@@ -58,6 +58,8 @@ running ──► generated ──► verified ──► needs_review  │
    │            │              │                     ├─► approved              ┐
    │            │              │                     ├─► changes_requested     ├─ harness review process
    │            │              │                     └─► rejected              ┘
+   │            │              │                          │
+   │            │              │                          └─► cleaned (harness cleanup)
    │            │              │
    │            │              ├─► failed-command (allowed command の exit≠0 / timeout)
    │            │              ├─► failed-policy-violation (safetyStatus=denied)
@@ -170,6 +172,12 @@ locks/<domain-slug>.lock   # active run の lock; runId / pid / hostname / acqui
 
 ```jsonl
 {"type":"review_processed","runId":"run-…","decision":"approved","previousStatus":"needs_review","newStatus":"approved","reviewer":"alice","reviewedAt":"2026-05-20T12:00:00Z"}
+```
+
+`harness cleanup` 実行時:
+
+```jsonl
+{"type":"cleaned","runId":"run-…","previousStatus":"approved","worktreeRemoved":true,"branchRemoved":true}
 ```
 
 通常の `failed-*` 終了（policy-violation / codex / codex-timeout / diff-collection）は **`run_completed` イベントに最終 status を載せる** だけで、`run_failed` は emit されない。`run_failed` は **post-`createRunLog` で unexpected exception が catch された場合のみ** 1 行追加される（その後 `failed-internal-error` で finalize して rethrow）。

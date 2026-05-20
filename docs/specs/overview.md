@@ -32,11 +32,11 @@ operator → `harness run --domain apps/catalog --goal "..."`
 - review-request.md + review-decision.yaml を生成（reviewer はこの 2 ファイルでレビューと決定を行う）
 - `harness review process --run-id <id>` で review-decision.yaml を読んで `meta.status` を `approved` / `changes_requested` / `rejected` に遷移、reviewer / reviewedAt を meta に記録、`review_processed` event を追記
 - path validation 通過後に `policy.allowedCommands`（例: `npm test` / `npm run lint`）を worktree 内で順次実行、失敗時は `failed-command` ステータス + `meta.commandResults` に結果保存
+- `harness cleanup --run-id <id> [--force]` で `approved` / `rejected` 後の worktree + branch を削除し meta を `cleaned` に遷移（`changes_requested` / `running` は強制でも残す、run dir は audit のため保持）
 
 ## できないこと（MVP の範囲外）
 
-- `changes_requested` / `rejected` 後の自動 cleanup (worktree / branch / run dir 削除) — 別 CLI `harness cleanup` を予定
-- 自動 retry / re-run loop（`changes_requested` を受けて再 run を起動するループ）
+- 自動 retry / re-run loop（`changes_requested` を受けて、`required_changes` を新 run の prompt に組み込んで起動するループ）
 - knowledge-candidates の promotion (candidate → confirmed)
 - multi-agent orchestration（reviewer agent / writer agent 分離など）
 - 複数 target repo を 1 run で扱う
@@ -76,7 +76,7 @@ interface ResolvedPolicy {
 
 type RunStatus =
   | "running" | "generated" | "verified" | "needs_review"
-  | "approved" | "changes_requested" | "rejected"
+  | "approved" | "changes_requested" | "rejected" | "cleaned"
   | "failed-policy-violation" | "failed-codex" | "failed-codex-timeout"
   | "failed-diff-collection" | "failed-command" | "failed-internal-error";
 

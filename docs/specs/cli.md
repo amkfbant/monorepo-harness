@@ -206,6 +206,62 @@ $EDITOR runs/run-20260520-apps-catalog-xxx/review-decision.yaml
 harness review process --run-id run-20260520-apps-catalog-xxx
 ```
 
+## `harness cleanup`
+
+approved / rejected 後の run について worktree と branch を削除する。run dir は audit のため残す。
+
+### Synopsis
+
+```bash
+harness cleanup --run-id <id> [--force]
+```
+
+### Options
+
+| Option | Required | 説明 |
+|--------|:--------:|------|
+| `--run-id <id>` | ✅ | 対象 run の識別子 |
+| `--force` | — | `needs_review` / `failed-*` / `verified` / `generated` を強制 cleanup（**`changes_requested` と `running` には効かない**） |
+
+### 動作
+
+1. `runs/<runId>/meta.json` を読み込み
+2. ステータスごとの判定:
+   - `approved` / `rejected` → cleanup 続行
+   - `cleaned` → no-op で exit 0
+   - `running` → 拒否（active run）
+   - `changes_requested` → **`--force` でも拒否**（retry の base なので、一度 `rejected` に手動変換してから削除）
+   - その他 (`needs_review` / `failed-*` / `verified` / `generated`) → `--force` 必須
+3. worktree (`workspaces/<runId>/repo/`) が存在すれば `git worktree remove --force` で削除
+4. 対応する run branch を `git branch -D` で削除（best-effort）
+5. `meta.status` を `cleaned` に変更
+6. `events.jsonl` に `cleaned` event 追記
+
+run dir (`runs/<runId>/`) と review-decision.yaml は保持される（audit trail）。
+
+### Output
+
+```
+run=<runId> previousStatus=approved worktreeRemoved=true branchRemoved=true
+```
+
+### Exit code
+
+- `0`: 削除成功、または `cleaned`/`approved`/`rejected` 状態で no-op
+- `1`: status が cleanup 対象外（`changes_requested` / `running` / `--force` なしの中間 status）
+- `2`: meta.json が読めない、git worktree remove が失敗するなど
+
+### 典型用途
+
+```bash
+# review approved 後の cleanup
+harness review process --run-id run-X       # → approved
+harness cleanup --run-id run-X              # worktree + branch 削除
+
+# 失敗 run の片付け
+harness cleanup --run-id run-Y --force      # status=failed-codex のもの
+```
+
 ## 環境変数
 
 | Variable | 解説 |
@@ -219,8 +275,8 @@ codex 子プロセスに渡る env は **`DEFAULT_CODEX_ENV_ALLOWLIST`** で制�
 
 将来追加予定（MVP には無い）:
 
-- `harness cleanup --run-id <id>` — `approved` / `rejected` の run の worktree + branch + run dir を削除
 - `harness review list` — `needs_review` 状態の run を一覧（処理待ちの可視化）
 - `harness knowledge promote --run-id <id> --kind <kind>` — knowledge-candidate を確定 knowledge file に昇格
+- `harness review process --apply-changes-requested` — `required_changes` を次の run の prompt に組み込む retry loop
 
 これらは `docs/superpowers/plans/` 配下に計画 doc を作るタイミングで追加する。
