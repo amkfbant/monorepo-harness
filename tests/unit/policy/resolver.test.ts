@@ -38,4 +38,23 @@ describe("resolvePolicy", () => {
       resolvePolicy(GLOBAL, REPO as never, "apps/missing"),
     ).toThrow(/domain.*apps\/missing/);
   });
+
+  it("defaults codex.sandbox to workspace-write when unset", () => {
+    const r = resolvePolicy(GLOBAL, REPO as never, "apps/user");
+    expect(r.codex.sandbox).toBe("workspace-write");
+    expect(r.codex.approval).toBeUndefined();
+  });
+
+  it("propagates codex defaults from global policy", () => {
+    const r = resolvePolicy(
+      {
+        always_deny_write: [],
+        defaults: { codex: { sandbox: "read-only", approval: "on-request" } },
+      },
+      REPO as never,
+      "apps/user",
+    );
+    expect(r.codex.sandbox).toBe("read-only");
+    expect(r.codex.approval).toBe("on-request");
+  });
 });

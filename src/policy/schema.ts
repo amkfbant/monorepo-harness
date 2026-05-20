@@ -2,16 +2,26 @@ import { z } from "zod";
 
 const Glob = z.string().min(1);
 
+export const SandboxModeSchema = z.enum([
+  "read-only",
+  "workspace-write",
+  "danger-full-access",
+]);
+export type SandboxMode = z.infer<typeof SandboxModeSchema>;
+
+export const CodexDefaultsSchema = z
+  .object({
+    sandbox: SandboxModeSchema.default("workspace-write"),
+    approval: z.string().optional(),
+  })
+  .strict();
+export type CodexDefaults = z.infer<typeof CodexDefaultsSchema>;
+
 export const GlobalPolicySchema = z
   .object({
     defaults: z
       .object({
-        codex: z
-          .object({
-            sandbox: z.string().optional(),
-            approval: z.string().optional(),
-          })
-          .optional(),
+        codex: CodexDefaultsSchema.optional(),
       })
       .optional(),
     always_deny_write: z.array(Glob).default([]),
@@ -54,4 +64,8 @@ export interface ResolvedPolicy {
   write: string[];
   denyWrite: string[];
   allowedCommands: string[];
+  codex: {
+    sandbox: SandboxMode;
+    approval?: string;
+  };
 }

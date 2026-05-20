@@ -15,6 +15,11 @@ export function resolvePolicy(
       `policy: domain "${domain}" not found in repo "${repo.repo_id}"`,
     );
   }
+  const codex: ResolvedPolicy["codex"] = {
+    sandbox: global.defaults?.codex?.sandbox ?? "workspace-write",
+  };
+  const approval = global.defaults?.codex?.approval;
+  if (approval !== undefined) codex.approval = approval;
   return {
     repoId: repo.repo_id,
     domain,
@@ -22,6 +27,7 @@ export function resolvePolicy(
     write: uniq(d.write),
     denyWrite: uniq([...(global.always_deny_write ?? []), ...d.deny_write]),
     allowedCommands: uniq(d.commands?.allow ?? []),
+    codex,
   };
 }
 
