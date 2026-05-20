@@ -14,6 +14,7 @@ import {
   domainLockPath,
   type LockInfo,
 } from "../workspace/domain-lock.js";
+import { processReviewDecision } from "../core/review-processor.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -191,6 +192,28 @@ lockCmd
     });
   });
 
+const reviewCmd = program
+  .command("review")
+  .description("operate on review-decision.yaml under runs/<id>/");
+reviewCmd
+  .command("process")
+  .description("apply review-decision.yaml to meta.status")
+  .requiredOption("--run-id <id>", "target run identifier")
+  .action(async (raw: Record<string, unknown>) => {
+    const harnessRoot = getHarnessRoot();
+    const paths = harnessPaths(harnessRoot);
+    const result = await processReviewDecision({
+      runsDir: paths.runsDir,
+      runId: String(raw.runId),
+    });
+    for (const w of result.warnings) {
+      process.stdout.write(`warning: ${w}\n`);
+    }
+    process.stdout.write(
+      `run=${result.runId} ${result.previousStatus} → ${result.newStatus} reviewer=${result.reviewer ?? "(none)"} reviewedAt=${result.reviewedAt}\n`,
+    );
+  });
+
 program.parseAsync(process.argv).catch((e: unknown) => {
   process.stderr.write(`harness error: ${(e as Error).message}\n`);
   process.exit(2);
@@ -198,3 +221,4 @@ program.parseAsync(process.argv).catch((e: unknown) => {
 
 // silence unused suppress
 void runCmd;
+void reviewCmd;
