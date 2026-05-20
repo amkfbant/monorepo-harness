@@ -22,7 +22,7 @@ always_deny_write:
   - packages/contracts/**
 
 ignore_untracked:
-  - node_modules/**
-  - dist/**
-  - coverage/**
-  - .turbo/**
+  - "**/node_modules/**"
+  - "**/dist/**"
+  - "**/coverage/**"
+  - "**/.turbo/**"
