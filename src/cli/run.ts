@@ -15,6 +15,7 @@ import {
   type LockInfo,
 } from "../workspace/domain-lock.js";
 import { processReviewDecision } from "../core/review-processor.js";
+import { cleanupRun } from "../core/cleanup.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -218,6 +219,30 @@ reviewCmd
     );
   });
 
+const cleanupCmd = program
+  .command("cleanup")
+  .description(
+    "remove worktree + branch for an approved/rejected run (run dir kept)",
+  )
+  .requiredOption("--run-id <id>", "target run identifier")
+  .option(
+    "--force",
+    "allow cleanup of needs_review / failed-* / verified / generated (NOT changes_requested or running)",
+    false,
+  )
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    const result = await cleanupRun({
+      runsDir: paths.runsDir,
+      workspacesDir: paths.workspacesDir,
+      runId: String(raw.runId),
+      force: Boolean(raw.force),
+    });
+    process.stdout.write(
+      `run=${result.runId} previousStatus=${result.previousStatus} worktreeRemoved=${result.worktreeRemoved} branchRemoved=${result.branchRemoved}\n`,
+    );
+  });
+
 program.parseAsync(process.argv).catch((e: unknown) => {
   process.stderr.write(`harness error: ${(e as Error).message}\n`);
   process.exit(2);
@@ -226,3 +251,4 @@ program.parseAsync(process.argv).catch((e: unknown) => {
 // silence unused suppress
 void runCmd;
 void reviewCmd;
+void cleanupCmd;
