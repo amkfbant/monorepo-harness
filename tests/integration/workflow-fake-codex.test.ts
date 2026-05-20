@@ -29,12 +29,16 @@ function setupRepo(): string {
   return repo;
 }
 
-function setupHarness(): string {
+function setupHarness(opts?: { ignoreUntracked?: string[] }): string {
   const root = mkdtempSync(join(tmpdir(), "harness-root-"));
   mkdirSync(join(root, "policies/repos"), { recursive: true });
+  const ignoreBlock =
+    opts?.ignoreUntracked && opts.ignoreUntracked.length > 0
+      ? `ignore_untracked:\n${opts.ignoreUntracked.map((p) => `  - ${p}`).join("\n")}\n`
+      : "";
   writeFileSync(
     join(root, "policies/global.yaml"),
-    "always_deny_write:\n  - .git/**\n  - package.json\n",
+    `always_deny_write:\n  - .git/**\n  - package.json\n${ignoreBlock}`,
   );
   writeFileSync(
     join(root, "policies/repos/t.yaml"),
@@ -60,7 +64,7 @@ describe("runDomainCoding (fake codex)", () => {
     harness = setupHarness();
   });
 
-  it("ends a healthy run at needs_review with full artifact set", async () => {
+  it("ends a healthy run at needs_review + safetyStatus=allowed with full artifact set", async () => {
     const runner = createFakeCodexRunner({
       edit: async (cwd) => {
         writeFileSync(
@@ -73,6 +77,7 @@ describe("runDomainCoding (fake codex)", () => {
         );
       },
       stdout: "applied 2 files\n",
+      stderr: "warning: nothing\n",
     });
     const r = await runDomainCoding({
       harnessRoot: harness,
@@ -85,22 +90,27 @@ describe("runDomainCoding (fake codex)", () => {
       now: new Date("2026-05-20T00:00:00Z"),
     });
     expect(r.status).toBe("needs_review");
+    expect(r.safetyStatus).toBe("allowed");
     const runDir = join(harness, "runs", r.runId);
     expect(existsSync(join(runDir, "summary.md"))).toBe(true);
     expect(existsSync(join(runDir, "final-diff.patch"))).toBe(true);
+    expect(existsSync(join(runDir, "untracked-files.patch"))).toBe(true);
+    expect(existsSync(join(runDir, "untracked-files.txt"))).toBe(true);
     expect(existsSync(join(runDir, "knowledge-candidates.yaml"))).toBe(true);
     expect(existsSync(join(runDir, "review-request.md"))).toBe(true);
     expect(existsSync(join(runDir, "review-decision.yaml"))).toBe(true);
-    expect(existsSync(join(runDir, "untracked-files.txt"))).toBe(true);
     expect(readFileSync(join(runDir, "final-diff.patch"), "utf8")).toMatch(
       /\+export const x = 1;/,
     );
-    expect(readFileSync(join(runDir, "summary.md"), "utf8")).toMatch(
-      /applied 2 files/,
+    expect(readFileSync(join(runDir, "untracked-files.patch"), "utf8")).toMatch(
+      /\+export const n = 1;/,
     );
+    const summary = readFileSync(join(runDir, "summary.md"), "utf8");
+    expect(summary).toMatch(/applied 2 files/);
+    expect(summary).toMatch(/warning: nothing/);
     const meta = JSON.parse(readFileSync(join(runDir, "meta.json"), "utf8"));
     expect(meta.baseSha).toMatch(/^[0-9a-f]{40}$/);
-    // worktree must still exist for review
+    expect(meta.safetyStatus).toBe("allowed");
     expect(existsSync(join(harness, "workspaces", r.runId, "repo"))).toBe(true);
   });
 
@@ -121,25 +131,85 @@ describe("runDomainCoding (fake codex)", () => {
       now: new Date("2026-05-20T00:00:00Z"),
     });
     expect(r.status).toBe("failed-policy-violation");
+    expect(r.safetyStatus).toBe("denied");
     const runDir = join(harness, "runs", r.runId);
     expect(readFileSync(join(runDir, "summary.md"), "utf8")).toMatch(
       /package\.json.*deny_write/,
     );
-    // worktree preserved on failure for inspection
     expect(existsSync(join(harness, "workspaces", r.runId, "repo"))).toBe(true);
   });
 
-  it("treats codex timeout as failed-codex-timeout and still saves diff", async () => {
+  it("ignore_untracked filters .gitignore'd output without making it invisible", async () => {
+    harness = setupHarness({ ignoreUntracked: ["dist/**"] });
     const runner = createFakeCodexRunner({
       edit: async (cwd) => {
+        // legit in-scope edit
         writeFileSync(
           join(cwd, "apps/user/src/profile.ts"),
-          "export const x = 99;\n",
+          "export const x = 2;\n",
         );
+        // throwaway build output: not in scope, but explicitly ignored.
+        mkdirSync(join(cwd, "dist"), { recursive: true });
+        writeFileSync(join(cwd, "dist/out.js"), "compiled\n");
+      },
+    });
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+    // Without ignore_untracked filter, dist/out.js would be 'not_in_write_scope'
+    // and fail the run. With filter, it surfaces in the summary but does NOT
+    // block validation.
+    expect(r.status).toBe("needs_review");
+    expect(r.safetyStatus).toBe("allowed");
+    const runDir = join(harness, "runs", r.runId);
+    const summary = readFileSync(join(runDir, "summary.md"), "utf8");
+    expect(summary).toMatch(/Ignored by ignore_untracked/);
+    expect(summary).toMatch(/dist\/out\.js/);
+  });
+
+  it("captures .gitignored output as a violation when not in ignore_untracked", async () => {
+    // ensure target repo has a .gitignore covering dist/
+    writeFileSync(join(repoPath, ".gitignore"), "dist/\n");
+    execFileSync("git", ["add", ".gitignore"], { cwd: repoPath });
+    execFileSync("git", ["commit", "-qm", "ignore"], { cwd: repoPath });
+
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        mkdirSync(join(cwd, "dist"), { recursive: true });
+        writeFileSync(join(cwd, "dist/out.js"), "compiled\n");
+      },
+    });
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+    expect(r.status).toBe("failed-policy-violation");
+    expect(r.safetyStatus).toBe("denied");
+  });
+
+  it("flags codex timeout as failed-codex-timeout but still records policy denied (orthogonal)", async () => {
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        // touch a deny_write path AND timeout — both should surface
+        writeFileSync(join(cwd, "package.json"), "{}\n");
       },
       timedOut: true,
       exitCode: -1,
       stdout: "partial work\n",
+      stderr: "killed by SIGKILL\n",
     });
     const r = await runDomainCoding({
       harnessRoot: harness,
@@ -152,12 +222,14 @@ describe("runDomainCoding (fake codex)", () => {
       now: new Date("2026-05-20T00:00:00Z"),
     });
     expect(r.status).toBe("failed-codex-timeout");
+    expect(r.safetyStatus).toBe("denied");
     const runDir = join(harness, "runs", r.runId);
-    expect(readFileSync(join(runDir, "final-diff.patch"), "utf8")).toMatch(
-      /\+export const x = 99;/,
-    );
-    expect(readFileSync(join(runDir, "summary.md"), "utf8")).toMatch(
-      /TIMEOUT/,
+    const meta = JSON.parse(readFileSync(join(runDir, "meta.json"), "utf8"));
+    expect(meta.status).toBe("failed-codex-timeout");
+    expect(meta.safetyStatus).toBe("denied");
+    expect(readFileSync(join(runDir, "summary.md"), "utf8")).toMatch(/TIMEOUT/);
+    expect(readFileSync(join(runDir, "review-request.md"), "utf8")).toMatch(
+      /killed by SIGKILL/,
     );
   });
 

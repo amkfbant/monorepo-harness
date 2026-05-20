@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
+import { minimatch } from "minimatch";
 import { harnessPaths } from "../config/paths.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
@@ -7,34 +8,26 @@ import {
   validateChangedPaths,
   type Violation,
 } from "../policy/path-policy-validator.js";
+import type { ResolvedPolicy } from "../policy/schema.js";
 import {
   createRunLog,
   type RunMeta,
   type RunStatus,
+  type SafetyStatus,
 } from "../logging/run-log.js";
 import { writeArtifact } from "../logging/artifacts.js";
 import { generateRunId } from "./run-id.js";
 import { acquireDomainLock } from "../workspace/domain-lock.js";
 import { runBranchName } from "../workspace/branch-name.js";
 import { createWorktree } from "../workspace/git-worktree.js";
-import {
-  collectDiff,
-  resolveBaseSha,
-  type DiffResult,
-} from "../git/diff.js";
+import { collectDiff, resolveBaseSha } from "../git/diff.js";
 import { buildCodexPrompt } from "../codex/prompt-builder.js";
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import { buildSummary } from "../reporter/summary.js";
 import { buildKnowledgeCandidates } from "../reporter/knowledge-candidates.js";
 import { buildReviewRequest } from "../reporter/review-request.js";
 import { buildReviewDecision } from "../reporter/review-decision.js";
-
-export interface RunLimits {
-  /** kill codex after this many ms; default 15 minutes */
-  codexTimeoutMs?: number;
-  /** abort any single git invocation after this many ms; default 30 seconds */
-  gitTimeoutMs?: number;
-}
+import { buildUntrackedPatch } from "../reporter/untracked-patch.js";
 
 export interface RunDomainCodingOpts {
   harnessRoot: string;
@@ -46,17 +39,16 @@ export interface RunDomainCodingOpts {
   /** retained for forward compat with a future cleanup tool; ignored by the workflow */
   keepWorktree?: boolean;
   codexRunner: CodexExecRunner;
-  limits?: RunLimits;
   now?: Date;
 }
 
 export interface RunDomainCodingResult {
   runId: string;
   status: RunStatus;
+  safetyStatus: SafetyStatus;
 }
 
-const DEFAULT_CODEX_TIMEOUT_MS = 15 * 60 * 1000;
-const DEFAULT_GIT_TIMEOUT_MS = 30 * 1000;
+const MATCH_OPTS = { dot: true, nocomment: true } as const;
 
 async function readTail(path: string, maxBytes = 8 * 1024): Promise<string> {
   try {
@@ -68,19 +60,56 @@ async function readTail(path: string, maxBytes = 8 * 1024): Promise<string> {
   }
 }
 
-async function tryCollectDiff(opts: {
-  repoPath: string;
-  baseSha: string;
-  gitTimeoutMs: number;
-}): Promise<DiffResult> {
+function partitionUntracked(
+  paths: readonly string[],
+  ignoreGlobs: readonly string[],
+): { kept: string[]; ignored: string[] } {
+  if (ignoreGlobs.length === 0) return { kept: [...paths], ignored: [] };
+  const kept: string[] = [];
+  const ignored: string[] = [];
+  for (const p of paths) {
+    if (ignoreGlobs.some((g) => minimatch(p, g, MATCH_OPTS))) {
+      ignored.push(p);
+    } else {
+      kept.push(p);
+    }
+  }
+  return { kept, ignored };
+}
+
+interface DiffOutcome {
+  ok: boolean;
+  error?: string;
+  trackedChangedPaths: string[];
+  untrackedAll: string[];
+  patch: string;
+}
+
+async function attemptDiff(
+  worktreePath: string,
+  baseSha: string,
+  gitTimeoutMs: number,
+): Promise<DiffOutcome> {
   try {
-    return await collectDiff({
-      repoPath: opts.repoPath,
-      baseSha: opts.baseSha,
-      timeoutMs: opts.gitTimeoutMs,
+    const d = await collectDiff({
+      repoPath: worktreePath,
+      baseSha,
+      timeoutMs: gitTimeoutMs,
     });
-  } catch {
-    return { trackedChangedPaths: [], untrackedPaths: [], patch: "" };
+    return {
+      ok: true,
+      trackedChangedPaths: d.trackedChangedPaths,
+      untrackedAll: d.untrackedPaths,
+      patch: d.patch,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      error: (e as Error).message,
+      trackedChangedPaths: [],
+      untrackedAll: [],
+      patch: "",
+    };
   }
 }
 
@@ -88,15 +117,11 @@ export async function runDomainCoding(
   opts: RunDomainCodingOpts,
 ): Promise<RunDomainCodingResult> {
   const paths = harnessPaths(opts.harnessRoot);
-  const codexTimeoutMs =
-    opts.limits?.codexTimeoutMs ?? DEFAULT_CODEX_TIMEOUT_MS;
-  const gitTimeoutMs = opts.limits?.gitTimeoutMs ?? DEFAULT_GIT_TIMEOUT_MS;
-
   const global = await loadGlobalPolicy(paths.globalPolicyPath);
   const repo = await loadRepoPolicy(paths.repoPolicyPath(opts.repoId));
-  const policy = resolvePolicy(global, repo, opts.domain);
+  const policy: ResolvedPolicy = resolvePolicy(global, repo, opts.domain);
+  const gitTimeoutMs = policy.limits.gitTimeoutMs;
 
-  // Generate runId BEFORE acquiring the lock so the lock can record who owns it.
   const runId = generateRunId({
     domain: opts.domain,
     ...(opts.now ? { now: opts.now } : {}),
@@ -111,8 +136,6 @@ export async function runDomainCoding(
   });
 
   try {
-    // Pin baseSha BEFORE creating worktree so a concurrent branch move doesn't
-    // change what "this run is diffed against".
     const baseSha = await resolveBaseSha({
       repoPath: opts.repoPath,
       baseBranch: opts.baseBranch,
@@ -169,47 +192,71 @@ export async function runDomainCoding(
     });
     await log.setStatus("generated");
 
-    // Always attempt a diff — even if codex failed it may have left partial
-    // edits in the worktree that reviewers need to see.
-    const diff = await tryCollectDiff({
-      repoPath: wt.path,
-      baseSha,
-      gitTimeoutMs,
-    });
+    const diff = await attemptDiff(wt.path, baseSha, gitTimeoutMs);
+    if (!diff.ok) {
+      await log.emit({
+        type: "diff_collection_failed",
+        error: diff.error,
+      });
+    }
+
+    // Apply harness-side ignore_untracked filter (we no longer rely on
+    // --exclude-standard so codex cannot hide changes in .gitignore'd paths).
+    const { kept: untrackedKept, ignored: untrackedIgnored } =
+      partitionUntracked(diff.untrackedAll, policy.ignoreUntracked);
+
     await writeArtifact(join(log.runDir, "final-diff.patch"), diff.patch);
-    if (diff.untrackedPaths.length > 0) {
+    if (untrackedKept.length > 0) {
       await writeArtifact(
         join(log.runDir, "untracked-files.txt"),
-        `${diff.untrackedPaths.join("\n")}\n`,
+        `${untrackedKept.join("\n")}\n`,
+      );
+      const untrackedPatch = await buildUntrackedPatch(wt.path, untrackedKept);
+      await writeArtifact(
+        join(log.runDir, "untracked-files.patch"),
+        untrackedPatch,
       );
     }
-    await log.emit({
-      type: "diff_collected",
-      tracked: diff.trackedChangedPaths,
-      untracked: diff.untrackedPaths,
-    });
+    if (diff.ok) {
+      await log.emit({
+        type: "diff_collected",
+        tracked: diff.trackedChangedPaths,
+        untracked: untrackedKept,
+        ignored: untrackedIgnored,
+      });
+    }
 
-    // Validate every path codex touched, not just tracked changes.
-    const allChangedPaths = [
-      ...diff.trackedChangedPaths,
-      ...diff.untrackedPaths,
-    ];
-    const validation = validateChangedPaths(policy, allChangedPaths);
-    const violations: Violation[] = validation.violations;
-    await log.emit({
-      type: "policy_validation_completed",
-      status: validation.status,
-    });
+    // Validate every path codex touched that wasn't explicitly ignored.
+    // When diff collection failed we cannot trust the empty list, so safety
+    // status is "skipped" rather than "allowed".
+    let safetyStatus: SafetyStatus;
+    let violations: Violation[] = [];
+    if (!diff.ok) {
+      safetyStatus = "skipped";
+    } else {
+      const allChangedPaths = [...diff.trackedChangedPaths, ...untrackedKept];
+      const validation = validateChangedPaths(policy, allChangedPaths);
+      violations = validation.violations;
+      safetyStatus = validation.status === "allowed" ? "allowed" : "denied";
+      await log.emit({
+        type: "policy_validation_completed",
+        status: validation.status,
+      });
+    }
+    await log.setSafetyStatus(safetyStatus);
 
-    // Determine final status. Codex-side failures (timeout / non-zero exit)
-    // take precedence over policy results; policy violations override clean
-    // success; otherwise we end at needs_review and KEEP the worktree.
+    // Status priority:
+    //   diff failure > codex timeout > codex non-zero > policy violation > needs_review
+    // safetyStatus is reported independently so callers can detect e.g.
+    // "timeout AND scope violation" cases.
     let status: RunStatus;
-    if (codex.timedOut) {
+    if (!diff.ok) {
+      status = "failed-diff-collection";
+    } else if (codex.timedOut) {
       status = "failed-codex-timeout";
     } else if (codex.exitCode !== 0) {
       status = "failed-codex";
-    } else if (validation.status === "denied") {
+    } else if (safetyStatus === "denied") {
       status = "failed-policy-violation";
     } else {
       status = "needs_review";
@@ -217,19 +264,36 @@ export async function runDomainCoding(
     }
 
     const codexStdoutTail = await readTail(codexStdoutPath);
+    const codexStderrTail = await readTail(codexStderrPath);
+    const finalDiffPath = join(log.runDir, "final-diff.patch");
+    const summaryPath = join(log.runDir, "summary.md");
+    const knowledgeCandidatesPath = join(
+      log.runDir,
+      "knowledge-candidates.yaml",
+    );
+    const reviewDecisionPath = join(log.runDir, "review-decision.yaml");
+    const untrackedPatchPath =
+      untrackedKept.length > 0
+        ? join(log.runDir, "untracked-files.patch")
+        : undefined;
+
     const summary = buildSummary({
       runId,
       domain: opts.domain,
       goal: opts.goal,
       status,
+      safetyStatus,
       changedPaths: diff.trackedChangedPaths,
-      untrackedPaths: diff.untrackedPaths,
+      untrackedPaths: untrackedKept,
+      ignoredUntrackedPaths: untrackedIgnored,
       violations,
       codexExitCode: codex.exitCode,
       codexTimedOut: codex.timedOut,
       codexStdoutTail,
+      codexStderrTail,
+      ...(diff.error ? { diffCollectionError: diff.error } : {}),
     });
-    await writeArtifact(join(log.runDir, "summary.md"), summary);
+    await writeArtifact(summaryPath, summary);
 
     const knowledge = buildKnowledgeCandidates({
       runId,
@@ -237,12 +301,8 @@ export async function runDomainCoding(
       status,
       violations,
     });
-    await writeArtifact(
-      join(log.runDir, "knowledge-candidates.yaml"),
-      knowledge,
-    );
+    await writeArtifact(knowledgeCandidatesPath, knowledge);
 
-    const reviewDecisionPath = join(log.runDir, "review-decision.yaml");
     await writeArtifact(
       reviewDecisionPath,
       buildReviewDecision({ runId, domain: opts.domain }),
@@ -254,28 +314,37 @@ export async function runDomainCoding(
         domain: opts.domain,
         goal: opts.goal,
         status,
+        safetyStatus,
         baseSha,
         runBranch: branch,
         worktreePath: wt.path,
         changedPaths: diff.trackedChangedPaths,
-        untrackedPaths: diff.untrackedPaths,
+        untrackedPaths: untrackedKept,
+        ignoredUntrackedPaths: untrackedIgnored,
         violations,
         codexExitCode: codex.exitCode,
         codexTimedOut: codex.timedOut,
         codexStdoutTail,
-        finalDiffPath: join(log.runDir, "final-diff.patch"),
-        summaryPath: join(log.runDir, "summary.md"),
-        knowledgeCandidatesPath: join(log.runDir, "knowledge-candidates.yaml"),
+        codexStderrTail,
+        ...(diff.error ? { diffCollectionError: diff.error } : {}),
+        finalDiffPath,
+        ...(untrackedPatchPath ? { untrackedPatchPath } : {}),
+        summaryPath,
+        knowledgeCandidatesPath,
         reviewDecisionPath,
       }),
     );
 
-    // Worktree is intentionally kept regardless of status — review and cleanup
+    // Worktree intentionally kept regardless of status — review and cleanup
     // are deferred to a follow-up tool that consumes review-decision.yaml.
 
-    await log.finalize({ status, finishedAt: new Date().toISOString() });
-    await log.emit({ type: "run_completed", status });
-    return { runId, status };
+    await log.finalize({
+      status,
+      safetyStatus,
+      finishedAt: new Date().toISOString(),
+    });
+    await log.emit({ type: "run_completed", status, safetyStatus });
+    return { runId, status, safetyStatus };
   } finally {
     await lock.release();
   }
