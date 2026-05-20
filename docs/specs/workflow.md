@@ -52,9 +52,9 @@ worktree は **削除しない**。レビュー後の cleanup は別フェーズ
                           ▼                          │
 running ──► generated ──► verified ──► needs_review  │
    │            │              │                     │
-   │            │              │                     ├─► approved (review-decision で外部更新; MVP では handler 無)
-   │            │              │                     ├─► changes_requested (同上)
-   │            │              │                     └─► rejected (同上)
+   │            │              │                     ├─► approved              ┐
+   │            │              │                     ├─► changes_requested     ├─ harness review process
+   │            │              │                     └─► rejected              ┘
    │            │              │
    │            │              ├─► failed-policy-violation (safetyStatus=denied)
    │            │
@@ -65,7 +65,7 @@ running ──► generated ──► verified ──► needs_review  │
    └─► failed-internal-error  (catch-all; emit run_failed event then rethrow)
 ```
 
-`approved` / `changes_requested` / `rejected` は MVP の workflow からは遷移しない（次フェーズの review-decision processor が更新）。
+`approved` / `changes_requested` / `rejected` への遷移は `domain-coding` workflow の中では起きない。`harness review process --run-id <id>` で `review-decision.yaml` を読んで遷移させる ([cli.md](./cli.md#harness-review-process) 参照)。同コマンドが `meta.status` / `meta.reviewer` / `meta.reviewedAt` を更新し、`events.jsonl` に `review_processed` イベントを追記する。
 
 failed-* で終わった run も worktree は残る（人間が原因を調べられるように）。
 
@@ -155,6 +155,12 @@ locks/<domain-slug>.lock   # active run の lock; runId / pid / hostname / acqui
 {"type":"run_completed","status":"needs_review","safetyStatus":"allowed","ignoredUntrackedCount":0,"secretSuspectCount":0}
 ```
 
+`harness review process` 実行時にはさらに追記される:
+
+```jsonl
+{"type":"review_processed","runId":"run-…","decision":"approved","previousStatus":"needs_review","newStatus":"approved","reviewer":"alice","reviewedAt":"2026-05-20T12:00:00Z"}
+```
+
 通常の `failed-*` 終了（policy-violation / codex / codex-timeout / diff-collection）は **`run_completed` イベントに最終 status を載せる** だけで、`run_failed` は emit されない。`run_failed` は **post-`createRunLog` で unexpected exception が catch された場合のみ** 1 行追加される（その後 `failed-internal-error` で finalize して rethrow）。
 
 ## knowledge-candidates.yaml の 4 signal
@@ -183,7 +189,9 @@ reviewer: null
 reviewed_at: null
 ```
 
-MVP の harness は **この値を読まない**。reviewer が手動で編集 + 次フェーズの review-decision processor が処理する想定。
+reviewer がこのファイルを編集して `decision` を `approved` / `changes_requested` / `rejected` に変更後、`harness review process --run-id <id>` で `meta.json` への反映と event 追記が行われる。`reviewed_at` が `null` のままなら processor が現在時刻で auto-fill して書き戻す。
+
+`required_changes` / `non_blocking_comments` / `out_of_scope_suggestions` は MVP processor では読み取られるが利用されない（将来の Phase 3 retry loop で prompt 生成に使う予定）。
 
 ## エラーパス
 

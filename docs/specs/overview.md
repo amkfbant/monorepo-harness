@@ -30,11 +30,12 @@ operator → `harness run --domain apps/catalog --goal "..."`
 - domain 単位の lockfile で同一 domain への並行 run を防止
 - run の全 artifact を `runs/<runId>/` に保存し、worktree も削除せず残す（レビュー後に手動 cleanup する想定）
 - review-request.md + review-decision.yaml を生成（reviewer はこの 2 ファイルでレビューと決定を行う）
+- `harness review process --run-id <id>` で review-decision.yaml を読んで `meta.status` を `approved` / `changes_requested` / `rejected` に遷移、reviewer / reviewedAt を meta に記録、`review_processed` event を追記
 
 ## できないこと（MVP の範囲外）
 
-- review-decision.yaml の処理（approved / changes_requested / rejected の状態遷移）
-- 自動 retry / re-run loop
+- `changes_requested` / `rejected` 後の自動 cleanup (worktree / branch / run dir 削除) — 別 CLI `harness cleanup` を予定
+- 自動 retry / re-run loop（`changes_requested` を受けて再 run を起動するループ）
 - knowledge-candidates の promotion (candidate → confirmed)
 - multi-agent orchestration（reviewer agent / writer agent 分離など）
 - 複数 target repo を 1 run で扱う
@@ -51,7 +52,7 @@ operator → `harness run --domain apps/catalog --goal "..."`
 | **harness root** | このリポジトリ自身。`policies/`, `runs/`, `workspaces/`, `locks/` を持つ |
 | **worktree** | target repo の `git worktree` で作った isolated copy。`workspaces/<runId>/repo/` |
 | **artifact** | run の成果物。`runs/<runId>/` 配下の meta.json / summary.md など |
-| **review gate** | run 完了時の状態 `needs_review`。reviewer が `review-decision.yaml` を編集することで次に進む（MVP では編集だけ。処理は次フェーズ） |
+| **review gate** | run 完了時の状態 `needs_review`。reviewer が `review-decision.yaml` を編集 → `harness review process` で `approved` / `changes_requested` / `rejected` に遷移 |
 
 ## 主要な型契約
 
@@ -87,6 +88,9 @@ interface RunDomainCodingResult {
   ignoredUntrackedCount: number;
   secretSuspectCount: number;
 }
+
+// RunMeta は加えて reviewer?: string | null と reviewedAt?: string | null を
+// 持つ。これらは `harness review process` 実行時にセットされる。
 ```
 
 詳細は [`workflow.md`](./workflow.md) と [`policy.md`](./policy.md) を参照。
@@ -132,6 +136,9 @@ HARNESS_ROOT="$PWD" npm run --silent harness -- run ... --dry-run
 # 残った lock を確認 / 解除
 HARNESS_ROOT="$PWD" npm run --silent harness -- lock list
 HARNESS_ROOT="$PWD" npm run --silent harness -- lock release --domain <subdir>
+
+# review-decision.yaml を編集 → meta.status を反映
+HARNESS_ROOT="$PWD" npm run --silent harness -- review process --run-id <run-id>
 ```
 
 詳細は [`cli.md`](./cli.md)。

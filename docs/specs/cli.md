@@ -158,6 +158,54 @@ harness lock release --domain apps/catalog --run-id run-20260520-apps-catalog-xx
 harness lock release --domain apps/catalog --force
 ```
 
+## `harness review process`
+
+`runs/<runId>/review-decision.yaml` の `decision` を読み、`meta.status` を遷移させる。
+
+### Synopsis
+
+```bash
+harness review process --run-id <id>
+```
+
+### Options
+
+| Option | Required | 説明 |
+|--------|:--------:|------|
+| `--run-id <id>` | ✅ | 対象 run の識別子 |
+
+### 動作
+
+1. `runs/<runId>/meta.json` を読み込み (`status` must be `needs_review`)
+2. `runs/<runId>/review-decision.yaml` を読み込み (`decision` must be `approved` / `changes_requested` / `rejected`)
+3. runId と domain が meta.json と一致することを check
+4. `reviewed_at` が `null` なら現在時刻で auto-fill して yaml に書き戻し
+5. `meta.json` の `status` / `reviewer` / `reviewedAt` を更新
+6. `events.jsonl` に `review_processed` event を追記
+
+### Output
+
+```
+[warning: …]
+run=<runId> needs_review → approved reviewer=alice reviewedAt=2026-05-20T12:00:00Z
+```
+
+reviewer が null の場合、`warning: reviewer field is null` を stdout に出力するが exit code は 0。
+
+### Exit code
+
+- `0`: 処理成功（reviewer null 警告含む）
+- `1`: decision が `pending` / current status が `needs_review` 以外 / runId or domain mismatch
+- `2`: meta.json / review-decision.yaml が読めない、その他予期しない例外
+
+### 典型用途
+
+```bash
+# reviewer が review-decision.yaml を編集後
+$EDITOR runs/run-20260520-apps-catalog-xxx/review-decision.yaml
+harness review process --run-id run-20260520-apps-catalog-xxx
+```
+
 ## 環境変数
 
 | Variable | 解説 |
@@ -171,8 +219,8 @@ codex 子プロセスに渡る env は **`DEFAULT_CODEX_ENV_ALLOWLIST`** で制�
 
 将来追加予定（MVP には無い）:
 
-- `harness review process --run-id <id>` — review-decision.yaml を読んで status を `approved` / `changes_requested` / `rejected` に遷移
 - `harness cleanup --run-id <id>` — `approved` / `rejected` の run の worktree + branch + run dir を削除
+- `harness review list` — `needs_review` 状態の run を一覧（処理待ちの可視化）
 - `harness knowledge promote --run-id <id> --kind <kind>` — knowledge-candidate を確定 knowledge file に昇格
 
 これらは `docs/superpowers/plans/` 配下に計画 doc を作るタイミングで追加する。
