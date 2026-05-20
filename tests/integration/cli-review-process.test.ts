@@ -110,8 +110,53 @@ describe("harness review process", () => {
       ["review", "process", "--run-id", "run-X"],
       root,
     );
-    expect(status).not.toBe(0);
+    expect(status).toBe(1); // gate refusal: exit 1, not 2
     expect(stdout).toMatch(/pending/);
+  });
+
+  it("returns exit code 1 (not 2) for runId mismatch", () => {
+    const root = setupHarness();
+    writeFileSync(
+      join(root, "runs/run-X/review-decision.yaml"),
+      [
+        "runId: run-something-else",
+        "domain: apps/user",
+        "decision: approved",
+        "required_changes: []",
+        "non_blocking_comments: []",
+        "out_of_scope_suggestions: []",
+        "reviewer: alice",
+        "reviewed_at: 2026-05-21T00:00:00Z",
+        "",
+      ].join("\n"),
+    );
+    const { status } = run(
+      ["review", "process", "--run-id", "run-X"],
+      root,
+    );
+    expect(status).toBe(1);
+  });
+
+  it("returns exit code 1 (not 2) for missing run directory", () => {
+    const root = setupHarness();
+    const { status } = run(
+      ["review", "process", "--run-id", "run-does-not-exist"],
+      root,
+    );
+    expect(status).toBe(1);
+  });
+
+  it("returns exit code 1 (not 2) for malformed review-decision.yaml", () => {
+    const root = setupHarness();
+    writeFileSync(
+      join(root, "runs/run-X/review-decision.yaml"),
+      "this: is: not: valid: yaml: {\n",
+    );
+    const { status } = run(
+      ["review", "process", "--run-id", "run-X"],
+      root,
+    );
+    expect(status).toBe(1);
   });
 
   it("warns when reviewer is null but still processes", () => {

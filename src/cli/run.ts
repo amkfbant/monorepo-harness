@@ -14,7 +14,10 @@ import {
   domainLockPath,
   type LockInfo,
 } from "../workspace/domain-lock.js";
-import { processReviewDecision } from "../core/review-processor.js";
+import {
+  processReviewDecision,
+  ReviewGateError,
+} from "../core/review-processor.js";
 import { cleanupRun, CleanupGateError } from "../core/cleanup.js";
 
 function getHarnessRoot(): string {
@@ -207,16 +210,24 @@ reviewCmd
   .action(async (raw: Record<string, unknown>) => {
     const harnessRoot = getHarnessRoot();
     const paths = harnessPaths(harnessRoot);
-    const result = await processReviewDecision({
-      runsDir: paths.runsDir,
-      runId: String(raw.runId),
-    });
-    for (const w of result.warnings) {
-      process.stdout.write(`warning: ${w}\n`);
+    try {
+      const result = await processReviewDecision({
+        runsDir: paths.runsDir,
+        runId: String(raw.runId),
+      });
+      for (const w of result.warnings) {
+        process.stdout.write(`warning: ${w}\n`);
+      }
+      process.stdout.write(
+        `run=${result.runId} ${result.previousStatus} → ${result.newStatus} reviewer=${result.reviewer ?? "(none)"} reviewedAt=${result.reviewedAt}\n`,
+      );
+    } catch (e) {
+      if (e instanceof ReviewGateError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
     }
-    process.stdout.write(
-      `run=${result.runId} ${result.previousStatus} → ${result.newStatus} reviewer=${result.reviewer ?? "(none)"} reviewedAt=${result.reviewedAt}\n`,
-    );
   });
 
 const cleanupCmd = program

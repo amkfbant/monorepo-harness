@@ -195,8 +195,15 @@ reviewer が null の場合、`warning: reviewer field is null` を stdout に�
 ### Exit code
 
 - `0`: 処理成功（reviewer null 警告含む）
-- `1`: decision が `pending` / current status が `needs_review` 以外 / runId or domain mismatch
-- `2`: meta.json / review-decision.yaml が読めない、その他予期しない例外
+- `1`: ユーザが解決可能な refusal（`ReviewGateError`）
+  - `decision: pending` のまま
+  - current `meta.status` が `needs_review` 以外
+  - runId / domain mismatch
+  - review-decision.yaml が読めない / YAML or schema parse fail
+  - meta.json が読めない / JSON parse fail / run directory 不在
+- `2`: 上記以外の予期しない例外（disk full, programming bug など）
+
+`harness cleanup` の exit code と同じ規約。`automation` で「retry しない」分岐は `1`、再試行検討は `2`。
 
 ### 典型用途
 
