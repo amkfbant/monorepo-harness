@@ -559,6 +559,161 @@ describe("runDomainCoding (fake codex)", () => {
     expect(r.commandResults[0]?.exitCode).not.toBe(0);
   });
 
+  it("T1: post-command ignored untracked is counted (F8 extension)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-cmd-"));
+    mkdirSync(join(root, "policies/repos"), { recursive: true });
+    writeFileSync(
+      join(root, "policies/global.yaml"),
+      'always_deny_write: []\nignore_untracked:\n  - "**/cache/**"\n',
+    );
+    writeFileSync(
+      join(root, "policies/repos/t.yaml"),
+      [
+        "repo_id: t",
+        "read: []",
+        "domains:",
+        "  apps/user:",
+        "    read: [apps/user/**]",
+        "    write: [apps/user/**]",
+        "    deny_write: []",
+        "    commands:",
+        "      allow:",
+        '        - "mkdir -p apps/user/cache && echo x > apps/user/cache/file.tmp"',
+        "",
+      ].join("\n"),
+    );
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 1;\n",
+        );
+      },
+    });
+    const r = await runDomainCoding({
+      harnessRoot: root,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-21T00:00:00Z"),
+    });
+    // command created cache/file.tmp AFTER codex; ignore_untracked filter
+    // catches it on the post-command re-collect.
+    expect(r.status).toBe("needs_review");
+    expect(r.safetyStatus).toBe("allowed");
+    expect(r.ignoredUntrackedCount).toBe(1);
+    const meta = JSON.parse(
+      readFileSync(join(root, "runs", r.runId, "meta.json"), "utf8"),
+    );
+    expect(meta.ignoredUntrackedCount).toBe(1);
+  });
+
+  it("T2: post-command secret-shaped file is detected (F8 extension)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-cmd-"));
+    mkdirSync(join(root, "policies/repos"), { recursive: true });
+    writeFileSync(
+      join(root, "policies/global.yaml"),
+      "always_deny_write: []\nignore_untracked: []\n",
+    );
+    writeFileSync(
+      join(root, "policies/repos/t.yaml"),
+      [
+        "repo_id: t",
+        "read: []",
+        "domains:",
+        "  apps/user:",
+        "    read: [apps/user/**]",
+        "    write: [apps/user/**]",
+        "    deny_write: []",
+        "    commands:",
+        "      allow:",
+        '        - "echo API_TOKEN=sk-test-abc > apps/user/.env.local"',
+        "",
+      ].join("\n"),
+    );
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 2;\n",
+        );
+      },
+    });
+    const r = await runDomainCoding({
+      harnessRoot: root,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-21T00:00:00Z"),
+    });
+    expect(r.status).toBe("needs_review");
+    expect(r.safetyStatus).toBe("allowed");
+    expect(r.secretSuspectCount).toBe(1);
+    const runDir = join(root, "runs", r.runId);
+    const meta = JSON.parse(readFileSync(join(runDir, "meta.json"), "utf8"));
+    expect(meta.secretSuspectCount).toBe(1);
+    const patch = readFileSync(join(runDir, "untracked-files.patch"), "utf8");
+    expect(patch).not.toMatch(/sk-test-abc/);
+    expect(patch).toMatch(/@@ secret-suspect/);
+  });
+
+  it("T3: post-command symlink is not followed (F8 extension)", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "harness-secret-"));
+    writeFileSync(join(outside, "secret.txt"), "EXTERNAL_VALUE\n");
+    const root = mkdtempSync(join(tmpdir(), "harness-cmd-"));
+    mkdirSync(join(root, "policies/repos"), { recursive: true });
+    writeFileSync(
+      join(root, "policies/global.yaml"),
+      "always_deny_write: []\nignore_untracked: []\n",
+    );
+    writeFileSync(
+      join(root, "policies/repos/t.yaml"),
+      [
+        "repo_id: t",
+        "read: []",
+        "domains:",
+        "  apps/user:",
+        "    read: [apps/user/**]",
+        "    write: [apps/user/**]",
+        "    deny_write: []",
+        "    commands:",
+        "      allow:",
+        `        - "ln -s ${outside}/secret.txt apps/user/src/link.ts"`,
+        "",
+      ].join("\n"),
+    );
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 3;\n",
+        );
+      },
+    });
+    const r = await runDomainCoding({
+      harnessRoot: root,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-21T00:00:00Z"),
+    });
+    expect(r.status).toBe("needs_review");
+    expect(r.safetyStatus).toBe("allowed");
+    const runDir = join(root, "runs", r.runId);
+    const patch = readFileSync(join(runDir, "untracked-files.patch"), "utf8");
+    expect(patch).toMatch(/@@ symlink @@/);
+    expect(patch).not.toMatch(/EXTERNAL_VALUE/);
+  });
+
   it("rejects concurrent runs on the same domain via lockfile", async () => {
     const slow = createFakeCodexRunner({
       edit: async () => {
