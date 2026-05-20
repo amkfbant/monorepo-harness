@@ -68,6 +68,11 @@ Finding ID は **F1, F2, …** で連番。レポート間で連続させる（�
 | F5 | 2026-05-20 initial | info (review-request UX) | observed | `2026-05-20-mvp-validation-initial.md` |
 | F6 | 2026-05-20 initial | info (worktree review) | observed | `2026-05-20-mvp-validation-initial.md` |
 | F7 | 2026-05-20 followup | P1 detection (looksBinary) | closed (impl) | `2026-05-20-mvp-validation-followup.md` |
+| F8 | 2026-05-21 phase2 | P0 workflow (post-command re-validation 抜け) | closed (impl) | `2026-05-21-phase2-review-commands-cleanup.md` |
+| F9 | 2026-05-21 phase2 | P1 cleanup (branch 削除粒度) | closed (impl) | `2026-05-21-phase2-review-commands-cleanup.md` |
+| F10 | 2026-05-21 phase2 | P1 cleanup (domain lock 取らず) | closed (impl) | `2026-05-21-phase2-review-commands-cleanup.md` |
+| F11 | 2026-05-21 phase2 | P1 cleanup (runId/meta 検証なし) | closed (impl) | `2026-05-21-phase2-review-commands-cleanup.md` |
+| F12 | 2026-05-21 phase2 | P2 cli (cleanup gate exit code) | closed (impl) | `2026-05-21-phase2-review-commands-cleanup.md` |
 
 ## Reports
 
@@ -75,6 +80,7 @@ Finding ID は **F1, F2, …** で連番。レポート間で連続させる（�
 |------|-------|-----------|
 | 2026-05-20 | [MVP validation — initial](2026-05-20-mvp-validation-initial.md) | mini-commerce での 7 シナリオ実機検証、F1〜F6 採番 |
 | 2026-05-20 | [MVP validation — follow-up](2026-05-20-mvp-validation-followup.md) | F1/P2 fix + scenarios 8-10、F7 発見と修正 |
+| 2026-05-21 | [Phase 2 — review/commands/cleanup](2026-05-21-phase2-review-commands-cleanup.md) | review processor + allowedCommands + cleanup CLI、codex review (gpt-5.5/xhigh) で F8-F12 発見&修正、mini-commerce で 5 シナリオ E2E 検証 |
 
 ## Workflow
 
