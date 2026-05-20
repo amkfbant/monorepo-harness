@@ -1,57 +1,76 @@
 import { describe, it, expect } from "vitest";
 import { buildSummary } from "../../../src/reporter/summary.js";
 
+const BASE = {
+  runId: "run-1",
+  domain: "apps/user",
+  goal: "add validation",
+  changedPaths: ["apps/user/profile.ts"] as string[],
+  untrackedPaths: [] as string[],
+  ignoredUntrackedPaths: [] as string[],
+  violations: [],
+  codexExitCode: 0,
+  codexTimedOut: false,
+  codexStdoutTail: "applied",
+  codexStderrTail: "",
+} as const;
+
 describe("buildSummary", () => {
-  it("renders a needs_review summary with tracked + untracked files and codex tail", () => {
+  it("renders needs_review with tracked + untracked + ignored sections", () => {
     const md = buildSummary({
-      runId: "run-1",
-      domain: "apps/user",
-      goal: "add validation",
+      ...BASE,
       status: "needs_review",
-      changedPaths: ["apps/user/profile.ts"],
-      untrackedPaths: ["apps/user/profile.test.ts"],
-      violations: [],
-      codexExitCode: 0,
-      codexTimedOut: false,
-      codexStdoutTail: "applied 2 files. ready for review.",
+      safetyStatus: "allowed",
+      untrackedPaths: ["apps/user/new.ts"],
+      ignoredUntrackedPaths: ["node_modules/foo"],
+      codexStderrTail: "warning: rate limit",
     });
-    expect(md).toMatch(/# Run run-1/);
     expect(md).toMatch(/Status: needs_review/);
+    expect(md).toMatch(/Safety status: allowed/);
     expect(md).toMatch(/apps\/user\/profile\.ts/);
-    expect(md).toMatch(/apps\/user\/profile\.test\.ts/);
-    expect(md).toMatch(/applied 2 files\. ready for review\./);
+    expect(md).toMatch(/apps\/user\/new\.ts/);
+    expect(md).toMatch(/Ignored by ignore_untracked/);
+    expect(md).toMatch(/node_modules\/foo/);
+    expect(md).toMatch(/warning: rate limit/);
   });
 
-  it("renders failed-policy-violation with details", () => {
+  it("renders failed-policy-violation with violations and safety denied", () => {
     const md = buildSummary({
-      runId: "run-2",
-      domain: "apps/user",
-      goal: "x",
+      ...BASE,
       status: "failed-policy-violation",
+      safetyStatus: "denied",
       changedPaths: ["package.json"],
-      untrackedPaths: [],
       violations: [{ path: "package.json", reason: "deny_write" }],
-      codexExitCode: 0,
-      codexTimedOut: false,
-      codexStdoutTail: "",
     });
     expect(md).toMatch(/failed-policy-violation/);
+    expect(md).toMatch(/Safety status: denied/);
     expect(md).toMatch(/package\.json.*deny_write/);
   });
 
-  it("marks codex timeout in the exit code line", () => {
+  it("marks codex timeout and shows stderr tail", () => {
     const md = buildSummary({
-      runId: "run-3",
-      domain: "apps/user",
-      goal: "x",
+      ...BASE,
       status: "failed-codex-timeout",
-      changedPaths: [],
-      untrackedPaths: [],
-      violations: [],
+      safetyStatus: "allowed",
       codexExitCode: -1,
       codexTimedOut: true,
       codexStdoutTail: "",
+      codexStderrTail: "rate limit exceeded",
     });
     expect(md).toMatch(/TIMEOUT/);
+    expect(md).toMatch(/rate limit exceeded/);
+  });
+
+  it("notes diff collection failure and skipped validation", () => {
+    const md = buildSummary({
+      ...BASE,
+      status: "failed-diff-collection",
+      safetyStatus: "skipped",
+      diffCollectionError: "git diff exited 128",
+      codexStdoutTail: "",
+    });
+    expect(md).toMatch(/Diff collection/);
+    expect(md).toMatch(/git diff exited 128/);
+    expect(md).toMatch(/Safety status: skipped/);
   });
 });
