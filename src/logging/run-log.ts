@@ -10,6 +10,7 @@ export type RunStatus =
   | "approved"
   | "changes_requested"
   | "rejected"
+  | "cleaned"
   | "failed-policy-violation"
   | "failed-codex"
   | "failed-codex-timeout"
