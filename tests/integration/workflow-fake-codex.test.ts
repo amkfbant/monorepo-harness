@@ -331,6 +331,37 @@ describe("runDomainCoding (fake codex)", () => {
     expect(parsed.codex.sandbox).toBe("workspace-write");
   });
 
+  it("finalizes meta as failed-internal-error when codex runner throws after createRunLog", async () => {
+    // simulate an unexpected runner-level crash (not a normal non-zero exit).
+    const exploder = {
+      async run(): Promise<never> {
+        throw new Error("runner exploded");
+      },
+    };
+    await expect(
+      runDomainCoding({
+        harnessRoot: harness,
+        repoPath,
+        repoId: "t",
+        domain: "apps/user",
+        goal: "x",
+        baseBranch: "main",
+        codexRunner: exploder,
+        now: new Date("2026-05-20T00:00:00Z"),
+      }),
+    ).rejects.toThrow(/runner exploded/);
+    // find the orphaned run dir (createRunLog succeeded before the throw)
+    const { readdirSync } = await import("node:fs");
+    const runDirs = readdirSync(join(harness, "runs"));
+    expect(runDirs.length).toBe(1);
+    const meta = JSON.parse(
+      readFileSync(join(harness, "runs", runDirs[0]!, "meta.json"), "utf8"),
+    );
+    expect(meta.status).toBe("failed-internal-error");
+    expect(meta.safetyStatus).toBe("skipped");
+    expect(meta.finishedAt).toBeDefined();
+  });
+
   it("rejects concurrent runs on the same domain via lockfile", async () => {
     const slow = createFakeCodexRunner({
       edit: async () => {

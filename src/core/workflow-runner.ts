@@ -163,6 +163,56 @@ export async function runDomainCoding(
         startedAt,
       },
     });
+
+    // Any failure after createRunLog leaves meta.status='running' on disk.
+    // Wrap the rest of the workflow so unexpected throws still finalize the
+    // run as failed-internal-error instead of silently rotting the status.
+    try {
+      return await runDomainCodingInner({
+        opts,
+        policy,
+        paths,
+        runId,
+        branch,
+        baseSha,
+        gitTimeoutMs,
+        log,
+      });
+    } catch (e) {
+      await log
+        .emit({ type: "run_failed", error: (e as Error).message })
+        .catch(() => {});
+      await log
+        .finalize({
+          status: "failed-internal-error",
+          safetyStatus: "skipped",
+          ignoredUntrackedCount: 0,
+          finishedAt: new Date().toISOString(),
+        })
+        .catch(() => {});
+      throw e;
+    }
+  } finally {
+    await lock.release();
+  }
+}
+
+interface InnerOpts {
+  opts: RunDomainCodingOpts;
+  policy: ResolvedPolicy;
+  paths: ReturnType<typeof harnessPaths>;
+  runId: string;
+  branch: string;
+  baseSha: string;
+  gitTimeoutMs: number;
+  log: Awaited<ReturnType<typeof createRunLog>>;
+}
+
+async function runDomainCodingInner(
+  inner: InnerOpts,
+): Promise<RunDomainCodingResult> {
+  const { opts, policy, paths, runId, branch, baseSha, gitTimeoutMs, log } =
+    inner;
     await log.emit({ type: "run_started", runId, baseSha });
     await writeArtifact(
       join(log.runDir, "resolved-policy.yaml"),
@@ -385,7 +435,4 @@ export async function runDomainCoding(
       ignoredUntrackedCount,
     });
     return { runId, status, safetyStatus, ignoredUntrackedCount };
-  } finally {
-    await lock.release();
-  }
 }
