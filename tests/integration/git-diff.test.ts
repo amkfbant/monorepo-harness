@@ -66,4 +66,11 @@ describe("collectDiff", () => {
     expect(d.trackedChangedPaths).toEqual(["apps/user/a.ts"]);
     expect(d.untrackedPaths).toEqual([]);
   });
+
+  it("returns .gitignore'd files in untrackedPaths (harness applies its own filter)", async () => {
+    writeFileSync(join(repo, ".gitignore"), "ignored.txt\n");
+    writeFileSync(join(repo, "ignored.txt"), "secret\n");
+    const d = await collectDiff({ repoPath: repo, baseSha: await baseSha() });
+    expect(d.untrackedPaths).toContain("ignored.txt");
+  });
 });

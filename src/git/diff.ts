@@ -3,7 +3,11 @@ import { gitCliOrThrow } from "./git-cli.js";
 export interface DiffResult {
   /** tracked-file changes between baseSha and the working tree */
   trackedChangedPaths: string[];
-  /** files present in the working tree but not yet tracked */
+  /**
+   * Files present in the working tree but not yet tracked.
+   * .gitignore is NOT honored here — callers must apply their own
+   * ignore list so codex-created throwaway files surface to validation.
+   */
   untrackedPaths: string[];
   /** unified diff against baseSha for tracked changes only */
   patch: string;
@@ -40,18 +44,17 @@ export async function resolveBaseSha(opts: {
 
 export async function collectDiff(opts: DiffOpts): Promise<DiffResult> {
   const g = withTimeout(opts.repoPath, opts.timeoutMs);
-  // tracked changes (working tree vs baseSha), NUL-separated paths
   const tracked = await gitCliOrThrow(
     ["diff", "--name-only", "-z", opts.baseSha],
     g,
   );
-  // untracked files NOT yet staged. exclude-standard respects .gitignore.
+  // NOTE: no --exclude-standard so .gitignore'd files still surface.
+  // Filtering belongs in the harness (policy.ignoreUntracked) so codex
+  // cannot hide behavior in throwaway / generated files.
   const untracked = await gitCliOrThrow(
-    ["ls-files", "--others", "--exclude-standard", "-z"],
+    ["ls-files", "--others", "-z"],
     g,
   );
-  // patch for tracked changes only. untracked files are reported separately
-  // so the index is not polluted with `git add -N`.
   const patch = await gitCliOrThrow(["diff", opts.baseSha], g);
   return {
     trackedChangedPaths: parseNullSeparated(tracked),
