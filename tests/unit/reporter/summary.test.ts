@@ -8,6 +8,7 @@ const BASE = {
   changedPaths: ["apps/user/profile.ts"] as string[],
   untrackedPaths: [] as string[],
   ignoredUntrackedPaths: [] as string[],
+  secretSuspectPaths: [] as string[],
   violations: [],
   codexExitCode: 0,
   codexTimedOut: false,
@@ -59,6 +60,18 @@ describe("buildSummary", () => {
     });
     expect(md).toMatch(/TIMEOUT/);
     expect(md).toMatch(/rate limit exceeded/);
+  });
+
+  it("highlights secret-suspect files when present", () => {
+    const md = buildSummary({
+      ...BASE,
+      status: "needs_review",
+      safetyStatus: "allowed",
+      untrackedPaths: ["apps/user/.env.local"],
+      secretSuspectPaths: ["apps/user/.env.local"],
+    });
+    expect(md).toMatch(/Secret-shaped files/);
+    expect(md).toMatch(/apps\/user\/\.env\.local/);
   });
 
   it("notes diff collection failure and skipped validation", () => {

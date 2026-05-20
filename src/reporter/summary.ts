@@ -10,6 +10,7 @@ export interface SummaryInputs {
   changedPaths: readonly string[];
   untrackedPaths: readonly string[];
   ignoredUntrackedPaths: readonly string[];
+  secretSuspectPaths: readonly string[];
   violations: readonly Violation[];
   codexExitCode: number;
   codexTimedOut: boolean;
@@ -57,6 +58,11 @@ export function buildSummary(i: SummaryInputs): string {
     lines.push("");
     lines.push("## Ignored by ignore_untracked (not validated)");
     for (const p of i.ignoredUntrackedPaths) lines.push(`- ${p}`);
+  }
+  if (i.secretSuspectPaths.length > 0) {
+    lines.push("");
+    lines.push("## Secret-shaped files (content REDACTED in artifacts)");
+    for (const p of i.secretSuspectPaths) lines.push(`- ${p}`);
   }
   lines.push("");
   lines.push("## Policy violations");

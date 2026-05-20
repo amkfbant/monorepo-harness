@@ -42,6 +42,12 @@ export interface RunMeta {
    * distinguish "allowed (clean)" from "allowed (had ignored output)".
    */
   ignoredUntrackedCount?: number;
+  /**
+   * Count of untracked files whose content was redacted because filename
+   * or content matched a secret heuristic. Path policy may still have
+   * allowed the file; this is an orthogonal review-quality signal.
+   */
+  secretSuspectCount?: number;
   startedAt: string;
   finishedAt?: string;
 }
@@ -55,6 +61,7 @@ export interface RunLog {
     status: RunStatus;
     safetyStatus: SafetyStatus;
     ignoredUntrackedCount: number;
+    secretSuspectCount: number;
     finishedAt: string;
   }): Promise<void>;
 }
@@ -87,11 +94,18 @@ export async function createRunLog(opts: {
     async setSafetyStatus(safetyStatus) {
       await updateMeta({ safetyStatus });
     },
-    async finalize({ status, safetyStatus, ignoredUntrackedCount, finishedAt }) {
+    async finalize({
+      status,
+      safetyStatus,
+      ignoredUntrackedCount,
+      secretSuspectCount,
+      finishedAt,
+    }) {
       await updateMeta({
         status,
         safetyStatus,
         ignoredUntrackedCount,
+        secretSuspectCount,
         finishedAt,
       });
     },

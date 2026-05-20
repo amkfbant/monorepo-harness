@@ -331,6 +331,59 @@ describe("runDomainCoding (fake codex)", () => {
     expect(parsed.codex.sandbox).toBe("workspace-write");
   });
 
+  it("redacts secret-shaped untracked files even when path policy allows them", async () => {
+    // apps/user/** is the allowed write scope, so policy alone would let
+    // .env.local through. The secret scanner must keep its content out
+    // of artifacts anyway, and surface the count.
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 1;\n",
+        );
+        writeFileSync(
+          join(cwd, "apps/user/.env.local"),
+          "DB_URL=postgres://user:hunter2@host/db\nAWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n",
+        );
+      },
+    });
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+    expect(r.status).toBe("needs_review");
+    expect(r.safetyStatus).toBe("allowed");
+    expect(r.secretSuspectCount).toBe(1);
+    const runDir = join(harness, "runs", r.runId);
+    const untrackedPatch = readFileSync(
+      join(runDir, "untracked-files.patch"),
+      "utf8",
+    );
+    expect(untrackedPatch).not.toMatch(/hunter2/);
+    expect(untrackedPatch).not.toMatch(/AKIAIOSFODNN7EXAMPLE/);
+    expect(untrackedPatch).toMatch(/@@ secret-suspect/);
+    // Index artifact lists the suspect with its trigger reasons.
+    const secretsList = readFileSync(
+      join(runDir, "untracked-secrets.txt"),
+      "utf8",
+    );
+    expect(secretsList).toMatch(/apps\/user\/\.env\.local/);
+    expect(secretsList).toMatch(/filename:\.env/);
+    expect(secretsList).toMatch(/content:aws-access-key-id/);
+    // Review surfaces flag it prominently.
+    expect(readFileSync(join(runDir, "review-request.md"), "utf8")).toMatch(
+      /Secret-shaped files/,
+    );
+    const meta = JSON.parse(readFileSync(join(runDir, "meta.json"), "utf8"));
+    expect(meta.secretSuspectCount).toBe(1);
+  });
+
   it("finalizes meta as failed-internal-error when codex runner throws after createRunLog", async () => {
     // simulate an unexpected runner-level crash (not a normal non-zero exit).
     const exploder = {

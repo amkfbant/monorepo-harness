@@ -66,7 +66,7 @@ async function cmdRun(o: RunOpts): Promise<void> {
     codexRunner: runner,
   });
   process.stdout.write(
-    `run=${result.runId} status=${result.status} safetyStatus=${result.safetyStatus} ignoredUntrackedCount=${result.ignoredUntrackedCount}\n`,
+    `run=${result.runId} status=${result.status} safetyStatus=${result.safetyStatus} ignoredUntrackedCount=${result.ignoredUntrackedCount} secretSuspectCount=${result.secretSuspectCount}\n`,
   );
   if (
     result.status === "failed-policy-violation" ||

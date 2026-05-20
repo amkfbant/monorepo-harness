@@ -73,6 +73,7 @@ describe("createRunLog", () => {
       status: "needs_review",
       safetyStatus: "allowed",
       ignoredUntrackedCount: 3,
+      secretSuspectCount: 2,
       finishedAt: "2026-05-20T01:00:00.000Z",
     });
     const meta = JSON.parse(
@@ -81,6 +82,7 @@ describe("createRunLog", () => {
     expect(meta.status).toBe("needs_review");
     expect(meta.safetyStatus).toBe("allowed");
     expect(meta.ignoredUntrackedCount).toBe(3);
+    expect(meta.secretSuspectCount).toBe(2);
     expect(meta.finishedAt).toBe("2026-05-20T01:00:00.000Z");
   });
 

@@ -31,6 +31,7 @@ import { buildReviewDecision } from "../reporter/review-decision.js";
 import {
   buildUntrackedPatch,
   buildUntrackedDeniedReport,
+  buildUntrackedSecretsReport,
 } from "../reporter/untracked-patch.js";
 
 export interface RunDomainCodingOpts {
@@ -51,6 +52,7 @@ export interface RunDomainCodingResult {
   status: RunStatus;
   safetyStatus: SafetyStatus;
   ignoredUntrackedCount: number;
+  secretSuspectCount: number;
 }
 
 const MATCH_OPTS = { dot: true, nocomment: true } as const;
@@ -187,6 +189,7 @@ export async function runDomainCoding(
           status: "failed-internal-error",
           safetyStatus: "skipped",
           ignoredUntrackedCount: 0,
+          secretSuspectCount: 0,
           finishedAt: new Date().toISOString(),
         })
         .catch(() => {});
@@ -294,19 +297,29 @@ async function runDomainCodingInner(
     }
 
     await writeArtifact(join(log.runDir, "final-diff.patch"), diff.patch);
+    let secretSuspects: { path: string; reasons: string[] }[] = [];
     if (untrackedAllowed.length > 0) {
       await writeArtifact(
         join(log.runDir, "untracked-files.txt"),
         `${untrackedAllowed.join("\n")}\n`,
       );
-      const untrackedPatch = await buildUntrackedPatch(
-        wt.path,
-        untrackedAllowed,
-      );
+      const result = await buildUntrackedPatch(wt.path, untrackedAllowed);
       await writeArtifact(
         join(log.runDir, "untracked-files.patch"),
-        untrackedPatch,
+        result.patch,
       );
+      secretSuspects = result.secretSuspects;
+      if (secretSuspects.length > 0) {
+        await writeArtifact(
+          join(log.runDir, "untracked-secrets.txt"),
+          buildUntrackedSecretsReport(secretSuspects),
+        );
+        await log.emit({
+          type: "secret_suspects_redacted",
+          count: secretSuspects.length,
+          paths: secretSuspects.map((s) => s.path),
+        });
+      }
     }
     if (untrackedDenied.length > 0) {
       const deniedReport = await buildUntrackedDeniedReport(
@@ -360,6 +373,7 @@ async function runDomainCodingInner(
         ? join(log.runDir, "untracked-files.patch")
         : undefined;
 
+    const secretSuspectPaths = secretSuspects.map((s) => s.path);
     const summary = buildSummary({
       runId,
       domain: opts.domain,
@@ -369,6 +383,7 @@ async function runDomainCodingInner(
       changedPaths: diff.trackedChangedPaths,
       untrackedPaths: untrackedKept,
       ignoredUntrackedPaths: untrackedIgnored,
+      secretSuspectPaths,
       violations,
       codexExitCode: codex.exitCode,
       codexTimedOut: codex.timedOut,
@@ -404,6 +419,7 @@ async function runDomainCodingInner(
         changedPaths: diff.trackedChangedPaths,
         untrackedPaths: untrackedKept,
         ignoredUntrackedPaths: untrackedIgnored,
+        secretSuspectPaths,
         violations,
         codexExitCode: codex.exitCode,
         codexTimedOut: codex.timedOut,
@@ -422,10 +438,12 @@ async function runDomainCodingInner(
     // are deferred to a follow-up tool that consumes review-decision.yaml.
 
     const ignoredUntrackedCount = untrackedIgnored.length;
+    const secretSuspectCount = secretSuspects.length;
     await log.finalize({
       status,
       safetyStatus,
       ignoredUntrackedCount,
+      secretSuspectCount,
       finishedAt: new Date().toISOString(),
     });
     await log.emit({
@@ -433,6 +451,13 @@ async function runDomainCodingInner(
       status,
       safetyStatus,
       ignoredUntrackedCount,
+      secretSuspectCount,
     });
-    return { runId, status, safetyStatus, ignoredUntrackedCount };
+    return {
+      runId,
+      status,
+      safetyStatus,
+      ignoredUntrackedCount,
+      secretSuspectCount,
+    };
 }

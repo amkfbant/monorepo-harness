@@ -17,6 +17,7 @@ const BASE = {
   knowledgeCandidatesPath: "/tmp/runs/x/knowledge-candidates.yaml",
   reviewDecisionPath: "/tmp/runs/x/review-decision.yaml",
   ignoredUntrackedPaths: [] as string[],
+  secretSuspectPaths: [] as string[],
 } as const;
 
 describe("buildReviewRequest", () => {
@@ -83,6 +84,20 @@ describe("buildReviewRequest", () => {
     expect(md).toMatch(/TIMEOUT/);
     expect(md).toMatch(/Diff collection failed/);
     expect(md).toMatch(/Safety status: \*\*skipped\*\*/);
+  });
+
+  it("highlights secret-suspect files prominently", () => {
+    const md = buildReviewRequest({
+      ...BASE,
+      status: "needs_review",
+      safetyStatus: "allowed",
+      changedPaths: [],
+      untrackedPaths: ["apps/user/.env.local"],
+      secretSuspectPaths: ["apps/user/.env.local"],
+      violations: [],
+    });
+    expect(md).toMatch(/Secret-shaped files \(content REDACTED/);
+    expect(md).toMatch(/apps\/user\/\.env\.local/);
   });
 
   it("links untracked-files patch when present", () => {
