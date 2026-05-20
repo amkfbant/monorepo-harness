@@ -15,7 +15,21 @@ async function streamSha256(path: string): Promise<string> {
 
 function looksBinary(buf: Buffer): boolean {
   const sample = buf.subarray(0, Math.min(8192, buf.length));
-  return sample.includes(0);
+  if (sample.length === 0) return false;
+  // NUL is the cheapest binary signal.
+  if (sample.includes(0)) return true;
+  // Otherwise: strict UTF-8 decode in stream mode. Random binary almost
+  // always trips an invalid continuation byte within 8KB; valid UTF-8
+  // text (including Japanese) decodes cleanly. stream:true tolerates a
+  // multi-byte character truncated by the sample boundary.
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(sample, {
+      stream: true,
+    });
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 export interface SecretSuspect {

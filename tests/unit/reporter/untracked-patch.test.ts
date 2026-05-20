@@ -45,6 +45,29 @@ describe("buildUntrackedPatch", () => {
     expect(r.patch).not.toMatch(/^\+xxxxx/m);
   });
 
+  it("flags NUL-free random binary as binary via UTF-8 validity check", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
+    // 1KB of bytes guaranteed to fail strict UTF-8 (lone continuation bytes)
+    const bytes = Buffer.alloc(1024);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = 0x80 + (i % 64);
+    writeFileSync(join(dir, "random.bin"), bytes);
+    const r = await buildUntrackedPatch(dir, ["random.bin"]);
+    expect(r.patch).toMatch(/omitted \(binary,/);
+    // sha256 line should appear; raw bytes should NOT be inlined as +lines
+    expect(r.patch).toMatch(/sha256=[0-9a-f]{64}/);
+  });
+
+  it("does NOT misflag valid UTF-8 (Japanese) as binary", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
+    writeFileSync(
+      join(dir, "notes.md"),
+      "こんにちは世界\nこれはテストです\n",
+    );
+    const r = await buildUntrackedPatch(dir, ["notes.md"]);
+    expect(r.patch).toMatch(/\+こんにちは世界/);
+    expect(r.patch).not.toMatch(/omitted \(binary/);
+  });
+
   it("omits binary files with size + sha256 instead of inlining bytes", async () => {
     const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
     const bytes = Buffer.from([
