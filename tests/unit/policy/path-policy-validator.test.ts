@@ -9,6 +9,7 @@ const POLICY: ResolvedPolicy = {
   write: ["apps/user/**"],
   denyWrite: ["packages/shared/**", "package.json"],
   allowedCommands: [],
+  codex: { sandbox: "workspace-write" },
 };
 
 describe("validateChangedPaths", () => {
@@ -46,5 +47,31 @@ describe("validateChangedPaths", () => {
     const r = validateChangedPaths(policy, ["package.json"]);
     expect(r.status).toBe("denied");
     expect(r.violations[0]?.reason).toBe("deny_write");
+  });
+
+  it("rejects absolute paths as unsafe_path", () => {
+    const r = validateChangedPaths(POLICY, ["/etc/passwd"]);
+    expect(r.violations[0]?.reason).toBe("unsafe_path");
+  });
+
+  it("rejects parent-directory traversal as unsafe_path", () => {
+    const r = validateChangedPaths(POLICY, ["apps/user/../package.json"]);
+    expect(r.violations[0]?.reason).toBe("unsafe_path");
+  });
+
+  it("rejects backslash-containing paths as unsafe_path", () => {
+    const r = validateChangedPaths(POLICY, ["apps\\user\\foo.ts"]);
+    expect(r.violations[0]?.reason).toBe("unsafe_path");
+  });
+
+  it("rejects NUL-containing paths as unsafe_path", () => {
+    const evil = "apps/user/foo" + String.fromCharCode(0) + ".ts";
+    const r = validateChangedPaths(POLICY, [evil]);
+    expect(r.violations[0]?.reason).toBe("unsafe_path");
+  });
+
+  it("rejects empty paths as unsafe_path", () => {
+    const r = validateChangedPaths(POLICY, [""]);
+    expect(r.violations[0]?.reason).toBe("unsafe_path");
   });
 });
