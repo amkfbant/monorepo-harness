@@ -129,4 +129,10 @@ describe("harness cleanup", () => {
     expect(status).not.toBe(0);
     expect(stdout).toMatch(/changes_requested/);
   });
+
+  it("returns exit code 1 (not 2) for gate refusals so automation can branch", async () => {
+    const s = await setupRun("needs_review");
+    const { status } = run(["cleanup", "--run-id", s.runId], s.root);
+    expect(status).toBe(1);
+  });
 });

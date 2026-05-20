@@ -15,7 +15,7 @@ import {
   type LockInfo,
 } from "../workspace/domain-lock.js";
 import { processReviewDecision } from "../core/review-processor.js";
-import { cleanupRun } from "../core/cleanup.js";
+import { cleanupRun, CleanupGateError } from "../core/cleanup.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -232,15 +232,24 @@ const cleanupCmd = program
   )
   .action(async (raw: Record<string, unknown>) => {
     const paths = harnessPaths(getHarnessRoot());
-    const result = await cleanupRun({
-      runsDir: paths.runsDir,
-      workspacesDir: paths.workspacesDir,
-      runId: String(raw.runId),
-      force: Boolean(raw.force),
-    });
-    process.stdout.write(
-      `run=${result.runId} previousStatus=${result.previousStatus} worktreeRemoved=${result.worktreeRemoved} branchRemoved=${result.branchRemoved}\n`,
-    );
+    try {
+      const result = await cleanupRun({
+        runsDir: paths.runsDir,
+        workspacesDir: paths.workspacesDir,
+        locksDir: paths.locksDir,
+        runId: String(raw.runId),
+        force: Boolean(raw.force),
+      });
+      process.stdout.write(
+        `run=${result.runId} previousStatus=${result.previousStatus} worktreeRemoved=${result.worktreeRemoved} branchRemoved=${result.branchRemoved}\n`,
+      );
+    } catch (e) {
+      if (e instanceof CleanupGateError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
   });
 
 program.parseAsync(process.argv).catch((e: unknown) => {
