@@ -21,6 +21,10 @@ import {
 import { cleanupRun, CleanupGateError } from "../core/cleanup.js";
 import { listReviews, formatTable } from "../core/review-lister.js";
 import { prepareRerunFromReview, RerunGateError } from "../core/rerun.js";
+import {
+  runReviewerAgent,
+  ReviewerAgentGateError,
+} from "../core/reviewer-agent.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -237,6 +241,49 @@ reviewCmd
       );
     } catch (e) {
       if (e instanceof ReviewGateError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
+  });
+reviewCmd
+  .command("auto")
+  .description(
+    "invoke a codex reviewer agent that reads run artifacts (read-only) and writes review-decision.yaml",
+  )
+  .requiredOption("--run-id <id>", "target run identifier")
+  .option(
+    "--reviewer-name <name>",
+    "stamped into review-decision.yaml.reviewer (default: codex-reviewer)",
+  )
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    // separate codex instance with read-only sandbox; the agent must not
+    // touch the worktree/runs files except by us writing review-decision
+    // afterward.
+    const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
+    const runner = createCodexCliRunner({
+      codexBin,
+      sandbox: "read-only",
+    });
+    try {
+      const result = await runReviewerAgent({
+        runsDir: paths.runsDir,
+        runId: String(raw.runId),
+        ...(raw.reviewerName !== undefined
+          ? { reviewerName: String(raw.reviewerName) }
+          : {}),
+        codexRunner: runner,
+      });
+      process.stdout.write(
+        `run=${result.runId} decision=${result.decision} reviewer=${result.reviewer} reviewedAt=${result.reviewedAt}\n`,
+      );
+      process.stdout.write(
+        `note: review-decision.yaml was overwritten; run 'harness review process --run-id ${result.runId}' to apply.\n`,
+      );
+    } catch (e) {
+      if (e instanceof ReviewerAgentGateError) {
         process.stderr.write(`harness error: ${(e as Error).message}\n`);
         process.exit(1);
       }
