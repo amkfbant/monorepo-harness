@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { minimatch } from "minimatch";
+import { stringify as yamlStringify } from "yaml";
 import { harnessPaths } from "../config/paths.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
@@ -27,7 +28,10 @@ import { buildSummary } from "../reporter/summary.js";
 import { buildKnowledgeCandidates } from "../reporter/knowledge-candidates.js";
 import { buildReviewRequest } from "../reporter/review-request.js";
 import { buildReviewDecision } from "../reporter/review-decision.js";
-import { buildUntrackedPatch } from "../reporter/untracked-patch.js";
+import {
+  buildUntrackedPatch,
+  buildUntrackedDeniedReport,
+} from "../reporter/untracked-patch.js";
 
 export interface RunDomainCodingOpts {
   harnessRoot: string;
@@ -162,7 +166,7 @@ export async function runDomainCoding(
     await log.emit({ type: "run_started", runId, baseSha });
     await writeArtifact(
       join(log.runDir, "resolved-policy.yaml"),
-      JSON.stringify(policy, null, 2),
+      yamlStringify(policy),
     );
 
     const wt = await createWorktree({
@@ -206,38 +210,20 @@ export async function runDomainCoding(
     const { kept: untrackedKept, ignored: untrackedIgnored } =
       partitionUntracked(diff.untrackedAll, policy.ignoreUntracked);
 
-    await writeArtifact(join(log.runDir, "final-diff.patch"), diff.patch);
-    if (untrackedKept.length > 0) {
-      await writeArtifact(
-        join(log.runDir, "untracked-files.txt"),
-        `${untrackedKept.join("\n")}\n`,
-      );
-      const untrackedPatch = await buildUntrackedPatch(wt.path, untrackedKept);
-      await writeArtifact(
-        join(log.runDir, "untracked-files.patch"),
-        untrackedPatch,
-      );
-    }
-    if (diff.ok) {
-      await log.emit({
-        type: "diff_collected",
-        tracked: diff.trackedChangedPaths,
-        untracked: untrackedKept,
-        ignored: untrackedIgnored,
-      });
-    }
-
-    // Validate every path codex touched that wasn't explicitly ignored.
-    // When diff collection failed we cannot trust the empty list, so safety
-    // status is "skipped" rather than "allowed".
+    // Validate BEFORE writing any untracked content to artifacts: a denied
+    // untracked file (e.g. .env) must not have its bytes copied into
+    // untracked-files.patch even though we still want reviewers to know
+    // the file existed.
     let safetyStatus: SafetyStatus;
     let violations: Violation[] = [];
+    const violatedPaths = new Set<string>();
     if (!diff.ok) {
       safetyStatus = "skipped";
     } else {
       const allChangedPaths = [...diff.trackedChangedPaths, ...untrackedKept];
       const validation = validateChangedPaths(policy, allChangedPaths);
       violations = validation.violations;
+      for (const v of validation.violations) violatedPaths.add(v.path);
       safetyStatus = validation.status === "allowed" ? "allowed" : "denied";
       await log.emit({
         type: "policy_validation_completed",
@@ -245,6 +231,52 @@ export async function runDomainCoding(
       });
     }
     await log.setSafetyStatus(safetyStatus);
+
+    // Split untracked into (allowed, denied). Only allowed content is
+    // inlined into untracked-files.patch. Denied paths get a metadata-only
+    // report so reviewers can see *what* was there without harness
+    // persisting the bytes.
+    const untrackedAllowed: string[] = [];
+    const untrackedDenied: string[] = [];
+    for (const p of untrackedKept) {
+      if (violatedPaths.has(p)) untrackedDenied.push(p);
+      else untrackedAllowed.push(p);
+    }
+
+    await writeArtifact(join(log.runDir, "final-diff.patch"), diff.patch);
+    if (untrackedAllowed.length > 0) {
+      await writeArtifact(
+        join(log.runDir, "untracked-files.txt"),
+        `${untrackedAllowed.join("\n")}\n`,
+      );
+      const untrackedPatch = await buildUntrackedPatch(
+        wt.path,
+        untrackedAllowed,
+      );
+      await writeArtifact(
+        join(log.runDir, "untracked-files.patch"),
+        untrackedPatch,
+      );
+    }
+    if (untrackedDenied.length > 0) {
+      const deniedReport = await buildUntrackedDeniedReport(
+        wt.path,
+        untrackedDenied,
+      );
+      await writeArtifact(
+        join(log.runDir, "untracked-denied.txt"),
+        deniedReport,
+      );
+    }
+    if (diff.ok) {
+      await log.emit({
+        type: "diff_collected",
+        tracked: diff.trackedChangedPaths,
+        untrackedAllowed,
+        untrackedDenied,
+        ignored: untrackedIgnored,
+      });
+    }
 
     // Status priority:
     //   diff failure > codex timeout > codex non-zero > policy violation > needs_review
@@ -274,7 +306,7 @@ export async function runDomainCoding(
     );
     const reviewDecisionPath = join(log.runDir, "review-decision.yaml");
     const untrackedPatchPath =
-      untrackedKept.length > 0
+      untrackedAllowed.length > 0
         ? join(log.runDir, "untracked-files.patch")
         : undefined;
 

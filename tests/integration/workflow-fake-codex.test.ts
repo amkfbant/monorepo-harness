@@ -6,7 +6,9 @@ import {
   mkdirSync,
   existsSync,
   readFileSync,
+  symlinkSync,
 } from "node:fs";
+import { parse as parseYaml } from "yaml";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runDomainCoding } from "../../src/core/workflow-runner.js";
@@ -234,6 +236,99 @@ describe("runDomainCoding (fake codex)", () => {
     expect(readFileSync(join(runDir, "review-request.md"), "utf8")).toMatch(
       /killed by SIGKILL/,
     );
+  });
+
+  it("never writes denied untracked content into artifacts (security boundary)", async () => {
+    // Codex drops a .env-like file at the repo root. This is out of scope
+    // (apps/user/** is the write scope) AND likely contains secrets.
+    // The path should appear in violations + untracked-denied.txt but the
+    // content (SECRET=hunter2) must never land in any artifact.
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(join(cwd, ".env"), "SECRET=hunter2\n");
+      },
+    });
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+    expect(r.status).toBe("failed-policy-violation");
+    expect(r.safetyStatus).toBe("denied");
+    const runDir = join(harness, "runs", r.runId);
+    // untracked-files.patch should NOT exist (no allowed untracked) OR
+    // must not contain the secret.
+    const utPatchPath = join(runDir, "untracked-files.patch");
+    if (existsSync(utPatchPath)) {
+      expect(readFileSync(utPatchPath, "utf8")).not.toMatch(/hunter2/);
+    }
+    // untracked-denied.txt should exist and reference the path with sha256
+    // but NOT include the bytes.
+    const deniedPath = join(runDir, "untracked-denied.txt");
+    expect(existsSync(deniedPath)).toBe(true);
+    const denied = readFileSync(deniedPath, "utf8");
+    expect(denied).not.toMatch(/hunter2/);
+    expect(denied).toMatch(/\.env\s+size=\d+\s+sha256=[0-9a-f]{64}/);
+    // summary still surfaces the violation
+    expect(readFileSync(join(runDir, "summary.md"), "utf8")).toMatch(
+      /\.env.*not_in_write_scope/,
+    );
+  });
+
+  it("never follows symlinks when generating untracked artifacts", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "harness-secret-"));
+    writeFileSync(join(outside, "secret"), "SUPERSECRET\n");
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        // in-scope path that symlinks out of the repo entirely
+        symlinkSync(join(outside, "secret"), join(cwd, "apps/user/leak.ts"));
+      },
+    });
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+    // Path is in scope, so policy allows it — but content must NOT have
+    // been read across the symlink.
+    expect(r.safetyStatus).toBe("allowed");
+    const runDir = join(harness, "runs", r.runId);
+    const utPatch = readFileSync(
+      join(runDir, "untracked-files.patch"),
+      "utf8",
+    );
+    expect(utPatch).not.toMatch(/SUPERSECRET/);
+    expect(utPatch).toMatch(/@@ symlink @@/);
+  });
+
+  it("writes resolved-policy.yaml as actual YAML", async () => {
+    const runner = createFakeCodexRunner({ edit: async () => {} });
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+    const runDir = join(harness, "runs", r.runId);
+    const raw = readFileSync(join(runDir, "resolved-policy.yaml"), "utf8");
+    expect(raw.trimStart().startsWith("{")).toBe(false);
+    const parsed = parseYaml(raw) as { domain: string; codex: { sandbox: string } };
+    expect(parsed.domain).toBe("apps/user");
+    expect(parsed.codex.sandbox).toBe("workspace-write");
   });
 
   it("rejects concurrent runs on the same domain via lockfile", async () => {
