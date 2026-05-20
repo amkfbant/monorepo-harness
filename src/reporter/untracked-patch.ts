@@ -1,12 +1,30 @@
-import { readFile } from "node:fs/promises";
+import { stat, readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { createHash } from "node:crypto";
+import { pipeline } from "node:stream/promises";
 import { join } from "node:path";
 
 const MAX_FILE_BYTES = 256 * 1024;
 
+async function streamSha256(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  await pipeline(createReadStream(path), hash);
+  return hash.digest("hex");
+}
+
+function looksBinary(buf: Buffer): boolean {
+  // NUL anywhere in the first 8KB is a reliable enough binary signal for
+  // review purposes. Avoids decoding 100MB of raw bytes into UTF-8.
+  const sample = buf.subarray(0, Math.min(8192, buf.length));
+  return sample.includes(0);
+}
+
 /**
  * Build a synthetic unified-diff for untracked files so review-request
- * surfaces the actual content of new files (final-diff.patch only covers
- * tracked changes). Output is git-apply friendly for tiny new files.
+ * surfaces actual content of new files. Files larger than MAX_FILE_BYTES
+ * or detected as binary are recorded as size+sha256 metadata only, so
+ * a runaway codex run can't blow up harness memory by writing a giant
+ * file into the worktree.
  */
 export async function buildUntrackedPatch(
   worktreePath: string,
@@ -15,27 +33,39 @@ export async function buildUntrackedPatch(
   if (untrackedPaths.length === 0) return "";
   const out: string[] = [];
   for (const p of untrackedPaths) {
+    const fullPath = join(worktreePath, p);
     out.push(`diff --git a/${p} b/${p}`);
     out.push("new file mode 100644");
     out.push("--- /dev/null");
     out.push(`+++ b/${p}`);
     try {
-      const buf = await readFile(join(worktreePath, p));
-      if (buf.length > MAX_FILE_BYTES) {
-        out.push(`@@ truncated (${buf.length} bytes) @@`);
-        out.push("+# (content omitted: exceeds 256KB harness limit)");
+      const st = await stat(fullPath);
+      if (st.size > MAX_FILE_BYTES) {
+        // Avoid loading the whole file; stream-hash instead.
+        const sha = await streamSha256(fullPath);
+        out.push(
+          `@@ omitted (size=${st.size} bytes, sha256=${sha}) @@`,
+        );
+        out.push(`+# content omitted: exceeds ${MAX_FILE_BYTES} byte limit`);
       } else {
-        const content = buf.toString("utf8");
-        const lines = content.split("\n");
-        // Trailing newline manifests as a trailing empty segment; drop it for
-        // a cleaner hunk header but keep the +-line so reviewers see the EOF.
-        const hasTrailingNewline =
-          lines.length > 0 && lines[lines.length - 1] === "";
-        const body = hasTrailingNewline ? lines.slice(0, -1) : lines;
-        out.push(`@@ -0,0 +1,${body.length} @@`);
-        for (const line of body) out.push(`+${line}`);
-        if (!hasTrailingNewline) {
-          out.push("\\ No newline at end of file");
+        const buf = await readFile(fullPath);
+        if (looksBinary(buf)) {
+          const sha = createHash("sha256").update(buf).digest("hex");
+          out.push(
+            `@@ omitted (binary, size=${st.size} bytes, sha256=${sha}) @@`,
+          );
+          out.push("+# content omitted: detected as binary");
+        } else {
+          const content = buf.toString("utf8");
+          const lines = content.split("\n");
+          const hasTrailingNewline =
+            lines.length > 0 && lines[lines.length - 1] === "";
+          const body = hasTrailingNewline ? lines.slice(0, -1) : lines;
+          out.push(`@@ -0,0 +1,${body.length} @@`);
+          for (const line of body) out.push(`+${line}`);
+          if (!hasTrailingNewline) {
+            out.push("\\ No newline at end of file");
+          }
         }
       }
     } catch (e) {
