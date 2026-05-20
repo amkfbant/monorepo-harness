@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { collectDiff } from "../../src/git/diff.js";
+import { collectDiff, resolveBaseSha } from "../../src/git/diff.js";
 
 let repo: string;
 
@@ -20,22 +20,50 @@ beforeEach(() => {
   r(["commit", "-qm", "init"]);
 });
 
+async function baseSha(): Promise<string> {
+  return await resolveBaseSha({ repoPath: repo, baseBranch: "main" });
+}
+
+describe("resolveBaseSha", () => {
+  it("returns the SHA of the given ref", async () => {
+    const sha = await baseSha();
+    expect(sha).toMatch(/^[0-9a-f]{40}$/);
+  });
+});
+
 describe("collectDiff", () => {
-  it("returns changed file list and full patch for working tree changes", async () => {
+  it("separates tracked changes from untracked files", async () => {
     writeFileSync(join(repo, "apps/user/a.ts"), "export const a = 2;\n");
     writeFileSync(join(repo, "apps/user/b.ts"), "export const b = 1;\n");
-    const d = await collectDiff({ repoPath: repo, baseBranch: "main" });
-    expect(d.changedPaths.sort()).toEqual([
-      "apps/user/a.ts",
-      "apps/user/b.ts",
-    ]);
+    const d = await collectDiff({ repoPath: repo, baseSha: await baseSha() });
+    expect(d.trackedChangedPaths).toEqual(["apps/user/a.ts"]);
+    expect(d.untrackedPaths).toEqual(["apps/user/b.ts"]);
     expect(d.patch).toMatch(/\+export const a = 2;/);
-    expect(d.patch).toMatch(/apps\/user\/b\.ts/);
+    expect(d.patch).not.toMatch(/apps\/user\/b\.ts/);
   });
 
-  it("returns empty patch when there are no changes", async () => {
-    const d = await collectDiff({ repoPath: repo, baseBranch: "main" });
-    expect(d.changedPaths).toEqual([]);
+  it("returns empty patch and empty lists when nothing changed", async () => {
+    const d = await collectDiff({ repoPath: repo, baseSha: await baseSha() });
+    expect(d.trackedChangedPaths).toEqual([]);
+    expect(d.untrackedPaths).toEqual([]);
     expect(d.patch).toBe("");
+  });
+
+  it("does not pollute the index with intent-to-add markers", async () => {
+    writeFileSync(join(repo, "apps/user/b.ts"), "export const b = 1;\n");
+    await collectDiff({ repoPath: repo, baseSha: await baseSha() });
+    const staged = execFileSync("git", ["diff", "--cached", "--name-only"], {
+      cwd: repo,
+    })
+      .toString()
+      .trim();
+    expect(staged).toBe("");
+  });
+
+  it("captures deletes as tracked changes", async () => {
+    rmSync(join(repo, "apps/user/a.ts"));
+    const d = await collectDiff({ repoPath: repo, baseSha: await baseSha() });
+    expect(d.trackedChangedPaths).toEqual(["apps/user/a.ts"]);
+    expect(d.untrackedPaths).toEqual([]);
   });
 });

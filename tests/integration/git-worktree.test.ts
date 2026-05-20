@@ -31,7 +31,7 @@ describe("createWorktree / removeWorktree", () => {
       worktreesDir,
       runId: "run-1",
       branch: "harness/run-1/x",
-      baseBranch: "main",
+      base: "main",
     });
     expect(existsSync(wt.path)).toBe(true);
     expect(existsSync(join(wt.path, "f.txt"))).toBe(true);
@@ -49,7 +49,7 @@ describe("createWorktree / removeWorktree", () => {
       worktreesDir,
       runId: "run-2",
       branch: "harness/run-2/x",
-      baseBranch: "main",
+      base: "main",
     });
     await removeWorktree({
       repoPath: repoRoot,
