@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -100,5 +105,15 @@ describe("CLI harness lock", () => {
     );
     expect(status).toBe(0);
     expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it("list surfaces unreadable lockfiles as status=unreadable", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-lockcli-"));
+    mkdirSync(join(root, "locks"), { recursive: true });
+    // intentionally invalid JSON
+    writeFileSync(join(root, "locks", "broken.lock"), "{not json");
+    const { stdout, status } = runCli(["lock", "list"], root);
+    expect(status).toBe(0);
+    expect(stdout).toMatch(/broken\.lock\tstatus=unreadable/);
   });
 });

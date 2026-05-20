@@ -66,7 +66,7 @@ async function cmdRun(o: RunOpts): Promise<void> {
     codexRunner: runner,
   });
   process.stdout.write(
-    `run=${result.runId} status=${result.status} safetyStatus=${result.safetyStatus}\n`,
+    `run=${result.runId} status=${result.status} safetyStatus=${result.safetyStatus} ignoredUntrackedCount=${result.ignoredUntrackedCount}\n`,
   );
   if (
     result.status === "failed-policy-violation" ||
@@ -86,25 +86,28 @@ async function cmdLockList(): Promise<void> {
     process.stdout.write("no locks\n");
     return;
   }
-  const entries = await readdir(paths.locksDir);
-  const locks: Array<{ file: string; info: LockInfo }> = [];
-  for (const e of entries) {
-    if (!e.endsWith(".lock")) continue;
-    try {
-      const raw = await readFile(join(paths.locksDir, e), "utf8");
-      locks.push({ file: e, info: JSON.parse(raw) as LockInfo });
-    } catch {
-      // ignore unreadable lock; surface only valid ones
-    }
-  }
-  if (locks.length === 0) {
+  const entries = (await readdir(paths.locksDir)).filter((e) =>
+    e.endsWith(".lock"),
+  );
+  if (entries.length === 0) {
     process.stdout.write("no locks\n");
     return;
   }
-  for (const { file, info } of locks) {
-    process.stdout.write(
-      `${file}\trunId=${info.runId}\tpid=${info.pid}\thost=${info.hostname}\tacquiredAt=${info.acquiredAt}\n`,
-    );
+  // Surface unreadable locks too — those are exactly the ones operators
+  // need to see (crash recovery, manual debugging).
+  for (const e of entries) {
+    const lockPath = join(paths.locksDir, e);
+    try {
+      const raw = await readFile(lockPath, "utf8");
+      const info = JSON.parse(raw) as LockInfo;
+      process.stdout.write(
+        `${e}\trunId=${info.runId}\tpid=${info.pid}\thost=${info.hostname}\tacquiredAt=${info.acquiredAt}\n`,
+      );
+    } catch (err) {
+      process.stdout.write(
+        `${e}\tstatus=unreadable\terror=${(err as Error).message}\n`,
+      );
+    }
   }
 }
 
