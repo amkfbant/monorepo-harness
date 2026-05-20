@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.log
+
+# run-time generated
+runs/
+workspaces/
+locks/
+
+# editor
+.DS_Store
