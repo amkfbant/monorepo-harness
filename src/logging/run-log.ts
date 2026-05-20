@@ -48,6 +48,10 @@ export interface RunMeta {
    * allowed the file; this is an orthogonal review-quality signal.
    */
   secretSuspectCount?: number;
+  /** Reviewer ハンドル。`harness review process` で review-decision.yaml から転写される。 */
+  reviewer?: string | null;
+  /** ISO 8601 review timestamp。`harness review process` 実行時に set される。 */
+  reviewedAt?: string | null;
   startedAt: string;
   finishedAt?: string;
 }
@@ -57,6 +61,10 @@ export interface RunLog {
   emit(event: RunEvent): Promise<void>;
   setStatus(status: RunStatus): Promise<void>;
   setSafetyStatus(safetyStatus: SafetyStatus): Promise<void>;
+  setReviewerInfo(p: {
+    reviewer: string | null;
+    reviewedAt: string;
+  }): Promise<void>;
   finalize(p: {
     status: RunStatus;
     safetyStatus: SafetyStatus;
@@ -93,6 +101,9 @@ export async function createRunLog(opts: {
     },
     async setSafetyStatus(safetyStatus) {
       await updateMeta({ safetyStatus });
+    },
+    async setReviewerInfo({ reviewer, reviewedAt }) {
+      await updateMeta({ reviewer, reviewedAt });
     },
     async finalize({
       status,

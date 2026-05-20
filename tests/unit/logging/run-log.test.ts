@@ -100,4 +100,22 @@ describe("createRunLog", () => {
     expect(meta.safetyStatus).toBe("skipped");
     expect(meta.status).toBe("running");
   });
+
+  it("setReviewerInfo updates reviewer + reviewedAt", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-"));
+    const log = await createRunLog({
+      runsDir: root,
+      runId: META.runId,
+      meta: META,
+    });
+    await log.setReviewerInfo({
+      reviewer: "alice",
+      reviewedAt: "2026-05-20T12:00:00Z",
+    });
+    const meta = JSON.parse(
+      readFileSync(join(log.runDir, "meta.json"), "utf8"),
+    );
+    expect(meta.reviewer).toBe("alice");
+    expect(meta.reviewedAt).toBe("2026-05-20T12:00:00Z");
+  });
 });
