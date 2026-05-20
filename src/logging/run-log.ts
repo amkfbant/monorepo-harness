@@ -64,6 +64,12 @@ export interface RunMeta {
     durationMs: number;
     timedOut: boolean;
   }>;
+  /**
+   * tracked changes + allowed untracked (denied are tracked under
+   * safetyStatus / violations). Surfaced by `harness review list` so
+   * operators can size-up runs without parsing artifacts.
+   */
+  changedFilesCount?: number;
   startedAt: string;
   finishedAt?: string;
 }
@@ -83,6 +89,7 @@ export interface RunLog {
     ignoredUntrackedCount: number;
     secretSuspectCount: number;
     commandResults: NonNullable<RunMeta["commandResults"]>;
+    changedFilesCount: number;
     finishedAt: string;
   }): Promise<void>;
 }
@@ -124,6 +131,7 @@ export async function createRunLog(opts: {
       ignoredUntrackedCount,
       secretSuspectCount,
       commandResults,
+      changedFilesCount,
       finishedAt,
     }) {
       await updateMeta({
@@ -132,6 +140,7 @@ export async function createRunLog(opts: {
         ignoredUntrackedCount,
         secretSuspectCount,
         commandResults,
+        changedFilesCount,
         finishedAt,
       });
     },

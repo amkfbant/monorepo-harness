@@ -255,6 +255,7 @@ export async function runDomainCoding(
           ignoredUntrackedCount: 0,
           secretSuspectCount: 0,
           commandResults: [],
+          changedFilesCount: 0,
           finishedAt: new Date().toISOString(),
         })
         .catch(() => {});
@@ -572,12 +573,15 @@ async function runDomainCodingInner(
 
     const ignoredUntrackedCount = untrackedIgnored.length;
     const secretSuspectCount = secretSuspects.length;
+    const changedFilesCount =
+      diff.trackedChangedPaths.length + untrackedAllowed.length;
     await log.finalize({
       status,
       safetyStatus,
       ignoredUntrackedCount,
       secretSuspectCount,
       commandResults,
+      changedFilesCount,
       finishedAt: new Date().toISOString(),
     });
     await log.emit({
@@ -587,6 +591,7 @@ async function runDomainCodingInner(
       ignoredUntrackedCount,
       secretSuspectCount,
       commandResultsCount: commandResults.length,
+      changedFilesCount,
     });
     return {
       runId,
