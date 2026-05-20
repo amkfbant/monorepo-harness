@@ -1,5 +1,6 @@
 import {
   DEFAULT_CODEX_TIMEOUT_MS,
+  DEFAULT_COMMAND_TIMEOUT_MS,
   DEFAULT_GIT_TIMEOUT_MS,
   type GlobalPolicy,
   type RepoPolicy,
@@ -23,6 +24,15 @@ export function resolvePolicy(
   };
   const approval = global.defaults?.codex?.approval;
   if (approval !== undefined) codex.approval = approval;
+
+  const cmdDefaultsRaw = d.commands?.defaults;
+  const commandDefaults: ResolvedPolicy["commandDefaults"] = {
+    timeoutMs: cmdDefaultsRaw?.timeout_ms ?? DEFAULT_COMMAND_TIMEOUT_MS,
+  };
+  if (cmdDefaultsRaw?.env_allowlist !== undefined) {
+    commandDefaults.envAllowlist = uniq(cmdDefaultsRaw.env_allowlist);
+  }
+
   return {
     repoId: repo.repo_id,
     domain,
@@ -30,6 +40,7 @@ export function resolvePolicy(
     write: uniq(d.write),
     denyWrite: uniq([...(global.always_deny_write ?? []), ...d.deny_write]),
     allowedCommands: uniq(d.commands?.allow ?? []),
+    commandDefaults,
     ignoreUntracked: uniq(global.ignore_untracked ?? []),
     codex,
     limits: {

@@ -22,16 +22,21 @@ export interface RunAllowedCommandsInputs {
   /** Per-command timeout. Default 5 minutes. */
   timeoutMs?: number;
   /**
-   * Env passed to the child. If undefined, a small default allowlist is used.
-   * This is intentionally narrow — operators must explicitly opt-in any extra
-   * variable in the policy/runner layer.
+   * Direct env to pass to children. Takes precedence over envAllowlist.
+   * Useful for tests that inject a specific shape.
    */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Env-var keys to filter from process.env. Used when `env` is not
+   * supplied. Undefined → DEFAULT_COMMAND_ENV_ALLOWLIST. Empty array →
+   * strictly empty env (operator opted into zero inheritance).
+   */
+  envAllowlist?: readonly string[];
 }
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
-const DEFAULT_COMMAND_ENV_ALLOWLIST = [
+export const DEFAULT_COMMAND_ENV_ALLOWLIST = [
   "PATH",
   "HOME",
   "USER",
@@ -42,9 +47,12 @@ const DEFAULT_COMMAND_ENV_ALLOWLIST = [
   "TMPDIR",
 ];
 
-function defaultEnv(): NodeJS.ProcessEnv {
+function filteredEnv(
+  allowlist: readonly string[] | undefined,
+): NodeJS.ProcessEnv {
+  const keys = allowlist ?? DEFAULT_COMMAND_ENV_ALLOWLIST;
   const out: NodeJS.ProcessEnv = {};
-  for (const k of DEFAULT_COMMAND_ENV_ALLOWLIST) {
+  for (const k of keys) {
     const v = process.env[k];
     if (v !== undefined) out[k] = v;
   }
@@ -82,7 +90,7 @@ export async function runAllowedCommands(
   }
   await mkdir(input.logDir, { recursive: true });
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const env = input.env ?? defaultEnv();
+  const env = input.env ?? filteredEnv(input.envAllowlist);
 
   const results: CommandResult[] = [];
   for (let i = 0; i < input.commands.length; i++) {

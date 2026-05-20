@@ -9,6 +9,7 @@ const POLICY: ResolvedPolicy = {
   write: ["apps/user/**"],
   denyWrite: ["packages/shared/**", "package.json"],
   allowedCommands: [],
+  commandDefaults: { timeoutMs: 300_000 },
   ignoreUntracked: [],
   codex: { sandbox: "workspace-write" },
   limits: { gitTimeoutMs: 30_000 },

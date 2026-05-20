@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { resolvePolicy } from "../../../src/policy/resolver.js";
 import {
   DEFAULT_CODEX_TIMEOUT_MS,
+  DEFAULT_COMMAND_TIMEOUT_MS,
   DEFAULT_GIT_TIMEOUT_MS,
 } from "../../../src/policy/schema.js";
 
@@ -75,5 +76,38 @@ describe("resolvePolicy", () => {
     expect(r.codex.timeoutMs).toBe(60_000);
     expect(r.limits.gitTimeoutMs).toBe(10_000);
     expect(r.ignoreUntracked).toEqual(["node_modules/**", "dist/**"]);
+  });
+
+  it("defaults commandDefaults.timeoutMs and leaves envAllowlist absent", () => {
+    const r = resolvePolicy(GLOBAL, REPO as never, "apps/user");
+    expect(r.commandDefaults.timeoutMs).toBe(DEFAULT_COMMAND_TIMEOUT_MS);
+    expect(r.commandDefaults.envAllowlist).toBeUndefined();
+  });
+
+  it("propagates per-domain commands.defaults (timeout + env_allowlist)", () => {
+    const r = resolvePolicy(
+      GLOBAL,
+      {
+        repo_id: "x",
+        read: [],
+        domains: {
+          "apps/user": {
+            read: [],
+            write: [],
+            deny_write: [],
+            commands: {
+              allow: ["pnpm test"],
+              defaults: {
+                timeout_ms: 120_000,
+                env_allowlist: ["PATH", "NODE_ENV"],
+              },
+            },
+          },
+        },
+      } as never,
+      "apps/user",
+    );
+    expect(r.commandDefaults.timeoutMs).toBe(120_000);
+    expect(r.commandDefaults.envAllowlist).toEqual(["PATH", "NODE_ENV"]);
   });
 });

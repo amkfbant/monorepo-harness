@@ -361,6 +361,10 @@ async function runDomainCodingInner(
         worktreePath: wt.path,
         commands: policy.allowedCommands,
         logDir: join(log.runDir, "commands"),
+        timeoutMs: policy.commandDefaults.timeoutMs,
+        ...(policy.commandDefaults.envAllowlist !== undefined
+          ? { envAllowlist: policy.commandDefaults.envAllowlist }
+          : {}),
       });
       commandResults = cmdRun.results.map((r) => ({
         command: r.command,

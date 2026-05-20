@@ -46,6 +46,18 @@ export const GlobalPolicySchema = z
   .strict();
 export type GlobalPolicy = z.infer<typeof GlobalPolicySchema>;
 
+export const CommandDefaultsSchema = z
+  .object({
+    timeout_ms: z.number().int().positive().optional(),
+    /**
+     * Environment variables to pass to allowed commands. If absent, falls
+     * back to DEFAULT_COMMAND_ENV_ALLOWLIST inside the runner.
+     */
+    env_allowlist: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
+export type CommandDefaults = z.infer<typeof CommandDefaultsSchema>;
+
 export const DomainPolicySchema = z
   .object({
     read: z.array(Glob).default([]),
@@ -54,6 +66,7 @@ export const DomainPolicySchema = z
     commands: z
       .object({
         allow: z.array(z.string()).default([]),
+        defaults: CommandDefaultsSchema.optional(),
       })
       .optional(),
   })
@@ -76,6 +89,16 @@ export interface ResolvedPolicy {
   write: string[];
   denyWrite: string[];
   allowedCommands: string[];
+  /**
+   * Defaults applied to every entry in allowedCommands.
+   * timeoutMs comes from domain.commands.defaults.timeout_ms or the
+   * harness default; envAllowlist is undefined → runner uses
+   * DEFAULT_COMMAND_ENV_ALLOWLIST; defined empty → strict empty env.
+   */
+  commandDefaults: {
+    timeoutMs: number;
+    envAllowlist?: string[];
+  };
   ignoreUntracked: string[];
   codex: {
     sandbox: SandboxMode;
@@ -89,3 +112,4 @@ export interface ResolvedPolicy {
 
 export const DEFAULT_CODEX_TIMEOUT_MS = 15 * 60 * 1000;
 export const DEFAULT_GIT_TIMEOUT_MS = 30 * 1000;
+export const DEFAULT_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;

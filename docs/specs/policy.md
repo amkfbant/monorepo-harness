@@ -98,6 +98,12 @@ domains:
       allow:
         - "npm test"
         - "npm run lint"
+      defaults:                       # 任意 — domain ごとに上書き可能
+        timeout_ms: 600000            # 10 min (default は 5 min)
+        env_allowlist:                # 省略時は DEFAULT_COMMAND_ENV_ALLOWLIST
+          - PATH
+          - HOME
+          - NODE_ENV
 
   apps/orders:
     # ...同様
@@ -174,9 +180,10 @@ for each changed path p:
 
 - 各コマンドの stdout/stderr は `runs/<runId>/commands/<idx>-<slug>.{out,err}.log` に保存
 - 1 つでも `exitCode !== 0` or timeout したら status = `failed-command`、`safetyStatus` は据え置き
-- timeout 既定値 5 分。tree-kill で子孫プロセスも SIGKILL
-- 環境変数は `PATH / HOME / USER / SHELL / LANG / LC_ALL / TERM / TMPDIR` のみ通過。`OPENAI_API_KEY` 等は **伝播しない**
+- **timeout**: domain ごとに `commands.defaults.timeout_ms` で指定可。未指定は **5 分**（`DEFAULT_COMMAND_TIMEOUT_MS`）。tree-kill で子孫プロセスも SIGKILL
+- **環境変数**: `commands.defaults.env_allowlist` でホワイトリスト指定可。未指定は **`PATH / HOME / USER / SHELL / LANG / LC_ALL / TERM / TMPDIR`** （`DEFAULT_COMMAND_ENV_ALLOWLIST`）。空配列 `[]` を明示すれば env なしで起動。`OPENAI_API_KEY` 等は default では **伝播しない**
 - 空 (`commands.allow: []`) の場合はステップそのものが skip
+- **commands 実行後** に diff + path validation が **再評価される**。コマンドが scope 外に書いたら `failed-policy-violation` に flip（F8）
 
 典型用途: `npm test`, `npm run lint`, `python -m pytest -q`。`pnpm test` を使う場合は target repo に `node_modules` が事前にあることが前提（harness は `pnpm install` を起動しない）。
 
