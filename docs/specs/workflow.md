@@ -31,8 +31,11 @@
 22. write untracked-secrets.txt for secret suspects (metadata only)
 23. emit diff_collected
 24. determine RunStatus from priority:
-    diff failure > codex timeout > codex non-zero > policy violation > needs_review
-25. if needs_review path: setStatus('verified')  // intermediate marker
+    diff failure > codex timeout > codex non-zero > policy violation
+    > command failure > needs_review
+25. if path validation passed: setStatus('verified'); then if policy.allowedCommands.length > 0:
+    runAllowedCommands(worktree, allowedCommands) → results
+    on any failure → status = 'failed-command'
 26. readTail(codex-output.log), readStderrTail(codex-error.log)
 27. write summary.md
 28. write knowledge-candidates.yaml (4 signal kinds)
@@ -56,6 +59,7 @@ running ──► generated ──► verified ──► needs_review  │
    │            │              │                     ├─► changes_requested     ├─ harness review process
    │            │              │                     └─► rejected              ┘
    │            │              │
+   │            │              ├─► failed-command (allowed command の exit≠0 / timeout)
    │            │              ├─► failed-policy-violation (safetyStatus=denied)
    │            │
    │            ├─► failed-codex             (codex exit ≠ 0)
@@ -118,6 +122,11 @@ runs/<runId>/
   knowledge-candidates.yaml # 自動抽出 signal (4 kinds; 後述)
   review-request.md        # reviewer 向け詳細 (status / safety / lists / artifacts / codex tails / checklist)
   review-decision.yaml     # 初期: { decision: pending, … } — reviewer がここを編集する
+  commands/                # OPTIONAL: policy.allowedCommands があるときだけ生成
+    00-<slug>.out.log
+    00-<slug>.err.log
+    01-<slug>.out.log
+    ...
 workspaces/<runId>/repo/   # git worktree (削除しない)
 locks/<domain-slug>.lock   # active run の lock; runId / pid / hostname / acquiredAt
 ```
@@ -152,7 +161,9 @@ locks/<domain-slug>.lock   # active run の lock; runId / pid / hostname / acqui
 {"type":"codex_exec_completed","exitCode":0,"timedOut":false}
 {"type":"policy_validation_completed","status":"allowed"}
 {"type":"diff_collected","tracked":["apps/catalog/src/validation.ts"],"untrackedAllowed":[],"untrackedDenied":[],"ignored":[]}
-{"type":"run_completed","status":"needs_review","safetyStatus":"allowed","ignoredUntrackedCount":0,"secretSuspectCount":0}
+{"type":"commands_started","count":2}
+{"type":"commands_completed","results":[{"command":"npm test","exitCode":0,"durationMs":4521,"timedOut":false},{"command":"npm run lint","exitCode":0,"durationMs":1102,"timedOut":false}],"allPassed":true}
+{"type":"run_completed","status":"needs_review","safetyStatus":"allowed","ignoredUntrackedCount":0,"secretSuspectCount":0,"commandResultsCount":2}
 ```
 
 `harness review process` 実行時にはさらに追記される:

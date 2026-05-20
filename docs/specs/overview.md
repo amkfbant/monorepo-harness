@@ -31,6 +31,7 @@ operator → `harness run --domain apps/catalog --goal "..."`
 - run の全 artifact を `runs/<runId>/` に保存し、worktree も削除せず残す（レビュー後に手動 cleanup する想定）
 - review-request.md + review-decision.yaml を生成（reviewer はこの 2 ファイルでレビューと決定を行う）
 - `harness review process --run-id <id>` で review-decision.yaml を読んで `meta.status` を `approved` / `changes_requested` / `rejected` に遷移、reviewer / reviewedAt を meta に記録、`review_processed` event を追記
+- path validation 通過後に `policy.allowedCommands`（例: `npm test` / `npm run lint`）を worktree 内で順次実行、失敗時は `failed-command` ステータス + `meta.commandResults` に結果保存
 
 ## できないこと（MVP の範囲外）
 
