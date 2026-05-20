@@ -9,12 +9,14 @@ import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import { finished } from "node:stream/promises";
 import type {
   CodexExecRunner,
   CodexRunInputs,
   CodexRunResult,
 } from "./codex-exec-runner.js";
 import type { SandboxMode } from "../policy/schema.js";
+import { killProcessTree } from "./process-tree.js";
 
 // Default env vars passed to the codex subprocess. Anything outside this
 // allowlist (OPENAI_* / AWS_* / etc.) is stripped unless the operator
@@ -78,17 +80,21 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
 
       const env = filterEnv(process.env, envAllowlist);
       return await new Promise<CodexRunResult>((resolve, reject) => {
+        // detached: true → codex becomes a new process-group leader so the
+        // timeout can SIGKILL the entire tree (test runners, dev servers,
+        // package managers) via killProcessTree, not just the parent.
         const child = spawn(opts.codexBin, args, {
           cwd: input.worktreePath,
           stdio: ["pipe", "pipe", "pipe"],
           env,
+          detached: true,
         });
         let timedOut = false;
         let timer: NodeJS.Timeout | undefined;
         if (opts.timeoutMs !== undefined && opts.timeoutMs > 0) {
           timer = setTimeout(() => {
             timedOut = true;
-            child.kill("SIGKILL");
+            killProcessTree(child);
           }, opts.timeoutMs);
         }
         child.stdout.pipe(outStream);
@@ -101,7 +107,17 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
         });
         child.on("close", (code) => {
           if (timer) clearTimeout(timer);
-          resolve({ exitCode: code ?? -1, timedOut });
+          // Make sure the file streams have flushed before the workflow
+          // calls readTail(). pipe() already calls .end() on outStream/
+          // errStream when stdout/stderr ends, so we only need to wait
+          // for the finished() signal.
+          Promise.all([finished(outStream), finished(errStream)])
+            .catch(() => {
+              // shutdown noise — exit code is the source of truth
+            })
+            .finally(() => {
+              resolve({ exitCode: code ?? -1, timedOut });
+            });
         });
       });
     },
