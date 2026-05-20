@@ -1,19 +1,14 @@
 import { stringify } from "yaml";
+import type { ReviewDecisionFile } from "../core/review-decision-schema.js";
+
+export type {
+  ReviewDecisionFile,
+  ReviewDecisionValue,
+} from "../core/review-decision-schema.js";
 
 export interface ReviewDecisionInputs {
   runId: string;
   domain: string;
-}
-
-interface ReviewDecisionFile {
-  runId: string;
-  domain: string;
-  decision: "pending" | "approved" | "changes_requested" | "rejected";
-  required_changes: string[];
-  non_blocking_comments: string[];
-  out_of_scope_suggestions: string[];
-  reviewer: string | null;
-  reviewed_at: string | null;
 }
 
 export function buildReviewDecision(i: ReviewDecisionInputs): string {
