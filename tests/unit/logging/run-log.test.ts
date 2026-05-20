@@ -62,7 +62,7 @@ describe("createRunLog", () => {
     expect(meta.runId).toBe(META.runId);
   });
 
-  it("finalize updates status + finishedAt", async () => {
+  it("finalize updates status + safetyStatus + finishedAt", async () => {
     const root = mkdtempSync(join(tmpdir(), "harness-"));
     const log = await createRunLog({
       runsDir: root,
@@ -71,12 +71,29 @@ describe("createRunLog", () => {
     });
     await log.finalize({
       status: "needs_review",
+      safetyStatus: "allowed",
       finishedAt: "2026-05-20T01:00:00.000Z",
     });
     const meta = JSON.parse(
       readFileSync(join(log.runDir, "meta.json"), "utf8"),
     );
     expect(meta.status).toBe("needs_review");
+    expect(meta.safetyStatus).toBe("allowed");
     expect(meta.finishedAt).toBe("2026-05-20T01:00:00.000Z");
+  });
+
+  it("setSafetyStatus updates only safetyStatus", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-"));
+    const log = await createRunLog({
+      runsDir: root,
+      runId: META.runId,
+      meta: META,
+    });
+    await log.setSafetyStatus("skipped");
+    const meta = JSON.parse(
+      readFileSync(join(log.runDir, "meta.json"), "utf8"),
+    );
+    expect(meta.safetyStatus).toBe("skipped");
+    expect(meta.status).toBe("running");
   });
 });

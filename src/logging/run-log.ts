@@ -13,8 +13,16 @@ export type RunStatus =
   | "failed-policy-violation"
   | "failed-codex"
   | "failed-codex-timeout"
+  | "failed-diff-collection"
   | "failed-command"
   | "failed-internal-error";
+
+/**
+ * Orthogonal verdict from path-policy validation. Tracked separately from
+ * RunStatus so that e.g. (status=failed-codex-timeout, safetyStatus=denied)
+ * is queryable from meta.json without re-parsing artifacts.
+ */
+export type SafetyStatus = "allowed" | "denied" | "skipped";
 
 export interface RunMeta {
   runId: string;
@@ -27,6 +35,7 @@ export interface RunMeta {
   baseSha: string;
   runBranch: string;
   status: RunStatus;
+  safetyStatus?: SafetyStatus;
   startedAt: string;
   finishedAt?: string;
 }
@@ -35,7 +44,12 @@ export interface RunLog {
   runDir: string;
   emit(event: RunEvent): Promise<void>;
   setStatus(status: RunStatus): Promise<void>;
-  finalize(p: { status: RunStatus; finishedAt: string }): Promise<void>;
+  setSafetyStatus(safetyStatus: SafetyStatus): Promise<void>;
+  finalize(p: {
+    status: RunStatus;
+    safetyStatus: SafetyStatus;
+    finishedAt: string;
+  }): Promise<void>;
 }
 
 export async function createRunLog(opts: {
@@ -43,9 +57,6 @@ export async function createRunLog(opts: {
   runId: string;
   meta: RunMeta;
 }): Promise<RunLog> {
-  // Parent must exist; the run-specific directory itself is created
-  // non-recursively so collisions surface as EEXIST instead of silently
-  // overlapping with another run's artifacts.
   await mkdir(opts.runsDir, { recursive: true });
   const runDir = join(opts.runsDir, opts.runId);
   await mkdir(runDir, { recursive: false });
@@ -66,8 +77,11 @@ export async function createRunLog(opts: {
     async setStatus(status) {
       await updateMeta({ status });
     },
-    async finalize({ status, finishedAt }) {
-      await updateMeta({ status, finishedAt });
+    async setSafetyStatus(safetyStatus) {
+      await updateMeta({ safetyStatus });
+    },
+    async finalize({ status, safetyStatus, finishedAt }) {
+      await updateMeta({ status, safetyStatus, finishedAt });
     },
   };
 }
