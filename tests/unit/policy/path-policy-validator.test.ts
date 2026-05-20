@@ -9,7 +9,9 @@ const POLICY: ResolvedPolicy = {
   write: ["apps/user/**"],
   denyWrite: ["packages/shared/**", "package.json"],
   allowedCommands: [],
+  ignoreUntracked: [],
   codex: { sandbox: "workspace-write" },
+  limits: { gitTimeoutMs: 30_000 },
 };
 
 describe("validateChangedPaths", () => {

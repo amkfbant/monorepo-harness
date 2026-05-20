@@ -13,9 +13,17 @@ export const CodexDefaultsSchema = z
   .object({
     sandbox: SandboxModeSchema.default("workspace-write"),
     approval: z.string().optional(),
+    timeout_ms: z.number().int().positive().optional(),
   })
   .strict();
 export type CodexDefaults = z.infer<typeof CodexDefaultsSchema>;
+
+export const LimitsSchema = z
+  .object({
+    git_timeout_ms: z.number().int().positive().default(30_000),
+  })
+  .strict();
+export type Limits = z.infer<typeof LimitsSchema>;
 
 export const GlobalPolicySchema = z
   .object({
@@ -24,7 +32,9 @@ export const GlobalPolicySchema = z
         codex: CodexDefaultsSchema.optional(),
       })
       .optional(),
+    limits: LimitsSchema.optional(),
     always_deny_write: z.array(Glob).default([]),
+    ignore_untracked: z.array(Glob).default([]),
     commands: z
       .object({
         default_allow: z.array(z.string()).default([]),
@@ -64,8 +74,16 @@ export interface ResolvedPolicy {
   write: string[];
   denyWrite: string[];
   allowedCommands: string[];
+  ignoreUntracked: string[];
   codex: {
     sandbox: SandboxMode;
     approval?: string;
+    timeoutMs?: number;
+  };
+  limits: {
+    gitTimeoutMs: number;
   };
 }
+
+export const DEFAULT_CODEX_TIMEOUT_MS = 15 * 60 * 1000;
+export const DEFAULT_GIT_TIMEOUT_MS = 30 * 1000;

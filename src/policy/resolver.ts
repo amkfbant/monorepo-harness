@@ -1,7 +1,9 @@
-import type {
-  GlobalPolicy,
-  RepoPolicy,
-  ResolvedPolicy,
+import {
+  DEFAULT_CODEX_TIMEOUT_MS,
+  DEFAULT_GIT_TIMEOUT_MS,
+  type GlobalPolicy,
+  type RepoPolicy,
+  type ResolvedPolicy,
 } from "./schema.js";
 
 export function resolvePolicy(
@@ -17,6 +19,7 @@ export function resolvePolicy(
   }
   const codex: ResolvedPolicy["codex"] = {
     sandbox: global.defaults?.codex?.sandbox ?? "workspace-write",
+    timeoutMs: global.defaults?.codex?.timeout_ms ?? DEFAULT_CODEX_TIMEOUT_MS,
   };
   const approval = global.defaults?.codex?.approval;
   if (approval !== undefined) codex.approval = approval;
@@ -27,7 +30,11 @@ export function resolvePolicy(
     write: uniq(d.write),
     denyWrite: uniq([...(global.always_deny_write ?? []), ...d.deny_write]),
     allowedCommands: uniq(d.commands?.allow ?? []),
+    ignoreUntracked: uniq(global.ignore_untracked ?? []),
     codex,
+    limits: {
+      gitTimeoutMs: global.limits?.git_timeout_ms ?? DEFAULT_GIT_TIMEOUT_MS,
+    },
   };
 }
 
