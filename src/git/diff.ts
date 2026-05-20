@@ -19,6 +19,12 @@ export interface DiffOpts {
   timeoutMs?: number;
 }
 
+// `--no-ext-diff` blocks per-repo `diff.external` drivers; `--no-textconv`
+// blocks per-file textconv filters. Either could be configured in the
+// TARGET repo to run arbitrary shell commands during artifact collection
+// — outside the codex env allowlist — so we disable them on every diff.
+const DIFF_BASE_ARGS = ["diff", "--no-ext-diff", "--no-textconv"] as const;
+
 function withTimeout(repoPath: string, timeoutMs: number | undefined) {
   const o: { cwd: string; timeoutMs?: number } = { cwd: repoPath };
   if (timeoutMs !== undefined) o.timeoutMs = timeoutMs;
@@ -45,7 +51,7 @@ export async function resolveBaseSha(opts: {
 export async function collectDiff(opts: DiffOpts): Promise<DiffResult> {
   const g = withTimeout(opts.repoPath, opts.timeoutMs);
   const tracked = await gitCliOrThrow(
-    ["diff", "--name-only", "-z", opts.baseSha],
+    [...DIFF_BASE_ARGS, "--name-only", "-z", opts.baseSha],
     g,
   );
   // NOTE: no --exclude-standard so .gitignore'd files still surface.
@@ -55,7 +61,7 @@ export async function collectDiff(opts: DiffOpts): Promise<DiffResult> {
     ["ls-files", "--others", "-z"],
     g,
   );
-  const patch = await gitCliOrThrow(["diff", opts.baseSha], g);
+  const patch = await gitCliOrThrow([...DIFF_BASE_ARGS, opts.baseSha], g);
   return {
     trackedChangedPaths: parseNullSeparated(tracked),
     untrackedPaths: parseNullSeparated(untracked),

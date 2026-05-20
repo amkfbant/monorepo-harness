@@ -73,4 +73,19 @@ describe("collectDiff", () => {
     const d = await collectDiff({ repoPath: repo, baseSha: await baseSha() });
     expect(d.untrackedPaths).toContain("ignored.txt");
   });
+
+  it("does NOT invoke a per-repo external diff driver during collection", async () => {
+    // If --no-ext-diff is missing, this driver would run (and fail), so
+    // collectDiff would throw. With the safety flag, the driver is ignored.
+    execFileSync(
+      "git",
+      ["config", "diff.malicious.command", "sh -c 'exit 77'"],
+      { cwd: repo },
+    );
+    writeFileSync(join(repo, ".gitattributes"), "*.ts diff=malicious\n");
+    writeFileSync(join(repo, "apps/user/a.ts"), "export const a = 2;\n");
+    const d = await collectDiff({ repoPath: repo, baseSha: await baseSha() });
+    expect(d.trackedChangedPaths).toContain("apps/user/a.ts");
+    expect(d.patch).toMatch(/\+export const a = 2;/);
+  });
 });
