@@ -1,0 +1,51 @@
+repo_id: mini-commerce
+
+read:
+  - README.md
+  - docs/**
+  - package.json
+  - tsconfig.base.json
+  - pnpm-workspace.yaml
+  - packages/contracts/**
+  - packages/shared/**
+
+domains:
+  apps/catalog:
+    read:
+      - apps/catalog/**
+      - docs/**
+      - packages/contracts/**
+      - packages/shared/**
+      - package.json
+      - tsconfig.base.json
+    write:
+      - apps/catalog/**
+    deny_write:
+      - apps/orders/**
+      - packages/contracts/**
+      - packages/shared/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - tsconfig.base.json
+      - .github/**
+
+  apps/orders:
+    read:
+      - apps/orders/**
+      - docs/**
+      - packages/contracts/**
+      - packages/shared/**
+      - package.json
+      - tsconfig.base.json
+    write:
+      - apps/orders/**
+    deny_write:
+      - apps/catalog/**
+      - packages/contracts/**
+      - packages/shared/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - tsconfig.base.json
+      - .github/**

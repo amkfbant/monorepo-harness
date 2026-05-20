@@ -2,6 +2,10 @@ defaults:
   codex:
     sandbox: workspace-write
     approval: on-request
+    timeout_ms: 900000
+
+limits:
+  git_timeout_ms: 30000
 
 always_deny_write:
   - .git/**
@@ -10,12 +14,15 @@ always_deny_write:
   - pnpm-lock.yaml
   - yarn.lock
   - package-lock.json
+  - pnpm-workspace.yaml
   - turbo.json
   - nx.json
   - tsconfig.base.json
   - packages/shared/**
-  - .harness/**
-  - .policies/**
+  - packages/contracts/**
 
-commands:
-  default_allow: []
+ignore_untracked:
+  - node_modules/**
+  - dist/**
+  - coverage/**
+  - .turbo/**
