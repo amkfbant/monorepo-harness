@@ -1,31 +1,47 @@
 #!/usr/bin/env node
 import process from "node:process";
-import { parseArgs } from "./parse-args.js";
+import { existsSync } from "node:fs";
+import { readdir, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { Command } from "commander";
 import { harnessPaths } from "../config/paths.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
 import { runDomainCoding } from "../core/workflow-runner.js";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
+import {
+  domainLockName,
+  domainLockPath,
+  type LockInfo,
+} from "../workspace/domain-lock.js";
 
-async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
-  const harnessRoot = process.env.HARNESS_ROOT ?? process.cwd();
+function getHarnessRoot(): string {
+  return process.env.HARNESS_ROOT ?? process.cwd();
+}
+
+interface RunOpts {
+  repo: string;
+  repoId: string;
+  domain: string;
+  goal: string;
+  baseBranch: string;
+  keepWorktree?: boolean;
+  dryRun?: boolean;
+}
+
+async function cmdRun(o: RunOpts): Promise<void> {
+  const harnessRoot = getHarnessRoot();
   const paths = harnessPaths(harnessRoot);
+  const global = await loadGlobalPolicy(paths.globalPolicyPath);
+  const repo = await loadRepoPolicy(paths.repoPolicyPath(o.repoId));
+  const resolved = resolvePolicy(global, repo, o.domain);
 
-  if (args.dryRun) {
-    const global = await loadGlobalPolicy(paths.globalPolicyPath);
-    const repo = await loadRepoPolicy(paths.repoPolicyPath(args.repoId));
-    const resolved = resolvePolicy(global, repo, args.domain);
+  if (o.dryRun) {
     process.stdout.write(
       `resolved policy for ${resolved.domain}:\n${JSON.stringify(resolved, null, 2)}\n`,
     );
     return;
   }
-
-  // Resolve policy once up-front so the codex runner can be configured from it.
-  const global = await loadGlobalPolicy(paths.globalPolicyPath);
-  const repo = await loadRepoPolicy(paths.repoPolicyPath(args.repoId));
-  const resolved = resolvePolicy(global, repo, args.domain);
 
   const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
   const runner = createCodexCliRunner({
@@ -34,23 +50,29 @@ async function main(): Promise<void> {
     ...(resolved.codex.approval !== undefined
       ? { approvalPolicy: resolved.codex.approval }
       : {}),
+    ...(resolved.codex.timeoutMs !== undefined
+      ? { timeoutMs: resolved.codex.timeoutMs }
+      : {}),
   });
 
   const result = await runDomainCoding({
     harnessRoot,
-    repoPath: args.repo,
-    repoId: args.repoId,
-    domain: args.domain,
-    goal: args.goal,
-    baseBranch: args.baseBranch,
-    keepWorktree: args.keepWorktree,
+    repoPath: o.repo,
+    repoId: o.repoId,
+    domain: o.domain,
+    goal: o.goal,
+    baseBranch: o.baseBranch,
+    ...(o.keepWorktree !== undefined ? { keepWorktree: o.keepWorktree } : {}),
     codexRunner: runner,
   });
-  process.stdout.write(`run=${result.runId} status=${result.status}\n`);
+  process.stdout.write(
+    `run=${result.runId} status=${result.status} safetyStatus=${result.safetyStatus}\n`,
+  );
   if (
     result.status === "failed-policy-violation" ||
     result.status === "failed-codex" ||
     result.status === "failed-codex-timeout" ||
+    result.status === "failed-diff-collection" ||
     result.status === "failed-command" ||
     result.status === "failed-internal-error"
   ) {
@@ -58,7 +80,118 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e: unknown) => {
+async function cmdLockList(): Promise<void> {
+  const paths = harnessPaths(getHarnessRoot());
+  if (!existsSync(paths.locksDir)) {
+    process.stdout.write("no locks\n");
+    return;
+  }
+  const entries = await readdir(paths.locksDir);
+  const locks: Array<{ file: string; info: LockInfo }> = [];
+  for (const e of entries) {
+    if (!e.endsWith(".lock")) continue;
+    try {
+      const raw = await readFile(join(paths.locksDir, e), "utf8");
+      locks.push({ file: e, info: JSON.parse(raw) as LockInfo });
+    } catch {
+      // ignore unreadable lock; surface only valid ones
+    }
+  }
+  if (locks.length === 0) {
+    process.stdout.write("no locks\n");
+    return;
+  }
+  for (const { file, info } of locks) {
+    process.stdout.write(
+      `${file}\trunId=${info.runId}\tpid=${info.pid}\thost=${info.hostname}\tacquiredAt=${info.acquiredAt}\n`,
+    );
+  }
+}
+
+interface LockReleaseOpts {
+  domain: string;
+  runId?: string;
+  force?: boolean;
+}
+
+async function cmdLockRelease(o: LockReleaseOpts): Promise<void> {
+  const paths = harnessPaths(getHarnessRoot());
+  const path = domainLockPath(paths.locksDir, o.domain);
+  if (!existsSync(path)) {
+    process.stdout.write(`no lock for domain ${o.domain}\n`);
+    return;
+  }
+  let info: LockInfo | undefined;
+  try {
+    info = JSON.parse(await readFile(path, "utf8")) as LockInfo;
+  } catch {
+    if (!o.force) {
+      throw new Error(
+        `lockfile at ${path} is unreadable; rerun with --force to delete anyway`,
+      );
+    }
+  }
+  if (info && o.runId !== undefined && info.runId !== o.runId) {
+    if (!o.force) {
+      throw new Error(
+        `runId mismatch: lock has ${info.runId}, requested ${o.runId}. Use --force to override.`,
+      );
+    }
+  }
+  await rm(path, { force: true });
+  process.stdout.write(`released ${domainLockName(o.domain)} (${path})\n`);
+}
+
+const program = new Command();
+program.name("harness");
+
+const runCmd = program
+  .command("run", { isDefault: true })
+  .description("run the domain-coding workflow")
+  .requiredOption("--repo <path>", "target repo path")
+  .requiredOption("--repo-id <id>", "repo identifier for policy resolution")
+  .requiredOption("--domain <domain>", "target domain (e.g. apps/user)")
+  .requiredOption("--goal <text>", "task goal passed to Codex")
+  .option("--base-branch <name>", "base branch", "main")
+  .option("--keep-worktree", "(no-op; worktree is always kept for review)", false)
+  .option("--dry-run", "resolve policy and exit", false)
+  .action(async (raw: Record<string, unknown>) => {
+    await cmdRun({
+      repo: String(raw.repo),
+      repoId: String(raw.repoId),
+      domain: String(raw.domain),
+      goal: String(raw.goal),
+      baseBranch: String(raw.baseBranch),
+      keepWorktree: Boolean(raw.keepWorktree),
+      dryRun: Boolean(raw.dryRun),
+    });
+  });
+
+const lockCmd = program.command("lock").description("manage domain locks");
+lockCmd
+  .command("list")
+  .description("list active domain locks")
+  .action(async () => {
+    await cmdLockList();
+  });
+lockCmd
+  .command("release")
+  .description("force-release a domain lock (e.g. after crashed run)")
+  .requiredOption("--domain <name>", "domain whose lock to release")
+  .option("--run-id <id>", "only release if the lock belongs to this runId")
+  .option("--force", "release even on runId mismatch / unreadable lock", false)
+  .action(async (raw: Record<string, unknown>) => {
+    await cmdLockRelease({
+      domain: String(raw.domain),
+      ...(raw.runId !== undefined ? { runId: String(raw.runId) } : {}),
+      force: Boolean(raw.force),
+    });
+  });
+
+program.parseAsync(process.argv).catch((e: unknown) => {
   process.stderr.write(`harness error: ${(e as Error).message}\n`);
   process.exit(2);
 });
+
+// silence unused suppress
+void runCmd;

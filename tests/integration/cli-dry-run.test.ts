@@ -4,6 +4,8 @@ import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const CLI = join(process.cwd(), "src/cli/run.ts");
+
 function setupHarness(): string {
   const root = mkdtempSync(join(tmpdir(), "harness-cli-"));
   mkdirSync(join(root, "policies/repos"), { recursive: true });
@@ -24,15 +26,16 @@ function setupHarness(): string {
   return root;
 }
 
-describe("CLI --dry-run", () => {
-  it("resolves policy and exits 0 without creating runs", () => {
+describe("CLI run --dry-run", () => {
+  it("resolves policy and exits 0", () => {
     const harness = setupHarness();
     const out = execFileSync(
       "node",
       [
         "--import",
         "tsx",
-        join(process.cwd(), "src/cli/run.ts"),
+        CLI,
+        "run",
         "--repo",
         "/tmp/no-repo",
         "--repo-id",
