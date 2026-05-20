@@ -2,7 +2,8 @@ import { lstat, readFile, readlink } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
 import { pipeline } from "node:stream/promises";
-import { join } from "node:path";
+import { basename as pathBasename, join } from "node:path";
+import { scanForSecrets, SCAN_SAMPLE_BYTES } from "./secret-scan.js";
 
 const MAX_FILE_BYTES = 256 * 1024;
 
@@ -13,31 +14,45 @@ async function streamSha256(path: string): Promise<string> {
 }
 
 function looksBinary(buf: Buffer): boolean {
-  // NUL anywhere in the first 8KB is a reliable enough binary signal for
-  // review purposes. Avoids decoding 100MB of raw bytes into UTF-8.
   const sample = buf.subarray(0, Math.min(8192, buf.length));
   return sample.includes(0);
 }
 
+export interface SecretSuspect {
+  path: string;
+  reasons: string[];
+}
+
+export interface UntrackedPatchResult {
+  patch: string;
+  /**
+   * Paths whose content was redacted because filename or content matched
+   * a secret heuristic, in addition to whatever the patch text records.
+   * The workflow uses this to write a separate review artifact and to
+   * surface a count in run meta.
+   */
+  secretSuspects: SecretSuspect[];
+}
+
 /**
  * Build a synthetic unified-diff for untracked files so review-request
- * surfaces actual content of new files. Files larger than MAX_FILE_BYTES
- * or detected as binary are recorded as size+sha256 metadata only, so
- * a runaway codex run can't blow up harness memory by writing a giant
- * file into the worktree.
- *
- * Symlinks are never followed — only the link target string is recorded.
- * This stops codex from exfiltrating files outside the worktree by
- * placing a symlink at an in-scope path.
+ * surfaces actual content of new files. Files larger than MAX_FILE_BYTES,
+ * binary, symlinks, or matched by a secret heuristic are recorded as
+ * metadata only (size + sha256, never bytes).
  */
 export async function buildUntrackedPatch(
   worktreePath: string,
   untrackedPaths: readonly string[],
-): Promise<string> {
-  if (untrackedPaths.length === 0) return "";
+): Promise<UntrackedPatchResult> {
+  if (untrackedPaths.length === 0) {
+    return { patch: "", secretSuspects: [] };
+  }
   const out: string[] = [];
+  const secretSuspects: SecretSuspect[] = [];
+
   for (const p of untrackedPaths) {
     const fullPath = join(worktreePath, p);
+    const base = pathBasename(p);
     out.push(`diff --git a/${p} b/${p}`);
     out.push("new file mode 100644");
     out.push("--- /dev/null");
@@ -53,14 +68,40 @@ export async function buildUntrackedPatch(
         out.push("@@ non-file @@");
         out.push("+# entry is not a regular file; content omitted");
       } else if (st.size > MAX_FILE_BYTES) {
+        // Stream-hash, do not load into memory.
         const sha = await streamSha256(fullPath);
-        out.push(
-          `@@ omitted (size=${st.size} bytes, sha256=${sha}) @@`,
-        );
-        out.push(`+# content omitted: exceeds ${MAX_FILE_BYTES} byte limit`);
+        const filenameScan = scanForSecrets(base, null);
+        if (filenameScan.matched) {
+          secretSuspects.push({ path: p, reasons: filenameScan.reasons });
+          out.push(
+            `@@ secret-suspect (${filenameScan.reasons.join(", ")}, size=${st.size}, sha256=${sha}) @@`,
+          );
+          out.push(
+            "+# content omitted: matched secret heuristic and exceeds size limit",
+          );
+        } else {
+          out.push(
+            `@@ omitted (size=${st.size} bytes, sha256=${sha}) @@`,
+          );
+          out.push(
+            `+# content omitted: exceeds ${MAX_FILE_BYTES} byte limit`,
+          );
+        }
       } else {
         const buf = await readFile(fullPath);
-        if (looksBinary(buf)) {
+        const isBinary = looksBinary(buf);
+        const sample = isBinary
+          ? null
+          : buf.toString("utf8").slice(0, SCAN_SAMPLE_BYTES);
+        const scan = scanForSecrets(base, sample);
+        if (scan.matched) {
+          const sha = createHash("sha256").update(buf).digest("hex");
+          secretSuspects.push({ path: p, reasons: scan.reasons });
+          out.push(
+            `@@ secret-suspect (${scan.reasons.join(", ")}, size=${st.size}, sha256=${sha}) @@`,
+          );
+          out.push("+# content omitted: matched secret heuristic");
+        } else if (isBinary) {
           const sha = createHash("sha256").update(buf).digest("hex");
           out.push(
             `@@ omitted (binary, size=${st.size} bytes, sha256=${sha}) @@`,
@@ -85,7 +126,8 @@ export async function buildUntrackedPatch(
     }
     out.push("");
   }
-  return out.join("\n");
+
+  return { patch: out.join("\n"), secretSuspects };
 }
 
 /**
@@ -123,4 +165,20 @@ export async function buildUntrackedDeniedReport(
     }
   }
   return `${out.join("\n")}\n`;
+}
+
+/**
+ * Render a secret-suspect list as a separate, easy-to-grep artifact.
+ */
+export function buildUntrackedSecretsReport(
+  suspects: readonly SecretSuspect[],
+): string {
+  if (suspects.length === 0) return "";
+  const lines: string[] = [];
+  lines.push("# Untracked files matched a secret heuristic (content NOT saved)");
+  lines.push("");
+  for (const s of suspects) {
+    lines.push(`- ${s.path}\treasons=${s.reasons.join(",")}`);
+  }
+  return `${lines.join("\n")}\n`;
 }

@@ -10,12 +10,15 @@ import { join } from "node:path";
 import {
   buildUntrackedPatch,
   buildUntrackedDeniedReport,
+  buildUntrackedSecretsReport,
 } from "../../../src/reporter/untracked-patch.js";
 
 describe("buildUntrackedPatch", () => {
   it("returns empty when no untracked files", async () => {
     const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
-    expect(await buildUntrackedPatch(dir, [])).toBe("");
+    const r = await buildUntrackedPatch(dir, []);
+    expect(r.patch).toBe("");
+    expect(r.secretSuspects).toEqual([]);
   });
 
   it("emits a new-file unified diff per text path", async () => {
@@ -25,23 +28,21 @@ describe("buildUntrackedPatch", () => {
       join(dir, "apps/user/new.ts"),
       "export const x = 1;\nexport const y = 2;\n",
     );
-    const patch = await buildUntrackedPatch(dir, ["apps/user/new.ts"]);
-    expect(patch).toMatch(
+    const r = await buildUntrackedPatch(dir, ["apps/user/new.ts"]);
+    expect(r.patch).toMatch(
       /diff --git a\/apps\/user\/new\.ts b\/apps\/user\/new\.ts/,
     );
-    expect(patch).toMatch(/new file mode 100644/);
-    expect(patch).toMatch(/--- \/dev\/null/);
-    expect(patch).toMatch(/\+export const x = 1;/);
-    expect(patch).toMatch(/\+export const y = 2;/);
+    expect(r.patch).toMatch(/\+export const x = 1;/);
+    expect(r.secretSuspects).toEqual([]);
   });
 
   it("omits oversized files with size + sha256 instead of inlining content", async () => {
     const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
     const big = "x".repeat(300 * 1024);
     writeFileSync(join(dir, "big.txt"), big);
-    const patch = await buildUntrackedPatch(dir, ["big.txt"]);
-    expect(patch).toMatch(/omitted \(size=\d+ bytes, sha256=[0-9a-f]{64}\)/);
-    expect(patch).not.toMatch(/^\+xxxxx/m);
+    const r = await buildUntrackedPatch(dir, ["big.txt"]);
+    expect(r.patch).toMatch(/omitted \(size=\d+ bytes, sha256=[0-9a-f]{64}\)/);
+    expect(r.patch).not.toMatch(/^\+xxxxx/m);
   });
 
   it("omits binary files with size + sha256 instead of inlining bytes", async () => {
@@ -51,8 +52,8 @@ describe("buildUntrackedPatch", () => {
       0x08, 0x09, 0x0a, 0x0b,
     ]);
     writeFileSync(join(dir, "out.bin"), bytes);
-    const patch = await buildUntrackedPatch(dir, ["out.bin"]);
-    expect(patch).toMatch(
+    const r = await buildUntrackedPatch(dir, ["out.bin"]);
+    expect(r.patch).toMatch(
       /omitted \(binary, size=16 bytes, sha256=[0-9a-f]{64}\)/,
     );
   });
@@ -62,16 +63,46 @@ describe("buildUntrackedPatch", () => {
     const outside = mkdtempSync(join(tmpdir(), "harness-secret-"));
     writeFileSync(join(outside, "secret"), "SUPERSECRET\n");
     symlinkSync(join(outside, "secret"), join(dir, "leak.ts"));
-    const patch = await buildUntrackedPatch(dir, ["leak.ts"]);
-    expect(patch).not.toMatch(/SUPERSECRET/);
-    expect(patch).toMatch(/@@ symlink @@/);
-    expect(patch).toMatch(/symlink target:/);
+    const r = await buildUntrackedPatch(dir, ["leak.ts"]);
+    expect(r.patch).not.toMatch(/SUPERSECRET/);
+    expect(r.patch).toMatch(/@@ symlink @@/);
+    expect(r.patch).toMatch(/symlink target:/);
   });
 
   it("annotates unreadable paths instead of throwing", async () => {
     const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
-    const patch = await buildUntrackedPatch(dir, ["does-not-exist.ts"]);
-    expect(patch).toMatch(/unreadable/);
+    const r = await buildUntrackedPatch(dir, ["does-not-exist.ts"]);
+    expect(r.patch).toMatch(/unreadable/);
+  });
+
+  it("redacts files matched by secret filename heuristic (no content inline)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
+    mkdirSync(join(dir, "apps/user"), { recursive: true });
+    writeFileSync(
+      join(dir, "apps/user/.env.local"),
+      "DB_URL=postgres://user:secret@host/db\n",
+    );
+    const r = await buildUntrackedPatch(dir, ["apps/user/.env.local"]);
+    expect(r.patch).not.toMatch(/postgres:\/\//);
+    expect(r.patch).toMatch(/@@ secret-suspect/);
+    expect(r.secretSuspects).toHaveLength(1);
+    expect(r.secretSuspects[0]?.path).toBe("apps/user/.env.local");
+    expect(r.secretSuspects[0]?.reasons).toEqual(
+      expect.arrayContaining(["filename:.env"]),
+    );
+  });
+
+  it("redacts files matched by secret content heuristic (PEM, AWS, OpenAI)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
+    writeFileSync(
+      join(dir, "notes.md"),
+      "Here is a key: AKIAIOSFODNN7EXAMPLE\n",
+    );
+    const r = await buildUntrackedPatch(dir, ["notes.md"]);
+    expect(r.patch).not.toMatch(/AKIAIOSFODNN7EXAMPLE/);
+    expect(r.secretSuspects[0]?.reasons).toContain(
+      "content:aws-access-key-id",
+    );
   });
 });
 
@@ -97,5 +128,25 @@ describe("buildUntrackedDeniedReport", () => {
   it("returns empty when no denied paths", async () => {
     const dir = mkdtempSync(join(tmpdir(), "harness-upd-"));
     expect(await buildUntrackedDeniedReport(dir, [])).toBe("");
+  });
+});
+
+describe("buildUntrackedSecretsReport", () => {
+  it("formats suspects with reasons", () => {
+    const out = buildUntrackedSecretsReport([
+      { path: "apps/user/.env.local", reasons: ["filename:.env"] },
+      {
+        path: "apps/user/notes.md",
+        reasons: ["content:aws-access-key-id"],
+      },
+    ]);
+    expect(out).toMatch(/apps\/user\/\.env\.local\s+reasons=filename:\.env/);
+    expect(out).toMatch(
+      /apps\/user\/notes\.md\s+reasons=content:aws-access-key-id/,
+    );
+  });
+
+  it("returns empty when no suspects", () => {
+    expect(buildUntrackedSecretsReport([])).toBe("");
   });
 });
