@@ -415,6 +415,103 @@ describe("runDomainCoding (fake codex)", () => {
     expect(meta.finishedAt).toBeDefined();
   });
 
+  it("runs allowedCommands on a clean diff and stays needs_review if they pass", async () => {
+    // override harness with a policy that runs `true` after the diff
+    const root = mkdtempSync(join(tmpdir(), "harness-cmd-"));
+    mkdirSync(join(root, "policies/repos"), { recursive: true });
+    writeFileSync(
+      join(root, "policies/global.yaml"),
+      "always_deny_write:\n  - package.json\nignore_untracked: []\n",
+    );
+    writeFileSync(
+      join(root, "policies/repos/t.yaml"),
+      [
+        "repo_id: t",
+        "read: []",
+        "domains:",
+        "  apps/user:",
+        "    read: [apps/user/**]",
+        "    write: [apps/user/**]",
+        "    deny_write: []",
+        "    commands:",
+        "      allow:",
+        '        - "true"',
+        '        - "echo ok"',
+        "",
+      ].join("\n"),
+    );
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 9;\n",
+        );
+      },
+    });
+    const r = await runDomainCoding({
+      harnessRoot: root,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+    expect(r.status).toBe("needs_review");
+    expect(r.commandResults).toHaveLength(2);
+    expect(r.commandResults.every((c) => c.exitCode === 0)).toBe(true);
+    const meta = JSON.parse(
+      readFileSync(join(root, "runs", r.runId, "meta.json"), "utf8"),
+    );
+    expect(meta.commandResults).toHaveLength(2);
+  });
+
+  it("flips to failed-command when an allowed command fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-cmd-"));
+    mkdirSync(join(root, "policies/repos"), { recursive: true });
+    writeFileSync(
+      join(root, "policies/global.yaml"),
+      "always_deny_write: []\nignore_untracked: []\n",
+    );
+    writeFileSync(
+      join(root, "policies/repos/t.yaml"),
+      [
+        "repo_id: t",
+        "read: []",
+        "domains:",
+        "  apps/user:",
+        "    read: [apps/user/**]",
+        "    write: [apps/user/**]",
+        "    deny_write: []",
+        "    commands:",
+        "      allow:",
+        '        - "false"',
+        "",
+      ].join("\n"),
+    );
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 8;\n",
+        );
+      },
+    });
+    const r = await runDomainCoding({
+      harnessRoot: root,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+    expect(r.status).toBe("failed-command");
+    expect(r.commandResults[0]?.exitCode).not.toBe(0);
+  });
+
   it("rejects concurrent runs on the same domain via lockfile", async () => {
     const slow = createFakeCodexRunner({
       edit: async () => {

@@ -66,8 +66,12 @@ async function cmdRun(o: RunOpts): Promise<void> {
     ...(o.keepWorktree !== undefined ? { keepWorktree: o.keepWorktree } : {}),
     codexRunner: runner,
   });
+  const cmdTotal = result.commandResults.length;
+  const cmdOk = result.commandResults.filter(
+    (c) => c.exitCode === 0 && !c.timedOut,
+  ).length;
   process.stdout.write(
-    `run=${result.runId} status=${result.status} safetyStatus=${result.safetyStatus} ignoredUntrackedCount=${result.ignoredUntrackedCount} secretSuspectCount=${result.secretSuspectCount}\n`,
+    `run=${result.runId} status=${result.status} safetyStatus=${result.safetyStatus} ignoredUntrackedCount=${result.ignoredUntrackedCount} secretSuspectCount=${result.secretSuspectCount} commands=${cmdOk}/${cmdTotal}\n`,
   );
   if (
     result.status === "failed-policy-violation" ||

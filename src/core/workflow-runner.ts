@@ -18,6 +18,7 @@ import {
 } from "../logging/run-log.js";
 import { writeArtifact } from "../logging/artifacts.js";
 import { generateRunId } from "./run-id.js";
+import { runAllowedCommands } from "./command-runner.js";
 import { acquireDomainLock } from "../workspace/domain-lock.js";
 import { runBranchName } from "../workspace/branch-name.js";
 import { createWorktree } from "../workspace/git-worktree.js";
@@ -53,6 +54,12 @@ export interface RunDomainCodingResult {
   safetyStatus: SafetyStatus;
   ignoredUntrackedCount: number;
   secretSuspectCount: number;
+  commandResults: Array<{
+    command: string;
+    exitCode: number;
+    durationMs: number;
+    timedOut: boolean;
+  }>;
 }
 
 const MATCH_OPTS = { dot: true, nocomment: true } as const;
@@ -211,6 +218,7 @@ export async function runDomainCoding(
           safetyStatus: "skipped",
           ignoredUntrackedCount: 0,
           secretSuspectCount: 0,
+          commandResults: [],
           finishedAt: new Date().toISOString(),
         })
         .catch(() => {});
@@ -363,10 +371,17 @@ async function runDomainCodingInner(
     }
 
     // Status priority:
-    //   diff failure > codex timeout > codex non-zero > policy violation > needs_review
+    //   diff failure > codex timeout > codex non-zero > policy violation
+    //   > command failure > needs_review
     // safetyStatus is reported independently so callers can detect e.g.
     // "timeout AND scope violation" cases.
     let status: RunStatus;
+    let commandResults: Array<{
+      command: string;
+      exitCode: number;
+      durationMs: number;
+      timedOut: boolean;
+    }> = [];
     if (!diff.ok) {
       status = "failed-diff-collection";
     } else if (codex.timedOut) {
@@ -376,8 +391,34 @@ async function runDomainCodingInner(
     } else if (safetyStatus === "denied") {
       status = "failed-policy-violation";
     } else {
-      status = "needs_review";
+      // path-policy passed. Run allowed commands (if any) before committing
+      // to needs_review.
       await log.setStatus("verified");
+      if (policy.allowedCommands.length > 0) {
+        await log.emit({
+          type: "commands_started",
+          count: policy.allowedCommands.length,
+        });
+        const cmdRun = await runAllowedCommands({
+          worktreePath: wt.path,
+          commands: policy.allowedCommands,
+          logDir: join(log.runDir, "commands"),
+        });
+        commandResults = cmdRun.results.map((r) => ({
+          command: r.command,
+          exitCode: r.exitCode,
+          durationMs: r.durationMs,
+          timedOut: r.timedOut,
+        }));
+        await log.emit({
+          type: "commands_completed",
+          results: commandResults,
+          allPassed: cmdRun.allPassed,
+        });
+        status = cmdRun.allPassed ? "needs_review" : "failed-command";
+      } else {
+        status = "needs_review";
+      }
     }
 
     const codexStdoutTail = await readTail(codexStdoutPath);
@@ -471,6 +512,7 @@ async function runDomainCodingInner(
       safetyStatus,
       ignoredUntrackedCount,
       secretSuspectCount,
+      commandResults,
       finishedAt: new Date().toISOString(),
     });
     await log.emit({
@@ -479,6 +521,7 @@ async function runDomainCodingInner(
       safetyStatus,
       ignoredUntrackedCount,
       secretSuspectCount,
+      commandResultsCount: commandResults.length,
     });
     return {
       runId,
@@ -486,5 +529,6 @@ async function runDomainCodingInner(
       safetyStatus,
       ignoredUntrackedCount,
       secretSuspectCount,
+      commandResults,
     };
 }

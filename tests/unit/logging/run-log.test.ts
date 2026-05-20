@@ -74,6 +74,7 @@ describe("createRunLog", () => {
       safetyStatus: "allowed",
       ignoredUntrackedCount: 3,
       secretSuspectCount: 2,
+      commandResults: [],
       finishedAt: "2026-05-20T01:00:00.000Z",
     });
     const meta = JSON.parse(

@@ -52,6 +52,17 @@ export interface RunMeta {
   reviewer?: string | null;
   /** ISO 8601 review timestamp。`harness review process` 実行時に set される。 */
   reviewedAt?: string | null;
+  /**
+   * Per-command result for `policy.allowedCommands` invocation. Empty / absent
+   * when the policy specifies no commands. Any failure here flips status to
+   * `failed-command`.
+   */
+  commandResults?: Array<{
+    command: string;
+    exitCode: number;
+    durationMs: number;
+    timedOut: boolean;
+  }>;
   startedAt: string;
   finishedAt?: string;
 }
@@ -70,6 +81,7 @@ export interface RunLog {
     safetyStatus: SafetyStatus;
     ignoredUntrackedCount: number;
     secretSuspectCount: number;
+    commandResults: NonNullable<RunMeta["commandResults"]>;
     finishedAt: string;
   }): Promise<void>;
 }
@@ -110,6 +122,7 @@ export async function createRunLog(opts: {
       safetyStatus,
       ignoredUntrackedCount,
       secretSuspectCount,
+      commandResults,
       finishedAt,
     }) {
       await updateMeta({
@@ -117,6 +130,7 @@ export async function createRunLog(opts: {
         safetyStatus,
         ignoredUntrackedCount,
         secretSuspectCount,
+        commandResults,
         finishedAt,
       });
     },
