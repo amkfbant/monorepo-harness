@@ -168,10 +168,13 @@ describe("runDomainCoding (fake codex)", () => {
     // block validation.
     expect(r.status).toBe("needs_review");
     expect(r.safetyStatus).toBe("allowed");
+    expect(r.ignoredUntrackedCount).toBe(1);
     const runDir = join(harness, "runs", r.runId);
     const summary = readFileSync(join(runDir, "summary.md"), "utf8");
     expect(summary).toMatch(/Ignored by ignore_untracked/);
     expect(summary).toMatch(/dist\/out\.js/);
+    const meta = JSON.parse(readFileSync(join(runDir, "meta.json"), "utf8"));
+    expect(meta.ignoredUntrackedCount).toBe(1);
   });
 
   it("captures .gitignored output as a violation when not in ignore_untracked", async () => {

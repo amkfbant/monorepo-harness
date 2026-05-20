@@ -36,6 +36,12 @@ export interface RunMeta {
   runBranch: string;
   status: RunStatus;
   safetyStatus?: SafetyStatus;
+  /**
+   * Count of untracked files filtered out by policy.ignoreUntracked.
+   * Recorded alongside safetyStatus so downstream aggregation can
+   * distinguish "allowed (clean)" from "allowed (had ignored output)".
+   */
+  ignoredUntrackedCount?: number;
   startedAt: string;
   finishedAt?: string;
 }
@@ -48,6 +54,7 @@ export interface RunLog {
   finalize(p: {
     status: RunStatus;
     safetyStatus: SafetyStatus;
+    ignoredUntrackedCount: number;
     finishedAt: string;
   }): Promise<void>;
 }
@@ -80,8 +87,13 @@ export async function createRunLog(opts: {
     async setSafetyStatus(safetyStatus) {
       await updateMeta({ safetyStatus });
     },
-    async finalize({ status, safetyStatus, finishedAt }) {
-      await updateMeta({ status, safetyStatus, finishedAt });
+    async finalize({ status, safetyStatus, ignoredUntrackedCount, finishedAt }) {
+      await updateMeta({
+        status,
+        safetyStatus,
+        ignoredUntrackedCount,
+        finishedAt,
+      });
     },
   };
 }

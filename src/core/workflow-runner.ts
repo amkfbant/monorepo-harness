@@ -46,6 +46,7 @@ export interface RunDomainCodingResult {
   runId: string;
   status: RunStatus;
   safetyStatus: SafetyStatus;
+  ignoredUntrackedCount: number;
 }
 
 const MATCH_OPTS = { dot: true, nocomment: true } as const;
@@ -338,13 +339,20 @@ export async function runDomainCoding(
     // Worktree intentionally kept regardless of status — review and cleanup
     // are deferred to a follow-up tool that consumes review-decision.yaml.
 
+    const ignoredUntrackedCount = untrackedIgnored.length;
     await log.finalize({
       status,
       safetyStatus,
+      ignoredUntrackedCount,
       finishedAt: new Date().toISOString(),
     });
-    await log.emit({ type: "run_completed", status, safetyStatus });
-    return { runId, status, safetyStatus };
+    await log.emit({
+      type: "run_completed",
+      status,
+      safetyStatus,
+      ignoredUntrackedCount,
+    });
+    return { runId, status, safetyStatus, ignoredUntrackedCount };
   } finally {
     await lock.release();
   }
