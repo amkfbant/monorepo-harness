@@ -1,8 +1,17 @@
-import { mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { hostname } from "node:os";
 import { join } from "node:path";
+
+export interface LockInfo {
+  runId: string;
+  pid: number;
+  hostname: string;
+  acquiredAt: string;
+}
 
 export interface DomainLock {
   path: string;
+  info: LockInfo;
   release: () => Promise<void>;
 }
 
@@ -24,15 +33,14 @@ export async function acquireDomainLock(
 ): Promise<DomainLock> {
   await mkdir(opts.locksDir, { recursive: true });
   const path = join(opts.locksDir, domainLockName(opts.domain));
+  const info: LockInfo = {
+    runId: opts.runId,
+    pid: process.pid,
+    hostname: hostname(),
+    acquiredAt: new Date().toISOString(),
+  };
   try {
-    await writeFile(
-      path,
-      JSON.stringify({
-        runId: opts.runId,
-        acquiredAt: new Date().toISOString(),
-      }),
-      { flag: "wx" },
-    );
+    await writeFile(path, JSON.stringify(info, null, 2), { flag: "wx" });
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "EEXIST") {
       throw new Error(
@@ -43,7 +51,17 @@ export async function acquireDomainLock(
   }
   return {
     path,
+    info,
     release: async () => {
+      // Read current lock content; only remove if it still belongs to us.
+      // Protects against a future stale-recovery process taking over the lock.
+      try {
+        const raw = await readFile(path, "utf8");
+        const existing = JSON.parse(raw) as LockInfo;
+        if (existing.runId !== opts.runId) return;
+      } catch {
+        return;
+      }
       await rm(path, { force: true });
     },
   };
