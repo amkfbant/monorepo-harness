@@ -22,11 +22,15 @@ function resolveCommands(
         shell: true,
       };
     }
+    // Structured form ALWAYS uses argv (shell:false), even when args is
+    // empty. Falling back to shell:true would silently re-enable shell
+    // interpretation (`$VAR`, quoting) and break the no-escape contract
+    // operators rely on when they opt into the structured shape.
     const resolved: ResolvedCommand = {
       id: e.id,
       cmd: e.cmd,
       args: e.args,
-      shell: e.args.length === 0,
+      shell: false,
     };
     if (e.timeout_ms !== undefined) resolved.timeoutMs = e.timeout_ms;
     if (e.env !== undefined) resolved.env = e.env;

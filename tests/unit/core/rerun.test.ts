@@ -123,6 +123,14 @@ describe("prepareRerunFromReview", () => {
     ).rejects.toThrow(/required_changes/);
   });
 
+  it("rejects when parent goal + required_changes would exceed the rerun prompt budget", async () => {
+    const huge = "x".repeat(80 * 1024);
+    const { runsDir, runId } = setup({ parentGoal: huge });
+    await expect(
+      prepareRerunFromReview({ runsDir, parentRunId: runId }),
+    ).rejects.toThrow(/cap is/);
+  });
+
   it("falls back to a stub when parent codex-prompt.md is missing or unparseable", async () => {
     const { runsDir, runId } = setup({});
     // remove the prompt file

@@ -84,6 +84,76 @@ describe("resolvePolicy", () => {
     expect(r.commandDefaults.envAllowlist).toBeUndefined();
   });
 
+  it("resolves a structured command with empty args as shell:false (argv form)", () => {
+    const r = resolvePolicy(
+      GLOBAL,
+      {
+        repo_id: "x",
+        read: [],
+        domains: {
+          "apps/user": {
+            read: [],
+            write: [],
+            deny_write: [],
+            commands: {
+              allow: [{ id: "lint", cmd: "ls", args: [] }],
+            },
+          },
+        },
+      } as never,
+      "apps/user",
+    );
+    expect(r.allowedCommands[0]?.shell).toBe(false);
+    expect(r.allowedCommands[0]?.id).toBe("lint");
+  });
+
+  it("string commands stay shell:true (legacy backward compat)", () => {
+    const r = resolvePolicy(
+      GLOBAL,
+      {
+        repo_id: "x",
+        read: [],
+        domains: {
+          "apps/user": {
+            read: [],
+            write: [],
+            deny_write: [],
+            commands: { allow: ["npm test"] },
+          },
+        },
+      } as never,
+      "apps/user",
+    );
+    expect(r.allowedCommands[0]?.shell).toBe(true);
+    expect(r.allowedCommands[0]?.id).toBe("cmd-0");
+  });
+
+  it("rejects duplicate command ids within a domain", () => {
+    expect(() =>
+      resolvePolicy(
+        GLOBAL,
+        {
+          repo_id: "x",
+          read: [],
+          domains: {
+            "apps/user": {
+              read: [],
+              write: [],
+              deny_write: [],
+              commands: {
+                allow: [
+                  { id: "same", cmd: "ls", args: [] },
+                  { id: "same", cmd: "pwd", args: [] },
+                ],
+              },
+            },
+          },
+        } as never,
+        "apps/user",
+      ),
+    ).toThrow(/duplicate command id/);
+  });
+
   it("propagates per-domain commands.defaults (timeout + env_allowlist)", () => {
     const r = resolvePolicy(
       GLOBAL,

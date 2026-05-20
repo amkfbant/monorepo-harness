@@ -213,4 +213,68 @@ describe("promoteKnowledge", () => {
     expect(r.promoted).toHaveLength(0);
     expect(r.skipped).toBe(2);
   });
+
+  it("rejects a candidate whose kind has a path separator (path traversal guard)", async () => {
+    const { runsDir, runId, knowledgeDir } = setup([
+      {
+        kind: "../../outside",
+        domain: "x",
+        title: "evil",
+        content: "x",
+        evidence: [],
+        confidence: "low",
+        status: "candidate",
+      },
+    ]);
+    await expect(
+      promoteKnowledge({ runsDir, knowledgeDir, runId }),
+    ).rejects.toThrow(/unsafe 'kind'/);
+  });
+
+  it("Unicode (Japanese) title produces a discriminating filename, not 'untitled'", async () => {
+    const { runsDir, runId, knowledgeDir } = setup([
+      {
+        kind: "policy_improvement",
+        domain: "x",
+        title: "日本語タイトルの候補",
+        content: "x",
+        evidence: [],
+        confidence: "low",
+        status: "candidate",
+      },
+    ]);
+    const r = await promoteKnowledge({ runsDir, knowledgeDir, runId });
+    expect(r.promoted).toHaveLength(1);
+    const fname = r.promoted[0]!.path.split("/").pop()!;
+    // either the unicode body survived, or there's at least a hash suffix
+    // so files don't collapse to a single "untitled.md"
+    expect(fname).not.toMatch(/untitled\.md$/);
+    expect(fname).toMatch(/-[a-f0-9]{6}\.md$/);
+  });
+
+  it("two different long titles produce distinct filenames (hash discriminator)", async () => {
+    const { runsDir, runId, knowledgeDir } = setup([
+      {
+        kind: "policy_improvement",
+        domain: "x",
+        title: "long title aaa aaa aaa aaa aaa aaa aaa aaa version one",
+        content: "a",
+        evidence: [],
+        confidence: "low",
+        status: "candidate",
+      },
+      {
+        kind: "policy_improvement",
+        domain: "x",
+        title: "long title aaa aaa aaa aaa aaa aaa aaa aaa version two",
+        content: "b",
+        evidence: [],
+        confidence: "low",
+        status: "candidate",
+      },
+    ]);
+    const r = await promoteKnowledge({ runsDir, knowledgeDir, runId });
+    expect(r.promoted).toHaveLength(2);
+    expect(r.promoted[0]!.path).not.toBe(r.promoted[1]!.path);
+  });
 });

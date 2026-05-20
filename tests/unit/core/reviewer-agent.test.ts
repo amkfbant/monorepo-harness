@@ -145,7 +145,7 @@ describe("runReviewerAgent", () => {
     expect(r.reviewer).toBe("codex-reviewer-gpt-5.5");
   });
 
-  it("defaults decision to changes_requested when codex returns an unknown decision", async () => {
+  it("rejects (does NOT silently coerce) when codex returns an unknown decision", async () => {
     const { runsDir, runId } = setup();
     const runner = fakeRunnerWithOutput(
       [
@@ -158,12 +158,91 @@ describe("runReviewerAgent", () => {
         "```",
       ].join("\n"),
     );
-    const r = await runReviewerAgent({
-      runsDir,
-      runId,
-      codexRunner: runner,
-    });
-    expect(r.decision).toBe("changes_requested");
+    await expect(
+      runReviewerAgent({ runsDir, runId, codexRunner: runner }),
+    ).rejects.toThrow(/missing or unknown decision/);
+  });
+
+  it("rejects when decision is missing entirely", async () => {
+    const { runsDir, runId } = setup();
+    const runner = fakeRunnerWithOutput(
+      [
+        "```yaml",
+        "required_changes: []",
+        "non_blocking_comments: []",
+        "out_of_scope_suggestions: []",
+        "```",
+      ].join("\n"),
+    );
+    await expect(
+      runReviewerAgent({ runsDir, runId, codexRunner: runner }),
+    ).rejects.toThrow(/missing or unknown decision/);
+  });
+
+  it("rejects when decision=changes_requested but required_changes is empty", async () => {
+    const { runsDir, runId } = setup();
+    const runner = fakeRunnerWithOutput(
+      [
+        "```yaml",
+        "decision: changes_requested",
+        "required_changes: []",
+        "non_blocking_comments: []",
+        "out_of_scope_suggestions: []",
+        "```",
+      ].join("\n"),
+    );
+    await expect(
+      runReviewerAgent({ runsDir, runId, codexRunner: runner }),
+    ).rejects.toThrow(/required_changes is empty/);
+  });
+
+  it("rejects when an array field contains non-string entries", async () => {
+    const { runsDir, runId } = setup();
+    const runner = fakeRunnerWithOutput(
+      [
+        "```yaml",
+        "decision: approved",
+        "required_changes: []",
+        "non_blocking_comments:",
+        "  - 42",
+        "out_of_scope_suggestions: []",
+        "```",
+      ].join("\n"),
+    );
+    await expect(
+      runReviewerAgent({ runsDir, runId, codexRunner: runner }),
+    ).rejects.toThrow(/non-string entries/);
+  });
+
+  it("rejects when the agent tampered with a non-allowlisted artifact (snapshot check)", async () => {
+    const { runsDir, runId } = setup();
+    // create an existing artifact the agent might want to mutate
+    const summary = join(runsDir, runId, "summary.md");
+    const { writeFileSync, utimesSync } = await import("node:fs");
+    writeFileSync(summary, "original\n");
+    const runner: typeof fakeRunnerWithOutput extends () => infer T
+      ? T
+      : never = {
+      async run(input: {
+        worktreePath: string;
+        prompt: string;
+        logPaths: { stdout: string; stderr: string };
+      }): Promise<{ exitCode: number; timedOut: boolean }> {
+        // mutate summary.md during codex execution (simulating sandbox escape)
+        writeFileSync(summary, "tampered\n");
+        // bump mtime ahead to ensure the snapshot detects the change even
+        // when the filesystem mtime resolution is coarse.
+        const now = new Date();
+        utimesSync(summary, now, new Date(now.getTime() + 5000));
+        const { writeFile } = await import("node:fs/promises");
+        await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
+        await writeFile(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false };
+      },
+    };
+    await expect(
+      runReviewerAgent({ runsDir, runId, codexRunner: runner }),
+    ).rejects.toThrow(/modified run artifact/);
   });
 
   it("rejects an invalid runId (path traversal)", async () => {

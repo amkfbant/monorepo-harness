@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -21,6 +21,74 @@ export class ReviewerAgentGateError extends Error {
 }
 
 const RUN_ID_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/**
+ * Names the reviewer agent IS allowed to create/modify. Anything else under
+ * runDir must match its pre-codex snapshot or the run is rejected.
+ *
+ * - reviewer-agent.out.log / .err.log: harness writes these to capture
+ *   codex stdout/stderr; codex may not write them directly but it writes
+ *   to stdout which gets piped here.
+ * - review-decision.yaml: this is the ONE artifact the agent is meant to
+ *   influence. We re-write it ourselves AFTER snapshot verification, so
+ *   it's allowed to change during this window — but the codex itself
+ *   should not write to it. To keep the check simple we exclude it from
+ *   the snapshot too; the agent doesn't have write sandbox so a direct
+ *   write should not succeed anyway.
+ */
+const REVIEWER_WRITE_ALLOWLIST = new Set([
+  "reviewer-agent.out.log",
+  "reviewer-agent.err.log",
+  "review-decision.yaml",
+]);
+
+interface FileSnapshot {
+  size: number;
+  mtimeMs: number;
+}
+
+async function snapshotRunDir(
+  runDir: string,
+): Promise<Map<string, FileSnapshot>> {
+  const out = new Map<string, FileSnapshot>();
+  const entries = await readdir(runDir, { withFileTypes: true });
+  for (const e of entries) {
+    if (!e.isFile()) continue; // subdirs (e.g. commands/) handled separately if needed
+    if (REVIEWER_WRITE_ALLOWLIST.has(e.name)) continue;
+    const st = await stat(join(runDir, e.name));
+    out.set(e.name, { size: st.size, mtimeMs: st.mtimeMs });
+  }
+  return out;
+}
+
+async function verifyArtifactsUnchanged(
+  runDir: string,
+  before: Map<string, FileSnapshot>,
+): Promise<void> {
+  const after = await snapshotRunDir(runDir);
+  // detect modifications and additions
+  for (const [name, snap] of after) {
+    const prev = before.get(name);
+    if (!prev) {
+      throw new ReviewerAgentGateError(
+        `reviewer agent created unexpected file: ${name}`,
+      );
+    }
+    if (prev.size !== snap.size || prev.mtimeMs !== snap.mtimeMs) {
+      throw new ReviewerAgentGateError(
+        `reviewer agent modified run artifact: ${name}`,
+      );
+    }
+  }
+  // detect deletions
+  for (const [name] of before) {
+    if (!after.has(name)) {
+      throw new ReviewerAgentGateError(
+        `reviewer agent deleted run artifact: ${name}`,
+      );
+    }
+  }
+}
 
 export interface ReviewerAgentInputs {
   runsDir: string;
@@ -99,9 +167,20 @@ interface PartialDecision {
   out_of_scope_suggestions?: unknown;
 }
 
-function coerceStringArray(v: unknown): string[] {
-  if (!Array.isArray(v)) return [];
-  return v.filter((x): x is string => typeof x === "string");
+function requireStringArray(field: string, v: unknown): string[] {
+  if (!Array.isArray(v)) {
+    throw new ReviewerAgentGateError(
+      `reviewer output field "${field}" must be an array of strings`,
+    );
+  }
+  for (const x of v) {
+    if (typeof x !== "string") {
+      throw new ReviewerAgentGateError(
+        `reviewer output field "${field}" contains non-string entries`,
+      );
+    }
+  }
+  return v as string[];
 }
 
 function buildDecision(
@@ -111,23 +190,39 @@ function buildDecision(
   reviewer: string,
   reviewedAt: string,
 ): ReviewDecisionFile {
+  if (
+    raw.decision !== "approved" &&
+    raw.decision !== "changes_requested" &&
+    raw.decision !== "rejected"
+  ) {
+    throw new ReviewerAgentGateError(
+      `reviewer output has missing or unknown decision: ${JSON.stringify(raw.decision)} (expected approved | changes_requested | rejected)`,
+    );
+  }
+  const required = requireStringArray("required_changes", raw.required_changes);
+  const nonBlocking = requireStringArray(
+    "non_blocking_comments",
+    raw.non_blocking_comments,
+  );
+  const outOfScope = requireStringArray(
+    "out_of_scope_suggestions",
+    raw.out_of_scope_suggestions,
+  );
+  if (raw.decision === "changes_requested" && required.length === 0) {
+    throw new ReviewerAgentGateError(
+      "reviewer output is decision=changes_requested but required_changes is empty",
+    );
+  }
   const file: ReviewDecisionFile = {
     runId,
     domain,
-    decision:
-      raw.decision === "approved" ||
-      raw.decision === "changes_requested" ||
-      raw.decision === "rejected"
-        ? raw.decision
-        : "changes_requested",
-    required_changes: coerceStringArray(raw.required_changes),
-    non_blocking_comments: coerceStringArray(raw.non_blocking_comments),
-    out_of_scope_suggestions: coerceStringArray(raw.out_of_scope_suggestions),
+    decision: raw.decision,
+    required_changes: required,
+    non_blocking_comments: nonBlocking,
+    out_of_scope_suggestions: outOfScope,
     reviewer,
     reviewed_at: reviewedAt,
   };
-  // Schema parse will throw if anything is off; that's surfaced as a gate
-  // error to the CLI.
   return ReviewDecisionFileSchema.parse(file);
 }
 
@@ -179,6 +274,14 @@ export async function runReviewerAgent(
   // the agent doesn't need to touch the worktree, just read artifacts.
   const stdoutPath = join(runDir, "reviewer-agent.out.log");
   const stderrPath = join(runDir, "reviewer-agent.err.log");
+
+  // Defense in depth: even though the runner is configured with
+  // sandbox=read-only, a misconfigured HARNESS_CODEX_BIN or sandbox
+  // failure could let the agent tamper with run artifacts. Snapshot
+  // every file (size + mtime) under runDir before codex runs, then
+  // verify nothing outside the writable allowlist changed.
+  const snapshot = await snapshotRunDir(runDir);
+
   const codexResult = await inputs.codexRunner.run({
     worktreePath: runDir,
     prompt: PROMPT_PREAMBLE,
@@ -194,6 +297,10 @@ export async function runReviewerAgent(
       `reviewer codex exited ${codexResult.exitCode} for ${inputs.runId}; see ${stderrPath}`,
     );
   }
+
+  // Confirm the agent did not touch any artifact outside the allowlist.
+  // This must run BEFORE we overwrite review-decision.yaml ourselves.
+  await verifyArtifactsUnchanged(runDir, snapshot);
 
   const rawOutput = await readFile(stdoutPath, "utf8");
   const yamlText = extractYamlBlock(rawOutput);

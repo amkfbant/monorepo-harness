@@ -1,6 +1,6 @@
 import { readFile, writeFile, mkdir, appendFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 
 export class KnowledgePromoteGateError extends Error {
@@ -11,6 +11,9 @@ export class KnowledgePromoteGateError extends Error {
 }
 
 const RUN_ID_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+// kind becomes a directory segment, so it must be a single safe name.
+// No path separators, no '..', no leading dot.
+const KIND_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
 export interface KnowledgeCandidate {
   kind: string;
@@ -44,14 +47,25 @@ export interface PromoteResult {
   skipped: number;
 }
 
+import { createHash } from "node:crypto";
+
+/**
+ * Unicode-aware slug: keep letters / numbers (any script), normalize
+ * separators to '-', truncate to 48 chars, and append a short hash so
+ * truncated or non-ASCII titles still have a discriminator.
+ */
 function slugify(s: string): string {
-  return s
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 48) || "untitled";
+  const lowered = s.toLowerCase().normalize("NFKC");
+  const cleaned = lowered
+    .replace(/\p{Mark}+/gu, "")
+    .replace(/[^\p{Letter}\p{Number}]+/gu, "-")
+    .replace(/^-|-$/g, "");
+  const base = cleaned.slice(0, 48) || "untitled";
+  // Short hash makes truncation collisions disambiguate even when the
+  // base ends up identical (e.g. two long Japanese titles whose first
+  // 48 chars match).
+  const hash = createHash("sha1").update(s).digest("hex").slice(0, 6);
+  return `${base}-${hash}`;
 }
 
 function isCandidate(x: unknown): x is KnowledgeCandidate {
@@ -104,11 +118,17 @@ export async function promoteKnowledge(
   const promoted: PromotedFile[] = [];
   let skipped = 0;
 
+  const knowledgeRoot = resolve(opts.knowledgeDir);
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i];
     if (!isCandidate(c)) {
       skipped++;
       continue;
+    }
+    if (!KIND_RE.test(c.kind)) {
+      throw new KnowledgePromoteGateError(
+        `candidate ${i} has unsafe 'kind' (must match ${KIND_RE.source}): ${JSON.stringify(c.kind)}`,
+      );
     }
     if (opts.kind !== undefined && c.kind !== opts.kind) {
       skipped++;
@@ -116,7 +136,18 @@ export async function promoteKnowledge(
     }
     const slug = slugify(c.title);
     const filename = `${opts.runId}-${String(i).padStart(2, "0")}-${slug}.md`;
-    const kindDir = join(opts.knowledgeDir, c.kind);
+    const kindDir = join(knowledgeRoot, c.kind);
+    // Defense in depth: even though KIND_RE prevents traversal, verify
+    // the resolved path stays under knowledgeRoot.
+    const resolvedDir = resolve(kindDir);
+    if (
+      resolvedDir !== knowledgeRoot &&
+      !resolvedDir.startsWith(knowledgeRoot + sep)
+    ) {
+      throw new KnowledgePromoteGateError(
+        `candidate ${i} kind ${JSON.stringify(c.kind)} resolves outside knowledgeDir`,
+      );
+    }
     await mkdir(kindDir, { recursive: true });
     const outPath = join(kindDir, filename);
     const body = [

@@ -15,6 +15,13 @@ export class RerunGateError extends Error {
 }
 
 const RUN_ID_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+/**
+ * Soft cap on the rerun prompt body. 64 KiB is well above any realistic
+ * task description but well below typical model context limits; the
+ * intent is to fail with a clear error instead of silently sending an
+ * oversized prompt.
+ */
+const MAX_RERUN_PROMPT_BYTES = 64 * 1024;
 
 export interface RerunPrepResult {
   parentRunId: string;
@@ -121,6 +128,16 @@ export async function prepareRerunFromReview(opts: {
     "Apply these specific changes on top of the previous attempt:",
     changesBullets,
   ].join("\n");
+
+  // Budget guard. Operator-level limit; codex itself may have its own
+  // smaller cap depending on model. The goal here is to fail loudly
+  // rather than silently truncating or sending an oversized prompt.
+  const goalBytes = Buffer.byteLength(goal, "utf8");
+  if (goalBytes > MAX_RERUN_PROMPT_BYTES) {
+    throw new RerunGateError(
+      `rerun goal would be ${goalBytes} bytes (parent goal plus required_changes); cap is ${MAX_RERUN_PROMPT_BYTES}. Shorten the goal or split into smaller required_changes.`,
+    );
+  }
 
   return {
     parentRunId: opts.parentRunId,
