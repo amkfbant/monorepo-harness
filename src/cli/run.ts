@@ -25,6 +25,10 @@ import {
   runReviewerAgent,
   ReviewerAgentGateError,
 } from "../core/reviewer-agent.js";
+import {
+  promoteKnowledge,
+  KnowledgePromoteGateError,
+} from "../core/knowledge-promoter.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -406,6 +410,52 @@ const rerunCmd = program
     }
   });
 
+const knowledgeCmd = program
+  .command("knowledge")
+  .description("promote knowledge-candidates to permanent docs");
+knowledgeCmd
+  .command("promote")
+  .description(
+    "write each knowledge-candidate as docs/knowledge/<kind>/<runId>-<idx>-<slug>.md",
+  )
+  .requiredOption("--run-id <id>", "target run identifier")
+  .option(
+    "--kind <kind>",
+    "if set, only candidates with this kind are promoted",
+  )
+  .option(
+    "--out <dir>",
+    "destination root (default: HARNESS_ROOT/docs/knowledge)",
+  )
+  .action(async (raw: Record<string, unknown>) => {
+    const harnessRoot = getHarnessRoot();
+    const paths = harnessPaths(harnessRoot);
+    const knowledgeDir =
+      raw.out !== undefined
+        ? String(raw.out)
+        : join(harnessRoot, "docs", "knowledge");
+    try {
+      const r = await promoteKnowledge({
+        runsDir: paths.runsDir,
+        knowledgeDir,
+        runId: String(raw.runId),
+        ...(raw.kind !== undefined ? { kind: String(raw.kind) } : {}),
+      });
+      process.stdout.write(
+        `run=${r.runId} promoted=${r.promoted.length} skipped=${r.skipped} out=${knowledgeDir}\n`,
+      );
+      for (const p of r.promoted) {
+        process.stdout.write(`  ${p.kind}: ${p.path}\n`);
+      }
+    } catch (e) {
+      if (e instanceof KnowledgePromoteGateError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
+  });
+
 program.parseAsync(process.argv).catch((e: unknown) => {
   process.stderr.write(`harness error: ${(e as Error).message}\n`);
   process.exit(2);
@@ -416,3 +466,4 @@ void runCmd;
 void reviewCmd;
 void cleanupCmd;
 void rerunCmd;
+void knowledgeCmd;
