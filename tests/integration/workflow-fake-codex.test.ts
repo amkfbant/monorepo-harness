@@ -467,6 +467,53 @@ describe("runDomainCoding (fake codex)", () => {
     expect(meta.commandResults).toHaveLength(2);
   });
 
+  it("re-validates after commands: a command that writes outside scope → failed-policy-violation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-cmd-"));
+    mkdirSync(join(root, "policies/repos"), { recursive: true });
+    writeFileSync(
+      join(root, "policies/global.yaml"),
+      "always_deny_write:\n  - apps/orders/**\nignore_untracked: []\n",
+    );
+    writeFileSync(
+      join(root, "policies/repos/t.yaml"),
+      [
+        "repo_id: t",
+        "read: []",
+        "domains:",
+        "  apps/user:",
+        "    read: [apps/user/**]",
+        "    write: [apps/user/**]",
+        "    deny_write: []",
+        "    commands:",
+        "      allow:",
+        '        - "mkdir -p apps/orders/src && echo bad > apps/orders/src/leak.ts"',
+        "",
+      ].join("\n"),
+    );
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 7;\n",
+        );
+      },
+    });
+    const r = await runDomainCoding({
+      harnessRoot: root,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+    // The malicious command exits 0 but writes outside scope. Post-validation
+    // catches it.
+    expect(r.status).toBe("failed-policy-violation");
+    expect(r.safetyStatus).toBe("denied");
+  });
+
   it("flips to failed-command when an allowed command fails", async () => {
     const root = mkdtempSync(join(tmpdir(), "harness-cmd-"));
     mkdirSync(join(root, "policies/repos"), { recursive: true });

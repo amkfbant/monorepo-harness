@@ -120,6 +120,42 @@ interface DiffOutcome {
   patch: string;
 }
 
+interface DiffAndValidate {
+  diff: DiffOutcome;
+  untrackedKept: string[];
+  untrackedIgnored: string[];
+  violations: Violation[];
+  safetyStatus: SafetyStatus;
+}
+
+async function diffAndValidate(opts: {
+  worktreePath: string;
+  baseSha: string;
+  gitTimeoutMs: number;
+  policy: ResolvedPolicy;
+}): Promise<DiffAndValidate> {
+  const diff = await attemptDiff(
+    opts.worktreePath,
+    opts.baseSha,
+    opts.gitTimeoutMs,
+  );
+  const { kept: untrackedKept, ignored: untrackedIgnored } = partitionUntracked(
+    diff.untrackedAll,
+    opts.policy.ignoreUntracked,
+  );
+  let violations: Violation[] = [];
+  let safetyStatus: SafetyStatus;
+  if (!diff.ok) {
+    safetyStatus = "skipped";
+  } else {
+    const allChangedPaths = [...diff.trackedChangedPaths, ...untrackedKept];
+    const validation = validateChangedPaths(opts.policy, allChangedPaths);
+    violations = validation.violations;
+    safetyStatus = validation.status === "allowed" ? "allowed" : "denied";
+  }
+  return { diff, untrackedKept, untrackedIgnored, violations, safetyStatus };
+}
+
 async function attemptDiff(
   worktreePath: string,
   baseSha: string,
@@ -279,39 +315,93 @@ async function runDomainCodingInner(
     });
     await log.setStatus("generated");
 
-    const diff = await attemptDiff(wt.path, baseSha, gitTimeoutMs);
-    if (!diff.ok) {
-      await log.emit({
-        type: "diff_collection_failed",
-        error: diff.error,
-      });
-    }
-
-    // Apply harness-side ignore_untracked filter (we no longer rely on
-    // --exclude-standard so codex cannot hide changes in .gitignore'd paths).
-    const { kept: untrackedKept, ignored: untrackedIgnored } =
-      partitionUntracked(diff.untrackedAll, policy.ignoreUntracked);
-
-    // Validate BEFORE writing any untracked content to artifacts: a denied
-    // untracked file (e.g. .env) must not have its bytes copied into
-    // untracked-files.patch even though we still want reviewers to know
-    // the file existed.
-    let safetyStatus: SafetyStatus;
-    let violations: Violation[] = [];
-    const violatedPaths = new Set<string>();
-    if (!diff.ok) {
-      safetyStatus = "skipped";
+    // Pass 1: post-codex diff + validation. This determines whether commands
+    // are safe to invoke (we don't want to run npm test in a worktree that
+    // already violates write scope).
+    let dv = await diffAndValidate({
+      worktreePath: wt.path,
+      baseSha,
+      gitTimeoutMs,
+      policy,
+    });
+    if (!dv.diff.ok) {
+      await log.emit({ type: "diff_collection_failed", error: dv.diff.error });
     } else {
-      const allChangedPaths = [...diff.trackedChangedPaths, ...untrackedKept];
-      const validation = validateChangedPaths(policy, allChangedPaths);
-      violations = validation.violations;
-      for (const v of validation.violations) violatedPaths.add(v.path);
-      safetyStatus = validation.status === "allowed" ? "allowed" : "denied";
       await log.emit({
         type: "policy_validation_completed",
-        status: validation.status,
+        status: dv.safetyStatus === "allowed" ? "allowed" : "denied",
       });
     }
+
+    // Pass 2: run allowed commands and RE-COLLECT diff + RE-VALIDATE. A
+    // command (formatter, build script) can modify the worktree in ways
+    // path policy would reject; artifacts must reflect the post-command
+    // worktree, not the pre-command snapshot.
+    let commandResults: Array<{
+      command: string;
+      exitCode: number;
+      durationMs: number;
+      timedOut: boolean;
+    }> = [];
+    let commandsRan = false;
+    let commandsPassed = true;
+    if (
+      dv.diff.ok &&
+      dv.safetyStatus === "allowed" &&
+      !codex.timedOut &&
+      codex.exitCode === 0 &&
+      policy.allowedCommands.length > 0
+    ) {
+      await log.setStatus("verified");
+      await log.emit({
+        type: "commands_started",
+        count: policy.allowedCommands.length,
+      });
+      const cmdRun = await runAllowedCommands({
+        worktreePath: wt.path,
+        commands: policy.allowedCommands,
+        logDir: join(log.runDir, "commands"),
+      });
+      commandResults = cmdRun.results.map((r) => ({
+        command: r.command,
+        exitCode: r.exitCode,
+        durationMs: r.durationMs,
+        timedOut: r.timedOut,
+      }));
+      commandsRan = true;
+      commandsPassed = cmdRun.allPassed;
+      await log.emit({
+        type: "commands_completed",
+        results: commandResults,
+        allPassed: cmdRun.allPassed,
+      });
+
+      // Re-collect diff + re-validate against the post-command worktree.
+      dv = await diffAndValidate({
+        worktreePath: wt.path,
+        baseSha,
+        gitTimeoutMs,
+        policy,
+      });
+      if (!dv.diff.ok) {
+        await log.emit({
+          type: "diff_collection_failed",
+          error: dv.diff.error,
+          phase: "post-commands",
+        });
+      } else {
+        await log.emit({
+          type: "policy_validation_completed",
+          status: dv.safetyStatus === "allowed" ? "allowed" : "denied",
+          phase: "post-commands",
+        });
+      }
+    }
+
+    const { diff, untrackedKept, untrackedIgnored } = dv;
+    const safetyStatus = dv.safetyStatus;
+    const violations = dv.violations;
+    const violatedPaths = new Set<string>(violations.map((v) => v.path));
     await log.setSafetyStatus(safetyStatus);
 
     // Split untracked into (allowed, denied). Only allowed content is
@@ -370,18 +460,12 @@ async function runDomainCodingInner(
       });
     }
 
-    // Status priority:
+    // Status priority (evaluated against POST-command worktree if commands ran):
     //   diff failure > codex timeout > codex non-zero > policy violation
     //   > command failure > needs_review
     // safetyStatus is reported independently so callers can detect e.g.
     // "timeout AND scope violation" cases.
     let status: RunStatus;
-    let commandResults: Array<{
-      command: string;
-      exitCode: number;
-      durationMs: number;
-      timedOut: boolean;
-    }> = [];
     if (!diff.ok) {
       status = "failed-diff-collection";
     } else if (codex.timedOut) {
@@ -389,36 +473,13 @@ async function runDomainCodingInner(
     } else if (codex.exitCode !== 0) {
       status = "failed-codex";
     } else if (safetyStatus === "denied") {
+      // a denied state here may be (a) codex itself, or (b) a command that
+      // wrote outside scope post-validation. Either way → policy violation.
       status = "failed-policy-violation";
+    } else if (commandsRan && !commandsPassed) {
+      status = "failed-command";
     } else {
-      // path-policy passed. Run allowed commands (if any) before committing
-      // to needs_review.
-      await log.setStatus("verified");
-      if (policy.allowedCommands.length > 0) {
-        await log.emit({
-          type: "commands_started",
-          count: policy.allowedCommands.length,
-        });
-        const cmdRun = await runAllowedCommands({
-          worktreePath: wt.path,
-          commands: policy.allowedCommands,
-          logDir: join(log.runDir, "commands"),
-        });
-        commandResults = cmdRun.results.map((r) => ({
-          command: r.command,
-          exitCode: r.exitCode,
-          durationMs: r.durationMs,
-          timedOut: r.timedOut,
-        }));
-        await log.emit({
-          type: "commands_completed",
-          results: commandResults,
-          allPassed: cmdRun.allPassed,
-        });
-        status = cmdRun.allPassed ? "needs_review" : "failed-command";
-      } else {
-        status = "needs_review";
-      }
+      status = "needs_review";
     }
 
     const codexStdoutTail = await readTail(codexStdoutPath);
