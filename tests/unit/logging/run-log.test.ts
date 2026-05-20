@@ -1,69 +1,82 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRunLog } from "../../../src/logging/run-log.js";
+import { createRunLog, type RunMeta } from "../../../src/logging/run-log.js";
+
+const META: RunMeta = {
+  runId: "run-20260520-apps-user-abc",
+  repoId: "sample-monorepo",
+  repoPath: "/tmp/repo",
+  domain: "apps/user",
+  workflow: "domain-coding",
+  baseBranch: "main",
+  baseSha: "0123456789abcdef0123456789abcdef01234567",
+  runBranch: "harness/run-20260520-apps-user-abc/apps-user",
+  status: "running",
+  startedAt: "2026-05-20T00:00:00.000Z",
+};
 
 describe("createRunLog", () => {
-  it("creates run dir and writes meta.json + first event", async () => {
+  it("creates the run dir atomically and writes meta.json + events", async () => {
     const root = mkdtempSync(join(tmpdir(), "harness-"));
     const log = await createRunLog({
       runsDir: root,
-      runId: "run-20260520-001",
-      meta: {
-        runId: "run-20260520-001",
-        repoId: "sample-monorepo",
-        repoPath: "/tmp/repo",
-        domain: "apps/user",
-        workflow: "domain-coding",
-        baseBranch: "main",
-        runBranch: "harness/run-20260520-001/apps-user",
-        status: "running",
-        startedAt: "2026-05-20T00:00:00.000Z",
-      },
+      runId: META.runId,
+      meta: META,
     });
     expect(existsSync(log.runDir)).toBe(true);
     const meta = JSON.parse(
       readFileSync(join(log.runDir, "meta.json"), "utf8"),
     );
-    expect(meta.runId).toBe("run-20260520-001");
+    expect(meta.baseSha).toBe(META.baseSha);
 
-    await log.emit({ type: "run_started", runId: "run-20260520-001" });
+    await log.emit({ type: "run_started", runId: META.runId });
     const events = readFileSync(join(log.runDir, "events.jsonl"), "utf8")
       .trim()
       .split("\n")
       .map((l) => JSON.parse(l));
-    expect(events[0]).toEqual({
-      type: "run_started",
-      runId: "run-20260520-001",
-    });
+    expect(events[0]).toEqual({ type: "run_started", runId: META.runId });
   });
 
-  it("updates meta.status on finalize", async () => {
+  it("fails with EEXIST when the run directory already exists", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-"));
+    mkdirSync(join(root, META.runId));
+    await expect(
+      createRunLog({ runsDir: root, runId: META.runId, meta: META }),
+    ).rejects.toThrow(/EEXIST/);
+  });
+
+  it("setStatus updates only the status field", async () => {
     const root = mkdtempSync(join(tmpdir(), "harness-"));
     const log = await createRunLog({
       runsDir: root,
-      runId: "run-20260520-002",
-      meta: {
-        runId: "run-20260520-002",
-        repoId: "x",
-        repoPath: "/tmp",
-        domain: "d",
-        workflow: "domain-coding",
-        baseBranch: "main",
-        runBranch: "b",
-        status: "running",
-        startedAt: "2026-05-20T00:00:00.000Z",
-      },
+      runId: META.runId,
+      meta: META,
+    });
+    await log.setStatus("generated");
+    const meta = JSON.parse(
+      readFileSync(join(log.runDir, "meta.json"), "utf8"),
+    );
+    expect(meta.status).toBe("generated");
+    expect(meta.runId).toBe(META.runId);
+  });
+
+  it("finalize updates status + finishedAt", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-"));
+    const log = await createRunLog({
+      runsDir: root,
+      runId: META.runId,
+      meta: META,
     });
     await log.finalize({
-      status: "success",
+      status: "needs_review",
       finishedAt: "2026-05-20T01:00:00.000Z",
     });
     const meta = JSON.parse(
       readFileSync(join(log.runDir, "meta.json"), "utf8"),
     );
-    expect(meta.status).toBe("success");
+    expect(meta.status).toBe("needs_review");
     expect(meta.finishedAt).toBe("2026-05-20T01:00:00.000Z");
   });
 });

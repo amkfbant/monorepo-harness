@@ -22,7 +22,20 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Resolve policy once up-front so the codex runner can be configured from it.
+  const global = await loadGlobalPolicy(paths.globalPolicyPath);
+  const repo = await loadRepoPolicy(paths.repoPolicyPath(args.repoId));
+  const resolved = resolvePolicy(global, repo, args.domain);
+
   const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
+  const runner = createCodexCliRunner({
+    codexBin,
+    sandbox: resolved.codex.sandbox,
+    ...(resolved.codex.approval !== undefined
+      ? { approvalPolicy: resolved.codex.approval }
+      : {}),
+  });
+
   const result = await runDomainCoding({
     harnessRoot,
     repoPath: args.repo,
@@ -31,10 +44,18 @@ async function main(): Promise<void> {
     goal: args.goal,
     baseBranch: args.baseBranch,
     keepWorktree: args.keepWorktree,
-    codexRunner: createCodexCliRunner({ codexBin }),
+    codexRunner: runner,
   });
   process.stdout.write(`run=${result.runId} status=${result.status}\n`);
-  if (result.status !== "success") process.exit(1);
+  if (
+    result.status === "failed-policy-violation" ||
+    result.status === "failed-codex" ||
+    result.status === "failed-codex-timeout" ||
+    result.status === "failed-command" ||
+    result.status === "failed-internal-error"
+  ) {
+    process.exit(1);
+  }
 }
 
 main().catch((e: unknown) => {

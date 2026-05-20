@@ -1,11 +1,11 @@
 import { stringify } from "yaml";
 import type { Violation } from "../policy/path-policy-validator.js";
-import type { RunMeta } from "../logging/run-log.js";
+import type { RunStatus } from "../logging/run-log.js";
 
 export interface KnowledgeInputs {
   runId: string;
   domain: string;
-  status: RunMeta["status"];
+  status: RunStatus;
   violations: readonly Violation[];
 }
 
