@@ -67,6 +67,27 @@ async function readTail(path: string, maxBytes = 8 * 1024): Promise<string> {
   }
 }
 
+/**
+ * Codex sometimes echoes the diff it just applied into stderr (via the
+ * `git apply` subprocess), which then floods review-request.md and
+ * summary.md. Truncate at the first `diff --git` block so reviewers see
+ * the real error message instead of a re-quoted patch.
+ */
+export function filterPatchEcho(stderr: string): string {
+  if (stderr === "") return "";
+  const m = stderr.match(/(^|\n)diff --git /);
+  if (!m) return stderr;
+  const head = stderr.slice(0, m.index! + (m[1] ?? "").length).trimEnd();
+  return `${head}\n[stderr omitted: patch-like output detected after this point]`;
+}
+
+async function readStderrTail(
+  path: string,
+  maxBytes = 8 * 1024,
+): Promise<string> {
+  return filterPatchEcho(await readTail(path, maxBytes));
+}
+
 function partitionUntracked(
   paths: readonly string[],
   ignoreGlobs: readonly string[],
@@ -360,7 +381,7 @@ async function runDomainCodingInner(
     }
 
     const codexStdoutTail = await readTail(codexStdoutPath);
-    const codexStderrTail = await readTail(codexStderrPath);
+    const codexStderrTail = await readStderrTail(codexStderrPath);
     const finalDiffPath = join(log.runDir, "final-diff.patch");
     const summaryPath = join(log.runDir, "summary.md");
     const knowledgeCandidatesPath = join(
@@ -398,6 +419,12 @@ async function runDomainCodingInner(
       domain: opts.domain,
       status,
       violations,
+      secretSuspectCount: secretSuspects.length,
+      ignoredUntrackedCount: untrackedIgnored.length,
+      changedFilesCount:
+        diff.trackedChangedPaths.length + untrackedKept.length,
+      codexExitCode: codex.exitCode,
+      codexTimedOut: codex.timedOut,
     });
     await writeArtifact(knowledgeCandidatesPath, knowledge);
 
