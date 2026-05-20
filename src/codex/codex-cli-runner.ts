@@ -66,6 +66,14 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
 
       const args: string[] = [
         "exec",
+        // --ephemeral: do not persist session state under CODEX_HOME. All
+        //   reviewable artifacts must live in runs/<id>/ — anything else is
+        //   an artifact-boundary leak.
+        // --ignore-rules: ignore .rules files inside the target repo. The
+        //   harness policy is the authoritative source of project rules;
+        //   silently inheriting target-repo rules can contradict policy.
+        "--ephemeral",
+        "--ignore-rules",
         "--sandbox",
         sandbox,
         "-C",
