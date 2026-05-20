@@ -58,6 +58,34 @@ export const CommandDefaultsSchema = z
   .strict();
 export type CommandDefaults = z.infer<typeof CommandDefaultsSchema>;
 
+/**
+ * Structured form of an allowed command.
+ *
+ * Operators get:
+ *   - shell-escape-free argv invocation (no string splitting surprises)
+ *   - per-command timeout / env override on top of commands.defaults
+ *   - a stable `id` for log filename and result correlation
+ *
+ * String entries in commands.allow are kept for backward compat; the
+ * resolver lifts them to this shape with auto-generated ids.
+ */
+export const StructuredCommandSchema = z
+  .object({
+    id: z.string().min(1).regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
+    cmd: z.string().min(1),
+    args: z.array(z.string()).default([]),
+    timeout_ms: z.number().int().positive().optional(),
+    env: z.record(z.string(), z.string()).optional(),
+  })
+  .strict();
+export type StructuredCommand = z.infer<typeof StructuredCommandSchema>;
+
+export const CommandEntrySchema = z.union([
+  z.string().min(1),
+  StructuredCommandSchema,
+]);
+export type CommandEntry = z.infer<typeof CommandEntrySchema>;
+
 export const DomainPolicySchema = z
   .object({
     read: z.array(Glob).default([]),
@@ -65,7 +93,7 @@ export const DomainPolicySchema = z
     deny_write: z.array(Glob).default([]),
     commands: z
       .object({
-        allow: z.array(z.string()).default([]),
+        allow: z.array(CommandEntrySchema).default([]),
         defaults: CommandDefaultsSchema.optional(),
       })
       .optional(),
@@ -82,13 +110,31 @@ export const RepoPolicySchema = z
   .strict();
 export type RepoPolicy = z.infer<typeof RepoPolicySchema>;
 
+/**
+ * One allowed command after resolution. String entries from YAML are
+ * lifted to `{ id: "cmd-<idx>", cmd: <raw-string>, args: [], shell: true }`
+ * so runner is uniform.
+ */
+export interface ResolvedCommand {
+  id: string;
+  /** when `shell` is true, this is the whole `sh -c` argument; otherwise it's argv[0]. */
+  cmd: string;
+  args: string[];
+  /** true → runner uses `sh -c cmd`; false → spawn(cmd, args). */
+  shell: boolean;
+  /** per-command timeout override (overrides commandDefaults.timeoutMs). */
+  timeoutMs?: number;
+  /** per-command env overrides merged on top of the env-allowlist-filtered process.env. */
+  env?: Record<string, string>;
+}
+
 export interface ResolvedPolicy {
   repoId: string;
   domain: string;
   read: string[];
   write: string[];
   denyWrite: string[];
-  allowedCommands: string[];
+  allowedCommands: ResolvedCommand[];
   /**
    * Defaults applied to every entry in allowedCommands.
    * timeoutMs comes from domain.commands.defaults.timeout_ms or the

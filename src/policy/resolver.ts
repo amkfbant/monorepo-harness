@@ -2,10 +2,37 @@ import {
   DEFAULT_CODEX_TIMEOUT_MS,
   DEFAULT_COMMAND_TIMEOUT_MS,
   DEFAULT_GIT_TIMEOUT_MS,
+  type CommandEntry,
   type GlobalPolicy,
   type RepoPolicy,
+  type ResolvedCommand,
   type ResolvedPolicy,
 } from "./schema.js";
+
+function resolveCommands(
+  entries: readonly CommandEntry[] | undefined,
+): ResolvedCommand[] {
+  if (!entries || entries.length === 0) return [];
+  return entries.map((e, i): ResolvedCommand => {
+    if (typeof e === "string") {
+      return {
+        id: `cmd-${i}`,
+        cmd: e,
+        args: [],
+        shell: true,
+      };
+    }
+    const resolved: ResolvedCommand = {
+      id: e.id,
+      cmd: e.cmd,
+      args: e.args,
+      shell: e.args.length === 0,
+    };
+    if (e.timeout_ms !== undefined) resolved.timeoutMs = e.timeout_ms;
+    if (e.env !== undefined) resolved.env = e.env;
+    return resolved;
+  });
+}
 
 export function resolvePolicy(
   global: GlobalPolicy,
@@ -33,13 +60,25 @@ export function resolvePolicy(
     commandDefaults.envAllowlist = uniq(cmdDefaultsRaw.env_allowlist);
   }
 
+  const resolvedCommands = resolveCommands(d.commands?.allow);
+  // Reject duplicate ids (operators sometimes copy-paste entries).
+  const seen = new Set<string>();
+  for (const c of resolvedCommands) {
+    if (seen.has(c.id)) {
+      throw new Error(
+        `policy: duplicate command id "${c.id}" in domain "${domain}"`,
+      );
+    }
+    seen.add(c.id);
+  }
+
   return {
     repoId: repo.repo_id,
     domain,
     read: uniq([...repo.read, ...d.read]),
     write: uniq(d.write),
     denyWrite: uniq([...(global.always_deny_write ?? []), ...d.deny_write]),
-    allowedCommands: uniq(d.commands?.allow ?? []),
+    allowedCommands: resolvedCommands,
     commandDefaults,
     ignoreUntracked: uniq(global.ignore_untracked ?? []),
     codex,

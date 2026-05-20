@@ -4,8 +4,11 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { finished } from "node:stream/promises";
 import { killProcessTree } from "../codex/process-tree.js";
+import type { ResolvedCommand } from "../policy/schema.js";
 
 export interface CommandResult {
+  /** stable command identifier from policy (or generated "cmd-N" for legacy string entries) */
+  id: string;
   command: string;
   exitCode: number;
   durationMs: number;
@@ -16,10 +19,10 @@ export interface CommandResult {
 
 export interface RunAllowedCommandsInputs {
   worktreePath: string;
-  commands: readonly string[];
+  commands: readonly ResolvedCommand[];
   /** absolute path of a directory to write command logs into */
   logDir: string;
-  /** Per-command timeout. Default 5 minutes. */
+  /** Default per-command timeout when a command does not override. */
   timeoutMs?: number;
   /**
    * Direct env to pass to children. Takes precedence over envAllowlist.
@@ -59,27 +62,21 @@ function filteredEnv(
   return out;
 }
 
-// Filenames must be deterministic per index so command artifacts are easy
-// to correlate with the results array.
-function slugifyForFilename(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 32);
-}
-
+// Log filenames use the policy-supplied id so artifacts correlate with
+// commandResults.
 function logPaths(
   logDir: string,
-  idx: number,
-  command: string,
+  id: string,
 ): { stdoutPath: string; stderrPath: string } {
-  const slug = slugifyForFilename(command) || "cmd";
-  const idxPart = String(idx).padStart(2, "0");
   return {
-    stdoutPath: join(logDir, `${idxPart}-${slug}.out.log`),
-    stderrPath: join(logDir, `${idxPart}-${slug}.err.log`),
+    stdoutPath: join(logDir, `${id}.out.log`),
+    stderrPath: join(logDir, `${id}.err.log`),
   };
+}
+
+function displayCommand(c: ResolvedCommand): string {
+  if (c.shell) return c.cmd;
+  return [c.cmd, ...c.args].join(" ");
 }
 
 export async function runAllowedCommands(
@@ -89,13 +86,17 @@ export async function runAllowedCommands(
     return { results: [], allPassed: true };
   }
   await mkdir(input.logDir, { recursive: true });
-  const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const env = input.env ?? filteredEnv(input.envAllowlist);
+  const baseTimeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const baseEnv = input.env ?? filteredEnv(input.envAllowlist);
 
   const results: CommandResult[] = [];
-  for (let i = 0; i < input.commands.length; i++) {
-    const command = input.commands[i]!;
-    const { stdoutPath, stderrPath } = logPaths(input.logDir, i, command);
+  for (const command of input.commands) {
+    const { stdoutPath, stderrPath } = logPaths(input.logDir, command.id);
+    const timeoutMs = command.timeoutMs ?? baseTimeoutMs;
+    // Per-command env override merges on top of the base allowlisted env.
+    const env: NodeJS.ProcessEnv = command.env
+      ? { ...baseEnv, ...command.env }
+      : baseEnv;
     const result = await runOne({
       command,
       worktreePath: input.worktreePath,
@@ -111,7 +112,7 @@ export async function runAllowedCommands(
 }
 
 interface RunOneInputs {
-  command: string;
+  command: ResolvedCommand;
   worktreePath: string;
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
@@ -126,12 +127,21 @@ function runOne(input: RunOneInputs): Promise<CommandResult> {
     const started = Date.now();
     // detached:true → tree-kill on timeout reaches any child (test runners
     // that fork workers, dev servers, etc.). Same pattern as codex runner.
-    const child = spawn("sh", ["-c", input.command], {
-      cwd: input.worktreePath,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: input.env,
-      detached: true,
-    });
+    // shell:true legacy form keeps `sh -c <cmd>`; structured form uses
+    // argv directly (no shell escaping).
+    const child = input.command.shell
+      ? spawn("sh", ["-c", input.command.cmd], {
+          cwd: input.worktreePath,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: input.env,
+          detached: true,
+        })
+      : spawn(input.command.cmd, input.command.args, {
+          cwd: input.worktreePath,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: input.env,
+          detached: true,
+        });
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -151,7 +161,8 @@ function runOne(input: RunOneInputs): Promise<CommandResult> {
         })
         .finally(() => {
           resolve({
-            command: input.command,
+            id: input.command.id,
+            command: displayCommand(input.command),
             exitCode: code ?? -1,
             durationMs: Date.now() - started,
             timedOut,

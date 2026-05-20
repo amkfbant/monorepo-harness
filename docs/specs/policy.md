@@ -96,10 +96,15 @@ domains:
       - .github/**
     commands:                         # path validation 通過後にこの allowlist を順次実行
       allow:
-        - "npm test"
-        - "npm run lint"
+        - "npm run lint"              # legacy string form: sh -c
+        - id: test-catalog            # structured form: id-based logs
+          cmd: npm                    # argv-style spawn, no shell escaping
+          args: ["test", "--filter", "catalog"]
+          timeout_ms: 600000          # per-command override
+          env:                        # per-command env merged on top of defaults
+            NODE_ENV: test
       defaults:                       # 任意 — domain ごとに上書き可能
-        timeout_ms: 600000            # 10 min (default は 5 min)
+        timeout_ms: 300000            # default 5 min when per-command も未指定
         env_allowlist:                # 省略時は DEFAULT_COMMAND_ENV_ALLOWLIST
           - PATH
           - HOME
@@ -182,10 +187,11 @@ for each changed path p:
 
 `domain.commands.allow` に並べた shell コマンドは、path validation が通過した直後（`needs_review` に確定する前）に **worktree 内** で `sh -c "<cmd>"` として順次実行される。実装: `src/core/command-runner.ts`。
 
-- 各コマンドの stdout/stderr は `runs/<runId>/commands/<idx>-<slug>.{out,err}.log` に保存
+- 各コマンドの stdout/stderr は `runs/<runId>/commands/<id>.{out,err}.log` に保存。`id` は policy 指定値 (structured form) または `cmd-<index>` (legacy string form)
 - 1 つでも `exitCode !== 0` or timeout したら status = `failed-command`、`safetyStatus` は据え置き
-- **timeout**: domain ごとに `commands.defaults.timeout_ms` で指定可。未指定は **5 分**（`DEFAULT_COMMAND_TIMEOUT_MS`）。tree-kill で子孫プロセスも SIGKILL
-- **環境変数**: `commands.defaults.env_allowlist` でホワイトリスト指定可。未指定は **`PATH / HOME / USER / SHELL / LANG / LC_ALL / TERM / TMPDIR`** （`DEFAULT_COMMAND_ENV_ALLOWLIST`）。空配列 `[]` を明示すれば env なしで起動。`OPENAI_API_KEY` 等は default では **伝播しない**
+- **timeout**: per-command `timeout_ms` > domain `commands.defaults.timeout_ms` > **5 分** (`DEFAULT_COMMAND_TIMEOUT_MS`) の順で決まる。tree-kill で子孫プロセスも SIGKILL
+- **環境変数**: `commands.defaults.env_allowlist` でホワイトリスト指定可。未指定は **`PATH / HOME / USER / SHELL / LANG / LC_ALL / TERM / TMPDIR`** （`DEFAULT_COMMAND_ENV_ALLOWLIST`）。空配列 `[]` を明示すれば env なしで起動。`OPENAI_API_KEY` 等は default では **伝播しない**。per-command `env` を指定すると base env の上にマージされる
+- **shell escaping**: legacy string form (`- "npm test"`) は `sh -c <cmd>` で実行。structured form (`{ cmd, args: [...] }`) は `spawn(cmd, args)` で **shell を介さない**（クォート / `$VAR` 展開なし）。誤実行リスクを下げたい場合は structured form 推奨
 - 空 (`commands.allow: []`) の場合はステップそのものが skip
 - **commands 実行後** に diff + path validation が **再評価される**。コマンドが scope 外に書いたら `failed-policy-violation` に flip（F8）
 
