@@ -77,6 +77,7 @@ describe("cleanupRun", () => {
     const r = await cleanupRun({
       runsDir: join(s.harnessRoot, "runs"),
       workspacesDir: join(s.harnessRoot, "workspaces"),
+      locksDir: join(s.harnessRoot, "locks"),
       runId: s.runId,
     });
     expect(r.worktreeRemoved).toBe(true);
@@ -101,6 +102,7 @@ describe("cleanupRun", () => {
     const r = await cleanupRun({
       runsDir: join(s.harnessRoot, "runs"),
       workspacesDir: join(s.harnessRoot, "workspaces"),
+      locksDir: join(s.harnessRoot, "locks"),
       runId: s.runId,
     });
     expect(r.worktreeRemoved).toBe(true);
@@ -123,6 +125,7 @@ describe("cleanupRun", () => {
     const r = await cleanupRun({
       runsDir: join(s.harnessRoot, "runs"),
       workspacesDir: join(s.harnessRoot, "workspaces"),
+      locksDir: join(s.harnessRoot, "locks"),
       runId: s.runId,
       force: true,
     });
@@ -145,6 +148,7 @@ describe("cleanupRun", () => {
     await cleanupRun({
       runsDir: join(s.harnessRoot, "runs"),
       workspacesDir: join(s.harnessRoot, "workspaces"),
+      locksDir: join(s.harnessRoot, "locks"),
       runId: s.runId,
     });
     const { readFileSync } = await import("node:fs");
@@ -162,17 +166,98 @@ describe("cleanupRun", () => {
     expect(events.find((e) => e.type === "cleaned")).toBeDefined();
   });
 
+  it("rejects path-traversal runId (../)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-cu-"));
+    await expect(
+      cleanupRun({
+        runsDir: join(root, "runs"),
+        workspacesDir: join(root, "workspaces"),
+        locksDir: join(root, "locks"),
+        runId: "../escape",
+      }),
+    ).rejects.toThrow(/invalid runId/);
+  });
+
+  it("rejects meta.json with mismatched runId", async () => {
+    const s = await setup("approved");
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(
+      join(s.harnessRoot, "runs", s.runId, "meta.json"),
+      JSON.stringify({ runId: "run-something-else", domain: "x" }),
+    );
+    await expect(
+      cleanupRun({
+        runsDir: join(s.harnessRoot, "runs"),
+        workspacesDir: join(s.harnessRoot, "workspaces"),
+        locksDir: join(s.harnessRoot, "locks"),
+        runId: s.runId,
+      }),
+    ).rejects.toThrow(/runId/);
+  });
+
+  it("removes the branch even when the worktree is already gone (independent paths)", async () => {
+    const s = await setup("approved");
+    // simulate someone deleting the worktree dir but leaving the branch
+    const { rmSync } = await import("node:fs");
+    rmSync(s.worktreePath, { recursive: true, force: true });
+    // git worktree prune so git's bookkeeping is consistent
+    execFileSync("git", ["worktree", "prune"], { cwd: s.repoPath });
+    const r = await cleanupRun({
+      runsDir: join(s.harnessRoot, "runs"),
+      workspacesDir: join(s.harnessRoot, "workspaces"),
+      locksDir: join(s.harnessRoot, "locks"),
+      runId: s.runId,
+    });
+    expect(r.worktreeRemoved).toBe(false); // already gone
+    expect(r.branchRemoved).toBe(true); // branch still existed and was removed
+    const branches = execFileSync(
+      "git",
+      ["branch", "--list", s.runBranch],
+      { cwd: s.repoPath },
+    )
+      .toString()
+      .trim();
+    expect(branches).toBe("");
+  });
+
+  it("acquires the domain lock during cleanup (cannot race with a new run)", async () => {
+    const s = await setup("approved");
+    // Pre-lock the domain to simulate a concurrent run.
+    const { acquireDomainLock } = await import(
+      "../../../src/workspace/domain-lock.js"
+    );
+    const held = await acquireDomainLock({
+      locksDir: join(s.harnessRoot, "locks"),
+      domain: "apps/user",
+      runId: "run-fake-concurrent",
+    });
+    try {
+      await expect(
+        cleanupRun({
+          runsDir: join(s.harnessRoot, "runs"),
+          workspacesDir: join(s.harnessRoot, "workspaces"),
+          locksDir: join(s.harnessRoot, "locks"),
+          runId: s.runId,
+        }),
+      ).rejects.toThrow(/locked/);
+    } finally {
+      await held.release();
+    }
+  });
+
   it("is idempotent: re-cleanup is a no-op when worktree is already gone", async () => {
     const s = await setup("approved");
     await cleanupRun({
       runsDir: join(s.harnessRoot, "runs"),
       workspacesDir: join(s.harnessRoot, "workspaces"),
+      locksDir: join(s.harnessRoot, "locks"),
       runId: s.runId,
     });
     // status is now 'cleaned'; re-cleanup should not throw, just no-op
     const r2 = await cleanupRun({
       runsDir: join(s.harnessRoot, "runs"),
       workspacesDir: join(s.harnessRoot, "workspaces"),
+      locksDir: join(s.harnessRoot, "locks"),
       runId: s.runId,
     });
     expect(r2.worktreeRemoved).toBe(false);
