@@ -34,6 +34,8 @@ export const GlobalPolicySchema = z
       .optional(),
     limits: LimitsSchema.optional(),
     always_deny_write: z.array(Glob).default([]),
+    // minimatch root-anchored patterns. Use `**/dist/**` (NOT `dist/**`)
+    // to match nested directories. See docs/policy-semantics.md.
     ignore_untracked: z.array(Glob).default([]),
     commands: z
       .object({

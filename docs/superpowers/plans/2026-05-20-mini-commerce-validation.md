@@ -549,10 +549,12 @@ always_deny_write:
   - packages/contracts/**
 
 ignore_untracked:
-  - node_modules/**
-  - dist/**
-  - coverage/**
-  - .turbo/**
+  - "**/node_modules/**"
+  - "**/dist/**"
+  - "**/coverage/**"
+  - "**/.turbo/**"
+# NOTE: minimatch is root-anchored, NOT gitignore-style.
+# Bare `dist/**` will NOT match `apps/foo/dist/out.js`.
 EOF
 ```
 

@@ -21,6 +21,9 @@ always_deny_write:
   - packages/shared/**
   - packages/contracts/**
 
+# Patterns use minimatch (root-anchored), NOT gitignore semantics.
+# `dist/**` only matches dist at the repo root; use `**/dist/**` to
+# ignore every nested dist directory. See docs/policy-semantics.md.
 ignore_untracked:
   - "**/node_modules/**"
   - "**/dist/**"
