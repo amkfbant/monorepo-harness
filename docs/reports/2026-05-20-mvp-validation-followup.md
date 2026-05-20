@@ -1,7 +1,7 @@
 # MVP validation follow-up report
 
 **Date:** 2026-05-20
-**Trigger:** `docs/mvp-validation-report.md` の指摘を受けた追加対応サイクル
+**Trigger:** `docs/reports/2026-05-20-mvp-validation-initial.md` の指摘を受けた追加対応サイクル
 **Harness range:** `b4f876b` (前 report 直後) → `4137b55` (本サイクル末尾)
 **Mini-commerce:** `ca427b9` (前 report と同じ skeleton、再構築不要)
 
@@ -223,16 +223,15 @@ affa65d feat(knowledge): emit signal candidates per category (P2 from MVP valida
 
 ---
 
-## Next phase (再掲、未着手)
+## Next phase
 
-ユーザ提案の通り次は以下を順に:
+**Phase 1 close:** 完了済み (本サイクルの後に別コミットで実施)
+- reports は `docs/reports/` 配下に移動 + 命名規則化
+- mini-commerce 仕様は `docs/examples/mini-commerce.md` に独立
+- harness 現状仕様は `docs/specs/` (overview / policy / workflow / cli) にまとめ
+- `docs/README.md` で全体構造と mini-commerce との関係を整理
 
-**Phase 1 close:**
-- `docs/mvp-validation-report.md` と本ファイル を `docs/validation/` に移動
-- mini-commerce 仕様 (`docs/superpowers/plans/2026-05-20-mini-commerce-validation.md`) を `docs/examples/` に移動
-- README なり index なりで mini-commerce / harness の関係を 1 ページで示す
-
-**Phase 2 (review loop):**
+**Phase 2 (review loop):** 未着手
 - `review-decision.yaml` を読む CLI (e.g. `harness review process --run-id ...`)
 - `approved` / `rejected` / `changes_requested` に応じた state 遷移
 - cleanup CLI (worktree + branch + run dir 削除)

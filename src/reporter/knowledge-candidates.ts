@@ -87,7 +87,7 @@ export function buildKnowledgeCandidates(i: KnowledgeInputs): string {
 
   // No-change run: codex exited cleanly with zero diff. Often indicates
   // codex self-refused due to a prompt/policy conflict (see scenario 3 in
-  // docs/mvp-validation-report.md). Skip when codex itself failed.
+  // docs/reports/2026-05-20-mvp-validation-initial.md). Skip when codex itself failed.
   if (
     i.codexExitCode === 0 &&
     !i.codexTimedOut &&

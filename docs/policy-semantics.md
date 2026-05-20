@@ -59,8 +59,9 @@ matched by the bare `package.json` pattern. If you want every nested
   output will surface as untracked files and may be validated against
   domain `write` scope — usually producing a false `failed-policy-violation`.
 
-The MVP validation report (`docs/mvp-validation-report.md`, F1) documents
-the empirical case where `dist/**` failed to ignore `apps/orders/dist/out.js`.
+The MVP validation report (`docs/reports/2026-05-20-mvp-validation-initial.md`,
+F1) documents the empirical case where `dist/**` failed to ignore
+`apps/orders/dist/out.js`.
 
 ## Migrating an existing policy
 

@@ -1,0 +1,24 @@
+# Harness specs
+
+monorepo-harness の **現状仕様** をまとめたディレクトリ。
+
+実装の真は `src/` にあるが、頻繁に参照される構造（policy YAML format / RunStatus 遷移 / artifact レイアウト / CLI subcommand）を読み物として独立させたもの。新しい人が `src/` を読まずに「何ができて何ができないか」を 30 分で把握できることを目指す。
+
+## ToC
+
+- [`overview.md`](./overview.md) — ハーネスは何で、何ができて、何ができないか
+- [`policy.md`](./policy.md) — policy YAML の形式（global / repo / domain）と評価順
+- [`workflow.md`](./workflow.md) — `domain-coding` workflow の status machine と artifact レイアウト
+- [`cli.md`](./cli.md) — `harness run` / `harness lock list` / `harness lock release` の CLI リファレンス
+
+関連 docs:
+
+- [`docs/policy-semantics.md`](../policy-semantics.md) — minimatch root-anchored の落とし穴（policy 書く前に必読）
+- [`docs/examples/mini-commerce.md`](../examples/mini-commerce.md) — 検証用ダミー monorepo の構成
+- [`docs/reports/`](../reports/) — 実機検証ログと finding 履歴
+
+## 更新方針
+
+- src/ や policy の動作が変わったら、対応するファイルも同じコミットで更新
+- breaking change の場合は report (`docs/reports/`) も別途残す
+- 「TODO」「予定」は書かない（specs/ は現状のスナップショット。計画は `docs/superpowers/plans/`）
