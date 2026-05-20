@@ -20,6 +20,7 @@ import {
 } from "../core/review-processor.js";
 import { cleanupRun, CleanupGateError } from "../core/cleanup.js";
 import { listReviews, formatTable } from "../core/review-lister.js";
+import { prepareRerunFromReview, RerunGateError } from "../core/rerun.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -276,6 +277,88 @@ const cleanupCmd = program
     }
   });
 
+const rerunCmd = program
+  .command("rerun")
+  .description("spawn a new run from a changes_requested parent")
+  .requiredOption(
+    "--from-review <run-id>",
+    "parent run id (must be in changes_requested status)",
+  )
+  .action(async (raw: Record<string, unknown>) => {
+    const harnessRoot = getHarnessRoot();
+    const paths = harnessPaths(harnessRoot);
+    let prep;
+    try {
+      prep = await prepareRerunFromReview({
+        runsDir: paths.runsDir,
+        parentRunId: String(raw.fromReview),
+      });
+    } catch (e) {
+      if (e instanceof RerunGateError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
+
+    // Reuse the same code path as `harness run`: resolve policy, build the
+    // codex runner with its sandbox/approval/timeout, then call
+    // runDomainCoding with the rerun-derived goal + parentRunId.
+    const global = await loadGlobalPolicy(paths.globalPolicyPath);
+    const repo = await loadRepoPolicy(paths.repoPolicyPath(prep.repoId));
+    const resolved = resolvePolicy(global, repo, prep.domain);
+    const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
+    const runner = createCodexCliRunner({
+      codexBin,
+      sandbox: resolved.codex.sandbox,
+      ...(resolved.codex.approval !== undefined
+        ? { approvalPolicy: resolved.codex.approval }
+        : {}),
+      ...(resolved.codex.timeoutMs !== undefined
+        ? { timeoutMs: resolved.codex.timeoutMs }
+        : {}),
+    });
+
+    // The parent's repoPath isn't carried in RerunPrepResult — read it
+    // back from meta.json. (We could add it to the prep result, but
+    // keeping prep narrow avoids re-handing details that don't belong.)
+    const { readFile } = await import("node:fs/promises");
+    const parentMeta = JSON.parse(
+      await readFile(
+        join(paths.runsDir, prep.parentRunId, "meta.json"),
+        "utf8",
+      ),
+    ) as { repoPath: string };
+
+    const result = await runDomainCoding({
+      harnessRoot,
+      repoPath: parentMeta.repoPath,
+      repoId: prep.repoId,
+      domain: prep.domain,
+      goal: prep.goal,
+      baseBranch: prep.baseBranch,
+      codexRunner: runner,
+      parentRunId: prep.parentRunId,
+    });
+    const cmdTotal = result.commandResults.length;
+    const cmdOk = result.commandResults.filter(
+      (c) => c.exitCode === 0 && !c.timedOut,
+    ).length;
+    process.stdout.write(
+      `run=${result.runId} parentRunId=${prep.parentRunId} status=${result.status} safetyStatus=${result.safetyStatus} commands=${cmdOk}/${cmdTotal}\n`,
+    );
+    if (
+      result.status === "failed-policy-violation" ||
+      result.status === "failed-codex" ||
+      result.status === "failed-codex-timeout" ||
+      result.status === "failed-diff-collection" ||
+      result.status === "failed-command" ||
+      result.status === "failed-internal-error"
+    ) {
+      process.exit(1);
+    }
+  });
+
 program.parseAsync(process.argv).catch((e: unknown) => {
   process.stderr.write(`harness error: ${(e as Error).message}\n`);
   process.exit(2);
@@ -285,3 +368,4 @@ program.parseAsync(process.argv).catch((e: unknown) => {
 void runCmd;
 void reviewCmd;
 void cleanupCmd;
+void rerunCmd;

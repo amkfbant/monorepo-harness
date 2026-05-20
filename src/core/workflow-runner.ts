@@ -46,6 +46,11 @@ export interface RunDomainCodingOpts {
   keepWorktree?: boolean;
   codexRunner: CodexExecRunner;
   now?: Date;
+  /**
+   * Set when this run is a rerun spawned from a previous changes_requested
+   * run. Recorded in meta.json so reviewers can follow the chain.
+   */
+  parentRunId?: string;
 }
 
 export interface RunDomainCodingResult {
@@ -226,6 +231,9 @@ export async function runDomainCoding(
         baseSha,
         runBranch: branch,
         status: "running",
+        ...(opts.parentRunId !== undefined
+          ? { parentRunId: opts.parentRunId }
+          : {}),
         startedAt,
       },
     });

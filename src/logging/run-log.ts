@@ -70,6 +70,12 @@ export interface RunMeta {
    * operators can size-up runs without parsing artifacts.
    */
   changedFilesCount?: number;
+  /**
+   * runId of the run this one was spawned from via `harness rerun`. The
+   * source run is typically in 'changes_requested' state; recording the
+   * link lets reviewers audit retry chains without grep'ing prompts.
+   */
+  parentRunId?: string;
   startedAt: string;
   finishedAt?: string;
 }
