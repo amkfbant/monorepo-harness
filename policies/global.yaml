@@ -1,0 +1,21 @@
+defaults:
+  codex:
+    sandbox: workspace-write
+    approval: on-request
+
+always_deny_write:
+  - .git/**
+  - .github/**
+  - package.json
+  - pnpm-lock.yaml
+  - yarn.lock
+  - package-lock.json
+  - turbo.json
+  - nx.json
+  - tsconfig.base.json
+  - packages/shared/**
+  - .harness/**
+  - .policies/**
+
+commands:
+  default_allow: []

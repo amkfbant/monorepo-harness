@@ -1,0 +1,28 @@
+repo_id: sample-monorepo
+read:
+  - README.md
+  - docs/**
+  - package.json
+  - tsconfig.base.json
+  - packages/contracts/**
+  - packages/shared/**
+
+domains:
+  apps/user:
+    read:
+      - apps/user/**
+      - docs/**
+      - packages/contracts/**
+      - package.json
+      - tsconfig.base.json
+    write:
+      - apps/user/**
+    deny_write:
+      - apps/admin/**
+      - apps/foo/**
+      - packages/shared/**
+      - packages/contracts/**
+      - package.json
+      - pnpm-lock.yaml
+    commands:
+      allow: []

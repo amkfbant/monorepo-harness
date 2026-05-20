@@ -1,0 +1,4 @@
+name: domain-coding
+description: |
+  MVP domain-coding workflow. Steps are hardcoded in workflow-runner.ts;
+  this file exists for forward-compatibility.
