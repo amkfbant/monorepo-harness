@@ -21,11 +21,15 @@ export interface AcquireOpts {
   runId: string;
 }
 
-function domainLockName(domain: string): string {
+export function domainLockName(domain: string): string {
   return `${domain
     .replace(/[^a-zA-Z0-9]+/g, "-")
     .replace(/^-|-$/g, "")
     .toLowerCase()}.lock`;
+}
+
+export function domainLockPath(locksDir: string, domain: string): string {
+  return join(locksDir, domainLockName(domain));
 }
 
 export async function acquireDomainLock(
