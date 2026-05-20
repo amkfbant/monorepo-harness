@@ -1,0 +1,8 @@
+repo_id: sample-monorepo
+read:
+  - README.md
+domains:
+  apps/user:
+    read: [apps/user/**]
+    write: [apps/user/**]
+    deny_write: [packages/shared/**]
