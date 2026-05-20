@@ -158,6 +158,43 @@ harness lock release --domain apps/catalog --run-id run-20260520-apps-catalog-xx
 harness lock release --domain apps/catalog --force
 ```
 
+## `harness review list`
+
+すべての `runs/<id>/meta.json` を読み、テーブル表示する。default では `needs_review` のみ。
+
+### Synopsis
+
+```bash
+harness review list [--all]
+```
+
+### Options
+
+| Option | Required | 説明 |
+|--------|:--------:|------|
+| `--all` | — | `needs_review` 以外（approved / failed-* / cleaned 等）も含める |
+
+### Output
+
+タブパディングされた fixed-column table:
+
+```
+runId                                       domain        status        safety   changed  secrets  ignored  startedAt
+run-20260520-apps-catalog-mpe3vgb9e...     apps/catalog  needs_review  allowed  2        0        0        2026-05-20T13:36:41Z
+run-20260520-apps-orders-mpe3xod6d...       apps/orders   needs_review  allowed  3        0        0        2026-05-20T13:38:25Z
+```
+
+- 新しい順 (`startedAt` desc) でソート
+- runId は **truncate しない**（コピペで `--run-id` 引数に使える）
+- meta.json が読めない / parse 失敗の run は `unreadable: <reason>` 列で常に表示（`--all` の有無に関わらず）
+- 古い run で counts が無い場合は `?` 表示
+
+### Exit code
+
+- `0`: 常に（0 件 / unreadable 含む）
+
+`needs_review` の run が無い場合は `no runs` と stdout に出す。
+
 ## `harness review process`
 
 `runs/<runId>/review-decision.yaml` の `decision` を読み、`meta.status` を遷移させる。
@@ -282,7 +319,7 @@ codex 子プロセスに渡る env は **`DEFAULT_CODEX_ENV_ALLOWLIST`** で制�
 
 将来追加予定（MVP には無い）:
 
-- `harness review list` — `needs_review` 状態の run を一覧（処理待ちの可視化）
+- `harness rerun --from-review <run-id>` — `changes_requested` を受けて、required_changes を新 prompt に組み込んで新 run を起動（parentRunId を meta に記録）
 - `harness knowledge promote --run-id <id> --kind <kind>` — knowledge-candidate を確定 knowledge file に昇格
 - `harness review process --apply-changes-requested` — `required_changes` を次の run の prompt に組み込む retry loop
 

@@ -33,6 +33,7 @@ operator → `harness run --domain apps/catalog --goal "..."`
 - `harness review process --run-id <id>` で review-decision.yaml を読んで `meta.status` を `approved` / `changes_requested` / `rejected` に遷移、reviewer / reviewedAt を meta に記録、`review_processed` event を追記
 - path validation 通過後に `policy.allowedCommands`（例: `npm test` / `npm run lint`）を worktree 内で順次実行、失敗時は `failed-command` ステータス + `meta.commandResults` に結果保存
 - `harness cleanup --run-id <id> [--force]` で `approved` / `rejected` 後の worktree + branch を削除し meta を `cleaned` に遷移（`changes_requested` / `running` は強制でも残す、run dir は audit のため保持）
+- `harness review list [--all]` で全 run の meta.json を読み、`needs_review` (default) または全ステータス (`--all`) をテーブル表示。新しい順、`changedFilesCount / secretSuspectCount / ignoredUntrackedCount` が一目で見える
 
 ## できないこと（MVP の範囲外）
 
@@ -139,8 +140,14 @@ HARNESS_ROOT="$PWD" npm run --silent harness -- run ... --dry-run
 HARNESS_ROOT="$PWD" npm run --silent harness -- lock list
 HARNESS_ROOT="$PWD" npm run --silent harness -- lock release --domain <subdir>
 
+# needs_review な run を一覧（処理待ちの可視化）
+HARNESS_ROOT="$PWD" npm run --silent harness -- review list
+
 # review-decision.yaml を編集 → meta.status を反映
 HARNESS_ROOT="$PWD" npm run --silent harness -- review process --run-id <run-id>
+
+# レビュー完了後の cleanup
+HARNESS_ROOT="$PWD" npm run --silent harness -- cleanup --run-id <run-id>
 ```
 
 詳細は [`cli.md`](./cli.md)。

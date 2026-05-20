@@ -19,6 +19,7 @@ import {
   ReviewGateError,
 } from "../core/review-processor.js";
 import { cleanupRun, CleanupGateError } from "../core/cleanup.js";
+import { listReviews, formatTable } from "../core/review-lister.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -203,6 +204,18 @@ lockCmd
 const reviewCmd = program
   .command("review")
   .description("operate on review-decision.yaml under runs/<id>/");
+reviewCmd
+  .command("list")
+  .description("list runs (default: only needs_review)")
+  .option("--all", "include runs of every status", false)
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    const entries = await listReviews({
+      runsDir: paths.runsDir,
+      all: Boolean(raw.all),
+    });
+    process.stdout.write(formatTable(entries));
+  });
 reviewCmd
   .command("process")
   .description("apply review-decision.yaml to meta.status")
