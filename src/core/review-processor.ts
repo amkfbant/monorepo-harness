@@ -47,25 +47,43 @@ const DECISION_TO_STATUS: Record<
   rejected: "rejected",
 };
 
-// Hand-written sentinel for user-facing FS errors. ENOENT on meta.json or
+// runId must look like a generated id; this also blocks `--run-id ../foo`
+// from escaping runsDir. Same shape as the cleanup validator.
+const RUN_ID_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+// User-facing FS error codes. ENOENT etc. on meta.json or
 // review-decision.yaml almost always means "user typed wrong --run-id" or
 // "forgot to edit the file"; treat as gate error.
 function isUserFacingFsError(e: unknown): boolean {
   const code = (e as NodeJS.ErrnoException | undefined)?.code;
-  return code === "ENOENT" || code === "EISDIR";
+  return (
+    code === "ENOENT" ||
+    code === "EISDIR" ||
+    code === "ENOTDIR" ||
+    code === "EACCES" ||
+    code === "EPERM"
+  );
 }
 
 export async function processReviewDecision(
   opts: ProcessOpts,
 ): Promise<ProcessResult> {
+  // Block --run-id ../escape and other path-traversal attempts BEFORE we
+  // touch the filesystem. Same defense as cleanup.
+  if (!RUN_ID_RE.test(opts.runId)) {
+    throw new ReviewGateError(
+      `invalid runId: ${JSON.stringify(opts.runId)}`,
+    );
+  }
   const runDir = join(opts.runsDir, opts.runId);
   const metaPath = join(runDir, "meta.json");
   const decisionPath = join(runDir, "review-decision.yaml");
 
-  // Read + parse meta.json. Missing file or invalid JSON are user-fixable.
-  let meta: RunMeta;
+  // Read + parse meta.json. Missing file, permission denied, or invalid
+  // JSON are user-fixable.
+  let metaRaw: unknown;
   try {
-    meta = JSON.parse(await readFile(metaPath, "utf8")) as RunMeta;
+    metaRaw = JSON.parse(await readFile(metaPath, "utf8"));
   } catch (e) {
     if (isUserFacingFsError(e) || e instanceof SyntaxError) {
       throw new ReviewGateError(
@@ -73,6 +91,22 @@ export async function processReviewDecision(
       );
     }
     throw e;
+  }
+  if (!metaRaw || typeof metaRaw !== "object" || Array.isArray(metaRaw)) {
+    throw new ReviewGateError(
+      `meta.json for ${opts.runId} is not an object`,
+    );
+  }
+  const meta = metaRaw as RunMeta;
+  if (typeof meta.domain !== "string" || meta.domain === "") {
+    throw new ReviewGateError(
+      `meta.json for ${opts.runId} has invalid domain`,
+    );
+  }
+  if (typeof meta.status !== "string") {
+    throw new ReviewGateError(
+      `meta.json for ${opts.runId} has invalid status`,
+    );
   }
 
   // Load + validate review-decision.yaml. Any failure here (FS error,

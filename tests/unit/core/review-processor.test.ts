@@ -193,6 +193,38 @@ describe("processReviewDecision", () => {
     expect(ev?.reviewer).toBe("alice");
   });
 
+  it("rejects path-traversal runId (../)", async () => {
+    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
+    await expect(
+      processReviewDecision({ runsDir, runId: "../escape" }),
+    ).rejects.toThrow(/invalid runId/);
+  });
+
+  it("rejects malformed meta.json (not an object) as gate error", async () => {
+    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
+    const runDir = join(runsDir, "run-bad-meta-001");
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(join(runDir, "meta.json"), '"just a string"');
+    writeFileSync(join(runDir, "events.jsonl"), "");
+    writeFileSync(
+      join(runDir, "review-decision.yaml"),
+      [
+        "runId: run-bad-meta-001",
+        "domain: apps/user",
+        "decision: approved",
+        "required_changes: []",
+        "non_blocking_comments: []",
+        "out_of_scope_suggestions: []",
+        "reviewer: alice",
+        "reviewed_at: 2026-05-21T00:00:00Z",
+      ].join("\n"),
+    );
+    await expect(
+      processReviewDecision({ runsDir, runId: "run-bad-meta-001" }),
+    ).rejects.toThrow(/not an object/);
+  });
+
   it("returns a warning flag when reviewer is null", async () => {
     const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
     writeFakeRun(runsDir, "run-J", {}, {

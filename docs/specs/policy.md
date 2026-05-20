@@ -127,6 +127,10 @@ ResolvedPolicy {
   write: uniq(domain.write),
   denyWrite: uniq([...global.always_deny_write, ...domain.deny_write]),
   allowedCommands: uniq(domain.commands?.allow),
+  commandDefaults: {
+    timeoutMs: domain.commands?.defaults?.timeout_ms ?? 300_000,
+    // envAllowlist: domain.commands?.defaults?.env_allowlist  // when defined
+  },
   ignoreUntracked: uniq(global.ignore_untracked),
   codex: {
     sandbox: global.defaults?.codex?.sandbox ?? "workspace-write",

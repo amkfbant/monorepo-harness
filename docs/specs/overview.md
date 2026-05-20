@@ -69,6 +69,7 @@ interface ResolvedPolicy {
   write: string[];
   denyWrite: string[];          // global.always_deny_write ∪ domain.deny_write
   allowedCommands: string[];
+  commandDefaults: { timeoutMs: number; envAllowlist?: string[] };
   ignoreUntracked: string[];
   codex: { sandbox: SandboxMode; approval?: string; timeoutMs?: number };
   limits: { gitTimeoutMs: number };
