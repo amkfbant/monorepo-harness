@@ -81,7 +81,8 @@ import {
   formatSessionPlan,
   formatSessionSummary,
 } from "../core/session.js";
-import { exportDashboard } from "../core/dashboard.js";
+import { exportDashboard } from "../dashboard/export.js";
+import { DashboardSnapshotError } from "../dashboard/snapshot.js";
 import { RUN_STATUSES } from "../logging/run-log.js";
 import {
   prepareRerunFromReview,
@@ -1375,28 +1376,44 @@ backlogCmd
 
 const dashboardCmd = program
   .command("dashboard")
-  .description("static, read-only HTML dashboard");
+  .description("static, read-only HTML dashboard (DB-backed — Phase 6)");
 dashboardCmd
   .command("export")
-  .description("write docs/dashboard/index.html (no server, read-only)")
+  .description("write docs/dashboard/index.html from the DB read model")
   .option("--out <path>", "output path (default docs/dashboard/index.html)")
-  .action(async (raw: Record<string, unknown>) => {
+  .option("--project <id>", "scope the dashboard to one project")
+  .option("--repo-id <id>", "scope the dashboard to one repo")
+  .option("--no-auto-import", "do not refresh the DB from files first")
+  .action((raw: Record<string, unknown>) => {
     const harnessRoot = getHarnessRoot();
-    const paths = harnessPaths(harnessRoot);
     const outPath =
       raw.out !== undefined
         ? String(raw.out)
         : join(harnessRoot, "docs", "dashboard", "index.html");
-    const r = await exportDashboard({
-      runsDir: paths.runsDir,
-      workspacesDir: paths.workspacesDir,
-      indexDbPath: paths.indexDbPath,
-      knowledgeDir: join(harnessRoot, "docs", "knowledge"),
-      outPath,
-    });
-    process.stdout.write(
-      `dashboard exported: ${r.outPath} (${r.bytes} bytes)\n`,
-    );
+    const filters = {
+      ...(raw.project !== undefined ? { projectId: String(raw.project) } : {}),
+      ...(raw.repoId !== undefined ? { repoId: String(raw.repoId) } : {}),
+    };
+    try {
+      const r = exportDashboard({
+        harnessRoot,
+        outPath,
+        filters,
+        // commander maps --no-auto-import to raw.autoImport === false
+        autoImport: raw.autoImport !== false,
+      });
+      const imported = raw.autoImport !== false ? " (auto-imported from files)" : "";
+      process.stdout.write(
+        `dashboard exported: ${r.outPath} (${r.bytes} bytes)${imported}\n` +
+          `consistency: ${r.snapshot.consistencyStatus}\n`,
+      );
+    } catch (e) {
+      if (e instanceof DashboardSnapshotError) {
+        process.stderr.write(`harness error: ${e.message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
   });
 
 const sessionCmd = program
