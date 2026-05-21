@@ -216,6 +216,31 @@ locks/<repoId>--<domain-slug>-<hash>.lock  # active run の lock; runId / pid / 
 
 通常の `failed-*` 終了（policy-violation / codex / codex-timeout / diff-collection）は **`run_completed` イベントに最終 status を載せる** だけで、`run_failed` は emit されない。`run_failed` は **post-`createRunLog` で unexpected exception が catch された場合のみ** 1 行追加される（その後 `failed-internal-error` で finalize して rethrow）。
 
+## Phase 6: DB read model
+
+> **Phase 6 実装中（target spec）。** 本節は Phase 6 の到達目標。確定仕様は
+> [`db.md`](./db.md) と実装後の `src/db/` を参照。
+
+Phase 6 で DB（[`db.md`](./db.md)）を導入する。**workflow 自体は変わらない** —
+`runDomainCoding` は引き続き `runs/<runId>/` の file へ書き、file が write-side の
+source of truth。
+
+DB は `harness db import --from-files` で file artifact から構築する read model。
+`harness.sqlite` を消しても `runs/` 等の file から import で再構築できる（依存方向は
+file → DB の一方向）。ダッシュボード（[`dashboard.md`](./dashboard.md)）や
+`metrics` / `inbox` の集計が DB query を使う。
+
+source-of-truth transition:
+
+```txt
+Phase 6: files = write-source,  DB = read-source（importer で構築）
+Phase 7: DB = write-source,     files = compatibility export
+Phase 8: DB complete,           file scan = migration-only
+```
+
+Phase 6 のスコープは read-side のみ。`runDomainCoding` 等が DB へ直接書く write
+path 化は Phase 7 以降。
+
 ## knowledge-candidates.yaml の 4 signal
 
 `src/reporter/knowledge-candidates.ts`:
