@@ -27,6 +27,7 @@ import {
   buildCodexPrompt,
   CODER_PROMPT_TEMPLATE,
 } from "../codex/prompt-builder.js";
+import { computeReviewedFingerprint } from "./reviewed-fingerprint.js";
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import { buildSummary } from "../reporter/summary.js";
 import { buildKnowledgeCandidates } from "../reporter/knowledge-candidates.js";
@@ -531,6 +532,10 @@ async function runDomainCodingInner(
         deniedReport,
       );
     }
+    // Reviewed file set + content fingerprint over the final (post-command
+    // if commands ran) worktree. `harness pr create` re-checks this to
+    // refuse a PR if a reviewed file drifted after approval.
+    let reviewed: { paths: string[]; fingerprint: string } | undefined;
     if (diff.ok) {
       await log.emit({
         type: "diff_collected",
@@ -542,6 +547,17 @@ async function runDomainCodingInner(
         // ran, the diff was re-collected against the post-command worktree.
         stage: commandsRan ? "post-command" : "post-codex",
       });
+      const reviewedPaths = [
+        ...diff.trackedChangedPaths,
+        ...untrackedAllowed,
+      ];
+      reviewed = {
+        paths: reviewedPaths,
+        fingerprint: await computeReviewedFingerprint(
+          wt.path,
+          reviewedPaths,
+        ),
+      };
     }
 
     // Status priority (evaluated against POST-command worktree if commands ran):
@@ -661,6 +677,7 @@ async function runDomainCodingInner(
       secretSuspectCount,
       commandResults,
       changedFilesCount,
+      ...(reviewed ? { reviewed } : {}),
       finishedAt: new Date().toISOString(),
     });
     await log.emit({

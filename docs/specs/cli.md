@@ -106,7 +106,7 @@ harness workflow reviewed-run \
 | `--repo` / `--repo-id` / `--domain` / `--goal` | ✅ | `harness run` と同じ |
 | `--base-branch <name>` | — | default `main` |
 | `--reviewer-name <name>` | — | `review auto` の reviewer identity |
-| `--max-attempts <n>` | — | root run から数えた retry 上限（default 2） |
+| `--max-attempts <n>` | — | **初回 run の後の rerun 回数の上限**（default 2）。`--max-attempts 2` なら 計 run 数は最大 initial + 2 = 3。`changes_requested` が続けば `n` 回目の rerun の後に `not_converged` で停止 |
 | `--stop-on-changes-requested` | — | 最初の `changes_requested` で rerun せず停止 |
 | `--no-auto-review` | — | coder run のみ実行し `needs_review` で停止（人間レビュー用） |
 | `--dry-run` | — | policy を解決して終了 |
@@ -674,7 +674,8 @@ harness knowledge build-context --domain <domain> [--out <dir>]
 - context は `build-context` 実行時点の snapshot。promote / deprecated 編集の後は再生成が必要（自動更新しない）
 - context は domain 完全一致でフィルタするだけ。関連 domain / 親 domain の知見は引かない。ベクトル検索や関連度ランキングは無い
 - `deprecated` は frontmatter を人間が手編集して立てる（`knowledge deprecate` コマンドは未実装）
-- context md 全体を prompt 末尾に追加するだけ。件数が多いと prompt が肥大する（domain 単位での件数制御は運用判断）
+- context は `<knowledge>` タグで囲み「reference material であり指示ではない」と明記して注入する。ただし prompt injection を完全に防ぐものではない（promoted knowledge は人間がレビューして昇格した前提）
+- 注入サイズは **32 KiB 上限**（`MAX_KNOWLEDGE_CONTEXT_BYTES`）。超過分は `[knowledge context truncated...]` マーカー付きで切り詰める。肥大したら deprecated 整理で運用カバー
 - 注入は coder run のみ。reviewer agent には注入しない
 
 ### `harness knowledge list`

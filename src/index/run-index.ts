@@ -32,6 +32,8 @@ const SCHEMA_STATEMENTS = [
     reviewer TEXT,
     reviewed_at TEXT,
     parent_run_id TEXT,
+    root_run_id TEXT,
+    rerun_attempt INTEGER,
     command_ok INTEGER,
     command_total INTEGER,
     changed_files_count INTEGER,
@@ -58,6 +60,8 @@ interface RunRow {
   reviewer: string | null;
   reviewed_at: string | null;
   parent_run_id: string | null;
+  root_run_id: string | null;
+  rerun_attempt: number | null;
   command_ok: number | null;
   command_total: number | null;
   changed_files_count: number | null;
@@ -94,13 +98,13 @@ export function rebuildIndex(
     for (const ddl of SCHEMA_STATEMENTS) db.prepare(ddl).run();
     const insertRun = db.prepare(
       `INSERT INTO runs (run_id, domain, status, safety_status, reviewer,
-        reviewed_at, parent_run_id, command_ok, command_total,
-        changed_files_count, secret_suspect_count, ignored_untracked_count,
-        started_at, finished_at)
+        reviewed_at, parent_run_id, root_run_id, rerun_attempt, command_ok,
+        command_total, changed_files_count, secret_suspect_count,
+        ignored_untracked_count, started_at, finished_at)
        VALUES (@run_id, @domain, @status, @safety_status, @reviewer,
-        @reviewed_at, @parent_run_id, @command_ok, @command_total,
-        @changed_files_count, @secret_suspect_count, @ignored_untracked_count,
-        @started_at, @finished_at)`,
+        @reviewed_at, @parent_run_id, @root_run_id, @rerun_attempt, @command_ok,
+        @command_total, @changed_files_count, @secret_suspect_count,
+        @ignored_untracked_count, @started_at, @finished_at)`,
     );
     const insertInvalid = db.prepare(
       `INSERT INTO invalid_runs (run_id, error) VALUES (?, ?)`,
@@ -243,6 +247,8 @@ function toRow(e: ReviewListEntry): RunRow {
     reviewer: e.reviewer,
     reviewed_at: e.reviewedAt,
     parent_run_id: e.parentRunId,
+    root_run_id: e.rootRunId,
+    rerun_attempt: e.rerunAttempt,
     command_ok: e.commandSummary ? e.commandSummary.ok : null,
     command_total: e.commandSummary ? e.commandSummary.total : null,
     changed_files_count: e.changedFilesCount,
@@ -262,6 +268,8 @@ function fromRow(r: RunRow): ReviewListEntry {
     reviewer: r.reviewer,
     reviewedAt: r.reviewed_at,
     parentRunId: r.parent_run_id,
+    rootRunId: r.root_run_id,
+    rerunAttempt: r.rerun_attempt,
     commandSummary:
       r.command_total === null
         ? null

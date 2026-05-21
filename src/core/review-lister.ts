@@ -25,6 +25,10 @@ export interface ReviewListEntry {
   reviewer: string | null;
   reviewedAt: string | null;
   parentRunId: string | null;
+  /** rerun chain root (Phase 2-7); null on an original run */
+  rootRunId: string | null;
+  /** rerun attempt count from the chain root; null on an original run */
+  rerunAttempt: number | null;
   /** ok/total for policy.allowedCommands; null when the run ran no commands */
   commandSummary: CommandSummary | null;
   changedFilesCount: number | null;
@@ -261,6 +265,10 @@ async function loadEntry(
     reviewedAt: typeof meta.reviewedAt === "string" ? meta.reviewedAt : null,
     parentRunId:
       typeof meta.parentRunId === "string" ? meta.parentRunId : null,
+    rootRunId:
+      typeof meta.rootRunId === "string" ? meta.rootRunId : null,
+    rerunAttempt:
+      typeof meta.rerunAttempt === "number" ? meta.rerunAttempt : null,
     commandSummary,
     changedFilesCount:
       typeof meta.changedFilesCount === "number"

@@ -314,6 +314,8 @@ if changes_requested かつ attempt < maxAttempts:
   changes_requested かつ attempt==maxAttempts → finalStatus=not_converged
 ```
 
+`--max-attempts n` は **初回 run の後の rerun 回数の上限**。`--max-attempts 2` なら attempt 0（初回）+ attempt 1, 2（rerun）の最大 3 run。attempt n まで `changes_requested` が続けば `not_converged` で停止。
+
 `not_converged` は **workflow result の値**であり、個別 run の `meta.status` は `changes_requested` のまま（新 RunStatus は導入しない）。`--no-auto-review` は coder run のみで `needs_review` 停止、`--stop-on-changes-requested` は最初の `changes_requested` で停止。
 
 workflow artifact は root run（attempt 0 の run）の dir に置く: `workflow.json` / `workflow-summary.md`。各 attempt の `parentRunId` / `rootRunId` / `rerunAttempt` は `rerun` と同じ規則で維持される。

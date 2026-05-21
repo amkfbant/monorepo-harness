@@ -8,6 +8,7 @@ import {
   type PrPublisher,
   type PrPublishInputs,
 } from "../../src/core/pr-creator.js";
+import { computeReviewedFingerprint } from "../../src/core/reviewed-fingerprint.js";
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" });
@@ -24,7 +25,7 @@ interface Fixture {
  * a run worktree on the run branch with an uncommitted change, and a
  * meta.json with the given status.
  */
-function setup(status: string): Fixture {
+async function setup(status: string): Promise<Fixture> {
   const root = mkdtempSync(join(tmpdir(), "harness-pr-"));
   mkdirSync(join(root, "runs"), { recursive: true });
   mkdirSync(join(root, "workspaces"), { recursive: true });
@@ -54,6 +55,10 @@ function setup(status: string): Fixture {
 
   const runDir = join(root, "runs", runId);
   mkdirSync(runDir, { recursive: true });
+  // meta.reviewed carries the reviewed paths + a content fingerprint over
+  // the worktree, computed the same way the workflow-runner would.
+  const reviewedPaths = ["apps/x/f.ts"];
+  const fingerprint = await computeReviewedFingerprint(worktree, reviewedPaths);
   writeFileSync(
     join(runDir, "meta.json"),
     JSON.stringify(
@@ -65,24 +70,14 @@ function setup(status: string): Fixture {
         runBranch,
         reviewer: "knkn",
         reviewedAt: "2026-05-21T00:00:00Z",
+        reviewed: { paths: reviewedPaths, fingerprint },
         startedAt: "2026-05-21T00:00:00Z",
       },
       null,
       2,
     ),
   );
-  // the run's diff_collected event names the reviewed paths
-  writeFileSync(
-    join(runDir, "events.jsonl"),
-    JSON.stringify({
-      type: "diff_collected",
-      tracked: ["apps/x/f.ts"],
-      untrackedAllowed: [],
-      untrackedDenied: [],
-      ignored: [],
-      stage: "post-codex",
-    }) + "\n",
-  );
+  writeFileSync(join(runDir, "events.jsonl"), "");
   writeFileSync(
     join(runDir, "codex-prompt.md"),
     "x\n\nGoal:\nadd a v constant\n\nTarget domain:\napps/x\n",
@@ -104,7 +99,7 @@ function fakePublisher(): PrPublisher & { calls: PrPublishInputs[] } {
 
 describe("createPullRequest", () => {
   it("E3-6-1: turns an approved run into a PR", async () => {
-    const f = setup("approved");
+    const f = await setup("approved");
     const pub = fakePublisher();
     const r = await createPullRequest({
       runsDir: join(f.root, "runs"),
@@ -144,7 +139,7 @@ describe("createPullRequest", () => {
   });
 
   it("E3-6-2: refuses a needs_review run", async () => {
-    const f = setup("needs_review");
+    const f = await setup("needs_review");
     await expect(
       createPullRequest({
         runsDir: join(f.root, "runs"),
@@ -159,7 +154,7 @@ describe("createPullRequest", () => {
   });
 
   it("E3-6-3: refuses a failed-policy-violation run", async () => {
-    const f = setup("failed-policy-violation");
+    const f = await setup("failed-policy-violation");
     await expect(
       createPullRequest({
         runsDir: join(f.root, "runs"),
@@ -174,7 +169,7 @@ describe("createPullRequest", () => {
   });
 
   it("refuses a changes_requested run", async () => {
-    const f = setup("changes_requested");
+    const f = await setup("changes_requested");
     await expect(
       createPullRequest({
         runsDir: join(f.root, "runs"),
@@ -189,7 +184,7 @@ describe("createPullRequest", () => {
   });
 
   it("refuses to create a second PR for the same run", async () => {
-    const f = setup("approved");
+    const f = await setup("approved");
     const opts = {
       runsDir: join(f.root, "runs"),
       workspacesDir: join(f.root, "workspaces"),
@@ -206,7 +201,7 @@ describe("createPullRequest", () => {
   });
 
   it("commits only reviewed paths, not ignore_untracked files", async () => {
-    const f = setup("approved");
+    const f = await setup("approved");
     // an ignored build artifact sits in the worktree but is NOT in the
     // run's diff_collected reviewed paths — it must stay out of the PR.
     const worktree = join(f.root, "workspaces", f.runId, "repo");
@@ -230,6 +225,27 @@ describe("createPullRequest", () => {
     ]).trim();
     expect(committed).toMatch(/apps\/x\/f\.ts/);
     expect(committed).not.toMatch(/dist\/bundle\.js/);
+  });
+
+  it("P1: refuses when a reviewed file drifted after approval", async () => {
+    const f = await setup("approved");
+    // someone edits a reviewed path AFTER the run was approved
+    const worktree = join(f.root, "workspaces", f.runId, "repo");
+    writeFileSync(
+      join(worktree, "apps/x/f.ts"),
+      "export const v = 999; // drifted\n",
+    );
+    await expect(
+      createPullRequest({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+        locksDir: join(f.root, "locks"),
+        runId: f.runId,
+        base: "main",
+        draft: true,
+        publisher: fakePublisher(),
+      }),
+    ).rejects.toThrow(/drifted since the run was reviewed/);
   });
 
   it("rejects an invalid runId", async () => {

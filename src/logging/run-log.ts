@@ -108,6 +108,12 @@ export interface RunMeta {
   prUrl?: string;
   /** GitHub PR number — set by `harness pr create` (Phase 3-6). */
   prNumber?: number;
+  /**
+   * The reviewed file set and a content fingerprint over it, captured at
+   * run time. `harness pr create` recomputes the fingerprint to detect a
+   * worktree that drifted after the run was approved (Phase 3-6 P1).
+   */
+  reviewed?: { paths: string[]; fingerprint: string };
   startedAt: string;
   finishedAt?: string;
 }
@@ -128,6 +134,7 @@ export interface RunLog {
     secretSuspectCount: number;
     commandResults: NonNullable<RunMeta["commandResults"]>;
     changedFilesCount: number;
+    reviewed?: RunMeta["reviewed"];
     finishedAt: string;
   }): Promise<void>;
 }
@@ -170,6 +177,7 @@ export async function createRunLog(opts: {
       secretSuspectCount,
       commandResults,
       changedFilesCount,
+      reviewed,
       finishedAt,
     }) {
       await updateMeta({
@@ -179,6 +187,7 @@ export async function createRunLog(opts: {
         secretSuspectCount,
         commandResults,
         changedFilesCount,
+        ...(reviewed ? { reviewed } : {}),
         finishedAt,
       });
     },

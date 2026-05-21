@@ -367,7 +367,8 @@ workflowCmd
   .option("--reviewer-name <name>", "reviewer identity for review auto")
   .option(
     "--max-attempts <n>",
-    `retry cap measured from the root run (default ${DEFAULT_MAX_ATTEMPTS})`,
+    `max rerun attempts after the initial run (default ${DEFAULT_MAX_ATTEMPTS}); ` +
+      `total runs may be initial + n`,
   )
   .option(
     "--stop-on-changes-requested",
@@ -843,7 +844,8 @@ const rerunCmd = program
   )
   .option(
     "--max-attempts <n>",
-    `retry cap measured from the chain root (default ${DEFAULT_MAX_ATTEMPTS})`,
+    `max rerun attempts from the chain root (default ${DEFAULT_MAX_ATTEMPTS}); ` +
+      `the n-th rerun is refused once rerunAttempt would exceed n`,
   )
   .action(async (raw: Record<string, unknown>) => {
     const harnessRoot = getHarnessRoot();

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { RunMeta } from "../logging/run-log.js";
 import { gitCli } from "../git/git-cli.js";
 import { acquireDomainLock } from "../workspace/domain-lock.js";
+import { computeReviewedFingerprint } from "./reviewed-fingerprint.js";
 
 export class PrGateError extends Error {
   constructor(message: string) {
@@ -135,17 +136,45 @@ async function createUnderLock(
   }
   const git = { cwd: worktree, timeoutMs: opts.gitTimeoutMs ?? 30_000 };
 
-  // 1. Determine the reviewed paths from the run's diff_collected event.
-  //    Only these are committed — ignore_untracked files (dist/** etc.)
-  //    are in the worktree but were NOT validated, so they stay out.
-  const reviewedPaths = await reviewedPathsOf(runDir, opts.runId);
+  // 1. The reviewed file set + content fingerprint come from meta.json
+  //    (written at run time) — the authoritative record, not events.jsonl.
+  const reviewed = meta.reviewed;
+  if (
+    !reviewed ||
+    !Array.isArray(reviewed.paths) ||
+    typeof reviewed.fingerprint !== "string"
+  ) {
+    throw new PrGateError(
+      `run ${opts.runId} has no reviewed fingerprint in meta.json; cannot verify the worktree (re-run on a current harness)`,
+    );
+  }
+  const reviewedPaths = reviewed.paths.filter(
+    (p): p is string => typeof p === "string" && p !== "",
+  );
   if (reviewedPaths.length === 0) {
     throw new PrGateError(
       `run ${opts.runId} has no reviewed file changes; nothing to PR`,
     );
   }
 
-  // 2. Stage ONLY the reviewed paths and commit onto the run branch.
+  // 2. Content drift check: the worktree's reviewed files must still match
+  //    what was approved. An edit to a reviewed path after approval must
+  //    NOT slip silently into the PR.
+  const currentFingerprint = await computeReviewedFingerprint(
+    worktree,
+    reviewedPaths,
+  );
+  if (currentFingerprint !== reviewed.fingerprint) {
+    throw new PrGateError(
+      `run ${opts.runId}: the worktree drifted since the run was reviewed — ` +
+        `a reviewed file no longer matches the approved content. ` +
+        `Refusing to create a PR; re-review the run.`,
+    );
+  }
+
+  // 3. Stage ONLY the reviewed paths and commit onto the run branch.
+  //    ignore_untracked files (dist/** etc.) are in the worktree but were
+  //    NOT validated, so they stay out.
   await runGit(["add", "--", ...reviewedPaths], git);
   const staged = (
     await runGit(["diff", "--cached", "--name-only"], git)
@@ -154,7 +183,7 @@ async function createUnderLock(
     await runGit(["commit", "-m", `harness: ${opts.runId}`], git);
   }
 
-  // 3. push the run branch to the target repo's origin.
+  // 4. push the run branch to the target repo's origin.
   const push = await gitCli(["push", "-u", "origin", head], git);
   if (push.exitCode !== 0) {
     throw new PrGateError(
@@ -162,7 +191,7 @@ async function createUnderLock(
     );
   }
 
-  // 4. open the PR (publisher should be idempotent on the head branch).
+  // 5. open the PR (publisher should be idempotent on the head branch).
   const title =
     opts.title ?? `harness ${opts.runId} (${meta.domain ?? "unknown"})`;
   const body = await buildPrBody(runDir, meta, opts.runId);
@@ -175,7 +204,7 @@ async function createUnderLock(
     draft: opts.draft,
   });
 
-  // 5. record prUrl / prNumber + emit pr_created. meta is re-read so we
+  // 6. record prUrl / prNumber + emit pr_created. meta is re-read so we
   //    never clobber a field a concurrent writer set — but we hold the
   //    lock, so this read is current.
   const current = await readMeta(metaPath, opts.runId);
@@ -204,58 +233,6 @@ async function createUnderLock(
     prNumber: published.number,
     head,
   };
-}
-
-/**
- * The set of paths that were validated for this run — tracked changes
- * plus allowed untracked files — read from the run's last diff_collected
- * event. ignore_untracked files are deliberately NOT included.
- */
-async function reviewedPathsOf(
-  runDir: string,
-  runId: string,
-): Promise<string[]> {
-  let lines: string[];
-  try {
-    lines = (await readFile(join(runDir, "events.jsonl"), "utf8"))
-      .trim()
-      .split("\n")
-      .filter((l) => l !== "");
-  } catch (e) {
-    throw new PrGateError(
-      `events.jsonl for ${runId} is unreadable: ${(e as Error).message}`,
-    );
-  }
-  interface DiffCollectedEvent {
-    tracked?: unknown;
-    untrackedAllowed?: unknown;
-  }
-  let diffCollected: DiffCollectedEvent | null = null;
-  for (const l of lines) {
-    try {
-      const ev = JSON.parse(l) as { type?: string } & DiffCollectedEvent;
-      if (ev.type === "diff_collected") {
-        diffCollected = ev;
-      }
-    } catch {
-      // skip malformed event lines
-    }
-  }
-  if (!diffCollected) {
-    throw new PrGateError(
-      `run ${runId} has no diff_collected event; cannot determine reviewed paths`,
-    );
-  }
-  const tracked = Array.isArray(diffCollected.tracked)
-    ? (diffCollected.tracked as unknown[])
-    : [];
-  const allowed = Array.isArray(diffCollected.untrackedAllowed)
-    ? (diffCollected.untrackedAllowed as unknown[])
-    : [];
-  const paths = [...tracked, ...allowed].filter(
-    (p): p is string => typeof p === "string" && p !== "",
-  );
-  return [...new Set(paths)];
 }
 
 async function runGit(

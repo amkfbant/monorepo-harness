@@ -1,4 +1,13 @@
-import { readFile, writeFile, mkdir, rm, readdir, stat } from "node:fs/promises";
+import {
+  readFile,
+  writeFile,
+  mkdir,
+  rm,
+  readdir,
+  stat,
+  lstat,
+  readlink,
+} from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -139,29 +148,39 @@ export async function evaluateReviewer(
   return { runId: opts.runId, samples, decisionCounts, dangerFlags };
 }
 
-interface FileSnap {
-  size: number;
-  mtimeMs: number;
-}
+/**
+ * A snapshot entry. Files / directories / symlinks are all recorded so a
+ * misconfigured reviewer agent that creates a symlink or an empty dir is
+ * still detected (parity with the Phase 2-6 reviewer-agent snapshot).
+ */
+type SnapEntry =
+  | { type: "file"; size: number; mtimeMs: number }
+  | { type: "dir" }
+  | { type: "symlink"; target: string };
 
 /**
- * Snapshot every file under runDir EXCEPT those in review-evaluations/
- * (the evaluator's own output), keyed by path relative to runDir.
+ * Snapshot every entry under runDir EXCEPT those in review-evaluations/
+ * (the evaluator's own output), keyed by path relative to runDir. Walks
+ * with lstat so symlinks are recorded as symlinks (never followed).
  */
 async function snapshotExcludingEvals(
   runDir: string,
-): Promise<Map<string, FileSnap>> {
-  const out = new Map<string, FileSnap>();
+): Promise<Map<string, SnapEntry>> {
+  const out = new Map<string, SnapEntry>();
   async function walk(dir: string, prefix: string): Promise<void> {
     const entries = await readdir(dir, { withFileTypes: true });
     for (const e of entries) {
       const rel = prefix ? `${prefix}/${e.name}` : e.name;
       if (rel === "review-evaluations") continue;
-      if (e.isDirectory()) {
-        await walk(join(dir, e.name), rel);
+      const full = join(dir, e.name);
+      if (e.isSymbolicLink()) {
+        out.set(rel, { type: "symlink", target: await readlink(full) });
+      } else if (e.isDirectory()) {
+        out.set(rel, { type: "dir" });
+        await walk(full, rel);
       } else if (e.isFile()) {
-        const st = await stat(join(dir, e.name));
-        out.set(rel, { size: st.size, mtimeMs: st.mtimeMs });
+        const st = await lstat(full);
+        out.set(rel, { type: "file", size: st.size, mtimeMs: st.mtimeMs });
       }
     }
   }
@@ -171,26 +190,36 @@ async function snapshotExcludingEvals(
 
 /** Throw if the run was mutated between two snapshots. */
 function verifyUnchanged(
-  before: Map<string, FileSnap>,
-  after: Map<string, FileSnap>,
+  before: Map<string, SnapEntry>,
+  after: Map<string, SnapEntry>,
 ): void {
+  const same = (a: SnapEntry, b: SnapEntry): boolean => {
+    if (a.type !== b.type) return false;
+    if (a.type === "file" && b.type === "file") {
+      return a.size === b.size && a.mtimeMs === b.mtimeMs;
+    }
+    if (a.type === "symlink" && b.type === "symlink") {
+      return a.target === b.target;
+    }
+    return true; // both dir
+  };
   for (const [p, b] of before) {
     const a = after.get(p);
     if (!a) {
       throw new ReviewEvaluateError(
-        `evaluation must not modify the run — artifact removed: ${p}`,
+        `evaluation must not modify the run — entry removed: ${p}`,
       );
     }
-    if (a.size !== b.size || a.mtimeMs !== b.mtimeMs) {
+    if (!same(a, b)) {
       throw new ReviewEvaluateError(
-        `evaluation must not modify the run — artifact changed: ${p}`,
+        `evaluation must not modify the run — entry changed: ${p}`,
       );
     }
   }
   for (const p of after.keys()) {
     if (!before.has(p)) {
       throw new ReviewEvaluateError(
-        `evaluation must not modify the run — unexpected file: ${p}`,
+        `evaluation must not modify the run — unexpected entry: ${p}`,
       );
     }
   }
