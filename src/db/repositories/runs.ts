@@ -398,16 +398,33 @@ export class RunRepository {
       if (input.operationId !== undefined) {
         const prior = findOperation(this.db, input.operationId);
         if (prior !== undefined) {
+          // a recorded id only short-circuits when it is THIS operation
+          // replaying. The same id recorded against a different run /
+          // command means the caller reused an operation id — a bug we
+          // must surface, not silently swallow the new write.
+          if (
+            prior.scopeType !== "run" ||
+            prior.scopeId !== input.runId ||
+            prior.command !== input.eventType
+          ) {
+            throw new DbError(
+              `operation id '${input.operationId}' was already used for ` +
+                `${prior.command} on ${prior.scopeType} '${prior.scopeId}'`,
+            );
+          }
           return { changed: false, status: this.requireRunStatus(input.runId) };
         }
       }
       const current = this.requireRunStatus(input.runId);
       const occurredAt = input.occurredAt ?? new Date().toISOString();
       const placeholders = input.expectedStatuses.map(() => "?").join(", ");
+      // the write also marks the run `export_status = 'dirty'`: the DB has
+      // moved ahead of its exported files until the command re-exports.
       const info = this.db
         .prepare(
           `UPDATE runs
-             SET status = ?, db_revision = db_revision + 1, updated_at = ?
+             SET status = ?, db_revision = db_revision + 1, updated_at = ?,
+                 export_status = 'dirty', last_export_error = NULL
            WHERE run_id = ? AND status IN (${placeholders})`,
         )
         .run(input.nextStatus, occurredAt, input.runId, ...input.expectedStatuses);

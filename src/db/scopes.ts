@@ -37,8 +37,12 @@ const SCOPE_TABLE: Record<
 };
 
 /**
- * Increment a row's `db_revision` and return the new value. Throws when
- * the row does not exist (a write to a missing row is always a bug).
+ * Increment a row's `db_revision` and return the new value. The same
+ * UPDATE marks the row `export_status = 'dirty'`: the DB has changed and
+ * its files have not been re-exported yet, so a crash between the commit
+ * and the export leaves an honest "needs export" marker rather than a
+ * stale `synced`. Throws when the row does not exist (a write to a
+ * missing row is always a bug).
  */
 export function bumpRevision(
   db: Database.Database,
@@ -48,7 +52,9 @@ export function bumpRevision(
   const { table, idColumn } = SCOPE_TABLE[scope];
   const info = db
     .prepare(
-      `UPDATE ${table} SET db_revision = db_revision + 1
+      `UPDATE ${table}
+         SET db_revision = db_revision + 1,
+             export_status = 'dirty', last_export_error = NULL
        WHERE ${idColumn} = ?`,
     )
     .run(id);

@@ -59,6 +59,14 @@ function revision(db: Database.Database, runId: string): number {
   ).r;
 }
 
+function exportStatus(db: Database.Database, runId: string): string {
+  return (
+    db
+      .prepare("SELECT export_status AS s FROM runs WHERE run_id = ?")
+      .get(runId) as { s: string }
+  ).s;
+}
+
 describe("RunRepository.updateRunStatus", () => {
   let db: Database.Database;
   beforeEach(() => {
@@ -79,6 +87,8 @@ describe("RunRepository.updateRunStatus", () => {
     expect(repo.getRun("run-a")?.status).toBe("approved");
     expect(revision(db, "run-a")).toBe(2); // 1 → bumped
     expect(eventCount(db, "run-a")).toBe(1);
+    // the write moved the DB ahead of its files
+    expect(exportStatus(db, "run-a")).toBe("dirty");
     const ev = db
       .prepare("SELECT type, payload_json FROM run_events WHERE run_id = 'run-a'")
       .get() as { type: string; payload_json: string };
@@ -143,6 +153,63 @@ describe("RunRepository.updateRunStatus", () => {
     expect(second).toEqual({ changed: false, status: "approved" });
     expect(eventCount(db, "run-c")).toBe(1); // no second event
     expect(revision(db, "run-c")).toBe(revAfterFirst); // no second bump
+  });
+
+  it("rejects an operation id reused for a different run", () => {
+    insertRun(db, "run-d", "needs_review");
+    insertRun(db, "run-e", "needs_review");
+    const repo = new RunRepository(db);
+    repo.updateRunStatus({
+      runId: "run-d",
+      expectedStatuses: ["needs_review"],
+      nextStatus: "approved",
+      eventType: "review_approved",
+      operationId: "op-shared",
+    });
+    // same id, different run — a reused operation id, not a replay.
+    expect(() =>
+      repo.updateRunStatus({
+        runId: "run-e",
+        expectedStatuses: ["needs_review"],
+        nextStatus: "approved",
+        eventType: "review_approved",
+        operationId: "op-shared",
+      }),
+    ).toThrow(DbError);
+    // run-e was not silently skipped — it stayed in needs_review
+    expect(repo.getRun("run-e")?.status).toBe("needs_review");
+  });
+
+  it("appends events at MAX(seq)+1 after a pre-existing event", () => {
+    insertRun(db, "run-f", "needs_review");
+    // a run created with one lifecycle event already at seq 0
+    db.prepare(
+      `INSERT INTO run_events (run_id, seq, type, occurred_at, payload_json)
+       VALUES ('run-f', 0, 'run_started', '2026-05-22T00:00:00Z', '{}')`,
+    ).run();
+    const repo = new RunRepository(db);
+    repo.updateRunStatus({
+      runId: "run-f",
+      expectedStatuses: ["needs_review"],
+      nextStatus: "approved",
+      eventType: "review_approved",
+    });
+    const seqs = (
+      db
+        .prepare("SELECT seq FROM run_events WHERE run_id = 'run-f' ORDER BY seq")
+        .all() as { seq: number }[]
+    ).map((r) => r.seq);
+    expect(seqs).toEqual([0, 1]);
+  });
+
+  it("rejects a duplicate (run_id, seq) event row", () => {
+    insertRun(db, "run-g", "needs_review");
+    const insert = db.prepare(
+      `INSERT INTO run_events (run_id, seq, type, occurred_at, payload_json)
+       VALUES ('run-g', 0, 'run_started', '2026-05-22T00:00:00Z', '{}')`,
+    );
+    insert.run();
+    expect(() => insert.run()).toThrow(/UNIQUE/);
   });
 });
 
