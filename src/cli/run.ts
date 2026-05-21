@@ -37,6 +37,7 @@ import {
   runReviewerAgent,
   ReviewerAgentGateError,
 } from "../core/reviewer-agent.js";
+import { runReviewedRunWorkflow } from "../core/reviewed-run-workflow.js";
 import {
   promoteKnowledge,
   rejectKnowledge,
@@ -109,6 +110,86 @@ async function cmdRun(o: RunOpts): Promise<void> {
     result.status === "failed-command" ||
     result.status === "failed-internal-error"
   ) {
+    process.exit(1);
+  }
+}
+
+interface ReviewedRunOpts {
+  repo: string;
+  repoId: string;
+  domain: string;
+  goal: string;
+  baseBranch: string;
+  reviewerName?: string;
+  maxAttempts: number;
+  noAutoReview?: boolean;
+  stopOnChangesRequested?: boolean;
+  dryRun?: boolean;
+}
+
+async function cmdReviewedRun(o: ReviewedRunOpts): Promise<void> {
+  const harnessRoot = getHarnessRoot();
+  const paths = harnessPaths(harnessRoot);
+  const global = await loadGlobalPolicy(paths.globalPolicyPath);
+  const repo = await loadRepoPolicy(paths.repoPolicyPath(o.repoId));
+  const resolved = resolvePolicy(global, repo, o.domain);
+
+  if (o.dryRun) {
+    process.stdout.write(
+      `reviewed-run workflow for ${resolved.domain} (maxAttempts=${o.maxAttempts}):\n` +
+        `${JSON.stringify(resolved, null, 2)}\n`,
+    );
+    return;
+  }
+
+  const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
+  const coderRunner = createCodexCliRunner({
+    codexBin,
+    sandbox: resolved.codex.sandbox,
+    ...(resolved.codex.approval !== undefined
+      ? { approvalPolicy: resolved.codex.approval }
+      : {}),
+    ...(resolved.codex.timeoutMs !== undefined
+      ? { timeoutMs: resolved.codex.timeoutMs }
+      : {}),
+  });
+  // the reviewer agent always runs in a separate read-only sandbox.
+  const reviewerRunner = createCodexCliRunner({
+    codexBin,
+    sandbox: "read-only",
+  });
+
+  const result = await runReviewedRunWorkflow({
+    harnessRoot,
+    runsDir: paths.runsDir,
+    locksDir: paths.locksDir,
+    repoPath: o.repo,
+    repoId: o.repoId,
+    domain: o.domain,
+    goal: o.goal,
+    baseBranch: o.baseBranch,
+    coderRunner,
+    reviewerRunner,
+    maxAttempts: o.maxAttempts,
+    ...(o.reviewerName !== undefined ? { reviewerName: o.reviewerName } : {}),
+    ...(o.noAutoReview !== undefined ? { noAutoReview: o.noAutoReview } : {}),
+    ...(o.stopOnChangesRequested !== undefined
+      ? { stopOnChangesRequested: o.stopOnChangesRequested }
+      : {}),
+  });
+
+  process.stdout.write(
+    `workflow=reviewed-run rootRunId=${result.rootRunId} ` +
+      `attempts=${result.attempts.length} finalStatus=${result.finalStatus}\n`,
+  );
+  for (const a of result.attempts) {
+    process.stdout.write(
+      `  attempt ${a.attempt}: ${a.runId} ${a.status}` +
+        `${a.reviewer ? ` (reviewer=${a.reviewer})` : ""}\n`,
+    );
+  }
+  // exit 1 on any non-success terminal state.
+  if (result.finalStatus !== "approved") {
     process.exit(1);
   }
 }
@@ -199,6 +280,63 @@ const runCmd = program
       goal: String(raw.goal),
       baseBranch: String(raw.baseBranch),
       keepWorktree: Boolean(raw.keepWorktree),
+      dryRun: Boolean(raw.dryRun),
+    });
+  });
+
+const workflowCmd = program
+  .command("workflow")
+  .description("multi-step workflows that sequence run / review / rerun");
+workflowCmd
+  .command("reviewed-run")
+  .description(
+    "run → review auto → review process → (rerun on changes_requested)*",
+  )
+  .requiredOption("--repo <path>", "target repo path")
+  .requiredOption("--repo-id <id>", "repo identifier for policy resolution")
+  .requiredOption("--domain <domain>", "target domain (e.g. apps/user)")
+  .requiredOption("--goal <text>", "task goal passed to Codex")
+  .option("--base-branch <name>", "base branch", "main")
+  .option("--reviewer-name <name>", "reviewer identity for review auto")
+  .option(
+    "--max-attempts <n>",
+    `retry cap measured from the root run (default ${DEFAULT_MAX_ATTEMPTS})`,
+  )
+  .option(
+    "--stop-on-changes-requested",
+    "stop at the first changes_requested instead of rerunning",
+    false,
+  )
+  .option(
+    "--no-auto-review",
+    "run the coder only, then stop at needs_review for a human",
+  )
+  .option("--dry-run", "resolve policy and exit", false)
+  .action(async (raw: Record<string, unknown>) => {
+    let maxAttempts = DEFAULT_MAX_ATTEMPTS;
+    if (raw.maxAttempts !== undefined) {
+      const n = Number(raw.maxAttempts);
+      if (!Number.isInteger(n) || n < 1) {
+        process.stderr.write(
+          `harness error: --max-attempts must be a positive integer (got ${JSON.stringify(String(raw.maxAttempts))})\n`,
+        );
+        process.exit(1);
+      }
+      maxAttempts = n;
+    }
+    // commander maps --no-auto-review to raw.autoReview === false
+    await cmdReviewedRun({
+      repo: String(raw.repo),
+      repoId: String(raw.repoId),
+      domain: String(raw.domain),
+      goal: String(raw.goal),
+      baseBranch: String(raw.baseBranch),
+      maxAttempts,
+      ...(raw.reviewerName !== undefined
+        ? { reviewerName: String(raw.reviewerName) }
+        : {}),
+      noAutoReview: raw.autoReview === false,
+      stopOnChangesRequested: Boolean(raw.stopOnChangesRequested),
       dryRun: Boolean(raw.dryRun),
     });
   });

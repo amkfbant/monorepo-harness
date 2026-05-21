@@ -323,34 +323,35 @@ export async function runReviewerAgent(
     prompt: PROMPT_PREAMBLE,
     logPaths: { stdout: stdoutPath, stderr: stderrPath },
   });
-  // Tamper check FIRST — before the timeout/exitCode gates. A sandbox
-  // escape that mutates an artifact and THEN exits non-zero / times out
-  // would otherwise slip past detection.
-  await verifyArtifactsUnchanged(runDir, snapshot);
-
-  if (codexResult.timedOut) {
-    throw new ReviewerAgentGateError(
-      `reviewer codex timed out for ${inputs.runId}`,
-    );
-  }
-  if (codexResult.exitCode !== 0) {
-    throw new ReviewerAgentGateError(
-      `reviewer codex exited ${codexResult.exitCode} for ${inputs.runId}; see ${stderrPath}`,
-    );
-  }
-
   const reviewer = inputs.reviewerName ?? "codex-reviewer";
   const reviewedAt = (inputs.now ?? new Date()).toISOString();
-  if (typeof meta.domain !== "string") {
-    throw new ReviewerAgentGateError(`meta.json domain is not a string`);
-  }
 
-  // Turn the codex output into a valid decision. Any failure here is an
-  // "output error": write review-auto-error.json (unless dry-run) so the
-  // operator can inspect what went wrong, then rethrow. review-decision.yaml
-  // is NOT touched on this path.
+  // Everything after codex runs is wrapped: ANY ReviewerAgentGateError —
+  // artifact tampering, codex timeout, non-zero exit, or unparseable /
+  // invalid output — writes review-auto-error.json (unless dry-run) so the
+  // operator (and `harness workflow reviewed-run`) can inspect what went
+  // wrong. review-decision.yaml is NOT touched on this path.
   let decision: ReviewDecisionFile;
   try {
+    // Tamper check FIRST — before the timeout/exitCode gates. A sandbox
+    // escape that mutates an artifact and THEN exits non-zero / times out
+    // would otherwise slip past detection.
+    await verifyArtifactsUnchanged(runDir, snapshot);
+
+    if (codexResult.timedOut) {
+      throw new ReviewerAgentGateError(
+        `reviewer codex timed out for ${inputs.runId}`,
+      );
+    }
+    if (codexResult.exitCode !== 0) {
+      throw new ReviewerAgentGateError(
+        `reviewer codex exited ${codexResult.exitCode} for ${inputs.runId}; see ${stderrPath}`,
+      );
+    }
+    if (typeof meta.domain !== "string") {
+      throw new ReviewerAgentGateError(`meta.json domain is not a string`);
+    }
+
     const rawOutput = await readFile(stdoutPath, "utf8");
     const yamlText = extractYamlBlock(rawOutput);
     let parsed: PartialDecision;
@@ -374,27 +375,25 @@ export async function runReviewerAgent(
       reviewedAt,
     );
   } catch (e) {
-    if (e instanceof ReviewerAgentGateError) {
-      if (!inputs.dryRun) {
-        await writeFile(
-          errorArtifactPath,
-          `${JSON.stringify(
-            {
-              type: "review-auto-error",
-              runId: inputs.runId,
-              reviewer,
-              failedAt: reviewedAt,
-              reason: e.message,
-              rawOutputPath: "reviewer-agent.out.log",
-              codexExitCode: codexResult.exitCode,
-              timedOut: codexResult.timedOut,
-            },
-            null,
-            2,
-          )}\n`,
-          "utf8",
-        );
-      }
+    if (e instanceof ReviewerAgentGateError && !inputs.dryRun) {
+      await writeFile(
+        errorArtifactPath,
+        `${JSON.stringify(
+          {
+            type: "review-auto-error",
+            runId: inputs.runId,
+            reviewer,
+            failedAt: reviewedAt,
+            reason: e.message,
+            rawOutputPath: "reviewer-agent.out.log",
+            codexExitCode: codexResult.exitCode,
+            timedOut: codexResult.timedOut,
+          },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
     }
     throw e;
   }

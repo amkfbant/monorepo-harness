@@ -57,6 +57,24 @@ export interface RunDomainCodingOpts {
   rerunAttempt?: number;
 }
 
+/**
+ * Thrown by runDomainCoding when an unexpected exception finalized the run
+ * as `failed-internal-error`. The run dir DOES exist and meta.status is
+ * already written — this error just carries the runId so an orchestrator
+ * (e.g. `harness workflow reviewed-run`) can record the failed attempt
+ * instead of aborting. `message` is the underlying error's message.
+ */
+export class RunFinalizedError extends Error {
+  readonly runId: string;
+  readonly status: RunStatus;
+  constructor(runId: string, status: RunStatus, cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "RunFinalizedError";
+    this.runId = runId;
+    this.status = status;
+  }
+}
+
 export interface RunDomainCodingResult {
   runId: string;
   status: RunStatus;
@@ -277,7 +295,10 @@ export async function runDomainCoding(
           finishedAt: new Date().toISOString(),
         })
         .catch(() => {});
-      throw e;
+      // Rethrow as a typed error carrying the (now finalized) runId so an
+      // orchestrator can record the failed attempt. `harness run` still
+      // surfaces it as an exception (message preserved) → exit 2.
+      throw new RunFinalizedError(runId, "failed-internal-error", e);
     }
   } finally {
     await lock.release();

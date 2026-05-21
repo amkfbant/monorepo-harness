@@ -82,6 +82,64 @@ resolved policy for apps/catalog:
 
 policy ファイルの編集後に確認するのが典型用途。
 
+## `harness workflow reviewed-run`
+
+`run → review auto → review process → (changes_requested なら rerun)*` を bounded workflow として 1 コマンドで束ねる（Phase 3-1）。各ステップは既存の `run` / `review auto` / `review process` / `rerun` を順に呼ぶだけで、状態遷移は引き続き harness が行う。
+
+### Synopsis
+
+```bash
+harness workflow reviewed-run \
+  --repo <path> --repo-id <id> --domain <domain> --goal <text> \
+  [--base-branch <name>] [--reviewer-name <name>] [--max-attempts <n>] \
+  [--stop-on-changes-requested] [--no-auto-review] [--dry-run]
+```
+
+### Options
+
+| Option | Required | 説明 |
+|--------|:--------:|------|
+| `--repo` / `--repo-id` / `--domain` / `--goal` | ✅ | `harness run` と同じ |
+| `--base-branch <name>` | — | default `main` |
+| `--reviewer-name <name>` | — | `review auto` の reviewer identity |
+| `--max-attempts <n>` | — | root run から数えた retry 上限（default 2） |
+| `--stop-on-changes-requested` | — | 最初の `changes_requested` で rerun せず停止 |
+| `--no-auto-review` | — | coder run のみ実行し `needs_review` で停止（人間レビュー用） |
+| `--dry-run` | — | policy を解決して終了 |
+
+### 動作
+
+1. attempt 0: `run` → `needs_review`（失敗系なら即停止）
+2. `review auto`（read-only sandbox の codex）→ `review-decision.yaml`
+3. `review process` → `approved` / `changes_requested` / `rejected`
+4. `changes_requested` かつ attempt < `--max-attempts` なら `rerun` して 2 へ。`parentRunId` / `rootRunId` / `rerunAttempt` は維持される
+5. 停止条件で finalStatus を確定
+
+### finalStatus
+
+| finalStatus | 意味 |
+|-------------|------|
+| `approved` | 成功 |
+| `rejected` | reviewer が reject |
+| `changes_requested` | `--stop-on-changes-requested` で停止 |
+| `not_converged` | `--max-attempts` まで `changes_requested` が続いた |
+| `needs_review` | `--no-auto-review` で停止 |
+| `review-auto-failed` | `review auto` が unusable な output（`review-auto-error.json` が残る） |
+| `failed-*` | coder run が失敗（rerun しない） |
+
+### artifact
+
+root run の dir に workflow-level artifact を残す:
+
+- `runs/<rootRunId>/workflow.json` — `{ workflow, rootRunId, attempts[], finalStatus, maxAttempts }`
+- `runs/<rootRunId>/workflow-summary.md` — attempt 一覧の表
+
+### Exit code
+
+- `0`: finalStatus が `approved`
+- `1`: それ以外の finalStatus（`not_converged` / `rejected` / `failed-*` / `review-auto-failed` / `--max-attempts` 不正値 等）
+- `2`: 予期しない例外
+
 ## `harness lock list`
 
 active な domain lockfile を全表示。

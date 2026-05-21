@@ -32,6 +32,7 @@ docs/
 | `harness rerun chain --run-id <id>` | 再実行系譜（root → 子孫）をツリー表示 |
 | `harness knowledge list / reject / promote` | 候補をレビュー（status 表示 / reject 記録 / `--reviewer` 付き昇格 + 重複制御） |
 | `harness cleanup --run-id <id> [--scope …]` | worktree / branch / run dir を scope 単位で削除 |
+| `harness workflow reviewed-run …` | run → review auto → review process → rerun を bounded loop で束ねる（Phase 3-1） |
 
 `policy.commands.allow` の structured form（`{id, cmd, args, timeout_ms, env}`）と `commands.defaults` も Phase 2 で追加（[`specs/policy.md`](./specs/policy.md)）。各機能の実機デモ結果は `reports/2026-05-21-phase2-*.md`。
 

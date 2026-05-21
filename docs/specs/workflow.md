@@ -291,3 +291,29 @@ timeout 到達 / エラーの扱い:
 - それ以外の git 操作（resolveBaseSha / createWorktree）の throw、または createRunLog 後の unexpected exception → inner try/catch が `failed-internal-error` で finalize して rethrow
 
 createRunLog **以前** の throw（policy load / lock acquire / baseSha 解決 / worktree 作成手前で異常）は finalize できないので、harness は通常の throw として伝播させる（outer finally で lock release は走る）。
+
+## workflow: reviewed-run（Phase 3-1）
+
+`harness workflow reviewed-run` は `domain-coding` workflow を retry loop として束ねる上位 workflow。新しい状態遷移は導入せず、既存の `run` / `review auto` / `review process` / `rerun` を順に呼ぶだけ。
+
+```txt
+attempt 0:
+  runDomainCoding → needs_review（失敗系なら finalStatus=failed-* で停止）
+  runReviewerAgent（review auto）→ review-decision.yaml
+    invalid output なら finalStatus=review-auto-failed で停止
+  processReviewDecision（review process）→ approved / changes_requested / rejected
+
+if changes_requested かつ attempt < maxAttempts:
+  prepareRerunFromReview + runDomainCoding → attempt+1（rerun）
+  以降 review auto / review process を繰り返す
+
+停止:
+  approved              → finalStatus=approved（exit 0）
+  rejected              → finalStatus=rejected
+  failed-*              → finalStatus=failed-*（rerun しない）
+  changes_requested かつ attempt==maxAttempts → finalStatus=not_converged
+```
+
+`not_converged` は **workflow result の値**であり、個別 run の `meta.status` は `changes_requested` のまま（新 RunStatus は導入しない）。`--no-auto-review` は coder run のみで `needs_review` 停止、`--stop-on-changes-requested` は最初の `changes_requested` で停止。
+
+workflow artifact は root run（attempt 0 の run）の dir に置く: `workflow.json` / `workflow-summary.md`。各 attempt の `parentRunId` / `rootRunId` / `rerunAttempt` は `rerun` と同じ規則で維持される。
