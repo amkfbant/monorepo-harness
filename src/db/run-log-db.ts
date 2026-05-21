@@ -168,42 +168,50 @@ function writeCommandResults(
 export function createDbRunLog(opts: CreateDbRunLogOpts): RunLog {
   const { db, runsDir, runId } = opts;
   const runDir = join(runsDir, runId);
-  mkdirSync(runDir, { recursive: true });
+  // exclusive create on the run dir: a run-id collision must fail loudly,
+  // not silently reuse a directory with stale artifact bodies.
+  mkdirSync(runsDir, { recursive: true });
+  mkdirSync(runDir, { recursive: false });
 
   let meta: RunMeta = opts.meta;
   insertRunRow(db, runId, meta);
   exportRun(db, runId, { runsDir });
 
+  /** apply a DB write in one transaction, then export the files. */
+  function commitThenExport(write: () => void): void {
+    db.transaction(write).immediate();
+    exportRun(db, runId, { runsDir });
+  }
+
   function persist(next: RunMeta): void {
     meta = next;
-    updateRunRow(db, runId, meta);
-    bumpRevision(db, "run", runId);
-    exportRun(db, runId, { runsDir });
+    commitThenExport(() => {
+      updateRunRow(db, runId, meta);
+      bumpRevision(db, "run", runId);
+    });
   }
 
   return {
     runDir,
-    emit(event: RunEvent): Promise<void> {
-      appendEvent(db, runId, event);
-      bumpRevision(db, "run", runId);
-      exportRun(db, runId, { runsDir });
-      return Promise.resolve();
+    // `async` so any synchronous DB throw surfaces as a Promise rejection
+    // (callers `.catch()` these on the failure path).
+    async emit(event: RunEvent): Promise<void> {
+      commitThenExport(() => {
+        appendEvent(db, runId, event);
+        bumpRevision(db, "run", runId);
+      });
     },
-    setStatus(status): Promise<void> {
+    async setStatus(status): Promise<void> {
       persist({ ...meta, status });
-      return Promise.resolve();
     },
-    setSafetyStatus(safetyStatus): Promise<void> {
+    async setSafetyStatus(safetyStatus): Promise<void> {
       persist({ ...meta, safetyStatus });
-      return Promise.resolve();
     },
-    setReviewerInfo({ reviewer, reviewedAt }): Promise<void> {
+    async setReviewerInfo({ reviewer, reviewedAt }): Promise<void> {
       persist({ ...meta, reviewer, reviewedAt });
-      return Promise.resolve();
     },
-    finalize(p): Promise<void> {
-      writeCommandResults(db, runId, p.commandResults);
-      persist({
+    async finalize(p): Promise<void> {
+      meta = {
         ...meta,
         status: p.status,
         safetyStatus: p.safetyStatus,
@@ -213,8 +221,12 @@ export function createDbRunLog(opts: CreateDbRunLogOpts): RunLog {
         changedFilesCount: p.changedFilesCount,
         ...(p.reviewed ? { reviewed: p.reviewed } : {}),
         finishedAt: p.finishedAt,
+      };
+      commitThenExport(() => {
+        writeCommandResults(db, runId, p.commandResults);
+        updateRunRow(db, runId, meta);
+        bumpRevision(db, "run", runId);
       });
-      return Promise.resolve();
     },
   };
 }
