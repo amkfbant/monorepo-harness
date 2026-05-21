@@ -30,7 +30,7 @@ docs/
 | `harness review process --run-id <id>` | `review-decision.yaml` を適用し status 遷移 |
 | `harness rerun --from-review <id> [--max-attempts <n>]` | `changes_requested` から `required_changes` を組み込んだ新 run（収束制御つき） |
 | `harness rerun chain --run-id <id>` | 再実行系譜（root → 子孫）をツリー表示 |
-| `harness knowledge promote --run-id <id>` | `knowledge-candidates.yaml` を `docs/knowledge/` に展開 |
+| `harness knowledge list / reject / promote` | 候補をレビュー（status 表示 / reject 記録 / `--reviewer` 付き昇格 + 重複制御） |
 | `harness cleanup --run-id <id> [--scope …]` | worktree / branch / run dir を scope 単位で削除 |
 
 `policy.commands.allow` の structured form（`{id, cmd, args, timeout_ms, env}`）と `commands.defaults` も Phase 2-4 で追加（[`specs/policy.md`](./specs/policy.md)）。実機デモ結果は [`reports/2026-05-21-phase2-4-feature-demo.md`](./reports/2026-05-21-phase2-4-feature-demo.md)。

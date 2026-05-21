@@ -39,6 +39,8 @@ import {
 } from "../core/reviewer-agent.js";
 import {
   promoteKnowledge,
+  rejectKnowledge,
+  listKnowledge,
   KnowledgePromoteGateError,
 } from "../core/knowledge-promoter.js";
 
@@ -565,42 +567,128 @@ rerunCmd
     }
   });
 
+function knowledgeDirOf(
+  harnessRoot: string,
+  raw: Record<string, unknown>,
+): string {
+  return raw.out !== undefined
+    ? String(raw.out)
+    : join(harnessRoot, "docs", "knowledge");
+}
+
 const knowledgeCmd = program
   .command("knowledge")
-  .description("promote knowledge-candidates to permanent docs");
+  .description("review and promote knowledge-candidates");
 knowledgeCmd
-  .command("promote")
-  .description(
-    "write each knowledge-candidate as docs/knowledge/<kind>/<runId>-<idx>-<slug>.md",
-  )
+  .command("list")
+  .description("list a run's knowledge candidates with their status")
   .requiredOption("--run-id <id>", "target run identifier")
-  .option(
-    "--kind <kind>",
-    "if set, only candidates with this kind are promoted",
-  )
-  .option(
-    "--out <dir>",
-    "destination root (default: HARNESS_ROOT/docs/knowledge)",
-  )
+  .option("--kind <kind>", "only candidates with this kind")
+  .option("--domain <domain>", "only candidates with this domain")
+  .option("--out <dir>", "knowledge root (default: HARNESS_ROOT/docs/knowledge)")
   .action(async (raw: Record<string, unknown>) => {
     const harnessRoot = getHarnessRoot();
     const paths = harnessPaths(harnessRoot);
-    const knowledgeDir =
-      raw.out !== undefined
-        ? String(raw.out)
-        : join(harnessRoot, "docs", "knowledge");
+    try {
+      const entries = await listKnowledge({
+        runsDir: paths.runsDir,
+        knowledgeDir: knowledgeDirOf(harnessRoot, raw),
+        runId: String(raw.runId),
+        ...(raw.kind !== undefined ? { kind: String(raw.kind) } : {}),
+        ...(raw.domain !== undefined ? { domain: String(raw.domain) } : {}),
+      });
+      if (entries.length === 0) {
+        process.stdout.write("no candidates\n");
+        return;
+      }
+      for (const e of entries) {
+        const extra =
+          e.status === "rejected" ? ` (by ${e.rejectedBy})` : "";
+        process.stdout.write(
+          `[${e.index}] ${e.status}${extra}  kind=${e.kind} domain=${e.domain} confidence=${e.confidence}\n` +
+            `    ${e.title}\n`,
+        );
+      }
+    } catch (e) {
+      if (e instanceof KnowledgePromoteGateError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
+  });
+knowledgeCmd
+  .command("reject")
+  .description("record a reject decision for a candidate (sidecar)")
+  .requiredOption("--run-id <id>", "target run identifier")
+  .requiredOption("--index <n>", "candidate index to reject")
+  .requiredOption("--reviewer <name>", "reviewer handle")
+  .option("--reason <text>", "why the candidate is rejected", "")
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    const index = Number(raw.index);
+    if (!Number.isInteger(index) || index < 0) {
+      process.stderr.write(
+        `harness error: --index must be a non-negative integer (got ${JSON.stringify(String(raw.index))})\n`,
+      );
+      process.exit(1);
+    }
+    try {
+      const r = await rejectKnowledge({
+        runsDir: paths.runsDir,
+        runId: String(raw.runId),
+        index,
+        reviewer: String(raw.reviewer),
+        reason: String(raw.reason),
+      });
+      process.stdout.write(
+        `run=${r.runId} rejected candidate ${r.index} by ${r.reviewer}\n`,
+      );
+    } catch (e) {
+      if (e instanceof KnowledgePromoteGateError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
+  });
+knowledgeCmd
+  .command("promote")
+  .description(
+    "write each candidate as docs/knowledge/<kind>/<runId>-<idx>-<slug>.md",
+  )
+  .requiredOption("--run-id <id>", "target run identifier")
+  .requiredOption("--reviewer <name>", "reviewer handle (stamped into each md)")
+  .option("--kind <kind>", "only candidates with this kind are promoted")
+  .option(
+    "--allow-duplicate",
+    "create a md even if an identical content hash already exists",
+    false,
+  )
+  .option("--out <dir>", "knowledge root (default: HARNESS_ROOT/docs/knowledge)")
+  .action(async (raw: Record<string, unknown>) => {
+    const harnessRoot = getHarnessRoot();
+    const paths = harnessPaths(harnessRoot);
+    const knowledgeDir = knowledgeDirOf(harnessRoot, raw);
     try {
       const r = await promoteKnowledge({
         runsDir: paths.runsDir,
         knowledgeDir,
         runId: String(raw.runId),
+        reviewer: String(raw.reviewer),
+        allowDuplicate: Boolean(raw.allowDuplicate),
         ...(raw.kind !== undefined ? { kind: String(raw.kind) } : {}),
       });
       process.stdout.write(
-        `run=${r.runId} promoted=${r.promoted.length} skipped=${r.skipped} out=${knowledgeDir}\n`,
+        `run=${r.runId} promoted=${r.promoted.length} skipped=${r.skipped.length} out=${knowledgeDir}\n`,
       );
       for (const p of r.promoted) {
-        process.stdout.write(`  ${p.kind}: ${p.path}\n`);
+        process.stdout.write(`  promoted ${p.kind}: ${p.path}\n`);
+      }
+      for (const s of r.skipped) {
+        process.stdout.write(
+          `  skipped [${s.index}] ${s.reason}${s.detail ? ` — ${s.detail}` : ""}\n`,
+        );
       }
     } catch (e) {
       if (e instanceof KnowledgePromoteGateError) {

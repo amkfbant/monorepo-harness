@@ -36,12 +36,12 @@ operator → `harness run --domain apps/catalog --goal "..."`
 - `harness review list` で全 run の meta.json を読みテーブル/JSON 表示。default は review queue（`needs_review` + `changes_requested`）、`--all` / `--status` / `--domain` / `--limit` / `--json` で絞り込み。壊れた run dir は invalid として分離（stderr 警告 or `invalidRuns[]`）
 - `harness rerun --from-review <parent-run-id> [--max-attempts <n>]` で `changes_requested` の親から `required_changes` を組み込んだ新 run を起動（`meta.parentRunId` / `rootRunId` / `rerunAttempt` で監査チェーン、`--max-attempts` 超過で拒否）。`harness rerun chain --run-id <id>` で再実行系譜をツリー表示
 - `harness review auto --run-id <id>` で reviewer agent（read-only sandbox の codex）が artifacts を読んで `review-decision.yaml` を生成（適用は別途 `review process`）
-- `harness knowledge promote --run-id <id>` で `knowledge-candidates.yaml` を `docs/knowledge/<kind>/*.md` に展開
+- `harness knowledge list / reject / promote` で候補をレビュー — status 一覧、reject 決定の sidecar 記録、`--reviewer` 必須の昇格（YAML frontmatter + (run,index)/content-hash 重複制御）。`knowledge-candidates.yaml` は不変
 
 ## できないこと（MVP の範囲外）
 
 - `review process` → `rerun` → `review` の完全自動ループ（各ステップは手動トリガ）
-- knowledge-candidates の confirmed ストア統合（`knowledge promote` は md 書き出しまで）
+- knowledge md の confirmed ストア統合 / LLM への自動注入（`knowledge promote` は md 書き出しまで）
 - multi-agent orchestration（writer agent / reviewer agent の同時並走など）
 - 複数 target repo を 1 run で扱う
 - 非ファイル系の検査（HTTP リクエストログ、外部 API 呼び出し履歴 等）
@@ -158,8 +158,9 @@ HARNESS_ROOT="$PWD" npm run --silent harness -- rerun --from-review <run-id>
 # レビュー完了後の cleanup
 HARNESS_ROOT="$PWD" npm run --silent harness -- cleanup --run-id <run-id> --scope workspace
 
-# knowledge-candidates を docs/knowledge/ に展開
-HARNESS_ROOT="$PWD" npm run --silent harness -- knowledge promote --run-id <run-id>
+# knowledge 候補をレビュー → 採用したものを docs/knowledge/ に展開
+HARNESS_ROOT="$PWD" npm run --silent harness -- knowledge list --run-id <run-id>
+HARNESS_ROOT="$PWD" npm run --silent harness -- knowledge promote --run-id <run-id> --reviewer <name>
 ```
 
 詳細は [`cli.md`](./cli.md)。

@@ -485,35 +485,94 @@ codex output が invalid だった場合:
 - `1`: invalid runId / status != needs_review / 非 `pending` decision を `--allow-overwrite` なしで上書き試行 / codex 非ゼロ or timeout / YAML パース不能 / 不明 decision / artifact 改竄検出
 - `2`: 予期しない例外
 
-## `harness knowledge promote`
+## `harness knowledge`
 
-`knowledge-candidates.yaml` の各候補を `docs/knowledge/<kind>/` 配下の md ファイルに展開する。
+run が生成した `knowledge-candidates.yaml` の候補をレビューし、採用したものを `docs/knowledge/<kind>/` に昇格する。**誰が・なぜ・どの候補を**昇格／却下したかを記録する。
 
-### Synopsis
+データモデル:
+
+- `runs/<runId>/knowledge-candidates.yaml` — run が生成した **immutable な観測ログ**（harness は一切書き換えない）
+- `runs/<runId>/knowledge-decisions.yaml` — reviewer の **reject 決定 sidecar**（`knowledge reject` が書く）
+- `docs/knowledge/<kind>/*.md` — reviewer が **採用した知見**（`knowledge promote` が書く）
+
+### `harness knowledge list`
+
+候補を governance status 付きで一覧する。
 
 ```bash
-harness knowledge promote --run-id <id> [--kind <kind>] [--out <dir>]
+harness knowledge list --run-id <id> [--kind <kind>] [--domain <domain>] [--out <dir>]
 ```
 
-### Options
+各候補の status:
+- `rejected` — `knowledge-decisions.yaml` に reject 決定がある
+- `promoted` — `docs/knowledge/<kind>/<runId>-<idx>-*.md` が存在する
+- `candidate` — どちらでもない
+
+### `harness knowledge reject`
+
+候補に reject 決定を記録する（`knowledge-candidates.yaml` は不変、決定は sidecar に）。
+
+```bash
+harness knowledge reject --run-id <id> --index <n> --reviewer <name> [--reason <text>]
+```
+
+`knowledge-decisions.yaml` に `{ index, decision: rejected, reviewer, reason, decidedAt }` を追記し、`events.jsonl` に `knowledge_rejected` を残す。reject された候補は以降の `promote` で skip される。
+
+### `harness knowledge promote`
+
+候補を `<out>/<kind>/<runId>-<idx>-<slug>.md` に展開する。
+
+```bash
+harness knowledge promote --run-id <id> --reviewer <name> [--kind <kind>] [--allow-duplicate] [--out <dir>]
+```
 
 | Option | Required | 説明 |
 |--------|:--------:|------|
 | `--run-id <id>` | ✅ | 対象 run |
-| `--kind <kind>` | — | 指定すると、その kind の候補だけ promote |
+| `--reviewer <name>` | ✅ | 各 md の frontmatter `promoted_by` に刻まれる |
+| `--kind <kind>` | — | その kind の候補だけ promote |
+| `--allow-duplicate` | — | 同一 content hash が既存でも md を作る |
 | `--out <dir>` | — | 出力 root（default `HARNESS_ROOT/docs/knowledge`） |
 
-### 動作
+各 md は **YAML frontmatter** を持つ:
 
-各候補を `<out>/<kind>/<runId>-<idx>-<slug>.md` に書き出す。`kind` は単一セグメント名（path traversal ガード）。`slug` は Unicode 対応 + SHA-1 hash suffix。`knowledge-candidates.yaml` 自体は変更しない（audit）。`events.jsonl` に `knowledge_promoted` を追記。
+```md
+---
+kind: policy_violation
+domain: "apps/catalog"
+title: "Codex wrote outside the domain scope"
+source_run: run-20260521-...
+source_index: 0
+confidence: "high"
+source_status: "candidate"
+promoted_by: "knkn"
+promoted_at: "2026-05-21T09:00:00.000Z"
+hash: 2e9910abcd1234ef
+---
+
+# Codex wrote outside the domain scope
+...
+```
+
+**重複制御:**
+- 同じ `(source run, candidate index)` が既に promote 済み（`<runId>-<idx>-*.md` が存在）→ skip（`promote` は冪等）
+- 同じ `content hash`（kind+domain+title+content の SHA-256）の md が既存 → skip。`--allow-duplicate` で上書き作成可
+- reject 済み候補 → skip
+- `--kind` 不一致 → skip
+
+`promote` の出力は promoted 一覧と skip 一覧（理由つき: `kind-filter` / `rejected` / `duplicate-index` / `duplicate-hash` / `malformed`）。
 
 ### source run との独立性
 
-promote された md は **`<out>/`（既定 `docs/knowledge/`）に書かれ、`runs/<runId>/` とは完全に独立**している。
+promote された md は `<out>/`（既定 `docs/knowledge/`）に書かれ、`runs/<runId>/` とは**完全に独立**している。
 
-つまり `harness cleanup --scope run` / `--scope all` で source run の `runs/<runId>/` が削除されても、**promote 済みの knowledge md は残る**。これは意図的な設計 — knowledge は run のライフサイクルより長く生きるべきもので、cleanup の対象外。
+`harness cleanup --scope run` / `--scope all` で source run の `runs/<runId>/` が削除されても、**promote 済みの knowledge md は残る** — knowledge は run のライフサイクルより長く生きる設計。md には runId / source_index / evidence が記録済みなので self-contained（`source_run` 参照は監査用であり存在保証ではない）。
 
-逆に、source run を消した後は md 内の `source run:` 参照が dangling になる（md には runId / source index / evidence が記録済みなので、内容自体は self-contained）。
+### Exit code（list / reject / promote 共通）
+
+- `0`: 成功
+- `1`: invalid runId / candidates yaml 不在 or parse 失敗 / 候補の `kind` が unsafe / reject の index 範囲外 / reviewer 空
+- `2`: 予期しない例外
 
 ### Exit code
 
