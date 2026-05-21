@@ -59,6 +59,14 @@ import {
   type BacklogStatus,
   type BacklogPriority,
 } from "../core/backlog.js";
+import {
+  checkMaintenance,
+  runMaintenanceCleanup,
+  formatFindings,
+  formatCleanupResult,
+  parseDuration,
+  MaintenanceError,
+} from "../core/maintenance.js";
 import { RUN_STATUSES } from "../logging/run-log.js";
 import {
   prepareRerunFromReview,
@@ -1113,6 +1121,50 @@ backlogCmd
       );
     }
     if (failed) process.exit(1);
+  });
+
+const maintenanceCmd = program
+  .command("maintenance")
+  .description("detect and clean up operational debris");
+maintenanceCmd
+  .command("check")
+  .description("report stale locks / orphan worktrees / oversized run dirs")
+  .action(async () => {
+    const paths = harnessPaths(getHarnessRoot());
+    const findings = await checkMaintenance({
+      runsDir: paths.runsDir,
+      workspacesDir: paths.workspacesDir,
+      locksDir: paths.locksDir,
+    });
+    process.stdout.write(formatFindings(findings));
+  });
+maintenanceCmd
+  .command("cleanup")
+  .description("remove cleanable debris (stale locks / orphan worktrees)")
+  .option("--dry-run", "list what would be removed, delete nothing", false)
+  .option("--older-than <dur>", "only debris older than e.g. 30d / 12h")
+  .option("--force", "actually delete (required for a non-dry-run)", false)
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    try {
+      const result = await runMaintenanceCleanup({
+        runsDir: paths.runsDir,
+        workspacesDir: paths.workspacesDir,
+        locksDir: paths.locksDir,
+        dryRun: Boolean(raw.dryRun),
+        force: Boolean(raw.force),
+        ...(raw.olderThan !== undefined
+          ? { olderThanMs: parseDuration(String(raw.olderThan)) }
+          : {}),
+      });
+      process.stdout.write(formatCleanupResult(result));
+    } catch (e) {
+      if (e instanceof MaintenanceError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
   });
 
 const cleanupCmd = program

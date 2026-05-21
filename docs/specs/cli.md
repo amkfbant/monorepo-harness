@@ -103,6 +103,40 @@ harness backlog defer --item-id <id>
 - `backlog run` は item の domain + goal で run を起動（default `reviewed-run`、`--workflow run` で単発 run）。完了後、item の `linkedRuns` に runId を追記し item を `doing` へ移動、run の `meta.backlogItemId` に item id を記録（双方向参照）
 - `harness run show` は `meta.backlogItemId` があれば backlog item を表示する
 
+## `harness maintenance`
+
+個人運用で溜まる残骸（stale lock / orphan worktree / oversized run dir 等）を検出・掃除する（Phase 4-4）。
+
+```bash
+harness maintenance check                      # 残骸を検出して報告（read-only）
+harness maintenance cleanup --dry-run          # 削除予定だけ表示
+harness maintenance cleanup --older-than 30d   # 30 日より古い残骸に限定
+harness maintenance cleanup --force            # 実際に削除（destructive、--force 必須）
+```
+
+検出する finding:
+
+| kind | 内容 | cleanup 対象 |
+|------|------|:------------:|
+| `stale-lock` | `locks/` に古い lock（acquiredAt が 2h 超） | ✅ |
+| `orphan-worktree` | `workspaces/<id>` はあるが `runs/<id>` が無い | ✅ |
+| `cleaned-with-worktree` | run は `cleaned` だが worktree 残存 | ✅ |
+| `uncleaned-finished` | approved/rejected run の worktree 残存 | — （`harness cleanup` 経由） |
+| `large-run-dir` | run dir が 50 MiB 超 | — |
+
+`maintenance cleanup` は cleanable な finding のみ削除する。`--dry-run` 無しの実削除は **`--force` 必須**。`stale-lock` は **所有プロセスの生存確認**を行い、同一 host で pid が死んでいる lock だけ auto-cleanable（生存中は finding を出さない、別 host / lock JSON 破損は manual 扱い）。`uncleaned-finished` は run branch も消す `harness cleanup --run-id` 経由で処理する。
+
+### 週次 maintenance 手順
+
+```bash
+harness maintenance check                      # 1. 残骸を一覧
+harness maintenance cleanup --dry-run          # 2. 自動削除予定を確認
+harness maintenance cleanup --older-than 30d --force   # 3. 30 日超の debris を削除
+# uncleaned-finished は個別に: harness cleanup --run-id <id>
+```
+
+（より詳細な日次・週次フローは `docs/ops/personal-operating-manual.md`、Phase 4-9 で追加。）
+
 ## `harness inbox`
 
 今日見るべきものを 1 コマンドに集約する個人運用ビュー（Phase 4-2）。
