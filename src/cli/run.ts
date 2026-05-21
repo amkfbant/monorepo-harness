@@ -960,6 +960,15 @@ const indexCmd = program
   .description(
     "SQLite run index — a derived cache; runs/ stays the source of truth",
   );
+// Phase 6: `index.sqlite` is superseded by the `harness.sqlite` read model
+// (`harness db import` / the dashboard). `index` still works for legacy
+// `review list --use-index`, but new tooling should use `harness db`.
+indexCmd.hook("preAction", () => {
+  process.stderr.write(
+    "warning: 'harness index' is deprecated (Phase 6); the harness.sqlite " +
+      "read model via 'harness db import' supersedes index.sqlite\n",
+  );
+});
 indexCmd
   .command("rebuild")
   .description("rebuild the SQLite index from a full runs/ scan")
