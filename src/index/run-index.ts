@@ -22,6 +22,13 @@ import type {
  * corrupt, `harness index rebuild` regenerates it from `runs/`.
  */
 
+/**
+ * Index schema version. Bump whenever the `runs` columns change so a
+ * stale index built by an older harness is detected and rebuilt rather
+ * than read with missing columns.
+ */
+const INDEX_SCHEMA_VERSION = 2;
+
 /** Each DDL statement is run individually (no multi-statement exec). */
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE runs (
@@ -110,12 +117,13 @@ export function rebuildIndex(
       `INSERT INTO invalid_runs (run_id, error) VALUES (?, ?)`,
     );
     const insertMeta = db.prepare(
-      `INSERT INTO index_meta (key, value) VALUES ('rebuilt_at', ?)`,
+      `INSERT INTO index_meta (key, value) VALUES (?, ?)`,
     );
     const tx = db.transaction(() => {
       for (const e of scan.valid) insertRun.run(toRow(e));
       for (const e of scan.invalid) insertInvalid.run(e.runId, e.error);
-      insertMeta.run(rebuiltAt);
+      insertMeta.run("rebuilt_at", rebuiltAt);
+      insertMeta.run("schema_version", String(INDEX_SCHEMA_VERSION));
     });
     tx();
   } catch (e) {
@@ -134,6 +142,23 @@ export function rebuildIndex(
   };
 }
 
+/**
+ * Throw if the index was built by an incompatible schema version — an
+ * older index is missing columns and must be rebuilt, not read silently.
+ */
+function assertSchemaCurrent(db: Database.Database): void {
+  const row = db
+    .prepare(`SELECT value FROM index_meta WHERE key = 'schema_version'`)
+    .get() as { value: string } | undefined;
+  const version = row ? Number(row.value) : 1;
+  if (version !== INDEX_SCHEMA_VERSION) {
+    throw new Error(
+      `index schema is v${version}, expected v${INDEX_SCHEMA_VERSION}; ` +
+        `run 'harness index rebuild'`,
+    );
+  }
+}
+
 /** Read the entire index back as a ListResult (no filtering applied). */
 export function loadFromIndex(dbPath: string): ListResult {
   if (!existsSync(dbPath)) {
@@ -143,6 +168,7 @@ export function loadFromIndex(dbPath: string): ListResult {
   }
   const db = new Database(dbPath, { readonly: true });
   try {
+    assertSchemaCurrent(db);
     const runRows = db.prepare(`SELECT * FROM runs`).all() as RunRow[];
     const invalidRows = db
       .prepare(`SELECT run_id, error FROM invalid_runs`)
@@ -173,6 +199,9 @@ export function indexStatus(dbPath: string): IndexStatus {
   let db: Database.Database | undefined;
   try {
     db = new Database(dbPath, { readonly: true });
+    // an outdated schema is reported like a corrupt index — it must be
+    // rebuilt, not read with missing columns.
+    assertSchemaCurrent(db);
     const runCount = (
       db.prepare(`SELECT COUNT(*) AS c FROM runs`).get() as { c: number }
     ).c;
@@ -224,6 +253,7 @@ export function showRunFromIndex(
   }
   const db = new Database(dbPath, { readonly: true });
   try {
+    assertSchemaCurrent(db);
     const row = db
       .prepare(`SELECT * FROM runs WHERE run_id = ?`)
       .get(runId) as RunRow | undefined;

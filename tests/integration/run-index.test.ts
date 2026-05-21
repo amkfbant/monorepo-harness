@@ -203,4 +203,33 @@ describe("run index", () => {
     const { dbPath } = setup();
     expect(indexStatus(dbPath).exists).toBe(false);
   });
+
+  it("preserves rootRunId / rerunAttempt through the index", async () => {
+    const { runsDir, dbPath } = setup();
+    writeRun(runsDir, {
+      runId: "run-20260521-apps-user-idxRR",
+      parentRunId: "run-20260521-apps-user-idxROOT",
+      rootRunId: "run-20260521-apps-user-idxROOT",
+      rerunAttempt: 2,
+    });
+    rebuildIndex(dbPath, await scanAllRuns(runsDir));
+    const found = showRunFromIndex(dbPath, "run-20260521-apps-user-idxRR");
+    expect(found?.kind).toBe("valid");
+    if (found?.kind !== "valid") throw new Error("expected valid");
+    expect(found.entry.rootRunId).toBe("run-20260521-apps-user-idxROOT");
+    expect(found.entry.rerunAttempt).toBe(2);
+  });
+
+  it("rejects an index built by an older schema (missing schema_version)", async () => {
+    const { runsDir, dbPath } = setup();
+    writeRun(runsDir, { runId: "run-20260521-apps-user-idxOLD" });
+    rebuildIndex(dbPath, await scanAllRuns(runsDir));
+    // simulate a v1 index: drop the schema_version marker
+    const Database = (await import("better-sqlite3")).default;
+    const db = new Database(dbPath);
+    db.prepare(`DELETE FROM index_meta WHERE key = 'schema_version'`).run();
+    db.close();
+    expect(() => loadFromIndex(dbPath)).toThrow(/index schema is v1/);
+    expect(indexStatus(dbPath).corrupt).toBe(true);
+  });
 });

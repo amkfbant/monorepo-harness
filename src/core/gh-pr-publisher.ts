@@ -9,6 +9,18 @@ import type {
 } from "./pr-creator.js";
 import { PrGateError } from "./pr-creator.js";
 
+/**
+ * A `gh` invocation that exceeded its timeout. Subclass of PrGateError so
+ * it still maps to exit 1, but distinguishable so the idempotency lookup
+ * does not swallow it.
+ */
+class GhTimeoutError extends PrGateError {
+  constructor(message: string) {
+    super(message);
+    this.name = "GhTimeoutError";
+  }
+}
+
 /** Default timeout for a single `gh` invocation. */
 const DEFAULT_GH_TIMEOUT_MS = 120_000;
 
@@ -95,8 +107,11 @@ async function findOpenPr(
       inputs.repoDir,
       timeoutMs,
     );
-  } catch {
-    // listing failed (no network / not a gh repo) — fall through to create
+  } catch (e) {
+    // a timeout must fail loudly — do NOT silently fall through to create.
+    if (e instanceof GhTimeoutError) throw e;
+    // a non-timeout failure (no network / not a gh repo) — fall through
+    // to create, which surfaces its own error.
     return null;
   }
   try {
@@ -146,7 +161,7 @@ function runGh(
       clearTimeout(timer);
       if (timedOut) {
         reject(
-          new PrGateError(
+          new GhTimeoutError(
             `gh ${args[0]} ${args[1] ?? ""} timed out after ${timeoutMs}ms`,
           ),
         );
