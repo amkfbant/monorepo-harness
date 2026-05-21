@@ -2,7 +2,41 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireDomainLock } from "../../../src/workspace/domain-lock.js";
+import {
+  acquireDomainLock,
+  domainLockName,
+} from "../../../src/workspace/domain-lock.js";
+
+describe("domainLockName (Phase 5-7 namespaced lock)", () => {
+  it("returns the legacy domain-only name when no repoId is given", () => {
+    expect(domainLockName("apps/user")).toBe("apps-user.lock");
+  });
+
+  it("namespaces by repoId when given", () => {
+    const name = domainLockName("apps/user", "mini-commerce");
+    expect(name.startsWith("mini-commerce--apps-user-")).toBe(true);
+    expect(name.endsWith(".lock")).toBe(true);
+  });
+
+  it("two repos with the same domain id get distinct locks", () => {
+    expect(domainLockName("apps/catalog", "repo-a")).not.toBe(
+      domainLockName("apps/catalog", "repo-b"),
+    );
+  });
+
+  it("is collision-resistant when repo-id slugs collide", () => {
+    // `foo.bar` and `foo-bar` slug to the same thing — the hash disambiguates.
+    expect(domainLockName("apps/user", "foo.bar")).not.toBe(
+      domainLockName("apps/user", "foo-bar"),
+    );
+  });
+
+  it("is collision-resistant when domain slugs collide", () => {
+    expect(domainLockName("apps/user-api", "r")).not.toBe(
+      domainLockName("apps/user/api", "r"),
+    );
+  });
+});
 
 describe("acquireDomainLock", () => {
   it("creates a lockfile with runId/pid/hostname and returns a release()", async () => {

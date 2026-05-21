@@ -87,6 +87,7 @@ export async function createPullRequest(
     locksDir: opts.locksDir,
     domain: typeof probe.domain === "string" ? probe.domain : "unknown",
     runId: `pr:${opts.runId}`,
+    ...(typeof probe.repoId === "string" ? { repoId: probe.repoId } : {}),
   });
   try {
     return await createUnderLock(opts, runDir, metaPath);

@@ -9,7 +9,11 @@ import {
   validateChangedPaths,
   type Violation,
 } from "../policy/path-policy-validator.js";
-import type { ResolvedPolicy } from "../policy/schema.js";
+import type {
+  ResolvedPolicy,
+  GlobalPolicy,
+  RepoPolicy,
+} from "../policy/schema.js";
 import {
   createRunLog,
   type RunMeta,
@@ -64,6 +68,20 @@ export interface RunDomainCodingOpts {
    * `text` is appended to the prompt; `path` is recorded in meta/events.
    */
   knowledgeContext?: { path: string; text: string };
+  /**
+   * Pre-compiled policy (Phase 5-7 `--project`). When set, the workflow
+   * uses it instead of loading `policies/global.yaml` + the repo policy
+   * file — a project profile compiles to exactly this {global, repo} pair.
+   */
+  compiledPolicy?: { global: GlobalPolicy; repo: RepoPolicy };
+  /** project profile provenance, recorded in meta.json (Phase 5-7). */
+  project?: RunMeta["project"];
+  /**
+   * Explicit project context packs (Phase 5-7). `promptText` is appended
+   * to the codex prompt as reference material; `manifestYaml` is saved as
+   * the `context-pack-manifest.yaml` artifact.
+   */
+  projectContextPacks?: { promptText: string; manifestYaml: string };
 }
 
 /**
@@ -224,8 +242,12 @@ export async function runDomainCoding(
   opts: RunDomainCodingOpts,
 ): Promise<RunDomainCodingResult> {
   const paths = harnessPaths(opts.harnessRoot);
-  const global = await loadGlobalPolicy(paths.globalPolicyPath);
-  const repo = await loadRepoPolicy(paths.repoPolicyPath(opts.repoId));
+  // a `--project` run supplies a pre-compiled {global, repo}; otherwise
+  // load the policy YAML files for the given repo id.
+  const { global, repo } = opts.compiledPolicy ?? {
+    global: await loadGlobalPolicy(paths.globalPolicyPath),
+    repo: await loadRepoPolicy(paths.repoPolicyPath(opts.repoId)),
+  };
   const policy: ResolvedPolicy = resolvePolicy(global, repo, opts.domain);
   const gitTimeoutMs = policy.limits.gitTimeoutMs;
 
@@ -240,6 +262,7 @@ export async function runDomainCoding(
     locksDir: paths.locksDir,
     domain: opts.domain,
     runId,
+    repoId: opts.repoId,
   });
 
   try {
@@ -279,6 +302,7 @@ export async function runDomainCoding(
               },
             }
           : {}),
+        ...(opts.project !== undefined ? { project: opts.project } : {}),
         promptTemplate: {
           name: CODER_PROMPT_TEMPLATE.name,
           version: CODER_PROMPT_TEMPLATE.version,
@@ -364,6 +388,9 @@ async function runDomainCodingInner(
       ...(opts.knowledgeContext !== undefined
         ? { knowledgeContext: opts.knowledgeContext.text }
         : {}),
+      ...(opts.projectContextPacks !== undefined
+        ? { projectContextPacks: opts.projectContextPacks.promptText }
+        : {}),
     });
     await writeArtifact(join(log.runDir, "codex-prompt.md"), prompt);
     if (opts.knowledgeContext !== undefined) {
@@ -371,6 +398,12 @@ async function runDomainCodingInner(
         type: "knowledge_context_loaded",
         contextFile: opts.knowledgeContext.path,
       });
+    }
+    if (opts.projectContextPacks !== undefined) {
+      await writeArtifact(
+        join(log.runDir, "context-pack-manifest.yaml"),
+        opts.projectContextPacks.manifestYaml,
+      );
     }
 
     await log.emit({ type: "codex_exec_started" });

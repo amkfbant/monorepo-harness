@@ -248,11 +248,13 @@ describe("processReviewDecision", () => {
     const { acquireDomainLock } = await import(
       "../../../src/workspace/domain-lock.js"
     );
-    // simulate a concurrent cleanup holding the same domain lock
+    // simulate a concurrent cleanup holding the same domain lock —
+    // namespaced by the run's repoId so it matches processReviewDecision.
     const held = await acquireDomainLock({
       locksDir,
       domain: "apps/user",
       runId: "cleanup:run-K",
+      repoId: "mini-commerce",
     });
     try {
       await expect(
@@ -280,6 +282,7 @@ describe("processReviewDecision", () => {
       locksDir,
       domain: "apps/user",
       runId: "probe",
+      repoId: "mini-commerce",
     });
     await after.release();
   });

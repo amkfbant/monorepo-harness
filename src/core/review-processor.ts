@@ -125,6 +125,11 @@ export async function processReviewDecision(
     locksDir: opts.locksDir,
     domain: domainProbe.domain,
     runId: `review:${opts.runId}`,
+    // namespace the lock by repo so the same domain id across two repos
+    // does not collide — must match how `harness run` acquired it.
+    ...(typeof domainProbe.repoId === "string"
+      ? { repoId: domainProbe.repoId }
+      : {}),
   });
 
   try {

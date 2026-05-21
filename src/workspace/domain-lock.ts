@@ -1,5 +1,6 @@
 import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { hostname } from "node:os";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 
 export interface LockInfo {
@@ -19,6 +20,12 @@ export interface AcquireOpts {
   locksDir: string;
   domain: string;
   runId: string;
+  /**
+   * When set, the lock is namespaced by repo: `<repoId>--<domain>.lock`
+   * (Phase 5-7 dual-mode). Two repos that both define `apps/catalog` then
+   * lock independently. Omitted → the legacy domain-only lock.
+   */
+  repoId?: string;
 }
 
 /**
@@ -33,22 +40,50 @@ export class DomainLockError extends Error {
   }
 }
 
-export function domainLockName(domain: string): string {
-  return `${domain
+function slugify(s: string): string {
+  return s
     .replace(/[^a-zA-Z0-9]+/g, "-")
     .replace(/^-|-$/g, "")
-    .toLowerCase()}.lock`;
+    .toLowerCase();
 }
 
-export function domainLockPath(locksDir: string, domain: string): string {
-  return join(locksDir, domainLockName(domain));
+/**
+ * Lock filename for a domain.
+ *
+ * - no `repoId` → legacy domain-only `<domain-slug>.lock` (unchanged, so
+ *   manual `lock release --domain` on old locks still works).
+ * - with `repoId` → namespaced `<repo-slug>--<domain-slug>-<hash>.lock`.
+ *   The slugs are lossy and exist only for readability; the hash is taken
+ *   over the raw `repoId` + `domain` pair, so no two distinct (repo,
+ *   domain) pairs can map to the same lock even when their slugs collide
+ *   (`foo.bar` vs `foo-bar`, `apps/user-api` vs `apps/user/api`).
+ */
+export function domainLockName(domain: string, repoId?: string): string {
+  const domainSlug = slugify(domain);
+  if (repoId === undefined) return `${domainSlug}.lock`;
+  const hash = createHash("sha1")
+    .update(`${repoId}\0${domain}`)
+    .digest("hex")
+    .slice(0, 12);
+  return `${slugify(repoId)}--${domainSlug}-${hash}.lock`;
+}
+
+export function domainLockPath(
+  locksDir: string,
+  domain: string,
+  repoId?: string,
+): string {
+  return join(locksDir, domainLockName(domain, repoId));
 }
 
 export async function acquireDomainLock(
   opts: AcquireOpts,
 ): Promise<DomainLock> {
   await mkdir(opts.locksDir, { recursive: true });
-  const path = join(opts.locksDir, domainLockName(opts.domain));
+  const path = join(
+    opts.locksDir,
+    domainLockName(opts.domain, opts.repoId),
+  );
   const info: LockInfo = {
     runId: opts.runId,
     pid: process.pid,

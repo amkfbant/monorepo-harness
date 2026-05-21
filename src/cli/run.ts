@@ -112,17 +112,26 @@ import {
   domainSlug,
 } from "../core/knowledge-context.js";
 import { registerProjectCommands } from "./project.js";
+import {
+  prepareProjectRun,
+  type PreparedProjectRun,
+} from "../project/run-project.js";
+import { ProjectError } from "../project/errors.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
 }
 
 interface RunOpts {
-  repo: string;
-  repoId: string;
+  /** repo path; required in --repo-id mode, an optional override in --project mode */
+  repo?: string;
+  repoId?: string;
+  /** project id — selects the profile-driven run path (Phase 5-7) */
+  project?: string;
   domain: string;
   goal: string;
-  baseBranch: string;
+  /** explicit --base-branch; when absent the profile (or "main") decides */
+  baseBranch?: string;
   keepWorktree?: boolean;
   dryRun?: boolean;
   withKnowledge?: boolean;
@@ -137,10 +146,41 @@ interface RunOutcome {
 
 async function cmdRun(o: RunOpts): Promise<RunOutcome> {
   const harnessRoot = getHarnessRoot();
-  const paths = harnessPaths(harnessRoot);
-  const global = await loadGlobalPolicy(paths.globalPolicyPath);
-  const repo = await loadRepoPolicy(paths.repoPolicyPath(o.repoId));
-  const resolved = resolvePolicy(global, repo, o.domain);
+
+  let prepared: PreparedProjectRun | undefined;
+  let resolved;
+  let repoPath: string;
+  let repoId: string;
+  if (o.project !== undefined) {
+    try {
+      prepared = await prepareProjectRun({
+        harnessRoot,
+        projectId: o.project,
+        domain: o.domain,
+        ...(o.repo !== undefined ? { repoOverride: o.repo } : {}),
+      });
+    } catch (e) {
+      if (e instanceof ProjectError) {
+        process.stderr.write(`harness error: ${e.message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
+    resolved = prepared.resolvedPolicy;
+    repoPath = prepared.repoPath;
+    repoId = prepared.repoId;
+  } else {
+    const paths = harnessPaths(harnessRoot);
+    const global = await loadGlobalPolicy(paths.globalPolicyPath);
+    const repo = await loadRepoPolicy(paths.repoPolicyPath(String(o.repoId)));
+    resolved = resolvePolicy(global, repo, o.domain);
+    repoPath = String(o.repo);
+    repoId = String(o.repoId);
+  }
+
+  // explicit --base-branch wins; otherwise the project profile's base
+  // branch (or "main" in --repo-id mode).
+  const baseBranch = o.baseBranch ?? prepared?.baseBranch ?? "main";
 
   if (o.dryRun) {
     process.stdout.write(
@@ -194,14 +234,28 @@ async function cmdRun(o: RunOpts): Promise<RunOutcome> {
 
   const result = await runDomainCoding({
     harnessRoot,
-    repoPath: o.repo,
-    repoId: o.repoId,
+    repoPath,
+    repoId,
     domain: o.domain,
     goal: o.goal,
-    baseBranch: o.baseBranch,
+    baseBranch,
     ...(o.keepWorktree !== undefined ? { keepWorktree: o.keepWorktree } : {}),
     codexRunner: runner,
     ...(knowledgeContext !== undefined ? { knowledgeContext } : {}),
+    ...(prepared !== undefined
+      ? {
+          compiledPolicy: prepared.compiledPolicy,
+          project: prepared.project,
+          ...(prepared.projectContextPacks !== undefined
+            ? {
+                projectContextPacks: {
+                  promptText: prepared.projectContextPacks.promptText,
+                  manifestYaml: prepared.projectContextPacks.manifestYaml,
+                },
+              }
+            : {}),
+        }
+      : {}),
   });
   const cmdTotal = result.commandResults.length;
   const cmdOk = result.commandResults.filter(
@@ -215,11 +269,12 @@ async function cmdRun(o: RunOpts): Promise<RunOutcome> {
 }
 
 interface ReviewedRunOpts {
-  repo: string;
-  repoId: string;
+  repo?: string;
+  repoId?: string;
+  project?: string;
   domain: string;
   goal: string;
-  baseBranch: string;
+  baseBranch?: string;
   reviewerName?: string;
   maxAttempts: number;
   noAutoReview?: boolean;
@@ -235,9 +290,38 @@ interface ReviewedRunOutcome {
 async function cmdReviewedRun(o: ReviewedRunOpts): Promise<ReviewedRunOutcome> {
   const harnessRoot = getHarnessRoot();
   const paths = harnessPaths(harnessRoot);
-  const global = await loadGlobalPolicy(paths.globalPolicyPath);
-  const repo = await loadRepoPolicy(paths.repoPolicyPath(o.repoId));
-  const resolved = resolvePolicy(global, repo, o.domain);
+
+  let prepared: PreparedProjectRun | undefined;
+  let resolved;
+  let repoPath: string;
+  let repoId: string;
+  if (o.project !== undefined) {
+    try {
+      prepared = await prepareProjectRun({
+        harnessRoot,
+        projectId: o.project,
+        domain: o.domain,
+        ...(o.repo !== undefined ? { repoOverride: o.repo } : {}),
+      });
+    } catch (e) {
+      if (e instanceof ProjectError) {
+        process.stderr.write(`harness error: ${e.message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
+    resolved = prepared.resolvedPolicy;
+    repoPath = prepared.repoPath;
+    repoId = prepared.repoId;
+  } else {
+    const global = await loadGlobalPolicy(paths.globalPolicyPath);
+    const repo = await loadRepoPolicy(paths.repoPolicyPath(String(o.repoId)));
+    resolved = resolvePolicy(global, repo, o.domain);
+    repoPath = String(o.repo);
+    repoId = String(o.repoId);
+  }
+
+  const baseBranch = o.baseBranch ?? prepared?.baseBranch ?? "main";
 
   if (o.dryRun) {
     process.stdout.write(
@@ -268,11 +352,11 @@ async function cmdReviewedRun(o: ReviewedRunOpts): Promise<ReviewedRunOutcome> {
     harnessRoot,
     runsDir: paths.runsDir,
     locksDir: paths.locksDir,
-    repoPath: o.repo,
-    repoId: o.repoId,
+    repoPath,
+    repoId,
     domain: o.domain,
     goal: o.goal,
-    baseBranch: o.baseBranch,
+    baseBranch,
     coderRunner,
     reviewerRunner,
     maxAttempts: o.maxAttempts,
@@ -280,6 +364,23 @@ async function cmdReviewedRun(o: ReviewedRunOpts): Promise<ReviewedRunOutcome> {
     ...(o.noAutoReview !== undefined ? { noAutoReview: o.noAutoReview } : {}),
     ...(o.stopOnChangesRequested !== undefined
       ? { stopOnChangesRequested: o.stopOnChangesRequested }
+      : {}),
+    ...(prepared !== undefined
+      ? {
+          projectRun: {
+            compiledPolicy: prepared.compiledPolicy,
+            project: prepared.project,
+            ...(prepared.projectContextPacks !== undefined
+              ? {
+                  projectContextPacks: {
+                    promptText: prepared.projectContextPacks.promptText,
+                    manifestYaml:
+                      prepared.projectContextPacks.manifestYaml,
+                  },
+                }
+              : {}),
+          },
+        }
       : {}),
   });
 
@@ -329,15 +430,21 @@ async function cmdLockList(): Promise<void> {
 
 interface LockReleaseOpts {
   domain: string;
+  repoId?: string;
   runId?: string;
   force?: boolean;
 }
 
 async function cmdLockRelease(o: LockReleaseOpts): Promise<void> {
   const paths = harnessPaths(getHarnessRoot());
-  const path = domainLockPath(paths.locksDir, o.domain);
+  // a run created by `harness run` namespaces the lock by repo id — pass
+  // --repo-id to release it. Without --repo-id the legacy domain-only
+  // lock name is used (manual recovery of old locks).
+  const path = domainLockPath(paths.locksDir, o.domain, o.repoId);
   if (!existsSync(path)) {
-    process.stdout.write(`no lock for domain ${o.domain}\n`);
+    process.stdout.write(
+      `no lock for domain ${o.domain}${o.repoId ? ` (repo ${o.repoId})` : ""}\n`,
+    );
     return;
   }
   let info: LockInfo | undefined;
@@ -358,7 +465,9 @@ async function cmdLockRelease(o: LockReleaseOpts): Promise<void> {
     }
   }
   await rm(path, { force: true });
-  process.stdout.write(`released ${domainLockName(o.domain)} (${path})\n`);
+  process.stdout.write(
+    `released ${domainLockName(o.domain, o.repoId)} (${path})\n`,
+  );
 }
 
 const program = new Command();
@@ -372,9 +481,13 @@ const runCmd = program
   // them. The action below enforces presence for the bare `run` form.
   .option("--repo <path>", "target repo path")
   .option("--repo-id <id>", "repo identifier for policy resolution")
+  .option("--project <id>", "project profile id (projects/<id>.yaml) — Phase 5")
   .option("--domain <domain>", "target domain (e.g. apps/user)")
   .option("--goal <text>", "task goal passed to Codex")
-  .option("--base-branch <name>", "base branch", "main")
+  .option(
+    "--base-branch <name>",
+    "base branch (default: the project profile's base_branch, or main)",
+  )
   .option("--keep-worktree", "(no-op; worktree is always kept for review)", false)
   .option(
     "--with-knowledge",
@@ -387,9 +500,12 @@ const runCmd = program
   )
   .option("--dry-run", "resolve policy and exit", false)
   .action(async (raw: Record<string, unknown>) => {
-    const missing = ["repo", "repoId", "domain", "goal"].filter(
-      (k) => raw[k] === undefined,
-    );
+    // --project mode needs domain + goal; --repo-id mode also needs repo + repo-id.
+    const required =
+      raw.project !== undefined
+        ? ["domain", "goal"]
+        : ["repo", "repoId", "domain", "goal"];
+    const missing = required.filter((k) => raw[k] === undefined);
     if (missing.length > 0) {
       const flags = missing
         .map((k) => `--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`)
@@ -400,11 +516,14 @@ const runCmd = program
       process.exit(1);
     }
     const outcome = await cmdRun({
-      repo: String(raw.repo),
-      repoId: String(raw.repoId),
+      ...(raw.repo !== undefined ? { repo: String(raw.repo) } : {}),
+      ...(raw.repoId !== undefined ? { repoId: String(raw.repoId) } : {}),
+      ...(raw.project !== undefined ? { project: String(raw.project) } : {}),
       domain: String(raw.domain),
       goal: String(raw.goal),
-      baseBranch: String(raw.baseBranch),
+      ...(raw.baseBranch !== undefined
+        ? { baseBranch: String(raw.baseBranch) }
+        : {}),
       keepWorktree: Boolean(raw.keepWorktree),
       dryRun: Boolean(raw.dryRun),
       withKnowledge: Boolean(raw.withKnowledge),
@@ -472,11 +591,15 @@ workflowCmd
   .description(
     "run → review auto → review process → (rerun on changes_requested)*",
   )
-  .requiredOption("--repo <path>", "target repo path")
-  .requiredOption("--repo-id <id>", "repo identifier for policy resolution")
+  .option("--repo <path>", "target repo path")
+  .option("--repo-id <id>", "repo identifier for policy resolution")
+  .option("--project <id>", "project profile id (projects/<id>.yaml) — Phase 5")
   .requiredOption("--domain <domain>", "target domain (e.g. apps/user)")
   .requiredOption("--goal <text>", "task goal passed to Codex")
-  .option("--base-branch <name>", "base branch", "main")
+  .option(
+    "--base-branch <name>",
+    "base branch (default: the project profile's base_branch, or main)",
+  )
   .option("--reviewer-name <name>", "reviewer identity for review auto")
   .option(
     "--max-attempts <n>",
@@ -505,13 +628,25 @@ workflowCmd
       }
       maxAttempts = n;
     }
+    if (
+      raw.project === undefined &&
+      (raw.repo === undefined || raw.repoId === undefined)
+    ) {
+      process.stderr.write(
+        "harness error: 'workflow reviewed-run' requires --project, or --repo + --repo-id\n",
+      );
+      process.exit(1);
+    }
     // commander maps --no-auto-review to raw.autoReview === false
     const outcome = await cmdReviewedRun({
-      repo: String(raw.repo),
-      repoId: String(raw.repoId),
+      ...(raw.repo !== undefined ? { repo: String(raw.repo) } : {}),
+      ...(raw.repoId !== undefined ? { repoId: String(raw.repoId) } : {}),
+      ...(raw.project !== undefined ? { project: String(raw.project) } : {}),
       domain: String(raw.domain),
       goal: String(raw.goal),
-      baseBranch: String(raw.baseBranch),
+      ...(raw.baseBranch !== undefined
+        ? { baseBranch: String(raw.baseBranch) }
+        : {}),
       maxAttempts,
       ...(raw.reviewerName !== undefined
         ? { reviewerName: String(raw.reviewerName) }
@@ -537,11 +672,13 @@ lockCmd
   .command("release")
   .description("force-release a domain lock (e.g. after crashed run)")
   .requiredOption("--domain <name>", "domain whose lock to release")
+  .option("--repo-id <id>", "repo id (namespaced locks created by `harness run`)")
   .option("--run-id <id>", "only release if the lock belongs to this runId")
   .option("--force", "release even on runId mismatch / unreadable lock", false)
   .action(async (raw: Record<string, unknown>) => {
     await cmdLockRelease({
       domain: String(raw.domain),
+      ...(raw.repoId !== undefined ? { repoId: String(raw.repoId) } : {}),
       ...(raw.runId !== undefined ? { runId: String(raw.runId) } : {}),
       force: Boolean(raw.force),
     });
@@ -1072,7 +1209,10 @@ backlogCmd
   .requiredOption("--item-id <id>", "backlog item id")
   .requiredOption("--repo <path>", "target repo path")
   .requiredOption("--repo-id <id>", "repo identifier for policy resolution")
-  .option("--base-branch <name>", "base branch", "main")
+  .option(
+    "--base-branch <name>",
+    "base branch (default: the project profile's base_branch, or main)",
+  )
   .option(
     "--workflow <kind>",
     "run | reviewed-run (default reviewed-run)",

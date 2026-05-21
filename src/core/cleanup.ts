@@ -167,6 +167,9 @@ export async function cleanupRun(opts: CleanupOpts): Promise<CleanupResult> {
     locksDir: opts.locksDir,
     domain: domainProbe.domain,
     runId: `cleanup:${opts.runId}`,
+    ...(typeof domainProbe.repoId === "string"
+      ? { repoId: domainProbe.repoId }
+      : {}),
   });
 
   try {

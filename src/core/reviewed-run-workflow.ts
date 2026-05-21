@@ -1,7 +1,8 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
-import type { RunStatus } from "../logging/run-log.js";
+import type { RunStatus, RunMeta } from "../logging/run-log.js";
+import type { GlobalPolicy, RepoPolicy } from "../policy/schema.js";
 import {
   runDomainCoding,
   RunFinalizedError,
@@ -58,6 +59,16 @@ export interface ReviewedRunWorkflowOpts {
   noAutoReview?: boolean;
   /** stop at the first changes_requested instead of rerunning */
   stopOnChangesRequested?: boolean;
+  /**
+   * Project-profile run inputs (Phase 5-7). When set, every coder run /
+   * rerun in the workflow uses the pre-compiled policy + records the
+   * project provenance + injects the project context packs.
+   */
+  projectRun?: {
+    compiledPolicy: { global: GlobalPolicy; repo: RepoPolicy };
+    project: NonNullable<RunMeta["project"]>;
+    projectContextPacks?: { promptText: string; manifestYaml: string };
+  };
 }
 
 /**
@@ -66,6 +77,24 @@ export interface ReviewedRunWorkflowOpts {
  * decides when to stop. The harness remains authoritative — every state
  * transition still happens inside runDomainCoding / processReviewDecision.
  */
+/** Spread the project-profile run inputs into a runDomainCoding call. */
+function projectRunFields(
+  opts: ReviewedRunWorkflowOpts,
+): Partial<{
+  compiledPolicy: { global: GlobalPolicy; repo: RepoPolicy };
+  project: NonNullable<RunMeta["project"]>;
+  projectContextPacks: { promptText: string; manifestYaml: string };
+}> {
+  if (opts.projectRun === undefined) return {};
+  return {
+    compiledPolicy: opts.projectRun.compiledPolicy,
+    project: opts.projectRun.project,
+    ...(opts.projectRun.projectContextPacks !== undefined
+      ? { projectContextPacks: opts.projectRun.projectContextPacks }
+      : {}),
+  };
+}
+
 export async function runReviewedRunWorkflow(
   opts: ReviewedRunWorkflowOpts,
 ): Promise<ReviewedRunWorkflowResult> {
@@ -96,6 +125,7 @@ export async function runReviewedRunWorkflow(
           goal: opts.goal,
           baseBranch: opts.baseBranch,
           codexRunner: opts.coderRunner,
+          ...projectRunFields(opts),
         });
         rootRunId = runResult.runId;
       } else {
@@ -115,6 +145,7 @@ export async function runReviewedRunWorkflow(
           parentRunId: prep.parentRunId,
           rootRunId: prep.rootRunId,
           rerunAttempt: prep.rerunAttempt,
+          ...projectRunFields(opts),
         });
       }
     } catch (e) {

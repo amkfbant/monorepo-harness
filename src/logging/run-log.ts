@@ -114,6 +114,20 @@ export interface RunMeta {
    * worktree that drifted after the run was approved (Phase 3-6 P1).
    */
   reviewed?: { paths: string[]; fingerprint: string };
+  /**
+   * Set when the run was driven by a project profile (`harness run
+   * --project`, Phase 5-7). Records the profile provenance so a run can be
+   * traced back to the profile / template / presets it compiled from. A
+   * run without this field is a legacy / `--repo-id` run.
+   */
+  project?: {
+    projectId: string;
+    profilePath: string;
+    profileVersion: number;
+    policyTemplateId?: string;
+    commandPresetIds?: string[];
+    contextPackIds?: string[];
+  };
   startedAt: string;
   finishedAt?: string;
 }

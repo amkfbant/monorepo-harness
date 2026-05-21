@@ -232,6 +232,8 @@ describe("cleanupRun", () => {
       locksDir: join(s.harnessRoot, "locks"),
       domain: "apps/user",
       runId: "run-fake-concurrent",
+      // namespaced lock — must match the repoId in the run's meta.json.
+      repoId: "t",
     });
     try {
       await expect(
