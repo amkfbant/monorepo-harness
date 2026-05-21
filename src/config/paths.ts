@@ -8,6 +8,8 @@ export interface HarnessPaths {
   policiesDir: string;
   globalPolicyPath: string;
   repoPolicyPath: (repoId: string) => string;
+  /** SQLite run index (Phase 3-5). source of truth stays runs/ files. */
+  indexDbPath: string;
 }
 
 // repo identifiers are interpolated directly into a filesystem path, so they
@@ -32,6 +34,7 @@ export function harnessPaths(root: string): HarnessPaths {
     workspacesDir: join(root, "workspaces"),
     locksDir: join(root, "locks"),
     policiesDir,
+    indexDbPath: join(root, ".harness", "index.sqlite"),
     globalPolicyPath: join(policiesDir, "global.yaml"),
     repoPolicyPath: (id) => {
       assertValidRepoId(id);

@@ -6,6 +6,7 @@ dist/
 runs/
 workspaces/
 locks/
+.harness/
 
 # scratch
 tmp/

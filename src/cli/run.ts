@@ -22,9 +22,17 @@ import {
 import { cleanupRun, CleanupGateError } from "../core/cleanup.js";
 import {
   listReviews,
+  scanAllRuns,
+  applyListFilters,
   formatTable,
   formatJson,
 } from "../core/review-lister.js";
+import {
+  rebuildIndex,
+  loadFromIndex,
+  indexStatus,
+  showRunFromIndex,
+} from "../index/run-index.js";
 import { RUN_STATUSES } from "../logging/run-log.js";
 import {
   prepareRerunFromReview,
@@ -435,6 +443,11 @@ reviewCmd
   .option("--domain <domain>", "restrict to a single domain")
   .option("--limit <n>", "cap the number of rows")
   .option("--json", "emit JSON ({ validRuns, invalidRuns }) instead of a table", false)
+  .option(
+    "--use-index",
+    "read from the SQLite index instead of scanning runs/ (Phase 3-5)",
+    false,
+  )
   .action(async (raw: Record<string, unknown>) => {
     const paths = harnessPaths(getHarnessRoot());
     const opts: Parameters<typeof listReviews>[0] = {
@@ -475,7 +488,20 @@ reviewCmd
       }
       opts.limit = n;
     }
-    const result = await listReviews(opts);
+    let result;
+    if (raw.useIndex) {
+      // index path: load every run from the SQLite index, then apply the
+      // SAME filter/sort/limit logic as the file scan.
+      try {
+        const scan = loadFromIndex(paths.indexDbPath);
+        result = applyListFilters(scan.valid, scan.invalid, opts);
+      } catch (e) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+    } else {
+      result = await listReviews(opts);
+    }
     if (raw.json) {
       process.stdout.write(formatJson(result));
       return;
@@ -647,6 +673,73 @@ reviewCmd
         process.exit(1);
       }
       throw e;
+    }
+  });
+
+const indexCmd = program
+  .command("index")
+  .description(
+    "SQLite run index — a derived cache; runs/ stays the source of truth",
+  );
+indexCmd
+  .command("rebuild")
+  .description("rebuild the SQLite index from a full runs/ scan")
+  .action(async () => {
+    const paths = harnessPaths(getHarnessRoot());
+    const scan = await scanAllRuns(paths.runsDir);
+    const stats = rebuildIndex(paths.indexDbPath, scan);
+    process.stdout.write(
+      `index rebuilt: runs=${stats.runCount} invalid=${stats.invalidCount} db=${stats.dbPath}\n`,
+    );
+  });
+indexCmd
+  .command("status")
+  .description("show SQLite index status")
+  .action(() => {
+    const paths = harnessPaths(getHarnessRoot());
+    const st = indexStatus(paths.indexDbPath);
+    if (!st.exists) {
+      process.stdout.write(
+        `index: not built (${st.dbPath}); run 'harness index rebuild'\n`,
+      );
+      return;
+    }
+    if (st.corrupt) {
+      process.stderr.write(
+        `index: corrupt (${st.dbPath}): ${st.error}; run 'harness index rebuild'\n`,
+      );
+      process.exit(1);
+    }
+    process.stdout.write(
+      `index: runs=${st.runCount} invalid=${st.invalidCount} ` +
+        `rebuiltAt=${st.rebuiltAt ?? "?"} size=${st.sizeBytes ?? 0}B db=${st.dbPath}\n`,
+    );
+  });
+indexCmd
+  .command("show")
+  .description("show one run's indexed row")
+  .requiredOption("--run-id <id>", "target run identifier")
+  .action((raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    try {
+      const found = showRunFromIndex(paths.indexDbPath, String(raw.runId));
+      if (!found) {
+        process.stderr.write(
+          `harness error: run ${String(raw.runId)} not in index ` +
+            `(rebuild if it is new)\n`,
+        );
+        process.exit(1);
+      }
+      if (found.kind === "invalid") {
+        process.stdout.write(
+          `${JSON.stringify({ runId: found.runId, status: "invalid", error: found.error }, null, 2)}\n`,
+        );
+      } else {
+        process.stdout.write(`${JSON.stringify(found.entry, null, 2)}\n`);
+      }
+    } catch (e) {
+      process.stderr.write(`harness error: ${(e as Error).message}\n`);
+      process.exit(1);
     }
   });
 

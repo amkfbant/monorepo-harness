@@ -66,6 +66,57 @@ const RUN_DIR_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]+$/;
 /** The default "review queue": what an operator most often wants to see. */
 const DEFAULT_QUEUE: RunStatus[] = ["needs_review", "changes_requested"];
 
+/**
+ * Apply the status / domain filters, newest-first sort and limit to a raw
+ * (valid, invalid) pair. Shared by the file-scan `listReviews` and the
+ * SQLite-index path so both produce identical results from identical data.
+ */
+export function applyListFilters(
+  valid: ReviewListEntry[],
+  invalid: InvalidRunEntry[],
+  opts: Omit<ListOpts, "runsDir">,
+): ListResult {
+  if (
+    opts.limit !== undefined &&
+    (!Number.isInteger(opts.limit) || opts.limit < 0)
+  ) {
+    throw new RangeError(
+      `listReviews: limit must be a non-negative integer (got ${String(opts.limit)})`,
+    );
+  }
+  // status filter
+  let filtered = valid;
+  if (!opts.all) {
+    const wanted =
+      opts.statuses && opts.statuses.length > 0
+        ? new Set(opts.statuses)
+        : new Set<string>(DEFAULT_QUEUE);
+    filtered = filtered.filter((r) => wanted.has(r.status));
+  }
+  // domain filter
+  if (opts.domain !== undefined) {
+    filtered = filtered.filter((r) => r.domain === opts.domain);
+  }
+
+  // newest first by startedAt; entries without a valid timestamp sort last
+  filtered = [...filtered].sort((a, b) => {
+    if (a.startedAt === null && b.startedAt === null) return 0;
+    if (a.startedAt === null) return 1;
+    if (b.startedAt === null) return -1;
+    return b.startedAt.localeCompare(a.startedAt);
+  });
+
+  if (opts.limit !== undefined) {
+    filtered = filtered.slice(0, opts.limit);
+  }
+
+  // invalid runs are sorted by runId for stable output
+  const sortedInvalid = [...invalid].sort((a, b) =>
+    a.runId.localeCompare(b.runId),
+  );
+  return { valid: filtered, invalid: sortedInvalid };
+}
+
 export async function listReviews(opts: ListOpts): Promise<ListResult> {
   // Validate limit at the core boundary — the CLI also checks, but other
   // callers must not silently get "no limit" (NaN/-1) or a truncated
@@ -89,37 +140,24 @@ export async function listReviews(opts: ListOpts): Promise<ListResult> {
     if ("error" in loaded) invalid.push(loaded);
     else valid.push(loaded);
   }
+  return applyListFilters(valid, invalid, opts);
+}
 
-  // status filter
-  let filtered = valid;
-  if (!opts.all) {
-    const wanted =
-      opts.statuses && opts.statuses.length > 0
-        ? new Set(opts.statuses)
-        : new Set<string>(DEFAULT_QUEUE);
-    filtered = filtered.filter((r) => wanted.has(r.status));
+/**
+ * Scan runs/ and return EVERY run (valid + invalid) with no filtering —
+ * used to populate the SQLite index.
+ */
+export async function scanAllRuns(runsDir: string): Promise<ListResult> {
+  if (!existsSync(runsDir)) return { valid: [], invalid: [] };
+  const runIds = (await readdir(runsDir)).filter((e) => RUN_DIR_RE.test(e));
+  const valid: ReviewListEntry[] = [];
+  const invalid: InvalidRunEntry[] = [];
+  for (const runId of runIds) {
+    const loaded = await loadEntry(runsDir, runId);
+    if ("error" in loaded) invalid.push(loaded);
+    else valid.push(loaded);
   }
-  // domain filter
-  if (opts.domain !== undefined) {
-    filtered = filtered.filter((r) => r.domain === opts.domain);
-  }
-
-  // newest first by startedAt; entries without a valid timestamp sort last
-  filtered.sort((a, b) => {
-    if (a.startedAt === null && b.startedAt === null) return 0;
-    if (a.startedAt === null) return 1;
-    if (b.startedAt === null) return -1;
-    return b.startedAt.localeCompare(a.startedAt);
-  });
-
-  if (opts.limit !== undefined) {
-    filtered = filtered.slice(0, opts.limit);
-  }
-
-  // invalid runs are sorted by runId for stable output
-  invalid.sort((a, b) => a.runId.localeCompare(b.runId));
-
-  return { valid: filtered, invalid };
+  return { valid, invalid };
 }
 
 function isCommandResultShape(

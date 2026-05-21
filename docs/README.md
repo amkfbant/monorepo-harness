@@ -35,6 +35,7 @@ docs/
 | `harness knowledge build-context --domain <d>` | promote 済み knowledge を domain 別に集約（`run --with-knowledge` 用、Phase 3-4） |
 | `harness cleanup --run-id <id> [--scope …]` | worktree / branch / run dir を scope 単位で削除 |
 | `harness workflow reviewed-run …` | run → review auto → review process → rerun を bounded loop で束ねる（Phase 3-1） |
+| `harness index rebuild / status / show` | SQLite run index（派生キャッシュ。source of truth は runs/ files、Phase 3-5） |
 
 `policy.commands.allow` の structured form（`{id, cmd, args, timeout_ms, env}`）と `commands.defaults` も Phase 2 で追加（[`specs/policy.md`](./specs/policy.md)）。各機能の実機デモ結果は `reports/2026-05-21-phase2-*.md`。
 

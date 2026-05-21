@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "bin": {
     "harness": "./dist/cli/run.js"
   },
@@ -15,12 +17,14 @@
     "harness": "tsx src/cli/run.ts"
   },
   "dependencies": {
+    "better-sqlite3": "12.10.0",
     "commander": "^12.1.0",
     "minimatch": "^10.0.1",
     "yaml": "^2.5.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
     "@types/node": "^20.14.0",
     "tsx": "^4.19.0",
     "typescript": "^5.5.0",
