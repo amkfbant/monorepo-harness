@@ -160,40 +160,78 @@ harness lock release --domain apps/catalog --force
 
 ## `harness review list`
 
-すべての `runs/<id>/meta.json` を読み、テーブル表示する。default では `needs_review` のみ。
+すべての `runs/<id>/meta.json` を読み、テーブル（または JSON）で表示する。default は **review queue**（`needs_review` + `changes_requested`）。
 
 ### Synopsis
 
 ```bash
-harness review list [--all]
+harness review list [--all] [--status <s>] [--domain <d>] [--limit <n>] [--json]
 ```
 
 ### Options
 
 | Option | Required | 説明 |
 |--------|:--------:|------|
-| `--all` | — | `needs_review` 以外（approved / failed-* / cleaned 等）も含める |
+| `--all` | — | 全ステータスを含める（`--status` を無視） |
+| `--status <s>` | — | カンマ区切りの status filter（例: `needs_review,failed-policy-violation`）。指定時は default queue を置き換える |
+| `--domain <d>` | — | 単一 domain に絞る |
+| `--limit <n>` | — | 表示行数の上限（非負整数。不正値は exit 1） |
+| `--json` | — | テーブルでなく JSON (`{ validRuns, invalidRuns }`) を出力 |
 
-### Output
+### Output（table）
 
 タブパディングされた fixed-column table:
 
 ```
-runId                                       domain        status        safety   changed  secrets  ignored  startedAt
-run-20260520-apps-catalog-mpe3vgb9e...     apps/catalog  needs_review  allowed  2        0        0        2026-05-20T13:36:41Z
-run-20260520-apps-orders-mpe3xod6d...       apps/orders   needs_review  allowed  3        0        0        2026-05-20T13:38:25Z
+runId                                    domain        status        safety   reviewer  parent  commands  secrets  ignored  startedAt
+run-20260521-apps-catalog-mpf297pn...   apps/catalog  needs_review  allowed  -         -       3/3       0        0        2026-05-21T05:00:00Z
+run-20260521-apps-orders-mpf2lhm...     apps/orders   needs_review  allowed  -         mpf2gz  2/2       -        0        2026-05-21T05:30:00Z
 ```
 
 - 新しい順 (`startedAt` desc) でソート
 - runId は **truncate しない**（コピペで `--run-id` 引数に使える）
-- meta.json が読めない / parse 失敗の run は `unreadable: <reason>` 列で常に表示（`--all` の有無に関わらず）
-- 古い run で counts が無い場合は `?` 表示
+- 列: runId / domain / status / safety / reviewer / parent (parentRunId) / commands (`ok/total`) / secrets / ignored / startedAt
+- 値が無いセルは `-`。command を実行していない run は commands 列が `-`
+- valid run が 0 件なら `no runs` を stdout に出す
+
+### Output（--json）
+
+```json
+{
+  "validRuns": [
+    {
+      "runId": "run-20260521-apps-catalog-mpf297pn59dba39f",
+      "domain": "apps/catalog",
+      "status": "needs_review",
+      "safetyStatus": "allowed",
+      "reviewer": null,
+      "reviewedAt": null,
+      "parentRunId": null,
+      "commandSummary": { "ok": 3, "total": 3 },
+      "changedFilesCount": 2,
+      "secretSuspectCount": 0,
+      "ignoredUntrackedCount": 0,
+      "startedAt": "2026-05-21T05:00:00Z",
+      "finishedAt": "2026-05-21T05:02:00Z"
+    }
+  ],
+  "invalidRuns": [
+    { "runId": "run-20260521-broken", "error": "meta.json invalid JSON: ..." }
+  ]
+}
+```
+
+### 壊れた run dir の扱い
+
+`meta.json` が無い / JSON parse 失敗 / `meta.runId` がディレクトリ名と不一致の run は **invalid** として扱う:
+
+- table モード: invalid run は表に出さず、stderr に `warning: N unreadable run dir(s) hidden …` を出す。`--all` 指定時は各 invalid run の理由も stderr に列挙
+- `--json` モード: `invalidRuns[]` に分離（stdout の JSON は常に valid）
 
 ### Exit code
 
-- `0`: 常に（0 件 / unreadable 含む）
-
-`needs_review` の run が無い場合は `no runs` と stdout に出す。
+- `0`: 正常（0 件 / invalid run があっても 0）
+- `1`: `--limit` が非負整数でない
 
 ## `harness review process`
 

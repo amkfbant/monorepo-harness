@@ -25,7 +25,7 @@ docs/
 
 | subcommand | 役割 |
 |------------|------|
-| `harness review list [--all]` | needs_review な run を一覧 |
+| `harness review list [--all\|--status\|--domain\|--limit\|--json]` | review queue（needs_review + changes_requested）を一覧 |
 | `harness review auto --run-id <id>` | reviewer agent（read-only codex）が `review-decision.yaml` を生成 |
 | `harness review process --run-id <id>` | `review-decision.yaml` を適用し status 遷移 |
 | `harness rerun --from-review <id>` | `changes_requested` から `required_changes` を組み込んだ新 run |

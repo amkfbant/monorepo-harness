@@ -2,28 +2,34 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { makeEventWriter, type RunEvent } from "./events.js";
 
-export type RunStatus =
-  | "running"
-  | "generated"
-  | "verified"
-  | "needs_review"
-  | "approved"
-  | "changes_requested"
-  | "rejected"
-  | "cleaned"
-  | "failed-policy-violation"
-  | "failed-codex"
-  | "failed-codex-timeout"
-  | "failed-diff-collection"
-  | "failed-command"
-  | "failed-internal-error";
+/** All RunStatus values as a runtime array (single source of truth). */
+export const RUN_STATUSES = [
+  "running",
+  "generated",
+  "verified",
+  "needs_review",
+  "approved",
+  "changes_requested",
+  "rejected",
+  "cleaned",
+  "failed-policy-violation",
+  "failed-codex",
+  "failed-codex-timeout",
+  "failed-diff-collection",
+  "failed-command",
+  "failed-internal-error",
+] as const;
+
+export type RunStatus = (typeof RUN_STATUSES)[number];
 
 /**
  * Orthogonal verdict from path-policy validation. Tracked separately from
  * RunStatus so that e.g. (status=failed-codex-timeout, safetyStatus=denied)
  * is queryable from meta.json without re-parsing artifacts.
  */
-export type SafetyStatus = "allowed" | "denied" | "skipped";
+export const SAFETY_STATUSES = ["allowed", "denied", "skipped"] as const;
+
+export type SafetyStatus = (typeof SAFETY_STATUSES)[number];
 
 export interface RunMeta {
   runId: string;

@@ -20,7 +20,12 @@ import {
   ReviewGateError,
 } from "../core/review-processor.js";
 import { cleanupRun, CleanupGateError } from "../core/cleanup.js";
-import { listReviews, formatTable } from "../core/review-lister.js";
+import {
+  listReviews,
+  formatTable,
+  formatJson,
+} from "../core/review-lister.js";
+import { RUN_STATUSES } from "../logging/run-log.js";
 import { prepareRerunFromReview, RerunGateError } from "../core/rerun.js";
 import {
   runReviewerAgent,
@@ -216,15 +221,75 @@ const reviewCmd = program
   .description("operate on review-decision.yaml under runs/<id>/");
 reviewCmd
   .command("list")
-  .description("list runs (default: only needs_review)")
+  .description(
+    "list runs (default: needs_review + changes_requested の review queue)",
+  )
   .option("--all", "include runs of every status", false)
+  .option(
+    "--status <status>",
+    "comma-separated status filter (e.g. needs_review,failed-policy-violation)",
+  )
+  .option("--domain <domain>", "restrict to a single domain")
+  .option("--limit <n>", "cap the number of rows")
+  .option("--json", "emit JSON ({ validRuns, invalidRuns }) instead of a table", false)
   .action(async (raw: Record<string, unknown>) => {
     const paths = harnessPaths(getHarnessRoot());
-    const entries = await listReviews({
+    const opts: Parameters<typeof listReviews>[0] = {
       runsDir: paths.runsDir,
       all: Boolean(raw.all),
-    });
-    process.stdout.write(formatTable(entries));
+    };
+    if (raw.status !== undefined) {
+      const statuses = String(raw.status)
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      if (statuses.length === 0) {
+        process.stderr.write(
+          "harness error: --status was empty; pass at least one status\n",
+        );
+        process.exit(1);
+      }
+      const unknown = statuses.filter(
+        (s) => !(RUN_STATUSES as readonly string[]).includes(s),
+      );
+      if (unknown.length > 0) {
+        process.stderr.write(
+          `harness error: unknown --status value(s): ${unknown.join(", ")}\n` +
+            `  valid: ${RUN_STATUSES.join(", ")}\n`,
+        );
+        process.exit(1);
+      }
+      opts.statuses = statuses;
+    }
+    if (raw.domain !== undefined) opts.domain = String(raw.domain);
+    if (raw.limit !== undefined) {
+      const n = Number(raw.limit);
+      if (!Number.isInteger(n) || n < 0) {
+        process.stderr.write(
+          `harness error: --limit must be a non-negative integer (got ${JSON.stringify(String(raw.limit))})\n`,
+        );
+        process.exit(1);
+      }
+      opts.limit = n;
+    }
+    const result = await listReviews(opts);
+    if (raw.json) {
+      process.stdout.write(formatJson(result));
+      return;
+    }
+    process.stdout.write(formatTable(result));
+    // invalid run dirs are surfaced on stderr so they never pollute the
+    // table (and so --json's stdout stays parseable).
+    if (result.invalid.length > 0) {
+      process.stderr.write(
+        `warning: ${result.invalid.length} unreadable run dir(s) hidden; use --all or --json to inspect\n`,
+      );
+      if (Boolean(raw.all)) {
+        for (const inv of result.invalid) {
+          process.stderr.write(`  ${inv.runId}: ${inv.error}\n`);
+        }
+      }
+    }
   });
 reviewCmd
   .command("process")
