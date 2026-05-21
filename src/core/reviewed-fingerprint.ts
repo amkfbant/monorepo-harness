@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile, lstat, readlink } from "node:fs/promises";
+import { lstat, readlink, open } from "node:fs/promises";
+import { constants } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -39,11 +40,29 @@ async function classifyPath(full: string): Promise<unknown[]> {
     return ["symlink", await readlink(full)];
   }
   if (st.isFile()) {
-    // safe: lstat confirmed a regular file, so readFile does not traverse
-    // a symlink. The executable bit is part of the fingerprint.
-    const bytes = await readFile(full);
-    const exec = (st.mode & 0o111) !== 0;
-    return ["file", createHash("sha256").update(bytes).digest("hex"), exec];
+    // Open with O_NOFOLLOW so a path swapped to a symlink between lstat
+    // and read is rejected rather than followed (no TOCTOU). stat + read
+    // both come from the opened fd, not the path. The executable bit is
+    // part of the fingerprint.
+    let fh;
+    try {
+      fh = await open(full, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch {
+      // raced into a symlink / removed between lstat and open
+      return ["error", "path changed during fingerprint"];
+    }
+    try {
+      const fhStat = await fh.stat();
+      const bytes = await fh.readFile();
+      const exec = (fhStat.mode & 0o111) !== 0;
+      return [
+        "file",
+        createHash("sha256").update(bytes).digest("hex"),
+        exec,
+      ];
+    } finally {
+      await fh.close();
+    }
   }
   if (st.isDirectory()) return ["dir"];
   return ["other"];

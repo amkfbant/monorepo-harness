@@ -39,10 +39,12 @@ export const MAX_KNOWLEDGE_CONTEXT_BYTES = 32 * 1024;
 /**
  * Neutralise any `<knowledge>` / `</knowledge>` tag inside the content so
  * it cannot close the fence early and smuggle text out of the reference
- * block. The brackets are stripped (`</knowledge>` → `/knowledge`).
+ * block. Runs of `<` / `>` are consumed whole (`<+ ... >+`) so a nested
+ * form like `<</knowledge>>` cannot re-form a real tag after one pass.
+ * The brackets are stripped (`</knowledge>` → `/knowledge`).
  */
 function neutraliseFence(text: string): string {
-  return text.replace(/<\/?knowledge>/gi, (m) => m.replace(/[<>]/g, ""));
+  return text.replace(/<+\/?knowledge>+/gi, (m) => m.replace(/[<>]/g, ""));
 }
 
 /** Truncate the knowledge context to the byte cap with a visible marker. */
