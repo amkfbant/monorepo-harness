@@ -24,6 +24,8 @@ export interface BacklogItem {
   createdAt: string;
   /** runs launched from this item via `backlog run` */
   linkedRuns: string[];
+  /** optional project id (Phase 5) — set by `backlog add --project` */
+  projectId?: string;
 }
 
 const STATUSES: BacklogStatus[] = ["open", "doing", "done", "deferred"];
@@ -44,6 +46,8 @@ interface AddItemInput {
   goal: string;
   priority?: BacklogPriority;
   tags?: string[];
+  /** optional project id this item belongs to (Phase 5) */
+  projectId?: string;
 }
 
 /** Create a new backlog item in backlog/open/. */
@@ -79,6 +83,9 @@ export async function addItem(
       tags: input.tags ?? [],
       createdAt: now.toISOString(),
       linkedRuns: [],
+      ...(input.projectId !== undefined && input.projectId !== ""
+        ? { projectId: input.projectId }
+        : {}),
     };
     try {
       await writeFile(itemPath(backlogDir, "open", id), serialise(item), {
@@ -285,6 +292,9 @@ async function readItemFile(
     linkedRuns: Array.isArray(doc.linkedRuns)
       ? doc.linkedRuns.filter((r): r is string => typeof r === "string")
       : [],
+    ...(typeof doc.projectId === "string" && doc.projectId !== ""
+      ? { projectId: doc.projectId }
+      : {}),
   };
 }
 
@@ -314,6 +324,7 @@ export function formatItem(
     `Item: ${item.id}`,
     `Title: ${item.title}`,
     `Domain: ${item.domain}`,
+    ...(item.projectId !== undefined ? [`Project: ${item.projectId}`] : []),
     `Status: ${item.status}`,
     `Priority: ${item.priority}`,
     `Tags: ${item.tags.length > 0 ? item.tags.join(", ") : "(none)"}`,

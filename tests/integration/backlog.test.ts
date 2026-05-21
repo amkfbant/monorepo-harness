@@ -38,6 +38,29 @@ describe("backlog", () => {
     expect(existsSync(join(backlogDir, "open", `${item.id}.yaml`))).toBe(true);
   });
 
+  it("E5-7-f: stores and reads back an optional projectId", async () => {
+    const { backlogDir } = harnessRoot();
+    const item = await addItem(backlogDir, {
+      title: "t",
+      domain: "apps/web",
+      goal: "g",
+      projectId: "demo-project",
+    });
+    expect(item.projectId).toBe("demo-project");
+    const shown = await showItem(backlogDir, item.id);
+    expect(shown.projectId).toBe("demo-project");
+  });
+
+  it("omits projectId when not given (legacy items stay clean)", async () => {
+    const { backlogDir } = harnessRoot();
+    const item = await addItem(backlogDir, {
+      title: "t",
+      domain: "d",
+      goal: "g",
+    });
+    expect(item.projectId).toBeUndefined();
+  });
+
   it("allocates sequential ids within a day", async () => {
     const { backlogDir } = harnessRoot();
     const now = new Date("2026-05-21T00:00:00Z");

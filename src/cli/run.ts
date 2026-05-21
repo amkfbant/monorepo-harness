@@ -1106,6 +1106,7 @@ backlogCmd
   .requiredOption("--goal <text>", "task goal")
   .option("--priority <level>", "high | medium | low", "medium")
   .option("--tags <list>", "comma-separated tags")
+  .option("--project <id>", "project id this item belongs to (Phase 5)")
   .action(async (raw: Record<string, unknown>) => {
     const paths = harnessPaths(getHarnessRoot());
     try {
@@ -1114,6 +1115,9 @@ backlogCmd
         domain: String(raw.domain),
         goal: String(raw.goal),
         priority: String(raw.priority) as BacklogPriority,
+        ...(raw.project !== undefined
+          ? { projectId: String(raw.project) }
+          : {}),
         ...(raw.tags !== undefined
           ? {
               tags: String(raw.tags)
