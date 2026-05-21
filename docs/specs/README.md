@@ -9,7 +9,7 @@ monorepo-harness の **現状仕様** をまとめたディレクトリ。
 - [`overview.md`](./overview.md) — ハーネスは何で、何ができて、何ができないか
 - [`policy.md`](./policy.md) — policy YAML の形式（global / repo / domain）と評価順
 - [`workflow.md`](./workflow.md) — `domain-coding` workflow の status machine と artifact レイアウト
-- [`cli.md`](./cli.md) — `harness run` / `harness lock list` / `harness lock release` の CLI リファレンス
+- [`cli.md`](./cli.md) — 全 CLI subcommand リファレンス（`run` / `lock` / `review list` / `review auto` / `review process` / `rerun` / `cleanup` / `knowledge promote`）
 
 関連 docs:
 

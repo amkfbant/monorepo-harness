@@ -342,6 +342,24 @@ harness rerun --from-review <parent-run-id>
 
 新 run は別 runId・別 branch・別 worktree。親は一切変更しない（監査用にチェーンを `meta.parentRunId` で辿れる）。
 
+### rerun 後の再レビュー
+
+`rerun` で生成された子 run は `needs_review` 状態で、**通常の run と全く同じ手順でレビューする**:
+
+```bash
+# 子 run を一覧で確認
+harness review list
+
+# reviewer agent または人間がレビュー
+harness review auto --run-id <child-run-id>      # または review-decision.yaml を手編集
+harness review process --run-id <child-run-id>
+
+# まだ changes_requested なら再度 rerun (チェーンが伸びる)
+harness rerun --from-review <child-run-id>
+```
+
+`meta.parentRunId` を辿ると `初回 run → rerun → rerun → …` の系譜が全て追える。各 run の `review-decision.yaml` / `summary.md` は run dir に残るので、「前回の required_changes が満たされたか」は子 run の diff と review で確認する。
+
 ### Exit code
 
 - `0`: 新 run が `needs_review` などの非失敗 status で完了
@@ -375,6 +393,12 @@ harness review auto --run-id <id> [--reviewer-name <name>]
 
 **`harness review auto` は status を遷移させない。** 生成された `review-decision.yaml` を人間が確認し、`harness review process` で適用する 2 段構成。
 
+### 検証状況
+
+実機 codex での **正常系 1 件**が検証済み（`docs/reports/2026-05-21-phase2-4-feature-demo.md` D2）。codex は fenced YAML block のみを返し、`extractYamlBlock` でパース成功した。
+
+prose 混入 / invalid decision / malformed YAML といった**異常系は unit test で担保**（`tests/unit/core/reviewer-agent.test.ts`）しているが、実機 codex での異常系サンプルは未取得。Phase 3 で追加検証する。
+
 ### Exit code
 
 - `0`: review-decision.yaml 生成成功
@@ -402,6 +426,14 @@ harness knowledge promote --run-id <id> [--kind <kind>] [--out <dir>]
 ### 動作
 
 各候補を `<out>/<kind>/<runId>-<idx>-<slug>.md` に書き出す。`kind` は単一セグメント名（path traversal ガード）。`slug` は Unicode 対応 + SHA-1 hash suffix。`knowledge-candidates.yaml` 自体は変更しない（audit）。`events.jsonl` に `knowledge_promoted` を追記。
+
+### source run との独立性
+
+promote された md は **`<out>/`（既定 `docs/knowledge/`）に書かれ、`runs/<runId>/` とは完全に独立**している。
+
+つまり `harness cleanup --scope run` / `--scope all` で source run の `runs/<runId>/` が削除されても、**promote 済みの knowledge md は残る**。これは意図的な設計 — knowledge は run のライフサイクルより長く生きるべきもので、cleanup の対象外。
+
+逆に、source run を消した後は md 内の `source run:` 参照が dangling になる（md には runId / source index / evidence が記録済みなので、内容自体は self-contained）。
 
 ### Exit code
 

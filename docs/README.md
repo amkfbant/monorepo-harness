@@ -13,11 +13,26 @@ docs/
   examples/                ← サンプル / 検証 fixture の仕様
     mini-commerce.md
   reports/                 ← 開発サイクルの記録 + finding registry
-    README.md, TEMPLATE.md, 2026-05-20-mvp-validation-initial.md, 2026-05-20-mvp-validation-followup.md
+    README.md, TEMPLATE.md, 2026-05-20-mvp-validation-*.md,
+    2026-05-21-phase2-review-commands-cleanup.md,
+    2026-05-21-phase2-4-feature-demo.md
   superpowers/plans/       ← 実装計画 (history 含む; 完了後も残す)
-    2026-05-20-codex-exec-harness-mvp.md
-    2026-05-20-mini-commerce-validation.md
 ```
+
+## Phase 2-4 の機能（run の後段）
+
+`harness run` の後に続く一連の subcommand。詳細は [`specs/cli.md`](./specs/cli.md)。
+
+| subcommand | 役割 |
+|------------|------|
+| `harness review list [--all]` | needs_review な run を一覧 |
+| `harness review auto --run-id <id>` | reviewer agent（read-only codex）が `review-decision.yaml` を生成 |
+| `harness review process --run-id <id>` | `review-decision.yaml` を適用し status 遷移 |
+| `harness rerun --from-review <id>` | `changes_requested` から `required_changes` を組み込んだ新 run |
+| `harness knowledge promote --run-id <id>` | `knowledge-candidates.yaml` を `docs/knowledge/` に展開 |
+| `harness cleanup --run-id <id> [--scope …]` | worktree / branch / run dir を scope 単位で削除 |
+
+`policy.commands.allow` の structured form（`{id, cmd, args, timeout_ms, env}`）と `commands.defaults` も Phase 2-4 で追加（[`specs/policy.md`](./specs/policy.md)）。実機デモ結果は [`reports/2026-05-21-phase2-4-feature-demo.md`](./reports/2026-05-21-phase2-4-feature-demo.md)。
 
 ## monorepo-harness と mini-commerce の関係
 

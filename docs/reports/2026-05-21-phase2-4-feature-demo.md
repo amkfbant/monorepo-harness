@@ -226,11 +226,46 @@ exit=1
 
 （デモ実施中、cleanup gate 拒否の exit code 確認で `... | tail -2` のパイプ越しに `$?` を読み、一時的に `tail` の exit code を見てしまった。これは検証手順側のミスで、harness の挙動ではない。パイプを外して再確認したところ正しく exit 1 だった。)
 
-## 残課題 / 観察
+## Phase 2-4 close 判定
 
-- **reviewer agent は 1 サンプルのみ**: 今回の codex は素直に fenced YAML を返したが、モデル/プロンプト次第で prose 混入や decision 逸脱はあり得る。`extractYamlBlock` の fallback と strict schema reject は unit test で担保済みだが、実機での異常系サンプルはまだ無い
-- **knowledge-candidates が出る run が少ない**: 正常系 run は candidates 空。promote のデモには過去の failed run を流用した。candidate signal の生成条件（policy_violation / secret_suspect / ignored_untracked_output / codex_no_changes）を意図的に作る検証は別途あってもよい
-- **rerun の結果コードの良し悪しは未評価**: parentRunId チェーンと prompt 埋め込みの**仕組み**は確認したが、再 run が required_changes を実際に満たしたかは評価していない（本デモは安全境界とフロー確認が目的）
+本デモ + 既存の自動テスト + docs 整備をもって、**Phase 2-4 を close する**。
+
+### close checklist
+
+| # | 条件 | 状態 |
+|---|------|------|
+| 1 | structured command form が動く | ✅ D1 |
+| 2 | commands.defaults が resolved policy に反映 | ✅ D1 (dry-run) |
+| 3 | command logs / commandResults が保存される | ✅ D1 |
+| 4 | reviewer agent が実機 Codex で review-decision.yaml 生成 | ✅ D2 |
+| 5 | review auto だけでは status を変更しない | ✅ D2 |
+| 6 | review process で approved / changes_requested 適用 | ✅ D3a / D3b |
+| 7 | rerun が新 runId / branch / worktree を作る | ✅ D3b |
+| 8 | rerun の meta に parentRunId | ✅ D3b |
+| 9 | rerun prompt に required_changes | ✅ D3b |
+| 10 | knowledge promote が docs/knowledge に書き出す | ✅ D4 |
+| 11 | cleanup --scope workspace/run/all が動く | ✅ D4 |
+| 12 | changes_requested は cleanup から保護 (--force でも) | ✅ D4 (exit 1) |
+| 13 | typecheck が通る | ✅ `tsc --noEmit` クリア |
+| 14 | unit / integration test が通る | ✅ 267 PASS / 1 skipped |
+| 15 | 実機デモ結果が docs に保存 | ✅ 本レポート |
+| 16 | README / docs index から Phase 2-4 へ辿れる | ✅ `docs/README.md` に Phase 2-4 表 |
+| 17 | review auto 異常系が unit test で担保 | ✅ `reviewer-agent.test.ts` 16 ケース |
+| 18 | review process の exit code が cleanup と同規約 | ✅ ReviewGateError / DomainLockError → exit 1 |
+| 19 | rerun 後の再レビュー手順が docs にある | ✅ `specs/cli.md` の rerun セクション |
+| 20 | knowledge promote の source run 削除後の挙動が docs に明記 | ✅ `specs/cli.md` の独立性セクション |
+| 21 | cleanup scope の違いが docs に明記 | ✅ `specs/cli.md` の scope テーブル |
+
+16 必須 + 5 確認条件すべて充足。
+
+## Deferred to Phase 3
+
+以下は Phase 2-4 の blocker ではなく、Phase 3 に送る残リスク:
+
+- **reviewer agent の実機異常系サンプル**: 今回の codex は素直に fenced YAML を返したが、モデル/プロンプト次第で prose 混入・decision 逸脱はあり得る。`extractYamlBlock` の fallback と strict schema reject は unit test で担保済み。実機での異常系サンプル（prose 混入を誘導する軽い実験など）は Phase 3 で取得する
+- **rerun 後の成果品質の評価**: parentRunId チェーンと prompt 埋め込みの**仕組み**は D3b で確認したが、子 run が `required_changes` を実際に満たしたかの評価はしていない（本デモは安全境界とフロー確認が目的）。`初回 run → changes_requested → rerun → review → approved` まで通す E2E は Phase 3（または Phase 2-4+1）で実施
+- **knowledge-candidates の生成条件の網羅検証**: 正常系 run は candidates 空。promote デモは過去の failed run を流用。4 signal（policy_violation / secret_suspect / ignored_untracked_output / codex_no_changes）を意図的に作る検証は Phase 3
+- **その他**: review list の発展（フィルタ/ソート）、knowledge promotion のレビューゲート、reviewer agent の複数モデル/複数回評価、retry loop の自動化、DB / SQLite index
 
 ## 後片付け
 
