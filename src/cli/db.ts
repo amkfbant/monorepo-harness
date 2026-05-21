@@ -5,6 +5,10 @@ import { harnessPaths } from "../config/paths.js";
 import { openDb, openDbReadonly, DbError } from "../db/connection.js";
 import { runMigrations, readSchemaVersion } from "../db/migrations.js";
 import { runFullImport, formatImportReport } from "../db/import-files.js";
+import {
+  checkConsistency,
+  formatConsistencyReport,
+} from "../db/consistency.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -111,6 +115,39 @@ export function registerDbCommands(program: Command): void {
         } finally {
           db.close();
         }
+      } catch (e) {
+        dbError(e);
+      }
+    });
+
+  dbCmd
+    .command("check-consistency")
+    .description("report where the DB has drifted from harness files")
+    .option("--json", "print the consistency report as JSON")
+    .action((raw: Record<string, unknown>) => {
+      const root = getHarnessRoot();
+      const { dbPath } = harnessPaths(root);
+      if (!existsSync(dbPath)) {
+        process.stderr.write(
+          "harness error: DB not initialized — run 'harness db import --from-files'\n",
+        );
+        process.exit(1);
+      }
+      try {
+        const db = openDbReadonly(dbPath);
+        let report;
+        try {
+          report = checkConsistency({ db, harnessRoot: root });
+        } finally {
+          db.close();
+        }
+        process.stdout.write(
+          raw.json === true
+            ? `${JSON.stringify(report, null, 2)}\n`
+            : formatConsistencyReport(report),
+        );
+        // non-zero exit on drift/missing so CI can gate on it
+        if (report.status !== "ok") process.exit(1);
       } catch (e) {
         dbError(e);
       }

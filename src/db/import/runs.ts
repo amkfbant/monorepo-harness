@@ -63,11 +63,12 @@ const RUN_SOURCE_FILES = [
 /**
  * A hash over ALL of a run's source files — `meta.json`, the structured
  * child files, and the artifact listing (name + size + mtime). Stored in
- * `runs.source_meta_sha256`. The import skip and 6-4 drift detection both
- * use it, so a change to ANY run file (e.g. `review auto` rewriting
- * `review-decision.yaml` without touching `meta.json`) is detected.
+ * `runs.source_meta_sha256`. The import skip and the 6-4 consistency
+ * checker both use it, so a change to ANY run file (e.g. `review auto`
+ * rewriting `review-decision.yaml` without touching `meta.json`) is
+ * detected.
  */
-function runFingerprint(runDir: string, metaRaw: string): string {
+export function runFingerprint(runDir: string, metaRaw: string): string {
   const parts: string[] = [metaRaw];
   for (const name of RUN_SOURCE_FILES) {
     const p = join(runDir, name);

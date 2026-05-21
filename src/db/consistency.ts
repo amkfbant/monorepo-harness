@@ -1,0 +1,246 @@
+import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
+import type Database from "better-sqlite3";
+import { harnessPaths } from "../config/paths.js";
+import { sha256 } from "./import/common.js";
+import { runFingerprint } from "./import/runs.js";
+
+/**
+ * DB / file consistency checker (Phase 6-4).
+ *
+ * The DB is a read model built from files. `checkConsistency` recomputes
+ * the source hashes the importer stored and reports where the DB has
+ * drifted from `runs/` / `projects/` / `policies/`. The dashboard shows
+ * this so an operator knows a stale DB needs `harness db import`.
+ */
+
+export type ConsistencyStatus =
+  | "ok"
+  | "drift"
+  | "missing-file"
+  | "missing-db";
+
+export interface ConsistencyItem {
+  /** "run" | "project" | "policy" */
+  kind: string;
+  /** runId / projectId / repoId */
+  id: string;
+  status: ConsistencyStatus;
+  detail: string;
+}
+
+export interface ConsistencyReport {
+  status: "ok" | "warn" | "error";
+  checkedAt: string;
+  counts: { ok: number; drift: number; missingFile: number; missingDb: number };
+  items: ConsistencyItem[];
+}
+
+export function checkConsistency(opts: {
+  db: Database.Database;
+  harnessRoot: string;
+}): ConsistencyReport {
+  const paths = harnessPaths(opts.harnessRoot);
+  const items: ConsistencyItem[] = [];
+  checkRuns(opts.db, paths.runsDir, items);
+  checkProjects(opts.db, paths.projectsDir, items);
+  checkPolicies(opts.db, paths.policiesDir, items);
+
+  const counts = { ok: 0, drift: 0, missingFile: 0, missingDb: 0 };
+  for (const it of items) {
+    if (it.status === "ok") counts.ok += 1;
+    else if (it.status === "drift") counts.drift += 1;
+    else if (it.status === "missing-file") counts.missingFile += 1;
+    else counts.missingDb += 1;
+  }
+  const clean = items.every((i) => i.status === "ok");
+  return {
+    status: clean ? "ok" : "warn",
+    checkedAt: new Date().toISOString(),
+    counts,
+    items,
+  };
+}
+
+function checkRuns(
+  db: Database.Database,
+  runsDir: string,
+  items: ConsistencyItem[],
+): void {
+  const dbRuns = db
+    .prepare("SELECT run_id, source_meta_sha256 AS h FROM runs")
+    .all() as { run_id: string; h: string }[];
+  const dbIds = new Set(dbRuns.map((r) => r.run_id));
+
+  for (const r of dbRuns) {
+    const runDir = join(runsDir, r.run_id);
+    const metaPath = join(runDir, "meta.json");
+    if (!existsSync(metaPath)) {
+      items.push({
+        kind: "run",
+        id: r.run_id,
+        status: "missing-file",
+        detail: "run dir is absent (cleaned?) but the DB still has the run",
+      });
+      continue;
+    }
+    const fp = runFingerprint(runDir, readFileSync(metaPath, "utf8"));
+    items.push(
+      fp === r.h
+        ? { kind: "run", id: r.run_id, status: "ok", detail: "" }
+        : {
+            kind: "run",
+            id: r.run_id,
+            status: "drift",
+            detail: "run files changed since import — re-run `db import`",
+          },
+    );
+  }
+
+  if (!existsSync(runsDir)) return;
+  for (const e of readdirSync(runsDir, { withFileTypes: true })) {
+    if (!e.isDirectory() || dbIds.has(e.name)) continue;
+    if (!existsSync(join(runsDir, e.name, "meta.json"))) continue;
+    items.push({
+      kind: "run",
+      id: e.name,
+      status: "missing-db",
+      detail: "run exists on disk but not in the DB — re-run `db import`",
+    });
+  }
+}
+
+function checkProjects(
+  db: Database.Database,
+  projectsDir: string,
+  items: ConsistencyItem[],
+): void {
+  // join to the CURRENT profile version and use the importer-recorded
+  // profile_path — never assume the filename equals the project_id, and
+  // never compare against a stale older profile version.
+  const rows = db
+    .prepare(
+      `SELECT p.project_id AS project_id, p.profile_path AS path,
+              pp.source_sha256 AS h
+       FROM projects p
+       JOIN project_profiles pp
+         ON pp.project_id = p.project_id AND pp.version = p.profile_version`,
+    )
+    .all() as { project_id: string; path: string | null; h: string }[];
+  const dbIds = new Set(rows.map((r) => r.project_id));
+
+  for (const r of rows) {
+    if (r.path === null || !existsSync(r.path)) {
+      items.push({
+        kind: "project",
+        id: r.project_id,
+        status: "missing-file",
+        detail: "profile file is gone but the DB still has the project",
+      });
+      continue;
+    }
+    const h = sha256(readFileSync(r.path, "utf8"));
+    items.push(
+      h === r.h
+        ? { kind: "project", id: r.project_id, status: "ok", detail: "" }
+        : {
+            kind: "project",
+            id: r.project_id,
+            status: "drift",
+            detail: "profile changed since import — re-run `db import`",
+          },
+    );
+  }
+
+  if (!existsSync(projectsDir)) return;
+  // missing-db: keyed on the parsed project_id, not the filename stem.
+  for (const f of readdirSync(projectsDir)) {
+    if (!f.endsWith(".yaml")) continue;
+    let projectId: string | null = null;
+    try {
+      const doc = parseYaml(
+        readFileSync(join(projectsDir, f), "utf8"),
+      ) as Record<string, unknown> | null;
+      projectId =
+        doc && typeof doc.project_id === "string" ? doc.project_id : null;
+    } catch {
+      projectId = null; // a malformed profile is surfaced via import_errors
+    }
+    if (projectId === null || dbIds.has(projectId)) continue;
+    items.push({
+      kind: "project",
+      id: projectId,
+      status: "missing-db",
+      detail: "profile exists on disk but not in the DB",
+    });
+  }
+}
+
+function checkPolicies(
+  db: Database.Database,
+  policiesDir: string,
+  items: ConsistencyItem[],
+): void {
+  const dbGen = db
+    .prepare(
+      "SELECT repo_id, repo_policy_sha256 AS h FROM policy_generations",
+    )
+    .all() as { repo_id: string; h: string }[];
+  const dbRepoIds = new Set(dbGen.map((g) => g.repo_id));
+
+  for (const g of dbGen) {
+    const path = join(policiesDir, "repos", `${g.repo_id}.yaml`);
+    if (!existsSync(path)) {
+      items.push({
+        kind: "policy",
+        id: g.repo_id,
+        status: "missing-file",
+        detail: "generated policy file is gone but the DB still has it",
+      });
+      continue;
+    }
+    const h = sha256(readFileSync(path, "utf8"));
+    items.push(
+      h === g.h
+        ? { kind: "policy", id: g.repo_id, status: "ok", detail: "" }
+        : {
+            kind: "policy",
+            id: g.repo_id,
+            status: "drift",
+            detail: "generated policy changed since import",
+          },
+    );
+  }
+
+  // missing-db: a generated-policy sidecar on disk with no DB row — the
+  // policy read model is stale (mirrors importPolicies' sidecar scan).
+  const reposDir = join(policiesDir, "repos");
+  if (!existsSync(reposDir)) return;
+  for (const f of readdirSync(reposDir)) {
+    if (!f.endsWith(".generated.json")) continue;
+    const repoId = f.slice(0, -".generated.json".length);
+    if (dbRepoIds.has(repoId)) continue;
+    items.push({
+      kind: "policy",
+      id: repoId,
+      status: "missing-db",
+      detail: "generated policy sidecar on disk but not in the DB",
+    });
+  }
+}
+
+/** Render a ConsistencyReport as a human-readable block. */
+export function formatConsistencyReport(r: ConsistencyReport): string {
+  const lines = [
+    `db consistency: ${r.status}`,
+    `  ok: ${r.counts.ok}  drift: ${r.counts.drift}  ` +
+      `missing-file: ${r.counts.missingFile}  missing-db: ${r.counts.missingDb}`,
+  ];
+  for (const it of r.items) {
+    if (it.status === "ok") continue;
+    lines.push(`  [${it.status}] ${it.kind} ${it.id} — ${it.detail}`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}

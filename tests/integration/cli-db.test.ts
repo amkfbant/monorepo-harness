@@ -99,4 +99,52 @@ describe("CLI harness db", () => {
     expect(report.projects).toBe(1);
     expect(report.errors).toBe(0);
   });
+
+  it("check-consistency reports ok right after an import", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
+    mkdirSync(join(root, "projects"), { recursive: true });
+    writeFileSync(
+      join(root, "projects", "demo.yaml"),
+      [
+        "version: 1",
+        "project_id: demo",
+        "repo:",
+        "  id: demo",
+        "domains:",
+        "  - id: apps/web",
+        "    root: apps/web",
+        "    kind: app",
+        "",
+      ].join("\n"),
+    );
+    runCli(root, ["db", "import", "--from-files"]);
+    const { out, code } = runCli(root, ["db", "check-consistency"]);
+    expect(code).toBe(0);
+    expect(out).toMatch(/db consistency: ok/);
+  });
+
+  it("check-consistency exits 1 when a profile drifts", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
+    mkdirSync(join(root, "projects"), { recursive: true });
+    const profile = [
+      "version: 1",
+      "project_id: demo",
+      "repo:",
+      "  id: demo",
+      "domains:",
+      "  - id: apps/web",
+      "    root: apps/web",
+      "    kind: app",
+      "",
+    ].join("\n");
+    writeFileSync(join(root, "projects", "demo.yaml"), profile);
+    runCli(root, ["db", "import", "--from-files"]);
+    writeFileSync(
+      join(root, "projects", "demo.yaml"),
+      `${profile}description: drifted\n`,
+    );
+    const { out, code } = runCli(root, ["db", "check-consistency"]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/drift/);
+  });
 });
