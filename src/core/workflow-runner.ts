@@ -358,6 +358,13 @@ export async function runDomainCoding(
           finishedAt: new Date().toISOString(),
         })
         .catch(() => {});
+      // best-effort manifest record on the failure path too, so a failed
+      // run still has an artifact manifest for the dashboard.
+      try {
+        recordRunArtifacts(db, log.runDir, runId);
+      } catch {
+        // non-fatal — see the success path.
+      }
       // Rethrow as a typed error carrying the (now finalized) runId so an
       // orchestrator can record the failed attempt. `harness run` still
       // surfaces it as an exception (message preserved) → exit 2.
@@ -788,8 +795,14 @@ async function runDomainCodingInner(
     });
     // Phase 7-4: record the artifact manifest now that every artifact
     // body has been written. Bodies stay file-backed; this is the DB
-    // manifest the dashboard / `run artifacts` read.
-    recordRunArtifacts(db, log.runDir, runId);
+    // manifest the dashboard / `run artifacts` read. Best-effort: a
+    // manifest failure must not flip a completed run to
+    // failed-internal-error — it is recoverable by a re-export.
+    try {
+      recordRunArtifacts(db, log.runDir, runId);
+    } catch {
+      // the artifact manifest is a DB read-model convenience only.
+    }
     return {
       runId,
       status,

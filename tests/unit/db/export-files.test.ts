@@ -254,6 +254,31 @@ describe("exportRun", () => {
     db.close();
   });
 
+  it("db import skips a db-first run and keeps its diff-result tables", () => {
+    const db = freshDb();
+    const runsDir = tmpDir();
+    insertRun(db, "run-dbf");
+    // a DB-first run populates run_changed_files directly (Phase 7-4)
+    db.prepare(
+      `INSERT INTO run_changed_files (run_id, path, status, allowed, source)
+       VALUES ('run-dbf', 'a.ts', 'tracked', 1, 'post-codex')`,
+    ).run();
+    exportRun(db, "run-dbf", { runsDir });
+    // re-importing from the exported files must NOT wipe the diff tables:
+    // a db-first run is DB-canonical and is skipped by the importer.
+    importRuns(db, runsDir, emptyCounters());
+    expect(
+      (
+        db
+          .prepare(
+            "SELECT count(*) AS n FROM run_changed_files WHERE run_id='run-dbf'",
+          )
+          .get() as { n: number }
+      ).n,
+    ).toBe(1);
+    db.close();
+  });
+
   it("the importer ignores the transient .exporting marker", () => {
     const db = freshDb();
     const runsDir = tmpDir();

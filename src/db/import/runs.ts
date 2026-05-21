@@ -82,8 +82,8 @@ export function importRuns(
     (e) => e.isDirectory(),
   );
 
-  const existingHash = db.prepare(
-    "SELECT source_meta_sha256 AS h FROM runs WHERE run_id = ?",
+  const existingRun = db.prepare(
+    "SELECT source_meta_sha256 AS h, source_mode AS mode FROM runs WHERE run_id = ?",
   );
   const upsertRun = db.prepare(
     `INSERT INTO runs (run_id, repo_id, project_id, repo_path, domain, workflow,
@@ -146,7 +146,19 @@ export function importRuns(
     }
 
     const fingerprint = runFingerprint(runDir, metaRaw);
-    const existing = existingHash.get(runId) as { h: string | null } | undefined;
+    const existing = existingRun.get(runId) as
+      | { h: string | null; mode: string | null }
+      | undefined;
+    // a `db-first` run is DB-canonical (Phase 7). Re-importing it from its
+    // own exported files would be redundant at best and destructive at
+    // worst — the importer cannot reconstruct `run_changed_files` /
+    // `policy_violations`, which a DB-first run populates directly — so
+    // it is skipped. Disaster-recovery reconciliation is a Phase 7-11
+    // concern (`--force-legacy-reconcile`).
+    if (existing && existing.mode === "db-first") {
+      counters.runsSkipped += 1;
+      continue;
+    }
     if (existing && existing.h === fingerprint) {
       counters.runsSkipped += 1;
       continue;

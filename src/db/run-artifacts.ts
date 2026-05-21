@@ -48,29 +48,35 @@ export function recordRunArtifacts(
   runDir: string,
   runId: string,
 ): void {
-  db.prepare("DELETE FROM artifacts WHERE run_id = ?").run(runId);
   const insert = db.prepare(
     `INSERT INTO artifacts (artifact_id, run_id, kind, relative_path,
        content_type, bytes, sha256, storage, created_at, redacted,
        secret_suspect)
      VALUES (?, ?, ?, ?, ?, ?, ?, 'file', ?, 0, 0)`,
   );
-  for (const file of readdirSync(runDir, { withFileTypes: true })) {
-    if (!file.isFile() || file.name.startsWith(".")) continue;
-    const name = file.name;
-    const abs = join(runDir, name);
-    const st = statSync(abs);
-    insert.run(
-      `${runId}:${name}`,
-      runId,
-      ARTIFACT_KINDS[name] ?? "other",
-      name,
-      contentType(name),
-      st.size,
-      // hash the raw bytes — an artifact may be binary, where a UTF-8
-      // decode would corrupt the digest.
-      sha256(readFileSync(abs)),
-      new Date(st.mtimeMs).toISOString(),
-    );
-  }
+  // wrap the replace in a transaction so a mid-scan stat/read failure
+  // cannot leave a partially-rebuilt manifest. better-sqlite3 nests this
+  // as a SAVEPOINT when the importer already holds a transaction.
+  const txn = db.transaction(() => {
+    db.prepare("DELETE FROM artifacts WHERE run_id = ?").run(runId);
+    for (const file of readdirSync(runDir, { withFileTypes: true })) {
+      if (!file.isFile() || file.name.startsWith(".")) continue;
+      const name = file.name;
+      const abs = join(runDir, name);
+      const st = statSync(abs);
+      insert.run(
+        `${runId}:${name}`,
+        runId,
+        ARTIFACT_KINDS[name] ?? "other",
+        name,
+        contentType(name),
+        st.size,
+        // hash the raw bytes — an artifact may be binary, where a UTF-8
+        // decode would corrupt the digest.
+        sha256(readFileSync(abs)),
+        new Date(st.mtimeMs).toISOString(),
+      );
+    }
+  });
+  txn();
 }
