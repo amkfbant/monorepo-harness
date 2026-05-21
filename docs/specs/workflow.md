@@ -236,7 +236,61 @@ Phase 8: DB complete,           file scan = migration-only
 ```
 
 Phase 6 のスコープは read-side のみ。`runDomainCoding` 等が DB へ直接書く write
-path 化は Phase 7 以降。
+path 化は Phase 7。
+
+## Phase 7: DB-first write path（実装中・target spec）
+
+Phase 7 で runtime write path を DB-first 化する（[`db.md`](./db.md) の
+「Phase 7」節）。**workflow の状態遷移と観測挙動は変えない** — 変わるのは state
+の保存先（file → DB）だけ。確定は `phase7-close` 時点。
+
+### write+export パターン
+
+移行された各 write コマンドは次の形をとる:
+
+```txt
+openDb(read-write)
+  → db.transaction(() => { repository の write メソッド群（guard 付き） })
+  → commit（db_revision を bump）
+  → exportFiles(db, 影響した id 群)   ← atomic write、export_records を更新
+  → close
+```
+
+`runDomainCoding` は codex exec で数分かかるため 1 トランザクションにしない。
+現行の「stage ごとの `meta.json` 逐次更新」と同じく、**stage ごとに短い
+トランザクション + export** を行う（run 作成 / codex 完了 / diff 検証 /
+finalize）。crash 時は最後に commit した stage で `runs` 行が止まり、現行の部分
+`meta.json` と同じ観測挙動になる。
+
+### state transition guard
+
+`approved` / `changes_requested` / `rejected` への遷移は引き続き
+`review process` のみが行う（安全モデル不変）。Phase 7 ではこの遷移を
+expected-status guard 付きの `updateRunStatus` で実行する: 現在 status が
+expected と一致した場合だけ成功し、不一致なら `StateConflictError`。event append
+は status update と同一トランザクション。同一 `operation_id` の再実行は idempotent
+no-op。
+
+### review auto と review process の権限境界
+
+```txt
+review auto:
+  - review proposal / suggested decision / rationale を DB に書く
+  - runs.status は変更しない（approved/changes_requested/rejected にしない）
+
+review process:
+  - human/operator decision を検証
+  - guard 付き updateRunStatus で status transition を実行
+```
+
+`review auto` の DB write は proposal 系に限定し、status guard を通る遷移は
+一切呼ばない。LLM の出力が状態を動かさない原則は Phase 7 でも不変。
+
+### `run_changed_files` / `policy_violations`
+
+Phase 6 で「file import から取れない」として繰り延べた 2 テーブルは、Phase 7 で
+`runDomainCoding` 自身が diff 検証結果を in-memory に持っているため DB へ直接
+書ける。`runDomainCoding` の DB-first 化でこの read-side の穴が閉じる。
 
 ## knowledge-candidates.yaml の 4 signal
 

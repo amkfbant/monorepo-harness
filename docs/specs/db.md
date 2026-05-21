@@ -10,7 +10,10 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 
 > **ステータス: Phase 6 close 済み（現状仕様）。** DB read model は `src/db/` に
 > 実装済み。schema の確定値は `src/db/schema.ts`（`MIGRATION_V1_STATEMENTS`）。
-> write-side の DB 化は Phase 7 以降。
+> write-side の DB 化は Phase 7。**Phase 7（DB-first write path）は実装中** —
+> 下記「Phase 7 — DB-first write path」節は target spec で、確定するのは
+> `phase7-close` 時点。設計書は
+> [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)。
 
 ## source-of-truth transition
 
@@ -120,3 +123,105 @@ harness db status             # schema version / table 数 / path / size
 harness db import --from-files # files から DB を構築
 harness db check-consistency  # DB ↔ files の drift 検出
 ```
+
+## Phase 7 — DB-first write path（実装中・target spec）
+
+Phase 7 は **runtime write path を DB-first 化**する。`runDomainCoding` /
+`review` / `rerun` / `cleanup` / `backlog` / `knowledge` / `pr create` が DB
+トランザクションを canonical な書き込みとし、files をその compatibility export
+にする。設計の確定は `phase7-close` 時点。
+
+### source-of-truth の反転
+
+Phase 6 では files が write-source、DB が read-source だった。Phase 7 では
+runtime state について反転する。
+
+```txt
+Phase 7 で DB が canonical:
+  run state / run events / review decisions / changed files /
+  policy violations / backlog state / knowledge decision state /
+  artifact manifest / pull request state / cleanup action records
+
+Phase 8 まで file-backed storage が canonical:
+  artifact body（codex-*.log / final-diff.patch / summary）/ large logs /
+  patch body / knowledge entry の markdown body（docs/knowledge/**/*.md）
+```
+
+「files は DB から導出される compatibility export」という表現は *runtime
+workflow state に限って* 正しい。artifact body と knowledge markdown body は
+Phase 8 まで file-backed storage のままで、DB はその manifest（path / sha256 /
+metadata）と参照整合性のみを持つ。
+
+### `source_mode` invariant（移行中の二重 source 防止）
+
+Phase 7 はサブフェーズごとにコマンドを移行するため、移行途中は DB-first 化済み
+コマンドと file-first のままのコマンドが共存する。各 runtime row（`runs` /
+`backlog_items` / `knowledge_candidates` / `knowledge_entries`）は
+`source_mode ∈ {legacy-file, db-first}` を持つ。
+
+```txt
+migration invariant:
+  DB-first row（source_mode='db-first'）を対象にする write command は、
+  file-first path で files を直接 mutation してはならない。
+```
+
+- Phase 6 importer で取り込んだ既存 row は `legacy-file`。DB-first 化した
+  コマンドが作成・遷移させた row は `db-first`。
+- file-first のまま残るコマンドが `db-first` row を触ろうとしたら `SourceModeError`
+  で reject（移行待ちであることを明示）。
+- 各 runtime コマンドの entrypoint で `source_mode` を見て DB-first writer か
+  legacy writer かにルーティングする。
+
+### state transition guard
+
+status 遷移は expected-status guard を通す。`runs` 行の status update は
+`WHERE status IN (expectedStatuses)` 付きで実行し、`changes === 0` なら
+`StateConflictError`。event append は同一トランザクション。`run_events` は
+`(run_id, seq)` unique。`operation_id` 重複は idempotent no-op（`operations`
+ledger に記録）。同 invariant を backlog / knowledge の status 遷移にも適用する。
+
+### export と integrity tracking
+
+各 write コマンドは DB commit 直後に影響範囲を scoped export する
+（`src/db/export-files.ts`）。file は temp file へ書いて rename する atomic
+write。run directory は `.exporting` marker と `.export-manifest.json` を使う。
+export 成否は `export_records` / `exported_files` に記録し、`runs.export_status`
+（`synced` / `dirty` / `failed`）/ `last_export_revision` / `last_exported_at`
+を更新する。export 失敗は rollback しない（commit 済み DB が canonical）。
+`db check-consistency` と再 export で回復する。
+
+### import semantics（Phase 7）
+
+source-of-truth が反転するため、stale な files で DB-first row を巻き戻さない。
+
+```txt
+db import --from-files
+  - legacy-file row: 従来どおり upsert
+  - db-first row: exported db_revision が DB と一致するなら no-op。
+    file が古ければ overwrite せず import_errors / レポートに conflict 記録
+
+db import --from-files --force-legacy-reconcile
+  - 明示指定時のみ db-first row の上書きを許す（CI / 復旧用途）
+```
+
+### schema v2
+
+Phase 7 で migration v2 を追加する（`runMigrations` は idempotent）。
+
+- `runs` / `backlog_items` / `knowledge_candidates` / `knowledge_entries` に
+  列追加: `source_mode` / `db_revision` / `last_export_revision` /
+  `export_status` / `last_exported_at` / `last_export_error`。既存 row は
+  `source_mode='legacy-file'`。
+- 新規テーブル: `export_records` / `exported_files` / `operations` /
+  `pull_requests` / `cleanup_actions`。
+- `run_events` に `(run_id, seq)` unique 制約。
+
+### スコープ外（Phase 8 以降）
+
+- artifact body / 大型 body の DB 格納（`artifact_blobs`）。
+- file export の optional 化（Phase 7 は常に export する）。
+- `domain_locks` テーブル（Phase 7 は file lock を維持）。
+- project profile / generated policy の write path 自体の DB-first 化。Phase 7
+  close のスコープは runtime write path に限定し、`projects/*.yaml` /
+  `policies/repos/*.yaml` は user-authored config file のまま（DB は import して
+  参照する read model 扱い）。

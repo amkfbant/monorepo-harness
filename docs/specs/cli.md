@@ -163,6 +163,21 @@ harness db check-consistency --json   # ConsistencyReport を JSON 出力
 - `db check-consistency` は drift / missing があれば exit 1（CI で gate 可能）。
 - exit code: `0` 正常 / `1` `DbError`、または `check-consistency` の drift/missing 検出。
 
+> **Phase 7（実装中）で追加予定。** runtime write path が DB-first 化されると
+> 次のサブコマンド／フラグが加わる。確定は `phase7-close` 時点。
+>
+> ```bash
+> harness db export-files                # DB から全 file artifact を再 export
+> harness db export-files --scope run --id <id>   # scope 指定 export
+> harness db import --from-files --force-legacy-reconcile  # db-first row の上書きを許可
+> ```
+>
+> - `db export-files` は DB（write-source）から files（compatibility export）を
+>   書き直す。atomic write、`export_records` に成否を記録。
+> - Phase 7 の `db import` は db-first row を stale file で巻き戻さない。file が
+>   古い db-first row は conflict として報告し、`--force-legacy-reconcile` 指定時
+>   のみ上書きする。詳細は [`db.md`](./db.md) の「Phase 7」節。
+
 ## `harness dashboard export`
 
 DB read model から read-only な static HTML ダッシュボードを生成する（Phase 6 で
