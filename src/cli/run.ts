@@ -111,6 +111,7 @@ import {
   KnowledgeContextError,
   domainSlug,
 } from "../core/knowledge-context.js";
+import { registerProjectCommands } from "./project.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -1691,6 +1692,8 @@ knowledgeCmd
     });
     process.stdout.write(formatDigest(digest));
   });
+
+registerProjectCommands(program);
 
 program.parseAsync(process.argv).catch((e: unknown) => {
   process.stderr.write(`harness error: ${(e as Error).message}\n`);

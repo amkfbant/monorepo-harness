@@ -12,6 +12,12 @@ export interface HarnessPaths {
   indexDbPath: string;
   /** personal backlog dir (Phase 4-3): open/ doing/ done/ deferred/. */
   backlogDir: string;
+  /** project profiles (Phase 5): projects/<project-id>.yaml. */
+  projectsDir: string;
+  /** reusable template catalogs (Phase 5): policy / commands / context-packs. */
+  templatesDir: string;
+  /** absolute path to a project profile by id. */
+  projectProfilePath: (projectId: string) => string;
 }
 
 // repo identifiers are interpolated directly into a filesystem path, so they
@@ -30,6 +36,7 @@ export function assertValidRepoId(id: string): void {
 
 export function harnessPaths(root: string): HarnessPaths {
   const policiesDir = join(root, "policies");
+  const projectsDir = join(root, "projects");
   return {
     root,
     runsDir: join(root, "runs"),
@@ -38,10 +45,16 @@ export function harnessPaths(root: string): HarnessPaths {
     policiesDir,
     indexDbPath: join(root, ".harness", "index.sqlite"),
     backlogDir: join(root, "backlog"),
+    projectsDir,
+    templatesDir: join(root, "templates"),
     globalPolicyPath: join(policiesDir, "global.yaml"),
     repoPolicyPath: (id) => {
       assertValidRepoId(id);
       return join(policiesDir, "repos", `${id}.yaml`);
+    },
+    projectProfilePath: (id) => {
+      assertValidRepoId(id);
+      return join(projectsDir, `${id}.yaml`);
     },
   };
 }
