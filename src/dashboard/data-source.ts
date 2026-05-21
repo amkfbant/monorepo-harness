@@ -9,6 +9,17 @@ import {
   type CommandResultRow,
   type ReviewDecisionRow,
 } from "../db/repositories/runs.js";
+import {
+  metricsSummary,
+  inboxSummary,
+  knowledgeDigest,
+  backlogList,
+  type AggregateFilter,
+  type DbMetricsSummary,
+  type DbInboxSummary,
+  type DbKnowledgeDigest,
+  type DbBacklogSummary,
+} from "../db/repositories/aggregates.js";
 
 /**
  * Dashboard data-source seam (Phase 6-5).
@@ -27,13 +38,18 @@ export interface DashboardDataSource {
   getRerunChain(runId: string): RerunChainNode[];
   getCommandResults(runId: string): CommandResultRow[];
   getReviewDecision(runId: string): ReviewDecisionRow | null;
+  // project-aware aggregates (Phase 6-6)
+  metricsSummary(filter?: AggregateFilter): DbMetricsSummary;
+  inboxSummary(filter?: AggregateFilter): DbInboxSummary;
+  knowledgeDigest(filter?: AggregateFilter): DbKnowledgeDigest;
+  backlogList(filter?: AggregateFilter): DbBacklogSummary;
 }
 
 /** The DB-backed `DashboardDataSource` — the only Phase 6 implementation. */
 export class DbDashboardDataSource implements DashboardDataSource {
   private readonly runs: RunRepository;
 
-  constructor(db: Database.Database) {
+  constructor(private readonly db: Database.Database) {
     this.runs = new RunRepository(db);
   }
 
@@ -57,5 +73,17 @@ export class DbDashboardDataSource implements DashboardDataSource {
   }
   getReviewDecision(runId: string): ReviewDecisionRow | null {
     return this.runs.getReviewDecision(runId);
+  }
+  metricsSummary(filter?: AggregateFilter): DbMetricsSummary {
+    return metricsSummary(this.db, filter);
+  }
+  inboxSummary(filter?: AggregateFilter): DbInboxSummary {
+    return inboxSummary(this.db, filter);
+  }
+  knowledgeDigest(filter?: AggregateFilter): DbKnowledgeDigest {
+    return knowledgeDigest(this.db, filter);
+  }
+  backlogList(filter?: AggregateFilter): DbBacklogSummary {
+    return backlogList(this.db, filter);
   }
 }

@@ -289,6 +289,40 @@ describe("runFullImport", () => {
     d.close();
   });
 
+  it("derives a backlog item's repo_id from its project (Phase 6-6)", () => {
+    const root = normalRoot();
+    // a second backlog item attributed to project "demo"
+    writeFileSync(
+      join(root, "backlog", "open", "item-20260521-002.yaml"),
+      [
+        "id: item-20260521-002",
+        "title: project-attributed",
+        "domain: apps/web",
+        "goal: g",
+        "status: open",
+        "priority: medium",
+        "tags: []",
+        "projectId: demo",
+        "createdAt: 2026-05-21T00:00:00Z",
+        "linkedRuns: []",
+        "",
+      ].join("\n"),
+    );
+    const d = db(root);
+    runFullImport(d, { harnessRoot: root });
+    const row = d
+      .prepare(
+        "SELECT project_id, repo_id FROM backlog_items WHERE item_id = ?",
+      )
+      .get("item-20260521-002") as {
+      project_id: string;
+      repo_id: string | null;
+    };
+    expect(row.project_id).toBe("demo");
+    expect(row.repo_id).toBe("demo"); // derived from projects.repo_id
+    d.close();
+  });
+
   it("--reset empties tables before importing", () => {
     const root = normalRoot();
     const d = db(root);

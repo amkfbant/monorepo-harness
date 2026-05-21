@@ -114,6 +114,13 @@ import {
 import { registerProjectCommands } from "./project.js";
 import { registerDbCommands } from "./db.js";
 import {
+  hasScopeFilter,
+  runScopedMetrics,
+  runScopedInbox,
+  runScopedKnowledgeDigest,
+  runScopedBacklog,
+} from "./db-scope.js";
+import {
   prepareProjectRun,
   type PreparedProjectRun,
 } from "../project/run-project.js";
@@ -1084,8 +1091,15 @@ program
   )
   .option("--failed", "only the failed section", false)
   .option("--cleanup", "only the cleanup-candidates section", false)
+  .option("--project <id>", "scope to a project (DB-backed, Phase 6)")
+  .option("--repo-id <id>", "scope to a repo (DB-backed, Phase 6)")
   .option("--json", "emit JSON instead of text", false)
   .action(async (raw: Record<string, unknown>) => {
+    // a project/repo/domain scope answers from the DB read model (Phase 6-6)
+    if (hasScopeFilter(raw)) {
+      runScopedInbox(getHarnessRoot(), raw);
+      return;
+    }
     const harnessRoot = getHarnessRoot();
     const paths = harnessPaths(harnessRoot);
     const inbox = await buildInbox({
@@ -1167,7 +1181,14 @@ backlogCmd
   .command("list")
   .description("list backlog items")
   .option("--status <status>", "open | doing | done | deferred")
+  .option("--project <id>", "scope to a project (DB-backed, Phase 6)")
+  .option("--repo-id <id>", "scope to a repo (DB-backed, Phase 6)")
+  .option("--json", "emit JSON instead of text")
   .action(async (raw: Record<string, unknown>) => {
+    if (hasScopeFilter(raw)) {
+      runScopedBacklog(getHarnessRoot(), raw);
+      return;
+    }
     const paths = harnessPaths(getHarnessRoot());
     const status =
       raw.status !== undefined
@@ -1447,7 +1468,14 @@ metricsCmd
   .command("summary")
   .description("run / review / retry / safety summary")
   .option("--since <dur>", "window, e.g. 30d / 12h")
+  .option("--project <id>", "scope to a project (DB-backed, Phase 6)")
+  .option("--repo-id <id>", "scope to a repo (DB-backed, Phase 6)")
+  .option("--json", "emit JSON instead of text")
   .action(async (raw: Record<string, unknown>) => {
+    if (hasScopeFilter(raw)) {
+      runScopedMetrics(getHarnessRoot(), raw);
+      return;
+    }
     const paths = harnessPaths(getHarnessRoot());
     const since = metricsSince(raw);
     const m = await buildMetrics({
@@ -1927,7 +1955,14 @@ knowledgeCmd
   .description("aggregate knowledge candidates / promotions / rejections")
   .option("--since <dur>", "only items within this window, e.g. 7d / 12h")
   .option("--domain <domain>", "restrict to one domain")
+  .option("--project <id>", "scope to a project (DB-backed, Phase 6)")
+  .option("--repo-id <id>", "scope to a repo (DB-backed, Phase 6)")
+  .option("--json", "emit JSON instead of text")
   .action(async (raw: Record<string, unknown>) => {
+    if (hasScopeFilter(raw)) {
+      runScopedKnowledgeDigest(getHarnessRoot(), raw);
+      return;
+    }
     const harnessRoot = getHarnessRoot();
     const paths = harnessPaths(harnessRoot);
     let since: Date | undefined;

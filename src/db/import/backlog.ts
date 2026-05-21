@@ -37,6 +37,12 @@ export function importBacklog(
   const deleteLinks = db.prepare(
     "DELETE FROM backlog_run_links WHERE item_id = ?",
   );
+  // a backlog item has no repo of its own — it is derived from the item's
+  // project (importProjects runs first in runFullImport), so that
+  // `backlog list --repo-id` resolves.
+  const projectRepoId = db.prepare(
+    "SELECT repo_id FROM projects WHERE project_id = ?",
+  );
   const insertLink = db.prepare(
     `INSERT INTO backlog_run_links (item_id, run_id, linked_at)
      VALUES (?, ?, ?)
@@ -73,12 +79,17 @@ export function importBacklog(
       const links = Array.isArray(doc.linkedRuns)
         ? doc.linkedRuns.filter((r): r is string => typeof r === "string")
         : [];
+      const projectId =
+        typeof doc.projectId === "string" ? doc.projectId : null;
+      const repoIdRow =
+        projectId !== null
+          ? (projectRepoId.get(projectId) as { repo_id: string } | undefined)
+          : undefined;
       const tx = db.transaction(() => {
         upsertItem.run({
           item_id: id,
-          project_id:
-            typeof doc.projectId === "string" ? doc.projectId : null,
-          repo_id: null,
+          project_id: projectId,
+          repo_id: repoIdRow?.repo_id ?? null,
           domain: typeof doc.domain === "string" ? doc.domain : "(unknown)",
           title: typeof doc.title === "string" ? doc.title : "(untitled)",
           goal: typeof doc.goal === "string" ? doc.goal : "",
