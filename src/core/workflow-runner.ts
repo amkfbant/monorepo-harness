@@ -24,6 +24,11 @@ import {
 import { openDb } from "../db/connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { createDbRunLog } from "../db/run-log-db.js";
+import { recordRunArtifacts } from "../db/run-artifacts.js";
+import {
+  RunRepository,
+  type ChangedFileInput,
+} from "../db/repositories/runs.js";
 import { writeArtifact } from "../logging/artifacts.js";
 import { generateRunId } from "./run-id.js";
 import { runAllowedCommands } from "./command-runner.js";
@@ -336,6 +341,7 @@ export async function runDomainCoding(
         baseSha,
         gitTimeoutMs,
         log,
+        db,
       });
     } catch (e) {
       await log
@@ -358,8 +364,12 @@ export async function runDomainCoding(
       throw new RunFinalizedError(runId, "failed-internal-error", e);
     }
   } finally {
-    db?.close();
-    await lock.release();
+    // close the DB even if it throws, but never skip the lock release.
+    try {
+      db?.close();
+    } finally {
+      await lock.release();
+    }
   }
 }
 
@@ -372,12 +382,13 @@ interface InnerOpts {
   baseSha: string;
   gitTimeoutMs: number;
   log: RunLog;
+  db: Database.Database;
 }
 
 async function runDomainCodingInner(
   inner: InnerOpts,
 ): Promise<RunDomainCodingResult> {
-  const { opts, policy, paths, runId, branch, baseSha, gitTimeoutMs, log } =
+  const { opts, policy, paths, runId, branch, baseSha, gitTimeoutMs, log, db } =
     inner;
     await log.emit({ type: "run_started", runId, baseSha });
     await writeArtifact(
@@ -606,6 +617,46 @@ async function runDomainCodingInner(
       };
     }
 
+    // Phase 7-4: persist the diff-verification result to the DB. Phase 6
+    // left run_changed_files / policy_violations empty (the importer
+    // cannot derive them from files); a DB-first run writes them here
+    // from the in-memory validation result.
+    const runRepo = new RunRepository(db);
+    runRepo.upsertViolations(
+      runId,
+      violations.map((v) => ({ path: v.path, rule: v.reason })),
+    );
+    if (diff.ok) {
+      const diffSource = commandsRan ? "post-command" : "post-codex";
+      const changedFiles: ChangedFileInput[] = [
+        ...diff.trackedChangedPaths.map((p) => ({
+          path: p,
+          status: "tracked",
+          allowed: !violatedPaths.has(p),
+          source: diffSource,
+        })),
+        ...untrackedAllowed.map((p) => ({
+          path: p,
+          status: "untracked",
+          allowed: true,
+          source: diffSource,
+        })),
+        ...untrackedDenied.map((p) => ({
+          path: p,
+          status: "untracked",
+          allowed: false,
+          source: diffSource,
+        })),
+        ...untrackedIgnored.map((p) => ({
+          path: p,
+          status: "ignored",
+          allowed: true,
+          source: diffSource,
+        })),
+      ];
+      runRepo.upsertChangedFiles(runId, changedFiles);
+    }
+
     // Status priority (evaluated against POST-command worktree if commands ran):
     //   diff failure > codex timeout > codex non-zero > policy violation
     //   > command failure > needs_review
@@ -735,6 +786,10 @@ async function runDomainCodingInner(
       commandResultsCount: commandResults.length,
       changedFilesCount,
     });
+    // Phase 7-4: record the artifact manifest now that every artifact
+    // body has been written. Bodies stay file-backed; this is the DB
+    // manifest the dashboard / `run artifacts` read.
+    recordRunArtifacts(db, log.runDir, runId);
     return {
       runId,
       status,

@@ -117,6 +117,25 @@ export interface UpdateRunStatusResult {
   status: string;
 }
 
+/** One row of `run_changed_files` — a path the run touched. */
+export interface ChangedFileInput {
+  path: string;
+  /** `tracked` | `untracked` | `ignored` */
+  status: string;
+  /** false when path policy denied the path */
+  allowed: boolean;
+  /** `post-codex` | `post-command` — which diff pass produced this */
+  source: string;
+}
+
+/** One row of `policy_violations` — a path path-policy rejected. */
+export interface ViolationInput {
+  path: string;
+  /** the rule kind: `deny_write` | `not_in_write_scope` | `unsafe_path` */
+  rule: string;
+  reason?: string;
+}
+
 const SUMMARY_COLUMNS = `run_id, repo_id, project_id, domain, status,
   safety_status, reviewer, started_at, finished_at, rerun_attempt, pr_url`;
 
@@ -482,6 +501,50 @@ export class RunRepository {
       throw new DbError(`updateRunStatus: no run '${runId}'`);
     }
     return r.status;
+  }
+
+  /**
+   * Replace a run's `run_changed_files` rows with the diff-verification
+   * result. Phase 6 left this table empty (the importer cannot derive it
+   * from files); a DB-first run populates it directly (Phase 7-4).
+   */
+  upsertChangedFiles(runId: string, files: ChangedFileInput[]): void {
+    const txn = this.db.transaction(() => {
+      this.db
+        .prepare("DELETE FROM run_changed_files WHERE run_id = ?")
+        .run(runId);
+      const insert = this.db.prepare(
+        `INSERT INTO run_changed_files (run_id, path, status, allowed, source)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      for (const f of files) {
+        insert.run(runId, f.path, f.status, f.allowed ? 1 : 0, f.source);
+      }
+    });
+    txn();
+  }
+
+  /**
+   * Replace a run's `policy_violations` rows with the validation result.
+   * Like `run_changed_files`, deferred in Phase 6 and populated directly
+   * by a DB-first run.
+   */
+  upsertViolations(runId: string, violations: ViolationInput[]): void {
+    const txn = this.db.transaction(() => {
+      this.db
+        .prepare("DELETE FROM policy_violations WHERE run_id = ?")
+        .run(runId);
+      // OR IGNORE: the (run_id, path, rule) PK absorbs a path that would
+      // otherwise be reported twice with the same rule.
+      const insert = this.db.prepare(
+        `INSERT OR IGNORE INTO policy_violations (run_id, path, rule, reason)
+         VALUES (?, ?, ?, ?)`,
+      );
+      for (const v of violations) {
+        insert.run(runId, v.path, v.rule, v.reason ?? null);
+      }
+    });
+    txn();
   }
 }
 

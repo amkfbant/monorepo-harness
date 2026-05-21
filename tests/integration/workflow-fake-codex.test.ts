@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runDomainCoding } from "../../src/core/workflow-runner.js";
 import { createFakeCodexRunner } from "../../src/codex/fake-codex-runner.js";
+import { openDb } from "../../src/db/connection.js";
 
 function setupRepo(): string {
   const repo = mkdtempSync(join(tmpdir(), "harness-target-"));
@@ -143,6 +144,84 @@ describe("runDomainCoding (fake codex)", () => {
       /package\.json.*deny_write/,
     );
     expect(existsSync(join(harness, "workspaces", r.runId, "repo"))).toBe(true);
+    // Phase 7-4: the violation is recorded in the DB read model
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const viol = db
+        .prepare(
+          "SELECT path, rule FROM policy_violations WHERE run_id = ?",
+        )
+        .all(r.runId) as { path: string; rule: string }[];
+      expect(viol).toContainEqual({ path: "package.json", rule: "deny_write" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("Phase 7-3/7-4: a run populates the DB read model", async () => {
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 1;\n",
+        );
+        writeFileSync(join(cwd, "apps/user/src/new.ts"), "export const n = 1;\n");
+      },
+      stdout: "ok\n",
+    });
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "bump x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+    expect(r.status).toBe("needs_review");
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const row = db
+        .prepare("SELECT status, source_mode FROM runs WHERE run_id = ?")
+        .get(r.runId) as { status: string; source_mode: string };
+      expect(row).toEqual({ status: "needs_review", source_mode: "db-first" });
+
+      const events = (
+        db
+          .prepare("SELECT count(*) AS n FROM run_events WHERE run_id = ?")
+          .get(r.runId) as { n: number }
+      ).n;
+      expect(events).toBeGreaterThan(0);
+
+      const changed = (
+        db
+          .prepare("SELECT path FROM run_changed_files WHERE run_id = ?")
+          .all(r.runId) as { path: string }[]
+      ).map((c) => c.path);
+      expect(changed).toContain("apps/user/src/new.ts");
+
+      // a healthy, in-scope run has no policy violations
+      expect(
+        (
+          db
+            .prepare(
+              "SELECT count(*) AS n FROM policy_violations WHERE run_id = ?",
+            )
+            .get(r.runId) as { n: number }
+        ).n,
+      ).toBe(0);
+
+      const artifacts = (
+        db
+          .prepare("SELECT relative_path FROM artifacts WHERE run_id = ?")
+          .all(r.runId) as { relative_path: string }[]
+      ).map((a) => a.relative_path);
+      expect(artifacts).toContain("meta.json");
+      expect(artifacts).toContain("summary.md");
+    } finally {
+      db.close();
+    }
   });
 
   it("ignore_untracked filters .gitignore'd output without making it invisible", async () => {

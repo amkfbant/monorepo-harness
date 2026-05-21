@@ -13,32 +13,7 @@ import {
   clearImportError,
   type ImportCounters,
 } from "./common.js";
-
-/** Artifact kind keyed by the run-dir filename. */
-const ARTIFACT_KINDS: Record<string, string> = {
-  "meta.json": "meta",
-  "events.jsonl": "events",
-  "codex-prompt.md": "codex-prompt",
-  "codex-output.log": "codex-output",
-  "codex-error.log": "codex-error",
-  "final-diff.patch": "diff",
-  "summary.md": "summary",
-  "review-request.md": "review-request",
-  "review-decision.yaml": "review-decision",
-  "resolved-policy.yaml": "resolved-policy",
-  "knowledge-candidates.yaml": "knowledge-candidates",
-  "context-pack-manifest.yaml": "context-pack-manifest",
-};
-
-function contentType(name: string): string {
-  if (name.endsWith(".md")) return "text/markdown";
-  if (name.endsWith(".json")) return "application/json";
-  if (name.endsWith(".jsonl")) return "application/x-ndjson";
-  if (name.endsWith(".yaml")) return "text/yaml";
-  if (name.endsWith(".patch")) return "text/x-patch";
-  if (name.endsWith(".log")) return "text/plain";
-  return "application/octet-stream";
-}
+import { recordRunArtifacts } from "../run-artifacts.js";
 
 /** Child tables cleared before a run is re-imported (replace semantics). */
 const RUN_CHILD_TABLES = [
@@ -185,7 +160,7 @@ export function importRuns(
       importCommandResults(db, runId, meta);
       importEvents(db, runDir, runId);
       importReviewDecision(db, runDir, runId, counters);
-      importArtifacts(db, runDir, runId);
+      recordRunArtifacts(db, runDir, runId);
       importContextPacks(db, runDir, runId, counters);
     });
     tx();
@@ -352,37 +327,6 @@ function importReviewDecision(
   }
   // the decision parsed cleanly — clear any stale error from a prior import
   clearImportError(db, path);
-}
-
-function importArtifacts(
-  db: Database.Database,
-  runDir: string,
-  runId: string,
-): void {
-  const insert = db.prepare(
-    `INSERT INTO artifacts (artifact_id, run_id, kind, relative_path,
-       content_type, bytes, sha256, storage, created_at, redacted, secret_suspect)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'file', ?, 0, 0)`,
-  );
-  for (const file of readdirSync(runDir, { withFileTypes: true })) {
-    // skip dotfiles — the Phase 7 export marker is not a run artifact.
-    if (!file.isFile() || file.name.startsWith(".")) continue;
-    const name = file.name;
-    const abs = join(runDir, name);
-    const st = statSync(abs);
-    insert.run(
-      `${runId}:${name}`,
-      runId,
-      ARTIFACT_KINDS[name] ?? "other",
-      name,
-      contentType(name),
-      st.size,
-      // hash the raw bytes — an artifact may be binary, where a UTF-8
-      // decode would corrupt the digest.
-      sha256(readFileSync(abs)),
-      new Date(st.mtimeMs).toISOString(),
-    );
-  }
 }
 
 function importContextPacks(
