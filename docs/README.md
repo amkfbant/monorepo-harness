@@ -19,13 +19,13 @@ docs/
   superpowers/plans/       ← 実装計画 (history 含む; 完了後も残す)
 ```
 
-## Phase 2 の機能（run の後段）
+## harness の機能（run の後段）
 
-`harness run` の後に続く一連の subcommand。詳細は [`specs/cli.md`](./specs/cli.md)、Phase 2 全体のクローズ状況は [`reports/2026-05-21-phase2-close.md`](./reports/2026-05-21-phase2-close.md)。
+`harness run` の後に続く一連の subcommand（Phase 2〜3）。詳細は [`specs/cli.md`](./specs/cli.md)。クローズ状況は [`reports/2026-05-21-phase2-close.md`](./reports/2026-05-21-phase2-close.md) / [`reports/2026-05-21-phase3-close.md`](./reports/2026-05-21-phase3-close.md)。
 
 | subcommand | 役割 |
 |------------|------|
-| `harness review list [--all\|--status\|--domain\|--limit\|--json]` | review queue（needs_review + changes_requested）を一覧 |
+| `harness review list [--all\|--status\|--domain\|--limit\|--json\|--use-index]` | review queue（needs_review + changes_requested）を一覧 |
 | `harness review auto --run-id <id>` | reviewer agent（read-only codex）が `review-decision.yaml` を生成 |
 | `harness review evaluate / compare` | reviewer agent を N 回走らせ verdict のばらつきを観測 / 2 decision を比較（Phase 3-2） |
 | `harness review process --run-id <id>` | `review-decision.yaml` を適用し status 遷移 |

@@ -4,7 +4,7 @@
 
 Codex はワークツリー内のファイルを直接編集し、ハーネスは事後に `git diff` を取って **policy の `write` / `deny_write` スコープ** で変更 path を検証する（`read` は codex への prompt/context 用で、読み取りの enforcement はしない）。スコープ外への書き込み・secret 漏洩・symlink 追従などを検出し、レビュー用の artifact 一式を `runs/<runId>/` に残す。
 
-> **Status:** Phase 2 close（試験運用可能なファイルベースのハーネス）。`codex 実行 → 検証 → レビュー → 再実行 → 知見昇格 → cleanup` までを人間が安全に操作できる。
+> **Status:** Phase 3 close。Phase 2（ファイルベースで `codex 実行 → 検証 → レビュー → 再実行 → 知見昇格 → cleanup`）に加え、Phase 3 で review-driven retry loop / reviewer 品質評価 / knowledge context 注入 / SQLite index / GitHub PR 連携を追加。`stronger sandbox`（Phase 3-7）は Deferred。
 
 ## 必要環境
 
@@ -103,14 +103,23 @@ npm run --silent harness -- knowledge reject --run-id <runId> --index <n> --revi
 | [`docs/reports/`](./docs/reports/) | 実機検証ログ + finding registry |
 | [`docs/policy-semantics.md`](./docs/policy-semantics.md) | minimatch root-anchored の落とし穴（policy を書く前に） |
 
-## Phase 2 のスコープと Phase 3
+## Phase 3 で追加した機能
 
-Phase 2 は **ファイルベース** で、人間がトリガする運用までを対象とする。次が Phase 3 候補（Phase 2 では実装しない）:
+Phase 2（ファイルベースで人間がトリガする運用）の上に、Phase 3 で次を追加:
 
-- `review process → rerun → review` の完全自動 retry loop
-- multi-agent（reviewer / coder の分離並走）
-- DB / SQLite index、Web UI
-- GitHub PR 連携
-- knowledge md の LLM への自動注入
+| コマンド | Phase | 内容 |
+|----------|-------|------|
+| `harness workflow reviewed-run` | 3-1 | run → review auto → review process → rerun を bounded loop で束ねる |
+| `harness knowledge build-context` / `harness run --with-knowledge` | 3-4 | promote 済み knowledge を domain 別に集約し、次回 run の prompt に注入 |
+| `harness review evaluate` / `review compare` | 3-2 | reviewer agent を N 回サンプリングして verdict のばらつきを観測 |
+| （prompt template の名前+version 化、`meta.promptTemplate`） | 3-3 | coder / reviewer / harness の role boundary を明文化 |
+| `harness index rebuild / status / show` / `review list --use-index` | 3-5 | SQLite run index（派生キャッシュ。source of truth は `runs/` files） |
+| `harness pr create` | 3-6 | approved run を GitHub draft PR にする |
 
-詳細な close 状況は [`docs/reports/2026-05-21-phase2-close.md`](./docs/reports/2026-05-21-phase2-close.md)。
+**Phase 3-7（stronger sandbox / Docker）は Deferred** — コンテナ内 `codex` の認証が現時点で解決できないため Phase 3 では実装しない（`tmp/phase3/phase3-7-*.md`）。
+
+詳細な close 状況は [`docs/reports/2026-05-21-phase3-close.md`](./docs/reports/2026-05-21-phase3-close.md)（Phase 2 は [`2026-05-21-phase2-close.md`](./docs/reports/2026-05-21-phase2-close.md)）。
+
+## Phase 4 以降の候補
+
+Phase 3 でも次はゴールにしない: 完全自律 merge / 人間レビューなしの本番反映 / OS・Container サンドボックス（Phase 3-7 deferred）/ Web UI / 大規模 multi-agent swarm。

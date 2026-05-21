@@ -94,6 +94,7 @@ Finding ID は **F1, F2, …** で連番。レポート間で連続させる（�
 | 2026-05-21 | [Phase 3-3 agent role separation デモ](2026-05-21-phase3-3-agent-role-separation-demo.md) | coder/reviewer/harness の role boundary 明文化、prompt template の名前+version 化、`meta.promptTemplate` 記録。codex review で P1×1+P2×3 を fix。E3-3-2/3 を実機検証、新 finding なし |
 | 2026-05-21 | [Phase 3-5 SQLite index デモ](2026-05-21-phase3-5-sqlite-index-demo.md) | better-sqlite3 の run index（`index rebuild/status/show`、`review list --use-index`）。codex review で P1×1+P2×2 を fix。E3-5-1〜3 で rebuild / file scan 一致 / 破損回復を実機検証、新 finding なし |
 | 2026-05-21 | [Phase 3-6 GitHub PR デモ](2026-05-21-phase3-6-github-pr-demo.md) | `harness pr create`（approved run → draft PR）。codex review で P1×2+P2×1 を fix。E3-6-1 で amkfbant/mini-commerce に draft PR #1 を実機作成（デモ後クローズ）、E3-6-2/3 で非 approved 拒否。新 finding なし |
+| 2026-05-21 | [Phase 3 close package](2026-05-21-phase3-close.md) | Phase 3 全体（3-1〜3-6 + 3-8）のクローズ。10 項目の close 条件、CLI 一覧、codex review サマリ。Phase 3-7（stronger sandbox）は Deferred。`phase3-close` タグ |
 
 ## Workflow
 
