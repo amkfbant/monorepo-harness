@@ -97,3 +97,20 @@ function formatZodError(err: ZodError): string {
     .map((i) => `  - ${i.path.join(".") || "(root)"}: ${i.message}`)
     .join("\n");
 }
+
+/**
+ * Pick a default domain registry from repo signals: a Node project uses
+ * the node-monorepo registry, anything else falls back to the generic one.
+ */
+export function selectDefaultRegistryId(signals: {
+  packageManager: string;
+  hasWorkspaces: boolean;
+  languages: string[];
+}): string {
+  const isNode =
+    signals.packageManager !== "none" ||
+    signals.hasWorkspaces ||
+    signals.languages.includes("javascript") ||
+    signals.languages.includes("typescript");
+  return isNode ? "node-monorepo-default-v1" : "generic-repo-default-v1";
+}
