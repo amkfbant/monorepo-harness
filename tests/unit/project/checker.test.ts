@@ -88,6 +88,28 @@ describe("checkProject", () => {
     expect(report.status).toBe("error");
   });
 
+  it("errors when the repo path is a file, not a directory (Phase 6-1)", async () => {
+    const root = harnessRoot();
+    writeProfile(root, "demo", OK_PROFILE);
+    const filePath = join(root, "not-a-dir.txt");
+    writeFileSync(filePath, "i am a file\n");
+    const report = await checkProject({
+      harnessRoot: root,
+      projectId: "demo",
+      repoOverride: filePath,
+      generatedAt: GENERATED_AT,
+    });
+    expect(report.status).toBe("error");
+    expect(
+      report.items.some(
+        (i) =>
+          i.level === "error" &&
+          i.label === "repo path" &&
+          /not a directory/.test(i.detail ?? ""),
+      ),
+    ).toBe(true);
+  });
+
   it("warns when a domain root is absent from the repo", async () => {
     const root = harnessRoot();
     writeProfile(

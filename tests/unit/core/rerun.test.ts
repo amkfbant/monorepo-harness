@@ -18,6 +18,8 @@ interface SetupOpts {
   parentRunId?: string;
   rootRunId?: string;
   rerunAttempt?: number;
+  /** when set, the parent meta carries a project block (a --project run) */
+  projectId?: string;
 }
 
 /** Write one run dir; returns its runId. */
@@ -46,6 +48,17 @@ function writeRun(runsDir: string, opts: SetupOpts = {}): string {
           : {}),
         ...(opts.rerunAttempt !== undefined
           ? { rerunAttempt: opts.rerunAttempt }
+          : {}),
+        ...(opts.projectId !== undefined
+          ? {
+              project: {
+                projectId: opts.projectId,
+                profilePath: `/tmp/projects/${opts.projectId}.yaml`,
+                profileVersion: 1,
+                commandPresetIds: [],
+                contextPackIds: [],
+              },
+            }
           : {}),
         startedAt: "2026-05-21T00:00:00Z",
       },
@@ -118,6 +131,18 @@ describe("prepareRerunFromReview", () => {
     expect(r.goal).toMatch(/fix the empty-string case/);
     expect(r.goal).toMatch(/use err\(\) consistently/);
     expect(r.goal).toMatch(/Previous run: run-20260521-apps-user-aaa/);
+  });
+
+  it("carries projectId when the parent was a --project run (Phase 6-1)", async () => {
+    const { runsDir, runId } = setup({ projectId: "mini-commerce" });
+    const r = await prepareRerunFromReview({ runsDir, parentRunId: runId });
+    expect(r.projectId).toBe("mini-commerce");
+  });
+
+  it("omits projectId when the parent was a --repo-id run", async () => {
+    const { runsDir, runId } = setup();
+    const r = await prepareRerunFromReview({ runsDir, parentRunId: runId });
+    expect(r.projectId).toBeUndefined();
   });
 
   it("rejects parentRunId that does not match RUN_ID_RE", async () => {

@@ -1,3 +1,4 @@
+import { existsSync, statSync } from "node:fs";
 import { harnessPaths } from "../config/paths.js";
 import { resolvePolicy } from "../policy/resolver.js";
 import type {
@@ -56,6 +57,13 @@ export async function prepareProjectRun(opts: {
   if (repoPath === null) {
     throw new ProjectError(
       `project "${opts.projectId}" has no repo.path — pass --repo`,
+    );
+  }
+  // the repo path must be an existing directory; otherwise scanRepoSignals
+  // fails with an opaque ENOENT/ENOTDIR (Phase 6-1).
+  if (!existsSync(repoPath) || !statSync(repoPath).isDirectory()) {
+    throw new ProjectError(
+      `project "${opts.projectId}" repo path is not a directory: ${repoPath}`,
     );
   }
   const domainSpec = profile.domains.find((d) => d.id === opts.domain);

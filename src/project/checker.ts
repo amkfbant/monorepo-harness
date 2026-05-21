@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { minimatch } from "minimatch";
@@ -167,6 +167,14 @@ function checkRepo(repoPath: string | null, items: CheckItem[]): boolean {
       level: "error",
       label: "repo path",
       detail: `does not exist: ${repoPath}`,
+    });
+    return false;
+  }
+  if (!statSync(repoPath).isDirectory()) {
+    items.push({
+      level: "error",
+      label: "repo path",
+      detail: `not a directory: ${repoPath}`,
     });
     return false;
   }

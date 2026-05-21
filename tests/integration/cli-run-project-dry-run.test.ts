@@ -117,4 +117,58 @@ describe("CLI run --project --dry-run", () => {
     ]);
     expect(code).toBe(1);
   });
+
+  it("Phase 6-1: rejects --project combined with --repo-id", () => {
+    const { root } = setup();
+    const { out, code } = runCli(root, [
+      "run",
+      "--project",
+      "demo",
+      "--repo-id",
+      "demo",
+      "--domain",
+      "apps/web",
+      "--goal",
+      "noop",
+      "--dry-run",
+    ]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/cannot combine --project with --repo-id/);
+  });
+
+  it("Phase 6-1: errors when the profile repo path is not a directory", () => {
+    const { root } = setup();
+    // point the profile's repo.path at a file
+    const filePath = join(root, "not-a-dir.txt");
+    writeFileSync(filePath, "file\n");
+    writeFileSync(
+      join(root, "projects", "demo.yaml"),
+      [
+        "version: 1",
+        "project_id: demo",
+        "repo:",
+        "  id: demo",
+        `  path: ${filePath}`,
+        "policy:",
+        "  template: strict-monorepo-v1",
+        "domains:",
+        "  - id: apps/web",
+        "    root: apps/web",
+        "    kind: app",
+        "",
+      ].join("\n"),
+    );
+    const { out, code } = runCli(root, [
+      "run",
+      "--project",
+      "demo",
+      "--domain",
+      "apps/web",
+      "--goal",
+      "noop",
+      "--dry-run",
+    ]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/not a directory/);
+  });
 });

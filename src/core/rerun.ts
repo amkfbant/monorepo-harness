@@ -41,6 +41,13 @@ export const RERUN_PROMPT_TEMPLATE = {
 export interface RerunPrepResult {
   parentRunId: string;
   repoId: string;
+  /**
+   * the parent's project id, when the parent was a `--project` run. The
+   * rerun must re-resolve the profile (not read `policies/repos/<id>.yaml`)
+   * so the child keeps the same compiled policy / context packs / project
+   * provenance — see Phase 6-1.
+   */
+  projectId?: string;
   domain: string;
   baseBranch: string;
   /** chain root (the original `harness run`) */
@@ -269,6 +276,9 @@ export async function prepareRerunFromReview(opts: {
   return {
     parentRunId: opts.parentRunId,
     repoId: meta.repoId,
+    ...(typeof meta.project?.projectId === "string"
+      ? { projectId: meta.project.projectId }
+      : {}),
     domain: meta.domain,
     baseBranch: meta.baseBranch,
     rootRunId,

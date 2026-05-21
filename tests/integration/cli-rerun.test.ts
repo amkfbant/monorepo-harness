@@ -5,6 +5,7 @@ import {
   mkdirSync,
   writeFileSync,
   readFileSync,
+  cpSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -278,5 +279,120 @@ describe("harness rerun --from-review", () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/run-20260521-apps-user-parent01/);
     expect(r.stdout).toMatch(/run-20260521-apps-user-child9.*needs_review/);
+  });
+});
+
+/**
+ * A parent run that was launched with `--project`. The profile has NO
+ * `repo.path` — so the rerun must reuse the parent's recorded `repoPath`
+ * as the `--repo` override (Phase 6-1). Without that, prepareProjectRun
+ * would fail with "has no repo.path".
+ */
+function setupProjectParent(): { root: string; runId: string } {
+  const root = mkdtempSync(join(tmpdir(), "harness-rerun-proj-"));
+  cpSync(join(process.cwd(), "templates"), join(root, "templates"), {
+    recursive: true,
+  });
+  mkdirSync(join(root, "projects"), { recursive: true });
+  mkdirSync(join(root, "policies"), { recursive: true });
+  writeFileSync(
+    join(root, "policies/global.yaml"),
+    "always_deny_write: []\nignore_untracked: []\n",
+  );
+  writeFileSync(
+    join(root, "projects/t.yaml"),
+    [
+      "version: 1",
+      "project_id: t",
+      "repo:",
+      "  id: t",
+      "policy:",
+      "  template: strict-monorepo-v1",
+      "domains:",
+      "  - id: apps/user",
+      "    root: apps/user",
+      "    kind: app",
+      "",
+    ].join("\n"),
+  );
+
+  const repoPath = mkdtempSync(join(tmpdir(), "harness-target-proj-"));
+  const g = (a: string[]) =>
+    execFileSync("git", a, { cwd: repoPath, stdio: "ignore" });
+  g(["init", "-q", "-b", "main"]);
+  g(["config", "user.email", "t@e.com"]);
+  g(["config", "user.name", "T"]);
+  mkdirSync(join(repoPath, "apps/user/src"), { recursive: true });
+  writeFileSync(join(repoPath, "apps/user/src/profile.ts"), "export const x = 0;\n");
+  g(["add", "."]);
+  g(["commit", "-qm", "init"]);
+
+  const runId = "run-20260521-apps-user-projpar1";
+  const runDir = join(root, "runs", runId);
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(
+    join(runDir, "meta.json"),
+    JSON.stringify(
+      {
+        runId,
+        repoId: "t",
+        repoPath,
+        domain: "apps/user",
+        workflow: "domain-coding",
+        baseBranch: "main",
+        baseSha: "abc",
+        runBranch: `harness/${runId}/x`,
+        status: "changes_requested",
+        startedAt: "2026-05-21T00:00:00Z",
+        project: {
+          projectId: "t",
+          profilePath: join(root, "projects/t.yaml"),
+          profileVersion: 1,
+          commandPresetIds: [],
+          contextPackIds: [],
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  writeFileSync(join(runDir, "events.jsonl"), "");
+  writeFileSync(
+    join(runDir, "review-decision.yaml"),
+    [
+      `runId: ${runId}`,
+      "domain: apps/user",
+      "decision: changes_requested",
+      'required_changes:\n  - "tighten the validation"',
+      "non_blocking_comments: []",
+      "out_of_scope_suggestions: []",
+      "reviewer: alice",
+      "reviewed_at: 2026-05-21T00:10:00Z",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    join(runDir, "codex-prompt.md"),
+    ["You are working on a monorepo domain task.", "", "Goal:", "Improve apps/user.", "", "Target domain:", "apps/user"].join("\n"),
+  );
+  return { root, runId };
+}
+
+describe("harness rerun --from-review (project parent)", () => {
+  it("Phase 6-1: re-resolves the profile using the parent's repoPath override", () => {
+    const s = setupProjectParent();
+    const fakeBin = writeFakeCodexBin(s.root);
+    const r = run(["rerun", "--from-review", s.runId], s.root, {
+      HARNESS_CODEX_BIN: fakeBin,
+    });
+    expect(r.status).toBe(0);
+    const newRunId = r.stdout.match(/run=([\w.-]+)/)?.[1];
+    expect(newRunId).toBeDefined();
+    const meta = JSON.parse(
+      readFileSync(join(s.root, "runs", newRunId!, "meta.json"), "utf8"),
+    );
+    // the child keeps the project attribution (not a bare --repo-id rerun)
+    expect(meta.project?.projectId).toBe("t");
+    expect(meta.repoId).toBe("t");
   });
 });

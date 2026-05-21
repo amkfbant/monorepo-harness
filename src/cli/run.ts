@@ -122,6 +122,25 @@ function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
 }
 
+/**
+ * Reject `--project` combined with `--repo-id` (Phase 6-1). In project mode
+ * the repo and its id come from the profile; `--repo-id` would be silently
+ * ignored, so a caller passing both is told explicitly instead. `--repo` is
+ * still allowed in project mode as a path override.
+ */
+function rejectProjectRepoIdMix(
+  raw: Record<string, unknown>,
+  command: string,
+): void {
+  if (raw.project !== undefined && raw.repoId !== undefined) {
+    process.stderr.write(
+      `harness error: '${command}' cannot combine --project with --repo-id ` +
+        `(--project resolves the repo from the profile; --repo is the only override)\n`,
+    );
+    process.exit(1);
+  }
+}
+
 interface RunOpts {
   /** repo path; required in --repo-id mode, an optional override in --project mode */
   repo?: string;
@@ -500,6 +519,7 @@ const runCmd = program
   )
   .option("--dry-run", "resolve policy and exit", false)
   .action(async (raw: Record<string, unknown>) => {
+    rejectProjectRepoIdMix(raw, "harness run");
     // --project mode needs domain + goal; --repo-id mode also needs repo + repo-id.
     const required =
       raw.project !== undefined
@@ -628,6 +648,7 @@ workflowCmd
       }
       maxAttempts = n;
     }
+    rejectProjectRepoIdMix(raw, "workflow reviewed-run");
     if (
       raw.project === undefined &&
       (raw.repo === undefined || raw.repoId === undefined)
@@ -1211,8 +1232,8 @@ backlogCmd
   .command("run")
   .description("launch a run for a backlog item and link it")
   .requiredOption("--item-id <id>", "backlog item id")
-  .requiredOption("--repo <path>", "target repo path")
-  .requiredOption("--repo-id <id>", "repo identifier for policy resolution")
+  .option("--repo <path>", "target repo path (required unless the item has a project)")
+  .option("--repo-id <id>", "repo id (required unless the item has a project)")
   .option(
     "--base-branch <name>",
     "base branch (default: the project profile's base_branch, or main)",
@@ -1238,15 +1259,47 @@ backlogCmd
       );
       process.exit(1);
     }
+    // the run mode is decided by the item, not a flag (Phase 6-1): an item
+    // with a projectId runs in --project mode; otherwise --repo + --repo-id
+    // are required. --base-branch is only forwarded when actually given, so
+    // an absent flag never becomes the string "undefined".
+    let modeOpts: { project?: string; repo?: string; repoId?: string };
+    if (item.projectId !== undefined) {
+      if (raw.repoId !== undefined) {
+        process.stderr.write(
+          `harness error: backlog item ${item.id} has project ` +
+            `"${item.projectId}"; --repo-id is not used ` +
+            `(pass --repo only to override the path)\n`,
+        );
+        process.exit(1);
+      }
+      modeOpts = {
+        project: item.projectId,
+        ...(raw.repo !== undefined ? { repo: String(raw.repo) } : {}),
+      };
+    } else {
+      if (raw.repo === undefined || raw.repoId === undefined) {
+        process.stderr.write(
+          `harness error: backlog item ${item.id} has no project; ` +
+            `'backlog run' requires --repo + --repo-id\n`,
+        );
+        process.exit(1);
+      }
+      modeOpts = { repo: String(raw.repo), repoId: String(raw.repoId) };
+    }
+    const baseBranchOpt =
+      raw.baseBranch !== undefined
+        ? { baseBranch: String(raw.baseBranch) }
+        : {};
+
     let runId: string;
     let failed = false;
     if (kind === "run") {
       const outcome = await cmdRun({
-        repo: String(raw.repo),
-        repoId: String(raw.repoId),
+        ...modeOpts,
+        ...baseBranchOpt,
         domain: item.domain,
         goal: item.goal,
-        baseBranch: String(raw.baseBranch),
         keepWorktree: false,
         dryRun: false,
         withKnowledge: false,
@@ -1266,11 +1319,10 @@ backlogCmd
         maxAttempts = n;
       }
       const outcome = await cmdReviewedRun({
-        repo: String(raw.repo),
-        repoId: String(raw.repoId),
+        ...modeOpts,
+        ...baseBranchOpt,
         domain: item.domain,
         goal: item.goal,
-        baseBranch: String(raw.baseBranch),
         maxAttempts,
       });
       runId = outcome.rootRunId;
@@ -1573,13 +1625,59 @@ const rerunCmd = program
       process.stderr.write(`warning: ${w}\n`);
     }
 
-    // Reuse the same code path as `harness run`: resolve policy, build the
-    // codex runner with its sandbox/approval/timeout, then call
-    // runDomainCoding with the rerun-derived goal + parentRunId.
-    const global = await loadGlobalPolicy(paths.globalPolicyPath);
-    const repo = await loadRepoPolicy(paths.repoPolicyPath(prep.repoId));
-    const resolved = resolvePolicy(global, repo, prep.domain);
+    // Resolve policy the same way `harness run` does. A rerun of a
+    // `--project` parent must re-resolve the profile (Phase 6-1) so the
+    // child keeps the same compiled policy / context packs / project
+    // provenance; a plain `--repo-id` parent reads policies/repos/<id>.yaml.
     const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
+    // the parent's repoPath is the repo the chain actually ran against — a
+    // `--project` parent may have used `--repo` as an override, so the rerun
+    // reuses it instead of re-deriving the path from the profile.
+    const parentMeta = JSON.parse(
+      await readFile(
+        join(paths.runsDir, prep.parentRunId, "meta.json"),
+        "utf8",
+      ),
+    ) as { repoPath: string };
+    let prepared: PreparedProjectRun | undefined;
+    let resolved;
+    let repoPath: string;
+    let repoId: string;
+    if (prep.projectId !== undefined) {
+      try {
+        prepared = await prepareProjectRun({
+          harnessRoot,
+          projectId: prep.projectId,
+          domain: prep.domain,
+          repoOverride: parentMeta.repoPath,
+        });
+      } catch (e) {
+        if (e instanceof ProjectError) {
+          process.stderr.write(`harness error: ${e.message}\n`);
+          process.exit(1);
+        }
+        throw e;
+      }
+      // the profile must still resolve to the same repo the parent ran
+      // against — otherwise the rerun would silently change attribution.
+      if (prepared.repoId !== prep.repoId) {
+        process.stderr.write(
+          `harness error: rerun repo attribution drift — parent ` +
+            `${prep.parentRunId} recorded repoId "${prep.repoId}" but project ` +
+            `"${prep.projectId}" now resolves to "${prepared.repoId}"\n`,
+        );
+        process.exit(1);
+      }
+      resolved = prepared.resolvedPolicy;
+      repoPath = prepared.repoPath;
+      repoId = prepared.repoId;
+    } else {
+      const global = await loadGlobalPolicy(paths.globalPolicyPath);
+      const repo = await loadRepoPolicy(paths.repoPolicyPath(prep.repoId));
+      resolved = resolvePolicy(global, repo, prep.domain);
+      repoPath = parentMeta.repoPath;
+      repoId = prep.repoId;
+    }
     const runner = createCodexCliRunner({
       codexBin,
       sandbox: resolved.codex.sandbox,
@@ -1591,21 +1689,10 @@ const rerunCmd = program
         : {}),
     });
 
-    // The parent's repoPath isn't carried in RerunPrepResult — read it
-    // back from meta.json. (We could add it to the prep result, but
-    // keeping prep narrow avoids re-handing details that don't belong.)
-    const { readFile } = await import("node:fs/promises");
-    const parentMeta = JSON.parse(
-      await readFile(
-        join(paths.runsDir, prep.parentRunId, "meta.json"),
-        "utf8",
-      ),
-    ) as { repoPath: string };
-
     const result = await runDomainCoding({
       harnessRoot,
-      repoPath: parentMeta.repoPath,
-      repoId: prep.repoId,
+      repoPath,
+      repoId,
       domain: prep.domain,
       goal: prep.goal,
       baseBranch: prep.baseBranch,
@@ -1613,6 +1700,20 @@ const rerunCmd = program
       parentRunId: prep.parentRunId,
       rootRunId: prep.rootRunId,
       rerunAttempt: prep.rerunAttempt,
+      ...(prepared !== undefined
+        ? {
+            compiledPolicy: prepared.compiledPolicy,
+            project: prepared.project,
+            ...(prepared.projectContextPacks !== undefined
+              ? {
+                  projectContextPacks: {
+                    promptText: prepared.projectContextPacks.promptText,
+                    manifestYaml: prepared.projectContextPacks.manifestYaml,
+                  },
+                }
+              : {}),
+          }
+        : {}),
     });
     const cmdTotal = result.commandResults.length;
     const cmdOk = result.commandResults.filter(
