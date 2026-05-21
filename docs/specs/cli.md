@@ -86,6 +86,22 @@ resolved policy for apps/catalog:
 
 policy ファイルの編集後に確認するのが典型用途。
 
+## `harness run show / timeline / artifacts`
+
+1 つの run の状態を読むための read-only サブコマンド（Phase 4-1）。
+
+```bash
+harness run show --run-id <id>       # status / files / commands / review / PR / artifacts を一画面集約
+harness run timeline --run-id <id>   # events.jsonl を順序付きで人間向けに整形
+harness run artifacts --run-id <id>  # run dir の artifact ファイル一覧
+```
+
+- `run show`: `meta.json` から status / domain / safetyStatus / reviewer / parent / root / attempt / 変更ファイル数 / commands / PR / backlog item を表示。個々の artifact が欠損していても落ちない
+- `run timeline`: `events.jsonl` を 1 行 1 イベントの順序付きリストに整形（events は wall-clock time を持たないため順序＝時系列。timestamp を持つイベントは併記）
+- `run artifacts`: run dir 直下のファイルを列挙
+
+Exit code: `0` 成功 / `1` invalid runId・run 不在・meta.json 破損 / `2` 予期しない例外。
+
 ## `harness workflow reviewed-run`
 
 `run → review auto → review process → (changes_requested なら rerun)*` を bounded workflow として 1 コマンドで束ねる（Phase 3-1）。各ステップは既存の `run` / `review auto` / `review process` / `rerun` を順に呼ぶだけで、状態遷移は引き続き harness が行う。

@@ -35,6 +35,12 @@ import {
 } from "../index/run-index.js";
 import { createPullRequest, PrGateError } from "../core/pr-creator.js";
 import { createGhPrPublisher } from "../core/gh-pr-publisher.js";
+import {
+  renderRunShow,
+  renderRunTimeline,
+  renderRunArtifacts,
+  RunViewError,
+} from "../core/run-viewer.js";
 import { RUN_STATUSES } from "../logging/run-log.js";
 import {
   prepareRerunFromReview,
@@ -319,10 +325,13 @@ program.name("harness");
 const runCmd = program
   .command("run", { isDefault: true })
   .description("run the domain-coding workflow")
-  .requiredOption("--repo <path>", "target repo path")
-  .requiredOption("--repo-id <id>", "repo identifier for policy resolution")
-  .requiredOption("--domain <domain>", "target domain (e.g. apps/user)")
-  .requiredOption("--goal <text>", "task goal passed to Codex")
+  // NOTE: plain options (not requiredOption) so the `run show` /
+  // `run timeline` / `run artifacts` subcommands can be invoked without
+  // them. The action below enforces presence for the bare `run` form.
+  .option("--repo <path>", "target repo path")
+  .option("--repo-id <id>", "repo identifier for policy resolution")
+  .option("--domain <domain>", "target domain (e.g. apps/user)")
+  .option("--goal <text>", "task goal passed to Codex")
   .option("--base-branch <name>", "base branch", "main")
   .option("--keep-worktree", "(no-op; worktree is always kept for review)", false)
   .option(
@@ -336,6 +345,18 @@ const runCmd = program
   )
   .option("--dry-run", "resolve policy and exit", false)
   .action(async (raw: Record<string, unknown>) => {
+    const missing = ["repo", "repoId", "domain", "goal"].filter(
+      (k) => raw[k] === undefined,
+    );
+    if (missing.length > 0) {
+      const flags = missing
+        .map((k) => `--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`)
+        .join(", ");
+      process.stderr.write(
+        `harness error: 'harness run' requires ${flags}\n`,
+      );
+      process.exit(1);
+    }
     await cmdRun({
       repo: String(raw.repo),
       repoId: String(raw.repoId),
@@ -350,6 +371,38 @@ const runCmd = program
         : {}),
     });
   });
+
+function runViewAction(
+  render: (runsDir: string, runId: string) => Promise<string>,
+) {
+  return async (raw: Record<string, unknown>): Promise<void> => {
+    const paths = harnessPaths(getHarnessRoot());
+    try {
+      process.stdout.write(await render(paths.runsDir, String(raw.runId)));
+    } catch (e) {
+      if (e instanceof RunViewError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
+  };
+}
+runCmd
+  .command("show")
+  .description("one-screen summary of a run (status / files / commands / PR)")
+  .requiredOption("--run-id <id>", "target run identifier")
+  .action(runViewAction(renderRunShow));
+runCmd
+  .command("timeline")
+  .description("render a run's events.jsonl as an ordered timeline")
+  .requiredOption("--run-id <id>", "target run identifier")
+  .action(runViewAction(renderRunTimeline));
+runCmd
+  .command("artifacts")
+  .description("list the artifact files in a run dir")
+  .requiredOption("--run-id <id>", "target run identifier")
+  .action(runViewAction(renderRunArtifacts));
 
 const workflowCmd = program
   .command("workflow")
