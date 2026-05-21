@@ -33,6 +33,8 @@ import {
   indexStatus,
   showRunFromIndex,
 } from "../index/run-index.js";
+import { createPullRequest, PrGateError } from "../core/pr-creator.js";
+import { createGhPrPublisher } from "../core/gh-pr-publisher.js";
 import { RUN_STATUSES } from "../logging/run-log.js";
 import {
   prepareRerunFromReview,
@@ -740,6 +742,46 @@ indexCmd
     } catch (e) {
       process.stderr.write(`harness error: ${(e as Error).message}\n`);
       process.exit(1);
+    }
+  });
+
+const prCmd = program
+  .command("pr")
+  .description("GitHub pull request integration");
+prCmd
+  .command("create")
+  .description("turn an approved run into a draft GitHub PR")
+  .requiredOption("--run-id <id>", "target run identifier (must be approved)")
+  .option("--base <branch>", "PR base branch", "main")
+  .option("--title <text>", "PR title (default derives from runId + domain)")
+  .option(
+    "--no-draft",
+    "create a ready PR instead of a draft (default: draft)",
+  )
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    const ghBin = process.env.HARNESS_GH_BIN ?? "gh";
+    try {
+      const r = await createPullRequest({
+        runsDir: paths.runsDir,
+        workspacesDir: paths.workspacesDir,
+        locksDir: paths.locksDir,
+        runId: String(raw.runId),
+        base: String(raw.base),
+        // commander maps --no-draft to raw.draft === false
+        draft: raw.draft !== false,
+        publisher: createGhPrPublisher(ghBin),
+        ...(raw.title !== undefined ? { title: String(raw.title) } : {}),
+      });
+      process.stdout.write(
+        `run=${r.runId} pr=#${r.prNumber} head=${r.head}\n${r.prUrl}\n`,
+      );
+    } catch (e) {
+      if (e instanceof PrGateError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
     }
   });
 

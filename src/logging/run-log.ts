@@ -104,6 +104,10 @@ export interface RunMeta {
    * (Phase 3-3). Lets a run be reproduced against a known template.
    */
   promptTemplate?: { name: string; version: number };
+  /** GitHub PR URL — set by `harness pr create` (Phase 3-6). */
+  prUrl?: string;
+  /** GitHub PR number — set by `harness pr create` (Phase 3-6). */
+  prNumber?: number;
   startedAt: string;
   finishedAt?: string;
 }

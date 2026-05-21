@@ -1,0 +1,248 @@
+import { describe, it, expect } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  createPullRequest,
+  type PrPublisher,
+  type PrPublishInputs,
+} from "../../src/core/pr-creator.js";
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8" });
+}
+
+interface Fixture {
+  root: string;
+  runId: string;
+  bareRemote: string;
+}
+
+/**
+ * Build a harness root with one run: a target repo with a bare remote,
+ * a run worktree on the run branch with an uncommitted change, and a
+ * meta.json with the given status.
+ */
+function setup(status: string): Fixture {
+  const root = mkdtempSync(join(tmpdir(), "harness-pr-"));
+  mkdirSync(join(root, "runs"), { recursive: true });
+  mkdirSync(join(root, "workspaces"), { recursive: true });
+
+  // target repo
+  const target = mkdtempSync(join(tmpdir(), "harness-pr-target-"));
+  git(target, ["init", "-q", "-b", "main"]);
+  git(target, ["config", "user.email", "t@e.com"]);
+  git(target, ["config", "user.name", "T"]);
+  mkdirSync(join(target, "apps/x"), { recursive: true });
+  writeFileSync(join(target, "apps/x/f.ts"), "export const v = 0;\n");
+  git(target, ["add", "."]);
+  git(target, ["commit", "-qm", "init"]);
+
+  // bare remote + push main
+  const bareRemote = mkdtempSync(join(tmpdir(), "harness-pr-bare-")) + ".git";
+  execFileSync("git", ["init", "-q", "--bare", bareRemote]);
+  git(target, ["remote", "add", "origin", bareRemote]);
+  git(target, ["push", "-q", "-u", "origin", "main"]);
+
+  const runId = "run-20260521-apps-x-pr01";
+  const runBranch = `harness/${runId}/apps-x`;
+  const worktree = join(root, "workspaces", runId, "repo");
+  git(target, ["worktree", "add", "-q", "-b", runBranch, worktree, "main"]);
+  // an uncommitted codex change in the worktree
+  writeFileSync(join(worktree, "apps/x/f.ts"), "export const v = 1;\n");
+
+  const runDir = join(root, "runs", runId);
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(
+    join(runDir, "meta.json"),
+    JSON.stringify(
+      {
+        runId,
+        domain: "apps/x",
+        status,
+        safetyStatus: "allowed",
+        runBranch,
+        reviewer: "knkn",
+        reviewedAt: "2026-05-21T00:00:00Z",
+        startedAt: "2026-05-21T00:00:00Z",
+      },
+      null,
+      2,
+    ),
+  );
+  // the run's diff_collected event names the reviewed paths
+  writeFileSync(
+    join(runDir, "events.jsonl"),
+    JSON.stringify({
+      type: "diff_collected",
+      tracked: ["apps/x/f.ts"],
+      untrackedAllowed: [],
+      untrackedDenied: [],
+      ignored: [],
+      stage: "post-codex",
+    }) + "\n",
+  );
+  writeFileSync(
+    join(runDir, "codex-prompt.md"),
+    "x\n\nGoal:\nadd a v constant\n\nTarget domain:\napps/x\n",
+  );
+  return { root, runId, bareRemote };
+}
+
+/** A publisher that records its inputs and returns a fixed PR. */
+function fakePublisher(): PrPublisher & { calls: PrPublishInputs[] } {
+  const calls: PrPublishInputs[] = [];
+  return {
+    calls,
+    async publish(inputs: PrPublishInputs) {
+      calls.push(inputs);
+      return { url: "https://github.com/amkfbant/mini-commerce/pull/7", number: 7 };
+    },
+  };
+}
+
+describe("createPullRequest", () => {
+  it("E3-6-1: turns an approved run into a PR", async () => {
+    const f = setup("approved");
+    const pub = fakePublisher();
+    const r = await createPullRequest({
+      runsDir: join(f.root, "runs"),
+      workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+      runId: f.runId,
+      base: "main",
+      draft: true,
+      publisher: pub,
+    });
+    expect(r.prNumber).toBe(7);
+    expect(pub.calls).toHaveLength(1);
+    expect(pub.calls[0]?.draft).toBe(true);
+    expect(pub.calls[0]?.body).toMatch(/add a v constant/);
+    // meta records the PR
+    const meta = JSON.parse(
+      readFileSync(join(f.root, "runs", f.runId, "meta.json"), "utf8"),
+    );
+    expect(meta.prUrl).toBe("https://github.com/amkfbant/mini-commerce/pull/7");
+    expect(meta.prNumber).toBe(7);
+    // events record pr_created
+    const events = readFileSync(
+      join(f.root, "runs", f.runId, "events.jsonl"),
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    expect(events.find((e) => e.type === "pr_created")).toBeDefined();
+    // the run branch was pushed to the bare remote
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).toMatch(/harness\/run-20260521-apps-x-pr01/);
+  });
+
+  it("E3-6-2: refuses a needs_review run", async () => {
+    const f = setup("needs_review");
+    await expect(
+      createPullRequest({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+        runId: f.runId,
+        base: "main",
+        draft: true,
+        publisher: fakePublisher(),
+      }),
+    ).rejects.toThrow(/only approved runs/);
+  });
+
+  it("E3-6-3: refuses a failed-policy-violation run", async () => {
+    const f = setup("failed-policy-violation");
+    await expect(
+      createPullRequest({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+        runId: f.runId,
+        base: "main",
+        draft: true,
+        publisher: fakePublisher(),
+      }),
+    ).rejects.toThrow(/only approved runs/);
+  });
+
+  it("refuses a changes_requested run", async () => {
+    const f = setup("changes_requested");
+    await expect(
+      createPullRequest({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+        runId: f.runId,
+        base: "main",
+        draft: true,
+        publisher: fakePublisher(),
+      }),
+    ).rejects.toThrow(/only approved runs/);
+  });
+
+  it("refuses to create a second PR for the same run", async () => {
+    const f = setup("approved");
+    const opts = {
+      runsDir: join(f.root, "runs"),
+      workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+      runId: f.runId,
+      base: "main",
+      draft: true,
+      publisher: fakePublisher(),
+    };
+    await createPullRequest(opts);
+    await expect(createPullRequest(opts)).rejects.toThrow(
+      /already has a PR/,
+    );
+  });
+
+  it("commits only reviewed paths, not ignore_untracked files", async () => {
+    const f = setup("approved");
+    // an ignored build artifact sits in the worktree but is NOT in the
+    // run's diff_collected reviewed paths — it must stay out of the PR.
+    const worktree = join(f.root, "workspaces", f.runId, "repo");
+    mkdirSync(join(worktree, "apps/x/dist"), { recursive: true });
+    writeFileSync(join(worktree, "apps/x/dist/bundle.js"), "built\n");
+    await createPullRequest({
+      runsDir: join(f.root, "runs"),
+      workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+      runId: f.runId,
+      base: "main",
+      draft: true,
+      publisher: fakePublisher(),
+    });
+    // the pushed commit contains f.ts but NOT dist/bundle.js
+    const committed = git(worktree, [
+      "show",
+      "--name-only",
+      "--pretty=format:",
+      "HEAD",
+    ]).trim();
+    expect(committed).toMatch(/apps\/x\/f\.ts/);
+    expect(committed).not.toMatch(/dist\/bundle\.js/);
+  });
+
+  it("rejects an invalid runId", async () => {
+    await expect(
+      createPullRequest({
+        runsDir: "/tmp",
+        workspacesDir: "/tmp",
+        locksDir: "/tmp",
+        runId: "../escape",
+        base: "main",
+        draft: true,
+        publisher: fakePublisher(),
+      }),
+    ).rejects.toThrow(/invalid runId/);
+  });
+});

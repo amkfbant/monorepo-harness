@@ -36,6 +36,7 @@ docs/
 | `harness cleanup --run-id <id> [--scope …]` | worktree / branch / run dir を scope 単位で削除 |
 | `harness workflow reviewed-run …` | run → review auto → review process → rerun を bounded loop で束ねる（Phase 3-1） |
 | `harness index rebuild / status / show` | SQLite run index（派生キャッシュ。source of truth は runs/ files、Phase 3-5） |
+| `harness pr create --run-id <approved-id>` | approved run を GitHub draft PR にする（Phase 3-6） |
 
 `policy.commands.allow` の structured form（`{id, cmd, args, timeout_ms, env}`）と `commands.defaults` も Phase 2 で追加（[`specs/policy.md`](./specs/policy.md)）。各機能の実機デモ結果は `reports/2026-05-21-phase2-*.md`。
 

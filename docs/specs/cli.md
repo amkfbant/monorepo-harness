@@ -322,6 +322,43 @@ harness index show --run-id <id>   # 1 run の indexed row を表示
 - `0`: 成功
 - `1`: `index show` で runId が index に無い / index が未構築
 
+## `harness pr create`
+
+approved な run を GitHub の **draft pull request** にする（Phase 3-6）。
+
+```bash
+harness pr create --run-id <approved-run-id> [--base <branch>] [--title <text>] [--no-draft]
+```
+
+| Option | Required | 説明 |
+|--------|:--------:|------|
+| `--run-id <id>` | ✅ | 対象 run（`status=approved` でなければ拒否） |
+| `--base <branch>` | — | PR の base branch（default `main`） |
+| `--title <text>` | — | PR タイトル（default は runId + domain から生成） |
+| `--no-draft` | — | draft でなく ready な PR を作る（default は draft） |
+
+### 動作
+
+1. `meta.status` が `approved` であることを確認（`needs_review` / `changes_requested` / `failed-*` / PR 作成済みは拒否、exit 1）
+2. run の worktree（`workspaces/<runId>/repo`）が残っていることを確認（cleanup 済みなら拒否）
+3. worktree の codex 変更を run branch（`meta.runBranch`）に commit
+4. run branch を target repo の `origin` に push
+5. `gh pr create --draft --base <base> --head <runBranch>` で PR 作成。本文に goal / runId / domain / safetyStatus / commands / reviewer などの run summary を含む
+6. `meta.json` に `prUrl` / `prNumber` を保存、`events.jsonl` に `pr_created` を追記
+
+### 前提（GitHub 設定）
+
+- `gh` CLI がインストールされ、`gh auth login` で認証済み（`repo` scope が必要）。`HARNESS_GH_BIN` で実行ファイルを上書き可
+- **target repo に GitHub の `origin` remote が設定済み**であること（`git -C <target-repo> remote add origin git@github.com:<owner>/<repo>.git`）
+- target repo の base branch（`main` 等）が GitHub 側に push 済みであること（PR の base が無いと作成できない）
+- harness は target repo の `origin` にそのまま push する。fork ではなく直接 push できる権限が前提
+
+### Exit code
+
+- `0`: PR 作成成功
+- `1`: status != approved / PR 作成済み / worktree 不在 / runBranch 不明 / git push 失敗 / `gh` 失敗 / invalid runId
+- `2`: 予期しない例外
+
 ## `harness review process`
 
 `runs/<runId>/review-decision.yaml` の `decision` を読み、`meta.status` を遷移させる。
@@ -731,8 +768,9 @@ promote された md は `<out>/`（既定 `docs/knowledge/`）に書かれ、`r
 
 | Variable | 解説 |
 |----------|------|
-| `HARNESS_ROOT` | harness の作業 root。`policies/`, `runs/`, `workspaces/`, `locks/` の親 |
+| `HARNESS_ROOT` | harness の作業 root。`policies/`, `runs/`, `workspaces/`, `locks/`, `.harness/` の親 |
 | `HARNESS_CODEX_BIN` | codex 実行ファイルへのパス（default: `codex`） |
+| `HARNESS_GH_BIN` | GitHub `gh` CLI のパス（default: `gh`、`harness pr create` で使用） |
 
 codex 子プロセスに渡る env は **`DEFAULT_CODEX_ENV_ALLOWLIST`** で制限される（`PATH / HOME / USER / SHELL / LANG / LC_ALL / TERM / TMPDIR / CODEX_HOME`）。`OPENAI_API_KEY` / `AWS_*` 等は伝播しない。必要なら `src/codex/codex-cli-runner.ts:DEFAULT_CODEX_ENV_ALLOWLIST` を編集する（policy からの動的注入は MVP では未実装）。
 
