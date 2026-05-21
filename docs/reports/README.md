@@ -97,6 +97,7 @@ Finding ID は **F1, F2, …** で連番。レポート間で連続させる（�
 | 2026-05-21 | [Phase 3 close package](2026-05-21-phase3-close.md) | Phase 3 全体（3-1〜3-6 + 3-8）のクローズ。10 項目の close 条件、CLI 一覧、codex review サマリ。Phase 3-7（stronger sandbox）は Deferred。`phase3-close` タグ |
 | 2026-05-21 | [Phase 4-1 run show デモ](2026-05-21-phase4-1-run-show-demo.md) | `run show/timeline/artifacts`（1 run を read-only で一画面集約）。codex review で P2×3 を fix。E4-1-1〜6 を既存 runs/ で実機検証、新 finding なし |
 | 2026-05-21 | [Phase 4-2 inbox デモ](2026-05-21-phase4-2-inbox-demo.md) | `harness inbox`（needs_review/cr/failed/cleanup/knowledge を集約 + action hint）。codex review で P2×3 を fix。E4-2-1〜6 を既存 runs/ で実機検証、新 finding なし |
+| 2026-05-21 | [Phase 4-3 backlog デモ](2026-05-21-phase4-3-backlog-demo.md) | `harness backlog add/list/show/run/done/defer`（個人 backlog、run と双方向リンク）。codex review で P1×2+P2×3 を fix。E4-3-2 を mini-commerce 実機検証、新 finding なし |
 
 ## Workflow
 

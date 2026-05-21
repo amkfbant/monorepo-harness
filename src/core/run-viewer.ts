@@ -2,6 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { RunMeta } from "../logging/run-log.js";
+import { findBacklogItemForRun } from "./backlog.js";
 
 export class RunViewError extends Error {
   constructor(message: string) {
@@ -35,10 +36,15 @@ async function readMeta(runsDir: string, runId: string): Promise<RunMeta> {
   }
 }
 
-/** A one-screen summary of a run. Missing artifacts degrade gracefully. */
+/**
+ * A one-screen summary of a run. Missing artifacts degrade gracefully.
+ * When `backlogDir` is given, the run's backlog item (if any) is derived
+ * by scanning the backlog — the link lives only on the backlog side.
+ */
 export async function renderRunShow(
   runsDir: string,
   runId: string,
+  backlogDir?: string,
 ): Promise<string> {
   assertRunId(runId);
   const meta = await readMeta(runsDir, runId);
@@ -89,8 +95,9 @@ export async function renderRunShow(
   if (meta.prUrl) {
     lines.push("", "PR:", `  ${meta.prUrl}`);
   }
-  if (meta.backlogItemId) {
-    lines.push("", "Backlog item:", `  ${meta.backlogItemId}`);
+  if (backlogDir !== undefined) {
+    const itemId = await findBacklogItemForRun(backlogDir, runId);
+    if (itemId) lines.push("", "Backlog item:", `  ${itemId}`);
   }
 
   lines.push("", "Artifacts:");

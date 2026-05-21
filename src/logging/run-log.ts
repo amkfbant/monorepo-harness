@@ -104,8 +104,6 @@ export interface RunMeta {
    * (Phase 3-3). Lets a run be reproduced against a known template.
    */
   promptTemplate?: { name: string; version: number };
-  /** backlog item this run was launched from — set by `backlog run` (Phase 4-3). */
-  backlogItemId?: string;
   /** GitHub PR URL — set by `harness pr create` (Phase 3-6). */
   prUrl?: string;
   /** GitHub PR number — set by `harness pr create` (Phase 3-6). */

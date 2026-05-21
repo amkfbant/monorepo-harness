@@ -86,6 +86,23 @@ resolved policy for apps/catalog:
 
 policy ファイルの編集後に確認するのが典型用途。
 
+## `harness backlog`
+
+やりたいことを harness 管理下に積み、run と紐づける個人 backlog（Phase 4-3）。
+
+```bash
+harness backlog add --title <t> --domain <d> --goal <g> [--priority high|medium|low] [--tags a,b]
+harness backlog list [--status open|doing|done|deferred]
+harness backlog show --item-id <id>
+harness backlog run --item-id <id> --repo <path> --repo-id <id> [--workflow run|reviewed-run] [--base-branch <name>] [--max-attempts <n>]
+harness backlog done --item-id <id>
+harness backlog defer --item-id <id>
+```
+
+- item は `backlog/<status>/item-YYYYMMDD-NNN.yaml`（status = open / doing / done / deferred、ディレクトリが status の source of truth）。`backlog/` は harness root 直下、gitignore 対象
+- `backlog run` は item の domain + goal で run を起動（default `reviewed-run`、`--workflow run` で単発 run）。完了後、item の `linkedRuns` に runId を追記し item を `doing` へ移動、run の `meta.backlogItemId` に item id を記録（双方向参照）
+- `harness run show` は `meta.backlogItemId` があれば backlog item を表示する
+
 ## `harness inbox`
 
 今日見るべきものを 1 コマンドに集約する個人運用ビュー（Phase 4-2）。

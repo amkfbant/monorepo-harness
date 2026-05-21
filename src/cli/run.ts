@@ -47,6 +47,18 @@ import {
   formatInboxJson,
   type InboxSection,
 } from "../core/inbox.js";
+import {
+  addItem,
+  listItems,
+  showItem,
+  setItemStatus,
+  recordBacklogRun,
+  formatItem,
+  formatItemList,
+  BacklogError,
+  type BacklogStatus,
+  type BacklogPriority,
+} from "../core/backlog.js";
 import { RUN_STATUSES } from "../logging/run-log.js";
 import {
   prepareRerunFromReview,
@@ -93,7 +105,13 @@ interface RunOpts {
   knowledgeContextPath?: string;
 }
 
-async function cmdRun(o: RunOpts): Promise<void> {
+interface RunOutcome {
+  runId: string;
+  status: string;
+  failed: boolean;
+}
+
+async function cmdRun(o: RunOpts): Promise<RunOutcome> {
   const harnessRoot = getHarnessRoot();
   const paths = harnessPaths(harnessRoot);
   const global = await loadGlobalPolicy(paths.globalPolicyPath);
@@ -104,7 +122,7 @@ async function cmdRun(o: RunOpts): Promise<void> {
     process.stdout.write(
       `resolved policy for ${resolved.domain}:\n${JSON.stringify(resolved, null, 2)}\n`,
     );
-    return;
+    return { runId: "", status: "dry-run", failed: false };
   }
 
   // resolve promoted-knowledge context (Phase 3-4), if requested.
@@ -168,16 +186,8 @@ async function cmdRun(o: RunOpts): Promise<void> {
   process.stdout.write(
     `run=${result.runId} status=${result.status} safetyStatus=${result.safetyStatus} ignoredUntrackedCount=${result.ignoredUntrackedCount} secretSuspectCount=${result.secretSuspectCount} commands=${cmdOk}/${cmdTotal}\n`,
   );
-  if (
-    result.status === "failed-policy-violation" ||
-    result.status === "failed-codex" ||
-    result.status === "failed-codex-timeout" ||
-    result.status === "failed-diff-collection" ||
-    result.status === "failed-command" ||
-    result.status === "failed-internal-error"
-  ) {
-    process.exit(1);
-  }
+  const failed = result.status.startsWith("failed-");
+  return { runId: result.runId, status: result.status, failed };
 }
 
 interface ReviewedRunOpts {
@@ -193,7 +203,12 @@ interface ReviewedRunOpts {
   dryRun?: boolean;
 }
 
-async function cmdReviewedRun(o: ReviewedRunOpts): Promise<void> {
+interface ReviewedRunOutcome {
+  rootRunId: string;
+  finalStatus: string;
+}
+
+async function cmdReviewedRun(o: ReviewedRunOpts): Promise<ReviewedRunOutcome> {
   const harnessRoot = getHarnessRoot();
   const paths = harnessPaths(harnessRoot);
   const global = await loadGlobalPolicy(paths.globalPolicyPath);
@@ -205,7 +220,7 @@ async function cmdReviewedRun(o: ReviewedRunOpts): Promise<void> {
       `reviewed-run workflow for ${resolved.domain} (maxAttempts=${o.maxAttempts}):\n` +
         `${JSON.stringify(resolved, null, 2)}\n`,
     );
-    return;
+    return { rootRunId: "", finalStatus: "dry-run" };
   }
 
   const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
@@ -254,10 +269,7 @@ async function cmdReviewedRun(o: ReviewedRunOpts): Promise<void> {
         `${a.reviewer ? ` (reviewer=${a.reviewer})` : ""}\n`,
     );
   }
-  // exit 1 on any non-success terminal state.
-  if (result.finalStatus !== "approved") {
-    process.exit(1);
-  }
+  return { rootRunId: result.rootRunId, finalStatus: result.finalStatus };
 }
 
 async function cmdLockList(): Promise<void> {
@@ -363,7 +375,7 @@ const runCmd = program
       );
       process.exit(1);
     }
-    await cmdRun({
+    const outcome = await cmdRun({
       repo: String(raw.repo),
       repoId: String(raw.repoId),
       domain: String(raw.domain),
@@ -376,6 +388,7 @@ const runCmd = program
         ? { knowledgeContextPath: String(raw.knowledgeContext) }
         : {}),
     });
+    if (outcome.failed) process.exit(1);
   });
 
 function runViewAction(
@@ -398,7 +411,24 @@ runCmd
   .command("show")
   .description("one-screen summary of a run (status / files / commands / PR)")
   .requiredOption("--run-id <id>", "target run identifier")
-  .action(runViewAction(renderRunShow));
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    try {
+      process.stdout.write(
+        await renderRunShow(
+          paths.runsDir,
+          String(raw.runId),
+          paths.backlogDir,
+        ),
+      );
+    } catch (e) {
+      if (e instanceof RunViewError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
+  });
 runCmd
   .command("timeline")
   .description("render a run's events.jsonl as an ordered timeline")
@@ -452,7 +482,7 @@ workflowCmd
       maxAttempts = n;
     }
     // commander maps --no-auto-review to raw.autoReview === false
-    await cmdReviewedRun({
+    const outcome = await cmdReviewedRun({
       repo: String(raw.repo),
       repoId: String(raw.repoId),
       domain: String(raw.domain),
@@ -466,6 +496,10 @@ workflowCmd
       stopOnChangesRequested: Boolean(raw.stopOnChangesRequested),
       dryRun: Boolean(raw.dryRun),
     });
+    // exit 1 on any non-success terminal state.
+    if (outcome.finalStatus !== "approved" && outcome.finalStatus !== "dry-run") {
+      process.exit(1);
+    }
   });
 
 const lockCmd = program.command("lock").description("manage domain locks");
@@ -889,6 +923,196 @@ program
     process.stdout.write(
       sections ? formatInbox(inbox, sections) : formatInbox(inbox),
     );
+  });
+
+const backlogCmd = program
+  .command("backlog")
+  .description("personal backlog — queue tasks and link them to runs");
+function backlogError(e: unknown): never {
+  if (e instanceof BacklogError) {
+    process.stderr.write(`harness error: ${(e as Error).message}\n`);
+    process.exit(1);
+  }
+  throw e;
+}
+backlogCmd
+  .command("add")
+  .description("add a backlog item")
+  .requiredOption("--title <text>", "short title")
+  .requiredOption("--domain <domain>", "target domain")
+  .requiredOption("--goal <text>", "task goal")
+  .option("--priority <level>", "high | medium | low", "medium")
+  .option("--tags <list>", "comma-separated tags")
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    try {
+      const item = await addItem(paths.backlogDir, {
+        title: String(raw.title),
+        domain: String(raw.domain),
+        goal: String(raw.goal),
+        priority: String(raw.priority) as BacklogPriority,
+        ...(raw.tags !== undefined
+          ? {
+              tags: String(raw.tags)
+                .split(",")
+                .map((t) => t.trim())
+                .filter((t) => t !== ""),
+            }
+          : {}),
+      });
+      process.stdout.write(`added ${item.id} [${item.status}]\n`);
+    } catch (e) {
+      backlogError(e);
+    }
+  });
+backlogCmd
+  .command("list")
+  .description("list backlog items")
+  .option("--status <status>", "open | doing | done | deferred")
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    const status =
+      raw.status !== undefined
+        ? (String(raw.status) as BacklogStatus)
+        : undefined;
+    if (
+      status !== undefined &&
+      !["open", "doing", "done", "deferred"].includes(status)
+    ) {
+      process.stderr.write(
+        `harness error: --status must be open|doing|done|deferred\n`,
+      );
+      process.exit(1);
+    }
+    const items = await listItems(paths.backlogDir, status);
+    process.stdout.write(formatItemList(items));
+  });
+backlogCmd
+  .command("show")
+  .description("show a backlog item")
+  .requiredOption("--item-id <id>", "backlog item id")
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    try {
+      process.stdout.write(
+        formatItem(await showItem(paths.backlogDir, String(raw.itemId))),
+      );
+    } catch (e) {
+      backlogError(e);
+    }
+  });
+backlogCmd
+  .command("done")
+  .description("mark a backlog item done")
+  .requiredOption("--item-id <id>", "backlog item id")
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    try {
+      const item = await setItemStatus(
+        paths.backlogDir,
+        String(raw.itemId),
+        "done",
+      );
+      process.stdout.write(`${item.id} → done\n`);
+    } catch (e) {
+      backlogError(e);
+    }
+  });
+backlogCmd
+  .command("defer")
+  .description("defer a backlog item")
+  .requiredOption("--item-id <id>", "backlog item id")
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    try {
+      const item = await setItemStatus(
+        paths.backlogDir,
+        String(raw.itemId),
+        "deferred",
+      );
+      process.stdout.write(`${item.id} → deferred\n`);
+    } catch (e) {
+      backlogError(e);
+    }
+  });
+backlogCmd
+  .command("run")
+  .description("launch a run for a backlog item and link it")
+  .requiredOption("--item-id <id>", "backlog item id")
+  .requiredOption("--repo <path>", "target repo path")
+  .requiredOption("--repo-id <id>", "repo identifier for policy resolution")
+  .option("--base-branch <name>", "base branch", "main")
+  .option(
+    "--workflow <kind>",
+    "run | reviewed-run (default reviewed-run)",
+    "reviewed-run",
+  )
+  .option("--max-attempts <n>", "reviewed-run rerun cap")
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    let item;
+    try {
+      item = await showItem(paths.backlogDir, String(raw.itemId));
+    } catch (e) {
+      backlogError(e);
+    }
+    const kind = String(raw.workflow);
+    if (kind !== "run" && kind !== "reviewed-run") {
+      process.stderr.write(
+        `harness error: --workflow must be 'run' or 'reviewed-run'\n`,
+      );
+      process.exit(1);
+    }
+    let runId: string;
+    let failed = false;
+    if (kind === "run") {
+      const outcome = await cmdRun({
+        repo: String(raw.repo),
+        repoId: String(raw.repoId),
+        domain: item.domain,
+        goal: item.goal,
+        baseBranch: String(raw.baseBranch),
+        keepWorktree: false,
+        dryRun: false,
+        withKnowledge: false,
+      });
+      runId = outcome.runId;
+      failed = outcome.failed;
+    } else {
+      let maxAttempts = DEFAULT_MAX_ATTEMPTS;
+      if (raw.maxAttempts !== undefined) {
+        const n = Number(raw.maxAttempts);
+        if (!Number.isInteger(n) || n < 1) {
+          process.stderr.write(
+            `harness error: --max-attempts must be a positive integer (got ${JSON.stringify(String(raw.maxAttempts))})\n`,
+          );
+          process.exit(1);
+        }
+        maxAttempts = n;
+      }
+      const outcome = await cmdReviewedRun({
+        repo: String(raw.repo),
+        repoId: String(raw.repoId),
+        domain: item.domain,
+        goal: item.goal,
+        baseBranch: String(raw.baseBranch),
+        maxAttempts,
+      });
+      runId = outcome.rootRunId;
+      failed = outcome.finalStatus !== "approved";
+    }
+    if (runId !== "") {
+      const updated = await recordBacklogRun(
+        paths.backlogDir,
+        item.id,
+        runId,
+      );
+      process.stdout.write(
+        `backlog ${item.id} → doing, linked run ${runId} ` +
+          `(${updated.linkedRuns.length} total)\n`,
+      );
+    }
+    if (failed) process.exit(1);
   });
 
 const cleanupCmd = program
