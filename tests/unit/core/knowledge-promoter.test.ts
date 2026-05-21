@@ -281,6 +281,19 @@ describe("rejectKnowledge", () => {
     ).rejects.toThrow(/reviewer is required/);
   });
 
+  it("requires a non-empty reason (governance)", async () => {
+    const { runsDir, runId } = setup([cand()]);
+    await expect(
+      rejectKnowledge({
+        runsDir,
+        runId,
+        index: 0,
+        reviewer: "knkn",
+        reason: "   ",
+      }),
+    ).rejects.toThrow(/reason is required/);
+  });
+
   it("rejects an out-of-range index", async () => {
     const { runsDir, runId } = setup([cand()]);
     await expect(

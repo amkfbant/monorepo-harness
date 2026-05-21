@@ -124,11 +124,32 @@ describe("harness knowledge reject", () => {
         "9",
         "--reviewer",
         "knkn",
+        "--reason",
+        "x",
       ],
       root,
     );
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/out of range/);
+  });
+
+  it("requires --reason (governance: a reject must record why)", () => {
+    const { root, runId } = setup();
+    const r = run(
+      [
+        "knowledge",
+        "reject",
+        "--run-id",
+        runId,
+        "--index",
+        "0",
+        "--reviewer",
+        "knkn",
+      ],
+      root,
+    );
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/reason/);
   });
 });
 

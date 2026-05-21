@@ -623,7 +623,7 @@ knowledgeCmd
   .requiredOption("--run-id <id>", "target run identifier")
   .requiredOption("--index <n>", "candidate index to reject")
   .requiredOption("--reviewer <name>", "reviewer handle")
-  .option("--reason <text>", "why the candidate is rejected", "")
+  .requiredOption("--reason <text>", "why the candidate is rejected")
   .action(async (raw: Record<string, unknown>) => {
     const paths = harnessPaths(getHarnessRoot());
     const index = Number(raw.index);

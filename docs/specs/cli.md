@@ -513,8 +513,10 @@ harness knowledge list --run-id <id> [--kind <kind>] [--domain <domain>] [--out 
 候補に reject 決定を記録する（`knowledge-candidates.yaml` は不変、決定は sidecar に）。
 
 ```bash
-harness knowledge reject --run-id <id> --index <n> --reviewer <name> [--reason <text>]
+harness knowledge reject --run-id <id> --index <n> --reviewer <name> --reason <text>
 ```
+
+`--reason` は **必須**（空文字列も不可）。「なぜ却下したか」を残すのが governance の目的のため。
 
 `knowledge-decisions.yaml` に `{ index, decision: rejected, reviewer, reason, decidedAt }` を追記し、`events.jsonl` に `knowledge_rejected` を残す。reject された候補は以降の `promote` で skip される。
 

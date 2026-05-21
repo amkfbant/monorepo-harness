@@ -367,6 +367,10 @@ export async function rejectKnowledge(
   if (opts.reviewer.trim() === "") {
     throw new KnowledgePromoteGateError("reviewer is required for reject");
   }
+  // governance: a reject must record WHY (Phase 2-9 intent).
+  if (opts.reason.trim() === "") {
+    throw new KnowledgePromoteGateError("reason is required for reject");
+  }
   const candidates = await loadCandidates(opts.runsDir, opts.runId);
   if (
     !Number.isInteger(opts.index) ||
