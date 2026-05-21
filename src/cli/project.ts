@@ -20,6 +20,11 @@ import {
 } from "../project/inspector.js";
 import { runProjectInit, type InitResult } from "../project/init.js";
 import { formatProposalMarkdown } from "../project/format-proposal.js";
+import { checkProject } from "../project/checker.js";
+import {
+  formatCheckText,
+  formatCheckJson,
+} from "../project/format-check.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -136,6 +141,28 @@ export function registerProjectCommands(program: Command): void {
             ? `${JSON.stringify(toInitJson(result), null, 2)}\n`
             : formatInitText(result, getHarnessRoot()),
         );
+      });
+    });
+
+  projectCmd
+    .command("check")
+    .description("validate a project profile without running Codex")
+    .requiredOption("--project <id>", "project id (projects/<id>.yaml)")
+    .option("--repo <path>", "override the profile's repo path")
+    .option("--json", "emit JSON instead of text", false)
+    .action(async (raw: Record<string, unknown>) => {
+      await withProjectErrorExit(async () => {
+        const report = await checkProject({
+          harnessRoot: getHarnessRoot(),
+          projectId: String(raw.project),
+          ...(raw.repo !== undefined ? { repoOverride: String(raw.repo) } : {}),
+          generatedAt: new Date().toISOString(),
+        });
+        process.stdout.write(
+          raw.json ? formatCheckJson(report) : formatCheckText(report),
+        );
+        // a config error fails the command (CI gate); ok/warn pass.
+        if (report.status === "error") process.exit(1);
       });
     });
 }
