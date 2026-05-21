@@ -85,6 +85,7 @@ Finding ID は **F1, F2, …** で連番。レポート間で連続させる（�
 | 2026-05-21 | [Phase 2-5 review list デモ](2026-05-21-phase2-5-review-list-demo.md) | review list 拡張（--status/--domain/--limit/--json、壊れ run 分離）。codex review で P1×1+P2×3 を fix。E2-5-1〜5 実機検証、新 finding なし |
 | 2026-05-21 | [Phase 2-6 reviewer agent robustness デモ](2026-05-21-phase2-6-reviewer-agent-robustness-demo.md) | review auto 異常系（error artifact / --allow-overwrite / --dry-run / 再帰 snapshot）。codex review で P1×2+P2×1 を fix。E2-6-1 で実機 prose 混入を検証、新 finding なし |
 | 2026-05-21 | [Phase 2-7 rerun convergence デモ](2026-05-21-phase2-7-rerun-convergence-demo.md) | rerun 収束制御（rootRunId/rerunAttempt/--max-attempts/rerun chain）。codex review で P1×1+P2×1 を fix。E2-7-1 で 初回→changes_requested→rerun→review auto→approved の full E2E を実機検証、新 finding なし |
+| 2026-05-21 | [Phase 2-8 post-command safety matrix デモ](2026-05-21-phase2-8-post-command-safety-matrix-demo.md) | command 副作用 9 シナリオ（scope外/secret/ignored/symlink/huge/binary 等）を T1-T7 で網羅 + events に stage。codex review で P2×2 を fix。E2-8-1/2/3 を実機検証、新 finding なし |
 
 ## Workflow
 
