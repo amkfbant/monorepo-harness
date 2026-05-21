@@ -4,6 +4,7 @@ import {
   mkdirSync,
   writeFileSync,
   readFileSync,
+  existsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +17,8 @@ import type { CodexExecRunner } from "../../../src/codex/codex-exec-runner.js";
 interface SetupOpts {
   status?: string;
   missingDecisionFile?: boolean;
+  /** decision value written into review-decision.yaml (default: pending) */
+  decision?: string;
 }
 
 function setup(
@@ -46,17 +49,21 @@ function setup(
   );
   writeFileSync(join(runDir, "events.jsonl"), "");
   if (!opts.missingDecisionFile) {
+    const decision = opts.decision ?? "pending";
+    const nonPending = decision !== "pending";
     writeFileSync(
       join(runDir, "review-decision.yaml"),
       [
         `runId: ${runId}`,
         "domain: apps/user",
-        "decision: pending",
-        "required_changes: []",
+        `decision: ${decision}`,
+        decision === "changes_requested"
+          ? 'required_changes:\n  - "fix it"'
+          : "required_changes: []",
         "non_blocking_comments: []",
         "out_of_scope_suggestions: []",
-        "reviewer: null",
-        "reviewed_at: null",
+        `reviewer: ${nonPending ? "knkn" : "null"}`,
+        `reviewed_at: ${nonPending ? "2026-05-21T00:00:00Z" : "null"}`,
         "",
       ].join("\n"),
     );
@@ -245,6 +252,86 @@ describe("runReviewerAgent", () => {
     ).rejects.toThrow(/modified run artifact/);
   });
 
+  // A runner that mutates `targetFile` mid-run, then returns the given
+  // exit code / timeout. Used to prove tamper detection runs before the
+  // exit-code / timeout gates.
+  function tamperingRunner(
+    targetFile: string,
+    opts: { exitCode?: number; timedOut?: boolean } = {},
+  ): CodexExecRunner {
+    return {
+      async run(input) {
+        const { writeFileSync, utimesSync } = await import("node:fs");
+        writeFileSync(targetFile, "tampered\n");
+        const now = new Date();
+        utimesSync(targetFile, now, new Date(now.getTime() + 5000));
+        const { writeFile } = await import("node:fs/promises");
+        await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
+        await writeFile(input.logPaths.stderr, "", "utf8");
+        return {
+          exitCode: opts.exitCode ?? 0,
+          timedOut: opts.timedOut ?? false,
+        };
+      },
+    };
+  }
+
+  it("detects tampering even when codex then exits non-zero", async () => {
+    const { runsDir, runId } = setup();
+    const summary = join(runsDir, runId, "summary.md");
+    writeFileSync(summary, "original\n");
+    await expect(
+      runReviewerAgent({
+        runsDir,
+        runId,
+        codexRunner: tamperingRunner(summary, { exitCode: 3 }),
+      }),
+    ).rejects.toThrow(/modified run artifact/);
+  });
+
+  it("detects tampering even when codex then times out", async () => {
+    const { runsDir, runId } = setup();
+    const summary = join(runsDir, runId, "summary.md");
+    writeFileSync(summary, "original\n");
+    await expect(
+      runReviewerAgent({
+        runsDir,
+        runId,
+        codexRunner: tamperingRunner(summary, {
+          exitCode: -1,
+          timedOut: true,
+        }),
+      }),
+    ).rejects.toThrow(/modified run artifact/);
+  });
+
+  it("detects tampering of a file in a subdirectory (commands/)", async () => {
+    const { runsDir, runId } = setup();
+    const cmdDir = join(runsDir, runId, "commands");
+    mkdirSync(cmdDir, { recursive: true });
+    const cmdLog = join(cmdDir, "cmd-0.out.log");
+    writeFileSync(cmdLog, "original command output\n");
+    await expect(
+      runReviewerAgent({
+        runsDir,
+        runId,
+        codexRunner: tamperingRunner(cmdLog),
+      }),
+    ).rejects.toThrow(/modified run artifact: commands\/cmd-0\.out\.log/);
+  });
+
+  it("detects tampering of review-decision.yaml itself (codex must not write it)", async () => {
+    const { runsDir, runId } = setup();
+    const decisionFile = join(runsDir, runId, "review-decision.yaml");
+    await expect(
+      runReviewerAgent({
+        runsDir,
+        runId,
+        codexRunner: tamperingRunner(decisionFile),
+      }),
+    ).rejects.toThrow(/modified run artifact: review-decision\.yaml/);
+  });
+
   it("rejects an invalid runId (path traversal)", async () => {
     await expect(
       runReviewerAgent({
@@ -299,5 +386,165 @@ describe("runReviewerAgent", () => {
     await expect(
       runReviewerAgent({ runsDir, runId, codexRunner: runner }),
     ).rejects.toThrow(/not found/);
+  });
+
+  it("result includes dryRun=false on a normal run", async () => {
+    const { runsDir, runId } = setup();
+    const r = await runReviewerAgent({
+      runsDir,
+      runId,
+      codexRunner: fakeRunnerWithOutput(APPROVED_OUTPUT),
+    });
+    expect(r.dryRun).toBe(false);
+  });
+
+  describe("--allow-overwrite gate", () => {
+    it("refuses to overwrite a non-pending decision by default", async () => {
+      const { runsDir, runId } = setup({ decision: "approved" });
+      await expect(
+        runReviewerAgent({
+          runsDir,
+          runId,
+          codexRunner: fakeRunnerWithOutput(APPROVED_OUTPUT),
+        }),
+      ).rejects.toThrow(/already has decision="approved".*--allow-overwrite/s);
+    });
+
+    it("overwrites a non-pending decision when allowOverwrite is set", async () => {
+      const { runsDir, runId } = setup({ decision: "changes_requested" });
+      const r = await runReviewerAgent({
+        runsDir,
+        runId,
+        allowOverwrite: true,
+        codexRunner: fakeRunnerWithOutput(APPROVED_OUTPUT),
+      });
+      expect(r.decision).toBe("approved");
+      const yaml = readFileSync(
+        join(runsDir, runId, "review-decision.yaml"),
+        "utf8",
+      );
+      expect(yaml).toMatch(/decision: approved/);
+    });
+
+    it("the overwrite gate runs BEFORE codex (no codex call when refused)", async () => {
+      const { runsDir, runId } = setup({ decision: "rejected" });
+      let codexCalled = false;
+      const runner: CodexExecRunner = {
+        async run(input) {
+          codexCalled = true;
+          const { writeFile } = await import("node:fs/promises");
+          await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
+          await writeFile(input.logPaths.stderr, "", "utf8");
+          return { exitCode: 0, timedOut: false };
+        },
+      };
+      await expect(
+        runReviewerAgent({ runsDir, runId, codexRunner: runner }),
+      ).rejects.toThrow(/--allow-overwrite/);
+      expect(codexCalled).toBe(false);
+    });
+
+    it("a pending decision is overwritten without --allow-overwrite", async () => {
+      const { runsDir, runId } = setup({ decision: "pending" });
+      const r = await runReviewerAgent({
+        runsDir,
+        runId,
+        codexRunner: fakeRunnerWithOutput(APPROVED_OUTPUT),
+      });
+      expect(r.decision).toBe("approved");
+    });
+  });
+
+  describe("--dry-run", () => {
+    it("validates output but does NOT write review-decision.yaml", async () => {
+      const { runsDir, runId } = setup();
+      const before = readFileSync(
+        join(runsDir, runId, "review-decision.yaml"),
+        "utf8",
+      );
+      const r = await runReviewerAgent({
+        runsDir,
+        runId,
+        dryRun: true,
+        codexRunner: fakeRunnerWithOutput(APPROVED_OUTPUT),
+      });
+      expect(r.dryRun).toBe(true);
+      expect(r.decision).toBe("approved");
+      const after = readFileSync(
+        join(runsDir, runId, "review-decision.yaml"),
+        "utf8",
+      );
+      expect(after).toBe(before); // unchanged
+    });
+
+    it("dry-run still rejects invalid output and writes NO error artifact", async () => {
+      const { runsDir, runId } = setup();
+      const runner = fakeRunnerWithOutput(
+        "```yaml\ndecision: maybe\nrequired_changes: []\nnon_blocking_comments: []\nout_of_scope_suggestions: []\n```",
+      );
+      await expect(
+        runReviewerAgent({ runsDir, runId, dryRun: true, codexRunner: runner }),
+      ).rejects.toThrow(/decision/);
+      expect(
+        existsSync(join(runsDir, runId, "review-auto-error.json")),
+      ).toBe(false);
+    });
+  });
+
+  describe("review-auto-error.json artifact", () => {
+    it("is written when codex output cannot be parsed (invalid decision)", async () => {
+      const { runsDir, runId } = setup();
+      const runner = fakeRunnerWithOutput(
+        "```yaml\ndecision: maybe\nrequired_changes: []\nnon_blocking_comments: []\nout_of_scope_suggestions: []\n```",
+      );
+      await expect(
+        runReviewerAgent({ runsDir, runId, codexRunner: runner }),
+      ).rejects.toThrow(/decision/);
+      const errPath = join(runsDir, runId, "review-auto-error.json");
+      expect(existsSync(errPath)).toBe(true);
+      const err = JSON.parse(readFileSync(errPath, "utf8"));
+      expect(err.type).toBe("review-auto-error");
+      expect(err.runId).toBe(runId);
+      expect(err.reason).toMatch(/decision/);
+      expect(err.codexExitCode).toBe(0);
+    });
+
+    it("review-decision.yaml is left intact when output is invalid", async () => {
+      const { runsDir, runId } = setup();
+      const before = readFileSync(
+        join(runsDir, runId, "review-decision.yaml"),
+        "utf8",
+      );
+      const runner = fakeRunnerWithOutput("not yaml at all, just prose");
+      await expect(
+        runReviewerAgent({ runsDir, runId, codexRunner: runner }),
+      ).rejects.toThrow();
+      const after = readFileSync(
+        join(runsDir, runId, "review-decision.yaml"),
+        "utf8",
+      );
+      expect(after).toBe(before);
+    });
+
+    it("a stale error artifact is cleared on a subsequent successful run", async () => {
+      const { runsDir, runId } = setup();
+      const errPath = join(runsDir, runId, "review-auto-error.json");
+      // first run: invalid output → error artifact written
+      await expect(
+        runReviewerAgent({
+          runsDir,
+          runId,
+          codexRunner: fakeRunnerWithOutput("```yaml\ndecision: maybe\n```"),
+        }),
+      ).rejects.toThrow();
+      expect(existsSync(errPath)).toBe(true);
+      // second run: valid output → artifact cleared
+      await runReviewerAgent({
+        runsDir,
+        runId,
+        codexRunner: fakeRunnerWithOutput(APPROVED_OUTPUT),
+      });
+      expect(existsSync(errPath)).toBe(false);
+    });
   });
 });

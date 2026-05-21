@@ -1,4 +1,4 @@
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, readdir, stat, writeFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -20,26 +20,25 @@ export class ReviewerAgentGateError extends Error {
   }
 }
 
+/** Diagnostic artifact written when codex output cannot be parsed/validated. */
+export const REVIEW_AUTO_ERROR_FILE = "review-auto-error.json";
+
 const RUN_ID_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /**
- * Names the reviewer agent IS allowed to create/modify. Anything else under
- * runDir must match its pre-codex snapshot or the run is rejected.
+ * The ONLY files allowed to appear/change during the codex window. The
+ * codex runner pipes the agent's stdout/stderr into these two files, so
+ * they legitimately change. Everything else under runDir — including
+ * review-decision.yaml and review-auto-error.json — must match its
+ * pre-codex snapshot, or the run is rejected as tampering.
  *
- * - reviewer-agent.out.log / .err.log: harness writes these to capture
- *   codex stdout/stderr; codex may not write them directly but it writes
- *   to stdout which gets piped here.
- * - review-decision.yaml: this is the ONE artifact the agent is meant to
- *   influence. We re-write it ourselves AFTER snapshot verification, so
- *   it's allowed to change during this window — but the codex itself
- *   should not write to it. To keep the check simple we exclude it from
- *   the snapshot too; the agent doesn't have write sandbox so a direct
- *   write should not succeed anyway.
+ * review-decision.yaml / review-auto-error.json are written (and the
+ * latter rm'd) by the harness itself, but ONLY after snapshot
+ * verification has passed — so they belong in the snapshot, not here.
  */
 const REVIEWER_WRITE_ALLOWLIST = new Set([
   "reviewer-agent.out.log",
   "reviewer-agent.err.log",
-  "review-decision.yaml",
 ]);
 
 interface FileSnapshot {
@@ -47,17 +46,29 @@ interface FileSnapshot {
   mtimeMs: number;
 }
 
+/**
+ * Snapshot every file under runDir (recursively — `commands/` etc.
+ * included), keyed by path relative to runDir. The two reviewer-agent log
+ * files are excluded since codex legitimately writes them.
+ */
 async function snapshotRunDir(
   runDir: string,
 ): Promise<Map<string, FileSnapshot>> {
   const out = new Map<string, FileSnapshot>();
-  const entries = await readdir(runDir, { withFileTypes: true });
-  for (const e of entries) {
-    if (!e.isFile()) continue; // subdirs (e.g. commands/) handled separately if needed
-    if (REVIEWER_WRITE_ALLOWLIST.has(e.name)) continue;
-    const st = await stat(join(runDir, e.name));
-    out.set(e.name, { size: st.size, mtimeMs: st.mtimeMs });
+  async function walk(dir: string, prefix: string): Promise<void> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const e of entries) {
+      const rel = prefix ? `${prefix}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        await walk(join(dir, e.name), rel);
+      } else if (e.isFile()) {
+        if (REVIEWER_WRITE_ALLOWLIST.has(rel)) continue;
+        const st = await stat(join(dir, e.name));
+        out.set(rel, { size: st.size, mtimeMs: st.mtimeMs });
+      }
+    }
   }
+  await walk(runDir, "");
   return out;
 }
 
@@ -99,6 +110,17 @@ export interface ReviewerAgentInputs {
    * to distinguish models.
    */
   reviewerName?: string;
+  /**
+   * When review-decision.yaml already has a non-pending decision, the run
+   * is refused unless this is set. Protects a human/earlier verdict from
+   * being clobbered by a re-run of `review auto`.
+   */
+  allowOverwrite?: boolean;
+  /**
+   * Run codex and validate the output, but do NOT write
+   * review-decision.yaml (or review-auto-error.json). For inspection.
+   */
+  dryRun?: boolean;
   codexRunner: CodexExecRunner;
   now?: Date;
 }
@@ -109,6 +131,8 @@ export interface ReviewerAgentResult {
   reviewer: string;
   reviewedAt: string;
   rawOutputPath: string;
+  /** true when dryRun was set — review-decision.yaml was NOT written */
+  dryRun: boolean;
 }
 
 const PROMPT_PREAMBLE = `You are an automated code reviewer. Read the run artifacts in the
@@ -263,17 +287,29 @@ export async function runReviewerAgent(
     );
   }
 
-  // Preserve any human-edited fields by loading the current file first.
-  await loadReviewDecision(decisionPath).catch(() => {
+  // Load the current decision file. Malformed → refuse (we'd otherwise
+  // not know whether it held a human verdict).
+  const existingDecision = await loadReviewDecision(decisionPath).catch(
+    () => {
+      throw new ReviewerAgentGateError(
+        `existing review-decision.yaml is malformed; refusing to overwrite`,
+      );
+    },
+  );
+  // Overwrite guard: a non-pending decision (human or earlier agent
+  // verdict) is only replaced with --allow-overwrite. Checked BEFORE codex
+  // so a refused run costs no codex call.
+  if (existingDecision.decision !== "pending" && !inputs.allowOverwrite) {
     throw new ReviewerAgentGateError(
-      `existing review-decision.yaml is malformed; refusing to overwrite`,
+      `review-decision.yaml already has decision="${existingDecision.decision}"; pass --allow-overwrite to replace it`,
     );
-  });
+  }
 
   // Invoke codex with the run directory as cwd. Sandbox is read-only —
   // the agent doesn't need to touch the worktree, just read artifacts.
   const stdoutPath = join(runDir, "reviewer-agent.out.log");
   const stderrPath = join(runDir, "reviewer-agent.err.log");
+  const errorArtifactPath = join(runDir, REVIEW_AUTO_ERROR_FILE);
 
   // Defense in depth: even though the runner is configured with
   // sandbox=read-only, a misconfigured HARNESS_CODEX_BIN or sandbox
@@ -287,6 +323,11 @@ export async function runReviewerAgent(
     prompt: PROMPT_PREAMBLE,
     logPaths: { stdout: stdoutPath, stderr: stderrPath },
   });
+  // Tamper check FIRST — before the timeout/exitCode gates. A sandbox
+  // escape that mutates an artifact and THEN exits non-zero / times out
+  // would otherwise slip past detection.
+  await verifyArtifactsUnchanged(runDir, snapshot);
+
   if (codexResult.timedOut) {
     throw new ReviewerAgentGateError(
       `reviewer codex timed out for ${inputs.runId}`,
@@ -298,41 +339,81 @@ export async function runReviewerAgent(
     );
   }
 
-  // Confirm the agent did not touch any artifact outside the allowlist.
-  // This must run BEFORE we overwrite review-decision.yaml ourselves.
-  await verifyArtifactsUnchanged(runDir, snapshot);
-
-  const rawOutput = await readFile(stdoutPath, "utf8");
-  const yamlText = extractYamlBlock(rawOutput);
-  let parsed: PartialDecision;
-  try {
-    parsed = parseYaml(yamlText) as PartialDecision;
-  } catch (e) {
-    throw new ReviewerAgentGateError(
-      `reviewer agent produced unparseable YAML: ${(e as Error).message}`,
-    );
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new ReviewerAgentGateError(
-      `reviewer agent output is not a YAML object`,
-    );
-  }
-
   const reviewer = inputs.reviewerName ?? "codex-reviewer";
   const reviewedAt = (inputs.now ?? new Date()).toISOString();
   if (typeof meta.domain !== "string") {
-    throw new ReviewerAgentGateError(
-      `meta.json domain is not a string`,
-    );
+    throw new ReviewerAgentGateError(`meta.json domain is not a string`);
   }
-  const decision = buildDecision(
-    inputs.runId,
-    meta.domain,
-    parsed,
-    reviewer,
-    reviewedAt,
-  );
+
+  // Turn the codex output into a valid decision. Any failure here is an
+  // "output error": write review-auto-error.json (unless dry-run) so the
+  // operator can inspect what went wrong, then rethrow. review-decision.yaml
+  // is NOT touched on this path.
+  let decision: ReviewDecisionFile;
+  try {
+    const rawOutput = await readFile(stdoutPath, "utf8");
+    const yamlText = extractYamlBlock(rawOutput);
+    let parsed: PartialDecision;
+    try {
+      parsed = parseYaml(yamlText) as PartialDecision;
+    } catch (e) {
+      throw new ReviewerAgentGateError(
+        `reviewer agent produced unparseable YAML: ${(e as Error).message}`,
+      );
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new ReviewerAgentGateError(
+        `reviewer agent output is not a YAML object`,
+      );
+    }
+    decision = buildDecision(
+      inputs.runId,
+      meta.domain,
+      parsed,
+      reviewer,
+      reviewedAt,
+    );
+  } catch (e) {
+    if (e instanceof ReviewerAgentGateError) {
+      if (!inputs.dryRun) {
+        await writeFile(
+          errorArtifactPath,
+          `${JSON.stringify(
+            {
+              type: "review-auto-error",
+              runId: inputs.runId,
+              reviewer,
+              failedAt: reviewedAt,
+              reason: e.message,
+              rawOutputPath: "reviewer-agent.out.log",
+              codexExitCode: codexResult.exitCode,
+              timedOut: codexResult.timedOut,
+            },
+            null,
+            2,
+          )}\n`,
+          "utf8",
+        );
+      }
+    }
+    throw e;
+  }
+
+  if (inputs.dryRun) {
+    // dry-run: validated successfully but write nothing.
+    return {
+      runId: inputs.runId,
+      decision: decision.decision,
+      reviewer,
+      reviewedAt,
+      rawOutputPath: stdoutPath,
+      dryRun: true,
+    };
+  }
+
   await writeReviewDecision(decisionPath, decision);
+  // success — clear any stale error artifact from a prior failed run.
+  await rm(errorArtifactPath, { force: true });
 
   return {
     runId: inputs.runId,
@@ -340,5 +421,6 @@ export async function runReviewerAgent(
     reviewer,
     reviewedAt,
     rawOutputPath: stdoutPath,
+    dryRun: false,
   };
 }

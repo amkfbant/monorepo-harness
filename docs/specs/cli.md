@@ -411,7 +411,7 @@ reviewer agent。codex を **read-only sandbox** で呼び、run artifacts を�
 ### Synopsis
 
 ```bash
-harness review auto --run-id <id> [--reviewer-name <name>]
+harness review auto --run-id <id> [--reviewer-name <name>] [--allow-overwrite] [--dry-run]
 ```
 
 ### Options
@@ -420,27 +420,46 @@ harness review auto --run-id <id> [--reviewer-name <name>]
 |--------|:--------:|------|
 | `--run-id <id>` | ✅ | 対象 run（`needs_review` 状態） |
 | `--reviewer-name <name>` | — | `review-decision.yaml.reviewer` に刻む名前（default `codex-reviewer`） |
+| `--allow-overwrite` | — | `review-decision.yaml` が既に非 `pending`（人間 or 過去の agent verdict）でも上書きする |
+| `--dry-run` | — | codex を呼んで output を検証するが `review-decision.yaml` は **書かない** |
 
 ### 動作
 
-1. `runs/<runId>/` を cwd に、`sandbox=read-only` で codex を起動
-2. codex は `review-request.md` / `summary.md` / `final-diff.patch` / `untracked-*` / command logs を読み、fenced YAML block を出力
-3. codex 実行前後で run dir のファイル (size + mtime) を snapshot 比較し、`reviewer-agent.*.log` 以外が変化していたら reject（read-only sandbox の二重防御）
-4. YAML を strict にパース（不明 decision / 非 string entry / `changes_requested` で `required_changes` 空 → 全て gate error）
-5. `review-decision.yaml` を上書き
+1. `review-decision.yaml` を読む。非 `pending` decision が入っていて `--allow-overwrite` 未指定なら **codex を呼ぶ前に** reject（人間/過去 agent の verdict 保護）
+2. `runs/<runId>/` を cwd に、`sandbox=read-only` で codex を起動
+3. codex は `review-request.md` / `summary.md` / `final-diff.patch` / `untracked-*` / command logs を読み、fenced YAML block を出力
+4. codex 実行前後で run dir のファイル (size + mtime) を snapshot 比較し、`reviewer-agent.*.log` / `review-auto-error.json` 以外が変化していたら reject（read-only sandbox の二重防御）
+5. YAML を strict にパース（不明 decision / 非 string entry / `changes_requested` で `required_changes` 空 → 全て output error）
+6. `--dry-run` 未指定なら `review-decision.yaml` を上書き、stale な `review-auto-error.json` を削除
 
 **`harness review auto` は status を遷移させない。** 生成された `review-decision.yaml` を人間が確認し、`harness review process` で適用する 2 段構成。
 
-### 検証状況
+### 保証範囲（review auto が守ること）
 
-実機 codex での **正常系 1 件**が検証済み（`docs/reports/2026-05-21-phase2-4-feature-demo.md` D2）。codex は fenced YAML block のみを返し、`extractYamlBlock` でパース成功した。
+- **review-decision.yaml を壊さない**: codex output が invalid（prose-only / malformed YAML / 不明 decision 等）の場合、`review-decision.yaml` は一切触らない。検証は parse → strict schema の順で、書き込みは検証通過後のみ
+- **read-only**: codex は read-only sandbox。さらに run dir の全ファイルを snapshot し、`reviewer-agent.*.log` / `review-auto-error.json` 以外が変化したら reject（sandbox 誤設定の二重防御）
+- **status を変えない**: meta.json の status 遷移は `review process` のみが行う
+- **冪等でない上書き保護**: 非 `pending` decision は `--allow-overwrite` なしには上書きされない
 
-prose 混入 / invalid decision / malformed YAML といった**異常系は unit test で担保**（`tests/unit/core/reviewer-agent.test.ts`）しているが、実機 codex での異常系サンプルは未取得。Phase 3 で追加検証する。
+### invalid output 時
+
+codex output が invalid だった場合:
+
+- `review-decision.yaml` は変更しない
+- `runs/<runId>/review-auto-error.json` に構造化エラー（reason / rawOutputPath / codexExitCode / timedOut）を書き出す（`--dry-run` 時は書かない）
+- `reviewer-agent.out.log` / `err.log` は codex の生 output として残る
+- exit 1
+
+### 検証状況・限界
+
+- 実機 codex での**正常系**は検証済み（`docs/reports/2026-05-21-phase2-4-feature-demo.md` D2、`2026-05-21-phase2-6-reviewer-agent-robustness-demo.md` E2-6-1）。codex は fenced YAML block を返し `extractYamlBlock` でパース成功
+- prose 混入 / invalid decision / malformed YAML / artifact 改竄 / overwrite gate / dry-run の**異常系は unit + integration test で担保**（`tests/unit/core/reviewer-agent.test.ts`、`tests/integration/cli-review-auto.test.ts`）
+- **限界**: review auto は reviewer agent の verdict の**品質**は保証しない。あくまで「壊れた output で harness が壊れない」「verdict を人間が確認するまで status は動かない」ことを保証する。最終判断は `review process` 前に人間が行う想定
 
 ### Exit code
 
-- `0`: review-decision.yaml 生成成功
-- `1`: invalid runId / status != needs_review / codex 非ゼロ or timeout / YAML パース不能 / artifact 改竄検出
+- `0`: review-decision.yaml 生成成功（`--dry-run` 時は検証成功）
+- `1`: invalid runId / status != needs_review / 非 `pending` decision を `--allow-overwrite` なしで上書き試行 / codex 非ゼロ or timeout / YAML パース不能 / 不明 decision / artifact 改竄検出
 - `2`: 予期しない例外
 
 ## `harness knowledge promote`

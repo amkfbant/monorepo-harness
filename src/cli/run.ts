@@ -328,6 +328,16 @@ reviewCmd
     "--reviewer-name <name>",
     "stamped into review-decision.yaml.reviewer (default: codex-reviewer)",
   )
+  .option(
+    "--allow-overwrite",
+    "replace review-decision.yaml even if it already has a non-pending decision",
+    false,
+  )
+  .option(
+    "--dry-run",
+    "run codex and validate the output but do NOT write review-decision.yaml",
+    false,
+  )
   .action(async (raw: Record<string, unknown>) => {
     const paths = harnessPaths(getHarnessRoot());
     // separate codex instance with read-only sandbox; the agent must not
@@ -345,14 +355,22 @@ reviewCmd
         ...(raw.reviewerName !== undefined
           ? { reviewerName: String(raw.reviewerName) }
           : {}),
+        allowOverwrite: Boolean(raw.allowOverwrite),
+        dryRun: Boolean(raw.dryRun),
         codexRunner: runner,
       });
       process.stdout.write(
         `run=${result.runId} decision=${result.decision} reviewer=${result.reviewer} reviewedAt=${result.reviewedAt}\n`,
       );
-      process.stdout.write(
-        `note: review-decision.yaml was overwritten; run 'harness review process --run-id ${result.runId}' to apply.\n`,
-      );
+      if (result.dryRun) {
+        process.stdout.write(
+          `note: --dry-run — review-decision.yaml was NOT written.\n`,
+        );
+      } else {
+        process.stdout.write(
+          `note: review-decision.yaml was overwritten; run 'harness review process --run-id ${result.runId}' to apply.\n`,
+        );
+      }
     } catch (e) {
       if (e instanceof ReviewerAgentGateError) {
         process.stderr.write(`harness error: ${(e as Error).message}\n`);
