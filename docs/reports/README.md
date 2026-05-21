@@ -87,6 +87,7 @@ Finding ID は **F1, F2, …** で連番。レポート間で連続させる（�
 | 2026-05-21 | [Phase 2-7 rerun convergence デモ](2026-05-21-phase2-7-rerun-convergence-demo.md) | rerun 収束制御（rootRunId/rerunAttempt/--max-attempts/rerun chain）。codex review で P1×1+P2×1 を fix。E2-7-1 で 初回→changes_requested→rerun→review auto→approved の full E2E を実機検証、新 finding なし |
 | 2026-05-21 | [Phase 2-8 post-command safety matrix デモ](2026-05-21-phase2-8-post-command-safety-matrix-demo.md) | command 副作用 9 シナリオ（scope外/secret/ignored/symlink/huge/binary 等）を T1-T7 で網羅 + events に stage。codex review で P2×2 を fix。E2-8-1/2/3 を実機検証、新 finding なし |
 | 2026-05-21 | [Phase 2-9 knowledge promotion governance デモ](2026-05-21-phase2-9-knowledge-promotion-governance-demo.md) | knowledge list / reject / promote --reviewer、YAML frontmatter、(run,index)/hash 重複制御。codex review で P2×5 を fix（うち 1 件は contentHash の NUL バイト混入）。E2-9-1〜4 を実機検証、新 finding なし |
+| 2026-05-21 | [Phase 2 close package](2026-05-21-phase2-close.md) | Phase 2 全体（2-1〜2-10）のクローズ。root README + Phase 2 quick start、全 close 条件チェック、E2-10 walkthrough、Phase 3 deferred items。`phase2-close` タグ |
 
 ## Workflow
 

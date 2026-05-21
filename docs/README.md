@@ -13,15 +13,15 @@ docs/
   examples/                ← サンプル / 検証 fixture の仕様
     mini-commerce.md
   reports/                 ← 開発サイクルの記録 + finding registry
-    README.md, TEMPLATE.md, 2026-05-20-mvp-validation-*.md,
-    2026-05-21-phase2-review-commands-cleanup.md,
-    2026-05-21-phase2-4-feature-demo.md
+    README.md, TEMPLATE.md,
+    2026-05-20-mvp-validation-*.md,
+    2026-05-21-phase2-*.md   (review-commands-cleanup / 2-4〜2-9 demo / phase2-close)
   superpowers/plans/       ← 実装計画 (history 含む; 完了後も残す)
 ```
 
-## Phase 2-4 の機能（run の後段）
+## Phase 2 の機能（run の後段）
 
-`harness run` の後に続く一連の subcommand。詳細は [`specs/cli.md`](./specs/cli.md)。
+`harness run` の後に続く一連の subcommand。詳細は [`specs/cli.md`](./specs/cli.md)、Phase 2 全体のクローズ状況は [`reports/2026-05-21-phase2-close.md`](./reports/2026-05-21-phase2-close.md)。
 
 | subcommand | 役割 |
 |------------|------|
@@ -33,7 +33,7 @@ docs/
 | `harness knowledge list / reject / promote` | 候補をレビュー（status 表示 / reject 記録 / `--reviewer` 付き昇格 + 重複制御） |
 | `harness cleanup --run-id <id> [--scope …]` | worktree / branch / run dir を scope 単位で削除 |
 
-`policy.commands.allow` の structured form（`{id, cmd, args, timeout_ms, env}`）と `commands.defaults` も Phase 2-4 で追加（[`specs/policy.md`](./specs/policy.md)）。実機デモ結果は [`reports/2026-05-21-phase2-4-feature-demo.md`](./reports/2026-05-21-phase2-4-feature-demo.md)。
+`policy.commands.allow` の structured form（`{id, cmd, args, timeout_ms, env}`）と `commands.defaults` も Phase 2 で追加（[`specs/policy.md`](./specs/policy.md)）。各機能の実機デモ結果は `reports/2026-05-21-phase2-*.md`。
 
 ## monorepo-harness と mini-commerce の関係
 

@@ -228,7 +228,7 @@ reviewed_at: null
 
 reviewer がこのファイルを編集して `decision` を `approved` / `changes_requested` / `rejected` に変更後、`harness review process --run-id <id>` で `meta.json` への反映と event 追記が行われる。`reviewed_at` が `null` のままなら processor が現在時刻で auto-fill して書き戻す。
 
-`required_changes` / `non_blocking_comments` / `out_of_scope_suggestions` は MVP processor では読み取られるが利用されない（将来の Phase 3 retry loop で prompt 生成に使う予定）。
+`review process` 自体は `required_changes` / `non_blocking_comments` / `out_of_scope_suggestions` を status 遷移に使わない。ただし `harness rerun --from-review` が `changes_requested` run の `required_changes` を次 run の prompt に組み込む（Phase 2-7）。`review process → rerun → review` を自動で連鎖させる完全自動 retry loop は Phase 3。
 
 ## エラーパス
 
