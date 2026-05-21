@@ -1,0 +1,31 @@
+version: 1
+preset_id: node-basic-v1
+description: >-
+  Basic Node.js verification commands: a version probe plus a domain-scoped
+  test script that is only emitted when the package actually declares it.
+
+defaults:
+  timeout_ms: 120000
+  env_allowlist: [PATH, HOME, NODE_ENV]
+
+commands:
+  - id: node-version
+    cmd: node
+    args: ["--version"]
+    env:
+      NODE_ENV: test
+
+  - id: npm-test-if-script-exists
+    kind: package_script
+    package_scope: domain
+    script: test
+    package_managers:
+      npm:
+        cmd: npm
+        args: ["test", "--workspace", "{package_name}"]
+      pnpm:
+        cmd: pnpm
+        args: ["--filter", "{package_name}", "test"]
+      yarn:
+        cmd: yarn
+        args: ["workspace", "{package_name}", "test"]

@@ -1,0 +1,40 @@
+version: 1
+preset_id: node-package-basic-v1
+description: >-
+  Verification commands for a publishable Node package domain: a typecheck
+  and a test script, both domain-scoped and emitted only when declared.
+
+defaults:
+  timeout_ms: 180000
+  env_allowlist: [PATH, HOME, NODE_ENV]
+
+commands:
+  - id: package-typecheck-if-script-exists
+    kind: package_script
+    package_scope: domain
+    script: typecheck
+    package_managers:
+      npm:
+        cmd: npm
+        args: ["run", "typecheck", "--workspace", "{package_name}"]
+      pnpm:
+        cmd: pnpm
+        args: ["--filter", "{package_name}", "typecheck"]
+      yarn:
+        cmd: yarn
+        args: ["workspace", "{package_name}", "typecheck"]
+
+  - id: package-test-if-script-exists
+    kind: package_script
+    package_scope: domain
+    script: test
+    package_managers:
+      npm:
+        cmd: npm
+        args: ["test", "--workspace", "{package_name}"]
+      pnpm:
+        cmd: pnpm
+        args: ["--filter", "{package_name}", "test"]
+      yarn:
+        cmd: yarn
+        args: ["workspace", "{package_name}", "test"]

@@ -1,0 +1,46 @@
+version: 1
+template_id: docs-only-v1
+description: >-
+  Documentation-only policy: domains may write Markdown/text within their
+  root, with all code, manifests and CI config globally denied.
+
+defaults:
+  codex:
+    sandbox: workspace-write
+    approval: on-request
+    timeout_ms: 900000
+  limits:
+    git_timeout_ms: 30000
+
+ignore_untracked:
+  - "**/node_modules/**"
+  - "**/dist/**"
+
+root_deny:
+  - .git/**
+  - .github/**
+  - package.json
+  - pnpm-lock.yaml
+  - yarn.lock
+  - package-lock.json
+
+domain_defaults:
+  docs:
+    read:
+      - "{root}/**"
+    write:
+      - "{root}/**/*.md"
+      - "{root}/**/*.mdx"
+      - "{root}/**/*.txt"
+    deny_write:
+      - "{other_domain_roots}/**"
+      - "{root_deny}"
+  other:
+    read:
+      - "{root}/**"
+    write:
+      - "{root}/**/*.md"
+      - "{root}/**/*.txt"
+    deny_write:
+      - "{other_domain_roots}/**"
+      - "{root_deny}"

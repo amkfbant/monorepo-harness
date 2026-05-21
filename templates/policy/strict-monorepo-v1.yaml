@@ -1,0 +1,85 @@
+version: 1
+template_id: strict-monorepo-v1
+description: >-
+  Strict monorepo policy: each domain may only write within its own root,
+  with workspace manifests and CI config globally denied.
+
+defaults:
+  codex:
+    sandbox: workspace-write
+    approval: on-request
+    timeout_ms: 900000
+  limits:
+    git_timeout_ms: 30000
+
+ignore_untracked:
+  - "**/node_modules/**"
+  - "**/dist/**"
+  - "**/coverage/**"
+  - "**/.turbo/**"
+
+root_deny:
+  - .git/**
+  - .github/**
+  - package.json
+  - pnpm-lock.yaml
+  - yarn.lock
+  - package-lock.json
+  - pnpm-workspace.yaml
+  - turbo.json
+  - nx.json
+  - tsconfig.base.json
+
+# domain_defaults are keyed by domain kind. read/write/deny_write may use
+# the placeholder tokens {root}, {other_domain_roots} and {root_deny};
+# the policy compiler (Phase 5-4) expands them per domain.
+domain_defaults:
+  app:
+    read:
+      - "{root}/**"
+      - docs/**
+      - package.json
+      - tsconfig.base.json
+    write:
+      - "{root}/**"
+    deny_write:
+      - "{other_domain_roots}/**"
+      - "{root_deny}"
+  package:
+    read:
+      - "{root}/**"
+      - docs/**
+      - package.json
+      - tsconfig.base.json
+    write:
+      - "{root}/**"
+    deny_write:
+      - "{other_domain_roots}/**"
+      - "{root_deny}"
+  service:
+    read:
+      - "{root}/**"
+      - docs/**
+      - package.json
+      - tsconfig.base.json
+    write:
+      - "{root}/**"
+    deny_write:
+      - "{other_domain_roots}/**"
+      - "{root_deny}"
+  docs:
+    read:
+      - "{root}/**"
+    write:
+      - "{root}/**"
+    deny_write:
+      - "{other_domain_roots}/**"
+      - "{root_deny}"
+  other:
+    read:
+      - "{root}/**"
+    write:
+      - "{root}/**"
+    deny_write:
+      - "{other_domain_roots}/**"
+      - "{root_deny}"

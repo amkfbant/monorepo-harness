@@ -1,0 +1,18 @@
+version: 1
+preset_id: python-basic-v1
+description: >-
+  Basic Python verification commands: an interpreter version probe and a
+  domain-scoped pytest invocation.
+
+defaults:
+  timeout_ms: 180000
+  env_allowlist: [PATH, HOME, PYTHONPATH]
+
+commands:
+  - id: python-version
+    cmd: python3
+    args: ["--version"]
+
+  - id: pytest-domain
+    cmd: python3
+    args: ["-m", "pytest", "-q", "{domain_root}"]

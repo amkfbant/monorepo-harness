@@ -1,0 +1,16 @@
+version: 1
+pack_id: monorepo-docs-v1
+description: >-
+  General monorepo documentation and shared contracts, attached to the
+  Codex prompt as explicit reference material.
+
+globs:
+  - README.md
+  - docs/**/*.md
+  - package.json
+  - tsconfig.base.json
+
+max_bytes: 32768
+deny_secret_like: true
+binary: skip
+missing: warn
