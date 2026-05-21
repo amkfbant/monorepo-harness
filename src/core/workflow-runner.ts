@@ -14,12 +14,16 @@ import type {
   GlobalPolicy,
   RepoPolicy,
 } from "../policy/schema.js";
+import type Database from "better-sqlite3";
 import {
-  createRunLog,
+  type RunLog,
   type RunMeta,
   type RunStatus,
   type SafetyStatus,
 } from "../logging/run-log.js";
+import { openDb } from "../db/connection.js";
+import { runMigrations } from "../db/migrations.js";
+import { createDbRunLog } from "../db/run-log-db.js";
 import { writeArtifact } from "../logging/artifacts.js";
 import { generateRunId } from "./run-id.js";
 import { runAllowedCommands } from "./command-runner.js";
@@ -265,14 +269,22 @@ export async function runDomainCoding(
     repoId: opts.repoId,
   });
 
+  // Phase 7: the run is DB-first. Open the harness DB (read-write) and
+  // ensure the schema is current before any run state is written; the
+  // run log writes the DB and exports `meta.json` / `events.jsonl`.
+  let db: Database.Database | undefined;
   try {
+    db = openDb(paths.dbPath);
+    runMigrations(db);
+
     const baseSha = await resolveBaseSha({
       repoPath: opts.repoPath,
       baseBranch: opts.baseBranch,
       timeoutMs: gitTimeoutMs,
     });
 
-    const log = await createRunLog({
+    const log = createDbRunLog({
+      db,
       runsDir: paths.runsDir,
       runId,
       meta: {
@@ -311,7 +323,7 @@ export async function runDomainCoding(
       },
     });
 
-    // Any failure after createRunLog leaves meta.status='running' on disk.
+    // Any failure after createDbRunLog leaves status='running' in the DB.
     // Wrap the rest of the workflow so unexpected throws still finalize the
     // run as failed-internal-error instead of silently rotting the status.
     try {
@@ -346,6 +358,7 @@ export async function runDomainCoding(
       throw new RunFinalizedError(runId, "failed-internal-error", e);
     }
   } finally {
+    db?.close();
     await lock.release();
   }
 }
@@ -358,7 +371,7 @@ interface InnerOpts {
   branch: string;
   baseSha: string;
   gitTimeoutMs: number;
-  log: Awaited<ReturnType<typeof createRunLog>>;
+  log: RunLog;
 }
 
 async function runDomainCodingInner(

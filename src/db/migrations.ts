@@ -3,6 +3,7 @@ import { DbError } from "./connection.js";
 import {
   MIGRATION_V1_STATEMENTS,
   MIGRATION_V2_STATEMENTS,
+  MIGRATION_V3_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -27,6 +28,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 2,
     name: "db-first-write-v2",
     statements: MIGRATION_V2_STATEMENTS,
+  },
+  {
+    version: 3,
+    name: "run-meta-json-v3",
+    statements: MIGRATION_V3_STATEMENTS,
   },
 ];
 

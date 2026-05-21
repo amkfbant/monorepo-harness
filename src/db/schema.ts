@@ -11,7 +11,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -373,6 +373,21 @@ export const MIGRATION_V2_STATEMENTS: readonly string[] = [
     error_message TEXT
   )`,
   `CREATE INDEX cleanup_actions_run_idx ON cleanup_actions(run_id)`,
+];
+
+/**
+ * v3 DDL — Phase 7-3.
+ *
+ * `runs.meta_json` holds the full canonical `meta.json` document for a
+ * DB-first run. The flattened `runs` columns stay the query index; this
+ * column is the lossless source the export writes back, so a run whose
+ * `meta.json` carries fields without a dedicated column (full `project`
+ * provenance, the `reviewed` fingerprint) still round-trips exactly.
+ * Legacy / file-imported rows leave it NULL — the export falls back to
+ * reconstructing `meta.json` from the columns.
+ */
+export const MIGRATION_V3_STATEMENTS: readonly string[] = [
+  `ALTER TABLE runs ADD COLUMN meta_json TEXT`,
 ];
 
 /** Tables added by v2. */

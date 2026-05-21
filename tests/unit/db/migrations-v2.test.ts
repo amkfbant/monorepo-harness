@@ -101,8 +101,8 @@ describe("schema v2", () => {
     ).run();
 
     const r = runMigrations(db);
-    expect(r.applied).toEqual([2]);
-    expect(currentSchemaVersion(db)).toBe(2);
+    expect(r.applied).toEqual([2, 3]);
+    expect(currentSchemaVersion(db)).toBe(3);
 
     const row = db
       .prepare(
@@ -120,12 +120,12 @@ describe("schema v2", () => {
     db.close();
   });
 
-  it("v2 migration is idempotent on an already-v2 DB", () => {
+  it("migrations are idempotent on an up-to-date DB", () => {
     const db = openDb(freshDbPath());
     runMigrations(db);
     const again = runMigrations(db);
     expect(again.applied).toEqual([]);
-    expect(currentSchemaVersion(db)).toBe(2);
+    expect(currentSchemaVersion(db)).toBe(3);
     db.close();
   });
 });
