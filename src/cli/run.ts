@@ -112,6 +112,7 @@ import {
   domainSlug,
 } from "../core/knowledge-context.js";
 import { registerProjectCommands } from "./project.js";
+import { registerDbCommands } from "./db.js";
 import {
   prepareProjectRun,
   type PreparedProjectRun,
@@ -1939,6 +1940,7 @@ knowledgeCmd
   });
 
 registerProjectCommands(program);
+registerDbCommands(program);
 
 program.parseAsync(process.argv).catch((e: unknown) => {
   process.stderr.write(`harness error: ${(e as Error).message}\n`);
