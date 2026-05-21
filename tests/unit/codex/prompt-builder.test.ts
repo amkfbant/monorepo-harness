@@ -36,4 +36,21 @@ describe("buildCodexPrompt", () => {
     });
     expect(p).toMatch(/Do not edit:/);
   });
+
+  it("appends a knowledge section when knowledgeContext is given", () => {
+    const p = buildCodexPrompt({
+      goal: "x",
+      policy: POLICY,
+      knowledgeContext: "Always validate priceMin <= priceMax.",
+    });
+    expect(p).toMatch(/Relevant knowledge from past runs/);
+    expect(p).toMatch(/priceMin <= priceMax/);
+    // the Goal/Target-domain shape must stay parseable for rerun
+    expect(p).toMatch(/Goal:\s*\n[\s\S]*?\n\nTarget domain:/);
+  });
+
+  it("omits the knowledge section when knowledgeContext is empty", () => {
+    const p = buildCodexPrompt({ goal: "x", policy: POLICY, knowledgeContext: "  " });
+    expect(p).not.toMatch(/Relevant knowledge from past runs/);
+  });
 });

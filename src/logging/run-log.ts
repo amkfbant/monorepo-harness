@@ -93,6 +93,12 @@ export interface RunMeta {
    * 1 for the first rerun, 2 for the next, … Used by `--max-attempts`.
    */
   rerunAttempt?: number;
+  /**
+   * Set when promoted-knowledge context was injected into the codex
+   * prompt (Phase 3-4 `--with-knowledge`). `contextFile` is the
+   * docs/knowledge-context/<domain>.md path that was used.
+   */
+  knowledgeContext?: { enabled: boolean; contextFile: string };
   startedAt: string;
   finishedAt?: string;
 }

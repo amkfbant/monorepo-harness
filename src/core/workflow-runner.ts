@@ -55,6 +55,11 @@ export interface RunDomainCodingOpts {
   rootRunId?: string;
   /** rerun attempt count from rootRunId (see RunMeta.rerunAttempt). */
   rerunAttempt?: number;
+  /**
+   * Promoted-knowledge context to inject into the codex prompt (Phase 3-4).
+   * `text` is appended to the prompt; `path` is recorded in meta/events.
+   */
+  knowledgeContext?: { path: string; text: string };
 }
 
 /**
@@ -262,6 +267,14 @@ export async function runDomainCoding(
         ...(opts.rerunAttempt !== undefined
           ? { rerunAttempt: opts.rerunAttempt }
           : {}),
+        ...(opts.knowledgeContext !== undefined
+          ? {
+              knowledgeContext: {
+                enabled: true,
+                contextFile: opts.knowledgeContext.path,
+              },
+            }
+          : {}),
         startedAt,
       },
     });
@@ -337,8 +350,20 @@ async function runDomainCodingInner(
     });
     await log.emit({ type: "worktree_created", path: wt.path });
 
-    const prompt = buildCodexPrompt({ goal: opts.goal, policy });
+    const prompt = buildCodexPrompt({
+      goal: opts.goal,
+      policy,
+      ...(opts.knowledgeContext !== undefined
+        ? { knowledgeContext: opts.knowledgeContext.text }
+        : {}),
+    });
     await writeArtifact(join(log.runDir, "codex-prompt.md"), prompt);
+    if (opts.knowledgeContext !== undefined) {
+      await log.emit({
+        type: "knowledge_context_loaded",
+        contextFile: opts.knowledgeContext.path,
+      });
+    }
 
     await log.emit({ type: "codex_exec_started" });
     const codexStdoutPath = join(log.runDir, "codex-output.log");

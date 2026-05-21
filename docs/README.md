@@ -31,6 +31,7 @@ docs/
 | `harness rerun --from-review <id> [--max-attempts <n>]` | `changes_requested` から `required_changes` を組み込んだ新 run（収束制御つき） |
 | `harness rerun chain --run-id <id>` | 再実行系譜（root → 子孫）をツリー表示 |
 | `harness knowledge list / reject / promote` | 候補をレビュー（status 表示 / reject 記録 / `--reviewer` 付き昇格 + 重複制御） |
+| `harness knowledge build-context --domain <d>` | promote 済み knowledge を domain 別に集約（`run --with-knowledge` 用、Phase 3-4） |
 | `harness cleanup --run-id <id> [--scope …]` | worktree / branch / run dir を scope 単位で削除 |
 | `harness workflow reviewed-run …` | run → review auto → review process → rerun を bounded loop で束ねる（Phase 3-1） |
 

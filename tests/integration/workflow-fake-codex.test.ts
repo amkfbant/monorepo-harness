@@ -935,6 +935,76 @@ describe("runDomainCoding (fake codex)", () => {
     expect(r.safetyStatus).toBe("denied");
   });
 
+  it("injects knowledgeContext into the prompt and records it in meta/events", async () => {
+    let seenPrompt = "";
+    const runner = createFakeCodexRunner({
+      edit: async (cwd, prompt) => {
+        seenPrompt = prompt;
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 9;\n",
+        );
+      },
+    });
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "bump x",
+      baseBranch: "main",
+      codexRunner: runner,
+      knowledgeContext: {
+        path: "docs/knowledge-context/apps-user.md",
+        text: "Always validate empty-string inputs.",
+      },
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+    // the codex prompt carries the knowledge section
+    expect(seenPrompt).toMatch(/Relevant knowledge from past runs/);
+    expect(seenPrompt).toMatch(/validate empty-string inputs/);
+    const runDir = join(harness, "runs", r.runId);
+    // meta records it
+    const meta = JSON.parse(readFileSync(join(runDir, "meta.json"), "utf8"));
+    expect(meta.knowledgeContext).toEqual({
+      enabled: true,
+      contextFile: "docs/knowledge-context/apps-user.md",
+    });
+    // events record it
+    const events = readFileSync(join(runDir, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    expect(
+      events.find((e) => e.type === "knowledge_context_loaded"),
+    ).toBeDefined();
+  });
+
+  it("omits knowledgeContext from meta when not provided", async () => {
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 2;\n",
+        );
+      },
+    });
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "bump x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+    const meta = JSON.parse(
+      readFileSync(join(harness, "runs", r.runId, "meta.json"), "utf8"),
+    );
+    expect(meta.knowledgeContext).toBeUndefined();
+  });
+
   it("rejects concurrent runs on the same domain via lockfile", async () => {
     const slow = createFakeCodexRunner({
       edit: async () => {

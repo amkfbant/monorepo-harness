@@ -38,7 +38,11 @@ harness run \
 | `--goal <text>` | ✅ | — | codex に渡す task 説明。stdin 経由で渡される |
 | `--base-branch <name>` | — | `main` | 差分の基準。`git rev-parse --verify` で SHA に解決 |
 | `--keep-worktree` | — | `false` | （MVP では no-op。worktree は常に保持） |
+| `--with-knowledge` | — | `false` | `docs/knowledge-context/<domain>.md` を codex prompt に注入（Phase 3-4）。事前に `knowledge build-context` が必要 |
+| `--knowledge-context <path>` | — | — | 注入する knowledge-context ファイルを明示指定（`--with-knowledge` より優先） |
 | `--dry-run` | — | `false` | policy 解決のみ、JSON で標準出力、ファイル変更なし |
+
+`--with-knowledge` / `--knowledge-context` を使うと、prompt 末尾に「Relevant knowledge from past runs」section が追加され、`meta.knowledgeContext = { enabled, contextFile }` と events の `knowledge_context_loaded` に記録される。注入されるのは **promote 済み knowledge のみ**（candidate / rejected / deprecated は対象外 — [`harness knowledge build-context`](#harness-knowledge) 参照）。
 
 ### Exit code
 
@@ -552,6 +556,29 @@ run が生成した `knowledge-candidates.yaml` の候補をレビューし、�
 - `runs/<runId>/knowledge-candidates.yaml` — run が生成した **immutable な観測ログ**（harness は一切書き換えない）
 - `runs/<runId>/knowledge-decisions.yaml` — reviewer の **reject 決定 sidecar**（`knowledge reject` が書く）
 - `docs/knowledge/<kind>/*.md` — reviewer が **採用した知見**（`knowledge promote` が書く）
+- `docs/knowledge-context/<domain>.md` — domain ごとに集約した **次回 run 用 context**（`knowledge build-context` が書く、Phase 3-4）
+
+### `harness knowledge build-context`
+
+promote 済み knowledge を domain 単位で 1 ファイルに集約し、`harness run --with-knowledge` で注入できる形にする（Phase 3-4）。
+
+```bash
+harness knowledge build-context --domain <domain> [--out <dir>]
+```
+
+| Option | Required | 説明 |
+|--------|:--------:|------|
+| `--domain <domain>` | ✅ | 対象 domain（例 `apps/catalog`） |
+| `--out <dir>` | — | knowledge root（default `HARNESS_ROOT/docs/knowledge`） |
+
+`docs/knowledge/<kind>/*.md` を走査し、frontmatter の `domain` が一致しかつ `deprecated: true` でないものを `docs/knowledge-context/<domain-slug>.md`（`/`→`-`）に集約する。candidate（`knowledge-candidates.yaml`）と rejected（`knowledge-decisions.yaml`）は `runs/` 配下にあり走査対象外 — **構造上 promote 済み knowledge しか集約されない**。
+
+**knowledge injection の限界:**
+- context は `build-context` 実行時点の snapshot。promote / deprecated 編集の後は再生成が必要（自動更新しない）
+- context は domain 完全一致でフィルタするだけ。関連 domain / 親 domain の知見は引かない。ベクトル検索や関連度ランキングは無い
+- `deprecated` は frontmatter を人間が手編集して立てる（`knowledge deprecate` コマンドは未実装）
+- context md 全体を prompt 末尾に追加するだけ。件数が多いと prompt が肥大する（domain 単位での件数制御は運用判断）
+- 注入は coder run のみ。reviewer agent には注入しない
 
 ### `harness knowledge list`
 

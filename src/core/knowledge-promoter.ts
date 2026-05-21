@@ -197,19 +197,46 @@ function kindDirOf(knowledgeRoot: string, kind: string, index: number): string {
   return dir;
 }
 
-/** Parse the leading `--- ... ---` YAML frontmatter of a md file. */
-function parseFrontmatter(md: string): Record<string, unknown> | null {
-  if (!md.startsWith("---\n")) return null;
-  const end = md.indexOf("\n---", 4);
-  if (end < 0) return null;
-  try {
-    const fm = parseYaml(md.slice(4, end + 1));
-    return fm && typeof fm === "object" && !Array.isArray(fm)
-      ? (fm as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
+/**
+ * Split a md file into its leading YAML frontmatter (if any) and body.
+ * The frontmatter is delimited by a `---` line at the very start and a
+ * closing `---` line — both matched as WHOLE lines (`^---\s*$`), so a
+ * `---...` sequence inside a value/body does not falsely close it. CRLF
+ * is tolerated. parseFrontmatter / stripFrontmatter both route here so
+ * they always agree on the boundary.
+ */
+export function splitFrontmatter(md: string): {
+  frontmatter: Record<string, unknown> | null;
+  body: string;
+} {
+  const lines = md.split(/\r?\n/);
+  if (lines[0]?.trim() !== "---") return { frontmatter: null, body: md };
+  let close = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i]?.trim() === "---") {
+      close = i;
+      break;
+    }
   }
+  if (close < 0) return { frontmatter: null, body: md };
+  const body = lines.slice(close + 1).join("\n");
+  let frontmatter: Record<string, unknown> | null = null;
+  try {
+    const parsed = parseYaml(lines.slice(1, close).join("\n"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      frontmatter = parsed as Record<string, unknown>;
+    }
+  } catch {
+    frontmatter = null;
+  }
+  return { frontmatter, body };
+}
+
+/** Parse the leading `--- ... ---` YAML frontmatter of a md file. */
+export function parseFrontmatter(
+  md: string,
+): Record<string, unknown> | null {
+  return splitFrontmatter(md).frontmatter;
 }
 
 interface KindDirScan {
@@ -561,6 +588,9 @@ export async function promoteKnowledge(
       `source_status: ${JSON.stringify(c.status)}`,
       `promoted_by: ${JSON.stringify(opts.reviewer)}`,
       `promoted_at: ${JSON.stringify(promotedAt)}`,
+      // deprecated knowledge is excluded from `knowledge build-context`.
+      // promote always writes false; a human edits this to retire an entry.
+      "deprecated: false",
       `hash: ${hash}`,
       "---",
     ].join("\n");

@@ -44,6 +44,11 @@ import {
   listKnowledge,
   KnowledgePromoteGateError,
 } from "../core/knowledge-promoter.js";
+import {
+  buildKnowledgeContext,
+  KnowledgeContextError,
+  domainSlug,
+} from "../core/knowledge-context.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -57,6 +62,8 @@ interface RunOpts {
   baseBranch: string;
   keepWorktree?: boolean;
   dryRun?: boolean;
+  withKnowledge?: boolean;
+  knowledgeContextPath?: string;
 }
 
 async function cmdRun(o: RunOpts): Promise<void> {
@@ -71,6 +78,37 @@ async function cmdRun(o: RunOpts): Promise<void> {
       `resolved policy for ${resolved.domain}:\n${JSON.stringify(resolved, null, 2)}\n`,
     );
     return;
+  }
+
+  // resolve promoted-knowledge context (Phase 3-4), if requested.
+  let knowledgeContext: { path: string; text: string } | undefined;
+  const explicitCtx = o.knowledgeContextPath;
+  if (explicitCtx !== undefined) {
+    if (!existsSync(explicitCtx)) {
+      process.stderr.write(
+        `harness error: --knowledge-context file not found: ${explicitCtx}\n`,
+      );
+      process.exit(1);
+    }
+    knowledgeContext = {
+      path: explicitCtx,
+      text: await readFile(explicitCtx, "utf8"),
+    };
+  } else if (o.withKnowledge) {
+    const ctxPath = join(
+      harnessRoot,
+      "docs",
+      "knowledge-context",
+      `${domainSlug(o.domain)}.md`,
+    );
+    if (!existsSync(ctxPath)) {
+      process.stderr.write(
+        `harness error: --with-knowledge: ${ctxPath} not found; ` +
+          `run 'harness knowledge build-context --domain ${o.domain}' first\n`,
+      );
+      process.exit(1);
+    }
+    knowledgeContext = { path: ctxPath, text: await readFile(ctxPath, "utf8") };
   }
 
   const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
@@ -94,6 +132,7 @@ async function cmdRun(o: RunOpts): Promise<void> {
     baseBranch: o.baseBranch,
     ...(o.keepWorktree !== undefined ? { keepWorktree: o.keepWorktree } : {}),
     codexRunner: runner,
+    ...(knowledgeContext !== undefined ? { knowledgeContext } : {}),
   });
   const cmdTotal = result.commandResults.length;
   const cmdOk = result.commandResults.filter(
@@ -271,6 +310,15 @@ const runCmd = program
   .requiredOption("--goal <text>", "task goal passed to Codex")
   .option("--base-branch <name>", "base branch", "main")
   .option("--keep-worktree", "(no-op; worktree is always kept for review)", false)
+  .option(
+    "--with-knowledge",
+    "inject docs/knowledge-context/<domain>.md into the codex prompt",
+    false,
+  )
+  .option(
+    "--knowledge-context <path>",
+    "inject an explicit knowledge-context file (overrides --with-knowledge)",
+  )
   .option("--dry-run", "resolve policy and exit", false)
   .action(async (raw: Record<string, unknown>) => {
     await cmdRun({
@@ -281,6 +329,10 @@ const runCmd = program
       baseBranch: String(raw.baseBranch),
       keepWorktree: Boolean(raw.keepWorktree),
       dryRun: Boolean(raw.dryRun),
+      withKnowledge: Boolean(raw.withKnowledge),
+      ...(raw.knowledgeContext !== undefined
+        ? { knowledgeContextPath: String(raw.knowledgeContext) }
+        : {}),
     });
   });
 
@@ -717,6 +769,32 @@ function knowledgeDirOf(
 const knowledgeCmd = program
   .command("knowledge")
   .description("review and promote knowledge-candidates");
+knowledgeCmd
+  .command("build-context")
+  .description(
+    "aggregate promoted knowledge for a domain into docs/knowledge-context/<domain>.md",
+  )
+  .requiredOption("--domain <domain>", "target domain")
+  .option("--out <dir>", "knowledge root (default: HARNESS_ROOT/docs/knowledge)")
+  .action(async (raw: Record<string, unknown>) => {
+    const harnessRoot = getHarnessRoot();
+    try {
+      const r = await buildKnowledgeContext({
+        knowledgeDir: knowledgeDirOf(harnessRoot, raw),
+        outDir: join(harnessRoot, "docs", "knowledge-context"),
+        domain: String(raw.domain),
+      });
+      process.stdout.write(
+        `domain=${r.domain} entries=${r.entries.length} out=${r.outPath}\n`,
+      );
+    } catch (e) {
+      if (e instanceof KnowledgeContextError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
+  });
 knowledgeCmd
   .command("list")
   .description("list a run's knowledge candidates with their status")
