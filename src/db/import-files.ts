@@ -1,7 +1,11 @@
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { harnessPaths } from "../config/paths.js";
-import { emptyCounters, type ImportCounters } from "./import/common.js";
+import {
+  emptyCounters,
+  pruneOrphanImportErrors,
+  type ImportCounters,
+} from "./import/common.js";
 import { importProjects } from "./import/projects.js";
 import { importPolicies } from "./import/policies.js";
 import { importRuns } from "./import/runs.js";
@@ -64,11 +68,11 @@ export function runFullImport(
       for (const t of RESET_TABLES) db.prepare(`DELETE FROM ${t}`).run();
     });
     tx();
-  } else {
-    // a full import re-records every error fresh — clear stale rows so a
-    // since-deleted source file does not linger in import_errors.
-    db.prepare("DELETE FROM import_errors").run();
   }
+  // NOTE: a non-reset import does NOT wipe `import_errors`. Each importer
+  // clears its own source on success / re-records on failure, and a
+  // skipped run keeps its errors (the malformed file is unchanged). Stale
+  // rows for since-deleted source files are pruned at the end.
 
   importProjects(db, paths.projectsDir, counters);
   importPolicies(db, paths.policiesDir, counters);
@@ -81,7 +85,15 @@ export function runFullImport(
     counters,
   );
 
-  return { ...counters, durationMs: Date.now() - started };
+  pruneOrphanImportErrors(db);
+  // report the FINAL import_errors row count — a skipped run's preserved
+  // error is not re-counted by `counters.errors`, so query the table.
+  const errors = (
+    db.prepare("SELECT count(*) AS n FROM import_errors").get() as {
+      n: number;
+    }
+  ).n;
+  return { ...counters, errors, durationMs: Date.now() - started };
 }
 
 /** Render an ImportReport as a human-readable block. */

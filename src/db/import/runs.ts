@@ -348,6 +348,8 @@ function importReviewDecision(
       if (typeof c === "string") insert.run(runId, i, c);
     });
   }
+  // the decision parsed cleanly — clear any stale error from a prior import
+  clearImportError(db, path);
 }
 
 function importArtifacts(
@@ -433,4 +435,6 @@ function importContextPacks(
       str(e.reason),
     );
   }
+  // the manifest parsed cleanly — clear any stale error from a prior import
+  clearImportError(db, path);
 }

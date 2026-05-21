@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import type Database from "better-sqlite3";
 
 /**
@@ -79,4 +80,24 @@ export function clearImportError(
   db.prepare("DELETE FROM import_errors WHERE source_path = ?").run(
     sourcePath,
   );
+}
+
+/**
+ * Drop `import_errors` rows whose source file no longer exists.
+ *
+ * A full import does NOT wipe `import_errors` up front: each importer
+ * clears its own source on success and re-records on failure, and a
+ * SKIPPED run (unchanged fingerprint) deliberately keeps its errors —
+ * the malformed file is still malformed. The only rows that go stale are
+ * those for source files deleted since the last import; this prunes them
+ * so a since-deleted file does not linger as a dashboard warning.
+ */
+export function pruneOrphanImportErrors(db: Database.Database): void {
+  const rows = db
+    .prepare("SELECT source_path FROM import_errors")
+    .all() as { source_path: string }[];
+  const del = db.prepare("DELETE FROM import_errors WHERE source_path = ?");
+  for (const r of rows) {
+    if (!existsSync(r.source_path)) del.run(r.source_path);
+  }
 }

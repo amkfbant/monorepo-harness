@@ -113,6 +113,44 @@ describe("checkConsistency", () => {
     expect(r.status).toBe("ok");
   });
 
+  it("detects generated policy provenance sidecar drift", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-cons-"));
+    mkdirSync(join(root, "policies", "repos"), { recursive: true });
+    writeFileSync(join(root, "policies", "repos", "demo.yaml"), "repo_id: demo\n");
+    const sidecar = join(root, "policies", "repos", "demo.generated.json");
+    const provenance = {
+      schemaVersion: 1,
+      projectId: "demo",
+      repoId: "demo",
+      profilePath: "projects/demo.yaml",
+      profileVersion: 1,
+      policyTemplate: null,
+      commandPresets: [],
+      contextPackPresets: [],
+      domainRegistry: null,
+      generatedAt: "2026-05-22T00:00:00.000Z",
+    };
+    writeFileSync(sidecar, JSON.stringify(provenance));
+    const db = openDb(join(root, ".harness", "harness.sqlite"));
+    runMigrations(db);
+    runFullImport(db, { harnessRoot: root });
+    // the policy YAML is unchanged; only the provenance sidecar drifts
+    writeFileSync(
+      sidecar,
+      JSON.stringify({ ...provenance, generatedAt: "2026-05-23T00:00:00.000Z" }),
+    );
+    const r = checkConsistency({ db, harnessRoot: root });
+    db.close();
+    expect(
+      r.items.some(
+        (i) =>
+          i.kind === "policy" &&
+          i.status === "drift" &&
+          /sidecar/.test(i.detail),
+      ),
+    ).toBe(true);
+  });
+
   it("detects a generated policy sidecar missing from the DB", () => {
     const { root, db } = importedRoot();
     // a generated-policy sidecar appears on disk but is never imported

@@ -16,13 +16,23 @@ export interface AggregateFilter {
   projectId?: string;
   repoId?: string;
   domain?: string;
+  /** ISO lower bound on the table's date column (inclusive) */
+  since?: string;
+  /** ISO upper bound on the table's date column (inclusive) */
+  until?: string;
+  /** exact status match (backlog) */
+  status?: string;
 }
 
-/** WHERE over the `project_id` / `repo_id` / `domain` columns (shared shape). */
-function whereScope(filter: AggregateFilter): {
-  sql: string;
-  params: unknown[];
-} {
+/**
+ * WHERE over `project_id` / `repo_id` / `domain` plus optional date-range
+ * and status filters. `dateColumn` / `statusColumn` name the table's
+ * columns (they differ per table — `started_at` vs `created_at`).
+ */
+function whereScope(
+  filter: AggregateFilter,
+  opts: { dateColumn?: string; statusColumn?: string } = {},
+): { sql: string; params: unknown[] } {
   const where: string[] = [];
   const params: unknown[] = [];
   if (filter.projectId !== undefined) {
@@ -36,6 +46,18 @@ function whereScope(filter: AggregateFilter): {
   if (filter.domain !== undefined) {
     where.push("domain = ?");
     params.push(filter.domain);
+  }
+  if (opts.dateColumn !== undefined && filter.since !== undefined) {
+    where.push(`${opts.dateColumn} >= ?`);
+    params.push(filter.since);
+  }
+  if (opts.dateColumn !== undefined && filter.until !== undefined) {
+    where.push(`${opts.dateColumn} <= ?`);
+    params.push(filter.until);
+  }
+  if (opts.statusColumn !== undefined && filter.status !== undefined) {
+    where.push(`${opts.statusColumn} = ?`);
+    params.push(filter.status);
   }
   return {
     sql: where.length > 0 ? `WHERE ${where.join(" AND ")}` : "",
@@ -57,7 +79,7 @@ export function metricsSummary(
   db: Database.Database,
   filter: AggregateFilter = {},
 ): DbMetricsSummary {
-  const { sql, params } = whereScope(filter);
+  const { sql, params } = whereScope(filter, { dateColumn: "started_at" });
   const rows = db
     .prepare(`SELECT status, count(*) AS n FROM runs ${sql} GROUP BY status`)
     .all(...params) as { status: string; n: number }[];
@@ -143,7 +165,7 @@ export function knowledgeDigest(
   db: Database.Database,
   filter: AggregateFilter = {},
 ): DbKnowledgeDigest {
-  const { sql, params } = whereScope(filter);
+  const { sql, params } = whereScope(filter, { dateColumn: "created_at" });
   const cands = db
     .prepare(
       `SELECT kind, status, count(*) AS n FROM knowledge_candidates
@@ -189,7 +211,7 @@ export function backlogList(
   db: Database.Database,
   filter: AggregateFilter = {},
 ): DbBacklogSummary {
-  const { sql, params } = whereScope(filter);
+  const { sql, params } = whereScope(filter, { statusColumn: "status" });
   const rows = db
     .prepare(
       `SELECT item_id, project_id, repo_id, domain, title, status, priority

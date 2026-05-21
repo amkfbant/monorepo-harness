@@ -138,7 +138,7 @@ harness backlog defer --item-id <id>
 - item は `backlog/<status>/item-YYYYMMDD-NNN.yaml`（status = open / doing / done / deferred、ディレクトリが status の source of truth）。`backlog/` は harness root 直下、gitignore 対象
 - `backlog run` は item の domain + goal で run を起動（default `reviewed-run`、`--workflow run` で単発 run）。完了後、item の `linkedRuns` に runId を追記し item を `doing` へ移動する
 - link は **backlog 側（item の `linkedRuns`）にのみ**保持する。run の meta.json は patch しない（並行 review/cleanup と競合しないため）。`harness run show` は backlog を走査し `linkedRuns` に当該 runId を含む item を逆引きして表示する
-- `backlog list --project` / `--repo-id`（Phase 6）は DB read model 経由で絞る（指定時は files から DB を再構築してから集計）。`--status` は scoped path では無視され warning が出る。scope 無しは従来の file-based 一覧（`--status` が効く）
+- `backlog list --project` / `--repo-id`（Phase 6）は DB read model 経由で絞る（指定時は files から DB を再構築してから集計）。`--status` は scoped path でも効く。scope 無しは従来の file-based 一覧
 - `backlog run` は item に `projectId` があれば project mode で起動（`--repo-id` は不要）、無ければ `--repo` + `--repo-id` 必須（Phase 6-1）
 
 ## `harness db`
@@ -209,8 +209,8 @@ harness metrics failures --since 30d       # failed-* の status 別内訳
 ```
 
 `metrics summary` の `--project` / `--repo-id`（Phase 6）は DB read model 経由で
-集計する（指定時は files から DB を再構築）。scope 無しは従来の file-based 集計で、
-`--since` が効く（`--project`/`--repo-id` 指定時は `--since` は無視され warning）。
+集計する（指定時は files から DB を再構築）。scoped path でも `--since`（`runs.started_at`
+への下限）と `--domain` が効く。scope 無しは従来の file-based 集計。
 
 - **Runs**: total + status 別件数
 - **Review**: approved / changes_requested / rejected 件数、approved 率、reviewer 別件数
@@ -231,9 +231,9 @@ harness knowledge digest --project <id>          # project を絞る（DB read m
 harness knowledge digest --repo-id <id>          # repo を絞る（DB read model 経由、Phase 6）
 ```
 
-`--project` / `--repo-id`（Phase 6）は DB read model 経由で集計する。指定時は
-`--since` は無視され warning（`--domain` は scope を refine する）。scope 無しは
-従来の file-based 集計。
+`--project` / `--repo-id`（Phase 6）は DB read model 経由で集計する。scoped path
+でも `--since`（`knowledge_candidates.created_at` への下限）と `--domain` が効く。
+scope 無しは従来の file-based 集計。
 
 - **Candidates**: 各 run の `knowledge-candidates.yaml` を kind 別に集計（run の startedAt で `--since`、candidate.domain で `--domain` フィルタ）
 - **Promoted**: `docs/knowledge/<kind>/*.md` の frontmatter（`promoted_at` / `domain`）でフィルタして件数
@@ -294,9 +294,11 @@ harness inbox --json          # JSON 出力
 各 section に次操作の hint（`→ harness ...`）が付く。cleanup candidate は「approved/rejected かつ worktree 残存」、knowledge は `knowledge-candidates.yaml` に候補がある run。run の読み込みは SQLite index があれば使い、無ければ `runs/` の file scan にフォールバック（JSON の `source` で確認可）。
 
 `--project` / `--repo-id`（Phase 6）は DB read model 経由で集計する（needs_review /
-changes_requested / failed / knowledge-candidate runs）。指定時は `--today` /
-`--needs-action` / `--failed` / `--cleanup` は無視され warning。scope 無しは従来の
-file-based ビュー（cleanup section は scope 経路では worktree 検査をしないため非掲載）。
+changes_requested / failed / knowledge-candidate runs）。scoped path でも `--today`
+（`runs.started_at` を当日 00:00 以降に絞る）は効く。section 選択フラグ
+（`--needs-action` / `--failed` / `--cleanup`）は scoped path では非対応で warning が
+出る（scoped inbox は常に全 section を返す）。scope 無しは従来の file-based ビュー
+（cleanup section は scope 経路では worktree 検査をしないため非掲載）。
 
 ## `harness run show / timeline / artifacts`
 

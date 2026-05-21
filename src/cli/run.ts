@@ -1487,6 +1487,7 @@ metricsCmd
   .option("--since <dur>", "window, e.g. 30d / 12h")
   .option("--project <id>", "scope to a project (DB-backed, Phase 6)")
   .option("--repo-id <id>", "scope to a repo (DB-backed, Phase 6)")
+  .option("--domain <d>", "scope to a domain (with --project / --repo-id)")
   .option("--json", "emit JSON instead of text")
   .action(async (raw: Record<string, unknown>) => {
     if (hasScopeFilter(raw)) {

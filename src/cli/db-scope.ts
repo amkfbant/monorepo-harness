@@ -4,6 +4,7 @@ import { harnessPaths } from "../config/paths.js";
 import { openDb } from "../db/connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { runFullImport } from "../db/import-files.js";
+import { parseDuration } from "../core/maintenance.js";
 import {
   metricsSummary,
   inboxSummary,
@@ -32,10 +33,29 @@ export function hasScopeFilter(raw: Record<string, unknown>): boolean {
 }
 
 function scopeFilter(raw: Record<string, unknown>): AggregateFilter {
+  // `--today` (inbox) and `--since <dur>` (metrics / knowledge digest) both
+  // resolve to an ISO lower bound on the table's date column.
+  let since: string | undefined;
+  if (raw.today === true) {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    since = d.toISOString();
+  } else if (raw.since !== undefined) {
+    try {
+      since = new Date(
+        Date.now() - parseDuration(String(raw.since)),
+      ).toISOString();
+    } catch (e) {
+      process.stderr.write(`harness error: ${(e as Error).message}\n`);
+      process.exit(1);
+    }
+  }
   return {
     ...(raw.project !== undefined ? { projectId: String(raw.project) } : {}),
     ...(raw.repoId !== undefined ? { repoId: String(raw.repoId) } : {}),
     ...(raw.domain !== undefined ? { domain: String(raw.domain) } : {}),
+    ...(raw.status !== undefined ? { status: String(raw.status) } : {}),
+    ...(since !== undefined ? { since } : {}),
   };
 }
 
@@ -88,7 +108,6 @@ export function runScopedMetrics(
   harnessRoot: string,
   raw: Record<string, unknown>,
 ): void {
-  warnIgnored(raw, "metrics summary", [{ key: "since", flag: "--since" }]);
   const filter = scopeFilter(raw);
   const m = withRefreshedDb(harnessRoot, (db) => metricsSummary(db, filter));
   const rate =
@@ -111,8 +130,9 @@ export function runScopedInbox(
   harnessRoot: string,
   raw: Record<string, unknown>,
 ): void {
+  // --today is honored (→ since); the section-selector flags are not (the
+  // scoped inbox always reports every section).
   warnIgnored(raw, "inbox", [
-    { key: "today", flag: "--today" },
     { key: "needsAction", flag: "--needs-action" },
     { key: "failed", flag: "--failed" },
     { key: "cleanup", flag: "--cleanup" },
@@ -136,9 +156,6 @@ export function runScopedKnowledgeDigest(
   harnessRoot: string,
   raw: Record<string, unknown>,
 ): void {
-  warnIgnored(raw, "knowledge digest", [
-    { key: "since", flag: "--since" },
-  ]);
   const filter = scopeFilter(raw);
   const d = withRefreshedDb(harnessRoot, (db) =>
     knowledgeDigest(db, filter),
@@ -160,7 +177,6 @@ export function runScopedBacklog(
   harnessRoot: string,
   raw: Record<string, unknown>,
 ): void {
-  warnIgnored(raw, "backlog list", [{ key: "status", flag: "--status" }]);
   const filter = scopeFilter(raw);
   const b = withRefreshedDb(harnessRoot, (db) => backlogList(db, filter));
   const lines = b.items
@@ -181,5 +197,7 @@ function scopeLabel(filter: AggregateFilter): string {
   if (filter.projectId !== undefined) parts.push(`project=${filter.projectId}`);
   if (filter.repoId !== undefined) parts.push(`repo=${filter.repoId}`);
   if (filter.domain !== undefined) parts.push(`domain=${filter.domain}`);
+  if (filter.status !== undefined) parts.push(`status=${filter.status}`);
+  if (filter.since !== undefined) parts.push(`since=${filter.since}`);
   return `(${parts.join(" ")})`;
 }

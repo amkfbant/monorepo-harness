@@ -121,3 +121,54 @@ describe("aggregates", () => {
     expect(demo.byStatus.open).toBe(1);
   });
 });
+
+describe("aggregate date / status filters", () => {
+  it("metricsSummary applies a since date filter on started_at", () => {
+    const db = freshDb();
+    const ins = db.prepare(
+      `INSERT INTO runs (run_id, repo_id, project_id, domain, workflow,
+         base_branch, status, started_at, source_meta_sha256, updated_at)
+       VALUES (?, 'demo', 'demo', 'apps/web', 'domain-coding', 'main',
+         'approved', ?, 'x', 'x')`,
+    );
+    ins.run("run-old", "2026-01-01T00:00:00Z");
+    ins.run("run-new", "2026-05-20T00:00:00Z");
+    expect(metricsSummary(db).totalRuns).toBe(2);
+    expect(
+      metricsSummary(db, { since: "2026-05-01T00:00:00Z" }).totalRuns,
+    ).toBe(1);
+    db.close();
+  });
+
+  it("knowledgeDigest applies a since date filter on created_at", () => {
+    const db = freshDb();
+    const ins = db.prepare(
+      `INSERT INTO knowledge_candidates (candidate_id, run_id, kind, status,
+         created_at)
+       VALUES (?, 'run-x', 'policy_violation', 'candidate', ?)`,
+    );
+    ins.run("c-old", "2026-01-01T00:00:00Z");
+    ins.run("c-new", "2026-05-20T00:00:00Z");
+    expect(knowledgeDigest(db).candidateTotal).toBe(2);
+    expect(
+      knowledgeDigest(db, { since: "2026-05-01T00:00:00Z" }).candidateTotal,
+    ).toBe(1);
+    db.close();
+  });
+
+  it("backlogList applies a status filter", () => {
+    const db = freshDb();
+    const ins = db.prepare(
+      `INSERT INTO backlog_items (item_id, project_id, domain, title, goal,
+         status, priority, tags_json, created_at)
+       VALUES (?, 'demo', 'apps/web', 't', 'g', ?, 'medium', '[]', 'x')`,
+    );
+    ins.run("item-1", "open");
+    ins.run("item-2", "done");
+    expect(backlogList(db).items).toHaveLength(2);
+    expect(
+      backlogList(db, { status: "open" }).items.map((i) => i.itemId),
+    ).toEqual(["item-1"]);
+    db.close();
+  });
+});

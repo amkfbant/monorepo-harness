@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../../../src/db/connection.js";
@@ -320,6 +320,72 @@ describe("runFullImport", () => {
     };
     expect(row.project_id).toBe("demo");
     expect(row.repo_id).toBe("demo"); // derived from projects.repo_id
+    d.close();
+  });
+
+  it("keeps a malformed review-decision.yaml error across a no-change re-import", () => {
+    const root = normalRoot();
+    // the run's review decision is malformed
+    writeFileSync(
+      join(root, "runs", "run-20260521-apps-web-aaa", "review-decision.yaml"),
+      ":\n  bad: [unclosed",
+    );
+    const d = db(root);
+    const r1 = runFullImport(d, { harnessRoot: root });
+    expect(r1.errors).toBeGreaterThanOrEqual(1);
+    // re-import with nothing changed: the run is skipped by fingerprint,
+    // but its malformed-file error must NOT vanish.
+    const r2 = runFullImport(d, { harnessRoot: root });
+    expect(r2.runsSkipped).toBe(1);
+    expect(r2.errors).toBeGreaterThanOrEqual(1);
+    const rows = (
+      d.prepare("SELECT count(*) AS n FROM import_errors").get() as {
+        n: number;
+      }
+    ).n;
+    expect(rows).toBeGreaterThanOrEqual(1);
+    d.close();
+  });
+
+  it("clears the error once the malformed file is fixed", () => {
+    const root = normalRoot();
+    const declPath = join(
+      root,
+      "runs",
+      "run-20260521-apps-web-aaa",
+      "review-decision.yaml",
+    );
+    writeFileSync(declPath, ":\n  bad: [unclosed");
+    const d = db(root);
+    expect(runFullImport(d, { harnessRoot: root }).errors).toBeGreaterThanOrEqual(
+      1,
+    );
+    // fix the file — the fingerprint changes, the run re-imports cleanly
+    writeFileSync(
+      declPath,
+      "runId: run-20260521-apps-web-aaa\ndomain: apps/web\ndecision: pending\nrequired_changes: []\n",
+    );
+    const r = runFullImport(d, { harnessRoot: root });
+    expect(r.errors).toBe(0);
+    d.close();
+  });
+
+  it("prunes an import error whose source file was deleted", () => {
+    const root = normalRoot();
+    const declPath = join(
+      root,
+      "runs",
+      "run-20260521-apps-web-aaa",
+      "review-decision.yaml",
+    );
+    writeFileSync(declPath, ":\n  bad: [unclosed");
+    const d = db(root);
+    expect(runFullImport(d, { harnessRoot: root }).errors).toBeGreaterThanOrEqual(
+      1,
+    );
+    rmSync(declPath);
+    const r = runFullImport(d, { harnessRoot: root });
+    expect(r.errors).toBe(0); // the orphan error row was pruned
     d.close();
   });
 

@@ -67,6 +67,13 @@ v1 は read-side が必要とするテーブルのみを作る。
 state、`run_events` は lifecycle ログという event-sourced 寄りの構成にして、
 Phase 7 の write path で監査性を保てるようにする。
 
+> **`run_changed_files` / `policy_violations` は v1 schema に予約済みだが Phase 6
+> の importer では populate しない。** file import からは変更 path 一覧・違反
+> 一覧をクリーンに取れない（diff / artifact 解析が要る）ため。ダッシュボードは
+> scalar の `runs.changed_files_count` を使う。これらは Phase 7（DB-first write
+> path）で `runDomainCoding` が in-memory に持つ検証結果から直接 populate される。
+> Phase 6 ではこの 2 テーブルは「空が正しい」。
+
 write-side 用のテーブル（`artifact_blobs` / `project_check_results` /
 `domain_locks`）は v1 では作らず、Phase 7 以降の migration で追加する。
 

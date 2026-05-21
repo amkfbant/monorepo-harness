@@ -116,4 +116,64 @@ describe("CLI project-scoped DB queries (Phase 6-6)", () => {
     const { code } = runCli(root, ["metrics", "summary"]);
     expect(code).toBe(0);
   });
+
+  it("backlog list --project --status threads the status filter (Phase 6 hardening)", () => {
+    const root = setup();
+    mkdirSync(join(root, "backlog", "open"), { recursive: true });
+    writeFileSync(
+      join(root, "backlog", "open", "item-20260521-001.yaml"),
+      [
+        "id: item-20260521-001",
+        "title: t",
+        "domain: apps/web",
+        "goal: g",
+        "status: open",
+        "priority: medium",
+        "tags: []",
+        "projectId: demo",
+        "createdAt: 2026-05-21T00:00:00Z",
+        "linkedRuns: []",
+        "",
+      ].join("\n"),
+    );
+    const open = runCli(root, [
+      "backlog",
+      "list",
+      "--project",
+      "demo",
+      "--status",
+      "open",
+      "--json",
+    ]);
+    expect(open.code).toBe(0);
+    expect((JSON.parse(open.out) as { items: unknown[] }).items).toHaveLength(1);
+    // a non-matching status must filter it out, not be ignored
+    const done = runCli(root, [
+      "backlog",
+      "list",
+      "--project",
+      "demo",
+      "--status",
+      "done",
+      "--json",
+    ]);
+    expect(done.code).toBe(0);
+    expect((JSON.parse(done.out) as { items: unknown[] }).items).toHaveLength(0);
+  });
+
+  it("metrics summary --project --since is accepted (date filter threaded)", () => {
+    const root = setup();
+    const { out, code } = runCli(root, [
+      "metrics",
+      "summary",
+      "--project",
+      "demo",
+      "--since",
+      "3650d",
+      "--json",
+    ]);
+    expect(code).toBe(0);
+    // a 10-year window includes the fixture run
+    expect((JSON.parse(out) as { totalRuns: number }).totalRuns).toBe(1);
+  });
 });

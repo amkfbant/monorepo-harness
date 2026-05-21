@@ -186,9 +186,10 @@ function checkPolicies(
 ): void {
   const dbGen = db
     .prepare(
-      "SELECT repo_id, repo_policy_sha256 AS h FROM policy_generations",
+      `SELECT repo_id, repo_policy_sha256 AS h, provenance_json
+       FROM policy_generations`,
     )
-    .all() as { repo_id: string; h: string }[];
+    .all() as { repo_id: string; h: string; provenance_json: string }[];
   const dbRepoIds = new Set(dbGen.map((g) => g.repo_id));
 
   for (const g of dbGen) {
@@ -203,16 +204,35 @@ function checkPolicies(
       continue;
     }
     const h = sha256(readFileSync(path, "utf8"));
-    items.push(
-      h === g.h
-        ? { kind: "policy", id: g.repo_id, status: "ok", detail: "" }
-        : {
-            kind: "policy",
-            id: g.repo_id,
-            status: "drift",
-            detail: "generated policy changed since import",
-          },
-    );
+    if (h !== g.h) {
+      items.push({
+        kind: "policy",
+        id: g.repo_id,
+        status: "drift",
+        detail: "generated policy YAML changed since import",
+      });
+      continue;
+    }
+    // the policy YAML matches — also verify the provenance sidecar, which
+    // can drift on its own (e.g. catalog version bump regenerated it).
+    const sidecar = join(policiesDir, "repos", `${g.repo_id}.generated.json`);
+    if (!existsSync(sidecar)) {
+      items.push({
+        kind: "policy",
+        id: g.repo_id,
+        status: "missing-file",
+        detail: "provenance sidecar is gone but the DB still has it",
+      });
+    } else if (readFileSync(sidecar, "utf8") !== g.provenance_json) {
+      items.push({
+        kind: "policy",
+        id: g.repo_id,
+        status: "drift",
+        detail: "provenance sidecar changed since import",
+      });
+    } else {
+      items.push({ kind: "policy", id: g.repo_id, status: "ok", detail: "" });
+    }
   }
 
   // missing-db: a generated-policy sidecar on disk with no DB row — the
