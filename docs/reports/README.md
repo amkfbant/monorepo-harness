@@ -90,6 +90,7 @@ Finding ID は **F1, F2, …** で連番。レポート間で連続させる（�
 | 2026-05-21 | [Phase 2 close package](2026-05-21-phase2-close.md) | Phase 2 全体（2-1〜2-10）のクローズ。root README + Phase 2 quick start、全 close 条件チェック、E2-10 walkthrough、Phase 3 deferred items。`phase2-close` タグ |
 | 2026-05-21 | [Phase 3-1 reviewed-run デモ](2026-05-21-phase3-1-reviewed-run-demo.md) | `harness workflow reviewed-run`（run→review auto→review process→rerun loop）。codex review で P1×1+P2×2 を fix。E3-1-1 を実機 ×2、E3-1-2〜5 は fake-codex 統合テストで担保。reviewer は goal 相対評価のため実機 cr 誘発は非再現（R5） |
 | 2026-05-21 | [Phase 3-4 knowledge context デモ](2026-05-21-phase3-4-knowledge-context-demo.md) | `knowledge build-context` + `run --with-knowledge`。promoted knowledge を domain 別集約 → prompt 注入。codex review で P2×3 を fix。E3-4-1〜3 を実機検証、新 finding なし |
+| 2026-05-21 | [Phase 3-2 reviewer evaluation デモ](2026-05-21-phase3-2-reviewer-evaluation-demo.md) | `review evaluate`（N 回サンプリング）/ `review compare`。codex review で P1×1+P2×1 を fix。known-bad run を 3 サンプル評価 → 3/3 非 approved、UNSTABLE 検出。新 finding なし |
 
 ## Workflow
 
