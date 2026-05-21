@@ -344,11 +344,16 @@ async function runDomainCodingInner(
       policy,
     });
     if (!dv.diff.ok) {
-      await log.emit({ type: "diff_collection_failed", error: dv.diff.error });
+      await log.emit({
+        type: "diff_collection_failed",
+        error: dv.diff.error,
+        stage: "post-codex",
+      });
     } else {
       await log.emit({
         type: "policy_validation_completed",
         status: dv.safetyStatus === "allowed" ? "allowed" : "denied",
+        stage: "post-codex",
       });
     }
 
@@ -410,13 +415,13 @@ async function runDomainCodingInner(
         await log.emit({
           type: "diff_collection_failed",
           error: dv.diff.error,
-          phase: "post-commands",
+          stage: "post-command",
         });
       } else {
         await log.emit({
           type: "policy_validation_completed",
           status: dv.safetyStatus === "allowed" ? "allowed" : "denied",
-          phase: "post-commands",
+          stage: "post-command",
         });
       }
     }
@@ -480,6 +485,9 @@ async function runDomainCodingInner(
         untrackedAllowed,
         untrackedDenied,
         ignored: untrackedIgnored,
+        // reflects which worktree state these lists describe: when commands
+        // ran, the diff was re-collected against the post-command worktree.
+        stage: commandsRan ? "post-command" : "post-codex",
       });
     }
 

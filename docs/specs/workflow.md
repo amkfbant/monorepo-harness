@@ -18,33 +18,37 @@
 11. read codex-output.log + codex-error.log (after stream flush)
 12. emit codex_exec_completed (exitCode, timedOut)
 13. setStatus('generated')
-14. attemptDiff(worktree, baseSha, gitTimeoutMs)
-    → DiffOutcome { ok, trackedChangedPaths, untrackedAll, patch, error? }
-15. partitionUntracked(untrackedAll, ignoreUntracked) → { kept, ignored }
-16. if diff.ok: validateChangedPaths(policy, tracked ∪ kept) → violations + safetyStatus
-    else:        safetyStatus = "skipped"
-17. setSafetyStatus
-18. split kept untracked → (allowed, denied) based on violations set
-19. write final-diff.patch
-20. write untracked-files.{txt,patch} for allowed (with secret-scan redaction)
-21. write untracked-denied.txt for denied (metadata only)
-22. write untracked-secrets.txt for secret suspects (metadata only)
-23. emit diff_collected
-24. determine RunStatus from priority:
+14. PASS 1 — post-codex diffAndValidate(worktree, baseSha, policy):
+    attemptDiff → DiffOutcome { ok, trackedChangedPaths, untrackedAll, patch, error? }
+    partitionUntracked(untrackedAll, ignoreUntracked) → { kept, ignored }
+    if diff.ok: validateChangedPaths(policy, tracked ∪ kept) → violations + safetyStatus
+    emit diff_collection_failed / policy_validation_completed with stage="post-codex"
+15. PASS 2 — if diff.ok && safetyStatus=allowed && codex ok && allowedCommands non-empty:
+    setStatus('verified'); emit commands_started
+    runAllowedCommands(worktree, allowedCommands) → results; emit commands_completed
+    RE-RUN diffAndValidate against the post-command worktree
+    emit diff_collection_failed / policy_validation_completed with stage="post-command"
+16. setSafetyStatus  (from the final — post-command if commands ran — validation)
+17. split kept untracked → (allowed, denied) based on the final violations set
+18. write final-diff.patch
+19. write untracked-files.{txt,patch} for allowed (with secret-scan redaction)
+20. write untracked-denied.txt for denied (metadata only)
+21. write untracked-secrets.txt for secret suspects (metadata only)
+22. emit diff_collected (stage = post-command if commands ran, else post-codex)
+23. determine RunStatus from priority:
     diff failure > codex timeout > codex non-zero > policy violation
     > command failure > needs_review
-25. if path validation passed: setStatus('verified'); then if policy.allowedCommands.length > 0:
-    runAllowedCommands(worktree, allowedCommands) → results
-    on any failure → status = 'failed-command'
-26. readTail(codex-output.log), readStderrTail(codex-error.log)
-27. write summary.md
-28. write knowledge-candidates.yaml (4 signal kinds)
-29. write review-decision.yaml (initial: pending)
-30. write review-request.md
-31. finalize(meta, status, safetyStatus, ignoredUntrackedCount, secretSuspectCount, finishedAt)
-32. emit run_completed
-33. release domain lock (finally)
+24. readTail(codex-output.log), readStderrTail(codex-error.log)
+25. write summary.md
+26. write knowledge-candidates.yaml (4 signal kinds)
+27. write review-decision.yaml (initial: pending)
+28. write review-request.md
+29. finalize(meta, status, safetyStatus, counts, commandResults, finishedAt)
+30. emit run_completed
+31. release domain lock (finally)
 ```
+
+ステップ 14/15 の 2 pass 構成が F8（コマンドの副作用も path policy で再検査）の核心。`allowedCommands` が無ければ pass 2 は skip され、pass 1 の結果がそのまま使われる。
 
 worktree は **削除しない**。レビュー後の cleanup は別フェーズ（MVP 未実装）。
 
@@ -77,13 +81,15 @@ failed-* で終わった run も worktree は残る（人間が原因を調べ�
 
 ### RunStatus 優先順位
 
-priority は上から下:
+priority は上から下（post-command pass が走った場合は、その後の状態で評価される）:
 
 1. `!diff.ok` → `failed-diff-collection`
 2. `codex.timedOut` → `failed-codex-timeout`
 3. `codex.exitCode !== 0` → `failed-codex`
 4. `safetyStatus === "denied"` → `failed-policy-violation`
-5. else → `needs_review`
+   （codex 直後 / commands 実行後のどちらの validation で denied になっても）
+5. `allowedCommands` が走り 1 つでも失敗 → `failed-command`
+6. else → `needs_review`
 
 `safetyStatus` は orthogonal: status が `failed-codex-timeout` でも、validation が走った結果として `denied` のことがある。reviewer はこの 2 軸を両方確認する。
 
@@ -161,12 +167,24 @@ locks/<domain-slug>.lock   # active run の lock; runId / pid / hostname / acqui
 {"type":"worktree_created","path":"/Users/kn/dev/monorepo-harness/workspaces/run-…/repo"}
 {"type":"codex_exec_started"}
 {"type":"codex_exec_completed","exitCode":0,"timedOut":false}
-{"type":"policy_validation_completed","status":"allowed"}
-{"type":"diff_collected","tracked":["apps/catalog/src/validation.ts"],"untrackedAllowed":[],"untrackedDenied":[],"ignored":[]}
+{"type":"policy_validation_completed","status":"allowed","stage":"post-codex"}
 {"type":"commands_started","count":2}
 {"type":"commands_completed","results":[{"command":"npm test","exitCode":0,"durationMs":4521,"timedOut":false},{"command":"npm run lint","exitCode":0,"durationMs":1102,"timedOut":false}],"allPassed":true}
+{"type":"policy_validation_completed","status":"allowed","stage":"post-command"}
+{"type":"diff_collected","tracked":["apps/catalog/src/validation.ts"],"untrackedAllowed":[],"untrackedDenied":[],"ignored":[],"stage":"post-command"}
 {"type":"run_completed","status":"needs_review","safetyStatus":"allowed","ignoredUntrackedCount":0,"secretSuspectCount":0,"commandResultsCount":2}
 ```
+
+### diff / validation の stage
+
+`diff_collected` / `policy_validation_completed` / `diff_collection_failed` には **`stage`** フィールドが付く:
+
+- `post-codex` — codex 実行直後の diff / path validation
+- `post-command` — `allowedCommands` 実行後の **再** diff / 再 validation（F8: コマンドの副作用も同じ安全境界で検査）
+
+`allowedCommands` が空、または codex / 初回 validation で既に失敗している場合、`post-command` の validation は走らず post-codex のみが残る。`diff_collected`（最終 diff の確定）の `stage` は、コマンドが走ったなら `post-command`、そうでなければ `post-codex`。
+
+コマンドが作った副作用（scope 外書き込み / secret-shaped file / ignored output / symlink / huge / binary）はすべて post-command の再検査で codex 直後と同じ扱いになる — 詳細は [`policy.md`](./policy.md#allowedcommands-実行) の「commands 実行後」。
 
 `harness review process` 実行時にはさらに追記される:
 
