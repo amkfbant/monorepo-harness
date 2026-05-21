@@ -37,7 +37,7 @@ Phase 3-7（Docker による stronger sandbox）は **Phase 3 では実装しな
 [x] promoted knowledge を context 注入できる            — Phase 3-4
 [x] SQLite index を再構築できる                        — Phase 3-5
 [x] approved run から draft PR を作れる                 — Phase 3-6
-[x] typecheck / test が通る                            — tsc クリア、Tests 392 passed / 1 skipped、Test Files 48 passed / 1 skipped (49)
+[x] typecheck / test が通る                            — tsc クリア、Tests 403 passed / 1 skipped、Test Files 50 passed / 1 skipped (51)
 [x] docs/reports に Phase 3 レポートがある               — 3-1/3-2/3-3/3-4/3-5/3-6 + 本レポート
 [x] README が更新されている                            — root README に Phase 3 機能表
 [x] Phase 3-7 が Deferred として明記されている           — README / tmp/phase3/ / 本レポート
@@ -71,6 +71,21 @@ harness pr create               approved run → GitHub draft PR
 
 **すべて同サイクル内で fix 済み。** Phase 3-8 時点で未 close の P0/P1 finding は無い。各レポートに detail。
 
+## Post-close ハードニング（ユーザーレビュー対応）
+
+Phase 3 close 後、ユーザーから Phase 3 全体に対し **P1×1 + P2×7** のレビューを受け、対応した。さらにその修正を codex で 2 巡再レビューした:
+
+- **ユーザーレビュー（P1×1 + P2×7）** → `e392c68` で fix:
+  - P1: `pr create` が path のみ制限し content drift を検出していなかった → reviewed paths の content fingerprint を `meta.reviewed` に記録し照合
+  - P2: pr-creator の events.jsonl 依存解消 / gh `--state open` / gh timeout / index に root_run_id・rerun_attempt / evaluator snapshot の symlink・dir 対応 / knowledge `<knowledge>` fence + 32 KiB 上限 / maxAttempts docs
+- **codex 再レビュー 1（P1×1 + P2×3）** → `e392c68` の次コミットで fix:
+  - P1: fingerprint が `readFile` で symlink を辿っていた → `lstat` ベースの type-tagged fingerprint
+  - P2: gh timeout の握り潰し / index schema version / knowledge fence の tag 混入
+- **codex 再レビュー 2（P0/P1 なし、P2×2）** → `518dfb3` で fix:
+  - P2: `neutraliseFence` の nested bracket（`<</knowledge>>`）/ fingerprint file branch の TOCTOU（`O_NOFOLLOW`）
+
+最終的に **codex 再レビューで P0/P1 ゼロ**、P2 も全件 fix 済み。テストは Tests 403 passed / 1 skipped に増加（content drift / fingerprint type 変化 / gh timeout / 旧 schema index / fence escape の regression テストを追加）。
+
 ## 実機デモ サマリ
 
 - 3-1: `reviewed-run` を 2 回実機実行（E3-1-1 approved 収束）。rerun ループは fake-codex 統合テストで決定論担保（reviewer の goal 相対評価により実機 cr 誘発は非再現 — R5）
@@ -94,6 +109,6 @@ harness pr create               approved run → GitHub draft PR
 
 ## 判定
 
-**Phase 3 を close する。** Phase 3-7 を Deferred とした以外、3-1〜3-6 + 3-8 のすべてが設計どおりの close 条件を満たして完了。typecheck / test green、全 finding closed、docs / README 整備済み。
+**Phase 3 を close する。** Phase 3-7 を Deferred とした以外、3-1〜3-6 + 3-8 のすべてが設計どおりの close 条件を満たして完了。close 後のユーザーレビュー（P1×1 + P2×7）と codex 再レビュー 2 巡で出た指摘も全件 fix し、最終 codex レビューは **P0/P1 ゼロ**。typecheck / test green（403 passed / 1 skipped）、未 close の finding なし、docs / README 整備済み。
 
-close commit に続けて `phase3-close` タグを打つ。
+`phase3-close` タグを post-close ハードニング後の commit に更新する。
