@@ -547,6 +547,39 @@ codex output が invalid だった場合:
 - `1`: invalid runId / status != needs_review / 非 `pending` decision を `--allow-overwrite` なしで上書き試行 / codex 非ゼロ or timeout / YAML パース不能 / 不明 decision / artifact 改竄検出
 - `2`: 予期しない例外
 
+## `harness review evaluate`
+
+reviewer agent を**同じ run に対して N 回**走らせ、verdict のばらつきを観測する（Phase 3-2）。観測ツールであり、run 自身の `review-decision.yaml` や `meta.status` は一切変更しない。
+
+```bash
+harness review evaluate --run-id <id> [--samples <n>] [--reviewer-name <name>]
+```
+
+| Option | Required | 説明 |
+|--------|:--------:|------|
+| `--run-id <id>` | ✅ | 対象 run |
+| `--samples <n>` | — | reviewer サンプル数（default 3、正の整数） |
+| `--reviewer-name <name>` | — | reviewer identity |
+
+各サンプルを `runs/<runId>/review-evaluations/eval-NNN/`（`review-decision.yaml` or `review-auto-error.json` + `reviewer-agent.*.log`）に保存し、`review-evaluations/evaluation-summary.md` に decision 分布・comment 数・**danger flag**（`safetyStatus=denied` / `secretSuspectCount>0` の run を `approved` したサンプル）をまとめる。invalid output のサンプルは `invalid` として記録され、他サンプルは継続する。
+
+### `harness review compare`
+
+2 つの `review-decision.yaml`（典型的には人間 vs agent）を比較する。
+
+```bash
+harness review compare --human <path> --agent <path>
+```
+
+decision 一致 / 不一致と各 comment 配列の件数差を report する。decision 不一致なら exit 1。
+
+### reviewer quality の限界
+
+- `review evaluate` は verdict の**一致率 / ばらつき**を観測するだけで、どの verdict が「正しい」かは判定しない。最終判断は人間
+- danger flag は `safetyStatus` / `secretSuspectCount` という**機械的シグナルとの突き合わせ**のみ。コードの実質的な誤りを検出するわけではない
+- reviewer agent は **goal 相対**でレビューする（Phase 3-1 の観察）。goal が不完全な実装を許容していれば、不完全な提出も approve され得る
+- サンプル数を増やすほど codex API コストが線形に増える
+
 ## `harness knowledge`
 
 run が生成した `knowledge-candidates.yaml` の候補をレビューし、採用したものを `docs/knowledge/<kind>/` に昇格する。**誰が・なぜ・どの候補を**昇格／却下したかを記録する。

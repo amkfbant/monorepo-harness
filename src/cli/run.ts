@@ -39,6 +39,11 @@ import {
 } from "../core/reviewer-agent.js";
 import { runReviewedRunWorkflow } from "../core/reviewed-run-workflow.js";
 import {
+  evaluateReviewer,
+  compareDecisions,
+  ReviewEvaluateError,
+} from "../core/review-evaluator.js";
+import {
   promoteKnowledge,
   rejectKnowledge,
   listKnowledge,
@@ -571,6 +576,73 @@ reviewCmd
       }
     } catch (e) {
       if (e instanceof ReviewerAgentGateError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
+  });
+reviewCmd
+  .command("evaluate")
+  .description(
+    "run the reviewer agent N times against one run to observe verdict stability",
+  )
+  .requiredOption("--run-id <id>", "target run identifier")
+  .option("--samples <n>", "number of reviewer samples", "3")
+  .option("--reviewer-name <name>", "reviewer identity")
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    const samples = Number(raw.samples);
+    if (!Number.isInteger(samples) || samples < 1) {
+      process.stderr.write(
+        `harness error: --samples must be a positive integer (got ${JSON.stringify(String(raw.samples))})\n`,
+      );
+      process.exit(1);
+    }
+    const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
+    const runner = createCodexCliRunner({ codexBin, sandbox: "read-only" });
+    try {
+      const r = await evaluateReviewer({
+        runsDir: paths.runsDir,
+        runId: String(raw.runId),
+        samples,
+        codexRunner: runner,
+        ...(raw.reviewerName !== undefined
+          ? { reviewerName: String(raw.reviewerName) }
+          : {}),
+      });
+      const dist = Object.entries(r.decisionCounts)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(" ");
+      process.stdout.write(
+        `run=${r.runId} samples=${r.samples.length} ${dist}\n`,
+      );
+      for (const f of r.dangerFlags) {
+        process.stderr.write(`danger: ${f}\n`);
+      }
+    } catch (e) {
+      if (e instanceof ReviewEvaluateError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
+  });
+reviewCmd
+  .command("compare")
+  .description("compare two review-decision.yaml files (e.g. human vs agent)")
+  .requiredOption("--human <path>", "human review-decision.yaml")
+  .requiredOption("--agent <path>", "agent review-decision.yaml")
+  .action(async (raw: Record<string, unknown>) => {
+    try {
+      const r = await compareDecisions({
+        humanPath: String(raw.human),
+        agentPath: String(raw.agent),
+      });
+      process.stdout.write(r.report);
+      if (!r.decisionMatch) process.exit(1);
+    } catch (e) {
+      if (e instanceof ReviewEvaluateError) {
         process.stderr.write(`harness error: ${(e as Error).message}\n`);
         process.exit(1);
       }

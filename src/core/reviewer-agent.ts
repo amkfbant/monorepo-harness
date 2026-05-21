@@ -135,7 +135,7 @@ export interface ReviewerAgentResult {
   dryRun: boolean;
 }
 
-const PROMPT_PREAMBLE = `You are an automated code reviewer. Read the run artifacts in the
+export const PROMPT_PREAMBLE = `You are an automated code reviewer. Read the run artifacts in the
 current working directory (you have read-only access) and produce a
 single YAML block that captures your verdict.
 
@@ -184,7 +184,7 @@ export function extractYamlBlock(output: string): string {
  * only writes the four optional fields; we merge with runId/domain from
  * meta.json and stamp reviewer + reviewed_at ourselves.
  */
-interface PartialDecision {
+export interface PartialDecision {
   decision?: unknown;
   required_changes?: unknown;
   non_blocking_comments?: unknown;
@@ -207,7 +207,7 @@ function requireStringArray(field: string, v: unknown): string[] {
   return v as string[];
 }
 
-function buildDecision(
+export function buildDecision(
   runId: string,
   domain: string,
   raw: PartialDecision,
