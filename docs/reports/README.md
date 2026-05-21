@@ -82,6 +82,7 @@ Finding ID は **F1, F2, …** で連番。レポート間で連続させる（�
 | 2026-05-20 | [MVP validation — follow-up](2026-05-20-mvp-validation-followup.md) | F1/P2 fix + scenarios 8-10、F7 発見と修正 |
 | 2026-05-21 | [Phase 2 — review/commands/cleanup](2026-05-21-phase2-review-commands-cleanup.md) | review processor + allowedCommands + cleanup CLI、codex review (gpt-5.5/xhigh) で F8-F12 発見&修正、mini-commerce で 5 シナリオ E2E 検証 |
 | 2026-05-21 | [Phase 2-4 機能デモ](2026-05-21-phase2-4-feature-demo.md) | structured commands / reviewer agent / rerun / knowledge promote / cleanup --scope を mini-commerce 実機でデモ。reviewer agent は実機 codex で初検証。新 finding なし |
+| 2026-05-21 | [Phase 2-5 review list デモ](2026-05-21-phase2-5-review-list-demo.md) | review list 拡張（--status/--domain/--limit/--json、壊れ run 分離）。codex review で P1×1+P2×3 を fix。E2-5-1〜5 実機検証、新 finding なし |
 
 ## Workflow
 
