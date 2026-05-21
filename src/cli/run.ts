@@ -26,7 +26,13 @@ import {
   formatJson,
 } from "../core/review-lister.js";
 import { RUN_STATUSES } from "../logging/run-log.js";
-import { prepareRerunFromReview, RerunGateError } from "../core/rerun.js";
+import {
+  prepareRerunFromReview,
+  buildRerunChain,
+  formatChain,
+  RerunGateError,
+  DEFAULT_MAX_ATTEMPTS,
+} from "../core/rerun.js";
 import {
   runReviewerAgent,
   ReviewerAgentGateError,
@@ -429,18 +435,44 @@ const cleanupCmd = program
 const rerunCmd = program
   .command("rerun")
   .description("spawn a new run from a changes_requested parent")
-  .requiredOption(
+  // NOTE: a plain option (not requiredOption) so the `rerun chain`
+  // subcommand can be invoked without --from-review. The action below
+  // enforces presence for the bare `rerun` form.
+  .option(
     "--from-review <run-id>",
     "parent run id (must be in changes_requested status)",
+  )
+  .option(
+    "--max-attempts <n>",
+    `retry cap measured from the chain root (default ${DEFAULT_MAX_ATTEMPTS})`,
   )
   .action(async (raw: Record<string, unknown>) => {
     const harnessRoot = getHarnessRoot();
     const paths = harnessPaths(harnessRoot);
+    if (raw.fromReview === undefined) {
+      process.stderr.write(
+        "harness error: 'harness rerun' requires --from-review <run-id> " +
+          "(did you mean 'harness rerun chain --run-id <id>'?)\n",
+      );
+      process.exit(1);
+    }
+    let maxAttempts: number | undefined;
+    if (raw.maxAttempts !== undefined) {
+      const n = Number(raw.maxAttempts);
+      if (!Number.isInteger(n) || n < 1) {
+        process.stderr.write(
+          `harness error: --max-attempts must be a positive integer (got ${JSON.stringify(String(raw.maxAttempts))})\n`,
+        );
+        process.exit(1);
+      }
+      maxAttempts = n;
+    }
     let prep;
     try {
       prep = await prepareRerunFromReview({
         runsDir: paths.runsDir,
         parentRunId: String(raw.fromReview),
+        ...(maxAttempts !== undefined ? { maxAttempts } : {}),
       });
     } catch (e) {
       if (e instanceof RerunGateError) {
@@ -448,6 +480,9 @@ const rerunCmd = program
         process.exit(1);
       }
       throw e;
+    }
+    for (const w of prep.warnings) {
+      process.stderr.write(`warning: ${w}\n`);
     }
 
     // Reuse the same code path as `harness run`: resolve policy, build the
@@ -488,13 +523,15 @@ const rerunCmd = program
       baseBranch: prep.baseBranch,
       codexRunner: runner,
       parentRunId: prep.parentRunId,
+      rootRunId: prep.rootRunId,
+      rerunAttempt: prep.rerunAttempt,
     });
     const cmdTotal = result.commandResults.length;
     const cmdOk = result.commandResults.filter(
       (c) => c.exitCode === 0 && !c.timedOut,
     ).length;
     process.stdout.write(
-      `run=${result.runId} parentRunId=${prep.parentRunId} status=${result.status} safetyStatus=${result.safetyStatus} commands=${cmdOk}/${cmdTotal}\n`,
+      `run=${result.runId} parentRunId=${prep.parentRunId} rootRunId=${prep.rootRunId} rerunAttempt=${prep.rerunAttempt} status=${result.status} safetyStatus=${result.safetyStatus} commands=${cmdOk}/${cmdTotal}\n`,
     );
     if (
       result.status === "failed-policy-violation" ||
@@ -505,6 +542,26 @@ const rerunCmd = program
       result.status === "failed-internal-error"
     ) {
       process.exit(1);
+    }
+  });
+rerunCmd
+  .command("chain")
+  .description("show the rerun chain a run belongs to (root → descendants)")
+  .requiredOption("--run-id <id>", "any run in the chain")
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    try {
+      const root = await buildRerunChain({
+        runsDir: paths.runsDir,
+        runId: String(raw.runId),
+      });
+      process.stdout.write(formatChain(root));
+    } catch (e) {
+      if (e instanceof RerunGateError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
     }
   });
 

@@ -82,6 +82,17 @@ export interface RunMeta {
    * link lets reviewers audit retry chains without grep'ing prompts.
    */
   parentRunId?: string;
+  /**
+   * runId of the first run in the rerun chain (the original `harness run`).
+   * Absent on an original run; on a rerun it is parent.rootRunId, or the
+   * parent's own runId when the parent is itself an original run.
+   */
+  rootRunId?: string;
+  /**
+   * Retry count measured from rootRunId. Absent / 0 on an original run;
+   * 1 for the first rerun, 2 for the next, … Used by `--max-attempts`.
+   */
+  rerunAttempt?: number;
   startedAt: string;
   finishedAt?: string;
 }

@@ -34,7 +34,7 @@ operator → `harness run --domain apps/catalog --goal "..."`
 - path validation 通過後に `policy.allowedCommands`（例: `npm test` / `npm run lint`）を worktree 内で順次実行、失敗時は `failed-command` ステータス + `meta.commandResults` に結果保存
 - `harness cleanup --run-id <id> [--force] [--scope workspace|run|all]` で worktree + branch（+ scope に応じ run dir）を削除（`changes_requested` / `running` は強制でも残す）
 - `harness review list` で全 run の meta.json を読みテーブル/JSON 表示。default は review queue（`needs_review` + `changes_requested`）、`--all` / `--status` / `--domain` / `--limit` / `--json` で絞り込み。壊れた run dir は invalid として分離（stderr 警告 or `invalidRuns[]`）
-- `harness rerun --from-review <parent-run-id>` で `changes_requested` の親から `required_changes` を組み込んだ新 run を起動（`meta.parentRunId` で監査チェーン）
+- `harness rerun --from-review <parent-run-id> [--max-attempts <n>]` で `changes_requested` の親から `required_changes` を組み込んだ新 run を起動（`meta.parentRunId` / `rootRunId` / `rerunAttempt` で監査チェーン、`--max-attempts` 超過で拒否）。`harness rerun chain --run-id <id>` で再実行系譜をツリー表示
 - `harness review auto --run-id <id>` で reviewer agent（read-only sandbox の codex）が artifacts を読んで `review-decision.yaml` を生成（適用は別途 `review process`）
 - `harness knowledge promote --run-id <id>` で `knowledge-candidates.yaml` を `docs/knowledge/<kind>/*.md` に展開
 

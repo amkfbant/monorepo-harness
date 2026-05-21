@@ -355,53 +355,76 @@ harness cleanup --run-id run-Y --force --scope run
 
 ## `harness rerun`
 
-`changes_requested` の親 run を base に、`required_changes` を組み込んだ新しい run を起動する。
+`changes_requested` の親 run を base に、`required_changes` を組み込んだ新しい run を起動する。`rerun chain` サブコマンドで再実行系譜を表示できる。
 
 ### Synopsis
 
 ```bash
-harness rerun --from-review <parent-run-id>
+harness rerun --from-review <parent-run-id> [--max-attempts <n>]
+harness rerun chain --run-id <id>
 ```
 
-### Options
+### Options（`rerun --from-review`）
 
 | Option | Required | 説明 |
 |--------|:--------:|------|
 | `--from-review <id>` | ✅ | 親 run の識別子（`changes_requested` 状態である必要あり） |
+| `--max-attempts <n>` | — | chain root から数えた retry 上限（正整数、default 2）。子の `rerunAttempt` がこれを超えると拒否 |
 
-### 動作
+### 動作（`rerun --from-review`）
 
 1. 親 `meta.json` + `review-decision.yaml` を読む
 2. 親 status == `changes_requested` かつ decision == `changes_requested` かつ `required_changes` が 1 件以上であることを検証
-3. 親 `codex-prompt.md` から元 goal を復元し、新 prompt を組み立てる:
-   `<元 goal>` + `## Required changes from the previous review` + `required_changes` の bullet list
-4. 親と同じ repo / domain / baseBranch で `harness run` 相当を実行
-5. 新 run の `meta.parentRunId` に親 runId を記録
+3. chain bookkeeping を計算: `rootRunId` = 親の `rootRunId`（無ければ親自身）、`rerunAttempt` = 親の `rerunAttempt` + 1
+4. `rerunAttempt` が `--max-attempts` を超えるなら拒否（収束しない chain を止める）
+5. 親 `codex-prompt.md` から元 goal を復元し、新 prompt を組み立てる:
+   `<元 goal>` + `## Required changes from the previous review`（previous run / rerun attempt / reviewer / `required_changes` bullet list）
+6. 親と同じ repo / domain / baseBranch で `harness run` 相当を実行
+7. 新 run の `meta.parentRunId` / `rootRunId` / `rerunAttempt` を記録
 
-新 run は別 runId・別 branch・別 worktree。親は一切変更しない（監査用にチェーンを `meta.parentRunId` で辿れる）。
+新 run は別 runId・別 branch・別 worktree。親は一切変更しない。
+
+### 収束ルール
+
+| 条件 | 挙動 |
+|------|------|
+| 親 status != `changes_requested`（`cleaned` / `failed-*` / 不在 含む） | 拒否（exit 1） |
+| `review-decision.yaml` の `required_changes` 空 | 拒否（exit 1） |
+| `rerunAttempt` > `--max-attempts` | 拒否（exit 1）。「chain が収束していない、手動レビューせよ」 |
+| 親の `required_changes` が祖父の `required_changes` と同一 | **warning（stderr）**。前回の rerun が feedback に対応できていないシグナル。実行自体は継続 |
+
+`--max-attempts 2`（default）の場合: original + 2 reruns = 計 3 run まで。3 回目の rerun（attempt 3）で拒否。
 
 ### rerun 後の再レビュー
 
 `rerun` で生成された子 run は `needs_review` 状態で、**通常の run と全く同じ手順でレビューする**:
 
 ```bash
-# 子 run を一覧で確認
-harness review list
-
-# reviewer agent または人間がレビュー
-harness review auto --run-id <child-run-id>      # または review-decision.yaml を手編集
+harness review list                              # 子 run を確認
+harness review auto --run-id <child-run-id>      # reviewer agent / または手編集
 harness review process --run-id <child-run-id>
-
-# まだ changes_requested なら再度 rerun (チェーンが伸びる)
-harness rerun --from-review <child-run-id>
+harness rerun --from-review <child-run-id>       # まだ changes_requested なら再度
 ```
 
-`meta.parentRunId` を辿ると `初回 run → rerun → rerun → …` の系譜が全て追える。各 run の `review-decision.yaml` / `summary.md` は run dir に残るので、「前回の required_changes が満たされたか」は子 run の diff と review で確認する。
+### `harness rerun chain`
+
+任意の run を起点に、再実行系譜（root → 子孫）をツリー表示する。`parentRunId` リンクを辿るので、`rootRunId` を持たない旧 rerun でも機能する。
+
+```bash
+$ harness rerun chain --run-id run-20260521-apps-orders-c2
+run-20260521-apps-orders-root  changes_requested
+└─ run-20260521-apps-orders-c1  changes_requested (attempt 1)
+   └─ run-20260521-apps-orders-c2  approved (attempt 2)
+```
+
+| Option | Required | 説明 |
+|--------|:--------:|------|
+| `--run-id <id>` | ✅ | chain 内の任意の run |
 
 ### Exit code
 
-- `0`: 新 run が `needs_review` などの非失敗 status で完了
-- `1`: 親が `changes_requested` でない / decision 不一致 / `required_changes` 空 / `--from-review` が path-traversal / 新 run prompt が 64 KiB 超
+- `0`: 新 run が `needs_review` などの非失敗 status で完了 / `chain` が表示成功
+- `1`: 親が `changes_requested` でない / decision 不一致 / `required_changes` 空 / `--from-review` 不在 or path-traversal / `--max-attempts` 超過 or 不正値 / 新 run prompt が 64 KiB 超 / `chain` の runId 不正 or 不在
 - `2`: 予期しない例外
 
 ## `harness review auto`

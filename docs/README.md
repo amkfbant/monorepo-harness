@@ -28,7 +28,8 @@ docs/
 | `harness review list [--all\|--status\|--domain\|--limit\|--json]` | review queue（needs_review + changes_requested）を一覧 |
 | `harness review auto --run-id <id>` | reviewer agent（read-only codex）が `review-decision.yaml` を生成 |
 | `harness review process --run-id <id>` | `review-decision.yaml` を適用し status 遷移 |
-| `harness rerun --from-review <id>` | `changes_requested` から `required_changes` を組み込んだ新 run |
+| `harness rerun --from-review <id> [--max-attempts <n>]` | `changes_requested` から `required_changes` を組み込んだ新 run（収束制御つき） |
+| `harness rerun chain --run-id <id>` | 再実行系譜（root → 子孫）をツリー表示 |
 | `harness knowledge promote --run-id <id>` | `knowledge-candidates.yaml` を `docs/knowledge/` に展開 |
 | `harness cleanup --run-id <id> [--scope …]` | worktree / branch / run dir を scope 単位で削除 |
 

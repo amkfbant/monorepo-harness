@@ -51,6 +51,10 @@ export interface RunDomainCodingOpts {
    * run. Recorded in meta.json so reviewers can follow the chain.
    */
   parentRunId?: string;
+  /** rerun chain root (see RunMeta.rootRunId). Set together with parentRunId. */
+  rootRunId?: string;
+  /** rerun attempt count from rootRunId (see RunMeta.rerunAttempt). */
+  rerunAttempt?: number;
 }
 
 export interface RunDomainCodingResult {
@@ -233,6 +237,12 @@ export async function runDomainCoding(
         status: "running",
         ...(opts.parentRunId !== undefined
           ? { parentRunId: opts.parentRunId }
+          : {}),
+        ...(opts.rootRunId !== undefined
+          ? { rootRunId: opts.rootRunId }
+          : {}),
+        ...(opts.rerunAttempt !== undefined
+          ? { rerunAttempt: opts.rerunAttempt }
           : {}),
         startedAt,
       },

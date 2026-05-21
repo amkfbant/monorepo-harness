@@ -202,4 +202,81 @@ describe("harness rerun --from-review", () => {
     expect(prompt).toMatch(/use err\(\) consistently/);
     expect(prompt).toMatch(/add empty-string test/);
   });
+
+  it("records rootRunId / rerunAttempt in the child meta.json", () => {
+    const s = setupParent({
+      status: "changes_requested",
+      decision: "changes_requested",
+    });
+    const fakeBin = writeFakeCodexBin(s.root);
+    const r = run(["rerun", "--from-review", s.runId], s.root, {
+      HARNESS_CODEX_BIN: fakeBin,
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/rootRunId=run-20260521-apps-user-parent01/);
+    expect(r.stdout).toMatch(/rerunAttempt=1/);
+    const newRunId = r.stdout.match(/run=([\w.-]+)/)?.[1];
+    const meta = JSON.parse(
+      readFileSync(join(s.root, "runs", newRunId!, "meta.json"), "utf8"),
+    );
+    expect(meta.rootRunId).toBe(s.runId);
+    expect(meta.rerunAttempt).toBe(1);
+  });
+
+  it("exit 1 when --max-attempts is exceeded", () => {
+    const s = setupParent({
+      status: "changes_requested",
+      decision: "changes_requested",
+    });
+    // make the parent look like it is already attempt 2
+    const metaPath = join(s.root, "runs", s.runId, "meta.json");
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    meta.rerunAttempt = 2;
+    meta.rootRunId = "run-20260521-apps-user-root";
+    writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+    const r = run(
+      ["rerun", "--from-review", s.runId, "--max-attempts", "2"],
+      s.root,
+      {},
+    );
+    expect(r.status).toBe(1);
+    expect(r.stdout).toMatch(/exceeding --max-attempts 2/);
+  });
+
+  it("'rerun' without --from-review exits 1 with a hint", () => {
+    const s = setupParent({
+      status: "changes_requested",
+      decision: "changes_requested",
+    });
+    const r = run(["rerun"], s.root, {});
+    expect(r.status).toBe(1);
+    expect(r.stdout).toMatch(/requires --from-review/);
+  });
+
+  it("'rerun chain' prints the chain for a run", () => {
+    const s = setupParent({
+      status: "changes_requested",
+      decision: "changes_requested",
+    });
+    // add a child run dir pointing at the parent
+    const childId = "run-20260521-apps-user-child9";
+    const childDir = join(s.root, "runs", childId);
+    mkdirSync(childDir, { recursive: true });
+    writeFileSync(
+      join(childDir, "meta.json"),
+      JSON.stringify({
+        runId: childId,
+        domain: "apps/user",
+        status: "needs_review",
+        parentRunId: s.runId,
+        rootRunId: s.runId,
+        rerunAttempt: 1,
+        startedAt: "2026-05-21T01:00:00Z",
+      }),
+    );
+    const r = run(["rerun", "chain", "--run-id", childId], s.root, {});
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/run-20260521-apps-user-parent01/);
+    expect(r.stdout).toMatch(/run-20260521-apps-user-child9.*needs_review/);
+  });
 });
