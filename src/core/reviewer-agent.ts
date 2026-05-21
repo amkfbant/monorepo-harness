@@ -135,6 +135,17 @@ export interface ReviewerAgentResult {
   dryRun: boolean;
 }
 
+/**
+ * The reviewer agent's prompt template (Phase 3-3). The reviewer runs
+ * under a read-only sandbox and only proposes a review-decision.yaml — it
+ * cannot edit code or change a run's status. Bump `version` whenever
+ * PROMPT_PREAMBLE changes.
+ */
+export const REVIEWER_PROMPT_TEMPLATE = {
+  name: "reviewer-run-artifacts",
+  version: 1,
+} as const;
+
 export const PROMPT_PREAMBLE = `You are an automated code reviewer. Read the run artifacts in the
 current working directory (you have read-only access) and produce a
 single YAML block that captures your verdict.

@@ -59,6 +59,23 @@ operator → `harness run --domain apps/catalog --goal "..."`
 | **artifact** | run の成果物。`runs/<runId>/` 配下の meta.json / summary.md など |
 | **review gate** | run 完了時の状態 `needs_review`。reviewer が `review-decision.yaml` を編集 → `harness review process` で `approved` / `changes_requested` / `rejected` に遷移 |
 
+## Agent role separation（Phase 3-3）
+
+harness は 2 種類の LLM agent と harness 自身の 3 ロールに権限を分離する。**LLM の出力は信用しない / 状態遷移は harness だけが行う**が大原則。
+
+| ロール | 目的 | 権限 | 出力 |
+|--------|------|------|------|
+| **coder agent** | domain 内の実装変更 | 標準は `workspace-write` sandbox（cwd = worktree） | worktree のファイル変更、`codex-output.log` / `codex-error.log` |
+| **reviewer agent** | run artifacts を読み verdict を提案 | `read-only` sandbox。コード編集不可、status 変更不可 | review verdict（codex stdout）、`reviewer-agent.*.log` |
+| **harness** | 状態遷移・安全検査 | authoritative。`meta.json` 更新 / events 追記 / cleanup | `review-decision.yaml` ほか artifacts |
+
+**構造上の境界:**
+- coder の cwd は worktree（`workspaces/<runId>/repo/`）。`workspace-write` sandbox では worktree に書き込みが閉じ、`runs/<runId>/review-decision.yaml`（harness root 配下、worktree の外）には到達できない → **coder は review-decision を変更できない**。coder が出力に「approved」と書いても `meta.status` は動かない（`harness review process` のみが遷移させる）。
+  - ⚠️ この境界は **標準の `workspace-write` sandbox 前提**。policy で `codex.sandbox: danger-full-access` を設定すると coder が harness root を含めどこでも書けるようになり、この保証は**失効する**。domain-coding workflow では `workspace-write`（または `read-only`）を推奨。
+- reviewer agent は `read-only` sandbox で動き、**直接コードも artifacts も変更できない**。codex の出力（verdict）は harness が検証したうえで `review-decision.yaml` に書く（agent が直接書くのではない）。実行前後の artifact snapshot（Phase 2-6）で改竄を検出・拒否するため、prompt に編集指示が混ざっても無害。
+
+**prompt template:** 各 agent の prompt は名前付き・version 付きのテンプレート。`meta.promptTemplate` には **codex-prompt.md を組んだ外側の coder テンプレート** `{name, version}`（`coder-domain-task`）を記録する。reviewer の `reviewer-run-artifacts`、rerun の goal-wrapper `rerun-from-review` も version 付き定数で、後者の version は rerun の `codex-prompt.md` 内に明記される。
+
 ## 主要な型契約
 
 `src/policy/schema.ts` / `src/logging/run-log.ts` から抜粋:

@@ -99,6 +99,11 @@ export interface RunMeta {
    * docs/knowledge-context/<domain>.md path that was used.
    */
   knowledgeContext?: { enabled: boolean; contextFile: string };
+  /**
+   * Identity of the coder prompt template used to build codex-prompt.md
+   * (Phase 3-3). Lets a run be reproduced against a known template.
+   */
+  promptTemplate?: { name: string; version: number };
   startedAt: string;
   finishedAt?: string;
 }

@@ -8,11 +8,28 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import {
   runReviewerAgent,
   extractYamlBlock,
+  PROMPT_PREAMBLE,
+  REVIEWER_PROMPT_TEMPLATE,
 } from "../../../src/core/reviewer-agent.js";
 import type { CodexExecRunner } from "../../../src/codex/codex-exec-runner.js";
+
+describe("reviewer prompt template (tripwire)", () => {
+  // Pins PROMPT_PREAMBLE to its declared version. If you change the
+  // reviewer prompt this hash breaks — when you update it, ALSO bump
+  // REVIEWER_PROMPT_TEMPLATE.version.
+  it("PROMPT_PREAMBLE content matches its declared version", () => {
+    const hash = createHash("sha256")
+      .update(PROMPT_PREAMBLE)
+      .digest("hex")
+      .slice(0, 16);
+    expect(REVIEWER_PROMPT_TEMPLATE.version).toBe(1);
+    expect(hash).toBe("ba8278a8e3235d92");
+  });
+});
 
 interface SetupOpts {
   status?: string;

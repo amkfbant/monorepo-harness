@@ -23,7 +23,10 @@ import { acquireDomainLock } from "../workspace/domain-lock.js";
 import { runBranchName } from "../workspace/branch-name.js";
 import { createWorktree } from "../workspace/git-worktree.js";
 import { collectDiff, resolveBaseSha } from "../git/diff.js";
-import { buildCodexPrompt } from "../codex/prompt-builder.js";
+import {
+  buildCodexPrompt,
+  CODER_PROMPT_TEMPLATE,
+} from "../codex/prompt-builder.js";
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import { buildSummary } from "../reporter/summary.js";
 import { buildKnowledgeCandidates } from "../reporter/knowledge-candidates.js";
@@ -275,6 +278,10 @@ export async function runDomainCoding(
               },
             }
           : {}),
+        promptTemplate: {
+          name: CODER_PROMPT_TEMPLATE.name,
+          version: CODER_PROMPT_TEMPLATE.version,
+        },
         startedAt,
       },
     });

@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { buildCodexPrompt } from "../../../src/codex/prompt-builder.js";
+import { createHash } from "node:crypto";
+import {
+  buildCodexPrompt,
+  CODER_PROMPT_TEMPLATE,
+} from "../../../src/codex/prompt-builder.js";
 import type { ResolvedPolicy } from "../../../src/policy/schema.js";
 
 const POLICY: ResolvedPolicy = {
@@ -52,5 +56,19 @@ describe("buildCodexPrompt", () => {
   it("omits the knowledge section when knowledgeContext is empty", () => {
     const p = buildCodexPrompt({ goal: "x", policy: POLICY, knowledgeContext: "  " });
     expect(p).not.toMatch(/Relevant knowledge from past runs/);
+  });
+
+  // Tripwire: pins the coder template's content to its version. If you
+  // change buildCodexPrompt's wording this hash breaks — when you update
+  // the hash here, ALSO bump CODER_PROMPT_TEMPLATE.version so meta stays
+  // an accurate record of which prompt a run used.
+  it("coder template content matches its declared version (tripwire)", () => {
+    const canonical = buildCodexPrompt({ goal: "__GOAL__", policy: POLICY });
+    const hash = createHash("sha256")
+      .update(canonical)
+      .digest("hex")
+      .slice(0, 16);
+    expect(CODER_PROMPT_TEMPLATE.version).toBe(1);
+    expect(hash).toBe("96e3e8a741fc170a");
   });
 });

@@ -1,5 +1,22 @@
 import type { ResolvedPolicy } from "../policy/schema.js";
 
+/** Identity of a prompt template — recorded so a run is reproducible. */
+export interface PromptTemplateId {
+  name: string;
+  version: number;
+}
+
+/**
+ * The coder agent's prompt template (Phase 3-3). The coder edits the
+ * worktree under a workspace-write sandbox; it has no path into the
+ * harness `runs/` dir, so it cannot touch review-decision.yaml or change
+ * a run's status. Bump `version` whenever buildCodexPrompt's shape changes.
+ */
+export const CODER_PROMPT_TEMPLATE: PromptTemplateId = {
+  name: "coder-domain-task",
+  version: 1,
+};
+
 export interface PromptInputs {
   goal: string;
   policy: ResolvedPolicy;

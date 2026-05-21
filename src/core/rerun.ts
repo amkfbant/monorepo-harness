@@ -28,6 +28,16 @@ const MAX_RERUN_PROMPT_BYTES = 64 * 1024;
 /** Default bound on retry attempts measured from the chain root. */
 export const DEFAULT_MAX_ATTEMPTS = 2;
 
+/**
+ * The rerun goal template (Phase 3-3). prepareRerunFromReview wraps the
+ * parent goal with the previous review's required_changes; the result is
+ * fed to the coder template (coder-domain-task) as the new goal.
+ */
+export const RERUN_PROMPT_TEMPLATE = {
+  name: "rerun-from-review",
+  version: 1,
+} as const;
+
 export interface RerunPrepResult {
   parentRunId: string;
   repoId: string;
@@ -239,7 +249,7 @@ export async function prepareRerunFromReview(opts: {
   const goal = [
     parentGoal,
     "",
-    "## Required changes from the previous review",
+    `## Required changes from the previous review (${RERUN_PROMPT_TEMPLATE.name} v${RERUN_PROMPT_TEMPLATE.version})`,
     "",
     `Previous run: ${opts.parentRunId} (status: changes_requested)`,
     `Rerun attempt: ${rerunAttempt} (root: ${rootRunId})`,
