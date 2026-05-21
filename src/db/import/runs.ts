@@ -75,7 +75,9 @@ export function runFingerprint(runDir: string, metaRaw: string): string {
     parts.push(existsSync(p) ? readFileSync(p, "utf8") : "");
   }
   const listing = readdirSync(runDir, { withFileTypes: true })
-    .filter((e) => e.isFile())
+    // skip dotfiles — the Phase 7 export marker `.exporting` is transient
+    // bookkeeping, not run state, and must not move the fingerprint.
+    .filter((e) => e.isFile() && !e.name.startsWith("."))
     .map((e) => {
       const st = statSync(join(runDir, e.name));
       return `${e.name}:${st.size}:${Math.round(st.mtimeMs)}`;
@@ -363,7 +365,8 @@ function importArtifacts(
      VALUES (?, ?, ?, ?, ?, ?, ?, 'file', ?, 0, 0)`,
   );
   for (const file of readdirSync(runDir, { withFileTypes: true })) {
-    if (!file.isFile()) continue;
+    // skip dotfiles — the Phase 7 export marker is not a run artifact.
+    if (!file.isFile() || file.name.startsWith(".")) continue;
     const name = file.name;
     const abs = join(runDir, name);
     const st = statSync(abs);
