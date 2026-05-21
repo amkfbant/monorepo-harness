@@ -4,6 +4,7 @@ import type { Command } from "commander";
 import { harnessPaths } from "../config/paths.js";
 import { openDb, openDbReadonly, DbError } from "../db/connection.js";
 import { runMigrations, readSchemaVersion } from "../db/migrations.js";
+import { runFullImport, formatImportReport } from "../db/import-files.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -65,6 +66,47 @@ export function registerDbCommands(program: Command): void {
             r.applied.length > 0
               ? `db migrate: applied ${r.applied.join(", ")} → schema version ${r.version}\n`
               : `db migrate: already at schema version ${r.version}\n`,
+          );
+        } finally {
+          db.close();
+        }
+      } catch (e) {
+        dbError(e);
+      }
+    });
+
+  dbCmd
+    .command("import")
+    .description("build the DB read model from harness files")
+    .option(
+      "--from-files",
+      "import from runs/ projects/ policies/ backlog/ docs/knowledge",
+    )
+    .option("--reset", "empty every data table before importing")
+    .option("--json", "print the import report as JSON")
+    .action((raw: Record<string, unknown>) => {
+      if (raw.fromFiles !== true) {
+        process.stderr.write(
+          "harness error: 'db import' requires --from-files\n",
+        );
+        process.exit(1);
+      }
+      const root = getHarnessRoot();
+      const { dbPath } = harnessPaths(root);
+      try {
+        const db = openDb(dbPath);
+        try {
+          // ensure the schema exists so `db import` works without a
+          // separate `db init` step.
+          runMigrations(db);
+          const report = runFullImport(db, {
+            harnessRoot: root,
+            reset: raw.reset === true,
+          });
+          process.stdout.write(
+            raw.json === true
+              ? `${JSON.stringify(report, null, 2)}\n`
+              : formatImportReport(report),
           );
         } finally {
           db.close();

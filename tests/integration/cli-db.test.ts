@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -60,5 +60,43 @@ describe("CLI harness db", () => {
     const { out, code } = runCli(root, ["db", "init"]);
     expect(code).toBe(0);
     expect(out).toMatch(/already current/);
+  });
+
+  it("import requires --from-files", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
+    const { out, code } = runCli(root, ["db", "import"]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/requires --from-files/);
+  });
+
+  it("import --from-files builds the read model from a project tree", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
+    mkdirSync(join(root, "projects"), { recursive: true });
+    writeFileSync(
+      join(root, "projects", "demo.yaml"),
+      [
+        "version: 1",
+        "project_id: demo",
+        "repo:",
+        "  id: demo",
+        "policy:",
+        "  template: strict-monorepo-v1",
+        "domains:",
+        "  - id: apps/web",
+        "    root: apps/web",
+        "    kind: app",
+        "",
+      ].join("\n"),
+    );
+    const { out, code } = runCli(root, [
+      "db",
+      "import",
+      "--from-files",
+      "--json",
+    ]);
+    expect(code).toBe(0);
+    const report = JSON.parse(out) as { projects: number; errors: number };
+    expect(report.projects).toBe(1);
+    expect(report.errors).toBe(0);
   });
 });
