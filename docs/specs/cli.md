@@ -167,13 +167,15 @@ harness db check-consistency --json   # ConsistencyReport を JSON 出力
 > 次のサブコマンド／フラグが加わる。確定は `phase7-close` 時点。
 >
 > ```bash
-> harness db export-files                # DB から全 file artifact を再 export
-> harness db export-files --scope run --id <id>   # scope 指定 export
+> harness db export-files                # DB canonical state を files へ再 export
 > harness db import --from-files --force-legacy-reconcile  # db-first row の上書きを許可
 > ```
 >
-> - `db export-files` は DB（write-source）から files（compatibility export）を
->   書き直す。atomic write、`export_records` に成否を記録。
+> - `db export-files` は DB canonical な runtime state / manifest を files
+>   （compatibility export）へ書き直す。artifact body / 大型 body は file-backed
+>   のまま保持し、DB は path / sha256 で整合性を追跡する（body 自体は復元しない）。
+>   atomic write、`export_records` に成否を記録。scope を絞る export は当面
+>   `src/db/export-files.ts` の内部 API で、CLI の scope オプション公開は未確定。
 > - Phase 7 の `db import` は db-first row を stale file で巻き戻さない。file が
 >   古い db-first row は conflict として報告し、`--force-legacy-reconcile` 指定時
 >   のみ上書きする。詳細は [`db.md`](./db.md) の「Phase 7」節。
@@ -197,7 +199,8 @@ harness dashboard export --no-auto-import     # DB を files から再構築せ�
 - DB が無いときは既定で files から auto-import してから生成（出力に明示）。
   `--no-auto-import` で抑止（その場合 DB 不在は exit 1）
 - 補間値はすべて HTML エスケープされる
-- `dashboard serve`（HTTP サーバ）は Phase 6 では未実装（Phase 7 候補）
+- `dashboard serve`（HTTP サーバ）は未実装。Phase 7 のスコープは runtime write
+  path の DB-first 化に限定で、`dashboard serve` / mutation UI は別トラック候補
 
 ## `harness session`
 

@@ -77,8 +77,10 @@ Phase 7 の write path で監査性を保てるようにする。
 > path）で `runDomainCoding` が in-memory に持つ検証結果から直接 populate される。
 > Phase 6 ではこの 2 テーブルは「空が正しい」。
 
-write-side 用のテーブル（`artifact_blobs` / `project_check_results` /
-`domain_locks`）は v1 では作らず、Phase 7 以降の migration で追加する。
+write-side 用のテーブルのうち、Phase 7 の migration v2 で追加するのは
+`export_records` / `exported_files` / `operations` / `pull_requests` /
+`cleanup_actions`（下記「Phase 7」節）。`artifact_blobs` / `domain_locks` は
+Phase 7 のスコープ外で Phase 8 以降、`project_check_results` は別トラック。
 
 ## repository layer
 
