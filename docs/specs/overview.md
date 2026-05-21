@@ -32,14 +32,17 @@ operator → `harness run --domain apps/catalog --goal "..."`
 - review-request.md + review-decision.yaml を生成（reviewer はこの 2 ファイルでレビューと決定を行う）
 - `harness review process --run-id <id>` で review-decision.yaml を読んで `meta.status` を `approved` / `changes_requested` / `rejected` に遷移、reviewer / reviewedAt を meta に記録、`review_processed` event を追記
 - path validation 通過後に `policy.allowedCommands`（例: `npm test` / `npm run lint`）を worktree 内で順次実行、失敗時は `failed-command` ステータス + `meta.commandResults` に結果保存
-- `harness cleanup --run-id <id> [--force]` で `approved` / `rejected` 後の worktree + branch を削除し meta を `cleaned` に遷移（`changes_requested` / `running` は強制でも残す、run dir は audit のため保持）
+- `harness cleanup --run-id <id> [--force] [--scope workspace|run|all]` で worktree + branch（+ scope に応じ run dir）を削除（`changes_requested` / `running` は強制でも残す）
 - `harness review list [--all]` で全 run の meta.json を読み、`needs_review` (default) または全ステータス (`--all`) をテーブル表示。新しい順、`changedFilesCount / secretSuspectCount / ignoredUntrackedCount` が一目で見える
+- `harness rerun --from-review <parent-run-id>` で `changes_requested` の親から `required_changes` を組み込んだ新 run を起動（`meta.parentRunId` で監査チェーン）
+- `harness review auto --run-id <id>` で reviewer agent（read-only sandbox の codex）が artifacts を読んで `review-decision.yaml` を生成（適用は別途 `review process`）
+- `harness knowledge promote --run-id <id>` で `knowledge-candidates.yaml` を `docs/knowledge/<kind>/*.md` に展開
 
 ## できないこと（MVP の範囲外）
 
-- 自動 retry / re-run loop（`changes_requested` を受けて、`required_changes` を新 run の prompt に組み込んで起動するループ）
-- knowledge-candidates の promotion (candidate → confirmed)
-- multi-agent orchestration（reviewer agent / writer agent 分離など）
+- `review process` → `rerun` → `review` の完全自動ループ（各ステップは手動トリガ）
+- knowledge-candidates の confirmed ストア統合（`knowledge promote` は md 書き出しまで）
+- multi-agent orchestration（writer agent / reviewer agent の同時並走など）
 - 複数 target repo を 1 run で扱う
 - 非ファイル系の検査（HTTP リクエストログ、外部 API 呼び出し履歴 等）
 - secret heuristic の DLP 級厳密性（あくまで「reviewer の見落とし防止」レベル）
@@ -143,11 +146,20 @@ HARNESS_ROOT="$PWD" npm run --silent harness -- lock release --domain <subdir>
 # needs_review な run を一覧（処理待ちの可視化）
 HARNESS_ROOT="$PWD" npm run --silent harness -- review list
 
+# (任意) reviewer agent に review-decision.yaml を生成させる
+HARNESS_ROOT="$PWD" npm run --silent harness -- review auto --run-id <run-id>
+
 # review-decision.yaml を編集 → meta.status を反映
 HARNESS_ROOT="$PWD" npm run --silent harness -- review process --run-id <run-id>
 
+# changes_requested を受けて再 run
+HARNESS_ROOT="$PWD" npm run --silent harness -- rerun --from-review <run-id>
+
 # レビュー完了後の cleanup
-HARNESS_ROOT="$PWD" npm run --silent harness -- cleanup --run-id <run-id>
+HARNESS_ROOT="$PWD" npm run --silent harness -- cleanup --run-id <run-id> --scope workspace
+
+# knowledge-candidates を docs/knowledge/ に展開
+HARNESS_ROOT="$PWD" npm run --silent harness -- knowledge promote --run-id <run-id>
 ```
 
 詳細は [`cli.md`](./cli.md)。
