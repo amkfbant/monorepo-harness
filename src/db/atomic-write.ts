@@ -9,7 +9,7 @@ import {
   closeSync,
 } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 /**
  * Atomic file write + export markers (Phase 7-2).
@@ -32,8 +32,13 @@ export function atomicWriteFile(
   path: string,
   content: string | Buffer,
 ): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp.${process.pid}.${randomBytes(6).toString("hex")}`;
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true });
+  // the temp file is dot-prefixed so a crash between write and rename
+  // leaves a file the importer skips (it ignores run-dir dotfiles) rather
+  // than a stray artifact folded into the fingerprint.
+  const nonce = randomBytes(6).toString("hex");
+  const tmp = join(dir, `.${basename(path)}.tmp.${process.pid}.${nonce}`);
   try {
     writeFileSync(tmp, content);
     // fsync the data before the rename so a crash cannot expose a renamed
@@ -45,6 +50,7 @@ export function atomicWriteFile(
       closeSync(fd);
     }
     renameSync(tmp, path);
+    fsyncDir(dir);
   } catch (e) {
     // never leak the temp file when the write or rename fails.
     try {
@@ -53,6 +59,20 @@ export function atomicWriteFile(
       // the temp file may already be gone — nothing to clean up.
     }
     throw e;
+  }
+}
+
+/** fsync a directory so a rename'd entry survives a crash. Best-effort. */
+function fsyncDir(dir: string): void {
+  try {
+    const fd = openSync(dir, "r");
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // some platforms (Windows) cannot fsync a directory handle — skip.
   }
 }
 

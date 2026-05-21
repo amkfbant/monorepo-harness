@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   mkdtempSync,
+  mkdirSync,
+  rmSync,
   readFileSync,
   readdirSync,
   writeFileSync,
@@ -71,6 +73,17 @@ describe("atomicWriteFile", () => {
     expect(isExporting(dir)).toBe(true);
     endExporting(dir);
     expect(isExporting(dir)).toBe(false);
+  });
+
+  it("leaves no temp file behind when the rename fails", () => {
+    const dir = tmpDir();
+    const path = join(dir, "target");
+    // make the target a non-empty directory so the rename onto it fails
+    mkdirSync(path);
+    mkdirSync(join(path, "child"));
+    expect(() => atomicWriteFile(path, "new\n")).toThrow();
+    const leftover = readdirSync(dir).filter((n) => n.includes(".tmp."));
+    expect(leftover).toEqual([]);
   });
 });
 
@@ -148,16 +161,31 @@ describe("exportRun", () => {
     db.close();
   });
 
-  it("round-trips: an exported run re-imports to an equivalent row", () => {
+  it("round-trips: run row, events and command results re-import", () => {
     const db = freshDb();
     const runsDir = tmpDir();
     insertRun(db, "run-c");
     db.prepare(
       `INSERT INTO run_events (run_id, seq, type, occurred_at, payload_json)
-       VALUES ('run-c', 0, 'run_started', '2026-05-22T00:00:00Z',
-         '{"type":"run_started"}')`,
+       VALUES ('run-c', 0, 'run_started', NULL, '{"type":"run_started"}'),
+              ('run-c', 1, 'run_completed', NULL, '{"type":"run_completed"}')`,
     ).run();
-    exportRun(db, "run-c", { runsDir });
+    db.prepare(
+      `INSERT INTO command_results (run_id, command_index, command, exit_code,
+         duration_ms, timed_out)
+       VALUES ('run-c', 0, 'npm test', 0, 1200, 0)`,
+    ).run();
+    const res = exportRun(db, "run-c", { runsDir });
+
+    // the recorded sha256 matches the bytes actually on disk
+    const meta = res.files.find((f) => f.relativePath === "meta.json");
+    expect(meta).toBeDefined();
+    const rec = db
+      .prepare(
+        "SELECT sha256 FROM exported_files WHERE scope_id='run-c' AND relative_path='meta.json'",
+      )
+      .get() as { sha256: string };
+    expect(rec.sha256).toBe(meta?.sha256);
 
     // re-import the exported files into a fresh DB
     const db2 = freshDb();
@@ -177,6 +205,19 @@ describe("exportRun", () => {
       started_at: "2026-05-22T00:00:00Z",
       changed_files_count: 3,
     });
+    expect(
+      (
+        db2
+          .prepare("SELECT count(*) AS n FROM run_events WHERE run_id='run-c'")
+          .get() as { n: number }
+      ).n,
+    ).toBe(2);
+    const cmd = db2
+      .prepare(
+        "SELECT command, exit_code FROM command_results WHERE run_id='run-c'",
+      )
+      .get() as { command: string; exit_code: number };
+    expect(cmd).toEqual({ command: "npm test", exit_code: 0 });
     db.close();
     db2.close();
   });

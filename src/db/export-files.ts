@@ -1,3 +1,4 @@
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { DbError } from "./connection.js";
@@ -46,12 +47,28 @@ export function exportRun(
   runId: string,
   opts: { runsDir: string },
 ): ExportResult {
-  const row = db
-    .prepare("SELECT * FROM runs WHERE run_id = ?")
-    .get(runId) as Record<string, unknown> | undefined;
-  if (row === undefined) {
+  // read the run + its events as one consistent snapshot, so an export
+  // can never mix a row at one revision with events at another.
+  const snapshot = db.transaction(
+    (): { row: Record<string, unknown>; eventLines: string[] } | undefined => {
+      const r = db
+        .prepare("SELECT * FROM runs WHERE run_id = ?")
+        .get(runId) as Record<string, unknown> | undefined;
+      if (r === undefined) return undefined;
+      const eventLines = (
+        db
+          .prepare(
+            "SELECT payload_json FROM run_events WHERE run_id = ? ORDER BY seq",
+          )
+          .all(runId) as { payload_json: string }[]
+      ).map((e) => e.payload_json);
+      return { row: r, eventLines };
+    },
+  )();
+  if (snapshot === undefined) {
     throw new DbError(`exportRun: no run '${runId}'`);
   }
+  const { row, eventLines } = snapshot;
   const dbRevision = (row.db_revision as number | null) ?? 0;
   const runDir = join(opts.runsDir, runId);
   const startedAt = new Date().toISOString();
@@ -60,21 +77,26 @@ export function exportRun(
     beginExporting(runDir);
     const files: ExportedFileInfo[] = [];
 
-    const metaContent = `${JSON.stringify(reconstructMeta(db, row), null, 2)}\n`;
+    // a DB-first run stores its canonical meta.json verbatim in
+    // `meta_json` (lossless); a legacy / file-imported row has none, so
+    // meta.json is reconstructed from the flattened columns.
+    const metaJson = row.meta_json;
+    const metaContent =
+      typeof metaJson === "string"
+        ? `${metaJson}\n`
+        : `${JSON.stringify(reconstructMeta(db, row), null, 2)}\n`;
     atomicWriteFile(join(runDir, "meta.json"), metaContent);
     files.push(describeExportedFile("meta.json", metaContent));
 
-    const eventLines = (
-      db
-        .prepare(
-          "SELECT payload_json FROM run_events WHERE run_id = ? ORDER BY seq",
-        )
-        .all(runId) as { payload_json: string }[]
-    ).map((r) => r.payload_json);
+    const eventsPath = join(runDir, "events.jsonl");
     if (eventLines.length > 0) {
       const eventsContent = `${eventLines.join("\n")}\n`;
-      atomicWriteFile(join(runDir, "events.jsonl"), eventsContent);
+      atomicWriteFile(eventsPath, eventsContent);
       files.push(describeExportedFile("events.jsonl", eventsContent));
+    } else {
+      // a run with no events must not keep a stale events.jsonl that a
+      // later file import would resurrect events from.
+      rmSync(eventsPath, { force: true });
     }
 
     endExporting(runDir);

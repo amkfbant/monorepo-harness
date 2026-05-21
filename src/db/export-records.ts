@@ -86,14 +86,19 @@ export function recordExportSuccess(
         finishedAt,
       );
     }
+    // only flip the scope to `synced` when it is STILL at the revision we
+    // exported. If another writer advanced `db_revision` while the export
+    // ran, the files are already stale — leave the row `dirty` so
+    // check-consistency / a re-export picks it up. The export_records /
+    // exported_files rows above still record what was written.
     const scope = SCOPE_TABLE[input.scopeType];
     if (scope !== undefined) {
       db.prepare(
         `UPDATE ${scope.table}
            SET export_status = 'synced', last_export_revision = ?,
                last_exported_at = ?, last_export_error = NULL
-         WHERE ${scope.idColumn} = ?`,
-      ).run(input.dbRevision, finishedAt, input.scopeId);
+         WHERE ${scope.idColumn} = ? AND db_revision = ?`,
+      ).run(input.dbRevision, finishedAt, input.scopeId, input.dbRevision);
     }
   });
   txn.immediate();
