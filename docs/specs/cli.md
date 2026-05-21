@@ -103,6 +103,24 @@ harness backlog defer --item-id <id>
 - `backlog run` は item の domain + goal で run を起動（default `reviewed-run`、`--workflow run` で単発 run）。完了後、item の `linkedRuns` に runId を追記し item を `doing` へ移動、run の `meta.backlogItemId` に item id を記録（双方向参照）
 - `harness run show` は `meta.backlogItemId` があれば backlog item を表示する
 
+## `harness metrics`
+
+個人運用の改善に使う指標（run / review / retry / safety / maintenance）を集計する（Phase 4-6）。
+
+```bash
+harness metrics summary --since 30d        # 全体 summary
+harness metrics domain apps/orders         # domain 別 summary
+harness metrics failures --since 30d       # failed-* の status 別内訳
+```
+
+- **Runs**: total + status 別件数
+- **Review**: approved / changes_requested / rejected 件数、approved 率、reviewer 別件数
+- **Retry**: rerun 数、rerun chain 数（rootRunId 単位）、approved に到達した chain 数（収束率）
+- **Safety**: policy violation 数、secret suspect 数の合計
+- **Maintenance**: cleanup 待ち（approved/rejected かつ worktree 残存）件数
+
+run の読み込みは SQLite index があれば使い、無ければ file scan（出力の `[index]`/`[file-scan]` で確認可）。`--since` は `30d` / `12h` 形式。
+
 ## `harness knowledge digest`
 
 knowledge candidate / promoted / rejected を期間・domain 別に集計して振り返る（Phase 4-5）。

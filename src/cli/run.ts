@@ -71,6 +71,11 @@ import {
   buildKnowledgeDigest,
   formatDigest,
 } from "../core/knowledge-digest.js";
+import {
+  buildMetrics,
+  formatMetricsSummary,
+  formatFailures,
+} from "../core/metrics.js";
 import { RUN_STATUSES } from "../logging/run-log.js";
 import {
   prepareRerunFromReview,
@@ -1125,6 +1130,66 @@ backlogCmd
       );
     }
     if (failed) process.exit(1);
+  });
+
+const metricsCmd = program
+  .command("metrics")
+  .description("personal operating metrics over runs / review / retry");
+function metricsSince(raw: Record<string, unknown>): Date | undefined {
+  if (raw.since === undefined) return undefined;
+  try {
+    return new Date(Date.now() - parseDuration(String(raw.since)));
+  } catch (e) {
+    process.stderr.write(`harness error: ${(e as Error).message}\n`);
+    process.exit(1);
+  }
+}
+metricsCmd
+  .command("summary")
+  .description("run / review / retry / safety summary")
+  .option("--since <dur>", "window, e.g. 30d / 12h")
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    const since = metricsSince(raw);
+    const m = await buildMetrics({
+      runsDir: paths.runsDir,
+      workspacesDir: paths.workspacesDir,
+      indexDbPath: paths.indexDbPath,
+      ...(since ? { since } : {}),
+    });
+    process.stdout.write(formatMetricsSummary(m));
+  });
+metricsCmd
+  .command("domain")
+  .description("metrics for a single domain")
+  .argument("<domain>", "target domain")
+  .option("--since <dur>", "window, e.g. 30d / 12h")
+  .action(async (domain: string, raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    const since = metricsSince(raw);
+    const m = await buildMetrics({
+      runsDir: paths.runsDir,
+      workspacesDir: paths.workspacesDir,
+      indexDbPath: paths.indexDbPath,
+      domain,
+      ...(since ? { since } : {}),
+    });
+    process.stdout.write(formatMetricsSummary(m));
+  });
+metricsCmd
+  .command("failures")
+  .description("breakdown of failed-* runs by status")
+  .option("--since <dur>", "window, e.g. 30d / 12h")
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    const since = metricsSince(raw);
+    const m = await buildMetrics({
+      runsDir: paths.runsDir,
+      workspacesDir: paths.workspacesDir,
+      indexDbPath: paths.indexDbPath,
+      ...(since ? { since } : {}),
+    });
+    process.stdout.write(formatFailures(m));
   });
 
 const maintenanceCmd = program
