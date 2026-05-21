@@ -101,6 +101,7 @@ Finding ID は **F1, F2, …** で連番。レポート間で連続させる（�
 | 2026-05-21 | [Phase 4-4 maintenance デモ](2026-05-21-phase4-4-maintenance-demo.md) | `harness maintenance check/cleanup`（stale lock / orphan worktree 等の検出・掃除）。codex review で P1×1+P2×2 を fix。E4-4-1〜5 を実機検証、新 finding なし |
 | 2026-05-21 | [Phase 4-5 knowledge digest デモ](2026-05-21-phase4-5-knowledge-digest-demo.md) | `harness knowledge digest`（candidate/promoted/rejected を期間・domain 別集計）。codex review で P2×3 を fix。E4-5-1〜4 を既存 runs/ で実機検証、新 finding なし |
 | 2026-05-21 | [Phase 4-6 metrics デモ](2026-05-21-phase4-6-metrics-demo.md) | `harness metrics summary/domain/failures`（run/review/retry/safety 指標）。codex review で P1×1+P2×3 を fix。E4-6 を既存 runs/ で実機検証、新 finding なし |
+| 2026-05-21 | [Phase 4-7 session planning デモ](2026-05-21-phase4-7-session-planning-demo.md) | `harness session plan/start/summary`（ルール順の作業提案、実行はしない）。codex review で P1×1+P2×1 を fix（index freshness）。E4-7 を実機検証、新 finding なし |
 
 ## Workflow
 

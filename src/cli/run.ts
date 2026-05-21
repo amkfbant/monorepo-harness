@@ -76,6 +76,11 @@ import {
   formatMetricsSummary,
   formatFailures,
 } from "../core/metrics.js";
+import {
+  buildSessionPlan,
+  formatSessionPlan,
+  formatSessionSummary,
+} from "../core/session.js";
 import { RUN_STATUSES } from "../logging/run-log.js";
 import {
   prepareRerunFromReview,
@@ -1130,6 +1135,56 @@ backlogCmd
       );
     }
     if (failed) process.exit(1);
+  });
+
+const sessionCmd = program
+  .command("session")
+  .description("rule-ordered work-session planning (suggestion only)");
+function sessionOpts(): {
+  runsDir: string;
+  workspacesDir: string;
+  indexDbPath: string;
+  backlogDir: string;
+} {
+  const paths = harnessPaths(getHarnessRoot());
+  return {
+    runsDir: paths.runsDir,
+    workspacesDir: paths.workspacesDir,
+    indexDbPath: paths.indexDbPath,
+    backlogDir: paths.backlogDir,
+  };
+}
+sessionCmd
+  .command("plan")
+  .description("ordered to-do list from the current state (does not run)")
+  .action(async () => {
+    process.stdout.write(
+      formatSessionPlan(await buildSessionPlan(sessionOpts())),
+    );
+  });
+sessionCmd
+  .command("start")
+  .description("the first N items of the session plan")
+  .option("--limit <n>", "how many items to show", "3")
+  .action(async (raw: Record<string, unknown>) => {
+    const n = Number(raw.limit);
+    if (!Number.isInteger(n) || n < 1) {
+      process.stderr.write(
+        `harness error: --limit must be a positive integer (got ${JSON.stringify(String(raw.limit))})\n`,
+      );
+      process.exit(1);
+    }
+    process.stdout.write(
+      formatSessionPlan(await buildSessionPlan(sessionOpts()), n),
+    );
+  });
+sessionCmd
+  .command("summary")
+  .description("compact snapshot of what is pending now")
+  .action(async () => {
+    process.stdout.write(
+      formatSessionSummary(await buildSessionPlan(sessionOpts())),
+    );
   });
 
 const metricsCmd = program

@@ -103,6 +103,18 @@ harness backlog defer --item-id <id>
 - `backlog run` は item の domain + goal で run を起動（default `reviewed-run`、`--workflow run` で単発 run）。完了後、item の `linkedRuns` に runId を追記し item を `doing` へ移動、run の `meta.backlogItemId` に item id を記録（双方向参照）
 - `harness run show` は `meta.backlogItemId` があれば backlog item を表示する
 
+## `harness session`
+
+今日何をすべきかをルールベースの順序で提案する（Phase 4-7）。**提案のみで何も実行しない。**
+
+```bash
+harness session plan            # 現在の状態から順序付き to-do を出す
+harness session start --limit 3 # plan の先頭 N 件
+harness session summary         # 保留中のものの compact なスナップショット
+```
+
+順序ルール（4-7.3）: `failed-*` → `needs_review` → `changes_requested` → cleanup 候補 → backlog（open、priority 高い順）。各項目に実行コマンド（`→ harness ...`）が付くが、`session` 自体は run/review/cleanup を一切起動しない。inbox（runs）と backlog を統合して見る。
+
 ## `harness metrics`
 
 個人運用の改善に使う指標（run / review / retry / safety / maintenance）を集計する（Phase 4-6）。
