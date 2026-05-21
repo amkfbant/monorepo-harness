@@ -92,6 +92,7 @@ Finding ID は **F1, F2, …** で連番。レポート間で連続させる（�
 | 2026-05-21 | [Phase 3-4 knowledge context デモ](2026-05-21-phase3-4-knowledge-context-demo.md) | `knowledge build-context` + `run --with-knowledge`。promoted knowledge を domain 別集約 → prompt 注入。codex review で P2×3 を fix。E3-4-1〜3 を実機検証、新 finding なし |
 | 2026-05-21 | [Phase 3-2 reviewer evaluation デモ](2026-05-21-phase3-2-reviewer-evaluation-demo.md) | `review evaluate`（N 回サンプリング）/ `review compare`。codex review で P1×1+P2×1 を fix。known-bad run を 3 サンプル評価 → 3/3 非 approved、UNSTABLE 検出。新 finding なし |
 | 2026-05-21 | [Phase 3-3 agent role separation デモ](2026-05-21-phase3-3-agent-role-separation-demo.md) | coder/reviewer/harness の role boundary 明文化、prompt template の名前+version 化、`meta.promptTemplate` 記録。codex review で P1×1+P2×3 を fix。E3-3-2/3 を実機検証、新 finding なし |
+| 2026-05-21 | [Phase 3-5 SQLite index デモ](2026-05-21-phase3-5-sqlite-index-demo.md) | better-sqlite3 の run index（`index rebuild/status/show`、`review list --use-index`）。codex review で P1×1+P2×2 を fix。E3-5-1〜3 で rebuild / file scan 一致 / 破損回復を実機検証、新 finding なし |
 
 ## Workflow
 
