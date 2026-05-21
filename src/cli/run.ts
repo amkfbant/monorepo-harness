@@ -12,6 +12,7 @@ import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
 import {
   domainLockName,
   domainLockPath,
+  DomainLockError,
   type LockInfo,
 } from "../workspace/domain-lock.js";
 import {
@@ -245,7 +246,7 @@ reviewCmd
         `run=${result.runId} ${result.previousStatus} → ${result.newStatus} reviewer=${result.reviewer ?? "(none)"} reviewedAt=${result.reviewedAt}\n`,
       );
     } catch (e) {
-      if (e instanceof ReviewGateError) {
+      if (e instanceof ReviewGateError || e instanceof DomainLockError) {
         process.stderr.write(`harness error: ${(e as Error).message}\n`);
         process.exit(1);
       }
@@ -334,7 +335,7 @@ const cleanupCmd = program
         `run=${result.runId} scope=${result.scope} previousStatus=${result.previousStatus} worktreeRemoved=${result.worktreeRemoved} branchRemoved=${result.branchRemoved} runDirRemoved=${result.runDirRemoved}\n`,
       );
     } catch (e) {
-      if (e instanceof CleanupGateError) {
+      if (e instanceof CleanupGateError || e instanceof DomainLockError) {
         process.stderr.write(`harness error: ${(e as Error).message}\n`);
         process.exit(1);
       }

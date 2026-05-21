@@ -21,6 +21,18 @@ export interface AcquireOpts {
   runId: string;
 }
 
+/**
+ * Thrown when a domain lock is already held. This is expected, retryable
+ * contention (another run/cleanup/review is in flight) — distinct from an
+ * unexpected fs error. Callers can map it to a retryable exit code.
+ */
+export class DomainLockError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DomainLockError";
+  }
+}
+
 export function domainLockName(domain: string): string {
   return `${domain
     .replace(/[^a-zA-Z0-9]+/g, "-")
@@ -47,7 +59,7 @@ export async function acquireDomainLock(
     await writeFile(path, JSON.stringify(info, null, 2), { flag: "wx" });
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error(
+      throw new DomainLockError(
         `domain "${opts.domain}" is already locked (${path})`,
       );
     }

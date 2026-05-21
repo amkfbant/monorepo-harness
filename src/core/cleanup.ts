@@ -138,22 +138,63 @@ function validateMeta(meta: unknown, runId: string): RunMeta {
   return meta as RunMeta;
 }
 
-export async function cleanupRun(opts: CleanupOpts): Promise<CleanupResult> {
-  if (!RUN_ID_RE.test(opts.runId)) {
-    throw new Error(`invalid runId: ${JSON.stringify(opts.runId)}`);
-  }
-  const runDir = join(opts.runsDir, opts.runId);
-  const metaPath = join(runDir, "meta.json");
-
+async function readMetaFile(
+  metaPath: string,
+  runId: string,
+): Promise<RunMeta> {
   let rawMeta: unknown;
   try {
     rawMeta = JSON.parse(await readFile(metaPath, "utf8"));
   } catch (e) {
     throw new Error(
-      `failed to read meta.json for ${opts.runId}: ${(e as Error).message}`,
+      `failed to read meta.json for ${runId}: ${(e as Error).message}`,
     );
   }
-  const meta = validateMeta(rawMeta, opts.runId);
+  return validateMeta(rawMeta, runId);
+}
+
+export async function cleanupRun(opts: CleanupOpts): Promise<CleanupResult> {
+  if (!RUN_ID_RE.test(opts.runId)) {
+    throw new Error(`invalid runId: ${JSON.stringify(opts.runId)}`);
+  }
+  const scope: CleanupScope = opts.scope ?? "workspace";
+  if (scope !== "workspace" && scope !== "run" && scope !== "all") {
+    // Core-level guard: callers other than the CLI must not slip an
+    // unknown scope into the destructive run/all branch.
+    throw new Error(`invalid cleanup scope: ${JSON.stringify(scope)}`);
+  }
+  const runDir = join(opts.runsDir, opts.runId);
+  const metaPath = join(runDir, "meta.json");
+
+  // First read is only to learn the domain so we can lock it. The
+  // authoritative read + gate check happen again UNDER the lock, so a
+  // concurrent `review process` can't flip status (e.g. needs_review →
+  // changes_requested) between our gate decision and the deletion.
+  const domainProbe = await readMetaFile(metaPath, opts.runId);
+
+  // Acquire the same per-domain lock as `harness run` / `review process`.
+  // distinct lock-runId so a failed acquire is attributable.
+  const lock = await acquireDomainLock({
+    locksDir: opts.locksDir,
+    domain: domainProbe.domain,
+    runId: `cleanup:${opts.runId}`,
+  });
+
+  try {
+    return await cleanupUnderLock(opts, scope, runDir, metaPath);
+  } finally {
+    await lock.release();
+  }
+}
+
+async function cleanupUnderLock(
+  opts: CleanupOpts,
+  scope: CleanupScope,
+  runDir: string,
+  metaPath: string,
+): Promise<CleanupResult> {
+  // Authoritative meta read — under the domain lock.
+  const meta = await readMetaFile(metaPath, opts.runId);
 
   const gate = checkCleanupAllowed(meta.status, opts.force ?? false);
   if (!gate.ok) {
@@ -162,16 +203,6 @@ export async function cleanupRun(opts: CleanupOpts): Promise<CleanupResult> {
     );
   }
 
-  // Acquire the same per-domain lock as `harness run` so a concurrent run
-  // can't try to create a worktree / branch while we're removing one. Using
-  // a distinct lock-runId so failed acquire from a real run is unambiguous.
-  const lock = await acquireDomainLock({
-    locksDir: opts.locksDir,
-    domain: meta.domain,
-    runId: `cleanup:${opts.runId}`,
-  });
-
-  const scope: CleanupScope = opts.scope ?? "workspace";
   const workspaceRunDir = join(opts.workspacesDir, opts.runId);
   const worktreePath = join(workspaceRunDir, "repo");
   const gitOpts: { cwd: string; timeoutMs?: number } = { cwd: meta.repoPath };
@@ -181,86 +212,84 @@ export async function cleanupRun(opts: CleanupOpts): Promise<CleanupResult> {
   let branchRemoved = false;
   let runDirRemoved = false;
 
-  try {
-    if (existsSync(worktreePath)) {
-      const wt = await gitCli(
-        ["worktree", "remove", "--force", worktreePath],
-        gitOpts,
-      );
-      if (wt.exitCode !== 0) {
-        throw new Error(
-          `failed to remove worktree at ${worktreePath}: ${wt.stderr.trim()}`,
-        );
-      }
-      worktreeRemoved = true;
-    }
-
-    // Branch removal is independent of worktree state — a previous run might
-    // have lost its worktree directory but the branch is still in the repo.
-    // Look it up explicitly and surface deletion failure.
-    const lookup = await gitCli(
-      ["branch", "--list", meta.runBranch],
+  if (existsSync(worktreePath)) {
+    const wt = await gitCli(
+      ["worktree", "remove", "--force", worktreePath],
       gitOpts,
     );
-    if (lookup.exitCode === 0 && lookup.stdout.trim() !== "") {
-      const del = await gitCli(["branch", "-D", meta.runBranch], gitOpts);
-      if (del.exitCode !== 0) {
-        throw new Error(
-          `branch delete failed for ${meta.runBranch}: ${del.stderr.trim()}`,
-        );
-      }
-      branchRemoved = true;
+    if (wt.exitCode !== 0) {
+      throw new Error(
+        `failed to remove worktree at ${worktreePath}: ${wt.stderr.trim()}`,
+      );
     }
-
-    const previousStatus = meta.status;
-
-    if (scope === "workspace") {
-      // Keep the run dir as audit trail; flip status to cleaned.
-      if (meta.status !== "cleaned") {
-        const updated: RunMeta = { ...meta, status: "cleaned" };
-        await writeFile(
-          metaPath,
-          `${JSON.stringify(updated, null, 2)}\n`,
-          "utf8",
-        );
-        await appendFile(
-          join(runDir, "events.jsonl"),
-          `${JSON.stringify({
-            type: "cleaned",
-            runId: opts.runId,
-            scope,
-            previousStatus,
-            worktreeRemoved,
-            branchRemoved,
-          })}\n`,
-          "utf8",
-        );
-      }
-    } else {
-      // run / all: delete runs/<runId>/ entirely. No meta update is
-      // possible afterward — the deletion itself is the record.
-      await rm(runDir, { recursive: true, force: true });
-      runDirRemoved = true;
-    }
-
-    // Remove the (now-empty) workspaces/<runId>/ parent dir for every scope.
-    await rm(workspaceRunDir, { recursive: true, force: true });
-
-    if (scope === "all") {
-      // Clear any stale worktree bookkeeping the target repo still holds.
-      // This is repo-wide (not just this run) — appropriate for "all".
-      await gitCli(["worktree", "prune"], gitOpts);
-    }
-
-    return {
-      runId: opts.runId,
-      scope,
-      worktreeRemoved,
-      branchRemoved,
-      runDirRemoved,
-      previousStatus,
-    };
-  } finally {
-    await lock.release();
+    worktreeRemoved = true;
   }
+
+  // Branch removal is independent of worktree state — a previous run might
+  // have lost its worktree directory but the branch is still in the repo.
+  // Look it up explicitly and surface deletion failure.
+  const lookup = await gitCli(["branch", "--list", meta.runBranch], gitOpts);
+  if (lookup.exitCode === 0 && lookup.stdout.trim() !== "") {
+    const del = await gitCli(["branch", "-D", meta.runBranch], gitOpts);
+    if (del.exitCode !== 0) {
+      throw new Error(
+        `branch delete failed for ${meta.runBranch}: ${del.stderr.trim()}`,
+      );
+    }
+    branchRemoved = true;
+  }
+
+  const previousStatus = meta.status;
+
+  if (scope === "workspace") {
+    // Keep the run dir as audit trail; flip status to cleaned.
+    if (meta.status !== "cleaned") {
+      const updated: RunMeta = { ...meta, status: "cleaned" };
+      await writeFile(
+        metaPath,
+        `${JSON.stringify(updated, null, 2)}\n`,
+        "utf8",
+      );
+      await appendFile(
+        join(runDir, "events.jsonl"),
+        `${JSON.stringify({
+          type: "cleaned",
+          runId: opts.runId,
+          scope,
+          previousStatus,
+          worktreeRemoved,
+          branchRemoved,
+        })}\n`,
+        "utf8",
+      );
+    }
+  } else {
+    // run / all: delete runs/<runId>/ entirely. No meta update is
+    // possible afterward — the deletion itself is the record.
+    await rm(runDir, { recursive: true, force: true });
+    runDirRemoved = true;
+  }
+
+  // Remove the (now-empty) workspaces/<runId>/ parent dir for every scope.
+  await rm(workspaceRunDir, { recursive: true, force: true });
+
+  if (scope === "all") {
+    // Clear any stale worktree bookkeeping the target repo still holds.
+    // This is repo-wide (not just this run) — appropriate for "all".
+    const prune = await gitCli(["worktree", "prune"], gitOpts);
+    if (prune.exitCode !== 0 || prune.timedOut) {
+      throw new Error(
+        `git worktree prune failed (exit ${prune.exitCode}${prune.timedOut ? ", timed out" : ""}): ${prune.stderr.trim()}`,
+      );
+    }
+  }
+
+  return {
+    runId: opts.runId,
+    scope,
+    worktreeRemoved,
+    branchRemoved,
+    runDirRemoved,
+    previousStatus,
+  };
 }

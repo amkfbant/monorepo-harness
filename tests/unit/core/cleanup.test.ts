@@ -114,6 +114,7 @@ describe("cleanupRun", () => {
       cleanupRun({
         runsDir: join(s.harnessRoot, "runs"),
         workspacesDir: join(s.harnessRoot, "workspaces"),
+        locksDir: join(s.harnessRoot, "locks"),
         runId: s.runId,
       }),
     ).rejects.toThrow(/status "needs_review"/);
@@ -138,6 +139,7 @@ describe("cleanupRun", () => {
       cleanupRun({
         runsDir: join(s.harnessRoot, "runs"),
         workspacesDir: join(s.harnessRoot, "workspaces"),
+        locksDir: join(s.harnessRoot, "locks"),
         runId: s.runId,
       }),
     ).rejects.toThrow(/changes_requested/);
