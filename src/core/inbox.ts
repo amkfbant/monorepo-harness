@@ -1,9 +1,11 @@
-import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { parse as parseYaml } from "yaml";
 import type { ReviewListEntry } from "./review-lister.js";
 import { loadAllRuns } from "./run-source.js";
+import {
+  scanPromotedKeys,
+  countUnactionedCandidates,
+} from "./knowledge-digest.js";
 
 /** One actionable line in the inbox. */
 export interface InboxItem {
@@ -34,6 +36,8 @@ export interface BuildInboxOpts {
   runsDir: string;
   workspacesDir: string;
   indexDbPath: string;
+  /** docs/knowledge — needed to tell actioned candidates from open ones */
+  knowledgeDir: string;
   /** when set, only runs started on this calendar day are included */
   today?: Date;
 }
@@ -69,6 +73,9 @@ export async function buildInbox(opts: BuildInboxOpts): Promise<Inbox> {
     knowledge: [],
     source,
   };
+  // promoted keys are scanned once so per-run knowledge counting only
+  // surfaces candidates that still need a decision.
+  const promotedKeys = await scanPromotedKeys(opts.knowledgeDir);
 
   for (const r of runs) {
     if (r.status === "needs_review") {
@@ -89,11 +96,16 @@ export async function buildInbox(opts: BuildInboxOpts): Promise<Inbox> {
       inbox.cleanupCandidates.push(item(r, "worktree_exists=true"));
     }
 
-    // knowledge candidates produced by this run.
-    const n = await knowledgeCandidateCount(opts.runsDir, r.runId);
+    // knowledge candidates still needing a decision (promoted / rejected
+    // ones are excluded — parity with `harness knowledge digest`).
+    const n = await countUnactionedCandidates(
+      join(opts.runsDir, r.runId),
+      r.runId,
+      promotedKeys,
+    );
     if (n > 0) {
       inbox.knowledge.push(
-        item(r, `${n} candidate${n === 1 ? "" : "s"}`),
+        item(r, `${n} unactioned candidate${n === 1 ? "" : "s"}`),
       );
     }
   }
@@ -110,22 +122,6 @@ function commandDetail(r: ReviewListEntry): string {
   return `${changed} commands=${r.commandSummary.ok}/${r.commandSummary.total}`;
 }
 
-/** Count the entries in a run's knowledge-candidates.yaml (0 on any error). */
-async function knowledgeCandidateCount(
-  runsDir: string,
-  runId: string,
-): Promise<number> {
-  const path = join(runsDir, runId, "knowledge-candidates.yaml");
-  if (!existsSync(path)) return 0;
-  try {
-    const doc = parseYaml(await readFile(path, "utf8")) as {
-      candidates?: unknown;
-    } | null;
-    return Array.isArray(doc?.candidates) ? doc.candidates.length : 0;
-  } catch {
-    return 0;
-  }
-}
 
 const SECTION_TITLES: Record<InboxSection, string> = {
   needsReview: "Needs review",

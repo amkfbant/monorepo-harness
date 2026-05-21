@@ -16,6 +16,7 @@ interface Root {
   workspacesDir: string;
   indexDbPath: string;
   backlogDir: string;
+  knowledgeDir: string;
 }
 
 function harnessRoot(): Root {
@@ -25,6 +26,7 @@ function harnessRoot(): Root {
     workspacesDir: join(root, "workspaces"),
     indexDbPath: join(root, ".harness", "index.sqlite"),
     backlogDir: join(root, "backlog"),
+    knowledgeDir: join(root, "docs", "knowledge"),
   };
   mkdirSync(r.runsDir, { recursive: true });
   mkdirSync(r.workspacesDir, { recursive: true });

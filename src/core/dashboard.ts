@@ -56,6 +56,7 @@ export async function buildDashboardHtml(
     runsDir: opts.runsDir,
     workspacesDir: opts.workspacesDir,
     indexDbPath: opts.indexDbPath,
+    knowledgeDir: opts.knowledgeDir,
   });
   const digest = await buildKnowledgeDigest({
     runsDir: opts.runsDir,

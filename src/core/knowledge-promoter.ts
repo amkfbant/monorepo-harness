@@ -55,7 +55,7 @@ function assertRunId(runId: string): void {
   }
 }
 
-function isCandidate(x: unknown): x is KnowledgeCandidate {
+export function isCandidate(x: unknown): x is KnowledgeCandidate {
   if (!x || typeof x !== "object") return false;
   const c = x as Record<string, unknown>;
   return (

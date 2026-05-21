@@ -60,7 +60,14 @@ function writeRun(
     `candidates:\n${
       candidates.length === 0
         ? "  []"
-        : candidates.map((c) => `  - kind: ${c.kind}`).join("\n")
+        : candidates
+            .map(
+              (c) =>
+                `  - kind: ${c.kind}\n    domain: ${c.domain}\n` +
+                `    title: ${c.title}\n    content: c\n` +
+                `    evidence: []\n    confidence: medium`,
+            )
+            .join("\n")
     }\n`,
   );
   if (o.worktree) {
@@ -88,6 +95,7 @@ describe("buildInbox", () => {
       runsDir,
       workspacesDir,
       indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
+      knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
     });
     expect(inbox.needsReview).toHaveLength(2);
     expect(inbox.changesRequested).toHaveLength(1);
@@ -95,7 +103,7 @@ describe("buildInbox", () => {
     expect(inbox.failed).toHaveLength(1);
     expect(inbox.cleanupCandidates).toHaveLength(1);
     expect(inbox.knowledge).toHaveLength(1);
-    expect(inbox.knowledge[0]?.detail).toMatch(/2 candidates/);
+    expect(inbox.knowledge[0]?.detail).toMatch(/2 unactioned candidates/);
     expect(inbox.source).toBe("file-scan");
   });
 
@@ -106,6 +114,7 @@ describe("buildInbox", () => {
       runsDir,
       workspacesDir,
       indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
+      knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
     });
     expect(inbox.cleanupCandidates).toHaveLength(0);
   });
@@ -125,6 +134,7 @@ describe("buildInbox", () => {
       runsDir,
       workspacesDir,
       indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
+      knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
       today,
     });
     expect(inbox.needsReview).toHaveLength(1);
@@ -142,6 +152,7 @@ describe("buildInbox", () => {
       runsDir,
       workspacesDir,
       indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
+      knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
       today: new Date("2020-01-01T12:00:00Z"),
     });
     expect(inbox.needsReview).toHaveLength(0);
@@ -155,6 +166,7 @@ describe("buildInbox", () => {
       runsDir,
       workspacesDir,
       indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
+      knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
     });
     const parsed = JSON.parse(formatInboxJson(inbox, ["failed"]));
     expect(parsed.failed).toHaveLength(1);
@@ -168,6 +180,7 @@ describe("buildInbox", () => {
       runsDir,
       workspacesDir,
       indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
+      knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
     });
     const parsed = JSON.parse(formatInboxJson(inbox));
     expect(parsed.needsReview).toHaveLength(1);
@@ -180,6 +193,7 @@ describe("buildInbox", () => {
       runsDir,
       workspacesDir,
       indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
+      knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
     });
     const text = formatInbox(inbox);
     expect(text).toMatch(/Needs review:/);
@@ -194,10 +208,55 @@ describe("buildInbox", () => {
       runsDir,
       workspacesDir,
       indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
+      knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
     });
     const text = formatInbox(inbox, ["failed"]);
     expect(text).toMatch(/Failed:/);
     expect(text).not.toMatch(/Needs review:/);
+  });
+
+  it("knowledge section counts only UNACTIONED candidates", async () => {
+    const { runsDir, workspacesDir } = harnessRoot();
+    // a run with 2 candidates; index 0 is rejected → 1 unactioned remains
+    const runId = writeRun(runsDir, workspacesDir, {
+      status: "failed-policy-violation",
+      knowledgeCandidates: 2,
+    });
+    writeFileSync(
+      join(runsDir, runId, "knowledge-decisions.yaml"),
+      'decisions:\n  - index: 0\n    decision: "rejected"\n' +
+        '    reviewer: "knkn"\n    reason: "x"\n' +
+        '    decidedAt: "2026-05-21T01:00:00Z"\n',
+    );
+    const inbox = await buildInbox({
+      runsDir,
+      workspacesDir,
+      indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
+      knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
+    });
+    expect(inbox.knowledge).toHaveLength(1);
+    expect(inbox.knowledge[0]?.detail).toMatch(/1 unactioned candidate\b/);
+  });
+
+  it("a run whose every candidate is actioned drops out of knowledge", async () => {
+    const { runsDir, workspacesDir } = harnessRoot();
+    const runId = writeRun(runsDir, workspacesDir, {
+      status: "failed-policy-violation",
+      knowledgeCandidates: 1,
+    });
+    writeFileSync(
+      join(runsDir, runId, "knowledge-decisions.yaml"),
+      'decisions:\n  - index: 0\n    decision: "rejected"\n' +
+        '    reviewer: "knkn"\n    reason: "x"\n' +
+        '    decidedAt: "2026-05-21T01:00:00Z"\n',
+    );
+    const inbox = await buildInbox({
+      runsDir,
+      workspacesDir,
+      indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
+      knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
+    });
+    expect(inbox.knowledge).toHaveLength(0);
   });
 
   it("reports an empty inbox", async () => {
@@ -206,6 +265,7 @@ describe("buildInbox", () => {
       runsDir,
       workspacesDir,
       indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
+      knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
     });
     expect(formatInbox(inbox)).toMatch(/Inbox is empty/);
   });

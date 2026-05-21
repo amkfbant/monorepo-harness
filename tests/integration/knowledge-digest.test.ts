@@ -53,6 +53,9 @@ function writeRun(
         `  - kind: ${c.kind}`,
         `    domain: ${c.domain ?? o.domain ?? "apps/user"}`,
         `    title: t`,
+        `    content: c`,
+        `    evidence: []`,
+        `    confidence: medium`,
       ]),
     ].join("\n");
     writeFileSync(join(dir, "knowledge-candidates.yaml"), yaml + "\n");
@@ -193,7 +196,6 @@ describe("buildKnowledgeDigest", () => {
 
   it("excludes a malformed candidate from the counts", async () => {
     const r = harnessRoot();
-    // a candidate with no kind/domain — knowledge list/promote skip it
     const runId = `run-20260521-apps-user-kd${String(seq++).padStart(2, "0")}`;
     const dir = join(r.runsDir, runId);
     mkdirSync(dir, { recursive: true });
@@ -201,9 +203,12 @@ describe("buildKnowledgeDigest", () => {
       join(dir, "meta.json"),
       JSON.stringify({ runId, domain: "apps/user", startedAt: "2026-05-21T00:00:00Z" }),
     );
+    // a candidate with kind+domain+title but NO content/evidence/confidence
+    // — knowledge list/promote treat it as malformed, so the digest must
+    // exclude it too (same isCandidate schema).
     writeFileSync(
       join(dir, "knowledge-candidates.yaml"),
-      "candidates:\n  - title: only a title\n",
+      "candidates:\n  - kind: policy_violation\n    domain: apps/user\n    title: t\n",
     );
     const d = await buildKnowledgeDigest(r);
     expect(d.candidateTotal).toBe(0);

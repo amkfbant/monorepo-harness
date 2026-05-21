@@ -917,11 +917,13 @@ program
   .option("--cleanup", "only the cleanup-candidates section", false)
   .option("--json", "emit JSON instead of text", false)
   .action(async (raw: Record<string, unknown>) => {
-    const paths = harnessPaths(getHarnessRoot());
+    const harnessRoot = getHarnessRoot();
+    const paths = harnessPaths(harnessRoot);
     const inbox = await buildInbox({
       runsDir: paths.runsDir,
       workspacesDir: paths.workspacesDir,
       indexDbPath: paths.indexDbPath,
+      knowledgeDir: join(harnessRoot, "docs", "knowledge"),
       ...(raw.today ? { today: new Date() } : {}),
     });
     // section selection is decided BEFORE the json branch so --failed /
@@ -1017,9 +1019,14 @@ backlogCmd
   .action(async (raw: Record<string, unknown>) => {
     const paths = harnessPaths(getHarnessRoot());
     try {
-      process.stdout.write(
-        formatItem(await showItem(paths.backlogDir, String(raw.itemId))),
+      const item = await showItem(paths.backlogDir, String(raw.itemId));
+      // a linked run whose run dir is gone (cleanup --scope run) is marked
+      const missingRuns = new Set(
+        item.linkedRuns.filter(
+          (r) => !existsSync(join(paths.runsDir, r)),
+        ),
       );
+      process.stdout.write(formatItem(item, { missingRuns }));
     } catch (e) {
       backlogError(e);
     }
@@ -1172,13 +1179,16 @@ function sessionOpts(): {
   workspacesDir: string;
   indexDbPath: string;
   backlogDir: string;
+  knowledgeDir: string;
 } {
-  const paths = harnessPaths(getHarnessRoot());
+  const harnessRoot = getHarnessRoot();
+  const paths = harnessPaths(harnessRoot);
   return {
     runsDir: paths.runsDir,
     workspacesDir: paths.workspacesDir,
     indexDbPath: paths.indexDbPath,
     backlogDir: paths.backlogDir,
+    knowledgeDir: join(harnessRoot, "docs", "knowledge"),
   };
 }
 sessionCmd

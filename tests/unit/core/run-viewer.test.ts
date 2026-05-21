@@ -189,4 +189,17 @@ describe("renderRunArtifacts", () => {
     expect(out).toMatch(/final-diff\.patch/);
     expect(out).toMatch(/meta\.json/); // always present
   });
+
+  it("summarises subdirectories with an entry count", async () => {
+    const { runsDir, runId } = setupRun(
+      { domain: "apps/x", status: "approved" },
+      { artifacts: ["summary.md"] },
+    );
+    const cmdDir = join(runsDir, runId, "commands");
+    mkdirSync(cmdDir, { recursive: true });
+    writeFileSync(join(cmdDir, "a.log"), "x");
+    writeFileSync(join(cmdDir, "b.log"), "x");
+    const out = await renderRunArtifacts(runsDir, runId);
+    expect(out).toMatch(/commands\/ \(2 entries\)/);
+  });
 });

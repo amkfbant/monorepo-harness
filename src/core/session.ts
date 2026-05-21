@@ -29,6 +29,7 @@ export interface SessionOpts {
   workspacesDir: string;
   indexDbPath: string;
   backlogDir: string;
+  knowledgeDir: string;
 }
 
 const PRIORITY_RANK: Record<BacklogPriority, number> = {
@@ -49,6 +50,7 @@ export async function buildSessionPlan(
     runsDir: opts.runsDir,
     workspacesDir: opts.workspacesDir,
     indexDbPath: opts.indexDbPath,
+    knowledgeDir: opts.knowledgeDir,
   });
   const backlogOpen = (await listItems(opts.backlogDir, "open")).sort(
     (a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority],

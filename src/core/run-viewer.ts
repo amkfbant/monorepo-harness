@@ -194,7 +194,11 @@ export async function renderRunArtifacts(
   return lines.join("\n");
 }
 
-/** Sorted list of regular files directly under the run dir. */
+/**
+ * Artifact listing for a run dir: regular files directly under it, plus
+ * each subdirectory (commands/ review-evaluations/ …) with an entry
+ * count so deeper artifacts are at least discoverable.
+ */
 async function artifactList(runDir: string): Promise<string[]> {
   let entries;
   try {
@@ -202,13 +206,22 @@ async function artifactList(runDir: string): Promise<string[]> {
   } catch {
     return ["(run dir unreadable)"];
   }
-  const files = entries
+  const out = entries
     .filter((e) => e.isFile())
     .map((e) => e.name)
     .sort();
-  // also surface the commands/ subdir if present
-  if (entries.some((e) => e.isDirectory() && e.name === "commands")) {
-    files.push("commands/");
+  const dirs = entries
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort();
+  for (const d of dirs) {
+    let count = 0;
+    try {
+      count = (await readdir(join(runDir, d))).length;
+    } catch {
+      // unreadable subdir — still surface its name
+    }
+    out.push(`${d}/ (${count} ${count === 1 ? "entry" : "entries"})`);
   }
-  return files.length > 0 ? files : ["(none)"];
+  return out.length > 0 ? out : ["(none)"];
 }

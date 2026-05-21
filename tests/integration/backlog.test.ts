@@ -140,6 +140,27 @@ describe("backlog", () => {
     );
   });
 
+  it("formatItem marks linked runs whose run dir is missing", async () => {
+    const { backlogDir } = harnessRoot();
+    const item = await addItem(backlogDir, {
+      title: "t",
+      domain: "apps/x",
+      goal: "g",
+    });
+    const linked = await recordBacklogRun(
+      backlogDir,
+      item.id,
+      "run-20260521-apps-x-gone",
+    );
+    // the linked run dir does not exist → marked (missing)
+    const text = formatItem(linked, {
+      missingRuns: new Set(["run-20260521-apps-x-gone"]),
+    });
+    expect(text).toMatch(/run-20260521-apps-x-gone \(missing\)/);
+    // without the hint set, no marker
+    expect(formatItem(linked)).not.toMatch(/\(missing\)/);
+  });
+
   it("formatItem / formatItemList render readable output", async () => {
     const { backlogDir } = harnessRoot();
     const item = await addItem(backlogDir, {

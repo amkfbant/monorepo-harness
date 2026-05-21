@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { splitFrontmatter } from "./knowledge-promoter.js";
+import { splitFrontmatter, isCandidate } from "./knowledge-promoter.js";
 
 const RUN_DIR_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]+$/;
 
@@ -139,14 +139,16 @@ async function readCandidates(runDir: string): Promise<DigestCandidate[]> {
     } | null;
     if (!Array.isArray(doc?.candidates)) return [];
     return (doc.candidates as unknown[]).map((c, index) => {
+      // valid == the SAME schema `knowledge list / promote` accept, so a
+      // candidate counted here is one those commands can actually act on.
+      const valid = isCandidate(c);
       const o = (c ?? {}) as { kind?: unknown; domain?: unknown };
-      const validKind = typeof o.kind === "string" && o.kind !== "";
-      const validDomain = typeof o.domain === "string" && o.domain !== "";
       return {
         index,
-        kind: validKind ? (o.kind as string) : "unknown",
-        domain: validDomain ? (o.domain as string) : "?",
-        valid: validKind && validDomain,
+        kind: typeof o.kind === "string" && o.kind !== "" ? o.kind : "unknown",
+        domain:
+          typeof o.domain === "string" && o.domain !== "" ? o.domain : "?",
+        valid,
       };
     });
   } catch {
@@ -183,6 +185,38 @@ async function readRejections(
     // unreadable decisions file — treat as no rejections
   }
   return out;
+}
+
+/**
+ * Promoted-candidate keys (`<source_run>#<source_index>`) across
+ * docs/knowledge — shared with `inbox` so both judge "actioned" the
+ * same way (Phase 4-5 parity).
+ */
+export async function scanPromotedKeys(
+  knowledgeDir: string,
+): Promise<Set<string>> {
+  return (await scanPromoted(knowledgeDir)).promotedKeys;
+}
+
+/**
+ * Count a run's valid candidates that are neither promoted nor rejected —
+ * i.e. the ones still needing an operator decision.
+ */
+export async function countUnactionedCandidates(
+  runDir: string,
+  runId: string,
+  promotedKeys: Set<string>,
+): Promise<number> {
+  const candidates = await readCandidates(runDir);
+  const rejections = await readRejections(runDir);
+  let n = 0;
+  for (const c of candidates) {
+    if (!c.valid) continue;
+    if (rejections.has(c.index)) continue;
+    if (promotedKeys.has(`${runId}#${c.index}`)) continue;
+    n += 1;
+  }
+  return n;
 }
 
 interface PromotedScan {

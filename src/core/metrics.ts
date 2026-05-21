@@ -2,6 +2,29 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadAllRuns } from "./run-source.js";
+import type { ReviewListEntry } from "./review-lister.js";
+
+/**
+ * The rerun-chain root of a run. Prefers the explicit `rootRunId`; for a
+ * legacy run that has `parentRunId` but no `rootRunId`, walks the parent
+ * links (cycle-guarded) to reconstruct the root — so chain convergence
+ * is not under-counted for pre-Phase-2-7 runs.
+ */
+function chainRoot(
+  entry: ReviewListEntry,
+  byId: Map<string, ReviewListEntry>,
+): string {
+  if (entry.rootRunId) return entry.rootRunId;
+  let cur = entry;
+  const seen = new Set<string>([cur.runId]);
+  while (cur.parentRunId && byId.has(cur.parentRunId)) {
+    if (seen.has(cur.parentRunId)) break; // cycle guard
+    seen.add(cur.parentRunId);
+    cur = byId.get(cur.parentRunId) as ReviewListEntry;
+    if (cur.rootRunId) return cur.rootRunId;
+  }
+  return cur.runId;
+}
 
 export interface MetricsSummary {
   since: string | null;
@@ -72,10 +95,13 @@ export async function buildMetrics(
 
   // chain-approved is computed over ALL runs, not the filtered subset —
   // a chain's approved run must not be missed because `--since` / `--domain`
-  // dropped it.
+  // dropped it. The chain root is reconstructed via parentRunId for legacy
+  // runs that lack rootRunId.
+  const byId = new Map<string, ReviewListEntry>();
+  for (const r of allRuns) byId.set(r.runId, r);
   const chainApproved = new Map<string, boolean>();
   for (const r of allRuns) {
-    const root = r.rootRunId ?? r.runId;
+    const root = chainRoot(r, byId);
     chainApproved.set(
       root,
       (chainApproved.get(root) ?? false) || r.status === "approved",
@@ -108,7 +134,7 @@ export async function buildMetrics(
     }
     if (typeof r.rerunAttempt === "number" && r.rerunAttempt >= 1) {
       reruns += 1;
-      rerunChainRoots.add(r.rootRunId ?? r.runId);
+      rerunChainRoots.add(chainRoot(r, byId));
     }
     if (
       (r.status === "approved" || r.status === "rejected") &&

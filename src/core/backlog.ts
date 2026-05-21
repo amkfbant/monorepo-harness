@@ -300,8 +300,16 @@ async function readdirSafe(dir: string): Promise<string[]> {
   }
 }
 
-/** Render an item as a human-readable block. */
-export function formatItem(item: BacklogItem): string {
+/**
+ * Render an item as a human-readable block. When `missingRuns` is given,
+ * any linked run whose run dir no longer exists (e.g. `cleanup --scope
+ * run`) is marked `(missing)`.
+ */
+export function formatItem(
+  item: BacklogItem,
+  opts: { missingRuns?: Set<string> } = {},
+): string {
+  const missing = opts.missingRuns ?? new Set<string>();
   return [
     `Item: ${item.id}`,
     `Title: ${item.title}`,
@@ -314,7 +322,9 @@ export function formatItem(item: BacklogItem): string {
     `  ${item.goal}`,
     "Linked runs:",
     ...(item.linkedRuns.length > 0
-      ? item.linkedRuns.map((r) => `  ${r}`)
+      ? item.linkedRuns.map(
+          (r) => `  ${r}${missing.has(r) ? " (missing)" : ""}`,
+        )
       : ["  (none)"]),
     "",
   ].join("\n");

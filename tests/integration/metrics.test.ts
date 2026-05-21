@@ -113,6 +113,32 @@ describe("buildMetrics", () => {
     expect(m.retry.convergenceRate).toBeCloseTo(0.5);
   });
 
+  it("reconstructs a legacy chain root from parentRunId (no rootRunId)", async () => {
+    const r = harnessRoot();
+    // legacy chain: an original run, then a rerun that has parentRunId
+    // but NO rootRunId — the chain root must still be reconstructed.
+    writeRun(r, { runId: "run-legacy-root", status: "changes_requested" });
+    // the child run dir is written by hand: parentRunId but no rootRunId
+    mkdirSync(join(r.runsDir, "run-legacy-child"), { recursive: true });
+    writeFileSync(
+      join(r.runsDir, "run-legacy-child", "meta.json"),
+      JSON.stringify({
+        runId: "run-legacy-child",
+        domain: "apps/user",
+        status: "approved",
+        safetyStatus: "allowed",
+        startedAt: "2026-05-21T00:00:00Z",
+        parentRunId: "run-legacy-root",
+        rerunAttempt: 1,
+      }),
+    );
+    const m = await buildMetrics(r);
+    // the child walks back to run-legacy-root; the chain reached
+    // approved → exactly 1 chain, converged (not under-counted)
+    expect(m.retry.chains).toBe(1);
+    expect(m.retry.convergedChains).toBe(1);
+  });
+
   it("counts safety by safetyStatus (orthogonal to final status)", async () => {
     const r = harnessRoot();
     // a failed-codex run that ALSO wrote outside scope → still a violation
