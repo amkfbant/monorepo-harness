@@ -50,7 +50,7 @@
 
 ステップ 14/15 の 2 pass 構成が F8（コマンドの副作用も path policy で再検査）の核心。`allowedCommands` が無ければ pass 2 は skip され、pass 1 の結果がそのまま使われる。
 
-worktree は **削除しない**。レビュー後の cleanup は別フェーズ（MVP 未実装）。
+worktree は **削除しない**。レビュー後の cleanup は `harness cleanup`（[`cli.md`](./cli.md)）で行う。
 
 ## RunStatus 遷移
 
@@ -135,9 +135,25 @@ runs/<runId>/
     00-<slug>.err.log
     01-<slug>.out.log
     ...
+  context-pack-manifest.yaml  # OPTIONAL: `run --project` で context pack を注入したときのみ
 workspaces/<runId>/repo/   # git worktree (削除しない)
-locks/<domain-slug>.lock   # active run の lock; runId / pid / hostname / acquiredAt
+locks/<repoId>--<domain-slug>-<hash>.lock  # active run の lock; runId / pid / hostname / acquiredAt
 ```
+
+## Phase 5: project-driven run
+
+`harness run --project <id>` は project profile（`projects/<id>.yaml`）を compile して
+実行する。違いは次のとおり（[`project.md`](./project.md)）:
+
+- policy は profile を compile して得る（policy file を読まない）。`meta.project`
+  に provenance（projectId / profilePath / profileVersion / template / preset / context pack id）を記録。
+- domain に context pack が紐づくと、参照ファイルを prompt の
+  `## Explicit project context packs` section に注入し、`context-pack-manifest.yaml`
+  を artifact として残す（secret-shaped file は content を入れず redacted 記録）。
+- **lock は repo namespaced**: `locks/<repoId>--<domainSlug>-<hash>.lock`。複数 repo が
+  同じ domain id を持っても lock が衝突しない。`run` / `review process` / `cleanup` /
+  `pr create` は run の `meta.repoId` から同じ lock key を導出する。`repoId` を持たない
+  旧 run のみ legacy の domain-only lock。
 
 ### meta.json 例
 

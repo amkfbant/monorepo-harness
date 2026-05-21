@@ -6,11 +6,9 @@ Abstraction 層**として分離する。
 
 実装: `src/project/`。実行 backend は引き続き `src/policy/`（`ResolvedPolicy`）。
 
-> **ステータス: Phase 5 実装中（target spec）。** 他の `docs/specs/*.md` は現状の
-> スナップショットだが、このファイルは Phase 5 で構築中のサブシステムの **目標
-> 仕様**であり、サブフェーズ（5-0〜5-10）の進行に合わせて節が埋まる。各 schema
-> の確定値は、実装が landed した時点の対応する `src/project/*.ts` の Zod schema
-> が真。まだ実装されていない節は「設計方針」として読むこと。
+> **ステータス: Phase 5 close 済み（現状仕様）。** Project Abstraction 層は
+> `src/project/` に実装済み。各 schema の確定値は対応する `src/project/*.ts` の
+> Zod schema が真。CLI の確定仕様は [`cli.md`](./cli.md) の `harness project` 節。
 
 ## 何を解決するか
 
@@ -34,8 +32,11 @@ project profile → domain registry → templates / presets / context packs
 5. policy template / command preset / context pack を再利用できる。
 6. `project check` が Codex を起動せず設定不備を検出できる。
 7. `mini-commerce` を project profile 形式へ移行できる。
-8. 複数プロジェクトを同じ `HARNESS_ROOT` で扱っても lock / knowledge / metrics /
-   context が混線しない。
+8. 複数プロジェクトを同じ `HARNESS_ROOT` で扱っても **lock / context pack** が
+   混線しない（lock は repo namespaced、context pack は run 単位）。
+
+> knowledge / metrics / inbox / digest の project namespace・filter は Phase 5
+> 範囲外（follow-up）。`docs/reports/2026-05-22-phase5-close.md` 参照。
 
 ### 非ゴール
 
@@ -59,8 +60,8 @@ Phase 5 は既存の動作を壊さない。
 
 ## データモデル
 
-`projects/<project-id>.yaml`（profile）が起点。`--profile <path>` で任意 path、
-`--project <id>` は `<HARNESS_ROOT>/projects/<id>.yaml` へ解決する。
+`projects/<project-id>.yaml`（profile）が起点。CLI の `--project <id>` は
+`<HARNESS_ROOT>/projects/<id>.yaml` へ解決する。
 
 ### Project profile
 
@@ -136,7 +137,7 @@ harness run --project <id> --domain <domain> --goal <text>
 harness workflow reviewed-run --project <id> --domain <domain> --goal <text>
 ```
 
-各コマンドの確定仕様は実装フェーズで `cli.md` に反映する。
+各コマンドの確定仕様は [`cli.md`](./cli.md) の `harness project` 節を参照。
 
 ## Namespace
 
@@ -149,28 +150,34 @@ harness workflow reviewed-run --project <id> --domain <domain> --goal <text>
 使うことが必須要件 — でないと run を起こした lock と review/cleanup が取る lock が
 ずれる。
 
-導出規則:
+導出規則（`src/workspace/domain-lock.ts`）:
 
-- run の `meta` が `project`（または `repoId`）を持つ → namespaced key
-  `<repoId>--<domainSlug>.lock`。
-- それを持たない旧 run → 従来どおりの domain-only key `<domainSlug>.lock`。
+- run の `meta` が `repoId` を持つ → namespaced lock
+  `locks/<repoSlug>--<domainSlug>-<hash>.lock`。
+- それを持たない旧 run → 従来どおりの domain-only `locks/<domainSlug>.lock`。
 
 これにより新旧が同じ harness root に混在しても、各 run の review/cleanup は
 その run を起こしたときと同じ lock を取れる。`harness run --repo-id`（profile 非
-経由）も `repoId` を持つため namespaced key を使う。真に legacy なのは
+経由）も `repoId` を持つため namespaced lock を使う。真に legacy なのは
 `repoId` を meta に持たない過去の run のみ。
 
-**domainSlug は衝突耐性を持たせる。** 単純な slash→dash 置換では
-`apps/user-api` と `apps/user/api` が同じ slug に潰れる。slug は元の domain id を
-一意に復元できるエンコード（例: path separator の percent-encode、または短い
-content hash の suffix 付与）で生成する。実装は Phase 5-7。
+`<hash>` は **raw な `repoId` + `domain` ペアの SHA-1 先頭 12 桁**。slug は読みやすさ
+用で lossy（`foo.bar` と `foo-bar` は同 slug）だが、hash により別 (repo, domain)
+ペアが同じ lock へ衝突することはない。namespaced lock の手動 release には
+`harness lock release --domain <d> --repo-id <id>` を使う。
 
-### その他
+### run meta
 
-- **knowledge context**: `docs/knowledge-context/<slug>/<domainSlug>.md`。
-- **promoted knowledge**: frontmatter に `repo_id` / `project_id` を追加。
-- **run meta**: optional `project` を追加。
-- **metrics / inbox / digest**: `--project` / `--repo-id` filter を追加。
+`RunMeta.project`（optional）に projectId / profilePath / profileVersion /
+template / preset / context pack id を記録する。旧 run は `project` を持たず
+legacy 扱い。
 
-旧 run / 旧 knowledge は `project` を持たないため legacy 扱い。domain-only filter は
-引き続き機能する。
+### follow-up（Phase 5 範囲外）
+
+次は未実装。`docs/reports/2026-05-22-phase5-close.md` の follow-up 節を参照:
+
+- **knowledge context / promoted knowledge の project namespace** — knowledge
+  candidate は `runs/<runId>/` 配下で run 単位に分離済み。`docs/knowledge-context/`
+  のディレクトリ namespace 化と promoted frontmatter への `repo_id` / `project_id`
+  追加は未実装。
+- **metrics / inbox / digest の `--project` / `--repo-id` filter** — 未実装。

@@ -4,7 +4,7 @@
 
 Codex はワークツリー内のファイルを直接編集し、ハーネスは事後に `git diff` を取って **policy の `write` / `deny_write` スコープ** で変更 path を検証する（`read` は codex への prompt/context 用で、読み取りの enforcement はしない）。スコープ外への書き込み・secret 漏洩・symlink 追従などを検出し、レビュー用の artifact 一式を `runs/<runId>/` に残す。
 
-> **Status:** Phase 4 close。Phase 2（ファイルベースの `codex 実行 → 検証 → レビュー → 再実行 → 知見昇格 → cleanup`）+ Phase 3（review-driven retry / reviewer 品質評価 / knowledge context 注入 / SQLite index / GitHub PR 連携）+ Phase 4（個人運用 CLI: run show / inbox / backlog / maintenance / knowledge digest / metrics / session planning / 静的 dashboard）。`stronger sandbox`（Phase 3-7）は Deferred。
+> **Status:** Phase 5 close。Phase 2（ファイルベースの `codex 実行 → 検証 → レビュー → 再実行 → 知見昇格 → cleanup`）+ Phase 3（review-driven retry / reviewer 品質評価 / knowledge context 注入 / SQLite index / GitHub PR 連携）+ Phase 4（個人運用 CLI: run show / inbox / backlog / maintenance / knowledge digest / metrics / session planning / 静的 dashboard）+ Phase 5（Project Abstraction: project profile / domain registry / templates / policy compiler / `project inspect|init|check` / `run --project`）。`stronger sandbox`（Phase 3-7）は Deferred。
 
 ## 必要環境
 
@@ -154,6 +154,47 @@ npm run --silent harness -- dashboard export              # docs/dashboard/index
 
 詳細な close 状況は [`docs/reports/2026-05-21-phase4-close.md`](./docs/reports/2026-05-21-phase4-close.md)。
 
-## Phase 5 以降の候補
+## Phase 5 で追加した機能 — Project Abstraction
+
+`mini-commerce` に寄っていた policy / domain / command / context の形を、任意の
+プロジェクトへ適用できる抽象層として分離した。
+
+- **project profile** (`projects/<id>.yaml`) — 1 つの target repo の source of truth。
+  domain / policy template / context pack を宣言する。
+- **domain registry / templates / presets** — `templates/` 配下の再利用可能カタログ
+  （policy template / command preset / context pack / domain registry）。
+- **policy compiler** — profile を既存 `RepoPolicy` / `GlobalPolicy` へ compile。
+  生成 policy は手書き policy と同じく `resolvePolicy()` に渡る。provenance は
+  サイドカー JSON `policies/repos/<id>.generated.json`。
+- `harness project inspect / init / check / show` と `harness run --project`。
+
+### Phase 5 quick start（project profile）
+
+```bash
+# 1. repo を静的に inspect して候補 domain を見る（Codex 不使用）
+HARNESS_ROOT=$PWD npm run --silent harness -- project inspect --repo /path/to/repo
+
+# 2. profile + policy proposal を生成（--dry-run は書き込みなし）
+HARNESS_ROOT=$PWD npm run --silent harness -- project init \
+  --repo /path/to/repo --project-id my-app --dry-run
+HARNESS_ROOT=$PWD npm run --silent harness -- project init \
+  --repo /path/to/repo --project-id my-app --write
+
+# 3. Codex を起動せず設定を検査
+HARNESS_ROOT=$PWD npm run --silent harness -- project check --project my-app
+
+# 4. profile 経由で run
+HARNESS_ROOT=$PWD npm run --silent harness -- run \
+  --project my-app --domain apps/web --goal "ログイン validation を追加"
+```
+
+既存 repo を移行する場合は `project init --from-policy <repo-id> --project-id <id>`。
+詳細は [`docs/specs/project.md`](./docs/specs/project.md)、close 状況は
+[`docs/reports/2026-05-22-phase5-close.md`](./docs/reports/2026-05-22-phase5-close.md)。
+
+## Phase 6 以降の候補
 
 次はゴールにしない: 完全自律 merge / 人間レビューなしの本番反映 / OS・Container サンドボックス（Phase 3-7 deferred）/ Web dashboard（Phase 4-8 は静的 export のみ）/ 大規模 multi-agent swarm。
+
+Phase 5 follow-up（未実装、close report 参照）: `metrics` / `inbox` / `knowledge digest` の
+`--project` / `--repo-id` filter、`knowledge build-context` の project namespace。

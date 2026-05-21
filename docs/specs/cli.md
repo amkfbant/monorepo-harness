@@ -30,13 +30,18 @@ harness run \
 
 ### Options
 
+2 つのモードがある: **`--repo` + `--repo-id`**（従来の policy file 経由）と
+**`--project`**（Phase 5 の project profile 経由、[`project.md`](./project.md)）。
+`--domain` / `--goal` は両モードで必須。
+
 | Option | Required | Default | 説明 |
 |--------|:--------:|---------|------|
-| `--repo <path>` | ✅ | — | target repo のパス（絶対 or 相対） |
-| `--repo-id <id>` | ✅ | — | `policies/repos/<id>.yaml` を特定する識別子。`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` でなければ reject |
-| `--domain <subdir>` | ✅ | — | repo policy 内の domain key（例: `apps/catalog`） |
+| `--repo <path>` | repo-id モードで必須 | — | target repo のパス（絶対 or 相対）。`--project` 時は profile の `repo.path` を上書きする任意 override |
+| `--repo-id <id>` | repo-id モードで必須 | — | `policies/repos/<id>.yaml` を特定する識別子。`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` でなければ reject |
+| `--project <id>` | project モードで必須 | — | `projects/<id>.yaml`（project profile）。policy は profile から compile される（Phase 5） |
+| `--domain <subdir>` | ✅ | — | domain key（例: `apps/catalog`） |
 | `--goal <text>` | ✅ | — | codex に渡す task 説明。stdin 経由で渡される |
-| `--base-branch <name>` | — | `main` | 差分の基準。`git rev-parse --verify` で SHA に解決 |
+| `--base-branch <name>` | — | profile の `base_branch`、無ければ `main` | 差分の基準。`git rev-parse --verify` で SHA に解決 |
 | `--keep-worktree` | — | `false` | （MVP では no-op。worktree は常に保持） |
 | `--with-knowledge` | — | `false` | `docs/knowledge-context/<domain>.md` を codex prompt に注入（Phase 3-4）。事前に `knowledge build-context` が必要 |
 | `--knowledge-context <path>` | — | — | 注入する knowledge-context ファイルを明示指定（`--with-knowledge` より優先） |
@@ -86,12 +91,43 @@ resolved policy for apps/catalog:
 
 policy ファイルの編集後に確認するのが典型用途。
 
+## `harness project`
+
+Project Abstraction 層（Phase 5）。任意の repo を **project profile**
+（`projects/<id>.yaml`）として定義し、profile から policy を compile して実行する。
+データモデルは [`project.md`](./project.md)。
+
+```bash
+harness project inspect --repo <path> [--registry <id>] [--json]
+harness project init --repo <path> --project-id <id> [--dry-run|--write] [--force] [--json]
+harness project init --from-policy <repo-id> --project-id <id> [--repo <path>] [--dry-run|--write]
+harness project check --project <id> [--repo <override>] [--json]
+harness project show --project <id> [--json]
+```
+
+| サブコマンド | 動作 |
+|--------------|------|
+| `inspect` | target repo を静的に走査（Codex 不使用）し、domain registry と照合して候補 domain を提案。決定論的出力 |
+| `init` | profile を生成。`--repo` で repo を inspect、`--from-policy` で既存 `policies/repos/<id>.yaml` を移行。`--dry-run`（既定）は policy proposal を表示し書き込みなし。`--write` で `projects/<id>.yaml` + 生成 `policies/repos/<id>.yaml` + provenance サイドカー `<id>.generated.json` を安全書き込み（既存があれば `--force` 必須） |
+| `check` | Codex を起動せず profile / repo layout / 生成 policy / glob / commands / context pack / drift を検査。`ok` / `warn` / `error` に分類。config error で exit 1 |
+| `show` | profile を表示 |
+
+`harness run --project <id>` / `harness workflow reviewed-run --project <id>` は
+profile を compile して実行する。生成 policy は既存 `RepoPolicySchema` をそのまま
+満たすため、`harness run --repo-id <id>` でも同じ policy を使える（後方互換）。
+
+### Exit code
+
+- `0`: 成功（`check` は `ok` / `warn`）
+- `1`: project error（profile schema 不正 / repo 不在 / `check` の `error` / 上書き拒否 など）
+- `2`: 予期しない例外
+
 ## `harness backlog`
 
 やりたいことを harness 管理下に積み、run と紐づける個人 backlog（Phase 4-3）。
 
 ```bash
-harness backlog add --title <t> --domain <d> --goal <g> [--priority high|medium|low] [--tags a,b]
+harness backlog add --title <t> --domain <d> --goal <g> [--priority high|medium|low] [--tags a,b] [--project <id>]
 harness backlog list [--status open|doing|done|deferred]
 harness backlog show --item-id <id>
 harness backlog run --item-id <id> --repo <path> --repo-id <id> [--workflow run|reviewed-run] [--base-branch <name>] [--max-attempts <n>]
@@ -237,18 +273,25 @@ Exit code: `0` 成功 / `1` invalid runId・run 不在・meta.json 破損 / `2` 
 ### Synopsis
 
 ```bash
+# repo-id モード
 harness workflow reviewed-run \
   --repo <path> --repo-id <id> --domain <domain> --goal <text> \
   [--base-branch <name>] [--reviewer-name <name>] [--max-attempts <n>] \
   [--stop-on-changes-requested] [--no-auto-review] [--dry-run]
+
+# project モード（Phase 5）
+harness workflow reviewed-run \
+  --project <id> --domain <domain> --goal <text> [...]
 ```
 
 ### Options
 
 | Option | Required | 説明 |
 |--------|:--------:|------|
-| `--repo` / `--repo-id` / `--domain` / `--goal` | ✅ | `harness run` と同じ |
-| `--base-branch <name>` | — | default `main` |
+| `--repo` + `--repo-id` | repo-id モードで必須 | `harness run` と同じ。`--project` 指定時は不要 |
+| `--project <id>` | project モードで必須 | project profile 経由（Phase 5）。`--repo`/`--repo-id` と排他的に、どちらか一方が必須 |
+| `--domain` / `--goal` | ✅ | `harness run` と同じ |
+| `--base-branch <name>` | — | default は profile の `base_branch`、無ければ `main` |
 | `--reviewer-name <name>` | — | `review auto` の reviewer identity |
 | `--max-attempts <n>` | — | **初回 run の後の rerun 回数の上限**（default 2）。`--max-attempts 2` なら 計 run 数は最大 initial + 2 = 3。`changes_requested` が続けば `n` 回目の rerun の後に `not_converged` で停止 |
 | `--stop-on-changes-requested` | — | 最初の `changes_requested` で rerun せず停止 |
@@ -320,7 +363,7 @@ broken.lock	status=unreadable	error=Unexpected token in JSON at position 1
 特定 domain の lockfile を削除する。crash 後の手動 recovery 用。
 
 ```bash
-harness lock release --domain <subdir> [--run-id <id>] [--force]
+harness lock release --domain <subdir> [--repo-id <id>] [--run-id <id>] [--force]
 ```
 
 ### Options
@@ -328,6 +371,7 @@ harness lock release --domain <subdir> [--run-id <id>] [--force]
 | Option | Required | 説明 |
 |--------|:--------:|------|
 | `--domain <subdir>` | ✅ | 対象 domain（例: `apps/catalog`） |
+| `--repo-id <id>` | — | namespaced lock の repo id。`harness run` が作る lock は `<repoId>--<domainSlug>-<hash>.lock` 形式なので、それを release するには指定が必要。省略時は legacy の domain-only lock 名を使う |
 | `--run-id <id>` | — | 指定した場合、lockfile の runId と一致する時だけ削除 |
 | `--force` | — | runId mismatch / lockfile unreadable でも削除を強行 |
 
