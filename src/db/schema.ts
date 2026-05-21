@@ -10,8 +10,8 @@
  * applies it; repositories (`repositories/`) own the queries.
  */
 
-/** Current (latest) schema version produced by the v1 migration. */
-export const SCHEMA_VERSION = 1;
+/** Current (latest) schema version produced by the migrations. */
+export const SCHEMA_VERSION = 2;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -275,6 +275,115 @@ export const MIGRATION_V1_STATEMENTS: readonly string[] = [
   )`,
 ];
 
+/**
+ * v2 DDL — Phase 7 (DB-first write path).
+ *
+ * Two kinds of change:
+ *  - ALTER TABLE: adds `source_mode` (the migration invariant — file-first
+ *    commands must not mutate `db-first` rows) and export bookkeeping
+ *    columns to the four runtime tables. Existing rows imported by Phase 6
+ *    default to `legacy-file`.
+ *  - CREATE TABLE: `export_records` / `exported_files` track which DB
+ *    revision was last exported to files; `operations` is the
+ *    operation-id idempotency ledger; `pull_requests` / `cleanup_actions`
+ *    make `pr create` / `cleanup` DB-first.
+ *
+ * `run_events` already declares `UNIQUE (run_id, seq)` in v1, so no event
+ * uniqueness change is needed here.
+ */
+const RUNTIME_TABLES_GETTING_SOURCE_MODE: readonly string[] = [
+  "runs",
+  "backlog_items",
+  "knowledge_candidates",
+  "knowledge_entries",
+];
+
+export const MIGRATION_V2_STATEMENTS: readonly string[] = [
+  // --- source_mode + export bookkeeping on the runtime tables ---------
+  ...RUNTIME_TABLES_GETTING_SOURCE_MODE.flatMap((t) => [
+    `ALTER TABLE ${t} ADD COLUMN source_mode TEXT NOT NULL DEFAULT 'legacy-file'`,
+    `ALTER TABLE ${t} ADD COLUMN db_revision INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE ${t} ADD COLUMN last_export_revision INTEGER`,
+    `ALTER TABLE ${t} ADD COLUMN export_status TEXT NOT NULL DEFAULT 'synced'`,
+    `ALTER TABLE ${t} ADD COLUMN last_exported_at TEXT`,
+    `ALTER TABLE ${t} ADD COLUMN last_export_error TEXT`,
+  ]),
+
+  // --- export records ------------------------------------------------
+  `CREATE TABLE export_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope_type TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    db_revision INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    error_message TEXT,
+    exported_files_json TEXT
+  )`,
+  `CREATE INDEX export_records_scope_idx
+     ON export_records(scope_type, scope_id, id)`,
+  `CREATE TABLE exported_files (
+    scope_type TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    relative_path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    db_revision INTEGER NOT NULL,
+    exported_at TEXT NOT NULL,
+    PRIMARY KEY (scope_type, scope_id, relative_path)
+  )`,
+
+  // --- operation-id idempotency ledger -------------------------------
+  `CREATE TABLE operations (
+    operation_id TEXT PRIMARY KEY NOT NULL,
+    command TEXT NOT NULL,
+    scope_type TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    result_json TEXT,
+    created_at TEXT NOT NULL
+  )`,
+
+  // --- pull requests (pr create DB-first) ----------------------------
+  `CREATE TABLE pull_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    repo TEXT,
+    branch TEXT,
+    base_branch TEXT,
+    title TEXT,
+    url TEXT,
+    external_pr_id TEXT,
+    status TEXT NOT NULL,
+    operation_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX pull_requests_run_idx ON pull_requests(run_id)`,
+
+  // --- cleanup actions (cleanup DB-first) ----------------------------
+  `CREATE TABLE cleanup_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    action_type TEXT NOT NULL,
+    target TEXT,
+    status TEXT NOT NULL,
+    executed_at TEXT NOT NULL,
+    error_message TEXT
+  )`,
+  `CREATE INDEX cleanup_actions_run_idx ON cleanup_actions(run_id)`,
+];
+
+/** Tables added by v2. */
+export const V2_TABLE_NAMES: readonly string[] = [
+  "export_records",
+  "exported_files",
+  "operations",
+  "pull_requests",
+  "cleanup_actions",
+];
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -297,4 +406,10 @@ export const V1_TABLE_NAMES: readonly string[] = [
   "knowledge_candidates",
   "knowledge_entries",
   "import_errors",
+];
+
+/** Every data table at the latest schema version (v1 + v2). */
+export const ALL_TABLE_NAMES: readonly string[] = [
+  ...V1_TABLE_NAMES,
+  ...V2_TABLE_NAMES,
 ];

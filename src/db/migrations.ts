@@ -1,6 +1,10 @@
 import type Database from "better-sqlite3";
 import { DbError } from "./connection.js";
-import { MIGRATION_V1_STATEMENTS, SCHEMA_VERSION } from "./schema.js";
+import {
+  MIGRATION_V1_STATEMENTS,
+  MIGRATION_V2_STATEMENTS,
+  SCHEMA_VERSION,
+} from "./schema.js";
 
 /**
  * Schema migration runner (Phase 6).
@@ -19,6 +23,11 @@ export interface Migration {
 /** Ordered list of all migrations this harness knows. */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "read-model-v1", statements: MIGRATION_V1_STATEMENTS },
+  {
+    version: 2,
+    name: "db-first-write-v2",
+    statements: MIGRATION_V2_STATEMENTS,
+  },
 ];
 
 /** The newest schema version this harness can produce. */

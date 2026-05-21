@@ -8,7 +8,7 @@ import {
   currentSchemaVersion,
   readSchemaVersion,
 } from "../../../src/db/migrations.js";
-import { V1_TABLE_NAMES } from "../../../src/db/schema.js";
+import { ALL_TABLE_NAMES, SCHEMA_VERSION } from "../../../src/db/schema.js";
 
 function freshDbPath(): string {
   const dir = mkdtempSync(join(tmpdir(), "harness-db-"));
@@ -28,16 +28,16 @@ function tableNames(dbPath: string): Set<string> {
 }
 
 describe("runMigrations", () => {
-  it("creates schema v1 with every table on a fresh DB", () => {
+  it("creates the latest schema with every table on a fresh DB", () => {
     const dbPath = freshDbPath();
     const db = openDb(dbPath);
     const r = runMigrations(db);
     db.close();
-    expect(r.version).toBe(1);
-    expect(r.applied).toEqual([1]);
+    expect(r.version).toBe(SCHEMA_VERSION);
+    expect(r.applied).toEqual([1, 2]);
     const tables = tableNames(dbPath);
     expect(tables.has("schema_migrations")).toBe(true);
-    for (const t of V1_TABLE_NAMES) {
+    for (const t of ALL_TABLE_NAMES) {
       expect(tables.has(t)).toBe(true);
     }
   });
@@ -62,14 +62,14 @@ describe("runMigrations", () => {
     const r2 = runMigrations(db);
     db.close();
     expect(r2.applied).toEqual([]);
-    expect(r2.version).toBe(1);
+    expect(r2.version).toBe(SCHEMA_VERSION);
   });
 
-  it("currentSchemaVersion is 0 before any migration, 1 after", () => {
+  it("currentSchemaVersion is 0 before any migration, latest after", () => {
     const db = openDb(freshDbPath());
     expect(currentSchemaVersion(db)).toBe(0);
     runMigrations(db);
-    expect(currentSchemaVersion(db)).toBe(1);
+    expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
     db.close();
   });
 
@@ -94,7 +94,7 @@ describe("runMigrations", () => {
       .get();
     expect(present).toBeUndefined();
     runMigrations(db);
-    expect(readSchemaVersion(db)).toBe(1);
+    expect(readSchemaVersion(db)).toBe(SCHEMA_VERSION);
     db.close();
   });
 

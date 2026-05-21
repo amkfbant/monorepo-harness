@@ -29,20 +29,20 @@ describe("CLI harness db", () => {
     expect(out).toMatch(/not initialized/);
   });
 
-  it("init creates harness.sqlite at schema version 1", () => {
+  it("init creates harness.sqlite at the latest schema version", () => {
     const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
     const { out, code } = runCli(root, ["db", "init"]);
     expect(code).toBe(0);
-    expect(out).toMatch(/schema version: 1/);
+    expect(out).toMatch(/schema version: 2/);
     expect(existsSync(join(root, ".harness", "harness.sqlite"))).toBe(true);
   });
 
-  it("status after init shows version 1 and the v1 tables", () => {
+  it("status after init shows the latest version and the tables", () => {
     const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
     runCli(root, ["db", "init"]);
     const { out, code } = runCli(root, ["db", "status"]);
     expect(code).toBe(0);
-    expect(out).toMatch(/schema version: 1/);
+    expect(out).toMatch(/schema version: 2/);
     expect(out).toMatch(/tables: 2[0-9]/);
   });
 
@@ -51,10 +51,10 @@ describe("CLI harness db", () => {
     runCli(root, ["db", "init"]);
     const { out, code } = runCli(root, ["db", "migrate"]);
     expect(code).toBe(0);
-    expect(out).toMatch(/already at schema version 1/);
+    expect(out).toMatch(/already at schema version 2/);
   });
 
-  it("init is idempotent — re-running keeps version 1", () => {
+  it("init is idempotent — re-running keeps the schema current", () => {
     const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
     runCli(root, ["db", "init"]);
     const { out, code } = runCli(root, ["db", "init"]);
