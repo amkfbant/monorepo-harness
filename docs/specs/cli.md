@@ -103,6 +103,22 @@ harness backlog defer --item-id <id>
 - `backlog run` は item の domain + goal で run を起動（default `reviewed-run`、`--workflow run` で単発 run）。完了後、item の `linkedRuns` に runId を追記し item を `doing` へ移動、run の `meta.backlogItemId` に item id を記録（双方向参照）
 - `harness run show` は `meta.backlogItemId` があれば backlog item を表示する
 
+## `harness dashboard export`
+
+read-only な static HTML ダッシュボードを生成する（Phase 4-8、Web dashboard の前段）。
+
+```bash
+harness dashboard export                 # docs/dashboard/index.html を生成
+harness dashboard export --out <path>    # 出力先を指定
+```
+
+- **server 不要・read-only**: 生成された `index.html` をブラウザで直接開ける。外部アセット・JS を含まない自己完結ページ
+- 内容: Metrics サマリ / Inbox（needs_review・changes_requested・failed・cleanup・knowledge）/ Recent runs / Knowledge digest
+- 各 run は `../../runs/<runId>/` への相対リンクになっており、run dir の artifact に辿れる
+- 補間値（domain / goal / status 等）はすべて HTML エスケープされる
+
+完全な Web dashboard は Phase 5。Phase 4-8 はその前段の静的エクスポートのみ。
+
 ## `harness session`
 
 今日何をすべきかをルールベースの順序で提案する（Phase 4-7）。**提案のみで何も実行しない。**

@@ -81,6 +81,7 @@ import {
   formatSessionPlan,
   formatSessionSummary,
 } from "../core/session.js";
+import { exportDashboard } from "../core/dashboard.js";
 import { RUN_STATUSES } from "../logging/run-log.js";
 import {
   prepareRerunFromReview,
@@ -1135,6 +1136,32 @@ backlogCmd
       );
     }
     if (failed) process.exit(1);
+  });
+
+const dashboardCmd = program
+  .command("dashboard")
+  .description("static, read-only HTML dashboard");
+dashboardCmd
+  .command("export")
+  .description("write docs/dashboard/index.html (no server, read-only)")
+  .option("--out <path>", "output path (default docs/dashboard/index.html)")
+  .action(async (raw: Record<string, unknown>) => {
+    const harnessRoot = getHarnessRoot();
+    const paths = harnessPaths(harnessRoot);
+    const outPath =
+      raw.out !== undefined
+        ? String(raw.out)
+        : join(harnessRoot, "docs", "dashboard", "index.html");
+    const r = await exportDashboard({
+      runsDir: paths.runsDir,
+      workspacesDir: paths.workspacesDir,
+      indexDbPath: paths.indexDbPath,
+      knowledgeDir: join(harnessRoot, "docs", "knowledge"),
+      outPath,
+    });
+    process.stdout.write(
+      `dashboard exported: ${r.outPath} (${r.bytes} bytes)\n`,
+    );
   });
 
 const sessionCmd = program
