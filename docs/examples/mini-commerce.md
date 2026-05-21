@@ -92,49 +92,17 @@ MVP では **全 domain から read-only**。codex がこれらを編集しよ�
 
 ## 対応する harness policy
 
-実体: `policies/repos/mini-commerce.yaml`。骨格は以下:
+**Phase 5 以降、source of truth は `projects/mini-commerce.yaml`（project profile）。**
+`policies/repos/mini-commerce.yaml` は profile から compile 生成された artifact
+であり、手で編集しない（生成元 provenance は `policies/repos/mini-commerce.generated.json`）。
 
-```yaml
-repo_id: mini-commerce
+profile の各 domain は `apps/<name>` を `write`、兄弟 domain root と
+`packages/contracts/**` / `packages/shared/**` ほかを `deny_write` に持つ。compile
+時に strict-monorepo-v1 テンプレートの `root_deny`（`.git/**` / lockfiles /
+`tsconfig.base.json` 等）が global deny へ畳み込まれる。
 
-read:
-  - README.md
-  - docs/**
-  - package.json
-  - tsconfig.base.json
-  - pnpm-workspace.yaml
-  - packages/contracts/**
-  - packages/shared/**
-
-domains:
-  apps/catalog:
-    read: [apps/catalog/**, docs/**, packages/contracts/**, packages/shared/**, package.json, tsconfig.base.json]
-    write: [apps/catalog/**]
-    deny_write:
-      - apps/orders/**
-      - packages/contracts/**
-      - packages/shared/**
-      - package.json
-      - pnpm-lock.yaml
-      - pnpm-workspace.yaml
-      - tsconfig.base.json
-      - .github/**
-
-  apps/orders:
-    read: [apps/orders/**, docs/**, packages/contracts/**, packages/shared/**, package.json, tsconfig.base.json]
-    write: [apps/orders/**]
-    deny_write:
-      - apps/catalog/**
-      - packages/contracts/**
-      - packages/shared/**
-      - package.json
-      - pnpm-lock.yaml
-      - pnpm-workspace.yaml
-      - tsconfig.base.json
-      - .github/**
-```
-
-`policies/global.yaml` に対する補足はない（global の `always_deny_write` + `ignore_untracked` が併用される）。
+実際の policy は両ファイルを直接参照すること。`apps/catalog` の典型タスク・
+編集可能スコープは上記「題材」節のとおり。
 
 > Policy のグロブセマンティクス（`dist/**` と `**/dist/**` の違い）については [`docs/policy-semantics.md`](../policy-semantics.md) を参照。
 
@@ -212,6 +180,31 @@ mini-commerce の中身は **harness 検証のためだけに変える**。
 - ❌ なしな変更: 実アプリとしての品質改善、E2E テストフレームワークの追加、CI 統合
 
 実機実験で本気で動かしたくなったら、別の monorepo を立ててそちらで検証する。
+
+## Project profile（Phase 5）
+
+Phase 5 で mini-commerce は **project profile 形式**へ移行した。
+
+- **source of truth は `projects/mini-commerce.yaml`**（project profile）。
+- `policies/repos/mini-commerce.yaml` は profile から **compile 生成された artifact**。
+  生成元の provenance は `policies/repos/mini-commerce.generated.json`。
+- `harness project check --project mini-commerce` が profile と生成 policy の
+  drift を検出する。
+
+実行は profile 経由でも従来の repo-id 経由でも可能（後方互換）:
+
+```bash
+# project profile 経由（Phase 5）
+HARNESS_ROOT=$PWD npm run --silent harness -- run \
+  --project mini-commerce --domain apps/catalog --goal "..."
+
+# 従来の repo-id 経由（生成 policy をそのまま使う）
+HARNESS_ROOT=$PWD npm run --silent harness -- run \
+  --repo ../mini-commerce --repo-id mini-commerce --domain apps/catalog --goal "..."
+```
+
+両経路は同等の `ResolvedPolicy` を解決する
+（`tests/integration/mini-commerce-profile.test.ts` で検証）。
 
 ## 関連ファイル
 

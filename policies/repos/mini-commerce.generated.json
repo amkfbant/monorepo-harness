@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "projectId": "mini-commerce",
+  "repoId": "mini-commerce",
+  "profilePath": "projects/mini-commerce.yaml",
+  "profileVersion": 1,
+  "policyTemplate": {
+    "id": "strict-monorepo-v1",
+    "version": 1
+  },
+  "commandPresets": [],
+  "contextPackPresets": [],
+  "domainRegistry": null,
+  "generatedAt": "2026-05-22T00:00:00.000Z"
+}

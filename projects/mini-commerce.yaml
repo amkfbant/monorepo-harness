@@ -1,32 +1,46 @@
-repo_id: mini-commerce
-read: []
+version: 1
+project_id: mini-commerce
+description: Migrated from policies/repos/mini-commerce.yaml
+repo:
+  id: mini-commerce
+  path: ../../mini-commerce
+policy:
+  template: strict-monorepo-v1
+context_packs:
+  default-docs:
+    description: General project docs and shared contracts
+    globs:
+      - README.md
+      - docs/**/*.md
+      - packages/contracts/**/*.ts
+      - packages/shared/**/*.ts
+    max_bytes: 32768
+    deny_secret_like: true
 domains:
-  apps/catalog:
+  - id: apps/catalog
+    root: apps/catalog
+    context_packs:
+      - default-docs
     read:
       - README.md
-      - apps/catalog/**
       - docs/**
       - package.json
+      - tsconfig.base.json
+      - pnpm-workspace.yaml
       - packages/contracts/**
       - packages/shared/**
-      - pnpm-workspace.yaml
-      - tsconfig.base.json
+      - apps/catalog/**
     write:
       - apps/catalog/**
     deny_write:
-      - .git/**
-      - .github/**
       - apps/orders/**
-      - nx.json
-      - package-lock.json
-      - package.json
       - packages/contracts/**
       - packages/shared/**
+      - package.json
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
       - tsconfig.base.json
-      - turbo.json
-      - yarn.lock
+      - .github/**
     commands:
       allow:
         - node -e "console.log('lint ok')"
@@ -47,29 +61,27 @@ domains:
         env_allowlist:
           - PATH
           - HOME
-  apps/orders:
+  - id: apps/orders
+    root: apps/orders
+    context_packs:
+      - default-docs
     read:
       - README.md
-      - apps/orders/**
       - docs/**
       - package.json
+      - tsconfig.base.json
+      - pnpm-workspace.yaml
       - packages/contracts/**
       - packages/shared/**
-      - pnpm-workspace.yaml
-      - tsconfig.base.json
+      - apps/orders/**
     write:
       - apps/orders/**
     deny_write:
-      - .git/**
-      - .github/**
       - apps/catalog/**
-      - nx.json
-      - package-lock.json
-      - package.json
       - packages/contracts/**
       - packages/shared/**
+      - package.json
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
       - tsconfig.base.json
-      - turbo.json
-      - yarn.lock
+      - .github/**
