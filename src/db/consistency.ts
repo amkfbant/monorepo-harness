@@ -46,6 +46,8 @@ export function checkConsistency(opts: {
   checkRuns(opts.db, paths.runsDir, items);
   checkProjects(opts.db, paths.projectsDir, items);
   checkPolicies(opts.db, paths.policiesDir, items);
+  checkBacklog(opts.db, paths.backlogDir, items);
+  checkKnowledgeEntries(opts.db, opts.harnessRoot, items);
 
   const counts = { ok: 0, drift: 0, missingFile: 0, missingDb: 0 };
   for (const it of items) {
@@ -227,6 +229,102 @@ function checkPolicies(
       status: "missing-db",
       detail: "generated policy sidecar on disk but not in the DB",
     });
+  }
+}
+
+const BACKLOG_STATUS_DIRS = ["open", "doing", "done", "deferred"];
+
+/**
+ * Backlog has no source-hash column, so this is an existence check only:
+ * a DB item with no file → missing-file; a file with no DB row →
+ * missing-db. Content drift is not detected (re-import to refresh).
+ */
+function checkBacklog(
+  db: Database.Database,
+  backlogDir: string,
+  items: ConsistencyItem[],
+): void {
+  const dbIds = new Set(
+    (
+      db.prepare("SELECT item_id FROM backlog_items").all() as {
+        item_id: string;
+      }[]
+    ).map((r) => r.item_id),
+  );
+  const fileIds = new Set<string>();
+  for (const status of BACKLOG_STATUS_DIRS) {
+    const dir = join(backlogDir, status);
+    if (!existsSync(dir)) continue;
+    for (const f of readdirSync(dir)) {
+      if (f.endsWith(".yaml")) fileIds.add(f.slice(0, -".yaml".length));
+    }
+  }
+  for (const id of dbIds) {
+    if (!fileIds.has(id)) {
+      items.push({
+        kind: "backlog",
+        id,
+        status: "missing-file",
+        detail: "backlog item in the DB but not on disk",
+      });
+    }
+  }
+  for (const id of fileIds) {
+    if (!dbIds.has(id)) {
+      items.push({
+        kind: "backlog",
+        id,
+        status: "missing-db",
+        detail: "backlog item on disk but not in the DB",
+      });
+    }
+  }
+}
+
+/** Existence check for promoted knowledge entries (`docs/knowledge/**`). */
+function checkKnowledgeEntries(
+  db: Database.Database,
+  harnessRoot: string,
+  items: ConsistencyItem[],
+): void {
+  const knowledgeDir = join(harnessRoot, "docs", "knowledge");
+  const dbIds = new Set(
+    (
+      db.prepare("SELECT entry_id FROM knowledge_entries").all() as {
+        entry_id: string;
+      }[]
+    ).map((r) => r.entry_id),
+  );
+  const fileIds = new Set<string>();
+  if (existsSync(knowledgeDir)) {
+    for (const kindDir of readdirSync(knowledgeDir, { withFileTypes: true })) {
+      if (!kindDir.isDirectory()) continue;
+      for (const f of readdirSync(join(knowledgeDir, kindDir.name))) {
+        if (f.endsWith(".md")) {
+          fileIds.add(join("docs", "knowledge", kindDir.name, f));
+        }
+      }
+    }
+  }
+  for (const id of dbIds) {
+    if (!fileIds.has(id)) {
+      items.push({
+        kind: "knowledge",
+        id,
+        status: "missing-file",
+        detail: "promoted knowledge entry in the DB but not on disk",
+      });
+    }
+  }
+  for (const id of fileIds) {
+    if (!dbIds.has(id)) {
+      items.push({
+        kind: "knowledge",
+        id,
+        status: "missing-db",
+        detail: "promoted knowledge entry on disk but not in the DB",
+      });
+    }
   }
 }
 

@@ -158,13 +158,14 @@ export function knowledgeDigest(
     byStatus[c.status] = (byStatus[c.status] ?? 0) + c.n;
     total += c.n;
   }
-  // promoted entries (`docs/knowledge/**`) carry no project_id / repo_id in
-  // their frontmatter — promoted-knowledge namespacing is a documented
-  // Phase 5 follow-up — so entryTotal is always the global count.
+  // entries are scoped the same way candidates are. Promoted entries
+  // carry project_id / repo_id only when their frontmatter has them
+  // (promoted-knowledge namespacing is a Phase 5 follow-up), so a
+  // project-scoped digest may legitimately count zero entries.
   const entryTotal = (
     db
-      .prepare("SELECT count(*) AS n FROM knowledge_entries")
-      .get() as { n: number }
+      .prepare(`SELECT count(*) AS n FROM knowledge_entries ${sql}`)
+      .get(...params) as { n: number }
   ).n;
   return { candidateTotal: total, byKind, byStatus, entryTotal };
 }

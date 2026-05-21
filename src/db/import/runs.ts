@@ -244,7 +244,9 @@ function runRow(
     imported_from: "files",
     source_meta_sha256: fingerprint,
     source_meta_mtime_ms: Math.round(mtimeMs),
-    updated_at: new Date().toISOString(),
+    // derived from the source mtime, not wall-clock time, so a re-import
+    // (including `--reset`) of an unchanged run yields an identical row.
+    updated_at: new Date(mtimeMs).toISOString(),
   };
 }
 

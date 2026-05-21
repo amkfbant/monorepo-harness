@@ -140,6 +140,34 @@ describe("checkConsistency", () => {
     ).toBe(true);
   });
 
+  it("detects a backlog item on disk but not in the DB (missing-db)", () => {
+    const { root, db } = importedRoot();
+    // a backlog item appears on disk after the import
+    mkdirSync(join(root, "backlog", "open"), { recursive: true });
+    writeFileSync(
+      join(root, "backlog", "open", "item-20260521-001.yaml"),
+      [
+        "id: item-20260521-001",
+        "title: t",
+        "domain: apps/web",
+        "goal: g",
+        "status: open",
+        "priority: medium",
+        "tags: []",
+        "createdAt: 2026-05-21T00:00:00Z",
+        "linkedRuns: []",
+        "",
+      ].join("\n"),
+    );
+    const r = checkConsistency({ db, harnessRoot: root });
+    db.close();
+    expect(
+      r.items.some(
+        (i) => i.kind === "backlog" && i.status === "missing-db",
+      ),
+    ).toBe(true);
+  });
+
   it("detects project profile drift", () => {
     const { root, db } = importedRoot();
     writeFileSync(

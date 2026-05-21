@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { harnessPaths } from "../config/paths.js";
-import { openDb } from "../db/connection.js";
+import { openDb, openDbReadonly } from "../db/connection.js";
 import { runMigrations, readSchemaVersion } from "../db/migrations.js";
 import { runFullImport } from "../db/import-files.js";
 import { checkConsistency } from "../db/consistency.js";
@@ -137,10 +137,11 @@ export class DashboardSnapshotError extends Error {
 /**
  * Open the DB and build a snapshot.
  *
- * `autoImport` (default true) fully rebuilds the read model from files
- * first, so the snapshot is never stale. With `autoImport: false` the DB
- * is read as-is — if it does not exist that is an error (the dashboard
- * cannot run without it).
+ * `autoImport` (default true) rebuilds the read model (`harness.sqlite`,
+ * a derived cache) from files first, so the snapshot is never stale —
+ * this writes the DB cache, but never harness workflow state. With
+ * `autoImport: false` the DB is opened READ-ONLY and read exactly as-is
+ * (the dashboard touches nothing); if it does not exist that is an error.
  */
 export function loadDashboardSnapshot(opts: {
   harnessRoot: string;
@@ -150,24 +151,35 @@ export function loadDashboardSnapshot(opts: {
 }): DashboardSnapshot {
   const { dbPath } = harnessPaths(opts.harnessRoot);
   const autoImport = opts.autoImport ?? true;
-  if (!existsSync(dbPath) && !autoImport) {
-    throw new DashboardSnapshotError(
-      `DB not initialized (${dbPath}); run 'harness db import --from-files'`,
-    );
-  }
-  const db = openDb(dbPath);
-  try {
-    runMigrations(db);
-    if (autoImport) {
-      runFullImport(db, { harnessRoot: opts.harnessRoot, reset: true });
-    }
-    return buildDashboardSnapshot({
+  const build = (db: Database.Database): DashboardSnapshot =>
+    buildDashboardSnapshot({
       db,
       harnessRoot: opts.harnessRoot,
       dbPath,
       ...(opts.filters !== undefined ? { filters: opts.filters } : {}),
       ...(opts.now !== undefined ? { now: opts.now } : {}),
     });
+
+  if (!autoImport) {
+    // read-only: never migrate or write the DB cache.
+    if (!existsSync(dbPath)) {
+      throw new DashboardSnapshotError(
+        `DB not initialized (${dbPath}); run 'harness db import --from-files'`,
+      );
+    }
+    const db = openDbReadonly(dbPath);
+    try {
+      return build(db);
+    } finally {
+      db.close();
+    }
+  }
+
+  const db = openDb(dbPath);
+  try {
+    runMigrations(db);
+    runFullImport(db, { harnessRoot: opts.harnessRoot, reset: true });
+    return build(db);
   } finally {
     db.close();
   }

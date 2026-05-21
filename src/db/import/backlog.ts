@@ -29,10 +29,10 @@ export function importBacklog(
      VALUES (@item_id, @project_id, @repo_id, @domain, @title, @goal, @status,
        @priority, @tags_json, @created_at, @updated_at)
      ON CONFLICT (item_id) DO UPDATE SET
-       project_id = excluded.project_id, domain = excluded.domain,
-       title = excluded.title, goal = excluded.goal, status = excluded.status,
-       priority = excluded.priority, tags_json = excluded.tags_json,
-       updated_at = excluded.updated_at`,
+       project_id = excluded.project_id, repo_id = excluded.repo_id,
+       domain = excluded.domain, title = excluded.title, goal = excluded.goal,
+       status = excluded.status, priority = excluded.priority,
+       tags_json = excluded.tags_json, updated_at = excluded.updated_at`,
   );
   const deleteLinks = db.prepare(
     "DELETE FROM backlog_run_links WHERE item_id = ?",
