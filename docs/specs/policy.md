@@ -7,6 +7,13 @@
 
 実装: `src/policy/schema.ts` (Zod) → `src/policy/loader.ts` (YAML パース) → `src/policy/resolver.ts` (マージ)。
 
+**Phase 5（実装中）:** `policies/repos/<repo-id>.yaml` は手書きのほか、project
+profile からコンパイルして生成できるようになる（`harness project init`）。生成
+される policy はこのファイルで説明する `RepoPolicySchema` をそのまま満たすため、
+`resolvePolicy()` の入力としては手書き policy と区別なく扱われる。生成元の
+provenance はサイドカー `policies/repos/<repo-id>.generated.json` に持つ。設計
+方針は [`project.md`](./project.md)（target spec）。
+
 ## グロブの大原則
 
 すべてのパターンは [minimatch](https://github.com/isaacs/minimatch) で `{ dot: true, nocomment: true }` 評価される。**gitignore ではない**。詳細と落とし穴は [`docs/policy-semantics.md`](../policy-semantics.md)。

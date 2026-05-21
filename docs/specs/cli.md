@@ -117,7 +117,7 @@ harness dashboard export --out <path>    # 出力先を指定
 - 各 run は `../../runs/<runId>/` への相対リンクになっており、run dir の artifact に辿れる
 - 補間値（domain / goal / status 等）はすべて HTML エスケープされる
 
-完全な Web dashboard は Phase 5。Phase 4-8 はその前段の静的エクスポートのみ。
+完全な Web dashboard は将来フェーズ（Phase 5 の Project Abstraction では非ゴール）。Phase 4-8 はその前段の静的エクスポートのみ。
 
 ## `harness session`
 
