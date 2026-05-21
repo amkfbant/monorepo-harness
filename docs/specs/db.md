@@ -8,8 +8,9 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 
 実装: `src/db/`。
 
-> **ステータス: Phase 6 実装中（target spec）。** 本ファイルは Phase 6 の到達目標。
-> 確定値は実装後の `src/db/schema.ts`（DDL）と各 repository の Zod schema が真。
+> **ステータス: Phase 6 close 済み（現状仕様）。** DB read model は `src/db/` に
+> 実装済み。schema の確定値は `src/db/schema.ts`（`MIGRATION_V1_STATEMENTS`）。
+> write-side の DB 化は Phase 7 以降。
 
 ## source-of-truth transition
 
@@ -103,8 +104,7 @@ missing-db）を検出する。ダッシュボードは consistency status を�
 
 ## CLI
 
-`harness db` コマンド群の CLI 確定仕様は、実装フェーズで [`cli.md`](./cli.md) に
-追記する（Phase 6-0 時点では未掲載）。
+`harness db` コマンド群の確定仕様は [`cli.md`](./cli.md) の `harness db` 節を参照。
 
 ```bash
 harness db init               # DB 作成 + schema v1 適用

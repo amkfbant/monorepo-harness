@@ -4,7 +4,7 @@
 
 Codex はワークツリー内のファイルを直接編集し、ハーネスは事後に `git diff` を取って **policy の `write` / `deny_write` スコープ** で変更 path を検証する（`read` は codex への prompt/context 用で、読み取りの enforcement はしない）。スコープ外への書き込み・secret 漏洩・symlink 追従などを検出し、レビュー用の artifact 一式を `runs/<runId>/` に残す。
 
-> **Status:** Phase 5 close。Phase 2（ファイルベースの `codex 実行 → 検証 → レビュー → 再実行 → 知見昇格 → cleanup`）+ Phase 3（review-driven retry / reviewer 品質評価 / knowledge context 注入 / SQLite index / GitHub PR 連携）+ Phase 4（個人運用 CLI: run show / inbox / backlog / maintenance / knowledge digest / metrics / session planning / 静的 dashboard）+ Phase 5（Project Abstraction: project profile / domain registry / templates / policy compiler / `project inspect|init|check` / `run --project`）。`stronger sandbox`（Phase 3-7）は Deferred。
+> **Status:** Phase 6 close。Phase 2（ファイルベースの `codex 実行 → 検証 → レビュー → 再実行 → 知見昇格 → cleanup`）+ Phase 3（review-driven retry / reviewer 品質評価 / knowledge context 注入 / SQLite index / GitHub PR 連携）+ Phase 4（個人運用 CLI: run show / inbox / backlog / maintenance / knowledge digest / metrics / session planning / 静的 dashboard）+ Phase 5（Project Abstraction: project profile / domain registry / templates / policy compiler / `project inspect|init|check` / `run --project`）+ Phase 6（DB read model `harness.sqlite` / file importer / consistency checker / DB-backed project-aware dashboard）。`stronger sandbox`（Phase 3-7）は Deferred。
 
 ## 必要環境
 
@@ -192,9 +192,43 @@ HARNESS_ROOT=$PWD npm run --silent harness -- run \
 詳細は [`docs/specs/project.md`](./docs/specs/project.md)、close 状況は
 [`docs/reports/2026-05-22-phase5-close.md`](./docs/reports/2026-05-22-phase5-close.md)。
 
-## Phase 6 以降の候補
+## Phase 6 で追加した機能 — DB read model + project-aware dashboard
 
-次はゴールにしない: 完全自律 merge / 人間レビューなしの本番反映 / OS・Container サンドボックス（Phase 3-7 deferred）/ Web dashboard（Phase 4-8 は静的 export のみ）/ 大規模 multi-agent swarm。
+Phase 6 は DB 完全移行の第一歩。`.harness/harness.sqlite` を **read model**
+（files から `harness db import` で構築する派生）として導入し、ダッシュボードを
+DB-backed・project-aware に刷新した。files は引き続き write-side の source of
+truth で、既存 workflow は不変。詳細は [`docs/specs/db.md`](./docs/specs/db.md) /
+[`docs/specs/dashboard.md`](./docs/specs/dashboard.md)。
 
-Phase 5 follow-up（未実装、close report 参照）: `metrics` / `inbox` / `knowledge digest` の
-`--project` / `--repo-id` filter、`knowledge build-context` の project namespace。
+- `harness db init / migrate / status / import --from-files / check-consistency`
+- `harness dashboard export` が DB read model から静的 HTML を生成（project-aware）
+- `metrics` / `inbox` / `knowledge digest` / `backlog list` に `--project` /
+  `--repo-id`（Phase 5 follow-up を回収）
+- Phase 5 の attribution 残課題（rerun の project 再解決等）を修正
+
+### Phase 6 quick start（DB / dashboard）
+
+```bash
+# 1. files から DB read model を構築
+HARNESS_ROOT=$PWD npm run --silent harness -- db import --from-files
+
+# 2. DB ↔ files の drift を検査
+HARNESS_ROOT=$PWD npm run --silent harness -- db check-consistency
+
+# 3. project-aware な静的ダッシュボードを生成（DB が無ければ auto-import）
+HARNESS_ROOT=$PWD npm run --silent harness -- dashboard export
+HARNESS_ROOT=$PWD npm run --silent harness -- dashboard export --project my-app
+
+# 4. project / repo で絞った集計
+HARNESS_ROOT=$PWD npm run --silent harness -- metrics summary --project my-app
+```
+
+close 状況は [`docs/reports/2026-05-22-phase6-close.md`](./docs/reports/2026-05-22-phase6-close.md)。
+
+## Phase 7 以降の候補
+
+次はゴールにしない: 完全自律 merge / 人間レビューなしの本番反映 / OS・Container サンドボックス（Phase 3-7 deferred）/ 大規模 multi-agent swarm。
+
+Phase 7 候補: write-side の DB 化（`runDomainCoding` 等が DB へ書き、files は
+compatibility export）/ artifact body の DB 格納 / `dashboard serve`（read-only
+HTTP）/ ダッシュボードからの操作。Phase 6 close report の follow-up 節を参照。

@@ -34,7 +34,24 @@ harness metrics summary --since 7d              # 直近 1 週間の運用指標
 ```
 
 - `maintenance` の `uncleaned-finished`（approved/rejected の worktree 残存）は `harness cleanup --run-id <id>` で個別に処理する（run branch も消える）。
-- `harness index rebuild` を週次で実行しておくと inbox / metrics が高速になる（index は派生キャッシュ。`runs/` が source of truth）。
+- `harness index rebuild` は Phase 6 で deprecated。代わりに `harness db import
+  --from-files` で DB read model（`harness.sqlite`）を更新する。
+
+## DB / dashboard（Phase 6）
+
+```bash
+harness db import --from-files        # files から DB read model を更新
+harness db check-consistency          # DB ↔ files の drift を検査（drift で exit 1）
+harness dashboard export              # project-aware な静的ダッシュボードを生成
+harness dashboard export --project <id>   # 特定 project に絞る
+```
+
+- DB（`.harness/harness.sqlite`）は files から構築する read model。`runs/` 等の
+  files が write-side の source of truth で、DB を消しても再構築できる。
+- `dashboard export` は DB が無ければ files から auto-import するので、週次で
+  `db import` を回していなくても最新スナップショットになる。
+- `metrics summary` / `inbox` / `knowledge digest` / `backlog list` に
+  `--project` / `--repo-id` を付けると DB read model 経由で project 別に絞れる。
 
 ---
 

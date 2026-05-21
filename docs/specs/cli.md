@@ -128,7 +128,7 @@ profile を compile して実行する。生成 policy は既存 `RepoPolicySche
 
 ```bash
 harness backlog add --title <t> --domain <d> --goal <g> [--priority high|medium|low] [--tags a,b] [--project <id>]
-harness backlog list [--status open|doing|done|deferred]
+harness backlog list [--status open|doing|done|deferred] [--project <id>] [--repo-id <id>] [--json]
 harness backlog show --item-id <id>
 harness backlog run --item-id <id> --repo <path> --repo-id <id> [--workflow run|reviewed-run] [--base-branch <name>] [--max-attempts <n>]
 harness backlog done --item-id <id>
@@ -138,22 +138,51 @@ harness backlog defer --item-id <id>
 - item は `backlog/<status>/item-YYYYMMDD-NNN.yaml`（status = open / doing / done / deferred、ディレクトリが status の source of truth）。`backlog/` は harness root 直下、gitignore 対象
 - `backlog run` は item の domain + goal で run を起動（default `reviewed-run`、`--workflow run` で単発 run）。完了後、item の `linkedRuns` に runId を追記し item を `doing` へ移動する
 - link は **backlog 側（item の `linkedRuns`）にのみ**保持する。run の meta.json は patch しない（並行 review/cleanup と競合しないため）。`harness run show` は backlog を走査し `linkedRuns` に当該 runId を含む item を逆引きして表示する
+- `backlog list --project` / `--repo-id`（Phase 6）は DB read model 経由で絞る（指定時は files から DB を再構築してから集計）。`--status` は scoped path では無視され warning が出る。scope 無しは従来の file-based 一覧（`--status` が効く）
+- `backlog run` は item に `projectId` があれば project mode で起動（`--repo-id` は不要）、無ければ `--repo` + `--repo-id` 必須（Phase 6-1）
+
+## `harness db`
+
+DB read model（`.harness/harness.sqlite`）の管理（Phase 6）。詳細は
+[`db.md`](./db.md)。
+
+```bash
+harness db init                       # DB を作成し schema v1 を適用
+harness db migrate                    # 未適用 migration を適用
+harness db status                     # schema version / table 数 / path / size
+harness db import --from-files        # files から read model を構築
+harness db import --from-files --reset  # 全テーブルを空にしてから import
+harness db import --from-files --json   # ImportReport を JSON 出力
+harness db check-consistency          # DB ↔ files の drift を検出
+harness db check-consistency --json   # ConsistencyReport を JSON 出力
+```
+
+- `db import` は idempotent（run は全 source file の fingerprint で skip、
+  malformed file は `import_errors` に記録）。`import` は schema を自動適用するので
+  `db init` なしでも動く。
+- `db check-consistency` は drift / missing があれば exit 1（CI で gate 可能）。
+- exit code: `0` 正常 / `1` `DbError`、または `check-consistency` の drift/missing 検出。
 
 ## `harness dashboard export`
 
-read-only な static HTML ダッシュボードを生成する（Phase 4-8、Web dashboard の前段）。
+DB read model から read-only な static HTML ダッシュボードを生成する（Phase 6 で
+DB-backed に刷新）。詳細は [`dashboard.md`](./dashboard.md)。
 
 ```bash
-harness dashboard export                 # docs/dashboard/index.html を生成
-harness dashboard export --out <path>    # 出力先を指定
+harness dashboard export                      # docs/dashboard/index.html を生成
+harness dashboard export --out <path>         # 出力先を指定
+harness dashboard export --project <id>       # project を絞る
+harness dashboard export --repo-id <id>       # repo を絞る
+harness dashboard export --no-auto-import     # DB を files から再構築せず使う
 ```
 
 - **server 不要・read-only**: 生成された `index.html` をブラウザで直接開ける。外部アセット・JS を含まない自己完結ページ
-- 内容: Metrics サマリ / Inbox（needs_review・changes_requested・failed・cleanup・knowledge）/ Recent runs / Knowledge digest
-- 各 run は `../../runs/<runId>/` への相対リンクになっており、run dir の artifact に辿れる
-- 補間値（domain / goal / status 等）はすべて HTML エスケープされる
-
-完全な Web dashboard は将来フェーズ（Phase 5 の Project Abstraction では非ゴール）。Phase 4-8 はその前段の静的エクスポートのみ。
+- 内容: status banner（DB / consistency / warnings）/ Overview / Projects /
+  Inbox / Recent runs / Backlog / Knowledge — すべて `DashboardSnapshot` から描画
+- DB が無いときは既定で files から auto-import してから生成（出力に明示）。
+  `--no-auto-import` で抑止（その場合 DB 不在は exit 1）
+- 補間値はすべて HTML エスケープされる
+- `dashboard serve`（HTTP サーバ）は Phase 6 では未実装（Phase 7 候補）
 
 ## `harness session`
 
@@ -173,9 +202,15 @@ harness session summary         # 保留中のものの compact なスナップ�
 
 ```bash
 harness metrics summary --since 30d        # 全体 summary
+harness metrics summary --project <id>     # project を絞る（DB read model 経由、Phase 6）
+harness metrics summary --repo-id <id>     # repo を絞る（DB read model 経由、Phase 6）
 harness metrics domain apps/orders         # domain 別 summary
 harness metrics failures --since 30d       # failed-* の status 別内訳
 ```
+
+`metrics summary` の `--project` / `--repo-id`（Phase 6）は DB read model 経由で
+集計する（指定時は files から DB を再構築）。scope 無しは従来の file-based 集計で、
+`--since` が効く（`--project`/`--repo-id` 指定時は `--since` は無視され warning）。
 
 - **Runs**: total + status 別件数
 - **Review**: approved / changes_requested / rejected 件数、approved 率、reviewer 別件数
@@ -192,7 +227,13 @@ knowledge candidate / promoted / rejected を期間・domain 別に集計して�
 ```bash
 harness knowledge digest --since 7d              # 直近 7 日
 harness knowledge digest --domain apps/catalog   # domain 別
+harness knowledge digest --project <id>          # project を絞る（DB read model 経由、Phase 6）
+harness knowledge digest --repo-id <id>          # repo を絞る（DB read model 経由、Phase 6）
 ```
+
+`--project` / `--repo-id`（Phase 6）は DB read model 経由で集計する。指定時は
+`--since` は無視され warning（`--domain` は scope を refine する）。scope 無しは
+従来の file-based 集計。
 
 - **Candidates**: 各 run の `knowledge-candidates.yaml` を kind 別に集計（run の startedAt で `--since`、candidate.domain で `--domain` フィルタ）
 - **Promoted**: `docs/knowledge/<kind>/*.md` の frontmatter（`promoted_at` / `domain`）でフィルタして件数
@@ -245,10 +286,17 @@ harness inbox --today         # 今日 start した run のみ
 harness inbox --needs-action  # action が要る section のみ（knowledge を除く）
 harness inbox --failed        # failed section のみ
 harness inbox --cleanup       # cleanup-candidates section のみ
+harness inbox --project <id>  # project を絞る（DB read model 経由、Phase 6）
+harness inbox --repo-id <id>  # repo を絞る（DB read model 経由、Phase 6）
 harness inbox --json          # JSON 出力
 ```
 
 各 section に次操作の hint（`→ harness ...`）が付く。cleanup candidate は「approved/rejected かつ worktree 残存」、knowledge は `knowledge-candidates.yaml` に候補がある run。run の読み込みは SQLite index があれば使い、無ければ `runs/` の file scan にフォールバック（JSON の `source` で確認可）。
+
+`--project` / `--repo-id`（Phase 6）は DB read model 経由で集計する（needs_review /
+changes_requested / failed / knowledge-candidate runs）。指定時は `--today` /
+`--needs-action` / `--failed` / `--cleanup` は無視され warning。scope 無しは従来の
+file-based ビュー（cleanup section は scope 経路では worktree 検査をしないため非掲載）。
 
 ## `harness run show / timeline / artifacts`
 
@@ -487,6 +535,12 @@ run-20260521-apps-orders-mpf2lhm...     apps/orders   needs_review  allowed  -  
 ## `harness index`
 
 `runs/` を走査する代わりに一覧・検索を高速化する **SQLite index**（Phase 3-5）。
+
+> **Phase 6 で deprecated。** `index.sqlite` は `harness.sqlite`（`harness db
+> import` で構築する read model、[`db.md`](./db.md)）に置き換わった。`index` 系
+> コマンドは legacy の `review list --use-index` 用に残るが、実行すると
+> deprecation warning を出す。新しい一覧・集計・ダッシュボードは `harness db` /
+> `harness dashboard` を使う。
 
 ```bash
 harness index rebuild        # runs/ 全走査から index を再構築

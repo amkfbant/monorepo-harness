@@ -35,8 +35,9 @@ project profile → domain registry → templates / presets / context packs
 8. 複数プロジェクトを同じ `HARNESS_ROOT` で扱っても **lock / context pack** が
    混線しない（lock は repo namespaced、context pack は run 単位）。
 
-> knowledge / metrics / inbox / digest の project namespace・filter は Phase 5
-> 範囲外（follow-up）。`docs/reports/2026-05-22-phase5-close.md` 参照。
+> metrics / inbox / knowledge digest / backlog の `--project` / `--repo-id`
+> filter は Phase 6 で実装済み（DB read model 経由、[`db.md`](./db.md)）。
+> promoted knowledge の project namespace は引き続き follow-up。
 
 ### 非ゴール
 
@@ -172,12 +173,11 @@ harness workflow reviewed-run --project <id> --domain <domain> --goal <text>
 template / preset / context pack id を記録する。旧 run は `project` を持たず
 legacy 扱い。
 
-### follow-up（Phase 5 範囲外）
+### follow-up
 
-次は未実装。`docs/reports/2026-05-22-phase5-close.md` の follow-up 節を参照:
-
+- **metrics / inbox / knowledge digest / backlog の `--project` / `--repo-id`
+  filter** — Phase 6 で実装済み（DB read model 経由）。`docs/reports/2026-05-22-phase6-close.md` 参照。
 - **knowledge context / promoted knowledge の project namespace** — knowledge
   candidate は `runs/<runId>/` 配下で run 単位に分離済み。`docs/knowledge-context/`
   のディレクトリ namespace 化と promoted frontmatter への `repo_id` / `project_id`
-  追加は未実装。
-- **metrics / inbox / digest の `--project` / `--repo-id` filter** — 未実装。
+  追加は未実装（Phase 6 でも継続 follow-up）。

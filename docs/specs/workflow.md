@@ -218,9 +218,6 @@ locks/<repoId>--<domain-slug>-<hash>.lock  # active run の lock; runId / pid / 
 
 ## Phase 6: DB read model
 
-> **Phase 6 実装中（target spec）。** 本節は Phase 6 の到達目標。確定仕様は
-> [`db.md`](./db.md) と実装後の `src/db/` を参照。
-
 Phase 6 で DB（[`db.md`](./db.md)）を導入する。**workflow 自体は変わらない** —
 `runDomainCoding` は引き続き `runs/<runId>/` の file へ書き、file が write-side の
 source of truth。

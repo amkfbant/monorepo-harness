@@ -6,8 +6,9 @@ HTML エクスポートだった。Phase 6 では **DB（[`db.md`](./db.md)）�
 
 実装: `src/dashboard/`。
 
-> **ステータス: Phase 6 実装中（target spec）。** 確定値は実装後の
-> `src/dashboard/snapshot.ts` の型と、更新後の [`cli.md`](./cli.md) が真。
+> **ステータス: Phase 6 close 済み（現状仕様）。** ダッシュボードは
+> `src/dashboard/` に実装済み。`DashboardSnapshot` の確定値は
+> `src/dashboard/snapshot.ts`、CLI は [`cli.md`](./cli.md) の `harness dashboard` 節。
 
 ## 設計原則
 
@@ -16,8 +17,8 @@ HTML エクスポートだった。Phase 6 では **DB（[`db.md`](./db.md)）�
   差し替えに備える seam）。
 - **read-only** — ダッシュボードは観測専用。状態を変える操作（mutation）は持た
   ない。状態遷移は従来どおり CLI コマンドの guard 経由でのみ行う。
-- **project-aware** — project / repo / domain / status / date range で filter
-  できる。同一 domain id を持つ別 project が混線しない。
+- **project-aware** — `--project` / `--repo-id` で filter できる。同一 domain id
+  を持つ別 project が混線しない。
 
 ## DashboardSnapshot
 
@@ -27,7 +28,7 @@ HTML エクスポートだった。Phase 6 では **DB（[`db.md`](./db.md)）�
 - `generatedAt` / `dbPath` / `dbSchemaVersion`
 - `importStatus` — 最終 import の時刻・件数
 - `consistencyStatus` — `ok` / `warn` / `error`（[`db.md`](./db.md) の checker）
-- `filters` — 適用中の project / repo / domain / date
+- `filters` — 適用中の project / repo（`DashboardFilters` は project / repo のみ）
 - `projects` — project ごとの health / policy provenance / drift
 - `overview` — run / review / retry / safety 指標
 - `inbox` — needs_review / changes_requested / failed / cleanup / knowledge
@@ -47,16 +48,16 @@ harness dashboard export [--out <path>] [--project <id>] [--repo-id <id>] [--no-
 DB が無いときは既定で `db import --from-files` 相当を一度実行してから export し、
 その旨を出力に明示する。`--no-auto-import` で抑止できる（CI 用）。
 
-## serve（任意 / Phase 7 候補）
+## serve（Phase 7 候補）
 
-`dashboard serve`（read-only の GET-only HTTP サーバ、`127.0.0.1` バインド、
-non-GET は 405）は Phase 6 の任意 stretch。実装されたか否かは Phase 6 の close
-レポート（`docs/reports/`）に記録する。
+`dashboard serve`（read-only の GET-only HTTP サーバ）は Phase 6 では**未実装**。
+Phase 6 の UI 成果物は静的 `dashboard export`。serve は Phase 7 候補
+（[`../reports/2026-05-22-phase6-close.md`](../reports/2026-05-22-phase6-close.md)
+の follow-up 参照）。
 
 ダッシュボードからの mutation（操作実行）は Phase 6 の非ゴール。導入する場合は
 既存 core オペレーションの薄いラッパとして別フェーズで追加する。
 
 ## CLI
 
-CLI の確定仕様は、実装フェーズで [`cli.md`](./cli.md) の `harness dashboard` 節へ
-反映する（Phase 6-0 時点では従来の Phase 4-8 仕様のまま）。
+CLI の確定仕様は [`cli.md`](./cli.md) の `harness dashboard` 節を参照。

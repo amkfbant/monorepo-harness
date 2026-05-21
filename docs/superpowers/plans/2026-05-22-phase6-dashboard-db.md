@@ -151,7 +151,15 @@ mutation API は作らない。Phase 6 で時間が余れば着手、なけれ�
 6-8   dashboard export（DB snapshot → 静的 HTML、Phase 6 の UI 成果物）
 6-9   multi-project DB fixture matrix
 6-10  docs / close package
+6-11  最終全体レビュー + rvzipper 実行
 ```
+
+6-11 は close 後の総点検ステップ:
+- **最終全体レビュー** — Phase 6 全体（DB schema / importer / repository / dashboard）を
+  codex gpt-5.5 xhigh で一括レビューし、サブフェーズ個別レビューで見落とした
+  跨りの問題（schema とコードの不整合、attribution の一貫性等）を検出・修正。
+- **rvzipper 実行** — `rvzipper` スキルで git 管理下のソース一式を zip 化し、
+  外部 LLM レビュー用アーカイブを更新する。
 
 各サブフェーズの作業サイクル（Phase 3/4/5 と同じ）:
 1. **実装** — TDD（fail → impl → pass）。strict TS / immutability / 小さいファイル。

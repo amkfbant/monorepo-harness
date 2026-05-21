@@ -7,12 +7,11 @@
 
 実装: `src/policy/schema.ts` (Zod) → `src/policy/loader.ts` (YAML パース) → `src/policy/resolver.ts` (マージ)。
 
-**Phase 5（実装中）:** `policies/repos/<repo-id>.yaml` は手書きのほか、project
-profile からコンパイルして生成できるようになる（`harness project init`）。生成
-される policy はこのファイルで説明する `RepoPolicySchema` をそのまま満たすため、
-`resolvePolicy()` の入力としては手書き policy と区別なく扱われる。生成元の
-provenance はサイドカー `policies/repos/<repo-id>.generated.json` に持つ。設計
-方針は [`project.md`](./project.md)（target spec）。
+`policies/repos/<repo-id>.yaml` は手書きのほか、project profile から
+コンパイルして生成できる（`harness project init`、Phase 5）。生成される policy は
+このファイルで説明する `RepoPolicySchema` をそのまま満たすため、`resolvePolicy()`
+の入力としては手書き policy と区別なく扱われる。生成元の provenance はサイドカー
+`policies/repos/<repo-id>.generated.json` に持つ。詳細は [`project.md`](./project.md)。
 
 ## グロブの大原則
 
