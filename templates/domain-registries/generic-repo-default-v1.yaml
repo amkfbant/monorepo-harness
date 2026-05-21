@@ -1,0 +1,34 @@
+version: 1
+registry_id: generic-repo-default-v1
+description: >-
+  Fallback domain registry for repos without a detected Node package
+  manager — covers Python services/packages and a docs domain.
+
+# strict-monorepo-v1 has per-kind defaults for code domains too; docs-only-v1
+# would only grant md/txt write scope and is wrong for service/package code.
+suggested_policy_template: strict-monorepo-v1
+
+patterns:
+  - id_template: "services/{name}"
+    root_glob: "services/*"
+    kind: service
+    command_presets: [python-basic-v1]
+    context_packs: []
+
+  - id_template: "packages/{name}"
+    root_glob: "packages/*"
+    kind: package
+    command_presets: [python-basic-v1]
+    context_packs: []
+
+  - id_template: "libs/{name}"
+    root_glob: "libs/*"
+    kind: package
+    command_presets: [python-basic-v1]
+    context_packs: []
+
+  - id_template: "docs"
+    root_glob: "docs"
+    kind: docs
+    command_presets: []
+    context_packs: []

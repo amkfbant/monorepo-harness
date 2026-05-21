@@ -42,21 +42,22 @@ const ProjectId = z
 // `.` segment, leading/trailing slash, or doubled slash.
 const DOMAIN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
 
-const DomainId = z
-  .string()
-  .refine(
-    (s) =>
-      DOMAIN_ID_RE.test(s) &&
-      !s.includes("\0") &&
-      !s.includes("\\") &&
-      !s.endsWith("/") &&
-      !s.includes("//") &&
-      !hasUnsafeSegment(s),
-    {
-      message:
-        "invalid domain id (allowed: [A-Za-z0-9][A-Za-z0-9._/-], no '.'/'..' segment, no leading/trailing/doubled '/')",
-    },
+/** True when `s` is a safe domain id (also used by the inspector). */
+export function isValidDomainId(s: string): boolean {
+  return (
+    DOMAIN_ID_RE.test(s) &&
+    !s.includes("\0") &&
+    !s.includes("\\") &&
+    !s.endsWith("/") &&
+    !s.includes("//") &&
+    !hasUnsafeSegment(s)
   );
+}
+
+const DomainId = z.string().refine(isValidDomainId, {
+  message:
+    "invalid domain id (allowed: [A-Za-z0-9][A-Za-z0-9._/-], no '.'/'..' segment, no leading/trailing/doubled '/')",
+});
 
 /** repo-relative path used for `domain.root`. `.` (repo root) is allowed. */
 const RepoRelPath = z.string().refine(

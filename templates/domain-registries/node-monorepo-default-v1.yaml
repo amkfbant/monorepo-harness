@@ -1,0 +1,32 @@
+version: 1
+registry_id: node-monorepo-default-v1
+description: >-
+  Default domain registry for Node.js monorepos laid out as apps/ +
+  packages/ + services/ + libs/.
+
+suggested_policy_template: strict-monorepo-v1
+
+patterns:
+  - id_template: "apps/{name}"
+    root_glob: "apps/*"
+    kind: app
+    command_presets: [node-basic-v1]
+    context_packs: [monorepo-docs-v1]
+
+  - id_template: "services/{name}"
+    root_glob: "services/*"
+    kind: service
+    command_presets: [node-basic-v1]
+    context_packs: [monorepo-docs-v1]
+
+  - id_template: "packages/{name}"
+    root_glob: "packages/*"
+    kind: package
+    command_presets: [node-package-basic-v1]
+    context_packs: [monorepo-docs-v1]
+
+  - id_template: "libs/{name}"
+    root_glob: "libs/*"
+    kind: package
+    command_presets: [node-package-basic-v1]
+    context_packs: [monorepo-docs-v1]
