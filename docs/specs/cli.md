@@ -100,8 +100,8 @@ harness backlog defer --item-id <id>
 ```
 
 - item は `backlog/<status>/item-YYYYMMDD-NNN.yaml`（status = open / doing / done / deferred、ディレクトリが status の source of truth）。`backlog/` は harness root 直下、gitignore 対象
-- `backlog run` は item の domain + goal で run を起動（default `reviewed-run`、`--workflow run` で単発 run）。完了後、item の `linkedRuns` に runId を追記し item を `doing` へ移動、run の `meta.backlogItemId` に item id を記録（双方向参照）
-- `harness run show` は `meta.backlogItemId` があれば backlog item を表示する
+- `backlog run` は item の domain + goal で run を起動（default `reviewed-run`、`--workflow run` で単発 run）。完了後、item の `linkedRuns` に runId を追記し item を `doing` へ移動する
+- link は **backlog 側（item の `linkedRuns`）にのみ**保持する。run の meta.json は patch しない（並行 review/cleanup と競合しないため）。`harness run show` は backlog を走査し `linkedRuns` に当該 runId を含む item を逆引きして表示する
 
 ## `harness dashboard export`
 
@@ -224,7 +224,7 @@ harness run timeline --run-id <id>   # events.jsonl を順序付きで人間向�
 harness run artifacts --run-id <id>  # run dir の artifact ファイル一覧
 ```
 
-- `run show`: `meta.json` から status / domain / safetyStatus / reviewer / parent / root / attempt / 変更ファイル数 / commands / PR / backlog item を表示。個々の artifact が欠損していても落ちない
+- `run show`: `meta.json` から status / domain / safetyStatus / reviewer / parent / root / attempt / 変更ファイル数 / commands / PR を表示。backlog item は `backlog/` を逆引きして表示（`findBacklogItemForRun`）。個々の artifact が欠損していても落ちない
 - `run timeline`: `events.jsonl` を 1 行 1 イベントの順序付きリストに整形（events は wall-clock time を持たないため順序＝時系列。timestamp を持つイベントは併記）
 - `run artifacts`: run dir 直下のファイルを列挙
 

@@ -21,7 +21,7 @@ docs/
 
 ## harness の機能（run の後段）
 
-`harness run` の後に続く一連の subcommand（Phase 2〜3）。詳細は [`specs/cli.md`](./specs/cli.md)。クローズ状況は [`reports/2026-05-21-phase2-close.md`](./reports/2026-05-21-phase2-close.md) / [`reports/2026-05-21-phase3-close.md`](./reports/2026-05-21-phase3-close.md)。
+`harness run` の後に続く一連の subcommand（Phase 2〜4）。詳細は [`specs/cli.md`](./specs/cli.md)。クローズ状況は [`reports/2026-05-21-phase2-close.md`](./reports/2026-05-21-phase2-close.md) / [`reports/2026-05-21-phase3-close.md`](./reports/2026-05-21-phase3-close.md) / [`reports/2026-05-21-phase4-close.md`](./reports/2026-05-21-phase4-close.md)。個人運用ルーティンは [`ops/personal-operating-manual.md`](./ops/personal-operating-manual.md)。
 
 | subcommand | 役割 |
 |------------|------|
@@ -37,6 +37,14 @@ docs/
 | `harness workflow reviewed-run …` | run → review auto → review process → rerun を bounded loop で束ねる（Phase 3-1） |
 | `harness index rebuild / status / show` | SQLite run index（派生キャッシュ。source of truth は runs/ files、Phase 3-5） |
 | `harness pr create --run-id <approved-id>` | approved run を GitHub draft PR にする（Phase 3-6） |
+| `harness run show / timeline / artifacts` | 1 run の状態を read-only で集約表示（Phase 4-1） |
+| `harness inbox` | 今日見るべきもの（needs_review / changes_requested / failed / cleanup / knowledge）を集約（Phase 4-2） |
+| `harness backlog add/list/show/run/done/defer` | 個人 backlog。run と双方向リンク（Phase 4-3） |
+| `harness maintenance check / cleanup` | stale lock / orphan worktree 等の残骸を検出・掃除（Phase 4-4） |
+| `harness knowledge digest` | knowledge candidate / promoted / rejected を期間・domain 別集計（Phase 4-5） |
+| `harness metrics summary / domain / failures` | run / review / retry / safety 指標（Phase 4-6） |
+| `harness session plan / start / summary` | ルール順の作業セッション提案（提案のみ、Phase 4-7） |
+| `harness dashboard export` | read-only な静的 HTML ダッシュボード（Phase 4-8） |
 
 `policy.commands.allow` の structured form（`{id, cmd, args, timeout_ms, env}`）と `commands.defaults` も Phase 2 で追加（[`specs/policy.md`](./specs/policy.md)）。各機能の実機デモ結果は `reports/2026-05-21-phase2-*.md`。
 

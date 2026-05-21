@@ -4,7 +4,7 @@
 
 Codex はワークツリー内のファイルを直接編集し、ハーネスは事後に `git diff` を取って **policy の `write` / `deny_write` スコープ** で変更 path を検証する（`read` は codex への prompt/context 用で、読み取りの enforcement はしない）。スコープ外への書き込み・secret 漏洩・symlink 追従などを検出し、レビュー用の artifact 一式を `runs/<runId>/` に残す。
 
-> **Status:** Phase 3 close。Phase 2（ファイルベースで `codex 実行 → 検証 → レビュー → 再実行 → 知見昇格 → cleanup`）に加え、Phase 3 で review-driven retry loop / reviewer 品質評価 / knowledge context 注入 / SQLite index / GitHub PR 連携を追加。`stronger sandbox`（Phase 3-7）は Deferred。
+> **Status:** Phase 4 close。Phase 2（ファイルベースの `codex 実行 → 検証 → レビュー → 再実行 → 知見昇格 → cleanup`）+ Phase 3（review-driven retry / reviewer 品質評価 / knowledge context 注入 / SQLite index / GitHub PR 連携）+ Phase 4（個人運用 CLI: run show / inbox / backlog / maintenance / knowledge digest / metrics / session planning / 静的 dashboard）。`stronger sandbox`（Phase 3-7）は Deferred。
 
 ## 必要環境
 
@@ -120,6 +120,40 @@ Phase 2（ファイルベースで人間がトリガする運用）の上に、P
 
 詳細な close 状況は [`docs/reports/2026-05-21-phase3-close.md`](./docs/reports/2026-05-21-phase3-close.md)（Phase 2 は [`2026-05-21-phase2-close.md`](./docs/reports/2026-05-21-phase2-close.md)）。
 
-## Phase 4 以降の候補
+## Phase 4 で追加した機能 — Personal Operations
 
-Phase 3 でも次はゴールにしない: 完全自律 merge / 人間レビューなしの本番反映 / OS・Container サンドボックス（Phase 3-7 deferred）/ Web UI / 大規模 multi-agent swarm。
+個人が「複数のやりたいこと・複数 run・レビュー待ち・知見・PR 候補」を安全に溜めて・選んで・処理し・振り返るための運用 CLI 群:
+
+| コマンド | Phase | 内容 |
+|----------|-------|------|
+| `harness run show / timeline / artifacts` | 4-1 | 1 run の状態を read-only で一画面集約 |
+| `harness inbox` | 4-2 | 今日見るべきもの（needs_review / changes_requested / failed / cleanup / knowledge）を集約 + action hint |
+| `harness backlog add / list / show / run / done / defer` | 4-3 | やりたいことを backlog に積み、run と双方向リンク |
+| `harness maintenance check / cleanup` | 4-4 | stale lock / orphan worktree 等の残骸を検出・掃除 |
+| `harness knowledge digest` | 4-5 | knowledge candidate / promoted / rejected を期間・domain 別集計 |
+| `harness metrics summary / domain / failures` | 4-6 | run / review / retry / safety 指標 |
+| `harness session plan / start / summary` | 4-7 | ルール順の作業セッション提案（提案のみ、実行しない） |
+| `harness dashboard export` | 4-8 | read-only な静的 HTML ダッシュボード |
+
+運用ルーティン（日次・週次フロー、cleanup / knowledge / retry のルール）は [`docs/ops/personal-operating-manual.md`](./docs/ops/personal-operating-manual.md)。
+
+### Personal Operations quick start
+
+CLI は `npm run --silent harness -- <args>` で起動する（`HARNESS_ROOT` 指定。詳細は上の quick start）。
+
+```bash
+npm run --silent harness -- session summary               # 今 pending なものの件数
+npm run --silent harness -- session start --limit 3       # 今日まず着手する 3 件（提案）
+npm run --silent harness -- inbox                         # needs_review / changes_requested / failed / cleanup / knowledge
+npm run --silent harness -- run show --run-id <id>        # 1 run の状態を確認
+npm run --silent harness -- backlog add --title "..." --domain apps/x --goal "..."   # やりたいことを積む
+npm run --silent harness -- maintenance check             # 週次: 残骸チェック
+npm run --silent harness -- metrics summary --since 7d    # 週次: 運用指標
+npm run --silent harness -- dashboard export              # docs/dashboard/index.html を生成
+```
+
+詳細な close 状況は [`docs/reports/2026-05-21-phase4-close.md`](./docs/reports/2026-05-21-phase4-close.md)。
+
+## Phase 5 以降の候補
+
+次はゴールにしない: 完全自律 merge / 人間レビューなしの本番反映 / OS・Container サンドボックス（Phase 3-7 deferred）/ Web dashboard（Phase 4-8 は静的 export のみ）/ 大規模 multi-agent swarm。
