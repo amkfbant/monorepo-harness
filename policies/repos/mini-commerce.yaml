@@ -31,8 +31,24 @@ domains:
       - .github/**
     commands:
       allow:
+        # legacy string form (sh -c)
         - "node -e \"console.log('lint ok')\""
-        - "test -f apps/catalog/src/validation.ts"
+        # structured form: argv spawn, per-command timeout
+        - id: check-validation-file
+          cmd: test
+          args: ["-f", "apps/catalog/src/validation.ts"]
+          timeout_ms: 30000
+        # structured form: per-command env override
+        - id: node-version
+          cmd: node
+          args: ["--version"]
+          env:
+            NODE_ENV: test
+      defaults:
+        timeout_ms: 120000
+        env_allowlist:
+          - PATH
+          - HOME
 
   apps/orders:
     read:
