@@ -41,6 +41,12 @@ import {
   renderRunArtifacts,
   RunViewError,
 } from "../core/run-viewer.js";
+import {
+  buildInbox,
+  formatInbox,
+  formatInboxJson,
+  type InboxSection,
+} from "../core/inbox.js";
 import { RUN_STATUSES } from "../logging/run-log.js";
 import {
   prepareRerunFromReview,
@@ -837,6 +843,52 @@ prCmd
       }
       throw e;
     }
+  });
+
+program
+  .command("inbox")
+  .description(
+    "today's queue: needs_review / changes_requested / failed / cleanup / knowledge",
+  )
+  .option("--today", "only runs started today", false)
+  .option(
+    "--needs-action",
+    "only sections that need an action (exclude knowledge)",
+    false,
+  )
+  .option("--failed", "only the failed section", false)
+  .option("--cleanup", "only the cleanup-candidates section", false)
+  .option("--json", "emit JSON instead of text", false)
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    const inbox = await buildInbox({
+      runsDir: paths.runsDir,
+      workspacesDir: paths.workspacesDir,
+      indexDbPath: paths.indexDbPath,
+      ...(raw.today ? { today: new Date() } : {}),
+    });
+    // section selection is decided BEFORE the json branch so --failed /
+    // --cleanup / --needs-action apply to JSON output too.
+    let sections: InboxSection[] | undefined;
+    if (raw.failed) sections = ["failed"];
+    else if (raw.cleanup) sections = ["cleanupCandidates"];
+    else if (raw.needsAction) {
+      sections = [
+        "needsReview",
+        "changesRequested",
+        "failed",
+        "cleanupCandidates",
+      ];
+    }
+    if (raw.json) {
+      process.stdout.write(
+        sections ? formatInboxJson(inbox, sections) : formatInboxJson(inbox),
+      );
+      return;
+    }
+    process.stdout.write(
+      sections ? formatInbox(inbox, sections) : formatInbox(inbox),
+    );
   });
 
 const cleanupCmd = program

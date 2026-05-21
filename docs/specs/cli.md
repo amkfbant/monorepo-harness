@@ -86,6 +86,21 @@ resolved policy for apps/catalog:
 
 policy ファイルの編集後に確認するのが典型用途。
 
+## `harness inbox`
+
+今日見るべきものを 1 コマンドに集約する個人運用ビュー（Phase 4-2）。
+
+```bash
+harness inbox                 # needs_review / changes_requested / failed / cleanup / knowledge を集約
+harness inbox --today         # 今日 start した run のみ
+harness inbox --needs-action  # action が要る section のみ（knowledge を除く）
+harness inbox --failed        # failed section のみ
+harness inbox --cleanup       # cleanup-candidates section のみ
+harness inbox --json          # JSON 出力
+```
+
+各 section に次操作の hint（`→ harness ...`）が付く。cleanup candidate は「approved/rejected かつ worktree 残存」、knowledge は `knowledge-candidates.yaml` に候補がある run。run の読み込みは SQLite index があれば使い、無ければ `runs/` の file scan にフォールバック（JSON の `source` で確認可）。
+
 ## `harness run show / timeline / artifacts`
 
 1 つの run の状態を読むための read-only サブコマンド（Phase 4-1）。

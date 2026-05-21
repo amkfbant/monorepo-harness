@@ -96,6 +96,7 @@ Finding ID は **F1, F2, …** で連番。レポート間で連続させる（�
 | 2026-05-21 | [Phase 3-6 GitHub PR デモ](2026-05-21-phase3-6-github-pr-demo.md) | `harness pr create`（approved run → draft PR）。codex review で P1×2+P2×1 を fix。E3-6-1 で amkfbant/mini-commerce に draft PR #1 を実機作成（デモ後クローズ）、E3-6-2/3 で非 approved 拒否。新 finding なし |
 | 2026-05-21 | [Phase 3 close package](2026-05-21-phase3-close.md) | Phase 3 全体（3-1〜3-6 + 3-8）のクローズ。10 項目の close 条件、CLI 一覧、codex review サマリ。Phase 3-7（stronger sandbox）は Deferred。`phase3-close` タグ |
 | 2026-05-21 | [Phase 4-1 run show デモ](2026-05-21-phase4-1-run-show-demo.md) | `run show/timeline/artifacts`（1 run を read-only で一画面集約）。codex review で P2×3 を fix。E4-1-1〜6 を既存 runs/ で実機検証、新 finding なし |
+| 2026-05-21 | [Phase 4-2 inbox デモ](2026-05-21-phase4-2-inbox-demo.md) | `harness inbox`（needs_review/cr/failed/cleanup/knowledge を集約 + action hint）。codex review で P2×3 を fix。E4-2-1〜6 を既存 runs/ で実機検証、新 finding なし |
 
 ## Workflow
 
