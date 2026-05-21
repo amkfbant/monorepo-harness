@@ -78,7 +78,7 @@ describe("processReviewDecision", () => {
       reviewer: "alice",
       reviewed_at: "2026-05-20T12:00:00Z",
     });
-    const r = await processReviewDecision({ runsDir, runId: "run-A" });
+    const r = await processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-A" });
     expect(r.previousStatus).toBe("needs_review");
     expect(r.newStatus).toBe("approved");
     expect(r.reviewer).toBe("alice");
@@ -97,7 +97,7 @@ describe("processReviewDecision", () => {
       reviewer: "bob",
       reviewed_at: "2026-05-20T13:00:00Z",
     });
-    const r = await processReviewDecision({ runsDir, runId: "run-B" });
+    const r = await processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-B" });
     expect(r.newStatus).toBe("changes_requested");
 
     writeFakeRun(runsDir, "run-C", {}, {
@@ -105,7 +105,7 @@ describe("processReviewDecision", () => {
       reviewer: "carol",
       reviewed_at: "2026-05-20T14:00:00Z",
     });
-    const r2 = await processReviewDecision({ runsDir, runId: "run-C" });
+    const r2 = await processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-C" });
     expect(r2.newStatus).toBe("rejected");
   });
 
@@ -117,7 +117,7 @@ describe("processReviewDecision", () => {
       reviewed_at: null,
     });
     const before = new Date().getTime();
-    const r = await processReviewDecision({ runsDir, runId: "run-D" });
+    const r = await processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-D" });
     const after = new Date().getTime();
     const ts = new Date(r.reviewedAt).getTime();
     expect(ts).toBeGreaterThanOrEqual(before);
@@ -133,7 +133,7 @@ describe("processReviewDecision", () => {
     const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
     writeFakeRun(runsDir, "run-E", {}, { decision: "pending" });
     await expect(
-      processReviewDecision({ runsDir, runId: "run-E" }),
+      processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-E" }),
     ).rejects.toThrow(/pending/);
   });
 
@@ -144,7 +144,7 @@ describe("processReviewDecision", () => {
       reviewer: "alice",
     });
     await expect(
-      processReviewDecision({ runsDir, runId: "run-F" }),
+      processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-F" }),
     ).rejects.toThrow(/status is "approved"/);
   });
 
@@ -156,7 +156,7 @@ describe("processReviewDecision", () => {
       reviewer: "alice",
     });
     await expect(
-      processReviewDecision({ runsDir, runId: "run-G" }),
+      processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-G" }),
     ).rejects.toThrow(/runId/);
   });
 
@@ -168,7 +168,7 @@ describe("processReviewDecision", () => {
       reviewer: "alice",
     });
     await expect(
-      processReviewDecision({ runsDir, runId: "run-H" }),
+      processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-H" }),
     ).rejects.toThrow(/domain/);
   });
 
@@ -179,7 +179,7 @@ describe("processReviewDecision", () => {
       reviewer: "alice",
       reviewed_at: "2026-05-20T12:00:00Z",
     });
-    await processReviewDecision({ runsDir, runId: "run-I" });
+    await processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-I" });
     const events = readFileSync(
       join(runsDir, "run-I", "events.jsonl"),
       "utf8",
@@ -196,7 +196,7 @@ describe("processReviewDecision", () => {
   it("rejects path-traversal runId (../)", async () => {
     const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
     await expect(
-      processReviewDecision({ runsDir, runId: "../escape" }),
+      processReviewDecision({ runsDir, locksDir: runsDir, runId: "../escape" }),
     ).rejects.toThrow(/invalid runId/);
   });
 
@@ -221,7 +221,7 @@ describe("processReviewDecision", () => {
       ].join("\n"),
     );
     await expect(
-      processReviewDecision({ runsDir, runId: "run-bad-meta-001" }),
+      processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-bad-meta-001" }),
     ).rejects.toThrow(/not an object/);
   });
 
@@ -232,8 +232,55 @@ describe("processReviewDecision", () => {
       reviewer: null,
       reviewed_at: "2026-05-20T12:00:00Z",
     });
-    const r = await processReviewDecision({ runsDir, runId: "run-J" });
+    const r = await processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-J" });
     expect(r.reviewer).toBeNull();
     expect(r.warnings).toContain("reviewer field is null");
+  });
+
+  it("acquires the domain lock — a concurrent cleanup holding it is rejected", async () => {
+    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
+    const locksDir = mkdtempSync(join(tmpdir(), "harness-rp-locks-"));
+    writeFakeRun(runsDir, "run-K", { domain: "apps/user" }, {
+      decision: "approved",
+      reviewer: "alice",
+      reviewed_at: "2026-05-20T12:00:00Z",
+    });
+    const { acquireDomainLock } = await import(
+      "../../../src/workspace/domain-lock.js"
+    );
+    // simulate a concurrent cleanup holding the same domain lock
+    const held = await acquireDomainLock({
+      locksDir,
+      domain: "apps/user",
+      runId: "cleanup:run-K",
+    });
+    try {
+      await expect(
+        processReviewDecision({ runsDir, locksDir, runId: "run-K" }),
+      ).rejects.toThrow(/locked/);
+    } finally {
+      await held.release();
+    }
+  });
+
+  it("releases the domain lock after processing so a later call succeeds", async () => {
+    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
+    const locksDir = mkdtempSync(join(tmpdir(), "harness-rp-locks-"));
+    writeFakeRun(runsDir, "run-L", { domain: "apps/user" }, {
+      decision: "approved",
+      reviewer: "alice",
+      reviewed_at: "2026-05-20T12:00:00Z",
+    });
+    await processReviewDecision({ runsDir, locksDir, runId: "run-L" });
+    // lock must be released — acquiring it now should succeed
+    const { acquireDomainLock } = await import(
+      "../../../src/workspace/domain-lock.js"
+    );
+    const after = await acquireDomainLock({
+      locksDir,
+      domain: "apps/user",
+      runId: "probe",
+    });
+    await after.release();
   });
 });

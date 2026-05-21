@@ -235,6 +235,7 @@ reviewCmd
     try {
       const result = await processReviewDecision({
         runsDir: paths.runsDir,
+        locksDir: paths.locksDir,
         runId: String(raw.runId),
       });
       for (const w of result.warnings) {

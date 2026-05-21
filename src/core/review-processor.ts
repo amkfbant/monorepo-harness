@@ -6,6 +6,7 @@ import {
   writeReviewDecision,
 } from "./review-decision-loader.js";
 import type { ReviewDecisionValue } from "./review-decision-schema.js";
+import { acquireDomainLock } from "../workspace/domain-lock.js";
 
 /**
  * Thrown when review processing is rejected for a reason the user can fix
@@ -25,6 +26,13 @@ export class ReviewGateError extends Error {
 export interface ProcessOpts {
   runsDir: string;
   runId: string;
+  /**
+   * locksDir is required: review processing mutates meta.json, which
+   * `harness cleanup` for the same run also mutates. Both acquire the
+   * per-domain lock so a concurrent cleanup can't interleave a stale
+   * meta write.
+   */
+  locksDir: string;
   /** Override "now" for deterministic tests. */
   now?: Date;
 }
@@ -65,6 +73,36 @@ function isUserFacingFsError(e: unknown): boolean {
   );
 }
 
+// Read + parse + shape-validate meta.json. Missing file, permission denied,
+// invalid JSON, or wrong shape are all user-fixable → ReviewGateError.
+async function readMeta(
+  metaPath: string,
+  runId: string,
+): Promise<RunMeta> {
+  let metaRaw: unknown;
+  try {
+    metaRaw = JSON.parse(await readFile(metaPath, "utf8"));
+  } catch (e) {
+    if (isUserFacingFsError(e) || e instanceof SyntaxError) {
+      throw new ReviewGateError(
+        `failed to read meta.json for ${runId}: ${(e as Error).message}`,
+      );
+    }
+    throw e;
+  }
+  if (!metaRaw || typeof metaRaw !== "object" || Array.isArray(metaRaw)) {
+    throw new ReviewGateError(`meta.json for ${runId} is not an object`);
+  }
+  const meta = metaRaw as RunMeta;
+  if (typeof meta.domain !== "string" || meta.domain === "") {
+    throw new ReviewGateError(`meta.json for ${runId} has invalid domain`);
+  }
+  if (typeof meta.status !== "string") {
+    throw new ReviewGateError(`meta.json for ${runId} has invalid status`);
+  }
+  return meta;
+}
+
 export async function processReviewDecision(
   opts: ProcessOpts,
 ): Promise<ProcessResult> {
@@ -79,35 +117,31 @@ export async function processReviewDecision(
   const metaPath = join(runDir, "meta.json");
   const decisionPath = join(runDir, "review-decision.yaml");
 
-  // Read + parse meta.json. Missing file, permission denied, or invalid
-  // JSON are user-fixable.
-  let metaRaw: unknown;
+  // First read is only to learn the domain so we can lock it. The
+  // authoritative read happens again *under* the lock below, so a
+  // concurrent cleanup can't change status between the two reads.
+  const domainProbe = await readMeta(metaPath, opts.runId);
+  const lock = await acquireDomainLock({
+    locksDir: opts.locksDir,
+    domain: domainProbe.domain,
+    runId: `review:${opts.runId}`,
+  });
+
   try {
-    metaRaw = JSON.parse(await readFile(metaPath, "utf8"));
-  } catch (e) {
-    if (isUserFacingFsError(e) || e instanceof SyntaxError) {
-      throw new ReviewGateError(
-        `failed to read meta.json for ${opts.runId}: ${(e as Error).message}`,
-      );
-    }
-    throw e;
+    return await processUnderLock(opts, runDir, metaPath, decisionPath);
+  } finally {
+    await lock.release();
   }
-  if (!metaRaw || typeof metaRaw !== "object" || Array.isArray(metaRaw)) {
-    throw new ReviewGateError(
-      `meta.json for ${opts.runId} is not an object`,
-    );
-  }
-  const meta = metaRaw as RunMeta;
-  if (typeof meta.domain !== "string" || meta.domain === "") {
-    throw new ReviewGateError(
-      `meta.json for ${opts.runId} has invalid domain`,
-    );
-  }
-  if (typeof meta.status !== "string") {
-    throw new ReviewGateError(
-      `meta.json for ${opts.runId} has invalid status`,
-    );
-  }
+}
+
+async function processUnderLock(
+  opts: ProcessOpts,
+  runDir: string,
+  metaPath: string,
+  decisionPath: string,
+): Promise<ProcessResult> {
+  // Authoritative meta read — under the domain lock.
+  const meta = await readMeta(metaPath, opts.runId);
 
   // Load + validate review-decision.yaml. Any failure here (FS error,
   // YAML parse error, Zod validation error) is by definition user-fixable
