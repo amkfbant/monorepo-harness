@@ -135,4 +135,37 @@ describe("harness cleanup", () => {
     const { status } = run(["cleanup", "--run-id", s.runId], s.root);
     expect(status).toBe(1);
   });
+
+  it("--scope run deletes the run dir", async () => {
+    const s = await setupRun("approved");
+    const { stdout, status } = run(
+      ["cleanup", "--run-id", s.runId, "--scope", "run"],
+      s.root,
+    );
+    expect(status).toBe(0);
+    expect(stdout).toMatch(/scope=run/);
+    expect(stdout).toMatch(/runDirRemoved=true/);
+    expect(existsSync(join(s.root, "runs", s.runId))).toBe(false);
+  });
+
+  it("--scope all deletes the run dir", async () => {
+    const s = await setupRun("approved");
+    const { stdout, status } = run(
+      ["cleanup", "--run-id", s.runId, "--scope", "all"],
+      s.root,
+    );
+    expect(status).toBe(0);
+    expect(stdout).toMatch(/scope=all/);
+    expect(existsSync(join(s.root, "runs", s.runId))).toBe(false);
+  });
+
+  it("rejects an invalid --scope value with exit 1", async () => {
+    const s = await setupRun("approved");
+    const { stdout, status } = run(
+      ["cleanup", "--run-id", s.runId, "--scope", "bogus"],
+      s.root,
+    );
+    expect(status).toBe(1);
+    expect(stdout).toMatch(/--scope must be/);
+  });
 });

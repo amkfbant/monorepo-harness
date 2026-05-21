@@ -1,9 +1,20 @@
-import { readFile, writeFile, appendFile } from "node:fs/promises";
+import { readFile, writeFile, appendFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { RunMeta, RunStatus } from "../logging/run-log.js";
 import { gitCli } from "../git/git-cli.js";
 import { acquireDomainLock } from "../workspace/domain-lock.js";
+
+/**
+ * How much of a run's footprint to remove.
+ * - workspace: worktree + branch + the (now-empty) workspaces/<runId>/ dir.
+ *   The run dir is KEPT and meta.status flips to "cleaned" (audit trail).
+ * - run: workspace scope + delete runs/<runId>/ entirely. No meta update
+ *   is possible afterward (the file is gone); the deletion is the record.
+ * - all: run scope + `git worktree prune` to clear any stale worktree
+ *   bookkeeping the target repo may still hold.
+ */
+export type CleanupScope = "workspace" | "run" | "all";
 
 export interface CleanupOpts {
   runsDir: string;
@@ -17,17 +28,22 @@ export interface CleanupOpts {
   runId: string;
   /** allow cleaning failed-* / needs_review / verified / generated runs */
   force?: boolean;
+  /** how much to remove; default "workspace" */
+  scope?: CleanupScope;
   /** override git invocation timeout */
   gitTimeoutMs?: number;
 }
 
 export interface CleanupResult {
   runId: string;
+  scope: CleanupScope;
   /** true if a worktree existed and was removed by this call */
   worktreeRemoved: boolean;
   /** true if a branch existed and was removed by this call */
   branchRemoved: boolean;
-  /** status BEFORE cleanup (post-cleanup is always "cleaned" or unchanged on no-op) */
+  /** true if runs/<runId>/ was deleted (scope run / all) */
+  runDirRemoved: boolean;
+  /** status BEFORE cleanup */
   previousStatus: RunStatus;
 }
 
@@ -155,12 +171,15 @@ export async function cleanupRun(opts: CleanupOpts): Promise<CleanupResult> {
     runId: `cleanup:${opts.runId}`,
   });
 
-  const worktreePath = join(opts.workspacesDir, opts.runId, "repo");
+  const scope: CleanupScope = opts.scope ?? "workspace";
+  const workspaceRunDir = join(opts.workspacesDir, opts.runId);
+  const worktreePath = join(workspaceRunDir, "repo");
   const gitOpts: { cwd: string; timeoutMs?: number } = { cwd: meta.repoPath };
   if (opts.gitTimeoutMs !== undefined) gitOpts.timeoutMs = opts.gitTimeoutMs;
 
   let worktreeRemoved = false;
   let branchRemoved = false;
+  let runDirRemoved = false;
 
   try {
     if (existsSync(worktreePath)) {
@@ -194,30 +213,51 @@ export async function cleanupRun(opts: CleanupOpts): Promise<CleanupResult> {
     }
 
     const previousStatus = meta.status;
-    if (meta.status !== "cleaned") {
-      const updated: RunMeta = { ...meta, status: "cleaned" };
-      await writeFile(
-        metaPath,
-        `${JSON.stringify(updated, null, 2)}\n`,
-        "utf8",
-      );
-      await appendFile(
-        join(runDir, "events.jsonl"),
-        `${JSON.stringify({
-          type: "cleaned",
-          runId: opts.runId,
-          previousStatus,
-          worktreeRemoved,
-          branchRemoved,
-        })}\n`,
-        "utf8",
-      );
+
+    if (scope === "workspace") {
+      // Keep the run dir as audit trail; flip status to cleaned.
+      if (meta.status !== "cleaned") {
+        const updated: RunMeta = { ...meta, status: "cleaned" };
+        await writeFile(
+          metaPath,
+          `${JSON.stringify(updated, null, 2)}\n`,
+          "utf8",
+        );
+        await appendFile(
+          join(runDir, "events.jsonl"),
+          `${JSON.stringify({
+            type: "cleaned",
+            runId: opts.runId,
+            scope,
+            previousStatus,
+            worktreeRemoved,
+            branchRemoved,
+          })}\n`,
+          "utf8",
+        );
+      }
+    } else {
+      // run / all: delete runs/<runId>/ entirely. No meta update is
+      // possible afterward — the deletion itself is the record.
+      await rm(runDir, { recursive: true, force: true });
+      runDirRemoved = true;
+    }
+
+    // Remove the (now-empty) workspaces/<runId>/ parent dir for every scope.
+    await rm(workspaceRunDir, { recursive: true, force: true });
+
+    if (scope === "all") {
+      // Clear any stale worktree bookkeeping the target repo still holds.
+      // This is repo-wide (not just this run) — appropriate for "all".
+      await gitCli(["worktree", "prune"], gitOpts);
     }
 
     return {
       runId: opts.runId,
+      scope,
       worktreeRemoved,
       branchRemoved,
+      runDirRemoved,
       previousStatus,
     };
   } finally {

@@ -298,7 +298,7 @@ reviewCmd
 const cleanupCmd = program
   .command("cleanup")
   .description(
-    "remove worktree + branch for an approved/rejected run (run dir kept)",
+    "remove worktree + branch for an approved/rejected run (run dir kept by default)",
   )
   .requiredOption("--run-id <id>", "target run identifier")
   .option(
@@ -306,8 +306,20 @@ const cleanupCmd = program
     "allow cleanup of needs_review / failed-* / verified / generated (NOT changes_requested or running)",
     false,
   )
+  .option(
+    "--scope <scope>",
+    "workspace (worktree+branch, keep run dir) | run (also delete run dir) | all (also git worktree prune)",
+    "workspace",
+  )
   .action(async (raw: Record<string, unknown>) => {
     const paths = harnessPaths(getHarnessRoot());
+    const scope = String(raw.scope);
+    if (scope !== "workspace" && scope !== "run" && scope !== "all") {
+      process.stderr.write(
+        `harness error: --scope must be workspace | run | all (got ${JSON.stringify(scope)})\n`,
+      );
+      process.exit(1);
+    }
     try {
       const result = await cleanupRun({
         runsDir: paths.runsDir,
@@ -315,9 +327,10 @@ const cleanupCmd = program
         locksDir: paths.locksDir,
         runId: String(raw.runId),
         force: Boolean(raw.force),
+        scope,
       });
       process.stdout.write(
-        `run=${result.runId} previousStatus=${result.previousStatus} worktreeRemoved=${result.worktreeRemoved} branchRemoved=${result.branchRemoved}\n`,
+        `run=${result.runId} scope=${result.scope} previousStatus=${result.previousStatus} worktreeRemoved=${result.worktreeRemoved} branchRemoved=${result.branchRemoved} runDirRemoved=${result.runDirRemoved}\n`,
       );
     } catch (e) {
       if (e instanceof CleanupGateError) {

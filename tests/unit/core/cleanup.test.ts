@@ -263,4 +263,70 @@ describe("cleanupRun", () => {
     expect(r2.worktreeRemoved).toBe(false);
     expect(r2.branchRemoved).toBe(false);
   });
+
+  it("scope=workspace keeps the run dir and removes the empty workspace dir", async () => {
+    const s = await setup("approved");
+    const r = await cleanupRun({
+      runsDir: join(s.harnessRoot, "runs"),
+      workspacesDir: join(s.harnessRoot, "workspaces"),
+      locksDir: join(s.harnessRoot, "locks"),
+      runId: s.runId,
+      scope: "workspace",
+    });
+    expect(r.scope).toBe("workspace");
+    expect(r.runDirRemoved).toBe(false);
+    expect(existsSync(join(s.harnessRoot, "runs", s.runId, "meta.json"))).toBe(
+      true,
+    );
+    // workspaces/<runId>/ parent dir removed
+    expect(existsSync(join(s.harnessRoot, "workspaces", s.runId))).toBe(false);
+  });
+
+  it("scope=run deletes the run dir entirely", async () => {
+    const s = await setup("approved");
+    const r = await cleanupRun({
+      runsDir: join(s.harnessRoot, "runs"),
+      workspacesDir: join(s.harnessRoot, "workspaces"),
+      locksDir: join(s.harnessRoot, "locks"),
+      runId: s.runId,
+      scope: "run",
+    });
+    expect(r.scope).toBe("run");
+    expect(r.runDirRemoved).toBe(true);
+    expect(r.previousStatus).toBe("approved");
+    expect(existsSync(join(s.harnessRoot, "runs", s.runId))).toBe(false);
+  });
+
+  it("scope=all deletes the run dir and prunes git worktree bookkeeping", async () => {
+    const s = await setup("approved");
+    const r = await cleanupRun({
+      runsDir: join(s.harnessRoot, "runs"),
+      workspacesDir: join(s.harnessRoot, "workspaces"),
+      locksDir: join(s.harnessRoot, "locks"),
+      runId: s.runId,
+      scope: "all",
+    });
+    expect(r.scope).toBe("all");
+    expect(r.runDirRemoved).toBe(true);
+    expect(existsSync(join(s.harnessRoot, "runs", s.runId))).toBe(false);
+    // git worktree list should no longer reference the pruned worktree
+    const list = execFileSync("git", ["worktree", "list"], {
+      cwd: s.repoPath,
+    }).toString();
+    expect(list).not.toContain(s.runId);
+  });
+
+  it("scope=run still honors the status gate (changes_requested refused)", async () => {
+    const s = await setup("changes_requested");
+    await expect(
+      cleanupRun({
+        runsDir: join(s.harnessRoot, "runs"),
+        workspacesDir: join(s.harnessRoot, "workspaces"),
+        locksDir: join(s.harnessRoot, "locks"),
+        runId: s.runId,
+        scope: "run",
+      }),
+    ).rejects.toThrow(/changes_requested/);
+    expect(existsSync(join(s.harnessRoot, "runs", s.runId))).toBe(true);
+  });
 });
