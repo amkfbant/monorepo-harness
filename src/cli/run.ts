@@ -67,6 +67,10 @@ import {
   parseDuration,
   MaintenanceError,
 } from "../core/maintenance.js";
+import {
+  buildKnowledgeDigest,
+  formatDigest,
+} from "../core/knowledge-digest.js";
 import { RUN_STATUSES } from "../logging/run-log.js";
 import {
   prepareRerunFromReview,
@@ -1503,6 +1507,32 @@ knowledgeCmd
       }
       throw e;
     }
+  });
+
+knowledgeCmd
+  .command("digest")
+  .description("aggregate knowledge candidates / promotions / rejections")
+  .option("--since <dur>", "only items within this window, e.g. 7d / 12h")
+  .option("--domain <domain>", "restrict to one domain")
+  .action(async (raw: Record<string, unknown>) => {
+    const harnessRoot = getHarnessRoot();
+    const paths = harnessPaths(harnessRoot);
+    let since: Date | undefined;
+    if (raw.since !== undefined) {
+      try {
+        since = new Date(Date.now() - parseDuration(String(raw.since)));
+      } catch (e) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+    }
+    const digest = await buildKnowledgeDigest({
+      runsDir: paths.runsDir,
+      knowledgeDir: join(harnessRoot, "docs", "knowledge"),
+      ...(since ? { since } : {}),
+      ...(raw.domain !== undefined ? { domain: String(raw.domain) } : {}),
+    });
+    process.stdout.write(formatDigest(digest));
   });
 
 program.parseAsync(process.argv).catch((e: unknown) => {

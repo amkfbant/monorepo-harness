@@ -103,6 +103,22 @@ harness backlog defer --item-id <id>
 - `backlog run` は item の domain + goal で run を起動（default `reviewed-run`、`--workflow run` で単発 run）。完了後、item の `linkedRuns` に runId を追記し item を `doing` へ移動、run の `meta.backlogItemId` に item id を記録（双方向参照）
 - `harness run show` は `meta.backlogItemId` があれば backlog item を表示する
 
+## `harness knowledge digest`
+
+knowledge candidate / promoted / rejected を期間・domain 別に集計して振り返る（Phase 4-5）。
+
+```bash
+harness knowledge digest --since 7d              # 直近 7 日
+harness knowledge digest --domain apps/catalog   # domain 別
+```
+
+- **Candidates**: 各 run の `knowledge-candidates.yaml` を kind 別に集計（run の startedAt で `--since`、candidate.domain で `--domain` フィルタ）
+- **Promoted**: `docs/knowledge/<kind>/*.md` の frontmatter（`promoted_at` / `domain`）でフィルタして件数
+- **Rejected**: 各 run の `knowledge-decisions.yaml` の `rejected` 決定を `decidedAt` でフィルタして件数
+- **Suggested actions**: 未対応の candidate を持つ run に `harness knowledge list --run-id` を提案
+
+`--since` は `7d` / `12h` 形式。
+
 ## `harness maintenance`
 
 個人運用で溜まる残骸（stale lock / orphan worktree / oversized run dir 等）を検出・掃除する（Phase 4-4）。
