@@ -8,6 +8,7 @@ import { runMigrations } from "../../../src/db/migrations.js";
 import { RunRepository } from "../../../src/db/repositories/runs.js";
 import { recordRunArtifacts } from "../../../src/db/run-artifacts.js";
 import { beginExporting } from "../../../src/db/atomic-write.js";
+import { StateConflictError } from "../../../src/db/errors.js";
 
 /**
  * Phase 7-4 — the diff-verification result tables (`run_changed_files` /
@@ -88,6 +89,56 @@ describe("RunRepository.upsertViolations", () => {
           .get() as { n: number }
       ).n,
     ).toBe(0);
+    db.close();
+  });
+});
+
+describe("RunRepository.applyReviewDecision", () => {
+  it("transitions needs_review and records the decision", () => {
+    const db = freshDb();
+    insertRun(db, "run-r");
+    const repo = new RunRepository(db);
+    const res = repo.applyReviewDecision({
+      runId: "run-r",
+      newStatus: "changes_requested",
+      decision: "changes_requested",
+      reviewer: "alice",
+      reviewedAt: "2026-05-22T01:00:00Z",
+      requiredChanges: ["fix the thing"],
+      decisionYaml: "decision: changes_requested\n",
+    });
+    expect(res.previousStatus).toBe("needs_review");
+    expect(
+      (
+        db
+          .prepare("SELECT status FROM runs WHERE run_id = 'run-r'")
+          .get() as { status: string }
+      ).status,
+    ).toBe("changes_requested");
+    const change = db
+      .prepare(
+        "SELECT change_text FROM review_required_changes WHERE run_id = 'run-r'",
+      )
+      .get() as { change_text: string };
+    expect(change.change_text).toBe("fix the thing");
+  });
+
+  it("guards against a run that already left needs_review", () => {
+    const db = freshDb();
+    insertRun(db, "run-s");
+    const repo = new RunRepository(db);
+    const apply = (): unknown =>
+      repo.applyReviewDecision({
+        runId: "run-s",
+        newStatus: "approved",
+        decision: "approved",
+        reviewer: null,
+        reviewedAt: "2026-05-22T01:00:00Z",
+        requiredChanges: [],
+        decisionYaml: "decision: approved\n",
+      });
+    apply();
+    expect(apply).toThrow(StateConflictError);
     db.close();
   });
 });

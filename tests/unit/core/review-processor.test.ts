@@ -3,6 +3,35 @@ import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processReviewDecision } from "../../../src/core/review-processor.js";
+import { openDb } from "../../../src/db/connection.js";
+import { runMigrations } from "../../../src/db/migrations.js";
+
+/** Seed the DB with a `db-first` run row matching an on-disk meta.json. */
+function seedDbFirstRun(
+  dbPath: string,
+  runsDir: string,
+  runId: string,
+): void {
+  const meta = JSON.parse(
+    readFileSync(join(runsDir, runId, "meta.json"), "utf8"),
+  ) as Record<string, unknown>;
+  const db = openDb(dbPath);
+  runMigrations(db);
+  db.prepare(
+    `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch, status,
+       started_at, updated_at, source_mode, db_revision, meta_json)
+     VALUES (?, ?, ?, 'domain-coding', 'main', ?, ?, ?, 'db-first', 1, ?)`,
+  ).run(
+    runId,
+    meta.repoId,
+    meta.domain,
+    meta.status,
+    meta.startedAt,
+    meta.startedAt,
+    JSON.stringify(meta, null, 2),
+  );
+  db.close();
+}
 
 interface FakeMeta {
   runId: string;
@@ -78,7 +107,7 @@ describe("processReviewDecision", () => {
       reviewer: "alice",
       reviewed_at: "2026-05-20T12:00:00Z",
     });
-    const r = await processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-A" });
+    const r = await processReviewDecision({ runsDir, locksDir: runsDir, dbPath: join(runsDir, "harness.sqlite"), runId: "run-A" });
     expect(r.previousStatus).toBe("needs_review");
     expect(r.newStatus).toBe("approved");
     expect(r.reviewer).toBe("alice");
@@ -97,7 +126,7 @@ describe("processReviewDecision", () => {
       reviewer: "bob",
       reviewed_at: "2026-05-20T13:00:00Z",
     });
-    const r = await processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-B" });
+    const r = await processReviewDecision({ runsDir, locksDir: runsDir, dbPath: join(runsDir, "harness.sqlite"), runId: "run-B" });
     expect(r.newStatus).toBe("changes_requested");
 
     writeFakeRun(runsDir, "run-C", {}, {
@@ -105,7 +134,7 @@ describe("processReviewDecision", () => {
       reviewer: "carol",
       reviewed_at: "2026-05-20T14:00:00Z",
     });
-    const r2 = await processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-C" });
+    const r2 = await processReviewDecision({ runsDir, locksDir: runsDir, dbPath: join(runsDir, "harness.sqlite"), runId: "run-C" });
     expect(r2.newStatus).toBe("rejected");
   });
 
@@ -117,7 +146,7 @@ describe("processReviewDecision", () => {
       reviewed_at: null,
     });
     const before = new Date().getTime();
-    const r = await processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-D" });
+    const r = await processReviewDecision({ runsDir, locksDir: runsDir, dbPath: join(runsDir, "harness.sqlite"), runId: "run-D" });
     const after = new Date().getTime();
     const ts = new Date(r.reviewedAt).getTime();
     expect(ts).toBeGreaterThanOrEqual(before);
@@ -133,7 +162,7 @@ describe("processReviewDecision", () => {
     const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
     writeFakeRun(runsDir, "run-E", {}, { decision: "pending" });
     await expect(
-      processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-E" }),
+      processReviewDecision({ runsDir, locksDir: runsDir, dbPath: join(runsDir, "harness.sqlite"), runId: "run-E" }),
     ).rejects.toThrow(/pending/);
   });
 
@@ -144,7 +173,7 @@ describe("processReviewDecision", () => {
       reviewer: "alice",
     });
     await expect(
-      processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-F" }),
+      processReviewDecision({ runsDir, locksDir: runsDir, dbPath: join(runsDir, "harness.sqlite"), runId: "run-F" }),
     ).rejects.toThrow(/status is "approved"/);
   });
 
@@ -156,7 +185,7 @@ describe("processReviewDecision", () => {
       reviewer: "alice",
     });
     await expect(
-      processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-G" }),
+      processReviewDecision({ runsDir, locksDir: runsDir, dbPath: join(runsDir, "harness.sqlite"), runId: "run-G" }),
     ).rejects.toThrow(/runId/);
   });
 
@@ -168,7 +197,7 @@ describe("processReviewDecision", () => {
       reviewer: "alice",
     });
     await expect(
-      processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-H" }),
+      processReviewDecision({ runsDir, locksDir: runsDir, dbPath: join(runsDir, "harness.sqlite"), runId: "run-H" }),
     ).rejects.toThrow(/domain/);
   });
 
@@ -179,7 +208,7 @@ describe("processReviewDecision", () => {
       reviewer: "alice",
       reviewed_at: "2026-05-20T12:00:00Z",
     });
-    await processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-I" });
+    await processReviewDecision({ runsDir, locksDir: runsDir, dbPath: join(runsDir, "harness.sqlite"), runId: "run-I" });
     const events = readFileSync(
       join(runsDir, "run-I", "events.jsonl"),
       "utf8",
@@ -196,7 +225,7 @@ describe("processReviewDecision", () => {
   it("rejects path-traversal runId (../)", async () => {
     const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
     await expect(
-      processReviewDecision({ runsDir, locksDir: runsDir, runId: "../escape" }),
+      processReviewDecision({ runsDir, locksDir: runsDir, dbPath: join(runsDir, "harness.sqlite"), runId: "../escape" }),
     ).rejects.toThrow(/invalid runId/);
   });
 
@@ -221,7 +250,7 @@ describe("processReviewDecision", () => {
       ].join("\n"),
     );
     await expect(
-      processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-bad-meta-001" }),
+      processReviewDecision({ runsDir, locksDir: runsDir, dbPath: join(runsDir, "harness.sqlite"), runId: "run-bad-meta-001" }),
     ).rejects.toThrow(/not an object/);
   });
 
@@ -232,7 +261,7 @@ describe("processReviewDecision", () => {
       reviewer: null,
       reviewed_at: "2026-05-20T12:00:00Z",
     });
-    const r = await processReviewDecision({ runsDir, locksDir: runsDir, runId: "run-J" });
+    const r = await processReviewDecision({ runsDir, locksDir: runsDir, dbPath: join(runsDir, "harness.sqlite"), runId: "run-J" });
     expect(r.reviewer).toBeNull();
     expect(r.warnings).toContain("reviewer field is null");
   });
@@ -258,7 +287,7 @@ describe("processReviewDecision", () => {
     });
     try {
       await expect(
-        processReviewDecision({ runsDir, locksDir, runId: "run-K" }),
+        processReviewDecision({ runsDir, locksDir, dbPath: join(runsDir, "harness.sqlite"), runId: "run-K" }),
       ).rejects.toThrow(/locked/);
     } finally {
       await held.release();
@@ -273,7 +302,7 @@ describe("processReviewDecision", () => {
       reviewer: "alice",
       reviewed_at: "2026-05-20T12:00:00Z",
     });
-    await processReviewDecision({ runsDir, locksDir, runId: "run-L" });
+    await processReviewDecision({ runsDir, locksDir, dbPath: join(runsDir, "harness.sqlite"), runId: "run-L" });
     // lock must be released — acquiring it now should succeed
     const { acquireDomainLock } = await import(
       "../../../src/workspace/domain-lock.js"
@@ -285,5 +314,78 @@ describe("processReviewDecision", () => {
       repoId: "mini-commerce",
     });
     await after.release();
+  });
+});
+
+describe("processReviewDecision — DB-first run (Phase 7-5)", () => {
+  it("applies the decision through the DB and re-exports the files", async () => {
+    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-dbf-"));
+    const dbPath = join(runsDir, "harness.sqlite");
+    writeFakeRun(runsDir, "run-dbf", {}, {
+      decision: "approved",
+      reviewer: "alice",
+      reviewed_at: "2026-05-20T12:00:00Z",
+    });
+    seedDbFirstRun(dbPath, runsDir, "run-dbf");
+
+    const r = await processReviewDecision({
+      runsDir,
+      locksDir: runsDir,
+      dbPath,
+      runId: "run-dbf",
+    });
+    expect(r.newStatus).toBe("approved");
+
+    const db = openDb(dbPath);
+    try {
+      const row = db
+        .prepare("SELECT status, reviewer FROM runs WHERE run_id = 'run-dbf'")
+        .get() as { status: string; reviewer: string };
+      expect(row).toEqual({ status: "approved", reviewer: "alice" });
+      const decision = db
+        .prepare(
+          "SELECT decision FROM review_decisions WHERE run_id = 'run-dbf'",
+        )
+        .get() as { decision: string };
+      expect(decision.decision).toBe("approved");
+    } finally {
+      db.close();
+    }
+    // meta.json was re-exported from the DB
+    const meta = JSON.parse(
+      readFileSync(join(runsDir, "run-dbf", "meta.json"), "utf8"),
+    ) as { status: string; reviewer: string };
+    expect(meta.status).toBe("approved");
+    expect(meta.reviewer).toBe("alice");
+    // events.jsonl carries the review_processed event
+    expect(
+      readFileSync(join(runsDir, "run-dbf", "events.jsonl"), "utf8"),
+    ).toMatch(/review_processed/);
+  });
+
+  it("rejects re-processing a run that already left needs_review", async () => {
+    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-dbf-"));
+    const dbPath = join(runsDir, "harness.sqlite");
+    writeFakeRun(runsDir, "run-dbf2", {}, {
+      decision: "approved",
+      reviewer: "alice",
+      reviewed_at: "2026-05-20T12:00:00Z",
+    });
+    seedDbFirstRun(dbPath, runsDir, "run-dbf2");
+    await processReviewDecision({
+      runsDir,
+      locksDir: runsDir,
+      dbPath,
+      runId: "run-dbf2",
+    });
+    // a second pass sees status=approved in the re-exported meta.json
+    await expect(
+      processReviewDecision({
+        runsDir,
+        locksDir: runsDir,
+        dbPath,
+        runId: "run-dbf2",
+      }),
+    ).rejects.toThrow(/only needs_review/);
   });
 });

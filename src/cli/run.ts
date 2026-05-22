@@ -818,6 +818,7 @@ reviewCmd
       const result = await processReviewDecision({
         runsDir: paths.runsDir,
         locksDir: paths.locksDir,
+        dbPath: paths.dbPath,
         runId: String(raw.runId),
       });
       for (const w of result.warnings) {

@@ -11,6 +11,7 @@ import {
 import { runReviewerAgent, ReviewerAgentGateError } from "./reviewer-agent.js";
 import { processReviewDecision } from "./review-processor.js";
 import { prepareRerunFromReview } from "./rerun.js";
+import { harnessPaths } from "../config/paths.js";
 
 /**
  * Outcome of a reviewed-run workflow.
@@ -219,6 +220,7 @@ export async function runReviewedRunWorkflow(
       runsDir: opts.runsDir,
       runId: runResult.runId,
       locksDir: opts.locksDir,
+      dbPath: harnessPaths(opts.harnessRoot).dbPath,
     });
     attempts.push({
       runId: runResult.runId,

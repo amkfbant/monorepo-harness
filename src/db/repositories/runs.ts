@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { DbError } from "../connection.js";
 import { StateConflictError } from "../errors.js";
+import { sha256 } from "../import/common.js";
 import { findOperation, recordOperation } from "./operations.js";
 
 /**
@@ -134,6 +135,20 @@ export interface ViolationInput {
   /** the rule kind: `deny_write` | `not_in_write_scope` | `unsafe_path` */
   rule: string;
   reason?: string;
+}
+
+/** Input to the guarded review-decision transition (Phase 7-5). */
+export interface ApplyReviewDecisionInput {
+  runId: string;
+  /** the run's target status: approved | changes_requested | rejected */
+  newStatus: string;
+  /** the decision value written by the reviewer */
+  decision: string;
+  reviewer: string | null;
+  reviewedAt: string;
+  requiredChanges: string[];
+  /** raw review-decision.yaml content, stored in review_decisions */
+  decisionYaml: string;
 }
 
 const SUMMARY_COLUMNS = `run_id, repo_id, project_id, domain, status,
@@ -545,6 +560,129 @@ export class RunRepository {
       }
     });
     txn();
+  }
+
+  /**
+   * Apply a review decision to a DB-first run (Phase 7-5).
+   *
+   * In one transaction: guards the run is still `needs_review` (a
+   * concurrent reviewer that already moved it is a `StateConflictError`,
+   * not a silent overwrite), moves it to `newStatus`, patches the
+   * `meta_json` reviewer fields, appends a `review_processed` event, and
+   * records the decision in `review_decisions` /
+   * `review_required_changes`. Returns the prior status.
+   */
+  applyReviewDecision(input: ApplyReviewDecisionInput): {
+    previousStatus: string;
+  } {
+    const txn = this.db.transaction((): { previousStatus: string } => {
+      const row = this.db
+        .prepare("SELECT status, meta_json FROM runs WHERE run_id = ?")
+        .get(input.runId) as
+        | { status: string; meta_json: string | null }
+        | undefined;
+      if (row === undefined) {
+        throw new DbError(`applyReviewDecision: no run '${input.runId}'`);
+      }
+      if (row.status !== "needs_review") {
+        throw new StateConflictError(
+          input.runId,
+          ["needs_review"],
+          row.status,
+        );
+      }
+      const meta =
+        row.meta_json !== null
+          ? (JSON.parse(row.meta_json) as Record<string, unknown>)
+          : {};
+      const patchedMeta = {
+        ...meta,
+        status: input.newStatus,
+        reviewer: input.reviewer,
+        reviewedAt: input.reviewedAt,
+      };
+      const info = this.db
+        .prepare(
+          `UPDATE runs
+             SET status = ?, reviewer = ?, reviewed_at = ?, meta_json = ?,
+                 db_revision = db_revision + 1, export_status = 'dirty',
+                 last_export_error = NULL, updated_at = ?
+           WHERE run_id = ? AND status = 'needs_review'`,
+        )
+        .run(
+          input.newStatus,
+          input.reviewer,
+          input.reviewedAt,
+          JSON.stringify(patchedMeta, null, 2),
+          input.reviewedAt,
+          input.runId,
+        );
+      if (info.changes === 0) {
+        throw new StateConflictError(
+          input.runId,
+          ["needs_review"],
+          row.status,
+        );
+      }
+      const seq = (
+        this.db
+          .prepare(
+            `SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM run_events
+             WHERE run_id = ?`,
+          )
+          .get(input.runId) as { next: number }
+      ).next;
+      this.db
+        .prepare(
+          `INSERT INTO run_events (run_id, seq, type, occurred_at, payload_json)
+           VALUES (?, ?, 'review_processed', ?, ?)`,
+        )
+        .run(
+          input.runId,
+          seq,
+          input.reviewedAt,
+          JSON.stringify({
+            type: "review_processed",
+            runId: input.runId,
+            decision: input.decision,
+            previousStatus: row.status,
+            newStatus: input.newStatus,
+            reviewer: input.reviewer,
+            reviewedAt: input.reviewedAt,
+          }),
+        );
+      this.db
+        .prepare(
+          `INSERT INTO review_decisions (run_id, decision, reviewer, summary,
+             reviewed_at, source_yaml, source_sha256)
+           VALUES (?, ?, ?, NULL, ?, ?, ?)
+           ON CONFLICT (run_id) DO UPDATE SET
+             decision = excluded.decision, reviewer = excluded.reviewer,
+             reviewed_at = excluded.reviewed_at,
+             source_yaml = excluded.source_yaml,
+             source_sha256 = excluded.source_sha256`,
+        )
+        .run(
+          input.runId,
+          input.decision,
+          input.reviewer,
+          input.reviewedAt,
+          input.decisionYaml,
+          sha256(input.decisionYaml),
+        );
+      this.db
+        .prepare("DELETE FROM review_required_changes WHERE run_id = ?")
+        .run(input.runId);
+      const insChange = this.db.prepare(
+        `INSERT INTO review_required_changes (run_id, idx, change_text)
+         VALUES (?, ?, ?)`,
+      );
+      input.requiredChanges.forEach((c, i) => {
+        insChange.run(input.runId, i, c);
+      });
+      return { previousStatus: row.status };
+    });
+    return txn.immediate();
   }
 }
 

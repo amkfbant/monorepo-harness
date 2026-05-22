@@ -1,5 +1,6 @@
 import { readFile, writeFile, appendFile } from "node:fs/promises";
 import { join } from "node:path";
+import type Database from "better-sqlite3";
 import type { RunMeta, RunStatus } from "../logging/run-log.js";
 import {
   loadReviewDecision,
@@ -7,6 +8,10 @@ import {
 } from "./review-decision-loader.js";
 import type { ReviewDecisionValue } from "./review-decision-schema.js";
 import { acquireDomainLock } from "../workspace/domain-lock.js";
+import { openDb } from "../db/connection.js";
+import { runMigrations } from "../db/migrations.js";
+import { RunRepository } from "../db/repositories/runs.js";
+import { exportRun } from "../db/export-files.js";
 
 /**
  * Thrown when review processing is rejected for a reason the user can fix
@@ -33,6 +38,8 @@ export interface ProcessOpts {
    * meta write.
    */
   locksDir: string;
+  /** harness DB path — a `db-first` run is processed through the DB. */
+  dbPath: string;
   /** Override "now" for deterministic tests. */
   now?: Date;
 }
@@ -132,10 +139,16 @@ export async function processReviewDecision(
       : {}),
   });
 
+  const db = openDb(opts.dbPath);
   try {
-    return await processUnderLock(opts, runDir, metaPath, decisionPath);
+    runMigrations(db);
+    return await processUnderLock(opts, runDir, metaPath, decisionPath, db);
   } finally {
-    await lock.release();
+    try {
+      db.close();
+    } finally {
+      await lock.release();
+    }
   }
 }
 
@@ -144,6 +157,7 @@ async function processUnderLock(
   runDir: string,
   metaPath: string,
   decisionPath: string,
+  db: Database.Database,
 ): Promise<ProcessResult> {
   // Authoritative meta read — under the domain lock.
   const meta = await readMeta(metaPath, opts.runId);
@@ -199,30 +213,54 @@ async function processUnderLock(
     });
   }
 
-  // meta 更新
-  const updatedMeta: RunMeta = {
-    ...meta,
-    status: newStatus,
-    reviewer: decision.reviewer,
-    reviewedAt,
-  };
-  await writeFile(metaPath, `${JSON.stringify(updatedMeta, null, 2)}\n`, "utf8");
+  // Phase 7-5: a `db-first` run is processed through the DB — a guarded
+  // status transition + `review_decisions`, then re-export. A legacy /
+  // file-canonical run keeps the direct meta.json / events.jsonl writes.
+  const modeRow = db
+    .prepare("SELECT source_mode FROM runs WHERE run_id = ?")
+    .get(opts.runId) as { source_mode: string } | undefined;
 
-  // event 追記
-  const event = {
-    type: "review_processed",
-    runId: opts.runId,
-    decision: decision.decision,
-    previousStatus: meta.status,
-    newStatus,
-    reviewer: decision.reviewer,
-    reviewedAt,
-  };
-  await appendFile(
-    join(runDir, "events.jsonl"),
-    `${JSON.stringify(event)}\n`,
-    "utf8",
-  );
+  if (modeRow?.source_mode === "db-first") {
+    new RunRepository(db).applyReviewDecision({
+      runId: opts.runId,
+      newStatus,
+      decision: decision.decision,
+      reviewer: decision.reviewer,
+      reviewedAt,
+      requiredChanges: decision.required_changes,
+      decisionYaml: await readFile(decisionPath, "utf8"),
+    });
+    exportRun(db, opts.runId, { runsDir: opts.runsDir });
+  } else {
+    // meta 更新
+    const updatedMeta: RunMeta = {
+      ...meta,
+      status: newStatus,
+      reviewer: decision.reviewer,
+      reviewedAt,
+    };
+    await writeFile(
+      metaPath,
+      `${JSON.stringify(updatedMeta, null, 2)}\n`,
+      "utf8",
+    );
+
+    // event 追記
+    const event = {
+      type: "review_processed",
+      runId: opts.runId,
+      decision: decision.decision,
+      previousStatus: meta.status,
+      newStatus,
+      reviewer: decision.reviewer,
+      reviewedAt,
+    };
+    await appendFile(
+      join(runDir, "events.jsonl"),
+      `${JSON.stringify(event)}\n`,
+      "utf8",
+    );
+  }
 
   return {
     runId: opts.runId,
