@@ -18,6 +18,7 @@ import {
   migrateArtifacts,
   formatMigrateArtifacts,
 } from "../db/migrate-artifacts.js";
+import { migrateLegacy, formatMigrateLegacy } from "../db/migrate-legacy.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -208,6 +209,34 @@ export function registerDbCommands(program: Command): void {
           raw.json === true
             ? `${JSON.stringify(report, null, 2)}\n`
             : formatMigrateArtifacts(report),
+        );
+      } catch (e) {
+        dbError(e);
+      }
+    });
+
+  dbCmd
+    .command("migrate-legacy")
+    .description(
+      "convert legacy-file runtime rows to db-first (Phase 8 migration)",
+    )
+    .option("--json", "print the migration report as JSON")
+    .action((raw: Record<string, unknown>) => {
+      const root = getHarnessRoot();
+      const paths = harnessPaths(root);
+      try {
+        const db = openDb(paths.dbPath);
+        let report;
+        try {
+          runMigrations(db);
+          report = migrateLegacy(db, { runsDir: paths.runsDir });
+        } finally {
+          db.close();
+        }
+        process.stdout.write(
+          raw.json === true
+            ? `${JSON.stringify(report, null, 2)}\n`
+            : formatMigrateLegacy(report),
         );
       } catch (e) {
         dbError(e);
