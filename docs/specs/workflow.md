@@ -292,6 +292,26 @@ Phase 6 で「file import から取れない」として繰り延べた 2 テー
 `runDomainCoding` 自身が diff 検証結果を in-memory に持っているため DB へ直接
 書ける。`runDomainCoding` の DB-first 化でこの read-side の穴が閉じる。
 
+## Phase 8: runtime DB complete（close 済み・現状仕様）
+
+Phase 8 で **artifact body**（codex ログ / diff / summary 等）も DB へ移し、
+file export を optional にした（[`db.md`](./db.md) の「Phase 8」節）。workflow の
+状態遷移と観測挙動は不変 — 変わるのは保存先と files の必須性だけ。
+
+- artifact body は `artifact_blobs` / `artifact_blob_chunks` に content-addressed
+  で分割保存する。`runDomainCoding` の artifact 記録は DB-first（DB blob →
+  `artifacts` row →（export ON なら）file の順）。
+- file export は `HARNESS_EXPORT_FILES` でオプトアウトできる（default ON）。
+  OFF にすると `runs/<id>/` の files を書かず DB だけで運用でき、`run show` /
+  `review` / `pr create` / `cleanup` / `dashboard` は DB から動く。後から
+  `harness db export-files` で files を再生成できる。
+- knowledge entry markdown（`docs/knowledge/**/*.md`）は **authored file** で
+  あり export gate の対象外 — export OFF でも `knowledge promote` は `.md` を
+  書く。export gate がかかるのは DB 由来の sidecar（`knowledge-decisions.yaml`）
+  のみ。
+- Phase 3-5 の `index.sqlite` / `harness index` は撤去された（Phase 8-7）。
+  run 一覧は file scan、集計・ダッシュボードは `harness.sqlite` read model。
+
 ## knowledge-candidates.yaml の 4 signal
 
 `src/reporter/knowledge-candidates.ts`:

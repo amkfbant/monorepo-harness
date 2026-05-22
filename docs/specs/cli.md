@@ -150,6 +150,7 @@ DB read model + DB-first write path（`.harness/harness.sqlite`）の管理。�
 harness db init                       # DB を作成し schema を適用
 harness db migrate                    # 未適用 migration を適用
 harness db status                     # schema version / table 数 / path / size
+harness db stats                      # table 別行数 / DB・WAL サイズ / blob 総量
 harness db import --from-files        # files から read model を構築
 harness db import --from-files --reset  # data テーブルを空にしてから import
 harness db import --from-files --json   # ImportReport を JSON 出力
@@ -158,6 +159,12 @@ harness db check-consistency --json   # ConsistencyReport を JSON 出力
 harness db export-files               # 全 db-first row の files を再 export
 harness db export-files --scope backlog --id item-20260522-001  # 範囲指定
 harness db import --from-files --force-legacy-reconcile  # db-first row の上書きを許可
+harness db migrate-artifacts          # 既存 run の file-backed artifact body を DB へ
+harness db migrate-legacy             # legacy-file runtime row を db-first へ移行
+harness db backup --out <path>        # 一貫した standalone コピーを書き出す
+harness db restore --from <path> --force  # backup で live DB を置換（破壊的）
+harness db checkpoint                 # WAL を本体へ checkpoint し truncate
+harness db vacuum                     # 空き領域を回収（blob 削除後など）
 ```
 
 - `db import` は idempotent（run は全 source file の fingerprint で skip、
@@ -165,13 +172,27 @@ harness db import --from-files --force-legacy-reconcile  # db-first row の上�
   `db init` なしでも動く。
 - `db check-consistency` は drift / missing があれば exit 1（CI で gate 可能）。
   Phase 7 では export 追跡も検査する（`export_status` が `dirty`/`failed` の行、
-  `exported_files.sha256` と実ファイルの drift）。
+  `exported_files.sha256` と実ファイルの drift）。Phase 8 で `export_status` は
+  `synced`/`dirty`/`failed`/`disabled`/`removed` の状態機械になり、`disabled`
+  （export OFF）や `removed`（cleanup tombstone）の missing file は drift 扱い
+  しない。
 - `db export-files`（Phase 7-11）は DB canonical な `db-first` row の
   compatibility files を bulk 再 export する（`--scope run|backlog|knowledge` /
-  `--id <id>` で範囲指定可）。crash・export 失敗・`--reset` import のあとに
-  files を DB から復元する。export 失敗があれば exit 1。
+  `--id <id>` で範囲指定可）。crash・export 失敗・`--reset` import のあと、
+  および file export を OFF にした DB-only 運用のあとに files を DB から復元する。
 - `db import` は `db-first` row を stale file で巻き戻さない（run / backlog item は
   skip）。`--force-legacy-reconcile` 指定時のみ files で上書きする（災害復旧用途）。
+- `db migrate-artifacts`（Phase 8-3）は Phase 7 までの file-backed artifact body
+  を DB blob へ backfill する。idempotent / resumable、missing / hash mismatch は
+  report して移行から除外する。
+- `db migrate-legacy`（Phase 8-6）は `source_mode='legacy-file'` の runtime row を
+  db-first へ変換する。idempotent。artifact body がまだ file-backed の run は
+  先に `migrate-artifacts` を促し、変換しない。
+- `db backup / restore / checkpoint / vacuum`（Phase 8-8）は DB 運用コマンド。
+  `backup` は WAL を含む一貫した standalone `.sqlite` を書き出す（出力先が既存
+  なら拒否）。`restore` は backup を SQLite online backup 経由で検証してから
+  atomic に live DB を置換し、live DB が既存なら `--force` を要求する。詳細は
+  [`db.md`](./db.md) の「DB 運用コマンド」節。
 - exit code: `0` 正常 / `1` `DbError`、`check-consistency` の drift/missing 検出、
   または `export-files` の失敗。
 

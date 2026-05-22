@@ -8,12 +8,15 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 
 実装: `src/db/`。
 
-> **ステータス: Phase 7 close 済み（現状仕様）。** DB read model（Phase 6）と
-> DB-first write path（Phase 7）はいずれも `src/db/` に実装済み。schema の確定値は
-> `src/db/schema.ts`（`MIGRATION_V1_STATEMENTS` / `MIGRATION_V2_STATEMENTS` /
-> `MIGRATION_V3_STATEMENTS`）。下記「Phase 7 — DB-first write path」節は
-> 現状仕様。設計書は
-> [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)。
+> **ステータス: Phase 8 close 済み（現状仕様）。** DB read model（Phase 6）/
+> DB-first write path（Phase 7）/ runtime DB complete（Phase 8）はいずれも
+> `src/db/` に実装済み。schema の確定値は `src/db/schema.ts`
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V4_STATEMENTS`、`SCHEMA_VERSION = 4`）。
+> 下記「Phase 7 — DB-first write path」「Phase 8 — runtime DB complete」節は
+> いずれも現状仕様。設計書は
+> [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
+> /
+> [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)。
 
 ## source-of-truth transition
 
@@ -249,14 +252,15 @@ Phase 7 で migration v2 を追加する（`runMigrations` は idempotent）。
   `policies/repos/*.yaml` は user-authored config file のまま（DB は import して
   参照する read model 扱い）。
 
-## Phase 8 — runtime DB complete（実装中・target spec）
+## Phase 8 — runtime DB complete（close 済み・現状仕様）
 
 Phase 8 は **files を必須でなくす**フェーズ。DB-first write path（Phase 7）に
 残った最後の file-canonical な runtime state — **artifact body**（codex ログ /
 diff / summary 等）— を DB へ移し、file export を optional にする。完了後は
 run を DB だけで運用でき、files は opt-in の互換出力になる。設計の正典は
-[`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)、
-実装計画は `tmp/phase8-db-complete-migration-plan.md`。確定は `phase8-close`。
+[`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)。
+close レポートは
+[`reports/2026-05-22-phase8-close.md`](../reports/2026-05-22-phase8-close.md)。
 
 - **artifact body の DB 格納** — `artifact_blobs` / `artifact_blob_chunks` に
   content-addressed（raw sha256）で分割保存。oversized は file に逃がさず
