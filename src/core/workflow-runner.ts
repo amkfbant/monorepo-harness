@@ -29,6 +29,7 @@ import {
   RunRepository,
   type ChangedFileInput,
 } from "../db/repositories/runs.js";
+import { RerunGateError } from "./rerun.js";
 import { writeArtifact } from "../logging/artifacts.js";
 import { generateRunId } from "./run-id.js";
 import { runAllowedCommands } from "./command-runner.js";
@@ -281,6 +282,21 @@ export async function runDomainCoding(
   try {
     db = openDb(paths.dbPath);
     runMigrations(db);
+
+    // Phase 7-6: a rerun produces exactly one child. The duplicate check
+    // runs UNDER the domain lock — two reruns of the same parent share a
+    // domain, so the lock serializes them and check-then-create is atomic.
+    if (opts.parentRunId !== undefined) {
+      const existingChild = db
+        .prepare("SELECT run_id FROM runs WHERE parent_run_id = ? LIMIT 1")
+        .get(opts.parentRunId) as { run_id: string } | undefined;
+      if (existingChild !== undefined) {
+        throw new RerunGateError(
+          `parent run ${opts.parentRunId} already has a rerun child ` +
+            `(${existingChild.run_id}); refusing to create a second one`,
+        );
+      }
+    }
 
     const baseSha = await resolveBaseSha({
       repoPath: opts.repoPath,

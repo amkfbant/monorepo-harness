@@ -224,6 +224,42 @@ describe("harness rerun --from-review", () => {
     expect(meta.rerunAttempt).toBe(1);
   });
 
+  it("Phase 7-6: the rerun child is a db-first run with the chain in the DB", async () => {
+    const s = setupParent({
+      status: "changes_requested",
+      decision: "changes_requested",
+    });
+    const fakeBin = writeFakeCodexBin(s.root);
+    const r = run(["rerun", "--from-review", s.runId], s.root, {
+      HARNESS_CODEX_BIN: fakeBin,
+    });
+    expect(r.status).toBe(0);
+    const newRunId = r.stdout.match(/run=([\w.-]+)/)?.[1];
+    const { openDb } = await import("../../src/db/connection.js");
+    const db = openDb(join(s.root, ".harness", "harness.sqlite"));
+    try {
+      const row = db
+        .prepare(
+          `SELECT source_mode, parent_run_id, root_run_id, rerun_attempt
+           FROM runs WHERE run_id = ?`,
+        )
+        .get(newRunId) as {
+        source_mode: string;
+        parent_run_id: string;
+        root_run_id: string;
+        rerun_attempt: number;
+      };
+      expect(row).toEqual({
+        source_mode: "db-first",
+        parent_run_id: s.runId,
+        root_run_id: s.runId,
+        rerun_attempt: 1,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("exit 1 when --max-attempts is exceeded", () => {
     const s = setupParent({
       status: "changes_requested",

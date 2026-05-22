@@ -86,6 +86,37 @@ async function readMetaObject(
 }
 
 /**
+ * Load the parent run's meta. For a `db-first` parent the canonical
+ * source is the DB row's `meta_json` (Phase 7-6) — the exported meta.json
+ * file can be stale if an export failed. A legacy / not-in-DB parent
+ * falls back to the meta.json file.
+ */
+async function loadParentMeta(
+  runsDir: string,
+  parentRunId: string,
+  dbPath: string | undefined,
+): Promise<RunMeta> {
+  if (dbPath !== undefined && existsSync(dbPath)) {
+    const db = openDb(dbPath);
+    try {
+      const row = db
+        .prepare(
+          "SELECT source_mode, meta_json FROM runs WHERE run_id = ?",
+        )
+        .get(parentRunId) as
+        | { source_mode: string; meta_json: string | null }
+        | undefined;
+      if (row?.source_mode === "db-first" && row.meta_json !== null) {
+        return JSON.parse(row.meta_json) as RunMeta;
+      }
+    } finally {
+      db.close();
+    }
+  }
+  return (await readMetaObject(runsDir, parentRunId)).meta;
+}
+
+/**
  * Determine the parent run's position in its rerun chain:
  *   - rootRunId: the original `harness run`
  *   - parentAttempt: how many reruns deep the parent itself is
@@ -166,7 +197,15 @@ export async function prepareRerunFromReview(opts: {
   }
   const runDir = join(opts.runsDir, opts.parentRunId);
 
-  const { meta } = await readMetaObject(opts.runsDir, opts.parentRunId);
+  // Phase 7-6: for a db-first parent the DB row is canonical — read its
+  // `meta_json` (the lossless meta document) rather than the exported
+  // meta.json file, which can be stale if an export failed. A legacy /
+  // not-in-DB parent falls back to the meta.json file.
+  const meta = await loadParentMeta(
+    opts.runsDir,
+    opts.parentRunId,
+    opts.dbPath,
+  );
 
   // parent must be in changes_requested (covers cleaned / failed / etc.)
   if (meta.status !== "changes_requested") {
@@ -204,9 +243,9 @@ export async function prepareRerunFromReview(opts: {
     );
   }
 
-  // Phase 7-6: a rerun produces exactly one child. If the DB already
-  // records a child for this parent, the rerun was already done — refuse
-  // a duplicate rather than branching the rerun chain.
+  // Phase 7-6: a rerun produces exactly one child. The DB check here is a
+  // fast, friendly pre-check; the ATOMIC enforcement is in runDomainCoding
+  // under the domain lock (two reruns of one parent share a domain).
   if (opts.dbPath !== undefined && existsSync(opts.dbPath)) {
     const db = openDb(opts.dbPath);
     try {
