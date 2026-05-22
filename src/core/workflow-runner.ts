@@ -24,7 +24,7 @@ import {
 import { openDb } from "../db/connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { createDbRunLog } from "../db/run-log-db.js";
-import { recordRunArtifacts } from "../db/run-artifacts.js";
+import { ingestRunArtifacts } from "../db/run-artifacts.js";
 import {
   RunRepository,
   type ChangedFileInput,
@@ -377,7 +377,7 @@ export async function runDomainCoding(
       // best-effort manifest record on the failure path too, so a failed
       // run still has an artifact manifest for the dashboard.
       try {
-        recordRunArtifacts(db, log.runDir, runId);
+        ingestRunArtifacts(db, log.runDir, runId);
       } catch {
         // non-fatal — see the success path.
       }
@@ -815,7 +815,7 @@ async function runDomainCodingInner(
     // manifest failure must not flip a completed run to
     // failed-internal-error — it is recoverable by a re-export.
     try {
-      recordRunArtifacts(db, log.runDir, runId);
+      ingestRunArtifacts(db, log.runDir, runId);
     } catch {
       // the artifact manifest is a DB read-model convenience only.
     }

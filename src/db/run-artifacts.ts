@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { sha256 } from "./import/common.js";
+import { storeArtifactBlob } from "./artifact-blobs.js";
 
 /**
  * Run artifact manifest (Phase 7-4).
@@ -74,6 +75,75 @@ export function recordRunArtifacts(
         // hash the raw bytes — an artifact may be binary, where a UTF-8
         // decode would corrupt the digest.
         sha256(readFileSync(abs)),
+        new Date(st.mtimeMs).toISOString(),
+      );
+    }
+  });
+  txn();
+}
+
+/**
+ * Artifacts whose body is reconstructed from other DB tables (`runs`,
+ * `run_events`, `review_decisions`) by `exportRun` — they get a manifest
+ * row but NO `artifact_blobs` entry, so the two writers do not collide.
+ */
+const DB_RECONSTRUCTED = new Set([
+  "meta.json",
+  "events.jsonl",
+  "review-decision.yaml",
+]);
+
+/**
+ * Ingest a DB-first run's artifact bodies into the DB (Phase 8-2).
+ *
+ * Like `recordRunArtifacts` it replaces the run's `artifacts` rows from a
+ * directory scan, but it also stores each artifact *body* in
+ * `artifact_blobs` (content-addressed, chunked) and marks the manifest
+ * `storage='db'`. After this the DB holds the canonical body and the
+ * run-dir files are a compatibility export.
+ *
+ * `meta.json` / `events.jsonl` / `review-decision.yaml` are skipped for
+ * blob storage — their body is reconstructed by `exportRun` from the
+ * canonical `runs` / `run_events` / `review_decisions` rows.
+ */
+export function ingestRunArtifacts(
+  db: Database.Database,
+  runDir: string,
+  runId: string,
+): void {
+  const insert = db.prepare(
+    `INSERT INTO artifacts (artifact_id, run_id, kind, relative_path,
+       content_type, bytes, sha256, storage, blob_sha256, body_status,
+       created_at, redacted, secret_suspect)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'db', ?, ?, ?, 0, 0)`,
+  );
+  const txn = db.transaction(() => {
+    db.prepare("DELETE FROM artifacts WHERE run_id = ?").run(runId);
+    for (const file of readdirSync(runDir, { withFileTypes: true })) {
+      if (!file.isFile() || file.name.startsWith(".")) continue;
+      const name = file.name;
+      const abs = join(runDir, name);
+      const raw = readFileSync(abs);
+      const st = statSync(abs);
+      let blobSha: string | null = null;
+      let bodyStatus = "db_available";
+      let bytes = raw.length;
+      if (!DB_RECONSTRUCTED.has(name)) {
+        const blob = storeArtifactBlob(db, raw);
+        blobSha = blob.sha256;
+        bytes = blob.bytes;
+        if (blob.truncated) bodyStatus = "truncated";
+      }
+      insert.run(
+        `${runId}:${name}`,
+        runId,
+        ARTIFACT_KINDS[name] ?? "other",
+        name,
+        contentType(name),
+        bytes,
+        sha256(raw),
+        blobSha,
+        bodyStatus,
         new Date(st.mtimeMs).toISOString(),
       );
     }
