@@ -13,6 +13,7 @@ import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { exportFiles } from "../../../src/db/export-bulk.js";
 import { checkConsistency } from "../../../src/db/consistency.js";
+import { ingestRunArtifacts } from "../../../src/db/run-artifacts.js";
 
 /**
  * Phase 7-11 — `db export-files` bulk re-export and the export-tracking
@@ -171,6 +172,37 @@ describe("db export-files (bulk)", () => {
     expect(
       report.items.some(
         (i) => i.kind === "export:knowledge_decisions" && i.status === "drift",
+      ),
+    ).toBe(true);
+  });
+
+  it("detects a hand-edited db-stored artifact body as drift (8-4 / P2-2)", () => {
+    const { root, db } = setup();
+    seedRun(db, "run-art-d");
+    const runDir = join(root, "runs", "run-art-d");
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(join(runDir, "codex-output.log"), "codex ran\n");
+    ingestRunArtifacts(db, runDir, "run-art-d"); // body → artifact_blobs
+    exportFiles(db, { harnessRoot: root, scope: "run" }); // → exported_files
+    // the artifact body file is recorded in exported_files
+    const tracked = (
+      db
+        .prepare(
+          `SELECT count(*) AS n FROM exported_files
+           WHERE scope_id = 'run-art-d' AND relative_path = 'codex-output.log'`,
+        )
+        .get() as { n: number }
+    ).n;
+    expect(tracked).toBe(1);
+    // hand-edit the exported artifact body → check-consistency sees drift
+    writeFileSync(join(runDir, "codex-output.log"), "tampered\n");
+    db.close();
+    const ro = openDb(join(root, ".harness", "harness.sqlite"));
+    const report = checkConsistency({ db: ro, harnessRoot: root });
+    ro.close();
+    expect(
+      report.items.some(
+        (i) => i.kind.startsWith("export") && i.status === "drift",
       ),
     ).toBe(true);
   });

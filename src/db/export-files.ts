@@ -210,7 +210,14 @@ export function exportRun(
     // keeps the run dir complete.
     for (const a of artifacts) {
       const body = readArtifactBlob(db, a.blob_sha256);
-      if (body === null) continue; // blob vanished — drift, surfaced elsewhere
+      if (body === null) {
+        // a `storage='db'` artifact whose blob is gone is DB corruption,
+        // not recoverable drift — fail the export loudly (P1).
+        throw new DbError(
+          `exportRun: artifact '${a.relative_path}' references a missing ` +
+            `blob ${a.blob_sha256}`,
+        );
+      }
       atomicWriteFile(join(runDir, a.relative_path), body);
       files.push(describeExportedFile(a.relative_path, body));
     }
