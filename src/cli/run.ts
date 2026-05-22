@@ -107,11 +107,14 @@ import {
   ReviewEvaluateError,
 } from "../core/review-evaluator.js";
 import {
-  promoteKnowledge,
-  rejectKnowledge,
   listKnowledge,
   KnowledgePromoteGateError,
 } from "../core/knowledge-promoter.js";
+import {
+  promoteKnowledgeDbFirst,
+  rejectKnowledgeDbFirst,
+  type KnowledgeDbContext,
+} from "../core/knowledge-db.js";
 import {
   buildKnowledgeContext,
   KnowledgeContextError,
@@ -1874,6 +1877,32 @@ function knowledgeDirOf(
     : join(harnessRoot, "docs", "knowledge");
 }
 
+/** DB-first knowledge context — runs dir, knowledge dir, harness DB path. */
+function knowledgeDbContext(
+  harnessRoot: string,
+  raw: Record<string, unknown>,
+): KnowledgeDbContext {
+  const paths = harnessPaths(harnessRoot);
+  return {
+    runsDir: paths.runsDir,
+    knowledgeDir: knowledgeDirOf(harnessRoot, raw),
+    dbPath: paths.dbPath,
+  };
+}
+
+/** Map a knowledge command failure to a user error (exit 1). */
+function knowledgeError(e: unknown): never {
+  if (
+    e instanceof KnowledgePromoteGateError ||
+    e instanceof StateConflictError ||
+    e instanceof SourceModeError
+  ) {
+    process.stderr.write(`harness error: ${(e as Error).message}\n`);
+    process.exit(1);
+  }
+  throw e;
+}
+
 const knowledgeCmd = program
   .command("knowledge")
   .description("review and promote knowledge-candidates");
@@ -1949,7 +1978,7 @@ knowledgeCmd
   .requiredOption("--reviewer <name>", "reviewer handle")
   .requiredOption("--reason <text>", "why the candidate is rejected")
   .action(async (raw: Record<string, unknown>) => {
-    const paths = harnessPaths(getHarnessRoot());
+    const harnessRoot = getHarnessRoot();
     const index = Number(raw.index);
     if (!Number.isInteger(index) || index < 0) {
       process.stderr.write(
@@ -1958,22 +1987,20 @@ knowledgeCmd
       process.exit(1);
     }
     try {
-      const r = await rejectKnowledge({
-        runsDir: paths.runsDir,
-        runId: String(raw.runId),
-        index,
-        reviewer: String(raw.reviewer),
-        reason: String(raw.reason),
-      });
+      const r = await rejectKnowledgeDbFirst(
+        knowledgeDbContext(harnessRoot, raw),
+        {
+          runId: String(raw.runId),
+          index,
+          reviewer: String(raw.reviewer),
+          reason: String(raw.reason),
+        },
+      );
       process.stdout.write(
         `run=${r.runId} rejected candidate ${r.index} by ${r.reviewer}\n`,
       );
     } catch (e) {
-      if (e instanceof KnowledgePromoteGateError) {
-        process.stderr.write(`harness error: ${(e as Error).message}\n`);
-        process.exit(1);
-      }
-      throw e;
+      knowledgeError(e);
     }
   });
 knowledgeCmd
@@ -1992,19 +2019,16 @@ knowledgeCmd
   .option("--out <dir>", "knowledge root (default: HARNESS_ROOT/docs/knowledge)")
   .action(async (raw: Record<string, unknown>) => {
     const harnessRoot = getHarnessRoot();
-    const paths = harnessPaths(harnessRoot);
-    const knowledgeDir = knowledgeDirOf(harnessRoot, raw);
+    const ctx = knowledgeDbContext(harnessRoot, raw);
     try {
-      const r = await promoteKnowledge({
-        runsDir: paths.runsDir,
-        knowledgeDir,
+      const r = await promoteKnowledgeDbFirst(ctx, {
         runId: String(raw.runId),
         reviewer: String(raw.reviewer),
         allowDuplicate: Boolean(raw.allowDuplicate),
         ...(raw.kind !== undefined ? { kind: String(raw.kind) } : {}),
       });
       process.stdout.write(
-        `run=${r.runId} promoted=${r.promoted.length} skipped=${r.skipped.length} out=${knowledgeDir}\n`,
+        `run=${r.runId} promoted=${r.promoted.length} skipped=${r.skipped.length} out=${ctx.knowledgeDir}\n`,
       );
       for (const p of r.promoted) {
         process.stdout.write(`  promoted ${p.kind}: ${p.path}\n`);
@@ -2015,11 +2039,7 @@ knowledgeCmd
         );
       }
     } catch (e) {
-      if (e instanceof KnowledgePromoteGateError) {
-        process.stderr.write(`harness error: ${(e as Error).message}\n`);
-        process.exit(1);
-      }
-      throw e;
+      knowledgeError(e);
     }
   });
 

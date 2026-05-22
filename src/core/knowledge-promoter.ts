@@ -71,9 +71,10 @@ export function isCandidate(x: unknown): x is KnowledgeCandidate {
 /**
  * Read knowledge-candidates.yaml for a run. Returns the raw entry array
  * (each element may or may not be a well-formed candidate — callers
- * filter with isCandidate).
+ * filter with isCandidate). Exported for the DB-first path (Phase 7-9),
+ * which syncs the same observation log into `knowledge_candidates`.
  */
-async function loadCandidates(
+export async function loadCandidates(
   runsDir: string,
   runId: string,
 ): Promise<unknown[]> {
@@ -154,7 +155,7 @@ async function loadRejectDecisions(
  * keeps the boundaries unambiguous (no separator-collision: ["a b","c"]
  * and ["a","b c"] serialize differently).
  */
-function contentHash(c: KnowledgeCandidate): string {
+export function contentHash(c: KnowledgeCandidate): string {
   return createHash("sha256")
     .update(JSON.stringify([c.kind, c.domain, c.title, c.content]))
     .digest("hex")
@@ -166,7 +167,7 @@ function contentHash(c: KnowledgeCandidate): string {
  * separators to '-', truncate to 48 chars, and append a short hash so
  * truncated or non-ASCII titles still have a discriminator.
  */
-function slugify(s: string): string {
+export function slugify(s: string): string {
   const lowered = s.toLowerCase().normalize("NFKC");
   const cleaned = lowered
     .replace(/\p{Mark}+/gu, "")
@@ -177,7 +178,7 @@ function slugify(s: string): string {
   return `${base}-${hash}`;
 }
 
-function assertSafeKind(kind: string, index: number): void {
+export function assertSafeKind(kind: string, index: number): void {
   if (!KIND_RE.test(kind)) {
     throw new KnowledgePromoteGateError(
       `candidate ${index} has unsafe 'kind' (must match ${KIND_RE.source}): ${JSON.stringify(kind)}`,
@@ -185,7 +186,7 @@ function assertSafeKind(kind: string, index: number): void {
   }
 }
 
-function kindDirOf(knowledgeRoot: string, kind: string, index: number): string {
+export function kindDirOf(knowledgeRoot: string, kind: string, index: number): string {
   const dir = join(knowledgeRoot, kind);
   const resolved = resolve(dir);
   // Defense in depth: KIND_RE already prevents traversal.
@@ -195,6 +196,67 @@ function kindDirOf(knowledgeRoot: string, kind: string, index: number): string {
     );
   }
   return dir;
+}
+
+/** Throw `KnowledgePromoteGateError` when `runId` is not a safe run id. */
+export function assertKnowledgeRunId(runId: string): void {
+  assertRunId(runId);
+}
+
+/** The `<runId>-<NN>-<slug>.md` filename a promoted candidate is written to. */
+export function promotedFilename(
+  runId: string,
+  index: number,
+  title: string,
+): string {
+  return `${runId}-${String(index).padStart(2, "0")}-${slugify(title)}.md`;
+}
+
+/**
+ * Render a promoted candidate as its `docs/knowledge/<kind>/*.md` body —
+ * the YAML frontmatter (provenance + content hash) followed by the
+ * candidate's content. Shared by the legacy file writer and the DB-first
+ * export (Phase 7-9) so both emit byte-identical markdown.
+ */
+export function buildPromotedMarkdown(
+  c: KnowledgeCandidate,
+  meta: {
+    runId: string;
+    index: number;
+    reviewer: string;
+    promotedAt: string;
+    hash: string;
+  },
+): string {
+  const frontmatter = [
+    "---",
+    `kind: ${c.kind}`,
+    `domain: ${JSON.stringify(c.domain)}`,
+    `title: ${JSON.stringify(c.title)}`,
+    `source_run: ${meta.runId}`,
+    `source_index: ${meta.index}`,
+    `confidence: ${JSON.stringify(c.confidence)}`,
+    `source_status: ${JSON.stringify(c.status)}`,
+    `promoted_by: ${JSON.stringify(meta.reviewer)}`,
+    `promoted_at: ${JSON.stringify(meta.promotedAt)}`,
+    // deprecated knowledge is excluded from `knowledge build-context`.
+    // promote always writes false; a human edits this to retire an entry.
+    "deprecated: false",
+    `hash: ${meta.hash}`,
+    "---",
+  ].join("\n");
+  return [
+    frontmatter,
+    "",
+    `# ${c.title}`,
+    "",
+    `Evidence: ${c.evidence.join(", ") || "(none)"}`,
+    "",
+    "## Content",
+    "",
+    c.content,
+    "",
+  ].join("\n");
 }
 
 /**
@@ -239,7 +301,7 @@ export function parseFrontmatter(
   return splitFrontmatter(md).frontmatter;
 }
 
-interface KindDirScan {
+export interface KindDirScan {
   /** content hashes already present (from frontmatter `hash`) */
   hashes: Set<string>;
   /** "<source_run>#<source_index>" keys already promoted */
@@ -252,7 +314,7 @@ interface KindDirScan {
  * keyed off the frontmatter, NOT the filename (filenames concatenate
  * runId and index ambiguously).
  */
-async function scanKindDir(kindDir: string): Promise<KindDirScan> {
+export async function scanKindDir(kindDir: string): Promise<KindDirScan> {
   const scan: KindDirScan = {
     hashes: new Set<string>(),
     promotedKeys: new Set<string>(),
@@ -487,6 +549,12 @@ export interface PromotedFile {
   kind: string;
   title: string;
   path: string;
+  /** the candidate's index in `knowledge-candidates.yaml` */
+  index: number;
+  /** the candidate's domain */
+  domain: string;
+  /** the candidate content hash stamped into the md frontmatter */
+  hash: string;
 }
 
 export interface SkipRecord {
@@ -573,45 +641,29 @@ export async function promoteKnowledge(
       continue;
     }
 
-    const slug = slugify(c.title);
-    const filename = `${opts.runId}-${String(i).padStart(2, "0")}-${slug}.md`;
+    const filename = promotedFilename(opts.runId, i, c.title);
     await mkdir(kindDir, { recursive: true });
     const outPath = join(kindDir, filename);
-    const frontmatter = [
-      "---",
-      `kind: ${c.kind}`,
-      `domain: ${JSON.stringify(c.domain)}`,
-      `title: ${JSON.stringify(c.title)}`,
-      `source_run: ${opts.runId}`,
-      `source_index: ${i}`,
-      `confidence: ${JSON.stringify(c.confidence)}`,
-      `source_status: ${JSON.stringify(c.status)}`,
-      `promoted_by: ${JSON.stringify(opts.reviewer)}`,
-      `promoted_at: ${JSON.stringify(promotedAt)}`,
-      // deprecated knowledge is excluded from `knowledge build-context`.
-      // promote always writes false; a human edits this to retire an entry.
-      "deprecated: false",
-      `hash: ${hash}`,
-      "---",
-    ].join("\n");
-    const body = [
-      frontmatter,
-      "",
-      `# ${c.title}`,
-      "",
-      `Evidence: ${c.evidence.join(", ") || "(none)"}`,
-      "",
-      "## Content",
-      "",
-      c.content,
-      "",
-    ].join("\n");
+    const body = buildPromotedMarkdown(c, {
+      runId: opts.runId,
+      index: i,
+      reviewer: opts.reviewer,
+      promotedAt,
+      hash,
+    });
     await writeFile(outPath, body, "utf8");
     // keep the in-memory scan current so two identical candidates in the
     // same run don't both get promoted.
     scan.hashes.add(hash);
     scan.promotedKeys.add(`${opts.runId}#${i}`);
-    promoted.push({ kind: c.kind, title: c.title, path: outPath });
+    promoted.push({
+      kind: c.kind,
+      title: c.title,
+      path: outPath,
+      index: i,
+      domain: c.domain,
+      hash,
+    });
   }
 
   await appendFile(

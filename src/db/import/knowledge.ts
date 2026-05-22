@@ -52,16 +52,27 @@ function importCandidates(
   counters: ImportCounters,
 ): void {
   if (!existsSync(runsDir)) return;
-  const insert = db.prepare(
+  // upsert content only — a `db-first` candidate's decision state (status /
+  // decided_at / reviewer / reason) and `source_mode` are DB-canonical
+  // (Phase 7-9) and must survive a re-import from the observation log.
+  const upsert = db.prepare(
     `INSERT INTO knowledge_candidates (candidate_id, run_id, project_id, repo_id,
-       domain, kind, title, body, status, created_at, decided_at, reviewer, reason)
+       domain, kind, title, body, status, created_at)
      VALUES (@candidate_id, @run_id, @project_id, @repo_id, @domain, @kind,
-       @title, @body, @status, @created_at, NULL, NULL, NULL)`,
+       @title, @body, 'candidate', @created_at)
+     ON CONFLICT (candidate_id) DO UPDATE SET
+       run_id = excluded.run_id, project_id = excluded.project_id,
+       repo_id = excluded.repo_id, domain = excluded.domain,
+       kind = excluded.kind, title = excluded.title, body = excluded.body,
+       created_at = excluded.created_at`,
   );
   // candidate_id is keyed by list index, so a shortened candidates file
-  // would otherwise leave stale high-index rows — replace per run.
-  const deleteForRun = db.prepare(
-    "DELETE FROM knowledge_candidates WHERE run_id = ?",
+  // would leave stale high-index rows. Drop the run's rows that are no
+  // longer present — but keep a `db-first` row, which is DB-canonical.
+  const deleteStale = db.prepare(
+    `DELETE FROM knowledge_candidates
+     WHERE run_id = @run_id AND source_mode != 'db-first'
+       AND candidate_id NOT IN (SELECT value FROM json_each(@keep))`,
   );
   for (const entry of readdirSync(runsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
@@ -81,11 +92,12 @@ function importCandidates(
     const attr = runAttribution(runDir);
     // mtime keeps re-imports of an unchanged file idempotent.
     const createdAt = new Date(statSync(path).mtimeMs).toISOString();
+    const keepIds = candidates.map((_, i) => `${entry.name}:${i}`);
     const tx = db.transaction(() => {
-      deleteForRun.run(entry.name);
+      deleteStale.run({ run_id: entry.name, keep: JSON.stringify(keepIds) });
       candidates.forEach((c, i) => {
         const cand = c as Record<string, unknown>;
-        insert.run({
+        upsert.run({
           candidate_id: `${entry.name}:${i}`,
           run_id: entry.name,
           project_id: attr.projectId,
@@ -94,8 +106,6 @@ function importCandidates(
           kind: typeof cand.kind === "string" ? cand.kind : "unknown",
           title: typeof cand.title === "string" ? cand.title : null,
           body: typeof cand.content === "string" ? cand.content : null,
-          status:
-            typeof cand.status === "string" ? cand.status : "candidate",
           created_at: createdAt,
         });
       });
