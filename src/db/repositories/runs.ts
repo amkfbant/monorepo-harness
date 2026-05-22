@@ -798,6 +798,93 @@ export class RunRepository {
       )
       .run(runId, actionType, status, new Date().toISOString(), errorMessage);
   }
+
+  /**
+   * Record a created pull request against a DB-first run (Phase 7-10).
+   *
+   * `pr create` does not change the run's status — an `approved` run
+   * stays `approved` — so this writes `pr_url` / `pr_number`, patches the
+   * `meta_json` PR fields, appends a `pr_created` event and bumps
+   * `db_revision`. The write is guarded on the run still being `approved`
+   * (a concurrent cleanup that moved it is a `StateConflictError`).
+   */
+  recordPrCreated(input: {
+    runId: string;
+    prUrl: string;
+    prNumber: number;
+    head: string;
+    base: string;
+    occurredAt: string;
+  }): void {
+    const txn = this.db.transaction(() => {
+      const row = this.db
+        .prepare("SELECT status, meta_json FROM runs WHERE run_id = ?")
+        .get(input.runId) as
+        | { status: string; meta_json: string | null }
+        | undefined;
+      if (row === undefined) {
+        throw new DbError(`recordPrCreated: no run '${input.runId}'`);
+      }
+      if (row.status !== "approved") {
+        throw new StateConflictError(input.runId, ["approved"], row.status);
+      }
+      const meta =
+        row.meta_json !== null
+          ? (JSON.parse(row.meta_json) as Record<string, unknown>)
+          : {};
+      const patchedMeta = {
+        ...meta,
+        prUrl: input.prUrl,
+        prNumber: input.prNumber,
+      };
+      const info = this.db
+        .prepare(
+          `UPDATE runs
+             SET pr_url = ?, pr_number = ?, meta_json = ?,
+                 db_revision = db_revision + 1, export_status = 'dirty',
+                 last_export_error = NULL, updated_at = ?
+           WHERE run_id = ? AND status = 'approved'`,
+        )
+        .run(
+          input.prUrl,
+          input.prNumber,
+          JSON.stringify(patchedMeta, null, 2),
+          input.occurredAt,
+          input.runId,
+        );
+      if (info.changes === 0) {
+        throw new StateConflictError(input.runId, ["approved"], row.status);
+      }
+      const seq = (
+        this.db
+          .prepare(
+            `SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM run_events
+             WHERE run_id = ?`,
+          )
+          .get(input.runId) as { next: number }
+      ).next;
+      this.db
+        .prepare(
+          `INSERT INTO run_events (run_id, seq, type, occurred_at, payload_json)
+           VALUES (?, ?, 'pr_created', ?, ?)`,
+        )
+        .run(
+          input.runId,
+          seq,
+          input.occurredAt,
+          JSON.stringify({
+            type: "pr_created",
+            runId: input.runId,
+            prUrl: input.prUrl,
+            prNumber: input.prNumber,
+            head: input.head,
+            base: input.base,
+            createdAt: input.occurredAt,
+          }),
+        );
+    });
+    txn.immediate();
+  }
 }
 
 /**

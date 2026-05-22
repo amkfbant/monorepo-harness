@@ -1,10 +1,16 @@
 import { readFile, writeFile, appendFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import type Database from "better-sqlite3";
 import type { RunMeta } from "../logging/run-log.js";
 import { gitCli } from "../git/git-cli.js";
 import { acquireDomainLock } from "../workspace/domain-lock.js";
 import { computeReviewedFingerprint } from "./reviewed-fingerprint.js";
+import { openDb } from "../db/connection.js";
+import { runMigrations } from "../db/migrations.js";
+import { RunRepository } from "../db/repositories/runs.js";
+import { PullRequestRepository } from "../db/repositories/pull-requests.js";
+import { exportRun } from "../db/export-files.js";
 
 export class PrGateError extends Error {
   constructor(message: string) {
@@ -49,6 +55,13 @@ export interface CreatePrOpts {
   base: string;
   draft: boolean;
   publisher: PrPublisher;
+  /**
+   * harness DB path. When given (Phase 7-10), the PR is recorded in
+   * `pull_requests` as the canonical record — making `pr create`
+   * idempotent — and a `db-first` run's PR fields are written through the
+   * DB. Omitted → the legacy file-only path (meta.json) is used.
+   */
+  dbPath?: string;
   /** override the PR title; default derives from runId + domain */
   title?: string;
   gitTimeoutMs?: number;
@@ -83,16 +96,42 @@ export async function createPullRequest(
   }
   // unlocked probe read just to learn the domain for the lock.
   const probe = await readMeta(metaPath, opts.runId);
-  const lock = await acquireDomainLock({
-    locksDir: opts.locksDir,
-    domain: typeof probe.domain === "string" ? probe.domain : "unknown",
-    runId: `pr:${opts.runId}`,
-    ...(typeof probe.repoId === "string" ? { repoId: probe.repoId } : {}),
-  });
+  // Open the DB before the lock so an open failure cannot leak a held
+  // lock (mirrors cleanup). A DB-recorded `created` PR short-circuits the
+  // whole flow — `pr create` is idempotent, never opening a second PR.
+  const db = opts.dbPath !== undefined ? openDb(opts.dbPath) : undefined;
+  let lock: Awaited<ReturnType<typeof acquireDomainLock>> | undefined;
   try {
-    return await createUnderLock(opts, runDir, metaPath);
+    if (db !== undefined) {
+      runMigrations(db);
+      const existing = new PullRequestRepository(db).findByRun(opts.runId);
+      if (
+        existing !== null &&
+        existing.status === "created" &&
+        existing.url !== null &&
+        existing.externalPrId !== null
+      ) {
+        return {
+          runId: opts.runId,
+          prUrl: existing.url,
+          prNumber: Number(existing.externalPrId),
+          head: existing.branch ?? "",
+        };
+      }
+    }
+    lock = await acquireDomainLock({
+      locksDir: opts.locksDir,
+      domain: typeof probe.domain === "string" ? probe.domain : "unknown",
+      runId: `pr:${opts.runId}`,
+      ...(typeof probe.repoId === "string" ? { repoId: probe.repoId } : {}),
+    });
+    return await createUnderLock(opts, runDir, metaPath, db);
   } finally {
-    await lock.release();
+    try {
+      db?.close();
+    } finally {
+      if (lock !== undefined) await lock.release();
+    }
   }
 }
 
@@ -110,6 +149,7 @@ async function createUnderLock(
   opts: CreatePrOpts,
   runDir: string,
   metaPath: string,
+  db: Database.Database | undefined,
 ): Promise<CreatePrResult> {
   // authoritative read UNDER the lock — a concurrent cleanup can't have
   // changed status between the probe read and here.
@@ -193,40 +233,101 @@ async function createUnderLock(
   }
 
   // 5. open the PR (publisher should be idempotent on the head branch).
+  //    A `db-first` run is recorded through the DB; a legacy run keeps the
+  //    meta.json path. The DB row's source_mode is the authority.
+  const dbFirst =
+    db !== undefined &&
+    (
+      db
+        .prepare("SELECT source_mode FROM runs WHERE run_id = ?")
+        .get(opts.runId) as { source_mode: string } | undefined
+    )?.source_mode === "db-first";
   const title =
     opts.title ?? `harness ${opts.runId} (${meta.domain ?? "unknown"})`;
   const body = await buildPrBody(runDir, meta, opts.runId);
-  const published = await opts.publisher.publish({
-    repoDir: worktree,
-    base: opts.base,
-    head,
-    title,
-    body,
-    draft: opts.draft,
-  });
+  const occurredAt = (opts.now ?? new Date()).toISOString();
+  const repo = typeof meta.repoId === "string" ? meta.repoId : null;
 
-  // 6. record prUrl / prNumber + emit pr_created. meta is re-read so we
-  //    never clobber a field a concurrent writer set — but we hold the
-  //    lock, so this read is current.
-  const current = await readMeta(metaPath, opts.runId);
-  await writeFile(
-    metaPath,
-    `${JSON.stringify({ ...current, prUrl: published.url, prNumber: published.number }, null, 2)}\n`,
-    "utf8",
-  );
-  await appendFile(
-    join(runDir, "events.jsonl"),
-    `${JSON.stringify({
-      type: "pr_created",
+  let published: PrPublishResult;
+  try {
+    published = await opts.publisher.publish({
+      repoDir: worktree,
+      base: opts.base,
+      head,
+      title,
+      body,
+      draft: opts.draft,
+    });
+  } catch (e) {
+    // the external creation failed: record it so a retry can recover, and
+    // surface the error. The DB stays the canonical record of the attempt.
+    if (db !== undefined) {
+      new PullRequestRepository(db).upsertPullRequest({
+        runId: opts.runId,
+        provider: "github",
+        repo,
+        branch: head,
+        baseBranch: opts.base,
+        title,
+        url: null,
+        externalPrId: null,
+        status: "failed",
+        operationId: null,
+      });
+    }
+    throw e;
+  }
+
+  // 6. record the pull request. The DB is the canonical record (Phase
+  //    7-10); a db-first run's PR fields go through the run row and are
+  //    re-exported, a legacy run keeps the meta.json write.
+  if (db !== undefined) {
+    new PullRequestRepository(db).upsertPullRequest({
+      runId: opts.runId,
+      provider: "github",
+      repo,
+      branch: head,
+      baseBranch: opts.base,
+      title,
+      url: published.url,
+      externalPrId: String(published.number),
+      status: "created",
+      operationId: null,
+    });
+  }
+  if (dbFirst && db !== undefined) {
+    new RunRepository(db).recordPrCreated({
       runId: opts.runId,
       prUrl: published.url,
       prNumber: published.number,
       head,
       base: opts.base,
-      createdAt: (opts.now ?? new Date()).toISOString(),
-    })}\n`,
-    "utf8",
-  );
+      occurredAt,
+    });
+    exportRun(db, opts.runId, { runsDir: opts.runsDir });
+  } else {
+    // legacy run — meta is re-read so we never clobber a field a
+    // concurrent writer set; we hold the lock, so this read is current.
+    const current = await readMeta(metaPath, opts.runId);
+    await writeFile(
+      metaPath,
+      `${JSON.stringify({ ...current, prUrl: published.url, prNumber: published.number }, null, 2)}\n`,
+      "utf8",
+    );
+    await appendFile(
+      join(runDir, "events.jsonl"),
+      `${JSON.stringify({
+        type: "pr_created",
+        runId: opts.runId,
+        prUrl: published.url,
+        prNumber: published.number,
+        head,
+        base: opts.base,
+        createdAt: occurredAt,
+      })}\n`,
+      "utf8",
+    );
+  }
 
   return {
     runId: opts.runId,

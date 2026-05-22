@@ -1076,6 +1076,7 @@ prCmd
         runsDir: paths.runsDir,
         workspacesDir: paths.workspacesDir,
         locksDir: paths.locksDir,
+        dbPath: paths.dbPath,
         runId: String(raw.runId),
         base: String(raw.base),
         // commander maps --no-draft to raw.draft === false
