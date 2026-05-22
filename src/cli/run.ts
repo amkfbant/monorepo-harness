@@ -564,12 +564,18 @@ const runCmd = program
   });
 
 function runViewAction(
-  render: (runsDir: string, runId: string) => Promise<string>,
+  render: (
+    runsDir: string,
+    runId: string,
+    dbPath?: string,
+  ) => Promise<string>,
 ) {
   return async (raw: Record<string, unknown>): Promise<void> => {
     const paths = harnessPaths(getHarnessRoot());
     try {
-      process.stdout.write(await render(paths.runsDir, String(raw.runId)));
+      process.stdout.write(
+        await render(paths.runsDir, String(raw.runId), paths.dbPath),
+      );
     } catch (e) {
       if (e instanceof RunViewError) {
         process.stderr.write(`harness error: ${(e as Error).message}\n`);
@@ -591,6 +597,7 @@ runCmd
           paths.runsDir,
           String(raw.runId),
           paths.backlogDir,
+          paths.dbPath,
         ),
       );
     } catch (e) {
@@ -1772,6 +1779,7 @@ rerunCmd
       const root = await buildRerunChain({
         runsDir: paths.runsDir,
         runId: String(raw.runId),
+        dbPath: paths.dbPath,
       });
       process.stdout.write(formatChain(root));
     } catch (e) {

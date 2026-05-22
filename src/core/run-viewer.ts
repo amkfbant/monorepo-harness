@@ -3,6 +3,11 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { RunMeta } from "../logging/run-log.js";
 import { findBacklogItemForRun } from "./backlog.js";
+import {
+  readRunMetaFromDb,
+  readRunEventsFromDb,
+  listRunArtifactsFromDb,
+} from "./run-db-reader.js";
 
 export class RunViewError extends Error {
   constructor(message: string) {
@@ -22,33 +27,47 @@ function assertRunId(runId: string): void {
   }
 }
 
-async function readMeta(runsDir: string, runId: string): Promise<RunMeta> {
+/**
+ * Read a run's `meta.json`. The exported file is canonical when present;
+ * with file export OFF (or after `cleanup` removed the run dir) it falls
+ * back to the db-first run's `meta_json` so a DB-only run still renders.
+ */
+async function readMeta(
+  runsDir: string,
+  runId: string,
+  dbPath?: string,
+): Promise<RunMeta> {
   const metaPath = join(runsDir, runId, "meta.json");
-  if (!existsSync(metaPath)) {
-    throw new RunViewError(`run ${runId} not found`);
+  if (existsSync(metaPath)) {
+    try {
+      return JSON.parse(await readFile(metaPath, "utf8")) as RunMeta;
+    } catch (e) {
+      throw new RunViewError(
+        `meta.json for ${runId} is unreadable: ${(e as Error).message}`,
+      );
+    }
   }
-  try {
-    return JSON.parse(await readFile(metaPath, "utf8")) as RunMeta;
-  } catch (e) {
-    throw new RunViewError(
-      `meta.json for ${runId} is unreadable: ${(e as Error).message}`,
-    );
+  if (dbPath !== undefined) {
+    const fromDb = readRunMetaFromDb(dbPath, runId);
+    if (fromDb !== null) return fromDb;
   }
+  throw new RunViewError(`run ${runId} not found`);
 }
 
 /**
  * A one-screen summary of a run. Missing artifacts degrade gracefully.
  * When `backlogDir` is given, the run's backlog item (if any) is derived
  * by scanning the backlog — the link lives only on the backlog side.
+ * `dbPath` enables the DB fallback for a run with no exported files.
  */
 export async function renderRunShow(
   runsDir: string,
   runId: string,
   backlogDir?: string,
+  dbPath?: string,
 ): Promise<string> {
   assertRunId(runId);
-  const meta = await readMeta(runsDir, runId);
-  const runDir = join(runsDir, runId);
+  const meta = await readMeta(runsDir, runId, dbPath);
   const lines: string[] = [
     `Run: ${runId}`,
     `Domain: ${meta.domain ?? "?"}`,
@@ -101,7 +120,9 @@ export async function renderRunShow(
   }
 
   lines.push("", "Artifacts:");
-  for (const a of await artifactList(runDir)) lines.push(`  ${a}`);
+  for (const a of await artifactLines(runsDir, runId, dbPath)) {
+    lines.push(`  ${a}`);
+  }
   lines.push("");
   return lines.join("\n");
 }
@@ -110,39 +131,47 @@ export async function renderRunShow(
 export async function renderRunTimeline(
   runsDir: string,
   runId: string,
+  dbPath?: string,
 ): Promise<string> {
   assertRunId(runId);
-  // run must exist (meta.json), but a missing/empty events.jsonl is fine
-  await readMeta(runsDir, runId);
+  // run must exist, but a missing/empty event stream is fine
+  await readMeta(runsDir, runId, dbPath);
   const eventsPath = join(runsDir, runId, "events.jsonl");
-  if (!existsSync(eventsPath)) {
-    return `Timeline: ${runId}\n  (no events.jsonl)\n`;
-  }
-  let raw: string;
-  try {
-    raw = await readFile(eventsPath, "utf8");
-  } catch (e) {
-    throw new RunViewError(
-      `events.jsonl for ${runId} is unreadable: ${(e as Error).message}`,
-    );
-  }
   const lines = [`Timeline: ${runId}`];
   let n = 0;
   let skipped = 0;
-  for (const line of raw.split("\n")) {
-    if (line.trim() === "") continue;
-    let ev: Record<string, unknown>;
-    try {
-      ev = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      // a corrupt line must not consume an event ordinal — the ordinal
-      // is meant to read as "the Nth event", not "the Nth line".
-      skipped += 1;
-      continue;
-    }
+  const push = (ev: Record<string, unknown>): void => {
     n += 1;
     lines.push(`  ${String(n).padStart(2, "0")}. ${formatEvent(ev)}`);
+  };
+
+  if (existsSync(eventsPath)) {
+    let raw: string;
+    try {
+      raw = await readFile(eventsPath, "utf8");
+    } catch (e) {
+      throw new RunViewError(
+        `events.jsonl for ${runId} is unreadable: ${(e as Error).message}`,
+      );
+    }
+    for (const line of raw.split("\n")) {
+      if (line.trim() === "") continue;
+      try {
+        push(JSON.parse(line) as Record<string, unknown>);
+      } catch {
+        // a corrupt line must not consume an event ordinal — the ordinal
+        // is meant to read as "the Nth event", not "the Nth line".
+        skipped += 1;
+      }
+    }
+  } else {
+    // no exported events.jsonl — fall back to the DB-stored events.
+    const fromDb =
+      dbPath !== undefined ? readRunEventsFromDb(dbPath, runId) : null;
+    if (fromDb === null) return `Timeline: ${runId}\n  (no events.jsonl)\n`;
+    for (const ev of fromDb) push(ev);
   }
+
   if (n === 0) lines.push("  (no events)");
   if (skipped > 0) lines.push(`  (skipped ${skipped} unparseable line(s))`);
   lines.push("");
@@ -180,18 +209,38 @@ function formatEvent(ev: Record<string, unknown>): string {
   return `${type}${extras.length > 0 ? ` ${extras.join(" ")}` : ""}${ts ? ` @ ${ts}` : ""}`;
 }
 
-/** The artifact files present in the run dir. */
+/** The artifact files present in the run dir (or the DB manifest). */
 export async function renderRunArtifacts(
   runsDir: string,
   runId: string,
+  dbPath?: string,
 ): Promise<string> {
   assertRunId(runId);
-  await readMeta(runsDir, runId);
-  const runDir = join(runsDir, runId);
+  await readMeta(runsDir, runId, dbPath);
   const lines = [`Artifacts: ${runId}`];
-  for (const a of await artifactList(runDir)) lines.push(`  ${a}`);
+  for (const a of await artifactLines(runsDir, runId, dbPath)) {
+    lines.push(`  ${a}`);
+  }
   lines.push("");
   return lines.join("\n");
+}
+
+/**
+ * Artifact listing for a run: the run dir's files when it exists, else the
+ * `artifacts` manifest from the DB so a DB-only / cleaned run still lists.
+ */
+async function artifactLines(
+  runsDir: string,
+  runId: string,
+  dbPath?: string,
+): Promise<string[]> {
+  const runDir = join(runsDir, runId);
+  if (existsSync(runDir)) return artifactList(runDir);
+  if (dbPath !== undefined) {
+    const fromDb = listRunArtifactsFromDb(dbPath, runId);
+    if (fromDb !== null) return fromDb.length > 0 ? fromDb : ["(none)"];
+  }
+  return ["(none)"];
 }
 
 /**

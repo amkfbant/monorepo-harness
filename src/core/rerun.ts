@@ -8,7 +8,7 @@ import {
   ReviewDecisionFileSchema,
   type ReviewDecisionFile,
 } from "./review-decision-schema.js";
-import { openDb } from "../db/connection.js";
+import { openDb, openDbReadonly } from "../db/connection.js";
 import { SourceModeError } from "../db/errors.js";
 
 /**
@@ -464,38 +464,28 @@ const RUN_DIR_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]+$/;
  * (robust even for pre-2-7 reruns that lack rootRunId) up to the root,
  * then assembles the descendant tree by scanning runs/.
  */
-export async function buildRerunChain(opts: {
-  runsDir: string;
-  runId: string;
-}): Promise<ChainNode> {
-  if (!RUN_ID_RE.test(opts.runId)) {
-    throw new RerunGateError(
-      `invalid runId: ${JSON.stringify(opts.runId)}`,
-    );
-  }
-  if (!existsSync(join(opts.runsDir, opts.runId, "meta.json"))) {
-    throw new RerunGateError(`run ${opts.runId} not found`);
-  }
+/** Per-run chain facts — the subset of a run needed to assemble the tree. */
+interface ChainInfo {
+  parentRunId: string | null;
+  status: RunMeta["status"] | "?";
+  rerunAttempt: number | null;
+}
 
-  // index every run dir's parentRunId / status
-  interface Info {
-    parentRunId: string | null;
-    status: RunMeta["status"] | "?";
-    rerunAttempt: number | null;
-  }
-  const index = new Map<string, Info>();
+/** Index every exported run dir's chain facts. */
+async function fileChainIndex(
+  runsDir: string,
+): Promise<Map<string, ChainInfo>> {
+  const index = new Map<string, ChainInfo>();
   let entries: string[] = [];
   try {
-    entries = (await readdir(opts.runsDir)).filter((e) =>
-      RUN_DIR_RE.test(e),
-    );
+    entries = (await readdir(runsDir)).filter((e) => RUN_DIR_RE.test(e));
   } catch {
     entries = [];
   }
   for (const id of entries) {
     try {
       const raw = JSON.parse(
-        await readFile(join(opts.runsDir, id, "meta.json"), "utf8"),
+        await readFile(join(runsDir, id, "meta.json"), "utf8"),
       ) as RunMeta;
       index.set(id, {
         parentRunId:
@@ -505,12 +495,61 @@ export async function buildRerunChain(opts: {
           typeof raw.rerunAttempt === "number" ? raw.rerunAttempt : null,
       });
     } catch {
-      index.set(id, {
-        parentRunId: null,
-        status: "?",
-        rerunAttempt: null,
+      index.set(id, { parentRunId: null, status: "?", rerunAttempt: null });
+    }
+  }
+  return index;
+}
+
+/** Index every run's chain facts from the DB (DB-only fallback). */
+function dbChainIndex(dbPath: string): Map<string, ChainInfo> {
+  const index = new Map<string, ChainInfo>();
+  const db = openDbReadonly(dbPath);
+  try {
+    const rows = db
+      .prepare(
+        "SELECT run_id, parent_run_id, status, rerun_attempt FROM runs",
+      )
+      .all() as {
+      run_id: string;
+      parent_run_id: string | null;
+      status: string;
+      rerun_attempt: number | null;
+    }[];
+    for (const r of rows) {
+      index.set(r.run_id, {
+        parentRunId: r.parent_run_id,
+        status: r.status as RunMeta["status"],
+        rerunAttempt: r.rerun_attempt,
       });
     }
+  } finally {
+    db.close();
+  }
+  return index;
+}
+
+export async function buildRerunChain(opts: {
+  runsDir: string;
+  runId: string;
+  /** when set, a run with no exported files is read from the DB instead */
+  dbPath?: string;
+}): Promise<ChainNode> {
+  if (!RUN_ID_RE.test(opts.runId)) {
+    throw new RerunGateError(
+      `invalid runId: ${JSON.stringify(opts.runId)}`,
+    );
+  }
+  // the run is exported → scan run dirs; otherwise fall back to the DB
+  // index so a DB-only run's chain still renders.
+  const onDisk = existsSync(join(opts.runsDir, opts.runId, "meta.json"));
+  const index = onDisk
+    ? await fileChainIndex(opts.runsDir)
+    : opts.dbPath !== undefined && existsSync(opts.dbPath)
+      ? dbChainIndex(opts.dbPath)
+      : new Map<string, ChainInfo>();
+  if (!index.has(opts.runId)) {
+    throw new RerunGateError(`run ${opts.runId} not found`);
   }
 
   // walk up to the root
