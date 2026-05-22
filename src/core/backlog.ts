@@ -33,6 +33,16 @@ const PRIORITIES: BacklogPriority[] = ["high", "medium", "low"];
 const ITEM_ID_RE = /^item-[0-9]{8}-[0-9]{3}$/;
 const RUN_ID_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]+$/;
 
+/** Whether `runId` is a well-formed run id that may be linked to an item. */
+export function isLinkableRunId(runId: string): boolean {
+  return RUN_ID_RE.test(runId);
+}
+
+/** Whether `id` is a well-formed `item-YYYYMMDD-NNN` backlog item id. */
+export function isBacklogItemId(id: string): boolean {
+  return ITEM_ID_RE.test(id);
+}
+
 /** Ensure backlog/{open,doing,done,deferred} exist. */
 async function ensureDirs(backlogDir: string): Promise<void> {
   for (const s of STATUSES) {
@@ -103,7 +113,26 @@ export async function addItem(
 
 /** Allocate the next `item-YYYYMMDD-NNN` id for the given day. */
 async function nextItemId(backlogDir: string, now: Date): Promise<string> {
-  const day = now.toISOString().slice(0, 10).replace(/-/g, "");
+  const day = dayKey(now);
+  const max = await maxDaySequenceFromFiles(backlogDir, day);
+  return `item-${day}-${String(max + 1).padStart(3, "0")}`;
+}
+
+/** The `YYYYMMDD` id-day key for a date. */
+export function dayKey(now: Date): string {
+  return now.toISOString().slice(0, 10).replace(/-/g, "");
+}
+
+/**
+ * Highest `NNN` sequence across all `item-<day>-NNN.yaml` files in the
+ * backlog dirs, or 0 when none exist. Exported so the DB-first add path
+ * (Phase 7-8) can seed its id allocation from the exported files too — a
+ * legacy item never imported into the DB still bumps the sequence.
+ */
+export async function maxDaySequenceFromFiles(
+  backlogDir: string,
+  day: string,
+): Promise<number> {
   let max = 0;
   for (const s of STATUSES) {
     for (const f of await readdirSafe(join(backlogDir, s))) {
@@ -111,7 +140,7 @@ async function nextItemId(backlogDir: string, now: Date): Promise<string> {
       if (m && m[1] === day) max = Math.max(max, Number(m[2]));
     }
   }
-  return `item-${day}-${String(max + 1).padStart(3, "0")}`;
+  return max;
 }
 
 /** List items, optionally filtered to one status. */
@@ -299,6 +328,15 @@ async function readItemFile(
 }
 
 function serialise(item: BacklogItem): string {
+  return serialiseBacklogItem(item);
+}
+
+/**
+ * Render a `BacklogItem` as the canonical `backlog/*.yaml` body. Shared by
+ * the legacy file writer here and the DB-first export (Phase 7-8) so both
+ * paths emit byte-identical YAML.
+ */
+export function serialiseBacklogItem(item: BacklogItem): string {
   return stringifyYaml(item);
 }
 

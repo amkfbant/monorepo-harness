@@ -49,17 +49,20 @@ import {
   type InboxSection,
 } from "../core/inbox.js";
 import {
-  addItem,
   listItems,
   showItem,
-  setItemStatus,
-  recordBacklogRun,
   formatItem,
   formatItemList,
   BacklogError,
   type BacklogStatus,
   type BacklogPriority,
 } from "../core/backlog.js";
+import {
+  addBacklogItem,
+  transitionBacklogItem,
+  linkBacklogRun,
+  type BacklogDbContext,
+} from "../core/backlog-db.js";
 import {
   checkMaintenance,
   runMaintenanceCleanup,
@@ -1147,11 +1150,21 @@ const backlogCmd = program
   .command("backlog")
   .description("personal backlog — queue tasks and link them to runs");
 function backlogError(e: unknown): never {
-  if (e instanceof BacklogError) {
+  if (
+    e instanceof BacklogError ||
+    e instanceof StateConflictError ||
+    e instanceof SourceModeError
+  ) {
     process.stderr.write(`harness error: ${(e as Error).message}\n`);
     process.exit(1);
   }
   throw e;
+}
+
+/** DB-first backlog context — `backlog/` dir + the harness DB path. */
+function backlogDbContext(): BacklogDbContext {
+  const paths = harnessPaths(getHarnessRoot());
+  return { backlogDir: paths.backlogDir, dbPath: paths.dbPath };
 }
 backlogCmd
   .command("add")
@@ -1163,9 +1176,8 @@ backlogCmd
   .option("--tags <list>", "comma-separated tags")
   .option("--project <id>", "project id this item belongs to (Phase 5)")
   .action(async (raw: Record<string, unknown>) => {
-    const paths = harnessPaths(getHarnessRoot());
     try {
-      const item = await addItem(paths.backlogDir, {
+      const item = await addBacklogItem(backlogDbContext(), {
         title: String(raw.title),
         domain: String(raw.domain),
         goal: String(raw.goal),
@@ -1240,10 +1252,9 @@ backlogCmd
   .description("mark a backlog item done")
   .requiredOption("--item-id <id>", "backlog item id")
   .action(async (raw: Record<string, unknown>) => {
-    const paths = harnessPaths(getHarnessRoot());
     try {
-      const item = await setItemStatus(
-        paths.backlogDir,
+      const item = await transitionBacklogItem(
+        backlogDbContext(),
         String(raw.itemId),
         "done",
       );
@@ -1257,10 +1268,9 @@ backlogCmd
   .description("defer a backlog item")
   .requiredOption("--item-id <id>", "backlog item id")
   .action(async (raw: Record<string, unknown>) => {
-    const paths = harnessPaths(getHarnessRoot());
     try {
-      const item = await setItemStatus(
-        paths.backlogDir,
+      const item = await transitionBacklogItem(
+        backlogDbContext(),
         String(raw.itemId),
         "deferred",
       );
@@ -1370,8 +1380,8 @@ backlogCmd
       failed = outcome.finalStatus !== "approved";
     }
     if (runId !== "") {
-      const updated = await recordBacklogRun(
-        paths.backlogDir,
+      const updated = await linkBacklogRun(
+        backlogDbContext(),
         item.id,
         runId,
       );

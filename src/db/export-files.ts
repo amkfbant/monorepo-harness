@@ -9,6 +9,19 @@ import {
   recordExportFailure,
   type ExportedFileInfo,
 } from "./export-records.js";
+import {
+  serialiseBacklogItem,
+  type BacklogItem,
+  type BacklogStatus,
+} from "../core/backlog.js";
+
+/** The four backlog status dirs — the one a db-first item is exported to. */
+const BACKLOG_STATUSES: readonly BacklogStatus[] = [
+  "open",
+  "doing",
+  "done",
+  "deferred",
+];
 
 /**
  * Scoped export engine (Phase 7-2) — the inverse of `import-files.ts`.
@@ -27,7 +40,7 @@ import {
  */
 
 export interface ExportResult {
-  scopeType: "run";
+  scopeType: "run" | "backlog_item";
   scopeId: string;
   status: "synced" | "failed";
   /** the `db_revision` the export targeted */
@@ -125,6 +138,137 @@ export function exportRun(
       files: [],
       error,
     };
+  }
+}
+
+/**
+ * Export one backlog item's DB-canonical state to `backlog/<status>/
+ * <itemId>.yaml`.
+ *
+ * A backlog item carries its status in the directory it lives in, so the
+ * export is a move: the YAML is written (atomically) into the dir for the
+ * item's current DB status, then any stale copy in the other three status
+ * dirs is removed. The new file is written before the old ones are
+ * deleted, so a crash mid-export leaves the item discoverable (in two
+ * dirs at worst) rather than lost — a re-export then reconciles it.
+ *
+ * Like `exportRun`, never throws on a file-write failure: the DB is
+ * canonical, so the failure is recorded and returned as `status: failed`.
+ * Throws `DbError` only when the item does not exist in the DB.
+ */
+export function exportBacklogItem(
+  db: Database.Database,
+  itemId: string,
+  opts: { backlogDir: string },
+): ExportResult {
+  // read the item row + its links as one consistent snapshot.
+  const snapshot = db.transaction(
+    ():
+      | { item: BacklogItem; status: BacklogStatus; dbRevision: number }
+      | undefined => {
+      const r = db
+        .prepare(
+          `SELECT item_id, project_id, domain, title, goal, status, priority,
+                  tags_json, created_at, db_revision
+           FROM backlog_items WHERE item_id = ?`,
+        )
+        .get(itemId) as Record<string, unknown> | undefined;
+      if (r === undefined) return undefined;
+      const links = (
+        db
+          .prepare(
+            `SELECT run_id FROM backlog_run_links WHERE item_id = ?
+             ORDER BY linked_at, run_id`,
+          )
+          .all(itemId) as { run_id: string }[]
+      ).map((l) => l.run_id);
+      const status = backlogStatusOf(r.status);
+      const tags = parseTagsJson(r.tags_json);
+      const item: BacklogItem = {
+        id: r.item_id as string,
+        title: (r.title as string | null) ?? "",
+        domain: (r.domain as string | null) ?? "",
+        goal: (r.goal as string | null) ?? "",
+        status,
+        priority: backlogPriorityOf(r.priority),
+        tags,
+        createdAt: (r.created_at as string | null) ?? "",
+        linkedRuns: links,
+        ...(typeof r.project_id === "string" && r.project_id !== ""
+          ? { projectId: r.project_id }
+          : {}),
+      };
+      return { item, status, dbRevision: (r.db_revision as number | null) ?? 0 };
+    },
+  )();
+  if (snapshot === undefined) {
+    throw new DbError(`exportBacklogItem: no backlog item '${itemId}'`);
+  }
+  const { item, status, dbRevision } = snapshot;
+  const startedAt = new Date().toISOString();
+  const relativePath = join(status, `${itemId}.yaml`);
+
+  try {
+    const content = serialiseBacklogItem(item);
+    atomicWriteFile(join(opts.backlogDir, relativePath), content);
+    // remove any stale copy left in the other status dirs — the DB status
+    // is authoritative for which dir the item belongs in.
+    for (const other of BACKLOG_STATUSES) {
+      if (other === status) continue;
+      rmSync(join(opts.backlogDir, other, `${itemId}.yaml`), { force: true });
+    }
+    const files = [describeExportedFile(relativePath, content)];
+    recordExportSuccess(db, {
+      scopeType: "backlog_item",
+      scopeId: itemId,
+      dbRevision,
+      startedAt,
+      files,
+    });
+    return {
+      scopeType: "backlog_item",
+      scopeId: itemId,
+      status: "synced",
+      dbRevision,
+      files,
+    };
+  } catch (e) {
+    const error = (e as Error).message;
+    recordExportFailure(db, {
+      scopeType: "backlog_item",
+      scopeId: itemId,
+      dbRevision,
+      startedAt,
+      error,
+    });
+    return {
+      scopeType: "backlog_item",
+      scopeId: itemId,
+      status: "failed",
+      dbRevision,
+      files: [],
+      error,
+    };
+  }
+}
+
+function backlogStatusOf(v: unknown): BacklogStatus {
+  return v === "doing" || v === "done" || v === "deferred" ? v : "open";
+}
+
+function backlogPriorityOf(v: unknown): BacklogItem["priority"] {
+  return v === "high" || v === "low" ? v : "medium";
+}
+
+function parseTagsJson(v: unknown): string[] {
+  if (typeof v !== "string") return [];
+  try {
+    const parsed = JSON.parse(v) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((t): t is string => typeof t === "string")
+      : [];
+  } catch {
+    return [];
   }
 }
 
