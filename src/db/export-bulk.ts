@@ -3,18 +3,21 @@ import { harnessPaths } from "../config/paths.js";
 import {
   exportRun,
   exportBacklogItem,
-  exportKnowledgeEntry,
-  type ExportResult,
+  exportKnowledgeDecisions,
 } from "./export-files.js";
 
 /**
  * Bulk file export (Phase 7-11) — `harness db export-files`.
  *
  * The DB-first commands export the single scope they touched. This drives
- * the same per-scope exporters across *every* `db-first` row, so an
+ * the same per-scope exporters across *every* DB-canonical row, so an
  * operator can rebuild the compatibility files after a crash, a failed
- * export, or a `--reset` import. Only `db-first` rows are exported: a
- * `legacy-file` row's files are already its source of truth.
+ * export, or a `--reset` import.
+ *
+ * - `run` / `backlog`: every `db-first` row's files are re-exported.
+ * - `knowledge`: every run with `db-first` candidate decisions has its
+ *   `knowledge-decisions.yaml` re-projected. Promoted-entry `.md` bodies
+ *   are file-backed (the `.md` is the artifact) and are NOT re-exported.
  */
 
 export type ExportScope = "run" | "backlog" | "knowledge";
@@ -35,12 +38,6 @@ export interface ExportFilesOptions {
   id?: string;
 }
 
-const SCOPE_QUERY: Record<ExportScope, { table: string; idColumn: string }> = {
-  run: { table: "runs", idColumn: "run_id" },
-  backlog: { table: "backlog_items", idColumn: "item_id" },
-  knowledge: { table: "knowledge_entries", idColumn: "entry_id" },
-};
-
 /** Re-export the DB-canonical files for the requested scopes. */
 export function exportFiles(
   db: Database.Database,
@@ -50,7 +47,7 @@ export function exportFiles(
   const scopes: ExportScope[] =
     opts.scope !== undefined ? [opts.scope] : ["run", "backlog", "knowledge"];
   return scopes.map((scope) => {
-    const ids = dbFirstIds(db, scope, opts.id);
+    const ids = scopeIds(db, scope, opts.id);
     const result: BulkExportResult = {
       scope,
       total: ids.length,
@@ -59,7 +56,7 @@ export function exportFiles(
       failures: [],
     };
     for (const id of ids) {
-      const r = exportOne(db, scope, id, opts.harnessRoot, paths.runsDir, paths.backlogDir);
+      const r = exportOne(db, scope, id, paths.runsDir, paths.backlogDir);
       if (r.status === "synced") result.synced += 1;
       else {
         result.failed += 1;
@@ -70,20 +67,30 @@ export function exportFiles(
   });
 }
 
-/** The `db-first` row ids for a scope, optionally narrowed to one id. */
-function dbFirstIds(
+/**
+ * The export targets for a scope. `run` / `backlog` are `db-first` rows;
+ * `knowledge` is the set of runs that have `db-first` candidate decisions
+ * (one `knowledge-decisions.yaml` per run).
+ */
+function scopeIds(
   db: Database.Database,
   scope: ExportScope,
   id: string | undefined,
 ): string[] {
-  const { table, idColumn } = SCOPE_QUERY[scope];
-  const where =
-    id !== undefined
-      ? `WHERE source_mode = 'db-first' AND ${idColumn} = ?`
-      : "WHERE source_mode = 'db-first'";
-  const rows = db
-    .prepare(`SELECT ${idColumn} AS id FROM ${table} ${where} ORDER BY ${idColumn}`)
-    .all(...(id !== undefined ? [id] : [])) as { id: string }[];
+  const table =
+    scope === "run"
+      ? "runs"
+      : scope === "backlog"
+        ? "backlog_items"
+        : "knowledge_candidates";
+  const col = scope === "backlog" ? "item_id" : "run_id";
+  const distinct = scope === "knowledge" ? "DISTINCT " : "";
+  let sql = `SELECT ${distinct}${col} AS id FROM ${table} WHERE source_mode = 'db-first'`;
+  if (id !== undefined) sql += ` AND ${col} = @id`;
+  sql += ` ORDER BY ${col}`;
+  const rows = db.prepare(sql).all(id !== undefined ? { id } : {}) as {
+    id: string;
+  }[];
   return rows.map((r) => r.id);
 }
 
@@ -91,21 +98,21 @@ function exportOne(
   db: Database.Database,
   scope: ExportScope,
   id: string,
-  harnessRoot: string,
   runsDir: string,
   backlogDir: string,
-): ExportResult {
+): { status: "synced" | "failed"; error?: string } {
   if (scope === "run") return exportRun(db, id, { runsDir });
   if (scope === "backlog") return exportBacklogItem(db, id, { backlogDir });
-  return exportKnowledgeEntry(db, id, { harnessRoot });
+  return exportKnowledgeDecisions(db, id, { runsDir });
 }
 
 /** Render the bulk export result set as a human-readable block. */
 export function formatBulkExport(results: BulkExportResult[]): string {
   const lines = ["db export-files:"];
   for (const r of results) {
+    const unit = r.scope === "knowledge" ? "decision sidecars" : "rows";
     lines.push(
-      `  ${r.scope}: ${r.synced}/${r.total} synced` +
+      `  ${r.scope}: ${r.synced}/${r.total} ${unit} synced` +
         (r.failed > 0 ? ` (${r.failed} failed)` : ""),
     );
     for (const f of r.failures) lines.push(`    failed ${f.id}: ${f.error}`);

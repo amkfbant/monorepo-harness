@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
@@ -91,6 +97,34 @@ describe("db export-files (bulk)", () => {
     expect(
       existsSync(join(root, "backlog", "open", "item-20260522-002.yaml")),
     ).toBe(false);
+    db.close();
+  });
+
+  it("re-projects knowledge decision sidecars and recovers a failed export", () => {
+    const { root, db } = setup();
+    mkdirSync(join(root, "runs", "run-knw-1"), { recursive: true });
+    // a db-first rejected candidate whose sidecar export previously failed
+    db.prepare(
+      `INSERT INTO knowledge_candidates (candidate_id, run_id, domain, kind,
+         title, body, status, created_at, decided_at, reviewer, reason,
+         source_mode, db_revision, export_status)
+       VALUES ('run-knw-1:0', 'run-knw-1', 'apps/x', 'policy_improvement',
+         't', 'c', 'rejected', '2026-05-22T00:00:00Z', '2026-05-22T01:00:00Z',
+         'kn', 'too specific', 'db-first', 1, 'failed')`,
+    ).run();
+
+    const results = exportFiles(db, { harnessRoot: root, scope: "knowledge" });
+    expect(results[0]?.synced).toBe(1);
+    expect(
+      existsSync(join(root, "runs", "run-knw-1", "knowledge-decisions.yaml")),
+    ).toBe(true);
+    // the candidate's failed export is recovered to synced
+    const status = db
+      .prepare(
+        "SELECT export_status FROM knowledge_candidates WHERE candidate_id = ?",
+      )
+      .get("run-knw-1:0") as { export_status: string };
+    expect(status.export_status).toBe("synced");
     db.close();
   });
 

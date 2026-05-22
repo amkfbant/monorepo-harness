@@ -11,7 +11,7 @@ import { acquireDomainLock } from "../workspace/domain-lock.js";
 import { openDb } from "../db/connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { RunRepository } from "../db/repositories/runs.js";
-import { exportRun } from "../db/export-files.js";
+import { exportRun, warnIfExportFailed } from "../db/export-files.js";
 import { SourceModeError } from "../db/errors.js";
 
 /**
@@ -277,7 +277,7 @@ async function processUnderLock(
       requiredChanges: decision.required_changes,
       decisionYaml: await readFile(decisionPath, "utf8"),
     });
-    exportRun(db, opts.runId, { runsDir: opts.runsDir });
+    warnIfExportFailed(exportRun(db, opts.runId, { runsDir: opts.runsDir }));
   } else {
     const updatedMeta: RunMeta = {
       ...(legacyMeta as RunMeta),

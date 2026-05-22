@@ -14,6 +14,7 @@ import {
   type BacklogItem,
   type BacklogStatus,
 } from "../core/backlog.js";
+import { KnowledgeRepository } from "./repositories/knowledge.js";
 
 /** The four backlog status dirs — the one a db-first item is exported to. */
 const BACKLOG_STATUSES: readonly BacklogStatus[] = [
@@ -273,121 +274,97 @@ function parseTagsJson(v: unknown): string[] {
 }
 
 /**
- * Export one promoted knowledge entry's DB-canonical manifest to its
- * `docs/knowledge/<kind>/*.md` file (Phase 7-11 bulk re-export).
- *
- * The markdown is reconstructed from the `knowledge_entries` row — the
- * frontmatter from `frontmatter_json`, the body from `body`. Like the
- * other exporters it never throws on a file-write failure; throws
- * `DbError` only when the entry does not exist.
+ * Surface a failed run export as a strong stderr warning (Phase 7 design:
+ * a DB commit succeeds + an export fails → exit 0 + warning). The DB stays
+ * canonical; `db export-files` / `check-consistency` recover the files.
+ * Shared by every `exportRun` caller so the behaviour is consistent.
  */
-export function exportKnowledgeEntry(
-  db: Database.Database,
-  entryId: string,
-  opts: { harnessRoot: string },
-): ExportResult {
-  const row = db
-    .prepare(
-      `SELECT path, body, frontmatter_json, db_revision
-       FROM knowledge_entries WHERE entry_id = ?`,
-    )
-    .get(entryId) as
-    | {
-        path: string | null;
-        body: string;
-        frontmatter_json: string | null;
-        db_revision: number | null;
-      }
-    | undefined;
-  if (row === undefined) {
-    throw new DbError(`exportKnowledgeEntry: no knowledge entry '${entryId}'`);
-  }
-  const dbRevision = row.db_revision ?? 0;
-  const relPath = row.path ?? entryId;
-  const startedAt = new Date().toISOString();
-  let frontmatter: Record<string, unknown> = {};
-  try {
-    const parsed =
-      row.frontmatter_json !== null
-        ? (JSON.parse(row.frontmatter_json) as unknown)
-        : {};
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      frontmatter = parsed as Record<string, unknown>;
-    }
-  } catch {
-    frontmatter = {};
-  }
-
-  try {
-    const content = `${renderKnowledgeFrontmatter(frontmatter)}${row.body}`;
-    atomicWriteFile(join(opts.harnessRoot, relPath), content);
-    const files = [describeExportedFile(relPath, content)];
-    recordExportSuccess(db, {
-      scopeType: "knowledge_entry",
-      scopeId: entryId,
-      dbRevision,
-      startedAt,
-      files,
-    });
-    return {
-      scopeType: "knowledge_entry",
-      scopeId: entryId,
-      status: "synced",
-      dbRevision,
-      files,
-    };
-  } catch (e) {
-    const error = (e as Error).message;
-    recordExportFailure(db, {
-      scopeType: "knowledge_entry",
-      scopeId: entryId,
-      dbRevision,
-      startedAt,
-      error,
-    });
-    return {
-      scopeType: "knowledge_entry",
-      scopeId: entryId,
-      status: "failed",
-      dbRevision,
-      files: [],
-      error,
-    };
+export function warnIfExportFailed(result: ExportResult): void {
+  if (result.status === "failed") {
+    process.stderr.write(
+      `warning: run ${result.scopeId}: the DB was updated but exporting ` +
+        `runs/${result.scopeId}/ failed: ${result.error ?? "unknown error"}` +
+        ` — run \`harness db export-files --scope run --id ${result.scopeId}\`\n`,
+    );
   }
 }
 
+/** Per-run result of re-projecting a `knowledge-decisions.yaml` sidecar. */
+export interface KnowledgeDecisionsExportResult {
+  runId: string;
+  status: "synced" | "failed";
+  error?: string;
+}
+
 /**
- * Serialise a knowledge entry's frontmatter as the `--- ... ---\n` block.
- * The standard promote keys are rendered in their canonical order and
- * format (matching `buildPromotedMarkdown`); any other key is appended
- * as JSON so a hand-edited entry still round-trips.
+ * Re-project a run's `knowledge-decisions.yaml` from the DB-canonical
+ * candidate decision state (Phase 7-9 / 7-11 bulk re-export).
+ *
+ * A knowledge candidate's *decision* (reject) is DB-canonical; the sidecar
+ * is its file projection. The promoted entry's `.md` body, by contrast, is
+ * file-backed (the `.md` is the artifact) — it is NOT re-exported from the
+ * DB. Never throws on a file-write failure: the failure is recorded on the
+ * affected candidate rows so `check-consistency` / a re-run recovers it.
  */
-function renderKnowledgeFrontmatter(fm: Record<string, unknown>): string {
-  const RAW = new Set(["kind", "source_run", "source_index", "hash"]);
-  const ORDER = [
-    "kind",
-    "domain",
-    "title",
-    "source_run",
-    "source_index",
-    "confidence",
-    "source_status",
-    "promoted_by",
-    "promoted_at",
-    "deprecated",
-    "hash",
-  ];
-  const lines: string[] = ["---"];
-  const emit = (k: string, v: unknown): void => {
-    if (v === undefined) return;
-    if (k === "deprecated") lines.push(`deprecated: ${v === true}`);
-    else if (RAW.has(k)) lines.push(`${k}: ${String(v)}`);
-    else lines.push(`${k}: ${JSON.stringify(v)}`);
-  };
-  for (const k of ORDER) if (k in fm) emit(k, fm[k]);
-  for (const k of Object.keys(fm)) if (!ORDER.includes(k)) emit(k, fm[k]);
-  lines.push("---");
-  return `${lines.join("\n")}\n`;
+export function exportKnowledgeDecisions(
+  db: Database.Database,
+  runId: string,
+  opts: { runsDir: string },
+): KnowledgeDecisionsExportResult {
+  const repo = new KnowledgeRepository(db);
+  const rows = db
+    .prepare(
+      `SELECT candidate_id, reviewer, reason, decided_at
+       FROM knowledge_candidates
+       WHERE run_id = ? AND status = 'rejected'
+       ORDER BY candidate_id`,
+    )
+    .all(runId) as {
+    candidate_id: string;
+    reviewer: string | null;
+    reason: string | null;
+    decided_at: string | null;
+  }[];
+  const entries = rows
+    .map((r) => ({
+      index: candidateIndex(r.candidate_id),
+      decision: "rejected",
+      reviewer: r.reviewer ?? "",
+      reason: r.reason ?? "",
+      decidedAt: r.decided_at ?? "",
+    }))
+    .sort((a, b) => a.index - b.index);
+  const content =
+    "decisions:\n" +
+    entries
+      .map((d) =>
+        Object.entries(d)
+          .map(
+            ([k, v], idx) =>
+              `${idx === 0 ? "  - " : "    "}${k}: ${JSON.stringify(v)}`,
+          )
+          .join("\n"),
+      )
+      .join("\n") +
+    "\n";
+  try {
+    atomicWriteFile(
+      join(opts.runsDir, runId, "knowledge-decisions.yaml"),
+      content,
+    );
+    for (const r of rows) repo.markCandidateExported(r.candidate_id);
+    return { runId, status: "synced" };
+  } catch (e) {
+    const error = (e as Error).message;
+    for (const r of rows) repo.markCandidateExportFailed(r.candidate_id, error);
+    return { runId, status: "failed", error };
+  }
+}
+
+/** The candidate's list index, parsed from a `<runId>:<index>` id. */
+function candidateIndex(id: string): number {
+  const n = Number(id.slice(id.lastIndexOf(":") + 1));
+  return Number.isInteger(n) && n >= 0 ? n : 0;
 }
 
 /** ---- meta.json reconstruction ------------------------------------- */

@@ -10,7 +10,8 @@ import { openDb } from "../db/connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { RunRepository } from "../db/repositories/runs.js";
 import { PullRequestRepository } from "../db/repositories/pull-requests.js";
-import { exportRun } from "../db/export-files.js";
+import { exportRun, warnIfExportFailed } from "../db/export-files.js";
+import { SourceModeError } from "../db/errors.js";
 
 export class PrGateError extends Error {
   constructor(message: string) {
@@ -169,6 +170,19 @@ async function createUnderLock(
             }
           | undefined)
       : undefined;
+  // an unrecognised source_mode is corruption — surface it rather than
+  // silently treating the row as legacy.
+  if (
+    dbRow !== undefined &&
+    dbRow.source_mode !== "db-first" &&
+    dbRow.source_mode !== "legacy-file"
+  ) {
+    throw new SourceModeError(
+      opts.runId,
+      dbRow.source_mode,
+      "db-first | legacy-file",
+    );
+  }
   const dbFirst = dbRow?.source_mode === "db-first";
 
   // re-check the canonical PR record UNDER the lock — a concurrent
@@ -351,7 +365,7 @@ async function createUnderLock(
         operationId: null,
       });
     })();
-    exportRun(db, opts.runId, { runsDir: opts.runsDir });
+    warnIfExportFailed(exportRun(db, opts.runId, { runsDir: opts.runsDir }));
   } else {
     if (db !== undefined) {
       new PullRequestRepository(db).upsertPullRequest({

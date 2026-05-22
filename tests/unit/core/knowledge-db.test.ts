@@ -187,26 +187,25 @@ describe("knowledge DB-first", () => {
     expect(c0?.reviewer).toBe("legacy-kn");
   });
 
-  it("db import does not overwrite a db-first knowledge entry", async () => {
+  it("db import re-reads a knowledge entry from its file-backed .md", async () => {
     const ctx = setup();
     await promoteKnowledgeDbFirst(ctx, { runId: RUN_ID, reviewer: "kn" });
     const kindDir = join(ctx.knowledgeDir, "policy_improvement");
     const mdFile = join(kindDir, readdirSync(kindDir)[0] as string);
-    // hand-edit the exported md, then run a normal full import
-    writeFileSync(mdFile, "---\nkind: x\n---\ntampered\n");
+    // a promoted entry's .md body is file-backed (canonical) — a human edit
+    // (e.g. fixing the body) is reflected by a normal `db import`.
+    writeFileSync(mdFile, "---\nkind: policy_improvement\n---\nhand edited\n");
     const root = join(ctx.runsDir, "..");
     const db = openDb(ctx.dbPath);
     runMigrations(db);
     runFullImport(db, { harnessRoot: root });
     const entry = db
       .prepare(
-        "SELECT body, source_mode FROM knowledge_entries WHERE source_mode = 'db-first' LIMIT 1",
+        "SELECT body FROM knowledge_entries WHERE entry_id LIKE '%policy_improvement%' LIMIT 1",
       )
-      .get() as { body: string; source_mode: string } | undefined;
+      .get() as { body: string } | undefined;
     db.close();
-    // the db-first manifest is canonical — the stale md did not roll it back
-    expect(entry?.source_mode).toBe("db-first");
-    expect(entry?.body).not.toContain("tampered");
+    expect(entry?.body).toContain("hand edited");
   });
 
   it("reject rejects an out-of-range index", async () => {

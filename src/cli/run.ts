@@ -1088,7 +1088,11 @@ prCmd
         `run=${r.runId} pr=#${r.prNumber} head=${r.head}\n${r.prUrl}\n`,
       );
     } catch (e) {
-      if (e instanceof PrGateError) {
+      if (
+        e instanceof PrGateError ||
+        e instanceof StateConflictError ||
+        e instanceof SourceModeError
+      ) {
         process.stderr.write(`harness error: ${(e as Error).message}\n`);
         process.exit(1);
       }

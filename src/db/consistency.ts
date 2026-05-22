@@ -368,6 +368,9 @@ function checkExports(
   harnessRoot: string,
   items: ConsistencyItem[],
 ): void {
+  // `knowledge_entries` is intentionally absent: a promoted entry's `.md`
+  // is file-backed (the `.md` is canonical), so the row is a read model
+  // that is never `dirty` — `checkKnowledgeEntries` covers it instead.
   const RUNTIME: { table: string; kind: string; idColumn: string }[] = [
     { table: "runs", kind: "export:run", idColumn: "run_id" },
     { table: "backlog_items", kind: "export:backlog", idColumn: "item_id" },
@@ -375,11 +378,6 @@ function checkExports(
       table: "knowledge_candidates",
       kind: "export:knowledge-candidate",
       idColumn: "candidate_id",
-    },
-    {
-      table: "knowledge_entries",
-      kind: "export:knowledge-entry",
-      idColumn: "entry_id",
     },
   ];
   for (const t of RUNTIME) {

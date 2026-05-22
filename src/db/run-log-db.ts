@@ -4,7 +4,7 @@ import type Database from "better-sqlite3";
 import type { RunEvent } from "../logging/events.js";
 import type { RunLog, RunMeta } from "../logging/run-log.js";
 import { bumpRevision } from "./scopes.js";
-import { exportRun } from "./export-files.js";
+import { exportRun, warnIfExportFailed } from "./export-files.js";
 
 /**
  * DB-backed run log (Phase 7-3) — the DB-first replacement for
@@ -175,12 +175,12 @@ export function createDbRunLog(opts: CreateDbRunLogOpts): RunLog {
 
   let meta: RunMeta = opts.meta;
   insertRunRow(db, runId, meta);
-  exportRun(db, runId, { runsDir });
+  warnIfExportFailed(exportRun(db, runId, { runsDir }));
 
   /** apply a DB write in one transaction, then export the files. */
   function commitThenExport(write: () => void): void {
     db.transaction(write).immediate();
-    exportRun(db, runId, { runsDir });
+    warnIfExportFailed(exportRun(db, runId, { runsDir }));
   }
 
   function persist(next: RunMeta): void {

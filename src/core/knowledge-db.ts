@@ -6,11 +6,7 @@ import { openDb } from "../db/connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { KnowledgeRepository } from "../db/repositories/knowledge.js";
 import { atomicWriteFile } from "../db/atomic-write.js";
-import {
-  describeExportedFile,
-  recordExportSuccess,
-  recordExportFailure,
-} from "../db/export-records.js";
+import { exportKnowledgeDecisions } from "../db/export-files.js";
 import {
   KnowledgePromoteGateError,
   assertKnowledgeRunId,
@@ -175,70 +171,24 @@ function parseDecisions(text: string): Record<string, unknown>[] {
 }
 
 /**
- * Write `knowledge-decisions.yaml` from the DB's rejected candidates for
- * a run — the file is a pure projection of the canonical decision state.
- * Returns a warning string when the file write failed (the DB stays
- * canonical), or undefined on success.
+ * Re-project `knowledge-decisions.yaml` from the canonical DB decision
+ * state. Returns a warning string when the file write failed (the DB
+ * stays canonical), or undefined on success. The bulk `db export-files`
+ * path shares the same `exportKnowledgeDecisions` exporter.
  */
 function exportDecisionsSidecar(
   db: Database.Database,
   ctx: KnowledgeDbContext,
   runId: string,
 ): string | undefined {
-  const repo = new KnowledgeRepository(db);
-  const rows = db
-    .prepare(
-      `SELECT candidate_id, reviewer, reason, decided_at
-       FROM knowledge_candidates
-       WHERE run_id = ? AND status = 'rejected'
-       ORDER BY candidate_id`,
-    )
-    .all(runId) as {
-    candidate_id: string;
-    reviewer: string | null;
-    reason: string | null;
-    decided_at: string | null;
-  }[];
-  const entries = rows
-    .map((r) => ({
-      index: indexOfCandidate(r.candidate_id),
-      decision: "rejected",
-      reviewer: r.reviewer ?? "",
-      reason: r.reason ?? "",
-      decidedAt: r.decided_at ?? "",
-    }))
-    .sort((a, b) => a.index - b.index);
-  const body =
-    "decisions:\n" +
-    entries
-      .map((d) =>
-        Object.entries(d)
-          .map(
-            ([k, v], idx) =>
-              `${idx === 0 ? "  - " : "    "}${k}: ${JSON.stringify(v)}`,
-          )
-          .join("\n"),
-      )
-      .join("\n") +
-    "\n";
-  try {
-    atomicWriteFile(join(ctx.runsDir, runId, DECISIONS_FILE), body);
-    for (const r of rows) repo.markCandidateExported(r.candidate_id);
-    return undefined;
-  } catch (e) {
-    const error = (e as Error).message;
-    for (const r of rows) repo.markCandidateExportFailed(r.candidate_id, error);
+  const r = exportKnowledgeDecisions(db, runId, { runsDir: ctx.runsDir });
+  if (r.status === "failed") {
     return (
       `run ${runId}: the DB decision was recorded but exporting ` +
-      `${DECISIONS_FILE} failed: ${error}`
+      `${DECISIONS_FILE} failed: ${r.error ?? "unknown error"}`
     );
   }
-}
-
-/** The candidate's list index, parsed from a `<runId>:<index>` id. */
-function indexOfCandidate(id: string): number {
-  const n = Number(id.slice(id.lastIndexOf(":") + 1));
-  return Number.isInteger(n) && n >= 0 ? n : 0;
+  return undefined;
 }
 
 /**
@@ -386,8 +336,9 @@ export async function promoteKnowledgeDbFirst(
         promotedAt,
         hash,
       });
-      // DB first (canonical decision + manifest), then export the md.
-      const { dbRevision } = db.transaction((): { dbRevision: number } => {
+      // DB first (canonical decision + read-model manifest), then write
+      // the canonical `.md` artifact.
+      db.transaction(() => {
         repo.setCandidateDecision({
           candidateId: id,
           decision: "promoted",
@@ -395,7 +346,7 @@ export async function promoteKnowledgeDbFirst(
           reason: null,
           decidedAt: promotedAt,
         });
-        return repo.upsertEntry({
+        repo.upsertEntry({
           entryId: relPath,
           projectId: attr.projectId,
           repoId: attr.repoId,
@@ -409,28 +360,17 @@ export async function promoteKnowledgeDbFirst(
           sourceCandidateId: id,
         });
       })();
+      // the `.md` is the canonical artifact (file-backed body) — promote
+      // writes it directly. A write failure leaves the candidate decision
+      // committed; the candidate is marked `failed` and a re-run recovers.
       try {
         atomicWriteFile(join(kindDir, filename), rendered.markdown);
-        recordExportSuccess(db, {
-          scopeType: "knowledge_entry",
-          scopeId: relPath,
-          dbRevision,
-          startedAt: promotedAt,
-          files: [describeExportedFile(relPath, rendered.markdown)],
-        });
         repo.markCandidateExported(id);
       } catch (e) {
         const error = (e as Error).message;
-        recordExportFailure(db, {
-          scopeType: "knowledge_entry",
-          scopeId: relPath,
-          dbRevision,
-          startedAt: promotedAt,
-          error,
-        });
         repo.markCandidateExportFailed(id, error);
         warnings.push(
-          `candidate ${id}: the DB was updated but exporting ${relPath} ` +
+          `candidate ${id}: the decision was recorded but writing ${relPath} ` +
             `failed: ${error}`,
         );
       }

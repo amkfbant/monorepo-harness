@@ -12,7 +12,7 @@ import { acquireDomainLock } from "../workspace/domain-lock.js";
 import { openDb } from "../db/connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { RunRepository } from "../db/repositories/runs.js";
-import { exportRun } from "../db/export-files.js";
+import { exportRun, warnIfExportFailed } from "../db/export-files.js";
 import { SourceModeError } from "../db/errors.js";
 
 /**
@@ -322,7 +322,7 @@ async function cleanupUnderLock(
         worktreeRemoved,
         branchRemoved,
       });
-      exportRun(db, opts.runId, { runsDir: opts.runsDir });
+      warnIfExportFailed(exportRun(db, opts.runId, { runsDir: opts.runsDir }));
     } else if ((legacyMeta as RunMeta).status !== "cleaned") {
       const updated: RunMeta = { ...(legacyMeta as RunMeta), status: "cleaned" };
       await writeFile(

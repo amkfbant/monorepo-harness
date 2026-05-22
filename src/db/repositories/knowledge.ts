@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { DbError } from "../connection.js";
-import { StateConflictError } from "../errors.js";
+import { StateConflictError, SourceModeError } from "../errors.js";
 
 /**
  * Knowledge write repository (Phase 7-9).
@@ -198,8 +198,13 @@ export class KnowledgeRepository {
 
   /**
    * Upsert a promoted entry's `knowledge_entries` manifest row and return
-   * its new `db_revision`. The row is `db-first` and left `export_status =
-   * 'dirty'` until the caller exports the md file and records the export.
+   * its new `db_revision`.
+   *
+   * `knowledge_entries` is a read model of the file-backed `.md` artifact
+   * (the markdown body / frontmatter are canonical on disk, Phase 7
+   * boundary). The row is therefore kept `export_status = 'synced'`: it is
+   * not something the DB exports — `promote` writes the `.md` directly and
+   * `db import` re-reads it.
    */
   upsertEntry(input: UpsertEntryInput): { dbRevision: number } {
     this.db
@@ -210,7 +215,7 @@ export class KnowledgeRepository {
            last_export_error)
          VALUES (@entry_id, @project_id, @repo_id, @domain, @kind, @path,
            @title, @body, @frontmatter_json, @created_at, @source_candidate_id,
-           'db-first', 1, 'dirty', NULL)
+           'db-first', 1, 'synced', NULL)
          ON CONFLICT (entry_id) DO UPDATE SET
            project_id = excluded.project_id, repo_id = excluded.repo_id,
            domain = excluded.domain, kind = excluded.kind,
@@ -219,7 +224,7 @@ export class KnowledgeRepository {
            source_candidate_id = excluded.source_candidate_id,
            source_mode = 'db-first',
            db_revision = knowledge_entries.db_revision + 1,
-           export_status = 'dirty', last_export_error = NULL`,
+           export_status = 'synced', last_export_error = NULL`,
       )
       .run({
         entry_id: input.entryId,
@@ -240,13 +245,29 @@ export class KnowledgeRepository {
     return { dbRevision: row.r };
   }
 
-  /** Current status of a candidate, or a `DbError` when it does not exist. */
+  /**
+   * Current status of a candidate. Throws `DbError` when it does not
+   * exist, and `SourceModeError` when its `source_mode` is neither
+   * `legacy-file` nor `db-first` — an unrecognised value is corruption
+   * and must not be silently migrated to `db-first` by a decision.
+   */
   private requireStatus(candidateId: string): string {
     const r = this.db
-      .prepare("SELECT status FROM knowledge_candidates WHERE candidate_id = ?")
-      .get(candidateId) as { status: string } | undefined;
+      .prepare(
+        "SELECT status, source_mode FROM knowledge_candidates WHERE candidate_id = ?",
+      )
+      .get(candidateId) as
+      | { status: string; source_mode: string }
+      | undefined;
     if (r === undefined) {
       throw new DbError(`knowledge candidate '${candidateId}' not found`);
+    }
+    if (r.source_mode !== "legacy-file" && r.source_mode !== "db-first") {
+      throw new SourceModeError(
+        candidateId,
+        r.source_mode,
+        "db-first | legacy-file",
+      );
     }
     return r.status;
   }

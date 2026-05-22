@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { RunMeta } from "../logging/run-log.js";
 import { loadReviewDecision } from "./review-decision-loader.js";
 import { openDb } from "../db/connection.js";
+import { SourceModeError } from "../db/errors.js";
 
 /**
  * Thrown when a rerun is refused for a user-fixable reason (parent missing,
@@ -106,8 +107,22 @@ async function loadParentMeta(
         .get(parentRunId) as
         | { source_mode: string; meta_json: string | null }
         | undefined;
-      if (row?.source_mode === "db-first" && row.meta_json !== null) {
-        return JSON.parse(row.meta_json) as RunMeta;
+      if (row !== undefined) {
+        // an unrecognised source_mode is corruption — surface it rather
+        // than silently falling back to the (possibly stale) meta.json.
+        if (
+          row.source_mode !== "db-first" &&
+          row.source_mode !== "legacy-file"
+        ) {
+          throw new SourceModeError(
+            parentRunId,
+            row.source_mode,
+            "db-first | legacy-file",
+          );
+        }
+        if (row.source_mode === "db-first" && row.meta_json !== null) {
+          return JSON.parse(row.meta_json) as RunMeta;
+        }
       }
     } finally {
       db.close();
