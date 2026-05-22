@@ -11,7 +11,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -390,6 +390,68 @@ export const MIGRATION_V3_STATEMENTS: readonly string[] = [
   `ALTER TABLE runs ADD COLUMN meta_json TEXT`,
 ];
 
+/**
+ * v4 DDL — Phase 8 (runtime DB complete).
+ *
+ *  - `artifact_blobs` / `artifact_blob_chunks`: content-addressed artifact
+ *    body storage (chunked SQLite BLOB). Phase 7 left artifact bodies
+ *    file-backed; Phase 8 moves them into the DB.
+ *  - `artifacts` is rebuilt: its v1 `CHECK (storage = 'file')` cannot be
+ *    altered in place, so the table is recreated with `storage IN
+ *    ('file','db')` and the new `blob_sha256` / `body_status` columns.
+ *  - `pull_requests` gets a `UNIQUE(run_id)` index (one PR per run). Any
+ *    pre-existing duplicate rows are de-duplicated (keep the latest `id`)
+ *    before the index is created so the migration cannot fail on them.
+ */
+export const MIGRATION_V4_STATEMENTS: readonly string[] = [
+  // --- artifact body storage ----------------------------------------
+  `CREATE TABLE artifact_blobs (
+    sha256 TEXT PRIMARY KEY NOT NULL,
+    bytes INTEGER NOT NULL,
+    content_encoding TEXT NOT NULL DEFAULT 'identity',
+    stored_bytes INTEGER NOT NULL,
+    chunk_count INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE artifact_blob_chunks (
+    sha256 TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    content BLOB NOT NULL,
+    PRIMARY KEY (sha256, chunk_index)
+  )`,
+
+  // --- rebuild `artifacts` to allow storage='db' + body columns ------
+  `CREATE TABLE artifacts_v4 (
+    artifact_id TEXT PRIMARY KEY NOT NULL,
+    run_id TEXT,
+    kind TEXT NOT NULL,
+    relative_path TEXT,
+    content_type TEXT,
+    bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    storage TEXT NOT NULL DEFAULT 'file' CHECK (storage IN ('file', 'db')),
+    blob_sha256 TEXT,
+    body_status TEXT NOT NULL DEFAULT 'legacy_file',
+    created_at TEXT,
+    redacted INTEGER NOT NULL DEFAULT 0,
+    secret_suspect INTEGER NOT NULL DEFAULT 0
+  )`,
+  `INSERT INTO artifacts_v4 (artifact_id, run_id, kind, relative_path,
+     content_type, bytes, sha256, storage, blob_sha256, body_status,
+     created_at, redacted, secret_suspect)
+   SELECT artifact_id, run_id, kind, relative_path, content_type, bytes,
+     sha256, storage, NULL, 'legacy_file', created_at, redacted,
+     secret_suspect
+   FROM artifacts`,
+  `DROP TABLE artifacts`,
+  `ALTER TABLE artifacts_v4 RENAME TO artifacts`,
+
+  // --- pull_requests: one PR per run ---------------------------------
+  `DELETE FROM pull_requests
+   WHERE id NOT IN (SELECT MAX(id) FROM pull_requests GROUP BY run_id)`,
+  `CREATE UNIQUE INDEX pull_requests_run_unique ON pull_requests(run_id)`,
+];
+
 /** Tables added by v2. */
 export const V2_TABLE_NAMES: readonly string[] = [
   "export_records",
@@ -397,6 +459,12 @@ export const V2_TABLE_NAMES: readonly string[] = [
   "operations",
   "pull_requests",
   "cleanup_actions",
+];
+
+/** Tables added by v4 (Phase 8). */
+export const V4_TABLE_NAMES: readonly string[] = [
+  "artifact_blobs",
+  "artifact_blob_chunks",
 ];
 
 /** Table names created by v1 — used by `db status` and tests. */
@@ -423,8 +491,9 @@ export const V1_TABLE_NAMES: readonly string[] = [
   "import_errors",
 ];
 
-/** Every data table at the latest schema version (v1 + v2). */
+/** Every data table at the latest schema version (v1 + v2 + v4). */
 export const ALL_TABLE_NAMES: readonly string[] = [
   ...V1_TABLE_NAMES,
   ...V2_TABLE_NAMES,
+  ...V4_TABLE_NAMES,
 ];

@@ -4,6 +4,7 @@ import {
   MIGRATION_V1_STATEMENTS,
   MIGRATION_V2_STATEMENTS,
   MIGRATION_V3_STATEMENTS,
+  MIGRATION_V4_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -33,6 +34,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 3,
     name: "run-meta-json-v3",
     statements: MIGRATION_V3_STATEMENTS,
+  },
+  {
+    version: 4,
+    name: "runtime-db-complete-v4",
+    statements: MIGRATION_V4_STATEMENTS,
   },
 ];
 

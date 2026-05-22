@@ -68,7 +68,7 @@ describe("loadDashboardSnapshot", () => {
     expect(snap.projects[0]?.runCount).toBe(2);
     expect(snap.projects[0]?.domainCount).toBe(1);
     expect(snap.consistencyStatus).toBe("ok");
-    expect(snap.dbSchemaVersion).toBe(3);
+    expect(snap.dbSchemaVersion).toBe(4);
   });
 
   it("throws when the DB is absent and auto-import is disabled", () => {
