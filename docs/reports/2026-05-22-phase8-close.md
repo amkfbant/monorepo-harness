@@ -158,7 +158,7 @@ refactor: ... — codex レビュー反映`）で反映済み。
 
 ## 検証
 
-- `npm test`: 923 passed / 1 skipped。
+- `npm test`: 924 passed / 1 skipped。
 - `npm run typecheck`: green。
 - schema v1→v2→v3→v4 migration: idempotent（`migrations-v4.test.ts`）。
 - 既存 file-based テスト: 回帰なし（legacy-file path は不変）。
