@@ -96,4 +96,45 @@ describe("migrateLegacy", () => {
     expect(again.backlogItems).toBe(0);
     db.close();
   });
+
+  it("does not promote a run with file-backed artifact bodies (P1)", () => {
+    const { root, db } = setup();
+    seedLegacyRun(db, "run-art");
+    // a non-reconstructed artifact still storage='file' (not backfilled)
+    db.prepare(
+      `INSERT INTO artifacts (artifact_id, run_id, kind, relative_path, bytes,
+         sha256, storage, body_status)
+       VALUES ('run-art:codex-output.log', 'run-art', 'codex-output',
+         'codex-output.log', 1, 'h', 'file', 'legacy_file')`,
+    ).run();
+    const report = migrateLegacy(db, { runsDir: join(root, "runs") });
+    expect(report.runs).toBe(0);
+    expect(report.runsBlockedByArtifacts).toBe(1);
+    expect(sourceMode(db, "run-art")).toBe("legacy-file");
+    db.close();
+  });
+
+  it("promotes a run once its artifacts are db-backed (DB_RECONSTRUCTED ok)", () => {
+    const { root, db } = setup();
+    seedLegacyRun(db, "run-ok");
+    // meta.json is DB-reconstructed — a storage='file' meta.json artifact
+    // does NOT block promotion
+    db.prepare(
+      `INSERT INTO artifacts (artifact_id, run_id, kind, relative_path, bytes,
+         sha256, storage, body_status)
+       VALUES ('run-ok:meta.json', 'run-ok', 'meta', 'meta.json', 1, 'h',
+         'file', 'legacy_file')`,
+    ).run();
+    // a real artifact body already migrated to the DB
+    db.prepare(
+      `INSERT INTO artifacts (artifact_id, run_id, kind, relative_path, bytes,
+         sha256, storage, blob_sha256, body_status)
+       VALUES ('run-ok:summary.md', 'run-ok', 'summary', 'summary.md', 1, 'h',
+         'db', 'h', 'db_available')`,
+    ).run();
+    const report = migrateLegacy(db, { runsDir: join(root, "runs") });
+    expect(report.runs).toBe(1);
+    expect(report.runsBlockedByArtifacts).toBe(0);
+    db.close();
+  });
 });
