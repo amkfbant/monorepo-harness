@@ -131,6 +131,14 @@ refactor: ... — codex レビュー反映`）で反映済み。
   ディレクトリ下の artifact body は従来どおり file-backed —
   `ingestRunArtifacts` は run dir 直下のみを走査する（Phase 6/7 からの境界）。
   構造化されたコマンド結果は `command_results` テーブルが保持する。
+- **`review auto` の verdict（`review-decision.yaml`）。** `review auto` は
+  proposal file `review-decision.yaml` を生成する補助コマンドで、verdict を
+  DB-canonical 化するのは `review process`（`review_decisions` テーブル、
+  Phase 7-5 で db-first）。`review auto` と `review process` の間、verdict は
+  materialize された run dir のファイルとして存在する（run dir は materialize
+  後に残るため通常フローでは失われない）。verdict 自体を DB に持つ
+  `review_proposals` テーブル化は Phase 7 close で Phase 8 候補として defer
+  され、Phase 8 設計でも採用しなかった — 引き続き Phase 9 候補。
 
 ## スコープ外（Phase 9 以降 / 別トラック）
 
@@ -163,4 +171,9 @@ refactor: ... — codex レビュー反映`）で反映済み。
 
 8-10 時点の横断 codex レビュー（gpt-5.5, xhigh）で P0 ゼロ・P1×4・P2×2。
 P1 は DB-only mode の read 経路の close 条件未達で、8-11〜8-14 を追加して
-解消した。各追加サブフェーズでも codex レビューを実施し P0 ゼロ。
+解消した。8-11〜8-14 に対する追加 codex レビューでも P0 ゼロ・P1×3 を検出し、
+`fix(runtime): Phase 8-11/8-12/8-13 — codex レビュー反映` で修正した:
+checkArtifactBlobs の DB-reconstructed artifact 偽陽性、ensureRunMaterialized
+が `exportRun` の失敗 status を無視していた点、reviewed-run の全 attempt
+sync。`review-decision.yaml` の DB-canonical 化（`review_proposals`）は上記の
+とおり Phase 9 候補として明示 defer。
