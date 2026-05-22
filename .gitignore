@@ -8,6 +8,8 @@ workspaces/
 locks/
 .harness/
 backlog/
+# `harness dashboard export` の生成物（DB read model から都度再生成）
+docs/dashboard/index.html
 
 # scratch
 tmp/
