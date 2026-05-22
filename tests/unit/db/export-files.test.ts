@@ -230,6 +230,29 @@ describe("exportRun", () => {
     db.close();
   });
 
+  it("exports review-decision.yaml from the DB review_decisions row (P1-2)", () => {
+    const db = freshDb();
+    const runsDir = tmpDir();
+    insertRun(db, "run-rev");
+    const yaml = "runId: run-rev\ndecision: approved\nreviewed_at: t\n";
+    db.prepare(
+      `INSERT INTO review_decisions (run_id, decision, reviewer, summary,
+         reviewed_at, source_yaml, source_sha256)
+       VALUES ('run-rev', 'approved', 'kn', NULL, 't', ?, 'h')`,
+    ).run(yaml);
+    const result = exportRun(db, "run-rev", { runsDir });
+    expect(result.status).toBe("synced");
+    // review-decision.yaml is exported verbatim from source_yaml
+    const path = join(runsDir, "run-rev", "review-decision.yaml");
+    expect(existsSync(path)).toBe(true);
+    expect(readFileSync(path, "utf8")).toBe(yaml);
+    // it is tracked in the run's exported file set
+    expect(
+      result.files.some((f) => f.relativePath === "review-decision.yaml"),
+    ).toBe(true);
+    db.close();
+  });
+
   it("records a failed export without throwing when the write fails", () => {
     const db = freshDb();
     insertRun(db, "run-d");

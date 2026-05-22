@@ -64,7 +64,13 @@ export function exportRun(
   // read the run + its events as one consistent snapshot, so an export
   // can never mix a row at one revision with events at another.
   const snapshot = db.transaction(
-    (): { row: Record<string, unknown>; eventLines: string[] } | undefined => {
+    ():
+      | {
+          row: Record<string, unknown>;
+          eventLines: string[];
+          reviewYaml: string | null;
+        }
+      | undefined => {
       const r = db
         .prepare("SELECT * FROM runs WHERE run_id = ?")
         .get(runId) as Record<string, unknown> | undefined;
@@ -76,13 +82,25 @@ export function exportRun(
           )
           .all(runId) as { payload_json: string }[]
       ).map((e) => e.payload_json);
-      return { row: r, eventLines };
+      // `review-decision.yaml` is the compatibility export of the
+      // DB-canonical `review_decisions` row (Phase 7 — P1-2). `source_yaml`
+      // holds the normalized decision document verbatim.
+      const rev = db
+        .prepare(
+          "SELECT source_yaml FROM review_decisions WHERE run_id = ?",
+        )
+        .get(runId) as { source_yaml: string | null } | undefined;
+      return {
+        row: r,
+        eventLines,
+        reviewYaml: rev?.source_yaml ?? null,
+      };
     },
   )();
   if (snapshot === undefined) {
     throw new DbError(`exportRun: no run '${runId}'`);
   }
-  const { row, eventLines } = snapshot;
+  const { row, eventLines, reviewYaml } = snapshot;
   const dbRevision = (row.db_revision as number | null) ?? 0;
   const runDir = join(opts.runsDir, runId);
   const startedAt = new Date().toISOString();
@@ -111,6 +129,17 @@ export function exportRun(
       // a run with no events must not keep a stale events.jsonl that a
       // later file import would resurrect events from.
       rmSync(eventsPath, { force: true });
+    }
+
+    // a reviewed run re-exports `review-decision.yaml` from the DB so
+    // `db export-files` regenerates it and a stale/edited sidecar is
+    // detectable as drift (P1-2). `source_yaml` is the canonical document.
+    if (reviewYaml !== null) {
+      const reviewContent = reviewYaml.endsWith("\n")
+        ? reviewYaml
+        : `${reviewYaml}\n`;
+      atomicWriteFile(join(runDir, "review-decision.yaml"), reviewContent);
+      files.push(describeExportedFile("review-decision.yaml", reviewContent));
     }
 
     endExporting(runDir);
@@ -347,16 +376,33 @@ export function exportKnowledgeDecisions(
       )
       .join("\n") +
     "\n";
+  const startedAt = new Date().toISOString();
   try {
     atomicWriteFile(
       join(opts.runsDir, runId, "knowledge-decisions.yaml"),
       content,
     );
     for (const r of rows) repo.markCandidateExported(r.candidate_id);
+    // record the sidecar in `exported_files` so `check-consistency` can
+    // sha256-compare it and detect a hand-edited / deleted file (P1-6).
+    recordExportSuccess(db, {
+      scopeType: "knowledge_decisions",
+      scopeId: runId,
+      dbRevision: 0,
+      startedAt,
+      files: [describeExportedFile("knowledge-decisions.yaml", content)],
+    });
     return { runId, status: "synced" };
   } catch (e) {
     const error = (e as Error).message;
     for (const r of rows) repo.markCandidateExportFailed(r.candidate_id, error);
+    recordExportFailure(db, {
+      scopeType: "knowledge_decisions",
+      scopeId: runId,
+      dbRevision: 0,
+      startedAt,
+      error,
+    });
     return { runId, status: "failed", error };
   }
 }

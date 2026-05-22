@@ -92,19 +92,52 @@ export async function createPullRequest(
   }
   const runDir = join(opts.runsDir, opts.runId);
   const metaPath = join(runDir, "meta.json");
-  if (!existsSync(metaPath)) {
-    throw new PrGateError(`run ${opts.runId} not found`);
-  }
-  // unlocked probe read just to learn the domain for the lock.
-  const probe = await readMeta(metaPath, opts.runId);
   // Open the DB before the lock so an open failure cannot leak a held
   // lock (mirrors cleanup). A DB-recorded `created` PR short-circuits the
   // whole flow — `pr create` is idempotent, never opening a second PR.
   const db = opts.dbPath !== undefined ? openDb(opts.dbPath) : undefined;
   let lock: Awaited<ReturnType<typeof acquireDomainLock>> | undefined;
   try {
+    if (db !== undefined) runMigrations(db);
+    // The lock key comes from the run's canonical source: a `db-first`
+    // run's `runs` row, a legacy run's meta.json. A db-first run does NOT
+    // require meta.json to exist — it is a compatibility export (P1-3).
+    const dbRow =
+      db !== undefined
+        ? (db
+            .prepare(
+              "SELECT source_mode, domain, repo_id FROM runs WHERE run_id = ?",
+            )
+            .get(opts.runId) as
+            | { source_mode: string; domain: string; repo_id: string | null }
+            | undefined)
+        : undefined;
+    if (
+      dbRow !== undefined &&
+      dbRow.source_mode !== "db-first" &&
+      dbRow.source_mode !== "legacy-file"
+    ) {
+      throw new SourceModeError(
+        opts.runId,
+        dbRow.source_mode,
+        "db-first | legacy-file",
+      );
+    }
+    let lockDomain: string;
+    let lockRepoId: string | undefined;
+    if (dbRow?.source_mode === "db-first") {
+      lockDomain = dbRow.domain;
+      lockRepoId = dbRow.repo_id ?? undefined;
+    } else {
+      if (!existsSync(metaPath)) {
+        throw new PrGateError(`run ${opts.runId} not found`);
+      }
+      const probe = await readMeta(metaPath, opts.runId);
+      lockDomain = typeof probe.domain === "string" ? probe.domain : "unknown";
+      lockRepoId =
+        typeof probe.repoId === "string" ? probe.repoId : undefined;
+    }
     if (db !== undefined) {
-      runMigrations(db);
       const existing = new PullRequestRepository(db).findByRun(opts.runId);
       if (
         existing !== null &&
@@ -122,9 +155,9 @@ export async function createPullRequest(
     }
     lock = await acquireDomainLock({
       locksDir: opts.locksDir,
-      domain: typeof probe.domain === "string" ? probe.domain : "unknown",
+      domain: lockDomain,
       runId: `pr:${opts.runId}`,
-      ...(typeof probe.repoId === "string" ? { repoId: probe.repoId } : {}),
+      ...(lockRepoId !== undefined ? { repoId: lockRepoId } : {}),
     });
     return await createUnderLock(opts, runDir, metaPath, db);
   } finally {

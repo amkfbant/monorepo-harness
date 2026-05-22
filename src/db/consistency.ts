@@ -439,6 +439,8 @@ function resolveExportedPath(
   if (f.t === "run") return join(paths.runsDir, f.id, f.p);
   if (f.t === "backlog_item") return join(paths.backlogDir, f.p);
   if (f.t === "knowledge_entry") return join(harnessRoot, f.p);
+  // `knowledge_decisions` — the per-run `knowledge-decisions.yaml` sidecar.
+  if (f.t === "knowledge_decisions") return join(paths.runsDir, f.id, f.p);
   return null;
 }
 

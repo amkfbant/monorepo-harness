@@ -102,6 +102,8 @@ export function importBacklog(
         projectId !== null
           ? (projectRepoId.get(projectId) as { repo_id: string } | undefined)
           : undefined;
+      const reconcilingDbFirst =
+        forceLegacyReconcile && existing?.mode === "db-first";
       const tx = db.transaction(() => {
         upsertItem.run({
           item_id: id,
@@ -119,6 +121,17 @@ export function importBacklog(
             typeof doc.createdAt === "string" ? doc.createdAt : mtime,
           updated_at: mtime,
         });
+        // force-reconciling a db-first item: bump `db_revision` + mark
+        // `export_status = 'dirty'` so the export tracking reflects the
+        // file-driven overwrite (P2-1).
+        if (reconcilingDbFirst) {
+          db.prepare(
+            `UPDATE backlog_items
+               SET db_revision = db_revision + 1, export_status = 'dirty',
+                   last_export_error = NULL
+             WHERE item_id = ?`,
+          ).run(id);
+        }
         deleteLinks.run(id);
         for (const runId of links) insertLink.run(id, runId, mtime);
       });

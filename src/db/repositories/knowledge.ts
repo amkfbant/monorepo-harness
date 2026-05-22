@@ -215,15 +215,15 @@ export class KnowledgeRepository {
            last_export_error)
          VALUES (@entry_id, @project_id, @repo_id, @domain, @kind, @path,
            @title, @body, @frontmatter_json, @created_at, @source_candidate_id,
-           'db-first', 1, 'synced', NULL)
+           'legacy-file', 1, 'synced', NULL)
          ON CONFLICT (entry_id) DO UPDATE SET
            project_id = excluded.project_id, repo_id = excluded.repo_id,
            domain = excluded.domain, kind = excluded.kind,
            title = excluded.title, body = excluded.body,
            frontmatter_json = excluded.frontmatter_json,
            source_candidate_id = excluded.source_candidate_id,
-           source_mode = 'db-first',
            db_revision = knowledge_entries.db_revision + 1,
+           source_mode = 'legacy-file',
            export_status = 'synced', last_export_error = NULL`,
       )
       .run({

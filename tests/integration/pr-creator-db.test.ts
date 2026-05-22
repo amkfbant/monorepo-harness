@@ -157,6 +157,17 @@ describe("pr create DB-first", () => {
     expect(meta.prUrl).toBe("https://github.com/o/r/pull/7");
   });
 
+  it("gates a db-first run from the DB even if meta.json is deleted (P1-3)", async () => {
+    const f = await setup();
+    // a db-first run's meta.json is a compatibility export — delete it
+    const { rmSync } = await import("node:fs");
+    rmSync(join(f.root, "runs", f.runId, "meta.json"));
+    const r = await createPullRequest(optsFor(f, fakePublisher()));
+    expect(r.prNumber).toBe(7);
+    // the PR was recorded against the run from its DB-canonical state
+    expect(pullRequestRow(f.dbPath, f.runId).status).toBe("created");
+  });
+
   it("is idempotent — a second create returns the recorded PR", async () => {
     const f = await setup();
     await createPullRequest(optsFor(f, fakePublisher()));

@@ -68,7 +68,12 @@ knowledge entry の canonical 境界統一（`.md` body は file-backed、
       検出できる（`.exporting` marker）。
 - [x] run status transition が expected-status guard で守られている
       — `StateConflictError`。
-- [x] duplicate `operation_id` が idempotent に扱われる — `operations` ledger。
+- [x] `operation_id` idempotency ledger（`operations` テーブル + `findOperation`
+      / `recordOperation`）が実装され、`RunRepository.updateRunStatus` が使用。
+      他の write コマンドの再実行 idempotency は自然な冪等性で担保している
+      （`pr create` = `pull_requests` の findByRun、`backlog`/`knowledge` =
+      status guard の no-op、`cleanup` = status==cleaned の no-op）。各コマンドへ
+      の operation_id plumbing は未実施（必要になれば追加可能）。
 - [x] `pr create` が duplicate PR を作らない — `pull_requests` canonical +
       lock 内 findByRun 再確認。
 - [x] cleanup は DB canonical state を削除せず、export files の削除/更新として
@@ -87,16 +92,36 @@ knowledge entry の canonical 境界統一（`.md` body は file-backed、
 ## スコープ外（Phase 8 以降 / 別トラック）
 
 - artifact body / 大型 body の DB 格納（Phase 8、`artifact_blobs`）。
-- knowledge entry の markdown body は file-backed のまま（DB は manifest）。
+- knowledge entry の markdown body は file-backed のまま（DB は read model）。
 - project profile / generated policy の write path 自体の DB-first 化。
 - `dashboard serve`・mutation UI。
 - file export の optional 化（Phase 7 は常に export）。
 - import の db_revision 不一致 conflict を `import_errors` に記録する強化
   （現状は `db check-consistency` の `exported_files.sha256` 照合で検出可能）。
+- **`review auto` の DB-backed proposal 化。** `review auto`（reviewer agent）は
+  `review-decision.yaml` という **operator-input の proposal file** を生成する
+  補助コマンドで、DB-canonical state は書かない（status も動かさない）。
+  Phase 7 の DB-first 化対象 7 コマンドには含めていない。設計書が言及する
+  `review_proposals` テーブル化は Phase 8 候補。
+- `pull_requests` の `UNIQUE(run_id)` 制約（現状は per-run domain lock +
+  select-then-insert で担保）。schema v4 を開く Phase 8 で同梱予定。
+- artifact body の manifest（`artifacts` 行）と実 file body の drift 検出。
+  Phase 8 の artifact body DB 化と合わせて `check-consistency` に追加予定。
 
 ## 検証
 
-- `npm test`: 848 passed / 1 skipped。
+- `npm test`: 853 passed / 1 skipped。
 - `npm run typecheck`: green。
 - v1 → v2 → v3 migration: idempotent。
 - 既存 file-based テスト: 回帰なし（legacy-file path は不変）。
+
+## post-close hardening
+
+`phase7-close` タグ後に外部 zip レビューを受け、P0:0 / P1:7 / P2:4 / P3:4 の
+うち受け入れた指摘を修正した（`fix(runtime): Phase 7 — 外部レビュー反映`）。
+主な修正: review decision の lifecycle（rerun が DB review rows を読む、
+`review-decision.yaml` を DB から export）、`pr create` の DB-first gate、
+`cleanup --scope run/all` の tombstone（bulk export が復活させない）、
+knowledge entry を file-derived read model に統一、`knowledge-decisions.yaml`
+の export 追跡。P2-3（artifact body drift 検出）/ P2-4（`pull_requests`
+`UNIQUE(run_id)`）は Phase 8 へ defer。

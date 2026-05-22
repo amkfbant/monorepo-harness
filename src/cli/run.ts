@@ -1751,13 +1751,10 @@ const rerunCmd = program
     const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
     // the parent's repoPath is the repo the chain actually ran against — a
     // `--project` parent may have used `--repo` as an override, so the rerun
-    // reuses it instead of re-deriving the path from the profile.
-    const parentMeta = JSON.parse(
-      await readFile(
-        join(paths.runsDir, prep.parentRunId, "meta.json"),
-        "utf8",
-      ),
-    ) as { repoPath: string };
+    // reuses it instead of re-deriving the path from the profile. It comes
+    // from the parent's canonical meta (the `runs` row for a db-first
+    // parent), not a possibly-stale exported meta.json (P1-b).
+    const parentRepoPath = prep.repoPath;
     let prepared: PreparedProjectRun | undefined;
     let resolved;
     let repoPath: string;
@@ -1768,7 +1765,7 @@ const rerunCmd = program
           harnessRoot,
           projectId: prep.projectId,
           domain: prep.domain,
-          repoOverride: parentMeta.repoPath,
+          repoOverride: parentRepoPath,
         });
       } catch (e) {
         if (e instanceof ProjectError) {
@@ -1794,7 +1791,7 @@ const rerunCmd = program
       const global = await loadGlobalPolicy(paths.globalPolicyPath);
       const repo = await loadRepoPolicy(paths.repoPolicyPath(prep.repoId));
       resolved = resolvePolicy(global, repo, prep.domain);
-      repoPath = parentMeta.repoPath;
+      repoPath = parentRepoPath;
       repoId = prep.repoId;
     }
     const runner = createCodexCliRunner({

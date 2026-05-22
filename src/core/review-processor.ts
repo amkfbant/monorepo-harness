@@ -5,6 +5,7 @@ import type { RunMeta, RunStatus } from "../logging/run-log.js";
 import {
   loadReviewDecision,
   writeReviewDecision,
+  serializeReviewDecision,
 } from "./review-decision-loader.js";
 import type { ReviewDecisionValue } from "./review-decision-schema.js";
 import { acquireDomainLock } from "../workspace/domain-lock.js";
@@ -268,6 +269,14 @@ async function processUnderLock(
   // Phase 7-5: a `db-first` run is processed through the DB — a guarded
   // status transition + `review_decisions`, then re-export. A legacy /
   // file-canonical run keeps the direct meta.json / events.jsonl writes.
+  // the normalized decision document (reviewed_at backfilled) is the
+  // single source: it is stored in `review_decisions.source_yaml` AND is
+  // what `exportRun` writes back to `review-decision.yaml`, so the DB and
+  // the sidecar never diverge (P1-2).
+  const normalizedYaml = serializeReviewDecision({
+    ...decision,
+    reviewed_at: reviewedAt,
+  });
   if (dbFirst) {
     new RunRepository(db).applyReviewDecision({
       runId: opts.runId,
@@ -275,7 +284,7 @@ async function processUnderLock(
       reviewer: decision.reviewer,
       reviewedAt,
       requiredChanges: decision.required_changes,
-      decisionYaml: await readFile(decisionPath, "utf8"),
+      decisionYaml: normalizedYaml,
     });
     warnIfExportFailed(exportRun(db, opts.runId, { runsDir: opts.runsDir }));
   } else {
@@ -306,10 +315,11 @@ async function processUnderLock(
     );
   }
 
-  // Backfill review-decision.yaml's reviewed_at ONLY after the canonical
-  // write succeeded — a failed guard must not leave the input file
-  // mutated while the decision was not applied.
-  if (decision.reviewed_at === null) {
+  // A db-first run's `review-decision.yaml` is exported from the DB by
+  // `exportRun` above (P1-2) — it is already normalized. A legacy run
+  // backfills the sidecar's reviewed_at directly, ONLY after the canonical
+  // write succeeded (a failed guard must not mutate the input file).
+  if (!dbFirst && decision.reviewed_at === null) {
     await writeReviewDecision(decisionPath, {
       ...decision,
       reviewed_at: reviewedAt,

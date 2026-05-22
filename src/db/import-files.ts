@@ -39,8 +39,13 @@ export interface ImportOptions {
 }
 
 /**
- * File-derived tables emptied entirely by `--reset`. These hold nothing
- * DB-canonical — they are rebuilt from `projects/` / `policies/` files.
+ * File-derived tables emptied entirely by `--reset` — they hold nothing
+ * DB-canonical and are rebuilt from files.
+ *
+ * `knowledge_entries` is here (not in RUNTIME): a promoted entry's `.md`
+ * body / frontmatter is file-backed canonical (Phase 7 boundary), so the
+ * row is a pure read model — a `--reset` rebuilds it from the `.md` files,
+ * and a since-deleted `.md` correctly drops its row.
  */
 const RESET_TABLES_FILE_DERIVED = [
   "import_errors",
@@ -48,22 +53,18 @@ const RESET_TABLES_FILE_DERIVED = [
   "domains",
   "project_profiles",
   "projects",
+  "knowledge_entries",
 ];
 
 /**
- * Runtime tables that carry `source_mode`. `--reset` clears only their
- * `legacy-file` rows: a `db-first` row is DB-canonical (Phase 7), and a
- * reset — performed by every read-only scoped command via
+ * Runtime tables that carry DB-canonical state. `--reset` clears only
+ * their `legacy-file` rows: a `db-first` row is DB-canonical (Phase 7),
+ * and a reset — performed by every read-only scoped command via
  * `withRefreshedDb` — must not silently demigrate it back to
  * `legacy-file`. A `legacy-file` row is still dropped so a since-deleted
  * source file does not linger.
  */
-const RESET_TABLES_RUNTIME = [
-  "runs",
-  "backlog_items",
-  "knowledge_candidates",
-  "knowledge_entries",
-];
+const RESET_TABLES_RUNTIME = ["runs", "backlog_items", "knowledge_candidates"];
 
 /**
  * Child tables keyed to a runtime parent. After the parents are cleared,

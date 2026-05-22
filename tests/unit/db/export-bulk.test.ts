@@ -128,6 +128,53 @@ describe("db export-files (bulk)", () => {
     db.close();
   });
 
+  it("does not resurrect a run dir removed by cleanup --scope run (P1-4)", () => {
+    const { root, db } = setup();
+    seedRun(db, "run-cleaned");
+    // cleanup --scope run removed the dir and recorded the action
+    db.prepare(
+      `INSERT INTO cleanup_actions (run_id, action_type, target, status,
+         executed_at, error_message)
+       VALUES ('run-cleaned', 'run_dir_remove', NULL, 'done',
+         '2026-05-22T00:00:00Z', NULL)`,
+    ).run();
+    const results = exportFiles(db, { harnessRoot: root, scope: "run" });
+    // the cleaned run is excluded — db export-files must not recreate its dir
+    expect(results[0]?.total).toBe(0);
+    expect(existsSync(join(root, "runs", "run-cleaned", "meta.json"))).toBe(
+      false,
+    );
+    db.close();
+  });
+
+  it("flags a hand-edited knowledge-decisions.yaml as drift (P1-6)", () => {
+    const { root, db } = setup();
+    mkdirSync(join(root, "runs", "run-knw-2"), { recursive: true });
+    db.prepare(
+      `INSERT INTO knowledge_candidates (candidate_id, run_id, domain, kind,
+         title, body, status, created_at, decided_at, reviewer, reason,
+         source_mode, db_revision, export_status)
+       VALUES ('run-knw-2:0', 'run-knw-2', 'apps/x', 'policy_improvement',
+         't', 'c', 'rejected', '2026-05-22T00:00:00Z', '2026-05-22T01:00:00Z',
+         'kn', 'x', 'db-first', 1, 'dirty')`,
+    ).run();
+    exportFiles(db, { harnessRoot: root, scope: "knowledge" });
+    // hand-edit the exported sidecar so its sha256 no longer matches
+    writeFileSync(
+      join(root, "runs", "run-knw-2", "knowledge-decisions.yaml"),
+      "decisions: []\n",
+    );
+    db.close();
+    const ro = openDb(join(root, ".harness", "harness.sqlite"));
+    const report = checkConsistency({ db: ro, harnessRoot: root });
+    ro.close();
+    expect(
+      report.items.some(
+        (i) => i.kind === "export:knowledge_decisions" && i.status === "drift",
+      ),
+    ).toBe(true);
+  });
+
   it("does not export legacy-file rows", () => {
     const { root, db } = setup();
     db.prepare(

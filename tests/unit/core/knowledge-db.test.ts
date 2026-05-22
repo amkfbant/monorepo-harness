@@ -86,12 +86,12 @@ describe("knowledge DB-first", () => {
     const db = openDb(ctx.dbPath);
     runMigrations(db);
     const entries = db
-      .prepare("SELECT entry_id, source_mode, source_candidate_id FROM knowledge_entries")
-      .all() as { entry_id: string; source_mode: string; source_candidate_id: string }[];
+      .prepare("SELECT entry_id, source_candidate_id FROM knowledge_entries")
+      .all() as { entry_id: string; source_candidate_id: string }[];
     db.close();
     expect(entries).toHaveLength(2);
-    expect(entries[0]?.source_mode).toBe("db-first");
-    // the md file is exported
+    expect(entries[0]?.source_candidate_id).toBe(`${RUN_ID}:0`);
+    // the md file is exported (the .md is the canonical artifact)
     for (const p of r.promoted) expect(existsSync(p.path)).toBe(true);
   });
 
@@ -160,6 +160,24 @@ describe("knowledge DB-first", () => {
       reason: "x",
     });
     expect(candidate(ctx, 0)?.status).toBe("rejected");
+  });
+
+  it("a deleted .md drops its knowledge_entries row on --reset import (P1-5)", async () => {
+    const ctx = setup();
+    await promoteKnowledgeDbFirst(ctx, { runId: RUN_ID, reviewer: "kn" });
+    const kindDir = join(ctx.knowledgeDir, "policy_improvement");
+    const { rmSync } = await import("node:fs");
+    // a human deletes the promoted .md (it is the canonical artifact)
+    rmSync(join(kindDir, readdirSync(kindDir)[0] as string));
+    const db = openDb(ctx.dbPath);
+    runMigrations(db);
+    runFullImport(db, { harnessRoot: join(ctx.runsDir, ".."), reset: true });
+    const remaining = db
+      .prepare("SELECT count(*) AS n FROM knowledge_entries")
+      .get() as { n: number };
+    db.close();
+    // knowledge_entries is a file-derived read model — the deleted .md is gone
+    expect(remaining.n).toBe(1); // only the other candidate's entry survives
   });
 
   it("reconciles a pre-Phase-7 promotion (md exists, DB still candidate)", async () => {

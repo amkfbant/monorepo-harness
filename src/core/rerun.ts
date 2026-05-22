@@ -1,8 +1,13 @@
 import { readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import type { RunMeta } from "../logging/run-log.js";
 import { loadReviewDecision } from "./review-decision-loader.js";
+import {
+  ReviewDecisionFileSchema,
+  type ReviewDecisionFile,
+} from "./review-decision-schema.js";
 import { openDb } from "../db/connection.js";
 import { SourceModeError } from "../db/errors.js";
 
@@ -43,6 +48,12 @@ export const RERUN_PROMPT_TEMPLATE = {
 export interface RerunPrepResult {
   parentRunId: string;
   repoId: string;
+  /**
+   * the repo the parent chain ran against. Taken from the parent's
+   * canonical meta (the `runs` row for a db-first parent) so the CLI need
+   * not re-read a possibly-stale exported `meta.json` (Phase 7 — P1-b).
+   */
+  repoPath: string;
   /**
    * the parent's project id, when the parent was a `--project` run. The
    * rerun must re-resolve the profile (not read `policies/repos/<id>.yaml`)
@@ -129,6 +140,58 @@ async function loadParentMeta(
     }
   }
   return (await readMetaObject(runsDir, parentRunId)).meta;
+}
+
+/**
+ * Load a run's review decision from the canonical source (Phase 7 — P1-1).
+ *
+ * A `db-first` run's decision is DB-canonical (`review_decisions`); its
+ * `source_yaml` holds the normalized decision document, so `rerun` uses
+ * the DB rather than a possibly-stale `review-decision.yaml`. A
+ * `legacy-file` run (or one not in the DB) reads the sidecar file.
+ */
+async function loadReviewDecisionForRun(
+  runsDir: string,
+  runId: string,
+  dbPath: string | undefined,
+): Promise<ReviewDecisionFile> {
+  if (dbPath !== undefined && existsSync(dbPath)) {
+    const db = openDb(dbPath);
+    try {
+      const row = db
+        .prepare(
+          `SELECT r.source_mode AS mode, d.source_yaml AS yaml
+           FROM runs r
+           LEFT JOIN review_decisions d ON d.run_id = r.run_id
+           WHERE r.run_id = ?`,
+        )
+        .get(runId) as { mode: string; yaml: string | null } | undefined;
+      if (row !== undefined) {
+        if (row.mode !== "db-first" && row.mode !== "legacy-file") {
+          throw new SourceModeError(
+            runId,
+            row.mode,
+            "db-first | legacy-file",
+          );
+        }
+        if (row.mode === "db-first") {
+          // a db-first run's decision is DB-canonical — it must come from
+          // the DB, never a (possibly stale) sidecar file. A missing
+          // `review_decisions` row is an error, not a fall-through.
+          if (row.yaml === null) {
+            throw new RerunGateError(
+              `run ${runId} is db-first but has no review decision recorded ` +
+                `in the DB`,
+            );
+          }
+          return ReviewDecisionFileSchema.parse(parseYaml(row.yaml));
+        }
+      }
+    } finally {
+      db.close();
+    }
+  }
+  return loadReviewDecision(join(runsDir, runId, "review-decision.yaml"));
 }
 
 /**
@@ -280,14 +343,16 @@ export async function prepareRerunFromReview(opts: {
     }
   }
 
-  let decision: Awaited<ReturnType<typeof loadReviewDecision>>;
+  let decision: ReviewDecisionFile;
   try {
-    decision = await loadReviewDecision(
-      join(runDir, "review-decision.yaml"),
+    decision = await loadReviewDecisionForRun(
+      opts.runsDir,
+      opts.parentRunId,
+      opts.dbPath,
     );
   } catch (e) {
     throw new RerunGateError(
-      `failed to read review-decision.yaml for ${opts.parentRunId}: ${(e as Error).message}`,
+      `failed to load the review decision for ${opts.parentRunId}: ${(e as Error).message}`,
     );
   }
 
@@ -305,8 +370,10 @@ export async function prepareRerunFromReview(opts: {
   // the previous rerun didn't address the feedback.
   if (typeof meta.parentRunId === "string") {
     try {
-      const grandDecision = await loadReviewDecision(
-        join(opts.runsDir, meta.parentRunId, "review-decision.yaml"),
+      const grandDecision = await loadReviewDecisionForRun(
+        opts.runsDir,
+        meta.parentRunId,
+        opts.dbPath,
       );
       if (
         sameChanges(
@@ -359,6 +426,7 @@ export async function prepareRerunFromReview(opts: {
   return {
     parentRunId: opts.parentRunId,
     repoId: meta.repoId,
+    repoPath: meta.repoPath,
     ...(typeof meta.project?.projectId === "string"
       ? { projectId: meta.project.projectId }
       : {}),

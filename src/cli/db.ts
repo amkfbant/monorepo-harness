@@ -134,7 +134,11 @@ export function registerDbCommands(program: Command): void {
     .command("export-files")
     .description("re-export the compatibility files from DB-canonical rows")
     .option("--scope <scope>", "run | backlog | knowledge (default: all)")
-    .option("--id <id>", "restrict to one row id (requires --scope)")
+    .option(
+      "--id <id>",
+      "restrict to one id (requires --scope; run id / item id / " +
+        "for knowledge: the run id whose decision sidecar to re-project)",
+    )
     .option("--json", "print the export report as JSON")
     .action((raw: Record<string, unknown>) => {
       const scope = raw.scope as string | undefined;

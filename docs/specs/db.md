@@ -186,8 +186,9 @@ ledger に記録）。同 invariant を backlog / knowledge の status 遷移に
 
 各 write コマンドは DB commit 直後に影響範囲を scoped export する
 （`src/db/export-files.ts`）。file は temp file へ書いて rename する atomic
-write。run directory は `.exporting` marker と `.export-manifest.json` を使う。
-export 成否は `export_records` / `exported_files` に記録し、`runs.export_status`
+write。run directory は export 進行中を示す `.exporting` marker を使う
+（crash 時に未完了 export を検出できる）。export 成否は
+`export_records` / `exported_files` に記録し、`runs.export_status`
 （`synced` / `dirty` / `failed`）/ `last_export_revision` / `last_exported_at`
 を更新する。export 失敗は rollback しない（commit 済み DB が canonical）。
 `db check-consistency` と再 export で回復する。

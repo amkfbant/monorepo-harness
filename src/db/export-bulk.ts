@@ -86,6 +86,15 @@ function scopeIds(
   const col = scope === "backlog" ? "item_id" : "run_id";
   const distinct = scope === "knowledge" ? "DISTINCT " : "";
   let sql = `SELECT ${distinct}${col} AS id FROM ${table} WHERE source_mode = 'db-first'`;
+  // a run whose dir was removed by `cleanup --scope run/all` is
+  // intentionally file-less — re-exporting it (the run's meta/events OR
+  // its knowledge-decisions.yaml, both under runs/<id>/) would resurrect
+  // the deleted run dir, so it is excluded (P1-4 / P1-a).
+  if (scope === "run" || scope === "knowledge") {
+    sql +=
+      " AND run_id NOT IN (SELECT run_id FROM cleanup_actions" +
+      " WHERE action_type = 'run_dir_remove' AND status = 'done')";
+  }
   if (id !== undefined) sql += ` AND ${col} = @id`;
   sql += ` ORDER BY ${col}`;
   const rows = db.prepare(sql).all(id !== undefined ? { id } : {}) as {

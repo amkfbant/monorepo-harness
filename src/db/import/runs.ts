@@ -150,6 +150,8 @@ export function importRuns(
     const existing = existingRun.get(runId) as
       | { h: string | null; mode: string | null }
       | undefined;
+    const reconcilingDbFirst =
+      forceLegacyReconcile && existing?.mode === "db-first";
     // a `db-first` run is DB-canonical (Phase 7). Re-importing it from its
     // own exported files would be redundant at best and destructive at
     // worst — the importer cannot reconstruct `run_changed_files` /
@@ -160,26 +162,29 @@ export function importRuns(
       counters.runsSkipped += 1;
       continue;
     }
-    if (existing && existing.h === fingerprint) {
+    // a force-reconcile of a db-first run must always re-import: a
+    // db-first row's `source_meta_sha256` is not maintained, so a
+    // fingerprint match here would otherwise silently skip the explicit
+    // overwrite (P2-a).
+    if (existing && existing.h === fingerprint && !reconcilingDbFirst) {
       counters.runsSkipped += 1;
       continue;
     }
-
-    const reconcilingDbFirst =
-      forceLegacyReconcile && existing?.mode === "db-first";
     const tx = db.transaction(() => {
       for (const del of deleteChild) del.run(runId);
       upsertRun.run(
         runRow(runId, meta, fingerprint, statSync(metaPath).mtimeMs),
       );
       // force-reconciling a db-first run: refresh `meta_json` from the file
-      // too, so a later `db export-files` re-emits the reconciled meta.json
-      // rather than the pre-reconcile snapshot exportRun would prefer.
+      // and bump `db_revision` + mark `export_status = 'dirty'` so the
+      // operator sees that the row moved and a re-export is due (P2-1).
       if (reconcilingDbFirst) {
-        db.prepare("UPDATE runs SET meta_json = ? WHERE run_id = ?").run(
-          metaRaw,
-          runId,
-        );
+        db.prepare(
+          `UPDATE runs
+             SET meta_json = ?, db_revision = db_revision + 1,
+                 export_status = 'dirty', last_export_error = NULL
+           WHERE run_id = ?`,
+        ).run(metaRaw, runId);
       }
       importCommandResults(db, runId, meta);
       importEvents(db, runDir, runId);

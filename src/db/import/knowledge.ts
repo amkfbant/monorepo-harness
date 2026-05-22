@@ -157,7 +157,9 @@ function importEntries(
        project_id = excluded.project_id, repo_id = excluded.repo_id,
        domain = excluded.domain, kind = excluded.kind, title = excluded.title,
        body = excluded.body, frontmatter_json = excluded.frontmatter_json,
-       source_candidate_id = excluded.source_candidate_id`,
+       source_candidate_id = excluded.source_candidate_id,
+       source_mode = 'legacy-file',
+       export_status = 'synced', last_export_error = NULL`,
   );
   // docs/knowledge/<kind>/<file>.md
   for (const kindDir of readdirSync(knowledgeDir, { withFileTypes: true })) {

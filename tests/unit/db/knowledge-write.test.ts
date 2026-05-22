@@ -124,7 +124,7 @@ describe("KnowledgeRepository", () => {
     db.close();
   });
 
-  it("upsertEntry writes a db-first manifest row and bumps the revision", () => {
+  it("upsertEntry writes a manifest row and bumps the revision", () => {
     const db = freshDb();
     const repo = new KnowledgeRepository(db);
     const entry = {
@@ -142,10 +142,12 @@ describe("KnowledgeRepository", () => {
     };
     expect(repo.upsertEntry(entry).dbRevision).toBe(1);
     expect(repo.upsertEntry(entry).dbRevision).toBe(2);
+    // knowledge_entries is a file-derived read model — the `.md` is the
+    // canonical artifact, so the row is not `db-first`.
     const row = db
       .prepare("SELECT source_mode FROM knowledge_entries WHERE entry_id = ?")
       .get(entry.entryId) as { source_mode: string };
-    expect(row.source_mode).toBe("db-first");
+    expect(row.source_mode).toBe("legacy-file");
     db.close();
   });
 });

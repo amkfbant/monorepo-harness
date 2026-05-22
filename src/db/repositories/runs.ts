@@ -782,21 +782,48 @@ export class RunRepository {
     return txn.immediate();
   }
 
-  /** Record one cleanup_actions row. Used for `run_dir_remove` after the
-   * filesystem delete actually succeeds (Phase 7-7). */
+  /**
+   * Record one cleanup_actions row. Used for `run_dir_remove` after the
+   * filesystem delete actually succeeds (Phase 7-7).
+   *
+   * When a `run_dir_remove` succeeds, the run's exported files are gone on
+   * purpose: the `exported_files` rows are cleared and `export_status` is
+   * set `synced` so `db export-files` does not resurrect the dir and
+   * `check-consistency` does not flag the intentional deletion (P1-4).
+   */
   recordCleanupAction(
     runId: string,
     actionType: string,
     status: string,
     errorMessage: string | null = null,
   ): void {
-    this.db
-      .prepare(
-        `INSERT INTO cleanup_actions (run_id, action_type, target, status,
-           executed_at, error_message)
-         VALUES (?, ?, NULL, ?, ?, ?)`,
-      )
-      .run(runId, actionType, status, new Date().toISOString(), errorMessage);
+    const txn = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO cleanup_actions (run_id, action_type, target, status,
+             executed_at, error_message)
+           VALUES (?, ?, NULL, ?, ?, ?)`,
+        )
+        .run(runId, actionType, status, new Date().toISOString(), errorMessage);
+      if (actionType === "run_dir_remove" && status === "done") {
+        // both the run's own files and its knowledge-decisions.yaml live
+        // under runs/<runId>/ and were just deleted (P1-4 / P1-a).
+        this.db
+          .prepare(
+            `DELETE FROM exported_files
+             WHERE scope_type IN ('run', 'knowledge_decisions')
+               AND scope_id = ?`,
+          )
+          .run(runId);
+        this.db
+          .prepare(
+            `UPDATE runs SET export_status = 'synced', last_export_error = NULL
+             WHERE run_id = ?`,
+          )
+          .run(runId);
+      }
+    });
+    txn();
   }
 
   /**
