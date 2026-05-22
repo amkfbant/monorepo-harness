@@ -241,10 +241,34 @@ Phase 7 で migration v2 を追加する（`runMigrations` は idempotent）。
 
 ### スコープ外（Phase 8 以降）
 
-- artifact body / 大型 body の DB 格納（`artifact_blobs`）。
-- file export の optional 化（Phase 7 は常に export する）。
-- `domain_locks` テーブル（Phase 7 は file lock を維持）。
+- artifact body / 大型 body の DB 格納（`artifact_blobs`）→ Phase 8。
+- file export の optional 化（Phase 7 は常に export する）→ Phase 8。
+- `domain_locks` テーブル（Phase 7 は file lock を維持）→ Phase 9。
 - project profile / generated policy の write path 自体の DB-first 化。Phase 7
   close のスコープは runtime write path に限定し、`projects/*.yaml` /
   `policies/repos/*.yaml` は user-authored config file のまま（DB は import して
   参照する read model 扱い）。
+
+## Phase 8 — runtime DB complete（実装中・target spec）
+
+Phase 8 は **files を必須でなくす**フェーズ。DB-first write path（Phase 7）に
+残った最後の file-canonical な runtime state — **artifact body**（codex ログ /
+diff / summary 等）— を DB へ移し、file export を optional にする。完了後は
+run を DB だけで運用でき、files は opt-in の互換出力になる。設計の正典は
+[`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)、
+実装計画は `tmp/phase8-db-complete-migration-plan.md`。確定は `phase8-close`。
+
+- **artifact body の DB 格納** — `artifact_blobs` / `artifact_blob_chunks` に
+  content-addressed（raw sha256）で分割保存。oversized は file に逃がさず
+  DB 内に truncated 保存。`artifacts` 行は `blob_sha256` / `body_status` を持つ。
+- **file export の optional 化** — export はオプトイン（default ON）。OFF なら
+  DB-only 運用。`export_status` を状態機械化（`synced` / `dirty` / `failed` /
+  `disabled` / `removed`）。
+- **`db import` の migration-only 化** — DB-complete row を stale file で
+  上書きしない。`--legacy-only` / `--verify-export` / `--force-reconcile`。
+- **DB 運用コマンド** — `harness db backup / restore / checkpoint / vacuum /
+  stats`。DB は artifact body（secret を含みうる）の canonical なので permission
+  を `0600` 寄りにする。
+- knowledge entry markdown / project profile / policy は **file-authored の
+  まま**（人手キュレーション対象。Phase 8 の対象は machine-generated runtime
+  state に限定）。`domain_locks` の DB 化は Phase 9。
