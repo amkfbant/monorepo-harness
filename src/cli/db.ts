@@ -14,6 +14,10 @@ import {
   formatBulkExport,
   type ExportScope,
 } from "../db/export-bulk.js";
+import {
+  migrateArtifacts,
+  formatMigrateArtifacts,
+} from "../db/migrate-artifacts.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -179,6 +183,32 @@ export function registerDbCommands(program: Command): void {
         );
         // a failed export is a non-zero exit so CI can gate on it
         if (results.some((r) => r.failed > 0)) process.exit(1);
+      } catch (e) {
+        dbError(e);
+      }
+    });
+
+  dbCmd
+    .command("migrate-artifacts")
+    .description("backfill file-backed artifact bodies into the DB (Phase 8)")
+    .option("--json", "print the migration report as JSON")
+    .action((raw: Record<string, unknown>) => {
+      const root = getHarnessRoot();
+      const paths = harnessPaths(root);
+      try {
+        const db = openDb(paths.dbPath);
+        let report;
+        try {
+          runMigrations(db);
+          report = migrateArtifacts(db, { runsDir: paths.runsDir });
+        } finally {
+          db.close();
+        }
+        process.stdout.write(
+          raw.json === true
+            ? `${JSON.stringify(report, null, 2)}\n`
+            : formatMigrateArtifacts(report),
+        );
       } catch (e) {
         dbError(e);
       }

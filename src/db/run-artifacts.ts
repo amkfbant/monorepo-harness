@@ -86,8 +86,9 @@ export function recordRunArtifacts(
  * Artifacts whose body is reconstructed from other DB tables (`runs`,
  * `run_events`, `review_decisions`) by `exportRun` — they get a manifest
  * row but NO `artifact_blobs` entry, so the two writers do not collide.
+ * Exported so the artifact backfill (Phase 8-3) skips them too.
  */
-const DB_RECONSTRUCTED = new Set([
+export const DB_RECONSTRUCTED = new Set([
   "meta.json",
   "events.jsonl",
   "review-decision.yaml",
