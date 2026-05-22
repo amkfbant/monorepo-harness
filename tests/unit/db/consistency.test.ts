@@ -6,6 +6,23 @@ import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { runFullImport } from "../../../src/db/import-files.js";
 import { checkConsistency } from "../../../src/db/consistency.js";
+import { storeArtifactBlob } from "../../../src/db/artifact-blobs.js";
+
+/** Insert a db-stored artifact backed by a real blob; returns its sha. */
+function addDbArtifact(
+  db: ReturnType<typeof openDb>,
+  artifactId: string,
+  body: Buffer,
+): string {
+  const stored = storeArtifactBlob(db, body);
+  db.prepare(
+    `INSERT INTO artifacts (artifact_id, run_id, kind, relative_path,
+       content_type, bytes, sha256, storage, blob_sha256, body_status)
+     VALUES (?, 'run-20260521-apps-web-aaa', 'codex-log', 'codex.log',
+       'text/plain', ?, ?, 'db', ?, 'db_available')`,
+  ).run(artifactId, body.length, stored.sha256, stored.sha256);
+  return stored.sha256;
+}
 
 const PROFILE = [
   "version: 1",
@@ -216,6 +233,88 @@ describe("checkConsistency", () => {
     db.close();
     expect(
       r.items.some((i) => i.kind === "project" && i.status === "drift"),
+    ).toBe(true);
+  });
+});
+
+describe("checkConsistency — artifact blobs (Phase 8-11)", () => {
+  it("stays ok with a healthy db-stored artifact and blob", () => {
+    const { root, db } = importedRoot();
+    addDbArtifact(db, "art-ok", Buffer.from("a healthy codex log body"));
+    const r = checkConsistency({ db, harnessRoot: root });
+    db.close();
+    expect(r.items.some((i) => i.kind.startsWith("artifact"))).toBe(false);
+    expect(r.status).toBe("ok");
+  });
+
+  it("flags a db-stored artifact with no blob_sha256 reference", () => {
+    const { root, db } = importedRoot();
+    db.prepare(
+      `INSERT INTO artifacts (artifact_id, run_id, kind, bytes, sha256,
+         storage, blob_sha256, body_status)
+       VALUES ('art-noref', 'run-20260521-apps-web-aaa', 'codex-log', 3,
+         'deadbeef', 'db', NULL, 'db_available')`,
+    ).run();
+    const r = checkConsistency({ db, harnessRoot: root });
+    db.close();
+    expect(
+      r.items.some(
+        (i) =>
+          i.kind === "artifact" &&
+          i.id === "art-noref" &&
+          i.status === "drift",
+      ),
+    ).toBe(true);
+  });
+
+  it("flags a db-stored artifact whose blob row is gone", () => {
+    const { root, db } = importedRoot();
+    const sha = addDbArtifact(db, "art-dangling", Buffer.from("body"));
+    // drop the blob the artifact still points at
+    db.prepare("DELETE FROM artifact_blobs WHERE sha256 = ?").run(sha);
+    db.prepare("DELETE FROM artifact_blob_chunks WHERE sha256 = ?").run(sha);
+    const r = checkConsistency({ db, harnessRoot: root });
+    db.close();
+    expect(
+      r.items.some(
+        (i) => i.kind === "artifact" && i.id === "art-dangling",
+      ),
+    ).toBe(true);
+  });
+
+  it("flags a blob whose chunks do not match its manifest", () => {
+    const { root, db } = importedRoot();
+    // a multi-chunk blob, then a chunk is deleted (partial / corrupt write)
+    const sha = addDbArtifact(db, "art-corrupt", Buffer.from("x".repeat(8)));
+    db.prepare(
+      "UPDATE artifact_blobs SET chunk_count = chunk_count + 1 WHERE sha256 = ?",
+    ).run(sha);
+    const r = checkConsistency({ db, harnessRoot: root });
+    db.close();
+    expect(
+      r.items.some(
+        (i) => i.kind === "artifact-blob" && i.status === "drift",
+      ),
+    ).toBe(true);
+  });
+
+  it("flags an artifact whose body_status is missing", () => {
+    const { root, db } = importedRoot();
+    db.prepare(
+      `INSERT INTO artifacts (artifact_id, run_id, kind, bytes, sha256,
+         storage, blob_sha256, body_status)
+       VALUES ('art-missing', 'run-20260521-apps-web-aaa', 'codex-log', 0,
+         'cafebabe', 'file', NULL, 'missing')`,
+    ).run();
+    const r = checkConsistency({ db, harnessRoot: root });
+    db.close();
+    expect(
+      r.items.some(
+        (i) =>
+          i.kind === "artifact" &&
+          i.id === "art-missing" &&
+          i.status === "missing-file",
+      ),
     ).toBe(true);
   });
 });

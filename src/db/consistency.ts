@@ -49,6 +49,7 @@ export function checkConsistency(opts: {
   checkBacklog(opts.db, paths.backlogDir, items);
   checkKnowledgeEntries(opts.db, opts.harnessRoot, items);
   checkExports(opts.db, paths, opts.harnessRoot, items);
+  checkArtifactBlobs(opts.db, items);
 
   const counts = { ok: 0, drift: 0, missingFile: 0, missingDb: 0 };
   for (const it of items) {
@@ -427,6 +428,108 @@ function checkExports(
         detail: `exported file ${f.p} changed since export — run \`db export-files\``,
       });
     }
+  }
+}
+
+/** True when a table exists — guards v4-only checks on an older DB. */
+function tableExists(db: Database.Database, name: string): boolean {
+  return (
+    db
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+      )
+      .get(name) !== undefined
+  );
+}
+
+/**
+ * Artifact-body integrity (Phase 8-11). With artifact bodies DB-canonical,
+ * `check-consistency` must verify the DB blob store itself — `exportRun`
+ * detecting a missing blob on access is not enough for a DB-only operator.
+ * Reports, on a purely DB-internal basis (no file IO):
+ *  - an artifact whose `body_status='missing'`;
+ *  - a `storage='db'` artifact with no `blob_sha256` reference;
+ *  - a `storage='db'` artifact pointing at a `blob_sha256` absent from
+ *    `artifact_blobs`;
+ *  - a blob whose `artifact_blob_chunks` rows do not match its manifest
+ *    `chunk_count` (a partial / corrupt blob).
+ */
+function checkArtifactBlobs(
+  db: Database.Database,
+  items: ConsistencyItem[],
+): void {
+  // `artifact_blobs` is a v4 table — skip on an older-schema DB.
+  if (!tableExists(db, "artifact_blobs")) return;
+
+  const artifacts = db
+    .prepare(
+      `SELECT artifact_id, run_id, storage, blob_sha256, body_status
+       FROM artifacts`,
+    )
+    .all() as {
+    artifact_id: string;
+    run_id: string | null;
+    storage: string;
+    blob_sha256: string | null;
+    body_status: string;
+  }[];
+  for (const a of artifacts) {
+    if (a.body_status === "missing") {
+      items.push({
+        kind: "artifact",
+        id: a.artifact_id,
+        status: "missing-file",
+        detail: `artifact body is missing (run ${a.run_id ?? "?"})`,
+      });
+      continue;
+    }
+    if (a.storage === "db" && a.blob_sha256 === null) {
+      items.push({
+        kind: "artifact",
+        id: a.artifact_id,
+        status: "drift",
+        detail: "db-stored artifact has no blob_sha256 reference",
+      });
+    }
+  }
+
+  // a db-stored artifact whose blob row is gone — the body is unreadable.
+  const dangling = db
+    .prepare(
+      `SELECT a.artifact_id AS id, a.blob_sha256 AS sha
+       FROM artifacts a
+       WHERE a.storage = 'db' AND a.blob_sha256 IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM artifact_blobs b WHERE b.sha256 = a.blob_sha256)`,
+    )
+    .all() as { id: string; sha: string }[];
+  for (const d of dangling) {
+    items.push({
+      kind: "artifact",
+      id: d.id,
+      status: "drift",
+      detail: `artifact blob ${d.sha.slice(0, 12)} is absent from artifact_blobs`,
+    });
+  }
+
+  // a blob whose chunk rows do not match its manifest — a partial write.
+  const badChunks = db
+    .prepare(
+      `SELECT b.sha256 AS sha, b.chunk_count AS expected,
+              count(c.chunk_index) AS actual
+       FROM artifact_blobs b
+       LEFT JOIN artifact_blob_chunks c ON c.sha256 = b.sha256
+       GROUP BY b.sha256, b.chunk_count
+       HAVING actual != expected`,
+    )
+    .all() as { sha: string; expected: number; actual: number }[];
+  for (const b of badChunks) {
+    items.push({
+      kind: "artifact-blob",
+      id: b.sha.slice(0, 12),
+      status: "drift",
+      detail: `blob has ${b.actual} chunk(s), manifest expects ${b.expected}`,
+    });
   }
 }
 
