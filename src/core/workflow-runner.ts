@@ -376,6 +376,15 @@ export async function runDomainCoding(
       await log
         .emit({ type: "run_failed", error: (e as Error).message })
         .catch(() => {});
+      // ingest the artifact manifest + bodies BEFORE the failure finalize,
+      // so the finalize export records whatever artifacts the partial run
+      // produced in `exported_files` — same ordering as the happy path
+      // (Phase 8 — external review P1-2).
+      try {
+        ingestRunArtifacts(db, log.runDir, runId);
+      } catch (e) {
+        warnArtifactIngestFailed(runId, e);
+      }
       await log
         .finalize({
           status: "failed-internal-error",
@@ -387,12 +396,6 @@ export async function runDomainCoding(
           finishedAt: new Date().toISOString(),
         })
         .catch(() => {});
-      // record the artifact manifest + bodies on the failure path too.
-      try {
-        ingestRunArtifacts(db, log.runDir, runId);
-      } catch (e) {
-        warnArtifactIngestFailed(runId, e);
-      }
       // Rethrow as a typed error carrying the (now finalized) runId so an
       // orchestrator can record the failed attempt. `harness run` still
       // surfaces it as an exception (message preserved) → exit 2.

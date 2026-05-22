@@ -76,7 +76,17 @@ export function syncRunArtifactsToDb(opts: {
       .prepare("SELECT source_mode FROM runs WHERE run_id = ?")
       .get(opts.runId) as { source_mode: string } | undefined;
     if (row === undefined || row.source_mode !== "db-first") return;
-    ingestRunArtifacts(db, runDir, opts.runId);
+    // best-effort post-processing: a sync failure (e.g. an unreadable run
+    // dir) must not crash the review command that succeeded — warn and
+    // leave the prior manifest intact (ingestRunArtifacts is transactional).
+    try {
+      ingestRunArtifacts(db, runDir, opts.runId);
+    } catch (e) {
+      process.stderr.write(
+        `warning: could not sync run ${opts.runId} artifacts to the DB: ` +
+          `${(e as Error).message}\n`,
+      );
+    }
   } finally {
     db.close();
   }

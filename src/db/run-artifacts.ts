@@ -107,8 +107,14 @@ function* walkRunArtifacts(
   let entries: Dirent[];
   try {
     entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return; // an unreadable subdir contributes nothing
+  } catch (e) {
+    // an unreadable dir must NOT be silently skipped: `ingestRunArtifacts`
+    // already deleted the run's artifact rows, so swallowing this would
+    // commit an empty / partial manifest. Throw so the surrounding
+    // transaction rolls back and the caller surfaces a warning.
+    throw new Error(
+      `run artifact dir unreadable (${dir}): ${(e as Error).message}`,
+    );
   }
   for (const e of entries) {
     if (e.name.startsWith(".")) continue;
