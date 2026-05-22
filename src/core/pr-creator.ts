@@ -151,23 +151,77 @@ async function createUnderLock(
   metaPath: string,
   db: Database.Database | undefined,
 ): Promise<CreatePrResult> {
-  // authoritative read UNDER the lock — a concurrent cleanup can't have
-  // changed status between the probe read and here.
-  const meta = await readMeta(metaPath, opts.runId);
-  if (meta.status !== "approved") {
+  // the run's canonical state: a `db-first` run is the `runs` row, a
+  // legacy run is meta.json. The exported meta.json of a db-first run can
+  // be stale, so it must NOT gate the PR.
+  const dbRow =
+    db !== undefined
+      ? (db
+          .prepare(
+            "SELECT source_mode, status, run_branch, meta_json FROM runs WHERE run_id = ?",
+          )
+          .get(opts.runId) as
+          | {
+              source_mode: string;
+              status: string;
+              run_branch: string | null;
+              meta_json: string | null;
+            }
+          | undefined)
+      : undefined;
+  const dbFirst = dbRow?.source_mode === "db-first";
+
+  // re-check the canonical PR record UNDER the lock — a concurrent
+  // `pr create` may have opened the PR since the pre-lock check.
+  if (db !== undefined) {
+    const existing = new PullRequestRepository(db).findByRun(opts.runId);
+    if (
+      existing !== null &&
+      existing.status === "created" &&
+      existing.url !== null &&
+      existing.externalPrId !== null
+    ) {
+      return {
+        runId: opts.runId,
+        prUrl: existing.url,
+        prNumber: Number(existing.externalPrId),
+        head: existing.branch ?? "",
+      };
+    }
+  }
+
+  let meta: RunMeta;
+  let status: string;
+  let head: string;
+  if (dbFirst && dbRow !== undefined) {
+    if (dbRow.meta_json === null) {
+      throw new PrGateError(
+        `run ${opts.runId} is db-first but its row has no meta_json`,
+      );
+    }
+    meta = JSON.parse(dbRow.meta_json) as RunMeta;
+    status = dbRow.status;
+    head = dbRow.run_branch ?? "";
+  } else {
+    meta = await readMeta(metaPath, opts.runId);
+    status = typeof meta.status === "string" ? meta.status : "";
+    head = typeof meta.runBranch === "string" ? meta.runBranch : "";
+  }
+  if (status !== "approved") {
     throw new PrGateError(
-      `run ${opts.runId} has status "${meta.status}"; only approved runs can be turned into a PR`,
+      `run ${opts.runId} has status "${status}"; only approved runs can be turned into a PR`,
     );
   }
-  if (typeof meta.prUrl === "string") {
+  // a db-first run's PR fact is its `pull_requests` row (re-checked
+  // above); a legacy run's is meta.prUrl — catch a pre-Phase-7 PR here.
+  if (!dbFirst && typeof meta.prUrl === "string") {
     throw new PrGateError(
       `run ${opts.runId} already has a PR: ${meta.prUrl}`,
     );
   }
-  if (typeof meta.runBranch !== "string" || meta.runBranch === "") {
-    throw new PrGateError(`meta.json for ${opts.runId} has no runBranch`);
+  if (head === "") {
+    throw new PrGateError(`run ${opts.runId} has no runBranch`);
   }
-  const head = meta.runBranch;
 
   const worktree = join(opts.workspacesDir, opts.runId, "repo");
   if (!existsSync(worktree)) {
@@ -233,15 +287,6 @@ async function createUnderLock(
   }
 
   // 5. open the PR (publisher should be idempotent on the head branch).
-  //    A `db-first` run is recorded through the DB; a legacy run keeps the
-  //    meta.json path. The DB row's source_mode is the authority.
-  const dbFirst =
-    db !== undefined &&
-    (
-      db
-        .prepare("SELECT source_mode FROM runs WHERE run_id = ?")
-        .get(opts.runId) as { source_mode: string } | undefined
-    )?.source_mode === "db-first";
   const title =
     opts.title ?? `harness ${opts.runId} (${meta.domain ?? "unknown"})`;
   const body = await buildPrBody(runDir, meta, opts.runId);
@@ -279,33 +324,49 @@ async function createUnderLock(
   }
 
   // 6. record the pull request. The DB is the canonical record (Phase
-  //    7-10); a db-first run's PR fields go through the run row and are
-  //    re-exported, a legacy run keeps the meta.json write.
-  if (db !== undefined) {
-    new PullRequestRepository(db).upsertPullRequest({
-      runId: opts.runId,
-      provider: "github",
-      repo,
-      branch: head,
-      baseBranch: opts.base,
-      title,
-      url: published.url,
-      externalPrId: String(published.number),
-      status: "created",
-      operationId: null,
-    });
-  }
-  if (dbFirst && db !== undefined) {
-    new RunRepository(db).recordPrCreated({
-      runId: opts.runId,
-      prUrl: published.url,
-      prNumber: published.number,
-      head,
-      base: opts.base,
-      occurredAt,
-    });
+  //    7-10). For a db-first run the `runs` update and the `pull_requests`
+  //    row are committed in ONE transaction, so the PR record can never be
+  //    `created` while the run row is left unrecorded.
+  if (db !== undefined && dbFirst) {
+    const conn = db;
+    conn.transaction(() => {
+      new RunRepository(conn).recordPrCreated({
+        runId: opts.runId,
+        prUrl: published.url,
+        prNumber: published.number,
+        head,
+        base: opts.base,
+        occurredAt,
+      });
+      new PullRequestRepository(conn).upsertPullRequest({
+        runId: opts.runId,
+        provider: "github",
+        repo,
+        branch: head,
+        baseBranch: opts.base,
+        title,
+        url: published.url,
+        externalPrId: String(published.number),
+        status: "created",
+        operationId: null,
+      });
+    })();
     exportRun(db, opts.runId, { runsDir: opts.runsDir });
   } else {
+    if (db !== undefined) {
+      new PullRequestRepository(db).upsertPullRequest({
+        runId: opts.runId,
+        provider: "github",
+        repo,
+        branch: head,
+        baseBranch: opts.base,
+        title,
+        url: published.url,
+        externalPrId: String(published.number),
+        status: "created",
+        operationId: null,
+      });
+    }
     // legacy run — meta is re-read so we never clobber a field a
     // concurrent writer set; we hold the lock, so this read is current.
     const current = await readMeta(metaPath, opts.runId);

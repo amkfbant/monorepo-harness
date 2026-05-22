@@ -26,13 +26,18 @@ export interface PullRequestRecord {
 export class PullRequestRepository {
   constructor(private readonly db: Database.Database) {}
 
-  /** The pull request recorded for a run, or null. */
+  /**
+   * The pull request recorded for a run, or null. `pr create` keeps one
+   * row per run (serialised by the run's domain lock); the explicit
+   * `ORDER BY id DESC` makes the read deterministic even if a row were
+   * ever duplicated out-of-band.
+   */
   findByRun(runId: string): PullRequestRecord | null {
     const r = this.db
       .prepare(
         `SELECT run_id, provider, repo, branch, base_branch, title, url,
                 external_pr_id, status, operation_id
-         FROM pull_requests WHERE run_id = ?`,
+         FROM pull_requests WHERE run_id = ? ORDER BY id DESC LIMIT 1`,
       )
       .get(runId) as Record<string, unknown> | undefined;
     if (r === undefined) return null;
