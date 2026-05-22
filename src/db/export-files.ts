@@ -62,6 +62,10 @@ export interface ExportResult {
 /**
  * Mark a scope row `export_status='disabled'` — file export is opt-out
  * and OFF, so the (absent) files are not drift (Phase 8-5).
+ *
+ * The scope's `exported_files` rows are cleared too: a row previously
+ * exported under export ON would otherwise leave stale tracked files that
+ * `check-consistency` flags as `missing-file` once they are removed.
  */
 function markExportDisabled(
   db: Database.Database,
@@ -69,10 +73,17 @@ function markExportDisabled(
   idColumn: "run_id" | "item_id",
   id: string,
 ): void {
-  db.prepare(
-    `UPDATE ${table} SET export_status = 'disabled', last_export_error = NULL
-     WHERE ${idColumn} = ?`,
-  ).run(id);
+  const scopeType = table === "runs" ? "run" : "backlog_item";
+  const txn = db.transaction(() => {
+    db.prepare(
+      `UPDATE ${table} SET export_status = 'disabled', last_export_error = NULL
+       WHERE ${idColumn} = ?`,
+    ).run(id);
+    db.prepare(
+      "DELETE FROM exported_files WHERE scope_type = ? AND scope_id = ?",
+    ).run(scopeType, id);
+  });
+  txn();
 }
 
 /**
@@ -439,12 +450,20 @@ export function exportKnowledgeDecisions(
   const repo = new KnowledgeRepository(db);
   if (opts.force !== true && !fileExportEnabled()) {
     // file export OFF — the rejected candidates' decision is DB-canonical;
-    // mark them disabled so the absent sidecar is not flagged as drift.
-    db.prepare(
-      `UPDATE knowledge_candidates SET export_status = 'disabled',
-         last_export_error = NULL
-       WHERE run_id = ? AND status = 'rejected'`,
-    ).run(runId);
+    // mark them disabled and clear the sidecar's tracked files so the
+    // absent `knowledge-decisions.yaml` is not flagged as drift.
+    const txn = db.transaction(() => {
+      db.prepare(
+        `UPDATE knowledge_candidates SET export_status = 'disabled',
+           last_export_error = NULL
+         WHERE run_id = ? AND status = 'rejected'`,
+      ).run(runId);
+      db.prepare(
+        `DELETE FROM exported_files
+         WHERE scope_type = 'knowledge_decisions' AND scope_id = ?`,
+      ).run(runId);
+    });
+    txn();
     return { runId, status: "disabled" };
   }
   const rows = db

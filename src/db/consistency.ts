@@ -271,13 +271,10 @@ function checkBacklog(
   backlogDir: string,
   items: ConsistencyItem[],
 ): void {
-  const dbIds = new Set(
-    (
-      db.prepare("SELECT item_id FROM backlog_items").all() as {
-        item_id: string;
-      }[]
-    ).map((r) => r.item_id),
-  );
+  const dbRows = db
+    .prepare("SELECT item_id, export_status FROM backlog_items")
+    .all() as { item_id: string; export_status: string | null }[];
+  const dbIds = new Set(dbRows.map((r) => r.item_id));
   const fileIds = new Set<string>();
   for (const status of BACKLOG_STATUS_DIRS) {
     const dir = join(backlogDir, status);
@@ -286,11 +283,14 @@ function checkBacklog(
       if (f.endsWith(".yaml")) fileIds.add(f.slice(0, -".yaml".length));
     }
   }
-  for (const id of dbIds) {
-    if (!fileIds.has(id)) {
+  for (const row of dbRows) {
+    // an item written with file export OFF (Phase 8-5) has no file on
+    // purpose — `export_status='disabled'` is not drift.
+    if (row.export_status === "disabled") continue;
+    if (!fileIds.has(row.item_id)) {
       items.push({
         kind: "backlog",
-        id,
+        id: row.item_id,
         status: "missing-file",
         detail: "backlog item in the DB but not on disk",
       });
