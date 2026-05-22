@@ -227,20 +227,42 @@ async function cleanupUnderLock(
   db: Database.Database,
   dbFirst: boolean,
 ): Promise<CleanupResult> {
-  // meta.json supplies repoPath / runBranch for the git operations; for a
-  // db-first run it is the (accurate) export.
-  const meta = await readMetaFile(metaPath, opts.runId);
-
-  // gate status: DB-canonical for a db-first run, meta.json otherwise.
-  let currentStatus: RunStatus = meta.status;
+  // The git operations need repoPath / runBranch and the gate needs the
+  // status. For a db-first run these come from the canonical DB row — the
+  // exported run dir may not even exist on a re-cleanup. A legacy run
+  // reads meta.json.
+  let repoPath: string;
+  let runBranch: string;
+  let currentStatus: RunStatus;
+  let legacyMeta: RunMeta | null = null;
   if (dbFirst) {
     const row = db
-      .prepare("SELECT status FROM runs WHERE run_id = ?")
-      .get(opts.runId) as { status: string } | undefined;
+      .prepare(
+        "SELECT repo_path, run_branch, status FROM runs WHERE run_id = ?",
+      )
+      .get(opts.runId) as
+      | {
+          repo_path: string | null;
+          run_branch: string | null;
+          status: string;
+        }
+      | undefined;
     if (row === undefined) {
       throw new Error(`run ${opts.runId} not found in the DB`);
     }
+    if (row.repo_path === null || row.run_branch === null) {
+      throw new Error(
+        `run ${opts.runId} DB row is missing repo_path / run_branch`,
+      );
+    }
+    repoPath = row.repo_path;
+    runBranch = row.run_branch;
     currentStatus = row.status as RunStatus;
+  } else {
+    legacyMeta = await readMetaFile(metaPath, opts.runId);
+    repoPath = legacyMeta.repoPath;
+    runBranch = legacyMeta.runBranch;
+    currentStatus = legacyMeta.status;
   }
 
   const gate = checkCleanupAllowed(currentStatus, opts.force ?? false);
@@ -252,7 +274,7 @@ async function cleanupUnderLock(
 
   const workspaceRunDir = join(opts.workspacesDir, opts.runId);
   const worktreePath = join(workspaceRunDir, "repo");
-  const gitOpts: { cwd: string; timeoutMs?: number } = { cwd: meta.repoPath };
+  const gitOpts: { cwd: string; timeoutMs?: number } = { cwd: repoPath };
   if (opts.gitTimeoutMs !== undefined) gitOpts.timeoutMs = opts.gitTimeoutMs;
 
   let worktreeRemoved = false;
@@ -275,12 +297,12 @@ async function cleanupUnderLock(
   // Branch removal is independent of worktree state — a previous run might
   // have lost its worktree directory but the branch is still in the repo.
   // Look it up explicitly and surface deletion failure.
-  const lookup = await gitCli(["branch", "--list", meta.runBranch], gitOpts);
+  const lookup = await gitCli(["branch", "--list", runBranch], gitOpts);
   if (lookup.exitCode === 0 && lookup.stdout.trim() !== "") {
-    const del = await gitCli(["branch", "-D", meta.runBranch], gitOpts);
+    const del = await gitCli(["branch", "-D", runBranch], gitOpts);
     if (del.exitCode !== 0) {
       throw new Error(
-        `branch delete failed for ${meta.runBranch}: ${del.stderr.trim()}`,
+        `branch delete failed for ${runBranch}: ${del.stderr.trim()}`,
       );
     }
     branchRemoved = true;
@@ -292,17 +314,17 @@ async function cleanupUnderLock(
     // Keep the run dir as audit trail; flip status to cleaned.
     if (dbFirst) {
       // DB-first: the DB row is canonical and is NOT deleted — cleanup
-      // flips its status, records cleanup_actions, and re-exports.
+      // flips its status (guarded), records cleanup_actions, re-exports.
       new RunRepository(db).recordCleanup({
         runId: opts.runId,
         scope,
+        expectedStatus: currentStatus,
         worktreeRemoved,
         branchRemoved,
-        runDirRemoved: false,
       });
       exportRun(db, opts.runId, { runsDir: opts.runsDir });
-    } else if (meta.status !== "cleaned") {
-      const updated: RunMeta = { ...meta, status: "cleaned" };
+    } else if ((legacyMeta as RunMeta).status !== "cleaned") {
+      const updated: RunMeta = { ...(legacyMeta as RunMeta), status: "cleaned" };
       await writeFile(
         metaPath,
         `${JSON.stringify(updated, null, 2)}\n`,
@@ -323,19 +345,26 @@ async function cleanupUnderLock(
     }
   } else {
     // run / all: delete runs/<runId>/. For a db-first run the canonical
-    // state is the DB row (kept) — only the exported files are removed,
-    // and the cleanup is recorded in cleanup_actions first.
+    // state is the DB row (kept) — only the exported files are removed.
+    // The DB write happens first, the `run_dir_remove` action is recorded
+    // only AFTER the rm succeeds so the audit log never claims a deletion
+    // that did not happen.
     if (dbFirst) {
-      new RunRepository(db).recordCleanup({
+      const repo = new RunRepository(db);
+      repo.recordCleanup({
         runId: opts.runId,
         scope,
+        expectedStatus: currentStatus,
         worktreeRemoved,
         branchRemoved,
-        runDirRemoved: true,
       });
+      await rm(runDir, { recursive: true, force: true });
+      runDirRemoved = true;
+      repo.recordCleanupAction(opts.runId, "run_dir_remove", "done");
+    } else {
+      await rm(runDir, { recursive: true, force: true });
+      runDirRemoved = true;
     }
-    await rm(runDir, { recursive: true, force: true });
-    runDirRemoved = true;
   }
 
   // Remove the (now-empty) workspaces/<runId>/ parent dir for every scope.

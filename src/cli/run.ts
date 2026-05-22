@@ -1629,7 +1629,12 @@ const cleanupCmd = program
         `run=${result.runId} scope=${result.scope} previousStatus=${result.previousStatus} worktreeRemoved=${result.worktreeRemoved} branchRemoved=${result.branchRemoved} runDirRemoved=${result.runDirRemoved}\n`,
       );
     } catch (e) {
-      if (e instanceof CleanupGateError || e instanceof DomainLockError) {
+      if (
+        e instanceof CleanupGateError ||
+        e instanceof DomainLockError ||
+        e instanceof StateConflictError ||
+        e instanceof SourceModeError
+      ) {
         process.stderr.write(`harness error: ${(e as Error).message}\n`);
         process.exit(1);
       }

@@ -692,16 +692,21 @@ export class RunRepository {
    * Record a cleanup against a DB-first run (Phase 7-7).
    *
    * Cleanup does NOT delete the canonical `runs` row — it flips status to
-   * `cleaned` (unless already cleaned), appends a `cleaned` event, and
-   * records each filesystem action in `cleanup_actions`. The exported run
-   * directory may be removed by the caller per scope; the DB row remains.
+   * `cleaned` (unless already cleaned, an idempotent no-op), appends a
+   * `cleaned` event, and records the already-completed worktree/branch
+   * actions. The status update is guarded by `expectedStatus` (the status
+   * read under the domain lock); a mismatch is a `StateConflictError`.
+   *
+   * `run_dir_remove` is NOT recorded here — the caller records it via
+   * `recordCleanupAction` only after the `rm` actually succeeds, so the
+   * audit log never claims a deletion that did not happen.
    */
   recordCleanup(input: {
     runId: string;
     scope: string;
+    expectedStatus: string;
     worktreeRemoved: boolean;
     branchRemoved: boolean;
-    runDirRemoved: boolean;
   }): { previousStatus: string } {
     const txn = this.db.transaction((): { previousStatus: string } => {
       const row = this.db
@@ -718,19 +723,27 @@ export class RunRepository {
           row.meta_json !== null
             ? (JSON.parse(row.meta_json) as Record<string, unknown>)
             : {};
-        this.db
+        const info = this.db
           .prepare(
             `UPDATE runs
                SET status = 'cleaned', meta_json = ?,
                    db_revision = db_revision + 1, export_status = 'dirty',
                    last_export_error = NULL, updated_at = ?
-             WHERE run_id = ?`,
+             WHERE run_id = ? AND status = ?`,
           )
           .run(
             JSON.stringify({ ...meta, status: "cleaned" }, null, 2),
             now,
             input.runId,
+            input.expectedStatus,
           );
+        if (info.changes === 0) {
+          throw new StateConflictError(
+            input.runId,
+            [input.expectedStatus],
+            row.status,
+          );
+        }
         const seq = (
           this.db
             .prepare(
@@ -758,23 +771,32 @@ export class RunRepository {
             }),
           );
       }
-      const insertAction = this.db.prepare(
-        `INSERT INTO cleanup_actions (run_id, action_type, target, status,
-           executed_at, error_message)
-         VALUES (?, ?, ?, 'done', ?, NULL)`,
-      );
       if (input.worktreeRemoved) {
-        insertAction.run(input.runId, "worktree_remove", null, now);
+        this.recordCleanupAction(input.runId, "worktree_remove", "done");
       }
       if (input.branchRemoved) {
-        insertAction.run(input.runId, "branch_delete", null, now);
-      }
-      if (input.runDirRemoved) {
-        insertAction.run(input.runId, "run_dir_remove", null, now);
+        this.recordCleanupAction(input.runId, "branch_delete", "done");
       }
       return { previousStatus: row.status };
     });
     return txn.immediate();
+  }
+
+  /** Record one cleanup_actions row. Used for `run_dir_remove` after the
+   * filesystem delete actually succeeds (Phase 7-7). */
+  recordCleanupAction(
+    runId: string,
+    actionType: string,
+    status: string,
+    errorMessage: string | null = null,
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO cleanup_actions (run_id, action_type, target, status,
+           executed_at, error_message)
+         VALUES (?, ?, NULL, ?, ?, ?)`,
+      )
+      .run(runId, actionType, status, new Date().toISOString(), errorMessage);
   }
 }
 

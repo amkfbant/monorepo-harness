@@ -23,13 +23,16 @@ function seedDbFirstRun(harnessRoot: string, runId: string): string {
   const db = openDb(dbPath);
   runMigrations(db);
   db.prepare(
-    `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch, status,
-       started_at, updated_at, source_mode, db_revision, meta_json)
-     VALUES (?, ?, ?, 'domain-coding', 'main', ?, ?, ?, 'db-first', 1, ?)`,
+    `INSERT INTO runs (run_id, repo_id, repo_path, domain, workflow,
+       base_branch, run_branch, status, started_at, updated_at, source_mode,
+       db_revision, meta_json)
+     VALUES (?, ?, ?, ?, 'domain-coding', 'main', ?, ?, ?, ?, 'db-first', 1, ?)`,
   ).run(
     runId,
     meta.repoId,
+    meta.repoPath,
     meta.domain,
+    meta.runBranch,
     meta.status,
     meta.startedAt,
     meta.startedAt,
@@ -445,5 +448,24 @@ describe("cleanupRun — DB-first run (Phase 7-7)", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("can re-clean a db-first run after its export dir was deleted", async () => {
+    const s = await setup("approved");
+    const dbPath = seedDbFirstRun(s.harnessRoot, s.runId);
+    const opts = {
+      runsDir: join(s.harnessRoot, "runs"),
+      workspacesDir: join(s.harnessRoot, "workspaces"),
+      locksDir: join(s.harnessRoot, "locks"),
+      dbPath,
+      runId: s.runId,
+      scope: "run" as const,
+    };
+    await cleanupRun(opts);
+    expect(existsSync(join(s.harnessRoot, "runs", s.runId))).toBe(false);
+    // a second cleanup must not fail on the missing meta.json — the
+    // db-first run is recovered from the DB row.
+    const r = await cleanupRun(opts);
+    expect(r.previousStatus).toBe("cleaned");
   });
 });
