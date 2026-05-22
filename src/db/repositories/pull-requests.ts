@@ -62,56 +62,35 @@ export class PullRequestRepository {
    */
   upsertPullRequest(input: PullRequestRecord): void {
     const now = new Date().toISOString();
-    const txn = this.db.transaction(() => {
-      const existing = this.db
-        .prepare("SELECT id FROM pull_requests WHERE run_id = ?")
-        .get(input.runId) as { id: number } | undefined;
-      if (existing === undefined) {
-        this.db
-          .prepare(
-            `INSERT INTO pull_requests (run_id, provider, repo, branch,
-               base_branch, title, url, external_pr_id, status, operation_id,
-               created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            input.runId,
-            input.provider,
-            input.repo,
-            input.branch,
-            input.baseBranch,
-            input.title,
-            input.url,
-            input.externalPrId,
-            input.status,
-            input.operationId,
-            now,
-            now,
-          );
-      } else {
-        this.db
-          .prepare(
-            `UPDATE pull_requests
-               SET provider = ?, repo = ?, branch = ?, base_branch = ?,
-                   title = ?, url = ?, external_pr_id = ?, status = ?,
-                   operation_id = ?, updated_at = ?
-             WHERE run_id = ?`,
-          )
-          .run(
-            input.provider,
-            input.repo,
-            input.branch,
-            input.baseBranch,
-            input.title,
-            input.url,
-            input.externalPrId,
-            input.status,
-            input.operationId,
-            now,
-            input.runId,
-          );
-      }
-    });
-    txn();
+    // `run_id` is UNIQUE (schema v4) — an atomic `ON CONFLICT(run_id)`
+    // upsert. `created_at` is preserved on update; only `updated_at` moves.
+    this.db
+      .prepare(
+        `INSERT INTO pull_requests (run_id, provider, repo, branch,
+           base_branch, title, url, external_pr_id, status, operation_id,
+           created_at, updated_at)
+         VALUES (@run_id, @provider, @repo, @branch, @base_branch, @title,
+           @url, @external_pr_id, @status, @operation_id, @now, @now)
+         ON CONFLICT (run_id) DO UPDATE SET
+           provider = excluded.provider, repo = excluded.repo,
+           branch = excluded.branch, base_branch = excluded.base_branch,
+           title = excluded.title, url = excluded.url,
+           external_pr_id = excluded.external_pr_id, status = excluded.status,
+           operation_id = excluded.operation_id,
+           updated_at = excluded.updated_at`,
+      )
+      .run({
+        run_id: input.runId,
+        provider: input.provider,
+        repo: input.repo,
+        branch: input.branch,
+        base_branch: input.baseBranch,
+        title: input.title,
+        url: input.url,
+        external_pr_id: input.externalPrId,
+        status: input.status,
+        operation_id: input.operationId,
+        now,
+      });
   }
 }

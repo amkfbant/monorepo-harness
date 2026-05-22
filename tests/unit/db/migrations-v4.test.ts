@@ -150,6 +150,15 @@ describe("schema v4 migration", () => {
         .get() as { n: number }
     ).n;
     expect(count).toBe(1); // only the latest id survived
+    // the older non-canonical row was salvaged into pull_request_attempts
+    const attempts = (
+      up
+        .prepare(
+          "SELECT count(*) AS n FROM pull_request_attempts WHERE run_id = 'run-x'",
+        )
+        .get() as { n: number }
+    ).n;
+    expect(attempts).toBe(1);
     // the UNIQUE index now rejects a duplicate run_id
     expect(() =>
       up
@@ -161,5 +170,20 @@ describe("schema v4 migration", () => {
         .run(),
     ).toThrow();
     up.close();
+  });
+
+  it("rejects an unknown content_encoding on artifact_blobs (P2)", () => {
+    const db = openDb(freshDbPath());
+    runMigrations(db);
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO artifact_blobs (sha256, bytes, content_encoding,
+             stored_bytes, chunk_count, created_at)
+           VALUES ('h', 1, 'lzma', 1, 1, 't')`,
+        )
+        .run(),
+    ).toThrow();
+    db.close();
   });
 });

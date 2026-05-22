@@ -407,18 +407,34 @@ export const MIGRATION_V4_STATEMENTS: readonly string[] = [
   // --- artifact body storage ----------------------------------------
   `CREATE TABLE artifact_blobs (
     sha256 TEXT PRIMARY KEY NOT NULL,
-    bytes INTEGER NOT NULL,
-    content_encoding TEXT NOT NULL DEFAULT 'identity',
-    stored_bytes INTEGER NOT NULL,
-    chunk_count INTEGER NOT NULL,
+    bytes INTEGER NOT NULL CHECK (bytes >= 0),
+    content_encoding TEXT NOT NULL DEFAULT 'identity'
+      CHECK (content_encoding IN ('identity', 'gzip')),
+    stored_bytes INTEGER NOT NULL CHECK (stored_bytes >= 0),
+    chunk_count INTEGER NOT NULL CHECK (chunk_count >= 0),
     created_at TEXT NOT NULL
   )`,
   `CREATE TABLE artifact_blob_chunks (
     sha256 TEXT NOT NULL,
-    chunk_index INTEGER NOT NULL,
+    chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
     content BLOB NOT NULL,
     PRIMARY KEY (sha256, chunk_index)
   )`,
+
+  // --- pull-request attempt ledger -----------------------------------
+  // a run keeps at most one canonical `pull_requests` row (UNIQUE below);
+  // every prior / non-canonical attempt is preserved here so audit and
+  // operation_id history is not lost when duplicates are de-duplicated.
+  `CREATE TABLE pull_request_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    operation_id TEXT,
+    status TEXT NOT NULL,
+    error_message TEXT,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX pull_request_attempts_run_idx
+     ON pull_request_attempts(run_id)`,
 
   // --- rebuild `artifacts` to allow storage='db' + body columns ------
   `CREATE TABLE artifacts_v4 (
@@ -447,6 +463,13 @@ export const MIGRATION_V4_STATEMENTS: readonly string[] = [
   `ALTER TABLE artifacts_v4 RENAME TO artifacts`,
 
   // --- pull_requests: one PR per run ---------------------------------
+  // salvage every non-canonical (older) PR row into the attempt ledger
+  // BEFORE deleting it, so no audit / operation_id history is lost.
+  `INSERT INTO pull_request_attempts
+     (run_id, operation_id, status, error_message, created_at)
+   SELECT run_id, operation_id, status, NULL, created_at
+   FROM pull_requests
+   WHERE id NOT IN (SELECT MAX(id) FROM pull_requests GROUP BY run_id)`,
   `DELETE FROM pull_requests
    WHERE id NOT IN (SELECT MAX(id) FROM pull_requests GROUP BY run_id)`,
   `CREATE UNIQUE INDEX pull_requests_run_unique ON pull_requests(run_id)`,
@@ -465,6 +488,7 @@ export const V2_TABLE_NAMES: readonly string[] = [
 export const V4_TABLE_NAMES: readonly string[] = [
   "artifact_blobs",
   "artifact_blob_chunks",
+  "pull_request_attempts",
 ];
 
 /** Table names created by v1 — used by `db status` and tests. */
