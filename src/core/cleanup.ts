@@ -1,6 +1,7 @@
 import { readFile, writeFile, appendFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import type Database from "better-sqlite3";
 import {
   RUN_STATUSES,
   type RunMeta,
@@ -8,6 +9,11 @@ import {
 } from "../logging/run-log.js";
 import { gitCli } from "../git/git-cli.js";
 import { acquireDomainLock } from "../workspace/domain-lock.js";
+import { openDb } from "../db/connection.js";
+import { runMigrations } from "../db/migrations.js";
+import { RunRepository } from "../db/repositories/runs.js";
+import { exportRun } from "../db/export-files.js";
+import { SourceModeError } from "../db/errors.js";
 
 /**
  * How much of a run's footprint to remove.
@@ -29,6 +35,8 @@ export interface CleanupOpts {
    * to avoid a race with a concurrent run.
    */
   locksDir: string;
+  /** harness DB path — a `db-first` run is cleaned through the DB. */
+  dbPath: string;
   runId: string;
   /** allow cleaning failed-* / needs_review / verified / generated runs */
   force?: boolean;
@@ -155,27 +163,59 @@ export async function cleanupRun(opts: CleanupOpts): Promise<CleanupResult> {
   const runDir = join(opts.runsDir, opts.runId);
   const metaPath = join(runDir, "meta.json");
 
-  // First read is only to learn the domain so we can lock it. The
-  // authoritative read + gate check happen again UNDER the lock, so a
-  // concurrent `review process` can't flip status (e.g. needs_review →
-  // changes_requested) between our gate decision and the deletion.
-  const domainProbe = await readMetaFile(metaPath, opts.runId);
-
-  // Acquire the same per-domain lock as `harness run` / `review process`.
-  // distinct lock-runId so a failed acquire is attributable.
-  const lock = await acquireDomainLock({
-    locksDir: opts.locksDir,
-    domain: domainProbe.domain,
-    runId: `cleanup:${opts.runId}`,
-    ...(typeof domainProbe.repoId === "string"
-      ? { repoId: domainProbe.repoId }
-      : {}),
-  });
-
+  // Open the DB before the lock so an open failure cannot leak a held
+  // lock. The DB tells us whether the run is db-first — which decides the
+  // canonical source for the lock key and the cleanup gate.
+  const db = openDb(opts.dbPath);
+  let lock: Awaited<ReturnType<typeof acquireDomainLock>> | undefined;
   try {
-    return await cleanupUnderLock(opts, scope, runDir, metaPath);
+    runMigrations(db);
+    const dbRow = db
+      .prepare(
+        "SELECT source_mode, domain, repo_id FROM runs WHERE run_id = ?",
+      )
+      .get(opts.runId) as
+      | { source_mode: string; domain: string; repo_id: string | null }
+      | undefined;
+    if (
+      dbRow !== undefined &&
+      dbRow.source_mode !== "db-first" &&
+      dbRow.source_mode !== "legacy-file"
+    ) {
+      throw new SourceModeError(
+        opts.runId,
+        dbRow.source_mode,
+        "db-first | legacy-file",
+      );
+    }
+    const dbFirst = dbRow?.source_mode === "db-first";
+
+    // lock key: a db-first run is DB-canonical; a legacy run probes
+    // meta.json. The authoritative gate check happens under the lock.
+    let lockDomain: string;
+    let lockRepoId: string | undefined;
+    if (dbFirst && dbRow !== undefined) {
+      lockDomain = dbRow.domain;
+      lockRepoId = dbRow.repo_id ?? undefined;
+    } else {
+      const probe = await readMetaFile(metaPath, opts.runId);
+      lockDomain = probe.domain;
+      lockRepoId =
+        typeof probe.repoId === "string" ? probe.repoId : undefined;
+    }
+    lock = await acquireDomainLock({
+      locksDir: opts.locksDir,
+      domain: lockDomain,
+      runId: `cleanup:${opts.runId}`,
+      ...(lockRepoId !== undefined ? { repoId: lockRepoId } : {}),
+    });
+    return await cleanupUnderLock(opts, scope, runDir, metaPath, db, dbFirst);
   } finally {
-    await lock.release();
+    try {
+      db.close();
+    } finally {
+      if (lock !== undefined) await lock.release();
+    }
   }
 }
 
@@ -184,11 +224,26 @@ async function cleanupUnderLock(
   scope: CleanupScope,
   runDir: string,
   metaPath: string,
+  db: Database.Database,
+  dbFirst: boolean,
 ): Promise<CleanupResult> {
-  // Authoritative meta read — under the domain lock.
+  // meta.json supplies repoPath / runBranch for the git operations; for a
+  // db-first run it is the (accurate) export.
   const meta = await readMetaFile(metaPath, opts.runId);
 
-  const gate = checkCleanupAllowed(meta.status, opts.force ?? false);
+  // gate status: DB-canonical for a db-first run, meta.json otherwise.
+  let currentStatus: RunStatus = meta.status;
+  if (dbFirst) {
+    const row = db
+      .prepare("SELECT status FROM runs WHERE run_id = ?")
+      .get(opts.runId) as { status: string } | undefined;
+    if (row === undefined) {
+      throw new Error(`run ${opts.runId} not found in the DB`);
+    }
+    currentStatus = row.status as RunStatus;
+  }
+
+  const gate = checkCleanupAllowed(currentStatus, opts.force ?? false);
   if (!gate.ok) {
     throw new CleanupGateError(
       `cannot cleanup ${opts.runId}: ${gate.reason}`,
@@ -231,11 +286,22 @@ async function cleanupUnderLock(
     branchRemoved = true;
   }
 
-  const previousStatus = meta.status;
+  const previousStatus = currentStatus;
 
   if (scope === "workspace") {
     // Keep the run dir as audit trail; flip status to cleaned.
-    if (meta.status !== "cleaned") {
+    if (dbFirst) {
+      // DB-first: the DB row is canonical and is NOT deleted — cleanup
+      // flips its status, records cleanup_actions, and re-exports.
+      new RunRepository(db).recordCleanup({
+        runId: opts.runId,
+        scope,
+        worktreeRemoved,
+        branchRemoved,
+        runDirRemoved: false,
+      });
+      exportRun(db, opts.runId, { runsDir: opts.runsDir });
+    } else if (meta.status !== "cleaned") {
       const updated: RunMeta = { ...meta, status: "cleaned" };
       await writeFile(
         metaPath,
@@ -256,8 +322,18 @@ async function cleanupUnderLock(
       );
     }
   } else {
-    // run / all: delete runs/<runId>/ entirely. No meta update is
-    // possible afterward — the deletion itself is the record.
+    // run / all: delete runs/<runId>/. For a db-first run the canonical
+    // state is the DB row (kept) — only the exported files are removed,
+    // and the cleanup is recorded in cleanup_actions first.
+    if (dbFirst) {
+      new RunRepository(db).recordCleanup({
+        runId: opts.runId,
+        scope,
+        worktreeRemoved,
+        branchRemoved,
+        runDirRemoved: true,
+      });
+    }
     await rm(runDir, { recursive: true, force: true });
     runDirRemoved = true;
   }

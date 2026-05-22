@@ -8,8 +8,36 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { cleanupRun } from "../../../src/core/cleanup.js";
 import { createWorktree } from "../../../src/workspace/git-worktree.js";
+import { openDb } from "../../../src/db/connection.js";
+import { runMigrations } from "../../../src/db/migrations.js";
+
+/** Seed a `db-first` run row matching the run's on-disk meta.json. */
+function seedDbFirstRun(harnessRoot: string, runId: string): string {
+  const dbPath = join(harnessRoot, ".harness", "harness.sqlite");
+  const meta = JSON.parse(
+    readFileSync(join(harnessRoot, "runs", runId, "meta.json"), "utf8"),
+  ) as Record<string, unknown>;
+  const db = openDb(dbPath);
+  runMigrations(db);
+  db.prepare(
+    `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch, status,
+       started_at, updated_at, source_mode, db_revision, meta_json)
+     VALUES (?, ?, ?, 'domain-coding', 'main', ?, ?, ?, 'db-first', 1, ?)`,
+  ).run(
+    runId,
+    meta.repoId,
+    meta.domain,
+    meta.status,
+    meta.startedAt,
+    meta.startedAt,
+    JSON.stringify(meta, null, 2),
+  );
+  db.close();
+  return dbPath;
+}
 
 interface SetupResult {
   harnessRoot: string;
@@ -78,6 +106,7 @@ describe("cleanupRun", () => {
       runsDir: join(s.harnessRoot, "runs"),
       workspacesDir: join(s.harnessRoot, "workspaces"),
       locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
       runId: s.runId,
     });
     expect(r.worktreeRemoved).toBe(true);
@@ -103,6 +132,7 @@ describe("cleanupRun", () => {
       runsDir: join(s.harnessRoot, "runs"),
       workspacesDir: join(s.harnessRoot, "workspaces"),
       locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
       runId: s.runId,
     });
     expect(r.worktreeRemoved).toBe(true);
@@ -115,6 +145,7 @@ describe("cleanupRun", () => {
         runsDir: join(s.harnessRoot, "runs"),
         workspacesDir: join(s.harnessRoot, "workspaces"),
         locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
         runId: s.runId,
       }),
     ).rejects.toThrow(/status "needs_review"/);
@@ -127,6 +158,7 @@ describe("cleanupRun", () => {
       runsDir: join(s.harnessRoot, "runs"),
       workspacesDir: join(s.harnessRoot, "workspaces"),
       locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
       runId: s.runId,
       force: true,
     });
@@ -140,6 +172,7 @@ describe("cleanupRun", () => {
         runsDir: join(s.harnessRoot, "runs"),
         workspacesDir: join(s.harnessRoot, "workspaces"),
         locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
         runId: s.runId,
       }),
     ).rejects.toThrow(/changes_requested/);
@@ -151,6 +184,7 @@ describe("cleanupRun", () => {
       runsDir: join(s.harnessRoot, "runs"),
       workspacesDir: join(s.harnessRoot, "workspaces"),
       locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
       runId: s.runId,
     });
     const { readFileSync } = await import("node:fs");
@@ -175,6 +209,7 @@ describe("cleanupRun", () => {
         runsDir: join(root, "runs"),
         workspacesDir: join(root, "workspaces"),
         locksDir: join(root, "locks"),
+        dbPath: join(root, ".harness", "harness.sqlite"),
         runId: "../escape",
       }),
     ).rejects.toThrow(/invalid runId/);
@@ -192,6 +227,7 @@ describe("cleanupRun", () => {
         runsDir: join(s.harnessRoot, "runs"),
         workspacesDir: join(s.harnessRoot, "workspaces"),
         locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
         runId: s.runId,
       }),
     ).rejects.toThrow(/runId/);
@@ -208,6 +244,7 @@ describe("cleanupRun", () => {
       runsDir: join(s.harnessRoot, "runs"),
       workspacesDir: join(s.harnessRoot, "workspaces"),
       locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
       runId: s.runId,
     });
     expect(r.worktreeRemoved).toBe(false); // already gone
@@ -230,6 +267,7 @@ describe("cleanupRun", () => {
     );
     const held = await acquireDomainLock({
       locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
       domain: "apps/user",
       runId: "run-fake-concurrent",
       // namespaced lock — must match the repoId in the run's meta.json.
@@ -241,6 +279,7 @@ describe("cleanupRun", () => {
           runsDir: join(s.harnessRoot, "runs"),
           workspacesDir: join(s.harnessRoot, "workspaces"),
           locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
           runId: s.runId,
         }),
       ).rejects.toThrow(/locked/);
@@ -255,6 +294,7 @@ describe("cleanupRun", () => {
       runsDir: join(s.harnessRoot, "runs"),
       workspacesDir: join(s.harnessRoot, "workspaces"),
       locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
       runId: s.runId,
     });
     // status is now 'cleaned'; re-cleanup should not throw, just no-op
@@ -262,6 +302,7 @@ describe("cleanupRun", () => {
       runsDir: join(s.harnessRoot, "runs"),
       workspacesDir: join(s.harnessRoot, "workspaces"),
       locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
       runId: s.runId,
     });
     expect(r2.worktreeRemoved).toBe(false);
@@ -274,6 +315,7 @@ describe("cleanupRun", () => {
       runsDir: join(s.harnessRoot, "runs"),
       workspacesDir: join(s.harnessRoot, "workspaces"),
       locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
       runId: s.runId,
       scope: "workspace",
     });
@@ -292,6 +334,7 @@ describe("cleanupRun", () => {
       runsDir: join(s.harnessRoot, "runs"),
       workspacesDir: join(s.harnessRoot, "workspaces"),
       locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
       runId: s.runId,
       scope: "run",
     });
@@ -307,6 +350,7 @@ describe("cleanupRun", () => {
       runsDir: join(s.harnessRoot, "runs"),
       workspacesDir: join(s.harnessRoot, "workspaces"),
       locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
       runId: s.runId,
       scope: "all",
     });
@@ -327,10 +371,79 @@ describe("cleanupRun", () => {
         runsDir: join(s.harnessRoot, "runs"),
         workspacesDir: join(s.harnessRoot, "workspaces"),
         locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
         runId: s.runId,
         scope: "run",
       }),
     ).rejects.toThrow(/changes_requested/);
     expect(existsSync(join(s.harnessRoot, "runs", s.runId))).toBe(true);
+  });
+});
+
+describe("cleanupRun — DB-first run (Phase 7-7)", () => {
+  it("workspace scope flips the DB status and records cleanup_actions", async () => {
+    const s = await setup("approved");
+    const dbPath = seedDbFirstRun(s.harnessRoot, s.runId);
+    await cleanupRun({
+      runsDir: join(s.harnessRoot, "runs"),
+      workspacesDir: join(s.harnessRoot, "workspaces"),
+      locksDir: join(s.harnessRoot, "locks"),
+      dbPath,
+      runId: s.runId,
+    });
+    const db = openDb(dbPath);
+    try {
+      const row = db
+        .prepare("SELECT status FROM runs WHERE run_id = ?")
+        .get(s.runId) as { status: string };
+      expect(row.status).toBe("cleaned");
+      const actions = (
+        db
+          .prepare(
+            "SELECT action_type FROM cleanup_actions WHERE run_id = ?",
+          )
+          .all(s.runId) as { action_type: string }[]
+      ).map((a) => a.action_type);
+      expect(actions).toContain("worktree_remove");
+    } finally {
+      db.close();
+    }
+    // run dir kept (workspace scope); meta.json re-exported as cleaned
+    expect(existsSync(join(s.harnessRoot, "runs", s.runId))).toBe(true);
+    const meta = JSON.parse(
+      readFileSync(join(s.harnessRoot, "runs", s.runId, "meta.json"), "utf8"),
+    ) as { status: string };
+    expect(meta.status).toBe("cleaned");
+  });
+
+  it("run scope deletes the dir but keeps the canonical DB row", async () => {
+    const s = await setup("approved");
+    const dbPath = seedDbFirstRun(s.harnessRoot, s.runId);
+    await cleanupRun({
+      runsDir: join(s.harnessRoot, "runs"),
+      workspacesDir: join(s.harnessRoot, "workspaces"),
+      locksDir: join(s.harnessRoot, "locks"),
+      dbPath,
+      runId: s.runId,
+      scope: "run",
+    });
+    // the exported run dir is gone …
+    expect(existsSync(join(s.harnessRoot, "runs", s.runId))).toBe(false);
+    // … but the canonical DB row remains, marked cleaned
+    const db = openDb(dbPath);
+    try {
+      const row = db
+        .prepare("SELECT status FROM runs WHERE run_id = ?")
+        .get(s.runId) as { status: string } | undefined;
+      expect(row?.status).toBe("cleaned");
+      const removed = db
+        .prepare(
+          "SELECT 1 FROM cleanup_actions WHERE run_id = ? AND action_type = 'run_dir_remove'",
+        )
+        .get(s.runId);
+      expect(removed).toBeDefined();
+    } finally {
+      db.close();
+    }
   });
 });

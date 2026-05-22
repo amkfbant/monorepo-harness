@@ -1620,6 +1620,7 @@ const cleanupCmd = program
         runsDir: paths.runsDir,
         workspacesDir: paths.workspacesDir,
         locksDir: paths.locksDir,
+        dbPath: paths.dbPath,
         runId: String(raw.runId),
         force: Boolean(raw.force),
         scope,
