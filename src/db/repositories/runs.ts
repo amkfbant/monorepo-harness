@@ -788,7 +788,7 @@ export class RunRepository {
    *
    * When a `run_dir_remove` succeeds, the run's exported files are gone on
    * purpose: the `exported_files` rows are cleared and `export_status` is
-   * set `synced` so `db export-files` does not resurrect the dir and
+   * set `removed` so `db export-files` does not resurrect the dir and
    * `check-consistency` does not flag the intentional deletion (P1-4).
    */
   recordCleanupAction(
@@ -815,9 +815,11 @@ export class RunRepository {
                AND scope_id = ?`,
           )
           .run(runId);
+        // `removed` — the exported run dir is intentionally gone; the
+        // absent files are not drift (Phase 8-5 export_status state).
         this.db
           .prepare(
-            `UPDATE runs SET export_status = 'synced', last_export_error = NULL
+            `UPDATE runs SET export_status = 'removed', last_export_error = NULL
              WHERE run_id = ?`,
           )
           .run(runId);

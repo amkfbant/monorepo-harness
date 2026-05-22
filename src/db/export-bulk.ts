@@ -109,10 +109,14 @@ function exportOne(
   id: string,
   runsDir: string,
   backlogDir: string,
-): { status: "synced" | "failed"; error?: string } {
-  if (scope === "run") return exportRun(db, id, { runsDir });
-  if (scope === "backlog") return exportBacklogItem(db, id, { backlogDir });
-  return exportKnowledgeDecisions(db, id, { runsDir });
+): { status: "synced" | "failed" | "disabled"; error?: string } {
+  // an explicit `db export-files` always exports — `force` bypasses the
+  // Phase 8-5 opt-out (`HARNESS_EXPORT_FILES`).
+  if (scope === "run") return exportRun(db, id, { runsDir, force: true });
+  if (scope === "backlog") {
+    return exportBacklogItem(db, id, { backlogDir, force: true });
+  }
+  return exportKnowledgeDecisions(db, id, { runsDir, force: true });
 }
 
 /** Render the bulk export result set as a human-readable block. */

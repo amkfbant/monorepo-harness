@@ -144,7 +144,9 @@ describe("exportRun", () => {
         )
         .all() as { relative_path: string }[]
     ).map((r) => r.relative_path);
-    expect(files).toEqual(["meta.json"]);
+    // a needs_review run also exports the pending review-decision.yaml
+    // template (Phase 8 — 8-2 P1-2)
+    expect(files).toEqual(["meta.json", "review-decision.yaml"]);
 
     const run = db
       .prepare(

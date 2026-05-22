@@ -16,6 +16,8 @@ import {
 } from "../core/backlog.js";
 import { KnowledgeRepository } from "./repositories/knowledge.js";
 import { readArtifactBlob } from "./artifact-blobs.js";
+import { fileExportEnabled } from "../config/export-mode.js";
+import { buildReviewDecision } from "../reporter/review-decision.js";
 
 /** The four backlog status dirs — the one a db-first item is exported to. */
 const BACKLOG_STATUSES: readonly BacklogStatus[] = [
@@ -36,20 +38,41 @@ const BACKLOG_STATUSES: readonly BacklogStatus[] = [
  * `check-consistency` / a re-export recovers the stale files.
  *
  * `exportRun` reconstructs `meta.json` from the `runs` row (+
- * `command_results`) and `events.jsonl` from `run_events`. Artifact
- * bodies (codex logs, patches) stay file-backed storage — they are not
- * in the DB and `exportRun` does not touch them.
+ * `command_results`) and `events.jsonl` from `run_events`, and writes
+ * `storage='db'` artifact bodies back from `artifact_blobs` (Phase 8).
+ *
+ * Phase 8-5: file export is opt-out. When `fileExportEnabled()` is false
+ * the export functions skip the file writes, mark the scope row
+ * `export_status='disabled'`, and return `status: "disabled"`. An
+ * explicit `harness db export-files` passes `force` to export anyway.
  */
 
 export interface ExportResult {
   scopeType: "run" | "backlog_item" | "knowledge_entry";
   scopeId: string;
-  status: "synced" | "failed";
+  /** `disabled` — file export is opt-out and OFF (Phase 8-5, DB-only). */
+  status: "synced" | "failed" | "disabled";
   /** the `db_revision` the export targeted */
   dbRevision: number;
   files: ExportedFileInfo[];
   /** present only when `status === "failed"` */
   error?: string;
+}
+
+/**
+ * Mark a scope row `export_status='disabled'` — file export is opt-out
+ * and OFF, so the (absent) files are not drift (Phase 8-5).
+ */
+function markExportDisabled(
+  db: Database.Database,
+  table: "runs" | "backlog_items",
+  idColumn: "run_id" | "item_id",
+  id: string,
+): void {
+  db.prepare(
+    `UPDATE ${table} SET export_status = 'disabled', last_export_error = NULL
+     WHERE ${idColumn} = ?`,
+  ).run(id);
 }
 
 /**
@@ -60,8 +83,22 @@ export interface ExportResult {
 export function exportRun(
   db: Database.Database,
   runId: string,
-  opts: { runsDir: string },
+  opts: { runsDir: string; force?: boolean },
 ): ExportResult {
+  if (opts.force !== true && !fileExportEnabled()) {
+    const rev = db
+      .prepare("SELECT db_revision FROM runs WHERE run_id = ?")
+      .get(runId) as { db_revision: number | null } | undefined;
+    if (rev === undefined) throw new DbError(`exportRun: no run '${runId}'`);
+    markExportDisabled(db, "runs", "run_id", runId);
+    return {
+      scopeType: "run",
+      scopeId: runId,
+      status: "disabled",
+      dbRevision: rev.db_revision ?? 0,
+      files: [],
+    };
+  }
   // read the run + its events as one consistent snapshot, so an export
   // can never mix a row at one revision with events at another.
   const snapshot = db.transaction(
@@ -151,6 +188,21 @@ export function exportRun(
         : `${reviewYaml}\n`;
       atomicWriteFile(join(runDir, "review-decision.yaml"), reviewContent);
       files.push(describeExportedFile("review-decision.yaml", reviewContent));
+    } else if (row.status === "needs_review") {
+      // not yet reviewed — synthesize the pending `review-decision.yaml`
+      // template (runId + domain) so `db export-files` can materialize it
+      // for the operator in DB-only mode (Phase 8 — 8-2 P1-2).
+      const pending = buildReviewDecision({
+        runId,
+        domain: String(row.domain ?? ""),
+      });
+      const pendingContent = pending.endsWith("\n")
+        ? pending
+        : `${pending}\n`;
+      atomicWriteFile(join(runDir, "review-decision.yaml"), pendingContent);
+      files.push(
+        describeExportedFile("review-decision.yaml", pendingContent),
+      );
     }
 
     // db-stored artifact bodies (Phase 8-4) — written back from
@@ -210,8 +262,24 @@ export function exportRun(
 export function exportBacklogItem(
   db: Database.Database,
   itemId: string,
-  opts: { backlogDir: string },
+  opts: { backlogDir: string; force?: boolean },
 ): ExportResult {
+  if (opts.force !== true && !fileExportEnabled()) {
+    const rev = db
+      .prepare("SELECT db_revision FROM backlog_items WHERE item_id = ?")
+      .get(itemId) as { db_revision: number | null } | undefined;
+    if (rev === undefined) {
+      throw new DbError(`exportBacklogItem: no item '${itemId}'`);
+    }
+    markExportDisabled(db, "backlog_items", "item_id", itemId);
+    return {
+      scopeType: "backlog_item",
+      scopeId: itemId,
+      status: "disabled",
+      dbRevision: rev.db_revision ?? 0,
+      files: [],
+    };
+  }
   // read the item row + its links as one consistent snapshot.
   const snapshot = db.transaction(
     ():
@@ -342,7 +410,7 @@ export function warnIfExportFailed(result: ExportResult): void {
 /** Per-run result of re-projecting a `knowledge-decisions.yaml` sidecar. */
 export interface KnowledgeDecisionsExportResult {
   runId: string;
-  status: "synced" | "failed";
+  status: "synced" | "failed" | "disabled";
   error?: string;
 }
 
@@ -359,9 +427,19 @@ export interface KnowledgeDecisionsExportResult {
 export function exportKnowledgeDecisions(
   db: Database.Database,
   runId: string,
-  opts: { runsDir: string },
+  opts: { runsDir: string; force?: boolean },
 ): KnowledgeDecisionsExportResult {
   const repo = new KnowledgeRepository(db);
+  if (opts.force !== true && !fileExportEnabled()) {
+    // file export OFF — the rejected candidates' decision is DB-canonical;
+    // mark them disabled so the absent sidecar is not flagged as drift.
+    db.prepare(
+      `UPDATE knowledge_candidates SET export_status = 'disabled',
+         last_export_error = NULL
+       WHERE run_id = ? AND status = 'rejected'`,
+    ).run(runId);
+    return { runId, status: "disabled" };
+  }
   const rows = db
     .prepare(
       `SELECT candidate_id, reviewer, reason, decided_at
