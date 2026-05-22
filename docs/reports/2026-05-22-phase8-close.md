@@ -1,6 +1,6 @@
 # Phase 8 close レポート — runtime DB complete
 
-**日付:** 2026-05-22
+**日付:** 2026-05-22 → 2026-05-23
 **対象:** `monorepo-harness` Phase 8（runtime DB complete）
 **設計:** [`../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
 **タグ:** `phase8-close`
@@ -37,6 +37,20 @@ policy）は file-authored canonical のまま残す。
 | 8-8 | DB 運用コマンド（backup / restore / checkpoint / vacuum / stats） | feat + fix |
 | 8-9 | fixture matrix + crash / 並行性テスト | test + fix |
 | 8-10 | docs + close package | docs |
+| 8-11 | consistency checker artifact blob 検査 | feat |
+| 8-12 | DB-backed run viewers（run show / timeline / artifacts / rerun chain） | feat |
+| 8-13 | DB-only review + review/workflow artifact の DB 取り込み | feat |
+| 8-14 | restore 安全性 docs + truncation 設計整合 + close | docs |
+
+8-11〜8-14 は、8-10 時点の**全フェーズ横断 codex レビュー**が DB-only mode の
+read 経路に close 条件未達（P1×4）を検出したため追加したサブフェーズ:
+
+- P1-1 — DB-only で `review auto` が壊れる（reviewer agent が `meta.json` を
+  file 直読み）→ 8-13。
+- P1-2 — review / workflow が生成する artifact が DB blob に入らない → 8-13。
+- P1-3 — `check-consistency` が DB の artifact blob 自体を検査しない → 8-11。
+- P1-4 — `db restore` が利用中の DB を無防備に置換しうる → 8-14（docs +
+  運用上の制約として明記、DB-wide 排他は Phase 9 concurrency トラック）。
 
 各サブフェーズは TDD 実装 → codex（gpt-5.5, `model_reasoning_effort=xhigh`,
 `--sandbox read-only`）外部レビュー → P0/P1/P2 修正の作法で進めた。全サブ
@@ -57,10 +71,13 @@ refactor: ... — codex レビュー反映`）で反映済み。
       mismatch）は report・除外（8-3）。
 - [x] `exportRun` / `db export-files` が artifact body を DB から復元する（8-4）。
 - [x] runtime command が `storage='db'` artifact body を file でなく DB から
-      読む（8-4）。
-- [x] `check-consistency` が artifact body の drift / missing を検出する（8-4）。
+      読む（8-4 export / 8-12 run viewers）。
+- [x] `check-consistency` が artifact body の drift / missing を検出する
+      — exported file 側（8-4）と DB blob 自体（8-11: blob_sha256 欠落 /
+      blob・chunk 欠損 / `body_status='missing'`）の両方。
 - [x] file export がオプトインで、DB-only で run→review→rerun→pr create→
-      cleanup→dashboard が動く（8-5、`HARNESS_EXPORT_FILES`）。
+      cleanup→dashboard が動く（8-5 export gate / 8-12 run viewers の DB
+      fallback / 8-13 reviewer の DB materialize）。
 - [x] `export_status` が `synced` / `dirty` / `failed` / `disabled` / `removed`
       を区別し、`check-consistency` が export OFF / tombstone を正しく扱う（8-5）。
 - [x] export default ON で既存挙動が不変（回帰なし）。
@@ -81,8 +98,13 @@ refactor: ... — codex レビュー反映`）で反映済み。
 - [x] schema v1→v2→v3→v4 migration が idempotent（`migrations-v4.test.ts`）。
 - [x] 安全モデル（policy 検証 / 状態遷移 gate / review auto 境界 /
       `source_mode` invariant）が不変。
-- [x] crash / 並行性 / artifact blob / backup-restore のテストがある（8-9）。
-- [x] 既存テスト green（909 passed / 1 skipped）、typecheck green。
+- [x] crash / 並行性 / artifact blob / backup-restore のテストがある（8-9、
+      3 プロセス並行書き込みを含む）。
+- [x] DB-only mode の read 経路（`run show` / `timeline` / `artifacts` /
+      `rerun chain` / `review auto`）が DB から動く（8-12 / 8-13）。
+- [x] review / workflow 生成 artifact（reviewer ログ / `workflow.json`）が
+      DB-canonical に取り込まれる（8-13）。
+- [x] 既存テスト green（typecheck green）。
 - [x] docs / specs 更新（`db.md` / `cli.md` / `workflow.md` / `README.md`）、
       `phase8-close` タグ。
 
@@ -97,6 +119,18 @@ refactor: ... — codex レビュー反映`）で反映済み。
   担う、(3) 復旧用上書きは既存の `--force-legacy-reconcile` が `--force-reconcile`
   の役割を果たす。新フラグは振る舞いの重複になるため追加しなかった。
   overwrite guard そのものは満たしている。
+- **truncation メタデータ。** 設計初版は oversized artifact に raw bytes の
+  sha256 と `original_bytes` / `truncation_reason` を記録するとしていた。実装
+  確定値は **STORED（truncated）body の sha256 で content-address** する方式に
+  した（`blob_sha256` が常に `readArtifactBlob` の返り値そのものを指す。8-14
+  で設計書 §A / schema コメントを実装へ整合）。truncation の signal は
+  `body_status='truncated'`、stored length は `artifacts.bytes` が保持する。
+  original のフルサイズは記録しない（truncated body は定義上それ以上復元
+  できないため）。
+- **nested artifact（`commands/` / `review-evaluations/`）。** サブ
+  ディレクトリ下の artifact body は従来どおり file-backed —
+  `ingestRunArtifacts` は run dir 直下のみを走査する（Phase 6/7 からの境界）。
+  構造化されたコマンド結果は `command_results` テーブルが保持する。
 
 ## スコープ外（Phase 9 以降 / 別トラック）
 
@@ -104,6 +138,10 @@ refactor: ... — codex レビュー反映`）で反映済み。
   — 人手キュレーション対象の file-authored content（設計判断 B）。
 - `domain_locks` の DB 化 — runtime concurrency の独立トピック。lease /
   expiry / heartbeat / fencing token の設計が重く Phase 9 送り（設計判断 D）。
+- **harness 全体の DB-wide 排他ロック。** `db restore` は live DB ファイルを
+  差し替えるため、他プロセスが DB を開いたままだと不整合が起きうる。Phase 8
+  では `--force` 要求 + docs での運用制約明記に留め、全コマンドが取る
+  DB-wide lock は上記 concurrency トラック（Phase 9）で扱う。
 - `dashboard serve` / mutation UI。
 - file export の **default OFF 化** — Phase 8 は「OFF にできる」まで。
 - legacy-file routing 分岐の**完全削除** — 未移行 row の保険として分岐を残す。
@@ -112,9 +150,17 @@ refactor: ... — codex レビュー反映`）で反映済み。
 
 ## 検証
 
-- `npm test`: 909 passed / 1 skipped。
+- `npm test`: 923 passed / 1 skipped。
 - `npm run typecheck`: green。
 - schema v1→v2→v3→v4 migration: idempotent（`migrations-v4.test.ts`）。
 - 既存 file-based テスト: 回帰なし（legacy-file path は不変）。
 - 8-9 fixture matrix: artifact blob 境界 / dedup / truncation / crash sanity /
   3 プロセス並行書き込み / DB-only recovery を網羅。
+- 8-11〜8-13 テスト: `consistency.test.ts`（blob 検査）/ `run-viewer-db.test.ts`
+  （DB fallback）/ `review-auto-db-only.test.ts`（DB-only review）。
+
+## 全フェーズ codex レビュー
+
+8-10 時点の横断 codex レビュー（gpt-5.5, xhigh）で P0 ゼロ・P1×4・P2×2。
+P1 は DB-only mode の read 経路の close 条件未達で、8-11〜8-14 を追加して
+解消した。各追加サブフェーズでも codex レビューを実施し P0 ゼロ。

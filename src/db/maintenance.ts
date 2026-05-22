@@ -381,7 +381,9 @@ export function formatRestore(r: RestoreResult): string {
     `db restore: replaced ${r.dbPath}\n` +
     `  from: ${r.fromPath}\n` +
     `  schema version: ${r.schemaVersion}\n` +
-    `  size: ${humanBytes(r.bytes)} (${r.bytes} bytes)\n`
+    `  size: ${humanBytes(r.bytes)} (${r.bytes} bytes)\n` +
+    `  note: run restore only when no other harness process is active —\n` +
+    `        a process holding the old DB open keeps writing the replaced file.\n`
   );
 }
 

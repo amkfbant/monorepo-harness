@@ -50,15 +50,23 @@ Phase 7 まで artifact body（codex ログ / diff / summary 等）は file cano
 
 ### A. artifact body は chunked SQLite BLOB（file fallback なし）
 
-artifact body は content-addressed（raw bytes の sha256）で `artifact_blobs` /
-`artifact_blob_chunks` に**分割保存**する。巨大 codex ログに対応するため chunk
-分割し、optional に `gzip` 圧縮する。
+artifact body は content-addressed で `artifact_blobs` / `artifact_blob_chunks`
+に**分割保存**する。巨大 codex ログに対応するため chunk 分割し、optional に
+`gzip` 圧縮する。
+
+**content address は STORED body の sha256。** すなわち truncation 後・
+compression 前の body の sha256 を `artifact_blobs.sha256` / `artifacts.blob_sha256`
+に使う（実装確定値）。これにより `blob_sha256` は常に `readArtifactBlob` が返す
+バイト列そのものを指し、address と読み取り結果が一致する。
 
 **oversized artifact を file に逃がさない。** hard max を超えた artifact は
 file canonical に残さず、**DB 内に truncated artifact として保存**する
-（`body_status='truncated'`、`original_bytes` / `truncation_reason` を記録）。
-file へ逃がすと DB-only mode でその artifact が読めず、「DB complete」が
-成立しないため。`storage='file'` は legacy / backfill 未完了 row のみ。
+（`body_status='truncated'`）。file へ逃がすと DB-only mode でその artifact が
+読めず、「DB complete」が成立しないため。truncated body の length は
+`artifacts.bytes` / `artifact_blobs.bytes` が保持し、truncation の signal は
+`body_status='truncated'` が担う（original のフルサイズは別途記録しない —
+truncated body は定義上それ以上復元できないため）。`storage='file'` は
+legacy / backfill 未完了 row のみ。
 
 ### B. knowledge entry markdown は file-authored のまま
 

@@ -405,6 +405,12 @@ export const MIGRATION_V3_STATEMENTS: readonly string[] = [
  */
 export const MIGRATION_V4_STATEMENTS: readonly string[] = [
   // --- artifact body storage ----------------------------------------
+  // `sha256` content-addresses the STORED body — the bytes the blob holds
+  // after truncation (over `HARD_MAX_BYTES`) and before compression. It is
+  // the sha of exactly what `readArtifactBlob` returns, so `blob_sha256`
+  // always matches the readable body. `bytes` is that stored length; an
+  // over-max body keeps no separate original-size record — the artifact's
+  // `body_status='truncated'` is the truncation signal.
   `CREATE TABLE artifact_blobs (
     sha256 TEXT PRIMARY KEY NOT NULL,
     bytes INTEGER NOT NULL CHECK (bytes >= 0),

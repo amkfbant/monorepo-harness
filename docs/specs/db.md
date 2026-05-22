@@ -300,7 +300,10 @@ harness db stats                    # table 別行数 / DB・WAL サイズ / blo
   検証前に失敗すれば live DB は無傷。live DB を自分自身に restore するのは
   拒否。置換後に旧 WAL/SHM sidecar を削除し stale journal の replay を防ぐ。
   live DB が既存なら `--force` を要求する（誤 `--from` での破壊を防ぐ。
-  `db backup` を先に取る運用）。
+  `db backup` を先に取る運用）。**restore は他の harness プロセスが動いて
+  いない状態で実行する** — DB ファイルを差し替えるため、旧 DB を開いたまま
+  のプロセスは置換後のファイルに書き続けてしまう（harness 全体の DB-wide
+  排他ロックは concurrency トラックとして Phase 9）。
 - backup / restore は artifact blob を含めて DB 全体を扱うので、files を
   すべて消しても backup から復旧できる。
 
