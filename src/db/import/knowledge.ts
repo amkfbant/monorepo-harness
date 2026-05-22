@@ -23,9 +23,10 @@ export function importKnowledge(
   runsDir: string,
   knowledgeDir: string,
   counters: ImportCounters,
+  forceLegacyReconcile = false,
 ): void {
   importCandidates(db, runsDir, counters);
-  importEntries(db, knowledgeDir, counters);
+  importEntries(db, knowledgeDir, counters, forceLegacyReconcile);
 }
 
 /** Read repoId / projectId from a run's meta.json (best effort). */
@@ -142,8 +143,14 @@ function importEntries(
   db: Database.Database,
   knowledgeDir: string,
   counters: ImportCounters,
+  forceLegacyReconcile = false,
 ): void {
   if (!existsSync(knowledgeDir)) return;
+  // a `db-first` knowledge entry is DB-canonical (Phase 7-9) — its manifest
+  // must not be overwritten from a stale `.md` on a normal import.
+  const existingEntry = db.prepare(
+    "SELECT source_mode AS mode FROM knowledge_entries WHERE entry_id = ?",
+  );
   const upsert = db.prepare(
     `INSERT INTO knowledge_entries (entry_id, project_id, repo_id, domain, kind,
        path, title, body, frontmatter_json, created_at, source_candidate_id)
@@ -163,6 +170,17 @@ function importEntries(
     for (const file of readdirSync(dir).filter((f) => f.endsWith(".md"))) {
       const path = join(dir, file);
       const relPath = join("docs", "knowledge", kind, file);
+      const existing = existingEntry.get(relPath) as
+        | { mode: string }
+        | undefined;
+      if (
+        existing !== undefined &&
+        existing.mode === "db-first" &&
+        !forceLegacyReconcile
+      ) {
+        clearImportError(db, path);
+        continue;
+      }
       try {
         const { frontmatter, body } = splitFrontmatter(
           readFileSync(path, "utf8"),

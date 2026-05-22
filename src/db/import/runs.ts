@@ -165,11 +165,22 @@ export function importRuns(
       continue;
     }
 
+    const reconcilingDbFirst =
+      forceLegacyReconcile && existing?.mode === "db-first";
     const tx = db.transaction(() => {
       for (const del of deleteChild) del.run(runId);
       upsertRun.run(
         runRow(runId, meta, fingerprint, statSync(metaPath).mtimeMs),
       );
+      // force-reconciling a db-first run: refresh `meta_json` from the file
+      // too, so a later `db export-files` re-emits the reconciled meta.json
+      // rather than the pre-reconcile snapshot exportRun would prefer.
+      if (reconcilingDbFirst) {
+        db.prepare("UPDATE runs SET meta_json = ? WHERE run_id = ?").run(
+          metaRaw,
+          runId,
+        );
+      }
       importCommandResults(db, runId, meta);
       importEvents(db, runDir, runId);
       importReviewDecision(db, runDir, runId, counters);

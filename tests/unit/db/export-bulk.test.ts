@@ -123,6 +123,21 @@ describe("check-consistency — export tracking", () => {
     ).toBe(true);
   });
 
+  it("does not flag a synced db-first run as drift", () => {
+    const { root, db } = setup();
+    seedRun(db, "run-x-001");
+    // export it — export_status flips to synced, exported_files recorded
+    exportFiles(db, { harnessRoot: root, scope: "run" });
+    db.close();
+    const ro = openDb(join(root, ".harness", "harness.sqlite"));
+    const report = checkConsistency({ db: ro, harnessRoot: root });
+    ro.close();
+    // a db-first run uses export tracking, not the file-fingerprint check
+    expect(
+      report.items.some((i) => i.id === "run-x-001" && i.status !== "ok"),
+    ).toBe(false);
+  });
+
   it("flags an exported file whose content drifted", () => {
     const { root, db } = setup();
     seedBacklog(db, "item-20260522-001");

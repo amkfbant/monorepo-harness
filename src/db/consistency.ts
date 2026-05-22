@@ -72,11 +72,17 @@ function checkRuns(
   items: ConsistencyItem[],
 ): void {
   const dbRuns = db
-    .prepare("SELECT run_id, source_meta_sha256 AS h FROM runs")
-    .all() as { run_id: string; h: string }[];
+    .prepare(
+      "SELECT run_id, source_meta_sha256 AS h, source_mode AS mode FROM runs",
+    )
+    .all() as { run_id: string; h: string; mode: string }[];
   const dbIds = new Set(dbRuns.map((r) => r.run_id));
 
   for (const r of dbRuns) {
+    // a db-first run's `runs` row is canonical and its `source_meta_sha256`
+    // is not maintained — the file-fingerprint drift check does not apply.
+    // Its export freshness is covered by `checkExports` instead.
+    if (r.mode === "db-first") continue;
     const runDir = join(runsDir, r.run_id);
     const metaPath = join(runDir, "meta.json");
     if (!existsSync(metaPath)) {

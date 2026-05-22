@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,6 +17,7 @@ import {
 import { promoteKnowledge } from "../../../src/core/knowledge-promoter.js";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
+import { runFullImport } from "../../../src/db/import-files.js";
 
 /** Phase 7-9 — knowledge DB-first promote / reject orchestration. */
 
@@ -177,6 +185,28 @@ describe("knowledge DB-first", () => {
     expect(c0?.status).toBe("promoted");
     expect(c0?.source_mode).toBe("db-first");
     expect(c0?.reviewer).toBe("legacy-kn");
+  });
+
+  it("db import does not overwrite a db-first knowledge entry", async () => {
+    const ctx = setup();
+    await promoteKnowledgeDbFirst(ctx, { runId: RUN_ID, reviewer: "kn" });
+    const kindDir = join(ctx.knowledgeDir, "policy_improvement");
+    const mdFile = join(kindDir, readdirSync(kindDir)[0] as string);
+    // hand-edit the exported md, then run a normal full import
+    writeFileSync(mdFile, "---\nkind: x\n---\ntampered\n");
+    const root = join(ctx.runsDir, "..");
+    const db = openDb(ctx.dbPath);
+    runMigrations(db);
+    runFullImport(db, { harnessRoot: root });
+    const entry = db
+      .prepare(
+        "SELECT body, source_mode FROM knowledge_entries WHERE source_mode = 'db-first' LIMIT 1",
+      )
+      .get() as { body: string; source_mode: string } | undefined;
+    db.close();
+    // the db-first manifest is canonical — the stale md did not roll it back
+    expect(entry?.source_mode).toBe("db-first");
+    expect(entry?.body).not.toContain("tampered");
   });
 
   it("reject rejects an out-of-range index", async () => {

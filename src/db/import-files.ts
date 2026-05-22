@@ -126,6 +126,7 @@ export function runFullImport(
     paths.runsDir,
     join(opts.harnessRoot, "docs", "knowledge"),
     counters,
+    force,
   );
 
   pruneOrphanImportErrors(db);
