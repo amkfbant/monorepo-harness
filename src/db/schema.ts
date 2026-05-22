@@ -1,10 +1,11 @@
 /**
- * harness DB schema (Phase 6).
+ * harness DB schema.
  *
- * The DB (`.harness/harness.sqlite`) is a read model: in Phase 6 it is
- * built from `runs/` / `projects/` / `policies/` / `backlog/` / knowledge
- * files by `db import --from-files`. Files stay the write-side source of
- * truth; the DB can always be deleted and rebuilt.
+ * The DB (`.harness/harness.sqlite`) evolved across three phases:
+ *  - Phase 6 (v1): a read model built from files by `db import --from-files`.
+ *  - Phase 7 (v2/v3): the DB-first write path — runtime state is DB-canonical.
+ *  - Phase 8 (v4): runtime DB complete — artifact bodies move into the DB
+ *    (`artifact_blobs`), file export becomes optional.
  *
  * `schema.ts` holds the DDL only. The migration runner (`migrations.ts`)
  * applies it; repositories (`repositories/`) own the queries.

@@ -45,15 +45,19 @@ function dbError(e: unknown): never {
 }
 
 /**
- * Register the `harness db ...` command group (Phase 6).
+ * Register the `harness db ...` command group.
  *
- * 6-2 adds init / migrate / status. Later sub-phases add `import` (6-3)
- * and `check-consistency` (6-4) here.
+ * Phase 6 added init / migrate / status / import / check-consistency
+ * (read model). Phase 7 added export-files (DB-first write path). Phase 8
+ * added migrate-artifacts / migrate-legacy and the operational commands
+ * backup / restore / checkpoint / vacuum / stats (runtime DB complete).
  */
 export function registerDbCommands(program: Command): void {
   const dbCmd = program
     .command("db")
-    .description("harness DB (read model built from files — Phase 6)");
+    .description(
+      "harness DB — runtime-canonical store + read model (.harness/harness.sqlite)",
+    );
 
   dbCmd
     .command("init")

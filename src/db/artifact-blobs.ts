@@ -9,12 +9,16 @@ import { sha256 } from "./import/common.js";
  * A run's artifact bodies (codex logs, diffs, summaries) were file-backed
  * through Phase 7. Phase 8 stores them in the DB so a run can be operated
  * without files. Bodies are **content-addressed** by the sha256 of their
- * raw bytes (so identical bodies across runs dedup), chunked into
- * `artifact_blob_chunks` (large codex logs), and optionally gzip-compressed.
+ * STORED form — the bytes after truncation (over `HARD_MAX_BYTES`) and
+ * before compression — so the address always matches exactly what
+ * `readArtifactBlob` returns and identical bodies across runs dedup.
+ * Bodies are chunked into `artifact_blob_chunks` (large codex logs) and
+ * optionally gzip-compressed.
  *
  * A body larger than `HARD_MAX_BYTES` is **truncated** and stored
  * truncated — it is never left file-canonical, since that would break
  * DB-only operation. The `artifacts` row records `body_status='truncated'`.
+ * The original (pre-truncation) size is not separately recorded.
  */
 
 /** Chunk size for `artifact_blob_chunks` rows. */
