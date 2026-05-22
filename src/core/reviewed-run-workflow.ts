@@ -9,6 +9,7 @@ import {
   type RunDomainCodingResult,
 } from "./workflow-runner.js";
 import { runReviewerAgent, ReviewerAgentGateError } from "./reviewer-agent.js";
+import { syncRunArtifactsToDb } from "./run-materialize.js";
 import { processReviewDecision } from "./review-processor.js";
 import { prepareRerunFromReview } from "./rerun.js";
 import { harnessPaths } from "../config/paths.js";
@@ -196,6 +197,7 @@ export async function runReviewedRunWorkflow(
       await runReviewerAgent({
         runsDir: opts.runsDir,
         runId: runResult.runId,
+        dbPath: harnessPaths(opts.harnessRoot).dbPath,
         codexRunner: opts.reviewerRunner,
         ...(opts.reviewerName !== undefined
           ? { reviewerName: opts.reviewerName }
@@ -258,6 +260,14 @@ export async function runReviewedRunWorkflow(
     maxAttempts: opts.maxAttempts,
   };
   await writeWorkflowArtifacts(opts.runsDir, opts.domain, result);
+  // workflow.json / workflow-summary.md live in the root run dir — sync
+  // them into the DB so the workflow artifacts are DB-canonical too
+  // (Phase 8-13).
+  syncRunArtifactsToDb({
+    dbPath: harnessPaths(opts.harnessRoot).dbPath,
+    runsDir: opts.runsDir,
+    runId: rootRunId,
+  });
   return result;
 }
 

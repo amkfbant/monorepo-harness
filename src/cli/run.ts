@@ -92,6 +92,7 @@ import {
   runReviewerAgent,
   ReviewerAgentGateError,
 } from "../core/reviewer-agent.js";
+import { syncRunArtifactsToDb } from "../core/run-materialize.js";
 import { runReviewedRunWorkflow } from "../core/reviewed-run-workflow.js";
 import {
   evaluateReviewer,
@@ -861,17 +862,33 @@ reviewCmd
       codexBin,
       sandbox: "read-only",
     });
+    const runId = String(raw.runId);
+    const dryRun = Boolean(raw.dryRun);
+    // re-ingest the run's artifacts so reviewer-agent logs / the decision
+    // become DB-canonical too (Phase 8-13). Skipped for --dry-run, which
+    // writes nothing.
+    const syncArtifacts = (): void => {
+      if (!dryRun) {
+        syncRunArtifactsToDb({
+          dbPath: paths.dbPath,
+          runsDir: paths.runsDir,
+          runId,
+        });
+      }
+    };
     try {
       const result = await runReviewerAgent({
         runsDir: paths.runsDir,
-        runId: String(raw.runId),
+        runId,
+        dbPath: paths.dbPath,
         ...(raw.reviewerName !== undefined
           ? { reviewerName: String(raw.reviewerName) }
           : {}),
         allowOverwrite: Boolean(raw.allowOverwrite),
-        dryRun: Boolean(raw.dryRun),
+        dryRun,
         codexRunner: runner,
       });
+      syncArtifacts();
       process.stdout.write(
         `run=${result.runId} decision=${result.decision} reviewer=${result.reviewer} reviewedAt=${result.reviewedAt}\n`,
       );
@@ -886,6 +903,8 @@ reviewCmd
       }
     } catch (e) {
       if (e instanceof ReviewerAgentGateError) {
+        // the gate path may have written review-auto-error.json — capture it
+        syncArtifacts();
         process.stderr.write(`harness error: ${(e as Error).message}\n`);
         process.exit(1);
       }

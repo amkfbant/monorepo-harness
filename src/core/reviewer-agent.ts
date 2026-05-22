@@ -7,6 +7,7 @@ import {
   loadReviewDecision,
   writeReviewDecision,
 } from "./review-decision-loader.js";
+import { ensureRunMaterialized } from "./run-materialize.js";
 import {
   ReviewDecisionFileSchema,
   type ReviewDecisionFile,
@@ -104,6 +105,12 @@ async function verifyArtifactsUnchanged(
 export interface ReviewerAgentInputs {
   runsDir: string;
   runId: string;
+  /**
+   * harness DB path. When set, a db-first run with no exported files is
+   * materialized from the DB before the reviewer runs (Phase 8-13) so
+   * `review auto` works in DB-only mode.
+   */
+  dbPath?: string;
   /**
    * Reviewer identity stamped into review-decision.yaml. Defaults to
    * "codex-reviewer". Operators can pass e.g. "codex-reviewer-gpt-5.5"
@@ -270,6 +277,16 @@ export async function runReviewerAgent(
     );
   }
   const runDir = join(inputs.runsDir, inputs.runId);
+  // the reviewer spawns codex with a read-only sandbox over the run dir,
+  // so the run's files must exist. With file export OFF a db-first run
+  // has none — materialize them from the DB first (Phase 8-13).
+  if (inputs.dbPath !== undefined) {
+    ensureRunMaterialized({
+      dbPath: inputs.dbPath,
+      runsDir: inputs.runsDir,
+      runId: inputs.runId,
+    });
+  }
   const metaPath = join(runDir, "meta.json");
   const decisionPath = join(runDir, "review-decision.yaml");
 
