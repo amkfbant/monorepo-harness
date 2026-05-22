@@ -23,17 +23,9 @@ import {
 import { cleanupRun, CleanupGateError } from "../core/cleanup.js";
 import {
   listReviews,
-  scanAllRuns,
-  applyListFilters,
   formatTable,
   formatJson,
 } from "../core/review-lister.js";
-import {
-  rebuildIndex,
-  loadFromIndex,
-  indexStatus,
-  showRunFromIndex,
-} from "../index/run-index.js";
 import { createPullRequest, PrGateError } from "../core/pr-creator.js";
 import { createGhPrPublisher } from "../core/gh-pr-publisher.js";
 import {
@@ -738,11 +730,6 @@ reviewCmd
   .option("--domain <domain>", "restrict to a single domain")
   .option("--limit <n>", "cap the number of rows")
   .option("--json", "emit JSON ({ validRuns, invalidRuns }) instead of a table", false)
-  .option(
-    "--use-index",
-    "read from the SQLite index instead of scanning runs/ (Phase 3-5)",
-    false,
-  )
   .action(async (raw: Record<string, unknown>) => {
     const paths = harnessPaths(getHarnessRoot());
     const opts: Parameters<typeof listReviews>[0] = {
@@ -783,20 +770,7 @@ reviewCmd
       }
       opts.limit = n;
     }
-    let result;
-    if (raw.useIndex) {
-      // index path: load every run from the SQLite index, then apply the
-      // SAME filter/sort/limit logic as the file scan.
-      try {
-        const scan = loadFromIndex(paths.indexDbPath);
-        result = applyListFilters(scan.valid, scan.invalid, opts);
-      } catch (e) {
-        process.stderr.write(`harness error: ${(e as Error).message}\n`);
-        process.exit(1);
-      }
-    } else {
-      result = await listReviews(opts);
-    }
+    const result = await listReviews(opts);
     if (raw.json) {
       process.stdout.write(formatJson(result));
       return;
@@ -979,80 +953,25 @@ reviewCmd
     }
   });
 
-const indexCmd = program
+// Phase 8-7: `index.sqlite` and `harness index` were removed — the
+// harness.sqlite read model (`harness db import` / the dashboard)
+// superseded the Phase 3-5 listing cache. The command is kept one phase
+// as an explicit error stub so `harness index` does not silently 404;
+// any leftover scripts get a pointer to the replacement instead.
+program
   .command("index")
-  .description(
-    "SQLite run index — a derived cache; runs/ stays the source of truth",
-  );
-// Phase 6: `index.sqlite` is superseded by the `harness.sqlite` read model
-// (`harness db import` / the dashboard). `index` still works for legacy
-// `review list --use-index`, but new tooling should use `harness db`.
-indexCmd.hook("preAction", () => {
-  process.stderr.write(
-    "warning: 'harness index' is deprecated (Phase 6); the harness.sqlite " +
-      "read model via 'harness db import' supersedes index.sqlite\n",
-  );
-});
-indexCmd
-  .command("rebuild")
-  .description("rebuild the SQLite index from a full runs/ scan")
-  .action(async () => {
-    const paths = harnessPaths(getHarnessRoot());
-    const scan = await scanAllRuns(paths.runsDir);
-    const stats = rebuildIndex(paths.indexDbPath, scan);
-    process.stdout.write(
-      `index rebuilt: runs=${stats.runCount} invalid=${stats.invalidCount} db=${stats.dbPath}\n`,
-    );
-  });
-indexCmd
-  .command("status")
-  .description("show SQLite index status")
+  .description("removed (Phase 8) — superseded by the harness.sqlite read model")
+  .argument("[args...]", "ignored — kept only so the stub catches subcommands")
+  .allowUnknownOption()
   .action(() => {
-    const paths = harnessPaths(getHarnessRoot());
-    const st = indexStatus(paths.indexDbPath);
-    if (!st.exists) {
-      process.stdout.write(
-        `index: not built (${st.dbPath}); run 'harness index rebuild'\n`,
-      );
-      return;
-    }
-    if (st.corrupt) {
-      process.stderr.write(
-        `index: corrupt (${st.dbPath}): ${st.error}; run 'harness index rebuild'\n`,
-      );
-      process.exit(1);
-    }
-    process.stdout.write(
-      `index: runs=${st.runCount} invalid=${st.invalidCount} ` +
-        `rebuiltAt=${st.rebuiltAt ?? "?"} size=${st.sizeBytes ?? 0}B db=${st.dbPath}\n`,
+    process.stderr.write(
+      "harness error: 'harness index' was removed (Phase 8); index.sqlite is " +
+        "superseded by the harness.sqlite read model:\n" +
+        "  harness db status            — read-model / DB status\n" +
+        "  harness db check-consistency — verify the DB against exported files\n" +
+        "  harness dashboard export     — derived run views\n",
     );
-  });
-indexCmd
-  .command("show")
-  .description("show one run's indexed row")
-  .requiredOption("--run-id <id>", "target run identifier")
-  .action((raw: Record<string, unknown>) => {
-    const paths = harnessPaths(getHarnessRoot());
-    try {
-      const found = showRunFromIndex(paths.indexDbPath, String(raw.runId));
-      if (!found) {
-        process.stderr.write(
-          `harness error: run ${String(raw.runId)} not in index ` +
-            `(rebuild if it is new)\n`,
-        );
-        process.exit(1);
-      }
-      if (found.kind === "invalid") {
-        process.stdout.write(
-          `${JSON.stringify({ runId: found.runId, status: "invalid", error: found.error }, null, 2)}\n`,
-        );
-      } else {
-        process.stdout.write(`${JSON.stringify(found.entry, null, 2)}\n`);
-      }
-    } catch (e) {
-      process.stderr.write(`harness error: ${(e as Error).message}\n`);
-      process.exit(1);
-    }
+    process.exit(1);
   });
 
 const prCmd = program
@@ -1127,7 +1046,6 @@ program
     const inbox = await buildInbox({
       runsDir: paths.runsDir,
       workspacesDir: paths.workspacesDir,
-      indexDbPath: paths.indexDbPath,
       knowledgeDir: join(harnessRoot, "docs", "knowledge"),
       ...(raw.today ? { today: new Date() } : {}),
     });
@@ -1478,7 +1396,6 @@ const sessionCmd = program
 function sessionOpts(): {
   runsDir: string;
   workspacesDir: string;
-  indexDbPath: string;
   backlogDir: string;
   knowledgeDir: string;
 } {
@@ -1487,7 +1404,6 @@ function sessionOpts(): {
   return {
     runsDir: paths.runsDir,
     workspacesDir: paths.workspacesDir,
-    indexDbPath: paths.indexDbPath,
     backlogDir: paths.backlogDir,
     knowledgeDir: join(harnessRoot, "docs", "knowledge"),
   };
@@ -1555,7 +1471,6 @@ metricsCmd
     const m = await buildMetrics({
       runsDir: paths.runsDir,
       workspacesDir: paths.workspacesDir,
-      indexDbPath: paths.indexDbPath,
       ...(since ? { since } : {}),
     });
     process.stdout.write(formatMetricsSummary(m));
@@ -1571,7 +1486,6 @@ metricsCmd
     const m = await buildMetrics({
       runsDir: paths.runsDir,
       workspacesDir: paths.workspacesDir,
-      indexDbPath: paths.indexDbPath,
       domain,
       ...(since ? { since } : {}),
     });
@@ -1587,7 +1501,6 @@ metricsCmd
     const m = await buildMetrics({
       runsDir: paths.runsDir,
       workspacesDir: paths.workspacesDir,
-      indexDbPath: paths.indexDbPath,
       ...(since ? { since } : {}),
     });
     process.stdout.write(formatFailures(m));

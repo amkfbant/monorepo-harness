@@ -8,8 +8,6 @@ export interface HarnessPaths {
   policiesDir: string;
   globalPolicyPath: string;
   repoPolicyPath: (repoId: string) => string;
-  /** SQLite run index (Phase 3-5). source of truth stays runs/ files. */
-  indexDbPath: string;
   /** harness DB (Phase 6): read model built from files by `db import`. */
   dbPath: string;
   /** personal backlog dir (Phase 4-3): open/ doing/ done/ deferred/. */
@@ -45,7 +43,6 @@ export function harnessPaths(root: string): HarnessPaths {
     workspacesDir: join(root, "workspaces"),
     locksDir: join(root, "locks"),
     policiesDir,
-    indexDbPath: join(root, ".harness", "index.sqlite"),
     dbPath: join(root, ".harness", "harness.sqlite"),
     backlogDir: join(root, "backlog"),
     projectsDir,

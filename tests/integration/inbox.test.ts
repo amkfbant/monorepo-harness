@@ -94,7 +94,6 @@ describe("buildInbox", () => {
     const inbox = await buildInbox({
       runsDir,
       workspacesDir,
-      indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
       knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
     });
     expect(inbox.needsReview).toHaveLength(2);
@@ -104,7 +103,6 @@ describe("buildInbox", () => {
     expect(inbox.cleanupCandidates).toHaveLength(1);
     expect(inbox.knowledge).toHaveLength(1);
     expect(inbox.knowledge[0]?.detail).toMatch(/2 unactioned candidates/);
-    expect(inbox.source).toBe("file-scan");
   });
 
   it("E4-2-4: approved run without a worktree is NOT a cleanup candidate", async () => {
@@ -113,7 +111,6 @@ describe("buildInbox", () => {
     const inbox = await buildInbox({
       runsDir,
       workspacesDir,
-      indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
       knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
     });
     expect(inbox.cleanupCandidates).toHaveLength(0);
@@ -133,7 +130,6 @@ describe("buildInbox", () => {
     const inbox = await buildInbox({
       runsDir,
       workspacesDir,
-      indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
       knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
       today,
     });
@@ -151,7 +147,6 @@ describe("buildInbox", () => {
     const inbox = await buildInbox({
       runsDir,
       workspacesDir,
-      indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
       knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
       today: new Date("2020-01-01T12:00:00Z"),
     });
@@ -165,7 +160,6 @@ describe("buildInbox", () => {
     const inbox = await buildInbox({
       runsDir,
       workspacesDir,
-      indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
       knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
     });
     const parsed = JSON.parse(formatInboxJson(inbox, ["failed"]));
@@ -179,7 +173,6 @@ describe("buildInbox", () => {
     const inbox = await buildInbox({
       runsDir,
       workspacesDir,
-      indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
       knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
     });
     const parsed = JSON.parse(formatInboxJson(inbox));
@@ -192,7 +185,6 @@ describe("buildInbox", () => {
     const inbox = await buildInbox({
       runsDir,
       workspacesDir,
-      indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
       knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
     });
     const text = formatInbox(inbox);
@@ -207,7 +199,6 @@ describe("buildInbox", () => {
     const inbox = await buildInbox({
       runsDir,
       workspacesDir,
-      indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
       knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
     });
     const text = formatInbox(inbox, ["failed"]);
@@ -231,7 +222,6 @@ describe("buildInbox", () => {
     const inbox = await buildInbox({
       runsDir,
       workspacesDir,
-      indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
       knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
     });
     expect(inbox.knowledge).toHaveLength(1);
@@ -253,7 +243,6 @@ describe("buildInbox", () => {
     const inbox = await buildInbox({
       runsDir,
       workspacesDir,
-      indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
       knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
     });
     expect(inbox.knowledge).toHaveLength(0);
@@ -264,7 +253,6 @@ describe("buildInbox", () => {
     const inbox = await buildInbox({
       runsDir,
       workspacesDir,
-      indexDbPath: join(runsDir, "..", ".harness", "index.sqlite"),
       knowledgeDir: join(runsDir, "..", "docs", "knowledge"),
     });
     expect(formatInbox(inbox)).toMatch(/Inbox is empty/);

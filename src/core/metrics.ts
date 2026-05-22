@@ -1,8 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { loadAllRuns } from "./run-source.js";
-import type { ReviewListEntry } from "./review-lister.js";
+import { scanAllRuns, type ReviewListEntry } from "./review-lister.js";
 
 /**
  * The rerun-chain root of a run. Prefers the explicit `rootRunId`; for a
@@ -29,7 +28,6 @@ function chainRoot(
 export interface MetricsSummary {
   since: string | null;
   domain: string | null;
-  source: "index" | "file-scan";
   runs: {
     total: number;
     byStatus: Record<string, number>;
@@ -68,7 +66,6 @@ export interface MetricsSummary {
 export interface MetricsOpts {
   runsDir: string;
   workspacesDir: string;
-  indexDbPath: string;
   since?: Date;
   domain?: string;
 }
@@ -77,10 +74,7 @@ export interface MetricsOpts {
 export async function buildMetrics(
   opts: MetricsOpts,
 ): Promise<MetricsSummary> {
-  const { result, source } = await loadAllRuns(
-    opts.runsDir,
-    opts.indexDbPath,
-  );
+  const result = await scanAllRuns(opts.runsDir);
   const allRuns = result.valid;
   const sinceMs = opts.since ? opts.since.getTime() : null;
   const runs = allRuns.filter((r) => {
@@ -161,7 +155,6 @@ export async function buildMetrics(
   return {
     since: opts.since ? opts.since.toISOString() : null,
     domain: opts.domain ?? null,
-    source,
     runs: { total: runs.length, byStatus },
     review: {
       approved,
@@ -209,7 +202,7 @@ async function readWorkflowFinalStatus(
 export function formatMetricsSummary(m: MetricsSummary): string {
   const window = m.since ? `since ${m.since}` : "all time";
   const lines: string[] = [
-    `Metrics: ${window}${m.domain ? ` (domain ${m.domain})` : ""}  [${m.source}]`,
+    `Metrics: ${window}${m.domain ? ` (domain ${m.domain})` : ""}`,
     "",
     `Runs: ${m.runs.total}`,
   ];
@@ -252,7 +245,7 @@ export function formatFailures(m: MetricsSummary): string {
     .filter((s) => s.startsWith("failed-"))
     .sort();
   const lines: string[] = [
-    `Failures: ${m.since ? `since ${m.since}` : "all time"}${m.domain ? ` (domain ${m.domain})` : ""}  [${m.source}]`,
+    `Failures: ${m.since ? `since ${m.since}` : "all time"}${m.domain ? ` (domain ${m.domain})` : ""}`,
     "",
   ];
   if (failed.length === 0) {

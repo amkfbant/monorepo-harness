@@ -11,8 +11,8 @@ export class RunViewError extends Error {
   }
 }
 
-// Same shape as review-lister's RUN_DIR_RE / run-index's run id check —
-// a `run-` prefixed segment with no path separators. No length cap, so a
+// Same shape as review-lister's RUN_DIR_RE — a `run-` prefixed segment
+// with no path separators. No length cap, so a
 // legitimately long runId (long domain slug) is never rejected here.
 const RUN_ID_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]+$/;
 

@@ -13,7 +13,6 @@ let seq = 0;
 interface Root {
   runsDir: string;
   workspacesDir: string;
-  indexDbPath: string;
 }
 
 function harnessRoot(): Root {
@@ -21,7 +20,6 @@ function harnessRoot(): Root {
   const r = {
     runsDir: join(root, "runs"),
     workspacesDir: join(root, "workspaces"),
-    indexDbPath: join(root, ".harness", "index.sqlite"),
   };
   mkdirSync(r.runsDir, { recursive: true });
   mkdirSync(r.workspacesDir, { recursive: true });
@@ -89,7 +87,6 @@ describe("buildMetrics", () => {
     expect(m.review.changesRequested).toBe(1);
     expect(m.review.approvedRate).toBeCloseTo(2 / 3);
     expect(m.review.reviewers.knkn).toBe(3);
-    expect(m.source).toBe("file-scan");
   });
 
   it("computes rerun convergence over chains", async () => {
@@ -216,7 +213,6 @@ describe("buildMetrics", () => {
     expect(text).toMatch(/failed-codex: 2/);
     expect(text).toMatch(/failed-policy-violation: 1/);
     expect(text).toMatch(/Total failed: 3/);
-    expect(text).toMatch(/\[file-scan\]/); // source shown like the summary
   });
 
   it("formatMetricsSummary renders the summary", async () => {

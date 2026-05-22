@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { ReviewListEntry } from "./review-lister.js";
-import { loadAllRuns } from "./run-source.js";
+import { scanAllRuns, type ReviewListEntry } from "./review-lister.js";
 import {
   scanPromotedKeys,
   countUnactionedCandidates,
@@ -22,7 +21,6 @@ export interface Inbox {
   failed: InboxItem[];
   cleanupCandidates: InboxItem[];
   knowledge: InboxItem[];
-  source: "index" | "file-scan";
 }
 
 export type InboxSection =
@@ -35,7 +33,6 @@ export type InboxSection =
 export interface BuildInboxOpts {
   runsDir: string;
   workspacesDir: string;
-  indexDbPath: string;
   /** docs/knowledge — needed to tell actioned candidates from open ones */
   knowledgeDir: string;
   /** when set, only runs started on this calendar day are included */
@@ -48,10 +45,7 @@ export interface BuildInboxOpts {
  * that produced knowledge candidates.
  */
 export async function buildInbox(opts: BuildInboxOpts): Promise<Inbox> {
-  const { result, source } = await loadAllRuns(
-    opts.runsDir,
-    opts.indexDbPath,
-  );
+  const result = await scanAllRuns(opts.runsDir);
   let runs = result.valid;
   if (opts.today) {
     const day = opts.today.toISOString().slice(0, 10);
@@ -71,7 +65,6 @@ export async function buildInbox(opts: BuildInboxOpts): Promise<Inbox> {
     failed: [],
     cleanupCandidates: [],
     knowledge: [],
-    source,
   };
   // promoted keys are scanned once so per-run knowledge counting only
   // surfaces candidates that still need a decision.
@@ -201,7 +194,6 @@ export function formatInboxJson(
       ? inbox.cleanupCandidates
       : [],
     knowledge: selected.has("knowledge") ? inbox.knowledge : [],
-    source: inbox.source,
   };
   return `${JSON.stringify(out, null, 2)}\n`;
 }

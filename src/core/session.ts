@@ -27,7 +27,6 @@ export interface SessionPlan {
 export interface SessionOpts {
   runsDir: string;
   workspacesDir: string;
-  indexDbPath: string;
   backlogDir: string;
   knowledgeDir: string;
 }
@@ -49,7 +48,6 @@ export async function buildSessionPlan(
   const inbox = await buildInbox({
     runsDir: opts.runsDir,
     workspacesDir: opts.workspacesDir,
-    indexDbPath: opts.indexDbPath,
     knowledgeDir: opts.knowledgeDir,
   });
   const backlogOpen = (await listItems(opts.backlogDir, "open")).sort(

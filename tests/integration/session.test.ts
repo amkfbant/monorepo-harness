@@ -14,7 +14,6 @@ let seq = 0;
 interface Root {
   runsDir: string;
   workspacesDir: string;
-  indexDbPath: string;
   backlogDir: string;
   knowledgeDir: string;
 }
@@ -24,7 +23,6 @@ function harnessRoot(): Root {
   const r = {
     runsDir: join(root, "runs"),
     workspacesDir: join(root, "workspaces"),
-    indexDbPath: join(root, ".harness", "index.sqlite"),
     backlogDir: join(root, "backlog"),
     knowledgeDir: join(root, "docs", "knowledge"),
   };
