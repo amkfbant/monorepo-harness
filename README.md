@@ -4,7 +4,7 @@
 
 Codex はワークツリー内のファイルを直接編集し、ハーネスは事後に `git diff` を取って **policy の `write` / `deny_write` スコープ** で変更 path を検証する（`read` は codex への prompt/context 用で、読み取りの enforcement はしない）。スコープ外への書き込み・secret 漏洩・symlink 追従などを検出し、レビュー用の artifact 一式を `runs/<runId>/` に残す。
 
-> **Status:** Phase 6 close。Phase 2（ファイルベースの `codex 実行 → 検証 → レビュー → 再実行 → 知見昇格 → cleanup`）+ Phase 3（review-driven retry / reviewer 品質評価 / knowledge context 注入 / SQLite index / GitHub PR 連携）+ Phase 4（個人運用 CLI: run show / inbox / backlog / maintenance / knowledge digest / metrics / session planning / 静的 dashboard）+ Phase 5（Project Abstraction: project profile / domain registry / templates / policy compiler / `project inspect|init|check` / `run --project`）+ Phase 6（DB read model `harness.sqlite` / file importer / consistency checker / DB-backed project-aware dashboard）。`stronger sandbox`（Phase 3-7）は Deferred。
+> **Status:** Phase 7 close。Phase 2（ファイルベースの `codex 実行 → 検証 → レビュー → 再実行 → 知見昇格 → cleanup`）+ Phase 3（review-driven retry / reviewer 品質評価 / knowledge context 注入 / SQLite index / GitHub PR 連携）+ Phase 4（個人運用 CLI: run show / inbox / backlog / maintenance / knowledge digest / metrics / session planning / 静的 dashboard）+ Phase 5（Project Abstraction: project profile / domain registry / templates / policy compiler / `project inspect|init|check` / `run --project`）+ Phase 6（DB read model `harness.sqlite` / file importer / consistency checker / DB-backed project-aware dashboard）+ Phase 7（DB-first write path: runtime write コマンドが DB トランザクションを canonical とし files を compatibility export する。`source_mode` invariant / state transition guard / `db export-files` / `db check-consistency` の export 追跡）。`stronger sandbox`（Phase 3-7）は Deferred。
 
 ## 必要環境
 

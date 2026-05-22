@@ -8,11 +8,11 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 
 実装: `src/db/`。
 
-> **ステータス: Phase 6 close 済み（現状仕様）。** DB read model は `src/db/` に
-> 実装済み。schema の確定値は `src/db/schema.ts`（`MIGRATION_V1_STATEMENTS`）。
-> write-side の DB 化は Phase 7。**Phase 7（DB-first write path）は実装中** —
-> 下記「Phase 7 — DB-first write path」節は target spec で、確定するのは
-> `phase7-close` 時点。設計書は
+> **ステータス: Phase 7 close 済み（現状仕様）。** DB read model（Phase 6）と
+> DB-first write path（Phase 7）はいずれも `src/db/` に実装済み。schema の確定値は
+> `src/db/schema.ts`（`MIGRATION_V1_STATEMENTS` / `MIGRATION_V2_STATEMENTS` /
+> `MIGRATION_V3_STATEMENTS`）。下記「Phase 7 — DB-first write path」節は
+> 現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)。
 
 ## source-of-truth transition
@@ -126,12 +126,12 @@ harness db import --from-files # files から DB を構築
 harness db check-consistency  # DB ↔ files の drift 検出
 ```
 
-## Phase 7 — DB-first write path（実装中・target spec）
+## Phase 7 — DB-first write path（close 済み・現状仕様）
 
-Phase 7 は **runtime write path を DB-first 化**する。`runDomainCoding` /
+Phase 7 は **runtime write path を DB-first 化**した。`runDomainCoding` /
 `review` / `rerun` / `cleanup` / `backlog` / `knowledge` / `pr create` が DB
 トランザクションを canonical な書き込みとし、files をその compatibility export
-にする。設計の確定は `phase7-close` 時点。
+にする。
 
 ### source-of-truth の反転
 
@@ -199,12 +199,26 @@ source-of-truth が反転するため、stale な files で DB-first row を巻�
 ```txt
 db import --from-files
   - legacy-file row: 従来どおり upsert
-  - db-first row: exported db_revision が DB と一致するなら no-op。
-    file が古ければ overwrite せず import_errors / レポートに conflict 記録
+  - db-first run / backlog item: skip（DB が canonical。files は export 出力で
+    あって import 元ではない）
+  - db-first knowledge candidate: content（kind/title/body）のみ upsert し、
+    decision state（status/decided_at/reviewer/reason）は保持
+  - --reset でも runtime テーブルは source_mode != 'db-first' の行のみ削除
+    （read-only scoped command が db-first 行を legacy-file へ demigrate しない）
 
 db import --from-files --force-legacy-reconcile
-  - 明示指定時のみ db-first row の上書きを許す（CI / 復旧用途）
+  - 明示指定時のみ db-first run / backlog row の files 上書きを許す（災害復旧用途）
 ```
+
+### db export-files（Phase 7-11）
+
+`harness db export-files` は全 `db-first` row の compatibility files を bulk
+再 export する。`--scope run|backlog|knowledge` / `--id <id>` で範囲指定可。
+crash・export 失敗・`--reset` import のあとに files を DB から再構築する。
+`legacy-file` row は files が source of truth なので対象外。
+
+`db check-consistency` は export 追跡も検査する: `export_status` が
+`dirty` / `failed` の runtime 行、`exported_files.sha256` と実ファイルの drift。
 
 ### schema v2
 

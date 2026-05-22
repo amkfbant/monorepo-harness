@@ -238,9 +238,9 @@ Phase 8: DB complete,           file scan = migration-only
 Phase 6 のスコープは read-side のみ。`runDomainCoding` 等が DB へ直接書く write
 path 化は Phase 7。
 
-## Phase 7: DB-first write path（実装中・target spec）
+## Phase 7: DB-first write path（close 済み・現状仕様）
 
-Phase 7 で runtime write path を DB-first 化する（[`db.md`](./db.md) の
+Phase 7 で runtime write path を DB-first 化した（[`db.md`](./db.md) の
 「Phase 7」節）。**workflow の状態遷移と観測挙動は変えない** — 変わるのは state
 の保存先（file → DB）だけ。確定は `phase7-close` 時点。
 

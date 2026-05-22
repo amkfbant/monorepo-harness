@@ -48,12 +48,13 @@ harness dashboard export [--out <path>] [--project <id>] [--repo-id <id>] [--no-
 DB が無いときは既定で `db import --from-files` 相当を一度実行してから export し、
 その旨を出力に明示する。`--no-auto-import` で抑止できる（CI 用）。
 
-## serve（Phase 7 候補）
+## serve（別トラック・未実装）
 
-`dashboard serve`（read-only の GET-only HTTP サーバ）は Phase 6 では**未実装**。
-Phase 6 の UI 成果物は静的 `dashboard export`。serve は Phase 7 候補
-（[`../reports/2026-05-22-phase6-close.md`](../reports/2026-05-22-phase6-close.md)
-の follow-up 参照）。
+`dashboard serve`（read-only の GET-only HTTP サーバ）は**未実装**。現状の UI
+成果物は静的 `dashboard export`。`dashboard serve` は Phase 7（DB-first write
+path）のスコープ外（runtime write path に限定）で、別トラック扱い。Phase 7 で
+DB-first 化された write は即時 read model に反映されるため、`dashboard export`
+を再実行すれば最新状態が出力される。
 
 ダッシュボードからの mutation（操作実行）は Phase 6 の非ゴール。導入する場合は
 既存 core オペレーションの薄いラッパとして別フェーズで追加する。

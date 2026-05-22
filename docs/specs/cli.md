@@ -143,42 +143,37 @@ harness backlog defer --item-id <id>
 
 ## `harness db`
 
-DB read model（`.harness/harness.sqlite`）の管理（Phase 6）。詳細は
+DB read model + DB-first write path（`.harness/harness.sqlite`）の管理。詳細は
 [`db.md`](./db.md)。
 
 ```bash
-harness db init                       # DB を作成し schema v1 を適用
+harness db init                       # DB を作成し schema を適用
 harness db migrate                    # 未適用 migration を適用
 harness db status                     # schema version / table 数 / path / size
 harness db import --from-files        # files から read model を構築
-harness db import --from-files --reset  # 全テーブルを空にしてから import
+harness db import --from-files --reset  # data テーブルを空にしてから import
 harness db import --from-files --json   # ImportReport を JSON 出力
 harness db check-consistency          # DB ↔ files の drift を検出
 harness db check-consistency --json   # ConsistencyReport を JSON 出力
+harness db export-files               # 全 db-first row の files を再 export
+harness db export-files --scope backlog --id item-20260522-001  # 範囲指定
+harness db import --from-files --force-legacy-reconcile  # db-first row の上書きを許可
 ```
 
 - `db import` は idempotent（run は全 source file の fingerprint で skip、
   malformed file は `import_errors` に記録）。`import` は schema を自動適用するので
   `db init` なしでも動く。
 - `db check-consistency` は drift / missing があれば exit 1（CI で gate 可能）。
-- exit code: `0` 正常 / `1` `DbError`、または `check-consistency` の drift/missing 検出。
-
-> **Phase 7（実装中）で追加予定。** runtime write path が DB-first 化されると
-> 次のサブコマンド／フラグが加わる。確定は `phase7-close` 時点。
->
-> ```bash
-> harness db export-files                # DB canonical state を files へ再 export
-> harness db import --from-files --force-legacy-reconcile  # db-first row の上書きを許可
-> ```
->
-> - `db export-files` は DB canonical な runtime state / manifest を files
->   （compatibility export）へ書き直す。artifact body / 大型 body は file-backed
->   のまま保持し、DB は path / sha256 で整合性を追跡する（body 自体は復元しない）。
->   atomic write、`export_records` に成否を記録。scope を絞る export は当面
->   `src/db/export-files.ts` の内部 API で、CLI の scope オプション公開は未確定。
-> - Phase 7 の `db import` は db-first row を stale file で巻き戻さない。file が
->   古い db-first row は conflict として報告し、`--force-legacy-reconcile` 指定時
->   のみ上書きする。詳細は [`db.md`](./db.md) の「Phase 7」節。
+  Phase 7 では export 追跡も検査する（`export_status` が `dirty`/`failed` の行、
+  `exported_files.sha256` と実ファイルの drift）。
+- `db export-files`（Phase 7-11）は DB canonical な `db-first` row の
+  compatibility files を bulk 再 export する（`--scope run|backlog|knowledge` /
+  `--id <id>` で範囲指定可）。crash・export 失敗・`--reset` import のあとに
+  files を DB から復元する。export 失敗があれば exit 1。
+- `db import` は `db-first` row を stale file で巻き戻さない（run / backlog item は
+  skip）。`--force-legacy-reconcile` 指定時のみ files で上書きする（災害復旧用途）。
+- exit code: `0` 正常 / `1` `DbError`、`check-consistency` の drift/missing 検出、
+  または `export-files` の失敗。
 
 ## `harness dashboard export`
 
