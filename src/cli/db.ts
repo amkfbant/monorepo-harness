@@ -9,6 +9,11 @@ import {
   checkConsistency,
   formatConsistencyReport,
 } from "../db/consistency.js";
+import {
+  exportFiles,
+  formatBulkExport,
+  type ExportScope,
+} from "../db/export-bulk.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -87,6 +92,10 @@ export function registerDbCommands(program: Command): void {
       "import from runs/ projects/ policies/ backlog/ docs/knowledge",
     )
     .option("--reset", "empty every data table before importing")
+    .option(
+      "--force-legacy-reconcile",
+      "overwrite DB-first rows from files (disaster recovery only)",
+    )
     .option("--json", "print the import report as JSON")
     .action((raw: Record<string, unknown>) => {
       if (raw.fromFiles !== true) {
@@ -106,6 +115,7 @@ export function registerDbCommands(program: Command): void {
           const report = runFullImport(db, {
             harnessRoot: root,
             reset: raw.reset === true,
+            forceLegacyReconcile: raw.forceLegacyReconcile === true,
           });
           process.stdout.write(
             raw.json === true
@@ -115,6 +125,56 @@ export function registerDbCommands(program: Command): void {
         } finally {
           db.close();
         }
+      } catch (e) {
+        dbError(e);
+      }
+    });
+
+  dbCmd
+    .command("export-files")
+    .description("re-export the compatibility files from DB-canonical rows")
+    .option("--scope <scope>", "run | backlog | knowledge (default: all)")
+    .option("--id <id>", "restrict to one row id (requires --scope)")
+    .option("--json", "print the export report as JSON")
+    .action((raw: Record<string, unknown>) => {
+      const scope = raw.scope as string | undefined;
+      if (
+        scope !== undefined &&
+        scope !== "run" &&
+        scope !== "backlog" &&
+        scope !== "knowledge"
+      ) {
+        process.stderr.write(
+          "harness error: --scope must be run | backlog | knowledge\n",
+        );
+        process.exit(1);
+      }
+      if (raw.id !== undefined && scope === undefined) {
+        process.stderr.write("harness error: --id requires --scope\n");
+        process.exit(1);
+      }
+      const root = getHarnessRoot();
+      const { dbPath } = harnessPaths(root);
+      try {
+        const db = openDb(dbPath);
+        let results;
+        try {
+          runMigrations(db);
+          results = exportFiles(db, {
+            harnessRoot: root,
+            ...(scope !== undefined ? { scope: scope as ExportScope } : {}),
+            ...(raw.id !== undefined ? { id: String(raw.id) } : {}),
+          });
+        } finally {
+          db.close();
+        }
+        process.stdout.write(
+          raw.json === true
+            ? `${JSON.stringify(results, null, 2)}\n`
+            : formatBulkExport(results),
+        );
+        // a failed export is a non-zero exit so CI can gate on it
+        if (results.some((r) => r.failed > 0)) process.exit(1);
       } catch (e) {
         dbError(e);
       }

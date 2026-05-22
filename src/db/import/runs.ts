@@ -76,6 +76,7 @@ export function importRuns(
   db: Database.Database,
   runsDir: string,
   counters: ImportCounters,
+  forceLegacyReconcile = false,
 ): void {
   if (!existsSync(runsDir)) return;
   const entries = readdirSync(runsDir, { withFileTypes: true }).filter(
@@ -155,7 +156,7 @@ export function importRuns(
     // `policy_violations`, which a DB-first run populates directly — so
     // it is skipped. Disaster-recovery reconciliation is a Phase 7-11
     // concern (`--force-legacy-reconcile`).
-    if (existing && existing.mode === "db-first") {
+    if (existing && existing.mode === "db-first" && !forceLegacyReconcile) {
       counters.runsSkipped += 1;
       continue;
     }

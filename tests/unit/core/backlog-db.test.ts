@@ -241,6 +241,29 @@ describe("backlog DB-first", () => {
     expect(links.map((l) => l.run_id)).toEqual(["run-20260522-d-bl1"]);
   });
 
+  it("--force-legacy-reconcile overwrites a db-first row from files", async () => {
+    const ctx = setup();
+    const { item } = await addBacklogItem(
+      ctx,
+      { title: "t", domain: "d", goal: "g" },
+      NOW,
+    );
+    // hand-edit the exported YAML, then force-reconcile from files
+    const yamlPath = join(ctx.backlogDir, "open", `${item.id}.yaml`);
+    writeFileSync(
+      yamlPath,
+      readFileSync(yamlPath, "utf8").replace("title: t", "title: forced"),
+    );
+    const db = openDb(ctx.dbPath);
+    runMigrations(db);
+    runFullImport(db, { harnessRoot: rootOf(ctx), forceLegacyReconcile: true });
+    const row = db
+      .prepare("SELECT title FROM backlog_items WHERE item_id = ?")
+      .get(item.id) as { title: string };
+    db.close();
+    expect(row.title).toBe("forced");
+  });
+
   it("resolveBacklogItemForRun reads a db-first item from the DB row", async () => {
     const ctx = setup();
     const { item } = await addBacklogItem(

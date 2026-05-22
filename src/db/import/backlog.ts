@@ -20,6 +20,7 @@ export function importBacklog(
   db: Database.Database,
   backlogDir: string,
   counters: ImportCounters,
+  forceLegacyReconcile = false,
 ): void {
   if (!existsSync(backlogDir)) return;
 
@@ -78,7 +79,11 @@ export function importBacklog(
       // could roll back its status with a stale file. It is skipped; full
       // reconciliation is a Phase 7-11 concern (`--force-legacy-reconcile`).
       const existing = existingItem.get(id) as { mode: string } | undefined;
-      if (existing !== undefined && existing.mode === "db-first") {
+      if (
+        existing !== undefined &&
+        existing.mode === "db-first" &&
+        !forceLegacyReconcile
+      ) {
         clearImportError(db, path);
         continue;
       }

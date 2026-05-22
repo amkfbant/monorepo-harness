@@ -30,6 +30,12 @@ export interface ImportOptions {
   harnessRoot: string;
   /** when true, every data table is emptied before the import */
   reset?: boolean;
+  /**
+   * when true, a `db-first` runtime row is overwritten from its files
+   * instead of being skipped — the explicit disaster-recovery escape
+   * hatch (`db import --force-legacy-reconcile`). Off by normal import.
+   */
+  forceLegacyReconcile?: boolean;
 }
 
 /**
@@ -110,10 +116,11 @@ export function runFullImport(
   // skipped run keeps its errors (the malformed file is unchanged). Stale
   // rows for since-deleted source files are pruned at the end.
 
+  const force = opts.forceLegacyReconcile === true;
   importProjects(db, paths.projectsDir, counters);
   importPolicies(db, paths.policiesDir, counters);
-  importRuns(db, paths.runsDir, counters);
-  importBacklog(db, paths.backlogDir, counters);
+  importRuns(db, paths.runsDir, counters, force);
+  importBacklog(db, paths.backlogDir, counters, force);
   importKnowledge(
     db,
     paths.runsDir,

@@ -48,6 +48,7 @@ export function checkConsistency(opts: {
   checkPolicies(opts.db, paths.policiesDir, items);
   checkBacklog(opts.db, paths.backlogDir, items);
   checkKnowledgeEntries(opts.db, opts.harnessRoot, items);
+  checkExports(opts.db, paths, opts.harnessRoot, items);
 
   const counts = { ok: 0, drift: 0, missingFile: 0, missingDb: 0 };
   for (const it of items) {
@@ -346,6 +347,95 @@ function checkKnowledgeEntries(
       });
     }
   }
+}
+
+/**
+ * Export-tracking checks (Phase 7-11). Two kinds of stale export:
+ *  - a runtime row whose `export_status` is `dirty` (export pending) or
+ *    `failed` (export errored) — the DB moved ahead of its files.
+ *  - an `exported_files` entry whose recorded sha256 no longer matches
+ *    the file on disk (a file hand-edited, or lost since export).
+ */
+function checkExports(
+  db: Database.Database,
+  paths: { runsDir: string; backlogDir: string },
+  harnessRoot: string,
+  items: ConsistencyItem[],
+): void {
+  const RUNTIME: { table: string; kind: string; idColumn: string }[] = [
+    { table: "runs", kind: "export:run", idColumn: "run_id" },
+    { table: "backlog_items", kind: "export:backlog", idColumn: "item_id" },
+    {
+      table: "knowledge_candidates",
+      kind: "export:knowledge-candidate",
+      idColumn: "candidate_id",
+    },
+    {
+      table: "knowledge_entries",
+      kind: "export:knowledge-entry",
+      idColumn: "entry_id",
+    },
+  ];
+  for (const t of RUNTIME) {
+    const rows = db
+      .prepare(
+        `SELECT ${t.idColumn} AS id, export_status AS s, last_export_error AS e
+         FROM ${t.table} WHERE export_status IN ('dirty', 'failed')`,
+      )
+      .all() as { id: string; s: string; e: string | null }[];
+    for (const r of rows) {
+      items.push({
+        kind: t.kind,
+        id: r.id,
+        status: "drift",
+        detail:
+          r.s === "failed"
+            ? `export failed: ${r.e ?? "unknown error"} — run \`db export-files\``
+            : "export pending (dirty) — run `db export-files`",
+      });
+    }
+  }
+
+  // exported_files sha256 vs the actual file on disk.
+  const files = db
+    .prepare(
+      `SELECT scope_type AS t, scope_id AS id, relative_path AS p,
+              sha256 AS h FROM exported_files`,
+    )
+    .all() as { t: string; id: string; p: string; h: string }[];
+  for (const f of files) {
+    const abs = resolveExportedPath(f, paths, harnessRoot);
+    if (abs === null) continue;
+    if (!existsSync(abs)) {
+      items.push({
+        kind: `export:${f.t}`,
+        id: f.id,
+        status: "missing-file",
+        detail: `exported file ${f.p} is gone — run \`db export-files\``,
+      });
+      continue;
+    }
+    if (sha256(readFileSync(abs)) !== f.h) {
+      items.push({
+        kind: `export:${f.t}`,
+        id: f.id,
+        status: "drift",
+        detail: `exported file ${f.p} changed since export — run \`db export-files\``,
+      });
+    }
+  }
+}
+
+/** Resolve an `exported_files` row to an absolute path by scope type. */
+function resolveExportedPath(
+  f: { t: string; id: string; p: string },
+  paths: { runsDir: string; backlogDir: string },
+  harnessRoot: string,
+): string | null {
+  if (f.t === "run") return join(paths.runsDir, f.id, f.p);
+  if (f.t === "backlog_item") return join(paths.backlogDir, f.p);
+  if (f.t === "knowledge_entry") return join(harnessRoot, f.p);
+  return null;
 }
 
 /** Render a ConsistencyReport as a human-readable block. */
