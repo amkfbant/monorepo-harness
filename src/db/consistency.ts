@@ -6,6 +6,7 @@ import { harnessPaths } from "../config/paths.js";
 import { sha256 } from "./import/common.js";
 import { runFingerprint } from "./import/runs.js";
 import { DB_RECONSTRUCTED } from "./run-artifacts.js";
+import { readArtifactBlob } from "./artifact-blobs.js";
 
 /**
  * DB / file consistency checker (Phase 6-4).
@@ -60,8 +61,16 @@ export function checkConsistency(opts: {
     else counts.missingDb += 1;
   }
   const clean = items.every((i) => i.status === "ok");
+  // an artifact / blob problem is error-severity: the DB is the canonical
+  // store for artifact bodies, so a missing or corrupt blob is data loss,
+  // not recoverable drift. Export / migration drift stays a warning.
+  const hasError = items.some(
+    (i) =>
+      i.status !== "ok" &&
+      (i.kind === "artifact" || i.kind === "artifact-blob"),
+  );
   return {
-    status: clean ? "ok" : "warn",
+    status: clean ? "ok" : hasError ? "error" : "warn",
     checkedAt: new Date().toISOString(),
     counts,
     items,
@@ -521,24 +530,43 @@ function checkArtifactBlobs(
     });
   }
 
-  // a blob whose chunk rows do not match its manifest — a partial write.
-  const badChunks = db
-    .prepare(
-      `SELECT b.sha256 AS sha, b.chunk_count AS expected,
-              count(c.chunk_index) AS actual
-       FROM artifact_blobs b
-       LEFT JOIN artifact_blob_chunks c ON c.sha256 = b.sha256
-       GROUP BY b.sha256, b.chunk_count
-       HAVING actual != expected`,
-    )
-    .all() as { sha: string; expected: number; actual: number }[];
-  for (const b of badChunks) {
-    items.push({
-      kind: "artifact-blob",
-      id: b.sha.slice(0, 12),
-      status: "drift",
-      detail: `blob has ${b.actual} chunk(s), manifest expects ${b.expected}`,
-    });
+  // verify each blob end-to-end: `readArtifactBlob` rejoins the chunks and
+  // checks chunk completeness + stored-byte length, then gunzips; here we
+  // also confirm the decoded body still hashes to its content address and
+  // matches the recorded raw length. This catches a partial write, a
+  // corrupt chunk, or a failed gzip decode that the manifest alone hides.
+  const blobs = db
+    .prepare("SELECT sha256, bytes FROM artifact_blobs")
+    .all() as { sha256: string; bytes: number }[];
+  for (const b of blobs) {
+    let body: Buffer | null;
+    try {
+      body = readArtifactBlob(db, b.sha256);
+    } catch (e) {
+      items.push({
+        kind: "artifact-blob",
+        id: b.sha256.slice(0, 12),
+        status: "drift",
+        detail: `blob is unreadable: ${(e as Error).message}`,
+      });
+      continue;
+    }
+    if (body === null) continue;
+    if (sha256(body) !== b.sha256) {
+      items.push({
+        kind: "artifact-blob",
+        id: b.sha256.slice(0, 12),
+        status: "drift",
+        detail: "blob content does not hash to its sha256 address",
+      });
+    } else if (body.length !== b.bytes) {
+      items.push({
+        kind: "artifact-blob",
+        id: b.sha256.slice(0, 12),
+        status: "drift",
+        detail: `blob decodes to ${body.length} bytes, manifest says ${b.bytes}`,
+      });
+    }
   }
 }
 

@@ -317,6 +317,25 @@ describe("checkConsistency — artifact blobs (Phase 8-11)", () => {
     ).toBe(true);
   });
 
+  it("reports error when an artifact blob's content is corrupt", () => {
+    const { root, db } = importedRoot();
+    const sha = addDbArtifact(db, "art-corrupt-body", Buffer.alloc(40, "x"));
+    // overwrite the chunk with same-length different bytes — chunk_count
+    // and stored_bytes still match, so only an end-to-end sha check catches it
+    db.prepare(
+      "UPDATE artifact_blob_chunks SET content = ? WHERE sha256 = ?",
+    ).run(Buffer.alloc(40, "y"), sha);
+    const r = checkConsistency({ db, harnessRoot: root });
+    db.close();
+    expect(
+      r.items.some(
+        (i) => i.kind === "artifact-blob" && i.status === "drift",
+      ),
+    ).toBe(true);
+    // a corrupt DB blob is data loss — error severity, not warn
+    expect(r.status).toBe("error");
+  });
+
   it("flags an artifact whose body_status is missing", () => {
     const { root, db } = importedRoot();
     db.prepare(

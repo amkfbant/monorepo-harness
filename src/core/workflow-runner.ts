@@ -802,6 +802,19 @@ async function runDomainCodingInner(
     const secretSuspectCount = secretSuspects.length;
     const changedFilesCount =
       diff.trackedChangedPaths.length + untrackedAllowed.length;
+    // Phase 8-2: ingest the artifact manifest + bodies into the DB now
+    // that every artifact body has been written. This runs BEFORE
+    // `finalize` so the finalize export sees the `storage='db'` rows and
+    // records the artifact bodies in `exported_files` — otherwise
+    // `check-consistency` could not detect drift on summary.md /
+    // final-diff.patch etc. (Phase 8 — external review P1-2).
+    // A failure does NOT flip a completed run to failed-internal-error —
+    // the run succeeded — but it IS surfaced as a warning.
+    try {
+      ingestRunArtifacts(db, log.runDir, runId);
+    } catch (e) {
+      warnArtifactIngestFailed(runId, e);
+    }
     await log.finalize({
       status,
       safetyStatus,
@@ -821,16 +834,6 @@ async function runDomainCodingInner(
       commandResultsCount: commandResults.length,
       changedFilesCount,
     });
-    // Phase 8-2: ingest the artifact manifest + bodies into the DB now
-    // that every artifact body has been written. A failure does NOT flip a
-    // completed run to failed-internal-error — the run succeeded and the
-    // bodies are still file-backed — but it IS surfaced as a warning,
-    // since the DB-canonical copy is missing until `db migrate-artifacts`.
-    try {
-      ingestRunArtifacts(db, log.runDir, runId);
-    } catch (e) {
-      warnArtifactIngestFailed(runId, e);
-    }
     return {
       runId,
       status,

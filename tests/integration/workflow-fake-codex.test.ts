@@ -219,6 +219,19 @@ describe("runDomainCoding (fake codex)", () => {
       ).map((a) => a.relative_path);
       expect(artifacts).toContain("meta.json");
       expect(artifacts).toContain("summary.md");
+
+      // Phase 8 (external review P1-2): artifacts are ingested BEFORE the
+      // final export, so the artifact bodies are recorded in
+      // `exported_files` — `check-consistency` can then detect drift on
+      // them, not just on meta.json / events.jsonl.
+      const exported = (
+        db
+          .prepare(
+            "SELECT relative_path FROM exported_files WHERE scope_type = 'run' AND scope_id = ?",
+          )
+          .all(r.runId) as { relative_path: string }[]
+      ).map((e) => e.relative_path);
+      expect(exported).toContain("summary.md");
     } finally {
       db.close();
     }

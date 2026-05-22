@@ -142,6 +142,41 @@ describe("ingestRunArtifacts", () => {
     db.close();
   });
 
+  it("recurses into subdirectories (commands/ etc.) — nested bodies in the DB", () => {
+    const db = freshDb();
+    const root = mkdtempSync(join(tmpdir(), "harness-ingest-"));
+    const runId = "run-x-nested";
+    const runDir = join(root, runId);
+    mkdirSync(join(runDir, "commands"), { recursive: true });
+    writeFileSync(join(runDir, "summary.md"), "# summary\n");
+    writeFileSync(join(runDir, "commands", "cmd-0.stdout.log"), "test ok\n");
+    writeFileSync(join(runDir, "commands", "cmd-0.stderr.log"), "");
+
+    ingestRunArtifacts(db, runDir, runId);
+
+    const rows = db
+      .prepare(
+        "SELECT relative_path, storage, blob_sha256 FROM artifacts WHERE run_id = ?",
+      )
+      .all(runId) as {
+      relative_path: string;
+      storage: string;
+      blob_sha256: string | null;
+    }[];
+    const paths = rows.map((r) => r.relative_path);
+    // the nested command log is captured with a POSIX-style relative path
+    expect(paths).toContain("commands/cmd-0.stdout.log");
+    const nested = rows.find(
+      (r) => r.relative_path === "commands/cmd-0.stdout.log",
+    );
+    expect(nested?.storage).toBe("db");
+    expect(nested?.blob_sha256).not.toBeNull();
+    expect(
+      readArtifactBlob(db, nested?.blob_sha256 as string)?.toString(),
+    ).toBe("test ok\n");
+    db.close();
+  });
+
   it("replaces the run's artifacts on re-ingest", () => {
     const db = freshDb();
     const root = mkdtempSync(join(tmpdir(), "harness-ingest-"));
