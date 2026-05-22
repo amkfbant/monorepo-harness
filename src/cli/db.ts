@@ -316,7 +316,7 @@ export function registerDbCommands(program: Command): void {
       "required to overwrite an existing DB — restore is destructive",
     )
     .option("--json", "print the restore result as JSON")
-    .action((raw: Record<string, unknown>) => {
+    .action(async (raw: Record<string, unknown>) => {
       const { dbPath } = harnessPaths(getHarnessRoot());
       // restore replaces the live DB — refuse to clobber an existing one
       // unless --force makes the destructive intent explicit.
@@ -328,7 +328,7 @@ export function registerDbCommands(program: Command): void {
         process.exit(1);
       }
       try {
-        const r = restoreDb({ dbPath, fromPath: String(raw.from) });
+        const r = await restoreDb({ dbPath, fromPath: String(raw.from) });
         process.stdout.write(
           raw.json === true
             ? `${JSON.stringify(r, null, 2)}\n`

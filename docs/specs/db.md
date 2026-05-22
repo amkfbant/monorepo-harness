@@ -289,10 +289,14 @@ harness db stats                    # table 別行数 / DB・WAL サイズ / blo
 - **backup** — better-sqlite3 の online backup を使い、WAL を含む
   transactionally consistent な単一 `.sqlite` を書き出す（journal sidecar
   なし、writer を block しない）。出力先が既存なら拒否する。
-- **restore** — `--from` が schema を持つ harness DB か **live DB に触れる前に**
-  検証する。live DB の WAL/SHM sidecar を削除してから copy するので stale
-  journal が復元後に replay されない。live DB が既存なら `--force` を要求する
-  （誤 `--from` での破壊を防ぐ。`db backup` を先に取る運用）。
+- **restore** — `--from` を SQLite online backup で target dir の temp に
+  写し（source の WAL も読むので live DB の copy でも committed data を失わ
+  ない）、`integrity_check` / schema version 範囲 / harness core テーブルを
+  **temp に対して検証**してから `rename` で atomic に live DB を置換する。
+  検証前に失敗すれば live DB は無傷。live DB を自分自身に restore するのは
+  拒否。置換後に旧 WAL/SHM sidecar を削除し stale journal の replay を防ぐ。
+  live DB が既存なら `--force` を要求する（誤 `--from` での破壊を防ぐ。
+  `db backup` を先に取る運用）。
 - backup / restore は artifact blob を含めて DB 全体を扱うので、files を
   すべて消しても backup から復旧できる。
 

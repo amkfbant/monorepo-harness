@@ -1,8 +1,9 @@
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
+  renameSync,
   rmSync,
+  realpathSync,
   statSync,
   chmodSync,
 } from "node:fs";
@@ -14,7 +15,7 @@ import {
   DB_FILE_MODE,
   DbError,
 } from "./connection.js";
-import { readSchemaVersion } from "./migrations.js";
+import { readSchemaVersion, LATEST_SCHEMA_VERSION } from "./migrations.js";
 import { ALL_TABLE_NAMES } from "./schema.js";
 
 /**
@@ -97,41 +98,106 @@ export interface RestoreResult {
   schemaVersion: number;
 }
 
+/** True when two paths resolve to the same file on disk. */
+function samePath(a: string, b: string): boolean {
+  try {
+    return (
+      existsSync(a) && existsSync(b) && realpathSync(a) === realpathSync(b)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validate that `path` is a restorable harness DB and return its schema
+ * version. Goes well beyond "has a schema_migrations table": runs
+ * `integrity_check`, bounds the schema version, and requires the harness
+ * core tables — so a foreign SQLite cannot pass and replace the live DB.
+ */
+function validateHarnessDb(path: string): number {
+  const db = openDbReadonly(path);
+  try {
+    const integ = db.pragma("integrity_check") as Array<{
+      integrity_check: string;
+    }>;
+    if (integ[0]?.integrity_check !== "ok") {
+      throw new DbError(
+        `${path}: integrity check failed ` +
+          `(${integ[0]?.integrity_check ?? "unknown"})`,
+      );
+    }
+    const version = readSchemaVersion(db);
+    if (version < 1 || version > LATEST_SCHEMA_VERSION) {
+      throw new DbError(
+        `${path}: schema version ${version} is not a restorable harness DB ` +
+          `(expected 1..${LATEST_SCHEMA_VERSION})`,
+      );
+    }
+    // a foreign SQLite could carry a schema_migrations table by coincidence
+    // — require the harness core tables before trusting it.
+    for (const t of ["db_meta", "runs", "artifacts"]) {
+      if (!tableExists(db, t)) {
+        throw new DbError(`${path}: missing core table '${t}' — not a harness DB`);
+      }
+    }
+    return version;
+  } finally {
+    db.close();
+  }
+}
+
 /**
  * Replace the live DB with a backup.
  *
- * The backup is validated as a real harness DB (schema version > 0)
- * BEFORE the live DB is touched, so a wrong `--from` never destroys data.
- * The live DB's WAL/SHM sidecars are removed so no stale journal is
- * replayed on top of the restored file.
+ * Restore goes through the SQLite online backup API into a temp file in
+ * the target directory, so the source's WAL is read (a backup of a live
+ * WAL-mode DB never loses committed data) and the temp is always a clean
+ * standalone file. The temp is fully validated as a harness DB BEFORE it
+ * atomically replaces the live DB via `rename` — any failure up to that
+ * point leaves the live DB completely untouched. Restoring the live DB
+ * onto itself is rejected.
  */
-export function restoreDb(opts: {
+export async function restoreDb(opts: {
   dbPath: string;
   fromPath: string;
-}): RestoreResult {
+}): Promise<RestoreResult> {
   if (!existsSync(opts.fromPath)) {
     throw new DbError(`backup file not found: ${opts.fromPath}`);
   }
-  let schemaVersion: number;
-  try {
-    schemaVersion = probeSchemaVersion(opts.fromPath);
-  } catch (e) {
+  if (samePath(opts.fromPath, opts.dbPath)) {
     throw new DbError(
-      `${opts.fromPath} is not a readable SQLite DB: ${(e as Error).message}`,
-    );
-  }
-  if (schemaVersion === 0) {
-    throw new DbError(
-      `${opts.fromPath} is not a harness DB backup (no schema)`,
+      `restore --from is the live DB itself: ${opts.fromPath}`,
     );
   }
   mkdirSync(dirname(opts.dbPath), { recursive: true });
-  // drop the live DB and its sidecars — copying only the .sqlite while a
-  // stale -wal survives would replay the old journal over the restore.
-  for (const suffix of ["", WAL_SUFFIX, SHM_SUFFIX]) {
+  const tmpPath = `${opts.dbPath}.restore-${process.pid}-${Date.now()}`;
+  rmSync(tmpPath, { force: true });
+  let schemaVersion: number;
+  try {
+    // online backup of the source: reads the source WAL too, so the temp
+    // is a consistent standalone copy regardless of the source's journal.
+    const src = openDbReadonly(opts.fromPath);
+    try {
+      await src.backup(tmpPath);
+    } finally {
+      src.close();
+    }
+    schemaVersion = validateHarnessDb(tmpPath);
+    hardenDbPermissions(tmpPath);
+    // atomic replace — a crash/failure before here leaves the live DB intact.
+    renameSync(tmpPath, opts.dbPath);
+  } catch (e) {
+    rmSync(tmpPath, { force: true });
+    throw e instanceof DbError
+      ? e
+      : new DbError(`restore failed: ${(e as Error).message}`);
+  }
+  // the replaced file's old WAL/SHM are stale — drop them so SQLite never
+  // applies a journal that belonged to the DB just overwritten.
+  for (const suffix of [WAL_SUFFIX, SHM_SUFFIX]) {
     rmSync(`${opts.dbPath}${suffix}`, { force: true });
   }
-  copyFileSync(opts.fromPath, opts.dbPath);
   hardenDbPermissions(opts.dbPath);
   return {
     dbPath: opts.dbPath,
@@ -146,6 +212,8 @@ export interface CheckpointResult {
   walBytesAfter: number;
   /** frames moved from the WAL into the main DB */
   checkpointedFrames: number;
+  /** true when another connection blocked a full (TRUNCATE) checkpoint */
+  busy: boolean;
 }
 
 function walBytes(dbPath: string): number {
@@ -159,6 +227,7 @@ export function checkpointDb(dbPath: string): CheckpointResult {
   const walBytesBefore = walBytes(dbPath);
   const db = openDb(dbPath);
   let checkpointedFrames = 0;
+  let busy = false;
   try {
     // TRUNCATE: checkpoint, then shrink the WAL file to zero length.
     const rows = db.pragma("wal_checkpoint(TRUNCATE)") as Array<{
@@ -166,7 +235,13 @@ export function checkpointDb(dbPath: string): CheckpointResult {
       log: number;
       checkpointed: number;
     }>;
-    if (rows[0]) checkpointedFrames = rows[0].checkpointed;
+    const row = rows[0];
+    if (row) {
+      checkpointedFrames = row.checkpointed;
+      // busy=1 means another connection held a lock and the checkpoint
+      // could not run to completion — surface it rather than report success.
+      busy = row.busy !== 0;
+    }
   } finally {
     db.close();
   }
@@ -174,6 +249,7 @@ export function checkpointDb(dbPath: string): CheckpointResult {
     walBytesBefore,
     walBytesAfter: walBytes(dbPath),
     checkpointedFrames,
+    busy,
   };
 }
 
@@ -312,7 +388,11 @@ export function formatRestore(r: RestoreResult): string {
 export function formatCheckpoint(r: CheckpointResult): string {
   return (
     `db checkpoint: ${r.checkpointedFrames} frame(s) checkpointed\n` +
-    `  WAL: ${humanBytes(r.walBytesBefore)} → ${humanBytes(r.walBytesAfter)}\n`
+    `  WAL: ${humanBytes(r.walBytesBefore)} → ${humanBytes(r.walBytesAfter)}\n` +
+    (r.busy
+      ? "  note: another connection blocked a full checkpoint — " +
+        "the WAL was not truncated; retry when idle\n"
+      : "")
   );
 }
 

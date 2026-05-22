@@ -91,7 +91,7 @@ describe("db maintenance — backup / restore", () => {
     // mutate the live DB after the backup was taken
     insertRun(dbPath, "run-b");
     expect(runCount(dbPath)).toBe(2);
-    const r = restoreDb({ dbPath, fromPath: out });
+    const r = await restoreDb({ dbPath, fromPath: out });
     expect(r.schemaVersion).toBe(4);
     // the post-backup row is gone — restore replaced the live DB
     expect(runCount(dbPath)).toBe(1);
@@ -104,18 +104,73 @@ describe("db maintenance — backup / restore", () => {
     await backupDb({ dbPath, outPath: out });
     // a WAL file exists from the writes above; restore must remove it
     writeFileSync(`${dbPath}-wal`, "stale-journal");
-    restoreDb({ dbPath, fromPath: out });
+    await restoreDb({ dbPath, fromPath: out });
     expect(existsSync(`${dbPath}-wal`)).toBe(false);
     expect(runCount(dbPath)).toBe(1);
   });
 
-  it("restore rejects a file that is not a harness DB", () => {
+  it("restore rejects a file that is not a SQLite DB", async () => {
     const { dbPath, root } = freshDb();
     const garbage = join(root, "garbage.bin");
     writeFileSync(garbage, "not a database");
-    expect(() => restoreDb({ dbPath, fromPath: garbage })).toThrow(DbError);
+    await expect(
+      restoreDb({ dbPath, fromPath: garbage }),
+    ).rejects.toThrow(DbError);
     // the live DB is untouched
     expect(existsSync(dbPath)).toBe(true);
+    expect(runCount(dbPath)).toBe(0);
+  });
+
+  it("restore rejects a valid SQLite that is not a harness DB", async () => {
+    const { dbPath, root } = freshDb();
+    insertRun(dbPath, "run-a");
+    // a real SQLite file, but with no harness schema
+    const foreign = join(root, "foreign.sqlite");
+    const fdb = openDb(foreign);
+    try {
+      fdb.prepare("CREATE TABLE unrelated (x INTEGER)").run();
+    } finally {
+      fdb.close();
+    }
+    await expect(
+      restoreDb({ dbPath, fromPath: foreign }),
+    ).rejects.toThrow(DbError);
+    // the live DB and its data survive the rejected restore
+    expect(runCount(dbPath)).toBe(1);
+  });
+
+  it("restore rejects restoring the live DB onto itself", async () => {
+    const { dbPath } = freshDb();
+    await expect(
+      restoreDb({ dbPath, fromPath: dbPath }),
+    ).rejects.toThrow(DbError);
+  });
+
+  it("restore reads a source whose data is still in a live WAL", async () => {
+    const { dbPath } = freshDb();
+    // a separate source DB whose row sits in an un-checkpointed WAL —
+    // the source connection is kept open so the WAL is not flushed.
+    const srcRoot = mkdtempSync(join(tmpdir(), "harness-maint-src-"));
+    const srcPath = join(srcRoot, "live.sqlite");
+    const srcDb = openDb(srcPath);
+    try {
+      runMigrations(srcDb);
+      srcDb
+        .prepare(
+          `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+             status, updated_at)
+           VALUES ('run-wal', 'repo', 'apps/x', 'domain-coding', 'main',
+             'needs_review', '2026-05-22T00:00:00Z')`,
+        )
+        .run();
+      expect(existsSync(`${srcPath}-wal`)).toBe(true);
+      const r = await restoreDb({ dbPath, fromPath: srcPath });
+      expect(r.schemaVersion).toBe(4);
+      // the row living in the source WAL must not be lost by the restore
+      expect(runCount(dbPath)).toBe(1);
+    } finally {
+      srcDb.close();
+    }
   });
 });
 
