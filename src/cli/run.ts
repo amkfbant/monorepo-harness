@@ -9,6 +9,7 @@ import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
 import { runDomainCoding } from "../core/workflow-runner.js";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
+import { StateConflictError, SourceModeError } from "../db/errors.js";
 import {
   domainLockName,
   domainLockPath,
@@ -828,7 +829,14 @@ reviewCmd
         `run=${result.runId} ${result.previousStatus} → ${result.newStatus} reviewer=${result.reviewer ?? "(none)"} reviewedAt=${result.reviewedAt}\n`,
       );
     } catch (e) {
-      if (e instanceof ReviewGateError || e instanceof DomainLockError) {
+      // a guard failure (concurrent reviewer, source-mode mismatch) is
+      // user-facing → exit 1, not an exit-2 unexpected error.
+      if (
+        e instanceof ReviewGateError ||
+        e instanceof DomainLockError ||
+        e instanceof StateConflictError ||
+        e instanceof SourceModeError
+      ) {
         process.stderr.write(`harness error: ${(e as Error).message}\n`);
         process.exit(1);
       }

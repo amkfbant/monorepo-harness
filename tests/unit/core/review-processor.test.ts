@@ -363,6 +363,32 @@ describe("processReviewDecision — DB-first run (Phase 7-5)", () => {
     ).toMatch(/review_processed/);
   });
 
+  it("rejects a run row with an unknown source_mode", async () => {
+    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-dbf-"));
+    const dbPath = join(runsDir, "harness.sqlite");
+    writeFakeRun(runsDir, "run-weird", {}, { decision: "approved" });
+    const meta = JSON.parse(
+      readFileSync(join(runsDir, "run-weird", "meta.json"), "utf8"),
+    ) as Record<string, unknown>;
+    const db = openDb(dbPath);
+    runMigrations(db);
+    db.prepare(
+      `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+         status, updated_at, source_mode)
+       VALUES ('run-weird', ?, ?, 'domain-coding', 'main', 'needs_review',
+         'x', 'bogus-mode')`,
+    ).run(meta.repoId, meta.domain);
+    db.close();
+    await expect(
+      processReviewDecision({
+        runsDir,
+        locksDir: runsDir,
+        dbPath,
+        runId: "run-weird",
+      }),
+    ).rejects.toThrow(/source-mode/);
+  });
+
   it("rejects re-processing a run that already left needs_review", async () => {
     const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-dbf-"));
     const dbPath = join(runsDir, "harness.sqlite");

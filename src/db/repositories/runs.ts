@@ -140,10 +140,11 @@ export interface ViolationInput {
 /** Input to the guarded review-decision transition (Phase 7-5). */
 export interface ApplyReviewDecisionInput {
   runId: string;
-  /** the run's target status: approved | changes_requested | rejected */
-  newStatus: string;
-  /** the decision value written by the reviewer */
-  decision: string;
+  /**
+   * the reviewer's decision — also the run's target status, since the
+   * three decision values map identically onto run statuses.
+   */
+  decision: "approved" | "changes_requested" | "rejected";
   reviewer: string | null;
   reviewedAt: string;
   requiredChanges: string[];
@@ -595,9 +596,11 @@ export class RunRepository {
         row.meta_json !== null
           ? (JSON.parse(row.meta_json) as Record<string, unknown>)
           : {};
+      // the three decision values are also the target run statuses.
+      const newStatus = input.decision;
       const patchedMeta = {
         ...meta,
-        status: input.newStatus,
+        status: newStatus,
         reviewer: input.reviewer,
         reviewedAt: input.reviewedAt,
       };
@@ -610,7 +613,7 @@ export class RunRepository {
            WHERE run_id = ? AND status = 'needs_review'`,
         )
         .run(
-          input.newStatus,
+          newStatus,
           input.reviewer,
           input.reviewedAt,
           JSON.stringify(patchedMeta, null, 2),
@@ -646,7 +649,7 @@ export class RunRepository {
             runId: input.runId,
             decision: input.decision,
             previousStatus: row.status,
-            newStatus: input.newStatus,
+            newStatus,
             reviewer: input.reviewer,
             reviewedAt: input.reviewedAt,
           }),

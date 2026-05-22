@@ -12,6 +12,7 @@ import { openDb } from "../db/connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { RunRepository } from "../db/repositories/runs.js";
 import { exportRun } from "../db/export-files.js";
+import { SourceModeError } from "../db/errors.js";
 
 /**
  * Thrown when review processing is rejected for a reason the user can fix
@@ -124,30 +125,72 @@ export async function processReviewDecision(
   const metaPath = join(runDir, "meta.json");
   const decisionPath = join(runDir, "review-decision.yaml");
 
-  // First read is only to learn the domain so we can lock it. The
-  // authoritative read happens again *under* the lock below, so a
-  // concurrent cleanup can't change status between the two reads.
-  const domainProbe = await readMeta(metaPath, opts.runId);
-  const lock = await acquireDomainLock({
-    locksDir: opts.locksDir,
-    domain: domainProbe.domain,
-    runId: `review:${opts.runId}`,
-    // namespace the lock by repo so the same domain id across two repos
-    // does not collide — must match how `harness run` acquired it.
-    ...(typeof domainProbe.repoId === "string"
-      ? { repoId: domainProbe.repoId }
-      : {}),
-  });
-
+  // Open the DB BEFORE the lock so an open failure cannot leak a held
+  // lock. The DB also tells us whether the run is db-first, which decides
+  // what (DB row vs meta.json) is the canonical source for the lock key.
   const db = openDb(opts.dbPath);
+  let lock: Awaited<ReturnType<typeof acquireDomainLock>> | undefined;
   try {
     runMigrations(db);
-    return await processUnderLock(opts, runDir, metaPath, decisionPath, db);
+    const dbRow = db
+      .prepare(
+        "SELECT source_mode, domain, repo_id, status FROM runs WHERE run_id = ?",
+      )
+      .get(opts.runId) as
+      | {
+          source_mode: string;
+          domain: string;
+          repo_id: string | null;
+          status: string;
+        }
+      | undefined;
+    if (
+      dbRow !== undefined &&
+      dbRow.source_mode !== "db-first" &&
+      dbRow.source_mode !== "legacy-file"
+    ) {
+      throw new SourceModeError(
+        opts.runId,
+        dbRow.source_mode,
+        "db-first | legacy-file",
+      );
+    }
+    const dbFirst = dbRow?.source_mode === "db-first";
+
+    // lock key: a db-first run is DB-canonical, so its domain/repoId come
+    // from the DB row; a legacy / not-in-DB run probes meta.json.
+    let lockDomain: string;
+    let lockRepoId: string | undefined;
+    if (dbFirst && dbRow !== undefined) {
+      lockDomain = dbRow.domain;
+      lockRepoId = dbRow.repo_id ?? undefined;
+    } else {
+      const probe = await readMeta(metaPath, opts.runId);
+      lockDomain = probe.domain;
+      lockRepoId =
+        typeof probe.repoId === "string" ? probe.repoId : undefined;
+    }
+    lock = await acquireDomainLock({
+      locksDir: opts.locksDir,
+      domain: lockDomain,
+      runId: `review:${opts.runId}`,
+      // namespace the lock by repo so the same domain id across two repos
+      // does not collide — must match how `harness run` acquired it.
+      ...(lockRepoId !== undefined ? { repoId: lockRepoId } : {}),
+    });
+    return await processUnderLock(
+      opts,
+      runDir,
+      metaPath,
+      decisionPath,
+      db,
+      dbFirst,
+    );
   } finally {
     try {
       db.close();
     } finally {
-      await lock.release();
+      if (lock !== undefined) await lock.release();
     }
   }
 }
@@ -158,10 +201,8 @@ async function processUnderLock(
   metaPath: string,
   decisionPath: string,
   db: Database.Database,
+  dbFirst: boolean,
 ): Promise<ProcessResult> {
-  // Authoritative meta read — under the domain lock.
-  const meta = await readMeta(metaPath, opts.runId);
-
   // Load + validate review-decision.yaml. Any failure here (FS error,
   // YAML parse error, Zod validation error) is by definition user-fixable
   // since the reviewer just edited this file.
@@ -173,16 +214,9 @@ async function processUnderLock(
       `failed to read review-decision.yaml for ${opts.runId}: ${(e as Error).message}`,
     );
   }
-
-  // 整合性 check — all gate errors.
   if (decision.runId !== opts.runId) {
     throw new ReviewGateError(
       `review-decision.yaml runId (${decision.runId}) does not match directory (${opts.runId})`,
-    );
-  }
-  if (decision.domain !== meta.domain) {
-    throw new ReviewGateError(
-      `review-decision.yaml domain (${decision.domain}) does not match meta.json domain (${meta.domain})`,
     );
   }
   if (decision.decision === "pending") {
@@ -190,9 +224,35 @@ async function processUnderLock(
       `decision is still pending in ${decisionPath}; reviewer must set it to approved | changes_requested | rejected`,
     );
   }
-  if (meta.status !== "needs_review") {
+
+  // Resolve the run's domain + status from the CANONICAL source —
+  // the DB row for a db-first run, meta.json for a legacy run.
+  let currentDomain: string;
+  let currentStatus: string;
+  let legacyMeta: RunMeta | null = null;
+  if (dbFirst) {
+    const row = db
+      .prepare("SELECT domain, status FROM runs WHERE run_id = ?")
+      .get(opts.runId) as { domain: string; status: string } | undefined;
+    if (row === undefined) {
+      throw new ReviewGateError(`run ${opts.runId} not found in the DB`);
+    }
+    currentDomain = row.domain;
+    currentStatus = row.status;
+  } else {
+    legacyMeta = await readMeta(metaPath, opts.runId);
+    currentDomain = legacyMeta.domain;
+    currentStatus = legacyMeta.status;
+  }
+
+  if (decision.domain !== currentDomain) {
     throw new ReviewGateError(
-      `run ${opts.runId} status is "${meta.status}", only needs_review can be processed`,
+      `review-decision.yaml domain (${decision.domain}) does not match the run domain (${currentDomain})`,
+    );
+  }
+  if (currentStatus !== "needs_review") {
+    throw new ReviewGateError(
+      `run ${opts.runId} status is "${currentStatus}", only needs_review can be processed`,
     );
   }
 
@@ -205,25 +265,12 @@ async function processUnderLock(
   const now = opts.now ?? new Date();
   const reviewedAt = decision.reviewed_at ?? now.toISOString();
 
-  // reviewed_at が null だった場合のみ file に書き戻す
-  if (decision.reviewed_at === null) {
-    await writeReviewDecision(decisionPath, {
-      ...decision,
-      reviewed_at: reviewedAt,
-    });
-  }
-
   // Phase 7-5: a `db-first` run is processed through the DB — a guarded
   // status transition + `review_decisions`, then re-export. A legacy /
   // file-canonical run keeps the direct meta.json / events.jsonl writes.
-  const modeRow = db
-    .prepare("SELECT source_mode FROM runs WHERE run_id = ?")
-    .get(opts.runId) as { source_mode: string } | undefined;
-
-  if (modeRow?.source_mode === "db-first") {
+  if (dbFirst) {
     new RunRepository(db).applyReviewDecision({
       runId: opts.runId,
-      newStatus,
       decision: decision.decision,
       reviewer: decision.reviewer,
       reviewedAt,
@@ -232,9 +279,8 @@ async function processUnderLock(
     });
     exportRun(db, opts.runId, { runsDir: opts.runsDir });
   } else {
-    // meta 更新
     const updatedMeta: RunMeta = {
-      ...meta,
+      ...(legacyMeta as RunMeta),
       status: newStatus,
       reviewer: decision.reviewer,
       reviewedAt,
@@ -244,13 +290,11 @@ async function processUnderLock(
       `${JSON.stringify(updatedMeta, null, 2)}\n`,
       "utf8",
     );
-
-    // event 追記
     const event = {
       type: "review_processed",
       runId: opts.runId,
       decision: decision.decision,
-      previousStatus: meta.status,
+      previousStatus: currentStatus,
       newStatus,
       reviewer: decision.reviewer,
       reviewedAt,
@@ -262,9 +306,19 @@ async function processUnderLock(
     );
   }
 
+  // Backfill review-decision.yaml's reviewed_at ONLY after the canonical
+  // write succeeded — a failed guard must not leave the input file
+  // mutated while the decision was not applied.
+  if (decision.reviewed_at === null) {
+    await writeReviewDecision(decisionPath, {
+      ...decision,
+      reviewed_at: reviewedAt,
+    });
+  }
+
   return {
     runId: opts.runId,
-    previousStatus: meta.status,
+    previousStatus: currentStatus as RunStatus,
     newStatus,
     reviewer: decision.reviewer,
     reviewedAt,
