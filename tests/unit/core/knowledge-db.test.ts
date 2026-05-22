@@ -7,6 +7,7 @@ import {
   rejectKnowledgeDbFirst,
   type KnowledgeDbContext,
 } from "../../../src/core/knowledge-db.js";
+import { promoteKnowledge } from "../../../src/core/knowledge-promoter.js";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 
@@ -151,6 +152,31 @@ describe("knowledge DB-first", () => {
       reason: "x",
     });
     expect(candidate(ctx, 0)?.status).toBe("rejected");
+  });
+
+  it("reconciles a pre-Phase-7 promotion (md exists, DB still candidate)", async () => {
+    const ctx = setup();
+    // a legacy promote — writes the md files but never touches the DB
+    await promoteKnowledge({
+      runsDir: ctx.runsDir,
+      knowledgeDir: ctx.knowledgeDir,
+      runId: RUN_ID,
+      reviewer: "legacy-kn",
+    });
+    expect(candidate(ctx, 0)).toBeUndefined(); // not in the DB yet
+
+    // a DB-first promote sees the existing md (duplicate-index) and
+    // reconciles the decision into the DB from the file's frontmatter
+    const r = await promoteKnowledgeDbFirst(ctx, {
+      runId: RUN_ID,
+      reviewer: "kn",
+    });
+    expect(r.promoted).toHaveLength(0);
+    expect(r.skipped.every((s) => s.reason === "duplicate-index")).toBe(true);
+    const c0 = candidate(ctx, 0);
+    expect(c0?.status).toBe("promoted");
+    expect(c0?.source_mode).toBe("db-first");
+    expect(c0?.reviewer).toBe("legacy-kn");
   });
 
   it("reject rejects an out-of-range index", async () => {

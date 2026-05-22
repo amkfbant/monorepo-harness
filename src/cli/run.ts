@@ -1997,6 +1997,9 @@ knowledgeCmd
           reason: String(raw.reason),
         },
       );
+      for (const w of r.exportWarnings ?? []) {
+        process.stderr.write(`warning: ${w}\n`);
+      }
       process.stdout.write(
         `run=${r.runId} rejected candidate ${r.index} by ${r.reviewer}\n`,
       );
@@ -2038,6 +2041,9 @@ knowledgeCmd
         process.stdout.write(
           `  skipped [${s.index}] ${s.reason}${s.detail ? ` — ${s.detail}` : ""}\n`,
         );
+      }
+      for (const w of r.exportWarnings ?? []) {
+        process.stderr.write(`warning: ${w}\n`);
       }
     } catch (e) {
       knowledgeError(e);

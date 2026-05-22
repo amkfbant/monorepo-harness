@@ -99,8 +99,7 @@ export class KnowledgeRepository {
          ON CONFLICT (candidate_id) DO UPDATE SET
            run_id = excluded.run_id, project_id = excluded.project_id,
            repo_id = excluded.repo_id, domain = excluded.domain,
-           kind = excluded.kind, title = excluded.title, body = excluded.body,
-           created_at = excluded.created_at`,
+           kind = excluded.kind, title = excluded.title, body = excluded.body`,
       )
       .run({
         candidate_id: input.candidateId,
@@ -179,6 +178,22 @@ export class KnowledgeRepository {
          WHERE candidate_id = ?`,
       )
       .run(new Date().toISOString(), candidateId);
+  }
+
+  /**
+   * Mark a candidate's decision export as `failed`. The DB decision is
+   * canonical and stays committed; the failure is recorded so
+   * check-consistency / a re-export reconciles the stale file.
+   */
+  markCandidateExportFailed(candidateId: string, error: string): void {
+    this.db
+      .prepare(
+        `UPDATE knowledge_candidates
+           SET export_status = 'failed', last_exported_at = ?,
+               last_export_error = ?
+         WHERE candidate_id = ?`,
+      )
+      .run(new Date().toISOString(), error, candidateId);
   }
 
   /**

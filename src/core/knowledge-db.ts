@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type Database from "better-sqlite3";
@@ -9,6 +9,7 @@ import { atomicWriteFile } from "../db/atomic-write.js";
 import {
   describeExportedFile,
   recordExportSuccess,
+  recordExportFailure,
 } from "../db/export-records.js";
 import {
   KnowledgePromoteGateError,
@@ -21,6 +22,7 @@ import {
   assertSafeKind,
   buildPromotedMarkdown,
   promotedFilename,
+  splitFrontmatter,
   type KnowledgeCandidate,
   type PromoteResult,
   type PromotedFile,
@@ -36,9 +38,11 @@ import {
  * candidate re-projects `knowledge-decisions.yaml`, a promoted candidate
  * writes its `docs/knowledge/<kind>/*.md`. The candidate content itself
  * stays file-derived — it is synced into `knowledge_candidates` from the
- * immutable per-run `knowledge-candidates.yaml` observation log, and any
- * decision already present in a legacy sidecar is migrated into the DB so
- * the re-projected sidecar never drops a prior rejection.
+ * immutable per-run `knowledge-candidates.yaml` observation log.
+ *
+ * The DB write is canonical; the file export is best-effort. A failed
+ * export leaves the decision committed, the row marked `failed`, and an
+ * `exportWarnings` entry the CLI surfaces to stderr.
  */
 
 export interface KnowledgeDbContext {
@@ -77,8 +81,8 @@ function runAttribution(
 /**
  * Sync a run's `knowledge-candidates.yaml` into `knowledge_candidates`
  * (content only — decisions are preserved) and migrate any legacy
- * `knowledge-decisions.yaml` rejection into the DB for a candidate still
- * undecided there. Returns the raw candidate list (index-aligned).
+ * `knowledge-decisions.yaml` rejection into the DB. Returns the raw
+ * candidate list (index-aligned).
  */
 async function syncRun(
   repo: KnowledgeRepository,
@@ -87,7 +91,10 @@ async function syncRun(
 ): Promise<unknown[]> {
   const candidates = await loadCandidates(ctx.runsDir, runId);
   const attr = runAttribution(ctx.runsDir, runId);
-  const createdAt = new Date().toISOString();
+  // the observation-log mtime keeps `created_at` stable across re-syncs and
+  // matches what `db import` records (no wall-clock drift).
+  const candidatesPath = join(ctx.runsDir, runId, "knowledge-candidates.yaml");
+  const createdAt = new Date(statSync(candidatesPath).mtimeMs).toISOString();
   candidates.forEach((raw, i) => {
     const c = raw as Record<string, unknown>;
     repo.syncCandidate({
@@ -110,7 +117,8 @@ async function syncRun(
  * Seed the DB with rejections already recorded in a legacy
  * `knowledge-decisions.yaml`, so a DB-first command's re-projected
  * sidecar does not drop a pre-Phase-7 rejection. Only a candidate still
- * `candidate` in the DB is touched (a `db-first` decision always wins).
+ * `candidate` in the DB is touched. A corrupt sidecar fails the command
+ * rather than risk overwriting it with an incomplete projection.
  */
 function migrateLegacyRejections(
   repo: KnowledgeRepository,
@@ -123,8 +131,11 @@ function migrateLegacyRejections(
   let decisions: Record<string, unknown>[];
   try {
     decisions = parseDecisions(readFileSync(path, "utf8"));
-  } catch {
-    return;
+  } catch (e) {
+    throw new KnowledgePromoteGateError(
+      `failed to parse ${path}: ${(e as Error).message} — ` +
+        `refusing to overwrite it with a partial projection`,
+    );
   }
   for (const d of decisions) {
     if (
@@ -166,12 +177,15 @@ function parseDecisions(text: string): Record<string, unknown>[] {
 /**
  * Write `knowledge-decisions.yaml` from the DB's rejected candidates for
  * a run — the file is a pure projection of the canonical decision state.
+ * Returns a warning string when the file write failed (the DB stays
+ * canonical), or undefined on success.
  */
 function exportDecisionsSidecar(
   db: Database.Database,
   ctx: KnowledgeDbContext,
   runId: string,
-): void {
+): string | undefined {
+  const repo = new KnowledgeRepository(db);
   const rows = db
     .prepare(
       `SELECT candidate_id, reviewer, reason, decided_at
@@ -207,9 +221,17 @@ function exportDecisionsSidecar(
       )
       .join("\n") +
     "\n";
-  atomicWriteFile(join(ctx.runsDir, runId, DECISIONS_FILE), body);
-  for (const r of rows) {
-    new KnowledgeRepository(db).markCandidateExported(r.candidate_id);
+  try {
+    atomicWriteFile(join(ctx.runsDir, runId, DECISIONS_FILE), body);
+    for (const r of rows) repo.markCandidateExported(r.candidate_id);
+    return undefined;
+  } catch (e) {
+    const error = (e as Error).message;
+    for (const r of rows) repo.markCandidateExportFailed(r.candidate_id, error);
+    return (
+      `run ${runId}: the DB decision was recorded but exporting ` +
+      `${DECISIONS_FILE} failed: ${error}`
+    );
   }
 }
 
@@ -235,6 +257,7 @@ export async function rejectKnowledgeDbFirst(
     throw new KnowledgePromoteGateError("reason is required for reject");
   }
   const db = openDb(ctx.dbPath);
+  const warnings: string[] = [];
   try {
     runMigrations(db);
     const repo = new KnowledgeRepository(db);
@@ -256,18 +279,26 @@ export async function rejectKnowledgeDbFirst(
       reason: opts.reason,
       decidedAt: (opts.now ?? new Date()).toISOString(),
     });
-    exportDecisionsSidecar(db, ctx, opts.runId);
+    const warning = exportDecisionsSidecar(db, ctx, opts.runId);
+    if (warning !== undefined) warnings.push(warning);
   } finally {
     db.close();
   }
-  return { runId: opts.runId, index: opts.index, reviewer: opts.reviewer };
+  return {
+    runId: opts.runId,
+    index: opts.index,
+    reviewer: opts.reviewer,
+    ...(warnings.length > 0 ? { exportWarnings: warnings } : {}),
+  };
 }
 
 /**
  * Promote a run's knowledge candidates. Each eligible candidate's
  * `promoted` decision and `knowledge_entries` manifest are committed to
  * the DB, then the `docs/knowledge/<kind>/*.md` artifact is exported.
- * Idempotent: a candidate already promoted (its md exists) is skipped.
+ * Idempotent: a candidate already promoted (its md exists) is skipped —
+ * and if the DB does not yet record that promotion (a pre-Phase-7 md), it
+ * is reconciled into the DB from the existing file.
  */
 export async function promoteKnowledgeDbFirst(
   ctx: KnowledgeDbContext,
@@ -286,6 +317,7 @@ export async function promoteKnowledgeDbFirst(
   const promotedAt = (opts.now ?? new Date()).toISOString();
   const promoted: PromotedFile[] = [];
   const skipped: SkipRecord[] = [];
+  const warnings: string[] = [];
 
   const db = openDb(ctx.dbPath);
   try {
@@ -293,7 +325,6 @@ export async function promoteKnowledgeDbFirst(
     const repo = new KnowledgeRepository(db);
     const candidates = await syncRun(repo, ctx, opts.runId);
     const attr = runAttribution(ctx.runsDir, opts.runId);
-    // per-kind scans of the existing md files, lazily seeded.
     const scanByKind = new Map<
       string,
       Awaited<ReturnType<typeof scanKindDir>>
@@ -329,6 +360,11 @@ export async function promoteKnowledgeDbFirst(
       }
       if (scan.promotedKeys.has(`${opts.runId}#${i}`)) {
         skipped.push({ index: i, reason: "duplicate-index" });
+        // an md exists but the DB does not record the promotion (a
+        // pre-Phase-7 promotion) — reconcile the decision into the DB.
+        if (decided?.status === "candidate") {
+          reconcileFromExistingMd(repo, ctx, opts.runId, i, c, kindDir, attr);
+        }
         continue;
       }
       const hash = contentHash(c);
@@ -343,7 +379,7 @@ export async function promoteKnowledgeDbFirst(
 
       const filename = promotedFilename(opts.runId, i, c.title);
       const relPath = join("docs", "knowledge", c.kind, filename);
-      const md = buildPromotedMarkdown(c, {
+      const rendered = buildPromotedMarkdown(c, {
         runId: opts.runId,
         index: i,
         reviewer: opts.reviewer,
@@ -367,30 +403,37 @@ export async function promoteKnowledgeDbFirst(
           kind: c.kind,
           path: relPath,
           title: c.title,
-          body: md,
-          frontmatterJson: JSON.stringify({
-            kind: c.kind,
-            domain: c.domain,
-            title: c.title,
-            source_run: opts.runId,
-            source_index: i,
-            confidence: c.confidence,
-            promoted_by: opts.reviewer,
-            promoted_at: promotedAt,
-            hash,
-          }),
+          body: rendered.body,
+          frontmatterJson: JSON.stringify(rendered.frontmatter),
           createdAt: promotedAt,
           sourceCandidateId: id,
         });
       })();
-      atomicWriteFile(join(kindDir, filename), md);
-      recordExportSuccess(db, {
-        scopeType: "knowledge_entry",
-        scopeId: relPath,
-        dbRevision,
-        startedAt: promotedAt,
-        files: [describeExportedFile(relPath, md)],
-      });
+      try {
+        atomicWriteFile(join(kindDir, filename), rendered.markdown);
+        recordExportSuccess(db, {
+          scopeType: "knowledge_entry",
+          scopeId: relPath,
+          dbRevision,
+          startedAt: promotedAt,
+          files: [describeExportedFile(relPath, rendered.markdown)],
+        });
+        repo.markCandidateExported(id);
+      } catch (e) {
+        const error = (e as Error).message;
+        recordExportFailure(db, {
+          scopeType: "knowledge_entry",
+          scopeId: relPath,
+          dbRevision,
+          startedAt: promotedAt,
+          error,
+        });
+        repo.markCandidateExportFailed(id, error);
+        warnings.push(
+          `candidate ${id}: the DB was updated but exporting ${relPath} ` +
+            `failed: ${error}`,
+        );
+      }
       // keep the in-memory scan current so two identical candidates in
       // the same run don't both promote.
       scan.hashes.add(hash);
@@ -407,5 +450,58 @@ export async function promoteKnowledgeDbFirst(
   } finally {
     db.close();
   }
-  return { runId: opts.runId, promoted, skipped };
+  return {
+    runId: opts.runId,
+    promoted,
+    skipped,
+    ...(warnings.length > 0 ? { exportWarnings: warnings } : {}),
+  };
+}
+
+/**
+ * Reconcile a pre-Phase-7 promotion into the DB: the md file exists but
+ * `knowledge_candidates` still says `candidate`. The decision and entry
+ * manifest are taken from the existing file's frontmatter so the DB
+ * matches what is already on disk (no file is written).
+ */
+function reconcileFromExistingMd(
+  repo: KnowledgeRepository,
+  ctx: KnowledgeDbContext,
+  runId: string,
+  index: number,
+  c: KnowledgeCandidate,
+  kindDir: string,
+  attr: { repoId: string | null; projectId: string | null },
+): void {
+  const filename = promotedFilename(runId, index, c.title);
+  const path = join(kindDir, filename);
+  if (!existsSync(path)) return; // title drifted — leave the DB untouched
+  const { frontmatter, body } = splitFrontmatter(readFileSync(path, "utf8"));
+  const fm = frontmatter ?? {};
+  const id = candidateId(runId, index);
+  const reviewer =
+    typeof fm.promoted_by === "string" ? fm.promoted_by : "(unknown)";
+  const decidedAt =
+    typeof fm.promoted_at === "string" ? fm.promoted_at : "";
+  const relPath = join("docs", "knowledge", c.kind, filename);
+  repo.setCandidateDecision({
+    candidateId: id,
+    decision: "promoted",
+    reviewer,
+    reason: null,
+    decidedAt,
+  });
+  repo.upsertEntry({
+    entryId: relPath,
+    projectId: attr.projectId,
+    repoId: attr.repoId,
+    domain: c.domain,
+    kind: c.kind,
+    path: relPath,
+    title: c.title,
+    body,
+    frontmatterJson: JSON.stringify(fm),
+    createdAt: decidedAt === "" ? null : decidedAt,
+    sourceCandidateId: id,
+  });
 }

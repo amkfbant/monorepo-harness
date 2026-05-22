@@ -212,23 +212,58 @@ export function promotedFilename(
   return `${runId}-${String(index).padStart(2, "0")}-${slugify(title)}.md`;
 }
 
+export interface PromoteMeta {
+  runId: string;
+  index: number;
+  reviewer: string;
+  promotedAt: string;
+  hash: string;
+}
+
+export interface PromotedMarkdown {
+  /** the full `docs/knowledge/<kind>/*.md` file content */
+  markdown: string;
+  /** the markdown body alone (everything after the frontmatter) */
+  body: string;
+  /** the frontmatter as the object `parseYaml` would produce from the md */
+  frontmatter: Record<string, unknown>;
+}
+
+/** The frontmatter object for a promoted candidate (the single source). */
+function promotedFrontmatter(
+  c: KnowledgeCandidate,
+  meta: PromoteMeta,
+): Record<string, unknown> {
+  return {
+    kind: c.kind,
+    domain: c.domain,
+    title: c.title,
+    source_run: meta.runId,
+    source_index: meta.index,
+    confidence: c.confidence,
+    source_status: c.status,
+    promoted_by: meta.reviewer,
+    promoted_at: meta.promotedAt,
+    // deprecated knowledge is excluded from `knowledge build-context`.
+    // promote always writes false; a human edits this to retire an entry.
+    deprecated: false,
+    hash: meta.hash,
+  };
+}
+
 /**
- * Render a promoted candidate as its `docs/knowledge/<kind>/*.md` body —
+ * Render a promoted candidate as its `docs/knowledge/<kind>/*.md` file —
  * the YAML frontmatter (provenance + content hash) followed by the
  * candidate's content. Shared by the legacy file writer and the DB-first
- * export (Phase 7-9) so both emit byte-identical markdown.
+ * export (Phase 7-9) so both emit byte-identical markdown, and so the DB
+ * manifest's `frontmatter_json` is the exact object the md parses to.
  */
 export function buildPromotedMarkdown(
   c: KnowledgeCandidate,
-  meta: {
-    runId: string;
-    index: number;
-    reviewer: string;
-    promotedAt: string;
-    hash: string;
-  },
-): string {
-  const frontmatter = [
+  meta: PromoteMeta,
+): PromotedMarkdown {
+  const fm = promotedFrontmatter(c, meta);
+  const frontmatterText = [
     "---",
     `kind: ${c.kind}`,
     `domain: ${JSON.stringify(c.domain)}`,
@@ -239,14 +274,11 @@ export function buildPromotedMarkdown(
     `source_status: ${JSON.stringify(c.status)}`,
     `promoted_by: ${JSON.stringify(meta.reviewer)}`,
     `promoted_at: ${JSON.stringify(meta.promotedAt)}`,
-    // deprecated knowledge is excluded from `knowledge build-context`.
-    // promote always writes false; a human edits this to retire an entry.
     "deprecated: false",
     `hash: ${meta.hash}`,
     "---",
   ].join("\n");
-  return [
-    frontmatter,
+  const body = [
     "",
     `# ${c.title}`,
     "",
@@ -257,6 +289,7 @@ export function buildPromotedMarkdown(
     c.content,
     "",
   ].join("\n");
+  return { markdown: `${frontmatterText}\n${body}`, body, frontmatter: fm };
 }
 
 /**
@@ -441,6 +474,8 @@ export interface RejectResult {
   runId: string;
   index: number;
   reviewer: string;
+  /** DB-first path: warnings when the DB write succeeded but export did not */
+  exportWarnings?: string[];
 }
 
 /**
@@ -572,6 +607,8 @@ export interface PromoteResult {
   runId: string;
   promoted: PromotedFile[];
   skipped: SkipRecord[];
+  /** DB-first path: warnings when the DB write succeeded but export did not */
+  exportWarnings?: string[];
 }
 
 /**
@@ -644,14 +681,14 @@ export async function promoteKnowledge(
     const filename = promotedFilename(opts.runId, i, c.title);
     await mkdir(kindDir, { recursive: true });
     const outPath = join(kindDir, filename);
-    const body = buildPromotedMarkdown(c, {
+    const { markdown } = buildPromotedMarkdown(c, {
       runId: opts.runId,
       index: i,
       reviewer: opts.reviewer,
       promotedAt,
       hash,
     });
-    await writeFile(outPath, body, "utf8");
+    await writeFile(outPath, markdown, "utf8");
     // keep the in-memory scan current so two identical candidates in the
     // same run don't both get promoted.
     scan.hashes.add(hash);
