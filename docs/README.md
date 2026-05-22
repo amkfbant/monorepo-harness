@@ -25,7 +25,7 @@ docs/
 
 | subcommand | 役割 |
 |------------|------|
-| `harness review list [--all\|--status\|--domain\|--limit\|--json\|--use-index]` | review queue（needs_review + changes_requested）を一覧 |
+| `harness review list [--all\|--status\|--domain\|--limit\|--json]` | review queue（needs_review + changes_requested）を一覧 |
 | `harness review auto --run-id <id>` | reviewer agent（read-only codex）が `review-decision.yaml` を生成 |
 | `harness review evaluate / compare` | reviewer agent を N 回走らせ verdict のばらつきを観測 / 2 decision を比較（Phase 3-2） |
 | `harness review process --run-id <id>` | `review-decision.yaml` を適用し status 遷移 |
@@ -35,7 +35,7 @@ docs/
 | `harness knowledge build-context --domain <d>` | promote 済み knowledge を domain 別に集約（`run --with-knowledge` 用、Phase 3-4） |
 | `harness cleanup --run-id <id> [--scope …]` | worktree / branch / run dir を scope 単位で削除 |
 | `harness workflow reviewed-run …` | run → review auto → review process → rerun を bounded loop で束ねる（Phase 3-1） |
-| `harness index rebuild / status / show` | SQLite run index（派生キャッシュ。source of truth は runs/ files、Phase 3-5） |
+| `harness index` | Phase 8-7 で撤去（`harness.sqlite` read model に置換）。exit 1 の stub のみ残置 |
 | `harness pr create --run-id <approved-id>` | approved run を GitHub draft PR にする（Phase 3-6） |
 | `harness run show / timeline / artifacts` | 1 run の状態を read-only で集約表示（Phase 4-1） |
 | `harness inbox` | 今日見るべきもの（needs_review / changes_requested / failed / cleanup / knowledge）を集約（Phase 4-2） |

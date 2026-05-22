@@ -478,7 +478,7 @@ harness lock release --domain apps/catalog --force
 ### Synopsis
 
 ```bash
-harness review list [--all] [--status <s>] [--domain <d>] [--limit <n>] [--json] [--use-index]
+harness review list [--all] [--status <s>] [--domain <d>] [--limit <n>] [--json]
 ```
 
 ### Options
@@ -490,7 +490,6 @@ harness review list [--all] [--status <s>] [--domain <d>] [--limit <n>] [--json]
 | `--domain <d>` | — | 単一 domain に絞る |
 | `--limit <n>` | — | 表示行数の上限（非負整数。不正値は exit 1） |
 | `--json` | — | テーブルでなく JSON (`{ validRuns, invalidRuns }`) を出力 |
-| `--use-index` | — | `runs/` を走査せず SQLite index から読む（Phase 3-5）。filter/sort/limit は file scan と同一ロジック。index が無ければ exit 1 |
 
 ### Output（table）
 
@@ -545,39 +544,32 @@ run-20260521-apps-orders-mpf2lhm...     apps/orders   needs_review  allowed  -  
 ### Exit code
 
 - `0`: 正常（0 件 / invalid run があっても 0）
-- `1`: `--limit` が非負整数でない / `--use-index` で index が未構築
+- `1`: `--limit` が非負整数でない
 
-## `harness index`
+## `harness index`（Phase 8 で撤去）
 
-`runs/` を走査する代わりに一覧・検索を高速化する **SQLite index**（Phase 3-5）。
+Phase 3-5 の SQLite run index（`index.sqlite` / `harness index rebuild|status|show`）
+は **Phase 8-7 で撤去**された。Phase 6 で `harness.sqlite` read model
+（`harness db import` で構築、[`db.md`](./db.md)）に置き換わり deprecated
+だった機能で、`review list --use-index` も同時に廃止されている。
 
-> **Phase 6 で deprecated。** `index.sqlite` は `harness.sqlite`（`harness db
-> import` で構築する read model、[`db.md`](./db.md)）に置き換わった。`index` 系
-> コマンドは legacy の `review list --use-index` 用に残るが、実行すると
-> deprecation warning を出す。新しい一覧・集計・ダッシュボードは `harness db` /
-> `harness dashboard` を使う。
+`harness index` は即削除せず、1 フェーズだけ **明示エラー stub** として残す。
+任意のサブコマンドで exit 1 となり、置き換え先を案内する:
 
-```bash
-harness index rebuild        # runs/ 全走査から index を再構築
-harness index status         # index の状態（件数 / 再構築時刻 / サイズ）
-harness index show --run-id <id>   # 1 run の indexed row を表示
+```text
+harness error: 'harness index' was removed (Phase 8); index.sqlite is superseded
+by the harness.sqlite read model:
+  harness db status            — read-model / DB status
+  harness db check-consistency — verify the DB against exported files
+  harness dashboard export     — derived run views
 ```
 
-### source of truth は `runs/` files
-
-**index は派生キャッシュであり source of truth ではない。** source of truth は常に `runs/<runId>/` のファイル群。index（`<HARNESS_ROOT>/.harness/index.sqlite`）が壊れても・消えても `harness index rebuild` で `runs/` から完全に再生成できる。`review list --use-index` は index が古い可能性があるため、run を追加したら rebuild する運用。
-
-### DB 導入方針
-
-- DB を source of truth にしない。run artifacts 全文を DB に入れない（Phase 3-5 非目標）
-- index は `runs/` の meta.json から導出できる値のみを持つ（`runs` / `invalid_runs` / `index_meta` テーブル）
-- `index rebuild` は db ファイルを削除して作り直す（破損からの確実な回復）
-- `review list --use-index` の filter / sort / limit は file scan と**同一の `applyListFilters`** を通すため、index が最新なら結果は file scan と一致する
+一覧・集計・ダッシュボードは `harness review list` / `harness db` /
+`harness dashboard` を使う。
 
 ### Exit code
 
-- `0`: 成功
-- `1`: `index show` で runId が index に無い / index が未構築
+- `1`: `harness index`（およびすべての旧サブコマンド）は常に exit 1 の stub
 
 ## `harness pr create`
 

@@ -44,4 +44,13 @@ describe("harness index (removed stub)", () => {
       expect(r.stderr).toMatch(/removed/i);
     }
   });
+
+  it("errors on a former subcommand invoked with its options", () => {
+    // the operational form `index show --run-id <id>`: allowUnknownOption()
+    // keeps commander from rejecting `--run-id` before the stub runs.
+    const r = run(["index", "show", "--run-id", "run-abc"]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/removed/i);
+    expect(r.stderr).toContain("harness db status");
+  });
 });

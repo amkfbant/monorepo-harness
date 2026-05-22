@@ -149,7 +149,7 @@ export async function listReviews(opts: ListOpts): Promise<ListResult> {
 
 /**
  * Scan runs/ and return EVERY run (valid + invalid) with no filtering —
- * used to populate the SQLite index.
+ * the unfiltered source for the inbox / metrics / session views.
  */
 export async function scanAllRuns(runsDir: string): Promise<ListResult> {
   if (!existsSync(runsDir)) return { valid: [], invalid: [] };
