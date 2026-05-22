@@ -41,6 +41,13 @@ Phase 8（将来）: DB complete,            file scan = migration-only
 修正コミット（`fix(...) — codex レビュー反映`）で反映済み。Phase 7 は
 per-subphase のデモレポートを持たず、テスト + codex レビューで検証した。
 
+加えて Phase 7 **全体**の横断 codex レビュー（gpt-5.5, xhigh）を実施し、
+P0 ゼロ・P1×4 を `fix(runtime): Phase 7 — 全体 codex レビュー反映` で修正した:
+knowledge entry の canonical 境界統一（`.md` body は file-backed、
+`knowledge_entries` は read model）、knowledge decision の failed export を
+`db export-files` で復旧可能に、run 系 export failure の warning surface
+（`warnIfExportFailed`）、unknown `source_mode` の一貫した `SourceModeError`。
+
 ## close 条件チェック（19 項目）
 
 - [x] 全 runtime write コマンドが DB トランザクションを canonical 書き込みとする
@@ -89,7 +96,7 @@ per-subphase のデモレポートを持たず、テスト + codex レビュー�
 
 ## 検証
 
-- `npm test`: 847 passed / 1 skipped。
+- `npm test`: 848 passed / 1 skipped。
 - `npm run typecheck`: green。
 - v1 → v2 → v3 migration: idempotent。
 - 既存 file-based テスト: 回帰なし（legacy-file path は不変）。

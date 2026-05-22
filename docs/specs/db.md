@@ -212,10 +212,16 @@ db import --from-files --force-legacy-reconcile
 
 ### db export-files（Phase 7-11）
 
-`harness db export-files` は全 `db-first` row の compatibility files を bulk
-再 export する。`--scope run|backlog|knowledge` / `--id <id>` で範囲指定可。
+`harness db export-files` は DB canonical な state の compatibility files を
+bulk 再 export する。`--scope run|backlog|knowledge` / `--id <id>` で範囲指定可。
 crash・export 失敗・`--reset` import のあとに files を DB から再構築する。
-`legacy-file` row は files が source of truth なので対象外。
+
+- `run` / `backlog`: `db-first` row の files（`meta.json` / `events.jsonl` /
+  `backlog/*.yaml`）を再 export。`legacy-file` row は files が source of truth
+  なので対象外。
+- `knowledge`: `db-first` decision を持つ run の `knowledge-decisions.yaml` を
+  再投影する。promote 済み entry の `.md` body は **file-backed**（`.md` 自体が
+  canonical な artifact で人手編集可能）なので DB から再生成しない。
 
 `db check-consistency` は export 追跡も検査する: `export_status` が
 `dirty` / `failed` の runtime 行、`exported_files.sha256` と実ファイルの drift。
