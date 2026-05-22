@@ -20,6 +20,7 @@ import {
   isExporting,
 } from "../../../src/db/atomic-write.js";
 import { exportRun } from "../../../src/db/export-files.js";
+import { ingestRunArtifacts } from "../../../src/db/run-artifacts.js";
 import { importRuns } from "../../../src/db/import/runs.js";
 import { emptyCounters } from "../../../src/db/import/common.js";
 
@@ -227,6 +228,29 @@ describe("exportRun", () => {
     expect(() => exportRun(db, "missing", { runsDir: tmpDir() })).toThrow(
       DbError,
     );
+    db.close();
+  });
+
+  it("exports db-stored artifact bodies from artifact_blobs (Phase 8-4)", () => {
+    const db = freshDb();
+    const runsDir = tmpDir();
+    insertRun(db, "run-art");
+    const runDir = join(runsDir, "run-art");
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(join(runDir, "codex-output.log"), "codex ran\n");
+    // ingest the body into artifact_blobs (storage='db')
+    ingestRunArtifacts(db, runDir, "run-art");
+    // the run dir loses the artifact file — export must restore it
+    rmSync(join(runDir, "codex-output.log"));
+
+    const result = exportRun(db, "run-art", { runsDir });
+    expect(result.status).toBe("synced");
+    expect(readFileSync(join(runDir, "codex-output.log"), "utf8")).toBe(
+      "codex ran\n",
+    );
+    expect(
+      result.files.some((f) => f.relativePath === "codex-output.log"),
+    ).toBe(true);
     db.close();
   });
 

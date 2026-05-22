@@ -15,6 +15,7 @@ import {
   type BacklogStatus,
 } from "../core/backlog.js";
 import { KnowledgeRepository } from "./repositories/knowledge.js";
+import { readArtifactBlob } from "./artifact-blobs.js";
 
 /** The four backlog status dirs — the one a db-first item is exported to. */
 const BACKLOG_STATUSES: readonly BacklogStatus[] = [
@@ -69,6 +70,7 @@ export function exportRun(
           row: Record<string, unknown>;
           eventLines: string[];
           reviewYaml: string | null;
+          artifacts: { relative_path: string; blob_sha256: string }[];
         }
       | undefined => {
       const r = db
@@ -90,17 +92,26 @@ export function exportRun(
           "SELECT source_yaml FROM review_decisions WHERE run_id = ?",
         )
         .get(runId) as { source_yaml: string | null } | undefined;
+      // db-stored artifact bodies (Phase 8) — exported from `artifact_blobs`.
+      const artifacts = db
+        .prepare(
+          `SELECT relative_path, blob_sha256 FROM artifacts
+           WHERE run_id = ? AND storage = 'db' AND blob_sha256 IS NOT NULL
+             AND relative_path IS NOT NULL`,
+        )
+        .all(runId) as { relative_path: string; blob_sha256: string }[];
       return {
         row: r,
         eventLines,
         reviewYaml: rev?.source_yaml ?? null,
+        artifacts,
       };
     },
   )();
   if (snapshot === undefined) {
     throw new DbError(`exportRun: no run '${runId}'`);
   }
-  const { row, eventLines, reviewYaml } = snapshot;
+  const { row, eventLines, reviewYaml, artifacts } = snapshot;
   const dbRevision = (row.db_revision as number | null) ?? 0;
   const runDir = join(opts.runsDir, runId);
   const startedAt = new Date().toISOString();
@@ -140,6 +151,16 @@ export function exportRun(
         : `${reviewYaml}\n`;
       atomicWriteFile(join(runDir, "review-decision.yaml"), reviewContent);
       files.push(describeExportedFile("review-decision.yaml", reviewContent));
+    }
+
+    // db-stored artifact bodies (Phase 8-4) — written back from
+    // `artifact_blobs` so `db export-files` restores them and export ON
+    // keeps the run dir complete.
+    for (const a of artifacts) {
+      const body = readArtifactBlob(db, a.blob_sha256);
+      if (body === null) continue; // blob vanished — drift, surfaced elsewhere
+      atomicWriteFile(join(runDir, a.relative_path), body);
+      files.push(describeExportedFile(a.relative_path, body));
     }
 
     endExporting(runDir);
