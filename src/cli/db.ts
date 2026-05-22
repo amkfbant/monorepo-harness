@@ -19,6 +19,18 @@ import {
   formatMigrateArtifacts,
 } from "../db/migrate-artifacts.js";
 import { migrateLegacy, formatMigrateLegacy } from "../db/migrate-legacy.js";
+import {
+  backupDb,
+  restoreDb,
+  checkpointDb,
+  vacuumDb,
+  dbStats,
+  formatBackup,
+  formatRestore,
+  formatCheckpoint,
+  formatVacuum,
+  formatStats,
+} from "../db/maintenance.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -271,6 +283,111 @@ export function registerDbCommands(program: Command): void {
         );
         // non-zero exit on drift/missing so CI can gate on it
         if (report.status !== "ok") process.exit(1);
+      } catch (e) {
+        dbError(e);
+      }
+    });
+
+  dbCmd
+    .command("backup")
+    .description("write a consistent standalone copy of the DB")
+    .requiredOption("--out <path>", "destination file (must not exist)")
+    .option("--json", "print the backup result as JSON")
+    .action(async (raw: Record<string, unknown>) => {
+      const { dbPath } = harnessPaths(getHarnessRoot());
+      try {
+        const r = await backupDb({ dbPath, outPath: String(raw.out) });
+        process.stdout.write(
+          raw.json === true
+            ? `${JSON.stringify(r, null, 2)}\n`
+            : formatBackup(r),
+        );
+      } catch (e) {
+        dbError(e);
+      }
+    });
+
+  dbCmd
+    .command("restore")
+    .description("replace the live DB with a backup (destructive)")
+    .requiredOption("--from <path>", "backup file to restore")
+    .option(
+      "--force",
+      "required to overwrite an existing DB — restore is destructive",
+    )
+    .option("--json", "print the restore result as JSON")
+    .action((raw: Record<string, unknown>) => {
+      const { dbPath } = harnessPaths(getHarnessRoot());
+      // restore replaces the live DB — refuse to clobber an existing one
+      // unless --force makes the destructive intent explicit.
+      if (existsSync(dbPath) && raw.force !== true) {
+        process.stderr.write(
+          `harness error: ${dbPath} already exists; 'db restore' overwrites it — ` +
+            "pass --force to confirm (back it up first with 'db backup')\n",
+        );
+        process.exit(1);
+      }
+      try {
+        const r = restoreDb({ dbPath, fromPath: String(raw.from) });
+        process.stdout.write(
+          raw.json === true
+            ? `${JSON.stringify(r, null, 2)}\n`
+            : formatRestore(r),
+        );
+      } catch (e) {
+        dbError(e);
+      }
+    });
+
+  dbCmd
+    .command("checkpoint")
+    .description("checkpoint the WAL into the main DB and truncate it")
+    .option("--json", "print the checkpoint result as JSON")
+    .action((raw: Record<string, unknown>) => {
+      const { dbPath } = harnessPaths(getHarnessRoot());
+      try {
+        const r = checkpointDb(dbPath);
+        process.stdout.write(
+          raw.json === true
+            ? `${JSON.stringify(r, null, 2)}\n`
+            : formatCheckpoint(r),
+        );
+      } catch (e) {
+        dbError(e);
+      }
+    });
+
+  dbCmd
+    .command("vacuum")
+    .description("rebuild the DB file, reclaiming freed space")
+    .option("--json", "print the vacuum result as JSON")
+    .action((raw: Record<string, unknown>) => {
+      const { dbPath } = harnessPaths(getHarnessRoot());
+      try {
+        const r = vacuumDb(dbPath);
+        process.stdout.write(
+          raw.json === true
+            ? `${JSON.stringify(r, null, 2)}\n`
+            : formatVacuum(r),
+        );
+      } catch (e) {
+        dbError(e);
+      }
+    });
+
+  dbCmd
+    .command("stats")
+    .description("show table row counts, blob totals and on-disk sizes")
+    .option("--json", "print the stats as JSON")
+    .action((raw: Record<string, unknown>) => {
+      const { dbPath } = harnessPaths(getHarnessRoot());
+      try {
+        const s = dbStats(dbPath);
+        process.stdout.write(
+          raw.json === true
+            ? `${JSON.stringify(s, null, 2)}\n`
+            : formatStats(s),
+        );
       } catch (e) {
         dbError(e);
       }

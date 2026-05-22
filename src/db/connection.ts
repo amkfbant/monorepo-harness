@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, chmodSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 
@@ -14,6 +14,28 @@ export class DbError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "DbError";
+  }
+}
+
+/**
+ * 0600 — owner read/write only. Phase 8 makes the DB the canonical store
+ * for artifact bodies (codex logs / diffs), so `harness.sqlite` and any
+ * backup of it may hold secrets and must not be group/world readable.
+ */
+export const DB_FILE_MODE = 0o600;
+
+/**
+ * Restrict the DB file and its WAL/SHM sidecars to `DB_FILE_MODE`.
+ * Best-effort: a filesystem without POSIX modes must not fail a DB open
+ * over permissions, so chmod errors are swallowed.
+ */
+export function hardenDbPermissions(dbPath: string): void {
+  for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+    try {
+      if (existsSync(p)) chmodSync(p, DB_FILE_MODE);
+    } catch {
+      // best-effort — see the doc comment above.
+    }
   }
 }
 
@@ -35,6 +57,9 @@ export function openDb(dbPath: string): Database.Database {
     // a non-SQLite file opens lazily but fails on the first pragma — run
     // the pragmas here so a corrupt DB surfaces as a DbError, not later.
     applyPragmas(db);
+    // the file (and the WAL/SHM the pragma above just created) may hold
+    // secrets — restrict it on every open so a fresh DB is never world-readable.
+    hardenDbPermissions(dbPath);
     return db;
   } catch (e) {
     // close a handle opened before the pragma failed, so a corrupt file

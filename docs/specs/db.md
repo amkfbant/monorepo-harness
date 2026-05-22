@@ -272,3 +272,42 @@ run を DB だけで運用でき、files は opt-in の互換出力になる。�
 - knowledge entry markdown / project profile / policy は **file-authored の
   まま**（人手キュレーション対象。Phase 8 の対象は machine-generated runtime
   state に限定）。`domain_locks` の DB 化は Phase 9。
+
+### DB 運用コマンド（Phase 8-8）
+
+artifact body が DB canonical になり files が optional になると、DB は files に
+無い情報を持ちうる。よって DB 自体の backup / 復旧が必須になる。
+
+```bash
+harness db backup --out <path>      # 一貫した standalone コピーを書き出す
+harness db restore --from <path>    # backup で live DB を置換（--force 必須）
+harness db checkpoint               # WAL を本体へ checkpoint し truncate
+harness db vacuum                   # blob 削除後などの空き領域を回収
+harness db stats                    # table 別行数 / DB・WAL サイズ / blob 総量
+```
+
+- **backup** — better-sqlite3 の online backup を使い、WAL を含む
+  transactionally consistent な単一 `.sqlite` を書き出す（journal sidecar
+  なし、writer を block しない）。出力先が既存なら拒否する。
+- **restore** — `--from` が schema を持つ harness DB か **live DB に触れる前に**
+  検証する。live DB の WAL/SHM sidecar を削除してから copy するので stale
+  journal が復元後に replay されない。live DB が既存なら `--force` を要求する
+  （誤 `--from` での破壊を防ぐ。`db backup` を先に取る運用）。
+- backup / restore は artifact blob を含めて DB 全体を扱うので、files を
+  すべて消しても backup から復旧できる。
+
+### permission と secret sensitivity（Phase 8-8）
+
+DB は codex ログ / diff / summary などの artifact body を canonical に持つ。
+これらは **secret を含みうる**（コマンド出力中の token、diff 中の credential
+など）。したがって:
+
+- `.harness/harness.sqlite` と WAL/SHM sidecar、および `db backup` 出力は
+  permission `0600`（owner read/write のみ）に制限する。`openDb` は開くたびに
+  best-effort で chmod し、新規 DB が world-readable のまま残らないようにする
+  （POSIX mode を持たない FS では no-op）。
+- backup ファイルは live DB の完全コピーなので、同じ機密度として扱う。
+  共有ストレージや VCS に置かない。
+- artifact 取り込み時の `secret_suspect` フラグ（`artifacts.secret_suspect`）は
+  DB 内で維持され、dashboard / export はこのフラグを引き継ぐ。secret-shaped な
+  untracked artifact は従来どおり redaction の対象。
