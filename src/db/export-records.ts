@@ -88,17 +88,28 @@ export function recordExportSuccess(
     }
     // only flip the scope to `synced` when it is STILL at the revision we
     // exported. If another writer advanced `db_revision` while the export
-    // ran, the files are already stale — leave the row `dirty` so
-    // check-consistency / a re-export picks it up. The export_records /
+    // ran, the files are already stale — the export_records /
     // exported_files rows above still record what was written.
     const scope = SCOPE_TABLE[input.scopeType];
     if (scope !== undefined) {
-      db.prepare(
-        `UPDATE ${scope.table}
-           SET export_status = 'synced', last_export_revision = ?,
-               last_exported_at = ?, last_export_error = NULL
-         WHERE ${scope.idColumn} = ? AND db_revision = ?`,
-      ).run(input.dbRevision, finishedAt, input.scopeId, input.dbRevision);
+      const info = db
+        .prepare(
+          `UPDATE ${scope.table}
+             SET export_status = 'synced', last_export_revision = ?,
+                 last_exported_at = ?, last_export_error = NULL
+           WHERE ${scope.idColumn} = ? AND db_revision = ?`,
+        )
+        .run(input.dbRevision, finishedAt, input.scopeId, input.dbRevision);
+      // the row moved past the revision we exported (a concurrent writer,
+      // or a slow export landing after a newer one): the files we wrote no
+      // longer match the DB. Mark `dirty` rather than leaving a misleading
+      // `synced` — check-consistency / a re-export then reconciles it.
+      if (info.changes === 0) {
+        db.prepare(
+          `UPDATE ${scope.table} SET export_status = 'dirty'
+           WHERE ${scope.idColumn} = ? AND db_revision != ?`,
+        ).run(input.scopeId, input.dbRevision);
+      }
     }
   });
   txn.immediate();

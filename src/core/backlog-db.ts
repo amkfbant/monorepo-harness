@@ -11,6 +11,7 @@ import {
   BacklogError,
   setItemStatus,
   recordBacklogRun,
+  showItem,
   dayKey,
   maxDaySequenceFromFiles,
   isBacklogItemId,
@@ -33,6 +34,10 @@ import {
  * file, or one the DB never imported) keeps the original file-only path.
  * A row carrying an unrecognised `source_mode` is corruption — surfaced
  * as a `SourceModeError`, never silently picked.
+ *
+ * The DB write is canonical; the file export is best-effort. When the
+ * export fails the DB is still correct, so the operation succeeds but
+ * carries an `exportWarning` the CLI surfaces to stderr.
  */
 
 export interface BacklogDbContext {
@@ -51,6 +56,13 @@ export interface AddBacklogItemInput {
   projectId?: string;
 }
 
+/** The outcome of a backlog write: the item, plus any export warning. */
+export interface BacklogWriteResult {
+  item: BacklogItem;
+  /** set when the DB write succeeded but the file export failed. */
+  exportWarning?: string;
+}
+
 const PRIORITIES: readonly BacklogPriority[] = ["high", "medium", "low"];
 
 /**
@@ -63,7 +75,7 @@ export async function addBacklogItem(
   ctx: BacklogDbContext,
   input: AddBacklogItemInput,
   now: Date = new Date(),
-): Promise<BacklogItem> {
+): Promise<BacklogWriteResult> {
   const title = input.title.trim();
   const domain = input.domain.trim();
   const goal = input.goal.trim();
@@ -80,8 +92,7 @@ export async function addBacklogItem(
   const fsFloor = await maxDaySequenceFromFiles(ctx.backlogDir, day);
 
   return withDb(ctx.dbPath, (db) => {
-    const repo = new BacklogRepository(db);
-    const record = repo.insertItem(
+    const record = new BacklogRepository(db).insertItem(
       {
         domain,
         title,
@@ -96,8 +107,7 @@ export async function addBacklogItem(
       day,
       fsFloor,
     );
-    exportBacklogItem(db, record.id, { backlogDir: ctx.backlogDir });
-    return toItem(record);
+    return result(toItem(record), exportItem(db, record.id, ctx.backlogDir));
   });
 }
 
@@ -113,12 +123,8 @@ export async function transitionBacklogItem(
   ctx: BacklogDbContext,
   itemId: string,
   target: "done" | "deferred",
-): Promise<BacklogItem> {
-  if (!isBacklogItemId(itemId)) {
-    throw new BacklogError(
-      `invalid backlog item id: ${JSON.stringify(itemId)}`,
-    );
-  }
+): Promise<BacklogWriteResult> {
+  assertItemId(itemId);
   // The DB write runs while the connection is open; the legacy fallback
   // touches only files, so it runs after the DB is closed (the `return`
   // inside the try short-circuits the db-first path).
@@ -133,21 +139,17 @@ export async function transitionBacklogItem(
       const expectedStatuses: BacklogStatus[] =
         target === "done" ? ["open", "doing", "deferred"] : ["open", "doing"];
       repo.updateItemStatus({ itemId, expectedStatuses, nextStatus: target });
-      exportBacklogItem(db, itemId, { backlogDir: ctx.backlogDir });
-      return requireItem(db, itemId);
-    }
-    if (existing !== null && existing.sourceMode !== "legacy-file") {
-      throw new SourceModeError(
-        itemId,
-        existing.sourceMode,
-        "db-first | legacy-file",
+      return result(
+        requireItem(db, itemId),
+        exportItem(db, itemId, ctx.backlogDir),
       );
     }
+    assertLegacyOrAbsent(existing, itemId);
   } finally {
     db.close();
   }
   // legacy / not-in-DB item — keep the original file-only path.
-  return setItemStatus(ctx.backlogDir, itemId, target);
+  return result(await setItemStatus(ctx.backlogDir, itemId, target));
 }
 
 /**
@@ -161,12 +163,8 @@ export async function linkBacklogRun(
   ctx: BacklogDbContext,
   itemId: string,
   runId: string,
-): Promise<BacklogItem> {
-  if (!isBacklogItemId(itemId)) {
-    throw new BacklogError(
-      `invalid backlog item id: ${JSON.stringify(itemId)}`,
-    );
-  }
+): Promise<BacklogWriteResult> {
+  assertItemId(itemId);
   if (!isLinkableRunId(runId)) {
     throw new BacklogError(`invalid runId: ${JSON.stringify(runId)}`);
   }
@@ -177,21 +175,85 @@ export async function linkBacklogRun(
     const existing = repo.getItem(itemId);
     if (existing !== null && existing.sourceMode === "db-first") {
       repo.linkRun({ itemId, runId });
-      exportBacklogItem(db, itemId, { backlogDir: ctx.backlogDir });
-      return requireItem(db, itemId);
-    }
-    if (existing !== null && existing.sourceMode !== "legacy-file") {
-      throw new SourceModeError(
-        itemId,
-        existing.sourceMode,
-        "db-first | legacy-file",
+      return result(
+        requireItem(db, itemId),
+        exportItem(db, itemId, ctx.backlogDir),
       );
     }
+    assertLegacyOrAbsent(existing, itemId);
   } finally {
     db.close();
   }
   // legacy / not-in-DB item — append to the YAML's linkedRuns.
-  return recordBacklogRun(ctx.backlogDir, itemId, runId);
+  return result(await recordBacklogRun(ctx.backlogDir, itemId, runId));
+}
+
+/**
+ * Resolve the canonical `BacklogItem` for `backlog run`, before the run
+ * is launched. A `db-first` item is read from the DB row (canonical),
+ * never from a possibly-stale exported YAML; a `legacy-file` item, or one
+ * not in the DB, is read from its file. An unrecognised `source_mode` is
+ * a `SourceModeError` raised up-front, not after a run has been created.
+ */
+export async function resolveBacklogItemForRun(
+  ctx: BacklogDbContext,
+  itemId: string,
+): Promise<BacklogItem> {
+  assertItemId(itemId);
+  const db = openDb(ctx.dbPath);
+  try {
+    runMigrations(db);
+    const existing = getItemWithRuns(db, itemId);
+    if (existing !== null && existing.sourceMode === "db-first") {
+      return toItem(existing);
+    }
+    assertLegacyOrAbsent(existing, itemId);
+  } finally {
+    db.close();
+  }
+  return showItem(ctx.backlogDir, itemId);
+}
+
+function assertItemId(itemId: string): void {
+  if (!isBacklogItemId(itemId)) {
+    throw new BacklogError(
+      `invalid backlog item id: ${JSON.stringify(itemId)}`,
+    );
+  }
+}
+
+/**
+ * Confirm a row is safe for the file-only path: `legacy-file` or absent.
+ * Anything else is an unrecognised `source_mode` — corruption — and is
+ * surfaced rather than silently treated as legacy.
+ */
+function assertLegacyOrAbsent(
+  existing: { sourceMode: string } | null,
+  itemId: string,
+): void {
+  if (existing !== null && existing.sourceMode !== "legacy-file") {
+    throw new SourceModeError(
+      itemId,
+      existing.sourceMode,
+      "db-first | legacy-file",
+    );
+  }
+}
+
+/** Export a db-first item; return a warning string when the export failed. */
+function exportItem(
+  db: Database.Database,
+  itemId: string,
+  backlogDir: string,
+): string | undefined {
+  const exported = exportBacklogItem(db, itemId, { backlogDir });
+  if (exported.status === "failed") {
+    return (
+      `backlog item ${itemId}: the DB was updated but exporting ` +
+      `backlog/<status>/${itemId}.yaml failed: ${exported.error ?? "unknown error"}`
+    );
+  }
+  return undefined;
 }
 
 /** Read an item back from the DB after a write — a missing row is a bug. */
@@ -207,6 +269,14 @@ function requireItem(db: Database.Database, itemId: string): BacklogItem {
 function toItem(record: BacklogItem & { sourceMode?: string }): BacklogItem {
   const { sourceMode: _sourceMode, ...item } = record;
   return item;
+}
+
+/** Build a `BacklogWriteResult`, attaching `exportWarning` only when set. */
+function result(
+  item: BacklogItem,
+  exportWarning?: string,
+): BacklogWriteResult {
+  return { item, ...(exportWarning !== undefined ? { exportWarning } : {}) };
 }
 
 /**

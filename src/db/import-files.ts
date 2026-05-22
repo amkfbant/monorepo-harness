@@ -32,27 +32,49 @@ export interface ImportOptions {
   reset?: boolean;
 }
 
-/** Data tables emptied by `--reset` (everything except db_meta). */
-const RESET_TABLES = [
+/**
+ * File-derived tables emptied entirely by `--reset`. These hold nothing
+ * DB-canonical — they are rebuilt from `projects/` / `policies/` files.
+ */
+const RESET_TABLES_FILE_DERIVED = [
   "import_errors",
-  "knowledge_entries",
-  "knowledge_candidates",
-  "backlog_run_links",
-  "backlog_items",
-  "run_context_pack_files",
-  "run_context_packs",
-  "artifacts",
-  "policy_violations",
-  "run_changed_files",
-  "review_required_changes",
-  "review_decisions",
-  "command_results",
-  "run_events",
-  "runs",
   "policy_generations",
   "domains",
   "project_profiles",
   "projects",
+];
+
+/**
+ * Runtime tables that carry `source_mode`. `--reset` clears only their
+ * `legacy-file` rows: a `db-first` row is DB-canonical (Phase 7), and a
+ * reset — performed by every read-only scoped command via
+ * `withRefreshedDb` — must not silently demigrate it back to
+ * `legacy-file`. A `legacy-file` row is still dropped so a since-deleted
+ * source file does not linger.
+ */
+const RESET_TABLES_RUNTIME = [
+  "runs",
+  "backlog_items",
+  "knowledge_candidates",
+  "knowledge_entries",
+];
+
+/**
+ * Child tables keyed to a runtime parent. After the parents are cleared,
+ * a row whose parent is gone is an orphan and removed; a child of a
+ * surviving `db-first` parent is kept.
+ */
+const RESET_CHILD_TABLES: { table: string; key: string; parent: string }[] = [
+  { table: "run_events", key: "run_id", parent: "runs" },
+  { table: "command_results", key: "run_id", parent: "runs" },
+  { table: "review_decisions", key: "run_id", parent: "runs" },
+  { table: "review_required_changes", key: "run_id", parent: "runs" },
+  { table: "run_changed_files", key: "run_id", parent: "runs" },
+  { table: "policy_violations", key: "run_id", parent: "runs" },
+  { table: "artifacts", key: "run_id", parent: "runs" },
+  { table: "run_context_packs", key: "run_id", parent: "runs" },
+  { table: "run_context_pack_files", key: "run_id", parent: "runs" },
+  { table: "backlog_run_links", key: "item_id", parent: "backlog_items" },
 ];
 
 export function runFullImport(
@@ -65,7 +87,21 @@ export function runFullImport(
 
   if (opts.reset === true) {
     const tx = db.transaction(() => {
-      for (const t of RESET_TABLES) db.prepare(`DELETE FROM ${t}`).run();
+      for (const t of RESET_TABLES_FILE_DERIVED) {
+        db.prepare(`DELETE FROM ${t}`).run();
+      }
+      // a db-first runtime row is canonical — keep it; drop legacy-file rows.
+      for (const t of RESET_TABLES_RUNTIME) {
+        db.prepare(`DELETE FROM ${t} WHERE source_mode != 'db-first'`).run();
+      }
+      // drop child rows orphaned by the runtime deletes above; children of a
+      // surviving db-first parent stay.
+      for (const c of RESET_CHILD_TABLES) {
+        db.prepare(
+          `DELETE FROM ${c.table}
+           WHERE ${c.key} NOT IN (SELECT ${c.key} FROM ${c.parent})`,
+        ).run();
+      }
     });
     tx();
   }

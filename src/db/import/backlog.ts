@@ -23,6 +23,9 @@ export function importBacklog(
 ): void {
   if (!existsSync(backlogDir)) return;
 
+  const existingItem = db.prepare(
+    "SELECT source_mode AS mode FROM backlog_items WHERE item_id = ?",
+  );
   const upsertItem = db.prepare(
     `INSERT INTO backlog_items (item_id, project_id, repo_id, domain, title,
        goal, status, priority, tags_json, created_at, updated_at)
@@ -68,6 +71,15 @@ export function importBacklog(
       const id = typeof doc.id === "string" ? doc.id : null;
       if (id === null) {
         recordImportError(db, counters, path, "backlog", "missing item id");
+        continue;
+      }
+      // a `db-first` item is DB-canonical (Phase 7-8). Re-importing it from
+      // its own exported YAML would demigrate it back to `legacy-file` and
+      // could roll back its status with a stale file. It is skipped; full
+      // reconciliation is a Phase 7-11 concern (`--force-legacy-reconcile`).
+      const existing = existingItem.get(id) as { mode: string } | undefined;
+      if (existing !== undefined && existing.mode === "db-first") {
+        clearImportError(db, path);
         continue;
       }
       // the source file's mtime keeps re-imports of an unchanged item

@@ -61,6 +61,7 @@ import {
   addBacklogItem,
   transitionBacklogItem,
   linkBacklogRun,
+  resolveBacklogItemForRun,
   type BacklogDbContext,
 } from "../core/backlog-db.js";
 import {
@@ -1166,6 +1167,18 @@ function backlogDbContext(): BacklogDbContext {
   const paths = harnessPaths(getHarnessRoot());
   return { backlogDir: paths.backlogDir, dbPath: paths.dbPath };
 }
+
+/**
+ * Surface a backlog file-export failure as a strong stderr warning. The DB
+ * write already succeeded (it is canonical), so the command still exits 0
+ * — the warning tells the operator the exported YAML is stale until a
+ * re-export reconciles it.
+ */
+function warnBacklogExport(exportWarning: string | undefined): void {
+  if (exportWarning !== undefined) {
+    process.stderr.write(`warning: ${exportWarning}\n`);
+  }
+}
 backlogCmd
   .command("add")
   .description("add a backlog item")
@@ -1177,23 +1190,27 @@ backlogCmd
   .option("--project <id>", "project id this item belongs to (Phase 5)")
   .action(async (raw: Record<string, unknown>) => {
     try {
-      const item = await addBacklogItem(backlogDbContext(), {
-        title: String(raw.title),
-        domain: String(raw.domain),
-        goal: String(raw.goal),
-        priority: String(raw.priority) as BacklogPriority,
-        ...(raw.project !== undefined
-          ? { projectId: String(raw.project) }
-          : {}),
-        ...(raw.tags !== undefined
-          ? {
-              tags: String(raw.tags)
-                .split(",")
-                .map((t) => t.trim())
-                .filter((t) => t !== ""),
-            }
-          : {}),
-      });
+      const { item, exportWarning } = await addBacklogItem(
+        backlogDbContext(),
+        {
+          title: String(raw.title),
+          domain: String(raw.domain),
+          goal: String(raw.goal),
+          priority: String(raw.priority) as BacklogPriority,
+          ...(raw.project !== undefined
+            ? { projectId: String(raw.project) }
+            : {}),
+          ...(raw.tags !== undefined
+            ? {
+                tags: String(raw.tags)
+                  .split(",")
+                  .map((t) => t.trim())
+                  .filter((t) => t !== ""),
+              }
+            : {}),
+        },
+      );
+      warnBacklogExport(exportWarning);
       process.stdout.write(`added ${item.id} [${item.status}]\n`);
     } catch (e) {
       backlogError(e);
@@ -1253,11 +1270,12 @@ backlogCmd
   .requiredOption("--item-id <id>", "backlog item id")
   .action(async (raw: Record<string, unknown>) => {
     try {
-      const item = await transitionBacklogItem(
+      const { item, exportWarning } = await transitionBacklogItem(
         backlogDbContext(),
         String(raw.itemId),
         "done",
       );
+      warnBacklogExport(exportWarning);
       process.stdout.write(`${item.id} → done\n`);
     } catch (e) {
       backlogError(e);
@@ -1269,11 +1287,12 @@ backlogCmd
   .requiredOption("--item-id <id>", "backlog item id")
   .action(async (raw: Record<string, unknown>) => {
     try {
-      const item = await transitionBacklogItem(
+      const { item, exportWarning } = await transitionBacklogItem(
         backlogDbContext(),
         String(raw.itemId),
         "deferred",
       );
+      warnBacklogExport(exportWarning);
       process.stdout.write(`${item.id} → deferred\n`);
     } catch (e) {
       backlogError(e);
@@ -1296,10 +1315,15 @@ backlogCmd
   )
   .option("--max-attempts <n>", "reviewed-run rerun cap")
   .action(async (raw: Record<string, unknown>) => {
-    const paths = harnessPaths(getHarnessRoot());
     let item;
     try {
-      item = await showItem(paths.backlogDir, String(raw.itemId));
+      // resolve the canonical item up-front: a db-first item comes from the
+      // DB row, not a possibly-stale exported YAML, and an unknown
+      // source_mode fails here rather than after a run has been launched.
+      item = await resolveBacklogItemForRun(
+        backlogDbContext(),
+        String(raw.itemId),
+      );
     } catch (e) {
       backlogError(e);
     }
@@ -1380,15 +1404,20 @@ backlogCmd
       failed = outcome.finalStatus !== "approved";
     }
     if (runId !== "") {
-      const updated = await linkBacklogRun(
-        backlogDbContext(),
-        item.id,
-        runId,
-      );
-      process.stdout.write(
-        `backlog ${item.id} → doing, linked run ${runId} ` +
-          `(${updated.linkedRuns.length} total)\n`,
-      );
+      try {
+        const { item: updated, exportWarning } = await linkBacklogRun(
+          backlogDbContext(),
+          item.id,
+          runId,
+        );
+        warnBacklogExport(exportWarning);
+        process.stdout.write(
+          `backlog ${item.id} → doing, linked run ${runId} ` +
+            `(${updated.linkedRuns.length} total)\n`,
+        );
+      } catch (e) {
+        backlogError(e);
+      }
     }
     if (failed) process.exit(1);
   });
