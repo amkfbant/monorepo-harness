@@ -1669,6 +1669,7 @@ const rerunCmd = program
       prep = await prepareRerunFromReview({
         runsDir: paths.runsDir,
         parentRunId: String(raw.fromReview),
+        dbPath: paths.dbPath,
         ...(maxAttempts !== undefined ? { maxAttempts } : {}),
       });
     } catch (e) {

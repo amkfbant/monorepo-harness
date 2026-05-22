@@ -134,6 +134,7 @@ export async function runReviewedRunWorkflow(
           runsDir: opts.runsDir,
           parentRunId: prevRunId as string,
           maxAttempts: opts.maxAttempts,
+          dbPath: harnessPaths(opts.harnessRoot).dbPath,
         });
         runResult = await runDomainCoding({
           harnessRoot: opts.harnessRoot,

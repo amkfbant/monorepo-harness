@@ -6,7 +6,10 @@ import {
   prepareRerunFromReview,
   buildRerunChain,
   formatChain,
+  RerunGateError,
 } from "../../../src/core/rerun.js";
+import { openDb } from "../../../src/db/connection.js";
+import { runMigrations } from "../../../src/db/migrations.js";
 
 interface SetupOpts {
   status?: string;
@@ -114,6 +117,41 @@ function setup(opts: SetupOpts = {}): { runsDir: string; runId: string } {
   const runId = writeRun(runsDir, opts);
   return { runsDir, runId };
 }
+
+describe("prepareRerunFromReview — duplicate-rerun guard (Phase 7-6)", () => {
+  it("refuses a rerun when a child already exists for the parent", async () => {
+    const { runsDir, runId } = setup();
+    const dbPath = join(runsDir, "harness.sqlite");
+    const db = openDb(dbPath);
+    runMigrations(db);
+    // a rerun child already recorded for this parent
+    db.prepare(
+      `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+         status, parent_run_id, updated_at, source_mode)
+       VALUES ('run-child', 't', 'apps/user', 'domain-coding', 'main',
+         'needs_review', ?, 'x', 'db-first')`,
+    ).run(runId);
+    db.close();
+
+    await expect(
+      prepareRerunFromReview({ runsDir, parentRunId: runId, dbPath }),
+    ).rejects.toThrow(RerunGateError);
+  });
+
+  it("allows a rerun when the DB records no child for the parent", async () => {
+    const { runsDir, runId } = setup();
+    const dbPath = join(runsDir, "harness.sqlite");
+    const db = openDb(dbPath);
+    runMigrations(db);
+    db.close();
+    const r = await prepareRerunFromReview({
+      runsDir,
+      parentRunId: runId,
+      dbPath,
+    });
+    expect(r.parentRunId).toBe(runId);
+  });
+});
 
 describe("prepareRerunFromReview", () => {
   it("returns repoId / domain / baseBranch + a new goal that embeds parent context", async () => {

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { RunMeta } from "../logging/run-log.js";
 import { loadReviewDecision } from "./review-decision-loader.js";
+import { openDb } from "../db/connection.js";
 
 /**
  * Thrown when a rerun is refused for a user-fixable reason (parent missing,
@@ -145,6 +146,12 @@ export async function prepareRerunFromReview(opts: {
   parentRunId: string;
   /** retry cap measured from the chain root; default DEFAULT_MAX_ATTEMPTS */
   maxAttempts?: number;
+  /**
+   * harness DB path (Phase 7-6). When given, a rerun is refused if a child
+   * run already exists for this parent — a rerun produces exactly one
+   * child, so a duplicate is a re-issued / crash-retried command.
+   */
+  dbPath?: string;
 }): Promise<RerunPrepResult> {
   if (!RUN_ID_RE.test(opts.parentRunId)) {
     throw new RerunGateError(
@@ -195,6 +202,28 @@ export async function prepareRerunFromReview(opts: {
       `rerun would be attempt ${rerunAttempt} from root ${rootRunId}, exceeding --max-attempts ${maxAttempts}. ` +
         `The chain is not converging — review manually instead of another rerun.`,
     );
+  }
+
+  // Phase 7-6: a rerun produces exactly one child. If the DB already
+  // records a child for this parent, the rerun was already done — refuse
+  // a duplicate rather than branching the rerun chain.
+  if (opts.dbPath !== undefined && existsSync(opts.dbPath)) {
+    const db = openDb(opts.dbPath);
+    try {
+      const child = db
+        .prepare(
+          "SELECT run_id FROM runs WHERE parent_run_id = ? LIMIT 1",
+        )
+        .get(opts.parentRunId) as { run_id: string } | undefined;
+      if (child !== undefined) {
+        throw new RerunGateError(
+          `parent run ${opts.parentRunId} already has a rerun child ` +
+            `(${child.run_id}); refusing to create a second one`,
+        );
+      }
+    } finally {
+      db.close();
+    }
   }
 
   let decision: Awaited<ReturnType<typeof loadReviewDecision>>;
