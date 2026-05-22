@@ -30,12 +30,24 @@ export function ensureRunMaterialized(opts: {
   try {
     // force: materialize even with file export OFF — the caller needs
     // the files regardless of the export setting.
-    exportRun(db, opts.runId, { runsDir: opts.runsDir, force: true });
+    const result = exportRun(db, opts.runId, {
+      runsDir: opts.runsDir,
+      force: true,
+    });
+    // `exportRun` reports a failed export (e.g. a missing blob) via its
+    // return value, not an exception — fail loudly so the caller never
+    // proceeds to read a partially materialized run dir.
+    if (result.status === "failed") {
+      throw new DbError(
+        `could not materialize run ${opts.runId}: ` +
+          `${result.error ?? "export failed"}`,
+      );
+    }
     return true;
   } catch (e) {
-    // the run is simply not in the DB — let the caller's own
-    // "run not found" path report it.
-    if (e instanceof DbError) return false;
+    // a DbError naming this run is "no such run" — let the caller's own
+    // "run not found" path report it; a materialize failure is rethrown.
+    if (e instanceof DbError && e.message.includes("no run")) return false;
     throw e;
   } finally {
     db.close();

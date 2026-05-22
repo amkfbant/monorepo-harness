@@ -5,6 +5,7 @@ import type Database from "better-sqlite3";
 import { harnessPaths } from "../config/paths.js";
 import { sha256 } from "./import/common.js";
 import { runFingerprint } from "./import/runs.js";
+import { DB_RECONSTRUCTED } from "./run-artifacts.js";
 
 /**
  * DB / file consistency checker (Phase 6-4).
@@ -463,12 +464,14 @@ function checkArtifactBlobs(
 
   const artifacts = db
     .prepare(
-      `SELECT artifact_id, run_id, storage, blob_sha256, body_status
+      `SELECT artifact_id, run_id, relative_path, storage, blob_sha256,
+              body_status
        FROM artifacts`,
     )
     .all() as {
     artifact_id: string;
     run_id: string | null;
+    relative_path: string | null;
     storage: string;
     blob_sha256: string | null;
     body_status: string;
@@ -483,7 +486,13 @@ function checkArtifactBlobs(
       });
       continue;
     }
-    if (a.storage === "db" && a.blob_sha256 === null) {
+    // `meta.json` / `events.jsonl` / `review-decision.yaml` are db-stored
+    // but DB-reconstructed — `exportRun` rebuilds them from the canonical
+    // `runs` / `run_events` / `review_decisions` rows, so they carry no
+    // `blob_sha256` by design and a null reference is NOT drift for them.
+    const reconstructed =
+      a.relative_path !== null && DB_RECONSTRUCTED.has(a.relative_path);
+    if (a.storage === "db" && a.blob_sha256 === null && !reconstructed) {
       items.push({
         kind: "artifact",
         id: a.artifact_id,

@@ -247,6 +247,25 @@ describe("checkConsistency — artifact blobs (Phase 8-11)", () => {
     expect(r.status).toBe("ok");
   });
 
+  it("does NOT flag a DB-reconstructed artifact for a null blob_sha256", () => {
+    const { root, db } = importedRoot();
+    // meta.json / events.jsonl / review-decision.yaml are db-stored but
+    // DB-reconstructed — `ingestRunArtifacts` registers them storage='db'
+    // with blob_sha256 NULL by design; that is not drift.
+    for (const name of ["meta.json", "events.jsonl", "review-decision.yaml"]) {
+      db.prepare(
+        `INSERT INTO artifacts (artifact_id, run_id, kind, relative_path,
+           bytes, sha256, storage, blob_sha256, body_status)
+         VALUES (?, 'run-20260521-apps-web-aaa', 'meta', ?, 0, 'h', 'db',
+           NULL, 'db_available')`,
+      ).run(`art-${name}`, name);
+    }
+    const r = checkConsistency({ db, harnessRoot: root });
+    db.close();
+    expect(r.items.some((i) => i.kind.startsWith("artifact"))).toBe(false);
+    expect(r.status).toBe("ok");
+  });
+
   it("flags a db-stored artifact with no blob_sha256 reference", () => {
     const { root, db } = importedRoot();
     db.prepare(

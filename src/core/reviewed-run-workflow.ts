@@ -260,14 +260,13 @@ export async function runReviewedRunWorkflow(
     maxAttempts: opts.maxAttempts,
   };
   await writeWorkflowArtifacts(opts.runsDir, opts.domain, result);
-  // workflow.json / workflow-summary.md live in the root run dir — sync
-  // them into the DB so the workflow artifacts are DB-canonical too
-  // (Phase 8-13).
-  syncRunArtifactsToDb({
-    dbPath: harnessPaths(opts.harnessRoot).dbPath,
-    runsDir: opts.runsDir,
-    runId: rootRunId,
-  });
+  // sync every attempt's run into the DB so each attempt's reviewer logs
+  // / review-auto-error.json — and the root run's workflow.json /
+  // workflow-summary.md — are DB-canonical too (Phase 8-13).
+  const dbPath = harnessPaths(opts.harnessRoot).dbPath;
+  for (const id of new Set([rootRunId, ...attempts.map((a) => a.runId)])) {
+    syncRunArtifactsToDb({ dbPath, runsDir: opts.runsDir, runId: id });
+  }
   return result;
 }
 
