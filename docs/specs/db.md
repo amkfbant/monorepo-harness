@@ -263,13 +263,18 @@ close レポートは
 [`reports/2026-05-22-phase8-close.md`](../reports/2026-05-22-phase8-close.md)。
 
 - **artifact body の DB 格納** — `artifact_blobs` / `artifact_blob_chunks` に
-  content-addressed（raw sha256）で分割保存。oversized は file に逃がさず
-  DB 内に truncated 保存。`artifacts` 行は `blob_sha256` / `body_status` を持つ。
-- **file export の optional 化** — export はオプトイン（default ON）。OFF なら
-  DB-only 運用。`export_status` を状態機械化（`synced` / `dirty` / `failed` /
+  content-addressed（STORED body の sha256 — truncation 後・compression 前）で
+  分割保存。oversized は file に逃がさず DB 内に truncated 保存。`artifacts`
+  行は `blob_sha256` / `body_status` を持つ。
+- **file export の optional 化** — `HARNESS_EXPORT_FILES=0` で
+  **compatibility export**（DB から `runs/<id>/` への構造的再 export）を止め
+  られる（default ON）。ただし run 実行自体は作業用 run dir に artifact を
+  書くため、OFF でも run dir は実行中・完了直後に存在する（後述「file export
+  と run dir」）。`export_status` を状態機械化（`synced` / `dirty` / `failed` /
   `disabled` / `removed`）。
-- **`db import` の migration-only 化** — DB-complete row を stale file で
-  上書きしない。`--legacy-only` / `--verify-export` / `--force-reconcile`。
+- **`db import` の migration-only 化** — 通常 import は DB-first（db-complete）
+  row を stale file で上書きしない（runs / backlog item は skip）。災害復旧用の
+  上書きは `--force-legacy-reconcile` のみ。
 - **DB 運用コマンド** — `harness db backup / restore / checkpoint / vacuum /
   stats`。DB は artifact body（secret を含みうる）の canonical なので permission
   を `0600` 寄りにする。
@@ -322,3 +327,33 @@ DB は codex ログ / diff / summary などの artifact body を canonical に�
 - artifact 取り込み時の `secret_suspect` フラグ（`artifacts.secret_suspect`）は
   DB 内で維持され、dashboard / export はこのフラグを引き継ぐ。secret-shaped な
   untracked artifact は従来どおり redaction の対象。
+
+### file export と run dir（Phase 8 — 運用上の注意）
+
+`HARNESS_EXPORT_FILES=0` は **pure fileless runtime ではない**。OFF にするのは
+DB-canonical state から `runs/<id>/` への**構造的 compatibility export**であって、
+run 実行そのものは止めない:
+
+- run 実行中、`runDomainCoding` は codex prompt / output ログ / diff /
+  summary / review-decision 等を作業用 run dir に書く（codex は worktree を
+  編集し、harness は diff・artifact を run dir に組み立てる）。
+- run 完了時、finalize の前に `ingestRunArtifacts` がそれら body を DB blob に
+  取り込む（`storage='db'`）。以後の canonical は DB blob。
+- したがって export OFF でも、run dir は run 実行中・完了直後に存在し、
+  artifact files（logs / diff / prompt）がディスク上に残る。run dir は
+  `cleanup` または明示削除まで残置される。
+- nested artifact（`commands/**`）も `ingestRunArtifacts` が再帰的に DB へ
+  取り込む。run dir 直下 / サブディレクトリの regular file が対象（dotfile・
+  symlink は除外）。
+
+運用上の含意: DB-only 運用でも、secret / privacy / backup scope を考えるときは
+**run dir 上の artifact files も対象**になる。完全に file を残したくない場合は
+run 後に `cleanup` で run dir を削除する（DB blob は canonical として残る）。
+
+### `db import --reset` の意味（Phase 8）
+
+`db import --from-files --reset` は **完全な再構築ではない**。file-derived /
+legacy-file の行はクリアして再構築するが、**DB-first（db-complete）runtime
+行は canonical state として保持**する（stale file が DB-first state を巻き戻す
+のを防ぐため、`source_mode != 'db-first'` の行のみ削除）。「DB を files から
+丸ごと作り直す」という意図で使うものではない。

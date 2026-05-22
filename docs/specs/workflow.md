@@ -299,12 +299,17 @@ file export を optional にした（[`db.md`](./db.md) の「Phase 8」節）�
 状態遷移と観測挙動は不変 — 変わるのは保存先と files の必須性だけ。
 
 - artifact body は `artifact_blobs` / `artifact_blob_chunks` に content-addressed
-  で分割保存する。`runDomainCoding` の artifact 記録は DB-first（DB blob →
-  `artifacts` row →（export ON なら）file の順）。
-- file export は `HARNESS_EXPORT_FILES` でオプトアウトできる（default ON）。
-  OFF にすると `runs/<id>/` の files を書かず DB だけで運用でき、`run show` /
-  `review` / `pr create` / `cleanup` / `dashboard` は DB から動く。後から
-  `harness db export-files` で files を再生成できる。
+  で分割保存する。`runDomainCoding` は実行中、artifact を作業用 run dir
+  （`runs/<id>/`）に書き、run 完了時（finalize の前）に `ingestRunArtifacts`
+  でそれらの body を DB blob へ取り込む（`storage='db'`）。
+- **`HARNESS_EXPORT_FILES=0` の意味（重要）。** これが OFF にするのは
+  **compatibility export**（DB-canonical state から `runs/<id>/` への構造的な
+  再 export）であって、run 実行そのものは依然として作業用 run dir に artifact
+  を書く。つまり OFF でも run 実行中・完了直後は run dir に files が存在する
+  （pure fileless ではない）。canonical な body は DB blob 側で、run dir は
+  `cleanup` または明示削除まで残る。`run show` / `review` / `pr create` /
+  `cleanup` / `dashboard` は run dir が無い db-first run でも DB から動き、
+  後から `harness db export-files` で files を再生成できる。
 - knowledge entry markdown（`docs/knowledge/**/*.md`）は **authored file** で
   あり export gate の対象外 — export OFF でも `knowledge promote` は `.md` を
   書く。export gate がかかるのは DB 由来の sidecar（`knowledge-decisions.yaml`）

@@ -177,3 +177,44 @@ checkArtifactBlobs の DB-reconstructed artifact 偽陽性、ensureRunMaterializ
 が `exportRun` の失敗 status を無視していた点、reviewed-run の全 attempt
 sync。`review-decision.yaml` の DB-canonical 化（`review_proposals`）は上記の
 とおり Phase 9 候補として明示 defer。
+
+## post-close 外部レビュー反映（2026-05-23）
+
+`phase8-close` タグ後にもう一段の外部レビュー（P1×5 / P2×5 / P3×4）を受け、
+受け入れた指摘を `fix(...): Phase 8 — 外部レビュー反映` 群で修正した。
+
+受け入れて修正したもの:
+
+- **P1-1（docs）** — `HARNESS_EXPORT_FILES=0` は compatibility export を止める
+  だけで run 実行は作業用 run dir に artifact を書く。pure fileless ではない
+  ことを `db.md` / `workflow.md` に明文化（「file export と run dir」節）。
+- **P1-2（bug）** — `ingestRunArtifacts` を finalize の**前**へ移動。以前は
+  最終 export の後だったため artifact body が `exported_files` に記録されず、
+  `check-consistency` が summary.md 等の drift を見逃しえた。
+- **P1-3** — `ingestRunArtifacts` をサブディレクトリ再帰に変更。`commands/**`
+  等の nested artifact body も DB blob へ取り込む（dotfile / symlink は除外）。
+- **P1-4** — P1-2 修正で `exported_files` が完全になり、db-first run の
+  artifact drift を `check-consistency` が検出できるようになった（viewer の
+  file-first 自体は維持 — run dir が在る db-first run の run dir は DB と同一
+  内容のため）。
+- **P1-5** — `checkArtifactBlobs` を `readArtifactBlob` ベースの end-to-end
+  検証（chunk 結合 / gunzip / sha256 / byte length）に強化。artifact / blob
+  の破損は `check-consistency` 全体 status を `error` にする。
+- **P2-4 / P2-5（docs）** — `db restore` の利用中制約、`db import --reset` が
+  DB-first 行を保持する（完全再構築ではない）旨を docs に明記。
+- **P3-1 / P3-2 / P3-3** — `artifact-blobs.ts` の content-address コメント、
+  `schema.ts` / `harness db` description の Phase 表記、`pr create` の PR body
+  文言を実装に整合。
+
+受け入れなかった / 先送りしたもの（rationale つき）:
+
+- **P2-1（syncRunArtifactsToDb の merge mode）** — 見送り。`ensureRunMaterialized`
+  は失敗時 throw（8-14）なので partial run dir で sync が走る経路は無く、
+  full-replace（run dir = truth）が正しい。merge mode は過剰実装と判断。
+- **P2-2（`original_bytes` 記録）** — Phase 9 へ。schema 変更（v5）を要し、
+  16MiB 超 artifact という稀ケースの監査情報。truncation signal は
+  `body_status='truncated'` が担う。
+- **P2-3（knowledge reconcile の `export_status`）** — 見送り。reconcile 後の
+  `dirty` は decision sidecar が未 export であることを正しく示す。`.md` の
+  存在は sidecar の export を意味しないため、`synced` に倒すと実在しない
+  export を装うことになり危険。`db export-files` で解消する設計のまま。
