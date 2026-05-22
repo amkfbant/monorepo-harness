@@ -87,9 +87,10 @@ describe("storeArtifactBlob / readArtifactBlob", () => {
     const body = Buffer.alloc(HARD_MAX_BYTES + 4096, 3);
     const r = storeArtifactBlob(db, body);
     expect(r.truncated).toBe(true);
-    expect(r.bytes).toBe(body.length); // raw length recorded
-    // the stored (readable) body is capped at the hard max
-    expect(readArtifactBlob(db, r.sha256)?.length).toBe(HARD_MAX_BYTES);
+    // `bytes` and the content address are of the STORED (truncated) body
+    expect(r.bytes).toBe(HARD_MAX_BYTES);
+    const back = readArtifactBlob(db, r.sha256);
+    expect(back?.length).toBe(HARD_MAX_BYTES);
     db.close();
   });
 

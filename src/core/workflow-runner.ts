@@ -53,6 +53,19 @@ import {
   buildUntrackedSecretsReport,
 } from "../reporter/untracked-patch.js";
 
+/**
+ * Surface a failed artifact-body ingest (Phase 8-2). The run still
+ * succeeded — its bodies are file-backed — but the DB-canonical copy is
+ * missing until `harness db migrate-artifacts` is run, so it is a loud
+ * warning rather than a silently swallowed failure.
+ */
+function warnArtifactIngestFailed(runId: string, e: unknown): void {
+  process.stderr.write(
+    `warning: run ${runId}: artifact body ingestion into the DB failed: ` +
+      `${(e as Error).message} — run \`harness db migrate-artifacts\` to recover\n`,
+  );
+}
+
 export interface RunDomainCodingOpts {
   harnessRoot: string;
   repoPath: string;
@@ -374,12 +387,11 @@ export async function runDomainCoding(
           finishedAt: new Date().toISOString(),
         })
         .catch(() => {});
-      // best-effort manifest record on the failure path too, so a failed
-      // run still has an artifact manifest for the dashboard.
+      // record the artifact manifest + bodies on the failure path too.
       try {
         ingestRunArtifacts(db, log.runDir, runId);
-      } catch {
-        // non-fatal — see the success path.
+      } catch (e) {
+        warnArtifactIngestFailed(runId, e);
       }
       // Rethrow as a typed error carrying the (now finalized) runId so an
       // orchestrator can record the failed attempt. `harness run` still
@@ -809,15 +821,15 @@ async function runDomainCodingInner(
       commandResultsCount: commandResults.length,
       changedFilesCount,
     });
-    // Phase 7-4: record the artifact manifest now that every artifact
-    // body has been written. Bodies stay file-backed; this is the DB
-    // manifest the dashboard / `run artifacts` read. Best-effort: a
-    // manifest failure must not flip a completed run to
-    // failed-internal-error — it is recoverable by a re-export.
+    // Phase 8-2: ingest the artifact manifest + bodies into the DB now
+    // that every artifact body has been written. A failure does NOT flip a
+    // completed run to failed-internal-error — the run succeeded and the
+    // bodies are still file-backed — but it IS surfaced as a warning,
+    // since the DB-canonical copy is missing until `db migrate-artifacts`.
     try {
       ingestRunArtifacts(db, log.runDir, runId);
-    } catch {
-      // the artifact manifest is a DB read-model convenience only.
+    } catch (e) {
+      warnArtifactIngestFailed(runId, e);
     }
     return {
       runId,
