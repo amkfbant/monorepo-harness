@@ -4,6 +4,7 @@ import { parse as parseYaml } from "yaml";
 import type Database from "better-sqlite3";
 import { openDb } from "../db/connection.js";
 import { runMigrations } from "../db/migrations.js";
+import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import { KnowledgeRepository } from "../db/repositories/knowledge.js";
 import { atomicWriteFile } from "../db/atomic-write.js";
 import { exportKnowledgeDecisions } from "../db/export-files.js";
@@ -210,6 +211,8 @@ export async function rejectKnowledgeDbFirst(
   const warnings: string[] = [];
   try {
     runMigrations(db);
+    // Phase 9-11: refuse runtime writes while legacy-file rows linger.
+    assertNoLegacyRuntimeRows(db);
     const repo = new KnowledgeRepository(db);
     const candidates = await syncRun(repo, ctx, opts.runId);
     if (
@@ -272,6 +275,8 @@ export async function promoteKnowledgeDbFirst(
   const db = openDb(ctx.dbPath);
   try {
     runMigrations(db);
+    // Phase 9-11: refuse runtime writes while legacy-file rows linger.
+    assertNoLegacyRuntimeRows(db);
     const repo = new KnowledgeRepository(db);
     const candidates = await syncRun(repo, ctx, opts.runId);
     const attr = runAttribution(ctx.runsDir, opts.runId);

@@ -10,6 +10,7 @@ import {
 } from "./review-decision-schema.js";
 import { openDb, openDbReadonly } from "../db/connection.js";
 import { SourceModeError } from "../db/errors.js";
+import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 
 /**
  * Thrown when a rerun is refused for a user-fixable reason (parent missing,
@@ -327,6 +328,8 @@ export async function prepareRerunFromReview(opts: {
   if (opts.dbPath !== undefined && existsSync(opts.dbPath)) {
     const db = openDb(opts.dbPath);
     try {
+      // Phase 9-11: legacy-file runtime rows must be migrated first.
+      assertNoLegacyRuntimeRows(db);
       const child = db
         .prepare(
           "SELECT run_id FROM runs WHERE parent_run_id = ? LIMIT 1",

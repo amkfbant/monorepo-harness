@@ -8,6 +8,7 @@ import { acquireDomainLock } from "../workspace/domain-lock.js";
 import { computeReviewedFingerprint } from "./reviewed-fingerprint.js";
 import { openDb } from "../db/connection.js";
 import { runMigrations } from "../db/migrations.js";
+import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import { RunRepository } from "../db/repositories/runs.js";
 import { PullRequestRepository } from "../db/repositories/pull-requests.js";
 import { exportRun, warnIfExportFailed } from "../db/export-files.js";
@@ -98,7 +99,11 @@ export async function createPullRequest(
   const db = opts.dbPath !== undefined ? openDb(opts.dbPath) : undefined;
   let lock: Awaited<ReturnType<typeof acquireDomainLock>> | undefined;
   try {
-    if (db !== undefined) runMigrations(db);
+    if (db !== undefined) {
+      runMigrations(db);
+      // Phase 9-11: refuse to operate on a DB with legacy-file runtime rows.
+      assertNoLegacyRuntimeRows(db);
+    }
     // The lock key comes from the run's canonical source: a `db-first`
     // run's `runs` row, a legacy run's meta.json. A db-first run does NOT
     // require meta.json to exist — it is a compatibility export (P1-3).

@@ -27,6 +27,7 @@ import { createDbRunLog } from "../db/run-log-db.js";
 import { ingestRunArtifacts } from "../db/run-artifacts.js";
 import { fileExportEnabled } from "../config/export-mode.js";
 import { rmSync } from "node:fs";
+import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import {
   RunRepository,
   type ChangedFileInput,
@@ -310,6 +311,10 @@ export async function runDomainCoding(
   try {
     db = openDb(paths.dbPath);
     runMigrations(db);
+    // Phase 9-11: refuse runtime writes when the DB still has legacy-file
+    // rows — operators must run `db migrate-legacy` first. Migration tools
+    // bypass this guard themselves.
+    assertNoLegacyRuntimeRows(db);
 
     // acquire the DB lease. The file lock above already serializes
     // contenders, so this is mostly book-keeping during Phase 9; in

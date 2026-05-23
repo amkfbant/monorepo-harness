@@ -16,6 +16,7 @@ import { runMigrations } from "../db/migrations.js";
 import { RunRepository } from "../db/repositories/runs.js";
 import { exportRun, warnIfExportFailed } from "../db/export-files.js";
 import { SourceModeError } from "../db/errors.js";
+import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 
 /**
  * Thrown when review processing is rejected for a reason the user can fix
@@ -135,6 +136,9 @@ export async function processReviewDecision(
   let lock: Awaited<ReturnType<typeof acquireDomainLock>> | undefined;
   try {
     runMigrations(db);
+    // Phase 9-11: refuse to operate on a DB that still has legacy-file
+    // runtime rows — operators must run `db migrate-legacy` first.
+    assertNoLegacyRuntimeRows(db);
     const dbRow = db
       .prepare(
         "SELECT source_mode, domain, repo_id, status FROM runs WHERE run_id = ?",

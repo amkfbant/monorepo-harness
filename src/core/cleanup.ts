@@ -12,6 +12,7 @@ import { acquireDomainLock } from "../workspace/domain-lock.js";
 import { openDb } from "../db/connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { RunRepository } from "../db/repositories/runs.js";
+import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import { exportRun, warnIfExportFailed } from "../db/export-files.js";
 import { SourceModeError } from "../db/errors.js";
 
@@ -170,6 +171,8 @@ export async function cleanupRun(opts: CleanupOpts): Promise<CleanupResult> {
   let lock: Awaited<ReturnType<typeof acquireDomainLock>> | undefined;
   try {
     runMigrations(db);
+    // Phase 9-11: legacy-file rows must be migrated before runtime writes.
+    assertNoLegacyRuntimeRows(db);
     const dbRow = db
       .prepare(
         "SELECT source_mode, domain, repo_id FROM runs WHERE run_id = ?",

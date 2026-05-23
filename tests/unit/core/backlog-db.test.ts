@@ -317,14 +317,15 @@ describe("backlog DB-first", () => {
     expect(row).toBeUndefined();
   });
 
-  it("done routes a legacy-file DB row through the file path", async () => {
+  it("refuses a legacy-file backlog row until `db migrate-legacy` runs (Phase 9-11)", async () => {
     const ctx = setup();
     const legacy = await addItem(
       ctx.backlogDir,
       { title: "legacy", domain: "d", goal: "g" },
       NOW,
     );
-    // seed a legacy-file DB row (as Phase 6 `db import` would)
+    // seed a legacy-file DB row (as Phase 6 `db import` would). Phase 9-11
+    // refuses runtime writes until these are migrated to db-first.
     const db = openDb(ctx.dbPath);
     runMigrations(db);
     db.prepare(
@@ -335,12 +336,8 @@ describe("backlog DB-first", () => {
     ).run(legacy.id);
     db.close();
 
-    await transitionBacklogItem(ctx, legacy.id, "done");
-    // the file moved, but the legacy-file DB row was NOT mutated
-    expect(existsSync(join(ctx.backlogDir, "done", `${legacy.id}.yaml`))).toBe(
-      true,
-    );
-    expect(itemRow(ctx, legacy.id).status).toBe("open");
-    expect(itemRow(ctx, legacy.id).source_mode).toBe("legacy-file");
+    await expect(
+      transitionBacklogItem(ctx, legacy.id, "done"),
+    ).rejects.toThrow(/legacy-file row/);
   });
 });

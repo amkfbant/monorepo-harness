@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { openDb } from "../db/connection.js";
 import { runMigrations } from "../db/migrations.js";
+import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import { SourceModeError } from "../db/errors.js";
 import {
   BacklogRepository,
@@ -92,6 +93,8 @@ export async function addBacklogItem(
   const fsFloor = await maxDaySequenceFromFiles(ctx.backlogDir, day);
 
   return withDb(ctx.dbPath, (db) => {
+    // Phase 9-11: legacy-file rows must be migrated before runtime writes.
+    assertNoLegacyRuntimeRows(db);
     const record = new BacklogRepository(db).insertItem(
       {
         domain,
@@ -131,6 +134,8 @@ export async function transitionBacklogItem(
   const db = openDb(ctx.dbPath);
   try {
     runMigrations(db);
+    // Phase 9-11: refuse runtime writes while legacy-file rows linger.
+    assertNoLegacyRuntimeRows(db);
     const repo = new BacklogRepository(db);
     const existing = repo.getItem(itemId);
     if (existing !== null && existing.sourceMode === "db-first") {
@@ -171,6 +176,8 @@ export async function linkBacklogRun(
   const db = openDb(ctx.dbPath);
   try {
     runMigrations(db);
+    // Phase 9-11: refuse runtime writes while legacy-file rows linger.
+    assertNoLegacyRuntimeRows(db);
     const repo = new BacklogRepository(db);
     const existing = repo.getItem(itemId);
     if (existing !== null && existing.sourceMode === "db-first") {
