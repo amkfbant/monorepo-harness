@@ -317,7 +317,7 @@ file export を optional にした（[`db.md`](./db.md) の「Phase 8」節）�
 - Phase 3-5 の `index.sqlite` / `harness index` は撤去された（Phase 8-7）。
   run 一覧は file scan、集計・ダッシュボードは `harness.sqlite` read model。
 
-## Phase 9: concurrency + runtime completion（実装中・target spec）
+## Phase 9: concurrency + runtime completion（close 済み・現状仕様）
 
 Phase 9 は concurrency safety と runtime DB story の完結を扱う。設計は
 [`db.md`](./db.md) の「Phase 9」節を参照。本書では workflow 観点の変更を

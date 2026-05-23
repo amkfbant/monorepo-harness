@@ -1045,7 +1045,7 @@ promote された md は `<out>/`（既定 `docs/knowledge/`）に書かれ、`r
 
 codex 子プロセスに渡る env は **`DEFAULT_CODEX_ENV_ALLOWLIST`** で制限される（`PATH / HOME / USER / SHELL / LANG / LC_ALL / TERM / TMPDIR / CODEX_HOME`）。`OPENAI_API_KEY` / `AWS_*` 等は伝播しない。必要なら `src/codex/codex-cli-runner.ts:DEFAULT_CODEX_ENV_ALLOWLIST` を編集する（policy からの動的注入は MVP では未実装）。
 
-## Phase 9 — concurrency + runtime completion（実装中・target spec）
+## Phase 9 — concurrency + runtime completion（close 済み・現状仕様）
 
 詳細は [`db.md`](./db.md) の「Phase 9」節 + [`workflow.md`](./workflow.md)
 の Phase 9 節。本節は CLI 観点の変更点をまとめる（実装中）。

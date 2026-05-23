@@ -8,15 +8,17 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 
 実装: `src/db/`。
 
-> **ステータス: Phase 8 close 済み（現状仕様）。** DB read model（Phase 6）/
-> DB-first write path（Phase 7）/ runtime DB complete（Phase 8）はいずれも
-> `src/db/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V4_STATEMENTS`、`SCHEMA_VERSION = 4`）。
-> 下記「Phase 7 — DB-first write path」「Phase 8 — runtime DB complete」節は
-> いずれも現状仕様。設計書は
+> **ステータス: Phase 9 close 済み（現状仕様）。** DB read model（Phase 6）/
+> DB-first write path（Phase 7）/ runtime DB complete（Phase 8）/
+> concurrency + runtime completion（Phase 9）はいずれも `src/db/` /
+> `src/workspace/` に実装済み。schema の確定値は `src/db/schema.ts`
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V5_STATEMENTS`、`SCHEMA_VERSION = 5`）。
+> 下記「Phase 7」「Phase 8」「Phase 9」節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
-> [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)。
+> [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
+> /
+> [`2026-05-23-phase9-concurrency-and-runtime-completion-design.md`](../superpowers/specs/2026-05-23-phase9-concurrency-and-runtime-completion-design.md)。
 
 ## source-of-truth transition
 
@@ -358,7 +360,7 @@ legacy-file の行はクリアして再構築するが、**DB-first（db-complet
 のを防ぐため、`source_mode != 'db-first'` の行のみ削除）。「DB を files から
 丸ごと作り直す」という意図で使うものではない。
 
-## Phase 9 — concurrency + runtime completion（実装中・target spec）
+## Phase 9 — concurrency + runtime completion（close 済み・現状仕様）
 
 Phase 9 は Phase 8 が残した 2 縦串を閉じるフェーズ。**concurrency safety**
 （lease ベースの domain lock + DB-wide reader/writer maintenance lock）と
