@@ -12,7 +12,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -482,6 +482,83 @@ export const MIGRATION_V4_STATEMENTS: readonly string[] = [
   `CREATE UNIQUE INDEX pull_requests_run_unique ON pull_requests(run_id)`,
 ];
 
+/**
+ * v5 DDL — Phase 9 (concurrency + runtime DB story 完結).
+ *
+ *  - `domain_locks`: lease-based domain locks with heartbeat and fencing
+ *    tokens. `lock_id` is `INTEGER PRIMARY KEY AUTOINCREMENT` and acts as
+ *    the fencing token (global monotonic). A partial unique index on
+ *    `domain_key WHERE released_at IS NULL` enforces "at most one active
+ *    lease per domain". Audit columns (`heartbeat_at` / `release_reason`
+ *    / `released_by`) make operational debugging tractable.
+ *  - `review_proposals`: DB-canonical store for `review auto` verdicts.
+ *    A partial unique index on `(run_id, reviewer) WHERE
+ *    superseded_at IS NULL` enforces "at most one active proposal per
+ *    (run, reviewer)". `processed_at` / `review_decision_id` make
+ *    `review process` idempotent (a re-processed proposal is a no-op).
+ *  - `artifacts.original_bytes` / `original_sha256`: monotonic NULL ↔
+ *    `body_status='truncated'` invariant — only truncated artifacts
+ *    record the original (pre-truncation) size and sha. No CHECK is
+ *    declared so backfill (`migrate-artifacts`) can set them in steps.
+ *  - `runs.lease_lock_id` / `lease_token` / `lease_domain_key`: the
+ *    active lease a run acquired. `lease_token` equals `lease_lock_id`
+ *    (kept as a separate column for query readability).
+ */
+export const MIGRATION_V5_STATEMENTS: readonly string[] = [
+  // --- domain_locks (Phase 9 — A1) ---------------------------------
+  `CREATE TABLE domain_locks (
+    lock_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain_key       TEXT NOT NULL,
+    repo_id          TEXT NOT NULL,
+    domain           TEXT NOT NULL,
+    holder_run_id    TEXT NOT NULL,
+    holder_pid       INTEGER NOT NULL,
+    holder_hostname  TEXT NOT NULL,
+    acquired_at      TEXT NOT NULL,
+    expires_at       TEXT NOT NULL,
+    heartbeat_at     TEXT NOT NULL,
+    released_at      TEXT,
+    release_reason   TEXT,
+    released_by      TEXT
+  )`,
+  `CREATE UNIQUE INDEX domain_locks_active_idx
+     ON domain_locks(domain_key) WHERE released_at IS NULL`,
+  `CREATE INDEX domain_locks_holder_idx ON domain_locks(holder_run_id)`,
+
+  // --- review_proposals (Phase 9 — B4) -----------------------------
+  `CREATE TABLE review_proposals (
+    proposal_id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id                        TEXT NOT NULL,
+    reviewer                      TEXT NOT NULL,
+    decision                      TEXT NOT NULL
+      CHECK (decision IN ('pending', 'approved',
+        'changes_requested', 'rejected')),
+    required_changes_json         TEXT NOT NULL DEFAULT '[]',
+    non_blocking_comments_json    TEXT NOT NULL DEFAULT '[]',
+    out_of_scope_suggestions_json TEXT NOT NULL DEFAULT '[]',
+    reviewed_at                   TEXT NOT NULL,
+    source_yaml                   TEXT NOT NULL,
+    source_sha256                 TEXT NOT NULL,
+    created_at                    TEXT NOT NULL,
+    superseded_at                 TEXT,
+    processed_at                  TEXT,
+    review_decision_id            TEXT
+  )`,
+  `CREATE INDEX review_proposals_run_idx
+     ON review_proposals(run_id, created_at)`,
+  `CREATE UNIQUE INDEX review_proposals_active_reviewer_idx
+     ON review_proposals(run_id, reviewer) WHERE superseded_at IS NULL`,
+
+  // --- artifacts.original_* (Phase 9 — B5) -------------------------
+  `ALTER TABLE artifacts ADD COLUMN original_bytes  INTEGER`,
+  `ALTER TABLE artifacts ADD COLUMN original_sha256 TEXT`,
+
+  // --- runs.lease_* (Phase 9 — A1 fencing guard) -------------------
+  `ALTER TABLE runs ADD COLUMN lease_lock_id    INTEGER`,
+  `ALTER TABLE runs ADD COLUMN lease_token      INTEGER`,
+  `ALTER TABLE runs ADD COLUMN lease_domain_key TEXT`,
+];
+
 /** Tables added by v2. */
 export const V2_TABLE_NAMES: readonly string[] = [
   "export_records",
@@ -496,6 +573,12 @@ export const V4_TABLE_NAMES: readonly string[] = [
   "artifact_blobs",
   "artifact_blob_chunks",
   "pull_request_attempts",
+];
+
+/** Tables added by v5 (Phase 9). */
+export const V5_TABLE_NAMES: readonly string[] = [
+  "domain_locks",
+  "review_proposals",
 ];
 
 /** Table names created by v1 — used by `db status` and tests. */
@@ -522,9 +605,10 @@ export const V1_TABLE_NAMES: readonly string[] = [
   "import_errors",
 ];
 
-/** Every data table at the latest schema version (v1 + v2 + v4). */
+/** Every data table at the latest schema version (v1 + v2 + v4 + v5). */
 export const ALL_TABLE_NAMES: readonly string[] = [
   ...V1_TABLE_NAMES,
   ...V2_TABLE_NAMES,
   ...V4_TABLE_NAMES,
+  ...V5_TABLE_NAMES,
 ];

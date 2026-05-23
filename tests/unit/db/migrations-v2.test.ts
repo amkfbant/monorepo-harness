@@ -101,8 +101,8 @@ describe("schema v2", () => {
     ).run();
 
     const r = runMigrations(db);
-    expect(r.applied).toEqual([2, 3, 4]);
-    expect(currentSchemaVersion(db)).toBe(4);
+    expect(r.applied).toEqual([2, 3, 4, 5]);
+    expect(currentSchemaVersion(db)).toBe(5);
 
     const row = db
       .prepare(
@@ -122,10 +122,10 @@ describe("schema v2", () => {
 
   it("migrations are idempotent on an up-to-date DB", () => {
     const db = openDb(freshDbPath());
-    runMigrations(db);
+    const first = runMigrations(db);
     const again = runMigrations(db);
     expect(again.applied).toEqual([]);
-    expect(currentSchemaVersion(db)).toBe(4);
+    expect(currentSchemaVersion(db)).toBe(first.version);
     db.close();
   });
 });

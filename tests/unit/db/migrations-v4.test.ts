@@ -63,10 +63,11 @@ function columns(db: Database.Database, table: string): Set<string> {
 }
 
 describe("schema v4 migration", () => {
-  it("v1→v2→v3→v4 reaches version 4 and creates the blob tables", () => {
+  it("v1→…→latest creates the v4 blob tables", () => {
     const db = openDb(freshDbPath());
-    const r = runMigrations(db);
-    expect(r.version).toBe(4);
+    runMigrations(db);
+    // runMigrations advances to the latest schema (v5 since Phase 9);
+    // v4-introduced tables must be present at any version >= 4.
     expect(tableExists(db, "artifact_blobs")).toBe(true);
     expect(tableExists(db, "artifact_blob_chunks")).toBe(true);
     db.close();
@@ -75,10 +76,10 @@ describe("schema v4 migration", () => {
   it("is idempotent — re-running applies nothing", () => {
     const path = freshDbPath();
     const db = openDb(path);
-    runMigrations(db);
+    const first = runMigrations(db);
     const again = runMigrations(db);
     expect(again.applied).toEqual([]);
-    expect(again.version).toBe(4);
+    expect(again.version).toBe(first.version);
     db.close();
   });
 
