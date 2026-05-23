@@ -357,3 +357,41 @@ legacy-file の行はクリアして再構築するが、**DB-first（db-complet
 行は canonical state として保持**する（stale file が DB-first state を巻き戻す
 のを防ぐため、`source_mode != 'db-first'` の行のみ削除）。「DB を files から
 丸ごと作り直す」という意図で使うものではない。
+
+## Phase 9 — concurrency + runtime completion（実装中・target spec）
+
+Phase 9 は Phase 8 が残した 2 縦串を閉じるフェーズ。**concurrency safety**
+（lease ベースの domain lock + DB-wide reader/writer maintenance lock）と
+**runtime DB story の完結**（file export の default OFF、scratch runDir
+lifecycle、legacy-file routing 撤去、`review_proposals` の DB canonical 化、
+truncated artifact の監査情報）を実装する。設計は
+[`../superpowers/specs/2026-05-23-phase9-concurrency-and-runtime-completion-design.md`](../superpowers/specs/2026-05-23-phase9-concurrency-and-runtime-completion-design.md)、
+計画は `tmp/phase9-concurrency-and-runtime-completion-plan.md`。確定は
+`phase9-close`。
+
+- **schema v5** — `domain_locks` / `review_proposals` / `artifacts.original_*`
+  / `runs.lease_*` 追加。
+- **DB-wide maintenance lock** — `.harness/db.lock` を flock-based
+  reader/writer に。destructive maintenance + schema 系（`db init` /
+  `db migrate` / `db restore` / `db vacuum` / `db checkpoint --truncate` /
+  `db migrate-*`）が exclusive lock を取り、通常 write は shared、`db backup`
+  も shared。
+- **DB-backed domain lock** — lease (5min) + heartbeat (1min) + fencing
+  token (= lock_id)。`runs.lease_*` で run row に紐付け。run execution stage
+  writes は `assertActiveLease` で active な `domain_locks` 行を EXISTS で
+  検証する compare-and-swap。post-run writes は既存の expected status /
+  operation_id guard のまま。Phase 9 は file + DB の **dual-lock**（runtime
+  経路は file lock が primary serialization、Phase 10 で file lock 撤去）。
+- **scratch runDir lifecycle** — `HARNESS_EXPORT_FILES=0` で ingest 成功時
+  に scratch runDir を削除。ingest failure で保持 + warning。
+- **legacy-file routing 撤去** — runtime tables（runs / backlog_items /
+  knowledge_candidates）のみ。`knowledge_entries`（markdown = file-authored）
+  は対象外。`db migrate-legacy` / `db import --force-legacy-reconcile` は
+  bypass。
+- **`review_proposals`** — `review auto` の verdict を DB canonical に。
+  active partial unique index + `processed_at` で idempotent な promotion。
+- **`HARNESS_EXPORT_FILES` の default OFF 化** — Phase 9 close で即 flip +
+  warning。`HARNESS_SUPPRESS_EXPORT_MODE_WARNING=1` で抑制可。breaking
+  change として close report で強周知。
+- **truncated artifact の original 情報** — `artifacts.original_bytes` /
+  `original_sha256` 記録。`db stats` で truncated 統計表示。

@@ -1045,6 +1045,43 @@ promote された md は `<out>/`（既定 `docs/knowledge/`）に書かれ、`r
 
 codex 子プロセスに渡る env は **`DEFAULT_CODEX_ENV_ALLOWLIST`** で制限される（`PATH / HOME / USER / SHELL / LANG / LC_ALL / TERM / TMPDIR / CODEX_HOME`）。`OPENAI_API_KEY` / `AWS_*` 等は伝播しない。必要なら `src/codex/codex-cli-runner.ts:DEFAULT_CODEX_ENV_ALLOWLIST` を編集する（policy からの動的注入は MVP では未実装）。
 
+## Phase 9 — concurrency + runtime completion（実装中・target spec）
+
+詳細は [`db.md`](./db.md) の「Phase 9」節 + [`workflow.md`](./workflow.md)
+の Phase 9 節。本節は CLI 観点の変更点をまとめる（実装中）。
+
+### `harness db` の lock 適用
+
+| コマンド | maintenance lock |
+|---------|------|
+| `db init` / `db migrate` | exclusive |
+| `db restore` / `db vacuum` / `db checkpoint --truncate` | exclusive |
+| `db migrate-artifacts` / `db migrate-legacy` | exclusive |
+| `db backup` / `db stats` / `db check-consistency` | shared |
+| `db status` | shared（または lockless） |
+
+exclusive 系には `--wait` / `--timeout <ms>` が追加される。busy 時は別プロセス
+の hint（pid / hostname）を出すエラー。
+
+### `harness lock`
+
+`lock list` / `lock release` は Phase 9 で DB-backed 化される（dual-lock
+期間: file + DB の両方を表示・release）。heartbeat_at / expires_at /
+fencing_token / release_reason を出力。`lock release --force` は active
+heartbeat 中の lease を奪い、保持側を `LeaseStolenError` で fail させ
+うる（強い stderr warning が出る）。
+
+### `HARNESS_EXPORT_FILES` の default
+
+Phase 9 close で default OFF に反転。未設定時は warning。
+`HARNESS_SUPPRESS_EXPORT_MODE_WARNING=1` で抑制可。
+
+### `harness review process` の verdict 経路
+
+`review_proposals` テーブルが DB canonical。`review process` は DB から
+最新 active proposal を読む（sidecar `review-decision.yaml` は legacy /
+手書きの fallback として残る）。`--reviewer <name>` で reviewer 指定可。
+
 ## 既存以外の subcommand
 
 将来追加予定（MVP には無い）:

@@ -317,6 +317,37 @@ file export を optional にした（[`db.md`](./db.md) の「Phase 8」節）�
 - Phase 3-5 の `index.sqlite` / `harness index` は撤去された（Phase 8-7）。
   run 一覧は file scan、集計・ダッシュボードは `harness.sqlite` read model。
 
+## Phase 9: concurrency + runtime completion（実装中・target spec）
+
+Phase 9 は concurrency safety と runtime DB story の完結を扱う。設計は
+[`db.md`](./db.md) の「Phase 9」節を参照。本書では workflow 観点の変更を
+記述する（実装中）。
+
+- **domain lock の DB 化** — `runDomainCoding` の lock 取得は Phase 9 で
+  file lock + DB lock の **dual-lock**。DB lock は lease (5 分) +
+  heartbeat (1 分) + fencing token (= `domain_locks.lock_id`) を持つ。
+  Phase 9 期間中は file lock が primary serialization のため、runtime 経路の
+  lease stealing は発生しにくい（full-path integration は Phase 10）。
+- **lease guard / state guard 分離** — run execution stage writes
+  （`runs` 行 status 更新 / `run_events` / `artifacts` の DB-first ingest
+  等）は `assertActiveLease` で active domain lock を verify。`review process`
+  / `cleanup` / `pr create` / `backlog` / `knowledge` は引き続き expected
+  status / operation_id guard。
+- **scratch runDir の lifecycle** — `HARNESS_EXPORT_FILES=0`（Phase 9 で
+  default）でも `runDomainCoding` は scratch として `runs/<id>/` に artifact
+  を書く。完了 + ingest 成功なら scratch を削除。ingest failure で保持 +
+  warning。
+- **`HARNESS_EXPORT_FILES` の default 反転** — Phase 9 close で OFF へ。
+  未設定時は warning。breaking change として close report で強周知。
+- **legacy-file routing 撤去** — runtime tables（runs / backlog_items /
+  knowledge_candidates）の `source_mode='legacy-file'` 経路を撤去。各 runtime
+  write の先頭で legacy 行を assert（migrate-legacy / disaster recovery は
+  bypass）。`knowledge_entries`（markdown = file-authored）は対象外。
+- **`review auto` の verdict が DB canonical** — `review_proposals` テーブル
+  に proposal を INSERT し、`review process` が DB から読んで `review_decisions`
+  に昇格。`processed_at` で idempotent。sidecar `review-decision.yaml` は
+  export ON のときの互換出力。
+
 ## knowledge-candidates.yaml の 4 signal
 
 `src/reporter/knowledge-candidates.ts`:
