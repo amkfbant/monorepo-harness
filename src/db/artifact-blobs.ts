@@ -17,8 +17,10 @@ import { sha256 } from "./import/common.js";
  *
  * A body larger than `HARD_MAX_BYTES` is **truncated** and stored
  * truncated — it is never left file-canonical, since that would break
- * DB-only operation. The `artifacts` row records `body_status='truncated'`.
- * The original (pre-truncation) size is not separately recorded.
+ * DB-only operation. The `artifacts` row records `body_status='truncated'`,
+ * and Phase 9 additionally records `original_bytes` / `original_sha256`
+ * on truncation so a future refetch can decide whether to recover the
+ * dropped tail bytes.
  */
 
 /** Chunk size for `artifact_blob_chunks` rows. */

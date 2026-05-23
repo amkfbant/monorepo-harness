@@ -389,29 +389,38 @@ describe("processReviewDecision — DB-first run (Phase 7-5)", () => {
     ).rejects.toThrow(/source-mode/);
   });
 
-  it("rejects re-processing a run that already left needs_review", async () => {
-    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-dbf-"));
-    const dbPath = join(runsDir, "harness.sqlite");
-    writeFakeRun(runsDir, "run-dbf2", {}, {
-      decision: "approved",
-      reviewer: "alice",
-      reviewed_at: "2026-05-20T12:00:00Z",
-    });
-    seedDbFirstRun(dbPath, runsDir, "run-dbf2");
-    await processReviewDecision({
-      runsDir,
-      locksDir: runsDir,
-      dbPath,
-      runId: "run-dbf2",
-    });
-    // a second pass sees status=approved in the re-exported meta.json
-    await expect(
-      processReviewDecision({
+  it(
+    "re-processing a run that already left needs_review is an idempotent " +
+      "no-op (Phase 9 post-close P1 #1 + P2-2 file→proposal import)",
+    async () => {
+      const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-dbf-"));
+      const dbPath = join(runsDir, "harness.sqlite");
+      writeFakeRun(runsDir, "run-dbf2", {}, {
+        decision: "approved",
+        reviewer: "alice",
+        reviewed_at: "2026-05-20T12:00:00Z",
+      });
+      seedDbFirstRun(dbPath, runsDir, "run-dbf2");
+      const r1 = await processReviewDecision({
         runsDir,
         locksDir: runsDir,
         dbPath,
         runId: "run-dbf2",
-      }),
-    ).rejects.toThrow(/only needs_review/);
-  });
+      });
+      expect(r1.newStatus).toBe("approved");
+      // Phase 9 post-close changed the semantics: a second pass sees the
+      // run is already promoted (DB row past needs_review + a processed
+      // proposal recording the prior decision), so it returns an
+      // idempotent no-op instead of failing the status gate.
+      const r2 = await processReviewDecision({
+        runsDir,
+        locksDir: runsDir,
+        dbPath,
+        runId: "run-dbf2",
+      });
+      expect(r2.previousStatus).toBe("approved");
+      expect(r2.newStatus).toBe("approved");
+      expect(r2.warnings.some((w) => /idempotent/i.test(w))).toBe(true);
+    },
+  );
 });

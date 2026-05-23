@@ -191,7 +191,12 @@ harness db vacuum                     # 空き領域を回収（blob 削除後�
 - `db backup / restore / checkpoint / vacuum`（Phase 8-8）は DB 運用コマンド。
   `backup` は WAL を含む一貫した standalone `.sqlite` を書き出す（出力先が既存
   なら拒否）。`restore` は backup を SQLite online backup 経由で検証してから
-  atomic に live DB を置換し、live DB が既存なら `--force` を要求する。詳細は
+  atomic に live DB を置換し、live DB が既存なら `--force` を要求する。
+  Phase 9 で `restore` は **exclusive maintenance lock** を取るようになり、
+  active な runtime process（`harness run` / `review process` 等は shared
+  lock を保持中）が release されるまで待つ。重要環境では運用上の安全策として
+  「他の harness process を止めてから restore する」を併用することも妥当だが、
+  Phase 9 の DB-wide lock 自体が data-safety を担保する。詳細は
   [`db.md`](./db.md) の「DB 運用コマンド」節。
 - exit code: `0` 正常 / `1` `DbError`、`check-consistency` の drift/missing 検出、
   または `export-files` の失敗。
@@ -1058,10 +1063,28 @@ codex 子プロセスに渡る env は **`DEFAULT_CODEX_ENV_ALLOWLIST`** で制�
 | `db restore` / `db vacuum` / `db checkpoint --truncate` | exclusive |
 | `db migrate-artifacts` / `db migrate-legacy` | exclusive |
 | `db backup` / `db stats` / `db check-consistency` | shared |
+| `db export-files` | shared（write も含む — 下記の注） |
 | `db status` | shared（または lockless） |
 
 exclusive 系には `--wait` / `--timeout <ms>` が追加される。busy 時は別プロセス
 の hint（pid / hostname）を出すエラー。
+
+**shared vs exclusive の意味（混乱しやすいので明文化）**:
+
+- **shared** = 「他の normal write / read と並行可能」。SQLite の WAL +
+  transaction が DB write を serialize する一方、maintenance lock は
+  「DB そのものを atomic に置換する restore / 全体 vacuum / 構造変更」を
+  排他するための上位 sidecar である。よって `db export-files` のように
+  `exported_files` を書く読み書きコマンドでも shared でよい。**shared =
+  read-only ではない**。
+- **exclusive** = 「他の harness 接続を一切許容しない」。`restore` / `vacuum`
+  / `checkpoint --truncate` / schema migration / large bulk import 等の
+  destructive / atomic-replace 操作。
+
+runtime（`harness run` / `review process` / `cleanup` / `pr create` /
+`backlog` / `knowledge`）は **shared maintenance lock を DB handle の
+lifetime 中保持**する（Phase 9 post-close P0 fix）。これにより exclusive な
+`db restore` を要求する process は runtime が release するまで待つ。
 
 ### `harness lock`
 

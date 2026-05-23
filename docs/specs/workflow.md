@@ -333,6 +333,12 @@ Phase 9 は concurrency safety と runtime DB story の完結を扱う。設計�
   等）は `assertActiveLease` で active domain lock を verify。`review process`
   / `cleanup` / `pr create` / `backlog` / `knowledge` は引き続き expected
   status / operation_id guard。
+  - **Phase 10 blocker**: `assertActiveLease` は現状 transaction 外で実行され
+    （check → SQLite transaction の 2 段階）、Phase 9 dual-lock 期間は file
+    lock が serialize するため race にならない。Phase 10 で file lock を撤去
+    したら、check と write の間で lease を奪われ得るため、`assertActiveLease`
+    を各 write transaction 内部の先頭で呼ぶか、repository write SQL に
+    `EXISTS(... domain_locks ...)` 述部を埋め込むかが必要。
 - **scratch runDir の lifecycle** — `HARNESS_EXPORT_FILES=0`（Phase 9 で
   default）でも `runDomainCoding` は scratch として `runs/<id>/` に artifact
   を書く。完了 + ingest 成功なら scratch を削除。ingest failure で保持 +

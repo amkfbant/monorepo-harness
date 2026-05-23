@@ -474,7 +474,7 @@ function checkArtifactBlobs(
   const artifacts = db
     .prepare(
       `SELECT artifact_id, run_id, relative_path, storage, blob_sha256,
-              body_status
+              body_status, bytes, original_bytes, original_sha256
        FROM artifacts`,
     )
     .all() as {
@@ -484,6 +484,9 @@ function checkArtifactBlobs(
     storage: string;
     blob_sha256: string | null;
     body_status: string;
+    bytes: number | null;
+    original_bytes: number | null;
+    original_sha256: string | null;
   }[];
   for (const a of artifacts) {
     if (a.body_status === "missing") {
@@ -507,6 +510,40 @@ function checkArtifactBlobs(
         id: a.artifact_id,
         status: "drift",
         detail: "db-stored artifact has no blob_sha256 reference",
+      });
+    }
+    // Phase 9 post-close (second review) P2-5 fix — original_* invariant
+    // for truncated artifacts.
+    if (a.body_status === "truncated") {
+      if (a.original_bytes === null || a.original_sha256 === null) {
+        items.push({
+          kind: "artifact",
+          id: a.artifact_id,
+          status: "drift",
+          detail:
+            "truncated artifact is missing original_bytes / original_sha256 audit metadata",
+        });
+      } else if (
+        a.bytes !== null &&
+        a.original_bytes < a.bytes
+      ) {
+        items.push({
+          kind: "artifact",
+          id: a.artifact_id,
+          status: "drift",
+          detail: `truncated artifact original_bytes (${a.original_bytes}) < stored bytes (${a.bytes})`,
+        });
+      }
+    } else if (a.original_bytes !== null || a.original_sha256 !== null) {
+      // a non-truncated row carrying original_* is suspicious — Phase 9
+      // records them only on truncated paths.
+      items.push({
+        kind: "artifact",
+        id: a.artifact_id,
+        status: "drift",
+        detail:
+          `non-truncated artifact carries original_bytes/original_sha256 ` +
+          `(body_status=${a.body_status})`,
       });
     }
   }

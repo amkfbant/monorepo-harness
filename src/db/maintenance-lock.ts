@@ -135,6 +135,16 @@ export function acquire(opts: {
         },
       };
     } catch (e) {
+      // Phase 9 post-close (second review) P2-4 fix — only EWOULDBLOCK /
+      // EAGAIN means "another holder, retry"; everything else
+      // (EBADF / EINVAL / permission / ENOLCK on filesystems without
+      // POSIX locks) is a real error, not contention, and must be
+      // surfaced to the operator rather than disguised as busy.
+      const errno = (e as NodeJS.ErrnoException).code;
+      if (errno !== "EWOULDBLOCK" && errno !== "EAGAIN") {
+        closeSync(fd);
+        throw e;
+      }
       if (Date.now() >= deadline) {
         closeSync(fd);
         throw new MaintenanceLockBusyError(opts.path, opts.mode);

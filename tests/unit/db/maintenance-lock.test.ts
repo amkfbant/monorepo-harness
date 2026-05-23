@@ -89,4 +89,17 @@ describe("maintenance lock — shared / exclusive", () => {
     expect(statSync(path).mode & 0o777).toBe(0o600);
     h.release();
   });
+
+  it(
+    "non-busy flock errors (e.g. EBADF) propagate instead of being " +
+      "disguised as MaintenanceLockBusyError (Phase 9 post-close P2-4)",
+    () => {
+      // a lock file path inside a non-existent directory triggers
+      // ENOENT on openSync — the surface for non-EWOULDBLOCK errors.
+      // The test confirms acquire surfaces the raw error rather than
+      // swallowing it into a busy / retry loop forever.
+      const badPath = "/nonexistent-harness-mlock-dir/db.lock";
+      expect(() => acquireShared(badPath, { timeoutMs: 100 })).toThrow();
+    },
+  );
 });

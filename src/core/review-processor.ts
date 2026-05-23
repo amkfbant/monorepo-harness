@@ -1,5 +1,6 @@
 import { readFile, writeFile, appendFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { RunMeta, RunStatus } from "../logging/run-log.js";
 import {
@@ -267,12 +268,50 @@ async function processUnderLock(
       );
     }
   } else {
+    let decisionYaml: string;
+    try {
+      decisionYaml = await readFile(decisionPath, "utf8");
+    } catch (e) {
+      throw new ReviewGateError(
+        `failed to read review-decision.yaml for ${opts.runId}: ${(e as Error).message}`,
+      );
+    }
     try {
       decision = await loadReviewDecision(decisionPath);
     } catch (e) {
       throw new ReviewGateError(
         `failed to read review-decision.yaml for ${opts.runId}: ${(e as Error).message}`,
       );
+    }
+    // Phase 9 post-close (second review) P2-2 fix — when the verdict
+    // came from a file (legacy / hand-edited / pre-Phase-9 run), still
+    // insert it as a `review_proposals` row so the audit trail stays
+    // DB-canonical. db-first runs only: a legacy-file run is gated by
+    // assertNoLegacyRuntimeRows.
+    if (dbFirst && decision.decision !== "pending") {
+      const fileSha = createHash("sha256").update(decisionYaml).digest("hex");
+      const fileReviewer = decision.reviewer ?? "manual-file";
+      const createdAt =
+        decision.reviewed_at ?? (opts.now ?? new Date()).toISOString();
+      try {
+        const ins = proposalRepo.insertProposal({
+          runId: opts.runId,
+          reviewer: fileReviewer,
+          decision: decision.decision,
+          requiredChanges: decision.required_changes,
+          nonBlockingComments: decision.non_blocking_comments,
+          outOfScopeSuggestions: decision.out_of_scope_suggestions,
+          reviewedAt: createdAt,
+          sourceYaml: decisionYaml,
+          sourceSha256: fileSha,
+          createdAt,
+        });
+        proposalId = ins.proposalId;
+      } catch {
+        // best-effort import — if the insert fails (e.g. constraint),
+        // continue with the file-only decision so the operator's
+        // command is not blocked.
+      }
     }
   }
   if (decision.runId !== opts.runId) {

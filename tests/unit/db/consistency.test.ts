@@ -355,4 +355,78 @@ describe("checkConsistency — artifact blobs (Phase 8-11)", () => {
       ),
     ).toBe(true);
   });
+
+  it(
+    "flags a truncated artifact missing original_bytes/original_sha256 " +
+      "(Phase 9 post-close P2-5)",
+    () => {
+      const { root, db } = importedRoot();
+      db.prepare(
+        `INSERT INTO artifacts (artifact_id, run_id, kind, bytes, sha256,
+           storage, blob_sha256, body_status, original_bytes, original_sha256)
+         VALUES ('art-trunc-bad', 'run-20260521-apps-web-aaa', 'codex-log',
+           100, 'aaa', 'db', 'aaa', 'truncated', NULL, NULL)`,
+      ).run();
+      const r = checkConsistency({ db, harnessRoot: root });
+      db.close();
+      expect(
+        r.items.some(
+          (i) =>
+            i.kind === "artifact" &&
+            i.id === "art-trunc-bad" &&
+            i.status === "drift" &&
+            /audit metadata/.test(i.detail ?? ""),
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it(
+    "flags a truncated artifact whose original_bytes < stored bytes " +
+      "(Phase 9 post-close P2-5)",
+    () => {
+      const { root, db } = importedRoot();
+      db.prepare(
+        `INSERT INTO artifacts (artifact_id, run_id, kind, bytes, sha256,
+           storage, blob_sha256, body_status, original_bytes, original_sha256)
+         VALUES ('art-trunc-shrunk', 'run-20260521-apps-web-aaa', 'codex-log',
+           100, 'aaa', 'db', 'aaa', 'truncated', 50, 'bbb')`,
+      ).run();
+      const r = checkConsistency({ db, harnessRoot: root });
+      db.close();
+      expect(
+        r.items.some(
+          (i) =>
+            i.kind === "artifact" &&
+            i.id === "art-trunc-shrunk" &&
+            i.status === "drift" &&
+            /original_bytes \(50\) < stored bytes \(100\)/.test(i.detail ?? ""),
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it(
+    "flags a non-truncated artifact that carries original_* (Phase 9 post-close P2-5)",
+    () => {
+      const { root, db } = importedRoot();
+      db.prepare(
+        `INSERT INTO artifacts (artifact_id, run_id, kind, bytes, sha256,
+           storage, blob_sha256, body_status, original_bytes, original_sha256)
+         VALUES ('art-clean-stray', 'run-20260521-apps-web-aaa', 'codex-log',
+           20, 'aaa', 'db', 'aaa', 'db_available', 50, 'bbb')`,
+      ).run();
+      const r = checkConsistency({ db, harnessRoot: root });
+      db.close();
+      expect(
+        r.items.some(
+          (i) =>
+            i.kind === "artifact" &&
+            i.id === "art-clean-stray" &&
+            i.status === "drift" &&
+            /non-truncated/.test(i.detail ?? ""),
+        ),
+      ).toBe(true);
+    },
+  );
 });

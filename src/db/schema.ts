@@ -1,11 +1,17 @@
 /**
  * harness DB schema.
  *
- * The DB (`.harness/harness.sqlite`) evolved across three phases:
+ * The DB (`.harness/harness.sqlite`) evolved across four phases:
  *  - Phase 6 (v1): a read model built from files by `db import --from-files`.
  *  - Phase 7 (v2/v3): the DB-first write path — runtime state is DB-canonical.
  *  - Phase 8 (v4): runtime DB complete — artifact bodies move into the DB
  *    (`artifact_blobs`), file export becomes optional.
+ *  - Phase 9 (v5): concurrency + runtime DB story completion —
+ *    `domain_locks` (DB-backed domain lock with lease + heartbeat + fencing
+ *    token = lock_id), `review_proposals` (DB-canonical review verdicts),
+ *    `runs.lease_*` columns (fencing token stamp), `artifacts.original_*`
+ *    (truncated artifact audit). `HARNESS_EXPORT_FILES` defaults OFF —
+ *    files are compatibility export only.
  *
  * `schema.ts` holds the DDL only. The migration runner (`migrations.ts`)
  * applies it; repositories (`repositories/`) own the queries.

@@ -461,14 +461,30 @@ async function cmdLockList(): Promise<void> {
   if (!anything) process.stdout.write("  (none)\n");
 
   // --- DB-backed locks (Phase 9 lease + heartbeat + fencing token) ---
+  // Phase 9 post-close (second review) P2-3 fix — lock list is purely
+  // observational. A missing DB, an old schema (pre-v5), or a missing
+  // `domain_locks` table must NOT crash the command; surface them as
+  // structured "unavailable" messages so operators can still see file
+  // locks above and decide whether to run `harness db migrate`.
   process.stdout.write("db locks:\n");
   if (!existsSync(paths.dbPath)) {
-    process.stdout.write("  (db not initialised)\n");
+    process.stdout.write("  (db not initialised — run 'harness db init')\n");
     return;
   }
-  const dbHandle = openManagedDb({ dbPath: paths.dbPath });
+  const dbHandle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
   const db = dbHandle.db;
   try {
+    const hasTable = db
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'domain_locks'",
+      )
+      .get();
+    if (hasTable === undefined) {
+      process.stdout.write(
+        "  (unavailable — schema < v5; run 'harness db migrate')\n",
+      );
+      return;
+    }
     const rows = listActiveDomainLocks(db);
     if (rows.length === 0) {
       process.stdout.write("  (none)\n");
