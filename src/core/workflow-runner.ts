@@ -25,6 +25,8 @@ import { openDb } from "../db/connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { createDbRunLog } from "../db/run-log-db.js";
 import { ingestRunArtifacts } from "../db/run-artifacts.js";
+import { fileExportEnabled } from "../config/export-mode.js";
+import { rmSync } from "node:fs";
 import {
   RunRepository,
   type ChangedFileInput,
@@ -427,9 +429,11 @@ export async function runDomainCoding(
       // so the finalize export records whatever artifacts the partial run
       // produced in `exported_files` — same ordering as the happy path
       // (Phase 8 — external review P1-2).
+      let ingestOk = false;
       try {
         assertActiveLease(db, runId);
         ingestRunArtifacts(db, log.runDir, runId);
+        ingestOk = true;
       } catch (e) {
         warnArtifactIngestFailed(runId, e);
       }
@@ -444,6 +448,16 @@ export async function runDomainCoding(
           finishedAt: new Date().toISOString(),
         })
         .catch(() => {});
+      // Phase 9-7: with export OFF, remove the scratch run dir on the
+      // failure path too — only when the ingest actually captured what
+      // the partial run produced. Keep the dir otherwise (debug aid).
+      if (ingestOk && !fileExportEnabled()) {
+        try {
+          rmSync(log.runDir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
       // Rethrow as a typed error carrying the (now finalized) runId so an
       // orchestrator can record the failed attempt. `harness run` still
       // surfaces it as an exception (message preserved) → exit 2.
@@ -878,9 +892,11 @@ async function runDomainCodingInner(
     // final-diff.patch etc. (Phase 8 — external review P1-2).
     // A failure does NOT flip a completed run to failed-internal-error —
     // the run succeeded — but it IS surfaced as a warning.
+    let ingestOk = false;
     try {
       assertActiveLease(db, runId);
       ingestRunArtifacts(db, log.runDir, runId);
+      ingestOk = true;
     } catch (e) {
       warnArtifactIngestFailed(runId, e);
     }
@@ -903,6 +919,19 @@ async function runDomainCodingInner(
       commandResultsCount: commandResults.length,
       changedFilesCount,
     });
+    // Phase 9-7: with file export OFF the run dir is scratch — delete it
+    // once artifacts are safely DB-canonical. On ingest failure we keep
+    // the dir for debugging (a warning has already been emitted).
+    if (ingestOk && !fileExportEnabled()) {
+      try {
+        rmSync(log.runDir, { recursive: true, force: true });
+      } catch (e) {
+        process.stderr.write(
+          `warning: could not remove scratch run dir ${log.runDir}: ` +
+            `${(e as Error).message}\n`,
+        );
+      }
+    }
     return {
       runId,
       status,
