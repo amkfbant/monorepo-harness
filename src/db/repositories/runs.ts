@@ -576,6 +576,107 @@ export class RunRepository {
   }
 
   /**
+   * Force-finalize a run as `failed-internal-error` WITHOUT the active
+   * lease guard (Phase 9 post-close second review P1-6).
+   *
+   * Why this exists: `RunLog.finalize` routes through `commitThenExport`,
+   * which begins with `assertActiveLease`. When a run's lease has been
+   * stolen (a peer process acquired the lease, the old fencing token is
+   * no longer in `domain_locks.released_at IS NULL`), every subsequent
+   * write — including the failure finalize — is rejected by that guard.
+   * Without a bypass, a lease-lost run never transitions out of
+   * `running` even though the orchestrator threw and exited; the row
+   * would rot.
+   *
+   * This method:
+   *   - Does NOT call `assertActiveLease` (this IS the recovery path)
+   *   - Only flips a run that is still in a non-terminal status (other
+   *     terminal writes win on a tie)
+   *   - Appends a `lease_lost` or `internal_error` event for audit
+   *   - Updates `meta_json` so file export round-trips the new status
+   *   - Returns `changed: true` when the row was actually flipped
+   */
+  forceFailFinalize(input: {
+    runId: string;
+    finishedAt: string;
+    reason: "lease_lost" | "internal_error";
+    errorMessage: string;
+  }): { changed: boolean } {
+    const TERMINAL = new Set([
+      "approved",
+      "changes_requested",
+      "rejected",
+      "cleaned",
+      "failed-internal-error",
+      "failed-policy-violation",
+      "failed-codex-timeout",
+      "failed-command",
+    ]);
+    const txn = this.db.transaction((): { changed: boolean } => {
+      const row = this.db
+        .prepare("SELECT status, meta_json FROM runs WHERE run_id = ?")
+        .get(input.runId) as
+        | { status: string; meta_json: string | null }
+        | undefined;
+      if (row === undefined) return { changed: false };
+      if (TERMINAL.has(row.status)) return { changed: false };
+      const meta =
+        row.meta_json !== null
+          ? (JSON.parse(row.meta_json) as Record<string, unknown>)
+          : {};
+      const patchedMeta = {
+        ...meta,
+        status: "failed-internal-error",
+        finishedAt: input.finishedAt,
+      };
+      this.db
+        .prepare(
+          `UPDATE runs
+             SET status = 'failed-internal-error',
+                 finished_at = ?,
+                 meta_json = ?,
+                 db_revision = db_revision + 1,
+                 export_status = 'dirty',
+                 last_export_error = NULL,
+                 updated_at = ?
+           WHERE run_id = ?`,
+        )
+        .run(
+          input.finishedAt,
+          JSON.stringify(patchedMeta, null, 2),
+          input.finishedAt,
+          input.runId,
+        );
+      const seq = (
+        this.db
+          .prepare(
+            `SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM run_events
+             WHERE run_id = ?`,
+          )
+          .get(input.runId) as { next: number }
+      ).next;
+      this.db
+        .prepare(
+          `INSERT INTO run_events (run_id, seq, type, occurred_at, payload_json)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.runId,
+          seq,
+          input.reason,
+          input.finishedAt,
+          JSON.stringify({
+            type: input.reason,
+            runId: input.runId,
+            reason: input.errorMessage,
+          }),
+        );
+      return { changed: true };
+    });
+    return txn.immediate();
+  }
+
+  /**
    * Apply a review decision to a DB-first run (Phase 7-5).
    *
    * In one transaction: guards the run is still `needs_review` (a

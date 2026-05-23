@@ -41,6 +41,7 @@ import {
   acquireDomainLock as acquireDbDomainLock,
   heartbeatIntervalMs,
   assertActiveLease,
+  LeaseGuardFailedError,
   type DomainLockHandle as DbDomainLockHandle,
 } from "../workspace/db-domain-lock.js";
 import { hostname } from "node:os";
@@ -437,20 +438,31 @@ export async function runDomainCoding(
         db,
       });
     } catch (e) {
+      // Phase 9 post-close (second review) P1-6 — detect a stolen-lease
+      // case up front. Once the lease is gone, every commitThenExport
+      // call (emit / finalize / ingest with lease guard) will throw
+      // LeaseGuardFailedError again, leaving runs.status stuck at
+      // 'running'. The fallback path uses `forceFailFinalize` which
+      // bypasses the lease guard and uses an expected-status guard.
+      const leaseLost = e instanceof LeaseGuardFailedError;
+
       await log
         .emit({ type: "run_failed", error: (e as Error).message })
         .catch(() => {});
       // ingest the artifact manifest + bodies BEFORE the failure finalize,
       // so the finalize export records whatever artifacts the partial run
       // produced in `exported_files` — same ordering as the happy path
-      // (Phase 8 — external review P1-2).
+      // (Phase 8 — external review P1-2). Skip on lease-lost because
+      // assertActiveLease is the failure mode we're recovering from.
       let ingestOk = false;
-      try {
-        assertActiveLease(db, runId);
-        ingestRunArtifacts(db, log.runDir, runId);
-        ingestOk = true;
-      } catch (e) {
-        warnArtifactIngestFailed(runId, e);
+      if (!leaseLost) {
+        try {
+          assertActiveLease(db, runId);
+          ingestRunArtifacts(db, log.runDir, runId);
+          ingestOk = true;
+        } catch (inner) {
+          warnArtifactIngestFailed(runId, inner);
+        }
       }
       await log
         .finalize({
@@ -463,6 +475,26 @@ export async function runDomainCoding(
           finishedAt: new Date().toISOString(),
         })
         .catch(() => {});
+      // P1-6 fallback — if RunLog.finalize couldn't flip the status
+      // (lease guard rejected it, transaction error, etc.), force the
+      // run to `failed-internal-error` via the lease-bypass path so the
+      // row doesn't rot at 'running'. forceFailFinalize is no-op on a
+      // row that already reached a terminal status.
+      try {
+        new RunRepository(db).forceFailFinalize({
+          runId,
+          finishedAt: new Date().toISOString(),
+          reason: leaseLost ? "lease_lost" : "internal_error",
+          errorMessage: (e as Error).message,
+        });
+      } catch {
+        // last-resort: lease was lost AND the DB is unhappy; the lease
+        // will eventually expire and a Phase 10 maintenance command can
+        // mark orphans. Surface a warning so an operator notices.
+        process.stderr.write(
+          `warning: could not force-finalize run ${runId} after lease loss\n`,
+        );
+      }
       // Phase 9-7: with export OFF, remove the scratch run dir on the
       // failure path too — only when the ingest actually captured what
       // the partial run produced. Keep the dir otherwise (debug aid).
