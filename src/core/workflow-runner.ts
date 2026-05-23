@@ -37,6 +37,7 @@ import { acquireDomainLock } from "../workspace/domain-lock.js";
 import {
   acquireDomainLock as acquireDbDomainLock,
   heartbeatIntervalMs,
+  assertActiveLease,
   type DomainLockHandle as DbDomainLockHandle,
 } from "../workspace/db-domain-lock.js";
 import { hostname } from "node:os";
@@ -427,6 +428,7 @@ export async function runDomainCoding(
       // produced in `exported_files` — same ordering as the happy path
       // (Phase 8 — external review P1-2).
       try {
+        assertActiveLease(db, runId);
         ingestRunArtifacts(db, log.runDir, runId);
       } catch (e) {
         warnArtifactIngestFailed(runId, e);
@@ -718,6 +720,10 @@ async function runDomainCodingInner(
     // cannot derive them from files); a DB-first run writes them here
     // from the in-memory validation result.
     const runRepo = new RunRepository(db);
+    // Phase 9-6: each direct write to the run's child tables verifies the
+    // active domain lease before touching the DB — the RunLog guard above
+    // already covers RunLog writes, but these inline writes need their own.
+    assertActiveLease(db, runId);
     runRepo.upsertViolations(
       runId,
       violations.map((v) => ({ path: v.path, rule: v.reason })),
@@ -750,6 +756,7 @@ async function runDomainCodingInner(
           source: diffSource,
         })),
       ];
+      assertActiveLease(db, runId);
       runRepo.upsertChangedFiles(runId, changedFiles);
     }
 
@@ -872,6 +879,7 @@ async function runDomainCodingInner(
     // A failure does NOT flip a completed run to failed-internal-error —
     // the run succeeded — but it IS surfaced as a warning.
     try {
+      assertActiveLease(db, runId);
       ingestRunArtifacts(db, log.runDir, runId);
     } catch (e) {
       warnArtifactIngestFailed(runId, e);

@@ -54,6 +54,22 @@ export class DomainLockBusyError extends Error {
   }
 }
 
+/**
+ * Thrown when a run-execution write detects that the run's recorded
+ * domain lease is no longer the active lease (`assertActiveLease`).
+ * Distinct from `LeaseLostError` (heartbeat-side) only by where it
+ * surfaces — both mean "another process took this run's domain lock".
+ */
+export class LeaseGuardFailedError extends Error {
+  constructor(public readonly runId: string) {
+    super(
+      `lease guard failed for run ${runId}: the active domain lease no ` +
+        `longer matches the run's recorded lease (another process took it).`,
+    );
+    this.name = "LeaseGuardFailedError";
+  }
+}
+
 export class LeaseLostError extends Error {
   constructor(
     public readonly domainKey: string,
@@ -302,6 +318,39 @@ export function releaseDomainLockByDomain(
     active.lockId,
   );
   return active;
+}
+
+/**
+ * Verify the run still holds an active domain lease at write time
+ * (Phase 9-6 fencing guard). A no-op for runs without a recorded lease
+ * (legacy or pre-9-5 runs) — those continue to rely on the expected
+ * status / operation_id guards.
+ *
+ * Throws `LeaseGuardFailedError` when the run was recorded under a
+ * lease that is now released, expired, or no longer matches the
+ * `domain_locks` row — i.e. someone else took the lock.
+ */
+export function assertActiveLease(
+  db: Database.Database,
+  runId: string,
+  now: Date = new Date(),
+): void {
+  const row = db
+    .prepare(
+      `SELECT lease_lock_id AS lockId FROM runs WHERE run_id = ?`,
+    )
+    .get(runId) as { lockId: number | null } | undefined;
+  // run absent (legacy file-only) or pre-9-5 (no lease recorded) →
+  // nothing to verify here; concurrency is guarded by other means.
+  if (row === undefined || row.lockId === null) return;
+  const active = db
+    .prepare(
+      `SELECT 1 FROM domain_locks
+        WHERE lock_id = ? AND holder_run_id = ? AND released_at IS NULL
+          AND expires_at > ?`,
+    )
+    .get(row.lockId, runId, now.toISOString());
+  if (active === undefined) throw new LeaseGuardFailedError(runId);
 }
 
 function toDomainLockRow(r: Record<string, unknown>): DomainLockRow {

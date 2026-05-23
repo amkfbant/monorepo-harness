@@ -5,6 +5,7 @@ import type { RunEvent } from "../logging/events.js";
 import type { RunLog, RunMeta } from "../logging/run-log.js";
 import { bumpRevision } from "./scopes.js";
 import { exportRun, warnIfExportFailed } from "./export-files.js";
+import { assertActiveLease } from "../workspace/db-domain-lock.js";
 
 /**
  * DB-backed run log (Phase 7-3) — the DB-first replacement for
@@ -177,8 +178,14 @@ export function createDbRunLog(opts: CreateDbRunLogOpts): RunLog {
   insertRunRow(db, runId, meta);
   warnIfExportFailed(exportRun(db, runId, { runsDir }));
 
-  /** apply a DB write in one transaction, then export the files. */
+  /**
+   * Apply a DB write in one transaction, then export the files. Verifies
+   * the run still holds its active domain lease before each write
+   * (Phase 9-6 fencing guard) — a stolen lease aborts the write so a
+   * displaced runDomainCoding cannot keep mutating the run row.
+   */
   function commitThenExport(write: () => void): void {
+    assertActiveLease(db, runId);
     db.transaction(write).immediate();
     warnIfExportFailed(exportRun(db, runId, { runsDir }));
   }
