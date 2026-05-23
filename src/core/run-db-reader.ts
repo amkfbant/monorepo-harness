@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { openDbReadonly } from "../db/connection.js";
+import { openManagedDb } from "../db/managed-connection.js";
 import type { RunMeta } from "../logging/run-log.js";
 
 /**
@@ -19,7 +19,8 @@ export function readRunMetaFromDb(
   runId: string,
 ): RunMeta | null {
   if (!existsSync(dbPath)) return null;
-  const db = openDbReadonly(dbPath);
+  const dbHandle = openManagedDb({ dbPath, readonly: true });
+  const db = dbHandle.db;
   try {
     const row = db
       .prepare("SELECT meta_json FROM runs WHERE run_id = ?")
@@ -33,7 +34,7 @@ export function readRunMetaFromDb(
       return null;
     }
   } finally {
-    db.close();
+    dbHandle.close();
   }
 }
 
@@ -47,7 +48,8 @@ export function readRunEventsFromDb(
   runId: string,
 ): Record<string, unknown>[] | null {
   if (!existsSync(dbPath)) return null;
-  const db = openDbReadonly(dbPath);
+  const dbHandle = openManagedDb({ dbPath, readonly: true });
+  const db = dbHandle.db;
   try {
     const present = db
       .prepare("SELECT 1 FROM runs WHERE run_id = ?")
@@ -68,7 +70,7 @@ export function readRunEventsFromDb(
     }
     return events;
   } finally {
-    db.close();
+    dbHandle.close();
   }
 }
 
@@ -78,7 +80,8 @@ export function listRunArtifactsFromDb(
   runId: string,
 ): string[] | null {
   if (!existsSync(dbPath)) return null;
-  const db = openDbReadonly(dbPath);
+  const dbHandle = openManagedDb({ dbPath, readonly: true });
+  const db = dbHandle.db;
   try {
     const present = db
       .prepare("SELECT 1 FROM runs WHERE run_id = ?")
@@ -92,6 +95,6 @@ export function listRunArtifactsFromDb(
       .all(runId) as { relative_path: string | null; kind: string }[];
     return rows.map((r) => r.relative_path ?? `(${r.kind})`);
   } finally {
-    db.close();
+    dbHandle.close();
   }
 }

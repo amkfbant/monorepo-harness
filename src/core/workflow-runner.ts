@@ -21,7 +21,7 @@ import {
   type RunStatus,
   type SafetyStatus,
 } from "../logging/run-log.js";
-import { openDb } from "../db/connection.js";
+import { openManagedDb, type ManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { createDbRunLog } from "../db/run-log-db.js";
 import { ingestRunArtifacts } from "../db/run-artifacts.js";
@@ -301,6 +301,12 @@ export async function runDomainCoding(
   // Phase 7: the run is DB-first. Open the harness DB (read-write) and
   // ensure the schema is current before any run state is written; the
   // run log writes the DB and exports `meta.json` / `events.jsonl`.
+  //
+  // Phase 9 post-close P0 fix: open through the managed wrapper so the
+  // DB-wide shared maintenance lock is held for the lifetime of the run
+  // — a concurrent `db restore` must wait until this run releases the
+  // lock (after the DB handle is closed, see teardown below).
+  let dbHandle: ManagedDb | undefined;
   let db: Database.Database | undefined;
   // Phase 9-5: dual-lock — alongside the file lock above, hold a
   // DB-backed lease (with heartbeat) so a stolen lease can be detected
@@ -309,7 +315,8 @@ export async function runDomainCoding(
   let heartbeatTimer: NodeJS.Timeout | undefined;
   const domainKey = `${opts.repoId}::${opts.domain}`;
   try {
-    db = openDb(paths.dbPath);
+    dbHandle = openManagedDb({ dbPath: paths.dbPath });
+    db = dbHandle.db;
     runMigrations(db);
     // Phase 9-11: refuse runtime writes when the DB still has legacy-file
     // rows — operators must run `db migrate-legacy` first. Migration tools
@@ -469,10 +476,11 @@ export async function runDomainCoding(
       throw new RunFinalizedError(runId, "failed-internal-error", e);
     }
   } finally {
-    // teardown order (mirrors §A2 of the Phase 9 design):
+    // teardown order (mirrors §A2 of the Phase 9 design + post-close P0):
     //   1. stop heartbeat
     //   2. release DB lease (uses the still-open db connection)
-    //   3. close DB
+    //   3. close DB AND release the shared maintenance lock (dbHandle.close
+    //      does both, in that order)
     //   4. release file lock
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     if (dbLock !== undefined) {
@@ -483,7 +491,7 @@ export async function runDomainCoding(
       }
     }
     try {
-      db?.close();
+      dbHandle?.close();
     } finally {
       await lock.release();
     }

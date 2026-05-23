@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { openDb, DbError } from "../db/connection.js";
+import { DbError } from "../db/connection.js";
+import { openManagedDb } from "../db/managed-connection.js";
 import { exportRun } from "../db/export-files.js";
 import { ingestRunArtifacts } from "../db/run-artifacts.js";
 
@@ -26,7 +27,8 @@ export function ensureRunMaterialized(opts: {
 }): boolean {
   if (!existsSync(opts.dbPath)) return false;
   if (existsSync(join(opts.runsDir, opts.runId, "meta.json"))) return false;
-  const db = openDb(opts.dbPath);
+  const dbHandle = openManagedDb({ dbPath: opts.dbPath });
+  const db = dbHandle.db;
   try {
     // force: materialize even with file export OFF — the caller needs
     // the files regardless of the export setting.
@@ -50,7 +52,7 @@ export function ensureRunMaterialized(opts: {
     if (e instanceof DbError && e.message.includes("no run")) return false;
     throw e;
   } finally {
-    db.close();
+    dbHandle.close();
   }
 }
 
@@ -70,7 +72,8 @@ export function syncRunArtifactsToDb(opts: {
   if (!existsSync(opts.dbPath)) return;
   const runDir = join(opts.runsDir, opts.runId);
   if (!existsSync(runDir)) return;
-  const db = openDb(opts.dbPath);
+  const dbHandle = openManagedDb({ dbPath: opts.dbPath });
+  const db = dbHandle.db;
   try {
     const row = db
       .prepare("SELECT source_mode FROM runs WHERE run_id = ?")
@@ -88,6 +91,6 @@ export function syncRunArtifactsToDb(opts: {
       );
     }
   } finally {
-    db.close();
+    dbHandle.close();
   }
 }

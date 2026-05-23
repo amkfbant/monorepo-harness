@@ -11,7 +11,7 @@ import {
 import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
 import type { ReviewDecisionValue } from "./review-decision-schema.js";
 import { acquireDomainLock } from "../workspace/domain-lock.js";
-import { openDb } from "../db/connection.js";
+import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { RunRepository } from "../db/repositories/runs.js";
 import { exportRun, warnIfExportFailed } from "../db/export-files.js";
@@ -129,10 +129,14 @@ export async function processReviewDecision(
   const metaPath = join(runDir, "meta.json");
   const decisionPath = join(runDir, "review-decision.yaml");
 
-  // Open the DB BEFORE the lock so an open failure cannot leak a held
-  // lock. The DB also tells us whether the run is db-first, which decides
-  // what (DB row vs meta.json) is the canonical source for the lock key.
-  const db = openDb(opts.dbPath);
+  // Open the DB BEFORE the file domain lock so an open failure cannot
+  // leak a held lock. The DB also tells us whether the run is db-first,
+  // which decides what (DB row vs meta.json) is the canonical source for
+  // the lock key. Phase 9 post-close P0 fix: open through the managed
+  // wrapper so the DB-wide shared maintenance lock is held for the
+  // lifetime of this command — a concurrent `db restore` must wait.
+  const dbHandle = openManagedDb({ dbPath: opts.dbPath });
+  const db = dbHandle.db;
   let lock: Awaited<ReturnType<typeof acquireDomainLock>> | undefined;
   try {
     runMigrations(db);
@@ -195,7 +199,7 @@ export async function processReviewDecision(
     );
   } finally {
     try {
-      db.close();
+      dbHandle.close();
     } finally {
       if (lock !== undefined) await lock.release();
     }

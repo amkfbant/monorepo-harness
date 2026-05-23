@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { harnessPaths } from "../config/paths.js";
-import { openDb, openDbReadonly } from "../db/connection.js";
+import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations, readSchemaVersion } from "../db/migrations.js";
 import { runFullImport } from "../db/import-files.js";
 import { checkConsistency } from "../db/consistency.js";
@@ -167,21 +167,24 @@ export function loadDashboardSnapshot(opts: {
         `DB not initialized (${dbPath}); run 'harness db import --from-files'`,
       );
     }
-    const db = openDbReadonly(dbPath);
+    const dbHandle = openManagedDb({ dbPath, readonly: true });
     try {
-      return build(db);
+      return build(dbHandle.db);
     } finally {
-      db.close();
+      dbHandle.close();
     }
   }
 
-  const db = openDb(dbPath);
+  const dbHandle = openManagedDb({ dbPath });
   try {
-    runMigrations(db);
-    runFullImport(db, { harnessRoot: opts.harnessRoot, reset: true });
-    return build(db);
+    runMigrations(dbHandle.db);
+    runFullImport(dbHandle.db, {
+      harnessRoot: opts.harnessRoot,
+      reset: true,
+    });
+    return build(dbHandle.db);
   } finally {
-    db.close();
+    dbHandle.close();
   }
 }
 

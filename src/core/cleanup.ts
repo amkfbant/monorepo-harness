@@ -9,7 +9,7 @@ import {
 } from "../logging/run-log.js";
 import { gitCli } from "../git/git-cli.js";
 import { acquireDomainLock } from "../workspace/domain-lock.js";
-import { openDb } from "../db/connection.js";
+import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { RunRepository } from "../db/repositories/runs.js";
 import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
@@ -164,10 +164,13 @@ export async function cleanupRun(opts: CleanupOpts): Promise<CleanupResult> {
   const runDir = join(opts.runsDir, opts.runId);
   const metaPath = join(runDir, "meta.json");
 
-  // Open the DB before the lock so an open failure cannot leak a held
-  // lock. The DB tells us whether the run is db-first — which decides the
-  // canonical source for the lock key and the cleanup gate.
-  const db = openDb(opts.dbPath);
+  // Open the DB before the file domain lock so an open failure cannot
+  // leak a held lock. The DB tells us whether the run is db-first — which
+  // decides the canonical source for the lock key and the cleanup gate.
+  // Phase 9 post-close P0 fix: managed open holds the DB-wide shared
+  // maintenance lock so a concurrent `db restore` can't swap the DB out.
+  const dbHandle = openManagedDb({ dbPath: opts.dbPath });
+  const db = dbHandle.db;
   let lock: Awaited<ReturnType<typeof acquireDomainLock>> | undefined;
   try {
     runMigrations(db);
@@ -215,7 +218,7 @@ export async function cleanupRun(opts: CleanupOpts): Promise<CleanupResult> {
     return await cleanupUnderLock(opts, scope, runDir, metaPath, db, dbFirst);
   } finally {
     try {
-      db.close();
+      dbHandle.close();
     } finally {
       if (lock !== undefined) await lock.release();
     }

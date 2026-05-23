@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { openDb } from "../db/connection.js";
+import { openManagedDb, withManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import { SourceModeError } from "../db/errors.js";
@@ -131,7 +131,8 @@ export async function transitionBacklogItem(
   // The DB write runs while the connection is open; the legacy fallback
   // touches only files, so it runs after the DB is closed (the `return`
   // inside the try short-circuits the db-first path).
-  const db = openDb(ctx.dbPath);
+  const dbHandle = openManagedDb({ dbPath: ctx.dbPath });
+  const db = dbHandle.db;
   try {
     runMigrations(db);
     // Phase 9-11: refuse runtime writes while legacy-file rows linger.
@@ -151,7 +152,7 @@ export async function transitionBacklogItem(
     }
     assertLegacyOrAbsent(existing, itemId);
   } finally {
-    db.close();
+    dbHandle.close();
   }
   // legacy / not-in-DB item — keep the original file-only path.
   return result(await setItemStatus(ctx.backlogDir, itemId, target));
@@ -173,7 +174,8 @@ export async function linkBacklogRun(
   if (!isLinkableRunId(runId)) {
     throw new BacklogError(`invalid runId: ${JSON.stringify(runId)}`);
   }
-  const db = openDb(ctx.dbPath);
+  const dbHandle = openManagedDb({ dbPath: ctx.dbPath });
+  const db = dbHandle.db;
   try {
     runMigrations(db);
     // Phase 9-11: refuse runtime writes while legacy-file rows linger.
@@ -189,7 +191,7 @@ export async function linkBacklogRun(
     }
     assertLegacyOrAbsent(existing, itemId);
   } finally {
-    db.close();
+    dbHandle.close();
   }
   // legacy / not-in-DB item — append to the YAML's linkedRuns.
   return result(await recordBacklogRun(ctx.backlogDir, itemId, runId));
@@ -207,7 +209,8 @@ export async function resolveBacklogItemForRun(
   itemId: string,
 ): Promise<BacklogItem> {
   assertItemId(itemId);
-  const db = openDb(ctx.dbPath);
+  const dbHandle = openManagedDb({ dbPath: ctx.dbPath });
+  const db = dbHandle.db;
   try {
     runMigrations(db);
     const existing = getItemWithRuns(db, itemId);
@@ -216,7 +219,7 @@ export async function resolveBacklogItemForRun(
     }
     assertLegacyOrAbsent(existing, itemId);
   } finally {
-    db.close();
+    dbHandle.close();
   }
   return showItem(ctx.backlogDir, itemId);
 }
@@ -289,14 +292,14 @@ function result(
 /**
  * Open the DB (running migrations), run `fn`, and always close. The DB is
  * opened lazily here rather than kept by the caller so a backlog command
- * never leaks a connection on an error path.
+ * never leaks a connection on an error path. Phase 9 post-close P0 fix:
+ * the managed wrapper holds the DB-wide shared maintenance lock for the
+ * lifetime of the call so a concurrent `db restore` can't swap the DB
+ * out under us.
  */
 function withDb<T>(dbPath: string, fn: (db: Database.Database) => T): T {
-  const db = openDb(dbPath);
-  try {
+  return withManagedDb({ dbPath }, (db) => {
     runMigrations(db);
     return fn(db);
-  } finally {
-    db.close();
-  }
+  });
 }

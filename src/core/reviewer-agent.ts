@@ -15,7 +15,9 @@ import {
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import { createHash } from "node:crypto";
 import { stringify as stringifyYaml } from "yaml";
-import { openDb } from "../db/connection.js";
+import { openManagedDb } from "../db/managed-connection.js";
+import { runMigrations } from "../db/migrations.js";
+import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
 
 export class ReviewerAgentGateError extends Error {
@@ -448,37 +450,40 @@ export async function runReviewerAgent(
 
   // Phase 9-8: also write the verdict to `review_proposals` so it is
   // DB-canonical for `review process` to read. The file write above
-  // stays as a compatibility export (toggled by HARNESS_EXPORT_FILES in
-  // a later sub-phase; today both always run). A DB write failure does
-  // NOT undo the file — operators can still process the file path.
-  // Skip the DB write if the DB file does not yet exist — `review auto`
-  // must not silently create an empty (un-migrated) harness DB.
+  // stays as a compatibility export.
+  //
+  // Phase 9 post-close P1 #2 fix: previously the DB write was best-effort
+  // (a failure was warned and swallowed) and skipped migrations + the
+  // legacy-row gate. That meant a v4 DB or a DB with leftover
+  // `legacy-file` rows silently degraded `review auto` to sidecar-only,
+  // breaking the "review_proposals is DB canonical" story. The DB write
+  // now (a) opens through the managed wrapper so it holds the shared
+  // maintenance lock, (b) runs migrations + the legacy gate, and (c)
+  // fails the command on any DB error so failures are visible.
+  //
+  // Skip the DB write entirely if the DB file does not yet exist —
+  // `review auto` must not silently create an empty (un-migrated) DB.
   if (inputs.dbPath !== undefined && existsSync(inputs.dbPath)) {
+    const sourceYaml = stringifyYaml(decision);
+    const sha = createHash("sha256").update(sourceYaml).digest("hex");
+    const dbHandle = openManagedDb({ dbPath: inputs.dbPath });
     try {
-      const sourceYaml = stringifyYaml(decision);
-      const sha = createHash("sha256").update(sourceYaml).digest("hex");
-      const db = openDb(inputs.dbPath);
-      try {
-        new ReviewProposalRepository(db).insertProposal({
-          runId: inputs.runId,
-          reviewer,
-          decision: decision.decision,
-          requiredChanges: decision.required_changes,
-          nonBlockingComments: decision.non_blocking_comments,
-          outOfScopeSuggestions: decision.out_of_scope_suggestions,
-          reviewedAt,
-          sourceYaml,
-          sourceSha256: sha,
-          createdAt: reviewedAt,
-        });
-      } finally {
-        db.close();
-      }
-    } catch (e) {
-      process.stderr.write(
-        `warning: review proposal not persisted to DB for ${inputs.runId}: ` +
-          `${(e as Error).message}\n`,
-      );
+      runMigrations(dbHandle.db);
+      assertNoLegacyRuntimeRows(dbHandle.db);
+      new ReviewProposalRepository(dbHandle.db).insertProposal({
+        runId: inputs.runId,
+        reviewer,
+        decision: decision.decision,
+        requiredChanges: decision.required_changes,
+        nonBlockingComments: decision.non_blocking_comments,
+        outOfScopeSuggestions: decision.out_of_scope_suggestions,
+        reviewedAt,
+        sourceYaml,
+        sourceSha256: sha,
+        createdAt: reviewedAt,
+      });
+    } finally {
+      dbHandle.close();
     }
   }
 

@@ -20,7 +20,7 @@ import {
   listActiveDomainLocks,
   releaseDomainLockByDomain,
 } from "../workspace/db-domain-lock.js";
-import { openDb } from "../db/connection.js";
+import { openManagedDb } from "../db/managed-connection.js";
 import {
   processReviewDecision,
   ReviewGateError,
@@ -466,7 +466,8 @@ async function cmdLockList(): Promise<void> {
     process.stdout.write("  (db not initialised)\n");
     return;
   }
-  const db = openDb(paths.dbPath);
+  const dbHandle = openManagedDb({ dbPath: paths.dbPath });
+  const db = dbHandle.db;
   try {
     const rows = listActiveDomainLocks(db);
     if (rows.length === 0) {
@@ -479,7 +480,7 @@ async function cmdLockList(): Promise<void> {
       );
     }
   } finally {
-    db.close();
+    dbHandle.close();
   }
 }
 
@@ -527,7 +528,8 @@ async function cmdLockRelease(o: LockReleaseOpts): Promise<void> {
 
   // --- DB-backed lock ---
   if ((source === "db" || source === "both") && existsSync(paths.dbPath)) {
-    const db = openDb(paths.dbPath);
+    const dbHandle = openManagedDb({ dbPath: paths.dbPath });
+    const db = dbHandle.db;
     try {
       // `domain_key` mirrors workflow-runner's `${repoId}::${domain}`.
       const domainKey =
@@ -553,7 +555,7 @@ async function cmdLockRelease(o: LockReleaseOpts): Promise<void> {
         releasedAny = true;
       }
     } finally {
-      db.close();
+      dbHandle.close();
     }
   }
 

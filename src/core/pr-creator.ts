@@ -6,7 +6,7 @@ import type { RunMeta } from "../logging/run-log.js";
 import { gitCli } from "../git/git-cli.js";
 import { acquireDomainLock } from "../workspace/domain-lock.js";
 import { computeReviewedFingerprint } from "./reviewed-fingerprint.js";
-import { openDb } from "../db/connection.js";
+import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import { RunRepository } from "../db/repositories/runs.js";
@@ -93,10 +93,16 @@ export async function createPullRequest(
   }
   const runDir = join(opts.runsDir, opts.runId);
   const metaPath = join(runDir, "meta.json");
-  // Open the DB before the lock so an open failure cannot leak a held
-  // lock (mirrors cleanup). A DB-recorded `created` PR short-circuits the
-  // whole flow — `pr create` is idempotent, never opening a second PR.
-  const db = opts.dbPath !== undefined ? openDb(opts.dbPath) : undefined;
+  // Open the DB before the file domain lock so an open failure cannot
+  // leak a held lock (mirrors cleanup). A DB-recorded `created` PR
+  // short-circuits the whole flow — `pr create` is idempotent, never
+  // opening a second PR. Phase 9 post-close P0 fix: managed open holds
+  // the DB-wide shared maintenance lock for the lifetime of this command.
+  const dbHandle =
+    opts.dbPath !== undefined
+      ? openManagedDb({ dbPath: opts.dbPath })
+      : undefined;
+  const db = dbHandle?.db;
   let lock: Awaited<ReturnType<typeof acquireDomainLock>> | undefined;
   try {
     if (db !== undefined) {
@@ -167,7 +173,7 @@ export async function createPullRequest(
     return await createUnderLock(opts, runDir, metaPath, db);
   } finally {
     try {
-      db?.close();
+      dbHandle?.close();
     } finally {
       if (lock !== undefined) await lock.release();
     }

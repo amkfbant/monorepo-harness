@@ -2,7 +2,7 @@ import { readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type Database from "better-sqlite3";
-import { openDb } from "../db/connection.js";
+import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import { KnowledgeRepository } from "../db/repositories/knowledge.js";
@@ -207,7 +207,8 @@ export async function rejectKnowledgeDbFirst(
   if (opts.reason.trim() === "") {
     throw new KnowledgePromoteGateError("reason is required for reject");
   }
-  const db = openDb(ctx.dbPath);
+  const dbHandle = openManagedDb({ dbPath: ctx.dbPath });
+  const db = dbHandle.db;
   const warnings: string[] = [];
   try {
     runMigrations(db);
@@ -235,7 +236,7 @@ export async function rejectKnowledgeDbFirst(
     const warning = exportDecisionsSidecar(db, ctx, opts.runId);
     if (warning !== undefined) warnings.push(warning);
   } finally {
-    db.close();
+    dbHandle.close();
   }
   return {
     runId: opts.runId,
@@ -272,7 +273,8 @@ export async function promoteKnowledgeDbFirst(
   const skipped: SkipRecord[] = [];
   const warnings: string[] = [];
 
-  const db = openDb(ctx.dbPath);
+  const dbHandle = openManagedDb({ dbPath: ctx.dbPath });
+  const db = dbHandle.db;
   try {
     runMigrations(db);
     // Phase 9-11: refuse runtime writes while legacy-file rows linger.
@@ -393,7 +395,7 @@ export async function promoteKnowledgeDbFirst(
       });
     }
   } finally {
-    db.close();
+    dbHandle.close();
   }
   return {
     runId: opts.runId,

@@ -1,7 +1,7 @@
 import process from "node:process";
 import type Database from "better-sqlite3";
 import { harnessPaths } from "../config/paths.js";
-import { openDb } from "../db/connection.js";
+import { withManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { runFullImport } from "../db/import-files.js";
 import { parseDuration } from "../core/maintenance.js";
@@ -71,14 +71,13 @@ function withRefreshedDb<T>(
   fn: (db: Database.Database) => T,
 ): T {
   const { dbPath } = harnessPaths(harnessRoot);
-  const db = openDb(dbPath);
-  try {
+  // Phase 9 post-close P0 fix: hold the shared maintenance lock for the
+  // lifetime of the import + scoped query.
+  return withManagedDb({ dbPath }, (db) => {
     runMigrations(db);
     runFullImport(db, { harnessRoot, reset: true });
     return fn(db);
-  } finally {
-    db.close();
-  }
+  });
 }
 
 /** Warn (once) when a flag the scoped DB path does not honor is present. */

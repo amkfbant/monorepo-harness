@@ -8,7 +8,7 @@ import {
   ReviewDecisionFileSchema,
   type ReviewDecisionFile,
 } from "./review-decision-schema.js";
-import { openDb, openDbReadonly } from "../db/connection.js";
+import { openManagedDb } from "../db/managed-connection.js";
 import { SourceModeError } from "../db/errors.js";
 import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 
@@ -110,7 +110,8 @@ async function loadParentMeta(
   dbPath: string | undefined,
 ): Promise<RunMeta> {
   if (dbPath !== undefined && existsSync(dbPath)) {
-    const db = openDb(dbPath);
+    const dbHandle = openManagedDb({ dbPath });
+    const db = dbHandle.db;
     try {
       const row = db
         .prepare(
@@ -137,7 +138,7 @@ async function loadParentMeta(
         }
       }
     } finally {
-      db.close();
+      dbHandle.close();
     }
   }
   return (await readMetaObject(runsDir, parentRunId)).meta;
@@ -157,7 +158,8 @@ async function loadReviewDecisionForRun(
   dbPath: string | undefined,
 ): Promise<ReviewDecisionFile> {
   if (dbPath !== undefined && existsSync(dbPath)) {
-    const db = openDb(dbPath);
+    const dbHandle = openManagedDb({ dbPath });
+    const db = dbHandle.db;
     try {
       const row = db
         .prepare(
@@ -189,7 +191,7 @@ async function loadReviewDecisionForRun(
         }
       }
     } finally {
-      db.close();
+      dbHandle.close();
     }
   }
   return loadReviewDecision(join(runsDir, runId, "review-decision.yaml"));
@@ -326,7 +328,8 @@ export async function prepareRerunFromReview(opts: {
   // fast, friendly pre-check; the ATOMIC enforcement is in runDomainCoding
   // under the domain lock (two reruns of one parent share a domain).
   if (opts.dbPath !== undefined && existsSync(opts.dbPath)) {
-    const db = openDb(opts.dbPath);
+    const dbHandle = openManagedDb({ dbPath: opts.dbPath });
+    const db = dbHandle.db;
     try {
       // Phase 9-11: legacy-file runtime rows must be migrated first.
       assertNoLegacyRuntimeRows(db);
@@ -342,7 +345,7 @@ export async function prepareRerunFromReview(opts: {
         );
       }
     } finally {
-      db.close();
+      dbHandle.close();
     }
   }
 
@@ -507,7 +510,8 @@ async function fileChainIndex(
 /** Index every run's chain facts from the DB (DB-only fallback). */
 function dbChainIndex(dbPath: string): Map<string, ChainInfo> {
   const index = new Map<string, ChainInfo>();
-  const db = openDbReadonly(dbPath);
+  const dbHandle = openManagedDb({ dbPath, readonly: true });
+  const db = dbHandle.db;
   try {
     const rows = db
       .prepare(
@@ -527,7 +531,7 @@ function dbChainIndex(dbPath: string): Map<string, ChainInfo> {
       });
     }
   } finally {
-    db.close();
+    dbHandle.close();
   }
   return index;
 }
