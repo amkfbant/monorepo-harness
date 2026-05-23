@@ -398,3 +398,193 @@ truncated artifact の監査情報）を実装する。設計は
   change として close report で強周知。
 - **truncated artifact の original 情報** — `artifacts.original_bytes` /
   `original_sha256` 記録。`db stats` で truncated 統計表示。
+
+## Phase 10 — DB-only runtime completion（設計確定・実装中）
+
+Phase 10 は Phase 9 の transition 状態（file + DB の dual-lock / scratch と
+compat export が単一 materialize 経路 / viewer が file-first / runtime に
+legacy-file 分岐残置 / review process idempotency 緩さ）を閉じるフェーズ。
+設計は [`../superpowers/specs/2026-05-23-phase10-db-only-runtime-completion-design.md`](../superpowers/specs/2026-05-23-phase10-db-only-runtime-completion-design.md)、
+元計画は `tmp/phase10-16-design-plans/phase10-db-only-runtime-completion-plan.md`。
+
+### schema v6（Phase 10-3 / 10-5）
+
+`SCHEMA_VERSION = 6`。Phase 10 で追加するもの:
+
+#### `run_materializations`
+
+scratch materialize（review/pr/external command 用の一時 file 領域）の
+lifecycle を追跡する table。compat-export は **この table を更新しない**
+（既存 `exported_files` で tracking）。
+
+```sql
+CREATE TABLE run_materializations (
+  materialization_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id             TEXT NOT NULL,
+  purpose            TEXT NOT NULL CHECK (purpose IN ('scratch', 'compat-export')),
+  path               TEXT NOT NULL,
+  reason             TEXT NOT NULL,
+  created_at         TEXT NOT NULL,
+  expires_at         TEXT,
+  cleaned_at         TEXT,
+  status             TEXT NOT NULL CHECK (status IN ('active', 'cleaned', 'failed')),
+  error_message      TEXT,
+  metadata_json      TEXT NOT NULL DEFAULT '{}',
+  FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+);
+CREATE INDEX run_materializations_run_idx ON run_materializations(run_id, created_at);
+CREATE INDEX run_materializations_expiry_idx ON run_materializations(status, expires_at);
+```
+
+Phase 10 minimum viable では `purpose='scratch'` のみ INSERT する。
+`purpose='compat-export'` 行を作る経路は Phase 15（`db doctor` が compat
+export の TTL/orphan を見る必要が出たとき）に判断する。
+
+#### `runs.state_version`
+
+```sql
+ALTER TABLE runs ADD COLUMN state_version INTEGER NOT NULL DEFAULT 0;
+```
+
+すべての runtime state transition（`RunLog.setStatus` /
+`setSafetyStatus` / `processReviewDecision` / `cleanupRun` /
+`createPullRequest` / `rerunFromReview`）が `state_version = state_version
++ 1` を CAS 付きで実行する。bump しない write: artifact ingest /
+heartbeat / `run_events` INSERT / `run_changed_files` INSERT /
+`policy_violations` INSERT。
+
+### DB-only domain lock（file lock 完全撤去）
+
+Phase 10-1 で `src/workspace/domain-lock.ts` の runtime usage は削除。
+runtime 経路は `db-domain-lock.ts`（Phase 9 で導入された lease + heartbeat
++ fencing token）のみ。`.harness/locks/<domain>.lock` は読みも書きもしない。
+
+旧 file lock sentinel（`.harness/locks/*.lock`）が残っていた場合は無視 +
+1 回 stderr warning（`HARNESS_SUPPRESS_LEGACY_FILE_LOCK_WARNING=1` で
+抑制可）。`harness lock migrate` コマンドは **作らない**。
+
+Lock ordering（Phase 10）:
+
+```
+1. shared maintenance lock
+2. open DB
+3. acquire DB domain lock
+4. execute
+5. release DB domain lock
+6. close DB
+7. release shared maintenance lock
+```
+
+### lease stealing semantics（Phase 10 確定）
+
+dual-lock 撤去で実 hot path となる lease stealing の挙動を確定:
+
+1. **expired lease の steal**: process B が active lease を acquire しようと
+   して `expires_at < now` の active 行を見つけたら、`released_at = now,
+   release_reason='expired', released_by='steal:<B-info>'` で soft-release
+   して新 lease を INSERT。
+2. **stale writer reject**: process A の次 guarded write は
+   `assertActiveLease(db, { lockId: A's, runId, now })` の EXISTS check に
+   失敗し `LeaseLostError` を throw。
+3. **unguarded finalize**: workflow-runner が `LeaseLostError` を catch
+   して `UPDATE runs SET status='failed', failure_reason='lease-stolen',
+   lease_lost_at=now WHERE run_id=:runId AND status='coding'` で clean
+   finalize（assertActiveLease を回らない expected-status guard 経路）。
+4. **DB safe invariant**: A は B の run row には触れない（run_id 単位で
+   分離）。post-run table（review/cleanup/pr/backlog）は触らない。
+
+`db doctor` の minimum orphan 検出（Phase 15 待たず Phase 10-2 で fixture
+として書く）:
+
+```sql
+-- expired but not released
+SELECT * FROM domain_locks
+WHERE released_at IS NULL AND expires_at < datetime('now', '-1 minute');
+
+-- orphan in-progress run
+SELECT * FROM runs WHERE status = 'coding'
+  AND lease_lock_id NOT IN (
+    SELECT lock_id FROM domain_locks WHERE released_at IS NULL
+  );
+```
+
+### Materialization vs export（Phase 10）
+
+| 概念 | API | 更新する table |
+|---|---|---|
+| scratch materialize | `materializeRun({ purpose: 'scratch', ttlMs, reason })` | `run_materializations` のみ |
+| compat export | `exportRun({ purpose: 'compat-export', force })` | `exported_files` + `runs.export_status='synced'` |
+
+scratch handle は `cleanup()` を finally で呼ぶ契約。失敗時は
+`HARNESS_KEEP_SCRATCH_ON_FAILURE=1` で path 保持 + `status='failed'` 記録。
+`harness db materialize cleanup --expired` で後から回収。
+
+**Invariant（test 化対象）**: `materializeRun({ purpose: 'scratch' })` は
+絶対に `exported_files` を更新せず、`runs.export_status` も `synced` に
+しない。
+
+### Viewer source mode（Phase 10）
+
+```txt
+auto (default):
+  source_mode='db-first'   → DB を読む（runDir があっても無視）
+  source_mode='legacy-file'→ files を読む（Phase 10 runtime では発生しない）
+
+--source db:
+  DB のみ。runDir 在っても無視。legacy-file run は reject。
+
+--source files:
+  runDir のみ。debug 用。db-first run でも許可。
+```
+
+`runs.export_status` が `disabled / dirty / failed / removed` の場合、auto
+モードでも 1 行 warning を表示し、operator が `--source files` を明示する
+ことを促す。
+
+### Review process idempotency（Phase 10-5）
+
+`review process` の core mutation は transaction 内で次を全部満たすことを
+確認する:
+
+```sql
+UPDATE review_proposals SET processed_at = :now, review_decision_id = :decisionId
+WHERE proposal_id        = :proposalId
+  AND source_sha256      = :expectedSourceSha
+  AND processed_at IS NULL
+  AND superseded_at IS NULL
+  AND run_id             = :runId
+  AND EXISTS (
+    SELECT 1 FROM runs
+    WHERE run_id = :runId
+      AND status        = :expectedStatus
+      AND state_version = :expectedStateVersion
+  );
+```
+
+`changes = 0` → `StateConflictError`。CLI / API は最新 proposal の再確認を
+ユーザーに促す（CLI UX は `cli.md` Phase 10 節参照）。`operation_id` 重複は
+同一結果なら no-op、結果が違えば `OperationReplayConflictError`。
+
+### Runtime legacy branch 撤去範囲（Phase 10-6）
+
+runtime rows（runs / run_events / review_decisions / review_proposals /
+artifacts / command_results / run_changed_files / policy_violations /
+cleanup records / pr records）への runtime write 経路から
+`sourceMode === 'legacy-file'` 分岐を削除。
+
+撤去しない（Phase 14 マター）:
+
+- `project profile YAML` / `policy YAML` / `docs/knowledge/**/*.md`
+- `knowledge_entries.body_*` 列
+
+Phase 9-11 で導入した `assertNoLegacyRuntimeRows(db)` 起動 guard は維持。
+bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
+`db doctor` / `db check-consistency`。
+
+### schema versions
+
+| Version | Phase | 主な内容 |
+|---|---|---|
+| 1〜4 | Phase 6〜8 | runtime DB completion |
+| 5 | Phase 9 | domain_locks / review_proposals / artifacts.original_* / runs.lease_* |
+| 6 | Phase 10 | run_materializations / runs.state_version |

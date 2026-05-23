@@ -1113,3 +1113,106 @@ Phase 9 close で default OFF に反転。未設定時は warning。
 - knowledge-candidate の confirmed ストアへの統合（現状 `knowledge promote` は md 書き出しまで）
 
 これらは `docs/superpowers/plans/` 配下に計画 doc を作るタイミングで追加する。
+
+## Phase 10 — CLI 変更（設計確定・実装中）
+
+Phase 10 の設計は [`../superpowers/specs/2026-05-23-phase10-db-only-runtime-completion-design.md`](../superpowers/specs/2026-05-23-phase10-db-only-runtime-completion-design.md) §5。
+
+### `harness lock`（Phase 10）
+
+| コマンド | 変更 |
+|---|---|
+| `harness lock list` | DB locks のみ表示。file source 表示を廃止。`heartbeat_at` / `expires_at` / `fencing_token` / `release_reason` を出力 |
+| `harness lock release --domain <d> [--run-id <id>] [--force]` | DB lock のみ release。stale (`expires_at < now`) は `--force` なしで release 可。active lease を奪う場合は `--force` 必要、stderr warning + `release_reason='force'` 記録 |
+| `harness lock migrate` | **未提供**。Phase 9 でも提供せず、Phase 10 でも作らない |
+
+`.harness/locks/<domain>.lock` が残っている場合、Phase 10 起動時に 1 回
+stderr warning（`HARNESS_SUPPRESS_LEGACY_FILE_LOCK_WARNING=1` で抑制可）:
+
+```
+warning: legacy file domain lock found at .harness/locks/<domain>.lock — ignored.
+         Phase 10 uses DB domain locks (domain_locks table) exclusively.
+         You can safely delete .harness/locks/.
+```
+
+### `harness db materialize`（Phase 10、新規）
+
+```bash
+harness db materialize --run <runId> [--ttl 1h] [--out <dir>] [--reason <text>]
+harness db materialize cleanup [--expired] [--run <runId>]
+```
+
+scratch materialize 専用。`run_materializations` に `purpose='scratch'`
+row を INSERT し、`<out> or runs/<runId>/` に file を書き出す。**`exported_files`
+/ `runs.export_status` は触らない**。
+
+`--ttl` は scratch 寿命。default なし（必ず明示）。expire 後の cleanup は
+`materialize cleanup --expired` が回収。
+
+### `harness db export-files`（Phase 10 で意味確定）
+
+```bash
+harness db export-files --run <runId>
+harness db export-files --project <projectId>
+harness db export-files --all
+```
+
+**compat export 専用**。`exported_files` を更新し、対象 run の
+`runs.export_status='synced'` に。scratch materialize と異なり、export は
+**永続的な file artifact** を意図する operator 操作。
+
+shared maintenance lock。
+
+### `harness run show` / `harness run artifacts`（Phase 10）
+
+```bash
+harness run show <runId> [--source db|files|auto]      # default = auto
+harness run artifacts <runId> [--source db|files|auto] # default = auto
+```
+
+`--source auto` の resolution:
+
+| `source_mode` | `--source auto` | `--source db` | `--source files` |
+|---|---|---|---|
+| `db-first` | DB を読む。runDir があっても無視。`export_status != synced` なら 1 行 warning | DB のみ | runDir のみ（debug） |
+| `legacy-file` | files を読む（runtime では発生しない経路） | reject | files のみ |
+
+`auto` で `export_status` が `disabled / dirty / failed / removed` のとき:
+
+```
+Note: file export status = dirty. Files in runs/<runId>/ may be stale.
+      Use --source files to inspect files explicitly,
+      or `harness db export-files --run <runId>` to refresh the export.
+```
+
+### `harness review process`（Phase 10、idempotency 強化）
+
+```bash
+harness review process <runId> [--proposal <id>] [--reviewer <name>]
+                               [--expected-state-version <n>]
+                               [--operation-id <uuid>]
+```
+
+guard 条件は db.md "Review process idempotency" 節。conflict 時の UX:
+
+```
+$ harness review process <runId>
+error: review proposal state changed since you read it.
+       Latest active proposal:    proposal_id=12, reviewer=codex, source_sha256=abcd…
+       Run state:                 status=in-review, state_version=4
+       You attempted to process:  proposal_id=11, source_sha256=ef01…
+       Re-run with the latest proposal, or use --proposal 12 explicitly.
+```
+
+`operation_id` 重複時:
+
+- 同一 input / 同一結果 → idempotent no-op、既存結果を出力
+- 同一 input / 異なる結果 → `OperationReplayConflictError`、stderr に
+  conflict 詳細
+
+### Runtime legacy branch 撤去（Phase 10-6 影響）
+
+runtime write command は `sourceMode === 'legacy-file'` の run / backlog /
+knowledge_candidate に対して `assertNoLegacyRuntimeRows(db)` で拒否。
+bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
+`db doctor` / `db check-consistency`。

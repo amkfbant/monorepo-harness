@@ -476,3 +476,67 @@ if changes_requested かつ attempt < maxAttempts:
 `not_converged` は **workflow result の値**であり、個別 run の `meta.status` は `changes_requested` のまま（新 RunStatus は導入しない）。`--no-auto-review` は coder run のみで `needs_review` 停止、`--stop-on-changes-requested` は最初の `changes_requested` で停止。
 
 workflow artifact は root run（attempt 0 の run）の dir に置く: `workflow.json` / `workflow-summary.md`。各 attempt の `parentRunId` / `rootRunId` / `rerunAttempt` は `rerun` と同じ規則で維持される。
+
+## Phase 10 — lease stealing / scratch lifecycle（設計確定・実装中）
+
+Phase 10 で file domain lock が撤去され、DB-only domain lock が唯一の
+serialization になる。dual-lock 期間に hidden だった lease stealing の挙動が
+hot path として観測可能になるため、operator から見える振る舞いを確定する。
+詳細は [`../superpowers/specs/2026-05-23-phase10-db-only-runtime-completion-design.md`](../superpowers/specs/2026-05-23-phase10-db-only-runtime-completion-design.md) §3.B。
+
+### Lease stealing — operator 視点
+
+次の現象は **正常な挙動** として扱う:
+
+```
+process A: harness run ...      # acquire lease X, status=coding に
+process A: SIGSTOP / GC pause / event loop block で heartbeat 停止
+（LEASE_DURATION_MS = 5min 経過）
+process B: harness run ...      # acquire lease Y, A の lease X を soft-release
+process A: 再開
+process A: 次の guarded write が LeaseLostError で fail
+process A: workflow-runner が catch して run を failed/lease-stolen で clean finalize
+process A: exit 1
+```
+
+この時:
+
+- B の run は影響を受けない（B は B の run_id にしか書かない）
+- A の run は `runs.status='failed'`, `failure_reason='lease-stolen'`,
+  `lease_lost_at=<時刻>` で確定
+- DB の global state は壊れない
+- `harness lock list` で B の lease のみが active として見える
+- `harness run show <A の runId>` は failed 状態を表示
+
+operator が `harness lock release --force` で active lease を奪った場合も
+同じ経路を通る（`release_reason='force'` 違いだけ）。
+
+`db doctor`（Phase 15）の orphan 検出条件で expired-but-not-released な
+`domain_locks` 行 / `coding` のまま `lease_lock_id` が released な
+`runs` 行を見つけたら警告するが、Phase 10 では fixture として
+`tests/integration/db-lease-stealing.test.ts` に同じ SQL を埋め込んでおく。
+
+### Scratch lifecycle（Phase 10）
+
+`runDomainCoding` 内で codex output / diff / artifact を組み立てるための
+`runs/<runId>/` は Phase 9 で `HARNESS_EXPORT_FILES=0` 時に ingest 成功後
+削除する形になった。Phase 10 ではこれを **scratch materialization** として
+明示する:
+
+- `materializeRun({ purpose: 'scratch', ttlMs, reason })` が `runs/<runId>/`
+  を作り、`run_materializations` に `status='active'` で row 記録。
+- 呼び出し元は handle.cleanup() を finally で呼ぶ。`rmSync` + row を
+  `status='cleaned', cleaned_at=now` に update。
+- `HARNESS_EXPORT_FILES=1` の compat-export は別経路（`exportRun({ purpose:
+  'compat-export' })`）で、`exported_files` + `runs.export_status='synced'`
+  を更新する。run_materializations は触らない。
+- ingest failure 時、`HARNESS_KEEP_SCRATCH_ON_FAILURE=1` set 時に限り path
+  を保持し row を `status='failed'` に。後で `harness db materialize cleanup
+  --expired` が回収。
+
+post-run command（`harness review process` の git diff 生成、`harness pr
+create` の patch 添付、external review 用 zip）は **必ず scratch** を使う。
+compat-export を内部利用しない。
+
+`run_materializations.metadata_json` には呼び出し元（command name /
+caller_id）を入れて debug 性を確保する。
