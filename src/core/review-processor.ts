@@ -6,7 +6,9 @@ import {
   loadReviewDecision,
   writeReviewDecision,
   serializeReviewDecision,
+  parseReviewDecisionYaml,
 } from "./review-decision-loader.js";
+import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
 import type { ReviewDecisionValue } from "./review-decision-schema.js";
 import { acquireDomainLock } from "../workspace/domain-lock.js";
 import { openDb } from "../db/connection.js";
@@ -204,16 +206,32 @@ async function processUnderLock(
   db: Database.Database,
   dbFirst: boolean,
 ): Promise<ProcessResult> {
-  // Load + validate review-decision.yaml. Any failure here (FS error,
-  // YAML parse error, Zod validation error) is by definition user-fixable
-  // since the reviewer just edited this file.
+  // Phase 9-8: the DB-canonical source for the verdict is
+  // `review_proposals` (written by `review auto`). Try it first; fall back
+  // to the file `review-decision.yaml` so legacy / hand-edited proposals
+  // still work.
   let decision: Awaited<ReturnType<typeof loadReviewDecision>>;
-  try {
-    decision = await loadReviewDecision(decisionPath);
-  } catch (e) {
-    throw new ReviewGateError(
-      `failed to read review-decision.yaml for ${opts.runId}: ${(e as Error).message}`,
-    );
+  let proposalId: number | null = null;
+  const proposalRepo = new ReviewProposalRepository(db);
+  const activeProposal = proposalRepo.getLatestActiveProposal(opts.runId);
+  if (activeProposal !== null) {
+    try {
+      decision = parseReviewDecisionYaml(activeProposal.sourceYaml);
+      proposalId = activeProposal.proposalId;
+    } catch (e) {
+      throw new ReviewGateError(
+        `review_proposals row for ${opts.runId} is malformed: ` +
+          `${(e as Error).message}`,
+      );
+    }
+  } else {
+    try {
+      decision = await loadReviewDecision(decisionPath);
+    } catch (e) {
+      throw new ReviewGateError(
+        `failed to read review-decision.yaml for ${opts.runId}: ${(e as Error).message}`,
+      );
+    }
   }
   if (decision.runId !== opts.runId) {
     throw new ReviewGateError(
@@ -324,6 +342,13 @@ async function processUnderLock(
       ...decision,
       reviewed_at: reviewedAt,
     });
+  }
+
+  // Phase 9-8: if the verdict came from a DB proposal, mark it processed
+  // so a re-run can no-op (and the audit trail records which decision
+  // came from which proposal).
+  if (proposalId !== null) {
+    proposalRepo.markProcessed(proposalId, opts.runId, reviewedAt);
   }
 
   return {

@@ -13,6 +13,10 @@ import {
   type ReviewDecisionFile,
 } from "./review-decision-schema.js";
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
+import { createHash } from "node:crypto";
+import { stringify as stringifyYaml } from "yaml";
+import { openDb } from "../db/connection.js";
+import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
 
 export class ReviewerAgentGateError extends Error {
   constructor(message: string) {
@@ -441,6 +445,42 @@ export async function runReviewerAgent(
   await writeReviewDecision(decisionPath, decision);
   // success — clear any stale error artifact from a prior failed run.
   await rm(errorArtifactPath, { force: true });
+
+  // Phase 9-8: also write the verdict to `review_proposals` so it is
+  // DB-canonical for `review process` to read. The file write above
+  // stays as a compatibility export (toggled by HARNESS_EXPORT_FILES in
+  // a later sub-phase; today both always run). A DB write failure does
+  // NOT undo the file — operators can still process the file path.
+  // Skip the DB write if the DB file does not yet exist — `review auto`
+  // must not silently create an empty (un-migrated) harness DB.
+  if (inputs.dbPath !== undefined && existsSync(inputs.dbPath)) {
+    try {
+      const sourceYaml = stringifyYaml(decision);
+      const sha = createHash("sha256").update(sourceYaml).digest("hex");
+      const db = openDb(inputs.dbPath);
+      try {
+        new ReviewProposalRepository(db).insertProposal({
+          runId: inputs.runId,
+          reviewer,
+          decision: decision.decision,
+          requiredChanges: decision.required_changes,
+          nonBlockingComments: decision.non_blocking_comments,
+          outOfScopeSuggestions: decision.out_of_scope_suggestions,
+          reviewedAt,
+          sourceYaml,
+          sourceSha256: sha,
+          createdAt: reviewedAt,
+        });
+      } finally {
+        db.close();
+      }
+    } catch (e) {
+      process.stderr.write(
+        `warning: review proposal not persisted to DB for ${inputs.runId}: ` +
+          `${(e as Error).message}\n`,
+      );
+    }
+  }
 
   return {
     runId: inputs.runId,

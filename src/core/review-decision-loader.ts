@@ -9,6 +9,11 @@ export async function loadReviewDecision(
   path: string,
 ): Promise<ReviewDecisionFile> {
   const raw = await readFile(path, "utf8");
+  return parseReviewDecisionYaml(raw);
+}
+
+/** Parse + validate a review-decision YAML document already in memory. */
+export function parseReviewDecisionYaml(raw: string): ReviewDecisionFile {
   const parsed = parseYaml(raw);
   return ReviewDecisionFileSchema.parse(parsed);
 }
