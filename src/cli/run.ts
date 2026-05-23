@@ -17,6 +17,11 @@ import {
   type LockInfo,
 } from "../workspace/domain-lock.js";
 import {
+  listActiveDomainLocks,
+  releaseDomainLockByDomain,
+} from "../workspace/db-domain-lock.js";
+import { openDb } from "../db/connection.js";
+import {
   processReviewDecision,
   ReviewGateError,
 } from "../core/review-processor.js";
@@ -428,32 +433,53 @@ async function cmdReviewedRun(o: ReviewedRunOpts): Promise<ReviewedRunOutcome> {
 
 async function cmdLockList(): Promise<void> {
   const paths = harnessPaths(getHarnessRoot());
-  if (!existsSync(paths.locksDir)) {
-    process.stdout.write("no locks\n");
+  let anything = false;
+
+  // --- file locks (legacy / Phase 9 dual-lock primary serialisation) ---
+  process.stdout.write("file locks:\n");
+  if (existsSync(paths.locksDir)) {
+    const entries = (await readdir(paths.locksDir)).filter((e) =>
+      e.endsWith(".lock"),
+    );
+    for (const e of entries) {
+      anything = true;
+      const lockPath = join(paths.locksDir, e);
+      try {
+        const raw = await readFile(lockPath, "utf8");
+        const info = JSON.parse(raw) as LockInfo;
+        process.stdout.write(
+          `  ${e}\trunId=${info.runId}\tpid=${info.pid}\thost=${info.hostname}\tacquiredAt=${info.acquiredAt}\n`,
+        );
+      } catch (err) {
+        anything = true;
+        process.stdout.write(
+          `  ${e}\tstatus=unreadable\terror=${(err as Error).message}\n`,
+        );
+      }
+    }
+  }
+  if (!anything) process.stdout.write("  (none)\n");
+
+  // --- DB-backed locks (Phase 9 lease + heartbeat + fencing token) ---
+  process.stdout.write("db locks:\n");
+  if (!existsSync(paths.dbPath)) {
+    process.stdout.write("  (db not initialised)\n");
     return;
   }
-  const entries = (await readdir(paths.locksDir)).filter((e) =>
-    e.endsWith(".lock"),
-  );
-  if (entries.length === 0) {
-    process.stdout.write("no locks\n");
-    return;
-  }
-  // Surface unreadable locks too — those are exactly the ones operators
-  // need to see (crash recovery, manual debugging).
-  for (const e of entries) {
-    const lockPath = join(paths.locksDir, e);
-    try {
-      const raw = await readFile(lockPath, "utf8");
-      const info = JSON.parse(raw) as LockInfo;
+  const db = openDb(paths.dbPath);
+  try {
+    const rows = listActiveDomainLocks(db);
+    if (rows.length === 0) {
+      process.stdout.write("  (none)\n");
+      return;
+    }
+    for (const r of rows) {
       process.stdout.write(
-        `${e}\trunId=${info.runId}\tpid=${info.pid}\thost=${info.hostname}\tacquiredAt=${info.acquiredAt}\n`,
-      );
-    } catch (err) {
-      process.stdout.write(
-        `${e}\tstatus=unreadable\terror=${(err as Error).message}\n`,
+        `  ${r.domainKey}\tlock_id=${r.lockId}\trunId=${r.holderRunId}\tpid=${r.holderPid}\thost=${r.holderHostname}\texpires=${r.expiresAt}\theartbeat=${r.heartbeatAt}\n`,
       );
     }
+  } finally {
+    db.close();
   }
 }
 
@@ -462,41 +488,80 @@ interface LockReleaseOpts {
   repoId?: string;
   runId?: string;
   force?: boolean;
+  source?: "file" | "db" | "both";
 }
 
 async function cmdLockRelease(o: LockReleaseOpts): Promise<void> {
   const paths = harnessPaths(getHarnessRoot());
-  // a run created by `harness run` namespaces the lock by repo id — pass
-  // --repo-id to release it. Without --repo-id the legacy domain-only
-  // lock name is used (manual recovery of old locks).
-  const path = domainLockPath(paths.locksDir, o.domain, o.repoId);
-  if (!existsSync(path)) {
+  const source = o.source ?? "both";
+  let releasedAny = false;
+
+  // --- file lock ---
+  if (source === "file" || source === "both") {
+    const path = domainLockPath(paths.locksDir, o.domain, o.repoId);
+    if (existsSync(path)) {
+      let info: LockInfo | undefined;
+      try {
+        info = JSON.parse(await readFile(path, "utf8")) as LockInfo;
+      } catch {
+        if (!o.force) {
+          throw new Error(
+            `lockfile at ${path} is unreadable; rerun with --force to delete anyway`,
+          );
+        }
+      }
+      if (info && o.runId !== undefined && info.runId !== o.runId) {
+        if (!o.force) {
+          throw new Error(
+            `runId mismatch: lock has ${info.runId}, requested ${o.runId}. Use --force to override.`,
+          );
+        }
+      }
+      await rm(path, { force: true });
+      process.stdout.write(
+        `released file lock ${domainLockName(o.domain, o.repoId)} (${path})\n`,
+      );
+      releasedAny = true;
+    }
+  }
+
+  // --- DB-backed lock ---
+  if ((source === "db" || source === "both") && existsSync(paths.dbPath)) {
+    const db = openDb(paths.dbPath);
+    try {
+      // `domain_key` mirrors workflow-runner's `${repoId}::${domain}`.
+      const domainKey =
+        o.repoId !== undefined ? `${o.repoId}::${o.domain}` : o.domain;
+      // forcing through a runId mismatch is destructive: the heartbeat side
+      // will fail with LeaseStolenError. Surface a strong warning.
+      if (o.force === true) {
+        process.stderr.write(
+          "warning: --force on an active DB lease may cause the running " +
+            "harness process to fail with LeaseStolenError.\n",
+        );
+      }
+      const r = releaseDomainLockByDomain(db, {
+        domainKey,
+        ...(o.runId !== undefined ? { runId: o.runId } : {}),
+        ...(o.force === true ? { force: true } : {}),
+        releasedBy: "cli",
+      });
+      if (r !== null) {
+        process.stdout.write(
+          `released db lock ${r.domainKey} (lock_id=${r.lockId}, holder=${r.holderRunId})\n`,
+        );
+        releasedAny = true;
+      }
+    } finally {
+      db.close();
+    }
+  }
+
+  if (!releasedAny) {
     process.stdout.write(
       `no lock for domain ${o.domain}${o.repoId ? ` (repo ${o.repoId})` : ""}\n`,
     );
-    return;
   }
-  let info: LockInfo | undefined;
-  try {
-    info = JSON.parse(await readFile(path, "utf8")) as LockInfo;
-  } catch {
-    if (!o.force) {
-      throw new Error(
-        `lockfile at ${path} is unreadable; rerun with --force to delete anyway`,
-      );
-    }
-  }
-  if (info && o.runId !== undefined && info.runId !== o.runId) {
-    if (!o.force) {
-      throw new Error(
-        `runId mismatch: lock has ${info.runId}, requested ${o.runId}. Use --force to override.`,
-      );
-    }
-  }
-  await rm(path, { force: true });
-  process.stdout.write(
-    `released ${domainLockName(o.domain, o.repoId)} (${path})\n`,
-  );
 }
 
 const program = new Command();
@@ -713,12 +778,25 @@ lockCmd
   .option("--repo-id <id>", "repo id (namespaced locks created by `harness run`)")
   .option("--run-id <id>", "only release if the lock belongs to this runId")
   .option("--force", "release even on runId mismatch / unreadable lock", false)
+  .option(
+    "--source <which>",
+    "which lock to release: file | db | both (default: both)",
+    "both",
+  )
   .action(async (raw: Record<string, unknown>) => {
+    const source = String(raw.source);
+    if (source !== "file" && source !== "db" && source !== "both") {
+      process.stderr.write(
+        `harness error: --source must be one of file | db | both (got ${JSON.stringify(source)})\n`,
+      );
+      process.exit(1);
+    }
     await cmdLockRelease({
       domain: String(raw.domain),
       ...(raw.repoId !== undefined ? { repoId: String(raw.repoId) } : {}),
       ...(raw.runId !== undefined ? { runId: String(raw.runId) } : {}),
       force: Boolean(raw.force),
+      source: source as "file" | "db" | "both",
     });
   });
 

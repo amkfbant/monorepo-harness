@@ -34,6 +34,12 @@ import { writeArtifact } from "../logging/artifacts.js";
 import { generateRunId } from "./run-id.js";
 import { runAllowedCommands } from "./command-runner.js";
 import { acquireDomainLock } from "../workspace/domain-lock.js";
+import {
+  acquireDomainLock as acquireDbDomainLock,
+  heartbeatIntervalMs,
+  type DomainLockHandle as DbDomainLockHandle,
+} from "../workspace/db-domain-lock.js";
+import { hostname } from "node:os";
 import { runBranchName } from "../workspace/branch-name.js";
 import { createWorktree } from "../workspace/git-worktree.js";
 import { collectDiff, resolveBaseSha } from "../git/diff.js";
@@ -292,9 +298,41 @@ export async function runDomainCoding(
   // ensure the schema is current before any run state is written; the
   // run log writes the DB and exports `meta.json` / `events.jsonl`.
   let db: Database.Database | undefined;
+  // Phase 9-5: dual-lock — alongside the file lock above, hold a
+  // DB-backed lease (with heartbeat) so a stolen lease can be detected
+  // and the file lock can be retired in Phase 10.
+  let dbLock: DbDomainLockHandle | undefined;
+  let heartbeatTimer: NodeJS.Timeout | undefined;
+  const domainKey = `${opts.repoId}::${opts.domain}`;
   try {
     db = openDb(paths.dbPath);
     runMigrations(db);
+
+    // acquire the DB lease. The file lock above already serializes
+    // contenders, so this is mostly book-keeping during Phase 9; in
+    // Phase 10 the file lock goes away and the DB lease becomes primary.
+    dbLock = acquireDbDomainLock(db, {
+      domainKey,
+      repoId: opts.repoId,
+      domain: opts.domain,
+      runId,
+      pid: process.pid,
+      hostname: hostname(),
+    });
+    heartbeatTimer = setInterval(() => {
+      try {
+        dbLock?.heartbeat();
+      } catch (e) {
+        // a lost lease will surface as a fencing-guard rejection on the
+        // next write (Phase 9-6); surface a warning here too.
+        process.stderr.write(
+          `warning: domain lease heartbeat failed for ${runId}: ` +
+            `${(e as Error).message}\n`,
+        );
+      }
+    }, heartbeatIntervalMs());
+    // do not keep the event loop alive solely for the heartbeat tick.
+    heartbeatTimer.unref?.();
 
     // Phase 7-6: a rerun produces exactly one child. The duplicate check
     // runs UNDER the domain lock — two reruns of the same parent share a
@@ -357,6 +395,14 @@ export async function runDomainCoding(
       },
     });
 
+    // Phase 9-6: stamp the run row with the lease fencing token so
+    // run-execution writes can verify the active lease via EXISTS.
+    db.prepare(
+      `UPDATE runs SET lease_lock_id = ?, lease_token = ?,
+         lease_domain_key = ?
+       WHERE run_id = ?`,
+    ).run(dbLock.lockId, dbLock.fencingToken, domainKey, runId);
+
     // Any failure after createDbRunLog leaves status='running' in the DB.
     // Wrap the rest of the workflow so unexpected throws still finalize the
     // run as failed-internal-error instead of silently rotting the status.
@@ -402,7 +448,19 @@ export async function runDomainCoding(
       throw new RunFinalizedError(runId, "failed-internal-error", e);
     }
   } finally {
-    // close the DB even if it throws, but never skip the lock release.
+    // teardown order (mirrors §A2 of the Phase 9 design):
+    //   1. stop heartbeat
+    //   2. release DB lease (uses the still-open db connection)
+    //   3. close DB
+    //   4. release file lock
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    if (dbLock !== undefined) {
+      try {
+        dbLock.release({ reason: "normal", releasedBy: `pid:${process.pid}` });
+      } catch {
+        // DB may be in a bad state; the lease will eventually expire.
+      }
+    }
     try {
       db?.close();
     } finally {

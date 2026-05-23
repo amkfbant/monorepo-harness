@@ -58,12 +58,14 @@ describe("CLI harness lock", () => {
     expect(stdout).toMatch(/pid=9999/);
   });
 
-  it("list prints 'no locks' on empty locks dir", () => {
+  it("list prints '(none)' under each section on an empty harness root", () => {
     const root = mkdtempSync(join(tmpdir(), "harness-lockcli-"));
     mkdirSync(join(root, "locks"), { recursive: true });
     const { stdout, status } = runCli(["lock", "list"], root);
     expect(status).toBe(0);
-    expect(stdout).toMatch(/no locks/);
+    // Phase 9: lock list shows file + DB sections
+    expect(stdout).toMatch(/file locks:\s+\(none\)/);
+    expect(stdout).toMatch(/db locks:/);
   });
 
   it("release with matching --run-id removes the lock", () => {
