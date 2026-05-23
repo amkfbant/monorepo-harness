@@ -146,7 +146,8 @@ db.md / workflow.md を参照。
 
 ## 検証
 
-- `npm test`: 969 passed / 1 skipped。
+- `npm test`: 969 passed / 1 skipped（close 直後）→ post-close fix 後
+  **987 passed / 1 skipped**。
 - `npm run typecheck`: green。
 - schema v1→v5 migration: idempotent（`migrations-v5.test.ts` /
   `migrations.test.ts` / `phase9-fixture-matrix.test.ts`）。
@@ -160,3 +161,57 @@ db.md / workflow.md を参照。
   - CLI 経由の legacy gate（backlog add が exit 1、migrate-legacy は bypass）
   - export default OFF
   - schema v1→v5 idempotent
+
+## post-close fix（外部 codex gpt-5.5 xhigh レビュー反映）
+
+Phase 9 close 後に実施した外部レビューで P0×1 / P1×2 / P2×4 / P3×5 を検出。
+P0〜P2 はすべて修正を入れた（P3 は positive observation のため対応不要）。
+
+| ID | issue | 修正コミット |
+|----|-------|------|
+| P0 | runtime DB writers が DB-wide maintenance lock を取らずに `openDb` を直接呼んでいた。`db restore` が live runtime プロセスから DB を atomic に置換できる data-safety リスク | `b5a2690` `fix(db): Phase 9 post-close — runtime DB open に shared maintenance lock を適用` |
+| P1 #2 | `review auto` の DB persist 経路が `runMigrations` + `assertNoLegacyRuntimeRows` を skip し、`insertProposal` 失敗を warning に降格していた（同コミット） | `b5a2690` |
+| P1 #1 | `review process` の `applyReviewDecision` と `markProcessed` が別 transaction で、間 crash で active unprocessed proposal が status=approved の run に残り、再実行で `ReviewGateError` | `f6ec947` `fix(db): Phase 9 post-close — review_proposals idempotency` |
+| P2 #1 | fencing token bootstrap window（最初の INSERT が `lease_*` を null で書き、直後 UPDATE で stamp） | `5170125` `fix: Phase 9 post-close — codex P2 #1〜#4 まとめ修正` |
+| P2 #2 | `HARNESS_SUPPRESS_EXPORT_MODE_WARNING=0` でも warning が消えてしまう正規化バグ | `5170125` |
+| P2 #3 | `docs/specs/db.md` / `workflow.md` の legacy-file gate scope 記述で `knowledge_candidates` も対象と書いていたが実装は runs + backlog_items のみ | `5170125` |
+| P2 #4 | scratch runDir lifecycle の integration test が phase9-fixture-matrix に無かった | `5170125` |
+
+### 主な変更
+
+- 新ヘルパ `src/db/managed-connection.ts` — `openManagedDb` /
+  `withManagedDb` が maintenance lock を取得してから `openDb` を呼び、
+  `close()` は DB handle を閉じてから lock を release する（inode 単位の
+  swap から保護）。`lockPath` は `dbPath` から自動派生（`deriveDbLockPath`）
+- 全 runtime DB open（workflow-runner / review-processor / cleanup /
+  pr-creator / backlog-db / knowledge-db / rerun / run-materialize /
+  run-db-reader / dashboard/snapshot / cli/db-scope / cli/run.ts
+  lock list-release / reviewer-agent）を managed wrapper 経由に移行
+- `workflow-runner.ts` の teardown 順序が「heartbeat 停止 → DB lease
+  release → DB handle close + maintenance lock release → file lock release」
+  に確定（dbHandle.close が DB と lock を atomically 解放）
+- `RunRepository.applyReviewDecision` が optional `markProposalProcessed`
+  を受け取り、同 transaction で `review_proposals.processed_at` を立てる
+- `ReviewProposalRepository`: `getLatestActiveProposal` を `processed_at
+  IS NULL` でも filter、`markProcessed` に `WHERE processed_at IS NULL`
+  guard、新規 `getLatestProcessedProposal` 追加
+- `review-processor` の冒頭で「すでに processed + run.status != needs_review」
+  ケースを idempotent no-op として return
+- `createDbRunLog` の最初の INSERT に lease_* を同梱（bootstrap window 解消）
+- `HARNESS_SUPPRESS_EXPORT_MODE_WARNING` を ON_VALUES と同じ truthy 正規化
+- `docs/specs/db.md` / `workflow.md` の legacy gate scope 記述を実装に揃え
+- `tests/integration/scratch-run-dir-lifecycle.test.ts` を新規追加
+- `tests/integration/review-process-idempotency.test.ts` を新規追加
+- `tests/unit/db/managed-connection.test.ts` を新規追加
+
+合計 4 コミット、+1077 / -142、テスト 988 → 987 passed / 1 skipped
+（managed-connection +9, review-proposals 編集 +4 (旧 1 改 + 新 3), idempotency +2,
+scratch +2, suppress +2 = +19 / 既存修正 1 で 988 → 987）。
+
+### 残課題（Phase 10）
+
+- file lock の完全撤去（dual-lock を解く）
+- legacy-file 分岐コードの dead code 剥離
+- crash 後の review process idempotency: 現状は「processed proposal が
+  ある + run.status != needs_review」を no-op 扱いするが、より精密に
+  `source_sha256` 一致確認まで入れる選択肢あり
