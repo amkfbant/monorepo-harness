@@ -10,6 +10,11 @@ export interface HarnessPaths {
   repoPolicyPath: (repoId: string) => string;
   /** harness DB (Phase 6): read model built from files by `db import`. */
   dbPath: string;
+  /**
+   * DB-wide reader/writer maintenance lock (Phase 9). Held shared by
+   * normal write commands and exclusive by destructive maintenance.
+   */
+  dbLockPath: string;
   /** personal backlog dir (Phase 4-3): open/ doing/ done/ deferred/. */
   backlogDir: string;
   /** project profiles (Phase 5): projects/<project-id>.yaml. */
@@ -44,6 +49,7 @@ export function harnessPaths(root: string): HarnessPaths {
     locksDir: join(root, "locks"),
     policiesDir,
     dbPath: join(root, ".harness", "harness.sqlite"),
+    dbLockPath: join(root, ".harness", "db.lock"),
     backlogDir: join(root, "backlog"),
     projectsDir,
     templatesDir: join(root, "templates"),
