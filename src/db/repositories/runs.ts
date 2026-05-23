@@ -700,18 +700,34 @@ export class RunRepository {
       // IS NULL` guard makes the UPDATE idempotent against a retry: a
       // proposal already processed by a prior crash-survived transaction
       // stays exactly as it was.
+      //
+      // Phase 9 post-close (second review) P1-4 fix — also require
+      // `superseded_at IS NULL`. If the proposal was superseded by a
+      // concurrent `review auto` between read and write, fail the whole
+      // transaction with a StateConflictError so the caller can reload
+      // the latest proposal rather than process a stale one.
       if (input.markProposalProcessed !== undefined) {
-        this.db
+        const r = this.db
           .prepare(
             `UPDATE review_proposals
                 SET processed_at = ?, review_decision_id = ?
-              WHERE proposal_id = ? AND processed_at IS NULL`,
+              WHERE proposal_id = ?
+                AND processed_at IS NULL
+                AND superseded_at IS NULL`,
           )
           .run(
             input.reviewedAt,
             input.markProposalProcessed.reviewDecisionId,
             input.markProposalProcessed.proposalId,
           );
+        if (r.changes === 0) {
+          throw new StateConflictError(
+            input.runId,
+            ["needs_review"],
+            `review_proposals(id=${input.markProposalProcessed.proposalId})` +
+              ` superseded or already processed`,
+          );
+        }
       }
       return { previousStatus: row.status };
     });

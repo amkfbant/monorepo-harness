@@ -19,6 +19,7 @@ import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
+import { fileExportEnabled } from "../config/export-mode.js";
 
 export class ReviewerAgentGateError extends Error {
   constructor(message: string) {
@@ -330,13 +331,37 @@ export async function runReviewerAgent(
       );
     },
   );
-  // Overwrite guard: a non-pending decision (human or earlier agent
-  // verdict) is only replaced with --allow-overwrite. Checked BEFORE codex
-  // so a refused run costs no codex call.
-  if (existingDecision.decision !== "pending" && !inputs.allowOverwrite) {
-    throw new ReviewerAgentGateError(
-      `review-decision.yaml already has decision="${existingDecision.decision}"; pass --allow-overwrite to replace it`,
-    );
+  // Phase 9 post-close (second review) P1-5 fix — the overwrite guard
+  // must be DB-aware. With export OFF the sidecar may be a scratch
+  // materialization or a stale `pending` template from a re-export, so a
+  // DB-canonical active proposal must be the primary guard. The file
+  // sidecar is a fallback for legacy / non-DB runs.
+  let activeDbProposal: Awaited<
+    ReturnType<ReviewProposalRepository["getLatestActiveProposal"]>
+  > = null;
+  if (inputs.dbPath !== undefined && existsSync(inputs.dbPath)) {
+    const probe = openManagedDb({ dbPath: inputs.dbPath, readonly: true });
+    try {
+      activeDbProposal = new ReviewProposalRepository(
+        probe.db,
+      ).getLatestActiveProposal(inputs.runId);
+    } finally {
+      probe.close();
+    }
+  }
+  if (!inputs.allowOverwrite) {
+    if (activeDbProposal !== null) {
+      throw new ReviewerAgentGateError(
+        `review_proposals already has an active proposal for ${inputs.runId} ` +
+          `(decision="${activeDbProposal.decision}", reviewer="${activeDbProposal.reviewer}"); ` +
+          `pass --allow-overwrite to replace it`,
+      );
+    }
+    if (existingDecision.decision !== "pending") {
+      throw new ReviewerAgentGateError(
+        `review-decision.yaml already has decision="${existingDecision.decision}"; pass --allow-overwrite to replace it`,
+      );
+    }
   }
 
   // Invoke codex with the run directory as cwd. Sandbox is read-only —
@@ -444,22 +469,17 @@ export async function runReviewerAgent(
     };
   }
 
-  await writeReviewDecision(decisionPath, decision);
-  // success — clear any stale error artifact from a prior failed run.
-  await rm(errorArtifactPath, { force: true });
-
-  // Phase 9-8: also write the verdict to `review_proposals` so it is
-  // DB-canonical for `review process` to read. The file write above
-  // stays as a compatibility export.
+  // Phase 9 post-close (second review) P1-3 fix — DB is canonical for
+  // Phase 9, so the proposal goes into `review_proposals` FIRST. A DB
+  // failure must not leave a stale file sidecar around. The sidecar is
+  // compatibility export and only written when export is ON (P1-3 second
+  // half — `exportRun` will regenerate it from the active proposal
+  // anyway via P1-2 fix).
   //
-  // Phase 9 post-close P1 #2 fix: previously the DB write was best-effort
-  // (a failure was warned and swallowed) and skipped migrations + the
-  // legacy-row gate. That meant a v4 DB or a DB with leftover
-  // `legacy-file` rows silently degraded `review auto` to sidecar-only,
-  // breaking the "review_proposals is DB canonical" story. The DB write
-  // now (a) opens through the managed wrapper so it holds the shared
-  // maintenance lock, (b) runs migrations + the legacy gate, and (c)
-  // fails the command on any DB error so failures are visible.
+  // Phase 9 post-close (second review) P1-4 fix — the run.status guard
+  // INSIDE the DB transaction guards a race where `review process`
+  // promoted a prior proposal between our pre-codex overwrite check and
+  // this insert. A status that is no longer `needs_review` aborts.
   //
   // Skip the DB write entirely if the DB file does not yet exist —
   // `review auto` must not silently create an empty (un-migrated) DB.
@@ -470,6 +490,28 @@ export async function runReviewerAgent(
     try {
       runMigrations(dbHandle.db);
       assertNoLegacyRuntimeRows(dbHandle.db);
+      // P1-4 status guard: only `needs_review` accepts a new proposal.
+      // A db-first run whose status changed since the pre-codex probe
+      // (e.g. a concurrent `review process` already promoted a proposal)
+      // is a StateConflictError-class race; reject with a clear message.
+      const statusRow = dbHandle.db
+        .prepare(
+          "SELECT status, source_mode FROM runs WHERE run_id = ?",
+        )
+        .get(inputs.runId) as
+        | { status: string; source_mode: string }
+        | undefined;
+      if (
+        statusRow !== undefined &&
+        statusRow.source_mode === "db-first" &&
+        statusRow.status !== "needs_review"
+      ) {
+        throw new ReviewerAgentGateError(
+          `run ${inputs.runId} status changed to "${statusRow.status}" ` +
+            `during review auto (concurrent review process?); refusing to ` +
+            `insert a stale proposal`,
+        );
+      }
       new ReviewProposalRepository(dbHandle.db).insertProposal({
         runId: inputs.runId,
         reviewer,
@@ -486,6 +528,21 @@ export async function runReviewerAgent(
       dbHandle.close();
     }
   }
+
+  // Phase 9 post-close P1-3 fix — sidecar is compatibility export only.
+  // Skip with export OFF: `db export-files` / `ensureRunMaterialized`
+  // will regenerate the sidecar from the DB-canonical active proposal
+  // when needed (P1-2 fix in exportRun).
+  if (fileExportEnabled()) {
+    await writeReviewDecision(decisionPath, decision);
+  } else {
+    // export OFF: leave the (possibly stale `pending` template) sidecar
+    // alone — the DB is the canonical store. Remove it so `review
+    // process` doesn't read a stale verdict on the file fallback path.
+    await rm(decisionPath, { force: true });
+  }
+  // success — clear any stale error artifact from a prior failed run.
+  await rm(errorArtifactPath, { force: true });
 
   return {
     runId: inputs.runId,

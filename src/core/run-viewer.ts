@@ -7,7 +7,25 @@ import {
   readRunMetaFromDb,
   readRunEventsFromDb,
   listRunArtifactsFromDb,
+  readRunSourceModeFromDb,
 } from "./run-db-reader.js";
+
+/**
+ * Phase 9 post-close (second review) P1-1 fix — decide whether to read
+ * the DB before the file for this run. A `db-first` run whose
+ * `export_status` is NOT `synced` means the file dir, if it exists, may
+ * be a stale scratch materialization (review auto) or a leftover from a
+ * prior export. The DB is canonical in that case, so the viewer prefers
+ * it. `synced` runs (the operator opted in to compatibility export) keep
+ * the existing file-first behavior.
+ */
+function shouldPreferDbForRun(dbPath: string | undefined, runId: string): boolean {
+  if (dbPath === undefined) return false;
+  const info = readRunSourceModeFromDb(dbPath, runId);
+  if (info === null) return false;
+  if (info.sourceMode !== "db-first") return false;
+  return info.exportStatus !== "synced";
+}
 
 export class RunViewError extends Error {
   constructor(message: string) {
@@ -37,6 +55,12 @@ async function readMeta(
   runId: string,
   dbPath?: string,
 ): Promise<RunMeta> {
+  // Phase 9 post-close P1-1 — db-first run with export_status != synced:
+  // DB is canonical, prefer it over a (possibly stale scratch) meta.json.
+  if (shouldPreferDbForRun(dbPath, runId) && dbPath !== undefined) {
+    const fromDb = readRunMetaFromDb(dbPath, runId);
+    if (fromDb !== null) return fromDb;
+  }
   const metaPath = join(runsDir, runId, "meta.json");
   if (existsSync(metaPath)) {
     try {
@@ -136,6 +160,9 @@ export async function renderRunTimeline(
   assertRunId(runId);
   // run must exist, but a missing/empty event stream is fine
   await readMeta(runsDir, runId, dbPath);
+  // Phase 9 post-close P1-1 — for an unsynced db-first run, prefer the
+  // DB event stream (events.jsonl on disk may be stale scratch).
+  const preferDb = shouldPreferDbForRun(dbPath, runId);
   const eventsPath = join(runsDir, runId, "events.jsonl");
   const lines = [`Timeline: ${runId}`];
   let n = 0;
@@ -145,7 +172,7 @@ export async function renderRunTimeline(
     lines.push(`  ${String(n).padStart(2, "0")}. ${formatEvent(ev)}`);
   };
 
-  if (existsSync(eventsPath)) {
+  if (!preferDb && existsSync(eventsPath)) {
     let raw: string;
     try {
       raw = await readFile(eventsPath, "utf8");
@@ -234,6 +261,13 @@ async function artifactLines(
   runId: string,
   dbPath?: string,
 ): Promise<string[]> {
+  // Phase 9 post-close P1-1 — DB is canonical for an unsynced db-first
+  // run, so list from the manifest rather than the (possibly stale)
+  // scratch dir.
+  if (shouldPreferDbForRun(dbPath, runId) && dbPath !== undefined) {
+    const fromDb = listRunArtifactsFromDb(dbPath, runId);
+    if (fromDb !== null) return fromDb.length > 0 ? fromDb : ["(none)"];
+  }
   const runDir = join(runsDir, runId);
   if (existsSync(runDir)) return artifactList(runDir);
   if (dbPath !== undefined) {

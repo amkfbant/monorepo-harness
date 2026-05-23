@@ -90,18 +90,31 @@ function markExportDisabled(
  * Export one run's DB-canonical state to `runs/<runId>/`. Never throws on
  * a file-write failure — returns `status: "failed"` with the recorded
  * error. Throws `DbError` only when the run does not exist in the DB.
+ *
+ * Phase 9 post-close (second review) P1-1 fix — `trackExport: false`
+ * separates a **scratch materialization** (review auto / DB-only viewer
+ * fallback) from a real compatibility export. With `trackExport: false`:
+ *   - files are still written
+ *   - `exported_files` is **not** updated
+ *   - `runs.export_status` is **not** flipped to `synced`
+ *   - the run's prior export tracking is left untouched
+ * This is necessary for export-OFF runtime: a materialized scratch dir
+ * must not be advertised as a compatibility export, or `run show` (file
+ * first) would render stale meta.json and the operator would not be able
+ * to tell which is canonical.
  */
 export function exportRun(
   db: Database.Database,
   runId: string,
-  opts: { runsDir: string; force?: boolean },
+  opts: { runsDir: string; force?: boolean; trackExport?: boolean },
 ): ExportResult {
+  const trackExport = opts.trackExport !== false;
   if (opts.force !== true && !fileExportEnabled()) {
     const rev = db
       .prepare("SELECT db_revision FROM runs WHERE run_id = ?")
       .get(runId) as { db_revision: number | null } | undefined;
     if (rev === undefined) throw new DbError(`exportRun: no run '${runId}'`);
-    markExportDisabled(db, "runs", "run_id", runId);
+    if (trackExport) markExportDisabled(db, "runs", "run_id", runId);
     return {
       scopeType: "run",
       scopeId: runId,
@@ -118,6 +131,7 @@ export function exportRun(
           row: Record<string, unknown>;
           eventLines: string[];
           reviewYaml: string | null;
+          proposalYaml: string | null;
           artifacts: { relative_path: string; blob_sha256: string }[];
         }
       | undefined => {
@@ -140,6 +154,21 @@ export function exportRun(
           "SELECT source_yaml FROM review_decisions WHERE run_id = ?",
         )
         .get(runId) as { source_yaml: string | null } | undefined;
+      // Phase 9 post-close (second review) P1-2 fix — when no
+      // `review_decisions` row exists yet, surface the active
+      // `review_proposals` row as the compatibility sidecar. Without this,
+      // `db export-files` would emit a `pending` template even though
+      // `review auto` already wrote a DB-canonical proposal — and the
+      // operator (or a re-materialize) would see a stale pending YAML.
+      const proposal = db
+        .prepare(
+          `SELECT source_yaml FROM review_proposals
+            WHERE run_id = ?
+              AND superseded_at IS NULL
+              AND processed_at IS NULL
+            ORDER BY reviewed_at DESC, proposal_id DESC LIMIT 1`,
+        )
+        .get(runId) as { source_yaml: string | null } | undefined;
       // db-stored artifact bodies (Phase 8) — exported from `artifact_blobs`.
       const artifacts = db
         .prepare(
@@ -152,6 +181,7 @@ export function exportRun(
         row: r,
         eventLines,
         reviewYaml: rev?.source_yaml ?? null,
+        proposalYaml: proposal?.source_yaml ?? null,
         artifacts,
       };
     },
@@ -159,7 +189,7 @@ export function exportRun(
   if (snapshot === undefined) {
     throw new DbError(`exportRun: no run '${runId}'`);
   }
-  const { row, eventLines, reviewYaml, artifacts } = snapshot;
+  const { row, eventLines, reviewYaml, proposalYaml, artifacts } = snapshot;
   const dbRevision = (row.db_revision as number | null) ?? 0;
   const runDir = join(opts.runsDir, runId);
   const startedAt = new Date().toISOString();
@@ -190,15 +220,28 @@ export function exportRun(
       rmSync(eventsPath, { force: true });
     }
 
-    // a reviewed run re-exports `review-decision.yaml` from the DB so
-    // `db export-files` regenerates it and a stale/edited sidecar is
-    // detectable as drift (P1-2). `source_yaml` is the canonical document.
+    // a reviewed run re-exports `review-decision.yaml` from the DB
+    // (Phase 7 — P1-2). Priority order:
+    //   1. `review_decisions.source_yaml` (a processed proposal — final
+    //      decision is canonical)
+    //   2. active `review_proposals.source_yaml` (Phase 9 post-close
+    //      P1-2 fix — `review auto` wrote the verdict to the DB, sidecar
+    //      reflects it)
+    //   3. pending template for a `needs_review` run with no proposal yet
     if (reviewYaml !== null) {
       const reviewContent = reviewYaml.endsWith("\n")
         ? reviewYaml
         : `${reviewYaml}\n`;
       atomicWriteFile(join(runDir, "review-decision.yaml"), reviewContent);
       files.push(describeExportedFile("review-decision.yaml", reviewContent));
+    } else if (proposalYaml !== null) {
+      const proposalContent = proposalYaml.endsWith("\n")
+        ? proposalYaml
+        : `${proposalYaml}\n`;
+      atomicWriteFile(join(runDir, "review-decision.yaml"), proposalContent);
+      files.push(
+        describeExportedFile("review-decision.yaml", proposalContent),
+      );
     } else if (row.status === "needs_review") {
       // not yet reviewed — synthesize the pending `review-decision.yaml`
       // template (runId + domain) so `db export-files` can materialize it
@@ -234,23 +277,27 @@ export function exportRun(
     }
 
     endExporting(runDir);
-    recordExportSuccess(db, {
-      scopeType: "run",
-      scopeId: runId,
-      dbRevision,
-      startedAt,
-      files,
-    });
+    if (trackExport) {
+      recordExportSuccess(db, {
+        scopeType: "run",
+        scopeId: runId,
+        dbRevision,
+        startedAt,
+        files,
+      });
+    }
     return { scopeType: "run", scopeId: runId, status: "synced", dbRevision, files };
   } catch (e) {
     const error = (e as Error).message;
-    recordExportFailure(db, {
-      scopeType: "run",
-      scopeId: runId,
-      dbRevision,
-      startedAt,
-      error,
-    });
+    if (trackExport) {
+      recordExportFailure(db, {
+        scopeType: "run",
+        scopeId: runId,
+        dbRevision,
+        startedAt,
+        error,
+      });
+    }
     return {
       scopeType: "run",
       scopeId: runId,

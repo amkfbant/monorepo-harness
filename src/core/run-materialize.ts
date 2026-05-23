@@ -1,9 +1,10 @@
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DbError } from "../db/connection.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { exportRun } from "../db/export-files.js";
 import { ingestRunArtifacts } from "../db/run-artifacts.js";
+import { fileExportEnabled } from "../config/export-mode.js";
 
 /**
  * Run materialization helpers (Phase 8-13).
@@ -19,6 +20,14 @@ import { ingestRunArtifacts } from "../db/run-artifacts.js";
  * Restore a db-first run's files from the DB when they are absent.
  * A no-op when the files already exist or the run is not in the DB.
  * Returns true when files were written.
+ *
+ * Phase 9 post-close (second review) P1-1 fix — this is a **scratch
+ * materialization** (the reviewer agent needs the run dir on disk to
+ * spawn codex over it). It must NOT be recorded as a compatibility
+ * export: with export OFF the DB-only runtime semantics require
+ * `runs.export_status` to stay `disabled` and `exported_files` to stay
+ * empty. Passing `trackExport: false` keeps the export bookkeeping
+ * untouched while still writing the files.
  */
 export function ensureRunMaterialized(opts: {
   dbPath: string;
@@ -32,9 +41,13 @@ export function ensureRunMaterialized(opts: {
   try {
     // force: materialize even with file export OFF — the caller needs
     // the files regardless of the export setting.
+    // trackExport: false: scratch materialization is not a compatibility
+    // export, so do not flip export_status / exported_files (Phase 9
+    // post-close P1-1 fix).
     const result = exportRun(db, opts.runId, {
       runsDir: opts.runsDir,
       force: true,
+      trackExport: false,
     });
     // `exportRun` reports a failed export (e.g. a missing blob) via its
     // return value, not an exception — fail loudly so the caller never
@@ -74,16 +87,20 @@ export function syncRunArtifactsToDb(opts: {
   if (!existsSync(runDir)) return;
   const dbHandle = openManagedDb({ dbPath: opts.dbPath });
   const db = dbHandle.db;
+  let ingestOk = false;
+  let dbFirst = false;
   try {
     const row = db
       .prepare("SELECT source_mode FROM runs WHERE run_id = ?")
       .get(opts.runId) as { source_mode: string } | undefined;
     if (row === undefined || row.source_mode !== "db-first") return;
+    dbFirst = true;
     // best-effort post-processing: a sync failure (e.g. an unreadable run
     // dir) must not crash the review command that succeeded — warn and
     // leave the prior manifest intact (ingestRunArtifacts is transactional).
     try {
       ingestRunArtifacts(db, runDir, opts.runId);
+      ingestOk = true;
     } catch (e) {
       process.stderr.write(
         `warning: could not sync run ${opts.runId} artifacts to the DB: ` +
@@ -92,5 +109,22 @@ export function syncRunArtifactsToDb(opts: {
     }
   } finally {
     dbHandle.close();
+  }
+  // Phase 9 post-close (second review) P1-1 fix — with export OFF, a
+  // scratch materialization (ensureRunMaterialized) plus a successful
+  // ingest leaves a runDir that is no longer needed and would otherwise
+  // mislead `run show` (file-first) into rendering stale meta.json /
+  // artifact listing. Remove it so the DB stays the single source of
+  // truth. Failure to remove is best-effort + warning — the canonical
+  // state is in the DB regardless.
+  if (dbFirst && ingestOk && !fileExportEnabled()) {
+    try {
+      rmSync(runDir, { recursive: true, force: true });
+    } catch (e) {
+      process.stderr.write(
+        `warning: could not remove scratch run dir ${runDir}: ` +
+          `${(e as Error).message}\n`,
+      );
+    }
   }
 }

@@ -74,6 +74,38 @@ export function readRunEventsFromDb(
   }
 }
 
+/**
+ * Resolve a run's `source_mode` + `export_status` so callers can decide
+ * whether to prefer the DB over the file (Phase 9 post-close P1-1 fix).
+ *
+ * Returns null when the DB does not exist or the run is not in it — the
+ * caller then falls back to its existing file-first behavior.
+ */
+export function readRunSourceModeFromDb(
+  dbPath: string,
+  runId: string,
+): { sourceMode: string; exportStatus: string | null } | null {
+  if (!existsSync(dbPath)) return null;
+  const dbHandle = openManagedDb({ dbPath, readonly: true });
+  const db = dbHandle.db;
+  try {
+    const row = db
+      .prepare(
+        "SELECT source_mode, export_status FROM runs WHERE run_id = ?",
+      )
+      .get(runId) as
+      | { source_mode: string; export_status: string | null }
+      | undefined;
+    if (row === undefined) return null;
+    return {
+      sourceMode: row.source_mode,
+      exportStatus: row.export_status,
+    };
+  } finally {
+    dbHandle.close();
+  }
+}
+
 /** Artifact relative paths recorded for a run, or null when not in the DB. */
 export function listRunArtifactsFromDb(
   dbPath: string,

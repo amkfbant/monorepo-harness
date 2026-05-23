@@ -131,16 +131,42 @@ describe("ReviewProposalRepository", () => {
     const db = freshDb();
     const repo = new ReviewProposalRepository(db);
     const { proposalId } = repo.insertProposal(baseProposal());
-    repo.markProcessed(proposalId, RUN_ID, "2026-05-23T13:00:00Z");
+    expect(repo.markProcessed(proposalId, RUN_ID, "2026-05-23T13:00:00Z")).toBe(
+      true,
+    );
     // A second call with a different timestamp / decision id must NOT
     // overwrite — the WHERE processed_at IS NULL guard makes the UPDATE
-    // a no-op when already processed.
-    repo.markProcessed(proposalId, "other", "2099-01-01T00:00:00Z");
+    // a no-op when already processed. The return value reports false.
+    expect(repo.markProcessed(proposalId, "other", "2099-01-01T00:00:00Z")).toBe(
+      false,
+    );
     const processed = repo.getLatestProcessedProposal(RUN_ID);
     expect(processed?.processedAt).toBe("2026-05-23T13:00:00Z");
     expect(processed?.reviewDecisionId).toBe(RUN_ID);
     db.close();
   });
+
+  it(
+    "markProcessed rejects a superseded proposal (Phase 9 post-close second review P1-4)",
+    () => {
+      const db = freshDb();
+      const repo = new ReviewProposalRepository(db);
+      const first = repo.insertProposal(baseProposal());
+      // a second insertProposal supersedes the first
+      repo.insertProposal(
+        baseProposal({
+          decision: "changes_requested",
+          reviewedAt: "2026-05-23T11:00:00Z",
+          createdAt: "2026-05-23T11:00:00Z",
+        }),
+      );
+      // first is now superseded — marking it processed must fail (returns false)
+      expect(
+        repo.markProcessed(first.proposalId, RUN_ID, "2026-05-23T13:00:00Z"),
+      ).toBe(false);
+      db.close();
+    },
+  );
 
   it("getLatestProcessedProposal returns null when nothing was processed", () => {
     const db = freshDb();

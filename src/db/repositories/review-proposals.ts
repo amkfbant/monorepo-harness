@@ -167,19 +167,30 @@ export class ReviewProposalRepository {
    * makes the UPDATE idempotent: a second call on an already-processed
    * proposal is a silent no-op rather than overwriting the recorded
    * `processed_at` timestamp.
+   *
+   * Phase 9 post-close (second review) P1-4 fix — also require
+   * `superseded_at IS NULL`. Without this, a process that read a
+   * proposal, was paused, and woke up after a concurrent `review auto`
+   * superseded the proposal would still stamp `processed_at` on the
+   * stale row. Returns `true` when the row was actually updated,
+   * `false` when a guard rejected it (caller can surface a state
+   * conflict).
    */
   markProcessed(
     proposalId: number,
     reviewDecisionId: string,
     processedAt: string,
-  ): void {
-    this.db
+  ): boolean {
+    const r = this.db
       .prepare(
         `UPDATE review_proposals
             SET processed_at = ?, review_decision_id = ?
-          WHERE proposal_id = ? AND processed_at IS NULL`,
+          WHERE proposal_id = ?
+            AND processed_at IS NULL
+            AND superseded_at IS NULL`,
       )
       .run(processedAt, reviewDecisionId, proposalId);
+    return r.changes > 0;
   }
 }
 

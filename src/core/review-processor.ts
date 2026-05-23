@@ -406,8 +406,21 @@ async function processUnderLock(
   // `WHERE processed_at IS NULL` guard in `markProcessed` makes this
   // call an idempotent no-op there. The legacy-file path still relies on
   // it.
+  //
+  // Phase 9 post-close (second review) P1-4 — on the legacy-file path
+  // a 0-rows changed result here means the proposal was concurrently
+  // superseded between read and mark. Surface it as a warning (the
+  // file-side decision is already applied; the DB just couldn't audit
+  // which proposal it came from).
   if (proposalId !== null) {
-    proposalRepo.markProcessed(proposalId, opts.runId, reviewedAt);
+    const ok = proposalRepo.markProcessed(proposalId, opts.runId, reviewedAt);
+    if (!ok && !dbFirst) {
+      warnings.push(
+        `review_proposals(id=${proposalId}) was superseded between read ` +
+          `and mark; the file-side decision is applied but the DB audit ` +
+          `link was not recorded`,
+      );
+    }
   }
 
   return {
