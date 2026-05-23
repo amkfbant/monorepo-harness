@@ -437,8 +437,12 @@ CREATE INDEX run_materializations_expiry_idx ON run_materializations(status, exp
 ```
 
 Phase 10 minimum viable では `purpose='scratch'` のみ INSERT する。
-`purpose='compat-export'` 行を作る経路は Phase 15（`db doctor` が compat
-export の TTL/orphan を見る必要が出たとき）に判断する。
+`purpose='compat-export'` は schema 上 **reserved for future use**（post-review
+P3）。Phase 10 内では INSERT も SELECT も行わない。`run_materializations`
+を読む queries は `WHERE purpose = 'scratch'` を必ず明示し、将来 compat-export
+が混入しても誤動作しないようにする。`purpose='compat-export'` 行を実際に
+書き始める計画は Phase 15（`db doctor` が compat export の TTL/orphan を
+見る必要が出たとき）に判断する。
 
 #### `runs.state_version`
 
@@ -493,6 +497,24 @@ dual-lock 撤去で実 hot path となる lease stealing の挙動を確定:
 4. **DB safe invariant**: A は B の run row には触れない（run_id 単位で
    分離）。post-run table（review/cleanup/pr/backlog）は触らない。
 
+clean finalize SQL は次の guard を組み合わせる (post-review P1):
+
+```sql
+UPDATE runs
+   SET status='failed',
+       failure_reason='lease-stolen',
+       lease_lost_at=:now,
+       state_version=state_version+1
+ WHERE run_id=:runIdA
+   AND status='coding'
+   AND lease_lock_id=:lostLockId;
+```
+
+`AND lease_lock_id=:lostLockId` を含めることで、A が catch してから finalize
+までの間に同じ `run_id` が rerun されて新 lease を保持していても、A は
+自身が失った lease の行のみを finalize する (= live attempt を誤って fail
+にしない)。state_version bump で state transition として記録する。
+
 `db doctor` の minimum orphan 検出（Phase 15 待たず Phase 10-2 で fixture
 として書く）:
 
@@ -501,10 +523,13 @@ dual-lock 撤去で実 hot path となる lease stealing の挙動を確定:
 SELECT * FROM domain_locks
 WHERE released_at IS NULL AND expires_at < datetime('now', '-1 minute');
 
--- orphan in-progress run
-SELECT * FROM runs WHERE status = 'coding'
-  AND lease_lock_id NOT IN (
-    SELECT lock_id FROM domain_locks WHERE released_at IS NULL
+-- orphan in-progress run (post-review P3: NOT EXISTS for NULL safety)
+SELECT r.* FROM runs r
+WHERE r.status = 'coding'
+  AND NOT EXISTS (
+    SELECT 1 FROM domain_locks dl
+    WHERE dl.lock_id = r.lease_lock_id
+      AND dl.released_at IS NULL
   );
 ```
 
@@ -564,6 +589,44 @@ WHERE proposal_id        = :proposalId
 `changes = 0` → `StateConflictError`。CLI / API は最新 proposal の再確認を
 ユーザーに促す（CLI UX は `cli.md` Phase 10 節参照）。`operation_id` 重複は
 同一結果なら no-op、結果が違えば `OperationReplayConflictError`。
+
+#### Operation transaction flow (post-review P2)
+
+review process の operation は `BEGIN IMMEDIATE` で開始する単一 transaction
+内で次を実行する:
+
+1. **operation claim** — `(operation_type='review.process', target_run_id,
+   idempotency_key)` で `operations` row を SELECT。succeeded で
+   `request_hash` 一致 → 既存結果を返す。succeeded で hash 違 →
+   `OperationReplayConflictError`。running → `OperationInFlightError`。failed
+   → 再 claim（`status='running'` 更新）。row なし → INSERT。
+2. **proposal CAS** — 上記の guard SQL を実行。`changes=0` → operation を
+   `status='failed', error_code='state_conflict'` 化 → `StateConflictError`。
+3. **decision INSERT + run state update** — `review_decisions` INSERT、
+   `runs.state_version` bump（`WHERE run_id=:runId AND state_version=
+   :expectedStateVersion`）。失敗 → `StateConflictError`。
+4. **operation 完了** — `operations.status='succeeded'`, `result_json` 保存。
+
+`request_hash = sha256(canonical_json({proposal_id, source_sha256,
+expected_status, expected_state_version, decision_payload}))`。同一意図の
+再送と別意図の同 key 衝突を区別する。
+
+#### state_version rollout (post-review P2)
+
+`runs.state_version DEFAULT 0` の migration を入れた瞬間から、bump 対象
+writer が全て同一 migration boundary 内で bump するよう統一する。途中状態
+(state_version 列はあるが bump しない writer が残る) は CAS が
+false-positive を返し review process が永続的に conflict になる。
+
+Phase 10 は次の順序で land:
+
+- **Phase 10-3** (`run_materializations` + `runs.state_version DEFAULT 0`
+  migration を schema v6 として追加)：**state_version は読まない / bump
+  しない**。
+- **Phase 10-5** (CAS 有効化 + 全 bump 対象 writer 更新 + lease-stolen
+  finalize guard を 1 commit / 1 sub-phase で land)。
+
+Phase 10-3 と Phase 10-5 の間で review process CAS を有効化してはいけない。
 
 ### Runtime legacy branch 撤去範囲（Phase 10-6）
 

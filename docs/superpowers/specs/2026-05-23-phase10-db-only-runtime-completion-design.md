@@ -158,7 +158,21 @@ process A resumes:
 stale writer (A) の次 guarded write は失敗する。これだけでは A の `runs.status` が `coding` のまま残り、後続の `db doctor` で異常扱いになる。Phase 10 では:
 
 - `LeaseLostError` を catch した workflow-runner は、**unguarded finalize path** で `runs.status = 'failed'`、`runs.failure_reason = 'lease-stolen'`、`runs.lease_lost_at = now` を書く。
-- この path は `assertActiveLease` を回らないが、`UPDATE runs SET status='failed', ... WHERE run_id = :runIdA AND status = 'coding'` のように **expected status guard** で守る。
+- この path は `assertActiveLease` を回らないが、次の **expected-status guard + lost-lease ownership guard + state_version bump** を組み合わせて守る:
+
+```sql
+UPDATE runs
+   SET status='failed',
+       failure_reason='lease-stolen',
+       lease_lost_at=:now,
+       state_version=state_version+1
+ WHERE run_id=:runIdA
+   AND status='coding'
+   AND lease_lock_id=:lostLockId;
+```
+
+- **`AND lease_lock_id=:lostLockId` の意義** (post-review P1): A が `LeaseLostError` を catch した時点と finalize SQL の発行までの間に、同じ `run_id` が rerun されて新 lease を持ち、新 attempt が `status='coding'` で走り始めていても、A は **自身が失った lease_lock_id 行のみを finalize** する。新 attempt の live 状態を誤って `failed` にしない。
+- state_version bump で finalize を runtime state transition として記録し、後続 read からも変更が検出できる (§3.E の CAS と統一)。
 - B が並行で A の run row を触ることはない (run_id が異なるため)。よって lost update は発生しない。
 - post-run table (review/cleanup/pr/backlog) は **触らない**。A の run は domain operation を完了していないため。
 
@@ -172,8 +186,21 @@ stale writer (A) の次 guarded write は失敗する。これだけでは A の
 
 Phase 15 で `db doctor` が完成するが、Phase 10-2 では最小限の orphan 検出をテストで使う:
 
-- `domain_locks WHERE released_at IS NULL AND expires_at < now - GRACE` → "expired but not released" 警告
-- `runs WHERE status = 'coding' AND lease_lock_id NOT IN (SELECT lock_id FROM domain_locks WHERE released_at IS NULL)` → "orphan in-progress run" 警告
+```sql
+-- "expired but not released" 警告
+SELECT * FROM domain_locks
+WHERE released_at IS NULL
+  AND expires_at < datetime('now', '-1 minute');
+
+-- "orphan in-progress run" 警告 (post-review P3: NOT IN は NULL-unsafe なので NOT EXISTS)
+SELECT r.* FROM runs r
+WHERE r.status = 'coding'
+  AND NOT EXISTS (
+    SELECT 1 FROM domain_locks dl
+    WHERE dl.lock_id = r.lease_lock_id
+      AND dl.released_at IS NULL
+  );
+```
 
 これらは Phase 10-2 で integration test fixture として書く。Phase 15 の `db doctor` 本実装は同じ SQL を再利用する。
 
@@ -304,6 +331,98 @@ WHERE proposal_id        = :proposalId
 - 同一 `(operation_id, target_run_id)` の record が存在し、結果が同一なら **idempotent no-op** (既存結果を返す)。
 - 結果が違う場合は `OperationReplayConflictError`。
 
+詳細な transaction flow は §3.E.5 を参照。
+
+#### E2-bis. Operation transaction flow (normative, post-review P2)
+
+review process の operation は次の単一 SQLite transaction (`BEGIN IMMEDIATE`)
+内で実行する。**guard SQL 単体ではなく flow 全体を normative とする** ことで、
+operation replay の組み合わせを完全に cover する:
+
+```
+TX BEGIN IMMEDIATE
+
+1. operation claim:
+   SELECT * FROM operations
+    WHERE operation_type = 'review.process'
+      AND target_run_id = :runId
+      AND idempotency_key = :operationId;
+
+   case row exists AND status = 'succeeded':
+     if request_hash == :requestHash:
+       → idempotent no-op、stored result_json を返す
+     else:
+       → OperationReplayConflictError (different intent, same key)
+
+   case row exists AND status = 'running':
+     → OperationInFlightError (異プロセス処理中)
+
+   case row exists AND status = 'failed':
+     → 既存 row を UPDATE で再 claim ('running' 化、started_at 更新)
+     (idempotency_key の再試行を許容)
+
+   case no row:
+     INSERT operations (operation_id, operation_type, target_run_id,
+                        idempotency_key, status='running', request_hash,
+                        input_json, created_at, started_at);
+
+2. proposal CAS (= E1 の guard SQL):
+   UPDATE review_proposals
+      SET processed_at = :now, review_decision_id = :decisionId
+    WHERE proposal_id        = :proposalId
+      AND source_sha256      = :expectedSourceSha
+      AND processed_at IS NULL
+      AND superseded_at IS NULL
+      AND run_id             = :runId
+      AND EXISTS (
+        SELECT 1 FROM runs
+        WHERE run_id = :runId
+          AND status        = :expectedStatus
+          AND state_version = :expectedStateVersion
+      );
+
+   case changes = 0:
+     UPDATE operations SET status='failed', error_code='state_conflict',
+                           completed_at=:now WHERE operation_id=:operationId;
+     → StateConflictError
+
+3. decision INSERT + run state update:
+   INSERT review_decisions (...);
+   UPDATE runs SET status=:nextStatus, state_version=state_version+1,
+                   reviewed_at=:now WHERE run_id=:runId AND state_version=:expectedStateVersion;
+   (UPDATE 失敗 = race → StateConflictError、operation を failed/state_conflict 化)
+
+4. operation 完了化:
+   UPDATE operations SET status='succeeded', result_json=:result,
+                         completed_at=:now WHERE operation_id=:operationId;
+
+TX COMMIT
+```
+
+**request_hash の計算**:
+
+```
+request_hash = sha256(canonical_json({
+  proposal_id:           :proposalId,
+  source_sha256:         :expectedSourceSha,
+  expected_status:       :expectedStatus,
+  expected_state_version::expectedStateVersion,
+  decision_payload:      :decisionPayloadCanonical,
+}))
+```
+
+operation_id を再送した時に request_hash が一致するか確認することで、CLI/API
+client の意図的な再送と、別意図の同 key 衝突を区別する。
+
+**operation transaction の意味**:
+
+- step 1-4 を `BEGIN IMMEDIATE` 内に閉じることで、proposal CAS が成立した
+  瞬間と operation succeeded 記録の間で他プロセスが review process を
+  仕掛けることを完全に排除する。
+- `BEGIN IMMEDIATE` は SQLite で writer lock を即時取得するため、複数
+  client の review process が並行発生しても、最大 1 つだけが proposal CAS
+  まで進める。
+
 #### E3. state_version
 
 Phase 9 まで `runs` に `state_version` 列はない。Phase 10-3 または 10-5 で:
@@ -321,6 +440,7 @@ state_version の bump 対象 (initial set):
 - `cleanupRun`
 - `createPullRequest`
 - `rerunFromReview`
+- §B2 の **stale writer clean finalize** (`UPDATE runs SET status='failed', ... WHERE ... AND lease_lock_id=:lostLockId`)
 
 bump しない:
 
@@ -329,6 +449,43 @@ bump しない:
 - run_events / changed_files / policy_violations の INSERT
 
 state_version の存在は Phase 11 で consensus evaluator の "consensus 再計算が必要かどうか" 判定にも流用できる。Phase 10 では runtime guard としてのみ使う。
+
+#### E5. state_version rollout safety (post-review P2)
+
+schema v6 migration が `runs.state_version DEFAULT 0` を追加した瞬間から、E1
+の guard SQL は `AND state_version = :expectedStateVersion` で CAS する。
+途中状態 (state_version 列はあるが bump しない writer が残る) は CAS が
+false-positive (差分 0) を返し続け、review process が永続的に conflict に
+なるリスクがある。
+
+これを避けるため、Phase 10-5 の commit は **次を 1 commit / 1 sub-phase 内で
+一体的に landing** させる:
+
+1. `runs.state_version` 列の migration (schema v6 の一部)
+2. 上記 bump 対象 writer 全てに `state_version = state_version + 1` を追加
+   (`RunLog.setStatus` / `setSafetyStatus` / `processReviewDecision` /
+    `cleanupRun` / `createPullRequest` / `rerunFromReview` / B2 finalize)
+3. review process の CAS guard (E1) を有効化
+4. lease-stolen clean finalize の guard を有効化 (B2)
+5. fixture / integration test
+
+**feature flag による段階的有効化は行わない** (途中状態 = 危険状態)。
+
+migration boundary を1 commit に閉じることで、Phase 10-3 (run_materializations
++ state_version migration) と Phase 10-5 (CAS 有効化) の間に **state_version
+を bump しない CI / 開発分岐が混在しない**ようにする。
+
+実装順序の選択:
+
+- Option α: Phase 10-3 で migration v6 をマージ + bump 対象 writer 全更新 +
+  CAS 有効化 (= 10-3 と 10-5 のコード変更を 10-3 で全部 land)。
+- Option β: Phase 10-3 で migration のみ追加し、state_version は当面
+  bump しない / 読まない。Phase 10-5 で bump + CAS を 1 commit で有効化。
+
+Phase 10 は Option β を採る (sub-phase boundary を保つ、commit 粒度の整合)。
+ただし **Phase 10-3 から Phase 10-5 までの間 = state_version 列は存在するが
+未使用** であり、この期間に review process の CAS を有効化してはいけない。
+Phase 10-3 commit message + Phase 10-5 spec に明記する。
 
 #### E4. CLI UX
 
@@ -431,7 +588,16 @@ CREATE INDEX run_materializations_run_idx ON run_materializations(run_id, create
 CREATE INDEX run_materializations_expiry_idx ON run_materializations(status, expires_at);
 ```
 
-`purpose='compat-export'` を schema 上は許可するが、Phase 10 の minimum viable では `purpose='scratch'` のみ INSERT する。compat-export 用 row を作る計画は Phase 15 (db doctor が compat export の TTL/orphan を追跡する必要が出たとき) に判断する。
+`purpose='compat-export'` を schema CHECK で **reserved for future use** として
+許可するが、Phase 10 内では INSERT も SELECT も **行わない** (post-review P3
+で曖昧さを除去)。compat-export tracking は既存 `exported_files` で完結し、
+`run_materializations` には `purpose='scratch'` 行のみが入る。compat-export
+row を実際に書き始める計画は Phase 15 (`db doctor` が compat export の
+TTL/orphan を追跡する必要が出たとき) に判断する。
+
+run_materializations を読む queries (`db doctor` / `db materialize cleanup`)
+は **`WHERE purpose = 'scratch'` を必ず明示する**ことで、将来 compat-export
+が混入しても誤動作しないようにする。
 
 ### 4.2 runs.state_version
 
