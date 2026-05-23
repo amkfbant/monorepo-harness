@@ -2107,6 +2107,13 @@ registerDbCommands(program);
 
 program.parseAsync(process.argv).catch((e: unknown) => {
   process.stderr.write(`harness error: ${(e as Error).message}\n`);
+  // user-fixable conditions (e.g. legacy-file rows pending migration) →
+  // exit 1 so scripts can branch on it cleanly. Truly unexpected errors
+  // stay at exit 2.
+  const name = (e as Error)?.name;
+  if (name === "LegacyRowsFoundError" || name === "MaintenanceLockBusyError") {
+    process.exit(1);
+  }
   process.exit(2);
 });
 
