@@ -408,15 +408,18 @@ export async function runDomainCoding(
         },
         startedAt,
       },
+      // Phase 9 post-close P2 #1 fix — stamp the lease fencing token in
+      // the SAME INSERT as the run row so `assertActiveLease` is
+      // enforceable from the very first write (Phase 9-6 fencing guard).
+      // Previously a UPDATE happened after `createDbRunLog`, leaving a
+      // tiny bootstrap window where the row + export ran without the
+      // lease columns populated.
+      lease: {
+        lockId: dbLock.lockId,
+        fencingToken: dbLock.fencingToken,
+        domainKey,
+      },
     });
-
-    // Phase 9-6: stamp the run row with the lease fencing token so
-    // run-execution writes can verify the active lease via EXISTS.
-    db.prepare(
-      `UPDATE runs SET lease_lock_id = ?, lease_token = ?,
-         lease_domain_key = ?
-       WHERE run_id = ?`,
-    ).run(dbLock.lockId, dbLock.fencingToken, domainKey, runId);
 
     // Any failure after createDbRunLog leaves status='running' in the DB.
     // Wrap the rest of the workflow so unexpected throws still finalize the

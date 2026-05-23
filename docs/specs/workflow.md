@@ -339,10 +339,13 @@ Phase 9 は concurrency safety と runtime DB story の完結を扱う。設計�
   warning。
 - **`HARNESS_EXPORT_FILES` の default 反転** — Phase 9 close で OFF へ。
   未設定時は warning。breaking change として close report で強周知。
-- **legacy-file routing 撤去** — runtime tables（runs / backlog_items /
-  knowledge_candidates）の `source_mode='legacy-file'` 経路を撤去。各 runtime
-  write の先頭で legacy 行を assert（migrate-legacy / disaster recovery は
-  bypass）。`knowledge_entries`（markdown = file-authored）は対象外。
+- **legacy-file routing 撤去** — `runs` + `backlog_items` の
+  `source_mode='legacy-file'` 経路を gate（runtime write 先頭で
+  `assertNoLegacyRuntimeRows`、`migrate-legacy` / `db import
+  --force-legacy-reconcile` は bypass）。`knowledge_candidates` は
+  `syncCandidate` が `legacy-file` を「未決定 marker」として使うため scope
+  外（close レポート § "計画からの差分" 参照）。`knowledge_entries`
+  （markdown = file-authored）も対象外。
 - **`review auto` の verdict が DB canonical** — `review_proposals` テーブル
   に proposal を INSERT し、`review process` が DB から読んで `review_decisions`
   に昇格。`processed_at` で idempotent。sidecar `review-decision.yaml` は

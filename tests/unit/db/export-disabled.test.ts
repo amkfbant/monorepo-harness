@@ -53,6 +53,51 @@ describe("fileExportEnabled", () => {
   });
 });
 
+describe("HARNESS_SUPPRESS_EXPORT_MODE_WARNING — truthy-only normalization (Phase 9 post-close P2 #2)", () => {
+  it("=0 does NOT suppress the warning (codex P2 #2 regression guard)", async () => {
+    delete process.env.HARNESS_EXPORT_FILES;
+    process.env.HARNESS_SUPPRESS_EXPORT_MODE_WARNING = "0";
+    const { fileExportEnabled, _resetExportModeWarningForTest } = await import(
+      "../../../src/config/export-mode.js"
+    );
+    _resetExportModeWarningForTest();
+    const original = process.stderr.write;
+    let captured = "";
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      captured += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      fileExportEnabled();
+    } finally {
+      process.stderr.write = original;
+    }
+    expect(captured).toMatch(/default changed/);
+    delete process.env.HARNESS_SUPPRESS_EXPORT_MODE_WARNING;
+  });
+
+  it("=1 suppresses the warning", async () => {
+    delete process.env.HARNESS_EXPORT_FILES;
+    process.env.HARNESS_SUPPRESS_EXPORT_MODE_WARNING = "1";
+    const { fileExportEnabled, _resetExportModeWarningForTest } = await import(
+      "../../../src/config/export-mode.js"
+    );
+    _resetExportModeWarningForTest();
+    const original = process.stderr.write;
+    let captured = "";
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      captured += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      fileExportEnabled();
+    } finally {
+      process.stderr.write = original;
+    }
+    expect(captured).toBe("");
+  });
+});
+
 describe("exportRun with file export disabled", () => {
   it("skips the file write and marks export_status='disabled'", () => {
     process.env.HARNESS_EXPORT_FILES = "0";

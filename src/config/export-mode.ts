@@ -42,7 +42,13 @@ let warned = false;
 function maybeWarnUnset(): void {
   if (warned) return;
   warned = true;
-  if (process.env.HARNESS_SUPPRESS_EXPORT_MODE_WARNING) return;
+  // Phase 9 post-close P2 #2 fix — the suppression env var must use the
+  // same truthy normalization as HARNESS_EXPORT_FILES (only `1` / true /
+  // on / yes silences). Previously any non-empty value (including `0`)
+  // silenced the warning, which is the opposite of what an operator
+  // setting `=0` would expect.
+  const suppress = process.env.HARNESS_SUPPRESS_EXPORT_MODE_WARNING ?? "";
+  if (ON_VALUES.has(suppress.trim().toLowerCase())) return;
   process.stderr.write(
     "warning: HARNESS_EXPORT_FILES is unset; the default changed from ON " +
       "(Phase 8) to OFF (Phase 9). Set HARNESS_EXPORT_FILES=1 to keep " +

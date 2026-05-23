@@ -386,10 +386,11 @@ truncated artifact の監査情報）を実装する。設計は
   経路は file lock が primary serialization、Phase 10 で file lock 撤去）。
 - **scratch runDir lifecycle** — `HARNESS_EXPORT_FILES=0` で ingest 成功時
   に scratch runDir を削除。ingest failure で保持 + warning。
-- **legacy-file routing 撤去** — runtime tables（runs / backlog_items /
-  knowledge_candidates）のみ。`knowledge_entries`（markdown = file-authored）
-  は対象外。`db migrate-legacy` / `db import --force-legacy-reconcile` は
-  bypass。
+- **legacy-file routing 撤去** — `runs` + `backlog_items` のみ。
+  `knowledge_candidates` は `syncCandidate` が `legacy-file` を「未決定
+  marker」として使う運用都合があり scope 外（close レポート § "計画からの
+  差分" 参照）。`knowledge_entries`（markdown = file-authored）も対象外。
+  `db migrate-legacy` / `db import --force-legacy-reconcile` は bypass。
 - **`review_proposals`** — `review auto` の verdict を DB canonical に。
   active partial unique index + `processed_at` で idempotent な promotion。
 - **`HARNESS_EXPORT_FILES` の default OFF 化** — Phase 9 close で即 flip +

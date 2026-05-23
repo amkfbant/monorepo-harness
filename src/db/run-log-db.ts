@@ -32,6 +32,18 @@ export interface CreateDbRunLogOpts {
   runsDir: string;
   runId: string;
   meta: RunMeta;
+  /**
+   * Phase 9 post-close P2 #1 fix — when set, the initial `runs` row is
+   * stamped with the DB lease columns in the same INSERT as the row
+   * itself, closing the bootstrap window between row creation and a
+   * later UPDATE in `runDomainCoding`. The fencing guard
+   * (`assertActiveLease`) is then enforceable from the very first write.
+   */
+  lease?: {
+    lockId: number;
+    fencingToken: number;
+    domainKey: string;
+  };
 }
 
 /** snake_case `runs` columns derived from a `RunMeta`. */
@@ -70,6 +82,7 @@ function insertRunRow(
   db: Database.Database,
   runId: string,
   meta: RunMeta,
+  lease?: CreateDbRunLogOpts["lease"],
 ): void {
   const cols = runColumns(meta);
   db.prepare(
@@ -80,7 +93,7 @@ function insertRunRow(
        ignored_untracked_count, secret_suspect_count, pr_url, pr_number,
        prompt_template_name, prompt_template_version, knowledge_context_path,
        meta_json, imported_from, updated_at, source_mode, db_revision,
-       export_status)
+       export_status, lease_lock_id, lease_token, lease_domain_key)
      VALUES (@run_id, @repo_id, @project_id, @repo_path, @domain, @workflow,
        @base_branch, @base_sha, @run_branch, @status, @safety_status,
        @reviewer, @reviewed_at, @started_at, @finished_at, @parent_run_id,
@@ -88,8 +101,16 @@ function insertRunRow(
        @ignored_untracked_count, @secret_suspect_count, @pr_url, @pr_number,
        @prompt_template_name, @prompt_template_version,
        @knowledge_context_path, @meta_json, 'runtime', @updated_at,
-       'db-first', 1, 'dirty')`,
-  ).run({ ...cols, run_id: runId, updated_at: new Date().toISOString() });
+       'db-first', 1, 'dirty',
+       @lease_lock_id, @lease_token, @lease_domain_key)`,
+  ).run({
+    ...cols,
+    run_id: runId,
+    updated_at: new Date().toISOString(),
+    lease_lock_id: lease?.lockId ?? null,
+    lease_token: lease?.fencingToken ?? null,
+    lease_domain_key: lease?.domainKey ?? null,
+  });
 }
 
 function updateRunRow(
@@ -175,7 +196,7 @@ export function createDbRunLog(opts: CreateDbRunLogOpts): RunLog {
   mkdirSync(runDir, { recursive: false });
 
   let meta: RunMeta = opts.meta;
-  insertRunRow(db, runId, meta);
+  insertRunRow(db, runId, meta, opts.lease);
   warnIfExportFailed(exportRun(db, runId, { runsDir }));
 
   /**
