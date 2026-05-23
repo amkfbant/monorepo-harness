@@ -37,15 +37,19 @@ afterEach(() => {
 });
 
 describe("fileExportEnabled", () => {
-  it("defaults to ON, OFF for falsy values", () => {
+  it("defaults to OFF (Phase 9 breaking change), ON for truthy values", () => {
     delete process.env.HARNESS_EXPORT_FILES;
-    expect(fileExportEnabled()).toBe(true);
+    process.env.HARNESS_SUPPRESS_EXPORT_MODE_WARNING = "1";
+    expect(fileExportEnabled()).toBe(false);
     for (const v of ["0", "false", "off", "no", "OFF"]) {
       process.env.HARNESS_EXPORT_FILES = v;
       expect(fileExportEnabled()).toBe(false);
     }
-    process.env.HARNESS_EXPORT_FILES = "1";
-    expect(fileExportEnabled()).toBe(true);
+    for (const v of ["1", "true", "on", "yes", "ON"]) {
+      process.env.HARNESS_EXPORT_FILES = v;
+      expect(fileExportEnabled()).toBe(true);
+    }
+    delete process.env.HARNESS_SUPPRESS_EXPORT_MODE_WARNING;
   });
 });
 
@@ -81,8 +85,9 @@ describe("exportRun with file export disabled", () => {
     const db = freshDb();
     const runsDir = mkdtempSync(join(tmpdir(), "harness-exp-off-runs-"));
     insertRun(db, "run-switch");
-    // exported once with export ON
-    delete process.env.HARNESS_EXPORT_FILES;
+    // exported once with export ON (Phase 9 default is OFF — set
+    // explicitly).
+    process.env.HARNESS_EXPORT_FILES = "1";
     exportRun(db, "run-switch", { runsDir });
     expect(
       (
