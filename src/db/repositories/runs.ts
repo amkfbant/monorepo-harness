@@ -150,6 +150,18 @@ export interface ApplyReviewDecisionInput {
   requiredChanges: string[];
   /** raw review-decision.yaml content, stored in review_decisions */
   decisionYaml: string;
+  /**
+   * Phase 9 post-close P1 #1 fix — when the verdict came from a DB
+   * `review_proposals` row, mark it processed inside the SAME transaction
+   * as the decision promotion. If the process crashes between the run
+   * status update and a later `markProcessed`, the proposal would
+   * otherwise stay active-but-unprocessed and a retry would fail the
+   * `status === needs_review` gate.
+   */
+  markProposalProcessed?: {
+    proposalId: number;
+    reviewDecisionId: string;
+  };
 }
 
 const SUMMARY_COLUMNS = `run_id, repo_id, project_id, domain, status,
@@ -683,6 +695,24 @@ export class RunRepository {
       input.requiredChanges.forEach((c, i) => {
         insChange.run(input.runId, i, c);
       });
+      // Phase 9 post-close P1 #1 fix — mark the source proposal processed
+      // in the same transaction as the decision promotion. `processed_at
+      // IS NULL` guard makes the UPDATE idempotent against a retry: a
+      // proposal already processed by a prior crash-survived transaction
+      // stays exactly as it was.
+      if (input.markProposalProcessed !== undefined) {
+        this.db
+          .prepare(
+            `UPDATE review_proposals
+                SET processed_at = ?, review_decision_id = ?
+              WHERE proposal_id = ? AND processed_at IS NULL`,
+          )
+          .run(
+            input.reviewedAt,
+            input.markProposalProcessed.reviewDecisionId,
+            input.markProposalProcessed.proposalId,
+          );
+      }
       return { previousStatus: row.status };
     });
     return txn.immediate();

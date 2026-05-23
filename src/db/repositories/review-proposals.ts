@@ -91,9 +91,16 @@ export class ReviewProposalRepository {
   }
 
   /**
-   * Return the latest active proposal for `runId`. With `reviewer` set,
-   * only that reviewer's proposal is considered. Tie-breaker:
-   * `reviewed_at DESC, proposal_id DESC` (newer wins).
+   * Return the latest active, **unprocessed** proposal for `runId`. With
+   * `reviewer` set, only that reviewer's proposal is considered.
+   * Tie-breaker: `reviewed_at DESC, proposal_id DESC` (newer wins).
+   *
+   * Phase 9 post-close P1 #1 fix — `processed_at IS NULL` is part of the
+   * filter so a proposal that was already promoted to `review_decisions`
+   * is not handed back to `review process` again. Without this guard a
+   * crash between promotion and `markProcessed` would leave an active
+   * proposal pointed at a run no longer in `needs_review`, and a retry
+   * would fail the status gate even though the work is already done.
    */
   getLatestActiveProposal(
     runId: string,
@@ -104,15 +111,49 @@ export class ReviewProposalRepository {
         ? this.db
             .prepare(
               `SELECT * FROM review_proposals
-                WHERE run_id = ? AND superseded_at IS NULL
+                WHERE run_id = ?
+                  AND superseded_at IS NULL
+                  AND processed_at IS NULL
                 ORDER BY reviewed_at DESC, proposal_id DESC LIMIT 1`,
             )
             .get(runId)
         : this.db
             .prepare(
               `SELECT * FROM review_proposals
-                WHERE run_id = ? AND reviewer = ? AND superseded_at IS NULL
+                WHERE run_id = ?
+                  AND reviewer = ?
+                  AND superseded_at IS NULL
+                  AND processed_at IS NULL
                 ORDER BY reviewed_at DESC, proposal_id DESC LIMIT 1`,
+            )
+            .get(runId, reviewer);
+    return row === undefined ? null : toReviewProposalRow(row);
+  }
+
+  /**
+   * Return the most recent **processed** proposal for `runId` so callers
+   * can detect a crash-survived idempotent state. Used by `review
+   * process` to short-circuit a retry when the work is already done.
+   */
+  getLatestProcessedProposal(
+    runId: string,
+    reviewer?: string,
+  ): ReviewProposalRow | null {
+    const row =
+      reviewer === undefined
+        ? this.db
+            .prepare(
+              `SELECT * FROM review_proposals
+                WHERE run_id = ? AND processed_at IS NOT NULL
+                ORDER BY processed_at DESC, proposal_id DESC LIMIT 1`,
+            )
+            .get(runId)
+        : this.db
+            .prepare(
+              `SELECT * FROM review_proposals
+                WHERE run_id = ? AND reviewer = ?
+                  AND processed_at IS NOT NULL
+                ORDER BY processed_at DESC, proposal_id DESC LIMIT 1`,
             )
             .get(runId, reviewer);
     return row === undefined ? null : toReviewProposalRow(row);
@@ -121,6 +162,11 @@ export class ReviewProposalRepository {
   /**
    * Mark a proposal as processed (promoted to `review_decisions`).
    * `review process` re-invocations look at `processed_at` to no-op.
+   *
+   * Phase 9 post-close P1 #1 fix — `WHERE processed_at IS NULL` guard
+   * makes the UPDATE idempotent: a second call on an already-processed
+   * proposal is a silent no-op rather than overwriting the recorded
+   * `processed_at` timestamp.
    */
   markProcessed(
     proposalId: number,
@@ -131,7 +177,7 @@ export class ReviewProposalRepository {
       .prepare(
         `UPDATE review_proposals
             SET processed_at = ?, review_decision_id = ?
-          WHERE proposal_id = ?`,
+          WHERE proposal_id = ? AND processed_at IS NULL`,
       )
       .run(processedAt, reviewDecisionId, proposalId);
   }

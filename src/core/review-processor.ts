@@ -221,6 +221,40 @@ async function processUnderLock(
   let decision: Awaited<ReturnType<typeof loadReviewDecision>>;
   let proposalId: number | null = null;
   const proposalRepo = new ReviewProposalRepository(db);
+  // Phase 9 post-close P1 #1 fix — if a prior `review process` invocation
+  // already promoted a proposal for this run but crashed before some
+  // observable side effect (the file backfill, the response), surface
+  // that idempotent state instead of failing the `status = needs_review`
+  // gate. The active proposal lookup below filters out `processed_at IS
+  // NOT NULL`, so an unconditional return-once-processed check here would
+  // hide nothing the active path uses.
+  if (dbFirst) {
+    const processed = proposalRepo.getLatestProcessedProposal(opts.runId);
+    if (processed !== null) {
+      const runRow = db
+        .prepare("SELECT status, reviewer, reviewed_at FROM runs WHERE run_id = ?")
+        .get(opts.runId) as
+        | { status: string; reviewer: string | null; reviewed_at: string | null }
+        | undefined;
+      if (
+        runRow !== undefined &&
+        runRow.status !== "needs_review" &&
+        runRow.reviewed_at !== null
+      ) {
+        // the run is already promoted in the DB AND a processed
+        // proposal records who did it — re-running `review process`
+        // is a no-op.
+        return {
+          runId: opts.runId,
+          previousStatus: runRow.status as RunStatus,
+          newStatus: runRow.status as RunStatus,
+          reviewer: runRow.reviewer,
+          reviewedAt: runRow.reviewed_at,
+          warnings: ["already processed — idempotent no-op"],
+        };
+      }
+    }
+  }
   const activeProposal = proposalRepo.getLatestActiveProposal(opts.runId);
   if (activeProposal !== null) {
     try {
@@ -304,6 +338,9 @@ async function processUnderLock(
     reviewed_at: reviewedAt,
   });
   if (dbFirst) {
+    // Phase 9 post-close P1 #1 fix — promote the run AND mark the source
+    // proposal processed in one transaction so a crash between the two
+    // cannot leave an active-but-unprocessed proposal behind.
     new RunRepository(db).applyReviewDecision({
       runId: opts.runId,
       decision: decision.decision,
@@ -311,6 +348,14 @@ async function processUnderLock(
       reviewedAt,
       requiredChanges: decision.required_changes,
       decisionYaml: normalizedYaml,
+      ...(proposalId !== null
+        ? {
+            markProposalProcessed: {
+              proposalId,
+              reviewDecisionId: opts.runId,
+            },
+          }
+        : {}),
     });
     warnIfExportFailed(exportRun(db, opts.runId, { runsDir: opts.runsDir }));
   } else {
@@ -355,6 +400,12 @@ async function processUnderLock(
   // Phase 9-8: if the verdict came from a DB proposal, mark it processed
   // so a re-run can no-op (and the audit trail records which decision
   // came from which proposal).
+  //
+  // Phase 9 post-close P1 #1 fix — on the `dbFirst` path this UPDATE has
+  // already happened inside `applyReviewDecision`'s transaction; the
+  // `WHERE processed_at IS NULL` guard in `markProcessed` makes this
+  // call an idempotent no-op there. The legacy-file path still relies on
+  // it.
   if (proposalId !== null) {
     proposalRepo.markProcessed(proposalId, opts.runId, reviewedAt);
   }

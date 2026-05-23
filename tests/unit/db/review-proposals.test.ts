@@ -103,9 +103,50 @@ describe("ReviewProposalRepository", () => {
     const repo = new ReviewProposalRepository(db);
     const { proposalId } = repo.insertProposal(baseProposal());
     repo.markProcessed(proposalId, RUN_ID, "2026-05-23T13:00:00Z");
-    const row = repo.getLatestActiveProposal(RUN_ID);
-    expect(row?.processedAt).toBe("2026-05-23T13:00:00Z");
-    expect(row?.reviewDecisionId).toBe(RUN_ID);
+    // Phase 9 post-close P1 #1 fix — `getLatestActiveProposal` filters
+    // out processed rows; `getLatestProcessedProposal` is what surfaces
+    // them. The two are deliberately disjoint.
+    const active = repo.getLatestActiveProposal(RUN_ID);
+    expect(active).toBeNull();
+    const processed = repo.getLatestProcessedProposal(RUN_ID);
+    expect(processed?.proposalId).toBe(proposalId);
+    expect(processed?.processedAt).toBe("2026-05-23T13:00:00Z");
+    expect(processed?.reviewDecisionId).toBe(RUN_ID);
+    db.close();
+  });
+
+  it("getLatestActiveProposal filters out processed proposals (P1 #1)", () => {
+    const db = freshDb();
+    const repo = new ReviewProposalRepository(db);
+    const { proposalId } = repo.insertProposal(baseProposal());
+    expect(repo.getLatestActiveProposal(RUN_ID)?.proposalId).toBe(proposalId);
+    repo.markProcessed(proposalId, RUN_ID, "2026-05-23T13:00:00Z");
+    // a re-fetch must not return the processed row — otherwise a crash
+    // between promotion and side effects would loop forever.
+    expect(repo.getLatestActiveProposal(RUN_ID)).toBeNull();
+    db.close();
+  });
+
+  it("markProcessed is idempotent — a second call does not overwrite (P1 #1)", () => {
+    const db = freshDb();
+    const repo = new ReviewProposalRepository(db);
+    const { proposalId } = repo.insertProposal(baseProposal());
+    repo.markProcessed(proposalId, RUN_ID, "2026-05-23T13:00:00Z");
+    // A second call with a different timestamp / decision id must NOT
+    // overwrite — the WHERE processed_at IS NULL guard makes the UPDATE
+    // a no-op when already processed.
+    repo.markProcessed(proposalId, "other", "2099-01-01T00:00:00Z");
+    const processed = repo.getLatestProcessedProposal(RUN_ID);
+    expect(processed?.processedAt).toBe("2026-05-23T13:00:00Z");
+    expect(processed?.reviewDecisionId).toBe(RUN_ID);
+    db.close();
+  });
+
+  it("getLatestProcessedProposal returns null when nothing was processed", () => {
+    const db = freshDb();
+    const repo = new ReviewProposalRepository(db);
+    repo.insertProposal(baseProposal());
+    expect(repo.getLatestProcessedProposal(RUN_ID)).toBeNull();
     db.close();
   });
 
