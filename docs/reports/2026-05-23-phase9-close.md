@@ -215,3 +215,54 @@ scratch +2, suppress +2 = +19 / 既存修正 1 で 988 → 987）。
 - crash 後の review process idempotency: 現状は「processed proposal が
   ある + run.status != needs_review」を no-op 扱いするが、より精密に
   `source_sha256` 一致確認まで入れる選択肢あり
+
+## post-close fix 第 2 弾（独立外部レビュー反映）
+
+最初の codex post-close fix の後、別系統の外部レビュアから Phase 9 の
+P1×6 / P2×6 / P3×3 の指摘を受領。すべて受け入れて修正。
+
+### P1 系（修正済み）
+
+| ID | 内容 | コミット |
+|----|------|------|
+| P1-1 | materialize と compatibility export の分離 — exportRun に trackExport:boolean を追加し、ensureRunMaterialized は trackExport:false 経由。syncRunArtifactsToDb 後に export OFF + db-first なら runDir 削除。run-viewer に shouldPreferDbForRun helper を追加し、db-first AND export_status != synced で DB を canonical 扱い | `5b9fb93` |
+| P1-2 | exportRun の review sidecar logic に active review_proposals を反映（review_decisions > active proposal > pending template の優先順） | `5b9fb93` |
+| P1-3 | reviewer-agent.ts の write 順序を逆転（DB-first、sidecar は fileExportEnabled() のときだけ、OFF なら stale sidecar を rm） | `5b9fb93` |
+| P1-4 | markProcessed / applyReviewDecision の inline UPDATE に `AND superseded_at IS NULL` guard 追加（0-rows changed で StateConflictError）、reviewer-agent.ts に insertProposal 前の run.status guard 追加 | `5b9fb93` |
+| P1-5 | reviewer-agent.ts の overwrite guard を DB active proposal primary に切替、file decision を secondary fallback | `5b9fb93` |
+| P1-6 | RunRepository.forceFailFinalize（lease guard を bypass する recovery path）追加、workflow-runner の catch path で LeaseGuardFailedError を up-front 検知し ingest を skip、fallback として forceFailFinalize を呼ぶ | `2a82972` |
+
+### P2 系（修正済み）
+
+| ID | 内容 | コミット |
+|----|------|------|
+| P2-1 | docs/specs/workflow.md に「assertActiveLease を Phase 10 で transaction 内へ移す」blocker 注記 | `02c96ae` |
+| P2-2 | review-processor の file fallback パスで、file decision を `reviewer='manual-file'` として review_proposals に import → applyReviewDecision で markProposalProcessed | `02c96ae` |
+| P2-3 | lock list が DB 未初期化 / schema < v5 / domain_locks 無しでも graceful。readonly open に変更 | `02c96ae` |
+| P2-4 | maintenance-lock.ts の acquire loop で EWOULDBLOCK / EAGAIN のみ retry、その他 errno は throw（busy で disguise しない） | `02c96ae` |
+| P2-5 | check-consistency に artifacts.original_* invariant 追加（truncated → original_* 必須 / original_bytes >= bytes / 非 truncated → original_* null） | `02c96ae` |
+| P2-6 | docs/specs/cli.md に「shared vs exclusive の意味」を明文化（shared = read-only ではない） | `02c96ae` |
+
+### P3 系（修正済み）
+
+| ID | 内容 | コミット |
+|----|------|------|
+| P3-1 | src/db/schema.ts と artifact-blobs.ts のヘッダコメントを Phase 9 反映（schema v5 / original_bytes 記録） | `02c96ae` |
+| P3-3 | docs/specs/cli.md の restore 説明に「Phase 9 で exclusive lock を取るので runtime release まで待つ」を追加 | `02c96ae` |
+
+### 主な追加テスト
+
+- `tests/integration/lease-stolen-finalize.test.ts` — lease 奪取後の
+  forceFailFinalize 動作 / no-op idempotency / 実 lease 奪取後の recovery
+- `tests/integration/materialize-and-export-tracking.test.ts` —
+  exportRun が active proposal を sidecar に出すこと、
+  ensureRunMaterialized が exported_files / export_status を更新しないこと
+- `tests/unit/db/maintenance-lock.test.ts` — 非 busy flock error 伝播
+- `tests/unit/db/consistency.test.ts` — truncated invariant 3 ケース
+- `tests/unit/db/review-proposals.test.ts` — markProcessed の supersede guard
+
+### 検証
+
+- `npm test`: **997 passed / 1 skipped**（typecheck green）
+- post-close fix 第 2 弾で +10（lease-stolen 3 + materialize 2 +
+  flock error 1 + consistency 3 + markProcessed supersede 1）
