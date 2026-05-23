@@ -67,7 +67,7 @@ export function migrateArtifacts(
   const promote = db.prepare(
     `UPDATE artifacts
        SET storage = 'db', blob_sha256 = ?, body_status = ?, sha256 = ?,
-           bytes = ?
+           bytes = ?, original_bytes = ?, original_sha256 = ?
      WHERE artifact_id = ?`,
   );
 
@@ -124,6 +124,10 @@ export function migrateArtifacts(
         blob.truncated ? "truncated" : "db_available",
         rawSha,
         blob.bytes,
+        // Phase 9-9: record the pre-truncation size + sha for audit; both
+        // are NULL when the body was not truncated.
+        blob.truncated ? raw.length : null,
+        blob.truncated ? rawSha : null,
         row.artifact_id,
       );
       // the recorded sha was stale (the file changed since the manifest

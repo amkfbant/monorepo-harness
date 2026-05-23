@@ -152,11 +152,14 @@ export function ingestRunArtifacts(
   runDir: string,
   runId: string,
 ): void {
+  // schema v5 added original_bytes / original_sha256 — only set when the
+  // body was truncated to `HARD_MAX_BYTES`, NULL otherwise (Phase 9-9).
   const insert = db.prepare(
     `INSERT INTO artifacts (artifact_id, run_id, kind, relative_path,
        content_type, bytes, sha256, storage, blob_sha256, body_status,
-       created_at, redacted, secret_suspect)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'db', ?, ?, ?, 0, 0)`,
+       created_at, redacted, secret_suspect,
+       original_bytes, original_sha256)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'db', ?, ?, ?, 0, 0, ?, ?)`,
   );
   const txn = db.transaction(() => {
     db.prepare("DELETE FROM artifacts WHERE run_id = ?").run(runId);
@@ -166,11 +169,17 @@ export function ingestRunArtifacts(
       let blobSha: string | null = null;
       let bodyStatus = "db_available";
       let bytes = raw.length;
+      let originalBytes: number | null = null;
+      let originalSha: string | null = null;
       if (!DB_RECONSTRUCTED.has(rel)) {
         const blob = storeArtifactBlob(db, raw);
         blobSha = blob.sha256;
         bytes = blob.bytes;
-        if (blob.truncated) bodyStatus = "truncated";
+        if (blob.truncated) {
+          bodyStatus = "truncated";
+          originalBytes = raw.length;
+          originalSha = sha256(raw);
+        }
       }
       insert.run(
         `${runId}:${rel}`,
@@ -183,6 +192,8 @@ export function ingestRunArtifacts(
         blobSha,
         bodyStatus,
         new Date(st.mtimeMs).toISOString(),
+        originalBytes,
+        originalSha,
       );
     }
   });

@@ -142,6 +142,47 @@ describe("ingestRunArtifacts", () => {
     db.close();
   });
 
+  it("records original_bytes / original_sha256 only for truncated artifacts (Phase 9-9)", async () => {
+    const db = freshDb();
+    const root = mkdtempSync(join(tmpdir(), "harness-ingest-"));
+    const runId = "run-x-trunc";
+    const runDir = join(root, runId);
+    mkdirSync(runDir, { recursive: true });
+    // a normal artifact → original_* stay NULL
+    writeFileSync(join(runDir, "summary.md"), "# small\n");
+    // a >HARD_MAX_BYTES artifact → truncated, original_* set
+    const { HARD_MAX_BYTES } = await import(
+      "../../../src/db/artifact-blobs.js"
+    );
+    const huge = Buffer.alloc(HARD_MAX_BYTES + 1024, "Z");
+    writeFileSync(join(runDir, "codex-output.log"), huge);
+
+    ingestRunArtifacts(db, runDir, runId);
+
+    const rows = db
+      .prepare(
+        `SELECT relative_path, body_status, original_bytes, original_sha256
+           FROM artifacts WHERE run_id = ?`,
+      )
+      .all(runId) as {
+      relative_path: string;
+      body_status: string;
+      original_bytes: number | null;
+      original_sha256: string | null;
+    }[];
+
+    const summary = rows.find((r) => r.relative_path === "summary.md");
+    expect(summary?.body_status).toBe("db_available");
+    expect(summary?.original_bytes).toBeNull();
+    expect(summary?.original_sha256).toBeNull();
+
+    const log = rows.find((r) => r.relative_path === "codex-output.log");
+    expect(log?.body_status).toBe("truncated");
+    expect(log?.original_bytes).toBe(HARD_MAX_BYTES + 1024);
+    expect(log?.original_sha256).not.toBeNull();
+    db.close();
+  });
+
   it("recurses into subdirectories (commands/ etc.) — nested bodies in the DB", () => {
     const db = freshDb();
     const root = mkdtempSync(join(tmpdir(), "harness-ingest-"));

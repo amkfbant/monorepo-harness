@@ -281,6 +281,16 @@ export interface BlobStats {
   chunkCount: number;
 }
 
+/** Truncated artifact statistics (Phase 9-9 — `original_*` columns). */
+export interface TruncationStats {
+  /** count of artifacts with `body_status='truncated'`. */
+  count: number;
+  /** sum of `original_bytes` over truncated artifacts. */
+  originalBytes: number;
+  /** sum of `bytes` (the stored / truncated length) over the same. */
+  storedBytes: number;
+}
+
 export interface DbStats {
   dbPath: string;
   schemaVersion: number;
@@ -290,6 +300,7 @@ export interface DbStats {
   tableRows: Record<string, number>;
   totalRows: number;
   blobs: BlobStats;
+  truncation: TruncationStats;
 }
 
 function tableExists(
@@ -325,6 +336,34 @@ function readBlobStats(db: ReturnType<typeof openDbReadonly>): BlobStats {
   return row;
 }
 
+function readTruncationStats(
+  db: ReturnType<typeof openDbReadonly>,
+): TruncationStats {
+  const empty: TruncationStats = {
+    count: 0,
+    originalBytes: 0,
+    storedBytes: 0,
+  };
+  if (!tableExists(db, "artifacts")) return empty;
+  // `original_bytes` is a v5 column — fall back to empty on older schemas
+  // (the artifacts table itself is older but the column may be absent).
+  const cols = db
+    .prepare(
+      "SELECT name FROM pragma_table_info('artifacts') WHERE name = 'original_bytes'",
+    )
+    .get();
+  if (cols === undefined) return empty;
+  const row = db
+    .prepare(
+      `SELECT count(*) AS count,
+              COALESCE(sum(original_bytes), 0) AS originalBytes,
+              COALESCE(sum(bytes), 0) AS storedBytes
+       FROM artifacts WHERE body_status = 'truncated'`,
+    )
+    .get() as TruncationStats;
+  return row;
+}
+
 /** Collect table row counts, blob totals and on-disk sizes. */
 export function dbStats(dbPath: string): DbStats {
   assertInitialized(dbPath);
@@ -349,6 +388,7 @@ export function dbStats(dbPath: string): DbStats {
       tableRows,
       totalRows,
       blobs: readBlobStats(db),
+      truncation: readTruncationStats(db),
     };
   } finally {
     db.close();
@@ -425,7 +465,24 @@ export function formatStats(s: DbStats): string {
     `    raw bytes: ${humanBytes(s.blobs.rawBytes)} (${s.blobs.rawBytes})`,
     `    stored bytes: ${humanBytes(s.blobs.storedBytes)} (${s.blobs.storedBytes})`,
     `    chunks: ${s.blobs.chunkCount}`,
-    "",
   );
+  if (s.truncation.count > 0) {
+    const saved = Math.max(
+      0,
+      s.truncation.originalBytes - s.truncation.storedBytes,
+    );
+    const pct =
+      s.truncation.originalBytes > 0
+        ? Math.round((saved * 100) / s.truncation.originalBytes)
+        : 0;
+    lines.push(
+      "  truncated artifacts:",
+      `    count: ${s.truncation.count}`,
+      `    original bytes: ${humanBytes(s.truncation.originalBytes)} (${s.truncation.originalBytes})`,
+      `    stored bytes: ${humanBytes(s.truncation.storedBytes)} (${s.truncation.storedBytes})`,
+      `    saved: ${humanBytes(saved)} (${pct}% reduction)`,
+    );
+  }
+  lines.push("");
   return lines.join("\n");
 }
