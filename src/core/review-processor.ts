@@ -15,6 +15,12 @@ import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
 import { ReviewRulesRepository } from "../db/repositories/review-rules.js";
 import { ReviewConsensusRepository } from "../db/repositories/review-consensus.js";
 import {
+  ReviewOverridesRepository,
+  OverrideReasonRequiredError,
+  UnauthorizedOverrideError,
+} from "../db/repositories/review-overrides.js";
+import { ReviewerRepository } from "../db/repositories/reviewers.js";
+import {
   evaluateConsensus,
   type EnrichedProposal,
 } from "./review-consensus.js";
@@ -31,6 +37,104 @@ import {
  * future consensus consumers (dashboard / governance) without changing
  * the existing single-writer review flow.
  */
+/**
+ * Phase 11-6: human override execution path. Skips the proposal /
+ * decision-file lookup, gates on the run's review rule snapshot, and
+ * promotes the override decision directly via `applyReviewDecision`.
+ */
+function processOverridePath(
+  db: Database.Database,
+  opts: ProcessOpts,
+  override: NonNullable<ProcessOpts["override"]>,
+): ProcessResult {
+  runMigrations(db);
+  assertNoLegacyRuntimeRows(db);
+  const dbRow = db
+    .prepare("SELECT source_mode, status FROM runs WHERE run_id = ?")
+    .get(opts.runId) as { source_mode: string; status: string } | undefined;
+  if (dbRow === undefined) {
+    throw new ReviewGateError(`run ${opts.runId} not found in the DB`);
+  }
+  if (dbRow.source_mode !== "db-first") {
+    throw new SourceModeError(opts.runId, dbRow.source_mode, "db-first");
+  }
+  // Rule snapshot gate — Phase 11-6 §D2.
+  const snapshot = new ReviewRulesRepository(db).findSnapshotByRun(
+    opts.runId,
+  );
+  const rule: ReviewRule =
+    snapshot === null
+      ? DEFAULT_REVIEW_RULE
+      : (JSON.parse(snapshot.ruleJson) as ReviewRule);
+  const actor = override.actorReviewerId ?? "system";
+  if (!rule.overrides.allowedReviewers.includes(actor)) {
+    throw new UnauthorizedOverrideError(actor, rule.overrides.allowedReviewers);
+  }
+  if (rule.overrides.requireReason && override.reason.trim() === "") {
+    throw new OverrideReasonRequiredError();
+  }
+  // resolve actor reviewer (FK to reviewers table; unknown reviewer is
+  // rejected by the FK already, but resolveOrThrow gives a friendlier
+  // error message).
+  new ReviewerRepository(db).resolveOrThrow(actor);
+
+  const reviewedAt = (opts.now ?? new Date()).toISOString();
+  // Build a synthetic normalised review-decision yaml so review_decisions
+  // and (when export ON) the sidecar reflect the override.
+  const decisionYaml = serializeReviewDecision({
+    runId: opts.runId,
+    domain: "(override)",
+    decision: override.decision,
+    required_changes: [],
+    non_blocking_comments: [],
+    out_of_scope_suggestions: [],
+    reviewer: actor,
+    reviewed_at: reviewedAt,
+  });
+
+  new RunRepository(db).applyReviewDecision({
+    runId: opts.runId,
+    decision: override.decision,
+    reviewer: actor,
+    reviewedAt,
+    requiredChanges: [],
+    decisionYaml,
+  });
+
+  // Audit row in review_overrides + consensus row reflecting the override.
+  const ovr = new ReviewOverridesRepository(db).insert({
+    runId: opts.runId,
+    actorReviewerId: actor,
+    decision: override.decision,
+    reason: override.reason,
+    now: opts.now ?? new Date(),
+  });
+  try {
+    recordConsensusForReviewProcess(db, {
+      runId: opts.runId,
+      decision: override.decision,
+      reviewer: actor,
+      reviewedAt,
+      // synthetic proposalId from the override row so source_proposals_json
+      // links the consensus to the audit log
+    });
+  } catch (e) {
+    process.stderr.write(
+      `warning: could not record override consensus for ${opts.runId}: ` +
+        `${(e as Error).message}\n`,
+    );
+  }
+  warnIfExportFailed(exportRun(db, opts.runId, { runsDir: opts.runsDir }));
+  return {
+    runId: opts.runId,
+    previousStatus: dbRow.status as RunStatus,
+    newStatus: override.decision as RunStatus,
+    reviewer: actor,
+    reviewedAt,
+    warnings: [`human override (audit override_id=${ovr.overrideId})`],
+  };
+}
+
 function recordConsensusForReviewProcess(
   db: Database.Database,
   input: {
@@ -123,6 +227,19 @@ export interface ProcessOpts {
   dbPath: string;
   /** Override "now" for deterministic tests. */
   now?: Date;
+  /**
+   * Phase 11-6 — human override path. When provided, the override
+   * decision is used instead of reading review_proposals /
+   * review-decision.yaml. The override is gated by the run's review
+   * rule snapshot (overrides.allowedReviewers / requireReason) and
+   * audited in `review_overrides` + `run_events`.
+   */
+  override?: {
+    decision: "approved" | "changes_requested" | "rejected";
+    reason: string;
+    /** actor reviewer_id; defaults to 'system'. */
+    actorReviewerId?: string;
+  };
 }
 
 export interface ProcessResult {
@@ -214,6 +331,18 @@ export async function processReviewDecision(
   warnLegacyFileLocks(opts.locksDir);
   const dbHandle = openManagedDb({ dbPath: opts.dbPath });
   const db = dbHandle.db;
+
+  // Phase 11-6: human override path bypasses proposal lookup. The
+  // override is gated by the run's review rule snapshot
+  // (overrides.allowedReviewers / requireReason) and audited in
+  // `review_overrides`.
+  if (opts.override !== undefined) {
+    try {
+      return processOverridePath(db, opts, opts.override);
+    } finally {
+      dbHandle.close();
+    }
+  }
   try {
     runMigrations(db);
     // Phase 9-11: refuse to operate on a DB that still has legacy-file

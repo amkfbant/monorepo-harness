@@ -18,7 +18,12 @@ import {
 import {
   ReviewerRepository,
   DuplicateReviewerError,
+  UnknownReviewerError,
 } from "../db/repositories/reviewers.js";
+import {
+  OverrideReasonRequiredError,
+  UnauthorizedOverrideError,
+} from "../db/repositories/review-overrides.js";
 import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import {
@@ -899,15 +904,59 @@ reviewCmd
   .command("process")
   .description("apply review-decision.yaml to meta.status")
   .requiredOption("--run-id <id>", "target run identifier")
+  .option(
+    "--override <decision>",
+    "Phase 11-6: human override — approved|changes_requested|rejected",
+  )
+  .option(
+    "--reason <text>",
+    "Phase 11-6: override reason (required with --override)",
+  )
+  .option(
+    "--actor-reviewer <id>",
+    "Phase 11-6: actor reviewer_id (default: system)",
+  )
   .action(async (raw: Record<string, unknown>) => {
     const harnessRoot = getHarnessRoot();
     const paths = harnessPaths(harnessRoot);
+    let overrideOpts: {
+      decision: "approved" | "changes_requested" | "rejected";
+      reason: string;
+      actorReviewerId?: string;
+    } | undefined;
+    if (raw.override !== undefined) {
+      const dec = String(raw.override);
+      if (
+        dec !== "approved" &&
+        dec !== "changes_requested" &&
+        dec !== "rejected"
+      ) {
+        process.stderr.write(
+          `harness error: --override must be one of approved|changes_requested|rejected (got ${JSON.stringify(dec)})\n`,
+        );
+        process.exit(1);
+      }
+      if (raw.reason === undefined) {
+        process.stderr.write(
+          "harness error: --reason is required when --override is supplied\n",
+        );
+        process.exit(1);
+      }
+      overrideOpts = {
+        decision: dec,
+        reason: String(raw.reason),
+        ...(raw.actorReviewer !== undefined
+          ? { actorReviewerId: String(raw.actorReviewer) }
+          : {}),
+      };
+    }
     try {
       const result = await processReviewDecision({
         runsDir: paths.runsDir,
         locksDir: paths.locksDir,
         dbPath: paths.dbPath,
         runId: String(raw.runId),
+        ...(overrideOpts !== undefined ? { override: overrideOpts } : {}),
       });
       for (const w of result.warnings) {
         process.stdout.write(`warning: ${w}\n`);
@@ -922,7 +971,10 @@ reviewCmd
         e instanceof ReviewGateError ||
         e instanceof DomainLockBusyError ||
         e instanceof StateConflictError ||
-        e instanceof SourceModeError
+        e instanceof SourceModeError ||
+        e instanceof OverrideReasonRequiredError ||
+        e instanceof UnauthorizedOverrideError ||
+        e instanceof UnknownReviewerError
       ) {
         process.stderr.write(`harness error: ${(e as Error).message}\n`);
         process.exit(1);
