@@ -16,6 +16,9 @@ import { ReviewProposalRepository } from "../../db/repositories/review-proposals
 import { ReviewConsensusRepository } from "../../db/repositories/review-consensus.js";
 import { ReviewerRepository } from "../../db/repositories/reviewers.js";
 import { readArtifactBlob } from "../../db/artifact-blobs.js";
+import { listActiveDomainLocks } from "../../workspace/db-domain-lock.js";
+import { checkConsistency } from "../../db/consistency.js";
+import { dbStats } from "../../db/maintenance.js";
 
 /**
  * Dashboard read-only HTTP server (Phase 12-1 skeleton).
@@ -417,6 +420,76 @@ export function defaultRoutes(): Route[] {
         try {
           const reviewers = new ReviewerRepository(handle.db).list();
           writeJson(res, 200, { reviewers });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/db/status",
+      handler: ({ ctx, res }) => {
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const ver = handle.db
+            .prepare("SELECT MAX(version) AS v FROM schema_migrations")
+            .get() as { v: number | null };
+          const runs = handle.db
+            .prepare("SELECT count(*) AS n FROM runs")
+            .get() as { n: number };
+          writeJson(res, 200, {
+            dbPath: ctx.config.dbPath,
+            schemaVersion: ver.v,
+            schemaVersionExpected: SCHEMA_VERSION,
+            runs: runs.n,
+            generatedAt: new Date().toISOString(),
+          });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/db/stats",
+      handler: ({ ctx, res }) => {
+        try {
+          const stats = dbStats(ctx.config.dbPath);
+          writeJson(res, 200, stats);
+        } catch (e) {
+          writeError(
+            res,
+            500,
+            "internal_error",
+            (e as Error).message ?? "dbStats failed",
+          );
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/db/consistency",
+      handler: ({ ctx, res }) => {
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const report = checkConsistency({
+            db: handle.db,
+            harnessRoot: dirname(dirname(ctx.config.dbPath)),
+          });
+          writeJson(res, 200, report);
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/locks",
+      handler: ({ ctx, res }) => {
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const locks = listActiveDomainLocks(handle.db);
+          writeJson(res, 200, { locks });
         } finally {
           handle.close();
         }
