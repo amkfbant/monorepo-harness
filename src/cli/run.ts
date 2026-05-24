@@ -95,6 +95,12 @@ import {
 } from "../core/session.js";
 import { exportDashboard } from "../dashboard/export.js";
 import { createDashboardServer } from "../dashboard/server/server.js";
+import {
+  listOperations,
+  getOperation,
+  listOperationEvents,
+  type OperationStatus,
+} from "../db/repositories/operations.js";
 import { DashboardSnapshotError } from "../dashboard/snapshot.js";
 import { RUN_STATUSES } from "../logging/run-log.js";
 import {
@@ -1830,6 +1836,71 @@ dashboardCmd
         resolve();
       });
     });
+  });
+
+const operationsCmd = program
+  .command("operations")
+  .description("operation audit ledger (Phase 13)");
+operationsCmd
+  .command("list")
+  .description("list recent operations")
+  .option("--target-type <t>", "filter by target type (run / backlog_item)")
+  .option("--target-id <id>", "filter by target id")
+  .option("--status <s>", "filter by status (pending|running|succeeded|failed|cancelled)")
+  .option("--limit <n>", "max rows (default 50)", "50")
+  .action((raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    const dbHandle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
+    try {
+      const rows = listOperations(dbHandle.db, {
+        ...(raw.targetType !== undefined
+          ? { targetType: String(raw.targetType) }
+          : {}),
+        ...(raw.targetId !== undefined
+          ? { targetId: String(raw.targetId) }
+          : {}),
+        ...(raw.status !== undefined
+          ? { status: String(raw.status) as OperationStatus }
+          : {}),
+        limit: Number(raw.limit) || 50,
+      });
+      if (rows.length === 0) {
+        process.stdout.write("(none)\n");
+        return;
+      }
+      for (const r of rows) {
+        process.stdout.write(
+          `  ${r.operationId}\t${r.status}\t${r.operationType ?? "?"}\t${r.targetType ?? "?"}:${r.targetId ?? "?"}\tactor=${r.actor ?? "?"}\tcreated=${r.createdAt}\n`,
+        );
+      }
+    } finally {
+      dbHandle.close();
+    }
+  });
+operationsCmd
+  .command("show")
+  .description("show an operation row + events")
+  .argument("<operationId>", "operation id")
+  .action((operationId: string) => {
+    const paths = harnessPaths(getHarnessRoot());
+    const dbHandle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
+    try {
+      const row = getOperation(dbHandle.db, operationId);
+      if (row === null) {
+        process.stderr.write(`harness error: operation ${operationId} not found\n`);
+        process.exit(1);
+      }
+      process.stdout.write(JSON.stringify(row, null, 2) + "\n");
+      const events = listOperationEvents(dbHandle.db, operationId);
+      process.stdout.write("events:\n");
+      for (const e of events) {
+        process.stdout.write(
+          `  ${e.seq}\t${e.eventType}\t${e.message ?? ""}\t${e.createdAt}\n`,
+        );
+      }
+    } finally {
+      dbHandle.close();
+    }
   });
 
 const sessionCmd = program
