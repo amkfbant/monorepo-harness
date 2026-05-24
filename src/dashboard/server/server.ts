@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { dirname } from "node:path";
 import { openManagedDb } from "../../db/managed-connection.js";
 import { SCHEMA_VERSION } from "../../db/schema.js";
@@ -424,17 +425,20 @@ export function mutationRoutes(): Route[] {
               ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
               dryRun,
               input: body,
+              // Phase 13 post-close fix (codex P1.1): the HTTP path only
+              // records the accept; an out-of-process CLI runner does the
+              // actual `gh` invocation. dry-run is in-process so it can
+              // still finalize as `succeeded`.
+              pendingExternalExecutor: !dryRun,
             },
             async () => {
               if (dryRun) {
                 return { dryRun: true, plannedAction: "pr-create" };
               }
-              // Phase 13-6 minimum: pr create は gh CLI への
-              // out-of-process invocation を含むため、HTTP path では
-              // 202 accepted を返し CLI runner に委譲。
               return {
                 accepted: true,
-                note: "pr create execution is deferred to a CLI runner (Phase 13-8 で integrate)",
+                executed: false,
+                note: "pr create execution is deferred to a CLI runner; operation will remain status=pending until a worker completes it",
               };
             },
           );
@@ -472,6 +476,7 @@ export function mutationRoutes(): Route[] {
         const actor = `http:${req.socket.remoteAddress ?? "?"}`;
         const handle = openManagedDb({ dbPath: ctx.config.dbPath });
         try {
+          const dryRun = body.dryRun === true;
           const outcome = await runOperation(
             handle.db,
             {
@@ -479,14 +484,17 @@ export function mutationRoutes(): Route[] {
               target: { type: "backlog_item", id: itemId },
               actor,
               ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
-              dryRun: body.dryRun === true,
+              dryRun,
               input: body,
+              // Phase 13 post-close fix (codex P1.1): audit-only; an
+              // external CLI runner picks up the backlog item.
+              pendingExternalExecutor: !dryRun,
             },
             async () => {
-              // Phase 13-6 minimum: backlog run も CLI runner に委譲。
               return {
                 accepted: true,
-                note: "backlog run execution is deferred to a CLI runner",
+                executed: false,
+                note: "backlog run execution is deferred to a CLI runner; operation will remain status=pending until a worker completes it",
               };
             },
           );
@@ -538,6 +546,9 @@ export function mutationRoutes(): Route[] {
               ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
               dryRun,
               input: body,
+              // Phase 13 post-close fix (codex P1.1): audit-only; real
+              // rerun is long-running and lives in the CLI runner.
+              pendingExternalExecutor: !dryRun,
             },
             async () => {
               if (dryRun) {
@@ -547,13 +558,10 @@ export function mutationRoutes(): Route[] {
                   reason: body.reason ?? null,
                 };
               }
-              // Phase 13-5 minimum: rerun の実 invocation は CLI 経由を
-              // 想定し、HTTP 経路では `{ accepted: true, ... }` を返す。
-              // Full rerun は long-running なので 202-style accepted +
-              // operation_id を返し、completion poll を期待する。
               return {
                 accepted: true,
-                note: "rerun execution is deferred to a CLI runner (Phase 13-6/8 で kick mechanism を統合)",
+                executed: false,
+                note: "rerun execution is deferred to a CLI runner; operation will remain status=pending until a worker completes it",
               };
             },
           );
@@ -1273,12 +1281,36 @@ function isLocalHost(host: string): boolean {
   );
 }
 
+/**
+ * Constant-time string compare. Returns false (not throws) when lengths
+ * differ so callers can use a single boolean check.
+ */
+function safeStringEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
 function checkAuth(
   req: IncomingMessage,
   config: DashboardServerConfig,
 ): { ok: true } | { ok: false; status: number; code: string; message: string } {
   const tokenConfigured = config.token !== undefined && config.token !== "";
-  // local + no token → skip.
+  // Phase 13 post-close fix (codex P1.3): mutation-enabled mode MUST have
+  // a bearer token, even on localhost. Without one a local process could
+  // POST to /api/runs/:id/review and bypass review governance.
+  if (config.mutationEnabled === true && !tokenConfigured) {
+    return {
+      ok: false,
+      status: 401,
+      code: "unauthorized",
+      message:
+        "--enable-mutation requires a bearer token (--token-env). " +
+        "Read-only dashboard still works without one.",
+    };
+  }
+  // Read-only + local + no token → skip (existing operator UX).
   if (!tokenConfigured) {
     if (isLocalHost(config.host)) return { ok: true };
     return {
@@ -1291,7 +1323,7 @@ function checkAuth(
   }
   const header = req.headers.authorization ?? "";
   const expected = `Bearer ${config.token}`;
-  if (header !== expected) {
+  if (!safeStringEqual(header, expected)) {
     return {
       ok: false,
       status: 401,
@@ -1362,19 +1394,28 @@ export function buildListener(
 
       // Phase 13-4: CSRF for POST. token check is the bearer auth gate
       // above; CSRF is an additional same-origin defense for browser UI.
+      // Phase 13 post-close fix (codex P1.3): csrfToken is required when
+      // mutationEnabled, and compared in constant time.
       if (req.method === "POST" && config.mutationEnabled === true) {
         const expected = config.csrfToken;
-        if (expected !== undefined && expected !== "") {
-          const got = req.headers["x-csrf-token"];
-          if (typeof got !== "string" || got !== expected) {
-            writeError(
-              res,
-              403,
-              "forbidden",
-              "missing or invalid X-CSRF-Token header",
-            );
-            return;
-          }
+        if (expected === undefined || expected === "") {
+          writeError(
+            res,
+            500,
+            "internal_error",
+            "--enable-mutation requires a csrf token (server misconfigured)",
+          );
+          return;
+        }
+        const got = req.headers["x-csrf-token"];
+        if (typeof got !== "string" || !safeStringEqual(got, expected)) {
+          writeError(
+            res,
+            403,
+            "forbidden",
+            "missing or invalid X-CSRF-Token header",
+          );
+          return;
         }
       }
 
@@ -1409,6 +1450,21 @@ export function createDashboardServer(
   config: DashboardServerConfig,
   routes?: Route[],
 ): Server {
+  // Phase 13 post-close fix (codex P1.3): fail fast when mutation is
+  // enabled without an auth shape. Catching this at startup is friendlier
+  // than 401-ing every POST.
+  if (config.mutationEnabled === true) {
+    if (config.token === undefined || config.token === "") {
+      throw new Error(
+        "--enable-mutation requires a bearer token (set via --token-env)",
+      );
+    }
+    if (config.csrfToken === undefined || config.csrfToken === "") {
+      throw new Error(
+        "--enable-mutation requires a csrf token (csrfToken)",
+      );
+    }
+  }
   const effective =
     routes ??
     (config.mutationEnabled === true

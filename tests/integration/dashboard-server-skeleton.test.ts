@@ -171,4 +171,144 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
     const after = fs.statSync(env.dbPath).mtimeMs;
     expect(after).toBe(before);
   });
+
+  // Phase 13 post-close fix (codex P1.3): mutation requires bearer + csrf.
+  it("Phase 13 post-close: createDashboardServer throws when mutationEnabled without bearer token", () => {
+    expect(() =>
+      createDashboardServer({
+        dbPath: env.dbPath,
+        host: "127.0.0.1",
+        port: 0,
+        mutationEnabled: true,
+      }),
+    ).toThrow(/bearer token/i);
+  });
+
+  it("Phase 13 post-close: createDashboardServer throws when mutationEnabled without csrf token", () => {
+    expect(() =>
+      createDashboardServer({
+        dbPath: env.dbPath,
+        host: "127.0.0.1",
+        port: 0,
+        mutationEnabled: true,
+        token: "topsecret",
+      }),
+    ).toThrow(/csrf/i);
+  });
+
+  it("Phase 13 post-close: POST mutation without X-CSRF-Token returns 403", async () => {
+    await env.server.close();
+    const srv = createDashboardServer({
+      dbPath: env.dbPath,
+      host: "127.0.0.1",
+      port: 0,
+      mutationEnabled: true,
+      token: "topsecret",
+      csrfToken: "csrf-123",
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const addr = srv.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    try {
+      const noCsrf = await fetch(`${base}/api/runs/run-x/rerun`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer topsecret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ dryRun: true }),
+      });
+      expect(noCsrf.status).toBe(403);
+      const withCsrfWrong = await fetch(`${base}/api/runs/run-x/rerun`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer topsecret",
+          "X-CSRF-Token": "csrf-wrong",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ dryRun: true }),
+      });
+      expect(withCsrfWrong.status).toBe(403);
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+      env.server = await startServer(env.dbPath);
+    }
+  });
+
+  // Phase 13 post-close fix (codex P1.1): 202 deferred endpoints must not
+  // claim "succeeded" for work that never ran. The operation should be
+  // finalized as `pending` so `GET /api/operations/:id` is truthful.
+  it("Phase 13 post-close: deferred POST /api/runs/:id/rerun finalizes operation as pending (non-dry-run)", async () => {
+    await env.server.close();
+    const srv = createDashboardServer({
+      dbPath: env.dbPath,
+      host: "127.0.0.1",
+      port: 0,
+      mutationEnabled: true,
+      token: "topsecret",
+      csrfToken: "csrf-123",
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const addr = srv.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    try {
+      const r = await fetch(`${base}/api/runs/run-deferred/rerun`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer topsecret",
+          "X-CSRF-Token": "csrf-123",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ reason: "external worker test" }),
+      });
+      expect(r.status).toBe(202);
+      const body = (await r.json()) as Record<string, unknown>;
+      expect(body.status).toBe("pending");
+      const result = body.result as Record<string, unknown>;
+      expect(result.executed).toBe(false);
+      // Poll via GET /api/operations/:id and confirm pending.
+      const opId = body.operationId as string;
+      const poll = await fetch(`${base}/api/operations/${opId}`, {
+        headers: { Authorization: "Bearer topsecret" },
+      });
+      expect(poll.status).toBe(200);
+      const pollBody = (await poll.json()) as { operation: Record<string, unknown> };
+      expect(pollBody.operation.status).toBe("pending");
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+      env.server = await startServer(env.dbPath);
+    }
+  });
+
+  it("Phase 13 post-close: dry-run rerun still finalizes as succeeded (no executor needed)", async () => {
+    await env.server.close();
+    const srv = createDashboardServer({
+      dbPath: env.dbPath,
+      host: "127.0.0.1",
+      port: 0,
+      mutationEnabled: true,
+      token: "topsecret",
+      csrfToken: "csrf-123",
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const addr = srv.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    try {
+      const r = await fetch(`${base}/api/runs/run-dry/rerun`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer topsecret",
+          "X-CSRF-Token": "csrf-123",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ dryRun: true }),
+      });
+      expect(r.status).toBe(202);
+      const body = (await r.json()) as Record<string, unknown>;
+      expect(body.status).toBe("succeeded");
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+      env.server = await startServer(env.dbPath);
+    }
+  });
 });

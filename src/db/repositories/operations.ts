@@ -284,6 +284,28 @@ export function succeedOperation(
   ).run(JSON.stringify(result ?? {}), now.toISOString(), operationId);
 }
 
+/**
+ * Phase 13 post-close (codex P1.1): finalize an operation as `pending`,
+ * signalling "audit recorded but execution is deferred to an external
+ * worker". The HTTP `202 Accepted` endpoints (pr / rerun / backlog) use
+ * this so `GET /api/operations/:id` does not falsely report `succeeded`
+ * for work that never ran.
+ */
+export function markOperationPending(
+  db: Database.Database,
+  operationId: string,
+  result: unknown,
+  now: Date = new Date(),
+): void {
+  db.prepare(
+    `UPDATE operations
+        SET status = 'pending',
+            result_json = ?,
+            completed_at = ?
+      WHERE operation_id = ?`,
+  ).run(JSON.stringify(result ?? {}), now.toISOString(), operationId);
+}
+
 export function failOperation(
   db: Database.Database,
   operationId: string,

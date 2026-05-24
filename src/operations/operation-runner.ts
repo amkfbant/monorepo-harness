@@ -4,6 +4,7 @@ import {
   findOperationByIdempotency,
   startOperation,
   succeedOperation,
+  markOperationPending,
   failOperation,
   appendOperationEvent,
   getOperation,
@@ -32,6 +33,16 @@ export interface RunOperationOptions<T> {
   metadata?: Record<string, unknown>;
   /** Caller-supplied operation_id, else server-generated. */
   operationId?: string;
+  /**
+   * Phase 13 post-close fix (codex P1.1). When true, the work function is
+   * treated as "audit-only" — its return value is recorded but the
+   * operation is finalized as `pending` rather than `succeeded`. Use this
+   * for endpoints that accept the request and delegate execution to an
+   * external worker (the 202-Accepted contract). The operations ledger
+   * stays honest: a poller sees `pending` until a worker actually runs
+   * the work, instead of `succeeded` for nothing.
+   */
+  pendingExternalExecutor?: boolean;
 }
 
 export interface OperationRunOutcome<T> {
@@ -93,8 +104,13 @@ export async function runOperation<T>(
   // 3. run work + finalize
   try {
     const result = await work(operationId);
-    succeedOperation(db, operationId, result);
-    appendOperationEvent(db, operationId, "succeeded");
+    if (opts.pendingExternalExecutor === true) {
+      markOperationPending(db, operationId, result);
+      appendOperationEvent(db, operationId, "accepted");
+    } else {
+      succeedOperation(db, operationId, result);
+      appendOperationEvent(db, operationId, "succeeded");
+    }
     return {
       operation: getOperation(db, operationId) as OperationFullRecord,
       result,

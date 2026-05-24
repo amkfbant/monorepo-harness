@@ -149,4 +149,31 @@ describe("OperationRunner (Phase 13-2)", () => {
       db.close();
     }
   });
+
+  // Phase 13 post-close fix (codex P1.1): when the work is audit-only and
+  // execution is delegated to an out-of-process worker, the operation must
+  // finalize as `pending` (not `succeeded`) so a poller learns the truth.
+  it("pendingExternalExecutor=true: finalizes as pending + accepted event", async () => {
+    const db = freshDb();
+    try {
+      const r = await runOperation<{ accepted: boolean }>(
+        db,
+        {
+          operationType: "test.deferred",
+          target: { type: "run", id: "run-deferred" },
+          actor: "http:127.0.0.1",
+          dryRun: false,
+          input: {},
+          pendingExternalExecutor: true,
+        },
+        async () => ({ accepted: true }),
+      );
+      expect(r.operation.status).toBe("pending");
+      expect(r.result).toEqual({ accepted: true });
+      const events = listOperationEvents(db, r.operation.operationId);
+      expect(events.map((e) => e.eventType)).toEqual(["started", "accepted"]);
+    } finally {
+      db.close();
+    }
+  });
 });
