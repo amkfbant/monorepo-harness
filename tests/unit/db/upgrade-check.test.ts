@@ -20,8 +20,8 @@ describe("runUpgradeCheck (Phase 15-7)", () => {
     try {
       const r = runUpgradeCheck(db, "phase16");
       expect(r.target).toBe("phase16");
-      expect(r.currentSchemaVersion).toBe(10);
-      expect(r.expectedSchemaVersion).toBe(10);
+      expect(r.currentSchemaVersion).toBe(11);
+      expect(r.expectedSchemaVersion).toBe(11);
       expect(r.overall).toBe("ready");
       expect(r.checks.length).toBeGreaterThanOrEqual(9);
       const blocked = r.checks.filter((c) => c.status === "blocked");

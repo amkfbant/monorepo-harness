@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1041,6 +1041,63 @@ export const V10_TABLE_NAMES: readonly string[] = [
   "db_stats_snapshots",
 ];
 
+/**
+ * v11 DDL — Phase 16 (blob storage scale-out).
+ *
+ * 3 new tables for external blob store support. The existing
+ * artifacts.storage CHECK (`IN ('file', 'db')`) remains in place;
+ * Phase 16 minimum lands the catalog + repositories so the
+ * infrastructure is ready, but actual `storage='external'` rows
+ * require a CHECK relaxation that SQLite does not support via ALTER —
+ * a table rebuild (post-Phase-16 work, schema v12) is needed before
+ * artifacts rows can carry the new value. Until then the new tables
+ * are usable as a manifest store for migration prep.
+ */
+export const MIGRATION_V11_STATEMENTS: readonly string[] = [
+  `CREATE TABLE blob_stores (
+    store_id      TEXT PRIMARY KEY,
+    store_type    TEXT NOT NULL CHECK (store_type IN ('local', 's3')),
+    config_json   TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    status        TEXT NOT NULL CHECK (status IN ('active', 'disabled')),
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+  )`,
+  `CREATE TABLE external_artifact_blobs (
+    sha256           TEXT PRIMARY KEY,
+    store_id         TEXT NOT NULL REFERENCES blob_stores(store_id),
+    uri              TEXT NOT NULL,
+    bytes            INTEGER NOT NULL,
+    stored_bytes     INTEGER NOT NULL,
+    content_encoding TEXT NOT NULL CHECK (content_encoding IN ('identity', 'gzip')),
+    chunking         TEXT NOT NULL DEFAULT 'none',
+    uploaded_at      TEXT NOT NULL,
+    verified_at      TEXT,
+    status           TEXT NOT NULL CHECK (status IN ('available', 'missing', 'corrupt')),
+    metadata_json    TEXT NOT NULL DEFAULT '{}'
+  )`,
+  `CREATE INDEX external_artifact_blobs_store_idx
+     ON external_artifact_blobs(store_id, uploaded_at)`,
+  `CREATE TABLE blob_migration_jobs (
+    job_id        TEXT PRIMARY KEY,
+    direction     TEXT NOT NULL CHECK (direction IN ('db-to-external', 'external-to-db')),
+    store_id      TEXT,
+    status        TEXT NOT NULL,
+    started_at    TEXT NOT NULL,
+    completed_at  TEXT,
+    input_json    TEXT NOT NULL,
+    result_json   TEXT NOT NULL DEFAULT '{}',
+    error_message TEXT
+  )`,
+];
+
+/** Tables added by v11 (Phase 16). */
+export const V11_TABLE_NAMES: readonly string[] = [
+  "blob_stores",
+  "external_artifact_blobs",
+  "blob_migration_jobs",
+];
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -1076,4 +1133,5 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V8_TABLE_NAMES,
   ...V9_TABLE_NAMES,
   ...V10_TABLE_NAMES,
+  ...V11_TABLE_NAMES,
 ];

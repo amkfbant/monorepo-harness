@@ -11,6 +11,7 @@ import {
   MIGRATION_V8_STATEMENTS,
   MIGRATION_V9_STATEMENTS,
   MIGRATION_V10_STATEMENTS,
+  MIGRATION_V11_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -75,6 +76,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 10,
     name: "db-operations-doctor-archive-v10",
     statements: MIGRATION_V10_STATEMENTS,
+  },
+  {
+    version: 11,
+    name: "blob-storage-scaleout-v11",
+    statements: MIGRATION_V11_STATEMENTS,
   },
 ];
 
