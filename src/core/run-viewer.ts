@@ -11,6 +11,20 @@ import {
 } from "./run-db-reader.js";
 
 /**
+ * Phase 10-4: source mode selector for `harness run show / artifacts /
+ * timeline`. Phase 9 introduced an implicit DB-first preference based on
+ * `export_status`; Phase 10-4 exposes it as an explicit `--source` flag.
+ *
+ * - `auto` (default): db-first runs read from the DB whenever
+ *   `export_status != 'synced'`; otherwise file-first as Phase 6-9.
+ * - `db`: DB is the only source. A `legacy-file` run is rejected with
+ *   `RunViewError`.
+ * - `files`: file dir is the only source. Useful for debugging stale
+ *   scratch dirs or comparing exported files with the DB.
+ */
+export type RunViewSource = "auto" | "db" | "files";
+
+/**
  * Phase 9 post-close (second review) P1-1 fix — decide whether to read
  * the DB before the file for this run. A `db-first` run whose
  * `export_status` is NOT `synced` means the file dir, if it exists, may
@@ -18,13 +32,66 @@ import {
  * prior export. The DB is canonical in that case, so the viewer prefers
  * it. `synced` runs (the operator opted in to compatibility export) keep
  * the existing file-first behavior.
+ *
+ * Phase 10-4: respects `source` — `db` always returns true (DB-only),
+ * `files` always returns false (file-only), `auto` keeps the Phase 9
+ * heuristic.
  */
-function shouldPreferDbForRun(dbPath: string | undefined, runId: string): boolean {
+function shouldPreferDbForRun(
+  dbPath: string | undefined,
+  runId: string,
+  source: RunViewSource = "auto",
+): boolean {
+  if (source === "files") return false;
+  if (source === "db") return dbPath !== undefined;
   if (dbPath === undefined) return false;
   const info = readRunSourceModeFromDb(dbPath, runId);
   if (info === null) return false;
   if (info.sourceMode !== "db-first") return false;
   return info.exportStatus !== "synced";
+}
+
+/**
+ * Phase 10-4: warning footer rendered for an `auto` view when the run's
+ * `export_status` is in a non-synced state. Returns an empty string if
+ * nothing to surface (or if `source` is explicit `db`/`files`).
+ */
+function exportStatusWarning(
+  dbPath: string | undefined,
+  runId: string,
+  source: RunViewSource,
+): string {
+  if (source !== "auto" || dbPath === undefined) return "";
+  const info = readRunSourceModeFromDb(dbPath, runId);
+  if (info === null || info.sourceMode !== "db-first") return "";
+  if (info.exportStatus === "synced") return "";
+  if (info.exportStatus === undefined || info.exportStatus === null) return "";
+  return (
+    `\nNote: file export status = ${info.exportStatus}. ` +
+    `Files in runs/${runId}/ may be stale.\n` +
+    `      Use --source files to inspect files explicitly, or ` +
+    `\`harness db export-files --run ${runId}\` to refresh the export.\n`
+  );
+}
+
+/**
+ * Phase 10-4: reject a `--source db` view on a `legacy-file` run.
+ * Legacy-file runs do not live in the DB-canonical world; the operator
+ * must drop `--source db` (or run `db migrate-legacy`).
+ */
+function assertSourceCompat(
+  dbPath: string | undefined,
+  runId: string,
+  source: RunViewSource,
+): void {
+  if (source !== "db" || dbPath === undefined) return;
+  const info = readRunSourceModeFromDb(dbPath, runId);
+  if (info !== null && info.sourceMode === "legacy-file") {
+    throw new RunViewError(
+      `run ${runId}: --source db is not supported for legacy-file runs. ` +
+        "Use --source files, or run `harness db migrate-legacy` first.",
+    );
+  }
 }
 
 export class RunViewError extends Error {
@@ -54,24 +121,34 @@ async function readMeta(
   runsDir: string,
   runId: string,
   dbPath?: string,
+  source: RunViewSource = "auto",
 ): Promise<RunMeta> {
-  // Phase 9 post-close P1-1 — db-first run with export_status != synced:
-  // DB is canonical, prefer it over a (possibly stale scratch) meta.json.
-  if (shouldPreferDbForRun(dbPath, runId) && dbPath !== undefined) {
+  assertSourceCompat(dbPath, runId, source);
+  // Phase 9 post-close P1-1 / Phase 10-4 — db-first run with
+  // export_status != synced (or explicit --source db): DB is canonical,
+  // prefer it over a (possibly stale scratch) meta.json.
+  if (shouldPreferDbForRun(dbPath, runId, source) && dbPath !== undefined) {
     const fromDb = readRunMetaFromDb(dbPath, runId);
     if (fromDb !== null) return fromDb;
-  }
-  const metaPath = join(runsDir, runId, "meta.json");
-  if (existsSync(metaPath)) {
-    try {
-      return JSON.parse(await readFile(metaPath, "utf8")) as RunMeta;
-    } catch (e) {
+    if (source === "db") {
       throw new RunViewError(
-        `meta.json for ${runId} is unreadable: ${(e as Error).message}`,
+        `run ${runId} not found in DB (--source db)`,
       );
     }
   }
-  if (dbPath !== undefined) {
+  if (source !== "db") {
+    const metaPath = join(runsDir, runId, "meta.json");
+    if (existsSync(metaPath)) {
+      try {
+        return JSON.parse(await readFile(metaPath, "utf8")) as RunMeta;
+      } catch (e) {
+        throw new RunViewError(
+          `meta.json for ${runId} is unreadable: ${(e as Error).message}`,
+        );
+      }
+    }
+  }
+  if (source !== "files" && dbPath !== undefined) {
     const fromDb = readRunMetaFromDb(dbPath, runId);
     if (fromDb !== null) return fromDb;
   }
@@ -89,9 +166,10 @@ export async function renderRunShow(
   runId: string,
   backlogDir?: string,
   dbPath?: string,
+  source: RunViewSource = "auto",
 ): Promise<string> {
   assertRunId(runId);
-  const meta = await readMeta(runsDir, runId, dbPath);
+  const meta = await readMeta(runsDir, runId, dbPath, source);
   const lines: string[] = [
     `Run: ${runId}`,
     `Domain: ${meta.domain ?? "?"}`,
@@ -144,10 +222,12 @@ export async function renderRunShow(
   }
 
   lines.push("", "Artifacts:");
-  for (const a of await artifactLines(runsDir, runId, dbPath)) {
+  for (const a of await artifactLines(runsDir, runId, dbPath, source)) {
     lines.push(`  ${a}`);
   }
   lines.push("");
+  const warn = exportStatusWarning(dbPath, runId, source);
+  if (warn !== "") lines.push(warn);
   return lines.join("\n");
 }
 
@@ -156,13 +236,12 @@ export async function renderRunTimeline(
   runsDir: string,
   runId: string,
   dbPath?: string,
+  source: RunViewSource = "auto",
 ): Promise<string> {
   assertRunId(runId);
   // run must exist, but a missing/empty event stream is fine
-  await readMeta(runsDir, runId, dbPath);
-  // Phase 9 post-close P1-1 — for an unsynced db-first run, prefer the
-  // DB event stream (events.jsonl on disk may be stale scratch).
-  const preferDb = shouldPreferDbForRun(dbPath, runId);
+  await readMeta(runsDir, runId, dbPath, source);
+  const preferDb = shouldPreferDbForRun(dbPath, runId, source);
   const eventsPath = join(runsDir, runId, "events.jsonl");
   const lines = [`Timeline: ${runId}`];
   let n = 0;
@@ -172,7 +251,7 @@ export async function renderRunTimeline(
     lines.push(`  ${String(n).padStart(2, "0")}. ${formatEvent(ev)}`);
   };
 
-  if (!preferDb && existsSync(eventsPath)) {
+  if (source !== "db" && !preferDb && existsSync(eventsPath)) {
     let raw: string;
     try {
       raw = await readFile(eventsPath, "utf8");
@@ -191,12 +270,14 @@ export async function renderRunTimeline(
         skipped += 1;
       }
     }
-  } else {
+  } else if (source !== "files") {
     // no exported events.jsonl — fall back to the DB-stored events.
     const fromDb =
       dbPath !== undefined ? readRunEventsFromDb(dbPath, runId) : null;
     if (fromDb === null) return `Timeline: ${runId}\n  (no events.jsonl)\n`;
     for (const ev of fromDb) push(ev);
+  } else {
+    return `Timeline: ${runId}\n  (no events.jsonl)\n`;
   }
 
   if (n === 0) lines.push("  (no events)");
@@ -241,14 +322,17 @@ export async function renderRunArtifacts(
   runsDir: string,
   runId: string,
   dbPath?: string,
+  source: RunViewSource = "auto",
 ): Promise<string> {
   assertRunId(runId);
-  await readMeta(runsDir, runId, dbPath);
+  await readMeta(runsDir, runId, dbPath, source);
   const lines = [`Artifacts: ${runId}`];
-  for (const a of await artifactLines(runsDir, runId, dbPath)) {
+  for (const a of await artifactLines(runsDir, runId, dbPath, source)) {
     lines.push(`  ${a}`);
   }
   lines.push("");
+  const warn = exportStatusWarning(dbPath, runId, source);
+  if (warn !== "") lines.push(warn);
   return lines.join("\n");
 }
 
@@ -260,17 +344,19 @@ async function artifactLines(
   runsDir: string,
   runId: string,
   dbPath?: string,
+  source: RunViewSource = "auto",
 ): Promise<string[]> {
-  // Phase 9 post-close P1-1 — DB is canonical for an unsynced db-first
-  // run, so list from the manifest rather than the (possibly stale)
-  // scratch dir.
-  if (shouldPreferDbForRun(dbPath, runId) && dbPath !== undefined) {
+  // Phase 9 post-close P1-1 / Phase 10-4 — DB is canonical for an
+  // unsynced db-first run or when --source db is explicit.
+  if (shouldPreferDbForRun(dbPath, runId, source) && dbPath !== undefined) {
     const fromDb = listRunArtifactsFromDb(dbPath, runId);
     if (fromDb !== null) return fromDb.length > 0 ? fromDb : ["(none)"];
   }
-  const runDir = join(runsDir, runId);
-  if (existsSync(runDir)) return artifactList(runDir);
-  if (dbPath !== undefined) {
+  if (source !== "db") {
+    const runDir = join(runsDir, runId);
+    if (existsSync(runDir)) return artifactList(runDir);
+  }
+  if (source !== "files" && dbPath !== undefined) {
     const fromDb = listRunArtifactsFromDb(dbPath, runId);
     if (fromDb !== null) return fromDb.length > 0 ? fromDb : ["(none)"];
   }

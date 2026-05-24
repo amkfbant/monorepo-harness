@@ -33,6 +33,7 @@ import {
   renderRunShow,
   renderRunTimeline,
   renderRunArtifacts,
+  type RunViewSource,
   RunViewError,
 } from "../core/run-viewer.js";
 import {
@@ -613,18 +614,31 @@ const runCmd = program
     if (outcome.failed) process.exit(1);
   });
 
+function parseSource(raw: unknown): RunViewSource {
+  const s = raw === undefined ? "auto" : String(raw);
+  if (s !== "auto" && s !== "db" && s !== "files") {
+    process.stderr.write(
+      `harness error: --source must be one of auto | db | files (got ${JSON.stringify(s)})\n`,
+    );
+    process.exit(1);
+  }
+  return s;
+}
+
 function runViewAction(
   render: (
     runsDir: string,
     runId: string,
     dbPath?: string,
+    source?: RunViewSource,
   ) => Promise<string>,
 ) {
   return async (raw: Record<string, unknown>): Promise<void> => {
     const paths = harnessPaths(getHarnessRoot());
+    const source = parseSource(raw.source);
     try {
       process.stdout.write(
-        await render(paths.runsDir, String(raw.runId), paths.dbPath),
+        await render(paths.runsDir, String(raw.runId), paths.dbPath, source),
       );
     } catch (e) {
       if (e instanceof RunViewError) {
@@ -639,8 +653,14 @@ runCmd
   .command("show")
   .description("one-screen summary of a run (status / files / commands / PR)")
   .requiredOption("--run-id <id>", "target run identifier")
+  .option(
+    "--source <which>",
+    "where to read from: auto | db | files (Phase 10-4; default auto)",
+    "auto",
+  )
   .action(async (raw: Record<string, unknown>) => {
     const paths = harnessPaths(getHarnessRoot());
+    const source = parseSource(raw.source);
     try {
       process.stdout.write(
         await renderRunShow(
@@ -648,6 +668,7 @@ runCmd
           String(raw.runId),
           paths.backlogDir,
           paths.dbPath,
+          source,
         ),
       );
     } catch (e) {
@@ -662,11 +683,21 @@ runCmd
   .command("timeline")
   .description("render a run's events.jsonl as an ordered timeline")
   .requiredOption("--run-id <id>", "target run identifier")
+  .option(
+    "--source <which>",
+    "where to read from: auto | db | files (Phase 10-4; default auto)",
+    "auto",
+  )
   .action(runViewAction(renderRunTimeline));
 runCmd
   .command("artifacts")
   .description("list the artifact files in a run dir")
   .requiredOption("--run-id <id>", "target run identifier")
+  .option(
+    "--source <which>",
+    "where to read from: auto | db | files (Phase 10-4; default auto)",
+    "auto",
+  )
   .action(runViewAction(renderRunArtifacts));
 
 const workflowCmd = program
