@@ -101,4 +101,66 @@ describe("runDoctor (Phase 15-2)", () => {
       db.close();
     }
   });
+
+  // Phase 15 post-close fix (codex P1.1a): the runtime.orphan_run check
+  // previously matched `status='coding'`, which is not in RUN_STATUSES,
+  // so the check was inert. After the fix it must match 'running' runs
+  // whose lease has been released.
+  it("running run with no live lease → flagged 'runtime.orphan_run'", () => {
+    const db = freshDb();
+    try {
+      db.prepare(
+        `INSERT INTO domain_locks
+           (lock_id, domain_key, repo_id, domain, holder_run_id,
+            holder_pid, holder_hostname, acquired_at, expires_at,
+            heartbeat_at, released_at, release_reason)
+         VALUES (42, 'r::d', 'r', 'd', 'run-orphan', 1, 'h',
+                 '2025-01-01T00:00:00Z', '2025-01-01T01:00:00Z',
+                 '2025-01-01T00:00:00Z',
+                 '2025-01-01T00:30:00Z', 'released')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, source_mode, db_revision, export_status, started_at,
+           updated_at, meta_json, lease_lock_id)
+         VALUES ('run-orphan', 'r', 'd', 'domain-coding', 'main',
+           'running', 'db-first', 1, 'disabled',
+           '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', '{}', 42)`,
+      ).run();
+      const r = runDoctor(db);
+      const ids = r.findings
+        .filter((f) => f.status === "flagged")
+        .map((f) => f.checkId);
+      expect(ids).toContain("runtime.orphan_run");
+    } finally {
+      db.close();
+    }
+  });
+
+  // Phase 15 post-close fix (codex P1.1b): an expires_at written by JS
+  // as an ISO string with `T` was previously compared (lexicographically)
+  // against `datetime('now')` which renders with a space, so same-day
+  // expiries could be missed. After the fix the doctor binds the JS-side
+  // ISO now and the compare is apples-to-apples.
+  it("same-format ISO compare: an expires_at < now (both ISO with T) is still flagged", () => {
+    const db = freshDb();
+    try {
+      // 1ms ago — both sides should render identically (ISO with T).
+      const past = new Date(Date.now() - 1000).toISOString();
+      db.prepare(
+        `INSERT INTO domain_locks
+           (domain_key, repo_id, domain, holder_run_id, holder_pid,
+            holder_hostname, acquired_at, expires_at, heartbeat_at)
+         VALUES ('r::d2', 'r', 'd2', 'run-y', 1, 'h',
+                 '2025-01-01T00:00:00Z', ?,
+                 '2025-01-01T00:00:00Z')`,
+      ).run(past);
+      const r = runDoctor(db, { category: "locks" });
+      expect(
+        r.findings.filter((f) => f.status === "flagged"),
+      ).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
 });

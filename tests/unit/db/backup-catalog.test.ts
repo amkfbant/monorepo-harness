@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../../../src/db/connection.js";
@@ -10,6 +11,7 @@ import {
   findBackup,
   markBackupVerified,
   rotateBackups,
+  verifyBackup,
 } from "../../../src/db/backup-catalog.js";
 
 function freshDb() {
@@ -98,6 +100,87 @@ describe("backup_catalog repository (Phase 15-4)", () => {
     } finally {
       db.close();
     }
+  });
+
+  // Phase 15 post-close fix (codex P1.3): verifyBackup actually checks
+  // the file (size + sha) and only stamps verified_at on a clean match.
+  // A missing file → status=missing. A sha/size mismatch → status=failed
+  // (so upgrade-check cannot read it as ready).
+  describe("verifyBackup (post-close)", () => {
+    it("status=verified when file exists with matching sha + size", async () => {
+      const db = freshDb();
+      const root = mkdtempSync(join(tmpdir(), "harness-bk-ver-"));
+      try {
+        const body = Buffer.from("hello backup");
+        const path = join(root, "bk.sqlite");
+        writeFileSync(path, body);
+        const sha = createHash("sha256").update(body).digest("hex");
+        recordBackup(db, {
+          backupId: "bk-ok",
+          path,
+          schemaVersion: 10,
+          sizeBytes: body.length,
+          sha256: sha,
+          manifest: manifest("bk-ok"),
+        });
+        const out = await verifyBackup(
+          db,
+          "bk-ok",
+          new Date("2026-05-24T14:00:00Z"),
+        );
+        expect(out.status).toBe("verified");
+        expect(findBackup(db, "bk-ok")?.verifiedAt).toBe(
+          "2026-05-24T14:00:00.000Z",
+        );
+      } finally {
+        db.close();
+      }
+    });
+
+    it("status=failed (sha_mismatch) when file body diverges → catalog status='failed'", async () => {
+      const db = freshDb();
+      const root = mkdtempSync(join(tmpdir(), "harness-bk-ver-"));
+      try {
+        const path = join(root, "bk.sqlite");
+        writeFileSync(path, Buffer.from("real body"));
+        recordBackup(db, {
+          backupId: "bk-bad",
+          path,
+          schemaVersion: 10,
+          sizeBytes: "real body".length,
+          sha256: "0".repeat(64), // wrong sha
+          manifest: manifest("bk-bad"),
+        });
+        const out = await verifyBackup(db, "bk-bad");
+        expect(out.status).toBe("failed");
+        if (out.status === "failed") {
+          expect(out.reason).toBe("sha_mismatch");
+        }
+        expect(findBackup(db, "bk-bad")?.status).toBe("failed");
+        expect(findBackup(db, "bk-bad")?.verifiedAt).toBeNull();
+      } finally {
+        db.close();
+      }
+    });
+
+    it("status=missing when file is gone → catalog status='missing'", async () => {
+      const db = freshDb();
+      try {
+        recordBackup(db, {
+          backupId: "bk-gone",
+          path: "/nonexistent/path/bk.sqlite",
+          schemaVersion: 10,
+          sizeBytes: 1,
+          sha256: "0".repeat(64),
+          manifest: manifest("bk-gone"),
+        });
+        const out = await verifyBackup(db, "bk-gone");
+        expect(out.status).toBe("missing");
+        expect(findBackup(db, "bk-gone")?.status).toBe("missing");
+      } finally {
+        db.close();
+      }
+    });
   });
 
   it("rotateBackups keeps N newest, marks the rest missing", () => {

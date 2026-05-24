@@ -137,4 +137,45 @@ describe("runRepair (Phase 15-3)", () => {
       db.close();
     }
   });
+
+  // Phase 15 post-close fix (codex P1.2): a stale doctor finding must not
+  // release a lock that was renewed between doctor and repair. The
+  // repair UPDATE now revalidates expires_at < now.
+  it("apply for lock.release_expired: skips when lease was renewed after doctor", () => {
+    const db = freshDb();
+    try {
+      db.prepare(
+        `INSERT INTO domain_locks
+           (domain_key, repo_id, domain, holder_run_id, holder_pid,
+            holder_hostname, acquired_at, expires_at, heartbeat_at)
+         VALUES ('r::d', 'r', 'd', 'run-x', 1, 'h',
+                 '2025-01-01T00:00:00Z',
+                 '1970-01-01T00:00:00Z',
+                 '2025-01-01T00:00:00Z')`,
+      ).run();
+      const dr = runDoctor(db);
+      const lockFinding = dr.findings.find(
+        (f) => f.checkId === "lock.expired_active" && f.status === "flagged",
+      )!;
+
+      // Simulate a holder renewal: a healthy holder bumped expires_at
+      // far into the future, between doctor and repair.
+      db.prepare(
+        `UPDATE domain_locks SET expires_at = '9999-01-01T00:00:00.000Z'`,
+      ).run();
+
+      const r = runRepair(db, lockFinding, {
+        dryRun: false,
+        now: new Date("2026-05-24T13:00:00Z"),
+      });
+      expect(r.status).toBe("failed");
+      expect(r.message).toMatch(/renewed/i);
+      const released = db
+        .prepare("SELECT released_at FROM domain_locks")
+        .all() as { released_at: string | null }[];
+      expect(released.every((row) => row.released_at === null)).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
 });

@@ -1,4 +1,6 @@
 import type Database from "better-sqlite3";
+import { createHash } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
 
 /**
  * `backup_catalog` repository (Phase 15-4).
@@ -92,6 +94,13 @@ export function listBackups(
   return rows.map(toRow);
 }
 
+/**
+ * Stamp `verified_at` directly. Phase 15 post-close fix (codex P1.3):
+ * `markBackupVerified` no longer takes a backup row that has not been
+ * checked at the filesystem level. Use `verifyBackup` for the full
+ * check; this raw stamp remains exported for tests / callers that have
+ * already performed verification out-of-band.
+ */
 export function markBackupVerified(
   db: Database.Database,
   backupId: string,
@@ -103,6 +112,75 @@ export function markBackupVerified(
     )
     .run(now.toISOString(), backupId);
   return info.changes > 0;
+}
+
+export type BackupVerifyOutcome =
+  | { status: "verified"; verifiedAt: string; sizeBytes: number; sha256: string }
+  | {
+      status: "missing";
+      reason: "no_catalog_row" | "file_absent";
+    }
+  | {
+      status: "failed";
+      reason: "size_mismatch" | "sha_mismatch";
+      expected: { sizeBytes: number; sha256: string };
+      actual: { sizeBytes: number; sha256: string };
+    };
+
+/**
+ * Phase 15 post-close fix (codex P1.3): actually verify the backup file
+ * before stamping `verified_at`. Re-hashes the file, compares against
+ * the catalog row's `sha256` + `size_bytes`, and only writes
+ * `verified_at` on a clean match. On size/sha mismatch, the catalog row
+ * is marked status='failed' so `upgrade-check` can no longer treat the
+ * backup as ready. On a missing file, status='missing'.
+ *
+ * The earlier `markBackupVerified` blindly stamped `verified_at` with no
+ * checks, which let `upgrade-check` declare readiness on a corrupted or
+ * absent backup.
+ */
+export async function verifyBackup(
+  db: Database.Database,
+  backupId: string,
+  now: Date = new Date(),
+): Promise<BackupVerifyOutcome> {
+  const row = findBackup(db, backupId);
+  if (row === null) {
+    return { status: "missing", reason: "no_catalog_row" };
+  }
+  let actualSize: number;
+  try {
+    const s = await stat(row.path);
+    actualSize = s.size;
+  } catch {
+    markBackupStatus(db, backupId, "missing");
+    return { status: "missing", reason: "file_absent" };
+  }
+  if (actualSize !== row.sizeBytes) {
+    markBackupStatus(db, backupId, "failed");
+    return {
+      status: "failed",
+      reason: "size_mismatch",
+      expected: { sizeBytes: row.sizeBytes, sha256: row.sha256 },
+      actual: { sizeBytes: actualSize, sha256: "" },
+    };
+  }
+  const body = await readFile(row.path);
+  const actualSha = createHash("sha256").update(body).digest("hex");
+  if (actualSha !== row.sha256) {
+    markBackupStatus(db, backupId, "failed");
+    return {
+      status: "failed",
+      reason: "sha_mismatch",
+      expected: { sizeBytes: row.sizeBytes, sha256: row.sha256 },
+      actual: { sizeBytes: actualSize, sha256: actualSha },
+    };
+  }
+  const verifiedAt = now.toISOString();
+  db.prepare(
+    `UPDATE backup_catalog SET verified_at = ?, status = 'available' WHERE backup_id = ?`,
+  ).run(verifiedAt, backupId);
+  return { status: "verified", verifiedAt, sizeBytes: actualSize, sha256: actualSha };
 }
 
 export function markBackupStatus(

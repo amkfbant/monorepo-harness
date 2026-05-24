@@ -61,15 +61,21 @@ export const DEFAULT_REPAIRS: RepairAction[] = [
         );
       }
       const now = (opts.now ?? new Date()).toISOString();
+      // Phase 15 post-close fix (codex P1.2): revalidate `expires_at` in
+      // the same UPDATE so a lease that was renewed between the doctor
+      // run and this repair is NOT stolen. The CAS makes the repair
+      // safe to retry.
       const info = db
         .prepare(
           `UPDATE domain_locks
               SET released_at = ?,
                   release_reason = 'expired-by-repair',
                   released_by = 'doctor-repair'
-            WHERE lock_id = ? AND released_at IS NULL`,
+            WHERE lock_id = ?
+              AND released_at IS NULL
+              AND expires_at < ?`,
         )
-        .run(now, lockId);
+        .run(now, lockId, now);
       return makeResult(
         "lock.release_expired",
         false,
@@ -77,7 +83,7 @@ export const DEFAULT_REPAIRS: RepairAction[] = [
         { lockId, changes: info.changes },
         info.changes > 0
           ? `released domain_lock ${lockId}`
-          : `domain_lock ${lockId} was already released`,
+          : `domain_lock ${lockId} was already released or has been renewed since doctor flagged it`,
       );
     },
   },

@@ -68,16 +68,20 @@ export const DEFAULT_CHECKS: DoctorCheck[] = [
     },
   },
   {
+    // Phase 15 post-close fix (codex P1.1a): status='coding' was never a
+    // real run status (`RUN_STATUSES` uses 'running'); the prior check
+    // would silently match nothing. Compare against the running set.
     id: "runtime.orphan_run",
     category: "runtime",
     severity: "warn",
-    description: "runs.status='coding' but lease released or absent",
+    description: "runs.status='running' but lease released or absent",
     run(db) {
       const rows = db
         .prepare(
           `SELECT r.run_id, r.lease_lock_id
              FROM runs r
-            WHERE r.status = 'coding'
+            WHERE r.status = 'running'
+              AND r.lease_lock_id IS NOT NULL
               AND NOT EXISTS (
                 SELECT 1 FROM domain_locks dl
                 WHERE dl.lock_id = r.lease_lock_id
@@ -90,27 +94,34 @@ export const DEFAULT_CHECKS: DoctorCheck[] = [
         checkId: "runtime.orphan_run",
         severity: "warn" as const,
         status: "flagged" as const,
-        message: `run ${r.run_id} stuck at status='coding' but lease released`,
+        message: `run ${r.run_id} stuck at status='running' but lease released`,
         repairable: false,
         details: { runId: r.run_id, leaseLockId: r.lease_lock_id },
       }));
     },
   },
   {
+    // Phase 15 post-close fix (codex P1.1b): SQLite `datetime('now')`
+    // renders as `YYYY-MM-DD HH:MM:SS` (space), while expires_at is
+    // stored as ISO `YYYY-MM-DDTHH:MM:SS.sssZ` (T + ms + Z) from JS.
+    // Lexicographic compare is wrong (T > space) and same-day expiries
+    // can be missed. Bind a JS-rendered ISO now and compare apples to
+    // apples.
     id: "lock.expired_active",
     category: "locks",
     severity: "warn",
     description: "domain_locks active but expires_at < now",
     run(db) {
+      const now = new Date().toISOString();
       const rows = db
         .prepare(
           `SELECT lock_id, domain_key, holder_run_id, expires_at
              FROM domain_locks
             WHERE released_at IS NULL
-              AND expires_at < datetime('now', '-1 minute')
+              AND expires_at < ?
             LIMIT 50`,
         )
-        .all() as Record<string, unknown>[];
+        .all(now) as Record<string, unknown>[];
       return rows.map((r) => ({
         checkId: "lock.expired_active",
         severity: "warn" as const,
@@ -127,6 +138,8 @@ export const DEFAULT_CHECKS: DoctorCheck[] = [
     severity: "warn",
     description: "run_materializations.status='active' but expires_at < now",
     run(db) {
+      // Phase 15 post-close fix (codex P1.1b): same ISO compare issue.
+      const now = new Date().toISOString();
       const rows = db
         .prepare(
           `SELECT materialization_id, run_id, path, expires_at
@@ -134,10 +147,10 @@ export const DEFAULT_CHECKS: DoctorCheck[] = [
             WHERE purpose = 'scratch'
               AND status = 'active'
               AND expires_at IS NOT NULL
-              AND expires_at < datetime('now')
+              AND expires_at < ?
             LIMIT 50`,
         )
-        .all() as Record<string, unknown>[];
+        .all(now) as Record<string, unknown>[];
       return rows.map((r) => ({
         checkId: "scratch.expired",
         severity: "warn" as const,
