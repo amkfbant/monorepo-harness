@@ -1,6 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
+import { dirname } from "node:path";
 import { openManagedDb } from "../../db/managed-connection.js";
 import { SCHEMA_VERSION } from "../../db/schema.js";
+import {
+  loadDashboardSnapshot,
+  DashboardSnapshotError,
+  type DashboardFilters,
+} from "../snapshot.js";
 
 /**
  * Dashboard read-only HTTP server (Phase 12-1 skeleton).
@@ -115,7 +121,7 @@ export function writeError(
   writeJson(res, status, { error: err });
 }
 
-/** Default route table (Phase 12-1 = health only). */
+/** Default route table for the dashboard server. */
 export function defaultRoutes(): Route[] {
   return [
     {
@@ -144,6 +150,38 @@ export function defaultRoutes(): Route[] {
           schemaVersionExpected: SCHEMA_VERSION,
           generatedAt: new Date().toISOString(),
         });
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/snapshot",
+      handler: ({ ctx, res, query }) => {
+        // Phase 12-2: DashboardSnapshot live from the DB. The server
+        // never auto-imports (autoImport: false enforces read-only).
+        // Phase 12 minimum filters: project / repo are the only fields
+        // supported by DashboardFilters at this point. domain / status /
+        // since / until query params are accepted but silently ignored
+        // (forward-compatible for Phase 14+ wiring).
+        const filters: DashboardFilters = {};
+        const proj = query.get("project");
+        const repo = query.get("repo");
+        if (proj !== null) filters.projectId = proj;
+        if (repo !== null) filters.repoId = repo;
+
+        try {
+          const snapshot = loadDashboardSnapshot({
+            harnessRoot: dirname(dirname(ctx.config.dbPath)),
+            filters,
+            autoImport: false,
+          });
+          writeJson(res, 200, snapshot);
+        } catch (e) {
+          if (e instanceof DashboardSnapshotError) {
+            writeError(res, 404, "not_found", e.message);
+            return;
+          }
+          throw e;
+        }
       },
     },
   ];

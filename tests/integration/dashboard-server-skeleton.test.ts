@@ -95,6 +95,26 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
     expect(body.error.code).toBe("not_found");
   });
 
+  it("GET /api/snapshot returns DashboardSnapshot from the DB (Phase 12-2)", async () => {
+    const r = await get(env.server.baseUrl, "/api/snapshot");
+    expect(r.status).toBe(200);
+    const body = r.body as Record<string, unknown>;
+    expect(typeof body.generatedAt).toBe("string");
+    expect(body.dbSchemaVersion).toBe(7);
+    expect(Array.isArray(body.recentRuns)).toBe(true);
+    expect(Array.isArray(body.warnings)).toBe(true);
+  });
+
+  it("GET /api/snapshot accepts ?project= / ?repo= filter query params", async () => {
+    const r = await get(
+      env.server.baseUrl,
+      "/api/snapshot?project=does-not-exist",
+    );
+    expect(r.status).toBe(200);
+    const body = r.body as Record<string, unknown>;
+    expect(body.filters).toEqual({ projectId: "does-not-exist" });
+  });
+
   it("invariant: GET /api/health does NOT mutate the DB (mtime unchanged)", async () => {
     const fs = await import("node:fs");
     const before = fs.statSync(env.dbPath).mtimeMs;
