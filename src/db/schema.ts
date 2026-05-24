@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -587,6 +587,58 @@ export const V5_TABLE_NAMES: readonly string[] = [
   "review_proposals",
 ];
 
+/**
+ * v6 DDL — Phase 10 (DB-only runtime completion).
+ *
+ *  - `run_materializations`: tracks scratch materializations
+ *    (`runs/<id>/` directories created so post-run commands can spawn a
+ *    codex / external tool over the run's files). Phase 9 left this
+ *    lifecycle implicit; Phase 10-3 makes it explicit so `db doctor` can
+ *    surface scratch leaks (`status='active' AND expires_at < now`).
+ *    `purpose='compat-export'` is **reserved for future use** (Phase 15):
+ *    Phase 10 reads / writes only `purpose='scratch'` rows. The existing
+ *    `exported_files` table remains the canonical tracker for compat
+ *    exports.
+ *  - `runs.state_version`: monotonic counter bumped on every runtime
+ *    state transition (`RunLog.setStatus` / `processReviewDecision` /
+ *    `cleanupRun` / `createPullRequest` / `rerunFromReview` / the stale
+ *    finalize path). The CAS that uses this column is **not** enabled
+ *    by this migration — Phase 10-5 lands the writer-side bump and the
+ *    `review process` guard together in one commit. Until then, the
+ *    column simply tracks the default `0`.
+ */
+export const MIGRATION_V6_STATEMENTS: readonly string[] = [
+  // --- run_materializations (Phase 10-3 — design §3.C) -----------
+  `CREATE TABLE run_materializations (
+    materialization_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id             TEXT NOT NULL,
+    purpose            TEXT NOT NULL CHECK (purpose IN ('scratch', 'compat-export')),
+    path               TEXT NOT NULL,
+    reason             TEXT NOT NULL,
+    created_at         TEXT NOT NULL,
+    expires_at         TEXT,
+    cleaned_at         TEXT,
+    status             TEXT NOT NULL CHECK (status IN ('active', 'cleaned', 'failed')),
+    error_message      TEXT,
+    metadata_json      TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+  )`,
+  `CREATE INDEX run_materializations_run_idx
+     ON run_materializations(run_id, created_at)`,
+  `CREATE INDEX run_materializations_expiry_idx
+     ON run_materializations(status, expires_at)`,
+
+  // --- runs.state_version (Phase 10-5 — design §3.E.E3) ----------
+  // DEFAULT 0 means every existing Phase 9 row migrates with version 0.
+  // Writers that bump this column come online in Phase 10-5.
+  `ALTER TABLE runs ADD COLUMN state_version INTEGER NOT NULL DEFAULT 0`,
+];
+
+/** Tables added by v6 (Phase 10). */
+export const V6_TABLE_NAMES: readonly string[] = [
+  "run_materializations",
+];
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -611,10 +663,11 @@ export const V1_TABLE_NAMES: readonly string[] = [
   "import_errors",
 ];
 
-/** Every data table at the latest schema version (v1 + v2 + v4 + v5). */
+/** Every data table at the latest schema version (v1 + v2 + v4 + v5 + v6). */
 export const ALL_TABLE_NAMES: readonly string[] = [
   ...V1_TABLE_NAMES,
   ...V2_TABLE_NAMES,
   ...V4_TABLE_NAMES,
   ...V5_TABLE_NAMES,
+  ...V6_TABLE_NAMES,
 ];

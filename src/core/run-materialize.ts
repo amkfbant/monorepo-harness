@@ -5,6 +5,11 @@ import { openManagedDb } from "../db/managed-connection.js";
 import { exportRun } from "../db/export-files.js";
 import { ingestRunArtifacts } from "../db/run-artifacts.js";
 import { fileExportEnabled } from "../config/export-mode.js";
+import {
+  recordScratchMaterialization,
+  markScratchCleaned,
+  listActiveScratchForRun,
+} from "../db/repositories/run-materializations.js";
 
 /**
  * Run materialization helpers (Phase 8-13).
@@ -33,6 +38,11 @@ export function ensureRunMaterialized(opts: {
   dbPath: string;
   runsDir: string;
   runId: string;
+  /**
+   * Phase 10-3: optional `reason` recorded in `run_materializations`
+   * for audit / `db doctor` visibility. Defaults to "ensureRunMaterialized".
+   */
+  reason?: string;
 }): boolean {
   if (!existsSync(opts.dbPath)) return false;
   if (existsSync(join(opts.runsDir, opts.runId, "meta.json"))) return false;
@@ -56,6 +66,22 @@ export function ensureRunMaterialized(opts: {
       throw new DbError(
         `could not materialize run ${opts.runId}: ` +
           `${result.error ?? "export failed"}`,
+      );
+    }
+    // Phase 10-3: record the scratch row so `db doctor` can detect leaks
+    // and so `db materialize cleanup --expired` has a list to work from.
+    // This is a best-effort write — a failure here must not roll back the
+    // already-completed materialization.
+    try {
+      recordScratchMaterialization(db, {
+        runId: opts.runId,
+        path: join(opts.runsDir, opts.runId),
+        reason: opts.reason ?? "ensureRunMaterialized",
+      });
+    } catch (e) {
+      process.stderr.write(
+        `warning: could not record scratch materialization for ` +
+          `${opts.runId}: ${(e as Error).message}\n`,
       );
     }
     return true;
@@ -123,6 +149,24 @@ export function syncRunArtifactsToDb(opts: {
     } catch (e) {
       process.stderr.write(
         `warning: could not remove scratch run dir ${runDir}: ` +
+          `${(e as Error).message}\n`,
+      );
+    }
+    // Phase 10-3: mark any active scratch rows for this run as cleaned.
+    // Best-effort — failing to update bookkeeping must not surface as a
+    // hard error to the caller.
+    try {
+      const dbHandle2 = openManagedDb({ dbPath: opts.dbPath });
+      try {
+        for (const row of listActiveScratchForRun(dbHandle2.db, opts.runId)) {
+          markScratchCleaned(dbHandle2.db, row.materializationId);
+        }
+      } finally {
+        dbHandle2.close();
+      }
+    } catch (e) {
+      process.stderr.write(
+        `warning: could not update run_materializations for ${opts.runId}: ` +
           `${(e as Error).message}\n`,
       );
     }

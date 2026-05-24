@@ -64,7 +64,7 @@ describe("db maintenance — backup / restore", () => {
     insertRun(dbPath, "run-a");
     const out = join(root, "backup.sqlite");
     const r = await backupDb({ dbPath, outPath: out });
-    expect(r.schemaVersion).toBe(5);
+    expect(r.schemaVersion).toBe(6);
     expect(r.bytes).toBeGreaterThan(0);
     expect(existsSync(out)).toBe(true);
     // the backup is a real DB and carries the row
@@ -92,7 +92,7 @@ describe("db maintenance — backup / restore", () => {
     insertRun(dbPath, "run-b");
     expect(runCount(dbPath)).toBe(2);
     const r = await restoreDb({ dbPath, fromPath: out });
-    expect(r.schemaVersion).toBe(5);
+    expect(r.schemaVersion).toBe(6);
     // the post-backup row is gone — restore replaced the live DB
     expect(runCount(dbPath)).toBe(1);
   });
@@ -165,7 +165,7 @@ describe("db maintenance — backup / restore", () => {
         .run();
       expect(existsSync(`${srcPath}-wal`)).toBe(true);
       const r = await restoreDb({ dbPath, fromPath: srcPath });
-      expect(r.schemaVersion).toBe(5);
+      expect(r.schemaVersion).toBe(6);
       // the row living in the source WAL must not be lost by the restore
       expect(runCount(dbPath)).toBe(1);
     } finally {
@@ -207,7 +207,7 @@ describe("db maintenance — checkpoint / vacuum / stats", () => {
       db.close();
     }
     const s = dbStats(dbPath);
-    expect(s.schemaVersion).toBe(5);
+    expect(s.schemaVersion).toBe(6);
     expect(s.dbBytes).toBeGreaterThan(0);
     expect(s.tableRows.runs).toBe(1);
     expect(s.totalRows).toBeGreaterThanOrEqual(1);

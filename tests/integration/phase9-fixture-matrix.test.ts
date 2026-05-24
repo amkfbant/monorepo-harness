@@ -240,10 +240,10 @@ describe("Phase 9-12 — schema migration end-to-end", () => {
     const h = tmpHarness();
     const db = openDb(h.dbPath);
     const first = runMigrations(db);
-    expect(first.version).toBe(5);
+    expect(first.version).toBe(6);
     const again = runMigrations(db);
     expect(again.applied).toEqual([]);
-    expect(again.version).toBe(5);
+    expect(again.version).toBe(6);
     for (const t of [
       "domain_locks",
       "review_proposals",

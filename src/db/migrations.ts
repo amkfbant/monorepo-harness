@@ -6,6 +6,7 @@ import {
   MIGRATION_V3_STATEMENTS,
   MIGRATION_V4_STATEMENTS,
   MIGRATION_V5_STATEMENTS,
+  MIGRATION_V6_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -45,6 +46,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 5,
     name: "concurrency-and-runtime-completion-v5",
     statements: MIGRATION_V5_STATEMENTS,
+  },
+  {
+    version: 6,
+    name: "db-only-runtime-completion-v6",
+    statements: MIGRATION_V6_STATEMENTS,
   },
 ];
 
