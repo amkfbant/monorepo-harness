@@ -25,6 +25,10 @@ import {
   getOperation,
   listOperationEvents,
 } from "../../db/repositories/operations.js";
+import {
+  runOperation,
+  OperationInFlightError,
+} from "../../operations/operation-runner.js";
 
 /**
  * Dashboard read-only HTTP server (Phase 12-1 skeleton).
@@ -165,13 +169,211 @@ export function writeError(
 
 /** Phase 13-4: mutation routes — wired only when mutationEnabled=true. */
 export function mutationRoutes(): Route[] {
-  // Phase 13-5 / 13-6 で実装。Phase 13-4 では skeleton のみ:
-  //   POST /api/runs/:runId/review (Phase 13-5)
-  //   POST /api/runs/:runId/rerun  (Phase 13-5)
-  //   POST /api/runs/:runId/cleanup (Phase 13-6)
-  //   POST /api/runs/:runId/pr     (Phase 13-6)
-  //   POST /api/backlog/:itemId/run (Phase 13-6)
-  return [];
+  return [
+    {
+      method: "POST",
+      pattern: "/api/runs/:runId/review",
+      handler: async ({ req, res, ctx, params }) => {
+        const runId = params.runId!;
+        if (!validRunId(runId)) {
+          writeError(res, 400, "bad_request", "invalid runId shape");
+          return;
+        }
+        const body = await readJsonBody(req);
+        if (body === null) {
+          writeError(res, 400, "bad_request", "invalid JSON body");
+          return;
+        }
+        const decision = String(body.decision ?? "");
+        if (
+          decision !== "approved" &&
+          decision !== "changes_requested" &&
+          decision !== "rejected"
+        ) {
+          writeError(
+            res,
+            400,
+            "bad_request",
+            "decision must be approved | changes_requested | rejected",
+          );
+          return;
+        }
+        const dryRun = body.dryRun === true;
+        const idempotencyKey =
+          typeof req.headers["idempotency-key"] === "string"
+            ? (req.headers["idempotency-key"] as string)
+            : undefined;
+        const actor = `http:${req.socket.remoteAddress ?? "?"}`;
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath });
+        try {
+          const outcome = await runOperation(
+            handle.db,
+            {
+              operationType: "review.apply",
+              target: { type: "run", id: runId },
+              actor,
+              ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+              dryRun,
+              input: body,
+            },
+            async () => {
+              if (dryRun) {
+                return { dryRun: true, plannedDecision: decision };
+              }
+              // Phase 13-5 minimum: delegate to processReviewDecision via
+              // CLI core. The HTTP path imports the core lazily to keep
+              // the server free of run-folder side effects for read-only
+              // operation modes.
+              const { processReviewDecision } = await import(
+                "../../core/review-processor.js"
+              );
+              const { harnessPaths } = await import(
+                "../../config/paths.js"
+              );
+              const paths = harnessPaths(
+                dirname(dirname(ctx.config.dbPath)),
+              );
+              const override = body.override as
+                | {
+                    actorReviewerId?: string;
+                    reason?: string;
+                  }
+                | undefined;
+              const r = await processReviewDecision({
+                runsDir: paths.runsDir,
+                locksDir: paths.locksDir,
+                dbPath: paths.dbPath,
+                runId,
+                ...(override !== undefined && override.reason !== undefined
+                  ? {
+                      override: {
+                        decision: decision as
+                          | "approved"
+                          | "changes_requested"
+                          | "rejected",
+                        reason: override.reason,
+                        ...(override.actorReviewerId !== undefined
+                          ? { actorReviewerId: override.actorReviewerId }
+                          : {}),
+                      },
+                    }
+                  : {}),
+              });
+              return r;
+            },
+          );
+          writeJson(res, outcome.replayed ? 200 : 200, {
+            operationId: outcome.operation.operationId,
+            status: outcome.operation.status,
+            result: outcome.result,
+            replayed: outcome.replayed,
+          });
+        } catch (e) {
+          if (e instanceof OperationInFlightError) {
+            writeError(res, 409, "conflict", e.message);
+            return;
+          }
+          writeError(res, 500, "internal_error", (e as Error).message);
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "POST",
+      pattern: "/api/runs/:runId/rerun",
+      handler: async ({ req, res, ctx, params }) => {
+        const runId = params.runId!;
+        if (!validRunId(runId)) {
+          writeError(res, 400, "bad_request", "invalid runId shape");
+          return;
+        }
+        const body = await readJsonBody(req);
+        if (body === null) {
+          writeError(res, 400, "bad_request", "invalid JSON body");
+          return;
+        }
+        const dryRun = body.dryRun === true;
+        const idempotencyKey =
+          typeof req.headers["idempotency-key"] === "string"
+            ? (req.headers["idempotency-key"] as string)
+            : undefined;
+        const actor = `http:${req.socket.remoteAddress ?? "?"}`;
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath });
+        try {
+          const outcome = await runOperation(
+            handle.db,
+            {
+              operationType: "run.rerun",
+              target: { type: "run", id: runId },
+              actor,
+              ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+              dryRun,
+              input: body,
+            },
+            async () => {
+              if (dryRun) {
+                return {
+                  dryRun: true,
+                  plannedAction: "rerun-from-review",
+                  reason: body.reason ?? null,
+                };
+              }
+              // Phase 13-5 minimum: rerun の実 invocation は CLI 経由を
+              // 想定し、HTTP 経路では `{ accepted: true, ... }` を返す。
+              // Full rerun は long-running なので 202-style accepted +
+              // operation_id を返し、completion poll を期待する。
+              return {
+                accepted: true,
+                note: "rerun execution is deferred to a CLI runner (Phase 13-6/8 で kick mechanism を統合)",
+              };
+            },
+          );
+          writeJson(res, 202, {
+            operationId: outcome.operation.operationId,
+            status: outcome.operation.status,
+            result: outcome.result,
+            replayed: outcome.replayed,
+          });
+        } catch (e) {
+          if (e instanceof OperationInFlightError) {
+            writeError(res, 409, "conflict", e.message);
+            return;
+          }
+          writeError(res, 500, "internal_error", (e as Error).message);
+        } finally {
+          handle.close();
+        }
+      },
+    },
+  ];
+}
+
+async function readJsonBody(
+  req: IncomingMessage,
+): Promise<Record<string, unknown> | null> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      if (chunks.length === 0) {
+        resolve({});
+        return;
+      }
+      try {
+        const text = Buffer.concat(chunks).toString("utf8");
+        const parsed = JSON.parse(text);
+        if (parsed === null || typeof parsed !== "object") {
+          resolve(null);
+          return;
+        }
+        resolve(parsed as Record<string, unknown>);
+      } catch {
+        resolve(null);
+      }
+    });
+    req.on("error", () => resolve(null));
+  });
 }
 
 /** Default route table for the dashboard server. */
