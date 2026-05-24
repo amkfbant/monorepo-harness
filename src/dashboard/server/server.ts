@@ -558,6 +558,66 @@ export function defaultRoutes(): Route[] {
   ];
 }
 
+/**
+ * Phase 12-7: Authorization gate.
+ *
+ *   - token unset + localhost (127.0.0.1 / ::1) → skip (operator UX).
+ *   - token unset + non-local → 401 (server should not have started in
+ *     that shape without an explicit warning; fail-closed regardless).
+ *   - token set → require `Authorization: Bearer <token>` on every
+ *     request.
+ */
+function isLocalHost(host: string): boolean {
+  return (
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host === "localhost" ||
+    host === "::ffff:127.0.0.1"
+  );
+}
+
+function checkAuth(
+  req: IncomingMessage,
+  config: DashboardServerConfig,
+): { ok: true } | { ok: false; status: number; code: string; message: string } {
+  const tokenConfigured = config.token !== undefined && config.token !== "";
+  // local + no token → skip.
+  if (!tokenConfigured) {
+    if (isLocalHost(config.host)) return { ok: true };
+    return {
+      ok: false,
+      status: 401,
+      code: "unauthorized",
+      message:
+        "dashboard bound non-local but no bearer token configured (--token-env)",
+    };
+  }
+  const header = req.headers.authorization ?? "";
+  const expected = `Bearer ${config.token}`;
+  if (header !== expected) {
+    return {
+      ok: false,
+      status: 401,
+      code: "unauthorized",
+      message: "missing or invalid Authorization: Bearer <token>",
+    };
+  }
+  return { ok: true };
+}
+
+function setSecurityHeaders(
+  res: ServerResponse,
+  config: DashboardServerConfig,
+): void {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  if (config.corsOrigin !== undefined && config.corsOrigin !== "") {
+    res.setHeader("Access-Control-Allow-Origin", config.corsOrigin);
+    res.setHeader("Vary", "Origin");
+  }
+}
+
 /** Build the request listener. Exposed so tests can drive directly. */
 export function buildListener(
   routes: Route[],
@@ -565,12 +625,21 @@ export function buildListener(
 ): (req: IncomingMessage, res: ServerResponse) => void {
   return async (req, res) => {
     try {
+      setSecurityHeaders(res, config);
       const ctx: RequestContext = { config };
       const url = new URL(
         req.url ?? "/",
         `http://${req.headers.host ?? "localhost"}`,
       );
       const pathname = url.pathname;
+
+      // Phase 12-7 auth gate before method check so /api/health does not
+      // leak schema_version on unauthorized requests.
+      const auth = checkAuth(req, config);
+      if (!auth.ok) {
+        writeError(res, auth.status, auth.code, auth.message);
+        return;
+      }
 
       if (req.method !== "GET" && req.method !== "HEAD") {
         writeError(

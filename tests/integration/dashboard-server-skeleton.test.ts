@@ -115,6 +115,46 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
     expect(body.filters).toEqual({ projectId: "does-not-exist" });
   });
 
+  it("Phase 12-7: token-protected server requires Bearer auth", async () => {
+    // shut down the local-no-token server and restart with a token.
+    await env.server.close();
+    const { createDashboardServer } = await import(
+      "../../src/dashboard/server/server.js"
+    );
+    const srv = createDashboardServer({
+      dbPath: env.dbPath,
+      host: "127.0.0.1",
+      port: 0,
+      token: "topsecret",
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const addr = srv.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    try {
+      const no = await get(base, "/api/health");
+      expect(no.status).toBe(401);
+      const yes = await get(base, "/api/health", {
+        headers: { Authorization: "Bearer topsecret" },
+      });
+      expect(yes.status).toBe(200);
+      const wrong = await get(base, "/api/health", {
+        headers: { Authorization: "Bearer wrong" },
+      });
+      expect(wrong.status).toBe(401);
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+      // restart the default for any subsequent test (cleanup)
+      env.server = await startServer(env.dbPath);
+    }
+  });
+
+  it("Phase 12-7: security headers (X-Content-Type-Options / X-Frame-Options / Referrer-Policy) on every response", async () => {
+    const r = await fetch(`${env.server.baseUrl}/api/health`);
+    expect(r.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(r.headers.get("X-Frame-Options")).toBe("DENY");
+    expect(r.headers.get("Referrer-Policy")).toBe("no-referrer");
+  });
+
   it("GET / returns the live HTML dashboard (Phase 12-6)", async () => {
     const r = await get(env.server.baseUrl, "/");
     expect(r.status).toBe(200);
