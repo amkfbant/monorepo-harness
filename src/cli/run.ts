@@ -1786,10 +1786,17 @@ dashboardCmd
       process.exit(1);
     }
     const host = String(raw.host);
-    if (host === "0.0.0.0") {
+    const isLocal =
+      host === "127.0.0.1" || host === "::1" || host === "localhost";
+    if (!isLocal && raw.tokenEnv === undefined) {
       process.stderr.write(
-        "warning: binding to 0.0.0.0 exposes the dashboard to the network. " +
-          "Use --token-env to require Bearer auth.\n",
+        `warning: binding to non-local host ${host} without --token-env. ` +
+          "All requests will be rejected with 401 (fail-closed). " +
+          "Set --token-env <ENV_NAME> to enable auth.\n",
+      );
+    } else if (host === "0.0.0.0") {
+      process.stderr.write(
+        "warning: binding to 0.0.0.0 exposes the dashboard to the network.\n",
       );
     }
     const maxInline = Number(raw.maxInlineArtifactBytes);
