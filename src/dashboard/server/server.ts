@@ -7,6 +7,14 @@ import {
   DashboardSnapshotError,
   type DashboardFilters,
 } from "../snapshot.js";
+import {
+  readRunMetaFromDb,
+  readRunEventsFromDb,
+  listRunArtifactsFromDb,
+} from "../../core/run-db-reader.js";
+import { ReviewProposalRepository } from "../../db/repositories/review-proposals.js";
+import { ReviewConsensusRepository } from "../../db/repositories/review-consensus.js";
+import { ReviewerRepository } from "../../db/repositories/reviewers.js";
 
 /**
  * Dashboard read-only HTTP server (Phase 12-1 skeleton).
@@ -150,6 +158,142 @@ export function defaultRoutes(): Route[] {
           schemaVersionExpected: SCHEMA_VERSION,
           generatedAt: new Date().toISOString(),
         });
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/runs",
+      handler: ({ ctx, res, query }) => {
+        // List recent runs via the snapshot's recentRuns slice. This
+        // reuses the same projection the static dashboard already shows
+        // so the UI shape stays consistent.
+        const filters: DashboardFilters = {};
+        const proj = query.get("project");
+        const repo = query.get("repo");
+        if (proj !== null) filters.projectId = proj;
+        if (repo !== null) filters.repoId = repo;
+        try {
+          const snap = loadDashboardSnapshot({
+            harnessRoot: dirname(dirname(ctx.config.dbPath)),
+            filters,
+            autoImport: false,
+          });
+          writeJson(res, 200, { runs: snap.recentRuns });
+        } catch (e) {
+          if (e instanceof DashboardSnapshotError) {
+            writeError(res, 404, "not_found", e.message);
+            return;
+          }
+          throw e;
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/runs/:runId",
+      handler: ({ ctx, res, params }) => {
+        const meta = readRunMetaFromDb(ctx.config.dbPath, params.runId!);
+        if (meta === null) {
+          writeError(res, 404, "not_found", `run ${params.runId} not found`);
+          return;
+        }
+        writeJson(res, 200, meta);
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/runs/:runId/timeline",
+      handler: ({ ctx, res, params }) => {
+        const events = readRunEventsFromDb(ctx.config.dbPath, params.runId!);
+        if (events === null) {
+          writeError(res, 404, "not_found", `run ${params.runId} not found`);
+          return;
+        }
+        writeJson(res, 200, { events });
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/runs/:runId/artifacts",
+      handler: ({ ctx, res, params }) => {
+        const list = listRunArtifactsFromDb(ctx.config.dbPath, params.runId!);
+        if (list === null) {
+          writeError(res, 404, "not_found", `run ${params.runId} not found`);
+          return;
+        }
+        writeJson(res, 200, { artifacts: list });
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/runs/:runId/review",
+      handler: ({ ctx, res, params }) => {
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const proposals = new ReviewProposalRepository(handle.db).listForRun(
+            params.runId!,
+          );
+          const consensus = new ReviewConsensusRepository(handle.db).findActive(
+            params.runId!,
+          );
+          writeJson(res, 200, { runId: params.runId, proposals, consensus });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/review/proposals",
+      handler: ({ ctx, res, query }) => {
+        const runId = query.get("runId");
+        if (runId === null) {
+          writeError(res, 400, "bad_request", "runId query is required");
+          return;
+        }
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const proposals = new ReviewProposalRepository(handle.db).listForRun(
+            runId,
+            { includeArchived: query.get("includeArchived") === "1" },
+          );
+          writeJson(res, 200, { runId, proposals });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/review/consensus",
+      handler: ({ ctx, res, query }) => {
+        const runId = query.get("runId");
+        if (runId === null) {
+          writeError(res, 400, "bad_request", "runId query is required");
+          return;
+        }
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const active = new ReviewConsensusRepository(handle.db).findActive(
+            runId,
+          );
+          writeJson(res, 200, { runId, consensus: active });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/review/reviewers",
+      handler: ({ ctx, res }) => {
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const reviewers = new ReviewerRepository(handle.db).list();
+          writeJson(res, 200, { reviewers });
+        } finally {
+          handle.close();
+        }
       },
     },
     {
