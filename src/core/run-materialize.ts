@@ -8,6 +8,7 @@ import { fileExportEnabled } from "../config/export-mode.js";
 import {
   recordScratchMaterialization,
   markScratchCleaned,
+  markScratchFailed,
   listActiveScratchForRun,
 } from "../db/repositories/run-materializations.js";
 
@@ -79,9 +80,18 @@ export function ensureRunMaterialized(opts: {
         reason: opts.reason ?? "ensureRunMaterialized",
       });
     } catch (e) {
+      // Phase 10-3 post-review P2 #1: bookkeeping insert failed but the
+      // on-disk scratch dir already exists. We do not abort the caller
+      // (that would break the review agent for a bookkeeping issue), but
+      // surface the leak explicitly so operators can recover via
+      // `harness db materialize cleanup --expired` or manual rm.
       process.stderr.write(
         `warning: could not record scratch materialization for ` +
-          `${opts.runId}: ${(e as Error).message}\n`,
+          `${opts.runId}: ${(e as Error).message} — the scratch dir at ` +
+          `${join(opts.runsDir, opts.runId)} may leak; ` +
+          `\`db doctor\` will not see it. ` +
+          `Recover with \`harness db materialize cleanup --run ${opts.runId}\` ` +
+          `or remove the dir manually.\n`,
       );
     }
     return true;
@@ -111,19 +121,23 @@ export function syncRunArtifactsToDb(opts: {
   if (!existsSync(opts.dbPath)) return;
   const runDir = join(opts.runsDir, opts.runId);
   if (!existsSync(runDir)) return;
+  // Phase 10-3 post-review P1 #1: hold a single shared maintenance lock
+  // across ingest, run-dir removal, and scratch bookkeeping so an
+  // exclusive `db restore` cannot swap the DB between steps. Phase 10-3
+  // post-review P1 #2: only mark scratch rows cleaned AFTER successful
+  // removal — a failed rmSync leaves the row in `active` (or `failed`)
+  // so `db doctor` / `db materialize cleanup --expired` can see the leak.
   const dbHandle = openManagedDb({ dbPath: opts.dbPath });
   const db = dbHandle.db;
-  let ingestOk = false;
-  let dbFirst = false;
   try {
     const row = db
       .prepare("SELECT source_mode FROM runs WHERE run_id = ?")
       .get(opts.runId) as { source_mode: string } | undefined;
     if (row === undefined || row.source_mode !== "db-first") return;
-    dbFirst = true;
     // best-effort post-processing: a sync failure (e.g. an unreadable run
     // dir) must not crash the review command that succeeded — warn and
     // leave the prior manifest intact (ingestRunArtifacts is transactional).
+    let ingestOk = false;
     try {
       ingestRunArtifacts(db, runDir, opts.runId);
       ingestOk = true;
@@ -133,42 +147,46 @@ export function syncRunArtifactsToDb(opts: {
           `${(e as Error).message}\n`,
       );
     }
-  } finally {
-    dbHandle.close();
-  }
-  // Phase 9 post-close (second review) P1-1 fix — with export OFF, a
-  // scratch materialization (ensureRunMaterialized) plus a successful
-  // ingest leaves a runDir that is no longer needed and would otherwise
-  // mislead `run show` (file-first) into rendering stale meta.json /
-  // artifact listing. Remove it so the DB stays the single source of
-  // truth. Failure to remove is best-effort + warning — the canonical
-  // state is in the DB regardless.
-  if (dbFirst && ingestOk && !fileExportEnabled()) {
+    // Phase 9 post-close (second review) P1-1 fix — with export OFF, a
+    // scratch materialization (ensureRunMaterialized) plus a successful
+    // ingest leaves a runDir that is no longer needed and would otherwise
+    // mislead `run show` (file-first) into rendering stale meta.json /
+    // artifact listing. Remove it so the DB stays the single source of
+    // truth.
+    if (!ingestOk || fileExportEnabled()) return;
+    let rmError: Error | undefined;
     try {
       rmSync(runDir, { recursive: true, force: true });
     } catch (e) {
+      rmError = e as Error;
       process.stderr.write(
         `warning: could not remove scratch run dir ${runDir}: ` +
-          `${(e as Error).message}\n`,
+          `${rmError.message}\n`,
       );
     }
-    // Phase 10-3: mark any active scratch rows for this run as cleaned.
-    // Best-effort — failing to update bookkeeping must not surface as a
-    // hard error to the caller.
-    try {
-      const dbHandle2 = openManagedDb({ dbPath: opts.dbPath });
+    // Phase 10-3 post-review P1 #2: bookkeeping reflects what actually
+    // happened on disk.
+    const active = listActiveScratchForRun(db, opts.runId);
+    for (const r of active) {
       try {
-        for (const row of listActiveScratchForRun(dbHandle2.db, opts.runId)) {
-          markScratchCleaned(dbHandle2.db, row.materializationId);
+        if (rmError === undefined) {
+          markScratchCleaned(db, r.materializationId);
+        } else {
+          markScratchFailed(
+            db,
+            r.materializationId,
+            `rm failed: ${rmError.message}`,
+          );
         }
-      } finally {
-        dbHandle2.close();
+      } catch (e) {
+        process.stderr.write(
+          `warning: could not update run_materializations for ` +
+            `${opts.runId} (id=${r.materializationId}): ` +
+            `${(e as Error).message}\n`,
+        );
       }
-    } catch (e) {
-      process.stderr.write(
-        `warning: could not update run_materializations for ${opts.runId}: ` +
-          `${(e as Error).message}\n`,
-      );
     }
+  } finally {
+    dbHandle.close();
   }
 }
