@@ -47,8 +47,11 @@ function shouldPreferDbForRun(
   if (dbPath === undefined) return false;
   const info = readRunSourceModeFromDb(dbPath, runId);
   if (info === null) return false;
-  if (info.sourceMode !== "db-first") return false;
-  return info.exportStatus !== "synced";
+  // Phase 10-4 post-review P1 — design §3.D D1 says `auto + db-first`
+  // always reads the DB and ignores runDir, regardless of export_status.
+  // Phase 9 used `export_status !== 'synced'` as the gate; Phase 10
+  // tightens this to "every db-first run is DB-canonical in auto mode".
+  return info.sourceMode === "db-first";
 }
 
 /**
@@ -147,8 +150,18 @@ async function readMeta(
         );
       }
     }
+    if (source === "files") {
+      // Phase 10-4 post-review P2 #2: distinguish "run dir missing" from
+      // "run does not exist anywhere" for --source files debug usage.
+      throw new RunViewError(
+        `run ${runId}: run dir not found (--source files). ` +
+          "The DB may still have this run — drop --source or use --source db.",
+      );
+    }
   }
-  if (source !== "files" && dbPath !== undefined) {
+  // At this point: source is 'auto' (file lookup missed) or 'db' (top
+  // branch missed). Both should fall back to DB if available.
+  if (dbPath !== undefined) {
     const fromDb = readRunMetaFromDb(dbPath, runId);
     if (fromDb !== null) return fromDb;
   }
