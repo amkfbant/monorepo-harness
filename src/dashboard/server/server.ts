@@ -281,6 +281,217 @@ export function mutationRoutes(): Route[] {
     },
     {
       method: "POST",
+      pattern: "/api/runs/:runId/cleanup",
+      handler: async ({ req, res, ctx, params }) => {
+        const runId = params.runId!;
+        if (!validRunId(runId)) {
+          writeError(res, 400, "bad_request", "invalid runId shape");
+          return;
+        }
+        const body = await readJsonBody(req);
+        if (body === null) {
+          writeError(res, 400, "bad_request", "invalid JSON body");
+          return;
+        }
+        const dryRun = body.dryRun === true;
+        if (!dryRun && body.confirm !== "cleanup") {
+          writeError(
+            res,
+            400,
+            "bad_request",
+            "real cleanup requires confirm: 'cleanup'",
+          );
+          return;
+        }
+        const idempotencyKey =
+          typeof req.headers["idempotency-key"] === "string"
+            ? (req.headers["idempotency-key"] as string)
+            : undefined;
+        const actor = `http:${req.socket.remoteAddress ?? "?"}`;
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath });
+        try {
+          const outcome = await runOperation(
+            handle.db,
+            {
+              operationType: "run.cleanup",
+              target: { type: "run", id: runId },
+              actor,
+              ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+              dryRun,
+              input: body,
+            },
+            async () => {
+              if (dryRun) {
+                return {
+                  dryRun: true,
+                  plannedAction: "cleanup",
+                  scope: body.scope ?? "workspace",
+                };
+              }
+              const { cleanupRun } = await import("../../core/cleanup.js");
+              const { harnessPaths } = await import(
+                "../../config/paths.js"
+              );
+              const paths = harnessPaths(
+                dirname(dirname(ctx.config.dbPath)),
+              );
+              const scope =
+                body.scope === "run" || body.scope === "all"
+                  ? body.scope
+                  : "workspace";
+              return await cleanupRun({
+                runsDir: paths.runsDir,
+                workspacesDir: paths.workspacesDir,
+                locksDir: paths.locksDir,
+                dbPath: paths.dbPath,
+                runId,
+                scope,
+                force: body.force === true,
+              });
+            },
+          );
+          writeJson(res, 200, {
+            operationId: outcome.operation.operationId,
+            status: outcome.operation.status,
+            result: outcome.result,
+            replayed: outcome.replayed,
+          });
+        } catch (e) {
+          if (e instanceof OperationInFlightError) {
+            writeError(res, 409, "conflict", e.message);
+            return;
+          }
+          writeError(res, 500, "internal_error", (e as Error).message);
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "POST",
+      pattern: "/api/runs/:runId/pr",
+      handler: async ({ req, res, ctx, params }) => {
+        const runId = params.runId!;
+        if (!validRunId(runId)) {
+          writeError(res, 400, "bad_request", "invalid runId shape");
+          return;
+        }
+        const body = await readJsonBody(req);
+        if (body === null) {
+          writeError(res, 400, "bad_request", "invalid JSON body");
+          return;
+        }
+        const dryRun = body.dryRun === true;
+        if (!dryRun && body.confirm !== "create-pr") {
+          writeError(
+            res,
+            400,
+            "bad_request",
+            "real pr create requires confirm: 'create-pr'",
+          );
+          return;
+        }
+        const idempotencyKey =
+          typeof req.headers["idempotency-key"] === "string"
+            ? (req.headers["idempotency-key"] as string)
+            : undefined;
+        const actor = `http:${req.socket.remoteAddress ?? "?"}`;
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath });
+        try {
+          const outcome = await runOperation(
+            handle.db,
+            {
+              operationType: "run.pr_create",
+              target: { type: "run", id: runId },
+              actor,
+              ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+              dryRun,
+              input: body,
+            },
+            async () => {
+              if (dryRun) {
+                return { dryRun: true, plannedAction: "pr-create" };
+              }
+              // Phase 13-6 minimum: pr create は gh CLI への
+              // out-of-process invocation を含むため、HTTP path では
+              // 202 accepted を返し CLI runner に委譲。
+              return {
+                accepted: true,
+                note: "pr create execution is deferred to a CLI runner (Phase 13-8 で integrate)",
+              };
+            },
+          );
+          writeJson(res, 202, {
+            operationId: outcome.operation.operationId,
+            status: outcome.operation.status,
+            result: outcome.result,
+            replayed: outcome.replayed,
+          });
+        } catch (e) {
+          if (e instanceof OperationInFlightError) {
+            writeError(res, 409, "conflict", e.message);
+            return;
+          }
+          writeError(res, 500, "internal_error", (e as Error).message);
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "POST",
+      pattern: "/api/backlog/:itemId/run",
+      handler: async ({ req, res, ctx, params }) => {
+        const itemId = params.itemId!;
+        const body = await readJsonBody(req);
+        if (body === null) {
+          writeError(res, 400, "bad_request", "invalid JSON body");
+          return;
+        }
+        const idempotencyKey =
+          typeof req.headers["idempotency-key"] === "string"
+            ? (req.headers["idempotency-key"] as string)
+            : undefined;
+        const actor = `http:${req.socket.remoteAddress ?? "?"}`;
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath });
+        try {
+          const outcome = await runOperation(
+            handle.db,
+            {
+              operationType: "backlog.run",
+              target: { type: "backlog_item", id: itemId },
+              actor,
+              ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+              dryRun: body.dryRun === true,
+              input: body,
+            },
+            async () => {
+              // Phase 13-6 minimum: backlog run も CLI runner に委譲。
+              return {
+                accepted: true,
+                note: "backlog run execution is deferred to a CLI runner",
+              };
+            },
+          );
+          writeJson(res, 202, {
+            operationId: outcome.operation.operationId,
+            status: outcome.operation.status,
+            result: outcome.result,
+            replayed: outcome.replayed,
+          });
+        } catch (e) {
+          if (e instanceof OperationInFlightError) {
+            writeError(res, 409, "conflict", e.message);
+            return;
+          }
+          writeError(res, 500, "internal_error", (e as Error).message);
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "POST",
       pattern: "/api/runs/:runId/rerun",
       handler: async ({ req, res, ctx, params }) => {
         const runId = params.runId!;
