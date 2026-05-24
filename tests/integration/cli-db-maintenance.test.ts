@@ -33,7 +33,7 @@ describe("CLI harness db — backup / restore", () => {
     const backup = join(root, "snap.sqlite");
     const b = runCli(root, ["db", "backup", "--out", backup]);
     expect(b.code).toBe(0);
-    expect(b.out).toMatch(/schema version: 9/);
+    expect(b.out).toMatch(/schema version: 10/);
     expect(existsSync(backup)).toBe(true);
     // restore over an existing DB needs --force
     const r = runCli(root, ["db", "restore", "--from", backup, "--force"]);
@@ -79,7 +79,7 @@ describe("CLI harness db — checkpoint / vacuum / stats", () => {
     const root = setup();
     const r = runCli(root, ["db", "stats"]);
     expect(r.code).toBe(0);
-    expect(r.out).toMatch(/schema version: 9/);
+    expect(r.out).toMatch(/schema version: 10/);
     expect(r.out).toMatch(/artifact blobs:/);
   });
 
@@ -88,7 +88,7 @@ describe("CLI harness db — checkpoint / vacuum / stats", () => {
     const r = runCli(root, ["db", "stats", "--json"]);
     expect(r.code).toBe(0);
     const parsed = JSON.parse(r.out) as { schemaVersion: number };
-    expect(parsed.schemaVersion).toBe(9);
+    expect(parsed.schemaVersion).toBe(10);
   });
 
   it("stats rejects an uninitialized DB", () => {

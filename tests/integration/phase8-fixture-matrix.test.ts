@@ -231,7 +231,7 @@ describe("Phase 8-9 — multi-connection access", () => {
     const b = openDb(dbPath);
     expect(runMigrations(a).applied).toEqual([]);
     expect(runMigrations(b).applied).toEqual([]);
-    expect(runMigrations(a).version).toBe(9);
+    expect(runMigrations(a).version).toBe(10);
     a.close();
     b.close();
   });
@@ -325,7 +325,7 @@ describe("Phase 8-9 — DB-only recovery (backup survives a file wipe)", () => {
     rmSync(join(root, ".harness"), { recursive: true, force: true });
 
     const r = await restoreDb({ dbPath, fromPath: backup });
-    expect(r.schemaVersion).toBe(9);
+    expect(r.schemaVersion).toBe(10);
     const restored = openDbReadonly(dbPath);
     expect(readArtifactBlob(restored, stored.sha256)?.equals(body)).toBe(true);
     restored.close();

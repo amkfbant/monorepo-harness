@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -965,6 +965,82 @@ export const V9_TABLE_NAMES: readonly string[] = [
   "asset_exports",
 ];
 
+/**
+ * v10 DDL — Phase 15 (DB operations / doctor / archive / backup).
+ */
+export const MIGRATION_V10_STATEMENTS: readonly string[] = [
+  `CREATE TABLE doctor_runs (
+    doctor_run_id TEXT PRIMARY KEY,
+    started_at    TEXT NOT NULL,
+    completed_at  TEXT,
+    status        TEXT NOT NULL,
+    summary_json  TEXT NOT NULL DEFAULT '{}'
+  )`,
+  `CREATE TABLE doctor_findings (
+    finding_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    doctor_run_id TEXT NOT NULL,
+    check_id      TEXT NOT NULL,
+    severity      TEXT NOT NULL CHECK (severity IN ('info','warn','error','critical')),
+    status        TEXT NOT NULL CHECK (status IN ('ok','flagged','resolved')),
+    message       TEXT NOT NULL,
+    repairable    INTEGER NOT NULL DEFAULT 0,
+    details_json  TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (doctor_run_id) REFERENCES doctor_runs(doctor_run_id) ON DELETE CASCADE
+  )`,
+  `CREATE INDEX doctor_findings_run_idx ON doctor_findings(doctor_run_id, check_id)`,
+  `CREATE TABLE repair_actions (
+    repair_id    TEXT PRIMARY KEY,
+    finding_id   INTEGER,
+    action_type  TEXT NOT NULL,
+    dry_run      INTEGER NOT NULL,
+    status       TEXT NOT NULL CHECK (status IN ('pending','running','succeeded','failed')),
+    result_json  TEXT NOT NULL DEFAULT '{}',
+    created_at   TEXT NOT NULL,
+    completed_at TEXT,
+    FOREIGN KEY (finding_id) REFERENCES doctor_findings(finding_id)
+  )`,
+  `CREATE INDEX repair_actions_finding_idx ON repair_actions(finding_id, created_at)`,
+  `CREATE TABLE backup_catalog (
+    backup_id      TEXT PRIMARY KEY,
+    path           TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    size_bytes     INTEGER NOT NULL,
+    sha256         TEXT NOT NULL,
+    verified_at    TEXT,
+    status         TEXT NOT NULL CHECK (status IN ('available','missing','failed')),
+    manifest_json  TEXT NOT NULL
+  )`,
+  `CREATE INDEX backup_catalog_created_idx ON backup_catalog(created_at)`,
+  `CREATE TABLE archive_catalog (
+    archive_id     TEXT PRIMARY KEY,
+    path           TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    range_start    TEXT,
+    range_end      TEXT,
+    schema_version INTEGER NOT NULL,
+    sha256         TEXT,
+    status         TEXT NOT NULL CHECK (status IN ('attached','detached','missing')),
+    metadata_json  TEXT NOT NULL DEFAULT '{}'
+  )`,
+  `CREATE TABLE db_stats_snapshots (
+    snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at  TEXT NOT NULL,
+    stats_json  TEXT NOT NULL
+  )`,
+  `CREATE INDEX db_stats_snapshots_created_idx ON db_stats_snapshots(created_at)`,
+];
+
+/** Tables added by v10 (Phase 15). */
+export const V10_TABLE_NAMES: readonly string[] = [
+  "doctor_runs",
+  "doctor_findings",
+  "repair_actions",
+  "backup_catalog",
+  "archive_catalog",
+  "db_stats_snapshots",
+];
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -989,7 +1065,7 @@ export const V1_TABLE_NAMES: readonly string[] = [
   "import_errors",
 ];
 
-/** Every data table at the latest schema version (v1 + v2 + v4 + v5 + v6 + v7 + v8 + v9). */
+/** Every data table at the latest schema version (v1 + v2 + v4 + v5 + v6 + v7 + v8 + v9 + v10). */
 export const ALL_TABLE_NAMES: readonly string[] = [
   ...V1_TABLE_NAMES,
   ...V2_TABLE_NAMES,
@@ -999,4 +1075,5 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V7_TABLE_NAMES,
   ...V8_TABLE_NAMES,
   ...V9_TABLE_NAMES,
+  ...V10_TABLE_NAMES,
 ];

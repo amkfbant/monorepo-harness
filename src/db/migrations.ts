@@ -10,6 +10,7 @@ import {
   MIGRATION_V7_STATEMENTS,
   MIGRATION_V8_STATEMENTS,
   MIGRATION_V9_STATEMENTS,
+  MIGRATION_V10_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -69,6 +70,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 9,
     name: "human-authored-assets-db-canonical-v9",
     statements: MIGRATION_V9_STATEMENTS,
+  },
+  {
+    version: 10,
+    name: "db-operations-doctor-archive-v10",
+    statements: MIGRATION_V10_STATEMENTS,
   },
 ];
 
