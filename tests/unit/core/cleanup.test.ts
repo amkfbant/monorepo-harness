@@ -262,34 +262,10 @@ describe("cleanupRun", () => {
     expect(branches).toBe("");
   });
 
-  it("acquires the domain lock during cleanup (cannot race with a new run)", async () => {
-    const s = await setup("approved");
-    // Pre-lock the domain to simulate a concurrent run.
-    const { acquireDomainLock } = await import(
-      "../../../src/workspace/domain-lock.js"
-    );
-    const held = await acquireDomainLock({
-      locksDir: join(s.harnessRoot, "locks"),
-      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
-      domain: "apps/user",
-      runId: "run-fake-concurrent",
-      // namespaced lock — must match the repoId in the run's meta.json.
-      repoId: "t",
-    });
-    try {
-      await expect(
-        cleanupRun({
-          runsDir: join(s.harnessRoot, "runs"),
-          workspacesDir: join(s.harnessRoot, "workspaces"),
-          locksDir: join(s.harnessRoot, "locks"),
-      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
-          runId: s.runId,
-        }),
-      ).rejects.toThrow(/locked/);
-    } finally {
-      await held.release();
-    }
-  });
+  // Phase 10-1: removed a file-lock-based concurrency test. cleanup is
+  // serialized by the run's terminal-status state guard (cleanupUnderLock
+  // re-checks). DB-lock concurrency is covered in Phase 10-2 by
+  // tests/integration/db-lock-only-serialization.test.ts.
 
   it("is idempotent: re-cleanup is a no-op when worktree is already gone", async () => {
     const s = await setup("approved");

@@ -36,7 +36,7 @@ import { RerunGateError } from "./rerun.js";
 import { writeArtifact } from "../logging/artifacts.js";
 import { generateRunId } from "./run-id.js";
 import { runAllowedCommands } from "./command-runner.js";
-import { acquireDomainLock } from "../workspace/domain-lock.js";
+import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
 import {
   acquireDomainLock as acquireDbDomainLock,
   heartbeatIntervalMs,
@@ -292,12 +292,10 @@ export async function runDomainCoding(
   const branch = runBranchName(runId, opts.domain);
   const startedAt = (opts.now ?? new Date()).toISOString();
 
-  const lock = await acquireDomainLock({
-    locksDir: paths.locksDir,
-    domain: opts.domain,
-    runId,
-    repoId: opts.repoId,
-  });
+  // Phase 10-1: the file domain lock (.harness/locks/*.lock) is retired;
+  // the DB domain lock below is the sole serialization. Surface a one-shot
+  // warning if older harness binaries left lock sentinels behind.
+  warnLegacyFileLocks(paths.locksDir);
 
   // Phase 7: the run is DB-first. Open the harness DB (read-write) and
   // ensure the schema is current before any run state is written; the
@@ -309,9 +307,9 @@ export async function runDomainCoding(
   // lock (after the DB handle is closed, see teardown below).
   let dbHandle: ManagedDb | undefined;
   let db: Database.Database | undefined;
-  // Phase 9-5: dual-lock — alongside the file lock above, hold a
-  // DB-backed lease (with heartbeat) so a stolen lease can be detected
-  // and the file lock can be retired in Phase 10.
+  // Phase 10-1: DB-backed domain lease (with heartbeat) is the sole
+  // serialization for this domain. A stolen lease is detected by the
+  // active-lease guard on the next write (see assertActiveLease).
   let dbLock: DbDomainLockHandle | undefined;
   let heartbeatTimer: NodeJS.Timeout | undefined;
   const domainKey = `${opts.repoId}::${opts.domain}`;
@@ -324,9 +322,8 @@ export async function runDomainCoding(
     // bypass this guard themselves.
     assertNoLegacyRuntimeRows(db);
 
-    // acquire the DB lease. The file lock above already serializes
-    // contenders, so this is mostly book-keeping during Phase 9; in
-    // Phase 10 the file lock goes away and the DB lease becomes primary.
+    // acquire the DB lease — the only domain serialization in Phase 10
+    // (Phase 9 also held a file lock; that has been retired).
     dbLock = acquireDbDomainLock(db, {
       domainKey,
       repoId: opts.repoId,
@@ -511,12 +508,11 @@ export async function runDomainCoding(
       throw new RunFinalizedError(runId, "failed-internal-error", e);
     }
   } finally {
-    // teardown order (mirrors §A2 of the Phase 9 design + post-close P0):
+    // teardown order (Phase 10-1: file lock removed):
     //   1. stop heartbeat
     //   2. release DB lease (uses the still-open db connection)
     //   3. close DB AND release the shared maintenance lock (dbHandle.close
     //      does both, in that order)
-    //   4. release file lock
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     if (dbLock !== undefined) {
       try {
@@ -525,11 +521,7 @@ export async function runDomainCoding(
         // DB may be in a bad state; the lease will eventually expire.
       }
     }
-    try {
-      dbHandle?.close();
-    } finally {
-      await lock.release();
-    }
+    dbHandle?.close();
   }
 }
 

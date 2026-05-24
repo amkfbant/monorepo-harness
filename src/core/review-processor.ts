@@ -11,7 +11,7 @@ import {
 } from "./review-decision-loader.js";
 import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
 import type { ReviewDecisionValue } from "./review-decision-schema.js";
-import { acquireDomainLock } from "../workspace/domain-lock.js";
+import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { RunRepository } from "../db/repositories/runs.js";
@@ -130,15 +130,15 @@ export async function processReviewDecision(
   const metaPath = join(runDir, "meta.json");
   const decisionPath = join(runDir, "review-decision.yaml");
 
-  // Open the DB BEFORE the file domain lock so an open failure cannot
-  // leak a held lock. The DB also tells us whether the run is db-first,
-  // which decides what (DB row vs meta.json) is the canonical source for
-  // the lock key. Phase 9 post-close P0 fix: open through the managed
-  // wrapper so the DB-wide shared maintenance lock is held for the
-  // lifetime of this command — a concurrent `db restore` must wait.
+  // Phase 9 post-close P0 fix: open through the managed wrapper so the
+  // DB-wide shared maintenance lock is held for the lifetime of this
+  // command — a concurrent `db restore` must wait. Phase 10-1: the file
+  // domain lock is retired; review process is serialized by the expected
+  // status / operation_id state guard (a concurrent run keeps the run in
+  // `coding`, which the review-decision SQL guard rejects).
+  warnLegacyFileLocks(opts.locksDir);
   const dbHandle = openManagedDb({ dbPath: opts.dbPath });
   const db = dbHandle.db;
-  let lock: Awaited<ReturnType<typeof acquireDomainLock>> | undefined;
   try {
     runMigrations(db);
     // Phase 9-11: refuse to operate on a DB that still has legacy-file
@@ -146,16 +146,9 @@ export async function processReviewDecision(
     assertNoLegacyRuntimeRows(db);
     const dbRow = db
       .prepare(
-        "SELECT source_mode, domain, repo_id, status FROM runs WHERE run_id = ?",
+        "SELECT source_mode FROM runs WHERE run_id = ?",
       )
-      .get(opts.runId) as
-      | {
-          source_mode: string;
-          domain: string;
-          repo_id: string | null;
-          status: string;
-        }
-      | undefined;
+      .get(opts.runId) as { source_mode: string } | undefined;
     if (
       dbRow !== undefined &&
       dbRow.source_mode !== "db-first" &&
@@ -169,27 +162,6 @@ export async function processReviewDecision(
     }
     const dbFirst = dbRow?.source_mode === "db-first";
 
-    // lock key: a db-first run is DB-canonical, so its domain/repoId come
-    // from the DB row; a legacy / not-in-DB run probes meta.json.
-    let lockDomain: string;
-    let lockRepoId: string | undefined;
-    if (dbFirst && dbRow !== undefined) {
-      lockDomain = dbRow.domain;
-      lockRepoId = dbRow.repo_id ?? undefined;
-    } else {
-      const probe = await readMeta(metaPath, opts.runId);
-      lockDomain = probe.domain;
-      lockRepoId =
-        typeof probe.repoId === "string" ? probe.repoId : undefined;
-    }
-    lock = await acquireDomainLock({
-      locksDir: opts.locksDir,
-      domain: lockDomain,
-      runId: `review:${opts.runId}`,
-      // namespace the lock by repo so the same domain id across two repos
-      // does not collide — must match how `harness run` acquired it.
-      ...(lockRepoId !== undefined ? { repoId: lockRepoId } : {}),
-    });
     return await processUnderLock(
       opts,
       runDir,
@@ -199,11 +171,7 @@ export async function processReviewDecision(
       dbFirst,
     );
   } finally {
-    try {
-      dbHandle.close();
-    } finally {
-      if (lock !== undefined) await lock.release();
-    }
+    dbHandle.close();
   }
 }
 

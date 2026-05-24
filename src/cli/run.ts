@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { existsSync } from "node:fs";
-import { readdir, readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Command } from "commander";
 import { harnessPaths } from "../config/paths.js";
@@ -11,15 +11,11 @@ import { runDomainCoding } from "../core/workflow-runner.js";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
 import { StateConflictError, SourceModeError } from "../db/errors.js";
 import {
-  domainLockName,
-  domainLockPath,
-  DomainLockError,
-  type LockInfo,
-} from "../workspace/domain-lock.js";
-import {
+  DomainLockBusyError,
   listActiveDomainLocks,
   releaseDomainLockByDomain,
 } from "../workspace/db-domain-lock.js";
+import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import {
   processReviewDecision,
@@ -433,39 +429,16 @@ async function cmdReviewedRun(o: ReviewedRunOpts): Promise<ReviewedRunOutcome> {
 
 async function cmdLockList(): Promise<void> {
   const paths = harnessPaths(getHarnessRoot());
-  let anything = false;
 
-  // --- file locks (legacy / Phase 9 dual-lock primary serialisation) ---
-  process.stdout.write("file locks:\n");
-  if (existsSync(paths.locksDir)) {
-    const entries = (await readdir(paths.locksDir)).filter((e) =>
-      e.endsWith(".lock"),
-    );
-    for (const e of entries) {
-      anything = true;
-      const lockPath = join(paths.locksDir, e);
-      try {
-        const raw = await readFile(lockPath, "utf8");
-        const info = JSON.parse(raw) as LockInfo;
-        process.stdout.write(
-          `  ${e}\trunId=${info.runId}\tpid=${info.pid}\thost=${info.hostname}\tacquiredAt=${info.acquiredAt}\n`,
-        );
-      } catch (err) {
-        anything = true;
-        process.stdout.write(
-          `  ${e}\tstatus=unreadable\terror=${(err as Error).message}\n`,
-        );
-      }
-    }
-  }
-  if (!anything) process.stdout.write("  (none)\n");
+  // Phase 10-1: file domain locks are retired. Warn (once) if any
+  // .harness/locks/*.lock sentinels are still lying around.
+  warnLegacyFileLocks(paths.locksDir);
 
-  // --- DB-backed locks (Phase 9 lease + heartbeat + fencing token) ---
+  // DB-backed locks (Phase 9 lease + heartbeat + fencing token).
   // Phase 9 post-close (second review) P2-3 fix — lock list is purely
   // observational. A missing DB, an old schema (pre-v5), or a missing
   // `domain_locks` table must NOT crash the command; surface them as
-  // structured "unavailable" messages so operators can still see file
-  // locks above and decide whether to run `harness db migrate`.
+  // structured "unavailable" messages.
   process.stdout.write("db locks:\n");
   if (!existsSync(paths.dbPath)) {
     process.stdout.write("  (db not initialised — run 'harness db init')\n");
@@ -505,45 +478,36 @@ interface LockReleaseOpts {
   repoId?: string;
   runId?: string;
   force?: boolean;
+  /**
+   * Phase 10-1: source selector is retained as a deprecated CLI flag for
+   * a short transition. `file` and `both` emit a stderr warning; only the
+   * DB-backed lock is actually released. Default = DB-only.
+   */
   source?: "file" | "db" | "both";
 }
 
 async function cmdLockRelease(o: LockReleaseOpts): Promise<void> {
   const paths = harnessPaths(getHarnessRoot());
-  const source = o.source ?? "both";
   let releasedAny = false;
 
-  // --- file lock ---
-  if (source === "file" || source === "both") {
-    const path = domainLockPath(paths.locksDir, o.domain, o.repoId);
-    if (existsSync(path)) {
-      let info: LockInfo | undefined;
-      try {
-        info = JSON.parse(await readFile(path, "utf8")) as LockInfo;
-      } catch {
-        if (!o.force) {
-          throw new Error(
-            `lockfile at ${path} is unreadable; rerun with --force to delete anyway`,
-          );
-        }
-      }
-      if (info && o.runId !== undefined && info.runId !== o.runId) {
-        if (!o.force) {
-          throw new Error(
-            `runId mismatch: lock has ${info.runId}, requested ${o.runId}. Use --force to override.`,
-          );
-        }
-      }
-      await rm(path, { force: true });
-      process.stdout.write(
-        `released file lock ${domainLockName(o.domain, o.repoId)} (${path})\n`,
-      );
-      releasedAny = true;
-    }
+  if (o.source === "file") {
+    process.stderr.write(
+      "warning: `--source file` is deprecated in Phase 10 — file domain " +
+        "locks are no longer used. No DB lock release was performed.\n",
+    );
+    return;
+  }
+  if (o.source === "both") {
+    process.stderr.write(
+      "warning: `--source both` is deprecated in Phase 10 — only the DB " +
+        "domain lock is released.\n",
+    );
   }
 
-  // --- DB-backed lock ---
-  if ((source === "db" || source === "both") && existsSync(paths.dbPath)) {
+  // Surface any legacy file lock sentinels so operators know to clean them up.
+  warnLegacyFileLocks(paths.locksDir);
+
+  if (existsSync(paths.dbPath)) {
     const dbHandle = openManagedDb({ dbPath: paths.dbPath });
     const db = dbHandle.db;
     try {
@@ -798,8 +762,9 @@ lockCmd
   .option("--force", "release even on runId mismatch / unreadable lock", false)
   .option(
     "--source <which>",
-    "which lock to release: file | db | both (default: both)",
-    "both",
+    "(deprecated, Phase 10) file | db | both — `file`/`both` warn and only" +
+      " the DB lock is released; default is `db`",
+    "db",
   )
   .action(async (raw: Record<string, unknown>) => {
     const source = String(raw.source);
@@ -918,7 +883,7 @@ reviewCmd
       // user-facing → exit 1, not an exit-2 unexpected error.
       if (
         e instanceof ReviewGateError ||
-        e instanceof DomainLockError ||
+        e instanceof DomainLockBusyError ||
         e instanceof StateConflictError ||
         e instanceof SourceModeError
       ) {
@@ -1713,7 +1678,7 @@ const cleanupCmd = program
     } catch (e) {
       if (
         e instanceof CleanupGateError ||
-        e instanceof DomainLockError ||
+        e instanceof DomainLockBusyError ||
         e instanceof StateConflictError ||
         e instanceof SourceModeError
       ) {

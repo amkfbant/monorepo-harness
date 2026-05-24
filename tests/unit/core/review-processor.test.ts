@@ -266,55 +266,12 @@ describe("processReviewDecision", () => {
     expect(r.warnings).toContain("reviewer field is null");
   });
 
-  it("acquires the domain lock — a concurrent cleanup holding it is rejected", async () => {
-    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
-    const locksDir = mkdtempSync(join(tmpdir(), "harness-rp-locks-"));
-    writeFakeRun(runsDir, "run-K", { domain: "apps/user" }, {
-      decision: "approved",
-      reviewer: "alice",
-      reviewed_at: "2026-05-20T12:00:00Z",
-    });
-    const { acquireDomainLock } = await import(
-      "../../../src/workspace/domain-lock.js"
-    );
-    // simulate a concurrent cleanup holding the same domain lock —
-    // namespaced by the run's repoId so it matches processReviewDecision.
-    const held = await acquireDomainLock({
-      locksDir,
-      domain: "apps/user",
-      runId: "cleanup:run-K",
-      repoId: "mini-commerce",
-    });
-    try {
-      await expect(
-        processReviewDecision({ runsDir, locksDir, dbPath: join(runsDir, "harness.sqlite"), runId: "run-K" }),
-      ).rejects.toThrow(/locked/);
-    } finally {
-      await held.release();
-    }
-  });
-
-  it("releases the domain lock after processing so a later call succeeds", async () => {
-    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
-    const locksDir = mkdtempSync(join(tmpdir(), "harness-rp-locks-"));
-    writeFakeRun(runsDir, "run-L", { domain: "apps/user" }, {
-      decision: "approved",
-      reviewer: "alice",
-      reviewed_at: "2026-05-20T12:00:00Z",
-    });
-    await processReviewDecision({ runsDir, locksDir, dbPath: join(runsDir, "harness.sqlite"), runId: "run-L" });
-    // lock must be released — acquiring it now should succeed
-    const { acquireDomainLock } = await import(
-      "../../../src/workspace/domain-lock.js"
-    );
-    const after = await acquireDomainLock({
-      locksDir,
-      domain: "apps/user",
-      runId: "probe",
-      repoId: "mini-commerce",
-    });
-    await after.release();
-  });
+  // Phase 10-1: removed two tests that asserted file-domain-lock based
+  // serialization between concurrent cleanup and review process. The file
+  // domain lock has been retired; review process is now serialized by the
+  // state guard (status / state_version CAS, see Phase 10-5) and the DB
+  // lease-stealing integration test covers the live concurrency scenarios
+  // (tests/integration/db-lock-only-serialization.test.ts in Phase 10-2).
 });
 
 describe("processReviewDecision — DB-first run (Phase 7-5)", () => {

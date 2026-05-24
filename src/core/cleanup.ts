@@ -8,7 +8,7 @@ import {
   type RunStatus,
 } from "../logging/run-log.js";
 import { gitCli } from "../git/git-cli.js";
-import { acquireDomainLock } from "../workspace/domain-lock.js";
+import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { RunRepository } from "../db/repositories/runs.js";
@@ -164,25 +164,23 @@ export async function cleanupRun(opts: CleanupOpts): Promise<CleanupResult> {
   const runDir = join(opts.runsDir, opts.runId);
   const metaPath = join(runDir, "meta.json");
 
-  // Open the DB before the file domain lock so an open failure cannot
-  // leak a held lock. The DB tells us whether the run is db-first — which
-  // decides the canonical source for the lock key and the cleanup gate.
   // Phase 9 post-close P0 fix: managed open holds the DB-wide shared
   // maintenance lock so a concurrent `db restore` can't swap the DB out.
+  // Phase 10-1: the file domain lock is retired; cleanup is serialized
+  // against concurrent runs by the run's expected status / state guard
+  // (the run must be terminal — `cleanupUnderLock` rechecks).
+  warnLegacyFileLocks(opts.locksDir);
   const dbHandle = openManagedDb({ dbPath: opts.dbPath });
   const db = dbHandle.db;
-  let lock: Awaited<ReturnType<typeof acquireDomainLock>> | undefined;
   try {
     runMigrations(db);
     // Phase 9-11: legacy-file rows must be migrated before runtime writes.
     assertNoLegacyRuntimeRows(db);
     const dbRow = db
       .prepare(
-        "SELECT source_mode, domain, repo_id FROM runs WHERE run_id = ?",
+        "SELECT source_mode FROM runs WHERE run_id = ?",
       )
-      .get(opts.runId) as
-      | { source_mode: string; domain: string; repo_id: string | null }
-      | undefined;
+      .get(opts.runId) as { source_mode: string } | undefined;
     if (
       dbRow !== undefined &&
       dbRow.source_mode !== "db-first" &&
@@ -196,32 +194,9 @@ export async function cleanupRun(opts: CleanupOpts): Promise<CleanupResult> {
     }
     const dbFirst = dbRow?.source_mode === "db-first";
 
-    // lock key: a db-first run is DB-canonical; a legacy run probes
-    // meta.json. The authoritative gate check happens under the lock.
-    let lockDomain: string;
-    let lockRepoId: string | undefined;
-    if (dbFirst && dbRow !== undefined) {
-      lockDomain = dbRow.domain;
-      lockRepoId = dbRow.repo_id ?? undefined;
-    } else {
-      const probe = await readMetaFile(metaPath, opts.runId);
-      lockDomain = probe.domain;
-      lockRepoId =
-        typeof probe.repoId === "string" ? probe.repoId : undefined;
-    }
-    lock = await acquireDomainLock({
-      locksDir: opts.locksDir,
-      domain: lockDomain,
-      runId: `cleanup:${opts.runId}`,
-      ...(lockRepoId !== undefined ? { repoId: lockRepoId } : {}),
-    });
     return await cleanupUnderLock(opts, scope, runDir, metaPath, db, dbFirst);
   } finally {
-    try {
-      dbHandle.close();
-    } finally {
-      if (lock !== undefined) await lock.release();
-    }
+    dbHandle.close();
   }
 }
 

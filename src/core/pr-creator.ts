@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type Database from "better-sqlite3";
 import type { RunMeta } from "../logging/run-log.js";
 import { gitCli } from "../git/git-cli.js";
-import { acquireDomainLock } from "../workspace/domain-lock.js";
+import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
 import { computeReviewedFingerprint } from "./reviewed-fingerprint.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
@@ -93,35 +93,31 @@ export async function createPullRequest(
   }
   const runDir = join(opts.runsDir, opts.runId);
   const metaPath = join(runDir, "meta.json");
-  // Open the DB before the file domain lock so an open failure cannot
-  // leak a held lock (mirrors cleanup). A DB-recorded `created` PR
-  // short-circuits the whole flow — `pr create` is idempotent, never
-  // opening a second PR. Phase 9 post-close P0 fix: managed open holds
-  // the DB-wide shared maintenance lock for the lifetime of this command.
+  // Phase 9 post-close P0 fix: managed open holds the DB-wide shared
+  // maintenance lock for the lifetime of this command. Phase 10-1: the
+  // file domain lock is retired; `pr create` is idempotent (DB-recorded
+  // `created` PRs short-circuit) and the state guard prevents racing
+  // against a still-running domain (status != 'created' check).
+  warnLegacyFileLocks(opts.locksDir);
   const dbHandle =
     opts.dbPath !== undefined
       ? openManagedDb({ dbPath: opts.dbPath })
       : undefined;
   const db = dbHandle?.db;
-  let lock: Awaited<ReturnType<typeof acquireDomainLock>> | undefined;
   try {
     if (db !== undefined) {
       runMigrations(db);
       // Phase 9-11: refuse to operate on a DB with legacy-file runtime rows.
       assertNoLegacyRuntimeRows(db);
     }
-    // The lock key comes from the run's canonical source: a `db-first`
-    // run's `runs` row, a legacy run's meta.json. A db-first run does NOT
-    // require meta.json to exist — it is a compatibility export (P1-3).
+    // Validate the run row source_mode before doing anything destructive.
     const dbRow =
       db !== undefined
         ? (db
             .prepare(
-              "SELECT source_mode, domain, repo_id FROM runs WHERE run_id = ?",
+              "SELECT source_mode FROM runs WHERE run_id = ?",
             )
-            .get(opts.runId) as
-            | { source_mode: string; domain: string; repo_id: string | null }
-            | undefined)
+            .get(opts.runId) as { source_mode: string } | undefined)
         : undefined;
     if (
       dbRow !== undefined &&
@@ -134,19 +130,9 @@ export async function createPullRequest(
         "db-first | legacy-file",
       );
     }
-    let lockDomain: string;
-    let lockRepoId: string | undefined;
-    if (dbRow?.source_mode === "db-first") {
-      lockDomain = dbRow.domain;
-      lockRepoId = dbRow.repo_id ?? undefined;
-    } else {
-      if (!existsSync(metaPath)) {
-        throw new PrGateError(`run ${opts.runId} not found`);
-      }
-      const probe = await readMeta(metaPath, opts.runId);
-      lockDomain = typeof probe.domain === "string" ? probe.domain : "unknown";
-      lockRepoId =
-        typeof probe.repoId === "string" ? probe.repoId : undefined;
+    // legacy / not-in-DB runs still need meta.json on disk.
+    if (dbRow === undefined && !existsSync(metaPath)) {
+      throw new PrGateError(`run ${opts.runId} not found`);
     }
     if (db !== undefined) {
       const existing = new PullRequestRepository(db).findByRun(opts.runId);
@@ -164,19 +150,9 @@ export async function createPullRequest(
         };
       }
     }
-    lock = await acquireDomainLock({
-      locksDir: opts.locksDir,
-      domain: lockDomain,
-      runId: `pr:${opts.runId}`,
-      ...(lockRepoId !== undefined ? { repoId: lockRepoId } : {}),
-    });
     return await createUnderLock(opts, runDir, metaPath, db);
   } finally {
-    try {
-      dbHandle?.close();
-    } finally {
-      if (lock !== undefined) await lock.release();
-    }
+    dbHandle?.close();
   }
 }
 

@@ -1184,7 +1184,7 @@ describe("runDomainCoding (fake codex)", () => {
         codexRunner: fast,
         now: new Date("2026-05-20T00:00:01Z"),
       }),
-    ).rejects.toThrow(/locked/);
+    ).rejects.toThrow(/locked|domain lock busy/);
     await p1;
   });
 });
