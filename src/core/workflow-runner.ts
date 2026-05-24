@@ -477,12 +477,19 @@ export async function runDomainCoding(
       // run to `failed-internal-error` via the lease-bypass path so the
       // row doesn't rot at 'running'. forceFailFinalize is no-op on a
       // row that already reached a terminal status.
+      //
+      // Phase 10-2: on a stolen-lease recovery, pass the lost lockId so
+      // a *new* attempt that reacquired this same run_id under a fresh
+      // lease (rerun) is not flipped by this finalize.
       try {
         new RunRepository(db).forceFailFinalize({
           runId,
           finishedAt: new Date().toISOString(),
           reason: leaseLost ? "lease_lost" : "internal_error",
           errorMessage: (e as Error).message,
+          ...(leaseLost && dbLock !== undefined
+            ? { lostLockId: dbLock.lockId }
+            : {}),
         });
       } catch {
         // last-resort: lease was lost AND the DB is unhappy; the lease

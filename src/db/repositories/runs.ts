@@ -601,6 +601,22 @@ export class RunRepository {
     finishedAt: string;
     reason: "lease_lost" | "internal_error";
     errorMessage: string;
+    /**
+     * Phase 10-0 post-review P1 / Phase 10-2: when this finalize is
+     * recovering from a stolen lease, the caller passes the `lock_id`
+     * of the lease that was lost. The UPDATE is then guarded by
+     * `AND lease_lock_id = :lostLockId`, so a *new* attempt that
+     * reacquired the same `run_id` under a fresh lease (e.g. a rerun)
+     * is not accidentally flipped to `failed-internal-error`. Omitting
+     * `lostLockId` preserves the Phase 9 unguarded behaviour for the
+     * generic internal-error recovery path.
+     *
+     * Note: `runs.state_version` bump (design §3.E.E3) is **not** added
+     * here because the column does not exist until schema v6 (Phase 10-3).
+     * Phase 10-5 will fold this finalize into the unified state-version
+     * CAS once the column lands.
+     */
+    lostLockId?: number;
   }): { changed: boolean } {
     const TERMINAL = new Set([
       "approved",
@@ -614,12 +630,24 @@ export class RunRepository {
     ]);
     const txn = this.db.transaction((): { changed: boolean } => {
       const row = this.db
-        .prepare("SELECT status, meta_json FROM runs WHERE run_id = ?")
+        .prepare(
+          "SELECT status, meta_json, lease_lock_id FROM runs WHERE run_id = ?",
+        )
         .get(input.runId) as
-        | { status: string; meta_json: string | null }
+        | { status: string; meta_json: string | null; lease_lock_id: number | null }
         | undefined;
       if (row === undefined) return { changed: false };
       if (TERMINAL.has(row.status)) return { changed: false };
+      // Phase 10-2: lostLockId guard — if the caller knows which lease was
+      // lost, only finalize the row when it still carries that exact lease.
+      // A re-acquired lease (different lock_id) means a new attempt is live
+      // for the same run_id; we must not flip it.
+      if (
+        input.lostLockId !== undefined &&
+        row.lease_lock_id !== input.lostLockId
+      ) {
+        return { changed: false };
+      }
       const meta =
         row.meta_json !== null
           ? (JSON.parse(row.meta_json) as Record<string, unknown>)
@@ -629,9 +657,9 @@ export class RunRepository {
         status: "failed-internal-error",
         finishedAt: input.finishedAt,
       };
-      this.db
-        .prepare(
-          `UPDATE runs
+      const guarded = input.lostLockId !== undefined;
+      const sql = guarded
+        ? `UPDATE runs
              SET status = 'failed-internal-error',
                  finished_at = ?,
                  meta_json = ?,
@@ -639,14 +667,36 @@ export class RunRepository {
                  export_status = 'dirty',
                  last_export_error = NULL,
                  updated_at = ?
-           WHERE run_id = ?`,
-        )
-        .run(
-          input.finishedAt,
-          JSON.stringify(patchedMeta, null, 2),
-          input.finishedAt,
-          input.runId,
-        );
+           WHERE run_id = ? AND lease_lock_id = ?`
+        : `UPDATE runs
+             SET status = 'failed-internal-error',
+                 finished_at = ?,
+                 meta_json = ?,
+                 db_revision = db_revision + 1,
+                 export_status = 'dirty',
+                 last_export_error = NULL,
+                 updated_at = ?
+           WHERE run_id = ?`;
+      const params = guarded
+        ? [
+            input.finishedAt,
+            JSON.stringify(patchedMeta, null, 2),
+            input.finishedAt,
+            input.runId,
+            input.lostLockId,
+          ]
+        : [
+            input.finishedAt,
+            JSON.stringify(patchedMeta, null, 2),
+            input.finishedAt,
+            input.runId,
+          ];
+      const info = this.db.prepare(sql).run(...params);
+      if (info.changes === 0) {
+        // guarded UPDATE matched zero rows → a re-acquired lease moved past
+        // this finalize. Treat as a no-op (returning `changed: false`).
+        return { changed: false };
+      }
       const seq = (
         this.db
           .prepare(
