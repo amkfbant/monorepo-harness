@@ -181,15 +181,16 @@ export async function cleanupRun(opts: CleanupOpts): Promise<CleanupResult> {
         "SELECT source_mode FROM runs WHERE run_id = ?",
       )
       .get(opts.runId) as { source_mode: string } | undefined;
-    if (
-      dbRow !== undefined &&
-      dbRow.source_mode !== "db-first" &&
-      dbRow.source_mode !== "legacy-file"
-    ) {
+    // Phase 10-6: runtime cleanup operates only on db-first runs. The
+    // legacy-file branch is dead code (assertNoLegacyRuntimeRows above
+    // rejects any DB carrying legacy-file rows). The dbFirst flag remains
+    // for cleanupUnderLock's existing branches; the only reachable value
+    // in Phase 10 runtime is `true`.
+    if (dbRow !== undefined && dbRow.source_mode !== "db-first") {
       throw new SourceModeError(
         opts.runId,
         dbRow.source_mode,
-        "db-first | legacy-file",
+        "db-first",
       );
     }
     const dbFirst = dbRow?.source_mode === "db-first";

@@ -121,19 +121,17 @@ async function loadParentMeta(
         | { source_mode: string; meta_json: string | null }
         | undefined;
       if (row !== undefined) {
-        // an unrecognised source_mode is corruption — surface it rather
-        // than silently falling back to the (possibly stale) meta.json.
-        if (
-          row.source_mode !== "db-first" &&
-          row.source_mode !== "legacy-file"
-        ) {
+        // Phase 10-6: runtime rerun operates only on db-first runs.
+        // legacy-file is dead branch (assertNoLegacyRuntimeRows elsewhere
+        // refuses runtime writes on a DB with legacy-file rows).
+        if (row.source_mode !== "db-first") {
           throw new SourceModeError(
             parentRunId,
             row.source_mode,
-            "db-first | legacy-file",
+            "db-first",
           );
         }
-        if (row.source_mode === "db-first" && row.meta_json !== null) {
+        if (row.meta_json !== null) {
           return JSON.parse(row.meta_json) as RunMeta;
         }
       }
@@ -170,11 +168,13 @@ async function loadReviewDecisionForRun(
         )
         .get(runId) as { mode: string; yaml: string | null } | undefined;
       if (row !== undefined) {
-        if (row.mode !== "db-first" && row.mode !== "legacy-file") {
+        // Phase 10-6: runtime rerun decision read operates only on
+        // db-first runs. legacy-file is dead branch.
+        if (row.mode !== "db-first") {
           throw new SourceModeError(
             runId,
             row.mode,
-            "db-first | legacy-file",
+            "db-first",
           );
         }
         if (row.mode === "db-first") {

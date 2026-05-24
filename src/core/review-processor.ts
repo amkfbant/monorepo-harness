@@ -150,15 +150,13 @@ export async function processReviewDecision(
         "SELECT source_mode FROM runs WHERE run_id = ?",
       )
       .get(opts.runId) as { source_mode: string } | undefined;
-    if (
-      dbRow !== undefined &&
-      dbRow.source_mode !== "db-first" &&
-      dbRow.source_mode !== "legacy-file"
-    ) {
+    // Phase 10-6: runtime review process operates only on db-first runs.
+    // legacy-file is dead branch (assertNoLegacyRuntimeRows gates above).
+    if (dbRow !== undefined && dbRow.source_mode !== "db-first") {
       throw new SourceModeError(
         opts.runId,
         dbRow.source_mode,
-        "db-first | legacy-file",
+        "db-first",
       );
     }
     const dbFirst = dbRow?.source_mode === "db-first";

@@ -123,15 +123,13 @@ export async function createPullRequest(
             )
             .get(opts.runId) as { source_mode: string } | undefined)
         : undefined;
-    if (
-      dbRow !== undefined &&
-      dbRow.source_mode !== "db-first" &&
-      dbRow.source_mode !== "legacy-file"
-    ) {
+    // Phase 10-6: runtime pr create operates only on db-first runs.
+    // legacy-file is dead branch (assertNoLegacyRuntimeRows gates above).
+    if (dbRow !== undefined && dbRow.source_mode !== "db-first") {
       throw new SourceModeError(
         opts.runId,
         dbRow.source_mode,
-        "db-first | legacy-file",
+        "db-first",
       );
     }
     // legacy / not-in-DB runs still need meta.json on disk.
