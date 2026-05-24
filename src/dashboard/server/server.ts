@@ -19,6 +19,7 @@ import { readArtifactBlob } from "../../db/artifact-blobs.js";
 import { listActiveDomainLocks } from "../../workspace/db-domain-lock.js";
 import { checkConsistency } from "../../db/consistency.js";
 import { dbStats } from "../../db/maintenance.js";
+import { renderDashboardHtml } from "../render.js";
 
 /**
  * Dashboard read-only HTTP server (Phase 12-1 skeleton).
@@ -422,6 +423,33 @@ export function defaultRoutes(): Route[] {
           writeJson(res, 200, { reviewers });
         } finally {
           handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/",
+      handler: ({ ctx, res }) => {
+        // Phase 12-6: serve the same HTML the static export writes,
+        // but with a live snapshot. The client may then poll
+        // /api/snapshot to refresh.
+        try {
+          const snapshot = loadDashboardSnapshot({
+            harnessRoot: dirname(dirname(ctx.config.dbPath)),
+            autoImport: false,
+          });
+          const html = renderDashboardHtml(snapshot);
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "text/html; charset=utf-8");
+          res.setHeader("X-Content-Type-Options", "nosniff");
+          res.setHeader("Cache-Control", "no-store");
+          res.end(html);
+        } catch (e) {
+          if (e instanceof DashboardSnapshotError) {
+            writeError(res, 404, "not_found", e.message);
+            return;
+          }
+          throw e;
         }
       },
     },

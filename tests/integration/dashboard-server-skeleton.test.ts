@@ -115,6 +115,13 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
     expect(body.filters).toEqual({ projectId: "does-not-exist" });
   });
 
+  it("GET / returns the live HTML dashboard (Phase 12-6)", async () => {
+    const r = await get(env.server.baseUrl, "/");
+    expect(r.status).toBe(200);
+    expect(typeof r.body).toBe("string");
+    expect(String(r.body)).toMatch(/<html/i);
+  });
+
   it("invariant: GET /api/health does NOT mutate the DB (mtime unchanged)", async () => {
     const fs = await import("node:fs");
     const before = fs.statSync(env.dbPath).mtimeMs;
