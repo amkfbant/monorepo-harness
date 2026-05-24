@@ -15,6 +15,10 @@ import {
   listActiveDomainLocks,
   releaseDomainLockByDomain,
 } from "../workspace/db-domain-lock.js";
+import {
+  ReviewerRepository,
+  DuplicateReviewerError,
+} from "../db/repositories/reviewers.js";
 import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import {
@@ -1051,6 +1055,103 @@ reviewCmd
       throw e;
     }
   });
+const reviewersCmd = reviewCmd
+  .command("reviewers")
+  .description("review reviewer identity registry (Phase 11)");
+reviewersCmd
+  .command("list")
+  .description("list registered reviewers")
+  .action(async () => {
+    const paths = harnessPaths(getHarnessRoot());
+    if (!existsSync(paths.dbPath)) {
+      process.stderr.write(
+        "harness error: db not initialised — run 'harness db init'\n",
+      );
+      process.exit(1);
+    }
+    const dbHandle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
+    try {
+      const rows = new ReviewerRepository(dbHandle.db).list();
+      if (rows.length === 0) {
+        process.stdout.write("(none)\n");
+        return;
+      }
+      for (const r of rows) {
+        process.stdout.write(
+          `  ${r.reviewerId}\ttype=${r.reviewerType}\tgroup=${r.groupId ?? "-"}\ttrust=${r.trustLevel}\t"${r.displayName}"\n`,
+        );
+      }
+    } finally {
+      dbHandle.close();
+    }
+  });
+reviewersCmd
+  .command("add")
+  .description("register a new reviewer")
+  .argument("<reviewer_id>", "stable reviewer id (slug)")
+  .requiredOption("--type <type>", "reviewer type: human|codex|external|system")
+  .requiredOption("--display-name <name>", "human-readable display name")
+  .option("--group <id>", "group id (humans / codex / security / ...)")
+  .option(
+    "--trust <level>",
+    "advisory | normal | required | policy (default: normal)",
+    "normal",
+  )
+  .action(async (reviewerId: string, raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    if (!existsSync(paths.dbPath)) {
+      process.stderr.write(
+        "harness error: db not initialised — run 'harness db init'\n",
+      );
+      process.exit(1);
+    }
+    const type = String(raw.type);
+    if (
+      type !== "human" &&
+      type !== "codex" &&
+      type !== "external" &&
+      type !== "system"
+    ) {
+      process.stderr.write(
+        `harness error: --type must be one of human|codex|external|system (got ${JSON.stringify(type)})\n`,
+      );
+      process.exit(1);
+    }
+    const trust = String(raw.trust ?? "normal");
+    if (
+      trust !== "advisory" &&
+      trust !== "normal" &&
+      trust !== "required" &&
+      trust !== "policy"
+    ) {
+      process.stderr.write(
+        `harness error: --trust must be one of advisory|normal|required|policy (got ${JSON.stringify(trust)})\n`,
+      );
+      process.exit(1);
+    }
+    const dbHandle = openManagedDb({ dbPath: paths.dbPath });
+    try {
+      const r = new ReviewerRepository(dbHandle.db).add({
+        reviewerId,
+        reviewerType: type,
+        displayName: String(raw.displayName),
+        ...(raw.group !== undefined ? { groupId: String(raw.group) } : {}),
+        trustLevel: trust,
+      });
+      process.stdout.write(
+        `added reviewer ${r.reviewerId} (type=${r.reviewerType}, trust=${r.trustLevel})\n`,
+      );
+    } catch (e) {
+      if (e instanceof DuplicateReviewerError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    } finally {
+      dbHandle.close();
+    }
+  });
+
 reviewCmd
   .command("compare")
   .description("compare two review-decision.yaml files (e.g. human vs agent)")
