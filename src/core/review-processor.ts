@@ -92,6 +92,25 @@ function processOverridePath(
     reviewed_at: reviewedAt,
   });
 
+  // Phase 11 post-close P1: consensus must reflect the override and
+  // review_overrides.consensus_id must be linked. Order:
+  //   1. consensus insertActive (with override summary so
+  //      decisionPath='override')
+  //   2. applyReviewDecision (links consensus_id into review_decisions)
+  //   3. review_overrides INSERT with consensus_id
+  const overridesRepo = new ReviewOverridesRepository(db);
+  const consensusRow = recordConsensusForReviewProcess(db, {
+    runId: opts.runId,
+    decision: override.decision,
+    reviewer: actor,
+    reviewedAt,
+    override: {
+      decision: override.decision,
+      actorReviewerId: actor,
+      reason: override.reason,
+      createdAt: reviewedAt,
+    },
+  });
   new RunRepository(db).applyReviewDecision({
     runId: opts.runId,
     decision: override.decision,
@@ -99,31 +118,21 @@ function processOverridePath(
     reviewedAt,
     requiredChanges: [],
     decisionYaml,
+    ...(consensusRow !== null
+      ? {
+          consensusId: consensusRow.consensusId,
+          proposalsSummaryJson: consensusRow.summaryJson,
+        }
+      : {}),
   });
-
-  // Audit row in review_overrides + consensus row reflecting the override.
-  const ovr = new ReviewOverridesRepository(db).insert({
+  const ovr = overridesRepo.insert({
     runId: opts.runId,
     actorReviewerId: actor,
     decision: override.decision,
     reason: override.reason,
     now: opts.now ?? new Date(),
+    ...(consensusRow !== null ? { consensusId: consensusRow.consensusId } : {}),
   });
-  try {
-    recordConsensusForReviewProcess(db, {
-      runId: opts.runId,
-      decision: override.decision,
-      reviewer: actor,
-      reviewedAt,
-      // synthetic proposalId from the override row so source_proposals_json
-      // links the consensus to the audit log
-    });
-  } catch (e) {
-    process.stderr.write(
-      `warning: could not record override consensus for ${opts.runId}: ` +
-        `${(e as Error).message}\n`,
-    );
-  }
   warnIfExportFailed(exportRun(db, opts.runId, { runsDir: opts.runsDir }));
   return {
     runId: opts.runId,
@@ -143,8 +152,15 @@ function recordConsensusForReviewProcess(
     reviewer: string | null;
     reviewedAt: string;
     proposalId?: number;
+    /** Phase 11 post-close P1: override → consensus.summary.override. */
+    override?: {
+      decision: "approved" | "changes_requested" | "rejected";
+      actorReviewerId: string;
+      reason: string;
+      createdAt: string;
+    };
   },
-): void {
+): { consensusId: number; summaryJson: string } | null {
   const snapshot = new ReviewRulesRepository(db).findSnapshotByRun(
     input.runId,
   );
@@ -155,31 +171,27 @@ function recordConsensusForReviewProcess(
       ? DEFAULT_REVIEW_RULE
       : (JSON.parse(snapshot.ruleJson) as ReviewRule);
   const ruleSha = snapshot?.sourceSha256 ?? ruleSha256(rule);
-  const enriched: EnrichedProposal =
+  const proposals: EnrichedProposal[] =
     input.proposalId !== undefined
-      ? {
-          proposalId: input.proposalId,
-          reviewerId: input.reviewer,
-          reviewerType: "unknown",
-          groupId: null,
-          decision: input.decision,
-          reviewedAt: input.reviewedAt,
-        }
-      : {
-          proposalId: -1, // synthetic placeholder for file-only path
-          reviewerId: input.reviewer,
-          reviewerType: "unknown",
-          groupId: null,
-          decision: input.decision,
-          reviewedAt: input.reviewedAt,
-        };
+      ? [
+          {
+            proposalId: input.proposalId,
+            reviewerId: input.reviewer,
+            reviewerType: "unknown",
+            groupId: null,
+            decision: input.decision,
+            reviewedAt: input.reviewedAt,
+          },
+        ]
+      : []; // file-only / override path: no real proposal row
   const result = evaluateConsensus({
     rule,
     ruleSha256: ruleSha,
-    proposals: [enriched],
+    proposals,
+    ...(input.override !== undefined ? { override: input.override } : {}),
     evaluatedAt: input.reviewedAt,
   });
-  new ReviewConsensusRepository(db).insertActive({
+  const row = new ReviewConsensusRepository(db).insertActive({
     runId: input.runId,
     ruleSha256: ruleSha,
     status: result.status,
@@ -189,6 +201,7 @@ function recordConsensusForReviewProcess(
     sourceProposalIds:
       input.proposalId !== undefined ? [input.proposalId] : [],
   });
+  return { consensusId: row.consensusId, summaryJson: row.summaryJson };
 }
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";

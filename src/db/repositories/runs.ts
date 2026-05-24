@@ -160,6 +160,14 @@ export interface ApplyReviewDecisionInput {
    */
   expectedStateVersion?: number;
   /**
+   * Phase 11 post-close P1 #2 — link the just-evaluated consensus row
+   * + its summary json into review_decisions, so decision provenance
+   * (including override actor / reason) is queryable from a single row
+   * for dashboard / archive consumers.
+   */
+  consensusId?: number;
+  proposalsSummaryJson?: string;
+  /**
    * Phase 9 post-close P1 #1 fix — when the verdict came from a DB
    * `review_proposals` row, mark it processed inside the SAME transaction
    * as the decision promotion. If the process crashes between the run
@@ -876,16 +884,22 @@ export class RunRepository {
             reviewedAt: input.reviewedAt,
           }),
         );
+      // Phase 11 post-close P1 #2: include consensus_id +
+      // proposals_summary_json so decision provenance is tied to the
+      // consensus row + summary used to derive it (override 経路を含む).
       this.db
         .prepare(
           `INSERT INTO review_decisions (run_id, decision, reviewer, summary,
-             reviewed_at, source_yaml, source_sha256)
-           VALUES (?, ?, ?, NULL, ?, ?, ?)
+             reviewed_at, source_yaml, source_sha256, consensus_id,
+             proposals_summary_json)
+           VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)
            ON CONFLICT (run_id) DO UPDATE SET
              decision = excluded.decision, reviewer = excluded.reviewer,
              reviewed_at = excluded.reviewed_at,
              source_yaml = excluded.source_yaml,
-             source_sha256 = excluded.source_sha256`,
+             source_sha256 = excluded.source_sha256,
+             consensus_id = excluded.consensus_id,
+             proposals_summary_json = excluded.proposals_summary_json`,
         )
         .run(
           input.runId,
@@ -894,6 +908,8 @@ export class RunRepository {
           input.reviewedAt,
           input.decisionYaml,
           sha256(input.decisionYaml),
+          input.consensusId ?? null,
+          input.proposalsSummaryJson ?? null,
         );
       this.db
         .prepare("DELETE FROM review_required_changes WHERE run_id = ?")

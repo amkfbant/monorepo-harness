@@ -767,6 +767,22 @@ export const MIGRATION_V7_STATEMENTS: readonly string[] = [
   // --- review_decisions additions (Phase 11 — §F) -------------------
   `ALTER TABLE review_decisions ADD COLUMN consensus_id INTEGER REFERENCES review_consensus(consensus_id)`,
   `ALTER TABLE review_decisions ADD COLUMN proposals_summary_json TEXT`,
+
+  // Phase 11 post-close (whole-phase review P2 #3) — backfill
+  // lifecycle_status for legacy rows that migrated as 'active' DEFAULT
+  // despite already being superseded/processed. Idempotent because the
+  // UPDATE is conditional on the existing lifecycle_status='active'.
+  // processed wins over superseded: a processed row should never be
+  // demoted to 'superseded' even if the row also carries superseded_at.
+  `UPDATE review_proposals
+      SET lifecycle_status = 'processed'
+    WHERE lifecycle_status = 'active'
+      AND processed_at IS NOT NULL`,
+  `UPDATE review_proposals
+      SET lifecycle_status = 'superseded'
+    WHERE lifecycle_status = 'active'
+      AND superseded_at IS NOT NULL
+      AND processed_at IS NULL`,
 ];
 
 /** Tables added by v7 (Phase 11). */
