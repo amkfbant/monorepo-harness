@@ -190,6 +190,10 @@ async function processUnderLock(
   // still work.
   let decision: Awaited<ReturnType<typeof loadReviewDecision>>;
   let proposalId: number | null = null;
+  // Phase 10-5 (design §3.E E1) — capture the proposal sha so the
+  // applyReviewDecision transaction can guard against a stale rewrite
+  // by a concurrent `review auto`.
+  let proposalSha256: string | null = null;
   const proposalRepo = new ReviewProposalRepository(db);
   // Phase 9 post-close P1 #1 fix — if a prior `review process` invocation
   // already promoted a proposal for this run but crashed before some
@@ -230,6 +234,7 @@ async function processUnderLock(
     try {
       decision = parseReviewDecisionYaml(activeProposal.sourceYaml);
       proposalId = activeProposal.proposalId;
+      proposalSha256 = activeProposal.sourceSha256;
     } catch (e) {
       throw new ReviewGateError(
         `review_proposals row for ${opts.runId} is malformed: ` +
@@ -276,6 +281,7 @@ async function processUnderLock(
           createdAt,
         });
         proposalId = ins.proposalId;
+        proposalSha256 = fileSha;
       } catch {
         // best-effort import — if the insert fails (e.g. constraint),
         // continue with the file-only decision so the operator's
@@ -361,6 +367,9 @@ async function processUnderLock(
             markProposalProcessed: {
               proposalId,
               reviewDecisionId: opts.runId,
+              ...(proposalSha256 !== null
+                ? { expectedSourceSha256: proposalSha256 }
+                : {}),
             },
           }
         : {}),

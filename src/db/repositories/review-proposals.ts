@@ -180,16 +180,39 @@ export class ReviewProposalRepository {
     proposalId: number,
     reviewDecisionId: string,
     processedAt: string,
+    /**
+     * Phase 10-5 (design §3.E E1) — when supplied, the UPDATE is also
+     * guarded by `source_sha256 = ?`. A stale caller holding an old
+     * sha after a concurrent `review auto` mutated the same proposal
+     * row in place (e.g. retry) gets `changes=0` rather than silently
+     * stamping `processed_at`.
+     */
+    expectedSourceSha256?: string,
   ): boolean {
-    const r = this.db
-      .prepare(
-        `UPDATE review_proposals
-            SET processed_at = ?, review_decision_id = ?
-          WHERE proposal_id = ?
-            AND processed_at IS NULL
-            AND superseded_at IS NULL`,
-      )
-      .run(processedAt, reviewDecisionId, proposalId);
+    const sql =
+      expectedSourceSha256 === undefined
+        ? `UPDATE review_proposals
+              SET processed_at = ?, review_decision_id = ?
+            WHERE proposal_id = ?
+              AND processed_at IS NULL
+              AND superseded_at IS NULL`
+        : `UPDATE review_proposals
+              SET processed_at = ?, review_decision_id = ?
+            WHERE proposal_id = ?
+              AND processed_at IS NULL
+              AND superseded_at IS NULL
+              AND source_sha256 = ?`;
+    const r =
+      expectedSourceSha256 === undefined
+        ? this.db.prepare(sql).run(processedAt, reviewDecisionId, proposalId)
+        : this.db
+            .prepare(sql)
+            .run(
+              processedAt,
+              reviewDecisionId,
+              proposalId,
+              expectedSourceSha256,
+            );
     return r.changes > 0;
   }
 }

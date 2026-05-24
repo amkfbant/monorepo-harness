@@ -161,6 +161,14 @@ export interface ApplyReviewDecisionInput {
   markProposalProcessed?: {
     proposalId: number;
     reviewDecisionId: string;
+    /**
+     * Phase 10-5 (design §3.E E1): when supplied, the UPDATE adds an
+     * `AND source_sha256 = ?` predicate so a stale caller (who read the
+     * proposal under an old sha after a concurrent `review auto`
+     * mutated it) gets a `StateConflictError` instead of silently
+     * stamping `processed_at`.
+     */
+    expectedSourceSha256?: string;
   };
 }
 
@@ -658,6 +666,9 @@ export class RunRepository {
         finishedAt: input.finishedAt,
       };
       const guarded = input.lostLockId !== undefined;
+      // Phase 10-5: bump state_version on the lease-stolen finalize so
+      // downstream observers (consensus / dashboard / doctor) see this
+      // transition. The state_version column landed in schema v6.
       const sql = guarded
         ? `UPDATE runs
              SET status = 'failed-internal-error',
@@ -666,7 +677,8 @@ export class RunRepository {
                  db_revision = db_revision + 1,
                  export_status = 'dirty',
                  last_export_error = NULL,
-                 updated_at = ?
+                 updated_at = ?,
+                 state_version = state_version + 1
            WHERE run_id = ? AND lease_lock_id = ?`
         : `UPDATE runs
              SET status = 'failed-internal-error',
@@ -675,7 +687,8 @@ export class RunRepository {
                  db_revision = db_revision + 1,
                  export_status = 'dirty',
                  last_export_error = NULL,
-                 updated_at = ?
+                 updated_at = ?,
+                 state_version = state_version + 1
            WHERE run_id = ?`;
       const params = guarded
         ? [
@@ -767,12 +780,18 @@ export class RunRepository {
         reviewer: input.reviewer,
         reviewedAt: input.reviewedAt,
       };
+      // Phase 10-5 (design §3.E E3): bump runs.state_version on every
+      // review-process transition so future consensus / dashboard / db
+      // doctor consumers can detect change. Phase 10 only bumps in
+      // review-related transitions; other writers are tracked in the
+      // close report as Phase 11 work.
       const info = this.db
         .prepare(
           `UPDATE runs
              SET status = ?, reviewer = ?, reviewed_at = ?, meta_json = ?,
                  db_revision = db_revision + 1, export_status = 'dirty',
-                 last_export_error = NULL, updated_at = ?
+                 last_export_error = NULL, updated_at = ?,
+                 state_version = state_version + 1
            WHERE run_id = ? AND status = 'needs_review'`,
         )
         .run(
@@ -858,25 +877,43 @@ export class RunRepository {
       // transaction with a StateConflictError so the caller can reload
       // the latest proposal rather than process a stale one.
       if (input.markProposalProcessed !== undefined) {
-        const r = this.db
-          .prepare(
-            `UPDATE review_proposals
-                SET processed_at = ?, review_decision_id = ?
-              WHERE proposal_id = ?
-                AND processed_at IS NULL
-                AND superseded_at IS NULL`,
-          )
-          .run(
-            input.reviewedAt,
-            input.markProposalProcessed.reviewDecisionId,
-            input.markProposalProcessed.proposalId,
-          );
+        const expSha = input.markProposalProcessed.expectedSourceSha256;
+        const r =
+          expSha === undefined
+            ? this.db
+                .prepare(
+                  `UPDATE review_proposals
+                      SET processed_at = ?, review_decision_id = ?
+                    WHERE proposal_id = ?
+                      AND processed_at IS NULL
+                      AND superseded_at IS NULL`,
+                )
+                .run(
+                  input.reviewedAt,
+                  input.markProposalProcessed.reviewDecisionId,
+                  input.markProposalProcessed.proposalId,
+                )
+            : this.db
+                .prepare(
+                  `UPDATE review_proposals
+                      SET processed_at = ?, review_decision_id = ?
+                    WHERE proposal_id = ?
+                      AND processed_at IS NULL
+                      AND superseded_at IS NULL
+                      AND source_sha256 = ?`,
+                )
+                .run(
+                  input.reviewedAt,
+                  input.markProposalProcessed.reviewDecisionId,
+                  input.markProposalProcessed.proposalId,
+                  expSha,
+                );
         if (r.changes === 0) {
           throw new StateConflictError(
             input.runId,
             ["needs_review"],
             `review_proposals(id=${input.markProposalProcessed.proposalId})` +
-              ` superseded or already processed`,
+              ` superseded, sha mismatch, or already processed`,
           );
         }
       }

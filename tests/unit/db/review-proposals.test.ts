@@ -168,6 +168,38 @@ describe("ReviewProposalRepository", () => {
     },
   );
 
+  it(
+    "markProcessed rejects when expectedSourceSha256 mismatches " +
+      "(Phase 10-5 design §3.E E1)",
+    () => {
+      const db = freshDb();
+      const repo = new ReviewProposalRepository(db);
+      const { proposalId } = repo.insertProposal(baseProposal());
+      // wrong sha → no-op (changes=0)
+      expect(
+        repo.markProcessed(
+          proposalId,
+          RUN_ID,
+          "2026-05-23T13:00:00Z",
+          "deadbeef".repeat(8),
+        ),
+      ).toBe(false);
+      // matching sha → succeeds
+      const r = db
+        .prepare("SELECT source_sha256 FROM review_proposals WHERE proposal_id = ?")
+        .get(proposalId) as { source_sha256: string };
+      expect(
+        repo.markProcessed(
+          proposalId,
+          RUN_ID,
+          "2026-05-23T13:00:00Z",
+          r.source_sha256,
+        ),
+      ).toBe(true);
+      db.close();
+    },
+  );
+
   it("getLatestProcessedProposal returns null when nothing was processed", () => {
     const db = freshDb();
     const repo = new ReviewProposalRepository(db);
