@@ -38,10 +38,11 @@ export interface ProcessOpts {
   runsDir: string;
   runId: string;
   /**
-   * locksDir is required: review processing mutates meta.json, which
-   * `harness cleanup` for the same run also mutates. Both acquire the
-   * per-domain lock so a concurrent cleanup can't interleave a stale
-   * meta write.
+   * locksDir is retained for callers that still pass it (e.g. CLI/tests).
+   * Phase 10-1: the file domain lock has been retired; review processing
+   * relies on the DB state guard (status / processed_at / source_sha256 /
+   * superseded_at) to reject stale or concurrent writes. The path is
+   * used only for the legacy file-lock warning helper.
    */
   locksDir: string;
   /** harness DB path — a `db-first` run is processed through the DB. */

@@ -82,8 +82,12 @@ export interface CreatePrResult {
  * reviewed paths from the run worktree onto the run branch, push it,
  * open the PR, and record prUrl / prNumber in meta.json.
  *
- * Runs under the run's domain lock so a concurrent cleanup cannot delete
- * the worktree / overwrite meta.json mid-flight.
+ * Phase 10-1: the file domain lock has been retired. Idempotency comes
+ * from the DB-recorded `pull_requests.status='created'` short-circuit at
+ * the top of `createPullRequest`. The post-review TODO below (Phase 10-2)
+ * tightens the race window between two concurrent `pr create` invocations
+ * for the same run, by reserving the `pull_requests` row before any
+ * external git/gh side effect.
  */
 export async function createPullRequest(
   opts: CreatePrOpts,

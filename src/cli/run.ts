@@ -490,14 +490,16 @@ async function cmdLockRelease(o: LockReleaseOpts): Promise<void> {
   const paths = harnessPaths(getHarnessRoot());
   let releasedAny = false;
 
+  // Phase 10-1 post-review P2: `--source file` and `--source both` are
+  // both deprecated; warn but still perform the DB release so stale
+  // operator scripts that still pass `--source file` actually clear the
+  // current (DB) lock.
   if (o.source === "file") {
     process.stderr.write(
       "warning: `--source file` is deprecated in Phase 10 — file domain " +
-        "locks are no longer used. No DB lock release was performed.\n",
+        "locks are no longer used. Continuing with a DB lock release.\n",
     );
-    return;
-  }
-  if (o.source === "both") {
+  } else if (o.source === "both") {
     process.stderr.write(
       "warning: `--source both` is deprecated in Phase 10 — only the DB " +
         "domain lock is released.\n",
