@@ -215,6 +215,57 @@ describe("Phase 10-2 DB lease stealing — full integration", () => {
   );
 
   it(
+    "forceFailFinalize with lostLockId guard — same run_id stale recovery: " +
+      "if a rerun reacquired the same run row under a fresh lease, A's " +
+      "stale recovery is a no-op (Phase 10-2 post-review P2 #1)",
+    () => {
+      const f = setup();
+      const dbA = openDb(f.dbPath);
+      try {
+        // A held lock 42 originally
+        const lockIdA = 42;
+        const lockIdB = 99;
+        dbA.prepare(
+          "UPDATE runs SET lease_lock_id = ?, status = 'running' WHERE run_id = ?",
+        ).run(lockIdA, f.runIdA);
+
+        // simulate B reacquiring the SAME run row (e.g. a rerun loop reusing
+        // run_id; or a recovery script that re-runs) — overwrite lease_lock_id
+        // to B's lock through a separate connection to model the cross-process
+        // race shape exactly.
+        const dbB = openDb(f.dbPath);
+        try {
+          dbB.prepare(
+            "UPDATE runs SET lease_lock_id = ? WHERE run_id = ?",
+          ).run(lockIdB, f.runIdA);
+        } finally {
+          dbB.close();
+        }
+
+        // A's stale recovery passes its OWN lockId (42); the WHERE clause now
+        // sees `lease_lock_id = 99`, so changes = 0 → no flip.
+        const r = new RunRepository(dbA).forceFailFinalize({
+          runId: f.runIdA,
+          finishedAt: "2026-05-24T01:05:00Z",
+          reason: "lease_lost",
+          errorMessage: "stale A recovery while B holds the same run_id",
+          lostLockId: lockIdA,
+        });
+        expect(r.changed).toBe(false);
+        const row = dbA
+          .prepare(
+            "SELECT status, lease_lock_id FROM runs WHERE run_id = ?",
+          )
+          .get(f.runIdA) as { status: string; lease_lock_id: number };
+        expect(row.status).toBe("running");
+        expect(row.lease_lock_id).toBe(lockIdB);
+      } finally {
+        dbA.close();
+      }
+    },
+  );
+
+  it(
     "forceFailFinalize with lostLockId guard — flips A's run only when " +
       "the run still carries A's lost lockId",
     () => {
@@ -326,6 +377,36 @@ describe("Phase 10-2 DB lease stealing — full integration", () => {
           )
           .all() as { run_id: string }[];
         expect(orphans.map((r) => r.run_id)).toContain(f.runIdA);
+
+        // Phase 10-2 post-review P2 #2: explicit NULL-safe assertion.
+        // A `coding` run with `lease_lock_id = NULL` should also be flagged
+        // as orphan by the NOT EXISTS form (NOT IN would silently drop it).
+        db.prepare(
+          `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+             status, source_mode, db_revision, export_status, started_at,
+             updated_at, meta_json, lease_lock_id)
+           VALUES (?, 't', 'apps/user', 'domain-coding', 'main',
+             'coding', 'db-first', 1, 'disabled', ?, ?, ?, NULL)`,
+        ).run(
+          "run-orphan-null-lease",
+          "2026-05-24T00:00:00Z",
+          "2026-05-24T00:00:00Z",
+          JSON.stringify({ runId: "run-orphan-null-lease" }),
+        );
+        const orphansWithNullLease = db
+          .prepare(
+            `SELECT r.run_id FROM runs r
+              WHERE r.status = 'coding'
+                AND NOT EXISTS (
+                  SELECT 1 FROM domain_locks dl
+                  WHERE dl.lock_id = r.lease_lock_id
+                    AND dl.released_at IS NULL
+                )`,
+          )
+          .all() as { run_id: string }[];
+        expect(orphansWithNullLease.map((r) => r.run_id)).toContain(
+          "run-orphan-null-lease",
+        );
       } finally {
         db.close();
       }
