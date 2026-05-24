@@ -967,15 +967,33 @@ export function defaultRoutes(): Route[] {
       method: "GET",
       pattern: "/",
       handler: ({ ctx, res }) => {
-        // Phase 12-6: serve the same HTML the static export writes,
-        // but with a live snapshot. The client may then poll
-        // /api/snapshot to refresh.
+        // Phase 12-6 + 13-7: serve the same HTML the static export
+        // writes, but with a live snapshot. When mutation is enabled,
+        // inject a CSRF meta tag + a mutation banner so browser JS can
+        // POST against the mutation endpoints with a valid token.
         try {
           const snapshot = loadDashboardSnapshot({
             harnessRoot: dirname(dirname(ctx.config.dbPath)),
             autoImport: false,
           });
-          const html = renderDashboardHtml(snapshot);
+          let html = renderDashboardHtml(snapshot);
+          if (
+            ctx.config.mutationEnabled === true &&
+            ctx.config.csrfToken !== undefined
+          ) {
+            const meta = `<meta name="harness-csrf-token" content="${
+              ctx.config.csrfToken
+            }">`;
+            const banner =
+              '<div style="background:#fbeaa6;padding:8px;font-family:sans-serif">' +
+              "Mutation API enabled. Browser POSTs must include " +
+              '<code>X-CSRF-Token</code> header (read it from ' +
+              '<code>&lt;meta name="harness-csrf-token"&gt;</code>).' +
+              "</div>";
+            html = html
+              .replace(/<head>/i, `<head>\n  ${meta}`)
+              .replace(/<body[^>]*>/i, (m) => `${m}\n${banner}`);
+          }
           res.statusCode = 200;
           res.setHeader("Content-Type", "text/html; charset=utf-8");
           res.setHeader("X-Content-Type-Options", "nosniff");
