@@ -67,8 +67,8 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
     expect(r.status).toBe(200);
     const body = r.body as Record<string, unknown>;
     expect(body.status).toBe("ok");
-    expect(body.dbSchemaVersion).toBe(7);
-    expect(body.schemaVersionExpected).toBe(7);
+    expect(body.dbSchemaVersion).toBe(8);
+    expect(body.schemaVersionExpected).toBe(8);
     expect(typeof body.generatedAt).toBe("string");
   });
 
@@ -100,7 +100,7 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
     expect(r.status).toBe(200);
     const body = r.body as Record<string, unknown>;
     expect(typeof body.generatedAt).toBe("string");
-    expect(body.dbSchemaVersion).toBe(7);
+    expect(body.dbSchemaVersion).toBe(8);
     expect(Array.isArray(body.recentRuns)).toBe(true);
     expect(Array.isArray(body.warnings)).toBe(true);
   });

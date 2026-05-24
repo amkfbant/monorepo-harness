@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -794,6 +794,64 @@ export const V7_TABLE_NAMES: readonly string[] = [
   "review_overrides",
 ];
 
+/**
+ * v8 DDL — Phase 13 (mutation API + operation audit).
+ *
+ *  - `operations` を Phase 7-5 軽量 schema (operation_id / command /
+ *    scope_type / scope_id / result_json / created_at) から audit
+ *    ledger shape に拡張する。新 columns はすべて nullable / DEFAULT
+ *    付きで legacy 行 (= Phase 7-12 で `processReviewDecision` 等が
+ *    insert した既存 row) は影響しない。
+ *  - `operation_events`: per-operation timeline (state transitions /
+ *    side-effect logs)。
+ *  - `operations_idempotency_idx`: (operation_type, target_id,
+ *    idempotency_key) UNIQUE (partial; idempotency_key IS NOT NULL).
+ *
+ *  Phase 13 minimum では `operation_confirmations` は作らない (CSRF
+ *  token で十分; Phase 14+ で UX を上げるとき再検討)。
+ */
+export const MIGRATION_V8_STATEMENTS: readonly string[] = [
+  `ALTER TABLE operations ADD COLUMN operation_type TEXT`,
+  `ALTER TABLE operations ADD COLUMN target_type TEXT`,
+  `ALTER TABLE operations ADD COLUMN target_id TEXT`,
+  `ALTER TABLE operations ADD COLUMN actor TEXT`,
+  `ALTER TABLE operations ADD COLUMN idempotency_key TEXT`,
+  `ALTER TABLE operations ADD COLUMN dry_run INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE operations ADD COLUMN status TEXT NOT NULL DEFAULT 'succeeded'
+     CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled'))`,
+  `ALTER TABLE operations ADD COLUMN input_json TEXT`,
+  `ALTER TABLE operations ADD COLUMN error_code TEXT`,
+  `ALTER TABLE operations ADD COLUMN error_message TEXT`,
+  `ALTER TABLE operations ADD COLUMN started_at TEXT`,
+  `ALTER TABLE operations ADD COLUMN completed_at TEXT`,
+  `ALTER TABLE operations ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'`,
+  `CREATE UNIQUE INDEX operations_idempotency_idx
+     ON operations(operation_type, target_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL`,
+  `CREATE INDEX operations_target_idx
+     ON operations(target_type, target_id, created_at)`,
+  `CREATE INDEX operations_status_idx
+     ON operations(status, created_at)`,
+
+  `CREATE TABLE operation_events (
+    event_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_id TEXT NOT NULL,
+    seq          INTEGER NOT NULL,
+    event_type   TEXT NOT NULL,
+    message      TEXT,
+    data_json    TEXT NOT NULL DEFAULT '{}',
+    created_at   TEXT NOT NULL,
+    FOREIGN KEY (operation_id) REFERENCES operations(operation_id) ON DELETE CASCADE,
+    UNIQUE(operation_id, seq)
+  )`,
+  `CREATE INDEX operation_events_op_idx ON operation_events(operation_id, seq)`,
+];
+
+/** Tables added by v8 (Phase 13). */
+export const V8_TABLE_NAMES: readonly string[] = [
+  "operation_events",
+];
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -818,7 +876,7 @@ export const V1_TABLE_NAMES: readonly string[] = [
   "import_errors",
 ];
 
-/** Every data table at the latest schema version (v1 + v2 + v4 + v5 + v6 + v7). */
+/** Every data table at the latest schema version (v1 + v2 + v4 + v5 + v6 + v7 + v8). */
 export const ALL_TABLE_NAMES: readonly string[] = [
   ...V1_TABLE_NAMES,
   ...V2_TABLE_NAMES,
@@ -826,4 +884,5 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V5_TABLE_NAMES,
   ...V6_TABLE_NAMES,
   ...V7_TABLE_NAMES,
+  ...V8_TABLE_NAMES,
 ];
