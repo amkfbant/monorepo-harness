@@ -15,6 +15,7 @@ import {
 import { ReviewProposalRepository } from "../../db/repositories/review-proposals.js";
 import { ReviewConsensusRepository } from "../../db/repositories/review-consensus.js";
 import { ReviewerRepository } from "../../db/repositories/reviewers.js";
+import { readArtifactBlob } from "../../db/artifact-blobs.js";
 
 /**
  * Dashboard read-only HTTP server (Phase 12-1 skeleton).
@@ -278,6 +279,131 @@ export function defaultRoutes(): Route[] {
             runId,
           );
           writeJson(res, 200, { runId, consensus: active });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/artifacts/:artifactId",
+      handler: ({ ctx, res, params }) => {
+        // Phase 12-4 — artifactId must be a positive integer (path
+        // traversal defense via type narrowing).
+        const id = Number(params.artifactId);
+        if (!Number.isInteger(id) || id <= 0) {
+          writeError(
+            res,
+            400,
+            "bad_request",
+            "artifactId must be a positive integer",
+          );
+          return;
+        }
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const row = handle.db
+            .prepare(
+              `SELECT artifact_id, run_id, relative_path, content_type,
+                      byte_size, sha256, blob_sha256, storage,
+                      secret_suspect, original_bytes, original_sha256,
+                      body_status
+                 FROM artifacts
+                WHERE artifact_id = ?`,
+            )
+            .get(id) as Record<string, unknown> | undefined;
+          if (row === undefined) {
+            writeError(res, 404, "not_found", `artifact ${id} not found`);
+            return;
+          }
+          writeJson(res, 200, row);
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/artifacts/:artifactId/body",
+      handler: ({ ctx, res, params }) => {
+        const id = Number(params.artifactId);
+        if (!Number.isInteger(id) || id <= 0) {
+          writeError(
+            res,
+            400,
+            "bad_request",
+            "artifactId must be a positive integer",
+          );
+          return;
+        }
+        if (ctx.config.artifactBodyDisabled === true) {
+          writeError(
+            res,
+            403,
+            "forbidden",
+            "artifact body serving is disabled (--no-artifact-body)",
+          );
+          return;
+        }
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const row = handle.db
+            .prepare(
+              `SELECT blob_sha256, byte_size, content_type, secret_suspect,
+                      relative_path
+                 FROM artifacts WHERE artifact_id = ?`,
+            )
+            .get(id) as
+            | {
+                blob_sha256: string | null;
+                byte_size: number | null;
+                content_type: string | null;
+                secret_suspect: number | null;
+                relative_path: string;
+              }
+            | undefined;
+          if (row === undefined || row.blob_sha256 === null) {
+            writeError(
+              res,
+              404,
+              "not_found",
+              `artifact ${id} has no DB-stored body`,
+            );
+            return;
+          }
+          const max =
+            ctx.config.maxInlineArtifactBytes ?? 1024 * 1024;
+          const tooLarge =
+            row.byte_size !== null && row.byte_size > max;
+          const buf = readArtifactBlob(handle.db, row.blob_sha256);
+          if (buf === null) {
+            writeError(
+              res,
+              404,
+              "not_found",
+              `artifact blob ${row.blob_sha256} missing`,
+            );
+            return;
+          }
+          res.statusCode = 200;
+          res.setHeader(
+            "Content-Type",
+            row.content_type ?? "application/octet-stream",
+          );
+          res.setHeader("X-Content-Type-Options", "nosniff");
+          if (row.secret_suspect === 1) {
+            res.setHeader("X-Harness-Secret-Suspect", "1");
+          }
+          if (tooLarge) {
+            // download-style: encourage client to save rather than render
+            const filename = row.relative_path.split("/").pop() ?? "artifact";
+            res.setHeader(
+              "Content-Disposition",
+              `attachment; filename="${filename.replace(/[^A-Za-z0-9._-]/g, "_")}"`,
+            );
+          }
+          res.setHeader("Content-Length", buf.length.toString());
+          res.end(buf);
         } finally {
           handle.close();
         }
