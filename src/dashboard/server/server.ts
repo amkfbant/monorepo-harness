@@ -26,6 +26,23 @@ import {
   listOperationEvents,
 } from "../../db/repositories/operations.js";
 import {
+  listAssetExports,
+  type AssetType,
+} from "../../db/repositories/asset-exports.js";
+import {
+  getCurrentProjectProfile,
+  listProjectProfileRevisions,
+} from "../../db/repositories/project-profile-revisions.js";
+import {
+  getCurrentPolicyTemplate,
+  listPolicyTemplates,
+  type PolicyScopeType,
+} from "../../db/repositories/policy-templates.js";
+import {
+  getCurrentKnowledgeRevision,
+  listKnowledgeRevisions,
+} from "../../db/repositories/knowledge-entry-revisions.js";
+import {
   runOperation,
   OperationInFlightError,
 } from "../../operations/operation-runner.js";
@@ -641,6 +658,122 @@ export function defaultRoutes(): Route[] {
           }
           const events = listOperationEvents(handle.db, params.operationId!);
           writeJson(res, 200, { operation: op, events });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/assets/exports",
+      handler: ({ ctx, res, query }) => {
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const t = query.get("assetType");
+          const filter =
+            t !== null
+              ? { assetType: t as AssetType }
+              : {};
+          const rows = listAssetExports(handle.db, filter);
+          writeJson(res, 200, { exports: rows });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/assets/projects/:projectId",
+      handler: ({ ctx, res, params }) => {
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const cur = getCurrentProjectProfile(handle.db, params.projectId!);
+          if (cur === null) {
+            writeError(
+              res,
+              404,
+              "not_found",
+              `no current revision for project ${params.projectId}`,
+            );
+            return;
+          }
+          const history = listProjectProfileRevisions(
+            handle.db,
+            params.projectId!,
+          );
+          writeJson(res, 200, { current: cur, history });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/assets/policies/:scopeType/:scopeId",
+      handler: ({ ctx, res, params }) => {
+        const t = params.scopeType!;
+        if (
+          t !== "repo" &&
+          t !== "project" &&
+          t !== "domain" &&
+          t !== "global"
+        ) {
+          writeError(
+            res,
+            400,
+            "bad_request",
+            "scopeType must be repo | project | domain | global",
+          );
+          return;
+        }
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const cur = getCurrentPolicyTemplate(
+            handle.db,
+            t as PolicyScopeType,
+            params.scopeId!,
+          );
+          if (cur === null) {
+            writeError(
+              res,
+              404,
+              "not_found",
+              `no policy template for ${t}:${params.scopeId}`,
+            );
+            return;
+          }
+          const history = listPolicyTemplates(
+            handle.db,
+            t as PolicyScopeType,
+            params.scopeId!,
+          );
+          writeJson(res, 200, { current: cur, history });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/assets/knowledge/:entryId",
+      handler: ({ ctx, res, params }) => {
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const cur = getCurrentKnowledgeRevision(
+            handle.db,
+            params.entryId!,
+          );
+          if (cur === null) {
+            writeError(
+              res,
+              404,
+              "not_found",
+              `no current revision for knowledge entry ${params.entryId}`,
+            );
+            return;
+          }
+          const history = listKnowledgeRevisions(handle.db, params.entryId!);
+          writeJson(res, 200, { current: cur, history });
         } finally {
           handle.close();
         }
