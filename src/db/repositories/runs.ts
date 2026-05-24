@@ -151,6 +151,15 @@ export interface ApplyReviewDecisionInput {
   /** raw review-decision.yaml content, stored in review_decisions */
   decisionYaml: string;
   /**
+   * Phase 10 post-close (whole-phase review P1 #1) — when supplied, the
+   * promotion UPDATE adds `AND state_version = ?`. A concurrent writer
+   * that already bumped state_version between the caller's read and this
+   * UPDATE triggers a StateConflictError rather than a silent overwrite.
+   * Phase 10-5 only bumps state_version in review-related transitions,
+   * so passing the caller-read snapshot is the right minimum guard.
+   */
+  expectedStateVersion?: number;
+  /**
    * Phase 9 post-close P1 #1 fix — when the verdict came from a DB
    * `review_proposals` row, mark it processed inside the SAME transaction
    * as the decision promotion. If the process crashes between the run
@@ -754,9 +763,11 @@ export class RunRepository {
   } {
     const txn = this.db.transaction((): { previousStatus: string } => {
       const row = this.db
-        .prepare("SELECT status, meta_json FROM runs WHERE run_id = ?")
+        .prepare(
+          "SELECT status, meta_json, state_version FROM runs WHERE run_id = ?",
+        )
         .get(input.runId) as
-        | { status: string; meta_json: string | null }
+        | { status: string; meta_json: string | null; state_version: number }
         | undefined;
       if (row === undefined) {
         throw new DbError(`applyReviewDecision: no run '${input.runId}'`);
@@ -766,6 +777,16 @@ export class RunRepository {
           input.runId,
           ["needs_review"],
           row.status,
+        );
+      }
+      if (
+        input.expectedStateVersion !== undefined &&
+        row.state_version !== input.expectedStateVersion
+      ) {
+        throw new StateConflictError(
+          input.runId,
+          [`state_version=${input.expectedStateVersion}`],
+          `state_version=${row.state_version}`,
         );
       }
       const meta =
@@ -785,23 +806,42 @@ export class RunRepository {
       // doctor consumers can detect change. Phase 10 only bumps in
       // review-related transitions; other writers are tracked in the
       // close report as Phase 11 work.
-      const info = this.db
-        .prepare(
-          `UPDATE runs
+      // Phase 10 post-close (whole-phase review P1 #1): if the caller
+      // passed expectedStateVersion, the UPDATE adds the CAS predicate.
+      const guarded = input.expectedStateVersion !== undefined;
+      const sql = guarded
+        ? `UPDATE runs
              SET status = ?, reviewer = ?, reviewed_at = ?, meta_json = ?,
                  db_revision = db_revision + 1, export_status = 'dirty',
                  last_export_error = NULL, updated_at = ?,
                  state_version = state_version + 1
-           WHERE run_id = ? AND status = 'needs_review'`,
-        )
-        .run(
-          newStatus,
-          input.reviewer,
-          input.reviewedAt,
-          JSON.stringify(patchedMeta, null, 2),
-          input.reviewedAt,
-          input.runId,
-        );
+           WHERE run_id = ? AND status = 'needs_review'
+             AND state_version = ?`
+        : `UPDATE runs
+             SET status = ?, reviewer = ?, reviewed_at = ?, meta_json = ?,
+                 db_revision = db_revision + 1, export_status = 'dirty',
+                 last_export_error = NULL, updated_at = ?,
+                 state_version = state_version + 1
+           WHERE run_id = ? AND status = 'needs_review'`;
+      const params = guarded
+        ? [
+            newStatus,
+            input.reviewer,
+            input.reviewedAt,
+            JSON.stringify(patchedMeta, null, 2),
+            input.reviewedAt,
+            input.runId,
+            input.expectedStateVersion,
+          ]
+        : [
+            newStatus,
+            input.reviewer,
+            input.reviewedAt,
+            JSON.stringify(patchedMeta, null, 2),
+            input.reviewedAt,
+            input.runId,
+          ];
+      const info = this.db.prepare(sql).run(...params);
       if (info.changes === 0) {
         throw new StateConflictError(
           input.runId,
