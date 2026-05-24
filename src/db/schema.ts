@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -852,6 +852,119 @@ export const V8_TABLE_NAMES: readonly string[] = [
   "operation_events",
 ];
 
+/**
+ * v9 DDL — Phase 14 (human-authored assets DB canonical).
+ *
+ * Adds revision-based history tables for project profile / policy
+ * template / knowledge entry, plus an `asset_exports` ledger that
+ * tracks the compat-export files' sha + status.
+ *
+ * Existing `projects` / `knowledge_entries` rows migrate with the new
+ * `current_*_revision_id` pointers = NULL. The Phase 14-2/14-4 import
+ * paths create a `version=1` revision and update the pointer.
+ *
+ * `effective_policy_snapshots` is a derived table (per-run / per-scope
+ * generated policy + provenance). It is recreated by `policy compile`.
+ */
+export const MIGRATION_V9_STATEMENTS: readonly string[] = [
+  // --- project profile -----------------------------------------------
+  `CREATE TABLE project_profile_revisions (
+    revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  TEXT NOT NULL,
+    version     INTEGER NOT NULL,
+    body_yaml   TEXT NOT NULL,
+    body_sha256 TEXT NOT NULL,
+    parsed_json TEXT NOT NULL,
+    actor       TEXT NOT NULL,
+    reason      TEXT,
+    created_at  TEXT NOT NULL,
+    supersedes_revision_id INTEGER,
+    UNIQUE(project_id, version)
+  )`,
+  `CREATE INDEX project_profile_revisions_project_idx
+     ON project_profile_revisions(project_id, version)`,
+  `ALTER TABLE projects ADD COLUMN current_profile_revision_id INTEGER
+     REFERENCES project_profile_revisions(revision_id)`,
+
+  // --- policy --------------------------------------------------------
+  `CREATE TABLE policy_templates (
+    policy_template_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope_type  TEXT NOT NULL CHECK (scope_type IN
+                  ('repo', 'project', 'domain', 'global')),
+    scope_id    TEXT NOT NULL,
+    version     INTEGER NOT NULL,
+    body_yaml   TEXT NOT NULL,
+    body_sha256 TEXT NOT NULL,
+    parsed_json TEXT NOT NULL,
+    actor       TEXT NOT NULL,
+    reason      TEXT,
+    created_at  TEXT NOT NULL,
+    UNIQUE(scope_type, scope_id, version)
+  )`,
+  `CREATE INDEX policy_templates_scope_idx
+     ON policy_templates(scope_type, scope_id, version)`,
+  `CREATE TABLE effective_policy_snapshots (
+    snapshot_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id                   TEXT,
+    project_id               TEXT,
+    repo_id                  TEXT,
+    domain                   TEXT,
+    template_revision_id     INTEGER REFERENCES policy_templates(policy_template_id),
+    generated_policy_yaml    TEXT NOT NULL,
+    generated_policy_sha256  TEXT NOT NULL,
+    provenance_json          TEXT NOT NULL,
+    created_at               TEXT NOT NULL
+  )`,
+  `CREATE INDEX effective_policy_snapshots_scope_idx
+     ON effective_policy_snapshots(repo_id, domain, created_at)`,
+
+  // --- knowledge entry markdown body --------------------------------
+  `CREATE TABLE knowledge_entry_revisions (
+    revision_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id         TEXT NOT NULL,
+    version          INTEGER NOT NULL,
+    body_markdown    TEXT NOT NULL,
+    body_sha256      TEXT NOT NULL,
+    frontmatter_json TEXT NOT NULL,
+    title            TEXT,
+    actor            TEXT NOT NULL,
+    reason           TEXT,
+    created_at       TEXT NOT NULL,
+    supersedes_revision_id INTEGER,
+    UNIQUE(entry_id, version)
+  )`,
+  `CREATE INDEX knowledge_entry_revisions_entry_idx
+     ON knowledge_entry_revisions(entry_id, version)`,
+  `ALTER TABLE knowledge_entries ADD COLUMN current_revision_id INTEGER
+     REFERENCES knowledge_entry_revisions(revision_id)`,
+
+  // --- compat export tracking ---------------------------------------
+  `CREATE TABLE asset_exports (
+    export_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_type    TEXT NOT NULL CHECK (asset_type IN
+                    ('project_profile', 'policy_template',
+                     'effective_policy', 'knowledge_entry')),
+    asset_id      TEXT NOT NULL,
+    revision_id   INTEGER NOT NULL,
+    relative_path TEXT NOT NULL,
+    sha256        TEXT NOT NULL,
+    exported_at   TEXT NOT NULL,
+    status        TEXT NOT NULL CHECK (status IN ('synced', 'dirty', 'removed')),
+    UNIQUE(asset_type, asset_id, relative_path)
+  )`,
+  `CREATE INDEX asset_exports_status_idx
+     ON asset_exports(status, asset_type)`,
+];
+
+/** Tables added by v9 (Phase 14). */
+export const V9_TABLE_NAMES: readonly string[] = [
+  "project_profile_revisions",
+  "policy_templates",
+  "effective_policy_snapshots",
+  "knowledge_entry_revisions",
+  "asset_exports",
+];
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -876,7 +989,7 @@ export const V1_TABLE_NAMES: readonly string[] = [
   "import_errors",
 ];
 
-/** Every data table at the latest schema version (v1 + v2 + v4 + v5 + v6 + v7 + v8). */
+/** Every data table at the latest schema version (v1 + v2 + v4 + v5 + v6 + v7 + v8 + v9). */
 export const ALL_TABLE_NAMES: readonly string[] = [
   ...V1_TABLE_NAMES,
   ...V2_TABLE_NAMES,
@@ -885,4 +998,5 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V6_TABLE_NAMES,
   ...V7_TABLE_NAMES,
   ...V8_TABLE_NAMES,
+  ...V9_TABLE_NAMES,
 ];

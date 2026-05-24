@@ -101,8 +101,8 @@ describe("schema v2", () => {
     ).run();
 
     const r = runMigrations(db);
-    expect(r.applied).toEqual([2, 3, 4, 5, 6, 7, 8]);
-    expect(currentSchemaVersion(db)).toBe(8);
+    expect(r.applied).toEqual([2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(currentSchemaVersion(db)).toBe(9);
 
     const row = db
       .prepare(

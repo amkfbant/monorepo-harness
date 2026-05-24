@@ -9,6 +9,7 @@ import {
   MIGRATION_V6_STATEMENTS,
   MIGRATION_V7_STATEMENTS,
   MIGRATION_V8_STATEMENTS,
+  MIGRATION_V9_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -63,6 +64,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 8,
     name: "mutation-api-operation-audit-v8",
     statements: MIGRATION_V8_STATEMENTS,
+  },
+  {
+    version: 9,
+    name: "human-authored-assets-db-canonical-v9",
+    statements: MIGRATION_V9_STATEMENTS,
   },
 ];
 
