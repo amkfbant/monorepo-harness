@@ -1216,3 +1216,62 @@ runtime write command は `sourceMode === 'legacy-file'` の run / backlog /
 knowledge_candidate に対して `assertNoLegacyRuntimeRows(db)` で拒否。
 bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 `db doctor` / `db check-consistency`。
+
+## Phase 11 — Review governance CLI（設計確定・実装中）
+
+Phase 11 の設計は [`../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md`](../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md)。
+
+### `harness review reviewers`（Phase 11-2、新規）
+
+```
+harness review reviewers list
+harness review reviewers add <reviewer_id> --type <human|codex|external|system> \
+                             --display-name <name> [--group <id>] \
+                             [--trust <advisory|normal|required|policy>]
+```
+
+migration v7 適用時に default reviewers が seed される (human / codex /
+codex-security / system)。
+
+### `harness review auto`（Phase 11-2 で reviewer 解決）
+
+```
+harness review auto <runId> --reviewer <reviewer_id> [--model <m>]
+```
+
+`--reviewer` は reviewers table の `reviewer_id`。unknown なら
+`UnknownReviewerError` で exit 1。proposal 保存時に reviewer_id /
+reviewer_type / model / prompt_sha256 / context_pack_id /
+policy_generation_id を埋める。完了後 consensus を re-evaluate (Phase 11-4)。
+
+### `harness review status`（Phase 11-4、新規）
+
+```
+harness review status <runId>
+```
+
+active consensus + required reviewers + blocking + active proposals 表示。
+
+### `harness review process`（Phase 11-5 で consensus mode 追加）
+
+```
+harness review process <runId> [--consensus] [--reviewer <id>]
+                               [--override <decision> --reason <reason>
+                                [--actor-reviewer <id>]]
+                               [--operation-id <uuid>]
+                               [--expected-state-version <n>]
+```
+
+default は `rule.mode` 依存 (`consensus` / `latest-proposal`)。`--override`
+で human override (Phase 11-6; allowedReviewers + reason 必須)。
+
+### `harness review proposals`（Phase 11-7、新規）
+
+```
+harness review proposals list <runId> [--include-archived]
+harness review proposals archive <proposalId>
+harness review proposals vacuum --older-than 30d [--apply]
+```
+
+`vacuum` は dry-run default。`superseded` / `rejected_stale` / `processed`
+で threshold より古い rows を `archived` 化 (delete はしない)。

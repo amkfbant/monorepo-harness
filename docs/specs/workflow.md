@@ -540,3 +540,52 @@ compat-export を内部利用しない。
 
 `run_materializations.metadata_json` には呼び出し元（command name /
 caller_id）を入れて debug 性を確保する。
+
+## Phase 11 — Review governance / consensus flow（設計確定・実装中）
+
+Phase 11 で review process は **consensus mode** が default となる (project
+profile で `review.mode` が `latest-proposal` 以外を指定した場合)。設計は
+[`../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md`](../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md)。
+
+### review auto → consensus re-evaluate flow
+
+```
+1. harness review auto <runId> --reviewer codex
+2. reviewer-agent が verdict を作成
+3. proposal を review_proposals に INSERT
+   (reviewer_id / reviewer_type / model / prompt_sha256 / lifecycle='active' を埋める)
+4. consensus evaluator を呼び、新 active consensus を review_consensus に
+   INSERT (旧 active は superseded_at = now で update)
+5. 旧 active proposal (同 reviewer) は lifecycle='superseded' に
+```
+
+複数 reviewer が並行で auto を走らせると、それぞれが proposal を insert
+し、consensus が re-evaluate される。
+
+### review process — consensus mode
+
+```
+harness review process <runId>
+  → rule.mode == 'consensus':
+      active consensus を読む
+      consensus.status ∈ {approved, changes_requested, rejected}:
+        applyReviewDecision を呼び、proposals_summary を review_decisions に
+        記録、processed proposals を lifecycle='processed' に
+      consensus.status == 'pending':
+        StateConflictError ("consensus not yet satisfied")
+  → rule.mode == 'latest-proposal' (default):
+      pre-Phase11 と等価動作 (最新 active proposal を直接 process)
+```
+
+### Human override
+
+```
+harness review process <runId> --override approved --reason "Critical hotfix" \
+                               [--actor-reviewer lead]
+  → rule.overrides.allowedReviewers に actor が含まれること検証
+  → reason 必須
+  → review_overrides に audit row
+  → run_events に review_override
+  → consensus re-evaluate (override がある場合は最優先)
+  → applyReviewDecision で final decision に昇格
+```

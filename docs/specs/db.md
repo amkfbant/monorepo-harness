@@ -651,3 +651,60 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 1〜4 | Phase 6〜8 | runtime DB completion |
 | 5 | Phase 9 | domain_locks / review_proposals / artifacts.original_* / runs.lease_* |
 | 6 | Phase 10 | run_materializations / runs.state_version |
+| 7 | Phase 11 | reviewers / review_rules / run_review_rule_snapshots / review_consensus / review_overrides + review_proposals/decisions additions |
+
+## Phase 11 — Review governance / consensus（設計確定・実装中）
+
+Phase 11 は `review_proposals` を governance layer に拡張する。設計は
+[`../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md`](../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md)、
+元計画は `tmp/phase10-16-design-plans/phase11-review-governance-consensus-plan.md`。
+
+### schema v7 (Phase 11-1)
+
+新規 5 tables:
+- `reviewers` — reviewer identity registry (default: human / codex / codex-security / system)
+- `review_rules` — rule template history (per project/repo/domain × version)
+- `run_review_rule_snapshots` — run-level effective rule freeze
+- `review_consensus` — computed consensus rows (superseded_at で履歴)
+- `review_overrides` — human override audit
+
+`review_proposals` 追加 columns: `reviewer_id` (FK, nullable; legacy 互換) /
+`reviewer_type` / `model` / `prompt_sha256` / `context_pack_id` /
+`policy_generation_id` / `lifecycle_status` / `archived_at`。
+
+`review_decisions` 追加 columns: `consensus_id` / `proposals_summary_json`。
+
+### Reviewer identity
+
+Phase 11 で reviewer は string ではなく `reviewer_id` (FK to `reviewers`)。
+既存 string 列 `review_proposals.reviewer` は legacy 互換のため温存。
+`UnknownReviewerError` で unknown reviewer は CLI exit 1。
+
+### Review rule snapshot
+
+`run_review_rule_snapshots(run_id, rule_json, source_sha256)` で run 作成時
+に effective rule を freeze。project profile を後変更しても進行中 run の
+review semantics は変わらない。
+
+### Consensus evaluator
+
+pure function: `evaluateConsensus(rule, proposals, override?) → {status,
+summary}`。tie-break: `rejected > changes_requested > approved > pending`。
+human override が最優先。
+
+`review_consensus` の active row は `superseded_at IS NULL` で run 単位 1 つ
+(partial unique index)。re-evaluate (新 proposal insert 時など) は supersede。
+
+### Human override
+
+`review_overrides(override_id, run_id, consensus_id?, actor_reviewer_id,
+decision, reason, ...)`。`rule.overrides.allowedReviewers` に含まれない
+actor は `UnauthorizedOverrideError`、reason 空は `OverrideReasonRequiredError`。
+`run_events` に `review_override` event を追加。
+
+### Proposal lifecycle
+
+`lifecycle_status`: `active` / `superseded` / `processed` / `rejected_stale`
+/ `archived`。consensus / process は `active` (+ historical `processed`) のみ。
+`harness review proposals vacuum --older-than <N>d` で古 superseded /
+rejected_stale / processed を `archived` 化 (delete はしない)。
