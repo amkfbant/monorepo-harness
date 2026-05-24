@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -639,6 +639,145 @@ export const V6_TABLE_NAMES: readonly string[] = [
   "run_materializations",
 ];
 
+/**
+ * v7 DDL — Phase 11 (review governance / consensus).
+ *
+ *  - `reviewers`: reviewer identity registry. Default rows (human / codex
+ *    / codex-security / system) are seeded by `INSERT OR IGNORE` so the
+ *    migration is idempotent across reruns.
+ *  - `review_rules`: project/repo/domain-scoped rule templates with
+ *    version history; `(scope, version)` is the addressable unit.
+ *  - `run_review_rule_snapshots`: per-run effective rule freeze — once a
+ *    run starts, profile changes do not retroactively alter its review
+ *    semantics.
+ *  - `review_consensus`: computed consensus rows, with a partial unique
+ *    index for at-most-one active consensus per run.
+ *  - `review_overrides`: human override audit log (actor / reason /
+ *    decision).
+ *  - `review_proposals` additions: `reviewer_id` (FK to reviewers,
+ *    nullable for legacy rows) / `reviewer_type` / `model` /
+ *    `prompt_sha256` / `context_pack_id` / `policy_generation_id` /
+ *    `lifecycle_status` / `archived_at`.
+ *  - `review_decisions` additions: `consensus_id` / `proposals_summary_json`
+ *    so a consensus-mode decision carries the source consensus + proposals
+ *    snapshot.
+ *
+ *  Existing Phase 9-10 `review_proposals` rows migrate with
+ *  `lifecycle_status='active'` (DEFAULT) and `reviewer_id IS NULL`
+ *  (legacy). Phase 11 consensus evaluator excludes `reviewer_id IS NULL`
+ *  rows from group-membership checks (treats them as `reviewer_type=
+ *  'unknown'`).
+ */
+export const MIGRATION_V7_STATEMENTS: readonly string[] = [
+  // --- reviewers (Phase 11 — §A1) -----------------------------------
+  `CREATE TABLE reviewers (
+    reviewer_id       TEXT PRIMARY KEY,
+    reviewer_type     TEXT NOT NULL CHECK (reviewer_type IN ('human', 'codex', 'external', 'system')),
+    display_name      TEXT NOT NULL,
+    group_id          TEXT,
+    trust_level       TEXT NOT NULL DEFAULT 'normal'
+      CHECK (trust_level IN ('advisory', 'normal', 'required', 'policy')),
+    metadata_json     TEXT NOT NULL DEFAULT '{}',
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+  )`,
+  // Default reviewer registry — Phase 11-2 seed (idempotent).
+  `INSERT OR IGNORE INTO reviewers
+     (reviewer_id, reviewer_type, display_name, group_id, trust_level, created_at, updated_at)
+   VALUES
+     ('human',          'human',  'Local human reviewer',   'humans',   'normal',   '2026-05-24T00:00:00Z', '2026-05-24T00:00:00Z'),
+     ('codex',          'codex',  'Codex automated review', 'codex',    'normal',   '2026-05-24T00:00:00Z', '2026-05-24T00:00:00Z'),
+     ('codex-security', 'codex',  'Codex security review',  'security', 'required', '2026-05-24T00:00:00Z', '2026-05-24T00:00:00Z'),
+     ('system',         'system', 'System / harness',       'system',   'advisory', '2026-05-24T00:00:00Z', '2026-05-24T00:00:00Z')`,
+
+  // --- review_rules (Phase 11 — §B3) --------------------------------
+  `CREATE TABLE review_rules (
+    rule_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id        TEXT,
+    repo_id           TEXT,
+    domain            TEXT,
+    rule_version      INTEGER NOT NULL,
+    source            TEXT NOT NULL CHECK (source IN ('project-profile', 'default', 'manual')),
+    rule_json         TEXT NOT NULL,
+    source_sha256     TEXT NOT NULL,
+    created_at        TEXT NOT NULL
+  )`,
+  `CREATE INDEX review_rules_scope_idx
+     ON review_rules(project_id, repo_id, domain, rule_version)`,
+
+  // --- run_review_rule_snapshots (Phase 11 — §B2) -------------------
+  `CREATE TABLE run_review_rule_snapshots (
+    run_id            TEXT PRIMARY KEY,
+    rule_id           INTEGER,
+    rule_json         TEXT NOT NULL,
+    source_sha256     TEXT NOT NULL,
+    created_at        TEXT NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE,
+    FOREIGN KEY (rule_id) REFERENCES review_rules(rule_id)
+  )`,
+
+  // --- review_consensus (Phase 11 — §C4) ----------------------------
+  `CREATE TABLE review_consensus (
+    consensus_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id            TEXT NOT NULL,
+    rule_sha256       TEXT NOT NULL,
+    status            TEXT NOT NULL
+      CHECK (status IN ('pending', 'approved', 'changes_requested', 'rejected')),
+    summary_json      TEXT NOT NULL,
+    evaluated_at      TEXT NOT NULL,
+    evaluated_by      TEXT NOT NULL,
+    source_proposals_json TEXT NOT NULL,
+    superseded_at     TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+  )`,
+  `CREATE INDEX review_consensus_run_idx
+     ON review_consensus(run_id, evaluated_at)`,
+  `CREATE UNIQUE INDEX review_consensus_active_idx
+     ON review_consensus(run_id) WHERE superseded_at IS NULL`,
+
+  // --- review_overrides (Phase 11 — §D1) ----------------------------
+  `CREATE TABLE review_overrides (
+    override_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id            TEXT NOT NULL,
+    consensus_id      INTEGER,
+    actor_reviewer_id TEXT NOT NULL,
+    decision          TEXT NOT NULL
+      CHECK (decision IN ('approved', 'changes_requested', 'rejected')),
+    reason            TEXT NOT NULL,
+    created_at        TEXT NOT NULL,
+    source_sha256     TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE,
+    FOREIGN KEY (actor_reviewer_id) REFERENCES reviewers(reviewer_id),
+    FOREIGN KEY (consensus_id) REFERENCES review_consensus(consensus_id)
+  )`,
+  `CREATE INDEX review_overrides_run_idx
+     ON review_overrides(run_id, created_at)`,
+
+  // --- review_proposals additions (Phase 11 — §A3, §E1) -------------
+  `ALTER TABLE review_proposals ADD COLUMN reviewer_id TEXT REFERENCES reviewers(reviewer_id)`,
+  `ALTER TABLE review_proposals ADD COLUMN reviewer_type TEXT`,
+  `ALTER TABLE review_proposals ADD COLUMN model TEXT`,
+  `ALTER TABLE review_proposals ADD COLUMN prompt_sha256 TEXT`,
+  `ALTER TABLE review_proposals ADD COLUMN context_pack_id TEXT`,
+  `ALTER TABLE review_proposals ADD COLUMN policy_generation_id TEXT`,
+  `ALTER TABLE review_proposals ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'active'
+     CHECK (lifecycle_status IN ('active', 'superseded', 'processed', 'rejected_stale', 'archived'))`,
+  `ALTER TABLE review_proposals ADD COLUMN archived_at TEXT`,
+
+  // --- review_decisions additions (Phase 11 — §F) -------------------
+  `ALTER TABLE review_decisions ADD COLUMN consensus_id INTEGER REFERENCES review_consensus(consensus_id)`,
+  `ALTER TABLE review_decisions ADD COLUMN proposals_summary_json TEXT`,
+];
+
+/** Tables added by v7 (Phase 11). */
+export const V7_TABLE_NAMES: readonly string[] = [
+  "reviewers",
+  "review_rules",
+  "run_review_rule_snapshots",
+  "review_consensus",
+  "review_overrides",
+];
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -663,11 +802,12 @@ export const V1_TABLE_NAMES: readonly string[] = [
   "import_errors",
 ];
 
-/** Every data table at the latest schema version (v1 + v2 + v4 + v5 + v6). */
+/** Every data table at the latest schema version (v1 + v2 + v4 + v5 + v6 + v7). */
 export const ALL_TABLE_NAMES: readonly string[] = [
   ...V1_TABLE_NAMES,
   ...V2_TABLE_NAMES,
   ...V4_TABLE_NAMES,
   ...V5_TABLE_NAMES,
   ...V6_TABLE_NAMES,
+  ...V7_TABLE_NAMES,
 ];
