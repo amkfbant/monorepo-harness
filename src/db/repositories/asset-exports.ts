@@ -125,15 +125,18 @@ export function computeAssetStatus(input: {
   currentRevSha: string | null;
 }): AssetStatus {
   const { exportRow, fileSha, currentRevSha } = input;
-  if (exportRow === null && currentRevSha === null) return "missing";
+  // Phase 14 post-close fix (codex P1.2): "no DB row => missing" must
+  // come first. Without this, exportRow != null && currentRevSha == null
+  // (a deleted/never-created DB revision with leftover export rows)
+  // would fall through into the dirty-db / conflict branch and lie.
+  if (currentRevSha === null) return "missing";
   if (exportRow === null) {
     // DB has a current revision but no export yet — missing export.
     return "missing";
   }
   if (fileSha === null) return "removed";
   const fileMatchesExported = fileSha === exportRow.sha256;
-  const dbUnchanged =
-    currentRevSha !== null && currentRevSha === exportRow.sha256;
+  const dbUnchanged = currentRevSha === exportRow.sha256;
   if (fileMatchesExported && dbUnchanged) return "synced";
   if (!fileMatchesExported && dbUnchanged) return "dirty-file";
   if (fileMatchesExported && !dbUnchanged) return "dirty-db";

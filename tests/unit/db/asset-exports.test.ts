@@ -159,4 +159,38 @@ describe("computeAssetStatus (Phase 14-5)", () => {
       }),
     ).toBe("conflict");
   });
+
+  // Phase 14 post-close fix (codex P1.2): when an export row lingers but
+  // the DB revision is gone (e.g. asset deleted from DB), the prior
+  // implementation returned dirty-db / conflict. "No DB row" must win
+  // and the result must be `missing`.
+  it("missing: export row lingers but DB has no current revision (file matches export)", () => {
+    expect(
+      computeAssetStatus({
+        exportRow: exp("a"),
+        fileSha: "a",
+        currentRevSha: null,
+      }),
+    ).toBe("missing");
+  });
+
+  it("missing: export row lingers but DB has no current revision (file diverges)", () => {
+    expect(
+      computeAssetStatus({
+        exportRow: exp("a"),
+        fileSha: "b",
+        currentRevSha: null,
+      }),
+    ).toBe("missing");
+  });
+
+  it("missing: export row lingers but DB has no current revision (file is gone)", () => {
+    expect(
+      computeAssetStatus({
+        exportRow: exp("a"),
+        fileSha: null,
+        currentRevSha: null,
+      }),
+    ).toBe("missing");
+  });
 });
