@@ -58,10 +58,13 @@ export class ReviewProposalRepository {
    */
   insertProposal(input: ReviewProposalInput): { proposalId: number } {
     const tx = this.db.transaction((): number => {
+      // Phase 11-7: when superseding a prior active proposal, flip its
+      // lifecycle_status to 'superseded' as well so list/vacuum and
+      // consensus filters see a consistent state machine.
       this.db
         .prepare(
           `UPDATE review_proposals
-              SET superseded_at = ?
+              SET superseded_at = ?, lifecycle_status = 'superseded'
             WHERE run_id = ? AND reviewer = ? AND superseded_at IS NULL`,
         )
         .run(input.createdAt, input.runId, input.reviewer);
@@ -176,6 +179,76 @@ export class ReviewProposalRepository {
    * `false` when a guard rejected it (caller can surface a state
    * conflict).
    */
+  /**
+   * Phase 11-7 — list proposals for a run, optionally including
+   * archived rows. Used by the `harness review proposals list` CLI.
+   */
+  listForRun(
+    runId: string,
+    opts: { includeArchived?: boolean } = {},
+  ): ReviewProposalRow[] {
+    const sql = opts.includeArchived
+      ? `SELECT * FROM review_proposals WHERE run_id = ?
+         ORDER BY created_at DESC, proposal_id DESC`
+      : `SELECT * FROM review_proposals WHERE run_id = ?
+           AND lifecycle_status != 'archived'
+         ORDER BY created_at DESC, proposal_id DESC`;
+    const rows = this.db.prepare(sql).all(runId);
+    return (rows as unknown[]).map((r) => toReviewProposalRow(r));
+  }
+
+  /**
+   * Phase 11-7 — archive a single proposal (audit-preserving delete).
+   * Idempotent: already-archived rows stay as-is.
+   */
+  archive(proposalId: number, now: Date = new Date()): boolean {
+    const r = this.db
+      .prepare(
+        `UPDATE review_proposals
+            SET lifecycle_status = 'archived', archived_at = ?
+          WHERE proposal_id = ? AND lifecycle_status != 'archived'`,
+      )
+      .run(now.toISOString(), proposalId);
+    return r.changes > 0;
+  }
+
+  /**
+   * Phase 11-7 — vacuum eligible rows older than `olderThan`.
+   * Eligible lifecycle: 'superseded' / 'processed' / 'rejected_stale'.
+   * `active` is never vacuumed. Default is dry-run; the `apply` flag
+   * actually flips them to `archived`.
+   *
+   * Returns the list of proposal_ids that were (or would be) archived.
+   */
+  vacuumOlderThan(input: {
+    olderThan: Date;
+    apply?: boolean;
+    now?: Date;
+  }): number[] {
+    const cutoff = input.olderThan.toISOString();
+    const candidates = this.db
+      .prepare(
+        `SELECT proposal_id FROM review_proposals
+          WHERE lifecycle_status IN ('superseded', 'processed', 'rejected_stale')
+            AND created_at < ?`,
+      )
+      .all(cutoff) as { proposal_id: number }[];
+    const ids = candidates.map((r) => r.proposal_id);
+    if (input.apply && ids.length > 0) {
+      const now = (input.now ?? new Date()).toISOString();
+      const stmt = this.db.prepare(
+        `UPDATE review_proposals
+            SET lifecycle_status = 'archived', archived_at = ?
+          WHERE proposal_id = ? AND lifecycle_status != 'archived'`,
+      );
+      const tx = this.db.transaction(() => {
+        for (const id of ids) stmt.run(now, id);
+      });
+      tx();
+    }
+    return ids;
+  }
+
   markProcessed(
     proposalId: number,
     reviewDecisionId: string,
@@ -189,15 +262,20 @@ export class ReviewProposalRepository {
      */
     expectedSourceSha256?: string,
   ): boolean {
+    // Phase 11-7: bump lifecycle_status to 'processed' alongside the
+    // processed_at timestamp so list/vacuum and consensus consumers see
+    // a consistent state machine.
     const sql =
       expectedSourceSha256 === undefined
         ? `UPDATE review_proposals
-              SET processed_at = ?, review_decision_id = ?
+              SET processed_at = ?, review_decision_id = ?,
+                  lifecycle_status = 'processed'
             WHERE proposal_id = ?
               AND processed_at IS NULL
               AND superseded_at IS NULL`
         : `UPDATE review_proposals
-              SET processed_at = ?, review_decision_id = ?
+              SET processed_at = ?, review_decision_id = ?,
+                  lifecycle_status = 'processed'
             WHERE proposal_id = ?
               AND processed_at IS NULL
               AND superseded_at IS NULL

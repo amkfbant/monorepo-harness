@@ -21,6 +21,10 @@ import {
   UnknownReviewerError,
 } from "../db/repositories/reviewers.js";
 import {
+  ReviewProposalRepository,
+  type ReviewProposalRow,
+} from "../db/repositories/review-proposals.js";
+import {
   OverrideReasonRequiredError,
   UnauthorizedOverrideError,
 } from "../db/repositories/review-overrides.js";
@@ -1107,6 +1111,95 @@ reviewCmd
       throw e;
     }
   });
+const proposalsCmd = reviewCmd
+  .command("proposals")
+  .description("review proposal lifecycle (Phase 11-7)");
+proposalsCmd
+  .command("list")
+  .description("list proposals for a run")
+  .argument("<runId>", "target run id")
+  .option("--include-archived", "include archived proposals", false)
+  .action(async (runId: string, raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    const dbHandle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
+    try {
+      const rows = new ReviewProposalRepository(dbHandle.db).listForRun(
+        runId,
+        { includeArchived: Boolean(raw.includeArchived) },
+      );
+      if (rows.length === 0) {
+        process.stdout.write("(none)\n");
+        return;
+      }
+      for (const r of rows) {
+        process.stdout.write(
+          `  ${String(r.proposalId).padStart(4, "0")}\treviewer=${r.reviewer}\tdecision=${r.decision}\tlifecycle=${(r as ReviewProposalRow & { lifecycleStatus?: string }).lifecycleStatus ?? "?"}\treviewedAt=${r.reviewedAt}\n`,
+        );
+      }
+    } finally {
+      dbHandle.close();
+    }
+  });
+proposalsCmd
+  .command("archive")
+  .description("archive a single proposal (audit-preserving)")
+  .argument("<proposalId>", "proposal id")
+  .action(async (proposalId: string) => {
+    const paths = harnessPaths(getHarnessRoot());
+    const id = Number(proposalId);
+    if (!Number.isInteger(id) || id <= 0) {
+      process.stderr.write(
+        `harness error: proposal id must be a positive integer (got ${JSON.stringify(proposalId)})\n`,
+      );
+      process.exit(1);
+    }
+    const dbHandle = openManagedDb({ dbPath: paths.dbPath });
+    try {
+      const ok = new ReviewProposalRepository(dbHandle.db).archive(id);
+      process.stdout.write(
+        ok
+          ? `archived proposal_id=${id}\n`
+          : `proposal_id=${id} already archived (no-op)\n`,
+      );
+    } finally {
+      dbHandle.close();
+    }
+  });
+proposalsCmd
+  .command("vacuum")
+  .description("vacuum (archive) old superseded / processed / rejected_stale proposals")
+  .requiredOption("--older-than <days>", "threshold in days (positive integer)")
+  .option("--apply", "actually archive (default: dry-run)", false)
+  .action(async (raw: Record<string, unknown>) => {
+    const days = Number(raw.olderThan);
+    if (!Number.isFinite(days) || days <= 0) {
+      process.stderr.write(
+        `harness error: --older-than must be a positive number of days (got ${JSON.stringify(String(raw.olderThan))})\n`,
+      );
+      process.exit(1);
+    }
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const paths = harnessPaths(getHarnessRoot());
+    const dbHandle = openManagedDb({ dbPath: paths.dbPath });
+    try {
+      const ids = new ReviewProposalRepository(dbHandle.db).vacuumOlderThan({
+        olderThan: cutoff,
+        apply: Boolean(raw.apply),
+      });
+      const verb = raw.apply ? "archived" : "would archive";
+      process.stdout.write(
+        `${verb} ${ids.length} proposal(s) older than ${cutoff.toISOString()}` +
+          (ids.length > 0 ? ` — ids: ${ids.join(", ")}` : "") +
+          "\n",
+      );
+      if (!raw.apply) {
+        process.stdout.write("  (dry-run — use --apply to perform)\n");
+      }
+    } finally {
+      dbHandle.close();
+    }
+  });
+
 const reviewersCmd = reviewCmd
   .command("reviewers")
   .description("review reviewer identity registry (Phase 11)");

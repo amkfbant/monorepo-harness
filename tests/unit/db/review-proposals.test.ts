@@ -200,6 +200,98 @@ describe("ReviewProposalRepository", () => {
     },
   );
 
+  it(
+    "Phase 11-7 lifecycle: insertProposal supersedes prior active row " +
+      "→ lifecycle_status='superseded'; markProcessed → 'processed'",
+    () => {
+      const db = freshDb();
+      const repo = new ReviewProposalRepository(db);
+      const first = repo.insertProposal({
+        ...baseProposal(),
+        createdAt: "2026-05-24T10:00:00Z",
+      });
+      const r1 = db
+        .prepare(
+          "SELECT lifecycle_status FROM review_proposals WHERE proposal_id = ?",
+        )
+        .get(first.proposalId) as { lifecycle_status: string };
+      expect(r1.lifecycle_status).toBe("active");
+
+      repo.insertProposal({
+        ...baseProposal(),
+        createdAt: "2026-05-24T11:00:00Z",
+      });
+      const r2 = db
+        .prepare(
+          "SELECT lifecycle_status FROM review_proposals WHERE proposal_id = ?",
+        )
+        .get(first.proposalId) as { lifecycle_status: string };
+      expect(r2.lifecycle_status).toBe("superseded");
+
+      const latest = repo.getLatestActiveProposal(RUN_ID);
+      expect(latest).not.toBeNull();
+      repo.markProcessed(
+        latest!.proposalId,
+        RUN_ID,
+        "2026-05-24T12:00:00Z",
+      );
+      const r3 = db
+        .prepare(
+          "SELECT lifecycle_status FROM review_proposals WHERE proposal_id = ?",
+        )
+        .get(latest!.proposalId) as { lifecycle_status: string };
+      expect(r3.lifecycle_status).toBe("processed");
+      db.close();
+    },
+  );
+
+  it("Phase 11-7 vacuum: dry-run lists eligible / --apply archives them; active rows are never touched", () => {
+    const db = freshDb();
+    const repo = new ReviewProposalRepository(db);
+    const first = repo.insertProposal({
+      ...baseProposal(),
+      createdAt: "2026-05-01T00:00:00Z",
+    });
+    // supersede the first → lifecycle='superseded'
+    repo.insertProposal({
+      ...baseProposal(),
+      createdAt: "2026-05-24T00:00:00Z",
+    });
+    const cutoff = new Date("2026-05-15T00:00:00Z");
+    const dryIds = repo.vacuumOlderThan({ olderThan: cutoff });
+    expect(dryIds).toContain(first.proposalId);
+    // dry-run did not mutate
+    expect(
+      (
+        db
+          .prepare(
+            "SELECT lifecycle_status FROM review_proposals WHERE proposal_id = ?",
+          )
+          .get(first.proposalId) as { lifecycle_status: string }
+      ).lifecycle_status,
+    ).toBe("superseded");
+    // --apply archives
+    const applyIds = repo.vacuumOlderThan({
+      olderThan: cutoff,
+      apply: true,
+      now: new Date("2026-05-24T13:00:00Z"),
+    });
+    expect(applyIds).toContain(first.proposalId);
+    const row = db
+      .prepare(
+        "SELECT lifecycle_status, archived_at FROM review_proposals WHERE proposal_id = ?",
+      )
+      .get(first.proposalId) as { lifecycle_status: string; archived_at: string };
+    expect(row.lifecycle_status).toBe("archived");
+    expect(row.archived_at).toBe("2026-05-24T13:00:00.000Z");
+    // listForRun without --include-archived hides it
+    const visible = repo.listForRun(RUN_ID);
+    expect(visible.map((r) => r.proposalId)).not.toContain(first.proposalId);
+    const all = repo.listForRun(RUN_ID, { includeArchived: true });
+    expect(all.map((r) => r.proposalId)).toContain(first.proposalId);
+    db.close();
+  });
+
   it("getLatestProcessedProposal returns null when nothing was processed", () => {
     const db = freshDb();
     const repo = new ReviewProposalRepository(db);

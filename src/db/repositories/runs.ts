@@ -918,12 +918,15 @@ export class RunRepository {
       // the latest proposal rather than process a stale one.
       if (input.markProposalProcessed !== undefined) {
         const expSha = input.markProposalProcessed.expectedSourceSha256;
+        // Phase 11-7: bump lifecycle_status to 'processed' alongside
+        // processed_at, mirroring ReviewProposalRepository.markProcessed.
         const r =
           expSha === undefined
             ? this.db
                 .prepare(
                   `UPDATE review_proposals
-                      SET processed_at = ?, review_decision_id = ?
+                      SET processed_at = ?, review_decision_id = ?,
+                          lifecycle_status = 'processed'
                     WHERE proposal_id = ?
                       AND processed_at IS NULL
                       AND superseded_at IS NULL`,
@@ -936,7 +939,8 @@ export class RunRepository {
             : this.db
                 .prepare(
                   `UPDATE review_proposals
-                      SET processed_at = ?, review_decision_id = ?
+                      SET processed_at = ?, review_decision_id = ?,
+                          lifecycle_status = 'processed'
                     WHERE proposal_id = ?
                       AND processed_at IS NULL
                       AND superseded_at IS NULL
