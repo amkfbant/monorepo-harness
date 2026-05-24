@@ -1782,6 +1782,11 @@ dashboardCmd
     "1048576",
   )
   .option("--cors-origin <origin>", "enable CORS for this origin")
+  .option(
+    "--enable-mutation",
+    "Phase 13: enable POST mutation routes (token + CSRF required)",
+    false,
+  )
   .action(async (raw: Record<string, unknown>) => {
     const paths = harnessPaths(getHarnessRoot());
     const port = Number(raw.port);
@@ -1814,6 +1819,24 @@ dashboardCmd
     }
     const token =
       raw.tokenEnv !== undefined ? process.env[String(raw.tokenEnv)] : undefined;
+    const mutationEnabled = Boolean(raw.enableMutation);
+    let csrfToken: string | undefined;
+    if (mutationEnabled) {
+      // Phase 13-4: csrfToken は server boot 時生成。HTML dashboard
+      // (Phase 13-7) が <meta> で読めるよう embed する。
+      const { randomBytes } = await import("node:crypto");
+      csrfToken = randomBytes(24).toString("base64url");
+      if (token === undefined) {
+        process.stderr.write(
+          "warning: --enable-mutation requires a bearer token in production. " +
+            "Set --token-env <ENV_NAME> with a strong secret.\n",
+        );
+      }
+      process.stdout.write(
+        `mutation enabled — CSRF token: ${csrfToken}\n` +
+          "  pass it in browser POSTs as X-CSRF-Token header.\n",
+      );
+    }
     const server = createDashboardServer({
       dbPath: paths.dbPath,
       host,
@@ -1824,6 +1847,8 @@ dashboardCmd
       ...(raw.corsOrigin !== undefined
         ? { corsOrigin: String(raw.corsOrigin) }
         : {}),
+      mutationEnabled,
+      ...(csrfToken !== undefined ? { csrfToken } : {}),
     });
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);

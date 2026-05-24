@@ -20,6 +20,11 @@ import { listActiveDomainLocks } from "../../workspace/db-domain-lock.js";
 import { checkConsistency } from "../../db/consistency.js";
 import { dbStats } from "../../db/maintenance.js";
 import { renderDashboardHtml } from "../render.js";
+import {
+  listOperations,
+  getOperation,
+  listOperationEvents,
+} from "../../db/repositories/operations.js";
 
 /**
  * Dashboard read-only HTTP server (Phase 12-1 skeleton).
@@ -45,6 +50,19 @@ export interface DashboardServerConfig {
   maxInlineArtifactBytes?: number;
   /** Optional CORS origin (Phase 12-7). */
   corsOrigin?: string;
+  /**
+   * Phase 13-4: when true, POST mutation routes are wired (review /
+   * rerun / cleanup / pr / backlog). Default OFF — POST returns 405 by
+   * the method guard exactly as Phase 12 did.
+   */
+  mutationEnabled?: boolean;
+  /**
+   * Phase 13-4: when mutation is enabled, browser POST requests must
+   * carry `X-CSRF-Token: <csrfToken>`. The token is generated at server
+   * start and embedded in the HTML dashboard (Phase 13-7) for JS to
+   * read.
+   */
+  csrfToken?: string;
 }
 
 export interface RequestContext {
@@ -73,7 +91,7 @@ export interface RouteHandlerInput {
 export type RouteHandler = (input: RouteHandlerInput) => Promise<void> | void;
 
 export interface Route {
-  method: "GET";
+  method: "GET" | "POST";
   pattern: string;
   handler: RouteHandler;
 }
@@ -145,9 +163,76 @@ export function writeError(
   writeJson(res, status, { error: err });
 }
 
+/** Phase 13-4: mutation routes — wired only when mutationEnabled=true. */
+export function mutationRoutes(): Route[] {
+  // Phase 13-5 / 13-6 で実装。Phase 13-4 では skeleton のみ:
+  //   POST /api/runs/:runId/review (Phase 13-5)
+  //   POST /api/runs/:runId/rerun  (Phase 13-5)
+  //   POST /api/runs/:runId/cleanup (Phase 13-6)
+  //   POST /api/runs/:runId/pr     (Phase 13-6)
+  //   POST /api/backlog/:itemId/run (Phase 13-6)
+  return [];
+}
+
 /** Default route table for the dashboard server. */
 export function defaultRoutes(): Route[] {
   return [
+    // Phase 13-4: operation audit endpoints (read-only; available even
+    // when --enable-mutation is OFF so operators can inspect past ops).
+    {
+      method: "GET",
+      pattern: "/api/operations",
+      handler: ({ ctx, res, query }) => {
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const tt = query.get("targetType");
+          const ti = query.get("targetId");
+          const st = query.get("status");
+          const limit = Number(query.get("limit") ?? "100");
+          const rows = listOperations(handle.db, {
+            ...(tt !== null ? { targetType: tt } : {}),
+            ...(ti !== null ? { targetId: ti } : {}),
+            ...(st !== null
+              ? {
+                  status: st as
+                    | "pending"
+                    | "running"
+                    | "succeeded"
+                    | "failed"
+                    | "cancelled",
+                }
+              : {}),
+            limit: Number.isFinite(limit) ? limit : 100,
+          });
+          writeJson(res, 200, { operations: rows });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/operations/:operationId",
+      handler: ({ ctx, res, params }) => {
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const op = getOperation(handle.db, params.operationId!);
+          if (op === null) {
+            writeError(
+              res,
+              404,
+              "not_found",
+              `operation ${params.operationId} not found`,
+            );
+            return;
+          }
+          const events = listOperationEvents(handle.db, params.operationId!);
+          writeJson(res, 200, { operation: op, events });
+        } finally {
+          handle.close();
+        }
+      },
+    },
     {
       method: "GET",
       pattern: "/api/health",
@@ -689,14 +774,44 @@ export function buildListener(
         return;
       }
 
-      if (req.method !== "GET" && req.method !== "HEAD") {
+      const isMutationVerb =
+        req.method === "POST" ||
+        req.method === "PUT" ||
+        req.method === "PATCH" ||
+        req.method === "DELETE";
+
+      if (
+        req.method !== "GET" &&
+        req.method !== "HEAD" &&
+        !(isMutationVerb && config.mutationEnabled === true)
+      ) {
         writeError(
           res,
           405,
           "method_not_allowed",
-          `Phase 12 dashboard accepts GET / HEAD only (got ${req.method ?? "?"})`,
+          `dashboard accepts GET / HEAD${
+            config.mutationEnabled === true ? " / POST" : ""
+          } only (got ${req.method ?? "?"})`,
         );
         return;
+      }
+
+      // Phase 13-4: CSRF for POST. token check is the bearer auth gate
+      // above; CSRF is an additional same-origin defense for browser UI.
+      if (req.method === "POST" && config.mutationEnabled === true) {
+        const expected = config.csrfToken;
+        if (expected !== undefined && expected !== "") {
+          const got = req.headers["x-csrf-token"];
+          if (typeof got !== "string" || got !== expected) {
+            writeError(
+              res,
+              403,
+              "forbidden",
+              "missing or invalid X-CSRF-Token header",
+            );
+            return;
+          }
+        }
       }
 
       const match = matchRoute(routes, pathname);
@@ -728,7 +843,12 @@ export function buildListener(
 
 export function createDashboardServer(
   config: DashboardServerConfig,
-  routes: Route[] = defaultRoutes(),
+  routes?: Route[],
 ): Server {
-  return createServer(buildListener(routes, config));
+  const effective =
+    routes ??
+    (config.mutationEnabled === true
+      ? [...defaultRoutes(), ...mutationRoutes()]
+      : defaultRoutes());
+  return createServer(buildListener(effective, config));
 }
