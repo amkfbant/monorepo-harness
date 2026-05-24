@@ -12,6 +12,80 @@ import {
 import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
 import type { ReviewDecisionValue } from "./review-decision-schema.js";
 import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
+import { ReviewRulesRepository } from "../db/repositories/review-rules.js";
+import { ReviewConsensusRepository } from "../db/repositories/review-consensus.js";
+import {
+  evaluateConsensus,
+  type EnrichedProposal,
+} from "./review-consensus.js";
+import {
+  DEFAULT_REVIEW_RULE,
+  ruleSha256,
+  type ReviewRule,
+} from "./review-rule.js";
+
+/**
+ * Phase 11-5: persist a consensus row for the just-promoted decision.
+ * Phase 11 default rule is `latest-proposal`, so consensus mirrors the
+ * single processed proposal. The row makes the decision visible to
+ * future consensus consumers (dashboard / governance) without changing
+ * the existing single-writer review flow.
+ */
+function recordConsensusForReviewProcess(
+  db: Database.Database,
+  input: {
+    runId: string;
+    decision: "approved" | "changes_requested" | "rejected";
+    reviewer: string | null;
+    reviewedAt: string;
+    proposalId?: number;
+  },
+): void {
+  const snapshot = new ReviewRulesRepository(db).findSnapshotByRun(
+    input.runId,
+  );
+  // If no snapshot row exists (e.g. an older run created before Phase
+  // 11-5), fall back to the default rule on the fly.
+  const rule: ReviewRule =
+    snapshot === null
+      ? DEFAULT_REVIEW_RULE
+      : (JSON.parse(snapshot.ruleJson) as ReviewRule);
+  const ruleSha = snapshot?.sourceSha256 ?? ruleSha256(rule);
+  const enriched: EnrichedProposal =
+    input.proposalId !== undefined
+      ? {
+          proposalId: input.proposalId,
+          reviewerId: input.reviewer,
+          reviewerType: "unknown",
+          groupId: null,
+          decision: input.decision,
+          reviewedAt: input.reviewedAt,
+        }
+      : {
+          proposalId: -1, // synthetic placeholder for file-only path
+          reviewerId: input.reviewer,
+          reviewerType: "unknown",
+          groupId: null,
+          decision: input.decision,
+          reviewedAt: input.reviewedAt,
+        };
+  const result = evaluateConsensus({
+    rule,
+    ruleSha256: ruleSha,
+    proposals: [enriched],
+    evaluatedAt: input.reviewedAt,
+  });
+  new ReviewConsensusRepository(db).insertActive({
+    runId: input.runId,
+    ruleSha256: ruleSha,
+    status: result.status,
+    summary: result.summary,
+    evaluatedAt: input.reviewedAt,
+    evaluatedBy: input.reviewer ?? "review-process",
+    sourceProposalIds:
+      input.proposalId !== undefined ? [input.proposalId] : [],
+  });
+}
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { RunRepository } from "../db/repositories/runs.js";
@@ -372,6 +446,27 @@ async function processUnderLock(
           }
         : {}),
     });
+
+    // Phase 11-5: record a consensus row reflecting the just-promoted
+    // decision. Phase 11 default rule is `latest-proposal` mode, so the
+    // consensus simply mirrors the chosen proposal's decision. Failures
+    // are best-effort: a missing snapshot row or an unexpected proposal
+    // shape must not unwind the just-completed promotion.
+    try {
+      recordConsensusForReviewProcess(db, {
+        runId: opts.runId,
+        decision: decision.decision,
+        reviewer: decision.reviewer,
+        reviewedAt,
+        ...(proposalId !== null ? { proposalId } : {}),
+      });
+    } catch (e) {
+      process.stderr.write(
+        `warning: could not record review consensus for ${opts.runId}: ` +
+          `${(e as Error).message}\n`,
+      );
+    }
+
     warnIfExportFailed(exportRun(db, opts.runId, { runsDir: opts.runsDir }));
   } else {
     const updatedMeta: RunMeta = {
