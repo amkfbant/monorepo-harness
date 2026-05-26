@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1232,6 +1232,213 @@ export const MIGRATION_V15_STATEMENTS: readonly string[] = [
   `ALTER TABLE mcp_confirmation_requests ADD COLUMN error_message TEXT`,
 ];
 
+/**
+ * v16 DDL — Phase 19 (goal convergence controller).
+ *
+ * Phase 19 adds a goal-level control plane above runs, reviews, operations,
+ * and backlog items. These tables record frozen scope, close conditions,
+ * attempts, review cycles, findings, close-check evidence, and convergence
+ * decisions so iterative agent work can converge, defer, or escalate instead
+ * of expanding scope indefinitely.
+ */
+export const MIGRATION_V16_STATEMENTS: readonly string[] = [
+  `CREATE TABLE goal_sessions (
+    goal_id                   TEXT PRIMARY KEY,
+    title                     TEXT NOT NULL,
+    description               TEXT,
+    project_id                TEXT,
+    repo_id                   TEXT,
+    domain                    TEXT,
+    backlog_item_id           TEXT,
+    status                    TEXT NOT NULL CHECK (status IN (
+      'open',
+      'in_progress',
+      'close_ready',
+      'closed',
+      'diverging',
+      'budget_exhausted',
+      'escalated',
+      'cancelled'
+    )),
+    scope_json                TEXT NOT NULL,
+    close_conditions_json     TEXT NOT NULL,
+    policy_json               TEXT NOT NULL,
+    max_iterations            INTEGER NOT NULL,
+    max_review_cycles         INTEGER NOT NULL,
+    max_reruns                INTEGER NOT NULL,
+    max_total_new_findings    INTEGER NOT NULL,
+    current_iteration         INTEGER NOT NULL DEFAULT 0,
+    current_review_cycle      INTEGER NOT NULL DEFAULT 0,
+    created_by                TEXT NOT NULL,
+    created_source            TEXT NOT NULL CHECK (created_source IN (
+      'cli', 'mcp', 'dashboard', 'worker', 'import'
+    )),
+    created_at                TEXT NOT NULL,
+    updated_at                TEXT NOT NULL,
+    closed_at                 TEXT,
+    close_summary             TEXT,
+    escalation_reason         TEXT
+  )`,
+  `CREATE INDEX goal_sessions_status_idx
+     ON goal_sessions(status, updated_at)`,
+  `CREATE INDEX goal_sessions_project_idx
+     ON goal_sessions(project_id, domain, status)`,
+
+  `CREATE TABLE goal_attempts (
+    attempt_id                TEXT PRIMARY KEY,
+    goal_id                   TEXT NOT NULL REFERENCES goal_sessions(goal_id) ON DELETE CASCADE,
+    iteration                 INTEGER NOT NULL,
+    attempt_type              TEXT NOT NULL CHECK (attempt_type IN (
+      'plan',
+      'implement',
+      'fix-review',
+      'rerun',
+      'validate',
+      'close-check',
+      'classify-findings',
+      'defer-followups'
+    )),
+    status                    TEXT NOT NULL CHECK (status IN (
+      'pending', 'running', 'succeeded', 'failed', 'cancelled'
+    )),
+    operation_id              TEXT,
+    run_id                    TEXT,
+    parent_attempt_id         TEXT,
+    input_json                TEXT NOT NULL DEFAULT '{}',
+    result_json               TEXT NOT NULL DEFAULT '{}',
+    error_message             TEXT,
+    started_at                TEXT,
+    completed_at              TEXT,
+    created_at                TEXT NOT NULL
+  )`,
+  `CREATE INDEX goal_attempts_goal_idx
+     ON goal_attempts(goal_id, iteration, created_at)`,
+  `CREATE INDEX goal_attempts_run_idx ON goal_attempts(run_id)`,
+  `CREATE INDEX goal_attempts_operation_idx ON goal_attempts(operation_id)`,
+
+  `CREATE TABLE goal_review_cycles (
+    cycle_id                  TEXT PRIMARY KEY,
+    goal_id                   TEXT NOT NULL REFERENCES goal_sessions(goal_id) ON DELETE CASCADE,
+    cycle_number              INTEGER NOT NULL,
+    review_mode               TEXT NOT NULL CHECK (review_mode IN (
+      'initial', 'delta', 'close', 'regression', 'manual'
+    )),
+    trigger_attempt_id        TEXT,
+    source_review_id          TEXT,
+    source_run_id             TEXT,
+    findings_seen             INTEGER NOT NULL DEFAULT 0,
+    findings_new              INTEGER NOT NULL DEFAULT 0,
+    findings_reopened         INTEGER NOT NULL DEFAULT 0,
+    findings_fixed            INTEGER NOT NULL DEFAULT 0,
+    findings_deferred         INTEGER NOT NULL DEFAULT 0,
+    findings_in_scope_open    INTEGER NOT NULL DEFAULT 0,
+    created_at                TEXT NOT NULL,
+    completed_at              TEXT,
+    summary                   TEXT
+  )`,
+  `CREATE UNIQUE INDEX goal_review_cycles_unique_idx
+     ON goal_review_cycles(goal_id, cycle_number)`,
+
+  `CREATE TABLE goal_findings (
+    finding_id                TEXT PRIMARY KEY,
+    goal_id                   TEXT NOT NULL REFERENCES goal_sessions(goal_id) ON DELETE CASCADE,
+    stable_key                TEXT NOT NULL,
+    duplicate_of             TEXT,
+    source                    TEXT NOT NULL CHECK (source IN (
+      'review', 'test', 'doctor', 'human', 'mcp', 'codex', 'other'
+    )),
+    source_ref                TEXT,
+    source_attempt_id         TEXT,
+    source_cycle_id           TEXT,
+    severity                  TEXT NOT NULL CHECK (severity IN (
+      'P0', 'P1', 'P2', 'P3', 'info'
+    )),
+    category                  TEXT NOT NULL,
+    scope_status              TEXT NOT NULL CHECK (scope_status IN (
+      'in_scope', 'out_of_scope', 'unknown', 'duplicate'
+    )),
+    lifecycle_status          TEXT NOT NULL CHECK (lifecycle_status IN (
+      'open',
+      'fixed',
+      'reopened',
+      'deferred',
+      'duplicate',
+      'out_of_scope',
+      'escalated',
+      'accepted_risk'
+    )),
+    summary                   TEXT NOT NULL,
+    detail                    TEXT,
+    file_path                 TEXT,
+    symbol                    TEXT,
+    suggested_fix             TEXT,
+    first_seen_at             TEXT NOT NULL,
+    last_seen_at              TEXT NOT NULL,
+    fixed_at                  TEXT,
+    deferred_at               TEXT,
+    escalated_at              TEXT,
+    reopen_count              INTEGER NOT NULL DEFAULT 0,
+    deferred_backlog_item_id  TEXT,
+    classification_reason     TEXT,
+    resolution_note           TEXT
+  )`,
+  `CREATE UNIQUE INDEX goal_findings_stable_idx
+     ON goal_findings(goal_id, stable_key)
+    WHERE duplicate_of IS NULL`,
+  `CREATE INDEX goal_findings_goal_status_idx
+     ON goal_findings(goal_id, lifecycle_status, scope_status, severity)`,
+
+  `CREATE TABLE goal_close_checks (
+    check_id                  TEXT PRIMARY KEY,
+    goal_id                   TEXT NOT NULL REFERENCES goal_sessions(goal_id) ON DELETE CASCADE,
+    condition_id              TEXT NOT NULL,
+    status                    TEXT NOT NULL CHECK (status IN (
+      'pending', 'passed', 'failed', 'skipped', 'unknown'
+    )),
+    checked_at                TEXT NOT NULL,
+    checked_by                TEXT NOT NULL,
+    evidence_json             TEXT NOT NULL DEFAULT '{}',
+    message                   TEXT
+  )`,
+  `CREATE INDEX goal_close_checks_goal_idx
+     ON goal_close_checks(goal_id, checked_at)`,
+
+  `CREATE TABLE goal_convergence_decisions (
+    decision_id               TEXT PRIMARY KEY,
+    goal_id                   TEXT NOT NULL REFERENCES goal_sessions(goal_id) ON DELETE CASCADE,
+    cycle_id                  TEXT,
+    attempt_id                TEXT,
+    decision                  TEXT NOT NULL CHECK (decision IN (
+      'continue',
+      'needs_fix',
+      'needs_classification',
+      'close_ready',
+      'closed',
+      'diverging',
+      'budget_exhausted',
+      'escalate',
+      'cancel'
+    )),
+    reason                    TEXT NOT NULL,
+    metrics_json              TEXT NOT NULL DEFAULT '{}',
+    recommended_next_action   TEXT,
+    created_at                TEXT NOT NULL,
+    created_by                TEXT NOT NULL
+  )`,
+  `CREATE INDEX goal_convergence_decisions_goal_idx
+     ON goal_convergence_decisions(goal_id, created_at)`,
+];
+
+/** Tables added by v16 (Phase 19). */
+export const V16_TABLE_NAMES: readonly string[] = [
+  "goal_sessions",
+  "goal_attempts",
+  "goal_review_cycles",
+  "goal_findings",
+  "goal_close_checks",
+  "goal_convergence_decisions",
+];
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -1269,4 +1476,5 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V10_TABLE_NAMES,
   ...V11_TABLE_NAMES,
   ...V13_TABLE_NAMES,
+  ...V16_TABLE_NAMES,
 ];

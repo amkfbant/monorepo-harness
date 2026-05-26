@@ -16,6 +16,7 @@ import {
   MIGRATION_V13_STATEMENTS,
   MIGRATION_V14_STATEMENTS,
   MIGRATION_V15_STATEMENTS,
+  MIGRATION_V16_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -105,6 +106,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 15,
     name: "mcp-identity-and-confirmation-failure-v15",
     statements: MIGRATION_V15_STATEMENTS,
+  },
+  {
+    version: 16,
+    name: "goal-convergence-controller-v16",
+    statements: MIGRATION_V16_STATEMENTS,
   },
 ];
 

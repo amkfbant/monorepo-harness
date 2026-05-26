@@ -34,7 +34,9 @@ describe("runMigrations", () => {
     const r = runMigrations(db);
     db.close();
     expect(r.version).toBe(SCHEMA_VERSION);
-    expect(r.applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(r.applied).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+    ]);
     const tables = tableNames(dbPath);
     expect(tables.has("schema_migrations")).toBe(true);
     for (const t of ALL_TABLE_NAMES) {
