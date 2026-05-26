@@ -238,6 +238,54 @@ harness operation reject <confirmationId> [--by <actor>]
 - `reject` は pending request を rejected にし、出力する confirmation row の `inputJson` / `previewJson` は redacted する。
 - rejected / expired / consumed request は再実行できない。
 
+## `harness goal`
+
+Goal convergence controller（Phase 19）。長い実装/レビュー/修正ループを 1 つの
+goal session に束ね、scope / close condition / budget / finding lifecycle を DB に
+記録する。仕様は [`goal-convergence.md`](./goal-convergence.md)。
+
+```bash
+harness goal start --title <text> [--goal-id <id>] [--project <id>] [--repo-id <id>] [--domain <domain>] \
+  [--scope-file <path>] [--close-file <path>] [--policy-file <path>] \
+  [--max-iterations <n>] [--max-review-cycles <n>] [--max-reruns <n>] \
+  [--max-total-new-findings <n>] [--json]
+harness goal list [--status <status>] [--project <id>] [--repo-id <id>] [--domain <domain>] [--limit <n>] [--json]
+harness goal status <goal-id> [--json]
+harness goal close <goal-id> --summary <text> [--force] [--json]
+harness goal cancel <goal-id> --reason <text> [--json]
+```
+
+Finding lifecycle:
+
+```bash
+harness goal finding add <goal-id> --severity P1 --category correctness --summary <text> \
+  [--source review|test|doctor|human|mcp|codex|other] [--scope in-scope|out-of-scope|unknown|duplicate] [--json]
+harness goal finding classify <finding-id> --scope in-scope|out-of-scope|unknown|duplicate --reason <text> [--duplicate-of <finding-id>] [--json]
+harness goal finding fixed <finding-id> [--note <text>] [--json]
+harness goal finding defer <finding-id> --reason <text> [--backlog] [--json]
+```
+
+Attempts, review cycles, close checks, and convergence decisions:
+
+```bash
+harness goal attempt start <goal-id> --type plan|implement|fix-review|rerun|validate|close-check|classify-findings|defer-followups \
+  [--iteration <n>] [--operation-id <id>] [--run-id <id>] [--parent-attempt-id <id>] [--input-json <json>] [--json]
+harness goal attempt complete <attempt-id> --status succeeded|failed|cancelled \
+  [--operation-id <id>] [--run-id <id>] [--result-json <json>] [--error <text>] [--json]
+harness goal review-cycle start <goal-id> --mode initial|delta|close|regression|manual \
+  [--trigger-attempt-id <id>] [--source-review-id <id>] [--source-run-id <id>] [--json]
+harness goal review-cycle complete <cycle-id> [--from-findings <path>] \
+  [--findings-seen <n>] [--findings-new <n>] [--findings-reopened <n>] \
+  [--findings-fixed <n>] [--findings-deferred <n>] [--findings-in-scope-open <n>] [--json]
+harness goal close-check record <goal-id> --condition <id> --status passed|failed|pending|skipped|unknown \
+  [--checked-by <actor>] [--message <text>] [--evidence-json <json>] [--json]
+harness goal check-convergence <goal-id> [--created-by <actor>] [--no-record] [--json]
+```
+
+`goal close` は convergence が `close_ready` でない限り `--force` を要求する。
+`check-convergence` は `diverging` / `budget_exhausted` / `escalate` で exit 2。
+MCP 経由の goal close/cancel/scope expansion は confirmation-required。
+
 ## `harness dashboard export`
 
 DB read model から read-only な static HTML ダッシュボードを生成する（Phase 6 で

@@ -4,6 +4,11 @@ Phase 19 adds a DB-backed control plane for long-running coding-agent goals.
 It answers whether a goal has converged, needs another bounded fix pass, should
 defer new findings, or must stop for human classification/escalation.
 
+Implementation status: Phase 19 is implemented as schema v16 plus repository,
+CLI, MCP, run/review integration, and a simulated goal-loop fixture matrix.
+The source of truth is `.harness/harness.sqlite`; compatibility files remain
+outside this feature's authority.
+
 ## Problem
 
 Iterative agent loops can drift:
@@ -72,7 +77,7 @@ regression:
 
 ## Data Model
 
-The latest schema stores:
+Schema v16 stores:
 
 ```txt
 goal_sessions                 top-level goal scope, close conditions, policy, budget
@@ -113,10 +118,10 @@ Evaluation is deterministic and conservative:
 2. Iteration/review/rerun budgets are enforced.
 3. Unknown-scope findings block automation when policy requires it.
 4. Open in-scope P0 escalates.
-5. Open in-scope P1 needs a fix.
-6. Failed required close checks need a fix.
-7. Passed required close checks plus no in-scope blockers is `close_ready`.
-8. Growing finding counts or reopened churn is `diverging`.
+5. Growing finding counts or reopened churn is `diverging`.
+6. Open in-scope P1 needs a fix.
+7. Failed required close checks need a fix.
+8. Passed required close checks plus no in-scope blockers is `close_ready`.
 9. Otherwise the decision is `continue`.
 
 Decision values:
@@ -147,6 +152,35 @@ deferOutOfScope: true
 reviewModeSequence: [initial, delta, close]
 ```
 
+## Operation And Review Integration
+
+Goal-aware operation paths accept an optional `goalId` and validate that the
+goal project, repo, and domain match the target run or project before recording
+anything. A scoped goal cannot be linked to an unscoped run.
+
+Implemented links:
+
+```txt
+run.start        -> goal_attempts(attempt_type='implement')
+review.auto      -> goal_attempts(attempt_type='fix-review')
+rerun.start      -> goal_attempts(attempt_type='rerun')
+review.process   -> goal_review_cycles + goal_findings + close checks
+```
+
+Review proposal import maps `required_changes` to P1 finding seeds, then runs
+the normal frozen-scope classifier. Required changes that match the goal scope
+become in-scope blockers; required changes that are outside scope or unknown
+must be deferred or classified before the loop can continue safely.
+`non_blocking_comments` become P2 finding seeds, and
+`out_of_scope_suggestions` are forced to out-of-scope follow-ups. A negative
+review decision with no required changes still creates an in-scope P1 blocker
+so a rejected/changes-requested verdict cannot accidentally become
+`close_ready`.
+
+Review-only attempts inherit the related coding iteration when they are linked
+to an existing run attempt. This keeps automatic review bookkeeping from
+burning the implementation iteration budget.
+
 ## CLI Contract
 
 The CLI exposes `harness goal`:
@@ -170,12 +204,42 @@ make MCP run arbitrary shell commands.
 ## MCP Contract
 
 MCP exposes read tools for sessions, findings, and decisions, plus guarded
-mutation tools for starting goals, recording/classifying/fixing/defering
+mutation tools for starting goals, recording/classifying/fixing/deferring
 findings, recording close checks, and evaluating convergence.
 
 MCP goal mutations use the same permission model as other mutation tools.
 Dangerous terminal operations such as forced close/cancel and scope expansion
 require confirmation. MCP finding details are capped and redacted.
+
+Goal-linked run/review tools support optional `goalId`:
+
+```txt
+harness.run.start
+harness.review.auto
+harness.rerun.start
+harness.review.process
+```
+
+When supplied, the operation audit metadata includes both `goalId` and
+`goal_id`, and the goal repository records the attempt or review-cycle result.
+`review.process` imports the bound review proposal into the goal only on the
+confirmed execution path.
+
+## Fixture Matrix
+
+`tests/unit/goal/fixture-matrix.test.ts` simulates the agent loop without
+calling Codex. The matrix covers:
+
+```txt
+converging fix -> close_ready
+diverging review cycles -> diverging
+out-of-scope follow-up -> defer -> close_ready
+unknown scope -> needs_classification -> close_ready after classification
+iteration budget exhaustion -> budget_exhausted
+```
+
+Each fixture records convergence decisions and updates goal status so the test
+asserts both the decision stream and the loop stop condition.
 
 ## Non-Goals
 

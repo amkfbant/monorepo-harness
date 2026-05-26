@@ -35,6 +35,7 @@ docs/
 | `harness knowledge build-context --domain <d>` | promote 済み knowledge を domain 別に集約（`run --with-knowledge` 用、Phase 3-4） |
 | `harness cleanup --run-id <id> [--scope …]` | worktree / branch / run dir を scope 単位で削除 |
 | `harness workflow reviewed-run …` | run → review auto → review process → rerun を bounded loop で束ねる（Phase 3-1） |
+| `harness goal ...` | scope / findings / close checks / convergence decision を DB に記録し、長い agent loop を止める（Phase 19） |
 | `harness index` | Phase 8-7 で撤去（`harness.sqlite` read model に置換）。exit 1 の stub のみ残置 |
 | `harness pr create --run-id <approved-id>` | approved run を GitHub draft PR にする（Phase 3-6） |
 | `harness run show / timeline / artifacts` | 1 run の状態を read-only で集約表示（Phase 4-1） |

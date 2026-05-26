@@ -105,6 +105,7 @@ Finding ID は **F1, F2, …** で連番。レポート間で連続させる（�
 | 2026-05-21 | [Phase 4-8 dashboard export デモ](2026-05-21-phase4-8-dashboard-export-demo.md) | `harness dashboard export`（read-only 静的 HTML ダッシュボード）。codex review で P2×1 を fix（run link の相対パス）。E4-8 を実機検証、新 finding なし |
 | 2026-05-21 | [Phase 4 close package](2026-05-21-phase4-close.md) | Phase 4 全体（4-1〜4-9 + 4-10）のクローズ。11 項目の close 条件、CLI 一覧、codex review サマリ（P0 ゼロ）。`phase4-close` タグ |
 | 2026-05-25 | [Phase 18 close — MCP server](2026-05-25-phase18-close.md) | coding agent 向け stdio MCP server。tools/resources/prompts、permission、dry-run、OperationRunner mutation、confirmation、audit/redaction。各 subphase を gpt-5.5/xhigh review、最終 full suite 1175 passed / 1 skipped |
+| 2026-05-26 | [Phase 19 close — Goal convergence controller](2026-05-26-phase19-close.md) | DB-backed goal sessions / attempts / review cycles / findings / close checks / convergence decisions。CLI/MCP goal tools、goalId run/review integration、simulated loop fixture matrix。各 subphase を gpt-5.5/xhigh review |
 
 ## Workflow
 

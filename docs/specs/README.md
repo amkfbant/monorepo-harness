@@ -11,7 +11,7 @@ monorepo-harness の **現状仕様** をまとめたディレクトリ。
 - [`project.md`](./project.md) — Project Abstraction 層（project profile / domain registry / templates / context pack、Phase 5）
 - [`db.md`](./db.md) — `harness.sqlite`（DB read model）と file からの import、source-of-truth transition（Phase 6）
 - [`dashboard.md`](./dashboard.md) — DB-backed な project-aware ダッシュボード（Phase 6）
-- [`mcp.md`](./mcp.md) — Phase 18 target spec: coding agent 向け MCP server（tools / resources / prompts / permission / confirmation）
+- [`mcp.md`](./mcp.md) — coding agent 向け MCP server（tools / resources / prompts / permission / confirmation）
 - [`goal-convergence.md`](./goal-convergence.md) — Phase 19 goal convergence controller（scope freeze / finding lifecycle / close decision）
 - [`workflow.md`](./workflow.md) — `domain-coding` workflow の status machine と artifact レイアウト
 - [`cli.md`](./cli.md) — 全 CLI subcommand リファレンス（`run` / `lock` / `review list` / `review auto` / `review process` / `rerun` / `cleanup` / `knowledge promote`）

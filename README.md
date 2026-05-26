@@ -4,7 +4,12 @@
 
 Codex はワークツリー内のファイルを直接編集し、ハーネスは事後に `git diff` を取って **policy の `write` / `deny_write` スコープ** で変更 path を検証する（`read` は codex への prompt/context 用で、読み取りの enforcement はしない）。スコープ外への書き込み・secret 漏洩・symlink 追従などを検出し、レビュー用の artifact 一式を `runs/<runId>/` に残す。
 
-> **Status:** Phase 9 close（concurrency + runtime completion）。Phase 2〜Phase 8 に加えて Phase 9（schema v5。DB-backed `domain_locks` の lease + heartbeat + fencing token = lock_id、active 行を EXISTS で検証する fencing guard を run execution stage writes に挿入。`.harness/db.lock` を flock-based reader/writer に — destructive maintenance + schema 系を exclusive、通常 write を shared。`review_proposals` テーブルが `review auto` の verdict を DB canonical 化、`processed_at` で idempotent。`artifacts.original_*` が truncated artifact の audit を保持。`HARNESS_EXPORT_FILES` の default が OFF へ反転（breaking change）。export OFF + ingest 成功で scratch runDir を削除。runtime tables の legacy-file routing を assertion で撤去 — operator は `db migrate-legacy` を先に走らせる）。`stronger sandbox`（Phase 3-7）と file lock の完全撤去（DB-lock-only 化）、人手 authored の DB canonical 化、`dashboard serve` / mutation UI は Deferred。
+> **Status:** Phase 19 close package。DB-canonical runtime / operation audit
+> / stdio MCP server に加えて、Phase 19 で goal convergence controller
+> （scope freeze、finding lifecycle、close checks、budgeted convergence
+> decisions、CLI/MCP goal tools、run/review/rerun との `goalId` 連携）を実装。
+> `dashboard serve` / dashboard mutation UI、remote multi-user auth、raw shell
+> MCP tool、autonomous worker scheduler は Deferred。
 
 ## 必要環境
 
@@ -99,6 +104,7 @@ npm run --silent harness -- knowledge reject --run-id <runId> --index <n> --revi
 | [`docs/README.md`](./docs/README.md) | docs 全体の index |
 | [`docs/specs/`](./docs/specs/) | 現状仕様 — overview / policy / workflow / cli |
 | [`docs/specs/cli.md`](./docs/specs/cli.md) | 全 CLI subcommand のリファレンス |
+| [`docs/specs/goal-convergence.md`](./docs/specs/goal-convergence.md) | Phase 19 goal convergence controller |
 | [`docs/examples/mini-commerce.md`](./docs/examples/mini-commerce.md) | 検証用ダミー monorepo の構成 |
 | [`docs/reports/`](./docs/reports/) | 実機検証ログ + finding registry |
 | [`docs/policy-semantics.md`](./docs/policy-semantics.md) | minimatch root-anchored の落とし穴（policy を書く前に） |
@@ -136,6 +142,45 @@ npm run --silent harness -- mcp confirmations --json
 
 `confirmations --json` と `operation reject` の payload は redacted 表示。
 Streamable HTTP transport と dashboard mutation UI は deferred。
+
+## Phase 19 quick start — Goal convergence
+
+長い実装/レビュー/修正ループを goal session に束ね、収束しない場合に止める
+DB-backed control plane。詳細は
+[`docs/specs/goal-convergence.md`](./docs/specs/goal-convergence.md)。
+
+```bash
+cat > close.yaml <<'YAML'
+- id: typecheck
+  kind: command
+  required: true
+YAML
+
+npm run --silent harness -- goal start \
+  --title "Catalog search safety" \
+  --project mini-commerce \
+  --domain apps/catalog \
+  --close-file close.yaml \
+  --max-iterations 3 \
+  --json
+
+npm run --silent harness -- goal finding add <goalId> \
+  --severity P1 \
+  --category correctness \
+  --summary "catalog filter close check is not wired" \
+  --scope in-scope
+
+npm run --silent harness -- goal close-check record <goalId> \
+  --condition typecheck \
+  --status passed \
+  --evidence-json '{"command":"npm run typecheck"}'
+
+npm run --silent harness -- goal check-convergence <goalId> --json
+```
+
+MCP `harness.run.start` / `harness.review.auto` / `harness.rerun.start` /
+`harness.review.process` also accept `goalId` and record the corresponding
+goal attempts or review findings after validating project/repo/domain scope.
 
 ## Phase 3 で追加した機能
 

@@ -334,6 +334,13 @@ harness.goal.record_close_check
 harness.goal.check_convergence
 ```
 
+`harness.run.start`, `harness.review.auto`, `harness.rerun.start`, and
+`harness.review.process` also accept optional `goalId`. When present, the tool
+validates the goal's project/repo/domain boundary against the target project or
+run and writes goal attempt/review-cycle records after the operation succeeds.
+A project-scoped or domain-scoped goal is rejected for an unscoped or mismatched
+run.
+
 Dangerous mutations, confirmation-required by default:
 
 ```txt
@@ -445,6 +452,7 @@ Input:
   "projectId": "mini-commerce",
   "domain": "catalog",
   "goal": "Add product search filter",
+  "goalId": "goal-...",
   "idempotencyKey": "uuid"
 }
 ```
@@ -452,6 +460,8 @@ Input:
 Requires `run.start` allowlist, project allowlist, budget availability, and an
 idempotency key. It returns `operation_started` with `operationId` and `runId`
 when execution starts.
+If `goalId` is supplied, the operation metadata includes `goalId` and `goal_id`
+and `goal_attempts` receives an `implement` attempt linked to the resulting run.
 
 `harness.review.auto`
 
@@ -460,6 +470,7 @@ Input:
 ```json
 {
   "runId": "run-...",
+  "goalId": "goal-...",
   "reviewer": "codex-reviewer",
   "idempotencyKey": "uuid"
 }
@@ -467,6 +478,24 @@ Input:
 
 Allowed only for runs in `needs_review` or `changes_requested`, after resolving
 the run's project and applying project allowlist and `review.auto` allowlist.
+If `goalId` is supplied, the review attempt is linked to the latest goal attempt
+for the same run and reuses that iteration so review-only bookkeeping does not
+consume implementation budget.
+
+`harness.rerun.start`
+
+Input:
+
+```json
+{
+  "runId": "run-...",
+  "goalId": "goal-...",
+  "idempotencyKey": "uuid"
+}
+```
+
+When linked to a goal, the generated child run is recorded as a `rerun` attempt
+with the parent run attempt as `parentAttemptId` when available.
 
 `harness.review.process`
 
@@ -475,6 +504,7 @@ Input:
 ```json
 {
   "runId": "run-...",
+  "goalId": "goal-...",
   "decision": "approved",
   "proposalId": 123,
   "sourceSha256": "...",
@@ -488,6 +518,31 @@ executed. If `proposalId` is omitted, preview binds the latest active proposal
 into the stored confirmation input. Confirm revalidates the same proposal id
 and `sourceSha256`, then uses the normal proposal-processing path. MCP
 `review.process` does not use the human override path.
+If `goalId` is supplied, confirmed execution imports the exact proposal into
+`goal_review_cycles` / `goal_findings`, records a `review_consensus` close check
+when the goal requires one, and records a convergence decision. Negative
+decisions with no explicit required changes become an in-scope P1 blocker.
+
+Goal tools:
+
+```txt
+harness.goal.start
+harness.goal.record_findings
+harness.goal.classify_finding
+harness.goal.mark_finding_fixed
+harness.goal.defer_finding
+harness.goal.record_close_check
+harness.goal.check_convergence
+harness.goal.close
+harness.goal.cancel
+harness.goal.expand_scope
+```
+
+All goal mutation tools use `OperationRunner`, require idempotency keys, and
+write operation audit metadata with `goalId`/`goal_id` where a goal is known.
+`goal.close` is executable without confirmation only when convergence is
+`close_ready`; forced close, cancel, and scope expansion are always
+confirmation-required.
 
 `harness.cleanup.apply`, `harness.pr.create`, `harness.db.repair.apply`,
 `harness.db.archive.apply`, `harness.db.migrate_blobs.apply`, and
