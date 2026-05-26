@@ -1,0 +1,331 @@
+import type { GoalRepository } from "./repository.js";
+import { evaluateCloseConditions } from "./close-checks.js";
+import type {
+  GoalAttempt,
+  GoalConvergenceDecision,
+  GoalConvergenceMetrics,
+  GoalConvergenceResult,
+  GoalFinding,
+  GoalLifecycleStatus,
+  GoalNextAction,
+  GoalReviewCycle,
+  GoalSession,
+} from "./types.js";
+
+const OPEN_LIFECYCLES = new Set<GoalLifecycleStatus>(["open", "reopened"]);
+const UNRESOLVED_OUT_OF_SCOPE_LIFECYCLES = new Set<GoalLifecycleStatus>([
+  "open",
+  "reopened",
+  "out_of_scope",
+]);
+
+export class ConvergenceService {
+  constructor(private readonly repo: GoalRepository) {}
+
+  evaluate(goalId: string): GoalConvergenceResult {
+    const session = this.repo.requireSession(goalId);
+    const findings = this.repo.listFindings({ goalId, limit: 10_000 });
+    const cycles = this.repo.listReviewCycles(goalId);
+    const attempts = this.repo.listAttempts(goalId);
+    const closeChecks = this.repo.listCloseChecks(goalId);
+    const close = evaluateCloseConditions({
+      conditions: session.closeConditions,
+      checks: closeChecks,
+      findings,
+    });
+    const metrics = buildMetrics(
+      session,
+      findings,
+      cycles,
+      maxAttemptIteration(attempts),
+      attempts.filter((a) => a.attemptType === "rerun").length,
+      {
+        passed: close.requiredPassed,
+        failed: close.requiredFailed,
+        pending: close.requiredPending,
+      },
+    );
+    return decide(session, findings, cycles, metrics, close.allRequiredPassed);
+  }
+}
+
+export function buildConvergenceMetrics(input: {
+  session: GoalSession;
+  findings: GoalFinding[];
+  cycles: GoalReviewCycle[];
+  attemptsUsed: number;
+  rerunsUsed?: number;
+  closeConditionsPassed: number;
+  closeConditionsFailed: number;
+  closeConditionsPending: number;
+}): GoalConvergenceMetrics {
+  return buildMetrics(
+    input.session,
+    input.findings,
+    input.cycles,
+    input.attemptsUsed,
+    input.rerunsUsed ?? 0,
+    {
+      passed: input.closeConditionsPassed,
+      failed: input.closeConditionsFailed,
+      pending: input.closeConditionsPending,
+    },
+  );
+}
+
+function buildMetrics(
+  session: GoalSession,
+  findings: GoalFinding[],
+  cycles: GoalReviewCycle[],
+  attemptsUsed: number,
+  rerunsUsed: number,
+  closeCounts: { passed: number; failed: number; pending: number },
+): GoalConvergenceMetrics {
+  const open = findings.filter((f) => OPEN_LIFECYCLES.has(f.lifecycleStatus));
+  const latestCycle = cycles[cycles.length - 1];
+  return {
+    openInScopeP0: open.filter(
+      (f) => f.scopeStatus === "in_scope" && f.severity === "P0",
+    ).length,
+    openInScopeP1: open.filter(
+      (f) => f.scopeStatus === "in_scope" && f.severity === "P1",
+    ).length,
+    openInScopeP2: open.filter(
+      (f) => f.scopeStatus === "in_scope" && f.severity === "P2",
+    ).length,
+    openUnknownScope: open.filter((f) => f.scopeStatus === "unknown").length,
+    openOutOfScope: findings.filter(
+      (f) =>
+        f.scopeStatus === "out_of_scope" &&
+        UNRESOLVED_OUT_OF_SCOPE_LIFECYCLES.has(f.lifecycleStatus),
+    ).length,
+    totalNewFindings: cycles.reduce(
+      (sum, cycle) => sum + cycle.findingsNew,
+      0,
+    ),
+    newFindingsThisCycle: latestCycle?.findingsNew ?? 0,
+    reviewCyclesUsed: cycles.length,
+    iterationsUsed: Math.max(session.currentIteration, attemptsUsed),
+    rerunsUsed,
+    closeConditionsPassed: closeCounts.passed,
+    closeConditionsFailed: closeCounts.failed,
+    closeConditionsPending: closeCounts.pending,
+    maxReopenCount: findings.reduce(
+      (max, finding) => Math.max(max, finding.reopenCount),
+      0,
+    ),
+  };
+}
+
+function maxAttemptIteration(attempts: GoalAttempt[]): number {
+  return attempts.reduce(
+    (max, attempt) => Math.max(max, attempt.iteration),
+    0,
+  );
+}
+
+function decide(
+  session: GoalSession,
+  findings: GoalFinding[],
+  cycles: GoalReviewCycle[],
+  metrics: GoalConvergenceMetrics,
+  allRequiredCloseConditionsPassed: boolean,
+): GoalConvergenceResult {
+  const terminal = terminalDecision(session.status);
+  if (terminal !== null) {
+    return result(session.goalId, terminal, `goal is ${session.status}`, metrics, {
+      kind: "ask_human",
+      message: `Goal is already ${session.status}.`,
+    });
+  }
+
+  if (metrics.iterationsUsed > session.maxIterations) {
+    return result(
+      session.goalId,
+      "budget_exhausted",
+      "max iterations exceeded",
+      metrics,
+      { kind: "ask_human", message: "Stop: iteration budget is exhausted." },
+    );
+  }
+
+  if (metrics.reviewCyclesUsed > session.maxReviewCycles) {
+    return result(
+      session.goalId,
+      "budget_exhausted",
+      "max review cycles exceeded",
+      metrics,
+      { kind: "ask_human", message: "Stop: review budget is exhausted." },
+    );
+  }
+
+  if (metrics.rerunsUsed > session.maxReruns) {
+    return result(
+      session.goalId,
+      "budget_exhausted",
+      "max reruns exceeded",
+      metrics,
+      { kind: "ask_human", message: "Stop: rerun budget is exhausted." },
+    );
+  }
+
+  if (metrics.openUnknownScope > 0 && session.policy.stopOnUnknownScope) {
+    return result(
+      session.goalId,
+      "needs_classification",
+      "unknown-scope findings require classification",
+      metrics,
+      {
+        kind: "classify_findings",
+        findingIds: openFindingIds(findings, (f) => f.scopeStatus === "unknown"),
+        message: "Classify unknown-scope findings before another fix pass.",
+      },
+    );
+  }
+
+  if (metrics.openInScopeP0 > 0) {
+    return result(
+      session.goalId,
+      "escalate",
+      "open in-scope P0 findings",
+      metrics,
+      {
+        kind: "ask_human",
+        findingIds: openFindingIds(
+          findings,
+          (f) => f.scopeStatus === "in_scope" && f.severity === "P0",
+        ),
+        message: "Escalate open in-scope P0 findings.",
+      },
+    );
+  }
+
+  const divergingReason = divergenceReason(session, cycles, metrics);
+  if (divergingReason !== null) {
+    return result(session.goalId, "diverging", divergingReason, metrics, {
+      kind: "ask_human",
+      message: "Stop automatic fixing: finding flow is not converging.",
+    });
+  }
+
+  if (metrics.openInScopeP1 > 0) {
+    return result(
+      session.goalId,
+      "needs_fix",
+      "open in-scope P1 findings",
+      metrics,
+      {
+        kind: "fix_findings",
+        findingIds: openFindingIds(
+          findings,
+          (f) => f.scopeStatus === "in_scope" && f.severity === "P1",
+        ),
+        message: "Fix open in-scope P1 findings.",
+      },
+    );
+  }
+
+  if (metrics.closeConditionsFailed > 0) {
+    return result(
+      session.goalId,
+      "needs_fix",
+      "required close conditions failed",
+      metrics,
+      {
+        kind: "run_close_check",
+        message: "Fix failed close conditions and record fresh evidence.",
+      },
+    );
+  }
+
+  if (allRequiredCloseConditionsPassed && onlyNonBlockingRemain(metrics)) {
+    return result(
+      session.goalId,
+      "close_ready",
+      "original close conditions satisfied",
+      metrics,
+      {
+        kind: "close_goal",
+        message: "Close goal and defer remaining out-of-scope follow-ups.",
+      },
+    );
+  }
+
+  return result(session.goalId, "continue", "more validation required", metrics, {
+    kind: "run_close_check",
+    message: "Record close-check evidence or run the next review mode.",
+  });
+}
+
+function terminalDecision(
+  status: GoalSession["status"],
+): GoalConvergenceDecision | null {
+  if (status === "closed") return "closed";
+  if (status === "cancelled") return "cancel";
+  if (status === "diverging") return "diverging";
+  if (status === "budget_exhausted") return "budget_exhausted";
+  if (status === "escalated") return "escalate";
+  return null;
+}
+
+function divergenceReason(
+  session: GoalSession,
+  cycles: GoalReviewCycle[],
+  metrics: GoalConvergenceMetrics,
+): string | null {
+  const policy = session.policy.divergence;
+  if (metrics.totalNewFindings > session.maxTotalNewFindings) {
+    return "total new findings exceeded goal budget";
+  }
+  if (metrics.totalNewFindings > policy.maxTotalNewFindings) {
+    return "total new findings exceeded policy budget";
+  }
+  if (metrics.newFindingsThisCycle > policy.maxNewFindingsPerCycle) {
+    return "new findings in current cycle exceeded policy budget";
+  }
+  if (metrics.maxReopenCount > policy.maxReopenedPerFinding) {
+    return "a finding reopened too many times";
+  }
+  const threshold = policy.requireNewFindingsDecreaseAfterCycle;
+  if (threshold > 0 && cycles.length >= threshold) {
+    const latest = cycles[cycles.length - 1];
+    const previous = cycles[cycles.length - 2];
+    if (
+      latest !== undefined &&
+      previous !== undefined &&
+      latest.cycleNumber >= threshold &&
+      latest.findingsNew > 0 &&
+      latest.findingsNew >= previous.findingsNew
+    ) {
+      return "new findings did not decrease across review cycles";
+    }
+  }
+  return null;
+}
+
+function onlyNonBlockingRemain(metrics: GoalConvergenceMetrics): boolean {
+  return (
+    metrics.openInScopeP0 === 0 &&
+    metrics.openInScopeP1 === 0 &&
+    metrics.openUnknownScope === 0
+  );
+}
+
+function openFindingIds(
+  findings: GoalFinding[],
+  predicate: (finding: GoalFinding) => boolean,
+): string[] {
+  return findings
+    .filter((f) => OPEN_LIFECYCLES.has(f.lifecycleStatus) && predicate(f))
+    .map((f) => f.findingId);
+}
+
+function result(
+  goalId: string,
+  decision: GoalConvergenceDecision,
+  reason: string,
+  metrics: GoalConvergenceMetrics,
+  recommendedNextAction: GoalNextAction,
+): GoalConvergenceResult {
+  return { goalId, decision, reason, metrics, recommendedNextAction };
+}

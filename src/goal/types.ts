@@ -315,6 +315,31 @@ export interface GoalNextAction {
   message: string;
 }
 
+export interface GoalConvergenceMetrics {
+  openInScopeP0: number;
+  openInScopeP1: number;
+  openInScopeP2: number;
+  openUnknownScope: number;
+  openOutOfScope: number;
+  totalNewFindings: number;
+  newFindingsThisCycle: number;
+  reviewCyclesUsed: number;
+  iterationsUsed: number;
+  rerunsUsed: number;
+  closeConditionsPassed: number;
+  closeConditionsFailed: number;
+  closeConditionsPending: number;
+  maxReopenCount: number;
+}
+
+export interface GoalConvergenceResult {
+  goalId: string;
+  decision: GoalConvergenceDecision;
+  reason: string;
+  metrics: GoalConvergenceMetrics;
+  recommendedNextAction: GoalNextAction;
+}
+
 export interface GoalConvergenceDecisionRecord {
   decisionId: string;
   goalId: string;
