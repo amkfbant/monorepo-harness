@@ -1180,10 +1180,13 @@ describe("MCP mutation, confirmation, and audit", () => {
     expect(result.data.limit).toBe("maxMutationOperationsPerHour");
   });
 
-  it("rejects goal-linked project reruns when the refreshed project repo changed", async () => {
+  it("rejects project reruns when the refreshed project repo attribution changed", async () => {
     const root = freshRoot((db, harnessRoot) => {
+      const oldRepo = join(harnessRoot, "repo-old");
       const newRepo = join(harnessRoot, "repo-new");
+      mkdirSync(join(oldRepo, "apps", "web"), { recursive: true });
       mkdirSync(join(newRepo, "apps", "web"), { recursive: true });
+      writeFileSync(join(oldRepo, "package.json"), '{"name":"repo-old"}\n');
       writeFileSync(join(newRepo, "package.json"), '{"name":"repo-new"}\n');
       mkdirSync(join(harnessRoot, "templates", "policy"), { recursive: true });
       writeFileSync(
@@ -1234,7 +1237,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       const meta = {
         runId: "run-rerun-repo",
         repoId: "demo-repo",
-        repoPath: join(harnessRoot, "repo-old"),
+        repoPath: oldRepo,
         domain: "apps/web",
         workflow: "domain-coding",
         baseBranch: "main",
@@ -1255,7 +1258,7 @@ describe("MCP mutation, confirmation, and audit", () => {
             'domain-coding', 'main', 'harness/run-rerun-repo',
             'changes_requested', 'clean', '2026-05-25T00:00:00Z',
             'sha', '2026-05-25T00:00:00Z', 'db-first', 1, ?)`,
-      ).run(join(harnessRoot, "repo-old"), JSON.stringify(meta));
+      ).run(oldRepo, JSON.stringify(meta));
       db.prepare(
         `INSERT INTO review_decisions
            (run_id, decision, reviewer, summary, reviewed_at, source_yaml,
@@ -1277,7 +1280,100 @@ describe("MCP mutation, confirmation, and audit", () => {
       idempotencyKey: "rerun-repo-mismatch",
     });
     expect(result.status).toBe("error");
-    expect(result.summary).toContain("goal repo does not match run repo");
+    expect(result.summary).toContain("rerun repo attribution drift");
+  });
+
+  it("rejects project rerun repo attribution drift without relying on a goal link", async () => {
+    const root = freshRoot((db, harnessRoot) => {
+      const oldRepo = join(harnessRoot, "repo-old");
+      const newRepo = join(harnessRoot, "repo-new");
+      mkdirSync(join(oldRepo, "apps", "web"), { recursive: true });
+      mkdirSync(join(newRepo, "apps", "web"), { recursive: true });
+      writeFileSync(join(oldRepo, "package.json"), '{"name":"repo-old"}\n');
+      writeFileSync(join(newRepo, "package.json"), '{"name":"repo-new"}\n');
+      mkdirSync(join(harnessRoot, "templates", "policy"), { recursive: true });
+      writeFileSync(
+        join(harnessRoot, "templates", "policy", "strict-monorepo-v1.yaml"),
+        [
+          "version: 1",
+          "template_id: strict-monorepo-v1",
+          "domain_defaults:",
+          "  app:",
+          "    read: ['{root}/**']",
+          "    write: ['{root}/**']",
+          "    deny_write: []",
+          "",
+        ].join("\n"),
+      );
+      mkdirSync(join(harnessRoot, "projects"), { recursive: true });
+      writeFileSync(
+        join(harnessRoot, "projects", "demo.yaml"),
+        [
+          "version: 1",
+          "project_id: demo",
+          "repo:",
+          "  id: demo-repo-new",
+          `  path: ${JSON.stringify(newRepo)}`,
+          "policy:",
+          "  template: strict-monorepo-v1",
+          "domains:",
+          "  - id: apps/web",
+          "    root: apps/web",
+          "    kind: app",
+          "",
+        ].join("\n"),
+      );
+      const yaml = reviewDecisionYaml({
+        runId: "run-rerun-repo",
+        decision: "changes_requested",
+        requiredChanges: ["fix the reviewed issue"],
+      });
+      const meta = {
+        runId: "run-rerun-repo",
+        repoId: "demo-repo",
+        repoPath: oldRepo,
+        domain: "apps/web",
+        workflow: "domain-coding",
+        baseBranch: "main",
+        baseSha: "sha",
+        runBranch: "harness/run-rerun-repo",
+        status: "changes_requested",
+        safetyStatus: "clean",
+        startedAt: "2026-05-25T00:00:00Z",
+        project: { projectId: "demo" },
+      };
+      db.prepare(
+        `INSERT INTO runs
+           (run_id, repo_id, project_id, repo_path, domain, workflow,
+            base_branch, run_branch, status, safety_status, started_at,
+            source_meta_sha256, updated_at, source_mode, db_revision, meta_json)
+         VALUES
+           ('run-rerun-repo', 'demo-repo', 'demo', ?, 'apps/web',
+            'domain-coding', 'main', 'harness/run-rerun-repo',
+            'changes_requested', 'clean', '2026-05-25T00:00:00Z',
+            'sha', '2026-05-25T00:00:00Z', 'db-first', 1, ?)`,
+      ).run(oldRepo, JSON.stringify(meta));
+      db.prepare(
+        `INSERT INTO review_decisions
+           (run_id, decision, reviewer, summary, reviewed_at, source_yaml,
+            source_sha256)
+         VALUES
+           ('run-rerun-repo', 'changes_requested', 'reviewer', 'needs work',
+            '2026-05-25T01:00:00Z', ?, ?)`,
+      ).run(yaml, sha256Text(yaml));
+    });
+    const config: McpConfig = {
+      ...DEFAULT_MCP_CONFIG,
+      defaultMode: "guarded-mutation",
+      allowedProjects: ["demo"],
+      allowedOperations: ["rerun.start"],
+    };
+    const result = await callTool(server(root, config), "harness.rerun.start", {
+      runId: "run-rerun-repo",
+      idempotencyKey: "rerun-repo-mismatch-no-goal",
+    });
+    expect(result.status).toBe("error");
+    expect(result.summary).toContain("rerun repo attribution drift");
   });
 
   it("confirms with the permission snapshot captured when the preview was created", async () => {

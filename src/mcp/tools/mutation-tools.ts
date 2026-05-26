@@ -284,7 +284,15 @@ export async function rerunStartTool(
           harnessRoot: context.harnessRoot,
           projectId: prep.projectId,
           domain: prep.domain,
+          repoOverride: prep.repoPath,
         });
+        if (prepared.repoId !== prep.repoId) {
+          throw new Error(
+            `rerun repo attribution drift: parent ${prep.parentRunId} recorded repoId ` +
+              `${JSON.stringify(prep.repoId)} but project ${JSON.stringify(prep.projectId)} ` +
+              `now resolves to ${JSON.stringify(prepared.repoId)}`,
+          );
+        }
         if (args.goalId !== undefined) {
           assertGoalRepoMatches(db, args.goalId, prepared.repoId);
         }

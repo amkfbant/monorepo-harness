@@ -605,6 +605,9 @@ export class GoalRepository {
       if (existing !== undefined) {
         const reopened = existing.lifecycle_status === "fixed";
         const severity = moreSevere(existing.severity, input.severity);
+        if (duplicateOf !== null) {
+          this.promoteDuplicateCanonical(duplicateOf, input.severity, now);
+        }
         this.db
           .prepare(
             `UPDATE goal_findings
@@ -646,6 +649,9 @@ export class GoalRepository {
         };
       }
 
+      if (duplicateOf !== null) {
+        this.promoteDuplicateCanonical(duplicateOf, input.severity, now);
+      }
       const findingId = input.findingId ?? `finding-${randomUUID()}`;
       this.db
         .prepare(
@@ -750,6 +756,9 @@ export class GoalRepository {
         input.findingId,
       );
     this.touchSession(current.goalId, now);
+    if (duplicateOf !== null) {
+      this.promoteDuplicateCanonical(duplicateOf, current.severity, now);
+    }
     return this.requireFinding(input.findingId);
   }
 
@@ -770,12 +779,45 @@ export class GoalRepository {
         `duplicate finding target belongs to a different goal: ${duplicateOf}`,
       );
     }
-    if (canonical.lifecycleStatus === "duplicate") {
+    if (
+      canonical.scopeStatus === "duplicate" ||
+      canonical.lifecycleStatus === "duplicate" ||
+      canonical.duplicateOf !== null
+    ) {
       throw new DbError(
         `duplicate finding target is also a duplicate: ${duplicateOf}`,
       );
     }
     return canonical.findingId;
+  }
+
+  private promoteDuplicateCanonical(
+    canonicalFindingId: string,
+    incomingSeverity: GoalFindingSeverity,
+    now: string,
+  ): void {
+    const canonical = this.requireFinding(canonicalFindingId);
+    const severity = moreSevere(canonical.severity, incomingSeverity);
+    this.db
+      .prepare(
+        `UPDATE goal_findings
+            SET severity = ?,
+                lifecycle_status = CASE
+                  WHEN lifecycle_status = 'fixed' THEN 'reopened'
+                  ELSE lifecycle_status
+                END,
+                fixed_at = CASE
+                  WHEN lifecycle_status = 'fixed' THEN NULL
+                  ELSE fixed_at
+                END,
+                reopen_count = CASE
+                  WHEN lifecycle_status = 'fixed' THEN reopen_count + 1
+                  ELSE reopen_count
+                END,
+                last_seen_at = ?
+          WHERE finding_id = ?`,
+      )
+      .run(severity, now, canonicalFindingId);
   }
 
   markFindingFixed(input: MarkFindingFixedInput): GoalFinding {

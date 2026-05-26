@@ -342,6 +342,90 @@ describe("GoalRepository", () => {
     }
   });
 
+  it("rejects duplicate canonical targets that are themselves duplicate-scoped", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const canonical = repo.upsertFinding({
+        goalId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        summary: "Canonical finding",
+      }).finding;
+      const duplicate = repo.upsertFinding({
+        goalId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        summary: "Duplicate finding",
+      }).finding;
+      repo.classifyFinding({
+        findingId: duplicate.findingId,
+        scopeStatus: "duplicate",
+        duplicateOf: canonical.findingId,
+        reason: "same root cause",
+      });
+      repo.markFindingFixed({ findingId: duplicate.findingId });
+      const chained = repo.upsertFinding({
+        goalId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        summary: "Chained duplicate",
+      }).finding;
+
+      expect(() =>
+        repo.classifyFinding({
+          findingId: chained.findingId,
+          scopeStatus: "duplicate",
+          duplicateOf: duplicate.findingId,
+          reason: "same root cause",
+        }),
+      ).toThrow(/also a duplicate/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("promotes duplicate severity onto canonical findings and reopens fixed canonicals", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const canonical = repo.upsertFinding({
+        goalId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary: "Canonical blocker",
+      }).finding;
+      repo.markFindingFixed({ findingId: canonical.findingId });
+      const duplicate = repo.upsertFinding({
+        goalId: "goal-test",
+        source: "review",
+        severity: "P0",
+        category: "correctness",
+        summary: "Duplicate blocker",
+      }).finding;
+      const classified = repo.classifyFinding({
+        findingId: duplicate.findingId,
+        scopeStatus: "duplicate",
+        duplicateOf: canonical.findingId,
+        reason: "same root cause",
+      });
+      const promoted = repo.requireFinding(canonical.findingId);
+
+      expect(classified.lifecycleStatus).toBe("duplicate");
+      expect(promoted.severity).toBe("P0");
+      expect(promoted.lifecycleStatus).toBe("reopened");
+      expect(promoted.fixedAt).toBeNull();
+      expect(promoted.reopenCount).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it("promotes severity when the same stable key is later reported higher", () => {
     const { db, repo } = freshRepo();
     try {
