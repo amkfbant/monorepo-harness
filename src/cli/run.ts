@@ -156,6 +156,7 @@ import {
 import { registerProjectCommands } from "./project.js";
 import { registerPolicyCommands } from "./policy.js";
 import { registerDbCommands } from "./db.js";
+import { registerGoalCommands } from "./goal.js";
 import { registerMcpCommands } from "../mcp/cli.js";
 import {
   confirmMcpRequest,
@@ -2883,6 +2884,7 @@ knowledgeCmd
 registerProjectCommands(program);
 registerPolicyCommands(program);
 registerDbCommands(program);
+registerGoalCommands(program, { getHarnessRoot });
 registerMcpCommands(program, { getHarnessRoot });
 
 program.parseAsync(process.argv).catch((e: unknown) => {
