@@ -67,6 +67,29 @@ describe("goal finding classification", () => {
     expect(classified.reason).toMatch(/targetFiles/);
   });
 
+  it("keeps target-file cleanup findings in scope", () => {
+    const classified = classifyFindingForGoal(session(), {
+      source: "review",
+      severity: "P1",
+      category: "correctness",
+      summary: "Cleanup MCP confirmation retry handling",
+      filePath: "src/mcp/server.ts",
+    });
+    expect(classified.scopeStatus).toBe("in_scope");
+    expect(classified.reason).toMatch(/targetFiles/);
+  });
+
+  it("keeps allowed-category refactor findings in scope", () => {
+    const classified = classifyFindingForGoal(session(), {
+      source: "review",
+      severity: "P1",
+      category: "security",
+      summary: "Refactor confirmation token validation",
+    });
+    expect(classified.scopeStatus).toBe("in_scope");
+    expect(classified.reason).toMatch(/category/);
+  });
+
   it("classifies file paths outside targetFiles as out of scope", () => {
     const classified = classifyFindingForGoal(session(), {
       source: "review",

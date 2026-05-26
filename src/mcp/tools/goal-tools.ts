@@ -24,6 +24,7 @@ import { parseGoalScope } from "../../goal/schemas.js";
 import type {
   GoalCloseCheckStatus,
   GoalCloseCondition,
+  GoalFinding,
   GoalFindingSeverity,
   GoalFindingSource,
   GoalPolicy,
@@ -41,6 +42,8 @@ import { modeForClient } from "../security/config.js";
 import { ensureProjectVisible, withReadonlyDb } from "./tool-helpers.js";
 
 const MAX_FINDINGS_PER_CALL = 50;
+const MAX_MCP_FINDINGS = 100;
+const MAX_MCP_FINDING_TEXT_CHARS = 1000;
 
 interface MutationBaseArgs {
   idempotencyKey: string;
@@ -199,10 +202,16 @@ export function goalStatusTool(
     if (goal === null) return errorResult(`goal not found: ${args.goalId}`);
     const denied = ensureProjectVisible(context.config, goal.projectId);
     if (denied !== null) return denied;
-    const findings = repo.listFindings({ goalId: args.goalId, limit: 10_000 });
+    const findings = mcpFindingPage(repo, args.goalId);
     const decisions = repo.listDecisions(args.goalId);
     const convergence = new ConvergenceService(repo).evaluate(args.goalId);
-    return ok("goal status", { goal, findings, decisions, convergence });
+    return ok("goal status", {
+      goal,
+      findings: findings.findings,
+      findingsTruncated: findings.truncated,
+      decisions,
+      convergence,
+    });
   }) as HarnessMcpToolResult;
 }
 
@@ -216,8 +225,11 @@ export function goalFindingsTool(
     if (goal === null) return errorResult(`goal not found: ${args.goalId}`);
     const denied = ensureProjectVisible(context.config, goal.projectId);
     if (denied !== null) return denied;
+    const findings = mcpFindingPage(repo, args.goalId);
     return ok("goal findings", {
-      findings: repo.listFindings({ goalId: args.goalId, limit: 10_000 }),
+      findings: findings.findings,
+      findingsTruncated: findings.truncated,
+      limit: MAX_MCP_FINDINGS,
     });
   }) as HarnessMcpToolResult;
 }
@@ -805,6 +817,42 @@ function ensureUnconfirmedGoalCloseAllowed(
 function compareGoalSessions(a: GoalSession, b: GoalSession): number {
   const byUpdated = b.updatedAt.localeCompare(a.updatedAt);
   return byUpdated === 0 ? b.goalId.localeCompare(a.goalId) : byUpdated;
+}
+
+function mcpFindingPage(
+  repo: GoalRepository,
+  goalId: string,
+): { findings: GoalFinding[]; truncated: boolean } {
+  const rows = repo.listFindings({
+    goalId,
+    limit: MAX_MCP_FINDINGS + 1,
+  });
+  return {
+    findings: rows.slice(0, MAX_MCP_FINDINGS).map(redactGoalFindingForMcp),
+    truncated: rows.length > MAX_MCP_FINDINGS,
+  };
+}
+
+function redactGoalFindingForMcp(finding: GoalFinding): GoalFinding {
+  return {
+    ...finding,
+    sourceRef: cappedNullableMcpText(finding.sourceRef),
+    summary: cappedMcpText(finding.summary),
+    detail: cappedNullableMcpText(finding.detail),
+    suggestedFix: cappedNullableMcpText(finding.suggestedFix),
+    classificationReason: cappedNullableMcpText(finding.classificationReason),
+    resolutionNote: cappedNullableMcpText(finding.resolutionNote),
+  };
+}
+
+function cappedNullableMcpText(value: string | null): string | null {
+  return value === null ? null : cappedMcpText(value);
+}
+
+function cappedMcpText(value: string): string {
+  const redacted = redactMcpText(value);
+  if (redacted.length <= MAX_MCP_FINDING_TEXT_CHARS) return redacted;
+  return `${redacted.slice(0, MAX_MCP_FINDING_TEXT_CHARS)}...[truncated]`;
 }
 
 function goalMetadata(

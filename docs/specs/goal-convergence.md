@@ -121,8 +121,9 @@ Evaluation is deterministic and conservative:
 5. Growing finding counts or reopened churn is `diverging`.
 6. Open in-scope P1 needs a fix.
 7. Failed required close checks need a fix.
-8. Passed required close checks plus configured `closeRequires` blockers clear is `close_ready`.
-9. Otherwise the decision is `continue`.
+8. Un-deferred out-of-scope findings require `defer_followups` when policy requires deferral.
+9. Passed required close checks plus configured `closeRequires` blockers clear is `close_ready`.
+10. Otherwise the decision is `continue`.
 
 Decision values:
 

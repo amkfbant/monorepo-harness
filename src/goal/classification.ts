@@ -72,17 +72,6 @@ export function classifyFindingForGoal(
     };
   }
 
-  if (
-    FUTURE_OR_UNRELATED_RE.test(
-      [finding.summary, finding.detail ?? ""].join(" "),
-    )
-  ) {
-    return {
-      scopeStatus: "out_of_scope",
-      reason: "finding text indicates future, unrelated, or opportunistic work",
-    };
-  }
-
   const targetFiles = session.scope.targetFiles ?? [];
   if (
     filePath !== "" &&
@@ -110,6 +99,17 @@ export function classifyFindingForGoal(
     return {
       scopeStatus: "in_scope",
       reason: `category ${JSON.stringify(finding.category)} is allowed by goal scope`,
+    };
+  }
+
+  if (
+    FUTURE_OR_UNRELATED_RE.test(
+      [finding.summary, finding.detail ?? ""].join(" "),
+    )
+  ) {
+    return {
+      scopeStatus: "out_of_scope",
+      reason: "finding text indicates future, unrelated, or opportunistic work",
     };
   }
 

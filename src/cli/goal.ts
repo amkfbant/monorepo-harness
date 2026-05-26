@@ -647,7 +647,8 @@ export function registerGoalCommands(
         if (
           out.decision === "diverging" ||
           out.decision === "budget_exhausted" ||
-          out.decision === "escalate"
+          out.decision === "escalate" ||
+          out.decision === "needs_classification"
         ) {
           process.exit(2);
         }

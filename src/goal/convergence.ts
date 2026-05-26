@@ -268,6 +268,24 @@ function decide(
 
   if (
     allRequiredCloseConditionsPassed &&
+    session.policy.deferOutOfScope &&
+    metrics.openOutOfScope > 0
+  ) {
+    return result(
+      session.goalId,
+      "continue",
+      "out-of-scope findings require deferral",
+      metrics,
+      {
+        kind: "defer_followups",
+        findingIds: unresolvedOutOfScopeFindingIds(findings),
+        message: "Defer out-of-scope findings before closing the goal.",
+      },
+    );
+  }
+
+  if (
+    allRequiredCloseConditionsPassed &&
     closeRequirementsSatisfied(session, metrics)
   ) {
     return result(
@@ -357,6 +375,16 @@ function openFindingIds(
 ): string[] {
   return findings
     .filter((f) => OPEN_LIFECYCLES.has(f.lifecycleStatus) && predicate(f))
+    .map((f) => f.findingId);
+}
+
+function unresolvedOutOfScopeFindingIds(findings: GoalFinding[]): string[] {
+  return findings
+    .filter(
+      (f) =>
+        f.scopeStatus === "out_of_scope" &&
+        UNRESOLVED_OUT_OF_SCOPE_LIFECYCLES.has(f.lifecycleStatus),
+    )
     .map((f) => f.findingId);
 }
 

@@ -269,10 +269,33 @@ describe("ConvergenceService", () => {
     }
   });
 
-  it("allows close_ready when only out-of-scope findings remain", () => {
+  it("requires defer_followups when out-of-scope findings remain", () => {
     const { db, repo, service } = fresh();
     try {
       createGoal(repo);
+      passClose(repo);
+      const finding = addFinding(repo, { scopeStatus: "out_of_scope", severity: "P1" });
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("continue");
+      expect(result.reason).toBe("out-of-scope findings require deferral");
+      expect(result.recommendedNextAction).toMatchObject({
+        kind: "defer_followups",
+        findingIds: [finding.findingId],
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("allows close_ready with out-of-scope findings when deferral is not required", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, {
+        policy: {
+          ...DEFAULT_GOAL_POLICY,
+          deferOutOfScope: false,
+        },
+      });
       passClose(repo);
       addFinding(repo, { scopeStatus: "out_of_scope", severity: "P1" });
       expect(service.evaluate("goal-test").decision).toBe("close_ready");

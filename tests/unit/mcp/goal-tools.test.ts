@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
+import { GoalRepository } from "../../../src/goal/repository.js";
 import { HarnessMcpServer } from "../../../src/mcp/server.js";
 import {
   DEFAULT_MCP_CONFIG,
@@ -210,6 +211,48 @@ describe("MCP goal tools", () => {
       idempotencyKey: "goal-defer-denied",
     });
     expect(denied.status).toBe("permission_denied");
+  });
+
+  it("redacts and caps raw findings in read tools and resources", async () => {
+    const root = freshRoot();
+    const s = server(root, mutationConfig(["goal.start"]));
+    const started = await callTool(s, "harness.goal.start", {
+      title: "Goal MCP raw findings",
+      projectId: "demo",
+      domain: "goal",
+      idempotencyKey: "goal-start-raw-findings",
+    });
+    const goalId = started.data.result.goalId as string;
+    const secret = `sk-${"d".repeat(40)}`;
+    withDb(root, (db) => {
+      new GoalRepository(db).upsertFinding({
+        goalId,
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary: `review leaked ${secret}`,
+        detail: `details leaked ${secret}`,
+        suggestedFix: "x".repeat(1500),
+      });
+    });
+
+    const status = await callTool(s, "harness.goal.status", { goalId });
+    expect(JSON.stringify(status)).not.toContain(secret);
+    expect(status.data.findings).toHaveLength(1);
+    expect(status.data.findings[0].summary).toBe("[redacted]");
+    expect(status.data.findings[0].detail).toBe("[redacted]");
+    expect(status.data.findings[0].suggestedFix).toHaveLength(1014);
+    expect(status.data.findings[0].suggestedFix).toMatch(/\.\.\.\[truncated\]$/);
+    expect(status.data.findingsTruncated).toBe(false);
+
+    const findings = await callTool(s, "harness.goal.findings", { goalId });
+    expect(JSON.stringify(findings)).not.toContain(secret);
+    expect(findings.data.findings[0].summary).toBe("[redacted]");
+
+    const resource = await readResource(s, `harness://goal/${goalId}`);
+    expect(JSON.stringify(resource)).not.toContain(secret);
+    expect(resource.data.findings[0].detail).toBe("[redacted]");
   });
 
   it("does not close close_ready goals without guarded close permission", async () => {

@@ -353,7 +353,7 @@ describe("goal convergence fixture matrix", () => {
           result.decision === "close_ready" && result.metrics.openOutOfScope === 0,
         advance: (result) => {
           if (
-            result.decision === "close_ready" &&
+            result.recommendedNextAction.kind === "defer_followups" &&
             result.metrics.openOutOfScope > 0
           ) {
             ctx.repo.deferFinding({
@@ -365,7 +365,7 @@ describe("goal convergence fixture matrix", () => {
         },
       });
 
-      expect(decisionNames(loop)).toEqual(["close_ready", "close_ready"]);
+      expect(decisionNames(loop)).toEqual(["continue", "close_ready"]);
       expect(loop.decisions.map((d) => d.metrics.openOutOfScope)).toEqual([1, 0]);
       expect(ctx.repo.requireFinding(followUp.findingId)).toMatchObject({
         lifecycleStatus: "deferred",

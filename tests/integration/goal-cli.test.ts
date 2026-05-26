@@ -258,4 +258,56 @@ describe("goal CLI", () => {
       db.close();
     }
   });
+
+  it("exits nonzero when convergence needs classification", () => {
+    const { root, scopePath, closePath } = setup();
+    const goal = json<{ goalId: string }>(
+      runCli(root, [
+        "goal",
+        "start",
+        "--title",
+        "Goal convergence CLI",
+        "--domain",
+        "goal",
+        "--scope-file",
+        scopePath,
+        "--close-file",
+        closePath,
+        "--json",
+      ]),
+    );
+    expect(
+      runCli(root, [
+        "goal",
+        "finding",
+        "add",
+        goal.goalId,
+        "--severity",
+        "P2",
+        "--category",
+        "quality",
+        "--summary",
+        "Review finding lacks scope context",
+      ]).code,
+    ).toBe(0);
+    expect(
+      runCli(root, [
+        "goal",
+        "close-check",
+        "record",
+        goal.goalId,
+        "--condition",
+        "typecheck",
+        "--status",
+        "passed",
+      ]).code,
+    ).toBe(0);
+
+    const result = runCli(root, ["goal", "check-convergence", goal.goalId, "--json"]);
+    expect(result.code).toBe(2);
+    expect(JSON.parse(result.out)).toMatchObject({
+      decision: "needs_classification",
+      recommendedNextAction: { kind: "classify_findings" },
+    });
+  });
 });
