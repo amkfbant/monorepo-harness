@@ -52,6 +52,12 @@
 
 worktree は **削除しない**。レビュー後の cleanup は `harness cleanup`（[`cli.md`](./cli.md)）で行う。
 
+Goal-mode executions can wrap one or more `domain-coding` runs in a
+[`goal-convergence`](./goal-convergence.md) session. The run status machine
+remains unchanged; goal convergence records the surrounding attempts, review
+cycles, finding classification, and close checks so an agent loop can stop at
+`close_ready`, `diverging`, or `budget_exhausted` instead of extending scope.
+
 ## RunStatus 遷移
 
 ```

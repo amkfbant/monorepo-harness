@@ -41,6 +41,11 @@ All mutation tools use `OperationRunner`. MCP is not a privileged side door
 around the CLI, dashboard, DB repositories, idempotency ledger, or audit
 records.
 
+Goal-mode agents must also obey the goal convergence controller documented in
+[`goal-convergence.md`](./goal-convergence.md). MCP goal tools record findings,
+classification, close checks, and convergence decisions; they do not authorize
+unbounded review/fix loops or automatic scope expansion.
+
 Dangerous operations do not complete from a model-controlled MCP tool call.
 They return a preview plus `confirmation_required`. Execution happens through
 an out-of-band operator action:
@@ -113,11 +118,21 @@ mcp:
 	    - backlog.run
 	    - knowledge.promote
 	    - knowledge.reject
+	    - goal.start
+	    - goal.record_findings
+	    - goal.classify_finding
+	    - goal.mark_finding_fixed
+	    - goal.defer_finding
+	    - goal.record_close_check
+	    - goal.check_convergence
 
   requireConfirmation:
     - review.process
     - cleanup.apply
     - pr.create
+    - goal.close
+    - goal.cancel
+    - goal.expand_scope
     - db.repair.apply
     - db.archive.apply
     - db.migrate_blobs.apply
@@ -267,6 +282,11 @@ harness.run.artifact.get
 harness.review.queue
 harness.review.proposals
 harness.review.consensus
+harness.goal.list
+harness.goal.get
+harness.goal.status
+harness.goal.findings
+harness.goal.decisions
 harness.backlog.list
 harness.backlog.get
 harness.knowledge.search
@@ -305,6 +325,13 @@ harness.backlog.run
 harness.backlog.update
 harness.knowledge.promote
 harness.knowledge.reject
+harness.goal.start
+harness.goal.record_findings
+harness.goal.classify_finding
+harness.goal.mark_finding_fixed
+harness.goal.defer_finding
+harness.goal.record_close_check
+harness.goal.check_convergence
 ```
 
 Dangerous mutations, confirmation-required by default:
@@ -313,6 +340,9 @@ Dangerous mutations, confirmation-required by default:
 harness.review.process
 harness.cleanup.apply
 harness.pr.create
+harness.goal.close
+harness.goal.cancel
+harness.goal.expand_scope
 harness.db.repair.apply
 harness.db.archive.apply
 harness.db.migrate_blobs.apply
@@ -546,6 +576,25 @@ harness.prompt.plan_backlog_item
 harness.prompt.review_run
 harness.prompt.summarize_run
 harness.prompt.prepare_rerun
+harness.goal.convergence
+harness.goal.review-findings
+harness.goal.close-check
+```
+
+Goal prompts carry additional rules:
+
+```txt
+harness.goal.convergence:
+  read the goal session, findings, close checks, and decisions; recommend the
+  next action without expanding scope
+
+harness.goal.review-findings:
+  classify findings before fixing; new unrelated delta/close findings default
+  out_of_scope; stop on unknown scope
+
+harness.goal.close-check:
+  check original close conditions only; stop on confirmation_required and run
+  harness.goal.check_convergence after recording evidence
 ```
 
 ## Confirmation workflow
