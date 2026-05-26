@@ -18,6 +18,7 @@ import {
   listMcpConfirmationRequests,
 } from "../../../src/mcp/security/confirmation.js";
 import { processReviewDecision } from "../../../src/core/review-processor.js";
+import { GoalRepository } from "../../../src/goal/repository.js";
 
 function freshRoot(seed: (db: Database.Database, root: string) => void = () => {}): string {
   const root = mkdtempSync(join(tmpdir(), "harness-mcp-mut-"));
@@ -121,12 +122,13 @@ function reviewDecisionYaml(input: {
   domain?: string;
   decision?: "approved" | "changes_requested" | "rejected";
   reviewer?: string;
+  requiredChanges?: string[];
 }): string {
   return [
     `runId: ${JSON.stringify(input.runId)}`,
     `domain: ${JSON.stringify(input.domain ?? "apps/web")}`,
     `decision: ${input.decision ?? "approved"}`,
-    `required_changes: []`,
+    `required_changes: ${JSON.stringify(input.requiredChanges ?? [])}`,
     `non_blocking_comments: []`,
     `out_of_scope_suggestions: []`,
     `reviewer: ${JSON.stringify(input.reviewer ?? "codex-reviewer")}`,
@@ -1176,6 +1178,106 @@ describe("MCP mutation, confirmation, and audit", () => {
     });
     expect(result.status).toBe("permission_denied");
     expect(result.data.limit).toBe("maxMutationOperationsPerHour");
+  });
+
+  it("rejects goal-linked project reruns when the refreshed project repo changed", async () => {
+    const root = freshRoot((db, harnessRoot) => {
+      const newRepo = join(harnessRoot, "repo-new");
+      mkdirSync(join(newRepo, "apps", "web"), { recursive: true });
+      writeFileSync(join(newRepo, "package.json"), '{"name":"repo-new"}\n');
+      mkdirSync(join(harnessRoot, "templates", "policy"), { recursive: true });
+      writeFileSync(
+        join(harnessRoot, "templates", "policy", "strict-monorepo-v1.yaml"),
+        [
+          "version: 1",
+          "template_id: strict-monorepo-v1",
+          "domain_defaults:",
+          "  app:",
+          "    read: ['{root}/**']",
+          "    write: ['{root}/**']",
+          "    deny_write: []",
+          "",
+        ].join("\n"),
+      );
+      mkdirSync(join(harnessRoot, "projects"), { recursive: true });
+      writeFileSync(
+        join(harnessRoot, "projects", "demo.yaml"),
+        [
+          "version: 1",
+          "project_id: demo",
+          "repo:",
+          "  id: demo-repo-new",
+          `  path: ${JSON.stringify(newRepo)}`,
+          "policy:",
+          "  template: strict-monorepo-v1",
+          "domains:",
+          "  - id: apps/web",
+          "    root: apps/web",
+          "    kind: app",
+          "",
+        ].join("\n"),
+      );
+      new GoalRepository(db).createSession({
+        goalId: "goal-rerun-repo",
+        title: "Goal rerun repo",
+        projectId: "demo",
+        repoId: "demo-repo",
+        domain: "apps/web",
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+      const yaml = reviewDecisionYaml({
+        runId: "run-rerun-repo",
+        decision: "changes_requested",
+        requiredChanges: ["fix the reviewed issue"],
+      });
+      const meta = {
+        runId: "run-rerun-repo",
+        repoId: "demo-repo",
+        repoPath: join(harnessRoot, "repo-old"),
+        domain: "apps/web",
+        workflow: "domain-coding",
+        baseBranch: "main",
+        baseSha: "sha",
+        runBranch: "harness/run-rerun-repo",
+        status: "changes_requested",
+        safetyStatus: "clean",
+        startedAt: "2026-05-25T00:00:00Z",
+        project: { projectId: "demo" },
+      };
+      db.prepare(
+        `INSERT INTO runs
+           (run_id, repo_id, project_id, repo_path, domain, workflow,
+            base_branch, run_branch, status, safety_status, started_at,
+            source_meta_sha256, updated_at, source_mode, db_revision, meta_json)
+         VALUES
+           ('run-rerun-repo', 'demo-repo', 'demo', ?, 'apps/web',
+            'domain-coding', 'main', 'harness/run-rerun-repo',
+            'changes_requested', 'clean', '2026-05-25T00:00:00Z',
+            'sha', '2026-05-25T00:00:00Z', 'db-first', 1, ?)`,
+      ).run(join(harnessRoot, "repo-old"), JSON.stringify(meta));
+      db.prepare(
+        `INSERT INTO review_decisions
+           (run_id, decision, reviewer, summary, reviewed_at, source_yaml,
+            source_sha256)
+         VALUES
+           ('run-rerun-repo', 'changes_requested', 'reviewer', 'needs work',
+            '2026-05-25T01:00:00Z', ?, ?)`,
+      ).run(yaml, sha256Text(yaml));
+    });
+    const config: McpConfig = {
+      ...DEFAULT_MCP_CONFIG,
+      defaultMode: "guarded-mutation",
+      allowedProjects: ["demo"],
+      allowedOperations: ["rerun.start"],
+    };
+    const result = await callTool(server(root, config), "harness.rerun.start", {
+      runId: "run-rerun-repo",
+      goalId: "goal-rerun-repo",
+      idempotencyKey: "rerun-repo-mismatch",
+    });
+    expect(result.status).toBe("error");
+    expect(result.summary).toContain("goal repo does not match run repo");
   });
 
   it("confirms with the permission snapshot captured when the preview was created", async () => {

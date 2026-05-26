@@ -116,12 +116,12 @@ Evaluation is deterministic and conservative:
 
 1. Terminal sessions stay terminal.
 2. Iteration/review/rerun budgets are enforced.
-3. Unknown-scope findings block automation when policy requires it.
-4. Open in-scope P0 escalates.
+3. Open in-scope P0 escalates.
+4. Unknown-scope findings block automation when policy requires it.
 5. Growing finding counts or reopened churn is `diverging`.
 6. Open in-scope P1 needs a fix.
 7. Failed required close checks need a fix.
-8. Passed required close checks plus no in-scope blockers is `close_ready`.
+8. Passed required close checks plus configured `closeRequires` blockers clear is `close_ready`.
 9. Otherwise the decision is `continue`.
 
 Decision values:

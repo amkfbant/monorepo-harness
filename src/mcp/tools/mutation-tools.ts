@@ -285,6 +285,9 @@ export async function rerunStartTool(
           projectId: prep.projectId,
           domain: prep.domain,
         });
+        if (args.goalId !== undefined) {
+          assertGoalRepoMatches(db, args.goalId, prepared.repoId);
+        }
         try {
           result = await runDomainCoding({
             harnessRoot: context.harnessRoot,

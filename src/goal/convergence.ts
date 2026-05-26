@@ -169,20 +169,6 @@ function decide(
     );
   }
 
-  if (metrics.openUnknownScope > 0 && session.policy.stopOnUnknownScope) {
-    return result(
-      session.goalId,
-      "needs_classification",
-      "unknown-scope findings require classification",
-      metrics,
-      {
-        kind: "classify_findings",
-        findingIds: openFindingIds(findings, (f) => f.scopeStatus === "unknown"),
-        message: "Classify unknown-scope findings before another fix pass.",
-      },
-    );
-  }
-
   if (metrics.openInScopeP0 > 0) {
     return result(
       session.goalId,
@@ -200,6 +186,24 @@ function decide(
     );
   }
 
+  if (
+    metrics.openUnknownScope > 0 &&
+    (session.policy.stopOnUnknownScope ||
+      session.policy.closeRequires.noUnknownScope)
+  ) {
+    return result(
+      session.goalId,
+      "needs_classification",
+      "unknown-scope findings require classification",
+      metrics,
+      {
+        kind: "classify_findings",
+        findingIds: openFindingIds(findings, (f) => f.scopeStatus === "unknown"),
+        message: "Classify unknown-scope findings before another fix pass.",
+      },
+    );
+  }
+
   const divergingReason = divergenceReason(session, cycles, metrics);
   if (divergingReason !== null) {
     return result(session.goalId, "diverging", divergingReason, metrics, {
@@ -208,7 +212,10 @@ function decide(
     });
   }
 
-  if (metrics.openInScopeP1 > 0) {
+  if (
+    metrics.openInScopeP1 > 0 &&
+    session.policy.closeRequires.noOpenInScopeP1
+  ) {
     return result(
       session.goalId,
       "needs_fix",
@@ -221,6 +228,27 @@ function decide(
           (f) => f.scopeStatus === "in_scope" && f.severity === "P1",
         ),
         message: "Fix open in-scope P1 findings.",
+      },
+    );
+  }
+
+  const maxOpenInScopeP2 = session.policy.closeRequires.maxOpenInScopeP2;
+  if (
+    maxOpenInScopeP2 !== undefined &&
+    metrics.openInScopeP2 > maxOpenInScopeP2
+  ) {
+    return result(
+      session.goalId,
+      "needs_fix",
+      "open in-scope P2 findings exceed close policy",
+      metrics,
+      {
+        kind: "fix_findings",
+        findingIds: openFindingIds(
+          findings,
+          (f) => f.scopeStatus === "in_scope" && f.severity === "P2",
+        ),
+        message: "Fix or defer in-scope P2 findings required by close policy.",
       },
     );
   }
@@ -238,7 +266,10 @@ function decide(
     );
   }
 
-  if (allRequiredCloseConditionsPassed && onlyNonBlockingRemain(metrics)) {
+  if (
+    allRequiredCloseConditionsPassed &&
+    closeRequirementsSatisfied(session, metrics)
+  ) {
     return result(
       session.goalId,
       "close_ready",
@@ -303,12 +334,21 @@ function divergenceReason(
   return null;
 }
 
-function onlyNonBlockingRemain(metrics: GoalConvergenceMetrics): boolean {
-  return (
-    metrics.openInScopeP0 === 0 &&
-    metrics.openInScopeP1 === 0 &&
-    metrics.openUnknownScope === 0
-  );
+function closeRequirementsSatisfied(
+  session: GoalSession,
+  metrics: GoalConvergenceMetrics,
+): boolean {
+  const requires = session.policy.closeRequires;
+  if (requires.noOpenInScopeP0 && metrics.openInScopeP0 > 0) return false;
+  if (requires.noOpenInScopeP1 && metrics.openInScopeP1 > 0) return false;
+  if (requires.noUnknownScope && metrics.openUnknownScope > 0) return false;
+  if (
+    requires.maxOpenInScopeP2 !== undefined &&
+    metrics.openInScopeP2 > requires.maxOpenInScopeP2
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function openFindingIds(

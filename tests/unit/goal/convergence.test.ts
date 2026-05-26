@@ -119,6 +119,21 @@ describe("ConvergenceService", () => {
     }
   });
 
+  it("escalates in-scope P0 before unknown-scope classification", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo);
+      passClose(repo);
+      addFinding(repo, { scopeStatus: "unknown", severity: "P2" });
+      addFinding(repo, { scopeStatus: "in_scope", severity: "P0" });
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("escalate");
+      expect(result.recommendedNextAction.findingIds).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it("returns needs_classification for unknown scope when policy stops on unknown", () => {
     const { db, repo, service } = fresh();
     try {
@@ -128,6 +143,27 @@ describe("ConvergenceService", () => {
       expect(service.evaluate("goal-test").decision).toBe(
         "needs_classification",
       );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("allows close_ready with unknown scope when policy permits it", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, {
+        policy: {
+          ...DEFAULT_GOAL_POLICY,
+          stopOnUnknownScope: false,
+          closeRequires: {
+            ...DEFAULT_GOAL_POLICY.closeRequires,
+            noUnknownScope: false,
+          },
+        },
+      });
+      passClose(repo);
+      addFinding(repo, { scopeStatus: "unknown", severity: "P2" });
+      expect(service.evaluate("goal-test").decision).toBe("close_ready");
     } finally {
       db.close();
     }
@@ -240,6 +276,28 @@ describe("ConvergenceService", () => {
       passClose(repo);
       addFinding(repo, { scopeStatus: "out_of_scope", severity: "P1" });
       expect(service.evaluate("goal-test").decision).toBe("close_ready");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("blocks close_ready when policy requires no open in-scope P2", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, {
+        policy: {
+          ...DEFAULT_GOAL_POLICY,
+          closeRequires: {
+            ...DEFAULT_GOAL_POLICY.closeRequires,
+            maxOpenInScopeP2: 0,
+          },
+        },
+      });
+      passClose(repo);
+      addFinding(repo, { scopeStatus: "in_scope", severity: "P2" });
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("needs_fix");
+      expect(result.recommendedNextAction.kind).toBe("fix_findings");
     } finally {
       db.close();
     }
