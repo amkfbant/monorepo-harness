@@ -272,6 +272,49 @@ describe("MCP goal tools", () => {
     expect(recorded.summary).toContain("duplicate finding requires duplicateOf");
   });
 
+  it("counts MCP-recorded findings as review cycles for divergence budgets", async () => {
+    const root = freshRoot();
+    const s = server(root, mutationConfig(["goal.start", "goal.record_findings"]));
+    const started = await callTool(s, "harness.goal.start", {
+      title: "Goal MCP divergence",
+      projectId: "demo",
+      domain: "goal",
+      scope: {
+        targetFiles: ["src/goal/**"],
+        allowedFindingCategories: ["correctness"],
+      },
+      maxTotalNewFindings: 1,
+      idempotencyKey: "goal-start-mcp-divergence",
+    });
+    const goalId = started.data.result.goalId as string;
+
+    const recorded = await callTool(s, "harness.goal.record_findings", {
+      goalId,
+      findings: [
+        {
+          severity: "P2",
+          category: "correctness",
+          summary: "First MCP finding",
+          filePath: "src/goal/repository.ts",
+        },
+        {
+          severity: "P2",
+          category: "correctness",
+          summary: "Second MCP finding",
+          filePath: "src/goal/convergence.ts",
+        },
+      ],
+      idempotencyKey: "goal-record-mcp-divergence",
+    });
+
+    expect(recorded.status).toBe("operation_started");
+    expect(recorded.data.result.cycle.findingsNew).toBe(2);
+    expect(recorded.data.result.cycle.findingsSeen).toBe(2);
+    expect(recorded.data.result.convergence.decision).toBe("diverging");
+    expect(recorded.data.result.convergence.metrics.totalNewFindings).toBe(2);
+    expect(recorded.data.result.convergence.metrics.reviewCyclesUsed).toBe(1);
+  });
+
   it("redacts and caps raw findings in read tools and resources", async () => {
     const root = freshRoot();
     const s = server(root, mutationConfig(["goal.start"]));

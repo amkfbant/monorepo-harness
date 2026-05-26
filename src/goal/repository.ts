@@ -586,7 +586,7 @@ export class GoalRepository {
     const tx = this.db.transaction((): UpsertGoalFindingResult => {
       const existing = this.db
         .prepare(
-          `SELECT finding_id, lifecycle_status, severity
+          `SELECT finding_id, lifecycle_status, severity, duplicate_of
              FROM goal_findings
             WHERE goal_id = ? AND stable_key = ?
             ORDER BY
@@ -600,14 +600,21 @@ export class GoalRepository {
             finding_id: string;
             lifecycle_status: GoalLifecycleStatus;
             severity: GoalFindingSeverity;
+            duplicate_of: string | null;
           }
         | undefined;
       if (existing !== undefined) {
-        const reopened = existing.lifecycle_status === "fixed";
-        const severity = moreSevere(existing.severity, input.severity);
-        if (duplicateOf !== null) {
-          this.promoteDuplicateCanonical(duplicateOf, input.severity, now);
+        const duplicateCanonical = duplicateOf ?? existing.duplicate_of;
+        let canonicalReopened = false;
+        if (duplicateCanonical !== null) {
+          canonicalReopened = this.promoteDuplicateCanonical(
+            duplicateCanonical,
+            input.severity,
+            now,
+          );
         }
+        const reopened = existing.lifecycle_status === "fixed" || canonicalReopened;
+        const severity = moreSevere(existing.severity, input.severity);
         this.db
           .prepare(
             `UPDATE goal_findings
@@ -649,9 +656,10 @@ export class GoalRepository {
         };
       }
 
-      if (duplicateOf !== null) {
-        this.promoteDuplicateCanonical(duplicateOf, input.severity, now);
-      }
+      const reopened =
+        duplicateOf !== null
+          ? this.promoteDuplicateCanonical(duplicateOf, input.severity, now)
+          : false;
       const findingId = input.findingId ?? `finding-${randomUUID()}`;
       this.db
         .prepare(
@@ -690,7 +698,7 @@ export class GoalRepository {
       return {
         finding: this.requireFinding(findingId),
         created: true,
-        reopened: false,
+        reopened,
       };
     });
     return tx.immediate();
@@ -795,9 +803,10 @@ export class GoalRepository {
     canonicalFindingId: string,
     incomingSeverity: GoalFindingSeverity,
     now: string,
-  ): void {
+  ): boolean {
     const canonical = this.requireFinding(canonicalFindingId);
     const severity = moreSevere(canonical.severity, incomingSeverity);
+    const reopened = canonical.lifecycleStatus === "fixed";
     this.db
       .prepare(
         `UPDATE goal_findings
@@ -818,6 +827,7 @@ export class GoalRepository {
           WHERE finding_id = ?`,
       )
       .run(severity, now, canonicalFindingId);
+    return reopened;
   }
 
   markFindingFixed(input: MarkFindingFixedInput): GoalFinding {

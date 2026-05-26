@@ -15,6 +15,7 @@ import {
 } from "../../goal/classification.js";
 import { ConvergenceService } from "../../goal/convergence.js";
 import { deferFindingToBacklog } from "../../goal/followups.js";
+import { nextReviewMode } from "../../goal/review-mode.js";
 import {
   GoalRepository,
   type CreateGoalSessionInput,
@@ -311,50 +312,97 @@ export async function goalRecordFindingsTool(
     metadata: goalMetadata(context, "harness.goal.record_findings", args, {
       goalId: args.goalId,
     }),
-    workWithDb: async (db) => {
+    workWithDb: async (db, operationId) => {
       const repo = new GoalRepository(db);
-      const session = repo.requireSession(args.goalId);
-      const recorded = args.findings.map((finding) => {
-        const source = finding.source ?? "mcp";
-        const classification =
-          finding.scopeStatus === undefined
-            ? classifyFindingForGoal(session, toClassifiableFinding(source, finding))
-            : {
-                scopeStatus: finding.scopeStatus,
-                reason: "scope supplied by MCP caller",
-              };
-        const input: UpsertGoalFindingInput = {
+      const tx = db.transaction(() => {
+        const session = repo.requireSession(args.goalId);
+        const cycle = repo.startReviewCycle({
           goalId: args.goalId,
-          source,
-          severity: finding.severity,
-          category: finding.category,
-          scopeStatus: classification.scopeStatus,
-          summary: redactMcpText(finding.summary),
-          classificationReason: classification.reason,
-          ...(finding.detail !== undefined
-            ? { detail: redactMcpText(finding.detail) }
-            : {}),
-          ...(finding.filePath !== undefined ? { filePath: finding.filePath } : {}),
-          ...(finding.symbol !== undefined ? { symbol: finding.symbol } : {}),
-          ...(finding.suggestedFix !== undefined
-            ? { suggestedFix: redactMcpText(finding.suggestedFix) }
-            : {}),
-          ...(finding.sourceRef !== undefined ? { sourceRef: finding.sourceRef } : {}),
-          ...(finding.sourceAttemptId !== undefined
-            ? { sourceAttemptId: finding.sourceAttemptId }
-            : {}),
-          ...(finding.sourceCycleId !== undefined
-            ? { sourceCycleId: finding.sourceCycleId }
-            : {}),
+          reviewMode: nextReviewMode(session, repo.listReviewCycles(args.goalId)),
+          sourceReviewId: `mcp:${operationId}`,
+        });
+        const recorded = args.findings.map((finding) => {
+          const source = finding.source ?? "mcp";
+          const classification =
+            finding.scopeStatus === undefined
+              ? classifyFindingForGoal(session, toClassifiableFinding(source, finding))
+              : {
+                  scopeStatus: finding.scopeStatus,
+                  reason: "scope supplied by MCP caller",
+                };
+          const input: UpsertGoalFindingInput = {
+            goalId: args.goalId,
+            source,
+            severity: finding.severity,
+            category: finding.category,
+            scopeStatus: classification.scopeStatus,
+            summary: redactMcpText(finding.summary),
+            classificationReason: classification.reason,
+            sourceCycleId: cycle.cycleId,
+            ...(finding.detail !== undefined
+              ? { detail: redactMcpText(finding.detail) }
+              : {}),
+            ...(finding.filePath !== undefined ? { filePath: finding.filePath } : {}),
+            ...(finding.symbol !== undefined ? { symbol: finding.symbol } : {}),
+            ...(finding.suggestedFix !== undefined
+              ? { suggestedFix: redactMcpText(finding.suggestedFix) }
+              : {}),
+            ...(finding.sourceRef !== undefined ? { sourceRef: finding.sourceRef } : {}),
+            ...(finding.sourceAttemptId !== undefined
+              ? { sourceAttemptId: finding.sourceAttemptId }
+              : {}),
+          };
+          return repo.upsertFinding(input);
+        });
+        const completedCycle = repo.completeReviewCycle({
+          cycleId: cycle.cycleId,
+          findingsSeen: recorded.length,
+          findingsNew: recorded.filter((r) => r.created).length,
+          findingsReopened: recorded.filter((r) => r.reopened).length,
+          findingsFixed: repo.listFindings({
+            goalId: args.goalId,
+            lifecycleStatus: "fixed",
+            limit: 10_000,
+          }).length,
+          findingsDeferred: repo.listFindings({
+            goalId: args.goalId,
+            lifecycleStatus: "deferred",
+            limit: 10_000,
+          }).length,
+          findingsInScopeOpen: repo
+            .listFindings({
+              goalId: args.goalId,
+              scopeStatus: "in_scope",
+              limit: 10_000,
+            })
+            .filter(
+              (finding) =>
+                finding.lifecycleStatus === "open" ||
+                finding.lifecycleStatus === "reopened",
+            ).length,
+          summary: `MCP recorded ${recorded.length} finding(s) via ${operationId}`,
+        });
+        const convergence = new ConvergenceService(repo).evaluate(args.goalId);
+        const decisionRecord = repo.recordConvergenceDecision({
+          goalId: args.goalId,
+          cycleId: completedCycle.cycleId,
+          decision: convergence.decision,
+          reason: convergence.reason,
+          metrics: { ...convergence.metrics },
+          recommendedNextAction: convergence.recommendedNextAction,
+          createdBy: `mcp:${context.clientName}`,
+        });
+        return {
+          goalId: args.goalId,
+          recorded,
+          created: recorded.filter((r) => r.created).length,
+          reopened: recorded.filter((r) => r.reopened).length,
+          cycle: completedCycle,
+          convergence,
+          decisionRecord,
         };
-        return repo.upsertFinding(input);
       });
-      return {
-        goalId: args.goalId,
-        recorded,
-        created: recorded.filter((r) => r.created).length,
-        reopened: recorded.filter((r) => r.reopened).length,
-      };
+      return tx.immediate();
     },
   });
 }

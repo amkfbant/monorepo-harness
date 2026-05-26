@@ -426,6 +426,53 @@ describe("GoalRepository", () => {
     }
   });
 
+  it("reopens duplicate canonicals when an existing duplicate is seen again", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const canonical = repo.upsertFinding({
+        goalId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary: "Canonical blocker",
+      }).finding;
+      const duplicate = repo.upsertFinding({
+        goalId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        summary: "Duplicate blocker",
+      }).finding;
+      repo.classifyFinding({
+        findingId: duplicate.findingId,
+        scopeStatus: "duplicate",
+        duplicateOf: canonical.findingId,
+        reason: "same root cause",
+      });
+      repo.markFindingFixed({ findingId: canonical.findingId });
+
+      const seenAgain = repo.upsertFinding({
+        goalId: "goal-test",
+        source: "review",
+        severity: "P0",
+        category: "correctness",
+        summary: "Duplicate blocker",
+      });
+      const promoted = repo.requireFinding(canonical.findingId);
+
+      expect(seenAgain.created).toBe(false);
+      expect(seenAgain.reopened).toBe(true);
+      expect(seenAgain.finding.lifecycleStatus).toBe("duplicate");
+      expect(promoted.severity).toBe("P0");
+      expect(promoted.lifecycleStatus).toBe("reopened");
+      expect(promoted.reopenCount).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it("promotes severity when the same stable key is later reported higher", () => {
     const { db, repo } = freshRepo();
     try {
