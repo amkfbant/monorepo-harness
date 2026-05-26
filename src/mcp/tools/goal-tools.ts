@@ -813,12 +813,19 @@ function goalMetadata(
   args: MutationBaseArgs,
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> {
+  const goalId =
+    typeof extra.goalId === "string"
+      ? extra.goalId
+      : typeof (args as unknown as { goalId?: unknown }).goalId === "string"
+        ? (args as unknown as { goalId: string }).goalId
+        : undefined;
   return {
     source: "mcp",
     clientName: context.clientName,
     sessionId: context.sessionId,
     toolName,
     idempotencyKey: args.idempotencyKey,
+    ...(goalId !== undefined ? { goal_id: goalId } : {}),
     ...(args.actorNote !== undefined ? { actorNote: args.actorNote } : {}),
     ...(context.confirmedConfirmationId !== undefined
       ? { confirmationId: context.confirmedConfirmationId }

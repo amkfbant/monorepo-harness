@@ -37,6 +37,15 @@ function server(root: string, config: McpConfig): HarnessMcpServer {
   });
 }
 
+function withDb(root: string, fn: (db: ReturnType<typeof openDb>) => void): void {
+  const db = openDb(join(root, ".harness", "harness.sqlite"));
+  try {
+    fn(db);
+  } finally {
+    db.close();
+  }
+}
+
 async function callTool(
   s: HarnessMcpServer,
   name: string,
@@ -95,6 +104,8 @@ describe("MCP goal tools", () => {
       operationId: started.operationId,
     });
     expect(startedOperation.status).toBe("ok");
+    expect(startedOperation.data.operation.metadata.goalId).toBe(goalId);
+    expect(startedOperation.data.operation.metadata.goal_id).toBe(goalId);
 
     const recorded = await callTool(s, "harness.goal.record_findings", {
       goalId,
@@ -323,5 +334,83 @@ describe("MCP goal tools", () => {
     const promptText = prompt.result.messages[0].content.text as string;
     expect(promptText).toContain("escalate and stop on P0");
     expect(promptText).not.toContain("P0/P1");
+  });
+
+  it("rejects linking review operations to a goal in another domain", async () => {
+    const root = freshRoot();
+    const s = server(
+      root,
+      mutationConfig(["goal.start", "review.process"]),
+    );
+    const started = await callTool(s, "harness.goal.start", {
+      title: "Goal MCP domain link",
+      projectId: "demo",
+      repoId: "demo-repo",
+      domain: "goal",
+      idempotencyKey: "goal-domain-link-start",
+    });
+    const goalId = started.data.result.goalId as string;
+    withDb(root, (db) => {
+      db.prepare(
+        `INSERT INTO runs
+           (run_id, repo_id, project_id, repo_path, domain, workflow,
+            base_branch, run_branch, status, safety_status, started_at,
+            source_meta_sha256, updated_at, meta_json, source_mode)
+         VALUES
+           ('run-other-domain', 'demo-repo', 'demo', '/tmp/demo', 'other',
+            'domain-coding', 'main', 'harness/run-other-domain',
+            'needs_review', 'allowed', '2026-05-26T00:00:00Z', 'sha',
+            '2026-05-26T00:00:00Z', '{}', 'db-first')`,
+      ).run();
+    });
+
+    const result = await callTool(s, "harness.review.process", {
+      runId: "run-other-domain",
+      goalId,
+      decision: "approved",
+      idempotencyKey: "goal-domain-link-review",
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.summary).toContain("goal domain does not match run domain");
+  });
+
+  it("rejects linking a project goal to an unprojected run", async () => {
+    const root = freshRoot();
+    const s = server(
+      root,
+      mutationConfig(["goal.start", "review.process"]),
+    );
+    const started = await callTool(s, "harness.goal.start", {
+      title: "Goal MCP project link",
+      projectId: "demo",
+      repoId: "demo-repo",
+      domain: "goal",
+      idempotencyKey: "goal-project-link-start",
+    });
+    const goalId = started.data.result.goalId as string;
+    withDb(root, (db) => {
+      db.prepare(
+        `INSERT INTO runs
+           (run_id, repo_id, project_id, repo_path, domain, workflow,
+            base_branch, run_branch, status, safety_status, started_at,
+            source_meta_sha256, updated_at, meta_json, source_mode)
+         VALUES
+           ('run-unprojected', 'demo-repo', NULL, '/tmp/demo', 'goal',
+            'domain-coding', 'main', 'harness/run-unprojected',
+            'needs_review', 'allowed', '2026-05-26T00:00:00Z', 'sha',
+            '2026-05-26T00:00:00Z', '{}', 'db-first')`,
+      ).run();
+    });
+
+    const result = await callTool(s, "harness.review.process", {
+      runId: "run-unprojected",
+      goalId,
+      decision: "approved",
+      idempotencyKey: "goal-project-link-review",
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.summary).toContain("goal project does not match run project");
   });
 });

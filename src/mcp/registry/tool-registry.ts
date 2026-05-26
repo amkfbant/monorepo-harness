@@ -186,11 +186,17 @@ const runDryRunArgs = z
   })
   .strict();
 
-const runStartArgs = runDryRunArgs.merge(MutationArgsBaseSchema).strict();
+const runStartArgs = runDryRunArgs
+  .extend({
+    goalId: z.string().min(1).optional(),
+  })
+  .merge(MutationArgsBaseSchema)
+  .strict();
 
 const reviewAutoArgs = z
   .object({
     runId: z.string().min(1),
+    goalId: z.string().min(1).optional(),
     reviewer: z.string().min(1).optional(),
   })
   .merge(MutationArgsBaseSchema)
@@ -199,6 +205,7 @@ const reviewAutoArgs = z
 const reviewProcessArgs = z
   .object({
     runId: z.string().min(1),
+    goalId: z.string().min(1).optional(),
     decision: z.enum(["approved", "changes_requested", "rejected"]),
     proposalId: z.number().int().positive().optional(),
     sourceSha256: z.string().min(1).optional(),
@@ -432,6 +439,14 @@ const goalExpandScopeArgs = z
 const dangerousRunArgs = z
   .object({
     runId: z.string().min(1),
+  })
+  .merge(MutationArgsBaseSchema)
+  .strict();
+
+const rerunStartArgs = z
+  .object({
+    runId: z.string().min(1),
+    goalId: z.string().min(1).optional(),
   })
   .merge(MutationArgsBaseSchema)
   .strict();
@@ -1002,6 +1017,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         projectId: projectIdJson,
         domain: { type: "string" },
         goal: { type: "string" },
+        goalId: goalIdJson,
         contextPack: { type: "string" },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
@@ -1021,6 +1037,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     inputSchema: objectSchema(
       {
         runId: runIdJson,
+        goalId: goalIdJson,
         reviewer: { type: "string" },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
@@ -1035,10 +1052,15 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description: "Start a rerun through OperationRunner.",
     kind: "mutation",
     operation: "rerun.start",
-    argsSchema: dangerousRunArgs,
+    argsSchema: rerunStartArgs,
     resolveProjectIdForPermission: resolveRunProjectId,
     inputSchema: objectSchema(
-      { runId: runIdJson, idempotencyKey: idempotencyJson, actorNote: { type: "string" } },
+      {
+        runId: runIdJson,
+        goalId: goalIdJson,
+        idempotencyKey: idempotencyJson,
+        actorNote: { type: "string" },
+      },
       ["runId", "idempotencyKey"],
     ),
     handler: rerunStartTool,
@@ -1307,6 +1329,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     inputSchema: objectSchema(
       {
         runId: runIdJson,
+        goalId: goalIdJson,
         decision: enumSchema(["approved", "changes_requested", "rejected"]),
         proposalId: { type: "number" },
         sourceSha256: { type: "string" },

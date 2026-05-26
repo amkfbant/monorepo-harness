@@ -21,7 +21,7 @@ import {
 import { createMcpConfirmationRequest, getMcpConfirmationRequest } from "../security/confirmation.js";
 import { assertMutationBudget, McpMutationBudgetExceededError } from "../security/limits.js";
 import { prepareProjectRun } from "../../project/run-project.js";
-import { runDomainCoding } from "../../core/workflow-runner.js";
+import { RunFinalizedError, runDomainCoding } from "../../core/workflow-runner.js";
 import { createCodexCliRunner } from "../../codex/codex-cli-runner.js";
 import { runReviewerAgent } from "../../core/reviewer-agent.js";
 import { prepareRerunFromReview } from "../../core/rerun.js";
@@ -31,6 +31,12 @@ import { ReviewProposalRepository, type ReviewProposalRow } from "../../db/repos
 import { exportBacklogItem } from "../../db/export-files.js";
 import { promoteKnowledgeDbFirst, rejectKnowledgeDbFirst } from "../../core/knowledge-db.js";
 import { processReviewDecision } from "../../core/review-processor.js";
+import {
+  latestGoalAttemptForRun,
+  recordGoalAttemptForOperationResult,
+} from "../../goal/operation-integration.js";
+import { importReviewProposalToGoal } from "../../goal/review-integration.js";
+import { GoalRepository } from "../../goal/repository.js";
 import { cleanupRun } from "../../core/cleanup.js";
 import { createPullRequest } from "../../core/pr-creator.js";
 import { createGhPrPublisher } from "../../core/gh-pr-publisher.js";
@@ -53,10 +59,12 @@ interface RunStartArgs extends MutationBaseArgs {
   domain: string;
   goal: string;
   contextPack?: string;
+  goalId?: string;
 }
 
 interface RunArgs extends MutationBaseArgs {
   runId: string;
+  goalId?: string;
 }
 
 interface ReviewAutoArgs extends RunArgs {
@@ -123,32 +131,79 @@ export async function runStartTool(
 ): Promise<HarnessMcpToolResult> {
   const visible = ensureProjectVisible(context.config, args.projectId);
   if (visible !== null) return visible;
+  const goalVisible = validateGoalLinkForProject(
+    context,
+    args.goalId,
+    args.projectId,
+    args.domain,
+  );
+  if (goalVisible !== null) return goalVisible;
   return runMcpOperation(context, {
     operationType: "run.start",
     target: { type: "project_domain", id: `${args.projectId}:${args.domain}` },
     idempotencyKey: args.idempotencyKey,
     input: args,
     metadata: operationMetadata(context, "harness.run.start", args),
-    work: async () => {
+    workWithDb: async (db, operationId) => {
       const prepared = await prepareProjectRun({
         harnessRoot: context.harnessRoot,
         projectId: args.projectId,
         domain: args.domain,
       });
-      const result = await runDomainCoding({
-        harnessRoot: context.harnessRoot,
-        repoPath: prepared.repoPath,
-        repoId: prepared.repoId,
-        domain: prepared.domain,
-        goal: args.goal,
-        baseBranch: prepared.baseBranch,
-        codexRunner: createCodexCliRunner({ codexBin: process.env.HARNESS_CODEX_BIN ?? "codex" }),
-        compiledPolicy: prepared.compiledPolicy,
-        project: prepared.project,
-        ...(prepared.projectContextPacks !== undefined
-          ? { projectContextPacks: prepared.projectContextPacks }
-          : {}),
-      });
+      if (args.goalId !== undefined) {
+        assertGoalRepoMatches(db, args.goalId, prepared.repoId);
+      }
+      let result: Awaited<ReturnType<typeof runDomainCoding>>;
+      try {
+        result = await runDomainCoding({
+          harnessRoot: context.harnessRoot,
+          repoPath: prepared.repoPath,
+          repoId: prepared.repoId,
+          domain: prepared.domain,
+          goal: args.goal,
+          baseBranch: prepared.baseBranch,
+          codexRunner: createCodexCliRunner({ codexBin: process.env.HARNESS_CODEX_BIN ?? "codex" }),
+          compiledPolicy: prepared.compiledPolicy,
+          project: prepared.project,
+          ...(prepared.projectContextPacks !== undefined
+            ? { projectContextPacks: prepared.projectContextPacks }
+            : {}),
+        });
+      } catch (e) {
+        if (args.goalId !== undefined && e instanceof RunFinalizedError) {
+          recordGoalAttemptForOperationResult(db, {
+            goalId: args.goalId,
+            attemptType: "implement",
+            operationId,
+            runId: e.runId,
+            runStatus: e.status,
+            errorMessage: e.message,
+            input: {
+              toolName: "harness.run.start",
+              projectId: args.projectId,
+              domain: args.domain,
+            },
+            result: { runId: e.runId, status: e.status },
+          });
+        }
+        throw e;
+      }
+      if (args.goalId !== undefined) {
+        const attempt = recordGoalAttemptForOperationResult(db, {
+          goalId: args.goalId,
+          attemptType: "implement",
+          operationId,
+          runId: result.runId,
+          runStatus: result.status,
+          input: {
+            toolName: "harness.run.start",
+            projectId: args.projectId,
+            domain: args.domain,
+          },
+          result: { ...result, projectId: args.projectId },
+        });
+        return { ...result, projectId: args.projectId, goalAttempt: attempt };
+      }
       return { ...result, projectId: args.projectId };
     },
   });
@@ -158,14 +213,16 @@ export async function reviewAutoTool(
   args: ReviewAutoArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
+  const goalVisible = validateGoalLinkForRun(context, args.goalId, args.runId);
+  if (goalVisible !== null) return goalVisible;
   return runMcpOperation(context, {
     operationType: "review.auto",
     target: { type: "run", id: args.runId },
     idempotencyKey: args.idempotencyKey,
     input: args,
     metadata: operationMetadata(context, "harness.review.auto", args),
-    work: async () =>
-      runReviewerAgent({
+    workWithDb: async (db, operationId) => {
+      const result = await runReviewerAgent({
         runsDir: harnessPaths(context.harnessRoot).runsDir,
         runId: args.runId,
         dbPath: harnessPaths(context.harnessRoot).dbPath,
@@ -174,7 +231,31 @@ export async function reviewAutoTool(
           codexBin: process.env.HARNESS_CODEX_BIN ?? "codex",
           sandbox: "read-only",
         }),
-      }),
+      });
+      if (args.goalId !== undefined) {
+        const relatedAttempt = latestGoalAttemptForRun(db, args.goalId, args.runId);
+        const attempt = recordGoalAttemptForOperationResult(db, {
+          goalId: args.goalId,
+          attemptType: "fix-review",
+          operationId,
+          runId: args.runId,
+          ...(relatedAttempt !== null
+            ? {
+                iteration: relatedAttempt.iteration,
+                parentAttemptId: relatedAttempt.attemptId,
+              }
+            : {}),
+          runStatus: result.decision,
+          input: {
+            toolName: "harness.review.auto",
+            reviewer: args.reviewer ?? `mcp:${context.clientName}`,
+          },
+          result: { ...result },
+        });
+        return { ...result, goalAttempt: attempt };
+      }
+      return result;
+    },
   });
 }
 
@@ -183,54 +264,124 @@ export async function rerunStartTool(
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   const paths = harnessPaths(context.harnessRoot);
+  const goalVisible = validateGoalLinkForRun(context, args.goalId, args.runId);
+  if (goalVisible !== null) return goalVisible;
   return runMcpOperation(context, {
     operationType: "rerun.start",
     target: { type: "run", id: args.runId },
     idempotencyKey: args.idempotencyKey,
     input: args,
     metadata: operationMetadata(context, "harness.rerun.start", args),
-    work: async () => {
+    workWithDb: async (db, operationId) => {
       const prep = await prepareRerunFromReview({
         runsDir: paths.runsDir,
         parentRunId: args.runId,
         dbPath: paths.dbPath,
       });
+      let result: Awaited<ReturnType<typeof runDomainCoding>>;
       if (prep.projectId !== undefined) {
         const prepared = await prepareProjectRun({
           harnessRoot: context.harnessRoot,
           projectId: prep.projectId,
           domain: prep.domain,
         });
-        return runDomainCoding({
-          harnessRoot: context.harnessRoot,
-          repoPath: prepared.repoPath,
-          repoId: prepared.repoId,
-          domain: prepared.domain,
-          goal: prep.goal,
-          baseBranch: prepared.baseBranch,
-          codexRunner: createCodexCliRunner({ codexBin: process.env.HARNESS_CODEX_BIN ?? "codex" }),
-          parentRunId: prep.parentRunId,
-          rootRunId: prep.rootRunId,
-          rerunAttempt: prep.rerunAttempt,
-          compiledPolicy: prepared.compiledPolicy,
-          project: prepared.project,
-          ...(prepared.projectContextPacks !== undefined
-            ? { projectContextPacks: prepared.projectContextPacks }
-            : {}),
-        });
+        try {
+          result = await runDomainCoding({
+            harnessRoot: context.harnessRoot,
+            repoPath: prepared.repoPath,
+            repoId: prepared.repoId,
+            domain: prepared.domain,
+            goal: prep.goal,
+            baseBranch: prepared.baseBranch,
+            codexRunner: createCodexCliRunner({ codexBin: process.env.HARNESS_CODEX_BIN ?? "codex" }),
+            parentRunId: prep.parentRunId,
+            rootRunId: prep.rootRunId,
+            rerunAttempt: prep.rerunAttempt,
+            compiledPolicy: prepared.compiledPolicy,
+            project: prepared.project,
+            ...(prepared.projectContextPacks !== undefined
+              ? { projectContextPacks: prepared.projectContextPacks }
+              : {}),
+          });
+        } catch (e) {
+          if (args.goalId !== undefined && e instanceof RunFinalizedError) {
+            const parentAttempt = latestGoalAttemptForRun(db, args.goalId, args.runId);
+            recordGoalAttemptForOperationResult(db, {
+              goalId: args.goalId,
+              attemptType: "rerun",
+              operationId,
+              runId: e.runId,
+              runStatus: e.status,
+              errorMessage: e.message,
+              ...(parentAttempt !== null ? { parentAttemptId: parentAttempt.attemptId } : {}),
+              input: {
+                toolName: "harness.rerun.start",
+                parentRunId: args.runId,
+                rootRunId: prep.rootRunId,
+                rerunAttempt: prep.rerunAttempt,
+              },
+              result: { runId: e.runId, status: e.status },
+            });
+          }
+          throw e;
+        }
+      } else {
+        try {
+          result = await runDomainCoding({
+            harnessRoot: context.harnessRoot,
+            repoPath: prep.repoPath,
+            repoId: prep.repoId,
+            domain: prep.domain,
+            goal: prep.goal,
+            baseBranch: prep.baseBranch,
+            codexRunner: createCodexCliRunner({ codexBin: process.env.HARNESS_CODEX_BIN ?? "codex" }),
+            parentRunId: prep.parentRunId,
+            rootRunId: prep.rootRunId,
+            rerunAttempt: prep.rerunAttempt,
+          });
+        } catch (e) {
+          if (args.goalId !== undefined && e instanceof RunFinalizedError) {
+            const parentAttempt = latestGoalAttemptForRun(db, args.goalId, args.runId);
+            recordGoalAttemptForOperationResult(db, {
+              goalId: args.goalId,
+              attemptType: "rerun",
+              operationId,
+              runId: e.runId,
+              runStatus: e.status,
+              errorMessage: e.message,
+              ...(parentAttempt !== null ? { parentAttemptId: parentAttempt.attemptId } : {}),
+              input: {
+                toolName: "harness.rerun.start",
+                parentRunId: args.runId,
+                rootRunId: prep.rootRunId,
+                rerunAttempt: prep.rerunAttempt,
+              },
+              result: { runId: e.runId, status: e.status },
+            });
+          }
+          throw e;
+        }
       }
-      return runDomainCoding({
-        harnessRoot: context.harnessRoot,
-        repoPath: prep.repoPath,
-        repoId: prep.repoId,
-        domain: prep.domain,
-        goal: prep.goal,
-        baseBranch: prep.baseBranch,
-        codexRunner: createCodexCliRunner({ codexBin: process.env.HARNESS_CODEX_BIN ?? "codex" }),
-        parentRunId: prep.parentRunId,
-        rootRunId: prep.rootRunId,
-        rerunAttempt: prep.rerunAttempt,
-      });
+      if (args.goalId !== undefined) {
+        const parentAttempt = latestGoalAttemptForRun(db, args.goalId, args.runId);
+        const attempt = recordGoalAttemptForOperationResult(db, {
+          goalId: args.goalId,
+          attemptType: "rerun",
+          operationId,
+          runId: result.runId,
+          runStatus: result.status,
+          ...(parentAttempt !== null ? { parentAttemptId: parentAttempt.attemptId } : {}),
+          input: {
+            toolName: "harness.rerun.start",
+            parentRunId: args.runId,
+            rootRunId: prep.rootRunId,
+            rerunAttempt: prep.rerunAttempt,
+          },
+          result: { ...result },
+        });
+        return { ...result, goalAttempt: attempt };
+      }
+      return result;
     },
   });
 }
@@ -368,15 +519,31 @@ export async function reviewProcessTool(
     idempotencyKey: args.idempotencyKey,
     input: args,
     metadata: operationMetadata(context, "harness.review.process", args),
-    work: async () =>
-      processReviewDecision({
+    workWithDb: async (db) => {
+      const result = await processReviewDecision({
         runsDir: paths.runsDir,
         locksDir: paths.locksDir,
         dbPath: paths.dbPath,
         runId: args.runId,
         proposalId: args.proposalId as number,
         sourceSha256: args.sourceSha256 as string,
-      }),
+      });
+      if (args.goalId === undefined) return result;
+      const proposal = new ReviewProposalRepository(db).getById(
+        args.proposalId as number,
+      );
+      if (proposal === null) {
+        throw new Error(`review proposal ${String(args.proposalId)} not found after processing`);
+      }
+      const goalIntegration = importReviewProposalToGoal({
+        repository: new GoalRepository(db),
+        goalId: args.goalId,
+        proposal,
+        processResult: result,
+        createdBy: `mcp:${context.clientName}`,
+      });
+      return { ...result, goalIntegration };
+    },
   });
 }
 
@@ -1007,7 +1174,7 @@ function reviewProcessPreview(
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
     const run = db
-      .prepare("SELECT run_id, project_id, status, domain FROM runs WHERE run_id = ?")
+      .prepare("SELECT run_id, project_id, repo_id, status, domain FROM runs WHERE run_id = ?")
       .get(args.runId) as Record<string, unknown> | undefined;
     if (run === undefined) return errorResult(`run ${args.runId} not found`, { runId: args.runId });
     if (run.status !== "needs_review") {
@@ -1015,6 +1182,20 @@ function reviewProcessPreview(
         `run ${args.runId} status is "${String(run.status)}", only needs_review can be processed`,
         { runId: args.runId, status: run.status },
       );
+    }
+    if (args.goalId !== undefined) {
+      const linked = validateGoalRunLinkFromDb(
+        db,
+        context,
+        args.goalId,
+        args.runId,
+        {
+          projectId: typeof run.project_id === "string" ? run.project_id : null,
+          repoId: typeof run.repo_id === "string" ? run.repo_id : null,
+          domain: typeof run.domain === "string" ? run.domain : null,
+        },
+      );
+      if (linked !== null) return linked;
     }
     const repo = new ReviewProposalRepository(db);
     const proposal =
@@ -1056,6 +1237,7 @@ function reviewProcessPreview(
       summary: `would process review proposal ${proposal.proposalId} for ${args.runId}`,
       data: {
         run,
+        ...(args.goalId !== undefined ? { goalId: args.goalId } : {}),
         decision: args.decision,
         proposal: reviewProposalPreview(proposal),
         sourceSha256: proposal.sourceSha256,
@@ -1119,6 +1301,126 @@ function bindReviewProcessArgs(
   };
 }
 
+function validateGoalLinkForProject(
+  context: McpToolContext,
+  goalId: string | undefined,
+  projectId: string,
+  domain?: string,
+): HarnessMcpToolResult | null {
+  if (goalId === undefined) return null;
+  return withReadonlyDb(context, ({ db }) => {
+    const goal = db
+      .prepare("SELECT project_id, repo_id, domain FROM goal_sessions WHERE goal_id = ?")
+      .get(goalId) as GoalLinkRow | undefined;
+    if (goal === undefined) {
+      return errorResult(`goal not found: ${goalId}`, { goalId });
+    }
+    const denied = ensureProjectVisible(context.config, goal.project_id);
+    if (denied !== null) return denied;
+    if (goal.project_id !== null && goal.project_id !== projectId) {
+      return errorResult("goal project does not match run project", {
+        goalId,
+        goalProjectId: goal.project_id,
+        runProjectId: projectId,
+      });
+    }
+    if (domain !== undefined && goal.domain !== null && goal.domain !== domain) {
+      return errorResult("goal domain does not match run domain", {
+        goalId,
+        goalDomain: goal.domain,
+        runDomain: domain,
+      });
+    }
+    return null;
+  }) as HarnessMcpToolResult | null;
+}
+
+function validateGoalLinkForRun(
+  context: McpToolContext,
+  goalId: string | undefined,
+  runId: string,
+): HarnessMcpToolResult | null {
+  if (goalId === undefined) return null;
+  return withReadonlyDb(context, ({ db }) => {
+    const run = db
+      .prepare("SELECT project_id, repo_id, domain FROM runs WHERE run_id = ?")
+      .get(runId) as RunLinkRow | undefined;
+    if (run === undefined) return errorResult(`run not found: ${runId}`, { runId });
+    return validateGoalRunLinkFromDb(db, context, goalId, runId, {
+      projectId: run.project_id,
+      repoId: run.repo_id,
+      domain: run.domain,
+    });
+  }) as HarnessMcpToolResult | null;
+}
+
+function validateGoalRunLinkFromDb(
+  db: Database.Database,
+  context: McpToolContext,
+  goalId: string,
+  runId: string,
+  run: { projectId: string | null; repoId: string | null; domain: string | null },
+): HarnessMcpToolResult | null {
+  const goal = db
+    .prepare("SELECT project_id, repo_id, domain FROM goal_sessions WHERE goal_id = ?")
+    .get(goalId) as GoalLinkRow | undefined;
+  if (goal === undefined) return errorResult(`goal not found: ${goalId}`, { goalId });
+  const denied = ensureProjectVisible(context.config, goal.project_id);
+  if (denied !== null) return denied;
+  if (goal.project_id !== null && run.projectId !== goal.project_id) {
+    return errorResult("goal project does not match run project", {
+      goalId,
+      runId,
+      goalProjectId: goal.project_id,
+      runProjectId: run.projectId,
+    });
+  }
+  if (goal.repo_id !== null && run.repoId !== goal.repo_id) {
+    return errorResult("goal repo does not match run repo", {
+      goalId,
+      runId,
+      goalRepoId: goal.repo_id,
+      runRepoId: run.repoId,
+    });
+  }
+  if (goal.domain !== null && run.domain !== goal.domain) {
+    return errorResult("goal domain does not match run domain", {
+      goalId,
+      runId,
+      goalDomain: goal.domain,
+      runDomain: run.domain,
+    });
+  }
+  return null;
+}
+
+interface GoalLinkRow {
+  project_id: string | null;
+  repo_id: string | null;
+  domain: string | null;
+}
+
+interface RunLinkRow {
+  project_id: string | null;
+  repo_id: string | null;
+  domain: string | null;
+}
+
+function assertGoalRepoMatches(
+  db: Database.Database,
+  goalId: string,
+  repoId: string,
+): void {
+  const goal = db
+    .prepare("SELECT repo_id FROM goal_sessions WHERE goal_id = ?")
+    .get(goalId) as { repo_id: string | null } | undefined;
+  if (goal !== undefined && goal.repo_id !== null && goal.repo_id !== repoId) {
+    throw new Error(
+      `goal repo does not match run repo: goal=${goalId} goalRepo=${goal.repo_id} runRepo=${repoId}`,
+    );
+  }
+}
+
 function prBaseBranchForConfirmedCreate(
   args: RunArgs,
   context: McpToolContext,
@@ -1165,12 +1467,17 @@ function operationMetadata(
   toolName: string,
   args: MutationBaseArgs,
 ): Record<string, unknown> {
+  const goalId =
+    typeof (args as unknown as { goalId?: unknown }).goalId === "string"
+      ? (args as unknown as { goalId: string }).goalId
+      : undefined;
   return {
     source: "mcp",
     clientName: context.clientName,
     sessionId: context.sessionId,
     toolName,
     idempotencyKey: args.idempotencyKey,
+    ...(goalId !== undefined ? { goalId, goal_id: goalId } : {}),
     ...(args.actorNote !== undefined ? { actorNote: args.actorNote } : {}),
     ...(context.confirmedConfirmationId !== undefined
       ? { confirmationId: context.confirmedConfirmationId }
