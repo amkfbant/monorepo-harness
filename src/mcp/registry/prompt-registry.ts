@@ -86,6 +86,23 @@ export const MCP_PROMPTS: McpPromptDefinition[] = [
       ),
   },
   {
+    name: "harness.prompt.drive_goal_convergence",
+    title: "Drive goal convergence",
+    description: "Work a goal toward close, defer, or escalation without expanding scope.",
+    arguments: [{ name: "goalId", description: "Goal id", required: true }],
+    buildMessages: (args) =>
+      textPrompt(
+        `Drive goal ${String(args.goalId)} toward convergence. Read ` +
+          `harness://goal/${encoded(args.goalId)} first. Then use ` +
+          "`harness.goal.findings`, `harness.goal.record_findings`, " +
+          "`harness.goal.classify_finding`, `harness.goal.mark_finding_fixed`, " +
+          "`harness.goal.defer_finding`, and `harness.goal.check_convergence` " +
+          "as needed. Fix only in-scope P1 findings, escalate and stop on P0, " +
+          "classify unknowns, defer out-of-scope findings, and stop on " +
+          "escalate, diverging, budget_exhausted, or needs_classification.",
+      ),
+  },
+  {
     name: "harness.prompt.summarize_run",
     title: "Summarize run",
     description: "Summarize a run and its artifacts.",

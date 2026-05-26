@@ -1017,6 +1017,8 @@ function listOperationPage(
       ...context.config.allowedProjects,
       ...context.config.allowedProjects,
       ...context.config.allowedProjects,
+      ...context.config.allowedProjects,
+      ...context.config.allowedProjects,
     );
   }
   const whereSql = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
@@ -1060,6 +1062,17 @@ function projectScopedOperationPredicate(allowedProjects: string[]): string {
       SELECT 1 FROM knowledge_candidates kc
        WHERE kc.candidate_id = operations.target_id
          AND kc.project_id IN (${placeholders})
+    ))
+    OR (target_type = 'goal' AND EXISTS (
+      SELECT 1 FROM goal_sessions gs
+       WHERE gs.goal_id = operations.target_id
+         AND gs.project_id IN (${placeholders})
+    ))
+    OR (target_type = 'goal_finding' AND EXISTS (
+      SELECT 1 FROM goal_findings gf
+      JOIN goal_sessions gs ON gs.goal_id = gf.goal_id
+       WHERE gf.finding_id = operations.target_id
+         AND gs.project_id IN (${placeholders})
     ))
     OR (target_type = 'project_domain' AND (
       target_id IN (${placeholders})
@@ -1481,6 +1494,23 @@ function projectIdForOperation(
   if (op.targetType === "knowledge_candidate" && op.targetId !== null) {
     const row = db
       .prepare("SELECT project_id FROM knowledge_candidates WHERE candidate_id = ?")
+      .get(op.targetId) as { project_id: string | null } | undefined;
+    return row?.project_id ?? null;
+  }
+  if (op.targetType === "goal" && op.targetId !== null) {
+    const row = db
+      .prepare("SELECT project_id FROM goal_sessions WHERE goal_id = ?")
+      .get(op.targetId) as { project_id: string | null } | undefined;
+    return row?.project_id ?? projectIdFromOperationInput(op.inputJson) ?? null;
+  }
+  if (op.targetType === "goal_finding" && op.targetId !== null) {
+    const row = db
+      .prepare(
+        `SELECT s.project_id
+           FROM goal_findings f
+           JOIN goal_sessions s ON s.goal_id = f.goal_id
+          WHERE f.finding_id = ?`,
+      )
       .get(op.targetId) as { project_id: string | null } | undefined;
     return row?.project_id ?? null;
   }

@@ -70,7 +70,38 @@ import {
   reviewProcessTool,
   runStartTool,
 } from "../tools/mutation-tools.js";
+import {
+  goalCancelTool,
+  goalCheckConvergenceTool,
+  goalClassifyFindingTool,
+  goalCloseTool,
+  goalDecisionsTool,
+  goalDeferFindingTool,
+  goalExpandScopeTool,
+  goalFindingsTool,
+  goalGetTool,
+  goalListTool,
+  goalMarkFindingFixedTool,
+  goalRecordCloseCheckTool,
+  goalRecordFindingsTool,
+  goalStartTool,
+  goalStatusTool,
+  resolveGoalFindingProjectId,
+  resolveGoalProjectId,
+} from "../tools/goal-tools.js";
 import type { McpPermissionDecision } from "../security/permissions.js";
+import {
+  GOAL_CLOSE_CHECK_STATUSES,
+  GOAL_FINDING_SEVERITIES,
+  GOAL_FINDING_SOURCES,
+  GOAL_SCOPE_STATUSES,
+  GOAL_STATUSES,
+} from "../../goal/types.js";
+import {
+  GoalCloseConditionSchema,
+  GoalPolicySchema,
+  GoalScopeSchema,
+} from "../../goal/schemas.js";
 
 export interface McpToolContext {
   harnessRoot: string;
@@ -265,6 +296,139 @@ const operationGetArgs = z
   })
   .strict();
 
+const goalListArgs = z
+  .object({
+    status: z.enum(GOAL_STATUSES).optional(),
+    projectId: z.string().min(1).optional(),
+    repoId: z.string().min(1).optional(),
+    domain: z.string().min(1).optional(),
+    limit: LimitSchema,
+  })
+  .strict();
+
+const goalGetArgs = z
+  .object({
+    goalId: z.string().min(1),
+  })
+  .strict();
+
+const goalStartArgs = z
+  .object({
+    goalId: z.string().min(1).optional(),
+    title: z.string().min(1),
+    description: z.string().min(1).optional(),
+    projectId: z.string().min(1).optional(),
+    repoId: z.string().min(1).optional(),
+    domain: z.string().min(1).optional(),
+    backlogItemId: z.string().min(1).optional(),
+    scope: GoalScopeSchema.optional(),
+    closeConditions: z.array(GoalCloseConditionSchema).optional(),
+    policy: GoalPolicySchema.optional(),
+    maxIterations: z.number().int().min(1).optional(),
+    maxReviewCycles: z.number().int().min(1).optional(),
+    maxReruns: z.number().int().min(0).optional(),
+    maxTotalNewFindings: z.number().int().min(0).optional(),
+  })
+  .merge(MutationArgsBaseSchema)
+  .strict();
+
+const goalFindingInputArgs = z
+  .object({
+    severity: z.enum(GOAL_FINDING_SEVERITIES),
+    category: z.string().min(1),
+    summary: z.string().min(1),
+    detail: z.string().min(1).optional(),
+    filePath: z.string().min(1).optional(),
+    symbol: z.string().min(1).optional(),
+    suggestedFix: z.string().min(1).optional(),
+    source: z.enum(GOAL_FINDING_SOURCES).optional(),
+    sourceRef: z.string().min(1).optional(),
+    sourceAttemptId: z.string().min(1).optional(),
+    sourceCycleId: z.string().min(1).optional(),
+    scopeStatus: z.enum(GOAL_SCOPE_STATUSES).optional(),
+  })
+  .strict();
+
+const goalRecordFindingsArgs = z
+  .object({
+    goalId: z.string().min(1),
+    findings: z.array(goalFindingInputArgs).min(1).max(50),
+  })
+  .merge(MutationArgsBaseSchema)
+  .strict();
+
+const goalClassifyFindingArgs = z
+  .object({
+    findingId: z.string().min(1),
+    scopeStatus: z.enum(GOAL_SCOPE_STATUSES),
+    reason: z.string().min(1),
+    duplicateOf: z.string().min(1).optional(),
+  })
+  .merge(MutationArgsBaseSchema)
+  .strict();
+
+const goalFindingMutationArgs = z
+  .object({
+    findingId: z.string().min(1),
+    note: z.string().min(1).optional(),
+  })
+  .merge(MutationArgsBaseSchema)
+  .strict();
+
+const goalDeferFindingArgs = z
+  .object({
+    findingId: z.string().min(1),
+    reason: z.string().min(1),
+    createBacklogItem: z.boolean().optional(),
+  })
+  .merge(MutationArgsBaseSchema)
+  .strict();
+
+const goalRecordCloseCheckArgs = z
+  .object({
+    goalId: z.string().min(1),
+    conditionId: z.string().min(1),
+    status: z.enum(GOAL_CLOSE_CHECK_STATUSES),
+    checkedBy: z.string().min(1).optional(),
+    evidence: z.record(z.unknown()).optional(),
+    message: z.string().min(1).optional(),
+  })
+  .merge(MutationArgsBaseSchema)
+  .strict();
+
+const goalCheckConvergenceArgs = z
+  .object({
+    goalId: z.string().min(1),
+  })
+  .merge(MutationArgsBaseSchema)
+  .strict();
+
+const goalCloseArgs = z
+  .object({
+    goalId: z.string().min(1),
+    summary: z.string().min(1),
+    force: z.boolean().optional(),
+  })
+  .merge(MutationArgsBaseSchema)
+  .strict();
+
+const goalCancelArgs = z
+  .object({
+    goalId: z.string().min(1),
+    reason: z.string().min(1),
+  })
+  .merge(MutationArgsBaseSchema)
+  .strict();
+
+const goalExpandScopeArgs = z
+  .object({
+    goalId: z.string().min(1),
+    scope: GoalScopeSchema,
+    reason: z.string().min(1),
+  })
+  .merge(MutationArgsBaseSchema)
+  .strict();
+
 const dangerousRunArgs = z
   .object({
     runId: z.string().min(1),
@@ -363,9 +527,20 @@ function define(
 
 const projectIdJson = { type: "string", description: "Project id" };
 const runIdJson = { type: "string", description: "Run id" };
+const goalIdJson = { type: "string", description: "Goal id" };
 const idempotencyJson = {
   type: "string",
   description: "Required idempotency key for mutation tools",
+};
+const goalScopeJson = {
+  type: "object",
+  description: "Goal scope object",
+  additionalProperties: true,
+};
+const goalFindingJson = {
+  type: "object",
+  description: "Goal finding input",
+  additionalProperties: true,
 };
 
 export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
@@ -658,6 +833,67 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     handler: operationGetTool,
   }),
   define({
+    name: "harness.goal.list",
+    title: "List goals",
+    description: "List goal convergence sessions.",
+    kind: "read",
+    operation: "goal.list",
+    argsSchema: goalListArgs,
+    projectIdFromArgs: (args) => args.projectId,
+    inputSchema: objectSchema({
+      status: enumSchema(GOAL_STATUSES),
+      projectId: projectIdJson,
+      repoId: { type: "string" },
+      domain: { type: "string" },
+      limit: { type: "number" },
+    }),
+    handler: goalListTool,
+  }),
+  define({
+    name: "harness.goal.get",
+    title: "Get goal",
+    description: "Read one goal session.",
+    kind: "read",
+    operation: "goal.get",
+    argsSchema: goalGetArgs,
+    resolveProjectIdForPermission: resolveGoalProjectId,
+    inputSchema: objectSchema({ goalId: goalIdJson }, ["goalId"]),
+    handler: goalGetTool,
+  }),
+  define({
+    name: "harness.goal.status",
+    title: "Goal status",
+    description: "Read a goal, findings, decisions, and current convergence.",
+    kind: "read",
+    operation: "goal.status",
+    argsSchema: goalGetArgs,
+    resolveProjectIdForPermission: resolveGoalProjectId,
+    inputSchema: objectSchema({ goalId: goalIdJson }, ["goalId"]),
+    handler: goalStatusTool,
+  }),
+  define({
+    name: "harness.goal.findings",
+    title: "Goal findings",
+    description: "List findings for a goal.",
+    kind: "read",
+    operation: "goal.findings",
+    argsSchema: goalGetArgs,
+    resolveProjectIdForPermission: resolveGoalProjectId,
+    inputSchema: objectSchema({ goalId: goalIdJson }, ["goalId"]),
+    handler: goalFindingsTool,
+  }),
+  define({
+    name: "harness.goal.decisions",
+    title: "Goal decisions",
+    description: "List recorded convergence decisions for a goal.",
+    kind: "read",
+    operation: "goal.decisions",
+    argsSchema: goalGetArgs,
+    resolveProjectIdForPermission: resolveGoalProjectId,
+    inputSchema: objectSchema({ goalId: goalIdJson }, ["goalId"]),
+    handler: goalDecisionsTool,
+  }),
+  define({
     name: "harness.project.check",
     title: "Check project",
     description: "Validate project profile and repo layout without mutation.",
@@ -872,6 +1108,157 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     handler: backlogUpdateTool,
   }),
   define({
+    name: "harness.goal.start",
+    title: "Start goal",
+    description: "Create a goal convergence session through OperationRunner.",
+    kind: "mutation",
+    operation: "goal.start",
+    argsSchema: goalStartArgs,
+    projectIdFromArgs: (args) => args.projectId,
+    inputSchema: objectSchema(
+      {
+        goalId: goalIdJson,
+        title: { type: "string" },
+        description: { type: "string" },
+        projectId: projectIdJson,
+        repoId: { type: "string" },
+        domain: { type: "string" },
+        backlogItemId: { type: "string" },
+        scope: goalScopeJson,
+        closeConditions: { type: "array", items: { type: "object" } },
+        policy: { type: "object", additionalProperties: true },
+        maxIterations: { type: "number" },
+        maxReviewCycles: { type: "number" },
+        maxReruns: { type: "number" },
+        maxTotalNewFindings: { type: "number" },
+        idempotencyKey: idempotencyJson,
+        actorNote: { type: "string" },
+      },
+      ["title", "idempotencyKey"],
+    ),
+    handler: goalStartTool,
+  }),
+  define({
+    name: "harness.goal.record_findings",
+    title: "Record goal findings",
+    description: "Record review/test/human findings for a goal.",
+    kind: "mutation",
+    operation: "goal.record_findings",
+    argsSchema: goalRecordFindingsArgs,
+    resolveProjectIdForPermission: resolveGoalProjectId,
+    inputSchema: objectSchema(
+      {
+        goalId: goalIdJson,
+        findings: { type: "array", items: goalFindingJson },
+        idempotencyKey: idempotencyJson,
+        actorNote: { type: "string" },
+      },
+      ["goalId", "findings", "idempotencyKey"],
+    ),
+    handler: goalRecordFindingsTool,
+  }),
+  define({
+    name: "harness.goal.classify_finding",
+    title: "Classify goal finding",
+    description: "Manually classify a goal finding.",
+    kind: "mutation",
+    operation: "goal.classify_finding",
+    argsSchema: goalClassifyFindingArgs,
+    resolveProjectIdForPermission: resolveGoalFindingProjectId,
+    inputSchema: objectSchema(
+      {
+        findingId: { type: "string" },
+        scopeStatus: enumSchema(GOAL_SCOPE_STATUSES),
+        reason: { type: "string" },
+        duplicateOf: { type: "string" },
+        idempotencyKey: idempotencyJson,
+        actorNote: { type: "string" },
+      },
+      ["findingId", "scopeStatus", "reason", "idempotencyKey"],
+    ),
+    handler: goalClassifyFindingTool,
+  }),
+  define({
+    name: "harness.goal.mark_finding_fixed",
+    title: "Mark goal finding fixed",
+    description: "Mark a goal finding as fixed.",
+    kind: "mutation",
+    operation: "goal.mark_finding_fixed",
+    argsSchema: goalFindingMutationArgs,
+    resolveProjectIdForPermission: resolveGoalFindingProjectId,
+    inputSchema: objectSchema(
+      {
+        findingId: { type: "string" },
+        note: { type: "string" },
+        idempotencyKey: idempotencyJson,
+        actorNote: { type: "string" },
+      },
+      ["findingId", "idempotencyKey"],
+    ),
+    handler: goalMarkFindingFixedTool,
+  }),
+  define({
+    name: "harness.goal.defer_finding",
+    title: "Defer goal finding",
+    description: "Defer an out-of-scope finding, optionally creating a backlog follow-up.",
+    kind: "mutation",
+    operation: "goal.defer_finding",
+    argsSchema: goalDeferFindingArgs,
+    resolveProjectIdForPermission: resolveGoalFindingProjectId,
+    inputSchema: objectSchema(
+      {
+        findingId: { type: "string" },
+        reason: { type: "string" },
+        createBacklogItem: { type: "boolean" },
+        idempotencyKey: idempotencyJson,
+        actorNote: { type: "string" },
+      },
+      ["findingId", "reason", "idempotencyKey"],
+    ),
+    handler: goalDeferFindingTool,
+  }),
+  define({
+    name: "harness.goal.record_close_check",
+    title: "Record goal close check",
+    description: "Record close-check evidence for a goal.",
+    kind: "mutation",
+    operation: "goal.record_close_check",
+    argsSchema: goalRecordCloseCheckArgs,
+    resolveProjectIdForPermission: resolveGoalProjectId,
+    inputSchema: objectSchema(
+      {
+        goalId: goalIdJson,
+        conditionId: { type: "string" },
+        status: enumSchema(GOAL_CLOSE_CHECK_STATUSES),
+        checkedBy: { type: "string" },
+        evidence: { type: "object", additionalProperties: true },
+        message: { type: "string" },
+        idempotencyKey: idempotencyJson,
+        actorNote: { type: "string" },
+      },
+      ["goalId", "conditionId", "status", "idempotencyKey"],
+    ),
+    handler: goalRecordCloseCheckTool,
+  }),
+  define({
+    name: "harness.goal.check_convergence",
+    title: "Check goal convergence",
+    description: "Evaluate and record goal convergence.",
+    kind: "mutation",
+    operation: "goal.check_convergence",
+    argsSchema: goalCheckConvergenceArgs,
+    resolveProjectIdForPermission: resolveGoalProjectId,
+    inputSchema: objectSchema(
+      {
+        goalId: goalIdJson,
+        idempotencyKey: idempotencyJson,
+        actorNote: { type: "string" },
+      },
+      ["goalId", "idempotencyKey"],
+    ),
+    handler: goalCheckConvergenceTool,
+  }),
+  define({
     name: "harness.knowledge.promote",
     title: "Promote knowledge",
     description: "Promote a knowledge candidate through OperationRunner.",
@@ -957,6 +1344,65 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       ["runId", "idempotencyKey"],
     ),
     handler: prCreateTool,
+  }),
+  define({
+    name: "harness.goal.close",
+    title: "Close goal",
+    description: "Close a goal. Confirmation is required unless it is close_ready.",
+    kind: "dangerous",
+    operation: "goal.close",
+    argsSchema: goalCloseArgs,
+    resolveProjectIdForPermission: resolveGoalProjectId,
+    inputSchema: objectSchema(
+      {
+        goalId: goalIdJson,
+        summary: { type: "string" },
+        force: { type: "boolean" },
+        idempotencyKey: idempotencyJson,
+        actorNote: { type: "string" },
+      },
+      ["goalId", "summary", "idempotencyKey"],
+    ),
+    handler: goalCloseTool,
+  }),
+  define({
+    name: "harness.goal.cancel",
+    title: "Cancel goal",
+    description: "Cancel a goal after confirmation.",
+    kind: "dangerous",
+    operation: "goal.cancel",
+    argsSchema: goalCancelArgs,
+    resolveProjectIdForPermission: resolveGoalProjectId,
+    inputSchema: objectSchema(
+      {
+        goalId: goalIdJson,
+        reason: { type: "string" },
+        idempotencyKey: idempotencyJson,
+        actorNote: { type: "string" },
+      },
+      ["goalId", "reason", "idempotencyKey"],
+    ),
+    handler: goalCancelTool,
+  }),
+  define({
+    name: "harness.goal.expand_scope",
+    title: "Expand goal scope",
+    description: "Expand a goal scope after confirmation.",
+    kind: "dangerous",
+    operation: "goal.expand_scope",
+    argsSchema: goalExpandScopeArgs,
+    resolveProjectIdForPermission: resolveGoalProjectId,
+    inputSchema: objectSchema(
+      {
+        goalId: goalIdJson,
+        scope: goalScopeJson,
+        reason: { type: "string" },
+        idempotencyKey: idempotencyJson,
+        actorNote: { type: "string" },
+      },
+      ["goalId", "scope", "reason", "idempotencyKey"],
+    ),
+    handler: goalExpandScopeTool,
   }),
   define({
     name: "harness.db.repair.apply",

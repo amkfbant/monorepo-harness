@@ -18,6 +18,7 @@ import {
   runGetTool,
   runTimelineTool,
 } from "../tools/read-tools.js";
+import { goalStatusTool } from "../tools/goal-tools.js";
 import {
   artifactIdFromUriSegment,
   ensureProjectVisible,
@@ -137,6 +138,12 @@ export const MCP_RESOURCE_TEMPLATES: McpResourceTemplateDefinition[] = [
     mimeType: "application/json",
   },
   {
+    uriTemplate: "harness://goal/{goalId}",
+    name: "Goal",
+    description: "Goal convergence status, findings, and decisions.",
+    mimeType: "application/json",
+  },
+  {
     uriTemplate: "harness://knowledge/{entryId}",
     name: "Knowledge entry",
     description: "Promoted knowledge entry.",
@@ -176,6 +183,7 @@ export function resolveMcpResourceRead(uri: string): McpResourceReadTarget | nul
   if (host === "run") return resolveRunResource(uri, segments);
   if (host === "artifact") return resolveArtifactResource(uri, segments);
   if (host === "backlog") return resolveBacklogResource(uri, segments);
+  if (host === "goal") return resolveGoalResource(uri, segments);
   if (host === "knowledge") return resolveKnowledgeResource(uri, segments);
   if (host === "operation") return resolveOperationResource(uri, segments);
   return errorTarget(uri, `unknown harness resource host: ${host}`);
@@ -334,6 +342,19 @@ function resolveBacklogResource(
   if (itemId === null) return errorTarget(uri, "missing backlog item id");
   return toolTarget(uri, "harness.backlog.get", { itemId }, (context) =>
     backlogGetTool({ itemId }, context),
+  );
+}
+
+function resolveGoalResource(
+  uri: string,
+  segments: string[],
+): McpResourceReadTarget {
+  if (segments.length !== 1 || segments[0] === undefined || segments[0].length === 0) {
+    return errorTarget(uri, "expected harness://goal/{goalId}");
+  }
+  const goalId = segments[0];
+  return toolTarget(uri, "harness.goal.status", { goalId }, (context) =>
+    goalStatusTool({ goalId }, context),
   );
 }
 
