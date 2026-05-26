@@ -10,6 +10,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { openDb, DbError } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
@@ -23,6 +25,11 @@ import { exportRun } from "../../../src/db/export-files.js";
 import { ingestRunArtifacts } from "../../../src/db/run-artifacts.js";
 import { importRuns } from "../../../src/db/import/runs.js";
 import { emptyCounters } from "../../../src/db/import/common.js";
+import {
+  recordExternalBlob,
+  registerBlobStore,
+} from "../../../src/db/blob-stores.js";
+import { LocalBlobStore } from "../../../src/storage/local-blob-store.js";
 
 /**
  * Phase 7-2 — scoped export engine: atomic write, the `.exporting`
@@ -253,6 +260,50 @@ describe("exportRun", () => {
     expect(
       result.files.some((f) => f.relativePath === "codex-output.log"),
     ).toBe(true);
+    db.close();
+  });
+
+  it("refuses to export corrupt external blob bytes", async () => {
+    const db = freshDb();
+    const runsDir = tmpDir();
+    const storeRoot = tmpDir();
+    insertRun(db, "run-ext");
+    registerBlobStore(db, {
+      storeId: "local",
+      storeType: "local",
+      config: { root: storeRoot },
+    });
+    const body = Buffer.from("external body\n");
+    const sha256 = createHash("sha256").update(body).digest("hex");
+    const put = await new LocalBlobStore({ root: storeRoot }).put({
+      sha256,
+      body,
+      contentEncoding: "identity",
+    });
+    recordExternalBlob(db, {
+      sha256,
+      storeId: "local",
+      uri: put.uri,
+      bytes: body.length,
+      storedBytes: body.length,
+      contentEncoding: "identity",
+    });
+    db.prepare(
+      `INSERT INTO artifacts
+         (artifact_id, run_id, kind, relative_path, content_type, bytes,
+          sha256, storage, blob_sha256, body_status, created_at,
+          redacted, secret_suspect)
+       VALUES ('run-ext:summary.md', 'run-ext', 'summary', 'summary.md',
+               'text/markdown', ?, ?, 'external', ?, 'external_available',
+               '2026-05-25T00:00:00.000Z', 0, 0)`,
+    ).run(body.length, sha256, sha256);
+    writeFileSync(fileURLToPath(put.uri), "corrupt body\n");
+
+    const result = exportRun(db, "run-ext", { runsDir });
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/body sha/);
+    expect(existsSync(join(runsDir, "run-ext", "summary.md"))).toBe(false);
     db.close();
   });
 

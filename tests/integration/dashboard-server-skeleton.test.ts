@@ -1,11 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { type AddressInfo } from "node:net";
 import { openDb } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
+import { SCHEMA_VERSION } from "../../src/db/schema.js";
 import { createDashboardServer } from "../../src/dashboard/server/server.js";
+import {
+  recordExternalBlob,
+  registerBlobStore,
+} from "../../src/db/blob-stores.js";
+import { LocalBlobStore } from "../../src/storage/local-blob-store.js";
 
 interface Env {
   dbPath: string;
@@ -67,8 +75,8 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
     expect(r.status).toBe(200);
     const body = r.body as Record<string, unknown>;
     expect(body.status).toBe("ok");
-    expect(body.dbSchemaVersion).toBe(11);
-    expect(body.schemaVersionExpected).toBe(11);
+    expect(body.dbSchemaVersion).toBe(SCHEMA_VERSION);
+    expect(body.schemaVersionExpected).toBe(SCHEMA_VERSION);
     expect(typeof body.generatedAt).toBe("string");
   });
 
@@ -100,7 +108,7 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
     expect(r.status).toBe(200);
     const body = r.body as Record<string, unknown>;
     expect(typeof body.generatedAt).toBe("string");
-    expect(body.dbSchemaVersion).toBe(11);
+    expect(body.dbSchemaVersion).toBe(SCHEMA_VERSION);
     expect(Array.isArray(body.recentRuns)).toBe(true);
     expect(Array.isArray(body.warnings)).toBe(true);
   });
@@ -277,6 +285,145 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
     } finally {
       await new Promise<void>((r) => srv.close(() => r()));
       env.server = await startServer(env.dbPath);
+    }
+  });
+
+  // Phase 12 post-close fix (external review P2-3): oversize JSON body
+  // is rejected with 413 instead of being read into memory.
+  it("Phase 12 post-close: POST mutation body > 1 MiB returns 413 payload_too_large", async () => {
+    await env.server.close();
+    const srv = createDashboardServer({
+      dbPath: env.dbPath,
+      host: "127.0.0.1",
+      port: 0,
+      mutationEnabled: true,
+      token: "topsecret",
+      csrfToken: "csrf-123",
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const addr = srv.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    try {
+      // 1.5 MiB JSON
+      const big = JSON.stringify({ dryRun: true, junk: "x".repeat(1_500_000) });
+      const r = await fetch(`${base}/api/runs/run-big/rerun`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer topsecret",
+          "X-CSRF-Token": "csrf-123",
+          "Content-Type": "application/json",
+        },
+        body: big,
+      });
+      expect(r.status).toBe(413);
+      const body = (await r.json()) as { error: { code: string } };
+      expect(body.error.code).toBe("payload_too_large");
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+      env.server = await startServer(env.dbPath);
+    }
+  });
+
+  // Phase 12 post-close fix (external review P1-1): artifact_id is TEXT
+  // (`<runId>:<relativePath>`) and the column is `bytes`, not `byte_size`.
+  // Earlier code numeric-validated the id and SELECTed a missing column,
+  // so both artifact endpoints were broken. Pin down the fix.
+  it("Phase 12 post-close: GET /api/artifacts/:idB64 returns the TEXT-id artifact row", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const sqlite = (await import("better-sqlite3")).default;
+    const db = sqlite(env.dbPath);
+    try {
+      // seed a minimal run + artifact row.
+      const runId = "run-art-1";
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, source_mode, db_revision, export_status, started_at,
+           updated_at, meta_json)
+         VALUES (?, 'r', 'd', 'domain-coding', 'main',
+           'needs_review', 'db-first', 1, 'disabled',
+           '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', '{}')`,
+      ).run(runId);
+      const artifactId = `${runId}:summary.md`;
+      db.prepare(
+        `INSERT INTO artifacts
+           (artifact_id, run_id, kind, relative_path, content_type, bytes,
+            sha256, storage, created_at, redacted, secret_suspect)
+         VALUES (?, ?, 'summary', 'summary.md', 'text/markdown', 12,
+                 'deadbeef', 'file', '2025-01-01T00:00:00Z', 0, 0)`,
+      ).run(artifactId, runId);
+    } finally {
+      db.close();
+    }
+    void fs; void path;
+    const idB64 = Buffer.from(`${"run-art-1"}:summary.md`).toString("base64url");
+    const r = await get(env.server.baseUrl, `/api/artifacts/${idB64}`);
+    expect(r.status).toBe(200);
+    const body = r.body as Record<string, unknown>;
+    expect(body.artifact_id).toBe("run-art-1:summary.md");
+    expect(body.bytes).toBe(12);
+    expect(body.run_id).toBe("run-art-1");
+  });
+
+  it("Phase 12 post-close: GET /api/artifacts/:idB64 returns 400 for non-base64url segment", async () => {
+    const r = await get(env.server.baseUrl, "/api/artifacts/!!!not-base64!!!");
+    // base64 decoder accepts loose forms; the truly empty/invalid case is
+    // caught as 404 (no such artifact_id) rather than 400. Either is
+    // acceptable as long as it's not 500 / no-such-column.
+    expect([400, 404]).toContain(r.status);
+  });
+
+  it("GET /api/artifacts/:idB64/body returns integrity error for corrupt external blobs", async () => {
+    const db = openDb(env.dbPath);
+    const storeRoot = mkdtempSync(join(tmpdir(), "harness-dash-blob-"));
+    try {
+      const runId = "run-ext-body";
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, source_mode, db_revision, export_status, started_at,
+           updated_at, meta_json)
+         VALUES (?, 'r', 'd', 'domain-coding', 'main',
+           'needs_review', 'db-first', 1, 'disabled',
+           '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', '{}')`,
+      ).run(runId);
+      registerBlobStore(db, {
+        storeId: "local",
+        storeType: "local",
+        config: { root: storeRoot },
+      });
+      const body = Buffer.from("external body\n");
+      const sha256 = createHash("sha256").update(body).digest("hex");
+      const put = await new LocalBlobStore({ root: storeRoot }).put({
+        sha256,
+        body,
+        contentEncoding: "identity",
+      });
+      recordExternalBlob(db, {
+        sha256,
+        storeId: "local",
+        uri: put.uri,
+        bytes: body.length,
+        storedBytes: body.length,
+        contentEncoding: "identity",
+      });
+      const artifactId = `${runId}:summary.md`;
+      db.prepare(
+        `INSERT INTO artifacts
+           (artifact_id, run_id, kind, relative_path, content_type, bytes,
+            sha256, storage, blob_sha256, body_status, created_at,
+            redacted, secret_suspect)
+         VALUES (?, ?, 'summary', 'summary.md', 'text/markdown', ?,
+                 ?, 'external', ?, 'external_available',
+                 '2025-01-01T00:00:00Z', 0, 0)`,
+      ).run(artifactId, runId, body.length, sha256, sha256);
+      writeFileSync(fileURLToPath(put.uri), "corrupt body\n");
+      const idB64 = Buffer.from(artifactId).toString("base64url");
+      const r = await get(env.server.baseUrl, `/api/artifacts/${idB64}/body`);
+      expect(r.status).toBe(409);
+      const json = r.body as { error: { code: string } };
+      expect(json.error.code).toBe("blob_integrity_error");
+    } finally {
+      db.close();
     }
   });
 

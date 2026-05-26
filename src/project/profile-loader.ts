@@ -23,19 +23,26 @@ export async function loadProjectProfile(
     );
   }
 
+  return parseProjectProfileYaml(raw, path);
+}
+
+export function parseProjectProfileYaml(
+  raw: string,
+  source: string,
+): ProjectProfile {
   let parsed: unknown;
   try {
     parsed = parseYaml(raw);
   } catch (e) {
     throw new ProjectProfileError(
-      `project profile is not valid YAML: ${path} (${(e as Error).message})`,
+      `project profile is not valid YAML: ${source} (${(e as Error).message})`,
     );
   }
 
   const result = ProjectProfileSchema.safeParse(parsed);
   if (!result.success) {
     throw new ProjectProfileError(
-      `project profile failed validation: ${path}\n${formatZodError(result.error)}`,
+      `project profile failed validation: ${source}\n${formatZodError(result.error)}`,
     );
   }
   return result.data;

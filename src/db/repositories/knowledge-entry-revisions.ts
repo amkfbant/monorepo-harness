@@ -32,7 +32,13 @@ export interface RecordKnowledgeEntryRevisionInput {
   actor: string;
   reason?: string;
   now?: Date;
+  currentPointerMode?: CurrentPointerMode;
 }
+
+export type CurrentPointerMode =
+  | "set-current"
+  | "if-missing"
+  | "do-not-change";
 
 export interface RecordKnowledgeRevisionResult {
   revision: KnowledgeEntryRevision;
@@ -48,6 +54,7 @@ export function recordKnowledgeEntryRevision(
   input: RecordKnowledgeEntryRevisionInput,
 ): RecordKnowledgeRevisionResult {
   const bodySha = sha(input.bodyMarkdown);
+  const currentPointerMode = input.currentPointerMode ?? "set-current";
   const tx = db.transaction((): RecordKnowledgeRevisionResult => {
     // Ensure knowledge_entries row exists. Phase 6 schema requires
     // NOT NULL `kind` and `body`; for an asset-revision first import
@@ -60,6 +67,19 @@ export function recordKnowledgeEntryRevision(
        VALUES (?, 'imported', '', ?)
        ON CONFLICT(entry_id) DO NOTHING`,
     ).run(input.entryId, nowStr);
+    const current = db
+      .prepare(
+        `SELECT current_revision_id
+           FROM knowledge_entries
+          WHERE entry_id = ?`,
+      )
+      .get(input.entryId) as
+      | { current_revision_id: number | null }
+      | undefined;
+    const shouldSetCurrent =
+      currentPointerMode === "set-current" ||
+      (currentPointerMode === "if-missing" &&
+        current?.current_revision_id == null);
     const latest = db
       .prepare(
         `SELECT * FROM knowledge_entry_revisions
@@ -68,10 +88,12 @@ export function recordKnowledgeEntryRevision(
       )
       .get(input.entryId) as Record<string, unknown> | undefined;
     if (latest !== undefined && latest.body_sha256 === bodySha) {
-      db.prepare(
-        `UPDATE knowledge_entries SET current_revision_id = ?
-          WHERE entry_id = ?`,
-      ).run(latest.revision_id, input.entryId);
+      if (shouldSetCurrent) {
+        db.prepare(
+          `UPDATE knowledge_entries SET current_revision_id = ?
+            WHERE entry_id = ?`,
+        ).run(latest.revision_id, input.entryId);
+      }
       return {
         revision: toRevision(latest),
         reusedExisting: true,
@@ -100,10 +122,12 @@ export function recordKnowledgeEntryRevision(
         now,
         latest === undefined ? null : (latest.revision_id as number),
       );
-    db.prepare(
-      `UPDATE knowledge_entries SET current_revision_id = ?
-        WHERE entry_id = ?`,
-    ).run(Number(info.lastInsertRowid), input.entryId);
+    if (shouldSetCurrent) {
+      db.prepare(
+        `UPDATE knowledge_entries SET current_revision_id = ?
+          WHERE entry_id = ?`,
+      ).run(Number(info.lastInsertRowid), input.entryId);
+    }
     return {
       revision: {
         revisionId: Number(info.lastInsertRowid),
@@ -151,6 +175,52 @@ export function listKnowledgeRevisions(
     )
     .all(entryId) as Record<string, unknown>[];
   return rows.map(toRevision);
+}
+
+export interface CurrentKnowledgeRevision extends KnowledgeEntryRevision {
+  projectId: string | null;
+  repoId: string | null;
+  domain: string | null;
+  kind: string;
+  path: string | null;
+}
+
+export function listCurrentKnowledgeRevisions(
+  db: Database.Database,
+  filter: { projectId?: string; repoId?: string; domain?: string } = {},
+): CurrentKnowledgeRevision[] {
+  const where = ["e.current_revision_id IS NOT NULL"];
+  const params: unknown[] = [];
+  if (filter.projectId !== undefined) {
+    where.push("(e.project_id = ? OR e.project_id IS NULL)");
+    params.push(filter.projectId);
+  }
+  if (filter.repoId !== undefined) {
+    where.push("(e.repo_id = ? OR e.repo_id IS NULL)");
+    params.push(filter.repoId);
+  }
+  if (filter.domain !== undefined) {
+    where.push("e.domain = ?");
+    params.push(filter.domain);
+  }
+  const rows = db
+    .prepare(
+      `SELECT r.*, e.project_id, e.repo_id, e.domain, e.kind, e.path
+         FROM knowledge_entries e
+         INNER JOIN knowledge_entry_revisions r
+            ON e.current_revision_id = r.revision_id
+        WHERE ${where.join(" AND ")}
+        ORDER BY e.kind, e.path, e.entry_id`,
+    )
+    .all(...params) as Record<string, unknown>[];
+  return rows.map((r) => ({
+    ...toRevision(r),
+    projectId: (r.project_id as string | null) ?? null,
+    repoId: (r.repo_id as string | null) ?? null,
+    domain: (r.domain as string | null) ?? null,
+    kind: r.kind as string,
+    path: (r.path as string | null) ?? null,
+  }));
 }
 
 function toRevision(r: Record<string, unknown>): KnowledgeEntryRevision {

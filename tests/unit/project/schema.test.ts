@@ -32,6 +32,15 @@ describe("ProjectProfileSchema", () => {
     expect(ProjectProfileSchema.safeParse(p).success).toBe(true);
   });
 
+  it("accepts a project profile mcp section", () => {
+    const p = validProfile() as Record<string, unknown>;
+    p.mcp = {
+      defaultMode: "read-only",
+      allowedProjects: ["demo"],
+    };
+    expect(ProjectProfileSchema.safeParse(p).success).toBe(true);
+  });
+
   it("rejects an unknown top-level key (strict)", () => {
     const p = validProfile() as Record<string, unknown>;
     p.extra = true;

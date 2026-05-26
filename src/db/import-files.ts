@@ -39,21 +39,14 @@ export interface ImportOptions {
 }
 
 /**
- * File-derived tables emptied entirely by `--reset` — they hold nothing
- * DB-canonical and are rebuilt from files.
- *
- * `knowledge_entries` is here (not in RUNTIME): a promoted entry's `.md`
- * body / frontmatter is file-backed canonical (Phase 7 boundary), so the
- * row is a pure read model — a `--reset` rebuilds it from the `.md` files,
- * and a since-deleted `.md` correctly drops its row.
+ * File-derived tables emptied entirely by `--reset` — they hold compatibility
+ * read-model rows and are rebuilt from files.
  */
 const RESET_TABLES_FILE_DERIVED = [
   "import_errors",
   "policy_generations",
   "domains",
   "project_profiles",
-  "projects",
-  "knowledge_entries",
 ];
 
 /**
@@ -97,6 +90,14 @@ export function runFullImport(
       for (const t of RESET_TABLES_FILE_DERIVED) {
         db.prepare(`DELETE FROM ${t}`).run();
       }
+      db.prepare(
+        `DELETE FROM projects
+          WHERE current_profile_revision_id IS NULL`,
+      ).run();
+      db.prepare(
+        `DELETE FROM knowledge_entries
+          WHERE current_revision_id IS NULL`,
+      ).run();
       // a db-first runtime row is canonical — keep it; drop legacy-file rows.
       for (const t of RESET_TABLES_RUNTIME) {
         db.prepare(`DELETE FROM ${t} WHERE source_mode != 'db-first'`).run();
@@ -118,7 +119,9 @@ export function runFullImport(
   // rows for since-deleted source files are pruned at the end.
 
   const force = opts.forceLegacyReconcile === true;
-  importProjects(db, paths.projectsDir, counters);
+  importProjects(db, paths.projectsDir, counters, {
+    currentPointerMode: "if-missing",
+  });
   importPolicies(db, paths.policiesDir, counters);
   importRuns(db, paths.runsDir, counters, force);
   importBacklog(db, paths.backlogDir, counters, force);
@@ -127,6 +130,7 @@ export function runFullImport(
     paths.runsDir,
     join(opts.harnessRoot, "docs", "knowledge"),
     counters,
+    { currentPointerMode: "if-missing" },
   );
 
   pruneOrphanImportErrors(db);

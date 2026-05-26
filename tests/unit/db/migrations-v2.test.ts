@@ -7,6 +7,7 @@ import { openDb } from "../../../src/db/connection.js";
 import { runMigrations, currentSchemaVersion } from "../../../src/db/migrations.js";
 import {
   MIGRATION_V1_STATEMENTS,
+  SCHEMA_VERSION,
   V2_TABLE_NAMES,
 } from "../../../src/db/schema.js";
 
@@ -101,8 +102,8 @@ describe("schema v2", () => {
     ).run();
 
     const r = runMigrations(db);
-    expect(r.applied).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
-    expect(currentSchemaVersion(db)).toBe(11);
+    expect(r.applied).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
 
     const row = db
       .prepare(

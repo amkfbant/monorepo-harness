@@ -131,6 +131,29 @@ describe("knowledge DB-first", () => {
     );
   });
 
+  it("promote can target a single candidate index", async () => {
+    const ctx = setup();
+    const r = await promoteKnowledgeDbFirst(ctx, {
+      runId: RUN_ID,
+      index: 0,
+      reviewer: "kn",
+    });
+    expect(r.promoted).toHaveLength(1);
+    expect(r.promoted[0]?.index).toBe(0);
+    expect(r.skipped.some((s) => s.index === 1 && s.reason === "index-filter")).toBe(
+      true,
+    );
+    expect(candidate(ctx, 0)?.status).toBe("promoted");
+    expect(candidate(ctx, 1)?.status).toBe("candidate");
+    const db = openDb(ctx.dbPath);
+    runMigrations(db);
+    const entryCount = db
+      .prepare("SELECT count(*) AS n FROM knowledge_entries")
+      .get() as { n: number };
+    db.close();
+    expect(entryCount.n).toBe(1);
+  });
+
   it("a second promote is idempotent (duplicate-index skip)", async () => {
     const ctx = setup();
     await promoteKnowledgeDbFirst(ctx, { runId: RUN_ID, reviewer: "kn" });

@@ -92,15 +92,19 @@ export function importRuns(
        reviewed_at, started_at, finished_at, parent_run_id, root_run_id,
        rerun_attempt, changed_files_count, ignored_untracked_count,
        secret_suspect_count, pr_url, pr_number, prompt_template_name,
-       prompt_template_version, knowledge_context_path, imported_from,
-       source_meta_sha256, source_meta_mtime_ms, updated_at)
+       prompt_template_version, knowledge_context_path,
+       project_profile_revision_id, effective_policy_snapshot_id,
+       knowledge_revision_ids_json, imported_from, source_meta_sha256,
+       source_meta_mtime_ms, updated_at)
      VALUES (@run_id, @repo_id, @project_id, @repo_path, @domain, @workflow,
        @base_branch, @base_sha, @run_branch, @status, @safety_status, @reviewer,
        @reviewed_at, @started_at, @finished_at, @parent_run_id, @root_run_id,
        @rerun_attempt, @changed_files_count, @ignored_untracked_count,
        @secret_suspect_count, @pr_url, @pr_number, @prompt_template_name,
-       @prompt_template_version, @knowledge_context_path, @imported_from,
-       @source_meta_sha256, @source_meta_mtime_ms, @updated_at)
+       @prompt_template_version, @knowledge_context_path,
+       @project_profile_revision_id, @effective_policy_snapshot_id,
+       @knowledge_revision_ids_json, @imported_from, @source_meta_sha256,
+       @source_meta_mtime_ms, @updated_at)
      ON CONFLICT (run_id) DO UPDATE SET
        repo_id = excluded.repo_id, project_id = excluded.project_id,
        repo_path = excluded.repo_path, domain = excluded.domain,
@@ -118,6 +122,9 @@ export function importRuns(
        prompt_template_name = excluded.prompt_template_name,
        prompt_template_version = excluded.prompt_template_version,
        knowledge_context_path = excluded.knowledge_context_path,
+       project_profile_revision_id = excluded.project_profile_revision_id,
+       effective_policy_snapshot_id = excluded.effective_policy_snapshot_id,
+       knowledge_revision_ids_json = excluded.knowledge_revision_ids_json,
        source_meta_sha256 = excluded.source_meta_sha256,
        source_meta_mtime_ms = excluded.source_meta_mtime_ms,
        updated_at = excluded.updated_at`,
@@ -173,7 +180,7 @@ export function importRuns(
     const tx = db.transaction(() => {
       for (const del of deleteChild) del.run(runId);
       upsertRun.run(
-        runRow(runId, meta, fingerprint, statSync(metaPath).mtimeMs),
+        runRow(db, runId, meta, fingerprint, statSync(metaPath).mtimeMs),
       );
       // force-reconciling a db-first run: refresh `meta_json` from the file
       // and bump `db_revision` + mark `export_status = 'dirty'` so the
@@ -208,12 +215,41 @@ function num(v: unknown): number | null {
 }
 
 function runRow(
+  db: Database.Database,
   runId: string,
   meta: Record<string, unknown>,
   fingerprint: string,
   mtimeMs: number,
 ): Record<string, unknown> {
-  const project = meta.project as { projectId?: string } | undefined;
+  const project = meta.project as
+    | { projectId?: string; profileRevisionId?: unknown }
+    | undefined;
+  const assetAttribution = meta.assetAttribution as
+    | {
+        projectProfileRevisionId?: unknown;
+        effectivePolicySnapshotId?: unknown;
+        knowledgeRevisionIds?: unknown;
+      }
+    | undefined;
+  const projectProfileRevisionId = resolveProjectProfileRevisionId(
+    db,
+    num(assetAttribution?.projectProfileRevisionId) ??
+      num(project?.profileRevisionId),
+    project?.projectId,
+  );
+  const effectivePolicySnapshotId = resolveEffectivePolicySnapshotId(
+    db,
+    num(assetAttribution?.effectivePolicySnapshotId),
+    runId,
+  );
+  const knowledgeRevisionIds = resolveKnowledgeRevisionIds(
+    db,
+    Array.isArray(assetAttribution?.knowledgeRevisionIds)
+      ? assetAttribution.knowledgeRevisionIds.filter(
+          (n): n is number => typeof n === "number" && Number.isInteger(n),
+        )
+      : undefined,
+  );
   const promptTemplate = meta.promptTemplate as
     | { name?: string; version?: number }
     | undefined;
@@ -247,6 +283,12 @@ function runRow(
     prompt_template_name: promptTemplate?.name ?? null,
     prompt_template_version: promptTemplate?.version ?? null,
     knowledge_context_path: knowledgeContext?.contextFile ?? null,
+    project_profile_revision_id: projectProfileRevisionId,
+    effective_policy_snapshot_id: effectivePolicySnapshotId,
+    knowledge_revision_ids_json:
+      knowledgeRevisionIds !== undefined && knowledgeRevisionIds.length > 0
+        ? JSON.stringify(knowledgeRevisionIds)
+        : null,
     imported_from: "files",
     source_meta_sha256: fingerprint,
     source_meta_mtime_ms: Math.round(mtimeMs),
@@ -254,6 +296,64 @@ function runRow(
     // (including `--reset`) of an unchanged run yields an identical row.
     updated_at: new Date(mtimeMs).toISOString(),
   };
+}
+
+function resolveProjectProfileRevisionId(
+  db: Database.Database,
+  revisionId: number | null,
+  projectId?: string,
+): number | null {
+  if (revisionId !== null) {
+    const row = db
+      .prepare(
+        `SELECT project_id FROM project_profile_revisions
+         WHERE revision_id = ?`,
+      )
+      .get(revisionId) as { project_id: string } | undefined;
+    if (
+      row !== undefined &&
+      (projectId === undefined || row.project_id === projectId)
+    ) {
+      return revisionId;
+    }
+  }
+  if (projectId === undefined) return null;
+  const current = db
+    .prepare(
+      `SELECT current_profile_revision_id FROM projects
+       WHERE project_id = ?`,
+    )
+    .get(projectId) as
+    | { current_profile_revision_id: number | null }
+    | undefined;
+  return current?.current_profile_revision_id ?? null;
+}
+
+function resolveEffectivePolicySnapshotId(
+  db: Database.Database,
+  snapshotId: number | null,
+  runId: string,
+): number | null {
+  if (snapshotId === null) return null;
+  const row = db
+    .prepare(
+      `SELECT run_id FROM effective_policy_snapshots
+       WHERE snapshot_id = ?`,
+    )
+    .get(snapshotId) as { run_id: string | null } | undefined;
+  if (row === undefined) return null;
+  return row.run_id === null || row.run_id === runId ? snapshotId : null;
+}
+
+function resolveKnowledgeRevisionIds(
+  db: Database.Database,
+  revisionIds: number[] | undefined,
+): number[] | undefined {
+  if (revisionIds === undefined) return undefined;
+  const exists = db.prepare(
+    `SELECT 1 FROM knowledge_entry_revisions WHERE revision_id = ?`,
+  );
+  return revisionIds.filter((id) => exists.get(id) !== undefined);
 }
 
 function importCommandResults(

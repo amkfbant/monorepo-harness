@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const CLI = join(process.cwd(), "src/cli/run.ts");
 
@@ -98,5 +98,71 @@ describe("CLI project show", () => {
     ]);
     expect(code).toBe(1);
     expect(out).toMatch(/invalid project id/);
+  });
+
+  it("project import preserves relative repo.path against the imported source path", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-cps-root-"));
+    const sourceRoot = mkdtempSync(join(tmpdir(), "harness-cps-source-"));
+    const repoPath = join(sourceRoot, "repo");
+    mkdirSync(repoPath, { recursive: true });
+    const profilePath = join(sourceRoot, "profiles", "project.yaml");
+    mkdirSync(join(sourceRoot, "profiles"), { recursive: true });
+    writeFileSync(
+      profilePath,
+      [
+        "version: 1",
+        "project_id: imported",
+        "repo:",
+        "  id: imported",
+        "  path: ../repo",
+        "domains:",
+        "  - id: apps/web",
+        "    root: apps/web",
+        "    kind: app",
+        "",
+      ].join("\n"),
+    );
+
+    expect(runCli(root, ["project", "import", profilePath]).code).toBe(0);
+    const shown = runCli(root, [
+      "project",
+      "show",
+      "--project",
+      "imported",
+      "--json",
+    ]);
+
+    expect(shown.code).toBe(0);
+    const parsed = JSON.parse(shown.out) as { repoPath: string; profilePath: string };
+    expect(parsed.repoPath).toBe(resolve(repoPath));
+    expect(parsed.profilePath).toBe(resolve(profilePath));
+
+    writeFileSync(
+      profilePath,
+      [
+        "version: 1",
+        "project_id: imported",
+        "repo:",
+        "  id: imported",
+        "  path: ../repo",
+        "  base_branch: imported-v3",
+        "domains:",
+        "  - id: apps/web",
+        "    root: apps/web",
+        "    kind: app",
+        "",
+      ].join("\n"),
+    );
+    expect(runCli(root, ["project", "import", profilePath]).code).toBe(0);
+    const updated = JSON.parse(
+      runCli(root, [
+        "project",
+        "show",
+        "--project",
+        "imported",
+        "--json",
+      ]).out,
+    ) as { profile: { repo: { base_branch?: string } } };
+    expect(updated.profile.repo.base_branch).toBe("imported-v3");
   });
 });

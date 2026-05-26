@@ -84,6 +84,58 @@ describe("runDoctor (Phase 15-2)", () => {
     }
   });
 
+  it("stale running operation → flagged 'operations.stale_running'", () => {
+    const db = freshDb();
+    try {
+      db.prepare(
+        `INSERT INTO operations
+           (operation_id, command, scope_type, scope_id, created_at,
+            operation_type, target_type, target_id, actor, dry_run,
+            status, started_at, metadata_json)
+         VALUES ('op-stale', 'knowledge.edit', 'knowledge_entry', 'k1',
+                 '2025-01-01T00:00:00Z',
+                 'knowledge.edit', 'knowledge_entry', 'k1', 'test', 0,
+                 'running', '2025-01-01T00:00:00Z', '{}')`,
+      ).run();
+      const r = runDoctor(db, { category: "operations" });
+      expect(
+        r.findings.filter(
+          (f) =>
+            f.checkId === "operations.stale_running" &&
+            f.status === "flagged",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("stale pending operation → flagged 'operations.stale_pending'", () => {
+    const db = freshDb();
+    try {
+      db.prepare(
+        `INSERT INTO operations
+           (operation_id, command, scope_type, scope_id, created_at,
+            operation_type, target_type, target_id, actor, dry_run,
+            status, metadata_json)
+         VALUES ('op-pending', 'run.rerun', 'run', 'run-x',
+                 '2025-01-01T00:00:00Z',
+                 'run.rerun', 'run', 'run-x', 'test', 0,
+                 'pending', '{}')`,
+      ).run();
+      const r = runDoctor(db, { category: "operations" });
+      expect(
+        r.findings.filter(
+          (f) =>
+            f.checkId === "operations.stale_pending" &&
+            f.status === "flagged",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it("dirty asset_export → flagged 'assets.dirty_export'", () => {
     const db = freshDb();
     try {

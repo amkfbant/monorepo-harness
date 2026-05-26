@@ -253,6 +253,10 @@ export interface ProcessOpts {
     /** actor reviewer_id; defaults to 'system'. */
     actorReviewerId?: string;
   };
+  /** Optional active proposal id guard for callers that previewed a specific proposal. */
+  proposalId?: number;
+  /** Optional active proposal source hash guard for stale-preview rejection. */
+  sourceSha256?: string;
 }
 
 export interface ProcessResult {
@@ -424,11 +428,34 @@ async function processUnderLock(
         .get(opts.runId) as
         | { status: string; reviewer: string | null; reviewed_at: string | null }
         | undefined;
-      if (
+      const runAlreadyPromoted =
         runRow !== undefined &&
         runRow.status !== "needs_review" &&
-        runRow.reviewed_at !== null
-      ) {
+        runRow.reviewed_at !== null;
+      if (opts.proposalId !== undefined) {
+        // A caller-bound proposal must not inherit the legacy idempotent no-op
+        // from a different processed proposal. If another proposal moved the
+        // run, continue to the normal state gate below so it is stale.
+        if (
+          processed.proposalId === opts.proposalId &&
+          opts.sourceSha256 !== undefined &&
+          processed.sourceSha256 !== opts.sourceSha256
+        ) {
+          throw new ReviewGateError(
+            `review proposal ${processed.proposalId} sourceSha256 changed; expected ${opts.sourceSha256}, got ${processed.sourceSha256}`,
+          );
+        }
+        if (processed.proposalId === opts.proposalId && runAlreadyPromoted) {
+          return {
+            runId: opts.runId,
+            previousStatus: runRow.status as RunStatus,
+            newStatus: runRow.status as RunStatus,
+            reviewer: runRow.reviewer,
+            reviewedAt: runRow.reviewed_at as string,
+            warnings: ["already processed — idempotent no-op"],
+          };
+        }
+      } else if (runAlreadyPromoted) {
         // the run is already promoted in the DB AND a processed
         // proposal records who did it — re-running `review process`
         // is a no-op.
@@ -437,14 +464,51 @@ async function processUnderLock(
           previousStatus: runRow.status as RunStatus,
           newStatus: runRow.status as RunStatus,
           reviewer: runRow.reviewer,
-          reviewedAt: runRow.reviewed_at,
+          reviewedAt: runRow.reviewed_at as string,
           warnings: ["already processed — idempotent no-op"],
         };
       }
     }
   }
-  const activeProposal = proposalRepo.getLatestActiveProposal(opts.runId);
+  const activeProposal =
+    opts.proposalId === undefined
+      ? proposalRepo.getLatestActiveProposal(opts.runId)
+      : proposalRepo.getById(opts.proposalId);
   if (activeProposal !== null) {
+    if (activeProposal.runId !== opts.runId) {
+      throw new ReviewGateError(
+        `review proposal ${activeProposal.proposalId} belongs to ${activeProposal.runId}, not ${opts.runId}`,
+      );
+    }
+    if (activeProposal.supersededAt !== null) {
+      throw new ReviewGateError(
+        `review proposal ${activeProposal.proposalId} is superseded; rerun review before processing`,
+      );
+    }
+    if (activeProposal.processedAt !== null) {
+      throw new ReviewGateError(
+        `review proposal ${activeProposal.proposalId} is already processed`,
+      );
+    }
+    if (
+      opts.sourceSha256 !== undefined &&
+      activeProposal.sourceSha256 !== opts.sourceSha256
+    ) {
+      throw new ReviewGateError(
+        `review proposal ${activeProposal.proposalId} sourceSha256 changed; expected ${opts.sourceSha256}, got ${activeProposal.sourceSha256}`,
+      );
+    }
+    if (opts.proposalId !== undefined) {
+      const latestActive = proposalRepo.getLatestActiveProposal(opts.runId);
+      if (
+        latestActive !== null &&
+        latestActive.proposalId !== activeProposal.proposalId
+      ) {
+        throw new ReviewGateError(
+          `review proposal ${activeProposal.proposalId} is stale; latest active proposal is ${latestActive.proposalId}`,
+        );
+      }
+    }
     try {
       decision = parseReviewDecisionYaml(activeProposal.sourceYaml);
       proposalId = activeProposal.proposalId;
@@ -456,6 +520,9 @@ async function processUnderLock(
       );
     }
   } else {
+    if (opts.proposalId !== undefined) {
+      throw new ReviewGateError(`review proposal ${opts.proposalId} not found`);
+    }
     let decisionYaml: string;
     try {
       decisionYaml = await readFile(decisionPath, "utf8");

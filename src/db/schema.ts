@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 15;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1098,6 +1098,140 @@ export const V11_TABLE_NAMES: readonly string[] = [
   "blob_migration_jobs",
 ];
 
+/**
+ * v12 DDL — Phase 17 (DB canonical platform integration).
+ *
+ *  - `artifacts.storage` is rebuilt to allow `external`, so Phase 16's
+ *    BlobStore infrastructure can become an actual runtime storage state.
+ *  - `runs` gains queryable asset attribution columns. `meta_json` remains
+ *    the lossless document; these columns let dashboard / doctor / archive
+ *    answer common provenance questions without JSON scans.
+ */
+export const MIGRATION_V12_STATEMENTS: readonly string[] = [
+  `CREATE TABLE artifacts_v12 (
+    artifact_id TEXT PRIMARY KEY NOT NULL,
+    run_id TEXT,
+    kind TEXT NOT NULL,
+    relative_path TEXT,
+    content_type TEXT,
+    bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    storage TEXT NOT NULL DEFAULT 'file'
+      CHECK (storage IN ('file', 'db', 'external')),
+    blob_sha256 TEXT,
+    body_status TEXT NOT NULL DEFAULT 'legacy_file',
+    created_at TEXT,
+    redacted INTEGER NOT NULL DEFAULT 0,
+    secret_suspect INTEGER NOT NULL DEFAULT 0,
+    original_bytes INTEGER,
+    original_sha256 TEXT
+  )`,
+  `INSERT INTO artifacts_v12
+     (artifact_id, run_id, kind, relative_path, content_type, bytes, sha256,
+      storage, blob_sha256, body_status, created_at, redacted,
+      secret_suspect, original_bytes, original_sha256)
+   SELECT artifact_id, run_id, kind, relative_path, content_type, bytes,
+      sha256, storage, blob_sha256, body_status, created_at, redacted,
+      secret_suspect, original_bytes, original_sha256
+     FROM artifacts`,
+  `DROP TABLE artifacts`,
+  `ALTER TABLE artifacts_v12 RENAME TO artifacts`,
+  `ALTER TABLE runs ADD COLUMN project_profile_revision_id INTEGER
+     REFERENCES project_profile_revisions(revision_id)`,
+  `ALTER TABLE runs ADD COLUMN effective_policy_snapshot_id INTEGER
+     REFERENCES effective_policy_snapshots(snapshot_id)`,
+  `ALTER TABLE runs ADD COLUMN knowledge_revision_ids_json TEXT`,
+  `CREATE INDEX runs_project_profile_revision_idx
+     ON runs(project_profile_revision_id)`,
+  `CREATE INDEX runs_effective_policy_snapshot_idx
+     ON runs(effective_policy_snapshot_id)`,
+];
+
+/**
+ * v13 DDL — Phase 18 (MCP confirmation and invocation audit).
+ */
+export const MIGRATION_V13_STATEMENTS: readonly string[] = [
+  `CREATE TABLE mcp_confirmation_requests (
+    confirmation_id TEXT PRIMARY KEY,
+    client_name TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    operation_type TEXT NOT NULL,
+    target_type TEXT,
+    target_id TEXT,
+    input_json TEXT NOT NULL,
+    preview_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending','confirmed','rejected','expired','consumed')),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    confirmed_by TEXT,
+    confirmed_at TEXT,
+    consumed_operation_id TEXT
+  )`,
+  `CREATE INDEX mcp_confirmation_status_idx
+     ON mcp_confirmation_requests(status, expires_at)`,
+  `CREATE TABLE mcp_sessions (
+    session_id TEXT PRIMARY KEY,
+    client_name TEXT NOT NULL,
+    client_version TEXT,
+    transport TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    permission_snapshot_json TEXT NOT NULL
+  )`,
+  `CREATE TABLE mcp_tool_invocations (
+    invocation_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    arguments_sha256 TEXT NOT NULL,
+    arguments_redacted_json TEXT,
+    result_status TEXT NOT NULL,
+    operation_id TEXT,
+    confirmation_id TEXT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    error_message TEXT,
+    FOREIGN KEY(session_id) REFERENCES mcp_sessions(session_id)
+  )`,
+  `CREATE INDEX mcp_tool_invocations_session_idx
+     ON mcp_tool_invocations(session_id, started_at)`,
+  `CREATE INDEX mcp_tool_invocations_tool_idx
+     ON mcp_tool_invocations(tool_name, started_at)`,
+];
+
+/** Tables added by v13 (Phase 18). */
+export const V13_TABLE_NAMES: readonly string[] = [
+  "mcp_confirmation_requests",
+  "mcp_sessions",
+  "mcp_tool_invocations",
+];
+
+/**
+ * v14 DDL — Phase 18 confirmation hardening.
+ *
+ * Confirmation requests must execute under the same MCP permission snapshot
+ * that produced the preview. Without this, an explicit `--config` used by
+ * `harness mcp serve` can be lost when `harness operation confirm` reloads
+ * config out-of-band.
+ */
+export const MIGRATION_V14_STATEMENTS: readonly string[] = [
+  `ALTER TABLE mcp_confirmation_requests
+     ADD COLUMN permission_snapshot_json TEXT NOT NULL DEFAULT '{}'`,
+];
+
+/**
+ * v15 DDL — Phase 18 post-review MCP hardening.
+ *
+ * Keep permission identity separate from self-reported initialize metadata, and
+ * record confirmation handler failures without leaving requests stuck in the
+ * intermediate `confirmed` state.
+ */
+export const MIGRATION_V15_STATEMENTS: readonly string[] = [
+  `ALTER TABLE mcp_sessions ADD COLUMN reported_client_name TEXT`,
+  `ALTER TABLE mcp_sessions ADD COLUMN reported_client_version TEXT`,
+  `ALTER TABLE mcp_confirmation_requests ADD COLUMN error_message TEXT`,
+];
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -1122,7 +1256,7 @@ export const V1_TABLE_NAMES: readonly string[] = [
   "import_errors",
 ];
 
-/** Every data table at the latest schema version (v1 + v2 + v4 + v5 + v6 + v7 + v8 + v9 + v10). */
+/** Every data table at the latest schema version. */
 export const ALL_TABLE_NAMES: readonly string[] = [
   ...V1_TABLE_NAMES,
   ...V2_TABLE_NAMES,
@@ -1134,4 +1268,5 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V9_TABLE_NAMES,
   ...V10_TABLE_NAMES,
   ...V11_TABLE_NAMES,
+  ...V13_TABLE_NAMES,
 ];

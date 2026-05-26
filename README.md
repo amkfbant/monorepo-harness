@@ -103,6 +103,40 @@ npm run --silent harness -- knowledge reject --run-id <runId> --index <n> --revi
 | [`docs/reports/`](./docs/reports/) | 実機検証ログ + finding registry |
 | [`docs/policy-semantics.md`](./docs/policy-semantics.md) | minimatch root-anchored の落とし穴（policy を書く前に） |
 
+## Phase 18 quick start — MCP server
+
+Coding agent から harness を読む/preview するための stdio MCP server。詳細は
+[`docs/specs/mcp.md`](./docs/specs/mcp.md)。
+
+```bash
+# 公開 surface を確認
+npm run --silent harness -- mcp tools --json
+npm run --silent harness -- mcp resources --json
+npm run --silent harness -- mcp prompts --json
+
+# stdio MCP server を起動
+npm run --silent harness -- mcp serve --transport stdio --client-name codex-local
+```
+
+既定は read + dry-run。mutation は allowlist と `idempotencyKey` が必要で、
+dangerous operation は `confirmation_required` を返し、実行は out-of-band:
+
+```bash
+npm run --silent harness -- operation confirm <confirmationId> --by <operator>
+npm run --silent harness -- operation reject <confirmationId> --by <operator>
+```
+
+監査確認:
+
+```bash
+npm run --silent harness -- mcp sessions --json
+npm run --silent harness -- mcp invocations --json
+npm run --silent harness -- mcp confirmations --json
+```
+
+`confirmations --json` と `operation reject` の payload は redacted 表示。
+Streamable HTTP transport と dashboard mutation UI は deferred。
+
 ## Phase 3 で追加した機能
 
 Phase 2（ファイルベースで人間がトリガする運用）の上に、Phase 3 で次を追加:

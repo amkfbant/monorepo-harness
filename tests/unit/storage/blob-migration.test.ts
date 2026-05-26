@@ -93,6 +93,29 @@ describe("blob migration + verify + GC (Phase 16-3..16-5)", () => {
     }
   });
 
+  // Phase 16 post-close fix (external review P2-5): opts-less verify
+  // previously filtered for store_id='' and silently checked nothing.
+  // After the fix it verifies every external blob the catalog knows.
+  it("verifyExternalBlobs: opts-less call verifies all external blobs (no silent zero)", async () => {
+    const { db, root } = freshDb();
+    try {
+      registerBlobStore(db, {
+        storeId: "local-default",
+        storeType: "local",
+        config: { root: join(root, "blob-store") },
+      });
+      const b = Buffer.from("opts-less");
+      storeArtifactBlob(db, b, "identity");
+      const store = new LocalBlobStore({ root: join(root, "blob-store") });
+      await migrateBlobsToExternal(db, store, { storeId: "local-default" });
+      const v = await verifyExternalBlobs(db, store); // no opts
+      expect(v.checkedCount).toBe(1);
+      expect(v.okCount).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it("gcExternalBlobs: dry-run lists unreferenced; --apply deletes", async () => {
     const { db, root } = freshDb();
     try {
@@ -125,6 +148,49 @@ describe("blob migration + verify + GC (Phase 16-3..16-5)", () => {
       });
       expect(apply.removed).toContain(s);
       expect(findExternalBlob(db, s)).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("gcExternalBlobs: storeId scopes candidates and deletes to one store", async () => {
+    const { db, root } = freshDb();
+    try {
+      for (const storeId of ["store-a", "store-b"]) {
+        registerBlobStore(db, {
+          storeId,
+          storeType: "local",
+          config: { root: join(root, storeId) },
+        });
+      }
+      const a = Buffer.from("orphan-a");
+      const b = Buffer.from("orphan-b");
+      const shaA = sha(a);
+      const shaB = sha(b);
+      for (const [storeId, body, digest] of [
+        ["store-a", a, shaA],
+        ["store-b", b, shaB],
+      ] as const) {
+        db.prepare(
+          `INSERT INTO external_artifact_blobs
+             (sha256, store_id, uri, bytes, stored_bytes, content_encoding,
+              chunking, uploaded_at, status)
+           VALUES (?, ?, 'file://x', ?, ?, 'identity', 'none',
+                   '2026-05-24T13:00:00Z', 'available')`,
+        ).run(digest, storeId, body.length, body.length);
+      }
+
+      const storeA = new LocalBlobStore({ root: join(root, "store-a") });
+      const dry = await gcExternalBlobs(db, storeA, { storeId: "store-a" });
+      expect(dry.candidates).toEqual([shaA]);
+
+      const apply = await gcExternalBlobs(db, storeA, {
+        storeId: "store-a",
+        apply: true,
+      });
+      expect(apply.removed).toEqual([shaA]);
+      expect(findExternalBlob(db, shaA)).toBeNull();
+      expect(findExternalBlob(db, shaB)?.storeId).toBe("store-b");
     } finally {
       db.close();
     }

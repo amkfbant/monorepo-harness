@@ -1,6 +1,5 @@
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { createHash } from "node:crypto";
 import { readArtifactBlob } from "../db/artifact-blobs.js";
 import {
   findBlobStore,
@@ -187,11 +186,17 @@ export interface VerifyResult {
 export async function verifyExternalBlobs(
   db: Database.Database,
   store: BlobStore,
-  opts: { storeId: string; deep?: boolean; sample?: number } = {
-    storeId: "",
-  },
+  opts: { storeId?: string; deep?: boolean; sample?: number } = {},
 ): Promise<VerifyResult> {
-  const rows = listExternalBlobs(db, { storeId: opts.storeId });
+  // Phase 16 post-close fix (external review P2-5): the prior default
+  // `{ storeId: "" }` made an opts-less call filter for `store_id = ''`,
+  // which silently checked zero blobs. Treat an empty/undefined storeId
+  // as "no filter — verify every external blob the DB knows about".
+  const filter =
+    opts.storeId !== undefined && opts.storeId !== ""
+      ? { storeId: opts.storeId }
+      : {};
+  const rows = listExternalBlobs(db, filter);
   const sample =
     opts.sample !== undefined && opts.sample < rows.length
       ? rows.slice(0, opts.sample)
@@ -201,35 +206,34 @@ export async function verifyExternalBlobs(
   let corrupt = 0;
   const updated: VerifyResult["updated"] = [];
   for (const r of sample) {
-    const h = await store.head({ sha256: r.sha256, uri: r.uri });
-    if (h === null) {
-      setExternalBlobStatus(db, r.sha256, "missing");
-      missing++;
-      updated.push({ sha256: r.sha256, status: "missing" });
-      continue;
-    }
-    if (h.sizeBytes !== r.storedBytes) {
-      setExternalBlobStatus(db, r.sha256, "corrupt");
-      corrupt++;
-      updated.push({ sha256: r.sha256, status: "corrupt" });
-      continue;
-    }
-    if (opts.deep === true) {
-      const body = await store.get({ sha256: r.sha256, uri: r.uri });
-      const actualSha = createHash("sha256").update(body).digest("hex");
-      if (actualSha !== r.sha256) {
+    try {
+      const h = await store.head({ sha256: r.sha256, uri: r.uri });
+      if (h === null) {
+        setExternalBlobStatus(db, r.sha256, "missing");
+        missing++;
+        updated.push({ sha256: r.sha256, status: "missing" });
+        continue;
+      }
+      if (h.sizeBytes !== r.storedBytes) {
         setExternalBlobStatus(db, r.sha256, "corrupt");
         corrupt++;
         updated.push({ sha256: r.sha256, status: "corrupt" });
         continue;
       }
+      if (opts.deep === true) {
+        await store.get({ sha256: r.sha256, uri: r.uri });
+      }
+      setExternalBlobStatus(db, r.sha256, "available");
+      ok++;
+      updated.push({ sha256: r.sha256, status: "available" });
+    } catch {
+      setExternalBlobStatus(db, r.sha256, "corrupt");
+      corrupt++;
+      updated.push({ sha256: r.sha256, status: "corrupt" });
     }
-    setExternalBlobStatus(db, r.sha256, "available");
-    ok++;
-    updated.push({ sha256: r.sha256, status: "available" });
   }
   return {
-    storeId: opts.storeId,
+    storeId: opts.storeId ?? "",
     checkedCount: sample.length,
     okCount: ok,
     missingCount: missing,
@@ -252,16 +256,31 @@ export interface GcResult {
 export async function gcExternalBlobs(
   db: Database.Database,
   store: BlobStore,
-  opts: { apply?: boolean; deleteObjects?: boolean } = {},
+  opts: { apply?: boolean; deleteObjects?: boolean; storeId?: string; sha256s?: readonly string[] } = {},
 ): Promise<GcResult> {
+  const where = [
+    `NOT EXISTS (
+       SELECT 1 FROM artifacts a WHERE a.blob_sha256 = e.sha256
+     )`,
+  ];
+  const params: unknown[] = [];
+  if (opts.sha256s !== undefined) {
+    if (opts.sha256s.length === 0) {
+      return { candidates: [], removed: [], dryRun: !opts.apply };
+    }
+    where.push(`e.sha256 IN (${opts.sha256s.map(() => "?").join(", ")})`);
+    params.push(...opts.sha256s);
+  }
+  if (opts.storeId !== undefined) {
+    where.push("e.store_id = ?");
+    params.push(opts.storeId);
+  }
   const candidates = db
     .prepare(
       `SELECT e.sha256, e.uri FROM external_artifact_blobs e
-        WHERE NOT EXISTS (
-          SELECT 1 FROM artifacts a WHERE a.blob_sha256 = e.sha256
-        )`,
+        WHERE ${where.join(" AND ")}`,
     )
-    .all() as { sha256: string; uri: string }[];
+    .all(...params) as { sha256: string; uri: string }[];
   const removed: string[] = [];
   if (opts.apply === true) {
     for (const c of candidates) {

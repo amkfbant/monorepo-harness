@@ -22,6 +22,8 @@ export interface ProjectProfileRevision {
   reason: string | null;
   createdAt: string;
   supersedesRevisionId: number | null;
+  /** Original/imported profile YAML path recorded on projects.profile_path. */
+  sourcePath: string | null;
 }
 
 export interface RecordProjectProfileRevisionInput {
@@ -31,7 +33,13 @@ export interface RecordProjectProfileRevisionInput {
   actor: string;
   reason?: string;
   now?: Date;
+  currentPointerMode?: CurrentPointerMode;
 }
+
+export type CurrentPointerMode =
+  | "set-current"
+  | "if-missing"
+  | "do-not-change";
 
 export interface RecordResult {
   revision: ProjectProfileRevision;
@@ -47,6 +55,7 @@ export function recordProjectProfileRevision(
   input: RecordProjectProfileRevisionInput,
 ): RecordResult {
   const bodySha256 = sha256(input.bodyYaml);
+  const currentPointerMode = input.currentPointerMode ?? "set-current";
   const tx = db.transaction((): RecordResult => {
     // Ensure projects row exists. The projects table has NOT NULL
     // repo_id (Phase 6); for an asset-only first import we default it
@@ -56,6 +65,20 @@ export function recordProjectProfileRevision(
       `INSERT INTO projects (project_id, repo_id) VALUES (?, ?)
        ON CONFLICT(project_id) DO NOTHING`,
     ).run(input.projectId, input.projectId);
+
+    const current = db
+      .prepare(
+        `SELECT current_profile_revision_id
+           FROM projects
+          WHERE project_id = ?`,
+      )
+      .get(input.projectId) as
+      | { current_profile_revision_id: number | null }
+      | undefined;
+    const shouldSetCurrent =
+      currentPointerMode === "set-current" ||
+      (currentPointerMode === "if-missing" &&
+        current?.current_profile_revision_id == null);
 
     // Reuse if the latest revision for this project has the same sha.
     const latest = db
@@ -68,11 +91,12 @@ export function recordProjectProfileRevision(
       )
       .get(input.projectId) as Record<string, unknown> | undefined;
     if (latest !== undefined && latest.body_sha256 === bodySha256) {
-      // Already current; just ensure pointer.
-      db.prepare(
-        `UPDATE projects SET current_profile_revision_id = ?
-          WHERE project_id = ?`,
-      ).run(latest.revision_id, input.projectId);
+      if (shouldSetCurrent) {
+        db.prepare(
+          `UPDATE projects SET current_profile_revision_id = ?
+            WHERE project_id = ?`,
+        ).run(latest.revision_id, input.projectId);
+      }
       return {
         revision: toRevision(latest),
         reusedExisting: true,
@@ -100,10 +124,12 @@ export function recordProjectProfileRevision(
         now,
         latest === undefined ? null : (latest.revision_id as number),
       );
-    db.prepare(
-      `UPDATE projects SET current_profile_revision_id = ?
-        WHERE project_id = ?`,
-    ).run(Number(info.lastInsertRowid), input.projectId);
+    if (shouldSetCurrent) {
+      db.prepare(
+        `UPDATE projects SET current_profile_revision_id = ?
+          WHERE project_id = ?`,
+      ).run(Number(info.lastInsertRowid), input.projectId);
+    }
     return {
       revision: {
         revisionId: Number(info.lastInsertRowid),
@@ -117,6 +143,7 @@ export function recordProjectProfileRevision(
         createdAt: now,
         supersedesRevisionId:
           latest === undefined ? null : (latest.revision_id as number),
+        sourcePath: null,
       },
       reusedExisting: false,
     };
@@ -130,7 +157,8 @@ export function getCurrentProjectProfile(
 ): ProjectProfileRevision | null {
   const row = db
     .prepare(
-      `SELECT r.* FROM project_profile_revisions r
+      `SELECT r.*, p.profile_path
+         FROM project_profile_revisions r
         INNER JOIN projects p ON p.current_profile_revision_id = r.revision_id
         WHERE p.project_id = ?`,
     )
@@ -179,5 +207,6 @@ function toRevision(r: Record<string, unknown>): ProjectProfileRevision {
     createdAt: r.created_at as string,
     supersedesRevisionId:
       (r.supersedes_revision_id as number | null) ?? null,
+    sourcePath: (r.profile_path as string | null) ?? null,
   };
 }

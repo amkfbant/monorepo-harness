@@ -8,6 +8,10 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type Database from "better-sqlite3";
 import {
+  recordKnowledgeEntryRevision,
+  type CurrentPointerMode,
+} from "../repositories/knowledge-entry-revisions.js";
+import {
   recordImportError,
   clearImportError,
   type ImportCounters,
@@ -23,9 +27,19 @@ export function importKnowledge(
   runsDir: string,
   knowledgeDir: string,
   counters: ImportCounters,
+  opts: { currentPointerMode?: CurrentPointerMode } = {},
 ): void {
   importCandidates(db, runsDir, counters);
-  importEntries(db, knowledgeDir, counters);
+  importEntries(db, knowledgeDir, counters, opts);
+}
+
+export function importKnowledgeEntries(
+  db: Database.Database,
+  knowledgeDir: string,
+  counters: ImportCounters,
+  opts: { currentPointerMode?: CurrentPointerMode } = {},
+): void {
+  importEntries(db, knowledgeDir, counters, opts);
 }
 
 /** Read repoId / projectId from a run's meta.json (best effort). */
@@ -142,12 +156,14 @@ function importEntries(
   db: Database.Database,
   knowledgeDir: string,
   counters: ImportCounters,
+  opts: { currentPointerMode?: CurrentPointerMode } = {},
 ): void {
   if (!existsSync(knowledgeDir)) return;
-  // a promoted knowledge entry's markdown body / frontmatter is file-backed
-  // (Phase 7 canonical boundary — the `.md` is the artifact, editable by a
-  // human). `knowledge_entries` is its read model: every `.md` is re-imported
-  // so a hand edit (e.g. `deprecated: true`) is reflected.
+  const currentPointerMode = opts.currentPointerMode ?? "set-current";
+  // docs/knowledge markdown is a compatibility import/export surface.
+  // `db import --from-files` seeds DB-current rows only when an entry has
+  // no current revision; explicit `knowledge import --from-docs` opts into
+  // set-current behavior.
   const upsert = db.prepare(
     `INSERT INTO knowledge_entries (entry_id, project_id, repo_id, domain, kind,
        path, title, body, frontmatter_json, created_at, source_candidate_id)
@@ -161,6 +177,11 @@ function importEntries(
        source_mode = 'legacy-file',
        export_status = 'synced', last_export_error = NULL`,
   );
+  const currentEntry = db.prepare(
+    `SELECT current_revision_id
+       FROM knowledge_entries
+      WHERE entry_id = ?`,
+  );
   // docs/knowledge/<kind>/<file>.md
   for (const kindDir of readdirSync(knowledgeDir, { withFileTypes: true })) {
     if (!kindDir.isDirectory()) continue;
@@ -170,10 +191,20 @@ function importEntries(
       const path = join(dir, file);
       const relPath = join("docs", "knowledge", kind, file);
       try {
-        const { frontmatter, body } = splitFrontmatter(
-          readFileSync(path, "utf8"),
-        );
+        const raw = readFileSync(path, "utf8");
+        const { frontmatter, body } = splitFrontmatter(raw);
         const fm = frontmatter;
+        const existing = currentEntry.get(relPath) as
+          | { current_revision_id: number | null }
+          | undefined;
+        const mayUpdateCurrentAsset =
+          currentPointerMode === "set-current" ||
+          (currentPointerMode === "if-missing" &&
+            existing?.current_revision_id == null);
+        if (!mayUpdateCurrentAsset) {
+          clearImportError(db, path);
+          continue;
+        }
         upsert.run({
           entry_id: relPath,
           project_id: typeof fm.project_id === "string" ? fm.project_id : null,
@@ -191,6 +222,16 @@ function importEntries(
             typeof fm.source_index === "number"
               ? `${fm.source_run}:${fm.source_index}`
               : null,
+        });
+        recordKnowledgeEntryRevision(db, {
+          entryId: relPath,
+          bodyMarkdown: raw,
+          frontmatter: fm,
+          title: typeof fm.title === "string" ? fm.title : file,
+          actor: "db-import",
+          reason: "compatibility knowledge markdown import",
+          now: new Date(statSync(path).mtimeMs),
+          currentPointerMode,
         });
         clearImportError(db, path);
         counters.knowledgeEntries += 1;

@@ -595,8 +595,9 @@ export interface PromotedFile {
 export interface SkipRecord {
   index: number;
   reason:
-    | "kind-filter"
-    | "rejected"
+	    | "kind-filter"
+	    | "index-filter"
+	    | "rejected"
     | "duplicate-index"
     | "duplicate-hash"
     | "malformed";

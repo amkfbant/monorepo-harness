@@ -32,6 +32,7 @@ import {
   RunRepository,
   type ChangedFileInput,
 } from "../db/repositories/runs.js";
+import { recordEffectivePolicySnapshot } from "../db/repositories/policy-templates.js";
 import { RerunGateError } from "./rerun.js";
 import { writeArtifact } from "../logging/artifacts.js";
 import { generateRunId } from "./run-id.js";
@@ -103,7 +104,7 @@ export interface RunDomainCodingOpts {
    * Promoted-knowledge context to inject into the codex prompt (Phase 3-4).
    * `text` is appended to the prompt; `path` is recorded in meta/events.
    */
-  knowledgeContext?: { path: string; text: string };
+  knowledgeContext?: { path: string; text: string; revisionIds?: number[] };
   /**
    * Pre-compiled policy (Phase 5-7 `--project`). When set, the workflow
    * uses it instead of loading `policies/global.yaml` + the repo policy
@@ -370,6 +371,30 @@ export async function runDomainCoding(
       timeoutMs: gitTimeoutMs,
     });
 
+    const policySnapshot = recordEffectivePolicySnapshot(db, {
+      runId,
+      ...(opts.project?.projectId !== undefined
+        ? { projectId: opts.project.projectId }
+        : {}),
+      repoId: opts.repoId,
+      domain: opts.domain,
+      generatedPolicyYaml: yamlStringify(policy),
+      provenance: {
+        source: opts.compiledPolicy !== undefined ? "project-runtime" : "repo-policy",
+        project: opts.project ?? null,
+      },
+    });
+
+    const assetAttribution: RunMeta["assetAttribution"] = {
+      ...(opts.project?.profileRevisionId !== undefined
+        ? { projectProfileRevisionId: opts.project.profileRevisionId }
+        : {}),
+      effectivePolicySnapshotId: policySnapshot.snapshotId,
+      ...(opts.knowledgeContext?.revisionIds !== undefined
+        ? { knowledgeRevisionIds: opts.knowledgeContext.revisionIds }
+        : {}),
+    };
+
     const log = createDbRunLog({
       db,
       runsDir: paths.runsDir,
@@ -402,6 +427,7 @@ export async function runDomainCoding(
             }
           : {}),
         ...(opts.project !== undefined ? { project: opts.project } : {}),
+        assetAttribution,
         promptTemplate: {
           name: CODER_PROMPT_TEMPLATE.name,
           version: CODER_PROMPT_TEMPLATE.version,

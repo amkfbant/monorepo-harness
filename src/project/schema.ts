@@ -178,6 +178,7 @@ export const ProjectProfileSchema = z
       .object({ presets: z.array(z.string().min(1)).optional() })
       .strict()
       .optional(),
+    mcp: z.record(z.string(), z.unknown()).optional(),
     domains: z.array(ProjectDomainSchema).min(1),
   })
   .strict()

@@ -124,9 +124,23 @@ export interface RunMeta {
     projectId: string;
     profilePath: string;
     profileVersion: number;
+    /** Phase 17: DB current revision wins over compatibility YAML files. */
+    profileSource?: "db" | "file";
+    /** Phase 17: project_profile_revisions.revision_id when DB-sourced. */
+    profileRevisionId?: number;
     policyTemplateId?: string;
     commandPresetIds?: string[];
     contextPackIds?: string[];
+  };
+  /**
+   * Phase 17 DB-canonical input attribution. Kept outside `project` so a
+   * future non-project run can still link a policy snapshot or knowledge
+   * revisions without pretending it came from a project profile.
+   */
+  assetAttribution?: {
+    projectProfileRevisionId?: number;
+    effectivePolicySnapshotId?: number;
+    knowledgeRevisionIds?: number[];
   };
   startedAt: string;
   finishedAt?: string;

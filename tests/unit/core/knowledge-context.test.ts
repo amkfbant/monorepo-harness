@@ -4,8 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildKnowledgeContext,
+  buildKnowledgeContextFromDb,
   domainSlug,
 } from "../../../src/core/knowledge-context.js";
+import { openDb } from "../../../src/db/connection.js";
+import { runMigrations } from "../../../src/db/migrations.js";
+import { recordKnowledgeEntryRevision } from "../../../src/db/repositories/knowledge-entry-revisions.js";
 
 interface KnowledgeMd {
   kind: string;
@@ -218,5 +222,58 @@ describe("buildKnowledgeContext", () => {
         domain: "../escape",
       }),
     ).rejects.toThrow(/invalid domain/);
+  });
+
+  it("DB context treats null project/repo knowledge as global for scoped project runs", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-kctx-db-"));
+    const db = openDb(join(root, ".harness", "harness.sqlite"));
+    try {
+      runMigrations(db);
+      const bodyMarkdown = [
+        "---",
+        "kind: domain_rule",
+        'domain: "apps/catalog"',
+        'title: "Global Lesson"',
+        'confidence: "high"',
+        "deprecated: false",
+        "---",
+        "",
+        "global context body",
+        "",
+      ].join("\n");
+      recordKnowledgeEntryRevision(db, {
+        entryId: "docs/knowledge/domain_rule/global.md",
+        bodyMarkdown,
+        frontmatter: {
+          kind: "domain_rule",
+          domain: "apps/catalog",
+          title: "Global Lesson",
+          confidence: "high",
+          deprecated: false,
+        },
+        title: "Global Lesson",
+        actor: "test",
+      });
+      db.prepare(
+        `UPDATE knowledge_entries
+            SET domain = 'apps/catalog',
+                kind = 'domain_rule',
+                path = 'docs/knowledge/domain_rule/global.md'
+          WHERE entry_id = 'docs/knowledge/domain_rule/global.md'`,
+      ).run();
+
+      const r = await buildKnowledgeContextFromDb({
+        db,
+        outDir: join(root, "knowledge-context"),
+        domain: "apps/catalog",
+        projectId: "demo",
+        repoId: "demo",
+      });
+
+      expect(r.entries.map((e) => e.title)).toEqual(["Global Lesson"]);
+      expect(readFileSync(r.outPath, "utf8")).toMatch(/global context body/);
+    } finally {
+      db.close();
+    }
   });
 });

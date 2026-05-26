@@ -13,6 +13,7 @@ import {
   MIGRATION_V2_STATEMENTS,
   MIGRATION_V3_STATEMENTS,
   MIGRATION_V4_STATEMENTS,
+  SCHEMA_VERSION,
 } from "../../../src/db/schema.js";
 
 /**
@@ -78,7 +79,7 @@ describe("schema v5 migration", () => {
     const path = freshDbPath();
     const db = openDb(path);
     const r = runMigrations(db);
-    expect(r.version).toBe(11);
+    expect(r.version).toBe(SCHEMA_VERSION);
     expect(tableExists(db, "domain_locks")).toBe(true);
     expect(tableExists(db, "review_proposals")).toBe(true);
     const runs = columns(db, "runs");
@@ -97,7 +98,7 @@ describe("schema v5 migration", () => {
     runMigrations(db);
     const again = runMigrations(db);
     expect(again.applied).toEqual([]);
-    expect(again.version).toBe(11);
+    expect(again.version).toBe(SCHEMA_VERSION);
     db.close();
   });
 
@@ -111,8 +112,8 @@ describe("schema v5 migration", () => {
          'needs_review', 'db-first', 1, 'synced', 't')`,
     ).run();
     const r = runMigrations(db);
-    expect(r.applied).toEqual([5, 6, 7, 8, 9, 10, 11]);
-    expect(currentSchemaVersion(db)).toBe(11);
+    expect(r.applied).toEqual([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
     const row = db
       .prepare(
         "SELECT lease_lock_id, lease_token, lease_domain_key FROM runs WHERE run_id = 'run-v4'",

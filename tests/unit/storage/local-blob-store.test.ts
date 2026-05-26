@@ -77,6 +77,25 @@ describe("LocalBlobStore (Phase 16-2)", () => {
     expect(await store.head({ sha256: s, uri: "" })).toBeNull();
   });
 
+  // Phase 16 post-close fix (external review P2-4): pathFor must reject
+  // any sha256 that is not 64 hex chars so a TEXT-typed DB value cannot
+  // become a path-traversal attempt via get / head / delete (the put()
+  // path's hash recompute already guarded the write side).
+  it("get/head/delete reject non-hex64 sha (DB-corruption defense)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-blob-"));
+    const store = new LocalBlobStore({ root });
+    const bad = "../../../etc/passwd";
+    await expect(
+      store.get({ sha256: bad, uri: "" }),
+    ).rejects.toThrow(/invalid sha256/i);
+    await expect(
+      store.head({ sha256: bad, uri: "" }),
+    ).rejects.toThrow(/invalid sha256/i);
+    await expect(
+      store.delete({ sha256: bad, uri: "" }),
+    ).rejects.toThrow(/invalid sha256/i);
+  });
+
   // Phase 16 post-close fix (codex P1.2): the local store is
   // content-addressed; the object name MUST equal sha256(body).
   // The earlier put() accepted any (sha, body) pair and would silently

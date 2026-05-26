@@ -7,6 +7,7 @@ import { runMigrations } from "../../../src/db/migrations.js";
 import {
   runOperation,
   OperationInFlightError,
+  OperationReplayedFailureError,
 } from "../../../src/operations/operation-runner.js";
 import {
   listOperations,
@@ -145,6 +146,102 @@ describe("OperationRunner (Phase 13-2)", () => {
       expect(ops[0]?.errorMessage).toBe("kaboom");
       const events = listOperationEvents(db, ops[0]!.operationId);
       expect(events.map((e) => e.eventType)).toEqual(["started", "failed"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("beforeStart guard runs inside reservation and leaves no row when it throws", async () => {
+    const db = freshDb();
+    try {
+      let workCalled = false;
+      await expect(
+        runOperation(
+          db,
+          {
+            operationType: "test.guard",
+            target: { type: "run", id: "run-guard" },
+            actor: "cli:1",
+            idempotencyKey: "key-guard",
+            dryRun: false,
+            input: {},
+            beforeStart: () => {
+              throw new Error("budget exhausted");
+            },
+          },
+          async () => {
+            workCalled = true;
+            return {};
+          },
+        ),
+      ).rejects.toThrow("budget exhausted");
+
+      expect(workCalled).toBe(false);
+      expect(listOperations(db, { targetType: "run", targetId: "run-guard" })).toHaveLength(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  // Phase 13 post-close fix (external review P1-3): the schema's UNIQUE
+  // index on (operation_type, target_id, idempotency_key) makes a second
+  // INSERT impossible for the same key. The runner now treats a repeated
+  // key as "same operation" and replays the prior outcome — for failed /
+  // cancelled it throws OperationReplayedFailureError so the caller knows
+  // to mint a new key, not silently retry.
+  it("idempotency: same key after a failed prior throws OperationReplayedFailureError (no UNIQUE crash)", async () => {
+    const db = freshDb();
+    try {
+      await expect(
+        runOperation(
+          db,
+          {
+            operationType: "test.fail",
+            target: { type: "run", id: "run-rep" },
+            actor: "cli:1",
+            idempotencyKey: "key-rep",
+            dryRun: false,
+            input: {},
+          },
+          async () => {
+            throw new Error("first attempt failed");
+          },
+        ),
+      ).rejects.toThrow("first attempt failed");
+
+      // Same key again: must NOT crash on UNIQUE; must surface the prior
+      // failure via OperationReplayedFailureError.
+      await expect(
+        runOperation(
+          db,
+          {
+            operationType: "test.fail",
+            target: { type: "run", id: "run-rep" },
+            actor: "cli:1",
+            idempotencyKey: "key-rep",
+            dryRun: false,
+            input: {},
+          },
+          async () => {
+            throw new Error("should not be called");
+          },
+        ),
+      ).rejects.toBeInstanceOf(OperationReplayedFailureError);
+
+      // A fresh key works (new operation).
+      const fresh = await runOperation(
+        db,
+        {
+          operationType: "test.fail",
+          target: { type: "run", id: "run-rep" },
+          actor: "cli:1",
+          idempotencyKey: "key-rep-2",
+          dryRun: false,
+          input: {},
+        },
+        async () => ({ ok: true }),
+      );
+      expect(fresh.operation.status).toBe("succeeded");
     } finally {
       db.close();
     }

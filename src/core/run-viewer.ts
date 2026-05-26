@@ -234,6 +234,36 @@ export async function renderRunShow(
     if (itemId) lines.push("", "Backlog item:", `  ${itemId}`);
   }
 
+  const attribution = meta.assetAttribution;
+  if (
+    attribution !== undefined ||
+    meta.project?.profileRevisionId !== undefined ||
+    meta.project?.profileSource !== undefined
+  ) {
+    lines.push("", "Asset attribution:");
+    if (meta.project?.profileSource !== undefined) {
+      lines.push(`  profileSource: ${meta.project.profileSource}`);
+    }
+    const profileRevision =
+      attribution?.projectProfileRevisionId ?? meta.project?.profileRevisionId;
+    if (profileRevision !== undefined) {
+      lines.push(`  projectProfileRevisionId: ${profileRevision}`);
+    }
+    if (attribution?.effectivePolicySnapshotId !== undefined) {
+      lines.push(
+        `  effectivePolicySnapshotId: ${attribution.effectivePolicySnapshotId}`,
+      );
+    }
+    if (
+      attribution?.knowledgeRevisionIds !== undefined &&
+      attribution.knowledgeRevisionIds.length > 0
+    ) {
+      lines.push(
+        `  knowledgeRevisionIds: ${attribution.knowledgeRevisionIds.join(", ")}`,
+      );
+    }
+  }
+
   lines.push("", "Artifacts:");
   for (const a of await artifactLines(runsDir, runId, dbPath, source)) {
     lines.push(`  ${a}`);

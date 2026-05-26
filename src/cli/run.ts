@@ -1,8 +1,16 @@
 #!/usr/bin/env node
 import process from "node:process";
-import { existsSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { Command } from "commander";
 import { harnessPaths } from "../config/paths.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
@@ -10,6 +18,9 @@ import { resolvePolicy } from "../policy/resolver.js";
 import { runDomainCoding } from "../core/workflow-runner.js";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
 import { StateConflictError, SourceModeError } from "../db/errors.js";
+import { runMigrations } from "../db/migrations.js";
+import { importKnowledgeEntries } from "../db/import/knowledge.js";
+import { emptyCounters } from "../db/import/common.js";
 import {
   DomainLockBusyError,
   listActiveDomainLocks,
@@ -124,6 +135,7 @@ import {
 import {
   listKnowledge,
   KnowledgePromoteGateError,
+  splitFrontmatter,
 } from "../core/knowledge-promoter.js";
 import {
   promoteKnowledgeDbFirst,
@@ -131,12 +143,28 @@ import {
   type KnowledgeDbContext,
 } from "../core/knowledge-db.js";
 import {
+  getCurrentKnowledgeRevision,
+  listCurrentKnowledgeRevisions,
+  recordKnowledgeEntryRevision,
+} from "../db/repositories/knowledge-entry-revisions.js";
+import {
   buildKnowledgeContext,
+  buildKnowledgeContextFromDb,
   KnowledgeContextError,
   domainSlug,
 } from "../core/knowledge-context.js";
 import { registerProjectCommands } from "./project.js";
+import { registerPolicyCommands } from "./policy.js";
 import { registerDbCommands } from "./db.js";
+import { registerMcpCommands } from "../mcp/cli.js";
+import {
+  confirmMcpRequest,
+  rejectMcpRequest,
+} from "../mcp/confirmation-runner.js";
+import {
+  getMcpConfirmationRequest,
+  redactMcpConfirmationRow,
+} from "../mcp/security/confirmation.js";
 import {
   hasScopeFilter,
   runScopedMetrics,
@@ -197,6 +225,7 @@ interface RunOutcome {
 
 async function cmdRun(o: RunOpts): Promise<RunOutcome> {
   const harnessRoot = getHarnessRoot();
+  const paths = harnessPaths(harnessRoot);
 
   let prepared: PreparedProjectRun | undefined;
   let resolved;
@@ -221,7 +250,6 @@ async function cmdRun(o: RunOpts): Promise<RunOutcome> {
     repoPath = prepared.repoPath;
     repoId = prepared.repoId;
   } else {
-    const paths = harnessPaths(harnessRoot);
     const global = await loadGlobalPolicy(paths.globalPolicyPath);
     const repo = await loadRepoPolicy(paths.repoPolicyPath(String(o.repoId)));
     resolved = resolvePolicy(global, repo, o.domain);
@@ -241,7 +269,9 @@ async function cmdRun(o: RunOpts): Promise<RunOutcome> {
   }
 
   // resolve promoted-knowledge context (Phase 3-4), if requested.
-  let knowledgeContext: { path: string; text: string } | undefined;
+  let knowledgeContext:
+    | { path: string; text: string; revisionIds?: number[] }
+    | undefined;
   const explicitCtx = o.knowledgeContextPath;
   if (explicitCtx !== undefined) {
     if (!existsSync(explicitCtx)) {
@@ -261,14 +291,48 @@ async function cmdRun(o: RunOpts): Promise<RunOutcome> {
       "knowledge-context",
       `${domainSlug(o.domain)}.md`,
     );
-    if (!existsSync(ctxPath)) {
+    if (prepared !== undefined && existsSync(paths.dbPath)) {
+      try {
+        const handle = openManagedDb({ dbPath: paths.dbPath });
+        try {
+          runMigrations(handle.db);
+          const built = await buildKnowledgeContextFromDb({
+            db: handle.db,
+            outDir: join(harnessRoot, "docs", "knowledge-context"),
+            domain: o.domain,
+            projectId: prepared.project.projectId,
+            repoId,
+          });
+          knowledgeContext = {
+            path: built.outPath,
+            text: await readFile(built.outPath, "utf8"),
+            ...(built.knowledgeRevisionIds !== undefined
+              ? { revisionIds: built.knowledgeRevisionIds }
+              : {}),
+          };
+        } finally {
+          handle.close();
+        }
+      } catch (e) {
+        if (!(e instanceof KnowledgeContextError)) throw e;
+        process.stderr.write(
+          `warning: DB knowledge context unavailable: ${e.message}; falling back to ${ctxPath}\n`,
+        );
+      }
+    }
+    if (knowledgeContext === undefined && !existsSync(ctxPath)) {
       process.stderr.write(
         `harness error: --with-knowledge: ${ctxPath} not found; ` +
           `run 'harness knowledge build-context --domain ${o.domain}' first\n`,
       );
       process.exit(1);
     }
-    knowledgeContext = { path: ctxPath, text: await readFile(ctxPath, "utf8") };
+    if (knowledgeContext === undefined) {
+      knowledgeContext = {
+        path: ctxPath,
+        text: await readFile(ctxPath, "utf8"),
+      };
+    }
   }
 
   const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
@@ -1932,6 +1996,61 @@ operationsCmd
     }
   });
 
+const operationCmd = program
+  .command("operation")
+  .description("MCP confirmation actions for operation requests");
+operationCmd
+  .command("confirm")
+  .description("preview or confirm and execute a pending MCP confirmation request")
+  .argument("<confirmationId>", "MCP confirmation id")
+  .option("--by <actor>", "human confirmer identity", "cli")
+  .option("--preview", "print the redacted confirmation preview without executing")
+  .option("--yes", "execute after printing the confirmation preview")
+  .action(async (confirmationId: string, raw: Record<string, unknown>) => {
+    const row = getMcpConfirmationRequest(getHarnessRoot(), confirmationId);
+    if (row === null) {
+      process.stderr.write(`harness error: confirmation ${confirmationId} not found\n`);
+      process.exit(1);
+    }
+    const redacted = redactMcpConfirmationRow(row);
+    process.stdout.write(`${JSON.stringify(redacted, null, 2)}\n`);
+    if (raw.preview === true) return;
+    if (raw.yes !== true) {
+      process.stderr.write(
+        "harness error: confirmation preview printed; rerun with --yes to execute\n",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const result = await confirmMcpRequest({
+      harnessRoot: getHarnessRoot(),
+      confirmationId,
+      confirmedBy: String(raw.by ?? "cli"),
+    });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    if (result.status === "error" || result.status === "permission_denied") {
+      process.exitCode = 1;
+    }
+  });
+operationCmd
+  .command("reject")
+  .description("reject a pending MCP confirmation request")
+  .argument("<confirmationId>", "MCP confirmation id")
+  .option("--by <actor>", "human confirmer identity", "cli")
+  .action((confirmationId: string, raw: Record<string, unknown>) => {
+    try {
+      const row = rejectMcpRequest({
+        harnessRoot: getHarnessRoot(),
+        confirmationId,
+        confirmedBy: String(raw.by ?? "cli"),
+      });
+      process.stdout.write(`${JSON.stringify(redactMcpConfirmationRow(row), null, 2)}\n`);
+    } catch (e) {
+      process.stderr.write(`harness error: ${(e as Error).message}\n`);
+      process.exit(1);
+    }
+  });
+
 const sessionCmd = program
   .command("session")
   .description("rule-ordered work-session planning (suggestion only)");
@@ -2348,6 +2467,18 @@ function knowledgeDbContext(
   };
 }
 
+function knowledgeExportPath(
+  knowledgeRoot: string,
+  row: { path: string | null; kind: string; entryId: string },
+): string {
+  const prefix = "docs/knowledge/";
+  if (row.path !== null && row.path.startsWith(prefix)) {
+    return join(knowledgeRoot, row.path.slice(prefix.length));
+  }
+  const safe = row.entryId.replace(/[^A-Za-z0-9._-]/g, "-");
+  return join(knowledgeRoot, row.kind, `${safe}.md`);
+}
+
 /** Map a knowledge command failure to a user error (exit 1). */
 function knowledgeError(e: unknown): never {
   if (
@@ -2370,15 +2501,37 @@ knowledgeCmd
     "aggregate promoted knowledge for a domain into docs/knowledge-context/<domain>.md",
   )
   .requiredOption("--domain <domain>", "target domain")
+  .option("--project <id>", "scope DB-current revisions to a project")
+  .option("--repo-id <id>", "scope DB-current revisions to a repo")
   .option("--out <dir>", "knowledge root (default: HARNESS_ROOT/docs/knowledge)")
   .action(async (raw: Record<string, unknown>) => {
     const harnessRoot = getHarnessRoot();
     try {
-      const r = await buildKnowledgeContext({
-        knowledgeDir: knowledgeDirOf(harnessRoot, raw),
-        outDir: join(harnessRoot, "docs", "knowledge-context"),
-        domain: String(raw.domain),
-      });
+      let r;
+      if (raw.project !== undefined || raw.repoId !== undefined) {
+        const paths = harnessPaths(harnessRoot);
+        const handle = openManagedDb({ dbPath: paths.dbPath });
+        try {
+          runMigrations(handle.db);
+          r = await buildKnowledgeContextFromDb({
+            db: handle.db,
+            outDir: join(harnessRoot, "docs", "knowledge-context"),
+            domain: String(raw.domain),
+            ...(raw.project !== undefined
+              ? { projectId: String(raw.project) }
+              : {}),
+            ...(raw.repoId !== undefined ? { repoId: String(raw.repoId) } : {}),
+          });
+        } finally {
+          handle.close();
+        }
+      } else {
+        r = await buildKnowledgeContext({
+          knowledgeDir: knowledgeDirOf(harnessRoot, raw),
+          outDir: join(harnessRoot, "docs", "knowledge-context"),
+          domain: String(raw.domain),
+        });
+      }
       process.stdout.write(
         `domain=${r.domain} entries=${r.entries.length} out=${r.outPath}\n`,
       );
@@ -2508,6 +2661,193 @@ knowledgeCmd
   });
 
 knowledgeCmd
+  .command("import")
+  .description("import docs/knowledge markdown into DB-current revisions")
+  .option("--from-docs", "import from docs/knowledge", false)
+  .option("--json", "emit JSON instead of text", false)
+  .action((raw: Record<string, unknown>) => {
+    if (raw.fromDocs !== true) {
+      process.stderr.write(
+        "harness error: 'knowledge import' requires --from-docs\n",
+      );
+      process.exit(1);
+    }
+    const root = getHarnessRoot();
+    const paths = harnessPaths(root);
+    const handle = openManagedDb({ dbPath: paths.dbPath });
+    try {
+      runMigrations(handle.db);
+      const report = emptyCounters();
+      importKnowledgeEntries(
+        handle.db,
+        join(root, "docs", "knowledge"),
+        report,
+        { currentPointerMode: "set-current" },
+      );
+      process.stdout.write(
+        raw.json === true
+          ? `${JSON.stringify(report, null, 2)}\n`
+          : `knowledge import: entries=${report.knowledgeEntries} candidates=${report.knowledgeCandidates}\n`,
+      );
+    } finally {
+      handle.close();
+    }
+  });
+
+knowledgeCmd
+  .command("export")
+  .description("export DB-current knowledge revisions back to docs")
+  .option("--to-docs", "export to docs/knowledge", false)
+  .option("--out <dir>", "knowledge root (default: HARNESS_ROOT/docs/knowledge)")
+  .option("--json", "emit JSON instead of text", false)
+  .action((raw: Record<string, unknown>) => {
+    if (raw.toDocs !== true) {
+      process.stderr.write(
+        "harness error: 'knowledge export' requires --to-docs\n",
+      );
+      process.exit(1);
+    }
+    const root = getHarnessRoot();
+    const paths = harnessPaths(root);
+    const knowledgeRoot = knowledgeDirOf(root, raw);
+    const handle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
+    try {
+      const rows = listCurrentKnowledgeRevisions(handle.db);
+      const written: string[] = [];
+      for (const r of rows) {
+        const outPath = knowledgeExportPath(knowledgeRoot, r);
+        mkdirSync(dirname(outPath), { recursive: true });
+        writeFileSync(outPath, r.bodyMarkdown, "utf8");
+        written.push(outPath);
+      }
+      const out = { written };
+      process.stdout.write(
+        raw.json === true
+          ? `${JSON.stringify(out, null, 2)}\n`
+          : `knowledge export: wrote ${written.length} file(s)\n`,
+      );
+    } finally {
+      handle.close();
+    }
+  });
+
+knowledgeCmd
+  .command("show")
+  .description("show a DB-current knowledge entry revision")
+  .argument("<entry-id>", "knowledge entry id")
+  .option("--json", "emit JSON instead of markdown", false)
+  .action((entryId: string, raw: Record<string, unknown>) => {
+    const handle = openManagedDb({
+      dbPath: harnessPaths(getHarnessRoot()).dbPath,
+      readonly: true,
+    });
+    try {
+      const revision = getCurrentKnowledgeRevision(handle.db, entryId);
+      if (revision === null) {
+        process.stderr.write(`harness error: no knowledge entry ${entryId}\n`);
+        process.exit(1);
+      }
+      process.stdout.write(
+        raw.json === true
+          ? `${JSON.stringify(revision, null, 2)}\n`
+          : revision.bodyMarkdown.endsWith("\n")
+            ? revision.bodyMarkdown
+            : `${revision.bodyMarkdown}\n`,
+      );
+    } finally {
+      handle.close();
+    }
+  });
+
+knowledgeCmd
+  .command("edit")
+  .description("edit a DB-current knowledge entry using $EDITOR")
+  .argument("<entry-id>", "knowledge entry id")
+  .option("--actor <actor>", "actor label", "cli")
+  .option("--reason <text>", "revision reason", "manual edit")
+  .action((entryId: string, raw: Record<string, unknown>) => {
+    const editor = process.env.EDITOR;
+    if (!editor) {
+      process.stderr.write(
+        "harness error: $EDITOR is not set; use knowledge show/import/export to edit explicitly\n",
+      );
+      process.exit(1);
+    }
+    const handle = openManagedDb({ dbPath: harnessPaths(getHarnessRoot()).dbPath });
+    try {
+      runMigrations(handle.db);
+      const current = getCurrentKnowledgeRevision(handle.db, entryId);
+      if (current === null) {
+        process.stderr.write(`harness error: no knowledge entry ${entryId}\n`);
+        process.exit(1);
+      }
+      const currentEntry = handle.db
+        .prepare(
+          `SELECT kind, path
+             FROM knowledge_entries
+            WHERE entry_id = ?`,
+        )
+        .get(entryId) as { kind: string; path: string | null } | undefined;
+      const dir = mkdtempSync(join(tmpdir(), "harness-knowledge-edit-"));
+      const editPath = join(dir, "entry.md");
+      writeFileSync(editPath, current.bodyMarkdown, "utf8");
+      const child = spawnSync(editor, [editPath], { stdio: "inherit" });
+      if (child.status !== 0) {
+        process.stderr.write(`harness error: editor exited with status ${child.status}\n`);
+        process.exit(1);
+      }
+      const bodyMarkdown = readFileSync(editPath, "utf8");
+      const parsed = splitFrontmatter(bodyMarkdown);
+      const frontmatter = parsed.frontmatter ?? {};
+      const revision = recordKnowledgeEntryRevision(handle.db, {
+        entryId,
+        bodyMarkdown,
+        frontmatter,
+        title:
+          typeof frontmatter.title === "string"
+            ? frontmatter.title
+            : current.title ?? entryId,
+        actor: String(raw.actor),
+        reason: String(raw.reason),
+      }).revision;
+      handle.db
+        .prepare(
+          `UPDATE knowledge_entries
+              SET project_id = ?, repo_id = ?, domain = ?, kind = ?,
+                  path = ?, body = ?, frontmatter_json = ?, title = ?,
+                  source_mode = 'db-first',
+                  export_status = 'dirty',
+                  last_export_error = NULL
+            WHERE entry_id = ?`,
+        )
+        .run(
+          typeof frontmatter.project_id === "string"
+            ? frontmatter.project_id
+            : null,
+          typeof frontmatter.repo_id === "string" ? frontmatter.repo_id : null,
+          typeof frontmatter.domain === "string" ? frontmatter.domain : null,
+          typeof frontmatter.kind === "string"
+            ? frontmatter.kind
+            : currentEntry?.kind ?? "imported",
+          typeof frontmatter.path === "string"
+            ? frontmatter.path
+            : currentEntry?.path ?? entryId,
+          parsed.body,
+          JSON.stringify(frontmatter),
+          typeof frontmatter.title === "string"
+            ? frontmatter.title
+            : current.title,
+          entryId,
+        );
+      process.stdout.write(
+        `knowledge edit: ${entryId} revision=${revision.revisionId} version=${revision.version}\n`,
+      );
+    } finally {
+      handle.close();
+    }
+  });
+
+knowledgeCmd
   .command("digest")
   .description("aggregate knowledge candidates / promotions / rejections")
   .option("--since <dur>", "only items within this window, e.g. 7d / 12h")
@@ -2541,7 +2881,9 @@ knowledgeCmd
   });
 
 registerProjectCommands(program);
+registerPolicyCommands(program);
 registerDbCommands(program);
+registerMcpCommands(program, { getHarnessRoot });
 
 program.parseAsync(process.argv).catch((e: unknown) => {
   process.stderr.write(`harness error: ${(e as Error).message}\n`);

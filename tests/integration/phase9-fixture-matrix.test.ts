@@ -16,6 +16,7 @@ import {
   LeaseGuardFailedError,
   DomainLockBusyError,
 } from "../../src/workspace/db-domain-lock.js";
+import { SCHEMA_VERSION } from "../../src/db/schema.js";
 
 /**
  * Phase 9-12 — concurrency / lease / maintenance lock / lifecycle matrix.
@@ -240,10 +241,10 @@ describe("Phase 9-12 — schema migration end-to-end", () => {
     const h = tmpHarness();
     const db = openDb(h.dbPath);
     const first = runMigrations(db);
-    expect(first.version).toBe(11);
+    expect(first.version).toBe(SCHEMA_VERSION);
     const again = runMigrations(db);
     expect(again.applied).toEqual([]);
-    expect(again.version).toBe(11);
+    expect(again.version).toBe(SCHEMA_VERSION);
     for (const t of [
       "domain_locks",
       "review_proposals",

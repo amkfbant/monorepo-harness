@@ -201,6 +201,43 @@ harness db vacuum                     # 空き領域を回収（blob 削除後�
 - exit code: `0` 正常 / `1` `DbError`、`check-consistency` の drift/missing 検出、
   または `export-files` の失敗。
 
+## `harness mcp`
+
+Coding agent 向け MCP server（Phase 18）。仕様は [`mcp.md`](./mcp.md)。
+production transport は stdio。Streamable HTTP は deferred で、指定すると失敗する。
+
+```bash
+harness mcp serve [--transport stdio] [--client-name <name>] [--config <path>]
+harness mcp tools [--json]
+harness mcp resources [--json]
+harness mcp prompts [--json]
+harness mcp config [--config <path>]
+harness mcp sessions [--limit <n>] [--json]
+harness mcp invocations [--session-id <id>] [--limit <n>] [--json]
+harness mcp confirmations [--status pending|confirmed|rejected|expired|consumed] [--limit <n>] [--json]
+```
+
+- `serve` は JSON-RPC MCP を stdin/stdout で処理する。stdout は MCP message 専用、diagnostic は stderr。
+- `tools` / `resources` / `prompts` は client 接続なしで公開 surface を確認するための read-only コマンド。
+- `config` は `--config` / `.harness/mcp.yaml` / project profile の `mcp` section / 既定値の優先順で実効 config を JSON 表示する。
+- 明示 `--config <path>` が存在しない場合は fallback せず非zeroで終了する。
+- `sessions` / `invocations` / `confirmations` は MCP 監査 DB を読む。`confirmations --json` の `inputJson` / `previewJson` は redacted 表示で、実行用 raw payload は CLI list には出さない。
+- read tools は既定で audit しない。dry-run は既定で audit、mutation/dangerous は常に audit。
+
+Out-of-band confirmation は top-level `operation` command で行う。
+これは MCP tool として公開しない。
+
+```bash
+harness operation confirm <confirmationId> [--preview] [--yes] [--by <actor>]
+harness operation reject <confirmationId> [--by <actor>]
+```
+
+- `confirm --preview` は実行せず、対象 confirmation の redacted preview を表示する。
+- `confirm <id>` は redacted preview を表示して終了する。実行には `--yes` が必要。
+- `confirm --yes` は pending/未期限切れを検証し、permission を再評価してから `OperationRunner` 経由で実行し、request を consumed にする。
+- `reject` は pending request を rejected にし、出力する confirmation row の `inputJson` / `previewJson` は redacted する。
+- rejected / expired / consumed request は再実行できない。
+
 ## `harness dashboard export`
 
 DB read model から read-only な static HTML ダッシュボードを生成する（Phase 6 で

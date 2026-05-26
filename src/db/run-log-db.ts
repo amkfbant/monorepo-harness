@@ -18,9 +18,10 @@ import { assertActiveLease } from "../workspace/db-domain-lock.js";
  * source of truth; the files are its compatibility export.
  *
  * Artifact bodies (`codex-*.log`, `final-diff.patch`, `summary.md`, …)
- * are NOT handled here — they stay file-backed storage written directly
- * into `runDir`, exactly as before. Only run state + events move to the
- * DB in Phase 7.
+ * are first written into `runDir` during execution, then ingestion stores
+ * them in the configured canonical body store (`artifact_blobs` or an
+ * external blob store). This module owns run state + events; artifact body
+ * ingestion is handled by the runtime artifact pipeline.
  *
  * `meta_json` stores the full `meta.json` document losslessly, so the
  * export round-trips even fields the flattened `runs` columns cannot hold
@@ -74,6 +75,16 @@ function runColumns(meta: RunMeta): Record<string, unknown> {
     prompt_template_name: meta.promptTemplate?.name ?? null,
     prompt_template_version: meta.promptTemplate?.version ?? null,
     knowledge_context_path: meta.knowledgeContext?.contextFile ?? null,
+    project_profile_revision_id:
+      meta.assetAttribution?.projectProfileRevisionId ??
+      meta.project?.profileRevisionId ??
+      null,
+    effective_policy_snapshot_id:
+      meta.assetAttribution?.effectivePolicySnapshotId ?? null,
+    knowledge_revision_ids_json:
+      meta.assetAttribution?.knowledgeRevisionIds !== undefined
+        ? JSON.stringify(meta.assetAttribution.knowledgeRevisionIds)
+        : null,
     meta_json: JSON.stringify(meta, null, 2),
   };
 }
@@ -92,16 +103,19 @@ function insertRunRow(
        root_run_id, rerun_attempt, changed_files_count,
        ignored_untracked_count, secret_suspect_count, pr_url, pr_number,
        prompt_template_name, prompt_template_version, knowledge_context_path,
-       meta_json, imported_from, updated_at, source_mode, db_revision,
-       export_status, lease_lock_id, lease_token, lease_domain_key)
+       project_profile_revision_id, effective_policy_snapshot_id,
+       knowledge_revision_ids_json, meta_json, imported_from, updated_at,
+       source_mode, db_revision, export_status, lease_lock_id, lease_token,
+       lease_domain_key)
      VALUES (@run_id, @repo_id, @project_id, @repo_path, @domain, @workflow,
        @base_branch, @base_sha, @run_branch, @status, @safety_status,
        @reviewer, @reviewed_at, @started_at, @finished_at, @parent_run_id,
        @root_run_id, @rerun_attempt, @changed_files_count,
        @ignored_untracked_count, @secret_suspect_count, @pr_url, @pr_number,
        @prompt_template_name, @prompt_template_version,
-       @knowledge_context_path, @meta_json, 'runtime', @updated_at,
-       'db-first', 1, 'dirty',
+       @knowledge_context_path, @project_profile_revision_id,
+       @effective_policy_snapshot_id, @knowledge_revision_ids_json,
+       @meta_json, 'runtime', @updated_at, 'db-first', 1, 'dirty',
        @lease_lock_id, @lease_token, @lease_domain_key)`,
   ).run({
     ...cols,
@@ -134,6 +148,9 @@ function updateRunRow(
        pr_number = @pr_number, prompt_template_name = @prompt_template_name,
        prompt_template_version = @prompt_template_version,
        knowledge_context_path = @knowledge_context_path,
+       project_profile_revision_id = @project_profile_revision_id,
+       effective_policy_snapshot_id = @effective_policy_snapshot_id,
+       knowledge_revision_ids_json = @knowledge_revision_ids_json,
        meta_json = @meta_json, updated_at = @updated_at
      WHERE run_id = @run_id`,
   ).run({ ...cols, run_id: runId, updated_at: new Date().toISOString() });
@@ -183,7 +200,7 @@ function writeCommandResults(
 
 /**
  * Create a DB-first run log. Inserts the `runs` row (`source_mode =
- * 'db-first'`), creates the run directory for artifact bodies, and
+ * 'db-first'`), creates the run directory used by runtime artifacts, and
  * exports the initial `meta.json`. Every later mutation writes the DB and
  * re-exports the affected files.
  */

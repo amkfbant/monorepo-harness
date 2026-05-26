@@ -6,6 +6,7 @@ import {
   loadDashboardSnapshot,
   DashboardSnapshotError,
 } from "../../../src/dashboard/snapshot.js";
+import { SCHEMA_VERSION } from "../../../src/db/schema.js";
 
 const PROFILE = [
   "version: 1",
@@ -68,7 +69,7 @@ describe("loadDashboardSnapshot", () => {
     expect(snap.projects[0]?.runCount).toBe(2);
     expect(snap.projects[0]?.domainCount).toBe(1);
     expect(snap.consistencyStatus).toBe("ok");
-    expect(snap.dbSchemaVersion).toBe(11);
+    expect(snap.dbSchemaVersion).toBe(SCHEMA_VERSION);
   });
 
   it("throws when the DB is absent and auto-import is disabled", () => {

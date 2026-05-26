@@ -7,6 +7,7 @@ import {
   readFileSync,
   existsSync,
   cpSync,
+  unlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +15,9 @@ import { parse as parseYaml } from "yaml";
 import { runDomainCoding } from "../../src/core/workflow-runner.js";
 import { createFakeCodexRunner } from "../../src/codex/fake-codex-runner.js";
 import { prepareProjectRun } from "../../src/project/run-project.js";
+import { openDb } from "../../src/db/connection.js";
+import { runMigrations } from "../../src/db/migrations.js";
+import { recordProjectProfileRevision } from "../../src/db/repositories/project-profile-revisions.js";
 
 function setupRepo(): string {
   const repo = mkdtempSync(join(tmpdir(), "harness-pp-repo-"));
@@ -61,6 +65,24 @@ function setupHarness(repoPath: string): string {
     ].join("\n"),
   );
   return root;
+}
+
+function seedDbProjectProfile(harness: string, yaml: string): number {
+  const db = openDb(join(harness, ".harness", "harness.sqlite"));
+  try {
+    runMigrations(db);
+    const r = recordProjectProfileRevision(db, {
+      projectId: "demo",
+      bodyYaml: yaml,
+      parsed: parseYaml(yaml),
+      actor: "test",
+      reason: "phase17 db-first profile fixture",
+      now: new Date("2026-05-25T00:00:00Z"),
+    });
+    return r.revision.revisionId;
+  } finally {
+    db.close();
+  }
 }
 
 describe("run --project (fake codex)", () => {
@@ -156,5 +178,37 @@ describe("run --project (fake codex)", () => {
       domain: "apps/user",
     });
     expect(prepared.baseBranch).toBe("release");
+  });
+
+  it("Phase 17-1: prefers DB current profile revision over compatibility YAML", async () => {
+    const yaml = [
+      "version: 1",
+      "project_id: demo",
+      "repo:",
+      "  id: t",
+      `  path: ${repoPath}`,
+      "  base_branch: db-main",
+      "  package_manager: npm",
+      "policy:",
+      "  template: strict-monorepo-v1",
+      "domains:",
+      "  - id: apps/user",
+      "    root: apps/user",
+      "    kind: app",
+      "",
+    ].join("\n");
+    const revisionId = seedDbProjectProfile(harness, yaml);
+    unlinkSync(join(harness, "projects", "demo.yaml"));
+
+    const prepared = await prepareProjectRun({
+      harnessRoot: harness,
+      projectId: "demo",
+      domain: "apps/user",
+    });
+
+    expect(prepared.baseBranch).toBe("db-main");
+    expect(prepared.project.profileSource).toBe("db");
+    expect(prepared.project.profileRevisionId).toBe(revisionId);
+    expect(prepared.resolvedPolicy.domain).toBe("apps/user");
   });
 });

@@ -15,6 +15,7 @@ import {
   HARD_MAX_BYTES,
 } from "../../src/db/artifact-blobs.js";
 import { backupDb, restoreDb } from "../../src/db/maintenance.js";
+import { SCHEMA_VERSION } from "../../src/db/schema.js";
 
 /**
  * Phase 8-9 — runtime DB complete fixture matrix.
@@ -231,7 +232,7 @@ describe("Phase 8-9 — multi-connection access", () => {
     const b = openDb(dbPath);
     expect(runMigrations(a).applied).toEqual([]);
     expect(runMigrations(b).applied).toEqual([]);
-    expect(runMigrations(a).version).toBe(11);
+    expect(runMigrations(a).version).toBe(SCHEMA_VERSION);
     a.close();
     b.close();
   });
@@ -325,7 +326,7 @@ describe("Phase 8-9 — DB-only recovery (backup survives a file wipe)", () => {
     rmSync(join(root, ".harness"), { recursive: true, force: true });
 
     const r = await restoreDb({ dbPath, fromPath: backup });
-    expect(r.schemaVersion).toBe(11);
+    expect(r.schemaVersion).toBe(SCHEMA_VERSION);
     const restored = openDbReadonly(dbPath);
     expect(readArtifactBlob(restored, stored.sha256)?.equals(body)).toBe(true);
     restored.close();

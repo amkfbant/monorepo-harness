@@ -133,6 +133,13 @@ export class ReviewProposalRepository {
     return row === undefined ? null : toReviewProposalRow(row);
   }
 
+  getById(proposalId: number): ReviewProposalRow | null {
+    const row = this.db
+      .prepare(`SELECT * FROM review_proposals WHERE proposal_id = ?`)
+      .get(proposalId);
+    return row === undefined ? null : toReviewProposalRow(row);
+  }
+
   /**
    * Return the most recent **processed** proposal for `runId` so callers
    * can detect a crash-survived idempotent state. Used by `review

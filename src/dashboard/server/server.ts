@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { dirname } from "node:path";
+import type Database from "better-sqlite3";
 import { openManagedDb } from "../../db/managed-connection.js";
 import { SCHEMA_VERSION } from "../../db/schema.js";
 import {
@@ -17,6 +18,14 @@ import { ReviewProposalRepository } from "../../db/repositories/review-proposals
 import { ReviewConsensusRepository } from "../../db/repositories/review-consensus.js";
 import { ReviewerRepository } from "../../db/repositories/reviewers.js";
 import { readArtifactBlob } from "../../db/artifact-blobs.js";
+import {
+  findBlobStore,
+  findExternalBlob,
+  listBlobStores,
+  listExternalBlobs,
+} from "../../db/blob-stores.js";
+import { listArchives } from "../../db/archive-catalog.js";
+import { LocalBlobStore } from "../../storage/local-blob-store.js";
 import { listActiveDomainLocks } from "../../workspace/db-domain-lock.js";
 import { checkConsistency } from "../../db/consistency.js";
 import { dbStats } from "../../db/maintenance.js";
@@ -46,6 +55,7 @@ import {
 import {
   runOperation,
   OperationInFlightError,
+  OperationReplayedFailureError,
 } from "../../operations/operation-runner.js";
 
 /**
@@ -198,6 +208,15 @@ export function mutationRoutes(): Route[] {
           return;
         }
         const body = await readJsonBody(req);
+        if (body === "oversize") {
+          writeError(
+            res,
+            413,
+            "payload_too_large",
+            `request body exceeds ${MAX_JSON_BODY_BYTES} bytes`,
+          );
+          return;
+        }
         if (body === null) {
           writeError(res, 400, "bad_request", "invalid JSON body");
           return;
@@ -291,6 +310,18 @@ export function mutationRoutes(): Route[] {
             writeError(res, 409, "conflict", e.message);
             return;
           }
+          if (e instanceof OperationReplayedFailureError) {
+            // Phase 13 post-close fix (external review P1-3): the prior
+            // attempt with this idempotency key failed. Surface 409 with
+            // the prior error so the client mints a new key.
+            writeError(res, 409, "idempotency_replayed_failure", e.message, {
+              operationId: e.operationId,
+              priorStatus: e.priorStatus,
+              priorErrorCode: e.priorErrorCode,
+              priorErrorMessage: e.priorErrorMessage,
+            });
+            return;
+          }
           writeError(res, 500, "internal_error", (e as Error).message);
         } finally {
           handle.close();
@@ -307,6 +338,15 @@ export function mutationRoutes(): Route[] {
           return;
         }
         const body = await readJsonBody(req);
+        if (body === "oversize") {
+          writeError(
+            res,
+            413,
+            "payload_too_large",
+            `request body exceeds ${MAX_JSON_BODY_BYTES} bytes`,
+          );
+          return;
+        }
         if (body === null) {
           writeError(res, 400, "bad_request", "invalid JSON body");
           return;
@@ -379,6 +419,18 @@ export function mutationRoutes(): Route[] {
             writeError(res, 409, "conflict", e.message);
             return;
           }
+          if (e instanceof OperationReplayedFailureError) {
+            // Phase 13 post-close fix (external review P1-3): the prior
+            // attempt with this idempotency key failed. Surface 409 with
+            // the prior error so the client mints a new key.
+            writeError(res, 409, "idempotency_replayed_failure", e.message, {
+              operationId: e.operationId,
+              priorStatus: e.priorStatus,
+              priorErrorCode: e.priorErrorCode,
+              priorErrorMessage: e.priorErrorMessage,
+            });
+            return;
+          }
           writeError(res, 500, "internal_error", (e as Error).message);
         } finally {
           handle.close();
@@ -395,6 +447,15 @@ export function mutationRoutes(): Route[] {
           return;
         }
         const body = await readJsonBody(req);
+        if (body === "oversize") {
+          writeError(
+            res,
+            413,
+            "payload_too_large",
+            `request body exceeds ${MAX_JSON_BODY_BYTES} bytes`,
+          );
+          return;
+        }
         if (body === null) {
           writeError(res, 400, "bad_request", "invalid JSON body");
           return;
@@ -453,6 +514,18 @@ export function mutationRoutes(): Route[] {
             writeError(res, 409, "conflict", e.message);
             return;
           }
+          if (e instanceof OperationReplayedFailureError) {
+            // Phase 13 post-close fix (external review P1-3): the prior
+            // attempt with this idempotency key failed. Surface 409 with
+            // the prior error so the client mints a new key.
+            writeError(res, 409, "idempotency_replayed_failure", e.message, {
+              operationId: e.operationId,
+              priorStatus: e.priorStatus,
+              priorErrorCode: e.priorErrorCode,
+              priorErrorMessage: e.priorErrorMessage,
+            });
+            return;
+          }
           writeError(res, 500, "internal_error", (e as Error).message);
         } finally {
           handle.close();
@@ -465,6 +538,15 @@ export function mutationRoutes(): Route[] {
       handler: async ({ req, res, ctx, params }) => {
         const itemId = params.itemId!;
         const body = await readJsonBody(req);
+        if (body === "oversize") {
+          writeError(
+            res,
+            413,
+            "payload_too_large",
+            `request body exceeds ${MAX_JSON_BODY_BYTES} bytes`,
+          );
+          return;
+        }
         if (body === null) {
           writeError(res, 400, "bad_request", "invalid JSON body");
           return;
@@ -509,6 +591,18 @@ export function mutationRoutes(): Route[] {
             writeError(res, 409, "conflict", e.message);
             return;
           }
+          if (e instanceof OperationReplayedFailureError) {
+            // Phase 13 post-close fix (external review P1-3): the prior
+            // attempt with this idempotency key failed. Surface 409 with
+            // the prior error so the client mints a new key.
+            writeError(res, 409, "idempotency_replayed_failure", e.message, {
+              operationId: e.operationId,
+              priorStatus: e.priorStatus,
+              priorErrorCode: e.priorErrorCode,
+              priorErrorMessage: e.priorErrorMessage,
+            });
+            return;
+          }
           writeError(res, 500, "internal_error", (e as Error).message);
         } finally {
           handle.close();
@@ -525,6 +619,15 @@ export function mutationRoutes(): Route[] {
           return;
         }
         const body = await readJsonBody(req);
+        if (body === "oversize") {
+          writeError(
+            res,
+            413,
+            "payload_too_large",
+            `request body exceeds ${MAX_JSON_BODY_BYTES} bytes`,
+          );
+          return;
+        }
         if (body === null) {
           writeError(res, 400, "bad_request", "invalid JSON body");
           return;
@@ -576,6 +679,18 @@ export function mutationRoutes(): Route[] {
             writeError(res, 409, "conflict", e.message);
             return;
           }
+          if (e instanceof OperationReplayedFailureError) {
+            // Phase 13 post-close fix (external review P1-3): the prior
+            // attempt with this idempotency key failed. Surface 409 with
+            // the prior error so the client mints a new key.
+            writeError(res, 409, "idempotency_replayed_failure", e.message, {
+              operationId: e.operationId,
+              priorStatus: e.priorStatus,
+              priorErrorCode: e.priorErrorCode,
+              priorErrorMessage: e.priorErrorMessage,
+            });
+            return;
+          }
           writeError(res, 500, "internal_error", (e as Error).message);
         } finally {
           handle.close();
@@ -585,13 +700,36 @@ export function mutationRoutes(): Route[] {
   ];
 }
 
+/**
+ * Phase 12 post-close fix (external review P2-3): cap JSON body size so
+ * a runaway POST cannot exhaust server memory. 1 MiB is generous for the
+ * mutation API (its bodies are short JSON). Returns `"oversize"` so the
+ * route handler can map to 413; returns `null` for parse / shape errors.
+ */
+const MAX_JSON_BODY_BYTES = 1 * 1024 * 1024;
+
 async function readJsonBody(
   req: IncomingMessage,
-): Promise<Record<string, unknown> | null> {
+): Promise<Record<string, unknown> | null | "oversize"> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
+    let total = 0;
+    let oversize = false;
+    req.on("data", (c: Buffer) => {
+      total += c.length;
+      if (total > MAX_JSON_BODY_BYTES) {
+        // Stop accumulating but keep draining the stream so the client
+        // can finish sending and receive a clean 413 instead of EPIPE.
+        oversize = true;
+        return;
+      }
+      if (!oversize) chunks.push(c);
+    });
     req.on("end", () => {
+      if (oversize) {
+        resolve("oversize");
+        return;
+      }
       if (chunks.length === 0) {
         resolve({});
         return;
@@ -691,6 +829,83 @@ export function defaultRoutes(): Route[] {
     },
     {
       method: "GET",
+      pattern: "/api/assets/projects",
+      handler: ({ ctx, res }) => {
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const rows = handle.db
+            .prepare(
+              `SELECT p.project_id, p.repo_id,
+                      p.current_profile_revision_id AS currentRevisionId,
+                      r.version, r.created_at AS revisionCreatedAt
+                 FROM projects p
+                 LEFT JOIN project_profile_revisions r
+                   ON r.revision_id = p.current_profile_revision_id
+                ORDER BY p.project_id`,
+            )
+            .all();
+          writeJson(res, 200, { projects: rows });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/assets/policies",
+      handler: ({ ctx, res }) => {
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const templates = handle.db
+            .prepare(
+              `SELECT scope_type, scope_id, MAX(version) AS currentVersion,
+                      COUNT(*) AS revisionCount
+                 FROM policy_templates
+                GROUP BY scope_type, scope_id
+                ORDER BY scope_type, scope_id`,
+            )
+            .all();
+          const snapshots = handle.db
+            .prepare(
+              `SELECT snapshot_id, run_id, project_id, repo_id, domain,
+                      created_at
+                 FROM effective_policy_snapshots
+                ORDER BY created_at DESC, snapshot_id DESC
+                LIMIT 100`,
+            )
+            .all();
+          writeJson(res, 200, { templates, snapshots });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/assets/knowledge",
+      handler: ({ ctx, res }) => {
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const rows = handle.db
+            .prepare(
+              `SELECT e.entry_id, e.project_id, e.repo_id, e.domain, e.kind,
+                      e.path, e.current_revision_id AS currentRevisionId,
+                      r.version, r.title, r.created_at AS revisionCreatedAt
+                 FROM knowledge_entries e
+                 LEFT JOIN knowledge_entry_revisions r
+                   ON r.revision_id = e.current_revision_id
+                ORDER BY e.kind, e.path, e.entry_id
+                LIMIT 500`,
+            )
+            .all();
+          writeJson(res, 200, { entries: rows });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
       pattern: "/api/assets/projects/:projectId",
       handler: ({ ctx, res, params }) => {
         const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
@@ -782,6 +997,76 @@ export function defaultRoutes(): Route[] {
           }
           const history = listKnowledgeRevisions(handle.db, params.entryId!);
           writeJson(res, 200, { current: cur, history });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/storage/blobs",
+      handler: ({ ctx, res }) => {
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const dbBlobs = handle.db
+            .prepare(
+              `SELECT COUNT(*) AS count,
+                      COALESCE(SUM(bytes), 0) AS bytes,
+                      COALESCE(SUM(stored_bytes), 0) AS storedBytes
+                 FROM artifact_blobs`,
+            )
+            .get();
+          writeJson(res, 200, {
+            dbBlobs,
+            stores: listBlobStores(handle.db),
+            externalBlobs: listExternalBlobs(handle.db),
+          });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/archives",
+      handler: ({ ctx, res }) => {
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          writeJson(res, 200, { archives: listArchives(handle.db) });
+        } finally {
+          handle.close();
+        }
+      },
+    },
+    {
+      method: "GET",
+      pattern: "/api/doctor/latest",
+      handler: ({ ctx, res }) => {
+        const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
+        try {
+          const run = handle.db
+            .prepare(
+              `SELECT doctor_run_id, started_at, completed_at, status,
+                      summary_json
+                 FROM doctor_runs
+                ORDER BY started_at DESC
+                LIMIT 1`,
+            )
+            .get() as { doctor_run_id: string } | undefined;
+          if (run === undefined) {
+            writeJson(res, 200, { run: null, findings: [] });
+            return;
+          }
+          const findings = handle.db
+            .prepare(
+              `SELECT finding_id, check_id, severity, status, message,
+                      repairable, details_json
+                 FROM doctor_findings
+                WHERE doctor_run_id = ?
+                ORDER BY finding_id`,
+            )
+            .all(run.doctor_run_id);
+          writeJson(res, 200, { run, findings });
         } finally {
           handle.close();
         }
@@ -966,19 +1251,24 @@ export function defaultRoutes(): Route[] {
         }
       },
     },
+    // Phase 12 post-close fix (external review P1-1): `artifact_id` is
+    // a TEXT id of the form `<runId>:<relativePath>` (see
+    // `src/db/run-artifacts.ts`). The previous handler validated it as a
+    // positive integer and the SELECT read a non-existent `byte_size`
+    // column (the real column is `bytes`). Both endpoints were broken.
+    // The path segment is base64url-encoded so a `:` or `/` in the id
+    // does not collide with the URL grammar.
     {
       method: "GET",
-      pattern: "/api/artifacts/:artifactId",
+      pattern: "/api/artifacts/:artifactIdB64",
       handler: ({ ctx, res, params }) => {
-        // Phase 12-4 — artifactId must be a positive integer (path
-        // traversal defense via type narrowing).
-        const id = Number(params.artifactId);
-        if (!Number.isInteger(id) || id <= 0) {
+        const id = decodeBase64UrlArtifactId(params.artifactIdB64!);
+        if (id === null) {
           writeError(
             res,
             400,
             "bad_request",
-            "artifactId must be a positive integer",
+            "artifactId must be base64url-encoded (e.g. base64url('run-XYZ:summary.md'))",
           );
           return;
         }
@@ -987,7 +1277,7 @@ export function defaultRoutes(): Route[] {
           const row = handle.db
             .prepare(
               `SELECT artifact_id, run_id, relative_path, content_type,
-                      byte_size, sha256, blob_sha256, storage,
+                      bytes, sha256, blob_sha256, storage,
                       secret_suspect, original_bytes, original_sha256,
                       body_status
                  FROM artifacts
@@ -1006,15 +1296,15 @@ export function defaultRoutes(): Route[] {
     },
     {
       method: "GET",
-      pattern: "/api/artifacts/:artifactId/body",
-      handler: ({ ctx, res, params }) => {
-        const id = Number(params.artifactId);
-        if (!Number.isInteger(id) || id <= 0) {
+      pattern: "/api/artifacts/:artifactIdB64/body",
+      handler: async ({ ctx, res, params }) => {
+        const id = decodeBase64UrlArtifactId(params.artifactIdB64!);
+        if (id === null) {
           writeError(
             res,
             400,
             "bad_request",
-            "artifactId must be a positive integer",
+            "artifactId must be base64url-encoded (e.g. base64url('run-XYZ:summary.md'))",
           );
           return;
         }
@@ -1031,17 +1321,18 @@ export function defaultRoutes(): Route[] {
         try {
           const row = handle.db
             .prepare(
-              `SELECT blob_sha256, byte_size, content_type, secret_suspect,
-                      relative_path
+              `SELECT blob_sha256, bytes, content_type, secret_suspect,
+                      relative_path, storage
                  FROM artifacts WHERE artifact_id = ?`,
             )
             .get(id) as
             | {
                 blob_sha256: string | null;
-                byte_size: number | null;
+                bytes: number | null;
                 content_type: string | null;
                 secret_suspect: number | null;
                 relative_path: string;
+                storage: string;
               }
             | undefined;
           if (row === undefined || row.blob_sha256 === null) {
@@ -1056,8 +1347,22 @@ export function defaultRoutes(): Route[] {
           const max =
             ctx.config.maxInlineArtifactBytes ?? 1024 * 1024;
           const tooLarge =
-            row.byte_size !== null && row.byte_size > max;
-          const buf = readArtifactBlob(handle.db, row.blob_sha256);
+            row.bytes !== null && row.bytes > max;
+          let buf: Buffer | null;
+          try {
+            buf = await readArtifactBody(handle.db, {
+              blobSha256: row.blob_sha256,
+              storage: row.storage,
+            });
+          } catch (e) {
+            writeError(
+              res,
+              409,
+              "blob_integrity_error",
+              (e as Error).message,
+            );
+            return;
+          }
           if (buf === null) {
             writeError(
               res,
@@ -1279,6 +1584,51 @@ function isLocalHost(host: string): boolean {
     host === "localhost" ||
     host === "::ffff:127.0.0.1"
   );
+}
+
+/**
+ * Phase 12 post-close fix (external review P1-1): decode the base64url
+ * URL segment back to the canonical `<runId>:<relativePath>` artifact id.
+ * Returns null if the segment is empty / not a string. Loose-form
+ * `+`/`/`/`=` are also tolerated so curl users who don't strictly use
+ * base64url still work.
+ */
+function decodeBase64UrlArtifactId(seg: string): string | null {
+  if (typeof seg !== "string" || seg.length === 0) return null;
+  // accept base64 too — replace url-safe chars and add padding.
+  const padded = seg
+    .replace(/-/g, "+")
+    .replace(/_/g, "/")
+    .padEnd(Math.ceil(seg.length / 4) * 4, "=");
+  try {
+    const decoded = Buffer.from(padded, "base64").toString("utf8");
+    // canonical artifact ids contain ':'; reject obvious junk so a
+    // mistyped numeric id does not silently match nothing.
+    if (decoded.length === 0) return null;
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+async function readArtifactBody(
+  db: Database.Database,
+  input: { blobSha256: string; storage: string },
+): Promise<Buffer | null> {
+  if (input.storage === "db") {
+    return readArtifactBlob(db, input.blobSha256);
+  }
+  if (input.storage !== "external") return null;
+  const external = findExternalBlob(db, input.blobSha256);
+  if (external === null || external.status !== "available") return null;
+  const storeRow = findBlobStore(db, external.storeId);
+  if (storeRow === null || storeRow.storeType !== "local") return null;
+  const config = JSON.parse(storeRow.configJson) as { root?: unknown };
+  if (typeof config.root !== "string") return null;
+  return new LocalBlobStore({ root: config.root }).get({
+    sha256: external.sha256,
+    uri: external.uri,
+  });
 }
 
 /**

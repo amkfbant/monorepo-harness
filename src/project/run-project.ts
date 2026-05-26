@@ -110,6 +110,10 @@ export async function prepareProjectRun(opts: {
     projectId: compiled.projectId,
     profilePath,
     profileVersion: profile.version,
+    profileSource: resolved.profileSource,
+    ...(resolved.profileRevisionId !== undefined
+      ? { profileRevisionId: resolved.profileRevisionId }
+      : {}),
     ...(compiled.provenance.policyTemplate !== null
       ? { policyTemplateId: compiled.provenance.policyTemplate.id }
       : {}),

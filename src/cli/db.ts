@@ -1,6 +1,9 @@
 import process from "node:process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, statSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
 import type { Command } from "commander";
+import type Database from "better-sqlite3";
 import { harnessPaths } from "../config/paths.js";
 import { openDb, openDbReadonly, DbError } from "../db/connection.js";
 import { runMigrations, readSchemaVersion } from "../db/migrations.js";
@@ -31,6 +34,22 @@ import {
   formatVacuum,
   formatStats,
 } from "../db/maintenance.js";
+import { runDoctor, type DoctorFinding } from "../db/doctor.js";
+import { runRepair } from "../db/repair.js";
+import { runUpgradeCheck } from "../db/upgrade-check.js";
+import { listArchives, recordArchive } from "../db/archive-catalog.js";
+import {
+  findBlobStore,
+  listBlobStores,
+  registerBlobStore,
+} from "../db/blob-stores.js";
+import {
+  migrateBlobsToExternal,
+  verifyExternalBlobs,
+  gcExternalBlobs,
+} from "../storage/blob-migration.js";
+import { LocalBlobStore } from "../storage/local-blob-store.js";
+import { storeArtifactBlob } from "../db/artifact-blobs.js";
 import {
   withMaintenanceLock,
   withMaintenanceLockAsync,
@@ -551,4 +570,572 @@ export function registerDbCommands(program: Command): void {
         dbError(e);
       }
     });
+
+  const archiveCmd = dbCmd
+    .command("archive")
+    .description("create or list attached archive DB snapshots")
+    .option("--before <date>", "copy live DB to an archive snapshot for rows before date")
+    .option("--out <path>", "archive DB path (default: .harness/archives/<id>.sqlite)")
+    .option("--json", "print JSON", false)
+    .action(async (raw: Record<string, unknown>) => {
+      if (raw.before === undefined) {
+        process.stderr.write(
+          "harness error: 'db archive' requires --before, or use 'db archive list'\n",
+        );
+        process.exit(1);
+      }
+      await withLockAsync("shared", raw, async () => {
+        const root = getHarnessRoot();
+        const paths = harnessPaths(root);
+        const archiveId = `archive-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+        const outPath =
+          raw.out !== undefined
+            ? String(raw.out)
+            : join(root, ".harness", "archives", `${archiveId}.sqlite`);
+        try {
+          const backup = await backupDb({ dbPath: paths.dbPath, outPath });
+          const sha = fileSha256(outPath);
+          const db = openDb(paths.dbPath);
+          try {
+            runMigrations(db);
+            const row = recordArchive(db, {
+              archiveId,
+              path: outPath,
+              rangeEnd: String(raw.before),
+              schemaVersion: backup.schemaVersion,
+              sha256: sha,
+              metadata: { mode: "copy-only", bytes: backup.bytes },
+            });
+            process.stdout.write(
+              raw.json === true
+                ? `${JSON.stringify(row, null, 2)}\n`
+                : `db archive: ${row.archiveId} path=${row.path} rangeEnd=${row.rangeEnd}\n`,
+            );
+          } finally {
+            db.close();
+          }
+        } catch (e) {
+          dbError(e);
+        }
+      });
+    });
+
+  archiveCmd
+    .command("list")
+    .description("list archive catalog rows")
+    .option("--json", "print JSON", false)
+    .action((raw: Record<string, unknown>) => {
+      withLock("shared", raw, () => {
+        const { dbPath } = harnessPaths(getHarnessRoot());
+        const db = openDbReadonly(dbPath);
+        try {
+          const rows = listArchives(db);
+          process.stdout.write(
+            raw.json === true
+              ? `${JSON.stringify(rows, null, 2)}\n`
+              : rows
+                  .map((a) => `${a.archiveId}\t${a.status}\t${a.path}\n`)
+                  .join(""),
+          );
+        } finally {
+          db.close();
+        }
+      });
+    });
+
+  dbCmd
+    .command("attach-archive")
+    .description("attach an existing archive DB to the archive catalog")
+    .argument("<path>", "archive DB path")
+    .option("--id <archive-id>", "archive id")
+    .option("--json", "print JSON", false)
+    .action((pathArg: string, raw: Record<string, unknown>) => {
+      withLock("exclusive", raw, () => {
+        const paths = harnessPaths(getHarnessRoot());
+        const archivePath = String(pathArg);
+        if (!existsSync(archivePath)) {
+          process.stderr.write(`harness error: archive DB not found: ${archivePath}\n`);
+          process.exit(1);
+        }
+        const db = openDb(paths.dbPath);
+        const archiveDb = openDbReadonly(archivePath);
+        try {
+          runMigrations(db);
+          const schemaVersion = readSchemaVersion(archiveDb);
+          const row = recordArchive(db, {
+            archiveId:
+              raw.id !== undefined
+                ? String(raw.id)
+                : `archive-${createHash("sha256").update(archivePath).digest("hex").slice(0, 12)}`,
+            path: archivePath,
+            schemaVersion,
+            sha256: fileSha256(archivePath),
+            metadata: { mode: "attached" },
+          });
+          process.stdout.write(
+            raw.json === true
+              ? `${JSON.stringify(row, null, 2)}\n`
+              : `db attach-archive: ${row.archiveId} path=${row.path}\n`,
+          );
+        } finally {
+          archiveDb.close();
+          db.close();
+        }
+      });
+    });
+
+  dbCmd
+    .command("doctor")
+    .description("run DB doctor checks and persist findings")
+    .option("--deep", "verify local external blob bytes before reporting", false)
+    .option("--json", "print JSON", false)
+    .action(async (raw: Record<string, unknown>) => {
+      await withLockAsync(raw.deep === true ? "exclusive" : "shared", raw, async () => {
+        const { dbPath } = harnessPaths(getHarnessRoot());
+        const db = openDb(dbPath);
+        try {
+          runMigrations(db);
+          const deepVerification =
+            raw.deep === true
+              ? await verifyLocalStoresDeep(db)
+              : [];
+          const result = runDoctor(db);
+          process.stdout.write(
+            raw.json === true
+              ? `${JSON.stringify({ ...result, deepVerification }, null, 2)}\n`
+              : formatDoctor(result),
+          );
+          if (result.status === "error" || result.status === "critical") {
+            process.exitCode = 1;
+          }
+        } finally {
+          db.close();
+        }
+      });
+    });
+
+  dbCmd
+    .command("repair")
+    .description("dry-run or apply a safe repair for a doctor finding")
+    .option("--dry-run", "plan repairs without mutation", false)
+    .option("--apply", "apply a repair", false)
+    .option("--finding-id <id>", "doctor_findings.finding_id to repair")
+    .option("--json", "print JSON", false)
+    .action((raw: Record<string, unknown>) => {
+      if (raw.apply === true && raw.dryRun === true) {
+        process.stderr.write("harness error: --apply and --dry-run are mutually exclusive\n");
+        process.exit(1);
+      }
+      if (raw.apply === true && raw.findingId === undefined) {
+        process.stderr.write("harness error: --apply requires --finding-id\n");
+        process.exit(1);
+      }
+      withLock(raw.apply === true ? "exclusive" : "shared", raw, () => {
+        const { dbPath } = harnessPaths(getHarnessRoot());
+        const db = openDb(dbPath);
+        try {
+          runMigrations(db);
+          if (raw.findingId !== undefined) {
+            const findingId = Number(raw.findingId);
+            if (!Number.isInteger(findingId) || findingId <= 0) {
+              process.stderr.write("harness error: --finding-id must be a positive integer\n");
+              process.exit(1);
+            }
+            const finding = loadDoctorFinding(db, findingId);
+            if (finding === null) {
+              process.stderr.write(`harness error: finding ${findingId} not found\n`);
+              process.exit(1);
+            }
+            const result = runRepair(db, finding, {
+              dryRun: raw.apply !== true,
+              findingId,
+            });
+            process.stdout.write(
+              raw.json === true
+                ? `${JSON.stringify(result, null, 2)}\n`
+                : `${result.message}\n`,
+            );
+            if (result.status === "failed") process.exitCode = 1;
+            return;
+          }
+          const doctor = runDoctor(db);
+          const repairable = doctor.findings.filter(
+            (f) => f.status === "flagged" && f.repairable,
+          );
+          const results = repairable.map((finding) =>
+            runRepair(db, finding, { dryRun: true }),
+          );
+          process.stdout.write(
+            raw.json === true
+              ? `${JSON.stringify({ doctorRunId: doctor.doctorRunId, results }, null, 2)}\n`
+              : formatRepairPlan(results),
+          );
+        } finally {
+          db.close();
+        }
+      });
+    });
+
+  dbCmd
+    .command("upgrade-check")
+    .description("report readiness for a target phase")
+    .requiredOption("--target <phase>", "target label, e.g. phase18")
+    .option("--json", "print JSON", false)
+    .action((raw: Record<string, unknown>) => {
+      withLock("shared", raw, () => {
+        const { dbPath } = harnessPaths(getHarnessRoot());
+        const db = openDb(dbPath);
+        try {
+          runMigrations(db);
+          const report = runUpgradeCheck(db, String(raw.target));
+          process.stdout.write(
+            raw.json === true
+              ? `${JSON.stringify(report, null, 2)}\n`
+              : formatUpgradeCheck(report),
+          );
+          if (report.overall === "blocked") process.exitCode = 1;
+        } finally {
+          db.close();
+        }
+      });
+    });
+
+  const blobStoreCmd = dbCmd
+    .command("blob-store")
+    .description("manage configured blob stores");
+  const blobStoreAdd = blobStoreCmd.command("add").description("add a blob store");
+  blobStoreAdd
+    .command("local")
+    .description("add/update a local filesystem blob store")
+    .requiredOption("--id <store-id>", "blob store id")
+    .requiredOption("--path <path>", "local object root")
+    .option("--json", "print JSON", false)
+    .action((raw: Record<string, unknown>) => {
+      withLock("exclusive", raw, () => {
+        const { dbPath } = harnessPaths(getHarnessRoot());
+        const db = openDb(dbPath);
+        try {
+          runMigrations(db);
+          const row = registerBlobStore(db, {
+            storeId: String(raw.id),
+            storeType: "local",
+            config: { root: String(raw.path) },
+          });
+          process.stdout.write(
+            raw.json === true
+              ? `${JSON.stringify(row, null, 2)}\n`
+              : `blob-store local: ${row.storeId} root=${String(raw.path)}\n`,
+          );
+        } finally {
+          db.close();
+        }
+      });
+    });
+  blobStoreCmd
+    .command("list")
+    .description("list blob stores")
+    .option("--json", "print JSON", false)
+    .action((raw: Record<string, unknown>) => {
+      withLock("shared", raw, () => {
+        const { dbPath } = harnessPaths(getHarnessRoot());
+        const db = openDbReadonly(dbPath);
+        try {
+          const rows = listBlobStores(db);
+          process.stdout.write(
+            raw.json === true
+              ? `${JSON.stringify(rows, null, 2)}\n`
+              : rows.map((r) => `${r.storeId}\t${r.storeType}\t${r.status}\n`).join(""),
+          );
+        } finally {
+          db.close();
+        }
+      });
+    });
+
+  dbCmd
+    .command("migrate-blobs")
+    .description("migrate artifact blobs between DB and external local store")
+    .requiredOption("--to <target>", "external | db")
+    .option("--store <store-id>", "blob store id")
+    .option("--limit <n>", "max rows for DB→external", "50")
+    .option("--dry-run", "plan without writes", false)
+    .option("--json", "print JSON", false)
+    .action(async (raw: Record<string, unknown>) => {
+      await withLockAsync("exclusive", raw, async () => {
+        const { dbPath } = harnessPaths(getHarnessRoot());
+        const db = openDb(dbPath);
+        try {
+          runMigrations(db);
+          const target = String(raw.to);
+          if (target !== "external" && target !== "db") {
+            process.stderr.write("harness error: --to must be external | db\n");
+            process.exit(1);
+          }
+          const storeId =
+            raw.store !== undefined
+              ? String(raw.store)
+              : defaultLocalStoreId(db);
+          const store = localStoreFromDb(db, storeId);
+          if (target === "external") {
+            const result = await migrateBlobsToExternal(db, store, {
+              storeId,
+              limit: Number(raw.limit),
+              dryRun: raw.dryRun === true,
+            });
+            let flipped = 0;
+            if (raw.dryRun !== true) {
+              flipped = db
+                .prepare(
+                  `UPDATE artifacts
+                      SET storage = 'external',
+                          body_status = 'external_available'
+                    WHERE storage = 'db'
+                      AND blob_sha256 IN (
+                        SELECT sha256 FROM external_artifact_blobs
+                        WHERE store_id = ? AND status = 'available'
+                      )`,
+                )
+                .run(storeId).changes;
+            }
+            const out = { ...result, flippedArtifacts: flipped };
+            process.stdout.write(
+              raw.json === true
+                ? `${JSON.stringify(out, null, 2)}\n`
+                : `migrate-blobs: uploaded=${result.uploadedCount} skipped=${result.skippedCount} failed=${result.failedCount} flipped=${flipped}\n`,
+            );
+          } else {
+            const result = await migrateExternalBlobsToDb(db, store, {
+              storeId,
+              dryRun: raw.dryRun === true,
+            });
+            process.stdout.write(
+              raw.json === true
+                ? `${JSON.stringify(result, null, 2)}\n`
+                : `migrate-blobs: restored=${result.restored} failed=${result.failed}\n`,
+            );
+          }
+        } finally {
+          db.close();
+        }
+      });
+    });
+
+  dbCmd
+    .command("verify-blobs")
+    .description("verify external artifact blobs")
+    .option("--store <store-id>", "blob store id")
+    .option("--deep", "read and hash object bodies", false)
+    .option("--json", "print JSON", false)
+    .action(async (raw: Record<string, unknown>) => {
+      await withLockAsync("shared", raw, async () => {
+        const { dbPath } = harnessPaths(getHarnessRoot());
+        const db = openDb(dbPath);
+        try {
+          runMigrations(db);
+          const storeId =
+            raw.store !== undefined
+              ? String(raw.store)
+              : defaultLocalStoreId(db);
+          const result = await verifyExternalBlobs(
+            db,
+            localStoreFromDb(db, storeId),
+            { storeId, deep: raw.deep === true },
+          );
+          process.stdout.write(
+            raw.json === true
+              ? `${JSON.stringify(result, null, 2)}\n`
+              : `verify-blobs: checked=${result.checkedCount} ok=${result.okCount} missing=${result.missingCount} corrupt=${result.corruptCount}\n`,
+          );
+          if (result.missingCount + result.corruptCount > 0) process.exitCode = 1;
+        } finally {
+          db.close();
+        }
+      });
+    });
+
+  dbCmd
+    .command("gc-blobs")
+    .description("garbage-collect unreferenced external blob rows")
+    .option("--store <store-id>", "blob store id")
+    .option("--dry-run", "plan only", false)
+    .option("--apply", "delete DB rows", false)
+    .option("--delete-objects", "also delete objects from the store", false)
+    .option("--json", "print JSON", false)
+    .action(async (raw: Record<string, unknown>) => {
+      await withLockAsync(raw.apply === true ? "exclusive" : "shared", raw, async () => {
+        const { dbPath } = harnessPaths(getHarnessRoot());
+        const db = openDb(dbPath);
+        try {
+          runMigrations(db);
+          const storeId =
+            raw.store !== undefined
+              ? String(raw.store)
+              : defaultLocalStoreId(db);
+          const result = await gcExternalBlobs(db, localStoreFromDb(db, storeId), {
+            apply: raw.apply === true,
+            deleteObjects: raw.deleteObjects === true,
+            storeId,
+          });
+          process.stdout.write(
+            raw.json === true
+              ? `${JSON.stringify(result, null, 2)}\n`
+              : `gc-blobs: candidates=${result.candidates.length} removed=${result.removed.length} dryRun=${result.dryRun}\n`,
+          );
+        } finally {
+          db.close();
+        }
+      });
+    });
+}
+
+function formatDoctor(result: ReturnType<typeof runDoctor>): string {
+  const lines = [
+    `db doctor: ${result.status} (${result.totals.flagged} flagged)`,
+  ];
+  for (const f of result.findings) {
+    if (f.status === "flagged") {
+      lines.push(`  [${f.severity}] ${f.checkId}: ${f.message}`);
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+function loadDoctorFinding(
+  db: Database.Database,
+  findingId: number,
+): DoctorFinding | null {
+  const row = db
+    .prepare(
+      `SELECT check_id, severity, status, message, repairable, details_json
+         FROM doctor_findings WHERE finding_id = ?`,
+    )
+    .get(findingId) as Record<string, unknown> | undefined;
+  if (row === undefined) return null;
+  return {
+    checkId: row.check_id as string,
+    severity: row.severity as DoctorFinding["severity"],
+    status: row.status as DoctorFinding["status"],
+    message: row.message as string,
+    repairable: row.repairable === 1,
+    details: JSON.parse((row.details_json as string | null) ?? "{}") as Record<string, unknown>,
+  };
+}
+
+function formatRepairPlan(results: Array<ReturnType<typeof runRepair>>): string {
+  if (results.length === 0) return "db repair: no repairable findings\n";
+  return results.map((r) => `${r.message}\n`).join("");
+}
+
+function formatUpgradeCheck(report: ReturnType<typeof runUpgradeCheck>): string {
+  const lines = [`db upgrade-check ${report.target}: ${report.overall}`];
+  for (const c of report.checks) lines.push(`  [${c.status}] ${c.id}: ${c.message}`);
+  lines.push("");
+  return lines.join("\n");
+}
+
+function fileSha256(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function defaultLocalStoreId(db: Database.Database): string {
+  const row = listBlobStores(db).find(
+    (s) => s.storeType === "local" && s.status === "active",
+  );
+  if (row === undefined) {
+    process.stderr.write(
+      "harness error: no active local blob store; run 'harness db blob-store add local --id <id> --path <path>'\n",
+    );
+    process.exit(1);
+  }
+  return row.storeId;
+}
+
+function localStoreFromDb(
+  db: Database.Database,
+  storeId: string,
+): LocalBlobStore {
+  const row = findBlobStore(db, storeId);
+  if (row === null) {
+    process.stderr.write(`harness error: unknown blob store ${storeId}\n`);
+    process.exit(1);
+  }
+  if (row.storeType !== "local") {
+    process.stderr.write(`harness error: blob store ${storeId} is ${row.storeType}, expected local\n`);
+    process.exit(1);
+  }
+  const config = JSON.parse(row.configJson) as { root?: unknown };
+  if (typeof config.root !== "string") {
+    process.stderr.write(`harness error: blob store ${storeId} has no local root\n`);
+    process.exit(1);
+  }
+  return new LocalBlobStore({ root: config.root });
+}
+
+async function verifyLocalStoresDeep(
+  db: Database.Database,
+): Promise<unknown[]> {
+  const rows = listBlobStores(db).filter(
+    (s) => s.storeType === "local" && s.status === "active",
+  );
+  const results: unknown[] = [];
+  for (const row of rows) {
+    results.push(
+      await verifyExternalBlobs(db, localStoreFromDb(db, row.storeId), {
+        storeId: row.storeId,
+        deep: true,
+      }),
+    );
+  }
+  return results;
+}
+
+async function migrateExternalBlobsToDb(
+  db: Database.Database,
+  store: LocalBlobStore,
+  opts: { storeId: string; dryRun: boolean },
+): Promise<{ storeId: string; restored: number; failed: number; details: unknown[] }> {
+  const rows = db
+    .prepare(
+      `SELECT a.artifact_id, a.blob_sha256, e.uri
+         FROM artifacts a
+         INNER JOIN external_artifact_blobs e ON e.sha256 = a.blob_sha256
+        WHERE a.storage = 'external'
+          AND e.store_id = ?
+          AND e.status = 'available'
+          AND a.blob_sha256 IS NOT NULL`,
+    )
+    .all(opts.storeId) as { artifact_id: string; blob_sha256: string; uri: string }[];
+  let restored = 0;
+  let failed = 0;
+  const details: unknown[] = [];
+  for (const row of rows) {
+    try {
+      if (!opts.dryRun) {
+        const body = await store.get({ sha256: row.blob_sha256, uri: row.uri });
+        const actualSha = createHash("sha256").update(body).digest("hex");
+        if (actualSha !== row.blob_sha256) {
+          throw new Error(
+            `external blob content mismatch: expected ${row.blob_sha256}, got ${actualSha}`,
+          );
+        }
+        storeArtifactBlob(db, body);
+        db.prepare(
+          `UPDATE artifacts
+              SET storage = 'db', body_status = 'db_available'
+            WHERE artifact_id = ?`,
+        ).run(row.artifact_id);
+      }
+      restored++;
+      details.push({ artifactId: row.artifact_id, status: "restored" });
+    } catch (e) {
+      failed++;
+      details.push({
+        artifactId: row.artifact_id,
+        status: "failed",
+        error: (e as Error).message,
+      });
+    }
+  }
+  return { storeId: opts.storeId, restored, failed, details };
 }

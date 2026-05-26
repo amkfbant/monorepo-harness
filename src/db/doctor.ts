@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 
 /**
  * DB doctor — Phase 15-2.
@@ -26,7 +27,15 @@ export interface DoctorFinding {
 
 export interface DoctorCheck {
   id: string;
-  category: "artifacts" | "runtime" | "locks" | "assets" | "scratch" | "review";
+  category:
+    | "artifacts"
+    | "runtime"
+    | "locks"
+    | "assets"
+    | "scratch"
+    | "review"
+    | "operations"
+    | "archive";
   severity: Severity;
   description: string;
   run(db: Database.Database): DoctorFinding[];
@@ -64,6 +73,59 @@ export const DEFAULT_CHECKS: DoctorCheck[] = [
           runId: r.run_id,
           blobSha256: r.blob_sha256,
         },
+      }));
+    },
+  },
+  {
+    id: "artifact.external.missing_catalog",
+    category: "artifacts",
+    severity: "error",
+    description: "artifacts.storage='external' but no external catalog row",
+    run(db) {
+      const rows = db
+        .prepare(
+          `SELECT a.artifact_id, a.run_id, a.relative_path, a.blob_sha256
+             FROM artifacts a
+            WHERE a.storage = 'external'
+              AND a.blob_sha256 IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM external_artifact_blobs e
+                WHERE e.sha256 = a.blob_sha256
+              )
+            LIMIT 50`,
+        )
+        .all() as Record<string, unknown>[];
+      return rows.map((r) => ({
+        checkId: "artifact.external.missing_catalog",
+        severity: "error" as const,
+        status: "flagged" as const,
+        message: `external artifact ${r.artifact_id} has no external_artifact_blobs row for ${r.blob_sha256}`,
+        repairable: false,
+        details: r,
+      }));
+    },
+  },
+  {
+    id: "artifact.external.unavailable",
+    category: "artifacts",
+    severity: "error",
+    description: "external_artifact_blobs status is missing/corrupt",
+    run(db) {
+      const rows = db
+        .prepare(
+          `SELECT sha256, store_id, uri, status
+             FROM external_artifact_blobs
+            WHERE status != 'available'
+            LIMIT 50`,
+        )
+        .all() as Record<string, unknown>[];
+      return rows.map((r) => ({
+        checkId: "artifact.external.unavailable",
+        severity: "error" as const,
+        status: "flagged" as const,
+        message: `external blob ${r.sha256} status=${r.status}`,
+        repairable: false,
+        details: r,
       }));
     },
   },
@@ -208,6 +270,87 @@ export const DEFAULT_CHECKS: DoctorCheck[] = [
         repairable: false,
         details: r,
       }));
+    },
+  },
+  {
+    id: "operations.stale_running",
+    category: "operations",
+    severity: "warn",
+    description: "operations.status='running' older than one hour",
+    run(db) {
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const rows = db
+        .prepare(
+          `SELECT operation_id, operation_type, target_type, target_id,
+                  started_at, created_at
+             FROM operations
+            WHERE status = 'running'
+              AND COALESCE(started_at, created_at) < ?
+            LIMIT 50`,
+        )
+        .all(cutoff) as Record<string, unknown>[];
+      return rows.map((r) => ({
+        checkId: "operations.stale_running",
+        severity: "warn" as const,
+        status: "flagged" as const,
+        message: `operation ${r.operation_id} has been running since ${r.started_at ?? r.created_at}`,
+        repairable: true,
+        details: r,
+      }));
+    },
+  },
+  {
+    id: "operations.stale_pending",
+    category: "operations",
+    severity: "warn",
+    description: "operations.status='pending' older than one hour",
+    run(db) {
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const rows = db
+        .prepare(
+          `SELECT operation_id, operation_type, target_type, target_id,
+                  created_at
+             FROM operations
+            WHERE status = 'pending'
+              AND created_at < ?
+            LIMIT 50`,
+        )
+        .all(cutoff) as Record<string, unknown>[];
+      return rows.map((r) => ({
+        checkId: "operations.stale_pending",
+        severity: "warn" as const,
+        status: "flagged" as const,
+        message: `operation ${r.operation_id} has been pending since ${r.created_at}`,
+        repairable: false,
+        details: r,
+      }));
+    },
+  },
+  {
+    id: "archive.path_missing",
+    category: "archive",
+    severity: "warn",
+    description: "attached archive_catalog.path is missing",
+    run(db) {
+      const rows = db
+        .prepare(
+          `SELECT archive_id, path
+             FROM archive_catalog
+            WHERE status = 'attached'
+            LIMIT 100`,
+        )
+        .all() as Record<string, unknown>[];
+      return rows
+        .filter((r) => typeof r.path === "string")
+        .filter((r) => !existsSync(r.path as string))
+        .map((r) => ({
+          checkId: "archive.path_missing",
+          severity: "warn" as const,
+          status: "flagged" as const,
+          message: `archive ${r.archive_id} path is missing: ${r.path}`,
+          repairable: false,
+          details: r,
+        }));
     },
   },
 ];

@@ -150,6 +150,30 @@ export class OperationInFlightError extends Error {
 }
 
 /**
+ * Phase 13 post-close fix (external review P1-3): thrown by
+ * `runOperation` when an idempotency key resolves to an existing
+ * failed/cancelled operation. The schema cannot accept a second row
+ * with the same key, and silently retrying would let the caller skip
+ * the prior failure. Carries the prior outcome so callers can either
+ * surface the same error or mint a new idempotency key.
+ */
+export class OperationReplayedFailureError extends Error {
+  constructor(
+    public readonly operationId: string,
+    public readonly priorStatus: OperationStatus,
+    public readonly priorErrorCode: string | null,
+    public readonly priorErrorMessage: string | null,
+  ) {
+    super(
+      `operation ${operationId} previously ended as ${priorStatus}` +
+        (priorErrorMessage !== null ? `: ${priorErrorMessage}` : "") +
+        ` — mint a new idempotency key to retry`,
+    );
+    this.name = "OperationReplayedFailureError";
+  }
+}
+
+/**
  * Find a prior operation by idempotency key (the Phase 13 lookup).
  * Returns the latest record for (operation_type, target_id, key).
  */

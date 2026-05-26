@@ -4,6 +4,10 @@ import { parse as parseYaml } from "yaml";
 import type Database from "better-sqlite3";
 import { ProjectProfileSchema } from "../../project/schema.js";
 import {
+  recordProjectProfileRevision,
+  type CurrentPointerMode,
+} from "../repositories/project-profile-revisions.js";
+import {
   sha256,
   recordImportError,
   clearImportError,
@@ -29,9 +33,16 @@ export function importProjects(
   db: Database.Database,
   projectsDir: string,
   counters: ImportCounters,
+  opts: { currentPointerMode?: CurrentPointerMode } = {},
 ): void {
   if (!existsSync(projectsDir)) return;
   const files = readdirSync(projectsDir).filter((f) => f.endsWith(".yaml"));
+  const currentPointerMode = opts.currentPointerMode ?? "set-current";
+  const currentProject = db.prepare(
+    `SELECT current_profile_revision_id
+       FROM projects
+      WHERE project_id = ?`,
+  );
 
   const upsertProject = db.prepare(
     `INSERT INTO projects (project_id, repo_id, profile_path, profile_version,
@@ -84,6 +95,18 @@ export function importProjects(
     // so re-importing an unchanged profile yields an identical row
     // (idempotency).
     const mtime = new Date(statSync(path).mtimeMs).toISOString();
+    const existing = currentProject.get(profile.project_id) as
+      | { current_profile_revision_id: number | null }
+      | undefined;
+    const mayUpdateCurrentAsset =
+      currentPointerMode === "set-current" ||
+      (currentPointerMode === "if-missing" &&
+        existing?.current_profile_revision_id == null);
+    if (!mayUpdateCurrentAsset) {
+      clearImportError(db, path);
+      continue;
+    }
+
     const tx = db.transaction(() => {
       upsertProject.run({
         project_id: profile.project_id,
@@ -118,6 +141,15 @@ export function importProjects(
       }
     });
     tx();
+    recordProjectProfileRevision(db, {
+      projectId: profile.project_id,
+      bodyYaml: raw,
+      parsed: profile,
+      actor: "db-import",
+      reason: "compatibility project profile import",
+      now: new Date(statSync(path).mtimeMs),
+      currentPointerMode,
+    });
     clearImportError(db, path);
     counters.projects += 1;
   }

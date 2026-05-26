@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
+import { SCHEMA_VERSION } from "../../../src/db/schema.js";
 import { runUpgradeCheck } from "../../../src/db/upgrade-check.js";
 
 function freshDb() {
@@ -20,8 +21,8 @@ describe("runUpgradeCheck (Phase 15-7)", () => {
     try {
       const r = runUpgradeCheck(db, "phase16");
       expect(r.target).toBe("phase16");
-      expect(r.currentSchemaVersion).toBe(11);
-      expect(r.expectedSchemaVersion).toBe(11);
+      expect(r.currentSchemaVersion).toBe(SCHEMA_VERSION);
+      expect(r.expectedSchemaVersion).toBe(SCHEMA_VERSION);
       expect(r.overall).toBe("ready");
       expect(r.checks.length).toBeGreaterThanOrEqual(9);
       const blocked = r.checks.filter((c) => c.status === "blocked");

@@ -11,6 +11,7 @@ monorepo-harness の **現状仕様** をまとめたディレクトリ。
 - [`project.md`](./project.md) — Project Abstraction 層（project profile / domain registry / templates / context pack、Phase 5）
 - [`db.md`](./db.md) — `harness.sqlite`（DB read model）と file からの import、source-of-truth transition（Phase 6）
 - [`dashboard.md`](./dashboard.md) — DB-backed な project-aware ダッシュボード（Phase 6）
+- [`mcp.md`](./mcp.md) — Phase 18 target spec: coding agent 向け MCP server（tools / resources / prompts / permission / confirmation）
 - [`workflow.md`](./workflow.md) — `domain-coding` workflow の status machine と artifact レイアウト
 - [`cli.md`](./cli.md) — 全 CLI subcommand リファレンス（`run` / `lock` / `review list` / `review auto` / `review process` / `rerun` / `cleanup` / `knowledge promote`）
 
@@ -24,4 +25,4 @@ monorepo-harness の **現状仕様** をまとめたディレクトリ。
 
 - src/ や policy の動作が変わったら、対応するファイルも同じコミットで更新
 - breaking change の場合は report (`docs/reports/`) も別途残す
-- 「TODO」「予定」は書かない（specs/ は現状のスナップショット。計画は `docs/superpowers/plans/`）
+- 「TODO」は書かない。原則 specs/ は現状のスナップショットだが、実装 phase 中の target spec はファイル冒頭でその状態を明記する

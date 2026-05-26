@@ -16,8 +16,10 @@ import {
 } from "../core/backlog.js";
 import { KnowledgeRepository } from "./repositories/knowledge.js";
 import { readArtifactBlob } from "./artifact-blobs.js";
+import { findBlobStore } from "./blob-stores.js";
 import { fileExportEnabled } from "../config/export-mode.js";
 import { buildReviewDecision } from "../reporter/review-decision.js";
+import { LocalBlobStore } from "../storage/local-blob-store.js";
 
 /** The four backlog status dirs — the one a db-first item is exported to. */
 const BACKLOG_STATUSES: readonly BacklogStatus[] = [
@@ -132,7 +134,13 @@ export function exportRun(
           eventLines: string[];
           reviewYaml: string | null;
           proposalYaml: string | null;
-          artifacts: { relative_path: string; blob_sha256: string }[];
+          artifacts: {
+            relative_path: string;
+            blob_sha256: string;
+            storage: string;
+            uri: string | null;
+            store_id: string | null;
+          }[];
         }
       | undefined => {
       const r = db
@@ -169,14 +177,26 @@ export function exportRun(
             ORDER BY reviewed_at DESC, proposal_id DESC LIMIT 1`,
         )
         .get(runId) as { source_yaml: string | null } | undefined;
-      // db-stored artifact bodies (Phase 8) — exported from `artifact_blobs`.
+      // DB/external-stored artifact bodies — exported from artifact_blobs
+      // or the Phase 17 external-local object store.
       const artifacts = db
         .prepare(
-          `SELECT relative_path, blob_sha256 FROM artifacts
-           WHERE run_id = ? AND storage = 'db' AND blob_sha256 IS NOT NULL
-             AND relative_path IS NOT NULL`,
+          `SELECT a.relative_path, a.blob_sha256, a.storage, e.uri,
+                  e.store_id
+             FROM artifacts a
+             LEFT JOIN external_artifact_blobs e ON e.sha256 = a.blob_sha256
+            WHERE a.run_id = ?
+              AND a.storage IN ('db', 'external')
+              AND a.blob_sha256 IS NOT NULL
+              AND a.relative_path IS NOT NULL`,
         )
-        .all(runId) as { relative_path: string; blob_sha256: string }[];
+        .all(runId) as {
+        relative_path: string;
+        blob_sha256: string;
+        storage: string;
+        uri: string | null;
+        store_id: string | null;
+      }[];
       return {
         row: r,
         eventLines,
@@ -259,11 +279,14 @@ export function exportRun(
       );
     }
 
-    // db-stored artifact bodies (Phase 8-4) — written back from
-    // `artifact_blobs` so `db export-files` restores them and export ON
-    // keeps the run dir complete.
+    // db/external-stored artifact bodies — written back so
+    // `db export-files` restores them and export ON keeps the run dir
+    // complete.
     for (const a of artifacts) {
-      const body = readArtifactBlob(db, a.blob_sha256);
+      const body =
+        a.storage === "external"
+          ? readExternalLocalArtifact(db, a.relative_path, a.blob_sha256)
+          : readArtifactBlob(db, a.blob_sha256);
       if (body === null) {
         // a `storage='db'` artifact whose blob is gone is DB corruption,
         // not recoverable drift — fail the export loudly (P1).
@@ -306,6 +329,38 @@ export function exportRun(
       files: [],
       error,
     };
+  }
+}
+
+function readExternalLocalArtifact(
+  db: Database.Database,
+  relativePath: string,
+  blobSha256: string,
+): Buffer | null {
+  const external = db
+    .prepare(
+      `SELECT sha256, store_id, uri, status
+         FROM external_artifact_blobs
+        WHERE sha256 = ?`,
+    )
+    .get(blobSha256) as
+    | { sha256: string; store_id: string; uri: string; status: string }
+    | undefined;
+  if (external === undefined || external.status !== "available") return null;
+  const storeRow = findBlobStore(db, external.store_id);
+  if (storeRow === null || storeRow.storeType !== "local") return null;
+  const config = JSON.parse(storeRow.configJson) as { root?: unknown };
+  if (typeof config.root !== "string") return null;
+  try {
+    return new LocalBlobStore({ root: config.root }).getSync({
+      sha256: blobSha256,
+      uri: external.uri,
+    });
+  } catch (e) {
+    throw new DbError(
+      `exportRun: external artifact '${relativePath}' references unreadable ` +
+        `blob ${blobSha256}: ${(e as Error).message}`,
+    );
   }
 }
 

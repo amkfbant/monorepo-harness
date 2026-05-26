@@ -5,6 +5,16 @@ import { join } from "node:path";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { runFullImport } from "../../../src/db/import-files.js";
+import { importProjects } from "../../../src/db/import/projects.js";
+import { emptyCounters } from "../../../src/db/import/common.js";
+import {
+  getCurrentProjectProfile,
+  recordProjectProfileRevision,
+} from "../../../src/db/repositories/project-profile-revisions.js";
+import {
+  getCurrentKnowledgeRevision,
+  recordKnowledgeEntryRevision,
+} from "../../../src/db/repositories/knowledge-entry-revisions.js";
 
 function freshRoot(): string {
   return mkdtempSync(join(tmpdir(), "harness-imp-"));
@@ -233,7 +243,7 @@ describe("runFullImport", () => {
     d.close();
   });
 
-  it("removes a domain dropped from the profile on re-import", () => {
+  it("removes a domain dropped from the profile on authoritative project import", () => {
     const root = freshRoot();
     mkdirSync(join(root, "projects"), { recursive: true });
     const twoDomains = [
@@ -252,13 +262,17 @@ describe("runFullImport", () => {
     ].join("\n");
     writeFileSync(join(root, "projects", "demo.yaml"), twoDomains);
     const d = db(root);
-    runFullImport(d, { harnessRoot: root });
+    importProjects(d, join(root, "projects"), emptyCounters(), {
+      currentPointerMode: "set-current",
+    });
     expect(
       (d.prepare("SELECT count(*) AS n FROM domains").get() as { n: number })
         .n,
     ).toBe(2);
     writeFileSync(join(root, "projects", "demo.yaml"), PROFILE); // 1 domain
-    runFullImport(d, { harnessRoot: root });
+    importProjects(d, join(root, "projects"), emptyCounters(), {
+      currentPointerMode: "set-current",
+    });
     expect(
       (d.prepare("SELECT count(*) AS n FROM domains").get() as { n: number })
         .n,
@@ -398,6 +412,90 @@ describe("runFullImport", () => {
     const r = runFullImport(d, { harnessRoot: root, reset: true });
     expect(r.runs).toBe(2);
     expect(r.runsSkipped).toBe(0); // reset cleared the prior rows
+    d.close();
+  });
+
+  it("--reset does not rewind a DB-current project profile from stale compatibility YAML", () => {
+    const root = freshRoot();
+    mkdirSync(join(root, "projects"), { recursive: true });
+    const fileV1 = [
+      "version: 1",
+      "project_id: demo",
+      "repo:",
+      "  id: demo",
+      "  base_branch: file-main",
+      "domains:",
+      "  - id: apps/web",
+      "    root: apps/web",
+      "    kind: app",
+      "",
+    ].join("\n");
+    writeFileSync(join(root, "projects", "demo.yaml"), fileV1);
+    const d = db(root);
+    runFullImport(d, { harnessRoot: root });
+    const dbV2 = fileV1.replace("file-main", "db-main");
+    recordProjectProfileRevision(d, {
+      projectId: "demo",
+      bodyYaml: dbV2,
+      parsed: { project_id: "demo" },
+      actor: "test",
+    });
+
+    runFullImport(d, { harnessRoot: root, reset: true });
+
+    expect(getCurrentProjectProfile(d, "demo")?.bodyYaml).toContain(
+      "base_branch: db-main",
+    );
+    d.close();
+  });
+
+  it("--reset does not rewind a DB-current knowledge entry from stale docs markdown", () => {
+    const root = freshRoot();
+    const knowledgeDir = join(root, "docs", "knowledge", "domain_rule");
+    mkdirSync(knowledgeDir, { recursive: true });
+    const fileV1 = [
+      "---",
+      "kind: domain_rule",
+      'domain: "catalog"',
+      'title: "Lesson"',
+      "---",
+      "",
+      "file v1",
+      "",
+    ].join("\n");
+    const entryId = "docs/knowledge/domain_rule/foo.md";
+    writeFileSync(join(knowledgeDir, "foo.md"), fileV1);
+    const d = db(root);
+    runFullImport(d, { harnessRoot: root });
+    const dbV2 = fileV1.replace('domain: "catalog"', 'domain: "checkout"').replace("file v1", "db v2");
+    recordKnowledgeEntryRevision(d, {
+      entryId,
+      bodyMarkdown: dbV2,
+      frontmatter: {
+        kind: "domain_rule",
+        domain: "checkout",
+        title: "Lesson",
+      },
+      title: "Lesson",
+      actor: "test",
+    });
+    d.prepare(
+      `UPDATE knowledge_entries
+          SET domain = 'checkout',
+              kind = 'domain_rule',
+              path = ?
+        WHERE entry_id = ?`,
+    ).run(entryId, entryId);
+
+    runFullImport(d, { harnessRoot: root, reset: true });
+
+    expect(getCurrentKnowledgeRevision(d, entryId)?.bodyMarkdown).toContain(
+      "db v2",
+    );
+    const row = d
+      .prepare("SELECT domain FROM knowledge_entries WHERE entry_id = ?")
+      .get(entryId) as { domain: string };
+    expect(row.domain).toBe("checkout");
     d.close();
   });
 });

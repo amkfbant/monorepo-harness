@@ -7,8 +7,9 @@ import {
   readdir,
   rename,
 } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { randomBytes, createHash } from "node:crypto";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 import type {
   BlobStore,
   ListResult,
@@ -45,7 +46,7 @@ export interface LocalBlobStoreConfig {
 export class LocalBlobStoreContentMismatchError extends Error {
   constructor(declaredSha: string, computedSha: string) {
     super(
-      `LocalBlobStore.put: body sha (${computedSha}) does not match declared sha (${declaredSha}); refusing to corrupt content-addressed store`,
+      `LocalBlobStore: body sha (${computedSha}) does not match declared sha (${declaredSha}); refusing to use corrupt content-addressed object`,
     );
     this.name = "LocalBlobStoreContentMismatchError";
   }
@@ -55,16 +56,27 @@ export class LocalBlobStore implements BlobStore {
   constructor(public readonly config: LocalBlobStoreConfig) {}
 
   private pathFor(sha256: string): string {
-    if (sha256.length < 4) {
-      throw new Error(`invalid sha256 (too short): ${sha256}`);
+    // Phase 16 post-close fix (external review P2-4): enforce hex-64
+    // shape so a stray TEXT value from a DB row or external input cannot
+    // turn into a path-traversal attempt. Belt-and-braces: resolve the
+    // candidate path and verify it stays under the configured root.
+    if (!/^[a-f0-9]{64}$/i.test(sha256)) {
+      throw new Error(`invalid sha256 (must be 64 hex chars): ${sha256}`);
     }
-    return join(
+    const candidate = join(
       this.config.root,
       "sha256",
       sha256.slice(0, 2),
       sha256.slice(2, 4),
       sha256,
     );
+    const rootAbs = resolve(this.config.root) + "/";
+    if (!resolve(candidate).startsWith(rootAbs)) {
+      throw new Error(
+        `LocalBlobStore.pathFor: computed path escapes root ${this.config.root}`,
+      );
+    }
+    return candidate;
   }
 
   async put(input: PutInput): Promise<PutResult> {
@@ -80,6 +92,7 @@ export class LocalBlobStore implements BlobStore {
     try {
       const existing = await stat(p);
       if (existing.size === input.body.length) {
+        this.assertBodySha(input.sha256, await readFile(p));
         return { uri: `file://${p}`, storedBytes: existing.size };
       }
       // Same name with a different size is impossible under a correct
@@ -112,22 +125,42 @@ export class LocalBlobStore implements BlobStore {
   }
 
   async get(input: { sha256: string; uri: string }): Promise<Buffer> {
-    return readFile(this.pathFor(input.sha256));
+    const body = await readFile(this.pathFor(input.sha256));
+    this.assertBodySha(input.sha256, body);
+    return body;
+  }
+
+  getSync(input: { sha256: string; uri: string }): Buffer {
+    const body = readFileSync(this.pathFor(input.sha256));
+    this.assertBodySha(input.sha256, body);
+    return body;
   }
 
   async head(
     input: { sha256: string; uri: string },
   ): Promise<{ sizeBytes: number } | null> {
+    // pathFor must throw for an invalid sha (P2-4); only ENOENT becomes
+    // null. Catching `pathFor` here would silently treat a corrupted
+    // sha as "not found", hiding the bug.
+    const p = this.pathFor(input.sha256);
     try {
-      const s = await stat(this.pathFor(input.sha256));
+      const s = await stat(p);
       return { sizeBytes: s.size };
-    } catch {
-      return null;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw e;
     }
   }
 
   async delete(input: { sha256: string; uri: string }): Promise<void> {
     await rm(this.pathFor(input.sha256), { force: true });
+  }
+
+  private assertBodySha(declaredSha: string, body: Buffer): void {
+    const computed = createHash("sha256").update(body).digest("hex");
+    if (computed !== declaredSha) {
+      throw new LocalBlobStoreContentMismatchError(declaredSha, computed);
+    }
   }
 
   async *list(_prefix?: string): AsyncIterable<ListResult> {

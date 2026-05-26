@@ -131,6 +131,74 @@ export const DEFAULT_REPAIRS: RepairAction[] = [
       );
     },
   },
+  {
+    id: "operations.mark_stale_failed",
+    description: "mark a stale running operation as failed",
+    appliesTo: "operations.stale_running",
+    apply(db, finding, opts) {
+      const operationId = finding.details?.operation_id as string | undefined;
+      if (typeof operationId !== "string" || operationId.length === 0) {
+        return makeResult(
+          "operations.mark_stale_failed",
+          false,
+          "failed",
+          { operationId },
+          `invalid operation_id`,
+        );
+      }
+      if (opts.dryRun) {
+        return makeResult(
+          "operations.mark_stale_failed",
+          true,
+          "succeeded",
+          { operationId, plannedStatus: "failed" },
+          `would mark operation ${operationId} as failed`,
+        );
+      }
+      const now = (opts.now ?? new Date()).toISOString();
+      const info = db
+        .prepare(
+          `UPDATE operations
+              SET status = 'failed',
+                  error_code = 'stale-operation',
+                  error_message = 'marked failed by doctor repair',
+                  completed_at = ?
+            WHERE operation_id = ?
+              AND status = 'running'`,
+        )
+        .run(now, operationId);
+      if (info.changes > 0) {
+        const seq = (
+          db
+            .prepare(
+              `SELECT COALESCE(MAX(seq), 0) + 1 AS next
+                 FROM operation_events
+                WHERE operation_id = ?`,
+            )
+            .get(operationId) as { next: number }
+        ).next;
+        db.prepare(
+          `INSERT INTO operation_events
+             (operation_id, seq, event_type, message, data_json, created_at)
+           VALUES (?, ?, 'repair', 'marked stale operation failed', ?, ?)`,
+        ).run(
+          operationId,
+          seq,
+          JSON.stringify({ action: "operations.mark_stale_failed" }),
+          now,
+        );
+      }
+      return makeResult(
+        "operations.mark_stale_failed",
+        false,
+        info.changes > 0 ? "succeeded" : "failed",
+        { operationId, changes: info.changes },
+        info.changes > 0
+          ? `marked operation ${operationId} as failed`
+          : `operation ${operationId} is no longer running`,
+      );
+    },
+  },
 ];
 
 /** Find the registered repair for a finding, or null. */
@@ -162,25 +230,27 @@ export function runRepair(
     );
   }
   const startedAt = (opts.now ?? new Date()).toISOString();
-  const result = action.apply(db, finding, opts);
-  const completedAt = (opts.now ?? new Date()).toISOString();
-
-  db.prepare(
-    `INSERT INTO repair_actions
-       (repair_id, finding_id, action_type, dry_run, status,
-        result_json, created_at, completed_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    result.repairId,
-    opts.findingId ?? null,
-    result.actionType,
-    result.dryRun ? 1 : 0,
-    result.status,
-    JSON.stringify(result.result),
-    startedAt,
-    completedAt,
-  );
-  return result;
+  const tx = db.transaction(() => {
+    const result = action.apply(db, finding, opts);
+    const completedAt = (opts.now ?? new Date()).toISOString();
+    db.prepare(
+      `INSERT INTO repair_actions
+         (repair_id, finding_id, action_type, dry_run, status,
+          result_json, created_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      result.repairId,
+      opts.findingId ?? null,
+      result.actionType,
+      result.dryRun ? 1 : 0,
+      result.status,
+      JSON.stringify(result.result),
+      startedAt,
+      completedAt,
+    );
+    return result;
+  });
+  return tx.immediate();
 }
 
 function makeResult(

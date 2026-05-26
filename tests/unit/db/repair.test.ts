@@ -138,6 +138,52 @@ describe("runRepair (Phase 15-3)", () => {
     }
   });
 
+  it("apply for operations.mark_stale_failed marks stale operation as failed", () => {
+    const db = freshDb();
+    try {
+      db.prepare(
+        `INSERT INTO operations
+           (operation_id, command, scope_type, scope_id, created_at,
+            operation_type, target_type, target_id, actor, dry_run,
+            status, started_at, metadata_json)
+         VALUES ('op-stale', 'knowledge.edit', 'knowledge_entry', 'k1',
+                 '2025-01-01T00:00:00Z',
+                 'knowledge.edit', 'knowledge_entry', 'k1', 'test', 0,
+                 'running', '2025-01-01T00:00:00Z', '{}')`,
+      ).run();
+      const dr = runDoctor(db, { category: "operations" });
+      const f = dr.findings.find(
+        (x) =>
+          x.checkId === "operations.stale_running" && x.status === "flagged",
+      )!;
+      const r = runRepair(db, f, {
+        dryRun: false,
+        now: new Date("2026-05-24T13:00:00Z"),
+      });
+      expect(r.status).toBe("succeeded");
+      const row = db
+        .prepare(
+          "SELECT status, error_code, completed_at FROM operations WHERE operation_id = 'op-stale'",
+        )
+        .get() as {
+        status: string;
+        error_code: string;
+        completed_at: string;
+      };
+      expect(row.status).toBe("failed");
+      expect(row.error_code).toBe("stale-operation");
+      expect(row.completed_at).toBe("2026-05-24T13:00:00.000Z");
+      const eventCount = db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM operation_events WHERE operation_id = 'op-stale'",
+        )
+        .get() as { n: number };
+      expect(eventCount.n).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
   // Phase 15 post-close fix (codex P1.2): a stale doctor finding must not
   // release a lock that was renewed between doctor and repair. The
   // repair UPDATE now revalidates expires_at < now.

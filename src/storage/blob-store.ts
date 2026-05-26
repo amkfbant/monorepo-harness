@@ -4,7 +4,9 @@
  * Provider-agnostic content-addressed blob store. Implementations
  * (local filesystem, S3, …) keep bodies under a sha256-derived path
  * layout. The DB stores `external_artifact_blobs.uri` returned by
- * `put()` for later `get()` / `head()` / `delete()`.
+ * `put()` for later `get()` / `head()` / `delete()`. Implementations must
+ * verify returned bytes against the requested sha256 before handing them to
+ * runtime/export/API callers.
  *
  * The sha256 is the **stored body** sha (after truncation, before
  * transport encoding) per Phase 8 invariant.
@@ -37,7 +39,7 @@ export interface ListResult {
 export interface BlobStore {
   /** Store an object content-addressed. Idempotent (same sha → same uri). */
   put(input: PutInput): Promise<PutResult>;
-  /** Retrieve stored bytes. */
+  /** Retrieve stored bytes and verify they match `sha256`. */
   get(input: { sha256: string; uri: string }): Promise<Buffer>;
   /** Existence + size check. */
   head(input: { sha256: string; uri: string }): Promise<HeadResult | null>;

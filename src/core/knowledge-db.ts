@@ -256,13 +256,14 @@ export async function rejectKnowledgeDbFirst(
  */
 export async function promoteKnowledgeDbFirst(
   ctx: KnowledgeDbContext,
-  opts: {
-    runId: string;
-    reviewer: string;
-    kind?: string;
-    allowDuplicate?: boolean;
-    now?: Date;
-  },
+	  opts: {
+	    runId: string;
+	    reviewer: string;
+	    index?: number;
+	    kind?: string;
+	    allowDuplicate?: boolean;
+	    now?: Date;
+	  },
 ): Promise<PromoteResult> {
   assertKnowledgeRunId(opts.runId);
   if (opts.reviewer.trim() === "") {
@@ -279,16 +280,31 @@ export async function promoteKnowledgeDbFirst(
     runMigrations(db);
     // Phase 9-11: refuse runtime writes while legacy-file rows linger.
     assertNoLegacyRuntimeRows(db);
-    const repo = new KnowledgeRepository(db);
-    const candidates = await syncRun(repo, ctx, opts.runId);
-    const attr = runAttribution(ctx.runsDir, opts.runId);
-    const scanByKind = new Map<
-      string,
+	    const repo = new KnowledgeRepository(db);
+	    const candidates = await syncRun(repo, ctx, opts.runId);
+	    if (
+	      opts.index !== undefined &&
+	      (!Number.isInteger(opts.index) ||
+	        opts.index < 0 ||
+	        opts.index >= candidates.length)
+	    ) {
+	      throw new KnowledgePromoteGateError(
+	        `candidate index ${opts.index} is out of range ` +
+	          `(run has ${candidates.length} candidate entries)`,
+	      );
+	    }
+	    const attr = runAttribution(ctx.runsDir, opts.runId);
+	    const scanByKind = new Map<
+	      string,
       Awaited<ReturnType<typeof scanKindDir>>
     >();
 
-    for (let i = 0; i < candidates.length; i++) {
-      const raw = candidates[i];
+	    for (let i = 0; i < candidates.length; i++) {
+	      if (opts.index !== undefined && i !== opts.index) {
+	        skipped.push({ index: i, reason: "index-filter" });
+	        continue;
+	      }
+	      const raw = candidates[i];
       if (!isCandidate(raw)) {
         skipped.push({ index: i, reason: "malformed" });
         continue;

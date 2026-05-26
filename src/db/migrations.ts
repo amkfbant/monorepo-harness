@@ -12,6 +12,10 @@ import {
   MIGRATION_V9_STATEMENTS,
   MIGRATION_V10_STATEMENTS,
   MIGRATION_V11_STATEMENTS,
+  MIGRATION_V12_STATEMENTS,
+  MIGRATION_V13_STATEMENTS,
+  MIGRATION_V14_STATEMENTS,
+  MIGRATION_V15_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -81,6 +85,26 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 11,
     name: "blob-storage-scaleout-v11",
     statements: MIGRATION_V11_STATEMENTS,
+  },
+  {
+    version: 12,
+    name: "phase17-platform-integration-v12",
+    statements: MIGRATION_V12_STATEMENTS,
+  },
+  {
+    version: 13,
+    name: "mcp-confirmation-audit-v13",
+    statements: MIGRATION_V13_STATEMENTS,
+  },
+  {
+    version: 14,
+    name: "mcp-confirmation-permission-snapshot-v14",
+    statements: MIGRATION_V14_STATEMENTS,
+  },
+  {
+    version: 15,
+    name: "mcp-identity-and-confirmation-failure-v15",
+    statements: MIGRATION_V15_STATEMENTS,
   },
 ];
 
