@@ -685,6 +685,10 @@ export class GoalRepository {
   classifyFinding(input: ClassifyFindingInput): GoalFinding {
     const now = new Date().toISOString();
     const current = this.requireFinding(input.findingId);
+    const duplicateOf =
+      input.scopeStatus === "duplicate"
+        ? this.requireCanonicalDuplicateFinding(current, input.duplicateOf)
+        : null;
     const lifecycleStatus =
       input.scopeStatus === "duplicate"
         ? "duplicate"
@@ -725,7 +729,7 @@ export class GoalRepository {
       .run(
         input.scopeStatus,
         lifecycleStatus,
-        input.scopeStatus === "duplicate" ? input.duplicateOf ?? null : null,
+        duplicateOf,
         input.reason,
         input.scopeStatus,
         input.scopeStatus,
@@ -735,6 +739,30 @@ export class GoalRepository {
       );
     this.touchSession(current.goalId, now);
     return this.requireFinding(input.findingId);
+  }
+
+  private requireCanonicalDuplicateFinding(
+    current: GoalFinding,
+    duplicateOf: string | undefined,
+  ): string {
+    if (duplicateOf === undefined) {
+      throw new DbError("duplicate classification requires duplicateOf");
+    }
+    if (duplicateOf === current.findingId) {
+      throw new DbError("duplicate classification cannot reference itself");
+    }
+    const canonical = this.requireFinding(duplicateOf);
+    if (canonical.goalId !== current.goalId) {
+      throw new DbError(
+        `duplicate classification target belongs to a different goal: ${duplicateOf}`,
+      );
+    }
+    if (canonical.lifecycleStatus === "duplicate") {
+      throw new DbError(
+        `duplicate classification target is also a duplicate: ${duplicateOf}`,
+      );
+    }
+    return canonical.findingId;
   }
 
   markFindingFixed(input: MarkFindingFixedInput): GoalFinding {

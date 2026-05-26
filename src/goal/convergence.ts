@@ -139,33 +139,17 @@ function decide(
     });
   }
 
-  if (metrics.iterationsUsed > session.maxIterations) {
+  const budgetExceededReason = goalBudgetExceededReason(session, metrics);
+  if (budgetExceededReason !== null) {
     return result(
       session.goalId,
       "budget_exhausted",
-      "max iterations exceeded",
+      budgetExceededReason,
       metrics,
-      { kind: "ask_human", message: "Stop: iteration budget is exhausted." },
-    );
-  }
-
-  if (metrics.reviewCyclesUsed > session.maxReviewCycles) {
-    return result(
-      session.goalId,
-      "budget_exhausted",
-      "max review cycles exceeded",
-      metrics,
-      { kind: "ask_human", message: "Stop: review budget is exhausted." },
-    );
-  }
-
-  if (metrics.rerunsUsed > session.maxReruns) {
-    return result(
-      session.goalId,
-      "budget_exhausted",
-      "max reruns exceeded",
-      metrics,
-      { kind: "ask_human", message: "Stop: rerun budget is exhausted." },
+      {
+        kind: "ask_human",
+        message: "Stop: goal budget is exhausted.",
+      },
     );
   }
 
@@ -186,6 +170,41 @@ function decide(
     );
   }
 
+  const divergingReason = divergenceReason(session, cycles, metrics);
+  if (divergingReason !== null) {
+    return result(session.goalId, "diverging", divergingReason, metrics, {
+      kind: "ask_human",
+      message: "Stop automatic fixing: finding flow is not converging.",
+    });
+  }
+
+  const outOfScopeDeferralsRequired =
+    session.policy.deferOutOfScope && metrics.openOutOfScope > 0;
+  if (
+    allRequiredCloseConditionsPassed &&
+    closeRequirementsSatisfied(session, metrics) &&
+    !outOfScopeDeferralsRequired
+  ) {
+    return result(
+      session.goalId,
+      "close_ready",
+      "original close conditions satisfied",
+      metrics,
+      {
+        kind: "close_goal",
+        message: "Close goal and defer remaining out-of-scope follow-ups.",
+      },
+    );
+  }
+
+  const budgetLimitReason = goalBudgetLimitReason(session, metrics);
+  if (budgetLimitReason !== null) {
+    return result(session.goalId, "budget_exhausted", budgetLimitReason, metrics, {
+      kind: "ask_human",
+      message: "Stop: goal budget is exhausted.",
+    });
+  }
+
   if (
     metrics.openUnknownScope > 0 &&
     (session.policy.stopOnUnknownScope ||
@@ -202,14 +221,6 @@ function decide(
         message: "Classify unknown-scope findings before another fix pass.",
       },
     );
-  }
-
-  const divergingReason = divergenceReason(session, cycles, metrics);
-  if (divergingReason !== null) {
-    return result(session.goalId, "diverging", divergingReason, metrics, {
-      kind: "ask_human",
-      message: "Stop automatic fixing: finding flow is not converging.",
-    });
   }
 
   if (
@@ -284,26 +295,42 @@ function decide(
     );
   }
 
-  if (
-    allRequiredCloseConditionsPassed &&
-    closeRequirementsSatisfied(session, metrics)
-  ) {
-    return result(
-      session.goalId,
-      "close_ready",
-      "original close conditions satisfied",
-      metrics,
-      {
-        kind: "close_goal",
-        message: "Close goal and defer remaining out-of-scope follow-ups.",
-      },
-    );
-  }
-
   return result(session.goalId, "continue", "more validation required", metrics, {
     kind: "run_close_check",
     message: "Record close-check evidence or run the next review mode.",
   });
+}
+
+function goalBudgetExceededReason(
+  session: GoalSession,
+  metrics: GoalConvergenceMetrics,
+): string | null {
+  if (metrics.iterationsUsed > session.maxIterations) {
+    return "max iterations exceeded";
+  }
+  if (metrics.reviewCyclesUsed > session.maxReviewCycles) {
+    return "max review cycles exceeded";
+  }
+  if (metrics.rerunsUsed > session.maxReruns) {
+    return "max reruns exceeded";
+  }
+  return null;
+}
+
+function goalBudgetLimitReason(
+  session: GoalSession,
+  metrics: GoalConvergenceMetrics,
+): string | null {
+  if (metrics.iterationsUsed >= session.maxIterations) {
+    return "max iterations reached";
+  }
+  if (metrics.reviewCyclesUsed >= session.maxReviewCycles) {
+    return "max review cycles reached";
+  }
+  if (metrics.rerunsUsed >= session.maxReruns) {
+    return "max reruns reached";
+  }
+  return null;
 }
 
 function terminalDecision(

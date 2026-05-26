@@ -501,6 +501,7 @@ export async function goalCloseTool(
   const decision = (preview.data as { convergence?: { decision?: string } })
     .convergence?.decision;
   const requiresConfirmation = args.force === true || decision !== "close_ready";
+  const confirmedOverrideClose = isConfirmed(context) && requiresConfirmation;
   if (requiresConfirmation && !isConfirmed(context)) {
     return confirmationResult(context, "harness.goal.close", "goal.close", args, preview, {
       type: "goal",
@@ -518,12 +519,23 @@ export async function goalCloseTool(
     metadata: goalMetadata(context, "harness.goal.close", args, {
       goalId: args.goalId,
     }),
-    workWithDb: async (db) =>
-      new GoalRepository(db).updateStatus(
-        args.goalId,
-        "closed",
-        redactMcpText(args.summary),
-      ),
+    workWithDb: async (db) => {
+      const repo = new GoalRepository(db);
+      const tx = db.transaction(() => {
+        if (!confirmedOverrideClose) {
+          const current = new ConvergenceService(repo).evaluate(args.goalId);
+          if (current.decision !== "close_ready") {
+            const error = new Error(
+              `goal is no longer close_ready: decision=${current.decision}`,
+            );
+            (error as { code?: string }).code = "goal_not_close_ready";
+            throw error;
+          }
+        }
+        return repo.updateStatus(args.goalId, "closed", redactMcpText(args.summary));
+      });
+      return tx.immediate();
+    },
   });
 }
 

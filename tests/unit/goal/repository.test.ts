@@ -13,9 +13,12 @@ function freshRepo(): { db: ReturnType<typeof openDb>; repo: GoalRepository } {
   return { db, repo: new GoalRepository(db) };
 }
 
-function createGoal(repo: GoalRepository) {
+function createGoal(
+  repo: GoalRepository,
+  overrides: { goalId?: string } = {},
+) {
   return repo.createSession({
-    goalId: "goal-test",
+    goalId: overrides.goalId ?? "goal-test",
     title: "Goal convergence",
     projectId: "monorepo-harness",
     domain: "goal",
@@ -230,6 +233,63 @@ describe("GoalRepository", () => {
       expect(seenAgain.finding.findingId).toBe(duplicate.findingId);
       expect(seenAgain.finding.lifecycleStatus).toBe("duplicate");
       expect(repo.listFindings({ goalId: "goal-test" })).toHaveLength(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects duplicate classification without a canonical finding", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const duplicate = repo.upsertFinding({
+        goalId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        summary: "Duplicate without canonical",
+      }).finding;
+
+      expect(() =>
+        repo.classifyFinding({
+          findingId: duplicate.findingId,
+          scopeStatus: "duplicate",
+          reason: "same root cause",
+        }),
+      ).toThrow(/duplicateOf/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects duplicate classification that points outside the goal", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      createGoal(repo, { goalId: "goal-other" });
+      const duplicate = repo.upsertFinding({
+        goalId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        summary: "Duplicate finding",
+      }).finding;
+      const other = repo.upsertFinding({
+        goalId: "goal-other",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        summary: "Other goal finding",
+      }).finding;
+
+      expect(() =>
+        repo.classifyFinding({
+          findingId: duplicate.findingId,
+          scopeStatus: "duplicate",
+          duplicateOf: other.findingId,
+          reason: "same root cause",
+        }),
+      ).toThrow(/different goal/);
     } finally {
       db.close();
     }

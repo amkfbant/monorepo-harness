@@ -181,6 +181,19 @@ describe("ConvergenceService", () => {
     }
   });
 
+  it("returns budget_exhausted instead of recommending fixes at the iteration limit", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, { maxIterations: 1 });
+      passClose(repo);
+      repo.createAttempt({ goalId: "goal-test", attemptType: "implement" });
+      addFinding(repo, { scopeStatus: "in_scope", severity: "P1" });
+      expect(service.evaluate("goal-test").decision).toBe("budget_exhausted");
+    } finally {
+      db.close();
+    }
+  });
+
   it("does not count multiple attempts in the same iteration as extra iterations", () => {
     const { db, repo, service } = fresh();
     try {
@@ -202,6 +215,23 @@ describe("ConvergenceService", () => {
     }
   });
 
+  it("returns budget_exhausted instead of recommending reruns at the rerun limit", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, { maxReruns: 1 });
+      passClose(repo);
+      repo.createAttempt({
+        goalId: "goal-test",
+        iteration: 1,
+        attemptType: "rerun",
+      });
+      addFinding(repo, { scopeStatus: "in_scope", severity: "P1" });
+      expect(service.evaluate("goal-test").decision).toBe("budget_exhausted");
+    } finally {
+      db.close();
+    }
+  });
+
   it("returns budget_exhausted when reruns exceed the goal budget", () => {
     const { db, repo, service } = fresh();
     try {
@@ -212,6 +242,19 @@ describe("ConvergenceService", () => {
         iteration: 1,
         attemptType: "rerun",
       });
+      expect(service.evaluate("goal-test").decision).toBe("budget_exhausted");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("returns budget_exhausted instead of recommending work at the review-cycle limit", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, { maxReviewCycles: 1 });
+      passClose(repo);
+      addCycle(repo, 1, 0);
+      addFinding(repo, { scopeStatus: "in_scope", severity: "P1" });
       expect(service.evaluate("goal-test").decision).toBe("budget_exhausted");
     } finally {
       db.close();

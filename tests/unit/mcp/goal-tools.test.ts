@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
+import { ConvergenceService } from "../../../src/goal/convergence.js";
 import { GoalRepository } from "../../../src/goal/repository.js";
 import { HarnessMcpServer } from "../../../src/mcp/server.js";
 import {
@@ -45,6 +46,34 @@ function withDb(root: string, fn: (db: ReturnType<typeof openDb>) => void): void
   } finally {
     db.close();
   }
+}
+
+function mockedConvergence(goalId: string, decision: string): Record<string, unknown> {
+  return {
+    goalId,
+    decision,
+    reason: "mocked convergence",
+    metrics: {
+      openInScopeP0: 0,
+      openInScopeP1: decision === "close_ready" ? 0 : 1,
+      openInScopeP2: 0,
+      openUnknownScope: 0,
+      openOutOfScope: 0,
+      totalNewFindings: 0,
+      newFindingsThisCycle: 0,
+      reviewCyclesUsed: 0,
+      iterationsUsed: 0,
+      rerunsUsed: 0,
+      closeConditionsPassed: decision === "close_ready" ? 1 : 0,
+      closeConditionsFailed: 0,
+      closeConditionsPending: decision === "close_ready" ? 0 : 1,
+      maxReopenCount: 0,
+    },
+    recommendedNextAction: {
+      kind: decision === "close_ready" ? "close_goal" : "fix_findings",
+      message: "mocked action",
+    },
+  };
 }
 
 async function callTool(
@@ -283,6 +312,37 @@ describe("MCP goal tools", () => {
     });
     expect(denied.status).toBe("permission_denied");
     expect(denied.data.reason).toBe("operation_not_allowlisted");
+  });
+
+  it("rechecks convergence inside an unconfirmed close_ready close", async () => {
+    const root = freshRoot();
+    const s = server(root, mutationConfig(["goal.start", "goal.close"]));
+    const started = await callTool(s, "harness.goal.start", {
+      title: "Goal MCP stale close",
+      projectId: "demo",
+      domain: "goal",
+      closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+      idempotencyKey: "goal-close-stale-start",
+    });
+    const goalId = started.data.result.goalId as string;
+    const evaluate = vi
+      .spyOn(ConvergenceService.prototype, "evaluate")
+      .mockImplementationOnce(() => mockedConvergence(goalId, "close_ready") as any)
+      .mockImplementationOnce(() => mockedConvergence(goalId, "needs_fix") as any);
+    try {
+      const denied = await callTool(s, "harness.goal.close", {
+        goalId,
+        summary: "done",
+        idempotencyKey: "goal-close-stale",
+      });
+      expect(denied.status).toBe("error");
+      expect(denied.summary).toContain("goal is no longer close_ready");
+      withDb(root, (db) => {
+        expect(new GoalRepository(db).requireSession(goalId).status).toBe("open");
+      });
+    } finally {
+      evaluate.mockRestore();
+    }
   });
 
   it("returns confirmation_required when closing a non-close_ready goal", async () => {
