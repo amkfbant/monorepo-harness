@@ -691,16 +691,35 @@ export class GoalRepository {
         : input.scopeStatus === "out_of_scope" &&
             current.lifecycleStatus !== "deferred"
           ? "out_of_scope"
+          : input.scopeStatus === "unknown" &&
+              current.lifecycleStatus !== "open" &&
+              current.lifecycleStatus !== "reopened" &&
+              current.lifecycleStatus !== "escalated"
+            ? "open"
           : input.scopeStatus === "in_scope" &&
               (current.lifecycleStatus === "out_of_scope" ||
-                current.lifecycleStatus === "duplicate")
+                current.lifecycleStatus === "duplicate" ||
+                current.lifecycleStatus === "deferred")
             ? "open"
             : current.lifecycleStatus;
     this.db
       .prepare(
         `UPDATE goal_findings
             SET scope_status = ?, lifecycle_status = ?, duplicate_of = ?,
-                classification_reason = ?, last_seen_at = ?
+                classification_reason = ?,
+                deferred_at = CASE
+                  WHEN ? IN ('in_scope', 'unknown') THEN NULL
+                  ELSE deferred_at
+                END,
+                deferred_backlog_item_id = CASE
+                  WHEN ? IN ('in_scope', 'unknown') THEN NULL
+                  ELSE deferred_backlog_item_id
+                END,
+                fixed_at = CASE
+                  WHEN ? IN ('in_scope', 'unknown') THEN NULL
+                  ELSE fixed_at
+                END,
+                last_seen_at = ?
           WHERE finding_id = ?`,
       )
       .run(
@@ -708,6 +727,9 @@ export class GoalRepository {
         lifecycleStatus,
         input.scopeStatus === "duplicate" ? input.duplicateOf ?? null : null,
         input.reason,
+        input.scopeStatus,
+        input.scopeStatus,
+        input.scopeStatus,
         now,
         input.findingId,
       );
@@ -723,6 +745,8 @@ export class GoalRepository {
         `UPDATE goal_findings
             SET lifecycle_status = 'fixed', fixed_at = ?,
                 resolution_note = COALESCE(?, resolution_note),
+                deferred_at = NULL,
+                deferred_backlog_item_id = NULL,
                 last_seen_at = ?
           WHERE finding_id = ?`,
       )
@@ -734,12 +758,18 @@ export class GoalRepository {
   deferFinding(input: DeferFindingInput): GoalFinding {
     const now = input.deferredAt ?? new Date().toISOString();
     const current = this.requireFinding(input.findingId);
+    if (current.scopeStatus !== "out_of_scope") {
+      throw new DbError(
+        `goal finding ${input.findingId} cannot be deferred while scope is ${current.scopeStatus}; classify it out_of_scope first`,
+      );
+    }
     this.db
       .prepare(
         `UPDATE goal_findings
             SET lifecycle_status = 'deferred', deferred_at = ?,
                 deferred_backlog_item_id = COALESCE(?, deferred_backlog_item_id),
                 resolution_note = COALESCE(?, resolution_note),
+                fixed_at = NULL,
                 last_seen_at = ?
           WHERE finding_id = ?`,
       )
