@@ -573,6 +573,14 @@ export class GoalRepository {
         summary: input.summary,
       });
     const scopeStatus = input.scopeStatus ?? "unknown";
+    const duplicateOf =
+      scopeStatus === "duplicate"
+        ? this.requireCanonicalDuplicateFinding(
+            input.goalId,
+            input.findingId,
+            input.duplicateOf,
+          )
+        : null;
     const lifecycleStatus =
       input.lifecycleStatus ?? defaultLifecycleForScope(scopeStatus);
     const tx = this.db.transaction((): UpsertGoalFindingResult => {
@@ -654,7 +662,7 @@ export class GoalRepository {
           findingId,
           input.goalId,
           stableKey,
-          input.duplicateOf ?? null,
+          duplicateOf,
           input.source,
           input.sourceRef ?? null,
           input.sourceAttemptId ?? null,
@@ -687,7 +695,11 @@ export class GoalRepository {
     const current = this.requireFinding(input.findingId);
     const duplicateOf =
       input.scopeStatus === "duplicate"
-        ? this.requireCanonicalDuplicateFinding(current, input.duplicateOf)
+        ? this.requireCanonicalDuplicateFinding(
+            current.goalId,
+            current.findingId,
+            input.duplicateOf,
+          )
         : null;
     const lifecycleStatus =
       input.scopeStatus === "duplicate"
@@ -742,24 +754,25 @@ export class GoalRepository {
   }
 
   private requireCanonicalDuplicateFinding(
-    current: GoalFinding,
+    goalId: string,
+    findingId: string | undefined,
     duplicateOf: string | undefined,
   ): string {
     if (duplicateOf === undefined) {
-      throw new DbError("duplicate classification requires duplicateOf");
+      throw new DbError("duplicate finding requires duplicateOf");
     }
-    if (duplicateOf === current.findingId) {
-      throw new DbError("duplicate classification cannot reference itself");
+    if (duplicateOf === findingId) {
+      throw new DbError("duplicate finding cannot reference itself");
     }
     const canonical = this.requireFinding(duplicateOf);
-    if (canonical.goalId !== current.goalId) {
+    if (canonical.goalId !== goalId) {
       throw new DbError(
-        `duplicate classification target belongs to a different goal: ${duplicateOf}`,
+        `duplicate finding target belongs to a different goal: ${duplicateOf}`,
       );
     }
     if (canonical.lifecycleStatus === "duplicate") {
       throw new DbError(
-        `duplicate classification target is also a duplicate: ${duplicateOf}`,
+        `duplicate finding target is also a duplicate: ${duplicateOf}`,
       );
     }
     return canonical.findingId;

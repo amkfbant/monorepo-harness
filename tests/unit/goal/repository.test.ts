@@ -295,6 +295,53 @@ describe("GoalRepository", () => {
     }
   });
 
+  it("rejects duplicate-scoped finding inserts without a canonical finding", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      expect(() =>
+        repo.upsertFinding({
+          goalId: "goal-test",
+          source: "review",
+          severity: "P1",
+          category: "correctness",
+          scopeStatus: "duplicate",
+          summary: "Duplicate without canonical",
+        }),
+      ).toThrow(/duplicateOf/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("allows duplicate-scoped finding inserts with a canonical same-goal finding", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const canonical = repo.upsertFinding({
+        goalId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        summary: "Canonical finding",
+      }).finding;
+      const duplicate = repo.upsertFinding({
+        goalId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "duplicate",
+        duplicateOf: canonical.findingId,
+        summary: "Duplicate with canonical",
+      }).finding;
+
+      expect(duplicate.lifecycleStatus).toBe("duplicate");
+      expect(duplicate.duplicateOf).toBe(canonical.findingId);
+    } finally {
+      db.close();
+    }
+  });
+
   it("promotes severity when the same stable key is later reported higher", () => {
     const { db, repo } = freshRepo();
     try {

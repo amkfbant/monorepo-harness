@@ -242,6 +242,36 @@ describe("MCP goal tools", () => {
     expect(denied.status).toBe("permission_denied");
   });
 
+  it("rejects duplicate-scoped finding records without canonical duplicate targets", async () => {
+    const root = freshRoot();
+    const s = server(
+      root,
+      mutationConfig(["goal.start", "goal.record_findings"]),
+    );
+    const started = await callTool(s, "harness.goal.start", {
+      title: "Goal MCP duplicate finding",
+      projectId: "demo",
+      domain: "goal",
+      idempotencyKey: "goal-start-duplicate-finding",
+    });
+    const goalId = started.data.result.goalId as string;
+
+    const recorded = await callTool(s, "harness.goal.record_findings", {
+      goalId,
+      findings: [
+        {
+          severity: "P1",
+          category: "correctness",
+          summary: "Duplicate without canonical",
+          scopeStatus: "duplicate",
+        },
+      ],
+      idempotencyKey: "goal-record-duplicate-finding",
+    });
+    expect(recorded.status).toBe("error");
+    expect(recorded.summary).toContain("duplicate finding requires duplicateOf");
+  });
+
   it("redacts and caps raw findings in read tools and resources", async () => {
     const root = freshRoot();
     const s = server(root, mutationConfig(["goal.start"]));
