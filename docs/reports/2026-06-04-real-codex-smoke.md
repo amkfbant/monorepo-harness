@@ -71,12 +71,30 @@ Generated diff (recovered from the DB blob via `db export-files --scope run --id
 - `db export-files` uses `--scope run --id <run>`, not `--run <run>` (operator
   note; the latter errors with "unknown option").
 
-## Deferred (not covered by this smoke)
+## Follow-up smoke (same day)
 
-- `review auto` / `review process` on a real reviewer codex pass.
-- `rerun --from-review`, `pr create`, MCP serve, and goal-convergence loop on
-  real codex. These remain fake-runner-only and are candidates for a follow-up
-  smoke before broad production use.
+A second pass exercised the review and agent surfaces against the same run /
+a fresh goal root:
+
+- **`review auto`** — the real reviewer codex ran read-only over the
+  materialized run and emitted `decision=approved`; the proposal was written to
+  `review_proposals` (DB-canonical, run had no files on disk).
+- **`review process`** — applied the proposal: `needs_review → approved`,
+  surfaced by `run show` reading from the DB.
+- **goal loop** — `db init` (schema v16, all 16 migrations) → `goal start`
+  (status=open) → `check-convergence` (`decision=continue`, "more validation
+  required") → `goal status`, all through the real CLI.
+- **MCP server** — `mcp serve` over stdio answered an `initialize` JSON-RPC
+  request with `serverInfo` (monorepo-harness 0.1.0) and tools/resources/prompts
+  capabilities (protocolVersion 2025-11-25).
+
+No divergence from the fake-runner behavior on any surface.
+
+## Still deferred
+
+- `pr create` — needs a real GitHub remote and creates an external PR; validate
+  on a real repo, not a throwaway.
+- `rerun --from-review` — bounded retry chain on real codex.
 
 ## Cleanup
 
