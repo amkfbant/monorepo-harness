@@ -406,6 +406,7 @@ const goalRecordCloseCheckArgs = z
 const goalCheckConvergenceArgs = z
   .object({
     goalId: z.string().min(1),
+    updateStatus: z.boolean().optional(),
   })
   .merge(MutationArgsBaseSchema)
   .strict();
@@ -1273,6 +1274,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     inputSchema: objectSchema(
       {
         goalId: goalIdJson,
+        updateStatus: { type: "boolean" },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
       },

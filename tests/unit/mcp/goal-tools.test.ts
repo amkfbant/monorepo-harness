@@ -390,6 +390,42 @@ describe("MCP goal tools", () => {
     expect(recorded.data.result.convergence.metrics.reviewCyclesUsed).toBe(1);
   });
 
+  it("check_convergence honors updateStatus:false (no status sync), matching the CLI", async () => {
+    const root = freshRoot();
+    withDb(root, (db) => {
+      const repo = new GoalRepository(db);
+      repo.createSession({
+        goalId: "goal-no-sync",
+        title: "NoSync",
+        projectId: "demo",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+      repo.recordCloseCheck({
+        goalId: "goal-no-sync",
+        conditionId: "typecheck",
+        status: "passed",
+        checkedBy: "test",
+      });
+    });
+    const s = server(root, mutationConfig(["goal.check_convergence"]));
+
+    const res = await callTool(s, "harness.goal.check_convergence", {
+      goalId: "goal-no-sync",
+      idempotencyKey: "goal-no-sync",
+      updateStatus: false,
+    });
+    // decision is still computed and recorded, but status sync is suppressed.
+    expect(res.data.result.decision).toBe("close_ready");
+    expect(res.data.result.goalStatus).toBeNull();
+    withDb(root, (db) => {
+      expect(new GoalRepository(db).requireSession("goal-no-sync").status).not.toBe(
+        "close_ready",
+      );
+    });
+  });
+
   it("check_convergence syncs durable stop and close_ready statuses", async () => {
     const root = freshRoot();
     withDb(root, (db) => {

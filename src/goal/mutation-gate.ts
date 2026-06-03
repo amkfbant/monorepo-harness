@@ -13,7 +13,8 @@ export interface GoalMutationGateDenied {
   allowed: false;
   code: string;
   message: string;
-  convergence: GoalConvergenceResult;
+  /** Absent only for goal_not_found, where convergence cannot be evaluated. */
+  convergence?: GoalConvergenceResult;
 }
 
 export interface GoalMutationGateAllowed {
@@ -50,6 +51,15 @@ export function evaluateGoalMutationGate(input: {
   mutationKind: GoalLinkedMutationKind;
   syncStatus?: boolean;
 }): GoalMutationGateResult {
+  // A linked goal that does not exist is a structured denial, not a DB error:
+  // ConvergenceService.evaluate would throw on a missing session.
+  if (input.repository.getSession(input.goalId) === null) {
+    return {
+      allowed: false,
+      code: "goal_not_found",
+      message: `goal ${input.goalId} not found`,
+    };
+  }
   const convergence = new ConvergenceService(input.repository).evaluate(
     input.goalId,
   );

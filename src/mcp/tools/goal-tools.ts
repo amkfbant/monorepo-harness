@@ -133,6 +133,9 @@ export interface GoalRecordCloseCheckArgs extends MutationBaseArgs {
 
 export interface GoalCheckConvergenceArgs extends MutationBaseArgs {
   goalId: string;
+  /** When false, record the decision but do not sync goal_sessions.status
+   *  (parity with the CLI `convergence --no-status-update`). */
+  updateStatus?: boolean;
 }
 
 export interface GoalCloseArgs extends MutationBaseArgs {
@@ -598,6 +601,9 @@ export async function goalCheckConvergenceTool(
         metrics: { ...result.metrics },
         recommendedNextAction: result.recommendedNextAction,
         createdBy: `mcp:${context.clientName}`,
+        ...(args.updateStatus !== undefined
+          ? { updateStatus: args.updateStatus }
+          : {}),
       });
       return {
         ...result,

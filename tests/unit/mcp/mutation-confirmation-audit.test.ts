@@ -1217,6 +1217,30 @@ describe("MCP mutation, confirmation, and audit", () => {
     expect(result.data.reason).toBe("goal_budget_exhausted");
   });
 
+  it("rejects goal-linked run.start with goal_not_found when the goal is absent", async () => {
+    const root = freshRoot();
+    const result = await callTool(
+      server(root, {
+        ...DEFAULT_MCP_CONFIG,
+        defaultMode: "guarded-mutation",
+        allowedProjects: ["demo"],
+        allowedOperations: ["run.start"],
+      }),
+      "harness.run.start",
+      {
+        projectId: "demo",
+        domain: "apps/web",
+        goal: "Should be blocked",
+        goalId: "goal-does-not-exist",
+        idempotencyKey: "goal-missing-run",
+      },
+    );
+
+    // A missing goal must be a structured denial, not an opaque DB error.
+    expect(result.status).toBe("permission_denied");
+    expect(result.data.reason).toBe("goal_not_found");
+  });
+
   it("rejects goal-linked rerun.start when convergence needs classification", async () => {
     const root = freshRoot((db) => {
       seedRun(db, "run-needs-classification", "demo");

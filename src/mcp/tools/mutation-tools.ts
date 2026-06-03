@@ -1152,15 +1152,17 @@ async function runMcpOperation<T>(
     }
     if (e instanceof GoalMutationGateError) {
       const gate = e.denial;
-      syncGoalStatusForConvergence(
-        new GoalRepository(handle.db),
-        gate.convergence,
-      );
+      if (gate.convergence) {
+        syncGoalStatusForConvergence(
+          new GoalRepository(handle.db),
+          gate.convergence,
+        );
+      }
       return permissionDenied(gate.message, {
         reason: gate.code,
-        goalId: opts.goalGate?.goalId ?? gate.convergence.goalId,
+        goalId: opts.goalGate?.goalId ?? gate.convergence?.goalId ?? null,
         mutationKind: opts.goalGate?.mutationKind ?? null,
-        convergence: gate.convergence,
+        ...(gate.convergence ? { convergence: gate.convergence } : {}),
       });
     }
     if (e instanceof OperationInFlightError) {
@@ -1385,7 +1387,7 @@ function validateGoalLinkForProject(
       .prepare("SELECT project_id, repo_id, domain FROM goal_sessions WHERE goal_id = ?")
       .get(goalId) as GoalLinkRow | undefined;
     if (goal === undefined) {
-      return errorResult(`goal not found: ${goalId}`, { goalId });
+      return permissionDenied(`goal not found: ${goalId}`, { reason: "goal_not_found", goalId });
     }
     const denied = ensureProjectVisible(context.config, goal.project_id);
     if (denied !== null) return denied;
@@ -1436,7 +1438,7 @@ function validateGoalRunLinkFromDb(
   const goal = db
     .prepare("SELECT project_id, repo_id, domain FROM goal_sessions WHERE goal_id = ?")
     .get(goalId) as GoalLinkRow | undefined;
-  if (goal === undefined) return errorResult(`goal not found: ${goalId}`, { goalId });
+  if (goal === undefined) return permissionDenied(`goal not found: ${goalId}`, { reason: "goal_not_found", goalId });
   const denied = ensureProjectVisible(context.config, goal.project_id);
   if (denied !== null) return denied;
   if (goal.project_id !== null && run.projectId !== goal.project_id) {
