@@ -44,12 +44,30 @@ export function evaluateCloseConditions(input: {
   conditions: GoalCloseCondition[];
   checks: GoalCloseCheck[];
   findings: GoalFinding[];
+  freshAfter?: string | null;
+  allowEmptyCloseConditions?: boolean;
 }): CloseConditionEvaluation {
+  if (
+    input.conditions.length === 0 &&
+    input.allowEmptyCloseConditions !== true
+  ) {
+    return {
+      conditions: [],
+      requiredPassed: 0,
+      requiredFailed: 0,
+      requiredPending: 1,
+      allRequiredPassed: false,
+    };
+  }
   const latest = latestCloseChecksByCondition(input.checks);
   const conditions = input.conditions.map((condition) =>
     condition.kind === "finding_policy"
       ? evaluateFindingPolicy(condition, input.findings)
-      : evaluateRecordedCheck(condition, latest.get(condition.id) ?? null),
+      : evaluateRecordedCheck(
+          condition,
+          latest.get(condition.id) ?? null,
+          input.freshAfter ?? null,
+        ),
   );
   let requiredPassed = 0;
   let requiredFailed = 0;
@@ -72,6 +90,7 @@ export function evaluateCloseConditions(input: {
 function evaluateRecordedCheck(
   condition: GoalCloseCondition,
   check: GoalCloseCheck | null,
+  freshAfter: string | null,
 ): EvaluatedCloseCondition {
   if (check === null) {
     return {
@@ -79,6 +98,15 @@ function evaluateRecordedCheck(
       status: "pending",
       check,
       message: "no close-check evidence recorded",
+    };
+  }
+  if (freshAfter !== null && check.checkedAt < freshAfter) {
+    return {
+      condition,
+      status: "pending",
+      check,
+      message:
+        "close-check evidence is stale; record fresh evidence after latest mutation",
     };
   }
   return {

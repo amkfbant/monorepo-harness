@@ -117,13 +117,22 @@ Evaluation is deterministic and conservative:
 1. Terminal sessions stay terminal.
 2. Iteration/review/rerun budgets are enforced.
 3. Open in-scope P0 escalates.
-4. Unknown-scope findings block automation when policy requires it.
-5. Growing finding counts or reopened churn is `diverging`.
-6. Open in-scope P1 needs a fix.
-7. Failed required close checks need a fix.
-8. Un-deferred out-of-scope findings require `defer_followups` when policy requires deferral.
-9. Passed required close checks plus configured `closeRequires` blockers clear is `close_ready`.
+4. Growing finding counts or reopened churn is `diverging`.
+5. Passed fresh required close checks plus configured `closeRequires` blockers clear is `close_ready`.
+6. Unknown-scope findings block automation when policy requires it.
+7. Open in-scope P1 needs a fix.
+8. Failed required close checks need a fix.
+9. Un-deferred out-of-scope findings require `defer_followups` when policy requires deferral.
 10. Otherwise the decision is `continue`.
+
+Recorded close-check evidence is fresh only when it is at or after the latest
+invalidating goal event: a non-close-check attempt, finding seen/fixed/deferred
+transition, or completed review cycle. Stale passed evidence is treated as
+pending and the next action is to record fresh close-check evidence.
+
+Goals with no close conditions are not close-ready by default. Set
+`policy.allowEmptyCloseConditions: true` only for goals where an empty close
+condition list is intentional.
 
 Decision values:
 
@@ -149,6 +158,7 @@ maxTotalNewFindings: 12
 autoFixSeverities: [P1]
 autoFixOnlyInScope: true
 stopOnUnknownScope: true
+allowEmptyCloseConditions: false
 deferOutOfScope: true
 reviewModeSequence: [initial, delta, close]
 ```
@@ -158,6 +168,24 @@ reviewModeSequence: [initial, delta, close]
 Goal-aware operation paths accept an optional `goalId` and validate that the
 goal project, repo, and domain match the target run or project before recording
 anything. A scoped goal cannot be linked to an unscoped run.
+
+Goal-linked mutations are also gated by a fresh convergence evaluation. The
+harness rejects implementation/review/rerun/process mutations when the goal is
+`close_ready`, `needs_classification`, `diverging`, `budget_exhausted`,
+`escalated`, `closed`, or `cancelled`. The gate also checks the recommended
+next action: `needs_fix` with `fix_findings` permits only `run.start` and
+`rerun.start`; `needs_fix` with `run_close_check` also permits `run.start` and
+`rerun.start` so failed close checks can be fixed. `continue` with
+`run_close_check` permits review validation (`review.auto` and
+`review.process`) so close-check evidence can be generated, but still blocks
+implementation mutations. `continue` with `defer_followups` blocks these
+goal-linked mutations until the recommended deferral action is handled.
+`review.process` confirmation requests are not created when this gate denies the
+linked goal. `harness goal check-convergence` and
+`harness.goal.check_convergence` record an audit decision and synchronize the
+durable goal status for stop/close-ready decisions by default. Review proposal
+import uses the same status synchronization after it records its convergence
+decision.
 
 Implemented links:
 

@@ -37,6 +37,13 @@ import {
 } from "../../goal/operation-integration.js";
 import { importReviewProposalToGoal } from "../../goal/review-integration.js";
 import { GoalRepository } from "../../goal/repository.js";
+import {
+  assertGoalCanStartMutation,
+  evaluateGoalMutationGate,
+  GoalMutationGateError,
+  type GoalLinkedMutationKind,
+} from "../../goal/mutation-gate.js";
+import { syncGoalStatusForConvergence } from "../../goal/convergence-status.js";
 import { cleanupRun } from "../../core/cleanup.js";
 import { createPullRequest } from "../../core/pr-creator.js";
 import { createGhPrPublisher } from "../../core/gh-pr-publisher.js";
@@ -144,6 +151,10 @@ export async function runStartTool(
     idempotencyKey: args.idempotencyKey,
     input: args,
     metadata: operationMetadata(context, "harness.run.start", args),
+    goalGate: {
+      goalId: args.goalId,
+      mutationKind: "run.start",
+    },
     workWithDb: async (db, operationId) => {
       const prepared = await prepareProjectRun({
         harnessRoot: context.harnessRoot,
@@ -221,6 +232,10 @@ export async function reviewAutoTool(
     idempotencyKey: args.idempotencyKey,
     input: args,
     metadata: operationMetadata(context, "harness.review.auto", args),
+    goalGate: {
+      goalId: args.goalId,
+      mutationKind: "review.auto",
+    },
     workWithDb: async (db, operationId) => {
       const result = await runReviewerAgent({
         runsDir: harnessPaths(context.harnessRoot).runsDir,
@@ -272,6 +287,10 @@ export async function rerunStartTool(
     idempotencyKey: args.idempotencyKey,
     input: args,
     metadata: operationMetadata(context, "harness.rerun.start", args),
+    goalGate: {
+      goalId: args.goalId,
+      mutationKind: "rerun.start",
+    },
     workWithDb: async (db, operationId) => {
       const prep = await prepareRerunFromReview({
         runsDir: paths.runsDir,
@@ -530,6 +549,10 @@ export async function reviewProcessTool(
     idempotencyKey: args.idempotencyKey,
     input: args,
     metadata: operationMetadata(context, "harness.review.process", args),
+    goalGate: {
+      goalId: args.goalId,
+      mutationKind: "review.process",
+    },
     workWithDb: async (db) => {
       const result = await processReviewDecision({
         runsDir: paths.runsDir,
@@ -1053,6 +1076,10 @@ async function runMcpOperation<T>(
     pendingExternalExecutor?: boolean;
     work?: () => Promise<T>;
     workWithDb?: (db: Database.Database, operationId: string) => Promise<T>;
+    goalGate?: {
+      goalId: string | undefined;
+      mutationKind: GoalLinkedMutationKind;
+    };
   },
 ): Promise<HarnessMcpToolResult> {
   const paths = harnessPaths(context.harnessRoot);
@@ -1076,6 +1103,13 @@ async function runMcpOperation<T>(
         metadata: opts.metadata,
         ...(opts.pendingExternalExecutor === true ? { pendingExternalExecutor: true } : {}),
         beforeStart: (db) => {
+          if (opts.goalGate?.goalId !== undefined) {
+            assertGoalCanStartMutation({
+              repository: new GoalRepository(db),
+              goalId: opts.goalGate.goalId,
+              mutationKind: opts.goalGate.mutationKind,
+            });
+          }
           assertMutationBudget(db, context.config, {
             clientName: context.clientName,
             operationType: opts.operationType,
@@ -1114,6 +1148,19 @@ async function runMcpOperation<T>(
         limit: budget.limit ?? budget.reason,
         max: budget.max ?? null,
         resetAt: budget.resetAt ?? null,
+      });
+    }
+    if (e instanceof GoalMutationGateError) {
+      const gate = e.denial;
+      syncGoalStatusForConvergence(
+        new GoalRepository(handle.db),
+        gate.convergence,
+      );
+      return permissionDenied(gate.message, {
+        reason: gate.code,
+        goalId: opts.goalGate?.goalId ?? gate.convergence.goalId,
+        mutationKind: opts.goalGate?.mutationKind ?? null,
+        convergence: gate.convergence,
       });
     }
     if (e instanceof OperationInFlightError) {
@@ -1207,6 +1254,20 @@ function reviewProcessPreview(
         },
       );
       if (linked !== null) return linked;
+      const gate = evaluateGoalMutationGate({
+        repository: new GoalRepository(db),
+        goalId: args.goalId,
+        mutationKind: "review.process",
+        syncStatus: false,
+      });
+      if (!gate.allowed) {
+        return permissionDenied(gate.message, {
+          reason: gate.code,
+          goalId: args.goalId,
+          mutationKind: "review.process",
+          convergence: gate.convergence,
+        });
+      }
     }
     const repo = new ReviewProposalRepository(db);
     const proposal =

@@ -81,6 +81,9 @@ export const GoalPolicySchema = z
     stopOnUnknownScope: z
       .boolean()
       .default(DEFAULT_GOAL_POLICY.stopOnUnknownScope),
+    allowEmptyCloseConditions: z
+      .boolean()
+      .default(DEFAULT_GOAL_POLICY.allowEmptyCloseConditions),
     reviewModeSequence: z.array(GoalReviewModeSchema).default(
       DEFAULT_GOAL_POLICY.reviewModeSequence,
     ),

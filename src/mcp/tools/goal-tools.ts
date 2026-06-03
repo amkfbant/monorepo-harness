@@ -14,6 +14,10 @@ import {
   type ClassifiableGoalFinding,
 } from "../../goal/classification.js";
 import { ConvergenceService } from "../../goal/convergence.js";
+import {
+  evaluateConvergenceAndRecordStatus,
+  recordConvergenceDecisionWithStatus,
+} from "../../goal/convergence-status.js";
 import { deferFindingToBacklog } from "../../goal/followups.js";
 import { nextReviewMode } from "../../goal/review-mode.js";
 import {
@@ -146,6 +150,13 @@ export interface GoalExpandScopeArgs extends MutationBaseArgs {
   goalId: string;
   scope: GoalScope;
   reason: string;
+}
+
+function splitRecordedConvergence(
+  result: ReturnType<typeof evaluateConvergenceAndRecordStatus>,
+) {
+  const { decisionRecord, goalStatus, ...convergence } = result;
+  return { convergence, decisionRecord, goalStatus };
 }
 
 export function goalListTool(
@@ -382,24 +393,20 @@ export async function goalRecordFindingsTool(
             ).length,
           summary: `MCP recorded ${recorded.length} finding(s) via ${operationId}`,
         });
-        const convergence = new ConvergenceService(repo).evaluate(args.goalId);
-        const decisionRecord = repo.recordConvergenceDecision({
+        const convergenceResult = evaluateConvergenceAndRecordStatus({
+          repository: repo,
           goalId: args.goalId,
           cycleId: completedCycle.cycleId,
-          decision: convergence.decision,
-          reason: convergence.reason,
-          metrics: { ...convergence.metrics },
-          recommendedNextAction: convergence.recommendedNextAction,
           createdBy: `mcp:${context.clientName}`,
         });
+        const convergence = splitRecordedConvergence(convergenceResult);
         return {
           goalId: args.goalId,
           recorded,
           created: recorded.filter((r) => r.created).length,
           reopened: recorded.filter((r) => r.reopened).length,
           cycle: completedCycle,
-          convergence,
-          decisionRecord,
+          ...convergence,
         };
       });
       return tx.immediate();
@@ -418,13 +425,28 @@ export async function goalClassifyFindingTool(
     metadata: goalMetadata(context, "harness.goal.classify_finding", args, {
       findingIds: [args.findingId],
     }),
-    workWithDb: async (db) =>
-      new GoalRepository(db).classifyFinding({
-        findingId: args.findingId,
-        scopeStatus: args.scopeStatus,
-        reason: redactMcpText(args.reason),
-        ...(args.duplicateOf !== undefined ? { duplicateOf: args.duplicateOf } : {}),
-      }),
+    workWithDb: async (db) => {
+      const repo = new GoalRepository(db);
+      const tx = db.transaction(() => {
+        const finding = repo.classifyFinding({
+          findingId: args.findingId,
+          scopeStatus: args.scopeStatus,
+          reason: redactMcpText(args.reason),
+          ...(args.duplicateOf !== undefined ? { duplicateOf: args.duplicateOf } : {}),
+        });
+        const convergenceResult = evaluateConvergenceAndRecordStatus({
+          repository: repo,
+          goalId: finding.goalId,
+          createdBy: `mcp:${context.clientName}`,
+        });
+        const convergence = splitRecordedConvergence(convergenceResult);
+        return {
+          finding,
+          ...convergence,
+        };
+      });
+      return tx.immediate();
+    },
   });
 }
 
@@ -439,11 +461,26 @@ export async function goalMarkFindingFixedTool(
     metadata: goalMetadata(context, "harness.goal.mark_finding_fixed", args, {
       findingIds: [args.findingId],
     }),
-    workWithDb: async (db) =>
-      new GoalRepository(db).markFindingFixed({
-        findingId: args.findingId,
-        ...(args.note !== undefined ? { note: redactMcpText(args.note) } : {}),
-      }),
+    workWithDb: async (db) => {
+      const repo = new GoalRepository(db);
+      const tx = db.transaction(() => {
+        const finding = repo.markFindingFixed({
+          findingId: args.findingId,
+          ...(args.note !== undefined ? { note: redactMcpText(args.note) } : {}),
+        });
+        const convergenceResult = evaluateConvergenceAndRecordStatus({
+          repository: repo,
+          goalId: finding.goalId,
+          createdBy: `mcp:${context.clientName}`,
+        });
+        const convergence = splitRecordedConvergence(convergenceResult);
+        return {
+          finding,
+          ...convergence,
+        };
+      });
+      return tx.immediate();
+    },
   });
 }
 
@@ -465,9 +502,10 @@ export async function goalDeferFindingTool(
     metadata: goalMetadata(context, "harness.goal.defer_finding", args, {
       findingIds: [args.findingId],
     }),
-    workWithDb: async (db) =>
-      deferFindingToBacklog({
-        repository: new GoalRepository(db),
+    workWithDb: async (db) => {
+      const repo = new GoalRepository(db);
+      const deferred = await deferFindingToBacklog({
+        repository: repo,
         findingId: args.findingId,
         reason: redactMcpText(args.reason),
         createBacklogItem: args.createBacklogItem === true,
@@ -479,7 +517,18 @@ export async function goalDeferFindingTool(
               },
             }
           : {}),
-      }),
+      });
+      const convergenceResult = evaluateConvergenceAndRecordStatus({
+        repository: repo,
+        goalId: deferred.finding.goalId,
+        createdBy: `mcp:${context.clientName}`,
+      });
+      const convergence = splitRecordedConvergence(convergenceResult);
+      return {
+        ...deferred,
+        ...convergence,
+      };
+    },
   });
 }
 
@@ -499,14 +548,30 @@ export async function goalRecordCloseCheckTool(
         args.evidence === undefined
           ? undefined
           : (redactMcpAuditValue(args.evidence) as Record<string, unknown>);
-      return new GoalRepository(db).recordCloseCheck({
-        goalId: args.goalId,
-        conditionId: args.conditionId,
-        status: args.status,
-        checkedBy: args.checkedBy ?? `mcp:${context.clientName}`,
-        ...(evidence !== undefined ? { evidence } : {}),
-        ...(args.message !== undefined ? { message: redactMcpText(args.message) } : {}),
+      const repo = new GoalRepository(db);
+      const tx = db.transaction(() => {
+        const check = repo.recordCloseCheck({
+          goalId: args.goalId,
+          conditionId: args.conditionId,
+          status: args.status,
+          checkedBy: args.checkedBy ?? `mcp:${context.clientName}`,
+          ...(evidence !== undefined ? { evidence } : {}),
+          ...(args.message !== undefined
+            ? { message: redactMcpText(args.message) }
+            : {}),
+        });
+        const convergenceResult = evaluateConvergenceAndRecordStatus({
+          repository: repo,
+          goalId: args.goalId,
+          createdBy: `mcp:${context.clientName}`,
+        });
+        const convergence = splitRecordedConvergence(convergenceResult);
+        return {
+          check,
+          ...convergence,
+        };
       });
+      return tx.immediate();
     },
   });
 }
@@ -525,7 +590,8 @@ export async function goalCheckConvergenceTool(
     workWithDb: async (db) => {
       const repo = new GoalRepository(db);
       const result = new ConvergenceService(repo).evaluate(args.goalId);
-      const decisionRecord = repo.recordConvergenceDecision({
+      const recorded = recordConvergenceDecisionWithStatus({
+        repository: repo,
         goalId: args.goalId,
         decision: result.decision,
         reason: result.reason,
@@ -533,7 +599,11 @@ export async function goalCheckConvergenceTool(
         recommendedNextAction: result.recommendedNextAction,
         createdBy: `mcp:${context.clientName}`,
       });
-      return { ...result, decisionRecord };
+      return {
+        ...result,
+        decisionRecord: recorded.decisionRecord,
+        goalStatus: recorded.goalStatus,
+      };
     },
   });
 }

@@ -5,6 +5,7 @@ import {
   type ClassifiableGoalFinding,
 } from "./classification.js";
 import { ConvergenceService } from "./convergence.js";
+import { recordConvergenceDecisionWithStatus } from "./convergence-status.js";
 import { GoalRepository } from "./repository.js";
 import { nextReviewMode } from "./review-mode.js";
 import type {
@@ -39,6 +40,7 @@ export interface ImportReviewProposalToGoalResult {
   findings: ImportedGoalFinding[];
   closeChecks: GoalCloseCheck[];
   convergenceDecision: GoalConvergenceDecisionRecord;
+  goalStatus: GoalSession | null;
 }
 
 interface ProposalFindingSeed {
@@ -71,15 +73,6 @@ export function importReviewProposalToGoal(
     sourceRunId: input.proposal.runId,
   });
   const findings = importProposalFindings(input.repository, session, input.proposal, cycle);
-  const closeChecks =
-    input.processResult === undefined
-      ? []
-      : recordReviewProcessCloseChecks(
-          input.repository,
-          session,
-          input.proposal,
-          input.processResult,
-        );
   const completedCycle = input.repository.completeReviewCycle({
     cycleId: cycle.cycleId,
     findingsSeen: findings.length,
@@ -97,8 +90,19 @@ export function importReviewProposalToGoal(
       .length,
     summary: `Imported review proposal ${input.proposal.proposalId} (${input.proposal.decision})`,
   });
+  const closeChecks =
+    input.processResult === undefined
+      ? []
+      : recordReviewProcessCloseChecks(
+          input.repository,
+          session,
+          input.proposal,
+          input.processResult,
+          completedCycle.completedAt,
+        );
   const convergence = new ConvergenceService(input.repository).evaluate(input.goalId);
-  const convergenceDecision = input.repository.recordConvergenceDecision({
+  const recorded = recordConvergenceDecisionWithStatus({
+    repository: input.repository,
     goalId: input.goalId,
     cycleId: completedCycle.cycleId,
     decision: convergence.decision,
@@ -111,7 +115,8 @@ export function importReviewProposalToGoal(
     cycle: completedCycle,
     findings,
     closeChecks,
-    convergenceDecision,
+    convergenceDecision: recorded.decisionRecord,
+    goalStatus: recorded.goalStatus,
   };
 }
 
@@ -209,6 +214,7 @@ function recordReviewProcessCloseChecks(
   session: GoalSession,
   proposal: ReviewProposalRow,
   result: ProcessResult,
+  freshAfter: string | null,
 ): GoalCloseCheck[] {
   const reviewConditions = session.closeConditions.filter(
     (condition) => condition.kind === "review_consensus",
@@ -219,7 +225,10 @@ function recordReviewProcessCloseChecks(
       conditionId: condition.id,
       status: result.newStatus === "approved" ? "passed" : "failed",
       checkedBy: result.reviewer ?? proposal.reviewer,
-      checkedAt: result.reviewedAt,
+      checkedAt:
+        freshAfter !== null && result.reviewedAt < freshAfter
+          ? freshAfter
+          : result.reviewedAt,
       evidence: {
         runId: result.runId,
         proposalId: proposal.proposalId,

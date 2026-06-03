@@ -1180,6 +1180,517 @@ describe("MCP mutation, confirmation, and audit", () => {
     expect(result.data.limit).toBe("maxMutationOperationsPerHour");
   });
 
+  it("rejects goal-linked run.start when convergence is budget_exhausted", async () => {
+    const root = freshRoot((db) => {
+      new GoalRepository(db).createSession({
+        goalId: "goal-budget-stop",
+        title: "Budget exhausted goal",
+        projectId: "demo",
+        domain: "apps/web",
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+      new GoalRepository(db).updateStatus(
+        "goal-budget-stop",
+        "budget_exhausted",
+        "budget exhausted",
+      );
+    });
+    const result = await callTool(
+      server(root, {
+        ...DEFAULT_MCP_CONFIG,
+        defaultMode: "guarded-mutation",
+        allowedProjects: ["demo"],
+        allowedOperations: ["run.start"],
+      }),
+      "harness.run.start",
+      {
+        projectId: "demo",
+        domain: "apps/web",
+        goal: "Should be blocked",
+        goalId: "goal-budget-stop",
+        idempotencyKey: "goal-budget-stop-run",
+      },
+    );
+
+    expect(result.status).toBe("permission_denied");
+    expect(result.data.reason).toBe("goal_budget_exhausted");
+  });
+
+  it("rejects goal-linked rerun.start when convergence needs classification", async () => {
+    const root = freshRoot((db) => {
+      seedRun(db, "run-needs-classification", "demo");
+      const repo = new GoalRepository(db);
+      repo.createSession({
+        goalId: "goal-needs-classification",
+        title: "Needs classification",
+        projectId: "demo",
+        repoId: "demo-repo",
+        domain: "apps/web",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+      repo.upsertFinding({
+        goalId: "goal-needs-classification",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "unknown",
+        summary: "Unclassified finding",
+      });
+    });
+    const result = await callTool(
+      server(root, {
+        ...DEFAULT_MCP_CONFIG,
+        defaultMode: "guarded-mutation",
+        allowedProjects: ["demo"],
+        allowedOperations: ["rerun.start"],
+      }),
+      "harness.rerun.start",
+      {
+        runId: "run-needs-classification",
+        goalId: "goal-needs-classification",
+        idempotencyKey: "goal-classification-rerun",
+      },
+    );
+
+    expect(result.status).toBe("permission_denied");
+    expect(result.data.reason).toBe("goal_needs_classification");
+  });
+
+  it("rejects goal-linked run.start when convergence is close_ready", async () => {
+    const root = freshRoot((db) => {
+      const repo = new GoalRepository(db);
+      repo.createSession({
+        goalId: "goal-close-ready",
+        title: "Close ready",
+        projectId: "demo",
+        domain: "apps/web",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+      repo.recordCloseCheck({
+        goalId: "goal-close-ready",
+        conditionId: "typecheck",
+        status: "passed",
+        checkedBy: "test",
+      });
+    });
+    const result = await callTool(
+      server(root, {
+        ...DEFAULT_MCP_CONFIG,
+        defaultMode: "guarded-mutation",
+        allowedProjects: ["demo"],
+        allowedOperations: ["run.start"],
+      }),
+      "harness.run.start",
+      {
+        projectId: "demo",
+        domain: "apps/web",
+        goal: "Should be blocked",
+        goalId: "goal-close-ready",
+        idempotencyKey: "goal-close-ready-run",
+      },
+    );
+
+    expect(result.status).toBe("permission_denied");
+    expect(result.data.reason).toBe("goal_close_ready");
+  });
+
+  it("rejects goal-linked run.start when close checks are pending", async () => {
+    const root = freshRoot((db) => {
+      seedRun(db, "run-close-check-pending", "demo");
+      new GoalRepository(db).createSession({
+        goalId: "goal-close-check-pending",
+        title: "Close check pending",
+        projectId: "demo",
+        repoId: "demo-repo",
+        domain: "apps/web",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+    });
+    const result = await callTool(
+      server(root, {
+        ...DEFAULT_MCP_CONFIG,
+        defaultMode: "guarded-mutation",
+        allowedProjects: ["demo"],
+        allowedOperations: ["run.start", "rerun.start"],
+      }),
+      "harness.run.start",
+      {
+        projectId: "demo",
+        domain: "apps/web",
+        goal: "Should run close check first",
+        goalId: "goal-close-check-pending",
+        idempotencyKey: "goal-close-check-pending-run",
+      },
+    );
+
+    expect(result.status).toBe("permission_denied");
+    expect(result.data.reason).toBe("goal_next_action_run_close_check");
+
+    const rerun = await callTool(
+      server(root, {
+        ...DEFAULT_MCP_CONFIG,
+        defaultMode: "guarded-mutation",
+        allowedProjects: ["demo"],
+        allowedOperations: ["rerun.start"],
+      }),
+      "harness.rerun.start",
+      {
+        runId: "run-close-check-pending",
+        goalId: "goal-close-check-pending",
+        idempotencyKey: "goal-close-check-pending-rerun",
+      },
+    );
+    expect(rerun.status).toBe("permission_denied");
+    expect(rerun.data.reason).toBe("goal_next_action_run_close_check");
+  });
+
+  it("allows goal-linked review.auto when close-check evidence is pending", async () => {
+    const root = freshRoot((db, harnessRoot) => {
+      seedReviewableRun(db, harnessRoot, { runId: "run-review-auto-close-check" });
+      new GoalRepository(db).createSession({
+        goalId: "goal-review-auto-close-check",
+        title: "Review auto close check",
+        projectId: "demo",
+        repoId: "demo-repo",
+        domain: "apps/web",
+        closeConditions: [
+          { id: "review-consensus", kind: "review_consensus", required: true },
+        ],
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+    });
+    const result = await callTool(
+      server(root, {
+        ...DEFAULT_MCP_CONFIG,
+        defaultMode: "guarded-mutation",
+        allowedProjects: ["demo"],
+        allowedOperations: ["review.auto"],
+      }),
+      "harness.review.auto",
+      {
+        runId: "run-review-auto-close-check",
+        goalId: "goal-review-auto-close-check",
+        idempotencyKey: "goal-review-auto-close-check",
+      },
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.summary).toContain("already has an active proposal");
+  });
+
+  it("rejects goal-linked implementation mutations when follow-ups need deferral", async () => {
+    const root = freshRoot((db) => {
+      seedRun(db, "run-defer-followups", "demo");
+      const repo = new GoalRepository(db);
+      repo.createSession({
+        goalId: "goal-defer-followups",
+        title: "Defer followups",
+        projectId: "demo",
+        repoId: "demo-repo",
+        domain: "apps/web",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+      repo.upsertFinding({
+        goalId: "goal-defer-followups",
+        source: "review",
+        severity: "P2",
+        category: "follow-up",
+        scopeStatus: "out_of_scope",
+        summary: "Defer this dashboard follow-up",
+      });
+      repo.recordCloseCheck({
+        goalId: "goal-defer-followups",
+        conditionId: "typecheck",
+        status: "passed",
+        checkedBy: "test",
+      });
+    });
+    const config = {
+      ...DEFAULT_MCP_CONFIG,
+      defaultMode: "guarded-mutation",
+      allowedProjects: ["demo"],
+      allowedOperations: ["run.start", "rerun.start"],
+    };
+    const s = server(root, config);
+
+    const run = await callTool(s, "harness.run.start", {
+      projectId: "demo",
+      domain: "apps/web",
+      goal: "Should defer followups first",
+      goalId: "goal-defer-followups",
+      idempotencyKey: "goal-defer-followups-run",
+    });
+    expect(run.status).toBe("permission_denied");
+    expect(run.data.reason).toBe("goal_next_action_defer_followups");
+
+    const rerun = await callTool(s, "harness.rerun.start", {
+      runId: "run-defer-followups",
+      goalId: "goal-defer-followups",
+      idempotencyKey: "goal-defer-followups-rerun",
+    });
+    expect(rerun.status).toBe("permission_denied");
+    expect(rerun.data.reason).toBe("goal_next_action_defer_followups");
+  });
+
+  it("allows goal-linked run.start gate when convergence needs a fix", async () => {
+    const root = freshRoot((db) => {
+      const repo = new GoalRepository(db);
+      repo.createSession({
+        goalId: "goal-needs-fix",
+        title: "Needs fix",
+        projectId: "demo",
+        domain: "apps/web",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+      repo.upsertFinding({
+        goalId: "goal-needs-fix",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary: "Needs implementation",
+      });
+    });
+    const result = await callTool(
+      server(root, {
+        ...DEFAULT_MCP_CONFIG,
+        defaultMode: "guarded-mutation",
+        allowedProjects: ["demo"],
+        allowedOperations: ["run.start"],
+      }),
+      "harness.run.start",
+      {
+        projectId: "demo",
+        domain: "apps/web",
+        goal: "Allowed past goal gate",
+        goalId: "goal-needs-fix",
+        idempotencyKey: "goal-needs-fix-run",
+      },
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.summary).toContain("no project profile");
+  });
+
+  it("allows goal-linked rerun.start gate when convergence needs a fix", async () => {
+    const root = freshRoot((db) => {
+      seedRun(db, "run-needs-fix-rerun", "demo");
+      const repo = new GoalRepository(db);
+      repo.createSession({
+        goalId: "goal-needs-fix-rerun",
+        title: "Needs fix rerun",
+        projectId: "demo",
+        repoId: "demo-repo",
+        domain: "apps/web",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+      repo.upsertFinding({
+        goalId: "goal-needs-fix-rerun",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary: "Needs rerun fix",
+      });
+    });
+    const result = await callTool(
+      server(root, {
+        ...DEFAULT_MCP_CONFIG,
+        defaultMode: "guarded-mutation",
+        allowedProjects: ["demo"],
+        allowedOperations: ["rerun.start"],
+      }),
+      "harness.rerun.start",
+      {
+        runId: "run-needs-fix-rerun",
+        goalId: "goal-needs-fix-rerun",
+        idempotencyKey: "goal-needs-fix-rerun",
+      },
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.summary).toContain("source-mode conflict");
+  });
+
+  it("allows implementation mutations when a required close check failed", async () => {
+    const root = freshRoot((db) => {
+      seedRun(db, "run-failed-close-check", "demo");
+      const repo = new GoalRepository(db);
+      repo.createSession({
+        goalId: "goal-failed-close-check",
+        title: "Failed close check",
+        projectId: "demo",
+        repoId: "demo-repo",
+        domain: "apps/web",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+      repo.recordCloseCheck({
+        goalId: "goal-failed-close-check",
+        conditionId: "typecheck",
+        status: "failed",
+        checkedBy: "test",
+      });
+    });
+    const config = {
+      ...DEFAULT_MCP_CONFIG,
+      defaultMode: "guarded-mutation",
+      allowedProjects: ["demo"],
+      allowedOperations: ["run.start", "rerun.start"],
+    };
+    const s = server(root, config);
+
+    const run = await callTool(s, "harness.run.start", {
+      projectId: "demo",
+      domain: "apps/web",
+      goal: "Fix failed close check",
+      goalId: "goal-failed-close-check",
+      idempotencyKey: "goal-failed-close-check-run",
+    });
+    expect(run.status).toBe("error");
+    expect(run.summary).toContain("no project profile");
+
+    const rerun = await callTool(s, "harness.rerun.start", {
+      runId: "run-failed-close-check",
+      goalId: "goal-failed-close-check",
+      idempotencyKey: "goal-failed-close-check-rerun",
+    });
+    expect(rerun.status).toBe("error");
+    expect(rerun.summary).toContain("source-mode conflict");
+  });
+
+  it("rejects goal-linked review.process and does not create confirmation when convergence needs a fix", async () => {
+    const root = freshRoot((db, harnessRoot) => {
+      seedReviewableRun(db, harnessRoot, {
+        runId: "run-needs-fix-review-process",
+        projectId: "demo",
+      });
+      const repo = new GoalRepository(db);
+      repo.createSession({
+        goalId: "goal-needs-fix-review-process",
+        title: "Needs fix review process",
+        projectId: "demo",
+        repoId: "demo-repo",
+        domain: "apps/web",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+      repo.upsertFinding({
+        goalId: "goal-needs-fix-review-process",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary: "Must fix before processing review",
+      });
+    });
+    const result = await callTool(
+      server(root, {
+        ...DEFAULT_MCP_CONFIG,
+        defaultMode: "guarded-mutation",
+        allowedProjects: ["demo"],
+        allowedOperations: ["review.process"],
+      }),
+      "harness.review.process",
+      {
+        runId: "run-needs-fix-review-process",
+        decision: "approved",
+        goalId: "goal-needs-fix-review-process",
+        idempotencyKey: "goal-needs-fix-review-process",
+      },
+    );
+
+    expect(result.status).toBe("permission_denied");
+    expect(result.data.reason).toBe(
+      "goal_needs_fix_fix_findings_disallows_review_process",
+    );
+    expect(
+      readDb(
+        root,
+        (db) =>
+          (
+            db
+              .prepare("SELECT count(*) AS n FROM mcp_confirmation_requests")
+              .get() as { n: number }
+          ).n,
+      ),
+    ).toBe(0);
+  });
+
+  it("processes goal-linked review proposals into close_ready via review.process", async () => {
+    const root = freshRoot((db, harnessRoot) => {
+      seedReviewableRun(db, harnessRoot, {
+        runId: "run-goal-review-process-close",
+        projectId: "demo",
+      });
+      new GoalRepository(db).createSession({
+        goalId: "goal-review-process-close",
+        title: "Review process close",
+        projectId: "demo",
+        repoId: "demo-repo",
+        domain: "apps/web",
+        closeConditions: [
+          { id: "review-consensus", kind: "review_consensus", required: true },
+        ],
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+    });
+    const s = server(root, {
+      ...DEFAULT_MCP_CONFIG,
+      defaultMode: "guarded-mutation",
+      allowedProjects: ["demo"],
+      allowedOperations: ["review.process"],
+    });
+    const pending = await callTool(s, "harness.review.process", {
+      runId: "run-goal-review-process-close",
+      decision: "approved",
+      goalId: "goal-review-process-close",
+      idempotencyKey: "goal-review-process-close",
+    });
+
+    expect(pending.status).toBe("confirmation_required");
+    expect(pending.data.preview.data.goalId).toBe("goal-review-process-close");
+
+    const confirmed = await confirmMcpRequest({
+      harnessRoot: root,
+      confirmationId: pending.confirmationId,
+      confirmedBy: "human",
+    });
+    expect(confirmed.status).toBe("operation_started");
+    expect(confirmed.data.result.goalIntegration.convergenceDecision.decision).toBe(
+      "close_ready",
+    );
+
+    expect(
+      readDb(
+        root,
+        (db) =>
+          (
+            db
+              .prepare("SELECT status FROM goal_sessions WHERE goal_id = ?")
+              .get("goal-review-process-close") as { status: string }
+          ).status,
+      ),
+    ).toBe("close_ready");
+  });
+
   it("rejects project reruns when the refreshed project repo attribution changed", async () => {
     const root = freshRoot((db, harnessRoot) => {
       const oldRepo = join(harnessRoot, "repo-old");
@@ -1226,8 +1737,17 @@ describe("MCP mutation, confirmation, and audit", () => {
         projectId: "demo",
         repoId: "demo-repo",
         domain: "apps/web",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
         createdBy: "test",
         createdSource: "mcp",
+      });
+      new GoalRepository(db).upsertFinding({
+        goalId: "goal-rerun-repo",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary: "Needs fix before rerun repo drift check",
       });
       const yaml = reviewDecisionYaml({
         runId: "run-rerun-repo",

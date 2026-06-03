@@ -12,6 +12,7 @@ import {
   type ClassifiableGoalFinding,
 } from "../goal/classification.js";
 import { ConvergenceService } from "../goal/convergence.js";
+import { recordConvergenceDecisionWithStatus } from "../goal/convergence-status.js";
 import { deferFindingToBacklog } from "../goal/followups.js";
 import {
   GoalRepository,
@@ -625,23 +626,26 @@ export function registerGoalCommands(
     .argument("<goal-id>", "goal id")
     .option("--created-by <actor>", "actor label", "cli")
     .option("--no-record", "evaluate without recording a decision")
+    .option("--no-status-update", "do not update goal status from the decision")
     .option("--json", "emit JSON", false)
     .action((goalId: string, raw: Record<string, unknown>) => {
       withGoalErrorExit(() => {
         const out = withGoalRepo(opts, ({ repo }) => {
           const result = new ConvergenceService(repo).evaluate(goalId);
-          const record =
-            raw.record === false
-              ? null
-              : repo.recordConvergenceDecision({
-                  goalId,
-                  decision: result.decision,
-                  reason: result.reason,
-                  metrics: { ...result.metrics },
-                  recommendedNextAction: result.recommendedNextAction,
-                  createdBy: String(raw.createdBy),
-                });
-          return { ...result, decisionRecord: record };
+          if (raw.record === false) {
+            return { ...result, decisionRecord: null, goalStatus: null };
+          }
+          const recorded = recordConvergenceDecisionWithStatus({
+            repository: repo,
+            goalId,
+            decision: result.decision,
+            reason: result.reason,
+            metrics: { ...result.metrics },
+            recommendedNextAction: result.recommendedNextAction,
+            createdBy: String(raw.createdBy),
+            updateStatus: raw.statusUpdate !== false,
+          });
+          return { ...result, ...recorded };
         });
         writeConvergence(raw, out);
         if (

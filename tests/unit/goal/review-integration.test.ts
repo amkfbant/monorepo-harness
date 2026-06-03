@@ -156,6 +156,69 @@ describe("goal review integration", () => {
         status: "passed",
       });
       expect(imported.convergenceDecision.decision).toBe("close_ready");
+      expect(imported.goalStatus?.status).toBe("close_ready");
+      expect(goals.requireSession("goal-close-review").status).toBe("close_ready");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("syncs goal status when review import detects divergence", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      goals.createSession({
+        goalId: "goal-review-diverging",
+        title: "Goal review diverging",
+        maxTotalNewFindings: 0,
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const proposal = createProposal(proposals, {
+        decision: "changes_requested",
+        requiredChanges: ["New blocker exceeds the finding budget"],
+      });
+
+      const imported = importReviewProposalToGoal({
+        repository: goals,
+        goalId: "goal-review-diverging",
+        proposal,
+        createdBy: "test",
+      });
+
+      expect(imported.convergenceDecision.decision).toBe("diverging");
+      expect(imported.goalStatus?.status).toBe("diverging");
+      expect(goals.requireSession("goal-review-diverging").status).toBe(
+        "diverging",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("syncs goal status when review import exhausts the review budget", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      goals.createSession({
+        goalId: "goal-review-budget",
+        title: "Goal review budget",
+        maxReviewCycles: 0,
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const proposal = createProposal(proposals, { decision: "approved" });
+
+      const imported = importReviewProposalToGoal({
+        repository: goals,
+        goalId: "goal-review-budget",
+        proposal,
+        createdBy: "test",
+      });
+
+      expect(imported.convergenceDecision.decision).toBe("budget_exhausted");
+      expect(imported.goalStatus?.status).toBe("budget_exhausted");
+      expect(goals.requireSession("goal-review-budget").status).toBe(
+        "budget_exhausted",
+      );
     } finally {
       db.close();
     }
@@ -276,6 +339,12 @@ describe("goal review integration", () => {
         iteration: runAttempt.iteration,
         parentAttemptId: runAttempt.attemptId,
         runStatus: "approved",
+      });
+      goals.recordCloseCheck({
+        goalId: "goal-review-attempt",
+        conditionId: "typecheck",
+        status: "passed",
+        checkedBy: "test",
       });
 
       expect(reviewAttempt.iteration).toBe(runAttempt.iteration);

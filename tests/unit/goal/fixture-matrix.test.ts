@@ -263,6 +263,7 @@ describe("goal convergence fixture matrix", () => {
               findingsNew: 0,
               findingsFixed: 1,
             });
+            passCloseCheck(ctx);
           }
         },
       });
@@ -332,7 +333,6 @@ describe("goal convergence fixture matrix", () => {
   it("defers out-of-scope findings before stopping close-ready", () => {
     const ctx = fresh("goal-fixture-defer");
     try {
-      passCloseCheck(ctx);
       const cycle = startCycle(ctx, "initial");
       const followUp = addFinding(ctx, {
         summary: "add dashboard chart follow-up",
@@ -345,6 +345,7 @@ describe("goal convergence fixture matrix", () => {
         findingsSeen: 1,
         findingsNew: 1,
       });
+      passCloseCheck(ctx);
 
       const loop = new SimulatedGoalLoop(ctx);
       loop.runUntilStop({
@@ -361,6 +362,7 @@ describe("goal convergence fixture matrix", () => {
               backlogItemId: "backlog-goal-fixture-defer",
               note: "deferred by fixture loop",
             });
+            passCloseCheck(ctx);
           }
         },
       });
@@ -397,6 +399,7 @@ describe("goal convergence fixture matrix", () => {
             scopeStatus: "in_scope",
             reason: "manual fixture classification",
           });
+          passCloseCheck(ctx);
         },
       });
 

@@ -154,13 +154,14 @@ describe("MCP goal tools", () => {
     );
     const findingId = recorded.data.result.recorded[0].finding.findingId;
 
-    expect(
-      (await callTool(s, "harness.goal.mark_finding_fixed", {
-        findingId,
-        note: "stored evidence",
-        idempotencyKey: "goal-fixed",
-      })).status,
-    ).toBe("operation_started");
+    const fixed = await callTool(s, "harness.goal.mark_finding_fixed", {
+      findingId,
+      note: "stored evidence",
+      idempotencyKey: "goal-fixed",
+    });
+    expect(fixed.status).toBe("operation_started");
+    expect(fixed.data.result.finding.lifecycleStatus).toBe("fixed");
+    expect(fixed.data.result.decisionRecord.decision).toBe("continue");
     const secret = `sk-${"c".repeat(40)}`;
     const checked = await callTool(s, "harness.goal.record_close_check", {
       goalId,
@@ -171,6 +172,10 @@ describe("MCP goal tools", () => {
       idempotencyKey: "goal-check",
     });
     expect(checked.status).toBe("operation_started");
+    expect(checked.data.result.check.status).toBe("passed");
+    expect(checked.data.result.convergence.decision).toBe("close_ready");
+    expect(checked.data.result.decisionRecord.decision).toBe("close_ready");
+    expect(checked.data.result.goalStatus.status).toBe("close_ready");
     expect(JSON.stringify(checked)).not.toContain(secret);
     const closeCheckOperation = await callTool(s, "harness.operation.get", {
       operationId: checked.operationId,
@@ -272,6 +277,76 @@ describe("MCP goal tools", () => {
     expect(recorded.summary).toContain("duplicate finding requires duplicateOf");
   });
 
+  it("records convergence decisions after classify and defer mutations", async () => {
+    const root = freshRoot();
+    const s = server(
+      root,
+      mutationConfig([
+        "goal.start",
+        "goal.record_findings",
+        "goal.classify_finding",
+        "goal.defer_finding",
+      ]),
+    );
+    const started = await callTool(s, "harness.goal.start", {
+      title: "Goal MCP post mutation audit",
+      projectId: "demo",
+      domain: "goal",
+      scope: { targetFiles: ["src/goal/**"] },
+      closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+      idempotencyKey: "goal-start-post-mutation-audit",
+    });
+    const goalId = started.data.result.goalId as string;
+    const unknown = await callTool(s, "harness.goal.record_findings", {
+      goalId,
+      findings: [
+        {
+          severity: "P1",
+          category: "correctness",
+          summary: "Unknown finding",
+          scopeStatus: "unknown",
+        },
+      ],
+      idempotencyKey: "goal-record-unknown-audit",
+    });
+    const unknownFindingId = unknown.data.result.recorded[0].finding.findingId;
+
+    const classified = await callTool(s, "harness.goal.classify_finding", {
+      findingId: unknownFindingId,
+      scopeStatus: "in_scope",
+      reason: "blocks the goal",
+      idempotencyKey: "goal-classify-audit",
+    });
+    expect(classified.status).toBe("operation_started");
+    expect(classified.data.result.convergence.decision).toBe("needs_fix");
+    expect(classified.data.result.decisionRecord.decision).toBe("needs_fix");
+
+    const outOfScope = await callTool(s, "harness.goal.record_findings", {
+      goalId,
+      findings: [
+        {
+          severity: "P2",
+          category: "future-feature",
+          summary: "Future dashboard controls",
+          filePath: "src/dashboard/view.ts",
+        },
+      ],
+      idempotencyKey: "goal-record-oos-audit",
+    });
+    const outOfScopeFindingId =
+      outOfScope.data.result.recorded[0].finding.findingId;
+
+    const deferred = await callTool(s, "harness.goal.defer_finding", {
+      findingId: outOfScopeFindingId,
+      reason: "future feature",
+      createBacklogItem: false,
+      idempotencyKey: "goal-defer-audit",
+    });
+    expect(deferred.status).toBe("operation_started");
+    expect(deferred.data.result.finding.lifecycleStatus).toBe("deferred");
+    expect(deferred.data.result.decisionRecord).toBeTruthy();
+  });
+
   it("counts MCP-recorded findings as review cycles for divergence budgets", async () => {
     const root = freshRoot();
     const s = server(root, mutationConfig(["goal.start", "goal.record_findings"]));
@@ -313,6 +388,83 @@ describe("MCP goal tools", () => {
     expect(recorded.data.result.convergence.decision).toBe("diverging");
     expect(recorded.data.result.convergence.metrics.totalNewFindings).toBe(2);
     expect(recorded.data.result.convergence.metrics.reviewCyclesUsed).toBe(1);
+  });
+
+  it("check_convergence syncs durable stop and close_ready statuses", async () => {
+    const root = freshRoot();
+    withDb(root, (db) => {
+      const repo = new GoalRepository(db);
+      repo.createSession({
+        goalId: "goal-sync-diverging",
+        title: "Diverging",
+        projectId: "demo",
+        maxTotalNewFindings: 0,
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+      const cycle = repo.startReviewCycle({
+        goalId: "goal-sync-diverging",
+        reviewMode: "initial",
+      });
+      repo.completeReviewCycle({ cycleId: cycle.cycleId, findingsNew: 1 });
+
+      repo.createSession({
+        goalId: "goal-sync-budget",
+        title: "Budget",
+        projectId: "demo",
+        maxIterations: 0,
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+
+      repo.createSession({
+        goalId: "goal-sync-close",
+        title: "Close",
+        projectId: "demo",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+      repo.recordCloseCheck({
+        goalId: "goal-sync-close",
+        conditionId: "typecheck",
+        status: "passed",
+        checkedBy: "test",
+      });
+    });
+    const s = server(root, mutationConfig(["goal.check_convergence"]));
+
+    const diverging = await callTool(s, "harness.goal.check_convergence", {
+      goalId: "goal-sync-diverging",
+      idempotencyKey: "goal-sync-diverging",
+    });
+    expect(diverging.data.result.decision).toBe("diverging");
+    expect(diverging.data.result.goalStatus.status).toBe("diverging");
+
+    const budget = await callTool(s, "harness.goal.check_convergence", {
+      goalId: "goal-sync-budget",
+      idempotencyKey: "goal-sync-budget",
+    });
+    expect(budget.data.result.decision).toBe("budget_exhausted");
+    expect(budget.data.result.goalStatus.status).toBe("budget_exhausted");
+
+    const closeReady = await callTool(s, "harness.goal.check_convergence", {
+      goalId: "goal-sync-close",
+      idempotencyKey: "goal-sync-close",
+    });
+    expect(closeReady.data.result.decision).toBe("close_ready");
+    expect(closeReady.data.result.goalStatus.status).toBe("close_ready");
+
+    withDb(root, (db) => {
+      const repo = new GoalRepository(db);
+      expect(repo.requireSession("goal-sync-diverging").status).toBe("diverging");
+      expect(repo.requireSession("goal-sync-budget").status).toBe(
+        "budget_exhausted",
+      );
+      expect(repo.requireSession("goal-sync-close").status).toBe("close_ready");
+    });
   });
 
   it("redacts and caps raw findings in read tools and resources", async () => {
@@ -440,6 +592,27 @@ describe("MCP goal tools", () => {
     expect(pending.data.preview.data.convergence.decision).not.toBe(
       "close_ready",
     );
+  });
+
+  it("does not treat empty close conditions as close_ready by default", async () => {
+    const root = freshRoot();
+    const s = server(root, mutationConfig(["goal.start", "goal.close"]));
+    const started = await callTool(s, "harness.goal.start", {
+      title: "Goal MCP empty close conditions",
+      projectId: "demo",
+      domain: "goal",
+      idempotencyKey: "goal-empty-close-start",
+    });
+    const goalId = started.data.result.goalId as string;
+
+    const pending = await callTool(s, "harness.goal.close", {
+      goalId,
+      summary: "should require confirmation",
+      idempotencyKey: "goal-empty-close",
+    });
+    expect(pending.status).toBe("confirmation_required");
+    expect(pending.data.preview.data.convergence.decision).toBe("continue");
+    expect(pending.data.preview.data.convergence.metrics.closeConditionsPending).toBe(1);
   });
 
   it("requires confirmation when force closing a close_ready goal", async () => {

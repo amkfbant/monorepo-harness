@@ -18,6 +18,7 @@ const UNRESOLVED_OUT_OF_SCOPE_LIFECYCLES = new Set<GoalLifecycleStatus>([
   "reopened",
   "out_of_scope",
 ]);
+const CLOSE_CHECK_ATTEMPT_TYPE = "close-check";
 
 export class ConvergenceService {
   constructor(private readonly repo: GoalRepository) {}
@@ -32,6 +33,12 @@ export class ConvergenceService {
       conditions: session.closeConditions,
       checks: closeChecks,
       findings,
+      freshAfter: lastCloseCheckInvalidatingMutationAt({
+        attempts,
+        findings,
+        cycles,
+      }),
+      allowEmptyCloseConditions: session.policy.allowEmptyCloseConditions,
     });
     const metrics = buildMetrics(
       session,
@@ -121,6 +128,34 @@ function maxAttemptIteration(attempts: GoalAttempt[]): number {
   return attempts.reduce(
     (max, attempt) => Math.max(max, attempt.iteration),
     0,
+  );
+}
+
+function lastCloseCheckInvalidatingMutationAt(input: {
+  attempts: GoalAttempt[];
+  findings: GoalFinding[];
+  cycles: GoalReviewCycle[];
+}): string | null {
+  const timestamps: string[] = [];
+  for (const attempt of input.attempts) {
+    if (attempt.attemptType === CLOSE_CHECK_ATTEMPT_TYPE) continue;
+    const timestamp =
+      attempt.completedAt ?? attempt.startedAt ?? attempt.createdAt;
+    timestamps.push(timestamp);
+  }
+  for (const finding of input.findings) {
+    timestamps.push(finding.lastSeenAt);
+    if (finding.fixedAt !== null) timestamps.push(finding.fixedAt);
+    if (finding.deferredAt !== null) timestamps.push(finding.deferredAt);
+    if (finding.escalatedAt !== null) timestamps.push(finding.escalatedAt);
+  }
+  for (const cycle of input.cycles) {
+    timestamps.push(cycle.completedAt ?? cycle.createdAt);
+  }
+  return timestamps.reduce<string | null>(
+    (latest, timestamp) =>
+      latest === null || timestamp > latest ? timestamp : latest,
+    null,
   );
 }
 

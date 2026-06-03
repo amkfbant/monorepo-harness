@@ -245,7 +245,7 @@ describe("goal CLI", () => {
       ]),
     );
     expect(deferred.finding.lifecycleStatus).toBe("deferred");
-    expect(deferred.backlogItemId).toBe("item-20260526-001");
+    expect(deferred.backlogItemId).toMatch(/^item-\d{8}-001$/);
 
     const db = openDb(harnessPaths(root).dbPath);
     try {

@@ -176,6 +176,7 @@ export interface GoalPolicy {
   autoFixOnlyInScope: boolean;
   deferOutOfScope: boolean;
   stopOnUnknownScope: boolean;
+  allowEmptyCloseConditions: boolean;
   reviewModeSequence: GoalReviewMode[];
   divergence: GoalDivergencePolicy;
   closeRequires: {
@@ -192,6 +193,7 @@ export const DEFAULT_GOAL_POLICY: GoalPolicy = {
   autoFixOnlyInScope: true,
   deferOutOfScope: true,
   stopOnUnknownScope: true,
+  allowEmptyCloseConditions: false,
   reviewModeSequence: ["initial", "delta", "close"],
   divergence: {
     maxNewFindingsPerCycle: 5,

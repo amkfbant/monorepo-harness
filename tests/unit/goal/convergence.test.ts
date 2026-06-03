@@ -49,12 +49,17 @@ function createGoal(
   });
 }
 
-function passClose(repo: GoalRepository, goalId = "goal-test") {
+function passClose(
+  repo: GoalRepository,
+  goalId = "goal-test",
+  checkedAt?: string,
+) {
   repo.recordCloseCheck({
     goalId,
     conditionId: "typecheck",
     status: "passed",
     checkedBy: "test",
+    ...(checkedAt !== undefined ? { checkedAt } : {}),
   });
 }
 
@@ -87,6 +92,35 @@ describe("ConvergenceService", () => {
     try {
       createGoal(repo);
       passClose(repo);
+      expect(service.evaluate("goal-test").decision).toBe("close_ready");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not close_ready goals with no close conditions by default", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, { closeConditions: [] });
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("continue");
+      expect(result.metrics.closeConditionsPending).toBe(1);
+      expect(result.recommendedNextAction.kind).toBe("run_close_check");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("allows empty close conditions only when policy explicitly permits it", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, {
+        closeConditions: [],
+        policy: {
+          ...DEFAULT_GOAL_POLICY,
+          allowEmptyCloseConditions: true,
+        },
+      });
       expect(service.evaluate("goal-test").decision).toBe("close_ready");
     } finally {
       db.close();
@@ -161,8 +195,8 @@ describe("ConvergenceService", () => {
           },
         },
       });
-      passClose(repo);
       addFinding(repo, { scopeStatus: "unknown", severity: "P2" });
+      passClose(repo);
       expect(service.evaluate("goal-test").decision).toBe("close_ready");
     } finally {
       db.close();
@@ -209,6 +243,77 @@ describe("ConvergenceService", () => {
         iteration: 1,
         attemptType: "validate",
       });
+      passClose(repo);
+      expect(service.evaluate("goal-test").decision).toBe("close_ready");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("treats close-check evidence before a later completed attempt as stale", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo);
+      passClose(repo, "goal-test", "2026-05-25T00:00:00.000Z");
+      const attempt = repo.createAttempt({
+        goalId: "goal-test",
+        attemptType: "implement",
+        createdAt: "2026-05-25T00:01:00.000Z",
+        startedAt: "2026-05-25T00:01:00.000Z",
+      });
+      repo.completeAttempt({
+        attemptId: attempt.attemptId,
+        status: "succeeded",
+        completedAt: "2026-05-25T00:02:00.000Z",
+      });
+
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("continue");
+      expect(result.metrics.closeConditionsPending).toBe(1);
+      expect(result.reason).toBe("more validation required");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("treats close-check evidence before a later finding fix as stale", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo);
+      const finding = addFinding(repo, {
+        scopeStatus: "in_scope",
+        severity: "P1",
+        seenAt: "2026-05-25T00:00:00.000Z",
+      });
+      passClose(repo, "goal-test", "2026-05-25T00:01:00.000Z");
+      repo.markFindingFixed({
+        findingId: finding.findingId,
+        fixedAt: "2026-05-25T00:02:00.000Z",
+      });
+
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("continue");
+      expect(result.metrics.closeConditionsPending).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("returns close_ready when close-check evidence is fresher than the fix", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo);
+      const finding = addFinding(repo, {
+        scopeStatus: "in_scope",
+        severity: "P1",
+        seenAt: "2026-05-25T00:00:00.000Z",
+      });
+      repo.markFindingFixed({
+        findingId: finding.findingId,
+        fixedAt: "2026-05-25T00:01:00.000Z",
+      });
+      passClose(repo, "goal-test", "2026-05-25T00:02:00.000Z");
+
       expect(service.evaluate("goal-test").decision).toBe("close_ready");
     } finally {
       db.close();
@@ -316,8 +421,8 @@ describe("ConvergenceService", () => {
     const { db, repo, service } = fresh();
     try {
       createGoal(repo);
-      passClose(repo);
       const finding = addFinding(repo, { scopeStatus: "out_of_scope", severity: "P1" });
+      passClose(repo);
       const result = service.evaluate("goal-test");
       expect(result.decision).toBe("continue");
       expect(result.reason).toBe("out-of-scope findings require deferral");
@@ -339,8 +444,8 @@ describe("ConvergenceService", () => {
           deferOutOfScope: false,
         },
       });
-      passClose(repo);
       addFinding(repo, { scopeStatus: "out_of_scope", severity: "P1" });
+      passClose(repo);
       expect(service.evaluate("goal-test").decision).toBe("close_ready");
     } finally {
       db.close();
