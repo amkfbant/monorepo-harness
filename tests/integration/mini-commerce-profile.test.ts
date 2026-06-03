@@ -81,6 +81,12 @@ describe("mini-commerce project profile (Phase 5-8)", () => {
   });
 
   it("E5-8-2: run --project mini-commerce --dry-run resolves the policy", () => {
+    // The committed profile's repo.path points outside the repo (../../mini-
+    // commerce) and is absent on CI / fresh checkouts. Override it with a
+    // self-contained fixture repo so the test does not depend on the local
+    // working-tree layout; --dry-run only resolves policy (no codex, no commit).
+    const repo = mkdtempSync(join(tmpdir(), "harness-mc-dry-"));
+    mkdirSync(join(repo, "apps/catalog"), { recursive: true });
     const out = execFileSync(
       "node",
       [
@@ -90,6 +96,8 @@ describe("mini-commerce project profile (Phase 5-8)", () => {
         "run",
         "--project",
         "mini-commerce",
+        "--repo",
+        repo,
         "--domain",
         "apps/catalog",
         "--goal",
