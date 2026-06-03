@@ -327,7 +327,7 @@ file export を optional にした（[`db.md`](./db.md) の「Phase 8」節）�
 
 Phase 9 は concurrency safety と runtime DB story の完結を扱う。設計は
 [`db.md`](./db.md) の「Phase 9」節を参照。本書では workflow 観点の変更を
-記述する（実装中）。
+記述する。
 
 - **domain lock の DB 化** — `runDomainCoding` の lock 取得は Phase 9 で
   file lock + DB lock の **dual-lock**。DB lock は lease (5 分) +
@@ -483,7 +483,7 @@ if changes_requested かつ attempt < maxAttempts:
 
 workflow artifact は root run（attempt 0 の run）の dir に置く: `workflow.json` / `workflow-summary.md`。各 attempt の `parentRunId` / `rootRunId` / `rerunAttempt` は `rerun` と同じ規則で維持される。
 
-## Phase 10 — lease stealing / scratch lifecycle（設計確定・実装中）
+## Phase 10 — lease stealing / scratch lifecycle（close 済み・現状仕様）
 
 Phase 10 で file domain lock が撤去され、DB-only domain lock が唯一の
 serialization になる。dual-lock 期間に hidden だった lease stealing の挙動が
@@ -547,7 +547,7 @@ compat-export を内部利用しない。
 `run_materializations.metadata_json` には呼び出し元（command name /
 caller_id）を入れて debug 性を確保する。
 
-## Phase 11 — Review governance / consensus flow（設計確定・実装中）
+## Phase 11 — Review governance / consensus flow（close 済み・現状仕様）
 
 Phase 11 で review process は **consensus mode** が default となる (project
 profile で `review.mode` が `latest-proposal` 以外を指定した場合)。設計は
@@ -595,3 +595,70 @@ harness review process <runId> --override approved --reason "Critical hotfix" \
   → consensus re-evaluate (override がある場合は最優先)
   → applyReviewDecision で final decision に昇格
 ```
+
+## Phase 19 — goal convergence（close 済み・現状仕様）
+
+Phase 19 は `domain-coding` の **状態機械は変えない**。代わりに 1 つ以上の
+`domain-coding` run を **goal session** で束ね、反復 loop が scope を無限に
+広げる代わりに `close_ready` / `diverging` / `budget_exhausted` で停止できる
+ようにする。DB schema は [`db.md`](./db.md) の「Phase 19」節、feature spec は
+[`goal-convergence.md`](./goal-convergence.md)。本書では goal の状態遷移と
+`domain-coding` workflow との境界を記述する。
+
+### goal session と run の関係
+
+goal session（`goal_sessions`）は session 開始時に **scope と close 条件を
+freeze** する。session 内の各作業は `goal_attempts`（`implement` / `fix-review`
+/ `rerun` / `validate` / `close-check` / `classify-findings` /
+`defer-followups` など）として記録され、`implement` / `rerun` 系 attempt は
+`run_id` で個別の `domain-coding` run に紐づく。review は `goal_review_cycles`
+（mode `initial → delta → close`）として記録され、検出された問題は
+`goal_findings` に分類（`in_scope` / `out_of_scope` / `unknown` /
+`duplicate`）されて貯まる。
+
+run / review の中身は Phase 5〜11 の挙動そのままで、新しい `RunStatus` や
+新しい review 遷移は導入しない。goal は周辺の attempt / cycle / finding /
+close-check を記録する **上位 control plane** にとどまる。
+
+### convergence decision → goal status 連携
+
+各 cycle / attempt の後に convergence evaluator（`src/goal/convergence.ts` の
+`ConvergenceService.evaluate`）が close 条件・finding・budget を総合して
+1 つの decision を出す。decision は `goal_convergence_decisions` に audit
+記録され、**同時に `goal_sessions.status` を遷移させる**
+（`src/goal/convergence-status.ts`）:
+
+```txt
+decision           → goal status
+close_ready        → close_ready
+diverging          → diverging
+budget_exhausted   → budget_exhausted
+escalate           → escalated
+continue / needs_* → (status 据え置き)
+closed / cancel    → (terminal; status は close/cancel 経路で確定)
+```
+
+`statusForConvergenceDecision` が status を持たない decision
+（`continue` / `needs_fix` / `needs_classification`）を返した場合、status は
+原則据え置きだが、`close_ready` だった goal が再び fix を要する decision を
+受けると `in_progress` へ戻す（`syncGoalStatusForConvergence`）。
+`closed` / `cancelled` は terminal で、どの decision でも live status へ
+戻さない（data-layer guard）。
+
+decision の優先順位は close 条件の評価結果と budget・finding に基づく
+（概略）:
+
+```txt
+terminal (already closed/cancelled) → そのまま
+budget 超過                          → budget_exhausted
+open in-scope P0                     → escalate
+… (close 条件 / open in-scope finding / unknown finding を順に評価) …
+すべての required close 条件 pass    → close_ready
+それ以外                              → continue / needs_fix / needs_classification
+```
+
+close 条件は **opportunistic な review 拡張より先**に評価される。元の close
+条件が pass し、残るのが out-of-scope / accepted-risk / escalated / deferred の
+follow-up finding だけなら goal は close できる。open な in-scope P0/P1 finding
+は通常の deferred work として扱えない（[`goal-convergence.md`](./goal-convergence.md)
+の Core Rules を参照）。

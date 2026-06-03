@@ -8,12 +8,17 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 
 実装: `src/db/`。
 
-> **ステータス: Phase 9 close 済み（現状仕様）。** DB read model（Phase 6）/
+> **ステータス: Phase 19 close 済み（現状仕様）。** DB read model（Phase 6）/
 > DB-first write path（Phase 7）/ runtime DB complete（Phase 8）/
-> concurrency + runtime completion（Phase 9）はいずれも `src/db/` /
-> `src/workspace/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V5_STATEMENTS`、`SCHEMA_VERSION = 5`）。
-> 下記「Phase 7」「Phase 8」「Phase 9」節はいずれも現状仕様。設計書は
+> concurrency + runtime completion（Phase 9）/ DB-only runtime completion
+> （Phase 10）/ review governance（Phase 11）/ mutation + operation audit
+> （Phase 13）/ human-authored assets DB canonical（Phase 14）/ DB operations
+> （Phase 15）/ blob storage scale-out（Phase 16）/ DB canonical platform
+> integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
+> goal convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
+> `src/mcp/` / `src/goal/` に実装済み。schema の確定値は `src/db/schema.ts`
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V16_STATEMENTS`、
+> `SCHEMA_VERSION = 16`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -399,7 +404,7 @@ truncated artifact の監査情報）を実装する。設計は
 - **truncated artifact の original 情報** — `artifacts.original_bytes` /
   `original_sha256` 記録。`db stats` で truncated 統計表示。
 
-## Phase 10 — DB-only runtime completion（設計確定・実装中）
+## Phase 10 — DB-only runtime completion（close 済み・現状仕様）
 
 Phase 10 は Phase 9 の transition 状態（file + DB の dual-lock / scratch と
 compat export が単一 materialize 経路 / viewer が file-first / runtime に
@@ -646,14 +651,25 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
+`SCHEMA_VERSION = 16`（`src/db/schema.ts`）。
+
 | Version | Phase | 主な内容 |
 |---|---|---|
 | 1〜4 | Phase 6〜8 | runtime DB completion |
 | 5 | Phase 9 | domain_locks / review_proposals / artifacts.original_* / runs.lease_* |
 | 6 | Phase 10 | run_materializations / runs.state_version |
 | 7 | Phase 11 | reviewers / review_rules / run_review_rule_snapshots / review_consensus / review_overrides + review_proposals/decisions additions |
+| 8 | Phase 13 | operations audit ledger 拡張 + operation_events + idempotency partial index |
+| 9 | Phase 14 | project_profile_revisions / policy_templates / effective_policy_snapshots / knowledge_entry_revisions / asset_exports |
+| 10 | Phase 15 | doctor_runs / doctor_findings / repair_actions / backup_catalog / archive_catalog / db_stats_snapshots |
+| 11 | Phase 16 | blob_stores / external_artifact_blobs / blob_migration_jobs |
+| 12 | Phase 17 | artifacts rebuild (`storage='external'` 許容) + runs の asset 帰属列 |
+| 13 | Phase 18 | mcp_confirmation_requests / mcp_sessions / mcp_tool_invocations |
+| 14 | Phase 18 | mcp_confirmation_requests.permission_snapshot_json |
+| 15 | Phase 18 | mcp_sessions.reported_client_* / mcp_confirmation_requests.error_message |
+| 16 | Phase 19 | goal_sessions / goal_attempts / goal_review_cycles / goal_findings / goal_close_checks / goal_convergence_decisions |
 
-## Phase 11 — Review governance / consensus（設計確定・実装中）
+## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
 Phase 11 は `review_proposals` を governance layer に拡張する。設計は
 [`../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md`](../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md)、
@@ -708,3 +724,186 @@ actor は `UnauthorizedOverrideError`、reason 空は `OverrideReasonRequiredErr
 / `archived`。consensus / process は `active` (+ historical `processed`) のみ。
 `harness review proposals vacuum --older-than <N>d` で古 superseded /
 rejected_stale / processed を `archived` 化 (delete はしない)。
+
+## Phase 13 — mutation API + operation audit（close 済み・現状仕様）
+
+Phase 13 は Phase 7-5 の軽量 `operations` ledger（`operation_id` / `command`
+/ `scope_type` / `scope_id` / `result_json` / `created_at`）を **audit ledger
+shape** へ拡張する。dashboard mutation API（[`dashboard.md`](./dashboard.md)）が
+書く operation の状態遷移・入出力・error を一元記録するのが目的。
+
+### schema v8
+
+- `operations` への列追加（すべて nullable / DEFAULT 付き。Phase 7-12 で
+  `processReviewDecision` 等が insert した legacy 行は影響しない）:
+  `operation_type` / `target_type` / `target_id` / `actor` /
+  `idempotency_key` / `dry_run` / `status`
+  （`pending`/`running`/`succeeded`/`failed`/`cancelled`、DEFAULT `succeeded`）/
+  `input_json` / `error_code` / `error_message` / `started_at` /
+  `completed_at` / `metadata_json`。
+- 新規 index: `operations_idempotency_idx`（`(operation_type, target_id,
+  idempotency_key)` UNIQUE partial — `idempotency_key IS NOT NULL`）/
+  `operations_target_idx` / `operations_status_idx`。
+- 新規テーブル `operation_events` — operation ごとの timeline（state
+  transition / side-effect log）。`(operation_id, seq)` unique、`operations`
+  への FK ON DELETE CASCADE。
+
+Phase 13 minimum では `operation_confirmations` は作らない（CSRF token で
+十分。confirmation UX は Phase 18 の MCP 経路で別途導入）。
+
+## Phase 14 — human-authored assets DB canonical（close 済み・現状仕様）
+
+Phase 14 は project profile / policy template / knowledge entry markdown と
+いった **人手 authored asset** を DB canonical 化する infrastructure を入れる。
+revision ベースの history テーブルと、compat-export 追跡 ledger を追加する。
+
+### schema v9
+
+- `project_profile_revisions` — project profile YAML の version 履歴
+  （`(project_id, version)` unique）。`projects.current_profile_revision_id`
+  が最新 revision を指す（既存 row は NULL、Phase 14-2 import が version=1 を
+  作って pointer を更新）。
+- `policy_templates` — repo/project/domain/global scope ごとの policy
+  template 履歴（`(scope_type, scope_id, version)` unique）。
+- `effective_policy_snapshots` — per-run / per-scope の生成済み policy +
+  provenance（`policy compile` が再生成する derived table）。
+- `knowledge_entry_revisions` — knowledge entry markdown body の version
+  履歴（`(entry_id, version)` unique）。`knowledge_entries.current_revision_id`
+  が最新を指す。
+- `asset_exports` — compat-export した files の sha + status（`synced` /
+  `dirty` / `removed`）を `(asset_type, asset_id, relative_path)` 単位で追跡。
+
+## Phase 15 — DB operations / doctor / archive / backup（close 済み・現状仕様）
+
+Phase 15 は DB 自体の健全性検査・修復・archive・backup を DB-backed にする
+infrastructure を入れる（CLI は [`cli.md`](./cli.md) の `harness db doctor` /
+`db archive` 系を参照）。
+
+### schema v10
+
+- `doctor_runs` / `doctor_findings` — `db doctor` の実行と検出結果。
+  `doctor_findings` は severity（`info`/`warn`/`error`/`critical`）/ status
+  （`ok`/`flagged`/`resolved`）/ `repairable` を持つ。
+- `repair_actions` — finding に対する修復 action（dry_run / status / 結果）。
+- `backup_catalog` — `db backup` 出力のカタログ（schema_version / size /
+  sha256 / verified_at / status `available`/`missing`/`failed`）。
+- `archive_catalog` — detach 済み archive の range とステータス
+  （`attached`/`detached`/`missing`）。
+- `db_stats_snapshots` — `db stats` の時系列スナップショット。
+
+## Phase 16 — blob storage scale-out（close 済み・現状仕様）
+
+Phase 16 は artifact body の external blob store（local / S3）への退避を可能に
+する catalog + repository を入れる。Phase 16 minimum では infrastructure のみで、
+`artifacts.storage` の CHECK（`IN ('file', 'db')`）はこの時点では据え置き。
+`storage='external'` 行を実際に書けるようにするための table rebuild は Phase 17
+（schema v12）で行う。それまで新テーブルは migration 準備用の manifest store。
+
+### schema v11
+
+- `blob_stores` — external store の登録（`store_type` `local`/`s3` /
+  `config_json` / status `active`/`disabled`）。
+- `external_artifact_blobs` — store 上の blob manifest（`sha256` PK /
+  `store_id` FK / `uri` / `bytes` / `stored_bytes` / `content_encoding`
+  `identity`/`gzip` / status `available`/`missing`/`corrupt`）。
+  `external_artifact_blobs_store_idx`（`(store_id, uploaded_at)`）。
+- `blob_migration_jobs` — `db-to-external` / `external-to-db` の移行 job
+  （input/result/error）。
+
+## Phase 17 — DB canonical platform integration（close 済み・現状仕様）
+
+Phase 17 は Phase 16 の BlobStore infrastructure を実際の runtime storage 状態に
+昇格させ、runs に query 可能な asset 帰属列を追加する。
+
+### schema v12
+
+- `artifacts` を rebuild し `storage` CHECK を `IN ('file', 'db', 'external')`
+  に拡張（SQLite は in-place な CHECK 変更ができないため `artifacts_v12` を
+  作って `INSERT … SELECT` → `DROP` → `RENAME`）。`blob_sha256` /
+  `body_status` / `original_bytes` / `original_sha256` は引き継ぐ。
+- `runs` に asset 帰属列を追加: `project_profile_revision_id`（FK →
+  `project_profile_revisions`）/ `effective_policy_snapshot_id`（FK →
+  `effective_policy_snapshots`）/ `knowledge_revision_ids_json`。`meta_json`
+  は lossless 文書のまま残し、これらの列は dashboard / doctor / archive が
+  JSON scan なしで provenance を引けるようにする query index。
+- 新規 index: `runs_project_profile_revision_idx` /
+  `runs_effective_policy_snapshot_idx`。
+
+## Phase 18 — MCP confirmation + invocation audit（close 済み・現状仕様）
+
+Phase 18 は MCP（`harness mcp serve`）経由の tool 実行に confirmation gate と
+invocation 監査を入れる。mutation tool は preview を作って confirmation を
+要求し、confirm 後に同一 permission snapshot で実行する。実装は
+`src/mcp/`（`src/mcp/tools/mutation-tools.ts` 等）。
+
+### schema v13
+
+- `mcp_confirmation_requests` — confirmation request（`tool_name` /
+  `operation_type` / `target_*` / `input_json` / `preview_json` / status
+  `pending`/`confirmed`/`rejected`/`expired`/`consumed` / `expires_at` /
+  `consumed_operation_id`）。`mcp_confirmation_status_idx`（`(status,
+  expires_at)`）。
+- `mcp_sessions` — MCP session（`client_name` / `transport` /
+  `permission_snapshot_json`）。
+- `mcp_tool_invocations` — tool 呼び出し監査（`arguments_sha256` /
+  redacted 引数 / `result_status` / `operation_id` / `confirmation_id`）。
+  session FK + `(session_id, started_at)` / `(tool_name, started_at)` index。
+
+### schema v14
+
+- `mcp_confirmation_requests.permission_snapshot_json`（DEFAULT `'{}'`）—
+  confirmation は preview を作った時と同じ MCP permission snapshot 下で実行
+  する。`harness mcp serve` が渡した `--config` が `operation confirm` の
+  out-of-band な config reload で失われないようにする。
+
+### schema v15（post-review hardening）
+
+- `mcp_sessions.reported_client_name` / `reported_client_version` —
+  permission identity を、client が initialize で自己申告した metadata と
+  分離して保持する。
+- `mcp_confirmation_requests.error_message` — confirmation handler の失敗を
+  記録し、request が `confirmed` の中間状態で stuck しないようにする。
+
+## Phase 19 — goal convergence controller（close 済み・現状仕様）
+
+Phase 19 は runs / reviews / operations / backlog の上位に **goal レベルの
+control plane** を追加する。frozen scope・close 条件・attempt・review cycle・
+finding 分類・close-check 証跡・convergence decision を記録し、反復的な agent
+作業が scope を無限に広げる代わりに converge / defer / escalate できるように
+する。feature spec は [`goal-convergence.md`](./goal-convergence.md)、実装は
+`src/goal/`。
+
+### schema v16
+
+- `goal_sessions` — goal session（`status` `open`/`in_progress`/`close_ready`
+  /`closed`/`diverging`/`budget_exhausted`/`escalated`/`cancelled` /
+  `scope_json` / `close_conditions_json` / `policy_json` / budget 列
+  `max_iterations`/`max_review_cycles`/`max_reruns`/`max_total_new_findings`
+  / `current_iteration` / `current_review_cycle` / `created_source`
+  `cli`/`mcp`/`dashboard`/`worker`/`import`）。
+  `goal_sessions_status_idx` / `goal_sessions_project_idx`。
+- `goal_attempts` — goal 内の attempt（`attempt_type`
+  `plan`/`implement`/`fix-review`/`rerun`/`validate`/`close-check`/
+  `classify-findings`/`defer-followups` / status / `operation_id` /
+  `run_id` / `parent_attempt_id`）。goal FK ON DELETE CASCADE。
+- `goal_review_cycles` — review cycle（`review_mode`
+  `initial`/`delta`/`close`/`regression`/`manual` / findings_* カウンタ）。
+  `(goal_id, cycle_number)` unique。
+- `goal_findings` — 分類済み finding（`stable_key` / `duplicate_of` /
+  `source` / `severity` `P0`〜`P3`/`info` / `scope_status`
+  `in_scope`/`out_of_scope`/`unknown`/`duplicate` / `lifecycle_status`
+  `open`/`fixed`/`reopened`/`deferred`/`duplicate`/`out_of_scope`/
+  `escalated`/`accepted_risk` / `deferred_backlog_item_id`）。
+  `goal_findings_stable_idx`（`(goal_id, stable_key)` partial unique WHERE
+  `duplicate_of IS NULL`）/ `goal_findings_goal_status_idx`。
+- `goal_close_checks` — close 条件ごとの check 証跡（status
+  `pending`/`passed`/`failed`/`skipped`/`unknown` / `evidence_json`）。
+- `goal_convergence_decisions` — convergence decision（`decision`
+  `continue`/`needs_fix`/`needs_classification`/`close_ready`/`closed`/
+  `diverging`/`budget_exhausted`/`escalate`/`cancel` / `reason` /
+  `metrics_json` / `recommended_next_action`）。goal FK ON DELETE CASCADE。
+
+`goal_convergence_decisions` は audit ledger であり、decision を記録すると同時に
+`goal_sessions.status` を遷移させる（`src/goal/convergence-status.ts` の
+`statusForConvergenceDecision`）。詳細な状態連携は
+[`workflow.md`](./workflow.md) の「Phase 19」節を参照。

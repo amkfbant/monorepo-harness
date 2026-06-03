@@ -15,8 +15,10 @@ HTML エクスポートだった。Phase 6 では **DB（[`db.md`](./db.md)）�
 - **DB-backed** — ダッシュボードは file scan をせず、DB から `DashboardSnapshot`
   を組み立てる。データ取得は `DashboardDataSource` interface 越し（将来の backend
   差し替えに備える seam）。
-- **read-only** — ダッシュボードは観測専用。状態を変える操作（mutation）は持た
-  ない。状態遷移は従来どおり CLI コマンドの guard 経由でのみ行う。
+- **read-only が既定** — `export` および `serve` は既定で観測専用。状態遷移は
+  従来どおり CLI コマンドの guard 経由でのみ行う。`serve --enable-mutation`
+  （Phase 13）でのみ POST mutation route を有効化でき、その場合も既存 core
+  オペレーションの薄いラッパとして同じ guard を通す（bearer token + CSRF 必須）。
 - **project-aware** — `--project` / `--repo-id` で filter できる。同一 domain id
   を持つ別 project が混線しない。
 
@@ -48,16 +50,72 @@ harness dashboard export [--out <path>] [--project <id>] [--repo-id <id>] [--no-
 DB が無いときは既定で `db import --from-files` 相当を一度実行してから export し、
 その旨を出力に明示する。`--no-auto-import` で抑止できる（CI 用）。
 
-## serve（別トラック・未実装）
+## serve（実装済み: Phase 12 read-only / Phase 13 mutation / Phase 14 asset reads）
 
-`dashboard serve`（read-only の GET-only HTTP サーバ）は**未実装**。現状の UI
-成果物は静的 `dashboard export`。`dashboard serve` は Phase 7（DB-first write
-path）のスコープ外（runtime write path に限定）で、別トラック扱い。Phase 7 で
-DB-first 化された write は即時 read model に反映されるため、`dashboard export`
-を再実行すれば最新状態が出力される。
+```bash
+harness dashboard serve [--host <host>] [--port <port>] [--token-env <ENV>] \
+  [--cors-origin <origin>] [--no-artifact-body] \
+  [--max-inline-artifact-bytes <n>] [--enable-mutation]
+```
 
-ダッシュボードからの mutation（操作実行）は Phase 6 の非ゴール。導入する場合は
-既存 core オペレーションの薄いラッパとして別フェーズで追加する。
+`dashboard serve` は DB を read model とする HTTP サーバを起動する（実装:
+`src/dashboard/server/server.ts`）。既定は `127.0.0.1:8787`、GET / HEAD のみを
+受け付ける read-only サーバ。`GET /` は live HTML ダッシュボード（`export` と
+同じスナップショットをサーバ上で都度生成）、`/api/*` は JSON を返す。
+
+DB-first 化された write は即時この read model に反映されるため、`export` と異なり
+再生成手順は不要。`export` は依存ゼロの静的成果物、`serve` は常時最新の動的 UI と
+いう住み分け。
+
+### Read endpoints（GET, Phase 12 / 14）
+
+| Path | 内容 |
+|------|------|
+| `GET /` | live HTML ダッシュボード |
+| `GET /api/health` | `ok` / schema_version 等の health |
+| `GET /api/snapshot` | `DashboardSnapshot` 全体 |
+| `GET /api/runs` / `GET /api/runs/:runId` | run 一覧 / 単体 |
+| `GET /api/runs/:runId/timeline` | run の timeline |
+| `GET /api/runs/:runId/artifacts` | run の artifact 一覧 |
+| `GET /api/runs/:runId/review` | run の review 状態 |
+| `GET /api/review/proposals` / `consensus` / `reviewers` | review governance |
+| `GET /api/artifacts/:artifactIdB64` | artifact メタ（id は base64url） |
+| `GET /api/artifacts/:artifactIdB64/body` | artifact 本体（`--no-artifact-body` で無効化、`--max-inline-artifact-bytes` で上限） |
+| `GET /api/db/status` / `stats` / `consistency` | DB 状態 |
+| `GET /api/locks` | runtime lock |
+| `GET /api/operations` / `GET /api/operations/:operationId` | operation audit（Phase 13） |
+| `GET /api/assets/exports` / `projects` / `policies` / `knowledge`（および `:id` 系の詳細） | human-authored asset の health / revision（Phase 14） |
+| `GET /api/storage/blobs` / `GET /api/archives` / `GET /api/doctor/latest` | infrastructure 系 read（Phase 15/16） |
+
+### Mutation endpoints（POST, Phase 13 — `--enable-mutation` 時のみ）
+
+既定では POST は `405`。`--enable-mutation` を渡したときだけ以下が wire され、
+いずれも既存 core オペレーションの guard を通る。
+
+| Path | 操作 |
+|------|------|
+| `POST /api/runs/:runId/review` | review 判定の記録 |
+| `POST /api/runs/:runId/cleanup` | cleanup |
+| `POST /api/runs/:runId/pr` | PR 作成 |
+| `POST /api/runs/:runId/rerun` | rerun |
+| `POST /api/backlog/:itemId/run` | backlog item の実行 |
+
+### Auth / CSRF / security headers
+
+認証の運用詳細は [`../ops/setup-and-secrets.md`](../ops/setup-and-secrets.md) の
+「Dashboard server auth」節を参照。仕様の要点のみ:
+
+- **Bearer token** — `--token-env <ENV>` で env var からトークンを読む。設定時は
+  全リクエストに `Authorization: Bearer <token>` が必要（定数時間比較）。read-only
+  かつ localhost bind で未設定なら認証はスキップ（operator UX）。非ローカル bind で
+  未設定の場合は fail-closed で `401`。
+- **`--enable-mutation`** — POST route を有効化する。bearer token が**必須**で、
+  未設定なら起動時に fail-fast。さらに boot 時に **CSRF token** を生成して一度だけ
+  stdout に出力し、live HTML の `<meta name="harness-csrf-token">` に埋め込む。
+  ブラウザからの POST は `X-CSRF-Token` ヘッダでそれを送る必要がある（不一致は `403`）。
+- **security headers** — 全レスポンスに `X-Content-Type-Options: nosniff` /
+  `X-Frame-Options: DENY` / `Referrer-Policy: no-referrer`。`--cors-origin <origin>`
+  指定時のみ `Access-Control-Allow-Origin` を返す。
 
 ## CLI
 

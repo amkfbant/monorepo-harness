@@ -305,8 +305,33 @@ harness dashboard export --no-auto-import     # DB を files から再構築せ�
 - DB が無いときは既定で files から auto-import してから生成（出力に明示）。
   `--no-auto-import` で抑止（その場合 DB 不在は exit 1）
 - 補間値はすべて HTML エスケープされる
-- `dashboard serve`（HTTP サーバ）は未実装。Phase 7 のスコープは runtime write
-  path の DB-first 化に限定で、`dashboard serve` / mutation UI は別トラック候補
+- 動的な HTTP サーバが必要なら `harness dashboard serve`（下記）を使う
+
+## `harness dashboard serve`
+
+DB read model を配信する HTTP ダッシュボードを起動する（Phase 12 read-only /
+Phase 13 mutation / Phase 14 asset reads）。エンドポイント一覧・auth は
+[`dashboard.md`](./dashboard.md) の `serve` 節を参照。
+
+```bash
+harness dashboard serve                       # 127.0.0.1:8787 で read-only 起動
+harness dashboard serve --host <host>         # bind host（既定 127.0.0.1）
+harness dashboard serve --port <port>         # bind port（既定 8787）
+harness dashboard serve --token-env <ENV>     # env var から Bearer token を読む
+harness dashboard serve --cors-origin <origin># 指定 origin に CORS を許可
+harness dashboard serve --no-artifact-body    # GET /api/artifacts/:id/body を無効化
+harness dashboard serve --max-inline-artifact-bytes <n>  # artifact 本体の上限（既定 1048576）
+harness dashboard serve --enable-mutation     # POST mutation route を有効化（token + CSRF 必須）
+```
+
+- 既定は **read-only**（GET / HEAD のみ、POST は `405`）。`GET /` は live HTML、
+  `/api/*` は JSON
+- `--token-env` 設定時は全リクエストに `Authorization: Bearer <token>` が必要。
+  非ローカル bind で未設定なら fail-closed で `401`
+- `--enable-mutation` は bearer token を必須とし（未設定なら起動時 fail-fast）、
+  boot 時に CSRF token を生成して一度だけ表示。ブラウザ POST は `X-CSRF-Token`
+  ヘッダで送る
+- auth の運用詳細は [`../ops/setup-and-secrets.md`](../ops/setup-and-secrets.md) を参照
 
 ## `harness session`
 
