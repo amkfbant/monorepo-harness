@@ -14,7 +14,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "harness": "tsx src/cli/run.ts"
+    "harness": "tsx src/cli/run.ts",
+    "prepare": "npm run build"
   },
   "dependencies": {
     "better-sqlite3": "12.10.0",

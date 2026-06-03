@@ -19,13 +19,25 @@ Codex はワークツリー内のファイルを直接編集し、ハーネス�
 
 ## セットアップ
 
+git clone 運用を想定。`npm install`（`npm ci`）後に `prepare` スクリプトが
+自動で `dist/` をビルドするため、追加手順なしで `bin/harness` が使える。
+
 ```bash
-npm install
+git clone <repo> && cd monorepo-harness
+npm ci              # prepare で dist/ を自動ビルド（bin/harness = dist/cli/run.js）
 npm run typecheck
 npm test
 ```
 
-CLI は `npm run harness -- <args>` で起動する（`HARNESS_ROOT` に `policies/` `runs/` `workspaces/` `locks/` の親を指定）。
+CLI は 2 通りで起動できる:
+
+- **開発時**: `npm run harness -- <args>`（tsx 経由、ビルド不要）
+- **インストール運用**: `npm link` 後に `harness <args>`（`bin/harness` を PATH に。
+  `npm ci` 時の `prepare` でビルド済み）
+
+いずれも `HARNESS_ROOT` に `policies/` `runs/` `workspaces/` `locks/` の親を指定する。
+本番運用の認証・secret は [docs/ops/setup-and-secrets.md](docs/ops/setup-and-secrets.md)、
+DB 定期メンテは [docs/ops/db-maintenance-runbook.md](docs/ops/db-maintenance-runbook.md) を参照。
 
 ## Phase 2 quick start
 
