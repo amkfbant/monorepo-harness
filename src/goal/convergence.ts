@@ -330,6 +330,19 @@ function decide(
     );
   }
 
+  if (metrics.iterationsUsed === 0) {
+    return result(
+      session.goalId,
+      "needs_fix",
+      "no implementation attempt yet",
+      metrics,
+      {
+        kind: "fix_findings",
+        message: "Run the initial coder pass for this goal.",
+      },
+    );
+  }
+
   return result(session.goalId, "continue", "more validation required", metrics, {
     kind: "run_close_check",
     message: "Record close-check evidence or run the next review mode.",

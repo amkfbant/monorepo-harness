@@ -124,9 +124,11 @@ describe("GoalOrchestrator", () => {
     const { db, close } = openManagedDb({ dbPath });
     try {
       runMigrations(db);
-      // a fresh goal with a pending command close condition dispatches to
-      // `review`; a review runner that throws must escalate cleanly.
-      new GoalRepository(db).createSession({
+      // a goal that has already had a coding pass (pending command close
+      // condition) dispatches to `review`; a review runner that throws must
+      // escalate cleanly.
+      const repo = new GoalRepository(db);
+      repo.createSession({
         goalId: "g-throw",
         title: "Throws",
         projectId: "demo",
@@ -134,6 +136,7 @@ describe("GoalOrchestrator", () => {
         createdBy: "test",
         createdSource: "worker",
       });
+      repo.createAttempt({ goalId: "g-throw", attemptType: "implement" });
     } finally {
       close();
     }

@@ -230,13 +230,15 @@ describe("goal convergence fixture matrix", () => {
   it("converges after a simulated fix and close-check pass", () => {
     const ctx = fresh("goal-fixture-converging");
     try {
+      const initialAttempt = completeAttempt(ctx, "implement");
+      expect(initialAttempt.iteration).toBe(1);
+
       const loop = new SimulatedGoalLoop(ctx);
       let blocker: GoalFinding | null = null;
 
       loop.runUntilStop({
         advance: (result) => {
           if (result.decision === "continue") {
-            const attempt = completeAttempt(ctx, "implement");
             const cycle = startCycle(ctx, "initial");
             blocker = addFinding(ctx, {
               summary: "operation metadata is not linked to the goal",
@@ -247,7 +249,6 @@ describe("goal convergence fixture matrix", () => {
               findingsNew: 1,
               findingsInScopeOpen: 1,
             });
-            expect(attempt.iteration).toBe(1);
             return;
           }
           if (result.decision === "needs_fix" && blocker !== null) {

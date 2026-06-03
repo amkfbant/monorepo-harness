@@ -1326,7 +1326,8 @@ describe("MCP mutation, confirmation, and audit", () => {
   it("rejects goal-linked run.start when close checks are pending", async () => {
     const root = freshRoot((db) => {
       seedRun(db, "run-close-check-pending", "demo");
-      new GoalRepository(db).createSession({
+      const repo = new GoalRepository(db);
+      repo.createSession({
         goalId: "goal-close-check-pending",
         title: "Close check pending",
         projectId: "demo",
@@ -1335,6 +1336,11 @@ describe("MCP mutation, confirmation, and audit", () => {
         closeConditions: [{ id: "typecheck", kind: "command", required: true }],
         createdBy: "test",
         createdSource: "mcp",
+      });
+      // a coding pass has already run; the goal awaits close-check evidence.
+      repo.createAttempt({
+        goalId: "goal-close-check-pending",
+        attemptType: "implement",
       });
     });
     const result = await callTool(
@@ -1378,7 +1384,8 @@ describe("MCP mutation, confirmation, and audit", () => {
   it("allows goal-linked review.auto when close-check evidence is pending", async () => {
     const root = freshRoot((db, harnessRoot) => {
       seedReviewableRun(db, harnessRoot, { runId: "run-review-auto-close-check" });
-      new GoalRepository(db).createSession({
+      const repo = new GoalRepository(db);
+      repo.createSession({
         goalId: "goal-review-auto-close-check",
         title: "Review auto close check",
         projectId: "demo",
@@ -1389,6 +1396,11 @@ describe("MCP mutation, confirmation, and audit", () => {
         ],
         createdBy: "test",
         createdSource: "mcp",
+      });
+      // a coding pass has already run; the goal awaits close-check evidence.
+      repo.createAttempt({
+        goalId: "goal-review-auto-close-check",
+        attemptType: "implement",
       });
     });
     const result = await callTool(
@@ -1663,7 +1675,8 @@ describe("MCP mutation, confirmation, and audit", () => {
         runId: "run-goal-review-process-close",
         projectId: "demo",
       });
-      new GoalRepository(db).createSession({
+      const repo = new GoalRepository(db);
+      repo.createSession({
         goalId: "goal-review-process-close",
         title: "Review process close",
         projectId: "demo",
@@ -1674,6 +1687,11 @@ describe("MCP mutation, confirmation, and audit", () => {
         ],
         createdBy: "test",
         createdSource: "mcp",
+      });
+      // a coding pass has already run; the goal awaits review consensus.
+      repo.createAttempt({
+        goalId: "goal-review-process-close",
+        attemptType: "implement",
       });
     });
     const s = server(root, {
