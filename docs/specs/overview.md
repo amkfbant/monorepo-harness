@@ -1,52 +1,155 @@
 # Overview
 
+これは全体像の **入口 doc**。各機能の詳細は対応する spec に委ね、ここでは俯瞰に
+徹する。詳細は [`policy.md`](./policy.md) / [`workflow.md`](./workflow.md) /
+[`cli.md`](./cli.md) / [`project.md`](./project.md) / [`db.md`](./db.md) /
+[`dashboard.md`](./dashboard.md) / [`mcp.md`](./mcp.md) /
+[`goal-convergence.md`](./goal-convergence.md) を参照。
+
 ## ハーネスの目的
 
-monorepo の中の **1 つの domain（例: `apps/catalog`）に対する codex exec の編集を policy で制約し、結果をレビュー artifact として保存する** 最小ランナー。
+monorepo の中の **1 つの domain（例: `apps/catalog`）に対する codex exec の編集を
+policy で制約し、結果をレビュー artifact として保存する** ランナー。状態の正本は
+`.harness/harness.sqlite`（[`db.md`](./db.md)）で、`runs/` 以下の file は既定では
+吐かない（opt-in の互換 export）。
 
 ```
-operator → `harness run --domain apps/catalog --goal "..."`
+operator → `harness run --project <id> --domain apps/catalog --goal "..."`
             │
-            ├─ resolve policy from policies/global.yaml + policies/repos/<id>.yaml
-            ├─ acquire per-domain lock
-            ├─ git worktree add (isolated copy of target repo)
-            ├─ spawn codex exec (sandbox=workspace-write by default)
-            ├─ collect diff (tracked + untracked, no `git add -N`)
-            ├─ validate paths (deny_write > unsafe_path > write scope)
-            ├─ build artifacts (summary.md, review-request.md, …)
+            ├─ resolve policy（project profile → policy compile、または repos/<id>.yaml）
+            ├─ acquire DB-backed domain lock（lease + heartbeat + fencing token）
+            ├─ git worktree add（isolated copy of target repo）
+            ├─ spawn codex exec（sandbox=workspace-write by default）
+            ├─ collect diff（tracked + untracked, no `git add -N`）
+            ├─ validate paths（deny_write > unsafe_path > write scope）
+            ├─ build artifacts（DB へ書く / blob は DB or external store）
             └─ finalize status + release lock
 ```
 
-操作者の責務は **policy の設計とレビュー**。codex の振る舞いを直接コントロールするのではなく、安全境界 (path / symlink / secret / size / lock) を harness が事後検査して、reviewer に decision を委ねる **bounded review gate** 型。
+操作者の責務は **policy の設計とレビュー**。codex の振る舞いを直接コントロールする
+のではなく、安全境界 (path / symlink / secret / size / lock) を harness が事後検査
+して、reviewer に decision を委ねる **bounded review gate** 型。
+
+## 安全モデル（中核・不変）
+
+harness の中核は次の安全モデルである。これは Phase が進んでも変わらない。
+
+1. **bounded review gate** — codex の振る舞いを直接制御せず、harness が事後に
+   安全境界を検査し、最終 decision は reviewer に委ねる。
+2. **2 層の安全境界**
+   - **policy ベースのスコープ制御** — `policies/global.yaml` +
+     `policies/repos/<id>.yaml`（あるいは project profile から compile した結果）の
+     write / deny_write で、どの path を編集してよいかを宣言的に定義する。
+   - **事後 `git diff` 検証** — codex 実行後の diff を path / symlink / secret /
+     size の観点で検査し、違反を `failed-policy-violation` で reject する。
+   - **LLM の出力は信用しない。** policy 違反検査も状態遷移も、LLM が何を出力した
+     かに依存しない。
+3. **状態遷移は harness だけが行う** — `meta.status` / `runs.status` を
+   `approved` / `changes_requested` / `rejected` に遷移させるのは
+   `harness review process`（および同等の core オペレーション）のみ。LLM が出力に
+   「approved」と書いても状態は動かない。
+
+## Agent role separation
+
+harness は 2 種類の LLM agent と harness 自身の 3 ロールに権限を分離する。
+**LLM の出力は信用しない / 状態遷移は harness だけが行う**が大原則。
+
+| ロール | 目的 | 権限 | 出力 |
+|--------|------|------|------|
+| **coder agent** | domain 内の実装変更 | 標準は `workspace-write` sandbox（cwd = worktree） | worktree のファイル変更、`codex-output.log` / `codex-error.log` |
+| **reviewer agent** | run artifacts を読み verdict を提案 | `read-only` sandbox。コード編集不可、status 変更不可 | review verdict（codex stdout）、`reviewer-agent.*.log` |
+| **harness** | 状態遷移・安全検査 | authoritative。run state / events / artifact を DB に書く / cleanup | review decision ほか artifacts |
+
+**構造上の境界:**
+- coder の cwd は worktree（`workspaces/<runId>/repo/`）。`workspace-write` sandbox
+  では worktree に書き込みが閉じ、harness の状態（DB / harness root 配下）には
+  到達できない → **coder は review decision を変更できない**。coder が出力に
+  「approved」と書いても status は動かない（`harness review process` のみが遷移）。
+  - ⚠️ この境界は **標準の `workspace-write` sandbox 前提**。policy で
+    `codex.sandbox: danger-full-access` を設定すると coder が harness root を含め
+    どこでも書けるようになり、この保証は **失効する**。domain-coding workflow では
+    `workspace-write`（または `read-only`）を推奨。
+- reviewer agent は `read-only` sandbox で動き、**直接コードも artifacts も変更
+  できない**。codex の出力（verdict）は harness が検証したうえで review decision に
+  反映する（agent が直接書くのではない）。prompt に編集指示が混ざっても無害。
+
+**prompt template:** 各 agent の prompt は名前付き・version 付きのテンプレート
+（coder の `coder-domain-task`、reviewer の `reviewer-run-artifacts`、rerun の
+`rerun-from-review` など）。詳細は [`workflow.md`](./workflow.md)。
 
 ## できること
 
-- 1 つの target monorepo を `--repo` で指定して、その内部の domain (= subdirectory tree) を targets として codex を走らせる
-- policy で domain ごとの read / write / deny_write を定義し、違反を `failed-policy-violation` で reject
-- untracked file（codex が新規作成したファイル）を validation 対象に含める
-- symlink を follow せずに target だけ記録（worktree 外への参照を artifact 化しない）
-- filename / content heuristics で secret-shape のファイルを redact（`*.env*` / AWS key / OpenAI key / etc.）
-- `**/node_modules/**` などの政策的 ignore で build 出力を除外（ただし validation はスキップする扱い）
-- domain 単位の lockfile で同一 domain への並行 run を防止
-- run の全 artifact を `runs/<runId>/` に保存し、worktree も削除せず残す（レビュー後に手動 cleanup する想定）
-- review-request.md + review-decision.yaml を生成（reviewer はこの 2 ファイルでレビューと決定を行う）
-- `harness review process --run-id <id>` で review-decision.yaml を読んで `meta.status` を `approved` / `changes_requested` / `rejected` に遷移、reviewer / reviewedAt を meta に記録、`review_processed` event を追記
-- path validation 通過後に `policy.allowedCommands`（例: `npm test` / `npm run lint`）を worktree 内で順次実行、失敗時は `failed-command` ステータス + `meta.commandResults` に結果保存
-- `harness cleanup --run-id <id> [--force] [--scope workspace|run|all]` で worktree + branch（+ scope に応じ run dir）を削除（`changes_requested` / `running` は強制でも残す）
-- `harness review list` で全 run の meta.json を読みテーブル/JSON 表示。default は review queue（`needs_review` + `changes_requested`）、`--all` / `--status` / `--domain` / `--limit` / `--json` で絞り込み。壊れた run dir は invalid として分離（stderr 警告 or `invalidRuns[]`）
-- `harness rerun --from-review <parent-run-id> [--max-attempts <n>]` で `changes_requested` の親から `required_changes` を組み込んだ新 run を起動（`meta.parentRunId` / `rootRunId` / `rerunAttempt` で監査チェーン、`--max-attempts` 超過で拒否）。`harness rerun chain --run-id <id>` で再実行系譜をツリー表示
-- `harness review auto --run-id <id>` で reviewer agent（read-only sandbox の codex）が artifacts を読んで `review-decision.yaml` を生成（適用は別途 `review process`）
-- `harness knowledge list / reject / promote` で候補をレビュー — status 一覧、reject 決定の sidecar 記録、`--reviewer` 必須の昇格（YAML frontmatter + (run,index)/content-hash 重複制御）。`knowledge-candidates.yaml` は不変
+俯瞰のみ。詳細は各 spec へ。
 
-## できないこと（MVP の範囲外）
+- **domain-coding run**（[`workflow.md`](./workflow.md) / [`cli.md`](./cli.md)）—
+  1 target repo の 1 domain に対し codex を走らせ、policy で read / write /
+  deny_write を制約。untracked file を validation 対象に含め、symlink を follow
+  せず、secret-shape を redact し、`**/node_modules/**` 等を政策的 ignore する。
+  path validation 通過後に `policy.allowedCommands` を worktree 内で実行。
+- **review gate**（[`workflow.md`](./workflow.md)）— `review list`（review queue
+  可視化）/ `review auto`（reviewer agent が verdict 提案）/ `review process`
+  （decision を読んで status を遷移）。
+- **bounded review→rerun ループ**（[`cli.md`](./cli.md)）— `rerun --from-review`
+  で `changes_requested` の親から `required_changes` を組み込んだ新 run を起動
+  （parentRunId / rootRunId / rerunAttempt の監査チェーン、`--max-attempts` 上限）。
+  `workflow reviewed-run` は run → review → rerun を **1 コマンドの bounded loop**
+  として回す。
+- **knowledge ループ**（[`cli.md`](./cli.md)）— `knowledge list / reject / promote`
+  で候補をレビューし、`knowledge promote` で `docs/knowledge/` に展開。
+  `run --with-knowledge`（または `--knowledge-context <path>`）で
+  `docs/knowledge-context/<domain>.md` を codex prompt に注入する。
+- **Project Abstraction（Phase 5）**（[`project.md`](./project.md)）— `projects/<id>.yaml`
+  の project profile を domain registry / template / preset / context pack 経由で
+  policy へ compile。`project inspect / init / check`（いずれも Codex 不使用）。
+  `run --project <id>` で起動。既存 `--repo + --repo-id` path は後方互換で従来どおり。
+- **DB 完全移行（Phase 6-17）**（[`db.md`](./db.md)）— run state / events / artifact
+  body(blob) / domain lock / review proposal の canonical は `.harness/harness.sqlite`
+  （schema v16）。`db init / migrate / import / export-files / backup / restore /
+  checkpoint / vacuum / stats / status / doctor / repair / check-consistency /
+  archive / upgrade-check / blob-store / migrate-blobs` 等。external blob storage
+  （Phase 16/17）。
+- **concurrency（Phase 9）**（[`db.md`](./db.md)）— DB-backed domain lock
+  （lease + heartbeat + fencing token）で同一 domain の並行 run を防ぎ、DB-wide
+  maintenance lock で破壊的メンテを排他する。file lock は撤去済み。
+- **review governance（Phase 11）**（[`cli.md`](./cli.md) / [`db.md`](./db.md)）—
+  reviewer registry / review rules / consensus（`review evaluate` / `review
+  proposals` / `reviewers`）と human override。
+- **dashboard（Phase 12-14）**（[`dashboard.md`](./dashboard.md)）— `dashboard export`
+  は依存ゼロの静的 HTML 成果物、`dashboard serve` は DB を read model とする HTTP
+  サーバ。既定は localhost / GET・HEAD のみの read-only。`--enable-mutation` で
+  POST mutation route を有効化（Bearer token 必須 + CSRF）。Phase 14 で
+  human-authored asset の read も提供。
+- **MCP server（Phase 18）**（[`mcp.md`](./mcp.md)）— `harness mcp serve --transport
+  stdio` の JSON-RPC server。read / dry-run / mutation tools を公開し、mutation は
+  permission allowlist + out-of-band confirmation + rate budget + audit/redaction
+  でガードする。raw shell は公開しない。
+- **goal convergence（Phase 19）**（[`goal-convergence.md`](./goal-convergence.md)）—
+  bounded coding-agent goal loop の DB-backed 収束コントローラ。`harness goal` CLI
+  + MCP goal tools。scope freeze / finding lifecycle / close decision を持ち、
+  convergence decision（`continue` / `needs_fix` / `needs_classification` /
+  `close_ready` / `diverging` / `budget_exhausted` / `escalate` 等）を返す。
 
-- `review process` → `rerun` → `review` の完全自動ループ（各ステップは手動トリガ）
-- knowledge md の confirmed ストア統合 / LLM への自動注入（`knowledge promote` は md 書き出しまで）
-- multi-agent orchestration（writer agent / reviewer agent の同時並走など）
-- 複数 target repo を 1 run で扱う
-- 非ファイル系の検査（HTTP リクエストログ、外部 API 呼び出し履歴 等）
-- secret heuristic の DLP 級厳密性（あくまで「reviewer の見落とし防止」レベル）
-- Windows でのプロセスツリー kill の E2E テスト（実装は taskkill 経路あり、未検証）
+## できないこと（現状の deferred / 範囲外）
+
+- **autonomous orchestration** — run → review → rerun の bounded loop は
+  `workflow reviewed-run`（および goal convergence の収束制御）で提供するが、
+  autonomous worker / orchestrator による **完全自律ループ**（人手トリガなしの
+  無制限な fix/review/merge）は未実装。
+- **MCP の Streamable HTTP transport** — production transport は stdio のみ。
+  HTTP は local-only stretch として deferred（[`mcp.md`](./mcp.md)）。
+- **dashboard mutation UI** — `dashboard serve --enable-mutation` は POST API を
+  提供するが、ブラウザ向けの mutation UI は未提供（[`dashboard.md`](./dashboard.md)）。
+- **リモート blob adapter** — blob store は local adapter のみ。S3 等の remote
+  adapter は未実装（[`db.md`](./db.md)）。
+- **external issue tracker 連携** — deferred finding は backlog item を作るのみで、
+  外部 issue tracker への sync は無い。
+- **`knowledge deprecate` コマンド** — `knowledge list / reject / promote` はあるが
+  deprecate コマンドは未実装。
+- **`pr create` / `rerun` の実 codex smoke** — 本番 target repo が要るため、実
+  codex を使った E2E smoke は未検証（fake-codex の integration は通る）。
+- **multi-target run** — 複数 target repo を 1 run で扱わない（1 run = 1 domain）。
+- **secret heuristic の DLP 級厳密性** — あくまで「reviewer の見落とし防止」レベル。
+- **Windows プロセスツリー kill の E2E** — 実装は taskkill 経路ありだが未検証。
 
 ## 用語
 
@@ -54,31 +157,16 @@ operator → `harness run --domain apps/catalog --goal "..."`
 |------|------|
 | **target repo** | codex を走らせる対象の git repository。harness の外側にある |
 | **domain** | target repo 内のディレクトリ（例: `apps/catalog`）。1 domain = 1 codex run = 1 lock |
-| **harness root** | このリポジトリ自身。`policies/`, `runs/`, `workspaces/`, `locks/` を持つ |
+| **project** | target repo の profile（`projects/<id>.yaml`）。domain registry / template / context を束ね、policy へ compile する（Phase 5） |
+| **harness root** | `HARNESS_ROOT` が指す任意ディレクトリ。`policies/` / `runs/` / `workspaces/` / `.harness/` の親（このリポジトリ自身である必要はない） |
 | **worktree** | target repo の `git worktree` で作った isolated copy。`workspaces/<runId>/repo/` |
-| **artifact** | run の成果物。`runs/<runId>/` 配下の meta.json / summary.md など |
-| **review gate** | run 完了時の状態 `needs_review`。reviewer が `review-decision.yaml` を編集 → `harness review process` で `approved` / `changes_requested` / `rejected` に遷移 |
-
-## Agent role separation（Phase 3-3）
-
-harness は 2 種類の LLM agent と harness 自身の 3 ロールに権限を分離する。**LLM の出力は信用しない / 状態遷移は harness だけが行う**が大原則。
-
-| ロール | 目的 | 権限 | 出力 |
-|--------|------|------|------|
-| **coder agent** | domain 内の実装変更 | 標準は `workspace-write` sandbox（cwd = worktree） | worktree のファイル変更、`codex-output.log` / `codex-error.log` |
-| **reviewer agent** | run artifacts を読み verdict を提案 | `read-only` sandbox。コード編集不可、status 変更不可 | review verdict（codex stdout）、`reviewer-agent.*.log` |
-| **harness** | 状態遷移・安全検査 | authoritative。`meta.json` 更新 / events 追記 / cleanup | `review-decision.yaml` ほか artifacts |
-
-**構造上の境界:**
-- coder の cwd は worktree（`workspaces/<runId>/repo/`）。`workspace-write` sandbox では worktree に書き込みが閉じ、`runs/<runId>/review-decision.yaml`（harness root 配下、worktree の外）には到達できない → **coder は review-decision を変更できない**。coder が出力に「approved」と書いても `meta.status` は動かない（`harness review process` のみが遷移させる）。
-  - ⚠️ この境界は **標準の `workspace-write` sandbox 前提**。policy で `codex.sandbox: danger-full-access` を設定すると coder が harness root を含めどこでも書けるようになり、この保証は**失効する**。domain-coding workflow では `workspace-write`（または `read-only`）を推奨。
-- reviewer agent は `read-only` sandbox で動き、**直接コードも artifacts も変更できない**。codex の出力（verdict）は harness が検証したうえで `review-decision.yaml` に書く（agent が直接書くのではない）。実行前後の artifact snapshot（Phase 2-6）で改竄を検出・拒否するため、prompt に編集指示が混ざっても無害。
-
-**prompt template:** 各 agent の prompt は名前付き・version 付きのテンプレート。`meta.promptTemplate` には **codex-prompt.md を組んだ外側の coder テンプレート** `{name, version}`（`coder-domain-task`）を記録する。reviewer の `reviewer-run-artifacts`、rerun の goal-wrapper `rerun-from-review` も version 付き定数で、後者の version は rerun の `codex-prompt.md` 内に明記される。
+| **DB** | `.harness/harness.sqlite`。run state / events / artifact body / domain lock / review proposal の canonical（[`db.md`](./db.md)） |
+| **artifact** | run の成果物（summary / review-request / log 等）。本体は DB blob or external store に格納 |
+| **review gate** | run 完了時の状態 `needs_review`。reviewer の decision を `harness review process` が `approved` / `changes_requested` / `rejected` に遷移させる |
 
 ## 主要な型契約
 
-`src/policy/schema.ts` / `src/logging/run-log.ts` から抜粋:
+`src/policy/schema.ts` / `src/logging/run-log.ts` から抜粋（中核は概ね不変）:
 
 ```ts
 type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
@@ -88,8 +176,8 @@ interface ResolvedPolicy {
   domain: string;
   read: string[];
   write: string[];
-  denyWrite: string[];          // global.always_deny_write ∪ domain.deny_write
-  allowedCommands: string[];
+  denyWrite: string[];               // global.always_deny_write ∪ domain.deny_write
+  allowedCommands: ResolvedCommand[]; // string YAML entries は {id,cmd,args,shell} に lift
   commandDefaults: { timeoutMs: number; envAllowlist?: string[] };
   ignoreUntracked: string[];
   codex: { sandbox: SandboxMode; approval?: string; timeoutMs?: number };
@@ -111,73 +199,100 @@ interface RunDomainCodingResult {
   ignoredUntrackedCount: number;
   secretSuspectCount: number;
 }
-
-// RunMeta は加えて reviewer?: string | null と reviewedAt?: string | null を
-// 持つ。これらは `harness review process` 実行時にセットされる。
+// RunMeta は加えて reviewer?: string | null と reviewedAt?: string | null を持つ。
+// goal convergence の decision 列挙は goal-convergence.md を参照。
 ```
 
-詳細は [`workflow.md`](./workflow.md) と [`policy.md`](./policy.md) を参照。
+詳細は [`policy.md`](./policy.md) / [`workflow.md`](./workflow.md) /
+[`goal-convergence.md`](./goal-convergence.md) を参照。
 
 ## ディレクトリレイアウト（harness root）
 
+`HARNESS_ROOT` が指す任意ディレクトリ配下のレイアウト。
+
 ```txt
-monorepo-harness/
+<HARNESS_ROOT>/
   policies/
     global.yaml                    # 全 run 共通の defaults / limits / always_deny / ignore
     repos/<repo-id>.yaml           # 1 target repo の domain ごとの read/write/deny
+  projects/<id>.yaml               # project profile（Phase 5）
+  templates/                       # policy template / command preset / context pack
+  .harness/
+    harness.sqlite                 # canonical DB（run state / events / blob / lock / proposal）
+    db.lock                        # DB-wide maintenance lock（Phase 9）
   src/                             # 実装
-    cli/run.ts                     # commander based subcommand entry
-    core/workflow-runner.ts        # 全体オーケストレーション
+    cli/                           # commander based subcommand entry（run / db / project / goal …）
+    core/                          # workflow オーケストレーション
     policy/, workspace/, git/, codex/, logging/, reporter/, config/
+    project/                       # Project Abstraction（Phase 5）
+    db/                            # SQLite read/write model・migration・blob・maintenance（Phase 6-17）
+    dashboard/                     # export 静的 HTML + serve HTTP server（Phase 12-14）
+    operations/                    # OperationRunner（mutation の単一経路）
+    storage/                       # blob store adapter（local。Phase 16）
+    mcp/                           # MCP server（Phase 18）
+    goal/                          # goal convergence controller（Phase 19）
   tests/
-    unit/                          # 各モジュールの単体テスト
-    integration/                   # workflow-fake-codex.test.ts 等 (実 git + fake codex)
-  runs/                            # runtime 生成、.gitignore'd
-    <runId>/                       # 1 run の全 artifact
-  workspaces/                      # runtime 生成、.gitignore'd
-    <runId>/repo/                  # git worktree 実体
-  locks/                           # runtime 生成、.gitignore'd
-    <domain-slug>.lock             # 1 domain の active run 情報
+    unit/, integration/            # 各モジュール単体 + 実 git + fake codex
+  runs/                            # runtime。export OFF（既定）では空で DB が canonical。
+                                   # `db export-files` で再生成できる互換 export
+  workspaces/                      # runtime scratch。export OFF + ingest 成功で削除される
+                                   # <runId>/repo/ に git worktree 実体
+  locks/                           # legacy（file lock は撤去済み。残骸は warnLegacyFileLocks が警告）
   docs/
-    specs/, reports/, examples/, policy-semantics.md, superpowers/plans/
+    specs/, ops/, reports/, examples/, knowledge/, knowledge-context/, …
 ```
 
-## エントリーポイント
+> `HARNESS_EXPORT_FILES` は **既定 OFF**（Phase 9 で ON → OFF へ反転）。`runs/` /
+> 互換 file が欲しい場合のみ `HARNESS_EXPORT_FILES=1` を設定するか、明示的に
+> `harness db export-files` を実行する。詳細は [`db.md`](./db.md)。
+
+## エントリーポイント（代表コマンド）
+
+詳細は [`cli.md`](./cli.md)。ここでは入口の代表のみ。
 
 ```bash
-# 通常実行
+# DB を初期化 / migration を適用（最初に一度）
+HARNESS_ROOT="$PWD" npm run --silent harness -- db init
+HARNESS_ROOT="$PWD" npm run --silent harness -- db migrate
+
+# project profile を起点に run（Phase 5）
 HARNESS_ROOT="$PWD" npm run --silent harness -- run \
-  --repo <target-repo-path> \
-  --repo-id <id> \
-  --domain <subdir> \
-  --goal "<task description>" \
-  --base-branch main
+  --project <id> --domain <subdir> --goal "<task>" [--with-knowledge]
+
+# 後方互換の repo-id 指定（profile を使わない path）
+HARNESS_ROOT="$PWD" npm run --silent harness -- run \
+  --repo <target-repo-path> --repo-id <id> --domain <subdir> --goal "<task>"
 
 # policy 解決だけ確認
 HARNESS_ROOT="$PWD" npm run --silent harness -- run ... --dry-run
 
-# 残った lock を確認 / 解除
-HARNESS_ROOT="$PWD" npm run --silent harness -- lock list
-HARNESS_ROOT="$PWD" npm run --silent harness -- lock release --domain <subdir>
-
-# needs_review な run を一覧（処理待ちの可視化）
+# review queue 可視化 → decision 反映
 HARNESS_ROOT="$PWD" npm run --silent harness -- review list
-
-# (任意) reviewer agent に review-decision.yaml を生成させる
-HARNESS_ROOT="$PWD" npm run --silent harness -- review auto --run-id <run-id>
-
-# review-decision.yaml を編集 → meta.status を反映
 HARNESS_ROOT="$PWD" npm run --silent harness -- review process --run-id <run-id>
 
-# changes_requested を受けて再 run
-HARNESS_ROOT="$PWD" npm run --silent harness -- rerun --from-review <run-id>
+# bounded loop（run → review → rerun を 1 コマンドで）
+HARNESS_ROOT="$PWD" npm run --silent harness -- workflow reviewed-run \
+  --project <id> --domain <subdir> --goal "<task>" [--max-attempts <n>]
 
-# レビュー完了後の cleanup
-HARNESS_ROOT="$PWD" npm run --silent harness -- cleanup --run-id <run-id> --scope workspace
+# dashboard（依存ゼロ静的 / 常時最新 HTTP）
+HARNESS_ROOT="$PWD" npm run --silent harness -- dashboard export
+HARNESS_ROOT="$PWD" npm run --silent harness -- dashboard serve [--enable-mutation]
 
-# knowledge 候補をレビュー → 採用したものを docs/knowledge/ に展開
-HARNESS_ROOT="$PWD" npm run --silent harness -- knowledge list --run-id <run-id>
-HARNESS_ROOT="$PWD" npm run --silent harness -- knowledge promote --run-id <run-id> --reviewer <name>
+# MCP server（coding agent 向け JSON-RPC, stdio）
+HARNESS_ROOT="$PWD" npm run --silent harness -- mcp serve --transport stdio
+
+# goal convergence（bounded goal loop）
+HARNESS_ROOT="$PWD" npm run --silent harness -- goal start \
+  --title "..." --scope-file scope.yaml --close-file close.yaml
+HARNESS_ROOT="$PWD" npm run --silent harness -- goal status <goal-id>
+HARNESS_ROOT="$PWD" npm run --silent harness -- goal check-convergence <goal-id> --json
 ```
 
-詳細は [`cli.md`](./cli.md)。
+## 関連 docs
+
+- 認証 / secret 運用（dashboard server auth・MCP token 等）:
+  [`../ops/setup-and-secrets.md`](../ops/setup-and-secrets.md)
+- DB の定期メンテ（backup / checkpoint / vacuum / archive / doctor）:
+  [`../ops/db-maintenance-runbook.md`](../ops/db-maintenance-runbook.md)
+- 個人運用フロー（inbox / backlog / metrics / session / maintenance, Phase 4）:
+  [`../ops/personal-operating-manual.md`](../ops/personal-operating-manual.md)
