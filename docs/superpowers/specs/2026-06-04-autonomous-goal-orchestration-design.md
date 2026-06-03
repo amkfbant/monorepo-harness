@@ -139,3 +139,14 @@ harness goal orchestrate <goalId> [--max-steps <n>] [--dry-run]
 - LLM-based classification or LLM-judged convergence (deliberately never).
 - Auto-merge of the created PR (PR is created; merge stays human).
 - Dashboard UI for orchestration.
+- **Empty-goal autonomy.** A fresh goal (no runs yet) evaluates to
+  `continue / run_close_check`, where the gate permits only `review.*` — so the
+  orchestrator drives from *review onward* and requires a **seeded first run**
+  (create the initial coder run with `harness run` / a linked `run.start`). If
+  the orchestrator hits review before any run exists, it now escalates cleanly
+  (it no longer crashes). Closing the loop so the orchestrator can create the
+  very first run itself needs a gate/convergence change and is deferred.
+- **Auto-defer of out-of-scope follow-ups.** `continue / defer_followups`
+  currently escalates rather than auto-deferring (deferral is deterministic and
+  safe via `deferFindingToBacklog`, so this is a candidate for a future
+  `defer` action; today it stays human to remain fail-closed).

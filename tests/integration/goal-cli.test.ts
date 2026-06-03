@@ -259,6 +259,28 @@ describe("goal CLI", () => {
     }
   });
 
+  it("orchestrate --dry-run prints the next action without running codex", () => {
+    const { root } = setup();
+    expect(
+      runCli(root, [
+        "goal",
+        "start",
+        "--title",
+        "Dry",
+        "--goal-id",
+        "g-dry",
+        "--domain",
+        "src",
+        "--created-by",
+        "cli",
+      ]).code,
+    ).toBe(0);
+    const r = runCli(root, ["goal", "orchestrate", "g-dry", "--dry-run"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toMatch(/decision=/);
+    expect(r.out).toMatch(/next-action=/);
+  });
+
   it("exits nonzero when convergence needs classification", () => {
     const { root, scopePath, closePath } = setup();
     const goal = json<{ goalId: string }>(
