@@ -1,10 +1,25 @@
 import { withManagedDb } from "../db/managed-connection.js";
+import { harnessPaths } from "../config/paths.js";
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
+import {
+  runDomainCoding,
+  RunFinalizedError,
+} from "../core/workflow-runner.js";
+import { runReviewerAgent } from "../core/reviewer-agent.js";
+import { processReviewDecision } from "../core/review-processor.js";
+import { createPullRequest, type PrPublisher } from "../core/pr-creator.js";
+import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
 import { GoalRepository } from "./repository.js";
 import { classifyFindingForGoal } from "./classification.js";
 import { assertGoalCanStartMutation } from "./mutation-gate.js";
+import { importReviewProposalToGoal } from "./review-integration.js";
+import { nextReviewMode } from "./review-mode.js";
 import type { OrchestratorRunners } from "./orchestrator-types.js";
-import type { GoalLifecycleStatus } from "./types.js";
+import type {
+  GoalLifecycleStatus,
+  GoalReviewMode,
+  GoalSession,
+} from "./types.js";
 
 /**
  * Lifecycle states that still demand attention (i.e. an "open" finding). A
@@ -17,17 +32,111 @@ const OPEN_LIFECYCLE_STATUSES: readonly GoalLifecycleStatus[] = [
   "escalated",
 ];
 
+/**
+ * The concrete repo/run context a goal session does not itself store. The
+ * session has `repoId` / `domain` and the goal text (title/description), but
+ * the on-disk repo path and base branch must be supplied by the caller. The
+ * CLI resolves these from its `--repo` / `--base-branch` flags; tests pass a
+ * throwaway git repo.
+ */
+export interface GoalRunContext {
+  repoPath: string;
+  repoId: string;
+  domain: string;
+  goal: string;
+  baseBranch: string;
+}
+
 export interface OrchestratorRunnerDeps {
   dbPath: string;
   harnessRoot: string;
   createdBy: string;
   coderRunner: CodexExecRunner;
   reviewerRunner: CodexExecRunner;
+  /**
+   * Publisher used by `closeAndPr`. The git side is exercised with a local
+   * bare remote in tests via a fake; production wires the real `gh` publisher.
+   * Required for `closeAndPr` (a clear error is thrown if it is missing).
+   */
+  publisher?: PrPublisher;
+  /**
+   * Resolve the repo/run context for a goal's session. Defaults to deriving
+   * the goal text from the session title/description, the repoId/domain from
+   * the session, and the base branch to `main`; the repo path is taken from
+   * `repoPath` below. Override for full control (e.g. project-mode runs).
+   */
+  resolveRunContext?: (session: GoalSession) => GoalRunContext;
+  /**
+   * Repo path used by the default `resolveRunContext`. Ignored when a custom
+   * `resolveRunContext` is supplied.
+   */
+  repoPath?: string;
+  /** Base branch used by the default `resolveRunContext` (default "main"). */
+  baseBranch?: string;
+}
+
+function defaultGoalText(session: GoalSession): string {
+  const parts = [session.title, session.description ?? ""]
+    .map((p) => p.trim())
+    .filter((p) => p !== "");
+  return parts.join("\n\n");
+}
+
+function resolveRunContext(
+  deps: OrchestratorRunnerDeps,
+  session: GoalSession,
+): GoalRunContext {
+  if (deps.resolveRunContext !== undefined) {
+    return deps.resolveRunContext(session);
+  }
+  if (session.repoId === null || session.domain === null) {
+    throw new Error(
+      `goal ${session.goalId} has no repoId/domain; cannot run the coder ` +
+        `(provide resolveRunContext or set the goal's repoId+domain)`,
+    );
+  }
+  if (deps.repoPath === undefined) {
+    throw new Error(
+      `goal ${session.goalId}: no repoPath configured for the orchestrator ` +
+        `(pass deps.repoPath or deps.resolveRunContext)`,
+    );
+  }
+  return {
+    repoPath: deps.repoPath,
+    repoId: session.repoId,
+    domain: session.domain,
+    goal: defaultGoalText(session),
+    baseBranch: deps.baseBranch ?? "main",
+  };
+}
+
+/**
+ * The latest run id recorded against a goal — the run the review / pr steps
+ * operate on. Attempts are ordered (iteration ASC, created_at ASC) so the
+ * last attempt carrying a runId is the most recent run.
+ */
+function latestRunId(repo: GoalRepository, goalId: string): string {
+  const attempts = repo.listAttempts(goalId);
+  for (let i = attempts.length - 1; i >= 0; i--) {
+    const runId = attempts[i]?.runId;
+    if (typeof runId === "string" && runId !== "") return runId;
+  }
+  throw new Error(
+    `goal ${goalId} has no recorded run yet; run the coder before reviewing`,
+  );
+}
+
+function reviewModeForGoal(
+  repo: GoalRepository,
+  session: GoalSession,
+): GoalReviewMode {
+  return nextReviewMode(session, repo.listReviewCycles(session.goalId));
 }
 
 export function createOrchestratorRunners(
   deps: OrchestratorRunnerDeps,
 ): OrchestratorRunners {
+  const paths = harnessPaths(deps.harnessRoot);
   const assertGate = (
     goalId: string,
     mutationKind: "run.start" | "review.auto",
@@ -44,11 +153,120 @@ export function createOrchestratorRunners(
   return {
     coder: async (goalId) => {
       assertGate(goalId, "run.start");
-      throw new Error("coder runner requires the integration wiring (Task 7)");
+      const { attemptId, context } = withManagedDb(
+        { dbPath: deps.dbPath },
+        (db) => {
+          const repo = new GoalRepository(db);
+          const s = repo.requireSession(goalId);
+          const ctx = resolveRunContext(deps, s);
+          // a goal that already has a coding attempt is iterating on review
+          // feedback → "rerun"; the first pass is "implement".
+          const prior = repo
+            .listAttempts(goalId)
+            .some(
+              (a) =>
+                a.attemptType === "implement" || a.attemptType === "rerun",
+            );
+          const attempt = repo.createAttempt({
+            goalId,
+            attemptType: prior ? "rerun" : "implement",
+            status: "running",
+          });
+          return { attemptId: attempt.attemptId, context: ctx };
+        },
+      );
+      try {
+        const result = await runDomainCoding({
+          harnessRoot: deps.harnessRoot,
+          repoPath: context.repoPath,
+          repoId: context.repoId,
+          domain: context.domain,
+          goal: context.goal,
+          baseBranch: context.baseBranch,
+          codexRunner: deps.coderRunner,
+        });
+        const succeeded = result.status === "needs_review";
+        withManagedDb({ dbPath: deps.dbPath }, (db) => {
+          new GoalRepository(db).completeAttempt({
+            attemptId,
+            status: succeeded ? "succeeded" : "failed",
+            runId: result.runId,
+            result: {
+              runStatus: result.status,
+              safetyStatus: result.safetyStatus,
+            },
+          });
+        });
+        return { runId: result.runId, runStatus: result.status };
+      } catch (e) {
+        // a finalized run still produced a runId — record the failed attempt
+        // so convergence can see the budget was spent.
+        const runId =
+          e instanceof RunFinalizedError ? e.runId : undefined;
+        withManagedDb({ dbPath: deps.dbPath }, (db) => {
+          new GoalRepository(db).completeAttempt({
+            attemptId,
+            status: "failed",
+            ...(runId !== undefined ? { runId } : {}),
+            errorMessage: (e as Error).message,
+          });
+        });
+        throw e;
+      }
     },
     review: async (goalId) => {
       assertGate(goalId, "review.auto");
-      throw new Error("review runner requires the integration wiring (Task 7)");
+      const runId = withManagedDb({ dbPath: deps.dbPath }, (db) =>
+        latestRunId(new GoalRepository(db), goalId),
+      );
+
+      // 1. produce a review proposal (review_proposals row) for the run.
+      const reviewResult = await runReviewerAgent({
+        runsDir: paths.runsDir,
+        runId,
+        dbPath: deps.dbPath,
+        codexRunner: deps.reviewerRunner,
+      });
+      // 2. promote the proposal to the run's status (approved / ...).
+      const processed = await processReviewDecision({
+        runsDir: paths.runsDir,
+        runId,
+        locksDir: paths.locksDir,
+        dbPath: deps.dbPath,
+      });
+
+      // 3. fold the processed proposal into the goal: a review cycle, any
+      //    findings it carried, and the `review_consensus` close-check that
+      //    lets convergence advance toward close.
+      withManagedDb({ dbPath: deps.dbPath }, (db) => {
+        const repo = new GoalRepository(db);
+        const session = repo.requireSession(goalId);
+        const proposal = new ReviewProposalRepository(
+          db,
+        ).getLatestProcessedProposal(runId);
+        if (proposal === null) {
+          // no DB proposal (should not happen on the db-first path) — still
+          // record an empty cycle so the budget reflects the review.
+          const cycle = repo.startReviewCycle({
+            goalId,
+            reviewMode: reviewModeForGoal(repo, session),
+            sourceRunId: runId,
+          });
+          repo.completeReviewCycle({
+            cycleId: cycle.cycleId,
+            summary: `decision=${processed.newStatus}`,
+          });
+          return;
+        }
+        importReviewProposalToGoal({
+          repository: repo,
+          goalId,
+          proposal,
+          processResult: processed,
+          createdBy: deps.createdBy,
+        });
+      });
+      return { runId, decision: reviewResult.decision };
     },
     classify: async (goalId) =>
       withManagedDb({ dbPath: deps.dbPath }, (db) => {
@@ -74,10 +292,33 @@ export function createOrchestratorRunners(
         return { resolved: true };
       }),
     closeAndPr: async (goalId) => {
-      assertGate(goalId, "run.start");
-      throw new Error(
-        "closeAndPr runner requires the integration wiring (Task 7)",
-      );
+      // No mutation gate here: closeAndPr is only dispatched on a
+      // `close_ready` convergence decision, which deliberately denies
+      // run.start/review. Closing + PR is the terminal step, not a run.
+      if (deps.publisher === undefined) {
+        throw new Error(
+          "closeAndPr requires a publisher in OrchestratorRunnerDeps",
+        );
+      }
+      const { runId, base } = withManagedDb({ dbPath: deps.dbPath }, (db) => {
+        const repo = new GoalRepository(db);
+        const session = repo.requireSession(goalId);
+        const context = resolveRunContext(deps, session);
+        const rid = latestRunId(repo, goalId);
+        repo.updateStatus(goalId, "closed", "goal converged; PR opened");
+        return { runId: rid, base: context.baseBranch };
+      });
+      const pr = await createPullRequest({
+        runsDir: paths.runsDir,
+        workspacesDir: paths.workspacesDir,
+        locksDir: paths.locksDir,
+        runId,
+        base,
+        draft: true,
+        publisher: deps.publisher,
+        dbPath: deps.dbPath,
+      });
+      return { prUrl: pr.prUrl };
     },
   };
 }

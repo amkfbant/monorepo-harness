@@ -12,6 +12,7 @@ import {
   type ClassifiableGoalFinding,
 } from "../goal/classification.js";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
+import { createGhPrPublisher } from "../core/gh-pr-publisher.js";
 import { ConvergenceService } from "../goal/convergence.js";
 import { recordConvergenceDecisionWithStatus } from "../goal/convergence-status.js";
 import { deferFindingToBacklog } from "../goal/followups.js";
@@ -667,6 +668,8 @@ export function registerGoalCommands(
     .command("orchestrate")
     .description("drive a goal to a terminal state (run/review/rerun/close/pr)")
     .argument("<goal-id>", "goal id")
+    .option("--repo <path>", "path to the target git repo (required unless --dry-run)")
+    .option("--base-branch <name>", "base branch for runs and the PR", "main")
     .option("--max-steps <n>", "loop step cap", "50")
     .option("--dry-run", "print the next action only; do not execute", false)
     .action(async (goalId: string, raw: Record<string, unknown>) => {
@@ -681,6 +684,9 @@ export function registerGoalCommands(
           );
           return;
         }
+        if (typeof raw.repo !== "string" || raw.repo === "") {
+          throw new Error("goal orchestrate requires --repo <path> unless --dry-run");
+        }
         const dbPath = harnessPaths(opts.getHarnessRoot()).dbPath;
         const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
         const result = await new GoalOrchestrator({ dbPath }).run({
@@ -691,6 +697,9 @@ export function registerGoalCommands(
             createdBy: "cli",
             coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
             reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
+            publisher: createGhPrPublisher(),
+            repoPath: String(raw.repo),
+            baseBranch: String(raw.baseBranch ?? "main"),
           }),
           maxSteps: parsePositiveInt(raw.maxSteps ?? 50, "--max-steps"),
           createdBy: "cli",
