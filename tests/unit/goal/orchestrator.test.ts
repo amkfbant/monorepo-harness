@@ -60,4 +60,62 @@ describe("GoalOrchestrator", () => {
     expect(result.prUrl).toBe("https://example/pr/1");
     expect(calls).toContain("closeAndPr");
   });
+
+  it("escalates a diverging goal without calling runners", async () => {
+    const dbPath = freshDbPath();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new GoalRepository(db);
+      repo.createSession({
+        goalId: "g-div",
+        title: "Diverging",
+        projectId: "demo",
+        maxTotalNewFindings: 0,
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+      const cycle = repo.startReviewCycle({ goalId: "g-div", reviewMode: "initial" });
+      repo.completeReviewCycle({ cycleId: cycle.cycleId, findingsNew: 1 });
+    } finally {
+      close();
+    }
+    const calls: string[] = [];
+    const result = await new GoalOrchestrator({ dbPath }).run({
+      goalId: "g-div",
+      runners: fakeRunners(calls),
+      maxSteps: 10,
+      createdBy: "worker",
+    });
+    expect(result.outcome).toBe("escalated");
+    expect(result.escalateReason).toBe("diverging");
+    expect(calls).toEqual([]);
+  });
+
+  it("stops with max_steps_exhausted when the loop never reaches a terminal", async () => {
+    const dbPath = freshDbPath();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      new GoalRepository(db).createSession({
+        goalId: "g-loop",
+        title: "Loop",
+        projectId: "demo",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+    } finally {
+      close();
+    }
+    const result = await new GoalOrchestrator({ dbPath }).run({
+      goalId: "g-loop",
+      runners: fakeRunners([]),
+      maxSteps: 3,
+      createdBy: "worker",
+    });
+    expect(result.outcome).toBe("max_steps_exhausted");
+    expect(result.steps.length).toBe(3);
+  });
 });
