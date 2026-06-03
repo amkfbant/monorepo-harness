@@ -11,11 +11,13 @@ import { createPullRequest, type PrPublisher } from "../core/pr-creator.js";
 import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
 import { GoalRepository } from "./repository.js";
 import { classifyFindingForGoal } from "./classification.js";
+import { ConvergenceService } from "./convergence.js";
 import { assertGoalCanStartMutation } from "./mutation-gate.js";
 import { importReviewProposalToGoal } from "./review-integration.js";
 import { nextReviewMode } from "./review-mode.js";
 import type { OrchestratorRunners } from "./orchestrator-types.js";
 import type {
+  GoalAttemptType,
   GoalLifecycleStatus,
   GoalReviewMode,
   GoalSession,
@@ -110,15 +112,22 @@ function resolveRunContext(
   };
 }
 
+/** Attempt types that produce a coding run whose runId review/PR operate on. */
+const CODING_ATTEMPT_TYPES = new Set<GoalAttemptType>(["implement", "rerun"]);
+
 /**
  * The latest run id recorded against a goal — the run the review / pr steps
- * operate on. Attempts are ordered (iteration ASC, created_at ASC) so the
- * last attempt carrying a runId is the most recent run.
+ * operate on. Attempts are ordered (iteration ASC, created_at ASC), so the
+ * last CODING attempt (implement / rerun) carrying a runId is the most recent
+ * run. A close-check or other attempt's runId must not be picked.
  */
-function latestRunId(repo: GoalRepository, goalId: string): string {
+export function latestRunId(repo: GoalRepository, goalId: string): string {
   const attempts = repo.listAttempts(goalId);
   for (let i = attempts.length - 1; i >= 0; i--) {
-    const runId = attempts[i]?.runId;
+    const attempt = attempts[i];
+    if (attempt === undefined) continue;
+    if (!CODING_ATTEMPT_TYPES.has(attempt.attemptType)) continue;
+    const runId = attempt.runId;
     if (typeof runId === "string" && runId !== "") return runId;
   }
   throw new Error(
@@ -303,11 +312,22 @@ export function createOrchestratorRunners(
       const { runId, base } = withManagedDb({ dbPath: deps.dbPath }, (db) => {
         const repo = new GoalRepository(db);
         const session = repo.requireSession(goalId);
+        // Defense in depth: closeAndPr must only ever run on a goal whose
+        // convergence is `close_ready`. The orchestrator dispatch already
+        // guarantees this, but a direct caller (or a future code path) must
+        // not be able to close a non-ready goal — fail closed.
+        const convergence = new ConvergenceService(repo).evaluate(goalId);
+        if (convergence.decision !== "close_ready") {
+          throw new Error(
+            `goal ${goalId} is not close_ready (decision=${convergence.decision}); ` +
+              `refusing to close and open a PR`,
+          );
+        }
         const context = resolveRunContext(deps, session);
-        const rid = latestRunId(repo, goalId);
-        repo.updateStatus(goalId, "closed", "goal converged; PR opened");
-        return { runId: rid, base: context.baseBranch };
+        return { runId: latestRunId(repo, goalId), base: context.baseBranch };
       });
+      // Create the PR FIRST. A PR failure must NOT leave a permanently-closed
+      // goal with no PR, so the close is the last side effect.
       const pr = await createPullRequest({
         runsDir: paths.runsDir,
         workspacesDir: paths.workspacesDir,
@@ -317,6 +337,13 @@ export function createOrchestratorRunners(
         draft: true,
         publisher: deps.publisher,
         dbPath: deps.dbPath,
+      });
+      withManagedDb({ dbPath: deps.dbPath }, (db) => {
+        new GoalRepository(db).updateStatus(
+          goalId,
+          "closed",
+          "goal converged; PR opened",
+        );
       });
       return { prUrl: pr.prUrl };
     },

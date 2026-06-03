@@ -44,27 +44,40 @@ export class GoalOrchestrator {
         steps.push({ step: i, decision: finalDecision, action: "escalate", detail: action.reason });
         return { goalId: input.goalId, outcome: "escalated", steps, finalDecision, escalateReason: action.reason };
       }
-      if (action.kind === "coder") {
-        const r = await input.runners.coder(input.goalId);
-        steps.push({ step: i, decision: finalDecision, action: "coder", detail: r.runStatus });
-        continue;
-      }
-      if (action.kind === "review") {
-        const r = await input.runners.review(input.goalId);
-        steps.push({ step: i, decision: finalDecision, action: "review", detail: r.decision });
-        continue;
-      }
-      if (action.kind === "classify") {
-        const r = await input.runners.classify(input.goalId);
-        steps.push({ step: i, decision: finalDecision, action: "classify", detail: String(r.resolved) });
-        if (!r.resolved) {
-          return { goalId: input.goalId, outcome: "escalated", steps, finalDecision, escalateReason: r.escalateReason ?? "classification unresolved" };
+      // A runner throwing (e.g. a coder/review/PR failure, or the documented
+      // "fresh goal → review before any run exists" precondition gap) must not
+      // crash the orchestrator. Turn it into a clean escalation: record the
+      // step, flip the goal to `escalated`, and return.
+      try {
+        if (action.kind === "coder") {
+          const r = await input.runners.coder(input.goalId);
+          steps.push({ step: i, decision: finalDecision, action: "coder", detail: r.runStatus });
+          continue;
         }
-        continue;
+        if (action.kind === "review") {
+          const r = await input.runners.review(input.goalId);
+          steps.push({ step: i, decision: finalDecision, action: "review", detail: r.decision });
+          continue;
+        }
+        if (action.kind === "classify") {
+          const r = await input.runners.classify(input.goalId);
+          steps.push({ step: i, decision: finalDecision, action: "classify", detail: String(r.resolved) });
+          if (!r.resolved) {
+            return { goalId: input.goalId, outcome: "escalated", steps, finalDecision, escalateReason: r.escalateReason ?? "classification unresolved" };
+          }
+          continue;
+        }
+        const pr = await input.runners.closeAndPr(input.goalId);
+        steps.push({ step: i, decision: finalDecision, action: "close_and_pr", detail: pr.prUrl });
+        return { goalId: input.goalId, outcome: "pr_created", steps, finalDecision, prUrl: pr.prUrl };
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        steps.push({ step: i, decision: finalDecision, action: "escalate", detail: message });
+        withManagedDb({ dbPath: this.opts.dbPath }, (db) => {
+          new GoalRepository(db).updateStatus(input.goalId, "escalated", message);
+        });
+        return { goalId: input.goalId, outcome: "escalated", steps, finalDecision, escalateReason: message };
       }
-      const pr = await input.runners.closeAndPr(input.goalId);
-      steps.push({ step: i, decision: finalDecision, action: "close_and_pr", detail: pr.prUrl });
-      return { goalId: input.goalId, outcome: "pr_created", steps, finalDecision, prUrl: pr.prUrl };
     }
     return { goalId: input.goalId, outcome: "max_steps_exhausted", steps, finalDecision };
   }

@@ -118,4 +118,54 @@ describe("GoalOrchestrator", () => {
     expect(result.outcome).toBe("max_steps_exhausted");
     expect(result.steps.length).toBe(3);
   });
+
+  it("escalates (and flips the goal status) when a runner throws", async () => {
+    const dbPath = freshDbPath();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      // a fresh goal with a pending command close condition dispatches to
+      // `review`; a review runner that throws must escalate cleanly.
+      new GoalRepository(db).createSession({
+        goalId: "g-throw",
+        title: "Throws",
+        projectId: "demo",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+    } finally {
+      close();
+    }
+    const throwingRunners: OrchestratorRunners = {
+      coder: async () => ({ runId: "r1", runStatus: "needs_review" }),
+      review: async () => {
+        throw new Error("review boom");
+      },
+      classify: async () => ({ resolved: true }),
+      closeAndPr: async () => ({ prUrl: "https://example/pr/1" }),
+    };
+    const result = await new GoalOrchestrator({ dbPath }).run({
+      goalId: "g-throw",
+      runners: throwingRunners,
+      maxSteps: 10,
+      createdBy: "worker",
+    });
+    expect(result.outcome).toBe("escalated");
+    expect(result.escalateReason).toBe("review boom");
+    expect(
+      result.steps.some(
+        (s) => s.action === "escalate" && s.detail === "review boom",
+      ),
+    ).toBe(true);
+
+    const { db: db2, close: close2 } = openManagedDb({ dbPath });
+    try {
+      expect(new GoalRepository(db2).requireSession("g-throw").status).toBe(
+        "escalated",
+      );
+    } finally {
+      close2();
+    }
+  });
 });
