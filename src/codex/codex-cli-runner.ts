@@ -107,6 +107,12 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
         }
         child.stdout.pipe(outStream);
         child.stderr.pipe(errStream);
+        // codex may exit before draining stdin (early exit / crash / a prompt
+        // larger than the OS pipe buffer). The resulting EPIPE on the prompt
+        // write is not fatal — the child's exit code is the source of truth.
+        // Without this handler the EPIPE is unhandled and crashes the harness
+        // (observed on CI/Linux; hidden on macOS by pipe-buffer timing).
+        child.stdin.on("error", () => {});
         child.stdin.write(input.prompt);
         child.stdin.end();
         child.on("error", (e) => {
