@@ -29,6 +29,10 @@ jobs:
       # comment tracks the human-readable tag. Dependabot (github-actions)
       # refreshes both the SHA and the comment so the pins do not go stale.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # No step performs authenticated git ops; don't leave GITHUB_TOKEN
+          # in .git/config during install/build/test.
+          persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
