@@ -18,6 +18,7 @@ export function decideOrchestratorAction(
       return { kind: "escalate", reason: `needs_fix with unsupported action ${action}` };
     case "continue":
       if (action === "run_close_check") return { kind: "review" };
+      if (action === "defer_followups") return { kind: "defer" };
       return { kind: "escalate", reason: `continue with non-review action ${action}` };
     case "needs_classification":
       return { kind: "classify" };

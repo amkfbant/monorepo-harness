@@ -3,6 +3,7 @@ export type OrchestratorAction =
   | { kind: "coder" } // needs_fix: run/rerun the coder to fix findings / run close checks
   | { kind: "review" } // continue + run_close_check: review the latest run
   | { kind: "classify" } // needs_classification: deterministic scope classification
+  | { kind: "defer" } // continue/defer_followups: defer out-of-scope findings to backlog
   | { kind: "close_and_pr" } // close_ready: close the goal then create the PR
   | { kind: "stop"; outcome: "closed" | "cancelled" } // already terminal
   | { kind: "escalate"; reason: string }; // diverging / budget / escalate / unsupported
@@ -19,6 +20,8 @@ export interface OrchestratorRunners {
   review(goalId: string): Promise<{ runId: string; decision: string }>;
   /** Deterministically classify open unknown-scope findings. Returns whether all resolved. */
   classify(goalId: string): Promise<{ resolved: boolean; escalateReason?: string }>;
+  /** Defer open out-of-scope findings to the backlog. Returns how many were deferred. */
+  defer(goalId: string): Promise<{ deferred: number }>;
   /** Close the goal and create a PR. Returns the PR url. */
   closeAndPr(goalId: string): Promise<{ prUrl: string }>;
 }

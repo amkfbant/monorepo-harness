@@ -67,6 +67,11 @@ export class GoalOrchestrator {
           }
           continue;
         }
+        if (action.kind === "defer") {
+          const r = await input.runners.defer(input.goalId);
+          steps.push({ step: i, decision: finalDecision, action: "defer", detail: String(r.deferred) });
+          continue;
+        }
         const pr = await input.runners.closeAndPr(input.goalId);
         steps.push({ step: i, decision: finalDecision, action: "close_and_pr", detail: pr.prUrl });
         return { goalId: input.goalId, outcome: "pr_created", steps, finalDecision, prUrl: pr.prUrl };

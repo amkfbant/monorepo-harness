@@ -1,4 +1,4 @@
-import { withManagedDb } from "../db/managed-connection.js";
+import { openManagedDb, withManagedDb } from "../db/managed-connection.js";
 import { harnessPaths } from "../config/paths.js";
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import {
@@ -11,6 +11,7 @@ import { createPullRequest, type PrPublisher } from "../core/pr-creator.js";
 import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
 import { GoalRepository } from "./repository.js";
 import { classifyFindingForGoal } from "./classification.js";
+import { deferFindingToBacklog } from "./followups.js";
 import { ConvergenceService } from "./convergence.js";
 import { assertGoalCanStartMutation } from "./mutation-gate.js";
 import { importReviewProposalToGoal } from "./review-integration.js";
@@ -32,6 +33,18 @@ const OPEN_LIFECYCLE_STATUSES: readonly GoalLifecycleStatus[] = [
   "open",
   "reopened",
   "escalated",
+];
+
+/**
+ * Lifecycle states of an out-of-scope finding that convergence still treats as
+ * needing deferral (`UNRESOLVED_OUT_OF_SCOPE_LIFECYCLES` in convergence.ts).
+ * `classifyFinding` sets an out-of-scope finding's lifecycle to `out_of_scope`,
+ * so the defer runner must include it (the generic OPEN set does not).
+ */
+const DEFERRABLE_OUT_OF_SCOPE_LIFECYCLES: readonly GoalLifecycleStatus[] = [
+  "open",
+  "reopened",
+  "out_of_scope",
 ];
 
 /**
@@ -300,6 +313,43 @@ export function createOrchestratorRunners(
         }
         return { resolved: true };
       }),
+    defer: async (goalId) => {
+      // No mutation gate: deferral is a goal-repo bookkeeping op (moving an
+      // out-of-scope follow-up to the backlog), not a workspace mutation.
+      // `deferFindingToBacklog` opens its own managed db for the backlog write,
+      // so collect the finding ids under one open, close it, then loop the
+      // async defers each with a fresh repo to avoid a same-dbPath lock clash.
+      const findingIds = withManagedDb({ dbPath: deps.dbPath }, (db) => {
+        const repo = new GoalRepository(db);
+        return repo
+          .listFindings({ goalId, scopeStatus: "out_of_scope" })
+          .filter((f) =>
+            DEFERRABLE_OUT_OF_SCOPE_LIFECYCLES.includes(f.lifecycleStatus),
+          )
+          .map((f) => f.findingId);
+      });
+      let deferred = 0;
+      for (const findingId of findingIds) {
+        const { db, close } = openManagedDb({ dbPath: deps.dbPath });
+        try {
+          await deferFindingToBacklog({
+            repository: new GoalRepository(db),
+            findingId,
+            reason:
+              "auto-deferred by orchestrator (out-of-scope follow-up)",
+            createBacklogItem: true,
+            backlogContext: {
+              backlogDir: paths.backlogDir,
+              dbPath: deps.dbPath,
+            },
+          });
+        } finally {
+          close();
+        }
+        deferred += 1;
+      }
+      return { deferred };
+    },
     closeAndPr: async (goalId) => {
       // No mutation gate here: closeAndPr is only dispatched on a
       // `close_ready` convergence decision, which deliberately denies
