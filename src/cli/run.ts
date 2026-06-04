@@ -1466,6 +1466,26 @@ prCmd
     }
   });
 
+/** Parse a finite, non-negative number CLI arg; exit 2 on anything invalid. */
+function parseNonNegative(raw: unknown, flag: string): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) {
+    process.stderr.write(`harness error: invalid ${flag}: ${String(raw)}\n`);
+    process.exit(2);
+  }
+  return n;
+}
+
+/** Parse a positive integer CLI arg; exit 2 on anything invalid. */
+function parsePositiveInt(raw: unknown, flag: string): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) {
+    process.stderr.write(`harness error: invalid ${flag}: ${String(raw)}\n`);
+    process.exit(2);
+  }
+  return Math.floor(n);
+}
+
 prCmd
   .command("request-review")
   .description(
@@ -1485,10 +1505,15 @@ prCmd
     }
     const ghBin = process.env.HARNESS_GH_BIN ?? "gh";
     const repoDir = String(raw.repo);
+    // Validate numeric args BEFORE the seconds→ms conversion: a NaN deadline
+    // (e.g. `--timeout foo`) would otherwise never trip the skip check.
+    const timeoutSec = parseNonNegative(raw.timeout, "--timeout");
+    const pollIntervalSec = parseNonNegative(raw.pollInterval, "--poll-interval");
+    const requestAttempts = parsePositiveInt(raw.requestAttempts, "--request-attempts");
     const config = {
-      pollTimeoutMs: Math.max(0, Number(raw.timeout) * 1000),
-      pollIntervalMs: Math.max(0, Number(raw.pollInterval) * 1000),
-      requestAttempts: Math.max(1, Number(raw.requestAttempts)),
+      pollTimeoutMs: Math.floor(timeoutSec) * 1000,
+      pollIntervalMs: Math.floor(pollIntervalSec) * 1000,
+      requestAttempts,
     };
     const outcome = await runCopilotReview({
       reviewer: createGhCopilotReviewer(repoDir, ghBin),

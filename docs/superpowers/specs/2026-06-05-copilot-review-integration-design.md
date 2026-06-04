@@ -104,7 +104,10 @@ harness pr request-review <prNumber> --repo <path>
 - exit code（standalone CLI のみの慣習。orchestrate は exit に依らず非 gating）:
   `reviewed` / `skipped`（timeout = 正常な best-effort 結果）→ **0**。
   `failed`（要求すら確立できなかった）→ **非 0**（operator が検知できるよう）。
-  引数不正も非 0。orchestrate 経路はこの exit を見ず、いずれの outcome でも close を継続。
+  数値引数（`--timeout` / `--poll-interval` / `--request-attempts`）は秒→ms 変換
+  **前**に検証する: finite かつ非負（`--request-attempts` は正の整数）でなければ
+  stderr に明示して **exit 2**（NaN deadline で永久に skip しない事故を防ぐ）。
+  orchestrate 経路はこの exit を見ず、いずれの outcome でも close を継続。
 
 ### 6. orchestrate opt-in: `goal orchestrate --request-copilot-review`
 

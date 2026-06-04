@@ -82,6 +82,22 @@ describe("harness pr request-review", () => {
     expect(row?.status).toBe("succeeded");
   });
 
+  it("exits 2 on an invalid --timeout (NaN guard)", () => {
+    const root = initRoot();
+    const gh = writeReviewedGh();
+    const r = runCli(root, gh, [
+      "pr",
+      "request-review",
+      "55",
+      "--repo",
+      tmpdir(),
+      "--timeout",
+      "foo",
+    ]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/invalid.*--timeout|timeout/i);
+  });
+
   it("exits non-zero when the request can never be established (failed)", () => {
     const root = initRoot();
     const failDir = mkdtempSync(join(tmpdir(), "harness-fake-gh-"));
