@@ -273,5 +273,11 @@ asserts both the decision stream and the loop stop condition.
 ## Non-Goals
 
 Phase 19 does not implement autonomous worker scheduling, semantic embedding
-clustering, dashboard mutation UI, raw shell execution, external issue tracker
-sync, or automatic merge.
+clustering, dashboard mutation UI, raw shell execution, or external issue
+tracker sync.
+
+Automatic merge is now available as an opt-in (default OFF): when
+`harness goal orchestrate --auto-merge` is set, `closeAndPr` evaluates a
+deterministic merge gate (close-ready ∧ consensus approved with quorum, or a
+human override ∧ CI green) and merges the PR, escalating fail-closed on a
+hard-blocked gate. See [`workflow.md`](./workflow.md) (auto-merge).

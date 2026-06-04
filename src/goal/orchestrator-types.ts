@@ -22,8 +22,16 @@ export interface OrchestratorRunners {
   classify(goalId: string): Promise<{ resolved: boolean; escalateReason?: string }>;
   /** Defer open out-of-scope findings to the backlog. Returns how many were deferred. */
   defer(goalId: string): Promise<{ deferred: number }>;
-  /** Close the goal and create a PR. Returns the PR url. */
-  closeAndPr(goalId: string): Promise<{ prUrl: string }>;
+  /**
+   * Close the goal and create a PR. Returns the PR url. Phase 3: when
+   * auto-merge is enabled it also merges the PR (`merged: true`) or, if the
+   * merge gate is hard-blocked, returns an `escalateReason` instead of closing.
+   */
+  closeAndPr(goalId: string): Promise<{
+    prUrl: string;
+    merged?: boolean;
+    escalateReason?: string;
+  }>;
 }
 
 export interface OrchestrationStep {
@@ -38,6 +46,7 @@ export type OrchestrationOutcome =
   | "cancelled"
   | "escalated"
   | "pr_created"
+  | "merged"
   | "max_steps_exhausted";
 
 export interface OrchestrationResult {

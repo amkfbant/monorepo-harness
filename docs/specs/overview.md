@@ -131,10 +131,11 @@ harness は 2 種類の LLM agent と harness 自身の 3 ロールに権限を�
 
 ## できないこと（現状の deferred / 範囲外）
 
-- **autonomous orchestration** — run → review → rerun の bounded loop は
-  `workflow reviewed-run`（および goal convergence の収束制御）で提供するが、
-  autonomous worker / orchestrator による **完全自律ループ**（人手トリガなしの
-  無制限な fix/review/merge）は未実装。
+- **autonomous orchestration** — run → review → rerun → close → PR の bounded
+  loop は `harness goal orchestrate`（goal convergence の収束制御）で提供する。
+  close-ready ∧ consensus approved(quorum) ∧ CI green な PR の **自動マージは
+  opt-in（既定 OFF、`--auto-merge`）** で提供する（[`workflow.md`](./workflow.md)）。
+  人手トリガ無しの常駐 worker / daemon・無制限ループは未実装。
 - **MCP の Streamable HTTP transport** — production transport は stdio のみ。
   HTTP は local-only stretch として deferred（[`mcp.md`](./mcp.md)）。
 - **dashboard mutation UI** — `dashboard serve --enable-mutation` は POST API を

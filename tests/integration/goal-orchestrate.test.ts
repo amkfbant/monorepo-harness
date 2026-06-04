@@ -16,6 +16,8 @@ import { runDomainCoding } from "../../src/core/workflow-runner.js";
 import {
   type PrPublisher,
   type PrPublishInputs,
+  type PrMerger,
+  type PrMergeInputs,
 } from "../../src/core/pr-creator.js";
 
 /**
@@ -116,6 +118,45 @@ function fakePublisher(): PrPublisher & { calls: PrPublishInputs[] } {
       return { url: "https://github.com/acme/repo/pull/42", number: 42 };
     },
   };
+}
+
+function fakeMerger(
+  behavior: "ok" | "throw" = "ok",
+): PrMerger & { calls: PrMergeInputs[] } {
+  const calls: PrMergeInputs[] = [];
+  return {
+    calls,
+    async merge(inputs: PrMergeInputs) {
+      calls.push(inputs);
+      if (behavior === "throw") throw new Error("gh pr merge failed");
+      return { merged: true, alreadyMerged: false };
+    },
+  };
+}
+
+/** Coder + reviewer fakes shared by the orchestration tests. */
+function approveFakes() {
+  const coderRunner = createFakeCodexRunner({
+    edit: async (cwd) => {
+      writeFileSync(
+        join(cwd, "apps/user/src/profile.ts"),
+        "export const x = 1; // implemented\n",
+      );
+    },
+    stdout: "applied 1 file\n",
+  });
+  const reviewerRunner = createFakeCodexRunner({
+    stdout: [
+      "```yaml",
+      "decision: approved",
+      "required_changes: []",
+      "non_blocking_comments: []",
+      "out_of_scope_suggestions: []",
+      "```",
+      "",
+    ].join("\n"),
+  });
+  return { coderRunner, reviewerRunner };
 }
 
 describe("goal orchestrate (real git + fake codex)", () => {
@@ -321,6 +362,156 @@ describe("goal orchestrate (real git + fake codex)", () => {
       expect(implement).toBeDefined();
       expect(implement?.runId).toMatch(/^run-/);
       expect(repo.listReviewCycles(goalId).length).toBeGreaterThan(0);
+    } finally {
+      close();
+    }
+  });
+
+  // Phase 3 auto-merge. The empty-goal flow yields a close_ready goal with an
+  // approved review_consensus, so the merge gate's approval condition is met;
+  // ciStatus / the merger control the outcome.
+  async function driveWithAutoMerge(opts: {
+    goalId: string;
+    ciGreen: boolean;
+    merger: PrMerger;
+  }) {
+    const { coderRunner, reviewerRunner } = approveFakes();
+    const resolveRunContext = (): GoalRunContext => ({
+      repoPath: f.repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "bump x in apps/user",
+      baseBranch: "main",
+    });
+    const runners = createOrchestratorRunners({
+      dbPath: f.dbPath,
+      harnessRoot: f.harnessRoot,
+      createdBy: "test",
+      coderRunner,
+      reviewerRunner,
+      publisher: fakePublisher(),
+      resolveRunContext,
+      autoMerge: {
+        merger: opts.merger,
+        ciStatus: async (_prNumber: number, _expectedHeadSha: string) => opts.ciGreen,
+      },
+    });
+    return new GoalOrchestrator({ dbPath: f.dbPath }).run({
+      goalId: opts.goalId,
+      runners,
+      maxSteps: 20,
+      createdBy: "test",
+    });
+  }
+
+  it("auto-merge: merges the PR when the gate passes (consensus approved + CI green)", async () => {
+    const goalId = createGoal(f.dbPath, "goal-merge-ok");
+    const merger = fakeMerger("ok");
+    const result = await driveWithAutoMerge({ goalId, ciGreen: true, merger });
+
+    expect(result.outcome).toBe("merged");
+    expect(merger.calls).toHaveLength(1);
+    expect(merger.calls[0]?.prNumber).toBe(42);
+    expect(merger.calls[0]?.method).toBe("squash");
+
+    const { db, close } = openManagedDb({ dbPath: f.dbPath });
+    try {
+      expect(new GoalRepository(db).requireSession(goalId).status).toBe("closed");
+      // the merge was audited.
+      const op = db
+        .prepare("SELECT status, operation_type FROM operations WHERE operation_type = 'merge'")
+        .get() as { status: string; operation_type: string } | undefined;
+      expect(op?.status).toBe("succeeded");
+    } finally {
+      close();
+    }
+  });
+
+  it("auto-merge: pins the merge to the reviewed commit (from createPullRequest)", async () => {
+    const goalId = createGoal(f.dbPath, "goal-merge-pin");
+    const merger = fakeMerger("ok");
+    const result = await driveWithAutoMerge({ goalId, ciGreen: true, merger });
+    expect(result.outcome).toBe("merged");
+    // the pinned SHA is the run branch's reviewed commit (a real, resolvable
+    // git SHA), not a later-observed PR head.
+    const pinned = merger.calls[0]?.expectedHeadSha;
+    expect(pinned).toMatch(/^[0-9a-f]{40}$/);
+    expect(() =>
+      execFileSync("git", ["-C", f.repoPath, "cat-file", "-e", pinned!], {
+        stdio: "ignore",
+      }),
+    ).not.toThrow();
+  });
+
+  it("auto-merge: leaves the PR open (pr_created, no merge) when CI is not green", async () => {
+    const goalId = createGoal(f.dbPath, "goal-merge-ci");
+    const merger = fakeMerger("ok");
+    const result = await driveWithAutoMerge({ goalId, ciGreen: false, merger });
+
+    expect(result.outcome).toBe("pr_created");
+    expect(merger.calls).toHaveLength(0);
+    const { db, close } = openManagedDb({ dbPath: f.dbPath });
+    try {
+      expect(new GoalRepository(db).requireSession(goalId).status).toBe("closed");
+    } finally {
+      close();
+    }
+  });
+
+  it("auto-merge: a merge failure escalates (fail-closed), audited as failed", async () => {
+    const goalId = createGoal(f.dbPath, "goal-merge-fail");
+    const merger = fakeMerger("throw");
+    const result = await driveWithAutoMerge({ goalId, ciGreen: true, merger });
+
+    expect(result.outcome).toBe("escalated");
+    expect(merger.calls).toHaveLength(1);
+    const { db, close } = openManagedDb({ dbPath: f.dbPath });
+    try {
+      expect(new GoalRepository(db).requireSession(goalId).status).toBe("escalated");
+      const op = db
+        .prepare("SELECT status FROM operations WHERE operation_type = 'merge'")
+        .get() as { status: string } | undefined;
+      expect(op?.status).toBe("failed");
+    } finally {
+      close();
+    }
+  });
+
+  it("auto-merge OFF by default: closeAndPr creates the PR but never merges", async () => {
+    // No `autoMerge` in deps → the merger is never constructed/called and the
+    // goal terminates at pr_created (covered by the main flow, asserted here
+    // explicitly for the opt-in default).
+    const goalId = createGoal(f.dbPath, "goal-merge-off");
+    const { coderRunner, reviewerRunner } = approveFakes();
+    const runners = createOrchestratorRunners({
+      dbPath: f.dbPath,
+      harnessRoot: f.harnessRoot,
+      createdBy: "test",
+      coderRunner,
+      reviewerRunner,
+      publisher: fakePublisher(),
+      resolveRunContext: (): GoalRunContext => ({
+        repoPath: f.repoPath,
+        repoId: "t",
+        domain: "apps/user",
+        goal: "bump x in apps/user",
+        baseBranch: "main",
+      }),
+    });
+    const result = await new GoalOrchestrator({ dbPath: f.dbPath }).run({
+      goalId,
+      runners,
+      maxSteps: 20,
+      createdBy: "test",
+    });
+    expect(result.outcome).toBe("pr_created");
+    const { db, close } = openManagedDb({ dbPath: f.dbPath });
+    try {
+      // no merge operation was recorded.
+      const op = db
+        .prepare("SELECT COUNT(*) c FROM operations WHERE operation_type = 'merge'")
+        .get() as { c: number };
+      expect(op.c).toBe(0);
     } finally {
       close();
     }

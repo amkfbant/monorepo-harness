@@ -48,6 +48,38 @@ export interface PrPublisher {
   publish(inputs: PrPublishInputs): Promise<PrPublishResult>;
 }
 
+/** Phase 3-2: merge method for an auto-merge. */
+export type PrMergeMethod = "squash" | "merge" | "rebase";
+
+export interface PrMergeInputs {
+  /** cwd for the merger (the run worktree). */
+  repoDir: string;
+  prNumber: number;
+  method: PrMergeMethod;
+  /**
+   * Phase 3 safety: pin the merge to this head commit (the reviewed /
+   * CI-checked commit). `gh pr merge --match-head-commit` refuses if the PR
+   * head moved. REQUIRED for an open-PR merge — the merger refuses to merge an
+   * open PR without it rather than falling back to an unverified head.
+   */
+  expectedHeadSha?: string;
+}
+
+export interface PrMergeResult {
+  merged: boolean;
+  /** True when the PR was already merged before this call (idempotent no-op). */
+  alreadyMerged: boolean;
+}
+
+/**
+ * Merges a pull request. Injected like {@link PrPublisher} so the auto-merge
+ * wiring can be tested with a fake. A real merger MUST be idempotent: detect
+ * an already-merged PR and not attempt a second merge.
+ */
+export interface PrMerger {
+  merge(inputs: PrMergeInputs): Promise<PrMergeResult>;
+}
+
 export interface CreatePrOpts {
   runsDir: string;
   workspacesDir: string;
@@ -75,6 +107,14 @@ export interface CreatePrResult {
   prUrl: string;
   prNumber: number;
   head: string;
+  /**
+   * Phase 3: the commit SHA that was committed + pushed for this PR — i.e. the
+   * exact reviewed commit (the worktree was fingerprint-verified against the
+   * approved content before this commit). Auto-merge pins the merge to THIS
+   * SHA, never to the PR's later-observed head. Undefined on the idempotent
+   * "PR already exists" paths where the commit was made by a prior run.
+   */
+  headSha?: string;
 }
 
 /**
@@ -321,6 +361,9 @@ async function createUnderLock(
       `git push of ${head} failed: ${push.stderr.trim() || push.stdout.trim()}`,
     );
   }
+  // The pushed tip is the reviewed commit (the worktree was fingerprint-checked
+  // above). Capture it so auto-merge can pin the merge to THIS exact commit.
+  const reviewedHeadSha = (await runGit(["rev-parse", "HEAD"], git)).trim();
 
   // 5. open the PR (publisher should be idempotent on the head branch).
   const title =
@@ -431,6 +474,7 @@ async function createUnderLock(
     prUrl: published.url,
     prNumber: published.number,
     head,
+    headSha: reviewedHeadSha,
   };
 }
 

@@ -3,6 +3,7 @@ import { GoalRepository } from "./repository.js";
 import { evaluateConvergenceAndRecordStatus } from "./convergence-status.js";
 import { decideOrchestratorAction } from "./orchestrator-dispatch.js";
 import type {
+  OrchestrationOutcome,
   OrchestrationResult,
   OrchestrationStep,
   OrchestratorRunners,
@@ -78,8 +79,17 @@ export class GoalOrchestrator {
           continue;
         }
         const pr = await input.runners.closeAndPr(input.goalId);
+        // Phase 3: a hard-blocked auto-merge gate escalates rather than closing.
+        if (pr.escalateReason !== undefined) {
+          steps.push({ step: i, decision: finalDecision, action: "escalate", detail: pr.escalateReason });
+          withManagedDb({ dbPath: this.opts.dbPath }, (db) => {
+            new GoalRepository(db).updateStatus(input.goalId, "escalated", pr.escalateReason as string);
+          });
+          return { goalId: input.goalId, outcome: "escalated", steps, finalDecision, escalateReason: pr.escalateReason, prUrl: pr.prUrl };
+        }
+        const outcome: OrchestrationOutcome = pr.merged === true ? "merged" : "pr_created";
         steps.push({ step: i, decision: finalDecision, action: "close_and_pr", detail: pr.prUrl });
-        return { goalId: input.goalId, outcome: "pr_created", steps, finalDecision, prUrl: pr.prUrl };
+        return { goalId: input.goalId, outcome, steps, finalDecision, prUrl: pr.prUrl };
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         steps.push({ step: i, decision: finalDecision, action: "escalate", detail: message });

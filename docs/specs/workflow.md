@@ -710,3 +710,32 @@ close 条件は **opportunistic な review 拡張より先**に評価される�
 follow-up finding だけなら goal は close できる。open な in-scope P0/P1 finding
 は通常の deferred work として扱えない（[`goal-convergence.md`](./goal-convergence.md)
 の Core Rules を参照）。
+
+## Phase 3 — auto-merge（opt-in・既定 OFF・現状仕様）
+
+`harness goal orchestrate` の terminal step（`close_and_pr`）は PR 作成後に
+**opt-in の auto-merge** を実行できる。既定 OFF（`--auto-merge` 指定時のみ）。設計は
+[`../superpowers/specs/2026-06-05-phase3-auto-merge-design.md`](../superpowers/specs/2026-06-05-phase3-auto-merge-design.md)。
+
+- **merge gate（pure・決定論的）**: `evaluateMergeGate`（`src/core/merge-gate.ts`）。
+  入力は DB の事実（close-ready / active `review_consensus` の status + quorumMet /
+  human override approve）＋ CI green（`gh pr checks` の snapshot）。承認は
+  **consensus approved（quorum 達成）or human override approve** が必須（fail-closed）。
+  blocker は hard（`not_close_ready` / `consensus_not_approved` / `quorum_not_satisfied`）
+  と transient（`ci_not_green`）に分かれる。
+- **closeAndPr の分岐**（`src/goal/orchestrator-runners.ts`）: PR 作成後、
+  `deps.autoMerge` があれば gate を評価し
+  - `canMerge` → `gh pr merge --match-head-commit <sha> --<method>`（idempotent:
+    既マージ検出、**head commit に pin**: CI 判定前に取得した head SHA に固定し
+    head が動けば拒否→escalate）で merge、operation audit（`operations`,
+    type=`merge`）に記録、outcome **`merged`**。auto-merge 有効時は PR を
+    **non-draft** で作成（draft は merge 不可）。CI 判定は `gh pr view --json
+    headRefOid,statusCheckRollup` の atomic snapshot で head OID == reviewed commit
+    かつ全 check success のみ green（ABA race 安全、不確定は fail-closed）。
+  - `hardBlocked` → **merge せず escalate**（fail-closed、goal は `escalated`）。
+  - transient（CI 未 green）→ merge せず PR を残す（outcome `pr_created`）。
+  - merge コマンド失敗 → 例外で escalate（audit は `failed`）。
+- **既定 OFF**: `deps.autoMerge` 不在（CLI で `--auto-merge` 未指定）なら従来どおり
+  PR 作成のみ（`pr_created`）。`--merge-method`（squash|merge|rebase）で方式指定。
+- 状態遷移は harness のみ。LLM 出力を merge 判定の根拠にしない。CI status 取得は
+  fail-closed（不確定は緑扱いしない）。
