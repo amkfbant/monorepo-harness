@@ -279,6 +279,9 @@ function isOlderThan(
   evaluatedMs: number,
   maxAgeHours: number,
 ): boolean {
+  // fail-closed on a misconfigured threshold (NaN / negative). Infinity is a
+  // valid "no age limit" and is handled by the comparison below.
+  if (Number.isNaN(maxAgeHours) || maxAgeHours < 0) return true;
   const reviewedMs = Date.parse(reviewedAt);
   // fail-closed: maxAgeHours is being enforced but we cannot prove the
   // proposal's freshness (unparseable timestamp) → treat it as stale and

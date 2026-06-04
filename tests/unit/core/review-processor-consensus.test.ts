@@ -33,7 +33,7 @@ function consensusRule(): ReviewRule {
   };
 }
 
-function setup() {
+function setup(rule: ReviewRule = consensusRule()) {
   const root = mkdtempSync(join(tmpdir(), "harness-consensus-process-"));
   mkdirSync(join(root, ".harness"), { recursive: true });
   const runsDir = join(root, "runs");
@@ -50,7 +50,6 @@ function setup() {
   const reviewers = new ReviewerRepository(db);
   reviewers.add({ reviewerId: "alice", reviewerType: "human", displayName: "Alice", groupId: "humans" });
   reviewers.add({ reviewerId: "bob", reviewerType: "human", displayName: "Bob", groupId: "humans" });
-  const rule = consensusRule();
   const template = new ReviewRulesRepository(db).upsertRuleTemplate({
     source: "manual",
     rule,
@@ -130,6 +129,35 @@ describe("review process — consensus mode gating (Phase 2)", () => {
       .listForRun("run-consensus")
       .filter((p) => p.processedAt === null);
     expect(open).toHaveLength(0);
+    db.close();
+  });
+
+  it("excludes a stale proposal from the decision and does not mark it processed", async () => {
+    const rule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        { group: "humans", minApprovals: 1, blockingDecisions: ["changes_requested", "rejected"] },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true, maxAgeHours: 1 },
+    };
+    const { root, runsDir, dbPath } = setup(rule);
+    // bob's verdict is 2h old → stale; alice's is fresh.
+    seedProposal(dbPath, "bob", "approved", [], "2026-06-05T08:00:00Z");
+    seedProposal(dbPath, "alice", "approved", [], NOW);
+
+    const result = await runProcess(dbPath, runsDir, root);
+    expect(result.newStatus).toBe("approved");
+
+    const db = openDb(dbPath);
+    const all = new ReviewProposalRepository(db).listForRun("run-consensus");
+    const bob = all.find((p) => p.reviewer === "bob");
+    const alice = all.find((p) => p.reviewer === "alice");
+    // alice (fresh) was processed; bob (stale) was excluded and left active.
+    expect(alice?.processedAt).not.toBeNull();
+    expect(bob?.processedAt).toBeNull();
+    const consensus = new ReviewConsensusRepository(db).findActive("run-consensus");
+    expect(JSON.parse(consensus!.sourceProposalsJson)).toEqual([alice?.proposalId]);
     db.close();
   });
 

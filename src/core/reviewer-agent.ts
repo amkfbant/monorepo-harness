@@ -578,6 +578,13 @@ function recordConsensusReEvaluation(
   evaluatedAt: string,
 ): void {
   try {
+    // Skip if the run was promoted concurrently (e.g. `review process` ran
+    // between the proposal insert and here): re-evaluating would supersede
+    // the final consensus row of a promoted run.
+    const statusRow = db
+      .prepare("SELECT status FROM runs WHERE run_id = ?")
+      .get(runId) as { status: string } | undefined;
+    if (statusRow === undefined || statusRow.status !== "needs_review") return;
     const snapshot = new ReviewRulesRepository(db).findSnapshotByRun(runId);
     const rule: ReviewRule =
       snapshot === null

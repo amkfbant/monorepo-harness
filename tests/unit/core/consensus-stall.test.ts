@@ -141,6 +141,15 @@ describe("detectConsensusStall (Phase 2-3)", () => {
     ).toThrow(/stallAfterSnapshots/);
   });
 
+  it("throws on a misconfigured maxPendingHours (NaN)", () => {
+    expect(() =>
+      detectConsensusStall(
+        [snap({ evaluatedAt: "2026-06-05T09:00:00Z" })],
+        { stallAfterSnapshots: 3, maxPendingHours: Number.NaN },
+      ),
+    ).toThrow(/maxPendingHours/);
+  });
+
   it("fail-closed: unparseable timestamp under maxPendingHours → stalled", () => {
     const r = detectConsensusStall(
       [

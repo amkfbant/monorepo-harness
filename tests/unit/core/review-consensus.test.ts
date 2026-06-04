@@ -577,6 +577,21 @@ describe("evaluateConsensus staleness (Phase 2-2)", () => {
     ]);
   });
 
+  it("fail-closed: a NaN maxAgeHours excludes the proposal", () => {
+    const rule: ReviewRule = {
+      ...DEFAULT_REVIEW_RULE,
+      staleProposal: { rejectSuperseded: true, maxAgeHours: Number.NaN },
+    };
+    const r = evaluateConsensus({
+      rule,
+      ruleSha256: ruleSha256(rule),
+      proposals: [proposal({ proposalId: 1, decision: "approved" })],
+      evaluatedAt: NOW,
+    });
+    expect(r.status).toBe("pending");
+    expect(r.summary.excludedProposals).toEqual([{ proposalId: 1, reason: "stale_age" }]);
+  });
+
   it("does not exclude on negative elapsed (reviewedAt after evaluatedAt)", () => {
     const rule: ReviewRule = {
       ...DEFAULT_REVIEW_RULE,

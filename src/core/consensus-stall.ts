@@ -60,6 +60,12 @@ export function detectConsensusStall(
       `invalid stallAfterSnapshots: ${config.stallAfterSnapshots}`,
     );
   }
+  if (
+    config.maxPendingHours !== undefined &&
+    (!Number.isFinite(config.maxPendingHours) || config.maxPendingHours < 0)
+  ) {
+    throw new Error(`invalid maxPendingHours: ${config.maxPendingHours}`);
+  }
   if (snapshots.length === 0) return notStalled();
   const last = snapshots[snapshots.length - 1]!;
 

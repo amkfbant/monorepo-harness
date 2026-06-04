@@ -201,10 +201,14 @@ function processConsensusModePath(
   }
 
   const decision = result.status;
-  // Required changes feed rerun; aggregate them from the proposals that did
-  // not approve (deduplicated, order-stable).
+  // Only proposals that actually fed the consensus (stale ones were dropped
+  // by evaluateConsensus) drive the decision, audit ids, and processing.
+  const includedIds = new Set(result.summary.proposals.map((p) => p.proposalId));
+  const includedRows = rows.filter((r) => includedIds.has(r.proposalId));
+  // Required changes feed rerun; aggregate them from the included proposals
+  // that did not approve (deduplicated, order-stable).
   const requiredChanges = dedupeStrings(
-    rows
+    includedRows
       .filter((r) => r.decision !== "approved")
       .flatMap((r) => r.requiredChanges),
   );
@@ -215,7 +219,7 @@ function processConsensusModePath(
     summary: result.summary,
     evaluatedAt: reviewedAt,
     evaluatedBy: "consensus",
-    sourceProposalIds: rows.map((r) => r.proposalId),
+    sourceProposalIds: includedRows.map((r) => r.proposalId),
   });
   const decisionYaml = serializeReviewDecision({
     runId: opts.runId,
@@ -227,6 +231,9 @@ function processConsensusModePath(
     reviewer: "consensus",
     reviewed_at: reviewedAt,
   });
+  // Promotion + marking every included proposal processed happen in a single
+  // transaction (applyReviewDecision); a proposal that went stale between the
+  // evaluation and this write aborts the whole promotion (atomic, fail-closed).
   new RunRepository(db).applyReviewDecision({
     runId: opts.runId,
     decision,
@@ -236,12 +243,8 @@ function processConsensusModePath(
     decisionYaml,
     consensusId: consensusRow.consensusId,
     proposalsSummaryJson: consensusRow.summaryJson,
+    markProposalsProcessed: includedRows.map((r) => r.proposalId),
   });
-  // Mark every aggregated proposal processed (audit: which proposals the
-  // consensus decision was computed from).
-  for (const r of rows) {
-    proposalRepo.markProcessed(r.proposalId, opts.runId, reviewedAt);
-  }
   warnIfExportFailed(exportRun(db, opts.runId, { runsDir: opts.runsDir }));
   return {
     runId: opts.runId,
@@ -250,7 +253,7 @@ function processConsensusModePath(
     reviewer: "consensus",
     reviewedAt,
     warnings: [
-      `consensus decision over ${rows.length} proposal(s) ` +
+      `consensus decision over ${includedRows.length} proposal(s) ` +
         `(${result.summary.decisionPath})`,
     ],
   };
