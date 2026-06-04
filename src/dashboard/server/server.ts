@@ -1422,24 +1422,18 @@ export function defaultRoutes(): Route[] {
             harnessRoot: dirname(dirname(ctx.config.dbPath)),
             autoImport: false,
           });
-          let html = renderDashboardHtml(snapshot);
-          if (
+          // Phase 4: when mutation is enabled, render the mutation UI (CSRF
+          // meta + bearer input + action buttons + inline JS). renderDashboardHtml
+          // owns the escaping; the server only supplies the token. Read-only
+          // mode passes no options and gets a JS-free page.
+          const mutationEnabled =
             ctx.config.mutationEnabled === true &&
-            ctx.config.csrfToken !== undefined
-          ) {
-            const meta = `<meta name="harness-csrf-token" content="${
-              ctx.config.csrfToken
-            }">`;
-            const banner =
-              '<div style="background:#fbeaa6;padding:8px;font-family:sans-serif">' +
-              "Mutation API enabled. Browser POSTs must include " +
-              '<code>X-CSRF-Token</code> header (read it from ' +
-              '<code>&lt;meta name="harness-csrf-token"&gt;</code>).' +
-              "</div>";
-            html = html
-              .replace(/<head>/i, `<head>\n  ${meta}`)
-              .replace(/<body[^>]*>/i, (m) => `${m}\n${banner}`);
-          }
+            ctx.config.csrfToken !== undefined;
+          const html = mutationEnabled
+            ? renderDashboardHtml(snapshot, {
+                mutation: { csrfToken: ctx.config.csrfToken as string },
+              })
+            : renderDashboardHtml(snapshot);
           res.statusCode = 200;
           res.setHeader("Content-Type", "text/html; charset=utf-8");
           res.setHeader("X-Content-Type-Options", "nosniff");

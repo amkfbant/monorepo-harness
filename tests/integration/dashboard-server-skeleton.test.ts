@@ -204,6 +204,46 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
     ).toThrow(/csrf/i);
   });
 
+  it("Phase 4: GET / on a read-only server has NO mutation UI", async () => {
+    const r = await get(env.server.baseUrl, "/");
+    expect(r.status).toBe(200);
+    const html = r.body as string;
+    expect(html).not.toMatch(/harness-csrf-token/);
+    expect(html).not.toMatch(/harness-bearer/);
+    expect(html).not.toMatch(/<script/);
+  });
+
+  it("Phase 4: GET / with mutation enabled renders the mutation UI + CSRF meta", async () => {
+    await env.server.close();
+    const srv = createDashboardServer({
+      dbPath: env.dbPath,
+      host: "127.0.0.1",
+      port: 0,
+      mutationEnabled: true,
+      token: "topsecret",
+      csrfToken: "csrf-123",
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const addr = srv.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    try {
+      // When a bearer token is configured (mutation mode) every request needs
+      // it — including loading the page that hosts the mutation UI.
+      const res = await fetch(`${base}/`, {
+        headers: { Authorization: "Bearer topsecret" },
+      });
+      const html = await res.text();
+      expect(res.status).toBe(200);
+      expect(html).toMatch(/<meta name="harness-csrf-token" content="csrf-123">/);
+      expect(html).toMatch(/id="harness-bearer"/);
+      expect(html).toMatch(/X-CSRF-Token/);
+      expect(html).toMatch(/\/api\/runs\//);
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+      env.server = await startServer(env.dbPath);
+    }
+  });
+
   it("Phase 13 post-close: POST mutation without X-CSRF-Token returns 403", async () => {
     await env.server.close();
     const srv = createDashboardServer({

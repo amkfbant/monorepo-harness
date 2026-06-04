@@ -117,6 +117,26 @@ DB-first 化された write は即時この read model に反映されるため�
   `X-Frame-Options: DENY` / `Referrer-Policy: no-referrer`。`--cors-origin <origin>`
   指定時のみ `Access-Control-Allow-Origin` を返す。
 
+### Mutation UI（Phase 4 — `--enable-mutation` 時のみ）
+
+`--enable-mutation` 時、`GET /` の live HTML に **mutation UI** を描画する
+（`src/dashboard/render.ts` の `renderDashboardHtml(snapshot, { mutation:
+{ csrfToken } })`）。read-only（既定 / static `export`）では UI・JS・CSRF meta を
+一切出さない（`renderDashboardHtml(snapshot)`）。
+
+- **構成**: CSRF meta タグ + bearer token 入力 + dry-run トグル（既定 ON）+ 各 run の
+  操作ボタン（needs_review は review approve/changes_requested/rejected、全 run に
+  pr / rerun / cleanup）+ backlog item の run ボタン + 結果表示領域 + inline JS。
+- **送信**: inline JS が `fetch` で各 POST route に送る。header は CSRF meta から読む
+  `X-CSRF-Token`、入力欄の bearer を `Authorization: Bearer`、非 dry-run 時は
+  `Idempotency-Key`（UUID）。
+- **誤操作防止**: 破壊的操作（cleanup / pr / rerun / backlog run）は非 dry-run 時に
+  `confirm()`。`409`（stale 状態 / replay）・`401`（bearer 不正）・`403`（CSRF 不正）
+  をラベル表示。
+- **安全**: 状態遷移は backend の operation / state guard のみ。UI は POST を組み立て
+  るだけ。snapshot 由来の id は escape して data-* 属性に埋め、JS には信頼できない値を
+  補間しない。mutation page の読込自体も（token 設定時は）bearer を要する。
+
 ## CLI
 
 CLI の確定仕様は [`cli.md`](./cli.md) の `harness dashboard` 節を参照。

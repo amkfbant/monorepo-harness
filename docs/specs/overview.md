@@ -138,8 +138,6 @@ harness は 2 種類の LLM agent と harness 自身の 3 ロールに権限を�
   人手トリガ無しの常駐 worker / daemon・無制限ループは未実装。
 - **MCP の Streamable HTTP transport** — production transport は stdio のみ。
   HTTP は local-only stretch として deferred（[`mcp.md`](./mcp.md)）。
-- **dashboard mutation UI** — `dashboard serve --enable-mutation` は POST API を
-  提供するが、ブラウザ向けの mutation UI は未提供（[`dashboard.md`](./dashboard.md)）。
 - **リモート blob adapter** — blob store は local adapter のみ。S3 等の remote
   adapter は未実装（[`db.md`](./db.md)）。
 - **external issue tracker 連携** — deferred finding は backlog item を作るのみで、
