@@ -35,33 +35,47 @@ function toErrorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** A unique sentinel resolved when a poll exceeds its remaining time budget. */
-const POLL_DEADLINE = Symbol("poll-deadline");
-
-/**
- * Reject-free timeout: resolves to {@link POLL_DEADLINE} after `ms`. Uses a raw
- * `setTimeout` (not the injected `sleep`) so a hanging poll is bounded by wall
- * time even when `sleep` is a fake clock. The timer is `unref`'d so it never
- * keeps the process alive.
- */
-function deadlineAfter(ms: number): Promise<typeof POLL_DEADLINE> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(POLL_DEADLINE), Math.max(0, ms));
-    if (typeof timer.unref === "function") timer.unref();
-  });
-}
-
 /**
  * Best-effort Copilot review orchestration. NEVER throws — always resolves to
  * an outcome. The result is observational only: callers MUST NOT gate any state
  * transition on it (close / merge stay independent — existing safety boundary).
  *
  * - `request` の一時エラーは `requestAttempts` まで retry。全失敗 → failed。
- * - request 成功後、`pollTimeoutMs` まで `pollIntervalMs` 間隔で poll。
- *   reviewed → reviewed。timeout（pending のまま）→ skipped。
- * - poll の一時エラーは握って次の interval へ（best-effort）。
+ * - request 成功後 **最低 1 回は poll** する。`reviewed` → reviewed。
+ *   その後 `now() >= deadline` なら skipped。さもなくば `pollIntervalMs` sleep して
+ *   再判定 → poll。`pollTimeoutMs=0` は「1 回だけ観測して reviewed か skipped」。
+ * - 各 poll は残り時間（`deadline - now()`）を `timeoutMs` として渡す。gh adapter は
+ *   その残り時間で子プロセスを自己 kill するため、hang した poll も総タイムアウト内に
+ *   収束する（内部 setTimeout race は不要 = timer leak 源を作らない）。
+ * - poll の一時エラー / hang は握って次の interval へ（best-effort）。
+ *
+ * 最終防衛として関数本体全体（`config`/`sleep`/`now` の初期化を含む）を try/catch で
+ * 包む。throwing な getter / 注入された `sleep`・`now` が throw しても failed を返し、
+ * 関数外へ reject しない。
  */
 export async function runCopilotReview(input: {
+  reviewer: CopilotReviewer;
+  prNumber: number;
+  config?: Partial<CopilotReviewConfig>;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}): Promise<CopilotReviewOutcome> {
+  // Thin never-reject wrapper: ANY throw — including from reading `input.config`
+  // via a throwing getter, or from building `sleep` / `now` — degrades to a
+  // failed outcome instead of escaping the best-effort contract.
+  try {
+    return await runCopilotReviewInner(input);
+  } catch (e) {
+    return {
+      status: "failed",
+      attempts: 0,
+      polls: 0,
+      detail: `Copilot review aborted unexpectedly: ${toErrorMessage(e)}`,
+    };
+  }
+}
+
+async function runCopilotReviewInner(input: {
   reviewer: CopilotReviewer;
   prNumber: number;
   config?: Partial<CopilotReviewConfig>;
@@ -72,9 +86,6 @@ export async function runCopilotReview(input: {
   const sleep = input.sleep ?? defaultSleep;
   const now = input.now ?? (() => Date.now());
 
-  // Final defense: the best-effort contract is that this function NEVER throws.
-  // Any unexpected throw — including from the injected `sleep` / `now`, or the
-  // poll-timeout machinery — degrades to a `failed` outcome instead of escaping.
   let attempts = 0;
   let polls = 0;
   try {
@@ -103,7 +114,7 @@ export async function runCopilotReview(input: {
       };
     }
 
-    // --- poll phase: poll until reviewed or the timeout elapses. ---
+    // --- poll phase: at least one poll, then poll until reviewed or timeout. ---
     const deadline = now() + config.pollTimeoutMs;
     const skipped = (): CopilotReviewOutcome => ({
       status: "skipped",
@@ -111,28 +122,21 @@ export async function runCopilotReview(input: {
       polls,
       detail: `Copilot review timed out after ${config.pollTimeoutMs}ms`,
     });
-    // The first poll happens immediately (even at pollTimeoutMs=0); subsequent
-    // ones after each interval. The clock is advanced by sleep(); the loop is
-    // bounded by the deadline checked after every poll.
+    // The first poll always runs (even at pollTimeoutMs=0 → "observe once").
+    // Each poll receives the remaining budget so the gh adapter bounds itself;
+    // we just await it (its exception is swallowed best-effort). No internal
+    // setTimeout race → no timer to leak.
     for (;;) {
       polls += 1;
       try {
-        // Bound the poll by the remaining budget so a hanging `poll` cannot blow
-        // past `pollTimeoutMs`. A fast (resolved) poll wins this microtask race
-        // before the setTimeout fires, so the first poll still observes the
-        // reviewer even when remaining = 0. The timeout branch falls through to
-        // the deadline check below (treated as still-pending → skipped).
         const remainingMs = Math.max(0, deadline - now());
-        const result = await Promise.race([
-          input.reviewer.poll(input.prNumber),
-          deadlineAfter(remainingMs),
-        ]);
+        const result = await input.reviewer.poll(input.prNumber, remainingMs);
         if (result === "reviewed") {
           return { status: "reviewed", attempts, polls, detail: "Copilot review posted" };
         }
-        // POLL_DEADLINE or "pending": fall through to the deadline re-check.
+        // "pending": fall through to the deadline re-check.
       } catch {
-        // best-effort: a transient poll error is swallowed; keep polling.
+        // best-effort: a transient poll error / timeout is swallowed; keep going.
       }
       if (now() >= deadline) return skipped();
       await sleep(config.pollIntervalMs);

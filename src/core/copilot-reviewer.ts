@@ -12,6 +12,15 @@ export interface CopilotReviewer {
    * （呼び出し側 = runCopilotReview が retry する）。
    */
   request(prNumber: number): Promise<void>;
-  /** Copilot のレビューが投稿済みかを返す。 */
-  poll(prNumber: number): Promise<CopilotReviewPollResult>;
+  /**
+   * Copilot のレビューが投稿済みかを返す。
+   *
+   * `timeoutMs` が与えられた場合、その時間でこの 1 回の poll を打ち切ってよい
+   * （best-effort）。これにより `runCopilotReview` の総タイムアウト（残り時間）が
+   * poll 単位で実効化される。optional なので既存 fake は無視してよい（非破壊的）。
+   */
+  poll(
+    prNumber: number,
+    timeoutMs?: number,
+  ): Promise<CopilotReviewPollResult>;
 }

@@ -37,12 +37,22 @@ export function createGhCopilotReviewer(
         timeoutMs,
       );
     },
-    async poll(prNumber: number): Promise<CopilotReviewPollResult> {
+    async poll(
+      prNumber: number,
+      pollTimeoutMs?: number,
+    ): Promise<CopilotReviewPollResult> {
+      // When the orchestration passes a remaining budget, bound this gh call by
+      // it (clamped ≥ 1ms so we never spawn with a 0/negative timeout that would
+      // SIGKILL before the child can start). Otherwise fall back to the default.
+      const effectiveTimeout =
+        pollTimeoutMs !== undefined
+          ? Math.max(1, pollTimeoutMs)
+          : timeoutMs;
       const out = await runGh(
         ghBin,
         ["pr", "view", String(prNumber), "--json", "reviews"],
         repoDir,
-        timeoutMs,
+        effectiveTimeout,
       );
       const parsed = JSON.parse(out.trim() || "{}") as {
         reviews?: Array<{ author?: { login?: unknown } }>;

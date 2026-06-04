@@ -6,8 +6,16 @@ import type { CopilotReviewer } from "../../../src/core/copilot-reviewer.js";
 function fakeReviewer(opts: {
   request: Array<"ok" | "throw">;
   poll: Array<"reviewed" | "pending" | "throw">;
-}): CopilotReviewer & { requestCalls: number; pollCalls: number } {
-  const state = { requestCalls: 0, pollCalls: 0 };
+}): CopilotReviewer & {
+  requestCalls: number;
+  pollCalls: number;
+  pollTimeouts: Array<number | undefined>;
+} {
+  const state = {
+    requestCalls: 0,
+    pollCalls: 0,
+    pollTimeouts: [] as Array<number | undefined>,
+  };
   return {
     get requestCalls() {
       return state.requestCalls;
@@ -15,14 +23,18 @@ function fakeReviewer(opts: {
     get pollCalls() {
       return state.pollCalls;
     },
+    get pollTimeouts() {
+      return state.pollTimeouts;
+    },
     async request() {
       const verb = opts.request[state.requestCalls] ?? "ok";
       state.requestCalls += 1;
       if (verb === "throw") throw new Error("gh transient");
     },
-    async poll() {
+    async poll(_pr: number, timeoutMs?: number) {
       const verb = opts.poll[state.pollCalls] ?? "pending";
       state.pollCalls += 1;
+      state.pollTimeouts.push(timeoutMs);
       if (verb === "throw") throw new Error("gh transient");
       return verb;
     },
@@ -160,20 +172,25 @@ describe("runCopilotReview", () => {
     expect(out.status).toBe("failed");
   });
 
-  it("bounds a hanging poll by pollTimeoutMs and converges to skipped", async () => {
-    // poll never resolves: without a per-poll timeout this would hang forever.
+  it("bounds a poll by the remaining budget and converges to skipped", async () => {
+    // The adapter contract: a poll given `timeoutMs` ends within it. This fake
+    // resolves to pending after the remaining budget elapses (mirroring a gh
+    // child that self-kills at its deadline). With pollTimeoutMs=20 the first
+    // poll's remaining budget is ~20ms, after which now() has reached the
+    // deadline → skipped. No internal setTimeout race is relied upon.
+    let polls = 0;
     const reviewer: CopilotReviewer = {
       async request() {
         /* ok */
       },
-      poll() {
-        return new Promise<never>(() => {
-          /* never resolves */
-        });
+      poll(_pr: number, timeoutMs?: number) {
+        polls += 1;
+        const wait = Math.max(0, timeoutMs ?? 0);
+        return new Promise<"pending">((resolve) =>
+          setTimeout(() => resolve("pending"), wait),
+        );
       },
     };
-    // Use real wall-clock now() with a tiny timeout so the internal
-    // setTimeout-based race fires quickly without depending on the fake clock.
     const out = await runCopilotReview({
       reviewer,
       prNumber: 1,
@@ -185,6 +202,53 @@ describe("runCopilotReview", () => {
     });
     expect(out.status).toBe("skipped");
     expect(out.detail).toMatch(/timed out/i);
+    expect(polls).toBeGreaterThanOrEqual(1);
+  });
+
+  it("pollTimeoutMs=0: polls exactly once and returns reviewed when that poll is reviewed", async () => {
+    const reviewer = fakeReviewer({ request: ["ok"], poll: ["reviewed"] });
+    const clock = fakeClock(0);
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 7,
+      config: { requestAttempts: 1, pollTimeoutMs: 0, pollIntervalMs: 0 },
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    expect(out.status).toBe("reviewed");
+    // request success guarantees at least one observation even at timeout 0.
+    expect(reviewer.pollCalls).toBe(1);
+  });
+
+  it("pollTimeoutMs=0: polls exactly once and returns skipped when that poll is pending", async () => {
+    const reviewer = fakeReviewer({ request: ["ok"], poll: ["pending"] });
+    const clock = fakeClock(0);
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 7,
+      config: { requestAttempts: 1, pollTimeoutMs: 0, pollIntervalMs: 0 },
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    expect(out.status).toBe("skipped");
+    // exactly one observation, then the deadline (now() >= deadline) trips.
+    expect(reviewer.pollCalls).toBe(1);
+    expect(out.detail).toMatch(/timed out/i);
+  });
+
+  it("passes a positive remaining budget as the poll timeoutMs", async () => {
+    const reviewer = fakeReviewer({ request: ["ok"], poll: ["reviewed"] });
+    const clock = fakeClock(15_000);
+    await runCopilotReview({
+      reviewer,
+      prNumber: 7,
+      config,
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    // the first poll runs at t=0 with the full budget remaining.
+    expect(reviewer.pollTimeouts[0]).toBe(300_000);
+    expect(reviewer.pollTimeouts[0]).toBeGreaterThan(0);
   });
 
   it("never rejects even when the injected sleep throws", async () => {
