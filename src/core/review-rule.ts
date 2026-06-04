@@ -16,11 +16,31 @@ import { createHash } from "node:crypto";
 
 export type ReviewMode = "latest-proposal" | "consensus";
 
+/**
+ * Phase 2-1: quorum / participation requirement for a reviewer group.
+ *
+ * Independent of `minApprovals`: a group can require N approvals AND a
+ * minimum participation (distinct reviewers that submitted a non-pending
+ * verdict). `undefined` on a requirement = legacy behaviour (no quorum
+ * check). fail-closed: a participation-rate requirement without a positive
+ * `groupSize` is treated as not satisfiable.
+ */
+export interface ReviewRuleQuorum {
+  /** Minimum number of distinct reviewers that must submit a non-pending verdict. */
+  minParticipants?: number;
+  /** Minimum participation rate (0..1). Requires a positive `groupSize`. */
+  minParticipationRate?: number;
+  /** Expected group size — the denominator for `minParticipationRate`. */
+  groupSize?: number;
+}
+
 export interface ReviewRuleRequirement {
   /** reviewer group_id to apply this requirement to. */
   group: string;
   minApprovals: number;
   blockingDecisions: Array<"changes_requested" | "rejected">;
+  /** Phase 2-1: optional quorum. `undefined` = no quorum check (legacy). */
+  quorum?: ReviewRuleQuorum;
 }
 
 export interface ReviewRuleOverrides {

@@ -1,4 +1,4 @@
-import type { ReviewRule } from "./review-rule.js";
+import type { ReviewRule, ReviewRuleQuorum, ReviewRuleStaleProposal } from "./review-rule.js";
 
 /**
  * Consensus evaluator (Phase 11-4).
@@ -29,6 +29,12 @@ export interface EnrichedProposal {
   groupId: string | null;
   decision: ConsensusStatus | "pending";
   reviewedAt: string;
+  /**
+   * Phase 2-2: non-null when this proposal was superseded by a later
+   * proposal. Used by the staleness filter (`staleProposal.rejectSuperseded`).
+   * `undefined`/`null` = active.
+   */
+  supersededAt?: string | null;
 }
 
 export interface ConsensusOverride {
@@ -44,6 +50,16 @@ export interface ConsensusRequirementCheck {
   approvals: number;
   blocked: boolean;
   blockingDecision?: ConsensusStatus;
+  /** Phase 2-1: distinct reviewers in the group with a non-pending verdict. */
+  participants: number;
+  /** Phase 2-1: whether the group's quorum is satisfied (true if no quorum declared). */
+  quorumMet: boolean;
+}
+
+/** Phase 2-2: a proposal dropped from aggregation, with the reason. */
+export interface ExcludedProposal {
+  proposalId: number;
+  reason: "superseded" | "stale_age";
 }
 
 export interface ConsensusSummary {
@@ -57,6 +73,8 @@ export interface ConsensusSummary {
   }>;
   override: ConsensusOverride | null;
   requirements: ConsensusRequirementCheck[];
+  /** Phase 2-2: proposals dropped by the staleness filter (audit trail). */
+  excludedProposals: ExcludedProposal[];
   decisionPath:
     | "override"
     | "blocking"
@@ -80,16 +98,27 @@ export function evaluateConsensus(input: {
   const evaluatedAt = input.evaluatedAt;
   const ruleSha = input.ruleSha256;
   const override = input.override ?? null;
+
+  // Phase 2-2: drop stale proposals (superseded / too old) before any
+  // aggregation. Deterministic: driven only by the rule's staleProposal
+  // config and the proposal's own supersededAt/reviewedAt — never LLM output.
+  const { active: proposals, excluded: excludedProposals } = filterStaleProposals(
+    input.proposals,
+    input.rule.staleProposal,
+    evaluatedAt,
+  );
+
   const baseSummary = {
     evaluatedAt,
     ruleSha256: ruleSha,
-    proposals: input.proposals.map((p) => ({
+    proposals: proposals.map((p) => ({
       proposalId: p.proposalId,
       reviewerId: p.reviewerId,
       groupId: p.groupId,
       decision: p.decision,
     })),
     override,
+    excludedProposals,
   };
 
   // 1. override is strongest.
@@ -111,7 +140,7 @@ export function evaluateConsensus(input: {
     input.rule.mode === "latest-proposal" ||
     input.rule.requirements.length === 0
   ) {
-    const latest = pickLatest(input.proposals);
+    const latest = pickLatest(proposals);
     if (latest === null) {
       return {
         status: "pending",
@@ -140,7 +169,7 @@ export function evaluateConsensus(input: {
   let blockingStatus: ConsensusStatus | null = null;
   const reqChecks: ConsensusRequirementCheck[] = [];
   for (const req of input.rule.requirements) {
-    const inGroup = input.proposals.filter(
+    const inGroup = proposals.filter(
       (p) => p.groupId === req.group && p.reviewerId !== null,
     );
     const blockedByReject = inGroup.some(
@@ -152,6 +181,13 @@ export function evaluateConsensus(input: {
         req.blockingDecisions.includes("changes_requested"),
     );
     const approvals = inGroup.filter((p) => p.decision === "approved").length;
+    // Phase 2-1: count distinct reviewers that submitted a non-pending verdict.
+    const participants = new Set(
+      inGroup
+        .filter((p) => p.decision !== "pending")
+        .map((p) => p.reviewerId),
+    ).size;
+    const quorumMet = isQuorumMet(req.quorum, participants);
     if (blockedByReject) {
       blockingStatus = "rejected";
     } else if (
@@ -164,6 +200,8 @@ export function evaluateConsensus(input: {
       group: req.group,
       required: req.minApprovals,
       approvals,
+      participants,
+      quorumMet,
       blocked: blockedByReject || blockedByChanges,
       ...(blockedByReject
         ? { blockingDecision: "rejected" as ConsensusStatus }
@@ -184,7 +222,9 @@ export function evaluateConsensus(input: {
     };
   }
 
-  const allSatisfied = reqChecks.every((r) => r.approvals >= r.required);
+  const allSatisfied = reqChecks.every(
+    (r) => r.approvals >= r.required && r.quorumMet,
+  );
   if (!allSatisfied) {
     return {
       status: "pending",
@@ -203,6 +243,67 @@ export function evaluateConsensus(input: {
       decisionPath: "requirements-met",
     },
   };
+}
+
+/**
+ * Phase 2-2: split proposals into the active set used for aggregation and
+ * the excluded (stale) set. Deterministic — superseded proposals are
+ * dropped when `rejectSuperseded` is set; proposals older than
+ * `maxAgeHours` (positive elapsed only) are dropped as stale. A proposal
+ * matching both reasons is reported once (superseded takes precedence).
+ */
+function filterStaleProposals(
+  proposals: EnrichedProposal[],
+  stale: ReviewRuleStaleProposal,
+  evaluatedAt: string,
+): { active: EnrichedProposal[]; excluded: ExcludedProposal[] } {
+  const active: EnrichedProposal[] = [];
+  const excluded: ExcludedProposal[] = [];
+  const evaluatedMs = Date.parse(evaluatedAt);
+  for (const p of proposals) {
+    if (stale.rejectSuperseded && p.supersededAt != null) {
+      excluded.push({ proposalId: p.proposalId, reason: "superseded" });
+      continue;
+    }
+    if (stale.maxAgeHours !== undefined && isOlderThan(p.reviewedAt, evaluatedMs, stale.maxAgeHours)) {
+      excluded.push({ proposalId: p.proposalId, reason: "stale_age" });
+      continue;
+    }
+    active.push(p);
+  }
+  return { active, excluded };
+}
+
+function isOlderThan(
+  reviewedAt: string,
+  evaluatedMs: number,
+  maxAgeHours: number,
+): boolean {
+  const reviewedMs = Date.parse(reviewedAt);
+  if (Number.isNaN(reviewedMs) || Number.isNaN(evaluatedMs)) return false;
+  const elapsedHours = (evaluatedMs - reviewedMs) / 3_600_000;
+  // Only positive elapsed counts; a reviewedAt after evaluatedAt is not stale.
+  return elapsedHours > maxAgeHours;
+}
+
+/**
+ * Phase 2-1: quorum check. `undefined` quorum = satisfied (legacy). A
+ * participation-rate quorum without a positive groupSize is fail-closed
+ * (not satisfied).
+ */
+function isQuorumMet(
+  quorum: ReviewRuleQuorum | undefined,
+  participants: number,
+): boolean {
+  if (quorum === undefined) return true;
+  if (quorum.minParticipants !== undefined && participants < quorum.minParticipants) {
+    return false;
+  }
+  if (quorum.minParticipationRate !== undefined) {
+    if (quorum.groupSize === undefined || quorum.groupSize <= 0) return false;
+    if (participants / quorum.groupSize < quorum.minParticipationRate) return false;
+  }
+  return true;
 }
 
 function pickLatest(proposals: EnrichedProposal[]): EnrichedProposal | null {
