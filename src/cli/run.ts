@@ -53,6 +53,15 @@ import {
 } from "../core/review-lister.js";
 import { createPullRequest, PrGateError } from "../core/pr-creator.js";
 import { createGhPrPublisher } from "../core/gh-pr-publisher.js";
+import { createGhCopilotReviewer } from "../core/copilot-reviewer-gh.js";
+import { runCopilotReview } from "../core/copilot-review-run.js";
+import {
+  startOperation,
+  succeedOperation,
+  markOperationPending,
+  failOperation,
+} from "../db/repositories/operations.js";
+import { randomUUID } from "node:crypto";
 import {
   renderRunShow,
   renderRunTimeline,
@@ -1455,6 +1464,86 @@ prCmd
       }
       throw e;
     }
+  });
+
+prCmd
+  .command("request-review")
+  .description(
+    "best-effort: request a Copilot review on a PR (retry-then-skip, non-gating)",
+  )
+  .argument("<pr-number>", "GitHub PR number")
+  .requiredOption("--repo <path>", "path to the target git repo")
+  .option("--timeout <seconds>", "total poll timeout in seconds", "300")
+  .option("--poll-interval <seconds>", "seconds between polls", "15")
+  .option("--request-attempts <n>", "request retry attempts", "3")
+  .option("--json", "emit JSON", false)
+  .action(async (prArg: string, raw: Record<string, unknown>) => {
+    const prNumber = Number(prArg);
+    if (!Number.isInteger(prNumber) || prNumber <= 0) {
+      process.stderr.write(`harness error: invalid PR number: ${prArg}\n`);
+      process.exit(2);
+    }
+    const ghBin = process.env.HARNESS_GH_BIN ?? "gh";
+    const repoDir = String(raw.repo);
+    const config = {
+      pollTimeoutMs: Math.max(0, Number(raw.timeout) * 1000),
+      pollIntervalMs: Math.max(0, Number(raw.pollInterval) * 1000),
+      requestAttempts: Math.max(1, Number(raw.requestAttempts)),
+    };
+    const outcome = await runCopilotReview({
+      reviewer: createGhCopilotReviewer(repoDir, ghBin),
+      prNumber,
+      config,
+    });
+
+    // audit (best-effort: a recording failure must not change the exit code).
+    try {
+      const paths = harnessPaths(getHarnessRoot());
+      const dbHandle = openManagedDb({ dbPath: paths.dbPath });
+      try {
+        runMigrations(dbHandle.db);
+        const operationId = `op-${randomUUID()}`;
+        startOperation(dbHandle.db, {
+          operationId,
+          operationType: "copilot-review",
+          targetType: "pr",
+          targetId: String(prNumber),
+          actor: "cli",
+          dryRun: false,
+          input: { prNumber, config },
+        });
+        if (outcome.status === "reviewed") {
+          succeedOperation(dbHandle.db, operationId, outcome);
+        } else if (outcome.status === "skipped") {
+          markOperationPending(dbHandle.db, operationId, outcome);
+        } else {
+          failOperation(
+            dbHandle.db,
+            operationId,
+            "copilot_review_failed",
+            outcome.detail,
+          );
+        }
+      } finally {
+        dbHandle.close();
+      }
+    } catch (e) {
+      process.stderr.write(
+        `warning: could not record copilot-review audit: ${(e as Error).message}\n`,
+      );
+    }
+
+    if (raw.json === true) {
+      process.stdout.write(`${JSON.stringify({ prNumber, ...outcome })}\n`);
+    } else {
+      process.stdout.write(
+        `pr=#${prNumber} copilot-review=${outcome.status} (${outcome.detail})\n`,
+      );
+    }
+    // reviewed / skipped (a timeout is a normal best-effort result) → 0;
+    // failed (the request itself could not be established) → non-0 so an
+    // operator notices. orchestrate ignores this exit (non-gating).
+    process.exit(outcome.status === "failed" ? 1 : 0);
   });
 
 program
