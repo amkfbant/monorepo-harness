@@ -57,10 +57,10 @@ export interface PrMergeInputs {
   prNumber: number;
   method: PrMergeMethod;
   /**
-   * Phase 3 safety: pin the merge to this head commit. When set, the merge
-   * must target exactly this SHA (the reviewed / CI-checked commit) and is
-   * refused if the PR head moved. When omitted, the merger pins to the head
-   * it observes just before merging.
+   * Phase 3 safety: pin the merge to this head commit (the reviewed /
+   * CI-checked commit). `gh pr merge --match-head-commit` refuses if the PR
+   * head moved. REQUIRED for an open-PR merge — the merger refuses to merge an
+   * open PR without it rather than falling back to an unverified head.
    */
   expectedHeadSha?: string;
 }

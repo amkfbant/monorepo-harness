@@ -150,20 +150,21 @@ export function createGhCiStatus(
   ghBin = "gh",
   timeoutMs = DEFAULT_GH_TIMEOUT_MS,
 ): (prNumber: number, expectedHeadSha: string) => Promise<boolean> {
+  const headOf = async (prNumber: number): Promise<string | null> =>
+    (await viewPr(ghBin, { repoDir, prNumber, method: "squash" }, timeoutMs)).headSha;
   return async (prNumber: number, expectedHeadSha: string) => {
     try {
-      const { headSha } = await viewPr(
-        ghBin,
-        { repoDir, prNumber, method: "squash" },
-        timeoutMs,
-      );
-      if (headSha !== expectedHeadSha) return false;
+      // The head must equal the reviewed commit BOTH before and after the
+      // checks query, so a green result cannot be for a commit the branch
+      // briefly advanced to during the call (fail-closed on any change).
+      if ((await headOf(prNumber)) !== expectedHeadSha) return false;
       await runGh(
         ghBin,
         ["pr", "checks", String(prNumber), "--required"],
         repoDir,
         timeoutMs,
       );
+      if ((await headOf(prNumber)) !== expectedHeadSha) return false;
       return true;
     } catch {
       return false;

@@ -85,11 +85,15 @@ export interface PrMerger { merge(inputs: PrMergeInputs): Promise<PrMergeResult>
 - timeout / 子プロセス例外（EPIPE 等）は既存 `runGh`（spawn + SIGKILL timeout）で
   握る。timeout は `GhTimeoutError` で loud に失敗。
 
-CI green は wiring 側 `createGhCiStatus`（`gh pr checks <n> --required`、**required
-checks のみ**）。不確定（pending/失敗/timeout/error）は false=fail-closed。wiring は
-**CI 判定前に head SHA を 1 度取得**し、それを CI 判定と merge pin の両方に紐づける
-（CI 検証した commit と merge 対象 commit を一致させる）。merge wrapper 自体は CI を
-見ない。
+CI green は wiring 側 `createGhCiStatus(prNumber, expectedHeadSha)`（`gh pr checks
+<n> --required`、**required checks のみ**）。checks の **前後で PR head ==
+expectedHeadSha を検証**し、head が動いた/不確定（pending/失敗/timeout/error）は
+false=fail-closed。merge も `--match-head-commit expectedHeadSha` で同 commit に
+固定するため、CI 検証 commit と merge commit が一致する。
+
+auto-merge 有効時は **PR 作成前に承認 gate（close-ready ∧ consensus approved+quorum
+or human override、CI は除く）を preflight** し、hard-block なら PR を作らず escalate
+（未承認の non-draft PR を残さない）。PR 作成後に CI 込みの full gate を再評価する。
 
 auto-merge opt-in 時は PR を **non-draft で作成**する（draft PR は merge 不可）。
 通常（auto-merge OFF）は従来どおり draft。

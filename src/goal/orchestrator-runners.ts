@@ -419,6 +419,36 @@ export function createOrchestratorRunners(
           repoPath: context.repoPath,
         };
       });
+
+      // Phase 3: when auto-merge is enabled, preflight the APPROVAL portion of
+      // the merge gate (close-ready ∧ consensus approved w/ quorum, or human
+      // override) BEFORE creating a non-draft PR. If it is hard-blocked, the PR
+      // (which would be ready/mergeable) is never created — escalate instead.
+      // CI is not part of the preflight (it needs the PR to exist).
+      if (deps.autoMerge !== undefined) {
+        const preflight = withManagedDb({ dbPath: deps.dbPath }, (db) => {
+          const repo = new GoalRepository(db);
+          const closeReady =
+            new ConvergenceService(repo).evaluate(goalId).decision === "close_ready";
+          const { consensus, humanApproved } = gatherApproval(db, runId);
+          return evaluateMergeGate({
+            autoMergeEnabled: true,
+            closeReady,
+            consensus,
+            humanApproved,
+            ciGreen: true, // CI is checked after the PR exists
+          });
+        });
+        if (preflight.hardBlocked) {
+          // Return escalateReason only; the orchestrator performs the
+          // escalated status transition (consistent with runAutoMerge).
+          return {
+            prUrl: "",
+            escalateReason: `auto-merge preflight hard-blocked: ${preflight.blockers.join(", ")}`,
+          };
+        }
+      }
+
       // Create the PR FIRST. A PR failure must NOT leave a permanently-closed
       // goal with no PR, so the close is the last side effect.
       const pr = await createPullRequest({
