@@ -83,7 +83,7 @@ describe("harness pr request-review", () => {
       "--repo",
       tmpdir(),
       "--poll-interval",
-      "0",
+      "1",
       "--timeout",
       "1",
     ]);
@@ -110,7 +110,7 @@ describe("harness pr request-review", () => {
       "--repo",
       tmpdir(),
       "--poll-interval",
-      "0",
+      "1",
       "--timeout",
       "0",
     ]);
@@ -142,6 +142,38 @@ describe("harness pr request-review", () => {
     expect(r.stderr).toMatch(/invalid.*--timeout|timeout/i);
   });
 
+  it("exits 2 on --poll-interval 0 (must be > 0)", () => {
+    const root = initRoot();
+    const gh = writeReviewedGh();
+    const r = runCli(root, gh, [
+      "pr",
+      "request-review",
+      "55",
+      "--repo",
+      tmpdir(),
+      "--poll-interval",
+      "0",
+    ]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/poll-interval/i);
+  });
+
+  it("exits 2 on a non-integer --request-attempts (1.5)", () => {
+    const root = initRoot();
+    const gh = writeReviewedGh();
+    const r = runCli(root, gh, [
+      "pr",
+      "request-review",
+      "55",
+      "--repo",
+      tmpdir(),
+      "--request-attempts",
+      "1.5",
+    ]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/request-attempts/i);
+  });
+
   it("exits non-zero when the request can never be established (failed)", () => {
     const root = initRoot();
     const failDir = mkdtempSync(join(tmpdir(), "harness-fake-gh-"));
@@ -155,7 +187,7 @@ describe("harness pr request-review", () => {
       "--repo",
       tmpdir(),
       "--poll-interval",
-      "0",
+      "1",
       "--request-attempts",
       "1",
     ]);

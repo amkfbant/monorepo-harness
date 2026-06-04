@@ -1466,24 +1466,41 @@ prCmd
     }
   });
 
-/** Parse a finite, non-negative number CLI arg; exit 2 on anything invalid. */
-function parseNonNegative(raw: unknown, flag: string): number {
+/**
+ * Parse a non-negative *integer* seconds CLI arg; exit 2 on anything invalid.
+ * Non-finite / negative / non-integer (decimal) all fail — seconds are whole.
+ * 0 is allowed (= observe once, no wait budget).
+ */
+function parseNonNegativeIntSeconds(raw: unknown, flag: string): number {
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) {
+  if (!Number.isInteger(n) || n < 0) {
     process.stderr.write(`harness error: invalid ${flag}: ${String(raw)}\n`);
     process.exit(2);
   }
   return n;
 }
 
-/** Parse a positive integer CLI arg; exit 2 on anything invalid. */
-function parsePositiveInt(raw: unknown, flag: string): number {
+/**
+ * Parse a positive (> 0) *integer* seconds CLI arg; exit 2 on anything invalid.
+ * Used for `--poll-interval` so we never poll GitHub at 0 / sub-second / NaN.
+ */
+function parsePositiveIntSeconds(raw: unknown, flag: string): number {
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 1) {
+  if (!Number.isInteger(n) || n < 1) {
     process.stderr.write(`harness error: invalid ${flag}: ${String(raw)}\n`);
     process.exit(2);
   }
-  return Math.floor(n);
+  return n;
+}
+
+/** Parse a positive integer CLI arg; exit 2 on anything invalid (incl. decimals). */
+function parsePositiveInt(raw: unknown, flag: string): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    process.stderr.write(`harness error: invalid ${flag}: ${String(raw)}\n`);
+    process.exit(2);
+  }
+  return n;
 }
 
 prCmd
@@ -1505,14 +1522,24 @@ prCmd
     }
     const ghBin = process.env.HARNESS_GH_BIN ?? "gh";
     const repoDir = String(raw.repo);
-    // Validate numeric args BEFORE the seconds→ms conversion: a NaN deadline
-    // (e.g. `--timeout foo`) would otherwise never trip the skip check.
-    const timeoutSec = parseNonNegative(raw.timeout, "--timeout");
-    const pollIntervalSec = parseNonNegative(raw.pollInterval, "--poll-interval");
-    const requestAttempts = parsePositiveInt(raw.requestAttempts, "--request-attempts");
+    // Validate numeric args BEFORE the seconds→ms conversion. Seconds must be
+    // whole integers; a NaN/decimal deadline (e.g. `--timeout foo` / `1.5`)
+    // would otherwise never trip the skip check or be silently floored.
+    //   --timeout         : non-negative integer (0 = observe once, no budget)
+    //   --poll-interval   : positive integer (never poll GitHub at 0 / sub-second)
+    //   --request-attempts: positive integer (no silent floor of decimals)
+    const timeoutSec = parseNonNegativeIntSeconds(raw.timeout, "--timeout");
+    const pollIntervalSec = parsePositiveIntSeconds(
+      raw.pollInterval,
+      "--poll-interval",
+    );
+    const requestAttempts = parsePositiveInt(
+      raw.requestAttempts,
+      "--request-attempts",
+    );
     const config = {
-      pollTimeoutMs: Math.floor(timeoutSec) * 1000,
-      pollIntervalMs: Math.floor(pollIntervalSec) * 1000,
+      pollTimeoutMs: timeoutSec * 1000,
+      pollIntervalMs: pollIntervalSec * 1000,
       requestAttempts,
     };
     const outcome = await runCopilotReview({
