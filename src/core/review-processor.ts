@@ -212,15 +212,6 @@ function processConsensusModePath(
       .filter((r) => r.decision !== "approved")
       .flatMap((r) => r.requiredChanges),
   );
-  const consensusRow = new ReviewConsensusRepository(db).insertActive({
-    runId: opts.runId,
-    ruleSha256: ruleSha,
-    status: decision,
-    summary: result.summary,
-    evaluatedAt: reviewedAt,
-    evaluatedBy: "consensus",
-    sourceProposalIds: includedRows.map((r) => r.proposalId),
-  });
   const decisionYaml = serializeReviewDecision({
     runId: opts.runId,
     domain: row.domain,
@@ -231,20 +222,36 @@ function processConsensusModePath(
     reviewer: "consensus",
     reviewed_at: reviewedAt,
   });
-  // Promotion + marking every included proposal processed happen in a single
-  // transaction (applyReviewDecision); a proposal that went stale between the
-  // evaluation and this write aborts the whole promotion (atomic, fail-closed).
-  new RunRepository(db).applyReviewDecision({
-    runId: opts.runId,
-    decision,
-    reviewer: "consensus",
-    reviewedAt,
-    requiredChanges,
-    decisionYaml,
-    consensusId: consensusRow.consensusId,
-    proposalsSummaryJson: consensusRow.summaryJson,
-    markProposalsProcessed: includedRows.map((r) => r.proposalId),
+  // The consensus row insert, run promotion, and marking every included
+  // proposal processed all run in ONE transaction (nested better-sqlite3
+  // transactions compose as savepoints): a proposal that went stale between
+  // the evaluation and this write aborts the whole unit, so neither the run
+  // nor the active consensus row is left in a half-applied state.
+  const consensusRepo = new ReviewConsensusRepository(db);
+  const runRepo = new RunRepository(db);
+  const promote = db.transaction(() => {
+    const consensusRow = consensusRepo.insertActive({
+      runId: opts.runId,
+      ruleSha256: ruleSha,
+      status: decision,
+      summary: result.summary,
+      evaluatedAt: reviewedAt,
+      evaluatedBy: "consensus",
+      sourceProposalIds: includedRows.map((r) => r.proposalId),
+    });
+    runRepo.applyReviewDecision({
+      runId: opts.runId,
+      decision,
+      reviewer: "consensus",
+      reviewedAt,
+      requiredChanges,
+      decisionYaml,
+      consensusId: consensusRow.consensusId,
+      proposalsSummaryJson: consensusRow.summaryJson,
+      markProposalsProcessed: includedRows.map((r) => r.proposalId),
+    });
   });
+  promote.immediate();
   warnIfExportFailed(exportRun(db, opts.runId, { runsDir: opts.runsDir }));
   return {
     runId: opts.runId,

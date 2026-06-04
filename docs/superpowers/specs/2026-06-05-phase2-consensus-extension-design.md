@@ -193,6 +193,14 @@ enrichment / `review process` の consensus gating / `review auto` の再評価�
   consensus mode なら consensus を再評価し `review_consensus` に記録（pending 含む）。
   stall timeline が蓄積される。best-effort（記録失敗は insert を巻き戻さない）。
 
+> 既知の制約（scope 外・follow-up）: orchestrator の review runner は 1 cycle =
+> 単一 reviewer のため、consensus mode で `quorum > 1` は満たせず、pending consensus
+> で即 escalate する（multi-cycle stall path は wired flow では発火しない）。stall
+> 検出の **能力**（detector + goal 連携）は実装・テスト済みだが、それを駆動する
+> **multi-reviewer orchestration** は `docs/future-features.md`（Multi-reviewer
+> consensus orchestration）に保留。consensus mode 自体も `resolveEffectiveRule` が
+> 既定 latest-proposal を返すため profile 読込（Phase 14）が前提。
+
 ## テスト（TDD・回帰禁止）
 
 - `tests/unit/core/review-consensus.test.ts`: quorum（minParticipants /

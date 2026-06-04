@@ -578,40 +578,46 @@ function recordConsensusReEvaluation(
   evaluatedAt: string,
 ): void {
   try {
-    // Skip if the run was promoted concurrently (e.g. `review process` ran
-    // between the proposal insert and here): re-evaluating would supersede
-    // the final consensus row of a promoted run.
-    const statusRow = db
-      .prepare("SELECT status FROM runs WHERE run_id = ?")
-      .get(runId) as { status: string } | undefined;
-    if (statusRow === undefined || statusRow.status !== "needs_review") return;
-    const snapshot = new ReviewRulesRepository(db).findSnapshotByRun(runId);
-    const rule: ReviewRule =
-      snapshot === null
-        ? DEFAULT_REVIEW_RULE
-        : (JSON.parse(snapshot.ruleJson) as ReviewRule);
-    if (rule.mode !== "consensus") return;
-    const ruleSha = snapshot?.sourceSha256 ?? ruleSha256(rule);
-    const proposals = enrichActiveProposals(
-      new ReviewProposalRepository(db),
-      new ReviewerRepository(db),
-      runId,
-    );
-    const result = evaluateConsensus({
-      rule,
-      ruleSha256: ruleSha,
-      proposals,
-      evaluatedAt,
+    // The status guard + re-evaluation + insert run in ONE immediate
+    // transaction so the "skip if already promoted" check is not subject to a
+    // TOCTOU race: a concurrent `review process` that promotes the run (and
+    // writes the final consensus) cannot be superseded by a late re-eval.
+    const tx = db.transaction(() => {
+      const statusRow = db
+        .prepare("SELECT status FROM runs WHERE run_id = ?")
+        .get(runId) as { status: string } | undefined;
+      if (statusRow === undefined || statusRow.status !== "needs_review") return;
+      const snapshot = new ReviewRulesRepository(db).findSnapshotByRun(runId);
+      const rule: ReviewRule =
+        snapshot === null
+          ? DEFAULT_REVIEW_RULE
+          : (JSON.parse(snapshot.ruleJson) as ReviewRule);
+      if (rule.mode !== "consensus") return;
+      const ruleSha = snapshot?.sourceSha256 ?? ruleSha256(rule);
+      const proposals = enrichActiveProposals(
+        new ReviewProposalRepository(db),
+        new ReviewerRepository(db),
+        runId,
+      );
+      const result = evaluateConsensus({
+        rule,
+        ruleSha256: ruleSha,
+        proposals,
+        evaluatedAt,
+      });
+      new ReviewConsensusRepository(db).insertActive({
+        runId,
+        ruleSha256: ruleSha,
+        status: result.status,
+        summary: result.summary,
+        evaluatedAt,
+        evaluatedBy: "review-auto",
+        // Only proposals that actually fed the consensus (post stale-filter)
+        // are the audit source — keep it consistent with the summary.
+        sourceProposalIds: result.summary.proposals.map((p) => p.proposalId),
+      });
     });
-    new ReviewConsensusRepository(db).insertActive({
-      runId,
-      ruleSha256: ruleSha,
-      status: result.status,
-      summary: result.summary,
-      evaluatedAt,
-      evaluatedBy: "review-auto",
-      sourceProposalIds: proposals.map((p) => p.proposalId),
-    });
+    tx.immediate();
   } catch (e) {
     process.stderr.write(
       `warning: could not re-evaluate review consensus for ${runId}: ` +

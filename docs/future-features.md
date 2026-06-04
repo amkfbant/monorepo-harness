@@ -3,6 +3,38 @@
 Ideas recorded for later implementation. Each entry is a sketch, not an approved
 design — run it through brainstorming → spec → plan when picked up.
 
+## Multi-reviewer consensus orchestration (drive the stall trigger)
+
+**What:** Let `harness goal orchestrate` drive **multiple reviewers** per review
+cycle so consensus-mode goals can actually reach quorum (and accumulate the
+pending timeline that the Phase 2 stall detector escalates on).
+
+**Why it is NOT in scope (Phase 2 boundary):** Phase 2 implemented the consensus
+extension — quorum / staleness, the deterministic `detectConsensusStall`
+detector, and the goal integration (`evaluateConsensusStallForGoal`), all
+unit-tested. But the orchestrator's review runner drives a **single** reviewer
+per cycle (`review.auto` with one reviewer), then `review process`. In consensus
+mode a single reviewer can never satisfy a `quorum > 1`, so `review process`
+returns a fail-closed pending and the orchestrator loop escalates on the first
+pending — the multi-cycle stall path is never exercised in the wired flow. The
+escalation *capability* exists and is correct; only the multi-reviewer *driving*
+is missing.
+
+**How (sketch):**
+- Teach the orchestrator review runner to dispatch N reviewers (per the run's
+  review rule / reviewer groups) before calling `review process`.
+- On a pending consensus, record the review cycle and run
+  `evaluateConsensusStallForGoal` (rather than escalating immediately), so the
+  stall detector decides escalate-vs-keep-waiting across cycles.
+- Reconcile with the single-writer review model and the goal budget.
+
+**Prerequisites:** reachable consensus mode (profile-loaded review rules —
+`resolveEffectiveRule` currently always returns the default latest-proposal rule;
+Phase 14 profile loading is the gate).
+
+**Status:** idea only — recorded 2026-06 during `GOAL.md` Phase 2 (consensus
+extension) review.
+
 ## Copilot PR review integration
 
 **Idea:** Let `harness pr create` optionally request a GitHub Copilot code
