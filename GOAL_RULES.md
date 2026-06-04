@@ -137,6 +137,31 @@ harness の安全設計はいかなる goal 実装でも侵してはならない
 
 ---
 
+## I. サブエージェント運用（Claude 側・軽量ポリシー）
+
+goal を駆動する Claude が使うサブエージェント（`Agent` ツール）の方針。**ハーネス
+内部の codex coder / reviewer agent とは別層**であり、混同しない。原則は「探索に
+活用し、レビューの正本は codex に保ち、重複ゲートを作らない」。
+
+- **探索は常用してよい。** 広いコードベース調査・複数箇所の横断把握は
+  `Explore` / `general-purpose` サブエージェントに任せ、結論だけ持ち帰る（メイン
+  context を汚さない）。独立した調査は**並列**で投げてよい。
+- **実装の subagent-driven 化は任意。** 大きい / 独立したサブ Phase は fresh
+  subagent per task（superpowers subagent-driven-development）で context を綺麗に
+  保てる。軽微な変更に使うのは過剰なので避ける。**実装サブエージェントは並列に
+  しない**（同一 worktree で競合するため、逐次）。
+- **レビューの正本は codex（重複させない）。** Claude 側の code-reviewer /
+  spec-reviewer は使ってよいが、その位置づけは **codex レビューに出す前の自己
+  レビュー前段**に限定する。`GOAL_RULES.md` §A の codex サブ/大レビューを置き換え
+  たり、二重のレビューゲートにしたりしない。
+- **安全境界はサブエージェントでも不変。** サブエージェントも §G を侵さない
+  （policy 検証 / 状態遷移 / MCP `confirmation_required` を迂回しない）。read-only
+  であるべき調査エージェントに書き込みをさせない。
+- **コスト意識。** サブエージェントは token を消費する。タスクに見合うときだけ
+  使い、トリビアルな単発編集はメインで直接行う。
+
+---
+
 ## レビューテンプレート
 
 codex レビューに渡すプロンプトの雛形。`<...>` を実値で埋めて

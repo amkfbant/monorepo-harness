@@ -30,6 +30,11 @@
 **codex レビューコマンドは常に** `codex exec -m gpt-5.5 -c model_reasoning_effort="xhigh"`
 （サブ Phase は最大 3 回、大 Phase は最大 5 回リトライ。詳細は `GOAL_RULES.md`）。
 
+**サブエージェント（Claude 側）は軽量ポリシー**（`GOAL_RULES.md` §I）: 探索は
+`Explore` 等に常用、実装の subagent-driven 化は任意、**レビューの正本は codex**
+（Claude 側レビューは codex 提出前の自己レビュー前段に限定し二重ゲートにしない）。
+ハーネス内部の codex coder/reviewer agent とは別層。
+
 ---
 
 ## 安全境界（不可侵）
