@@ -173,6 +173,26 @@ orchestrator は既存どおり convergence/escalation decision に従うだけ�
 
 ---
 
+## 2-4 production wiring（consensus mode を実フローに接続）
+
+大レビューで判明: Phase 11 で consensus-mode の production 経路（multi-proposal
+enrichment / `review process` の consensus gating / `review auto` の再評価）が未実装
+だったため、2-1〜2-3 の拡張が実運用で run promotion を gate できなかった（安全境界
+の懸念）。Phase 2 の目的（安全な merge gate の前提）を満たすため接続する。default の
+`latest-proposal` mode には一切影響しない（consensus mode 限定）。
+
+- **enrichment**（`src/core/consensus-enrichment.ts`）: run の active（非 superseded・
+  非 processed）proposal を reviewers registry で group / type 付与して
+  `EnrichedProposal[]` 化。未登録 reviewer は type "unknown" / group null（per-group
+  判定に落ちる = 安全側）。
+- **`review process` gating**（`processConsensusModePath`）: rule が consensus mode の
+  とき全 active proposal で `evaluateConsensus`。`pending` は **fail-closed**
+  （`ReviewGateError`、promote しない）。decisive なら consensus decision で promote し
+  consensus row を実 proposal から記録、集計 proposal を processed に。
+- **`review auto` 再評価**（`recordConsensusReEvaluation`）: proposal insert 後、
+  consensus mode なら consensus を再評価し `review_consensus` に記録（pending 含む）。
+  stall timeline が蓄積される。best-effort（記録失敗は insert を巻き戻さない）。
+
 ## テスト（TDD・回帰禁止）
 
 - `tests/unit/core/review-consensus.test.ts`: quorum（minParticipants /

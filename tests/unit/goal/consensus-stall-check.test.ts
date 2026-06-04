@@ -74,13 +74,14 @@ function seedConsensus(
   });
 }
 
-function seedReviewCycle(goals: GoalRepository, goalId: string, runId: string) {
+function seedReviewCycle(goals: GoalRepository, goalId: string, runId: string): string {
   const cycle = goals.startReviewCycle({
     goalId,
     reviewMode: "delta",
     sourceRunId: runId,
   });
   goals.completeReviewCycle({ cycleId: cycle.cycleId, summary: "seed" });
+  return cycle.cycleId;
 }
 
 describe("evaluateConsensusStallForGoal (Phase 2-3)", () => {
@@ -93,7 +94,7 @@ describe("evaluateConsensusStallForGoal (Phase 2-3)", () => {
         createdBy: "test",
         createdSource: "cli",
       });
-      seedReviewCycle(goals, "goal-stall", "run-1");
+      const cycleId = seedReviewCycle(goals, "goal-stall", "run-1");
       seedRun(db, "run-1");
       seedConsensus(db, "run-1", "2026-06-05T09:00:00Z", "pending", 0, 1);
       seedConsensus(db, "run-1", "2026-06-05T10:00:00Z", "pending", 0, 1);
@@ -104,11 +105,15 @@ describe("evaluateConsensusStallForGoal (Phase 2-3)", () => {
         goalId: "goal-stall",
         provider: dbConsensusSnapshotProvider(db),
         createdBy: "test",
+        cycleId,
       });
 
       expect(result.stalled).toBe(true);
       expect(result.goalStatus?.status).toBe("escalated");
       expect(goals.requireSession("goal-stall").status).toBe("escalated");
+      // P3: the escalate record links the triggering cycle + is surfaced.
+      expect(result.decisionRecord?.decision).toBe("escalate");
+      expect(result.decisionRecord?.cycleId).toBe(cycleId);
     } finally {
       db.close();
     }

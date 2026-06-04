@@ -133,6 +133,7 @@ export function importReviewProposalToGoal(
   // goal (harness-only state transition, fail-closed) and supersedes the
   // just-synced status.
   let goalStatus = recorded.goalStatus;
+  let convergenceDecision = recorded.decisionRecord;
   let consensusStall: GoalConsensusStallResult | undefined;
   if (input.consensusStall !== undefined) {
     consensusStall = evaluateConsensusStallForGoal({
@@ -143,9 +144,16 @@ export function importReviewProposalToGoal(
         ? { config: input.consensusStall.config }
         : {}),
       createdBy: input.createdBy,
+      cycleId: completedCycle.cycleId,
     });
+    // A stall escalation is the final decision for this import — surface its
+    // record + status so callers are not misled by the earlier convergence
+    // decision (which may read close_ready / continue).
     if (consensusStall.stalled && consensusStall.goalStatus !== null) {
       goalStatus = consensusStall.goalStatus;
+      if (consensusStall.decisionRecord !== undefined) {
+        convergenceDecision = consensusStall.decisionRecord;
+      }
     }
   }
 
@@ -153,7 +161,7 @@ export function importReviewProposalToGoal(
     cycle: completedCycle,
     findings,
     closeChecks,
-    convergenceDecision: recorded.decisionRecord,
+    convergenceDecision,
     goalStatus,
     ...(consensusStall !== undefined ? { consensusStall } : {}),
   };

@@ -132,6 +132,27 @@ describe("detectConsensusStall (Phase 2-3)", () => {
     expect(r.reason).toContain("max");
   });
 
+  it("throws on a misconfigured window (stallAfterSnapshots <= 0)", () => {
+    expect(() =>
+      detectConsensusStall(
+        [snap({ evaluatedAt: "2026-06-05T09:00:00Z" })],
+        { stallAfterSnapshots: 0 },
+      ),
+    ).toThrow(/stallAfterSnapshots/);
+  });
+
+  it("fail-closed: unparseable timestamp under maxPendingHours → stalled", () => {
+    const r = detectConsensusStall(
+      [
+        snap({ evaluatedAt: "not-a-date" }),
+        snap({ evaluatedAt: "2026-06-05T11:00:00Z" }),
+      ],
+      { stallAfterSnapshots: 3, maxPendingHours: 24 },
+    );
+    expect(r.stalled).toBe(true);
+    expect(r.reason).toContain("unparseable");
+  });
+
   it("maxPendingHours: within threshold → not stalled", () => {
     const r = detectConsensusStall(
       [

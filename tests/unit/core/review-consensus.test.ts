@@ -410,6 +410,31 @@ describe("evaluateConsensus quorum (Phase 2-1)", () => {
     expect(r.summary.requirements.find((x) => x.group === "humans")?.quorumMet).toBe(false);
   });
 
+  it.each([
+    ["minParticipants NaN", { minParticipants: Number.NaN }],
+    ["minParticipants negative", { minParticipants: -1 }],
+    ["rate above 1", { minParticipationRate: 1.5, groupSize: 4 }],
+    ["rate NaN", { minParticipationRate: Number.NaN, groupSize: 4 }],
+  ])("fail-closed on misconfigured quorum: %s", (_label, quorum) => {
+    const rule: ReviewRule = {
+      ...QUORUM_RULE,
+      requirements: [
+        { group: "humans", minApprovals: 1, blockingDecisions: [], quorum },
+      ],
+    };
+    const r = evaluateConsensus({
+      rule,
+      ruleSha256: ruleSha256(rule),
+      proposals: [
+        proposal({ proposalId: 1, decision: "approved", reviewerId: "alice", groupId: "humans" }),
+        proposal({ proposalId: 2, decision: "approved", reviewerId: "bob", groupId: "humans" }),
+      ],
+      evaluatedAt: NOW,
+    });
+    expect(r.status).toBe("pending");
+    expect(r.summary.requirements.find((x) => x.group === "humans")?.quorumMet).toBe(false);
+  });
+
   it("no quorum declared → quorumMet true (backward compatible)", () => {
     const r = evaluateConsensus({
       rule: CONSENSUS_RULE,

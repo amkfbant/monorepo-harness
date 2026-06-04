@@ -50,6 +50,16 @@ export function detectConsensusStall(
   snapshots: ConsensusProgressSnapshot[],
   config: ConsensusStallConfig,
 ): ConsensusStallResult {
+  // fail-closed on a misconfigured window: an invalid threshold cannot be
+  // interpreted, so surface it rather than silently never-stalling.
+  if (
+    !Number.isInteger(config.stallAfterSnapshots) ||
+    config.stallAfterSnapshots <= 0
+  ) {
+    throw new Error(
+      `invalid stallAfterSnapshots: ${config.stallAfterSnapshots}`,
+    );
+  }
   if (snapshots.length === 0) return notStalled();
   const last = snapshots[snapshots.length - 1]!;
 
@@ -62,14 +72,20 @@ export function detectConsensusStall(
     const streak = trailingUnresolvedStreak(snapshots);
     const oldestMs = Date.parse(streak[0]!.evaluatedAt);
     const lastMs = Date.parse(last.evaluatedAt);
-    if (!Number.isNaN(oldestMs) && !Number.isNaN(lastMs)) {
-      const hours = (lastMs - oldestMs) / 3_600_000;
-      if (hours > config.maxPendingHours) {
-        return {
-          stalled: true,
-          reason: `consensus pending beyond max ${config.maxPendingHours}h (${hours.toFixed(1)}h)`,
-        };
-      }
+    if (Number.isNaN(oldestMs) || Number.isNaN(lastMs)) {
+      // fail-closed: a pending timeout is being enforced but the timeline
+      // carries an unparseable timestamp — treat as stalled.
+      return {
+        stalled: true,
+        reason: "unparseable evaluatedAt in consensus timeline",
+      };
+    }
+    const hours = (lastMs - oldestMs) / 3_600_000;
+    if (hours > config.maxPendingHours) {
+      return {
+        stalled: true,
+        reason: `consensus pending beyond max ${config.maxPendingHours}h (${hours.toFixed(1)}h)`,
+      };
     }
   }
 

@@ -19,6 +19,13 @@ import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
+import { ReviewRulesRepository } from "../db/repositories/review-rules.js";
+import { ReviewConsensusRepository } from "../db/repositories/review-consensus.js";
+import { ReviewerRepository } from "../db/repositories/reviewers.js";
+import { evaluateConsensus } from "./review-consensus.js";
+import { enrichActiveProposals } from "./consensus-enrichment.js";
+import { DEFAULT_REVIEW_RULE, ruleSha256, type ReviewRule } from "./review-rule.js";
+import type Database from "better-sqlite3";
 import { fileExportEnabled } from "../config/export-mode.js";
 
 export class ReviewerAgentGateError extends Error {
@@ -524,6 +531,12 @@ export async function runReviewerAgent(
         sourceSha256: sha,
         createdAt: reviewedAt,
       });
+      // Phase 2: in consensus mode, re-evaluate consensus over all active
+      // proposals and record a (possibly pending) consensus row so the
+      // timeline accumulates for stall detection and the active consensus
+      // reflects every reviewer. latest-proposal mode keeps its
+      // single-writer flow untouched.
+      recordConsensusReEvaluation(dbHandle.db, inputs.runId, reviewedAt);
     } finally {
       dbHandle.close();
     }
@@ -552,4 +565,50 @@ export async function runReviewerAgent(
     rawOutputPath: stdoutPath,
     dryRun: false,
   };
+}
+
+/**
+ * Phase 2: re-evaluate consensus after a `review auto` proposal insert.
+ * No-op for latest-proposal mode. Best-effort: a recording failure must not
+ * unwind the just-inserted proposal (the verdict is already persisted).
+ */
+function recordConsensusReEvaluation(
+  db: Database.Database,
+  runId: string,
+  evaluatedAt: string,
+): void {
+  try {
+    const snapshot = new ReviewRulesRepository(db).findSnapshotByRun(runId);
+    const rule: ReviewRule =
+      snapshot === null
+        ? DEFAULT_REVIEW_RULE
+        : (JSON.parse(snapshot.ruleJson) as ReviewRule);
+    if (rule.mode !== "consensus") return;
+    const ruleSha = snapshot?.sourceSha256 ?? ruleSha256(rule);
+    const proposals = enrichActiveProposals(
+      new ReviewProposalRepository(db),
+      new ReviewerRepository(db),
+      runId,
+    );
+    const result = evaluateConsensus({
+      rule,
+      ruleSha256: ruleSha,
+      proposals,
+      evaluatedAt,
+    });
+    new ReviewConsensusRepository(db).insertActive({
+      runId,
+      ruleSha256: ruleSha,
+      status: result.status,
+      summary: result.summary,
+      evaluatedAt,
+      evaluatedBy: "review-auto",
+      sourceProposalIds: proposals.map((p) => p.proposalId),
+    });
+  } catch (e) {
+    process.stderr.write(
+      `warning: could not re-evaluate review consensus for ${runId}: ` +
+        `${(e as Error).message}\n`,
+    );
+  }
 }

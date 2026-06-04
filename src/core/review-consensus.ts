@@ -299,12 +299,21 @@ function isQuorumMet(
   participants: number,
 ): boolean {
   if (quorum === undefined) return true;
-  if (quorum.minParticipants !== undefined && participants < quorum.minParticipants) {
-    return false;
+  if (quorum.minParticipants !== undefined) {
+    // fail-closed on a misconfigured threshold (NaN / negative).
+    if (!Number.isFinite(quorum.minParticipants) || quorum.minParticipants < 0) {
+      return false;
+    }
+    if (participants < quorum.minParticipants) return false;
   }
   if (quorum.minParticipationRate !== undefined) {
-    if (quorum.groupSize === undefined || quorum.groupSize <= 0) return false;
-    if (participants / quorum.groupSize < quorum.minParticipationRate) return false;
+    const rate = quorum.minParticipationRate;
+    // fail-closed: rate must be in [0,1] and groupSize a positive number.
+    if (!Number.isFinite(rate) || rate < 0 || rate > 1) return false;
+    if (quorum.groupSize === undefined || !Number.isFinite(quorum.groupSize) || quorum.groupSize <= 0) {
+      return false;
+    }
+    if (participants / quorum.groupSize < rate) return false;
   }
   return true;
 }

@@ -11,7 +11,7 @@ import { ReviewConsensusRepository } from "../db/repositories/review-consensus.j
 import { ConvergenceService } from "./convergence.js";
 import { recordConvergenceDecisionWithStatus } from "./convergence-status.js";
 import type { GoalRepository } from "./repository.js";
-import type { GoalSession } from "./types.js";
+import type { GoalConvergenceDecisionRecord, GoalSession } from "./types.js";
 
 /**
  * Phase 2-3: consensus stall → goal escalation.
@@ -33,6 +33,8 @@ export const DEFAULT_CONSENSUS_STALL_CONFIG: ConsensusStallConfig = {
 export interface GoalConsensusStallResult extends ConsensusStallResult {
   /** Non-null when the stall caused an escalate transition. */
   goalStatus: GoalSession | null;
+  /** The escalate convergence record, when a stall transition was made. */
+  decisionRecord?: GoalConvergenceDecisionRecord;
 }
 
 export function evaluateConsensusStallForGoal(input: {
@@ -42,6 +44,7 @@ export function evaluateConsensusStallForGoal(input: {
   config?: ConsensusStallConfig;
   createdBy: string;
   now?: string;
+  cycleId?: string;
 }): GoalConsensusStallResult {
   const config = input.config ?? DEFAULT_CONSENSUS_STALL_CONFIG;
   const cycles = input.repository.listReviewCycles(input.goalId);
@@ -53,18 +56,18 @@ export function evaluateConsensusStallForGoal(input: {
   if (runIds.length === 0) {
     return { stalled: false, reason: null, goalStatus: null };
   }
-  let snapshots: ConsensusProgressSnapshot[];
+  let result: ConsensusStallResult;
   try {
-    snapshots = input.provider(runIds);
+    const snapshots = input.provider(runIds);
+    result = detectConsensusStall(snapshots, config);
   } catch (e) {
-    // fail-closed: the consensus timeline could not be reconstructed
-    // (corrupted summary_json / unparseable evaluated_at). Escalate rather
-    // than silently proceeding.
+    // fail-closed: the consensus timeline could not be reconstructed or
+    // evaluated (corrupted summary_json / unparseable evaluated_at /
+    // misconfigured window). Escalate rather than silently proceeding.
     return escalate(input, `consensus data unreadable: ${(e as Error).message}`);
   }
-  const result = detectConsensusStall(snapshots, config);
   if (!result.stalled) {
-    return { ...result, goalStatus: null };
+    return { stalled: false, reason: result.reason, goalStatus: null };
   }
   return escalate(input, `consensus stall: ${result.reason}`, result.reason);
 }
@@ -75,6 +78,7 @@ function escalate(
     goalId: string;
     createdBy: string;
     now?: string;
+    cycleId?: string;
   },
   reason: string,
   stallReason?: string | null,
@@ -87,6 +91,7 @@ function escalate(
   const recorded = recordConvergenceDecisionWithStatus({
     repository: input.repository,
     goalId: input.goalId,
+    ...(input.cycleId !== undefined ? { cycleId: input.cycleId } : {}),
     decision: "escalate",
     reason,
     metrics,
@@ -97,7 +102,12 @@ function escalate(
     createdBy: input.createdBy,
     ...(input.now !== undefined ? { createdAt: input.now } : {}),
   });
-  return { stalled: true, reason: stallReason ?? reason, goalStatus: recorded.goalStatus };
+  return {
+    stalled: true,
+    reason: stallReason ?? reason,
+    goalStatus: recorded.goalStatus,
+    decisionRecord: recorded.decisionRecord,
+  };
 }
 
 /**
