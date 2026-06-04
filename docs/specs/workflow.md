@@ -739,3 +739,14 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
   PR 作成のみ（`pr_created`）。`--merge-method`（squash|merge|rebase）で方式指定。
 - 状態遷移は harness のみ。LLM 出力を merge 判定の根拠にしない。CI status 取得は
   fail-closed（不確定は緑扱いしない）。
+
+### Copilot review（観測ステップ・opt-in・best-effort）
+
+PR 作成後・auto-merge 評価の**前**に、opt-in（`--request-copilot-review`、既定 OFF）
+で GitHub Copilot のコードレビューを best-effort でリクエストできる。これは純粋な
+**観測ステップ**で、retry-then-skip（request 一時エラーは retry、timeout は skip）し、
+例外も握る（非 gating）。outcome は operation audit（`copilot-review`）に記録される
+だけで、**close / merge を一切 gate しない**――外部出力を状態遷移の根拠にしない、
+という安全境界を守る。`closeAndPr` はレビュー結果に関わらず後続（auto-merge / 
+`pr_created`）へ進む。同じ best-effort 処理は単発の [`harness pr request-review`](
+./cli.md#harness-pr-request-review) でも実行できる。
