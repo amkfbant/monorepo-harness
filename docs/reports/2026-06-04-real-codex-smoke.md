@@ -90,11 +90,25 @@ a fresh goal root:
 
 No divergence from the fake-runner behavior on any surface.
 
-## Still deferred
+## rerun / pr create smoke (2026-06-05, real codex)
 
-- `pr create` — needs a real GitHub remote and creates an external PR; validate
-  on a real repo, not a throwaway.
-- `rerun --from-review` — bounded retry chain on real codex.
+Both previously-deferred surfaces are now verified on real codex.
+
+- **`rerun --from-review`** — throwaway repo: a real run reached `needs_review`;
+  its `review-decision.yaml` was set to `changes_requested` with one required
+  change and applied via `review process`; `rerun --from-review` then spawned a
+  child run whose `meta.json` carried `parentRunId` / `rootRunId` /
+  `rerunAttempt=1`, and whose `codex-prompt.md` embedded
+  `## Required changes from the previous review` with that change. Real codex
+  completed the rerun (`needs_review`, `safetyStatus=allowed`).
+- **`pr create`** — against `amkfbant/mini-commerce` (real GitHub remote): a real
+  run on `apps/catalog` (codex added a top-of-file comment, `commands=3/3`,
+  `safetyStatus=allowed`) was approved, then `pr create` committed the worktree,
+  pushed branch `harness/<runId>/apps-catalog`, and opened **draft PR #2**
+  (https://github.com/amkfbant/mini-commerce/pull/2) via `gh`.
+
+All major surfaces — run, review auto/process, rerun, pr create, goal loop,
+MCP serve — are now verified on real codex.
 
 ## Cleanup
 
