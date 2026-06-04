@@ -53,13 +53,34 @@ export function evaluateConsensusStallForGoal(input: {
   if (runIds.length === 0) {
     return { stalled: false, reason: null, goalStatus: null };
   }
-  const snapshots = input.provider(runIds);
+  let snapshots: ConsensusProgressSnapshot[];
+  try {
+    snapshots = input.provider(runIds);
+  } catch (e) {
+    // fail-closed: the consensus timeline could not be reconstructed
+    // (corrupted summary_json / unparseable evaluated_at). Escalate rather
+    // than silently proceeding.
+    return escalate(input, `consensus data unreadable: ${(e as Error).message}`);
+  }
   const result = detectConsensusStall(snapshots, config);
   if (!result.stalled) {
     return { ...result, goalStatus: null };
   }
-  // Stall detected → escalate. The metrics come from the deterministic
-  // convergence evaluation; only the decision/reason reflect the stall.
+  return escalate(input, `consensus stall: ${result.reason}`, result.reason);
+}
+
+function escalate(
+  input: {
+    repository: GoalRepository;
+    goalId: string;
+    createdBy: string;
+    now?: string;
+  },
+  reason: string,
+  stallReason?: string | null,
+): GoalConsensusStallResult {
+  // The metrics come from the deterministic convergence evaluation; only the
+  // decision/reason reflect the stall. State transition is harness-only.
   const metrics = new ConvergenceService(input.repository).evaluate(
     input.goalId,
   ).metrics;
@@ -67,16 +88,16 @@ export function evaluateConsensusStallForGoal(input: {
     repository: input.repository,
     goalId: input.goalId,
     decision: "escalate",
-    reason: `consensus stall: ${result.reason}`,
+    reason,
     metrics,
     recommendedNextAction: {
       kind: "ask_human",
-      message: `Escalate: consensus is stuck (${result.reason}).`,
+      message: `Escalate: ${reason}.`,
     },
     createdBy: input.createdBy,
     ...(input.now !== undefined ? { createdAt: input.now } : {}),
   });
-  return { ...result, goalStatus: recorded.goalStatus };
+  return { stalled: true, reason: stallReason ?? reason, goalStatus: recorded.goalStatus };
 }
 
 /**
@@ -89,22 +110,43 @@ export function dbConsensusSnapshotProvider(
 ): ConsensusSnapshotProvider {
   const repo = new ReviewConsensusRepository(db);
   return (runIds) => {
-    const snapshots: ConsensusProgressSnapshot[] = [];
+    const rows: Array<{
+      snapshot: ConsensusProgressSnapshot;
+      sortMs: number;
+      consensusId: number;
+    }> = [];
     for (const runId of runIds) {
       for (const row of repo.listHistory(runId)) {
+        // JSON.parse throws on a corrupted summary → propagates to the
+        // caller, which escalates (fail-closed).
         const summary = JSON.parse(row.summaryJson) as ConsensusSummary;
-        snapshots.push(
-          snapshotFromConsensus({
+        // Stall detection applies only to consensus-mode evaluations. A
+        // latest-proposal row (no requirements) is a decisive single-reviewer
+        // verdict handled by the normal convergence / rerun loop — feeding it
+        // here would falsely stall on repeated changes_requested verdicts.
+        if (!Array.isArray(summary.requirements) || summary.requirements.length === 0) {
+          continue;
+        }
+        const sortMs = Date.parse(row.evaluatedAt);
+        if (Number.isNaN(sortMs)) {
+          throw new Error(
+            `unparseable review_consensus.evaluated_at for ${row.runId}#${row.consensusId}: ${row.evaluatedAt}`,
+          );
+        }
+        rows.push({
+          snapshot: snapshotFromConsensus({
             evaluatedAt: row.evaluatedAt,
             status: row.status,
-            requirements: summary.requirements ?? [],
+            requirements: summary.requirements,
           }),
-        );
+          sortMs,
+          consensusId: row.consensusId,
+        });
       }
     }
-    return snapshots.sort((a, b) =>
-      a.evaluatedAt < b.evaluatedAt ? -1 : a.evaluatedAt > b.evaluatedAt ? 1 : 0,
-    );
+    // Deterministic order: by evaluation time, tie-broken by consensus_id.
+    rows.sort((a, b) => a.sortMs - b.sortMs || a.consensusId - b.consensusId);
+    return rows.map((r) => r.snapshot);
   };
 }
 

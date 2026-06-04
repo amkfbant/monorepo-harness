@@ -173,6 +173,85 @@ describe("evaluateConsensusStallForGoal (Phase 2-3)", () => {
     }
   });
 
+  it("does not stall on a latest-proposal flow (repeated changes_requested, no requirements)", () => {
+    const { db, goals } = fresh();
+    try {
+      goals.createSession({
+        goalId: "goal-latest",
+        title: "Goal latest-proposal",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      seedReviewCycle(goals, "goal-latest", "run-1");
+      seedRun(db, "run-1");
+      // latest-proposal mode: consensus rows carry NO requirements.
+      const repo = new ReviewConsensusRepository(db);
+      for (const evaluatedAt of [
+        "2026-06-05T09:00:00Z",
+        "2026-06-05T10:00:00Z",
+        "2026-06-05T11:00:00Z",
+      ]) {
+        repo.insertActive({
+          runId: "run-1",
+          ruleSha256: "sha",
+          status: "changes_requested",
+          summary: {
+            evaluatedAt,
+            ruleSha256: "sha",
+            proposals: [],
+            override: null,
+            excludedProposals: [],
+            requirements: [],
+            decisionPath: "no-requirements-latest-proposal",
+          },
+          evaluatedAt,
+          evaluatedBy: "test",
+          sourceProposalIds: [],
+        });
+      }
+
+      const result = evaluateConsensusStallForGoal({
+        repository: goals,
+        goalId: "goal-latest",
+        provider: dbConsensusSnapshotProvider(db),
+        createdBy: "test",
+      });
+
+      expect(result.stalled).toBe(false);
+      expect(goals.requireSession("goal-latest").status).not.toBe("escalated");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("fail-closed: provider failure escalates the goal", () => {
+    const { db, goals } = fresh();
+    try {
+      goals.createSession({
+        goalId: "goal-corrupt",
+        title: "Goal corrupt",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      seedReviewCycle(goals, "goal-corrupt", "run-1");
+
+      const result = evaluateConsensusStallForGoal({
+        repository: goals,
+        goalId: "goal-corrupt",
+        provider: () => {
+          throw new Error("malformed summary_json");
+        },
+        createdBy: "test",
+      });
+
+      expect(result.stalled).toBe(true);
+      expect(result.reason).toContain("unreadable");
+      expect(goals.requireSession("goal-corrupt").status).toBe("escalated");
+    } finally {
+      db.close();
+    }
+  });
+
   it("is a no-op when the goal has no review runs", () => {
     const { db, goals } = fresh();
     try {

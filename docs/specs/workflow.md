@@ -596,6 +596,35 @@ harness review process <runId> --override approved --reason "Critical hotfix" \
   → applyReviewDecision で final decision に昇格
 ```
 
+### Phase 2 — consensus 拡張（quorum / 鮮度 / stall escalation）
+
+`evaluateConsensus`（`src/core/review-consensus.ts`）は Phase 11 の
+requirement（per-group `minApprovals` / `blockingDecisions`）に加えて以下を
+決定論的に評価する。設計は
+[`../superpowers/specs/2026-06-05-phase2-consensus-extension-design.md`](../superpowers/specs/2026-06-05-phase2-consensus-extension-design.md)。
+
+- **quorum / 参加率**: `ReviewRuleRequirement.quorum`（任意）。`minParticipants`
+  はグループ内で non-pending な verdict を出した **distinct reviewer 数** の
+  最低値、`minParticipationRate`（要 `groupSize`）は参加率。requirement の充足は
+  `approvals >= minApprovals` **かつ** quorum 充足。quorum 未指定は従来挙動
+  （`quorumMet = true`）。`minParticipationRate` 指定で `groupSize` が正でない場合は
+  fail-closed（quorum 未達）。`ConsensusRequirementCheck` に `participants` /
+  `quorumMet` を出力。
+- **proposal 鮮度**: `ReviewRule.staleProposal`（`rejectSuperseded` /
+  `maxAgeHours`）を集計前に適用。superseded（`EnrichedProposal.supersededAt`）/
+  `maxAgeHours` 超過の proposal を除外し `ConsensusSummary.excludedProposals` に
+  記録。timestamp 解析不能時は fail-closed（stale 扱いで除外）。負経過
+  （reviewedAt が evaluatedAt より後）は除外しない。
+- **stall escalation**: `detectConsensusStall`（`src/core/consensus-stall.ts`、純
+  関数）が consensus 評価スナップショット列（時刻昇順）から「詰まり」を判定する。
+  直近 `stallAfterSnapshots` 件が unresolved（pending / changes_requested）のまま
+  approvals / participants が増えない、または unresolved streak が
+  `maxPendingHours` 超で stall。decisive（approved / rejected）は非 stall。
+  goal 連携（`src/goal/consensus-stall-check.ts`）は goal の review 対象 run の
+  `review_consensus` 履歴から timeline を再構築し、stall 検出時に goal を
+  **`escalated`** に倒す（harness のみ状態遷移、fail-closed、新スキーマ無し）。
+  単一 reviewer の決着フローでは no-op（後方互換）。LLM 出力は一切判定入力にしない。
+
 ## Phase 19 — goal convergence（close 済み・現状仕様）
 
 Phase 19 は `domain-coding` の **状態機械は変えない**。代わりに 1 つ以上の
