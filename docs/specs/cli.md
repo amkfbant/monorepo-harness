@@ -280,11 +280,23 @@ harness goal review-cycle complete <cycle-id> [--from-findings <path>] \
 harness goal close-check record <goal-id> --condition <id> --status passed|failed|pending|skipped|unknown \
   [--checked-by <actor>] [--message <text>] [--evidence-json <json>] [--json]
 harness goal check-convergence <goal-id> [--created-by <actor>] [--no-record] [--json]
+
+harness goal orchestrate <goal-id> --repo <path> [--base-branch <name>] [--max-steps <n>] \
+  [--dry-run] [--auto-merge] [--merge-method squash|merge|rebase]
 ```
 
 `goal close` は convergence が `close_ready` でない限り `--force` を要求する。
 `check-convergence` は `diverging` / `budget_exhausted` / `escalate` で exit 2。
 MCP 経由の goal close/cancel/scope expansion は confirmation-required。
+
+`goal orchestrate` は goal を terminal 状態（closed / pr_created / merged /
+escalated）まで bounded loop（`--max-steps`、既定 50）で自律駆動する。`--dry-run`
+は次の action のみ表示し実行しない。**`--auto-merge`（既定 OFF）** を付けると
+terminal の PR 作成後に merge gate（close-ready ∧ consensus approved(quorum) ∧
+CI green、または human override）を評価し、満たせば `gh pr merge` で自動マージ
+（`--merge-method`、既定 squash）。gate が hard 未達なら merge せず escalate
+（fail-closed）。merge は operation audit に記録される。詳細は
+[`workflow.md`](./workflow.md) の「Phase 3 — auto-merge」。
 
 ## `harness dashboard export`
 
