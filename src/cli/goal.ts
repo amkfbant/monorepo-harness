@@ -12,7 +12,12 @@ import {
   type ClassifiableGoalFinding,
 } from "../goal/classification.js";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
-import { createGhPrPublisher } from "../core/gh-pr-publisher.js";
+import {
+  createGhPrPublisher,
+  createGhPrMerger,
+  createGhCiStatus,
+} from "../core/gh-pr-publisher.js";
+import type { PrMergeMethod } from "../core/pr-creator.js";
 import { ConvergenceService } from "../goal/convergence.js";
 import { recordConvergenceDecisionWithStatus } from "../goal/convergence-status.js";
 import { deferFindingToBacklog } from "../goal/followups.js";
@@ -672,6 +677,16 @@ export function registerGoalCommands(
     .option("--base-branch <name>", "base branch for runs and the PR", "main")
     .option("--max-steps <n>", "loop step cap", "50")
     .option("--dry-run", "print the next action only; do not execute", false)
+    .option(
+      "--auto-merge",
+      "opt-in: auto-merge the PR when the merge gate passes (default OFF)",
+      false,
+    )
+    .option(
+      "--merge-method <method>",
+      "merge method for --auto-merge (squash|merge|rebase)",
+      "squash",
+    )
     .action(async (goalId: string, raw: Record<string, unknown>) => {
       await withGoalErrorExitAsync(async () => {
         if (raw.dryRun === true) {
@@ -689,6 +704,18 @@ export function registerGoalCommands(
         }
         const dbPath = harnessPaths(opts.getHarnessRoot()).dbPath;
         const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
+        const repoPath = String(raw.repo);
+        // Phase 3: auto-merge is opt-in (default OFF). Only when --auto-merge is
+        // passed do we construct the merger + CI probe; otherwise the
+        // orchestrator just creates the PR.
+        const autoMerge =
+          raw.autoMerge === true
+            ? {
+                merger: createGhPrMerger(),
+                ciStatus: createGhCiStatus(repoPath),
+                method: parseMergeMethod(raw.mergeMethod),
+              }
+            : undefined;
         const result = await new GoalOrchestrator({ dbPath }).run({
           goalId,
           runners: createOrchestratorRunners({
@@ -698,7 +725,8 @@ export function registerGoalCommands(
             coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
             reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
             publisher: createGhPrPublisher(),
-            repoPath: String(raw.repo),
+            ...(autoMerge !== undefined ? { autoMerge } : {}),
+            repoPath,
             baseBranch: String(raw.baseBranch ?? "main"),
           }),
           maxSteps: parsePositiveInt(raw.maxSteps ?? 50, "--max-steps"),
@@ -831,6 +859,13 @@ function parsePositiveInt(value: unknown, flag: string): number {
   const parsed = parseNonNegativeInt(value, flag);
   if (parsed < 1) throw new GoalCliError(`${flag} must be a positive integer`);
   return parsed;
+}
+
+function parseMergeMethod(value: unknown): PrMergeMethod {
+  if (value === "squash" || value === "merge" || value === "rebase") {
+    return value;
+  }
+  throw new GoalCliError("--merge-method must be one of: squash, merge, rebase");
 }
 
 function parseNonNegativeInt(value: unknown, flag: string): number {

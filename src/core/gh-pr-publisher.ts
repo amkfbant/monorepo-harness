@@ -107,6 +107,32 @@ export function createGhPrMerger(
 }
 
 /**
+ * Phase 3: a CI-green probe for the auto-merge gate, backed by `gh pr checks`
+ * (exit 0 == all required checks passed). Fail-closed: ANY failure — pending /
+ * failing checks, a timeout, or an error — returns false so the gate does not
+ * merge on an uncertain CI status.
+ */
+export function createGhCiStatus(
+  repoDir: string,
+  ghBin = "gh",
+  timeoutMs = DEFAULT_GH_TIMEOUT_MS,
+): (prNumber: number) => Promise<boolean> {
+  return async (prNumber: number) => {
+    try {
+      await runGh(
+        ghBin,
+        ["pr", "checks", String(prNumber)],
+        repoDir,
+        timeoutMs,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+}
+
+/**
  * Returns true when the PR is already MERGED. A timeout fails loudly; any
  * other lookup failure returns false so the caller surfaces a real error from
  * the merge attempt itself.

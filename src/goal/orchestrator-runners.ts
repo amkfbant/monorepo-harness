@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { openManagedDb, withManagedDb } from "../db/managed-connection.js";
 import { harnessPaths } from "../config/paths.js";
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
@@ -7,8 +8,25 @@ import {
 } from "../core/workflow-runner.js";
 import { runReviewerAgent } from "../core/reviewer-agent.js";
 import { processReviewDecision } from "../core/review-processor.js";
-import { createPullRequest, type PrPublisher } from "../core/pr-creator.js";
+import {
+  createPullRequest,
+  type PrPublisher,
+  type PrMerger,
+  type PrMergeMethod,
+} from "../core/pr-creator.js";
+import {
+  evaluateMergeGate,
+  type MergeGateConsensus,
+} from "../core/merge-gate.js";
 import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
+import { ReviewConsensusRepository } from "../db/repositories/review-consensus.js";
+import { ReviewOverridesRepository } from "../db/repositories/review-overrides.js";
+import {
+  startOperation,
+  succeedOperation,
+  failOperation,
+} from "../db/repositories/operations.js";
+import type { ConsensusSummary } from "../core/review-consensus.js";
 import { GoalRepository } from "./repository.js";
 import { classifyFindingForGoal } from "./classification.js";
 import { deferFindingToBacklog } from "./followups.js";
@@ -75,6 +93,18 @@ export interface OrchestratorRunnerDeps {
    * Required for `closeAndPr` (a clear error is thrown if it is missing).
    */
   publisher?: PrPublisher;
+  /**
+   * Phase 3: opt-in auto-merge. Omitted (default) = auto-merge OFF — `closeAndPr`
+   * only creates the PR. When present, `closeAndPr` evaluates the merge gate
+   * after creating the PR and, if it passes, merges via `merger`; a hard-blocked
+   * gate escalates (fail-closed); CI-not-green leaves the PR open.
+   */
+  autoMerge?: {
+    merger: PrMerger;
+    /** Returns whether the PR's required checks are green. */
+    ciStatus: (prNumber: number) => Promise<boolean>;
+    method?: PrMergeMethod;
+  };
   /**
    * Resolve the repo/run context for a goal's session. Defaults to deriving
    * the goal text from the session title/description, the repoId/domain from
@@ -364,7 +394,7 @@ export function createOrchestratorRunners(
           "closeAndPr requires a publisher in OrchestratorRunnerDeps",
         );
       }
-      const { runId, base } = withManagedDb({ dbPath: deps.dbPath }, (db) => {
+      const { runId, base, repoPath } = withManagedDb({ dbPath: deps.dbPath }, (db) => {
         const repo = new GoalRepository(db);
         const session = repo.requireSession(goalId);
         // Defense in depth: closeAndPr must only ever run on a goal whose
@@ -379,7 +409,11 @@ export function createOrchestratorRunners(
           );
         }
         const context = resolveRunContext(deps, session);
-        return { runId: latestRunId(repo, goalId), base: context.baseBranch };
+        return {
+          runId: latestRunId(repo, goalId),
+          base: context.baseBranch,
+          repoPath: context.repoPath,
+        };
       });
       // Create the PR FIRST. A PR failure must NOT leave a permanently-closed
       // goal with no PR, so the close is the last side effect.
@@ -393,6 +427,23 @@ export function createOrchestratorRunners(
         publisher: deps.publisher,
         dbPath: deps.dbPath,
       });
+
+      // Phase 3: opt-in auto-merge after the PR exists. Default OFF.
+      if (deps.autoMerge !== undefined) {
+        const outcome = await runAutoMerge(deps, goalId, runId, repoPath, pr.prNumber);
+        if (outcome.escalateReason !== undefined) {
+          return { prUrl: pr.prUrl, escalateReason: outcome.escalateReason };
+        }
+        withManagedDb({ dbPath: deps.dbPath }, (db) => {
+          new GoalRepository(db).updateStatus(
+            goalId,
+            "closed",
+            outcome.merged ? "goal converged; PR merged" : "goal converged; PR opened",
+          );
+        });
+        return { prUrl: pr.prUrl, merged: outcome.merged };
+      }
+
       withManagedDb({ dbPath: deps.dbPath }, (db) => {
         new GoalRepository(db).updateStatus(
           goalId,
@@ -400,7 +451,94 @@ export function createOrchestratorRunners(
           "goal converged; PR opened",
         );
       });
-      return { prUrl: pr.prUrl };
+      return { prUrl: pr.prUrl, merged: false };
     },
   };
+}
+
+/**
+ * Phase 3: evaluate the merge gate for a freshly-created PR and, if it passes,
+ * merge (recording an operation-audit row). A hard-blocked gate returns an
+ * escalateReason (fail-closed: do NOT merge, do NOT close). CI-not-green
+ * returns `{ merged: false }` so the caller closes the goal and leaves the PR
+ * open for a later merge.
+ */
+async function runAutoMerge(
+  deps: OrchestratorRunnerDeps,
+  goalId: string,
+  runId: string,
+  repoPath: string,
+  prNumber: number,
+): Promise<{ merged: boolean; escalateReason?: string }> {
+  const autoMerge = deps.autoMerge!;
+  const ciGreen = await autoMerge.ciStatus(prNumber);
+  const gate = withManagedDb({ dbPath: deps.dbPath }, (db) => {
+    const { consensus, humanApproved } = gatherApproval(db, runId);
+    return evaluateMergeGate({
+      autoMergeEnabled: true,
+      closeReady: true, // closeAndPr only runs on a re-verified close_ready goal
+      consensus,
+      humanApproved,
+      ciGreen,
+    });
+  });
+  if (gate.canMerge) {
+    const method: PrMergeMethod = autoMerge.method ?? "squash";
+    const operationId = `op-${randomUUID()}`;
+    const startedOk = withManagedDb({ dbPath: deps.dbPath }, (db) => {
+      startOperation(db, {
+        operationId,
+        operationType: "merge",
+        targetType: "pr",
+        targetId: String(prNumber),
+        actor: deps.createdBy,
+        dryRun: false,
+        input: { goalId, runId, prNumber, method },
+      });
+      return true;
+    });
+    void startedOk;
+    try {
+      const result = await autoMerge.merger.merge({ repoDir: repoPath, prNumber, method });
+      withManagedDb({ dbPath: deps.dbPath }, (db) => {
+        succeedOperation(db, operationId, result);
+      });
+      return { merged: true };
+    } catch (e) {
+      withManagedDb({ dbPath: deps.dbPath }, (db) => {
+        failOperation(db, operationId, "merge_failed", (e as Error).message);
+      });
+      throw e;
+    }
+  }
+  if (gate.hardBlocked) {
+    // fail-closed: a human-required blocker must not be auto-merged or silently
+    // closed — escalate so a human resolves it.
+    return {
+      merged: false,
+      escalateReason: `auto-merge gate hard-blocked: ${gate.blockers.join(", ")}`,
+    };
+  }
+  // transient (CI not green yet): leave the PR open for a later merge.
+  return { merged: false };
+}
+
+/** Gather the consensus + human-override approval facts for the merge gate. */
+function gatherApproval(
+  db: Parameters<Parameters<typeof withManagedDb>[1]>[0],
+  runId: string,
+): { consensus: MergeGateConsensus | null; humanApproved: boolean } {
+  const active = new ReviewConsensusRepository(db).findActive(runId);
+  let consensus: MergeGateConsensus | null = null;
+  if (active !== null) {
+    const summary = JSON.parse(active.summaryJson) as ConsensusSummary;
+    const requirements = Array.isArray(summary.requirements) ? summary.requirements : [];
+    consensus = {
+      status: active.status,
+      // latest-proposal mode has no requirements → no quorum to satisfy.
+      quorumSatisfied: requirements.every((r) => r.quorumMet),
+    };
+  }
+  const override = new ReviewOverridesRepository(db).findLatest(runId);
+  return { consensus, humanApproved: override?.decision === "approved" };
 }
