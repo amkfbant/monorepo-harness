@@ -27,6 +27,24 @@ function writeReviewedGh(): string {
   return bin;
 }
 
+/** A fake `gh` whose `pr view --json reviews` reports no reviews (pending). */
+function writePendingGh(): string {
+  const dir = mkdtempSync(join(tmpdir(), "harness-fake-gh-"));
+  const bin = join(dir, "gh");
+  const script = [
+    "#!/bin/sh",
+    'if [ "$1" = "api" ]; then exit 0; fi',
+    'if [ "$1" = "pr" ] && [ "$2" = "view" ]; then',
+    `  printf '{"reviews":[]}'`,
+    "  exit 0",
+    "fi",
+    "exit 1",
+  ].join("\n");
+  writeFileSync(bin, `${script}\n`);
+  execFileSync("chmod", ["+x", bin]);
+  return bin;
+}
+
 /** Initialise an empty harness root with a migrated DB. */
 function initRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "harness-root-"));
@@ -80,6 +98,32 @@ describe("harness pr request-review", () => {
       .get() as { status: string } | undefined;
     db.close();
     expect(row?.status).toBe("succeeded");
+  });
+
+  it("exits 0 and reports skipped (pending review timed out), recording pending", () => {
+    const root = initRoot();
+    const gh = writePendingGh();
+    const r = runCli(root, gh, [
+      "pr",
+      "request-review",
+      "55",
+      "--repo",
+      tmpdir(),
+      "--poll-interval",
+      "0",
+      "--timeout",
+      "0",
+    ]);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/copilot-review=skipped/);
+    const db = new Database(harnessPaths(root).dbPath);
+    const row = db
+      .prepare(
+        "SELECT status FROM operations WHERE operation_type = 'copilot-review'",
+      )
+      .get() as { status: string } | undefined;
+    db.close();
+    expect(row?.status).toBe("pending");
   });
 
   it("exits 2 on an invalid --timeout (NaN guard)", () => {
