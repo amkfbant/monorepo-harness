@@ -130,11 +130,19 @@ export function dbConsensusSnapshotProvider(
         // JSON.parse throws on a corrupted summary → propagates to the
         // caller, which escalates (fail-closed).
         const summary = JSON.parse(row.summaryJson) as ConsensusSummary;
+        // A malformed summary (requirements is not an array) is corruption →
+        // fail-closed (throw → escalate), NOT silently skipped.
+        if (!Array.isArray(summary.requirements)) {
+          throw new Error(
+            `malformed review_consensus.summary (requirements not an array) for ${row.runId}#${row.consensusId}`,
+          );
+        }
         // Stall detection applies only to consensus-mode evaluations. A
-        // latest-proposal row (no requirements) is a decisive single-reviewer
-        // verdict handled by the normal convergence / rerun loop — feeding it
-        // here would falsely stall on repeated changes_requested verdicts.
-        if (!Array.isArray(summary.requirements) || summary.requirements.length === 0) {
+        // latest-proposal row (an empty requirements array) is a decisive
+        // single-reviewer verdict handled by the normal convergence / rerun
+        // loop — feeding it here would falsely stall on repeated
+        // changes_requested verdicts.
+        if (summary.requirements.length === 0) {
           continue;
         }
         const sortMs = Date.parse(row.evaluatedAt);

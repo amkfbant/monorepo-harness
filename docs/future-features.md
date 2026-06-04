@@ -3,6 +3,27 @@
 Ideas recorded for later implementation. Each entry is a sketch, not an approved
 design — run it through brainstorming → spec → plan when picked up.
 
+## Transactional run-status guard on `review auto` proposal insert
+
+**What:** Move the `runs.status = 'needs_review'` (and `source_mode = 'db-first'`)
+pre-check in `reviewer-agent.ts` *into* the same transaction as
+`ReviewProposalRepository.insertProposal`, so a proposal cannot be inserted on a
+run that a concurrent `review process` promoted between the pre-check and the
+insert.
+
+**Why it is a follow-up (not a Phase 2 regression):** the pre-check is
+pre-existing (the Phase 9 "P1-4 status guard") and the residual TOCTOU affects
+the shared `insertProposal` path — both the default latest-proposal flow and
+consensus mode. The worst case is a soon-to-be-ignored active proposal lingering
+on an already-promoted run (no corruption, no safety-boundary breach). Closing it
+means adding a transactional status re-read to the shared review-hot-path insert,
+which is broader than Phase 2 and should be done deliberately with its own tests
+for the default flow. Flagged by the Phase 2 round-5 review; recorded 2026-06.
+
+**How (sketch):** add an optional guard to `insertProposal` (or a guarded
+wrapper) that, inside its `tx.immediate()`, re-reads the run's status/source_mode
+and throws `ReviewerAgentGateError` when it is not `db-first && needs_review`.
+
 ## Multi-reviewer consensus orchestration (drive the stall trigger)
 
 **What:** Let `harness goal orchestrate` drive **multiple reviewers** per review

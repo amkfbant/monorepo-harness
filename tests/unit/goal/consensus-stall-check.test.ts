@@ -229,6 +229,51 @@ describe("evaluateConsensusStallForGoal (Phase 2-3)", () => {
     }
   });
 
+  it("fail-closed: a malformed consensus summary (requirements not an array) escalates", () => {
+    const { db, goals } = fresh();
+    try {
+      goals.createSession({
+        goalId: "goal-malformed",
+        title: "Goal malformed",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      seedReviewCycle(goals, "goal-malformed", "run-1");
+      seedRun(db, "run-1");
+      new ReviewConsensusRepository(db).insertActive({
+        runId: "run-1",
+        ruleSha256: "sha",
+        status: "pending",
+        // requirements deliberately not an array → corruption.
+        summary: {
+          evaluatedAt: "2026-06-05T09:00:00Z",
+          ruleSha256: "sha",
+          proposals: [],
+          override: null,
+          excludedProposals: [],
+          requirements: null as unknown as [],
+          decisionPath: "requirements-pending",
+        },
+        evaluatedAt: "2026-06-05T09:00:00Z",
+        evaluatedBy: "test",
+        sourceProposalIds: [],
+      });
+
+      const result = evaluateConsensusStallForGoal({
+        repository: goals,
+        goalId: "goal-malformed",
+        provider: dbConsensusSnapshotProvider(db),
+        createdBy: "test",
+      });
+
+      expect(result.stalled).toBe(true);
+      expect(result.reason).toContain("unreadable");
+      expect(goals.requireSession("goal-malformed").status).toBe("escalated");
+    } finally {
+      db.close();
+    }
+  });
+
   it("fail-closed: provider failure escalates the goal", () => {
     const { db, goals } = fresh();
     try {
