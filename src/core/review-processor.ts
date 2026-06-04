@@ -22,6 +22,7 @@ import {
 import { ReviewerRepository } from "../db/repositories/reviewers.js";
 import {
   evaluateConsensus,
+  type ConsensusStatus,
   type EnrichedProposal,
 } from "./review-consensus.js";
 import { activeProposalRows, enrichRows } from "./consensus-enrichment.js";
@@ -165,71 +166,74 @@ function processConsensusModePath(
   rule: ReviewRule,
   ruleSha: string,
 ): ProcessResult {
-  const row = db
-    .prepare("SELECT domain, status FROM runs WHERE run_id = ?")
-    .get(opts.runId) as { domain: string; status: string } | undefined;
-  if (row === undefined) {
-    throw new ReviewGateError(`run ${opts.runId} not found in the DB`);
-  }
-  if (row.status !== "needs_review") {
-    throw new ReviewGateError(
-      `run ${opts.runId} status is "${row.status}", only needs_review can be processed`,
-    );
-  }
-
   const proposalRepo = new ReviewProposalRepository(db);
   const reviewerRepo = new ReviewerRepository(db);
-  const rows = activeProposalRows(proposalRepo, opts.runId);
-  if (rows.length === 0) {
-    throw new ReviewGateError(
-      `no active review proposals to evaluate for ${opts.runId}; run \`review auto\` first`,
-    );
-  }
-  const reviewedAt = (opts.now ?? new Date()).toISOString();
-  const result = evaluateConsensus({
-    rule,
-    ruleSha256: ruleSha,
-    proposals: enrichRows(rows, reviewerRepo),
-    evaluatedAt: reviewedAt,
-  });
-  if (result.status === "pending") {
-    // fail-closed: consensus is not satisfied yet (quorum/requirements
-    // pending). Do NOT promote the run on a partial set of approvals.
-    throw new ReviewGateError(
-      `consensus not yet satisfied for ${opts.runId} (${result.summary.decisionPath})`,
-    );
-  }
-
-  const decision = result.status;
-  // Only proposals that actually fed the consensus (stale ones were dropped
-  // by evaluateConsensus) drive the decision, audit ids, and processing.
-  const includedIds = new Set(result.summary.proposals.map((p) => p.proposalId));
-  const includedRows = rows.filter((r) => includedIds.has(r.proposalId));
-  // Required changes feed rerun; aggregate them from the included proposals
-  // that did not approve (deduplicated, order-stable).
-  const requiredChanges = dedupeStrings(
-    includedRows
-      .filter((r) => r.decision !== "approved")
-      .flatMap((r) => r.requiredChanges),
-  );
-  const decisionYaml = serializeReviewDecision({
-    runId: opts.runId,
-    domain: row.domain,
-    decision,
-    required_changes: requiredChanges,
-    non_blocking_comments: [],
-    out_of_scope_suggestions: [],
-    reviewer: "consensus",
-    reviewed_at: reviewedAt,
-  });
-  // The consensus row insert, run promotion, and marking every included
-  // proposal processed all run in ONE transaction (nested better-sqlite3
-  // transactions compose as savepoints): a proposal that went stale between
-  // the evaluation and this write aborts the whole unit, so neither the run
-  // nor the active consensus row is left in a half-applied state.
   const consensusRepo = new ReviewConsensusRepository(db);
   const runRepo = new RunRepository(db);
-  const promote = db.transaction(() => {
+  const reviewedAt = (opts.now ?? new Date()).toISOString();
+
+  // The ENTIRE gate — read the run, snapshot all active proposals, evaluate
+  // consensus, then (only if decisive) insert the consensus row, promote the
+  // run, and mark the included proposals processed — runs in ONE immediate
+  // transaction. The IMMEDIATE write lock makes the evaluation snapshot
+  // consistent with the promotion: a concurrent `review auto` cannot slip a
+  // blocking proposal in between the evaluation and the write, so the run is
+  // never promoted on a stale subset of proposals. A `pending` consensus (or
+  // missing run / proposals) throws, which rolls the transaction back with no
+  // side effect (fail-closed).
+  const gate = db.transaction((): { decision: ConsensusStatus; includedCount: number; decisionPath: string } => {
+    const row = db
+      .prepare("SELECT domain, status FROM runs WHERE run_id = ?")
+      .get(opts.runId) as { domain: string; status: string } | undefined;
+    if (row === undefined) {
+      throw new ReviewGateError(`run ${opts.runId} not found in the DB`);
+    }
+    if (row.status !== "needs_review") {
+      throw new ReviewGateError(
+        `run ${opts.runId} status is "${row.status}", only needs_review can be processed`,
+      );
+    }
+    const rows = activeProposalRows(proposalRepo, opts.runId);
+    if (rows.length === 0) {
+      throw new ReviewGateError(
+        `no active review proposals to evaluate for ${opts.runId}; run \`review auto\` first`,
+      );
+    }
+    const result = evaluateConsensus({
+      rule,
+      ruleSha256: ruleSha,
+      proposals: enrichRows(rows, reviewerRepo),
+      evaluatedAt: reviewedAt,
+    });
+    if (result.status === "pending") {
+      // fail-closed: consensus is not satisfied yet (quorum/requirements
+      // pending). Do NOT promote the run on a partial set of approvals.
+      throw new ReviewGateError(
+        `consensus not yet satisfied for ${opts.runId} (${result.summary.decisionPath})`,
+      );
+    }
+    const decision = result.status;
+    // Only proposals that actually fed the consensus (stale ones were dropped
+    // by evaluateConsensus) drive the decision, audit ids, and processing.
+    const includedIds = new Set(result.summary.proposals.map((p) => p.proposalId));
+    const includedRows = rows.filter((r) => includedIds.has(r.proposalId));
+    // Required changes feed rerun; aggregate them from the included proposals
+    // that did not approve (deduplicated, order-stable).
+    const requiredChanges = dedupeStrings(
+      includedRows
+        .filter((r) => r.decision !== "approved")
+        .flatMap((r) => r.requiredChanges),
+    );
+    const decisionYaml = serializeReviewDecision({
+      runId: opts.runId,
+      domain: row.domain,
+      decision,
+      required_changes: requiredChanges,
+      non_blocking_comments: [],
+      out_of_scope_suggestions: [],
+      reviewer: "consensus",
+      reviewed_at: reviewedAt,
+    });
     const consensusRow = consensusRepo.insertActive({
       runId: opts.runId,
       ruleSha256: ruleSha,
@@ -250,18 +254,24 @@ function processConsensusModePath(
       proposalsSummaryJson: consensusRow.summaryJson,
       markProposalsProcessed: includedRows.map((r) => r.proposalId),
     });
+    return {
+      decision,
+      includedCount: includedRows.length,
+      decisionPath: result.summary.decisionPath,
+    };
   });
-  promote.immediate();
+  const outcome = gate.immediate();
+
   warnIfExportFailed(exportRun(db, opts.runId, { runsDir: opts.runsDir }));
   return {
     runId: opts.runId,
     previousStatus: "needs_review",
-    newStatus: decision as RunStatus,
+    newStatus: outcome.decision as RunStatus,
     reviewer: "consensus",
     reviewedAt,
     warnings: [
-      `consensus decision over ${includedRows.length} proposal(s) ` +
-        `(${result.summary.decisionPath})`,
+      `consensus decision over ${outcome.includedCount} proposal(s) ` +
+        `(${outcome.decisionPath})`,
     ],
   };
 }
