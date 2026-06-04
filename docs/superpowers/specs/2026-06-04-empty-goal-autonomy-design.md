@@ -3,7 +3,7 @@
 **Date:** 2026-06-04
 **Phase:** 21.1 (follow-up to Phase 21 autonomous goal orchestration)
 **Depends on:** Phase 19 (goal convergence), Phase 21 (orchestrator)
-**Status:** design approved, pending implementation plan
+**Status:** implemented (ConvergenceService first-run branch; orchestrator drives the initial run from an empty goal)
 
 ## Goal
 

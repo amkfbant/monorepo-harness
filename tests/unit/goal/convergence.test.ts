@@ -98,10 +98,24 @@ describe("ConvergenceService", () => {
     }
   });
 
+  it("a fresh goal with no coding attempts needs its first run", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo);
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("needs_fix");
+      expect(result.recommendedNextAction.kind).toBe("fix_findings");
+      expect(result.reason).toBe("no implementation attempt yet");
+    } finally {
+      db.close();
+    }
+  });
+
   it("does not close_ready goals with no close conditions by default", () => {
     const { db, repo, service } = fresh();
     try {
       createGoal(repo, { closeConditions: [] });
+      repo.createAttempt({ goalId: "goal-test", attemptType: "implement" });
       const result = service.evaluate("goal-test");
       expect(result.decision).toBe("continue");
       expect(result.metrics.closeConditionsPending).toBe(1);
@@ -280,6 +294,12 @@ describe("ConvergenceService", () => {
     const { db, repo, service } = fresh();
     try {
       createGoal(repo);
+      repo.createAttempt({
+        goalId: "goal-test",
+        attemptType: "implement",
+        createdAt: "2026-05-24T00:00:00.000Z",
+        startedAt: "2026-05-24T00:00:00.000Z",
+      });
       const finding = addFinding(repo, {
         scopeStatus: "in_scope",
         severity: "P1",

@@ -137,6 +137,14 @@ describe("MCP goal tools", () => {
     expect(startedOperation.data.operation.metadata.goalId).toBe(goalId);
     expect(startedOperation.data.operation.metadata.goal_id).toBe(goalId);
 
+    // a coding pass has already run; convergence reflects post-run behavior.
+    withDb(root, (db) => {
+      new GoalRepository(db).createAttempt({
+        goalId,
+        attemptType: "implement",
+      });
+    });
+
     const recorded = await callTool(s, "harness.goal.record_findings", {
       goalId,
       findings: [
@@ -640,6 +648,13 @@ describe("MCP goal tools", () => {
       idempotencyKey: "goal-empty-close-start",
     });
     const goalId = started.data.result.goalId as string;
+    // a coding pass has already run; convergence reflects post-run behavior.
+    withDb(root, (db) => {
+      new GoalRepository(db).createAttempt({
+        goalId,
+        attemptType: "implement",
+      });
+    });
 
     const pending = await callTool(s, "harness.goal.close", {
       goalId,
