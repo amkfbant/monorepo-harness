@@ -128,9 +128,12 @@ describe("renderDashboardHtml", () => {
       expect(html).toMatch(/<option value="workspace">/);
       expect(html).toMatch(/<option value="run">/);
       expect(html).toMatch(/<option value="all">/);
-      // review actions are confirmed too (non-dry-run): the review post is
-      // dispatched as destructive (true), like the other state-changing ops.
-      expect(html).toMatch(/\/review",\{decision:act\.slice\(7\)\},true\)/);
+      // review actions apply the clicked decision as an audited override on
+      // non-dry-run (the backend ignores the body decision otherwise), and the
+      // reason prompt serves as the confirmation.
+      expect(html).toMatch(/body\.override=\{reason:reason\}/);
+      expect(html).toMatch(/window\.prompt\(/);
+      expect(html).toMatch(/decision:decision/);
     });
 
     it("escapes the CSRF token and run/backlog ids in the mutation UI", () => {

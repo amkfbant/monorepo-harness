@@ -293,7 +293,18 @@ const MUTATION_SCRIPT = `
   document.addEventListener("click",function(ev){
     var b=ev.target.closest&&ev.target.closest("button[data-act]");if(!b){return;}
     var run=b.getAttribute("data-run-id");var item=b.getAttribute("data-item-id");var act=b.getAttribute("data-act");
-    if(act.indexOf("review-")===0){post("/api/runs/"+encodeURIComponent(run)+"/review",{decision:act.slice(7)},true);}
+    if(act.indexOf("review-")===0){
+      var decision=act.slice(7);var body={decision:decision};
+      if(!dry()){
+        // Apply the CLICKED decision as an audited human override (the backend
+        // otherwise promotes whatever the stored proposal says, ignoring the
+        // button). The reason prompt also serves as the confirmation.
+        var reason=window.prompt('Apply review "'+decision+'" to '+run+' as an override? Enter an audited reason:');
+        if(!reason){return;}
+        body.override={reason:reason};
+      }
+      post("/api/runs/"+encodeURIComponent(run)+"/review",body,false);
+    }
     else if(act==="cleanup"){var sel=b.parentElement?b.parentElement.querySelector("select.mut-scope"):null;var scope=sel?sel.value:"workspace";post("/api/runs/"+encodeURIComponent(run)+"/cleanup",{confirm:"cleanup",scope:scope},true);}
     else if(act==="pr"){post("/api/runs/"+encodeURIComponent(run)+"/pr",{confirm:"create-pr"},true);}
     else if(act==="rerun"){post("/api/runs/"+encodeURIComponent(run)+"/rerun",{},true);}

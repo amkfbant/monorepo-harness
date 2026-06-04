@@ -193,8 +193,9 @@ function isCheckGreen(check: unknown): boolean {
 
 /**
  * Read the PR's merged state + head commit in one `gh pr view`. A timeout
- * fails loudly (never swallowed); a malformed payload yields a null headSha,
- * which the merger treats as fail-closed.
+ * fails loudly (never swallowed). A malformed/unparseable payload also throws:
+ * for a destructive merge we must not proceed on an unknown PR state, so the
+ * caller (the merger) escalates rather than attempting a merge (fail-closed).
  */
 async function viewPr(
   ghBin: string,
@@ -207,22 +208,21 @@ async function viewPr(
     inputs.repoDir,
     timeoutMs,
   );
+  let parsed: { state?: unknown; mergedAt?: unknown; headRefOid?: unknown };
   try {
-    const parsed = JSON.parse(out.trim() || "{}") as {
-      state?: unknown;
-      mergedAt?: unknown;
-      headRefOid?: unknown;
-    };
-    const merged =
-      parsed.state === "MERGED" || typeof parsed.mergedAt === "string";
-    const headSha =
-      typeof parsed.headRefOid === "string" && parsed.headRefOid !== ""
-        ? parsed.headRefOid
-        : null;
-    return { merged, headSha };
+    parsed = JSON.parse(out.trim() || "{}");
   } catch {
-    return { merged: false, headSha: null };
+    throw new PrGateError(
+      `could not parse \`gh pr view\` output for PR #${inputs.prNumber}; ` +
+        `refusing to act on an unknown PR state`,
+    );
   }
+  const merged = parsed.state === "MERGED" || typeof parsed.mergedAt === "string";
+  const headSha =
+    typeof parsed.headRefOid === "string" && parsed.headRefOid !== ""
+      ? parsed.headRefOid
+      : null;
+  return { merged, headSha };
 }
 
 /**

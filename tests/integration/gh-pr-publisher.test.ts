@@ -119,6 +119,34 @@ describe("gh PR merger (Phase 3-2)", () => {
       merger.merge({ repoDir: tmpdir(), prNumber: 1, method: "squash", expectedHeadSha: "x" }),
     ).rejects.toThrow(/timed out/);
   });
+
+  it("fail-closed: a malformed `gh pr view` payload aborts the merge (does not proceed)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "harness-fake-gh-"));
+    const bin = join(dir, "gh");
+    writeFileSync(
+      bin,
+      [
+        "#!/bin/sh",
+        'if [ "$1" = "pr" ] && [ "$2" = "view" ]; then',
+        // warnings mixed into stdout → unparseable as JSON.
+        '  printf \'warning: something\\n{not json\'',
+        "  exit 0",
+        "fi",
+        'if [ "$1" = "pr" ] && [ "$2" = "merge" ]; then',
+        `  echo "$@" > "${dir}/merge-called"`,
+        "  exit 0",
+        "fi",
+        "exit 1",
+        "",
+      ].join("\n"),
+    );
+    execFileSync("chmod", ["+x", bin]);
+    const merger = createGhPrMerger(bin, 5_000);
+    await expect(
+      merger.merge({ repoDir: tmpdir(), prNumber: 5, method: "squash", expectedHeadSha: "sha" }),
+    ).rejects.toThrow(/unknown PR state/);
+    expect(existsSync(join(dir, "merge-called"))).toBe(false);
+  });
 });
 
 /** A fake `gh` whose `pr view --json headRefOid,statusCheckRollup` returns the
