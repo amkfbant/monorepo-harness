@@ -27,7 +27,7 @@ function writeFakeGh(state: "OPEN" | "MERGED"): { bin: string; dir: string } {
   const script = [
     "#!/bin/sh",
     'if [ "$1" = "pr" ] && [ "$2" = "view" ]; then',
-    `  printf '{"state":"${state}","mergedAt":${state === "MERGED" ? '"2026-06-05T00:00:00Z"' : "null"}}'`,
+    `  printf '{"state":"${state}","mergedAt":${state === "MERGED" ? '"2026-06-05T00:00:00Z"' : "null"},"headRefOid":"abc123sha"}'`,
     "  exit 0",
     "fi",
     'if [ "$1" = "pr" ] && [ "$2" = "merge" ]; then',
@@ -66,7 +66,36 @@ describe("gh PR merger (Phase 3-2)", () => {
     const r = await merger.merge({ repoDir: tmpdir(), prNumber: 42, method: "squash" });
     expect(r).toEqual({ merged: true, alreadyMerged: false });
     const called = readFileSync(join(dir, "merge-called"), "utf8");
-    expect(called).toContain("pr merge 42 --squash");
+    // the merge is pinned to the head commit observed via `gh pr view`.
+    expect(called).toContain("pr merge 42 --match-head-commit abc123sha --squash");
+  });
+
+  it("fail-closed: refuses to merge when the head commit cannot be determined", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "harness-fake-gh-"));
+    const bin = join(dir, "gh");
+    writeFileSync(
+      bin,
+      [
+        "#!/bin/sh",
+        // pr view returns no headRefOid → cannot pin → must refuse.
+        'if [ "$1" = "pr" ] && [ "$2" = "view" ]; then',
+        '  printf \'{"state":"OPEN","mergedAt":null}\'',
+        "  exit 0",
+        "fi",
+        'if [ "$1" = "pr" ] && [ "$2" = "merge" ]; then',
+        `  echo "$@" > "${dir}/merge-called"`,
+        "  exit 0",
+        "fi",
+        "exit 1",
+        "",
+      ].join("\n"),
+    );
+    execFileSync("chmod", ["+x", bin]);
+    const merger = createGhPrMerger(bin, 5_000);
+    await expect(
+      merger.merge({ repoDir: tmpdir(), prNumber: 9, method: "squash" }),
+    ).rejects.toThrow(/head commit/);
+    expect(existsSync(join(dir, "merge-called"))).toBe(false);
   });
 
   it("is idempotent: an already-merged PR is a no-op (no second merge)", async () => {

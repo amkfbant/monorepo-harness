@@ -374,6 +374,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
     goalId: string;
     ciGreen: boolean;
     merger: PrMerger;
+    headSha?: (prNumber: number) => Promise<string | null>;
   }) {
     const { coderRunner, reviewerRunner } = approveFakes();
     const resolveRunContext = (): GoalRunContext => ({
@@ -394,6 +395,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
       autoMerge: {
         merger: opts.merger,
         ciStatus: async () => opts.ciGreen,
+        ...(opts.headSha !== undefined ? { headSha: opts.headSha } : {}),
       },
     });
     return new GoalOrchestrator({ dbPath: f.dbPath }).run({
@@ -425,6 +427,32 @@ describe("goal orchestrate (real git + fake codex)", () => {
     } finally {
       close();
     }
+  });
+
+  it("auto-merge: pins the merge to the captured head commit", async () => {
+    const goalId = createGoal(f.dbPath, "goal-merge-pin");
+    const merger = fakeMerger("ok");
+    const result = await driveWithAutoMerge({
+      goalId,
+      ciGreen: true,
+      merger,
+      headSha: async () => "deadbeefsha",
+    });
+    expect(result.outcome).toBe("merged");
+    expect(merger.calls[0]?.expectedHeadSha).toBe("deadbeefsha");
+  });
+
+  it("auto-merge: escalates fail-closed when the head commit cannot be determined", async () => {
+    const goalId = createGoal(f.dbPath, "goal-merge-nohead");
+    const merger = fakeMerger("ok");
+    const result = await driveWithAutoMerge({
+      goalId,
+      ciGreen: true,
+      merger,
+      headSha: async () => null,
+    });
+    expect(result.outcome).toBe("escalated");
+    expect(merger.calls).toHaveLength(0);
   });
 
   it("auto-merge: leaves the PR open (pr_created, no merge) when CI is not green", async () => {

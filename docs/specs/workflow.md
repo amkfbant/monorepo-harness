@@ -725,8 +725,12 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
   と transient（`ci_not_green`）に分かれる。
 - **closeAndPr の分岐**（`src/goal/orchestrator-runners.ts`）: PR 作成後、
   `deps.autoMerge` があれば gate を評価し
-  - `canMerge` → `gh pr merge --<method>`（idempotent: 既マージ検出）で merge、
-    operation audit（`operations`, type=`merge`）に記録、outcome **`merged`**。
+  - `canMerge` → `gh pr merge --match-head-commit <sha> --<method>`（idempotent:
+    既マージ検出、**head commit に pin**: CI 判定前に取得した head SHA に固定し
+    head が動けば拒否→escalate）で merge、operation audit（`operations`,
+    type=`merge`）に記録、outcome **`merged`**。auto-merge 有効時は PR を
+    **non-draft** で作成（draft は merge 不可）。CI 判定は `gh pr checks --required`
+    （required checks のみ、不確定は fail-closed）。
   - `hardBlocked` → **merge せず escalate**（fail-closed、goal は `escalated`）。
   - transient（CI 未 green）→ merge せず PR を残す（outcome `pr_created`）。
   - merge コマンド失敗 → 例外で escalate（audit は `failed`）。

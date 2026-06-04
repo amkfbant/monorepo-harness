@@ -103,6 +103,12 @@ export interface OrchestratorRunnerDeps {
     merger: PrMerger;
     /** Returns whether the PR's required checks are green. */
     ciStatus: (prNumber: number) => Promise<boolean>;
+    /**
+     * Returns the PR head commit SHA. Captured before the CI check so CI and
+     * the merge pin reference the same commit; null fails closed (escalate).
+     * Omitted (e.g. tests) → the merger pins to the head it observes itself.
+     */
+    headSha?: (prNumber: number) => Promise<string | null>;
     method?: PrMergeMethod;
   };
   /**
@@ -423,7 +429,10 @@ export function createOrchestratorRunners(
         locksDir: paths.locksDir,
         runId,
         base,
-        draft: true,
+        // A draft PR cannot be merged; when auto-merge is enabled the PR must be
+        // ready so `gh pr merge` can complete. Otherwise keep the safe default
+        // (draft) so a human opens it.
+        draft: deps.autoMerge === undefined,
         publisher: deps.publisher,
         dbPath: deps.dbPath,
       });
@@ -471,12 +480,30 @@ async function runAutoMerge(
   prNumber: number,
 ): Promise<{ merged: boolean; escalateReason?: string }> {
   const autoMerge = deps.autoMerge!;
+  // Capture the head commit BEFORE the CI check so CI and the merge pin
+  // reference the same commit. A null head fails closed (cannot pin → escalate).
+  let expectedHeadSha: string | undefined;
+  if (autoMerge.headSha !== undefined) {
+    const sha = await autoMerge.headSha(prNumber);
+    if (sha === null) {
+      return {
+        merged: false,
+        escalateReason: `auto-merge: could not determine PR #${prNumber} head commit`,
+      };
+    }
+    expectedHeadSha = sha;
+  }
   const ciGreen = await autoMerge.ciStatus(prNumber);
   const gate = withManagedDb({ dbPath: deps.dbPath }, (db) => {
+    const repo = new GoalRepository(db);
+    // Re-evaluate close-readiness at merge time from the DB facts — a finding
+    // or close-check could have changed since the PR was created.
+    const closeReady =
+      new ConvergenceService(repo).evaluate(goalId).decision === "close_ready";
     const { consensus, humanApproved } = gatherApproval(db, runId);
     return evaluateMergeGate({
       autoMergeEnabled: true,
-      closeReady: true, // closeAndPr only runs on a re-verified close_ready goal
+      closeReady,
       consensus,
       humanApproved,
       ciGreen,
@@ -499,7 +526,12 @@ async function runAutoMerge(
     });
     void startedOk;
     try {
-      const result = await autoMerge.merger.merge({ repoDir: repoPath, prNumber, method });
+      const result = await autoMerge.merger.merge({
+        repoDir: repoPath,
+        prNumber,
+        method,
+        ...(expectedHeadSha !== undefined ? { expectedHeadSha } : {}),
+      });
       withManagedDb({ dbPath: deps.dbPath }, (db) => {
         succeedOperation(db, operationId, result);
       });

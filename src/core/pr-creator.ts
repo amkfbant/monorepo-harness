@@ -56,6 +56,13 @@ export interface PrMergeInputs {
   repoDir: string;
   prNumber: number;
   method: PrMergeMethod;
+  /**
+   * Phase 3 safety: pin the merge to this head commit. When set, the merge
+   * must target exactly this SHA (the reviewed / CI-checked commit) and is
+   * refused if the PR head moved. When omitted, the merger pins to the head
+   * it observes just before merging.
+   */
+  expectedHeadSha?: string;
 }
 
 export interface PrMergeResult {

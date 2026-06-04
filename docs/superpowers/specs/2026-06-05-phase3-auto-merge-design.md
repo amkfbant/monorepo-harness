@@ -71,14 +71,25 @@ export interface PrMerger { merge(inputs: PrMergeInputs): Promise<PrMergeResult>
 ```
 
 `createGhPrMerger(ghBin, timeoutMs)`:
-- idempotency: 先に `gh pr view <n> --json state,mergedAt` で **既マージ検出**
-  → merged なら `{ merged:true, alreadyMerged:true }`（再 merge しない）。
-- `gh pr merge <n> --squash`（method 指定）。timeout / 子プロセス例外（EPIPE 等）は
-  既存 `runGh`（spawn + SIGKILL timeout）で握る。timeout は `GhTimeoutError` で
-  loud に失敗（idempotency lookup で握り潰さない）。
+- idempotency: 先に `gh pr view <n> --json state,mergedAt,headRefOid` で
+  **既マージ検出** → merged なら `{ merged:true, alreadyMerged:true }`（再 merge
+  しない）。
+- **head SHA pin（安全境界・P0）**: merge は `gh pr merge <n> --match-head-commit
+  <sha> --<method>` で **head commit に固定**する。`expectedHeadSha`（CI 判定前に
+  wiring が `gh pr view --json headRefOid` で取得）を優先し、無ければ merger が
+  観測した head を使う。head が pin SHA から動いていれば `gh` が merge を拒否
+  → 例外 → escalate（fail-closed）。head SHA を決定できなければ merge しない。
+- timeout / 子プロセス例外（EPIPE 等）は既存 `runGh`（spawn + SIGKILL timeout）で
+  握る。timeout は `GhTimeoutError` で loud に失敗。
 
-CI green を gate に使う場合の取得は wiring 側（`gh pr checks <n>`）。merge wrapper
-自体は CI を見ない（gate が許可した時のみ呼ばれる）。
+CI green は wiring 側 `createGhCiStatus`（`gh pr checks <n> --required`、**required
+checks のみ**）。不確定（pending/失敗/timeout/error）は false=fail-closed。wiring は
+**CI 判定前に head SHA を 1 度取得**し、それを CI 判定と merge pin の両方に紐づける
+（CI 検証した commit と merge 対象 commit を一致させる）。merge wrapper 自体は CI を
+見ない。
+
+auto-merge opt-in 時は PR を **non-draft で作成**する（draft PR は merge 不可）。
+通常（auto-merge OFF）は従来どおり draft。
 
 ## 3-3 orchestrator runner / CLI 統合
 

@@ -91,13 +91,33 @@ export function createGhPrMerger(
 ): PrMerger {
   return {
     async merge(inputs: PrMergeInputs): Promise<PrMergeResult> {
+      const view = await viewPr(ghBin, inputs, timeoutMs);
       // idempotency: never attempt a second merge on an already-merged PR.
-      if (await isAlreadyMerged(ghBin, inputs, timeoutMs)) {
+      if (view.merged) {
         return { merged: true, alreadyMerged: true };
+      }
+      // Safety boundary: pin the merge to the reviewed / CI-checked commit.
+      // Prefer the caller-supplied expectedHeadSha (captured before the CI
+      // check) so CI and merge target the same commit; otherwise pin to the
+      // head observed here. `gh pr merge --match-head-commit` refuses if the
+      // PR head moved, so an unreviewed commit can never slip in (fail-closed
+      // → caller escalates).
+      const pinSha = inputs.expectedHeadSha ?? view.headSha;
+      if (pinSha === null) {
+        throw new PrGateError(
+          `cannot determine PR #${inputs.prNumber} head commit; refusing to merge without pinning the head`,
+        );
       }
       await runGh(
         ghBin,
-        ["pr", "merge", String(inputs.prNumber), `--${inputs.method}`],
+        [
+          "pr",
+          "merge",
+          String(inputs.prNumber),
+          "--match-head-commit",
+          pinSha,
+          `--${inputs.method}`,
+        ],
         inputs.repoDir,
         timeoutMs,
       );
@@ -107,10 +127,11 @@ export function createGhPrMerger(
 }
 
 /**
- * Phase 3: a CI-green probe for the auto-merge gate, backed by `gh pr checks`
- * (exit 0 == all required checks passed). Fail-closed: ANY failure — pending /
- * failing checks, a timeout, or an error — returns false so the gate does not
- * merge on an uncertain CI status.
+ * Phase 3: a CI-green probe for the auto-merge gate, backed by `gh pr checks
+ * --required` (exit 0 == all REQUIRED checks passed; optional/neutral checks
+ * are ignored so they do not permanently block merge). Fail-closed: ANY
+ * failure — pending / failing required checks, a timeout, or an error —
+ * returns false so the gate does not merge on an uncertain CI status.
  */
 export function createGhCiStatus(
   repoDir: string,
@@ -121,7 +142,7 @@ export function createGhCiStatus(
     try {
       await runGh(
         ghBin,
-        ["pr", "checks", String(prNumber)],
+        ["pr", "checks", String(prNumber), "--required"],
         repoDir,
         timeoutMs,
       );
@@ -133,35 +154,56 @@ export function createGhCiStatus(
 }
 
 /**
- * Returns true when the PR is already MERGED. A timeout fails loudly; any
- * other lookup failure returns false so the caller surfaces a real error from
- * the merge attempt itself.
+ * Phase 3: a probe that returns the PR's current head commit SHA (or null on
+ * any failure). The auto-merge wiring captures this BEFORE the CI check so the
+ * CI judgement and the merge pin reference the same commit.
  */
-async function isAlreadyMerged(
+export function createGhPrHead(
+  repoDir: string,
+  ghBin = "gh",
+  timeoutMs = DEFAULT_GH_TIMEOUT_MS,
+): (prNumber: number) => Promise<string | null> {
+  return async (prNumber: number) => {
+    try {
+      const { headSha } = await viewPr(ghBin, { repoDir, prNumber, method: "squash" }, timeoutMs);
+      return headSha;
+    } catch {
+      return null;
+    }
+  };
+}
+
+/**
+ * Read the PR's merged state + head commit in one `gh pr view`. A timeout
+ * fails loudly (never swallowed); a malformed payload yields a null headSha,
+ * which the merger treats as fail-closed.
+ */
+async function viewPr(
   ghBin: string,
   inputs: PrMergeInputs,
   timeoutMs: number,
-): Promise<boolean> {
-  let out: string;
-  try {
-    out = await runGh(
-      ghBin,
-      ["pr", "view", String(inputs.prNumber), "--json", "state,mergedAt"],
-      inputs.repoDir,
-      timeoutMs,
-    );
-  } catch (e) {
-    if (e instanceof GhTimeoutError) throw e;
-    return false;
-  }
+): Promise<{ merged: boolean; headSha: string | null }> {
+  const out = await runGh(
+    ghBin,
+    ["pr", "view", String(inputs.prNumber), "--json", "state,mergedAt,headRefOid"],
+    inputs.repoDir,
+    timeoutMs,
+  );
   try {
     const parsed = JSON.parse(out.trim() || "{}") as {
       state?: unknown;
       mergedAt?: unknown;
+      headRefOid?: unknown;
     };
-    return parsed.state === "MERGED" || typeof parsed.mergedAt === "string";
+    const merged =
+      parsed.state === "MERGED" || typeof parsed.mergedAt === "string";
+    const headSha =
+      typeof parsed.headRefOid === "string" && parsed.headRefOid !== ""
+        ? parsed.headRefOid
+        : null;
+    return { merged, headSha };
   } catch {
-    return false;
+    return { merged: false, headSha: null };
   }
 }
 
