@@ -30,6 +30,27 @@ const DEFAULT_CONFIG: CopilotReviewConfig = {
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Safely stringify an unknown thrown value (a reject is not always an Error). */
+function toErrorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** A unique sentinel resolved when a poll exceeds its remaining time budget. */
+const POLL_DEADLINE = Symbol("poll-deadline");
+
+/**
+ * Reject-free timeout: resolves to {@link POLL_DEADLINE} after `ms`. Uses a raw
+ * `setTimeout` (not the injected `sleep`) so a hanging poll is bounded by wall
+ * time even when `sleep` is a fake clock. The timer is `unref`'d so it never
+ * keeps the process alive.
+ */
+function deadlineAfter(ms: number): Promise<typeof POLL_DEADLINE> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(POLL_DEADLINE), Math.max(0, ms));
+    if (typeof timer.unref === "function") timer.unref();
+  });
+}
+
 /**
  * Best-effort Copilot review orchestration. NEVER throws — always resolves to
  * an outcome. The result is observational only: callers MUST NOT gate any state
@@ -51,63 +72,75 @@ export async function runCopilotReview(input: {
   const sleep = input.sleep ?? defaultSleep;
   const now = input.now ?? (() => Date.now());
 
-  // --- request phase: retry transient errors up to requestAttempts. ---
+  // Final defense: the best-effort contract is that this function NEVER throws.
+  // Any unexpected throw — including from the injected `sleep` / `now`, or the
+  // poll-timeout machinery — degrades to a `failed` outcome instead of escaping.
   let attempts = 0;
-  let lastError = "";
-  let requested = false;
-  while (attempts < config.requestAttempts) {
-    attempts += 1;
-    try {
-      await input.reviewer.request(input.prNumber);
-      requested = true;
-      break;
-    } catch (e) {
-      lastError = (e as Error).message;
-      if (attempts < config.requestAttempts) {
-        await sleep(config.pollIntervalMs);
+  let polls = 0;
+  try {
+    // --- request phase: retry transient errors up to requestAttempts. ---
+    let lastError = "";
+    let requested = false;
+    while (attempts < config.requestAttempts) {
+      attempts += 1;
+      try {
+        await input.reviewer.request(input.prNumber);
+        requested = true;
+        break;
+      } catch (e) {
+        lastError = toErrorMessage(e);
+        if (attempts < config.requestAttempts) {
+          await sleep(config.pollIntervalMs);
+        }
       }
     }
-  }
-  if (!requested) {
+    if (!requested) {
+      return {
+        status: "failed",
+        attempts,
+        polls: 0,
+        detail: `could not request Copilot review after ${attempts} attempts: ${lastError}`,
+      };
+    }
+
+    // --- poll phase: poll until reviewed or the timeout elapses. ---
+    const deadline = now() + config.pollTimeoutMs;
+    const skipped = (): CopilotReviewOutcome => ({
+      status: "skipped",
+      attempts,
+      polls,
+      detail: `Copilot review timed out after ${config.pollTimeoutMs}ms`,
+    });
+    // The first poll happens immediately; subsequent ones after each interval.
+    // The clock is advanced by sleep(); the loop is bounded by the deadline.
+    for (;;) {
+      if (now() >= deadline) return skipped();
+      polls += 1;
+      try {
+        // Bound the poll by the remaining budget so a hanging `poll` cannot blow
+        // past `pollTimeoutMs`. The timeout branch is treated as still-pending.
+        const remainingMs = deadline - now();
+        const result = await Promise.race([
+          input.reviewer.poll(input.prNumber),
+          deadlineAfter(remainingMs),
+        ]);
+        if (result === "reviewed") {
+          return { status: "reviewed", attempts, polls, detail: "Copilot review posted" };
+        }
+        // POLL_DEADLINE or "pending": fall through to the deadline re-check.
+      } catch {
+        // best-effort: a transient poll error is swallowed; keep polling.
+      }
+      if (now() >= deadline) return skipped();
+      await sleep(config.pollIntervalMs);
+      if (now() >= deadline) return skipped();
+    }
+  } catch (e) {
     return {
       status: "failed",
       attempts,
-      polls: 0,
-      detail: `could not request Copilot review after ${attempts} attempts: ${lastError}`,
+      polls,
+      detail: `Copilot review aborted unexpectedly: ${toErrorMessage(e)}`,
     };
-  }
-
-  // --- poll phase: poll until reviewed or the timeout elapses. ---
-  const deadline = now() + config.pollTimeoutMs;
-  let polls = 0;
-  // The first poll happens immediately; subsequent ones after each interval.
-  // The clock is advanced by sleep(); the loop is bounded by the deadline.
-  for (;;) {
-    polls += 1;
-    try {
-      const result = await input.reviewer.poll(input.prNumber);
-      if (result === "reviewed") {
-        return { status: "reviewed", attempts, polls, detail: "Copilot review posted" };
-      }
-    } catch {
-      // best-effort: a transient poll error is swallowed; keep polling.
-    }
-    if (now() >= deadline) {
-      return {
-        status: "skipped",
-        attempts,
-        polls,
-        detail: `Copilot review timed out after ${config.pollTimeoutMs}ms`,
-      };
-    }
-    await sleep(config.pollIntervalMs);
-    if (now() >= deadline) {
-      return {
-        status: "skipped",
-        attempts,
-        polls,
-        detail: `Copilot review timed out after ${config.pollTimeoutMs}ms`,
-      };
-    }
   }
 }

@@ -63,6 +63,12 @@ export function runCopilotReview(input: {
   - timeout 到達（最後の poll も pending）→ `{ status: "skipped", detail: "timed out ..." }`。
 - `poll` の一時エラーは握って次の interval へ（poll は best-effort）。timeout まで継続。
 - `now()` で経過を判定し、最大 `ceil(pollTimeoutMs/pollIntervalMs)` 回程度 poll。
+- `pollTimeoutMs` は **総タイムアウトとして実効化**: 各 `poll` 呼び出しを残り時間
+  （`deadline - now()`）で打ち切る（`setTimeout` ベースの内部 race、`sleep` 注入とは独立）。
+  hang した `poll` でも `pollTimeoutMs` 内に `skipped` へ収束する。
+- never-throw は厳密: 非 Error の reject も安全に文字列化し、本体全体を最終防衛の
+  try/catch で包む。注入された `sleep` / `now` が throw しても `{ status: "failed" }`
+  を返し、関数外へ reject しない。
 
 > `skipped` は「Copilot が時間内にレビューしなかった」= 正常な best-effort 結果。
 > `failed` は「要求自体が確立できなかった」（gh エラー継続）。どちらも非 gating。

@@ -137,4 +137,68 @@ describe("runCopilotReview", () => {
     });
     expect(out.status).toBe("failed");
   });
+
+  it("returns failed (never rejects) when request rejects with a non-Error", async () => {
+    const reviewer: CopilotReviewer = {
+      // eslint-disable-next-line @typescript-eslint/no-throw-literal
+      async request() {
+        // a non-Error reject must not crash the (e as Error).message path.
+        return Promise.reject(null);
+      },
+      async poll() {
+        return "pending";
+      },
+    };
+    const clock = fakeClock(15_000);
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 1,
+      config: { ...config, requestAttempts: 1 },
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    expect(out.status).toBe("failed");
+  });
+
+  it("bounds a hanging poll by pollTimeoutMs and converges to skipped", async () => {
+    // poll never resolves: without a per-poll timeout this would hang forever.
+    const reviewer: CopilotReviewer = {
+      async request() {
+        /* ok */
+      },
+      poll() {
+        return new Promise<never>(() => {
+          /* never resolves */
+        });
+      },
+    };
+    // Use real wall-clock now() with a tiny timeout so the internal
+    // setTimeout-based race fires quickly without depending on the fake clock.
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 1,
+      config: { requestAttempts: 1, pollTimeoutMs: 20, pollIntervalMs: 0 },
+      sleep: async () => {
+        /* no-op: real time advances now() */
+      },
+      now: () => Date.now(),
+    });
+    expect(out.status).toBe("skipped");
+    expect(out.detail).toMatch(/timed out/i);
+  });
+
+  it("never rejects even when the injected sleep throws", async () => {
+    const reviewer = fakeReviewer({ request: ["throw", "throw", "throw"], poll: [] });
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 1,
+      config,
+      // sleep throwing (e.g. a timer error) must not escape the function.
+      sleep: async () => {
+        throw new Error("sleep boom");
+      },
+      now: () => 0,
+    });
+    expect(out.status).toBe("failed");
+  });
 });
