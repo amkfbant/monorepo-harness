@@ -108,16 +108,13 @@ export function createGhPrMerger(
         }
         return { merged: true, alreadyMerged: true };
       }
-      // Safety boundary: pin the merge to the reviewed / CI-checked commit.
-      // Prefer the caller-supplied expectedHeadSha (captured before the CI
-      // check) so CI and merge target the same commit; otherwise pin to the
-      // head observed here. `gh pr merge --match-head-commit` refuses if the
-      // PR head moved, so an unreviewed commit can never slip in (fail-closed
-      // → caller escalates).
-      const pinSha = inputs.expectedHeadSha ?? view.headSha;
-      if (pinSha === null) {
+      // Safety boundary: an open-PR merge MUST be pinned to a caller-supplied
+      // reviewed commit. The primitive refuses to merge without it rather than
+      // falling back to whatever head it observes (which could be unreviewed).
+      // `gh pr merge --match-head-commit` then refuses if the PR head moved.
+      if (inputs.expectedHeadSha === undefined) {
         throw new PrGateError(
-          `cannot determine PR #${inputs.prNumber} head commit; refusing to merge without pinning the head`,
+          `refusing to merge PR #${inputs.prNumber} without an expectedHeadSha (reviewed commit)`,
         );
       }
       await runGh(
@@ -127,7 +124,7 @@ export function createGhPrMerger(
           "merge",
           String(inputs.prNumber),
           "--match-head-commit",
-          pinSha,
+          inputs.expectedHeadSha,
           `--${inputs.method}`,
         ],
         inputs.repoDir,
@@ -141,17 +138,26 @@ export function createGhPrMerger(
 /**
  * Phase 3: a CI-green probe for the auto-merge gate, backed by `gh pr checks
  * --required` (exit 0 == all REQUIRED checks passed; optional/neutral checks
- * are ignored so they do not permanently block merge). Fail-closed: ANY
- * failure — pending / failing required checks, a timeout, or an error —
- * returns false so the gate does not merge on an uncertain CI status.
+ * are ignored so they do not permanently block merge). The probe first
+ * confirms the PR head is still the expected reviewed commit, so a green CI
+ * result is always for that exact commit (not a commit the branch briefly
+ * advanced to). Fail-closed: a head mismatch or ANY failure — pending /
+ * failing required checks, a timeout, an error — returns false so the gate
+ * does not merge on an uncertain CI status.
  */
 export function createGhCiStatus(
   repoDir: string,
   ghBin = "gh",
   timeoutMs = DEFAULT_GH_TIMEOUT_MS,
-): (prNumber: number) => Promise<boolean> {
-  return async (prNumber: number) => {
+): (prNumber: number, expectedHeadSha: string) => Promise<boolean> {
+  return async (prNumber: number, expectedHeadSha: string) => {
     try {
+      const { headSha } = await viewPr(
+        ghBin,
+        { repoDir, prNumber, method: "squash" },
+        timeoutMs,
+      );
+      if (headSha !== expectedHeadSha) return false;
       await runGh(
         ghBin,
         ["pr", "checks", String(prNumber), "--required"],

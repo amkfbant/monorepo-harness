@@ -16,6 +16,7 @@ import {
 } from "../core/pr-creator.js";
 import {
   evaluateMergeGate,
+  quorumSatisfiedFromRequirements,
   type MergeGateConsensus,
 } from "../core/merge-gate.js";
 import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
@@ -101,8 +102,11 @@ export interface OrchestratorRunnerDeps {
    */
   autoMerge?: {
     merger: PrMerger;
-    /** Returns whether the PR's required checks are green. */
-    ciStatus: (prNumber: number) => Promise<boolean>;
+    /**
+     * Returns whether the PR's required checks are green FOR the expected
+     * reviewed commit (a head mismatch returns false → leave the PR open).
+     */
+    ciStatus: (prNumber: number, expectedHeadSha: string) => Promise<boolean>;
     method?: PrMergeMethod;
   };
   /**
@@ -492,7 +496,7 @@ async function runAutoMerge(
     };
   }
   const expectedHeadSha = reviewedHeadSha;
-  const ciGreen = await autoMerge.ciStatus(prNumber);
+  const ciGreen = await autoMerge.ciStatus(prNumber, expectedHeadSha);
   const gate = withManagedDb({ dbPath: deps.dbPath }, (db) => {
     const repo = new GoalRepository(db);
     // Re-evaluate close-readiness at merge time from the DB facts — a finding
@@ -511,7 +515,7 @@ async function runAutoMerge(
   if (gate.canMerge) {
     const method: PrMergeMethod = autoMerge.method ?? "squash";
     const operationId = `op-${randomUUID()}`;
-    const startedOk = withManagedDb({ dbPath: deps.dbPath }, (db) => {
+    withManagedDb({ dbPath: deps.dbPath }, (db) => {
       startOperation(db, {
         operationId,
         operationType: "merge",
@@ -519,17 +523,17 @@ async function runAutoMerge(
         targetId: String(prNumber),
         actor: deps.createdBy,
         dryRun: false,
-        input: { goalId, runId, prNumber, method },
+        // Record the gate snapshot so an auditor can later verify which
+        // reviewed commit was pinned and what the gate saw.
+        input: { goalId, runId, prNumber, method, expectedHeadSha, ciGreen, gate },
       });
-      return true;
     });
-    void startedOk;
     try {
       const result = await autoMerge.merger.merge({
         repoDir: repoPath,
         prNumber,
         method,
-        ...(expectedHeadSha !== undefined ? { expectedHeadSha } : {}),
+        expectedHeadSha,
       });
       withManagedDb({ dbPath: deps.dbPath }, (db) => {
         succeedOperation(db, operationId, result);
@@ -563,14 +567,10 @@ function gatherApproval(
   let consensus: MergeGateConsensus | null = null;
   if (active !== null) {
     const summary = JSON.parse(active.summaryJson) as ConsensusSummary;
-    // fail-open guard: a malformed summary (requirements not an array) must NOT
-    // be treated as latest-proposal (empty requirements). A valid empty array
-    // is latest-proposal (no quorum to satisfy → true); a non-array is
-    // corruption → quorum NOT satisfied (the gate then blocks / needs human).
-    const quorumSatisfied =
-      Array.isArray(summary.requirements) &&
-      summary.requirements.every((r) => r.quorumMet);
-    consensus = { status: active.status, quorumSatisfied };
+    consensus = {
+      status: active.status,
+      quorumSatisfied: quorumSatisfiedFromRequirements(summary.requirements),
+    };
   }
   const override = new ReviewOverridesRepository(db).findLatest(runId);
   return { consensus, humanApproved: override?.decision === "approved" };

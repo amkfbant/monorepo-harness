@@ -47,6 +47,22 @@ const HARD_BLOCKERS = new Set<MergeBlockerReason>([
   "quorum_not_satisfied",
 ]);
 
+/**
+ * Whether a consensus summary's requirement groups all satisfy quorum. A valid
+ * empty array is latest-proposal (no quorum to satisfy → true). Anything that
+ * is not an array, or any requirement whose `quorumMet` is not strictly `true`
+ * (missing / non-boolean / a truthy non-boolean like `"yes"`), is fail-closed
+ * (false) so a malformed summary cannot let a merge through.
+ */
+export function quorumSatisfiedFromRequirements(requirements: unknown): boolean {
+  return (
+    Array.isArray(requirements) &&
+    requirements.every(
+      (r) => (r as { quorumMet?: unknown } | null)?.quorumMet === true,
+    )
+  );
+}
+
 export function evaluateMergeGate(input: MergeGateInput): MergeGateResult {
   const blockers: MergeBlockerReason[] = [];
 

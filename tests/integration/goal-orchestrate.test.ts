@@ -393,7 +393,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
       resolveRunContext,
       autoMerge: {
         merger: opts.merger,
-        ciStatus: async () => opts.ciGreen,
+        ciStatus: async (_prNumber: number, _expectedHeadSha: string) => opts.ciGreen,
       },
     });
     return new GoalOrchestrator({ dbPath: f.dbPath }).run({

@@ -60,41 +60,27 @@ describe("gh PR publisher", () => {
 });
 
 describe("gh PR merger (Phase 3-2)", () => {
-  it("merges an open PR via gh pr merge", async () => {
+  it("merges an open PR, pinned to the expected reviewed commit", async () => {
     const { bin, dir } = writeFakeGh("OPEN");
     const merger = createGhPrMerger(bin, 5_000);
-    const r = await merger.merge({ repoDir: tmpdir(), prNumber: 42, method: "squash" });
+    const r = await merger.merge({
+      repoDir: tmpdir(),
+      prNumber: 42,
+      method: "squash",
+      expectedHeadSha: "reviewedsha",
+    });
     expect(r).toEqual({ merged: true, alreadyMerged: false });
     const called = readFileSync(join(dir, "merge-called"), "utf8");
-    // the merge is pinned to the head commit observed via `gh pr view`.
-    expect(called).toContain("pr merge 42 --match-head-commit abc123sha --squash");
+    // the merge is pinned to the caller-supplied reviewed commit.
+    expect(called).toContain("pr merge 42 --match-head-commit reviewedsha --squash");
   });
 
-  it("fail-closed: refuses to merge when the head commit cannot be determined", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "harness-fake-gh-"));
-    const bin = join(dir, "gh");
-    writeFileSync(
-      bin,
-      [
-        "#!/bin/sh",
-        // pr view returns no headRefOid → cannot pin → must refuse.
-        'if [ "$1" = "pr" ] && [ "$2" = "view" ]; then',
-        '  printf \'{"state":"OPEN","mergedAt":null}\'',
-        "  exit 0",
-        "fi",
-        'if [ "$1" = "pr" ] && [ "$2" = "merge" ]; then',
-        `  echo "$@" > "${dir}/merge-called"`,
-        "  exit 0",
-        "fi",
-        "exit 1",
-        "",
-      ].join("\n"),
-    );
-    execFileSync("chmod", ["+x", bin]);
+  it("fail-closed: refuses to merge an open PR without an expectedHeadSha", async () => {
+    const { bin, dir } = writeFakeGh("OPEN");
     const merger = createGhPrMerger(bin, 5_000);
     await expect(
       merger.merge({ repoDir: tmpdir(), prNumber: 9, method: "squash" }),
-    ).rejects.toThrow(/head commit/);
+    ).rejects.toThrow(/without an expectedHeadSha/);
     expect(existsSync(join(dir, "merge-called"))).toBe(false);
   });
 

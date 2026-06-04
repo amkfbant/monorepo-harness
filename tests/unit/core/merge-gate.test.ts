@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   evaluateMergeGate,
+  quorumSatisfiedFromRequirements,
   type MergeGateInput,
 } from "../../../src/core/merge-gate.js";
 
@@ -88,5 +89,33 @@ describe("evaluateMergeGate (Phase 3-1)", () => {
     expect(r.hardBlocked).toBe(true);
     expect(r.blockers).toContain("not_close_ready");
     expect(r.blockers).toContain("ci_not_green");
+  });
+});
+
+describe("quorumSatisfiedFromRequirements (Phase 3)", () => {
+  it("a valid empty array (latest-proposal) → satisfied", () => {
+    expect(quorumSatisfiedFromRequirements([])).toBe(true);
+  });
+
+  it("all quorumMet strictly true → satisfied", () => {
+    expect(
+      quorumSatisfiedFromRequirements([{ quorumMet: true }, { quorumMet: true }]),
+    ).toBe(true);
+  });
+
+  it("any quorumMet false → not satisfied", () => {
+    expect(
+      quorumSatisfiedFromRequirements([{ quorumMet: true }, { quorumMet: false }]),
+    ).toBe(false);
+  });
+
+  it.each([
+    ["non-array", { quorumMet: true } as unknown],
+    ["null", null as unknown],
+    ["truthy non-boolean quorumMet", [{ quorumMet: "yes" }]],
+    ["missing quorumMet", [{}]],
+    ["null entry", [null]],
+  ])("fail-closed on malformed requirements: %s", (_label, requirements) => {
+    expect(quorumSatisfiedFromRequirements(requirements)).toBe(false);
   });
 });
