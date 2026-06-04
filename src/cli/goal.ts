@@ -724,9 +724,10 @@ export function registerGoalCommands(
             : undefined;
         // Best-effort Copilot review is opt-in (default OFF). Non-gating: the
         // outcome never affects close/merge.
+        const ghBin = process.env.HARNESS_GH_BIN ?? "gh";
         const copilotReview =
           raw.requestCopilotReview === true
-            ? { reviewer: createGhCopilotReviewer(repoPath) }
+            ? { reviewer: createGhCopilotReviewer(repoPath, ghBin) }
             : undefined;
         const result = await new GoalOrchestrator({ dbPath }).run({
           goalId,
