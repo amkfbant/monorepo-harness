@@ -120,6 +120,7 @@ npm run --silent harness -- knowledge reject --run-id <runId> --index <n> --revi
 | [`docs/examples/mini-commerce.md`](./docs/examples/mini-commerce.md) | 検証用ダミー monorepo の構成 |
 | [`docs/reports/`](./docs/reports/) | 実機検証ログ + finding registry |
 | [`docs/policy-semantics.md`](./docs/policy-semantics.md) | minimatch root-anchored の落とし穴（policy を書く前に） |
+| [`docs/future-features.md`](./docs/future-features.md) | 将来実装する feature のアイデア |
 
 ## Phase 18 quick start — MCP server
 
