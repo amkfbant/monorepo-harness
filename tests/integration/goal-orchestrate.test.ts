@@ -82,13 +82,13 @@ function setup(): Fixture {
   return { harnessRoot, dbPath, repoPath, bareRemote };
 }
 
-function createGoal(dbPath: string): string {
+function createGoal(dbPath: string, goalId = "goal-orch-e2e"): string {
   const { db, close } = openManagedDb({ dbPath });
   try {
     runMigrations(db);
     const repo = new GoalRepository(db);
     repo.createSession({
-      goalId: "goal-orch-e2e",
+      goalId,
       title: "Add a field to the user profile",
       description: "bump the exported constant in apps/user",
       repoId: "t",
@@ -101,7 +101,7 @@ function createGoal(dbPath: string): string {
       createdBy: "test",
       createdSource: "worker",
     });
-    return "goal-orch-e2e";
+    return goalId;
   } finally {
     close();
   }
@@ -232,6 +232,94 @@ describe("goal orchestrate (real git + fake codex)", () => {
       const attempts = repo.listAttempts(goalId);
       expect(attempts.some((a) => a.attemptType === "implement")).toBe(true);
       expect(attempts.some((a) => a.runId !== null)).toBe(true);
+      expect(repo.listReviewCycles(goalId).length).toBeGreaterThan(0);
+    } finally {
+      close();
+    }
+  });
+
+  it("drives an EMPTY goal (no seeded run) end-to-end", async () => {
+    // No pre-created run. ConvergenceService returns needs_fix/fix_findings
+    // for a goal with zero coding attempts (iterationsUsed===0), so the
+    // orchestrator's first loop step is `coder` (the gate permits run.start
+    // for needs_fix), which drives the initial run itself.
+    const goalId = createGoal(f.dbPath, "goal-orch-empty");
+
+    const coderRunner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 1; // implemented\n",
+        );
+      },
+      stdout: "applied 1 file\n",
+    });
+    const reviewerRunner = createFakeCodexRunner({
+      stdout: [
+        "```yaml",
+        "decision: approved",
+        "required_changes: []",
+        "non_blocking_comments: []",
+        "out_of_scope_suggestions: []",
+        "```",
+        "",
+      ].join("\n"),
+    });
+    const publisher = fakePublisher();
+
+    const resolveRunContext = (): GoalRunContext => ({
+      repoPath: f.repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "bump x in apps/user",
+      baseBranch: "main",
+    });
+
+    const runners = createOrchestratorRunners({
+      dbPath: f.dbPath,
+      harnessRoot: f.harnessRoot,
+      createdBy: "test",
+      coderRunner,
+      reviewerRunner,
+      publisher,
+      resolveRunContext,
+    });
+
+    const result = await new GoalOrchestrator({ dbPath: f.dbPath }).run({
+      goalId,
+      runners,
+      maxSteps: 20,
+      createdBy: "test",
+    });
+
+    // terminal: the orchestrator drove coder → review → close → PR with no
+    // seeded first run.
+    expect(["closed", "pr_created"]).toContain(result.outcome);
+    expect(result.outcome).toBe("pr_created");
+    expect(result.prUrl).toBe("https://github.com/acme/repo/pull/42");
+    expect(publisher.calls).toHaveLength(1);
+
+    // the very first orchestrator step is the coder pass it created itself.
+    expect(result.steps[0]?.action).toBe("coder");
+
+    // the run branch was pushed to the bare remote
+    const branches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(branches).toMatch(/harness\//);
+
+    const { db, close } = openManagedDb({ dbPath: f.dbPath });
+    try {
+      const repo = new GoalRepository(db);
+      expect(repo.requireSession(goalId).status).toBe("closed");
+      const attempts = repo.listAttempts(goalId);
+      // the implement attempt was created BY THE ORCHESTRATOR (not seeded)
+      // and carries the runId of the run it drove.
+      const implement = attempts.find((a) => a.attemptType === "implement");
+      expect(implement).toBeDefined();
+      expect(implement?.runId).toMatch(/^run-/);
       expect(repo.listReviewCycles(goalId).length).toBeGreaterThan(0);
     } finally {
       close();
