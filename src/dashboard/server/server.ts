@@ -156,9 +156,16 @@ function compilePattern(
 /** Match a path against a list of routes. Returns route + params or null. */
 export function matchRoute(
   routes: Route[],
+  method: string,
   pathname: string,
 ): { route: Route; params: RouteParams } | null {
+  // Match METHOD then path: two routes can share a path with different verbs
+  // (e.g. GET vs POST /api/runs/:id/review). A path-only match would let a
+  // POST be dispatched to the read-only GET handler — a silent no-op for a
+  // mutation. HEAD is served by the GET handler.
+  const wanted = method === "HEAD" ? "GET" : method;
   for (const route of routes) {
+    if (route.method !== wanted) continue;
     const { regex, params: paramNames } = compilePattern(route.pattern);
     const m = regex.exec(pathname);
     if (m === null) continue;
@@ -1763,7 +1770,7 @@ export function buildListener(
         }
       }
 
-      const match = matchRoute(routes, pathname);
+      const match = matchRoute(routes, req.method ?? "GET", pathname);
       if (match === null) {
         writeError(res, 404, "not_found", `no route for ${pathname}`);
         return;

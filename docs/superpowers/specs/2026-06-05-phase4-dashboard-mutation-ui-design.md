@@ -26,6 +26,11 @@ server の GET `/` は、従来の「文字列置換で meta+banner を inject�
 `renderDashboardHtml(snapshot, { mutation: { csrfToken } })` を呼ぶ（二重 inject
 防止）。mutationEnabled が false なら従来どおり `renderDashboardHtml(snapshot)`。
 
+> dispatch 修正（前提バグ）: `matchRoute` を **method-aware** にする。従来は path
+> のみで先勝ちのため、`GET /api/runs/:id/review`（read-only）が `POST .../review`
+> （mutation）を shadow し、UI の review POST が read-only handler に吸われて状態
+> 遷移しなかった。method + path で match するよう修正（HEAD は GET handler）。
+
 > backend の認証・状態遷移・idempotency は不変。UI は POST を組み立てるだけで、
 > 状態遷移は harness（server の operation/state guard）のみが行う。
 

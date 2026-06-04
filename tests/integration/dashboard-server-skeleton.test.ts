@@ -244,6 +244,40 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
     }
   });
 
+  it("Phase 4: POST /api/runs/:id/review dispatches to the POST handler (not the GET route)", async () => {
+    await env.server.close();
+    const srv = createDashboardServer({
+      dbPath: env.dbPath,
+      host: "127.0.0.1",
+      port: 0,
+      mutationEnabled: true,
+      token: "topsecret",
+      csrfToken: "csrf-123",
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const addr = srv.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    try {
+      const res = await fetch(`${base}/api/runs/run-x/review`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer topsecret",
+          "X-CSRF-Token": "csrf-123",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ decision: "approved", dryRun: true }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      // the mutation (POST) handler shape — NOT the read-only GET review shape.
+      expect(body).toHaveProperty("operationId");
+      expect((body.result as Record<string, unknown>).plannedDecision).toBe("approved");
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+      env.server = await startServer(env.dbPath);
+    }
+  });
+
   it("Phase 13 post-close: POST mutation without X-CSRF-Token returns 403", async () => {
     await env.server.close();
     const srv = createDashboardServer({

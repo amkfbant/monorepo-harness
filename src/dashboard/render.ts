@@ -219,7 +219,11 @@ function mutationSection(s: DashboardSnapshot, csrfToken: string): string {
       reviewBtns +
       `<button data-run-id="${id}" data-act="pr">pr</button>` +
       `<button data-run-id="${id}" data-act="rerun">rerun</button>` +
-      `<button data-run-id="${id}" data-act="cleanup" data-scope="workspace">cleanup</button>` +
+      '<select class="mut-scope" aria-label="cleanup scope">' +
+      '<option value="workspace">workspace</option>' +
+      '<option value="run">run</option>' +
+      '<option value="all">all</option></select>' +
+      `<button data-run-id="${id}" data-act="cleanup">cleanup</button>` +
       "</td></tr>"
     );
   };
@@ -289,8 +293,8 @@ const MUTATION_SCRIPT = `
   document.addEventListener("click",function(ev){
     var b=ev.target.closest&&ev.target.closest("button[data-act]");if(!b){return;}
     var run=b.getAttribute("data-run-id");var item=b.getAttribute("data-item-id");var act=b.getAttribute("data-act");
-    if(act.indexOf("review-")===0){post("/api/runs/"+encodeURIComponent(run)+"/review",{decision:act.slice(7)},false);}
-    else if(act==="cleanup"){post("/api/runs/"+encodeURIComponent(run)+"/cleanup",{confirm:"cleanup",scope:b.getAttribute("data-scope")||"workspace"},true);}
+    if(act.indexOf("review-")===0){post("/api/runs/"+encodeURIComponent(run)+"/review",{decision:act.slice(7)},true);}
+    else if(act==="cleanup"){var sel=b.parentElement?b.parentElement.querySelector("select.mut-scope"):null;var scope=sel?sel.value:"workspace";post("/api/runs/"+encodeURIComponent(run)+"/cleanup",{confirm:"cleanup",scope:scope},true);}
     else if(act==="pr"){post("/api/runs/"+encodeURIComponent(run)+"/pr",{confirm:"create-pr"},true);}
     else if(act==="rerun"){post("/api/runs/"+encodeURIComponent(run)+"/rerun",{},true);}
     else if(act==="backlog-run"){post("/api/backlog/"+encodeURIComponent(item)+"/run",{},true);}

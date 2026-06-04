@@ -123,6 +123,14 @@ describe("renderDashboardHtml", () => {
       // destructive ops confirm; dry-run is the default.
       expect(html).toMatch(/confirm\(/);
       expect(html).toMatch(/id="harness-dryrun" checked/);
+      // cleanup offers a scope selector (workspace/run/all).
+      expect(html).toMatch(/class="mut-scope"/);
+      expect(html).toMatch(/<option value="workspace">/);
+      expect(html).toMatch(/<option value="run">/);
+      expect(html).toMatch(/<option value="all">/);
+      // review actions are confirmed too (non-dry-run): the review post is
+      // dispatched as destructive (true), like the other state-changing ops.
+      expect(html).toMatch(/\/review",\{decision:act\.slice\(7\)\},true\)/);
     });
 
     it("escapes the CSRF token and run/backlog ids in the mutation UI", () => {
