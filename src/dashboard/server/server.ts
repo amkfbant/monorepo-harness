@@ -156,9 +156,16 @@ function compilePattern(
 /** Match a path against a list of routes. Returns route + params or null. */
 export function matchRoute(
   routes: Route[],
+  method: string,
   pathname: string,
 ): { route: Route; params: RouteParams } | null {
+  // Match METHOD then path: two routes can share a path with different verbs
+  // (e.g. GET vs POST /api/runs/:id/review). A path-only match would let a
+  // POST be dispatched to the read-only GET handler — a silent no-op for a
+  // mutation. HEAD is served by the GET handler.
+  const wanted = method === "HEAD" ? "GET" : method;
   for (const route of routes) {
+    if (route.method !== wanted) continue;
     const { regex, params: paramNames } = compilePattern(route.pattern);
     const m = regex.exec(pathname);
     if (m === null) continue;
@@ -1422,24 +1429,18 @@ export function defaultRoutes(): Route[] {
             harnessRoot: dirname(dirname(ctx.config.dbPath)),
             autoImport: false,
           });
-          let html = renderDashboardHtml(snapshot);
-          if (
+          // Phase 4: when mutation is enabled, render the mutation UI (CSRF
+          // meta + bearer input + action buttons + inline JS). renderDashboardHtml
+          // owns the escaping; the server only supplies the token. Read-only
+          // mode passes no options and gets a JS-free page.
+          const mutationEnabled =
             ctx.config.mutationEnabled === true &&
-            ctx.config.csrfToken !== undefined
-          ) {
-            const meta = `<meta name="harness-csrf-token" content="${
-              ctx.config.csrfToken
-            }">`;
-            const banner =
-              '<div style="background:#fbeaa6;padding:8px;font-family:sans-serif">' +
-              "Mutation API enabled. Browser POSTs must include " +
-              '<code>X-CSRF-Token</code> header (read it from ' +
-              '<code>&lt;meta name="harness-csrf-token"&gt;</code>).' +
-              "</div>";
-            html = html
-              .replace(/<head>/i, `<head>\n  ${meta}`)
-              .replace(/<body[^>]*>/i, (m) => `${m}\n${banner}`);
-          }
+            ctx.config.csrfToken !== undefined;
+          const html = mutationEnabled
+            ? renderDashboardHtml(snapshot, {
+                mutation: { csrfToken: ctx.config.csrfToken as string },
+              })
+            : renderDashboardHtml(snapshot);
           res.statusCode = 200;
           res.setHeader("Content-Type", "text/html; charset=utf-8");
           res.setHeader("X-Content-Type-Options", "nosniff");
@@ -1720,16 +1721,16 @@ export function buildListener(
         return;
       }
 
-      const isMutationVerb =
-        req.method === "POST" ||
-        req.method === "PUT" ||
-        req.method === "PATCH" ||
-        req.method === "DELETE";
+      // The dashboard only defines GET and POST routes. POST is allowed only
+      // when mutation is enabled; every other verb (PUT/PATCH/DELETE/...) is
+      // 405, not 404 — keep the contract explicit rather than relying on a
+      // later route miss.
+      const isPost = req.method === "POST";
 
       if (
         req.method !== "GET" &&
         req.method !== "HEAD" &&
-        !(isMutationVerb && config.mutationEnabled === true)
+        !(isPost && config.mutationEnabled === true)
       ) {
         writeError(
           res,
@@ -1769,7 +1770,7 @@ export function buildListener(
         }
       }
 
-      const match = matchRoute(routes, pathname);
+      const match = matchRoute(routes, req.method ?? "GET", pathname);
       if (match === null) {
         writeError(res, 404, "not_found", `no route for ${pathname}`);
         return;
