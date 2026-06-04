@@ -111,15 +111,18 @@ export async function runCopilotReview(input: {
       polls,
       detail: `Copilot review timed out after ${config.pollTimeoutMs}ms`,
     });
-    // The first poll happens immediately; subsequent ones after each interval.
-    // The clock is advanced by sleep(); the loop is bounded by the deadline.
+    // The first poll happens immediately (even at pollTimeoutMs=0); subsequent
+    // ones after each interval. The clock is advanced by sleep(); the loop is
+    // bounded by the deadline checked after every poll.
     for (;;) {
-      if (now() >= deadline) return skipped();
       polls += 1;
       try {
         // Bound the poll by the remaining budget so a hanging `poll` cannot blow
-        // past `pollTimeoutMs`. The timeout branch is treated as still-pending.
-        const remainingMs = deadline - now();
+        // past `pollTimeoutMs`. A fast (resolved) poll wins this microtask race
+        // before the setTimeout fires, so the first poll still observes the
+        // reviewer even when remaining = 0. The timeout branch falls through to
+        // the deadline check below (treated as still-pending → skipped).
+        const remainingMs = Math.max(0, deadline - now());
         const result = await Promise.race([
           input.reviewer.poll(input.prNumber),
           deadlineAfter(remainingMs),
