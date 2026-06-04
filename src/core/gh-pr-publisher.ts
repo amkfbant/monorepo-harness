@@ -6,6 +6,9 @@ import type {
   PrPublisher,
   PrPublishInputs,
   PrPublishResult,
+  PrMerger,
+  PrMergeInputs,
+  PrMergeResult,
 } from "./pr-creator.js";
 import { PrGateError } from "./pr-creator.js";
 
@@ -75,6 +78,65 @@ export function createGhPrPublisher(
       }
     },
   };
+}
+
+/**
+ * A PrMerger backed by `gh`. Idempotent: it first checks the PR state and
+ * returns without re-merging an already-merged PR. Each `gh` call is bounded
+ * by a timeout so a hang fails loudly (the timeout is never swallowed).
+ */
+export function createGhPrMerger(
+  ghBin = "gh",
+  timeoutMs = DEFAULT_GH_TIMEOUT_MS,
+): PrMerger {
+  return {
+    async merge(inputs: PrMergeInputs): Promise<PrMergeResult> {
+      // idempotency: never attempt a second merge on an already-merged PR.
+      if (await isAlreadyMerged(ghBin, inputs, timeoutMs)) {
+        return { merged: true, alreadyMerged: true };
+      }
+      await runGh(
+        ghBin,
+        ["pr", "merge", String(inputs.prNumber), `--${inputs.method}`],
+        inputs.repoDir,
+        timeoutMs,
+      );
+      return { merged: true, alreadyMerged: false };
+    },
+  };
+}
+
+/**
+ * Returns true when the PR is already MERGED. A timeout fails loudly; any
+ * other lookup failure returns false so the caller surfaces a real error from
+ * the merge attempt itself.
+ */
+async function isAlreadyMerged(
+  ghBin: string,
+  inputs: PrMergeInputs,
+  timeoutMs: number,
+): Promise<boolean> {
+  let out: string;
+  try {
+    out = await runGh(
+      ghBin,
+      ["pr", "view", String(inputs.prNumber), "--json", "state,mergedAt"],
+      inputs.repoDir,
+      timeoutMs,
+    );
+  } catch (e) {
+    if (e instanceof GhTimeoutError) throw e;
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(out.trim() || "{}") as {
+      state?: unknown;
+      mergedAt?: unknown;
+    };
+    return parsed.state === "MERGED" || typeof parsed.mergedAt === "string";
+  } catch {
+    return false;
+  }
 }
 
 /**

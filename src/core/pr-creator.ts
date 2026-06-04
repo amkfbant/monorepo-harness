@@ -48,6 +48,31 @@ export interface PrPublisher {
   publish(inputs: PrPublishInputs): Promise<PrPublishResult>;
 }
 
+/** Phase 3-2: merge method for an auto-merge. */
+export type PrMergeMethod = "squash" | "merge" | "rebase";
+
+export interface PrMergeInputs {
+  /** cwd for the merger (the run worktree). */
+  repoDir: string;
+  prNumber: number;
+  method: PrMergeMethod;
+}
+
+export interface PrMergeResult {
+  merged: boolean;
+  /** True when the PR was already merged before this call (idempotent no-op). */
+  alreadyMerged: boolean;
+}
+
+/**
+ * Merges a pull request. Injected like {@link PrPublisher} so the auto-merge
+ * wiring can be tested with a fake. A real merger MUST be idempotent: detect
+ * an already-merged PR and not attempt a second merge.
+ */
+export interface PrMerger {
+  merge(inputs: PrMergeInputs): Promise<PrMergeResult>;
+}
+
 export interface CreatePrOpts {
   runsDir: string;
   workspacesDir: string;
