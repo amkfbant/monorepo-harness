@@ -10,20 +10,37 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege: this workflow only reads the repo and runs tests.
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
-    name: typecheck + build + test
+    name: typecheck + build + test (node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      # Surface failures on every supported Node version, not just the first.
+      fail-fast: false
+      matrix:
+        node-version: ["20", "24"]
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      # Actions are pinned to commit SHAs (supply-chain hardening); the trailing
+      # comment tracks the human-readable tag. Dependabot (github-actions)
+      # refreshes both the SHA and the comment so the pins do not go stale.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          node-version: "20"
+          # No step performs authenticated git ops; don't leave GITHUB_TOKEN
+          # in .git/config during install/build/test.
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node-version }}
           cache: npm
 
-      # native deps (better-sqlite3, fs-ext) build via node-gyp on the runner.
+      # native deps (better-sqlite3, fs-ext) build via node-gyp on the runner;
+      # the matrix verifies they rebuild cleanly on Node 24 as well as 20.
       - name: Install dependencies
         run: npm ci
 
@@ -33,7 +50,7 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Full suite runs locally in ~34s wall (vitest forks pool); the historic
+      # Full suite runs locally in ~36s wall (vitest forks pool); the historic
       # `listen EPERM` failures were a local sandbox artifact, not present on CI.
       - name: Test
         run: npm test

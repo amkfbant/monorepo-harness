@@ -13,7 +13,7 @@ Codex はワークツリー内のファイルを直接編集し、ハーネス�
 
 ## 必要環境
 
-- Node.js >= 20
+- Node.js >= 20（CI は Node 20 / 24 の matrix でフルスイートを検証）
 - `codex` CLI（`HARNESS_CODEX_BIN` で上書き可能）
 - `git`
 
