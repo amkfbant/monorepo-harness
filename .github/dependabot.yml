@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # Keep the SHA-pinned GitHub Actions in .github/workflows fresh. Dependabot
+  # bumps both the commit SHA and the trailing `# v4` comment, so the pins in
+  # ci.yml do not silently go stale.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
