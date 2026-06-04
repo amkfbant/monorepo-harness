@@ -187,6 +187,14 @@ export interface ApplyReviewDecisionInput {
      */
     expectedSourceSha256?: string;
   };
+  /**
+   * Phase 2 (consensus production wiring): mark MULTIPLE proposals
+   * processed in the SAME transaction as the consensus promotion. Each
+   * proposal must still be active (`processed_at IS NULL AND superseded_at
+   * IS NULL`); any that is not aborts the whole promotion with a
+   * StateConflictError (atomic: the run is not promoted on a stale set).
+   */
+  markProposalsProcessed?: number[];
 }
 
 const SUMMARY_COLUMNS = `run_id, repo_id, project_id, domain, status,
@@ -975,6 +983,30 @@ export class RunRepository {
             `review_proposals(id=${input.markProposalProcessed.proposalId})` +
               ` superseded, sha mismatch, or already processed`,
           );
+        }
+      }
+      // Phase 2: consensus promotion marks every aggregated proposal in this
+      // same transaction. Any proposal that is no longer active aborts the
+      // whole promotion (atomic), so the run is never promoted on a stale set.
+      if (input.markProposalsProcessed !== undefined) {
+        for (const proposalId of input.markProposalsProcessed) {
+          const r = this.db
+            .prepare(
+              `UPDATE review_proposals
+                  SET processed_at = ?, review_decision_id = ?,
+                      lifecycle_status = 'processed'
+                WHERE proposal_id = ?
+                  AND processed_at IS NULL
+                  AND superseded_at IS NULL`,
+            )
+            .run(input.reviewedAt, input.runId, proposalId);
+          if (r.changes === 0) {
+            throw new StateConflictError(
+              input.runId,
+              ["needs_review"],
+              `review_proposals(id=${proposalId}) superseded or already processed`,
+            );
+          }
         }
       }
       return { previousStatus: row.status };

@@ -22,8 +22,10 @@ import {
 import { ReviewerRepository } from "../db/repositories/reviewers.js";
 import {
   evaluateConsensus,
+  type ConsensusStatus,
   type EnrichedProposal,
 } from "./review-consensus.js";
+import { activeProposalRows, enrichRows } from "./consensus-enrichment.js";
 import {
   DEFAULT_REVIEW_RULE,
   ruleSha256,
@@ -142,6 +144,140 @@ function processOverridePath(
     reviewedAt,
     warnings: [`human override (audit override_id=${ovr.overrideId})`],
   };
+}
+
+/**
+ * Phase 2 (consensus production wiring): `review process` for a run whose
+ * effective rule is `mode: consensus`. Instead of promoting a single
+ * proposal, it evaluates consensus over ALL active proposals (enriched with
+ * reviewer group / type) and:
+ *   - refuses to promote while consensus is `pending` (fail-closed — quorum
+ *     not met / requirements pending),
+ *   - promotes the decisive consensus status (approved / changes_requested /
+ *     rejected), recording the consensus row from the real proposals and
+ *     marking every aggregated proposal processed.
+ *
+ * The default `latest-proposal` mode is unaffected; this path runs only when
+ * the run's rule snapshot declares consensus mode.
+ */
+function processConsensusModePath(
+  db: Database.Database,
+  opts: ProcessOpts,
+  rule: ReviewRule,
+  ruleSha: string,
+): ProcessResult {
+  const proposalRepo = new ReviewProposalRepository(db);
+  const reviewerRepo = new ReviewerRepository(db);
+  const consensusRepo = new ReviewConsensusRepository(db);
+  const runRepo = new RunRepository(db);
+  const reviewedAt = (opts.now ?? new Date()).toISOString();
+
+  // The ENTIRE gate — read the run, snapshot all active proposals, evaluate
+  // consensus, then (only if decisive) insert the consensus row, promote the
+  // run, and mark the included proposals processed — runs in ONE immediate
+  // transaction. The IMMEDIATE write lock makes the evaluation snapshot
+  // consistent with the promotion: a concurrent `review auto` cannot slip a
+  // blocking proposal in between the evaluation and the write, so the run is
+  // never promoted on a stale subset of proposals. A `pending` consensus (or
+  // missing run / proposals) throws, which rolls the transaction back with no
+  // side effect (fail-closed).
+  const gate = db.transaction((): { decision: ConsensusStatus; includedCount: number; decisionPath: string } => {
+    const row = db
+      .prepare("SELECT domain, status FROM runs WHERE run_id = ?")
+      .get(opts.runId) as { domain: string; status: string } | undefined;
+    if (row === undefined) {
+      throw new ReviewGateError(`run ${opts.runId} not found in the DB`);
+    }
+    if (row.status !== "needs_review") {
+      throw new ReviewGateError(
+        `run ${opts.runId} status is "${row.status}", only needs_review can be processed`,
+      );
+    }
+    const rows = activeProposalRows(proposalRepo, opts.runId);
+    if (rows.length === 0) {
+      throw new ReviewGateError(
+        `no active review proposals to evaluate for ${opts.runId}; run \`review auto\` first`,
+      );
+    }
+    const result = evaluateConsensus({
+      rule,
+      ruleSha256: ruleSha,
+      proposals: enrichRows(rows, reviewerRepo),
+      evaluatedAt: reviewedAt,
+    });
+    if (result.status === "pending") {
+      // fail-closed: consensus is not satisfied yet (quorum/requirements
+      // pending). Do NOT promote the run on a partial set of approvals.
+      throw new ReviewGateError(
+        `consensus not yet satisfied for ${opts.runId} (${result.summary.decisionPath})`,
+      );
+    }
+    const decision = result.status;
+    // Only proposals that actually fed the consensus (stale ones were dropped
+    // by evaluateConsensus) drive the decision, audit ids, and processing.
+    const includedIds = new Set(result.summary.proposals.map((p) => p.proposalId));
+    const includedRows = rows.filter((r) => includedIds.has(r.proposalId));
+    // Required changes feed rerun; aggregate them from the included proposals
+    // that did not approve (deduplicated, order-stable).
+    const requiredChanges = dedupeStrings(
+      includedRows
+        .filter((r) => r.decision !== "approved")
+        .flatMap((r) => r.requiredChanges),
+    );
+    const decisionYaml = serializeReviewDecision({
+      runId: opts.runId,
+      domain: row.domain,
+      decision,
+      required_changes: requiredChanges,
+      non_blocking_comments: [],
+      out_of_scope_suggestions: [],
+      reviewer: "consensus",
+      reviewed_at: reviewedAt,
+    });
+    const consensusRow = consensusRepo.insertActive({
+      runId: opts.runId,
+      ruleSha256: ruleSha,
+      status: decision,
+      summary: result.summary,
+      evaluatedAt: reviewedAt,
+      evaluatedBy: "consensus",
+      sourceProposalIds: includedRows.map((r) => r.proposalId),
+    });
+    runRepo.applyReviewDecision({
+      runId: opts.runId,
+      decision,
+      reviewer: "consensus",
+      reviewedAt,
+      requiredChanges,
+      decisionYaml,
+      consensusId: consensusRow.consensusId,
+      proposalsSummaryJson: consensusRow.summaryJson,
+      markProposalsProcessed: includedRows.map((r) => r.proposalId),
+    });
+    return {
+      decision,
+      includedCount: includedRows.length,
+      decisionPath: result.summary.decisionPath,
+    };
+  });
+  const outcome = gate.immediate();
+
+  warnIfExportFailed(exportRun(db, opts.runId, { runsDir: opts.runsDir }));
+  return {
+    runId: opts.runId,
+    previousStatus: "needs_review",
+    newStatus: outcome.decision as RunStatus,
+    reviewer: "consensus",
+    reviewedAt,
+    warnings: [
+      `consensus decision over ${outcome.includedCount} proposal(s) ` +
+        `(${outcome.decisionPath})`,
+    ],
+  };
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 function recordConsensusForReviewProcess(
@@ -380,6 +516,24 @@ export async function processReviewDecision(
       );
     }
     const dbFirst = dbRow?.source_mode === "db-first";
+
+    // Phase 2: a db-first run whose effective rule is consensus mode is
+    // gated by the full consensus evaluation (fail-closed on pending),
+    // not by a single proposal. latest-proposal mode falls through to the
+    // existing single-proposal path below.
+    if (dbFirst) {
+      const snapshot = new ReviewRulesRepository(db).findSnapshotByRun(
+        opts.runId,
+      );
+      const rule: ReviewRule =
+        snapshot === null
+          ? DEFAULT_REVIEW_RULE
+          : (JSON.parse(snapshot.ruleJson) as ReviewRule);
+      if (rule.mode === "consensus") {
+        const ruleSha = snapshot?.sourceSha256 ?? ruleSha256(rule);
+        return processConsensusModePath(db, opts, rule, ruleSha);
+      }
+    }
 
     return await processUnderLock(
       opts,

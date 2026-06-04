@@ -596,6 +596,54 @@ harness review process <runId> --override approved --reason "Critical hotfix" \
   → applyReviewDecision で final decision に昇格
 ```
 
+### Phase 2 — consensus 拡張（quorum / 鮮度 / stall escalation）
+
+`evaluateConsensus`（`src/core/review-consensus.ts`）は Phase 11 の
+requirement（per-group `minApprovals` / `blockingDecisions`）に加えて以下を
+決定論的に評価する。設計は
+[`../superpowers/specs/2026-06-05-phase2-consensus-extension-design.md`](../superpowers/specs/2026-06-05-phase2-consensus-extension-design.md)。
+
+- **quorum / 参加率**: `ReviewRuleRequirement.quorum`（任意）。`minParticipants`
+  はグループ内で non-pending な verdict を出した **distinct reviewer 数** の
+  最低値、`minParticipationRate`（要 `groupSize`）は参加率。requirement の充足は
+  `approvals >= minApprovals` **かつ** quorum 充足。quorum 未指定は従来挙動
+  （`quorumMet = true`）。`minParticipationRate` 指定で `groupSize` が正でない場合は
+  fail-closed（quorum 未達）。`ConsensusRequirementCheck` に `participants` /
+  `quorumMet` を出力。
+- **proposal 鮮度**: `ReviewRule.staleProposal`（`rejectSuperseded` /
+  `maxAgeHours`）を集計前に適用。superseded（`EnrichedProposal.supersededAt`）/
+  `maxAgeHours` 超過の proposal を除外し `ConsensusSummary.excludedProposals` に
+  記録。timestamp 解析不能時は fail-closed（stale 扱いで除外）。負経過
+  （reviewedAt が evaluatedAt より後）は除外しない。
+- **stall escalation**: `detectConsensusStall`（`src/core/consensus-stall.ts`、純
+  関数）が consensus 評価スナップショット列（時刻昇順）から「詰まり」を判定する。
+  直近 `stallAfterSnapshots` 件が unresolved（pending / changes_requested）のまま
+  approvals / participants が増えない、または unresolved streak が
+  `maxPendingHours` 超で stall。decisive（approved / rejected）は非 stall。
+  goal 連携（`src/goal/consensus-stall-check.ts`）は goal の review 対象 run の
+  `review_consensus` 履歴から timeline を再構築し、stall 検出時に goal を
+  **`escalated`** に倒す（harness のみ状態遷移、fail-closed、新スキーマ無し）。
+  単一 reviewer の決着フローでは no-op（後方互換）。LLM 出力は一切判定入力にしない。
+
+#### production wiring（consensus mode の実経路）
+
+Phase 2 で consensus mode が実フローに接続された（`src/core/consensus-enrichment.ts`）。
+
+- **`review process`**: run の rule snapshot が `mode: consensus` の場合、単一
+  proposal ではなく **全 active proposal**（reviewers registry で group / type を
+  enrich）から `evaluateConsensus` を実行する（`processConsensusModePath`）。結果が
+  `pending` なら **promote せず fail-closed**（`ReviewGateError`）。decisive
+  （approved / changes_requested / rejected）なら consensus 由来の decision で run を
+  promote し、consensus row を実 proposal から記録、集計対象 proposal を processed に
+  する。`mode: latest-proposal`（既定）は従来の単一 proposal 経路のまま。
+- **`review auto`**: proposal insert 後、consensus mode なら全 active proposal で
+  consensus を再評価し `review_consensus` に（pending を含めて）記録する。これにより
+  multi-reviewer consensus と stall 用の timeline が蓄積される（best-effort: 記録失敗は
+  insert を巻き戻さない）。
+
+> 既定の rule は `latest-proposal`（`resolveEffectiveRule`）なので、上記 consensus
+> 経路は profile が consensus mode を宣言したときのみ作動する。既存フローは不変。
+
 ## Phase 19 — goal convergence（close 済み・現状仕様）
 
 Phase 19 は `domain-coding` の **状態機械は変えない**。代わりに 1 つ以上の
