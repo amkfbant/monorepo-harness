@@ -25,8 +25,11 @@ export type CopilotReviewPollResult = "reviewed" | "pending";
 export interface CopilotReviewer {
   /** Copilot reviewer を PR に要求する。一時エラーは throw してよい（呼び出し側が retry）。 */
   request(prNumber: number): Promise<void>;
-  /** Copilot のレビューが投稿済みかを返す。 */
-  poll(prNumber: number): Promise<CopilotReviewPollResult>;
+  /**
+   * Copilot のレビューが投稿済みかを返す。`timeoutMs` が与えられたら、その時間で
+   * この 1 回の poll を打ち切ってよい（best-effort）。optional なので既存 fake は無視可。
+   */
+  poll(prNumber: number, timeoutMs?: number): Promise<CopilotReviewPollResult>;
 }
 ```
 
@@ -58,17 +61,22 @@ export function runCopilotReview(input: {
 挙動（**決して throw しない**）:
 - `request` を呼ぶ。一時エラーなら `requestAttempts` まで retry（間隔は pollInterval を流用）。
   全 retry 失敗 → `{ status: "failed", detail }`。
-- request 成功後、`pollTimeoutMs` を超えるまで `pollIntervalMs` 間隔で `poll`:
-  - `reviewed` → `{ status: "reviewed" }`。
-  - timeout 到達（最後の poll も pending）→ `{ status: "skipped", detail: "timed out ..." }`。
-- `poll` の一時エラーは握って次の interval へ（poll は best-effort）。timeout まで継続。
-- `now()` で経過を判定し、最大 `ceil(pollTimeoutMs/pollIntervalMs)` 回程度 poll。
-- `pollTimeoutMs` は **総タイムアウトとして実効化**: 各 `poll` 呼び出しを残り時間
-  （`deadline - now()`）で打ち切る（`setTimeout` ベースの内部 race、`sleep` 注入とは独立）。
-  hang した `poll` でも `pollTimeoutMs` 内に `skipped` へ収束する。
-- never-throw は厳密: 非 Error の reject も安全に文字列化し、本体全体を最終防衛の
-  try/catch で包む。注入された `sleep` / `now` が throw しても `{ status: "failed" }`
-  を返し、関数外へ reject しない。
+- request 成功後 **最低 1 回は poll** する（決定論的セマンティクス）:
+  - `remaining = max(0, deadline - now())` を計算し `poll(pr, remaining)` を呼ぶ。
+    `reviewed` → `{ status: "reviewed" }`。
+  - その後 `now() >= deadline` なら `{ status: "skipped", detail: "timed out ..." }`。
+    さもなくば `sleep(pollIntervalMs)` → 再度 deadline 判定 → poll。
+  - **`pollTimeoutMs=0`** は「1 回だけ観測して reviewed か skipped」を意味する
+    （即解決 fake でも実 gh でも同義）。
+- `poll` の一時エラー / timeout は握って次の interval へ（poll は best-effort）。
+- `pollTimeoutMs` は **総タイムアウトとして実効化**: 各 `poll` 呼び出しに残り時間
+  （`deadline - now()`）を **`timeoutMs` 引数として渡す**。gh adapter はその残り時間で
+  子プロセスを自己 kill するため、hang した `poll` でも `pollTimeoutMs` 内に `skipped`
+  へ収束する（内部 `setTimeout` race を持たない = timer leak 源を作らない）。
+- never-throw は厳密: 非 Error の reject も安全に文字列化し、本体全体（`config`/`sleep`/
+  `now` の初期化を含む）を最終防衛の try/catch で包む（薄い never-reject wrapper +
+  inner 実装に分割）。throwing な getter / 注入された `sleep`・`now` が throw しても
+  `{ status: "failed" }` を返し、関数外へ reject しない。
 
 > `skipped` は「Copilot が時間内にレビューしなかった」= 正常な best-effort 結果。
 > `failed` は「要求自体が確立できなかった」（gh エラー継続）。どちらも非 gating。
@@ -79,9 +87,11 @@ export function runCopilotReview(input: {
   -f "reviewers[]=Copilot"`（実機で確認済み）。owner/repo は `repoDir` から gh が解決
   （`gh` は cwd のリポジトリを使う）。timeout は既存 `runGh` 相当（spawn + SIGKILL）。
   非 0 / timeout は throw（runCopilotReview が retry/最終 failed 化）。
-- `poll(prNumber)`: `gh pr view {n} --json reviews` を実行し、`reviews[].author.login` に
-  `copilot-pull-request-reviewer` があれば `reviewed`、無ければ `pending`。
-  （`gh pr view` の reviews は bot author を含む。GraphQL は使わず JSON で十分。）
+- `poll(prNumber, timeoutMs?)`: `gh pr view {n} --json reviews` を実行し、
+  `reviews[].author.login` に `copilot-pull-request-reviewer` があれば `reviewed`、無ければ
+  `pending`。`timeoutMs` が渡されたら `runGh` の timeout に **`Math.max(1, timeoutMs)`**
+  を使う（0/負を避ける。残り時間が来たら gh 子プロセスが自己 kill）。無指定時は既定
+  timeout。（`gh pr view` の reviews は bot author を含む。GraphQL は使わず JSON で十分。）
 
 ### 4. operation audit（既存 `operations` 台帳）
 
@@ -104,9 +114,11 @@ harness pr request-review <prNumber> --repo <path>
 - exit code（standalone CLI のみの慣習。orchestrate は exit に依らず非 gating）:
   `reviewed` / `skipped`（timeout = 正常な best-effort 結果）→ **0**。
   `failed`（要求すら確立できなかった）→ **非 0**（operator が検知できるよう）。
-  数値引数（`--timeout` / `--poll-interval` / `--request-attempts`）は秒→ms 変換
-  **前**に検証する: finite かつ非負（`--request-attempts` は正の整数）でなければ
-  stderr に明示して **exit 2**（NaN deadline で永久に skip しない事故を防ぐ）。
+  数値引数は秒→ms 変換 **前**に検証する（不正は stderr に明示して **exit 2**）:
+  - `--timeout`: **非負の整数秒**（`0` 許容 = 1 回観測）。
+  - `--poll-interval`: **正（> 0）の整数秒**（GitHub を 0/sub-second で高頻度 poll しない）。
+  - `--request-attempts`: **正の整数**（小数を `Math.floor` で黙って受けない）。
+  - いずれも NaN/非有限/負/小数は exit 2（NaN deadline で永久に skip しない事故を防ぐ）。
   orchestrate 経路はこの exit を見ず、いずれの outcome でも close を継続。
 
 ### 6. orchestrate opt-in: `goal orchestrate --request-copilot-review`

@@ -777,10 +777,15 @@ harness pr request-review <pr-number> --repo <path> \
 |--------|:--------:|------|
 | `<pr-number>` | ✅ | 対象 PR 番号（正の整数） |
 | `--repo <path>` | ✅ | target git repo のパス |
-| `--timeout <seconds>` | — | poll 総タイムアウト秒（default `300`） |
-| `--poll-interval <seconds>` | — | poll 間隔秒（default `15`） |
-| `--request-attempts <n>` | — | request の一時エラー retry 上限（default `3`） |
+| `--timeout <seconds>` | — | poll 総タイムアウト秒。**非負の整数**（`0` = 1 回観測）。default `300` |
+| `--poll-interval <seconds>` | — | poll 間隔秒。**正（> 0）の整数**。default `15` |
+| `--request-attempts <n>` | — | request の一時エラー retry 上限。**正の整数**。default `3` |
 | `--json` | — | 結果を JSON で出力 |
+
+数値引数は秒→ms 変換**前**に検証する。NaN/非有限/負/小数、`--poll-interval 0`、
+`--request-attempts` の小数などはすべて stderr に明示して **exit 2**（`Math.floor` で
+黙って受けない）。poll 総タイムアウトは各 poll に残り時間を渡して実効化し、`pollTimeoutMs=0`
+は「request 成功後に 1 回だけ観測して reviewed か skipped」を意味する。
 
 ### 動作
 
@@ -797,7 +802,8 @@ harness pr request-review <pr-number> --repo <path> \
 
 - `0`: reviewed / skipped（timeout も best-effort の正常結果）
 - `1`: failed（request 自体を確立できなかった。operator が気付けるよう非 0）
-- `2`: 引数不正（PR 番号が正の整数でない 等）
+- `2`: 引数不正（PR 番号が正の整数でない / `--timeout` が非負整数でない /
+  `--poll-interval` が正整数でない / `--request-attempts` が正整数でない 等）
 
 ## `harness review process`
 
