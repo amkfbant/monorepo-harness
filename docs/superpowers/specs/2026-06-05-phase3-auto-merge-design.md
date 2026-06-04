@@ -75,10 +75,13 @@ export interface PrMerger { merge(inputs: PrMergeInputs): Promise<PrMergeResult>
   **既マージ検出** → merged なら `{ merged:true, alreadyMerged:true }`（再 merge
   しない）。
 - **head SHA pin（安全境界・P0）**: merge は `gh pr merge <n> --match-head-commit
-  <sha> --<method>` で **head commit に固定**する。`expectedHeadSha`（CI 判定前に
-  wiring が `gh pr view --json headRefOid` で取得）を優先し、無ければ merger が
-  観測した head を使う。head が pin SHA から動いていれば `gh` が merge を拒否
-  → 例外 → escalate（fail-closed）。head SHA を決定できなければ merge しない。
+  <sha> --<method>` で **reviewed commit に固定**する。`expectedHeadSha` は
+  `createPullRequest` が **commit + push した immutable な reviewed commit SHA**
+  （`git rev-parse HEAD`、push 直前に worktree を fingerprint 検証済み）。PR 作成後に
+  branch が未レビュー commit へ進んでも、merge は reviewed SHA を要求し `gh` が
+  拒否 → 例外 → escalate（fail-closed）。reviewed SHA が不明なら merge しない。
+  already-merged の idempotent no-op も、expected と異なる commit で merge 済みなら
+  fail-closed（成功扱いにしない）。
 - timeout / 子プロセス例外（EPIPE 等）は既存 `runGh`（spawn + SIGKILL timeout）で
   握る。timeout は `GhTimeoutError` で loud に失敗。
 

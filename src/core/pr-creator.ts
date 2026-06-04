@@ -107,6 +107,14 @@ export interface CreatePrResult {
   prUrl: string;
   prNumber: number;
   head: string;
+  /**
+   * Phase 3: the commit SHA that was committed + pushed for this PR — i.e. the
+   * exact reviewed commit (the worktree was fingerprint-verified against the
+   * approved content before this commit). Auto-merge pins the merge to THIS
+   * SHA, never to the PR's later-observed head. Undefined on the idempotent
+   * "PR already exists" paths where the commit was made by a prior run.
+   */
+  headSha?: string;
 }
 
 /**
@@ -353,6 +361,9 @@ async function createUnderLock(
       `git push of ${head} failed: ${push.stderr.trim() || push.stdout.trim()}`,
     );
   }
+  // The pushed tip is the reviewed commit (the worktree was fingerprint-checked
+  // above). Capture it so auto-merge can pin the merge to THIS exact commit.
+  const reviewedHeadSha = (await runGit(["rev-parse", "HEAD"], git)).trim();
 
   // 5. open the PR (publisher should be idempotent on the head branch).
   const title =
@@ -463,6 +474,7 @@ async function createUnderLock(
     prUrl: published.url,
     prNumber: published.number,
     head,
+    headSha: reviewedHeadSha,
   };
 }
 

@@ -103,12 +103,6 @@ export interface OrchestratorRunnerDeps {
     merger: PrMerger;
     /** Returns whether the PR's required checks are green. */
     ciStatus: (prNumber: number) => Promise<boolean>;
-    /**
-     * Returns the PR head commit SHA. Captured before the CI check so CI and
-     * the merge pin reference the same commit; null fails closed (escalate).
-     * Omitted (e.g. tests) → the merger pins to the head it observes itself.
-     */
-    headSha?: (prNumber: number) => Promise<string | null>;
     method?: PrMergeMethod;
   };
   /**
@@ -439,7 +433,14 @@ export function createOrchestratorRunners(
 
       // Phase 3: opt-in auto-merge after the PR exists. Default OFF.
       if (deps.autoMerge !== undefined) {
-        const outcome = await runAutoMerge(deps, goalId, runId, repoPath, pr.prNumber);
+        const outcome = await runAutoMerge(
+          deps,
+          goalId,
+          runId,
+          repoPath,
+          pr.prNumber,
+          pr.headSha,
+        );
         if (outcome.escalateReason !== undefined) {
           return { prUrl: pr.prUrl, escalateReason: outcome.escalateReason };
         }
@@ -478,21 +479,19 @@ async function runAutoMerge(
   runId: string,
   repoPath: string,
   prNumber: number,
+  reviewedHeadSha: string | undefined,
 ): Promise<{ merged: boolean; escalateReason?: string }> {
   const autoMerge = deps.autoMerge!;
-  // Capture the head commit BEFORE the CI check so CI and the merge pin
-  // reference the same commit. A null head fails closed (cannot pin → escalate).
-  let expectedHeadSha: string | undefined;
-  if (autoMerge.headSha !== undefined) {
-    const sha = await autoMerge.headSha(prNumber);
-    if (sha === null) {
-      return {
-        merged: false,
-        escalateReason: `auto-merge: could not determine PR #${prNumber} head commit`,
-      };
-    }
-    expectedHeadSha = sha;
+  // The merge is pinned to the REVIEWED commit (the SHA createPullRequest
+  // committed + pushed after the fingerprint check), never the PR's later
+  // head. Without it we cannot prove the merge target was reviewed → escalate.
+  if (reviewedHeadSha === undefined) {
+    return {
+      merged: false,
+      escalateReason: `auto-merge: reviewed head commit for PR #${prNumber} is unknown`,
+    };
   }
+  const expectedHeadSha = reviewedHeadSha;
   const ciGreen = await autoMerge.ciStatus(prNumber);
   const gate = withManagedDb({ dbPath: deps.dbPath }, (db) => {
     const repo = new GoalRepository(db);
@@ -564,12 +563,14 @@ function gatherApproval(
   let consensus: MergeGateConsensus | null = null;
   if (active !== null) {
     const summary = JSON.parse(active.summaryJson) as ConsensusSummary;
-    const requirements = Array.isArray(summary.requirements) ? summary.requirements : [];
-    consensus = {
-      status: active.status,
-      // latest-proposal mode has no requirements → no quorum to satisfy.
-      quorumSatisfied: requirements.every((r) => r.quorumMet),
-    };
+    // fail-open guard: a malformed summary (requirements not an array) must NOT
+    // be treated as latest-proposal (empty requirements). A valid empty array
+    // is latest-proposal (no quorum to satisfy → true); a non-array is
+    // corruption → quorum NOT satisfied (the gate then blocks / needs human).
+    const quorumSatisfied =
+      Array.isArray(summary.requirements) &&
+      summary.requirements.every((r) => r.quorumMet);
+    consensus = { status: active.status, quorumSatisfied };
   }
   const override = new ReviewOverridesRepository(db).findLatest(runId);
   return { consensus, humanApproved: override?.decision === "approved" };

@@ -16,7 +16,6 @@ import {
   createGhPrPublisher,
   createGhPrMerger,
   createGhCiStatus,
-  createGhPrHead,
 } from "../core/gh-pr-publisher.js";
 import type { PrMergeMethod } from "../core/pr-creator.js";
 import { ConvergenceService } from "../goal/convergence.js";
@@ -714,7 +713,6 @@ export function registerGoalCommands(
             ? {
                 merger: createGhPrMerger(),
                 ciStatus: createGhCiStatus(repoPath),
-                headSha: createGhPrHead(repoPath),
                 method: parseMergeMethod(raw.mergeMethod),
               }
             : undefined;

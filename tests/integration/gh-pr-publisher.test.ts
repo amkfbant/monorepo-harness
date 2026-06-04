@@ -98,11 +98,30 @@ describe("gh PR merger (Phase 3-2)", () => {
     expect(existsSync(join(dir, "merge-called"))).toBe(false);
   });
 
-  it("is idempotent: an already-merged PR is a no-op (no second merge)", async () => {
+  it("is idempotent: an already-merged PR (matching expected head) is a no-op", async () => {
     const { bin, dir } = writeFakeGh("MERGED");
     const merger = createGhPrMerger(bin, 5_000);
-    const r = await merger.merge({ repoDir: tmpdir(), prNumber: 7, method: "squash" });
+    const r = await merger.merge({
+      repoDir: tmpdir(),
+      prNumber: 7,
+      method: "squash",
+      expectedHeadSha: "abc123sha",
+    });
     expect(r).toEqual({ merged: true, alreadyMerged: true });
+    expect(existsSync(join(dir, "merge-called"))).toBe(false);
+  });
+
+  it("fail-closed: an already-merged PR at a DIFFERENT commit is rejected", async () => {
+    const { bin, dir } = writeFakeGh("MERGED"); // head = abc123sha
+    const merger = createGhPrMerger(bin, 5_000);
+    await expect(
+      merger.merge({
+        repoDir: tmpdir(),
+        prNumber: 7,
+        method: "squash",
+        expectedHeadSha: "different-sha",
+      }),
+    ).rejects.toThrow(/already merged at a different commit/);
     expect(existsSync(join(dir, "merge-called"))).toBe(false);
   });
 

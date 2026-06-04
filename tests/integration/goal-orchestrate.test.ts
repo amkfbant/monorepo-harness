@@ -374,7 +374,6 @@ describe("goal orchestrate (real git + fake codex)", () => {
     goalId: string;
     ciGreen: boolean;
     merger: PrMerger;
-    headSha?: (prNumber: number) => Promise<string | null>;
   }) {
     const { coderRunner, reviewerRunner } = approveFakes();
     const resolveRunContext = (): GoalRunContext => ({
@@ -395,7 +394,6 @@ describe("goal orchestrate (real git + fake codex)", () => {
       autoMerge: {
         merger: opts.merger,
         ciStatus: async () => opts.ciGreen,
-        ...(opts.headSha !== undefined ? { headSha: opts.headSha } : {}),
       },
     });
     return new GoalOrchestrator({ dbPath: f.dbPath }).run({
@@ -429,30 +427,20 @@ describe("goal orchestrate (real git + fake codex)", () => {
     }
   });
 
-  it("auto-merge: pins the merge to the captured head commit", async () => {
+  it("auto-merge: pins the merge to the reviewed commit (from createPullRequest)", async () => {
     const goalId = createGoal(f.dbPath, "goal-merge-pin");
     const merger = fakeMerger("ok");
-    const result = await driveWithAutoMerge({
-      goalId,
-      ciGreen: true,
-      merger,
-      headSha: async () => "deadbeefsha",
-    });
+    const result = await driveWithAutoMerge({ goalId, ciGreen: true, merger });
     expect(result.outcome).toBe("merged");
-    expect(merger.calls[0]?.expectedHeadSha).toBe("deadbeefsha");
-  });
-
-  it("auto-merge: escalates fail-closed when the head commit cannot be determined", async () => {
-    const goalId = createGoal(f.dbPath, "goal-merge-nohead");
-    const merger = fakeMerger("ok");
-    const result = await driveWithAutoMerge({
-      goalId,
-      ciGreen: true,
-      merger,
-      headSha: async () => null,
-    });
-    expect(result.outcome).toBe("escalated");
-    expect(merger.calls).toHaveLength(0);
+    // the pinned SHA is the run branch's reviewed commit (a real, resolvable
+    // git SHA), not a later-observed PR head.
+    const pinned = merger.calls[0]?.expectedHeadSha;
+    expect(pinned).toMatch(/^[0-9a-f]{40}$/);
+    expect(() =>
+      execFileSync("git", ["-C", f.repoPath, "cat-file", "-e", pinned!], {
+        stdio: "ignore",
+      }),
+    ).not.toThrow();
   });
 
   it("auto-merge: leaves the PR open (pr_created, no merge) when CI is not green", async () => {

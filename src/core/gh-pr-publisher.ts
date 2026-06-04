@@ -94,6 +94,18 @@ export function createGhPrMerger(
       const view = await viewPr(ghBin, inputs, timeoutMs);
       // idempotency: never attempt a second merge on an already-merged PR.
       if (view.merged) {
+        // fail-closed: if a head was expected, the already-merged PR must be
+        // the one we reviewed — a concurrently-merged different commit must not
+        // be reported as our success.
+        if (
+          inputs.expectedHeadSha !== undefined &&
+          view.headSha !== inputs.expectedHeadSha
+        ) {
+          throw new PrGateError(
+            `PR #${inputs.prNumber} is already merged at a different commit ` +
+              `(expected ${inputs.expectedHeadSha}, head ${view.headSha ?? "unknown"}); refusing to report success`,
+          );
+        }
         return { merged: true, alreadyMerged: true };
       }
       // Safety boundary: pin the merge to the reviewed / CI-checked commit.
@@ -149,26 +161,6 @@ export function createGhCiStatus(
       return true;
     } catch {
       return false;
-    }
-  };
-}
-
-/**
- * Phase 3: a probe that returns the PR's current head commit SHA (or null on
- * any failure). The auto-merge wiring captures this BEFORE the CI check so the
- * CI judgement and the merge pin reference the same commit.
- */
-export function createGhPrHead(
-  repoDir: string,
-  ghBin = "gh",
-  timeoutMs = DEFAULT_GH_TIMEOUT_MS,
-): (prNumber: number) => Promise<string | null> {
-  return async (prNumber: number) => {
-    try {
-      const { headSha } = await viewPr(ghBin, { repoDir, prNumber, method: "squash" }, timeoutMs);
-      return headSha;
-    } catch {
-      return null;
     }
   };
 }
