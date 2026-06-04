@@ -42,6 +42,61 @@ describe("createOrchestratorRunners.classify", () => {
     const r = await runners.classify("g-c");
     expect(r.resolved).toBe(true);
   });
+
+  it("defer moves open out-of-scope findings to the backlog", async () => {
+    const dbPath = join(
+      mkdtempSync(join(tmpdir(), "harness-orch-defer-")),
+      "harness.sqlite",
+    );
+    let findingId = "";
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        runMigrations(db);
+        const repo = new GoalRepository(db);
+        repo.createSession({
+          goalId: "g-defer",
+          title: "Defer",
+          projectId: "demo",
+          closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+          createdBy: "test",
+          createdSource: "worker",
+        });
+        const f = repo.upsertFinding({
+          goalId: "g-defer",
+          source: "review",
+          severity: "P2",
+          category: "future-feature",
+          summary: "out of scope idea",
+        }).finding;
+        repo.classifyFinding({
+          findingId: f.findingId,
+          scopeStatus: "out_of_scope",
+          reason: "test",
+        });
+        findingId = f.findingId;
+      } finally {
+        close();
+      }
+    }
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot: dbPath,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+    });
+    const result = await runners.defer("g-defer");
+    expect(result.deferred).toBe(1);
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      expect(
+        new GoalRepository(db).requireFinding(findingId).lifecycleStatus,
+      ).toBe("deferred");
+    } finally {
+      close();
+    }
+  });
 });
 
 describe("latestRunId", () => {

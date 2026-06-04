@@ -143,7 +143,8 @@ harness goal orchestrate <goalId> [--max-steps <n>] [--dry-run]
   `2026-06-04-empty-goal-autonomy-design.md`. A goal with zero coding attempts
   now converges to `needs_fix / fix_findings`, so the orchestrator drives its
   own first coder run; no seeded first run is required.
-- **Auto-defer of out-of-scope follow-ups.** `continue / defer_followups`
-  currently escalates rather than auto-deferring (deferral is deterministic and
-  safe via `deferFindingToBacklog`, so this is a candidate for a future
-  `defer` action; today it stays human to remain fail-closed).
+- **Auto-defer of out-of-scope follow-ups.** _Implemented (Phase 21.2)._
+  `continue / defer_followups` now maps to a `defer` action that moves open
+  out-of-scope findings to the backlog via `deferFindingToBacklog` (no mutation
+  gate — deferral is deterministic and safe). See
+  `2026-06-05-auto-defer-design.md`.

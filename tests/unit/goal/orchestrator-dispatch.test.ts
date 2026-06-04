@@ -47,7 +47,10 @@ describe("decideOrchestratorAction", () => {
   it("maps continue + run_close_check to review, escalates other continue actions", () => {
     expect(decideOrchestratorAction(conv("continue", "run_close_check")).kind).toBe("review");
     expect(decideOrchestratorAction(conv("continue", "fix_findings")).kind).toBe("escalate");
-    expect(decideOrchestratorAction(conv("continue", "defer_followups")).kind).toBe("escalate");
+  });
+
+  it("maps continue + defer_followups to defer", () => {
+    expect(decideOrchestratorAction(conv("continue", "defer_followups")).kind).toBe("defer");
   });
 
   it("maps needs_classification to classify and close_ready to close_and_pr", () => {

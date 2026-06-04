@@ -41,6 +41,7 @@ function fakeRunners(calls: string[]): OrchestratorRunners {
     coder: async () => { calls.push("coder"); return { runId: "r1", runStatus: "needs_review" }; },
     review: async () => { calls.push("review"); return { runId: "r1", decision: "approved" }; },
     classify: async () => { calls.push("classify"); return { resolved: true }; },
+    defer: async () => { calls.push("defer"); return { deferred: 1 }; },
     closeAndPr: async () => { calls.push("closeAndPr"); return { prUrl: "https://example/pr/1" }; },
   };
 }
@@ -146,6 +147,7 @@ describe("GoalOrchestrator", () => {
         throw new Error("review boom");
       },
       classify: async () => ({ resolved: true }),
+      defer: async () => ({ deferred: 0 }),
       closeAndPr: async () => ({ prUrl: "https://example/pr/1" }),
     };
     const result = await new GoalOrchestrator({ dbPath }).run({
@@ -170,5 +172,55 @@ describe("GoalOrchestrator", () => {
     } finally {
       close2();
     }
+  });
+
+  it("dispatches defer for continue/defer_followups", async () => {
+    const dbPath = freshDbPath();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new GoalRepository(db);
+      repo.createSession({
+        goalId: "g-defer-loop",
+        title: "Defer loop",
+        projectId: "demo",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+      repo.createAttempt({ goalId: "g-defer-loop", attemptType: "implement" });
+      const f = repo.upsertFinding({
+        goalId: "g-defer-loop",
+        source: "review",
+        severity: "P2",
+        category: "future",
+        summary: "oos",
+      }).finding;
+      repo.classifyFinding({
+        findingId: f.findingId,
+        scopeStatus: "out_of_scope",
+        reason: "test",
+      });
+      // Record the close-check LAST so its evidence is fresh relative to the
+      // finding mutation (otherwise convergence treats it as stale → pending
+      // → run_close_check/review instead of continue/defer_followups).
+      repo.recordCloseCheck({
+        goalId: "g-defer-loop",
+        conditionId: "typecheck",
+        status: "passed",
+        checkedBy: "test",
+      });
+    } finally {
+      close();
+    }
+    const calls: string[] = [];
+    const result = await new GoalOrchestrator({ dbPath }).run({
+      goalId: "g-defer-loop",
+      runners: fakeRunners(calls),
+      maxSteps: 3,
+      createdBy: "worker",
+    });
+    expect(calls).toContain("defer");
+    expect(result.steps.some((s) => s.action === "defer")).toBe(true);
   });
 });
