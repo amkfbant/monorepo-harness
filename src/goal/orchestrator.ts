@@ -23,6 +23,11 @@ export class GoalOrchestrator {
   constructor(private readonly opts: GoalOrchestratorOpts) {}
 
   async run(input: RunOrchestrationInput): Promise<OrchestrationResult> {
+    if (!Number.isInteger(input.maxSteps) || input.maxSteps < 1) {
+      throw new Error(
+        `maxSteps must be a positive integer (got ${input.maxSteps})`,
+      );
+    }
     const steps: OrchestrationStep[] = [];
     let finalDecision = "";
     for (let i = 1; i <= input.maxSteps; i++) {
