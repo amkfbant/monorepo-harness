@@ -244,6 +244,33 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
     }
   });
 
+  it("Phase 4: in mutation mode, non-GET/POST verbs are 405 (not 404)", async () => {
+    await env.server.close();
+    const srv = createDashboardServer({
+      dbPath: env.dbPath,
+      host: "127.0.0.1",
+      port: 0,
+      mutationEnabled: true,
+      token: "topsecret",
+      csrfToken: "csrf-123",
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const addr = srv.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    try {
+      for (const method of ["PUT", "PATCH", "DELETE"]) {
+        const res = await fetch(`${base}/api/runs/run-x/review`, {
+          method,
+          headers: { Authorization: "Bearer topsecret" },
+        });
+        expect(res.status).toBe(405);
+      }
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+      env.server = await startServer(env.dbPath);
+    }
+  });
+
   it("Phase 4: POST /api/runs/:id/review dispatches to the POST handler (not the GET route)", async () => {
     await env.server.close();
     const srv = createDashboardServer({

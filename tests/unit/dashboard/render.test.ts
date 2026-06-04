@@ -54,7 +54,7 @@ function markupSnapshot(): DashboardSnapshot {
     backlog: {
       items: [
         {
-          itemId: "item-1",
+          itemId: "item-<script>i</script>",
           projectId: "demo",
           repoId: "demo",
           domain: "apps/web",
@@ -143,6 +143,9 @@ describe("renderDashboardHtml", () => {
       // run id (which contains markup) is escaped in its data attribute.
       expect(html).not.toMatch(/data-run-id="run-<script>/);
       expect(html).toMatch(/run-&lt;script&gt;/);
+      // backlog item id is escaped in its data attribute too.
+      expect(html).not.toMatch(/data-item-id="item-<script>/);
+      expect(html).toMatch(/item-&lt;script&gt;/);
     });
   });
 });

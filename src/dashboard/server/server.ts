@@ -1721,16 +1721,16 @@ export function buildListener(
         return;
       }
 
-      const isMutationVerb =
-        req.method === "POST" ||
-        req.method === "PUT" ||
-        req.method === "PATCH" ||
-        req.method === "DELETE";
+      // The dashboard only defines GET and POST routes. POST is allowed only
+      // when mutation is enabled; every other verb (PUT/PATCH/DELETE/...) is
+      // 405, not 404 — keep the contract explicit rather than relying on a
+      // later route miss.
+      const isPost = req.method === "POST";
 
       if (
         req.method !== "GET" &&
         req.method !== "HEAD" &&
-        !(isMutationVerb && config.mutationEnabled === true)
+        !(isPost && config.mutationEnabled === true)
       ) {
         writeError(
           res,
