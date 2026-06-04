@@ -1,0 +1,197 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { openDb } from "../../../src/db/connection.js";
+import { runMigrations } from "../../../src/db/migrations.js";
+import { ReviewConsensusRepository } from "../../../src/db/repositories/review-consensus.js";
+import { GoalRepository } from "../../../src/goal/repository.js";
+import {
+  dbConsensusSnapshotProvider,
+  evaluateConsensusStallForGoal,
+} from "../../../src/goal/consensus-stall-check.js";
+import type { ConsensusStatus, ConsensusSummary } from "../../../src/core/review-consensus.js";
+
+function fresh() {
+  const dir = mkdtempSync(join(tmpdir(), "harness-goal-consensus-stall-"));
+  const db = openDb(join(dir, ".harness", "harness.sqlite"));
+  runMigrations(db);
+  return { db, goals: new GoalRepository(db) };
+}
+
+function summary(input: {
+  evaluatedAt: string;
+  approvals: number;
+  participants: number;
+  blocked?: boolean;
+}): ConsensusSummary {
+  return {
+    evaluatedAt: input.evaluatedAt,
+    ruleSha256: "sha",
+    proposals: [],
+    override: null,
+    excludedProposals: [],
+    requirements: [
+      {
+        group: "g",
+        required: 1,
+        approvals: input.approvals,
+        participants: input.participants,
+        quorumMet: false,
+        blocked: input.blocked ?? false,
+      },
+    ],
+    decisionPath: "requirements-pending",
+  };
+}
+
+function seedRun(db: ReturnType<typeof openDb>, runId: string) {
+  db.prepare(
+    `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch, status,
+       started_at, updated_at, source_mode, db_revision, meta_json)
+     VALUES (?, 'repo', 'domain', 'domain-coding', 'main', 'needs_review',
+       '2026-06-05T08:00:00Z', '2026-06-05T08:00:00Z', 'db-first', 1, '{}')`,
+  ).run(runId);
+}
+
+function seedConsensus(
+  db: ReturnType<typeof openDb>,
+  runId: string,
+  evaluatedAt: string,
+  status: ConsensusStatus,
+  approvals: number,
+  participants: number,
+  blocked = false,
+) {
+  new ReviewConsensusRepository(db).insertActive({
+    runId,
+    ruleSha256: "sha",
+    status,
+    summary: summary({ evaluatedAt, approvals, participants, blocked }),
+    evaluatedAt,
+    evaluatedBy: "test",
+    sourceProposalIds: [],
+  });
+}
+
+function seedReviewCycle(goals: GoalRepository, goalId: string, runId: string) {
+  const cycle = goals.startReviewCycle({
+    goalId,
+    reviewMode: "delta",
+    sourceRunId: runId,
+  });
+  goals.completeReviewCycle({ cycleId: cycle.cycleId, summary: "seed" });
+}
+
+describe("evaluateConsensusStallForGoal (Phase 2-3)", () => {
+  it("escalates the goal when consensus is stalled (no progress)", () => {
+    const { db, goals } = fresh();
+    try {
+      goals.createSession({
+        goalId: "goal-stall",
+        title: "Goal stall",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      seedReviewCycle(goals, "goal-stall", "run-1");
+      seedRun(db, "run-1");
+      seedConsensus(db, "run-1", "2026-06-05T09:00:00Z", "pending", 0, 1);
+      seedConsensus(db, "run-1", "2026-06-05T10:00:00Z", "pending", 0, 1);
+      seedConsensus(db, "run-1", "2026-06-05T11:00:00Z", "pending", 0, 1);
+
+      const result = evaluateConsensusStallForGoal({
+        repository: goals,
+        goalId: "goal-stall",
+        provider: dbConsensusSnapshotProvider(db),
+        createdBy: "test",
+      });
+
+      expect(result.stalled).toBe(true);
+      expect(result.goalStatus?.status).toBe("escalated");
+      expect(goals.requireSession("goal-stall").status).toBe("escalated");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not escalate when consensus is progressing", () => {
+    const { db, goals } = fresh();
+    try {
+      goals.createSession({
+        goalId: "goal-progress",
+        title: "Goal progress",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      seedReviewCycle(goals, "goal-progress", "run-1");
+      seedRun(db, "run-1");
+      seedConsensus(db, "run-1", "2026-06-05T09:00:00Z", "pending", 0, 1);
+      seedConsensus(db, "run-1", "2026-06-05T10:00:00Z", "pending", 0, 2);
+      seedConsensus(db, "run-1", "2026-06-05T11:00:00Z", "pending", 1, 3);
+
+      const result = evaluateConsensusStallForGoal({
+        repository: goals,
+        goalId: "goal-progress",
+        provider: dbConsensusSnapshotProvider(db),
+        createdBy: "test",
+      });
+
+      expect(result.stalled).toBe(false);
+      expect(result.goalStatus).toBeNull();
+      expect(goals.requireSession("goal-progress").status).not.toBe("escalated");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not escalate a resolved (approved) consensus", () => {
+    const { db, goals } = fresh();
+    try {
+      goals.createSession({
+        goalId: "goal-approved",
+        title: "Goal approved",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      seedReviewCycle(goals, "goal-approved", "run-1");
+      seedRun(db, "run-1");
+      seedConsensus(db, "run-1", "2026-06-05T09:00:00Z", "pending", 0, 1);
+      seedConsensus(db, "run-1", "2026-06-05T10:00:00Z", "pending", 0, 1);
+      seedConsensus(db, "run-1", "2026-06-05T11:00:00Z", "approved", 1, 1);
+
+      const result = evaluateConsensusStallForGoal({
+        repository: goals,
+        goalId: "goal-approved",
+        provider: dbConsensusSnapshotProvider(db),
+        createdBy: "test",
+      });
+
+      expect(result.stalled).toBe(false);
+      expect(goals.requireSession("goal-approved").status).not.toBe("escalated");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("is a no-op when the goal has no review runs", () => {
+    const { db, goals } = fresh();
+    try {
+      goals.createSession({
+        goalId: "goal-none",
+        title: "Goal none",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const result = evaluateConsensusStallForGoal({
+        repository: goals,
+        goalId: "goal-none",
+        provider: dbConsensusSnapshotProvider(db),
+        createdBy: "test",
+      });
+      expect(result.stalled).toBe(false);
+      expect(result.goalStatus).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+});

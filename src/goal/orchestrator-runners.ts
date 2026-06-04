@@ -15,6 +15,7 @@ import { deferFindingToBacklog } from "./followups.js";
 import { ConvergenceService } from "./convergence.js";
 import { assertGoalCanStartMutation } from "./mutation-gate.js";
 import { importReviewProposalToGoal } from "./review-integration.js";
+import { dbConsensusSnapshotProvider } from "./consensus-stall-check.js";
 import { nextReviewMode } from "./review-mode.js";
 import type { OrchestratorRunners } from "./orchestrator-types.js";
 import type {
@@ -286,6 +287,10 @@ export function createOrchestratorRunners(
           proposal,
           processResult: processed,
           createdBy: deps.createdBy,
+          // Phase 2-3: escalate if the consensus for this goal's review runs
+          // is stuck (long pending / no progress). No-op for the common
+          // single-reviewer, decisive-verdict flow.
+          consensusStall: { provider: dbConsensusSnapshotProvider(db) },
         });
       });
       return { runId, decision: reviewResult.decision };

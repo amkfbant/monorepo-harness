@@ -6,6 +6,12 @@ import {
 } from "./classification.js";
 import { ConvergenceService } from "./convergence.js";
 import { recordConvergenceDecisionWithStatus } from "./convergence-status.js";
+import {
+  evaluateConsensusStallForGoal,
+  type ConsensusSnapshotProvider,
+  type GoalConsensusStallResult,
+} from "./consensus-stall-check.js";
+import type { ConsensusStallConfig } from "../core/consensus-stall.js";
 import { GoalRepository } from "./repository.js";
 import { nextReviewMode } from "./review-mode.js";
 import type {
@@ -27,6 +33,15 @@ export interface ImportReviewProposalToGoalInput {
   reviewMode?: GoalReviewMode;
   triggerAttemptId?: string;
   createdBy: string;
+  /**
+   * Phase 2-3: when provided, evaluate consensus stall after recording the
+   * convergence decision. A detected stall escalates the goal (harness-only,
+   * fail-closed). Omitted = no stall check (backward compatible).
+   */
+  consensusStall?: {
+    provider: ConsensusSnapshotProvider;
+    config?: ConsensusStallConfig;
+  };
 }
 
 export interface ImportedGoalFinding {
@@ -41,6 +56,8 @@ export interface ImportReviewProposalToGoalResult {
   closeChecks: GoalCloseCheck[];
   convergenceDecision: GoalConvergenceDecisionRecord;
   goalStatus: GoalSession | null;
+  /** Phase 2-3: present when a consensus-stall check ran for this import. */
+  consensusStall?: GoalConsensusStallResult;
 }
 
 interface ProposalFindingSeed {
@@ -111,12 +128,34 @@ export function importReviewProposalToGoal(
     recommendedNextAction: convergence.recommendedNextAction,
     createdBy: input.createdBy,
   });
+  // Phase 2-3: after the normal convergence decision, check whether the
+  // consensus for this goal's review runs is stuck. A stall escalates the
+  // goal (harness-only state transition, fail-closed) and supersedes the
+  // just-synced status.
+  let goalStatus = recorded.goalStatus;
+  let consensusStall: GoalConsensusStallResult | undefined;
+  if (input.consensusStall !== undefined) {
+    consensusStall = evaluateConsensusStallForGoal({
+      repository: input.repository,
+      goalId: input.goalId,
+      provider: input.consensusStall.provider,
+      ...(input.consensusStall.config !== undefined
+        ? { config: input.consensusStall.config }
+        : {}),
+      createdBy: input.createdBy,
+    });
+    if (consensusStall.stalled && consensusStall.goalStatus !== null) {
+      goalStatus = consensusStall.goalStatus;
+    }
+  }
+
   return {
     cycle: completedCycle,
     findings,
     closeChecks,
     convergenceDecision: recorded.decisionRecord,
-    goalStatus: recorded.goalStatus,
+    goalStatus,
+    ...(consensusStall !== undefined ? { consensusStall } : {}),
   };
 }
 
