@@ -85,11 +85,14 @@ export interface PrMerger { merge(inputs: PrMergeInputs): Promise<PrMergeResult>
 - timeout / 子プロセス例外（EPIPE 等）は既存 `runGh`（spawn + SIGKILL timeout）で
   握る。timeout は `GhTimeoutError` で loud に失敗。
 
-CI green は wiring 側 `createGhCiStatus(prNumber, expectedHeadSha)`（`gh pr checks
-<n> --required`、**required checks のみ**）。checks の **前後で PR head ==
-expectedHeadSha を検証**し、head が動いた/不確定（pending/失敗/timeout/error）は
-false=fail-closed。merge も `--match-head-commit expectedHeadSha` で同 commit に
-固定するため、CI 検証 commit と merge commit が一致する。
+CI green は wiring 側 `createGhCiStatus(prNumber, expectedHeadSha)`。
+`gh pr view --json headRefOid,statusCheckRollup` で **head OID と check rollup を
+1 つの atomic snapshot** として取得し、`headRefOid === expectedHeadSha` **かつ**
+rollup の全 check が success のときのみ green。snapshot が単一なので A→B→A の
+ABA race でも「rollup が expectedHeadSha のもの」と保証できる。head mismatch /
+空 rollup（CI 証跡なし）/ 非 success / timeout / error は false=fail-closed。merge も
+`--match-head-commit expectedHeadSha` で同 commit に固定するため、CI 検証 commit と
+merge commit が一致する。
 
 auto-merge 有効時は **PR 作成前に承認 gate（close-ready ∧ consensus approved+quorum
 or human override、CI は除く）を preflight** し、hard-block なら PR を作らず escalate

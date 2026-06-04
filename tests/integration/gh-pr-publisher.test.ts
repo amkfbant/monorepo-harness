@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   createGhPrPublisher,
   createGhPrMerger,
+  createGhCiStatus,
 } from "../../src/core/gh-pr-publisher.js";
 
 /** Write a fake `gh` executable that sleeps (to trigger the timeout). */
@@ -115,7 +116,61 @@ describe("gh PR merger (Phase 3-2)", () => {
     const slowGh = writeSlowGh();
     const merger = createGhPrMerger(slowGh, 300);
     await expect(
-      merger.merge({ repoDir: tmpdir(), prNumber: 1, method: "squash" }),
+      merger.merge({ repoDir: tmpdir(), prNumber: 1, method: "squash", expectedHeadSha: "x" }),
     ).rejects.toThrow(/timed out/);
+  });
+});
+
+/** A fake `gh` whose `pr view --json headRefOid,statusCheckRollup` returns the
+ *  given head OID + rollup as a single atomic JSON snapshot. */
+function writeFakeGhCi(headOid: string, rollupJson: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "harness-fake-gh-"));
+  const bin = join(dir, "gh");
+  writeFileSync(
+    bin,
+    [
+      "#!/bin/sh",
+      'if [ "$1" = "pr" ] && [ "$2" = "view" ]; then',
+      `  printf '{"headRefOid":"${headOid}","statusCheckRollup":${rollupJson}}'`,
+      "  exit 0",
+      "fi",
+      "exit 1",
+      "",
+    ].join("\n"),
+  );
+  execFileSync("chmod", ["+x", bin]);
+  return bin;
+}
+
+describe("gh CI status probe (Phase 3)", () => {
+  const GREEN = '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]';
+
+  it("green when head matches and all checks succeed", async () => {
+    const ci = createGhCiStatus(tmpdir(), writeFakeGhCi("reviewedsha", GREEN), 5_000);
+    expect(await ci(5, "reviewedsha")).toBe(true);
+  });
+
+  it("fail-closed: head mismatch (the rollup is for a different commit) → false", async () => {
+    // even though the checks are green, the snapshot's head is not the
+    // reviewed commit, so the green result is not trusted (A→B→A safety).
+    const ci = createGhCiStatus(tmpdir(), writeFakeGhCi("othersha", GREEN), 5_000);
+    expect(await ci(5, "reviewedsha")).toBe(false);
+  });
+
+  it("fail-closed: a pending check → false", async () => {
+    const pending = '[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":null}]';
+    const ci = createGhCiStatus(tmpdir(), writeFakeGhCi("reviewedsha", pending), 5_000);
+    expect(await ci(5, "reviewedsha")).toBe(false);
+  });
+
+  it("fail-closed: a failing check → false", async () => {
+    const failing = '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]';
+    const ci = createGhCiStatus(tmpdir(), writeFakeGhCi("reviewedsha", failing), 5_000);
+    expect(await ci(5, "reviewedsha")).toBe(false);
+  });
+
+  it("fail-closed: an empty rollup (no CI evidence) → false", async () => {
+    const ci = createGhCiStatus(tmpdir(), writeFakeGhCi("reviewedsha", "[]"), 5_000);
+    expect(await ci(5, "reviewedsha")).toBe(false);
   });
 });

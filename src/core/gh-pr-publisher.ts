@@ -91,31 +91,27 @@ export function createGhPrMerger(
 ): PrMerger {
   return {
     async merge(inputs: PrMergeInputs): Promise<PrMergeResult> {
+      // Invariant: this destructive primitive ALWAYS requires the reviewed
+      // commit — checked before anything else, including the already-merged
+      // no-op, so an unpinned call can never succeed.
+      if (inputs.expectedHeadSha === undefined) {
+        throw new PrGateError(
+          `refusing to merge PR #${inputs.prNumber} without an expectedHeadSha (reviewed commit)`,
+        );
+      }
       const view = await viewPr(ghBin, inputs, timeoutMs);
       // idempotency: never attempt a second merge on an already-merged PR.
       if (view.merged) {
-        // fail-closed: if a head was expected, the already-merged PR must be
-        // the one we reviewed — a concurrently-merged different commit must not
-        // be reported as our success.
-        if (
-          inputs.expectedHeadSha !== undefined &&
-          view.headSha !== inputs.expectedHeadSha
-        ) {
+        // fail-closed: the already-merged PR must be the one we reviewed — a
+        // concurrently-merged different commit must not be reported as our
+        // success.
+        if (view.headSha !== inputs.expectedHeadSha) {
           throw new PrGateError(
             `PR #${inputs.prNumber} is already merged at a different commit ` +
               `(expected ${inputs.expectedHeadSha}, head ${view.headSha ?? "unknown"}); refusing to report success`,
           );
         }
         return { merged: true, alreadyMerged: true };
-      }
-      // Safety boundary: an open-PR merge MUST be pinned to a caller-supplied
-      // reviewed commit. The primitive refuses to merge without it rather than
-      // falling back to whatever head it observes (which could be unreviewed).
-      // `gh pr merge --match-head-commit` then refuses if the PR head moved.
-      if (inputs.expectedHeadSha === undefined) {
-        throw new PrGateError(
-          `refusing to merge PR #${inputs.prNumber} without an expectedHeadSha (reviewed commit)`,
-        );
       }
       await runGh(
         ghBin,
@@ -136,40 +132,63 @@ export function createGhPrMerger(
 }
 
 /**
- * Phase 3: a CI-green probe for the auto-merge gate, backed by `gh pr checks
- * --required` (exit 0 == all REQUIRED checks passed; optional/neutral checks
- * are ignored so they do not permanently block merge). The probe first
- * confirms the PR head is still the expected reviewed commit, so a green CI
- * result is always for that exact commit (not a commit the branch briefly
- * advanced to). Fail-closed: a head mismatch or ANY failure — pending /
- * failing required checks, a timeout, an error — returns false so the gate
- * does not merge on an uncertain CI status.
+ * Phase 3: a CI-green probe for the auto-merge gate. It reads the PR head OID
+ * AND its check rollup in ONE atomic `gh pr view` snapshot, so the checks it
+ * evaluates are provably for that exact commit — there is no before/after
+ * window that an A→B→A head swap could exploit. Green requires
+ * headRefOid === expectedHeadSha AND every check in the rollup successful.
+ * Fail-closed: a head mismatch, an empty rollup (no CI evidence), any
+ * non-success check, a timeout, or an error all return false.
  */
 export function createGhCiStatus(
   repoDir: string,
   ghBin = "gh",
   timeoutMs = DEFAULT_GH_TIMEOUT_MS,
 ): (prNumber: number, expectedHeadSha: string) => Promise<boolean> {
-  const headOf = async (prNumber: number): Promise<string | null> =>
-    (await viewPr(ghBin, { repoDir, prNumber, method: "squash" }, timeoutMs)).headSha;
   return async (prNumber: number, expectedHeadSha: string) => {
     try {
-      // The head must equal the reviewed commit BOTH before and after the
-      // checks query, so a green result cannot be for a commit the branch
-      // briefly advanced to during the call (fail-closed on any change).
-      if ((await headOf(prNumber)) !== expectedHeadSha) return false;
-      await runGh(
+      const out = await runGh(
         ghBin,
-        ["pr", "checks", String(prNumber), "--required"],
+        ["pr", "view", String(prNumber), "--json", "headRefOid,statusCheckRollup"],
         repoDir,
         timeoutMs,
       );
-      if ((await headOf(prNumber)) !== expectedHeadSha) return false;
-      return true;
+      const parsed = JSON.parse(out.trim() || "{}") as {
+        headRefOid?: unknown;
+        statusCheckRollup?: unknown;
+      };
+      // The rollup is for THIS head OID; binding it to the reviewed commit
+      // makes the green judgement provably about the commit we will merge.
+      if (parsed.headRefOid !== expectedHeadSha) return false;
+      const rollup = parsed.statusCheckRollup;
+      if (!Array.isArray(rollup) || rollup.length === 0) return false;
+      return rollup.every(isCheckGreen);
     } catch {
       return false;
     }
   };
+}
+
+/**
+ * A single `statusCheckRollup` entry is green when a CheckRun completed with a
+ * benign conclusion, or a legacy StatusContext is SUCCESS. Anything else
+ * (pending, failure, error, unknown shape) is NOT green (fail-closed).
+ */
+function isCheckGreen(check: unknown): boolean {
+  const c = check as { state?: unknown; status?: unknown; conclusion?: unknown };
+  if (typeof c.state === "string") {
+    return c.state.toUpperCase() === "SUCCESS";
+  }
+  if (typeof c.status === "string" && c.status.toUpperCase() !== "COMPLETED") {
+    return false;
+  }
+  const conclusion =
+    typeof c.conclusion === "string" ? c.conclusion.toUpperCase() : "";
+  return (
+    conclusion === "SUCCESS" ||
+    conclusion === "NEUTRAL" ||
+    conclusion === "SKIPPED"
+  );
 }
 
 /**
