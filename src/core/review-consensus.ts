@@ -280,7 +280,10 @@ function isOlderThan(
   maxAgeHours: number,
 ): boolean {
   const reviewedMs = Date.parse(reviewedAt);
-  if (Number.isNaN(reviewedMs) || Number.isNaN(evaluatedMs)) return false;
+  // fail-closed: maxAgeHours is being enforced but we cannot prove the
+  // proposal's freshness (unparseable timestamp) → treat it as stale and
+  // exclude it, rather than letting it count toward an approval.
+  if (Number.isNaN(reviewedMs) || Number.isNaN(evaluatedMs)) return true;
   const elapsedHours = (evaluatedMs - reviewedMs) / 3_600_000;
   // Only positive elapsed counts; a reviewedAt after evaluatedAt is not stale.
   return elapsedHours > maxAgeHours;

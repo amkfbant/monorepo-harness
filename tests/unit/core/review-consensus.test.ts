@@ -385,6 +385,31 @@ describe("evaluateConsensus quorum (Phase 2-1)", () => {
     expect(r.summary.requirements.find((x) => x.group === "humans")?.quorumMet).toBe(false);
   });
 
+  it("participation rate with groupSize 0 → fail-closed (quorum not met)", () => {
+    const rule: ReviewRule = {
+      ...QUORUM_RULE,
+      requirements: [
+        {
+          group: "humans",
+          minApprovals: 1,
+          blockingDecisions: [],
+          quorum: { minParticipationRate: 0.5, groupSize: 0 },
+        },
+      ],
+    };
+    const r = evaluateConsensus({
+      rule,
+      ruleSha256: ruleSha256(rule),
+      proposals: [
+        proposal({ proposalId: 1, decision: "approved", reviewerId: "alice", groupId: "humans" }),
+        proposal({ proposalId: 2, decision: "approved", reviewerId: "bob", groupId: "humans" }),
+      ],
+      evaluatedAt: NOW,
+    });
+    expect(r.status).toBe("pending");
+    expect(r.summary.requirements.find((x) => x.group === "humans")?.quorumMet).toBe(false);
+  });
+
   it("no quorum declared → quorumMet true (backward compatible)", () => {
     const r = evaluateConsensus({
       rule: CONSENSUS_RULE,
@@ -482,6 +507,49 @@ describe("evaluateConsensus staleness (Phase 2-2)", () => {
     });
     expect(r.status).toBe("approved");
     expect(r.summary.excludedProposals).toEqual([]);
+  });
+
+  it("fail-closed: maxAgeHours with an unparseable reviewedAt excludes the proposal", () => {
+    const rule: ReviewRule = {
+      ...DEFAULT_REVIEW_RULE,
+      staleProposal: { rejectSuperseded: true, maxAgeHours: 24 },
+    };
+    const r = evaluateConsensus({
+      rule,
+      ruleSha256: ruleSha256(rule),
+      proposals: [
+        proposal({ proposalId: 1, decision: "approved", reviewedAt: "not-a-date" }),
+      ],
+      evaluatedAt: NOW,
+    });
+    expect(r.status).toBe("pending");
+    expect(r.summary.excludedProposals).toEqual([
+      { proposalId: 1, reason: "stale_age" },
+    ]);
+  });
+
+  it("superseded takes precedence over stale_age and is reported once", () => {
+    const rule: ReviewRule = {
+      ...DEFAULT_REVIEW_RULE,
+      staleProposal: { rejectSuperseded: true, maxAgeHours: 24 },
+    };
+    const r = evaluateConsensus({
+      rule,
+      ruleSha256: ruleSha256(rule),
+      proposals: [
+        proposal({
+          proposalId: 1,
+          decision: "approved",
+          // both superseded AND older than 24h
+          reviewedAt: "2026-05-23T09:00:00Z",
+          supersededAt: "2026-05-24T08:00:00Z",
+        }),
+      ],
+      evaluatedAt: NOW,
+    });
+    expect(r.summary.excludedProposals).toEqual([
+      { proposalId: 1, reason: "superseded" },
+    ]);
   });
 
   it("does not exclude on negative elapsed (reviewedAt after evaluatedAt)", () => {
