@@ -269,17 +269,33 @@ bugfix2（PR 後の修正ループ）は Advisory レーンに置く。外部 fi
   クリアした薄いスライスだけ auto。`src/policy/**` `src/codex/**` `src/goal/**`
   migrations `.github/**` 等の安全境界路は常に auto 不可。
 
-### 4. 前提（最初のベーシックな一歩）
+### 4. 前提（最初のベーシックな一歩）— **実装済み（P1, PR #19）**
 
-auto-merge を実在させる前提は **CI の bounded await**（PR 作成後に CI 完了を
-timeout 付きで poll、timeout は fail-closed で人手に残す）。現状の単発スナップ
-ショット評価では実 repo で auto-merge は発火しない（[上記エントリ参照](#非同期な外部チェックcodex-github-app-review--copilot-review--ci-の-bounded-await--取り込み)）。
+auto-merge を実在させる前提だった **CI の bounded await**（PR 作成後に CI 完了を
+timeout 付きで poll、timeout は fail-closed で人手に残す）は **実装済み**。
+`createGhCiStatus`（`src/core/gh-pr-publisher.ts`）が単発スナップショットから
+bounded poll になり、`goal orchestrate --ci-await-timeout`（既定 1200s）で CI 完了を
+待ってから gate 評価する。head-moved / terminal failure / timeout はすべて
+fail-closed。仕様は [`specs/workflow.md`](./specs/workflow.md) の「Phase 3 — auto-merge」。
 
-### 5. sensitivity map の初期 tier（monorepo-harness 向け）
+> 残るのは**非ブロッキング化**: 現状は `closeAndPr` が in-process で CI 完了まで待つ
+> （最大 timeout 分ブロック）。上記エントリの **resumable `awaiting_checks` 状態 /
+> 外部レビュー ingestion** は未実装で、bounded await はその「最小の一歩」に当たる。
+
+### 5. sensitivity map の初期 tier（monorepo-harness 向け）— **実装済み（P2, PR #20）**
 
 path glob → tier（= blast radius と meta-risk の符号化）。tier 許可は決定論的に
 これで計算する。**meta-risk**（gate する仕組みそのものを変える変更）は常に
 auto 不可 — 変更が自分のチェックを無効化しうるため。
+
+> **実装済み**: `src/core/automerge-tiers.ts`（`DEFAULT_AUTO_MERGE_SENSITIVITY_MAP`
+> ＋ `computeAutoMergeTier`）。`evaluateMergeGate` に `tierEligible` を足し、tier>0 は
+> `tier_not_auto_eligible`（**非hard**＝PR を残すだけ・escalate しない）。`runAutoMerge`
+> は run の changed paths から tier を計算し **tier===0 のときだけ auto-merge**。
+> fail-closed: 空 paths→tier-1 / multi-match→max tier / 未マップ→tier-1。tier gate は
+> auto-merge を**制限方向にしか効かない**（§0 非対称）。下表は初期 map（コード内の
+> 既定値が真）。**follow-up**: operator-config-override、tests の「追加のみ」検出、
+> `src/core/automerge-tiers.ts` 自体を Tier-2 にするか。
 
 | tier | 方針 | path（例） | 理由 |
 |------|------|-----------|------|
@@ -334,3 +350,26 @@ bound される。
 **Status:** 設計原則 ＋ 三論点詳細（tier 表 / 取りこぼし吸収 / 発散拡張）を記録
 （実装なし）。実装着手時は §5 の tier 表と「§0 非対称・§4 CI bounded await 前提」を
 出発点にする。2026-06-05 の運用整理ディスカッション（A〜D auto-merge 実験後）に基づく。
+
+## orchestrator が failed-command（検証失敗）から自動復帰しない
+
+**観測（P2 実装中, 2026-06-05）:** coder run の検証コマンド（typecheck / vitest）が
+失敗すると run は `failed-command` になる。だが `goal orchestrate` はこの run を
+**review しようとして**「only needs_review can be auto-reviewed」で **escalate** する。
+bugfix ループ（rerun）は `review process` の `changes_requested` 経路のみが入口で
+（`harness rerun --from-review` は changes_requested 必須）、**コマンド失敗からの
+rerun 経路が無い**。
+
+**なぜ重要:** P2 では codex が既存 auto-merge テストを回帰させ failed-command に
+なった（harness が正しく弾いた）。だが orchestrator が自動で coder を rerun せず
+escalate し、operator が手で goal を作り直す必要があった。回帰の多い大きめタスクで
+この手間が効いてくる。
+
+**対策案（sketch・未実装）:**
+- `failed-command` を dispatch で「coder rerun」アクションへマップする（review でなく）。
+  失敗コマンドの stderr/stdout を rerun prompt に `required_changes` 同様に注入。
+- `harness rerun` に `--from-failed-command <run-id>` 経路を足す（changes_requested
+  限定を緩める）。`max-reruns` 予算内で bound。
+- fail-closed: rerun 予算超過は従来どおり escalate。
+
+**Status:** idea only — 未実装。P2 実装中の実観測に基づく。
