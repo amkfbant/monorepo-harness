@@ -159,12 +159,16 @@ App / Copilot）が実バグを拾う価値が高く、(b) それを取りこぼ
 
 **対策案（sketch、実装はしない / 複数の方向）:**
 
-1. **resumable な "awaiting-checks" goal 状態。** transient（CI / 外部レビュー未確定）
-   のとき goal を `closed` ではなく非終端の新状態（例 `awaiting_checks`）に置く。
-   `orchestrator-dispatch.ts` に再評価経路を足し、再 `orchestrate`（または定期
-   `goal await-merge`）が CI + 外部レビュー verdict を **bounded budget で poll** →
-   揃えば merge、未達は待機、failure は fix ループへ。これが「later merge」を
-   harness 経路にする核（現状は手 merge しか無い）。
+1. **resumable な "awaiting-checks" goal 状態 — CI 部分は実装済み（slice 1）。**
+   transient が **`ci_not_green` のみ**のとき goal を `closed` でなく **`close_ready`**
+   に残し（新 status / migration を避け close_ready を「PR up・CI 待ち」に二重利用）、
+   後続の `goal orchestrate` が closeAndPr に再入して CI 緑なら merge する
+   （`createPullRequest` は既存 PR を冪等返却し reviewed head SHA を run branch tip から
+   解決、`runAutoMerge` が再 pin）。`tier_not_auto_eligible` は再チェック無意味なので
+   `closed`（人手）。これで「later merge」が harness 経路になった（CI 待ちのみ）。
+   **残 slice**: 専用 `awaiting_checks` status（close_ready 二重利用の解消・要 migration）、
+   外部レビュー verdict（codex App / Copilot）の poll → **advisory finding 化** →
+   fix ループ（§2/§6）、bounded budget / 定期 `goal await-merge`。下記 2〜3 が core。
 
 2. **bounded poll-and-ingest lander（land を実装ループから分離）。** `ciStatus` を
    bounded poll 化し、`gh pr view --json reviews` で codex App / Copilot の verdict を

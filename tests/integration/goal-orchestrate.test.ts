@@ -462,7 +462,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
     ).not.toThrow();
   });
 
-  it("auto-merge: leaves the PR open (pr_created, no merge) when CI is not green", async () => {
+  it("auto-merge: CI-not-green leaves the PR open and the goal close_ready (re-checkable)", async () => {
     const goalId = createGoal(f.dbPath, "goal-merge-ci", "docs");
     const merger = fakeMerger("ok");
     const result = await driveWithAutoMerge({ goalId, ciGreen: false, merger });
@@ -471,9 +471,49 @@ describe("goal orchestrate (real git + fake codex)", () => {
     expect(merger.calls).toHaveLength(0);
     const { db, close } = openManagedDb({ dbPath: f.dbPath });
     try {
-      expect(new GoalRepository(db).requireSession(goalId).status).toBe("closed");
+      // NOT closed: a CI-not-green transient is re-checkable, so the goal is
+      // left close_ready with the PR open for a later merge.
+      expect(new GoalRepository(db).requireSession(goalId).status).toBe(
+        "close_ready",
+      );
     } finally {
       close();
+    }
+  });
+
+  it("auto-merge: a close_ready (CI-not-green) goal merges on a later re-run", async () => {
+    const goalId = createGoal(f.dbPath, "goal-merge-recheck", "docs");
+    // first pass: CI not green → PR open, goal left close_ready.
+    const first = await driveWithAutoMerge({
+      goalId,
+      ciGreen: false,
+      merger: fakeMerger("ok"),
+    });
+    expect(first.outcome).toBe("pr_created");
+    {
+      const { db, close } = openManagedDb({ dbPath: f.dbPath });
+      try {
+        expect(new GoalRepository(db).requireSession(goalId).status).toBe(
+          "close_ready",
+        );
+      } finally {
+        close();
+      }
+    }
+    // second pass: CI now green → re-enters closeAndPr (idempotent PR) and merges.
+    const merger = fakeMerger("ok");
+    const second = await driveWithAutoMerge({ goalId, ciGreen: true, merger });
+    expect(second.outcome).toBe("merged");
+    expect(merger.calls).toHaveLength(1);
+    {
+      const { db, close } = openManagedDb({ dbPath: f.dbPath });
+      try {
+        expect(new GoalRepository(db).requireSession(goalId).status).toBe(
+          "closed",
+        );
+      } finally {
+        close();
+      }
     }
   });
 

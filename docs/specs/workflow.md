@@ -766,7 +766,13 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
     安全、不確定は fail-closed）。
   - `hardBlocked` → **merge せず escalate**（fail-closed、goal は `escalated`）。
   - transient（CI 未 green、または Tier-1/Tier-2）→ merge せず PR を残す
-    （outcome `pr_created`）。
+    （outcome `pr_created`）。**resumable な later-merge**: transient が
+    **`ci_not_green` のみ**（再チェックで解決しうる temporal な blocker）なら goal を
+    `closed` でなく **`close_ready`** に残す。後続の `goal orchestrate` が closeAndPr に
+    再入し（`createPullRequest` は既存 PR を冪等に返し、reviewed head SHA を run branch
+    の tip から解決）、CI が緑になっていれば merge する。`tier_not_auto_eligible`（tier は
+    変わらない＝再チェック無意味）は従来どおり `closed`（人手 merge）。新 status /
+    migration なしで `close_ready` を「PR up・CI 待ち」に二重利用する。
   - merge コマンド失敗 → 例外で escalate（audit は `failed`）。
 - **既定 OFF**: `deps.autoMerge` 不在（CLI で `--auto-merge` 未指定）なら従来どおり
   PR 作成のみ（`pr_created`）。`--merge-method`（squash|merge|rebase）で方式指定し、

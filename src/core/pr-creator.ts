@@ -184,12 +184,7 @@ export async function createPullRequest(
         existing.url !== null &&
         existing.externalPrId !== null
       ) {
-        return {
-          runId: opts.runId,
-          prUrl: existing.url,
-          prNumber: Number(existing.externalPrId),
-          head: existing.branch ?? "",
-        };
+        return await existingPrResult(opts, existing);
       }
     }
     return await createUnderLock(opts, runDir, metaPath, db);
@@ -206,6 +201,47 @@ async function readMeta(metaPath: string, runId: string): Promise<RunMeta> {
       `meta.json for ${runId} is unreadable: ${(e as Error).message}`,
     );
   }
+}
+
+/**
+ * Resolve the reviewed head commit (the run branch's tip) for an
+ * already-existing PR. The branch was pushed when the PR was first created, so
+ * its tip is the reviewed commit. Returning it lets a later auto-merge re-check
+ * pin to the reviewed SHA. Best-effort: a missing worktree / branch yields
+ * `undefined` (the caller then leaves the PR for a human — fail-closed).
+ */
+async function resolveReviewedHeadSha(
+  opts: CreatePrOpts,
+  branch: string | null,
+): Promise<string | undefined> {
+  if (branch === null || branch === "") return undefined;
+  const worktree = join(opts.workspacesDir, opts.runId, "repo");
+  if (!existsSync(worktree)) return undefined;
+  try {
+    const out = await runGit(["rev-parse", branch], {
+      cwd: worktree,
+      timeoutMs: opts.gitTimeoutMs ?? 30_000,
+    });
+    const sha = out.trim();
+    return sha === "" ? undefined : sha;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Idempotent result for an already-created PR, including its reviewed SHA. */
+async function existingPrResult(
+  opts: CreatePrOpts,
+  existing: { url: string | null; externalPrId: string | null; branch: string | null },
+): Promise<CreatePrResult> {
+  const headSha = await resolveReviewedHeadSha(opts, existing.branch);
+  return {
+    runId: opts.runId,
+    prUrl: existing.url ?? "",
+    prNumber: Number(existing.externalPrId),
+    head: existing.branch ?? "",
+    ...(headSha !== undefined ? { headSha } : {}),
+  };
 }
 
 async function createUnderLock(
@@ -257,12 +293,7 @@ async function createUnderLock(
       existing.url !== null &&
       existing.externalPrId !== null
     ) {
-      return {
-        runId: opts.runId,
-        prUrl: existing.url,
-        prNumber: Number(existing.externalPrId),
-        head: existing.branch ?? "",
-      };
+      return await existingPrResult(opts, existing);
     }
   }
 
