@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { ReviewerAgentGateError } from "../../core/reviewer-agent-errors.js";
 
 /**
  * Review proposal repository (Phase 9-8).
@@ -58,6 +59,23 @@ export class ReviewProposalRepository {
    */
   insertProposal(input: ReviewProposalInput): { proposalId: number } {
     const tx = this.db.transaction((): number => {
+      const run = this.db
+        .prepare("SELECT status, source_mode FROM runs WHERE run_id = ?")
+        .get(input.runId) as
+        | { status: string; source_mode: string }
+        | undefined;
+      if (run === undefined) {
+        throw new ReviewerAgentGateError(
+          `run ${input.runId} not found; only db-first needs_review runs can accept review proposals`,
+        );
+      }
+      if (run.source_mode !== "db-first" || run.status !== "needs_review") {
+        throw new ReviewerAgentGateError(
+          `run ${input.runId} is source_mode="${run.source_mode}" ` +
+            `status="${run.status}"; only db-first needs_review runs can ` +
+            `accept review proposals`,
+        );
+      }
       // Phase 11-7: when superseding a prior active proposal, flip its
       // lifecycle_status to 'superseded' as well so list/vacuum and
       // consensus filters see a consistent state machine.

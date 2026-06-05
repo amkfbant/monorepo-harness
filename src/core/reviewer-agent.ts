@@ -27,13 +27,9 @@ import { enrichActiveProposals } from "./consensus-enrichment.js";
 import { DEFAULT_REVIEW_RULE, ruleSha256, type ReviewRule } from "./review-rule.js";
 import type Database from "better-sqlite3";
 import { fileExportEnabled } from "../config/export-mode.js";
+import { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
 
-export class ReviewerAgentGateError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ReviewerAgentGateError";
-  }
-}
+export { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
 
 /** Diagnostic artifact written when codex output cannot be parsed/validated. */
 export const REVIEW_AUTO_ERROR_FILE = "review-auto-error.json";
@@ -497,28 +493,6 @@ export async function runReviewerAgent(
     try {
       runMigrations(dbHandle.db);
       assertNoLegacyRuntimeRows(dbHandle.db);
-      // P1-4 status guard: only `needs_review` accepts a new proposal.
-      // A db-first run whose status changed since the pre-codex probe
-      // (e.g. a concurrent `review process` already promoted a proposal)
-      // is a StateConflictError-class race; reject with a clear message.
-      const statusRow = dbHandle.db
-        .prepare(
-          "SELECT status, source_mode FROM runs WHERE run_id = ?",
-        )
-        .get(inputs.runId) as
-        | { status: string; source_mode: string }
-        | undefined;
-      if (
-        statusRow !== undefined &&
-        statusRow.source_mode === "db-first" &&
-        statusRow.status !== "needs_review"
-      ) {
-        throw new ReviewerAgentGateError(
-          `run ${inputs.runId} status changed to "${statusRow.status}" ` +
-            `during review auto (concurrent review process?); refusing to ` +
-            `insert a stale proposal`,
-        );
-      }
       new ReviewProposalRepository(dbHandle.db).insertProposal({
         runId: inputs.runId,
         reviewer,

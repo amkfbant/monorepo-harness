@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
+import { ReviewerAgentGateError } from "../../../src/core/reviewer-agent.js";
 import {
   ReviewProposalRepository,
 } from "../../../src/db/repositories/review-proposals.js";
@@ -12,14 +13,27 @@ import {
  * Phase 9-8 — review_proposals repository.
  */
 
+const RUN_ID = "run-20260523-apps-web-rp1";
+
+function seedDbFirstNeedsReviewRun(
+  db: ReturnType<typeof openDb>,
+  runId = RUN_ID,
+) {
+  db.prepare(
+    `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+       status, source_mode, db_revision, export_status, updated_at, meta_json)
+     VALUES (?, 't', 'apps/web', 'domain-coding', 'main', 'needs_review',
+       'db-first', 1, 'disabled', '2026-05-23T00:00:00Z', '{}')`,
+  ).run(runId);
+}
+
 function freshDb() {
   const dir = mkdtempSync(join(tmpdir(), "harness-rp-"));
   const db = openDb(join(dir, ".harness", "harness.sqlite"));
   runMigrations(db);
+  seedDbFirstNeedsReviewRun(db);
   return db;
 }
-
-const RUN_ID = "run-20260523-apps-web-rp1";
 
 function baseProposal(over: Partial<Parameters<
   ReviewProposalRepository["insertProposal"]
@@ -40,6 +54,39 @@ function baseProposal(over: Partial<Parameters<
 }
 
 describe("ReviewProposalRepository", () => {
+  it("rejects a promote-before-insert race for db-first runs", () => {
+    const db = freshDb();
+    const repo = new ReviewProposalRepository(db);
+    db.prepare(
+      "UPDATE runs SET status = 'approved' WHERE run_id = ?",
+    ).run(RUN_ID);
+
+    expect(() => repo.insertProposal(baseProposal())).toThrow(
+      ReviewerAgentGateError,
+    );
+    expect(
+      (
+        db
+          .prepare(
+            "SELECT count(*) AS n FROM review_proposals WHERE run_id = ?",
+          )
+          .get(RUN_ID) as { n: number }
+      ).n,
+    ).toBe(0);
+    db.close();
+  });
+
+  it("allows the normal db-first needs_review review-auto insert path", () => {
+    const db = freshDb();
+    const repo = new ReviewProposalRepository(db);
+
+    const { proposalId } = repo.insertProposal(baseProposal());
+
+    expect(proposalId).toBeGreaterThan(0);
+    expect(repo.getLatestActiveProposal(RUN_ID)?.proposalId).toBe(proposalId);
+    db.close();
+  });
+
   it("inserts a proposal and reads it back as the active latest", () => {
     const db = freshDb();
     const repo = new ReviewProposalRepository(db);
