@@ -59,20 +59,35 @@ export function runCopilotReview(input: {
 ```
 
 挙動（**決して throw しない**）:
+- **config を入口で normalize**（never-reject wrapper の内側、inner の最初。新オブジェクト
+  を作り mutate しない）。不正な数値は NaN deadline / busy-loop を生むため既定へフォール
+  バックする:
+  - `requestAttempts`: `Number.isInteger` かつ ≥ 1 でなければ既定 3。
+  - `pollTimeoutMs`: `Number.isFinite` かつ ≥ 0 でなければ既定 300_000。
+  - `pollIntervalMs`: `Number.isFinite` かつ ≥ 0 でなければ既定 15_000。**0 は許容**
+    （sleep しないが deadline 再判定で必ず終了。FAST_CONFIG の即収束目的）。負 / NaN /
+    Infinity のみフォールバック対象。
 - `request` を呼ぶ。一時エラーなら `requestAttempts` まで retry（間隔は pollInterval を流用）。
   全 retry 失敗 → `{ status: "failed", detail }`。
 - request 成功後 **最低 1 回は poll** する（決定論的セマンティクス）:
-  - `remaining = max(0, deadline - now())` を計算し `poll(pr, remaining)` を呼ぶ。
-    `reviewed` → `{ status: "reviewed" }`。
+  - `remaining = deadline - now()` を計算し `poll(pr, remaining > 0 ? remaining : undefined)`
+    を呼ぶ。`reviewed` → `{ status: "reviewed" }`。
+  - **`remaining <= 0`（pollTimeoutMs=0 の mandatory first poll を含む）では `timeoutMs` に
+    `undefined` を渡す**。adapter が `Math.max(1, 0)=1ms` で実 gh を即 kill して `reviewed`
+    を取りこぼす事故を避け、adapter 既定 timeout で 1 回だけ観測させる。
   - その後 `now() >= deadline` なら `{ status: "skipped", detail: "timed out ..." }`。
-    さもなくば `sleep(pollIntervalMs)` → 再度 deadline 判定 → poll。
+    さもなくば `sleep(min(pollIntervalMs, remaining))` → 再度 deadline 判定 → poll。
+    **sleep は残り時間（`deadline - now()`）で clamp** する。これにより
+    `pollTimeoutMs < pollIntervalMs`（例 timeout 1000ms / interval 15000ms）でも sleep の
+    累積が総タイムアウトを超えない。
   - **`pollTimeoutMs=0`** は「1 回だけ観測して reviewed か skipped」を意味する
     （即解決 fake でも実 gh でも同義）。
 - `poll` の一時エラー / timeout は握って次の interval へ（poll は best-effort）。
 - `pollTimeoutMs` は **総タイムアウトとして実効化**: 各 `poll` 呼び出しに残り時間
-  （`deadline - now()`）を **`timeoutMs` 引数として渡す**。gh adapter はその残り時間で
-  子プロセスを自己 kill するため、hang した `poll` でも `pollTimeoutMs` 内に `skipped`
-  へ収束する（内部 `setTimeout` race を持たない = timer leak 源を作らない）。
+  （`deadline - now()`、>0 のときのみ。≤0 は undefined）を **`timeoutMs` 引数として渡す**。
+  gh adapter はその残り時間で子プロセスを自己 kill するため、hang した `poll` でも
+  `pollTimeoutMs` 内に `skipped` へ収束する（内部 `setTimeout` race を持たない = timer
+  leak 源を作らない）。
 - never-throw は厳密: 非 Error の reject も安全に文字列化し、本体全体（`config`/`sleep`/
   `now` の初期化を含む）を最終防衛の try/catch で包む（薄い never-reject wrapper +
   inner 実装に分割）。throwing な getter / 注入された `sleep`・`now` が throw しても

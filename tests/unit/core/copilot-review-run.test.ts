@@ -52,6 +52,28 @@ function fakeClock(stepMs: number) {
   };
 }
 
+/**
+ * A clock that records every value passed to sleep and advances now() by the
+ * exact slept amount (no step substitution). Lets a test assert the cumulative
+ * slept time and that each sleep was clamped to the remaining budget.
+ */
+function recordingClock() {
+  const state = { t: 0, slept: [] as number[] };
+  return {
+    now: () => state.t,
+    get slept() {
+      return state.slept;
+    },
+    get total() {
+      return state.slept.reduce((a, b) => a + b, 0);
+    },
+    sleep: async (ms: number) => {
+      state.slept.push(ms);
+      state.t += ms;
+    },
+  };
+}
+
 describe("runCopilotReview", () => {
   const config = { requestAttempts: 3, pollTimeoutMs: 300_000, pollIntervalMs: 15_000 };
 
@@ -218,6 +240,9 @@ describe("runCopilotReview", () => {
     expect(out.status).toBe("reviewed");
     // request success guarantees at least one observation even at timeout 0.
     expect(reviewer.pollCalls).toBe(1);
+    // remaining <= 0 on the mandatory first poll → pass undefined so the adapter
+    // uses its own default timeout (not Math.max(1,0)=1ms which would SIGKILL gh).
+    expect(reviewer.pollTimeouts[0]).toBeUndefined();
   });
 
   it("pollTimeoutMs=0: polls exactly once and returns skipped when that poll is pending", async () => {
@@ -233,6 +258,8 @@ describe("runCopilotReview", () => {
     expect(out.status).toBe("skipped");
     // exactly one observation, then the deadline (now() >= deadline) trips.
     expect(reviewer.pollCalls).toBe(1);
+    // remaining <= 0 on the mandatory first poll → undefined timeoutMs.
+    expect(reviewer.pollTimeouts[0]).toBeUndefined();
     expect(out.detail).toMatch(/timed out/i);
   });
 
@@ -249,6 +276,124 @@ describe("runCopilotReview", () => {
     // the first poll runs at t=0 with the full budget remaining.
     expect(reviewer.pollTimeouts[0]).toBe(300_000);
     expect(reviewer.pollTimeouts[0]).toBeGreaterThan(0);
+  });
+
+  it("clamps each sleep to the remaining budget when interval > total timeout", async () => {
+    // timeout(1000) < interval(15000): a naive sleep(interval) would overshoot
+    // the total timeout 15x. The sleep must be clamped to `deadline - now()` so
+    // the cumulative slept time never materially exceeds pollTimeoutMs and the
+    // run converges to skipped.
+    const reviewer = fakeReviewer({ request: ["ok"], poll: [] }); // always pending
+    const clock = recordingClock();
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 7,
+      config: { requestAttempts: 1, pollTimeoutMs: 1000, pollIntervalMs: 15_000 },
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    expect(out.status).toBe("skipped");
+    // every sleep was clamped to the remaining budget (<= 1000ms), never 15000.
+    for (const ms of clock.slept) {
+      expect(ms).toBeLessThanOrEqual(1000);
+    }
+    // total slept time stays within the budget (no 15s overshoot).
+    expect(clock.total).toBeLessThanOrEqual(1000);
+  });
+
+  it("does not throw or busy-loop when pollIntervalMs is NaN (falls back to default)", async () => {
+    const reviewer = fakeReviewer({ request: ["ok"], poll: [] }); // always pending
+    const clock = recordingClock();
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 7,
+      // NaN interval would corrupt deadline math / never converge if unguarded.
+      config: { requestAttempts: 1, pollTimeoutMs: 1000, pollIntervalMs: NaN },
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    expect(out.status).toBe("skipped");
+    // converged in a bounded number of polls (default 15s interval kicks in).
+    expect(reviewer.pollCalls).toBeLessThanOrEqual(5);
+  });
+
+  it("does not throw or busy-loop when pollIntervalMs is negative (falls back to default)", async () => {
+    const reviewer = fakeReviewer({ request: ["ok"], poll: [] });
+    const clock = recordingClock();
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 7,
+      config: { requestAttempts: 1, pollTimeoutMs: 1000, pollIntervalMs: -1 },
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    expect(out.status).toBe("skipped");
+    for (const ms of clock.slept) {
+      expect(ms).toBeGreaterThanOrEqual(0); // never a negative sleep
+    }
+    expect(reviewer.pollCalls).toBeLessThanOrEqual(5);
+  });
+
+  it("does not throw or busy-loop when pollIntervalMs is Infinity (falls back to default)", async () => {
+    const reviewer = fakeReviewer({ request: ["ok"], poll: [] });
+    const clock = recordingClock();
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 7,
+      config: { requestAttempts: 1, pollTimeoutMs: 1000, pollIntervalMs: Infinity },
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    expect(out.status).toBe("skipped");
+    expect(reviewer.pollCalls).toBeLessThanOrEqual(5);
+  });
+
+  it("treats pollIntervalMs=0 as immediate-convergence (not a busy-loop) and reaches skipped", async () => {
+    // 0 is allowed (FAST_CONFIG semantics): no sleep, but the deadline re-check
+    // still terminates because pollTimeoutMs is finite. Must NOT fall back to a
+    // 15s default (which would slow the orchestrate FAST_CONFIG tests).
+    const reviewer = fakeReviewer({ request: ["ok"], poll: ["pending"] });
+    const clock = fakeClock(0);
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 7,
+      config: { requestAttempts: 1, pollTimeoutMs: 0, pollIntervalMs: 0 },
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    expect(out.status).toBe("skipped");
+    expect(reviewer.pollCalls).toBe(1);
+  });
+
+  it("falls back to a sane requestAttempts when given a non-integer (no throw)", async () => {
+    // requestAttempts NaN must not make the while-loop never run or loop forever.
+    const reviewer = fakeReviewer({ request: ["throw", "throw", "throw"], poll: [] });
+    const clock = recordingClock();
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 7,
+      config: { requestAttempts: NaN, pollTimeoutMs: 1000, pollIntervalMs: 0 },
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    expect(out.status).toBe("failed");
+    // default 3 attempts.
+    expect(reviewer.requestCalls).toBe(3);
+  });
+
+  it("falls back to a sane pollTimeoutMs when given a non-finite value (no NaN deadline)", async () => {
+    const reviewer = fakeReviewer({ request: ["ok"], poll: ["reviewed"] });
+    const clock = recordingClock();
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 7,
+      config: { requestAttempts: 1, pollTimeoutMs: NaN, pollIntervalMs: 0 },
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    // a reviewed first poll still resolves (NaN deadline would have broken the
+    // remaining-budget math); it must not throw or hang.
+    expect(out.status).toBe("reviewed");
   });
 
   it("never rejects even when the injected sleep throws", async () => {

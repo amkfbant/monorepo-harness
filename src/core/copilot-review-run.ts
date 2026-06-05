@@ -30,6 +30,39 @@ const DEFAULT_CONFIG: CopilotReviewConfig = {
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Normalize a (possibly partial / hostile) config into a sane, terminating
+ * shape. Immutable — returns a new object. Bad numeric inputs (NaN, Infinity,
+ * negatives, non-integers) would otherwise corrupt deadline math or spin a
+ * busy-loop; we clamp them to defaults so the run always converges.
+ *
+ * - `requestAttempts`: integer ≥ 1, else default 3.
+ * - `pollTimeoutMs`: finite ≥ 0, else default 300_000 (NaN deadline → never).
+ * - `pollIntervalMs`: finite (any value ≥ 0 stays as-is, including 0 which means
+ *   "do not sleep but still terminate via the deadline re-check"); only
+ *   negative / NaN / Infinity fall back to default 15_000 to avoid busy-loop /
+ *   non-convergence. 0 is intentionally preserved (FAST_CONFIG immediate
+ *   convergence) and is safe because pollTimeoutMs is finite.
+ */
+function normalizeConfig(
+  partial: Partial<CopilotReviewConfig> | undefined,
+): CopilotReviewConfig {
+  const merged: CopilotReviewConfig = { ...DEFAULT_CONFIG, ...partial };
+  const requestAttempts =
+    Number.isInteger(merged.requestAttempts) && merged.requestAttempts >= 1
+      ? merged.requestAttempts
+      : DEFAULT_CONFIG.requestAttempts;
+  const pollTimeoutMs =
+    Number.isFinite(merged.pollTimeoutMs) && merged.pollTimeoutMs >= 0
+      ? merged.pollTimeoutMs
+      : DEFAULT_CONFIG.pollTimeoutMs;
+  const pollIntervalMs =
+    Number.isFinite(merged.pollIntervalMs) && merged.pollIntervalMs >= 0
+      ? merged.pollIntervalMs
+      : DEFAULT_CONFIG.pollIntervalMs;
+  return { requestAttempts, pollTimeoutMs, pollIntervalMs };
+}
+
 /** Safely stringify an unknown thrown value (a reject is not always an Error). */
 function toErrorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -82,7 +115,7 @@ async function runCopilotReviewInner(input: {
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
 }): Promise<CopilotReviewOutcome> {
-  const config: CopilotReviewConfig = { ...DEFAULT_CONFIG, ...input.config };
+  const config = normalizeConfig(input.config);
   const sleep = input.sleep ?? defaultSleep;
   const now = input.now ?? (() => Date.now());
 
@@ -129,8 +162,16 @@ async function runCopilotReviewInner(input: {
     for (;;) {
       polls += 1;
       try {
-        const remainingMs = Math.max(0, deadline - now());
-        const result = await input.reviewer.poll(input.prNumber, remainingMs);
+        // Remaining budget bounds the gh child. When it is already exhausted
+        // (remaining <= 0 — e.g. pollTimeoutMs=0 on the mandatory first poll),
+        // pass `undefined` so the adapter uses its own default timeout instead
+        // of Math.max(1, 0)=1ms, which would SIGKILL gh before it can observe a
+        // posted review. A positive remaining is passed through as the bound.
+        const remainingMs = deadline - now();
+        const result = await input.reviewer.poll(
+          input.prNumber,
+          remainingMs > 0 ? remainingMs : undefined,
+        );
         if (result === "reviewed") {
           return { status: "reviewed", attempts, polls, detail: "Copilot review posted" };
         }
@@ -139,7 +180,10 @@ async function runCopilotReviewInner(input: {
         // best-effort: a transient poll error / timeout is swallowed; keep going.
       }
       if (now() >= deadline) return skipped();
-      await sleep(config.pollIntervalMs);
+      // Clamp the sleep to the remaining budget so an interval larger than the
+      // total timeout (pollTimeoutMs < pollIntervalMs) cannot overshoot it.
+      const remainingBeforeSleep = deadline - now();
+      await sleep(Math.min(config.pollIntervalMs, Math.max(0, remainingBeforeSleep)));
       if (now() >= deadline) return skipped();
     }
   } catch (e) {

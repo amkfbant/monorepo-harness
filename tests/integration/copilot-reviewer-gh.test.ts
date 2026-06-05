@@ -56,6 +56,16 @@ describe("createGhCopilotReviewer", () => {
     expect(await reviewer.poll(42)).toBe("pending");
   });
 
+  it("poll detects reviewed with no timeoutMs (adapter falls back to its default timeout)", async () => {
+    // When runCopilotReview passes undefined (remaining <= 0 on the mandatory
+    // first poll), the adapter must use its own default timeout — not 1ms —
+    // so a real gh has time to run and `reviewed` is not lost.
+    const { bin } = writeFakeGh("copilot-pull-request-reviewer");
+    const reviewer = createGhCopilotReviewer(tmpdir(), bin, 5_000);
+    // explicit no-arg call (timeoutMs undefined).
+    expect(await reviewer.poll(42)).toBe("reviewed");
+  });
+
   it("poll returns pending for a non-Copilot reviewer (a human review)", async () => {
     const { bin } = writeFakeGh("some-human");
     const reviewer = createGhCopilotReviewer(tmpdir(), bin, 5_000);
