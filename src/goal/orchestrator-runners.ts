@@ -128,6 +128,20 @@ export interface OrchestratorRunnerDeps {
     reviewVerdicts?: (
       prNumber: number,
     ) => Promise<{ author: string; state: string }[]>;
+    /**
+     * Opt-in bounded await for external review verdicts, symmetric with the CI
+     * bounded await: external reviewers (codex App / Copilot) post their verdict
+     * asynchronously after the PR opens, so a one-shot orchestrate may evaluate
+     * the gate before they weigh in. When set, poll `reviewVerdicts` until a
+     * CHANGES_REQUESTED appears or the budget is spent. Fail-safe: a late verdict
+     * is still caught by the resumable close_ready re-check on a later run.
+     */
+    reviewAwait?: {
+      timeoutMs: number;
+      intervalMs: number;
+      sleep?: (ms: number) => Promise<void>;
+      now?: () => number;
+    };
   };
   /**
    * Best-effort Copilot PR review (opt-in; default OFF). When present,
@@ -799,6 +813,23 @@ function effectiveAutoMergeTier(
  * (§0/§6: external output may only push fail-closed, never approve). Best
  * effort: a fetch failure is swallowed so it cannot break the merge path.
  */
+function defaultReviewSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Fetch the PR's CHANGES_REQUESTED verdicts once; a fetch failure yields none. */
+async function fetchBlockingVerdicts(
+  fetchVerdicts: (prNumber: number) => Promise<{ author: string; state: string }[]>,
+  prNumber: number,
+): Promise<{ author: string; state: string }[]> {
+  try {
+    const verdicts = await fetchVerdicts(prNumber);
+    return verdicts.filter((v) => v.state.toUpperCase() === "CHANGES_REQUESTED");
+  } catch {
+    return [];
+  }
+}
+
 async function ingestExternalReviewVerdicts(
   deps: OrchestratorRunnerDeps,
   goalId: string,
@@ -806,15 +837,21 @@ async function ingestExternalReviewVerdicts(
 ): Promise<void> {
   const fetchVerdicts = deps.autoMerge?.reviewVerdicts;
   if (fetchVerdicts === undefined) return;
-  let verdicts: { author: string; state: string }[];
-  try {
-    verdicts = await fetchVerdicts(prNumber);
-  } catch {
-    return;
+  let blocking = await fetchBlockingVerdicts(fetchVerdicts, prNumber);
+  const awaitCfg = deps.autoMerge?.reviewAwait;
+  if (blocking.length === 0 && awaitCfg !== undefined) {
+    // Bounded await: give async external reviewers a window to weigh in before
+    // the gate is evaluated. Stop on the first blocking verdict or budget spent.
+    const now = awaitCfg.now ?? Date.now;
+    const sleep = awaitCfg.sleep ?? defaultReviewSleep;
+    const start = now();
+    while (now() - start < awaitCfg.timeoutMs) {
+      const remaining = awaitCfg.timeoutMs - (now() - start);
+      await sleep(Math.min(awaitCfg.intervalMs, remaining));
+      blocking = await fetchBlockingVerdicts(fetchVerdicts, prNumber);
+      if (blocking.length > 0) break;
+    }
   }
-  const blocking = verdicts.filter(
-    (v) => v.state.toUpperCase() === "CHANGES_REQUESTED",
-  );
   if (blocking.length === 0) return;
   withManagedDb({ dbPath: deps.dbPath }, (db) => {
     const repo = new GoalRepository(db);

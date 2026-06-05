@@ -704,6 +704,11 @@ export function registerGoalCommands(
       "opt-in: ingest external PR review verdicts; a CHANGES_REQUESTED review becomes an advisory finding and escalates the auto-merge gate (fail-closed)",
       false,
     )
+    .option(
+      "--external-review-timeout <seconds>",
+      "seconds to await async external reviews (codex App / Copilot) before evaluating the gate; 0 = single check (requires --ingest-external-reviews)",
+      "0",
+    )
     .action(async (goalId: string, raw: Record<string, unknown>) => {
       await withGoalErrorExitAsync(async () => {
         if (raw.dryRun === true) {
@@ -725,6 +730,11 @@ export function registerGoalCommands(
         const ghBin = process.env.HARNESS_GH_BIN ?? "gh";
         const ciAwaitTimeoutMs =
           parseNonNegativeInt(raw.ciAwaitTimeout, "--ci-await-timeout") * 1_000;
+        const externalReviewTimeoutMs =
+          parseNonNegativeInt(
+            raw.externalReviewTimeout,
+            "--external-review-timeout",
+          ) * 1_000;
         // Phase 3: auto-merge is opt-in (default OFF). Only when --auto-merge is
         // passed do we construct the merger + CI probe; otherwise the
         // orchestrator just creates the PR.
@@ -737,7 +747,17 @@ export function registerGoalCommands(
                 }),
                 method: parseMergeMethod(raw.mergeMethod),
                 ...(raw.ingestExternalReviews === true
-                  ? { reviewVerdicts: createGhReviewVerdicts(repoPath, ghBin) }
+                  ? {
+                      reviewVerdicts: createGhReviewVerdicts(repoPath, ghBin),
+                      ...(externalReviewTimeoutMs > 0
+                        ? {
+                            reviewAwait: {
+                              timeoutMs: externalReviewTimeoutMs,
+                              intervalMs: 15_000,
+                            },
+                          }
+                        : {}),
+                    }
                   : {}),
               }
             : undefined;

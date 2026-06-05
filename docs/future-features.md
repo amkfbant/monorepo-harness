@@ -171,10 +171,16 @@ App / Copilot）が実バグを拾う価値が高く、(b) それを取りこぼ
    fetch、`CHANGES_REQUESTED` を **unknown-scope finding**（1 度だけ）として記録 →
    closeReady 落ち→escalate→operator 分類（§6・fail-closed）。approve は ingest しない
    （§0 非対称）。`createGhReviewVerdicts` + `ingestExternalReviewVerdicts`。
+   **外部レビューの bounded await も実装済み（slice 3）**: opt-in
+   `--external-review-timeout <seconds>`（既定 `0`＝単発）で CI bounded await と対称に、
+   gate 評価前に verdict を 15 秒間隔で poll（`CHANGES_REQUESTED` 出現か budget 切れまで）。
+   budget 内に blocking 無ければ gate 評価へ進む（fail-safe。遅延 verdict は close_ready
+   再 check で後拾い）。`reviewAwait`（`now`/`sleep` 注入可）。これで「一発 orchestrate が
+   verdict 到着前に評価してしまう」窓を bounded に塞いだ。
    **残 slice**: 専用 `awaiting_checks` status（close_ready 二重利用の解消・要 migration）、
-   外部レビューの**自動 poll/待機**（現状は再 orchestrate 時に fetch・bounded budget /
-   定期 `goal await-merge` は未）、ingest 後の **fix ループ**（operator 分類→rerun の
-   自動化）、semantic dedup（§3）。core の入口（§2/§6 の advisory レーン）は通った。
+   定期 `goal await-merge`（scheduler 駆動の自動再 orchestrate）、ingest 後の **fix ループ**
+   （operator 分類→rerun の自動化）、semantic dedup（§3）。core（§2/§6 の advisory レーン
+   ＋ async bounded await）は通った。
 
 2. **bounded poll-and-ingest lander（land を実装ループから分離）。** `ciStatus` を
    bounded poll 化し、`gh pr view --json reviews` で codex App / Copilot の verdict を
