@@ -740,13 +740,20 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
     head が動けば拒否→escalate）で merge、operation audit（`operations`,
     type=`merge`）に記録、outcome **`merged`**。auto-merge 有効時は PR を
     **non-draft** で作成（draft は merge 不可）。CI 判定は `gh pr view --json
-    headRefOid,statusCheckRollup` の atomic snapshot で head OID == reviewed commit
-    かつ全 check success のみ green（ABA race 安全、不確定は fail-closed）。
+    headRefOid,statusCheckRollup` を `--ci-await-timeout`（既定 1200 秒）まで bounded
+    poll する。各 poll の atomic snapshot で head OID != reviewed commit なら即 false
+    （head moved, fail-closed）。非空 rollup の全 check が terminal（CheckRun
+    `status=COMPLETED`、または StatusContext `SUCCESS` / `FAILURE` / `ERROR`）なら、
+    全 green（CheckRun `SUCCESS` / `NEUTRAL` / `SKIPPED`、または StatusContext
+    `SUCCESS`）のみ green、いずれか failure/error は即 false。pending / empty rollup は
+    poll interval 後に再評価し、timeout 到達・取得失敗・不明 shape は false（ABA race
+    安全、不確定は fail-closed）。
   - `hardBlocked` → **merge せず escalate**（fail-closed、goal は `escalated`）。
   - transient（CI 未 green）→ merge せず PR を残す（outcome `pr_created`）。
   - merge コマンド失敗 → 例外で escalate（audit は `failed`）。
 - **既定 OFF**: `deps.autoMerge` 不在（CLI で `--auto-merge` 未指定）なら従来どおり
-  PR 作成のみ（`pr_created`）。`--merge-method`（squash|merge|rebase）で方式指定。
+  PR 作成のみ（`pr_created`）。`--merge-method`（squash|merge|rebase）で方式指定し、
+  `--ci-await-timeout <seconds>` で CI bounded await の総 timeout を指定する。
 - 状態遷移は harness のみ。LLM 出力を merge 判定の根拠にしない。CI status 取得は
   fail-closed（不確定は緑扱いしない）。
 

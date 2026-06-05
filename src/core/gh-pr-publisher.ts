@@ -26,6 +26,28 @@ class GhTimeoutError extends PrGateError {
 
 /** Default timeout for a single `gh` invocation. */
 const DEFAULT_GH_TIMEOUT_MS = 120_000;
+const DEFAULT_CI_AWAIT_TIMEOUT_MS = 1_200_000;
+const DEFAULT_CI_POLL_INTERVAL_MS = 15_000;
+
+type GhRunner = (
+  ghBin: string,
+  args: readonly string[],
+  cwd: string,
+  timeoutMs: number,
+) => Promise<string>;
+
+export interface GhCiStatusOptions {
+  /** Total wall-clock budget for waiting on pending/empty CI evidence. */
+  awaitTimeoutMs?: number;
+  /** Delay between pending/empty CI polls. */
+  pollIntervalMs?: number;
+  /** Injectable sleep for tests. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Injectable millisecond clock for tests. */
+  now?: () => number;
+  /** Injectable gh runner for tests. */
+  runGh?: GhRunner;
+}
 
 /**
  * A PrPublisher backed by the GitHub `gh` CLI. `gh pr create` prints the
@@ -132,37 +154,68 @@ export function createGhPrMerger(
 }
 
 /**
- * Phase 3: a CI-green probe for the auto-merge gate. It reads the PR head OID
- * AND its check rollup in ONE atomic `gh pr view` snapshot, so the checks it
- * evaluates are provably for that exact commit — there is no before/after
- * window that an A→B→A head swap could exploit. Green requires
- * headRefOid === expectedHeadSha AND every check in the rollup successful.
- * Fail-closed: a head mismatch, an empty rollup (no CI evidence), any
- * non-success check, a timeout, or an error all return false.
+ * Phase 3: a CI-green probe for the auto-merge gate. Each poll reads the PR
+ * head OID AND its check rollup in ONE atomic `gh pr view` snapshot, so the
+ * checks it evaluates are provably for that exact commit — there is no
+ * before/after window that an A→B→A head swap could exploit. Green requires
+ * headRefOid === expectedHeadSha AND a non-empty rollup whose checks are all
+ * terminal and successful. Pending/empty rollups are awaited within a bounded
+ * timeout. Fail-closed: a head mismatch, terminal failure, timeout, or error
+ * all return false.
  */
 export function createGhCiStatus(
   repoDir: string,
   ghBin = "gh",
   timeoutMs = DEFAULT_GH_TIMEOUT_MS,
+  options: GhCiStatusOptions = {},
 ): (prNumber: number, expectedHeadSha: string) => Promise<boolean> {
+  const awaitTimeoutMs =
+    options.awaitTimeoutMs === undefined
+      ? DEFAULT_CI_AWAIT_TIMEOUT_MS
+      : Math.max(0, options.awaitTimeoutMs);
+  const pollIntervalMs =
+    options.pollIntervalMs === undefined
+      ? DEFAULT_CI_POLL_INTERVAL_MS
+      : Math.max(1, options.pollIntervalMs);
+  const sleep = options.sleep ?? defaultSleep;
+  const now = options.now ?? Date.now;
+  const gh = options.runGh ?? runGh;
   return async (prNumber: number, expectedHeadSha: string) => {
+    const startedAt = now();
     try {
-      const out = await runGh(
-        ghBin,
-        ["pr", "view", String(prNumber), "--json", "headRefOid,statusCheckRollup"],
-        repoDir,
-        timeoutMs,
-      );
-      const parsed = JSON.parse(out.trim() || "{}") as {
-        headRefOid?: unknown;
-        statusCheckRollup?: unknown;
-      };
-      // The rollup is for THIS head OID; binding it to the reviewed commit
-      // makes the green judgement provably about the commit we will merge.
-      if (parsed.headRefOid !== expectedHeadSha) return false;
-      const rollup = parsed.statusCheckRollup;
-      if (!Array.isArray(rollup) || rollup.length === 0) return false;
-      return rollup.every(isCheckGreen);
+      while (now() - startedAt < awaitTimeoutMs) {
+        const remainingBeforePollMs = awaitTimeoutMs - (now() - startedAt);
+        if (remainingBeforePollMs <= 0) return false;
+        const out = await gh(
+          ghBin,
+          [
+            "pr",
+            "view",
+            String(prNumber),
+            "--json",
+            "headRefOid,statusCheckRollup",
+          ],
+          repoDir,
+          Math.max(1, Math.min(timeoutMs, remainingBeforePollMs)),
+        );
+        if (now() - startedAt >= awaitTimeoutMs) return false;
+        const parsed = JSON.parse(out.trim() || "{}") as {
+          headRefOid?: unknown;
+          statusCheckRollup?: unknown;
+        };
+        // The rollup is for THIS head OID; binding it to the reviewed commit
+        // makes the green judgement provably about the commit we will merge.
+        if (parsed.headRefOid !== expectedHeadSha) return false;
+        const rollup = parsed.statusCheckRollup;
+        if (Array.isArray(rollup) && rollup.length > 0) {
+          if (rollup.every(isCheckTerminal)) return rollup.every(isCheckGreen);
+        }
+        const elapsedMs = now() - startedAt;
+        const remainingMs = awaitTimeoutMs - elapsedMs;
+        if (remainingMs <= 0) return false;
+        await sleep(Math.min(pollIntervalMs, remainingMs));
+      }
+      return false;
     } catch {
       return false;
     }
@@ -189,6 +242,27 @@ function isCheckGreen(check: unknown): boolean {
     conclusion === "NEUTRAL" ||
     conclusion === "SKIPPED"
   );
+}
+
+/**
+ * A rollup entry is terminal when the result can no longer change without a
+ * new check record: CheckRun COMPLETED, or legacy StatusContext
+ * SUCCESS/FAILURE/ERROR. Pending and unknown shapes keep the await loop open.
+ */
+function isCheckTerminal(check: unknown): boolean {
+  const c = check as { state?: unknown; status?: unknown };
+  if (typeof c.status === "string") {
+    return c.status.toUpperCase() === "COMPLETED";
+  }
+  if (typeof c.state === "string") {
+    const state = c.state.toUpperCase();
+    return state === "SUCCESS" || state === "FAILURE" || state === "ERROR";
+  }
+  return false;
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**

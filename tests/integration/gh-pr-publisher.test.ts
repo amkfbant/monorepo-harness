@@ -172,6 +172,50 @@ function writeFakeGhCi(headOid: string, rollupJson: string): string {
 
 describe("gh CI status probe (Phase 3)", () => {
   const GREEN = '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]';
+  const greenRollup = [
+    { __typename: "CheckRun", status: "COMPLETED", conclusion: "SUCCESS" },
+  ];
+  const pendingRollup = [
+    { __typename: "CheckRun", status: "IN_PROGRESS", conclusion: null },
+  ];
+  const failingRollup = [
+    { __typename: "CheckRun", status: "COMPLETED", conclusion: "FAILURE" },
+  ];
+
+  function createFakeCiProbe(
+    snapshots: Array<{ headRefOid: string; statusCheckRollup: unknown[] }>,
+    opts: { awaitTimeoutMs?: number; pollIntervalMs?: number } = {},
+  ): {
+    ci: ReturnType<typeof createGhCiStatus>;
+    calls: string[][];
+    timeouts: number[];
+    sleeps: number[];
+  } {
+    let nowMs = 0;
+    let snapshotIndex = 0;
+    const calls: string[][] = [];
+    const timeouts: number[] = [];
+    const sleeps: number[] = [];
+    const ci = createGhCiStatus(tmpdir(), "fake-gh", 5_000, {
+      awaitTimeoutMs: opts.awaitTimeoutMs ?? 10_000,
+      pollIntervalMs: opts.pollIntervalMs ?? 1_000,
+      now: () => nowMs,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        nowMs += ms;
+      },
+      runGh: async (_ghBin, args, _cwd, timeoutMs) => {
+        calls.push([...args]);
+        timeouts.push(timeoutMs);
+        const snapshot =
+          snapshots[Math.min(snapshotIndex, snapshots.length - 1)] ??
+          snapshots[snapshots.length - 1];
+        snapshotIndex += 1;
+        return JSON.stringify(snapshot);
+      },
+    });
+    return { ci, calls, timeouts, sleeps };
+  }
 
   it("green when head matches and all checks succeed", async () => {
     const ci = createGhCiStatus(tmpdir(), writeFakeGhCi("reviewedsha", GREEN), 5_000);
@@ -185,20 +229,53 @@ describe("gh CI status probe (Phase 3)", () => {
     expect(await ci(5, "reviewedsha")).toBe(false);
   });
 
-  it("fail-closed: a pending check → false", async () => {
-    const pending = '[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":null}]';
-    const ci = createGhCiStatus(tmpdir(), writeFakeGhCi("reviewedsha", pending), 5_000);
-    expect(await ci(5, "reviewedsha")).toBe(false);
+  it("pending checks are polled until all checks are terminal green → true", async () => {
+    const { ci, calls, sleeps } = createFakeCiProbe([
+      { headRefOid: "reviewedsha", statusCheckRollup: pendingRollup },
+      { headRefOid: "reviewedsha", statusCheckRollup: greenRollup },
+    ]);
+    expect(await ci(5, "reviewedsha")).toBe(true);
+    expect(calls).toHaveLength(2);
+    expect(sleeps).toEqual([1_000]);
   });
 
-  it("fail-closed: a failing check → false", async () => {
-    const failing = '[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]';
-    const ci = createGhCiStatus(tmpdir(), writeFakeGhCi("reviewedsha", failing), 5_000);
+  it("fail-closed: terminal failure → false without waiting for timeout", async () => {
+    const { ci, calls, sleeps } = createFakeCiProbe([
+      { headRefOid: "reviewedsha", statusCheckRollup: failingRollup },
+    ]);
     expect(await ci(5, "reviewedsha")).toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(sleeps).toEqual([]);
   });
 
-  it("fail-closed: an empty rollup (no CI evidence) → false", async () => {
-    const ci = createGhCiStatus(tmpdir(), writeFakeGhCi("reviewedsha", "[]"), 5_000);
+  it("fail-closed: head moved while polling → false", async () => {
+    const { ci, calls, sleeps } = createFakeCiProbe([
+      { headRefOid: "reviewedsha", statusCheckRollup: pendingRollup },
+      { headRefOid: "othersha", statusCheckRollup: greenRollup },
+    ]);
     expect(await ci(5, "reviewedsha")).toBe(false);
+    expect(calls).toHaveLength(2);
+    expect(sleeps).toEqual([1_000]);
+  });
+
+  it("fail-closed: timeout while checks are pending → false", async () => {
+    const { ci, calls, timeouts, sleeps } = createFakeCiProbe(
+      [{ headRefOid: "reviewedsha", statusCheckRollup: pendingRollup }],
+      { awaitTimeoutMs: 2_500, pollIntervalMs: 1_000 },
+    );
+    expect(await ci(5, "reviewedsha")).toBe(false);
+    expect(calls).toHaveLength(3);
+    expect(timeouts).toEqual([2_500, 1_500, 500]);
+    expect(sleeps).toEqual([1_000, 1_000, 500]);
+  });
+
+  it("fail-closed: an empty rollup (no CI evidence) times out → false", async () => {
+    const { ci, calls, sleeps } = createFakeCiProbe(
+      [{ headRefOid: "reviewedsha", statusCheckRollup: [] }],
+      { awaitTimeoutMs: 2_000, pollIntervalMs: 1_000 },
+    );
+    expect(await ci(5, "reviewedsha")).toBe(false);
+    expect(calls).toHaveLength(2);
+    expect(sleeps).toEqual([1_000, 1_000]);
   });
 });
