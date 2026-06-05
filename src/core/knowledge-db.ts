@@ -1,13 +1,22 @@
+import { createHash } from "node:crypto";
 import { readFileSync, existsSync, statSync } from "node:fs";
-import { join } from "node:path";
-import { parse as parseYaml } from "yaml";
+import { join, resolve, sep } from "node:path";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type Database from "better-sqlite3";
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import { KnowledgeRepository } from "../db/repositories/knowledge.js";
+import { recordAssetExport } from "../db/repositories/asset-exports.js";
+import { recordKnowledgeEntryRevision } from "../db/repositories/knowledge-entry-revisions.js";
 import { atomicWriteFile } from "../db/atomic-write.js";
 import { exportKnowledgeDecisions } from "../db/export-files.js";
+import {
+  describeExportedFile,
+  recordExportFailure,
+  recordExportSuccess,
+} from "../db/export-records.js";
+import { SourceModeError } from "../db/errors.js";
 import {
   KnowledgePromoteGateError,
   assertKnowledgeRunId,
@@ -47,6 +56,15 @@ export interface KnowledgeDbContext {
   /** absolute `docs/knowledge` root that promoted md files live under */
   knowledgeDir: string;
   dbPath: string;
+}
+
+export interface DeprecateKnowledgeResult {
+  entryId: string;
+  path: string;
+  revisionId: number;
+  version: number;
+  exportStatus: "synced" | "failed";
+  exportWarnings?: string[];
 }
 
 const DECISIONS_FILE = "knowledge-decisions.yaml";
@@ -190,6 +208,255 @@ function exportDecisionsSidecar(
     );
   }
   return undefined;
+}
+
+interface KnowledgeEntryRow {
+  entry_id: string;
+  project_id: string | null;
+  repo_id: string | null;
+  domain: string | null;
+  kind: string;
+  path: string | null;
+  title: string | null;
+  body: string;
+  frontmatter_json: string | null;
+  source_mode: string;
+  db_revision: number;
+  current_revision_id: number | null;
+}
+
+function parseFrontmatterJson(text: string | null): Record<string, unknown> {
+  if (text === null || text.trim() === "") return {};
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function markdownFromEntryRow(row: KnowledgeEntryRow): string {
+  return renderMarkdownWithFrontmatter(
+    parseFrontmatterJson(row.frontmatter_json),
+    row.body,
+  );
+}
+
+function renderMarkdownWithFrontmatter(
+  frontmatter: Record<string, unknown>,
+  body: string,
+): string {
+  const yaml = stringifyYaml(frontmatter).trimEnd();
+  return `---\n${yaml}\n---\n${body}`;
+}
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+function knowledgeRelativePath(row: KnowledgeEntryRow): string {
+  const rel = row.path ?? row.entry_id;
+  if (!rel.startsWith("docs/knowledge/")) {
+    throw new KnowledgePromoteGateError(
+      `knowledge entry ${row.entry_id} has unsupported export path ${JSON.stringify(rel)}`,
+    );
+  }
+  return rel;
+}
+
+function knowledgeAbsolutePath(knowledgeDir: string, relativePath: string): string {
+  const prefix = "docs/knowledge/";
+  const inner = relativePath.slice(prefix.length);
+  const resolvedRoot = resolve(knowledgeDir);
+  const outPath = resolve(join(knowledgeDir, inner));
+  if (outPath !== resolvedRoot && !outPath.startsWith(resolvedRoot + sep)) {
+    throw new KnowledgePromoteGateError(
+      `knowledge entry export path escapes knowledgeDir: ${JSON.stringify(relativePath)}`,
+    );
+  }
+  return outPath;
+}
+
+function currentKnowledgeMarkdown(
+  db: Database.Database,
+  row: KnowledgeEntryRow,
+): string {
+  const current =
+    row.current_revision_id === null
+      ? undefined
+      : (db
+          .prepare(
+            `SELECT body_markdown
+               FROM knowledge_entry_revisions
+              WHERE revision_id = ?`,
+          )
+          .get(row.current_revision_id) as
+          | { body_markdown: string }
+          | undefined);
+  return current?.body_markdown ?? markdownFromEntryRow(row);
+}
+
+function knowledgeEntryRow(
+  db: Database.Database,
+  entryId: string,
+): KnowledgeEntryRow {
+  const row = db
+    .prepare(
+      `SELECT entry_id, project_id, repo_id, domain, kind, path, title, body,
+              frontmatter_json, source_mode, db_revision, current_revision_id
+         FROM knowledge_entries
+        WHERE entry_id = ?`,
+    )
+    .get(entryId) as KnowledgeEntryRow | undefined;
+  if (row === undefined) {
+    throw new KnowledgePromoteGateError(`no knowledge entry ${entryId}`);
+  }
+  if (row.source_mode !== "legacy-file" && row.source_mode !== "db-first") {
+    throw new SourceModeError(
+      entryId,
+      row.source_mode,
+      "db-first | legacy-file",
+    );
+  }
+  return row;
+}
+
+/**
+ * Deprecate a promoted knowledge entry. The markdown body is updated as a
+ * DB-current revision first; the compatibility file is then exported with
+ * `deprecated: true` frontmatter so both DB and file build-context paths
+ * exclude it deterministically.
+ */
+export async function deprecateKnowledgeDbFirst(
+  ctx: KnowledgeDbContext,
+  opts: { entryId: string; actor?: string; reason?: string; now?: Date },
+): Promise<DeprecateKnowledgeResult> {
+  const entryId = opts.entryId.trim();
+  if (entryId === "") {
+    throw new KnowledgePromoteGateError("entry id is required for deprecate");
+  }
+  const actor = (opts.actor ?? "cli").trim();
+  if (actor === "") {
+    throw new KnowledgePromoteGateError("actor is required for deprecate");
+  }
+  const dbHandle = openManagedDb({ dbPath: ctx.dbPath });
+  const db = dbHandle.db;
+  try {
+    runMigrations(db);
+    const row = knowledgeEntryRow(db, entryId);
+    const path = knowledgeRelativePath(row);
+    const outPath = knowledgeAbsolutePath(ctx.knowledgeDir, path);
+    const sourceMarkdown = currentKnowledgeMarkdown(db, row);
+    const parsed = splitFrontmatter(sourceMarkdown);
+    const frontmatter: Record<string, unknown> = {
+      ...(parsed.frontmatter ?? parseFrontmatterJson(row.frontmatter_json)),
+      deprecated: true,
+    };
+    const bodyMarkdown = renderMarkdownWithFrontmatter(frontmatter, parsed.body);
+    const title =
+      typeof frontmatter.title === "string"
+        ? frontmatter.title
+        : row.title ?? entryId;
+    const revision = recordKnowledgeEntryRevision(db, {
+      entryId,
+      bodyMarkdown,
+      frontmatter,
+      title,
+      actor,
+      reason: opts.reason ?? "knowledge deprecate",
+      ...(opts.now !== undefined ? { now: opts.now } : {}),
+    }).revision;
+    const kind = typeof frontmatter.kind === "string" ? frontmatter.kind : row.kind;
+    const domain =
+      typeof frontmatter.domain === "string" ? frontmatter.domain : row.domain;
+    const needsRowUpdate =
+      row.current_revision_id !== revision.revisionId ||
+      row.source_mode !== "db-first" ||
+      row.body !== parsed.body ||
+      row.frontmatter_json !== JSON.stringify(frontmatter) ||
+      row.kind !== kind ||
+      row.domain !== domain ||
+      row.title !== title ||
+      row.path !== path;
+    if (needsRowUpdate) {
+      db.prepare(
+        `UPDATE knowledge_entries
+            SET project_id = ?, repo_id = ?, domain = ?, kind = ?,
+                path = ?, title = ?, body = ?, frontmatter_json = ?,
+                source_mode = 'db-first',
+                current_revision_id = ?,
+                db_revision = db_revision + 1,
+                export_status = 'dirty',
+                last_export_error = NULL
+          WHERE entry_id = ?`,
+      ).run(
+        typeof frontmatter.project_id === "string"
+          ? frontmatter.project_id
+          : row.project_id,
+        typeof frontmatter.repo_id === "string"
+          ? frontmatter.repo_id
+          : row.repo_id,
+        domain,
+        kind,
+        path,
+        title,
+        parsed.body,
+        JSON.stringify(frontmatter),
+        revision.revisionId,
+        entryId,
+      );
+    }
+    const fresh = knowledgeEntryRow(db, entryId);
+    const startedAt = new Date().toISOString();
+    try {
+      atomicWriteFile(outPath, bodyMarkdown);
+      recordExportSuccess(db, {
+        scopeType: "knowledge_entry",
+        scopeId: entryId,
+        dbRevision: fresh.db_revision,
+        startedAt,
+        files: [describeExportedFile(path, bodyMarkdown)],
+      });
+      recordAssetExport(db, {
+        assetType: "knowledge_entry",
+        assetId: entryId,
+        revisionId: revision.revisionId,
+        relativePath: path,
+        sha256: sha256(bodyMarkdown),
+        ...(opts.now !== undefined ? { now: opts.now } : {}),
+      });
+      return {
+        entryId,
+        path: outPath,
+        revisionId: revision.revisionId,
+        version: revision.version,
+        exportStatus: "synced",
+      };
+    } catch (e) {
+      const error = (e as Error).message;
+      recordExportFailure(db, {
+        scopeType: "knowledge_entry",
+        scopeId: entryId,
+        dbRevision: fresh.db_revision,
+        startedAt,
+        error,
+      });
+      return {
+        entryId,
+        path: outPath,
+        revisionId: revision.revisionId,
+        version: revision.version,
+        exportStatus: "failed",
+        exportWarnings: [
+          `knowledge ${entryId}: deprecated in DB but exporting ${path} failed: ${error}`,
+        ],
+      };
+    }
+  } finally {
+    dbHandle.close();
+  }
 }
 
 /**

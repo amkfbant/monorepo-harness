@@ -215,4 +215,44 @@ describe("harness knowledge promote", () => {
     expect(stdout).toMatch(/promoted=0 skipped=2/);
     expect(stdout).toMatch(/duplicate-index/);
   });
+
+  it("deprecates a promoted entry and excludes it from build-context", () => {
+    const { root, runId } = setup();
+    run(
+      ["knowledge", "promote", "--run-id", runId, "--reviewer", "knkn"],
+      root,
+    );
+    const kindDir = join(root, "docs", "knowledge", "policy_improvement");
+    const filename = readdirSync(kindDir)[0]!;
+    const entryId = `docs/knowledge/policy_improvement/${filename}`;
+
+    const dep = run(
+      [
+        "knowledge",
+        "deprecate",
+        entryId,
+        "--actor",
+        "knkn",
+        "--reason",
+        "stale",
+      ],
+      root,
+    );
+    expect(dep.status).toBe(0);
+    expect(dep.stdout).toMatch(/deprecated docs\/knowledge\/policy_improvement\//);
+    expect(readFileSync(join(kindDir, filename), "utf8")).toMatch(
+      /^deprecated: true$/m,
+    );
+
+    const built = run(["knowledge", "build-context", "--domain", "apps/user"], root);
+    expect(built.status).toBe(0);
+    expect(built.stdout).toMatch(/entries=1/);
+    const contextFile = readdirSync(join(root, "docs", "knowledge-context"))[0]!;
+    const context = readFileSync(
+      join(root, "docs", "knowledge-context", contextFile),
+      "utf8",
+    );
+    expect(context).not.toMatch(/needs cross-domain step/);
+    expect(context).toMatch(/env file appeared/);
+  });
 });
