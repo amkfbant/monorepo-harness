@@ -1,0 +1,22 @@
+version: 1
+registry_id: harness-self-v1
+description: >-
+  Domain registry for the monorepo-harness repo itself. Unlike the
+  apps/packages monorepo registries, this single-package repo keeps its
+  code under src/ and its specs under docs/, so it exposes exactly two
+  domains: a src code domain and a docs domain. Each denies writes into
+  the other's root via the strict-monorepo-v1 template.
+suggested_policy_template: strict-monorepo-v1
+
+patterns:
+  - id_template: "src"
+    root_glob: "src"
+    kind: package
+    command_presets: [node-basic-v1]
+    context_packs: []
+
+  - id_template: "docs"
+    root_glob: "docs"
+    kind: docs
+    command_presets: []
+    context_packs: []

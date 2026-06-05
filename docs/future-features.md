@@ -135,3 +135,202 @@ the safety model (`GOAL_RULES.md` §G, `docs/specs/workflow.md`), not a gap:
 
 **Status:** idea only — not designed or scheduled; recorded 2026-06 during
 `GOAL.md` planning.
+
+## 非同期な外部チェック（codex GitHub App review / Copilot review / CI）の bounded await + 取り込み
+
+**問題 / 観測:** `harness goal orchestrate --auto-merge` の `closeAndPr` は、PR を
+作成した**直後に merge gate を 1 回だけ評価**し（CI は `createGhCiStatus` の単発
+スナップショット＝完了を待たない）、その後 goal を `closed` にする。`closed` は
+`orchestrator-dispatch.ts` で `stop` にマップされ、`runAutoMerge` も単発評価のため、
+**PR 作成後に遅れて到着する signal は gate に一切反映されない**。実 repo では CI が
+数分かかるので通常 `ci_not_green`（transient）→ PR を残して goal close、になる。
+
+2026-06-05 の B（PR #15）実験で具体化: PR には codex GitHub App が**絵文字 reaction
+で ack**したが、Copilot review と CI が先に終わって harness が gate 評価・goal を
+閉じたため、**codex App の本レビューを待たず / 取り込まずに**進んだ可能性が高い
+（`goal_attempts: implement=1`、rerun ゼロ、required_changes ゼロで一発マージ）。
+
+**なぜ重要（規模依存）:** 小規模変更では「即評価 → 残ったら operator が手 merge」で
+無害。だが**サブフェーズが多い大規模 PR** では、(a) 外部レビュー（特に codex GitHub
+App / Copilot）が実バグを拾う価値が高く、(b) それを取りこぼすと修正ループへ戻す
+経路が無い、の二重の問題になる。harness 内部の codex review はローカル `codex exec`
+で **diff のみ**を見るので、GitHub 上の PR コンテキストで動く外部レビューとは観点が
+異なり、補完価値がある。
+
+**対策案（sketch、実装はしない / 複数の方向）:**
+
+1. **resumable な "awaiting-checks" goal 状態。** transient（CI / 外部レビュー未確定）
+   のとき goal を `closed` ではなく非終端の新状態（例 `awaiting_checks`）に置く。
+   `orchestrator-dispatch.ts` に再評価経路を足し、再 `orchestrate`（または定期
+   `goal await-merge`）が CI + 外部レビュー verdict を **bounded budget で poll** →
+   揃えば merge、未達は待機、failure は fix ループへ。これが「later merge」を
+   harness 経路にする核（現状は手 merge しか無い）。
+
+2. **bounded poll-and-ingest lander（land を実装ループから分離）。** `ciStatus` を
+   bounded poll 化し、`gh pr view --json reviews` で codex App / Copilot の verdict を
+   取得。`harness pr land` / `goal await-merge` を resumable に。
+
+3. **外部レビュー指摘の finding 化（advisory）。** PR の review コメント（codex App /
+   Copilot）を goal finding として ingest → P0〜P3 分類 → 修正ループへ。**ただし安全
+   境界（外部出力を状態遷移の根拠にしない / 現状 Copilot review は意図的に非 gating、
+   [[Copilot PR review integration]] 参照）と衝突する。** 衝突回避案: 外部由来 finding は
+   **operator 分類必須の advisory** とし自動 gate しない（`stopOnUnknownScope` と同様、
+   分類するまで close をブロックする fail-closed 側に倒す）。これで「外部レビューを
+   無視しない」と「外部出力を信用しない」を両立。
+
+4. **GitHub native auto-merge をブリッジに（opt-in）。** 即 `gh pr merge` の代わりに
+   `gh pr merge --auto` ＋ branch protection（required checks に CI、required reviewers
+   に codex App / Copilot）で async 待機を GitHub 側へ委譲。harness gate の決定論性は
+   弱まる（merge 判定が GitHub 側）ので opt-in。harness は outcome を後追いで
+   operation audit に取り込む。
+
+5. **規模に応じた behavior 切り替え。** サブフェーズ数 / 変更行数 / domain などの閾値で、
+   小規模は現状の即評価、大規模は (1)〜(3) の bounded await + ingest、を選ぶ。
+
+**トレードオフ / caveat:**
+- **安全境界が最大の論点。** 外部レビューを gate / fix に使うのは現行方針（非 gating）の
+  転換。advisory + operator 分類 + fail-closed で寄せるのが安全。
+- 既存制約に手を入れる必要（1〜3）: `orchestrator-dispatch.ts`（closed→stop）、
+  `gh-pr-publisher.ts`（`createGhCiStatus` 単発）、`orchestrator-runners.ts`
+  （`runAutoMerge` 単発評価 / closeAndPr が即 close）。
+- **bounded であること必須**（無制限待機 / 常駐 daemon は別件で非ゴール、
+  `specs/overview.md`「できないこと」）。timeout は fail-closed で PR を人手へ残す。
+- codex App / Copilot の到着タイミングはアカウント / GitHub 側に依存し不確定。
+
+**関連:** [[Copilot PR review integration]]（非 gating の既存配線）、auto-merge
+（`specs/workflow.md` の「Phase 3 — auto-merge」）、Multi-reviewer consensus
+orchestration（内部レビューの multi-reviewer driving）。
+
+**Status:** idea only — 未実装 / 未設計。フロー自体が手探り段階のため設計だけ記録。
+2026-06-05 の B（PR #15）auto-merge 実験での観測に基づく。
+
+## 設計原則: 外部出力と状態遷移の非対称（bugfix2 / advisory finding / auto-merge tier）
+
+上記「非同期な外部チェックの取り込み」を**どう安全に組むか**の判断基準。実装前の
+合意事項として明文化する（2026-06-05 の運用整理ディスカッションより）。
+
+### 0. 貫く一原則（非対称）
+
+> **外部 / LLM / 自動化は、流れのどこでも fail-closed 方向（厳しくする・作業を
+> 増やす・人手に寄せる・両方残す）には自由に押してよい。だが fail-open 方向
+> （自動承認・完了・drop・gate 緩和・auto-merge 許可）には決して押せない。
+> そこは決定論ロジックと operator が握る。**
+
+理由: tighten 方向の誤り（誤検知・無駄作業）は最悪 operator が却下して終わる。
+open 方向の誤り（偽の "LGTM" を信用）は悪コードの merge に直結する（取り返しが
+つかない）。だから両方向を同じ信頼度で扱わない。
+
+### 1. close 条件は「ルール」、レビューは「データ」（gate の切り分け）
+
+- **ルール（固定・operator 所有）**: `closeConditions`（`--close-file`）＋
+  `policy.closeRequires`（open in-scope P0/P1 ゼロ・unknown ゼロ）。**主ゴールと
+  一緒に最初に決まり、レビューで書き換わらない。**
+- **データ（レビューが生む）**: finding。レビューは finding を足すだけで、close
+  条件（ルール）は追加・緩和できない。
+- 「サブ条件が増える」感覚の正体: 固定ルールが**新しい finding を数えて未達に
+  なる**現象。条件追加ではない。
+- finding が「候補」から「ブロッカー」に化ける唯一の関所は **scope/severity 分類**。
+  ここが決定論 or operator（LLM の severity 自己申告は不採用、unknown は
+  `stopOnUnknownScope` で escalate、"直した" は tests/diff で再検証）。**これが
+  「外部を根拠にしない」の実体。**
+- 本当に新しい明示 close 条件を足すのは **operator の意図的操作**のみ
+  （`goal close-check` / close 条件編集）。LLM 自動追加は不可。
+
+### 2. 三レーン（trust / risk で分ける運用層）
+
+| レーン | 駆動 | 状態遷移の根拠 | merge |
+|--------|------|----------------|-------|
+| **Fast** | 内部 codex review + CI | 決定論（consensus / CI / finding） | 小規模のみ auto（CI bounded await 前提） |
+| **Advisory** | copilot / GitHub codex app review | **operator 分類**（advisory→promote） | bugfix2 で再検証後に再 gate |
+| **Human** | 大規模 / 迷い | 人 | 人手 merge |
+
+bugfix2（PR 後の修正ループ）は Advisory レーンに置く。外部 finding は既定
+**deferred/advisory**、operator が in-scope P0/P1 に promote したものだけ修正に
+入れる。修正の効果は内部と同じく **tests/diff で決定論的に再検証**（"直った" を
+信用しない）。
+
+### 3. 三論点の指針（いずれも §0 の非対称に従う）
+
+- **semantic dedup**: 畳む/落とすは fail-open（本物の P0 を消すリスク）。
+  **疑わしきは両方残す**。順序は ①anchor+category の決定論完全一致のみ畳む
+  ②「重複候補」は operator へのヒント（advisory） ③embedding/意味クラスタリングは
+  後回し（goal-convergence の **non-goal** に "semantic embedding clustering" が明記）。
+- **operator 分類負荷**: 権威ある分類は operator から外せない（安全境界）。が
+  (a) **決定論 auto-scope**（diff/domain 外を指す finding は自動 out_of_scope）、
+  (b) **default-defer**（外部 finding の既定を非ブロッキングにし「沈黙=stuck」を
+  「沈黙=defer=前進」へ反転）、(c) **severity ルーティング**（LLM severity は gate
+  でなく "誰の目を先に向けるか" の優先度にだけ使う）、(d) **サブエージェント
+  前処理**（クラスタ化/scope 提案を advisory で出し operator は一括確認）で軽くする。
+- **auto-merge tier 境界**: tier 許可は**決定論・operator 所有の信号のみ**で計算
+  （path の **sensitivity map**＝blast-radius を符号化した glob / 変更サイズ /
+  サブフェーズ・rerun 数 / 内部 finding プロファイル / CI coverage）。どの信号も
+  **人手方向にしか押せない**。外部レビュー結果は tier を**厳しくする方向にだけ**
+  使え、緩める方向には使わない。**既定は人手**（fail-closed）、積極的に全 gate を
+  クリアした薄いスライスだけ auto。`src/policy/**` `src/codex/**` `src/goal/**`
+  migrations `.github/**` 等の安全境界路は常に auto 不可。
+
+### 4. 前提（最初のベーシックな一歩）
+
+auto-merge を実在させる前提は **CI の bounded await**（PR 作成後に CI 完了を
+timeout 付きで poll、timeout は fail-closed で人手に残す）。現状の単発スナップ
+ショット評価では実 repo で auto-merge は発火しない（[上記エントリ参照](#非同期な外部チェックcodex-github-app-review--copilot-review--ci-の-bounded-await--取り込み)）。
+
+### 5. sensitivity map の初期 tier（monorepo-harness 向け）
+
+path glob → tier（= blast radius と meta-risk の符号化）。tier 許可は決定論的に
+これで計算する。**meta-risk**（gate する仕組みそのものを変える変更）は常に
+auto 不可 — 変更が自分のチェックを無効化しうるため。
+
+| tier | 方針 | path（例） | 理由 |
+|------|------|-----------|------|
+| **Tier-2 絶対 auto 不可** | 安全機構そのもの | `src/policy/**` / `src/codex/**` / `src/core/merge-gate.ts`・`src/goal/orchestrator*.ts`・`src/goal/convergence.ts` / `src/core/reviewer-agent.ts`・`src/db/repositories/review-*.ts` / `src/db/migrations*` / `.github/**` / `policies/**` | meta-risk: 壊れると安全境界・gate・CI 設定・policy 定義が緩む |
+| **Tier-1 既定 人手** | 一般コード | 上記以外の `src/**`（cli/mcp/dashboard/knowledge/config/workspace…） | 通常の blast radius |
+| **Tier-0 auto 適格** | 低 blast・survivable | `docs/**`、**追加のみの** `tests/**` | 非実行 or テスト純増。取りこぼしても follow-up で吸収可 |
+
+bootstrap: Tier-0 を最小（`docs/**` ＋ テスト純増のみ）から開始、未マップは既定
+人手（fail-closed）、事故ゼロ実績で慎重に拡大。map は operator 所有・versioned・
+監査可能。**Tier-0 tests の罠**: テスト削除/`.skip`/`xfail` は silent に安全を下げる
+ため、決定論検出（テスト純減/skip 追加）で人手へ降格（「追加のみ」が条件）。
+
+### 6. default-defer の外部 P0 取りこぼしを人手 tier で拾う
+
+外部 finding を既定 deferred にする穴（本物の P0 も既定で止まらない）は、
+**defer ≠ drop**（defer は PR/goal 上に可視で残り記録される）を前提に tier で拾う:
+
+- **非 Tier-0**: どのみち merge 前に人がレビュー。**deferred な外部 finding を
+  目立つ形で surface**し、人が本物の P0 を promote → merge ブロック → bugfix2。
+  トリアージ担当が「ループ途中」から「merge 時の人」へ移るだけ。`merged with N
+  deferred external findings` をログ（監査可能）。
+- **Tier-0 auto**: 外部レビューは async（merge 後着）で間に合わない。緩和は
+  (a) Tier-0 は「外部が P0 を出しにくい path」を選ぶ（docs・追加テスト）、
+  (b) **merge 後着の外部 finding → 自動 follow-up 化**（backlog/revert 候補）。
+  → **Tier-0 の本質は「小さい」でなく「外部 P0 を取りこぼしても follow-up で
+  吸収できる＝実質可逆（survivable）」**。
+- **severity floor（全 tier の保険・fail-closed）**: 外部 finding が **source 申告
+  critical かつ in-diff で sensitive path を指す**なら default-defer せず人手強制。
+  source severity は「承認」でなく「注意の強制喚起（fail-closed 方向）」にだけ使う。
+
+→ 取りこぼしは「低 severity か低 blast、常に記録・follow-up、silent drop しない」に
+bound される。
+
+### 7. 発散検出の外部 finding 拡張
+
+外部（複数 LLM）は大量・言い換え再提示・out-of-scope が多く、`maxNewFindingsPerCycle`
+等にそのまま数えると偽 diverging or 永遠に減らない。拡張:
+
+- **promote された in-scope P0/P1 だけカウント**（advisory/deferred は **inventory
+  =在庫**でカウント外）。発散は **in-flight=仕掛り（修正中の blocking 集合）の
+  軌跡**で測る。
+- **外部レビューに独立 round 予算**（例 1、最大 2）。尽きたら残りは backlog。
+  安定 head ごとに 1 パス、fix ごとに毎回再レビューしない（無制限ソース化を防ぐ）。
+- **カウント前に保守的 dedup**（§3 anchor）。過剰 dedup は発散を早める＝fail-closed
+  側なので安全。
+- **外部 flood は fail-closed 方向にだけ**: 増え続けたら diverging→人手 escalate
+  （「contentious な変更」の安全な応答）。「無視して merge」方向には効かせない。
+- **operator の disposition を round 跨ぎで尊重**: deferred にした finding は外部が
+  言い換え再提示しても（dedup して）再 escalate しない（`maxReopenedPerFinding` の
+  精神を外部に拡張）。
+
+**Status:** 設計原則 ＋ 三論点詳細（tier 表 / 取りこぼし吸収 / 発散拡張）を記録
+（実装なし）。実装着手時は §5 の tier 表と「§0 非対称・§4 CI bounded await 前提」を
+出発点にする。2026-06-05 の運用整理ディスカッション（A〜D auto-merge 実験後）に基づく。

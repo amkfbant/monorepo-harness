@@ -1,0 +1,60 @@
+version: 1
+project_id: monorepo-harness
+description: Initialized by 'project init' from /Users/kn/dev/monorepo-harness
+repo:
+  id: monorepo-harness
+  path: ..
+  package_manager: npm
+policy:
+  template: strict-monorepo-v1
+domains:
+  # Self-hosting uses ONE cross-cutting domain. A harness change spans src/,
+  # tests/ and docs/specs/ together (spec-driven), so the narrow apps/packages
+  # split does not fit. A single `self` domain also avoids strict-monorepo-v1's
+  # {other_domain_roots} deny: with sibling src/docs domains, the template would
+  # deny src/** and docs/** for `self` (deny_write > write), breaking it. Write
+  # is the explicit multi-root list below; deny is the dangerous roots only.
+  - id: self
+    root: "."
+    kind: package
+    read:
+      - src/**
+      - tests/**
+      - docs/**
+      - package.json
+      - tsconfig.json
+      - vitest.config.ts
+    write:
+      - src/**
+      - tests/**
+      - docs/specs/**
+    deny_write:
+      - .git/**
+      - .github/**
+      - package.json
+      - package-lock.json
+      - pnpm-lock.yaml
+      - yarn.lock
+      - tsconfig.json
+      - dist/**
+      - node_modules/**
+    commands:
+      allow:
+        - id: typecheck
+          cmd: npm
+          args:
+            - run
+            - typecheck
+          timeout_ms: 300000
+        - id: vitest-run
+          cmd: npx
+          args:
+            - vitest
+            - run
+          timeout_ms: 600000
+      defaults:
+        timeout_ms: 300000
+        env_allowlist:
+          - PATH
+          - HOME
+          - NODE_ENV
