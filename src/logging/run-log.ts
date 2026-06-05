@@ -113,7 +113,7 @@ export interface RunMeta {
    * run time. `harness pr create` recomputes the fingerprint to detect a
    * worktree that drifted after the run was approved (Phase 3-6 P1).
    */
-  reviewed?: { paths: string[]; fingerprint: string };
+  reviewed?: { paths: string[]; fingerprint: string; weakensTests?: boolean };
   /**
    * Set when the run was driven by a project profile (`harness run
    * --project`, Phase 5-7). Records the profile provenance so a run can be

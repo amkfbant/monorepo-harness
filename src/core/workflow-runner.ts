@@ -51,6 +51,7 @@ import { hostname } from "node:os";
 import { runBranchName } from "../workspace/branch-name.js";
 import { createWorktree } from "../workspace/git-worktree.js";
 import { collectDiff, resolveBaseSha } from "../git/diff.js";
+import { detectsTestWeakening } from "./automerge-tiers.js";
 import {
   buildCodexPrompt,
   CODER_PROMPT_TEMPLATE,
@@ -808,7 +809,9 @@ async function runDomainCodingInner(
     // Reviewed file set + content fingerprint over the final (post-command
     // if commands ran) worktree. `harness pr create` re-checks this to
     // refuse a PR if a reviewed file drifted after approval.
-    let reviewed: { paths: string[]; fingerprint: string } | undefined;
+    let reviewed:
+      | { paths: string[]; fingerprint: string; weakensTests?: boolean }
+      | undefined;
     if (diff.ok) {
       await log.emit({
         type: "diff_collected",
@@ -830,6 +833,10 @@ async function runDomainCodingInner(
           wt.path,
           reviewedPaths,
         ),
+        // Captured at run time for the auto-merge tier gate: a tests-only
+        // (Tier-0) change that deletes a test file or adds a skip/only marker
+        // weakens coverage and must not auto-merge silently.
+        weakensTests: detectsTestWeakening(diff.patch),
       };
     }
 

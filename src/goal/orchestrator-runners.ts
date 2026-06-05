@@ -19,7 +19,10 @@ import {
   quorumSatisfiedFromRequirements,
   type MergeGateConsensus,
 } from "../core/merge-gate.js";
-import { computeAutoMergeTier } from "../core/automerge-tiers.js";
+import {
+  computeAutoMergeTier,
+  type AutoMergeTier,
+} from "../core/automerge-tiers.js";
 import { loadAutoMergeSensitivityMap } from "../core/automerge-tiers-config.js";
 import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
 import { ReviewConsensusRepository } from "../db/repositories/review-consensus.js";
@@ -455,10 +458,7 @@ export function createOrchestratorRunners(
             humanApproved,
             ciGreen: true, // CI is checked after the PR exists
             tierEligible:
-              computeAutoMergeTier(
-                changedPathsForRun(db, runId),
-                loadAutoMergeSensitivityMap(deps.harnessRoot),
-              ) === 0,
+              effectiveAutoMergeTier(db, runId, deps.harnessRoot) === 0,
           });
         });
         if (preflight.hardBlocked) {
@@ -597,10 +597,7 @@ async function runAutoMerge(
   }
   const expectedHeadSha = reviewedHeadSha;
   const tier = withManagedDb({ dbPath: deps.dbPath }, (db) =>
-    computeAutoMergeTier(
-      changedPathsForRun(db, runId),
-      loadAutoMergeSensitivityMap(deps.harnessRoot),
-    ),
+    effectiveAutoMergeTier(db, runId, deps.harnessRoot),
   );
   const tierEligible = tier === 0;
   const ciGreen = tierEligible
@@ -724,4 +721,41 @@ function changedPathsForRun(
   return reviewedPaths.filter(
     (p): p is string => typeof p === "string" && p !== "",
   );
+}
+
+/** Whether the run's captured diff weakened the test suite (run-time signal). */
+function runWeakensTests(
+  db: Parameters<Parameters<typeof withManagedDb>[1]>[0],
+  runId: string,
+): boolean {
+  const row = db
+    .prepare("SELECT meta_json FROM runs WHERE run_id = ?")
+    .get(runId) as { meta_json: string | null } | undefined;
+  if (row?.meta_json === undefined || row.meta_json === null) return false;
+  try {
+    const meta = JSON.parse(row.meta_json) as {
+      reviewed?: { weakensTests?: unknown };
+    };
+    return meta.reviewed?.weakensTests === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Auto-merge tier for a run: the sensitivity-map tier, but a Tier-0
+ * (tests/docs-only) change that WEAKENS tests (deletes a test file or adds a
+ * skip/only marker) is downgraded to Tier-1 so it cannot auto-merge — coverage
+ * must not be removed by an automatic merge. Fail-closed (only tightens).
+ */
+function effectiveAutoMergeTier(
+  db: Parameters<Parameters<typeof withManagedDb>[1]>[0],
+  runId: string,
+  harnessRoot: string,
+): AutoMergeTier {
+  const base = computeAutoMergeTier(
+    changedPathsForRun(db, runId),
+    loadAutoMergeSensitivityMap(harnessRoot),
+  );
+  return base === 0 && runWeakensTests(db, runId) ? 1 : base;
 }
