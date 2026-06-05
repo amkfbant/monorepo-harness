@@ -800,9 +800,12 @@ harness pr request-review <pr-number> --repo <path> \
 2. request 成功後、`--timeout` まで `--poll-interval` 間隔で poll。レビュー投稿を
    検出すれば **reviewed**、timeout まで未投稿なら **skipped**（poll の一時エラーは
    握って継続）
-3. operations 台帳に `operationType:"copilot-review"` / `targetType:"pr"` で記録
-   （reviewed → `succeeded` / skipped → `pending` / failed → `failed`）。
-   台帳記録の失敗は exit code に影響しない
+3. operations 台帳に `operationType:"copilot-review"` / `targetType:"pr"` で記録。
+   `started_at` は review 実行**前**に取得した時刻。outcome の記録は
+   reviewed / skipped → `succeeded`（どちらも terminal な best-effort 結果。
+   result JSON の `status` で区別）、failed → `failed`。skipped を `pending` に
+   しないのは、`pending`（外部 worker への deferral）だと timeout した skip が
+   doctor の stale pending に誤検知されるため。台帳記録の失敗は exit code に影響しない
 
 ### Exit code
 

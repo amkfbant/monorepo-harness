@@ -278,13 +278,16 @@ describe("closeAndPr Copilot review opt-in", () => {
       expect(new GoalRepository(db).requireSession(goalId).status).toBe(
         "closed",
       );
-      // a skipped (timed-out) review is recorded as pending, never gating.
+      // a skipped (timed-out) review is a terminal best-effort outcome — it is
+      // audited as `succeeded` (result JSON carries status:"skipped"), never
+      // `pending` (which would be misread as deferred work), and never gates.
       const op = db
         .prepare(
-          "SELECT status FROM operations WHERE operation_type = 'copilot-review'",
+          "SELECT status, result_json FROM operations WHERE operation_type = 'copilot-review'",
         )
-        .get() as { status: string } | undefined;
-      expect(op?.status).toBe("pending");
+        .get() as { status: string; result_json: string } | undefined;
+      expect(op?.status).toBe("succeeded");
+      expect(JSON.parse(op?.result_json ?? "{}").status).toBe("skipped");
     } finally {
       close();
     }

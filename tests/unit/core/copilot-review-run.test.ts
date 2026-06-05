@@ -518,6 +518,41 @@ describe("runCopilotReview", () => {
     expect(polls).toBeGreaterThanOrEqual(1);
   });
 
+  it("zero-timeout (observe-once): never hangs when that single poll never resolves", async () => {
+    // pollTimeoutMs=0 takes the single-observation branch (remaining <= 0), which
+    // passes `undefined` to the adapter. A contract-violating reviewer that
+    // ignores cancellation and never resolves must STILL be bounded by a finite
+    // observe-once watchdog — otherwise runCopilotReview (and orchestrate's
+    // close/merge) would block forever. `observeOnceTimeoutMs` is the injectable
+    // bound; a tiny value keeps the test itself from hanging.
+    let polls = 0;
+    let observedTimeout: number | undefined = -1;
+    const reviewer: CopilotReviewer = {
+      async request() {
+        /* ok */
+      },
+      poll(_pr: number, timeoutMs?: number) {
+        polls += 1;
+        observedTimeout = timeoutMs;
+        // never resolves: only the observe-once watchdog can end this poll.
+        return new Promise<"pending">(() => {});
+      },
+    };
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 1,
+      config: { requestAttempts: 1, pollTimeoutMs: 0, pollIntervalMs: 0 },
+      observeOnceTimeoutMs: 40,
+      now: () => Date.now(),
+    });
+    expect(out.status).toBe("skipped");
+    expect(out.detail).toMatch(/timed out/i);
+    expect(polls).toBe(1);
+    // the observe-once poll still receives `undefined` (adapter uses its own
+    // default timeout); the harness watchdog is the backstop, not the arg.
+    expect(observedTimeout).toBeUndefined();
+  });
+
   it("never rejects even when the injected sleep throws", async () => {
     const reviewer = fakeReviewer({ request: ["throw", "throw", "throw"], poll: [] });
     const out = await runCopilotReview({

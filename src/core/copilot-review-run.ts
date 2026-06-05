@@ -37,6 +37,16 @@ const DEFAULT_CONFIG: CopilotReviewConfig = {
  */
 const MAX_TIMER_MS = 2_147_483_647;
 
+/**
+ * Finite backstop for the single-observation poll (the mandatory first poll when
+ * `pollTimeoutMs === 0`, or any poll once the budget is exhausted). That branch
+ * passes `undefined` to the adapter so it uses its own default timeout, but a
+ * contract-violating reviewer that ignores cancellation would otherwise hang
+ * forever; this bounds it. Matches the gh adapter's own default (120s) and is
+ * overridable per-call via the `observeOnceTimeoutMs` test seam.
+ */
+const OBSERVE_ONCE_TIMEOUT_MS = 120_000;
+
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -140,8 +150,10 @@ function toErrorMessage(e: unknown): string {
  * - 各 poll は残り時間（`deadline - now()`）を `timeoutMs` として渡す。gh adapter は
  *   その残り時間で子プロセスを自己 kill する。加えて、残り時間 > 0 の poll は内部
  *   watchdog（`rejectAfter` の `Promise.race`）で包み、`timeoutMs` を無視して hang する
- *   代替 reviewer でも総タイムアウト内に必ず収束させる（watchdog timer は `finally` で
- *   clear + `.unref()` ＝ leak / プロセス終了阻害を作らない）。
+ *   代替 reviewer でも総タイムアウト内に必ず収束させる。単発観測（残り時間 <= 0、
+ *   `pollTimeoutMs=0` 含む）の poll も `OBSERVE_ONCE_TIMEOUT_MS`（既定 120s）の finite
+ *   watchdog で包み、hang を防ぐ（watchdog timer は `finally` で clear + `.unref()` ＝
+ *   leak / プロセス終了阻害を作らない）。
  * - poll の一時エラー / hang / watchdog reject は握って次の interval へ（best-effort）。
  *
  * 最終防衛として関数本体全体（`config`/`sleep`/`now` の初期化を含む）を try/catch で
@@ -154,6 +166,8 @@ export async function runCopilotReview(input: {
   config?: Partial<CopilotReviewConfig>;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  /** Test seam: finite bound for the single-observation watchdog (default 120s). */
+  observeOnceTimeoutMs?: number;
 }): Promise<CopilotReviewOutcome> {
   // Thin never-reject wrapper: ANY throw — including from reading `input.config`
   // via a throwing getter, or from building `sleep` / `now` — degrades to a
@@ -176,10 +190,19 @@ async function runCopilotReviewInner(input: {
   config?: Partial<CopilotReviewConfig>;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  observeOnceTimeoutMs?: number;
 }): Promise<CopilotReviewOutcome> {
   const config = normalizeConfig(input.config);
   const sleep = input.sleep ?? defaultSleep;
   const now = input.now ?? (() => Date.now());
+  // The single-observation watchdog bound: a usable positive timer, else default.
+  // (0 is rejected here — a 0ms watchdog would trip before the poll can observe.)
+  const observeWatchdogMs =
+    input.observeOnceTimeoutMs !== undefined &&
+    isUsableTimerMs(input.observeOnceTimeoutMs) &&
+    input.observeOnceTimeoutMs > 0
+      ? input.observeOnceTimeoutMs
+      : OBSERVE_ONCE_TIMEOUT_MS;
 
   let attempts = 0;
   let polls = 0;
@@ -235,9 +258,9 @@ async function runCopilotReviewInner(input: {
         const remainingMs = deadline - now();
         let result: CopilotReviewPollResult;
         if (remainingMs > 0) {
-          // Watchdog only for a positive budget. The single-observation path
-          // (remaining <= 0) is awaited directly so FAST_CONFIG / pollTimeoutMs=0
-          // never depends on a watchdog timer.
+          // Positive budget: bound the poll by the remaining budget. The
+          // single-observation path (remaining <= 0) uses its own finite
+          // observe-once watchdog below.
           const watchdog = rejectAfter(remainingMs);
           try {
             result = await Promise.race([
@@ -248,7 +271,21 @@ async function runCopilotReviewInner(input: {
             watchdog.cancel();
           }
         } else {
-          result = await input.reviewer.poll(input.prNumber, undefined);
+          // Single-observation path (remaining <= 0, e.g. pollTimeoutMs=0). Pass
+          // `undefined` so the adapter uses its own default timeout (not
+          // Math.max(1,0)=1ms, which would SIGKILL gh before it can observe a
+          // posted review), but STILL wrap in a finite watchdog so a
+          // contract-violating reviewer that ignores cancellation cannot hang
+          // forever. The watchdog timer is cleared in `finally` (no leak).
+          const watchdog = rejectAfter(observeWatchdogMs);
+          try {
+            result = await Promise.race([
+              input.reviewer.poll(input.prNumber, undefined),
+              watchdog.promise,
+            ]);
+          } finally {
+            watchdog.cancel();
+          }
         }
         if (result === "reviewed") {
           return { status: "reviewed", attempts, polls, detail: "Copilot review posted" };

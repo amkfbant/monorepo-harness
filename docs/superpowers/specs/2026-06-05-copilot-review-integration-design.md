@@ -101,7 +101,10 @@ export function runCopilotReview(input: {
   （race の reject は既存 catch が握る → 次ループ → deadline → skipped）。watchdog の
   timer は **必ず `finally` で `clearTimeout`** し **`.unref()`** を付ける（leak /
   プロセス終了阻害を作らない）。**残り時間 ≤ 0**（single-observation, pollTimeoutMs=0
-  経路）は watchdog 無しで `poll(pr, undefined)` を直接 await（FAST_CONFIG 非破壊）。
+  経路）も `poll(pr, undefined)` を `OBSERVE_ONCE_TIMEOUT_MS`（既定 120s、`observeOnceTimeoutMs`
+  シームで上書き可）の finite watchdog で包む。adapter には `undefined` を渡したまま
+  （adapter は自前の既定 timeout を使う）、cancellation を無視して hang する代替 reviewer も
+  watchdog が必ず収束させる（FAST_CONFIG では tiny な bound を注入してテスト）。
 - never-throw は厳密: 非 Error の reject も安全に文字列化し、本体全体（`config`/`sleep`/
   `now` の初期化を含む）を最終防衛の try/catch で包む（薄い never-reject wrapper +
   inner 実装に分割）。throwing な getter / 注入された `sleep`・`now` が throw しても
@@ -125,10 +128,15 @@ export function runCopilotReview(input: {
 ### 4. operation audit（既存 `operations` 台帳）
 
 `runCopilotReview` の **呼び出し側（CLI / orchestrate）** で記録:
-- `startOperation(db, { operationType: "copilot-review", targetType: "pr",
-  targetId: String(prNumber), actor, dryRun:false, input:{prNumber,config} })`
-- outcome に応じて `succeedOperation`(reviewed) / `markOperationPending`(skipped) /
-  `failOperation`(failed, errorCode="copilot_review_failed")。
+- `runCopilotReview` 実行**前**に `startedAt = new Date()` を取り、`startOperation(db,
+  { operationType: "copilot-review", targetType: "pr", targetId: String(prNumber),
+  actor, dryRun:false, input:{prNumber,config}, now: startedAt })`。DB 書込みは review
+  完了後だが `started_at` は作業開始時刻を反映する。
+- outcome に応じて記録: `failed` は `failOperation`(errorCode="copilot_review_failed")。
+  `reviewed` / `skipped` は**どちらも terminal な best-effort 結果**なので
+  `succeedOperation(db, id, outcome)`（result JSON の `status` で両者を区別）。
+  `skipped` を `markOperationPending` にはしない — `pending` は「外部 worker に deferred」の
+  意味で、timeout した skip が doctor の stale pending に誤検知されるため。
 - audit は best-effort（記録失敗で本処理を壊さない）。
 
 ### 5. CLI: `harness pr request-review`
@@ -172,7 +180,7 @@ harness pr request-review <prNumber> --repo <path>
 PR 作成（createPullRequest）
   └ (opt-in) runCopilotReview:
        request → (retry) → poll loop (timeout) → outcome
-       └ operation audit (succeeded/pending/failed)
+       └ operation audit (succeeded[reviewed|skipped]/failed)
   └ (既存) auto-merge / close   ← Copilot review の結果に依存しない
 ```
 

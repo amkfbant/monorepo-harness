@@ -58,7 +58,6 @@ import { runCopilotReview } from "../core/copilot-review-run.js";
 import {
   startOperation,
   succeedOperation,
-  markOperationPending,
   failOperation,
 } from "../db/repositories/operations.js";
 import { randomUUID } from "node:crypto";
@@ -1562,6 +1561,9 @@ prCmd
       pollIntervalMs,
       requestAttempts,
     };
+    // Capture the start before the review runs so the audit `started_at`
+    // reflects when the work began (the DB write happens after it completes).
+    const startedAt = new Date();
     const outcome = await runCopilotReview({
       reviewer: createGhCopilotReviewer(repoDir, ghBin),
       prNumber,
@@ -1583,18 +1585,21 @@ prCmd
           actor: "cli",
           dryRun: false,
           input: { prNumber, config },
+          now: startedAt,
         });
-        if (outcome.status === "reviewed") {
-          succeedOperation(dbHandle.db, operationId, outcome);
-        } else if (outcome.status === "skipped") {
-          markOperationPending(dbHandle.db, operationId, outcome);
-        } else {
+        if (outcome.status === "failed") {
           failOperation(
             dbHandle.db,
             operationId,
             "copilot_review_failed",
             outcome.detail,
           );
+        } else {
+          // reviewed | skipped are terminal best-effort outcomes (the operation
+          // itself completed; the result JSON's `status` distinguishes them).
+          // `pending` would be wrong — it means "deferred to an external worker"
+          // and the doctor would flag a timed-out skip as a stale pending op.
+          succeedOperation(dbHandle.db, operationId, outcome);
         }
       } finally {
         dbHandle.close();

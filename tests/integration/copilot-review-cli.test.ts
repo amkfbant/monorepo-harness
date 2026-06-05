@@ -100,7 +100,7 @@ describe("harness pr request-review", () => {
     expect(row?.status).toBe("succeeded");
   });
 
-  it("exits 0 and reports skipped (pending review timed out), recording pending", () => {
+  it("exits 0 and reports skipped (review timed out), recording a terminal succeeded op", () => {
     const root = initRoot();
     const gh = writePendingGh();
     const r = runCli(root, gh, [
@@ -119,11 +119,15 @@ describe("harness pr request-review", () => {
     const db = new Database(harnessPaths(root).dbPath);
     const row = db
       .prepare(
-        "SELECT status FROM operations WHERE operation_type = 'copilot-review'",
+        "SELECT status, result_json FROM operations WHERE operation_type = 'copilot-review'",
       )
-      .get() as { status: string } | undefined;
+      .get() as { status: string; result_json: string } | undefined;
     db.close();
-    expect(row?.status).toBe("pending");
+    // skipped is a terminal best-effort outcome, not deferred work: it is
+    // recorded as `succeeded` (the result JSON carries status:"skipped") so the
+    // doctor never flags it as a stale `pending` operation.
+    expect(row?.status).toBe("succeeded");
+    expect(JSON.parse(row?.result_json ?? "{}").status).toBe("skipped");
   });
 
   it("exits 2 on an invalid --timeout (NaN guard)", () => {
