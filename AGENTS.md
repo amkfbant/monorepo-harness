@@ -19,3 +19,11 @@ For goal-mode work:
 10. Close the goal once the original close conditions are satisfied and no open in-scope blockers remain.
 
 Never bypass MCP `confirmation_required` by running an equivalent shell command directly.
+
+## Ops vs dev mode
+
+These rules govern *operating* the harness against a real target monorepo (ops
+mode). In ops mode the harness source (`src/`) is a pinned, immutable release
+tag and is **read-only** — do not edit it here; if a code change is needed,
+raise it in the dev clone. The authoritative definition of the two modes and how
+to tell them apart lives in [`CLAUDE.md`](./CLAUDE.md) ("モード（dev / ops）").

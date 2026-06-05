@@ -10,6 +10,28 @@
 
 ---
 
+## モード（dev / ops）
+
+このリポジトリは2つの役割で使われる。**作業開始時にまずどちらのモードかを確定**
+してから動く。安全境界（後述）は dev / ops で完全に同一で、モードによって緩むもの
+は無い。違うのは「`src/` を触ってよいか」と「主タスク」だけ。
+
+- **dev モード**: ハーネス自体を開発する。`src/` を TDD で編集し、typecheck/test を
+  通し、spec を同じコミットで更新する。**本ファイル全体がそのまま適用される**。
+- **ops モード**: 実運用。**不変の release タグ（`vX.Y.Z`）に pin された checkout**
+  で本物の対象モノレポにハーネスを動かす。`src/`（ハーネス本体）は **read-only。
+  編集しない**。役割は run 統括・finding triage・escalation 対応・DB / 認証 / secret
+  等の運用。コード変更が要るなら **dev クローン側で issue / PR にする**（ops checkout
+  で直接直すと pin が崩れる）。手順は **[`AGENTS.md`](./AGENTS.md)** と
+  **[`docs/ops/`](./docs/ops/)** を正本とする。
+
+**モードの見分け方（決定論的に）**: ops は通常 **detached HEAD で release タグに
+pin**（`git describe --tags --exact-match` が成功）、dev は **`main` / feature
+ブランチ上**。ディレクトリ規約（`ops/monorepo-harness` vs `dev/monorepo-harness`）も
+補助。迷ったら**人間に確認**し、安全側（= ops とみなして `src/` を触らない）に倒す。
+
+---
+
 ## goal モードのとき（最重要）
 
 このハーネスを **goal モード**（`harness goal` 系で実装/レビュー/修正ループを
