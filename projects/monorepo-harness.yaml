@@ -1,0 +1,18 @@
+version: 1
+project_id: monorepo-harness
+description: Initialized by 'project init' from /Users/kn/dev/monorepo-harness
+repo:
+  id: monorepo-harness
+  path: ..
+  package_manager: npm
+policy:
+  template: strict-monorepo-v1
+domains:
+  - id: docs
+    root: docs
+    kind: docs
+  - id: src
+    root: src
+    kind: package
+    command_presets:
+      - node-basic-v1

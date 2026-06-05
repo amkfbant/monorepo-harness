@@ -1,0 +1,54 @@
+repo_id: monorepo-harness
+read: []
+domains:
+  docs:
+    read:
+      - docs/**
+    write:
+      - docs/**
+    deny_write:
+      - .git/**
+      - .github/**
+      - nx.json
+      - package-lock.json
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - src/**
+      - tsconfig.base.json
+      - turbo.json
+      - yarn.lock
+  src:
+    read:
+      - docs/**
+      - package.json
+      - src/**
+      - tsconfig.base.json
+    write:
+      - src/**
+    deny_write:
+      - .git/**
+      - .github/**
+      - docs/**
+      - nx.json
+      - package-lock.json
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - tsconfig.base.json
+      - turbo.json
+      - yarn.lock
+    commands:
+      allow:
+        - id: node-version
+          cmd: node
+          args:
+            - --version
+          env:
+            NODE_ENV: test
+      defaults:
+        timeout_ms: 120000
+        env_allowlist:
+          - PATH
+          - HOME
+          - NODE_ENV
