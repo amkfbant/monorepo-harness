@@ -15,6 +15,7 @@ import {
   listMcpSessions,
 } from "./audit/mcp-audit.js";
 import { listMcpConfirmationRequests } from "./security/confirmation.js";
+import { resolveMcpClientPermission } from "./security/permissions.js";
 
 export interface RegisterMcpCommandOptions {
   getHarnessRoot: () => string;
@@ -128,6 +129,7 @@ export function registerMcpCommands(
     .command("config")
     .description("show effective MCP config")
     .option("--config <path>", "path to .harness/mcp.yaml")
+    .option("--client-name <name>", "show effective permission for MCP client name")
     .action((raw: Record<string, unknown>) => {
       const paths = harnessPaths(opts.getHarnessRoot());
       const config = loadMcpConfig({
@@ -136,7 +138,12 @@ export function registerMcpCommands(
           ? { configPath: configPathFrom(raw) as string }
           : {}),
       });
-      process.stdout.write(`${JSON.stringify(config, null, 2)}\n`);
+      const clientName = clientNameFrom(raw);
+      const payload =
+        clientName === undefined
+          ? config
+          : resolveMcpClientPermission(config, clientName);
+      process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
     });
 
   mcp

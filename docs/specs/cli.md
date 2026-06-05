@@ -211,7 +211,7 @@ harness mcp serve [--transport stdio] [--client-name <name>] [--config <path>]
 harness mcp tools [--json]
 harness mcp resources [--json]
 harness mcp prompts [--json]
-harness mcp config [--config <path>]
+harness mcp config [--config <path>] [--client-name <name>]
 harness mcp sessions [--limit <n>] [--json]
 harness mcp invocations [--session-id <id>] [--limit <n>] [--json]
 harness mcp confirmations [--status pending|confirmed|rejected|expired|consumed] [--limit <n>] [--json]
@@ -219,7 +219,7 @@ harness mcp confirmations [--status pending|confirmed|rejected|expired|consumed]
 
 - `serve` は JSON-RPC MCP を stdin/stdout で処理する。stdout は MCP message 専用、diagnostic は stderr。
 - `tools` / `resources` / `prompts` は client 接続なしで公開 surface を確認するための read-only コマンド。
-- `config` は `--config` / `.harness/mcp.yaml` / project profile の `mcp` section / 既定値の優先順で実効 config を JSON 表示する。
+- `config` は `--config` / `.harness/mcp.yaml` / project profile の `mcp` section / 既定値の優先順で実効 config を JSON 表示する。`--client-name <name>` 指定時は、その client に解決された `mode` / `allowedOperations` / `requireConfirmation` を JSON 表示する。
 - 明示 `--config <path>` が存在しない場合は fallback せず非zeroで終了する。
 - `sessions` / `invocations` / `confirmations` は MCP 監査 DB を読む。`confirmations --json` の `inputJson` / `previewJson` は redacted 表示で、実行用 raw payload は CLI list には出さない。
 - read tools は既定で audit しない。dry-run は既定で audit、mutation/dangerous は常に audit。

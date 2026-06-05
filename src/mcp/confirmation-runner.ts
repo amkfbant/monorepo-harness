@@ -8,10 +8,9 @@ import {
 } from "./security/confirmation.js";
 import {
   parseMcpConfigSnapshotJson,
-  modeForClient,
   type McpConfig,
 } from "./security/config.js";
-import { decideMcpPermission } from "./security/permissions.js";
+import { decideMcpPermission, modeForClient } from "./security/permissions.js";
 import { parseToolArgs } from "./schemas/common.js";
 import { errorResult, type HarnessMcpToolResult } from "./schemas/outputs.js";
 import { getMcpTool } from "./registry/tool-registry.js";

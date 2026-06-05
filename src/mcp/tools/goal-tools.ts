@@ -43,7 +43,7 @@ import { errorResult, ok, permissionDenied, type HarnessMcpToolResult } from "..
 import { createMcpConfirmationRequest } from "../security/confirmation.js";
 import { assertMutationBudget, McpMutationBudgetExceededError } from "../security/limits.js";
 import type { McpToolContext } from "../registry/tool-registry.js";
-import { modeForClient } from "../security/config.js";
+import { modeForClient } from "../security/permissions.js";
 import { ensureProjectVisible, withReadonlyDb } from "./tool-helpers.js";
 
 const MAX_FINDINGS_PER_CALL = 50;

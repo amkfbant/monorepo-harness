@@ -325,11 +325,6 @@ function cloneMcpConfig(config: McpConfig): McpConfig {
   return mergeMcpConfig(config, {});
 }
 
-export function modeForClient(config: McpConfig, clientName: string): McpMode {
-  const matched = config.clients.find((c) => c.names.includes(clientName));
-  return matched?.mode ?? config.defaultMode;
-}
-
 export function parseMcpConfigSnapshotJson(text: string): McpConfig {
   let parsed: unknown;
   try {
