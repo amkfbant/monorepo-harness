@@ -548,12 +548,24 @@ export function createOrchestratorRunners(
         if (outcome.escalateReason !== undefined) {
           return { prUrl: pr.prUrl, escalateReason: outcome.escalateReason };
         }
+        // merged → closed. A CI-not-green transient (recheckable) leaves the
+        // goal `close_ready` with the PR open: a later `goal orchestrate`
+        // re-enters closeAndPr (idempotent PR + a fresh gate evaluation) and
+        // merges once CI is green — the resumable "later merge" path, no new
+        // status / migration needed. Any other transient (e.g. tier-not-eligible)
+        // is permanent for a re-check, so the goal closes for a human merge.
+        const nextStatus = outcome.merged
+          ? "closed"
+          : outcome.recheckable === true
+            ? "close_ready"
+            : "closed";
+        const summary = outcome.merged
+          ? "goal converged; PR merged"
+          : outcome.recheckable === true
+            ? "PR open; awaiting CI — re-run orchestrate to merge"
+            : "goal converged; PR opened";
         withManagedDb({ dbPath: deps.dbPath }, (db) => {
-          new GoalRepository(db).updateStatus(
-            goalId,
-            "closed",
-            outcome.merged ? "goal converged; PR merged" : "goal converged; PR opened",
-          );
+          new GoalRepository(db).updateStatus(goalId, nextStatus, summary);
         });
         return { prUrl: pr.prUrl, merged: outcome.merged };
       }
@@ -584,7 +596,7 @@ async function runAutoMerge(
   repoPath: string,
   prNumber: number,
   reviewedHeadSha: string | undefined,
-): Promise<{ merged: boolean; escalateReason?: string }> {
+): Promise<{ merged: boolean; escalateReason?: string; recheckable?: boolean }> {
   const autoMerge = deps.autoMerge!;
   // The merge is pinned to the REVIEWED commit (the SHA createPullRequest
   // committed + pushed after the fingerprint check), never the PR's later
@@ -670,8 +682,11 @@ async function runAutoMerge(
       escalateReason: `auto-merge gate hard-blocked: ${gate.blockers.join(", ")}`,
     };
   }
-  // transient (CI not green yet): leave the PR open for a later merge.
-  return { merged: false };
+  // transient: leave the PR open for a later merge. `recheckable` is true only
+  // for CI-not-green (a temporal blocker that a re-run can clear); a
+  // tier_not_auto_eligible block is permanent (the path's tier never changes),
+  // so the goal closes for a human merge rather than waiting on a re-check.
+  return { merged: false, recheckable: gate.blockers.includes("ci_not_green") };
 }
 
 /** Gather the consensus + human-override approval facts for the merge gate. */
