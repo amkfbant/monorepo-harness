@@ -297,8 +297,11 @@ auto 不可 — 変更が自分のチェックを無効化しうるため。
 > 既定値が真）。**operator override は実装済み（PR #23）**: `policies/automerge-tiers.yaml`
 > （任意）の rule を既定 map に追記、max-tier セマンティクスで **operator は厳格化方向
 > にしか効かない**（緩められない）、malformed は throw（`src/core/automerge-tiers-config.ts`）。
-> **残 follow-up**: tests の「追加のみ」検出（test 削除/skip 追加の tier-0 を tier-1 へ
-> 降格する fail-open 穴塞ぎ）、`src/core/automerge-tiers*.ts` 自体を Tier-2 にするか。
+> **tests additive-only ガードは実装済み**: Tier-0 の tests-only 変更が test 削除/
+> skip 追加でカバレッジを削る場合は Tier-1 へ降格（`detectsTestWeakening` を run 時に
+> `meta.reviewed.weakensTests` で捕捉、`effectiveAutoMergeTier` が降格）。両誤り方向で
+> fail-safe。**残 follow-up**: 削除でなく `it()` 純減（net-count 減）の検出、
+> `src/core/automerge-tiers*.ts` 自体を Tier-2 にするか。
 
 | tier | 方針 | path（例） | 理由 |
 |------|------|-----------|------|
