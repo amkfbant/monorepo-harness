@@ -284,7 +284,7 @@ harness goal check-convergence <goal-id> [--created-by <actor>] [--no-record] [-
 harness goal orchestrate <goal-id> --repo <path> [--base-branch <name>] [--max-steps <n>] \
   [--dry-run] [--auto-merge] [--merge-method squash|merge|rebase] \
   [--ci-await-timeout <seconds>] [--request-copilot-review] \
-  [--ingest-external-reviews]
+  [--ingest-external-reviews] [--external-review-timeout <seconds>]
 ```
 
 `goal close` は convergence が `close_ready` でない限り `--force` を要求する。
@@ -314,6 +314,13 @@ auto-merge gate 評価前に PR の外部レビュー verdict（codex App / Copi
 する。これにより gate が escalate し operator が分類する（外部は advisory・operator
 分類必須）。**approve は ingest しない**（外部の approve は merge を authorize しない）。
 fetch 失敗は握って merge path を壊さない。`workflow.md` の「Phase 3 — auto-merge」参照。
+
+**`--external-review-timeout <seconds>`（既定 `0`・`--ingest-external-reviews` 時のみ
+有効）** は外部レビューの **bounded await**（CI bounded await と対称）。外部レビューは
+PR 公開後に非同期で post されるため、一発の orchestrate が verdict 到着前に gate を
+評価しうる。`0`（既定）は単発 fetch。正値なら `CHANGES_REQUESTED` が出るか budget
+（秒）が尽きるまで 15 秒間隔で poll する。budget 内に blocking が無ければ gate 評価に
+進む（fail-safe。遅れて来た verdict は close_ready の再 check で後から拾える）。
 
 ## `harness dashboard export`
 

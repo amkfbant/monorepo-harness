@@ -780,6 +780,13 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
     すると closeReady 再評価が落ち gate が escalate → operator が分類（§6: 外部は
     advisory・operator 分類必須）。**approve は ingest しない**（外部の approve は merge を
     authorize できない＝§0 非対称）。fetch 失敗は握って merge path を壊さない。
+  - **外部レビュー bounded await**（opt-in `--external-review-timeout <seconds>`、既定
+    `0`＝単発 fetch）: CI bounded await と対称。外部レビューは PR 公開後に非同期で
+    post されるため、一発の orchestrate が verdict 到着前に gate を評価しうる。正値なら
+    `CHANGES_REQUESTED` が出るか budget が尽きるまで 15 秒間隔で poll する（最初に
+    blocking を見つけた時点で打ち切り）。budget 内に blocking が無ければ gate 評価へ進む
+    （fail-safe。遅れて来た verdict は close_ready 再 check で後から拾える）。`now`/`sleep`
+    は注入可能（テスト用）。
   - merge コマンド失敗 → 例外で escalate（audit は `failed`）。
 - **既定 OFF**: `deps.autoMerge` 不在（CLI で `--auto-merge` 未指定）なら従来どおり
   PR 作成のみ（`pr_created`）。`--merge-method`（squash|merge|rebase）で方式指定し、

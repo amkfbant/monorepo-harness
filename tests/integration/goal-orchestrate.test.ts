@@ -395,6 +395,12 @@ describe("goal orchestrate (real git + fake codex)", () => {
     reviewVerdicts?: (
       prNumber: number,
     ) => Promise<{ author: string; state: string }[]>;
+    reviewAwait?: {
+      timeoutMs: number;
+      intervalMs: number;
+      sleep?: (ms: number) => Promise<void>;
+      now?: () => number;
+    };
   }) {
     const domain = opts.domain ?? "docs";
     const { coderRunner, reviewerRunner } = approveFakes(opts.changedPath);
@@ -418,6 +424,9 @@ describe("goal orchestrate (real git + fake codex)", () => {
         ciStatus: async (_prNumber: number, _expectedHeadSha: string) => opts.ciGreen,
         ...(opts.reviewVerdicts !== undefined
           ? { reviewVerdicts: opts.reviewVerdicts }
+          : {}),
+        ...(opts.reviewAwait !== undefined
+          ? { reviewAwait: opts.reviewAwait }
           : {}),
       },
     });
@@ -494,6 +503,82 @@ describe("goal orchestrate (real git + fake codex)", () => {
     // (consensus + CI green + tier-0) still merges.
     expect(result.outcome).toBe("merged");
     expect(merger.calls).toHaveLength(1);
+  });
+
+  it("auto-merge: bounded await polls until a late external CHANGES_REQUESTED appears, then escalates", async () => {
+    const goalId = createGoal(f.dbPath, "goal-merge-extawait", "docs");
+    const merger = fakeMerger("ok");
+    // The reviewer is slow: the first two fetches see nothing, the third posts a
+    // blocking verdict — the bounded await must keep polling and catch it.
+    let fetchCount = 0;
+    const sleeps: number[] = [];
+    let clock = 0;
+    const result = await driveWithAutoMerge({
+      goalId,
+      ciGreen: true,
+      merger,
+      reviewVerdicts: async () => {
+        fetchCount += 1;
+        return fetchCount >= 3
+          ? [{ author: "codex[bot]", state: "CHANGES_REQUESTED" }]
+          : [];
+      },
+      reviewAwait: {
+        timeoutMs: 60_000,
+        intervalMs: 15_000,
+        now: () => clock,
+        sleep: async (ms: number) => {
+          sleeps.push(ms);
+          clock += ms;
+        },
+      },
+    });
+
+    expect(result.outcome).toBe("escalated");
+    expect(merger.calls).toHaveLength(0);
+    // initial fetch + 2 polls before the verdict appeared on the 3rd fetch.
+    expect(fetchCount).toBe(3);
+    expect(sleeps).toEqual([15_000, 15_000]);
+    const { db, close } = openManagedDb({ dbPath: f.dbPath });
+    try {
+      const ext = new GoalRepository(db)
+        .listFindings({ goalId })
+        .find((x) => x.category === "external-review-changes-requested");
+      expect(ext).toBeDefined();
+    } finally {
+      close();
+    }
+  });
+
+  it("auto-merge: bounded await proceeds to merge when no blocking verdict appears before the budget is spent", async () => {
+    const goalId = createGoal(f.dbPath, "goal-merge-extawait-clean", "docs");
+    const merger = fakeMerger("ok");
+    let fetchCount = 0;
+    let clock = 0;
+    const result = await driveWithAutoMerge({
+      goalId,
+      ciGreen: true,
+      merger,
+      reviewVerdicts: async () => {
+        fetchCount += 1;
+        return [];
+      },
+      reviewAwait: {
+        timeoutMs: 30_000,
+        intervalMs: 15_000,
+        now: () => clock,
+        sleep: async (ms: number) => {
+          clock += ms;
+        },
+      },
+    });
+
+    // no external reviewer requested changes within the window → the gate is
+    // evaluated and the deterministic merge proceeds. The budget is bounded.
+    expect(result.outcome).toBe("merged");
+    expect(merger.calls).toHaveLength(1);
+    // initial fetch + polls until the 30s budget is spent (2 × 15s).
+    expect(fetchCount).toBe(3);
   });
 
   it("auto-merge: pins the merge to the reviewed commit (from createPullRequest)", async () => {
