@@ -20,4 +20,13 @@ describe("computeAutoMergeTier", () => {
       ]),
     ).toBe(2);
   });
+
+  it("returns the highest tier when one path matches multiple rules", () => {
+    expect(
+      computeAutoMergeTier(["docs/specs/goal-convergence.md"], [
+        { glob: "docs/**", tier: 0 },
+        { glob: "docs/specs/**", tier: 2 },
+      ]),
+    ).toBe(2);
+  });
 });
