@@ -3,7 +3,18 @@ name: CI
 on:
   push:
     branches: [main]
+    # Skip CI when a change touches only docs / release metadata — nothing the
+    # typecheck/build/test job exercises. paths-ignore only skips when EVERY
+    # changed file matches, so any change to source, tests, build config, or a
+    # workflow still runs the full matrix.
+    paths-ignore: &ci-skip-paths
+      - "**/*.md"
+      - "docs/**"
+      - "release-please-config.json"
+      - ".release-please-manifest.json"
+      - ".github/dependabot.yml"
   pull_request:
+    paths-ignore: *ci-skip-paths
 
 # Cancel superseded runs on the same ref to save CI minutes.
 concurrency:
