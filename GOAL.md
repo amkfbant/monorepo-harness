@@ -1,189 +1,142 @@
-# GOAL.md — 実装ロードマップ
+# GOAL.md — 残 follow-up ロードマップ（A〜D）
 
-monorepo-harness を **goal モード**で自律実装させるための大 Phase / サブ Phase
-定義。実行ルール（レビュー・close 条件・テスト粒度・ブランチ運用・安全境界）は
+monorepo-harness を **goal モード**で実装させるための作業項目定義。実行ルール
+（レビュー・close 条件・テスト粒度・ブランチ運用・安全境界）は
 [`GOAL_RULES.md`](./GOAL_RULES.md) を参照。本ファイルは「何を作るか」を、
 `GOAL_RULES.md` は「どう作るか」を定める。
 
-- 各 **大 Phase** = feature branch 1 本 → CI green → main merge。
-- 各 **サブ Phase** = 1〜数コミット（TDD で関連テスト + `npm run typecheck` 緑）。
-- サブ Phase ごとに codex サブレビュー（最大 3 回）、大 Phase 完了時に codex 大
-  レビュー（最大 5 回）。未解決 P0 ゼロが close の必須条件。
+> **大 Phase 1〜4 は全て完了・main merge 済み**（`goal-phaseN-close` タグ。
+> Phase 1=CI 足回り / Phase 2=consensus 拡張 / Phase 3=auto-merge / Phase 4=
+> dashboard mutation UI。設計は `docs/superpowers/specs/2026-06-05-phaseN-*.md`）。
+> 本ファイルは**残っている follow-up A〜D のみ**を扱う。
 
-**実装順（確定）**: Phase 1 → 2 → 3 → 4。
-
-> 各 Phase は着手前に spec / plan を用意する（spec 駆動）。下記の spec パスは
-> 着手時に作成する想定の置き場所。
-
----
-
-## スコープ確定メモ
-
-- **含む**: 軽量保守 / consensus 拡張 / auto-merge / dashboard mutation UI。
-- **含まない**:
-  - **Copilot PR review 連携** — 2026-06 の実験で実際にレビューされず（アカウント
-    /GitHub 側要因）。`docs/future-features.md` に保留。
-  - **review consensus の基礎統合** — Phase 11 / 19 で実装・統合済み。本 GOAL では
-    その「拡張」のみ扱う。
-  - **重み付け投票** — consensus 拡張から除外（quorum / 鮮度 / エスカレーションのみ）。
-  - **codex セッション継続** — 安全モデル（ステートレス）とのトレードオフがあり、
-    `docs/future-features.md` に保留（spike 前提）。
-  - **S3 blob adapter** — スキップ。
+- 各 follow-up = サブ Phase 規模（1〜数コミット、TDD で関連テスト + `npm run
+  typecheck` 緑）。codex サブレビュー（最大 3 回、`codex exec -m gpt-5.5 -c
+  model_reasoning_effort="xhigh"`）。未解決 P0 ゼロが close の必須条件。
+- A〜D は**相互依存なし**。独立に着手・merge してよい。A/B/C はコード、D は doc のみ。
+- 着手前に必要なら spec / plan を用意する（spec 駆動）。
 
 ---
 
-## Phase 1: 軽量保守（CI / 足回り）
+## Follow-up A: `review auto` proposal insert の TOCTOU 解消
 
-**目的**: CI を Node 24 時代に備えて固め、以降の Phase の土台を安定させる。最小・
-低リスクのウォームアップ Phase。
+**目的**: `reviewer-agent.ts` の status pre-check（`runs.status = 'needs_review'`
+∧ `source_mode = 'db-first'`）を `ReviewProposalRepository.insertProposal` と
+**同一トランザクション**に入れ、並行する `review process` が pre-check と insert の
+間に run を promote しても proposal が挿入されないようにする。
 
-- **関連 spec/plan**: 軽微なため spec は省略可。変更点は CI 設定のみ。
-- **base ref**: 現 main（`bce6761` 以降）
-- **対象**: `.github/workflows/ci.yml`
+- **現状の土台**: pre-check は既存（Phase 9 の P1-4 status guard）。残存 TOCTOU は
+  共有 `insertProposal` path に影響（default latest-proposal flow と consensus mode
+  の両方）。`docs/future-features.md` の同項目を本 follow-up が引き継ぐ。
+- **性質**: 最悪でも「promote 済み run に、すぐ無視される active proposal が残る」
+  程度で、corruption も安全境界破りもない。だが共有 review hot-path の insert に
+  トランザクショナルな status 再読を足すため、default flow 用テスト込みで慎重に。
 
 ### サブ Phase
+- **A-1 ガード付き insert（TDD）**
+  - `insertProposal`（or guarded wrapper）の `tx.immediate()` 内で run の
+    `status` / `source_mode` を再読し、`db-first && needs_review` でなければ
+    `ReviewerAgentGateError` を throw。
+  - 並行 promote → insert が決定論的に弾かれること、正常 path（needs_review の
+    run）は従来どおり通ることを TDD で検証。
 
-- **1-1 Node 24 を CI に追加**
-  - `node-version` を matrix 化（`["20", "24"]`）。native deps（`better-sqlite3` /
-    `fs-ext`）が Node 24 で rebuild され、フルスイートが緑になることを確認。
-  - 24 で落ちる場合は原因を切り分け、`20` 維持 + 24 を `continue-on-error` 等で
-    段階導入するか判断（回帰禁止）。
-- **1-2 actions / workflow 点検**
-  - `actions/checkout@v4` / `actions/setup-node@v4` の妥当性確認。必要なら
-    commit SHA pin・`permissions:` 最小化など軽微な hardening。
-  - concurrency / timeout 設定の見直し（既存の cancel-in-progress は維持）。
-
-### close 条件（Phase 1）
-- [ ] フルスイート `npm test` + `npm run typecheck` 緑（CI 上、対象 Node 全バージョン）
+### close 条件（A）
+- [ ] 関連テスト + `npm run typecheck` 緑、回帰なし（既存 review/consensus テスト含む）
 - [ ] 未解決 P0 ゼロ
-- [ ] CI 変更が docs（必要なら `docs/specs/` の CI 記述）に反映済み
+- [ ] 並行 promote 弾き / 正常通過 の両方に TDD テスト
+- [ ] `docs/specs/workflow.md`（review hot-path の insert 仕様）を更新
 
 ---
 
-## Phase 2: consensus 拡張
+## Follow-up B: `CopilotReviewer.poll` を AbortSignal でキャンセル可能に
 
-**目的**: review consensus を強化し、Phase 3（auto-merge）の安全な merge gate の
-前提を作る。`evaluateConsensus`（`src/core/review-consensus.ts`）は pure function
-なので TDD しやすい。状態遷移・永続化は harness 側（repository / orchestrator）。
+**目的**: `runCopilotReview` の watchdog（`Promise.race`）で**負けた側の poll が
+中断されず放置**される問題を解消する。`poll` に `AbortSignal` を渡し、watchdog
+発火時に in-flight poll を abort してリソースを解放する。
 
-- **関連 spec/plan**: `docs/superpowers/specs/2026-MM-DD-phaseN-consensus-extension-design.md`（着手時作成）
-- **base ref**: Phase 1 完了タグ
-- **現状の土台**: per-group `minApprovals` / `blockingDecisions` / human override /
-  reviewer グループ は実装済み（`src/core/review-consensus.ts`、schema v7 の
-  `reviewers` / `review_rules` / `review_consensus` / `review_overrides`）。
-- **除外**: 重み付け投票。
+- **現状の土台**: `src/core/copilot-reviewer.ts`（interface `poll(prNumber,
+  timeoutMs?)`）/ `copilot-reviewer-gh.ts`（gh 実装）/ `copilot-review-run.ts`
+  （`rejectAfter` watchdog）。現状 `poll` に signal 引数は無い（確認済み）。
+  Copilot round-5 review で deferred とされ未記録だった項目。
+- **不可侵の不変条件**: `runCopilotReview` は **NEVER throw**、Copilot outcome は
+  close/merge を**一切 gate しない**、外部出力は観測（audit + log）のみ。これらは
+  維持する（[`docs/future-features.md`](./docs/future-features.md) の Copilot 項参照）。
 
 ### サブ Phase
+- **B-1 poll に AbortSignal を追加（TDD）**
+  - `CopilotReviewer.poll` に optional `signal?: AbortSignal` を追加。gh runner は
+    子プロセス / フェッチへ伝播。
+  - `copilot-review-run.ts` で `AbortController` を生成し、watchdog 発火時に
+    `abort()`、`finally` で cancel。負け側 poll が abort されることを fake reviewer
+    で検証。`runCopilotReview` の non-throw 不変条件は回帰させない。
 
-- **2-1 quorum / 参加率**
-  - `ReviewRule` の requirement に「グループ内最低参加人数」または「参加率」を
-    追加（既存 `minApprovals` と独立）。`evaluateConsensus` の `requirements-met`
-    判定に組み込み、quorum 未達なら `approved` にしない（`requirements-pending`）。
-  - 後方互換: quorum 未指定の既存 rule は従来挙動を維持。
-- **2-2 proposal 鮮度管理**
-  - stale / supersede の概念を導入。再 review で置換された / 古い proposal を
-    集計から除外する（supersede chain or stale 閾値）。`EnrichedProposal` と
-    `evaluateConsensus` の集計ロジックに反映。
-  - 鮮度判定の基準（時刻ベース / supersede 明示）は spec で確定し決定論的に。
-- **2-3 エスカレーション連携**
-  - consensus が「詰まった」状態（長期 pending / blocking 未解消 / quorum に届かず
-    進展なし）を決定論的に検出し、goal orchestrator へエスカレーションを上げる。
-  - 状態遷移は harness のみ（LLM 出力を根拠にしない）。`src/goal/review-integration.ts`
-    / `src/goal/orchestrator-*.ts` と接続。fail-closed。
-
-### close 条件（Phase 2）
-- [ ] フルスイート + typecheck 緑、回帰なし（既存 consensus テスト含む）
+### close 条件（B）
+- [ ] 関連テスト + `npm run typecheck` 緑、回帰なし
 - [ ] 未解決 P0 ゼロ
-- [ ] quorum / 鮮度 / エスカレーションの新挙動に TDD のテスト
-- [ ] `docs/superpowers/specs/...consensus-extension...` と関連 `docs/specs/` 更新
+- [ ] watchdog 発火で poll が abort される TDD テスト（fake reviewer）
+- [ ] `runCopilotReview` non-throw / 非 gating の不変条件にテストで回帰なし
+- [ ] `docs/specs/cli.md`（`pr request-review`）/ `workflow.md`（Copilot 観測ステップ）
+      に signal 挙動を反映
 
 ---
 
-## Phase 3: auto-merge
+## Follow-up C: `harness knowledge deprecate` コマンド
 
-**目的**: close-ready かつ consensus approved な PR を harness 主導で自動マージ。
-安全境界が最重要。既定 OFF の opt-in 機能とする。
+**目的**: 今は frontmatter `deprecated:` の手編集でしか deprecate できない。
+`knowledge deprecate <id>` コマンドを足し、決定論的に deprecated へ遷移させる
+（`knowledge build-context` の除外と整合）。
 
-- **関連 spec/plan**: `docs/superpowers/specs/2026-MM-DD-phaseN-auto-merge-design.md`（着手時作成）
-- **base ref**: Phase 2 完了タグ
-- **現状の土台**: PR 作成（`src/core/pr-creator.ts` / `src/core/gh-pr-publisher.ts`）、
-  close-ready 判定（`src/goal/convergence.ts` / close-checks）、`closeAndPr` runner
-  （`src/goal/orchestrator-runners.ts`）は実装済み。merge 実行ロジックは未実装。
-- **前提**: Phase 2 の強化された consensus（quorum 込み approved）を merge gate に使う。
+- **現状の土台**: `knowledge list / reject / promote` は実装済み。`deprecated`
+  frontmatter と除外ロジック（`src/core/knowledge-context.ts` /
+  `knowledge-promoter.ts`）も実装済み。**コマンドのみ欠落**
+  （`docs/specs/overview.md` の「deprecate コマンドは未実装」）。
 
 ### サブ Phase
+- **C-1 deprecate subcommand（TDD）**
+  - `knowledge promote` / `reject` に倣い CLI subcommand を追加。対象 knowledge を
+    `deprecated: true` に遷移（DB-canonical の asset 更新 + file export 整合）。
+    状態遷移は harness のみ。
+  - deprecate 後に `build-context` から除外されることを TDD で検証。
 
-- **3-1 merge gate 判定（pure）**
-  - 「close-ready ∧ consensus approved（quorum 達成）∧ CI green」を満たすか判定
-    する純関数を TDD で実装。判定根拠（どの条件が未達か）を構造化して返す。
-  - LLM 出力を根拠にしない。判定は DB の事実のみから決定論的に行う。
-- **3-2 `gh pr merge` ラッパ**
-  - `src/core/gh-pr-publisher.ts` に idempotent な merge を追加（既マージ検出、
-    merge method 指定、タイムアウト処理）。EPIPE 等の子プロセス例外を握る。
-- **3-3 orchestrator runner / CLI 統合**
-  - `closeAndPr` の後段に opt-in の `autoMerge` runner を追加（既定 OFF、flag で
-    有効化）。状態遷移・記録は harness のみ。merge 後の goal 状態を確定。
-- **3-4 安全境界の固め**
-  - merge は「consensus approved（quorum 達成）or 人間 approve」を必須とし、
-    gate 未達なら merge せずエスカレーション（fail-closed）。merge 操作を監査記録に
-    残す（`mutation` / operation audit と整合）。
-
-### close 条件（Phase 3）
-- [ ] フルスイート + typecheck 緑、回帰なし
+### close 条件（C）
+- [ ] 関連テスト + `npm run typecheck` 緑、回帰なし
 - [ ] 未解決 P0 ゼロ
-- [ ] gate 未達で merge しない / gate 達成で merge する の両方に TDD テスト
-- [ ] auto-merge が既定 OFF であることのテスト
-- [ ] `docs/specs/overview.md` / `goal-convergence.md` の Non-Goals（auto-merge）を
-      実装済みに更新、`docs/specs/workflow.md` 等に挙動を記載
+- [ ] deprecate → build-context 除外 の TDD テスト
+- [ ] `docs/specs/cli.md`（knowledge 節）更新 + `overview.md` の「deprecate コマンド
+      未実装」記述を実装済みに更新
 
 ---
 
-## Phase 4: dashboard mutation UI
+## Follow-up D: `overview.md` の stale 修正（pr create / rerun の実 codex smoke）
 
-**目的**: 完成済みの mutation API（Phase 13: CSRF token + Bearer、`dashboard serve
---enable-mutation`）にブラウザ向けフロントエンド UI を載せる。独立 Phase。
+**目的**: `docs/specs/overview.md`「できないこと」の「`pr create` / `rerun` の実
+codex smoke 未検証」は、**2026-06-04 の smoke で検証済み**
+（[`docs/reports/2026-06-04-real-codex-smoke.md`](./docs/reports/2026-06-04-real-codex-smoke.md)、
+real GitHub に draft PR #2 を作成）。記述を実態に合わせる。
 
-- **関連 spec/plan**: `docs/superpowers/specs/2026-MM-DD-phaseN-dashboard-mutation-ui-design.md`（着手時作成）
-- **base ref**: Phase 3 完了タグ
-- **現状の土台**: backend は完成。POST routes（`/api/runs/:runId/review` /
-  `cleanup` / `pr` / `rerun`、`/api/backlog/:itemId/run`）+ CSRF + bearer は
-  `src/dashboard/server/server.ts` に実装済み。`src/dashboard/render.ts` は
-  read-only の static HTML で mutation UI は無い。
-- **安全**: 既定 OFF（`--enable-mutation` 時のみ）。bearer / CSRF を UI 側でも厳守。
+- **性質**: doc のみ。ロジック変更なし。
 
 ### サブ Phase
+- **D-1 記述の更新**
+  - 当該 bullet を削除、または「実 codex smoke 検証済み（2026-06-04）」へ書き換え、
+    reports へリンク。
 
-- **4-1 mutation UI 骨格**
-  - `src/dashboard/render.ts`（または分割した新フロント module）に、CSRF token
-    取得 + bearer 入力 + `fetch` POST ヘルパを実装。`--enable-mutation` 時のみ
-    UI 要素を描画。
-- **4-2 各 mutation 操作の UI**
-  - review decision / cleanup / PR 作成 / rerun / backlog 実行 の各 POST route に
-    対応するフォーム・ボタンを実装。レスポンスを画面に反映。
-- **4-3 誤操作防止 / エラー表示**
-  - 破壊的操作（cleanup / rerun / merge 系）に確認ダイアログ。エラー時の表示と、
-    楽観排他（stale な状態への操作を弾く）を実装。
-
-### close 条件（Phase 4）
-- [ ] フルスイート + typecheck 緑、回帰なし
-- [ ] 未解決 P0 ゼロ
-- [ ] mutation UI が `--enable-mutation` OFF 時に出ない / CSRF・bearer を要求する
-      ことのテスト
-- [ ] `docs/specs/dashboard.md` / `overview.md`（mutation UI 未提供の記述）を更新
+### close 条件（D）
+- [ ] `docs/specs/overview.md` を実態（検証済み）に更新
+- [ ] reports（`2026-06-04-real-codex-smoke.md`）へのリンク整合
 
 ---
 
-## 全体フロー
+## 実行フロー
 
 ```
-Phase 1 (保守) ─→ Phase 2 (consensus 拡張) ─→ Phase 3 (auto-merge) ─→ Phase 4 (UI)
-   各 Phase:
-     feature branch を切る / spec・plan 用意
-       └ サブ Phase ごとに TDD 実装 → commit → codex サブレビュー(最大3回)
-            ├ P0 残 → 修正/再レビュー、上限なら停止+エスカレーション
-            └ P0 ゼロ → 残 P1↓ は follow-up、次サブ Phase へ
-       └ 大 Phase レビュー(最大5回, フルスイート+typecheck 緑前提)
-            └ P0 ゼロ + close 条件 → push → CI green → main merge
+各 follow-up（A / B / C は独立、D は doc のみ）:
+  branch を切る（必要なら spec / plan 用意）
+    └ TDD 実装 → commit → codex サブレビュー（最大 3 回）
+         ├ P0 残 → 修正 / 再レビュー、上限なら停止 + エスカレーション
+         └ P0 ゼロ → 残 P1↓ は follow-up、close 条件を満たして merge
 ```
 
 詳細な判断基準・レビューテンプレート・安全境界は [`GOAL_RULES.md`](./GOAL_RULES.md)。
+より大きい保留事項（multi-reviewer consensus orchestration / codex session
+continuation 等）は [`docs/future-features.md`](./docs/future-features.md)。
