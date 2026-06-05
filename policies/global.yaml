@@ -29,3 +29,7 @@ ignore_untracked:
   - "**/dist/**"
   - "**/coverage/**"
   - "**/.turbo/**"
+  # Self-hosting: when the harness runs against its own repo, coder command/test
+  # runs create a runtime DB under .harness/ in the worktree. It is a runtime
+  # artifact (gitignored), never part of the reviewed change.
+  - "**/.harness/**"

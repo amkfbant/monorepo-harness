@@ -52,3 +52,45 @@ domains:
           - PATH
           - HOME
           - NODE_ENV
+  self:
+    read:
+      - src/**
+      - tests/**
+      - docs/**
+      - package.json
+      - tsconfig.json
+      - vitest.config.ts
+    write:
+      - src/**
+      - tests/**
+      - docs/specs/**
+    deny_write:
+      - .git/**
+      - .github/**
+      - package.json
+      - package-lock.json
+      - pnpm-lock.yaml
+      - yarn.lock
+      - tsconfig.json
+      - dist/**
+      - node_modules/**
+    commands:
+      allow:
+        - id: typecheck
+          cmd: npm
+          args:
+            - run
+            - typecheck
+          timeout_ms: 300000
+        - id: vitest-run
+          cmd: npx
+          args:
+            - vitest
+            - run
+          timeout_ms: 600000
+      defaults:
+        timeout_ms: 300000
+        env_allowlist:
+          - PATH
+          - HOME
+          - NODE_ENV
