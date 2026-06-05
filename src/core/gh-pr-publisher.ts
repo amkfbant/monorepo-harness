@@ -266,6 +266,42 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 /**
+ * Fetch a PR's review verdicts (author + state) via `gh pr view --json reviews`.
+ * Used by the opt-in external-review ingestion: a CHANGES_REQUESTED verdict
+ * becomes an advisory finding that escalates the auto-merge gate. Best-effort:
+ * any failure yields an empty list so it cannot break the merge path.
+ */
+export function createGhReviewVerdicts(
+  repoDir: string,
+  ghBin = "gh",
+  timeoutMs = DEFAULT_GH_TIMEOUT_MS,
+): (prNumber: number) => Promise<{ author: string; state: string }[]> {
+  return async (prNumber: number) => {
+    try {
+      const out = await runGh(
+        ghBin,
+        ["pr", "view", String(prNumber), "--json", "reviews"],
+        repoDir,
+        timeoutMs,
+      );
+      const parsed = JSON.parse(out.trim() || "{}") as { reviews?: unknown };
+      if (!Array.isArray(parsed.reviews)) return [];
+      return parsed.reviews
+        .map((r) => {
+          const rr = r as { author?: { login?: unknown }; state?: unknown };
+          const author =
+            typeof rr.author?.login === "string" ? rr.author.login : "";
+          const state = typeof rr.state === "string" ? rr.state : "";
+          return { author, state };
+        })
+        .filter((v) => v.author !== "" && v.state !== "");
+    } catch {
+      return [];
+    }
+  };
+}
+
+/**
  * Read the PR's merged state + head commit in one `gh pr view`. A timeout
  * fails loudly (never swallowed). A malformed/unparseable payload also throws:
  * for a destructive merge we must not proceed on an unknown PR state, so the

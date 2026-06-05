@@ -773,6 +773,13 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
     の tip から解決）、CI が緑になっていれば merge する。`tier_not_auto_eligible`（tier は
     変わらない＝再チェック無意味）は従来どおり `closed`（人手 merge）。新 status /
     migration なしで `close_ready` を「PR up・CI 待ち」に二重利用する。
+  - **外部レビュー ingestion**（opt-in `--ingest-external-reviews`）: gate 評価前に
+    PR の外部レビュー verdict（codex App / Copilot）を fetch し、**`CHANGES_REQUESTED`**
+    を **unknown-scope の advisory finding**（`source=review` /
+    `category=external-review-changes-requested`、stableKey で 1 度だけ）として記録する。
+    すると closeReady 再評価が落ち gate が escalate → operator が分類（§6: 外部は
+    advisory・operator 分類必須）。**approve は ingest しない**（外部の approve は merge を
+    authorize できない＝§0 非対称）。fetch 失敗は握って merge path を壊さない。
   - merge コマンド失敗 → 例外で escalate（audit は `failed`）。
 - **既定 OFF**: `deps.autoMerge` 不在（CLI で `--auto-merge` 未指定）なら従来どおり
   PR 作成のみ（`pr_created`）。`--merge-method`（squash|merge|rebase）で方式指定し、
