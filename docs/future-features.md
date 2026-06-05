@@ -177,10 +177,43 @@ App / Copilot）が実バグを拾う価値が高く、(b) それを取りこぼ
    budget 内に blocking 無ければ gate 評価へ進む（fail-safe。遅延 verdict は close_ready
    再 check で後拾い）。`reviewAwait`（`now`/`sleep` 注入可）。これで「一発 orchestrate が
    verdict 到着前に評価してしまう」窓を bounded に塞いだ。
-   **残 slice**: 専用 `awaiting_checks` status（close_ready 二重利用の解消・要 migration）、
-   定期 `goal await-merge`（scheduler 駆動の自動再 orchestrate）、ingest 後の **fix ループ**
-   （operator 分類→rerun の自動化）、semantic dedup（§3）。core（§2/§6 の advisory レーン
-   ＋ async bounded await）は通った。
+   **残 slice**（いずれも core 機構に触れる**大 Phase 級・codex review 必須**の独立タスク。
+   セッション末尾で急がない＝fail-closed）:
+
+   - **専用 `awaiting_checks` status（close_ready 二重利用の解消）— 高リスク migration が前提。**
+     `goal_sessions.status` は `CHECK (status IN (...))`（`schema.ts:1253`）。新値の追加は
+     SQLite では **テーブル recreate** が必須だが、現状これは**現 migration runner と非互換**:
+     runner は全 DDL を**トランザクション内**で実行し（`migrations.ts:197`）、接続は
+     **`foreign_keys = ON`**（`connection.ts:44`）、かつ `goal_sessions` には**子 5 本**
+     （`goal_attempts` / `goal_findings` / `goal_review_cycles` / `goal_close_checks` /
+     `goal_convergence_decisions`）が **`ON DELETE CASCADE` FK** で依存する。この状態で
+     CHECK 変更に要る `DROP TABLE goal_sessions` を実行すると、暗黙 DELETE が子の **CASCADE
+     を誘発し全削除**される（`PRAGMA defer_foreign_keys` は検査を遅らせるだけで cascade
+     アクションは止められない）。FK-safe な recreate には `PRAGMA foreign_keys=OFF`（**tx 外
+     でしか切替不可**）が要る。artifacts v4 recreate（`schema.ts:475`）は子 FK 無しの前例で、
+     ここには使えない。**実装方針**: migration runner に「FK 親を recreate する migration」を
+     表現する hook を足す（apply 前後で `foreign_keys` を OFF/ON、tx 外で実行、末尾に
+     `PRAGMA foreign_key_check` で整合を assert して fail-closed）。`writable_schema` で
+     sqlite_master の CHECK 文字列を直接書き換える手は cascade を避けられるが SQLite が
+     非推奨で corruption リスク・review で落ちるため**不採用**。consumer（v17）と同時に出す。
+     配線側は: `GOAL_STATUSES`/`SCHEMA_VERSION` 追加、`orchestrator-runners.ts:581-590` の
+     recheckable 時 status を `close_ready`→`awaiting_checks`、`convergence-status.ts` の
+     close_ready reversion（`:110`）を `awaiting_checks` にも適用、close_ready 決定時に現在
+     `awaiting_checks` なら据え置く分岐。dispatch は decision 駆動なので不要。**migration の
+     data-survival テスト（既存 goal が子ごと生存）を必須**にする。
+   - **ingest 後の fix ループ自動化 — 既存ギャップ発見（① 以前から）。** goal mode の coder
+     rerun は `runDomainCoding({ goal: context.goal, ... })` を呼ぶだけで（`orchestrator-runners.ts:280`）、
+     **open in-scope finding / review の `required_changes` を coder prompt に注入していない**。
+     run 単体の rerun 機構（`core/rerun.ts`：original goal + required_changes ブロック）は
+     あるが goal coder 経路では使われていない。よって operator が外部 finding を in_scope に
+     分類しても、次の coder rerun は「何を直すべきか」を明示文脈なしに再コーディングする。
+     **実装方針**: coder runner で open in-scope（および直近 review の required_changes）を
+     集め、`runDomainCoding` に注入（`core/rerun.ts` の prompt 構築を流用）。収束性に影響する
+     core loop 変更なので回帰テスト必須。
+   - 定期 `goal await-merge`（scheduler 駆動の自動再 orchestrate。`awaiting_checks` status が
+     前提＝上記の後）、semantic dedup（§3）。
+
+   core（§2/§6 の advisory レーン＋ async bounded await、slice 1–3）は通った。
 
 2. **bounded poll-and-ingest lander（land を実装ループから分離）。** `ciStatus` を
    bounded poll 化し、`gh pr view --json reviews` で codex App / Copilot の verdict を
