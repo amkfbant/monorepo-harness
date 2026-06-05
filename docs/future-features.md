@@ -294,8 +294,11 @@ auto 不可 — 変更が自分のチェックを無効化しうるため。
 > は run の changed paths から tier を計算し **tier===0 のときだけ auto-merge**。
 > fail-closed: 空 paths→tier-1 / multi-match→max tier / 未マップ→tier-1。tier gate は
 > auto-merge を**制限方向にしか効かない**（§0 非対称）。下表は初期 map（コード内の
-> 既定値が真）。**follow-up**: operator-config-override、tests の「追加のみ」検出、
-> `src/core/automerge-tiers.ts` 自体を Tier-2 にするか。
+> 既定値が真）。**operator override は実装済み（PR #23）**: `policies/automerge-tiers.yaml`
+> （任意）の rule を既定 map に追記、max-tier セマンティクスで **operator は厳格化方向
+> にしか効かない**（緩められない）、malformed は throw（`src/core/automerge-tiers-config.ts`）。
+> **残 follow-up**: tests の「追加のみ」検出（test 削除/skip 追加の tier-0 を tier-1 へ
+> 降格する fail-open 穴塞ぎ）、`src/core/automerge-tiers*.ts` 自体を Tier-2 にするか。
 
 | tier | 方針 | path（例） | 理由 |
 |------|------|-----------|------|
