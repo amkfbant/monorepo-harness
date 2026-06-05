@@ -12,6 +12,7 @@ function base(overrides: Partial<MergeGateInput> = {}): MergeGateInput {
     consensus: { status: "approved", quorumSatisfied: true },
     humanApproved: false,
     ciGreen: true,
+    tierEligible: true,
     ...overrides,
   };
 }
@@ -80,6 +81,13 @@ describe("evaluateMergeGate (Phase 3-1)", () => {
     const r = evaluateMergeGate(base({ ciGreen: false }));
     expect(r.canMerge).toBe(false);
     expect(r.blockers).toEqual(["ci_not_green"]);
+    expect(r.hardBlocked).toBe(false);
+  });
+
+  it("tier not auto-eligible → transient block (not hard)", () => {
+    const r = evaluateMergeGate(base({ tierEligible: false }));
+    expect(r.canMerge).toBe(false);
+    expect(r.blockers).toEqual(["tier_not_auto_eligible"]);
     expect(r.hardBlocked).toBe(false);
   });
 
