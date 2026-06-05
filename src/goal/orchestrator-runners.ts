@@ -20,6 +20,7 @@ import {
   type MergeGateConsensus,
 } from "../core/merge-gate.js";
 import { computeAutoMergeTier } from "../core/automerge-tiers.js";
+import { loadAutoMergeSensitivityMap } from "../core/automerge-tiers-config.js";
 import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
 import { ReviewConsensusRepository } from "../db/repositories/review-consensus.js";
 import { ReviewOverridesRepository } from "../db/repositories/review-overrides.js";
@@ -453,7 +454,11 @@ export function createOrchestratorRunners(
             consensus,
             humanApproved,
             ciGreen: true, // CI is checked after the PR exists
-            tierEligible: computeAutoMergeTier(changedPathsForRun(db, runId)) === 0,
+            tierEligible:
+              computeAutoMergeTier(
+                changedPathsForRun(db, runId),
+                loadAutoMergeSensitivityMap(deps.harnessRoot),
+              ) === 0,
           });
         });
         if (preflight.hardBlocked) {
@@ -592,7 +597,10 @@ async function runAutoMerge(
   }
   const expectedHeadSha = reviewedHeadSha;
   const tier = withManagedDb({ dbPath: deps.dbPath }, (db) =>
-    computeAutoMergeTier(changedPathsForRun(db, runId)),
+    computeAutoMergeTier(
+      changedPathsForRun(db, runId),
+      loadAutoMergeSensitivityMap(deps.harnessRoot),
+    ),
   );
   const tierEligible = tier === 0;
   const ciGreen = tierEligible

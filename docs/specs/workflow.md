@@ -738,6 +738,12 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
   `src/db/migrations*`, `.github/**`, `policies/**`。未マップ path は Tier-1。
   blocker は hard（`not_close_ready` / `consensus_not_approved` / `quorum_not_satisfied`）
   と transient（`ci_not_green` / `tier_not_auto_eligible`）に分かれる。
+  **operator override**: `policies/automerge-tiers.yaml`（任意・`{version: 1, rules:
+  [{glob, tier}]}`）があれば、その rule を既定 map に**追記**する
+  （`src/core/automerge-tiers-config.ts`）。`tierForPath` は全マッチの **max tier** を
+  取るため、operator rule は path の tier を**上げる（厳格化）方向にしか効かず緩め
+  られない**（既定 Tier-2 は operator Tier-0 に勝つ）＝fail-closed。ファイル不在は
+  既定 map、**malformed は throw**（壊れた merge-gate policy で黙って既定にせず停止）。
 - **closeAndPr の分岐**（`src/goal/orchestrator-runners.ts`）: PR 作成後、
   `deps.autoMerge` があれば gate を評価し
   - `canMerge` → `gh pr merge --match-head-commit <sha> --<method>`（idempotent:
