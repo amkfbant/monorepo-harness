@@ -17,6 +17,7 @@ import {
   createGhPrMerger,
   createGhCiStatus,
 } from "../core/gh-pr-publisher.js";
+import { createGhCopilotReviewer } from "../core/copilot-reviewer-gh.js";
 import type { PrMergeMethod } from "../core/pr-creator.js";
 import { ConvergenceService } from "../goal/convergence.js";
 import { recordConvergenceDecisionWithStatus } from "../goal/convergence-status.js";
@@ -687,6 +688,11 @@ export function registerGoalCommands(
       "merge method for --auto-merge (squash|merge|rebase)",
       "squash",
     )
+    .option(
+      "--request-copilot-review",
+      "opt-in: best-effort request a Copilot review on the PR (non-gating)",
+      false,
+    )
     .action(async (goalId: string, raw: Record<string, unknown>) => {
       await withGoalErrorExitAsync(async () => {
         if (raw.dryRun === true) {
@@ -716,6 +722,13 @@ export function registerGoalCommands(
                 method: parseMergeMethod(raw.mergeMethod),
               }
             : undefined;
+        // Best-effort Copilot review is opt-in (default OFF). Non-gating: the
+        // outcome never affects close/merge.
+        const ghBin = process.env.HARNESS_GH_BIN ?? "gh";
+        const copilotReview =
+          raw.requestCopilotReview === true
+            ? { reviewer: createGhCopilotReviewer(repoPath, ghBin) }
+            : undefined;
         const result = await new GoalOrchestrator({ dbPath }).run({
           goalId,
           runners: createOrchestratorRunners({
@@ -726,6 +739,7 @@ export function registerGoalCommands(
             reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
             publisher: createGhPrPublisher(),
             ...(autoMerge !== undefined ? { autoMerge } : {}),
+            ...(copilotReview !== undefined ? { copilotReview } : {}),
             repoPath,
             baseBranch: String(raw.baseBranch ?? "main"),
           }),

@@ -1,0 +1,215 @@
+# Copilot PR review integration — 設計
+
+これまで `docs/future-features.md` に保留されていた **Copilot PR review 連携** を、
+実機で機能することを確認できたため回収する。ただし Copilot review は不安定（過去に
+未投稿で長時間 cancelled）だったため、**非基幹・best-effort・retry-then-skip** に
+徹し、harness の状態遷移を一切 gate しない。
+
+- base ref: `goal-phase3-close` 以降の main（GOAL.md 完了後の follow-up feature）
+- 安全境界（既存と同一）: 外部（Copilot / GitHub）の出力を **状態遷移の根拠にしない**。
+  Copilot review の結果は観測情報（audit + ログ）に留め、close / merge を gate しない。
+  best-effort 処理は決して harness のワークフローを失敗させない（fail-open ではなく
+  「非 gating」: review は任意の付加価値であり、無くても安全）。
+
+---
+
+## コンポーネント
+
+### 1. `CopilotReviewer`（`src/core/copilot-reviewer.ts`）
+
+DI 抽象（`PrPublisher` / `PrMerger` と同じ慣習）。
+
+```ts
+export type CopilotReviewPollResult = "reviewed" | "pending";
+
+export interface CopilotReviewer {
+  /** Copilot reviewer を PR に要求する。一時エラーは throw してよい（呼び出し側が retry）。 */
+  request(prNumber: number): Promise<void>;
+  /**
+   * Copilot のレビューが投稿済みかを返す。`timeoutMs` が与えられたら、その時間で
+   * この 1 回の poll を打ち切ってよい（best-effort）。optional なので既存 fake は無視可。
+   */
+  poll(prNumber: number, timeoutMs?: number): Promise<CopilotReviewPollResult>;
+}
+```
+
+### 2. `runCopilotReview`（`src/core/copilot-review-run.ts`、純粋オーケストレーション）
+
+```ts
+export interface CopilotReviewConfig {
+  requestAttempts: number;   // request の一時エラー retry 上限（既定 3）
+  pollTimeoutMs: number;     // poll の総タイムアウト（既定 300_000 = 5 分）
+  pollIntervalMs: number;    // poll 間隔（既定 15_000）
+}
+export type CopilotReviewStatus = "reviewed" | "skipped" | "failed";
+export interface CopilotReviewOutcome {
+  status: CopilotReviewStatus;
+  attempts: number;          // 実 request 試行回数
+  polls: number;             // 実 poll 回数
+  detail: string;            // 人間可読の要約（"reviewed" / "timed out after Ns" / エラー要約）
+}
+
+export function runCopilotReview(input: {
+  reviewer: CopilotReviewer;
+  prNumber: number;
+  config?: Partial<CopilotReviewConfig>;
+  sleep?: (ms: number) => Promise<void>;  // テスト注入
+  now?: () => number;                     // テスト注入（経過判定）
+}): Promise<CopilotReviewOutcome>;
+```
+
+挙動（**決して throw しない**）:
+- **config を入口で normalize**（never-reject wrapper の内側、inner の最初。新オブジェクト
+  を作り mutate しない）。不正な数値は NaN deadline / busy-loop を生むため既定へフォール
+  バックする:
+  - `requestAttempts`: `Number.isInteger` かつ ≥ 1 でなければ既定 3。
+  - `MAX_TIMER_MS = 2_147_483_647`（Node の `setTimeout` 上限。これを超える遅延は
+    1ms に黙って丸められ busy-loop 化するため、timer 値はこの上限も検査する）。
+  - **timer 値（`pollTimeoutMs` / `pollIntervalMs`）は整数のみ有効**。`Number.isInteger`
+    でない値（例 `0.5`）は既定へフォールバックする。小数 interval が正の timeout と
+    組むと 1ms 級の高頻度 poll を生むため。`Number.isInteger` は finite 判定も兼ねる
+    （NaN / ±Infinity は整数でない）。`0` は整数なので許容（FAST_CONFIG 非破壊）。
+  - `pollTimeoutMs`: 整数かつ `0 ≤ x ≤ MAX_TIMER_MS` でなければ既定 300_000。
+  - `pollIntervalMs`: **`pollTimeoutMs` の正規化後の値に依存**する条件付きフロア:
+    - `pollTimeoutMs === 0`（single-observation / FAST_CONFIG）: **0 を許容**（sleep
+      しないが deadline 再判定で必ず終了）。それ以外の `0 ≤ x ≤ MAX_TIMER_MS` も保持。
+    - `pollTimeoutMs > 0`: 0 / 負 / NaN / Infinity / `> MAX_TIMER_MS` は既定 15_000 へ
+      **フォールバック**（正の timeout で 0ms interval の高頻度 busy-poll を排除する）。
+- `request` を呼ぶ。一時エラーなら `requestAttempts` まで retry（間隔は pollInterval を流用）。
+  全 retry 失敗 → `{ status: "failed", detail }`。
+- request 成功後 **最低 1 回は poll** する（決定論的セマンティクス）:
+  - `remaining = deadline - now()` を計算し `poll(pr, remaining > 0 ? remaining : undefined)`
+    を呼ぶ。`reviewed` → `{ status: "reviewed" }`。
+  - **`remaining <= 0`（pollTimeoutMs=0 の mandatory first poll を含む）では `timeoutMs` に
+    `undefined` を渡す**。adapter が `Math.max(1, 0)=1ms` で実 gh を即 kill して `reviewed`
+    を取りこぼす事故を避け、adapter 既定 timeout で 1 回だけ観測させる。
+  - その後 `now() >= deadline` なら `{ status: "skipped", detail: "timed out ..." }`。
+    さもなくば `sleep(min(pollIntervalMs, remaining))` → 再度 deadline 判定 → poll。
+    **sleep は残り時間（`deadline - now()`）で clamp** する。これにより
+    `pollTimeoutMs < pollIntervalMs`（例 timeout 1000ms / interval 15000ms）でも sleep の
+    累積が総タイムアウトを超えない。
+  - **`pollTimeoutMs=0`** は「1 回だけ観測して reviewed か skipped」を意味する
+    （即解決 fake でも実 gh でも同義）。
+- `poll` の一時エラー / timeout は握って次の interval へ（poll は best-effort）。
+- `pollTimeoutMs` は **総タイムアウトとして実効化**: 各 `poll` 呼び出しに残り時間
+  （`deadline - now()`、>0 のときのみ。≤0 は undefined）を **`timeoutMs` 引数として渡す**。
+  gh adapter はその残り時間で子プロセスを自己 kill する。
+- **内部 watchdog（DI 境界の保証）**: 残り時間 > 0 の poll は `Promise.race([reviewer.poll(pr,
+  remaining), rejectAfter(remaining)])` で包む。`rejectAfter` は `setTimeout` ベースの
+  内部ヘルパで、返す Promise が remaining 経過後に reject する。これにより `timeoutMs` を
+  **無視して hang する代替 reviewer** でも総タイムアウト内に必ず `skipped` へ収束する
+  （race の reject は既存 catch が握る → 次ループ → deadline → skipped）。watchdog の
+  timer は **必ず `finally` で `clearTimeout`** し **`.unref()`** を付ける（leak /
+  プロセス終了阻害を作らない）。**残り時間 ≤ 0**（single-observation, pollTimeoutMs=0
+  経路）も `poll(pr, undefined)` を `OBSERVE_ONCE_TIMEOUT_MS`（既定 120s、`observeOnceTimeoutMs`
+  シームで上書き可）の finite watchdog で包む。adapter には `undefined` を渡したまま
+  （adapter は自前の既定 timeout を使う）、cancellation を無視して hang する代替 reviewer も
+  watchdog が必ず収束させる（FAST_CONFIG では tiny な bound を注入してテスト）。
+- never-throw は厳密: 非 Error の reject も安全に文字列化し、本体全体（`config`/`sleep`/
+  `now` の初期化を含む）を最終防衛の try/catch で包む（薄い never-reject wrapper +
+  inner 実装に分割）。throwing な getter / 注入された `sleep`・`now` が throw しても
+  `{ status: "failed" }` を返し、関数外へ reject しない。
+
+> `skipped` は「Copilot が時間内にレビューしなかった」= 正常な best-effort 結果。
+> `failed` は「要求自体が確立できなかった」（gh エラー継続）。どちらも非 gating。
+
+### 3. `createGhCopilotReviewer`（`src/core/copilot-reviewer-gh.ts`、gh アダプタ）
+
+- `request(prNumber)`: `gh api --method POST repos/{owner}/{repo}/pulls/{n}/requested_reviewers
+  -f "reviewers[]=Copilot"`（実機で確認済み）。owner/repo は `repoDir` から gh が解決
+  （`gh` は cwd のリポジトリを使う）。timeout は既存 `runGh` 相当（spawn + SIGKILL）。
+  非 0 / timeout は throw（runCopilotReview が retry/最終 failed 化）。
+- `poll(prNumber, timeoutMs?)`: `gh pr view {n} --json reviews` を実行し、
+  `reviews[].author.login` に `copilot-pull-request-reviewer` があれば `reviewed`、無ければ
+  `pending`。`timeoutMs` が渡されたら `runGh` の timeout に **`Math.max(1, timeoutMs)`**
+  を使う（0/負を避ける。残り時間が来たら gh 子プロセスが自己 kill）。無指定時は既定
+  timeout。（`gh pr view` の reviews は bot author を含む。GraphQL は使わず JSON で十分。）
+
+### 4. operation audit（既存 `operations` 台帳）
+
+`runCopilotReview` の **呼び出し側（CLI / orchestrate）** で記録:
+- `runCopilotReview` 実行**前**に `startedAt = new Date()` を取り、`startOperation(db,
+  { operationType: "copilot-review", targetType: "pr", targetId: String(prNumber),
+  actor, dryRun:false, input:{prNumber,config}, now: startedAt })`。DB 書込みは review
+  完了後だが `started_at` は作業開始時刻を反映する。
+- outcome に応じて記録: `failed` は `failOperation`(errorCode="copilot_review_failed")。
+  `reviewed` / `skipped` は**どちらも terminal な best-effort 結果**なので
+  `succeedOperation(db, id, outcome)`（result JSON の `status` で両者を区別）。
+  `skipped` を `markOperationPending` にはしない — `pending` は「外部 worker に deferred」の
+  意味で、timeout した skip が doctor の stale pending に誤検知されるため。
+- audit は best-effort（記録失敗で本処理を壊さない）。
+
+### 5. CLI: `harness pr request-review`
+
+```
+harness pr request-review <prNumber> --repo <path>
+  [--timeout <seconds>] [--poll-interval <seconds>] [--request-attempts <n>] [--json]
+```
+
+- `createGhCopilotReviewer(repo)` + `runCopilotReview` を実行し、audit 記録。
+- 出力: `pr=<n> copilot-review=<status> (detail)`。`--json` で構造化。
+- exit code（standalone CLI のみの慣習。orchestrate は exit に依らず非 gating）:
+  `reviewed` / `skipped`（timeout = 正常な best-effort 結果）→ **0**。
+  `failed`（要求すら確立できなかった）→ **非 0**（operator が検知できるよう）。
+  数値引数は秒→ms 変換 **前**に検証する（不正は stderr に明示して **exit 2**）:
+  - `--timeout`: **非負の整数秒**（`0` 許容 = 1 回観測）。
+  - `--poll-interval`: **正（> 0）の整数秒**（GitHub を 0/sub-second で高頻度 poll しない）。
+  - `--request-attempts`: **正の整数**（小数を `Math.floor` で黙って受けない）。
+  - いずれも NaN/非有限/負/小数は exit 2（NaN deadline で永久に skip しない事故を防ぐ）。
+  - 秒→ms 変換 **後**、`--timeout` / `--poll-interval` の ms が `MAX_TIMER_MS`
+    (= 2_147_483_647) を超えたら明示メッセージで **exit 2**（Node の `setTimeout` が
+    1ms に丸めて busy-loop 化するのを防ぐ。fail-closed）。
+  orchestrate 経路はこの exit を見ず、いずれの outcome でも close を継続。
+
+### 6. orchestrate opt-in: `goal orchestrate --request-copilot-review`
+
+- 既定 **OFF**。flag ON 時のみ `deps.copilotReview = { reviewer, config? }` を組み立て。
+- `closeAndPr` の **PR 作成後**（auto-merge があればその前）に、`deps.copilotReview` が
+  あれば `runCopilotReview` を best-effort 実行し audit + ログ。
+  - 結果（reviewed/skipped/failed）は `OrchestrationResult` には影響させない。
+    **close / auto-merge を一切 gate しない**。例外は握る（万一の throw でも goal を
+    壊さない）。
+- auto-merge と併用時: Copilot review（最大 timeout）→ auto-merge。review 結果は
+  merge gate に入れない（独立・非 gating）。
+
+---
+
+## データフロー
+
+```
+PR 作成（createPullRequest）
+  └ (opt-in) runCopilotReview:
+       request → (retry) → poll loop (timeout) → outcome
+       └ operation audit (succeeded[reviewed|skipped]/failed)
+  └ (既存) auto-merge / close   ← Copilot review の結果に依存しない
+```
+
+## エラーハンドリング（中核・非基幹の担保）
+
+- `runCopilotReview` は **throw しない**（必ず outcome を返す）。
+- orchestrate 側でも `runCopilotReview` 呼び出しを try/catch で囲み、万一の例外でも
+  goal の close/merge を継続（review は付加価値で、無くても安全）。
+- 外部出力（Copilot のレビュー有無）を **状態遷移の根拠にしない**（既存安全境界）。
+
+## テスト（TDD・回帰禁止）
+
+- `runCopilotReview`（fake reviewer + 注入 sleep/now）:
+  - request 成功 + poll が即 reviewed → reviewed。
+  - poll が pending のまま timeout → skipped（poll 回数が bound 内）。
+  - request が毎回 throw → requestAttempts 後 failed。
+  - poll が一時 throw → 握って継続し最終 reviewed/skipped。
+- gh アダプタ（fake gh スクリプト）: request が `requested_reviewers` を叩く、poll が
+  `copilot-pull-request-reviewer` を検出/未検出で reviewed/pending。
+- CLI: reviewed/skipped が exit 0、status を出力、audit 行が記録される。
+- orchestrate opt-in: fake reviewer が reviewed/skipped でも closeAndPr が close まで進む。
+  既定 OFF（flag 無し）では reviewer を要求しない（fake が呼ばれない）。
+- フルスイート + typecheck 緑。
+
+## close 条件
+
+- [ ] フルスイート + typecheck 緑、回帰なし
+- [ ] 未解決 P0 ゼロ（codex 大レビュー）
+- [ ] best-effort（throw しない）/ 非 gating（close/merge を gate しない）/ 既定 OFF の
+      テスト
+- [ ] `docs/future-features.md` の Copilot 項目を「実装済み（best-effort opt-in）」へ更新、
+      `docs/specs/cli.md`（pr request-review / orchestrate flag）/ `workflow.md` を更新

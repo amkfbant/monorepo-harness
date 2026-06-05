@@ -282,7 +282,7 @@ harness goal close-check record <goal-id> --condition <id> --status passed|faile
 harness goal check-convergence <goal-id> [--created-by <actor>] [--no-record] [--json]
 
 harness goal orchestrate <goal-id> --repo <path> [--base-branch <name>] [--max-steps <n>] \
-  [--dry-run] [--auto-merge] [--merge-method squash|merge|rebase]
+  [--dry-run] [--auto-merge] [--merge-method squash|merge|rebase] [--request-copilot-review]
 ```
 
 `goal close` は convergence が `close_ready` でない限り `--force` を要求する。
@@ -297,6 +297,12 @@ CI green、または human override）を評価し、満たせば `gh pr merge` 
 （`--merge-method`、既定 squash）。gate が hard 未達なら merge せず escalate
 （fail-closed）。merge は operation audit に記録される。詳細は
 [`workflow.md`](./workflow.md) の「Phase 3 — auto-merge」。
+
+**`--request-copilot-review`（既定 OFF・非 gating）** を付けると、closeAndPr で PR
+作成後・auto-merge 前に best-effort で Copilot review をリクエストする。outcome は
+operation audit（`copilot-review`）に記録されるだけで、close / merge を一切 gate
+しない（例外も握る）。挙動は [`harness pr request-review`](#harness-pr-request-review)
+と同じ。
 
 ## `harness dashboard export`
 
@@ -755,6 +761,58 @@ harness pr create --run-id <approved-run-id> [--base <branch>] [--title <text>] 
 - `0`: PR 作成成功
 - `1`: status != approved / PR 作成済み / worktree 不在 / runBranch 不明 / git push 失敗 / `gh` 失敗 / invalid runId
 - `2`: 予期しない例外
+
+## `harness pr request-review`
+
+作成済み PR に GitHub Copilot のコードレビューを **best-effort**（retry-then-skip・
+**非 gating**）でリクエストする。close / merge を一切 gate せず、外部出力を状態遷移の
+根拠にしない（安全境界）。
+
+```bash
+harness pr request-review <pr-number> --repo <path> \
+  [--timeout <seconds>] [--poll-interval <seconds>] [--request-attempts <n>] [--json]
+```
+
+| Option | Required | 説明 |
+|--------|:--------:|------|
+| `<pr-number>` | ✅ | 対象 PR 番号（正の整数） |
+| `--repo <path>` | ✅ | target git repo のパス |
+| `--timeout <seconds>` | — | poll 総タイムアウト秒。**非負の整数**（`0` = 1 回観測）。default `300` |
+| `--poll-interval <seconds>` | — | poll 間隔秒。**正（> 0）の整数**。default `15` |
+| `--request-attempts <n>` | — | request の一時エラー retry 上限。**正の整数**。default `3` |
+| `--json` | — | 結果を JSON で出力 |
+
+数値引数は秒→ms 変換**前**に検証する。NaN/非有限/負/小数、`--poll-interval 0`、
+`--request-attempts` の小数などはすべて stderr に明示して **exit 2**（`Math.floor` で
+黙って受けない）。加えて秒→ms 変換**後**、`--timeout` / `--poll-interval` の ms が
+`MAX_TIMER_MS`（= 2_147_483_647、Node の `setTimeout` 上限）を超える場合も明示メッセージで
+**exit 2**（上限超は 1ms に丸められ busy-loop 化するため fail-closed）。poll 総タイムアウト
+は各 poll に残り時間を渡して実効化し（残り時間 > 0 の poll は内部 watchdog で包み、reviewer
+が `timeoutMs` を無視して hang しても総タイムアウト内に必ず収束する）、`pollTimeoutMs=0`
+は「request 成功後に 1 回だけ観測して reviewed か skipped」を意味する。なお core の
+`normalizeConfig` は、正の `pollTimeoutMs` に対し `pollIntervalMs` が 0/負/非有限/上限超
+なら既定 15_000 にフォールバックする（`pollTimeoutMs=0` のときのみ 0 interval を許容）。
+
+### 動作
+
+1. `gh`（`HARNESS_GH_BIN` で上書き可）経由で Copilot reviewer をリクエスト。
+   一時エラーは `--request-attempts` まで retry、全失敗なら **failed**
+2. request 成功後、`--timeout` まで `--poll-interval` 間隔で poll。レビュー投稿を
+   検出すれば **reviewed**、timeout まで未投稿なら **skipped**（poll の一時エラーは
+   握って継続）
+3. operations 台帳に `operationType:"copilot-review"` / `targetType:"pr"` で記録。
+   `started_at` は review 実行**前**に取得した時刻。outcome の記録は
+   reviewed / skipped → `succeeded`（どちらも terminal な best-effort 結果。
+   result JSON の `status` で区別）、failed → `failed`。skipped を `pending` に
+   しないのは、`pending`（外部 worker への deferral）だと timeout した skip が
+   doctor の stale pending に誤検知されるため。台帳記録の失敗は exit code に影響しない
+
+### Exit code
+
+- `0`: reviewed / skipped（timeout も best-effort の正常結果）
+- `1`: failed（request 自体を確立できなかった。operator が気付けるよう非 0）
+- `2`: 引数不正（PR 番号が正の整数でない / `--timeout` が非負整数でない /
+  `--poll-interval` が正整数でない / `--request-attempts` が正整数でない 等）
 
 ## `harness review process`
 

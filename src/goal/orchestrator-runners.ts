@@ -27,6 +27,11 @@ import {
   succeedOperation,
   failOperation,
 } from "../db/repositories/operations.js";
+import type { CopilotReviewer } from "../core/copilot-reviewer.js";
+import {
+  runCopilotReview,
+  type CopilotReviewConfig,
+} from "../core/copilot-review-run.js";
 import type { ConsensusSummary } from "../core/review-consensus.js";
 import { GoalRepository } from "./repository.js";
 import { classifyFindingForGoal } from "./classification.js";
@@ -108,6 +113,16 @@ export interface OrchestratorRunnerDeps {
      */
     ciStatus: (prNumber: number, expectedHeadSha: string) => Promise<boolean>;
     method?: PrMergeMethod;
+  };
+  /**
+   * Best-effort Copilot PR review (opt-in; default OFF). When present,
+   * `closeAndPr` requests a Copilot review after creating the PR and records
+   * an audit row. The outcome is observational ONLY — it never gates close or
+   * auto-merge, and any exception is swallowed (non-gating safety boundary).
+   */
+  copilotReview?: {
+    reviewer: CopilotReviewer;
+    config?: Partial<CopilotReviewConfig>;
   };
   /**
    * Resolve the repo/run context for a goal's session. Defaults to deriving
@@ -464,6 +479,54 @@ export function createOrchestratorRunners(
         publisher: deps.publisher,
         dbPath: deps.dbPath,
       });
+
+      // Best-effort Copilot review (opt-in). Observational only: it NEVER
+      // gates close/merge, and ANY failure (including an unexpected throw) is
+      // swallowed — the goal proceeds regardless (existing safety boundary:
+      // external output must not drive a state transition).
+      if (deps.copilotReview !== undefined) {
+        try {
+          // Capture the start before the review runs so the audit `started_at`
+          // reflects when the work began (the DB write happens after, contrast
+          // with auto-merge which starts its operation before the external work).
+          const startedAt = new Date();
+          const outcome = await runCopilotReview({
+            reviewer: deps.copilotReview.reviewer,
+            prNumber: pr.prNumber,
+            ...(deps.copilotReview.config !== undefined
+              ? { config: deps.copilotReview.config }
+              : {}),
+          });
+          withManagedDb({ dbPath: deps.dbPath }, (db) => {
+            const operationId = `op-${randomUUID()}`;
+            startOperation(db, {
+              operationId,
+              operationType: "copilot-review",
+              targetType: "pr",
+              targetId: String(pr.prNumber),
+              actor: deps.createdBy,
+              dryRun: false,
+              input: { goalId, prNumber: pr.prNumber },
+              now: startedAt,
+            });
+            if (outcome.status === "failed") {
+              failOperation(
+                db,
+                operationId,
+                "copilot_review_failed",
+                outcome.detail,
+              );
+            } else {
+              // reviewed | skipped are terminal best-effort outcomes (the result
+              // JSON's `status` distinguishes them). `pending` would be misread
+              // as deferred work and flagged stale by the doctor.
+              succeedOperation(db, operationId, outcome);
+            }
+          });
+        } catch {
+          // non-gating: a Copilot review failure must never break close/merge.
+        }
+      }
 
       // Phase 3: opt-in auto-merge after the PR exists. Default OFF.
       if (deps.autoMerge !== undefined) {

@@ -84,14 +84,23 @@ review is already in flight" with no extra manual step.
   `ChrisCarini/gh-copilot-review`) with duplicate-prevention / wait-for-completion;
   evaluate vs. a thin native `--reviewer @copilot` call.
 
-**Status:** deferred — wiring is straightforward, but a 2026-06 experiment
-(throwaway PRs against `monorepo-harness` and `mini-commerce`) never produced an
-actual review: Copilot returned "encountered an error and was unable to review
-this pull request" on every re-request, even after enabling automatic Copilot
-code review on the account. Judged to be an account/GitHub-side issue rather than
-repo-specific, so it is excluded from the current `GOAL.md` and parked here until
-Copilot review works end-to-end. Pick it up once a manual `gh pr edit
---add-reviewer @copilot` yields a real review.
+**Status:** **実装済み**（best-effort opt-in, 非 gating）。最終的な配線は当初の
+sketch（`pr create --copilot-review`）とは別の形で着地した:
+
+- 単発: `harness pr request-review <pr-number> --repo <path>`（retry-then-skip・
+  非 gating。詳細は [`specs/cli.md`](./specs/cli.md#harness-pr-request-review)）。
+- 自律ループ: `harness goal orchestrate --request-copilot-review`（既定 OFF）。
+  `closeAndPr` で PR 作成後・auto-merge 前に best-effort で実行
+  （[`specs/workflow.md`](./specs/workflow.md) の「Copilot review（観測ステップ）」）。
+
+いずれも **close / merge を一切 gate しない**（外部出力を状態遷移の根拠にしない安全
+境界）。outcome は operation audit（`copilot-review`）に記録するのみ。
+
+経緯メモ: 2026-06 の実験（`monorepo-harness` / `mini-commerce` への throwaway PR）
+では Copilot が "encountered an error and was unable to review this pull request"
+を返し、自動レビューを有効化しても実レビューが返らなかった。アカウント / GitHub 側の
+事象と判断し、配線自体は非 gating の best-effort（失敗しても loop を止めない）として
+実装した。Copilot が end-to-end で実レビューを返すかは運用環境に依存する。
 
 ## Codex session continuation (conversation resume)
 
