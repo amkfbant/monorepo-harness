@@ -57,9 +57,9 @@ function setup(): Fixture {
       "repo_id: t",
       "read: []",
       "domains:",
-      "  apps/user:",
-      "    read: [apps/user/**]",
-      "    write: [apps/user/**]",
+      "  docs:",
+      "    read: [docs/**]",
+      "    write: [docs/**]",
       "    deny_write: []",
       "",
     ].join("\n"),
@@ -69,11 +69,8 @@ function setup(): Fixture {
   git(repoPath, ["init", "-q", "-b", "main"]);
   git(repoPath, ["config", "user.email", "t@e.com"]);
   git(repoPath, ["config", "user.name", "T"]);
-  mkdirSync(join(repoPath, "apps/user/src"), { recursive: true });
-  writeFileSync(
-    join(repoPath, "apps/user/src/profile.ts"),
-    "export const x = 0;\n",
-  );
+  mkdirSync(join(repoPath, "docs"), { recursive: true });
+  writeFileSync(join(repoPath, "docs/guide.md"), "# Guide\n\nInitial.\n");
   git(repoPath, ["add", "."]);
   git(repoPath, ["commit", "-qm", "init"]);
   const bareRemote =
@@ -93,10 +90,10 @@ function createGoal(dbPath: string, goalId: string): string {
     runMigrations(db);
     new GoalRepository(db).createSession({
       goalId,
-      title: "Add a field to the user profile",
-      description: "bump the exported constant in apps/user",
+      title: "Update docs guide",
+      description: "refresh the docs guide",
       repoId: "t",
-      domain: "apps/user",
+      domain: "docs",
       closeConditions: [
         { id: "review-ok", kind: "review_consensus", required: true },
       ],
@@ -137,8 +134,8 @@ function approveFakes() {
   const coderRunner = createFakeCodexRunner({
     edit: async (cwd) => {
       writeFileSync(
-        join(cwd, "apps/user/src/profile.ts"),
-        "export const x = 1; // implemented\n",
+        join(cwd, "docs/guide.md"),
+        "# Guide\n\nImplemented.\n",
       );
     },
     stdout: "applied 1 file\n",
@@ -190,8 +187,8 @@ function resolveRunContext(f: Fixture): () => GoalRunContext {
   return () => ({
     repoPath: f.repoPath,
     repoId: "t",
-    domain: "apps/user",
-    goal: "bump x in apps/user",
+    domain: "docs",
+    goal: "update docs",
     baseBranch: "main",
   });
 }

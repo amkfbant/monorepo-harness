@@ -729,10 +729,15 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
 
 - **merge gate（pure・決定論的）**: `evaluateMergeGate`（`src/core/merge-gate.ts`）。
   入力は DB の事実（close-ready / active `review_consensus` の status + quorumMet /
-  human override approve）＋ CI green（`gh pr checks` の snapshot）。承認は
-  **consensus approved（quorum 達成）or human override approve** が必須（fail-closed）。
+  human override approve）＋ CI green（`gh pr checks` の snapshot）＋ sensitivity-map
+  tier gate。承認は **consensus approved（quorum 達成）or human override approve** が
+  必須（fail-closed）。`--auto-merge` 指定時も tier gate は常に有効で、auto-merge
+  対象は Tier-0（既定 map: `docs/**` / `tests/**`）だけ。Tier-2（絶対 auto 不可）は
+  `src/policy/**`, `src/codex/**`, `src/core/merge-gate.ts`, `src/goal/**`,
+  `src/core/reviewer-agent.ts`, `src/db/repositories/review-*.ts`,
+  `src/db/migrations*`, `.github/**`, `policies/**`。未マップ path は Tier-1。
   blocker は hard（`not_close_ready` / `consensus_not_approved` / `quorum_not_satisfied`）
-  と transient（`ci_not_green`）に分かれる。
+  と transient（`ci_not_green` / `tier_not_auto_eligible`）に分かれる。
 - **closeAndPr の分岐**（`src/goal/orchestrator-runners.ts`）: PR 作成後、
   `deps.autoMerge` があれば gate を評価し
   - `canMerge` → `gh pr merge --match-head-commit <sha> --<method>`（idempotent:
@@ -749,7 +754,8 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
     poll interval 後に再評価し、timeout 到達・取得失敗・不明 shape は false（ABA race
     安全、不確定は fail-closed）。
   - `hardBlocked` → **merge せず escalate**（fail-closed、goal は `escalated`）。
-  - transient（CI 未 green）→ merge せず PR を残す（outcome `pr_created`）。
+  - transient（CI 未 green、または Tier-1/Tier-2）→ merge せず PR を残す
+    （outcome `pr_created`）。
   - merge コマンド失敗 → 例外で escalate（audit は `failed`）。
 - **既定 OFF**: `deps.autoMerge` 不在（CLI で `--auto-merge` 未指定）なら従来どおり
   PR 作成のみ（`pr_created`）。`--merge-method`（squash|merge|rebase）で方式指定し、

@@ -19,6 +19,7 @@ import {
   quorumSatisfiedFromRequirements,
   type MergeGateConsensus,
 } from "../core/merge-gate.js";
+import { computeAutoMergeTier } from "../core/automerge-tiers.js";
 import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
 import { ReviewConsensusRepository } from "../db/repositories/review-consensus.js";
 import { ReviewOverridesRepository } from "../db/repositories/review-overrides.js";
@@ -452,6 +453,7 @@ export function createOrchestratorRunners(
             consensus,
             humanApproved,
             ciGreen: true, // CI is checked after the PR exists
+            tierEligible: computeAutoMergeTier(changedPathsForRun(db, runId)) === 0,
           });
         });
         if (preflight.hardBlocked) {
@@ -589,7 +591,13 @@ async function runAutoMerge(
     };
   }
   const expectedHeadSha = reviewedHeadSha;
-  const ciGreen = await autoMerge.ciStatus(prNumber, expectedHeadSha);
+  const tier = withManagedDb({ dbPath: deps.dbPath }, (db) =>
+    computeAutoMergeTier(changedPathsForRun(db, runId)),
+  );
+  const tierEligible = tier === 0;
+  const ciGreen = tierEligible
+    ? await autoMerge.ciStatus(prNumber, expectedHeadSha)
+    : true;
   const gate = withManagedDb({ dbPath: deps.dbPath }, (db) => {
     const repo = new GoalRepository(db);
     // Re-evaluate close-readiness at merge time from the DB facts — a finding
@@ -603,6 +611,7 @@ async function runAutoMerge(
       consensus,
       humanApproved,
       ciGreen,
+      tierEligible,
     });
   });
   if (gate.canMerge) {
@@ -618,7 +627,16 @@ async function runAutoMerge(
         dryRun: false,
         // Record the gate snapshot so an auditor can later verify which
         // reviewed commit was pinned and what the gate saw.
-        input: { goalId, runId, prNumber, method, expectedHeadSha, ciGreen, gate },
+        input: {
+          goalId,
+          runId,
+          prNumber,
+          method,
+          expectedHeadSha,
+          ciGreen,
+          tier,
+          gate,
+        },
       });
     });
     try {
@@ -667,4 +685,35 @@ function gatherApproval(
   }
   const override = new ReviewOverridesRepository(db).findLatest(runId);
   return { consensus, humanApproved: override?.decision === "approved" };
+}
+
+function changedPathsForRun(
+  db: Parameters<Parameters<typeof withManagedDb>[1]>[0],
+  runId: string,
+): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT path
+       FROM run_changed_files
+       WHERE run_id = ? AND allowed = 1 AND status <> 'ignored'
+       ORDER BY path`,
+    )
+    .all(runId) as { path: string }[];
+  const dbPaths = rows
+    .map((r) => r.path)
+    .filter((p): p is string => typeof p === "string" && p !== "");
+  if (dbPaths.length > 0) return dbPaths;
+
+  const row = db
+    .prepare("SELECT meta_json FROM runs WHERE run_id = ?")
+    .get(runId) as { meta_json: string | null } | undefined;
+  if (row?.meta_json === undefined || row.meta_json === null) return [];
+  const meta = JSON.parse(row.meta_json) as {
+    reviewed?: { paths?: unknown };
+  };
+  const reviewedPaths = meta.reviewed?.paths;
+  if (!Array.isArray(reviewedPaths)) return [];
+  return reviewedPaths.filter(
+    (p): p is string => typeof p === "string" && p !== "",
+  );
 }

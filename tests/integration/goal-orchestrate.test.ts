@@ -58,6 +58,14 @@ function setup(): Fixture {
       "    read: [apps/user/**]",
       "    write: [apps/user/**]",
       "    deny_write: []",
+      "  docs:",
+      "    read: [docs/**]",
+      "    write: [docs/**]",
+      "    deny_write: []",
+      "  src/policy:",
+      "    read: [src/policy/**]",
+      "    write: [src/policy/**]",
+      "    deny_write: []",
       "",
     ].join("\n"),
   );
@@ -72,6 +80,10 @@ function setup(): Fixture {
     join(repoPath, "apps/user/src/profile.ts"),
     "export const x = 0;\n",
   );
+  mkdirSync(join(repoPath, "docs"), { recursive: true });
+  writeFileSync(join(repoPath, "docs/guide.md"), "# Guide\n\nInitial.\n");
+  mkdirSync(join(repoPath, "src/policy"), { recursive: true });
+  writeFileSync(join(repoPath, "src/policy/rules.ts"), "export const rules = [];\n");
   git(repoPath, ["add", "."]);
   git(repoPath, ["commit", "-qm", "init"]);
   const bareRemote = mkdtempSync(join(tmpdir(), "harness-goal-bare-")) + ".git";
@@ -84,7 +96,11 @@ function setup(): Fixture {
   return { harnessRoot, dbPath, repoPath, bareRemote };
 }
 
-function createGoal(dbPath: string, goalId = "goal-orch-e2e"): string {
+function createGoal(
+  dbPath: string,
+  goalId = "goal-orch-e2e",
+  domain = "apps/user",
+): string {
   const { db, close } = openManagedDb({ dbPath });
   try {
     runMigrations(db);
@@ -92,9 +108,9 @@ function createGoal(dbPath: string, goalId = "goal-orch-e2e"): string {
     repo.createSession({
       goalId,
       title: "Add a field to the user profile",
-      description: "bump the exported constant in apps/user",
+      description: `update ${domain}`,
       repoId: "t",
-      domain: "apps/user",
+      domain,
       // close once the run is approved; review process records this
       // `review_consensus` close-check as passed.
       closeConditions: [
@@ -135,12 +151,12 @@ function fakeMerger(
 }
 
 /** Coder + reviewer fakes shared by the orchestration tests. */
-function approveFakes() {
+function approveFakes(changedPath = "docs/guide.md") {
   const coderRunner = createFakeCodexRunner({
     edit: async (cwd) => {
       writeFileSync(
-        join(cwd, "apps/user/src/profile.ts"),
-        "export const x = 1; // implemented\n",
+        join(cwd, changedPath),
+        `${changedPath} implemented\n`,
       );
     },
     stdout: "applied 1 file\n",
@@ -374,13 +390,16 @@ describe("goal orchestrate (real git + fake codex)", () => {
     goalId: string;
     ciGreen: boolean;
     merger: PrMerger;
+    domain?: string;
+    changedPath?: string;
   }) {
-    const { coderRunner, reviewerRunner } = approveFakes();
+    const domain = opts.domain ?? "docs";
+    const { coderRunner, reviewerRunner } = approveFakes(opts.changedPath);
     const resolveRunContext = (): GoalRunContext => ({
       repoPath: f.repoPath,
       repoId: "t",
-      domain: "apps/user",
-      goal: "bump x in apps/user",
+      domain,
+      goal: `update ${domain}`,
       baseBranch: "main",
     });
     const runners = createOrchestratorRunners({
@@ -405,7 +424,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
   }
 
   it("auto-merge: merges the PR when the gate passes (consensus approved + CI green)", async () => {
-    const goalId = createGoal(f.dbPath, "goal-merge-ok");
+    const goalId = createGoal(f.dbPath, "goal-merge-ok", "docs");
     const merger = fakeMerger("ok");
     const result = await driveWithAutoMerge({ goalId, ciGreen: true, merger });
 
@@ -428,7 +447,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
   });
 
   it("auto-merge: pins the merge to the reviewed commit (from createPullRequest)", async () => {
-    const goalId = createGoal(f.dbPath, "goal-merge-pin");
+    const goalId = createGoal(f.dbPath, "goal-merge-pin", "docs");
     const merger = fakeMerger("ok");
     const result = await driveWithAutoMerge({ goalId, ciGreen: true, merger });
     expect(result.outcome).toBe("merged");
@@ -444,7 +463,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
   });
 
   it("auto-merge: leaves the PR open (pr_created, no merge) when CI is not green", async () => {
-    const goalId = createGoal(f.dbPath, "goal-merge-ci");
+    const goalId = createGoal(f.dbPath, "goal-merge-ci", "docs");
     const merger = fakeMerger("ok");
     const result = await driveWithAutoMerge({ goalId, ciGreen: false, merger });
 
@@ -458,8 +477,33 @@ describe("goal orchestrate (real git + fake codex)", () => {
     }
   });
 
+  it("auto-merge: tier-2 paths leave the PR open even with CI green and consensus", async () => {
+    const goalId = createGoal(f.dbPath, "goal-merge-tier2", "src/policy");
+    const merger = fakeMerger("ok");
+    const result = await driveWithAutoMerge({
+      goalId,
+      ciGreen: true,
+      merger,
+      domain: "src/policy",
+      changedPath: "src/policy/rules.ts",
+    });
+
+    expect(result.outcome).toBe("pr_created");
+    expect(merger.calls).toHaveLength(0);
+    const { db, close } = openManagedDb({ dbPath: f.dbPath });
+    try {
+      expect(new GoalRepository(db).requireSession(goalId).status).toBe("closed");
+      const op = db
+        .prepare("SELECT COUNT(*) c FROM operations WHERE operation_type = 'merge'")
+        .get() as { c: number };
+      expect(op.c).toBe(0);
+    } finally {
+      close();
+    }
+  });
+
   it("auto-merge: a merge failure escalates (fail-closed), audited as failed", async () => {
-    const goalId = createGoal(f.dbPath, "goal-merge-fail");
+    const goalId = createGoal(f.dbPath, "goal-merge-fail", "docs");
     const merger = fakeMerger("throw");
     const result = await driveWithAutoMerge({ goalId, ciGreen: true, merger });
 
@@ -481,7 +525,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
     // No `autoMerge` in deps → the merger is never constructed/called and the
     // goal terminates at pr_created (covered by the main flow, asserted here
     // explicitly for the opt-in default).
-    const goalId = createGoal(f.dbPath, "goal-merge-off");
+    const goalId = createGoal(f.dbPath, "goal-merge-off", "docs");
     const { coderRunner, reviewerRunner } = approveFakes();
     const runners = createOrchestratorRunners({
       dbPath: f.dbPath,
@@ -493,8 +537,8 @@ describe("goal orchestrate (real git + fake codex)", () => {
       resolveRunContext: (): GoalRunContext => ({
         repoPath: f.repoPath,
         repoId: "t",
-        domain: "apps/user",
-        goal: "bump x in apps/user",
+        domain: "docs",
+        goal: "update docs",
         baseBranch: "main",
       }),
     });
