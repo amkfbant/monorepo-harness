@@ -40,10 +40,12 @@ export function createGhCopilotReviewer(
     async poll(
       prNumber: number,
       pollTimeoutMs?: number,
+      signal?: AbortSignal,
     ): Promise<CopilotReviewPollResult> {
       // When the orchestration passes a remaining budget, bound this gh call by
-      // it (clamped ≥ 1ms so we never spawn with a 0/negative timeout that would
-      // SIGKILL before the child can start). Otherwise fall back to the default.
+      // it (clamped >= 1ms so we never spawn with a 0/negative timeout that
+      // would SIGKILL before the child can start). Otherwise fall back to the
+      // default.
       const effectiveTimeout =
         pollTimeoutMs !== undefined
           ? Math.max(1, pollTimeoutMs)
@@ -53,6 +55,7 @@ export function createGhCopilotReviewer(
         ["pr", "view", String(prNumber), "--json", "reviews"],
         repoDir,
         effectiveTimeout,
+        signal,
       );
       const parsed = JSON.parse(out.trim() || "{}") as {
         reviews?: Array<{ author?: { login?: unknown } }>;
@@ -71,33 +74,66 @@ function runGh(
   args: readonly string[],
   cwd: string,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error(`gh ${args[0]} aborted`));
+      return;
+    }
+    let settled = false;
     const child = spawn(ghBin, args as string[], {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      signal,
     });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abortHandler);
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const succeed = (out: string) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(out);
+    };
+    const abortHandler = () => {
+      child.kill("SIGKILL");
+    };
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGKILL");
     }, timeoutMs);
+    signal?.addEventListener("abort", abortHandler, { once: true });
     child.stdout.on("data", (d) => (stdout += d.toString()));
     child.stderr.on("data", (d) => (stderr += d.toString()));
     child.on("error", (e) => {
-      clearTimeout(timer);
-      reject(new Error(`failed to run ${ghBin}: ${e.message}`));
+      if (signal?.aborted) {
+        fail(new Error(`gh ${args[0]} aborted`));
+        return;
+      }
+      fail(new Error(`failed to run ${ghBin}: ${e.message}`));
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
+      if (signal?.aborted) {
+        fail(new Error(`gh ${args[0]} aborted`));
+        return;
+      }
       if (timedOut) {
-        reject(new Error(`gh ${args[0]} timed out after ${timeoutMs}ms`));
+        fail(new Error(`gh ${args[0]} timed out after ${timeoutMs}ms`));
       } else if (code === 0) {
-        resolve(stdout);
+        succeed(stdout);
       } else {
-        reject(
+        fail(
           new Error(
             `gh ${args.join(" ")} failed (${code}): ${stderr.trim() || stdout.trim()}`,
           ),

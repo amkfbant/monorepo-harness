@@ -57,13 +57,21 @@ const defaultSleep = (ms: number): Promise<void> =>
  * `finally` and is `.unref()`ed so it neither leaks nor keeps the process alive
  * (the prior race was removed for exactly that leak; this reinstates it safely).
  */
-function rejectAfter(ms: number): {
+function rejectAfter(
+  ms: number,
+  onTimeout?: () => void,
+): {
   promise: Promise<never>;
   cancel: () => void;
 } {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const promise = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
+      try {
+        onTimeout?.();
+      } catch {
+        /* watchdog still rejects below; never let abort hooks escape the timer. */
+      }
       reject(new Error(`poll watchdog tripped after ${ms}ms`));
     }, ms);
     timer.unref?.();
@@ -261,10 +269,15 @@ async function runCopilotReviewInner(input: {
           // Positive budget: bound the poll by the remaining budget. The
           // single-observation path (remaining <= 0) uses its own finite
           // observe-once watchdog below.
-          const watchdog = rejectAfter(remainingMs);
+          const controller = new AbortController();
+          const watchdog = rejectAfter(remainingMs, () => controller.abort());
           try {
             result = await Promise.race([
-              input.reviewer.poll(input.prNumber, remainingMs),
+              input.reviewer.poll(
+                input.prNumber,
+                remainingMs,
+                controller.signal,
+              ),
               watchdog.promise,
             ]);
           } finally {
@@ -277,10 +290,15 @@ async function runCopilotReviewInner(input: {
           // posted review), but STILL wrap in a finite watchdog so a
           // contract-violating reviewer that ignores cancellation cannot hang
           // forever. The watchdog timer is cleared in `finally` (no leak).
-          const watchdog = rejectAfter(observeWatchdogMs);
+          const controller = new AbortController();
+          const watchdog = rejectAfter(observeWatchdogMs, () => controller.abort());
           try {
             result = await Promise.race([
-              input.reviewer.poll(input.prNumber, undefined),
+              input.reviewer.poll(
+                input.prNumber,
+                undefined,
+                controller.signal,
+              ),
               watchdog.promise,
             ]);
           } finally {

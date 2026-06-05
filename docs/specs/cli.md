@@ -788,8 +788,10 @@ harness pr request-review <pr-number> --repo <path> \
 `MAX_TIMER_MS`（= 2_147_483_647、Node の `setTimeout` 上限）を超える場合も明示メッセージで
 **exit 2**（上限超は 1ms に丸められ busy-loop 化するため fail-closed）。poll 総タイムアウト
 は各 poll に残り時間を渡して実効化し（残り時間 > 0 の poll は内部 watchdog で包み、reviewer
-が `timeoutMs` を無視して hang しても総タイムアウト内に必ず収束する）、`pollTimeoutMs=0`
-は「request 成功後に 1 回だけ観測して reviewed か skipped」を意味する。なお core の
+が `timeoutMs` を無視して hang しても総タイムアウト内に必ず収束する）、watchdog 発火時は
+その poll に渡した `AbortSignal` を abort する。gh 実装はこの signal を実行中の子プロセスへ
+伝播し（将来 fetch を使う場合も同じ signal を渡す）、watchdog timer は `finally` で cancel
+する。`pollTimeoutMs=0` は「request 成功後に 1 回だけ観測して reviewed か skipped」を意味する。なお core の
 `normalizeConfig` は、正の `pollTimeoutMs` に対し `pollIntervalMs` が 0/負/非有限/上限超
 なら既定 15_000 にフォールバックする（`pollTimeoutMs=0` のときのみ 0 interval を許容）。
 

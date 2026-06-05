@@ -518,6 +518,46 @@ describe("runCopilotReview", () => {
     expect(polls).toBeGreaterThanOrEqual(1);
   });
 
+  it("aborts the in-flight poll when the internal watchdog wins", async () => {
+    let aborts = 0;
+    const pollSignals: Array<AbortSignal | undefined> = [];
+    const reviewer: CopilotReviewer = {
+      async request() {
+        /* ok */
+      },
+      poll(_pr: number, _timeoutMs?: number, signal?: AbortSignal) {
+        pollSignals.push(signal);
+        return new Promise<"pending">((resolve) => {
+          if (signal?.aborted) {
+            aborts += 1;
+            resolve("pending");
+            return;
+          }
+          signal?.addEventListener(
+            "abort",
+            () => {
+              aborts += 1;
+              resolve("pending");
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 1,
+      config: { requestAttempts: 1, pollTimeoutMs: 40, pollIntervalMs: 0 },
+      now: () => Date.now(),
+    });
+
+    expect(out.status).toBe("skipped");
+    expect(pollSignals[0]).toBeInstanceOf(AbortSignal);
+    expect(pollSignals[0]?.aborted).toBe(true);
+    expect(aborts).toBe(1);
+  });
+
   it("zero-timeout (observe-once): never hangs when that single poll never resolves", async () => {
     // pollTimeoutMs=0 takes the single-observation branch (remaining <= 0), which
     // passes `undefined` to the adapter. A contract-violating reviewer that
