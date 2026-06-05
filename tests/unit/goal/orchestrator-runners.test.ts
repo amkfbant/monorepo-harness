@@ -280,4 +280,127 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
       close2();
     }
   });
+
+  it("injects open in-scope findings into the coder goal on a rerun", async () => {
+    const { harnessRoot, dbPath, repoPath } = setupHarness();
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        runMigrations(db);
+        const repo = new GoalRepository(db);
+        repo.createSession({
+          goalId: "g-inject",
+          title: "Inject",
+          projectId: "demo",
+          repoId: "t",
+          domain: "apps/user",
+          closeConditions: [{ id: "tc", kind: "command", required: true }],
+          createdBy: "test",
+          createdSource: "worker",
+        });
+        // a prior coding attempt → this run is a "rerun"
+        repo.createAttempt({
+          goalId: "g-inject",
+          attemptType: "implement",
+          status: "succeeded",
+          runId: "run-prior",
+        });
+        // an open in-scope finding the rerun must address (also makes the goal
+        // needs_fix so the run.start gate permits the coder).
+        repo.upsertFinding({
+          goalId: "g-inject",
+          source: "review",
+          severity: "P1",
+          category: "bug",
+          scopeStatus: "in_scope",
+          summary: "missing null check in profile loader",
+        });
+      } finally {
+        close();
+      }
+    }
+    const resolveRunContext = (): GoalRunContext => ({
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "improve the profile feature",
+      baseBranch: "main",
+    });
+    let captured = "";
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: {
+        run: async (input) => {
+          captured = input.prompt;
+          return { exitCode: 0, timedOut: false };
+        },
+      },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+      resolveRunContext,
+    });
+    await runners.coder("g-inject");
+    expect(captured).toContain("improve the profile feature");
+    expect(captured).toContain("Open in-scope findings to address");
+    expect(captured).toContain("missing null check in profile loader");
+  });
+
+  it("does NOT inject the findings block on the first implement pass", async () => {
+    const { harnessRoot, dbPath, repoPath } = setupHarness();
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        runMigrations(db);
+        const repo = new GoalRepository(db);
+        repo.createSession({
+          goalId: "g-first",
+          title: "First",
+          projectId: "demo",
+          repoId: "t",
+          domain: "apps/user",
+          closeConditions: [{ id: "tc", kind: "command", required: true }],
+          createdBy: "test",
+          createdSource: "worker",
+        });
+        // an open in-scope finding (so run.start is permitted) but NO prior
+        // coding attempt → this is the first `implement` pass, no injection.
+        repo.upsertFinding({
+          goalId: "g-first",
+          source: "review",
+          severity: "P1",
+          category: "bug",
+          scopeStatus: "in_scope",
+          summary: "should not be injected on first pass",
+        });
+      } finally {
+        close();
+      }
+    }
+    const resolveRunContext = (): GoalRunContext => ({
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "improve the profile feature",
+      baseBranch: "main",
+    });
+    let captured = "";
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: {
+        run: async (input) => {
+          captured = input.prompt;
+          return { exitCode: 0, timedOut: false };
+        },
+      },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+      resolveRunContext,
+    });
+    await runners.coder("g-first");
+    expect(captured).toContain("improve the profile feature");
+    expect(captured).not.toContain("Open in-scope findings to address");
+    expect(captured).not.toContain("should not be injected on first pass");
+  });
 });
