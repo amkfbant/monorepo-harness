@@ -1,0 +1,39 @@
+name: Release
+
+# release-please reads the Conventional Commit history on `main` and maintains a
+# single "release PR" (version bump + CHANGELOG). Merging that PR is the
+# deliberate act that cuts the `vX.Y.Z` tag and publishes a GitHub Release — the
+# immutable point an ops checkout pins to. No manual `git tag` needed.
+on:
+  push:
+    branches: [main]
+
+# Serialize release runs so two pushes don't race on the release PR / tag.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# release-please needs to write the version bump / CHANGELOG / tag (contents)
+# and open & maintain the release PR (pull-requests). Nothing else.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    name: release-please
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Pinned to a commit SHA (supply-chain hardening); the trailing comment
+      # tracks the human-readable tag. Dependabot (github-actions) refreshes both
+      # the SHA and the comment so the pin does not silently go stale.
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          # GITHUB_TOKEN suffices: it bumps package.json, writes CHANGELOG.md,
+          # cuts the vX.Y.Z tag, and opens/maintains the release PR. (Caveat: a PR
+          # opened by GITHUB_TOKEN does not itself re-trigger CI — acceptable for a
+          # bump-only release PR; switch to a PAT if CI-on-release-PR is wanted.)
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
