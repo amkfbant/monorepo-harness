@@ -16,6 +16,7 @@ import {
   createGhPrPublisher,
   createGhPrMerger,
   createGhCiStatus,
+  createGhReviewVerdicts,
 } from "../core/gh-pr-publisher.js";
 import { createGhCopilotReviewer } from "../core/copilot-reviewer-gh.js";
 import type { PrMergeMethod } from "../core/pr-creator.js";
@@ -698,6 +699,11 @@ export function registerGoalCommands(
       "opt-in: best-effort request a Copilot review on the PR (non-gating)",
       false,
     )
+    .option(
+      "--ingest-external-reviews",
+      "opt-in: ingest external PR review verdicts; a CHANGES_REQUESTED review becomes an advisory finding and escalates the auto-merge gate (fail-closed)",
+      false,
+    )
     .action(async (goalId: string, raw: Record<string, unknown>) => {
       await withGoalErrorExitAsync(async () => {
         if (raw.dryRun === true) {
@@ -730,6 +736,9 @@ export function registerGoalCommands(
                   awaitTimeoutMs: ciAwaitTimeoutMs,
                 }),
                 method: parseMergeMethod(raw.mergeMethod),
+                ...(raw.ingestExternalReviews === true
+                  ? { reviewVerdicts: createGhReviewVerdicts(repoPath, ghBin) }
+                  : {}),
               }
             : undefined;
         // Best-effort Copilot review is opt-in (default OFF). Non-gating: the

@@ -166,9 +166,15 @@ App / Copilot）が実バグを拾う価値が高く、(b) それを取りこぼ
    （`createPullRequest` は既存 PR を冪等返却し reviewed head SHA を run branch tip から
    解決、`runAutoMerge` が再 pin）。`tier_not_auto_eligible` は再チェック無意味なので
    `closed`（人手）。これで「later merge」が harness 経路になった（CI 待ちのみ）。
+   **外部レビュー verdict の advisory ingestion も実装済み（slice 2）**: opt-in
+   `--ingest-external-reviews` で gate 評価前に PR の verdict（codex App / Copilot）を
+   fetch、`CHANGES_REQUESTED` を **unknown-scope finding**（1 度だけ）として記録 →
+   closeReady 落ち→escalate→operator 分類（§6・fail-closed）。approve は ingest しない
+   （§0 非対称）。`createGhReviewVerdicts` + `ingestExternalReviewVerdicts`。
    **残 slice**: 専用 `awaiting_checks` status（close_ready 二重利用の解消・要 migration）、
-   外部レビュー verdict（codex App / Copilot）の poll → **advisory finding 化** →
-   fix ループ（§2/§6）、bounded budget / 定期 `goal await-merge`。下記 2〜3 が core。
+   外部レビューの**自動 poll/待機**（現状は再 orchestrate 時に fetch・bounded budget /
+   定期 `goal await-merge` は未）、ingest 後の **fix ループ**（operator 分類→rerun の
+   自動化）、semantic dedup（§3）。core の入口（§2/§6 の advisory レーン）は通った。
 
 2. **bounded poll-and-ingest lander（land を実装ループから分離）。** `ciStatus` を
    bounded poll 化し、`gh pr view --json reviews` で codex App / Copilot の verdict を

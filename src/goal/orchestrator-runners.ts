@@ -118,6 +118,16 @@ export interface OrchestratorRunnerDeps {
      */
     ciStatus: (prNumber: number, expectedHeadSha: string) => Promise<boolean>;
     method?: PrMergeMethod;
+    /**
+     * Opt-in: fetch the PR's external review verdicts (codex GitHub App /
+     * Copilot). A `CHANGES_REQUESTED` verdict is ingested ONCE as an
+     * unknown-scope advisory goal finding so the merge gate escalates
+     * (fail-closed) for the operator to classify (§6: external output is
+     * advisory, never auto-trusted). Approvals have NO gating effect.
+     */
+    reviewVerdicts?: (
+      prNumber: number,
+    ) => Promise<{ author: string; state: string }[]>;
   };
   /**
    * Best-effort Copilot PR review (opt-in; default OFF). When present,
@@ -608,6 +618,11 @@ async function runAutoMerge(
     };
   }
   const expectedHeadSha = reviewedHeadSha;
+  // Advisory ingestion of external review verdicts (opt-in). A
+  // CHANGES_REQUESTED verdict becomes an unknown-scope finding, which makes the
+  // close-readiness re-eval below fail → the gate escalates for the operator to
+  // classify (fail-closed; external approvals are never trusted to merge).
+  await ingestExternalReviewVerdicts(deps, goalId, prNumber);
   const tier = withManagedDb({ dbPath: deps.dbPath }, (db) =>
     effectiveAutoMergeTier(db, runId, deps.harnessRoot),
   );
@@ -773,4 +788,54 @@ function effectiveAutoMergeTier(
     loadAutoMergeSensitivityMap(harnessRoot),
   );
   return base === 0 && runWeakensTests(db, runId) ? 1 : base;
+}
+
+/**
+ * Opt-in advisory ingestion of external PR review verdicts (codex GitHub App /
+ * Copilot). Each `CHANGES_REQUESTED` verdict is recorded ONCE as an
+ * unknown-scope goal finding; the close-readiness re-eval in the merge gate
+ * then fails, so the gate escalates for the operator to classify. External
+ * approvals are NEVER ingested — an external "approve" cannot authorise a merge
+ * (§0/§6: external output may only push fail-closed, never approve). Best
+ * effort: a fetch failure is swallowed so it cannot break the merge path.
+ */
+async function ingestExternalReviewVerdicts(
+  deps: OrchestratorRunnerDeps,
+  goalId: string,
+  prNumber: number,
+): Promise<void> {
+  const fetchVerdicts = deps.autoMerge?.reviewVerdicts;
+  if (fetchVerdicts === undefined) return;
+  let verdicts: { author: string; state: string }[];
+  try {
+    verdicts = await fetchVerdicts(prNumber);
+  } catch {
+    return;
+  }
+  const blocking = verdicts.filter(
+    (v) => v.state.toUpperCase() === "CHANGES_REQUESTED",
+  );
+  if (blocking.length === 0) return;
+  withManagedDb({ dbPath: deps.dbPath }, (db) => {
+    const repo = new GoalRepository(db);
+    const seen = new Set(
+      repo.listFindings({ goalId, limit: 10_000 }).map((f) => f.stableKey),
+    );
+    for (const v of blocking) {
+      const stableKey = `external-review:${prNumber}:${v.author}`;
+      if (seen.has(stableKey)) continue; // ingest each verdict once (no reopen loop)
+      repo.upsertFinding({
+        goalId,
+        source: "review",
+        sourceRef: `external_review:${prNumber}:${v.author}`,
+        severity: "P1",
+        category: "external-review-changes-requested",
+        scopeStatus: "unknown",
+        summary: `External reviewer ${v.author} requested changes on PR #${prNumber}`,
+        classificationReason:
+          "external review verdict ingested as advisory; classify before acting",
+        stableKey,
+      });
+    }
+  });
 }

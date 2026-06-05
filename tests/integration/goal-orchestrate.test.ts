@@ -392,6 +392,9 @@ describe("goal orchestrate (real git + fake codex)", () => {
     merger: PrMerger;
     domain?: string;
     changedPath?: string;
+    reviewVerdicts?: (
+      prNumber: number,
+    ) => Promise<{ author: string; state: string }[]>;
   }) {
     const domain = opts.domain ?? "docs";
     const { coderRunner, reviewerRunner } = approveFakes(opts.changedPath);
@@ -413,6 +416,9 @@ describe("goal orchestrate (real git + fake codex)", () => {
       autoMerge: {
         merger: opts.merger,
         ciStatus: async (_prNumber: number, _expectedHeadSha: string) => opts.ciGreen,
+        ...(opts.reviewVerdicts !== undefined
+          ? { reviewVerdicts: opts.reviewVerdicts }
+          : {}),
       },
     });
     return new GoalOrchestrator({ dbPath: f.dbPath }).run({
@@ -444,6 +450,50 @@ describe("goal orchestrate (real git + fake codex)", () => {
     } finally {
       close();
     }
+  });
+
+  it("auto-merge: an external CHANGES_REQUESTED review is ingested as a finding and escalates (fail-closed)", async () => {
+    const goalId = createGoal(f.dbPath, "goal-merge-extreview", "docs");
+    const merger = fakeMerger("ok");
+    const result = await driveWithAutoMerge({
+      goalId,
+      ciGreen: true,
+      merger,
+      reviewVerdicts: async () => [
+        { author: "codex[bot]", state: "CHANGES_REQUESTED" },
+      ],
+    });
+
+    // external changes-requested → not merged; an unknown finding was ingested,
+    // so the gate's close-readiness re-eval fails and the goal escalates.
+    expect(result.outcome).toBe("escalated");
+    expect(merger.calls).toHaveLength(0);
+    const { db, close } = openManagedDb({ dbPath: f.dbPath });
+    try {
+      const ext = new GoalRepository(db)
+        .listFindings({ goalId })
+        .find((x) => x.category === "external-review-changes-requested");
+      expect(ext).toBeDefined();
+      expect(ext?.scopeStatus).toBe("unknown");
+    } finally {
+      close();
+    }
+  });
+
+  it("auto-merge: an external APPROVED review does NOT gate (CI-green merge proceeds)", async () => {
+    const goalId = createGoal(f.dbPath, "goal-merge-extapprove", "docs");
+    const merger = fakeMerger("ok");
+    const result = await driveWithAutoMerge({
+      goalId,
+      ciGreen: true,
+      merger,
+      reviewVerdicts: async () => [{ author: "copilot", state: "APPROVED" }],
+    });
+
+    // an external approval is never trusted to gate — the deterministic gate
+    // (consensus + CI green + tier-0) still merges.
+    expect(result.outcome).toBe("merged");
+    expect(merger.calls).toHaveLength(1);
   });
 
   it("auto-merge: pins the merge to the reviewed commit (from createPullRequest)", async () => {

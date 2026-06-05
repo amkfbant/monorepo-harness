@@ -283,7 +283,8 @@ harness goal check-convergence <goal-id> [--created-by <actor>] [--no-record] [-
 
 harness goal orchestrate <goal-id> --repo <path> [--base-branch <name>] [--max-steps <n>] \
   [--dry-run] [--auto-merge] [--merge-method squash|merge|rebase] \
-  [--ci-await-timeout <seconds>] [--request-copilot-review]
+  [--ci-await-timeout <seconds>] [--request-copilot-review] \
+  [--ingest-external-reviews]
 ```
 
 `goal close` は convergence が `close_ready` でない限り `--force` を要求する。
@@ -306,6 +307,13 @@ audit に記録される。詳細は
 operation audit（`copilot-review`）に記録されるだけで、close / merge を一切 gate
 しない（例外も握る）。挙動は [`harness pr request-review`](#harness-pr-request-review)
 と同じ。
+
+**`--ingest-external-reviews`（既定 OFF・`--auto-merge` 時のみ）** を付けると、
+auto-merge gate 評価前に PR の外部レビュー verdict（codex App / Copilot）を fetch し、
+**`CHANGES_REQUESTED`** を **unknown-scope の advisory finding** として 1 度だけ記録
+する。これにより gate が escalate し operator が分類する（外部は advisory・operator
+分類必須）。**approve は ingest しない**（外部の approve は merge を authorize しない）。
+fetch 失敗は握って merge path を壊さない。`workflow.md` の「Phase 3 — auto-merge」参照。
 
 ## `harness dashboard export`
 
