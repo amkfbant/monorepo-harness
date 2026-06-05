@@ -39,6 +39,7 @@ import {
 } from "../core/copilot-review-run.js";
 import type { ConsensusSummary } from "../core/review-consensus.js";
 import { GoalRepository } from "./repository.js";
+import { augmentGoalWithOpenFindings } from "./coder-goal-context.js";
 import { classifyFindingForGoal } from "./classification.js";
 import { deferFindingToBacklog } from "./followups.js";
 import { ConvergenceService } from "./convergence.js";
@@ -254,7 +255,7 @@ export function createOrchestratorRunners(
   return {
     coder: async (goalId) => {
       assertGate(goalId, "run.start");
-      const { attemptId, context } = withManagedDb(
+      const { attemptId, context, goalText } = withManagedDb(
         { dbPath: deps.dbPath },
         (db) => {
           const repo = new GoalRepository(db);
@@ -268,12 +269,28 @@ export function createOrchestratorRunners(
               (a) =>
                 a.attemptType === "implement" || a.attemptType === "rerun",
             );
+          // On a rerun, inject the open in-scope findings review raised into the
+          // coder goal so it knows what to fix (the goal-mode analogue of the
+          // run-level required_changes injection). The first `implement` pass
+          // has none. unknown-scope findings are intentionally excluded — they
+          // must be classified first (fail-closed).
+          const openInScope = prior
+            ? repo
+                .listFindings({ goalId, scopeStatus: "in_scope", limit: 200 })
+                .filter((fnd) =>
+                  OPEN_LIFECYCLE_STATUSES.includes(fnd.lifecycleStatus),
+                )
+            : [];
           const attempt = repo.createAttempt({
             goalId,
             attemptType: prior ? "rerun" : "implement",
             status: "running",
           });
-          return { attemptId: attempt.attemptId, context: ctx };
+          return {
+            attemptId: attempt.attemptId,
+            context: ctx,
+            goalText: augmentGoalWithOpenFindings(ctx.goal, openInScope),
+          };
         },
       );
       try {
@@ -282,7 +299,7 @@ export function createOrchestratorRunners(
           repoPath: context.repoPath,
           repoId: context.repoId,
           domain: context.domain,
-          goal: context.goal,
+          goal: goalText,
           baseBranch: context.baseBranch,
           codexRunner: deps.coderRunner,
         });

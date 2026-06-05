@@ -201,15 +201,17 @@ App / Copilot）が実バグを拾う価値が高く、(b) それを取りこぼ
      close_ready reversion（`:110`）を `awaiting_checks` にも適用、close_ready 決定時に現在
      `awaiting_checks` なら据え置く分岐。dispatch は decision 駆動なので不要。**migration の
      data-survival テスト（既存 goal が子ごと生存）を必須**にする。
-   - **ingest 後の fix ループ自動化 — 既存ギャップ発見（① 以前から）。** goal mode の coder
-     rerun は `runDomainCoding({ goal: context.goal, ... })` を呼ぶだけで（`orchestrator-runners.ts:280`）、
-     **open in-scope finding / review の `required_changes` を coder prompt に注入していない**。
-     run 単体の rerun 機構（`core/rerun.ts`：original goal + required_changes ブロック）は
-     あるが goal coder 経路では使われていない。よって operator が外部 finding を in_scope に
-     分類しても、次の coder rerun は「何を直すべきか」を明示文脈なしに再コーディングする。
-     **実装方針**: coder runner で open in-scope（および直近 review の required_changes）を
-     集め、`runDomainCoding` に注入（`core/rerun.ts` の prompt 構築を流用）。収束性に影響する
-     core loop 変更なので回帰テスト必須。
+   - **ingest 後の fix ループへの finding 注入 — 実装済み（slice 4）。** 以前は goal mode の
+     coder rerun が `runDomainCoding({ goal: context.goal })` のみで、open in-scope finding を
+     coder prompt に注入していなかった（① 以前からの潜在ギャップ）。`augmentGoalWithOpenFindings`
+     を追加し、`rerun` 系 attempt で open in-scope（lifecycle `open`/`reopened`/`escalated`）を
+     集約してゴール文言末尾に「Open in-scope findings to address」ブロックとして注入する
+     （run 単体 `core/rerun.ts` の required_changes 注入の goal-mode 版）。初回 `implement` は
+     非注入、`unknown`-scope は分類前なので非注入（fail-closed）、件数上限 25（超過は明示注記）。
+     pure helper を単体テスト＋coder runner の prompt 捕捉で統合テスト。これで operator が
+     finding を in_scope 分類した後の rerun が「何を直すか」を持つ。`runDomainCoding`/
+     prompt-builder は無改変（ゴール文言だけ拡張）で最小リスク。**残**: 外部 finding 分類→
+     rerun の**自動連鎖**（現状は分類後の再 orchestrate で coder が回る）。
    - 定期 `goal await-merge`（scheduler 駆動の自動再 orchestrate。`awaiting_checks` status が
      前提＝上記の後）、semantic dedup（§3）。
 

@@ -678,6 +678,15 @@ run / review の中身は Phase 5〜11 の挙動そのままで、新しい `Run
 新しい review 遷移は導入しない。goal は周辺の attempt / cycle / finding /
 close-check を記録する **上位 control plane** にとどまる。
 
+**rerun への finding 注入**: `rerun` 系 attempt（prior coding attempt が既に
+ある coder 実行）では、open in-scope finding（lifecycle が `open`/`reopened`/
+`escalated`）を集約して coder のゴール文言末尾に「Open in-scope findings to
+address」ブロックとして注入する（`augmentGoalWithOpenFindings`）。run 単体の
+`required_changes` 注入（`core/rerun.ts`）の goal-mode 版で、これが無いと rerun は
+元のゴール文言だけで「何を直すか」を知らずに再コーディングしてしまう。初回
+`implement` pass では注入しない。`unknown`-scope finding は**分類前なので注入
+しない**（fail-closed）。件数は上限付き（既定 25・超過分は明示注記）。
+
 ### convergence decision → goal status 連携
 
 各 cycle / attempt の後に convergence evaluator（`src/goal/convergence.ts` の
