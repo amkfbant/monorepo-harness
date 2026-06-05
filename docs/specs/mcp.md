@@ -94,6 +94,20 @@ the recommended deployment path for shared agent access.
 An explicit `--config <path>` is fail-closed: if the file does not exist, the
 server/CLI exits nonzero instead of falling back to broader defaults.
 
+`harness mcp config` prints the full effective MCP config as JSON. With
+`--client-name <name>`, it prints the effective permission view for that launch
+client instead:
+
+```json
+{
+  "clientName": "claude",
+  "clientId": "claude-local",
+  "mode": "guarded-mutation",
+  "allowedOperations": ["run.start"],
+  "requireConfirmation": ["pr.create"]
+}
+```
+
 Canonical example:
 
 ```yaml

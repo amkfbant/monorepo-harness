@@ -20,6 +20,32 @@ export interface McpPermissionDecision {
   };
 }
 
+export interface ResolvedMcpClientPermission {
+  clientName: string;
+  clientId: string | null;
+  mode: McpMode;
+  allowedOperations: string[];
+  requireConfirmation: string[];
+}
+
+export function resolveMcpClientPermission(
+  config: McpConfig,
+  clientName: string,
+): ResolvedMcpClientPermission {
+  const matched = config.clients.find((c) => c.names.includes(clientName));
+  return {
+    clientName,
+    clientId: matched?.id ?? null,
+    mode: matched?.mode ?? config.defaultMode,
+    allowedOperations: [...config.allowedOperations],
+    requireConfirmation: [...config.requireConfirmation],
+  };
+}
+
+export function modeForClient(config: McpConfig, clientName: string): McpMode {
+  return resolveMcpClientPermission(config, clientName).mode;
+}
+
 export function operationNameForTool(toolName: string): string {
   return toolName.startsWith("harness.")
     ? toolName.slice("harness.".length)

@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { loadMcpConfig, McpConfigError } from "../../../src/mcp/security/config.js";
-import { decideMcpPermission } from "../../../src/mcp/security/permissions.js";
+import {
+  decideMcpPermission,
+  resolveMcpClientPermission,
+} from "../../../src/mcp/security/permissions.js";
 
 function tempHarnessRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "harness-mcp-config-"));
@@ -209,6 +212,75 @@ describe("MCP config and permission engine", () => {
     const config = loadMcpConfig({ harnessRoot: root, configPath: explicit });
     expect(config.defaultMode).toBe("guarded-mutation");
     expect(config.allowedProjects).toEqual(["explicit"]);
+  });
+
+  it("resolves effective permission for a named client", () => {
+    const root = tempHarnessRoot();
+    const configPath = join(root, ".harness", "mcp.yaml");
+    writeFileSync(
+      configPath,
+      [
+        "version: 1",
+        "mcp:",
+        "  defaultMode: read-only",
+        "  clients:",
+        "    - id: claude-local",
+        "      names:",
+        "        - claude",
+        "      mode: guarded-mutation",
+        "  allowedOperations:",
+        "    - run.start",
+        "  requireConfirmation:",
+        "    - pr.create",
+        "",
+      ].join("\n"),
+    );
+
+    const config = loadMcpConfig({ harnessRoot: root, configPath });
+    expect(resolveMcpClientPermission(config, "claude")).toEqual({
+      clientName: "claude",
+      clientId: "claude-local",
+      mode: "guarded-mutation",
+      allowedOperations: ["run.start"],
+      requireConfirmation: ["pr.create"],
+    });
+    expect(resolveMcpClientPermission(config, "unknown")).toMatchObject({
+      clientName: "unknown",
+      clientId: null,
+      mode: "read-only",
+    });
+  });
+
+  it("prints effective permission for mcp config --client-name", () => {
+    const root = tempHarnessRoot();
+    const configPath = join(root, ".harness", "mcp.yaml");
+    writeFileSync(
+      configPath,
+      [
+        "version: 1",
+        "mcp:",
+        "  defaultMode: read-only",
+        "  clients:",
+        "    - id: claude-local",
+        "      names: [claude]",
+        "      mode: guarded-mutation",
+        "  allowedOperations:",
+        "    - run.start",
+        "  requireConfirmation:",
+        "    - pr.create",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runCli(root, ["mcp", "config", "--client-name", "claude"]);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      clientName: "claude",
+      clientId: "claude-local",
+      mode: "guarded-mutation",
+      allowedOperations: ["run.start"],
+      requireConfirmation: ["pr.create"],
+    });
   });
 
   it("fails closed when an explicit config path is missing", () => {

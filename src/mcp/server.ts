@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { McpConfig } from "./security/config.js";
-import { modeForClient } from "./security/config.js";
 import { McpRateLimiter } from "./security/limits.js";
-import { decideMcpPermission } from "./security/permissions.js";
+import { decideMcpPermission, modeForClient } from "./security/permissions.js";
 import { getMcpTool, listMcpTools } from "./registry/tool-registry.js";
 import {
   MCP_RESOURCE_TEMPLATES,
