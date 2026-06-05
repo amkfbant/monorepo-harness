@@ -245,7 +245,7 @@ function promotedFrontmatter(
     promoted_by: meta.reviewer,
     promoted_at: meta.promotedAt,
     // deprecated knowledge is excluded from `knowledge build-context`.
-    // promote always writes false; a human edits this to retire an entry.
+    // promote writes false; `knowledge deprecate` retires an entry later.
     deprecated: false,
     hash: meta.hash,
   };

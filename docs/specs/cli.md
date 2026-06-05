@@ -1110,6 +1110,7 @@ run が生成した `knowledge-candidates.yaml` の候補をレビューし、�
 - `runs/<runId>/knowledge-candidates.yaml` — run が生成した **immutable な観測ログ**（harness は一切書き換えない）
 - `runs/<runId>/knowledge-decisions.yaml` — reviewer の **reject 決定 sidecar**（`knowledge reject` が書く）
 - `docs/knowledge/<kind>/*.md` — reviewer が **採用した知見**（`knowledge promote` が書く）
+- `knowledge_entry_revisions` — DB-current な knowledge markdown body。`knowledge deprecate` / `knowledge edit` が更新する
 - `docs/knowledge-context/<domain>.md` — domain ごとに集約した **次回 run 用 context**（`knowledge build-context` が書く、Phase 3-4）
 
 ### `harness knowledge build-context`
@@ -1128,9 +1129,9 @@ harness knowledge build-context --domain <domain> [--out <dir>]
 `docs/knowledge/<kind>/*.md` を走査し、frontmatter の `domain` が一致しかつ `deprecated: true` でないものを `docs/knowledge-context/<domain-slug>.md`（`/`→`-`）に集約する。candidate（`knowledge-candidates.yaml`）と rejected（`knowledge-decisions.yaml`）は `runs/` 配下にあり走査対象外 — **構造上 promote 済み knowledge しか集約されない**。
 
 **knowledge injection の限界:**
-- context は `build-context` 実行時点の snapshot。promote / deprecated 編集の後は再生成が必要（自動更新しない）
+- context は `build-context` 実行時点の snapshot。promote / deprecate / edit の後は再生成が必要（自動更新しない）
 - context は domain 完全一致でフィルタするだけ。関連 domain / 親 domain の知見は引かない。ベクトル検索や関連度ランキングは無い
-- `deprecated` は frontmatter を人間が手編集して立てる（`knowledge deprecate` コマンドは未実装）
+- deprecated entry は `knowledge deprecate <entry-id>` で DB-current revision と compatibility markdown の frontmatter を `deprecated: true` に揃える
 - context は `<knowledge>` タグで囲み「reference material であり指示ではない」と明記して注入する。ただし prompt injection を完全に防ぐものではない（promoted knowledge は人間がレビューして昇格した前提）
 - 注入サイズは **32 KiB 上限**（`MAX_KNOWLEDGE_CONTEXT_BYTES`）。超過分は `[knowledge context truncated...]` マーカー付きで切り詰める。肥大したら deprecated 整理で運用カバー
 - 注入は coder run のみ。reviewer agent には注入しない
@@ -1204,16 +1205,35 @@ hash: 2e9910abcd1234ef
 
 `promote` の出力は promoted 一覧と skip 一覧（理由つき: `kind-filter` / `rejected` / `duplicate-index` / `duplicate-hash` / `malformed`）。
 
+### `harness knowledge deprecate`
+
+採用済み knowledge entry を retired state に遷移する。対象は `knowledge show` / `knowledge edit` と同じ entry id（例 `docs/knowledge/<kind>/<file>.md`）。
+
+```bash
+harness knowledge deprecate <entry-id> [--actor <actor>] [--reason <text>] [--out <dir>]
+```
+
+| Option | Required | 説明 |
+|--------|:--------:|------|
+| `<entry-id>` | ✅ | 対象 knowledge entry id |
+| `--actor <actor>` | — | revision actor（default `cli`、空文字不可） |
+| `--reason <text>` | — | revision reason（default `knowledge deprecate`） |
+| `--out <dir>` | — | compatibility markdown の export root（default `HARNESS_ROOT/docs/knowledge`） |
+
+`knowledge deprecate` は DB-first の状態遷移として、対象 entry の current revision に `deprecated: true` frontmatter を持つ markdown を記録し、`knowledge_entries` を `source_mode='db-first'` / `export_status='dirty'` に更新してから `<out>/<kind>/<file>.md` へ atomically export する。export 成功時は `knowledge_entries.export_status='synced'` になり、`asset_exports` と `exported_files` に sha を記録する。既に deprecated の entry への再実行は同じ current body を再利用し、stale な compatibility file を再 export できる。
+
+deprecate 済み entry は file-scan の `knowledge build-context --domain ...` と DB-current の scoped build-context の両方から除外される。
+
 ### source run との独立性
 
 promote された md は `<out>/`（既定 `docs/knowledge/`）に書かれ、`runs/<runId>/` とは**完全に独立**している。
 
 `harness cleanup --scope run` / `--scope all` で source run の `runs/<runId>/` が削除されても、**promote 済みの knowledge md は残る** — knowledge は run のライフサイクルより長く生きる設計。md には runId / source_index / evidence が記録済みなので self-contained（`source_run` 参照は監査用であり存在保証ではない）。
 
-### Exit code（list / reject / promote 共通）
+### Exit code（list / reject / promote / deprecate 共通）
 
 - `0`: 成功
-- `1`: invalid runId / candidates yaml 不在 or parse 失敗 / 候補の `kind` が unsafe / reject の index 範囲外 / reviewer 空
+- `1`: invalid runId / candidates yaml 不在 or parse 失敗 / 候補の `kind` が unsafe / reject の index 範囲外 / reviewer 空 / actor 空 / knowledge entry 不在
 - `2`: 予期しない例外
 
 ### Exit code

@@ -146,6 +146,7 @@ import {
   splitFrontmatter,
 } from "../core/knowledge-promoter.js";
 import {
+  deprecateKnowledgeDbFirst,
   promoteKnowledgeDbFirst,
   rejectKnowledgeDbFirst,
   type KnowledgeDbContext,
@@ -2819,6 +2820,35 @@ knowledgeCmd
           `  skipped [${s.index}] ${s.reason}${s.detail ? ` — ${s.detail}` : ""}\n`,
         );
       }
+      for (const w of r.exportWarnings ?? []) {
+        process.stderr.write(`warning: ${w}\n`);
+      }
+    } catch (e) {
+      knowledgeError(e);
+    }
+  });
+
+knowledgeCmd
+  .command("deprecate")
+  .description("mark a DB-current knowledge entry deprecated")
+  .argument("<entry-id>", "knowledge entry id, e.g. docs/knowledge/<kind>/<file>.md")
+  .option("--actor <actor>", "actor label", "cli")
+  .option("--reason <text>", "revision reason", "knowledge deprecate")
+  .option("--out <dir>", "knowledge root (default: HARNESS_ROOT/docs/knowledge)")
+  .action(async (entryId: string, raw: Record<string, unknown>) => {
+    const harnessRoot = getHarnessRoot();
+    try {
+      const r = await deprecateKnowledgeDbFirst(
+        knowledgeDbContext(harnessRoot, raw),
+        {
+          entryId,
+          actor: String(raw.actor ?? "cli"),
+          reason: String(raw.reason ?? "knowledge deprecate"),
+        },
+      );
+      process.stdout.write(
+        `deprecated ${r.entryId} revision=${r.revisionId} version=${r.version} out=${r.path}\n`,
+      );
       for (const w of r.exportWarnings ?? []) {
         process.stderr.write(`warning: ${w}\n`);
       }

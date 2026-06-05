@@ -94,8 +94,8 @@ harness は 2 種類の LLM agent と harness 自身の 3 ロールに権限を�
   （parentRunId / rootRunId / rerunAttempt の監査チェーン、`--max-attempts` 上限）。
   `workflow reviewed-run` は run → review → rerun を **1 コマンドの bounded loop**
   として回す。
-- **knowledge ループ**（[`cli.md`](./cli.md)）— `knowledge list / reject / promote`
-  で候補をレビューし、`knowledge promote` で `docs/knowledge/` に展開。
+- **knowledge ループ**（[`cli.md`](./cli.md)）— `knowledge list / reject / promote / deprecate`
+  で候補と採用済み知見をレビューし、`knowledge promote` で `docs/knowledge/` に展開。
   `run --with-knowledge`（または `--knowledge-context <path>`）で
   `docs/knowledge-context/<domain>.md` を codex prompt に注入する。
 - **Project Abstraction（Phase 5）**（[`project.md`](./project.md)）— `projects/<id>.yaml`
@@ -142,8 +142,6 @@ harness は 2 種類の LLM agent と harness 自身の 3 ロールに権限を�
   adapter は未実装（[`db.md`](./db.md)）。
 - **external issue tracker 連携** — deferred finding は backlog item を作るのみで、
   外部 issue tracker への sync は無い。
-- **`knowledge deprecate` コマンド** — `knowledge list / reject / promote` はあるが
-  deprecate コマンドは未実装。
 - **`pr create` / `rerun` の実 codex smoke** — 2026-06-04 の実 codex smoke で検証済み。
   `rerun --from-review` は real codex の child run、`pr create` は real GitHub remote
   への draft PR 作成まで確認済み

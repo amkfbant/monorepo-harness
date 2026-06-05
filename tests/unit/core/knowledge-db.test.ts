@@ -8,12 +8,17 @@ import {
   existsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
+  deprecateKnowledgeDbFirst,
   promoteKnowledgeDbFirst,
   rejectKnowledgeDbFirst,
   type KnowledgeDbContext,
 } from "../../../src/core/knowledge-db.js";
+import {
+  buildKnowledgeContext,
+  buildKnowledgeContextFromDb,
+} from "../../../src/core/knowledge-context.js";
 import { promoteKnowledge } from "../../../src/core/knowledge-promoter.js";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
@@ -247,6 +252,87 @@ describe("knowledge DB-first", () => {
       .get() as { body: string } | undefined;
     db.close();
     expect(entry?.body).toContain("hand edited");
+  });
+
+  it("deprecate writes a DB-current revision, exports deprecated frontmatter, and build-context excludes it", async () => {
+    const ctx = setup();
+    const promoted = await promoteKnowledgeDbFirst(ctx, {
+      runId: RUN_ID,
+      reviewer: "kn",
+      now: new Date("2026-05-22T00:00:00.000Z"),
+    });
+    const target = promoted.promoted.find((p) => p.kind === "policy_improvement");
+    expect(target).toBeDefined();
+    const entryId = `docs/knowledge/policy_improvement/${basename(target!.path)}`;
+
+    const result = await deprecateKnowledgeDbFirst(ctx, {
+      entryId,
+      actor: "kn",
+      reason: "stale lesson",
+      now: new Date("2026-05-23T00:00:00.000Z"),
+    });
+
+    expect(result.entryId).toBe(entryId);
+    expect(readFileSync(target!.path, "utf8")).toMatch(/^deprecated: true$/m);
+
+    const db = openDb(ctx.dbPath);
+    runMigrations(db);
+    try {
+      const revision = db
+        .prepare(
+          `SELECT r.body_markdown
+             FROM knowledge_entries e
+             INNER JOIN knowledge_entry_revisions r
+                ON e.current_revision_id = r.revision_id
+            WHERE e.entry_id = ?`,
+        )
+        .get(entryId) as { body_markdown: string } | undefined;
+      expect(revision?.body_markdown).toMatch(/^deprecated: true$/m);
+      const row = db
+        .prepare(
+          `SELECT source_mode, export_status, last_export_error
+             FROM knowledge_entries
+            WHERE entry_id = ?`,
+        )
+        .get(entryId) as {
+        source_mode: string;
+        export_status: string;
+        last_export_error: string | null;
+      };
+      expect(row).toMatchObject({
+        source_mode: "db-first",
+        export_status: "synced",
+        last_export_error: null,
+      });
+      const tracked = db
+        .prepare(
+          `SELECT status
+             FROM asset_exports
+            WHERE asset_type = 'knowledge_entry'
+              AND asset_id = ?
+              AND relative_path = ?`,
+        )
+        .get(entryId, entryId) as { status: string } | undefined;
+      expect(tracked?.status).toBe("synced");
+
+      const dbContext = await buildKnowledgeContextFromDb({
+        db,
+        outDir: join(ctx.runsDir, "..", "db-context"),
+        domain: "apps/web",
+      });
+      expect(dbContext.entries).toHaveLength(0);
+    } finally {
+      db.close();
+    }
+
+    const fileContext = await buildKnowledgeContext({
+      knowledgeDir: ctx.knowledgeDir,
+      outDir: join(ctx.runsDir, "..", "knowledge-context"),
+      domain: "apps/web",
+    });
+    expect(fileContext.entries.map((e) => e.title)).toEqual([
+      "env file appeared",
+    ]);
   });
 
   it("reject rejects an out-of-range index", async () => {
