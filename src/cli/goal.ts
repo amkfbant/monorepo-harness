@@ -689,6 +689,11 @@ export function registerGoalCommands(
       "squash",
     )
     .option(
+      "--ci-await-timeout <seconds>",
+      "seconds to await pending CI before auto-merge fails closed",
+      "1200",
+    )
+    .option(
       "--request-copilot-review",
       "opt-in: best-effort request a Copilot review on the PR (non-gating)",
       false,
@@ -711,20 +716,24 @@ export function registerGoalCommands(
         const dbPath = harnessPaths(opts.getHarnessRoot()).dbPath;
         const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
         const repoPath = String(raw.repo);
+        const ghBin = process.env.HARNESS_GH_BIN ?? "gh";
+        const ciAwaitTimeoutMs =
+          parseNonNegativeInt(raw.ciAwaitTimeout, "--ci-await-timeout") * 1_000;
         // Phase 3: auto-merge is opt-in (default OFF). Only when --auto-merge is
         // passed do we construct the merger + CI probe; otherwise the
         // orchestrator just creates the PR.
         const autoMerge =
           raw.autoMerge === true
             ? {
-                merger: createGhPrMerger(),
-                ciStatus: createGhCiStatus(repoPath),
+                merger: createGhPrMerger(ghBin),
+                ciStatus: createGhCiStatus(repoPath, ghBin, undefined, {
+                  awaitTimeoutMs: ciAwaitTimeoutMs,
+                }),
                 method: parseMergeMethod(raw.mergeMethod),
               }
             : undefined;
         // Best-effort Copilot review is opt-in (default OFF). Non-gating: the
         // outcome never affects close/merge.
-        const ghBin = process.env.HARNESS_GH_BIN ?? "gh";
         const copilotReview =
           raw.requestCopilotReview === true
             ? { reviewer: createGhCopilotReviewer(repoPath, ghBin) }
