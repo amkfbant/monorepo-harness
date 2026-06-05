@@ -144,8 +144,10 @@ harness は 2 種類の LLM agent と harness 自身の 3 ロールに権限を�
   外部 issue tracker への sync は無い。
 - **`knowledge deprecate` コマンド** — `knowledge list / reject / promote` はあるが
   deprecate コマンドは未実装。
-- **`pr create` / `rerun` の実 codex smoke** — 本番 target repo が要るため、実
-  codex を使った E2E smoke は未検証（fake-codex の integration は通る）。
+- **`pr create` / `rerun` の実 codex smoke** — 2026-06-04 の実 codex smoke で検証済み。
+  `rerun --from-review` は real codex の child run、`pr create` は real GitHub remote
+  への draft PR 作成まで確認済み
+  （[`2026-06-04-real-codex-smoke.md`](../reports/2026-06-04-real-codex-smoke.md)）。
 - **multi-target run** — 複数 target repo を 1 run で扱わない（1 run = 1 domain）。
 - **secret heuristic の DLP 級厳密性** — あくまで「reviewer の見落とし防止」レベル。
 - **Windows プロセスツリー kill の E2E** — 実装は taskkill 経路ありだが未検証。
