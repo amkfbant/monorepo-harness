@@ -750,3 +750,8 @@ PR 作成後・auto-merge 評価の**前**に、opt-in（`--request-copilot-revi
 という安全境界を守る。`closeAndPr` はレビュー結果に関わらず後続（auto-merge / 
 `pr_created`）へ進む。同じ best-effort 処理は単発の [`harness pr request-review`](
 ./cli.md#harness-pr-request-review) でも実行できる。
+
+poll は総 timeout の残り時間で bounded に実行され、内部 watchdog が発火した場合は
+その poll に渡した `AbortSignal` を abort する。gh 実装は signal を子プロセスへ伝播し、
+watchdog timer は `finally` で cancel される。この abort は外部観測の中断だけに使い、
+Copilot outcome が close / merge の gate になることはない。

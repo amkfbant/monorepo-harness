@@ -34,6 +34,25 @@ function writeFakeGh(reviewerLogin: string): { bin: string; dir: string } {
   return { bin, dir };
 }
 
+function writeSleepingGh(): { bin: string; dir: string } {
+  const dir = mkdtempSync(join(tmpdir(), "harness-fake-gh-"));
+  const bin = join(dir, "gh");
+  const script = [
+    "#!/usr/bin/env node",
+    'if (process.argv[2] === "pr" && process.argv[3] === "view") {',
+    "  setTimeout(() => {",
+    "    process.stdout.write('{\"reviews\":[]}');",
+    "    process.exit(0);",
+    "  }, 5000);",
+    "} else {",
+    "  process.exit(1);",
+    "}",
+  ].join("\n");
+  writeFileSync(bin, `${script}\n`);
+  execFileSync("chmod", ["+x", bin]);
+  return { bin, dir };
+}
+
 describe("createGhCopilotReviewer", () => {
   it("request invokes `gh api ... requested_reviewers` with Copilot", async () => {
     const { bin, dir } = writeFakeGh("");
@@ -70,6 +89,21 @@ describe("createGhCopilotReviewer", () => {
     const { bin } = writeFakeGh("some-human");
     const reviewer = createGhCopilotReviewer(tmpdir(), bin, 5_000);
     expect(await reviewer.poll(42)).toBe("pending");
+  });
+
+  it("poll abort signal aborts the in-flight gh child", async () => {
+    const { bin } = writeSleepingGh();
+    const reviewer = createGhCopilotReviewer(tmpdir(), bin, 5_000);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20);
+    timer.unref?.();
+    try {
+      await expect(reviewer.poll(42, 5_000, controller.signal)).rejects.toThrow(
+        /aborted/,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
   });
 
   it("request throws on a gh non-zero exit (so the orchestration can retry)", async () => {
