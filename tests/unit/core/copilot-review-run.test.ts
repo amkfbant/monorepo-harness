@@ -428,6 +428,28 @@ describe("runCopilotReview", () => {
     expect(polls).toBeLessThanOrEqual(2);
   });
 
+  it("floors a fractional pollIntervalMs to the default when pollTimeoutMs>0 (no sub-ms high-frequency poll)", async () => {
+    // P1-3: a non-integer interval (e.g. 0.5ms) paired with a positive timeout
+    // would otherwise drive a high-frequency, sub-ms-grain poll loop (10ms /
+    // 0.5ms = ~20 polls). normalizeConfig requires Number.isInteger, so 0.5
+    // falls back to the 15_000 default (clamped to the 10ms budget) and the
+    // deadline trips after only a couple of polls.
+    const reviewer = fakeReviewer({ request: ["ok"], poll: [] }); // always pending
+    // recordingClock advances now() by the exact slept amount, so an un-floored
+    // 0.5ms interval would yield many polls; a floored 15s interval yields ~2.
+    const clock = recordingClock();
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 1,
+      config: { requestAttempts: 1, pollTimeoutMs: 10, pollIntervalMs: 0.5 },
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    expect(out.status).toBe("skipped");
+    // a couple of polls at most — NOT a sub-ms high-frequency loop.
+    expect(reviewer.pollCalls).toBeLessThanOrEqual(2);
+  });
+
   it("falls back to the default (no 1ms truncation) when pollTimeoutMs exceeds the 32-bit timer max", async () => {
     // P2: a value > MAX_TIMER_MS (2_147_483_647) would be truncated to 1ms by
     // Node's setTimeout. normalizeConfig rejects it → default 300_000, so the

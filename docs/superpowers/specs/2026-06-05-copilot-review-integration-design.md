@@ -65,7 +65,11 @@ export function runCopilotReview(input: {
   - `requestAttempts`: `Number.isInteger` かつ ≥ 1 でなければ既定 3。
   - `MAX_TIMER_MS = 2_147_483_647`（Node の `setTimeout` 上限。これを超える遅延は
     1ms に黙って丸められ busy-loop 化するため、timer 値はこの上限も検査する）。
-  - `pollTimeoutMs`: `Number.isFinite` かつ `0 ≤ x ≤ MAX_TIMER_MS` でなければ既定 300_000。
+  - **timer 値（`pollTimeoutMs` / `pollIntervalMs`）は整数のみ有効**。`Number.isInteger`
+    でない値（例 `0.5`）は既定へフォールバックする。小数 interval が正の timeout と
+    組むと 1ms 級の高頻度 poll を生むため。`Number.isInteger` は finite 判定も兼ねる
+    （NaN / ±Infinity は整数でない）。`0` は整数なので許容（FAST_CONFIG 非破壊）。
+  - `pollTimeoutMs`: 整数かつ `0 ≤ x ≤ MAX_TIMER_MS` でなければ既定 300_000。
   - `pollIntervalMs`: **`pollTimeoutMs` の正規化後の値に依存**する条件付きフロア:
     - `pollTimeoutMs === 0`（single-observation / FAST_CONFIG）: **0 を許容**（sleep
       しないが deadline 再判定で必ず終了）。それ以外の `0 ≤ x ≤ MAX_TIMER_MS` も保持。

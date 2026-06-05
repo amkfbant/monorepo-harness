@@ -112,9 +112,15 @@ function normalizeConfig(
   return { requestAttempts, pollTimeoutMs, pollIntervalMs };
 }
 
-/** A timer value usable as-is: finite, ≥ 0, and within Node's 32-bit timer max. */
+/**
+ * A timer value usable as-is: an integer, ≥ 0, and within Node's 32-bit timer
+ * max. A non-integer (e.g. 0.5ms) paired with a positive timeout would drive a
+ * sub-ms-grain high-frequency poll loop, so it is rejected (falls back to the
+ * default in `normalizeConfig`). `Number.isInteger` also subsumes the finite
+ * check (NaN / ±Infinity are not integers). 0 stays usable (FAST_CONFIG).
+ */
 function isUsableTimerMs(ms: number): boolean {
-  return Number.isFinite(ms) && ms >= 0 && ms <= MAX_TIMER_MS;
+  return Number.isInteger(ms) && ms >= 0 && ms <= MAX_TIMER_MS;
 }
 
 /** Safely stringify an unknown thrown value (a reject is not always an Error). */
