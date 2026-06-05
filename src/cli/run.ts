@@ -1537,9 +1537,29 @@ prCmd
       raw.requestAttempts,
       "--request-attempts",
     );
+    const pollTimeoutMs = timeoutSec * 1000;
+    const pollIntervalMs = pollIntervalSec * 1000;
+    // Node's setTimeout truncates a delay > the signed 32-bit max to 1ms (a
+    // busy-loop). Reject such a (seconds→ms) value explicitly instead of letting
+    // it silently round down — fail-closed with a clear message.
+    const MAX_TIMER_MS = 2_147_483_647;
+    if (pollTimeoutMs > MAX_TIMER_MS) {
+      process.stderr.write(
+        `harness error: --timeout too large: ${String(raw.timeout)}s exceeds the ` +
+          `${MAX_TIMER_MS}ms timer limit\n`,
+      );
+      process.exit(2);
+    }
+    if (pollIntervalMs > MAX_TIMER_MS) {
+      process.stderr.write(
+        `harness error: --poll-interval too large: ${String(raw.pollInterval)}s ` +
+          `exceeds the ${MAX_TIMER_MS}ms timer limit\n`,
+      );
+      process.exit(2);
+    }
     const config = {
-      pollTimeoutMs: timeoutSec * 1000,
-      pollIntervalMs: pollIntervalSec * 1000,
+      pollTimeoutMs,
+      pollIntervalMs,
       requestAttempts,
     };
     const outcome = await runCopilotReview({

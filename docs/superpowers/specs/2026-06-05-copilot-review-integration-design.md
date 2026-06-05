@@ -63,10 +63,14 @@ export function runCopilotReview(input: {
   を作り mutate しない）。不正な数値は NaN deadline / busy-loop を生むため既定へフォール
   バックする:
   - `requestAttempts`: `Number.isInteger` かつ ≥ 1 でなければ既定 3。
-  - `pollTimeoutMs`: `Number.isFinite` かつ ≥ 0 でなければ既定 300_000。
-  - `pollIntervalMs`: `Number.isFinite` かつ ≥ 0 でなければ既定 15_000。**0 は許容**
-    （sleep しないが deadline 再判定で必ず終了。FAST_CONFIG の即収束目的）。負 / NaN /
-    Infinity のみフォールバック対象。
+  - `MAX_TIMER_MS = 2_147_483_647`（Node の `setTimeout` 上限。これを超える遅延は
+    1ms に黙って丸められ busy-loop 化するため、timer 値はこの上限も検査する）。
+  - `pollTimeoutMs`: `Number.isFinite` かつ `0 ≤ x ≤ MAX_TIMER_MS` でなければ既定 300_000。
+  - `pollIntervalMs`: **`pollTimeoutMs` の正規化後の値に依存**する条件付きフロア:
+    - `pollTimeoutMs === 0`（single-observation / FAST_CONFIG）: **0 を許容**（sleep
+      しないが deadline 再判定で必ず終了）。それ以外の `0 ≤ x ≤ MAX_TIMER_MS` も保持。
+    - `pollTimeoutMs > 0`: 0 / 負 / NaN / Infinity / `> MAX_TIMER_MS` は既定 15_000 へ
+      **フォールバック**（正の timeout で 0ms interval の高頻度 busy-poll を排除する）。
 - `request` を呼ぶ。一時エラーなら `requestAttempts` まで retry（間隔は pollInterval を流用）。
   全 retry 失敗 → `{ status: "failed", detail }`。
 - request 成功後 **最低 1 回は poll** する（決定論的セマンティクス）:
@@ -85,9 +89,15 @@ export function runCopilotReview(input: {
 - `poll` の一時エラー / timeout は握って次の interval へ（poll は best-effort）。
 - `pollTimeoutMs` は **総タイムアウトとして実効化**: 各 `poll` 呼び出しに残り時間
   （`deadline - now()`、>0 のときのみ。≤0 は undefined）を **`timeoutMs` 引数として渡す**。
-  gh adapter はその残り時間で子プロセスを自己 kill するため、hang した `poll` でも
-  `pollTimeoutMs` 内に `skipped` へ収束する（内部 `setTimeout` race を持たない = timer
-  leak 源を作らない）。
+  gh adapter はその残り時間で子プロセスを自己 kill する。
+- **内部 watchdog（DI 境界の保証）**: 残り時間 > 0 の poll は `Promise.race([reviewer.poll(pr,
+  remaining), rejectAfter(remaining)])` で包む。`rejectAfter` は `setTimeout` ベースの
+  内部ヘルパで、返す Promise が remaining 経過後に reject する。これにより `timeoutMs` を
+  **無視して hang する代替 reviewer** でも総タイムアウト内に必ず `skipped` へ収束する
+  （race の reject は既存 catch が握る → 次ループ → deadline → skipped）。watchdog の
+  timer は **必ず `finally` で `clearTimeout`** し **`.unref()`** を付ける（leak /
+  プロセス終了阻害を作らない）。**残り時間 ≤ 0**（single-observation, pollTimeoutMs=0
+  経路）は watchdog 無しで `poll(pr, undefined)` を直接 await（FAST_CONFIG 非破壊）。
 - never-throw は厳密: 非 Error の reject も安全に文字列化し、本体全体（`config`/`sleep`/
   `now` の初期化を含む）を最終防衛の try/catch で包む（薄い never-reject wrapper +
   inner 実装に分割）。throwing な getter / 注入された `sleep`・`now` が throw しても
@@ -134,6 +144,9 @@ harness pr request-review <prNumber> --repo <path>
   - `--poll-interval`: **正（> 0）の整数秒**（GitHub を 0/sub-second で高頻度 poll しない）。
   - `--request-attempts`: **正の整数**（小数を `Math.floor` で黙って受けない）。
   - いずれも NaN/非有限/負/小数は exit 2（NaN deadline で永久に skip しない事故を防ぐ）。
+  - 秒→ms 変換 **後**、`--timeout` / `--poll-interval` の ms が `MAX_TIMER_MS`
+    (= 2_147_483_647) を超えたら明示メッセージで **exit 2**（Node の `setTimeout` が
+    1ms に丸めて busy-loop 化するのを防ぐ。fail-closed）。
   orchestrate 経路はこの exit を見ず、いずれの outcome でも close を継続。
 
 ### 6. orchestrate opt-in: `goal orchestrate --request-copilot-review`

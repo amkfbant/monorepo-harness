@@ -15,6 +15,8 @@ import { createFakeCodexRunner } from "../../../src/codex/fake-codex-runner.js";
 import type {
   PrPublisher,
   PrPublishInputs,
+  PrMerger,
+  PrMergeInputs,
 } from "../../../src/core/pr-creator.js";
 import type { CopilotReviewer } from "../../../src/core/copilot-reviewer.js";
 
@@ -118,6 +120,18 @@ function fakePublisher(): PrPublisher & { calls: PrPublishInputs[] } {
   };
 }
 
+/** A fake merger that records calls and reports a successful squash merge. */
+function fakeMerger(): PrMerger & { calls: PrMergeInputs[] } {
+  const calls: PrMergeInputs[] = [];
+  return {
+    calls,
+    async merge(inputs: PrMergeInputs) {
+      calls.push(inputs);
+      return { merged: true, alreadyMerged: false };
+    },
+  };
+}
+
 /** Coder + reviewer fakes that drive the goal to an approved close_ready. */
 function approveFakes() {
   const coderRunner = createFakeCodexRunner({
@@ -193,6 +207,10 @@ describe("closeAndPr Copilot review opt-in", () => {
       reviewer: CopilotReviewer;
       config?: Record<string, number>;
     },
+    autoMerge?: {
+      merger: PrMerger;
+      ciStatus: (prNumber: number, expectedHeadSha: string) => Promise<boolean>;
+    },
   ) {
     const { coderRunner, reviewerRunner } = approveFakes();
     return createOrchestratorRunners({
@@ -204,6 +222,7 @@ describe("closeAndPr Copilot review opt-in", () => {
       publisher: fakePublisher(),
       resolveRunContext: resolveRunContext(f),
       ...(copilotReview !== undefined ? { copilotReview } : {}),
+      ...(autoMerge !== undefined ? { autoMerge } : {}),
     });
   }
 
@@ -297,6 +316,58 @@ describe("closeAndPr Copilot review opt-in", () => {
       close();
     }
   });
+
+  // P3: Copilot review is non-gating for AUTO-MERGE too — whatever the Copilot
+  // outcome (reviewed / skipped / failed), the auto-merge path still runs and
+  // the goal still closes. This directly regression-tests merge non-gating.
+  const copilotCases: Array<{
+    label: string;
+    reviewer: () => CopilotReviewer;
+  }> = [
+    { label: "reviewed", reviewer: () => recordingReviewer("reviewed") },
+    { label: "skipped", reviewer: () => recordingReviewer("pending") },
+    {
+      label: "failed",
+      reviewer: () => ({
+        async request() {
+          throw new Error("boom");
+        },
+        async poll() {
+          throw new Error("boom");
+        },
+      }),
+    },
+  ];
+
+  for (const { label, reviewer: makeReviewer } of copilotCases) {
+    it(`auto-merge runs and the goal closes regardless of a ${label} Copilot outcome`, async () => {
+      const goalId = createGoal(f.dbPath, `g-copilot-merge-${label}`);
+      const merger = fakeMerger();
+      const result = await drive(
+        goalId,
+        buildRunners(
+          { reviewer: makeReviewer(), config: FAST_CONFIG },
+          {
+            merger,
+            ciStatus: async () => true, // CI green → auto-merge proceeds
+          },
+        ),
+      );
+
+      // the Copilot outcome never gated the merge: the merger was invoked once.
+      expect(merger.calls).toHaveLength(1);
+      expect(merger.calls[0]?.prNumber).toBe(42);
+      expect(result.outcome).toBe("merged");
+      const { db, close } = openManagedDb({ dbPath: f.dbPath });
+      try {
+        expect(new GoalRepository(db).requireSession(goalId).status).toBe(
+          "closed",
+        );
+      } finally {
+        close();
+      }
+    });
+  }
 
   it("default (no copilotReview dep) never requests a review", async () => {
     const goalId = createGoal(f.dbPath, "g-copilot-default-off");

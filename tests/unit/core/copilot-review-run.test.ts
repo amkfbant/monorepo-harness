@@ -396,6 +396,106 @@ describe("runCopilotReview", () => {
     expect(out.status).toBe("reviewed");
   });
 
+  it("floors pollIntervalMs=0 to the default when pollTimeoutMs>0 (no high-frequency poll)", async () => {
+    // P1: pollTimeoutMs=20 with pollIntervalMs=0 must NOT busy-poll (e.g. "20ms
+    // → 17 polls"). normalizeConfig floors the 0 interval to 15_000 for a
+    // positive timeout, so the 20ms deadline trips after only a couple of polls.
+    let polls = 0;
+    const reviewer: CopilotReviewer = {
+      async request() {
+        /* ok */
+      },
+      poll(_pr: number, timeoutMs?: number) {
+        polls += 1;
+        // mirror a gh child that self-kills at its (clamped) deadline, then
+        // reports pending — so the budget elapses inside the poll itself.
+        const wait = Math.max(0, timeoutMs ?? 0);
+        return new Promise<"pending">((resolve) =>
+          setTimeout(() => resolve("pending"), wait),
+        );
+      },
+    };
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 1,
+      // real timer + real clock: with a 15s floored interval, the 20ms deadline
+      // is reached within the mandatory polls (no 0ms busy-loop).
+      config: { requestAttempts: 1, pollTimeoutMs: 20, pollIntervalMs: 0 },
+      now: () => Date.now(),
+    });
+    expect(out.status).toBe("skipped");
+    // a couple of polls at most — NOT a high-frequency busy-loop.
+    expect(polls).toBeLessThanOrEqual(2);
+  });
+
+  it("falls back to the default (no 1ms truncation) when pollTimeoutMs exceeds the 32-bit timer max", async () => {
+    // P2: a value > MAX_TIMER_MS (2_147_483_647) would be truncated to 1ms by
+    // Node's setTimeout. normalizeConfig rejects it → default 300_000, so the
+    // run still converges (here: reviewed) without throwing or 1ms-spinning.
+    const reviewer = fakeReviewer({ request: ["ok"], poll: ["reviewed"] });
+    const clock = fakeClock(15_000);
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 7,
+      config: {
+        requestAttempts: 1,
+        pollTimeoutMs: 2_147_483_647 + 1,
+        pollIntervalMs: 0,
+      },
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    expect(out.status).toBe("reviewed");
+    // the first poll ran with the (defaulted) 300_000 budget, never ~1ms.
+    expect(reviewer.pollTimeouts[0]).toBe(300_000);
+  });
+
+  it("falls back to the default when pollIntervalMs exceeds the 32-bit timer max (positive timeout)", async () => {
+    const reviewer = fakeReviewer({ request: ["ok"], poll: [] }); // always pending
+    const clock = recordingClock();
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 7,
+      config: {
+        requestAttempts: 1,
+        pollTimeoutMs: 1000,
+        pollIntervalMs: 2_147_483_647 + 1,
+      },
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    expect(out.status).toBe("skipped");
+    // 15s default interval (clamped to the 1000ms budget) → bounded polls.
+    expect(reviewer.pollCalls).toBeLessThanOrEqual(5);
+  });
+
+  it("converges to skipped (never hangs/throws) when poll never resolves — internal watchdog", async () => {
+    // P2 (DI boundary): an alternate reviewer that ignores timeoutMs and never
+    // resolves must NOT make runCopilotReview await forever. The internal
+    // watchdog (rejectAfter race) trips at the remaining budget → pending →
+    // deadline → skipped. Real small timer; the test itself must not hang.
+    let polls = 0;
+    const reviewer: CopilotReviewer = {
+      async request() {
+        /* ok */
+      },
+      poll() {
+        polls += 1;
+        // never resolves: only the harness watchdog can end this poll.
+        return new Promise<"pending">(() => {});
+      },
+    };
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 1,
+      config: { requestAttempts: 1, pollTimeoutMs: 50, pollIntervalMs: 0 },
+      now: () => Date.now(),
+    });
+    expect(out.status).toBe("skipped");
+    expect(out.detail).toMatch(/timed out/i);
+    expect(polls).toBeGreaterThanOrEqual(1);
+  });
+
   it("never rejects even when the injected sleep throws", async () => {
     const reviewer = fakeReviewer({ request: ["throw", "throw", "throw"], poll: [] });
     const out = await runCopilotReview({

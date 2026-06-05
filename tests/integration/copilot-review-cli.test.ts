@@ -174,6 +174,25 @@ describe("harness pr request-review", () => {
     expect(r.stderr).toMatch(/request-attempts/i);
   });
 
+  it("exits 2 when --timeout (seconds→ms) exceeds the 32-bit timer max", () => {
+    // P2: 9_999_999_999s → ms is far beyond Node's 2_147_483_647ms timer max,
+    // which would be silently truncated to 1ms. The CLI must reject it (exit 2)
+    // rather than spin a 1ms busy-loop.
+    const root = initRoot();
+    const gh = writeReviewedGh();
+    const r = runCli(root, gh, [
+      "pr",
+      "request-review",
+      "55",
+      "--repo",
+      tmpdir(),
+      "--timeout",
+      "9999999999",
+    ]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/--timeout too large|timer limit/i);
+  });
+
   it("exits non-zero when the request can never be established (failed)", () => {
     const root = initRoot();
     const failDir = mkdtempSync(join(tmpdir(), "harness-fake-gh-"));

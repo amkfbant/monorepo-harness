@@ -784,8 +784,14 @@ harness pr request-review <pr-number> --repo <path> \
 
 数値引数は秒→ms 変換**前**に検証する。NaN/非有限/負/小数、`--poll-interval 0`、
 `--request-attempts` の小数などはすべて stderr に明示して **exit 2**（`Math.floor` で
-黙って受けない）。poll 総タイムアウトは各 poll に残り時間を渡して実効化し、`pollTimeoutMs=0`
-は「request 成功後に 1 回だけ観測して reviewed か skipped」を意味する。
+黙って受けない）。加えて秒→ms 変換**後**、`--timeout` / `--poll-interval` の ms が
+`MAX_TIMER_MS`（= 2_147_483_647、Node の `setTimeout` 上限）を超える場合も明示メッセージで
+**exit 2**（上限超は 1ms に丸められ busy-loop 化するため fail-closed）。poll 総タイムアウト
+は各 poll に残り時間を渡して実効化し（残り時間 > 0 の poll は内部 watchdog で包み、reviewer
+が `timeoutMs` を無視して hang しても総タイムアウト内に必ず収束する）、`pollTimeoutMs=0`
+は「request 成功後に 1 回だけ観測して reviewed か skipped」を意味する。なお core の
+`normalizeConfig` は、正の `pollTimeoutMs` に対し `pollIntervalMs` が 0/負/非有限/上限超
+なら既定 15_000 にフォールバックする（`pollTimeoutMs=0` のときのみ 0 interval を許容）。
 
 ### 動作
 
