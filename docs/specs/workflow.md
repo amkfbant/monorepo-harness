@@ -568,6 +568,16 @@ profile で `review.mode` が `latest-proposal` 以外を指定した場合)。�
 複数 reviewer が並行で auto を走らせると、それぞれが proposal を insert
 し、consensus が re-evaluate される。
 
+`review auto` の hot-path INSERT は `ReviewProposalRepository.insertProposal`
+内の `tx.immediate()` で完結する。transaction の先頭で `runs` row を読み、
+`source_mode='db-first'` かつ `status='needs_review'` のときだけ、同 reviewer の
+旧 active proposal を supersede して新 proposal を INSERT する。run row が無い、
+`legacy-file`、または `review process` により `approved` /
+`changes_requested` / `rejected` 等へ promote 済みの場合は
+`ReviewerAgentGateError` を throw し、proposal は挿入されない。これにより
+`review auto` の pre-check と INSERT の間で並行 process が run を promote する
+TOCTOU race は fail-closed になる。
+
 ### review process — consensus mode
 
 ```

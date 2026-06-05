@@ -22,6 +22,13 @@ function fresh(): {
   const dir = mkdtempSync(join(tmpdir(), "harness-goal-review-integration-"));
   const db = openDb(join(dir, ".harness", "harness.sqlite"));
   runMigrations(db);
+  db.prepare(
+    `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+       status, source_mode, db_revision, export_status, updated_at, meta_json)
+     VALUES ('run-review', 'repo', 'apps/web', 'domain-coding', 'main',
+       'needs_review', 'db-first', 1, 'disabled',
+       '2026-05-26T00:00:00.000Z', '{}')`,
+  ).run();
   return {
     db,
     goals: new GoalRepository(db),
