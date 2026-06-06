@@ -216,7 +216,11 @@ export function createGhCiStatus(
         await sleep(Math.min(pollIntervalMs, remainingMs));
       }
       return false;
-    } catch {
+    } catch (error) {
+      warnExternalProbeFailure(
+        `CI status check for PR #${prNumber} failed`,
+        error,
+      );
       return false;
     }
   };
@@ -266,6 +270,20 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 /**
+ * Surface an otherwise-silent external-command failure on stderr WITHOUT
+ * changing the fail-safe return value. These `gh` probes feed the auto-merge
+ * gate, which is never relaxed by a failure (a failed CI read is treated as
+ * not-green, failed verdicts as none). The bare swallow, though, hid the failure
+ * from the operator, who would see a clean "not green" / "no verdicts" and not
+ * know the check could not be performed. This makes that visible; it is purely
+ * observational and does not affect the gate.
+ */
+export function warnExternalProbeFailure(context: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`warning: ${context}; treated as fail-safe (${message})\n`);
+}
+
+/**
  * Fetch a PR's review verdicts (author + state) via `gh pr view --json reviews`.
  * Used by the opt-in external-review ingestion: a CHANGES_REQUESTED verdict
  * becomes an advisory finding that escalates the auto-merge gate. Best-effort:
@@ -275,10 +293,11 @@ export function createGhReviewVerdicts(
   repoDir: string,
   ghBin = "gh",
   timeoutMs = DEFAULT_GH_TIMEOUT_MS,
+  runGhImpl: typeof runGh = runGh,
 ): (prNumber: number) => Promise<{ author: string; state: string }[]> {
   return async (prNumber: number) => {
     try {
-      const out = await runGh(
+      const out = await runGhImpl(
         ghBin,
         ["pr", "view", String(prNumber), "--json", "reviews"],
         repoDir,
@@ -295,7 +314,11 @@ export function createGhReviewVerdicts(
           return { author, state };
         })
         .filter((v) => v.author !== "" && v.state !== "");
-    } catch {
+    } catch (error) {
+      warnExternalProbeFailure(
+        `fetching external review verdicts for PR #${prNumber} failed`,
+        error,
+      );
       return [];
     }
   };
