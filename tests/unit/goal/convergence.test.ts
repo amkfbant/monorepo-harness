@@ -510,6 +510,70 @@ describe("ConvergenceService", () => {
     }
   });
 
+  it("routes to a rerun (not review) when the latest coding attempt failed before review", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo); // close condition pending, no findings
+      repo.createAttempt({
+        goalId: "goal-test",
+        attemptType: "implement",
+        status: "failed",
+      });
+      const r = service.evaluate("goal-test");
+      // a failed coding run produces no needs_review run — convergence must NOT
+      // route to review (which would throw); it routes to a bounded rerun.
+      expect(r.decision).toBe("needs_fix");
+      expect(r.recommendedNextAction.kind).toBe("fix_findings");
+      expect(r.reason).toMatch(/latest coding run failed/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does NOT route to a rerun once a later coding attempt succeeded (review path intact)", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo);
+      repo.createAttempt({
+        goalId: "goal-test",
+        attemptType: "implement",
+        status: "failed",
+      });
+      repo.createAttempt({
+        goalId: "goal-test",
+        attemptType: "rerun",
+        status: "succeeded",
+      });
+      const r = service.evaluate("goal-test");
+      expect(r.decision).toBe("continue");
+      expect(r.recommendedNextAction.kind).toBe("run_close_check");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("a failed latest coding attempt with reruns exhausted escalates as budget_exhausted (bounded)", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, { maxReruns: 1, maxIterations: 10 });
+      repo.createAttempt({
+        goalId: "goal-test",
+        attemptType: "implement",
+        status: "failed",
+      });
+      repo.createAttempt({
+        goalId: "goal-test",
+        attemptType: "rerun",
+        status: "failed",
+      });
+      // rerunsUsed (1) >= maxReruns (1) → the budget guard terminates the loop
+      // before the failed-run reroute, so it cannot rerun forever.
+      expect(service.evaluate("goal-test").decision).toBe("budget_exhausted");
+    } finally {
+      db.close();
+    }
+  });
+
   it("returns diverging when a finding reopens too many times", () => {
     const { db, repo, service } = fresh();
     try {

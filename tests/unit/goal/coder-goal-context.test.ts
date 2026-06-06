@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { augmentGoalWithOpenFindings } from "../../../src/goal/coder-goal-context.js";
+import {
+  augmentGoalWithFailedRun,
+  augmentGoalWithOpenFindings,
+} from "../../../src/goal/coder-goal-context.js";
 import type { GoalFinding } from "../../../src/goal/types.js";
 
 function mkFinding(partial: Partial<GoalFinding>): GoalFinding {
@@ -78,5 +81,19 @@ describe("augmentGoalWithOpenFindings", () => {
     const out = augmentGoalWithOpenFindings(goal, [mkFinding({})]);
     expect(goal).toBe("original");
     expect(out).not.toBe(goal);
+  });
+});
+
+describe("augmentGoalWithFailedRun", () => {
+  it("returns the goal unchanged when there is no failure to report", () => {
+    expect(augmentGoalWithFailedRun("do the thing", "")).toBe("do the thing");
+    expect(augmentGoalWithFailedRun("do the thing", "   ")).toBe("do the thing");
+  });
+
+  it("appends a failure note naming the previous run status", () => {
+    const out = augmentGoalWithFailedRun("do the thing", "failed-command");
+    expect(out.startsWith("do the thing")).toBe(true);
+    expect(out).toContain("Previous attempt failed");
+    expect(out).toContain("`failed-command`");
   });
 });
