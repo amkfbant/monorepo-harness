@@ -54,39 +54,61 @@ export function computeAutoMergeTier(
 }
 
 // Added lines that weaken a test instead of adding coverage: skip/only/todo
-// markers and the xit/xdescribe family. Removing coverage by editing (net fewer
-// `it()` blocks) is intentionally NOT flagged here to avoid false positives on
-// refactors — that net-count check is a follow-up; deletion + skip markers are
-// the clear, low-false-positive signals.
+// markers and the xit/xdescribe family.
 const TEST_SKIP_MARKER =
   /(?:\bx(?:it|describe|test|context)\s*\(|\b(?:it|test|describe|context)\.(?:skip|only|todo)\b|\.(?:skip|only|todo)\s*\()/;
 
+// A line that DEFINES a test case or suite (any vitest/jest style, incl. the
+// skip/only/todo/each variants and the xit/xdescribe family). Used to count the
+// net change in test cases per file: removing more definitions than are added
+// (without a whole-file delete or a skip marker) still drops coverage.
+const TEST_DEFINITION =
+  /\b(?:x?(?:it|test|describe|context))(?:\.(?:skip|only|todo|each|concurrent|failing))?\s*[(`]/;
+
 /**
- * Whether a unified diff WEAKENS the test suite: it deletes a `tests/**` file,
- * or adds a skip/only/todo marker inside a `tests/**` file. Used to drop a
- * Tier-0 (tests-only) change out of auto-merge eligibility — a tests-only PR
- * that removes or disables coverage must not auto-merge silently.
+ * Whether a unified diff WEAKENS the test suite for any `tests/**` file: it
+ * deletes the file, adds a skip/only/todo marker, or removes more test/suite
+ * definitions than it adds (a net decrease in cases). Used to drop a Tier-0
+ * (tests-only) change out of auto-merge eligibility — a tests-only PR that
+ * removes or disables coverage must not auto-merge silently.
+ *
+ * The net-count check is evaluated PER FILE so an unrelated test file that only
+ * adds cases cannot mask another that drops them. A balanced rename/refactor
+ * (removed == added) is not flagged.
  *
  * Fail-safe in BOTH directions: a false positive only forces a human merge
- * (safe), and a false negative is no worse than today. Conservative on purpose.
+ * (safe), and a false negative is no worse than the deletion/skip signals alone.
  */
 export function detectsTestWeakening(patch: string): boolean {
   let currentFileIsTest = false;
+  let added = 0;
+  let removed = 0;
+  // True once we know the current file drops more definitions than it adds.
+  const fileHasNetDecrease = (): boolean => currentFileIsTest && removed > added;
   for (const line of patch.split("\n")) {
     if (line.startsWith("diff --git ")) {
+      // Settle the file we just finished before switching context.
+      if (fileHasNetDecrease()) return true;
+      added = 0;
+      removed = 0;
       const m = line.match(/^diff --git a\/\S+ b\/(\S+)/);
-      currentFileIsTest = m !== null && m[1] !== undefined
-        ? m[1].startsWith("tests/")
-        : false;
+      currentFileIsTest =
+        m !== null && m[1] !== undefined ? m[1].startsWith("tests/") : false;
       continue;
     }
     if (!currentFileIsTest) continue;
     // a deleted tests/ file removes coverage.
     if (line.startsWith("deleted file mode")) return true;
-    // an added line (not the `+++` header) that disables a test.
-    if (line.startsWith("+") && !line.startsWith("+++")) {
+    // skip the unified-diff file headers (not real content lines).
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) {
+      // an added line that disables a test.
       if (TEST_SKIP_MARKER.test(line)) return true;
+      if (TEST_DEFINITION.test(line)) added += 1;
+    } else if (line.startsWith("-")) {
+      if (TEST_DEFINITION.test(line)) removed += 1;
     }
   }
-  return false;
+  // Settle the final file in the diff.
+  return fileHasNetDecrease();
 }

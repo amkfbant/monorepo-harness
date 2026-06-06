@@ -754,10 +754,13 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
   られない**（既定 Tier-2 は operator Tier-0 に勝つ）＝fail-closed。ファイル不在は
   既定 map、**malformed は throw**（壊れた merge-gate policy で黙って既定にせず停止）。
   **tests additive-only ガード**: Tier-0 でも、run の diff が **`tests/**` ファイルを
-  削除** または **skip/only/todo マーカーを追加**していれば（`detectsTestWeakening`、
-  run 時に `meta.reviewed.weakensTests` として捕捉）、tier を **Tier-1 へ降格**して
-  auto-merge 不可にする — カバレッジを削る変更が自動マージで silent に入るのを防ぐ。
-  両誤り方向で fail-safe（false-positive は人手 merge=安全 / false-negative は現状維持）。
+  削除**・**skip/only/todo マーカーを追加**・**test/suite 定義を純減**（同一 `tests/**`
+  ファイル内で定義の削除数 > 追加数）していれば（`detectsTestWeakening`、run 時に
+  `meta.reviewed.weakensTests` として捕捉）、tier を **Tier-1 へ降格**して auto-merge
+  不可にする — カバレッジを削る変更が自動マージで silent に入るのを防ぐ。純減判定は
+  **ファイル単位**（足すだけの別ファイルが削るファイルを隠せない）で、バランスした
+  rename/refactor（削除数 == 追加数）は降格しない。両誤り方向で fail-safe（false-positive
+  は人手 merge=安全 / false-negative は削除・skip シグナル単独と同等）。
 - **closeAndPr の分岐**（`src/goal/orchestrator-runners.ts`）: PR 作成後、
   `deps.autoMerge` があれば gate を評価し
   - `canMerge` → `gh pr merge --match-head-commit <sha> --<method>`（idempotent:

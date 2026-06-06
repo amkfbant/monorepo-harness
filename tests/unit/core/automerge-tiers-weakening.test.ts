@@ -79,4 +79,55 @@ describe("detectsTestWeakening", () => {
     ].join("\n");
     expect(detectsTestWeakening(patch)).toBe(false);
   });
+
+  it("flags a NET decrease in test cases (an it() block removed, no skip marker / file delete)", () => {
+    const patch = [
+      "diff --git a/tests/unit/foo.test.ts b/tests/unit/foo.test.ts",
+      "--- a/tests/unit/foo.test.ts",
+      "+++ b/tests/unit/foo.test.ts",
+      "@@ -1,8 +1,3 @@",
+      ' it("keep", () => {});',
+      '-it("remove me", () => {',
+      "-  expect(1).toBe(2);",
+      "-});",
+    ].join("\n");
+    expect(detectsTestWeakening(patch)).toBe(true);
+  });
+
+  it("does NOT flag a rename/refactor that keeps the test count (removed == added)", () => {
+    const patch = [
+      "diff --git a/tests/unit/foo.test.ts b/tests/unit/foo.test.ts",
+      "--- a/tests/unit/foo.test.ts",
+      "+++ b/tests/unit/foo.test.ts",
+      "@@ -1,1 +1,1 @@",
+      '-it("old name", () => { doThing(); });',
+      '+it("new name", () => { doThing(); });',
+    ].join("\n");
+    expect(detectsTestWeakening(patch)).toBe(false);
+  });
+
+  it("does NOT flag a net decrease of test-looking lines in a NON-test (src) file", () => {
+    const patch = [
+      "diff --git a/src/core/x.ts b/src/core/x.ts",
+      "--- a/src/core/x.ts",
+      "+++ b/src/core/x.ts",
+      '-describe("internal helper grouping", () => {});',
+    ].join("\n");
+    expect(detectsTestWeakening(patch)).toBe(false);
+  });
+
+  it("flags a per-file net decrease even when another test file only adds cases", () => {
+    const patch = [
+      "diff --git a/tests/unit/added.test.ts b/tests/unit/added.test.ts",
+      "--- a/tests/unit/added.test.ts",
+      "+++ b/tests/unit/added.test.ts",
+      '+it("brand new a", () => {});',
+      '+it("brand new b", () => {});',
+      "diff --git a/tests/unit/shrunk.test.ts b/tests/unit/shrunk.test.ts",
+      "--- a/tests/unit/shrunk.test.ts",
+      "+++ b/tests/unit/shrunk.test.ts",
+      '-it("dropped", () => {});',
+    ].join("\n");
+    expect(detectsTestWeakening(patch)).toBe(true);
+  });
 });
