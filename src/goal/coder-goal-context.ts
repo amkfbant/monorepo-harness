@@ -46,3 +46,26 @@ export function augmentGoalWithOpenFindings(
     bullets.join("\n"),
   ].join("\n");
 }
+
+/**
+ * Append a "previous attempt failed" note to the coder goal when the prior
+ * coding run failed before review (e.g. `failed-command` / `failed-codex`), so
+ * a recovery rerun knows it is fixing a failure rather than starting fresh.
+ * Returns the goal unchanged when there is no failure to report. Pure.
+ */
+export function augmentGoalWithFailedRun(
+  goal: string,
+  runStatus: string,
+): string {
+  if (runStatus.trim() === "") return goal;
+  return [
+    goal,
+    "",
+    "## Previous attempt failed",
+    "",
+    `The previous coder run did not reach review — it finished with status ` +
+      `\`${runStatus.trim()}\` (e.g. a failing allowed command, a policy ` +
+      `violation, or a codex error). Diagnose and fix the cause so this ` +
+      `attempt can pass.`,
+  ].join("\n");
+}

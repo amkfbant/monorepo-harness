@@ -39,7 +39,10 @@ import {
 } from "../core/copilot-review-run.js";
 import type { ConsensusSummary } from "../core/review-consensus.js";
 import { GoalRepository } from "./repository.js";
-import { augmentGoalWithOpenFindings } from "./coder-goal-context.js";
+import {
+  augmentGoalWithFailedRun,
+  augmentGoalWithOpenFindings,
+} from "./coder-goal-context.js";
 import { classifyFindingForGoal } from "./classification.js";
 import { deferFindingToBacklog } from "./followups.js";
 import { ConvergenceService } from "./convergence.js";
@@ -263,12 +266,24 @@ export function createOrchestratorRunners(
           const ctx = resolveRunContext(deps, s);
           // a goal that already has a coding attempt is iterating on review
           // feedback → "rerun"; the first pass is "implement".
-          const prior = repo
+          const codingAttempts = repo
             .listAttempts(goalId)
-            .some(
+            .filter(
               (a) =>
                 a.attemptType === "implement" || a.attemptType === "rerun",
             );
+          const prior = codingAttempts.length > 0;
+          // If the most recent coding run failed before review, this is a
+          // recovery rerun — inject the failed run status so the coder fixes the
+          // cause rather than re-coding blind (convergence routes here).
+          const latestCoding = codingAttempts[codingAttempts.length - 1];
+          const failedRunStatus =
+            latestCoding?.status === "failed"
+              ? String(
+                  (latestCoding.result as { runStatus?: unknown } | undefined)
+                    ?.runStatus ?? "failed",
+                )
+              : "";
           // On a rerun, inject the open in-scope findings review raised into the
           // coder goal so it knows what to fix (the goal-mode analogue of the
           // run-level required_changes injection). The first `implement` pass
@@ -289,7 +304,10 @@ export function createOrchestratorRunners(
           return {
             attemptId: attempt.attemptId,
             context: ctx,
-            goalText: augmentGoalWithOpenFindings(ctx.goal, openInScope),
+            goalText: augmentGoalWithFailedRun(
+              augmentGoalWithOpenFindings(ctx.goal, openInScope),
+              failedRunStatus,
+            ),
           };
         },
       );

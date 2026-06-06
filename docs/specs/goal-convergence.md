@@ -123,7 +123,14 @@ Evaluation is deterministic and conservative:
 7. Open in-scope P1 needs a fix.
 8. Failed required close checks need a fix.
 9. Un-deferred out-of-scope findings require `defer_followups` when policy requires deferral.
-10. Otherwise the decision is `continue`.
+10. If the most recent coding attempt (implement/rerun) ended `failed` (e.g. a
+    `failed-command` run that never reached `needs_review`), the decision is
+    `needs_fix` with `fix_findings` — route to a bounded recovery rerun rather
+    than to review (review on a non-`needs_review` run would throw and dead-end
+    the goal). The rerun budget (step 2) terminates this as `budget_exhausted`
+    if the run cannot be recovered. The recovery rerun's coder goal carries the
+    failed run status so it fixes the cause instead of re-coding blind.
+11. Otherwise the decision is `continue`.
 
 Recorded close-check evidence is fresh only when it is at or after the latest
 invalidating goal event: a non-close-check attempt, finding seen/fixed/deferred

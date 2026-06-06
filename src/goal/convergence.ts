@@ -52,7 +52,14 @@ export class ConvergenceService {
         pending: close.requiredPending,
       },
     );
-    return decide(session, findings, cycles, metrics, close.allRequiredPassed);
+    return decide(
+      session,
+      findings,
+      cycles,
+      metrics,
+      close.allRequiredPassed,
+      isLatestCodingAttemptFailed(attempts),
+    );
   }
 }
 
@@ -131,6 +138,27 @@ function maxAttemptIteration(attempts: GoalAttempt[]): number {
   );
 }
 
+const CODING_ATTEMPT_TYPES = new Set<GoalAttempt["attemptType"]>([
+  "implement",
+  "rerun",
+]);
+
+/**
+ * Whether the most recent coding attempt (implement / rerun) ended `failed`.
+ * Attempts are ordered (iteration ASC, created_at ASC), so the last coding
+ * attempt is the most recent. A failed coding run produces no review proposal,
+ * so convergence must route to a rerun instead of a review that would throw.
+ */
+function isLatestCodingAttemptFailed(attempts: GoalAttempt[]): boolean {
+  for (let i = attempts.length - 1; i >= 0; i--) {
+    const attempt = attempts[i];
+    if (attempt === undefined) continue;
+    if (!CODING_ATTEMPT_TYPES.has(attempt.attemptType)) continue;
+    return attempt.status === "failed";
+  }
+  return false;
+}
+
 function lastCloseCheckInvalidatingMutationAt(input: {
   attempts: GoalAttempt[];
   findings: GoalFinding[];
@@ -165,6 +193,7 @@ function decide(
   cycles: GoalReviewCycle[],
   metrics: GoalConvergenceMetrics,
   allRequiredCloseConditionsPassed: boolean,
+  latestCodingFailed: boolean,
 ): GoalConvergenceResult {
   const terminal = terminalDecision(session.status);
   if (terminal !== null) {
@@ -339,6 +368,27 @@ function decide(
       {
         kind: "fix_findings",
         message: "Run the initial coder pass for this goal.",
+      },
+    );
+  }
+
+  if (latestCodingFailed) {
+    // The most recent coding run failed before it could be reviewed (e.g.
+    // failed-command / failed-codex). There is nothing in `needs_review` to
+    // review, so route to a bounded coder rerun rather than letting the review
+    // runner be invoked on a non-reviewable run (which threw and dead-ended the
+    // goal). The rerun budget above terminates this cleanly as budget_exhausted
+    // if the run cannot be recovered.
+    return result(
+      session.goalId,
+      "needs_fix",
+      "latest coding run failed before review; rerun",
+      metrics,
+      {
+        kind: "fix_findings",
+        message:
+          "The previous coder run failed before review (a failing command, " +
+          "policy violation, or codex error). Re-run the coder to fix the cause.",
       },
     );
   }

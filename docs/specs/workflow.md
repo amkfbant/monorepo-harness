@@ -687,6 +687,14 @@ address」ブロックとして注入する（`augmentGoalWithOpenFindings`）�
 `implement` pass では注入しない。`unknown`-scope finding は**分類前なので注入
 しない**（fail-closed）。件数は上限付き（既定 25・超過分は明示注記）。
 
+**failed-run からの recovery rerun**: 直近の coding attempt が review 到達前に
+`failed`（例 `failed-command`）だった場合、convergence は review でなく `needs_fix`/
+`fix_findings`（＝coder rerun）へ route する（review runner は `needs_review` 以外で
+throw し goal を dead-end させるため）。この recovery rerun の coder ゴールには失敗した
+run status を `augmentGoalWithFailedRun` で注入し、原因を直すよう促す（blind な再
+コーディングを避ける）。rerun budget を使い切ると `budget_exhausted` で clean に停止
+（無限 rerun しない）。
+
 ### convergence decision → goal status 連携
 
 各 cycle / attempt の後に convergence evaluator（`src/goal/convergence.ts` の

@@ -403,4 +403,65 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
     expect(captured).not.toContain("Open in-scope findings to address");
     expect(captured).not.toContain("should not be injected on first pass");
   });
+
+  it("injects the previous run's failure status into the coder goal on a recovery rerun", async () => {
+    const { harnessRoot, dbPath, repoPath } = setupHarness();
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        runMigrations(db);
+        const repo = new GoalRepository(db);
+        repo.createSession({
+          goalId: "g-recover",
+          title: "Recover",
+          projectId: "demo",
+          repoId: "t",
+          domain: "apps/user",
+          closeConditions: [{ id: "tc", kind: "command", required: true }],
+          createdBy: "test",
+          createdSource: "worker",
+        });
+        // a prior coding attempt that FAILED before review (failed-command) →
+        // convergence routes to a rerun, and the coder injects the failure.
+        const failed = repo.createAttempt({
+          goalId: "g-recover",
+          attemptType: "implement",
+          status: "running",
+        });
+        repo.completeAttempt({
+          attemptId: failed.attemptId,
+          status: "failed",
+          runId: "run-failed-cmd",
+          result: { runStatus: "failed-command" },
+        });
+      } finally {
+        close();
+      }
+    }
+    const resolveRunContext = (): GoalRunContext => ({
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "improve the profile feature",
+      baseBranch: "main",
+    });
+    let captured = "";
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: {
+        run: async (input) => {
+          captured = input.prompt;
+          return { exitCode: 0, timedOut: false };
+        },
+      },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+      resolveRunContext,
+    });
+    await runners.coder("g-recover");
+    expect(captured).toContain("improve the profile feature");
+    expect(captured).toContain("Previous attempt failed");
+    expect(captured).toContain("failed-command");
+  });
 });
