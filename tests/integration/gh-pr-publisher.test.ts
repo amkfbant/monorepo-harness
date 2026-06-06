@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +7,7 @@ import {
   createGhPrPublisher,
   createGhPrMerger,
   createGhCiStatus,
+  createGhReviewVerdicts,
 } from "../../src/core/gh-pr-publisher.js";
 
 /** Write a fake `gh` executable that sleeps (to trigger the timeout). */
@@ -277,5 +278,55 @@ describe("gh CI status probe (Phase 3)", () => {
     expect(await ci(5, "reviewedsha")).toBe(false);
     expect(calls).toHaveLength(2);
     expect(sleeps).toEqual([1_000, 1_000]);
+  });
+});
+
+describe("external probe failure observability", () => {
+  it("CI status probe surfaces an unexpected gh failure on stderr (still fail-safe false)", async () => {
+    const warnings: string[] = [];
+    const spy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk: string | Uint8Array) => {
+        warnings.push(String(chunk));
+        return true;
+      });
+    try {
+      const ci = createGhCiStatus(tmpdir(), "fake-gh", 5_000, {
+        awaitTimeoutMs: 10_000,
+        now: () => 0,
+        runGh: async () => {
+          throw new Error("gh blew up");
+        },
+      });
+      // fail-safe: an unexpected failure is still treated as not-green.
+      expect(await ci(7, "reviewedsha")).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(warnings.join("")).toMatch(
+      /CI status check for PR #7 failed.*gh blew up/,
+    );
+  });
+
+  it("review verdicts probe surfaces an unexpected gh failure on stderr (still fail-safe empty)", async () => {
+    const warnings: string[] = [];
+    const spy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk: string | Uint8Array) => {
+        warnings.push(String(chunk));
+        return true;
+      });
+    try {
+      const verdicts = createGhReviewVerdicts(tmpdir(), "fake-gh", 5_000, async () => {
+        throw new Error("network down");
+      });
+      // fail-safe: a failure yields no verdicts (never an approval).
+      expect(await verdicts(9)).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(warnings.join("")).toMatch(
+      /fetching external review verdicts for PR #9 failed.*network down/,
+    );
   });
 });

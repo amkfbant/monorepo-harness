@@ -151,6 +151,23 @@ describe("runCopilotReview", () => {
     expect(reviewer.pollCalls).toBe(3);
   });
 
+  it("records the last swallowed poll error in the skipped detail (observability)", async () => {
+    // every poll throws → the loop swallows each error and eventually times out
+    // skipped, but the detail now distinguishes this from a clean no-review.
+    const reviewer = fakeReviewer({ request: ["ok"], poll: ["throw"] });
+    const clock = fakeClock(15_000);
+    const out = await runCopilotReview({
+      reviewer,
+      prNumber: 7,
+      config,
+      sleep: clock.sleep,
+      now: clock.now,
+    });
+    expect(out.status).toBe("skipped");
+    expect(out.detail).toMatch(/timed out/i);
+    expect(out.detail).toMatch(/last poll error: gh transient/);
+  });
+
   it("never throws even when both request and poll always throw", async () => {
     const reviewer: CopilotReviewer = {
       async request() {

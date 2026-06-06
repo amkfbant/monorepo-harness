@@ -802,6 +802,11 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
   `--ci-await-timeout <seconds>` で CI bounded await の総 timeout を指定する。
 - 状態遷移は harness のみ。LLM 出力を merge 判定の根拠にしない。CI status 取得は
   fail-closed（不確定は緑扱いしない）。
+- **observability**: CI status / 外部レビュー verdict 取得で予期しない `gh` 失敗が出た
+  場合、gate は緩めない（fail-safe で not-green / verdict なし）まま **stderr に warning
+  を出す**（`warnExternalProbeFailure`）— 失敗が silent に隠れて「実は確認できなかった」が
+  運用に見えない問題を解消。Copilot review の poll で握りつぶした最後のエラーは skipped 時の
+  audit detail（`last poll error: …`）に載る（非 gating）。
 
 ### Copilot review（観測ステップ・opt-in・best-effort）
 

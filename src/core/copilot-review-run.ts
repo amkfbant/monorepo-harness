@@ -242,11 +242,18 @@ async function runCopilotReviewInner(input: {
 
     // --- poll phase: at least one poll, then poll until reviewed or timeout. ---
     const deadline = now() + config.pollTimeoutMs;
+    // Remember the most recent swallowed poll error so a skip caused by repeated
+    // poll failures is distinguishable from a clean "review never posted" in the
+    // recorded audit detail (non-gating, but observable for the operator).
+    let lastPollError = "";
     const skipped = (): CopilotReviewOutcome => ({
       status: "skipped",
       attempts,
       polls,
-      detail: `Copilot review timed out after ${config.pollTimeoutMs}ms`,
+      detail:
+        lastPollError === ""
+          ? `Copilot review timed out after ${config.pollTimeoutMs}ms`
+          : `Copilot review timed out after ${config.pollTimeoutMs}ms (last poll error: ${lastPollError})`,
     });
     // The first poll always runs (even at pollTimeoutMs=0 → "observe once").
     // Each poll receives the remaining budget so the gh adapter bounds itself.
@@ -309,9 +316,11 @@ async function runCopilotReviewInner(input: {
           return { status: "reviewed", attempts, polls, detail: "Copilot review posted" };
         }
         // "pending": fall through to the deadline re-check.
-      } catch {
+      } catch (e) {
         // best-effort: a transient poll error / timeout / watchdog reject is
-        // swallowed; keep going (deadline re-check terminates the loop).
+        // swallowed; keep going (deadline re-check terminates the loop). Record
+        // the reason so a timeout caused by repeated poll failures is visible.
+        lastPollError = toErrorMessage(e);
       }
       if (now() >= deadline) return skipped();
       // Clamp the sleep to the remaining budget so an interval larger than the
