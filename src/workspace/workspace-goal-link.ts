@@ -5,6 +5,7 @@ import { WorkspaceRepository } from "../db/repositories/workspaces.js";
 import {
   agentNameFromBranch,
   canonicalRepoKey,
+  defaultGitRunner,
   listWorktrees,
   normalizeWorktreePath,
   type GitRunner,
@@ -30,7 +31,12 @@ export async function linkAgentWorkspaceToGoal(opts: {
       workspacesDir: opts.repoPath,
       ...(opts.git !== undefined ? { git: opts.git } : {}),
     };
-    const target = normalizeWorktreePath(opts.repoPath);
+    const run = opts.git ?? defaultGitRunner();
+    // resolve the worktree ROOT so a subdirectory of an agent worktree still
+    // matches the path `git worktree list` reports.
+    const top = await run(["rev-parse", "--show-toplevel"], opts.repoPath);
+    if (top.exitCode !== 0 || top.timedOut) return { linked: false };
+    const target = normalizeWorktreePath(top.stdout.trim());
     // exclude the MAIN worktree (git lists it first): the primary checkout is the
     // shared tree, never an agent workspace — consistent with reconcile/adopt.
     const wt = (await listWorktrees(ctx))

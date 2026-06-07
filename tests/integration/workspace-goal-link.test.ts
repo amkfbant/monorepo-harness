@@ -67,6 +67,24 @@ describe("linkAgentWorkspaceToGoal", () => {
     expect(goalIdOfWorkspace(harnessRoot, "alice")).toBe("g1");
   });
 
+  it("links when --repo points at a SUBDIRECTORY inside an agent worktree", async () => {
+    const { harnessRoot, repoPath, workspacesDir } = setup();
+    const ws = await createAgentWorkspace(
+      { repoPath, workspacesDir },
+      { agent: "alice", base: "main" },
+    );
+    const sub = join(ws.path, "src", "deep");
+    mkdirSync(sub, { recursive: true });
+    const res = await linkAgentWorkspaceToGoal({
+      repoPath: sub, // a subdir of the agent worktree, not its root
+      goalId: "g1",
+      harnessRoot,
+    });
+    expect(res.linked).toBe(true);
+    expect(res.agent).toBe("alice");
+    expect(goalIdOfWorkspace(harnessRoot, "alice")).toBe("g1");
+  });
+
   it("does not link when run from the main (non-agent) worktree", async () => {
     const { harnessRoot, repoPath } = setup();
     const res = await linkAgentWorkspaceToGoal({
