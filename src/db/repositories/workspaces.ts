@@ -46,6 +46,40 @@ export interface UpsertWorkspaceInput {
   now?: string;
 }
 
+export interface WorkspaceCheckpointRecord {
+  checkpointId: string;
+  workspaceId: string;
+  note: string | null;
+  headSha: string | null;
+  dirtyCount: number;
+  goalId: string | null;
+  createdAt: string;
+  createdBy: string;
+}
+
+export interface RecordCheckpointInput {
+  workspaceId: string;
+  note?: string | null;
+  headSha?: string | null;
+  dirtyCount?: number;
+  goalId?: string | null;
+  createdBy: string;
+  now?: string;
+}
+
+function rowToCheckpoint(r: Record<string, unknown>): WorkspaceCheckpointRecord {
+  return {
+    checkpointId: r.checkpoint_id as string,
+    workspaceId: r.workspace_id as string,
+    note: (r.note as string | null) ?? null,
+    headSha: (r.head_sha as string | null) ?? null,
+    dirtyCount: r.dirty_count as number,
+    goalId: (r.goal_id as string | null) ?? null,
+    createdAt: r.created_at as string,
+    createdBy: r.created_by as string,
+  };
+}
+
 export class WorkspaceRepository {
   constructor(private readonly db: Database.Database) {}
 
@@ -153,5 +187,57 @@ export class WorkspaceRepository {
            WHERE repo_path = ? AND agent = ?`,
       )
       .run(objective, ts, ts, repoPath, agent);
+  }
+
+  /** Append an advisory checkpoint (save) for a workspace. */
+  recordCheckpoint(input: RecordCheckpointInput): WorkspaceCheckpointRecord {
+    const now = input.now ?? new Date().toISOString();
+    const checkpointId = `wcp-${randomUUID()}`;
+    this.db
+      .prepare(
+        `INSERT INTO workspace_checkpoints (
+           checkpoint_id, workspace_id, note, head_sha, dirty_count,
+           goal_id, created_at, created_by
+         )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        checkpointId,
+        input.workspaceId,
+        input.note ?? null,
+        input.headSha ?? null,
+        input.dirtyCount ?? 0,
+        input.goalId ?? null,
+        now,
+        input.createdBy,
+      );
+    const r = this.db
+      .prepare(`SELECT * FROM workspace_checkpoints WHERE checkpoint_id = ?`)
+      .get(checkpointId) as Record<string, unknown>;
+    return rowToCheckpoint(r);
+  }
+
+  /**
+   * Checkpoints for a workspace, newest first. Ties on `created_at` (e.g. two
+   * saves in the same millisecond) break by insertion order via `rowid`, so the
+   * "latest" is deterministically the most recently inserted — never a random
+   * UUID ordering.
+   */
+  listCheckpoints(workspaceId: string, limit = 50): WorkspaceCheckpointRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM workspace_checkpoints
+           WHERE workspace_id = ?
+           ORDER BY created_at DESC, rowid DESC
+           LIMIT ?`,
+      )
+      .all(workspaceId, limit) as Record<string, unknown>[];
+    return rows.map(rowToCheckpoint);
+  }
+
+  /** The most recent checkpoint for a workspace, or null. */
+  latestCheckpoint(workspaceId: string): WorkspaceCheckpointRecord | null {
+    const list = this.listCheckpoints(workspaceId, 1);
+    return list[0] ?? null;
   }
 }

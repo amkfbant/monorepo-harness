@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > goal convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/goal/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V17_STATEMENTS`、
-> `SCHEMA_VERSION = 17`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V18_STATEMENTS`、
+> `SCHEMA_VERSION = 18`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -66,6 +66,12 @@ version を記録し、`harness db migrate` が未適用分を idempotent に適
 > 合わせ、git 側に無い行は **stale** として扱う（runs の「meta は DB・worktree は
 > disk」と同じ git-authoritative パターン）。`WorkspaceRepository`（`src/db/
 > repositories/workspaces.ts`）。
+>
+> **v18（workspace checkpoints）**: append-only な `workspace_checkpoints`（`harness
+> workspace checkpoint`）。LLM の advisory narrative（`note`）＋ その時点の決定論
+> スナップショット（`head_sha` / `dirty_count` / advisory `goal_id`）。`workspaces`
+> への FK は `ON DELETE CASCADE`。recover は git/goal から正本状態を再構成し最新 note を
+> **文脈として**重ねる（note は状態の根拠にしない＝§0 非対称）。
 
 ## schema v1 のテーブル
 

@@ -79,4 +79,63 @@ describe("WorkspaceRepository", () => {
     expect(repo.get(REPO, "alice")).toBeNull();
     expect(repo.remove(REPO, "alice")).toBe(false);
   });
+
+  it("records and lists checkpoints newest-first, and exposes the latest", () => {
+    const ws = repo.upsert({
+      agent: "alice",
+      repoPath: REPO,
+      branch: "agent/alice",
+      worktreePath: "/p/alice",
+    });
+    const c1 = repo.recordCheckpoint({
+      workspaceId: ws.workspaceId,
+      note: "first",
+      headSha: "a".repeat(40),
+      dirtyCount: 2,
+      createdBy: "cli",
+      now: "2026-06-07T00:00:00.000Z",
+    });
+    const c2 = repo.recordCheckpoint({
+      workspaceId: ws.workspaceId,
+      note: "second",
+      goalId: "goal-1",
+      dirtyCount: 0,
+      createdBy: "alice",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+    expect(c1.checkpointId).toMatch(/^wcp-/);
+    expect(c1.dirtyCount).toBe(2);
+    const list = repo.listCheckpoints(ws.workspaceId);
+    expect(list.map((c) => c.note)).toEqual(["second", "first"]);
+    expect(repo.latestCheckpoint(ws.workspaceId)?.note).toBe("second");
+    expect(repo.latestCheckpoint(ws.workspaceId)?.goalId).toBe("goal-1");
+    expect(c2.createdBy).toBe("alice");
+  });
+
+  it("breaks same-timestamp checkpoints by insertion order (latest is the newest insert)", () => {
+    const ws = repo.upsert({
+      agent: "alice",
+      repoPath: REPO,
+      branch: "agent/alice",
+      worktreePath: "/p/alice",
+    });
+    const SAME = "2026-06-07T00:00:00.000Z";
+    repo.recordCheckpoint({ workspaceId: ws.workspaceId, note: "older", createdBy: "cli", now: SAME });
+    repo.recordCheckpoint({ workspaceId: ws.workspaceId, note: "newer", createdBy: "cli", now: SAME });
+    expect(repo.latestCheckpoint(ws.workspaceId)?.note).toBe("newer");
+    expect(repo.listCheckpoints(ws.workspaceId).map((c) => c.note)).toEqual([
+      "newer",
+      "older",
+    ]);
+  });
+
+  it("latestCheckpoint is null when there are none", () => {
+    const ws = repo.upsert({
+      agent: "alice",
+      repoPath: REPO,
+      branch: "agent/alice",
+      worktreePath: "/p/alice",
+    });
+    expect(repo.latestCheckpoint(ws.workspaceId)).toBeNull();
+  });
 });
