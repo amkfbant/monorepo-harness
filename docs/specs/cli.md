@@ -286,9 +286,9 @@ harness goal orchestrate <goal-id> --repo <path> [--base-branch <name>] [--max-s
   [--ci-await-timeout <seconds>] [--request-copilot-review] \
   [--ingest-external-reviews] [--external-review-timeout <seconds>]
 
-harness goal await-merge [<goal-id>] --repo <path> [--all] [--base-branch <name>] \
-  [--merge-method squash|merge|rebase] [--ci-await-timeout <seconds>] \
-  [--poll-interval <seconds>] [--max-wait <seconds>] \
+harness goal await-merge [<goal-id>] --repo <path> [--all] [--repo-id <id>] \
+  [--base-branch <name>] [--merge-method squash|merge|rebase] \
+  [--ci-await-timeout <seconds>] [--poll-interval <seconds>] [--max-wait <seconds>] \
   [--ingest-external-reviews] [--external-review-timeout <seconds>]
 ```
 
@@ -337,8 +337,11 @@ PR 公開後に非同期で post されるため、一発の orchestrate が ver
 
 `goal await-merge` は **`close_ready` で PR がオープン中（CI 待ち）** の goal を、
 merge されるまで**ポーリングで自動駆動**する（`orchestrate --auto-merge` の close/merge
-ステップだけを繰り返す薄いループ）。`<goal-id>` か **`--all`**（その時点の全 `close_ready`
-goal を順に駆動）の**どちらか一方**が必須。await-merge は常にマージを意図するので
+ステップだけを繰り返す薄いループ）。`<goal-id>` か **`--all`** の**どちらか一方**が必須。**`--all` は `--repo-id <id>` を
+必須**とし、その repo の `close_ready` goal だけを順に駆動する（gh の CI/merge probe は
+単一 `--repo` 作業ディレクトリに束縛されるため、`--all` が**別 repo の PR を跨いで誤マージ
+しない**ための安全策＝fail-closed）。単一 goal 指定時に `--repo-id` を渡すと、その goal の
+`repoId` と一致しなければ拒否する。await-merge は常にマージを意図するので
 auto-merge 配線（merger / CI probe / `--ingest-external-reviews`）は**常に構築**される
 （`--auto-merge` フラグは不要）。各ポーリングは convergence を再評価し、**`close_ready`
 のときだけ** close/merge ステップ（`maxSteps=1`）を 1 回走らせる（coder/review は走らせ

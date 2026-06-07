@@ -819,8 +819,12 @@ export function registerGoalCommands(
       "poll a close_ready goal's open PR and merge it once the gate passes",
     )
     .argument("[goal-id]", "goal id (omit when using --all)")
-    .option("--all", "drive EVERY close_ready goal to merge", false)
+    .option("--all", "drive EVERY close_ready goal of --repo-id to merge", false)
     .option("--repo <path>", "path to the target git repo (required)")
+    .option(
+      "--repo-id <id>",
+      "repo id to scope which goals are driven (REQUIRED with --all; the gh CI/merge probes are bound to the single --repo, so --all must not span repos)",
+    )
     .option("--base-branch <name>", "base branch for the merge gate", "main")
     .option(
       "--merge-method <method>",
@@ -862,6 +866,19 @@ export function registerGoalCommands(
         }
         if (typeof raw.repo !== "string" || raw.repo === "") {
           throw new GoalCliError("goal await-merge requires --repo <path>");
+        }
+        const repoIdScope =
+          typeof raw.repoId === "string" && raw.repoId !== ""
+            ? raw.repoId
+            : undefined;
+        // --all fans out across goals but the gh CI/merge probes are bound to the
+        // single --repo working dir; without a repo scope it could drive (and
+        // merge) a PR of a DIFFERENT repo. Require --repo-id so --all never spans
+        // repos. (Single-goal mode names the goal explicitly, like orchestrate.)
+        if (all && repoIdScope === undefined) {
+          throw new GoalCliError(
+            "goal await-merge --all requires --repo-id <id> (it must not span repos)",
+          );
         }
         const dbPath = harnessPaths(opts.getHarnessRoot()).dbPath;
         const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
@@ -980,16 +997,35 @@ export function registerGoalCommands(
             return step;
           };
 
-        // --all: drive every close_ready goal. The cap is generous; if it is hit,
-        // surface the truncation explicitly rather than silently dropping goals.
+        // --all: drive every close_ready goal OF THE SCOPED REPO. The cap is
+        // generous; if it is hit, surface the truncation explicitly rather than
+        // silently dropping goals.
         const ALL_CAP = 10_000;
         const goalIds = all
           ? withGoalRepo(opts, ({ repo }) =>
               repo
-                .listSessions({ status: "close_ready", limit: ALL_CAP })
+                .listSessions({
+                  status: "close_ready",
+                  ...(repoIdScope !== undefined ? { repoId: repoIdScope } : {}),
+                  limit: ALL_CAP,
+                })
                 .map((s) => s.goalId),
             )
           : [String(goalArg)];
+
+        // Single-goal mode: if a --repo-id was given, the named goal must belong
+        // to it — refuse to merge a goal whose repo differs from the --repo dir.
+        if (!all && repoIdScope !== undefined) {
+          const namedGoalId = String(goalArg);
+          const session = withGoalRepo(opts, ({ repo }) =>
+            repo.getSession(namedGoalId),
+          );
+          if (session !== null && session.repoId !== repoIdScope) {
+            throw new GoalCliError(
+              `goal ${namedGoalId} belongs to repo "${session.repoId}", not "${repoIdScope}"`,
+            );
+          }
+        }
 
         if (all && goalIds.length === 0) {
           process.stdout.write("no close_ready goals to await\n");
