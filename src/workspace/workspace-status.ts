@@ -37,7 +37,10 @@ export interface WorkspaceStatus extends WorkspaceStatusInput {
  * then a blocked/needs-work goal, then the working-tree state. Pure.
  */
 export function progressLabel(input: WorkspaceStatusInput): string {
-  if (input.stale) return "stale";
+  // A missing worktree (explicitly stale, or degenerate null git state) is
+  // fail-closed: treat it as `stale` rather than letting it fall through to
+  // `clean`, which would contradict how the CLI renders it.
+  if (input.stale || input.git === null) return "stale";
 
   const d = input.goalDecision;
   if (input.goalId !== null && d === null) return "goal-missing";
@@ -65,8 +68,8 @@ export function progressLabel(input: WorkspaceStatusInput): string {
   }
 
   // No (live) goal, or a terminal goal: project the working-tree state.
+  // (git is non-null here: a null worktree was handled fail-closed above.)
   const g = input.git;
-  if (g === null) return "clean";
   if (g.dirtyCount > 0) return "dirty";
   // an unresolved base hides ahead/behind — surface it rather than "clean".
   if (!g.baseResolved) return "base-unknown";

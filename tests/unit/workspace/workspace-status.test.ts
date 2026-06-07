@@ -31,6 +31,11 @@ describe("progressLabel (deterministic projection)", () => {
     ).toBe("stale");
   });
 
+  it("treats a non-stale entry with no git state as stale (fail-closed)", () => {
+    // a degenerate input (missing/failed inspection) must not read as `clean`.
+    expect(progressLabel(base({ stale: false, git: null, goalId: "g", goalDecision: "needs_fix" }))).toBe("stale");
+  });
+
   it("goal-missing for a dangling link", () => {
     expect(progressLabel(base({ goalId: "gone", goalDecision: null }))).toBe(
       "goal-missing",

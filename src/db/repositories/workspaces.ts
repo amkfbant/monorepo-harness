@@ -240,4 +240,27 @@ export class WorkspaceRepository {
     const list = this.listCheckpoints(workspaceId, 1);
     return list[0] ?? null;
   }
+
+  /**
+   * The latest checkpoint timestamp for each given workspace, in ONE query.
+   * Avoids the N+1 of calling `latestCheckpoint` per workspace (e.g. in
+   * `workspace status`). Workspaces with no checkpoint are absent from the map.
+   */
+  latestCheckpointAtForWorkspaces(
+    workspaceIds: readonly string[],
+  ): Map<string, string> {
+    const map = new Map<string, string>();
+    if (workspaceIds.length === 0) return map;
+    const placeholders = workspaceIds.map(() => "?").join(",");
+    const rows = this.db
+      .prepare(
+        `SELECT workspace_id, MAX(created_at) AS latest
+           FROM workspace_checkpoints
+           WHERE workspace_id IN (${placeholders})
+           GROUP BY workspace_id`,
+      )
+      .all(...workspaceIds) as { workspace_id: string; latest: string }[];
+    for (const r of rows) map.set(r.workspace_id, r.latest);
+    return map;
+  }
 }

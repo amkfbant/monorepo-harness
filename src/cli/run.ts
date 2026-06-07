@@ -3332,12 +3332,25 @@ workspaceCmd
         const rowByAgent = new Map(rows.map((r) => [r.agent, r]));
         const liveAgents = new Set(live.map((w) => w.agent));
         const goalRepo = new GoalRepository(db);
+        // Memoize per goalId: many workspaces can share a goal, and
+        // ConvergenceService.evaluate loads findings/cycles/attempts.
+        const decisionCache = new Map<string, string | null>();
         const goalDecisionFor = (goalId: string | null): string | null => {
           if (goalId === null) return null;
+          const cached = decisionCache.get(goalId);
+          if (cached !== undefined) return cached;
           // dangling advisory link → null (rendered as goal-missing).
-          if (goalRepo.getSession(goalId) === null) return null;
-          return new ConvergenceService(goalRepo).evaluate(goalId).decision;
+          const decision =
+            goalRepo.getSession(goalId) === null
+              ? null
+              : new ConvergenceService(goalRepo).evaluate(goalId).decision;
+          decisionCache.set(goalId, decision);
+          return decision;
         };
+        // Latest checkpoint timestamp for every row in ONE query (no N+1).
+        const checkpointAt = wsRepo.latestCheckpointAtForWorkspaces(
+          rows.map((r) => r.workspaceId),
+        );
         const out: WorkspaceStatusInput[] = [];
         for (const w of live) {
           const r = rowByAgent.get(w.agent) ?? null;
@@ -3359,11 +3372,11 @@ workspaceCmd
             objective: r?.objective ?? null,
             lastActiveAt: r?.lastActiveAt ?? null,
             lastCheckpointAt:
-              r === null ? null : (wsRepo.latestCheckpoint(r.workspaceId)?.createdAt ?? null),
+              r === null ? null : (checkpointAt.get(r.workspaceId) ?? null),
             stale: false,
           });
         }
-        // stale: a DB row whose git worktree git no longer knows about.
+        // stale: a DB row whose git worktree no longer exists.
         for (const r of rows) {
           if (liveAgents.has(r.agent)) continue;
           out.push({
@@ -3374,7 +3387,7 @@ workspaceCmd
             goalDecision: goalDecisionFor(r.goalId),
             objective: r.objective,
             lastActiveAt: r.lastActiveAt,
-            lastCheckpointAt: wsRepo.latestCheckpoint(r.workspaceId)?.createdAt ?? null,
+            lastCheckpointAt: checkpointAt.get(r.workspaceId) ?? null,
             stale: true,
           });
         }

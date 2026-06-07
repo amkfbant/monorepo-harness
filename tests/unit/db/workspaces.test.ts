@@ -129,6 +129,25 @@ describe("WorkspaceRepository", () => {
     ]);
   });
 
+  it("returns latest checkpoint timestamps for many workspaces in one query", () => {
+    const a = repo.upsert({ agent: "a", repoPath: REPO, branch: "agent/a", worktreePath: "/p/a" });
+    const b = repo.upsert({ agent: "b", repoPath: REPO, branch: "agent/b", worktreePath: "/p/b" });
+    const c = repo.upsert({ agent: "c", repoPath: REPO, branch: "agent/c", worktreePath: "/p/c" });
+    repo.recordCheckpoint({ workspaceId: a.workspaceId, createdBy: "cli", now: "2026-06-07T00:00:00.000Z" });
+    repo.recordCheckpoint({ workspaceId: a.workspaceId, createdBy: "cli", now: "2026-06-07T02:00:00.000Z" });
+    repo.recordCheckpoint({ workspaceId: b.workspaceId, createdBy: "cli", now: "2026-06-07T01:00:00.000Z" });
+    // c has no checkpoints
+    const map = repo.latestCheckpointAtForWorkspaces([
+      a.workspaceId,
+      b.workspaceId,
+      c.workspaceId,
+    ]);
+    expect(map.get(a.workspaceId)).toBe("2026-06-07T02:00:00.000Z");
+    expect(map.get(b.workspaceId)).toBe("2026-06-07T01:00:00.000Z");
+    expect(map.has(c.workspaceId)).toBe(false);
+    expect(repo.latestCheckpointAtForWorkspaces([]).size).toBe(0);
+  });
+
   it("latestCheckpoint is null when there are none", () => {
     const ws = repo.upsert({
       agent: "alice",
