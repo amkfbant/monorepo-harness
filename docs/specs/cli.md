@@ -386,13 +386,15 @@ harness session summary         # 保留中のものの compact なスナップ�
 複数の LLM エージェント / ターミナルが**同一プロジェクトを並行作業**するための、エージェントごとの**隔離 git worktree** を管理する。各エージェントは独立した作業ツリー（独立 index/HEAD）を `agent/<name>` ブランチ上に持ち、共有 checkout を取り合わない。harness の state（`HARNESS_ROOT` / `.harness` DB・domain ロック・goal・knowledge）は**共有**したまま。**git 自体が source of truth**（DB ミラーを持たず drift しない）。実装は `src/workspace/agent-workspace.ts`。
 
 ```bash
-harness workspace create <agent> [--repo <path>] [--base <commit-ish>] [--dir <dir>] [--json]
-harness workspace list   [--repo <path>] [--json]
-harness workspace remove <agent> [--repo <path>] [--dir <dir>] [--force] [--keep-branch]
+harness workspace create  <agent> [--repo <path>] [--base <commit-ish>] [--dir <dir>] [--json]
+harness workspace list    [--repo <path>] [--json]
+harness workspace inspect <agent> [--repo <path>] [--dir <dir>] [--base <commit-ish>] [--json]
+harness workspace remove  <agent> [--repo <path>] [--dir <dir>] [--force] [--keep-branch]
 ```
 
 - **`create <agent>`** — `agent/<name>` ブランチ上の worktree を `<dir>/<agent>` に作成（`--base` 既定 `HEAD`・既存ブランチがあれば再利用）。**冪等**（同一 agent の再実行は既存を返す）。出力に worktree path と「`cd <path> && export HARNESS_ROOT=<sharedRoot>`」の共有手順を表示。
 - **`list`** — harness 管理の worktree（ブランチ `agent/*`）だけを列挙（main checkout や run 内部 worktree は除外）。
+- **`inspect <agent>`** — workspace の**決定論ブリーフィング**を git だけから再構成して返す（branch / HEAD / 最終コミット / `--base`（既定 `main`）に対する ahead-behind / 未コミット file）。保存状態に依存せず、LLM が自分や他エージェントの workspace を**自己申告抜きで理解**するための土台（save/recover の理解レイヤー）。`--json` で構造化出力。
 - **`remove <agent>`** — worktree とブランチを削除。未コミット変更があると **`--force` 無しでは拒否**（作業を黙って捨てない fail-closed）。`--keep-branch` でブランチを残す。
 - **`--repo`** 既定はカレントディレクトリ。**`--dir`** 既定は `<repo>.agents/`（repo の sibling）。
 - `run` 内部の worktree（`workspaces/<runId>/repo/`・codex 実行用・detached）とは別レイヤー。並行運用の安全モデルは [`workflow.md`](./workflow.md) の concurrency 節を参照。

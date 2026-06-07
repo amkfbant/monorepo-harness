@@ -43,6 +43,7 @@ import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
 import {
   AgentWorkspaceError,
   createAgentWorkspace,
+  inspectAgentWorkspace,
   listAgentWorkspaces,
   removeAgentWorkspace,
 } from "../workspace/agent-workspace.js";
@@ -3170,6 +3171,52 @@ workspaceCmd
       for (const w of list) {
         process.stdout.write(`${w.agent}\t${w.branch}\t${w.path}\n`);
       }
+    } catch (e) {
+      withWorkspaceErrorExit(e);
+    }
+  });
+
+workspaceCmd
+  .command("inspect")
+  .description(
+    "deterministic git briefing of an agent's workspace (branch / dirty / ahead-behind)",
+  )
+  .argument("<agent>", "agent name")
+  .option("--repo <path>", "the project repo (default: current directory)")
+  .option("--dir <dir>", "where agent worktrees live (default: <repo>.agents)")
+  .option("--base <commit-ish>", "compare ahead/behind against this ref", "main")
+  .option("--json", "emit JSON instead of text", false)
+  .action(async (agent: string, raw: Record<string, unknown>) => {
+    try {
+      const repoPath = workspaceRepoPath(raw);
+      const workspacesDir = workspacesDirFor(repoPath, raw);
+      const insp = await inspectAgentWorkspace(
+        { repoPath, workspacesDir },
+        { agent, base: String(raw.base ?? "main") },
+      );
+      if (raw.json === true) {
+        process.stdout.write(`${JSON.stringify(insp, null, 2)}\n`);
+        return;
+      }
+      const aheadBehind = insp.baseResolved
+        ? `${insp.ahead} ahead / ${insp.behind} behind (vs ${insp.base})`
+        : `base "${insp.base}" not found`;
+      const last = insp.lastCommit
+        ? `${insp.lastCommit.sha.slice(0, 8)} ${insp.lastCommit.subject}`
+        : "(none)";
+      const dirty =
+        insp.dirtyFiles.length === 0
+          ? "clean"
+          : `${insp.dirtyFiles.length} uncommitted: ` +
+            insp.dirtyFiles.slice(0, 10).join(", ") +
+            (insp.dirtyFiles.length > 10 ? ", …" : "");
+      process.stdout.write(
+        `workspace "${insp.agent}" (${insp.branch})\n` +
+          `  path:         ${insp.path}\n` +
+          `  last commit:  ${last}\n` +
+          `  vs base:      ${aheadBehind}\n` +
+          `  working tree: ${dirty}\n`,
+      );
     } catch (e) {
       withWorkspaceErrorExit(e);
     }
