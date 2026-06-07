@@ -24,6 +24,11 @@ import { ConvergenceService } from "../goal/convergence.js";
 import { recordConvergenceDecisionWithStatus } from "../goal/convergence-status.js";
 import { deferFindingToBacklog } from "../goal/followups.js";
 import { GoalOrchestrator } from "../goal/orchestrator.js";
+import {
+  awaitGoalMerge,
+  awaitStepFromOutcome,
+  type AwaitMergeStep,
+} from "../goal/await-merge.js";
 import { linkAgentWorkspaceToGoal } from "../workspace/workspace-goal-link.js";
 import { decideOrchestratorAction } from "../goal/orchestrator-dispatch.js";
 import { createOrchestratorRunners } from "../goal/orchestrator-runners.js";
@@ -802,6 +807,164 @@ export function registerGoalCommands(
             (link.linked ? ` workspace=${link.agent}` : "") +
             "\n",
         );
+      });
+    });
+
+  goalCmd
+    .command("await-merge")
+    .description(
+      "poll a close_ready goal's open PR and merge it once the gate passes",
+    )
+    .argument("[goal-id]", "goal id (omit when using --all)")
+    .option("--all", "drive EVERY close_ready goal to merge", false)
+    .option("--repo <path>", "path to the target git repo (required)")
+    .option("--base-branch <name>", "base branch for the merge gate", "main")
+    .option(
+      "--merge-method <method>",
+      "merge method (squash|merge|rebase)",
+      "squash",
+    )
+    .option(
+      "--ci-await-timeout <seconds>",
+      "seconds to await pending CI per attempt before failing closed",
+      "1200",
+    )
+    .option(
+      "--poll-interval <seconds>",
+      "seconds between merge attempts while the PR awaits CI",
+      "30",
+    )
+    .option(
+      "--max-wait <seconds>",
+      "total seconds to wait for the merge (0 = a single attempt)",
+      "1800",
+    )
+    .option(
+      "--ingest-external-reviews",
+      "opt-in: ingest external PR review verdicts; a CHANGES_REQUESTED review escalates the gate (fail-closed)",
+      false,
+    )
+    .option(
+      "--external-review-timeout <seconds>",
+      "seconds to await async external reviews before evaluating the gate; 0 = single check",
+      "0",
+    )
+    .action(async (goalArg: string | undefined, raw: Record<string, unknown>) => {
+      await withGoalErrorExitAsync(async () => {
+        const all = raw.all === true;
+        if (all === (typeof goalArg === "string" && goalArg !== "")) {
+          throw new GoalCliError(
+            "goal await-merge requires exactly one of <goal-id> or --all",
+          );
+        }
+        if (typeof raw.repo !== "string" || raw.repo === "") {
+          throw new GoalCliError("goal await-merge requires --repo <path>");
+        }
+        const dbPath = harnessPaths(opts.getHarnessRoot()).dbPath;
+        const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
+        const ghBin = process.env.HARNESS_GH_BIN ?? "gh";
+        const repoPath = String(raw.repo);
+        const ciAwaitTimeoutMs =
+          parseNonNegativeInt(raw.ciAwaitTimeout, "--ci-await-timeout") * 1_000;
+        const externalReviewTimeoutMs =
+          parseNonNegativeInt(
+            raw.externalReviewTimeout,
+            "--external-review-timeout",
+          ) * 1_000;
+        const pollIntervalMs =
+          parsePositiveInt(raw.pollInterval, "--poll-interval") * 1_000;
+        const maxWaitMs =
+          parseNonNegativeInt(raw.maxWait, "--max-wait") * 1_000;
+
+        // await-merge ALWAYS merges (that is its purpose), so the auto-merge deps
+        // are always constructed — same gate/CI/ingest wiring as `orchestrate
+        // --auto-merge`, just driven by the poll loop.
+        const autoMerge = {
+          merger: createGhPrMerger(ghBin),
+          ciStatus: createGhCiStatus(repoPath, ghBin, undefined, {
+            awaitTimeoutMs: ciAwaitTimeoutMs,
+          }),
+          method: parseMergeMethod(raw.mergeMethod),
+          ...(raw.ingestExternalReviews === true
+            ? {
+                reviewVerdicts: createGhReviewVerdicts(repoPath, ghBin),
+                ...(externalReviewTimeoutMs > 0
+                  ? {
+                      reviewAwait: {
+                        timeoutMs: externalReviewTimeoutMs,
+                        intervalMs: 15_000,
+                      },
+                    }
+                  : {}),
+              }
+            : {}),
+        };
+        const runners = createOrchestratorRunners({
+          dbPath,
+          harnessRoot: opts.getHarnessRoot(),
+          createdBy: "cli",
+          coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
+          reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
+          publisher: createGhPrPublisher(),
+          autoMerge,
+          repoPath,
+          baseBranch: String(raw.baseBranch ?? "main"),
+        });
+        const orchestrator = new GoalOrchestrator({ dbPath });
+
+        // One probe: re-evaluate convergence and run AT MOST the close/merge step
+        // (never a coder/review) — a goal that is not close_ready is reported as
+        // not_awaiting without mutating anything.
+        const probe = (goalId: string) => async (): Promise<AwaitMergeStep> => {
+          const decision = withGoalRepo(opts, ({ repo }) =>
+            new ConvergenceService(repo).evaluate(goalId).decision,
+          );
+          if (decision !== "close_ready") {
+            return { kind: "not_awaiting", decision };
+          }
+          const result = await orchestrator.run({
+            goalId,
+            runners,
+            maxSteps: 1,
+            createdBy: "cli",
+          });
+          return awaitStepFromOutcome(result);
+        };
+
+        const goalIds = all
+          ? withGoalRepo(opts, ({ repo }) =>
+              repo
+                .listSessions({ status: "close_ready", limit: 500 })
+                .map((s) => s.goalId),
+            )
+          : [String(goalArg)];
+
+        if (all && goalIds.length === 0) {
+          process.stdout.write("no close_ready goals to await\n");
+          return;
+        }
+
+        for (const goalId of goalIds) {
+          const result = await awaitGoalMerge(
+            {
+              pollOnce: probe(goalId),
+              sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+              now: () => Date.now(),
+            },
+            { pollIntervalMs, maxWaitMs },
+          );
+          process.stdout.write(
+            `goal=${goalId} await-merge=${result.outcome} polls=${result.polls}` +
+              ("prUrl" in result && result.prUrl !== undefined
+                ? ` pr=${result.prUrl}`
+                : "") +
+              ("decision" in result ? ` decision=${result.decision}` : "") +
+              ("reason" in result && result.reason !== undefined
+                ? ` escalate=${result.reason}`
+                : "") +
+              "\n",
+          );
+        }
       });
     });
 }

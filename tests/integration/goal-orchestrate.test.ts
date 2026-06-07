@@ -7,6 +7,12 @@ import { openManagedDb } from "../../src/db/managed-connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
 import { GoalRepository } from "../../src/goal/repository.js";
 import { GoalOrchestrator } from "../../src/goal/orchestrator.js";
+import { ConvergenceService } from "../../src/goal/convergence.js";
+import {
+  awaitGoalMerge,
+  awaitStepFromOutcome,
+  type AwaitMergeStep,
+} from "../../src/goal/await-merge.js";
 import {
   createOrchestratorRunners,
   type GoalRunContext,
@@ -649,6 +655,88 @@ describe("goal orchestrate (real git + fake codex)", () => {
       } finally {
         close();
       }
+    }
+  });
+
+  it("await-merge: the poll loop auto-merges a close_ready (CI-not-green) goal once CI greens", async () => {
+    const goalId = createGoal(f.dbPath, "goal-awaitmerge-e2e", "docs");
+    // reach close_ready + PR open with CI not green → goal stays close_ready.
+    const first = await driveWithAutoMerge({
+      goalId,
+      ciGreen: false,
+      merger: fakeMerger("ok"),
+    });
+    expect(first.outcome).toBe("pr_created");
+
+    // Build the await-merge probe exactly as the CLI does: one orchestrate step
+    // per poll, gated to the close/merge action, with CI flipping green on the
+    // 2nd check so the loop must poll twice.
+    const merger = fakeMerger("ok");
+    const { coderRunner, reviewerRunner } = approveFakes("docs/guide.md");
+    let ciChecks = 0;
+    const runners = createOrchestratorRunners({
+      dbPath: f.dbPath,
+      harnessRoot: f.harnessRoot,
+      createdBy: "test",
+      coderRunner,
+      reviewerRunner,
+      publisher: fakePublisher(),
+      resolveRunContext: (): GoalRunContext => ({
+        repoPath: f.repoPath,
+        repoId: "t",
+        domain: "docs",
+        goal: "update docs",
+        baseBranch: "main",
+      }),
+      autoMerge: {
+        merger,
+        ciStatus: async () => (ciChecks += 1) >= 2, // false, then green
+      },
+    });
+    const orch = new GoalOrchestrator({ dbPath: f.dbPath });
+    const probe = async (): Promise<AwaitMergeStep> => {
+      const { db, close } = openManagedDb({ dbPath: f.dbPath });
+      let decision: string;
+      try {
+        decision = new ConvergenceService(new GoalRepository(db)).evaluate(
+          goalId,
+        ).decision;
+      } finally {
+        close();
+      }
+      if (decision !== "close_ready") return { kind: "not_awaiting", decision };
+      const r = await orch.run({
+        goalId,
+        runners,
+        maxSteps: 1,
+        createdBy: "test",
+      });
+      return awaitStepFromOutcome(r);
+    };
+
+    const sleeps: number[] = [];
+    const out = await awaitGoalMerge(
+      {
+        pollOnce: probe,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+        now: () => 0,
+      },
+      { pollIntervalMs: 1, maxWaitMs: 60_000 },
+    );
+
+    expect(out.outcome).toBe("merged");
+    expect(out.polls).toBe(2); // awaiting once (CI red), then merged (CI green)
+    expect(sleeps).toEqual([1]); // slept once between the two polls
+    expect(merger.calls).toHaveLength(1);
+    const { db, close } = openManagedDb({ dbPath: f.dbPath });
+    try {
+      expect(new GoalRepository(db).requireSession(goalId).status).toBe(
+        "closed",
+      );
+    } finally {
+      close();
     }
   });
 

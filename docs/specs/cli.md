@@ -285,6 +285,11 @@ harness goal orchestrate <goal-id> --repo <path> [--base-branch <name>] [--max-s
   [--dry-run] [--auto-merge] [--merge-method squash|merge|rebase] \
   [--ci-await-timeout <seconds>] [--request-copilot-review] \
   [--ingest-external-reviews] [--external-review-timeout <seconds>]
+
+harness goal await-merge [<goal-id>] --repo <path> [--all] [--base-branch <name>] \
+  [--merge-method squash|merge|rebase] [--ci-await-timeout <seconds>] \
+  [--poll-interval <seconds>] [--max-wait <seconds>] \
+  [--ingest-external-reviews] [--external-review-timeout <seconds>]
 ```
 
 `goal close` は convergence が `close_ready` でない限り `--force` を要求する。
@@ -329,6 +334,22 @@ PR 公開後に非同期で post されるため、一発の orchestrate が ver
 評価しうる。`0`（既定）は単発 fetch。正値なら `CHANGES_REQUESTED` が出るか budget
 （秒）が尽きるまで 15 秒間隔で poll する。budget 内に blocking が無ければ gate 評価に
 進む（fail-safe。遅れて来た verdict は close_ready の再 check で後から拾える）。
+
+`goal await-merge` は **`close_ready` で PR がオープン中（CI 待ち）** の goal を、
+merge されるまで**ポーリングで自動駆動**する（`orchestrate --auto-merge` の close/merge
+ステップだけを繰り返す薄いループ）。`<goal-id>` か **`--all`**（その時点の全 `close_ready`
+goal を順に駆動）の**どちらか一方**が必須。await-merge は常にマージを意図するので
+auto-merge 配線（merger / CI probe / `--ingest-external-reviews`）は**常に構築**される
+（`--auto-merge` フラグは不要）。各ポーリングは convergence を再評価し、**`close_ready`
+のときだけ** close/merge ステップ（`maxSteps=1`）を 1 回走らせる（coder/review は走らせ
+ない）。`close_ready` でない goal は **`not_awaiting`** として何も変更せず報告する（状態
+遷移は harness のみ・LLM 出力で駆動しない安全境界どおり）。結果の分類: PR が merge された
+→ **`merged`**、PR オープンで CI 未 green（recheckable）→ 続行、gate hard 未達 / runner
+throw → **`escalated`** で停止、budget 超過 → **`timeout`**。`--poll-interval`（既定 `30`
+秒）は CI 待ち中の再試行間隔、`--max-wait`（既定 `1800` 秒、`0`=単発）は merge を待つ総
+wall-clock。`--ci-await-timeout` は**各**試行内で pending CI を待つ秒数（既定 `1200`）。
+出力は goal ごとに `goal=<id> await-merge=<outcome> polls=<n> [pr=… | decision=… |
+escalate=…]`。
 
 ## `harness dashboard export`
 
