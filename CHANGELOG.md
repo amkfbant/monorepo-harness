@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/amkfbant/monorepo-harness/compare/v0.3.0...v0.4.0) (2026-06-07)
+
+
+### Features
+
+* **mcp:** harness.inbox + harness.metrics read tools ([#55](https://github.com/amkfbant/monorepo-harness/issues/55)) ([45685d7](https://github.com/amkfbant/monorepo-harness/commit/45685d7638410abf1c5366971656c90cebaa4952))
+* **mcp:** workspace inspect / conflicts / recover read tools ([#53](https://github.com/amkfbant/monorepo-harness/issues/53)) ([3307d23](https://github.com/amkfbant/monorepo-harness/commit/3307d23527d5ee34b90ac78dc79818110b095898))
+
 ## [0.3.0](https://github.com/amkfbant/monorepo-harness/compare/v0.2.0...v0.3.0) (2026-06-07)
 
 
