@@ -260,10 +260,23 @@ Finding lifecycle:
 ```bash
 harness goal finding add <goal-id> --severity P1 --category correctness --summary <text> \
   [--source review|test|doctor|human|mcp|codex|other] [--scope in-scope|out-of-scope|unknown|duplicate] [--json]
-harness goal finding classify <finding-id> --scope in-scope|out-of-scope|unknown|duplicate --reason <text> [--duplicate-of <finding-id>] [--json]
+harness goal finding classify <finding-id> --scope in-scope|out-of-scope|unknown|duplicate --reason <text> \
+  [--duplicate-of <finding-id>] [--then-rerun --repo <path> [--base-branch <name>] [--max-steps <n>]] [--json]
 harness goal finding fixed <finding-id> [--note <text>] [--json]
 harness goal finding defer <finding-id> --reason <text> [--backlog] [--json]
 ```
+
+**`goal finding classify --then-rerun`（C#8 / opt-in・要 `--repo`）**: external review 由来で
+ingest された unknown-scope finding を operator が **in-scope に分類した直後**、coder rerun を
+**自動連鎖**する（手動の `goal orchestrate` 再実行を不要にする）。安全境界どおり: 分類は
+operator-owned な human-in-the-loop 境界（external 出力を自動分類しない）で、自動実行するのは
+分類後の convergence が **`needs_fix` のときだけ**（harness-only の決定論ゲート）。`needs_fix`
+なら orchestrator を bounded（`--max-steps`、既定 20）で回し coder が新たに in-scope となった
+finding を `augmentGoalWithOpenFindings` 経由で修正する。分類後が `needs_fix` でない
+（`needs_classification`＝他に unknown が残る / `close_ready` 等）場合は**自動実行しない**で
+`rerun=skipped(<reason>)` を出力する（classify が暗黙に PR を作る等の副作用を避ける）。
+`--then-rerun` 無指定時は従来どおり分類のみ（出力不変）。codex coder は execution-only で
+状態遷移の決定権は持たない。
 
 Attempts, review cycles, close checks, and convergence decisions:
 
