@@ -43,12 +43,14 @@ import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
 import {
   AgentWorkspaceError,
   canonicalRepoKey,
+  changedFilesForWorkspace,
   createAgentWorkspace,
   inspectAgentWorkspace,
   listAgentWorkspaces,
   removeAgentWorkspace,
   resolveMainWorktree,
 } from "../workspace/agent-workspace.js";
+import { findWorkspaceConflicts } from "../workspace/workspace-conflicts.js";
 import { WorkspaceRepository } from "../db/repositories/workspaces.js";
 import {
   buildRecoveryBriefing,
@@ -3297,6 +3299,52 @@ workspaceCmd
           `  vs base:      ${aheadBehind}\n` +
           `  working tree: ${dirty}\n`,
       );
+    } catch (e) {
+      withWorkspaceErrorExit(e);
+    }
+  });
+
+workspaceCmd
+  .command("conflicts")
+  .description(
+    "find agent workspaces that have changed the same files (overlap pre-check)",
+  )
+  .option("--repo <path>", "the project repo (default: current directory)")
+  .option("--dir <dir>", "where agent worktrees live (default: <repo>.agents)")
+  .option("--base <commit-ish>", "base ref for committed-ahead changes", "main")
+  .option("--json", "emit JSON instead of text", false)
+  .action(async (raw: Record<string, unknown>) => {
+    try {
+      const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
+      const live = await listAgentWorkspaces({ repoPath, workspacesDir });
+      const entries = [];
+      for (const w of live) {
+        entries.push({
+          agent: w.agent,
+          files: await changedFilesForWorkspace(
+            { repoPath, workspacesDir },
+            { agent: w.agent, base: String(raw.base ?? "main"), workspace: w },
+          ),
+        });
+      }
+      const conflicts = findWorkspaceConflicts(entries);
+      if (raw.json === true) {
+        process.stdout.write(`${JSON.stringify({ conflicts }, null, 2)}\n`);
+        return;
+      }
+      if (conflicts.length === 0) {
+        process.stdout.write(
+          `no overlapping changes across ${entries.length} workspace(s)\n`,
+        );
+        return;
+      }
+      for (const c of conflicts) {
+        process.stdout.write(
+          `${c.a} ⨯ ${c.b}: ${c.files.length} shared file(s)\n` +
+            c.files.map((f) => `    ${f}`).join("\n") +
+            "\n",
+        );
+      }
     } catch (e) {
       withWorkspaceErrorExit(e);
     }

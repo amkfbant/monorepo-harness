@@ -316,6 +316,76 @@ export async function removeAgentWorkspace(
   return { removed: true };
 }
 
+/**
+ * The set of files an agent workspace has changed relative to `base`: its
+ * committed-ahead diff (`base...branch`) unioned with its uncommitted working
+ * tree. Used by the cross-agent conflict pre-check. Fail-closed on git errors;
+ * a missing base ref degrades to the uncommitted set only (best-effort).
+ */
+export async function changedFilesForWorkspace(
+  ctx: AgentWorkspaceContext,
+  opts: { agent: string; base?: string; workspace?: AgentWorkspace },
+): Promise<string[]> {
+  assertAgentName(opts.agent);
+  const ws =
+    opts.workspace !== undefined && opts.workspace.agent === opts.agent
+      ? opts.workspace
+      : (await listAgentWorkspaces(ctx)).find((w) => w.agent === opts.agent);
+  if (ws === undefined) {
+    throw new AgentWorkspaceError(
+      `no workspace for agent ${JSON.stringify(opts.agent)}`,
+    );
+  }
+  const base = opts.base ?? "main";
+  const run = ctx.git ?? defaultGitRunner();
+
+  // `--no-renames` for conflict detection: a rename `foo -> bar` is split into a
+  // delete of `foo` and an add of `bar`, so BOTH endpoints are captured. (This
+  // differs from inspect, which uses `--renames` for a tidier display.) Without
+  // it, an agent renaming `foo` would not conflict with one editing `foo`.
+  const status = await run(
+    ["status", "--porcelain", "-z", "--no-renames"],
+    ws.path,
+  );
+  if (status.exitCode !== 0 || status.timedOut) {
+    throw new AgentWorkspaceError(
+      `git status failed in ${ws.path}: ${status.stderr.trim()}`,
+    );
+  }
+  const files = new Set(parseStatusPorcelain(status.stdout));
+
+  const baseCheck = await run(
+    ["rev-parse", "--verify", "--quiet", `${base}^{commit}`],
+    ws.path,
+  );
+  if (baseCheck.timedOut) {
+    throw new AgentWorkspaceError(
+      `git rev-parse timed out resolving base ${JSON.stringify(base)} in ${ws.path}`,
+    );
+  }
+  if (baseCheck.exitCode === 0) {
+    const diff = await run(
+      ["diff", "--name-only", "-z", "--no-renames", `${base}...${ws.branch}`],
+      ws.path,
+    );
+    if (diff.exitCode !== 0 || diff.timedOut) {
+      throw new AgentWorkspaceError(
+        `git diff failed for ${JSON.stringify(base)}...${ws.branch} in ${ws.path}: ` +
+          diff.stderr.trim(),
+      );
+    }
+    for (const f of diff.stdout.split("\0")) {
+      if (f !== "") files.add(f);
+    }
+  } else if (baseCheck.stderr.trim() !== "") {
+    throw new AgentWorkspaceError(
+      `git rev-parse failed resolving base ${JSON.stringify(base)} in ${ws.path}: ` +
+        baseCheck.stderr.trim(),
+    );
+  }
+  return [...files];
+}
+
 export interface WorkspaceInspection {
   agent: string;
   path: string;
