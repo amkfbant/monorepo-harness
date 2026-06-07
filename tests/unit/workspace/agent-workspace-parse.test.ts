@@ -4,6 +4,8 @@ import {
   agentNameFromBranch,
   assertAgentName,
   AgentWorkspaceError,
+  parseAheadBehind,
+  parseStatusPorcelain,
   parseWorktreePorcelain,
 } from "../../../src/workspace/agent-workspace.js";
 
@@ -74,5 +76,40 @@ describe("agent name <-> branch", () => {
     expect(() => assertAgentName("../escape")).toThrow(AgentWorkspaceError);
     expect(() => assertAgentName("has space")).toThrow(AgentWorkspaceError);
     expect(() => assertAgentName("white/space bad")).toThrow(AgentWorkspaceError);
+  });
+});
+
+describe("parseStatusPorcelain (NUL-delimited -z)", () => {
+  it("extracts changed paths from NUL records", () => {
+    const out = " M src/a.ts\0?? new.txt\0A  staged.ts\0";
+    expect(parseStatusPorcelain(out)).toEqual([
+      "src/a.ts",
+      "new.txt",
+      "staged.ts",
+    ]);
+  });
+
+  it("reports the rename destination and skips the original path record", () => {
+    const out = "R  new name.ts\0old name.ts\0 M other.ts\0";
+    expect(parseStatusPorcelain(out)).toEqual(["new name.ts", "other.ts"]);
+  });
+
+  it("is empty for a clean tree", () => {
+    expect(parseStatusPorcelain("")).toEqual([]);
+    expect(parseStatusPorcelain("\0")).toEqual([]);
+  });
+});
+
+describe("parseAheadBehind", () => {
+  it("maps `<behind>\\t<ahead>` from rev-list --left-right --count", () => {
+    expect(parseAheadBehind("2\t5")).toEqual({ behind: 2, ahead: 5 });
+    expect(parseAheadBehind("0\t0\n")).toEqual({ behind: 0, ahead: 0 });
+  });
+
+  it("throws (fail-closed) on malformed output rather than reading zeros", () => {
+    expect(() => parseAheadBehind("")).toThrow(AgentWorkspaceError);
+    expect(() => parseAheadBehind("garbage")).toThrow(AgentWorkspaceError);
+    expect(() => parseAheadBehind("1 2 3")).toThrow(AgentWorkspaceError);
+    expect(() => parseAheadBehind("-1\t2")).toThrow(AgentWorkspaceError);
   });
 });

@@ -92,6 +92,49 @@ export function parseWorktreePorcelain(stdout: string): ParsedWorktree[] {
   return out;
 }
 
+/**
+ * Parse NUL-delimited `git status --porcelain -z` into the list of changed
+ * paths. `-z` avoids the rename/quote ambiguity of newline porcelain: a
+ * rename/copy entry (`R`/`C`) is followed by its original path as a separate
+ * NUL record, which we skip after reporting the destination path.
+ */
+export function parseStatusPorcelain(stdout: string): string[] {
+  const tokens = stdout.split("\0");
+  const files: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    // each status record is `XY <path>` (2 status chars + space + path).
+    if (t === undefined || t.length < 4) continue;
+    files.push(t.slice(3));
+    // a rename/copy carries the ORIGINAL path as the next NUL record — skip it.
+    const xy = t.slice(0, 2);
+    if (xy.includes("R") || xy.includes("C")) i++;
+  }
+  return files;
+}
+
+/**
+ * Parse `git rev-list --left-right --count <base>...<branch>` output. git emits
+ * `<left>\t<right>` where, for `base...branch`, left = commits on base not on
+ * branch (= behind) and right = commits on branch not on base (= ahead).
+ * Fail-closed: anything that is not exactly two non-negative integers throws
+ * rather than being silently read as 0/0.
+ */
+export function parseAheadBehind(stdout: string): {
+  behind: number;
+  ahead: number;
+} {
+  const parts = stdout.trim().split(/\s+/);
+  const isCount = (s: string | undefined): s is string =>
+    s !== undefined && /^\d+$/.test(s);
+  if (parts.length !== 2 || !isCount(parts[0]) || !isCount(parts[1])) {
+    throw new AgentWorkspaceError(
+      `unexpected rev-list --count output: ${JSON.stringify(stdout)}`,
+    );
+  }
+  return { behind: Number(parts[0]), ahead: Number(parts[1]) };
+}
+
 export interface AgentWorkspace {
   agent: string;
   path: string;
@@ -213,4 +256,93 @@ export async function removeAgentWorkspace(
     await git(ctx, ["branch", "-D", existing.branch]);
   }
   return { removed: true };
+}
+
+export interface WorkspaceInspection {
+  agent: string;
+  path: string;
+  branch: string;
+  head: string | null;
+  base: string;
+  /** false when `base` could not be resolved (ahead/behind are then 0). */
+  baseResolved: boolean;
+  ahead: number;
+  behind: number;
+  dirtyFiles: string[];
+  lastCommit: { sha: string; subject: string } | null;
+}
+
+/**
+ * A deterministic briefing of an agent's workspace, reconstructed entirely from
+ * git (no stored state): branch / HEAD, uncommitted files, ahead/behind vs a
+ * base, and the last commit. This is the authoritative "what is the state of
+ * this workspace" layer — an LLM reads it to understand its own (or another
+ * agent's) workspace without trusting any saved self-report.
+ */
+export async function inspectAgentWorkspace(
+  ctx: AgentWorkspaceContext,
+  opts: { agent: string; base?: string },
+): Promise<WorkspaceInspection> {
+  assertAgentName(opts.agent);
+  const ws = (await listAgentWorkspaces(ctx)).find(
+    (w) => w.agent === opts.agent,
+  );
+  if (ws === undefined) {
+    throw new AgentWorkspaceError(
+      `no workspace for agent ${JSON.stringify(opts.agent)}`,
+    );
+  }
+  const base = opts.base ?? "main";
+  const run = ctx.git ?? defaultGitRunner();
+  // git status / log run IN the worktree so they reflect THIS agent's tree.
+  // Fail-closed: a git error must NOT be read as a clean / up-to-date tree.
+  const status = await run(["status", "--porcelain", "-z"], ws.path);
+  if (status.exitCode !== 0 || status.timedOut) {
+    throw new AgentWorkspaceError(
+      `git status failed in ${ws.path}: ${status.stderr.trim()}`,
+    );
+  }
+  const dirtyFiles = parseStatusPorcelain(status.stdout);
+
+  // Resolve the base ref explicitly first, so a genuinely missing base
+  // (baseResolved=false) is distinguished from a git error after it resolves.
+  const baseCheck = await run(
+    ["rev-parse", "--verify", "--quiet", `${base}^{commit}`],
+    ws.path,
+  );
+  const baseResolved = baseCheck.exitCode === 0;
+  let ahead = 0;
+  let behind = 0;
+  if (baseResolved) {
+    const revs = await run(
+      ["rev-list", "--left-right", "--count", `${base}...${ws.branch}`],
+      ws.path,
+    );
+    if (revs.exitCode !== 0 || revs.timedOut) {
+      throw new AgentWorkspaceError(
+        `git rev-list failed for base ${JSON.stringify(base)} in ${ws.path}: ` +
+          revs.stderr.trim(),
+      );
+    }
+    ({ ahead, behind } = parseAheadBehind(revs.stdout));
+  }
+
+  const log = await run(["log", "-1", "--format=%H%n%s"], ws.path);
+  const lines = log.stdout.split("\n");
+  const lastCommit =
+    log.exitCode === 0 && (lines[0] ?? "") !== ""
+      ? { sha: lines[0] as string, subject: lines[1] ?? "" }
+      : null;
+  return {
+    agent: ws.agent,
+    path: ws.path,
+    branch: ws.branch,
+    head: ws.head,
+    base,
+    baseResolved,
+    ahead,
+    behind,
+    dirtyFiles,
+    lastCommit,
+  };
 }
