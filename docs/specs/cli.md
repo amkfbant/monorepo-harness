@@ -348,8 +348,12 @@ auto-merge 配線（merger / CI probe / `--ingest-external-reviews`）は**常�
 throw → **`escalated`** で停止、budget 超過 → **`timeout`**。`--poll-interval`（既定 `30`
 秒）は CI 待ち中の再試行間隔、`--max-wait`（既定 `1800` 秒、`0`=単発）は merge を待つ総
 wall-clock。`--ci-await-timeout` は**各**試行内で pending CI を待つ秒数（既定 `1200`）。
-出力は goal ごとに `goal=<id> await-merge=<outcome> polls=<n> [pr=… | decision=… |
-escalate=…]`。
+各試行の bounded await（CI / 外部レビュー）は**残予算で clamp** されるので 1 試行が
+`--max-wait` を超えてブロックしない（予算切れなら新たな試行を始めない）。`closeAndPr` を
+**直接**呼ぶ close/merge 専用経路で coder/review は走らない。pre-check と closeAndPr 内部の
+close_ready 再 check の間に drift したら `not_awaiting` で停止（副作用なし）、close_ready の
+まま close/merge が**失敗**したら `escalated`（fail-closed）。出力は goal ごとに
+`goal=<id> await-merge=<outcome> polls=<n> [pr=… | decision=… | escalate=…]`。
 
 ## `harness dashboard export`
 

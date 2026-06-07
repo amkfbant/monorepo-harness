@@ -878,11 +878,13 @@ export function registerGoalCommands(
 
         // await-merge ALWAYS merges (that is its purpose), so the auto-merge deps
         // are always constructed — same gate/CI/ingest wiring as `orchestrate
-        // --auto-merge`. The CI await per attempt is CLAMPED to the wall-clock
-        // budget left, so a single attempt cannot block past `--max-wait`; that
-        // is why the runners are rebuilt per poll with a fresh ciStatus.
-        const buildRunners = (ciAwaitMs: number) =>
-          createOrchestratorRunners({
+        // --auto-merge`. BOTH bounded awaits (CI and external-review) are CLAMPED
+        // to the wall-clock budget left, so a single attempt cannot block past
+        // `--max-wait`; the runners are rebuilt per poll with the fresh clamps.
+        const buildRunners = (remainingMs: number) => {
+          const ciAwaitMs = Math.min(ciAwaitTimeoutMs, remainingMs);
+          const reviewTimeoutMs = Math.min(externalReviewTimeoutMs, remainingMs);
+          return createOrchestratorRunners({
             dbPath,
             harnessRoot: opts.getHarnessRoot(),
             createdBy: "cli",
@@ -898,10 +900,10 @@ export function registerGoalCommands(
               ...(raw.ingestExternalReviews === true
                 ? {
                     reviewVerdicts: createGhReviewVerdicts(repoPath, ghBin),
-                    ...(externalReviewTimeoutMs > 0
+                    ...(reviewTimeoutMs > 0
                       ? {
                           reviewAwait: {
-                            timeoutMs: externalReviewTimeoutMs,
+                            timeoutMs: reviewTimeoutMs,
                             intervalMs: 15_000,
                           },
                         }
@@ -912,33 +914,44 @@ export function registerGoalCommands(
             repoPath,
             baseBranch: String(raw.baseBranch ?? "main"),
           });
+        };
+
+        const evalDecision = (goalId: string): string =>
+          withGoalRepo(opts, ({ repo }) =>
+            new ConvergenceService(repo).evaluate(goalId).decision,
+          );
 
         // One probe: re-evaluate convergence and run AT MOST the close/merge step
         // (`closeAndPr` — the close/merge-ONLY runner; it can never run a coder or
         // review). A goal that is not close_ready is reported as not_awaiting
-        // without mutating anything. `remainingMs` clamps this attempt's CI await
-        // to the budget left.
+        // without mutating anything. `remainingMs` clamps this attempt's awaits to
+        // the budget left.
         const probe =
           (goalId: string) =>
           async (remainingMs: number): Promise<AwaitMergeStep> => {
-            const decision = withGoalRepo(opts, ({ repo }) =>
-              new ConvergenceService(repo).evaluate(goalId).decision,
-            );
-            if (decision !== "close_ready") {
-              return { kind: "not_awaiting", decision };
+            if (evalDecision(goalId) !== "close_ready") {
+              return { kind: "not_awaiting", decision: evalDecision(goalId) };
             }
-            const runners = buildRunners(Math.min(ciAwaitTimeoutMs, remainingMs));
+            const runners = buildRunners(remainingMs);
             let result;
             try {
               result = await runners.closeAndPr(goalId);
-            } catch {
-              // convergence drifted away from close_ready between the check and
-              // the close (closeAndPr re-checks and throws BEFORE any side
-              // effect) → nothing merged, nothing mutated; re-read and stop.
-              const d2 = withGoalRepo(opts, ({ repo }) =>
-                new ConvergenceService(repo).evaluate(goalId).decision,
+            } catch (e) {
+              const reason = e instanceof Error ? e.message : String(e);
+              // Distinguish a benign DRIFT (convergence moved off close_ready
+              // between the pre-check and closeAndPr's own re-check, which throws
+              // BEFORE any side effect) from a REAL close/merge failure (PR
+              // create / push / merge). Drift → just stop (nothing mutated). A
+              // failure while STILL close_ready → escalate (fail-closed), as the
+              // generic orchestrator does — never swallow it as not_awaiting.
+              const after = evalDecision(goalId);
+              if (after !== "close_ready") {
+                return { kind: "not_awaiting", decision: after };
+              }
+              withGoalRepo(opts, ({ repo }) =>
+                repo.updateStatus(goalId, "escalated", reason),
               );
-              return { kind: "not_awaiting", decision: d2 };
+              return { kind: "escalated", reason };
             }
             const step = awaitStepFromCloseResult(result);
             if (step.kind === "escalated") {
