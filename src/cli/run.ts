@@ -3496,6 +3496,7 @@ workspaceCmd
           base: String(raw.base ?? "main"),
           nowMs,
           staleThresholdMs: staleHours * 3_600_000,
+          repoKey, // verify each worktree still belongs to this repo
         },
       );
       if (raw.json === true) {

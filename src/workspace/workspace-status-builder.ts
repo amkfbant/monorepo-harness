@@ -8,6 +8,7 @@ import {
 import {
   inspectAgentWorkspace,
   normalizeWorktreePath,
+  worktreeBelongsToRepo,
   type AgentWorkspaceContext,
 } from "./agent-workspace.js";
 import { reconcileWorkspaces } from "./workspace-reconcile.js";
@@ -74,6 +75,14 @@ export interface AssembleStatusOpts {
    * convention-only worktree with no row) and its linked-goal project.
    */
   include?: (record: WorkspaceRecord | null, goalProjectId: string | null) => boolean;
+  /**
+   * When set, each live worktree is VERIFIED to still belong to this canonical
+   * repo key before git runs in it — so a worktree whose dir was reused for a
+   * DIFFERENT repo (git's stale metadata still lists it) is skipped rather than
+   * inspected as if it were ours. Omit only when the caller has no repo key
+   * (then no verification is done).
+   */
+  repoKey?: string;
 }
 
 /**
@@ -103,6 +112,14 @@ export async function assembleWorkspaceStatuses(
     // not attach a different row's goal/project (scope authority follows path).
     const r = recordByPath.get(normalizeWorktreePath(w.path)) ?? null;
     if (!visible(r)) continue; // skip out-of-scope BEFORE any git inspection
+    // skip a worktree whose dir was reused for a foreign repo (stale git
+    // metadata may still list it) — never run git in a repo we do not track.
+    if (
+      opts.repoKey !== undefined &&
+      !(await worktreeBelongsToRepo(w.path, opts.repoKey, ctx.git))
+    ) {
+      continue;
+    }
     const insp = await inspectAgentWorkspace(ctx, {
       agent: w.agent,
       base: opts.base,

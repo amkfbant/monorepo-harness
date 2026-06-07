@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-import { sep as pathSep } from "node:path";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { harnessPaths } from "../../config/paths.js";
@@ -16,11 +15,15 @@ import {
   WorkspaceRepository,
   type WorkspaceRecord,
 } from "../../db/repositories/workspaces.js";
-import { normalizeWorktreePath } from "../../workspace/agent-workspace.js";
 import {
   assembleWorkspaceStatuses,
   readWorkspaceStatusData,
 } from "../../workspace/workspace-status-builder.js";
+import {
+  pickVerifiedGitCwd,
+  resolveTrackedWorkspaceRepo,
+  type TrackedRepoResolution,
+} from "./workspace-tracked-repo.js";
 import {
   errorResult,
   ok,
@@ -128,31 +131,6 @@ export interface WorkspaceStatusArgs {
 }
 
 /**
- * Match `target` (a normalized path) to the tracked workspace it belongs to:
- * an exact worktree path, OR any subpath under one (a subdir/file inside the
- * worktree). Pure fs string logic — no git — so the DB-first guard holds. When
- * the path sits under multiple worktrees (shouldn't happen for non-nested
- * worktrees), the most specific (longest) worktree path wins. Operates on the
- * lightweight (worktreePath, repoPath) list so it is cap-free.
- */
-function matchTrackedWorktree<T extends { worktreePath: string }>(
-  rows: readonly T[],
-  target: string,
-): T | undefined {
-  let best: T | undefined;
-  let bestLen = -1;
-  for (const r of rows) {
-    const wt = normalizeWorktreePath(r.worktreePath);
-    const isMatch = target === wt || target.startsWith(wt + pathSep);
-    if (isMatch && wt.length > bestLen) {
-      best = r;
-      bestLen = wt.length;
-    }
-  }
-  return best;
-}
-
-/**
  * Git-inclusive status of every workspace of ONE repo, over MCP. `repoPath` is a
  * path inside a tracked worktree — its `worktreePath` from `workspace.list`, or
  * any subdir/file under it. It must resolve to a repo the harness already tracks
@@ -171,69 +149,29 @@ export async function workspaceStatusTool(
     return errorResult("harness DB is not initialized", { dbPath: paths.dbPath });
   }
 
-  const allowed = context.config.allowedProjects;
-  // project scoping (like workspace.list): a restricted client only sees — and
-  // only inspects (git) — workspaces whose linked-goal project is allowed.
-  const include =
-    allowed.length === 0
-      ? undefined
-      : (_r: unknown, projectId: string | null): boolean =>
-          projectId !== null && allowed.includes(projectId);
-  const notTracked = (): HarnessMcpToolResult =>
-    errorResult(`${args.repoPath} is not a tracked workspace worktree`, {
-      repoPath: args.repoPath,
-    });
-
-  // Authorize against the DB FIRST (no git): `repoPath` must sit inside a tracked
-  // workspace worktree, so git never runs on an arbitrary unknown path. The
-  // matched worktree yields the canonical repo key; we then pick an EXISTING
-  // worktree of that repo as the git cwd so a stale (deleted) provided path still
-  // works — but only ever from a worktree the client is ALLOWED to observe.
-  let gitCwd: string;
-  let data: ReturnType<typeof readWorkspaceStatusData>;
+  // DB-FIRST guard (shared): resolve `repoPath` to a tracked repo + candidate git
+  // cwds, scoped to allowedProjects, WITHOUT running git on an unknown path.
+  let resolution: TrackedRepoResolution;
   const handle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
   try {
-    // readonly: the DB is already migrated; do NOT runMigrations here.
-    const target = normalizeWorktreePath(args.repoPath);
-    // cap-free path match: a tracked worktree must never be missed by a row cap.
-    const tracked = matchTrackedWorktree(
-      new WorkspaceRepository(handle.db).listWorktreePaths(),
-      target,
+    const resolved = resolveTrackedWorkspaceRepo(
+      handle.db,
+      args.repoPath,
+      context.config.allowedProjects,
     );
-    if (tracked === undefined) return notTracked();
-    data = readWorkspaceStatusData(handle.db, tracked.repoPath);
-    const projectOf = (r: WorkspaceRecord): string | null =>
-      r.goalId !== null
-        ? (data.goalInfo.get(r.goalId)?.projectId ?? null)
-        : null;
-    // re-find the matched ROW within the repo's (unbounded) rows for the scope
-    // check + cwd selection.
-    const matchedRow = matchTrackedWorktree(data.rows, target);
-    if (matchedRow === undefined) return notTracked();
-    // scope check on the MATCHED row BEFORE confirming it is tracked: an
-    // out-of-scope path must be indistinguishable from an unknown one.
-    if (include !== undefined && !include(matchedRow, projectOf(matchedRow))) {
-      return notTracked();
-    }
-    // git cwd: prefer the matched worktree, else any VISIBLE sibling that still
-    // exists on disk — never an out-of-scope worktree the client may not observe.
-    const visibleRows =
-      include === undefined
-        ? data.rows
-        : data.rows.filter((r) => include(r, projectOf(r)));
-    const candidate = [
-      matchedRow.worktreePath,
-      ...visibleRows.map((r) => r.worktreePath),
-    ].find((p) => existsSync(p));
-    if (candidate === undefined) {
-      return errorResult(`no live worktree on disk for ${args.repoPath}`, {
-        repoPath: args.repoPath,
-      });
-    }
-    gitCwd = candidate;
+    if ("error" in resolved) return resolved.error;
+    resolution = resolved.ok;
   } finally {
     handle.close();
   }
+  // confirm a candidate still belongs to this repo before running git in it.
+  const gitCwd = await pickVerifiedGitCwd(resolution);
+  if (gitCwd === undefined) {
+    return errorResult(`no live worktree on disk for ${args.repoPath}`, {
+      repoPath: args.repoPath,
+    });
+  }
+  const { data, include } = resolution;
 
   const staleHours =
     args.staleAfterHours !== undefined && args.staleAfterHours >= 0
@@ -246,6 +184,7 @@ export async function workspaceStatusTool(
       base: args.base ?? "main",
       nowMs: Date.now(),
       staleThresholdMs: staleHours * 3_600_000,
+      repoKey: resolution.repoKey, // verify each worktree belongs to this repo
       ...(include !== undefined ? { include } : {}),
     },
   );
