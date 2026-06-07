@@ -307,6 +307,8 @@ harness.knowledge.search
 harness.knowledge.get
 harness.db.status
 harness.doctor.summary
+harness.inbox
+harness.metrics
 harness.operation.list
 harness.operation.get
 harness.workspace.list
@@ -354,6 +356,14 @@ subpath で、未知 path で git を実行しない。
 mutating な **create/remove**（filesystem の git worktree 操作 + confirmation gate）は
 server-side git の破壊的操作を要するため**現状 CLI 専用**
 （[`cli.md`](./cli.md#harness-workspace)・MCP 版は follow-up）。
+
+**`harness.inbox` / `harness.metrics`（read）** は DB read model の集計（git/fs アクセス
+なし）。`harness.inbox` は「今見るべき run」＝needs_review / changes_requested / failed /
+knowledge-candidate を返し、`harness.metrics` は run 件数（status 別）/ review approved-rate /
+retry・safety カウンタを返す。任意の `projectId` / `repoId` / `domain` / `sinceHours` で
+絞り込み可。**scope**: `allowedProjects` が空（unrestricted）なら repo 横断、restricted なら
+`projectId` がその集合に入る必要がある（未指定時は allowed が 1 つなら既定、複数なら
+`project_required` で deny＝単一 projectId 集計で部分集合を跨がない fail-closed）。
 
 `harness.knowledge.get` tool results omit entry body by default and include a
 capped body only when `includeBody` is true. `harness://knowledge/{entryId}`

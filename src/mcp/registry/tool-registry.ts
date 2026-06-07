@@ -50,6 +50,7 @@ import {
   workspaceInspectTool,
   workspaceRecoverTool,
 } from "../tools/workspace-read-tools.js";
+import { inboxTool, metricsTool } from "../tools/aggregate-tools.js";
 import {
   cleanupDryRunTool,
   dbArchivePreviewTool,
@@ -596,6 +597,15 @@ const workspaceCheckpointArgs = z
   })
   .strict();
 
+const aggregateArgs = z
+  .object({
+    projectId: z.string().min(1).optional(),
+    repoId: z.string().min(1).optional(),
+    domain: z.string().min(1).optional(),
+    sinceHours: z.number().nonnegative().optional(),
+  })
+  .strict();
+
 const workspaceInspectArgs = z
   .object({
     repoPath: z.string().min(1),
@@ -881,6 +891,42 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     argsSchema: noArgs,
     inputSchema: emptyInputSchema,
     handler: doctorSummaryTool,
+  }),
+  define({
+    name: "harness.inbox",
+    title: "What to look at now",
+    description:
+      "Runs needing attention: needs-review / changes-requested / failed / " +
+      "cleanup-candidate / knowledge. Optional projectId / repoId / domain / " +
+      "sinceHours filters. Scoped to allowedProjects. Pure DB read.",
+    kind: "read",
+    operation: "inbox",
+    argsSchema: aggregateArgs,
+    inputSchema: objectSchema({
+      projectId: { type: "string" },
+      repoId: { type: "string" },
+      domain: { type: "string" },
+      sinceHours: { type: "number" },
+    }),
+    handler: inboxTool,
+  }),
+  define({
+    name: "harness.metrics",
+    title: "Run / review / retry / safety metrics",
+    description:
+      "Aggregate run health: run counts by status, review approved-rate, " +
+      "retry and safety counters. Optional projectId / repoId / domain / " +
+      "sinceHours filters. Scoped to allowedProjects. Pure DB read.",
+    kind: "read",
+    operation: "metrics",
+    argsSchema: aggregateArgs,
+    inputSchema: objectSchema({
+      projectId: { type: "string" },
+      repoId: { type: "string" },
+      domain: { type: "string" },
+      sinceHours: { type: "number" },
+    }),
+    handler: metricsTool,
   }),
   define({
     name: "harness.operation.list",
