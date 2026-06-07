@@ -24,6 +24,7 @@ import { ConvergenceService } from "../goal/convergence.js";
 import { recordConvergenceDecisionWithStatus } from "../goal/convergence-status.js";
 import { deferFindingToBacklog } from "../goal/followups.js";
 import { GoalOrchestrator } from "../goal/orchestrator.js";
+import { linkAgentWorkspaceToGoal } from "../workspace/workspace-goal-link.js";
 import { decideOrchestratorAction } from "../goal/orchestrator-dispatch.js";
 import { createOrchestratorRunners } from "../goal/orchestrator-runners.js";
 import {
@@ -784,12 +785,21 @@ export function registerGoalCommands(
           maxSteps: parsePositiveInt(raw.maxSteps ?? 50, "--max-steps"),
           createdBy: "cli",
         });
+        // Best-effort: if this ran in an agent worktree, link the workspace to
+        // the goal so `workspace status` reflects who is driving it. Never fails
+        // the orchestration.
+        const link = await linkAgentWorkspaceToGoal({
+          repoPath,
+          goalId,
+          harnessRoot: opts.getHarnessRoot(),
+        });
         process.stdout.write(
           `goal=${goalId} outcome=${result.outcome}` +
             (result.prUrl !== undefined ? ` pr=${result.prUrl}` : "") +
             (result.escalateReason !== undefined
               ? ` escalate=${result.escalateReason}`
               : "") +
+            (link.linked ? ` workspace=${link.agent}` : "") +
             "\n",
         );
       });
