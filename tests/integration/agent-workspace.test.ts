@@ -15,6 +15,7 @@ import {
   inspectAgentWorkspace,
   listAgentWorkspaces,
   removeAgentWorkspace,
+  resolveMainWorktree,
 } from "../../src/workspace/agent-workspace.js";
 
 function setupRepo(): { repoPath: string; workspacesDir: string } {
@@ -154,6 +155,25 @@ describe("agent workspaces (real git)", () => {
     const ws = await createAgentWorkspace(ctx, { agent: "alice", base: "main" });
     const fromWorktree = await canonicalRepoKey({ repoPath: ws.path });
     expect(fromWorktree).toBe(fromRoot);
+  });
+
+  it("resolveMainWorktree: returns the main worktree from root, subdir, and a linked worktree", async () => {
+    const fromRoot = await resolveMainWorktree({ repoPath: ctx.repoPath });
+    expect(fromRoot.endsWith("repo")).toBe(true);
+    const sub = join(ctx.repoPath, "s");
+    mkdirSync(sub, { recursive: true });
+    expect(await resolveMainWorktree({ repoPath: sub })).toBe(fromRoot);
+    // from a linked agent worktree, the MAIN worktree is still resolved (so a
+    // command run there does not pin git to the soon-to-be-removed worktree).
+    const ws = await createAgentWorkspace(ctx, { agent: "alice", base: "main" });
+    expect(await resolveMainWorktree({ repoPath: ws.path })).toBe(fromRoot);
+  });
+
+  it("resolveMainWorktree: throws outside a git repository", async () => {
+    const notRepo = mkdtempSync(join(tmpdir(), "harness-norepo2-"));
+    await expect(
+      resolveMainWorktree({ repoPath: notRepo }),
+    ).rejects.toThrow(/not a git repository/);
   });
 
   it("canonicalRepoKey: throws outside a git repository", async () => {
