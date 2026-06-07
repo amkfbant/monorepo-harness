@@ -91,6 +91,11 @@ describe("harness.inbox / harness.metrics MCP tools", () => {
     expect(out.summary).toMatch(/project/i);
   });
 
+  it("inbox does not accept sinceHours (not honored across its buckets)", async () => {
+    const out = await callTool(server(setup()), "harness.inbox", { sinceHours: 24 });
+    expect(out.status).toBe("error"); // strict schema rejects the unknown arg
+  });
+
   it("filters metrics by an explicit allowed projectId", async () => {
     const out = await callTool(server(setup(), ["demo", "other"]), "harness.metrics", {
       projectId: "other",

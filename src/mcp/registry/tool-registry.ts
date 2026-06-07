@@ -597,7 +597,18 @@ const workspaceCheckpointArgs = z
   })
   .strict();
 
-const aggregateArgs = z
+// inbox = current actionable state; a time window is not honored consistently
+// across its buckets (knowledge-candidate count is all-time), so it is not
+// exposed there. metrics is historical, so it accepts `sinceHours`.
+const inboxArgs = z
+  .object({
+    projectId: z.string().min(1).optional(),
+    repoId: z.string().min(1).optional(),
+    domain: z.string().min(1).optional(),
+  })
+  .strict();
+
+const metricsArgs = z
   .object({
     projectId: z.string().min(1).optional(),
     repoId: z.string().min(1).optional(),
@@ -896,30 +907,29 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     name: "harness.inbox",
     title: "What to look at now",
     description:
-      "Runs needing attention: needs-review / changes-requested / failed / " +
-      "cleanup-candidate / knowledge. Optional projectId / repoId / domain / " +
-      "sinceHours filters. Scoped to allowedProjects. Pure DB read.",
+      "Runs needing attention: needs-review / changes-requested / failed runs, " +
+      "plus a knowledge-candidate run count. Optional projectId / repoId / " +
+      "domain filters. Scoped to allowedProjects. Pure DB read.",
     kind: "read",
     operation: "inbox",
-    argsSchema: aggregateArgs,
+    argsSchema: inboxArgs,
     inputSchema: objectSchema({
       projectId: { type: "string" },
       repoId: { type: "string" },
       domain: { type: "string" },
-      sinceHours: { type: "number" },
     }),
     handler: inboxTool,
   }),
   define({
     name: "harness.metrics",
-    title: "Run / review / retry / safety metrics",
+    title: "Run / review metrics",
     description:
-      "Aggregate run health: run counts by status, review approved-rate, " +
-      "retry and safety counters. Optional projectId / repoId / domain / " +
-      "sinceHours filters. Scoped to allowedProjects. Pure DB read.",
+      "Aggregate run health: run counts by status, plus review approved-rate. " +
+      "Optional projectId / repoId / domain / sinceHours filters. Scoped to " +
+      "allowedProjects. Pure DB read.",
     kind: "read",
     operation: "metrics",
-    argsSchema: aggregateArgs,
+    argsSchema: metricsArgs,
     inputSchema: objectSchema({
       projectId: { type: "string" },
       repoId: { type: "string" },

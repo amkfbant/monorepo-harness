@@ -70,8 +70,9 @@ function buildFilter(
 
 /**
  * "What should I look at now" over MCP: needs-review / changes-requested /
- * failed / cleanup-candidate / knowledge runs, scoped to `allowedProjects`.
- * Pure DB read (the DB read model), no git / filesystem.
+ * failed runs, plus a knowledge-candidate run count, scoped to `allowedProjects`.
+ * Pure DB read (the DB read model), no git / filesystem. No time window — inbox
+ * is current actionable state (the knowledge bucket is not window-aware).
  */
 export function inboxTool(
   args: AggregateArgs,
@@ -87,8 +88,9 @@ export function inboxTool(
 }
 
 /**
- * Run / review / retry / safety metrics over MCP, scoped to `allowedProjects`.
- * Pure DB read (the DB read model), no git / filesystem.
+ * Run / review metrics over MCP, scoped to `allowedProjects`: run counts by
+ * status plus the review approved-rate (the DB read-model `metricsSummary`).
+ * Pure DB read, no git / filesystem.
  */
 export function metricsTool(
   args: AggregateArgs,
