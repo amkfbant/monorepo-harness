@@ -302,6 +302,11 @@ fail-closed。gate が hard 未達なら merge せず escalate（fail-closed）�
 audit に記録される。詳細は
 [`workflow.md`](./workflow.md) の「Phase 3 — auto-merge」。
 
+**workspace 自動リンク（best-effort）**: `--repo` が agent worktree（branch が
+`agent/<name>`、または adopt 済みの path）なら、run 後にその workspace を goal に
+**自動リンク**し heartbeat を更新する（`workspace status` がどの agent がどの goal を
+回しているかを自動反映）。失敗しても orchestration を止めない。出力に `workspace=<agent>`。
+
 **`--request-copilot-review`（既定 OFF・非 gating）** を付けると、closeAndPr で PR
 作成後・auto-merge 前に best-effort で Copilot review をリクエストする。outcome は
 operation audit（`copilot-review`）に記録されるだけで、close / merge を一切 gate
