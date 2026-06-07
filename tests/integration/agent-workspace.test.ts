@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   canonicalRepoKey,
+  changedFilesForWorkspace,
   createAgentWorkspace,
   inspectAgentWorkspace,
   listAgentWorkspaces,
@@ -181,6 +182,48 @@ describe("agent workspaces (real git)", () => {
     await expect(canonicalRepoKey({ repoPath: notRepo })).rejects.toThrow(
       /not a git repository/,
     );
+  });
+
+  it("changedFilesForWorkspace: unions committed-ahead and uncommitted files", async () => {
+    const ws = await createAgentWorkspace(ctx, { agent: "alice", base: "main" });
+    const g = (args: string[]) =>
+      execFileSync("git", args, { cwd: ws.path, stdio: "ignore" });
+    // a committed change (ahead of main) + an uncommitted edit.
+    writeFileSync(join(ws.path, "committed.ts"), "export const x = 1;\n");
+    g(["add", "committed.ts"]);
+    g(["commit", "-qm", "add committed"]);
+    writeFileSync(join(ws.path, "wip.ts"), "work\n");
+
+    const files = await changedFilesForWorkspace(ctx, {
+      agent: "alice",
+      base: "main",
+    });
+    expect([...files].sort()).toEqual(["committed.ts", "wip.ts"]);
+  });
+
+  it("changedFilesForWorkspace: a rename contributes BOTH endpoints (conflict-safe)", async () => {
+    const ws = await createAgentWorkspace(ctx, { agent: "alice", base: "main" });
+    // README.md exists from the repo init; rename it (staged).
+    execFileSync("git", ["mv", "README.md", "DOCS.md"], {
+      cwd: ws.path,
+      stdio: "ignore",
+    });
+    const files = await changedFilesForWorkspace(ctx, {
+      agent: "alice",
+      base: "main",
+    });
+    // an agent editing README.md must still be seen as overlapping → both ends.
+    expect([...files].sort()).toEqual(["DOCS.md", "README.md"]);
+  });
+
+  it("changedFilesForWorkspace: a missing base degrades to the uncommitted set", async () => {
+    const ws = await createAgentWorkspace(ctx, { agent: "alice", base: "main" });
+    writeFileSync(join(ws.path, "wip.ts"), "work\n");
+    const files = await changedFilesForWorkspace(ctx, {
+      agent: "alice",
+      base: "nonexistent",
+    });
+    expect(files).toEqual(["wip.ts"]);
   });
 
   it("inspect: throws for an unknown agent", async () => {
