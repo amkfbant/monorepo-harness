@@ -50,7 +50,10 @@ import {
   removeAgentWorkspace,
   resolveMainWorktree,
 } from "../workspace/agent-workspace.js";
-import { findWorkspaceConflicts } from "../workspace/workspace-conflicts.js";
+import {
+  findWorkspaceConflicts,
+  type WorkspaceChangedFiles,
+} from "../workspace/workspace-conflicts.js";
 import { WorkspaceRepository } from "../db/repositories/workspaces.js";
 import {
   buildRecoveryBriefing,
@@ -3317,7 +3320,7 @@ workspaceCmd
     try {
       const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
       const live = await listAgentWorkspaces({ repoPath, workspacesDir });
-      const entries = [];
+      const entries: WorkspaceChangedFiles[] = [];
       for (const w of live) {
         entries.push({
           agent: w.agent,
