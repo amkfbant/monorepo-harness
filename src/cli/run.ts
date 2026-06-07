@@ -54,6 +54,10 @@ import {
   buildRecoveryBriefing,
   type RecoveryGoal,
 } from "../workspace/workspace-recover.js";
+import {
+  summarizeWorkspace,
+  type WorkspaceStatusInput,
+} from "../workspace/workspace-status.js";
 import { GoalRepository } from "../goal/repository.js";
 import { ConvergenceService } from "../goal/convergence.js";
 import { openManagedDb } from "../db/managed-connection.js";
@@ -3293,6 +3297,111 @@ workspaceCmd
           `  vs base:      ${aheadBehind}\n` +
           `  working tree: ${dirty}\n`,
       );
+    } catch (e) {
+      withWorkspaceErrorExit(e);
+    }
+  });
+
+workspaceCmd
+  .command("status")
+  .description(
+    "at-a-glance progress of every agent workspace (deterministic projection)",
+  )
+  .option("--repo <path>", "the project repo (default: current directory)")
+  .option("--dir <dir>", "where agent worktrees live (default: <repo>.agents)")
+  .option("--base <commit-ish>", "base ref for ahead/behind", "main")
+  .option("--json", "emit JSON instead of text", false)
+  .action(async (raw: Record<string, unknown>) => {
+    try {
+      const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
+      const repoKey = await canonicalRepoKey({ repoPath });
+      const live = await listAgentWorkspaces({ repoPath, workspacesDir });
+      // inspect each live workspace (git state) before touching the DB.
+      const inspections = new Map<string, Awaited<ReturnType<typeof inspectAgentWorkspace>>>();
+      for (const w of live) {
+        inspections.set(
+          w.agent,
+          await inspectAgentWorkspace(
+            { repoPath, workspacesDir },
+            { agent: w.agent, base: String(raw.base ?? "main"), workspace: w },
+          ),
+        );
+      }
+      const inputs = withWorkspaceRepo((wsRepo, db) => {
+        const rows = wsRepo.listByRepo(repoKey);
+        const rowByAgent = new Map(rows.map((r) => [r.agent, r]));
+        const liveAgents = new Set(live.map((w) => w.agent));
+        const goalRepo = new GoalRepository(db);
+        const goalDecisionFor = (goalId: string | null): string | null => {
+          if (goalId === null) return null;
+          // dangling advisory link → null (rendered as goal-missing).
+          if (goalRepo.getSession(goalId) === null) return null;
+          return new ConvergenceService(goalRepo).evaluate(goalId).decision;
+        };
+        const out: WorkspaceStatusInput[] = [];
+        for (const w of live) {
+          const r = rowByAgent.get(w.agent) ?? null;
+          const insp = inspections.get(w.agent);
+          out.push({
+            agent: w.agent,
+            branch: w.branch,
+            git:
+              insp === undefined
+                ? null
+                : {
+                    ahead: insp.ahead,
+                    behind: insp.behind,
+                    baseResolved: insp.baseResolved,
+                    dirtyCount: insp.dirtyFiles.length,
+                  },
+            goalId: r?.goalId ?? null,
+            goalDecision: goalDecisionFor(r?.goalId ?? null),
+            objective: r?.objective ?? null,
+            lastActiveAt: r?.lastActiveAt ?? null,
+            lastCheckpointAt:
+              r === null ? null : (wsRepo.latestCheckpoint(r.workspaceId)?.createdAt ?? null),
+            stale: false,
+          });
+        }
+        // stale: a DB row whose git worktree git no longer knows about.
+        for (const r of rows) {
+          if (liveAgents.has(r.agent)) continue;
+          out.push({
+            agent: r.agent,
+            branch: r.branch,
+            git: null,
+            goalId: r.goalId,
+            goalDecision: goalDecisionFor(r.goalId),
+            objective: r.objective,
+            lastActiveAt: r.lastActiveAt,
+            lastCheckpointAt: wsRepo.latestCheckpoint(r.workspaceId)?.createdAt ?? null,
+            stale: true,
+          });
+        }
+        return out;
+      });
+      const statuses = inputs.map((i) => summarizeWorkspace(i));
+      if (raw.json === true) {
+        process.stdout.write(`${JSON.stringify(statuses, null, 2)}\n`);
+        return;
+      }
+      if (statuses.length === 0) {
+        process.stdout.write("no agent workspaces\n");
+        return;
+      }
+      for (const s of statuses) {
+        const git =
+          s.git === null
+            ? "worktree-missing"
+            : s.git.baseResolved
+              ? `+${s.git.ahead}/-${s.git.behind} ${s.git.dirtyCount}dirty`
+              : `base? ${s.git.dirtyCount}dirty`;
+        const goal = s.goalId ? `${s.goalId}${s.goalDecision ? `:${s.goalDecision}` : ":missing"}` : "-";
+        const obj = s.objective ? ` — ${s.objective}` : "";
+        process.stdout.write(
+          `${s.agent}\t${s.label}\t${git}\t${goal}\t${s.lastActiveAt ?? "-"}${obj}\n`,
+        );
+      }
     } catch (e) {
       withWorkspaceErrorExit(e);
     }

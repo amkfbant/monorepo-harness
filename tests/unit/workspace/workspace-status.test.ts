@@ -1,0 +1,88 @@
+import { describe, expect, it } from "vitest";
+import {
+  progressLabel,
+  summarizeWorkspace,
+  type WorkspaceStatusInput,
+} from "../../../src/workspace/workspace-status.js";
+
+function base(over: Partial<WorkspaceStatusInput> = {}): WorkspaceStatusInput {
+  return {
+    agent: "alice",
+    branch: "agent/alice",
+    git: { ahead: 0, behind: 0, baseResolved: true, dirtyCount: 0 },
+    goalId: null,
+    goalDecision: null,
+    objective: null,
+    lastActiveAt: null,
+    lastCheckpointAt: null,
+    stale: false,
+    ...over,
+  };
+}
+
+describe("progressLabel (deterministic projection)", () => {
+  it("clean for a tidy, goal-less workspace", () => {
+    expect(progressLabel(base())).toBe("clean");
+  });
+
+  it("stale dominates everything", () => {
+    expect(
+      progressLabel(base({ stale: true, git: null, goalDecision: "needs_fix", goalId: "g" })),
+    ).toBe("stale");
+  });
+
+  it("goal-missing for a dangling link", () => {
+    expect(progressLabel(base({ goalId: "gone", goalDecision: null }))).toBe(
+      "goal-missing",
+    );
+  });
+
+  it("blocked for diverging / budget_exhausted / escalate", () => {
+    for (const d of ["diverging", "budget_exhausted", "escalate"]) {
+      expect(progressLabel(base({ goalId: "g", goalDecision: d }))).toBe("blocked");
+    }
+  });
+
+  it("needs-work for needs_fix / needs_classification", () => {
+    expect(progressLabel(base({ goalId: "g", goalDecision: "needs_fix" }))).toBe("needs-work");
+    expect(progressLabel(base({ goalId: "g", goalDecision: "needs_classification" }))).toBe("needs-work");
+  });
+
+  it("ready-to-close for close_ready", () => {
+    expect(progressLabel(base({ goalId: "g", goalDecision: "close_ready" }))).toBe("ready-to-close");
+  });
+
+  it("in-progress for a `continue` goal (does not fall through to clean)", () => {
+    expect(progressLabel(base({ goalId: "g", goalDecision: "continue" }))).toBe("in-progress");
+  });
+
+  it("blocked (fail-closed) for an unrecognized decision", () => {
+    expect(progressLabel(base({ goalId: "g", goalDecision: "brand_new" }))).toBe("blocked");
+  });
+
+  it("base-unknown when the base ref does not resolve (hides ahead/behind)", () => {
+    expect(
+      progressLabel(base({ git: { ahead: 0, behind: 0, baseResolved: false, dirtyCount: 0 } })),
+    ).toBe("base-unknown");
+    // dirty still takes priority over an unresolved base.
+    expect(
+      progressLabel(base({ git: { ahead: 0, behind: 0, baseResolved: false, dirtyCount: 3 } })),
+    ).toBe("dirty");
+  });
+
+  it("falls back to git state (dirty > ahead > behind) when the goal is calm", () => {
+    expect(progressLabel(base({ git: { ahead: 1, behind: 1, baseResolved: true, dirtyCount: 2 } }))).toBe("dirty");
+    expect(progressLabel(base({ git: { ahead: 1, behind: 1, baseResolved: true, dirtyCount: 0 } }))).toBe("ahead");
+    expect(progressLabel(base({ git: { ahead: 0, behind: 1, baseResolved: true, dirtyCount: 0 } }))).toBe("behind");
+  });
+
+  it("a calm closed goal with a tidy tree is clean", () => {
+    expect(progressLabel(base({ goalId: "g", goalDecision: "closed" }))).toBe("clean");
+  });
+
+  it("summarizeWorkspace attaches the label", () => {
+    const s = summarizeWorkspace(base({ goalId: "g", goalDecision: "needs_fix" }));
+    expect(s.label).toBe("needs-work");
+    expect(s.agent).toBe("alice");
+  });
+});
