@@ -66,6 +66,19 @@ describe("WorkspaceRepository", () => {
     expect(zoe.map((r) => r.agent)).toEqual(["zoe"]);
   });
 
+  it("listWorktreePaths returns EVERY (worktree, repo) with no cap", () => {
+    // DB-first path auth must never miss a tracked worktree to a row cap.
+    for (const name of ["amy", "bea", "cara", "dee", "zoe"]) {
+      repo.upsert({ agent: name, repoPath: REPO, branch: `agent/${name}`, worktreePath: `/p/${name}` });
+    }
+    const paths = repo.listWorktreePaths();
+    expect(paths).toHaveLength(5); // not capped at any default
+    expect(paths.map((p) => p.worktreePath).sort()).toEqual(
+      ["/p/amy", "/p/bea", "/p/cara", "/p/dee", "/p/zoe"],
+    );
+    expect(paths.every((p) => p.repoPath === REPO)).toBe(true);
+  });
+
   it("scopes rows by repo path (same agent name in two repos is two rows)", () => {
     repo.upsert({ agent: "alice", repoPath: "/a", branch: "agent/alice", worktreePath: "/a/x" });
     repo.upsert({ agent: "alice", repoPath: "/b", branch: "agent/alice", worktreePath: "/b/x" });

@@ -128,17 +128,18 @@ export interface WorkspaceStatusArgs {
 }
 
 /**
- * Match `target` (a normalized path) to the tracked workspace row it belongs to:
+ * Match `target` (a normalized path) to the tracked workspace it belongs to:
  * an exact worktree path, OR any subpath under one (a subdir/file inside the
  * worktree). Pure fs string logic — no git — so the DB-first guard holds. When
- * the path sits under multiple rows (shouldn't happen for non-nested worktrees),
- * the most specific (longest) worktree path wins.
+ * the path sits under multiple worktrees (shouldn't happen for non-nested
+ * worktrees), the most specific (longest) worktree path wins. Operates on the
+ * lightweight (worktreePath, repoPath) list so it is cap-free.
  */
-function matchTrackedWorktree(
-  rows: readonly WorkspaceRecord[],
+function matchTrackedWorktree<T extends { worktreePath: string }>(
+  rows: readonly T[],
   target: string,
-): WorkspaceRecord | undefined {
-  let best: WorkspaceRecord | undefined;
+): T | undefined {
+  let best: T | undefined;
   let bestLen = -1;
   for (const r of rows) {
     const wt = normalizeWorktreePath(r.worktreePath);
@@ -185,42 +186,49 @@ export async function workspaceStatusTool(
 
   // Authorize against the DB FIRST (no git): `repoPath` must sit inside a tracked
   // workspace worktree, so git never runs on an arbitrary unknown path. The
-  // matched row yields the canonical repo key; we then pick an EXISTING worktree
-  // of that repo as the git cwd so a stale (deleted) provided path still works.
-  let repoKey: string;
+  // matched worktree yields the canonical repo key; we then pick an EXISTING
+  // worktree of that repo as the git cwd so a stale (deleted) provided path still
+  // works — but only ever from a worktree the client is ALLOWED to observe.
   let gitCwd: string;
   let data: ReturnType<typeof readWorkspaceStatusData>;
   const handle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
   try {
     // readonly: the DB is already migrated; do NOT runMigrations here.
     const target = normalizeWorktreePath(args.repoPath);
+    // cap-free path match: a tracked worktree must never be missed by a row cap.
     const tracked = matchTrackedWorktree(
-      new WorkspaceRepository(handle.db).listAll({ limit: 10_000 }),
+      new WorkspaceRepository(handle.db).listWorktreePaths(),
       target,
     );
     if (tracked === undefined) return notTracked();
-    repoKey = tracked.repoPath;
-    data = readWorkspaceStatusData(handle.db, repoKey);
+    data = readWorkspaceStatusData(handle.db, tracked.repoPath);
+    const projectOf = (r: WorkspaceRecord): string | null =>
+      r.goalId !== null
+        ? (data.goalInfo.get(r.goalId)?.projectId ?? null)
+        : null;
+    // re-find the matched ROW within the repo's (unbounded) rows for the scope
+    // check + cwd selection.
+    const matchedRow = matchTrackedWorktree(data.rows, target);
+    if (matchedRow === undefined) return notTracked();
     // scope check on the MATCHED row BEFORE confirming it is tracked: an
     // out-of-scope path must be indistinguishable from an unknown one.
-    if (include !== undefined) {
-      const projectId =
-        tracked.goalId !== null
-          ? (data.goalInfo.get(tracked.goalId)?.projectId ?? null)
-          : null;
-      if (!include(tracked, projectId)) return notTracked();
+    if (include !== undefined && !include(matchedRow, projectOf(matchedRow))) {
+      return notTracked();
     }
-    // git cwd: prefer the provided worktree, else any sibling that still exists
-    // on disk (the provided path may be stale while the repo lives elsewhere).
+    // git cwd: prefer the matched worktree, else any VISIBLE sibling that still
+    // exists on disk — never an out-of-scope worktree the client may not observe.
+    const visibleRows =
+      include === undefined
+        ? data.rows
+        : data.rows.filter((r) => include(r, projectOf(r)));
     const candidate = [
-      tracked.worktreePath,
-      ...data.rows.map((r) => r.worktreePath),
+      matchedRow.worktreePath,
+      ...visibleRows.map((r) => r.worktreePath),
     ].find((p) => existsSync(p));
     if (candidate === undefined) {
-      return errorResult(
-        `no live worktree on disk for ${args.repoPath}`,
-        { repoPath: args.repoPath },
-      );
+      return errorResult(`no live worktree on disk for ${args.repoPath}`, {
+        repoPath: args.repoPath,
+      });
     }
     gitCwd = candidate;
   } finally {

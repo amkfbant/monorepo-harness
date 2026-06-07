@@ -156,6 +156,21 @@ export class WorkspaceRepository {
     return rows.map(rowToRecord);
   }
 
+  /**
+   * Every workspace's (worktreePath, repoPath) with NO row cap — for DB-first
+   * path authorization, where a capped `listAll` scan could miss a tracked
+   * worktree that sorts beyond the limit and wrongly treat it as unknown.
+   */
+  listWorktreePaths(): { worktreePath: string; repoPath: string }[] {
+    const rows = this.db
+      .prepare(`SELECT worktree_path, repo_path FROM workspaces`)
+      .all() as Record<string, unknown>[];
+    return rows.map((r) => ({
+      worktreePath: String(r.worktree_path),
+      repoPath: String(r.repo_path),
+    }));
+  }
+
   remove(repoPath: string, agent: string): boolean {
     const r = this.db
       .prepare(`DELETE FROM workspaces WHERE repo_path = ? AND agent = ?`)
