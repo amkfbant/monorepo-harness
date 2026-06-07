@@ -309,7 +309,18 @@ harness.db.status
 harness.doctor.summary
 harness.operation.list
 harness.operation.get
+harness.workspace.list
 ```
+
+`harness.workspace.list`（read）は agent workspace の coordination view（DB index）を
+返す: agent / branch / worktree_path / linked goal とその convergence decision /
+objective / heartbeat / last checkpoint。`agent` で絞り込み可。**read tool なので既定で
+許可**（allowlist 不要）。`allowedProjects` で scope された client には、**linked goal の
+project_id がその集合に入る workspace のみ**返す（unlinked / dangling は project 不明なので
+restricted client では fail-closed で除外）。**git state（dirty / ahead-behind）は含めない**。mutating な
+create/remove/checkpoint と git-inclusive な inspect/recover は、filesystem/git アクセスと
+（mutation には）confirmation gate を要するため**現状 CLI 専用**（[`cli.md`](./cli.md#harness-workspace)・
+将来の MCP mutation tool は follow-up）。
 
 `harness.knowledge.get` tool results omit entry body by default and include a
 capped body only when `includeBody` is true. `harness://knowledge/{entryId}`

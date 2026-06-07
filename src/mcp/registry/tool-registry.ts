@@ -40,6 +40,7 @@ import {
   runListTool,
   runTimelineTool,
 } from "../tools/read-tools.js";
+import { workspaceListTool } from "../tools/workspace-tools.js";
 import {
   cleanupDryRunTool,
   dbArchivePreviewTool,
@@ -558,6 +559,13 @@ const goalFindingJson = {
   description: "Goal finding input",
   additionalProperties: true,
 };
+
+const workspaceListArgs = z
+  .object({
+    agent: z.string().min(1).optional(),
+    limit: LimitSchema,
+  })
+  .strict();
 
 export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   define({
@@ -1502,6 +1510,22 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       ["idempotencyKey"],
     ),
     handler: dbGcBlobsApplyTool,
+  }),
+  define({
+    name: "harness.workspace.list",
+    title: "List agent workspaces",
+    description:
+      "Read-only coordination view of the per-agent workspaces (DB index): " +
+      "branch, linked goal + its convergence decision, objective, heartbeat, " +
+      "and last checkpoint. No git state; mutations stay CLI-only.",
+    kind: "read",
+    operation: "workspace.list",
+    argsSchema: workspaceListArgs,
+    inputSchema: objectSchema({
+      agent: { type: "string" },
+      limit: { type: "number" },
+    }),
+    handler: workspaceListTool,
   }),
 ];
 

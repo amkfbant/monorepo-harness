@@ -404,6 +404,7 @@ harness workspace remove     <agent> [--repo <path>] [--dir <dir>] [--force] [--
 - **`remove <agent>`** — worktree とブランチを削除し、DB index 行も掃除（stale 行のみでも掃除可・checkpoint は FK cascade で消える）。未コミット変更があると **`--force` 無しでは拒否**（作業を黙って捨てない fail-closed）。`--keep-branch` でブランチを残す。
 - **`--repo`** 既定はカレントディレクトリ。**`--dir`** 既定は `<repo>.agents/`（repo の sibling）。
 - `run` 内部の worktree（`workspaces/<runId>/repo/`・codex 実行用・detached）とは別レイヤー。並行運用の安全モデルは [`workflow.md`](./workflow.md) の concurrency 節を参照。
+- **MCP**: read-only な coordination view は `harness.workspace.list`（MCP tool・DB index・[`mcp.md`](./mcp.md)）でも取得できる（git state は含まない）。mutating（create/remove/checkpoint）と git-inclusive（inspect/recover）は現状 CLI 専用。
 
 > **使い方（multi-agent 運用）**: ターミナルごとに `harness workspace create <agent>` で隔離 worktree を切り、表示された `HARNESS_ROOT` を全エージェントで共有する。これで「素手 git の共有作業ツリー衝突」を避けつつ、ハーネスの domain ロック / goal / knowledge を協調できる。
 

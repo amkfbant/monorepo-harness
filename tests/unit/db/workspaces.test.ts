@@ -55,6 +55,17 @@ describe("WorkspaceRepository", () => {
     expect(second.lastActiveAt).toBe("2026-06-07T01:00:00.000Z");
   });
 
+  it("listAll filters by agent inside the query (limit cannot drop a match)", () => {
+    // many agents sort before "zoe"; a small limit must still find zoe by filter.
+    for (const name of ["amy", "bea", "cara", "dee", "zoe"]) {
+      repo.upsert({ agent: name, repoPath: REPO, branch: `agent/${name}`, worktreePath: `/p/${name}` });
+    }
+    const all = repo.listAll({ limit: 2 });
+    expect(all).toHaveLength(2); // capped
+    const zoe = repo.listAll({ agent: "zoe", limit: 2 });
+    expect(zoe.map((r) => r.agent)).toEqual(["zoe"]);
+  });
+
   it("scopes rows by repo path (same agent name in two repos is two rows)", () => {
     repo.upsert({ agent: "alice", repoPath: "/a", branch: "agent/alice", worktreePath: "/a/x" });
     repo.upsert({ agent: "alice", repoPath: "/b", branch: "agent/alice", worktreePath: "/b/x" });
