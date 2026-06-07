@@ -3291,6 +3291,73 @@ workspaceCmd
   });
 
 workspaceCmd
+  .command("checkpoint")
+  .description(
+    "save an advisory checkpoint (LLM note + a deterministic state snapshot)",
+  )
+  .argument("<agent>", "agent name")
+  .option("--repo <path>", "the project repo (default: current directory)")
+  .option("--dir <dir>", "where agent worktrees live (default: <repo>.agents)")
+  .option("--base <commit-ish>", "base ref for the state snapshot", "main")
+  .option("--note <text>", "advisory narrative (what / why / next steps)")
+  .option("--goal <goal-id>", "link an advisory goal to the workspace")
+  .option("--objective <text>", "set the workspace's objective")
+  .option("--by <actor>", "actor recorded on the checkpoint", "cli")
+  .option("--json", "emit JSON instead of text", false)
+  .action(async (agent: string, raw: Record<string, unknown>) => {
+    try {
+      const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
+      const repoKey = await canonicalRepoKey({ repoPath });
+      const live = await listAgentWorkspaces({ repoPath, workspacesDir });
+      const ws = live.find((w) => w.agent === agent);
+      if (ws === undefined) {
+        throw new AgentWorkspaceError(
+          `no workspace for agent "${agent}"; run 'harness workspace create ${agent}' first`,
+        );
+      }
+      const insp = await inspectAgentWorkspace(
+        { repoPath, workspacesDir },
+        { agent, base: String(raw.base ?? "main") },
+      );
+      const goalId = typeof raw.goal === "string" ? raw.goal : null;
+      const checkpoint = withWorkspaceRepo((repo) => {
+        // ensure the workspace is tracked, then record the advisory checkpoint.
+        const record = repo.upsert({
+          agent,
+          repoPath: repoKey,
+          branch: ws.branch,
+          worktreePath: ws.path,
+        });
+        if (goalId !== null) repo.linkGoal(repoKey, agent, goalId);
+        if (typeof raw.objective === "string") {
+          repo.setObjective(repoKey, agent, raw.objective);
+        }
+        return repo.recordCheckpoint({
+          workspaceId: record.workspaceId,
+          note: typeof raw.note === "string" ? raw.note : null,
+          headSha: insp.head,
+          dirtyCount: insp.dirtyFiles.length,
+          goalId: goalId ?? record.goalId,
+          createdBy: String(raw.by ?? "cli"),
+        });
+      });
+      if (raw.json === true) {
+        process.stdout.write(`${JSON.stringify(checkpoint, null, 2)}\n`);
+        return;
+      }
+      process.stdout.write(
+        `checkpoint saved for agent "${agent}"\n` +
+          `  head:  ${checkpoint.headSha ? checkpoint.headSha.slice(0, 8) : "(none)"}\n` +
+          `  dirty: ${checkpoint.dirtyCount} file(s)\n` +
+          (checkpoint.goalId ? `  goal:  ${checkpoint.goalId}\n` : "") +
+          (checkpoint.note ? `  note:  ${checkpoint.note}\n` : ""),
+      );
+    } catch (e) {
+      withWorkspaceErrorExit(e);
+    }
+  });
+
+workspaceCmd
   .command("remove")
   .description("remove an agent's worktree (and its branch)")
   .argument("<agent>", "agent name")

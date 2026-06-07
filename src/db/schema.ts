@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1469,6 +1469,32 @@ export const MIGRATION_V17_STATEMENTS: readonly string[] = [
 /** Tables added by v17 (W2 — agent workspaces). */
 export const V17_TABLE_NAMES: readonly string[] = ["workspaces"];
 
+/**
+ * v18 — workspace checkpoints (W2b). Append-only advisory "save" records for an
+ * agent workspace: an LLM narrative (`note`) plus a snapshot of the
+ * deterministic state at that time (`head_sha`, `dirty_count`, advisory
+ * `goal_id`). Recovery reconstructs the authoritative state from git/goals and
+ * overlays the latest note — the note is never trusted to drive state.
+ */
+export const MIGRATION_V18_STATEMENTS: readonly string[] = [
+  `CREATE TABLE workspace_checkpoints (
+    checkpoint_id  TEXT PRIMARY KEY,
+    workspace_id   TEXT NOT NULL
+      REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+    note           TEXT,
+    head_sha       TEXT,
+    dirty_count    INTEGER NOT NULL DEFAULT 0,
+    goal_id        TEXT,
+    created_at     TEXT NOT NULL,
+    created_by     TEXT NOT NULL
+  )`,
+  `CREATE INDEX workspace_checkpoints_ws_idx
+     ON workspace_checkpoints(workspace_id, created_at)`,
+];
+
+/** Tables added by v18 (W2b — workspace checkpoints). */
+export const V18_TABLE_NAMES: readonly string[] = ["workspace_checkpoints"];
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -1508,4 +1534,5 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V13_TABLE_NAMES,
   ...V16_TABLE_NAMES,
   ...V17_TABLE_NAMES,
+  ...V18_TABLE_NAMES,
 ];
