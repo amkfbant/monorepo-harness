@@ -272,7 +272,10 @@ ingest された unknown-scope finding を operator が **in-scope に分類し�
 operator-owned な human-in-the-loop 境界（external 出力を自動分類しない）で、自動実行するのは
 分類後の convergence が **`needs_fix` のときだけ**（harness-only の決定論ゲート）。`needs_fix`
 なら orchestrator を bounded（`--max-steps`、既定 20）で回し coder が新たに in-scope となった
-finding を `augmentGoalWithOpenFindings` 経由で修正する。分類後が `needs_fix` でない
+finding を `augmentGoalWithOpenFindings` 経由で修正する。**ただし `close_ready` に達したら PR を
+開かず停止**する（`stopAtCloseReady`・publisher も wire しない）＝coder rerun の意図どおりで、
+PR 作成/merge は別途 `goal orchestrate` / `goal await-merge` の明示ステップに委ねる（least-surprise）。
+分類後が `needs_fix` でない
 （`needs_classification`＝他に unknown が残る / `close_ready` 等）場合は**自動実行しない**で
 `rerun=skipped(<reason>)` を出力する（classify が暗黙に PR を作る等の副作用を避ける）。
 `--then-rerun` 無指定時は従来どおり分類のみ（出力不変）。codex coder は execution-only で

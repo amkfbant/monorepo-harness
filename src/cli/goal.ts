@@ -517,12 +517,16 @@ export function registerGoalCommands(
             createdBy: "cli",
             coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
             reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
-            publisher: createGhPrPublisher(),
+            // no publisher: --then-rerun reruns the coder and halts at
+            // close_ready; it never opens a PR (stopAtCloseReady below).
             repoPath,
             baseBranch: String(raw.baseBranch ?? "main"),
           }),
           maxSteps: parsePositiveInt(raw.maxSteps ?? 20, "--max-steps"),
           createdBy: "cli",
+          // halt before close/PR: a coder rerun must not silently open a PR /
+          // close the goal — that stays a deliberate `orchestrate` / `await-merge`.
+          stopAtCloseReady: true,
         });
         writeOutput(
           raw,

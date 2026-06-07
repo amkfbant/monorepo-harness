@@ -47,6 +47,7 @@ export type OrchestrationOutcome =
   | "escalated"
   | "pr_created"
   | "merged"
+  | "close_ready"
   | "max_steps_exhausted";
 
 export interface OrchestrationResult {

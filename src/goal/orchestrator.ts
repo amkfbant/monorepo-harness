@@ -18,6 +18,14 @@ export interface RunOrchestrationInput {
   runners: OrchestratorRunners;
   maxSteps: number;
   createdBy: string;
+  /**
+   * Halt at `close_ready` WITHOUT running close/PR (returns outcome
+   * `close_ready`). For drivers that only mean to advance the work — e.g.
+   * `classify --then-rerun`, which reruns the coder but must not silently open a
+   * PR / close the goal. Opening the PR stays a deliberate, separate step
+   * (`goal orchestrate` / `goal await-merge`).
+   */
+  stopAtCloseReady?: boolean;
 }
 
 export class GoalOrchestrator {
@@ -77,6 +85,13 @@ export class GoalOrchestrator {
           const r = await input.runners.defer(input.goalId);
           steps.push({ step: i, decision: finalDecision, action: "defer", detail: String(r.deferred) });
           continue;
+        }
+        // Halt before the close/PR step when the caller only means to advance
+        // the work (e.g. classify --then-rerun): reaching close_ready is the
+        // signal to stop; opening the PR is a deliberate, separate step.
+        if (input.stopAtCloseReady === true) {
+          steps.push({ step: i, decision: finalDecision, action: "close_and_pr", detail: "halted before PR (stopAtCloseReady)" });
+          return { goalId: input.goalId, outcome: "close_ready", steps, finalDecision };
         }
         const pr = await input.runners.closeAndPr(input.goalId);
         // Phase 3: a hard-blocked auto-merge gate escalates rather than closing.
