@@ -111,9 +111,11 @@ read-only な coordination view と低リスク mutation を MCP tool でも公�
   実行しない DB-first ガード。`allowedProjects` 外の path は「未 track」と同一エラーで弾く。
 - **`harness.workspace.checkpoint`**（mutation）— advisory checkpoint の保存（guarded-mutation
   ＋ allowlist ＋ project scope ＋ operation 監査・冪等）。
+- **`harness.workspace.inspect` / `.conflicts` / `.recover`**（read）— git-inclusive な
+  ブリーフィング / 衝突 pre-check / 復旧 next-steps（`workspace.status` と同じ DB-first
+  ガード・read-only git・`allowedProjects` で scope）。
 
-git アクセスを要する mutating（create / remove）と git-inclusive な inspect / recover は
-**現状 CLI 専用**。
+git の**破壊的**操作を要する mutating（create / remove）は**現状 CLI 専用**。
 
 ---
 

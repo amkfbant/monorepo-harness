@@ -46,6 +46,11 @@ import {
   workspaceStatusTool,
 } from "../tools/workspace-tools.js";
 import {
+  workspaceConflictsTool,
+  workspaceInspectTool,
+  workspaceRecoverTool,
+} from "../tools/workspace-read-tools.js";
+import {
   cleanupDryRunTool,
   dbArchivePreviewTool,
   dbGcBlobsPreviewTool,
@@ -588,6 +593,29 @@ const workspaceCheckpointArgs = z
     objective: z.string().optional(),
     idempotencyKey: z.string().min(1),
     actorNote: z.string().optional(),
+  })
+  .strict();
+
+const workspaceInspectArgs = z
+  .object({
+    repoPath: z.string().min(1),
+    agent: z.string().min(1),
+    base: z.string().min(1).optional(),
+  })
+  .strict();
+
+const workspaceConflictsArgs = z
+  .object({
+    repoPath: z.string().min(1),
+    base: z.string().min(1).optional(),
+  })
+  .strict();
+
+const workspaceRecoverArgs = z
+  .object({
+    repoPath: z.string().min(1),
+    agent: z.string().min(1),
+    base: z.string().min(1).optional(),
   })
   .strict();
 
@@ -1571,6 +1599,69 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       ["repoPath"],
     ),
     handler: workspaceStatusTool,
+  }),
+  define({
+    name: "harness.workspace.inspect",
+    title: "Deterministic git briefing of one workspace",
+    description:
+      "Git-only briefing of one agent's workspace (branch / HEAD / dirty / " +
+      "ahead-behind vs base / last commit). repoPath = a tracked worktree path " +
+      "(from workspace.list) or any subpath; the agent must be in scope. " +
+      "Read-only (runs read-only git in known worktrees only).",
+    kind: "read",
+    operation: "workspace.inspect",
+    argsSchema: workspaceInspectArgs,
+    inputSchema: objectSchema(
+      {
+        repoPath: { type: "string" },
+        agent: { type: "string" },
+        base: { type: "string" },
+      },
+      ["repoPath", "agent"],
+    ),
+    handler: workspaceInspectTool,
+  }),
+  define({
+    name: "harness.workspace.conflicts",
+    title: "Cross-agent changed-file overlap pre-check",
+    description:
+      "Pairs of agent workspaces (of one repo) that have changed the SAME " +
+      "files — the overlap pre-check for concurrent multi-agent work. repoPath " +
+      "= a tracked worktree path or any subpath. Only in-scope workspaces are " +
+      "inspected. Read-only (runs read-only git in known worktrees only).",
+    kind: "read",
+    operation: "workspace.conflicts",
+    argsSchema: workspaceConflictsArgs,
+    inputSchema: objectSchema(
+      {
+        repoPath: { type: "string" },
+        base: { type: "string" },
+      },
+      ["repoPath"],
+    ),
+    handler: workspaceConflictsTool,
+  }),
+  define({
+    name: "harness.workspace.recover",
+    title: "Reconstruct workspace state + deterministic next steps",
+    description:
+      "Reconstruct one agent's workspace (git briefing + linked goal " +
+      "convergence) and recommend deterministic next steps (the checkpoint " +
+      "narrative is advisory context only, never a driver). repoPath = a " +
+      "tracked worktree path or any subpath; the agent must be in scope. " +
+      "Read-only (runs read-only git in known worktrees only).",
+    kind: "read",
+    operation: "workspace.recover",
+    argsSchema: workspaceRecoverArgs,
+    inputSchema: objectSchema(
+      {
+        repoPath: { type: "string" },
+        agent: { type: "string" },
+        base: { type: "string" },
+      },
+      ["repoPath", "agent"],
+    ),
+    handler: workspaceRecoverTool,
   }),
   define({
     name: "harness.workspace.checkpoint",

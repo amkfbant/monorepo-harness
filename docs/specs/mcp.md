@@ -337,8 +337,22 @@ restricted client では fail-closed で除外）。**git state（dirty / ahead-
 `allowedProjects` で scope（workspace の goal project 不可なら deny）。advisory なので
 **confirmation は不要**。
 
-mutating な **create/remove**（filesystem の git worktree 操作 + confirmation gate）と
-git-inclusive な inspect/recover は、server-side git アクセスを要するため**現状 CLI 専用**
+**`harness.workspace.inspect` / `harness.workspace.conflicts` / `harness.workspace.recover`
+（read）** は git-inclusive な read tool（`workspace.status` と同じ DB-first ガードを共有・
+`src/mcp/tools/workspace-tracked-repo.ts`）。`repoPath` は追跡中の worktree path またはその
+subpath で、未知 path で git を実行しない。
+- **inspect**（per-agent）— 1 agent の決定論 git ブリーフィング（branch / HEAD / dirty /
+  ahead-behind / 最終コミット）。対象 agent が scope 外/不在なら「not found」（scope を漏らさない）。
+- **conflicts**（per-repo）— 全 workspace の変更ファイル重複 pre-check（committed-ahead ∪
+  uncommitted）。**in-scope の workspace のみ** inspect・報告する。
+- **recover**（per-agent）— git ブリーフィング ＋ linked goal の convergence から決定論的な
+  next-steps を再構成（checkpoint narrative は advisory 文脈で next-steps の根拠にしない＝§0）。
+
+これらは read なので **allowlist 不要**（既定許可）・`allowedProjects` で scope。**read-only git**
+のみ（worktree list / status / rev-list / diff）。
+
+mutating な **create/remove**（filesystem の git worktree 操作 + confirmation gate）は
+server-side git の破壊的操作を要するため**現状 CLI 専用**
 （[`cli.md`](./cli.md#harness-workspace)・MCP 版は follow-up）。
 
 `harness.knowledge.get` tool results omit entry body by default and include a
