@@ -223,6 +223,20 @@ async function branchExists(
   return r.exitCode === 0;
 }
 
+/**
+ * Canonicalize a worktree path for identity comparison: realpath when it exists
+ * (resolves symlinks / `/var`→`/private/var`), else a plain absolute resolve.
+ * Used on BOTH the user input and git-reported paths so a symlinked path does
+ * not cause a false "not a worktree" or a wrong main-worktree match.
+ */
+export function normalizeWorktreePath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
 /** ALL git worktrees of the repo (parsed), the MAIN one first (git's order). */
 export async function listWorktrees(
   ctx: AgentWorkspaceContext,
@@ -248,14 +262,12 @@ export async function adoptAgentWorkspace(
   opts: { agent: string; worktreePath: string },
 ): Promise<AgentWorkspace> {
   assertAgentName(opts.agent);
-  let target: string;
-  try {
-    target = realpathSync(opts.worktreePath);
-  } catch {
-    target = resolve(opts.worktreePath);
-  }
+  const target = normalizeWorktreePath(opts.worktreePath);
   const worktrees = await listWorktrees(ctx);
-  const wt = worktrees.find((w) => w.path === target);
+  // normalize BOTH sides: git may report a symlinked / non-realpath path.
+  const wt = worktrees.find(
+    (w) => normalizeWorktreePath(w.path) === target,
+  );
   if (wt === undefined) {
     throw new AgentWorkspaceError(
       `${opts.worktreePath} is not a git worktree of this repository`,
@@ -263,7 +275,10 @@ export async function adoptAgentWorkspace(
   }
   // git lists the MAIN worktree first; never adopt the primary checkout as an
   // agent (it is the shared tree, not an isolated per-agent one).
-  if (worktrees[0] !== undefined && wt.path === worktrees[0].path) {
+  if (
+    worktrees[0] !== undefined &&
+    normalizeWorktreePath(worktrees[0].path) === target
+  ) {
     throw new AgentWorkspaceError(
       `cannot adopt the main worktree (${target}); adopt an additional worktree`,
     );
@@ -344,12 +359,21 @@ export async function createAgentWorkspace(
  */
 export async function removeAgentWorkspace(
   ctx: AgentWorkspaceContext,
-  opts: { agent: string; force?: boolean; keepBranch?: boolean },
+  opts: {
+    agent: string;
+    force?: boolean;
+    keepBranch?: boolean;
+    /** the resolved live workspace (path-first), e.g. an adopted any-branch one */
+    workspace?: AgentWorkspace;
+  },
 ): Promise<{ removed: boolean }> {
   assertAgentName(opts.agent);
-  const existing = (await listAgentWorkspaces(ctx)).find(
-    (w) => w.agent === opts.agent,
-  );
+  // Prefer the caller-resolved workspace (works for adopted non-agent/* trees);
+  // fall back to the agent/* lookup.
+  const existing =
+    opts.workspace !== undefined && opts.workspace.agent === opts.agent
+      ? opts.workspace
+      : (await listAgentWorkspaces(ctx)).find((w) => w.agent === opts.agent);
   if (existing === undefined) return { removed: false };
 
   const removeArgs = ["worktree", "remove", existing.path];

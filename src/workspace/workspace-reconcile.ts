@@ -1,8 +1,7 @@
-import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
 import {
   agentNameFromBranch,
   listWorktrees,
+  normalizeWorktreePath as norm,
   type AgentWorkspace,
   type AgentWorkspaceContext,
 } from "./agent-workspace.js";
@@ -24,14 +23,6 @@ import type { WorkspaceRecord } from "../db/repositories/workspaces.js";
  * or mis-attach metadata. One-agent-per-path is enforced at `adopt` time.
  */
 
-function norm(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return resolve(p);
-  }
-}
-
 export interface ReconcileResult {
   /** agent/* worktrees plus adopted (path-present) workspaces, hydrated from git */
   live: AgentWorkspace[];
@@ -51,20 +42,20 @@ export async function reconcileWorkspaces(
   for (const r of rows) recordByPath.set(norm(r.worktreePath), r);
   const recordByAgent = new Map(rows.map((r) => [r.agent, r]));
 
-  const livePaths = new Set<string>();
+  // EVERY current worktree path (incl. detached) → for stale detection, so a
+  // present-but-detached worktree's row is NOT wrongly flagged as missing.
+  const allPaths = new Set(others.map((wt) => norm(wt.path)));
   const live: AgentWorkspace[] = [];
   for (const wt of others) {
-    const p = norm(wt.path);
-    livePaths.add(p);
-    if (wt.branch === null) continue; // detached → cannot be a workspace
+    if (wt.branch === null) continue; // detached → present but not a usable workspace
     const fromBranch = agentNameFromBranch(wt.branch); // agent/<name> → name
-    const adopted = recordByPath.get(p) ?? null;
+    const adopted = recordByPath.get(norm(wt.path)) ?? null;
     const agent = fromBranch ?? adopted?.agent ?? null;
     if (agent === null) continue; // neither convention nor adopted → not ours
     // hydrate branch/HEAD from the LIVE worktree, not the DB row.
     live.push({ agent, path: wt.path, branch: wt.branch, head: wt.head });
   }
 
-  const stale = rows.filter((r) => !livePaths.has(norm(r.worktreePath)));
+  const stale = rows.filter((r) => !allPaths.has(norm(r.worktreePath)));
   return { live, recordByAgent, stale };
 }

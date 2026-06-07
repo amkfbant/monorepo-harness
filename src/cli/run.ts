@@ -50,6 +50,7 @@ import {
   listAgentWorkspaces,
   removeAgentWorkspace,
   resolveMainWorktree,
+  type AgentWorkspace,
 } from "../workspace/agent-workspace.js";
 import { reconcileWorkspaces } from "../workspace/workspace-reconcile.js";
 import {
@@ -3144,6 +3145,23 @@ function withWorkspaceErrorExit(e: unknown): never {
 }
 
 /**
+ * Resolve a single agent's LIVE workspace path-first (reconciled), so the agent
+ * commands (inspect / checkpoint / recover / remove) work for adopted
+ * non-`agent/*` worktrees too — not just the `agent/*` convention. Returns null
+ * when the agent has no live worktree.
+ */
+async function resolveLiveWorkspace(
+  repoPath: string,
+  workspacesDir: string,
+  repoKey: string,
+  agent: string,
+): Promise<AgentWorkspace | null> {
+  const rows = withWorkspaceRepo((repo) => repo.listByRepo(repoKey));
+  const { live } = await reconcileWorkspaces({ repoPath, workspacesDir }, rows);
+  return live.find((w) => w.agent === agent) ?? null;
+}
+
+/**
  * Run a function against the shared workspace DB index (HARNESS_ROOT/.harness).
  * git stays the source of truth for a worktree's existence; this row carries
  * the harness-side metadata (objective / advisory goal link / heartbeat).
@@ -3337,9 +3355,14 @@ workspaceCmd
   .action(async (agent: string, raw: Record<string, unknown>) => {
     try {
       const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
+      const repoKey = await canonicalRepoKey({ repoPath });
+      const ws = await resolveLiveWorkspace(repoPath, workspacesDir, repoKey, agent);
+      if (ws === null) {
+        throw new AgentWorkspaceError(`no workspace for agent "${agent}"`);
+      }
       const insp = await inspectAgentWorkspace(
         { repoPath, workspacesDir },
-        { agent, base: String(raw.base ?? "main") },
+        { agent, base: String(raw.base ?? "main"), workspace: ws },
       );
       if (raw.json === true) {
         process.stdout.write(`${JSON.stringify(insp, null, 2)}\n`);
@@ -3580,16 +3603,15 @@ workspaceCmd
     try {
       const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
       const repoKey = await canonicalRepoKey({ repoPath });
-      const live = await listAgentWorkspaces({ repoPath, workspacesDir });
-      const ws = live.find((w) => w.agent === agent);
-      if (ws === undefined) {
+      const ws = await resolveLiveWorkspace(repoPath, workspacesDir, repoKey, agent);
+      if (ws === null) {
         throw new AgentWorkspaceError(
           `no workspace for agent "${agent}"; run 'harness workspace create ${agent}' first`,
         );
       }
       const insp = await inspectAgentWorkspace(
         { repoPath, workspacesDir },
-        { agent, base: String(raw.base ?? "main") },
+        { agent, base: String(raw.base ?? "main"), workspace: ws },
       );
       const goalId = typeof raw.goal === "string" ? raw.goal : null;
       const checkpoint = withWorkspaceRepo((repo) => {
@@ -3643,15 +3665,15 @@ workspaceCmd
     try {
       const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
       const repoKey = await canonicalRepoKey({ repoPath });
-      const live = await listAgentWorkspaces({ repoPath, workspacesDir });
-      if (!live.some((w) => w.agent === agent)) {
+      const ws = await resolveLiveWorkspace(repoPath, workspacesDir, repoKey, agent);
+      if (ws === null) {
         throw new AgentWorkspaceError(
           `no workspace for agent "${agent}"; run 'harness workspace create ${agent}' first`,
         );
       }
       const inspection = await inspectAgentWorkspace(
         { repoPath, workspacesDir },
-        { agent, base: String(raw.base ?? "main") },
+        { agent, base: String(raw.base ?? "main"), workspace: ws },
       );
       const { objective, goal, latestCheckpoint } = withWorkspaceRepo(
         (wsRepo, db) => {
@@ -3747,12 +3769,16 @@ workspaceCmd
       // front so the DB cleanup runs regardless.
       const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
       const repoKey = await canonicalRepoKey({ repoPath });
+      // path-first: resolve the live workspace so an adopted (non-agent/*)
+      // worktree is actually removed, not just its DB row.
+      const ws = await resolveLiveWorkspace(repoPath, workspacesDir, repoKey, agent);
       const res = await removeAgentWorkspace(
         { repoPath, workspacesDir },
         {
           agent,
           force: raw.force === true,
           keepBranch: raw.keepBranch === true,
+          ...(ws !== null ? { workspace: ws } : {}),
         },
       );
       // Clear the DB index row too (also clears a stale row whose worktree was

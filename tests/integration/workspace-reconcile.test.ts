@@ -70,6 +70,22 @@ describe("reconcileWorkspaces (real git)", () => {
     expect(stale.map((r) => r.agent)).toEqual(["ghost"]);
   });
 
+  it("a present-but-detached adopted worktree is neither live nor (wrongly) stale", async () => {
+    const det = join(ctx.workspacesDir, "..", "det");
+    const head = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: ctx.repoPath,
+      encoding: "utf8",
+    }).trim();
+    execFileSync("git", ["worktree", "add", "--detach", det, head], {
+      cwd: ctx.repoPath,
+      stdio: "ignore",
+    });
+    const rows = [record({ agent: "dee", branch: "feature/z", worktreePath: det })];
+    const { live, stale } = await reconcileWorkspaces(ctx, rows);
+    expect(live.some((w) => w.agent === "dee")).toBe(false); // detached → not usable
+    expect(stale.some((r) => r.agent === "dee")).toBe(false); // path present → not stale
+  });
+
   it("hydrates an agent/* worktree that has switched branches from git", async () => {
     const ws = await createAgentWorkspace(ctx, { agent: "alice", base: "main" });
     // switch the worktree to a different branch behind the harness's back.
