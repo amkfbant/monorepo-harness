@@ -390,6 +390,7 @@ harness workspace create     <agent> [--repo <path>] [--base <commit-ish>] [--di
 harness workspace list       [--repo <path>] [--json]
 harness workspace inspect    <agent> [--repo <path>] [--dir <dir>] [--base <commit-ish>] [--json]
 harness workspace checkpoint <agent> [--repo <path>] [--dir <dir>] [--base <commit-ish>] [--note <text>] [--goal <id>] [--objective <text>] [--by <actor>] [--json]
+harness workspace recover    <agent> [--repo <path>] [--dir <dir>] [--base <commit-ish>] [--json]
 harness workspace remove     <agent> [--repo <path>] [--dir <dir>] [--force] [--keep-branch]
 ```
 
@@ -397,6 +398,7 @@ harness workspace remove     <agent> [--repo <path>] [--dir <dir>] [--force] [--
 - **`list`** — harness 管理の worktree（ブランチ `agent/*`）だけを列挙（main checkout や run 内部 worktree は除外）。各行に DB の goal link / objective を付与。**stale 検出**: DB に行があるが git worktree が消えている場合は `(stale: …)` と表示（`remove <agent>` で掃除）。
 - **`inspect <agent>`** — workspace の**決定論ブリーフィング**を git だけから再構成して返す（branch / HEAD / 最終コミット / `--base`（既定 `main`）に対する ahead-behind / 未コミット file）。保存状態に依存せず、LLM が自分や他エージェントの workspace を**自己申告抜きで理解**するための土台（save/recover の理解レイヤー）。`--json` で構造化出力。
 - **`checkpoint <agent>`** — workspace の **save**。advisory narrative（`--note`：何を/なぜ/次の一手）と、その時点の**決定論スナップショット**（HEAD sha / dirty file 数）を append-only に記録（`workspace_checkpoints`・[`db.md`](./db.md)）。`--goal <id>` で advisory goal link、`--objective <text>` で objective を設定。`--by` は actor。narrative は**非権威**で、recover 時の文脈にのみ使う（状態遷移の根拠にしない＝§0 非対称）。
+- **`recover <agent>`** — workspace 状態を**再構成**して**決定論的な next-steps** を提示。**正本**は inspect（git）＋ linked goal の `ConvergenceService` 判定（decision / next-action）から再構成し、最新 checkpoint の narrative は**文脈として**重ねるだけ（next-steps は git+goal シグナルのみから導出し、note は根拠にしない＝§0 非対称）。next-steps 例: dirty→commit/stash、ahead→push/PR、behind→integrate、goal `needs_fix`→coder、`close_ready`→close、dangling goal→re-link。クラッシュ/再開した LLM が「保存した理解を信じる」のでなく決定論的に真を取り戻すための復旧コマンド。`--json` で構造化出力。
 - **`remove <agent>`** — worktree とブランチを削除し、DB index 行も掃除（stale 行のみでも掃除可・checkpoint は FK cascade で消える）。未コミット変更があると **`--force` 無しでは拒否**（作業を黙って捨てない fail-closed）。`--keep-branch` でブランチを残す。
 - **`--repo`** 既定はカレントディレクトリ。**`--dir`** 既定は `<repo>.agents/`（repo の sibling）。
 - `run` 内部の worktree（`workspaces/<runId>/repo/`・codex 実行用・detached）とは別レイヤー。並行運用の安全モデルは [`workflow.md`](./workflow.md) の concurrency 節を参照。
