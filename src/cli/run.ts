@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { Command } from "commander";
@@ -40,6 +40,12 @@ import {
   UnauthorizedOverrideError,
 } from "../db/repositories/review-overrides.js";
 import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
+import {
+  AgentWorkspaceError,
+  createAgentWorkspace,
+  listAgentWorkspaces,
+  removeAgentWorkspace,
+} from "../workspace/agent-workspace.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import {
   processReviewDecision,
@@ -3075,6 +3081,128 @@ knowledgeCmd
       ...(raw.domain !== undefined ? { domain: String(raw.domain) } : {}),
     });
     process.stdout.write(formatDigest(digest));
+  });
+
+// --- agent workspaces ----------------------------------------------------
+// Isolated git worktrees so multiple LLM agents / terminals can work the same
+// project concurrently without colliding on a shared checkout, while sharing
+// the harness state (HARNESS_ROOT / `.harness` DB). git is the source of truth.
+
+/** The repo a workspace command operates on (default: current directory). */
+function workspaceRepoPath(raw: Record<string, unknown>): string {
+  return resolve(typeof raw.repo === "string" && raw.repo !== "" ? raw.repo : process.cwd());
+}
+
+/** Default location for per-agent worktrees: a sibling `<repo>.agents/` dir. */
+function workspacesDirFor(repoPath: string, raw: Record<string, unknown>): string {
+  if (typeof raw.dir === "string" && raw.dir !== "") return resolve(raw.dir);
+  return join(dirname(repoPath), `${basename(repoPath)}.agents`);
+}
+
+function withWorkspaceErrorExit(e: unknown): never {
+  if (e instanceof AgentWorkspaceError) {
+    process.stderr.write(`harness error: ${e.message}\n`);
+    process.exit(1);
+  }
+  throw e;
+}
+
+const workspaceCmd = program
+  .command("workspace")
+  .description(
+    "manage per-agent isolated git worktrees for concurrent multi-agent work",
+  );
+
+workspaceCmd
+  .command("create")
+  .description(
+    "create (or return) an isolated worktree on the agent/<name> branch",
+  )
+  .argument("<agent>", "agent name (used as the branch suffix and directory)")
+  .option("--repo <path>", "the project repo (default: current directory)")
+  .option("--base <commit-ish>", "branch base for a new agent branch", "HEAD")
+  .option("--dir <dir>", "where to place agent worktrees (default: <repo>.agents)")
+  .option("--json", "emit JSON instead of text", false)
+  .action(async (agent: string, raw: Record<string, unknown>) => {
+    try {
+      const repoPath = workspaceRepoPath(raw);
+      const workspacesDir = workspacesDirFor(repoPath, raw);
+      const ws = await createAgentWorkspace(
+        { repoPath, workspacesDir },
+        { agent, base: String(raw.base ?? "HEAD") },
+      );
+      if (raw.json === true) {
+        process.stdout.write(`${JSON.stringify(ws, null, 2)}\n`);
+        return;
+      }
+      const sharedRoot = getHarnessRoot();
+      process.stdout.write(
+        `${ws.created ? "created" : "exists"} workspace for agent "${agent}"\n` +
+          `  path:   ${ws.path}\n` +
+          `  branch: ${ws.branch}\n\n` +
+          `Start the agent here, sharing the harness state DB:\n` +
+          `  cd ${ws.path}\n` +
+          `  export HARNESS_ROOT=${sharedRoot}\n`,
+      );
+    } catch (e) {
+      withWorkspaceErrorExit(e);
+    }
+  });
+
+workspaceCmd
+  .command("list")
+  .description("list the harness-managed agent worktrees (branch agent/*)")
+  .option("--repo <path>", "the project repo (default: current directory)")
+  .option("--json", "emit JSON instead of text", false)
+  .action(async (raw: Record<string, unknown>) => {
+    try {
+      const repoPath = workspaceRepoPath(raw);
+      const workspacesDir = workspacesDirFor(repoPath, raw);
+      const list = await listAgentWorkspaces({ repoPath, workspacesDir });
+      if (raw.json === true) {
+        process.stdout.write(`${JSON.stringify(list, null, 2)}\n`);
+        return;
+      }
+      if (list.length === 0) {
+        process.stdout.write("no agent workspaces\n");
+        return;
+      }
+      for (const w of list) {
+        process.stdout.write(`${w.agent}\t${w.branch}\t${w.path}\n`);
+      }
+    } catch (e) {
+      withWorkspaceErrorExit(e);
+    }
+  });
+
+workspaceCmd
+  .command("remove")
+  .description("remove an agent's worktree (and its branch)")
+  .argument("<agent>", "agent name")
+  .option("--repo <path>", "the project repo (default: current directory)")
+  .option("--dir <dir>", "where agent worktrees live (default: <repo>.agents)")
+  .option("--force", "discard uncommitted changes in the worktree", false)
+  .option("--keep-branch", "remove the worktree but keep the agent/<name> branch", false)
+  .action(async (agent: string, raw: Record<string, unknown>) => {
+    try {
+      const repoPath = workspaceRepoPath(raw);
+      const workspacesDir = workspacesDirFor(repoPath, raw);
+      const res = await removeAgentWorkspace(
+        { repoPath, workspacesDir },
+        {
+          agent,
+          force: raw.force === true,
+          keepBranch: raw.keepBranch === true,
+        },
+      );
+      process.stdout.write(
+        res.removed
+          ? `removed workspace for agent "${agent}"\n`
+          : `no workspace for agent "${agent}"\n`,
+      );
+    } catch (e) {
+      withWorkspaceErrorExit(e);
+    }
   });
 
 registerProjectCommands(program);
