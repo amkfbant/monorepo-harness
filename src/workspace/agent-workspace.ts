@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { gitCli, type GitResult } from "../git/git-cli.js";
 
@@ -155,6 +156,63 @@ async function git(
   args: readonly string[],
 ): Promise<GitResult> {
   return (ctx.git ?? defaultGitRunner())(args, ctx.repoPath);
+}
+
+/**
+ * A stable identity for the git repository at `repoPath`, used as the DB index
+ * key so the same project resolves to ONE key regardless of how it is reached —
+ * the repo root, a subdirectory, a symlinked path, or one of its own agent
+ * worktrees. Uses the (absolute, realpath'd) common git dir, which every linked
+ * worktree shares. Throws if `repoPath` is not inside a git repository.
+ */
+export async function canonicalRepoKey(ctx: {
+  repoPath: string;
+  git?: GitRunner;
+}): Promise<string> {
+  const run = ctx.git ?? defaultGitRunner();
+  const r = await run(
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ctx.repoPath,
+  );
+  if (r.exitCode !== 0 || r.timedOut) {
+    throw new AgentWorkspaceError(
+      `not a git repository: ${ctx.repoPath} (${r.stderr.trim()})`,
+    );
+  }
+  const commonDir = r.stdout.trim();
+  try {
+    return realpathSync(commonDir);
+  } catch {
+    // common dir should exist, but fall back to the un-realpath'd absolute path
+    // rather than throwing on a filesystem quirk.
+    return commonDir;
+  }
+}
+
+/**
+ * The main working tree of the repository reachable from `repoPath`. git
+ * `worktree list` always reports the main worktree first. Used as a STABLE cwd
+ * for git operations: a command run with the to-be-deleted agent worktree as
+ * its cwd (e.g. `workspace remove` pointed at that worktree) would, after the
+ * worktree is removed, run its remaining git steps against a path that no
+ * longer exists (`spawn git ENOENT`). Resolving to the main worktree avoids it.
+ */
+export async function resolveMainWorktree(ctx: {
+  repoPath: string;
+  git?: GitRunner;
+}): Promise<string> {
+  const run = ctx.git ?? defaultGitRunner();
+  const r = await run(["worktree", "list", "--porcelain"], ctx.repoPath);
+  if (r.exitCode !== 0 || r.timedOut) {
+    throw new AgentWorkspaceError(
+      `not a git repository: ${ctx.repoPath} (${r.stderr.trim()})`,
+    );
+  }
+  const first = parseWorktreePorcelain(r.stdout)[0];
+  if (first === undefined) {
+    throw new AgentWorkspaceError(`no git worktree at ${ctx.repoPath}`);
+  }
+  return first.path;
 }
 
 async function branchExists(

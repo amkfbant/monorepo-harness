@@ -42,11 +42,14 @@ import {
 import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
 import {
   AgentWorkspaceError,
+  canonicalRepoKey,
   createAgentWorkspace,
   inspectAgentWorkspace,
   listAgentWorkspaces,
   removeAgentWorkspace,
+  resolveMainWorktree,
 } from "../workspace/agent-workspace.js";
+import { WorkspaceRepository } from "../db/repositories/workspaces.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import {
   processReviewDecision,
@@ -3100,12 +3103,43 @@ function workspacesDirFor(repoPath: string, raw: Record<string, unknown>): strin
   return join(dirname(repoPath), `${basename(repoPath)}.agents`);
 }
 
+/**
+ * Resolve the stable git context for a workspace command: the MAIN worktree
+ * (so a subdir / symlink / worktree invocation all normalize to one location
+ * that survives removing an agent worktree) plus the worktrees dir.
+ */
+async function resolveWorkspaceCtx(
+  raw: Record<string, unknown>,
+): Promise<{ repoPath: string; workspacesDir: string }> {
+  const repoPath = await resolveMainWorktree({
+    repoPath: workspaceRepoPath(raw),
+  });
+  return { repoPath, workspacesDir: workspacesDirFor(repoPath, raw) };
+}
+
 function withWorkspaceErrorExit(e: unknown): never {
   if (e instanceof AgentWorkspaceError) {
     process.stderr.write(`harness error: ${e.message}\n`);
     process.exit(1);
   }
   throw e;
+}
+
+/**
+ * Run a function against the shared workspace DB index (HARNESS_ROOT/.harness).
+ * git stays the source of truth for a worktree's existence; this row carries
+ * the harness-side metadata (objective / advisory goal link / heartbeat).
+ */
+function withWorkspaceRepo<T>(fn: (repo: WorkspaceRepository) => T): T {
+  const handle = openManagedDb({
+    dbPath: harnessPaths(getHarnessRoot()).dbPath,
+  });
+  try {
+    runMigrations(handle.db);
+    return fn(new WorkspaceRepository(handle.db));
+  } finally {
+    handle.close();
+  }
 }
 
 const workspaceCmd = program
@@ -3126,11 +3160,23 @@ workspaceCmd
   .option("--json", "emit JSON instead of text", false)
   .action(async (agent: string, raw: Record<string, unknown>) => {
     try {
-      const repoPath = workspaceRepoPath(raw);
-      const workspacesDir = workspacesDirFor(repoPath, raw);
+      const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
       const ws = await createAgentWorkspace(
         { repoPath, workspacesDir },
         { agent, base: String(raw.base ?? "HEAD") },
+      );
+      // Track the worktree in the shared DB index (git remains the source of
+      // truth for its existence; this row carries harness-side metadata). Key
+      // by the canonical git identity so the same repo is one row regardless of
+      // how it is reached (subdir / symlink / worktree).
+      const repoKey = await canonicalRepoKey({ repoPath });
+      withWorkspaceRepo((repo) =>
+        repo.upsert({
+          agent,
+          repoPath: repoKey,
+          branch: ws.branch,
+          worktreePath: ws.path,
+        }),
       );
       if (raw.json === true) {
         process.stdout.write(`${JSON.stringify(ws, null, 2)}\n`);
@@ -3157,19 +3203,42 @@ workspaceCmd
   .option("--json", "emit JSON instead of text", false)
   .action(async (raw: Record<string, unknown>) => {
     try {
-      const repoPath = workspaceRepoPath(raw);
-      const workspacesDir = workspacesDirFor(repoPath, raw);
-      const list = await listAgentWorkspaces({ repoPath, workspacesDir });
+      const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
+      const live = await listAgentWorkspaces({ repoPath, workspacesDir });
+      const repoKey = await canonicalRepoKey({ repoPath });
+      const rows = withWorkspaceRepo((repo) => repo.listByRepo(repoKey));
+      const rowByAgent = new Map(rows.map((r) => [r.agent, r]));
+      const liveAgents = new Set(live.map((w) => w.agent));
+      // a DB row whose git worktree git no longer knows about is stale.
+      const stale = rows.filter((r) => !liveAgents.has(r.agent));
+      const enriched = live.map((w) => {
+        const r = rowByAgent.get(w.agent) ?? null;
+        return {
+          ...w,
+          goalId: r?.goalId ?? null,
+          objective: r?.objective ?? null,
+          lastActiveAt: r?.lastActiveAt ?? null,
+        };
+      });
       if (raw.json === true) {
-        process.stdout.write(`${JSON.stringify(list, null, 2)}\n`);
+        process.stdout.write(
+          `${JSON.stringify({ workspaces: enriched, stale }, null, 2)}\n`,
+        );
         return;
       }
-      if (list.length === 0) {
+      if (enriched.length === 0 && stale.length === 0) {
         process.stdout.write("no agent workspaces\n");
         return;
       }
-      for (const w of list) {
-        process.stdout.write(`${w.agent}\t${w.branch}\t${w.path}\n`);
+      for (const w of enriched) {
+        const goal = w.goalId ? ` goal=${w.goalId}` : "";
+        const obj = w.objective ? ` — ${w.objective}` : "";
+        process.stdout.write(`${w.agent}\t${w.branch}\t${w.path}${goal}${obj}\n`);
+      }
+      for (const r of stale) {
+        process.stdout.write(
+          `${r.agent}\t${r.branch}\t(stale: worktree missing; run 'harness workspace remove ${r.agent}' to clear)\n`,
+        );
       }
     } catch (e) {
       withWorkspaceErrorExit(e);
@@ -3188,8 +3257,7 @@ workspaceCmd
   .option("--json", "emit JSON instead of text", false)
   .action(async (agent: string, raw: Record<string, unknown>) => {
     try {
-      const repoPath = workspaceRepoPath(raw);
-      const workspacesDir = workspacesDirFor(repoPath, raw);
+      const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
       const insp = await inspectAgentWorkspace(
         { repoPath, workspacesDir },
         { agent, base: String(raw.base ?? "main") },
@@ -3232,8 +3300,12 @@ workspaceCmd
   .option("--keep-branch", "remove the worktree but keep the agent/<name> branch", false)
   .action(async (agent: string, raw: Record<string, unknown>) => {
     try {
-      const repoPath = workspaceRepoPath(raw);
-      const workspacesDir = workspacesDirFor(repoPath, raw);
+      // resolveWorkspaceCtx pins git ops to the MAIN worktree, so removing an
+      // agent worktree (even when --repo points at it) does not pull the cwd out
+      // from under the later git steps. The canonical key is also computed up
+      // front so the DB cleanup runs regardless.
+      const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
+      const repoKey = await canonicalRepoKey({ repoPath });
       const res = await removeAgentWorkspace(
         { repoPath, workspacesDir },
         {
@@ -3242,8 +3314,13 @@ workspaceCmd
           keepBranch: raw.keepBranch === true,
         },
       );
+      // Clear the DB index row too (also clears a stale row whose worktree was
+      // already gone). git remains the source of truth for the worktree itself.
+      const rowCleared = withWorkspaceRepo((repo) =>
+        repo.remove(repoKey, agent),
+      );
       process.stdout.write(
-        res.removed
+        res.removed || rowCleared
           ? `removed workspace for agent "${agent}"\n`
           : `no workspace for agent "${agent}"\n`,
       );

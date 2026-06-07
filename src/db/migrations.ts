@@ -17,6 +17,7 @@ import {
   MIGRATION_V14_STATEMENTS,
   MIGRATION_V15_STATEMENTS,
   MIGRATION_V16_STATEMENTS,
+  MIGRATION_V17_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -111,6 +112,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 16,
     name: "goal-convergence-controller-v16",
     statements: MIGRATION_V16_STATEMENTS,
+  },
+  {
+    version: 17,
+    name: "agent-workspaces-v17",
+    statements: MIGRATION_V17_STATEMENTS,
   },
 ];
 
