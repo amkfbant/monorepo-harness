@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { HarnessMcpServer, MCP_PROTOCOL_VERSION } from "../../../src/mcp/server.js";
+import { harnessVersion } from "../../../src/config/version.js";
 import { serveMcpStdio } from "../../../src/mcp/transports/stdio.js";
 import { DEFAULT_MCP_CONFIG, type McpConfig } from "../../../src/mcp/security/config.js";
 import { openDb } from "../../../src/db/connection.js";
@@ -45,6 +46,11 @@ describe("HarnessMcpServer skeleton", () => {
         },
       },
     });
+    // serverInfo.version reflects the package version (read at runtime), never
+    // the previously hard-coded — and stale — "0.1.0" literal.
+    const reportedVersion = (init as any).result.serverInfo.version as string;
+    expect(reportedVersion).toBe(harnessVersion());
+    expect(reportedVersion).toMatch(/^\d+\.\d+\.\d+/);
 
     const tools = await s.handleMessage({
       jsonrpc: "2.0",

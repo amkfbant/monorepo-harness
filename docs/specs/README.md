@@ -13,8 +13,9 @@ monorepo-harness の **現状仕様** をまとめたディレクトリ。
 - [`dashboard.md`](./dashboard.md) — DB-backed な project-aware ダッシュボード（Phase 6）
 - [`mcp.md`](./mcp.md) — coding agent 向け MCP server（tools / resources / prompts / permission / confirmation）
 - [`goal-convergence.md`](./goal-convergence.md) — Phase 19 goal convergence controller（scope freeze / finding lifecycle / close decision）
+- [`workspace.md`](./workspace.md) — agent workspaces（per-agent 隔離 worktree / checkpoint / status / conflicts / adopt / 並行協調の安全モデル）
 - [`workflow.md`](./workflow.md) — `domain-coding` workflow の status machine と artifact レイアウト
-- [`cli.md`](./cli.md) — 全 CLI subcommand リファレンス（`run` / `lock` / `review list` / `review auto` / `review process` / `rerun` / `cleanup` / `knowledge promote` / `knowledge deprecate`）
+- [`cli.md`](./cli.md) — 全 CLI subcommand リファレンス（`run` / `workspace` / `goal` / `lock` / `review` / `rerun` / `cleanup` / `knowledge` …）
 
 関連 docs:
 

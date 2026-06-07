@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { harnessVersion } from "../config/version.js";
 import type { McpConfig } from "./security/config.js";
 import { McpRateLimiter } from "./security/limits.js";
 import { decideMcpPermission, modeForClient } from "./security/permissions.js";
@@ -182,7 +183,7 @@ export class HarnessMcpServer {
       },
       serverInfo: {
         name: "monorepo-harness",
-        version: "0.1.0",
+        version: harnessVersion(),
       },
     };
   }
