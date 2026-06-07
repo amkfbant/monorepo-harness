@@ -208,7 +208,15 @@ export async function workspaceCheckpointTool(
         idempotencyKey: args.idempotencyKey,
         dryRun: false,
         input: redactMcpAuditValue(args),
-        metadata: { clientName: context.clientName },
+        metadata: {
+          source: "mcp",
+          toolName: "harness.workspace.checkpoint",
+          clientName: context.clientName,
+          sessionId: context.sessionId,
+          ...(args.actorNote !== undefined
+            ? { actorNote: redactMcpAuditValue(args.actorNote) }
+            : {}),
+        },
         beforeStart: (db) => {
           assertMutationBudget(db, context.config, {
             clientName: context.clientName,
@@ -232,6 +240,8 @@ export async function workspaceCheckpointTool(
         if (args.objective !== undefined) {
           repo.setObjective(args.repoPath, args.agent, args.objective);
         }
+        // always refresh the heartbeat, even for a note-only checkpoint.
+        repo.touch(args.repoPath, args.agent);
         return repo.recordCheckpoint({
           workspaceId: record.workspaceId,
           note: args.note ?? null,
@@ -249,11 +259,21 @@ export async function workspaceCheckpointTool(
       data: {
         operation: {
           operationId: outcome.operation.operationId,
+          operationType: outcome.operation.operationType,
+          targetType: outcome.operation.targetType,
+          targetId: outcome.operation.targetId,
           status: outcome.operation.status,
         },
         result: outcome.result,
         replayed: outcome.replayed,
       },
+      resourceLinks: [
+        {
+          uri: `harness://operation/${outcome.operation.operationId}`,
+          name: `operation ${outcome.operation.operationId}`,
+          mimeType: "application/json",
+        },
+      ],
     };
   } catch (e) {
     if (e instanceof McpMutationBudgetExceededError) {

@@ -136,6 +136,32 @@ describe("harness.workspace.list MCP tool", () => {
     expect(out.data.result.note).toBe("saved via mcp");
   });
 
+  it("checkpoint: refreshes the heartbeat even for a note-only checkpoint", async () => {
+    const root = freshHarness();
+    // backdate alice's heartbeat.
+    {
+      const db = openDb(join(root, ".harness", "harness.sqlite"));
+      runMigrations(db);
+      db.prepare("UPDATE workspaces SET last_active_at = '2026-01-01T00:00:00.000Z' WHERE agent = 'alice'").run();
+      db.close();
+    }
+    const s = mutationServer(root, ["workspace.checkpoint"]);
+    const out = await callTool(s, "harness.workspace.checkpoint", {
+      repoPath: "/repo/.git",
+      agent: "alice",
+      note: "just a note",
+      idempotencyKey: "hb",
+    });
+    expect(out.status).toBe("operation_started");
+    // the standard mutation shape includes operation provenance + a resource link.
+    expect(out.data.operation.operationType).toBe("workspace.checkpoint");
+    const db = openDb(join(root, ".harness", "harness.sqlite"));
+    runMigrations(db);
+    const row = db.prepare("SELECT last_active_at FROM workspaces WHERE agent = 'alice'").get() as { last_active_at: string };
+    db.close();
+    expect(row.last_active_at).not.toBe("2026-01-01T00:00:00.000Z"); // refreshed
+  });
+
   it("checkpoint: replays the same idempotency key", async () => {
     const s = mutationServer(freshHarness(), ["workspace.checkpoint"]);
     const args = { repoPath: "/repo/.git", agent: "alice", idempotencyKey: "dup" };
