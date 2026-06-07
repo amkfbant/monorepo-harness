@@ -210,8 +210,11 @@ App / Copilot）が実バグを拾う価値が高く、(b) それを取りこぼ
      非注入、`unknown`-scope は分類前なので非注入（fail-closed）、件数上限 25（超過は明示注記）。
      pure helper を単体テスト＋coder runner の prompt 捕捉で統合テスト。これで operator が
      finding を in_scope 分類した後の rerun が「何を直すか」を持つ。`runDomainCoding`/
-     prompt-builder は無改変（ゴール文言だけ拡張）で最小リスク。**残**: 外部 finding 分類→
-     rerun の**自動連鎖**（現状は分類後の再 orchestrate で coder が回る）。
+     prompt-builder は無改変（ゴール文言だけ拡張）で最小リスク。~~**残**: 外部 finding 分類→
+     rerun の**自動連鎖**~~ → **実装済み（C#8, PR #50）**: `goal finding classify --then-rerun
+     --repo <path>` が in-scope 分類後、convergence が `needs_fix` のときだけ orchestrator を
+     bounded で回し coder rerun を連鎖する（gate 経由・operator 分類が trigger・LLM は
+     execution-only）。`needs_fix` でなければ自動実行せず `rerun=skipped(<reason>)`。
    - 定期 `goal await-merge`（scheduler 駆動の自動再 orchestrate。`awaiting_checks` status が
      前提＝上記の後）、semantic dedup（§3）。
    - **`goal await-merge` の外部レビュー ingestion の wall-clock を完全束縛する**（codex

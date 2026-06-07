@@ -21,7 +21,10 @@ import {
 import { createGhCopilotReviewer } from "../core/copilot-reviewer-gh.js";
 import type { PrMergeMethod } from "../core/pr-creator.js";
 import { ConvergenceService } from "../goal/convergence.js";
-import { recordConvergenceDecisionWithStatus } from "../goal/convergence-status.js";
+import {
+  evaluateConvergenceAndRecordStatus,
+  recordConvergenceDecisionWithStatus,
+} from "../goal/convergence-status.js";
 import { deferFindingToBacklog } from "../goal/followups.js";
 import { GoalOrchestrator } from "../goal/orchestrator.js";
 import {
@@ -29,6 +32,7 @@ import {
   awaitStepFromCloseResult,
   type AwaitMergeStep,
 } from "../goal/await-merge.js";
+import { classifyChainDecision } from "../goal/classify-rerun.js";
 import { linkAgentWorkspaceToGoal } from "../workspace/workspace-goal-link.js";
 import { decideOrchestratorAction } from "../goal/orchestrator-dispatch.js";
 import {
@@ -436,23 +440,100 @@ export function registerGoalCommands(
     .requiredOption("--scope <scope>", "in-scope | out-of-scope | unknown | duplicate")
     .requiredOption("--reason <text>", "classification reason")
     .option("--duplicate-of <finding-id>", "canonical duplicate finding id")
+    .option(
+      "--then-rerun",
+      "after classifying, auto-run the orchestrator IFF the goal is now needs_fix (chains a coder rerun to address the newly in-scope finding); requires --repo",
+      false,
+    )
+    .option("--repo <path>", "target git repo (required with --then-rerun)")
+    .option("--base-branch <name>", "base branch for the rerun", "main")
+    .option("--max-steps <n>", "orchestrator step cap for the chained rerun", "20")
     .option("--json", "emit JSON", false)
-    .action((findingId: string, raw: Record<string, unknown>) => {
-      withGoalErrorExit(() => {
-        const finding = withGoalRepo(opts, ({ repo }) =>
-          repo.classifyFinding({
-            findingId,
-            scopeStatus: parseScope(raw.scope),
-            reason: String(raw.reason),
-            ...(raw.duplicateOf !== undefined
-              ? { duplicateOf: String(raw.duplicateOf) }
-              : {}),
+    .action(async (findingId: string, raw: Record<string, unknown>) => {
+      await withGoalErrorExitAsync(async () => {
+        const thenRerun = raw.thenRerun === true;
+        const classifyInput = {
+          findingId,
+          scopeStatus: parseScope(raw.scope),
+          reason: String(raw.reason),
+          ...(raw.duplicateOf !== undefined
+            ? { duplicateOf: String(raw.duplicateOf) }
+            : {}),
+        };
+
+        // Default (no --then-rerun): classify only, original output unchanged.
+        if (!thenRerun) {
+          const finding = withGoalRepo(opts, ({ repo }) =>
+            repo.classifyFinding(classifyInput),
+          );
+          writeOutput(
+            raw,
+            finding,
+            `finding=${finding.findingId} scope=${finding.scopeStatus} lifecycle=${finding.lifecycleStatus}\n`,
+          );
+          return;
+        }
+
+        // --then-rerun: classify (the operator-owned, human-in-the-loop
+        // boundary), then re-evaluate + record convergence — like the MCP
+        // classify tool — so the chain decision reads a fresh decision.
+        const { finding, decision } = withGoalRepo(opts, ({ repo }) => {
+          const f = repo.classifyFinding(classifyInput);
+          const conv = evaluateConvergenceAndRecordStatus({
+            repository: repo,
+            goalId: f.goalId,
+            createdBy: "cli",
+          });
+          return { finding: f, decision: conv.decision };
+        });
+
+        const chain = classifyChainDecision(thenRerun, decision);
+        if (!chain.chain) {
+          writeOutput(
+            raw,
+            { ...finding, decision, chained: false, skipReason: chain.reason },
+            `finding=${finding.findingId} scope=${finding.scopeStatus} ` +
+              `lifecycle=${finding.lifecycleStatus} decision=${decision} ` +
+              `rerun=skipped(${chain.reason})\n`,
+          );
+          return;
+        }
+
+        // chain a coder rerun via the orchestrator (deterministic + gated): the
+        // operator's classification is the trigger, convergence drives the step.
+        if (typeof raw.repo !== "string" || raw.repo === "") {
+          throw new GoalCliError(
+            "goal finding classify --then-rerun requires --repo <path>",
+          );
+        }
+        const dbPath = harnessPaths(opts.getHarnessRoot()).dbPath;
+        const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
+        const repoPath = String(raw.repo);
+        const result = await new GoalOrchestrator({ dbPath }).run({
+          goalId: finding.goalId,
+          runners: createOrchestratorRunners({
+            dbPath,
+            harnessRoot: opts.getHarnessRoot(),
+            createdBy: "cli",
+            coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
+            reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
+            // no publisher: --then-rerun reruns the coder and halts at
+            // close_ready; it never opens a PR (stopAtCloseReady below).
+            repoPath,
+            baseBranch: String(raw.baseBranch ?? "main"),
           }),
-        );
+          maxSteps: parsePositiveInt(raw.maxSteps ?? 20, "--max-steps"),
+          createdBy: "cli",
+          // halt before close/PR: a coder rerun must not silently open a PR /
+          // close the goal — that stays a deliberate `orchestrate` / `await-merge`.
+          stopAtCloseReady: true,
+        });
         writeOutput(
           raw,
-          finding,
-          `finding=${finding.findingId} scope=${finding.scopeStatus} lifecycle=${finding.lifecycleStatus}\n`,
+          { ...finding, decision, chained: true, orchestration: result },
+          `finding=${finding.findingId} scope=${finding.scopeStatus} ` +
+            `lifecycle=${finding.lifecycleStatus} decision=${decision} ` +
+            `rerun=chained outcome=${result.outcome}\n`,
         );
       });
     });

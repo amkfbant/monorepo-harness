@@ -736,6 +736,47 @@ describe("goal orchestrate (real git + fake codex)", () => {
     }
   });
 
+  it("stopAtCloseReady halts before the PR (no publisher needed) and returns close_ready", async () => {
+    // drives an empty goal: coder → review → close_ready, then HALTS without
+    // running closeAndPr (the classify --then-rerun contract: rerun, don't PR).
+    const goalId = createGoal(f.dbPath, "goal-stopclose", "docs");
+    const { coderRunner, reviewerRunner } = approveFakes("docs/guide.md");
+    const publisher = fakePublisher();
+    const runners = createOrchestratorRunners({
+      dbPath: f.dbPath,
+      harnessRoot: f.harnessRoot,
+      createdBy: "test",
+      coderRunner,
+      reviewerRunner,
+      publisher, // present, but must NOT be called when stopAtCloseReady halts
+      resolveRunContext: (): GoalRunContext => ({
+        repoPath: f.repoPath,
+        repoId: "t",
+        domain: "docs",
+        goal: "update docs",
+        baseBranch: "main",
+      }),
+    });
+    const result = await new GoalOrchestrator({ dbPath: f.dbPath }).run({
+      goalId,
+      runners,
+      maxSteps: 20,
+      createdBy: "test",
+      stopAtCloseReady: true,
+    });
+    expect(result.outcome).toBe("close_ready");
+    expect(publisher.calls).toHaveLength(0); // no PR opened
+    const { db, close } = openManagedDb({ dbPath: f.dbPath });
+    try {
+      // the goal is NOT closed — it is left close_ready for a deliberate PR step.
+      expect(new GoalRepository(db).requireSession(goalId).status).toBe(
+        "close_ready",
+      );
+    } finally {
+      close();
+    }
+  });
+
   it("closeAndPr throws a typed GoalNotCloseReadyError on a non-close_ready goal (drift signal)", async () => {
     // a fresh goal sits at `continue` (needs a run/review), not close_ready.
     const goalId = createGoal(f.dbPath, "goal-notready", "docs");
