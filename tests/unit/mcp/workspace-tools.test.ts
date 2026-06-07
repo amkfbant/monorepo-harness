@@ -106,4 +106,42 @@ describe("harness.workspace.list MCP tool", () => {
     const out = await callTool(s, "harness.workspace.list");
     expect(out.status).toBe("ok");
   });
+
+  it("scopes results to allowedProjects (omits cross-project + unlinked rows)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-mcp-ws-scope-"));
+    const db = openDb(join(root, ".harness", "harness.sqlite"));
+    runMigrations(db);
+    const ws = new WorkspaceRepository(db);
+    const goals = new GoalRepository(db);
+    for (const [goalId, projectId] of [
+      ["g-demo", "demo"],
+      ["g-other", "other"],
+    ] as const) {
+      goals.createSession({
+        goalId,
+        title: goalId,
+        projectId,
+        closeConditions: [{ id: "tc", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+    }
+    ws.upsert({ agent: "alice", repoPath: "/r/.git", branch: "agent/alice", worktreePath: "/r.agents/alice" });
+    ws.linkGoal("/r/.git", "alice", "g-demo");
+    ws.upsert({ agent: "bob", repoPath: "/r/.git", branch: "agent/bob", worktreePath: "/r.agents/bob" });
+    ws.linkGoal("/r/.git", "bob", "g-other");
+    ws.upsert({ agent: "carol", repoPath: "/r/.git", branch: "agent/carol", worktreePath: "/r.agents/carol" });
+    db.close();
+
+    const s = new HarnessMcpServer({
+      harnessRoot: root,
+      config: { ...DEFAULT_MCP_CONFIG, allowedProjects: ["demo"] },
+      clientName: "scoped",
+      transport: "stdio",
+      sessionId: "mcpsess_scope",
+    });
+    const out = await callTool(s, "harness.workspace.list");
+    // only the demo-linked workspace; "other" and the unlinked "carol" are hidden.
+    expect(out.data.workspaces.map((w: any) => w.agent)).toEqual(["alice"]);
+  });
 });

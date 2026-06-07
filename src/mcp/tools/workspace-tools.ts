@@ -32,31 +32,56 @@ export function workspaceListTool(
       ...(args.agent !== undefined ? { agent: args.agent } : {}),
     });
 
-    // Memoize convergence per goalId (many workspaces can share a goal).
-    const decisionCache = new Map<string, string | null>();
-    const goalDecisionFor = (goalId: string | null): string | null => {
-      if (goalId === null) return null;
-      const cached = decisionCache.get(goalId);
+    // Memoize per goalId: a workspace's project (for scoping) and the goal's
+    // convergence decision both come from the same session lookup.
+    const goalCache = new Map<
+      string,
+      { decision: string | null; projectId: string | null }
+    >();
+    const goalInfo = (
+      goalId: string | null,
+    ): { decision: string | null; projectId: string | null } => {
+      if (goalId === null) return { decision: null, projectId: null };
+      const cached = goalCache.get(goalId);
       if (cached !== undefined) return cached;
-      const decision =
-        goalRepo.getSession(goalId) === null
-          ? null
-          : new ConvergenceService(goalRepo).evaluate(goalId).decision;
-      decisionCache.set(goalId, decision);
-      return decision;
+      const session = goalRepo.getSession(goalId);
+      const info =
+        session === null
+          ? { decision: null, projectId: null }
+          : {
+              decision: new ConvergenceService(goalRepo).evaluate(goalId)
+                .decision,
+              projectId: session.projectId,
+            };
+      goalCache.set(goalId, info);
+      return info;
     };
-    const checkpointAt = repo.latestCheckpointAtForWorkspaces(
-      rows.map((r) => r.workspaceId),
-    );
 
-    const workspaces = rows.map((r) => ({
+    // Project scoping: a client restricted to `allowedProjects` must not see
+    // workspaces outside it. A workspace's project is its linked goal's
+    // project_id; an unlinked or dangling workspace has no project, so it is
+    // omitted for a restricted client (fail-closed).
+    const allowed = context.config.allowedProjects;
+    const restricted = allowed.length > 0;
+    const kept = rows
+      .map((r) => ({ r, info: goalInfo(r.goalId) }))
+      .filter(
+        ({ info }) =>
+          !restricted ||
+          (info.projectId !== null && allowed.includes(info.projectId)),
+      );
+
+    const checkpointAt = repo.latestCheckpointAtForWorkspaces(
+      kept.map(({ r }) => r.workspaceId),
+    );
+    const workspaces = kept.map(({ r, info }) => ({
       agent: r.agent,
       repoPath: r.repoPath,
       branch: r.branch,
       worktreePath: r.worktreePath,
       status: r.status,
       goalId: r.goalId,
-      goalDecision: goalDecisionFor(r.goalId),
+      goalDecision: info.decision,
       objective: r.objective,
       lastActiveAt: r.lastActiveAt,
       lastCheckpointAt: checkpointAt.get(r.workspaceId) ?? null,
