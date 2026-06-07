@@ -108,6 +108,7 @@ npm run harness -- <args>   # 開発時の CLI 起動（tsx 経由、HARNESS_ROO
 | [`docs/specs/mcp.md`](./docs/specs/mcp.md) | MCP server（tools/resources/permission/confirmation） | MCP を触る前 |
 | [`docs/specs/dashboard.md`](./docs/specs/dashboard.md) | dashboard（read-only API + mutation API） | dashboard を触る前 |
 | [`docs/specs/goal-convergence.md`](./docs/specs/goal-convergence.md) | goal convergence controller の仕様 | goal 内部を触る前 |
+| [`docs/specs/workspace.md`](./docs/specs/workspace.md) | agent workspaces（per-agent worktree / checkpoint / 並行安全モデル） | workspace を触る/使う前 |
 | [`docs/specs/project.md`](./docs/specs/project.md) | Project Abstraction 層 | project profile を触る前 |
 | [`docs/future-features.md`](./docs/future-features.md) | 将来 feature（スコープ外の保留事項） | スコープ外を見つけたとき |
 | [`docs/ops/`](./docs/ops/) | 認証/secret・DB メンテ・運用 manual | 運用設定時 |

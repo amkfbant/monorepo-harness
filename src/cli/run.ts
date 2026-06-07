@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { Command } from "commander";
 import { harnessPaths } from "../config/paths.js";
+import { harnessVersion } from "../config/version.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
 import { runDomainCoding } from "../core/workflow-runner.js";
@@ -674,6 +675,7 @@ async function cmdLockRelease(o: LockReleaseOpts): Promise<void> {
 
 const program = new Command();
 program.name("harness");
+program.version(harnessVersion(), "-v, --version", "print the harness version");
 
 const runCmd = program
   .command("run", { isDefault: true })
