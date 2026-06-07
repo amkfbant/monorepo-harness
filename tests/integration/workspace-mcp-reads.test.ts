@@ -126,6 +126,7 @@ describe("MCP workspace read tools (real git)", () => {
 
   it("rejects when a tracked worktree path was replaced by a DIFFERENT repo (cwd verified)", async () => {
     const { harnessRoot, alicePath } = await setup();
+    const bobPath = join(harnessRoot, "repo.agents", "bob");
     // simulate the tracked worktree path being deleted and recreated as another,
     // unrelated git repo. The git-cwd verification must NOT run worktree-listing
     // git in that foreign repo → it falls back to a live sibling (bob) and still
@@ -148,6 +149,17 @@ describe("MCP workspace read tools (real git)", () => {
     });
     expect(out.status).toBe("error");
     expect(out.summary).toMatch(/no workspace for agent "alice"/);
+
+    // status must also SKIP the foreign worktree (never inspect it as ours): the
+    // verified repo (via bob) is reported, but alice — now a different repo — is
+    // excluded.
+    const st = await callTool(server(harnessRoot), "harness.workspace.status", {
+      repoPath: bobPath,
+    });
+    expect(st.status).toBe("ok");
+    const agents = st.data.workspaces.map((w: any) => w.agent);
+    expect(agents).toContain("bob");
+    expect(agents).not.toContain("alice");
   });
 
   it("a restricted client gets the SAME not-tracked error (no scope leak) on all three", async () => {

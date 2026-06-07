@@ -184,6 +184,7 @@ export async function workspaceStatusTool(
       base: args.base ?? "main",
       nowMs: Date.now(),
       staleThresholdMs: staleHours * 3_600_000,
+      repoKey: resolution.repoKey, // verify each worktree belongs to this repo
       ...(include !== undefined ? { include } : {}),
     },
   );

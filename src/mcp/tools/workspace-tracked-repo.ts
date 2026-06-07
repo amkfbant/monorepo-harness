@@ -6,8 +6,8 @@ import {
   type WorkspaceRecord,
 } from "../../db/repositories/workspaces.js";
 import {
-  canonicalRepoKey,
   normalizeWorktreePath,
+  worktreeBelongsToRepo,
   type GitRunner,
 } from "../../workspace/agent-workspace.js";
 import {
@@ -57,30 +57,6 @@ export interface TrackedRepoResolution {
   include?: (record: WorkspaceRecord | null, goalProjectId: string | null) => boolean;
   /** linked-goal project of a row (for the scope predicate) */
   projectOf: (record: WorkspaceRecord) => string | null;
-}
-
-/**
- * Does the git worktree at `path` PROVABLY still belong to `repoKey`? True only
- * when its canonical repo key (`git rev-parse --git-common-dir`) equals
- * `repoKey`. A path that no longer resolves (deleted) or now belongs to a
- * DIFFERENT repo (the dir was reused for another repo) returns false — so the
- * read tools never run git against a foreign repository even when git's stale
- * worktree metadata still lists the path.
- */
-export async function worktreeBelongsToRepo(
-  path: string,
-  repoKey: string,
-  git?: GitRunner,
-): Promise<boolean> {
-  try {
-    const key = await canonicalRepoKey({
-      repoPath: path,
-      ...(git !== undefined ? { git } : {}),
-    });
-    return key === repoKey;
-  } catch {
-    return false;
-  }
 }
 
 /**

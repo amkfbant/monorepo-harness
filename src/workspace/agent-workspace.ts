@@ -190,6 +190,26 @@ export async function canonicalRepoKey(ctx: {
 }
 
 /**
+ * Does the git worktree at `path` PROVABLY still belong to `repoKey`? True only
+ * when its canonical repo key (`git rev-parse --git-common-dir`) equals
+ * `repoKey`. A path that no longer resolves (deleted) or now belongs to a
+ * DIFFERENT repo (the dir was reused for another repo) returns false — so a
+ * caller never runs git against a foreign repository even when git's stale
+ * worktree metadata still lists the path. Fail-closed: a git error → false.
+ */
+export async function worktreeBelongsToRepo(
+  path: string,
+  repoKey: string,
+  git?: GitRunner,
+): Promise<boolean> {
+  try {
+    return (await canonicalRepoKey({ repoPath: path, ...(git ? { git } : {}) })) === repoKey;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The main working tree of the repository reachable from `repoPath`. git
  * `worktree list` always reports the main worktree first. Used as a STABLE cwd
  * for git operations: a command run with the to-be-deleted agent worktree as

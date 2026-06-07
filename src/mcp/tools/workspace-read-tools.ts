@@ -11,6 +11,7 @@ import {
   changedFilesForWorkspace,
   inspectAgentWorkspace,
   normalizeWorktreePath,
+  worktreeBelongsToRepo,
   type AgentWorkspace,
   type AgentWorkspaceContext,
 } from "../../workspace/agent-workspace.js";
@@ -28,7 +29,6 @@ import type { McpToolContext } from "../registry/tool-registry.js";
 import {
   pickVerifiedGitCwd,
   resolveTrackedWorkspaceRepo,
-  worktreeBelongsToRepo,
   type TrackedRepoResolution,
 } from "./workspace-tracked-repo.js";
 
