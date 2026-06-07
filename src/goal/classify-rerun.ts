@@ -16,6 +16,8 @@
  * coder rerun is warranted; the operator's explicit classification + flag is the
  * trigger; the codex coder is execution-only.
  */
+import type { GoalConvergenceDecision } from "./types.js";
+
 export type ChainSkipReason = "not_requested" | "not_needs_fix";
 
 export type ClassifyChainDecision =
@@ -24,7 +26,7 @@ export type ClassifyChainDecision =
 
 export function classifyChainDecision(
   thenRerun: boolean,
-  decisionAfter: string,
+  decisionAfter: GoalConvergenceDecision,
 ): ClassifyChainDecision {
   if (!thenRerun) return { chain: false, reason: "not_requested" };
   if (decisionAfter !== "needs_fix") {
