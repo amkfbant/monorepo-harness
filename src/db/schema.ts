@@ -1483,7 +1483,7 @@ export const MIGRATION_V18_STATEMENTS: readonly string[] = [
       REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
     note           TEXT,
     head_sha       TEXT,
-    dirty_count    INTEGER NOT NULL DEFAULT 0,
+    dirty_count    INTEGER NOT NULL DEFAULT 0 CHECK (dirty_count >= 0),
     goal_id        TEXT,
     created_at     TEXT NOT NULL,
     created_by     TEXT NOT NULL

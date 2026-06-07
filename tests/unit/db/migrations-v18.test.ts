@@ -87,6 +87,26 @@ describe("schema v18 workspace checkpoints", () => {
     }
   });
 
+  it("rejects a negative dirty_count (CHECK constraint)", () => {
+    const db = openDb(freshDbPath());
+    try {
+      runMigrations(db);
+      seedWorkspace(db, "ws-1");
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO workspace_checkpoints (
+               checkpoint_id, workspace_id, dirty_count, created_at, created_by
+             )
+             VALUES ('wcp-neg', 'ws-1', -1, 't', 'cli')`,
+          )
+          .run(),
+      ).toThrow(/CHECK/);
+    } finally {
+      db.close();
+    }
+  });
+
   it("rejects a checkpoint for a non-existent workspace (FK)", () => {
     const db = openDb(freshDbPath());
     try {

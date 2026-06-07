@@ -389,7 +389,7 @@ harness session summary         # 保留中のものの compact なスナップ�
 harness workspace create     <agent> [--repo <path>] [--base <commit-ish>] [--dir <dir>] [--json]
 harness workspace list       [--repo <path>] [--json]
 harness workspace inspect    <agent> [--repo <path>] [--dir <dir>] [--base <commit-ish>] [--json]
-harness workspace checkpoint <agent> [--repo <path>] [--note <text>] [--goal <id>] [--objective <text>] [--by <actor>] [--json]
+harness workspace checkpoint <agent> [--repo <path>] [--dir <dir>] [--base <commit-ish>] [--note <text>] [--goal <id>] [--objective <text>] [--by <actor>] [--json]
 harness workspace remove     <agent> [--repo <path>] [--dir <dir>] [--force] [--keep-branch]
 ```
 
