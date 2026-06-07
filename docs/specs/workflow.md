@@ -329,6 +329,14 @@ Phase 9 は concurrency safety と runtime DB story の完結を扱う。設計�
 [`db.md`](./db.md) の「Phase 9」節を参照。本書では workflow 観点の変更を
 記述する。
 
+> **multi-agent 並行運用（concurrency の利用者側）**: ハーネスの run/goal 層は上記
+> （DB domain ロック + run ごとの隔離 worktree + WAL DB）で並行安全だが、**複数の
+> LLM エージェントが同じ checkout で直接 git を叩く**と共有 index/HEAD/作業ツリーを
+> 取り合って衝突する（ハーネス管轄外）。これを避けるため `harness workspace`
+> （[`cli.md`](./cli.md#harness-workspace)）でエージェントごとに `agent/<name>`
+> ブランチの隔離 worktree を切り、`HARNESS_ROOT`（共有 state DB）を全エージェントで
+> 共有する。run 内部の `workspaces/<runId>/repo/`（codex 用・detached）とは別レイヤー。
+
 - **domain lock の DB 化** — `runDomainCoding` の lock 取得は Phase 9 で
   file lock + DB lock の **dual-lock**。DB lock は lease (5 分) +
   heartbeat (1 分) + fencing token (= `domain_locks.lock_id`) を持つ。

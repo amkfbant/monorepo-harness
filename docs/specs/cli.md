@@ -381,6 +381,24 @@ harness session summary         # 保留中のものの compact なスナップ�
 
 順序ルール（4-7.3）: `failed-*` → `needs_review` → `changes_requested` → cleanup 候補 → backlog（open、priority 高い順）。各項目に実行コマンド（`→ harness ...`）が付くが、`session` 自体は run/review/cleanup を一切起動しない。inbox（runs）と backlog を統合して見る。
 
+## `harness workspace`
+
+複数の LLM エージェント / ターミナルが**同一プロジェクトを並行作業**するための、エージェントごとの**隔離 git worktree** を管理する。各エージェントは独立した作業ツリー（独立 index/HEAD）を `agent/<name>` ブランチ上に持ち、共有 checkout を取り合わない。harness の state（`HARNESS_ROOT` / `.harness` DB・domain ロック・goal・knowledge）は**共有**したまま。**git 自体が source of truth**（DB ミラーを持たず drift しない）。実装は `src/workspace/agent-workspace.ts`。
+
+```bash
+harness workspace create <agent> [--repo <path>] [--base <commit-ish>] [--dir <dir>] [--json]
+harness workspace list   [--repo <path>] [--json]
+harness workspace remove <agent> [--repo <path>] [--dir <dir>] [--force] [--keep-branch]
+```
+
+- **`create <agent>`** — `agent/<name>` ブランチ上の worktree を `<dir>/<agent>` に作成（`--base` 既定 `HEAD`・既存ブランチがあれば再利用）。**冪等**（同一 agent の再実行は既存を返す）。出力に worktree path と「`cd <path> && export HARNESS_ROOT=<sharedRoot>`」の共有手順を表示。
+- **`list`** — harness 管理の worktree（ブランチ `agent/*`）だけを列挙（main checkout や run 内部 worktree は除外）。
+- **`remove <agent>`** — worktree とブランチを削除。未コミット変更があると **`--force` 無しでは拒否**（作業を黙って捨てない fail-closed）。`--keep-branch` でブランチを残す。
+- **`--repo`** 既定はカレントディレクトリ。**`--dir`** 既定は `<repo>.agents/`（repo の sibling）。
+- `run` 内部の worktree（`workspaces/<runId>/repo/`・codex 実行用・detached）とは別レイヤー。並行運用の安全モデルは [`workflow.md`](./workflow.md) の concurrency 節を参照。
+
+> **使い方（multi-agent 運用）**: ターミナルごとに `harness workspace create <agent>` で隔離 worktree を切り、表示された `HARNESS_ROOT` を全エージェントで共有する。これで「素手 git の共有作業ツリー衝突」を避けつつ、ハーネスの domain ロック / goal / knowledge を協調できる。
+
 ## `harness metrics`
 
 個人運用の改善に使う指標（run / review / retry / safety / maintenance）を集計する（Phase 4-6）。
