@@ -139,6 +139,23 @@ export class WorkspaceRepository {
     return rows.map(rowToRecord);
   }
 
+  /**
+   * Workspace rows across repos (for the MCP coordination view), optionally
+   * filtered by agent. The agent predicate is applied IN the query so `LIMIT`
+   * cannot drop matching rows that sort beyond the cap.
+   */
+  listAll(filter: { agent?: string; limit?: number } = {}): WorkspaceRecord[] {
+    const where = filter.agent !== undefined ? " WHERE agent = ?" : "";
+    const params: unknown[] = filter.agent !== undefined ? [filter.agent] : [];
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM workspaces${where} ` +
+          `ORDER BY repo_path ASC, agent ASC LIMIT ?`,
+      )
+      .all(...params, filter.limit ?? 200) as Record<string, unknown>[];
+    return rows.map(rowToRecord);
+  }
+
   remove(repoPath: string, agent: string): boolean {
     const r = this.db
       .prepare(`DELETE FROM workspaces WHERE repo_path = ? AND agent = ?`)
