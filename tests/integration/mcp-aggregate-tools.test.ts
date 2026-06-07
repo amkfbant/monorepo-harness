@@ -103,4 +103,12 @@ describe("harness.inbox / harness.metrics MCP tools", () => {
     expect(out.status).toBe("ok");
     expect(out.data.totalRuns).toBe(1); // only 'other'
   });
+
+  it("metrics sinceHours windows by started_at", async () => {
+    // all seeded runs are old (started_at 2026-05-21), so a tight window
+    // excludes them all — proving the time filter is actually applied.
+    const out = await callTool(server(setup()), "harness.metrics", { sinceHours: 1 });
+    expect(out.status).toBe("ok");
+    expect(out.data.totalRuns).toBe(0);
+  });
 });
