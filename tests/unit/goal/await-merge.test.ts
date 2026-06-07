@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   awaitGoalMerge,
-  awaitStepFromOutcome,
+  awaitStepFromCloseResult,
   type AwaitMergeStep,
 } from "../../../src/goal/await-merge.js";
 
@@ -107,10 +107,10 @@ describe("awaitGoalMerge", () => {
       { pollIntervalMs: 1000, maxWaitMs: 2500 },
     );
     expect(out.outcome).toBe("timeout");
-    // polls at t=0, t=1000, t=2000, then elapsed 2000<2500 sleeps min(1000, 500)
-    // → t=2500, next poll, elapsed 2500>=2500 → timeout.
+    // polls at t=0, t=1000, t=2000 (sleeping 1000,1000,500 → t=2500); the next
+    // iteration's pre-poll budget gate (remaining 0) stops WITHOUT a 4th attempt.
     expect(clock.sleeps).toEqual([1000, 1000, 500]);
-    expect(out.polls).toBe(4);
+    expect(out.polls).toBe(3);
   });
 
   it("single-shot (maxWaitMs=0): one poll, no sleep, then timeout if still awaiting", async () => {
@@ -147,43 +147,25 @@ describe("awaitGoalMerge", () => {
   });
 });
 
-describe("awaitStepFromOutcome", () => {
-  it("maps merged → merged (carrying the PR url)", () => {
+describe("awaitStepFromCloseResult", () => {
+  it("maps merged:true → merged (carrying the PR url)", () => {
     expect(
-      awaitStepFromOutcome({
-        outcome: "merged",
-        finalDecision: "closed",
-        prUrl: "http://pr/9",
-      }),
+      awaitStepFromCloseResult({ merged: true, prUrl: "http://pr/9" }),
     ).toEqual({ kind: "merged", prUrl: "http://pr/9" });
   });
 
-  it("maps pr_created → awaiting (PR open, still needs CI)", () => {
+  it("maps a not-yet-merged PR → awaiting (PR open, still needs CI)", () => {
     expect(
-      awaitStepFromOutcome({
-        outcome: "pr_created",
-        finalDecision: "close_ready",
-        prUrl: "http://pr/9",
-      }),
+      awaitStepFromCloseResult({ merged: false, prUrl: "http://pr/9" }),
     ).toEqual({ kind: "awaiting", prUrl: "http://pr/9" });
   });
 
-  it("maps escalated → escalated (carrying the reason)", () => {
+  it("escalateReason wins even if merged is absent → escalated", () => {
     expect(
-      awaitStepFromOutcome({
-        outcome: "escalated",
-        finalDecision: "close_ready",
+      awaitStepFromCloseResult({
+        prUrl: "",
         escalateReason: "gate hard-blocked: ci_not_green",
       }),
     ).toEqual({ kind: "escalated", reason: "gate hard-blocked: ci_not_green" });
-  });
-
-  it("maps any other terminal outcome → not_awaiting (final decision surfaced)", () => {
-    expect(
-      awaitStepFromOutcome({
-        outcome: "max_steps_exhausted",
-        finalDecision: "continue",
-      }),
-    ).toEqual({ kind: "not_awaiting", decision: "continue" });
   });
 });

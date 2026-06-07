@@ -26,7 +26,7 @@ import { deferFindingToBacklog } from "../goal/followups.js";
 import { GoalOrchestrator } from "../goal/orchestrator.js";
 import {
   awaitGoalMerge,
-  awaitStepFromOutcome,
+  awaitStepFromCloseResult,
   type AwaitMergeStep,
 } from "../goal/await-merge.js";
 import { linkAgentWorkspaceToGoal } from "../workspace/workspace-goal-link.js";
@@ -878,63 +878,91 @@ export function registerGoalCommands(
 
         // await-merge ALWAYS merges (that is its purpose), so the auto-merge deps
         // are always constructed — same gate/CI/ingest wiring as `orchestrate
-        // --auto-merge`, just driven by the poll loop.
-        const autoMerge = {
-          merger: createGhPrMerger(ghBin),
-          ciStatus: createGhCiStatus(repoPath, ghBin, undefined, {
-            awaitTimeoutMs: ciAwaitTimeoutMs,
-          }),
-          method: parseMergeMethod(raw.mergeMethod),
-          ...(raw.ingestExternalReviews === true
-            ? {
-                reviewVerdicts: createGhReviewVerdicts(repoPath, ghBin),
-                ...(externalReviewTimeoutMs > 0
-                  ? {
-                      reviewAwait: {
-                        timeoutMs: externalReviewTimeoutMs,
-                        intervalMs: 15_000,
-                      },
-                    }
-                  : {}),
-              }
-            : {}),
-        };
-        const runners = createOrchestratorRunners({
-          dbPath,
-          harnessRoot: opts.getHarnessRoot(),
-          createdBy: "cli",
-          coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
-          reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
-          publisher: createGhPrPublisher(),
-          autoMerge,
-          repoPath,
-          baseBranch: String(raw.baseBranch ?? "main"),
-        });
-        const orchestrator = new GoalOrchestrator({ dbPath });
+        // --auto-merge`. The CI await per attempt is CLAMPED to the wall-clock
+        // budget left, so a single attempt cannot block past `--max-wait`; that
+        // is why the runners are rebuilt per poll with a fresh ciStatus.
+        const buildRunners = (ciAwaitMs: number) =>
+          createOrchestratorRunners({
+            dbPath,
+            harnessRoot: opts.getHarnessRoot(),
+            createdBy: "cli",
+            coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
+            reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
+            publisher: createGhPrPublisher(),
+            autoMerge: {
+              merger: createGhPrMerger(ghBin),
+              ciStatus: createGhCiStatus(repoPath, ghBin, undefined, {
+                awaitTimeoutMs: ciAwaitMs,
+              }),
+              method: parseMergeMethod(raw.mergeMethod),
+              ...(raw.ingestExternalReviews === true
+                ? {
+                    reviewVerdicts: createGhReviewVerdicts(repoPath, ghBin),
+                    ...(externalReviewTimeoutMs > 0
+                      ? {
+                          reviewAwait: {
+                            timeoutMs: externalReviewTimeoutMs,
+                            intervalMs: 15_000,
+                          },
+                        }
+                      : {}),
+                  }
+                : {}),
+            },
+            repoPath,
+            baseBranch: String(raw.baseBranch ?? "main"),
+          });
 
         // One probe: re-evaluate convergence and run AT MOST the close/merge step
-        // (never a coder/review) — a goal that is not close_ready is reported as
-        // not_awaiting without mutating anything.
-        const probe = (goalId: string) => async (): Promise<AwaitMergeStep> => {
-          const decision = withGoalRepo(opts, ({ repo }) =>
-            new ConvergenceService(repo).evaluate(goalId).decision,
-          );
-          if (decision !== "close_ready") {
-            return { kind: "not_awaiting", decision };
-          }
-          const result = await orchestrator.run({
-            goalId,
-            runners,
-            maxSteps: 1,
-            createdBy: "cli",
-          });
-          return awaitStepFromOutcome(result);
-        };
+        // (`closeAndPr` — the close/merge-ONLY runner; it can never run a coder or
+        // review). A goal that is not close_ready is reported as not_awaiting
+        // without mutating anything. `remainingMs` clamps this attempt's CI await
+        // to the budget left.
+        const probe =
+          (goalId: string) =>
+          async (remainingMs: number): Promise<AwaitMergeStep> => {
+            const decision = withGoalRepo(opts, ({ repo }) =>
+              new ConvergenceService(repo).evaluate(goalId).decision,
+            );
+            if (decision !== "close_ready") {
+              return { kind: "not_awaiting", decision };
+            }
+            const runners = buildRunners(Math.min(ciAwaitTimeoutMs, remainingMs));
+            let result;
+            try {
+              result = await runners.closeAndPr(goalId);
+            } catch {
+              // convergence drifted away from close_ready between the check and
+              // the close (closeAndPr re-checks and throws BEFORE any side
+              // effect) → nothing merged, nothing mutated; re-read and stop.
+              const d2 = withGoalRepo(opts, ({ repo }) =>
+                new ConvergenceService(repo).evaluate(goalId).decision,
+              );
+              return { kind: "not_awaiting", decision: d2 };
+            }
+            const step = awaitStepFromCloseResult(result);
+            if (step.kind === "escalated") {
+              // closeAndPr surfaces escalateReason but does NOT persist the
+              // status (the generic orchestrator does); mirror that here so a
+              // hard-blocked gate leaves the goal `escalated` for a human.
+              withGoalRepo(opts, ({ repo }) =>
+                repo.updateStatus(
+                  goalId,
+                  "escalated",
+                  result.escalateReason as string,
+                ),
+              );
+            }
+            return step;
+          };
 
+        // --all: drive every close_ready goal. The cap is generous; if it is hit,
+        // surface the truncation explicitly rather than silently dropping goals.
+        const ALL_CAP = 10_000;
         const goalIds = all
           ? withGoalRepo(opts, ({ repo }) =>
               repo
-                .listSessions({ status: "close_ready", limit: 500 })
+                .listSessions({ status: "close_ready", limit: ALL_CAP })
                 .map((s) => s.goalId),
             )
           : [String(goalArg)];
@@ -942,6 +970,12 @@ export function registerGoalCommands(
         if (all && goalIds.length === 0) {
           process.stdout.write("no close_ready goals to await\n");
           return;
+        }
+        if (all && goalIds.length === ALL_CAP) {
+          process.stderr.write(
+            `warning: --all processed the first ${ALL_CAP} close_ready goals; ` +
+              `more may remain — re-run to continue\n`,
+          );
         }
 
         for (const goalId of goalIds) {

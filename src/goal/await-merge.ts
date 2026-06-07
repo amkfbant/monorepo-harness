@@ -25,50 +25,47 @@ export type AwaitMergeOutcome =
   | { outcome: "timeout"; polls: number }
   | { outcome: "not_awaiting"; polls: number; decision: string };
 
-/** The subset of an orchestration result the await-merge mapping reads. */
-export interface OrchestrationStepResult {
-  outcome: string;
-  finalDecision: string;
+/** The subset of a `closeAndPr` runner result the await-merge mapping reads. */
+export interface CloseStepResult {
   prUrl?: string;
+  merged?: boolean;
   escalateReason?: string;
 }
 
 /**
- * Map ONE orchestrator step's result (run on a close_ready goal, so it dispatched
- * the close/merge action) to an await-merge step. `merged` → done; `pr_created`
- * → PR open awaiting CI (keep polling); `escalated` → human needed; anything
- * else (stop / max_steps) → nothing left to await. Pure, so the CLI's mapping is
- * unit-tested without a live gh/codex.
+ * Map ONE close/merge step's result (the `closeAndPr` runner, the only action
+ * await-merge ever runs) to an await step. `escalateReason` → human needed;
+ * `merged: true` → done; otherwise the PR is open (CI not yet green, or a
+ * permanent close for a human merge) → `awaiting`. The permanent-close case
+ * terminates on the NEXT poll, whose convergence re-check sees a non-close_ready
+ * goal and returns `not_awaiting`. Pure, so the mapping is unit-tested without a
+ * live gh/codex.
  */
-export function awaitStepFromOutcome(
-  result: OrchestrationStepResult,
+export function awaitStepFromCloseResult(
+  result: CloseStepResult,
 ): AwaitMergeStep {
-  if (result.outcome === "merged") {
+  if (result.escalateReason !== undefined) {
+    return { kind: "escalated", reason: result.escalateReason };
+  }
+  if (result.merged === true) {
     return {
       kind: "merged",
       ...(result.prUrl !== undefined ? { prUrl: result.prUrl } : {}),
     };
   }
-  if (result.outcome === "escalated") {
-    return {
-      kind: "escalated",
-      ...(result.escalateReason !== undefined
-        ? { reason: result.escalateReason }
-        : {}),
-    };
-  }
-  if (result.outcome === "pr_created") {
-    return {
-      kind: "awaiting",
-      ...(result.prUrl !== undefined ? { prUrl: result.prUrl } : {}),
-    };
-  }
-  return { kind: "not_awaiting", decision: result.finalDecision };
+  return {
+    kind: "awaiting",
+    ...(result.prUrl !== undefined ? { prUrl: result.prUrl } : {}),
+  };
 }
 
 export interface AwaitMergeDeps {
-  /** evaluate + run at most the close/merge step once; never runs coder/review. */
-  pollOnce: () => Promise<AwaitMergeStep>;
+  /**
+   * Evaluate convergence and run AT MOST the close/merge step once; never runs
+   * coder/review. `remainingMs` is the wall-clock budget left, so the attempt can
+   * clamp its own CI await to it (an attempt must not block past the budget).
+   */
+  pollOnce: (remainingMs: number) => Promise<AwaitMergeStep>;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
 }
@@ -97,7 +94,12 @@ export async function awaitGoalMerge(
   const start = deps.now();
   let polls = 0;
   for (;;) {
-    const step = await deps.pollOnce();
+    // budget gate BEFORE starting a new attempt: once the wall-clock budget is
+    // spent, do not begin another (possibly long, CI-awaiting) attempt. The very
+    // first attempt always runs (so maxWaitMs=0 still does a single check).
+    const remaining = opts.maxWaitMs - (deps.now() - start);
+    if (polls > 0 && remaining <= 0) return { outcome: "timeout", polls };
+    const step = await deps.pollOnce(Math.max(0, remaining));
     polls += 1;
     if (step.kind === "merged") {
       return {

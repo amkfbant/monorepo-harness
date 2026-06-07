@@ -10,7 +10,7 @@ import { GoalOrchestrator } from "../../src/goal/orchestrator.js";
 import { ConvergenceService } from "../../src/goal/convergence.js";
 import {
   awaitGoalMerge,
-  awaitStepFromOutcome,
+  awaitStepFromCloseResult,
   type AwaitMergeStep,
 } from "../../src/goal/await-merge.js";
 import {
@@ -693,8 +693,8 @@ describe("goal orchestrate (real git + fake codex)", () => {
         ciStatus: async () => (ciChecks += 1) >= 2, // false, then green
       },
     });
-    const orch = new GoalOrchestrator({ dbPath: f.dbPath });
-    const probe = async (): Promise<AwaitMergeStep> => {
+    // probe mirrors the CLI: gate to close_ready, then run ONLY closeAndPr.
+    const probe = async (_remainingMs: number): Promise<AwaitMergeStep> => {
       const { db, close } = openManagedDb({ dbPath: f.dbPath });
       let decision: string;
       try {
@@ -705,13 +705,8 @@ describe("goal orchestrate (real git + fake codex)", () => {
         close();
       }
       if (decision !== "close_ready") return { kind: "not_awaiting", decision };
-      const r = await orch.run({
-        goalId,
-        runners,
-        maxSteps: 1,
-        createdBy: "test",
-      });
-      return awaitStepFromOutcome(r);
+      const r = await runners.closeAndPr(goalId);
+      return awaitStepFromCloseResult(r);
     };
 
     const sleeps: number[] = [];
