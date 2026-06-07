@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HarnessMcpServer } from "../../../src/mcp/server.js";
-import { DEFAULT_MCP_CONFIG } from "../../../src/mcp/security/config.js";
+import { DEFAULT_MCP_CONFIG, type McpConfig } from "../../../src/mcp/security/config.js";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { WorkspaceRepository } from "../../../src/db/repositories/workspaces.js";
@@ -105,6 +105,111 @@ describe("harness.workspace.list MCP tool", () => {
     const s = server(freshHarness());
     const out = await callTool(s, "harness.workspace.list");
     expect(out.status).toBe("ok");
+  });
+
+  function mutationServer(root: string, ops: string[], projects: string[] = []): HarnessMcpServer {
+    const config: McpConfig = {
+      ...DEFAULT_MCP_CONFIG,
+      defaultMode: "guarded-mutation",
+      allowedProjects: projects,
+      allowedOperations: ops,
+    };
+    return new HarnessMcpServer({
+      harnessRoot: root,
+      config,
+      clientName: "m",
+      transport: "stdio",
+      sessionId: "mcpsess_mut",
+    });
+  }
+
+  it("checkpoint: records an advisory checkpoint (guarded-mutation + allowlisted)", async () => {
+    const s = mutationServer(freshHarness(), ["workspace.checkpoint"]);
+    const out = await callTool(s, "harness.workspace.checkpoint", {
+      repoPath: "/repo/.git",
+      agent: "alice",
+      note: "saved via mcp",
+      objective: "ship",
+      idempotencyKey: "k1",
+    });
+    expect(out.status).toBe("operation_started");
+    expect(out.data.result.note).toBe("saved via mcp");
+  });
+
+  it("checkpoint: replays the same idempotency key", async () => {
+    const s = mutationServer(freshHarness(), ["workspace.checkpoint"]);
+    const args = { repoPath: "/repo/.git", agent: "alice", idempotencyKey: "dup" };
+    const first = await callTool(s, "harness.workspace.checkpoint", args);
+    const second = await callTool(s, "harness.workspace.checkpoint", args);
+    expect(first.status).toBe("operation_started");
+    expect(second.data.replayed).toBe(true);
+  });
+
+  it("checkpoint: denied when workspace.checkpoint is not allowlisted", async () => {
+    const s = mutationServer(freshHarness(), []);
+    const out = await callTool(s, "harness.workspace.checkpoint", {
+      repoPath: "/repo/.git",
+      agent: "alice",
+      idempotencyKey: "k2",
+    });
+    expect(out.status).toBe("permission_denied");
+  });
+
+  it("checkpoint: errors for an unknown agent", async () => {
+    const s = mutationServer(freshHarness(), ["workspace.checkpoint"]);
+    const out = await callTool(s, "harness.workspace.checkpoint", {
+      repoPath: "/repo/.git",
+      agent: "ghost",
+      idempotencyKey: "k3",
+    });
+    expect(out.status).toBe("error");
+  });
+
+  function scopedHarness(aliceGoalProject: string): string {
+    const root = mkdtempSync(join(tmpdir(), "harness-mcp-cpscope-"));
+    const db = openDb(join(root, ".harness", "harness.sqlite"));
+    runMigrations(db);
+    const ws = new WorkspaceRepository(db);
+    const goals = new GoalRepository(db);
+    for (const [goalId, projectId] of [
+      ["g-alice", aliceGoalProject],
+      ["g-demo", "demo"],
+    ] as const) {
+      goals.createSession({
+        goalId,
+        title: goalId,
+        projectId,
+        closeConditions: [{ id: "tc", kind: "command", required: true }],
+        createdBy: "t",
+        createdSource: "cli",
+      });
+    }
+    ws.upsert({ agent: "alice", repoPath: "/r/.git", branch: "agent/alice", worktreePath: "/r.agents/alice" });
+    ws.linkGoal("/r/.git", "alice", "g-alice");
+    db.close();
+    return root;
+  }
+
+  it("checkpoint scoping: denies an out-of-scope workspace even with an allowed goalId (no bypass)", async () => {
+    // alice's workspace is in project "other"; the client is restricted to "demo".
+    const s = mutationServer(scopedHarness("other"), ["workspace.checkpoint"], ["demo"]);
+    const out = await callTool(s, "harness.workspace.checkpoint", {
+      repoPath: "/r/.git",
+      agent: "alice",
+      goalId: "g-demo", // an allowed goal — must NOT unlock the out-of-scope workspace
+      idempotencyKey: "x",
+    });
+    expect(out.status).toBe("permission_denied");
+  });
+
+  it("checkpoint scoping: allows a workspace whose goal is in an allowed project", async () => {
+    const s = mutationServer(scopedHarness("demo"), ["workspace.checkpoint"], ["demo"]);
+    const out = await callTool(s, "harness.workspace.checkpoint", {
+      repoPath: "/r/.git",
+      agent: "alice",
+      idempotencyKey: "y",
+    });
+    expect(out.status).toBe("operation_started");
   });
 
   it("scopes results to allowedProjects (omits cross-project + unlinked rows)", async () => {

@@ -310,6 +310,7 @@ harness.doctor.summary
 harness.operation.list
 harness.operation.get
 harness.workspace.list
+harness.workspace.checkpoint
 ```
 
 `harness.workspace.list`（read）は agent workspace の coordination view（DB index）を
@@ -317,10 +318,16 @@ harness.workspace.list
 objective / heartbeat / last checkpoint。`agent` で絞り込み可。**read tool なので既定で
 許可**（allowlist 不要）。`allowedProjects` で scope された client には、**linked goal の
 project_id がその集合に入る workspace のみ**返す（unlinked / dangling は project 不明なので
-restricted client では fail-closed で除外）。**git state（dirty / ahead-behind）は含めない**。mutating な
-create/remove/checkpoint と git-inclusive な inspect/recover は、filesystem/git アクセスと
-（mutation には）confirmation gate を要するため**現状 CLI 専用**（[`cli.md`](./cli.md#harness-workspace)・
-将来の MCP mutation tool は follow-up）。
+restricted client では fail-closed で除外）。**git state（dirty / ahead-behind）は含めない**。**`harness.workspace.checkpoint`（mutation）** は workspace に advisory checkpoint
+（note + goal link + objective）を記録し heartbeat を更新する **DB-only mutation**（git
+スナップショットなし）。`operation = workspace.checkpoint` を **allowlist 必須**（mutation
+の既定 deny）・guarded-mutation mode 必須。idempotencyKey で冪等・operation audit に記録・
+`allowedProjects` で scope（workspace の goal project 不可なら deny）。advisory なので
+**confirmation は不要**。
+
+mutating な **create/remove**（filesystem の git worktree 操作 + confirmation gate）と
+git-inclusive な inspect/recover は、server-side git アクセスを要するため**現状 CLI 専用**
+（[`cli.md`](./cli.md#harness-workspace)・MCP 版は follow-up）。
 
 `harness.knowledge.get` tool results omit entry body by default and include a
 capped body only when `includeBody` is true. `harness://knowledge/{entryId}`

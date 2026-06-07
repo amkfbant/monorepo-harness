@@ -40,7 +40,10 @@ import {
   runListTool,
   runTimelineTool,
 } from "../tools/read-tools.js";
-import { workspaceListTool } from "../tools/workspace-tools.js";
+import {
+  workspaceCheckpointTool,
+  workspaceListTool,
+} from "../tools/workspace-tools.js";
 import {
   cleanupDryRunTool,
   dbArchivePreviewTool,
@@ -564,6 +567,18 @@ const workspaceListArgs = z
   .object({
     agent: z.string().min(1).optional(),
     limit: LimitSchema,
+  })
+  .strict();
+
+const workspaceCheckpointArgs = z
+  .object({
+    repoPath: z.string().min(1),
+    agent: z.string().min(1),
+    note: z.string().optional(),
+    goalId: z.string().min(1).optional(),
+    objective: z.string().optional(),
+    idempotencyKey: z.string().min(1),
+    actorNote: z.string().optional(),
   })
   .strict();
 
@@ -1526,6 +1541,30 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       limit: { type: "number" },
     }),
     handler: workspaceListTool,
+  }),
+  define({
+    name: "harness.workspace.checkpoint",
+    title: "Save a workspace checkpoint",
+    description:
+      "Record an advisory checkpoint (note + goal link + objective) for a " +
+      "tracked workspace; refreshes its heartbeat. DB-only (no git snapshot). " +
+      "Requires the workspace.checkpoint operation to be allowlisted.",
+    kind: "mutation",
+    operation: "workspace.checkpoint",
+    argsSchema: workspaceCheckpointArgs,
+    inputSchema: objectSchema(
+      {
+        repoPath: { type: "string" },
+        agent: { type: "string" },
+        note: { type: "string" },
+        goalId: { type: "string" },
+        objective: { type: "string" },
+        idempotencyKey: idempotencyJson,
+        actorNote: { type: "string" },
+      },
+      ["repoPath", "agent", "idempotencyKey"],
+    ),
+    handler: workspaceCheckpointTool,
   }),
 ];
 
