@@ -129,7 +129,8 @@ export function resolveTrackedWorkspaceRepo(
   // check + cwd selection.
   const matchedRow = matchTrackedWorktree(data.rows, target);
   if (matchedRow === undefined) return notTracked();
-  // scope check on the MATCHED row BEFORE confirming it is tracked.
+  // scope check on the MATCHED row: an out-of-scope tracked path returns the
+  // SAME "not tracked" error as an unknown path, so scope membership never leaks.
   if (include !== undefined && !include(matchedRow, projectOf(matchedRow))) {
     return notTracked();
   }
