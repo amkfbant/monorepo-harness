@@ -339,12 +339,15 @@ export interface WorkspaceInspection {
  */
 export async function inspectAgentWorkspace(
   ctx: AgentWorkspaceContext,
-  opts: { agent: string; base?: string },
+  opts: { agent: string; base?: string; workspace?: AgentWorkspace },
 ): Promise<WorkspaceInspection> {
   assertAgentName(opts.agent);
-  const ws = (await listAgentWorkspaces(ctx)).find(
-    (w) => w.agent === opts.agent,
-  );
+  // Callers that already hold the worktree list (e.g. `workspace status`) can
+  // pass the known workspace to skip a redundant `git worktree list`.
+  const ws =
+    opts.workspace !== undefined && opts.workspace.agent === opts.agent
+      ? opts.workspace
+      : (await listAgentWorkspaces(ctx)).find((w) => w.agent === opts.agent);
   if (ws === undefined) {
     throw new AgentWorkspaceError(
       `no workspace for agent ${JSON.stringify(opts.agent)}`,
