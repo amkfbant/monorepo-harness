@@ -315,12 +315,15 @@ harness.workspace.checkpoint
 ```
 
 `harness.workspace.status`（read）は **1 repo 分**の workspace の **git-inclusive status**
-を返す（`repoPath` ＝その repo 内の path・例: `workspace.list` の worktree_path）。CLI の
-`workspace status` と同じ shape（progress label + git state(dirty/ahead-behind) + linked
-goal + heartbeat）。`repoPath` は **harness が追跡している repo（workspace 行が 1 つ以上）に
-限定**＝**未知の任意 path で git を実行しない**安全策。read tool だが worktree 内で
-**read-only git**（worktree list / status / rev-list / diff）を回す。`allowedProjects` で
-scope（`workspace.list` と同様）。
+を返す。`repoPath` ＝ **追跡中の worktree path**（`workspace.list` の `worktree_path`）
+**またはその配下の subpath**（worktree 内の subdir/file）。一致は純 fs の path 判定のみ
+（git は使わない）で、**未知の任意 path で git を実行しない**安全策＝harness が追跡している
+repo（workspace 行が 1 つ以上）に限定。CLI の `workspace status` と同じ shape（progress
+label + git state(dirty/ahead-behind) + linked goal + heartbeat）。read tool だが worktree
+内で **read-only git**（worktree list / status / rev-list / diff）を回す（提供 path が
+stale でも、同 repo の実在 worktree を git cwd に選んで status を組む）。`allowedProjects`
+で scope（`workspace.list` と同様）。**scope 外の workspace に当たる path は、未知 path と
+同一の "not tracked" エラー**で弾く（scope 所属を漏らさない）。
 
 `harness.workspace.list`（read）は agent workspace の coordination view（DB index）を
 返す: agent / branch / worktree_path / linked goal とその convergence decision /

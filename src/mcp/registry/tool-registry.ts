@@ -1555,9 +1555,10 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     name: "harness.workspace.status",
     title: "Git-inclusive workspace status",
     description:
-      "Status of every workspace of one repo (a path inside it via repoPath): " +
-      "progress label + git state (dirty / ahead-behind) + linked goal + " +
-      "heartbeat. Read-only (runs read-only git in known worktrees only).",
+      "Status of every workspace of one repo. repoPath = a tracked worktree " +
+      "path (from workspace.list) or any subpath under it. Returns progress " +
+      "label + git state (dirty / ahead-behind) + linked goal + heartbeat. " +
+      "Read-only (runs read-only git in known worktrees only).",
     kind: "read",
     operation: "workspace.status",
     argsSchema: workspaceStatusArgs,
