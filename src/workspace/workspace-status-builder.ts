@@ -7,6 +7,7 @@ import {
 } from "../db/repositories/workspaces.js";
 import {
   inspectAgentWorkspace,
+  normalizeWorktreePath,
   type AgentWorkspaceContext,
 } from "./agent-workspace.js";
 import { reconcileWorkspaces } from "./workspace-reconcile.js";
@@ -85,7 +86,7 @@ export async function assembleWorkspaceStatuses(
   data: WorkspaceStatusData,
   opts: AssembleStatusOpts,
 ): Promise<WorkspaceStatusFull[]> {
-  const { live, recordByAgent, stale } = await reconcileWorkspaces(
+  const { live, recordByPath, stale } = await reconcileWorkspaces(
     ctx,
     data.rows,
   );
@@ -98,7 +99,9 @@ export async function assembleWorkspaceStatuses(
 
   const out: WorkspaceStatusFull[] = [];
   for (const w of live) {
-    const r = recordByAgent.get(w.agent) ?? null;
+    // attribute by the EXACT live path, never agent name: a name collision must
+    // not attach a different row's goal/project (scope authority follows path).
+    const r = recordByPath.get(normalizeWorktreePath(w.path)) ?? null;
     if (!visible(r)) continue; // skip out-of-scope BEFORE any git inspection
     const insp = await inspectAgentWorkspace(ctx, {
       agent: w.agent,

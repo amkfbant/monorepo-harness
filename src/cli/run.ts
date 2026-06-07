@@ -48,6 +48,7 @@ import {
   createAgentWorkspace,
   inspectAgentWorkspace,
   listAgentWorkspaces,
+  normalizeWorktreePath,
   removeAgentWorkspace,
   resolveMainWorktree,
   type AgentWorkspace,
@@ -3303,12 +3304,13 @@ workspaceCmd
       const repoKey = await canonicalRepoKey({ repoPath });
       const rows = withWorkspaceRepo((repo) => repo.listByRepo(repoKey));
       // reconcile by worktree path: agent/* worktrees + adopted (any-branch) rows.
-      const { live, recordByAgent, stale } = await reconcileWorkspaces(
+      const { live, recordByPath, stale } = await reconcileWorkspaces(
         { repoPath, workspacesDir },
         rows,
       );
       const enriched = live.map((w) => {
-        const r = recordByAgent.get(w.agent) ?? null;
+        // attribute by exact live path, not agent name (see reconcile docs).
+        const r = recordByPath.get(normalizeWorktreePath(w.path)) ?? null;
         return {
           ...w,
           goalId: r?.goalId ?? null,
