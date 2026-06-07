@@ -83,3 +83,22 @@ export function summarizeWorkspace(
 ): WorkspaceStatus {
   return { ...input, label: progressLabel(input) };
 }
+
+/**
+ * Whether a workspace's heartbeat is stale: no activity for at least
+ * `thresholdMs`. Surfaces an abandoned / forgotten agent workspace to a human
+ * coordinating several agents. A workspace with no parseable activity timestamp
+ * — `lastActiveAt === null` OR an unparseable string — is NOT treated as stale
+ * (there is no activity window to judge). `now`/threshold are explicit so the
+ * check is deterministic.
+ */
+export function isHeartbeatStale(
+  lastActiveAt: string | null,
+  nowMs: number,
+  thresholdMs: number,
+): boolean {
+  if (lastActiveAt === null) return false;
+  const lastMs = Date.parse(lastActiveAt);
+  if (Number.isNaN(lastMs)) return false;
+  return nowMs - lastMs >= thresholdMs;
+}
