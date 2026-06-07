@@ -387,6 +387,7 @@ harness session summary         # 保留中のものの compact なスナップ�
 
 ```bash
 harness workspace create     <agent> [--repo <path>] [--base <commit-ish>] [--dir <dir>] [--json]
+harness workspace adopt      <agent> --worktree <path> [--repo <path>] [--json]
 harness workspace list       [--repo <path>] [--json]
 harness workspace status     [--repo <path>] [--dir <dir>] [--base <commit-ish>] [--stale-after <hours>] [--json]
 harness workspace conflicts  [--repo <path>] [--dir <dir>] [--base <commit-ish>] [--json]
@@ -397,7 +398,8 @@ harness workspace remove     <agent> [--repo <path>] [--dir <dir>] [--force] [--
 ```
 
 - **`create <agent>`** — `agent/<name>` ブランチ上の worktree を `<dir>/<agent>` に作成（`--base` 既定 `HEAD`・既存ブランチがあれば再利用）。**冪等**（同一 agent の再実行は既存を返す）。出力に worktree path と「`cd <path> && export HARNESS_ROOT=<sharedRoot>`」の共有手順を表示。作成した worktree は共有 DB の `workspaces` index にも記録（git が worktree 存在の正本、DB は harness 側メタ＝objective / advisory goal link / heartbeat を持つ・[`db.md`](./db.md)）。
-- **`list`** — harness 管理の worktree（ブランチ `agent/*`）だけを列挙（main checkout や run 内部 worktree は除外）。各行に DB の goal link / objective を付与。**stale 検出**: DB に行があるが git worktree が消えている場合は `(stale: …)` と表示（`remove <agent>` で掃除）。
+- **`adopt <agent> --worktree <path>`** — ハーネスが作っていない**既存の git worktree を agent として登録**（`create` と違い**作らない**・任意ブランチ可）。`<path>` が repo の現 worktree でなければ拒否、**main worktree** と **detached（branch なし）** も拒否（fail-closed）。`git worktree add -b … <path>` で手動に切った worktree を後付け追跡する入口。
+- **`list`** — workspace を列挙: **`agent/*` worktree** ＋ **adopted（任意ブランチ・DB 行の worktree_path が現存）**。各行に DB の goal link / objective を付与。**reconcile は worktree path ベース**（DB 行の worktree が消えていれば `(stale: …)` 表示・`remove <agent>` で掃除）。main checkout や run 内部 worktree は除外。
 - **`status`** — 全 agent workspace の**進捗を一目で**集約（複数ターミナルを束ねる人間の統括用）。各 workspace に**決定論ラベル**を付ける（git state ＋ linked goal の convergence decision のみから射影・checkpoint note は使わない）: `stale` / `goal-missing`（dangling link）/ `blocked`（diverging・budget_exhausted・escalate・**未知 decision は fail-closed で blocked**）/ `needs-work`（needs_fix・needs_classification）/ `ready-to-close` / `in-progress`（goal `continue`）/ `dirty` / `base-unknown`（base ref 未解決＝ahead/behind 不明）/ `ahead` / `behind` / `clean`（優先順）。各行に git（ahead/behind/dirty）・goal・last-active・objective。**heartbeat staleness**: `last_active_at` が `--stale-after <hours>`（既定 24）より古い workspace は last-active に `⚠idle` を付ける（放置/忘れられた agent の検出。`staleHeartbeat` として JSON にも）。`--json` で構造化出力。
 - **`conflicts`** — 全 agent workspace の**変更ファイルの重複を事前検出**（並行作業の衝突 pre-check）。各 workspace の変更集合＝**committed-ahead**（`base...branch` の diff）∪ **uncommitted**（working tree）。2 agent が同じファイルを触る pair を共有ファイル付きで報告。git エラーは fail-closed、base 未解決は uncommitted のみに degrade（best-effort）。`--json` 可。「あまり同じファイルは触らない」前提を**検証可能**にする。
 - **`inspect <agent>`** — workspace の**決定論ブリーフィング**を git だけから再構成して返す（branch / HEAD / 最終コミット / `--base`（既定 `main`）に対する ahead-behind / 未コミット file）。保存状態に依存せず、LLM が自分や他エージェントの workspace を**自己申告抜きで理解**するための土台（save/recover の理解レイヤー）。`--json` で構造化出力。

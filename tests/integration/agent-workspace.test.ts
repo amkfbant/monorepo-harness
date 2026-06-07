@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  adoptAgentWorkspace,
   canonicalRepoKey,
   changedFilesForWorkspace,
   createAgentWorkspace,
@@ -92,6 +93,47 @@ describe("agent workspaces (real git)", () => {
       encoding: "utf8",
     });
     expect(branches.trim()).toBe("");
+  });
+
+  it("adopt: registers an existing worktree on a non-agent branch", async () => {
+    const wtPath = join(
+      mkdtempSync(join(tmpdir(), "harness-adopt-")),
+      "feature",
+    );
+    execFileSync("git", ["worktree", "add", "-b", "feature/x", wtPath, "main"], {
+      cwd: ctx.repoPath,
+      stdio: "ignore",
+    });
+    const ws = await adoptAgentWorkspace(ctx, {
+      agent: "dave",
+      worktreePath: wtPath,
+    });
+    expect(ws.agent).toBe("dave");
+    expect(ws.branch).toBe("feature/x");
+    expect(ws.path.endsWith("feature")).toBe(true);
+  });
+
+  it("adopt: refuses the main worktree, a non-worktree path, and a detached worktree", async () => {
+    await expect(
+      adoptAgentWorkspace(ctx, { agent: "z", worktreePath: ctx.repoPath }),
+    ).rejects.toThrow(/main worktree/);
+    const notWt = mkdtempSync(join(tmpdir(), "harness-notwt-"));
+    await expect(
+      adoptAgentWorkspace(ctx, { agent: "z", worktreePath: notWt }),
+    ).rejects.toThrow(/not a git worktree/);
+    // a detached worktree has no branch.
+    const det = join(mkdtempSync(join(tmpdir(), "harness-det-")), "d");
+    const head = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: ctx.repoPath,
+      encoding: "utf8",
+    }).trim();
+    execFileSync("git", ["worktree", "add", "--detach", det, head], {
+      cwd: ctx.repoPath,
+      stdio: "ignore",
+    });
+    await expect(
+      adoptAgentWorkspace(ctx, { agent: "z", worktreePath: det }),
+    ).rejects.toThrow(/detached/);
   });
 
   it("removing a non-existent agent is a no-op (removed=false)", async () => {

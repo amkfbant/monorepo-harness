@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { gitCli, type GitResult } from "../git/git-cli.js";
 
 /**
@@ -221,6 +221,59 @@ async function branchExists(
 ): Promise<boolean> {
   const r = await git(ctx, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
   return r.exitCode === 0;
+}
+
+/** ALL git worktrees of the repo (parsed), the MAIN one first (git's order). */
+export async function listWorktrees(
+  ctx: AgentWorkspaceContext,
+): Promise<ParsedWorktree[]> {
+  const r = await git(ctx, ["worktree", "list", "--porcelain"]);
+  if (r.exitCode !== 0 || r.timedOut) {
+    throw new AgentWorkspaceError(
+      `git worktree list failed: ${r.stderr.trim()}`,
+    );
+  }
+  return parseWorktreePorcelain(r.stdout);
+}
+
+/**
+ * Register an EXISTING git worktree of the repo as agent `<name>`, on whatever
+ * branch it is currently on (the `agent/<name>` convention is not required).
+ * Unlike `create`, it never creates a worktree or branch — it fails if the path
+ * is not a current worktree. The caller records the returned record in the DB
+ * index; `list`/`status` then surface it (reconciled by worktree path).
+ */
+export async function adoptAgentWorkspace(
+  ctx: AgentWorkspaceContext,
+  opts: { agent: string; worktreePath: string },
+): Promise<AgentWorkspace> {
+  assertAgentName(opts.agent);
+  let target: string;
+  try {
+    target = realpathSync(opts.worktreePath);
+  } catch {
+    target = resolve(opts.worktreePath);
+  }
+  const worktrees = await listWorktrees(ctx);
+  const wt = worktrees.find((w) => w.path === target);
+  if (wt === undefined) {
+    throw new AgentWorkspaceError(
+      `${opts.worktreePath} is not a git worktree of this repository`,
+    );
+  }
+  // git lists the MAIN worktree first; never adopt the primary checkout as an
+  // agent (it is the shared tree, not an isolated per-agent one).
+  if (worktrees[0] !== undefined && wt.path === worktrees[0].path) {
+    throw new AgentWorkspaceError(
+      `cannot adopt the main worktree (${target}); adopt an additional worktree`,
+    );
+  }
+  if (wt.branch === null) {
+    throw new AgentWorkspaceError(
+      `worktree ${opts.worktreePath} is detached (no branch); adopt requires a branch`,
+    );
+  }
+  return { agent: opts.agent, path: wt.path, branch: wt.branch, head: wt.head };
 }
 
 /** List the harness-managed agent workspaces (branch `agent/*`). */

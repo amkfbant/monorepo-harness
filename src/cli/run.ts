@@ -41,6 +41,7 @@ import {
 } from "../db/repositories/review-overrides.js";
 import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
 import {
+  adoptAgentWorkspace,
   AgentWorkspaceError,
   canonicalRepoKey,
   changedFilesForWorkspace,
@@ -50,6 +51,7 @@ import {
   removeAgentWorkspace,
   resolveMainWorktree,
 } from "../workspace/agent-workspace.js";
+import { reconcileWorkspaces } from "../workspace/workspace-reconcile.js";
 import {
   findWorkspaceConflicts,
   type WorkspaceChangedFiles,
@@ -3215,22 +3217,81 @@ workspaceCmd
   });
 
 workspaceCmd
+  .command("adopt")
+  .description(
+    "register an EXISTING git worktree as an agent (any branch; never creates)",
+  )
+  .argument("<agent>", "agent name")
+  .requiredOption("--worktree <path>", "path to an existing worktree of the repo")
+  .option("--repo <path>", "the project repo (default: current directory)")
+  .option("--json", "emit JSON instead of text", false)
+  .action(async (agent: string, raw: Record<string, unknown>) => {
+    try {
+      const repoPath = await resolveMainWorktree({
+        repoPath: workspaceRepoPath(raw),
+      });
+      const repoKey = await canonicalRepoKey({ repoPath });
+      const ws = await adoptAgentWorkspace(
+        { repoPath, workspacesDir: workspacesDirFor(repoPath, raw) },
+        { agent, worktreePath: String(raw.worktree) },
+      );
+      withWorkspaceRepo((repo) => {
+        // one-agent-per-path and one-worktree-per-agent: a collision would let
+        // reconcile emit the same worktree twice or orphan an existing tree.
+        const rows = repo.listByRepo(repoKey);
+        const byOtherAgent = rows.find(
+          (r) => r.worktreePath === ws.path && r.agent !== agent,
+        );
+        if (byOtherAgent !== undefined) {
+          throw new AgentWorkspaceError(
+            `worktree ${ws.path} is already adopted by agent "${byOtherAgent.agent}"`,
+          );
+        }
+        const existing = rows.find((r) => r.agent === agent);
+        if (existing !== undefined && existing.worktreePath !== ws.path) {
+          throw new AgentWorkspaceError(
+            `agent "${agent}" already has a workspace at ${existing.worktreePath}; ` +
+              `remove it first or use a different agent name`,
+          );
+        }
+        repo.upsert({
+          agent,
+          repoPath: repoKey,
+          branch: ws.branch,
+          worktreePath: ws.path,
+        });
+      });
+      if (raw.json === true) {
+        process.stdout.write(`${JSON.stringify(ws, null, 2)}\n`);
+        return;
+      }
+      process.stdout.write(
+        `adopted worktree as agent "${agent}"\n` +
+          `  path:   ${ws.path}\n` +
+          `  branch: ${ws.branch}\n`,
+      );
+    } catch (e) {
+      withWorkspaceErrorExit(e);
+    }
+  });
+
+workspaceCmd
   .command("list")
-  .description("list the harness-managed agent worktrees (branch agent/*)")
+  .description("list workspaces: agent/* worktrees + adopted (any-branch)")
   .option("--repo <path>", "the project repo (default: current directory)")
   .option("--json", "emit JSON instead of text", false)
   .action(async (raw: Record<string, unknown>) => {
     try {
       const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
-      const live = await listAgentWorkspaces({ repoPath, workspacesDir });
       const repoKey = await canonicalRepoKey({ repoPath });
       const rows = withWorkspaceRepo((repo) => repo.listByRepo(repoKey));
-      const rowByAgent = new Map(rows.map((r) => [r.agent, r]));
-      const liveAgents = new Set(live.map((w) => w.agent));
-      // a DB row whose git worktree git no longer knows about is stale.
-      const stale = rows.filter((r) => !liveAgents.has(r.agent));
+      // reconcile by worktree path: agent/* worktrees + adopted (any-branch) rows.
+      const { live, recordByAgent, stale } = await reconcileWorkspaces(
+        { repoPath, workspacesDir },
+        rows,
+      );
       const enriched = live.map((w) => {
-        const r = rowByAgent.get(w.agent) ?? null;
+        const r = recordByAgent.get(w.agent) ?? null;
         return {
           ...w,
           goalId: r?.goalId ?? null,
@@ -3320,7 +3381,12 @@ workspaceCmd
   .action(async (raw: Record<string, unknown>) => {
     try {
       const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
-      const live = await listAgentWorkspaces({ repoPath, workspacesDir });
+      const repoKey = await canonicalRepoKey({ repoPath });
+      const rows = withWorkspaceRepo((repo) => repo.listByRepo(repoKey));
+      const { live } = await reconcileWorkspaces(
+        { repoPath, workspacesDir },
+        rows,
+      );
       const entries: WorkspaceChangedFiles[] = [];
       for (const w of live) {
         entries.push({
@@ -3372,7 +3438,12 @@ workspaceCmd
     try {
       const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
       const repoKey = await canonicalRepoKey({ repoPath });
-      const live = await listAgentWorkspaces({ repoPath, workspacesDir });
+      const rows = withWorkspaceRepo((repo) => repo.listByRepo(repoKey));
+      // reconcile by worktree path: agent/* worktrees + adopted (any-branch).
+      const { live, recordByAgent, stale } = await reconcileWorkspaces(
+        { repoPath, workspacesDir },
+        rows,
+      );
       // inspect each live workspace (git state) before touching the DB.
       const inspections = new Map<string, Awaited<ReturnType<typeof inspectAgentWorkspace>>>();
       for (const w of live) {
@@ -3385,9 +3456,6 @@ workspaceCmd
         );
       }
       const inputs = withWorkspaceRepo((wsRepo, db) => {
-        const rows = wsRepo.listByRepo(repoKey);
-        const rowByAgent = new Map(rows.map((r) => [r.agent, r]));
-        const liveAgents = new Set(live.map((w) => w.agent));
         const goalRepo = new GoalRepository(db);
         // Memoize per goalId: many workspaces can share a goal, and
         // ConvergenceService.evaluate loads findings/cycles/attempts.
@@ -3410,7 +3478,7 @@ workspaceCmd
         );
         const out: WorkspaceStatusInput[] = [];
         for (const w of live) {
-          const r = rowByAgent.get(w.agent) ?? null;
+          const r = recordByAgent.get(w.agent) ?? null;
           const insp = inspections.get(w.agent);
           out.push({
             agent: w.agent,
@@ -3434,8 +3502,7 @@ workspaceCmd
           });
         }
         // stale: a DB row whose git worktree no longer exists.
-        for (const r of rows) {
-          if (liveAgents.has(r.agent)) continue;
+        for (const r of stale) {
           out.push({
             agent: r.agent,
             branch: r.branch,
