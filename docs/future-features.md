@@ -181,6 +181,15 @@ App / Copilot）が実バグを拾う価値が高く、(b) それを取りこぼ
    セッション末尾で急がない＝fail-closed）:
 
    - **専用 `awaiting_checks` status（close_ready 二重利用の解消）— 高リスク migration が前提。**
+     **判断（2026-06-08・defer 確定）**: C#9 として評価したが**実装しない（defer）**。当初
+     「scheduler 駆動 `goal await-merge` の前提」とされたが、**C#7 の `goal await-merge` を新
+     status 無し（`close_ready` の resumable パス）で実装した**ため前提が消滅。「PR オープン・
+     CI 待ち」は既に `close_ready` ＋ PR-open で表現でき、status を足すと**情報が重複**し、
+     convergence（finding/close-check から decision を算出）と orchestration（PR/merge）の
+     関心が混ざる。一方コストは**最高**（下記の FK 親 recreate migration ＋ runner への新
+     インフラ）。可視化が要るなら base column ではなく**派生ビュー**（`close_ready` ∧ PR-open →
+     `effective_status='awaiting_checks'`）で十分。よって実装せず本メモを設計記録として残す。
+     以下は将来どうしても入れる場合の最小設計。
      `goal_sessions.status` は `CHECK (status IN (...))`（`schema.ts:1253`）。新値の追加は
      SQLite では **テーブル recreate** が必須だが、現状これは**現 migration runner と非互換**:
      runner は全 DDL を**トランザクション内**で実行し（`migrations.ts:197`）、接続は
