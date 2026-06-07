@@ -31,7 +31,10 @@ import {
 } from "../goal/await-merge.js";
 import { linkAgentWorkspaceToGoal } from "../workspace/workspace-goal-link.js";
 import { decideOrchestratorAction } from "../goal/orchestrator-dispatch.js";
-import { createOrchestratorRunners } from "../goal/orchestrator-runners.js";
+import {
+  createOrchestratorRunners,
+  GoalNotCloseReadyError,
+} from "../goal/orchestrator-runners.js";
 import {
   GoalRepository,
   type CompleteReviewCycleInput,
@@ -897,9 +900,17 @@ export function registerGoalCommands(
                 awaitTimeoutMs: ciAwaitMs,
               }),
               method: parseMergeMethod(raw.mergeMethod),
-              ...(raw.ingestExternalReviews === true
+              // External-review ingestion is budget-bounded too: the verdict
+              // FETCH (`gh pr view`) timeout is clamped to the remaining budget,
+              // and with no budget left (e.g. --max-wait 0) ingestion is omitted
+              // entirely so a single fetch cannot block past the wall-clock.
+              ...(raw.ingestExternalReviews === true && remainingMs > 0
                 ? {
-                    reviewVerdicts: createGhReviewVerdicts(repoPath, ghBin),
+                    reviewVerdicts: createGhReviewVerdicts(
+                      repoPath,
+                      ghBin,
+                      remainingMs,
+                    ),
                     ...(reviewTimeoutMs > 0
                       ? {
                           reviewAwait: {
@@ -929,25 +940,25 @@ export function registerGoalCommands(
         const probe =
           (goalId: string) =>
           async (remainingMs: number): Promise<AwaitMergeStep> => {
-            if (evalDecision(goalId) !== "close_ready") {
-              return { kind: "not_awaiting", decision: evalDecision(goalId) };
+            const decision = evalDecision(goalId);
+            if (decision !== "close_ready") {
+              return { kind: "not_awaiting", decision };
             }
             const runners = buildRunners(remainingMs);
             let result;
             try {
               result = await runners.closeAndPr(goalId);
             } catch (e) {
-              const reason = e instanceof Error ? e.message : String(e);
-              // Distinguish a benign DRIFT (convergence moved off close_ready
-              // between the pre-check and closeAndPr's own re-check, which throws
-              // BEFORE any side effect) from a REAL close/merge failure (PR
-              // create / push / merge). Drift → just stop (nothing mutated). A
-              // failure while STILL close_ready → escalate (fail-closed), as the
-              // generic orchestrator does — never swallow it as not_awaiting.
-              const after = evalDecision(goalId);
-              if (after !== "close_ready") {
-                return { kind: "not_awaiting", decision: after };
+              // Distinguish a benign DRIFT from a real close/merge failure by the
+              // error TYPE (not a racy convergence re-read): closeAndPr throws a
+              // typed GoalNotCloseReadyError from its pre-side-effect guard, so a
+              // drift means nothing was mutated → just stop. ANY other throw is a
+              // real PR-create/push/merge failure → escalate (fail-closed, as the
+              // generic orchestrator does); never swallow it as not_awaiting.
+              if (e instanceof GoalNotCloseReadyError) {
+                return { kind: "not_awaiting", decision: e.decision };
               }
+              const reason = e instanceof Error ? e.message : String(e);
               withGoalRepo(opts, ({ repo }) =>
                 repo.updateStatus(goalId, "escalated", reason),
               );

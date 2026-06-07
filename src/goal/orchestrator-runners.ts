@@ -59,6 +59,26 @@ import type {
 } from "./types.js";
 
 /**
+ * Thrown by `closeAndPr`'s pre-side-effect guard when the goal is not
+ * `close_ready`. It is raised BEFORE any side effect (no PR/push/merge), so a
+ * caller (e.g. `goal await-merge`) can distinguish a benign convergence DRIFT
+ * from a real close/merge failure by the error TYPE rather than re-reading
+ * convergence (which is racy).
+ */
+export class GoalNotCloseReadyError extends Error {
+  constructor(
+    readonly goalId: string,
+    readonly decision: string,
+  ) {
+    super(
+      `goal ${goalId} is not close_ready (decision=${decision}); ` +
+        `refusing to close and open a PR`,
+    );
+    this.name = "GoalNotCloseReadyError";
+  }
+}
+
+/**
  * Lifecycle states that still demand attention (i.e. an "open" finding). A
  * finding whose scope is `unknown` and whose lifecycle is one of these must be
  * deterministically classified before the goal can converge.
@@ -486,10 +506,7 @@ export function createOrchestratorRunners(
         // not be able to close a non-ready goal — fail closed.
         const convergence = new ConvergenceService(repo).evaluate(goalId);
         if (convergence.decision !== "close_ready") {
-          throw new Error(
-            `goal ${goalId} is not close_ready (decision=${convergence.decision}); ` +
-              `refusing to close and open a PR`,
-          );
+          throw new GoalNotCloseReadyError(goalId, convergence.decision);
         }
         const context = resolveRunContext(deps, session);
         return {

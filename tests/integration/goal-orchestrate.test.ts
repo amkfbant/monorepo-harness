@@ -15,6 +15,7 @@ import {
 } from "../../src/goal/await-merge.js";
 import {
   createOrchestratorRunners,
+  GoalNotCloseReadyError,
   type GoalRunContext,
 } from "../../src/goal/orchestrator-runners.js";
 import { createFakeCodexRunner } from "../../src/codex/fake-codex-runner.js";
@@ -733,6 +734,39 @@ describe("goal orchestrate (real git + fake codex)", () => {
     } finally {
       close();
     }
+  });
+
+  it("closeAndPr throws a typed GoalNotCloseReadyError on a non-close_ready goal (drift signal)", async () => {
+    // a fresh goal sits at `continue` (needs a run/review), not close_ready.
+    const goalId = createGoal(f.dbPath, "goal-notready", "docs");
+    const { coderRunner, reviewerRunner } = approveFakes("docs/guide.md");
+    const runners = createOrchestratorRunners({
+      dbPath: f.dbPath,
+      harnessRoot: f.harnessRoot,
+      createdBy: "test",
+      coderRunner,
+      reviewerRunner,
+      publisher: fakePublisher(),
+      resolveRunContext: (): GoalRunContext => ({
+        repoPath: f.repoPath,
+        repoId: "t",
+        domain: "docs",
+        goal: "update docs",
+        baseBranch: "main",
+      }),
+      autoMerge: {
+        merger: fakeMerger("ok"),
+        ciStatus: async () => true,
+      },
+    });
+    // the typed error lets await-merge tell a benign drift from a real failure.
+    await expect(runners.closeAndPr(goalId)).rejects.toBeInstanceOf(
+      GoalNotCloseReadyError,
+    );
+    await runners.closeAndPr(goalId).catch((e: unknown) => {
+      expect(e).toBeInstanceOf(GoalNotCloseReadyError);
+      expect((e as GoalNotCloseReadyError).decision).not.toBe("close_ready");
+    });
   });
 
   it("auto-merge: tier-2 paths leave the PR open even with CI green and consensus", async () => {
