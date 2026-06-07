@@ -54,20 +54,40 @@ describe("buildRecoveryBriefing nextSteps (deterministic)", () => {
   });
 
   it("projects the linked goal's convergence decision into a step", () => {
-    const mk = (decision: string) =>
+    // realistic (decision, nextActionKind) pairs as ConvergenceService emits.
+    const mk = (decision: string, nextActionKind: string) =>
       buildRecoveryBriefing({
         inspection: insp(),
         objective: null,
-        goal: { goalId: "g1", convergence: { decision, reason: "r", nextActionKind: "x" } },
+        goal: { goalId: "g1", convergence: { decision, reason: "r", nextActionKind } },
         latestCheckpoint: null,
       }).nextSteps.join(" | ");
-    expect(mk("needs_fix")).toMatch(/run the coder for goal g1/);
-    expect(mk("needs_classification")).toMatch(/classify unknown-scope/);
-    expect(mk("continue")).toMatch(/run review \/ record close-check/);
-    expect(mk("close_ready")).toMatch(/close goal g1 and open the PR/);
-    expect(mk("escalate")).toMatch(/escalate goal g1 \(escalate: r\)/);
+    expect(mk("needs_fix", "fix_findings")).toMatch(/run the coder for goal g1/);
+    expect(mk("needs_classification", "classify_findings")).toMatch(/classify unknown-scope/);
+    expect(mk("continue", "run_close_check")).toMatch(/run review \/ record close-check/);
+    expect(mk("close_ready", "close_goal")).toMatch(/close goal g1 and open the PR/);
+    expect(mk("escalate", "ask_human")).toMatch(/escalate goal g1 \(escalate: r\)/);
     // a closed goal contributes no goal step → clean message.
-    expect(mk("closed")).toMatch(/nothing pending/);
+    expect(mk("closed", "close_goal")).toMatch(/nothing pending/);
+  });
+
+  it("fail-closes (escalate) on an unrecognized decision or an unsupported continue action", () => {
+    const steps = (decision: string, nextActionKind: string) =>
+      buildRecoveryBriefing({
+        inspection: insp(),
+        objective: null,
+        goal: { goalId: "g1", convergence: { decision, reason: "r", nextActionKind } },
+        latestCheckpoint: null,
+      }).nextSteps.join(" | ");
+    // a future/unknown decision must not be guessed as "review".
+    expect(steps("brand_new_decision", "whatever")).toMatch(
+      /unrecognized convergence decision \(brand_new_decision\) — escalate/,
+    );
+    expect(steps("brand_new_decision", "whatever")).not.toMatch(/run review/);
+    // continue with an unsupported next action also escalates.
+    expect(steps("continue", "some_future_action")).toMatch(
+      /unsupported action \(continue\/some_future_action\) — escalate/,
+    );
   });
 
   it("respects the authoritative nextActionKind for a `continue` decision", () => {

@@ -77,13 +77,23 @@ function computeNextSteps(input: RecoveryBriefingInput): string[] {
           );
           break;
         case "continue":
-          // `continue` carries an authoritative next action: defer follow-ups
-          // vs. review/close-check. Respect it rather than always saying review.
-          steps.push(
-            nextActionKind === "defer_followups"
-              ? `defer out-of-scope follow-ups for goal ${goal.goalId} before closing`
-              : `run review / record close-check evidence for goal ${goal.goalId}`,
-          );
+          // `continue` carries an authoritative next action. Handle the known
+          // kinds explicitly; an unrecognized kind is fail-closed (escalate)
+          // rather than guessing "review".
+          if (nextActionKind === "defer_followups") {
+            steps.push(
+              `defer out-of-scope follow-ups for goal ${goal.goalId} before closing`,
+            );
+          } else if (nextActionKind === "run_close_check") {
+            steps.push(
+              `run review / record close-check evidence for goal ${goal.goalId}`,
+            );
+          } else {
+            steps.push(
+              `goal ${goal.goalId} needs an unsupported action ` +
+                `(continue/${nextActionKind}) — escalate`,
+            );
+          }
           break;
         case "close_ready":
           steps.push(`close goal ${goal.goalId} and open the PR`);
@@ -97,7 +107,11 @@ function computeNextSteps(input: RecoveryBriefingInput): string[] {
           steps.push(`escalate goal ${goal.goalId} (${decision}: ${reason})`);
           break;
         default:
-          steps.push(`review goal ${goal.goalId} (${decision})`);
+          // an unrecognized decision is fail-closed: escalate, never guess.
+          steps.push(
+            `goal ${goal.goalId} has an unrecognized convergence decision ` +
+              `(${decision}) — escalate`,
+          );
       }
     }
   }
