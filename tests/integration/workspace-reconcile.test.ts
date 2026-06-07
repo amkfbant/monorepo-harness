@@ -3,7 +3,10 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAgentWorkspace } from "../../src/workspace/agent-workspace.js";
+import {
+  createAgentWorkspace,
+  normalizeWorktreePath,
+} from "../../src/workspace/agent-workspace.js";
 import { reconcileWorkspaces } from "../../src/workspace/workspace-reconcile.js";
 import type { WorkspaceRecord } from "../../src/db/repositories/workspaces.js";
 
@@ -84,6 +87,29 @@ describe("reconcileWorkspaces (real git)", () => {
     const { live, stale } = await reconcileWorkspaces(ctx, rows);
     expect(live.some((w) => w.agent === "dee")).toBe(false); // detached → not usable
     expect(stale.some((r) => r.agent === "dee")).toBe(false); // path present → not stale
+  });
+
+  it("attributes metadata by exact path, not agent name (collision cannot leak a row)", async () => {
+    // a live agent/alice worktree, but the DB row for "alice" points elsewhere
+    // (a different, stale path). recordByPath must key the LIVE path → so the
+    // live worktree gets NO row (the stale-path row never attaches to it).
+    const ws = await createAgentWorkspace(ctx, { agent: "alice", base: "main" });
+    const rows = [
+      record({
+        agent: "alice",
+        goalId: "goal-secret",
+        objective: "out-of-scope work",
+        worktreePath: "/some/other/stale/alice",
+      }),
+    ];
+    const { live, recordByPath } = await reconcileWorkspaces(ctx, rows);
+    const aliceLive = live.find((w) => w.agent === "alice");
+    expect(aliceLive).toBeDefined();
+    const liveKey = normalizeWorktreePath(aliceLive!.path);
+    // the row is keyed by ITS (stale) path, not the live worktree's path …
+    expect(recordByPath.has(liveKey)).toBe(false);
+    // … so attribution by live path yields null — the foreign goal never leaks.
+    expect(recordByPath.get(liveKey) ?? null).toBeNull();
   });
 
   it("hydrates an agent/* worktree that has switched branches from git", async () => {

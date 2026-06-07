@@ -26,7 +26,14 @@ import type { WorkspaceRecord } from "../db/repositories/workspaces.js";
 export interface ReconcileResult {
   /** agent/* worktrees plus adopted (path-present) workspaces, hydrated from git */
   live: AgentWorkspace[];
-  recordByAgent: Map<string, WorkspaceRecord>;
+  /**
+   * Live worktree metadata keyed by NORMALIZED worktree PATH (not agent name):
+   * attribution must follow the exact live path so a name collision (an
+   * `agent/<name>` worktree whose DB row points elsewhere) cannot attach a
+   * different row's goal/project. A convention-only live worktree with no row at
+   * its path is absent here → null record → out-of-scope for restricted clients.
+   */
+  recordByPath: Map<string, WorkspaceRecord>;
   /** DB rows whose worktree no longer exists */
   stale: WorkspaceRecord[];
 }
@@ -40,7 +47,6 @@ export async function reconcileWorkspaces(
   const others = worktrees.slice(1);
   const recordByPath = new Map<string, WorkspaceRecord>();
   for (const r of rows) recordByPath.set(norm(r.worktreePath), r);
-  const recordByAgent = new Map(rows.map((r) => [r.agent, r]));
 
   // EVERY current worktree path (incl. detached) → for stale detection, so a
   // present-but-detached worktree's row is NOT wrongly flagged as missing.
@@ -57,5 +63,5 @@ export async function reconcileWorkspaces(
   }
 
   const stale = rows.filter((r) => !allPaths.has(norm(r.worktreePath)));
-  return { live, recordByAgent, stale };
+  return { live, recordByPath, stale };
 }

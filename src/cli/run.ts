@@ -48,11 +48,16 @@ import {
   createAgentWorkspace,
   inspectAgentWorkspace,
   listAgentWorkspaces,
+  normalizeWorktreePath,
   removeAgentWorkspace,
   resolveMainWorktree,
   type AgentWorkspace,
 } from "../workspace/agent-workspace.js";
 import { reconcileWorkspaces } from "../workspace/workspace-reconcile.js";
+import {
+  assembleWorkspaceStatuses,
+  readWorkspaceStatusData,
+} from "../workspace/workspace-status-builder.js";
 import {
   findWorkspaceConflicts,
   type WorkspaceChangedFiles,
@@ -62,11 +67,6 @@ import {
   buildRecoveryBriefing,
   type RecoveryGoal,
 } from "../workspace/workspace-recover.js";
-import {
-  isHeartbeatStale,
-  summarizeWorkspace,
-  type WorkspaceStatusInput,
-} from "../workspace/workspace-status.js";
 import { GoalRepository } from "../goal/repository.js";
 import { ConvergenceService } from "../goal/convergence.js";
 import { openManagedDb } from "../db/managed-connection.js";
@@ -3304,12 +3304,13 @@ workspaceCmd
       const repoKey = await canonicalRepoKey({ repoPath });
       const rows = withWorkspaceRepo((repo) => repo.listByRepo(repoKey));
       // reconcile by worktree path: agent/* worktrees + adopted (any-branch) rows.
-      const { live, recordByAgent, stale } = await reconcileWorkspaces(
+      const { live, recordByPath, stale } = await reconcileWorkspaces(
         { repoPath, workspacesDir },
         rows,
       );
       const enriched = live.map((w) => {
-        const r = recordByAgent.get(w.agent) ?? null;
+        // attribute by exact live path, not agent name (see reconcile docs).
+        const r = recordByPath.get(normalizeWorktreePath(w.path)) ?? null;
         return {
           ...w,
           goalId: r?.goalId ?? null,
@@ -3461,85 +3462,6 @@ workspaceCmd
     try {
       const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
       const repoKey = await canonicalRepoKey({ repoPath });
-      const rows = withWorkspaceRepo((repo) => repo.listByRepo(repoKey));
-      // reconcile by worktree path: agent/* worktrees + adopted (any-branch).
-      const { live, recordByAgent, stale } = await reconcileWorkspaces(
-        { repoPath, workspacesDir },
-        rows,
-      );
-      // inspect each live workspace (git state) before touching the DB.
-      const inspections = new Map<string, Awaited<ReturnType<typeof inspectAgentWorkspace>>>();
-      for (const w of live) {
-        inspections.set(
-          w.agent,
-          await inspectAgentWorkspace(
-            { repoPath, workspacesDir },
-            { agent: w.agent, base: String(raw.base ?? "main"), workspace: w },
-          ),
-        );
-      }
-      const inputs = withWorkspaceRepo((wsRepo, db) => {
-        const goalRepo = new GoalRepository(db);
-        // Memoize per goalId: many workspaces can share a goal, and
-        // ConvergenceService.evaluate loads findings/cycles/attempts.
-        const decisionCache = new Map<string, string | null>();
-        const goalDecisionFor = (goalId: string | null): string | null => {
-          if (goalId === null) return null;
-          const cached = decisionCache.get(goalId);
-          if (cached !== undefined) return cached;
-          // dangling advisory link → null (rendered as goal-missing).
-          const decision =
-            goalRepo.getSession(goalId) === null
-              ? null
-              : new ConvergenceService(goalRepo).evaluate(goalId).decision;
-          decisionCache.set(goalId, decision);
-          return decision;
-        };
-        // Latest checkpoint timestamp for every row in ONE query (no N+1).
-        const checkpointAt = wsRepo.latestCheckpointAtForWorkspaces(
-          rows.map((r) => r.workspaceId),
-        );
-        const out: WorkspaceStatusInput[] = [];
-        for (const w of live) {
-          const r = recordByAgent.get(w.agent) ?? null;
-          const insp = inspections.get(w.agent);
-          out.push({
-            agent: w.agent,
-            branch: w.branch,
-            git:
-              insp === undefined
-                ? null
-                : {
-                    ahead: insp.ahead,
-                    behind: insp.behind,
-                    baseResolved: insp.baseResolved,
-                    dirtyCount: insp.dirtyFiles.length,
-                  },
-            goalId: r?.goalId ?? null,
-            goalDecision: goalDecisionFor(r?.goalId ?? null),
-            objective: r?.objective ?? null,
-            lastActiveAt: r?.lastActiveAt ?? null,
-            lastCheckpointAt:
-              r === null ? null : (checkpointAt.get(r.workspaceId) ?? null),
-            stale: false,
-          });
-        }
-        // stale: a DB row whose git worktree no longer exists.
-        for (const r of stale) {
-          out.push({
-            agent: r.agent,
-            branch: r.branch,
-            git: null,
-            goalId: r.goalId,
-            goalDecision: goalDecisionFor(r.goalId),
-            objective: r.objective,
-            lastActiveAt: r.lastActiveAt,
-            lastCheckpointAt: checkpointAt.get(r.workspaceId) ?? null,
-            stale: true,
-          });
-        }
-        return out;
-      });
       const nowMs = Date.now();
       const rawStaleAfter = raw.staleAfter ?? "24";
       // reject a blank string explicitly: Number("") / Number("  ") === 0 would
@@ -3553,11 +3475,27 @@ workspaceCmd
           `--stale-after must be a non-negative number of hours (got ${JSON.stringify(raw.staleAfter)})`,
         );
       }
-      const thresholdMs = staleHours * 3_600_000;
-      const statuses = inputs.map((i) => ({
-        ...summarizeWorkspace(i),
-        staleHeartbeat: isHeartbeatStale(i.lastActiveAt, nowMs, thresholdMs),
-      }));
+      // read DB facts in one short window, then CLOSE the handle before the
+      // (slow) git inspections — no DB lock is held during git work.
+      const handle = openManagedDb({
+        dbPath: harnessPaths(getHarnessRoot()).dbPath,
+      });
+      let data;
+      try {
+        runMigrations(handle.db);
+        data = readWorkspaceStatusData(handle.db, repoKey);
+      } finally {
+        handle.close();
+      }
+      const statuses = await assembleWorkspaceStatuses(
+        { repoPath, workspacesDir },
+        data,
+        {
+          base: String(raw.base ?? "main"),
+          nowMs,
+          staleThresholdMs: staleHours * 3_600_000,
+        },
+      );
       if (raw.json === true) {
         process.stdout.write(`${JSON.stringify(statuses, null, 2)}\n`);
         return;
