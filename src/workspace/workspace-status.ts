@@ -87,9 +87,10 @@ export function summarizeWorkspace(
 /**
  * Whether a workspace's heartbeat is stale: no activity for at least
  * `thresholdMs`. Surfaces an abandoned / forgotten agent workspace to a human
- * coordinating several agents. A workspace that has never been active
- * (`lastActiveAt === null`) is NOT treated as stale here — there is no activity
- * window to judge. `now`/threshold are explicit so the check is deterministic.
+ * coordinating several agents. A workspace with no parseable activity timestamp
+ * — `lastActiveAt === null` OR an unparseable string — is NOT treated as stale
+ * (there is no activity window to judge). `now`/threshold are explicit so the
+ * check is deterministic.
  */
 export function isHeartbeatStale(
   lastActiveAt: string | null,
