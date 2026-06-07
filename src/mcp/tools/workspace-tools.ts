@@ -1,7 +1,29 @@
+import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import type Database from "better-sqlite3";
+import { harnessPaths } from "../../config/paths.js";
+import { openManagedDb } from "../../db/managed-connection.js";
+import { runMigrations } from "../../db/migrations.js";
+import {
+  OperationInFlightError,
+  OperationReplayedFailureError,
+  runOperation,
+} from "../../operations/operation-runner.js";
 import { ConvergenceService } from "../../goal/convergence.js";
 import { GoalRepository } from "../../goal/repository.js";
 import { WorkspaceRepository } from "../../db/repositories/workspaces.js";
-import { ok, type HarnessMcpToolResult } from "../schemas/outputs.js";
+import {
+  errorResult,
+  ok,
+  permissionDenied,
+  type HarnessMcpToolResult,
+} from "../schemas/outputs.js";
+import { redactMcpAuditValue } from "../audit/redaction.js";
+import {
+  assertMutationBudget,
+  McpMutationBudgetExceededError,
+} from "../security/limits.js";
+import { modeForClient } from "../security/permissions.js";
 import type { McpToolContext } from "../registry/tool-registry.js";
 import { normalizeLimit, withReadonlyDb } from "./tool-helpers.js";
 
@@ -88,4 +110,194 @@ export function workspaceListTool(
     }));
     return ok(`listed ${workspaces.length} workspace(s)`, { workspaces });
   }) as HarnessMcpToolResult;
+}
+
+export interface WorkspaceCheckpointArgs {
+  repoPath: string;
+  agent: string;
+  note?: string;
+  goalId?: string;
+  objective?: string;
+  idempotencyKey: string;
+  actorNote?: string;
+}
+
+/**
+ * `allowedProjects` scoping for a workspace mutation. Authorizes the EXISTING
+ * workspace's linked-goal project FIRST (a restricted client may not touch an
+ * unlinked / dangling / out-of-scope workspace — and an absent workspace is
+ * denied rather than leaking its existence). When `args.goalId` re-links a new
+ * goal, that goal's project must ALSO be allowed. Read-only; runs on the write
+ * handle (after migrate) before the mutation. Returns permission_denied or null.
+ */
+function checkWorkspaceProjectScope(
+  db: Database.Database,
+  allowed: readonly string[],
+  args: WorkspaceCheckpointArgs,
+): HarnessMcpToolResult | null {
+  const wsRepo = new WorkspaceRepository(db);
+  const goalRepo = new GoalRepository(db);
+  const projectAllowed = (goalId: string | null): boolean => {
+    if (goalId === null) return false;
+    const projectId = goalRepo.getSession(goalId)?.projectId ?? null;
+    return projectId !== null && allowed.includes(projectId);
+  };
+  const deny = (): HarnessMcpToolResult =>
+    permissionDenied("MCP permission denied: project_not_allowed", {
+      reason: "project_not_allowed",
+    });
+
+  const existing = wsRepo.get(args.repoPath, args.agent);
+  if (existing === null || !projectAllowed(existing.goalId)) return deny();
+  if (args.goalId !== undefined && !projectAllowed(args.goalId)) return deny();
+  return null;
+}
+
+/**
+ * Save an advisory checkpoint for a workspace over MCP (DB-only: note + goal
+ * link + objective + heartbeat — no git snapshot). A low-risk mutation: it
+ * needs `workspace.checkpoint` allowlisted but no confirmation. The mutating
+ * create/remove (filesystem worktree ops + a confirmation gate) stay CLI-only.
+ */
+export async function workspaceCheckpointTool(
+  args: WorkspaceCheckpointArgs,
+  context: McpToolContext,
+): Promise<HarnessMcpToolResult> {
+  // mutation gate: guarded-mutation mode + operation allowlisted.
+  if (modeForClient(context.config, context.clientName) !== "guarded-mutation") {
+    return permissionDenied("MCP permission denied: mutation_disabled_for_client", {
+      operation: "workspace.checkpoint",
+      reason: "mutation_disabled_for_client",
+    });
+  }
+  if (!context.config.allowedOperations.includes("workspace.checkpoint")) {
+    return permissionDenied("MCP permission denied: operation_not_allowlisted", {
+      operation: "workspace.checkpoint",
+      reason: "operation_not_allowlisted",
+    });
+  }
+  const paths = harnessPaths(context.harnessRoot);
+  if (!existsSync(paths.dbPath)) {
+    return errorResult("harness DB is not initialized", { dbPath: paths.dbPath });
+  }
+
+  const operationId = `op-${randomUUID()}`;
+  const handle = openManagedDb({
+    dbPath: paths.dbPath,
+    lockPath: paths.dbLockPath,
+  });
+  try {
+    runMigrations(handle.db);
+    // project scoping on the WRITE handle (after migrate), BEFORE the mutation:
+    // authorize the existing workspace's project first, then any re-linked goal.
+    if (context.config.allowedProjects.length > 0) {
+      const denied = checkWorkspaceProjectScope(
+        handle.db,
+        context.config.allowedProjects,
+        args,
+      );
+      if (denied !== null) return denied;
+    }
+    const outcome = await runOperation(
+      handle.db,
+      {
+        operationId,
+        operationType: "workspace.checkpoint",
+        target: { type: "workspace", id: `${args.repoPath}:${args.agent}` },
+        actor: `mcp:${context.clientName}`,
+        idempotencyKey: args.idempotencyKey,
+        dryRun: false,
+        input: redactMcpAuditValue(args),
+        metadata: {
+          source: "mcp",
+          toolName: "harness.workspace.checkpoint",
+          clientName: context.clientName,
+          sessionId: context.sessionId,
+          ...(args.actorNote !== undefined
+            ? { actorNote: redactMcpAuditValue(args.actorNote) }
+            : {}),
+        },
+        beforeStart: (db) => {
+          assertMutationBudget(db, context.config, {
+            clientName: context.clientName,
+            operationType: "workspace.checkpoint",
+            targetId: `${args.repoPath}:${args.agent}`,
+            idempotencyKey: args.idempotencyKey,
+          });
+        },
+      },
+      async () => {
+        const repo = new WorkspaceRepository(handle.db);
+        const record = repo.get(args.repoPath, args.agent);
+        if (record === null) {
+          throw new Error(
+            `no workspace for agent "${args.agent}" in ${args.repoPath}`,
+          );
+        }
+        if (args.goalId !== undefined) {
+          repo.linkGoal(args.repoPath, args.agent, args.goalId);
+        }
+        if (args.objective !== undefined) {
+          repo.setObjective(args.repoPath, args.agent, args.objective);
+        }
+        // always refresh the heartbeat, even for a note-only checkpoint.
+        repo.touch(args.repoPath, args.agent);
+        return repo.recordCheckpoint({
+          workspaceId: record.workspaceId,
+          note: args.note ?? null,
+          headSha: null,
+          dirtyCount: 0,
+          goalId: args.goalId ?? record.goalId,
+          createdBy: `mcp:${context.clientName}`,
+        });
+      },
+    );
+    return {
+      status: "operation_started",
+      summary: `workspace.checkpoint ${outcome.replayed ? "replayed" : "started"}`,
+      operationId: outcome.operation.operationId,
+      data: {
+        operation: {
+          operationId: outcome.operation.operationId,
+          operationType: outcome.operation.operationType,
+          targetType: outcome.operation.targetType,
+          targetId: outcome.operation.targetId,
+          status: outcome.operation.status,
+        },
+        result: outcome.result,
+        replayed: outcome.replayed,
+      },
+      resourceLinks: [
+        {
+          uri: `harness://operation/${outcome.operation.operationId}`,
+          name: `operation ${outcome.operation.operationId}`,
+          mimeType: "application/json",
+        },
+      ],
+    };
+  } catch (e) {
+    if (e instanceof McpMutationBudgetExceededError) {
+      const budget = e.decision;
+      return permissionDenied(e.message, {
+        limit: budget.limit ?? budget.reason,
+        max: budget.max ?? null,
+        resetAt: budget.resetAt ?? null,
+      });
+    }
+    if (e instanceof OperationInFlightError) {
+      return errorResult(e.message, {
+        operationId: e.operationId,
+        reason: "operation_in_flight",
+      });
+    }
+    if (e instanceof OperationReplayedFailureError) {
+      return errorResult(e.message, {
+        operationId: e.operationId,
+        reason: "idempotency_replayed_failure",
+      });
+    }
+    return errorResult((e as Error).message, { operationId });
+  } finally {
+    handle.close();
+  }
 }
