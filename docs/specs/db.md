@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > goal convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/goal/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V16_STATEMENTS`、
-> `SCHEMA_VERSION = 16`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V17_STATEMENTS`、
+> `SCHEMA_VERSION = 17`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -56,6 +56,16 @@ SQLite（`better-sqlite3`）。`PRAGMA journal_mode=WAL` / `foreign_keys=ON`。
 
 schema は migration version を持つ。`schema_migrations` テーブルに適用済み
 version を記録し、`harness db migrate` が未適用分を idempotent に適用する。
+
+> **v17（agent workspaces）**: additive な `workspaces` テーブルを追加。`harness
+> workspace`（[`cli.md`](./cli.md#harness-workspace)）が作る per-agent git worktree
+> の **index**。git が worktree の存在・branch の正本で、この行は git が持たない
+> harness 側メタ（`objective` / advisory `goal_id`（FK なし＝goal 削除で cascade
+> しない）/ `last_active_at` heartbeat / `status active|archived`）を持つ。
+> `UNIQUE(repo_path, agent)` で 1 agent 1 行。`list` 時に git worktree 一覧と突き
+> 合わせ、git 側に無い行は **stale** として扱う（runs の「meta は DB・worktree は
+> disk」と同じ git-authoritative パターン）。`WorkspaceRepository`（`src/db/
+> repositories/workspaces.ts`）。
 
 ## schema v1 のテーブル
 

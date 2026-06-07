@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { gitCli, type GitResult } from "../git/git-cli.js";
 
@@ -155,6 +156,37 @@ async function git(
   args: readonly string[],
 ): Promise<GitResult> {
   return (ctx.git ?? defaultGitRunner())(args, ctx.repoPath);
+}
+
+/**
+ * A stable identity for the git repository at `repoPath`, used as the DB index
+ * key so the same project resolves to ONE key regardless of how it is reached —
+ * the repo root, a subdirectory, a symlinked path, or one of its own agent
+ * worktrees. Uses the (absolute, realpath'd) common git dir, which every linked
+ * worktree shares. Throws if `repoPath` is not inside a git repository.
+ */
+export async function canonicalRepoKey(ctx: {
+  repoPath: string;
+  git?: GitRunner;
+}): Promise<string> {
+  const run = ctx.git ?? defaultGitRunner();
+  const r = await run(
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ctx.repoPath,
+  );
+  if (r.exitCode !== 0 || r.timedOut) {
+    throw new AgentWorkspaceError(
+      `not a git repository: ${ctx.repoPath} (${r.stderr.trim()})`,
+    );
+  }
+  const commonDir = r.stdout.trim();
+  try {
+    return realpathSync(commonDir);
+  } catch {
+    // common dir should exist, but fall back to the un-realpath'd absolute path
+    // rather than throwing on a filesystem quirk.
+    return commonDir;
+  }
 }
 
 async function branchExists(

@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1439,6 +1439,36 @@ export const V16_TABLE_NAMES: readonly string[] = [
   "goal_convergence_decisions",
 ];
 
+/**
+ * v17 — agent workspaces (W2). An additive index over the per-agent git
+ * worktrees created by `harness workspace`: git stays the source of truth for a
+ * worktree's existence/branch, while this row carries the harness-side
+ * coordination metadata git does not track (objective, advisory goal link,
+ * heartbeat). `goal_id` is an advisory reference (no FK) so a deleted goal does
+ * not cascade into workspaces; the service reconciles dangling links on read.
+ */
+export const MIGRATION_V17_STATEMENTS: readonly string[] = [
+  `CREATE TABLE workspaces (
+    workspace_id   TEXT PRIMARY KEY,
+    agent          TEXT NOT NULL,
+    repo_path      TEXT NOT NULL,
+    branch         TEXT NOT NULL,
+    worktree_path  TEXT NOT NULL,
+    goal_id        TEXT,
+    objective      TEXT,
+    status         TEXT NOT NULL DEFAULT 'active'
+      CHECK (status IN ('active', 'archived')),
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    last_active_at TEXT NOT NULL,
+    UNIQUE (repo_path, agent)
+  )`,
+  `CREATE INDEX workspaces_repo_idx ON workspaces(repo_path, status)`,
+];
+
+/** Tables added by v17 (W2 — agent workspaces). */
+export const V17_TABLE_NAMES: readonly string[] = ["workspaces"];
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -1477,4 +1507,5 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V11_TABLE_NAMES,
   ...V13_TABLE_NAMES,
   ...V16_TABLE_NAMES,
+  ...V17_TABLE_NAMES,
 ];

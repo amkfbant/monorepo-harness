@@ -1,9 +1,16 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  existsSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  canonicalRepoKey,
   createAgentWorkspace,
   inspectAgentWorkspace,
   listAgentWorkspaces,
@@ -129,6 +136,31 @@ describe("agent workspaces (real git)", () => {
     const insp = await inspectAgentWorkspace(ctx, { agent: "alice", base: "main" });
     expect(insp.dirtyFiles).toContain("DOCS.md");
     expect(insp.dirtyFiles).not.toContain("README.md");
+  });
+
+  it("canonicalRepoKey: stable across repo root, a subdirectory, a symlink, and a worktree", async () => {
+    const fromRoot = await canonicalRepoKey({ repoPath: ctx.repoPath });
+    // a subdirectory of the repo resolves to the same identity.
+    const sub = join(ctx.repoPath, "sub", "dir");
+    mkdirSync(sub, { recursive: true });
+    const fromSub = await canonicalRepoKey({ repoPath: sub });
+    expect(fromSub).toBe(fromRoot);
+    // a symlink to the repo resolves to the same identity.
+    const link = join(mkdtempSync(join(tmpdir(), "harness-link-")), "repo-link");
+    symlinkSync(ctx.repoPath, link);
+    const fromLink = await canonicalRepoKey({ repoPath: link });
+    expect(fromLink).toBe(fromRoot);
+    // invoking from one of the repo's own agent worktrees → same identity.
+    const ws = await createAgentWorkspace(ctx, { agent: "alice", base: "main" });
+    const fromWorktree = await canonicalRepoKey({ repoPath: ws.path });
+    expect(fromWorktree).toBe(fromRoot);
+  });
+
+  it("canonicalRepoKey: throws outside a git repository", async () => {
+    const notRepo = mkdtempSync(join(tmpdir(), "harness-norepo-"));
+    await expect(canonicalRepoKey({ repoPath: notRepo })).rejects.toThrow(
+      /not a git repository/,
+    );
   });
 
   it("inspect: throws for an unknown agent", async () => {

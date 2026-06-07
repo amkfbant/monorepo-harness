@@ -392,10 +392,10 @@ harness workspace inspect <agent> [--repo <path>] [--dir <dir>] [--base <commit-
 harness workspace remove  <agent> [--repo <path>] [--dir <dir>] [--force] [--keep-branch]
 ```
 
-- **`create <agent>`** — `agent/<name>` ブランチ上の worktree を `<dir>/<agent>` に作成（`--base` 既定 `HEAD`・既存ブランチがあれば再利用）。**冪等**（同一 agent の再実行は既存を返す）。出力に worktree path と「`cd <path> && export HARNESS_ROOT=<sharedRoot>`」の共有手順を表示。
-- **`list`** — harness 管理の worktree（ブランチ `agent/*`）だけを列挙（main checkout や run 内部 worktree は除外）。
+- **`create <agent>`** — `agent/<name>` ブランチ上の worktree を `<dir>/<agent>` に作成（`--base` 既定 `HEAD`・既存ブランチがあれば再利用）。**冪等**（同一 agent の再実行は既存を返す）。出力に worktree path と「`cd <path> && export HARNESS_ROOT=<sharedRoot>`」の共有手順を表示。作成した worktree は共有 DB の `workspaces` index にも記録（git が worktree 存在の正本、DB は harness 側メタ＝objective / advisory goal link / heartbeat を持つ・[`db.md`](./db.md)）。
+- **`list`** — harness 管理の worktree（ブランチ `agent/*`）だけを列挙（main checkout や run 内部 worktree は除外）。各行に DB の goal link / objective を付与。**stale 検出**: DB に行があるが git worktree が消えている場合は `(stale: …)` と表示（`remove <agent>` で掃除）。
 - **`inspect <agent>`** — workspace の**決定論ブリーフィング**を git だけから再構成して返す（branch / HEAD / 最終コミット / `--base`（既定 `main`）に対する ahead-behind / 未コミット file）。保存状態に依存せず、LLM が自分や他エージェントの workspace を**自己申告抜きで理解**するための土台（save/recover の理解レイヤー）。`--json` で構造化出力。
-- **`remove <agent>`** — worktree とブランチを削除。未コミット変更があると **`--force` 無しでは拒否**（作業を黙って捨てない fail-closed）。`--keep-branch` でブランチを残す。
+- **`remove <agent>`** — worktree とブランチを削除し、DB index 行も掃除（stale 行のみでも掃除可）。未コミット変更があると **`--force` 無しでは拒否**（作業を黙って捨てない fail-closed）。`--keep-branch` でブランチを残す。
 - **`--repo`** 既定はカレントディレクトリ。**`--dir`** 既定は `<repo>.agents/`（repo の sibling）。
 - `run` 内部の worktree（`workspaces/<runId>/repo/`・codex 実行用・detached）とは別レイヤー。並行運用の安全モデルは [`workflow.md`](./workflow.md) の concurrency 節を参照。
 
