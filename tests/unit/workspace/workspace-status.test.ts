@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isHeartbeatStale,
   progressLabel,
   summarizeWorkspace,
   type WorkspaceStatusInput,
@@ -89,5 +90,27 @@ describe("progressLabel (deterministic projection)", () => {
     const s = summarizeWorkspace(base({ goalId: "g", goalDecision: "needs_fix" }));
     expect(s.label).toBe("needs-work");
     expect(s.agent).toBe("alice");
+  });
+});
+
+describe("isHeartbeatStale", () => {
+  const NOW = Date.parse("2026-06-07T12:00:00.000Z");
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it("is stale when last activity is older than the threshold", () => {
+    expect(isHeartbeatStale("2026-06-06T11:00:00.000Z", NOW, DAY)).toBe(true);
+  });
+
+  it("is not stale within the threshold", () => {
+    expect(isHeartbeatStale("2026-06-07T06:00:00.000Z", NOW, DAY)).toBe(false);
+  });
+
+  it("treats exactly the threshold as stale (>=)", () => {
+    expect(isHeartbeatStale("2026-06-06T12:00:00.000Z", NOW, DAY)).toBe(true);
+  });
+
+  it("is never stale when there is no activity timestamp or it is unparseable", () => {
+    expect(isHeartbeatStale(null, NOW, DAY)).toBe(false);
+    expect(isHeartbeatStale("not-a-date", NOW, DAY)).toBe(false);
   });
 });

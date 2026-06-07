@@ -60,6 +60,7 @@ import {
   type RecoveryGoal,
 } from "../workspace/workspace-recover.js";
 import {
+  isHeartbeatStale,
   summarizeWorkspace,
   type WorkspaceStatusInput,
 } from "../workspace/workspace-status.js";
@@ -3361,6 +3362,11 @@ workspaceCmd
   .option("--repo <path>", "the project repo (default: current directory)")
   .option("--dir <dir>", "where agent worktrees live (default: <repo>.agents)")
   .option("--base <commit-ish>", "base ref for ahead/behind", "main")
+  .option(
+    "--stale-after <hours>",
+    "flag a workspace whose heartbeat is older than this many hours",
+    "24",
+  )
   .option("--json", "emit JSON instead of text", false)
   .action(async (raw: Record<string, unknown>) => {
     try {
@@ -3444,7 +3450,24 @@ workspaceCmd
         }
         return out;
       });
-      const statuses = inputs.map((i) => summarizeWorkspace(i));
+      const nowMs = Date.now();
+      const rawStaleAfter = raw.staleAfter ?? "24";
+      // reject a blank string explicitly: Number("") / Number("  ") === 0 would
+      // otherwise silently flag every workspace as idle.
+      const staleHours =
+        typeof rawStaleAfter === "string" && rawStaleAfter.trim() === ""
+          ? NaN
+          : Number(rawStaleAfter);
+      if (!Number.isFinite(staleHours) || staleHours < 0) {
+        throw new AgentWorkspaceError(
+          `--stale-after must be a non-negative number of hours (got ${JSON.stringify(raw.staleAfter)})`,
+        );
+      }
+      const thresholdMs = staleHours * 3_600_000;
+      const statuses = inputs.map((i) => ({
+        ...summarizeWorkspace(i),
+        staleHeartbeat: isHeartbeatStale(i.lastActiveAt, nowMs, thresholdMs),
+      }));
       if (raw.json === true) {
         process.stdout.write(`${JSON.stringify(statuses, null, 2)}\n`);
         return;
@@ -3462,8 +3485,9 @@ workspaceCmd
               : `base? ${s.git.dirtyCount}dirty`;
         const goal = s.goalId ? `${s.goalId}${s.goalDecision ? `:${s.goalDecision}` : ":missing"}` : "-";
         const obj = s.objective ? ` — ${s.objective}` : "";
+        const active = `${s.lastActiveAt ?? "-"}${s.staleHeartbeat ? " ⚠idle" : ""}`;
         process.stdout.write(
-          `${s.agent}\t${s.label}\t${git}\t${goal}\t${s.lastActiveAt ?? "-"}${obj}\n`,
+          `${s.agent}\t${s.label}\t${git}\t${goal}\t${active}${obj}\n`,
         );
       }
     } catch (e) {
