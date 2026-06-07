@@ -296,7 +296,13 @@ export async function inspectAgentWorkspace(
   const run = ctx.git ?? defaultGitRunner();
   // git status / log run IN the worktree so they reflect THIS agent's tree.
   // Fail-closed: a git error must NOT be read as a clean / up-to-date tree.
-  const status = await run(["status", "--porcelain", "-z"], ws.path);
+  // `--renames` forces rename detection regardless of the repo's
+  // `status.renames` config, so a staged `git mv` is always an `R` record (one
+  // path) rather than split D/A records — keeps the briefing deterministic.
+  const status = await run(
+    ["status", "--porcelain", "-z", "--renames"],
+    ws.path,
+  );
   if (status.exitCode !== 0 || status.timedOut) {
     throw new AgentWorkspaceError(
       `git status failed in ${ws.path}: ${status.stderr.trim()}`,
@@ -306,11 +312,24 @@ export async function inspectAgentWorkspace(
 
   // Resolve the base ref explicitly first, so a genuinely missing base
   // (baseResolved=false) is distinguished from a git error after it resolves.
+  // `rev-parse --verify --quiet` exits 1 with NO output for a missing ref;
+  // a timeout or any stderr is an unexpected failure → fail closed (throw).
   const baseCheck = await run(
     ["rev-parse", "--verify", "--quiet", `${base}^{commit}`],
     ws.path,
   );
+  if (baseCheck.timedOut) {
+    throw new AgentWorkspaceError(
+      `git rev-parse timed out resolving base ${JSON.stringify(base)} in ${ws.path}`,
+    );
+  }
   const baseResolved = baseCheck.exitCode === 0;
+  if (!baseResolved && baseCheck.stderr.trim() !== "") {
+    throw new AgentWorkspaceError(
+      `git rev-parse failed resolving base ${JSON.stringify(base)} in ${ws.path}: ` +
+        baseCheck.stderr.trim(),
+    );
+  }
   let ahead = 0;
   let behind = 0;
   if (baseResolved) {
@@ -328,6 +347,11 @@ export async function inspectAgentWorkspace(
   }
 
   const log = await run(["log", "-1", "--format=%H%n%s"], ws.path);
+  if (log.timedOut) {
+    throw new AgentWorkspaceError(
+      `git log timed out in ${ws.path}`,
+    );
+  }
   const lines = log.stdout.split("\n");
   const lastCommit =
     log.exitCode === 0 && (lines[0] ?? "") !== ""
