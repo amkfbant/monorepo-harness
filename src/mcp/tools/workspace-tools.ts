@@ -12,6 +12,11 @@ import {
 import { ConvergenceService } from "../../goal/convergence.js";
 import { GoalRepository } from "../../goal/repository.js";
 import { WorkspaceRepository } from "../../db/repositories/workspaces.js";
+import { normalizeWorktreePath } from "../../workspace/agent-workspace.js";
+import {
+  assembleWorkspaceStatuses,
+  readWorkspaceStatusData,
+} from "../../workspace/workspace-status-builder.js";
 import {
   errorResult,
   ok,
@@ -110,6 +115,82 @@ export function workspaceListTool(
     }));
     return ok(`listed ${workspaces.length} workspace(s)`, { workspaces });
   }) as HarnessMcpToolResult;
+}
+
+export interface WorkspaceStatusArgs {
+  repoPath: string;
+  base?: string;
+  staleAfterHours?: number;
+}
+
+/**
+ * Git-inclusive status of every workspace of ONE repo, over MCP. `repoPath` is a
+ * path inside the target repo (e.g. a worktree path from `workspace.list`); it
+ * must resolve to a repo the harness already tracks (≥1 workspace row) so this
+ * read tool never runs git against an arbitrary, unknown path. Returns the same
+ * shape as the CLI `workspace status` (label + git state + goal + heartbeat),
+ * scoped to `allowedProjects` like `workspace.list`.
+ */
+export async function workspaceStatusTool(
+  args: WorkspaceStatusArgs,
+  context: McpToolContext,
+): Promise<HarnessMcpToolResult> {
+  const paths = harnessPaths(context.harnessRoot);
+  if (!existsSync(paths.dbPath)) {
+    return errorResult("harness DB is not initialized", { dbPath: paths.dbPath });
+  }
+  // Authorize against the DB FIRST (no git): `repoPath` must be a tracked
+  // workspace worktree, so git never runs on an arbitrary unknown path. The
+  // matched row also yields the canonical repo key and a safe cwd to run git in.
+  let repoKey: string;
+  let gitCwd: string;
+  let data;
+  const handle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
+  try {
+    // readonly: the DB is already migrated; do NOT runMigrations here.
+    const target = normalizeWorktreePath(args.repoPath);
+    const tracked = new WorkspaceRepository(handle.db)
+      .listAll({ limit: 10_000 })
+      .find((r) => normalizeWorktreePath(r.worktreePath) === target);
+    if (tracked === undefined) {
+      return errorResult(
+        `${args.repoPath} is not a tracked workspace worktree`,
+        { repoPath: args.repoPath },
+      );
+    }
+    repoKey = tracked.repoPath;
+    gitCwd = tracked.worktreePath;
+    data = readWorkspaceStatusData(handle.db, repoKey);
+  } finally {
+    handle.close();
+  }
+
+  // project scoping (like workspace.list): a restricted client only sees — and
+  // only inspects (git) — workspaces whose linked-goal project is allowed.
+  const allowed = context.config.allowedProjects;
+  const include =
+    allowed.length === 0
+      ? undefined
+      : (_r: unknown, projectId: string | null): boolean =>
+          projectId !== null && allowed.includes(projectId);
+
+  const staleHours =
+    args.staleAfterHours !== undefined && args.staleAfterHours >= 0
+      ? args.staleAfterHours
+      : 24;
+  const statuses = await assembleWorkspaceStatuses(
+    { repoPath: gitCwd, workspacesDir: gitCwd },
+    data,
+    {
+      base: args.base ?? "main",
+      nowMs: Date.now(),
+      staleThresholdMs: staleHours * 3_600_000,
+      ...(include !== undefined ? { include } : {}),
+    },
+  );
+  return ok(`status for ${statuses.length} workspace(s)`, {
+    workspaces: statuses,
+  });
 }
 
 export interface WorkspaceCheckpointArgs {

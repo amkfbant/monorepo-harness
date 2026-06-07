@@ -310,8 +310,17 @@ harness.doctor.summary
 harness.operation.list
 harness.operation.get
 harness.workspace.list
+harness.workspace.status
 harness.workspace.checkpoint
 ```
+
+`harness.workspace.status`（read）は **1 repo 分**の workspace の **git-inclusive status**
+を返す（`repoPath` ＝その repo 内の path・例: `workspace.list` の worktree_path）。CLI の
+`workspace status` と同じ shape（progress label + git state(dirty/ahead-behind) + linked
+goal + heartbeat）。`repoPath` は **harness が追跡している repo（workspace 行が 1 つ以上）に
+限定**＝**未知の任意 path で git を実行しない**安全策。read tool だが worktree 内で
+**read-only git**（worktree list / status / rev-list / diff）を回す。`allowedProjects` で
+scope（`workspace.list` と同様）。
 
 `harness.workspace.list`（read）は agent workspace の coordination view（DB index）を
 返す: agent / branch / worktree_path / linked goal とその convergence decision /

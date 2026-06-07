@@ -43,6 +43,7 @@ import {
 import {
   workspaceCheckpointTool,
   workspaceListTool,
+  workspaceStatusTool,
 } from "../tools/workspace-tools.js";
 import {
   cleanupDryRunTool,
@@ -567,6 +568,14 @@ const workspaceListArgs = z
   .object({
     agent: z.string().min(1).optional(),
     limit: LimitSchema,
+  })
+  .strict();
+
+const workspaceStatusArgs = z
+  .object({
+    repoPath: z.string().min(1),
+    base: z.string().min(1).optional(),
+    staleAfterHours: z.number().nonnegative().optional(),
   })
   .strict();
 
@@ -1541,6 +1550,26 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       limit: { type: "number" },
     }),
     handler: workspaceListTool,
+  }),
+  define({
+    name: "harness.workspace.status",
+    title: "Git-inclusive workspace status",
+    description:
+      "Status of every workspace of one repo (a path inside it via repoPath): " +
+      "progress label + git state (dirty / ahead-behind) + linked goal + " +
+      "heartbeat. Read-only (runs read-only git in known worktrees only).",
+    kind: "read",
+    operation: "workspace.status",
+    argsSchema: workspaceStatusArgs,
+    inputSchema: objectSchema(
+      {
+        repoPath: { type: "string" },
+        base: { type: "string" },
+        staleAfterHours: { type: "number" },
+      },
+      ["repoPath"],
+    ),
+    handler: workspaceStatusTool,
   }),
   define({
     name: "harness.workspace.checkpoint",
