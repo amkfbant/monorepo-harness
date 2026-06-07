@@ -353,9 +353,16 @@ subpath で、未知 path で git を実行しない。
 これらは read なので **allowlist 不要**（既定許可）・`allowedProjects` で scope。**read-only git**
 のみ（worktree list / status / rev-list / diff）。
 
-mutating な **create/remove**（filesystem の git worktree 操作 + confirmation gate）は
-server-side git の破壊的操作を要するため**現状 CLI 専用**
-（[`cli.md`](./cli.md#harness-workspace)・MCP 版は follow-up）。
+mutating な **create / remove / adopt**（worktree lifecycle）は **CLI 専用**。create/remove は
+filesystem の git worktree を破壊的に操作する。**adopt** も MCP では出さない（2026-06 判断）:
+クライアント指定 path で server-side git を走らせること（path 探知の surface）になり、かつ
+adopt 直後の workspace は goal/project 未紐付けで `allowedProjects` scope が定まらないため、
+read tools の DB-first ガードや mutation の project scope と整合しない。worktree の作成・登録・
+削除は人間/CLI 側に留める（[`cli.md`](./cli.md#harness-workspace)）。observability（inspect /
+conflicts / recover / status / list）と advisory checkpoint は MCP で提供済み。
+**`pr request-review`**（Copilot review リクエスト）も同様に **CLI 専用**: best-effort・非 gating
+だが gh を client 指定 path で実行し最大 timeout 秒ブロックして poll するため、bounded な MCP
+mutation として出す価値が低い（必要なら結果待ちなしの fire-and-forget 版を follow-up で検討）。
 
 **`harness.inbox` / `harness.metrics`（read）** は DB read model の集計（git/fs アクセス
 なし）。`harness.inbox` は「今見るべき run」＝needs_review / changes_requested / failed ＋
