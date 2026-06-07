@@ -5,7 +5,11 @@ import {
   WorkspaceRepository,
   type WorkspaceRecord,
 } from "../../db/repositories/workspaces.js";
-import { normalizeWorktreePath } from "../../workspace/agent-workspace.js";
+import {
+  canonicalRepoKey,
+  normalizeWorktreePath,
+  type GitRunner,
+} from "../../workspace/agent-workspace.js";
 import {
   readWorkspaceStatusData,
   type WorkspaceStatusData,
@@ -40,14 +44,60 @@ export function matchTrackedWorktree<T extends { worktreePath: string }>(
 export interface TrackedRepoResolution {
   /** the canonical repo key of the matched repo */
   repoKey: string;
-  /** an EXISTING, IN-SCOPE worktree of the repo, safe to run read-only git in */
-  gitCwd: string;
+  /**
+   * EXISTING, IN-SCOPE worktree paths of the repo (matched-first, then siblings).
+   * A candidate is only a SAFE git cwd once `pickVerifiedGitCwd` confirms it
+   * still belongs to `repoKey` (a deleted path could have been recreated as a
+   * DIFFERENT repo — existsSync alone is not enough).
+   */
+  candidateGitCwds: string[];
   /** DB facts for the repo's workspaces (rows + per-goal info + checkpoint ts) */
   data: WorkspaceStatusData;
   /** project-scope predicate (undefined when the client is unrestricted) */
   include?: (record: WorkspaceRecord | null, goalProjectId: string | null) => boolean;
   /** linked-goal project of a row (for the scope predicate) */
   projectOf: (record: WorkspaceRecord) => string | null;
+}
+
+/**
+ * Does the git worktree at `path` PROVABLY still belong to `repoKey`? True only
+ * when its canonical repo key (`git rev-parse --git-common-dir`) equals
+ * `repoKey`. A path that no longer resolves (deleted) or now belongs to a
+ * DIFFERENT repo (the dir was reused for another repo) returns false — so the
+ * read tools never run git against a foreign repository even when git's stale
+ * worktree metadata still lists the path.
+ */
+export async function worktreeBelongsToRepo(
+  path: string,
+  repoKey: string,
+  git?: GitRunner,
+): Promise<boolean> {
+  try {
+    const key = await canonicalRepoKey({
+      repoPath: path,
+      ...(git !== undefined ? { git } : {}),
+    });
+    return key === repoKey;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pick a git cwd that provably still belongs to the tracked repo: the first
+ * candidate that {@link worktreeBelongsToRepo}. Returns undefined when none
+ * verify (caller returns "no live worktree").
+ */
+export async function pickVerifiedGitCwd(
+  resolution: TrackedRepoResolution,
+  git?: GitRunner,
+): Promise<string | undefined> {
+  for (const candidate of resolution.candidateGitCwds) {
+    if (await worktreeBelongsToRepo(candidate, resolution.repoKey, git)) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 export type ResolveTrackedRepoResult =
@@ -108,17 +158,22 @@ export function resolveTrackedWorkspaceRepo(
     return notTracked();
   }
 
-  // git cwd: the matched worktree, else any VISIBLE sibling that still exists on
-  // disk — never an out-of-scope worktree the client may not observe.
+  // git cwd CANDIDATES: the matched worktree, then any VISIBLE sibling that still
+  // exists on disk — never an out-of-scope worktree the client may not observe.
+  // The actual git cwd is chosen by `pickVerifiedGitCwd` (it also confirms the
+  // path still belongs to this repo). De-dup while preserving order.
   const visibleRows =
     include === undefined
       ? data.rows
       : data.rows.filter((r) => include(r, projectOf(r)));
-  const gitCwd = [
-    matchedRow.worktreePath,
-    ...visibleRows.map((r) => r.worktreePath),
-  ].find((p) => existsSync(p));
-  if (gitCwd === undefined) {
+  const candidateGitCwds = [
+    ...new Set(
+      [matchedRow.worktreePath, ...visibleRows.map((r) => r.worktreePath)].filter(
+        (p) => existsSync(p),
+      ),
+    ),
+  ];
+  if (candidateGitCwds.length === 0) {
     return {
       error: errorResult(`no live worktree on disk for ${repoPath}`, {
         repoPath,
@@ -129,7 +184,7 @@ export function resolveTrackedWorkspaceRepo(
   return {
     ok: {
       repoKey: tracked.repoPath,
-      gitCwd,
+      candidateGitCwds,
       data,
       ...(include !== undefined ? { include } : {}),
       projectOf,

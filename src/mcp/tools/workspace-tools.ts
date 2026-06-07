@@ -20,6 +20,7 @@ import {
   readWorkspaceStatusData,
 } from "../../workspace/workspace-status-builder.js";
 import {
+  pickVerifiedGitCwd,
   resolveTrackedWorkspaceRepo,
   type TrackedRepoResolution,
 } from "./workspace-tracked-repo.js";
@@ -148,11 +149,9 @@ export async function workspaceStatusTool(
     return errorResult("harness DB is not initialized", { dbPath: paths.dbPath });
   }
 
-  // DB-FIRST guard (shared): resolve `repoPath` to a tracked repo + a safe git
-  // cwd, scoped to allowedProjects, WITHOUT running git on an unknown path.
-  let gitCwd: string;
-  let data: ReturnType<typeof readWorkspaceStatusData>;
-  let include: TrackedRepoResolution["include"];
+  // DB-FIRST guard (shared): resolve `repoPath` to a tracked repo + candidate git
+  // cwds, scoped to allowedProjects, WITHOUT running git on an unknown path.
+  let resolution: TrackedRepoResolution;
   const handle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
   try {
     const resolved = resolveTrackedWorkspaceRepo(
@@ -161,10 +160,18 @@ export async function workspaceStatusTool(
       context.config.allowedProjects,
     );
     if ("error" in resolved) return resolved.error;
-    ({ gitCwd, data, include } = resolved.ok);
+    resolution = resolved.ok;
   } finally {
     handle.close();
   }
+  // confirm a candidate still belongs to this repo before running git in it.
+  const gitCwd = await pickVerifiedGitCwd(resolution);
+  if (gitCwd === undefined) {
+    return errorResult(`no live worktree on disk for ${args.repoPath}`, {
+      repoPath: args.repoPath,
+    });
+  }
+  const { data, include } = resolution;
 
   const staleHours =
     args.staleAfterHours !== undefined && args.staleAfterHours >= 0

@@ -124,6 +124,32 @@ describe("MCP workspace read tools (real git)", () => {
     expect(out.data.nextSteps.length).toBeGreaterThan(0);
   });
 
+  it("rejects when a tracked worktree path was replaced by a DIFFERENT repo (cwd verified)", async () => {
+    const { harnessRoot, alicePath } = await setup();
+    // simulate the tracked worktree path being deleted and recreated as another,
+    // unrelated git repo. The git-cwd verification must NOT run worktree-listing
+    // git in that foreign repo → it falls back to a live sibling (bob) and still
+    // works for conflicts; for alice-specific inspect, alice is simply gone.
+    execFileSync("rm", ["-rf", alicePath]);
+    mkdirSync(alicePath, { recursive: true });
+    const g = (args: string[]) => execFileSync("git", args, { cwd: alicePath, stdio: "ignore" });
+    g(["init", "-q", "-b", "main"]);
+    g(["config", "user.email", "x@e.com"]);
+    g(["config", "user.name", "X"]);
+    writeFileSync(join(alicePath, "foreign.txt"), "foreign\n");
+    g(["add", "."]);
+    g(["commit", "-qm", "foreign"]);
+
+    // inspecting via alice's (now foreign) path still resolves the tracked repo
+    // (bob is a live sibling) but alice is no longer a worktree of it → not found.
+    const out = await callTool(server(harnessRoot), "harness.workspace.inspect", {
+      repoPath: alicePath,
+      agent: "alice",
+    });
+    expect(out.status).toBe("error");
+    expect(out.summary).toMatch(/no workspace for agent "alice"/);
+  });
+
   it("a restricted client gets the SAME not-tracked error (no scope leak) on all three", async () => {
     const { harnessRoot, alicePath } = await setup();
     // alice's workspace has no linked goal → no project → out of scope for a
