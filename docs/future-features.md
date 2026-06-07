@@ -214,6 +214,14 @@ App / Copilot）が実バグを拾う価値が高く、(b) それを取りこぼ
      rerun の**自動連鎖**（現状は分類後の再 orchestrate で coder が回る）。
    - 定期 `goal await-merge`（scheduler 駆動の自動再 orchestrate。`awaiting_checks` status が
      前提＝上記の後）、semantic dedup（§3）。
+   - **`goal await-merge` の外部レビュー ingestion の wall-clock を完全束縛する**（codex
+     review C#7 round4 の P2・defer）。現状 `await-merge` は各試行の CI await / external-review
+     await / verdict fetch（`gh pr view`）timeout を残予算で clamp し、予算切れなら ingestion
+     を省くが、`--ingest-external-reviews` 時の **initial fetch ＋ await-loop の複数 fetch が
+     加算的**になり、`--max-wait` を僅かに超え得る（超過は O(予算)・opt-in・秒未満予算という
+     非現実的設定でのみ顕在）。厳密束縛には `ingestExternalReviewVerdicts` /
+     `fetchBlockingVerdicts` / reviewAwait に **deadline（残予算）を引き回し**、各 I/O 前に
+     deadline チェックする必要がある（共有 review-await 機構への変更＝await-merge 単体スコープ外）。
 
    core（§2/§6 の advisory レーン＋ async bounded await、slice 1–3）は通った。
 

@@ -24,9 +24,17 @@ import { ConvergenceService } from "../goal/convergence.js";
 import { recordConvergenceDecisionWithStatus } from "../goal/convergence-status.js";
 import { deferFindingToBacklog } from "../goal/followups.js";
 import { GoalOrchestrator } from "../goal/orchestrator.js";
+import {
+  awaitGoalMerge,
+  awaitStepFromCloseResult,
+  type AwaitMergeStep,
+} from "../goal/await-merge.js";
 import { linkAgentWorkspaceToGoal } from "../workspace/workspace-goal-link.js";
 import { decideOrchestratorAction } from "../goal/orchestrator-dispatch.js";
-import { createOrchestratorRunners } from "../goal/orchestrator-runners.js";
+import {
+  createOrchestratorRunners,
+  GoalNotCloseReadyError,
+} from "../goal/orchestrator-runners.js";
 import {
   GoalRepository,
   type CompleteReviewCycleInput,
@@ -802,6 +810,255 @@ export function registerGoalCommands(
             (link.linked ? ` workspace=${link.agent}` : "") +
             "\n",
         );
+      });
+    });
+
+  goalCmd
+    .command("await-merge")
+    .description(
+      "poll a close_ready goal's open PR and merge it once the gate passes",
+    )
+    .argument("[goal-id]", "goal id (omit when using --all)")
+    .option("--all", "drive EVERY close_ready goal of --repo-id to merge", false)
+    .option("--repo <path>", "path to the target git repo (required)")
+    .option(
+      "--repo-id <id>",
+      "repo id to scope which goals are driven (REQUIRED with --all; the gh CI/merge probes are bound to the single --repo, so --all must not span repos)",
+    )
+    .option("--base-branch <name>", "base branch for the merge gate", "main")
+    .option(
+      "--merge-method <method>",
+      "merge method (squash|merge|rebase)",
+      "squash",
+    )
+    .option(
+      "--ci-await-timeout <seconds>",
+      "seconds to await pending CI per attempt before failing closed",
+      "1200",
+    )
+    .option(
+      "--poll-interval <seconds>",
+      "seconds between merge attempts while the PR awaits CI",
+      "30",
+    )
+    .option(
+      "--max-wait <seconds>",
+      "total seconds to wait for the merge (0 = a single attempt)",
+      "1800",
+    )
+    .option(
+      "--ingest-external-reviews",
+      "opt-in: ingest external PR review verdicts; a CHANGES_REQUESTED review escalates the gate (fail-closed)",
+      false,
+    )
+    .option(
+      "--external-review-timeout <seconds>",
+      "seconds to await async external reviews before evaluating the gate; 0 = single check",
+      "0",
+    )
+    .action(async (goalArg: string | undefined, raw: Record<string, unknown>) => {
+      await withGoalErrorExitAsync(async () => {
+        const all = raw.all === true;
+        if (all === (typeof goalArg === "string" && goalArg !== "")) {
+          throw new GoalCliError(
+            "goal await-merge requires exactly one of <goal-id> or --all",
+          );
+        }
+        if (typeof raw.repo !== "string" || raw.repo === "") {
+          throw new GoalCliError("goal await-merge requires --repo <path>");
+        }
+        const repoIdScope =
+          typeof raw.repoId === "string" && raw.repoId !== ""
+            ? raw.repoId
+            : undefined;
+        // --all fans out across goals but the gh CI/merge probes are bound to the
+        // single --repo working dir; without a repo scope it could drive (and
+        // merge) a PR of a DIFFERENT repo. Require --repo-id so --all never spans
+        // repos. (Single-goal mode names the goal explicitly, like orchestrate.)
+        if (all && repoIdScope === undefined) {
+          throw new GoalCliError(
+            "goal await-merge --all requires --repo-id <id> (it must not span repos)",
+          );
+        }
+        const dbPath = harnessPaths(opts.getHarnessRoot()).dbPath;
+        const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
+        const ghBin = process.env.HARNESS_GH_BIN ?? "gh";
+        const repoPath = String(raw.repo);
+        const ciAwaitTimeoutMs =
+          parseNonNegativeInt(raw.ciAwaitTimeout, "--ci-await-timeout") * 1_000;
+        const externalReviewTimeoutMs =
+          parseNonNegativeInt(
+            raw.externalReviewTimeout,
+            "--external-review-timeout",
+          ) * 1_000;
+        const pollIntervalMs =
+          parsePositiveInt(raw.pollInterval, "--poll-interval") * 1_000;
+        const maxWaitMs =
+          parseNonNegativeInt(raw.maxWait, "--max-wait") * 1_000;
+
+        // await-merge ALWAYS merges (that is its purpose), so the auto-merge deps
+        // are always constructed — same gate/CI/ingest wiring as `orchestrate
+        // --auto-merge`. BOTH bounded awaits (CI and external-review) are CLAMPED
+        // to the wall-clock budget left, so a single attempt cannot block past
+        // `--max-wait`; the runners are rebuilt per poll with the fresh clamps.
+        const buildRunners = (remainingMs: number) => {
+          const ciAwaitMs = Math.min(ciAwaitTimeoutMs, remainingMs);
+          const reviewTimeoutMs = Math.min(externalReviewTimeoutMs, remainingMs);
+          return createOrchestratorRunners({
+            dbPath,
+            harnessRoot: opts.getHarnessRoot(),
+            createdBy: "cli",
+            coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
+            reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
+            publisher: createGhPrPublisher(),
+            autoMerge: {
+              merger: createGhPrMerger(ghBin),
+              ciStatus: createGhCiStatus(repoPath, ghBin, undefined, {
+                awaitTimeoutMs: ciAwaitMs,
+              }),
+              method: parseMergeMethod(raw.mergeMethod),
+              // External-review ingestion is budget-bounded too: the verdict
+              // FETCH (`gh pr view`) timeout is clamped to the remaining budget,
+              // and with no budget left (e.g. --max-wait 0) ingestion is omitted
+              // entirely so a single fetch cannot block past the wall-clock.
+              ...(raw.ingestExternalReviews === true && remainingMs > 0
+                ? {
+                    reviewVerdicts: createGhReviewVerdicts(
+                      repoPath,
+                      ghBin,
+                      remainingMs,
+                    ),
+                    ...(reviewTimeoutMs > 0
+                      ? {
+                          reviewAwait: {
+                            timeoutMs: reviewTimeoutMs,
+                            intervalMs: 15_000,
+                          },
+                        }
+                      : {}),
+                  }
+                : {}),
+            },
+            repoPath,
+            baseBranch: String(raw.baseBranch ?? "main"),
+          });
+        };
+
+        const evalDecision = (goalId: string): string =>
+          withGoalRepo(opts, ({ repo }) =>
+            new ConvergenceService(repo).evaluate(goalId).decision,
+          );
+
+        // One probe: re-evaluate convergence and run AT MOST the close/merge step
+        // (`closeAndPr` — the close/merge-ONLY runner; it can never run a coder or
+        // review). A goal that is not close_ready is reported as not_awaiting
+        // without mutating anything. `remainingMs` clamps this attempt's awaits to
+        // the budget left.
+        const probe =
+          (goalId: string) =>
+          async (remainingMs: number): Promise<AwaitMergeStep> => {
+            const decision = evalDecision(goalId);
+            if (decision !== "close_ready") {
+              return { kind: "not_awaiting", decision };
+            }
+            const runners = buildRunners(remainingMs);
+            let result;
+            try {
+              result = await runners.closeAndPr(goalId);
+            } catch (e) {
+              // Distinguish a benign DRIFT from a real close/merge failure by the
+              // error TYPE (not a racy convergence re-read): closeAndPr throws a
+              // typed GoalNotCloseReadyError from its pre-side-effect guard, so a
+              // drift means nothing was mutated → just stop. ANY other throw is a
+              // real PR-create/push/merge failure → escalate (fail-closed, as the
+              // generic orchestrator does); never swallow it as not_awaiting.
+              if (e instanceof GoalNotCloseReadyError) {
+                return { kind: "not_awaiting", decision: e.decision };
+              }
+              const reason = e instanceof Error ? e.message : String(e);
+              withGoalRepo(opts, ({ repo }) =>
+                repo.updateStatus(goalId, "escalated", reason),
+              );
+              return { kind: "escalated", reason };
+            }
+            const step = awaitStepFromCloseResult(result);
+            if (step.kind === "escalated") {
+              // closeAndPr surfaces escalateReason but does NOT persist the
+              // status (the generic orchestrator does); mirror that here so a
+              // hard-blocked gate leaves the goal `escalated` for a human.
+              withGoalRepo(opts, ({ repo }) =>
+                repo.updateStatus(
+                  goalId,
+                  "escalated",
+                  result.escalateReason as string,
+                ),
+              );
+            }
+            return step;
+          };
+
+        // --all: drive every close_ready goal OF THE SCOPED REPO. The cap is
+        // generous; if it is hit, surface the truncation explicitly rather than
+        // silently dropping goals.
+        const ALL_CAP = 10_000;
+        const goalIds = all
+          ? withGoalRepo(opts, ({ repo }) =>
+              repo
+                .listSessions({
+                  status: "close_ready",
+                  ...(repoIdScope !== undefined ? { repoId: repoIdScope } : {}),
+                  limit: ALL_CAP,
+                })
+                .map((s) => s.goalId),
+            )
+          : [String(goalArg)];
+
+        // Single-goal mode: if a --repo-id was given, the named goal must belong
+        // to it — refuse to merge a goal whose repo differs from the --repo dir.
+        if (!all && repoIdScope !== undefined) {
+          const namedGoalId = String(goalArg);
+          const session = withGoalRepo(opts, ({ repo }) =>
+            repo.getSession(namedGoalId),
+          );
+          if (session !== null && session.repoId !== repoIdScope) {
+            throw new GoalCliError(
+              `goal ${namedGoalId} belongs to repo "${session.repoId}", not "${repoIdScope}"`,
+            );
+          }
+        }
+
+        if (all && goalIds.length === 0) {
+          process.stdout.write("no close_ready goals to await\n");
+          return;
+        }
+        if (all && goalIds.length === ALL_CAP) {
+          process.stderr.write(
+            `warning: --all processed the first ${ALL_CAP} close_ready goals; ` +
+              `more may remain — re-run to continue\n`,
+          );
+        }
+
+        for (const goalId of goalIds) {
+          const result = await awaitGoalMerge(
+            {
+              pollOnce: probe(goalId),
+              sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+              now: () => Date.now(),
+            },
+            { pollIntervalMs, maxWaitMs },
+          );
+          process.stdout.write(
+            `goal=${goalId} await-merge=${result.outcome} polls=${result.polls}` +
+              ("prUrl" in result && result.prUrl !== undefined
+                ? ` pr=${result.prUrl}`
+                : "") +
+              ("decision" in result ? ` decision=${result.decision}` : "") +
+              ("reason" in result && result.reason !== undefined
+                ? ` escalate=${result.reason}`
+                : "") +
+              "\n",
+          );
+        }
       });
     });
 }
