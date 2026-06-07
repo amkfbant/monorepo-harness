@@ -50,6 +50,12 @@ import {
   resolveMainWorktree,
 } from "../workspace/agent-workspace.js";
 import { WorkspaceRepository } from "../db/repositories/workspaces.js";
+import {
+  buildRecoveryBriefing,
+  type RecoveryGoal,
+} from "../workspace/workspace-recover.js";
+import { GoalRepository } from "../goal/repository.js";
+import { ConvergenceService } from "../goal/convergence.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import {
   processReviewDecision,
@@ -3130,13 +3136,15 @@ function withWorkspaceErrorExit(e: unknown): never {
  * git stays the source of truth for a worktree's existence; this row carries
  * the harness-side metadata (objective / advisory goal link / heartbeat).
  */
-function withWorkspaceRepo<T>(fn: (repo: WorkspaceRepository) => T): T {
+function withWorkspaceRepo<T>(
+  fn: (repo: WorkspaceRepository, db: ReturnType<typeof openManagedDb>["db"]) => T,
+): T {
   const handle = openManagedDb({
     dbPath: harnessPaths(getHarnessRoot()).dbPath,
   });
   try {
     runMigrations(handle.db);
-    return fn(new WorkspaceRepository(handle.db));
+    return fn(new WorkspaceRepository(handle.db), handle.db);
   } finally {
     handle.close();
   }
@@ -3351,6 +3359,108 @@ workspaceCmd
           `  dirty: ${checkpoint.dirtyCount} file(s)\n` +
           (checkpoint.goalId ? `  goal:  ${checkpoint.goalId}\n` : "") +
           (checkpoint.note ? `  note:  ${checkpoint.note}\n` : ""),
+      );
+    } catch (e) {
+      withWorkspaceErrorExit(e);
+    }
+  });
+
+workspaceCmd
+  .command("recover")
+  .description(
+    "reconstruct a workspace's state (git + linked goal) and recommend next steps",
+  )
+  .argument("<agent>", "agent name")
+  .option("--repo <path>", "the project repo (default: current directory)")
+  .option("--dir <dir>", "where agent worktrees live (default: <repo>.agents)")
+  .option("--base <commit-ish>", "base ref for ahead/behind", "main")
+  .option("--json", "emit JSON instead of text", false)
+  .action(async (agent: string, raw: Record<string, unknown>) => {
+    try {
+      const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
+      const repoKey = await canonicalRepoKey({ repoPath });
+      const live = await listAgentWorkspaces({ repoPath, workspacesDir });
+      if (!live.some((w) => w.agent === agent)) {
+        throw new AgentWorkspaceError(
+          `no workspace for agent "${agent}"; run 'harness workspace create ${agent}' first`,
+        );
+      }
+      const inspection = await inspectAgentWorkspace(
+        { repoPath, workspacesDir },
+        { agent, base: String(raw.base ?? "main") },
+      );
+      const { objective, goal, latestCheckpoint } = withWorkspaceRepo(
+        (wsRepo, db) => {
+          const record = wsRepo.get(repoKey, agent);
+          const latest =
+            record === null
+              ? null
+              : wsRepo.latestCheckpoint(record.workspaceId);
+          let goalSummary: RecoveryGoal | null = null;
+          if (record?.goalId != null) {
+            const goalRepo = new GoalRepository(db);
+            // a dangling advisory link (goal deleted) → convergence stays null.
+            const exists = goalRepo.getSession(record.goalId) !== null;
+            goalSummary = {
+              goalId: record.goalId,
+              convergence: exists
+                ? (() => {
+                    const c = new ConvergenceService(goalRepo).evaluate(
+                      record.goalId as string,
+                    );
+                    return {
+                      decision: c.decision,
+                      reason: c.reason,
+                      nextActionKind: c.recommendedNextAction.kind,
+                    };
+                  })()
+                : null,
+            };
+          }
+          return {
+            objective: record?.objective ?? null,
+            goal: goalSummary,
+            latestCheckpoint:
+              latest === null
+                ? null
+                : {
+                    note: latest.note,
+                    createdAt: latest.createdAt,
+                    createdBy: latest.createdBy,
+                  },
+          };
+        },
+      );
+      const briefing = buildRecoveryBriefing({
+        inspection,
+        objective,
+        goal,
+        latestCheckpoint,
+      });
+      if (raw.json === true) {
+        process.stdout.write(`${JSON.stringify(briefing, null, 2)}\n`);
+        return;
+      }
+      const insp = briefing.inspection;
+      const gitLine = insp.baseResolved
+        ? `${insp.ahead} ahead / ${insp.behind} behind ${insp.base}, ${insp.dirtyFiles.length} uncommitted`
+        : `base "${insp.base}" not found, ${insp.dirtyFiles.length} uncommitted`;
+      const goalLine =
+        briefing.goal === null
+          ? "(none)"
+          : briefing.goal.convergence === null
+            ? `${briefing.goal.goalId} (no longer exists)`
+            : `${briefing.goal.goalId} — ${briefing.goal.convergence.decision} (${briefing.goal.convergence.reason})`;
+      const cp = briefing.latestCheckpoint;
+      process.stdout.write(
+        `recover "${agent}" (${insp.branch})\n` +
+          `  git:        ${gitLine}\n` +
+          `  objective:  ${briefing.objective ?? "(none)"}\n` +
+          `  goal:       ${goalLine}\n` +
+          `  checkpoint: ${cp ? `${cp.createdAt} by ${cp.createdBy}${cp.note ? ` — ${cp.note}` : ""}` : "(none)"}\n` +
+          `  next steps:\n` +
+          briefing.nextSteps.map((s) => `    - ${s}`).join("\n") +
+          "\n",
       );
     } catch (e) {
       withWorkspaceErrorExit(e);
