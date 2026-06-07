@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.0](https://github.com/amkfbant/monorepo-harness/compare/v0.2.0...v0.3.0) (2026-06-07)
+
+
+### Features
+
+* auto-link the agent workspace to the goal on goal orchestrate (B[#6](https://github.com/amkfbant/monorepo-harness/issues/6)) ([#46](https://github.com/amkfbant/monorepo-harness/issues/46)) ([e09972f](https://github.com/amkfbant/monorepo-harness/commit/e09972f10cada88fc3cfbdb701423cdc585423a1))
+* git-inclusive harness.workspace.status MCP read tool (A[#2](https://github.com/amkfbant/monorepo-harness/issues/2)) ([#48](https://github.com/amkfbant/monorepo-harness/issues/48)) ([f62f119](https://github.com/amkfbant/monorepo-harness/commit/f62f119db81b9618f6b7a887c3994deb3c226bdb))
+* goal finding classify --then-rerun — auto-chain coder rerun (C[#8](https://github.com/amkfbant/monorepo-harness/issues/8)) ([#50](https://github.com/amkfbant/monorepo-harness/issues/50)) ([2c944db](https://github.com/amkfbant/monorepo-harness/commit/2c944db6aad15919998fe659702352b900e697d3))
+* harness goal await-merge — poll a close_ready goal's PR to merge (C[#7](https://github.com/amkfbant/monorepo-harness/issues/7)) ([#49](https://github.com/amkfbant/monorepo-harness/issues/49)) ([a027585](https://github.com/amkfbant/monorepo-harness/commit/a0275851640637d690f9198cc2e6655ba37cd151))
+* harness workspace — per-agent isolated worktrees for concurrent multi-agent work ([#35](https://github.com/amkfbant/monorepo-harness/issues/35)) ([fef0a41](https://github.com/amkfbant/monorepo-harness/commit/fef0a41adea6ec583aaf19a7fc5935234d5ac0d6))
+* harness.workspace.checkpoint MCP mutation tool (A[#1](https://github.com/amkfbant/monorepo-harness/issues/1)) ([#47](https://github.com/amkfbant/monorepo-harness/issues/47)) ([8088cc5](https://github.com/amkfbant/monorepo-harness/commit/8088cc509234e9c7cf310cdeb23d542ba803f709))
+* harness.workspace.list MCP read tool — coordination view (W4) ([#42](https://github.com/amkfbant/monorepo-harness/issues/42)) ([badc929](https://github.com/amkfbant/monorepo-harness/commit/badc9297744ba1771f209443c9141709f8042693))
+* workspace adopt + path-first reconcile (B[#3](https://github.com/amkfbant/monorepo-harness/issues/3)) ([#45](https://github.com/amkfbant/monorepo-harness/issues/45)) ([9ede907](https://github.com/amkfbant/monorepo-harness/commit/9ede907b6469c5ab04b7ceca7956bddf3c991f5f))
+* workspace checkpoint — advisory save + deterministic snapshot (W2b) ([#39](https://github.com/amkfbant/monorepo-harness/issues/39)) ([36e0178](https://github.com/amkfbant/monorepo-harness/commit/36e0178c46e7c50c9668855a7b3946c60e530d55))
+* workspace conflicts — cross-agent changed-file overlap pre-check (B[#4](https://github.com/amkfbant/monorepo-harness/issues/4)) ([#43](https://github.com/amkfbant/monorepo-harness/issues/43)) ([090f8cc](https://github.com/amkfbant/monorepo-harness/commit/090f8cca31433bb8a90db466f6a23dc314989bed))
+* workspace DB index — additive workspaces table + reconcile (W2a) ([#38](https://github.com/amkfbant/monorepo-harness/issues/38)) ([0c2d62c](https://github.com/amkfbant/monorepo-harness/commit/0c2d62c70bb0cf47b15edb9cbf276d9ca66ce351))
+* workspace inspect — deterministic git briefing (W1) ([#37](https://github.com/amkfbant/monorepo-harness/issues/37)) ([588094b](https://github.com/amkfbant/monorepo-harness/commit/588094be6d5486717dbdc00b5df34dd7ead614d7))
+* workspace recover — deterministic state reconstruction + next steps (W2c) ([#40](https://github.com/amkfbant/monorepo-harness/issues/40)) ([6bb5303](https://github.com/amkfbant/monorepo-harness/commit/6bb53036a08b8839396cf5780557e3f56a0051af))
+* workspace status — deterministic progress projection for all agents (W3) ([#41](https://github.com/amkfbant/monorepo-harness/issues/41)) ([20721d2](https://github.com/amkfbant/monorepo-harness/commit/20721d2e3bfff989c5d012f078c40e200d92caea))
+* workspace status heartbeat staleness (B[#5](https://github.com/amkfbant/monorepo-harness/issues/5)) ([#44](https://github.com/amkfbant/monorepo-harness/issues/44)) ([3752b2c](https://github.com/amkfbant/monorepo-harness/commit/3752b2cf66f805832a0cedf45307284bf6b36a33))
+
 ## [0.2.0](https://github.com/amkfbant/monorepo-harness/compare/v0.1.0...v0.2.0) (2026-06-06)
 
 
