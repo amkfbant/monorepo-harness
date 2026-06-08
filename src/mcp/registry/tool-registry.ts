@@ -56,6 +56,7 @@ import {
   opsKnowledgeSearchTool,
   resolveOpsKnowledgeProjectId,
 } from "../tools/ops-knowledge-tools.js";
+import { releasePlanTool } from "../tools/release-tools.js";
 import {
   cleanupDryRunTool,
   dbArchivePreviewTool,
@@ -311,6 +312,13 @@ const opsKnowledgeGetArgs = z
     entryId: z.string().min(1),
     includeBody: z.boolean().optional(),
     maxBytes: z.number().int().min(0).optional(),
+  })
+  .strict();
+
+const releasePlanArgs = z
+  .object({
+    since: z.string().min(1).optional(),
+    to: z.string().min(1).optional(),
   })
   .strict();
 
@@ -1040,6 +1048,23 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     argsSchema: noArgs,
     inputSchema: emptyInputSchema,
     handler: doctorSummaryTool,
+  }),
+  define({
+    name: "harness.release.plan",
+    title: "Release plan",
+    description:
+      "Deterministic release-readiness + compatibility analysis for a tag range (schema delta / no-downgrade / added-removed CLI+MCP surface / recommended bump). Read-only; complements release-please.",
+    kind: "read",
+    operation: "release.plan",
+    argsSchema: releasePlanArgs,
+    inputSchema: objectSchema(
+      {
+        since: { type: "string", description: "compare-from ref (default: last tag)" },
+        to: { type: "string", description: "compare-to ref (default: HEAD)" },
+      },
+      [],
+    ),
+    handler: releasePlanTool,
   }),
   define({
     name: "harness.inbox",
