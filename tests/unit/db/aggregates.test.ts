@@ -95,6 +95,18 @@ describe("aggregates", () => {
     expect(demo.byStatus.promoted).toBe(1);
   });
 
+  it("knowledgeDigest entryTotal excludes operational entries (issue #57)", () => {
+    db.prepare(
+      `INSERT INTO knowledge_entries (entry_id, kind, body, category)
+       VALUES ('docs/knowledge/note/a.md', 'note', 'codebase body', 'codebase')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO knowledge_entries (entry_id, kind, body, category)
+       VALUES ('ops/x', 'operational', 'ops body', 'operational')`,
+    ).run();
+    expect(knowledgeDigest(db).entryTotal).toBe(1);
+  });
+
   it("inboxSummary counts un-decided knowledge-candidate runs", () => {
     insertCandidate(db, "run-a:0", "run-a", "demo", "policy_violation", "candidate");
     insertCandidate(db, "run-a:1", "run-a", "demo", "secret_suspect", "promoted");

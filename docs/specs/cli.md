@@ -1213,6 +1213,7 @@ run が生成した `knowledge-candidates.yaml` の候補をレビューし、�
 - `docs/knowledge/<kind>/*.md` — reviewer が **採用した知見**（`knowledge promote` が書く）
 - `knowledge_entry_revisions` — DB-current な knowledge markdown body。`knowledge deprecate` / `knowledge edit` が更新する
 - `docs/knowledge-context/<domain>.md` — domain ごとに集約した **次回 run 用 context**（`knowledge build-context` が書く、Phase 3-4）
+- `knowledge_entries.category` — `codebase`（上記）と `operational`（運用知識、issue #57）を分ける。operational は [`knowledge ops`](#harness-knowledge-ops) が著述し、**coder prompt には注入されない**（schema v19 / [`db.md`](./db.md)）
 
 ### `harness knowledge build-context`
 
@@ -1324,6 +1325,33 @@ harness knowledge deprecate <entry-id> [--actor <actor>] [--reason <text>] [--ou
 `knowledge deprecate` は DB-first の状態遷移として、対象 entry の current revision に `deprecated: true` frontmatter を持つ markdown を記録し、`knowledge_entries` を `source_mode='db-first'` / `export_status='dirty'` に更新してから `<out>/<kind>/<file>.md` へ atomically export する。export 成功時は `knowledge_entries.export_status='synced'` になり、`asset_exports` と `exported_files` に sha を記録する。既に deprecated の entry への再実行は同じ current body を再利用し、stale な compatibility file を再 export できる。
 
 deprecate 済み entry は file-scan の `knowledge build-context --domain ...` と DB-current の scoped build-context の両方から除外される。
+
+### `harness knowledge ops`（operational knowledge — issue #57）
+
+**codebase ではない運用知識**（toolchain / CI / 環境 / harness 運用の学び）を著述・一覧・閲覧・deprecate する。codebase 知識（run 由来の candidate → promote）と異なり、**candidate ステージを持たず** operator が直接著述する（信用しない生成元が無いので gate 不要）。DB-canonical で `ops/` entry-id namespace に保存し、`docs/knowledge/` には export しない。
+
+```bash
+harness knowledge ops add  --title <t> --body <text> [--key <slug>] [--kind <k>] \
+                           [--tag <t>...] [--project <id>] [--repo-id <id>] [--domain <d>] [--actor <a>] [--json]
+harness knowledge ops list [--project <id>] [--repo-id <id>] [--domain <d>] [--include-deprecated] [--json]
+harness knowledge ops show <entry-id> [--json]
+harness knowledge ops deprecate <entry-id> [--actor <a>] [--reason <text>] [--json]
+```
+
+| `ops add` option | Required | 説明 |
+|--------|:--------:|------|
+| `--title <t>` | ✅ | 短いタイトル |
+| `--body <text>` | ✅* | markdown 本文。`--body-file <path>` か stdin でも可（いずれか必須） |
+| `--key <slug>` | — | 安定 slug → `ops/<slug>`（既定: 生成 id）。同一 key への再 add は同じ entry を更新（body 不変なら no-op） |
+| `--kind <k>` | — | サブ種別（既定 `operational`、例 `toolchain` / `ci` / `environment`） |
+| `--tag <t>` | — | タグ（繰り返し可） |
+| `--project` / `--repo-id` / `--domain` | — | scope（既定: portable = project 横断で見える） |
+| `--actor <a>` | — | actor ラベル（既定 `cli`） |
+
+- **scope**: `ops list --project <id>` は当該 project に加え **portable（NULL scope）entry も表示**する（codebase の knowledge と同じ包含規則）。
+- **deprecate**: DB-only で current revision に `deprecated: true` を記録し、既定 list から隠す（`--include-deprecated` で表示）。冪等。
+- **安全境界**: operational 知識は **coder(codex) prompt に注入されない**（`knowledge build-context` / `--with-knowledge` は codebase のみ集約）。codebase 側の `knowledge show` / `edit` は operational entry を拒否し、`knowledge ops show` は非 operational id を拒否する（surface 分離）。
+- **MCP からの recall** は follow-up（SP3 の `harness.ops_knowledge.*` read tools）。それまで recall はこの CLI で行う。
 
 ### source run との独立性
 
