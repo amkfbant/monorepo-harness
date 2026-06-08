@@ -26,6 +26,7 @@ import { redactMcpAuditValue } from "../audit/redaction.js";
 import {
   attachedArchivePaths,
   artifactIdToUri,
+  cappedText,
   decodeCursor,
   encodeCursor,
   ensureProjectVisible,
@@ -726,16 +727,6 @@ export function knowledgeGetTool(
       ],
     };
   }) as HarnessMcpToolResult;
-}
-
-function cappedText(text: string, maxBytes: number): { text: string; bytes: number; capped: boolean } {
-  const bytes = Buffer.byteLength(text, "utf8");
-  if (bytes <= maxBytes) return { text, bytes, capped: false };
-  return {
-    text: Buffer.from(text, "utf8").subarray(0, maxBytes).toString("utf8"),
-    bytes,
-    capped: true,
-  };
 }
 
 export function dbStatusTool(

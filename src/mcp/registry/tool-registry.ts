@@ -52,6 +52,11 @@ import {
 } from "../tools/workspace-read-tools.js";
 import { inboxTool, metricsTool } from "../tools/aggregate-tools.js";
 import {
+  opsKnowledgeGetTool,
+  opsKnowledgeSearchTool,
+  resolveOpsKnowledgeProjectId,
+} from "../tools/ops-knowledge-tools.js";
+import {
   cleanupDryRunTool,
   dbArchivePreviewTool,
   dbGcBlobsPreviewTool,
@@ -281,6 +286,25 @@ const knowledgeSearchArgs = z
   .strict();
 
 const knowledgeGetArgs = z
+  .object({
+    entryId: z.string().min(1),
+    includeBody: z.boolean().optional(),
+    maxBytes: z.number().int().min(0).optional(),
+  })
+  .strict();
+
+const opsKnowledgeSearchArgs = z
+  .object({
+    query: z.string().min(1).optional(),
+    projectId: z.string().min(1).optional(),
+    repoId: z.string().min(1).optional(),
+    domain: z.string().min(1).optional(),
+    includeDeprecated: z.boolean().optional(),
+    limit: LimitSchema,
+  })
+  .strict();
+
+const opsKnowledgeGetArgs = z
   .object({
     entryId: z.string().min(1),
     includeBody: z.boolean().optional(),
@@ -882,6 +906,46 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       ["entryId"],
     ),
     handler: knowledgeGetTool,
+  }),
+  define({
+    name: "harness.ops_knowledge.search",
+    title: "Search operational knowledge",
+    description:
+      "Search operational (non-codebase) knowledge: toolchain / CI / environment / harness-usage learnings (issue #57).",
+    kind: "read",
+    operation: "ops_knowledge.search",
+    argsSchema: opsKnowledgeSearchArgs,
+    projectIdFromArgs: (args) => args.projectId,
+    inputSchema: objectSchema(
+      {
+        query: { type: "string" },
+        projectId: projectIdJson,
+        repoId: { type: "string", description: "Repo id" },
+        domain: { type: "string" },
+        includeDeprecated: { type: "boolean" },
+        limit: { type: "number" },
+      },
+      [],
+    ),
+    handler: opsKnowledgeSearchTool,
+  }),
+  define({
+    name: "harness.ops_knowledge.get",
+    title: "Get operational knowledge",
+    description: "Read an operational knowledge entry (issue #57).",
+    kind: "read",
+    operation: "ops_knowledge.get",
+    argsSchema: opsKnowledgeGetArgs,
+    resolveProjectIdForPermission: resolveOpsKnowledgeProjectId,
+    inputSchema: objectSchema(
+      {
+        entryId: { type: "string" },
+        includeBody: { type: "boolean" },
+        maxBytes: { type: "number" },
+      },
+      ["entryId"],
+    ),
+    handler: opsKnowledgeGetTool,
   }),
   define({
     name: "harness.db.status",
