@@ -128,10 +128,14 @@ function normalizeTags(tags: readonly string[] | undefined): string[] {
   return unique;
 }
 
-function resolveEntryId(key: string | undefined): string {
-  if (key === undefined || key.trim() === "") {
-    return `${ENTRY_PREFIX}${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-  }
+/**
+ * The canonical `ops/<slug>` entry id a given key resolves to (trim + slug
+ * validate). Exported so callers that must authorize/target the entry BEFORE
+ * the write (e.g. the MCP mutation handler) compute the EXACT same id the core
+ * write will use — preventing a raw-vs-normalized mismatch (e.g. `"k "` vs `"k"`)
+ * from bypassing an existing-entry check. Throws on an invalid key.
+ */
+export function operationalEntryIdForKey(key: string): string {
   const slug = key.trim();
   if (!SLUG_RE.test(slug)) {
     throw new OperationalKnowledgeError(
@@ -139,6 +143,13 @@ function resolveEntryId(key: string | undefined): string {
     );
   }
   return `${ENTRY_PREFIX}${slug}`;
+}
+
+function resolveEntryId(key: string | undefined): string {
+  if (key === undefined || key.trim() === "") {
+    return `${ENTRY_PREFIX}${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+  }
+  return operationalEntryIdForKey(key);
 }
 
 interface BuiltFrontmatter {
