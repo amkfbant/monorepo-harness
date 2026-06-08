@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.0](https://github.com/amkfbant/monorepo-harness/compare/v0.4.0...v0.5.0) (2026-06-08)
+
+
+### Features
+
+* add `harness knowledge ops` CLI for operational knowledge [[#57](https://github.com/amkfbant/monorepo-harness/issues/57)] ([#60](https://github.com/amkfbant/monorepo-harness/issues/60)) ([1317595](https://github.com/amkfbant/monorepo-harness/commit/131759506f010079e4220fc58683a403646f271d))
+* add MCP read tools for operational knowledge [[#57](https://github.com/amkfbant/monorepo-harness/issues/57)] ([#62](https://github.com/amkfbant/monorepo-harness/issues/62)) ([a6b819d](https://github.com/amkfbant/monorepo-harness/commit/a6b819d2b8cabdd61aa89dcb6b2183a114aa9d29))
+* operational knowledge category — storage core + safety isolation (SP1, [#57](https://github.com/amkfbant/monorepo-harness/issues/57)) ([#59](https://github.com/amkfbant/monorepo-harness/issues/59)) ([e1e2480](https://github.com/amkfbant/monorepo-harness/commit/e1e2480d288454ca7bc8468f64982ab225fe95ca))
+
 ## [0.4.0](https://github.com/amkfbant/monorepo-harness/compare/v0.3.0...v0.4.0) (2026-06-07)
 
 
