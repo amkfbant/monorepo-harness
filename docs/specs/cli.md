@@ -1610,3 +1610,18 @@ harness review proposals vacuum --older-than 30d [--apply]
 
 `vacuum` は dry-run default。`superseded` / `rejected_stale` / `processed`
 で threshold より古い rows を `archived` 化 (delete はしない)。
+
+## `harness release plan`
+
+リリース計画 / 互換性解析（release-please を補完する決定論的アナライザ）。詳細は
+[`release.md`](./release.md)。
+
+```bash
+harness release plan [--since <ref>] [--to <ref>] [--json]
+```
+
+`--since`（既定: 直近 tag）から `--to`（既定: HEAD）までの commits を分類し、推奨
+SemVer bump、**DB schema delta（no-downgrade 影響）**、追加/削除された **MCP tool /
+CLI command surface**、未宣言の破壊的変更を出力する。exit code: `0` 問題なし / `1`
+ref 解決失敗 / `2` 未宣言の破壊的変更検出（fail-closed）。bump/CHANGELOG/tag は
+release-please が担当（このコマンドは読み取りのみ）。

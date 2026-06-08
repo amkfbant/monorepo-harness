@@ -25,6 +25,25 @@ audit / budget; actor `mcp:<clientName>`).
 
 Recorded 2026-06 when issue #57's storage + CLI + MCP-read cut landed.
 
+## Release planning — beyond `harness release plan`
+
+`harness release plan` (deterministic release-readiness + compatibility analysis,
+`docs/specs/release.md`) shipped as a CLI command. Natural follow-ups:
+
+- **MCP read exposure** (`harness.release.plan`) — so an MCP-driven agent can call
+  the analyzer directly (wrap the CLI core in a read tool, like the ops_knowledge
+  read tools).
+- **`harness release check`** — a fail-closed readiness gate: typecheck + test +
+  build green, `docs/specs/*` in sync with the changed surface, no undeclared
+  breaking change. An agent runs this before merging the release PR.
+- **`harness release notes`** — render a `docs/UPGRADING.md` section from the plan
+  (feature summary + the schema no-downgrade caveat + surface changes).
+- **richer surface diffing** — the current MCP/CLI surface parse is regex-based
+  (best-effort) and does not diff config keys; a structured surface snapshot would
+  be more robust for future ranges.
+
+Recorded 2026-06 when the `release plan` CLI landed.
+
 ## Atomic authorization for MCP mutations (TOCTOU)
 
 MCP mutation tools authorize (project scope / existing-entry checks) in a

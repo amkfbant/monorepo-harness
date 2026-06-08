@@ -19,7 +19,16 @@ import { resolvePolicy } from "../policy/resolver.js";
 import { runDomainCoding } from "../core/workflow-runner.js";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
 import { StateConflictError, SourceModeError } from "../db/errors.js";
-import { runMigrations } from "../db/migrations.js";
+import { runMigrations, MIGRATIONS } from "../db/migrations.js";
+import {
+  createGitReader,
+  gatherReleasePlanInput,
+  ReleaseGatherError,
+} from "../release/release-git.js";
+import {
+  buildReleasePlan,
+  renderReleasePlanText,
+} from "../release/release-plan.js";
 import { importKnowledgeEntries } from "../db/import/knowledge.js";
 import { emptyCounters } from "../db/import/common.js";
 import {
@@ -3953,6 +3962,54 @@ registerPolicyCommands(program);
 registerDbCommands(program);
 registerGoalCommands(program, { getHarnessRoot });
 registerMcpCommands(program, { getHarnessRoot });
+
+// --- release planning ----------------------------------------------------
+// Deterministic release-readiness + compatibility analysis. Complements
+// release-please (which owns the bump / CHANGELOG / tag) by surfacing the DB
+// schema delta (no-downgrade) and removed/renamed CLI / MCP surface for any
+// tag range — see docs/specs/release.md.
+const releaseCmd = program
+  .command("release")
+  .description("release planning / compatibility analysis (complements release-please)");
+
+releaseCmd
+  .command("plan")
+  .description("analyze readiness + compatibility for the next version bump")
+  .option("--since <ref>", "compare from this ref (default: the last tag)")
+  .option("--to <ref>", "compare to this ref (default: HEAD)")
+  .option("--repo <path>", "git repo to analyze (default: current directory)")
+  .option("--json", "emit JSON instead of text", false)
+  .action(async (raw: Record<string, unknown>) => {
+    const reader = createGitReader(
+      typeof raw.repo === "string" && raw.repo !== "" ? raw.repo : process.cwd(),
+    );
+    try {
+      const input = await gatherReleasePlanInput(reader, {
+        migrations: MIGRATIONS,
+        currentVersion: harnessVersion(),
+        ...(typeof raw.since === "string" ? { since: raw.since } : {}),
+        ...(typeof raw.to === "string" ? { to: raw.to } : {}),
+      });
+      const plan = buildReleasePlan(input);
+      process.stdout.write(
+        raw.json === true
+          ? `${JSON.stringify(plan, null, 2)}\n`
+          : renderReleasePlanText(plan),
+      );
+      // fail-closed (exit 2) for an agent / CI gate: an UNDECLARED breaking
+      // change, OR an incomplete analysis (a surface file vanished / migration
+      // metadata gap) — in which case "no breaking detected" is not trustworthy.
+      if (plan.undeclaredBreaking.length > 0 || plan.analysisWarnings.length > 0) {
+        process.exitCode = 2;
+      }
+    } catch (e) {
+      if (e instanceof ReleaseGatherError) {
+        process.stderr.write(`harness error: ${e.message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
+  });
 
 program.parseAsync(process.argv).catch((e: unknown) => {
   process.stderr.write(`harness error: ${(e as Error).message}\n`);
