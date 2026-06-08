@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1494,6 +1494,32 @@ export const MIGRATION_V18_STATEMENTS: readonly string[] = [
 
 /** Tables added by v18 (W2b — workspace checkpoints). */
 export const V18_TABLE_NAMES: readonly string[] = ["workspace_checkpoints"];
+
+/**
+ * v19 — operational knowledge category (issue #57).
+ *
+ * The knowledge subsystem so far accumulates *codebase* knowledge only:
+ * per-run candidates → promote → `knowledge_entries` → injected into coder
+ * prompts. v19 adds an `operational` category for non-codebase knowledge
+ * (toolchain / workflow / environment learnings discovered while operating
+ * the harness). Operational entries are authored directly (no run-derived
+ * candidate stage — there is no untrusted generator to gate) and reuse the
+ * `knowledge_entry_revisions` history / deprecate machinery.
+ *
+ * Existing rows migrate with `category='codebase'` (the DEFAULT), so the
+ * coder-prompt context path — which filters to `category='codebase'` —
+ * keeps behaving exactly as before and operational knowledge can never
+ * leak into a coder prompt (the safety boundary in issue #57).
+ */
+export const MIGRATION_V19_STATEMENTS: readonly string[] = [
+  `ALTER TABLE knowledge_entries ADD COLUMN category TEXT NOT NULL
+     DEFAULT 'codebase' CHECK (category IN ('codebase', 'operational'))`,
+  `CREATE INDEX knowledge_entries_category_idx
+     ON knowledge_entries(category, kind)`,
+];
+
+/** Tables added by v19 (operational knowledge — additive column only). */
+export const V19_TABLE_NAMES: readonly string[] = [];
 
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [

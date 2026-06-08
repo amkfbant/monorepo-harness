@@ -177,20 +177,36 @@ export function listKnowledgeRevisions(
   return rows.map(toRevision);
 }
 
+export type KnowledgeCategory = "codebase" | "operational";
+
 export interface CurrentKnowledgeRevision extends KnowledgeEntryRevision {
   projectId: string | null;
   repoId: string | null;
   domain: string | null;
   kind: string;
   path: string | null;
+  category: KnowledgeCategory;
+}
+
+export interface ListCurrentKnowledgeFilter {
+  projectId?: string;
+  repoId?: string;
+  domain?: string;
+  /**
+   * Which knowledge category to list. Defaults to `'codebase'` (fail-closed):
+   * the coder-prompt context path and every legacy caller must never see
+   * `operational` entries unless they opt in explicitly (issue #57 safety
+   * boundary). There is intentionally no "all categories" option.
+   */
+  category?: KnowledgeCategory;
 }
 
 export function listCurrentKnowledgeRevisions(
   db: Database.Database,
-  filter: { projectId?: string; repoId?: string; domain?: string } = {},
+  filter: ListCurrentKnowledgeFilter = {},
 ): CurrentKnowledgeRevision[] {
-  const where = ["e.current_revision_id IS NOT NULL"];
-  const params: unknown[] = [];
+  const where = ["e.current_revision_id IS NOT NULL", "e.category = ?"];
+  const params: unknown[] = [filter.category ?? "codebase"];
   if (filter.projectId !== undefined) {
     where.push("(e.project_id = ? OR e.project_id IS NULL)");
     params.push(filter.projectId);
@@ -205,7 +221,7 @@ export function listCurrentKnowledgeRevisions(
   }
   const rows = db
     .prepare(
-      `SELECT r.*, e.project_id, e.repo_id, e.domain, e.kind, e.path
+      `SELECT r.*, e.project_id, e.repo_id, e.domain, e.kind, e.path, e.category
          FROM knowledge_entries e
          INNER JOIN knowledge_entry_revisions r
             ON e.current_revision_id = r.revision_id
@@ -220,6 +236,7 @@ export function listCurrentKnowledgeRevisions(
     domain: (r.domain as string | null) ?? null,
     kind: r.kind as string,
     path: (r.path as string | null) ?? null,
+    category: (r.category as KnowledgeCategory | null) ?? "codebase",
   }));
 }
 

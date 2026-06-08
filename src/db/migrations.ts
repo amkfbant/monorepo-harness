@@ -19,6 +19,7 @@ import {
   MIGRATION_V16_STATEMENTS,
   MIGRATION_V17_STATEMENTS,
   MIGRATION_V18_STATEMENTS,
+  MIGRATION_V19_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -123,6 +124,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 18,
     name: "workspace-checkpoints-v18",
     statements: MIGRATION_V18_STATEMENTS,
+  },
+  {
+    version: 19,
+    name: "operational-knowledge-category-v19",
+    statements: MIGRATION_V19_STATEMENTS,
   },
 ];
 

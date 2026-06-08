@@ -3,6 +3,32 @@
 Ideas recorded for later implementation. Each entry is a sketch, not an approved
 design — run it through brainstorming → spec → plan when picked up.
 
+## Operational knowledge — deferred surfaces (issue #57)
+
+The operational knowledge category (`knowledge_entries.category='operational'`,
+schema v19) ships as **storage core + CLI + MCP read** (issue #57). These
+complementary surfaces were explicitly scoped OUT of the initial cut and are
+deferred:
+
+- **MCP write (`harness.ops_knowledge.record` / `deprecate`)** — let an operating
+  agent persist operational knowledge over MCP without shelling out to the CLI.
+  This is a mutation, so it requires guarded-mutation mode + an `allowedOperations`
+  allowlist + `runOperation` (idempotency / audit / budget), per the MCP safety
+  model. Deferred to keep the first cut read-only (matching the "read 群で打ち止め"
+  decision). For now operators author via the CLI; recall is via MCP read.
+- **goal / reviewer context injection** — surface relevant operational knowledge
+  into the **goal briefing / reviewer** prompt (NOT the coder prompt — that
+  boundary is permanent). Needs a relevance/scoping model so it does not flood the
+  reviewer with unrelated ops notes.
+- **inbox / session surfacing** — show operational-knowledge counts / recent
+  entries in `harness.inbox` / dashboard `session` views.
+- **file export parity** — operational entries are DB-only today. A
+  `docs/ops-knowledge/` compat export (mirroring `docs/knowledge/`) would make
+  them reviewable in git, but needs an importer namespace that does not collide
+  with the codebase-knowledge round-trip.
+
+Recorded 2026-06 when issue #57's storage + CLI + MCP-read cut landed.
+
 ## Transactional run-status guard on `review auto` proposal insert
 
 **Promoted to an active follow-up** — now tracked as **Follow-up A** in

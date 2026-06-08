@@ -13,6 +13,7 @@ import {
   succeedOperation,
 } from "../../../src/db/repositories/operations.js";
 import { storeArtifactBlob } from "../../../src/db/artifact-blobs.js";
+import { recordOperationalKnowledge } from "../../../src/core/operational-knowledge.js";
 
 function freshHarness(): { root: string; db: Database.Database } {
   const root = mkdtempSync(join(tmpdir(), "harness-mcp-read-"));
@@ -330,6 +331,55 @@ describe("MCP read tools", () => {
       });
       expect(operation.data.operation.status).toBe("succeeded");
       expect(operation.data.events.map((e: any) => e.eventType)).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("excludes operational knowledge from the codebase knowledge.search/get tools", async () => {
+    const { root, db } = freshHarness();
+    try {
+      // An operational entry whose body also mentions "filters" — the codebase
+      // MCP knowledge tools must NOT surface it (issue #57 read-surface
+      // isolation).
+      const rec = recordOperationalKnowledge(db, {
+        key: "ops-filters",
+        title: "Operational filters note",
+        body: "operational filters body",
+        actor: "op",
+      });
+      const s = server(root);
+      const search = await callTool(s, "harness.knowledge.search", {
+        query: "filters",
+      });
+      expect(search.status).toBe("ok");
+      expect(search.data.entries.map((e: any) => e.entryId)).toEqual([
+        "knowledge/demo.md",
+      ]);
+      const get = await callTool(s, "harness.knowledge.get", {
+        entryId: rec.entryId,
+      });
+      expect(get.status).toBe("error");
+
+      // Even under a project allowlist, an operational entry in a disallowed
+      // project must read as plain not-found (not permission_denied) so its
+      // existence / project does not leak via the codebase get surface.
+      const scopedRec = recordOperationalKnowledge(db, {
+        key: "ops-secret",
+        title: "Secret ops",
+        body: "secret",
+        projectId: "other",
+        actor: "op",
+      });
+      const scoped = server(root, {
+        ...DEFAULT_MCP_CONFIG,
+        allowedProjects: ["demo"],
+      });
+      const scopedGet = await callTool(scoped, "harness.knowledge.get", {
+        entryId: scopedRec.entryId,
+      });
+      expect(scopedGet.status).toBe("error");
+      expect(scopedGet.status).not.toBe("permission_denied");
     } finally {
       db.close();
     }

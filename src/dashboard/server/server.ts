@@ -895,12 +895,16 @@ export function defaultRoutes(): Route[] {
         try {
           const rows = handle.db
             .prepare(
+              // codebase-knowledge assets view. Operational knowledge
+              // (category='operational', issue #57) is excluded here
+              // (fail-closed); its own surfaces land in a follow-up.
               `SELECT e.entry_id, e.project_id, e.repo_id, e.domain, e.kind,
                       e.path, e.current_revision_id AS currentRevisionId,
                       r.version, r.title, r.created_at AS revisionCreatedAt
                  FROM knowledge_entries e
                  LEFT JOIN knowledge_entry_revisions r
                    ON r.revision_id = e.current_revision_id
+                WHERE e.category = 'codebase'
                 ORDER BY e.kind, e.path, e.entry_id
                 LIMIT 500`,
             )
@@ -989,10 +993,18 @@ export function defaultRoutes(): Route[] {
       handler: ({ ctx, res, params }) => {
         const handle = openManagedDb({ dbPath: ctx.config.dbPath, readonly: true });
         try {
-          const cur = getCurrentKnowledgeRevision(
-            handle.db,
-            params.entryId!,
-          );
+          // codebase-only detail surface. Operational entries (issue #57) are
+          // excluded so their body/history cannot be fetched here (mirrors the
+          // category filter on the listing route).
+          const categoryRow = handle.db
+            .prepare(
+              "SELECT category FROM knowledge_entries WHERE entry_id = ?",
+            )
+            .get(params.entryId!) as { category: string } | undefined;
+          const cur =
+            categoryRow?.category === "codebase"
+              ? getCurrentKnowledgeRevision(handle.db, params.entryId!)
+              : null;
           if (cur === null) {
             writeError(
               res,

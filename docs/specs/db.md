@@ -72,6 +72,19 @@ version を記録し、`harness db migrate` が未適用分を idempotent に適
 > スナップショット（`head_sha` / `dirty_count` / advisory `goal_id`）。`workspaces`
 > への FK は `ON DELETE CASCADE`。recover は git/goal から正本状態を再構成し最新 note を
 > **文脈として**重ねる（note は状態の根拠にしない＝§0 非対称）。
+>
+> **v19（operational knowledge — issue #57）**: `knowledge_entries` に `category`
+> 列（`codebase` / `operational`、DEFAULT `codebase`、CHECK 制約）を additive に
+> 追加。codebase 知識（run 由来の candidate → promote → coder prompt 注入）に対し、
+> **operational 知識**（toolchain / CI / 環境 / harness 運用の学び）を並列カテゴリ
+> として持つ。operational は **candidate ステージを持たず**（信用しない生成元が無い
+> ので gate 不要）operator が直接著述し、`knowledge_entry_revisions` の履歴 /
+> deprecate 機構を再利用する（entry_id は `ops/` namespace で file importer/exporter
+> の対象外＝DB-only）。**安全境界**: `listCurrentKnowledgeRevisions` は
+> `category='codebase'` を **fail-closed default** とし、coder prompt 用の
+> `buildKnowledgeContextFromDb` は codebase のみを集約する。operational 知識が
+> coder prompt に混入することは構造上あり得ない。core は
+> `src/core/operational-knowledge.ts`。
 
 ## schema v1 のテーブル
 
@@ -684,6 +697,9 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 14 | Phase 18 | mcp_confirmation_requests.permission_snapshot_json |
 | 15 | Phase 18 | mcp_sessions.reported_client_* / mcp_confirmation_requests.error_message |
 | 16 | Phase 19 | goal_sessions / goal_attempts / goal_review_cycles / goal_findings / goal_close_checks / goal_convergence_decisions |
+| 17 | agent workspaces | workspaces |
+| 18 | workspace checkpoints | workspace_checkpoints |
+| 19 | operational knowledge (issue #57) | knowledge_entries.category（additive 列・新規テーブル無し） |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -785,7 +801,7 @@ revision ベースの history テーブルと、compat-export 追跡 ledger を�
   provenance（`policy compile` が再生成する derived table）。
 - `knowledge_entry_revisions` — knowledge entry markdown body の version
   履歴（`(entry_id, version)` unique）。`knowledge_entries.current_revision_id`
-  が最新を指す。
+  が最新を指す。codebase / operational（v19）の両カテゴリで共用する。
 - `asset_exports` — compat-export した files の sha + status（`synced` /
   `dirty` / `removed`）を `(asset_type, asset_id, relative_path)` 単位で追跡。
 

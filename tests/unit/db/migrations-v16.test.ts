@@ -47,7 +47,7 @@ describe("schema v16 goal convergence", () => {
     try {
       expect(currentSchemaVersion(db)).toBe(15);
       const result = runMigrations(db);
-      expect(result.applied).toEqual([16, 17, 18]);
+      expect(result.applied).toEqual([16, 17, 18, 19]);
       expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
       for (const table of [
         "goal_sessions",

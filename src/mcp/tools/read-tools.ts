@@ -626,7 +626,14 @@ export function knowledgeSearchTool(
   }
   return withReadonlyDb(context, ({ db }) => {
     const limit = normalizeLimit(args.limit);
-    const where = ["(entry_id LIKE ? OR title LIKE ? OR body LIKE ?)"];
+    // `harness.knowledge.*` is the CODEBASE knowledge surface. Operational
+    // knowledge (category='operational', issue #57) is excluded here; its own
+    // MCP read tools land in a follow-up (SP3). Until then operational recall is
+    // via the CLI — this filter keeps the codebase surface fail-closed meanwhile.
+    const where = [
+      "category = 'codebase'",
+      "(entry_id LIKE ? OR title LIKE ? OR body LIKE ?)",
+    ];
     const q = `%${args.query}%`;
     const params: unknown[] = [q, q, q];
     if (args.projectId !== undefined) {
@@ -670,7 +677,7 @@ export function knowledgeGetTool(
                 body, frontmatter_json, created_at, source_candidate_id,
                 current_revision_id
            FROM knowledge_entries
-          WHERE entry_id = ?`,
+          WHERE entry_id = ? AND category = 'codebase'`,
       )
       .get(args.entryId) as Record<string, unknown> | undefined;
     if (row === undefined) {
@@ -907,8 +914,14 @@ export function resolveKnowledgeProjectId(
     return undefined;
   }
   const result = withReadonlyDb(context, ({ db }) => {
+    // codebase-only: this pre-dispatch scope check guards `harness.knowledge.get`
+    // (a codebase surface). Resolving an operational entry here would leak its
+    // existence / project via a `project_not_allowed` reply; treat it as absent
+    // so the get falls through to the category-filtered not-found.
     const row = db
-      .prepare("SELECT project_id FROM knowledge_entries WHERE entry_id = ?")
+      .prepare(
+        "SELECT project_id FROM knowledge_entries WHERE entry_id = ? AND category = 'codebase'",
+      )
       .get(args.entryId) as { project_id: string | null } | undefined;
     return row?.project_id ?? null;
   });

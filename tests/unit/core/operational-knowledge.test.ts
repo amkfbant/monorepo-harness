@@ -1,0 +1,338 @@
+import { describe, it, expect } from "vitest";
+import { mkdtempSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openDb } from "../../../src/db/connection.js";
+import { runMigrations } from "../../../src/db/migrations.js";
+import {
+  recordOperationalKnowledge,
+  listOperationalKnowledge,
+  getOperationalKnowledge,
+  deprecateOperationalKnowledge,
+  OperationalKnowledgeError,
+} from "../../../src/core/operational-knowledge.js";
+import {
+  recordKnowledgeEntryRevision,
+  listCurrentKnowledgeRevisions,
+} from "../../../src/db/repositories/knowledge-entry-revisions.js";
+import { buildKnowledgeContextFromDb } from "../../../src/core/knowledge-context.js";
+
+function freshDb() {
+  const root = mkdtempSync(join(tmpdir(), "harness-ops-kn-"));
+  mkdirSync(join(root, ".harness"), { recursive: true });
+  const db = openDb(join(root, ".harness", "harness.sqlite"));
+  runMigrations(db);
+  return { db, root };
+}
+
+describe("operational knowledge (issue #57)", () => {
+  it("records, gets and lists an operational entry", () => {
+    const { db } = freshDb();
+    try {
+      const r = recordOperationalKnowledge(db, {
+        title: "codex App verdict semantics",
+        body: "👀 reviewing, 👍 approved, a PR comment = findings.",
+        kind: "ci",
+        tags: ["github", "review"],
+        actor: "operator",
+      });
+      expect(r.entryId.startsWith("ops/")).toBe(true);
+      expect(r.version).toBe(1);
+      expect(r.reusedExisting).toBe(false);
+
+      const got = getOperationalKnowledge(db, r.entryId);
+      expect(got?.title).toBe("codex App verdict semantics");
+      expect(got?.kind).toBe("ci");
+      expect(got?.tags).toEqual(["github", "review"]);
+      expect(got?.deprecated).toBe(false);
+      expect(got?.body).toContain("👍 approved");
+
+      const list = listOperationalKnowledge(db);
+      expect(list).toHaveLength(1);
+      expect(list[0]?.entryId).toBe(r.entryId);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("uses a stable id when a key is given and re-records idempotently", () => {
+    const { db } = freshDb();
+    try {
+      const a = recordOperationalKnowledge(db, {
+        key: "ci-spending-limit",
+        title: "CI spending limit",
+        body: "All jobs fail instantly once the limit is hit.",
+        actor: "op",
+      });
+      expect(a.entryId).toBe("ops/ci-spending-limit");
+      const b = recordOperationalKnowledge(db, {
+        key: "ci-spending-limit",
+        title: "CI spending limit",
+        body: "All jobs fail instantly once the limit is hit.",
+        actor: "op",
+      });
+      expect(b.reusedExisting).toBe(true);
+      expect(b.version).toBe(1);
+      expect(listOperationalKnowledge(db)).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("records a new revision when the body changes", () => {
+    const { db } = freshDb();
+    try {
+      recordOperationalKnowledge(db, {
+        key: "k",
+        title: "T",
+        body: "v1",
+        actor: "op",
+      });
+      const r2 = recordOperationalKnowledge(db, {
+        key: "k",
+        title: "T",
+        body: "v2 updated",
+        actor: "op",
+      });
+      expect(r2.version).toBe(2);
+      expect(getOperationalKnowledge(db, "ops/k")?.body).toBe("v2 updated");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("deprecate hides the entry from the default list but keeps it gettable", () => {
+    const { db } = freshDb();
+    try {
+      const r = recordOperationalKnowledge(db, {
+        key: "old",
+        title: "Old note",
+        body: "stale",
+        actor: "op",
+      });
+      const dep = deprecateOperationalKnowledge(db, {
+        entryId: r.entryId,
+        actor: "op",
+      });
+      expect(dep.alreadyDeprecated).toBe(false);
+      expect(listOperationalKnowledge(db)).toHaveLength(0);
+      expect(listOperationalKnowledge(db, { includeDeprecated: true })).toHaveLength(1);
+      expect(getOperationalKnowledge(db, r.entryId)?.deprecated).toBe(true);
+
+      // idempotent
+      const again = deprecateOperationalKnowledge(db, {
+        entryId: r.entryId,
+        actor: "op",
+      });
+      expect(again.alreadyDeprecated).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("scopes by project but still surfaces portable (NULL-scoped) entries", () => {
+    const { db } = freshDb();
+    try {
+      recordOperationalKnowledge(db, {
+        key: "portable",
+        title: "Portable note",
+        body: "tool fact",
+        actor: "op",
+      });
+      recordOperationalKnowledge(db, {
+        key: "proj-a",
+        title: "Project A note",
+        body: "a fact",
+        projectId: "alpha",
+        actor: "op",
+      });
+      recordOperationalKnowledge(db, {
+        key: "proj-b",
+        title: "Project B note",
+        body: "b fact",
+        projectId: "beta",
+        actor: "op",
+      });
+      const forAlpha = listOperationalKnowledge(db, { projectId: "alpha" });
+      const ids = forAlpha.map((e) => e.entryId).sort();
+      expect(ids).toEqual(["ops/portable", "ops/proj-a"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects empty title / body / actor and invalid key", () => {
+    const { db } = freshDb();
+    try {
+      expect(() =>
+        recordOperationalKnowledge(db, { title: " ", body: "x", actor: "op" }),
+      ).toThrow(OperationalKnowledgeError);
+      expect(() =>
+        recordOperationalKnowledge(db, { title: "t", body: " ", actor: "op" }),
+      ).toThrow(OperationalKnowledgeError);
+      expect(() =>
+        recordOperationalKnowledge(db, { title: "t", body: "x", actor: " " }),
+      ).toThrow(OperationalKnowledgeError);
+      expect(() =>
+        recordOperationalKnowledge(db, {
+          key: "Bad Key!",
+          title: "t",
+          body: "x",
+          actor: "op",
+        }),
+      ).toThrow(OperationalKnowledgeError);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("SAFETY: operational entries never appear in the coder-prompt context", async () => {
+    const { db, root } = freshDb();
+    try {
+      // A codebase entry for the domain — SHOULD appear. The `domain` column
+      // (not just frontmatter) drives the context filter, mirroring the
+      // promote path's `upsertEntry`.
+      recordKnowledgeEntryRevision(db, {
+        entryId: "docs/knowledge/domain_rule/cache.md",
+        bodyMarkdown:
+          "---\ndomain: apps/web\nkind: domain_rule\ntitle: Cache rule\n---\nUse the cache.",
+        frontmatter: { domain: "apps/web", kind: "domain_rule", title: "Cache rule" },
+        title: "Cache rule",
+        actor: "promote",
+      });
+      db.prepare(
+        "UPDATE knowledge_entries SET domain = 'apps/web' WHERE entry_id = ?",
+      ).run("docs/knowledge/domain_rule/cache.md");
+      // An operational entry tagged with the SAME domain — must NOT appear.
+      recordOperationalKnowledge(db, {
+        key: "leaky",
+        title: "Operational secret",
+        body: "Run from ext4, not /mnt.",
+        domain: "apps/web",
+        actor: "op",
+      });
+
+      const result = await buildKnowledgeContextFromDb({
+        db,
+        outDir: join(root, "docs", "knowledge-context"),
+        domain: "apps/web",
+      });
+      const titles = result.entries.map((e) => e.title);
+      expect(titles).toContain("Cache rule");
+      expect(titles).not.toContain("Operational secret");
+      expect(result.entries).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("SAFETY: forces category=operational over a pre-existing codebase ops/ row", async () => {
+    const { db, root } = freshDb();
+    try {
+      // Simulate a stray `ops/leaky` row that defaulted to category='codebase'
+      // (recordKnowledgeEntryRevision auto-creates with the v19 default).
+      recordKnowledgeEntryRevision(db, {
+        entryId: "ops/leaky",
+        bodyMarkdown: "---\ntitle: stray\n---\nstray",
+        frontmatter: { title: "stray" },
+        actor: "x",
+      });
+      db.prepare(
+        "UPDATE knowledge_entries SET domain = 'apps/web' WHERE entry_id = 'ops/leaky'",
+      ).run();
+      expect(
+        (
+          db
+            .prepare("SELECT category FROM knowledge_entries WHERE entry_id = 'ops/leaky'")
+            .get() as { category: string }
+        ).category,
+      ).toBe("codebase");
+
+      // Authoring over it must flip the row to operational.
+      recordOperationalKnowledge(db, {
+        key: "leaky",
+        title: "Now operational",
+        body: "ext4 only",
+        domain: "apps/web",
+        actor: "op",
+      });
+      expect(
+        (
+          db
+            .prepare("SELECT category FROM knowledge_entries WHERE entry_id = 'ops/leaky'")
+            .get() as { category: string }
+        ).category,
+      ).toBe("operational");
+
+      // ...and it must NOT leak into the coder context for that domain.
+      const result = await buildKnowledgeContextFromDb({
+        db,
+        outDir: join(root, "docs", "knowledge-context"),
+        domain: "apps/web",
+      });
+      expect(result.entries).toHaveLength(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("re-recording an unchanged entry is a row-level no-op (idempotent db_revision)", () => {
+    const { db } = freshDb();
+    try {
+      recordOperationalKnowledge(db, {
+        key: "k",
+        title: "T",
+        body: "same",
+        actor: "op",
+      });
+      const rev1 = (
+        db
+          .prepare("SELECT db_revision FROM knowledge_entries WHERE entry_id = 'ops/k'")
+          .get() as { db_revision: number }
+      ).db_revision;
+      recordOperationalKnowledge(db, {
+        key: "k",
+        title: "T",
+        body: "same",
+        actor: "op",
+      });
+      const rev2 = (
+        db
+          .prepare("SELECT db_revision FROM knowledge_entries WHERE entry_id = 'ops/k'")
+          .get() as { db_revision: number }
+      ).db_revision;
+      expect(rev2).toBe(rev1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("listCurrentKnowledgeRevisions is fail-closed: default excludes operational", () => {
+    const { db } = freshDb();
+    try {
+      recordKnowledgeEntryRevision(db, {
+        entryId: "docs/knowledge/domain_rule/x.md",
+        bodyMarkdown: "---\ntitle: Codebase\n---\nbody",
+        frontmatter: { title: "Codebase" },
+        actor: "a",
+      });
+      recordOperationalKnowledge(db, {
+        key: "op1",
+        title: "Operational",
+        body: "ops",
+        actor: "op",
+      });
+      const codebase = listCurrentKnowledgeRevisions(db);
+      expect(codebase.map((r) => r.entryId)).toEqual([
+        "docs/knowledge/domain_rule/x.md",
+      ]);
+      const operational = listCurrentKnowledgeRevisions(db, {
+        category: "operational",
+      });
+      expect(operational.map((r) => r.entryId)).toEqual(["ops/op1"]);
+      expect(operational[0]?.category).toBe("operational");
+    } finally {
+      db.close();
+    }
+  });
+});

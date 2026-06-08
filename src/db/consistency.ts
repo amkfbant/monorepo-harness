@@ -326,9 +326,16 @@ function checkKnowledgeEntries(
   items: ConsistencyItem[],
 ): void {
   const knowledgeDir = join(harnessRoot, "docs", "knowledge");
+  // Only codebase knowledge round-trips to `docs/knowledge/**`. Operational
+  // knowledge (category='operational', issue #57) is DB-only by design, so it
+  // must not be reported as a missing-file inconsistency.
   const dbIds = new Set(
     (
-      db.prepare("SELECT entry_id FROM knowledge_entries").all() as {
+      db
+        .prepare(
+          "SELECT entry_id FROM knowledge_entries WHERE category = 'codebase'",
+        )
+        .all() as {
         entry_id: string;
       }[]
     ).map((r) => r.entry_id),
