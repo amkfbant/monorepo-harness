@@ -7,6 +7,7 @@ import { runMigrations } from "../../src/db/migrations.js";
 import { storeArtifactBlob } from "../../src/db/artifact-blobs.js";
 import { runReviewerAgent } from "../../src/core/reviewer-agent.js";
 import { syncRunArtifactsToDb } from "../../src/core/run-materialize.js";
+import { recordOperationalKnowledge } from "../../src/core/operational-knowledge.js";
 import type { CodexExecRunner } from "../../src/codex/codex-exec-runner.js";
 
 /**
@@ -35,6 +36,24 @@ function fakeRunner(output: string): CodexExecRunner {
       return { exitCode: 0, timedOut: false };
     },
   };
+}
+
+/** A fake runner that also records every prompt it is given. */
+function capturingRunner(output: string): {
+  runner: CodexExecRunner;
+  prompts: string[];
+} {
+  const prompts: string[] = [];
+  const runner: CodexExecRunner = {
+    async run(input) {
+      prompts.push(input.prompt);
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(input.logPaths.stdout, output, "utf8");
+      await writeFile(input.logPaths.stderr, "", "utf8");
+      return { exitCode: 0, timedOut: false };
+    },
+  };
+  return { runner, prompts };
 }
 
 interface Fixture {
@@ -108,6 +127,34 @@ describe("review auto — DB-only mode (Phase 8-13)", () => {
     expect(existsSync(join(runsDir, runId, "review-decision.yaml"))).toBe(
       true,
     );
+  });
+
+  it("injects scoped operational knowledge into the reviewer prompt (issue #57)", async () => {
+    const { runsDir, dbPath, runId } = dbOnlyNeedsReview();
+    const db = openDb(dbPath);
+    try {
+      recordOperationalKnowledge(db, { key: "repo-note", title: "Repo CI quirk", body: "spending limit fails fast", repoId: "t", actor: "op" });
+      recordOperationalKnowledge(db, { key: "portable-note", title: "Portable env note", body: "ext4 only", actor: "op" });
+      recordOperationalKnowledge(db, { key: "other-repo", title: "Other repo note", body: "irrelevant", repoId: "z", actor: "op" });
+    } finally {
+      db.close();
+    }
+    const { runner, prompts } = capturingRunner(APPROVED_OUTPUT);
+    const r = await runReviewerAgent({ runsDir, runId, dbPath, codexRunner: runner });
+    expect(r.decision).toBe("approved");
+    expect(prompts).toHaveLength(1);
+    const p = prompts[0] as string;
+    expect(p).toContain("<operational-knowledge>");
+    expect(p).toContain("Repo CI quirk"); // repo t — in scope
+    expect(p).toContain("Portable env note"); // portable — in scope
+    expect(p).not.toContain("Other repo note"); // repo z — out of scope
+  });
+
+  it("omits the operational-knowledge section when there is none in scope", async () => {
+    const { runsDir, dbPath, runId } = dbOnlyNeedsReview();
+    const { runner, prompts } = capturingRunner(APPROVED_OUTPUT);
+    await runReviewerAgent({ runsDir, runId, dbPath, codexRunner: runner });
+    expect(prompts[0]).not.toContain("<operational-knowledge>");
   });
 
   it("without a dbPath a fileless run still fails (no silent fallback)", async () => {

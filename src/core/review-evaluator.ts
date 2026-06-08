@@ -20,6 +20,8 @@ import {
   type PartialDecision,
 } from "./reviewer-agent.js";
 import { loadReviewDecision } from "./review-decision-loader.js";
+import { buildOperationalKnowledgeReviewSection } from "./operational-knowledge.js";
+import { openManagedDb } from "../db/managed-connection.js";
 
 export class ReviewEvaluateError extends Error {
   constructor(message: string) {
@@ -63,6 +65,12 @@ export interface EvaluateOpts {
   /** read-only codex runner; invoked once per sample */
   codexRunner: CodexExecRunner;
   reviewerName?: string;
+  /**
+   * harness DB path. When set, each sample's prompt gets the same operational-
+   * knowledge section the production reviewer (`runReviewerAgent`) injects, so
+   * the stability measurement reflects the real prompt (issue #57).
+   */
+  dbPath?: string;
   now?: Date;
 }
 
@@ -96,6 +104,22 @@ export async function evaluateReviewer(
   const reviewer = opts.reviewerName ?? "codex-reviewer";
   const evalRoot = join(runDir, "review-evaluations");
 
+  // Same operational-knowledge section the production reviewer injects, so the
+  // sampled prompt matches `runReviewerAgent` (issue #57). Built once — the run
+  // is identical across samples.
+  let reviewerOpsSection = "";
+  if (opts.dbPath !== undefined && existsSync(opts.dbPath)) {
+    const probe = openManagedDb({ dbPath: opts.dbPath, readonly: true });
+    try {
+      reviewerOpsSection = buildOperationalKnowledgeReviewSection(probe.db, {
+        projectId: meta.project?.projectId ?? null,
+        repoId: meta.repoId ?? null,
+      });
+    } finally {
+      probe.close();
+    }
+  }
+
   const samples: SampleResult[] = [];
   for (let i = 1; i <= opts.samples; i++) {
     const evalDir = join(evalRoot, `eval-${String(i).padStart(3, "0")}`);
@@ -113,7 +137,7 @@ export async function evaluateReviewer(
     const before = await snapshotExcludingEvals(runDir);
     const codexResult = await opts.codexRunner.run({
       worktreePath: runDir,
-      prompt: PROMPT_PREAMBLE,
+      prompt: PROMPT_PREAMBLE + reviewerOpsSection,
       logPaths: { stdout: stdoutPath, stderr: stderrPath },
     });
     verifyUnchanged(before, await snapshotExcludingEvals(runDir));

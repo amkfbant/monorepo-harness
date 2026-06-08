@@ -1209,6 +1209,7 @@ reviewCmd
         runId: String(raw.runId),
         samples,
         codexRunner: runner,
+        ...(existsSync(paths.dbPath) ? { dbPath: paths.dbPath } : {}),
         ...(raw.reviewerName !== undefined
           ? { reviewerName: String(raw.reviewerName) }
           : {}),
