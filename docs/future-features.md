@@ -32,9 +32,9 @@ Recorded 2026-06 when issue #57's storage + CLI + MCP-read cut landed.
 
 - ~~**MCP read exposure** (`harness.release.plan`)~~ — **landed** (read tool wrapping
   the analyzer core; `docs/specs/mcp.md`).
-- **`harness release check`** — a fail-closed readiness gate: typecheck + test +
-  build green, `docs/specs/*` in sync with the changed surface, no undeclared
-  breaking change. An agent runs this before merging the release PR.
+- ~~**`harness release check`**~~ — **landed**: a fail-closed readiness gate
+  (plan-clean + version-consistency + spec-sync + clean-tree). `docs/specs/release.md`.
+  build/test stay CI's job. An agent runs this before merging the release PR.
 - **`harness release notes`** — render a `docs/UPGRADING.md` section from the plan
   (feature summary + the schema no-downgrade caveat + surface changes).
 - **richer surface diffing** — the current MCP/CLI surface parse is regex-based

@@ -49,4 +49,24 @@ git は `--repo`（既定: `process.cwd()`）のリポジトリで実行する�
 - migration name/statements は**現在の `MIGRATIONS`** を参照する（`--to` が現行 schema 以下である前提）。
 - bump/CHANGELOG/tag は release-please の担当（`plan` は実行しない）。
 
-将来（`docs/future-features.md`）: MCP read 露出（`harness.ops_knowledge` のような `harness.release.plan`）、`release check`（typecheck/test/spec 同期の readiness ゲート）、`release notes`（`docs/UPGRADING.md` 生成）。
+## `harness release check`
+
+リリースを切ってよいかを判定する **fail-closed なゲート**。`release plan` が「教える」のに対し
+`release check` は「止める」。release PR を merge する前にエージェント / CI が回す。CI（typecheck/
+build/test）を**置き換えず補完**し、release 固有の前提だけを見る。
+
+```bash
+harness release check [--since <ref>] [--to <ref>] [--repo <path>] [--json]
+```
+
+4 つの check（全 pass で exit 0、1 つでも fail で **exit 1**）:
+
+1. **plan-clean** — `release plan` が未宣言の破壊的変更も解析の不完全さも持たない（plan の exit-2 条件に当たらない）。
+2. **version-consistency** — `package.json` の version と `.release-please-manifest.json` の `"."` が一致。
+3. **spec-sync** — 変化した surface が文書化されている（spec 駆動）: 追加 MCP tool は `mcp.md` に、追加 CLI command token は `cli.md` に、schema bump の到達 version `vN` は `db.md` に出現する。
+4. **clean-tree** — `git status --porcelain` が空（未コミット変更なし）。
+
+build / test は CI の担当（`release check` は回さない）。エージェントの版上げは実質
+`release plan`（把握）→ `release check`（exit 0 で青信号）→ release PR を merge。
+
+将来（`docs/future-features.md`）: `release notes`（`docs/UPGRADING.md` 生成）、surface diff の構造化。
