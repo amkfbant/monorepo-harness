@@ -7,6 +7,7 @@ import { runMigrations } from "../../../src/db/migrations.js";
 import { runFullImport } from "../../../src/db/import-files.js";
 import { checkConsistency } from "../../../src/db/consistency.js";
 import { storeArtifactBlob } from "../../../src/db/artifact-blobs.js";
+import { recordOperationalKnowledge } from "../../../src/core/operational-knowledge.js";
 
 /** Insert a db-stored artifact backed by a real blob; returns its sha. */
 function addDbArtifact(
@@ -76,6 +77,24 @@ describe("checkConsistency", () => {
     db.close();
     expect(r.status).toBe("ok");
     expect(r.items.every((i) => i.status === "ok")).toBe(true);
+  });
+
+  it("does not flag DB-only operational knowledge as a missing file (issue #57)", () => {
+    const { root, db } = importedRoot();
+    recordOperationalKnowledge(db, {
+      key: "tool-note",
+      title: "Tool note",
+      body: "DB-only operational knowledge has no docs/knowledge file.",
+      actor: "op",
+    });
+    const r = checkConsistency({ db, harnessRoot: root });
+    db.close();
+    expect(r.status).toBe("ok");
+    expect(
+      r.items.some(
+        (i) => i.kind === "knowledge" && i.status === "missing-file",
+      ),
+    ).toBe(false);
   });
 
   it("detects run drift when a run file changes after import", () => {
