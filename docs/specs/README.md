@@ -15,7 +15,8 @@ monorepo-harness の **現状仕様** をまとめたディレクトリ。
 - [`goal-convergence.md`](./goal-convergence.md) — Phase 19 goal convergence controller（scope freeze / finding lifecycle / close decision）
 - [`workspace.md`](./workspace.md) — agent workspaces（per-agent 隔離 worktree / checkpoint / status / conflicts / adopt / 並行協調の安全モデル）
 - [`workflow.md`](./workflow.md) — `domain-coding` workflow の status machine と artifact レイアウト
-- [`cli.md`](./cli.md) — 全 CLI subcommand リファレンス（`run` / `workspace` / `goal` / `lock` / `review` / `rerun` / `cleanup` / `knowledge` …）
+- [`cli.md`](./cli.md) — 全 CLI subcommand リファレンス（`run` / `workspace` / `goal` / `lock` / `review` / `rerun` / `cleanup` / `knowledge` / `release` …）
+- [`release.md`](./release.md) — `harness release plan`（リリース計画 / 互換性解析、release-please 補完）
 
 関連 docs:
 
