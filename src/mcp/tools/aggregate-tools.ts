@@ -70,9 +70,10 @@ function buildFilter(
 
 /**
  * "What should I look at now" over MCP: needs-review / changes-requested /
- * failed runs, plus a knowledge-candidate run count, scoped to `allowedProjects`.
+ * failed runs, a knowledge-candidate run count, and an operational-knowledge
+ * slice (total + recent entries, issue #57), scoped to `allowedProjects`.
  * Pure DB read (the DB read model), no git / filesystem. No time window — inbox
- * is current actionable state (the knowledge bucket is not window-aware).
+ * is current actionable state (the knowledge buckets are not window-aware).
  */
 export function inboxTool(
   args: AggregateArgs,

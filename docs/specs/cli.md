@@ -562,7 +562,11 @@ harness inbox --json          # JSON 出力
 各 section に次操作の hint（`→ harness ...`）が付く。cleanup candidate は「approved/rejected かつ worktree 残存」、knowledge は `knowledge-candidates.yaml` に候補がある run。run の読み込みは SQLite index があれば使い、無ければ `runs/` の file scan にフォールバック（JSON の `source` で確認可）。
 
 `--project` / `--repo-id`（Phase 6）は DB read model 経由で集計する（needs_review /
-changes_requested / failed / knowledge-candidate runs）。scoped path でも `--today`
+changes_requested / failed / knowledge-candidate runs ＋ **operational-knowledge**
+の total と recent エントリ、issue #57。operational は project/repo scope に portable
+entry も含める）。scope 無しの file-based ビューは DB-only の operational 知識を含まない
+（[`knowledge ops`](#harness-knowledge-ops) は DB-canonical のため scoped path / MCP
+`harness.inbox` で見る）。scoped path でも `--today`
 （`runs.started_at` を当日 00:00 以降に絞る）は効く。section 選択フラグ
 （`--needs-action` / `--failed` / `--cleanup`）は scoped path では非対応で warning が
 出る（scoped inbox は常に全 section を返す）。scope 無しは従来の file-based ビュー

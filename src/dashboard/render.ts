@@ -128,12 +128,21 @@ function inboxSection(s: DashboardSnapshot): string {
       `<th>status</th><th>started</th></tr>${runRows(runs)}</table>`
     );
   };
+  const ops = i.operationalKnowledge;
+  const opsLine =
+    ops.recent.length > 0
+      ? `<p class="meta">operational knowledge: ${ops.total} ` +
+        `(recent: ${ops.recent
+          .map((e) => `<code>${esc(e.entryId)}</code>`)
+          .join(", ")})</p>`
+      : `<p class="meta">operational knowledge: ${ops.total}</p>`;
   return [
     "<h2>Inbox</h2>",
     block("Needs review", i.needsReview),
     block("Changes requested", i.changesRequested),
     block("Failed", i.failed),
     `<p class="meta">runs with knowledge candidates: ${i.knowledgeCandidateRuns}</p>`,
+    opsLine,
   ].join("\n");
 }
 

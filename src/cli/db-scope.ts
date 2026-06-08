@@ -147,7 +147,14 @@ export function runScopedInbox(
       `needs_review: ${inbox.needsReview.length}  ` +
       `changes_requested: ${inbox.changesRequested.length}  ` +
       `failed: ${inbox.failed.length}  ` +
-      `knowledge-candidate runs: ${inbox.knowledgeCandidateRuns}\n`,
+      `knowledge-candidate runs: ${inbox.knowledgeCandidateRuns}\n` +
+      `operational-knowledge: ${inbox.operationalKnowledge.total}` +
+      (inbox.operationalKnowledge.recent.length > 0
+        ? ` (recent: ${inbox.operationalKnowledge.recent
+            .map((e) => e.entryId)
+            .join(", ")})`
+        : "") +
+      "\n",
   );
 }
 

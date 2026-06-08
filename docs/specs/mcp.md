@@ -368,8 +368,11 @@ mutation として出す価値が低い（必要なら結果待ちなしの fire
 
 **`harness.inbox` / `harness.metrics`（read）** は DB read model の集計（git/fs アクセス
 なし）。`harness.inbox` は「今見るべき run」＝needs_review / changes_requested / failed ＋
-knowledge-candidate run 数（**時間窓なし**＝現在の actionable 状態。knowledge bucket が窓非対応
-のため `sinceHours` は出さない）。`harness.metrics` は run 件数（status 別）＋ review
+knowledge-candidate run 数 ＋ **operational 知識**の slice（`operationalKnowledge.total` ＋
+最近エントリ `recent`、issue #57。reference material であり action queue ではない）。
+（**時間窓なし**＝現在の actionable 状態。knowledge bucket が窓非対応のため `sinceHours` は
+出さない。operational は project/repo scope に **portable entry も含めて** 集計）。
+`harness.metrics` は run 件数（status 別）＋ review
 approved-rate（DB read-model の `metricsSummary`）。絞り込みは inbox=`projectId`/`repoId`/
 `domain`、metrics=それ＋`sinceHours`。**scope**: `allowedProjects` が空（unrestricted）なら
 repo 横断、restricted なら `projectId` がその集合に入る必要がある（未指定時は allowed が
