@@ -30,9 +30,8 @@ Recorded 2026-06 when issue #57's storage + CLI + MCP-read cut landed.
 `harness release plan` (deterministic release-readiness + compatibility analysis,
 `docs/specs/release.md`) shipped as a CLI command. Natural follow-ups:
 
-- **MCP read exposure** (`harness.release.plan`) — so an MCP-driven agent can call
-  the analyzer directly (wrap the CLI core in a read tool, like the ops_knowledge
-  read tools).
+- ~~**MCP read exposure** (`harness.release.plan`)~~ — **landed** (read tool wrapping
+  the analyzer core; `docs/specs/mcp.md`).
 - **`harness release check`** — a fail-closed readiness gate: typecheck + test +
   build green, `docs/specs/*` in sync with the changed surface, no undeclared
   breaking change. An agent runs this before merging the release PR.

@@ -309,6 +309,7 @@ harness.ops_knowledge.search
 harness.ops_knowledge.get
 harness.db.status
 harness.doctor.summary
+harness.release.plan
 harness.inbox
 harness.metrics
 harness.operation.list
@@ -410,6 +411,14 @@ operational write を **自分の許可 project に限定**される — **porta
 record / deprecate は拒否**（portable は全 reviewer scope に注入されるグローバル変更のため）し、
 既存 `ops/<key>` が portable / 他 project の場合も拒否（hijack 防止）。`allowedProjects` が
 空（unrestricted）なら portable も可。
+
+**`harness.release.plan`（read）** は `harness release plan`（[`release.md`](./release.md)）の
+MCP 露出。MCP 駆動エージェントが版上げの readiness + 互換性レポート（推奨 bump / schema
+delta・no-downgrade / 追加・削除された CLI+MCP surface / 未宣言の破壊的変更）を直接取得できる。
+read-only（git の rev-parse/show/log と source 読み取りのみ。DB / mutation 無し）。`since` /
+`to`（既定: 直近 tag .. HEAD）。**解析対象は常に `harnessRoot`**（client が任意のローカル
+リポジトリ path を渡せると read 境界を破るため `repo` 引数は無し。別リポジトリの解析は CLI
+`--repo`）。ref 解決不能は `error`。**bump / CHANGELOG / tag は release-please の担当**。
 
 Dry-run tools:
 
