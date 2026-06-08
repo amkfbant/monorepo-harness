@@ -183,10 +183,15 @@ export function knowledgeDigest(
   // entries are scoped the same way candidates are. Promoted entries
   // carry project_id / repo_id only when their frontmatter has them
   // (promoted-knowledge namespacing is a Phase 5 follow-up), so a
-  // project-scoped digest may legitimately count zero entries.
+  // project-scoped digest may legitimately count zero entries. Operational
+  // knowledge (category='operational', issue #57) is a separate category and
+  // is excluded from this codebase digest count.
+  const entrySql = sql
+    ? `${sql} AND category = 'codebase'`
+    : "WHERE category = 'codebase'";
   const entryTotal = (
     db
-      .prepare(`SELECT count(*) AS n FROM knowledge_entries ${sql}`)
+      .prepare(`SELECT count(*) AS n FROM knowledge_entries ${entrySql}`)
       .get(...params) as { n: number }
   ).n;
   return { candidateTotal: total, byKind, byStatus, entryTotal };

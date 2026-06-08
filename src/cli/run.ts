@@ -192,6 +192,13 @@ import {
   KnowledgeContextError,
   domainSlug,
 } from "../core/knowledge-context.js";
+import {
+  recordOperationalKnowledge,
+  listOperationalKnowledge,
+  getOperationalKnowledge,
+  deprecateOperationalKnowledge,
+  OperationalKnowledgeError,
+} from "../core/operational-knowledge.js";
 import { registerProjectCommands } from "./project.js";
 import { registerPolicyCommands } from "./policy.js";
 import { registerDbCommands } from "./db.js";
@@ -2970,6 +2977,12 @@ knowledgeCmd
       readonly: true,
     });
     try {
+      if (isOperationalEntry(handle.db, entryId)) {
+        process.stderr.write(
+          `harness error: ${entryId} is operational knowledge; use 'knowledge ops show'\n`,
+        );
+        process.exit(1);
+      }
       const revision = getCurrentKnowledgeRevision(handle.db, entryId);
       if (revision === null) {
         process.stderr.write(`harness error: no knowledge entry ${entryId}\n`);
@@ -3004,6 +3017,12 @@ knowledgeCmd
     const handle = openManagedDb({ dbPath: harnessPaths(getHarnessRoot()).dbPath });
     try {
       runMigrations(handle.db);
+      if (isOperationalEntry(handle.db, entryId)) {
+        process.stderr.write(
+          `harness error: ${entryId} is operational knowledge; edit it with 'knowledge ops add --key <key>'\n`,
+        );
+        process.exit(1);
+      }
       const current = getCurrentKnowledgeRevision(handle.db, entryId);
       if (current === null) {
         process.stderr.write(`harness error: no knowledge entry ${entryId}\n`);
@@ -3070,6 +3089,197 @@ knowledgeCmd
       process.stdout.write(
         `knowledge edit: ${entryId} revision=${revision.revisionId} version=${revision.version}\n`,
       );
+    } finally {
+      handle.close();
+    }
+  });
+
+/** True when `entryId` is an operational entry (so codebase commands refuse it). */
+function isOperationalEntry(
+  db: ReturnType<typeof openManagedDb>["db"],
+  entryId: string,
+): boolean {
+  const row = db
+    .prepare("SELECT category FROM knowledge_entries WHERE entry_id = ?")
+    .get(entryId) as { category: string } | undefined;
+  return row?.category === "operational";
+}
+
+/** Append a repeated `--tag` value into an accumulator (commander collect). */
+function collectTag(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+// --- operational knowledge (issue #57): author non-codebase learnings ----
+// (toolchain / CI / environment / harness-usage). Authored directly (no
+// candidate stage) and never injected into coder prompts — see operational-
+// knowledge.ts and docs/specs/db.md (schema v19).
+const knowledgeOpsCmd = knowledgeCmd
+  .command("ops")
+  .description("operational (non-codebase) knowledge: author / list / show / deprecate");
+
+knowledgeOpsCmd
+  .command("add")
+  .description("author an operational knowledge entry")
+  .requiredOption("--title <title>", "short title")
+  .option("--body <text>", "markdown body (or use --body-file / stdin)")
+  .option("--body-file <path>", "read the markdown body from a file")
+  .option("--key <slug>", "stable slug → ops/<slug> (default: generated id)")
+  .option("--kind <kind>", "sub-kind, e.g. toolchain / ci / environment", "operational")
+  .option("--tag <tag>", "tag (repeatable)", collectTag, [])
+  .option("--project <id>", "scope to a project (default: portable)")
+  .option("--repo-id <id>", "scope to a repo (default: portable)")
+  .option("--domain <domain>", "scope to a domain (default: portable)")
+  .option("--actor <actor>", "actor label", "cli")
+  .option("--json", "emit JSON instead of text", false)
+  .action((raw: Record<string, unknown>) => {
+    let body: string;
+    if (typeof raw.body === "string") {
+      body = raw.body;
+    } else if (typeof raw.bodyFile === "string") {
+      body = readFileSync(raw.bodyFile, "utf8");
+    } else if (process.stdin.isTTY) {
+      // no piped body on an interactive terminal — fail fast instead of
+      // blocking on a stdin read the user did not intend.
+      process.stderr.write(
+        "harness error: body is required; pass --body, --body-file, or pipe stdin\n",
+      );
+      process.exit(1);
+    } else {
+      body = readFileSync(0, "utf8"); // stdin
+    }
+    const handle = openManagedDb({ dbPath: harnessPaths(getHarnessRoot()).dbPath });
+    try {
+      runMigrations(handle.db);
+      const result = recordOperationalKnowledge(handle.db, {
+        title: String(raw.title),
+        body,
+        kind: String(raw.kind),
+        tags: raw.tag as string[],
+        actor: String(raw.actor),
+        ...(typeof raw.key === "string" ? { key: raw.key } : {}),
+        ...(typeof raw.project === "string" ? { projectId: raw.project } : {}),
+        ...(typeof raw.repoId === "string" ? { repoId: raw.repoId } : {}),
+        ...(typeof raw.domain === "string" ? { domain: raw.domain } : {}),
+      });
+      process.stdout.write(
+        raw.json === true
+          ? `${JSON.stringify(result, null, 2)}\n`
+          : `knowledge ops add: ${result.entryId} version=${result.version}` +
+              `${result.reusedExisting ? " (unchanged)" : ""}\n`,
+      );
+    } catch (e) {
+      if (e instanceof OperationalKnowledgeError) {
+        process.stderr.write(`harness error: ${e.message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    } finally {
+      handle.close();
+    }
+  });
+
+knowledgeOpsCmd
+  .command("list")
+  .description("list operational knowledge entries")
+  .option("--project <id>", "scope to a project (portable entries still shown)")
+  .option("--repo-id <id>", "scope to a repo (portable entries still shown)")
+  .option("--domain <domain>", "scope to a domain")
+  .option("--include-deprecated", "include deprecated entries", false)
+  .option("--json", "emit JSON instead of text", false)
+  .action((raw: Record<string, unknown>) => {
+    const handle = openManagedDb({
+      dbPath: harnessPaths(getHarnessRoot()).dbPath,
+      readonly: true,
+    });
+    try {
+      const entries = listOperationalKnowledge(handle.db, {
+        includeDeprecated: raw.includeDeprecated === true,
+        ...(typeof raw.project === "string" ? { projectId: raw.project } : {}),
+        ...(typeof raw.repoId === "string" ? { repoId: raw.repoId } : {}),
+        ...(typeof raw.domain === "string" ? { domain: raw.domain } : {}),
+      });
+      if (raw.json === true) {
+        process.stdout.write(`${JSON.stringify({ entries }, null, 2)}\n`);
+        return;
+      }
+      if (entries.length === 0) {
+        process.stdout.write("(no operational knowledge)\n");
+        return;
+      }
+      for (const e of entries) {
+        const scopeParts = [
+          e.projectId !== null ? `project=${e.projectId}` : null,
+          e.repoId !== null ? `repo=${e.repoId}` : null,
+          e.domain !== null ? `domain=${e.domain}` : null,
+        ].filter((p): p is string => p !== null);
+        const scope = scopeParts.length > 0 ? scopeParts.join(" ") : "portable";
+        const tags = e.tags.length > 0 ? ` [${e.tags.join(", ")}]` : "";
+        process.stdout.write(
+          `${e.entryId}\t${e.kind}\t${scope}\t${e.title}${tags}\n`,
+        );
+      }
+    } finally {
+      handle.close();
+    }
+  });
+
+knowledgeOpsCmd
+  .command("show")
+  .description("show an operational knowledge entry")
+  .argument("<entry-id>", "operational entry id (ops/...)")
+  .option("--json", "emit JSON instead of markdown", false)
+  .action((entryId: string, raw: Record<string, unknown>) => {
+    const handle = openManagedDb({
+      dbPath: harnessPaths(getHarnessRoot()).dbPath,
+      readonly: true,
+    });
+    try {
+      const entry = getOperationalKnowledge(handle.db, entryId);
+      if (entry === null) {
+        process.stderr.write(
+          `harness error: no operational knowledge entry ${entryId}\n`,
+        );
+        process.exit(1);
+      }
+      process.stdout.write(
+        raw.json === true
+          ? `${JSON.stringify(entry, null, 2)}\n`
+          : `${entry.body.endsWith("\n") ? entry.body : `${entry.body}\n`}`,
+      );
+    } finally {
+      handle.close();
+    }
+  });
+
+knowledgeOpsCmd
+  .command("deprecate")
+  .description("deprecate an operational knowledge entry (hidden from list)")
+  .argument("<entry-id>", "operational entry id (ops/...)")
+  .option("--actor <actor>", "actor label", "cli")
+  .option("--reason <text>", "deprecation reason")
+  .option("--json", "emit JSON instead of text", false)
+  .action((entryId: string, raw: Record<string, unknown>) => {
+    const handle = openManagedDb({ dbPath: harnessPaths(getHarnessRoot()).dbPath });
+    try {
+      runMigrations(handle.db);
+      const result = deprecateOperationalKnowledge(handle.db, {
+        entryId,
+        actor: String(raw.actor),
+        ...(typeof raw.reason === "string" ? { reason: raw.reason } : {}),
+      });
+      process.stdout.write(
+        raw.json === true
+          ? `${JSON.stringify(result, null, 2)}\n`
+          : `knowledge ops deprecate: ${result.entryId}` +
+              `${result.alreadyDeprecated ? " (already deprecated)" : ""}\n`,
+      );
+    } catch (e) {
+      if (e instanceof OperationalKnowledgeError) {
+        process.stderr.write(`harness error: ${e.message}\n`);
+        process.exit(1);
+      }
+      throw e;
     } finally {
       handle.close();
     }
