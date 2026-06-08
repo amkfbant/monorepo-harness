@@ -11,6 +11,10 @@ import {
   knowledgeDigest,
   backlogList,
 } from "../../../src/db/repositories/aggregates.js";
+import {
+  recordOperationalKnowledge,
+  deprecateOperationalKnowledge,
+} from "../../../src/core/operational-knowledge.js";
 
 function freshDb(): Database.Database {
   const dir = mkdtempSync(join(tmpdir(), "harness-agg-"));
@@ -105,6 +109,24 @@ describe("aggregates", () => {
        VALUES ('ops/x', 'operational', 'ops body', 'operational')`,
     ).run();
     expect(knowledgeDigest(db).entryTotal).toBe(1);
+  });
+
+  it("inboxSummary surfaces operational knowledge (total + recent, scoped, non-deprecated)", () => {
+    recordOperationalKnowledge(db, { key: "portable", title: "Portable", body: "p", actor: "op" });
+    recordOperationalKnowledge(db, { key: "demo-a", title: "Demo A", body: "a", projectId: "demo", actor: "op" });
+    recordOperationalKnowledge(db, { key: "other-a", title: "Other A", body: "b", projectId: "other", actor: "op" });
+    const gone = recordOperationalKnowledge(db, { key: "gone", title: "Gone", body: "g", actor: "op" });
+    deprecateOperationalKnowledge(db, { entryId: gone.entryId, actor: "op" });
+
+    const all = inboxSummary(db);
+    expect(all.operationalKnowledge.total).toBe(3); // gone is deprecated
+    expect(all.operationalKnowledge.recent.map((e) => e.entryId).sort()).toEqual([
+      "ops/demo-a", "ops/other-a", "ops/portable",
+    ]);
+
+    const demo = inboxSummary(db, { projectId: "demo" });
+    expect(demo.operationalKnowledge.total).toBe(2); // demo + portable
+    expect(demo.operationalKnowledge.recent.map((e) => e.entryId)).not.toContain("ops/other-a");
   });
 
   it("inboxSummary counts un-decided knowledge-candidate runs", () => {

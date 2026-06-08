@@ -35,6 +35,19 @@ function markupSnapshot(): DashboardSnapshot {
       changesRequested: [],
       failed: [],
       knowledgeCandidateRuns: 0,
+      operationalKnowledge: {
+        total: 1,
+        recent: [
+          {
+            entryId: "ops/<script>",
+            title: "Ops <b>note</b>",
+            kind: "ci",
+            projectId: null,
+            domain: null,
+            updatedAt: "2026-06-08T00:00:00Z",
+          },
+        ],
+      },
     },
     recentRuns: [
       {

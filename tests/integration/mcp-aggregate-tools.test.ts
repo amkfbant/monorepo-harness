@@ -7,6 +7,7 @@ import { HarnessMcpServer } from "../../src/mcp/server.js";
 import { DEFAULT_MCP_CONFIG } from "../../src/mcp/security/config.js";
 import { openManagedDb } from "../../src/db/managed-connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
+import { recordOperationalKnowledge } from "../../src/core/operational-knowledge.js";
 
 function insertRun(db: Database.Database, runId: string, projectId: string, status: string): void {
   db.prepare(
@@ -27,6 +28,12 @@ function setup(): string {
   insertRun(handle.db, "run-c", "other", "needs_review");
   insertRun(handle.db, "run-d", "demo", "failed-policy-violation");
   insertRun(handle.db, "run-e", "demo", "changes_requested");
+  recordOperationalKnowledge(handle.db, {
+    key: "demo-note", title: "Demo ops note", body: "x", projectId: "demo", actor: "op",
+  });
+  recordOperationalKnowledge(handle.db, {
+    key: "portable-note", title: "Portable ops note", body: "y", actor: "op",
+  });
   handle.close();
   return harnessRoot;
 }
@@ -66,6 +73,17 @@ describe("harness.inbox / harness.metrics MCP tools", () => {
     expect(out.data.needsReview).toHaveLength(2); // demo + other
     expect(out.data.changesRequested).toHaveLength(1);
     expect(out.data.failed).toHaveLength(1);
+    expect(out.data.operationalKnowledge.total).toBe(2); // demo + portable
+  });
+
+  it("inbox operational-knowledge is scoped to a restricted client (portable included)", async () => {
+    const out = await callTool(server(setup(), ["demo"]), "harness.inbox", {});
+    expect(out.status).toBe("ok");
+    // demo-note (project demo) + portable-note (project-less) — not 'other'
+    expect(out.data.operationalKnowledge.total).toBe(2);
+    expect(out.data.operationalKnowledge.recent.map((e: any) => e.entryId).sort()).toEqual([
+      "ops/demo-note", "ops/portable-note",
+    ]);
   });
 
   it("a single-project restricted client is scoped to its project by default", async () => {

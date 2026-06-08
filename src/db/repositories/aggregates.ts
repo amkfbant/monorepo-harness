@@ -117,10 +117,84 @@ export interface DbInboxSummary {
    * counts every run with candidates.
    */
   knowledgeCandidateRuns: number;
+  /**
+   * Operational knowledge (issue #57) the operator can recall: a total of
+   * non-deprecated entries plus the most-recent few, scoped like the other
+   * buckets (project/repo-scoped reads also see portable, project-less
+   * entries). This is reference material, not an action queue.
+   */
+  operationalKnowledge: DbOperationalKnowledgeInbox;
+}
+
+export interface DbOperationalKnowledgeRef {
+  entryId: string;
+  title: string;
+  kind: string;
+  projectId: string | null;
+  domain: string | null;
+  updatedAt: string;
+}
+
+export interface DbOperationalKnowledgeInbox {
+  total: number;
+  recent: DbOperationalKnowledgeRef[];
 }
 
 /** A high cap so inbox buckets are not silently truncated. */
 const UNBOUNDED = Number.MAX_SAFE_INTEGER;
+
+/** How many recent operational entries the inbox surfaces. */
+const OPERATIONAL_INBOX_RECENT = 5;
+
+/**
+ * Operational-knowledge inbox slice: total non-deprecated entries + the most
+ * recent few. Scoped inclusively of portable (project/repo-less) entries, like
+ * `listOperationalKnowledge`. Deprecation is read from the current revision's
+ * frontmatter (`deprecated: true`), matching the CLI/MCP read path.
+ */
+function operationalKnowledgeInbox(
+  db: Database.Database,
+  filter: AggregateFilter,
+): DbOperationalKnowledgeInbox {
+  const where = [
+    "e.category = 'operational'",
+    "json_extract(r.frontmatter_json, '$.deprecated') IS NOT 1",
+  ];
+  const params: unknown[] = [];
+  if (filter.projectId !== undefined) {
+    where.push("(e.project_id = ? OR e.project_id IS NULL)");
+    params.push(filter.projectId);
+  }
+  if (filter.repoId !== undefined) {
+    where.push("(e.repo_id = ? OR e.repo_id IS NULL)");
+    params.push(filter.repoId);
+  }
+  if (filter.domain !== undefined) {
+    where.push("e.domain = ?");
+    params.push(filter.domain);
+  }
+  const from = `FROM knowledge_entries e
+       JOIN knowledge_entry_revisions r ON r.revision_id = e.current_revision_id
+      WHERE ${where.join(" AND ")}`;
+  const total = (
+    db.prepare(`SELECT count(*) AS n ${from}`).get(...params) as { n: number }
+  ).n;
+  const rows = db
+    .prepare(
+      `SELECT e.entry_id, e.kind, e.project_id, e.domain, r.title, r.created_at
+       ${from} ORDER BY r.created_at DESC, e.entry_id LIMIT ?`,
+    )
+    .all(...params, OPERATIONAL_INBOX_RECENT) as Record<string, unknown>[];
+  const recent = rows.map((r) => ({
+    entryId: r.entry_id as string,
+    title: (r.title as string | null) ?? (r.entry_id as string),
+    kind: r.kind as string,
+    projectId: (r.project_id as string | null) ?? null,
+    domain: (r.domain as string | null) ?? null,
+    updatedAt: r.created_at as string,
+  }));
+  return { total, recent };
+}
 
 export function inboxSummary(
   db: Database.Database,
@@ -151,6 +225,7 @@ export function inboxSummary(
     }),
     failed,
     knowledgeCandidateRuns: candRuns,
+    operationalKnowledge: operationalKnowledgeInbox(db, filter),
   };
 }
 

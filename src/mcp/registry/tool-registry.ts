@@ -972,8 +972,9 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     title: "What to look at now",
     description:
       "Runs needing attention: needs-review / changes-requested / failed runs, " +
-      "plus a knowledge-candidate run count. Optional projectId / repoId / " +
-      "domain filters. Scoped to allowedProjects. Pure DB read.",
+      "a knowledge-candidate run count, and an operational-knowledge slice " +
+      "(operationalKnowledge.total + recent entries). Optional projectId / " +
+      "repoId / domain filters. Scoped to allowedProjects. Pure DB read.",
     kind: "read",
     operation: "inbox",
     argsSchema: inboxArgs,
