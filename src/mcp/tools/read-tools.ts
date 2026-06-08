@@ -627,8 +627,9 @@ export function knowledgeSearchTool(
   return withReadonlyDb(context, ({ db }) => {
     const limit = normalizeLimit(args.limit);
     // `harness.knowledge.*` is the CODEBASE knowledge surface. Operational
-    // knowledge (category='operational', issue #57) has its own read tools and
-    // must not bleed into these legacy results.
+    // knowledge (category='operational', issue #57) is excluded here; its own
+    // MCP read tools land in a follow-up (SP3). Until then operational recall is
+    // via the CLI — this filter keeps the codebase surface fail-closed meanwhile.
     const where = [
       "category = 'codebase'",
       "(entry_id LIKE ? OR title LIKE ? OR body LIKE ?)",

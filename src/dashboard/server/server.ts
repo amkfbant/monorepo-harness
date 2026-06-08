@@ -896,8 +896,8 @@ export function defaultRoutes(): Route[] {
           const rows = handle.db
             .prepare(
               // codebase-knowledge assets view. Operational knowledge
-              // (category='operational', issue #57) has its own surfaces and
-              // is excluded here (fail-closed).
+              // (category='operational', issue #57) is excluded here
+              // (fail-closed); its own surfaces land in a follow-up.
               `SELECT e.entry_id, e.project_id, e.repo_id, e.domain, e.kind,
                       e.path, e.current_revision_id AS currentRevisionId,
                       r.version, r.title, r.created_at AS revisionCreatedAt
