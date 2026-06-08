@@ -126,6 +126,14 @@ npm run harness -- <args>   # 開発時の CLI 起動（tsx 経由、HARNESS_ROO
 - **spec 駆動**: `src/` や policy の動作が変わったら、対応する `docs/specs/*` を
   **同じコミットで**更新する。`docs/specs/` は現状のスナップショット（TODO を
   書かない）。
+- **codex exec レビュー（goal モード外の通常 PR にも適用）**: 実質的な変更の PR は
+  **merge 前に codex exec で差分レビュー**する。コマンドは常に
+  `codex exec -m gpt-5.5 -c model_reasoning_effort="xhigh" -s read-only -o <out> "<prompt>" < /dev/null`
+  （`-s read-only` ＋ **stdin クローズ（`< /dev/null`）で hang 回避**）。**P0 / P1 は
+  修正必須**、P2 は修正 or `docs/future-features.md` に defer（理由を記録）。PR の
+  bot レビュー（codex App / Copilot）の受け入れ指摘も併せて反映する。goal モードの
+  リトライ上限（サブ ≤3 / 大 ≤5）・レビューテンプレート・未解決 P0 ゼロ gate は
+  [`GOAL_RULES.md`](./GOAL_RULES.md) を正本とする。
 - **immutability**（新オブジェクトを作り、mutate しない）、小ファイル（〜400 行
   目安・800 行上限）、適切なエラーハンドリング、`console.log` を残さない。
 - **スコープを広げない**: 作業中に見つけたスコープ外の事項は backlog /
