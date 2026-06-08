@@ -51,6 +51,7 @@ import {
 import {
   getCurrentKnowledgeRevision,
   listKnowledgeRevisions,
+  knowledgeEntriesHasCategory,
 } from "../../db/repositories/knowledge-entry-revisions.js";
 import {
   runOperation,
@@ -897,14 +898,15 @@ export function defaultRoutes(): Route[] {
             .prepare(
               // codebase-knowledge assets view. Operational knowledge
               // (category='operational', issue #57) is excluded here
-              // (fail-closed); its own surfaces land in a follow-up.
+              // (fail-closed); its own surfaces land in a follow-up. On a
+              // pre-v19 schema all rows are codebase → drop the filter.
               `SELECT e.entry_id, e.project_id, e.repo_id, e.domain, e.kind,
                       e.path, e.current_revision_id AS currentRevisionId,
                       r.version, r.title, r.created_at AS revisionCreatedAt
                  FROM knowledge_entries e
                  LEFT JOIN knowledge_entry_revisions r
                    ON r.revision_id = e.current_revision_id
-                WHERE e.category = 'codebase'
+                ${knowledgeEntriesHasCategory(handle.db) ? "WHERE e.category = 'codebase'" : ""}
                 ORDER BY e.kind, e.path, e.entry_id
                 LIMIT 500`,
             )
@@ -995,16 +997,18 @@ export function defaultRoutes(): Route[] {
         try {
           // codebase-only detail surface. Operational entries (issue #57) are
           // excluded so their body/history cannot be fetched here (mirrors the
-          // category filter on the listing route).
-          const categoryRow = handle.db
-            .prepare(
-              "SELECT category FROM knowledge_entries WHERE entry_id = ?",
-            )
-            .get(params.entryId!) as { category: string } | undefined;
-          const cur =
-            categoryRow?.category === "codebase"
-              ? getCurrentKnowledgeRevision(handle.db, params.entryId!)
-              : null;
+          // category filter on the listing route). On a pre-v19 schema there is
+          // no category column → every row is codebase.
+          const isCodebase = knowledgeEntriesHasCategory(handle.db)
+            ? ((
+                handle.db
+                  .prepare("SELECT category FROM knowledge_entries WHERE entry_id = ?")
+                  .get(params.entryId!) as { category: string } | undefined
+              )?.category === "codebase")
+            : true;
+          const cur = isCodebase
+            ? getCurrentKnowledgeRevision(handle.db, params.entryId!)
+            : null;
           if (cur === null) {
             writeError(
               res,

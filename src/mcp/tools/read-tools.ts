@@ -21,6 +21,7 @@ import {
 } from "../../db/repositories/operations.js";
 import type { HarnessMcpToolResult } from "../schemas/outputs.js";
 import { errorResult, ok } from "../schemas/outputs.js";
+import { knowledgeEntriesHasCategory } from "../../db/repositories/knowledge-entry-revisions.js";
 import type { McpToolContext } from "../registry/tool-registry.js";
 import { redactMcpAuditValue } from "../audit/redaction.js";
 import {
@@ -628,13 +629,11 @@ export function knowledgeSearchTool(
   return withReadonlyDb(context, ({ db }) => {
     const limit = normalizeLimit(args.limit);
     // `harness.knowledge.*` is the CODEBASE knowledge surface. Operational
-    // knowledge (category='operational', issue #57) is excluded here; its own
-    // MCP read tools land in a follow-up (SP3). Until then operational recall is
-    // via the CLI — this filter keeps the codebase surface fail-closed meanwhile.
-    const where = [
-      "category = 'codebase'",
-      "(entry_id LIKE ? OR title LIKE ? OR body LIKE ?)",
-    ];
+    // knowledge (category='operational', issue #57) is excluded here. On a
+    // pre-v19 schema every row is codebase, so the filter is dropped (the
+    // column does not exist yet) rather than throwing.
+    const where = ["(entry_id LIKE ? OR title LIKE ? OR body LIKE ?)"];
+    if (knowledgeEntriesHasCategory(db)) where.unshift("category = 'codebase'");
     const q = `%${args.query}%`;
     const params: unknown[] = [q, q, q];
     if (args.projectId !== undefined) {
@@ -672,13 +671,17 @@ export function knowledgeGetTool(
   context: McpToolContext,
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
+    // pre-v19: no category column, all rows are codebase → drop the predicate.
+    const categoryClause = knowledgeEntriesHasCategory(db)
+      ? " AND category = 'codebase'"
+      : "";
     const row = db
       .prepare(
         `SELECT entry_id, project_id, repo_id, domain, kind, path, title,
                 body, frontmatter_json, created_at, source_candidate_id,
                 current_revision_id
            FROM knowledge_entries
-          WHERE entry_id = ? AND category = 'codebase'`,
+          WHERE entry_id = ?${categoryClause}`,
       )
       .get(args.entryId) as Record<string, unknown> | undefined;
     if (row === undefined) {
@@ -908,10 +911,14 @@ export function resolveKnowledgeProjectId(
     // codebase-only: this pre-dispatch scope check guards `harness.knowledge.get`
     // (a codebase surface). Resolving an operational entry here would leak its
     // existence / project via a `project_not_allowed` reply; treat it as absent
-    // so the get falls through to the category-filtered not-found.
+    // so the get falls through to the category-filtered not-found. On a pre-v19
+    // schema all rows are codebase, so the filter is dropped.
+    const categoryClause = knowledgeEntriesHasCategory(db)
+      ? " AND category = 'codebase'"
+      : "";
     const row = db
       .prepare(
-        "SELECT project_id FROM knowledge_entries WHERE entry_id = ? AND category = 'codebase'",
+        `SELECT project_id FROM knowledge_entries WHERE entry_id = ?${categoryClause}`,
       )
       .get(args.entryId) as { project_id: string | null } | undefined;
     return row?.project_id ?? null;

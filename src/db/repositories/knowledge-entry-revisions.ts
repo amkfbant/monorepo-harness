@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
+import { DbError } from "../connection.js";
+import { readSchemaVersion } from "../migrations.js";
 
 /**
  * `knowledge_entry_revisions` + `knowledge_entries.current_revision_id`
@@ -185,12 +187,24 @@ export type KnowledgeCategory = "codebase" | "operational";
  * reviewer's readonly probe, `knowledge export --to-docs`), so category-aware
  * queries must check this first and fail soft on an older schema instead of
  * throwing "no such column: category".
+ *
+ * Returns false ONLY for a genuine pre-v19 schema (every row is codebase by
+ * definition). If `schema_migrations` claims v19+ but the column is absent, the
+ * DB is corrupt — fail CLOSED (throw) rather than silently treating former
+ * operational rows as codebase, which could leak them into the coder context.
  */
 export function knowledgeEntriesHasCategory(db: Database.Database): boolean {
   const cols = db
     .prepare("PRAGMA table_info(knowledge_entries)")
     .all() as { name: string }[];
-  return cols.some((c) => c.name === "category");
+  if (cols.some((c) => c.name === "category")) return true;
+  if (readSchemaVersion(db) >= 19) {
+    throw new DbError(
+      "knowledge_entries.category is missing on a v19+ schema (corrupt DB); " +
+        "refusing to fall back to codebase-only",
+    );
+  }
+  return false;
 }
 
 export interface CurrentKnowledgeRevision extends KnowledgeEntryRevision {

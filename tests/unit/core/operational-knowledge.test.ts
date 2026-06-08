@@ -415,6 +415,20 @@ describe("operational knowledge (issue #57)", () => {
     }
   });
 
+  it("fails CLOSED when schema claims v19+ but the category column is missing (corrupt)", () => {
+    const db = preV19Db(); // schema_migrations has 1..18, no category column
+    try {
+      // claim v19 was applied without actually adding the column
+      db.prepare(
+        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (19, 'fake-v19', '2026-06-08T00:00:00Z')",
+      ).run();
+      expect(() => listOperationalKnowledge(db)).toThrow(/corrupt/i);
+      expect(() => listCurrentKnowledgeRevisions(db)).toThrow(/corrupt/i);
+    } finally {
+      db.close();
+    }
+  });
+
   it("listCurrentKnowledgeRevisions is fail-closed: default excludes operational", () => {
     const { db } = freshDb();
     try {
