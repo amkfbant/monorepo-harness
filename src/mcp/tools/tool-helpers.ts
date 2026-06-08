@@ -124,6 +124,20 @@ export function ensureProjectVisible(
   });
 }
 
+/** Cap `text` to `maxBytes` UTF-8 bytes, reporting the original size. */
+export function cappedText(
+  text: string,
+  maxBytes: number,
+): { text: string; bytes: number; capped: boolean } {
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes <= maxBytes) return { text, bytes, capped: false };
+  return {
+    text: Buffer.from(text, "utf8").subarray(0, maxBytes).toString("utf8"),
+    bytes,
+    capped: true,
+  };
+}
+
 export function artifactIdToUri(artifactId: string): string {
   return `harness://artifact/${Buffer.from(artifactId, "utf8").toString("base64url")}`;
 }

@@ -305,6 +305,8 @@ harness.backlog.list
 harness.backlog.get
 harness.knowledge.search
 harness.knowledge.get
+harness.ops_knowledge.search
+harness.ops_knowledge.get
 harness.db.status
 harness.doctor.summary
 harness.inbox
@@ -377,6 +379,20 @@ fail-closed）。
 `harness.knowledge.get` tool results omit entry body by default and include a
 capped body only when `includeBody` is true. `harness://knowledge/{entryId}`
 resources may include the body, capped by `resources.maxResourceBytes`.
+
+**`harness.ops_knowledge.search` / `harness.ops_knowledge.get`（read、issue #57）**
+は **operational 知識**（codebase ではない toolchain / CI / 環境 / harness 運用の学び、
+`knowledge_entries.category='operational'`）の recall surface。`harness.knowledge.*`
+が codebase 専用なのに対しこちらは operational 専用で、両者は相互に混ざらない（codebase
+ツールは operational を返さず、ops ツールは codebase を返さない＝SP1 の fail-closed 境界）。
+scope は codebase knowledge と同じ: `allowedProjects` が project 付き entry の可視性を
+絞り、**portable（project 無し）entry は常に可視**。`search` は `query`（title/body/
+entryId の部分一致）/ `projectId` / `repoId` / `domain` / `includeDeprecated`（既定 false）/
+`limit` を取り body を含まない summary を返す。`get` は body を既定で省略し `includeBody`
+時のみ capped body を返す（disallowed project の entry は `permission_denied`、不在 /
+codebase id は not-found）。**read 専用** — operational の記録（MCP write）は guarded
+mutation が要るため follow-up（[`../future-features.md`](../future-features.md)）。著述は
+CLI [`harness knowledge ops add`](./cli.md#harness-knowledge-ops)。
 
 Dry-run tools:
 
