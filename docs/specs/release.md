@@ -22,9 +22,10 @@ harness release plan [--since <ref>] [--to <ref>] [--json]
 |--------|------|------|
 | `--since <ref>` | 直近の tag（`git describe --tags --abbrev=0`） | 比較元 |
 | `--to <ref>` | `HEAD` | 比較先 |
+| `--repo <path>` | カレントディレクトリ | 解析対象の git リポジトリ |
 | `--json` | off | JSON 出力（エージェント / CI 用） |
 
-git は **process.cwd() のリポジトリ**で実行する（harness ソース＝dev クローンを解析する dev コマンド）。`--since` / `--to` が解決できなければ exit 1。
+git は `--repo`（既定: `process.cwd()`）のリポジトリで実行する。`--since` / `--to` が解決できなければ exit 1。
 
 ### 算出内容
 
@@ -38,9 +39,9 @@ git は **process.cwd() のリポジトリ**で実行する（harness ソース�
 
 ### exit code
 
-- `0`: 解析成功（互換問題なし、または additive な変更のみ）
-- `1`: ref 解決失敗 / tag 無し
-- `2`: **未宣言の破壊的変更**を検出（surface 削除 / non-additive migration に marker 無し）
+- `0`: 解析成功（互換問題なし、または additive な変更のみ。analysisWarnings 無し）
+- `1`: ref 解決失敗 / tag 無し / `to` の `schema.ts` 読み取り・パース不能（fail-closed）
+- `2`: **fail-closed シグナル** — 未宣言の破壊的変更（surface 削除 / non-additive migration に marker 無し）**または** 解析が不完全（`analysisWarnings`：`since` に在った surface ファイルが `to` で消えた / migration metadata 不足）＝「破壊なし」を信用できない状態
 
 ### 限界（現状）
 

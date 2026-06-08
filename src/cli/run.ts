@@ -3977,9 +3977,12 @@ releaseCmd
   .description("analyze readiness + compatibility for the next version bump")
   .option("--since <ref>", "compare from this ref (default: the last tag)")
   .option("--to <ref>", "compare to this ref (default: HEAD)")
+  .option("--repo <path>", "git repo to analyze (default: current directory)")
   .option("--json", "emit JSON instead of text", false)
   .action(async (raw: Record<string, unknown>) => {
-    const reader = createGitReader(process.cwd());
+    const reader = createGitReader(
+      typeof raw.repo === "string" && raw.repo !== "" ? raw.repo : process.cwd(),
+    );
     try {
       const input = await gatherReleasePlanInput(reader, {
         migrations: MIGRATIONS,
@@ -3993,9 +3996,12 @@ releaseCmd
           ? `${JSON.stringify(plan, null, 2)}\n`
           : renderReleasePlanText(plan),
       );
-      // a release with an UNDECLARED breaking change is a fail-closed signal
-      // for an agent / CI gate.
-      if (plan.undeclaredBreaking.length > 0) process.exitCode = 2;
+      // fail-closed (exit 2) for an agent / CI gate: an UNDECLARED breaking
+      // change, OR an incomplete analysis (a surface file vanished / migration
+      // metadata gap) — in which case "no breaking detected" is not trustworthy.
+      if (plan.undeclaredBreaking.length > 0 || plan.analysisWarnings.length > 0) {
+        process.exitCode = 2;
+      }
     } catch (e) {
       if (e instanceof ReleaseGatherError) {
         process.stderr.write(`harness error: ${e.message}\n`);

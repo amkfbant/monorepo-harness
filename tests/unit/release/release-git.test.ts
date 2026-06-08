@@ -177,6 +177,6 @@ describe("gatherReleasePlanInput", () => {
       migrations: MIGRATIONS, currentVersion: "0.5.0", since: "v0.5.0",
     });
     expect(input.mcpTools).toEqual({ added: [], removed: [] }); // NOT [harness.run.list] removed
-    expect((input.warnings ?? []).join(" ")).toMatch(/tool-registry\.ts at HEAD; MCP tool diff skipped/);
+    expect((input.warnings ?? []).join(" ")).toMatch(/tool-registry\.ts present at v0\.5\.0 but unreadable at HEAD/);
   });
 });

@@ -246,12 +246,16 @@ async function surfaceDiffAtRefs(
   warnings: string[],
 ): Promise<SurfaceDiff> {
   const toSrc = await reader.fileAtRef(to, path);
+  const fromSrc = await reader.fileAtRef(since, path);
   if (toSrc === null) {
-    warnings.push(`could not read ${path} at ${to}; ${label} diff skipped`);
+    // A file present at `since` but gone at `to` = moved/deleted → the diff is
+    // incomplete (a real removal could hide here): warn (fail-closed signal). A
+    // file absent at BOTH refs is simply not-applicable → silent.
+    if (fromSrc !== null) {
+      warnings.push(`${path} present at ${since} but unreadable at ${to}; ${label} diff partial`);
+    }
     return { added: [], removed: [] };
   }
-  // `since` null = file absent at that (older) ref → empty prior surface.
-  const fromSrc = await reader.fileAtRef(since, path);
   return diffSurface(matchAll(fromSrc, re), matchAll(toSrc, re));
 }
 
@@ -275,13 +279,16 @@ async function surfaceDiffMulti(
   const toUnion = new Set<string>();
   for (const p of paths) {
     const toSrc = await reader.fileAtRef(to, p);
+    const fromSrc = await reader.fileAtRef(since, p);
     if (toSrc === null) {
-      warnings.push(`could not read ${p} at ${to}; ${label} diff partial`);
+      // present at `since` but gone at `to` = moved/deleted → partial (warn);
+      // absent at both = not-applicable (silent).
+      if (fromSrc !== null) {
+        warnings.push(`${p} present at ${since} but unreadable at ${to}; ${label} diff partial`);
+      }
       continue;
     }
-    for (const x of matchAll(await reader.fileAtRef(since, p), re)) {
-      fromUnion.add(x);
-    }
+    for (const x of matchAll(fromSrc, re)) fromUnion.add(x);
     for (const x of matchAll(toSrc, re)) toUnion.add(x);
   }
   return diffSurface(fromUnion, toUnion);
