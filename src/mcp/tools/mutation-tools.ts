@@ -30,6 +30,13 @@ import { BacklogRepository } from "../../db/repositories/backlog.js";
 import { ReviewProposalRepository, type ReviewProposalRow } from "../../db/repositories/review-proposals.js";
 import { exportBacklogItem } from "../../db/export-files.js";
 import { promoteKnowledgeDbFirst, rejectKnowledgeDbFirst } from "../../core/knowledge-db.js";
+import {
+  recordOperationalKnowledge,
+  deprecateOperationalKnowledge,
+  getOperationalKnowledge,
+  operationalEntryIdForKey,
+  OperationalKnowledgeError,
+} from "../../core/operational-knowledge.js";
 import { processReviewDecision } from "../../core/review-processor.js";
 import {
   latestGoalAttemptForRun,
@@ -102,6 +109,23 @@ interface BacklogUpdateArgs extends MutationBaseArgs {
 
 interface KnowledgeDecisionArgs extends MutationBaseArgs {
   candidateId: string;
+  reason?: string;
+}
+
+interface OpsKnowledgeRecordArgs extends MutationBaseArgs {
+  title: string;
+  body: string;
+  key: string;
+  kind?: string;
+  tags?: string[];
+  projectId?: string;
+  repoId?: string;
+  domain?: string;
+  reason?: string;
+}
+
+interface OpsKnowledgeDeprecateArgs extends MutationBaseArgs {
+  entryId: string;
   reason?: string;
 }
 
@@ -517,6 +541,135 @@ export async function knowledgeRejectTool(
         index: parsed.index,
         reviewer: `mcp:${context.clientName}`,
         reason: args.reason as string,
+      }),
+  });
+}
+
+/**
+ * Authorize an operational-knowledge WRITE for a restricted client
+ * (`allowedProjects` non-empty). Operational entries are global-ish: a portable
+ * (project-less) entry is injected into EVERY project's reviewer scope, so a
+ * restricted client must not create/modify portable or other-project entries.
+ *
+ * Rules for a restricted client (no-op for unrestricted clients):
+ *  - a requested project (record) must be one of the allowed projects;
+ *  - the existing `ops/<key>` entry (if any) must already be scoped to an
+ *    allowed, NON-portable project — so a restricted client cannot hijack /
+ *    retarget a portable or other-project entry.
+ */
+function authorizeOpsWrite(
+  context: McpToolContext,
+  opts: { entryId: string; requestedProjectId?: string },
+): HarnessMcpToolResult | null {
+  const allowed = context.config.allowedProjects;
+  if (allowed.length === 0) return null; // unrestricted: portable + any project ok
+  if (
+    opts.requestedProjectId !== undefined &&
+    !allowed.includes(opts.requestedProjectId)
+  ) {
+    return permissionDenied("MCP permission denied: project_not_allowed", {
+      reason: "project_not_allowed",
+      projectId: opts.requestedProjectId,
+    });
+  }
+  const paths = harnessPaths(context.harnessRoot);
+  if (!existsSync(paths.dbPath)) return null;
+  const probe = openManagedDb({ dbPath: paths.dbPath, readonly: true });
+  try {
+    const existing = getOperationalKnowledge(probe.db, opts.entryId);
+    if (
+      existing !== null &&
+      (existing.projectId === null || !allowed.includes(existing.projectId))
+    ) {
+      return permissionDenied("MCP permission denied: project_not_allowed", {
+        reason: "project_not_allowed",
+        entryId: opts.entryId,
+      });
+    }
+  } finally {
+    probe.close();
+  }
+  return null;
+}
+
+/**
+ * Author operational knowledge over MCP (issue #57, roadmap G). A guarded
+ * mutation: requires guarded-mutation mode + `ops_knowledge.record` in
+ * allowedOperations, and runs through OperationRunner (idempotency / audit /
+ * budget). The actor is recorded as `mcp:<clientName>`.
+ */
+export async function opsKnowledgeRecordTool(
+  args: OpsKnowledgeRecordArgs,
+  context: McpToolContext,
+): Promise<HarnessMcpToolResult> {
+  // Resolve the canonical entry id the SAME way the core write will, so the
+  // authorize/target/idempotency id cannot diverge from the written row via a
+  // raw-vs-normalized key (e.g. "shared " vs "shared").
+  let entryId: string;
+  try {
+    entryId = operationalEntryIdForKey(args.key);
+  } catch (e) {
+    if (e instanceof OperationalKnowledgeError) return errorResult(e.message);
+    throw e;
+  }
+  // A restricted client must target one of its allowed projects — no portable
+  // (global) writes (portable ops knowledge reaches every reviewer scope).
+  if (
+    context.config.allowedProjects.length > 0 &&
+    args.projectId === undefined
+  ) {
+    return permissionDenied(
+      "MCP permission denied: a project is required for operational writes by a scoped client",
+      { reason: "project_required" },
+    );
+  }
+  const denied = authorizeOpsWrite(context, {
+    entryId,
+    ...(args.projectId !== undefined ? { requestedProjectId: args.projectId } : {}),
+  });
+  if (denied !== null) return denied;
+  return runMcpOperation(context, {
+    operationType: "ops_knowledge.record",
+    target: { type: "knowledge_entry", id: entryId },
+    idempotencyKey: args.idempotencyKey,
+    input: args,
+    metadata: operationMetadata(context, "harness.ops_knowledge.record", args),
+    workWithDb: async (db) =>
+      recordOperationalKnowledge(db, {
+        key: args.key,
+        title: args.title,
+        body: args.body,
+        actor: `mcp:${context.clientName}`,
+        ...(args.kind !== undefined ? { kind: args.kind } : {}),
+        ...(args.tags !== undefined ? { tags: args.tags } : {}),
+        ...(args.projectId !== undefined ? { projectId: args.projectId } : {}),
+        ...(args.repoId !== undefined ? { repoId: args.repoId } : {}),
+        ...(args.domain !== undefined ? { domain: args.domain } : {}),
+        ...(args.reason !== undefined ? { reason: args.reason } : {}),
+      }),
+  });
+}
+
+/** Deprecate an operational entry over MCP (issue #57, roadmap G). */
+export async function opsKnowledgeDeprecateTool(
+  args: OpsKnowledgeDeprecateArgs,
+  context: McpToolContext,
+): Promise<HarnessMcpToolResult> {
+  // A restricted client may only deprecate an existing entry scoped to one of
+  // its allowed projects (never a portable / other-project entry).
+  const denied = authorizeOpsWrite(context, { entryId: args.entryId });
+  if (denied !== null) return denied;
+  return runMcpOperation(context, {
+    operationType: "ops_knowledge.deprecate",
+    target: { type: "knowledge_entry", id: args.entryId },
+    idempotencyKey: args.idempotencyKey,
+    input: args,
+    metadata: operationMetadata(context, "harness.ops_knowledge.deprecate", args),
+    workWithDb: async (db) =>
+      deprecateOperationalKnowledge(db, {
+        entryId: args.entryId,
+        actor: `mcp:${context.clientName}`,
+        ...(args.reason !== undefined ? { reason: args.reason } : {}),
       }),
   });
 }

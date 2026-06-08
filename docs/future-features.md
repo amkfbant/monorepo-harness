@@ -6,16 +6,10 @@ design — run it through brainstorming → spec → plan when picked up.
 ## Operational knowledge — deferred surfaces (issue #57)
 
 The operational knowledge category (`knowledge_entries.category='operational'`,
-schema v19) ships as **storage core + CLI + MCP read** (issue #57), plus the
-**inbox surfacing** (roadmap E) and **reviewer/goal injection** (roadmap F).
-Remaining deferred surfaces:
+schema v19) ships as **storage core + CLI + MCP read** (issue #57), plus **inbox
+surfacing** (E), **reviewer/goal injection** (F), and **MCP write** (G). The only
+remaining deferred surface:
 
-- **MCP write (`harness.ops_knowledge.record` / `deprecate`)** — let an operating
-  agent persist operational knowledge over MCP without shelling out to the CLI.
-  This is a mutation, so it requires guarded-mutation mode + an `allowedOperations`
-  allowlist + `runOperation` (idempotency / audit / budget), per the MCP safety
-  model. Deferred to keep the first cut read-only (matching the "read 群で打ち止め"
-  decision). For now operators author via the CLI; recall is via MCP read.
 - **file export parity** — operational entries are DB-only today. A
   `docs/ops-knowledge/` compat export (mirroring `docs/knowledge/`) would make
   them reviewable in git, but needs an importer namespace that does not collide
@@ -25,8 +19,23 @@ Landed: **inbox surfacing** (`DbInboxSummary.operationalKnowledge` → `harness.
 / scoped CLI / dashboard). **reviewer/goal injection**
 (`buildOperationalKnowledgeReviewSection` appended to the reviewer prompt, project+repo
 scoped, bounded — **never the coder prompt**; goal-mode reviews use the same path).
+**MCP write** (`harness.ops_knowledge.record` / `deprecate` — guarded mutations through
+OperationRunner: guarded-mutation mode + `allowedOperations` allowlist + idempotency /
+audit / budget; actor `mcp:<clientName>`).
 
 Recorded 2026-06 when issue #57's storage + CLI + MCP-read cut landed.
+
+## Atomic authorization for MCP mutations (TOCTOU)
+
+MCP mutation tools authorize (project scope / existing-entry checks) in a
+pre-dispatch step, then write later in a separate OperationRunner transaction —
+the general pattern for every mutation tool, not just `ops_knowledge.*`. A
+concurrent writer could change the target between check and write. For the
+current single-operator MCP deployment this is low risk, but if restricted MCP
+clients are ever treated as mutually-untrusted tenants, the authorization should
+move into the same `immediate()` transaction as the mutation (e.g. an authorize
+callback the core write invokes inside its tx). Flagged by the G codex review
+(P2), 2026-06.
 
 ## Reviewer prompt provenance audit (prompt_sha256 + injected knowledge)
 

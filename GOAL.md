@@ -32,18 +32,19 @@ follow-up A〜D は**すべて実装・main merge 済み**（close 条件＝テ�
 `harness.ops_knowledge.*` MCP read。`docs/specs/{db,cli,mcp}.md`）。残る deferred surfaces
 を本ロードマップの現行項目とする（詳細スケッチは [`docs/future-features.md`](./docs/future-features.md)）。
 
-- **E: inbox / session surfacing** — `harness.inbox` / dashboard に operational 知識の
-  件数・最近エントリを出す（read 中心）。
-- **F: goal / reviewer context 注入** — 関連 operational 知識を reviewer / goal briefing
-  prompt に注入（**coder には注入しない** — §G の安全境界は恒久）。関連度 scope モデルが要る。
-- **G: MCP write（`ops_knowledge.record` / `deprecate`）** — operating agent が MCP 経由で
-  ops 知識を記録。guarded-mutation（allowlist + `runOperation` の idempotency / audit /
-  budget）として実装。
+- **E: inbox / session surfacing** — ✅ 完了（`DbInboxSummary.operationalKnowledge` →
+  `harness.inbox` / scoped CLI / dashboard）。
+- **F: goal / reviewer context 注入** — ✅ 完了（`buildOperationalKnowledgeReviewSection`
+  を reviewer prompt に append。project+repo scope・bounded・**coder には注入しない**。
+  goal モードの review も同 path）。
+- **G: MCP write（`ops_knowledge.record` / `deprecate`）** — ✅ 完了（guarded-mutation：
+  `allowedOperations` allowlist + OperationRunner の idempotency / audit / budget）。
 - **H: file-export parity** — operational entry の `docs/ops-knowledge/` compat export
-  （importer namespace の衝突回避が前提）。
+  （importer namespace の衝突回避が前提）。**残（未着手）**。
 
 各項目 = サブ Phase 規模（TDD で関連テスト + `npm run typecheck` 緑、codex サブレビュー
 最大 3 回、未解決 P0 ゼロが close 必須）。相互依存は薄く独立に着手・merge してよい。
+E/F/G は完了、残るは H（+ reviewer prompt provenance audit、`docs/future-features.md`）。
 
 ---
 

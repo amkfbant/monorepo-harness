@@ -78,6 +78,8 @@ import {
   dbRepairApplyTool,
   knowledgePromoteTool,
   knowledgeRejectTool,
+  opsKnowledgeRecordTool,
+  opsKnowledgeDeprecateTool,
   resolveDoctorFindingProjectId,
   prCreateTool,
   rerunStartTool,
@@ -310,6 +312,31 @@ const opsKnowledgeGetArgs = z
     includeBody: z.boolean().optional(),
     maxBytes: z.number().int().min(0).optional(),
   })
+  .strict();
+
+const opsKnowledgeRecordArgs = z
+  .object({
+    title: z.string().min(1),
+    body: z.string().min(1),
+    // MCP writes require an explicit key so the operation targets a real,
+    // resolvable `ops/<key>` row (audit / idempotency / project-scope checks).
+    key: z.string().min(1),
+    kind: z.string().min(1).optional(),
+    tags: z.array(z.string().min(1)).optional(),
+    projectId: z.string().min(1).optional(),
+    repoId: z.string().min(1).optional(),
+    domain: z.string().min(1).optional(),
+    reason: z.string().optional(),
+  })
+  .merge(MutationArgsBaseSchema)
+  .strict();
+
+const opsKnowledgeDeprecateArgs = z
+  .object({
+    entryId: z.string().min(1),
+    reason: z.string().optional(),
+  })
+  .merge(MutationArgsBaseSchema)
   .strict();
 
 const knowledgeDecisionArgs = z
@@ -946,6 +973,53 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       ["entryId"],
     ),
     handler: opsKnowledgeGetTool,
+  }),
+  define({
+    name: "harness.ops_knowledge.record",
+    title: "Record operational knowledge",
+    description:
+      "Author operational (non-codebase) knowledge through OperationRunner (issue #57). Guarded mutation.",
+    kind: "mutation",
+    operation: "ops_knowledge.record",
+    argsSchema: opsKnowledgeRecordArgs,
+    projectIdFromArgs: (args) => args.projectId,
+    inputSchema: objectSchema(
+      {
+        title: { type: "string" },
+        body: { type: "string" },
+        key: { type: "string" },
+        kind: { type: "string" },
+        tags: { type: "array", items: { type: "string" } },
+        projectId: projectIdJson,
+        repoId: { type: "string", description: "Repo id" },
+        domain: { type: "string" },
+        reason: { type: "string" },
+        idempotencyKey: idempotencyJson,
+        actorNote: { type: "string" },
+      },
+      ["title", "body", "key", "idempotencyKey"],
+    ),
+    handler: opsKnowledgeRecordTool,
+  }),
+  define({
+    name: "harness.ops_knowledge.deprecate",
+    title: "Deprecate operational knowledge",
+    description:
+      "Deprecate an operational knowledge entry through OperationRunner (issue #57). Guarded mutation.",
+    kind: "mutation",
+    operation: "ops_knowledge.deprecate",
+    argsSchema: opsKnowledgeDeprecateArgs,
+    resolveProjectIdForPermission: resolveOpsKnowledgeProjectId,
+    inputSchema: objectSchema(
+      {
+        entryId: { type: "string" },
+        reason: { type: "string" },
+        idempotencyKey: idempotencyJson,
+        actorNote: { type: "string" },
+      },
+      ["entryId", "idempotencyKey"],
+    ),
+    handler: opsKnowledgeDeprecateTool,
   }),
   define({
     name: "harness.db.status",

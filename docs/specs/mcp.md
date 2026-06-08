@@ -393,9 +393,23 @@ scope は codebase knowledge と同じ: `allowedProjects` が project 付き ent
 entryId の部分一致）/ `projectId` / `repoId` / `domain` / `includeDeprecated`（既定 false）/
 `limit` を取り body を含まない summary を返す。`get` は body を既定で省略し `includeBody`
 時のみ capped body を返す（disallowed project の entry は `permission_denied`、不在 /
-codebase id は not-found）。**read 専用** — operational の記録（MCP write）は guarded
-mutation が要るため follow-up（[`../future-features.md`](../future-features.md)）。著述は
-CLI [`harness knowledge ops add`](./cli.md#harness-knowledge-ops)。
+codebase id は not-found）。CLI からも著述できる（[`harness knowledge ops add`](./cli.md#harness-knowledge-ops)）。
+
+**`harness.ops_knowledge.record` / `harness.ops_knowledge.deprecate`（mutation、issue #57）**
+は operational 知識を MCP から著述 / deprecate する **guarded mutation**。`kind:"mutation"`
+なので **`guarded-mutation` モード ＋ `allowedOperations` に `ops_knowledge.record` /
+`ops_knowledge.deprecate`** が無いと拒否（`mutation_disabled_for_client` /
+`operation_not_allowlisted`）。OperationRunner 経由で **idempotency（`idempotencyKey` 必須）/
+audit ledger / budget** が効く。actor は `mcp:<clientName>`。`record` は `title` / `body` /
+**`key` 必須**（→ 実在の `ops/<key>` を target に。再記録は同一 entry を更新・body 不変なら
+no-op）＋ `kind` / `tags` / `project`/`repo`/`domain` scope / `reason`。append-only で
+低リスクのため既定で confirmation は不要。
+
+**restricted client の scope（重要）**: `allowedProjects` が非空のクライアントは、
+operational write を **自分の許可 project に限定**される — **portable（project 無し）の
+record / deprecate は拒否**（portable は全 reviewer scope に注入されるグローバル変更のため）し、
+既存 `ops/<key>` が portable / 他 project の場合も拒否（hijack 防止）。`allowedProjects` が
+空（unrestricted）なら portable も可。
 
 Dry-run tools:
 
