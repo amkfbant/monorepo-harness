@@ -292,6 +292,18 @@ review process:
 `review auto` の DB write は proposal 系に限定し、status guard を通る遷移は
 一切呼ばない。LLM の出力が状態を動かさない原則は Phase 7 でも不変。
 
+#### reviewer prompt への operational knowledge 注入（issue #57）
+
+`runReviewerAgent` は `dbPath` がある時、reviewer codex prompt（`PROMPT_PREAMBLE`）末尾に
+**operational 知識**の `<operational-knowledge>` 参照ブロックを append する（goal モードの
+review も同じ path なので自動で適用される）。**coder prompt には決して注入しない**（issue
+#57 の恒久境界。coder は `buildCodexPrompt` の `<knowledge>` = codebase 知識のみ）。スコープ
+は決定論的に run の **project + repo**（どちらも portable entry を含む。domain では絞らない＝
+operational は domain 固有でないことが多く portable note を取りこぼさないため）、上限 ≤10
+エントリ・≤12 KiB、deprecated 除外。fence（`</operational-knowledge>`）は coder 同様に無害化
+する。参照資料でありレビュー基準・出力 shape を変えない旨を明記して注入する。実装は
+`buildOperationalKnowledgeReviewSection`（`src/core/operational-knowledge.ts`）。
+
 ### `run_changed_files` / `policy_violations`
 
 Phase 6 で「file import から取れない」として繰り延べた 2 テーブルは、Phase 7 で

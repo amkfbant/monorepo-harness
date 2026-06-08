@@ -7,6 +7,7 @@ import { sha256 } from "./import/common.js";
 import { runFingerprint } from "./import/runs.js";
 import { DB_RECONSTRUCTED } from "./run-artifacts.js";
 import { readArtifactBlob } from "./artifact-blobs.js";
+import { knowledgeEntriesHasCategory } from "./repositories/knowledge-entry-revisions.js";
 
 /**
  * DB / file consistency checker (Phase 6-4).
@@ -328,13 +329,15 @@ function checkKnowledgeEntries(
   const knowledgeDir = join(harnessRoot, "docs", "knowledge");
   // Only codebase knowledge round-trips to `docs/knowledge/**`. Operational
   // knowledge (category='operational', issue #57) is DB-only by design, so it
-  // must not be reported as a missing-file inconsistency.
+  // must not be reported as a missing-file inconsistency. On a pre-v19 schema
+  // all rows are codebase (no column) → drop the filter rather than throw.
+  const categoryClause = knowledgeEntriesHasCategory(db)
+    ? " WHERE category = 'codebase'"
+    : "";
   const dbIds = new Set(
     (
       db
-        .prepare(
-          "SELECT entry_id FROM knowledge_entries WHERE category = 'codebase'",
-        )
+        .prepare(`SELECT entry_id FROM knowledge_entries${categoryClause}`)
         .all() as {
         entry_id: string;
       }[]

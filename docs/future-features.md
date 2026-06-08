@@ -6,9 +6,9 @@ design — run it through brainstorming → spec → plan when picked up.
 ## Operational knowledge — deferred surfaces (issue #57)
 
 The operational knowledge category (`knowledge_entries.category='operational'`,
-schema v19) ships as **storage core + CLI + MCP read** (issue #57). These
-complementary surfaces were explicitly scoped OUT of the initial cut and are
-deferred:
+schema v19) ships as **storage core + CLI + MCP read** (issue #57), plus the
+**inbox surfacing** (roadmap E) and **reviewer/goal injection** (roadmap F).
+Remaining deferred surfaces:
 
 - **MCP write (`harness.ops_knowledge.record` / `deprecate`)** — let an operating
   agent persist operational knowledge over MCP without shelling out to the CLI.
@@ -16,18 +16,33 @@ deferred:
   allowlist + `runOperation` (idempotency / audit / budget), per the MCP safety
   model. Deferred to keep the first cut read-only (matching the "read 群で打ち止め"
   decision). For now operators author via the CLI; recall is via MCP read.
-- **goal / reviewer context injection** — surface relevant operational knowledge
-  into the **goal briefing / reviewer** prompt (NOT the coder prompt — that
-  boundary is permanent). Needs a relevance/scoping model so it does not flood the
-  reviewer with unrelated ops notes.
-- **inbox / session surfacing** — show operational-knowledge counts / recent
-  entries in `harness.inbox` / dashboard `session` views.
 - **file export parity** — operational entries are DB-only today. A
   `docs/ops-knowledge/` compat export (mirroring `docs/knowledge/`) would make
   them reviewable in git, but needs an importer namespace that does not collide
   with the codebase-knowledge round-trip.
 
+Landed: **inbox surfacing** (`DbInboxSummary.operationalKnowledge` → `harness.inbox`
+/ scoped CLI / dashboard). **reviewer/goal injection**
+(`buildOperationalKnowledgeReviewSection` appended to the reviewer prompt, project+repo
+scoped, bounded — **never the coder prompt**; goal-mode reviews use the same path).
+
 Recorded 2026-06 when issue #57's storage + CLI + MCP-read cut landed.
+
+## Reviewer prompt provenance audit (prompt_sha256 + injected knowledge)
+
+The reviewer prompt is now DB-dependent (operational-knowledge injection, issue #57
+roadmap F; codebase-knowledge injection already feeds the coder prompt). Neither path
+records WHAT was injected: `review_proposals.prompt_sha256` exists in the schema but is
+not populated, and the injected operational `entryId`/`version` list is not recorded.
+After an entry is edited/deprecated a past verdict can no longer be reproduced exactly.
+
+**Sketch:** compute the assembled reviewer prompt once, record `prompt_sha256` on the
+proposal (extend `ReviewProposalInput` + the insert), and capture the injected
+operational entry ids/versions (e.g. as proposal metadata or an audit artifact). This is
+a cross-cutting provenance improvement (should also cover the coder's codebase-knowledge
+injection), and it touches the safety-sensitive `insertProposal` hot-path, so it is
+designed/reviewed separately rather than folded into F. Flagged by the F codex review
+(P2), 2026-06.
 
 ## Transactional run-status guard on `review auto` proposal insert
 

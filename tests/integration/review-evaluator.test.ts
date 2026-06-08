@@ -18,6 +18,9 @@ import type {
   CodexRunInputs,
   CodexRunResult,
 } from "../../src/codex/codex-exec-runner.js";
+import { openDb } from "../../src/db/connection.js";
+import { runMigrations } from "../../src/db/migrations.js";
+import { recordOperationalKnowledge } from "../../src/core/operational-knowledge.js";
 
 interface SetupOpts {
   safetyStatus?: string;
@@ -76,6 +79,47 @@ function sequenced(outputs: string[]): CodexExecRunner {
     },
   };
 }
+
+describe("evaluateReviewer operational-knowledge injection (issue #57)", () => {
+  it("samples the same operational-knowledge prompt the production reviewer uses", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-reval-ops-"));
+    const runsDir = join(root, "runs");
+    const runId = "run-20260521-apps-user-evalops";
+    const runDir = join(runsDir, runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(
+      join(runDir, "meta.json"),
+      JSON.stringify({
+        runId, repoId: "t", domain: "apps/user", status: "needs_review",
+        safetyStatus: "allowed", startedAt: "2026-05-21T00:00:00Z",
+      }),
+    );
+    writeFileSync(join(runDir, "summary.md"), "# summary\n");
+    const dbPath = join(root, ".harness", "harness.sqlite");
+    const db = openDb(dbPath);
+    try {
+      runMigrations(db);
+      recordOperationalKnowledge(db, { key: "repo-note", title: "Repo CI quirk", body: "x", repoId: "t", actor: "op" });
+    } finally {
+      db.close();
+    }
+    const prompts: string[] = [];
+    const runner: CodexExecRunner = {
+      async run(input: CodexRunInputs): Promise<CodexRunResult> {
+        prompts.push(input.prompt);
+        await writeFile(input.logPaths.stdout, yamlBlock("approved"), "utf8");
+        await writeFile(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false };
+      },
+    };
+    await evaluateReviewer({ runsDir, runId, samples: 2, dbPath, codexRunner: runner });
+    expect(prompts).toHaveLength(2);
+    for (const p of prompts) {
+      expect(p).toContain("<operational-knowledge>");
+      expect(p).toContain("Repo CI quirk");
+    }
+  });
+});
 
 describe("evaluateReviewer", () => {
   it("runs N samples and saves each under review-evaluations/eval-NNN/", async () => {

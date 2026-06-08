@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
+import { DbError } from "../connection.js";
+import { readSchemaVersion } from "../migrations.js";
 
 /**
  * `knowledge_entry_revisions` + `knowledge_entries.current_revision_id`
@@ -179,6 +181,32 @@ export function listKnowledgeRevisions(
 
 export type KnowledgeCategory = "codebase" | "operational";
 
+/**
+ * Whether `knowledge_entries.category` exists (schema v19, issue #57). Read
+ * paths can run on a DB opened read-only BEFORE it is migrated (e.g. the
+ * reviewer's readonly probe, `knowledge export --to-docs`), so category-aware
+ * queries must check this first and fail soft on an older schema instead of
+ * throwing "no such column: category".
+ *
+ * Returns false ONLY for a genuine pre-v19 schema (every row is codebase by
+ * definition). If `schema_migrations` claims v19+ but the column is absent, the
+ * DB is corrupt — fail CLOSED (throw) rather than silently treating former
+ * operational rows as codebase, which could leak them into the coder context.
+ */
+export function knowledgeEntriesHasCategory(db: Database.Database): boolean {
+  const cols = db
+    .prepare("PRAGMA table_info(knowledge_entries)")
+    .all() as { name: string }[];
+  if (cols.some((c) => c.name === "category")) return true;
+  if (readSchemaVersion(db) >= 19) {
+    throw new DbError(
+      "knowledge_entries.category is missing on a v19+ schema (corrupt DB); " +
+        "refusing to fall back to codebase-only",
+    );
+  }
+  return false;
+}
+
 export interface CurrentKnowledgeRevision extends KnowledgeEntryRevision {
   projectId: string | null;
   repoId: string | null;
@@ -205,8 +233,18 @@ export function listCurrentKnowledgeRevisions(
   db: Database.Database,
   filter: ListCurrentKnowledgeFilter = {},
 ): CurrentKnowledgeRevision[] {
-  const where = ["e.current_revision_id IS NOT NULL", "e.category = ?"];
-  const params: unknown[] = [filter.category ?? "codebase"];
+  const wantCategory = filter.category ?? "codebase";
+  const hasCategory = knowledgeEntriesHasCategory(db);
+  // Pre-v19 schema: there is no `category` column, so every row is codebase by
+  // definition. An `operational` request has no rows; a `codebase` request must
+  // not filter on (or select) the missing column.
+  if (!hasCategory && wantCategory === "operational") return [];
+  const where = ["e.current_revision_id IS NOT NULL"];
+  const params: unknown[] = [];
+  if (hasCategory) {
+    where.push("e.category = ?");
+    params.push(wantCategory);
+  }
   if (filter.projectId !== undefined) {
     where.push("(e.project_id = ? OR e.project_id IS NULL)");
     params.push(filter.projectId);
@@ -219,9 +257,10 @@ export function listCurrentKnowledgeRevisions(
     where.push("e.domain = ?");
     params.push(filter.domain);
   }
+  const categorySelect = hasCategory ? "e.category" : "'codebase' AS category";
   const rows = db
     .prepare(
-      `SELECT r.*, e.project_id, e.repo_id, e.domain, e.kind, e.path, e.category
+      `SELECT r.*, e.project_id, e.repo_id, e.domain, e.kind, e.path, ${categorySelect}
          FROM knowledge_entries e
          INNER JOIN knowledge_entry_revisions r
             ON e.current_revision_id = r.revision_id

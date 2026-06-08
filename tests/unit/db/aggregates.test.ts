@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { openDb } from "../../../src/db/connection.js";
-import { runMigrations } from "../../../src/db/migrations.js";
+import { runMigrations, MIGRATIONS } from "../../../src/db/migrations.js";
 import {
   metricsSummary,
   inboxSummary,
@@ -20,6 +20,24 @@ function freshDb(): Database.Database {
   const dir = mkdtempSync(join(tmpdir(), "harness-agg-"));
   const db = openDb(join(dir, ".harness", "harness.sqlite"));
   runMigrations(db);
+  return db;
+}
+
+/** A DB migrated only up to v18 — no `knowledge_entries.category` column. */
+function preV19Db(): Database.Database {
+  const dir = mkdtempSync(join(tmpdir(), "harness-agg-pre19-"));
+  const db = openDb(join(dir, ".harness", "harness.sqlite"));
+  db.prepare(
+    `CREATE TABLE schema_migrations (
+       version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
+     )`,
+  ).run();
+  for (const m of MIGRATIONS.filter((x) => x.version < 19)) {
+    for (const stmt of m.statements) db.prepare(stmt).run();
+    db.prepare(
+      "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+    ).run(m.version, m.name, "2026-06-08T00:00:00Z");
+  }
   return db;
 }
 
@@ -127,6 +145,16 @@ describe("aggregates", () => {
     const demo = inboxSummary(db, { projectId: "demo" });
     expect(demo.operationalKnowledge.total).toBe(2); // demo + portable
     expect(demo.operationalKnowledge.recent.map((e) => e.entryId)).not.toContain("ops/other-a");
+  });
+
+  it("inboxSummary fails soft on a pre-v19 schema (no category column)", () => {
+    const db = preV19Db();
+    try {
+      const inbox = inboxSummary(db);
+      expect(inbox.operationalKnowledge).toEqual({ total: 0, recent: [] });
+    } finally {
+      db.close();
+    }
   });
 
   it("inboxSummary counts un-decided knowledge-candidate runs", () => {

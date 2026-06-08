@@ -28,6 +28,7 @@ import { DEFAULT_REVIEW_RULE, ruleSha256, type ReviewRule } from "./review-rule.
 import type Database from "better-sqlite3";
 import { fileExportEnabled } from "../config/export-mode.js";
 import { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
+import { buildOperationalKnowledgeReviewSection } from "./operational-knowledge.js";
 
 export { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
 
@@ -342,12 +343,24 @@ export async function runReviewerAgent(
   let activeDbProposal: Awaited<
     ReturnType<ReviewProposalRepository["getLatestActiveProposal"]>
   > = null;
+  // Operational knowledge (issue #57) is injected into the REVIEWER prompt only
+  // (never the coder prompt). Scoped to this run's project + repo (not domain),
+  // bounded — see the call below.
+  let reviewerOpsSection = "";
   if (inputs.dbPath !== undefined && existsSync(inputs.dbPath)) {
     const probe = openManagedDb({ dbPath: inputs.dbPath, readonly: true });
     try {
       activeDbProposal = new ReviewProposalRepository(
         probe.db,
       ).getLatestActiveProposal(inputs.runId);
+      // Scope by project + repo only (both include portable, project/repo-less
+      // entries). Operational knowledge is rarely domain-specific, and the
+      // domain filter would exclude portable notes — so it is intentionally not
+      // applied here.
+      reviewerOpsSection = buildOperationalKnowledgeReviewSection(probe.db, {
+        projectId: meta.project?.projectId ?? null,
+        repoId: meta.repoId ?? null,
+      });
     } finally {
       probe.close();
     }
@@ -382,7 +395,7 @@ export async function runReviewerAgent(
 
   const codexResult = await inputs.codexRunner.run({
     worktreePath: runDir,
-    prompt: PROMPT_PREAMBLE,
+    prompt: PROMPT_PREAMBLE + reviewerOpsSection,
     logPaths: { stdout: stdoutPath, stderr: stderrPath },
   });
   const reviewer = inputs.reviewerName ?? "codex-reviewer";

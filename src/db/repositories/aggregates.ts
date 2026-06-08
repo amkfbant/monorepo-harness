@@ -3,6 +3,7 @@ import {
   RunRepository,
   type DashboardRunSummary,
 } from "./runs.js";
+import { knowledgeEntriesHasCategory } from "./knowledge-entry-revisions.js";
 
 /**
  * Project-aware aggregates over the DB read model (Phase 6-6).
@@ -156,6 +157,9 @@ function operationalKnowledgeInbox(
   db: Database.Database,
   filter: AggregateFilter,
 ): DbOperationalKnowledgeInbox {
+  // Fail soft on a pre-v19 schema (no category column) — inbox reads can run on
+  // a readonly DB opened before migration.
+  if (!knowledgeEntriesHasCategory(db)) return { total: 0, recent: [] };
   const where = [
     "e.category = 'operational'",
     "json_extract(r.frontmatter_json, '$.deprecated') IS NOT 1",
@@ -260,10 +264,16 @@ export function knowledgeDigest(
   // (promoted-knowledge namespacing is a Phase 5 follow-up), so a
   // project-scoped digest may legitimately count zero entries. Operational
   // knowledge (category='operational', issue #57) is a separate category and
-  // is excluded from this codebase digest count.
-  const entrySql = sql
-    ? `${sql} AND category = 'codebase'`
-    : "WHERE category = 'codebase'";
+  // is excluded from this codebase digest count. On a pre-v19 schema all rows
+  // are codebase (no column) → keep the base scope without the category filter.
+  const categoryClause = knowledgeEntriesHasCategory(db)
+    ? "category = 'codebase'"
+    : "";
+  const entrySql = categoryClause
+    ? sql
+      ? `${sql} AND ${categoryClause}`
+      : `WHERE ${categoryClause}`
+    : sql;
   const entryTotal = (
     db
       .prepare(`SELECT count(*) AS n FROM knowledge_entries ${entrySql}`)
