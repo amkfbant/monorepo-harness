@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../../../src/db/connection.js";
-import { runMigrations } from "../../../src/db/migrations.js";
+import { runMigrations, MIGRATIONS } from "../../../src/db/migrations.js";
 import {
   recordOperationalKnowledge,
   listOperationalKnowledge,
@@ -24,6 +24,25 @@ function freshDb() {
   const db = openDb(join(root, ".harness", "harness.sqlite"));
   runMigrations(db);
   return { db, root };
+}
+
+/** A DB migrated only up to v18 — no `knowledge_entries.category` column. */
+function preV19Db() {
+  const root = mkdtempSync(join(tmpdir(), "harness-ops-pre19-"));
+  mkdirSync(join(root, ".harness"), { recursive: true });
+  const db = openDb(join(root, ".harness", "harness.sqlite"));
+  db.prepare(
+    `CREATE TABLE schema_migrations (
+       version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
+     )`,
+  ).run();
+  for (const m of MIGRATIONS.filter((x) => x.version < 19)) {
+    for (const stmt of m.statements) db.prepare(stmt).run();
+    db.prepare(
+      "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+    ).run(m.version, m.name, "2026-06-08T00:00:00Z");
+  }
+  return db;
 }
 
 describe("operational knowledge (issue #57)", () => {
@@ -369,6 +388,31 @@ describe("operational knowledge (issue #57)", () => {
         db.close();
       }
     });
+  });
+
+  it("read paths fail soft on a pre-v19 schema (no category column)", () => {
+    const db = preV19Db();
+    try {
+      // operational reads return empty instead of throwing "no such column"
+      expect(listOperationalKnowledge(db)).toEqual([]);
+      expect(getOperationalKnowledge(db, "ops/x")).toBeNull();
+      expect(buildOperationalKnowledgeReviewSection(db, { repoId: "t" })).toBe("");
+      // a codebase revision (no category column) still lists; operational is empty
+      recordKnowledgeEntryRevision(db, {
+        entryId: "docs/knowledge/note/a.md",
+        bodyMarkdown: "---\ntitle: Old\n---\nbody",
+        frontmatter: { title: "Old" },
+        actor: "a",
+      });
+      expect(listCurrentKnowledgeRevisions(db).map((r) => r.entryId)).toEqual([
+        "docs/knowledge/note/a.md",
+      ]);
+      expect(
+        listCurrentKnowledgeRevisions(db, { category: "operational" }),
+      ).toEqual([]);
+    } finally {
+      db.close();
+    }
   });
 
   it("listCurrentKnowledgeRevisions is fail-closed: default excludes operational", () => {

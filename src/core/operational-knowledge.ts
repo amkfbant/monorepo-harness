@@ -4,6 +4,7 @@ import { stringify as stringifyYaml } from "yaml";
 import { splitFrontmatter } from "./knowledge-promoter.js";
 import {
   recordKnowledgeEntryRevision,
+  knowledgeEntriesHasCategory,
   type KnowledgeCategory,
 } from "../db/repositories/knowledge-entry-revisions.js";
 
@@ -322,6 +323,9 @@ export function listOperationalKnowledge(
   db: Database.Database,
   filter: ListOperationalKnowledgeFilter = {},
 ): OperationalKnowledgeEntry[] {
+  // Fail soft on a pre-v19 schema (no category column) — e.g. a readonly DB
+  // opened before migration. No operational entries can exist yet.
+  if (!knowledgeEntriesHasCategory(db)) return [];
   const where: string[] = [];
   const params: unknown[] = [];
   if (filter.projectId !== undefined) {
@@ -353,6 +357,7 @@ export function getOperationalKnowledge(
   db: Database.Database,
   entryId: string,
 ): OperationalKnowledgeEntry | null {
+  if (!knowledgeEntriesHasCategory(db)) return null;
   const row = db
     .prepare(`${SELECT_OPERATIONAL} AND e.entry_id = ?`)
     .get(entryId) as OperationalRow | undefined;

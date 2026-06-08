@@ -3,6 +3,7 @@ import {
   RunRepository,
   type DashboardRunSummary,
 } from "./runs.js";
+import { knowledgeEntriesHasCategory } from "./knowledge-entry-revisions.js";
 
 /**
  * Project-aware aggregates over the DB read model (Phase 6-6).
@@ -156,6 +157,9 @@ function operationalKnowledgeInbox(
   db: Database.Database,
   filter: AggregateFilter,
 ): DbOperationalKnowledgeInbox {
+  // Fail soft on a pre-v19 schema (no category column) — inbox reads can run on
+  // a readonly DB opened before migration.
+  if (!knowledgeEntriesHasCategory(db)) return { total: 0, recent: [] };
   const where = [
     "e.category = 'operational'",
     "json_extract(r.frontmatter_json, '$.deprecated') IS NOT 1",
