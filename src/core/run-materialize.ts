@@ -12,6 +12,9 @@ import {
   listActiveScratchForRun,
 } from "../db/repositories/run-materializations.js";
 
+export const REPAIR_MISSING_REVIEW_DECISION_REASON =
+  "ensureRunMaterialized:repair-missing-review-decision";
+
 /**
  * Run materialization helpers (Phase 8-13).
  *
@@ -40,13 +43,26 @@ export function ensureRunMaterialized(opts: {
   runsDir: string;
   runId: string;
   /**
+   * Repair a partially materialized run dir where meta.json exists but
+   * review-decision.yaml is missing. This is intentionally narrower than a
+   * generic re-export: review auto needs the sidecar, and the audit reason must
+   * identify this repair path.
+   */
+  repairMissingReviewDecision?: boolean;
+  /**
    * Phase 10-3: optional `reason` recorded in `run_materializations`
    * for audit / `db doctor` visibility. Defaults to "ensureRunMaterialized".
    */
   reason?: string;
 }): boolean {
   if (!existsSync(opts.dbPath)) return false;
-  if (existsSync(join(opts.runsDir, opts.runId, "meta.json"))) return false;
+  const runDir = join(opts.runsDir, opts.runId);
+  const metaExists = existsSync(join(runDir, "meta.json"));
+  const repairMissingReviewDecision =
+    opts.repairMissingReviewDecision === true &&
+    metaExists &&
+    !existsSync(join(runDir, "review-decision.yaml"));
+  if (metaExists && !repairMissingReviewDecision) return false;
   const dbHandle = openManagedDb({ dbPath: opts.dbPath });
   const db = dbHandle.db;
   try {
@@ -76,8 +92,12 @@ export function ensureRunMaterialized(opts: {
     try {
       recordScratchMaterialization(db, {
         runId: opts.runId,
-        path: join(opts.runsDir, opts.runId),
-        reason: opts.reason ?? "ensureRunMaterialized",
+        path: runDir,
+        reason:
+          opts.reason ??
+          (repairMissingReviewDecision
+            ? REPAIR_MISSING_REVIEW_DECISION_REASON
+            : "ensureRunMaterialized"),
       });
     } catch (e) {
       // Phase 10-3 post-review P2 #1: bookkeeping insert failed but the
@@ -88,7 +108,7 @@ export function ensureRunMaterialized(opts: {
       process.stderr.write(
         `warning: could not record scratch materialization for ` +
           `${opts.runId}: ${(e as Error).message} — the scratch dir at ` +
-          `${join(opts.runsDir, opts.runId)} may leak; ` +
+          `${runDir} may leak; ` +
           `\`db doctor\` will not see it. ` +
           `Recover with \`harness db materialize cleanup --run ${opts.runId}\` ` +
           `or remove the dir manually.\n`,

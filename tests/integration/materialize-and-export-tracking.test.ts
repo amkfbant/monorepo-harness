@@ -15,6 +15,7 @@ import { storeArtifactBlob } from "../../src/db/artifact-blobs.js";
 import { exportRun } from "../../src/db/export-files.js";
 import {
   ensureRunMaterialized,
+  REPAIR_MISSING_REVIEW_DECISION_REASON,
 } from "../../src/core/run-materialize.js";
 import { _resetExportModeWarningForTest } from "../../src/config/export-mode.js";
 
@@ -199,4 +200,42 @@ describe("ensureRunMaterialized — scratch materialization (P1-1)", () => {
       }
     },
   );
+
+  it("repairs a materialized run dir that is missing only review-decision.yaml", () => {
+    const { runsDir, dbPath } = setupRoot();
+    seedDbFirstRun(dbPath, RUN_ID);
+
+    const runDir = join(runsDir, RUN_ID);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(
+      join(runDir, "meta.json"),
+      JSON.stringify({ runId: RUN_ID, status: "needs_review" }),
+    );
+    expect(existsSync(join(runDir, "review-decision.yaml"))).toBe(false);
+
+    const wrote = ensureRunMaterialized({
+      dbPath,
+      runsDir,
+      runId: RUN_ID,
+      repairMissingReviewDecision: true,
+    });
+    expect(wrote).toBe(true);
+    const yaml = readFileSync(
+      join(runDir, "review-decision.yaml"),
+      "utf8",
+    );
+    expect(yaml).toMatch(/decision: pending/);
+
+    const db = openDb(dbPath);
+    try {
+      const row = db
+        .prepare(
+          "SELECT reason FROM run_materializations WHERE run_id = ? ORDER BY materialization_id DESC LIMIT 1",
+        )
+        .get(RUN_ID) as { reason: string };
+      expect(row.reason).toBe(REPAIR_MISSING_REVIEW_DECISION_REASON);
+    } finally {
+      db.close();
+    }
+  });
 });

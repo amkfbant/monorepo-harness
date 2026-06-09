@@ -5,7 +5,6 @@ import type Database from "better-sqlite3";
 import type { RunMeta } from "../logging/run-log.js";
 import { gitCli } from "../git/git-cli.js";
 import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
-import { computeReviewedFingerprint } from "./reviewed-fingerprint.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
@@ -13,13 +12,20 @@ import { RunRepository } from "../db/repositories/runs.js";
 import { PullRequestRepository } from "../db/repositories/pull-requests.js";
 import { exportRun, warnIfExportFailed } from "../db/export-files.js";
 import { SourceModeError } from "../db/errors.js";
+import { PrGateError } from "./pr-gate-error.js";
+import {
+  assertPathsSubset,
+  assertReviewedFingerprintMatches,
+  parseGitPathList,
+  reviewedPathsFromMeta,
+} from "./reviewed-branch-push.js";
 
-export class PrGateError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "PrGateError";
-  }
-}
+export { PrGateError } from "./pr-gate-error.js";
+export {
+  pushReviewedBranchForEscalation,
+  type PushReviewedBranchOpts,
+  type PushReviewedBranchResult,
+} from "./reviewed-branch-push.js";
 
 const RUN_ID_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -340,52 +346,43 @@ async function createUnderLock(
 
   // 1. The reviewed file set + content fingerprint come from meta.json
   //    (written at run time) — the authoritative record, not events.jsonl.
-  const reviewed = meta.reviewed;
-  if (
-    !reviewed ||
-    !Array.isArray(reviewed.paths) ||
-    typeof reviewed.fingerprint !== "string"
-  ) {
-    throw new PrGateError(
-      `run ${opts.runId} has no reviewed fingerprint in meta.json; cannot verify the worktree (re-run on a current harness)`,
-    );
-  }
-  const reviewedPaths = reviewed.paths.filter(
-    (p): p is string => typeof p === "string" && p !== "",
-  );
-  if (reviewedPaths.length === 0) {
-    throw new PrGateError(
-      `run ${opts.runId} has no reviewed file changes; nothing to PR`,
-    );
-  }
+  const reviewedPaths = reviewedPathsFromMeta(meta, opts.runId);
 
   // 2. Content drift check: the worktree's reviewed files must still match
   //    what was approved. An edit to a reviewed path after approval must
   //    NOT slip silently into the PR.
-  const currentFingerprint = await computeReviewedFingerprint(
+  await assertReviewedFingerprintMatches({
     worktree,
+    meta,
+    runId: opts.runId,
     reviewedPaths,
-  );
-  if (currentFingerprint !== reviewed.fingerprint) {
-    throw new PrGateError(
-      `run ${opts.runId}: the worktree drifted since the run was reviewed — ` +
-        `a reviewed file no longer matches the approved content. ` +
-        `Refusing to create a PR; re-review the run.`,
-    );
-  }
+    refusal: "create a PR",
+  });
 
   // 3. Stage ONLY the reviewed paths and commit onto the run branch.
   //    ignore_untracked files (dist/** etc.) are in the worktree but were
   //    NOT validated, so they stay out.
   await runGit(["add", "--", ...reviewedPaths], git);
-  const staged = (
-    await runGit(["diff", "--cached", "--name-only"], git)
-  ).trim();
-  if (staged !== "") {
+  const stagedPaths = parseGitPathList(
+    await runGit(["diff", "--cached", "--name-only"], git),
+  );
+  assertPathsSubset(stagedPaths, reviewedPaths, "staged diff");
+  if (stagedPaths.length > 0) {
     await runGit(["commit", "-m", `harness: ${opts.runId}`], git);
   }
 
-  // 4. push the run branch to the target repo's origin.
+  // 4. Verify the FULL branch diff before push. This catches existing local
+  //    commits on the run branch, not just paths staged by this invocation.
+  const baseRef =
+    typeof meta.baseSha === "string" && meta.baseSha !== ""
+      ? meta.baseSha
+      : opts.base;
+  const branchPaths = parseGitPathList(
+    await runGit(["diff", "--name-only", baseRef, "HEAD"], git),
+  );
+  assertPathsSubset(branchPaths, reviewedPaths, "branch diff");
+
+  // 5. push the run branch to the target repo's origin.
   const push = await gitCli(["push", "-u", "origin", head], git);
   if (push.exitCode !== 0) {
     throw new PrGateError(
@@ -396,7 +393,7 @@ async function createUnderLock(
   // above). Capture it so auto-merge can pin the merge to THIS exact commit.
   const reviewedHeadSha = (await runGit(["rev-parse", "HEAD"], git)).trim();
 
-  // 5. open the PR (publisher should be idempotent on the head branch).
+  // 6. open the PR (publisher should be idempotent on the head branch).
   const title =
     opts.title ?? `harness ${opts.runId} (${meta.domain ?? "unknown"})`;
   const body = await buildPrBody(runDir, meta, opts.runId);
@@ -433,7 +430,7 @@ async function createUnderLock(
     throw e;
   }
 
-  // 6. record the pull request. The DB is the canonical record (Phase
+  // 7. record the pull request. The DB is the canonical record (Phase
   //    7-10). For a db-first run the `runs` update and the `pull_requests`
   //    row are committed in ONE transaction, so the PR record can never be
   //    `created` while the run row is left unrecorded.

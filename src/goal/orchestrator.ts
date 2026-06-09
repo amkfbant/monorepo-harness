@@ -106,7 +106,26 @@ export class GoalOrchestrator {
         steps.push({ step: i, decision: finalDecision, action: "close_and_pr", detail: pr.prUrl });
         return { goalId: input.goalId, outcome, steps, finalDecision, prUrl: pr.prUrl };
       } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
+        let message = e instanceof Error ? e.message : String(e);
+        if (
+          action.kind === "review" &&
+          input.runners.salvageReviewBranch !== undefined
+        ) {
+          try {
+            const salvage = await input.runners.salvageReviewBranch(
+              input.goalId,
+            );
+            if (salvage !== null) {
+              message +=
+                `; workspace branch pushed: ${salvage.branch}` +
+                ` (${salvage.headSha})`;
+            }
+          } catch (salvageError) {
+            message +=
+              `; workspace branch salvage failed: ` +
+              `${salvageError instanceof Error ? salvageError.message : String(salvageError)}`;
+          }
+        }
         steps.push({ step: i, decision: finalDecision, action: "escalate", detail: message });
         withManagedDb({ dbPath: this.opts.dbPath }, (db) => {
           new GoalRepository(db).updateStatus(input.goalId, "escalated", message);

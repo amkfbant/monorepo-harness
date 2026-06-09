@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openManagedDb } from "../../src/db/managed-connection.js";
@@ -16,6 +16,7 @@ import {
 import {
   createOrchestratorRunners,
   GoalNotCloseReadyError,
+  latestRunId,
   type GoalRunContext,
 } from "../../src/goal/orchestrator-runners.js";
 import { createFakeCodexRunner } from "../../src/codex/fake-codex-runner.js";
@@ -26,6 +27,7 @@ import {
   type PrMerger,
   type PrMergeInputs,
 } from "../../src/core/pr-creator.js";
+import { REPAIR_MISSING_REVIEW_DECISION_REASON } from "../../src/core/run-materialize.js";
 
 /**
  * End-to-end goal orchestration over real git + a fake codex.
@@ -385,6 +387,141 @@ describe("goal orchestrate (real git + fake codex)", () => {
       expect(implement).toBeDefined();
       expect(implement?.runId).toMatch(/^run-/);
       expect(repo.listReviewCycles(goalId).length).toBeGreaterThan(0);
+    } finally {
+      close();
+    }
+  });
+
+  it("repairs a coder run whose review-decision.yaml is missing, then finalizes", async () => {
+    const goalId = createGoal(f.dbPath, "goal-orch-repair-missing-decision");
+    const { coderRunner, reviewerRunner } = approveFakes("docs/guide.md");
+    const publisher = fakePublisher();
+    const resolveRunContext = (): GoalRunContext => ({
+      repoPath: f.repoPath,
+      repoId: "t",
+      domain: "docs",
+      goal: "update docs",
+      baseBranch: "main",
+    });
+    const coded = await runDomainCoding({
+      harnessRoot: f.harnessRoot,
+      repoPath: f.repoPath,
+      repoId: "t",
+      domain: "docs",
+      goal: "update docs",
+      baseBranch: "main",
+      codexRunner: coderRunner,
+    });
+    expect(coded.status).toBe("needs_review");
+    rmSync(
+      join(f.harnessRoot, "runs", coded.runId, "review-decision.yaml"),
+      { force: true },
+    );
+    {
+      const { db, close } = openManagedDb({ dbPath: f.dbPath });
+      try {
+        const repo = new GoalRepository(db);
+        const attempt = repo.createAttempt({
+          goalId,
+          attemptType: "implement",
+          status: "running",
+        });
+        repo.completeAttempt({
+          attemptId: attempt.attemptId,
+          status: "succeeded",
+          runId: coded.runId,
+        });
+      } finally {
+        close();
+      }
+    }
+
+    const runners = createOrchestratorRunners({
+      dbPath: f.dbPath,
+      harnessRoot: f.harnessRoot,
+      createdBy: "test",
+      coderRunner,
+      reviewerRunner,
+      publisher,
+      resolveRunContext,
+    });
+    const result = await new GoalOrchestrator({ dbPath: f.dbPath }).run({
+      goalId,
+      runners,
+      maxSteps: 20,
+      createdBy: "test",
+    });
+
+    expect(result.outcome).toBe("pr_created");
+    expect(publisher.calls).toHaveLength(1);
+    const { db, close } = openManagedDb({ dbPath: f.dbPath });
+    try {
+      const row = db
+        .prepare(
+          "SELECT reason FROM run_materializations WHERE run_id = ? ORDER BY materialization_id DESC LIMIT 1",
+        )
+        .get(coded.runId) as { reason: string };
+      expect(row.reason).toBe(REPAIR_MISSING_REVIEW_DECISION_REASON);
+    } finally {
+      close();
+    }
+  });
+
+  it("on review failure, escalates with the salvaged workspace branch and opens no PR", async () => {
+    const goalId = createGoal(f.dbPath, "goal-orch-salvage-review-failure");
+    const coderRunner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(join(cwd, "docs/guide.md"), "# Guide\n\nChanged.\n");
+      },
+      stdout: "updated docs\n",
+    });
+    const reviewerRunner = createFakeCodexRunner({
+      stdout: "not a review decision\n",
+    });
+    const publisher = fakePublisher();
+    const runners = createOrchestratorRunners({
+      dbPath: f.dbPath,
+      harnessRoot: f.harnessRoot,
+      createdBy: "test",
+      coderRunner,
+      reviewerRunner,
+      publisher,
+      resolveRunContext: (): GoalRunContext => ({
+        repoPath: f.repoPath,
+        repoId: "t",
+        domain: "docs",
+        goal: "update docs",
+        baseBranch: "main",
+      }),
+    });
+
+    const result = await new GoalOrchestrator({ dbPath: f.dbPath }).run({
+      goalId,
+      runners,
+      maxSteps: 20,
+      createdBy: "test",
+    });
+
+    expect(result.outcome).toBe("escalated");
+    expect(result.escalateReason).toMatch(/reviewer agent output is not a YAML object/);
+    expect(result.escalateReason).toMatch(/workspace branch pushed: harness\//);
+    expect(publisher.calls).toHaveLength(0);
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).toMatch(/harness\/run-/);
+
+    const { db, close } = openManagedDb({ dbPath: f.dbPath });
+    try {
+      const repo = new GoalRepository(db);
+      expect(repo.requireSession(goalId).status).toBe("escalated");
+      const runId = latestRunId(repo, goalId);
+      const run = db
+        .prepare("SELECT status FROM runs WHERE run_id = ?")
+        .get(runId) as { status: string };
+      expect(run.status).toBe("needs_review");
     } finally {
       close();
     }

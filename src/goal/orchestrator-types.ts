@@ -32,6 +32,16 @@ export interface OrchestratorRunners {
     merged?: boolean;
     escalateReason?: string;
   }>;
+  /**
+   * Best-effort, fail-closed salvage for a review-step failure: commit and push
+   * the latest needs_review run's reviewed branch without creating a PR or
+   * closing the goal. Omitted by tests/fakes that do not support real git.
+   */
+  salvageReviewBranch?(goalId: string): Promise<{
+    branch: string;
+    headSha: string;
+    committed: boolean;
+  } | null>;
 }
 
 export interface OrchestrationStep {
