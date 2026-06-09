@@ -100,4 +100,30 @@ describe("project_profile_revisions repository (Phase 14-2)", () => {
       db.close();
     }
   });
+
+  it("rolls back the canonical revision when write-through fails", () => {
+    const db = freshDb();
+    try {
+      expect(() =>
+        recordProjectProfileRevision(db, {
+          projectId: "mini",
+          bodyYaml: SAMPLE_YAML,
+          parsed: {},
+          actor: "a",
+          writeThrough: () => {
+            throw new Error("compat write failed");
+          },
+        }),
+      ).toThrow(/compat write failed/);
+      expect(getCurrentProjectProfile(db, "mini")).toBeNull();
+      const rows = db
+        .prepare(
+          "SELECT count(*) AS n FROM project_profile_revisions WHERE project_id = ?",
+        )
+        .get("mini") as { n: number };
+      expect(rows.n).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
 });

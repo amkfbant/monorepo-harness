@@ -103,6 +103,9 @@ harness project init --repo <path> --project-id <id> [--dry-run|--write] [--forc
 harness project init --from-policy <repo-id> --project-id <id> [--repo <path>] [--dry-run|--write]
 harness project check --project <id> [--repo <override>] [--json]
 harness project show --project <id> [--json]
+harness project import <path> [--actor <actor>] [--reason <text>] [--json]
+harness project export --project <id> --out <path> [--json]
+harness project edit <project-id> [--actor <actor>] [--reason <text>]
 ```
 
 | サブコマンド | 動作 |
@@ -111,6 +114,9 @@ harness project show --project <id> [--json]
 | `init` | profile を生成。`--repo` で repo を inspect、`--from-policy` で既存 `policies/repos/<id>.yaml` を移行。`--dry-run`（既定）は policy proposal を表示し書き込みなし。`--write` で `projects/<id>.yaml` + 生成 `policies/repos/<id>.yaml` + provenance サイドカー `<id>.generated.json` を安全書き込み（既存があれば `--force` 必須） |
 | `check` | Codex を起動せず profile / repo layout / 生成 policy / glob / commands / context pack / drift を検査。`ok` / `warn` / `error` に分類。config error で exit 1 |
 | `show` | profile を表示 |
+| `import` | 指定 YAML を DB canonical な `project_profile_revisions` に記録し、同一 transaction で `projects` / compat `project_profiles` / `domains` へ write-through する。`projects/<id>.yaml` を import した直後の `db check-consistency` は ok |
+| `export` | DB-current project profile revision の YAML を指定 path へ書き出す |
+| `edit` | DB-current project profile を `$EDITOR` で編集し、新 revision と compat rows を同一 transaction で更新する |
 
 `harness run --project <id>` / `harness workflow reviewed-run --project <id>` は
 profile を compile して実行する。生成 policy は既存 `RepoPolicySchema` をそのまま

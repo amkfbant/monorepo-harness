@@ -796,7 +796,9 @@ revision ベースの history テーブルと、compat-export 追跡 ledger を�
 - `project_profile_revisions` — project profile YAML の version 履歴
   （`(project_id, version)` unique）。`projects.current_profile_revision_id`
   が最新 revision を指す（既存 row は NULL、Phase 14-2 import が version=1 を
-  作って pointer を更新）。
+  作って pointer を更新）。`harness project import` と file bulk import は、
+  revision 記録と同一 transaction で `projects` / compat `project_profiles` /
+  `domains` へ write-through する（冪等 upsert + profile 単位の domains replace）。
 - `policy_templates` — repo/project/domain/global scope ごとの policy
   template 履歴（`(scope_type, scope_id, version)` unique）。
 - `effective_policy_snapshots` — per-run / per-scope の生成済み policy +
