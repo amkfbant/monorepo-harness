@@ -10,6 +10,7 @@ import { runReviewerAgent } from "../core/reviewer-agent.js";
 import { processReviewDecision } from "../core/review-processor.js";
 import {
   createPullRequest,
+  pushReviewedBranchForEscalation,
   type PrPublisher,
   type PrMerger,
   type PrMergeMethod,
@@ -654,6 +655,18 @@ export function createOrchestratorRunners(
         );
       });
       return { prUrl: pr.prUrl, merged: false };
+    },
+    salvageReviewBranch: async (goalId) => {
+      const runId = withManagedDb({ dbPath: deps.dbPath }, (db) =>
+        latestRunId(new GoalRepository(db), goalId),
+      );
+      return pushReviewedBranchForEscalation({
+        runsDir: paths.runsDir,
+        workspacesDir: paths.workspacesDir,
+        locksDir: paths.locksDir,
+        runId,
+        dbPath: deps.dbPath,
+      });
     },
   };
 }

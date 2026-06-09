@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createPullRequest,
+  pushReviewedBranchForEscalation,
   type PrPublisher,
   type PrPublishInputs,
 } from "../../src/core/pr-creator.js";
@@ -25,7 +26,10 @@ interface Fixture {
  * a run worktree on the run branch with an uncommitted change, and a
  * meta.json with the given status.
  */
-async function setup(status: string): Promise<Fixture> {
+async function setup(
+  status: string,
+  safetyStatus = "allowed",
+): Promise<Fixture> {
   const root = mkdtempSync(join(tmpdir(), "harness-pr-"));
   mkdirSync(join(root, "runs"), { recursive: true });
   mkdirSync(join(root, "workspaces"), { recursive: true });
@@ -66,11 +70,11 @@ async function setup(status: string): Promise<Fixture> {
         runId,
         domain: "apps/x",
         status,
-        safetyStatus: "allowed",
         runBranch,
         reviewer: "knkn",
         reviewedAt: "2026-05-21T00:00:00Z",
         reviewed: { paths: reviewedPaths, fingerprint },
+        safetyStatus,
         startedAt: "2026-05-21T00:00:00Z",
       },
       null,
@@ -183,6 +187,36 @@ describe("createPullRequest", () => {
     ).rejects.toThrow(/only approved runs/);
   });
 
+  it("salvage refuses an approved run instead of bypassing the PR gate", async () => {
+    const f = await setup("approved");
+    await expect(
+      pushReviewedBranchForEscalation({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+        locksDir: join(f.root, "locks"),
+        runId: f.runId,
+      }),
+    ).rejects.toThrow(/expected needs_review/);
+  });
+
+  it("salvage refuses safetyStatus=denied", async () => {
+    const f = await setup("needs_review", "denied");
+    await expect(
+      pushReviewedBranchForEscalation({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+        locksDir: join(f.root, "locks"),
+        runId: f.runId,
+      }),
+    ).rejects.toThrow(/expected allowed/);
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-pr01/);
+  });
+
   it("refuses to create a second PR for the same run", async () => {
     const f = await setup("approved");
     const opts = {
@@ -225,6 +259,33 @@ describe("createPullRequest", () => {
     ]).trim();
     expect(committed).toMatch(/apps\/x\/f\.ts/);
     expect(committed).not.toMatch(/dist\/bundle\.js/);
+  });
+
+  it("refuses to push when the branch already contains an unreviewed commit", async () => {
+    const f = await setup("approved");
+    const worktree = join(f.root, "workspaces", f.runId, "repo");
+    writeFileSync(join(worktree, "apps/x/extra.ts"), "export const extra = 1;\n");
+    git(worktree, ["add", "apps/x/extra.ts"]);
+    git(worktree, ["commit", "-qm", "unreviewed local commit"]);
+
+    await expect(
+      createPullRequest({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+        locksDir: join(f.root, "locks"),
+        runId: f.runId,
+        base: "main",
+        draft: true,
+        publisher: fakePublisher(),
+      }),
+    ).rejects.toThrow(/branch diff contains unreviewed path.*apps\/x\/extra\.ts/);
+
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-pr01/);
   });
 
   it("P1: refuses when a reviewed file drifted after approval", async () => {

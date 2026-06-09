@@ -296,6 +296,7 @@ export async function runReviewerAgent(
       dbPath: inputs.dbPath,
       runsDir: inputs.runsDir,
       runId: inputs.runId,
+      repairMissingReviewDecision: true,
     });
   }
   const metaPath = join(runDir, "meta.json");

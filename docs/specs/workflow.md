@@ -503,6 +503,33 @@ if changes_requested かつ attempt < maxAttempts:
 
 workflow artifact は root run（attempt 0 の run）の dir に置く: `workflow.json` / `workflow-summary.md`。各 attempt の `parentRunId` / `rootRunId` / `rerunAttempt` は `rerun` と同じ規則で維持される。
 
+## goal orchestrate finalization salvage（R2 / issue #72）
+
+`harness goal orchestrate` の finalization は review-decision 生成 →
+`review process` → commit/push → PR の順に進む。`review auto` の直前に
+`ensureRunMaterialized({ repairMissingReviewDecision: true })` を呼び、`runs/<id>/`
+に `meta.json` はあるが `review-decision.yaml` だけが欠ける部分 materialize を
+DB から再生成する。この repair の `run_materializations.reason` は必ず
+`ensureRunMaterialized:repair-missing-review-decision` で、generic な
+`review-auto` では記録しない。
+
+review step が失敗した場合、orchestrator は従来どおり goal を `escalated`
+に倒す。ただし、最新 run が安全に salvage 可能なときだけ、PR を作らず goal も
+close せずに workspace branch を commit/push する。salvage gate は fail-closed:
+
+- canonical run status が `needs_review`
+- `safetyStatus === "allowed"`
+- `meta.reviewed.paths` と `meta.reviewed.fingerprint` が存在し、現 worktree で再一致
+- stage するのは reviewed path のみで、既存 index も reviewed path 以外を含まない
+- push 直前に `baseSha..HEAD` の **完全な branch diff** が reviewed path のみである
+  ことを検証する（今回 stage した path だけでなく既存 local commit も対象）
+- PR 作成・goal close はしない。既存 `pr create` の `status === approved` gate と
+  reviewed fingerprint 再検証は維持され、salvage で迂回しない
+
+escalation reason text には元の失敗理由を残し、push に成功した場合だけ
+`workspace branch pushed: <branch> (<sha>)` を追記する。schema は変更しない。salvage
+gate が落ちた場合は push せず、その拒否理由だけを escalation reason に追記する。
+
 ## Phase 10 — lease stealing / scratch lifecycle（close 済み・現状仕様）
 
 Phase 10 で file domain lock が撤去され、DB-only domain lock が唯一の
