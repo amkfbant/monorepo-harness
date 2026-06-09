@@ -211,8 +211,13 @@ import {
   listOperationalKnowledge,
   getOperationalKnowledge,
   deprecateOperationalKnowledge,
+  operationalKnowledgeDigest,
   OperationalKnowledgeError,
 } from "../core/operational-knowledge.js";
+import {
+  exportOperationalKnowledge,
+  importOperationalKnowledge,
+} from "../core/operational-knowledge-files.js";
 import { registerProjectCommands } from "./project.js";
 import { registerPolicyCommands } from "./policy.js";
 import { registerDbCommands } from "./db.js";
@@ -3295,6 +3300,112 @@ knowledgeOpsCmd
         process.exit(1);
       }
       throw e;
+    } finally {
+      handle.close();
+    }
+  });
+
+/** Default compat dir for operational knowledge files (DB-canonical → file). */
+function opsKnowledgeDirOf(root: string, raw: Record<string, unknown>): string {
+  if (typeof raw.dir === "string" && raw.dir !== "") return resolve(raw.dir);
+  return join(root, "docs", "ops-knowledge");
+}
+
+knowledgeOpsCmd
+  .command("digest")
+  .description("aggregate operational knowledge (total / active / deprecated / by kind)")
+  .option("--project <id>", "scope to a project (portable entries still counted)")
+  .option("--repo-id <id>", "scope to a repo (portable entries still counted)")
+  .option("--domain <domain>", "scope to a domain")
+  .option("--json", "emit JSON instead of text", false)
+  .action((raw: Record<string, unknown>) => {
+    const handle = openManagedDb({
+      dbPath: harnessPaths(getHarnessRoot()).dbPath,
+      readonly: true,
+    });
+    try {
+      const d = operationalKnowledgeDigest(handle.db, {
+        ...(typeof raw.project === "string" ? { projectId: raw.project } : {}),
+        ...(typeof raw.repoId === "string" ? { repoId: raw.repoId } : {}),
+        ...(typeof raw.domain === "string" ? { domain: raw.domain } : {}),
+      });
+      if (raw.json === true) {
+        process.stdout.write(`${JSON.stringify(d, null, 2)}\n`);
+        return;
+      }
+      const kinds = Object.keys(d.byKind)
+        .sort()
+        .map((k) => `  ${k}: ${d.byKind[k]}`)
+        .join("\n");
+      process.stdout.write(
+        `operational knowledge digest\n` +
+          `total: ${d.total}  active: ${d.active}  deprecated: ${d.deprecated}\n` +
+          `${kinds}${kinds ? "\n" : ""}`,
+      );
+    } finally {
+      handle.close();
+    }
+  });
+
+knowledgeOpsCmd
+  .command("export")
+  .description("export operational knowledge to docs/ops-knowledge/ (DB → file compat)")
+  .option("--to-docs", "export to docs/ops-knowledge", false)
+  .option("--dir <dir>", "output dir (default: HARNESS_ROOT/docs/ops-knowledge)")
+  .option("--json", "emit JSON instead of text", false)
+  .action(async (raw: Record<string, unknown>) => {
+    if (raw.toDocs !== true) {
+      process.stderr.write(
+        "harness error: 'knowledge ops export' requires --to-docs\n",
+      );
+      process.exit(1);
+    }
+    const root = getHarnessRoot();
+    const outDir = opsKnowledgeDirOf(root, raw);
+    const handle = openManagedDb({
+      dbPath: harnessPaths(root).dbPath,
+      readonly: true,
+    });
+    try {
+      const result = await exportOperationalKnowledge(handle.db, outDir);
+      process.stdout.write(
+        raw.json === true
+          ? `${JSON.stringify(result, null, 2)}\n`
+          : `knowledge ops export: wrote ${result.written.length} file(s) to ${outDir}\n`,
+      );
+    } finally {
+      handle.close();
+    }
+  });
+
+knowledgeOpsCmd
+  .command("import")
+  .description("import operational knowledge from docs/ops-knowledge/ (file → DB, idempotent)")
+  .option("--from-docs", "import from docs/ops-knowledge", false)
+  .option("--dir <dir>", "input dir (default: HARNESS_ROOT/docs/ops-knowledge)")
+  .option("--actor <actor>", "actor label", "db-import")
+  .option("--json", "emit JSON instead of text", false)
+  .action(async (raw: Record<string, unknown>) => {
+    if (raw.fromDocs !== true) {
+      process.stderr.write(
+        "harness error: 'knowledge ops import' requires --from-docs\n",
+      );
+      process.exit(1);
+    }
+    const root = getHarnessRoot();
+    const inDir = opsKnowledgeDirOf(root, raw);
+    const handle = openManagedDb({ dbPath: harnessPaths(root).dbPath });
+    try {
+      runMigrations(handle.db);
+      const result = await importOperationalKnowledge(handle.db, inDir, {
+        actor: String(raw.actor),
+      });
+      process.stdout.write(
+        raw.json === true
+          ? `${JSON.stringify(result, null, 2)}\n`
+          : `knowledge ops import: imported ${result.imported}` +
+              `${result.skipped.length > 0 ? `, skipped ${result.skipped.length}` : ""}\n`,
+      );
     } finally {
       handle.close();
     }

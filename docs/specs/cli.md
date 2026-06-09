@@ -1340,6 +1340,9 @@ harness knowledge ops add  --title <t> --body <text> [--key <slug>] [--kind <k>]
 harness knowledge ops list [--project <id>] [--repo-id <id>] [--domain <d>] [--include-deprecated] [--json]
 harness knowledge ops show <entry-id> [--json]
 harness knowledge ops deprecate <entry-id> [--actor <a>] [--reason <text>] [--json]
+harness knowledge ops digest [--project <id>] [--repo-id <id>] [--domain <d>] [--json]
+harness knowledge ops export --to-docs   [--dir <dir>] [--json]
+harness knowledge ops import --from-docs [--dir <dir>] [--actor <a>] [--json]
 ```
 
 | `ops add` option | Required | 説明 |
@@ -1355,7 +1358,9 @@ harness knowledge ops deprecate <entry-id> [--actor <a>] [--reason <text>] [--js
 - **scope**: `ops list --project <id>` は当該 project に加え **portable（NULL scope）entry も表示**する（codebase の knowledge と同じ包含規則）。
 - **deprecate**: DB-only で current revision に `deprecated: true` を記録し、既定 list から隠す（`--include-deprecated` で表示）。冪等。
 - **安全境界**: operational 知識は **coder(codex) prompt に注入されない**（`knowledge build-context` / `--with-knowledge` は codebase のみ集約）。codebase 側の `knowledge show` / `edit` は operational entry を拒否し、`knowledge ops show` は非 operational id を拒否する（surface 分離）。
-- **MCP からの recall** は follow-up（SP3 の `harness.ops_knowledge.*` read tools）。それまで recall はこの CLI で行う。
+- **MCP からの recall / 著述**は `harness.ops_knowledge.search` / `get`（read）/ `record` / `deprecate`（guarded mutation）。
+- **digest**: total / active / deprecated と active の kind 別件数（scope 包含は list と同じ）。
+- **file export/import（DB-canonical ⇄ file compat）**: `ops export --to-docs` が各 entry を **`docs/ops-knowledge/<kind>/<key>.md`**（既定 `HARNESS_ROOT/docs/ops-knowledge`、`--dir` で変更）に出力し、git で review できるようにする。`ops import --from-docs` がそれを DB に戻す（**冪等** round-trip。`ops/<key>` namespace を維持し、codebase 知識の `docs/knowledge/` importer とは衝突しない）。**`db import --from-files` は ops-knowledge を自動取り込みしない**（明示の `ops import` を使う＝namespace 分離）。
 
 ### source run との独立性
 

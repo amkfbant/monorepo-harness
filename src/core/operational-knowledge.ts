@@ -519,3 +519,100 @@ export function deprecateOperationalKnowledge(
   });
   return tx.immediate();
 }
+
+export interface OperationalKnowledgeDigest {
+  total: number;
+  active: number;
+  deprecated: number;
+  /** active (non-deprecated) entry count by kind */
+  byKind: Record<string, number>;
+}
+
+/**
+ * Aggregate operational knowledge for a digest view (issue #57 — digest parity).
+ * Scoped like `listOperationalKnowledge` (portable entries included).
+ */
+export function operationalKnowledgeDigest(
+  db: Database.Database,
+  filter: ListOperationalKnowledgeFilter = {},
+): OperationalKnowledgeDigest {
+  const all = listOperationalKnowledge(db, { ...filter, includeDeprecated: true });
+  const byKind: Record<string, number> = {};
+  let active = 0;
+  let deprecated = 0;
+  for (const e of all) {
+    if (e.deprecated) {
+      deprecated += 1;
+    } else {
+      active += 1;
+      byKind[e.kind] = (byKind[e.kind] ?? 0) + 1;
+    }
+  }
+  return { total: all.length, active, deprecated, byKind };
+}
+
+export interface ImportOperationalEntryInput {
+  /** the canonical `ops/<key>` entry id */
+  entryId: string;
+  /** the raw markdown (frontmatter + body) exactly as stored / exported */
+  rawMarkdown: string;
+  frontmatter: Record<string, unknown>;
+  actor: string;
+  now?: Date;
+}
+
+/**
+ * Materialize an operational entry from its exported markdown (issue #57 —
+ * file-export round-trip). Stores the RAW markdown as the current revision so an
+ * export→import round-trip is idempotent (same body sha → reused), and forces
+ * `category='operational'`. Deprecation rides in the frontmatter (no separate
+ * call), so a deprecated export round-trips as deprecated.
+ */
+export function importOperationalEntry(
+  db: Database.Database,
+  input: ImportOperationalEntryInput,
+): { entryId: string; reusedExisting: boolean } {
+  // Enforce the `ops/<slug>` namespace so a direct caller cannot upsert (and
+  // reclassify) a codebase / arbitrary entry id as operational.
+  const suffix = input.entryId.startsWith(ENTRY_PREFIX)
+    ? input.entryId.slice(ENTRY_PREFIX.length)
+    : null;
+  if (suffix === null || !SLUG_RE.test(suffix)) {
+    throw new OperationalKnowledgeError(
+      `invalid operational entry id ${JSON.stringify(input.entryId)} (expected ops/<slug>)`,
+    );
+  }
+  const fm = input.frontmatter;
+  // Validate the imported kind with the SAME slug rules as authoring — an
+  // untrusted `kind` must not become a path-traversal segment on the next export.
+  const kind = normalizeKind(typeof fm.kind === "string" ? fm.kind : undefined);
+  const title = typeof fm.title === "string" ? fm.title : input.entryId;
+  const projectId = typeof fm.project_id === "string" ? fm.project_id : null;
+  const repoId = typeof fm.repo_id === "string" ? fm.repo_id : null;
+  const domain = typeof fm.domain === "string" ? fm.domain : null;
+  const createdAt = (input.now ?? new Date()).toISOString();
+  const tx = db.transaction((): { entryId: string; reusedExisting: boolean } => {
+    db.prepare(UPSERT_ENTRY_SQL).run({
+      entry_id: input.entryId,
+      project_id: projectId,
+      repo_id: repoId,
+      domain,
+      kind,
+      title,
+      body: input.rawMarkdown,
+      frontmatter_json: JSON.stringify(fm),
+      created_at: createdAt,
+    });
+    const recorded = recordKnowledgeEntryRevision(db, {
+      entryId: input.entryId,
+      bodyMarkdown: input.rawMarkdown,
+      frontmatter: fm,
+      title,
+      actor: input.actor,
+      reason: "operational knowledge file import",
+      ...(input.now !== undefined ? { now: input.now } : {}),
+    });
+    return { entryId: input.entryId, reusedExisting: recorded.reusedExisting };
+  });
+  return tx.immediate();
+}
