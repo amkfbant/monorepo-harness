@@ -364,7 +364,7 @@ async function createUnderLock(
   //    NOT validated, so they stay out.
   await runGit(["add", "--", ...reviewedPaths], git);
   const stagedPaths = parseGitPathList(
-    await runGit(["diff", "--cached", "--name-only"], git),
+    await runGit(["diff", "--cached", "-z", "--name-only"], git),
   );
   assertPathsSubset(stagedPaths, reviewedPaths, "staged diff");
   if (stagedPaths.length > 0) {
@@ -378,7 +378,7 @@ async function createUnderLock(
       ? meta.baseSha
       : opts.base;
   const branchPaths = parseGitPathList(
-    await runGit(["diff", "--name-only", baseRef, "HEAD"], git),
+    await runGit(["diff", "-z", "--name-only", baseRef, "HEAD"], git),
   );
   assertPathsSubset(branchPaths, reviewedPaths, "branch diff");
 

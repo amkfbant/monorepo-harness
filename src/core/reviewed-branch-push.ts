@@ -224,7 +224,7 @@ async function commitAndPushReviewedBranch(input: {
 
   await runGit(["add", "--", ...reviewedPaths], git);
   const stagedPaths = parseGitPathList(
-    await runGit(["diff", "--cached", "--name-only"], git),
+    await runGit(["diff", "--cached", "-z", "--name-only"], git),
   );
   assertPathsSubset(stagedPaths, reviewedPaths, "staged diff");
   let committed = false;
@@ -234,7 +234,7 @@ async function commitAndPushReviewedBranch(input: {
   }
 
   const branchPaths = parseGitPathList(
-    await runGit(["diff", "--name-only", input.baseRef, "HEAD"], git),
+    await runGit(["diff", "-z", "--name-only", input.baseRef, "HEAD"], git),
   );
   assertPathsSubset(branchPaths, reviewedPaths, "branch diff");
 
@@ -249,10 +249,11 @@ async function commitAndPushReviewedBranch(input: {
 }
 
 export function parseGitPathList(stdout: string): string[] {
-  return stdout
-    .split("\n")
-    .map((p) => p.trim())
-    .filter((p) => p !== "");
+  // Parse `git diff -z` output: paths are NUL-terminated, so split on NUL and
+  // do NOT trim. A path with leading/trailing whitespace (e.g. " a") must be
+  // preserved exactly — trimming line-oriented output could rewrite " a" to
+  // "a" and let an unreviewed file slip past the reviewed-paths subset gate.
+  return stdout.split("\0").filter((p) => p !== "");
 }
 
 export function assertPathsSubset(
