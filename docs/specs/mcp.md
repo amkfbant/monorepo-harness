@@ -641,6 +641,21 @@ If `goalId` is supplied, confirmed execution imports the exact proposal into
 `goal_review_cycles` / `goal_findings`, records a `review_consensus` close check
 when the goal requires one, and records a convergence decision. Negative
 decisions with no explicit required changes become an in-scope P1 blocker.
+Reviewer non-blocking comments that only report tests/checks were not run or
+that command logs/output are missing are returned under
+`goalIntegration.reviewAdvisories` and copied into
+`goal_close_checks.evidence.reviewerAdvisories`; they are not imported as
+`goal_findings` and therefore do not trigger `needs_classification` or
+escalation by themselves. A passed `review_consensus` close check means static
+review consensus approved the run. It is not test execution evidence; MCP
+clients that need a test gate should start the goal with a normal `command`
+close condition and record that command evidence separately.
+
+`harness.review.consensus` returns the persisted `review_consensus` row without
+introducing extra enum values. The `active` row is returned raw, so parse
+`active.summaryJson` for its `semantics` field; `history` entries are already
+parsed, so read `history[].summary.semantics`. `approved` means static review
+passed and `testsExecutedByConsensus=false`.
 
 Goal tools:
 

@@ -5,6 +5,7 @@ import { parse as parseYaml } from "yaml";
 import type { RunMeta } from "../logging/run-log.js";
 import {
   loadReviewDecision,
+  serializeReviewDecision,
   writeReviewDecision,
 } from "./review-decision-loader.js";
 import { ensureRunMaterialized } from "./run-materialize.js";
@@ -14,7 +15,6 @@ import {
 } from "./review-decision-schema.js";
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import { createHash } from "node:crypto";
-import { stringify as stringifyYaml } from "yaml";
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
@@ -161,7 +161,7 @@ export interface ReviewerAgentResult {
  */
 export const REVIEWER_PROMPT_TEMPLATE = {
   name: "reviewer-run-artifacts",
-  version: 1,
+  version: 2,
 } as const;
 
 export const PROMPT_PREAMBLE = `You are an automated code reviewer. Read the run artifacts in the
@@ -195,6 +195,11 @@ Artifacts to read (in this order of priority):
 - commands/<id>.out.log / commands/<id>.err.log (allowedCommands output, if any)
 
 Be strict but fair. Prefer specific required_changes over vague ones.
+An approved decision means static review passed; review_consensus does not execute tests.
+If commands/<id>.out.log / commands/<id>.err.log do not show
+tests/checks actually ran, do not block approval solely for that reason; add a
+concise non_blocking_comments advisory that tests/checks were not run or no
+command logs were present.
 `;
 
 /**
@@ -501,7 +506,7 @@ export async function runReviewerAgent(
   // Skip the DB write entirely if the DB file does not yet exist —
   // `review auto` must not silently create an empty (un-migrated) DB.
   if (inputs.dbPath !== undefined && existsSync(inputs.dbPath)) {
-    const sourceYaml = stringifyYaml(decision);
+    const sourceYaml = serializeReviewDecision(decision);
     const sha = createHash("sha256").update(sourceYaml).digest("hex");
     const dbHandle = openManagedDb({ dbPath: inputs.dbPath });
     try {

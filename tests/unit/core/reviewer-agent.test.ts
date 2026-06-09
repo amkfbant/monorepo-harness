@@ -26,8 +26,15 @@ describe("reviewer prompt template (tripwire)", () => {
       .update(PROMPT_PREAMBLE)
       .digest("hex")
       .slice(0, 16);
-    expect(REVIEWER_PROMPT_TEMPLATE.version).toBe(1);
-    expect(hash).toBe("ba8278a8e3235d92");
+    expect(REVIEWER_PROMPT_TEMPLATE.version).toBe(2);
+    expect(hash).toBe("2fe7b149384d076d");
+  });
+
+  it("tells reviewers to surface missing test execution as non-blocking advisory", () => {
+    expect(PROMPT_PREAMBLE).toMatch(/static review passed/i);
+    expect(PROMPT_PREAMBLE).toMatch(/does not execute tests/i);
+    expect(PROMPT_PREAMBLE).toMatch(/non_blocking_comments/);
+    expect(PROMPT_PREAMBLE).toMatch(/command logs/i);
   });
 });
 
@@ -153,6 +160,9 @@ describe("runReviewerAgent", () => {
       "utf8",
     );
     expect(yaml).toMatch(/decision: approved/);
+    expect(yaml).toMatch(
+      /approved means static review passed; review_consensus does not execute tests/,
+    );
     expect(yaml).toMatch(/reviewer: codex-reviewer/);
     expect(yaml).toMatch(/diff is scoped to apps\/user/);
   });

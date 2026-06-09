@@ -212,6 +212,22 @@ must be deferred or classified before the loop can continue safely.
 review decision with no required changes still creates an in-scope P1 blocker
 so a rejected/changes-requested verdict cannot accidentally become
 `close_ready`.
+Generic reviewer advisories that only say tests/checks were not run, could not
+be run in the review environment, or that command logs/output are missing are
+not imported as goal findings when they appear in `non_blocking_comments`.
+They are surfaced as `reviewAdvisories` on review import and copied into
+`goal_close_checks.evidence.reviewerAdvisories`, so operators can see the
+missing test evidence without triggering `needs_classification` or escalation.
+The carve-out does not apply to `required_changes`, close-check failures, or
+actual failing command evidence.
+
+`review_consensus` close conditions are static review evidence only. A passed
+`review_consensus` check records that static review consensus approved the run;
+it does not prove tests executed. Goals that require tests must include normal
+`kind: command` close conditions for those commands. Convergence evaluates those
+command checks using the existing close-condition machinery; it does not inject
+synthetic test gates and does not use reviewer self-report as state-transition
+evidence.
 
 Review-only attempts inherit the related coding iteration when they are linked
 to an existing run attempt. This keeps automatic review bookkeeping from

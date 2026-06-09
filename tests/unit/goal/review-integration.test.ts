@@ -291,7 +291,9 @@ describe("goal review integration", () => {
       });
       const proposal = createProposal(proposals, {
         decision: "approved",
-        nonBlockingComments: ["Tests were not run in this environment."],
+        nonBlockingComments: [
+          "No command logs were present, so I could not verify tests ran.",
+        ],
       });
 
       const imported = importReviewProposalToGoal({
@@ -309,14 +311,39 @@ describe("goal review integration", () => {
         createdBy: "test",
       });
 
+      expect(imported.reviewAdvisories).toEqual([
+        {
+          source: "non_blocking_comment",
+          index: 0,
+          category: "test-execution-unverified",
+          text: "No command logs were present, so I could not verify tests ran.",
+        },
+      ]);
       expect(imported.findings).toHaveLength(0);
       expect(imported.cycle.findingsSeen).toBe(0);
+      expect(imported.cycle.summary).toMatch(/reviewer advisory/);
       expect(goals.listFindings({ goalId: "goal-environment-note" })).toEqual(
         [],
       );
       expect(proposal.nonBlockingComments).toEqual([
-        "Tests were not run in this environment.",
+        "No command logs were present, so I could not verify tests ran.",
       ]);
+      expect(imported.closeChecks[0]?.message).toMatch(/static pass/);
+      expect(imported.closeChecks[0]?.message).toMatch(/tests not executed/);
+      expect(imported.closeChecks[0]?.evidence).toMatchObject({
+        reviewConsensusSemantics: {
+          approvalKind: "static_review",
+          testsExecutedByConsensus: false,
+        },
+        reviewerAdvisories: [
+          {
+            source: "non_blocking_comment",
+            index: 0,
+            category: "test-execution-unverified",
+            text: "No command logs were present, so I could not verify tests ran.",
+          },
+        ],
+      });
       expect(imported.convergenceDecision.decision).toBe("close_ready");
       expect(imported.goalStatus?.status).toBe("close_ready");
     } finally {

@@ -213,18 +213,14 @@ export function registerGoalCommands(
           const session = repo.requireSession(goalId);
           const findings = repo.listFindings({ goalId, limit: 10_000 });
           const decisions = repo.listDecisions(goalId);
+          const closeChecks = repo.listCloseChecks(goalId);
           const convergence = new ConvergenceService(repo).evaluate(goalId);
-          return { session, findings, decisions, convergence };
+          return { session, findings, decisions, closeChecks, convergence };
         });
         if (raw.json === true) {
           process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
         } else {
-          process.stdout.write(
-            `goal=${result.session.goalId} status=${result.session.status} ` +
-              `decision=${result.convergence.decision} ` +
-              `openP1=${result.convergence.metrics.openInScopeP1} ` +
-              `unknown=${result.convergence.metrics.openUnknownScope}\n`,
-          );
+          process.stdout.write(`${formatGoalStatusLine(result)}\n`);
         }
       });
     });
@@ -1153,6 +1149,109 @@ export function formatGoalOrchestrateResultLine(
       : "") +
     (link.linked ? ` workspace=${link.agent}` : "")
   );
+}
+
+export function formatGoalStatusLine(result: {
+  session: {
+    goalId: string;
+    status: string;
+    closeConditions: Array<{ id: string; kind: string; required: boolean }>;
+  };
+  convergence: {
+    decision: string;
+    metrics: { openInScopeP1: number; openUnknownScope: number };
+  };
+  closeChecks: Array<{
+    conditionId: string;
+    status: string;
+    checkedAt?: string;
+    evidence?: Record<string, unknown>;
+  }>;
+}): string {
+  const reviewAdvisoryCount = countReviewConsensusAdvisories(result);
+  const staticConsensus = hasPassedReviewConsensusCheck(result)
+    ? " review_consensus=static_pass tests=not_run_by_consensus"
+    : "";
+  const advisories =
+    reviewAdvisoryCount > 0 ? ` review_advisories=${reviewAdvisoryCount}` : "";
+  return (
+    `goal=${result.session.goalId} status=${result.session.status} ` +
+    `decision=${result.convergence.decision} ` +
+    `openP1=${result.convergence.metrics.openInScopeP1} ` +
+    `unknown=${result.convergence.metrics.openUnknownScope}` +
+    staticConsensus +
+    advisories
+  );
+}
+
+function hasPassedReviewConsensusCheck(result: {
+  session: { closeConditions: Array<{ id: string; kind: string }> };
+  closeChecks: Array<{ conditionId: string; status: string; checkedAt?: string }>;
+}): boolean {
+  const reviewConditionIds = new Set(
+    result.session.closeConditions
+      .filter((condition) => condition.kind === "review_consensus")
+      .map((condition) => condition.id),
+  );
+  for (const conditionId of reviewConditionIds) {
+    const latest = latestCloseCheck(result.closeChecks, conditionId);
+    if (latest?.status === "passed") return true;
+  }
+  return false;
+}
+
+function countReviewConsensusAdvisories(result: {
+  session: { closeConditions: Array<{ id: string; kind: string }> };
+  closeChecks: Array<{
+    conditionId: string;
+    status: string;
+    checkedAt?: string;
+    evidence?: Record<string, unknown>;
+  }>;
+}): number {
+  const reviewConditionIds = new Set(
+    result.session.closeConditions
+      .filter((condition) => condition.kind === "review_consensus")
+      .map((condition) => condition.id),
+  );
+  let count = 0;
+  for (const conditionId of reviewConditionIds) {
+    const latest = latestCloseCheck(result.closeChecks, conditionId);
+    const advisories = latest?.evidence?.reviewerAdvisories;
+    if (Array.isArray(advisories)) count += advisories.length;
+  }
+  return count;
+}
+
+function latestCloseCheck(
+  checks: Array<{
+    conditionId: string;
+    status: string;
+    checkedAt?: string;
+    evidence?: Record<string, unknown>;
+  }>,
+  conditionId: string,
+): {
+  conditionId: string;
+  status: string;
+  checkedAt?: string;
+  evidence?: Record<string, unknown>;
+} | null {
+  return checks
+    .filter((check) => check.conditionId === conditionId)
+    .reduce<{
+      conditionId: string;
+      status: string;
+      checkedAt?: string;
+      evidence?: Record<string, unknown>;
+    } | null>(
+      (latest, check) => {
+        if (latest === null) return check;
+        if ((check.checkedAt ?? "") >= (latest.checkedAt ?? "")) return check;
+        return latest;
+      },
+      null,
+    );
 }
 
 function withGoalRepo<T>(
