@@ -543,6 +543,7 @@ export function createOrchestratorRunners(
           // escalated status transition (consistent with runAutoMerge).
           return {
             prUrl: "",
+            draft: false,
             escalateReason: `auto-merge preflight hard-blocked: ${preflight.blockers.join(", ")}`,
           };
         }
@@ -623,7 +624,11 @@ export function createOrchestratorRunners(
           pr.headSha,
         );
         if (outcome.escalateReason !== undefined) {
-          return { prUrl: pr.prUrl, escalateReason: outcome.escalateReason };
+          return {
+            prUrl: pr.prUrl,
+            draft: pr.draft,
+            escalateReason: outcome.escalateReason,
+          };
         }
         // merged → closed. A CI-not-green transient (recheckable) leaves the
         // goal `close_ready` with the PR open: a later `goal orchestrate`
@@ -644,7 +649,7 @@ export function createOrchestratorRunners(
         withManagedDb({ dbPath: deps.dbPath }, (db) => {
           new GoalRepository(db).updateStatus(goalId, nextStatus, summary);
         });
-        return { prUrl: pr.prUrl, merged: outcome.merged };
+        return { prUrl: pr.prUrl, draft: pr.draft, merged: outcome.merged };
       }
 
       withManagedDb({ dbPath: deps.dbPath }, (db) => {
@@ -654,7 +659,7 @@ export function createOrchestratorRunners(
           "goal converged; PR opened",
         );
       });
-      return { prUrl: pr.prUrl, merged: false };
+      return { prUrl: pr.prUrl, draft: pr.draft, merged: false };
     },
     salvageReviewBranch: async (goalId) => {
       const runId = withManagedDb({ dbPath: deps.dbPath }, (db) =>

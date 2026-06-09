@@ -832,7 +832,10 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
   rename/refactor（削除数 == 追加数）は降格しない。両誤り方向で fail-safe（false-positive
   は人手 merge=安全 / false-negative は削除・skip シグナル単独と同等）。
 - **closeAndPr の分岐**（`src/goal/orchestrator-runners.ts`）: PR 作成後、
-  `deps.autoMerge` があれば gate を評価し
+  `deps.autoMerge` があれば gate を評価する。`closeAndPr` の PR 結果と
+  `OrchestrationResult` は PR の draft 状態を `draft: boolean` として保持する。
+  outcome enum の値は不変で、draft PR の作成でも `outcome` は **`pr_created`** のまま
+  （CLI が `draft=true|false` を別フィールド表示）。
   - `canMerge` → `gh pr merge --match-head-commit <sha> --<method>`（idempotent:
     既マージ検出、**head commit に pin**: CI 判定前に取得した head SHA に固定し
     head が動けば拒否→escalate）で merge、operation audit（`operations`,

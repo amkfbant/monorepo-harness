@@ -68,6 +68,7 @@ import {
   type GoalScopeStatus,
   type GoalStatus,
 } from "../goal/types.js";
+import type { OrchestrationResult } from "../goal/orchestrator-types.js";
 
 export interface RegisterGoalCommandsOptions {
   getHarnessRoot: () => string;
@@ -883,13 +884,7 @@ export function registerGoalCommands(
           harnessRoot: opts.getHarnessRoot(),
         });
         process.stdout.write(
-          `goal=${goalId} outcome=${result.outcome}` +
-            (result.prUrl !== undefined ? ` pr=${result.prUrl}` : "") +
-            (result.escalateReason !== undefined
-              ? ` escalate=${result.escalateReason}`
-              : "") +
-            (link.linked ? ` workspace=${link.agent}` : "") +
-            "\n",
+          `${formatGoalOrchestrateResultLine(goalId, result, link)}\n`,
         );
       });
     });
@@ -1142,6 +1137,22 @@ export function registerGoalCommands(
         }
       });
     });
+}
+
+export function formatGoalOrchestrateResultLine(
+  goalId: string,
+  result: OrchestrationResult,
+  link: { linked: boolean; agent?: string },
+): string {
+  return (
+    `goal=${goalId} outcome=${result.outcome}` +
+    (result.draft !== undefined ? ` draft=${result.draft}` : "") +
+    (result.prUrl !== undefined ? ` pr=${result.prUrl}` : "") +
+    (result.escalateReason !== undefined
+      ? ` escalate=${result.escalateReason}`
+      : "") +
+    (link.linked ? ` workspace=${link.agent}` : "")
+  );
 }
 
 function withGoalRepo<T>(

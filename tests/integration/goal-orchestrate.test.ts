@@ -277,6 +277,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
     });
 
     expect(result.outcome).toBe("pr_created");
+    expect(result.draft).toBe(true);
     expect(result.prUrl).toBe("https://github.com/acme/repo/pull/42");
     expect(publisher.calls).toHaveLength(1);
     expect(publisher.calls[0]?.draft).toBe(true);

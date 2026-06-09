@@ -100,11 +100,26 @@ export class GoalOrchestrator {
           withManagedDb({ dbPath: this.opts.dbPath }, (db) => {
             new GoalRepository(db).updateStatus(input.goalId, "escalated", pr.escalateReason as string);
           });
-          return { goalId: input.goalId, outcome: "escalated", steps, finalDecision, escalateReason: pr.escalateReason, prUrl: pr.prUrl };
+          return {
+            goalId: input.goalId,
+            outcome: "escalated",
+            steps,
+            finalDecision,
+            escalateReason: pr.escalateReason,
+            prUrl: pr.prUrl,
+            draft: pr.draft,
+          };
         }
         const outcome: OrchestrationOutcome = pr.merged === true ? "merged" : "pr_created";
         steps.push({ step: i, decision: finalDecision, action: "close_and_pr", detail: pr.prUrl });
-        return { goalId: input.goalId, outcome, steps, finalDecision, prUrl: pr.prUrl };
+        return {
+          goalId: input.goalId,
+          outcome,
+          steps,
+          finalDecision,
+          prUrl: pr.prUrl,
+          draft: pr.draft,
+        };
       } catch (e) {
         let message = e instanceof Error ? e.message : String(e);
         if (
