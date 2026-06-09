@@ -2,6 +2,7 @@ import type { ReviewProposalRow } from "../db/repositories/review-proposals.js";
 import type { ProcessResult } from "../core/review-processor.js";
 import {
   classifyFindingForGoal,
+  isEnvironmentMetaNote,
   type ClassifiableGoalFinding,
 } from "./classification.js";
 import { ConvergenceService } from "./convergence.js";
@@ -225,13 +226,19 @@ function proposalFindingSeeds(proposal: ReviewProposalRow): ProposalFindingSeed[
           },
         ]
       : []),
-    ...proposal.nonBlockingComments.map((text, index) => ({
-      kind: "non_blocking_comment" as const,
-      index,
-      text,
-      severity: "P2" as const,
-      category: "review-non-blocking-comment",
-    })),
+    ...proposal.nonBlockingComments.flatMap((text, index) =>
+      isEnvironmentMetaNote(text)
+        ? []
+        : [
+            {
+              kind: "non_blocking_comment" as const,
+              index,
+              text,
+              severity: "P2" as const,
+              category: "review-non-blocking-comment",
+            },
+          ],
+    ),
     ...proposal.outOfScopeSuggestions.map((text, index) => ({
       kind: "out_of_scope_suggestion" as const,
       index,

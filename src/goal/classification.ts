@@ -10,6 +10,16 @@ import type {
 const MATCH_OPTS = { dot: true, nocomment: true } as const;
 const FUTURE_OR_UNRELATED_RE =
   /\b(future|future-phase|later|nice-to-have|opportunistic|cleanup|refactor|unrelated|separate phase|follow-up only)\b/i;
+const TEST_NOT_RUN_PATTERNS = [
+  /\b(?:tests?|test suite|test command|checks?|verification)\b.{0,80}\b(?:not|never)\b.{0,40}\b(?:run|executed|performed|completed)\b/,
+  /\b(?:not|never)\b.{0,40}\b(?:run|execute|perform|complete)\b.{0,80}\b(?:tests?|test suite|test command|checks?|verification)\b/,
+  /\b(?:did not|didn't|cannot|can't|could not|couldn't|unable to|was not able to|wasn't able to|not able to)\b.{0,40}\b(?:run|execute|perform|complete)\b.{0,80}\b(?:tests?|test suite|test command|checks?|verification)\b/,
+  /\bno\b.{0,20}\b(?:tests?|test suite|checks?|verification)\b.{0,30}\b(?:run|executed|performed|completed)\b/,
+] as const;
+const ENVIRONMENT_META_CONTEXT_RE =
+  /\b(?:ci|container|environment|env|here|local|locally|machine|runner|sandbox)\b|\bthis setup\b/;
+const REVIEWER_META_CONTEXT_RE =
+  /\b(?:i|manual verification|reviewer|this review|we)\b/;
 const GENERIC_TARGET_TERMS = new Set([
   "add",
   "fix",
@@ -58,6 +68,16 @@ export function classifyFindingForGoal(
     return {
       scopeStatus: "in_scope",
       reason: "finding comes from a goal close-check failure",
+    };
+  }
+
+  if (
+    category === "review-non-blocking-comment" &&
+    isEnvironmentMetaNote([finding.summary, finding.detail ?? ""].join(" "))
+  ) {
+    return {
+      scopeStatus: "out_of_scope",
+      reason: "finding text is a reviewer environment meta note",
     };
   }
 
@@ -125,6 +145,18 @@ export function classifyFindingForGoal(
     scopeStatus: "unknown",
     reason: "finding does not match goal scope heuristics",
   };
+}
+
+export function isEnvironmentMetaNote(text: string): boolean {
+  const normalized = normalizeText(text.replace(/[`*_>\[\]()]/g, " "));
+  if (normalized === "") return false;
+  if (!TEST_NOT_RUN_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return false;
+  }
+  return (
+    ENVIRONMENT_META_CONTEXT_RE.test(normalized) ||
+    REVIEWER_META_CONTEXT_RE.test(normalized)
+  );
 }
 
 export function canAutoFixFinding(
