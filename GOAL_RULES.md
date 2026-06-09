@@ -18,10 +18,11 @@
   review 連携）に対応。feature branch 1 本 ＝ 大 Phase 1 つ。
 - **サブ Phase** — 大 Phase を構成する作業単位。1〜数コミットで完結し、関連
   テストと typecheck が緑になる粒度。
-- **codex レビュー** — 外部 LLM による差分レビュー。コマンドは常に:
+- **codex レビュー** — 外部 LLM による差分レビュー。コマンドは常に（`-s read-only` ＋
+  stdin クローズ `< /dev/null` で hang 回避。正本は [`CLAUDE.md`](./CLAUDE.md)）:
 
   ```
-  codex exec -m gpt-5.5 -c model_reasoning_effort="xhigh"
+  codex exec -m gpt-5.5 -c model_reasoning_effort="xhigh" -s read-only -o <out> "<prompt>" < /dev/null
   ```
 
 - **finding** — レビューが挙げた指摘。下記 **B** の P0〜P3 で分類する。
@@ -72,7 +73,8 @@
 - [ ] `npm run typecheck` が緑
 - [ ] **未解決の P0 がゼロ**
 - [ ] 関連ドキュメント（`docs/specs/*` / `README.md` / spec / plan）を更新済み
-- [ ] （大 Phase のみ）feature branch が CI 緑 → main へマージ済み（下記 **E**）
+- [ ] （大 Phase のみ）feature branch が **GitHub Actions CI 緑 ＋ PR bot レビュー反映** →
+      main へマージ済み（下記 **E**）
 
 ---
 
@@ -96,8 +98,13 @@
 - サブ Phase（または小粒度の変更）ごとに **commit**。Conventional Commits 形式
   （`feat:` / `fix:` / `refactor:` / `test:` / `docs:` / `chore:`）。
 - commit 前に必ず `npm run typecheck`。
-- 大 Phase 完了時に **push → CI green → main へマージ**。CI が赤のまま main へは
-  入れない。
+- 大 Phase 完了時に **push → GitHub Actions CI green → main へマージ**。CI（`ci.yml`:
+  node 20/24 matrix で `npm ci` → typecheck → build → `npm test` フルスイート）が **赤のまま
+  main へは入れない**（必須 gate。docs/md のみの変更は `paths-ignore` で skip される）。
+- **PR レビューは二段**: ① merge 前に **codex exec で差分レビュー**（§A のリトライ上限・finding
+  分類・未解決 P0 ゼロ gate）。② PR を上げたら **PR 上の bot レビュー（codex App
+  `chatgpt-codex-connector[bot]` / Copilot）の受け入れ指摘も反映**してから merge（P0/P1 必須・
+  P2 は判断）。codex App reaction の意味論: **👀=レビュー中 / 👍=指摘なし / inline comment=指摘あり**。
 - spec 駆動: 大 Phase 着手前に spec / plan を用意し、実装はそれに紐づける。
 
 ---
@@ -238,5 +245,6 @@ codex レビューに渡すプロンプトの雛形。`<...>` を実値で埋め
   ├ サブ Phase 2 …（同上）
   └ 大 Phase レビュー（最大 5 回, フルスイート + typecheck 緑が前提）
       ├ P0 残 → 修正して再レビュー / 上限なら停止+エスカレーション
-      └ P0 ゼロ → close 条件(C)を満たしたら push → CI green → main merge
+      └ P0 ゼロ → close 条件(C)を満たしたら push → GitHub Actions CI green
+                  ＋ PR bot レビュー反映 → main merge
 ```
