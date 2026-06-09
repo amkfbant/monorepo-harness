@@ -57,10 +57,10 @@ function buildRepo(o: RepoOpts = {}): string {
   return repo;
 }
 
-function check(repo: string): { stdout: string; stderr: string; status: number } {
+function check(repoArg: string): { stdout: string; stderr: string; status: number } {
   const r = spawnSync(
     "node",
-    ["--import", "tsx", CLI, "release", "check", "--repo", repo, "--since", "v0.0.1", "--to", "v0.0.2", "--json"],
+    ["--import", "tsx", CLI, "release", "check", "--repo", repoArg, "--since", "v0.0.1", "--to", "v0.0.2", "--json"],
     { cwd: process.cwd(), encoding: "utf8" },
   );
   return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", status: r.status ?? 1 };
@@ -77,6 +77,15 @@ describe("harness release check", () => {
     const report = JSON.parse(r.stdout);
     expect(report.ok).toBe(true);
     expect(report.checks.every((c: any) => c.pass)).toBe(true);
+  });
+
+  it("PASSES when --repo points at a SUBDIRECTORY (resolves the worktree root)", () => {
+    const repo = buildRepo();
+    const r = check(join(repo, "src", "db")); // a subdir, not the root
+    expect(r.status).toBe(0);
+    const report = JSON.parse(r.stdout);
+    expect(report.ok).toBe(true);
+    expect(checkOf(report, "version-consistency").pass).toBe(true); // read from the root
   });
 
   it("FAILS (exit 1) version-consistency on a manifest mismatch", () => {

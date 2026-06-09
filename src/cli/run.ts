@@ -4026,8 +4026,19 @@ releaseCmd
   .option("--repo <path>", "git repo to analyze (default: current directory)")
   .option("--json", "emit JSON instead of text", false)
   .action(async (raw: Record<string, unknown>) => {
-    const repo =
+    const repoArg =
       typeof raw.repo === "string" && raw.repo !== "" ? raw.repo : process.cwd();
+    // Resolve to the git worktree root so the working-tree file reads
+    // (package.json / manifest / docs/specs) are correct even when run from a
+    // subdirectory — otherwise version-consistency / spec-sync falsely FAIL.
+    const top = await gitCli(["rev-parse", "--show-toplevel"], {
+      cwd: repoArg,
+      timeoutMs: 15_000,
+    });
+    const repo =
+      top.exitCode === 0 && !top.timedOut && top.stdout.trim() !== ""
+        ? top.stdout.trim()
+        : repoArg;
     const reader = createGitReader(repo);
     const readJson = (p: string): Record<string, unknown> | null => {
       try {
