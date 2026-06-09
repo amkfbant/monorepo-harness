@@ -222,6 +222,21 @@ async function commitAndPushReviewedBranch(input: {
     reviewedPaths,
   });
 
+  // The diff gates below validate HEAD, but `git push ... input.branch` pushes
+  // the named branch ref. If the worktree HEAD is not the reviewed branch (e.g.
+  // an operator checked out another branch in the worktree), HEAD and
+  // input.branch can diverge and unreviewed commits already on input.branch
+  // would bypass the gate. Pin HEAD == input.branch up front, fail-closed.
+  const currentBranch = (
+    await runGit(["rev-parse", "--abbrev-ref", "HEAD"], git)
+  ).trim();
+  if (currentBranch !== input.branch) {
+    throw new PrGateError(
+      `worktree for ${input.runId} is on '${currentBranch}', not the reviewed ` +
+        `branch '${input.branch}'; refusing to push`,
+    );
+  }
+
   await runGit(["add", "--", ...reviewedPaths], git);
   const stagedPaths = parseGitPathList(
     await runGit(["diff", "--cached", "-z", "--name-only"], git),

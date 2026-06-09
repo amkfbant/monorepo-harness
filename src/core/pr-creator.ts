@@ -359,6 +359,19 @@ async function createUnderLock(
     refusal: "create a PR",
   });
 
+  // The diff gates below validate HEAD, but the push targets the named `head`
+  // branch ref. Pin HEAD == head so the validated diff is exactly what gets
+  // pushed; fail-closed if the worktree is on another branch.
+  const currentBranch = (
+    await runGit(["rev-parse", "--abbrev-ref", "HEAD"], git)
+  ).trim();
+  if (currentBranch !== head) {
+    throw new PrGateError(
+      `worktree for ${opts.runId} is on '${currentBranch}', not the reviewed ` +
+        `branch '${head}'; refusing to create the PR`,
+    );
+  }
+
   // 3. Stage ONLY the reviewed paths and commit onto the run branch.
   //    ignore_untracked files (dist/** etc.) are in the worktree but were
   //    NOT validated, so they stay out.
