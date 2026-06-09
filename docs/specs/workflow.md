@@ -725,6 +725,21 @@ run / review の中身は Phase 5〜11 の挙動そのままで、新しい `Run
 新しい review 遷移は導入しない。goal は周辺の attempt / cycle / finding /
 close-check を記録する **上位 control plane** にとどまる。
 
+**review proposal → finding 分類**: goal に紐づく `review process` は proposal を
+`goal_review_cycles` に import し、`required_changes` を P1 finding seed として通常の
+frozen-scope classifier に通す。scope に合う required change は in-scope blocker、
+scope 外/unknown は defer または operator 分類が必要で、fail-open にはしない。
+`non_blocking_comments` は原則 P2 finding seed だが、「tests/checks were not run /
+could not be run」系の reviewer 環境メタ注記（local / environment / sandbox / reviewer
+context を含むもの）は deterministic pattern で goal finding 化しない。注記自体は
+review proposal / review decision の `non_blocking_comments` に残って surface されるが、
+`goal_findings` には入らず `needs_classification` / auto-merge escalation の原因にしない。
+この carve-out は non-blocking comment の環境メタ注記だけに適用し、`required_changes`、
+close-check failure、実 test failure は従来どおり blocker として扱う。negative decision
+に `required_changes` が無い場合は in-scope P1 blocker を作り、negative verdict が
+誤って `close_ready` にならないようにする。`out_of_scope_suggestions` は out-of-scope
+follow-up として記録される。
+
 **rerun への finding 注入**: `rerun` 系 attempt（prior coding attempt が既に
 ある coder 実行）では、open in-scope finding（lifecycle が `open`/`reopened`/
 `escalated`）を集約して coder のゴール文言末尾に「Open in-scope findings to

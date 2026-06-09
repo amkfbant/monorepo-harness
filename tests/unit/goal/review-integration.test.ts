@@ -273,6 +273,115 @@ describe("goal review integration", () => {
     }
   });
 
+  it("surfaces environment meta notes without importing goal findings", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      goals.createSession({
+        goalId: "goal-environment-note",
+        title: "Goal environment note",
+        closeConditions: [
+          {
+            id: "review-consensus",
+            kind: "review_consensus",
+            required: true,
+          },
+        ],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const proposal = createProposal(proposals, {
+        decision: "approved",
+        nonBlockingComments: ["Tests were not run in this environment."],
+      });
+
+      const imported = importReviewProposalToGoal({
+        repository: goals,
+        goalId: "goal-environment-note",
+        proposal,
+        processResult: {
+          runId: "run-review",
+          previousStatus: "needs_review",
+          newStatus: "approved",
+          reviewer: "codex-review",
+          reviewedAt: "2026-05-26T00:03:00.000Z",
+          warnings: [],
+        },
+        createdBy: "test",
+      });
+
+      expect(imported.findings).toHaveLength(0);
+      expect(imported.cycle.findingsSeen).toBe(0);
+      expect(goals.listFindings({ goalId: "goal-environment-note" })).toEqual(
+        [],
+      );
+      expect(proposal.nonBlockingComments).toEqual([
+        "Tests were not run in this environment.",
+      ]);
+      expect(imported.convergenceDecision.decision).toBe("close_ready");
+      expect(imported.goalStatus?.status).toBe("close_ready");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps real required changes blocking when an environment meta note is present", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      goals.createSession({
+        goalId: "goal-required-with-environment-note",
+        title: "Goal required with environment note",
+        scope: {
+          targetSummary: "review integration",
+        },
+        closeConditions: [
+          {
+            id: "review-consensus",
+            kind: "review_consensus",
+            required: true,
+          },
+        ],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const proposal = createProposal(proposals, {
+        decision: "changes_requested",
+        requiredChanges: ["Review integration must preserve required changes."],
+        nonBlockingComments: ["Tests were not run in this environment."],
+      });
+
+      const imported = importReviewProposalToGoal({
+        repository: goals,
+        goalId: "goal-required-with-environment-note",
+        proposal,
+        processResult: {
+          runId: "run-review",
+          previousStatus: "needs_review",
+          newStatus: "changes_requested",
+          reviewer: "codex-review",
+          reviewedAt: "2026-05-26T00:04:00.000Z",
+          warnings: [],
+        },
+        createdBy: "test",
+      });
+
+      expect(imported.findings).toHaveLength(1);
+      expect(imported.cycle.findingsSeen).toBe(1);
+      expect(imported.findings[0].finding).toMatchObject({
+        severity: "P1",
+        category: "review-required-change",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+      });
+      expect(imported.convergenceDecision.decision).toBe("needs_fix");
+      expect(imported.goalStatus).toBeNull();
+      expect(
+        goals.requireSession("goal-required-with-environment-note").status,
+      ).toBe("open");
+    } finally {
+      db.close();
+    }
+  });
+
   it("records operation and run ids on rerun goal attempts", () => {
     const { db, goals } = fresh();
     try {

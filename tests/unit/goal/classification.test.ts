@@ -7,6 +7,7 @@ import { runMigrations } from "../../../src/db/migrations.js";
 import {
   canAutoFixFinding,
   classifyFindingForGoal,
+  isEnvironmentMetaNote,
 } from "../../../src/goal/classification.js";
 import { ConvergenceService } from "../../../src/goal/convergence.js";
 import { GoalRepository } from "../../../src/goal/repository.js";
@@ -55,6 +56,35 @@ function freshRepo(): { db: ReturnType<typeof openDb>; repo: GoalRepository } {
 }
 
 describe("goal finding classification", () => {
+  it("detects reviewer environment meta notes deterministically", () => {
+    expect(
+      isEnvironmentMetaNote("Tests were not run in this environment."),
+    ).toBe(true);
+    expect(
+      isEnvironmentMetaNote("I could not run the tests in this sandbox."),
+    ).toBe(true);
+    expect(isEnvironmentMetaNote("No tests were run locally.")).toBe(true);
+  });
+
+  it("does not treat real test findings as environment meta notes", () => {
+    expect(
+      isEnvironmentMetaNote("Add regression tests for the review integration."),
+    ).toBe(false);
+    expect(
+      isEnvironmentMetaNote("The test suite fails in CI after this change."),
+    ).toBe(false);
+  });
+
+  it("does not auto-dismiss required changes that look like environment notes", () => {
+    const classified = classifyFindingForGoal(session(), {
+      source: "review",
+      severity: "P1",
+      category: "review-required-change",
+      summary: "Tests were not run in this environment.",
+    });
+    expect(classified.scopeStatus).toBe("unknown");
+  });
+
   it("classifies file paths inside targetFiles as in scope", () => {
     const classified = classifyFindingForGoal(session(), {
       source: "review",
