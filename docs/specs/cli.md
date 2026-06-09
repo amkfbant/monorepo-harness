@@ -1625,3 +1625,16 @@ SemVer bump、**DB schema delta（no-downgrade 影響）**、追加/削除され
 CLI command surface**、未宣言の破壊的変更を出力する。exit code: `0` 問題なし / `1`
 ref 解決失敗 / `2` 未宣言の破壊的変更検出（fail-closed）。bump/CHANGELOG/tag は
 release-please が担当（このコマンドは読み取りのみ）。
+
+## `harness release check`
+
+リリース可否の **fail-closed ゲート**（[`release.md`](./release.md)）。
+
+```bash
+harness release check [--since <ref>] [--to <ref>] [--repo <path>] [--json]
+```
+
+`plan-clean`（`release plan` がクリーン）/ `version-consistency`（package.json ＝
+manifest）/ `spec-sync`（追加 surface が mcp.md / cli.md / db.md に文書化済み）/
+`clean-tree`（未コミット変更なし）の 4 check。全 pass で `0`、1 つでも fail で `1`。
+build / test は CI 担当。

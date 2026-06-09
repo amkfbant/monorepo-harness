@@ -29,6 +29,11 @@ import {
   buildReleasePlan,
   renderReleasePlanText,
 } from "../release/release-plan.js";
+import {
+  buildReleaseCheck,
+  renderReleaseCheckText,
+} from "../release/release-check.js";
+import { gitCli } from "../git/git-cli.js";
 import { importKnowledgeEntries } from "../db/import/knowledge.js";
 import { emptyCounters } from "../db/import/common.js";
 import {
@@ -4002,6 +4007,92 @@ releaseCmd
       if (plan.undeclaredBreaking.length > 0 || plan.analysisWarnings.length > 0) {
         process.exitCode = 2;
       }
+    } catch (e) {
+      if (e instanceof ReleaseGatherError) {
+        process.stderr.write(`harness error: ${e.message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
+  });
+
+releaseCmd
+  .command("check")
+  .description(
+    "fail-closed release-readiness gate (plan-clean + version-consistency + spec-sync + clean-tree)",
+  )
+  .option("--since <ref>", "compare from this ref (default: the last tag)")
+  .option("--to <ref>", "compare to this ref (default: HEAD)")
+  .option("--repo <path>", "git repo to analyze (default: current directory)")
+  .option("--json", "emit JSON instead of text", false)
+  .action(async (raw: Record<string, unknown>) => {
+    const repoArg =
+      typeof raw.repo === "string" && raw.repo !== "" ? raw.repo : process.cwd();
+    // Resolve to the git worktree root so the working-tree file reads
+    // (package.json / manifest / docs/specs) are correct even when run from a
+    // subdirectory — otherwise version-consistency / spec-sync falsely FAIL.
+    const top = await gitCli(["rev-parse", "--show-toplevel"], {
+      cwd: repoArg,
+      timeoutMs: 15_000,
+    });
+    const repo =
+      top.exitCode === 0 && !top.timedOut && top.stdout.trim() !== ""
+        ? top.stdout.trim()
+        : repoArg;
+    const reader = createGitReader(repo);
+    const readJson = (p: string): Record<string, unknown> | null => {
+      try {
+        return JSON.parse(readFileSync(join(repo, p), "utf8")) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    };
+    const readSpec = (p: string): string => {
+      try {
+        return readFileSync(join(repo, "docs", "specs", p), "utf8");
+      } catch {
+        return "";
+      }
+    };
+    const pkg = readJson("package.json");
+    const packageVersion =
+      typeof pkg?.version === "string" ? pkg.version : null;
+    const manifest = readJson(".release-please-manifest.json");
+    const manifestVersion =
+      manifest !== null && typeof manifest["."] === "string"
+        ? (manifest["."] as string)
+        : null;
+    try {
+      const input = await gatherReleasePlanInput(reader, {
+        migrations: MIGRATIONS,
+        currentVersion: packageVersion ?? "0.0.0",
+        ...(typeof raw.since === "string" ? { since: raw.since } : {}),
+        ...(typeof raw.to === "string" ? { to: raw.to } : {}),
+      });
+      const plan = buildReleasePlan(input);
+      const status = await gitCli(["status", "--porcelain"], {
+        cwd: repo,
+        timeoutMs: 15_000,
+      });
+      const treeClean =
+        status.exitCode === 0 && !status.timedOut && status.stdout.trim() === "";
+      const report = buildReleaseCheck({
+        plan,
+        packageVersion,
+        manifestVersion,
+        treeClean,
+        specs: {
+          mcp: readSpec("mcp.md"),
+          db: readSpec("db.md"),
+          cli: readSpec("cli.md"),
+        },
+      });
+      process.stdout.write(
+        raw.json === true
+          ? `${JSON.stringify(report, null, 2)}\n`
+          : renderReleaseCheckText(report),
+      );
+      if (!report.ok) process.exitCode = 1; // fail-closed: not ready to release
     } catch (e) {
       if (e instanceof ReleaseGatherError) {
         process.stderr.write(`harness error: ${e.message}\n`);
