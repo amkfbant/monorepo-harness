@@ -113,6 +113,7 @@ export interface CreatePrResult {
   prUrl: string;
   prNumber: number;
   head: string;
+  draft: boolean;
   /**
    * Phase 3: the commit SHA that was committed + pushed for this PR — i.e. the
    * exact reviewed commit (the worktree was fingerprint-verified against the
@@ -246,6 +247,7 @@ async function existingPrResult(
     prUrl: existing.url ?? "",
     prNumber: Number(existing.externalPrId),
     head: existing.branch ?? "",
+    draft: opts.draft,
     ...(headSha !== undefined ? { headSha } : {}),
   };
 }
@@ -515,6 +517,7 @@ async function createUnderLock(
     prUrl: published.url,
     prNumber: published.number,
     head,
+    draft: opts.draft,
     headSha: reviewedHeadSha,
   };
 }

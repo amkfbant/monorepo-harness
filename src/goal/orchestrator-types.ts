@@ -29,6 +29,7 @@ export interface OrchestratorRunners {
    */
   closeAndPr(goalId: string): Promise<{
     prUrl: string;
+    draft: boolean;
     merged?: boolean;
     escalateReason?: string;
   }>;
@@ -67,4 +68,5 @@ export interface OrchestrationResult {
   finalDecision: string;
   escalateReason?: string;
   prUrl?: string;
+  draft?: boolean;
 }

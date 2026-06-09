@@ -115,6 +115,7 @@ describe("createPullRequest", () => {
       publisher: pub,
     });
     expect(r.prNumber).toBe(7);
+    expect(r.draft).toBe(true);
     expect(pub.calls).toHaveLength(1);
     expect(pub.calls[0]?.draft).toBe(true);
     expect(pub.calls[0]?.body).toMatch(/add a v constant/);

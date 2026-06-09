@@ -320,7 +320,9 @@ MCP 経由の goal close/cancel/scope expansion は confirmation-required。
 
 `goal orchestrate` は goal を terminal 状態（closed / pr_created / merged /
 escalated）まで bounded loop（`--max-steps`、既定 50）で自律駆動する。`--dry-run`
-は次の action のみ表示し実行しない。**`--auto-merge`（既定 OFF）** を付けると
+は次の action のみ表示し実行しない。PR 作成を伴う結果では、typed outcome の値は
+`pr_created` / `merged` のまま変えず、one-line 出力に `draft=true|false` を別フィールド
+として表示する（例: `outcome=pr_created draft=true pr=<url>`）。**`--auto-merge`（既定 OFF）** を付けると
 terminal の PR 作成後に merge gate（close-ready ∧ consensus approved(quorum) ∧
 CI green、または human override）を評価し、満たせば `gh pr merge` で自動マージ
 （`--merge-method`、既定 squash）。CI は `--ci-await-timeout` 秒（既定 `1200`）

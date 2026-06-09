@@ -42,7 +42,7 @@ function fakeRunners(calls: string[]): OrchestratorRunners {
     review: async () => { calls.push("review"); return { runId: "r1", decision: "approved" }; },
     classify: async () => { calls.push("classify"); return { resolved: true }; },
     defer: async () => { calls.push("defer"); return { deferred: 1 }; },
-    closeAndPr: async () => { calls.push("closeAndPr"); return { prUrl: "https://example/pr/1" }; },
+    closeAndPr: async () => { calls.push("closeAndPr"); return { prUrl: "https://example/pr/1", draft: true }; },
   };
 }
 
@@ -58,6 +58,7 @@ describe("GoalOrchestrator", () => {
       createdBy: "worker",
     });
     expect(result.outcome).toBe("pr_created");
+    expect(result.draft).toBe(true);
     expect(result.prUrl).toBe("https://example/pr/1");
     expect(calls).toContain("closeAndPr");
   });
@@ -148,7 +149,7 @@ describe("GoalOrchestrator", () => {
       },
       classify: async () => ({ resolved: true }),
       defer: async () => ({ deferred: 0 }),
-      closeAndPr: async () => ({ prUrl: "https://example/pr/1" }),
+      closeAndPr: async () => ({ prUrl: "https://example/pr/1", draft: true }),
     };
     const result = await new GoalOrchestrator({ dbPath }).run({
       goalId: "g-throw",
