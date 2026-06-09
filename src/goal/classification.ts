@@ -16,10 +16,17 @@ const TEST_NOT_RUN_PATTERNS = [
   /\b(?:did not|didn't|cannot|can't|could not|couldn't|unable to|was not able to|wasn't able to|not able to)\b.{0,40}\b(?:run|execute|perform|complete)\b.{0,80}\b(?:tests?|test suite|test command|checks?|verification)\b/,
   /\bno\b.{0,20}\b(?:tests?|test suite|checks?|verification)\b.{0,30}\b(?:run|executed|performed|completed)\b/,
 ] as const;
+const MISSING_COMMAND_LOG_PATTERNS = [
+  /\b(?:no|missing|without|absent|unavailable)\b.{0,60}\b(?:command|test|check|verification)\b.{0,30}\b(?:logs?|output)\b/,
+  /\b(?:command|test|check|verification)\b.{0,30}\b(?:logs?|output)\b.{0,60}\b(?:missing|absent|unavailable|not provided|not present|not included|not attached)\b/,
+  /\b(?:cannot|can't|could not|couldn't|unable to|not able to)\b.{0,60}\b(?:find|see|inspect|verify)\b.{0,60}\b(?:command|test|check|verification)\b.{0,30}\b(?:logs?|output)\b/,
+] as const;
 const ENVIRONMENT_META_CONTEXT_RE =
   /\b(?:ci|container|environment|env|here|local|locally|machine|runner|sandbox)\b|\bthis setup\b/;
 const REVIEWER_META_CONTEXT_RE =
   /\b(?:i|manual verification|reviewer|this review|we)\b/;
+const MISSING_COMMAND_LOG_CONTEXT_RE =
+  /\b(?:provided|present|available|included|attached|visible|found|see|inspect|verify)\b/;
 const GENERIC_TARGET_TERMS = new Set([
   "add",
   "fix",
@@ -150,12 +157,37 @@ export function classifyFindingForGoal(
 export function isEnvironmentMetaNote(text: string): boolean {
   const normalized = normalizeText(text.replace(/[`*_>\[\]()]/g, " "));
   if (normalized === "") return false;
-  if (!TEST_NOT_RUN_PATTERNS.some((pattern) => pattern.test(normalized))) {
+  if (TEST_NOT_RUN_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return (
+      ENVIRONMENT_META_CONTEXT_RE.test(normalized) ||
+      REVIEWER_META_CONTEXT_RE.test(normalized)
+    );
+  }
+  if (!MISSING_COMMAND_LOG_PATTERNS.some((pattern) => pattern.test(normalized))) {
     return false;
   }
   return (
+    MISSING_COMMAND_LOG_CONTEXT_RE.test(normalized) ||
     ENVIRONMENT_META_CONTEXT_RE.test(normalized) ||
     REVIEWER_META_CONTEXT_RE.test(normalized)
+  );
+}
+
+/**
+ * Broader test-execution advisory matcher for reviewer non_blocking_comments.
+ * Unlike `isEnvironmentMetaNote` (which additionally requires an environment /
+ * reviewer context), this treats ANY test-not-run or missing-command-log
+ * phrasing as a reviewer advisory — e.g. a plain "Tests were not run" with no
+ * surrounding context. It MUST only ever be applied to non_blocking_comments;
+ * required changes are never filtered, so a broad match here cannot suppress a
+ * real blocker.
+ */
+export function isTestNotRunAdvisory(text: string): boolean {
+  const normalized = normalizeText(text.replace(/[`*_>\[\]()]/g, " "));
+  if (normalized === "") return false;
+  return (
+    TEST_NOT_RUN_PATTERNS.some((pattern) => pattern.test(normalized)) ||
+    MISSING_COMMAND_LOG_PATTERNS.some((pattern) => pattern.test(normalized))
   );
 }
 

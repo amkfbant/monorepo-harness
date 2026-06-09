@@ -640,6 +640,16 @@ harness review process <runId>
       pre-Phase11 と等価動作 (最新 active proposal を直接 process)
 ```
 
+`review_consensus.status = approved` は **static pass** を意味する。すなわち
+reviewer / consensus が run artifacts と diff を静的に確認して blocking issue を
+見つけなかったという evidence であり、`review_consensus` 自体は test command を
+実行しない。`review_consensus.summary_json.semantics` と approved
+`review-decision.yaml` の compat export comment はこの意味を明示する。
+実テスト実行を close gate にしたい goal は、別途 `kind: command` close condition
+（例: `npm test` / `npm run typecheck`）を goal 開始時に追加する。
+`review_consensus` を synthetic test gate に拡張したり、reviewer の自己申告を
+test 実行状態の遷移根拠にしたりしない。
+
 ### Human override
 
 ```
@@ -730,10 +740,13 @@ close-check を記録する **上位 control plane** にとどまる。
 frozen-scope classifier に通す。scope に合う required change は in-scope blocker、
 scope 外/unknown は defer または operator 分類が必要で、fail-open にはしない。
 `non_blocking_comments` は原則 P2 finding seed だが、「tests/checks were not run /
-could not be run」系の reviewer 環境メタ注記（local / environment / sandbox / reviewer
-context を含むもの）は deterministic pattern で goal finding 化しない。注記自体は
-review proposal / review decision の `non_blocking_comments` に残って surface されるが、
-`goal_findings` には入らず `needs_classification` / auto-merge escalation の原因にしない。
+could not be run」および「command logs が無い / 見えないため test 実行を確認できない」
+系の generic reviewer advisory（local / environment / sandbox / reviewer context を
+含むもの）は deterministic pattern で goal finding 化しない。注記自体は review
+proposal / review decision の `non_blocking_comments` に残り、goal import の
+`reviewAdvisories` と `goal_close_checks.evidence.reviewerAdvisories` として operator に
+surface されるが、`goal_findings` には入らず `needs_classification` /
+auto-merge escalation の原因にしない。
 この carve-out は non-blocking comment の環境メタ注記だけに適用し、`required_changes`、
 close-check failure、実 test failure は従来どおり blocker として扱う。negative decision
 に `required_changes` が無い場合は in-scope P1 blocker を作り、negative verdict が

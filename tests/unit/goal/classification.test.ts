@@ -8,6 +8,7 @@ import {
   canAutoFixFinding,
   classifyFindingForGoal,
   isEnvironmentMetaNote,
+  isTestNotRunAdvisory,
 } from "../../../src/goal/classification.js";
 import { ConvergenceService } from "../../../src/goal/convergence.js";
 import { GoalRepository } from "../../../src/goal/repository.js";
@@ -314,5 +315,25 @@ describe("goal finding classification", () => {
         lifecycleStatus: "open",
       }),
     ).toBe(true);
+  });
+});
+
+describe("isTestNotRunAdvisory", () => {
+  it("treats plain test-not-run notes as advisories without requiring context", () => {
+    expect(isTestNotRunAdvisory("Tests were not run.")).toBe(true);
+    expect(isTestNotRunAdvisory("No tests were run.")).toBe(true);
+    // isEnvironmentMetaNote is narrower: a plain note with no environment /
+    // reviewer context is not an environment meta note, but it is still a
+    // reviewer advisory when it appears as a non_blocking comment.
+    expect(isEnvironmentMetaNote("Tests were not run.")).toBe(false);
+  });
+
+  it("does not treat real test-related findings as advisories", () => {
+    expect(isTestNotRunAdvisory("Add regression tests for the parser.")).toBe(
+      false,
+    );
+    expect(
+      isTestNotRunAdvisory("The test suite fails after this change."),
+    ).toBe(false);
   });
 });

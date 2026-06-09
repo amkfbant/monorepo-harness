@@ -22,6 +22,13 @@ export type ConsensusStatus =
   | "changes_requested"
   | "rejected";
 
+export const REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS = {
+  approvalKind: "static_review",
+  approvedMeaning:
+    "approved means static review passed; review_consensus does not execute tests",
+  testsExecutedByConsensus: false,
+} as const;
+
 export interface EnrichedProposal {
   proposalId: number;
   reviewerId: string | null;
@@ -65,6 +72,7 @@ export interface ExcludedProposal {
 export interface ConsensusSummary {
   evaluatedAt: string;
   ruleSha256: string;
+  semantics: typeof REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS;
   proposals: Array<{
     proposalId: number;
     reviewerId: string | null;
@@ -111,6 +119,7 @@ export function evaluateConsensus(input: {
   const baseSummary = {
     evaluatedAt,
     ruleSha256: ruleSha,
+    semantics: REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS,
     proposals: proposals.map((p) => ({
       proposalId: p.proposalId,
       reviewerId: p.reviewerId,

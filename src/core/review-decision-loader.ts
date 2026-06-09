@@ -4,6 +4,7 @@ import {
   ReviewDecisionFileSchema,
   type ReviewDecisionFile,
 } from "./review-decision-schema.js";
+import { REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS } from "./review-consensus.js";
 
 export async function loadReviewDecision(
   path: string,
@@ -20,7 +21,9 @@ export function parseReviewDecisionYaml(raw: string): ReviewDecisionFile {
 
 /** Serialize a review decision to its canonical YAML document string. */
 export function serializeReviewDecision(data: ReviewDecisionFile): string {
-  return yamlStringify(data);
+  const yaml = yamlStringify(data);
+  if (data.decision !== "approved") return yaml;
+  return `# ${REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS.approvedMeaning}\n${yaml}`;
 }
 
 export async function writeReviewDecision(

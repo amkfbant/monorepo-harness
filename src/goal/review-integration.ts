@@ -1,8 +1,9 @@
 import type { ReviewProposalRow } from "../db/repositories/review-proposals.js";
 import type { ProcessResult } from "../core/review-processor.js";
+import { REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS } from "../core/review-consensus.js";
 import {
   classifyFindingForGoal,
-  isEnvironmentMetaNote,
+  isTestNotRunAdvisory,
   type ClassifiableGoalFinding,
 } from "./classification.js";
 import { ConvergenceService } from "./convergence.js";
@@ -51,9 +52,17 @@ export interface ImportedGoalFinding {
   reopened: boolean;
 }
 
+export interface ReviewerAdvisory {
+  source: "non_blocking_comment";
+  index: number;
+  category: "test-execution-unverified";
+  text: string;
+}
+
 export interface ImportReviewProposalToGoalResult {
   cycle: GoalReviewCycle;
   findings: ImportedGoalFinding[];
+  reviewAdvisories: ReviewerAdvisory[];
   closeChecks: GoalCloseCheck[];
   convergenceDecision: GoalConvergenceDecisionRecord;
   goalStatus: GoalSession | null;
@@ -91,6 +100,7 @@ export function importReviewProposalToGoal(
     sourceRunId: input.proposal.runId,
   });
   const findings = importProposalFindings(input.repository, session, input.proposal, cycle);
+  const reviewAdvisories = proposalReviewerAdvisories(input.proposal);
   const completedCycle = input.repository.completeReviewCycle({
     cycleId: cycle.cycleId,
     findingsSeen: findings.length,
@@ -106,7 +116,10 @@ export function importReviewProposalToGoal(
       .listFindings({ goalId: input.goalId, scopeStatus: "in_scope", limit: 10_000 })
       .filter((f) => f.lifecycleStatus === "open" || f.lifecycleStatus === "reopened")
       .length,
-    summary: `Imported review proposal ${input.proposal.proposalId} (${input.proposal.decision})`,
+    summary: reviewAdvisories.length === 0
+      ? `Imported review proposal ${input.proposal.proposalId} (${input.proposal.decision})`
+      : `Imported review proposal ${input.proposal.proposalId} (${input.proposal.decision}); ` +
+        `reviewer advisory surfaced=${reviewAdvisories.length}`,
   });
   const closeChecks =
     input.processResult === undefined
@@ -161,11 +174,29 @@ export function importReviewProposalToGoal(
   return {
     cycle: completedCycle,
     findings,
+    reviewAdvisories,
     closeChecks,
     convergenceDecision,
     goalStatus,
     ...(consensusStall !== undefined ? { consensusStall } : {}),
   };
+}
+
+function proposalReviewerAdvisories(
+  proposal: ReviewProposalRow,
+): ReviewerAdvisory[] {
+  return proposal.nonBlockingComments.flatMap((text, index) =>
+    isTestNotRunAdvisory(text)
+      ? [
+          {
+            source: "non_blocking_comment" as const,
+            index,
+            category: "test-execution-unverified" as const,
+            text,
+          },
+        ]
+      : [],
+  );
 }
 
 function importProposalFindings(
@@ -227,7 +258,7 @@ function proposalFindingSeeds(proposal: ReviewProposalRow): ProposalFindingSeed[
         ]
       : []),
     ...proposal.nonBlockingComments.flatMap((text, index) =>
-      isEnvironmentMetaNote(text)
+      isTestNotRunAdvisory(text)
         ? []
         : [
             {
@@ -273,6 +304,7 @@ function recordReviewProcessCloseChecks(
   const reviewConditions = session.closeConditions.filter(
     (condition) => condition.kind === "review_consensus",
   );
+  const reviewAdvisories = proposalReviewerAdvisories(proposal);
   return reviewConditions.map((condition) =>
     repository.recordCloseCheck({
       goalId: session.goalId,
@@ -290,10 +322,15 @@ function recordReviewProcessCloseChecks(
         decision: proposal.decision,
         processStatus: result.newStatus,
         sourceSha256: proposal.sourceSha256,
+        reviewConsensusSemantics: REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS,
+        ...(reviewAdvisories.length > 0 ? { reviewerAdvisories: reviewAdvisories } : {}),
       },
       message:
         result.newStatus === "approved"
-          ? "review process approved the run"
+          ? "review consensus approved the run (static pass; tests not executed by review_consensus)" +
+            (reviewAdvisories.length > 0
+              ? `; reviewer advisories=${reviewAdvisories.length}`
+              : "")
           : `review process ended as ${result.newStatus}`,
     }),
   );

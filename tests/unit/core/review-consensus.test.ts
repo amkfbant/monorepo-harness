@@ -131,6 +131,12 @@ describe("evaluateConsensus (Phase 11-4)", () => {
     });
     expect(r.status).toBe("approved");
     expect(r.summary.decisionPath).toBe("requirements-met");
+    expect(r.summary.semantics).toEqual({
+      approvalKind: "static_review",
+      approvedMeaning:
+        "approved means static review passed; review_consensus does not execute tests",
+      testsExecutedByConsensus: false,
+    });
   });
 
   it("blocking changes_requested from required group → changes_requested", () => {
