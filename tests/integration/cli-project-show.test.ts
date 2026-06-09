@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { openDb } from "../../src/db/connection.js";
 
 const CLI = join(process.cwd(), "src/cli/run.ts");
 
@@ -164,5 +165,49 @@ describe("CLI project show", () => {
       ]).out,
     ) as { profile: { repo: { base_branch?: string } } };
     expect(updated.profile.repo.base_branch).toBe("imported-v3");
+  });
+
+  it("project import writes through compat profile and domain rows", () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-cps-root-"));
+    mkdirSync(join(root, "projects"), { recursive: true });
+    const profilePath = join(root, "projects", "imported.yaml");
+    writeFileSync(
+      profilePath,
+      [
+        "version: 1",
+        "project_id: imported",
+        "repo:",
+        "  id: imported",
+        "domains:",
+        "  - id: apps/web",
+        "    root: apps/web",
+        "    kind: app",
+        "  - id: packages/ui",
+        "    root: packages/ui",
+        "    kind: package",
+        "",
+      ].join("\n"),
+    );
+
+    expect(runCli(root, ["project", "import", profilePath]).code).toBe(0);
+    const consistency = runCli(root, ["db", "check-consistency"]);
+    expect(consistency.code).toBe(0);
+    expect(consistency.out).toMatch(/db consistency: ok/);
+
+    const db = openDb(join(root, ".harness", "harness.sqlite"));
+    try {
+      const profileRows = db
+        .prepare(
+          "SELECT count(*) AS n FROM project_profiles WHERE project_id = ?",
+        )
+        .get("imported") as { n: number };
+      const domainRows = db
+        .prepare("SELECT count(*) AS n FROM domains WHERE project_id = ?")
+        .get("imported") as { n: number };
+      expect(profileRows.n).toBe(1);
+      expect(domainRows.n).toBe(2);
+    } finally {
+      db.close();
+    }
   });
 });

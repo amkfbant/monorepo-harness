@@ -34,6 +34,8 @@ export interface RecordProjectProfileRevisionInput {
   reason?: string;
   now?: Date;
   currentPointerMode?: CurrentPointerMode;
+  /** Additional project profile rows to write in the same revision tx. */
+  writeThrough?: (db: Database.Database) => void;
 }
 
 export type CurrentPointerMode =
@@ -97,6 +99,7 @@ export function recordProjectProfileRevision(
             WHERE project_id = ?`,
         ).run(latest.revision_id, input.projectId);
       }
+      input.writeThrough?.(db);
       return {
         revision: toRevision(latest),
         reusedExisting: true,
@@ -130,6 +133,7 @@ export function recordProjectProfileRevision(
           WHERE project_id = ?`,
       ).run(Number(info.lastInsertRowid), input.projectId);
     }
+    input.writeThrough?.(db);
     return {
       revision: {
         revisionId: Number(info.lastInsertRowid),

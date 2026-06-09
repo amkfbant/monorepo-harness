@@ -10,10 +10,10 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import type { Command } from "commander";
-import type Database from "better-sqlite3";
 import { harnessPaths } from "../config/paths.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
+import { writeProjectProfileImportRows } from "../db/import/projects.js";
 import {
   getCurrentProjectProfile,
   recordProjectProfileRevision,
@@ -94,14 +94,22 @@ export function registerProjectCommands(program: Command): void {
         const handle = openManagedDb({ dbPath: harnessPaths(getHarnessRoot()).dbPath });
         try {
           runMigrations(handle.db);
+          const importedAt = new Date(statSync(path).mtimeMs);
           const result = recordProjectProfileRevision(handle.db, {
             projectId: profile.project_id,
             bodyYaml,
             parsed: profile,
             actor: String(raw.actor),
             ...(raw.reason !== undefined ? { reason: String(raw.reason) } : {}),
+            now: importedAt,
+            writeThrough: (db) =>
+              writeProjectProfileImportRows(db, {
+                profile,
+                profilePath: path,
+                bodyYaml,
+                loadedAt: importedAt,
+              }),
           });
-          upsertProjectMetadata(handle.db, profile, path);
           const out = {
             projectId: profile.project_id,
             revisionId: result.revision.revisionId,
@@ -195,18 +203,24 @@ export function registerProjectCommands(program: Command): void {
               `edited profile changed project_id from "${projectId}" to "${profile.project_id}"`,
             );
           }
+          const editedAt = new Date();
+          const profilePath =
+            revision.sourcePath ?? paths.projectProfilePath(projectId);
           const result = recordProjectProfileRevision(handle.db, {
             projectId,
             bodyYaml,
             parsed: profile,
             actor: String(raw.actor),
             reason: String(raw.reason),
+            now: editedAt,
+            writeThrough: (db) =>
+              writeProjectProfileImportRows(db, {
+                profile,
+                profilePath,
+                bodyYaml,
+                loadedAt: editedAt,
+              }),
           });
-          upsertProjectMetadata(
-            handle.db,
-            profile,
-            revision.sourcePath ?? paths.projectProfilePath(projectId),
-          );
           process.stdout.write(
             `project edit: ${projectId} revision=${result.revision.revisionId} version=${result.revision.version}${result.reusedExisting ? " (unchanged)" : ""}\n`,
           );
@@ -412,38 +426,4 @@ function formatProjectShow(r: ResolvedProjectProfile): string {
 
 function fmtList(items: string[] | undefined): string {
   return items && items.length > 0 ? items.join(", ") : "(none)";
-}
-
-function upsertProjectMetadata(
-  db: Database.Database,
-  profile: ResolvedProjectProfile["profile"],
-  profilePath: string,
-): void {
-  const now = new Date().toISOString();
-  db.prepare(
-    `INSERT INTO projects (project_id, repo_id, profile_path,
-       profile_version, description, repo_path, base_branch,
-       package_manager, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(project_id) DO UPDATE SET
-       repo_id = excluded.repo_id,
-       profile_path = excluded.profile_path,
-       profile_version = excluded.profile_version,
-       description = excluded.description,
-       repo_path = excluded.repo_path,
-       base_branch = excluded.base_branch,
-       package_manager = excluded.package_manager,
-       updated_at = excluded.updated_at`,
-  ).run(
-    profile.project_id,
-    profile.repo.id,
-    profilePath,
-    profile.version,
-    profile.description ?? null,
-    profile.repo.path ?? null,
-    profile.repo.base_branch ?? null,
-    profile.repo.package_manager ?? null,
-    now,
-    now,
-  );
 }

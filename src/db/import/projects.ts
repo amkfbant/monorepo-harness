@@ -2,7 +2,10 @@ import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type Database from "better-sqlite3";
-import { ProjectProfileSchema } from "../../project/schema.js";
+import {
+  ProjectProfileSchema,
+  type ProjectProfile,
+} from "../../project/schema.js";
 import {
   recordProjectProfileRevision,
   type CurrentPointerMode,
@@ -22,6 +25,87 @@ export function domainKey(
 ): string {
   // JSON array — unambiguous, collision-safe, no control chars in source
   return sha256(JSON.stringify([repoId, domainId, projectId ?? ""]));
+}
+
+export interface WriteProjectProfileImportRowsInput {
+  profile: ProjectProfile;
+  profilePath: string;
+  bodyYaml: string;
+  loadedAt: Date | string;
+}
+
+/**
+ * Write the project profile rows that remain as compatibility/read-model
+ * surfaces while `project_profile_revisions` is the canonical body store.
+ *
+ * Callers decide the surrounding transaction. Single-profile import passes
+ * this through `recordProjectProfileRevision(..., writeThrough)` so projects,
+ * project_profile_revisions, project_profiles, and domains commit atomically.
+ */
+export function writeProjectProfileImportRows(
+  db: Database.Database,
+  input: WriteProjectProfileImportRowsInput,
+): void {
+  const { profile, profilePath, bodyYaml } = input;
+  const loadedAt =
+    typeof input.loadedAt === "string"
+      ? input.loadedAt
+      : input.loadedAt.toISOString();
+  db.prepare(
+    `INSERT INTO projects (project_id, repo_id, profile_path, profile_version,
+       description, repo_path, base_branch, package_manager, created_at, updated_at)
+     VALUES (@project_id, @repo_id, @profile_path, @profile_version,
+       @description, @repo_path, @base_branch, @package_manager, @created_at, @updated_at)
+     ON CONFLICT (project_id) DO UPDATE SET
+       repo_id = excluded.repo_id, profile_path = excluded.profile_path,
+       profile_version = excluded.profile_version, description = excluded.description,
+       repo_path = excluded.repo_path, base_branch = excluded.base_branch,
+       package_manager = excluded.package_manager,
+       created_at = COALESCE(projects.created_at, excluded.created_at),
+       updated_at = excluded.updated_at`,
+  ).run({
+    project_id: profile.project_id,
+    repo_id: profile.repo.id,
+    profile_path: profilePath,
+    profile_version: profile.version,
+    description: profile.description ?? null,
+    repo_path: profile.repo.path ?? null,
+    base_branch: profile.repo.base_branch ?? null,
+    package_manager: profile.repo.package_manager ?? null,
+    created_at: loadedAt,
+    updated_at: loadedAt,
+  });
+  db.prepare(
+    `INSERT INTO project_profiles (project_id, version, source_yaml, source_sha256, loaded_at)
+     VALUES (@project_id, @version, @source_yaml, @source_sha256, @loaded_at)
+     ON CONFLICT (project_id, version) DO UPDATE SET
+       source_yaml = excluded.source_yaml, source_sha256 = excluded.source_sha256,
+       loaded_at = excluded.loaded_at`,
+  ).run({
+    project_id: profile.project_id,
+    version: profile.version,
+    source_yaml: bodyYaml,
+    source_sha256: sha256(bodyYaml),
+    loaded_at: loadedAt,
+  });
+  db.prepare("DELETE FROM domains WHERE project_id = ?").run(profile.project_id);
+  const upsertDomain = db.prepare(
+    `INSERT INTO domains (domain_key, project_id, repo_id, domain_id, root, kind, title)
+     VALUES (@domain_key, @project_id, @repo_id, @domain_id, @root, @kind, @title)
+     ON CONFLICT (domain_key) DO UPDATE SET
+       root = excluded.root, kind = excluded.kind, title = excluded.title`,
+  );
+  for (const d of profile.domains) {
+    upsertDomain.run({
+      domain_key: domainKey(profile.repo.id, d.id, profile.project_id),
+      project_id: profile.project_id,
+      repo_id: profile.repo.id,
+      domain_id: d.id,
+      root: d.root,
+      kind: d.kind ?? null,
+      title: null,
+    });
+  }
 }
 
 /**
@@ -44,36 +128,6 @@ export function importProjects(
       WHERE project_id = ?`,
   );
 
-  const upsertProject = db.prepare(
-    `INSERT INTO projects (project_id, repo_id, profile_path, profile_version,
-       description, repo_path, base_branch, package_manager, created_at, updated_at)
-     VALUES (@project_id, @repo_id, @profile_path, @profile_version,
-       @description, @repo_path, @base_branch, @package_manager, @created_at, @updated_at)
-     ON CONFLICT (project_id) DO UPDATE SET
-       repo_id = excluded.repo_id, profile_path = excluded.profile_path,
-       profile_version = excluded.profile_version, description = excluded.description,
-       repo_path = excluded.repo_path, base_branch = excluded.base_branch,
-       package_manager = excluded.package_manager, updated_at = excluded.updated_at`,
-  );
-  const upsertProfile = db.prepare(
-    `INSERT INTO project_profiles (project_id, version, source_yaml, source_sha256, loaded_at)
-     VALUES (@project_id, @version, @source_yaml, @source_sha256, @loaded_at)
-     ON CONFLICT (project_id, version) DO UPDATE SET
-       source_yaml = excluded.source_yaml, source_sha256 = excluded.source_sha256,
-       loaded_at = excluded.loaded_at`,
-  );
-  const upsertDomain = db.prepare(
-    `INSERT INTO domains (domain_key, project_id, repo_id, domain_id, root, kind, title)
-     VALUES (@domain_key, @project_id, @repo_id, @domain_id, @root, @kind, @title)
-     ON CONFLICT (domain_key) DO UPDATE SET
-       root = excluded.root, kind = excluded.kind, title = excluded.title`,
-  );
-  // a domain dropped from the profile must not linger — replace the whole
-  // set per project.
-  const deleteDomains = db.prepare(
-    "DELETE FROM domains WHERE project_id = ?",
-  );
-
   for (const file of files) {
     const path = join(projectsDir, file);
     let profile;
@@ -94,7 +148,7 @@ export function importProjects(
     // timestamps come from the source file's mtime, not wall-clock time,
     // so re-importing an unchanged profile yields an identical row
     // (idempotency).
-    const mtime = new Date(statSync(path).mtimeMs).toISOString();
+    const mtime = new Date(statSync(path).mtimeMs);
     const existing = currentProject.get(profile.project_id) as
       | { current_profile_revision_id: number | null }
       | undefined;
@@ -107,48 +161,21 @@ export function importProjects(
       continue;
     }
 
-    const tx = db.transaction(() => {
-      upsertProject.run({
-        project_id: profile.project_id,
-        repo_id: profile.repo.id,
-        profile_path: path,
-        profile_version: profile.version,
-        description: profile.description ?? null,
-        repo_path: profile.repo.path ?? null,
-        base_branch: profile.repo.base_branch ?? null,
-        package_manager: profile.repo.package_manager ?? null,
-        created_at: mtime,
-        updated_at: mtime,
-      });
-      upsertProfile.run({
-        project_id: profile.project_id,
-        version: profile.version,
-        source_yaml: raw,
-        source_sha256: sha256(raw),
-        loaded_at: mtime,
-      });
-      deleteDomains.run(profile.project_id);
-      for (const d of profile.domains) {
-        upsertDomain.run({
-          domain_key: domainKey(profile.repo.id, d.id, profile.project_id),
-          project_id: profile.project_id,
-          repo_id: profile.repo.id,
-          domain_id: d.id,
-          root: d.root,
-          kind: d.kind ?? null,
-          title: null,
-        });
-      }
-    });
-    tx();
     recordProjectProfileRevision(db, {
       projectId: profile.project_id,
       bodyYaml: raw,
       parsed: profile,
       actor: "db-import",
       reason: "compatibility project profile import",
-      now: new Date(statSync(path).mtimeMs),
+      now: mtime,
       currentPointerMode,
+      writeThrough: (txDb) =>
+        writeProjectProfileImportRows(txDb, {
+          profile,
+          profilePath: path,
+          bodyYaml: raw,
+          loadedAt: mtime,
+        }),
     });
     clearImportError(db, path);
     counters.projects += 1;
