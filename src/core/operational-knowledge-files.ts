@@ -1,4 +1,4 @@
-import { readdir, readFile, mkdir, writeFile } from "node:fs/promises";
+import { readdir, readFile, mkdir, writeFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname, resolve, sep } from "node:path";
 import type Database from "better-sqlite3";
@@ -53,8 +53,31 @@ export async function exportOperationalKnowledge(
     await writeFile(path, rev.bodyMarkdown, "utf8");
     written.push(path);
   }
+  // Prune stale `.md` files no longer backed by an entry (e.g. an entry whose
+  // `kind` changed leaves a `<old-kind>/<key>.md` orphan). Without this, an
+  // export→import round-trip after a kind change would re-import BOTH copies
+  // under the same key — a non-deterministic "current" pick. The export dir is a
+  // harness-owned compat mirror, so removing non-current `.md` is safe.
+  const keep = new Set(written.map((p) => resolve(p)));
+  for (const orphan of await listMarkdownFiles(outDir)) {
+    if (!keep.has(resolve(orphan))) await rm(orphan);
+  }
   written.sort();
   return { written };
+}
+
+/** Every `*.md` directly under a kind subdir of `dir` (the export layout). */
+async function listMarkdownFiles(dir: string): Promise<string[]> {
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const kindDir of await readdir(dir, { withFileTypes: true })) {
+    if (!kindDir.isDirectory()) continue;
+    const sub = join(dir, kindDir.name);
+    for (const f of (await readdir(sub)).filter((x) => x.endsWith(".md"))) {
+      out.push(join(sub, f));
+    }
+  }
+  return out;
 }
 
 export interface ImportOperationalResult {
@@ -90,11 +113,17 @@ export async function importOperationalKnowledge(
       }
       const raw = await readFile(join(dir, f), "utf8");
       const { frontmatter } = splitFrontmatter(raw);
+      if (frontmatter === null) {
+        // no / malformed / non-object YAML frontmatter — report, don't import a
+        // default-kind entry from an operator's YAML mistake.
+        skipped.push({ file: rel, reason: "no or malformed frontmatter" });
+        continue;
+      }
       try {
         importOperationalEntry(db, {
           entryId,
           rawMarkdown: raw,
-          frontmatter: frontmatter ?? {},
+          frontmatter,
           actor,
         });
         imported += 1;

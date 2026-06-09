@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../../../src/db/connection.js";
@@ -132,6 +132,38 @@ describe("operational knowledge file export/import (issue #57)", () => {
           actor: "op",
         }),
       ).toThrow(OperationalKnowledgeError);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("prunes a stale export when an entry's kind changes (round-trip stays deterministic)", async () => {
+    const db = freshDb();
+    const outDir = mkdtempSync(join(tmpdir(), "harness-ops-prune-"));
+    try {
+      recordOperationalKnowledge(db, { key: "k", title: "T", body: "b", kind: "ci", actor: "op" });
+      await exportOperationalKnowledge(db, outDir);
+      expect(existsSync(join(outDir, "ci", "k.md"))).toBe(true);
+      // re-record the same key under a different kind, then re-export
+      recordOperationalKnowledge(db, { key: "k", title: "T", body: "b2", kind: "environment", actor: "op" });
+      await exportOperationalKnowledge(db, outDir);
+      expect(existsSync(join(outDir, "ci", "k.md"))).toBe(false); // orphan pruned
+      expect(existsSync(join(outDir, "environment", "k.md"))).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("skips a file with no / malformed frontmatter (not a default-kind entry)", async () => {
+    const db = freshDb();
+    const inDir = mkdtempSync(join(tmpdir(), "harness-ops-badfm-"));
+    try {
+      mkdirSync(join(inDir, "ci"), { recursive: true });
+      writeFileSync(join(inDir, "ci", "bad.md"), "just text, no frontmatter\n");
+      const r = await importOperationalKnowledge(db, inDir);
+      expect(r.imported).toBe(0);
+      expect(r.skipped[0]?.reason).toMatch(/frontmatter/i);
+      expect(listOperationalKnowledge(db)).toEqual([]);
     } finally {
       db.close();
     }
