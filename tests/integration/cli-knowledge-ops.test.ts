@@ -114,4 +114,41 @@ describe("harness knowledge ops", () => {
     const opsShowMissing = run(["knowledge", "ops", "show", "docs/knowledge/x.md"], root);
     expect(opsShowMissing.status).not.toBe(0);
   });
+
+  it("digest aggregates total / active / deprecated / by kind", () => {
+    const root = setup();
+    run(["knowledge", "ops", "add", "--key", "a", "--title", "A", "--body", "x", "--kind", "ci", "--actor", "op"], root);
+    run(["knowledge", "ops", "add", "--key", "b", "--title", "B", "--body", "y", "--kind", "ci", "--actor", "op"], root);
+    run(["knowledge", "ops", "deprecate", "ops/b", "--actor", "op"], root);
+    const d = run(["knowledge", "ops", "digest", "--json"], root);
+    expect(d.status).toBe(0);
+    const j = JSON.parse(d.stdout);
+    expect(j).toMatchObject({ total: 2, active: 1, deprecated: 1 });
+    expect(j.byKind).toEqual({ ci: 1 });
+  });
+
+  it("export → import round-trips operational knowledge across HARNESS_ROOTs", () => {
+    const src = setup();
+    run(["knowledge", "ops", "add", "--key", "ci-note", "--title", "CI", "--body", "fails fast", "--kind", "ci", "--tag", "github", "--actor", "op"], src);
+    run(["knowledge", "ops", "add", "--key", "portable", "--title", "P", "--body", "ext4 only", "--actor", "op"], src);
+
+    const ex = run(["knowledge", "ops", "export", "--to-docs", "--json"], src);
+    expect(ex.status).toBe(0);
+    expect(JSON.parse(ex.stdout).written).toHaveLength(2);
+
+    // requires --to-docs
+    expect(run(["knowledge", "ops", "export"], src).status).not.toBe(0);
+
+    // import into a FRESH root from src's docs/ops-knowledge
+    const dst = setup();
+    const im = run(
+      ["knowledge", "ops", "import", "--from-docs", "--dir", join(src, "docs", "ops-knowledge"), "--json"],
+      dst,
+    );
+    expect(im.status).toBe(0);
+    expect(JSON.parse(im.stdout).imported).toBe(2);
+    const list = run(["knowledge", "ops", "list", "--json"], dst);
+    const ids = JSON.parse(list.stdout).entries.map((e: any) => e.entryId).sort();
+    expect(ids).toEqual(["ops/ci-note", "ops/portable"]);
+  });
 });

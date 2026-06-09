@@ -5,25 +5,14 @@ design — run it through brainstorming → spec → plan when picked up.
 
 ## Operational knowledge — deferred surfaces (issue #57)
 
-The operational knowledge category (`knowledge_entries.category='operational'`,
-schema v19) ships as **storage core + CLI + MCP read** (issue #57), plus **inbox
-surfacing** (E), **reviewer/goal injection** (F), and **MCP write** (G). The only
-remaining deferred surface:
-
-- **file export parity** — operational entries are DB-only today. A
-  `docs/ops-knowledge/` compat export (mirroring `docs/knowledge/`) would make
-  them reviewable in git, but needs an importer namespace that does not collide
-  with the codebase-knowledge round-trip.
-
-Landed: **inbox surfacing** (`DbInboxSummary.operationalKnowledge` → `harness.inbox`
-/ scoped CLI / dashboard). **reviewer/goal injection**
-(`buildOperationalKnowledgeReviewSection` appended to the reviewer prompt, project+repo
-scoped, bounded — **never the coder prompt**; goal-mode reviews use the same path).
-**MCP write** (`harness.ops_knowledge.record` / `deprecate` — guarded mutations through
-OperationRunner: guarded-mutation mode + `allowedOperations` allowlist + idempotency /
-audit / budget; actor `mcp:<clientName>`).
-
-Recorded 2026-06 when issue #57's storage + CLI + MCP-read cut landed.
+**Issue #57 is COMPLETE** (closed). The operational knowledge category
+(`knowledge_entries.category='operational'`, schema v19) shipped as: storage core +
+CLI (`knowledge ops add/list/show/deprecate/digest/export/import`) + MCP read
+(`ops_knowledge.search/get`) + MCP write (`ops_knowledge.record/deprecate`, guarded
+mutation) + inbox surfacing (E) + reviewer/goal injection (F, never the coder prompt) +
+**file-export parity** (`docs/ops-knowledge/<kind>/<key>.md` round-trip, separate from the
+codebase `docs/knowledge/` namespace) + **digest**. `promote` parity is intentionally
+N/A — operational knowledge is authored directly (no untrusted generator to gate).
 
 ## Release planning — beyond `harness release plan`
 

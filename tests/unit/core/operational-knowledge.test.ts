@@ -10,6 +10,7 @@ import {
   getOperationalKnowledge,
   deprecateOperationalKnowledge,
   buildOperationalKnowledgeReviewSection,
+  operationalKnowledgeDigest,
   OperationalKnowledgeError,
 } from "../../../src/core/operational-knowledge.js";
 import {
@@ -322,6 +323,22 @@ describe("operational knowledge (issue #57)", () => {
           .get() as { db_revision: number }
       ).db_revision;
       expect(rev2).toBe(rev1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("operationalKnowledgeDigest aggregates total / active / deprecated / byKind", () => {
+    const { db } = freshDb();
+    try {
+      recordOperationalKnowledge(db, { key: "a", title: "A", body: "x", kind: "ci", actor: "op" });
+      recordOperationalKnowledge(db, { key: "b", title: "B", body: "y", kind: "ci", actor: "op" });
+      recordOperationalKnowledge(db, { key: "c", title: "C", body: "z", kind: "environment", actor: "op" });
+      const gone = recordOperationalKnowledge(db, { key: "d", title: "D", body: "w", kind: "ci", actor: "op" });
+      deprecateOperationalKnowledge(db, { entryId: gone.entryId, actor: "op" });
+      const d = operationalKnowledgeDigest(db);
+      expect(d).toMatchObject({ total: 4, active: 3, deprecated: 1 });
+      expect(d.byKind).toEqual({ ci: 2, environment: 1 }); // deprecated 'd' excluded
     } finally {
       db.close();
     }

@@ -79,12 +79,14 @@ version を記録し、`harness db migrate` が未適用分を idempotent に適
 > **operational 知識**（toolchain / CI / 環境 / harness 運用の学び）を並列カテゴリ
 > として持つ。operational は **candidate ステージを持たず**（信用しない生成元が無い
 > ので gate 不要）operator が直接著述し、`knowledge_entry_revisions` の履歴 /
-> deprecate 機構を再利用する（entry_id は `ops/` namespace で file importer/exporter
-> の対象外＝DB-only）。**安全境界**: `listCurrentKnowledgeRevisions` は
-> `category='codebase'` を **fail-closed default** とし、coder prompt 用の
-> `buildKnowledgeContextFromDb` は codebase のみを集約する。operational 知識が
-> coder prompt に混入することは構造上あり得ない。core は
-> `src/core/operational-knowledge.ts`。
+> deprecate 機構を再利用する（entry_id は `ops/` namespace。DB-canonical だが、
+> `knowledge ops export/import` で **`docs/ops-knowledge/<kind>/<key>.md`** に round-trip
+> できる＝codebase 知識の `docs/knowledge/` importer とは別 namespace で衝突しない。
+> `db import --from-files` は自動取り込みしない）。**安全境界**:
+> `listCurrentKnowledgeRevisions` は `category='codebase'` を **fail-closed default**
+> とし、coder prompt 用の `buildKnowledgeContextFromDb` は codebase のみを集約する。
+> operational 知識が coder prompt に混入することは構造上あり得ない。core は
+> `src/core/operational-knowledge.ts`（+ `operational-knowledge-files.ts`）。
 
 ## schema v1 のテーブル
 
