@@ -369,7 +369,7 @@ describe("runReviewerAgent", () => {
     ).rejects.toThrow(/invalid runId/);
   });
 
-  it("rejects when status is not needs_review", async () => {
+  it("rejects an already-decided run with a no-op message (#77 disambiguation)", async () => {
     const { runsDir, runId } = setup({ status: "approved" });
     await expect(
       runReviewerAgent({
@@ -377,7 +377,7 @@ describe("runReviewerAgent", () => {
         runId,
         codexRunner: fakeRunnerWithOutput(APPROVED_OUTPUT),
       }),
-    ).rejects.toThrow(/only needs_review/);
+    ).rejects.toThrow(/no re-review is needed/i);
   });
 
   it("rejects when codex exits non-zero", async () => {

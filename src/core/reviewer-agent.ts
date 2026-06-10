@@ -28,6 +28,7 @@ import { DEFAULT_REVIEW_RULE, ruleSha256, type ReviewRule } from "./review-rule.
 import type Database from "better-sqlite3";
 import { fileExportEnabled } from "../config/export-mode.js";
 import { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
+import { classifyReviewGate } from "./review-gate-classify.js";
 import { buildOperationalKnowledgeReviewSection } from "./operational-knowledge.js";
 
 export { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
@@ -284,6 +285,28 @@ export function buildDecision(
   return ReviewDecisionFileSchema.parse(file);
 }
 
+/**
+ * The latest recorded review decision for a run, or null. Used (#77) to tell a
+ * run whose `review-decision.yaml` sidecar was deleted under export-OFF (but
+ * whose verdict is in the DB) apart from a genuinely incomplete run.
+ */
+function latestRecordedDecision(
+  dbPath: string | undefined,
+  runId: string,
+): string | null {
+  if (dbPath === undefined || !existsSync(dbPath)) return null;
+  const probe = openManagedDb({ dbPath, readonly: true });
+  try {
+    const repo = new ReviewProposalRepository(probe.db);
+    const proposal =
+      repo.getLatestProcessedProposal(runId) ??
+      repo.getLatestActiveProposal(runId);
+    return proposal?.decision ?? null;
+  } finally {
+    probe.close();
+  }
+}
+
 export async function runReviewerAgent(
   inputs: ReviewerAgentInputs,
 ): Promise<ReviewerAgentResult> {
@@ -321,15 +344,23 @@ export async function runReviewerAgent(
     );
   }
   const meta = metaRaw as RunMeta;
-  if (meta.status !== "needs_review") {
-    throw new ReviewerAgentGateError(
-      `run ${inputs.runId} status is "${meta.status}", only needs_review can be auto-reviewed`,
-    );
-  }
-  if (!existsSync(decisionPath)) {
-    throw new ReviewerAgentGateError(
-      `${decisionPath} not found; the run may not have completed normally`,
-    );
+  const decisionFileExists = existsSync(decisionPath);
+  // #77 — the DB is canonical: distinguish an already-decided run
+  // (re-orchestrate is a no-op; with export OFF the sidecar is deleted after a
+  // decision) from a genuinely incomplete one. Probe the DB only on the
+  // missing-file path so the normal success path stays a single DB open below.
+  const recordedDecision =
+    meta.status === "needs_review" && !decisionFileExists
+      ? latestRecordedDecision(inputs.dbPath, inputs.runId)
+      : null;
+  const gate = classifyReviewGate({
+    runId: inputs.runId,
+    status: meta.status ?? "",
+    decisionFileExists,
+    recordedDecision,
+  });
+  if (gate.kind !== "ok") {
+    throw new ReviewerAgentGateError(gate.message, { kind: gate.kind });
   }
 
   // Load the current decision file. Malformed → refuse (we'd otherwise

@@ -513,6 +513,11 @@ DB から再生成する。この repair の `run_materializations.reason` は�
 `ensureRunMaterialized:repair-missing-review-decision` で、generic な
 `review-auto` では記録しない。
 
+reviewer gate は run 状態を **DB-canonical** に判別し、欠落した `review-decision.yaml` を
+「既に decided（export OFF で sidecar 削除済み・再 orchestrate は no-op = `already_decided`）」と
+「真の未完了（recover 可 = `run_incomplete`）」で区別する（#77）。判定は `classifyReviewGate`
+（純関数）で行い、`ReviewerAgentGateError.kind` に区分を載せ、メッセージに推奨アクションを併記する。
+
 review step が失敗した場合、orchestrator は従来どおり goal を `escalated`
 に倒す。ただし、最新 run が安全に salvage 可能なときだけ、PR を作らず goal も
 close せずに workspace branch を commit/push する。salvage gate は fail-closed:
