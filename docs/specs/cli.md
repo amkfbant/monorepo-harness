@@ -319,13 +319,18 @@ harness goal await-merge [<goal-id>] --repo <path> [--all] [--repo-id <id>] \
 `check-convergence` は `diverging` / `budget_exhausted` / `escalate` で exit 2。
 MCP 経由の goal close/cancel/scope expansion は confirmation-required。
 
-`goal reopen`（#76）は **terminal な goal**（`closed` / `budget_exhausted` / `escalated` /
-`diverging`）を `open` に戻し、後から判明した finding を**既存ブランチ上で**修正できるようにする
+`goal reopen`（#76）は **terminal な goal**（`closed` / `budget_exhausted` / `escalated`）を
+`open` に戻し、後から判明した finding を**既存ブランチ上で**修正できるようにする
 （PR クローズ＆再実装を避ける）。`updateStatus` が COALESCE で残す terminal マーカー
 （`closed_at` / `close_summary` / `escalation_reason`）を**クリア**し、budget（`max_iterations` /
 `max_review_cycles` / `max_reruns`、既存カラム＝schema 不変）を **延長**するので、
 `budget_exhausted` の goal が再開直後に再枯渇しない。`cancelled`（意図的放棄）は reopen 不可。
-reopen 後は `goal finding add` で finding を記録 → orchestrate が `needs_fix` → coder で修正する。
+`diverging` も **reopen 不可**: divergence トリガー（`totalNewFindings` / `maxReopenCount` /
+finding 数の非減少）は不変の履歴から導出され、reopen は iteration/review/rerun budget しか
+延長しない（divergence budget は延長しない）ため、再開直後の convergence 評価で即 `diverging`
+が再発火し全 mutation を再 block する＝operator に解消手段がない。divergence budget 延長を伴う
+設計は `docs/future-features.md` 参照。reopen 後は `goal finding add` で finding を記録 →
+orchestrate が `needs_fix` → coder で修正する。
 
 `goal orchestrate` は goal を terminal 状態（closed / pr_created / merged /
 escalated）まで bounded loop（`--max-steps`、既定 50）で自律駆動する。`--dry-run`

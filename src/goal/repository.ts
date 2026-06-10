@@ -310,12 +310,19 @@ function nonNegInt(value: number | undefined): number {
 }
 
 /** Terminal statuses a goal can be reopened from (#76). `cancelled` is a
- * deliberate abandon and is excluded. */
+ * deliberate abandon and is excluded.
+ *
+ * `diverging` is intentionally NOT reopenable: divergence triggers
+ * (totalNewFindings, maxReopenCount, non-decreasing finding counts) derive from
+ * immutable history, and `reopenSession` only extends iteration/review/rerun
+ * budgets — not the divergence budget. A reopened diverging goal would re-fire
+ * `diverging` on its very next convergence evaluation and re-block every
+ * mutation, leaving the operator no way out. Reopening a diverging goal needs a
+ * divergence-budget extension design (see docs/future-features.md). */
 const REOPENABLE_STATUSES: ReadonlySet<GoalStatus> = new Set<GoalStatus>([
   "closed",
   "budget_exhausted",
   "escalated",
-  "diverging",
 ]);
 
 export class GoalRepository {

@@ -38,6 +38,25 @@ describe("classifyReviewGate (#77 escalation disambiguation)", () => {
     }
   });
 
+  it.each(["running", "generated", "verified", "failed-codex", "failed-command"])(
+    "does NOT claim 'already reviewed' for in-flight/failed status %s",
+    (status) => {
+      const c = classifyReviewGate({
+        runId: "run-1",
+        status,
+        decisionFileExists: false,
+        recordedDecision: null,
+      });
+      // an in-flight or failed run is not reviewable yet — but it was NOT
+      // "already reviewed". Must not be mis-routed as already_decided.
+      expect(c.kind).toBe("run_incomplete");
+      if (c.kind !== "ok") {
+        expect(c.message).not.toMatch(/already (been )?reviewed/i);
+        expect(c.message).toMatch(/not in a reviewable state|needs_review/i);
+      }
+    },
+  );
+
   it("run_incomplete when needs_review, no sidecar, and no recorded decision", () => {
     const c = classifyReviewGate({
       runId: "run-1",

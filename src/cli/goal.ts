@@ -265,8 +265,8 @@ export function registerGoalCommands(
   goalCmd
     .command("reopen")
     .description(
-      "reopen a terminal goal (closed/budget_exhausted/escalated/diverging) to " +
-        "fix a late finding on the existing branch instead of re-implementing (#76)",
+      "reopen a terminal goal (closed/budget_exhausted/escalated) to fix a late " +
+        "finding on the existing branch instead of re-implementing (#76)",
     )
     .argument("<goal-id>", "goal id")
     .requiredOption("--reason <text>", "reopen reason")
@@ -278,9 +278,18 @@ export function registerGoalCommands(
       withGoalErrorExit(() => {
         const result = withGoalRepo(opts, ({ repo }) =>
           repo.reopenSession(goalId, {
-            extendIterations: Number(raw.extendIterations),
-            extendReviewCycles: Number(raw.extendReviewCycles),
-            extendReruns: Number(raw.extendReruns),
+            extendIterations: parseNonNegativeInt(
+              raw.extendIterations,
+              "--extend-iterations",
+            ),
+            extendReviewCycles: parseNonNegativeInt(
+              raw.extendReviewCycles,
+              "--extend-review-cycles",
+            ),
+            extendReruns: parseNonNegativeInt(
+              raw.extendReruns,
+              "--extend-reruns",
+            ),
           }),
         );
         writeOutput(

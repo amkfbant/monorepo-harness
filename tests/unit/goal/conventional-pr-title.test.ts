@@ -34,4 +34,32 @@ describe("conventionalPrTitle (#103)", () => {
       "fix: run-4 (run-4)",
     );
   });
+
+  it("takes only the first line so a body/footer cannot reach the commit (release-please safety)", () => {
+    // a multi-line goal title must not smuggle a `BREAKING CHANGE:` footer into
+    // the squash commit and force a major bump from non-operator input.
+    const title = conventionalPrTitle({
+      goalTitle: "add a thing\n\nBREAKING CHANGE: drops the old API",
+      runId: "run-5",
+    });
+    expect(title).toBe("fix: add a thing (run-5)");
+    expect(title).not.toMatch(/BREAKING CHANGE/);
+    expect(title).not.toContain("\n");
+  });
+
+  it("strips control characters from the title", () => {
+    expect(
+      conventionalPrTitle({ goalTitle: "feat: a\tb\r\nc", runId: "run-6" }),
+    ).toBe("feat: a b (run-6)");
+  });
+
+  it("caps an absurdly long title", () => {
+    const title = conventionalPrTitle({
+      goalTitle: "fix: " + "x".repeat(500),
+      runId: "run-7",
+    });
+    // subject capped; run-id suffix still appended
+    expect(title.length).toBeLessThanOrEqual(120 + " (run-7)".length);
+    expect(title.endsWith(" (run-7)")).toBe(true);
+  });
 });

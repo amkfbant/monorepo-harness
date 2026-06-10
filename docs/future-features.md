@@ -632,3 +632,14 @@ reopen したか」を追えない）。lifecycle 変化自体は status で見�
 （最終判定は変わらず git diff）が、project-scoped goal では guardrail のスコープが
 raw repo policy になる。follow-up: `OrchestratorRunnerDeps` に `compiledPolicy` を追加し
 coder / closeAndPr に thread する（CLI と MCP 共通の独立改善）。S7 のブロッカーにはしない。
+
+## review budget だけ残して rerun が budget 境界で停止すると未レビュー run が残る（#104 review P2）
+
+#104 の reviewPending 分岐は `goalBudgetLimitReason`（iteration/rerun budget）の**後**に
+置かれている（`src/goal/convergence.ts`、`docs/specs/goal-convergence.md` step 6）。これは
+「genuinely over-budget な goal は止まる」という意図的な fail-closed 選択だが、rerun が
+budget 境界ちょうどで終わると、その fix が未レビューのまま `budget_exhausted` で停止する
+境界ケースが残る（#104 が消そうとした症状の残滓）。運用上は **#76 `goal reopen`（review
+budget 延長）** が救済になる。follow-up: rerun budget は尽きたが **review budget が残っている**
+ケースに限り、停止前に pending coder run のレビューを 1 回だけ許す（review は新規 coding を
+増やさないので発散しない）改善を検討。fail-closed 方向のため S の close ブロッカーにはしない。

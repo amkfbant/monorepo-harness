@@ -556,4 +556,18 @@ describe("reopenSession (#76)", () => {
       db.close();
     }
   });
+
+  it("refuses to reopen a diverging goal (would immediately re-diverge)", () => {
+    // divergence triggers derive from immutable history; reopen only extends
+    // iteration/review/rerun budgets, so a reopened diverging goal would re-fire
+    // `diverging` at once. Reopening it needs a divergence-budget design.
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.updateStatus("goal-test", "diverging", "finding churn");
+      expect(() => repo.reopenSession("goal-test")).toThrow(/not a reopenable/);
+    } finally {
+      db.close();
+    }
+  });
 });

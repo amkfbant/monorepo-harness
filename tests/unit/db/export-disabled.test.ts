@@ -96,6 +96,15 @@ describe("HARNESS_WARN_EXPORT_MODE — opt-in migration warning (#79 cross-proce
     process.env.HARNESS_SUPPRESS_EXPORT_MODE_WARNING = "1";
     expect(await captureWarn()).toBe("");
   });
+
+  it("HARNESS_SUPPRESS_EXPORT_MODE_WARNING=0 does NOT silence (truthy normalization)", async () => {
+    // suppress uses the same truthy normalization as HARNESS_EXPORT_FILES:
+    // only 1/true/on/yes silences — `=0` must still surface the opted-in notice.
+    delete process.env.HARNESS_EXPORT_FILES;
+    process.env.HARNESS_WARN_EXPORT_MODE = "1";
+    process.env.HARNESS_SUPPRESS_EXPORT_MODE_WARNING = "0";
+    expect(await captureWarn()).toMatch(/default changed/);
+  });
 });
 
 describe("exportRun with file export disabled", () => {
