@@ -119,18 +119,26 @@ Evaluation is deterministic and conservative:
 3. Open in-scope P0 escalates.
 4. Growing finding counts or reopened churn is `diverging`.
 5. Passed fresh required close checks plus configured `closeRequires` blockers clear is `close_ready`.
-6. Unknown-scope findings block automation when policy requires it.
-7. Open in-scope P1 needs a fix.
-8. Failed required close checks need a fix.
-9. Un-deferred out-of-scope findings require `defer_followups` when policy requires deferral.
-10. If the most recent coding attempt (implement/rerun) ended `failed` (e.g. a
+6. (#104) An **unreviewed** coder run — the latest coding attempt (implement/
+   rerun) is newer than the latest review cycle — is **reviewed** (`continue` →
+   `run_close_check`) before routing to another rerun, classification, or fix
+   pass. Placed *after* the budget checks (a genuinely over-budget goal still
+   stops) and gated by the review-cycle budget, so an open finding cannot drive
+   endless reruns that never review the fix that would clear it (otherwise the
+   goal burns its rerun budget and dead-ends as `budget_exhausted` with the
+   finding still open).
+7. Unknown-scope findings block automation when policy requires it.
+8. Open in-scope P1 needs a fix.
+9. Failed required close checks need a fix.
+10. Un-deferred out-of-scope findings require `defer_followups` when policy requires deferral.
+11. If the most recent coding attempt (implement/rerun) ended `failed` (e.g. a
     `failed-command` run that never reached `needs_review`), the decision is
     `needs_fix` with `fix_findings` — route to a bounded recovery rerun rather
     than to review (review on a non-`needs_review` run would throw and dead-end
     the goal). The rerun budget (step 2) terminates this as `budget_exhausted`
     if the run cannot be recovered. The recovery rerun's coder goal carries the
     failed run status so it fixes the cause instead of re-coding blind.
-11. Otherwise the decision is `continue`.
+12. Otherwise the decision is `continue`.
 
 Recorded close-check evidence is fresh only when it is at or after the latest
 invalidating goal event: a non-close-check attempt, finding seen/fixed/deferred

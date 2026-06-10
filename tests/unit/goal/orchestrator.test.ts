@@ -190,6 +190,15 @@ describe("GoalOrchestrator", () => {
         createdSource: "worker",
       });
       repo.createAttempt({ goalId: "g-defer-loop", attemptType: "implement" });
+      // The implement run was reviewed (the finding below came from that review)
+      // — record the cycle so convergence does not route to a pending review
+      // (#104) instead of the defer path under test.
+      const dc = repo.startReviewCycle({
+        goalId: "g-defer-loop",
+        cycleNumber: 1,
+        reviewMode: "initial",
+      });
+      repo.completeReviewCycle({ cycleId: dc.cycleId, findingsNew: 1 });
       const f = repo.upsertFinding({
         goalId: "g-defer-loop",
         source: "review",
