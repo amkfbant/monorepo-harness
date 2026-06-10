@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { gitCliOrThrow, gitCli } from "../git/git-cli.js";
+import { assertSymlinkCapable } from "./fs-preflight.js";
 
 export interface WorktreeCreateOpts {
   repoPath: string;
@@ -25,6 +26,10 @@ function withTimeout(repoPath: string, timeoutMs: number | undefined) {
 export async function createWorktree(
   opts: WorktreeCreateOpts,
 ): Promise<Worktree> {
+  // (#68) Fail fast with an actionable message if the worktree dir is on a
+  // symlink-incapable FS (WSL 9p/drvfs) — git worktree / dep installs would
+  // otherwise die with a cryptic EPERM deep inside.
+  assertSymlinkCapable(opts.worktreesDir);
   const wtPath = join(opts.worktreesDir, opts.runId, "repo");
   await gitCliOrThrow(
     ["worktree", "add", "-b", opts.branch, wtPath, opts.base],
