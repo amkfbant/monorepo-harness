@@ -196,7 +196,13 @@ next action: `needs_fix` with `fix_findings` permits only `run.start` and
 implementation mutations. `continue` with `defer_followups` blocks these
 goal-linked mutations until the recommended deferral action is handled.
 `review.process` confirmation requests are not created when this gate denies the
-linked goal. `harness goal check-convergence` and
+linked goal. The bounded MCP driver `goal.orchestrate` (`harness.goal.orchestrate`)
+is gated by the same evaluation: it is permitted **exactly when some per-step
+mutation would be permitted** (`needs_fix` with `fix_findings`/`run_close_check`,
+or `continue` with `run_close_check`). `close_ready`, the terminal decisions,
+`defer_followups`, and classification all deny the driver so an operator handles
+them out of band; each internal coder/review step the orchestrator runs
+re-checks its own gate. `harness goal check-convergence` and
 `harness.goal.check_convergence` record an audit decision and synchronize the
 durable goal status for stop/close-ready decisions by default. Review proposal
 import uses the same status synchronization after it records its convergence
@@ -271,6 +277,14 @@ findings, recording close checks, and evaluating convergence.
 MCP goal mutations use the same permission model as other mutation tools.
 Dangerous terminal operations such as forced close/cancel and scope expansion
 require confirmation. MCP finding details are capped and redacted.
+
+`harness.goal.orchestrate` is a bounded driver (args: `goalId`, optional
+`maxSteps` 1-50 default 20) that advances the loop a capped number of
+orchestrator steps and halts at `close_ready` without opening a PR
+(`stopAtCloseReady`). The target repo is resolved server-side from the goal's
+project/domain (never a client-supplied path); it never wires a publisher.
+Opening the PR / closing the goal stays the deliberate CLI
+`harness goal orchestrate` path. See [`mcp.md`](./mcp.md) for the full contract.
 
 Goal-linked run/review tools support optional `goalId`:
 

@@ -44,6 +44,8 @@ import {
 } from "../../goal/operation-integration.js";
 import { importReviewProposalToGoal } from "../../goal/review-integration.js";
 import { GoalRepository } from "../../goal/repository.js";
+import { GoalOrchestrator } from "../../goal/orchestrator.js";
+import { createOrchestratorRunners } from "../../goal/orchestrator-runners.js";
 import {
   assertGoalCanStartMutation,
   evaluateGoalMutationGate,
@@ -79,6 +81,11 @@ interface RunStartArgs extends MutationBaseArgs {
 interface RunArgs extends MutationBaseArgs {
   runId: string;
   goalId?: string;
+}
+
+interface OrchestrateGoalArgs extends MutationBaseArgs {
+  goalId: string;
+  maxSteps?: number;
 }
 
 interface ReviewAutoArgs extends RunArgs {
@@ -436,6 +443,85 @@ export async function rerunStartTool(
         return { ...result, goalAttempt: attempt };
       }
       return result;
+    },
+  });
+}
+
+// (#83) Bounded MCP driver for the goal convergence loop. Advances the goal a
+// capped number of orchestrator steps (coder rerun -> review -> convergence) and
+// halts at close_ready WITHOUT opening a PR or closing the goal — opening the PR
+// stays a deliberate, separately-confirmed step (CLI `goal orchestrate`).
+const DEFAULT_ORCHESTRATE_STEPS = 20;
+const MAX_ORCHESTRATE_STEPS = 50;
+
+export async function orchestrateGoalTool(
+  args: OrchestrateGoalArgs,
+  context: McpToolContext,
+): Promise<HarnessMcpToolResult> {
+  // Bounded: clamp to [1, MAX_ORCHESTRATE_STEPS]; a missing/invalid value falls
+  // back to the default. The driver never opens a PR (stopAtCloseReady below), so
+  // a large maxSteps can only burn coder/review budget, which the convergence
+  // budgets already cap.
+  const requested =
+    typeof args.maxSteps === "number" && Number.isFinite(args.maxSteps)
+      ? Math.trunc(args.maxSteps)
+      : DEFAULT_ORCHESTRATE_STEPS;
+  const maxSteps = Math.min(MAX_ORCHESTRATE_STEPS, Math.max(1, requested));
+  const dbPath = harnessPaths(context.harnessRoot).dbPath;
+  return runMcpOperation(context, {
+    operationType: "goal.orchestrate",
+    target: { type: "goal", id: args.goalId },
+    idempotencyKey: args.idempotencyKey,
+    input: { ...args, maxSteps },
+    metadata: operationMetadata(context, "harness.goal.orchestrate", args),
+    goalGate: { goalId: args.goalId, mutationKind: "goal.orchestrate" },
+    workWithDb: async (db) => {
+      // Resolve the target repo SERVER-SIDE from the goal's own project/domain —
+      // never a client-supplied path (safety boundary: MCP must not accept an
+      // arbitrary repo path). prepareProjectRun also compiles the policy the
+      // per-run guardrails enforce.
+      const session = new GoalRepository(db).requireSession(args.goalId);
+      if (session.projectId === null || session.domain === null) {
+        throw new Error(
+          `goal ${args.goalId} has no projectId/domain; harness.goal.orchestrate ` +
+            "only drives project-scoped goals",
+        );
+      }
+      const prepared = await prepareProjectRun({
+        harnessRoot: context.harnessRoot,
+        projectId: session.projectId,
+        domain: session.domain,
+      });
+      const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
+      const createdBy = `mcp:${context.clientName}`;
+      const result = await new GoalOrchestrator({ dbPath }).run({
+        goalId: args.goalId,
+        runners: createOrchestratorRunners({
+          dbPath,
+          harnessRoot: context.harnessRoot,
+          createdBy,
+          coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
+          reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
+          // NO publisher: the MCP driver never opens a PR. stopAtCloseReady below
+          // halts at close_ready; opening the PR / closing the goal stays a
+          // deliberate, separately-confirmed step.
+          repoPath: prepared.repoPath,
+          baseBranch: prepared.baseBranch,
+        }),
+        maxSteps,
+        createdBy,
+        stopAtCloseReady: true,
+      });
+      return {
+        goalId: result.goalId,
+        outcome: result.outcome,
+        finalDecision: result.finalDecision,
+        stepCount: result.steps.length,
+        steps: result.steps,
+        ...(result.escalateReason !== undefined
+          ? { escalateReason: result.escalateReason }
+          : {}),
+      };
     },
   });
 }

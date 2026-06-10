@@ -115,3 +115,61 @@ describe("allowedByConvergence — permit matrix is fail-closed", () => {
     expect(allowedByConvergence("rerun.start", convergence("continue", "run_close_check"))).toBe(false);
   });
 });
+
+// (#83) The MCP `harness.goal.orchestrate` driver is permitted exactly when the
+// loop has a permitted autonomous next step — i.e. when SOME per-step mutation
+// would be allowed. Everything else (close_ready, terminal, defer/classify) must
+// require an operator, so the driver is denied.
+const ORCHESTRATE_PERMITTED = new Set<string>([
+  "needs_fix|fix_findings",
+  "needs_fix|run_close_check",
+  "continue|run_close_check",
+]);
+
+describe("allowedByConvergence — goal.orchestrate driver is fail-closed", () => {
+  it("permits the driver iff a per-step mutation is permitted", () => {
+    for (const decision of GOAL_CONVERGENCE_DECISIONS) {
+      for (const actionKind of GOAL_NEXT_ACTION_KINDS) {
+        const c = convergence(decision, actionKind);
+        const anyStepPermitted = ALL_MUTATIONS.some((m) =>
+          allowedByConvergence(m, c),
+        );
+        const expected = ORCHESTRATE_PERMITTED.has(`${decision}|${actionKind}`);
+        // the driver gate must agree with "some step is permitted"
+        expect(anyStepPermitted, `${decision}|${actionKind} step-permit`).toBe(
+          expected,
+        );
+        expect(
+          allowedByConvergence("goal.orchestrate", c),
+          `${decision}|${actionKind} orchestrate-permit`,
+        ).toBe(expected);
+      }
+    }
+  });
+
+  it("denies the driver at close_ready and every terminal decision", () => {
+    const denyAll: GoalConvergenceDecision[] = [
+      "close_ready",
+      "closed",
+      "cancel",
+      "diverging",
+      "budget_exhausted",
+      "escalate",
+      "needs_classification",
+    ];
+    for (const decision of denyAll) {
+      for (const actionKind of GOAL_NEXT_ACTION_KINDS) {
+        expect(
+          allowedByConvergence("goal.orchestrate", convergence(decision, actionKind)),
+          `${decision}|${actionKind} must deny orchestrate`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it("denies the driver under continue + defer_followups (operator must defer)", () => {
+    expect(
+      allowedByConvergence("goal.orchestrate", convergence("continue", "defer_followups")),
+    ).toBe(false);
+  });
+});

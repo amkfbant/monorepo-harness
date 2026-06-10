@@ -82,6 +82,7 @@ import {
   opsKnowledgeRecordTool,
   opsKnowledgeDeprecateTool,
   resolveDoctorFindingProjectId,
+  orchestrateGoalTool,
   prCreateTool,
   rerunStartTool,
   resolveKnowledgeCandidateProjectId,
@@ -518,6 +519,14 @@ const rerunStartArgs = z
   .object({
     runId: z.string().min(1),
     goalId: z.string().min(1).optional(),
+  })
+  .merge(MutationArgsBaseSchema)
+  .strict();
+
+const orchestrateGoalArgs = z
+  .object({
+    goalId: z.string().min(1),
+    maxSteps: z.number().int().positive().max(50).optional(),
   })
   .merge(MutationArgsBaseSchema)
   .strict();
@@ -1345,6 +1354,30 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       ["runId", "idempotencyKey"],
     ),
     handler: rerunStartTool,
+  }),
+  define({
+    name: "harness.goal.orchestrate",
+    title: "Drive goal loop",
+    description:
+      "Advance a goal a bounded number of orchestrator steps (coder rerun -> " +
+      "review -> convergence), halting at close_ready WITHOUT opening a PR.",
+    kind: "mutation",
+    operation: "goal.orchestrate",
+    argsSchema: orchestrateGoalArgs,
+    resolveProjectIdForPermission: resolveGoalProjectId,
+    inputSchema: objectSchema(
+      {
+        goalId: goalIdJson,
+        maxSteps: {
+          type: "number",
+          description: "Max orchestrator steps to run (1-50, default 20)",
+        },
+        idempotencyKey: idempotencyJson,
+        actorNote: { type: "string" },
+      },
+      ["goalId", "idempotencyKey"],
+    ),
+    handler: orchestrateGoalTool,
   }),
   define({
     name: "harness.backlog.create",
