@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { openManagedDb, withManagedDb } from "../db/managed-connection.js";
 import { harnessPaths } from "../config/paths.js";
+import { conventionalPrTitle } from "./conventional-pr-title.js";
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import {
   runDomainCoding,
@@ -498,24 +499,34 @@ export function createOrchestratorRunners(
           "closeAndPr requires a publisher in OrchestratorRunnerDeps",
         );
       }
-      const { runId, base, repoPath } = withManagedDb({ dbPath: deps.dbPath }, (db) => {
-        const repo = new GoalRepository(db);
-        const session = repo.requireSession(goalId);
-        // Defense in depth: closeAndPr must only ever run on a goal whose
-        // convergence is `close_ready`. The orchestrator dispatch already
-        // guarantees this, but a direct caller (or a future code path) must
-        // not be able to close a non-ready goal — fail closed.
-        const convergence = new ConvergenceService(repo).evaluate(goalId);
-        if (convergence.decision !== "close_ready") {
-          throw new GoalNotCloseReadyError(goalId, convergence.decision);
-        }
-        const context = resolveRunContext(deps, session);
-        return {
-          runId: latestRunId(repo, goalId),
-          base: context.baseBranch,
-          repoPath: context.repoPath,
-        };
-      });
+      const { runId, base, repoPath, prTitle } = withManagedDb(
+        { dbPath: deps.dbPath },
+        (db) => {
+          const repo = new GoalRepository(db);
+          const session = repo.requireSession(goalId);
+          // Defense in depth: closeAndPr must only ever run on a goal whose
+          // convergence is `close_ready`. The orchestrator dispatch already
+          // guarantees this, but a direct caller (or a future code path) must
+          // not be able to close a non-ready goal — fail closed.
+          const convergence = new ConvergenceService(repo).evaluate(goalId);
+          if (convergence.decision !== "close_ready") {
+            throw new GoalNotCloseReadyError(goalId, convergence.decision);
+          }
+          const context = resolveRunContext(deps, session);
+          const rid = latestRunId(repo, goalId);
+          return {
+            runId: rid,
+            base: context.baseBranch,
+            repoPath: context.repoPath,
+            // #103 — Conventional-Commit title derived from the goal title so
+            // release-please picks the squash commit up.
+            prTitle: conventionalPrTitle({
+              goalTitle: session.title ?? "",
+              runId: rid,
+            }),
+          };
+        },
+      );
 
       // Phase 3: when auto-merge is enabled, preflight the APPROVAL portion of
       // the merge gate (close-ready ∧ consensus approved w/ quorum, or human
@@ -557,6 +568,7 @@ export function createOrchestratorRunners(
         locksDir: paths.locksDir,
         runId,
         base,
+        title: prTitle,
         // A draft PR cannot be merged; when auto-merge is enabled the PR must be
         // ready so `gh pr merge` can complete. Otherwise keep the safe default
         // (draft) so a human opens it.

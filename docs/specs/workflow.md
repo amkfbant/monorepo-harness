@@ -854,6 +854,12 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
   `OrchestrationResult` は PR の draft 状態を `draft: boolean` として保持する。
   outcome enum の値は不変で、draft PR の作成でも `outcome` は **`pr_created`** のまま
   （CLI が `draft=true|false` を別フィールド表示）。
+  - **PR タイトル（#103）**: `closeAndPr` は goal title から **Conventional Commit** 形式の
+    タイトル（`conventionalPrTitle`：goal title が既に conventional ならそのまま、でなければ
+    `fix:` を付与し `(run-<id>)` を付す）を作り、`createPullRequest({ title })` に渡す。
+    `pr-creator` はこのタイトルを **PR title かつ branch commit subject** に使う（squash 設定が
+    PR title / commit message のどちらでも squash subject が conventional になり、release-please が
+    version/CHANGELOG に拾える）。`(#NN)` は GitHub issue autolink を避けるため使わない。
   - `canMerge` → `gh pr merge --match-head-commit <sha> --<method>`（idempotent:
     既マージ検出、**head commit に pin**: CI 判定前に取得した head SHA に固定し
     head が動けば拒否→escalate）で merge、operation audit（`operations`,
