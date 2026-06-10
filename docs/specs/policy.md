@@ -237,6 +237,19 @@ hit したファイルは:
 
 `safetyStatus` には影響しない（path policy 通過した allowed file が対象なので）。
 
+## verify-guarded — out-of-band 変更の検知（#69）
+
+policy 検証はハーネス**自身**の変更を事後 `git diff` で見るが、対象 repo の guarded ドメインへの
+**out-of-band（非ハーネス）変更**（素手編集など）は未強制だった。`harness verify-guarded`
+（[`cli.md`](./cli.md)）は read-only でこれを補う: 各ドメインの `write` + `deny_write` glob を
+guarded scope とし、対象 repo の**未コミット working-tree 変更**で guarded scope に該当するものを
+検出して fail-closed（exit 1）に倒す。ハーネスはレビュー済み run のコミット経由でのみ land するため、
+guarded path への未コミット変更は定義上未検証。「常時ハーネス強制」はせず、operator / CI / pre-push
+hook が呼び出し側で gate する設計（強制は呼び出し側の選択）。
+
+> committed 履歴の帰属（過去コミットがレビュー済み run 由来か）は健全判定に reviewed-head-sha の記録が
+> 要るため対象外（follow-up）。working-tree 検知は最頻・最も明確に fail-closed なケースを担保する。
+
 ## 既知の限界
 
 - minimatch root-anchored が gitignore と違うこと（[policy-semantics.md](../policy-semantics.md) F1）

@@ -303,6 +303,28 @@ interface GoalDecisionRow {
   created_by: string;
 }
 
+/** Clamp a budget extension to a non-negative integer; non-finite (e.g. a NaN
+ * from a bad CLI string) becomes 0 rather than reaching the SQL bind. */
+function nonNegInt(value: number | undefined): number {
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value as number)) : 0;
+}
+
+/** Terminal statuses a goal can be reopened from (#76). `cancelled` is a
+ * deliberate abandon and is excluded.
+ *
+ * `diverging` is intentionally NOT reopenable: divergence triggers
+ * (totalNewFindings, maxReopenCount, non-decreasing finding counts) derive from
+ * immutable history, and `reopenSession` only extends iteration/review/rerun
+ * budgets — not the divergence budget. A reopened diverging goal would re-fire
+ * `diverging` on its very next convergence evaluation and re-block every
+ * mutation, leaving the operator no way out. Reopening a diverging goal needs a
+ * divergence-budget extension design (see docs/future-features.md). */
+const REOPENABLE_STATUSES: ReadonlySet<GoalStatus> = new Set<GoalStatus>([
+  "closed",
+  "budget_exhausted",
+  "escalated",
+]);
+
 export class GoalRepository {
   constructor(private readonly db: Database.Database) {}
 
@@ -397,6 +419,53 @@ export class GoalRepository {
           WHERE goal_id = ?`,
       )
       .run(status, now, closedAt, closeSummary, escalationReason, goalId);
+    return this.requireSession(goalId);
+  }
+
+  /**
+   * #76 / #104 — resume a terminal goal (closed / budget_exhausted / escalated /
+   * diverging) so a late-discovered finding can be fixed on the existing branch
+   * instead of closing the PR and re-implementing. Transitions back to `open`,
+   * clears the terminal markers `updateStatus` would COALESCE-preserve
+   * (`closed_at` / `close_summary` / `escalation_reason`), and extends the
+   * budget (existing columns — no schema change) so a budget_exhausted goal does
+   * not immediately re-exhaust. State transition only (harness-driven, audited
+   * by the caller). `cancelled` is a deliberate abandon and is NOT reopenable.
+   */
+  reopenSession(
+    goalId: string,
+    opts: {
+      extendIterations?: number;
+      extendReviewCycles?: number;
+      extendReruns?: number;
+      now?: string;
+    } = {},
+  ): GoalSession {
+    const session = this.requireSession(goalId);
+    if (!REOPENABLE_STATUSES.has(session.status)) {
+      throw new Error(
+        `goal ${goalId} is "${session.status}", not a reopenable terminal ` +
+          `status (${[...REOPENABLE_STATUSES].join(", ")})`,
+      );
+    }
+    const now = opts.now ?? new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE goal_sessions
+            SET status = 'open', updated_at = ?,
+                closed_at = NULL, close_summary = NULL, escalation_reason = NULL,
+                max_iterations = max_iterations + ?,
+                max_review_cycles = max_review_cycles + ?,
+                max_reruns = max_reruns + ?
+          WHERE goal_id = ?`,
+      )
+      .run(
+        now,
+        nonNegInt(opts.extendIterations),
+        nonNegInt(opts.extendReviewCycles),
+        nonNegInt(opts.extendReruns),
+        goalId,
+      );
     return this.requireSession(goalId);
   }
 

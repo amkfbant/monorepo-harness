@@ -383,7 +383,13 @@ async function createUnderLock(
   );
   assertPathsSubset(stagedPaths, reviewedPaths, "staged diff");
   if (stagedPaths.length > 0) {
-    await runGit(["commit", "-m", `harness: ${opts.runId}`], git);
+    // #103 — use the (Conventional-Commit) PR title as the branch commit
+    // subject too, so the squash merge subject is Conventional regardless of
+    // whether the repo squashes from the PR title or the commit message.
+    await runGit(
+      ["commit", "-m", opts.title ?? `harness: ${opts.runId}`],
+      git,
+    );
   }
 
   // 4. Verify the FULL branch diff before push. This catches existing local

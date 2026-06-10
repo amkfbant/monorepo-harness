@@ -9,9 +9,11 @@
  *   - `HARNESS_EXPORT_FILES=0 / false / off / no` → file export OFF
  *   - unset → OFF (Phase 9 default; **breaking change** from Phase 8 ON)
  *
- * When the env var is unset, the first write command emits a one-time
- * stderr warning so existing operators discover the new default. Set
- * `HARNESS_SUPPRESS_EXPORT_MODE_WARNING=1` (CI / tests) to silence it.
+ * The Phase 9 migration is long settled, so the "default changed to OFF"
+ * notice is **opt-in** (#79): silent by default — every short-lived CLI
+ * process used to emit it once, spamming a session's logs. Set
+ * `HARNESS_WARN_EXPORT_MODE=1` to surface the one-time notice;
+ * `HARNESS_SUPPRESS_EXPORT_MODE_WARNING=1` still silences it even when opted in.
  *
  * An explicit `harness db export-files` always exports regardless.
  */
@@ -42,11 +44,13 @@ let warned = false;
 function maybeWarnUnset(): void {
   if (warned) return;
   warned = true;
-  // Phase 9 post-close P2 #2 fix — the suppression env var must use the
-  // same truthy normalization as HARNESS_EXPORT_FILES (only `1` / true /
-  // on / yes silences). Previously any non-empty value (including `0`)
-  // silenced the warning, which is the opposite of what an operator
-  // setting `=0` would expect.
+  // #79 — the migration notice is opt-in to avoid cross-process log spam
+  // (each short-lived CLI process otherwise emits it once). Default silent;
+  // only surface it when explicitly requested.
+  const warn = process.env.HARNESS_WARN_EXPORT_MODE ?? "";
+  if (!ON_VALUES.has(warn.trim().toLowerCase())) return;
+  // truthy-only normalization (same as HARNESS_EXPORT_FILES) — only
+  // `1` / true / on / yes silences; an operator setting `=0` still sees it.
   const suppress = process.env.HARNESS_SUPPRESS_EXPORT_MODE_WARNING ?? "";
   if (ON_VALUES.has(suppress.trim().toLowerCase())) return;
   process.stderr.write(

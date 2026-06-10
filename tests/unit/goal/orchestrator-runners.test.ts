@@ -305,6 +305,15 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
           status: "succeeded",
           runId: "run-prior",
         });
+        // the prior attempt was reviewed (the finding below came from it) so
+        // convergence stays needs_fix rather than routing to a pending review
+        // (#104).
+        const ic = repo.startReviewCycle({
+          goalId: "g-inject",
+          cycleNumber: 1,
+          reviewMode: "initial",
+        });
+        repo.completeReviewCycle({ cycleId: ic.cycleId, findingsNew: 1 });
         // an open in-scope finding the rerun must address (also makes the goal
         // needs_fix so the run.start gate permits the coder).
         repo.upsertFinding({

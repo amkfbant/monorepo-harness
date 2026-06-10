@@ -119,18 +119,26 @@ Evaluation is deterministic and conservative:
 3. Open in-scope P0 escalates.
 4. Growing finding counts or reopened churn is `diverging`.
 5. Passed fresh required close checks plus configured `closeRequires` blockers clear is `close_ready`.
-6. Unknown-scope findings block automation when policy requires it.
-7. Open in-scope P1 needs a fix.
-8. Failed required close checks need a fix.
-9. Un-deferred out-of-scope findings require `defer_followups` when policy requires deferral.
-10. If the most recent coding attempt (implement/rerun) ended `failed` (e.g. a
+6. (#104) An **unreviewed** coder run — the latest coding attempt (implement/
+   rerun) is newer than the latest review cycle — is **reviewed** (`continue` →
+   `run_close_check`) before routing to another rerun, classification, or fix
+   pass. Placed *after* the budget checks (a genuinely over-budget goal still
+   stops) and gated by the review-cycle budget, so an open finding cannot drive
+   endless reruns that never review the fix that would clear it (otherwise the
+   goal burns its rerun budget and dead-ends as `budget_exhausted` with the
+   finding still open).
+7. Unknown-scope findings block automation when policy requires it.
+8. Open in-scope P1 needs a fix.
+9. Failed required close checks need a fix.
+10. Un-deferred out-of-scope findings require `defer_followups` when policy requires deferral.
+11. If the most recent coding attempt (implement/rerun) ended `failed` (e.g. a
     `failed-command` run that never reached `needs_review`), the decision is
     `needs_fix` with `fix_findings` — route to a bounded recovery rerun rather
     than to review (review on a non-`needs_review` run would throw and dead-end
     the goal). The rerun budget (step 2) terminates this as `budget_exhausted`
     if the run cannot be recovered. The recovery rerun's coder goal carries the
     failed run status so it fixes the cause instead of re-coding blind.
-11. Otherwise the decision is `continue`.
+12. Otherwise the decision is `continue`.
 
 Recorded close-check evidence is fresh only when it is at or after the latest
 invalidating goal event: a non-close-check attempt, finding seen/fixed/deferred
@@ -188,7 +196,13 @@ next action: `needs_fix` with `fix_findings` permits only `run.start` and
 implementation mutations. `continue` with `defer_followups` blocks these
 goal-linked mutations until the recommended deferral action is handled.
 `review.process` confirmation requests are not created when this gate denies the
-linked goal. `harness goal check-convergence` and
+linked goal. The bounded MCP driver `goal.orchestrate` (`harness.goal.orchestrate`)
+is gated by the same evaluation: it is permitted **exactly when some per-step
+mutation would be permitted** (`needs_fix` with `fix_findings`/`run_close_check`,
+or `continue` with `run_close_check`). `close_ready`, the terminal decisions,
+`defer_followups`, and classification all deny the driver so an operator handles
+them out of band; each internal coder/review step the orchestrator runs
+re-checks its own gate. `harness goal check-convergence` and
 `harness.goal.check_convergence` record an audit decision and synchronize the
 durable goal status for stop/close-ready decisions by default. Review proposal
 import uses the same status synchronization after it records its convergence
@@ -240,6 +254,7 @@ The CLI exposes `harness goal`:
 ```bash
 harness goal start --title "..." --scope-file scope.yaml --close-file close.yaml
 harness goal status <goal-id>
+harness goal reopen <goal-id> --reason "..." [--extend-iterations N] [--extend-review-cycles N] [--extend-reruns N]
 harness goal finding add <goal-id> --severity P1 --category correctness --summary "..."
 harness goal finding classify <finding-id> --scope in-scope --reason "..."
 harness goal finding fixed <finding-id> --note "..."
@@ -262,6 +277,14 @@ findings, recording close checks, and evaluating convergence.
 MCP goal mutations use the same permission model as other mutation tools.
 Dangerous terminal operations such as forced close/cancel and scope expansion
 require confirmation. MCP finding details are capped and redacted.
+
+`harness.goal.orchestrate` is a bounded driver (args: `goalId`, optional
+`maxSteps` 1-50 default 20) that advances the loop a capped number of
+orchestrator steps and halts at `close_ready` without opening a PR
+(`stopAtCloseReady`). The target repo is resolved server-side from the goal's
+project/domain (never a client-supplied path); it never wires a publisher.
+Opening the PR / closing the goal stays the deliberate CLI
+`harness goal orchestrate` path. See [`mcp.md`](./mcp.md) for the full contract.
 
 Goal-linked run/review tools support optional `goalId`:
 

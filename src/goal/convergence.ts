@@ -52,13 +52,15 @@ export class ConvergenceService {
         pending: close.requiredPending,
       },
     );
+    const latestCodingFailed = isLatestCodingAttemptFailed(attempts);
     return decide(
       session,
       findings,
       cycles,
       metrics,
       close.allRequiredPassed,
-      isLatestCodingAttemptFailed(attempts),
+      latestCodingFailed,
+      isReviewPending(attempts, cycles, latestCodingFailed),
     );
   }
 }
@@ -159,6 +161,38 @@ function isLatestCodingAttemptFailed(attempts: GoalAttempt[]): boolean {
   return false;
 }
 
+/**
+ * #104 — true when the latest (non-failed) coding attempt produced a run that
+ * has not been reviewed yet: there is a coding attempt newer than the latest
+ * review cycle (or no review cycle at all). In that state the next step must be
+ * a review (so the fix can clear the open finding), not another coder rerun /
+ * budget_exhausted — otherwise reruns keep re-opening the same finding without
+ * ever reviewing the fix, and the goal dead-ends at budget with the finding
+ * still open.
+ */
+function isReviewPending(
+  attempts: GoalAttempt[],
+  cycles: GoalReviewCycle[],
+  latestCodingFailed: boolean,
+): boolean {
+  if (latestCodingFailed) return false;
+  let latestCodingAt: string | null = null;
+  for (let i = attempts.length - 1; i >= 0; i--) {
+    const attempt = attempts[i];
+    if (attempt !== undefined && CODING_ATTEMPT_TYPES.has(attempt.attemptType)) {
+      latestCodingAt = attempt.createdAt;
+      break;
+    }
+  }
+  if (latestCodingAt === null) return false; // no coding attempt yet
+  if (cycles.length === 0) return true; // coded but never reviewed
+  const latestCycleAt = cycles.reduce(
+    (max, c) => (c.createdAt > max ? c.createdAt : max),
+    "",
+  );
+  return latestCodingAt > latestCycleAt;
+}
+
 function lastCloseCheckInvalidatingMutationAt(input: {
   attempts: GoalAttempt[];
   findings: GoalFinding[];
@@ -194,6 +228,7 @@ function decide(
   metrics: GoalConvergenceMetrics,
   allRequiredCloseConditionsPassed: boolean,
   latestCodingFailed: boolean,
+  reviewPending: boolean,
 ): GoalConvergenceResult {
   const terminal = terminalDecision(session.status);
   if (terminal !== null) {
@@ -267,6 +302,25 @@ function decide(
       kind: "ask_human",
       message: "Stop: goal budget is exhausted.",
     });
+  }
+
+  // #104 — when the latest coder run is unreviewed, REVIEW it before routing to
+  // another coder rerun (or classification). Otherwise an open finding keeps
+  // triggering needs_fix → coder reruns that are never reviewed, so the fix
+  // never clears the finding and the goal burns its rerun budget. Placed AFTER
+  // the budget checks (a genuinely over-budget goal still stops) and gated by
+  // the review-cycle budget, so it is bounded: one review per coder run.
+  if (reviewPending && metrics.reviewCyclesUsed < session.maxReviewCycles) {
+    return result(
+      session.goalId,
+      "continue",
+      "review the latest coder run before another fix pass",
+      metrics,
+      {
+        kind: "run_close_check",
+        message: "Review the latest coder run before another fix pass.",
+      },
+    );
   }
 
   if (

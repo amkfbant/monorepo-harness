@@ -7,7 +7,9 @@ export type GoalLinkedMutationKind =
   | "run.start"
   | "review.auto"
   | "rerun.start"
-  | "review.process";
+  | "review.process"
+  // (#83) The MCP driver that advances the goal loop a bounded number of steps.
+  | "goal.orchestrate";
 
 export interface GoalMutationGateDenied {
   allowed: false;
@@ -85,6 +87,18 @@ export function allowedByConvergence(
   convergence: GoalConvergenceResult,
 ): boolean {
   const action = convergence.recommendedNextAction.kind;
+  if (mutationKind === "goal.orchestrate") {
+    // The bounded-step orchestrate driver is permitted exactly when the loop has
+    // a permitted autonomous next step — i.e. some per-step mutation below would
+    // be allowed. close_ready / terminal / defer / classify all require an
+    // operator, so the driver is denied (fail-closed; the operator drives the
+    // deliberate close/PR or classification path out of band).
+    return (
+      (convergence.decision === "needs_fix" &&
+        (action === "fix_findings" || action === "run_close_check")) ||
+      (convergence.decision === "continue" && action === "run_close_check")
+    );
+  }
   if (convergence.decision === "needs_fix") {
     if (action === "fix_findings" || action === "run_close_check") {
       return mutationKind === "run.start" || mutationKind === "rerun.start";

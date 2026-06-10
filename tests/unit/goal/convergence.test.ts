@@ -264,6 +264,43 @@ describe("ConvergenceService", () => {
     }
   });
 
+  it("reviews a pending coder run before another rerun instead of looping (#104)", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, { maxReviewCycles: 5, maxReruns: 4 });
+      passClose(repo);
+      // implement → review#1 (found the P1) → rerun. The rerun is UNREVIEWED.
+      repo.createAttempt({
+        goalId: "goal-test",
+        attemptType: "implement",
+        createdAt: "2026-05-25T00:00:00.000Z",
+      });
+      const c = repo.startReviewCycle({
+        goalId: "goal-test",
+        cycleNumber: 1,
+        reviewMode: "initial",
+        createdAt: "2026-05-25T00:01:00.000Z",
+      });
+      repo.completeReviewCycle({ cycleId: c.cycleId, findingsNew: 1 });
+      addFinding(repo, { scopeStatus: "in_scope", severity: "P1" });
+      repo.createAttempt({
+        goalId: "goal-test",
+        attemptType: "rerun",
+        createdAt: "2026-05-25T00:02:00.000Z",
+      });
+
+      // The rerun (00:02) is newer than the latest review cycle (00:01): rather
+      // than needs_fix → another coder rerun (which never reviews the fix and
+      // burns the rerun budget), convergence reviews the pending run.
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("continue");
+      expect(result.recommendedNextAction.kind).toBe("run_close_check");
+      expect(result.reason).toMatch(/review the latest coder run/);
+    } finally {
+      db.close();
+    }
+  });
+
   it("treats close-check evidence before a later completed attempt as stale", () => {
     const { db, repo, service } = fresh();
     try {
@@ -280,6 +317,10 @@ describe("ConvergenceService", () => {
         status: "succeeded",
         completedAt: "2026-05-25T00:02:00.000Z",
       });
+      // The attempt was reviewed (a later cycle) so convergence does not route
+      // to a pending review (#104); the close-check is still stale vs the
+      // attempt, so the decision is the "more validation required" fallthrough.
+      addCycle(repo, 1, 0);
 
       const result = service.evaluate("goal-test");
       expect(result.decision).toBe("continue");

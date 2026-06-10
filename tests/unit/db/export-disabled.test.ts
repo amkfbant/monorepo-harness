@@ -53,10 +53,8 @@ describe("fileExportEnabled", () => {
   });
 });
 
-describe("HARNESS_SUPPRESS_EXPORT_MODE_WARNING — truthy-only normalization (Phase 9 post-close P2 #2)", () => {
-  it("=0 does NOT suppress the warning (codex P2 #2 regression guard)", async () => {
-    delete process.env.HARNESS_EXPORT_FILES;
-    process.env.HARNESS_SUPPRESS_EXPORT_MODE_WARNING = "0";
+describe("HARNESS_WARN_EXPORT_MODE — opt-in migration warning (#79 cross-process spam fix)", () => {
+  async function captureWarn(): Promise<string> {
     const { fileExportEnabled, _resetExportModeWarningForTest } = await import(
       "../../../src/config/export-mode.js"
     );
@@ -72,29 +70,40 @@ describe("HARNESS_SUPPRESS_EXPORT_MODE_WARNING — truthy-only normalization (Ph
     } finally {
       process.stderr.write = original;
     }
-    expect(captured).toMatch(/default changed/);
+    return captured;
+  }
+
+  afterEach(() => {
+    delete process.env.HARNESS_WARN_EXPORT_MODE;
     delete process.env.HARNESS_SUPPRESS_EXPORT_MODE_WARNING;
   });
 
-  it("=1 suppresses the warning", async () => {
+  it("is silent by default so it does not spam every CLI process", async () => {
     delete process.env.HARNESS_EXPORT_FILES;
+    delete process.env.HARNESS_WARN_EXPORT_MODE;
+    expect(await captureWarn()).toBe("");
+  });
+
+  it("emits the migration warning when opted in with HARNESS_WARN_EXPORT_MODE=1", async () => {
+    delete process.env.HARNESS_EXPORT_FILES;
+    process.env.HARNESS_WARN_EXPORT_MODE = "1";
+    expect(await captureWarn()).toMatch(/default changed/);
+  });
+
+  it("HARNESS_SUPPRESS_EXPORT_MODE_WARNING=1 still silences even when opted in", async () => {
+    delete process.env.HARNESS_EXPORT_FILES;
+    process.env.HARNESS_WARN_EXPORT_MODE = "1";
     process.env.HARNESS_SUPPRESS_EXPORT_MODE_WARNING = "1";
-    const { fileExportEnabled, _resetExportModeWarningForTest } = await import(
-      "../../../src/config/export-mode.js"
-    );
-    _resetExportModeWarningForTest();
-    const original = process.stderr.write;
-    let captured = "";
-    process.stderr.write = ((chunk: string | Uint8Array) => {
-      captured += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
-      return true;
-    }) as typeof process.stderr.write;
-    try {
-      fileExportEnabled();
-    } finally {
-      process.stderr.write = original;
-    }
-    expect(captured).toBe("");
+    expect(await captureWarn()).toBe("");
+  });
+
+  it("HARNESS_SUPPRESS_EXPORT_MODE_WARNING=0 does NOT silence (truthy normalization)", async () => {
+    // suppress uses the same truthy normalization as HARNESS_EXPORT_FILES:
+    // only 1/true/on/yes silences — `=0` must still surface the opted-in notice.
+    delete process.env.HARNESS_EXPORT_FILES;
+    process.env.HARNESS_WARN_EXPORT_MODE = "1";
+    process.env.HARNESS_SUPPRESS_EXPORT_MODE_WARNING = "0";
+    expect(await captureWarn()).toMatch(/default changed/);
   });
 });
 

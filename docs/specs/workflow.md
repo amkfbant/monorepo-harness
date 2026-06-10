@@ -513,6 +513,11 @@ DB から再生成する。この repair の `run_materializations.reason` は�
 `ensureRunMaterialized:repair-missing-review-decision` で、generic な
 `review-auto` では記録しない。
 
+reviewer gate は run 状態を **DB-canonical** に判別し、欠落した `review-decision.yaml` を
+「既に decided（export OFF で sidecar 削除済み・再 orchestrate は no-op = `already_decided`）」と
+「真の未完了（recover 可 = `run_incomplete`）」で区別する（#77）。判定は `classifyReviewGate`
+（純関数）で行い、`ReviewerAgentGateError.kind` に区分を載せ、メッセージに推奨アクションを併記する。
+
 review step が失敗した場合、orchestrator は従来どおり goal を `escalated`
 に倒す。ただし、最新 run が安全に salvage 可能なときだけ、PR を作らず goal も
 close せずに workspace branch を commit/push する。salvage gate は fail-closed:
@@ -849,6 +854,12 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
   `OrchestrationResult` は PR の draft 状態を `draft: boolean` として保持する。
   outcome enum の値は不変で、draft PR の作成でも `outcome` は **`pr_created`** のまま
   （CLI が `draft=true|false` を別フィールド表示）。
+  - **PR タイトル（#103）**: `closeAndPr` は goal title から **Conventional Commit** 形式の
+    タイトル（`conventionalPrTitle`：goal title が既に conventional ならそのまま、でなければ
+    `fix:` を付与し `(run-<id>)` を付す）を作り、`createPullRequest({ title })` に渡す。
+    `pr-creator` はこのタイトルを **PR title かつ branch commit subject** に使う（squash 設定が
+    PR title / commit message のどちらでも squash subject が conventional になり、release-please が
+    version/CHANGELOG に拾える）。`(#NN)` は GitHub issue autolink を避けるため使わない。
   - `canMerge` → `gh pr merge --match-head-commit <sha> --<method>`（idempotent:
     既マージ検出、**head commit に pin**: CI 判定前に取得した head SHA に固定し
     head が動けば拒否→escalate）で merge、operation audit（`operations`,

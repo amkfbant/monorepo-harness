@@ -509,3 +509,137 @@ escalate し、operator が手で goal を作り直す必要があった。回�
 - fail-closed: rerun 予算超過は従来どおり escalate。
 
 **Status:** idea only — 未実装。P2 実装中の実観測に基づく。
+
+## verify-guarded — committed 履歴の帰属（#69 の続き）
+
+`harness verify-guarded`（#69）は **未コミット working-tree 変更**の guarded scope 違反を fail-closed
+で検知する（[`docs/specs/policy.md`](./specs/policy.md)）。**committed 済み**の変更について「どの過去
+コミットがレビュー済み harness run 由来か」を健全に判定する部分は未実装（defer）。
+
+- 健全な帰属には **reviewed-head-sha の記録**（pr-creator が捕捉する reviewedHeadSha を queryable に
+  永続化）と、base..HEAD の各コミットの **到達可能性**判定が要る。commit author/message での推測は
+  spoofable で fail-closed にならないため採用しない。
+- これは additive な schema 変更（reviewed-head-sha の保存）を伴うため、スコープと schema 影響を確定
+  してから別 Phase で実装する。
+- hook 自動設置 / CI 必須化（呼び出し側の強制）も本コマンドの範囲外（呼び出し側の運用選択）。
+
+## 直接制御型 harness からの取り込み（pre-execution 介入の追加層）
+
+**背景:** 本ハーネスの安全モデルは **bounded review gate**（codex を直接操らず、
+事後 `git diff` を policy 検証して reject、最終 decision は reviewer）。一方
+「harness＝手綱で直接操る」側の設計（ツールコール仲介 / パッチブローカー / 実行環境
+強制 / セッション操舵）には、**安全境界を緩めずに**取り込める防御の追加層・無駄打ち
+削減のアイデアがある。**いずれも `git diff` ベースの事後検証を最終判定として残した
+まま**の上乗せとして設計する（検証を緩める / バイパスする変更は安全境界違反で不可、
+`GOAL_RULES.md` §G）。費用対効果の高い順に記す。
+
+### 1. coder prompt への compile 済み policy スコープ注入（rerun コスト削減）
+
+compile 済み policy の write / deny_write リスト（と deny の理由）を coder prompt に
+明示注入し、agent が自発的に違反を避けるようにする。
+
+- **これは安全機構ではない。** LLM の遵守を信用しない原則どおり検証は従来のまま。
+  効果は **reject 率の低下＝rerun コスト削減**のみ。fail-open には一切寄与しない。
+- prompt template は名前付き・version 付き（`coder-domain-task`）なので、その改版
+  として乗る（`src/codex/prompt-builder.ts`）。knowledge context の `<knowledge>`
+  ブロックと同じ注入機構。
+- **要確認:** 既に scope を注入しているなら、deny_write の「理由」付与の余地が
+  あるかの差分確認から。実装最小で即効くため最優先候補。
+
+### 2. 実行中の早期中断ウォッチドッグ（budget 浪費の最適化）
+
+codex 実行中に harness 側で `git status --porcelain` / `git diff --name-only` を定期
+ポーリングし、**deny_write path への接触や diff サイズ超過を検知したら run を即 kill**。
+
+- **判定の正本はあくまで事後検証のまま。** これは「どうせ reject される run に budget
+  を使い切らせない」**最適化**であって安全機構ではない、と位置づける（早期 kill の
+  見落としがあっても事後検証が必ず捕まえる＝fail-safe）。
+- codex 側への介入面は不要（worktree を外から観るだけ）なので、`codex exec
+  --ephemeral` の単発・ステートレス設計と衝突しない。
+- 状態機械には `failed-codex-timeout` 系と同列の `failed-*` status を 1 つ足すだけで
+  収まる（例 `failed-watchdog-deny`）。`limits` に poll 間隔 / diff サイズ上限を追加。
+
+### 3. path 制御の confirm 階層（`confirm_write`）
+
+現状 path は allow / deny の二値。第三階層 `confirm_write` を設け、「触っても run は
+fail しないが、**reviewer が該当 diff を明示承認しない限り approve に遷移できない**」
+とする（MCP の `confirmation_required` の per-action 承認を policy path 制御へ輸入）。
+
+- migration ファイルや CI 設定など「禁止ではないが必ず人が見るべき path」に合う。
+- 判定は決定論的（path マッチ＋reviewer の明示操作）なので原則と整合。fail-closed
+  方向（承認が要る＝厳しくなる）にしか効かないので §0 非対称にも従う。
+- `ResolvedPolicy` に `confirmWrite: string[]` を追加し、review gate の approve 遷移
+  条件に「confirm_write に該当する diff があれば明示承認フラグ必須」を足す。
+  sensitivity map（§5 の auto-merge tier）と概念が近く、設計時に整合を取る。
+
+### 4. パッチブローカーモード（opt-in run mode・予防型への格上げ）
+
+高感度 domain 限定で、coder を `read-only` sandbox で走らせ **unified diff を提案
+として出力させ、harness が policy 検証してから自分で apply** する（直接制御型の
+「パッチブローカー」をそのまま opt-in 取り込み）。
+
+- 違反 diff は worktree に**触れる前に** reject できる（**検出→予防への格上げ**）。
+  apply 後にも従来の事後 diff 検証をそのまま走らせれば**二重検証**になり、既存の
+  安全モデルを一切緩めない。
+- 「LLM の出力を信用しない」「状態遷移は harness のみ」と完全整合（agent は終始
+  ファイルに触れない＝review decision に到達できない構造境界がさらに固くなる）。
+- `policy.codex.mode: propose-patch` のような policy 宣言で domain ごとに選択。
+- **コストは apply 実装**（コンフリクト / バイナリ / 新規ファイル / 行末・エンコーディング
+  の扱い）で小さくない。だから全面移行ではなく **opt-in、かつ感度の高い domain が実際
+  に出てきてから**が現実的。価値は最大だが着手は最後。
+
+### 取り込まないもの（設計判断と衝突）
+
+- **セッション操舵型**（実行中に system message を注入して軌道修正）は
+  `codex exec --ephemeral` の単発・ステートレス設計（再現性・監査性のための明示的
+  判断）と真っ向衝突。取り込むなら設計判断ごと反転する別件＝[[Codex session
+  continuation (conversation resume)]] の範疇。本エントリには含めない。
+- **OS マウントレベルの deny_write 物理 read-only 化** は `workspace-write` sandbox
+  内で agent が chmod を戻せるため見かけほど効かず、本気でやるならコンテナ化という
+  別の大工事。費用対効果が低く保留。
+
+**優先順位:** 1（prompt 注入）→ 2（ウォッチドッグ）→ 3（confirm 階層）→
+4（パッチブローカー）。1 は実装最小で rerun コスト削減が即効き、4 は価値最大だが
+apply 実装が重い。いずれもスコープ外の新規 feature ＝着手時は brainstorming → spec →
+plan を通す。
+
+**関連:** [[Codex session continuation (conversation resume)]]（セッション操舵の本体）、
+auto-merge sensitivity map（§5、confirm 階層と概念が近い）、安全境界（`GOAL_RULES.md`
+§G・`specs/overview.md`「安全モデル」）。
+
+**Status:** idea only — 未実装 / 未設計。2026-06-11 の「直接制御型 harness からの
+取り込み」ディスカッションに基づく。安全境界（事後 `git diff` 検証が最終判定）を
+不変条件とする上乗せ層として記録。
+
+## goal reopen の監査永続化（#76 review P2）
+
+`harness goal reopen`（#76）は `--reason` を stdout にエコーするだけで、close/cancel が
+`updateStatus` 経由で reason をカラムに残すのと違い **永続化していない**（DB から「なぜ・いつ
+reopen したか」を追えない）。lifecycle 変化自体は status で見えるが、dangerous 操作の監査としては
+弱い。`goal_decisions`（`listDecisions` が読む層）に reopen 行を 1 件記録するか、reason を
+退避してから NULL クリアするのを follow-up とする。MCP 露出時の confirmation 要否も併せて判断。
+
+## orchestrator が project profile の compiled policy を coder に thread しない（#83 review P2）
+
+`createOrchestratorRunners` の coder runner（`src/goal/orchestrator-runners.ts`）は
+`runDomainCoding` に `compiledPolicy` / `project` を渡さず、`workflow-runner` 側の
+フォールバック（`policies/<repoId>.yaml` を読む）に委ねている。project profile から
+コンパイルした scope（テンプレ default / placeholder 込み）と raw repo policy が乖離
+しうる点が、commit `3a1d824`「verify-guarded uses the compiled policy scope」と同種の
+懸念。`OrchestratorRunnerDeps` に compiled policy を通す口が無く、**出荷済みの CLI
+`goal orchestrate` / `classify --then-rerun` も同一挙動**であり、`harness.goal.orchestrate`
+（#83）が新規導入した回帰ではない。事後 `git diff` ベースの policy 検証自体は機能する
+（最終判定は変わらず git diff）が、project-scoped goal では guardrail のスコープが
+raw repo policy になる。follow-up: `OrchestratorRunnerDeps` に `compiledPolicy` を追加し
+coder / closeAndPr に thread する（CLI と MCP 共通の独立改善）。S7 のブロッカーにはしない。
+
+## review budget だけ残して rerun が budget 境界で停止すると未レビュー run が残る（#104 review P2）
+
+#104 の reviewPending 分岐は `goalBudgetLimitReason`（iteration/rerun budget）の**後**に
+置かれている（`src/goal/convergence.ts`、`docs/specs/goal-convergence.md` step 6）。これは
+「genuinely over-budget な goal は止まる」という意図的な fail-closed 選択だが、rerun が
+budget 境界ちょうどで終わると、その fix が未レビューのまま `budget_exhausted` で停止する
+境界ケースが残る（#104 が消そうとした症状の残滓）。運用上は **#76 `goal reopen`（review
+budget 延長）** が救済になる。follow-up: rerun budget は尽きたが **review budget が残っている**
+ケースに限り、停止前に pending coder run のレビューを 1 回だけ許す（review は新規 coding を
+増やさないので発散しない）改善を検討。fail-closed 方向のため S の close ブロッカーにはしない。

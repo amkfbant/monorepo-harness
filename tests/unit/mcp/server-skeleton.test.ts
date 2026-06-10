@@ -63,6 +63,8 @@ describe("HarnessMcpServer skeleton", () => {
     );
     expect(toolNames).not.toContain("harness.operation.confirm");
     expect(toolNames).not.toContain("harness.operation.reject");
+    // (#83) the bounded goal-loop driver is exposed as a mutation tool
+    expect(toolNames).toContain("harness.goal.orchestrate");
 
     const resources = await s.handleMessage({
       jsonrpc: "2.0",
@@ -108,6 +110,23 @@ describe("HarnessMcpServer skeleton", () => {
         structuredContent: {
           status: "permission_denied",
         },
+        isError: true,
+      },
+    });
+
+    // (#83) the goal-loop driver is a mutation: denied by default permissions
+    const orchestrateDenied = await s.handleMessage({
+      jsonrpc: "2.0",
+      id: 9,
+      method: "tools/call",
+      params: {
+        name: "harness.goal.orchestrate",
+        arguments: { goalId: "goal-1", idempotencyKey: "k" },
+      },
+    });
+    expect(orchestrateDenied).toMatchObject({
+      result: {
+        structuredContent: { status: "permission_denied" },
         isError: true,
       },
     });

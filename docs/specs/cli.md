@@ -259,6 +259,7 @@ harness goal list [--status <status>] [--project <id>] [--repo-id <id>] [--domai
 harness goal status <goal-id> [--json]
 harness goal close <goal-id> --summary <text> [--force] [--json]
 harness goal cancel <goal-id> --reason <text> [--json]
+harness goal reopen <goal-id> --reason <text> [--extend-iterations <n>] [--extend-review-cycles <n>] [--extend-reruns <n>] [--json]
 ```
 
 Finding lifecycle:
@@ -317,6 +318,19 @@ harness goal await-merge [<goal-id>] --repo <path> [--all] [--repo-id <id>] \
 `goal close` は convergence が `close_ready` でない限り `--force` を要求する。
 `check-convergence` は `diverging` / `budget_exhausted` / `escalate` で exit 2。
 MCP 経由の goal close/cancel/scope expansion は confirmation-required。
+
+`goal reopen`（#76）は **terminal な goal**（`closed` / `budget_exhausted` / `escalated`）を
+`open` に戻し、後から判明した finding を**既存ブランチ上で**修正できるようにする
+（PR クローズ＆再実装を避ける）。`updateStatus` が COALESCE で残す terminal マーカー
+（`closed_at` / `close_summary` / `escalation_reason`）を**クリア**し、budget（`max_iterations` /
+`max_review_cycles` / `max_reruns`、既存カラム＝schema 不変）を **延長**するので、
+`budget_exhausted` の goal が再開直後に再枯渇しない。`cancelled`（意図的放棄）は reopen 不可。
+`diverging` も **reopen 不可**: divergence トリガー（`totalNewFindings` / `maxReopenCount` /
+finding 数の非減少）は不変の履歴から導出され、reopen は iteration/review/rerun budget しか
+延長しない（divergence budget は延長しない）ため、再開直後の convergence 評価で即 `diverging`
+が再発火し全 mutation を再 block する＝operator に解消手段がない。divergence budget 延長を伴う
+設計は `docs/future-features.md` 参照。reopen 後は `goal finding add` で finding を記録 →
+orchestrate が `needs_fix` → coder で修正する。
 
 `goal orchestrate` は goal を terminal 状態（closed / pr_created / merged /
 escalated）まで bounded loop（`--max-steps`、既定 50）で自律駆動する。`--dry-run`
@@ -1444,8 +1458,9 @@ heartbeat 中の lease を奪い、保持側を `LeaseStolenError` で fail さ�
 
 ### `HARNESS_EXPORT_FILES` の default
 
-Phase 9 close で default OFF に反転。未設定時は warning。
-`HARNESS_SUPPRESS_EXPORT_MODE_WARNING=1` で抑制可。
+Phase 9 close で default OFF に反転。移行 warning は **opt-in**（#79）: 既定は silent
+（短命 CLI プロセス毎の警告でログを埋めないため）。`HARNESS_WARN_EXPORT_MODE=1` で
+一度だけ表示、`HARNESS_SUPPRESS_EXPORT_MODE_WARNING=1` は opt-in 時も抑制。
 
 ### `harness review process` の verdict 経路
 
@@ -1651,3 +1666,23 @@ harness release check [--since <ref>] [--to <ref>] [--repo <path>] [--json]
 manifest）/ `spec-sync`（追加 surface が mcp.md / cli.md / db.md に文書化済み）/
 `clean-tree`（未コミット変更なし）の 4 check。全 pass で `0`、1 つでも fail で `1`。
 build / test は CI 担当。
+
+## `harness verify-guarded`
+
+ガード対象ドメインへの **out-of-band（非ハーネス）変更**を検知する read-only ガードレール
+（#69、[`policy.md`](./policy.md)）。
+
+```bash
+harness verify-guarded --project <id> [--repo <path>] [--json]
+```
+
+project profile の各ドメインの `write` + `deny_write` glob を **guarded scope** とし、対象 repo の
+**未コミット working-tree 変更**（tracked 変更 ＋ untracked 非 ignore ファイル。`.harness/**` 等の
+gitignore 対象は git が除外）のうち guarded scope に該当するものを検出する。ハーネスは変更を
+レビュー済み run のコミット経由でのみ land するので、guarded path への未コミット変更は定義上
+**未検証**。該当があれば一覧を出して **exit 1（fail-closed）**、無ければ `ok`。operator / CI /
+pre-push hook から呼べる（「常時ハーネス強制」はしない）。
+
+> スコープ: committed 履歴の帰属（どの過去コミットがレビュー済み run 由来か）は健全に判定するには
+> reviewed-head-sha の記録が要るため本コマンドの対象外（commit author/message での推測は spoofable で
+> fail-closed にならない）。follow-up（`docs/future-features.md`）。
