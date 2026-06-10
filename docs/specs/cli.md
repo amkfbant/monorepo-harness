@@ -1652,3 +1652,23 @@ harness release check [--since <ref>] [--to <ref>] [--repo <path>] [--json]
 manifest）/ `spec-sync`（追加 surface が mcp.md / cli.md / db.md に文書化済み）/
 `clean-tree`（未コミット変更なし）の 4 check。全 pass で `0`、1 つでも fail で `1`。
 build / test は CI 担当。
+
+## `harness verify-guarded`
+
+ガード対象ドメインへの **out-of-band（非ハーネス）変更**を検知する read-only ガードレール
+（#69、[`policy.md`](./policy.md)）。
+
+```bash
+harness verify-guarded --project <id> [--repo <path>] [--json]
+```
+
+project profile の各ドメインの `write` + `deny_write` glob を **guarded scope** とし、対象 repo の
+**未コミット working-tree 変更**（tracked 変更 ＋ untracked 非 ignore ファイル。`.harness/**` 等の
+gitignore 対象は git が除外）のうち guarded scope に該当するものを検出する。ハーネスは変更を
+レビュー済み run のコミット経由でのみ land するので、guarded path への未コミット変更は定義上
+**未検証**。該当があれば一覧を出して **exit 1（fail-closed）**、無ければ `ok`。operator / CI /
+pre-push hook から呼べる（「常時ハーネス強制」はしない）。
+
+> スコープ: committed 履歴の帰属（どの過去コミットがレビュー済み run 由来か）は健全に判定するには
+> reviewed-head-sha の記録が要るため本コマンドの対象外（commit author/message での推測は spoofable で
+> fail-closed にならない）。follow-up（`docs/future-features.md`）。

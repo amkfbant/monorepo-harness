@@ -509,3 +509,16 @@ escalate し、operator が手で goal を作り直す必要があった。回�
 - fail-closed: rerun 予算超過は従来どおり escalate。
 
 **Status:** idea only — 未実装。P2 実装中の実観測に基づく。
+
+## verify-guarded — committed 履歴の帰属（#69 の続き）
+
+`harness verify-guarded`（#69）は **未コミット working-tree 変更**の guarded scope 違反を fail-closed
+で検知する（[`docs/specs/policy.md`](./specs/policy.md)）。**committed 済み**の変更について「どの過去
+コミットがレビュー済み harness run 由来か」を健全に判定する部分は未実装（defer）。
+
+- 健全な帰属には **reviewed-head-sha の記録**（pr-creator が捕捉する reviewedHeadSha を queryable に
+  永続化）と、base..HEAD の各コミットの **到達可能性**判定が要る。commit author/message での推測は
+  spoofable で fail-closed にならないため採用しない。
+- これは additive な schema 変更（reviewed-head-sha の保存）を伴うため、スコープと schema 影響を確定
+  してから別 Phase で実装する。
+- hook 自動設置 / CI 必須化（呼び出し側の強制）も本コマンドの範囲外（呼び出し側の運用選択）。
