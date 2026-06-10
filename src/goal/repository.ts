@@ -303,6 +303,12 @@ interface GoalDecisionRow {
   created_by: string;
 }
 
+/** Clamp a budget extension to a non-negative integer; non-finite (e.g. a NaN
+ * from a bad CLI string) becomes 0 rather than reaching the SQL bind. */
+function nonNegInt(value: number | undefined): number {
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value as number)) : 0;
+}
+
 /** Terminal statuses a goal can be reopened from (#76). `cancelled` is a
  * deliberate abandon and is excluded. */
 const REOPENABLE_STATUSES: ReadonlySet<GoalStatus> = new Set<GoalStatus>([
@@ -448,9 +454,9 @@ export class GoalRepository {
       )
       .run(
         now,
-        Math.max(0, Math.trunc(opts.extendIterations ?? 0)),
-        Math.max(0, Math.trunc(opts.extendReviewCycles ?? 0)),
-        Math.max(0, Math.trunc(opts.extendReruns ?? 0)),
+        nonNegInt(opts.extendIterations),
+        nonNegInt(opts.extendReviewCycles),
+        nonNegInt(opts.extendReruns),
         goalId,
       );
     return this.requireSession(goalId);
