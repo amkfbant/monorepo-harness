@@ -4,33 +4,24 @@ import {
   findGuardedChanges,
   parseNulPaths,
 } from "../../../src/core/verify-guarded.js";
-import type { ProjectProfile } from "../../../src/project/schema.js";
-
-function profile(domains: ProjectProfile["domains"]): ProjectProfile {
-  return {
-    version: 1,
-    project_id: "p",
-    repo: { id: "p" },
-    domains,
-  } as ProjectProfile;
-}
 
 describe("guardedWriteGlobs (#69)", () => {
-  it("collects every domain's write + deny_write globs", () => {
-    const p = profile([
-      { id: "web", root: "apps/web", write: ["apps/web/**"], deny_write: ["apps/web/secrets/**"] },
-      { id: "api", root: "apps/api", write: ["apps/api/**"] },
-    ] as ProjectProfile["domains"]);
-    expect(guardedWriteGlobs(p).sort()).toEqual(
+  it("unions every COMPILED domain's write + deny_write globs (deduped)", () => {
+    // The compile result carries the resolved scope (template defaults +
+    // {root} placeholders already expanded); guardedWriteGlobs just unions it.
+    const compiled = {
+      domains: {
+        web: { write: ["apps/web/**"], deny_write: ["apps/web/secrets/**", "apps/api/**"] },
+        api: { write: ["apps/api/**"], deny_write: ["apps/web/**"] },
+      },
+    };
+    expect(guardedWriteGlobs(compiled).sort()).toEqual(
       ["apps/api/**", "apps/web/**", "apps/web/secrets/**"].sort(),
     );
   });
 
-  it("tolerates domains without write/deny_write", () => {
-    const p = profile([
-      { id: "x", root: "x", read: ["x/**"] },
-    ] as ProjectProfile["domains"]);
-    expect(guardedWriteGlobs(p)).toEqual([]);
+  it("tolerates compiled domains without write/deny_write", () => {
+    expect(guardedWriteGlobs({ domains: { x: { write: [] } } })).toEqual([]);
   });
 });
 

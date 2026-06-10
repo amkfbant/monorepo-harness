@@ -1,6 +1,5 @@
 import { spawnSync } from "node:child_process";
 import { minimatch } from "minimatch";
-import type { ProjectProfile } from "../project/schema.js";
 
 const MATCH_OPTS = { dot: true, nocomment: true } as const;
 
@@ -23,14 +22,25 @@ const MATCH_OPTS = { dot: true, nocomment: true } as const;
  * surfaces unverified guarded edits so an operator / CI / pre-push hook can act.
  */
 
-/** Guarded write scope = every domain's `write` + `deny_write` globs. */
-export function guardedWriteGlobs(profile: ProjectProfile): string[] {
+/**
+ * Guarded write scope = every domain's **compiled** `write` + `deny_write`
+ * globs. The compiled policy (from `compileProjectPolicy`) is used rather than
+ * the raw profile so kind-template defaults (e.g. a `write`-less domain getting
+ * `{root}/**`), placeholder expansion (`{root}` / `{other_domain_roots}` /
+ * `{root_deny}`), and the cross-domain deny additions all resolve — otherwise a
+ * template-driven profile's guarded paths would be silently missed (not
+ * fail-closed). Takes the loose `{ domains }` shape of the compile result so
+ * this stays decoupled from the compiler's concrete types.
+ */
+export function guardedWriteGlobs(compiled: {
+  domains: Record<string, { write?: readonly string[]; deny_write?: readonly string[] }>;
+}): string[] {
   const globs: string[] = [];
-  for (const d of profile.domains) {
+  for (const d of Object.values(compiled.domains)) {
     if (d.write) globs.push(...d.write);
     if (d.deny_write) globs.push(...d.deny_write);
   }
-  return globs;
+  return [...new Set(globs)];
 }
 
 /**
@@ -89,14 +99,16 @@ export interface VerifyGuardedResult {
 
 /**
  * Detect uncommitted out-of-band changes to guarded domains in `repo`. ok=false
- * (fail-closed) when any uncommitted change lands in a guarded write/deny_write
- * scope — such a change did not go through a reviewed harness run.
+ * (fail-closed) when any uncommitted change lands in the guarded scope — such a
+ * change did not go through a reviewed harness run. `guardedGlobs` are the
+ * compiled write/deny_write globs (see `guardedWriteGlobs`); the caller resolves
+ * them so this stays a pure git+match step.
  */
 export function verifyGuarded(opts: {
-  profile: ProjectProfile;
+  guardedGlobs: readonly string[];
   repo: string;
 }): VerifyGuardedResult {
-  const guardedGlobs = guardedWriteGlobs(opts.profile);
+  const guardedGlobs = [...opts.guardedGlobs];
   const changed = gitWorkingTreeChangedPaths(opts.repo);
   const violations = findGuardedChanges(changed, guardedGlobs).sort();
   return { ok: violations.length === 0, guardedGlobs, violations };

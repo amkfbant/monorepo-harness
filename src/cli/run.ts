@@ -18,7 +18,11 @@ import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
 import { runDomainCoding } from "../core/workflow-runner.js";
 import { loadProjectById } from "../project/profile-resolver.js";
-import { verifyGuarded } from "../core/verify-guarded.js";
+import { verifyGuarded, guardedWriteGlobs } from "../core/verify-guarded.js";
+import {
+  loadCompileInputs,
+  compileProjectPolicy,
+} from "../project/policy-compiler.js";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
 import { StateConflictError, SourceModeError } from "../db/errors.js";
 import { runMigrations, MIGRATIONS } from "../db/migrations.js";
@@ -4107,8 +4111,19 @@ program
         process.exit(1);
         return;
       }
+      // Compile the policy so the guarded scope uses the SAME resolved
+      // write/deny_write the harness enforces (kind-template defaults +
+      // {root}/{other_domain_roots} placeholders + cross-domain denies), not
+      // the raw profile globs — otherwise a template-driven profile's guarded
+      // paths would be missed (not fail-closed).
+      const compiled = compileProjectPolicy(
+        await loadCompileInputs(resolved.profile, resolved.profilePath, {
+          templatesDir: harnessPaths(getHarnessRoot()).templatesDir,
+          generatedAt: new Date().toISOString(),
+        }),
+      );
       const result = verifyGuarded({
-        profile: resolved.profile,
+        guardedGlobs: guardedWriteGlobs(compiled.repoPolicy),
         repo: resolved.repoPath,
       });
       if (raw.json === true) {
