@@ -102,9 +102,11 @@ probe 失敗は block しない（既知の symlink-EPERM に限定した早期�
   run worktree が PR ブランチ（`harness/<runId>/<domain>`）を占有していると `gh pr checkout <n>` が
   `fatal: '<branch>' is already used by worktree` で失敗するため、ブランチを使わない detached HEAD で
   回避する。`harness workspace verify-pr <n> [--repo <path>] [--remote origin] [--rm]`: `origin` の
-  `refs/pull/<n>/head`（**GitHub origin 前提**）を fetch し `workspaces/verify-pr-<n>/repo` に detached
-  worktree を作る。**read-only は運用約束**（detached worktree は物理的には書ける）。`--rm` で同 PR の
-  検証 worktree を削除（作りっぱなし防止）。`createDetachedWorktree` は #68 の symlink preflight も通す。
+  `refs/pull/<n>/head`（**GitHub origin 前提**）を **PR 専用 local ref**（`refs/harness/verify-pr/<n>`・
+  共有 `FETCH_HEAD` を使わないので並行 verify-pr が衝突しない）に fetch し、agent workspace と同じ dir
+  （既定 `<repo>.agents/verify-pr-<n>/repo`）に detached worktree を作る。**read-only は運用約束**
+  （detached worktree は物理的には書ける）。`--rm` で同 PR の検証 worktree を削除（作りっぱなし防止）。
+  `createDetachedWorktree` は #68 の symlink preflight も通す。
 
 ---
 

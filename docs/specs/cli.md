@@ -122,6 +122,14 @@ harness project edit <project-id> [--actor <actor>] [--reason <text>]
 profile を compile して実行する。生成 policy は既存 `RepoPolicySchema` をそのまま
 満たすため、`harness run --repo-id <id>` でも同じ policy を使える（後方互換）。
 
+### Exit code
+
+`harness project` / `harness policy` 共通:
+
+- `0`: 成功（`check` は `ok` / `warn`）
+- `1`: project error（profile schema 不正 / repo 不在 / `check` の `error` / 上書き拒否 など）
+- `2`: 予期しない例外
+
 ## `harness policy`
 
 DB-canonical policy snapshot 操作（Phase 17）に加え、profile → policy ファイルの
@@ -135,18 +143,12 @@ harness policy export --project <id> --out <path> [--domain <id>] [--json]
 
 | サブコマンド | 動作 |
 |--------------|------|
-| `compile` | profile を compile し、`goal orchestrate` が **repoId モードで読む** `policies/repos/<repoId>.yaml` を生成（`--out` で出力先上書き）。`policies/global.yaml` が**不在なら併せて scaffold**（不在 ENOENT 回避、#78）。既存ファイルは `--force` 必須＝誤上書き防止。生成 YAML 先頭に provenance ヘッダ（手編集非推奨）。**DB は変更しない**（snapshot 行は記録しない＝`policy snapshot` を使う）。`warnings` を stderr に surface |
+| `compile` | profile を compile し、`goal orchestrate` が **repoId モードで読む** `policies/repos/<repoId>.yaml` を生成。`policies/global.yaml` が**不在なら併せて scaffold**（不在 ENOENT 回避、#78）。既存ファイルは `--force` 必須＝誤上書き防止。生成 YAML 先頭に provenance ヘッダ（手編集非推奨）。**DB は変更しない**（snapshot 行は記録しない＝`policy snapshot` を使う）。`warnings` を stderr に surface。**`--out` を指定すると単一ファイル（repo policy）のみ出力し global.yaml は管理しない**ので、global が無い fresh な HARNESS_ROOT では `--out` を使わず既定パスに出力すること |
 | `snapshot` | effective policy snapshot を DB（`effective_policy_snapshots`）に materialize |
 | `export` | DB-current snapshot の YAML を path へ書き出す |
 
 `harness policy compile` は、手書き profile しかない repo で `goal orchestrate` が
 `ENOENT policies/repos/<repoId>.yaml` で escalate するセットアップの落とし穴（#78）を解消する。
-
-### Exit code
-
-- `0`: 成功（`check` は `ok` / `warn`）
-- `1`: project error（profile schema 不正 / repo 不在 / `check` の `error` / 上書き拒否 など）
-- `2`: 予期しない例外
 
 ## `harness backlog`
 
@@ -495,7 +497,7 @@ harness workspace verify-pr  <number> [--repo <path>] [--remote origin] [--rm] [
 - **`create <agent>`** — `agent/<name>` ブランチ上の worktree を `<dir>/<agent>` に作成（`--base` 既定 `HEAD`・既存ブランチがあれば再利用）。**冪等**（同一 agent の再実行は既存を返す）。出力に worktree path と「`cd <path> && export HARNESS_ROOT=<sharedRoot>`」の共有手順を表示。作成した worktree は共有 DB の `workspaces` index にも記録（git が worktree 存在の正本、DB は harness 側メタ＝objective / advisory goal link / heartbeat を持つ・[`db.md`](./db.md)）。
 - **`adopt <agent> --worktree <path>`** — ハーネスが作っていない**既存の git worktree を agent として登録**（`create` と違い**作らない**・任意ブランチ可）。`<path>` が repo の現 worktree でなければ拒否、**main worktree** と **detached（branch なし）** も拒否（fail-closed・path は両辺正規化して symlink 差を吸収）。**1 path 1 agent / 1 agent 1 worktree** を強制（重複 adopt は拒否）。adopted な非 `agent/*` workspace も `inspect`/`checkpoint`/`recover`/`remove`/`status`/`conflicts` 全てで扱える（**全コマンド path-first 解決**・branch/HEAD は live git から hydrate）。`git worktree add -b … <path>` で手動に切った worktree を後付け追跡する入口。
 - **`list`** — workspace を列挙: **`agent/*` worktree** ＋ **adopted（任意ブランチ・DB 行の worktree_path が現存）**。各行に DB の goal link / objective を付与。**reconcile は worktree path ベース**（DB 行の worktree が消えていれば `(stale: …)` 表示・`remove <agent>` で掃除）。main checkout や run 内部 worktree は除外。
-- **`verify-pr <number>`**（#82）— PR head を **detached（ブランチ非占有）worktree** にチェックアウトして検証する。run worktree が PR ブランチを占有していると `gh pr checkout <n>` が `already used by worktree` で失敗するのを回避。`--remote`（既定 `origin`）の `refs/pull/<n>/head`（**GitHub origin 前提**）を fetch し `workspaces/verify-pr-<n>/repo` に detached worktree を作成（#68 の symlink preflight も通す）。**read-only は運用約束**（detached worktree は物理的には書ける）。`--rm` で同 PR の検証 worktree を削除。`<number>` は正の整数のみ。
+- **`verify-pr <number>`**（#82）— PR head を **detached（ブランチ非占有）worktree** にチェックアウトして検証する。run worktree が PR ブランチを占有していると `gh pr checkout <n>` が `already used by worktree` で失敗するのを回避。`--remote`（既定 `origin`）の `refs/pull/<n>/head`（**GitHub origin 前提**）を PR 専用 local ref（`refs/harness/verify-pr/<n>`・共有 `FETCH_HEAD` 不使用で並行安全）に fetch し、`<repo>.agents/verify-pr-<n>/repo` に detached worktree を作成（#68 の symlink preflight も通す）。**read-only は運用約束**（detached worktree は物理的には書ける）。`--rm` で同 PR の検証 worktree を削除。`<number>` は正の整数のみ。
 - **`status`** — 全 agent workspace の**進捗を一目で**集約（複数ターミナルを束ねる人間の統括用）。各 workspace に**決定論ラベル**を付ける（git state ＋ linked goal の convergence decision のみから射影・checkpoint note は使わない）: `stale` / `goal-missing`（dangling link）/ `blocked`（diverging・budget_exhausted・escalate・**未知 decision は fail-closed で blocked**）/ `needs-work`（needs_fix・needs_classification）/ `ready-to-close` / `in-progress`（goal `continue`）/ `dirty` / `base-unknown`（base ref 未解決＝ahead/behind 不明）/ `ahead` / `behind` / `clean`（優先順）。各行に git（ahead/behind/dirty）・goal・last-active・objective。**heartbeat staleness**: `last_active_at` が `--stale-after <hours>`（既定 24）より古い workspace は last-active に `⚠idle` を付ける（放置/忘れられた agent の検出。`staleHeartbeat` として JSON にも）。`--json` で構造化出力。
 - **`conflicts`** — 全 agent workspace の**変更ファイルの重複を事前検出**（並行作業の衝突 pre-check）。各 workspace の変更集合＝**committed-ahead**（`base...branch` の diff）∪ **uncommitted**（working tree）。2 agent が同じファイルを触る pair を共有ファイル付きで報告。git エラーは fail-closed、base 未解決は uncommitted のみに degrade（best-effort）。`--json` 可。「あまり同じファイルは触らない」前提を**検証可能**にする。
 - **`inspect <agent>`** — workspace の**決定論ブリーフィング**を git だけから再構成して返す（branch / HEAD / 最終コミット / `--base`（既定 `main`）に対する ahead-behind / 未コミット file）。保存状態に依存せず、LLM が自分や他エージェントの workspace を**自己申告抜きで理解**するための土台（save/recover の理解レイヤー）。`--json` で構造化出力。

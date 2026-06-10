@@ -643,3 +643,13 @@ budget 境界ちょうどで終わると、その fix が未レビューのま�
 budget 延長）** が救済になる。follow-up: rerun budget は尽きたが **review budget が残っている**
 ケースに限り、停止前に pending coder run のレビューを 1 回だけ許す（review は新規 coding を
 増やさないので発散しない）改善を検討。fail-closed 方向のため S の close ブロッカーにはしない。
+
+## policy compile / verify-pr の CLI action 層テスト（#78/#82 review P2）
+
+`harness policy compile`（#78）と `harness workspace verify-pr`（#82）の **CLI action 層**
+（`policy compile` の `loadProjectById`→既定 repoPolicyPath 解決・`--out` 分岐・warnings surface／
+`verify-pr` の `git fetch`→detached worktree 配線）は現状ユニットテスト無し。load-bearing な決定論
+コア（`writeCompiledPolicyFiles` / `createDetachedWorktree`・両 #68 preflight 配線）は covered で、
+action 層は既存 `policy snapshot`/`export` 同様に手動動作確認に委ねている（network fetch / project
+profile + templatesDir のフル setup が必要で hermetic test が重い）。follow-up: `loadProjectById` を
+fake した薄い action-level test で配線退行を防ぐ。本 Phase のブロッカーにはしない。

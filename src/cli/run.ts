@@ -3611,10 +3611,14 @@ workspaceCmd
       }
       // GitHub exposes a PR head at refs/pull/<n>/head on the origin remote.
       const remote = String(raw.remote ?? "origin");
-      // `--` stops git option parsing so a `--remote=--upload-pack=…` value is
-      // treated as a remote name, not a git flag (argument-injection surface).
+      // Fetch into a PR-specific local ref (not the shared FETCH_HEAD), so two
+      // concurrent verify-pr runs in the same repo cannot race — a plain
+      // `rev-parse FETCH_HEAD` could read another PR's just-fetched head. `--`
+      // stops git option parsing so a `--remote=--upload-pack=…` value is treated
+      // as a remote name, not a git flag (argument-injection surface).
+      const localRef = `refs/harness/verify-pr/${number}`;
       const fetched = await gitCli(
-        ["fetch", "--", remote, `pull/${number}/head`],
+        ["fetch", "--", remote, `+pull/${number}/head:${localRef}`],
         { cwd: repoPath },
       );
       if (fetched.exitCode !== 0) {
@@ -3622,7 +3626,7 @@ workspaceCmd
           `failed to fetch pull/${number}/head from "${remote}": ${fetched.stderr.trim()}`,
         );
       }
-      const rev = await gitCli(["rev-parse", "FETCH_HEAD"], { cwd: repoPath });
+      const rev = await gitCli(["rev-parse", localRef], { cwd: repoPath });
       if (rev.exitCode !== 0) {
         throw new AgentWorkspaceError(
           `failed to resolve fetched PR head: ${rev.stderr.trim()}`,
