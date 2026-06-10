@@ -76,6 +76,10 @@ import {
 } from "../workspace/agent-workspace.js";
 import { reconcileWorkspaces } from "../workspace/workspace-reconcile.js";
 import {
+  createDetachedWorktree,
+  removeDetachedWorktree,
+} from "../workspace/git-worktree.js";
+import {
   assembleWorkspaceStatuses,
   readWorkspaceStatusData,
 } from "../workspace/workspace-status-builder.js";
@@ -3572,6 +3576,75 @@ workspaceCmd
           `Start the agent here, sharing the harness state DB:\n` +
           `  cd ${ws.path}\n` +
           `  export HARNESS_ROOT=${sharedRoot}\n`,
+      );
+    } catch (e) {
+      withWorkspaceErrorExit(e);
+    }
+  });
+
+workspaceCmd
+  .command("verify-pr")
+  .description(
+    "check out a PR head in a DETACHED (branch-free) worktree for verification, " +
+      "avoiding the 'branch already used by worktree' conflict a run worktree causes (#82)",
+  )
+  .argument("<number>", "PR number")
+  .option("--repo <path>", "the project repo (default: current directory)")
+  .option("--remote <name>", "remote to fetch the PR head from", "origin")
+  .option("--rm", "remove the verify worktree for this PR instead of creating it", false)
+  .option("--json", "emit JSON instead of text", false)
+  .action(async (number: string, raw: Record<string, unknown>) => {
+    try {
+      if (!/^\d+$/.test(number)) {
+        throw new AgentWorkspaceError(`PR number must be a positive integer: ${number}`);
+      }
+      const { repoPath, workspacesDir } = await resolveWorkspaceCtx(raw);
+      const worktreePath = join(workspacesDir, `verify-pr-${number}`, "repo");
+      if (raw.rm === true) {
+        await removeDetachedWorktree({ repoPath, worktreePath });
+        process.stdout.write(
+          raw.json === true
+            ? `${JSON.stringify({ removed: worktreePath }, null, 2)}\n`
+            : `removed verify worktree: ${worktreePath}\n`,
+        );
+        return;
+      }
+      // GitHub exposes a PR head at refs/pull/<n>/head on the origin remote.
+      const remote = String(raw.remote ?? "origin");
+      // Fetch into a PR-specific local ref (not the shared FETCH_HEAD), so two
+      // concurrent verify-pr runs in the same repo cannot race — a plain
+      // `rev-parse FETCH_HEAD` could read another PR's just-fetched head. `--`
+      // stops git option parsing so a `--remote=--upload-pack=…` value is treated
+      // as a remote name, not a git flag (argument-injection surface).
+      const localRef = `refs/harness/verify-pr/${number}`;
+      const fetched = await gitCli(
+        ["fetch", "--", remote, `+pull/${number}/head:${localRef}`],
+        { cwd: repoPath },
+      );
+      if (fetched.exitCode !== 0) {
+        throw new AgentWorkspaceError(
+          `failed to fetch pull/${number}/head from "${remote}": ${fetched.stderr.trim()}`,
+        );
+      }
+      const rev = await gitCli(["rev-parse", localRef], { cwd: repoPath });
+      if (rev.exitCode !== 0) {
+        throw new AgentWorkspaceError(
+          `failed to resolve fetched PR head: ${rev.stderr.trim()}`,
+        );
+      }
+      const sha = rev.stdout.trim();
+      const { path } = await createDetachedWorktree({
+        repoPath,
+        worktreePath,
+        commitish: sha,
+      });
+      process.stdout.write(
+        raw.json === true
+          ? `${JSON.stringify({ pr: Number(number), sha, path }, null, 2)}\n`
+          : `verify worktree for PR #${number} (detached at ${sha.slice(0, 12)}):\n` +
+              `  path: ${path}\n\n` +
+              `Inspect read-only, then remove it with:\n` +
+              `  harness workspace verify-pr ${number} --rm${raw.repo !== undefined ? ` --repo ${String(raw.repo)}` : ""}\n`,
       );
     } catch (e) {
       withWorkspaceErrorExit(e);

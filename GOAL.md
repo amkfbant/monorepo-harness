@@ -493,6 +493,175 @@ reopen→needs_fix→fix-rerun→再 close できる」を確認（S6）。期�
 - **defer（`docs/future-features.md` へ）**: #69 の hook 自動設置・CI 必須化、#103 の既存 harness:
   commit 補完の自動化、#83 の単発フル loop（長時間ブロッキング）方式。
 
+> **大 Phase S は完了・main merge 済み**（PR #105 / squash `6bc50d4`。S1–S7 + 大レビュー P1 修正。
+> #79 #77 #103 #69 #76 #83 #104 close／#104・#83 は close 操作のみ残）。
+
+---
+
+## 大 Phase T — 運用セットアップ・DX のつまずき修正（#78 #81 #82 #68）
+
+大 Phase R/S を実プロジェクト（mini-commerce / 実機）に対し goal モードで運用した際に
+観測した **セットアップ／DX のつまずき** を 1 本の feature branch（大 Phase）で修正する。
+4 件いずれも **CLI / config / workspace 表面の追加で DB schema に触れず・goal loop に非依存**
+（回帰リスクが低い）。**#74（マルチドメイン1論理変更・協調マージ）はユーザー合意により今回
+除外**（schema 変更 + multi-PR 協調マージの再設計を要し、他 4 件の合計より大。独立 大 Phase に
+回し brainstorm から）。
+
+> 対応 issue: #78 #81 #82 #68。各 issue 本文が一次情報（実機 ops での観測）。
+
+### レビュー体制（codex クレジット切れの代替）
+
+大 Phase S と同一: **サブ Phase = opus サブエージェントレビュー**、**大 Phase = Fable-5
+サブエージェントレビュー**（codex 正本レビューの代替。codex 復帰後に着手前差分レビューを別途）。
+**未解決 P0／P1 ゼロが close gate**（P0=安全境界違反/重大バグ・修正必須、P1=機能バグ・修正必須、
+P2=修正 or 理由付き defer、P3=nit）。
+
+### 確定した取り決め
+
+- **スコープ**: #78 #81 #82 #68 の 4 件。#74 は除外（future 大 Phase）。
+- **実装場所**: dev クローン新 feature branch（`feat/ops-setup-dx-fixes`）。
+- **運用**: GOAL_RULES 準拠。各サブ = TDD → commit → opus サブレビュー（P0/P1 ゼロ gate）→ close →
+  PR（**conventional title**）→ CI green（node 20/24）→ squash merge → local main 同期。大 Phase =
+  フルスイート `npm test` + typecheck 緑 → Fable 大レビュー → 未解決 P0/P1 ゼロ → merge。
+- **schema 変更なし**: 4 件いずれも DB schema に触れない。触れる必要が判明したら **停止して再決定**。
+- **ops 反映**: `git pull` → `npm run build`。新 CLI（#78）・preflight（#68）・検証 worktree（#82）は
+  CLI/run/workspace 表面で **serve 再起動不要**。#81 は MCP の **メッセージ／導出ロジック変更のみ**
+  （tool registration 不変）。MCP transport は stdio なので実行中 serve には反映されず **次回 client 接続
+  から有効**（P3-2）。migrate 不要。
+
+### 確定した取り決め（Fable 計画レビューで確定）
+
+- **#78 の CLI 配置／出力**: `harness policy compile --project <id> [--out <path>] [--force]`（既存
+  `policy snapshot` / `policy export` と対称）。既定出力は orchestrate が読む `policies/repos/<repoId>.yaml`。
+  `compileProjectPolicy().repoPolicy`（`src/project/policy-compiler.ts`）を YAML 化（`policy snapshot` の
+  compile パイプライン再利用）。**global policy も手当する**（P1-2）: `loadGlobalPolicy`（`src/policy/loader.ts`）
+  は素の readFile で `policies/global.yaml` 不在なら **global 側でも ENOENT** になるため、不在なら
+  `compiledPolicy.globalPolicy` も併せて生成（repo 側と同じ `--force` ゲート）。生成 YAML 先頭に
+  **provenance ヘッダ**（project id / profile version / source sha / 生成時刻 / 「harness policy compile が
+  生成・手編集非推奨」）を付与しドリフト検出の足がかりに（P2-5）。**DB は不変**＝`effective_policy_snapshots`
+  には記録しない（snapshot が要れば既存 `policy snapshot` を使う旨 doc 化、P3-3）。
+- **#81 の repoId→projectId 導出**: **入れる**。メッセージ改善（projectId 未指定＝null を明示し
+  allowedProjects 併記）＋ `projects` テーブルで repoId に**一意対応**する project があれば projectId を
+  **導出**（0 件／複数件は導出せず改善メッセージで停止＝fail-closed）。**導出は permission 判定に必要な
+  場合に限定**（`allowedProjects` 非空 && projectId 未指定）＝ allowedProjects 空のときは挙動を変えない
+  （P2-1）。導出値は **必ず `ensureProjectVisible` を通し**、`CreateGoalSessionInput.projectId` に**永続化**
+  （後続 `goal.status` 等の可視性判定が機能するため）。`goal.start` の null 拒否（scope 必須）は維持。
+- **#82 の機構**: doc 化（`git fetch origin pull/<n>/head:<name>` 手順を `workspace.md` に明記）＋
+  **detached read-only 検証 worktree** helper（`harness workspace verify-pr <n>` ＝PR head sha を
+  `git worktree add --detach` でブランチ非占有取得）を**入れる**。配置先（`workspaces/verify-pr-<n>/` 等）・
+  **cleanup 手段**（remove subcommand or `--rm` or doc 指示で作りっぱなし防止）・`pull/<n>/head` が
+  **GitHub origin 前提**・「read-only は運用約束（detached worktree は書ける）」を T4 に明記（P2-4）。
+- **#68 の preflight 位置**: `isSymlinkCapable(dir)` probe を新規 `src/workspace/fs-preflight.ts` に。
+  **worktree が実際に置かれる FS** を probe する＝ `createWorktree`（run worktree・probe 対象 `opts.worktreesDir`）
+  **と** `src/workspace/agent-workspace.ts` の workspace 作成（probe 対象 workspace 親 dir）の**両経路に配線**
+  （P1-1: 元インシデントは repo の sibling に作る agent workspace が `/mnt/d` 上で踏んだもので、HARNESS_ROOT
+  側だけ probe しても検出できない。repoPath と HARNESS_ROOT が別 FS のケースが本質）。EPERM を fail-fast
+  （FS 名＋remediation 明示）。doctor の `fs` カテゴリ常設は defer。
+
+### 実装順（相互独立・低リスク→高表面）
+
+T1 #81（メッセージ／導出・最小）→ T2 #78（compile CLI）→ T3 #68（preflight・新ファイル）→
+T4 #82（検証 worktree・doc）。4 件は相互依存なし。goal loop を触らないため S のような自己ホスティング
+再帰の懸念は無い（各サブ merge 後の loop 健全性検証は不要、通常の関連テスト＋typecheck で足りる）。
+T3 先行で T4 の検証 worktree 作成が preflight を自然に再利用できる。
+
+> **本計画は Fable（claude-fable-5）サブエージェントでレビュー済み**（codex クレジット切れの代替）。
+> P0 ゼロ・着手可（条件付き）。P1×2（#68 の probe 配線を run worktree + agent workspace の両経路に／
+> #78 の global.yaml 不在 ENOENT も手当）と要確認 4 点への推奨回答、主要 P2（#81 導出範囲・#82 helper
+> 未決事項・#78 provenance ヘッダ・#82 workspace.md 誤記述訂正）を本文に反映済み。指摘は実コードで裏取り
+> 済み。codex 正本レビューは復帰後に着手前差分で別途。
+
+---
+
+#### T1 — #81 `project_not_allowed (projectId: null)` メッセージ改善 + repoId 導出
+
+- **観測**: MCP `harness.goal.start` を repoId 指定で呼ぶと `permission_denied: project_not_allowed
+  (projectId: null)`。projectId が別途必須だと気づけない。
+- **修正方針**: `ensureProjectVisible`（`src/mcp/tools/tool-helpers.ts:113-125`）で projectId が
+  null/undefined かつ `allowedProjects` 非空のとき、メッセージを「**projectId 未指定（null）。
+  allowedProjects=[...] に対し projectId を指定せよ**」に分岐。`goalStartTool`（`src/mcp/tools/goal-tools.ts:272`）
+  で repoId が与えられ `projects` テーブルに**一意対応**があれば projectId を導出（0 件／複数件は導出せず
+  改善メッセージ＝fail-closed）。導出は **allowedProjects 非空 && projectId 未指定**に限定し（P2-1）、導出値は
+  必ず `ensureProjectVisible` を通し `CreateGoalSessionInput.projectId` に永続化。`isProjectAllowed`
+  （`src/mcp/security/permissions.ts:55` null 許容、P3-1）と `ensureProjectVisible`（null 拒否）の非対称は
+  **意図確認の上、goal.start は scope 必須＝拒否を維持しメッセージのみ改善**。
+- **対象**: `src/mcp/tools/tool-helpers.ts`、`src/mcp/tools/goal-tools.ts`、`projects` lookup（`src/db`）。
+- **安全境界**: 権限判定は決定論のまま緩めない（曖昧導出は禁止＝fail-closed）。状態遷移に影響しない。
+- **TDD**: (a) projectId 未指定＋allowedProjects 設定 → メッセージに projectId/allowedProjects を含む、
+  (b) repoId 一意対応 → 導出され通過、(c) repoId 曖昧（複数 project）→ 導出せず deny、
+  (d) 導出値が allowedProjects に**無い** → deny（fail-closed の明示）、(e) 0 件対応 → 改善メッセージ（P2-2）。
+- **動作確認**: mini-commerce で repoId のみの goal.start → 具体的メッセージ or 導出成功。
+- **close**: 関連テスト+typecheck 緑／P0・P1 ゼロ／`docs/specs/mcp.md` 更新。schema 不変。
+
+#### T2 — #78 profile → repo policy コンパイル CLI
+
+- **観測**: `goal orchestrate` の repoId モードは `policies/repos/<repoId>.yaml` を読むが、project profile
+  からこれを生成する CLI が無く（`project init` は inspect/migrate のみ）、ワンオフスクリプトを知らないと
+  `ENOENT policies/repos/<repoId>.yaml` で escalate。
+- **修正方針**: `harness policy compile --project <id> [--out <path>] [--force]` を追加。`loadCompileInputs`
+  + `compileProjectPolicy`（`src/project/policy-compiler.ts`）で compile し `repoPolicy` を YAML 化
+  （`policy snapshot` と同パイプライン・`src/cli/policy.ts` の既存 import 再利用）して既定
+  `policies/repos/<repoId>.yaml` に書く（**既存ファイルは `--force` 必須＝誤上書き防止 fail-safe**）。
+  `compile` の `warnings` を surface。**global.yaml も手当**（P1-2）: `policies/global.yaml` 不在なら
+  `compiledPolicy.globalPolicy` も生成（同 `--force` ゲート）し、orchestrate が global 側 ENOENT で落ちない
+  ようにする。生成 YAML 先頭に **provenance ヘッダ**を付与（P2-5）。`effective_policy_snapshots` には
+  記録しない＝DB 不変（P3-3）。
+- **対象**: `src/cli/policy.ts`（`compile` サブコマンド）、`docs/specs/{cli,policy}.md`。
+- **安全境界**: 生成のみ。既存上書きは `--force` ゲート。compile は決定論。DB 不変。
+- **TDD**: profile → `policies/repos/<id>.yaml` 生成・内容が `compileProjectPolicy().repoPolicy` と一致、
+  global.yaml 不在時に global も生成、`--force` 無しの上書き拒否、warnings 表示、provenance ヘッダ付与。
+- **動作確認**: fresh HARNESS_ROOT で compile → orchestrate が repo/global とも ENOENT を出さず policy を読める。
+- **close**: 関連テスト+typecheck 緑／P0・P1 ゼロ／`docs/specs/{cli,policy}.md` 更新。schema 不変。
+
+#### T3 — #68 symlink 非対応 FS（WSL 9p/drvfs）の preflight
+
+- **観測**: workspace/HARNESS_ROOT が `/mnt/*`（9p/drvfs）上だと `symlink(2)` が EPERM。worktree/venv/
+  node_modules 段で cryptic errno として深部で表面化。ext4 等 Linux ネイティブ FS は無影響。
+- **修正方針**: `isSymlinkCapable(dir): boolean` probe を新規 `src/workspace/fs-preflight.ts` に（temp subdir
+  へ symlink を試行→EPERM 捕捉→cleanup。fs を注入可能にして unit テスト）。**worktree が実際に置かれる FS**
+  を probe し、不可なら **FS 名＋remediation**（「Linux ネイティブ FS（例 `~/ops/...`）で実行せよ」）を明示して
+  **fail-fast（fail-closed）**。**両経路に配線**（P1-1）: `createWorktree`（run worktree・probe 対象
+  `opts.worktreesDir`）**と** `src/workspace/agent-workspace.ts` の workspace 作成（probe 対象 workspace 親 dir
+  ＝repo の sibling）。元インシデントは repo 側 FS（`/mnt/d`）で踏んだもので、repoPath と HARNESS_ROOT が
+  別 FS のケースが本質。`docs/specs/workspace.md` に symlink-capable FS の注記。
+- **対象**: 新規 `src/workspace/fs-preflight.ts`、`src/workspace/git-worktree.ts` + `src/workspace/agent-workspace.ts`
+  （両経路に配線）、`docs/specs/workspace.md`。doctor の `fs` カテゴリ常設は defer。
+- **安全境界**: 能力不明なら停止（fail-closed）。既存挙動（ext4 等）は不変。
+- **TDD**: probe が capable=true/false を返す（fs inject）、preflight が EPERM を actionable error に変換、
+  両経路（run worktree / agent workspace）で probe が呼ばれる、capable FS では透過。
+- **動作確認**: capable FS で透過（実機 WSL は CI 外のため probe の unit で EPERM 分岐を担保）。
+- **close**: 関連テスト+typecheck 緑／P0・P1 ゼロ／`docs/specs/workspace.md` 更新。schema 不変。
+
+#### T4 — #82 PR 検証用の非占有（detached）worktree + doc
+
+- **観測**: run ごとの worktree が PR ブランチ（`harness/<runId>/<domain>`）を占有し、別 checkout で
+  `gh pr checkout <n>` すると `fatal: '<branch>' is already used by worktree at ...` で失敗。毎回
+  `git fetch origin pull/<n>/head:<name>` で別名取得して回避した。
+- **修正方針**: ① `docs/specs/workspace.md` に「PR 検証は `git fetch origin pull/<n>/head:<name>` で
+  別名取得、または detached worktree」を明記。**同 doc の既存誤記述を訂正**（P2-3）: 現状 60 行目付近の
+  「run 内部 worktree は detached」は事実と矛盾（実装は `-b harness/<runId>/<domain>` で**ブランチ占有**＝
+  #82 の痛みの原因）。② **detached read-only 検証 worktree** helper を `src/workspace/git-worktree.ts` に
+  追加（`git worktree add --detach <path> <sha>` ＝**ブランチ非占有**）し、PR head を取得する CLI
+  （`harness workspace verify-pr <n>`）として提供。**配置先**（`workspaces/verify-pr-<n>/` 等）・**cleanup**
+  （remove subcommand or `--rm` or doc 指示で作りっぱなし防止）・`pull/<n>/head` が **GitHub origin 前提**・
+  「read-only は運用約束（detached worktree は書ける）」を明記（P2-4）。
+- **対象**: `src/workspace/git-worktree.ts`（detached helper）、`src/cli/`（`workspace verify-pr`）、
+  `docs/specs/workspace.md`（既存誤記述の訂正含む）。
+- **安全境界**: read-only は運用約束（detached・書き戻さない）。run worktree のライフサイクルは不変。
+- **TDD**: detached worktree がブランチを占有せず作られ既存 run worktree（ブランチ占有）と競合しない
+  （local bare remote の fake）、cleanup でリーク無し。
+- **動作確認**: PR ブランチが run worktree に占有された状態で detached 検証 worktree を作成→成功。
+- **close**: 関連テスト+typecheck 緑／P0・P1 ゼロ／`docs/specs/workspace.md` 更新。schema 不変。
+
+### 大 Phase T の close & ops 反映
+
+- 全サブ close → フルスイート `npm test` + typecheck 緑 → Fable 大レビュー（未解決 P0/P1 ゼロ）→ push →
+  CI green（node 20/24）→ main merge。
+- ops 反映: `git pull` → `npm run build`。**serve 再起動・migrate ともに不要**（CLI/workspace/MCP メッセージ
+  表面のみ、schema 不変、tool registration 不変）。
+- **defer（`docs/future-features.md` へ）**: #74（マルチドメイン協調マージ・独立 大 Phase）、#68 の doctor
+  `fs` カテゴリ常設・venv/node_modules 段の個別 preflight、#82 の run worktree 自動 cleanup タイミング変更。
+
 ---
 
 ## 実行フロー

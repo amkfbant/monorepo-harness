@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { gitCli, type GitResult } from "../git/git-cli.js";
+import { assertSymlinkCapable } from "./fs-preflight.js";
 
 /**
  * Agent workspace management: a thin, deterministic wrapper over `git worktree`
@@ -350,6 +351,9 @@ export async function createAgentWorkspace(
   );
   if (existing !== undefined) return { ...existing, created: false };
 
+  // (#68) The agent workspace is created as a sibling of the repo, which may sit
+  // on a different (symlink-incapable) FS than HARNESS_ROOT — fail fast there.
+  assertSymlinkCapable(ctx.workspacesDir);
   const hasBranch = await branchExists(ctx, branch);
   const addArgs = hasBranch
     ? ["worktree", "add", path, branch]

@@ -57,8 +57,21 @@ agent workspace は、エージェントごとに `git worktree` で**独立し�
   agent worktree でも同じ repo を指すので、DB 行は repo 横断で一意に紐づく。
 - **branch/HEAD は常に live git から hydrate**（DB の値が stale でも reconcile が live を採る）。
 - **2 レイヤーの worktree**: agent workspace（人間 / エージェントが編集・`agent/<name>`）と、
-  run 内部の worktree（`workspaces/<runId>/repo/`・codex 実行用・detached）は**別物**。
+  run 内部の worktree（`workspaces/<runId>/repo/`・codex 実行用）は**別物**。
   reconcile / list / status は run 内部 worktree と main checkout を除外する。
+
+## symlink 可能な FS が前提（#68）
+
+`git worktree` と worktree 上の依存インストール（uv venv・`node_modules/.bin`）は POSIX
+symlink を作る。**WSL の 9p/drvfs マウント（`/mnt/*`）など symlink 不可の FS** 上では
+`symlink(2)` が `EPERM` を返し、深部で cryptic な errno として失敗する。worktree 作成
+（run 内部 = `createWorktree`／agent workspace = `createAgentWorkspace`）は、**worktree が
+実際に置かれるディレクトリ**（run は `worktreesDir`・agent は `workspacesDir`）を作成直前に
+`assertSymlinkCapable`（`src/workspace/fs-preflight.ts`）で probe し、不可なら FS を名指し＋
+「Linux ネイティブ FS（例 `~/ops/...`）で実行せよ」と remediation を示して **fail-fast** する。
+元インシデントは **repo の sibling に作られる agent workspace** が `/mnt/d` 上で踏んだもので、
+repoPath と HARNESS_ROOT が別 FS のケースを捕捉するため両経路で probe する。EPERM 以外の
+probe 失敗は block しない（既知の symlink-EPERM に限定した早期警告）。
 
 ---
 
@@ -85,6 +98,15 @@ agent workspace は、エージェントごとに `git worktree` で**独立し�
 - **recover**: inspect（git）＋ goal convergence から状態を再構成し**決定論的 next-steps** を提示。
   クラッシュ / 再開した LLM が「保存した理解を信じる」のでなく真を取り戻すための復旧口。
 - **remove**: worktree ＋ ブランチ ＋ DB 行を掃除（未コミット変更は `--force` 無しで拒否）。
+- **verify-pr**（#82）: PR head を **detached（ブランチ非占有）worktree** にチェックアウトして検証する。
+  run worktree が PR ブランチ（`harness/<runId>/<domain>`）を占有していると `gh pr checkout <n>` が
+  `fatal: '<branch>' is already used by worktree` で失敗するため、ブランチを使わない detached HEAD で
+  回避する。`harness workspace verify-pr <n> [--repo <path>] [--remote origin] [--rm]`: `origin` の
+  `refs/pull/<n>/head`（**GitHub origin 前提**）を **PR 専用 local ref**（`refs/harness/verify-pr/<n>`・
+  共有 `FETCH_HEAD` を使わないので並行 verify-pr が衝突しない）に fetch し、agent workspace と同じ dir
+  （既定 `<repo>.agents/verify-pr-<n>/repo`）に detached worktree を作る。**read-only は運用約束**
+  （detached worktree は物理的には書ける）。`--rm` で同 PR の検証 worktree を削除（作りっぱなし防止）。
+  `createDetachedWorktree` は #68 の symlink preflight も通す。
 
 ---
 

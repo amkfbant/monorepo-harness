@@ -10,7 +10,7 @@
 3. resolveBaseSha(baseBranch) — pin the commit to diff against
 4. createRunLog(runsDir, runId, meta) — atomic mkdir + meta.json + events.jsonl
 5. emit run_started event, write resolved-policy.yaml
-6. createWorktree(repo, baseSha, runId) — git worktree add detached at baseSha
+6. createWorktree(repo, baseSha, runId) — git worktree add -b harness/<runId>/<domain> at baseSha (occupies that branch)
 7. emit worktree_created event
 8. build codex prompt from goal + policy → write codex-prompt.md
 9. emit codex_exec_started
@@ -347,7 +347,7 @@ Phase 9 は concurrency safety と runtime DB story の完結を扱う。設計�
 > 取り合って衝突する（ハーネス管轄外）。これを避けるため `harness workspace`
 > （[`cli.md`](./cli.md#harness-workspace)）でエージェントごとに `agent/<name>`
 > ブランチの隔離 worktree を切り、`HARNESS_ROOT`（共有 state DB）を全エージェントで
-> 共有する。run 内部の `workspaces/<runId>/repo/`（codex 用・detached）とは別レイヤー。
+> 共有する。run 内部の `workspaces/<runId>/repo/`（codex 用・`harness/<runId>/<domain>` ブランチを占有）とは別レイヤー。
 
 - **domain lock の DB 化** — `runDomainCoding` の lock 取得は Phase 9 で
   file lock + DB lock の **dual-lock**。DB lock は lease (5 分) +

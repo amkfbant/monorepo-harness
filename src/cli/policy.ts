@@ -15,6 +15,7 @@ import {
   loadCompileInputs,
 } from "../project/policy-compiler.js";
 import { resolvePolicy } from "../policy/resolver.js";
+import { writeCompiledPolicyFiles } from "./policy-compile.js";
 
 function getHarnessRoot(): string {
   return process.env.HARNESS_ROOT ?? process.cwd();
@@ -38,6 +39,77 @@ export function registerPolicyCommands(program: Command): void {
           raw.json === true
             ? `${JSON.stringify(snapshot, null, 2)}\n`
             : `policy snapshot: project=${snapshot.projectId} domain=${snapshot.domain} snapshot=${snapshot.snapshotId}\n`,
+        );
+      });
+    });
+
+  policyCmd
+    .command("compile")
+    .description(
+      "compile a project profile to policies/repos/<repoId>.yaml (+ global.yaml if missing)",
+    )
+    .requiredOption("--project <id>", "project id")
+    .option(
+      "--out <path>",
+      "destination for the repo policy (default: policies/repos/<repoId>.yaml)",
+    )
+    .option("--force", "overwrite existing policy file(s)", false)
+    .option("--json", "emit JSON instead of text", false)
+    .action(async (raw: Record<string, unknown>) => {
+      await withPolicyErrorExit(async () => {
+        const root = getHarnessRoot();
+        const paths = harnessPaths(root);
+        const resolved = await loadProjectById(root, String(raw.project), {});
+        if (resolved.repoPath === null) {
+          throw new ProjectError(
+            `project "${String(raw.project)}" has no repo.path; cannot compile policy`,
+          );
+        }
+        if (!existsSync(resolved.repoPath)) {
+          throw new ProjectError(`repo path does not exist: ${resolved.repoPath}`);
+        }
+        const repoSignals = await scanRepoSignals(resolved.repoPath);
+        const generatedAt = new Date().toISOString();
+        const inputs = await loadCompileInputs(
+          resolved.profile,
+          resolved.profilePath,
+          { templatesDir: paths.templatesDir, repoSignals, generatedAt },
+        );
+        const compiled = compileProjectPolicy(inputs);
+        const written = writeCompiledPolicyFiles({
+          repoPolicy: compiled.repoPolicy,
+          globalPolicy: compiled.globalPolicy,
+          repoOut:
+            raw.out !== undefined
+              ? resolve(String(raw.out))
+              : paths.repoPolicyPath(compiled.repoId),
+          // an explicit --out targets a single file; do not also manage global
+          globalOut: raw.out !== undefined ? null : paths.globalPolicyPath,
+          force: raw.force === true,
+          provenance: {
+            projectId: compiled.projectId,
+            repoId: compiled.repoId,
+            profileSource: resolved.profileSource,
+            profileRevisionId: resolved.profileRevisionId ?? null,
+            generatedAt,
+          },
+        });
+        for (const w of compiled.warnings) {
+          process.stderr.write(
+            `warning: ${w.domain !== undefined ? `[${w.domain}] ` : ""}${w.message}\n`,
+          );
+        }
+        const out = {
+          projectId: compiled.projectId,
+          repoId: compiled.repoId,
+          written,
+          warnings: compiled.warnings,
+        };
+        process.stdout.write(
+          raw.json === true
+            ? `${JSON.stringify(out, null, 2)}\n`
+            : `policy compile: project=${compiled.projectId} repo=${compiled.repoId} ` +
+                `wrote ${written.length} file(s):\n${written.map((p) => `  ${p}`).join("\n")}\n`,
         );
       });
     });

@@ -118,10 +118,26 @@ export function ensureProjectVisible(
   if (projectId !== null && projectId !== undefined && config.allowedProjects.includes(projectId)) {
     return null;
   }
-  return permissionDenied("MCP permission denied: project_not_allowed", {
-    reason: "project_not_allowed",
-    projectId: projectId ?? null,
-  });
+  // (#81) Disambiguate the two denial causes so the operator knows what to fix.
+  // The `reason` stays `project_not_allowed` for compatibility; the summary +
+  // `hint` + `allowedProjects` make the unset case ("you forgot projectId")
+  // distinguishable from the not-allowed case ("wrong projectId").
+  const unset = projectId === null || projectId === undefined;
+  const allowed = config.allowedProjects.join(", ");
+  return permissionDenied(
+    unset
+      ? `MCP permission denied: projectId is required but was not provided (allowedProjects: [${allowed}])`
+      : "MCP permission denied: project_not_allowed",
+    {
+      reason: "project_not_allowed",
+      projectId: projectId ?? null,
+      allowedProjects: config.allowedProjects,
+      hint: unset
+        ? `projectId was not provided; set projectId to one of [${allowed}], ` +
+          `or provide a repoId that maps to exactly one allowed project`
+        : `projectId "${projectId}" is not in allowedProjects [${allowed}]`,
+    },
+  );
 }
 
 /** Cap `text` to `maxBytes` UTF-8 bytes, reporting the original size. */
