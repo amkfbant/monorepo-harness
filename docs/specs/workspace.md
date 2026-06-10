@@ -98,6 +98,13 @@ probe 失敗は block しない（既知の symlink-EPERM に限定した早期�
 - **recover**: inspect（git）＋ goal convergence から状態を再構成し**決定論的 next-steps** を提示。
   クラッシュ / 再開した LLM が「保存した理解を信じる」のでなく真を取り戻すための復旧口。
 - **remove**: worktree ＋ ブランチ ＋ DB 行を掃除（未コミット変更は `--force` 無しで拒否）。
+- **verify-pr**（#82）: PR head を **detached（ブランチ非占有）worktree** にチェックアウトして検証する。
+  run worktree が PR ブランチ（`harness/<runId>/<domain>`）を占有していると `gh pr checkout <n>` が
+  `fatal: '<branch>' is already used by worktree` で失敗するため、ブランチを使わない detached HEAD で
+  回避する。`harness workspace verify-pr <n> [--repo <path>] [--remote origin] [--rm]`: `origin` の
+  `refs/pull/<n>/head`（**GitHub origin 前提**）を fetch し `workspaces/verify-pr-<n>/repo` に detached
+  worktree を作る。**read-only は運用約束**（detached worktree は物理的には書ける）。`--rm` で同 PR の
+  検証 worktree を削除（作りっぱなし防止）。`createDetachedWorktree` は #68 の symlink preflight も通す。
 
 ---
 
