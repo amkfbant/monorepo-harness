@@ -1444,8 +1444,9 @@ heartbeat 中の lease を奪い、保持側を `LeaseStolenError` で fail さ�
 
 ### `HARNESS_EXPORT_FILES` の default
 
-Phase 9 close で default OFF に反転。未設定時は warning。
-`HARNESS_SUPPRESS_EXPORT_MODE_WARNING=1` で抑制可。
+Phase 9 close で default OFF に反転。移行 warning は **opt-in**（#79）: 既定は silent
+（短命 CLI プロセス毎の警告でログを埋めないため）。`HARNESS_WARN_EXPORT_MODE=1` で
+一度だけ表示、`HARNESS_SUPPRESS_EXPORT_MODE_WARNING=1` は opt-in 時も抑制。
 
 ### `harness review process` の verdict 経路
 

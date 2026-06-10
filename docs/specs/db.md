@@ -429,9 +429,10 @@ truncated artifact の監査情報）を実装する。設計は
   `db migrate-legacy` / `db import --force-legacy-reconcile` は bypass。
 - **`review_proposals`** — `review auto` の verdict を DB canonical に。
   active partial unique index + `processed_at` で idempotent な promotion。
-- **`HARNESS_EXPORT_FILES` の default OFF 化** — Phase 9 close で即 flip +
-  warning。`HARNESS_SUPPRESS_EXPORT_MODE_WARNING=1` で抑制可。breaking
-  change として close report で強周知。
+- **`HARNESS_EXPORT_FILES` の default OFF 化** — Phase 9 close で即 flip。移行
+  warning は **opt-in（#79）**: 既定 silent、`HARNESS_WARN_EXPORT_MODE=1` で一度だけ
+  表示（`HARNESS_SUPPRESS_EXPORT_MODE_WARNING=1` は opt-in 時も抑制）。breaking
+  change として close report で強周知済み。
 - **truncated artifact の original 情報** — `artifacts.original_bytes` /
   `original_sha256` 記録。`db stats` で truncated 統計表示。
 
