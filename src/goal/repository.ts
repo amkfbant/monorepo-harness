@@ -303,6 +303,15 @@ interface GoalDecisionRow {
   created_by: string;
 }
 
+/** Terminal statuses a goal can be reopened from (#76). `cancelled` is a
+ * deliberate abandon and is excluded. */
+const REOPENABLE_STATUSES: ReadonlySet<GoalStatus> = new Set<GoalStatus>([
+  "closed",
+  "budget_exhausted",
+  "escalated",
+  "diverging",
+]);
+
 export class GoalRepository {
   constructor(private readonly db: Database.Database) {}
 
@@ -397,6 +406,53 @@ export class GoalRepository {
           WHERE goal_id = ?`,
       )
       .run(status, now, closedAt, closeSummary, escalationReason, goalId);
+    return this.requireSession(goalId);
+  }
+
+  /**
+   * #76 / #104 — resume a terminal goal (closed / budget_exhausted / escalated /
+   * diverging) so a late-discovered finding can be fixed on the existing branch
+   * instead of closing the PR and re-implementing. Transitions back to `open`,
+   * clears the terminal markers `updateStatus` would COALESCE-preserve
+   * (`closed_at` / `close_summary` / `escalation_reason`), and extends the
+   * budget (existing columns — no schema change) so a budget_exhausted goal does
+   * not immediately re-exhaust. State transition only (harness-driven, audited
+   * by the caller). `cancelled` is a deliberate abandon and is NOT reopenable.
+   */
+  reopenSession(
+    goalId: string,
+    opts: {
+      extendIterations?: number;
+      extendReviewCycles?: number;
+      extendReruns?: number;
+      now?: string;
+    } = {},
+  ): GoalSession {
+    const session = this.requireSession(goalId);
+    if (!REOPENABLE_STATUSES.has(session.status)) {
+      throw new Error(
+        `goal ${goalId} is "${session.status}", not a reopenable terminal ` +
+          `status (${[...REOPENABLE_STATUSES].join(", ")})`,
+      );
+    }
+    const now = opts.now ?? new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE goal_sessions
+            SET status = 'open', updated_at = ?,
+                closed_at = NULL, close_summary = NULL, escalation_reason = NULL,
+                max_iterations = max_iterations + ?,
+                max_review_cycles = max_review_cycles + ?,
+                max_reruns = max_reruns + ?
+          WHERE goal_id = ?`,
+      )
+      .run(
+        now,
+        Math.max(0, Math.trunc(opts.extendIterations ?? 0)),
+        Math.max(0, Math.trunc(opts.extendReviewCycles ?? 0)),
+        Math.max(0, Math.trunc(opts.extendReruns ?? 0)),
+        goalId,
+      );
     return this.requireSession(goalId);
   }
 

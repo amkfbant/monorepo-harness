@@ -248,6 +248,7 @@ The CLI exposes `harness goal`:
 ```bash
 harness goal start --title "..." --scope-file scope.yaml --close-file close.yaml
 harness goal status <goal-id>
+harness goal reopen <goal-id> --reason "..." [--extend-iterations N] [--extend-review-cycles N] [--extend-reruns N]
 harness goal finding add <goal-id> --severity P1 --category correctness --summary "..."
 harness goal finding classify <finding-id> --scope in-scope --reason "..."
 harness goal finding fixed <finding-id> --note "..."

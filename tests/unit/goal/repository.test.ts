@@ -499,3 +499,61 @@ describe("GoalRepository", () => {
     }
   });
 });
+
+describe("reopenSession (#76)", () => {
+  it("reopens a closed goal: status open, terminal markers cleared, budget extended", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.updateStatus("goal-test", "closed", "all done");
+      const before = repo.requireSession("goal-test");
+      expect(before.status).toBe("closed");
+      expect(before.closedAt).not.toBeNull();
+      const after = repo.reopenSession("goal-test", {
+        extendIterations: 3,
+        extendReviewCycles: 2,
+        extendReruns: 1,
+      });
+      expect(after.status).toBe("open");
+      expect(after.closedAt).toBeNull();
+      expect(after.closeSummary).toBeNull();
+      expect(after.maxIterations).toBe(before.maxIterations + 3);
+      expect(after.maxReviewCycles).toBe(before.maxReviewCycles + 2);
+      expect(after.maxReruns).toBe(before.maxReruns + 1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reopens a budget_exhausted goal", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.updateStatus("goal-test", "budget_exhausted", "out of budget");
+      expect(repo.reopenSession("goal-test").status).toBe("open");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("refuses to reopen a cancelled goal (deliberate abandon)", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.updateStatus("goal-test", "cancelled", "abandoned");
+      expect(() => repo.reopenSession("goal-test")).toThrow(/not a reopenable/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("refuses to reopen a live (open) goal", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      expect(() => repo.reopenSession("goal-test")).toThrow(/not a reopenable/);
+    } finally {
+      db.close();
+    }
+  });
+});

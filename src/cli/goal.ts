@@ -262,6 +262,37 @@ export function registerGoalCommands(
       });
     });
 
+  goalCmd
+    .command("reopen")
+    .description(
+      "reopen a terminal goal (closed/budget_exhausted/escalated/diverging) to " +
+        "fix a late finding on the existing branch instead of re-implementing (#76)",
+    )
+    .argument("<goal-id>", "goal id")
+    .requiredOption("--reason <text>", "reopen reason")
+    .option("--extend-iterations <n>", "extend the iteration budget", "3")
+    .option("--extend-review-cycles <n>", "extend the review-cycle budget", "3")
+    .option("--extend-reruns <n>", "extend the rerun budget", "2")
+    .option("--json", "emit JSON", false)
+    .action((goalId: string, raw: Record<string, unknown>) => {
+      withGoalErrorExit(() => {
+        const result = withGoalRepo(opts, ({ repo }) =>
+          repo.reopenSession(goalId, {
+            extendIterations: Number(raw.extendIterations),
+            extendReviewCycles: Number(raw.extendReviewCycles),
+            extendReruns: Number(raw.extendReruns),
+          }),
+        );
+        writeOutput(
+          raw,
+          result,
+          `goal=${result.goalId} status=${result.status} reopened ` +
+            `(budget: iter=${result.maxIterations} review=${result.maxReviewCycles} ` +
+            `rerun=${result.maxReruns}; reason: ${String(raw.reason)})\n`,
+        );
+      });
+    });
+
   const attemptCmd = goalCmd.command("attempt").description("goal attempts");
   attemptCmd
     .command("start")

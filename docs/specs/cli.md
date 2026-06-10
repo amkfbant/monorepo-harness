@@ -259,6 +259,7 @@ harness goal list [--status <status>] [--project <id>] [--repo-id <id>] [--domai
 harness goal status <goal-id> [--json]
 harness goal close <goal-id> --summary <text> [--force] [--json]
 harness goal cancel <goal-id> --reason <text> [--json]
+harness goal reopen <goal-id> --reason <text> [--extend-iterations <n>] [--extend-review-cycles <n>] [--extend-reruns <n>] [--json]
 ```
 
 Finding lifecycle:
@@ -317,6 +318,14 @@ harness goal await-merge [<goal-id>] --repo <path> [--all] [--repo-id <id>] \
 `goal close` は convergence が `close_ready` でない限り `--force` を要求する。
 `check-convergence` は `diverging` / `budget_exhausted` / `escalate` で exit 2。
 MCP 経由の goal close/cancel/scope expansion は confirmation-required。
+
+`goal reopen`（#76）は **terminal な goal**（`closed` / `budget_exhausted` / `escalated` /
+`diverging`）を `open` に戻し、後から判明した finding を**既存ブランチ上で**修正できるようにする
+（PR クローズ＆再実装を避ける）。`updateStatus` が COALESCE で残す terminal マーカー
+（`closed_at` / `close_summary` / `escalation_reason`）を**クリア**し、budget（`max_iterations` /
+`max_review_cycles` / `max_reruns`、既存カラム＝schema 不変）を **延長**するので、
+`budget_exhausted` の goal が再開直後に再枯渇しない。`cancelled`（意図的放棄）は reopen 不可。
+reopen 後は `goal finding add` で finding を記録 → orchestrate が `needs_fix` → coder で修正する。
 
 `goal orchestrate` は goal を terminal 状態（closed / pr_created / merged /
 escalated）まで bounded loop（`--max-steps`、既定 50）で自律駆動する。`--dry-run`
