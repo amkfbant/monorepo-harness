@@ -462,10 +462,14 @@ deliberate, separately-confirmed step (CLI `harness goal orchestrate`). Args:
 `goalId` (required), optional `maxSteps` (1-50, default 20). The target repo is
 resolved **server-side** from the goal's own project/domain via
 `prepareProjectRun` — the tool never accepts a client-supplied repo path. The
-convergence gate permits the driver **exactly when a per-step mutation would be
-permitted** (`needs_fix`+`fix_findings`/`run_close_check`, or
-`continue`+`run_close_check`); `close_ready`, terminal, defer, and classify
-decisions deny it (an operator drives those out of band). Goals with no
+convergence gate permits the driver at **entry** **exactly when a per-step
+mutation would be permitted** (`needs_fix`+`fix_findings`/`run_close_check`, or
+`continue`+`run_close_check`); a `close_ready`, terminal, `defer_followups`, or
+classification decision denies the driver from *starting* (an operator drives
+those out of band). Once started, the orchestrator re-evaluates convergence each
+step and may run `classify`/`defer` steps within its bounded budget — those are
+deterministic harness-side bookkeeping (no LLM-driven state transition) — and
+still halts at `close_ready` without opening a PR. Goals with no
 `projectId`/`domain` are rejected. Each internal coder/review step re-checks its
 own convergence gate. Adding this tool requires a `serve` restart to take
 effect.

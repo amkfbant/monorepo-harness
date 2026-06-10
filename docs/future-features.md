@@ -618,3 +618,17 @@ auto-merge sensitivity map（§5、confirm 階層と概念が近い）、安全�
 reopen したか」を追えない）。lifecycle 変化自体は status で見えるが、dangerous 操作の監査としては
 弱い。`goal_decisions`（`listDecisions` が読む層）に reopen 行を 1 件記録するか、reason を
 退避してから NULL クリアするのを follow-up とする。MCP 露出時の confirmation 要否も併せて判断。
+
+## orchestrator が project profile の compiled policy を coder に thread しない（#83 review P2）
+
+`createOrchestratorRunners` の coder runner（`src/goal/orchestrator-runners.ts`）は
+`runDomainCoding` に `compiledPolicy` / `project` を渡さず、`workflow-runner` 側の
+フォールバック（`policies/<repoId>.yaml` を読む）に委ねている。project profile から
+コンパイルした scope（テンプレ default / placeholder 込み）と raw repo policy が乖離
+しうる点が、commit `3a1d824`「verify-guarded uses the compiled policy scope」と同種の
+懸念。`OrchestratorRunnerDeps` に compiled policy を通す口が無く、**出荷済みの CLI
+`goal orchestrate` / `classify --then-rerun` も同一挙動**であり、`harness.goal.orchestrate`
+（#83）が新規導入した回帰ではない。事後 `git diff` ベースの policy 検証自体は機能する
+（最終判定は変わらず git diff）が、project-scoped goal では guardrail のスコープが
+raw repo policy になる。follow-up: `OrchestratorRunnerDeps` に `compiledPolicy` を追加し
+coder / closeAndPr に thread する（CLI と MCP 共通の独立改善）。S7 のブロッカーにはしない。
