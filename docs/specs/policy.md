@@ -13,6 +13,12 @@
 の入力としては手書き policy と区別なく扱われる。生成元の provenance はサイドカー
 `policies/repos/<repo-id>.generated.json` に持つ。詳細は [`project.md`](./project.md)。
 
+既存 profile から **policy ファイルを直接 materialize** するには
+`harness policy compile --project <id>`（#78）を使う: `policies/repos/<repoId>.yaml`
+（`goal orchestrate` が repoId モードで読むファイル）を生成し、`policies/global.yaml`
+不在時はそれも scaffold する（不在 ENOENT 回避）。既存ファイルは `--force` 必須。生成
+YAML 先頭に provenance ヘッダ（コメント＝loader は無視）が付く。DB は変更しない。
+
 ## グロブの大原則
 
 すべてのパターンは [minimatch](https://github.com/isaacs/minimatch) で `{ dot: true, nocomment: true }` 評価される。**gitignore ではない**。詳細と落とし穴は [`docs/policy-semantics.md`](../policy-semantics.md)。

@@ -122,6 +122,26 @@ harness project edit <project-id> [--actor <actor>] [--reason <text>]
 profile を compile して実行する。生成 policy は既存 `RepoPolicySchema` をそのまま
 満たすため、`harness run --repo-id <id>` でも同じ policy を使える（後方互換）。
 
+## `harness policy`
+
+DB-canonical policy snapshot 操作（Phase 17）に加え、profile → policy ファイルの
+materialize（#78）。
+
+```bash
+harness policy compile --project <id> [--out <path>] [--force] [--json]
+harness policy snapshot --project <id> [--domain <id>] [--json]
+harness policy export --project <id> --out <path> [--domain <id>] [--json]
+```
+
+| サブコマンド | 動作 |
+|--------------|------|
+| `compile` | profile を compile し、`goal orchestrate` が **repoId モードで読む** `policies/repos/<repoId>.yaml` を生成（`--out` で出力先上書き）。`policies/global.yaml` が**不在なら併せて scaffold**（不在 ENOENT 回避、#78）。既存ファイルは `--force` 必須＝誤上書き防止。生成 YAML 先頭に provenance ヘッダ（手編集非推奨）。**DB は変更しない**（snapshot 行は記録しない＝`policy snapshot` を使う）。`warnings` を stderr に surface |
+| `snapshot` | effective policy snapshot を DB（`effective_policy_snapshots`）に materialize |
+| `export` | DB-current snapshot の YAML を path へ書き出す |
+
+`harness policy compile` は、手書き profile しかない repo で `goal orchestrate` が
+`ENOENT policies/repos/<repoId>.yaml` で escalate するセットアップの落とし穴（#78）を解消する。
+
 ### Exit code
 
 - `0`: 成功（`check` は `ok` / `warn`）
