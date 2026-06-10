@@ -1,4 +1,5 @@
 import { mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 /**
@@ -49,7 +50,9 @@ function hasCode(e: unknown, code: string): boolean {
  * from the real operation with their own message.
  */
 export function isSymlinkCapable(dir: string, fs: SymlinkProbeFs = realFs): boolean {
-  const probeDir = join(dir, ".harness-symlink-probe");
+  // unique per-call name so concurrent probes (multi-agent runs sharing a
+  // workspacesDir) never collide on EEXIST or rm each other's probe dir
+  const probeDir = join(dir, `.harness-symlink-probe-${process.pid}-${randomUUID()}`);
   try {
     fs.mkdirSync(probeDir, { recursive: true });
     fs.symlinkSync("probe-target", join(probeDir, "link"));
