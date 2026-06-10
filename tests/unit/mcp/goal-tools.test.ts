@@ -876,6 +876,27 @@ describe("goal.start repoId → projectId derivation (#81)", () => {
     expect(denied.data.reason).toBe("project_not_allowed");
   });
 
+  it("denies when repoId resolves to a single project that is NOT in allowedProjects (re-validated, fail-closed)", async () => {
+    const root = freshRoot();
+    withDb(root, (db) => seedProject(db, "demo3", "lonely-repo"));
+    // client is scoped to "demo" only; the derived "demo3" must still be denied
+    const s = server(root, {
+      ...mutationConfig(["goal.start"]),
+      allowedProjects: ["demo"],
+    });
+    const denied = await callTool(s, "harness.goal.start", {
+      title: "derived-but-not-allowed",
+      repoId: "lonely-repo",
+      domain: "goal",
+      idempotencyKey: "goal-derive-not-allowed",
+    });
+    expect(denied.status).toBe("permission_denied");
+    expect(denied.data.reason).toBe("project_not_allowed");
+    // derived projectId is present (not unset) → not-allowed variant
+    expect(denied.summary).toContain("project_not_allowed");
+    expect(denied.data.projectId).toBe("demo3");
+  });
+
   it("does not require derivation when allowedProjects is empty (repoId-only is allowed)", async () => {
     const root = freshRoot();
     const s = server(root, {
