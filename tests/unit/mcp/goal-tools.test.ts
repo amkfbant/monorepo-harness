@@ -814,3 +814,81 @@ describe("MCP goal tools", () => {
     expect(result.summary).toContain("goal project does not match run project");
   });
 });
+
+function seedProject(
+  db: ReturnType<typeof openDb>,
+  projectId: string,
+  repoId: string,
+): void {
+  db.prepare(
+    `INSERT INTO projects (project_id, repo_id, created_at, updated_at)
+     VALUES (?, ?, '2026-06-11T00:00:00Z', '2026-06-11T00:00:00Z')`,
+  ).run(projectId, repoId);
+}
+
+function goalProjectId(root: string, goalId: string): string | null {
+  let pid: string | null = null;
+  withDb(root, (db) => {
+    pid = (
+      db
+        .prepare("SELECT project_id FROM goal_sessions WHERE goal_id = ?")
+        .get(goalId) as { project_id: string | null }
+    ).project_id;
+  });
+  return pid;
+}
+
+describe("goal.start repoId → projectId derivation (#81)", () => {
+  it("derives an unambiguous projectId from repoId and persists it", async () => {
+    const root = freshRoot();
+    withDb(root, (db) => seedProject(db, "demo", "demo-repo"));
+    const s = server(root, mutationConfig(["goal.start"]));
+    const started = await callTool(s, "harness.goal.start", {
+      title: "repoId only",
+      repoId: "demo-repo", // no projectId — must be derived
+      domain: "goal",
+      closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+      idempotencyKey: "goal-derive-ok",
+    });
+    expect(started.status).toBe("operation_started");
+    const goalId = started.data.result.goalId as string;
+    expect(goalProjectId(root, goalId)).toBe("demo");
+  });
+
+  it("does NOT derive an ambiguous repoId (two projects) — denies with the actionable message", async () => {
+    const root = freshRoot();
+    withDb(root, (db) => {
+      seedProject(db, "demo", "shared-repo");
+      seedProject(db, "demo2", "shared-repo");
+    });
+    const s = server(root, {
+      ...mutationConfig(["goal.start"]),
+      allowedProjects: ["demo", "demo2"],
+    });
+    const denied = await callTool(s, "harness.goal.start", {
+      title: "ambiguous repo",
+      repoId: "shared-repo",
+      domain: "goal",
+      idempotencyKey: "goal-derive-ambiguous",
+    });
+    expect(denied.status).toBe("permission_denied");
+    expect(denied.summary).toMatch(/projectId is required/i);
+    expect(denied.data.reason).toBe("project_not_allowed");
+  });
+
+  it("does not require derivation when allowedProjects is empty (repoId-only is allowed)", async () => {
+    const root = freshRoot();
+    const s = server(root, {
+      ...mutationConfig(["goal.start"]),
+      allowedProjects: [],
+    });
+    const started = await callTool(s, "harness.goal.start", {
+      title: "unscoped client",
+      repoId: "demo-repo",
+      domain: "goal",
+      closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+      idempotencyKey: "goal-derive-unscoped",
+    });
+    expect(started.status).toBe("operation_started");
+  });
+});

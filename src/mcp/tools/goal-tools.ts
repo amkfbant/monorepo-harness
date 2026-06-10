@@ -265,11 +265,44 @@ export function goalDecisionsTool(
   }) as HarnessMcpToolResult;
 }
 
+/**
+ * (#81) Derive a projectId from a repoId when the goal omits projectId but the
+ * client is project-scoped. Only an UNAMBIGUOUS mapping (exactly one project for
+ * the repoId) is derived; 0 or >1 matches return undefined so the caller falls
+ * through to the actionable `ensureProjectVisible` denial — fail-closed, never
+ * guess a project. A missing DB also yields undefined (withReadonlyDb returns a
+ * tool result, not a string).
+ */
+function deriveProjectIdFromRepo(
+  context: McpToolContext,
+  repoId: string,
+): string | undefined {
+  const result = withReadonlyDb(context, ({ db }) => {
+    const rows = db
+      .prepare("SELECT project_id FROM projects WHERE repo_id = ?")
+      .all(repoId) as Array<{ project_id: string }>;
+    return rows.length === 1 ? rows[0]!.project_id : undefined;
+  });
+  return typeof result === "string" ? result : undefined;
+}
+
 export async function goalStartTool(
   args: GoalStartArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
-  const visible = ensureProjectVisible(context.config, args.projectId);
+  // (#81) When the client is project-scoped but the goal only carries a repoId,
+  // derive the projectId from an unambiguous repo→project mapping before the
+  // visibility gate, so a repoId-only goal.start is not rejected for a missing
+  // projectId it could have inferred. Ambiguous/unknown repos are NOT derived.
+  let effectiveProjectId = args.projectId;
+  if (
+    effectiveProjectId === undefined &&
+    args.repoId !== undefined &&
+    context.config.allowedProjects.length > 0
+  ) {
+    effectiveProjectId = deriveProjectIdFromRepo(context, args.repoId);
+  }
+  const visible = ensureProjectVisible(context.config, effectiveProjectId);
   if (visible !== null) return visible;
   const goalId = args.goalId ?? goalIdForIdempotencyKey(args.idempotencyKey);
   return runGoalOperation(context, {
@@ -282,7 +315,7 @@ export async function goalStartTool(
         goalId,
         title: args.title,
         ...(args.description !== undefined ? { description: args.description } : {}),
-        ...(args.projectId !== undefined ? { projectId: args.projectId } : {}),
+        ...(effectiveProjectId !== undefined ? { projectId: effectiveProjectId } : {}),
         ...(args.repoId !== undefined ? { repoId: args.repoId } : {}),
         ...(args.domain !== undefined ? { domain: args.domain } : {}),
         ...(args.backlogItemId !== undefined

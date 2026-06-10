@@ -214,6 +214,17 @@ The permission engine normalizes MCP tool names by stripping the `harness.`
 prefix. `harness.pr.create` is checked as operation `pr.create`. Exact matches
 are used unless a future spec explicitly adds wildcards.
 
+Project visibility (`project_not_allowed`): a project-scoped client
+(`allowedProjects` non-empty) must target a `projectId` in that set. The denial
+distinguishes two causes (#81): an **unset** projectId returns a
+`projectId is required …` summary listing `allowedProjects`, while a
+**present-but-not-allowed** projectId keeps the `project_not_allowed` summary;
+both carry `reason: "project_not_allowed"`, `allowedProjects`, and an actionable
+`hint`. `harness.goal.start` additionally **derives** the projectId from a
+supplied `repoId` when the repo maps to exactly one project — an ambiguous (0 or
+>1) mapping is never guessed (fail-closed) and falls through to the
+`projectId is required` denial. A derived projectId is persisted on the goal.
+
 `requireConfirmation` is not an execution allowlist. A dangerous operation that
 appears only in `requireConfirmation` may create a preview and pending
 confirmation request, but cannot execute until out-of-band confirmation reruns
