@@ -503,7 +503,7 @@ harness workspace verify-pr  <number> [--repo <path>] [--remote origin] [--rm] [
 - **`recover <agent>`** — workspace 状態を**再構成**して**決定論的な next-steps** を提示。**正本**は inspect（git）＋ linked goal の `ConvergenceService` 判定（decision / next-action）から再構成し、最新 checkpoint の narrative は**文脈として**重ねるだけ（next-steps は git+goal シグナルのみから導出し、note は根拠にしない＝§0 非対称）。next-steps 例: dirty→commit/stash、ahead→push/PR、behind→integrate、goal `needs_fix`→coder、`close_ready`→close、dangling goal→re-link。クラッシュ/再開した LLM が「保存した理解を信じる」のでなく決定論的に真を取り戻すための復旧コマンド。`--json` で構造化出力。
 - **`remove <agent>`** — worktree とブランチを削除し、DB index 行も掃除（stale 行のみでも掃除可・checkpoint は FK cascade で消える）。未コミット変更があると **`--force` 無しでは拒否**（作業を黙って捨てない fail-closed）。`--keep-branch` でブランチを残す。
 - **`--repo`** 既定はカレントディレクトリ。**`--dir`** 既定は `<repo>.agents/`（repo の sibling）。
-- `run` 内部の worktree（`workspaces/<runId>/repo/`・codex 実行用・detached）とは別レイヤー。並行運用の安全モデルは [`workflow.md`](./workflow.md) の concurrency 節を参照。
+- `run` 内部の worktree（`workspaces/<runId>/repo/`・codex 実行用・`harness/<runId>/<domain>` ブランチを占有）とは別レイヤー。並行運用の安全モデルは [`workflow.md`](./workflow.md) の concurrency 節を参照。run worktree がブランチを占有するため、その PR を別 checkout で検証するときは `harness workspace verify-pr <n>`（detached）を使う（#82）。
 - **MCP**: `list`（DB index coordination view）/ `status`・`inspect`・`conflicts`・`recover`（git-inclusive read）/ `checkpoint`（advisory mutation）は MCP tool でも提供（[`mcp.md`](./mcp.md)）。git の**破壊的**操作を要する `create` / `remove` は現状 CLI 専用。
 
 > **使い方（multi-agent 運用）**: ターミナルごとに `harness workspace create <agent>` で隔離 worktree を切り、表示された `HARNESS_ROOT` を全エージェントで共有する。これで「素手 git の共有作業ツリー衝突」を避けつつ、ハーネスの domain ロック / goal / knowledge を協調できる。

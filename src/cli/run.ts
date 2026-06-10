@@ -3611,8 +3611,10 @@ workspaceCmd
       }
       // GitHub exposes a PR head at refs/pull/<n>/head on the origin remote.
       const remote = String(raw.remote ?? "origin");
+      // `--` stops git option parsing so a `--remote=--upload-pack=…` value is
+      // treated as a remote name, not a git flag (argument-injection surface).
       const fetched = await gitCli(
-        ["fetch", remote, `pull/${number}/head`],
+        ["fetch", "--", remote, `pull/${number}/head`],
         { cwd: repoPath },
       );
       if (fetched.exitCode !== 0) {

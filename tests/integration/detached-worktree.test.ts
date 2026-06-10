@@ -1,12 +1,20 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createDetachedWorktree,
   removeDetachedWorktree,
 } from "../../src/workspace/git-worktree.js";
+
+// track + remove every temp repo so this integration test does not leak TMPDIR
+const tempRepos: string[] = [];
+afterEach(() => {
+  for (const r of tempRepos.splice(0)) {
+    rmSync(r, { recursive: true, force: true });
+  }
+});
 
 function git(repo: string, args: string[]): string {
   return execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
@@ -22,6 +30,7 @@ function initRepo(dir: string): void {
 /** A repo whose `pull/1/head` ref points at a feature commit (like a GitHub PR). */
 function setupRepoWithPrRef(): { repo: string; prSha: string } {
   const repo = mkdtempSync(join(tmpdir(), "harness-detached-"));
+  tempRepos.push(repo);
   initRepo(repo);
   execFileSync("git", ["commit", "-q", "--allow-empty", "-m", "base"], {
     cwd: repo,
