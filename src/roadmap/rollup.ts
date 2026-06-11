@@ -1,6 +1,8 @@
 import type Database from "better-sqlite3";
+import { ConvergenceService } from "../hitch/convergence.js";
 import { HitchRepository } from "../hitch/repository.js";
 import { PhaseRepository } from "./phase-repository.js";
+import { derivePhaseReadiness } from "./ready-to-close.js";
 import type { PhaseStatus } from "./types.js";
 
 export interface PhaseRollup {
@@ -12,6 +14,7 @@ export interface PhaseRollup {
   derivedOpenP1: number;
   depth: number;
   latestDecision: string | null;
+  readyToClose: boolean;
 }
 
 export interface CourseRollup {
@@ -72,6 +75,7 @@ export function rollupCourse(opts: {
 }): CourseRollup {
   const phases = new PhaseRepository(opts.db);
   const hitches = new HitchRepository(opts.db);
+  const convergence = new ConvergenceService(new HitchRepository(opts.db));
   const tree = phases.tree(opts.courseId);
   const allPhases = phases.listForCourse(opts.courseId);
   const flat: PhaseRollup[] = [];
@@ -96,6 +100,9 @@ export function rollupCourse(opts: {
         p0 += c.p0;
         p1 += c.p1;
       }
+      const hitchConvergences = hitchIds.map((hitchId) =>
+        convergence.evaluate(hitchId),
+      );
       counts[n.phase.status] += 1;
       totalP0 += p0;
       totalP1 += p1;
@@ -108,6 +115,11 @@ export function rollupCourse(opts: {
         derivedOpenP1: p1,
         depth,
         latestDecision: latestDecisionForPhase(hitches, hitchIds),
+        readyToClose: derivePhaseReadiness({
+          hitchConvergences,
+          derivedOpenP0: p0,
+          derivedOpenP1: p1,
+        }),
       });
       walk(n.children, depth + 1);
     }

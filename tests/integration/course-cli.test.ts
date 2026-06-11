@@ -97,6 +97,13 @@ describe("course/phase CLI (SP-1)", () => {
     // child has depth 1
     const child = status.phases.find((p) => p.title === "Phase Beta (child)")!;
     expect(child.depth).toBe(1);
+
+    const humanStatus = runCli(root, ["course", "status", course.courseId]);
+    expect(humanStatus.code).toBe(0);
+    const parentLine = humanStatus.out
+      .split("\n")
+      .find((line) => line.includes(`phase=${parentPhase.phaseId}`));
+    expect(parentLine).toContain("readyToClose=false");
   });
 
   it("phase link-hitch links a seeded hitch and phase show reflects it", () => {

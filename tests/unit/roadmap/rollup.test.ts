@@ -4,6 +4,8 @@ import { runMigrations } from "../../../src/db/migrations.js";
 import { CourseRepository } from "../../../src/roadmap/course-repository.js";
 import { PhaseRepository } from "../../../src/roadmap/phase-repository.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
+import { ConvergenceService } from "../../../src/hitch/convergence.js";
+import { DEFAULT_HITCH_POLICY } from "../../../src/hitch/types.js";
 import { rollupCourse } from "../../../src/roadmap/rollup.js";
 import {
   recordConvergenceDecisionWithStatus,
@@ -82,6 +84,155 @@ describe("rollupCourse (SP-1)", () => {
     const rollup = rollupCourse({ db: conn, courseId: c.courseId });
     expect(rollup.phases[0]!.latestDecision).toBe("needs_fix");
   });
+
+  it("marks a phase readyToClose when its hitch evaluates close_ready with no open P0/P1", () => {
+    const courses = new CourseRepository(conn);
+    const phases = new PhaseRepository(conn);
+    const hitches = new HitchRepository(conn);
+    const c = courses.create({ title: "C-ready", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P-ready", createdBy: "t", createdSource: "cli" });
+    const h = hitches.createSession({
+      title: "H-ready",
+      projectId: "demo",
+      scope: {},
+      closeConditions: [{
+        id: "no-blockers",
+        kind: "finding_policy",
+        required: true,
+        rule: { maxOpenInScopeP0: 0, maxOpenInScopeP1: 0, maxOpenUnknownScope: 0 },
+      }],
+      createdBy: "t",
+      createdSource: "cli",
+    });
+    phases.linkHitch(p.phaseId, h.hitchId);
+
+    const rollup = rollupCourse({ db: conn, courseId: c.courseId });
+    expect(rollup.phases[0]!.readyToClose).toBe(true);
+  });
+
+  it("marks a phase not readyToClose when its hitch still needs fixes", () => {
+    const courses = new CourseRepository(conn);
+    const phases = new PhaseRepository(conn);
+    const hitches = new HitchRepository(conn);
+    const c = courses.create({ title: "C-needs-fix", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P-needs-fix", createdBy: "t", createdSource: "cli" });
+    const h = hitches.createSession({
+      title: "H-needs-fix",
+      projectId: "demo",
+      scope: {},
+      closeConditions: [{
+        id: "no-blockers",
+        kind: "finding_policy",
+        required: true,
+        rule: { maxOpenInScopeP0: 0, maxOpenInScopeP1: 0, maxOpenUnknownScope: 0 },
+      }],
+      createdBy: "t",
+      createdSource: "cli",
+    });
+    phases.linkHitch(p.phaseId, h.hitchId);
+    hitches.upsertFinding({
+      hitchId: h.hitchId,
+      severity: "P1",
+      source: "human",
+      category: "correctness",
+      summary: "bug",
+      scopeStatus: "in_scope",
+    });
+
+    const rollup = rollupCourse({ db: conn, courseId: c.courseId });
+    expect(rollup.phases[0]!.readyToClose).toBe(false);
+  });
+
+  it.each([
+    ["close_ready", "open"],
+    ["closed", "reopened"],
+  ] as const)(
+    "keeps readyToClose false when hitch convergence is %s but DB has a %s in-scope P1",
+    (targetDecision, findingLifecycle) => {
+      const courses = new CourseRepository(conn);
+      const phases = new PhaseRepository(conn);
+      const hitches = new HitchRepository(conn);
+      const c = courses.create({
+        title: `C-${targetDecision}-${findingLifecycle}`,
+        projectId: "demo",
+        createdBy: "t",
+        createdSource: "cli",
+      });
+      const p = phases.add({
+        courseId: c.courseId,
+        title: `P-${targetDecision}-${findingLifecycle}`,
+        createdBy: "t",
+        createdSource: "cli",
+      });
+      const h = hitches.createSession({
+        title: `H-${targetDecision}-${findingLifecycle}`,
+        projectId: "demo",
+        scope: {},
+        closeConditions: [
+          {
+            id: "manual-pass",
+            kind: "manual",
+            required: true,
+          },
+        ],
+        policy: {
+          ...DEFAULT_HITCH_POLICY,
+          closeRequires: {
+            ...DEFAULT_HITCH_POLICY.closeRequires,
+            noOpenInScopeP1: false,
+          },
+        },
+        createdBy: "t",
+        createdSource: "cli",
+      });
+      phases.linkHitch(p.phaseId, h.hitchId);
+      hitches.upsertFinding({
+        hitchId: h.hitchId,
+        severity: "P1",
+        source: "human",
+        category: "correctness",
+        summary: "live blocker",
+        scopeStatus: "in_scope",
+        seenAt: "2026-01-01T00:00:00.000Z",
+      });
+      if (findingLifecycle === "reopened") {
+        const findings = hitches.listFindings({ hitchId: h.hitchId, limit: 10 });
+        expect(findings.length).toBeGreaterThanOrEqual(1);
+        hitches.markFindingFixed({
+          findingId: findings[0]!.findingId,
+          fixedAt: "2026-01-01T00:00:01.000Z",
+        });
+        hitches.upsertFinding({
+          hitchId: h.hitchId,
+          severity: "P1",
+          source: "human",
+          category: "correctness",
+          summary: "live blocker",
+          scopeStatus: "in_scope",
+          seenAt: "2026-01-01T00:00:02.000Z",
+        });
+      }
+      if (targetDecision === "closed") {
+        hitches.updateStatus(h.hitchId, "closed", "declared closed");
+      } else {
+        hitches.recordCloseCheck({
+          hitchId: h.hitchId,
+          conditionId: "manual-pass",
+          status: "passed",
+          checkedAt: "2026-01-01T00:00:03.000Z",
+          checkedBy: "t",
+        });
+      }
+
+      expect(new ConvergenceService(hitches).evaluate(h.hitchId).decision).toBe(
+        targetDecision,
+      );
+      const rollup = rollupCourse({ db: conn, courseId: c.courseId });
+      const node = rollup.phases[0]!;
+      expect(node.derivedOpenP1).toBeGreaterThanOrEqual(1);
+      expect(node.readyToClose).toBe(false);
+    },
+  );
 
   it("counts reopened in-scope P1 findings (P0 fix: reopened must not be silently dropped)", () => {
     // Regression for SP-1 codex P0: rollup previously only counted lifecycleStatus='open',

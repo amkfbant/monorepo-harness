@@ -203,6 +203,7 @@ export function registerCourseCommands(
             lines.push(
               `${indent}phase=${p.phaseId} title=${JSON.stringify(p.title)} status=${p.declaredStatus}` +
                 ` openP0=${p.derivedOpenP0} openP1=${p.derivedOpenP1}` +
+                ` readyToClose=${p.readyToClose}` +
                 (p.latestDecision !== null ? ` decision=${p.latestDecision}` : ""),
             );
           }
