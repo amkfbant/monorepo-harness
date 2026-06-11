@@ -113,6 +113,7 @@ import {
   courseCreateTool,
   courseGetTool,
   courseListTool,
+  courseOrchestrateTool,
   courseStatusTool,
   phaseAddTool,
   phaseGetTool,
@@ -1946,6 +1947,35 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       ["title", "idempotencyKey"],
     ),
     handler: courseCreateTool,
+  }),
+  define({
+    name: "harness.course.orchestrate",
+    title: "Orchestrate course",
+    description:
+      "Drive linked hitches in roadmap phase order and advance course phase status. " +
+      "Stops at hitch close-ready and never opens PRs or closes hitches.",
+    kind: "mutation",
+    operation: "course.orchestrate",
+    argsSchema: z
+      .object({
+        courseId: z.string().min(1),
+        maxDrivenHitches: z.number().int().min(1).optional(),
+        maxStepsPerHitch: z.number().int().min(1).optional(),
+      })
+      .merge(MutationArgsBaseSchema)
+      .strict(),
+    resolveProjectIdForPermission: resolveCourseProjectId,
+    inputSchema: objectSchema(
+      {
+        courseId: { type: "string", description: "Course id" },
+        maxDrivenHitches: { type: "number" },
+        maxStepsPerHitch: { type: "number" },
+        idempotencyKey: { type: "string", description: "Required idempotency key for mutation tools" },
+        actorNote: { type: "string" },
+      },
+      ["courseId", "idempotencyKey"],
+    ),
+    handler: courseOrchestrateTool,
   }),
   define({
     name: "harness.phase.add",

@@ -108,7 +108,7 @@ npm run harness -- <args>   # 開発時の CLI 起動（tsx 経由、HARNESS_ROO
 | [`docs/specs/mcp.md`](./docs/specs/mcp.md) | MCP server（tools/resources/permission/confirmation） | MCP を触る前 |
 | [`docs/specs/dashboard.md`](./docs/specs/dashboard.md) | dashboard（read-only API + mutation API） | dashboard を触る前 |
 | [`docs/specs/hitch-convergence.md`](./docs/specs/hitch-convergence.md) | hitch convergence controller の仕様 | hitch 内部を触る前 |
-| [`docs/specs/roadmap.md`](./docs/specs/roadmap.md) | course → phase ロードマップ層（SP-1）のデータモデル・API・ロールアップ仕様 | course/phase を触る前 |
+| [`docs/specs/roadmap.md`](./docs/specs/roadmap.md) | course → phase ロードマップ層（SP-1/SP-2）のデータモデル・API・ロールアップ・orchestrate 仕様 | course/phase を触る前 |
 | [`docs/specs/workspace.md`](./docs/specs/workspace.md) | agent workspaces（per-agent worktree / checkpoint / 並行安全モデル） | workspace を触る/使う前 |
 | [`docs/specs/project.md`](./docs/specs/project.md) | Project Abstraction 層 | project profile を触る前 |
 | [`docs/future-features.md`](./docs/future-features.md) | 将来 feature（スコープ外の保留事項） | スコープ外を見つけたとき |

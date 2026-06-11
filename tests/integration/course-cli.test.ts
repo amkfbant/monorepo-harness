@@ -1,21 +1,28 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { openDb } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
+import { CourseRepository } from "../../src/roadmap/course-repository.js";
 import { HitchRepository } from "../../src/hitch/repository.js";
+import { PhaseRepository } from "../../src/roadmap/phase-repository.js";
 
 const CLI = join(process.cwd(), "src/cli/run.ts");
 
-function runCli(root: string, args: string[]): { out: string; code: number } {
+function runCli(
+  root: string,
+  args: string[],
+  extraEnv: NodeJS.ProcessEnv = {},
+): { out: string; code: number } {
   try {
     const out = execFileSync("node", ["--import", "tsx", CLI, ...args], {
       env: {
         ...process.env,
         HARNESS_ROOT: root,
         HARNESS_SUPPRESS_EXPORT_MODE_WARNING: "1",
+        ...extraEnv,
       },
     }).toString();
     return { out, code: 0 };
@@ -34,12 +41,481 @@ function setup(): { root: string } {
   return { root };
 }
 
+function setupRepo(): string {
+  const repo = mkdtempSync(join(tmpdir(), "harness-course-cli-repo-"));
+  const git = (args: string[]) =>
+    execFileSync("git", args, { cwd: repo, stdio: "ignore" });
+  git(["init", "-q", "-b", "main"]);
+  git(["config", "user.email", "t@example.invalid"]);
+  git(["config", "user.name", "Test"]);
+  mkdirSync(join(repo, "apps/user/src"), { recursive: true });
+  writeFileSync(join(repo, "apps/user/src/profile.ts"), "export const x = 0;\n");
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "target" }));
+  git(["add", "."]);
+  git(["commit", "-qm", "init"]);
+  return repo;
+}
+
+function setupProjectHarness(root: string, repoPath: string): void {
+  cpSync(join(process.cwd(), "templates"), join(root, "templates"), {
+    recursive: true,
+  });
+  mkdirSync(join(root, "projects"), { recursive: true });
+  writeFileSync(
+    join(root, "projects", "demo.yaml"),
+    [
+      "version: 1",
+      "project_id: demo",
+      "repo:",
+      "  id: t",
+      `  path: ${repoPath}`,
+      "  package_manager: npm",
+      "policy:",
+      "  template: strict-monorepo-v1",
+      "domains:",
+      "  - id: apps/user",
+      "    root: apps/user",
+      "    kind: app",
+      "",
+    ].join("\n"),
+  );
+}
+
+function writeFakeCodexBin(): string {
+  const dir = mkdtempSync(join(tmpdir(), "harness-course-cli-fake-codex-"));
+  const bin = join(dir, "codex");
+  writeFileSync(
+    bin,
+    [
+      "#!/bin/sh",
+      "cat > /dev/null",
+      "case \"$*\" in",
+      "  *read-only*)",
+      "    cat <<'YAML'",
+      "decision: approved",
+      "required_changes: []",
+      "non_blocking_comments: []",
+      "out_of_scope_suggestions: []",
+      "YAML",
+      "    ;;",
+      "  *)",
+      "    echo 'export const x = 1;' > apps/user/src/profile.ts",
+      "    echo 'fake codex done'",
+      "    ;;",
+      "esac",
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
+  execFileSync("chmod", ["+x", bin]);
+  return bin;
+}
+
 function json<T>(result: { out: string; code: number }): T {
   expect(result.code, `expected exit 0, got:\n${result.out}`).toBe(0);
   return JSON.parse(result.out) as T;
 }
 
+function withSeedDb(root: string, seed: (db: ReturnType<typeof openDb>) => void): void {
+  const db = openDb(join(root, ".harness", "harness.sqlite"));
+  try {
+    runMigrations(db);
+    seed(db);
+  } finally {
+    db.close();
+  }
+}
+
+function seedDrivableHitch(
+  db: ReturnType<typeof openDb>,
+  hitchId: string,
+  opts: { projectId?: string; domain?: string } = {},
+): void {
+  const hitches = new HitchRepository(db);
+  hitches.createSession({
+    hitchId,
+    title: hitchId,
+    projectId: opts.projectId ?? "demo",
+    domain: opts.domain ?? "app",
+    scope: {},
+    closeConditions: [],
+    createdBy: "test",
+    createdSource: "cli",
+  });
+  hitches.upsertFinding({
+    hitchId,
+    severity: "P1",
+    source: "human",
+    category: "correctness",
+    summary: "needs fix",
+    scopeStatus: "in_scope",
+  });
+}
+
+function seedBlockedHitch(db: ReturnType<typeof openDb>, hitchId: string): void {
+  const hitches = new HitchRepository(db);
+  hitches.createSession({
+    hitchId,
+    title: hitchId,
+    scope: {},
+    closeConditions: [],
+    createdBy: "test",
+    createdSource: "cli",
+  });
+  hitches.upsertFinding({
+    hitchId,
+    severity: "P0",
+    source: "human",
+    category: "correctness",
+    summary: "block automation",
+    scopeStatus: "in_scope",
+  });
+}
+
 describe("course/phase CLI (SP-1)", () => {
+  it("course orchestrate --dry-run prints phase actions without side effects", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Dry Run Course", "--json"]),
+    );
+    const phase = json<{ phaseId: string }>(
+      runCli(root, [
+        "phase",
+        "add",
+        "--course",
+        course.courseId,
+        "--title",
+        "Pending leaf",
+        "--json",
+      ]),
+    );
+
+    const result = runCli(root, [
+      "course",
+      "orchestrate",
+      course.courseId,
+      "--dry-run",
+      "--json",
+    ]);
+    expect(result.code).toBe(0);
+    const dryRun = JSON.parse(result.out) as {
+      courseId: string;
+      dryRun: boolean;
+      phaseOutcomes: Array<{ phaseId: string; action: string }>;
+    };
+    expect(dryRun.courseId).toBe(course.courseId);
+    expect(dryRun.dryRun).toBe(true);
+    expect(dryRun.phaseOutcomes).toEqual([
+      { phaseId: phase.phaseId, action: "needs_link" },
+    ]);
+
+    const shown = json<{ phase: { phaseId: string; status: string } }>(
+      runCli(root, ["phase", "show", phase.phaseId, "--json"]),
+    );
+    expect(shown.phase.status).toBe("pending");
+  });
+
+  it("course orchestrate --dry-run reflects maxDrivenHitches budget", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Dry Budget Course", "--json"]),
+    );
+    const p1 = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "One", "--json"]),
+    );
+    const p2 = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "Two", "--json"]),
+    );
+    withSeedDb(root, (db) => {
+      const phases = new PhaseRepository(db);
+      seedDrivableHitch(db, "h-one");
+      seedDrivableHitch(db, "h-two");
+      phases.linkHitch(p1.phaseId, "h-one");
+      phases.linkHitch(p2.phaseId, "h-two");
+    });
+
+    const result = runCli(root, [
+      "course",
+      "orchestrate",
+      course.courseId,
+      "--dry-run",
+      "--max-driven-hitches",
+      "1",
+      "--json",
+    ]);
+    expect(result.code).toBe(0);
+    const dryRun = JSON.parse(result.out) as {
+      phaseOutcomes: Array<{ phaseId: string; action: string; note?: string }>;
+      drivenHitches: unknown[];
+    };
+    expect(dryRun.drivenHitches).toEqual([]);
+    expect(new Set(dryRun.phaseOutcomes.map((outcome) => outcome.phaseId))).toEqual(
+      new Set([p1.phaseId, p2.phaseId]),
+    );
+    expect(dryRun.phaseOutcomes.map((outcome) => outcome.action)).toEqual([
+      "drive",
+      "not_driven",
+    ]);
+    expect(dryRun.phaseOutcomes[0]).toEqual(
+      expect.objectContaining({ action: "drive", drivenHitches: [] }),
+    );
+    expect(dryRun.phaseOutcomes[1]).toEqual(
+      expect.objectContaining({
+        action: "not_driven",
+        drivenHitches: [],
+        note: "not_driven",
+      }),
+    );
+  });
+
+  it("course orchestrate --dry-run reflects blocked subtree isolation", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Dry Blocked Course", "--json"]),
+    );
+    const parent = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "Parent", "--json"]),
+    );
+    const child = json<{ phaseId: string }>(
+      runCli(root, [
+        "phase",
+        "add",
+        "--course",
+        course.courseId,
+        "--parent",
+        parent.phaseId,
+        "--title",
+        "Child",
+        "--json",
+      ]),
+    );
+    withSeedDb(root, (db) => {
+      const phases = new PhaseRepository(db);
+      seedBlockedHitch(db, "h-blocked");
+      seedDrivableHitch(db, "h-child");
+      phases.linkHitch(parent.phaseId, "h-blocked");
+      phases.linkHitch(child.phaseId, "h-child");
+    });
+
+    const result = runCli(root, [
+      "course",
+      "orchestrate",
+      course.courseId,
+      "--dry-run",
+      "--json",
+    ]);
+    expect(result.code).toBe(0);
+    const dryRun = JSON.parse(result.out) as {
+      phaseOutcomes: Array<{ phaseId: string; action: string; note?: string }>;
+    };
+    expect(dryRun.phaseOutcomes).toEqual([
+      expect.objectContaining({
+        phaseId: parent.phaseId,
+        action: "blocked_hitch",
+        blockedHitch: expect.objectContaining({ hitchId: "h-blocked" }),
+      }),
+      { phaseId: child.phaseId, action: "blocked_subtree", note: "blocked_subtree" },
+    ]);
+  });
+
+  it("course orchestrate prepares only actually driven hitches", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Lazy Prepare Course", "--json"]),
+    );
+    const parent = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "Parent", "--json"]),
+    );
+    const child = json<{ phaseId: string }>(
+      runCli(root, [
+        "phase",
+        "add",
+        "--course",
+        course.courseId,
+        "--parent",
+        parent.phaseId,
+        "--title",
+        "Child",
+        "--json",
+      ]),
+    );
+    withSeedDb(root, (db) => {
+      const phases = new PhaseRepository(db);
+      const hitches = new HitchRepository(db);
+      seedBlockedHitch(db, "h-blocked");
+      hitches.createSession({
+        hitchId: "h-bad-project",
+        title: "bad project",
+        projectId: "missing-project",
+        domain: "app",
+        scope: {},
+        closeConditions: [],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      hitches.upsertFinding({
+        hitchId: "h-bad-project",
+        severity: "P1",
+        source: "human",
+        category: "correctness",
+        summary: "would need codex if driven",
+        scopeStatus: "in_scope",
+      });
+      phases.linkHitch(parent.phaseId, "h-blocked");
+      phases.linkHitch(child.phaseId, "h-bad-project");
+    });
+
+    const result = runCli(root, ["course", "orchestrate", course.courseId, "--json"]);
+    expect(result.code).toBe(0);
+    const body = JSON.parse(result.out) as {
+      phaseOutcomes: Array<{ phaseId: string; action: string }>;
+    };
+    expect(body.phaseOutcomes).toEqual([
+      expect.objectContaining({ phaseId: parent.phaseId, action: "blocked_hitch" }),
+      { phaseId: child.phaseId, action: "blocked_subtree", note: "blocked_subtree" },
+    ]);
+  });
+
+  it("course orchestrate records project errors with project_error", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Project Error Course", "--json"]),
+    );
+    const phase = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "Needs Project", "--json"]),
+    );
+    withSeedDb(root, (db) => {
+      const phases = new PhaseRepository(db);
+      const hitches = new HitchRepository(db);
+      hitches.createSession({
+        hitchId: "h-missing-project",
+        title: "missing project",
+        projectId: "missing-project",
+        domain: "app",
+        scope: {},
+        closeConditions: [],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      hitches.upsertFinding({
+        hitchId: "h-missing-project",
+        severity: "P1",
+        source: "human",
+        category: "correctness",
+        summary: "needs fix",
+        scopeStatus: "in_scope",
+      });
+      phases.linkHitch(phase.phaseId, "h-missing-project");
+    });
+
+    const result = runCli(root, ["course", "orchestrate", course.courseId]);
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/project/i);
+    withSeedDb(root, (db) => {
+      const row = db
+        .prepare(
+          "SELECT status, error_code FROM operations WHERE operation_type = 'course.orchestrate' ORDER BY created_at DESC LIMIT 1",
+        )
+        .get() as { status: string; error_code: string } | undefined;
+      expect(row).toEqual({ status: "failed", error_code: "project_error" });
+    });
+  });
+
+  it("course orchestrate records budget_exhausted as succeeded while exiting 1", () => {
+    const { root } = setup();
+    const repoPath = setupRepo();
+    setupProjectHarness(root, repoPath);
+    const fakeCodexBin = writeFakeCodexBin();
+    const course = json<{ courseId: string }>(
+      runCli(root, [
+        "course",
+        "create",
+        "--title",
+        "Budget Course",
+        "--project",
+        "demo",
+        "--json",
+      ]),
+    );
+    const p1 = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "One", "--json"]),
+    );
+    const p2 = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "Two", "--json"]),
+    );
+    withSeedDb(root, (db) => {
+      const phases = new PhaseRepository(db);
+      seedDrivableHitch(db, "h-budget-one", { domain: "apps/user" });
+      seedDrivableHitch(db, "h-budget-two", { domain: "apps/user" });
+      phases.linkHitch(p1.phaseId, "h-budget-one");
+      phases.linkHitch(p2.phaseId, "h-budget-two");
+    });
+
+    const result = runCli(
+      root,
+      [
+        "course",
+        "orchestrate",
+        course.courseId,
+        "--max-driven-hitches",
+        "1",
+        "--json",
+      ],
+      { HARNESS_CODEX_BIN: fakeCodexBin },
+    );
+    expect(result.code).toBe(1);
+    const body = JSON.parse(result.out) as {
+      stopReason: string;
+      drivenHitches: Array<{ hitchId: string }>;
+    };
+    expect(body.stopReason).toBe("budget_exhausted");
+    expect(body.drivenHitches).toHaveLength(1);
+    expect(["h-budget-one", "h-budget-two"]).toContain(
+      body.drivenHitches[0]?.hitchId,
+    );
+
+    withSeedDb(root, (db) => {
+      const row = db
+        .prepare(
+          "SELECT status, error_code, result_json FROM operations WHERE operation_type = 'course.orchestrate' ORDER BY created_at DESC LIMIT 1",
+        )
+        .get() as
+        | { status: string; error_code: string | null; result_json: string | null }
+        | undefined;
+      expect(row?.status).toBe("succeeded");
+      expect(row?.error_code).toBeNull();
+      expect(JSON.parse(row?.result_json ?? "{}")).toMatchObject({
+        stopReason: "budget_exhausted",
+      });
+      const lease = db
+        .prepare(
+          "SELECT released_by FROM domain_locks WHERE domain_key = ? ORDER BY lock_id DESC LIMIT 1",
+        )
+        .get(`course:${course.courseId}`) as
+        | { released_by: string | null }
+        | undefined;
+      expect(lease?.released_by).toBe(
+        `course-orchestrate:${course.courseId}`,
+      );
+    });
+  });
+
+  it("course orchestrate on a non-active course exits 1", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Paused Course", "--json"]),
+    );
+    const paths = { dbPath: join(root, ".harness", "harness.sqlite") };
+    const db = openDb(paths.dbPath);
+    runMigrations(db);
+    new CourseRepository(db).setStatus(course.courseId, "paused");
+    db.close();
+
+    const result = runCli(root, ["course", "orchestrate", course.courseId]);
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/not active/i);
+  });
+
   it("creates a course, adds phases (parent/child), and rollup shows phase titles + open P0/P1", () => {
     const { root } = setup();
 
@@ -97,6 +573,13 @@ describe("course/phase CLI (SP-1)", () => {
     // child has depth 1
     const child = status.phases.find((p) => p.title === "Phase Beta (child)")!;
     expect(child.depth).toBe(1);
+
+    const humanStatus = runCli(root, ["course", "status", course.courseId]);
+    expect(humanStatus.code).toBe(0);
+    const parentLine = humanStatus.out
+      .split("\n")
+      .find((line) => line.includes(`phase=${parentPhase.phaseId}`));
+    expect(parentLine).toContain("readyToClose=false");
   });
 
   it("phase link-hitch links a seeded hitch and phase show reflects it", () => {

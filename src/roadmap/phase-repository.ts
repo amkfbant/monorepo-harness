@@ -86,6 +86,25 @@ export class PhaseRepository {
     return this.require(phaseId);
   }
 
+  /**
+   * CAS 遷移: 現在 status が `from` のいずれかのときのみ `to` に更新する。
+   * 遷移できたら true、現在値が `from` 外（または phase 不在）なら false（no-op）。
+   * driver の自動 write が operator の宣言（blocked/closed）を後勝ちで上書きしない
+   * ようにするための lost-update 防止。
+   */
+  transitionStatus(phaseId: string, from: PhaseStatus[], to: PhaseStatus, now?: string): boolean {
+    if (from.length === 0) return false;
+    const placeholders = from.map(() => "?").join(", ");
+    const ts = now ?? new Date().toISOString();
+    const info = this.db
+      .prepare(
+        `UPDATE phases SET status = ?, updated_at = ?
+          WHERE phase_id = ? AND status IN (${placeholders})`,
+      )
+      .run(to, ts, phaseId, ...from);
+    return info.changes > 0;
+  }
+
   /** Link a hitch to a phase. Rejects a project mismatch and a double-link (PK). */
   linkHitch(phaseId: string, hitchId: string, now?: string): void {
     const phase = this.require(phaseId);

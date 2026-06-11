@@ -54,4 +54,34 @@ describe("Course/Phase repositories (SP-1)", () => {
     conn.prepare(`INSERT INTO hitch_sessions (hitch_id,project_id,title,status,scope_json,close_conditions_json,policy_json,max_iterations,max_review_cycles,max_reruns,max_total_new_findings,created_by,created_source,created_at,updated_at) VALUES ('h2','other','H','open','{}','[]','{}',3,3,2,12,'t','cli','t','t')`).run();
     expect(() => phases.linkHitch(p.phaseId, "h2")).toThrow(/project/i);
   });
+
+  it("transitionStatus performs CAS: succeeds only from an allowed prior status", () => {
+    const c = courses.create({ title: "C", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P", createdBy: "t", createdSource: "cli" });
+
+    // pending -> in_progress allowed
+    expect(phases.transitionStatus(p.phaseId, ["pending"], "in_progress")).toBe(true);
+    expect(phases.require(p.phaseId).status).toBe("in_progress");
+
+    // a second pending->in_progress is a no-op (current status is in_progress, not in the from-set)
+    expect(phases.transitionStatus(p.phaseId, ["pending"], "in_progress")).toBe(false);
+    expect(phases.require(p.phaseId).status).toBe("in_progress");
+
+    // operator blocks it; driver's pending->in_progress must NOT override (current=blocked)
+    phases.setStatus(p.phaseId, "blocked");
+    expect(phases.transitionStatus(p.phaseId, ["pending"], "in_progress")).toBe(false);
+    expect(phases.require(p.phaseId).status).toBe("blocked");
+  });
+
+  it("transitionStatus with an empty from-set is a no-op (returns false)", () => {
+    const c = courses.create({ title: "C", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P", createdBy: "t", createdSource: "cli" });
+
+    expect(phases.transitionStatus(p.phaseId, [], "in_progress")).toBe(false);
+    expect(phases.require(p.phaseId).status).toBe("pending");
+  });
+
+  it("transitionStatus returns false for an unknown phase (no throw)", () => {
+    expect(phases.transitionStatus("phase-does-not-exist", ["pending"], "in_progress")).toBe(false);
+  });
 });

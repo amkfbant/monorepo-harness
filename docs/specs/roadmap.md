@@ -1,14 +1,16 @@
-# Course → Phase Roadmap Layer (SP-1)
+# Course → Phase Roadmap Layer (SP-1 / SP-2)
 
 SP-1 adds a `course → phase` DB layer **above** the existing `hitch_*` convergence
 tables. A course is a long-lived initiative (roadmap / program / epic); phases are
 ordered planning nodes under it; hitches (convergence sessions) are loosely linked
 to phases for tracking purposes. This layer is **DB-canonical** and does not replace
-or alter the hitch execution tables.
+or alter the hitch execution tables. SP-2 adds a drive-only `course orchestrate`
+pass on top of the same model.
 
-Implementation: `src/roadmap/` (repositories + rollup), `src/cli/course.ts` (CLI),
-`src/mcp/tools/course-tools.ts` (MCP tools). Schema: `MIGRATION_V21_STATEMENTS`
-(`src/db/schema.ts`, `SCHEMA_VERSION = 21`).
+Implementation: `src/roadmap/` (repositories + rollup + orchestrator),
+`src/cli/course.ts` (CLI), `src/mcp/tools/course-tools.ts` (MCP tools). Schema:
+`MIGRATION_V21_STATEMENTS` (`src/db/schema.ts`, `SCHEMA_VERSION = 21`). SP-2 adds
+no migration.
 
 ## Data Model
 
@@ -117,6 +119,9 @@ For each phase in the tree (pre-order, depth-first):
   a phase "closed" to hide open findings.
 - **`latestDecision`**: the most recent `hitch_convergence_decisions.decision`
   across all linked hitches (latest by `created_at`), or null if none.
+- **`readyToClose`**: derived live by `derivePhaseReadiness`: at least one linked
+  hitch, every linked hitch is `close_ready` or `closed`, and independently
+  aggregated open in-scope P0/P1 counts are both zero. This is not stored.
 - **`depth`**: tree depth (0 = 大 phase).
 
 ### Course totals
@@ -133,6 +138,80 @@ under-reporting open P0/P1. The error message names the course id.
 A cycle cannot be created in normal operation (`phase add` only adds new leaf
 nodes; reparent is not exposed in SP-1). The guard is a defensive invariant.
 
+## SP-2 `course orchestrate`
+
+`course orchestrate` is a bounded, drive-only, single-pass orchestrator over an
+active course's phase tree. It walks the current `rollupCourse` pre-order at most
+once, decides a deterministic action per phase, and drives only already-linked
+hitches that are allowed by the existing hitch convergence gate.
+
+It does **not** spawn hitches, auto-close phases, close hitches, open PRs, merge
+PRs, or persist course orchestration run rows. The production hitch runtime is
+created without a publisher and calls `HitchOrchestrator.run(...,
+stopAtCloseReady: true)`, so a ready hitch stops at `close_ready`.
+
+### Per-phase dispatch
+
+`decideCoursePhaseAction` is a pure function over phase declared status, leaf-ness,
+linked hitch ids with live convergence, and derived open P0/P1 counts:
+
+| Condition | Action |
+|-----------|--------|
+| `declaredStatus = closed` | `skip_closed` |
+| `declaredStatus = blocked` | `skip_blocked` |
+| no linked hitches and non-leaf phase | `container` |
+| no linked hitches and leaf phase | `needs_link` (reported only; pass continues) |
+| any linked hitch decision is `escalate`, `diverging`, `budget_exhausted`, or `needs_classification` | `blocked_hitch` |
+| any linked hitch is allowed by `allowedByConvergence("hitch.orchestrate", convergence)` | `drive` those hitch ids |
+| all linked hitches are `close_ready` / `closed` and derived open P0/P1 are zero | `ready_to_close` (derived; not stored) |
+| none of the above | `report_only` |
+
+`blocked_hitch` isolates the current top-level subtree: the phase records
+`blocked_hitch`, the remaining descendants in that subtree are reported as
+`blocked_subtree`, and the pass continues with the next top-level phase. This is
+an escalation boundary, not a whole-course hard stop.
+
+### Writes and stopping
+
+The only phase status write performed by SP-2 is a CAS transition
+`pending -> in_progress` immediately before the first driven hitch for that phase.
+The orchestrator does not write `closed`, does not write `blocked`, and does not
+store `readyToClose`.
+
+Hard stops are limited to:
+
+- non-active course (`paused` / `closed`) before planning or driving;
+- course-pass lease busy;
+- course-level drive budget exhausted;
+- a driver/runtime exception while preparing or driving a hitch.
+
+Budget exhaustion records the current phase as `not_driven`, marks the remaining
+phases `not_driven`, and returns `stopReason = budget_exhausted`.
+
+### Budget and lease
+
+Budgets are course-pass scoped:
+
+- `maxDrivenHitches`: default `3`, clamped to `10`.
+- `maxStepsPerHitch`: default `20`, clamped to `50`.
+
+A drive pass takes a course lease through the existing `domain_locks` table with
+`domainKey = "course:<courseId>"` and `domain = "course-orchestrate"`. A non-active
+course or busy lease refuses the pass before any hitch is driven. `--dry-run` plans
+the same phase actions without taking the lease, writing phase status, preparing
+runners, or driving hitches.
+
+### Safety boundary mapping
+
+- Project visibility and null-project fail-closed behavior are unchanged.
+- `phase.link_hitch` remains the only way to attach a hitch; `needs_link` is the
+  future auto-spawn integration point, but SP-2 only reports it.
+- Drivability is delegated to the existing hitch mutation gate
+  (`allowedByConvergence`) and each hitch drive still re-checks its own gate.
+- Per-hitch repo/domain resolution is server-side via `prepareProjectRun`; clients
+  do not supply repo paths to the MCP tool.
+- Close/PR/spawn are deliberate follow-up operations outside this pass.
+
 ## CLI (`harness course` / `harness phase`)
 
 Implemented in `src/cli/course.ts`, registered via `registerCourseCommands`.
@@ -145,6 +224,7 @@ Implemented in `src/cli/course.ts`, registered via `registerCourseCommands`.
 | `course list [--status active\|paused\|closed] [--json]` | List courses (tab-separated id/status/title or JSON). |
 | `course show <id> [--json]` | Show a single course. |
 | `course status <id> [--json]` | Walk the phase tree and print the deterministic rollup (open P0/P1 per phase + course totals). |
+| `course orchestrate <id> [--max-driven-hitches <n>] [--max-steps-per-hitch <n>] [--dry-run] [--json]` | Drive eligible linked hitches in phase-tree order for one bounded pass. Dry-run prints actions only. |
 | `course close <id>` | Set course status to `closed`. |
 | `course export <id> --md [--out <path>]` | One-way DB → markdown view of the course roadmap. DB stays canonical; no markdown → DB round-trip. |
 
@@ -161,10 +241,11 @@ Implemented in `src/cli/course.ts`, registered via `registerCourseCommands`.
 
 ### Exit codes
 
-- `0`: success
+- `0`: success (`course orchestrate` completed; dry-run planned successfully)
 - `1`: user-fixable error (not found / different course / already linked / project
   mismatch / invalid `--status` choice / `--position` not an integer / missing
-  `--md` flag for export / DB error)
+  `--md` flag for export / non-active course / course lease busy / budget exhausted
+  / project resolution error / DB error)
 - `2`: unexpected exception (rethrown)
 
 ## MCP Tools
@@ -188,12 +269,16 @@ mutating.
 | Tool | Operation key | Args | Description |
 |------|---------------|------|-------------|
 | `harness.course.create` | `course.create` | `title`, `description?`, `projectId?`, `repoId?`, `idempotencyKey`, `actorNote?` | Create a course. Visibility-checked against `projectId`. Idempotent via `OperationRunner`. |
+| `harness.course.orchestrate` | `course.orchestrate` | `courseId`, `maxDrivenHitches?`, `maxStepsPerHitch?`, `idempotencyKey`, `actorNote?` | Drive eligible linked hitches for one bounded pass. Visibility-checked via course; defaults/clamps match CLI; no confirmation; does not open PRs. |
 | `harness.phase.add` | `phase.add` | `courseId`, `title`, `parentPhaseId?`, `position?`, `scope?`, `closeConditions?`, `idempotencyKey`, `actorNote?` | Add a phase to a course. Visibility-checked via parent course before entering `OperationRunner`. |
 | `harness.phase.update` | `phase.update` | `phaseId`, `status?`, `idempotencyKey`, `actorNote?` | Update a phase's declared status. Visibility-checked via parent course. |
 | `harness.phase.link_hitch` | `phase.link_hitch` | `phaseId`, `hitchId`, `idempotencyKey`, `actorNote?` | Link a hitch to a phase. Cross-project mismatch and double-link are rejected inside the operation. |
 
-All guarded mutations use `runMcpMutationOperation` (idempotency ledger / operation
-audit / mutation budget enforcement). The `idempotencyKey` is caller-supplied and
+`course.create` / phase guarded mutations use `runMcpMutationOperation`
+(idempotency ledger / operation audit / mutation budget enforcement).
+`course.orchestrate` uses `runMcpOperation` so the bounded driver can resolve
+per-hitch project/domain state and apply hitch gates while still recording an
+audited, idempotent operation. The `idempotencyKey` is caller-supplied and
 required.
 
 ### Visibility rule summary
@@ -213,10 +298,12 @@ null-`project_id` courses. This is fail-closed: `course.list` excludes them,
 `setStatus`, `linkHitch` (with cross-project guard and double-link detection),
 `unlinkHitch`, `hitchIdsFor`.
 
-## Out of Scope (SP-1)
+## Out of Scope
 
-- **SP-2**: autonomous `course orchestrate` (phase auto-advance, phase → hitch spawn,
-  gate enforcement one level up). SP-1 links are all manual.
+- Auto-spawn from a phase (`needs_link`) is a later increment. SP-2 is drive-only
+  over manually linked hitches.
+- Course-level PR automation, phase auto-close, parallel hitch drive, durable
+  `course_orchestration_runs`, and phase dependency edges are later increments.
 - The GOAL_RULES.md build rules (retry limits, P0–P3 classification, gates) stay as
   docs / prompt-context — not duplicated into the DB.
 - The individual roadmap features (#84–#93) build on this model in later sub-projects.
