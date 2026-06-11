@@ -232,7 +232,7 @@ import { registerProjectCommands } from "./project.js";
 import { registerPolicyCommands } from "./policy.js";
 import { registerDbCommands } from "./db.js";
 import { registerOnboardCommands } from "./onboard.js";
-import { registerGoalCommands } from "./goal.js";
+import { registerHitchCommands } from "./hitch.js";
 import { registerMcpCommands } from "../mcp/cli.js";
 import {
   confirmMcpRequest,
@@ -3747,7 +3747,7 @@ workspaceCmd
         return;
       }
       for (const w of enriched) {
-        const goal = w.hitchId ? ` goal=${w.hitchId}` : "";
+        const goal = w.hitchId ? ` hitch=${w.hitchId}` : "";
         const obj = w.objective ? ` — ${w.objective}` : "";
         process.stdout.write(`${w.agent}\t${w.branch}\t${w.path}${goal}${obj}\n`);
       }
@@ -3952,7 +3952,7 @@ workspaceCmd
   .option("--dir <dir>", "where agent worktrees live (default: <repo>.agents)")
   .option("--base <commit-ish>", "base ref for the state snapshot", "main")
   .option("--note <text>", "advisory narrative (what / why / next steps)")
-  .option("--goal <goal-id>", "link an advisory goal to the workspace")
+  .option("--hitch <hitch-id>", "link an advisory hitch to the workspace")
   .option("--objective <text>", "set the workspace's objective")
   .option("--by <actor>", "actor recorded on the checkpoint", "cli")
   .option("--json", "emit JSON instead of text", false)
@@ -3970,7 +3970,7 @@ workspaceCmd
         { repoPath, workspacesDir },
         { agent, base: String(raw.base ?? "main"), workspace: ws },
       );
-      const goalId = typeof raw.goal === "string" ? raw.goal : null;
+      const goalId = typeof raw.hitch === "string" ? raw.hitch : null;
       const checkpoint = withWorkspaceRepo((repo) => {
         // ensure the workspace is tracked, then record the advisory checkpoint.
         const record = repo.upsert({
@@ -4000,7 +4000,7 @@ workspaceCmd
         `checkpoint saved for agent "${agent}"\n` +
           `  head:  ${checkpoint.headSha ? checkpoint.headSha.slice(0, 8) : "(none)"}\n` +
           `  dirty: ${checkpoint.dirtyCount} file(s)\n` +
-          (checkpoint.hitchId ? `  goal:  ${checkpoint.hitchId}\n` : "") +
+          (checkpoint.hitchId ? `  hitch: ${checkpoint.hitchId}\n` : "") +
           (checkpoint.note ? `  note:  ${checkpoint.note}\n` : ""),
       );
     } catch (e) {
@@ -4099,7 +4099,7 @@ workspaceCmd
         `recover "${agent}" (${insp.branch})\n` +
           `  git:        ${gitLine}\n` +
           `  objective:  ${briefing.objective ?? "(none)"}\n` +
-          `  goal:       ${goalLine}\n` +
+          `  hitch:      ${goalLine}\n` +
           `  checkpoint: ${cp ? `${cp.createdAt} by ${cp.createdBy}${cp.note ? ` — ${cp.note}` : ""}` : "(none)"}\n` +
           `  next steps:\n` +
           briefing.nextSteps.map((s) => `    - ${s}`).join("\n") +
@@ -4157,7 +4157,19 @@ registerProjectCommands(program);
 registerPolicyCommands(program);
 registerDbCommands(program);
 registerOnboardCommands(program);
-registerGoalCommands(program, { getHarnessRoot });
+registerHitchCommands(program, { getHarnessRoot });
+
+program
+  .command("goal", { hidden: true })
+  .allowUnknownOption()
+  .argument("[args...]")
+  .description("(removed) renamed to 'harness hitch'")
+  .action(() => {
+    process.stderr.write(
+      "harness error: goal mode was renamed to \"hitch\" — use 'harness hitch …'\n",
+    );
+    process.exit(1);
+  });
 registerMcpCommands(program, { getHarnessRoot });
 
 // #69 — read-only guardrail: detect uncommitted out-of-band (non-harness)

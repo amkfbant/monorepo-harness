@@ -25,7 +25,7 @@ function runCli(root: string, args: string[]): { out: string; code: number } {
 }
 
 function setup(): { root: string; scopePath: string; closePath: string } {
-  const root = mkdtempSync(join(tmpdir(), "harness-goal-cli-"));
+  const root = mkdtempSync(join(tmpdir(), "harness-hitch-cli-"));
   mkdirSync(root, { recursive: true });
   const scopePath = join(root, "scope.yaml");
   const closePath = join(root, "close.yaml");
@@ -33,12 +33,12 @@ function setup(): { root: string; scopePath: string; closePath: string } {
     scopePath,
     [
       "targetFiles:",
-      "  - src/goal/**",
+      "  - src/hitch/**",
       "allowedFindingCategories:",
       "  - correctness",
       "excludedCategories:",
       "  - future-feature",
-      "targetSummary: goal convergence",
+      "targetSummary: hitch convergence",
       "",
     ].join("\n"),
   );
@@ -60,17 +60,17 @@ function json<T>(result: { out: string; code: number }): T {
   return JSON.parse(result.out) as T;
 }
 
-describe("goal CLI", () => {
-  it("creates a goal, tracks attempts/findings/checks, and closes on convergence", () => {
+describe("hitch CLI", () => {
+  it("creates a hitch, tracks attempts/findings/checks, and closes on convergence", () => {
     const { root, scopePath, closePath } = setup();
-    const goal = json<{ goalId: string }>(
+    const hitch = json<{ hitchId: string }>(
       runCli(root, [
-        "goal",
+        "hitch",
         "start",
         "--title",
-        "Goal convergence CLI",
+        "Hitch convergence CLI",
         "--domain",
-        "goal",
+        "hitch",
         "--scope-file",
         scopePath,
         "--close-file",
@@ -81,10 +81,10 @@ describe("goal CLI", () => {
 
     const attempt = json<{ attemptId: string }>(
       runCli(root, [
-        "goal",
+        "hitch",
         "attempt",
         "start",
-        goal.goalId,
+        hitch.hitchId,
         "--type",
         "implement",
         "--json",
@@ -92,23 +92,23 @@ describe("goal CLI", () => {
     );
     expect(
       runCli(root, [
-        "goal",
+        "hitch",
         "attempt",
         "complete",
         attempt.attemptId,
         "--status",
         "succeeded",
         "--run-id",
-        "run-goal-cli",
+        "run-hitch-cli",
       ]).code,
     ).toBe(0);
 
     const cycle = json<{ cycleId: string }>(
       runCli(root, [
-        "goal",
+        "hitch",
         "review-cycle",
         "start",
-        goal.goalId,
+        hitch.hitchId,
         "--mode",
         "initial",
         "--json",
@@ -116,7 +116,7 @@ describe("goal CLI", () => {
     );
     expect(
       runCli(root, [
-        "goal",
+        "hitch",
         "review-cycle",
         "complete",
         cycle.cycleId,
@@ -131,25 +131,25 @@ describe("goal CLI", () => {
       finding: { findingId: string; scopeStatus: string; lifecycleStatus: string };
     }>(
       runCli(root, [
-        "goal",
+        "hitch",
         "finding",
         "add",
-        goal.goalId,
+        hitch.hitchId,
         "--severity",
         "P1",
         "--category",
         "correctness",
         "--summary",
-        "Goal repository drops close-check evidence",
+        "Hitch repository drops close-check evidence",
         "--file",
-        "src/goal/repository.ts",
+        "src/hitch/repository.ts",
         "--json",
       ]),
     );
     expect(finding.finding.scopeStatus).toBe("in_scope");
     expect(
       runCli(root, [
-        "goal",
+        "hitch",
         "finding",
         "fixed",
         finding.finding.findingId,
@@ -159,10 +159,10 @@ describe("goal CLI", () => {
     ).toBe(0);
     expect(
       runCli(root, [
-        "goal",
+        "hitch",
         "close-check",
         "record",
-        goal.goalId,
+        hitch.hitchId,
         "--condition",
         "typecheck",
         "--status",
@@ -173,16 +173,16 @@ describe("goal CLI", () => {
     ).toBe(0);
 
     const convergence = json<{ decision: string; decisionRecord: { decision: string } }>(
-      runCli(root, ["goal", "check-convergence", goal.goalId, "--json"]),
+      runCli(root, ["hitch", "check-convergence", hitch.hitchId, "--json"]),
     );
     expect(convergence.decision).toBe("close_ready");
     expect(convergence.decisionRecord.decision).toBe("close_ready");
 
     const closed = json<{ status: string }>(
       runCli(root, [
-        "goal",
+        "hitch",
         "close",
-        goal.goalId,
+        hitch.hitchId,
         "--summary",
         "all in-scope findings fixed",
         "--json",
@@ -193,14 +193,14 @@ describe("goal CLI", () => {
 
   it("defers an out-of-scope finding to a backlog follow-up", () => {
     const { root, scopePath, closePath } = setup();
-    const goal = json<{ goalId: string }>(
+    const hitch = json<{ hitchId: string }>(
       runCli(root, [
-        "goal",
+        "hitch",
         "start",
         "--title",
-        "Goal convergence CLI",
+        "Hitch convergence CLI",
         "--domain",
-        "goal",
+        "hitch",
         "--scope-file",
         scopePath,
         "--close-file",
@@ -212,16 +212,16 @@ describe("goal CLI", () => {
       finding: { findingId: string; scopeStatus: string; lifecycleStatus: string };
     }>(
       runCli(root, [
-        "goal",
+        "hitch",
         "finding",
         "add",
-        goal.goalId,
+        hitch.hitchId,
         "--severity",
         "P2",
         "--category",
         "future-feature",
         "--summary",
-        "Add dashboard goal controls",
+        "Add dashboard hitch controls",
         "--file",
         "src/dashboard/view.ts",
         "--json",
@@ -234,7 +234,7 @@ describe("goal CLI", () => {
       finding: { lifecycleStatus: string; deferredBacklogItemId: string };
     }>(
       runCli(root, [
-        "goal",
+        "hitch",
         "finding",
         "defer",
         finding.finding.findingId,
@@ -263,11 +263,11 @@ describe("goal CLI", () => {
     const { root } = setup();
     expect(
       runCli(root, [
-        "goal",
+        "hitch",
         "start",
         "--title",
         "Dry",
-        "--goal-id",
+        "--hitch-id",
         "g-dry",
         "--domain",
         "src",
@@ -275,7 +275,7 @@ describe("goal CLI", () => {
         "cli",
       ]).code,
     ).toBe(0);
-    const r = runCli(root, ["goal", "orchestrate", "g-dry", "--dry-run"]);
+    const r = runCli(root, ["hitch", "orchestrate", "g-dry", "--dry-run"]);
     expect(r.code).toBe(0);
     expect(r.out).toMatch(/decision=/);
     expect(r.out).toMatch(/next-action=/);
@@ -283,14 +283,14 @@ describe("goal CLI", () => {
 
   it("exits nonzero when convergence needs classification", () => {
     const { root, scopePath, closePath } = setup();
-    const goal = json<{ goalId: string }>(
+    const hitch = json<{ hitchId: string }>(
       runCli(root, [
-        "goal",
+        "hitch",
         "start",
         "--title",
-        "Goal convergence CLI",
+        "Hitch convergence CLI",
         "--domain",
-        "goal",
+        "hitch",
         "--scope-file",
         scopePath,
         "--close-file",
@@ -300,10 +300,10 @@ describe("goal CLI", () => {
     );
     expect(
       runCli(root, [
-        "goal",
+        "hitch",
         "finding",
         "add",
-        goal.goalId,
+        hitch.hitchId,
         "--severity",
         "P2",
         "--category",
@@ -314,10 +314,10 @@ describe("goal CLI", () => {
     ).toBe(0);
     expect(
       runCli(root, [
-        "goal",
+        "hitch",
         "close-check",
         "record",
-        goal.goalId,
+        hitch.hitchId,
         "--condition",
         "typecheck",
         "--status",
@@ -325,7 +325,7 @@ describe("goal CLI", () => {
       ]).code,
     ).toBe(0);
 
-    const result = runCli(root, ["goal", "check-convergence", goal.goalId, "--json"]);
+    const result = runCli(root, ["hitch", "check-convergence", hitch.hitchId, "--json"]);
     expect(result.code).toBe(2);
     expect(JSON.parse(result.out)).toMatchObject({
       decision: "needs_classification",

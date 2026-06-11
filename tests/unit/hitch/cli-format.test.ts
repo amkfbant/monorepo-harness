@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  formatGoalOrchestrateResultLine,
-  formatGoalStatusLine,
-} from "../../../src/cli/goal.js";
+  formatHitchOrchestrateResultLine,
+  formatHitchStatusLine,
+} from "../../../src/cli/hitch.js";
 
-describe("goal CLI formatting", () => {
+describe("hitch CLI formatting", () => {
   it("prints draft state as a separate field without changing outcome", () => {
-    const line = formatGoalOrchestrateResultLine(
+    const line = formatHitchOrchestrateResultLine(
       "g-draft",
       {
         hitchId: "g-draft",
@@ -25,7 +25,7 @@ describe("goal CLI formatting", () => {
   });
 
   it("labels passed review_consensus checks as static-only approval", () => {
-    const line = formatGoalStatusLine({
+    const line = formatHitchStatusLine({
       session: {
         hitchId: "g-static",
         status: "close_ready",

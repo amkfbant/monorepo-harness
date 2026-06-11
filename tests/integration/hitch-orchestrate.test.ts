@@ -184,7 +184,7 @@ function approveFakes(changedPath = "docs/guide.md") {
   return { coderRunner, reviewerRunner };
 }
 
-describe("goal orchestrate (real git + fake codex)", () => {
+describe("hitch orchestrate (real git + fake codex)", () => {
   let f: Fixture;
   beforeEach(() => {
     f = setup();

@@ -70,35 +70,35 @@ import {
 } from "../hitch/types.js";
 import type { HitchOrchestrationResult } from "../hitch/orchestrator-types.js";
 
-export interface RegisterGoalCommandsOptions {
+export interface RegisterHitchCommandsOptions {
   getHarnessRoot: () => string;
 }
 
-interface GoalContext {
+interface HitchContext {
   root: string;
   paths: ReturnType<typeof harnessPaths>;
   repo: HitchRepository;
 }
 
-export function registerGoalCommands(
+export function registerHitchCommands(
   program: Command,
-  opts: RegisterGoalCommandsOptions,
+  opts: RegisterHitchCommandsOptions,
 ): void {
-  const goalCmd = program
-    .command("goal")
-    .description("goal convergence controller");
+  const hitchCmd = program
+    .command("hitch")
+    .description("hitch convergence controller");
 
-  goalCmd
+  hitchCmd
     .command("start")
-    .description("create a goal session")
-    .requiredOption("--title <text>", "goal title")
-    .option("--goal-id <id>", "explicit goal id")
-    .option("--description <text>", "goal description")
+    .description("create a hitch session")
+    .requiredOption("--title <text>", "hitch title")
+    .option("--hitch-id <id>", "explicit hitch id")
+    .option("--description <text>", "hitch description")
     .option("--project <id>", "project id")
     .option("--repo-id <id>", "repo id")
-    .option("--domain <domain>", "goal domain")
+    .option("--domain <domain>", "hitch domain")
     .option("--backlog-item-id <id>", "source backlog item id")
-    .option("--scope-file <path>", "YAML/JSON goal scope file")
+    .option("--scope-file <path>", "YAML/JSON hitch scope file")
     .option("--close-file <path>", "YAML/JSON close conditions file")
     .option("--policy-file <path>", "YAML/JSON policy file")
     .option("--max-iterations <n>", "iteration budget")
@@ -108,8 +108,8 @@ export function registerGoalCommands(
     .option("--created-by <actor>", "actor label", "cli")
     .option("--json", "emit JSON", false)
     .action((raw: Record<string, unknown>) => {
-      withGoalErrorExit(() => {
-        const result = withGoalRepo(opts, ({ repo }) =>
+      withHitchErrorExit(() => {
+        const result = withHitchRepo(opts, ({ repo }) =>
           repo.createSession({
             ...(raw.hitchId !== undefined ? { hitchId: String(raw.hitchId) } : {}),
             title: String(raw.title),
@@ -161,13 +161,13 @@ export function registerGoalCommands(
             createdSource: "cli",
           }),
         );
-        writeOutput(raw, result, `goal=${result.hitchId} status=${result.status}\n`);
+        writeOutput(raw, result, `hitch=${result.hitchId} status=${result.status}\n`);
       });
     });
 
-  goalCmd
+  hitchCmd
     .command("list")
-    .description("list goal sessions")
+    .description("list hitch sessions")
     .option("--status <status>", "filter by status")
     .option("--project <id>", "filter by project id")
     .option("--repo-id <id>", "filter by repo id")
@@ -175,8 +175,8 @@ export function registerGoalCommands(
     .option("--limit <n>", "max rows", "50")
     .option("--json", "emit JSON", false)
     .action((raw: Record<string, unknown>) => {
-      withGoalErrorExit(() => {
-        const rows = withGoalRepo(opts, ({ repo }) =>
+      withHitchErrorExit(() => {
+        const rows = withHitchRepo(opts, ({ repo }) =>
           repo.listSessions({
             ...(raw.status !== undefined
               ? { status: parseChoice(raw.status, HITCH_STATUSES, "--status") }
@@ -188,7 +188,7 @@ export function registerGoalCommands(
           }),
         );
         if (raw.json === true) {
-          process.stdout.write(`${JSON.stringify({ goals: rows }, null, 2)}\n`);
+          process.stdout.write(`${JSON.stringify({ hitches: rows }, null, 2)}\n`);
         } else {
           process.stdout.write(
             rows
@@ -202,14 +202,14 @@ export function registerGoalCommands(
       });
     });
 
-  goalCmd
+  hitchCmd
     .command("status")
-    .description("show a goal session with current convergence")
-    .argument("<goal-id>", "goal id")
+    .description("show a hitch session with current convergence")
+    .argument("<hitch-id>", "hitch id")
     .option("--json", "emit JSON", false)
     .action((hitchId: string, raw: Record<string, unknown>) => {
-      withGoalErrorExit(() => {
-        const result = withGoalRepo(opts, ({ repo }) => {
+      withHitchErrorExit(() => {
+        const result = withHitchRepo(opts, ({ repo }) => {
           const session = repo.requireSession(hitchId);
           const findings = repo.listFindings({ hitchId, limit: 10_000 });
           const decisions = repo.listDecisions(hitchId);
@@ -220,63 +220,63 @@ export function registerGoalCommands(
         if (raw.json === true) {
           process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
         } else {
-          process.stdout.write(`${formatGoalStatusLine(result)}\n`);
+          process.stdout.write(`${formatHitchStatusLine(result)}\n`);
         }
       });
     });
 
-  goalCmd
+  hitchCmd
     .command("close")
-    .description("close a goal after convergence says close_ready")
-    .argument("<goal-id>", "goal id")
+    .description("close a hitch after convergence says close_ready")
+    .argument("<hitch-id>", "hitch id")
     .requiredOption("--summary <text>", "close summary")
     .option("--force", "close even when convergence is not close_ready", false)
     .option("--json", "emit JSON", false)
     .action((hitchId: string, raw: Record<string, unknown>) => {
-      withGoalErrorExit(() => {
-        const result = withGoalRepo(opts, ({ repo }) => {
+      withHitchErrorExit(() => {
+        const result = withHitchRepo(opts, ({ repo }) => {
           const convergence = new ConvergenceService(repo).evaluate(hitchId);
           if (convergence.decision !== "close_ready" && raw.force !== true) {
-            throw new GoalCliError(
-              `goal ${hitchId} is not close_ready (decision=${convergence.decision}); use --force to override`,
+            throw new HitchCliError(
+              `hitch ${hitchId} is not close_ready (decision=${convergence.decision}); use --force to override`,
             );
           }
           return repo.updateStatus(hitchId, "closed", String(raw.summary));
         });
-        writeOutput(raw, result, `goal=${result.hitchId} status=${result.status}\n`);
+        writeOutput(raw, result, `hitch=${result.hitchId} status=${result.status}\n`);
       });
     });
 
-  goalCmd
+  hitchCmd
     .command("cancel")
-    .description("cancel a goal")
-    .argument("<goal-id>", "goal id")
+    .description("cancel a hitch")
+    .argument("<hitch-id>", "hitch id")
     .requiredOption("--reason <text>", "cancel reason")
     .option("--json", "emit JSON", false)
     .action((hitchId: string, raw: Record<string, unknown>) => {
-      withGoalErrorExit(() => {
-        const result = withGoalRepo(opts, ({ repo }) =>
+      withHitchErrorExit(() => {
+        const result = withHitchRepo(opts, ({ repo }) =>
           repo.updateStatus(hitchId, "cancelled", String(raw.reason)),
         );
-        writeOutput(raw, result, `goal=${result.hitchId} status=${result.status}\n`);
+        writeOutput(raw, result, `hitch=${result.hitchId} status=${result.status}\n`);
       });
     });
 
-  goalCmd
+  hitchCmd
     .command("reopen")
     .description(
-      "reopen a terminal goal (closed/budget_exhausted/escalated) to fix a late " +
+      "reopen a terminal hitch (closed/budget_exhausted/escalated) to fix a late " +
         "finding on the existing branch instead of re-implementing (#76)",
     )
-    .argument("<goal-id>", "goal id")
+    .argument("<hitch-id>", "hitch id")
     .requiredOption("--reason <text>", "reopen reason")
     .option("--extend-iterations <n>", "extend the iteration budget", "3")
     .option("--extend-review-cycles <n>", "extend the review-cycle budget", "3")
     .option("--extend-reruns <n>", "extend the rerun budget", "2")
     .option("--json", "emit JSON", false)
     .action((hitchId: string, raw: Record<string, unknown>) => {
-      withGoalErrorExit(() => {
-        const result = withGoalRepo(opts, ({ repo }) =>
+      withHitchErrorExit(() => {
+        const result = withHitchRepo(opts, ({ repo }) =>
           repo.reopenSession(hitchId, {
             extendIterations: parseNonNegativeInt(
               raw.extendIterations,
@@ -295,18 +295,18 @@ export function registerGoalCommands(
         writeOutput(
           raw,
           result,
-          `goal=${result.hitchId} status=${result.status} reopened ` +
+          `hitch=${result.hitchId} status=${result.status} reopened ` +
             `(budget: iter=${result.maxIterations} review=${result.maxReviewCycles} ` +
             `rerun=${result.maxReruns}; reason: ${String(raw.reason)})\n`,
         );
       });
     });
 
-  const attemptCmd = goalCmd.command("attempt").description("goal attempts");
+  const attemptCmd = hitchCmd.command("attempt").description("hitch attempts");
   attemptCmd
     .command("start")
-    .description("start a goal attempt")
-    .argument("<goal-id>", "goal id")
+    .description("start a hitch attempt")
+    .argument("<hitch-id>", "hitch id")
     .requiredOption("--type <type>", "attempt type")
     .option("--iteration <n>", "explicit iteration")
     .option("--operation-id <id>", "operation id")
@@ -315,8 +315,8 @@ export function registerGoalCommands(
     .option("--input-json <json>", "input JSON object")
     .option("--json", "emit JSON", false)
     .action((hitchId: string, raw: Record<string, unknown>) => {
-      withGoalErrorExit(() => {
-        const attempt = withGoalRepo(opts, ({ repo }) =>
+      withHitchErrorExit(() => {
+        const attempt = withHitchRepo(opts, ({ repo }) =>
           repo.createAttempt({
             hitchId,
             attemptType: parseChoice(
@@ -342,14 +342,14 @@ export function registerGoalCommands(
         writeOutput(
           raw,
           attempt,
-          `attempt=${attempt.attemptId} goal=${attempt.hitchId} status=${attempt.status}\n`,
+          `attempt=${attempt.attemptId} hitch=${attempt.hitchId} status=${attempt.status}\n`,
         );
       });
     });
 
   attemptCmd
     .command("complete")
-    .description("complete a goal attempt")
+    .description("complete a hitch attempt")
     .argument("<attempt-id>", "attempt id")
     .requiredOption("--status <status>", "succeeded | failed | cancelled")
     .option("--operation-id <id>", "operation id")
@@ -358,13 +358,13 @@ export function registerGoalCommands(
     .option("--error <text>", "error message")
     .option("--json", "emit JSON", false)
     .action((attemptId: string, raw: Record<string, unknown>) => {
-      withGoalErrorExit(() => {
+      withHitchErrorExit(() => {
         const status = parseChoice(
           raw.status,
           ["succeeded", "failed", "cancelled"],
           "--status",
         ) as Exclude<HitchAttemptStatus, "pending" | "running">;
-        const attempt = withGoalRepo(opts, ({ repo }) =>
+        const attempt = withHitchRepo(opts, ({ repo }) =>
           repo.completeAttempt({
             attemptId,
             status,
@@ -386,11 +386,11 @@ export function registerGoalCommands(
       });
     });
 
-  const findingCmd = goalCmd.command("finding").description("goal findings");
+  const findingCmd = hitchCmd.command("finding").description("hitch findings");
   findingCmd
     .command("add")
     .description("record a finding")
-    .argument("<goal-id>", "goal id")
+    .argument("<hitch-id>", "hitch id")
     .requiredOption("--severity <severity>", "P0 | P1 | P2 | P3 | info")
     .requiredOption("--category <category>", "finding category")
     .requiredOption("--summary <text>", "finding summary")
@@ -405,8 +405,8 @@ export function registerGoalCommands(
     .option("--scope <scope>", "in-scope | out-of-scope | unknown | duplicate")
     .option("--json", "emit JSON", false)
     .action((hitchId: string, raw: Record<string, unknown>) => {
-      withGoalErrorExit(() => {
-        const result = withGoalRepo(opts, ({ repo }) => {
+      withHitchErrorExit(() => {
+        const result = withHitchRepo(opts, ({ repo }) => {
           const session = repo.requireSession(hitchId);
           const source = parseChoice(
             raw.source,
@@ -479,7 +479,7 @@ export function registerGoalCommands(
     .option("--duplicate-of <finding-id>", "canonical duplicate finding id")
     .option(
       "--then-rerun",
-      "after classifying, auto-run the orchestrator IFF the goal is now needs_fix (chains a coder rerun to address the newly in-scope finding); requires --repo",
+      "after classifying, auto-run the orchestrator IFF the hitch is now needs_fix (chains a coder rerun to address the newly in-scope finding); requires --repo",
       false,
     )
     .option("--repo <path>", "target git repo (required with --then-rerun)")
@@ -487,7 +487,7 @@ export function registerGoalCommands(
     .option("--max-steps <n>", "orchestrator step cap for the chained rerun", "20")
     .option("--json", "emit JSON", false)
     .action(async (findingId: string, raw: Record<string, unknown>) => {
-      await withGoalErrorExitAsync(async () => {
+      await withHitchErrorExitAsync(async () => {
         const thenRerun = raw.thenRerun === true;
         const classifyInput = {
           findingId,
@@ -500,7 +500,7 @@ export function registerGoalCommands(
 
         // Default (no --then-rerun): classify only, original output unchanged.
         if (!thenRerun) {
-          const finding = withGoalRepo(opts, ({ repo }) =>
+          const finding = withHitchRepo(opts, ({ repo }) =>
             repo.classifyFinding(classifyInput),
           );
           writeOutput(
@@ -514,7 +514,7 @@ export function registerGoalCommands(
         // --then-rerun: classify (the operator-owned, human-in-the-loop
         // boundary), then re-evaluate + record convergence — like the MCP
         // classify tool — so the chain decision reads a fresh decision.
-        const { finding, decision } = withGoalRepo(opts, ({ repo }) => {
+        const { finding, decision } = withHitchRepo(opts, ({ repo }) => {
           const f = repo.classifyFinding(classifyInput);
           const conv = evaluateConvergenceAndRecordStatus({
             repository: repo,
@@ -539,8 +539,8 @@ export function registerGoalCommands(
         // chain a coder rerun via the orchestrator (deterministic + gated): the
         // operator's classification is the trigger, convergence drives the step.
         if (typeof raw.repo !== "string" || raw.repo === "") {
-          throw new GoalCliError(
-            "goal finding classify --then-rerun requires --repo <path>",
+          throw new HitchCliError(
+            "hitch finding classify --then-rerun requires --repo <path>",
           );
         }
         const dbPath = harnessPaths(opts.getHarnessRoot()).dbPath;
@@ -582,8 +582,8 @@ export function registerGoalCommands(
     .option("--note <text>", "resolution note")
     .option("--json", "emit JSON", false)
     .action((findingId: string, raw: Record<string, unknown>) => {
-      withGoalErrorExit(() => {
-        const finding = withGoalRepo(opts, ({ repo }) =>
+      withHitchErrorExit(() => {
+        const finding = withHitchRepo(opts, ({ repo }) =>
           repo.markFindingFixed({
             findingId,
             ...(raw.note !== undefined ? { note: String(raw.note) } : {}),
@@ -605,8 +605,8 @@ export function registerGoalCommands(
     .requiredOption("--reason <text>", "deferral reason")
     .option("--json", "emit JSON", false)
     .action(async (findingId: string, raw: Record<string, unknown>) => {
-      await withGoalErrorExitAsync(async () => {
-        const result = await withGoalRepoAsync(opts, async (ctx) =>
+      await withHitchErrorExitAsync(async () => {
+        const result = await withHitchRepoAsync(opts, async (ctx) =>
           deferFindingToBacklog({
             repository: ctx.repo,
             findingId,
@@ -634,21 +634,21 @@ export function registerGoalCommands(
       });
     });
 
-  const cycleCmd = goalCmd
+  const cycleCmd = hitchCmd
     .command("review-cycle")
-    .description("goal review cycles");
+    .description("hitch review cycles");
   cycleCmd
     .command("start")
     .description("start a review cycle")
-    .argument("<goal-id>", "goal id")
+    .argument("<hitch-id>", "hitch id")
     .requiredOption("--mode <mode>", "initial | delta | close | regression | manual")
     .option("--trigger-attempt-id <id>", "trigger attempt id")
     .option("--source-review-id <id>", "source review id")
     .option("--source-run-id <id>", "source run id")
     .option("--json", "emit JSON", false)
     .action((hitchId: string, raw: Record<string, unknown>) => {
-      withGoalErrorExit(() => {
-        const cycle = withGoalRepo(opts, ({ repo }) =>
+      withHitchErrorExit(() => {
+        const cycle = withHitchRepo(opts, ({ repo }) =>
           repo.startReviewCycle({
             hitchId,
             reviewMode: parseChoice(
@@ -689,12 +689,12 @@ export function registerGoalCommands(
     .option("--summary <text>", "review cycle summary")
     .option("--json", "emit JSON", false)
     .action((cycleId: string, raw: Record<string, unknown>) => {
-      withGoalErrorExit(() => {
+      withHitchErrorExit(() => {
         const fileInput =
           raw.fromFindings === undefined
             ? {}
             : parseCycleCounts(readStructuredFile(String(raw.fromFindings)));
-        const cycle = withGoalRepo(opts, ({ repo }) =>
+        const cycle = withHitchRepo(opts, ({ repo }) =>
           repo.completeReviewCycle({
             cycleId,
             ...fileInput,
@@ -719,13 +719,13 @@ export function registerGoalCommands(
       });
     });
 
-  const closeCheckCmd = goalCmd
+  const closeCheckCmd = hitchCmd
     .command("close-check")
-    .description("goal close checks");
+    .description("hitch close checks");
   closeCheckCmd
     .command("record")
     .description("record close-check evidence")
-    .argument("<goal-id>", "goal id")
+    .argument("<hitch-id>", "hitch id")
     .requiredOption("--condition <id>", "close condition id")
     .requiredOption("--status <status>", "pending | passed | failed | skipped | unknown")
     .option("--checked-by <actor>", "actor label", "cli")
@@ -733,8 +733,8 @@ export function registerGoalCommands(
     .option("--evidence-json <json>", "evidence JSON object")
     .option("--json", "emit JSON", false)
     .action((hitchId: string, raw: Record<string, unknown>) => {
-      withGoalErrorExit(() => {
-        const check = withGoalRepo(opts, ({ repo }) =>
+      withHitchErrorExit(() => {
+        const check = withHitchRepo(opts, ({ repo }) =>
           repo.recordCloseCheck({
             hitchId,
             conditionId: String(raw.condition),
@@ -759,17 +759,17 @@ export function registerGoalCommands(
       });
     });
 
-  goalCmd
+  hitchCmd
     .command("check-convergence")
-    .description("evaluate and record a goal convergence decision")
-    .argument("<goal-id>", "goal id")
+    .description("evaluate and record a hitch convergence decision")
+    .argument("<hitch-id>", "hitch id")
     .option("--created-by <actor>", "actor label", "cli")
     .option("--no-record", "evaluate without recording a decision")
-    .option("--no-status-update", "do not update goal status from the decision")
+    .option("--no-status-update", "do not update hitch status from the decision")
     .option("--json", "emit JSON", false)
     .action((hitchId: string, raw: Record<string, unknown>) => {
-      withGoalErrorExit(() => {
-        const out = withGoalRepo(opts, ({ repo }) => {
+      withHitchErrorExit(() => {
+        const out = withHitchRepo(opts, ({ repo }) => {
           const result = new ConvergenceService(repo).evaluate(hitchId);
           if (raw.record === false) {
             return { ...result, decisionRecord: null, goalStatus: null };
@@ -798,10 +798,10 @@ export function registerGoalCommands(
       });
     });
 
-  goalCmd
+  hitchCmd
     .command("orchestrate")
-    .description("drive a goal to a terminal state (run/review/rerun/close/pr)")
-    .argument("<goal-id>", "goal id")
+    .description("drive a hitch to a terminal state (run/review/rerun/close/pr)")
+    .argument("<hitch-id>", "hitch id")
     .option("--repo <path>", "path to the target git repo (required unless --dry-run)")
     .option("--base-branch <name>", "base branch for runs and the PR", "main")
     .option("--max-steps <n>", "loop step cap", "50")
@@ -837,19 +837,19 @@ export function registerGoalCommands(
       "0",
     )
     .action(async (hitchId: string, raw: Record<string, unknown>) => {
-      await withGoalErrorExitAsync(async () => {
+      await withHitchErrorExitAsync(async () => {
         if (raw.dryRun === true) {
-          const { convergence, action } = withGoalRepo(opts, ({ repo }) => {
+          const { convergence, action } = withHitchRepo(opts, ({ repo }) => {
             const result = new ConvergenceService(repo).evaluate(hitchId);
             return { convergence: result, action: decideOrchestratorAction(result) };
           });
           process.stdout.write(
-            `goal=${hitchId} decision=${convergence.decision} next-action=${action.kind}\n`,
+            `hitch=${hitchId} decision=${convergence.decision} next-action=${action.kind}\n`,
           );
           return;
         }
         if (typeof raw.repo !== "string" || raw.repo === "") {
-          throw new Error("goal orchestrate requires --repo <path> unless --dry-run");
+          throw new Error("hitch orchestrate requires --repo <path> unless --dry-run");
         }
         const dbPath = harnessPaths(opts.getHarnessRoot()).dbPath;
         const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
@@ -920,18 +920,18 @@ export function registerGoalCommands(
           harnessRoot: opts.getHarnessRoot(),
         });
         process.stdout.write(
-          `${formatGoalOrchestrateResultLine(hitchId, result, link)}\n`,
+          `${formatHitchOrchestrateResultLine(hitchId, result, link)}\n`,
         );
       });
     });
 
-  goalCmd
+  hitchCmd
     .command("await-merge")
     .description(
-      "poll a close_ready goal's open PR and merge it once the gate passes",
+      "poll a close_ready hitch's open PR and merge it once the gate passes",
     )
-    .argument("[goal-id]", "goal id (omit when using --all)")
-    .option("--all", "drive EVERY close_ready goal of --repo-id to merge", false)
+    .argument("[hitch-id]", "hitch id (omit when using --all)")
+    .option("--all", "drive EVERY close_ready hitch of --repo-id to merge", false)
     .option("--repo <path>", "path to the target git repo (required)")
     .option(
       "--repo-id <id>",
@@ -969,15 +969,15 @@ export function registerGoalCommands(
       "0",
     )
     .action(async (goalArg: string | undefined, raw: Record<string, unknown>) => {
-      await withGoalErrorExitAsync(async () => {
+      await withHitchErrorExitAsync(async () => {
         const all = raw.all === true;
         if (all === (typeof goalArg === "string" && goalArg !== "")) {
-          throw new GoalCliError(
-            "goal await-merge requires exactly one of <goal-id> or --all",
+          throw new HitchCliError(
+            "hitch await-merge requires exactly one of <hitch-id> or --all",
           );
         }
         if (typeof raw.repo !== "string" || raw.repo === "") {
-          throw new GoalCliError("goal await-merge requires --repo <path>");
+          throw new HitchCliError("hitch await-merge requires --repo <path>");
         }
         const repoIdScope =
           typeof raw.repoId === "string" && raw.repoId !== ""
@@ -988,8 +988,8 @@ export function registerGoalCommands(
         // merge) a PR of a DIFFERENT repo. Require --repo-id so --all never spans
         // repos. (Single-goal mode names the goal explicitly, like orchestrate.)
         if (all && repoIdScope === undefined) {
-          throw new GoalCliError(
-            "goal await-merge --all requires --repo-id <id> (it must not span repos)",
+          throw new HitchCliError(
+            "hitch await-merge --all requires --repo-id <id> (it must not span repos)",
           );
         }
         const dbPath = harnessPaths(opts.getHarnessRoot()).dbPath;
@@ -1057,7 +1057,7 @@ export function registerGoalCommands(
         };
 
         const evalDecision = (hitchId: string): string =>
-          withGoalRepo(opts, ({ repo }) =>
+          withHitchRepo(opts, ({ repo }) =>
             new ConvergenceService(repo).evaluate(hitchId).decision,
           );
 
@@ -1088,7 +1088,7 @@ export function registerGoalCommands(
                 return { kind: "not_awaiting", decision: e.decision };
               }
               const reason = e instanceof Error ? e.message : String(e);
-              withGoalRepo(opts, ({ repo }) =>
+              withHitchRepo(opts, ({ repo }) =>
                 repo.updateStatus(hitchId, "escalated", reason),
               );
               return { kind: "escalated", reason };
@@ -1098,7 +1098,7 @@ export function registerGoalCommands(
               // closeAndPr surfaces escalateReason but does NOT persist the
               // status (the generic orchestrator does); mirror that here so a
               // hard-blocked gate leaves the goal `escalated` for a human.
-              withGoalRepo(opts, ({ repo }) =>
+              withHitchRepo(opts, ({ repo }) =>
                 repo.updateStatus(
                   hitchId,
                   "escalated",
@@ -1114,7 +1114,7 @@ export function registerGoalCommands(
         // silently dropping goals.
         const ALL_CAP = 10_000;
         const goalIds = all
-          ? withGoalRepo(opts, ({ repo }) =>
+          ? withHitchRepo(opts, ({ repo }) =>
               repo
                 .listSessions({
                   status: "close_ready",
@@ -1129,23 +1129,23 @@ export function registerGoalCommands(
         // to it — refuse to merge a goal whose repo differs from the --repo dir.
         if (!all && repoIdScope !== undefined) {
           const namedGoalId = String(goalArg);
-          const session = withGoalRepo(opts, ({ repo }) =>
+          const session = withHitchRepo(opts, ({ repo }) =>
             repo.getSession(namedGoalId),
           );
           if (session !== null && session.repoId !== repoIdScope) {
-            throw new GoalCliError(
-              `goal ${namedGoalId} belongs to repo "${session.repoId}", not "${repoIdScope}"`,
+            throw new HitchCliError(
+              `hitch ${namedGoalId} belongs to repo "${session.repoId}", not "${repoIdScope}"`,
             );
           }
         }
 
         if (all && goalIds.length === 0) {
-          process.stdout.write("no close_ready goals to await\n");
+          process.stdout.write("no close_ready hitches to await\n");
           return;
         }
         if (all && goalIds.length === ALL_CAP) {
           process.stderr.write(
-            `warning: --all processed the first ${ALL_CAP} close_ready goals; ` +
+            `warning: --all processed the first ${ALL_CAP} close_ready hitches; ` +
               `more may remain — re-run to continue\n`,
           );
         }
@@ -1160,7 +1160,7 @@ export function registerGoalCommands(
             { pollIntervalMs, maxWaitMs },
           );
           process.stdout.write(
-            `goal=${hitchId} await-merge=${result.outcome} polls=${result.polls}` +
+            `hitch=${hitchId} await-merge=${result.outcome} polls=${result.polls}` +
               ("prUrl" in result && result.prUrl !== undefined
                 ? ` pr=${result.prUrl}`
                 : "") +
@@ -1175,13 +1175,13 @@ export function registerGoalCommands(
     });
 }
 
-export function formatGoalOrchestrateResultLine(
+export function formatHitchOrchestrateResultLine(
   hitchId: string,
   result: HitchOrchestrationResult,
   link: { linked: boolean; agent?: string },
 ): string {
   return (
-    `goal=${hitchId} outcome=${result.outcome}` +
+    `hitch=${hitchId} outcome=${result.outcome}` +
     (result.draft !== undefined ? ` draft=${result.draft}` : "") +
     (result.prUrl !== undefined ? ` pr=${result.prUrl}` : "") +
     (result.escalateReason !== undefined
@@ -1191,7 +1191,7 @@ export function formatGoalOrchestrateResultLine(
   );
 }
 
-export function formatGoalStatusLine(result: {
+export function formatHitchStatusLine(result: {
   session: {
     hitchId: string;
     status: string;
@@ -1215,7 +1215,7 @@ export function formatGoalStatusLine(result: {
   const advisories =
     reviewAdvisoryCount > 0 ? ` review_advisories=${reviewAdvisoryCount}` : "";
   return (
-    `goal=${result.session.hitchId} status=${result.session.status} ` +
+    `hitch=${result.session.hitchId} status=${result.session.status} ` +
     `decision=${result.convergence.decision} ` +
     `openP1=${result.convergence.metrics.openInScopeP1} ` +
     `unknown=${result.convergence.metrics.openUnknownScope}` +
@@ -1294,9 +1294,9 @@ function latestCloseCheck(
     );
 }
 
-function withGoalRepo<T>(
-  opts: RegisterGoalCommandsOptions,
-  fn: (ctx: GoalContext) => T,
+function withHitchRepo<T>(
+  opts: RegisterHitchCommandsOptions,
+  fn: (ctx: HitchContext) => T,
 ): T {
   const root = opts.getHarnessRoot();
   const paths = harnessPaths(root);
@@ -1309,9 +1309,9 @@ function withGoalRepo<T>(
   }
 }
 
-async function withGoalRepoAsync<T>(
-  opts: RegisterGoalCommandsOptions,
-  fn: (ctx: GoalContext) => Promise<T>,
+async function withHitchRepoAsync<T>(
+  opts: RegisterHitchCommandsOptions,
+  fn: (ctx: HitchContext) => Promise<T>,
 ): Promise<T> {
   const root = opts.getHarnessRoot();
   const paths = harnessPaths(root);
@@ -1324,34 +1324,34 @@ async function withGoalRepoAsync<T>(
   }
 }
 
-function withGoalErrorExit(fn: () => void): void {
+function withHitchErrorExit(fn: () => void): void {
   try {
     fn();
   } catch (e) {
-    goalError(e);
+    hitchError(e);
   }
 }
 
-async function withGoalErrorExitAsync(fn: () => Promise<void>): Promise<void> {
+async function withHitchErrorExitAsync(fn: () => Promise<void>): Promise<void> {
   try {
     await fn();
   } catch (e) {
-    goalError(e);
+    hitchError(e);
   }
 }
 
-function goalError(e: unknown): never {
-  if (e instanceof GoalCliError || e instanceof DbError || e instanceof BacklogError) {
+function hitchError(e: unknown): never {
+  if (e instanceof HitchCliError || e instanceof DbError || e instanceof BacklogError) {
     process.stderr.write(`harness error: ${e.message}\n`);
     process.exit(1);
   }
   throw e;
 }
 
-class GoalCliError extends Error {
+class HitchCliError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "GoalCliError";
+    this.name = "HitchCliError";
   }
 }
 
@@ -1368,7 +1368,7 @@ function writeConvergence(
     return;
   }
   process.stdout.write(
-    `goal=${value.hitchId} decision=${value.decision} reason=${value.reason}\n`,
+    `hitch=${value.hitchId} decision=${value.decision} reason=${value.reason}\n`,
   );
 }
 
@@ -1381,7 +1381,7 @@ function readStructuredFile(path: string): unknown {
 function parseJsonRecord(text: string, flag: string): Record<string, unknown> {
   const parsed = JSON.parse(text) as unknown;
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new GoalCliError(`${flag} must be a JSON object`);
+    throw new HitchCliError(`${flag} must be a JSON object`);
   }
   return parsed as Record<string, unknown>;
 }
@@ -1398,7 +1398,7 @@ function parseChoice<T extends readonly string[]>(
 ): T[number] {
   const str = String(value);
   if (!(allowed as readonly string[]).includes(str)) {
-    throw new GoalCliError(
+    throw new HitchCliError(
       `${flag} must be one of ${allowed.join("|")} (got ${JSON.stringify(str)})`,
     );
   }
@@ -1407,7 +1407,7 @@ function parseChoice<T extends readonly string[]>(
 
 function parsePositiveInt(value: unknown, flag: string): number {
   const parsed = parseNonNegativeInt(value, flag);
-  if (parsed < 1) throw new GoalCliError(`${flag} must be a positive integer`);
+  if (parsed < 1) throw new HitchCliError(`${flag} must be a positive integer`);
   return parsed;
 }
 
@@ -1415,13 +1415,13 @@ function parseMergeMethod(value: unknown): PrMergeMethod {
   if (value === "squash" || value === "merge" || value === "rebase") {
     return value;
   }
-  throw new GoalCliError("--merge-method must be one of: squash, merge, rebase");
+  throw new HitchCliError("--merge-method must be one of: squash, merge, rebase");
 }
 
 function parseNonNegativeInt(value: unknown, flag: string): number {
   const n = Number(value);
   if (!Number.isInteger(n) || n < 0) {
-    throw new GoalCliError(`${flag} must be a non-negative integer`);
+    throw new HitchCliError(`${flag} must be a non-negative integer`);
   }
   return n;
 }
@@ -1437,7 +1437,7 @@ function countOption(
 
 function parseCycleCounts(value: unknown): Partial<CompleteHitchReviewCycleInput> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new GoalCliError("--from-findings must contain an object");
+    throw new HitchCliError("--from-findings must contain an object");
   }
   const raw = value as Record<string, unknown>;
   return {

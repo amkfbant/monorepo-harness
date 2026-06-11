@@ -42,9 +42,9 @@ function goalIdOfWorkspace(harnessRoot: string, agent: string): string | null {
   });
   try {
     const row = handle.db
-      .prepare("SELECT goal_id FROM workspaces WHERE agent = ?")
-      .get(agent) as { goal_id: string | null } | undefined;
-    return row?.goal_id ?? null;
+      .prepare("SELECT hitch_id FROM workspaces WHERE agent = ?")
+      .get(agent) as { hitch_id: string | null } | undefined;
+    return row?.hitch_id ?? null;
   } finally {
     handle.close();
   }

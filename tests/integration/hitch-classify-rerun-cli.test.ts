@@ -58,11 +58,11 @@ function seed(): { root: string; hitchId: string; findingId: string } {
   }
 }
 
-describe("goal finding classify --then-rerun (C#8)", () => {
+describe("hitch finding classify --then-rerun (C#8)", () => {
   it("plain classify (no --then-rerun) keeps the original output", () => {
     const { root, findingId } = seed();
     const r = runCli(root, [
-      "goal",
+      "hitch",
       "finding",
       "classify",
       findingId,
@@ -81,7 +81,7 @@ describe("goal finding classify --then-rerun (C#8)", () => {
     // classifying the only unknown P1 in-scope → needs_fix → the chain triggers
     // and demands --repo (proving it reached the rerun path, gated by convergence).
     const r = runCli(root, [
-      "goal",
+      "hitch",
       "finding",
       "classify",
       findingId,
@@ -97,11 +97,11 @@ describe("goal finding classify --then-rerun (C#8)", () => {
 
   it("--then-rerun skips the chain when classification does NOT yield needs_fix", () => {
     const { root, findingId } = seed();
-    // reverting to unknown leaves the goal `needs_classification` (not
+    // reverting to unknown leaves the hitch `needs_classification` (not
     // needs_fix), so the chain is skipped — and no --repo is required because we
     // never reach the rerun. The skip reason is surfaced.
     const r = runCli(root, [
-      "goal",
+      "hitch",
       "finding",
       "classify",
       findingId,

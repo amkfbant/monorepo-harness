@@ -49,30 +49,30 @@ function seedGoal(root: string, hitchId: string, repoId: string): void {
   }
 }
 
-describe("goal await-merge CLI validation (repo scoping)", () => {
-  it("requires exactly one of <goal-id> or --all", () => {
-    const r = runCli(newRoot(), ["goal", "await-merge", "--repo", "/x"]);
+describe("hitch await-merge CLI validation (repo scoping)", () => {
+  it("requires exactly one of <hitch-id> or --all", () => {
+    const r = runCli(newRoot(), ["hitch", "await-merge", "--repo", "/x"]);
     expect(r.code).not.toBe(0);
     expect(r.out).toMatch(/exactly one of/);
   });
 
   it("requires --repo", () => {
-    const r = runCli(newRoot(), ["goal", "await-merge", "some-goal"]);
+    const r = runCli(newRoot(), ["hitch", "await-merge", "some-hitch"]);
     expect(r.code).not.toBe(0);
     expect(r.out).toMatch(/--repo/);
   });
 
   it("--all requires --repo-id (must not span repos)", () => {
-    const r = runCli(newRoot(), ["goal", "await-merge", "--all", "--repo", "/x"]);
+    const r = runCli(newRoot(), ["hitch", "await-merge", "--all", "--repo", "/x"]);
     expect(r.code).not.toBe(0);
     expect(r.out).toMatch(/--repo-id/);
   });
 
-  it("single goal: rejects a --repo-id that does not match the goal's repo", () => {
+  it("single hitch: rejects a --repo-id that does not match the hitch's repo", () => {
     const root = newRoot();
     seedGoal(root, "goal-rs", "repo-a");
     const r = runCli(root, [
-      "goal",
+      "hitch",
       "await-merge",
       "goal-rs",
       "--repo",
