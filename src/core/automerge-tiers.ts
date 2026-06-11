@@ -14,7 +14,7 @@ export const DEFAULT_AUTO_MERGE_SENSITIVITY_MAP: readonly AutoMergeSensitivityRu
     { glob: "src/policy/**", tier: 2 },
     { glob: "src/codex/**", tier: 2 },
     { glob: "src/core/merge-gate.ts", tier: 2 },
-    { glob: "src/goal/**", tier: 2 },
+    { glob: "src/hitch/**", tier: 2 },
     { glob: "src/core/reviewer-agent.ts", tier: 2 },
     { glob: "src/db/repositories/review-*.ts", tier: 2 },
     { glob: "src/db/migrations*", tier: 2 },
