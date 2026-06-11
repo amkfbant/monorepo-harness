@@ -8,9 +8,9 @@ import { DbError } from "../db/connection.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import {
-  classifyFindingForGoal,
-  type ClassifiableGoalFinding,
-} from "../goal/classification.js";
+  classifyFindingForHitch,
+  type ClassifiableHitchFinding,
+} from "../hitch/classification.js";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
 import {
   createGhPrPublisher,
@@ -20,55 +20,55 @@ import {
 } from "../core/gh-pr-publisher.js";
 import { createGhCopilotReviewer } from "../core/copilot-reviewer-gh.js";
 import type { PrMergeMethod } from "../core/pr-creator.js";
-import { ConvergenceService } from "../goal/convergence.js";
+import { ConvergenceService } from "../hitch/convergence.js";
 import {
   evaluateConvergenceAndRecordStatus,
   recordConvergenceDecisionWithStatus,
-} from "../goal/convergence-status.js";
-import { deferFindingToBacklog } from "../goal/followups.js";
-import { GoalOrchestrator } from "../goal/orchestrator.js";
+} from "../hitch/convergence-status.js";
+import { deferFindingToBacklog } from "../hitch/followups.js";
+import { HitchOrchestrator } from "../hitch/orchestrator.js";
 import {
   awaitGoalMerge,
   awaitStepFromCloseResult,
   type AwaitMergeStep,
-} from "../goal/await-merge.js";
-import { classifyChainDecision } from "../goal/classify-rerun.js";
-import { linkAgentWorkspaceToGoal } from "../workspace/workspace-goal-link.js";
-import { decideOrchestratorAction } from "../goal/orchestrator-dispatch.js";
+} from "../hitch/await-merge.js";
+import { classifyChainDecision } from "../hitch/classify-rerun.js";
+import { linkAgentWorkspaceToHitch } from "../workspace/workspace-hitch-link.js";
+import { decideOrchestratorAction } from "../hitch/orchestrator-dispatch.js";
 import {
   createOrchestratorRunners,
   GoalNotCloseReadyError,
-} from "../goal/orchestrator-runners.js";
+} from "../hitch/orchestrator-runners.js";
 import {
-  GoalRepository,
-  type CompleteReviewCycleInput,
-  type UpsertGoalFindingInput,
-} from "../goal/repository.js";
+  HitchRepository,
+  type CompleteHitchReviewCycleInput,
+  type UpsertHitchFindingInput,
+} from "../hitch/repository.js";
 import {
-  parseGoalCloseConditions,
-  parseGoalPolicy,
-  parseGoalScope,
-} from "../goal/schemas.js";
+  parseHitchCloseConditions,
+  parseHitchPolicy,
+  parseHitchScope,
+} from "../hitch/schemas.js";
 import {
-  GOAL_ATTEMPT_STATUSES,
-  GOAL_ATTEMPT_TYPES,
-  GOAL_CLOSE_CHECK_STATUSES,
-  GOAL_FINDING_SEVERITIES,
-  GOAL_FINDING_SOURCES,
-  GOAL_REVIEW_MODES,
-  GOAL_SCOPE_STATUSES,
-  GOAL_STATUSES,
-  type GoalAttemptStatus,
-  type GoalAttemptType,
-  type GoalCloseCheckStatus,
-  type GoalConvergenceResult,
-  type GoalFindingSeverity,
-  type GoalFindingSource,
-  type GoalReviewMode,
-  type GoalScopeStatus,
-  type GoalStatus,
-} from "../goal/types.js";
-import type { OrchestrationResult } from "../goal/orchestrator-types.js";
+  HITCH_ATTEMPT_STATUSES,
+  HITCH_ATTEMPT_TYPES,
+  HITCH_CLOSE_CHECK_STATUSES,
+  HITCH_FINDING_SEVERITIES,
+  HITCH_FINDING_SOURCES,
+  HITCH_REVIEW_MODES,
+  HITCH_SCOPE_STATUSES,
+  HITCH_STATUSES,
+  type HitchAttemptStatus,
+  type HitchAttemptType,
+  type HitchCloseCheckStatus,
+  type HitchConvergenceResult,
+  type HitchFindingSeverity,
+  type HitchFindingSource,
+  type HitchReviewMode,
+  type HitchScopeStatus,
+  type HitchStatus,
+} from "../hitch/types.js";
+import type { HitchOrchestrationResult } from "../hitch/orchestrator-types.js";
 
 export interface RegisterGoalCommandsOptions {
   getHarnessRoot: () => string;
@@ -77,7 +77,7 @@ export interface RegisterGoalCommandsOptions {
 interface GoalContext {
   root: string;
   paths: ReturnType<typeof harnessPaths>;
-  repo: GoalRepository;
+  repo: HitchRepository;
 }
 
 export function registerGoalCommands(
@@ -111,7 +111,7 @@ export function registerGoalCommands(
       withGoalErrorExit(() => {
         const result = withGoalRepo(opts, ({ repo }) =>
           repo.createSession({
-            ...(raw.goalId !== undefined ? { goalId: String(raw.goalId) } : {}),
+            ...(raw.hitchId !== undefined ? { hitchId: String(raw.hitchId) } : {}),
             title: String(raw.title),
             ...(raw.description !== undefined
               ? { description: String(raw.description) }
@@ -125,15 +125,15 @@ export function registerGoalCommands(
             scope:
               raw.scopeFile === undefined
                 ? {}
-                : parseGoalScope(readStructuredFile(String(raw.scopeFile))),
+                : parseHitchScope(readStructuredFile(String(raw.scopeFile))),
             closeConditions:
               raw.closeFile === undefined
                 ? []
-                : parseGoalCloseConditions(
+                : parseHitchCloseConditions(
                     readStructuredFile(String(raw.closeFile)),
                   ),
             ...(raw.policyFile !== undefined
-              ? { policy: parseGoalPolicy(readStructuredFile(String(raw.policyFile))) }
+              ? { policy: parseHitchPolicy(readStructuredFile(String(raw.policyFile))) }
               : {}),
             ...(raw.maxIterations !== undefined
               ? { maxIterations: parsePositiveInt(raw.maxIterations, "--max-iterations") }
@@ -161,7 +161,7 @@ export function registerGoalCommands(
             createdSource: "cli",
           }),
         );
-        writeOutput(raw, result, `goal=${result.goalId} status=${result.status}\n`);
+        writeOutput(raw, result, `goal=${result.hitchId} status=${result.status}\n`);
       });
     });
 
@@ -179,7 +179,7 @@ export function registerGoalCommands(
         const rows = withGoalRepo(opts, ({ repo }) =>
           repo.listSessions({
             ...(raw.status !== undefined
-              ? { status: parseChoice(raw.status, GOAL_STATUSES, "--status") }
+              ? { status: parseChoice(raw.status, HITCH_STATUSES, "--status") }
               : {}),
             ...(raw.project !== undefined ? { projectId: String(raw.project) } : {}),
             ...(raw.repoId !== undefined ? { repoId: String(raw.repoId) } : {}),
@@ -194,7 +194,7 @@ export function registerGoalCommands(
             rows
               .map(
                 (g) =>
-                  `${g.goalId}\t${g.status}\t${g.domain ?? "-"}\t${g.title}`,
+                  `${g.hitchId}\t${g.status}\t${g.domain ?? "-"}\t${g.title}`,
               )
               .join("\n") + (rows.length > 0 ? "\n" : ""),
           );
@@ -207,14 +207,14 @@ export function registerGoalCommands(
     .description("show a goal session with current convergence")
     .argument("<goal-id>", "goal id")
     .option("--json", "emit JSON", false)
-    .action((goalId: string, raw: Record<string, unknown>) => {
+    .action((hitchId: string, raw: Record<string, unknown>) => {
       withGoalErrorExit(() => {
         const result = withGoalRepo(opts, ({ repo }) => {
-          const session = repo.requireSession(goalId);
-          const findings = repo.listFindings({ goalId, limit: 10_000 });
-          const decisions = repo.listDecisions(goalId);
-          const closeChecks = repo.listCloseChecks(goalId);
-          const convergence = new ConvergenceService(repo).evaluate(goalId);
+          const session = repo.requireSession(hitchId);
+          const findings = repo.listFindings({ hitchId, limit: 10_000 });
+          const decisions = repo.listDecisions(hitchId);
+          const closeChecks = repo.listCloseChecks(hitchId);
+          const convergence = new ConvergenceService(repo).evaluate(hitchId);
           return { session, findings, decisions, closeChecks, convergence };
         });
         if (raw.json === true) {
@@ -232,18 +232,18 @@ export function registerGoalCommands(
     .requiredOption("--summary <text>", "close summary")
     .option("--force", "close even when convergence is not close_ready", false)
     .option("--json", "emit JSON", false)
-    .action((goalId: string, raw: Record<string, unknown>) => {
+    .action((hitchId: string, raw: Record<string, unknown>) => {
       withGoalErrorExit(() => {
         const result = withGoalRepo(opts, ({ repo }) => {
-          const convergence = new ConvergenceService(repo).evaluate(goalId);
+          const convergence = new ConvergenceService(repo).evaluate(hitchId);
           if (convergence.decision !== "close_ready" && raw.force !== true) {
             throw new GoalCliError(
-              `goal ${goalId} is not close_ready (decision=${convergence.decision}); use --force to override`,
+              `goal ${hitchId} is not close_ready (decision=${convergence.decision}); use --force to override`,
             );
           }
-          return repo.updateStatus(goalId, "closed", String(raw.summary));
+          return repo.updateStatus(hitchId, "closed", String(raw.summary));
         });
-        writeOutput(raw, result, `goal=${result.goalId} status=${result.status}\n`);
+        writeOutput(raw, result, `goal=${result.hitchId} status=${result.status}\n`);
       });
     });
 
@@ -253,12 +253,12 @@ export function registerGoalCommands(
     .argument("<goal-id>", "goal id")
     .requiredOption("--reason <text>", "cancel reason")
     .option("--json", "emit JSON", false)
-    .action((goalId: string, raw: Record<string, unknown>) => {
+    .action((hitchId: string, raw: Record<string, unknown>) => {
       withGoalErrorExit(() => {
         const result = withGoalRepo(opts, ({ repo }) =>
-          repo.updateStatus(goalId, "cancelled", String(raw.reason)),
+          repo.updateStatus(hitchId, "cancelled", String(raw.reason)),
         );
-        writeOutput(raw, result, `goal=${result.goalId} status=${result.status}\n`);
+        writeOutput(raw, result, `goal=${result.hitchId} status=${result.status}\n`);
       });
     });
 
@@ -274,10 +274,10 @@ export function registerGoalCommands(
     .option("--extend-review-cycles <n>", "extend the review-cycle budget", "3")
     .option("--extend-reruns <n>", "extend the rerun budget", "2")
     .option("--json", "emit JSON", false)
-    .action((goalId: string, raw: Record<string, unknown>) => {
+    .action((hitchId: string, raw: Record<string, unknown>) => {
       withGoalErrorExit(() => {
         const result = withGoalRepo(opts, ({ repo }) =>
-          repo.reopenSession(goalId, {
+          repo.reopenSession(hitchId, {
             extendIterations: parseNonNegativeInt(
               raw.extendIterations,
               "--extend-iterations",
@@ -295,7 +295,7 @@ export function registerGoalCommands(
         writeOutput(
           raw,
           result,
-          `goal=${result.goalId} status=${result.status} reopened ` +
+          `goal=${result.hitchId} status=${result.status} reopened ` +
             `(budget: iter=${result.maxIterations} review=${result.maxReviewCycles} ` +
             `rerun=${result.maxReruns}; reason: ${String(raw.reason)})\n`,
         );
@@ -314,16 +314,16 @@ export function registerGoalCommands(
     .option("--parent-attempt-id <id>", "parent attempt id")
     .option("--input-json <json>", "input JSON object")
     .option("--json", "emit JSON", false)
-    .action((goalId: string, raw: Record<string, unknown>) => {
+    .action((hitchId: string, raw: Record<string, unknown>) => {
       withGoalErrorExit(() => {
         const attempt = withGoalRepo(opts, ({ repo }) =>
           repo.createAttempt({
-            goalId,
+            hitchId,
             attemptType: parseChoice(
               raw.type,
-              GOAL_ATTEMPT_TYPES,
+              HITCH_ATTEMPT_TYPES,
               "--type",
-            ) as GoalAttemptType,
+            ) as HitchAttemptType,
             ...(raw.iteration !== undefined
               ? { iteration: parsePositiveInt(raw.iteration, "--iteration") }
               : {}),
@@ -342,7 +342,7 @@ export function registerGoalCommands(
         writeOutput(
           raw,
           attempt,
-          `attempt=${attempt.attemptId} goal=${attempt.goalId} status=${attempt.status}\n`,
+          `attempt=${attempt.attemptId} goal=${attempt.hitchId} status=${attempt.status}\n`,
         );
       });
     });
@@ -363,7 +363,7 @@ export function registerGoalCommands(
           raw.status,
           ["succeeded", "failed", "cancelled"],
           "--status",
-        ) as Exclude<GoalAttemptStatus, "pending" | "running">;
+        ) as Exclude<HitchAttemptStatus, "pending" | "running">;
         const attempt = withGoalRepo(opts, ({ repo }) =>
           repo.completeAttempt({
             attemptId,
@@ -404,22 +404,22 @@ export function registerGoalCommands(
     .option("--source-cycle-id <id>", "source review cycle id")
     .option("--scope <scope>", "in-scope | out-of-scope | unknown | duplicate")
     .option("--json", "emit JSON", false)
-    .action((goalId: string, raw: Record<string, unknown>) => {
+    .action((hitchId: string, raw: Record<string, unknown>) => {
       withGoalErrorExit(() => {
         const result = withGoalRepo(opts, ({ repo }) => {
-          const session = repo.requireSession(goalId);
+          const session = repo.requireSession(hitchId);
           const source = parseChoice(
             raw.source,
-            GOAL_FINDING_SOURCES,
+            HITCH_FINDING_SOURCES,
             "--source",
-          ) as GoalFindingSource;
-          const findingForClassification: ClassifiableGoalFinding = {
+          ) as HitchFindingSource;
+          const findingForClassification: ClassifiableHitchFinding = {
             source,
             severity: parseChoice(
               raw.severity,
-              GOAL_FINDING_SEVERITIES,
+              HITCH_FINDING_SEVERITIES,
               "--severity",
-            ) as GoalFindingSeverity,
+            ) as HitchFindingSeverity,
             category: String(raw.category),
             summary: String(raw.summary),
             ...(raw.detail !== undefined ? { detail: String(raw.detail) } : {}),
@@ -431,15 +431,15 @@ export function registerGoalCommands(
           };
           const classification =
             raw.scope === undefined
-              ? classifyFindingForGoal(session, findingForClassification)
+              ? classifyFindingForHitch(session, findingForClassification)
               : {
                   scopeStatus: parseScope(raw.scope),
                   reason: "manual scope supplied by CLI",
                 };
-          const input: UpsertGoalFindingInput = {
-            goalId,
+          const input: UpsertHitchFindingInput = {
+            hitchId,
             source,
-            severity: findingForClassification.severity as GoalFindingSeverity,
+            severity: findingForClassification.severity as HitchFindingSeverity,
             category: String(raw.category),
             scopeStatus: classification.scopeStatus,
             summary: String(raw.summary),
@@ -518,7 +518,7 @@ export function registerGoalCommands(
           const f = repo.classifyFinding(classifyInput);
           const conv = evaluateConvergenceAndRecordStatus({
             repository: repo,
-            goalId: f.goalId,
+            hitchId: f.hitchId,
             createdBy: "cli",
           });
           return { finding: f, decision: conv.decision };
@@ -546,8 +546,8 @@ export function registerGoalCommands(
         const dbPath = harnessPaths(opts.getHarnessRoot()).dbPath;
         const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
         const repoPath = String(raw.repo);
-        const result = await new GoalOrchestrator({ dbPath }).run({
-          goalId: finding.goalId,
+        const result = await new HitchOrchestrator({ dbPath }).run({
+          hitchId: finding.hitchId,
           runners: createOrchestratorRunners({
             dbPath,
             harnessRoot: opts.getHarnessRoot(),
@@ -646,16 +646,16 @@ export function registerGoalCommands(
     .option("--source-review-id <id>", "source review id")
     .option("--source-run-id <id>", "source run id")
     .option("--json", "emit JSON", false)
-    .action((goalId: string, raw: Record<string, unknown>) => {
+    .action((hitchId: string, raw: Record<string, unknown>) => {
       withGoalErrorExit(() => {
         const cycle = withGoalRepo(opts, ({ repo }) =>
           repo.startReviewCycle({
-            goalId,
+            hitchId,
             reviewMode: parseChoice(
               raw.mode,
-              GOAL_REVIEW_MODES,
+              HITCH_REVIEW_MODES,
               "--mode",
-            ) as GoalReviewMode,
+            ) as HitchReviewMode,
             ...(raw.triggerAttemptId !== undefined
               ? { triggerAttemptId: String(raw.triggerAttemptId) }
               : {}),
@@ -732,17 +732,17 @@ export function registerGoalCommands(
     .option("--message <text>", "message")
     .option("--evidence-json <json>", "evidence JSON object")
     .option("--json", "emit JSON", false)
-    .action((goalId: string, raw: Record<string, unknown>) => {
+    .action((hitchId: string, raw: Record<string, unknown>) => {
       withGoalErrorExit(() => {
         const check = withGoalRepo(opts, ({ repo }) =>
           repo.recordCloseCheck({
-            goalId,
+            hitchId,
             conditionId: String(raw.condition),
             status: parseChoice(
               raw.status,
-              GOAL_CLOSE_CHECK_STATUSES,
+              HITCH_CLOSE_CHECK_STATUSES,
               "--status",
-            ) as GoalCloseCheckStatus,
+            ) as HitchCloseCheckStatus,
             checkedBy: String(raw.checkedBy),
             ...(raw.message !== undefined ? { message: String(raw.message) } : {}),
             ...(raw.evidenceJson !== undefined
@@ -767,16 +767,16 @@ export function registerGoalCommands(
     .option("--no-record", "evaluate without recording a decision")
     .option("--no-status-update", "do not update goal status from the decision")
     .option("--json", "emit JSON", false)
-    .action((goalId: string, raw: Record<string, unknown>) => {
+    .action((hitchId: string, raw: Record<string, unknown>) => {
       withGoalErrorExit(() => {
         const out = withGoalRepo(opts, ({ repo }) => {
-          const result = new ConvergenceService(repo).evaluate(goalId);
+          const result = new ConvergenceService(repo).evaluate(hitchId);
           if (raw.record === false) {
             return { ...result, decisionRecord: null, goalStatus: null };
           }
           const recorded = recordConvergenceDecisionWithStatus({
             repository: repo,
-            goalId,
+            hitchId,
             decision: result.decision,
             reason: result.reason,
             metrics: { ...result.metrics },
@@ -836,15 +836,15 @@ export function registerGoalCommands(
       "seconds to await async external reviews (codex App / Copilot) before evaluating the gate; 0 = single check (requires --ingest-external-reviews)",
       "0",
     )
-    .action(async (goalId: string, raw: Record<string, unknown>) => {
+    .action(async (hitchId: string, raw: Record<string, unknown>) => {
       await withGoalErrorExitAsync(async () => {
         if (raw.dryRun === true) {
           const { convergence, action } = withGoalRepo(opts, ({ repo }) => {
-            const result = new ConvergenceService(repo).evaluate(goalId);
+            const result = new ConvergenceService(repo).evaluate(hitchId);
             return { convergence: result, action: decideOrchestratorAction(result) };
           });
           process.stdout.write(
-            `goal=${goalId} decision=${convergence.decision} next-action=${action.kind}\n`,
+            `goal=${hitchId} decision=${convergence.decision} next-action=${action.kind}\n`,
           );
           return;
         }
@@ -894,8 +894,8 @@ export function registerGoalCommands(
           raw.requestCopilotReview === true
             ? { reviewer: createGhCopilotReviewer(repoPath, ghBin) }
             : undefined;
-        const result = await new GoalOrchestrator({ dbPath }).run({
-          goalId,
+        const result = await new HitchOrchestrator({ dbPath }).run({
+          hitchId,
           runners: createOrchestratorRunners({
             dbPath,
             harnessRoot: opts.getHarnessRoot(),
@@ -914,13 +914,13 @@ export function registerGoalCommands(
         // Best-effort: if this ran in an agent worktree, link the workspace to
         // the goal so `workspace status` reflects who is driving it. Never fails
         // the orchestration.
-        const link = await linkAgentWorkspaceToGoal({
+        const link = await linkAgentWorkspaceToHitch({
           repoPath,
-          goalId,
+          hitchId,
           harnessRoot: opts.getHarnessRoot(),
         });
         process.stdout.write(
-          `${formatGoalOrchestrateResultLine(goalId, result, link)}\n`,
+          `${formatGoalOrchestrateResultLine(hitchId, result, link)}\n`,
         );
       });
     });
@@ -1056,9 +1056,9 @@ export function registerGoalCommands(
           });
         };
 
-        const evalDecision = (goalId: string): string =>
+        const evalDecision = (hitchId: string): string =>
           withGoalRepo(opts, ({ repo }) =>
-            new ConvergenceService(repo).evaluate(goalId).decision,
+            new ConvergenceService(repo).evaluate(hitchId).decision,
           );
 
         // One probe: re-evaluate convergence and run AT MOST the close/merge step
@@ -1067,16 +1067,16 @@ export function registerGoalCommands(
         // without mutating anything. `remainingMs` clamps this attempt's awaits to
         // the budget left.
         const probe =
-          (goalId: string) =>
+          (hitchId: string) =>
           async (remainingMs: number): Promise<AwaitMergeStep> => {
-            const decision = evalDecision(goalId);
+            const decision = evalDecision(hitchId);
             if (decision !== "close_ready") {
               return { kind: "not_awaiting", decision };
             }
             const runners = buildRunners(remainingMs);
             let result;
             try {
-              result = await runners.closeAndPr(goalId);
+              result = await runners.closeAndPr(hitchId);
             } catch (e) {
               // Distinguish a benign DRIFT from a real close/merge failure by the
               // error TYPE (not a racy convergence re-read): closeAndPr throws a
@@ -1089,7 +1089,7 @@ export function registerGoalCommands(
               }
               const reason = e instanceof Error ? e.message : String(e);
               withGoalRepo(opts, ({ repo }) =>
-                repo.updateStatus(goalId, "escalated", reason),
+                repo.updateStatus(hitchId, "escalated", reason),
               );
               return { kind: "escalated", reason };
             }
@@ -1100,7 +1100,7 @@ export function registerGoalCommands(
               // hard-blocked gate leaves the goal `escalated` for a human.
               withGoalRepo(opts, ({ repo }) =>
                 repo.updateStatus(
-                  goalId,
+                  hitchId,
                   "escalated",
                   result.escalateReason as string,
                 ),
@@ -1121,7 +1121,7 @@ export function registerGoalCommands(
                   ...(repoIdScope !== undefined ? { repoId: repoIdScope } : {}),
                   limit: ALL_CAP,
                 })
-                .map((s) => s.goalId),
+                .map((s) => s.hitchId),
             )
           : [String(goalArg)];
 
@@ -1150,17 +1150,17 @@ export function registerGoalCommands(
           );
         }
 
-        for (const goalId of goalIds) {
+        for (const hitchId of goalIds) {
           const result = await awaitGoalMerge(
             {
-              pollOnce: probe(goalId),
+              pollOnce: probe(hitchId),
               sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
               now: () => Date.now(),
             },
             { pollIntervalMs, maxWaitMs },
           );
           process.stdout.write(
-            `goal=${goalId} await-merge=${result.outcome} polls=${result.polls}` +
+            `goal=${hitchId} await-merge=${result.outcome} polls=${result.polls}` +
               ("prUrl" in result && result.prUrl !== undefined
                 ? ` pr=${result.prUrl}`
                 : "") +
@@ -1176,12 +1176,12 @@ export function registerGoalCommands(
 }
 
 export function formatGoalOrchestrateResultLine(
-  goalId: string,
-  result: OrchestrationResult,
+  hitchId: string,
+  result: HitchOrchestrationResult,
   link: { linked: boolean; agent?: string },
 ): string {
   return (
-    `goal=${goalId} outcome=${result.outcome}` +
+    `goal=${hitchId} outcome=${result.outcome}` +
     (result.draft !== undefined ? ` draft=${result.draft}` : "") +
     (result.prUrl !== undefined ? ` pr=${result.prUrl}` : "") +
     (result.escalateReason !== undefined
@@ -1193,7 +1193,7 @@ export function formatGoalOrchestrateResultLine(
 
 export function formatGoalStatusLine(result: {
   session: {
-    goalId: string;
+    hitchId: string;
     status: string;
     closeConditions: Array<{ id: string; kind: string; required: boolean }>;
   };
@@ -1215,7 +1215,7 @@ export function formatGoalStatusLine(result: {
   const advisories =
     reviewAdvisoryCount > 0 ? ` review_advisories=${reviewAdvisoryCount}` : "";
   return (
-    `goal=${result.session.goalId} status=${result.session.status} ` +
+    `goal=${result.session.hitchId} status=${result.session.status} ` +
     `decision=${result.convergence.decision} ` +
     `openP1=${result.convergence.metrics.openInScopeP1} ` +
     `unknown=${result.convergence.metrics.openUnknownScope}` +
@@ -1303,7 +1303,7 @@ function withGoalRepo<T>(
   const handle = openManagedDb({ dbPath: paths.dbPath });
   try {
     runMigrations(handle.db);
-    return fn({ root, paths, repo: new GoalRepository(handle.db) });
+    return fn({ root, paths, repo: new HitchRepository(handle.db) });
   } finally {
     handle.close();
   }
@@ -1318,7 +1318,7 @@ async function withGoalRepoAsync<T>(
   const handle = openManagedDb({ dbPath: paths.dbPath });
   try {
     runMigrations(handle.db);
-    return await fn({ root, paths, repo: new GoalRepository(handle.db) });
+    return await fn({ root, paths, repo: new HitchRepository(handle.db) });
   } finally {
     handle.close();
   }
@@ -1361,14 +1361,14 @@ function writeOutput(raw: Record<string, unknown>, value: unknown, text: string)
 
 function writeConvergence(
   raw: Record<string, unknown>,
-  value: GoalConvergenceResult & { decisionRecord: unknown },
+  value: HitchConvergenceResult & { decisionRecord: unknown },
 ): void {
   if (raw.json === true) {
     process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
     return;
   }
   process.stdout.write(
-    `goal=${value.goalId} decision=${value.decision} reason=${value.reason}\n`,
+    `goal=${value.hitchId} decision=${value.decision} reason=${value.reason}\n`,
   );
 }
 
@@ -1386,9 +1386,9 @@ function parseJsonRecord(text: string, flag: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
-function parseScope(value: unknown): GoalScopeStatus {
+function parseScope(value: unknown): HitchScopeStatus {
   const normalized = String(value).replace(/-/g, "_");
-  return parseChoice(normalized, GOAL_SCOPE_STATUSES, "--scope") as GoalScopeStatus;
+  return parseChoice(normalized, HITCH_SCOPE_STATUSES, "--scope") as HitchScopeStatus;
 }
 
 function parseChoice<T extends readonly string[]>(
@@ -1428,14 +1428,14 @@ function parseNonNegativeInt(value: unknown, flag: string): number {
 
 function countOption(
   raw: Record<string, unknown>,
-  key: keyof CompleteReviewCycleInput,
+  key: keyof CompleteHitchReviewCycleInput,
   flag: string,
-): Partial<CompleteReviewCycleInput> {
+): Partial<CompleteHitchReviewCycleInput> {
   const value = raw[key];
   return value === undefined ? {} : { [key]: parseNonNegativeInt(value, flag) };
 }
 
-function parseCycleCounts(value: unknown): Partial<CompleteReviewCycleInput> {
+function parseCycleCounts(value: unknown): Partial<CompleteHitchReviewCycleInput> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new GoalCliError("--from-findings must contain an object");
   }
@@ -1453,8 +1453,8 @@ function parseCycleCounts(value: unknown): Partial<CompleteReviewCycleInput> {
 
 function parseCountField(
   raw: Record<string, unknown>,
-  key: keyof CompleteReviewCycleInput,
-): Partial<CompleteReviewCycleInput> {
+  key: keyof CompleteHitchReviewCycleInput,
+): Partial<CompleteHitchReviewCycleInput> {
   return raw[key] === undefined
     ? {}
     : { [key]: parseNonNegativeInt(raw[key], key) };

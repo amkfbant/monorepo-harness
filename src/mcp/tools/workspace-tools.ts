@@ -9,8 +9,8 @@ import {
   OperationReplayedFailureError,
   runOperation,
 } from "../../operations/operation-runner.js";
-import { ConvergenceService } from "../../goal/convergence.js";
-import { GoalRepository } from "../../goal/repository.js";
+import { ConvergenceService } from "../../hitch/convergence.js";
+import { HitchRepository } from "../../hitch/repository.js";
 import {
   WorkspaceRepository,
   type WorkspaceRecord,
@@ -58,7 +58,7 @@ export function workspaceListTool(
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
     const repo = new WorkspaceRepository(db);
-    const goalRepo = new GoalRepository(db);
+    const goalRepo = new HitchRepository(db);
     const limit = normalizeLimit(args.limit, 200);
     // filter by agent IN the query so the limit cannot drop a match.
     const rows = repo.listAll({
@@ -66,28 +66,28 @@ export function workspaceListTool(
       ...(args.agent !== undefined ? { agent: args.agent } : {}),
     });
 
-    // Memoize per goalId: a workspace's project (for scoping) and the goal's
+    // Memoize per hitchId: a workspace's project (for scoping) and the goal's
     // convergence decision both come from the same session lookup.
     const goalCache = new Map<
       string,
       { decision: string | null; projectId: string | null }
     >();
-    const goalInfo = (
-      goalId: string | null,
+    const hitchInfo = (
+      hitchId: string | null,
     ): { decision: string | null; projectId: string | null } => {
-      if (goalId === null) return { decision: null, projectId: null };
-      const cached = goalCache.get(goalId);
+      if (hitchId === null) return { decision: null, projectId: null };
+      const cached = goalCache.get(hitchId);
       if (cached !== undefined) return cached;
-      const session = goalRepo.getSession(goalId);
+      const session = goalRepo.getSession(hitchId);
       const info =
         session === null
           ? { decision: null, projectId: null }
           : {
-              decision: new ConvergenceService(goalRepo).evaluate(goalId)
+              decision: new ConvergenceService(goalRepo).evaluate(hitchId)
                 .decision,
               projectId: session.projectId,
             };
-      goalCache.set(goalId, info);
+      goalCache.set(hitchId, info);
       return info;
     };
 
@@ -98,7 +98,7 @@ export function workspaceListTool(
     const allowed = context.config.allowedProjects;
     const restricted = allowed.length > 0;
     const kept = rows
-      .map((r) => ({ r, info: goalInfo(r.goalId) }))
+      .map((r) => ({ r, info: hitchInfo(r.hitchId) }))
       .filter(
         ({ info }) =>
           !restricted ||
@@ -114,7 +114,7 @@ export function workspaceListTool(
       branch: r.branch,
       worktreePath: r.worktreePath,
       status: r.status,
-      goalId: r.goalId,
+      hitchId: r.hitchId,
       goalDecision: info.decision,
       objective: r.objective,
       lastActiveAt: r.lastActiveAt,
@@ -197,7 +197,7 @@ export interface WorkspaceCheckpointArgs {
   repoPath: string;
   agent: string;
   note?: string;
-  goalId?: string;
+  hitchId?: string;
   objective?: string;
   idempotencyKey: string;
   actorNote?: string;
@@ -207,7 +207,7 @@ export interface WorkspaceCheckpointArgs {
  * `allowedProjects` scoping for a workspace mutation. Authorizes the EXISTING
  * workspace's linked-goal project FIRST (a restricted client may not touch an
  * unlinked / dangling / out-of-scope workspace — and an absent workspace is
- * denied rather than leaking its existence). When `args.goalId` re-links a new
+ * denied rather than leaking its existence). When `args.hitchId` re-links a new
  * goal, that goal's project must ALSO be allowed. Read-only; runs on the write
  * handle (after migrate) before the mutation. Returns permission_denied or null.
  */
@@ -217,10 +217,10 @@ function checkWorkspaceProjectScope(
   args: WorkspaceCheckpointArgs,
 ): HarnessMcpToolResult | null {
   const wsRepo = new WorkspaceRepository(db);
-  const goalRepo = new GoalRepository(db);
-  const projectAllowed = (goalId: string | null): boolean => {
-    if (goalId === null) return false;
-    const projectId = goalRepo.getSession(goalId)?.projectId ?? null;
+  const goalRepo = new HitchRepository(db);
+  const projectAllowed = (hitchId: string | null): boolean => {
+    if (hitchId === null) return false;
+    const projectId = goalRepo.getSession(hitchId)?.projectId ?? null;
     return projectId !== null && allowed.includes(projectId);
   };
   const deny = (): HarnessMcpToolResult =>
@@ -229,8 +229,8 @@ function checkWorkspaceProjectScope(
     });
 
   const existing = wsRepo.get(args.repoPath, args.agent);
-  if (existing === null || !projectAllowed(existing.goalId)) return deny();
-  if (args.goalId !== undefined && !projectAllowed(args.goalId)) return deny();
+  if (existing === null || !projectAllowed(existing.hitchId)) return deny();
+  if (args.hitchId !== undefined && !projectAllowed(args.hitchId)) return deny();
   return null;
 }
 
@@ -315,8 +315,8 @@ export async function workspaceCheckpointTool(
             `no workspace for agent "${args.agent}" in ${args.repoPath}`,
           );
         }
-        if (args.goalId !== undefined) {
-          repo.linkGoal(args.repoPath, args.agent, args.goalId);
+        if (args.hitchId !== undefined) {
+          repo.linkHitch(args.repoPath, args.agent, args.hitchId);
         }
         if (args.objective !== undefined) {
           repo.setObjective(args.repoPath, args.agent, args.objective);
@@ -328,7 +328,7 @@ export async function workspaceCheckpointTool(
           note: args.note ?? null,
           headSha: null,
           dirtyCount: 0,
-          goalId: args.goalId ?? record.goalId,
+          hitchId: args.hitchId ?? record.hitchId,
           createdBy: `mcp:${context.clientName}`,
         });
       },

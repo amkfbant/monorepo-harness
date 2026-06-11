@@ -59,7 +59,7 @@ describe("buildRecoveryBriefing nextSteps (deterministic)", () => {
       buildRecoveryBriefing({
         inspection: insp(),
         objective: null,
-        goal: { goalId: "g1", convergence: { decision, reason: "r", nextActionKind } },
+        goal: { hitchId: "g1", convergence: { decision, reason: "r", nextActionKind } },
         latestCheckpoint: null,
       }).nextSteps.join(" | ");
     expect(mk("needs_fix", "fix_findings")).toMatch(/run the coder for goal g1/);
@@ -76,7 +76,7 @@ describe("buildRecoveryBriefing nextSteps (deterministic)", () => {
       buildRecoveryBriefing({
         inspection: insp(),
         objective: null,
-        goal: { goalId: "g1", convergence: { decision, reason: "r", nextActionKind } },
+        goal: { hitchId: "g1", convergence: { decision, reason: "r", nextActionKind } },
         latestCheckpoint: null,
       }).nextSteps.join(" | ");
     // a future/unknown decision must not be guessed as "review".
@@ -95,7 +95,7 @@ describe("buildRecoveryBriefing nextSteps (deterministic)", () => {
       buildRecoveryBriefing({
         inspection: insp(),
         objective: null,
-        goal: { goalId: "g1", convergence: { decision: "continue", reason: "r", nextActionKind } },
+        goal: { hitchId: "g1", convergence: { decision: "continue", reason: "r", nextActionKind } },
         latestCheckpoint: null,
       }).nextSteps.join(" | ");
     expect(mk("defer_followups")).toMatch(/defer out-of-scope follow-ups for goal g1/);
@@ -107,7 +107,7 @@ describe("buildRecoveryBriefing nextSteps (deterministic)", () => {
     const b = buildRecoveryBriefing({
       inspection: insp(),
       objective: null,
-      goal: { goalId: "gone", convergence: null },
+      goal: { hitchId: "gone", convergence: null },
       latestCheckpoint: null,
     });
     expect(b.nextSteps.join(" ")).toMatch(/goal gone no longer exists/);

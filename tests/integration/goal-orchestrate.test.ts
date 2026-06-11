@@ -5,20 +5,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openManagedDb } from "../../src/db/managed-connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
-import { GoalRepository } from "../../src/goal/repository.js";
-import { GoalOrchestrator } from "../../src/goal/orchestrator.js";
-import { ConvergenceService } from "../../src/goal/convergence.js";
+import { HitchRepository } from "../../src/hitch/repository.js";
+import { HitchOrchestrator } from "../../src/hitch/orchestrator.js";
+import { ConvergenceService } from "../../src/hitch/convergence.js";
 import {
   awaitGoalMerge,
   awaitStepFromCloseResult,
   type AwaitMergeStep,
-} from "../../src/goal/await-merge.js";
+} from "../../src/hitch/await-merge.js";
 import {
   createOrchestratorRunners,
   GoalNotCloseReadyError,
   latestRunId,
   type GoalRunContext,
-} from "../../src/goal/orchestrator-runners.js";
+} from "../../src/hitch/orchestrator-runners.js";
 import { createFakeCodexRunner } from "../../src/codex/fake-codex-runner.js";
 import { runDomainCoding } from "../../src/core/workflow-runner.js";
 import {
@@ -107,15 +107,15 @@ function setup(): Fixture {
 
 function createGoal(
   dbPath: string,
-  goalId = "goal-orch-e2e",
+  hitchId = "goal-orch-e2e",
   domain = "apps/user",
 ): string {
   const { db, close } = openManagedDb({ dbPath });
   try {
     runMigrations(db);
-    const repo = new GoalRepository(db);
+    const repo = new HitchRepository(db);
     repo.createSession({
-      goalId,
+      hitchId,
       title: "Add a field to the user profile",
       description: `update ${domain}`,
       repoId: "t",
@@ -128,7 +128,7 @@ function createGoal(
       createdBy: "test",
       createdSource: "worker",
     });
-    return goalId;
+    return hitchId;
   } finally {
     close();
   }
@@ -191,7 +191,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
   });
 
   it("drives coder → review → close to a PR", async () => {
-    const goalId = createGoal(f.dbPath);
+    const hitchId = createGoal(f.dbPath);
 
     const coderRunner = createFakeCodexRunner({
       edit: async (cwd) => {
@@ -253,9 +253,9 @@ describe("goal orchestrate (real git + fake codex)", () => {
     {
       const { db, close } = openManagedDb({ dbPath: f.dbPath });
       try {
-        const repo = new GoalRepository(db);
+        const repo = new HitchRepository(db);
         const attempt = repo.createAttempt({
-          goalId,
+          hitchId,
           attemptType: "implement",
           status: "running",
         });
@@ -269,8 +269,8 @@ describe("goal orchestrate (real git + fake codex)", () => {
       }
     }
 
-    const result = await new GoalOrchestrator({ dbPath: f.dbPath }).run({
-      goalId,
+    const result = await new HitchOrchestrator({ dbPath: f.dbPath }).run({
+      hitchId,
       runners,
       maxSteps: 20,
       createdBy: "test",
@@ -293,13 +293,13 @@ describe("goal orchestrate (real git + fake codex)", () => {
     // the goal recorded an implement attempt, a review cycle, and is closed.
     const { db, close } = openManagedDb({ dbPath: f.dbPath });
     try {
-      const repo = new GoalRepository(db);
-      const session = repo.requireSession(goalId);
+      const repo = new HitchRepository(db);
+      const session = repo.requireSession(hitchId);
       expect(session.status).toBe("closed");
-      const attempts = repo.listAttempts(goalId);
+      const attempts = repo.listAttempts(hitchId);
       expect(attempts.some((a) => a.attemptType === "implement")).toBe(true);
       expect(attempts.some((a) => a.runId !== null)).toBe(true);
-      expect(repo.listReviewCycles(goalId).length).toBeGreaterThan(0);
+      expect(repo.listReviewCycles(hitchId).length).toBeGreaterThan(0);
     } finally {
       close();
     }
@@ -310,7 +310,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
     // for a goal with zero coding attempts (iterationsUsed===0), so the
     // orchestrator's first loop step is `coder` (the gate permits run.start
     // for needs_fix), which drives the initial run itself.
-    const goalId = createGoal(f.dbPath, "goal-orch-empty");
+    const hitchId = createGoal(f.dbPath, "goal-orch-empty");
 
     const coderRunner = createFakeCodexRunner({
       edit: async (cwd) => {
@@ -352,8 +352,8 @@ describe("goal orchestrate (real git + fake codex)", () => {
       resolveRunContext,
     });
 
-    const result = await new GoalOrchestrator({ dbPath: f.dbPath }).run({
-      goalId,
+    const result = await new HitchOrchestrator({ dbPath: f.dbPath }).run({
+      hitchId,
       runners,
       maxSteps: 20,
       createdBy: "test",
@@ -379,22 +379,22 @@ describe("goal orchestrate (real git + fake codex)", () => {
 
     const { db, close } = openManagedDb({ dbPath: f.dbPath });
     try {
-      const repo = new GoalRepository(db);
-      expect(repo.requireSession(goalId).status).toBe("closed");
-      const attempts = repo.listAttempts(goalId);
+      const repo = new HitchRepository(db);
+      expect(repo.requireSession(hitchId).status).toBe("closed");
+      const attempts = repo.listAttempts(hitchId);
       // the implement attempt was created BY THE ORCHESTRATOR (not seeded)
       // and carries the runId of the run it drove.
       const implement = attempts.find((a) => a.attemptType === "implement");
       expect(implement).toBeDefined();
       expect(implement?.runId).toMatch(/^run-/);
-      expect(repo.listReviewCycles(goalId).length).toBeGreaterThan(0);
+      expect(repo.listReviewCycles(hitchId).length).toBeGreaterThan(0);
     } finally {
       close();
     }
   });
 
   it("repairs a coder run whose review-decision.yaml is missing, then finalizes", async () => {
-    const goalId = createGoal(f.dbPath, "goal-orch-repair-missing-decision");
+    const hitchId = createGoal(f.dbPath, "goal-orch-repair-missing-decision");
     const { coderRunner, reviewerRunner } = approveFakes("docs/guide.md");
     const publisher = fakePublisher();
     const resolveRunContext = (): GoalRunContext => ({
@@ -421,9 +421,9 @@ describe("goal orchestrate (real git + fake codex)", () => {
     {
       const { db, close } = openManagedDb({ dbPath: f.dbPath });
       try {
-        const repo = new GoalRepository(db);
+        const repo = new HitchRepository(db);
         const attempt = repo.createAttempt({
-          goalId,
+          hitchId,
           attemptType: "implement",
           status: "running",
         });
@@ -446,8 +446,8 @@ describe("goal orchestrate (real git + fake codex)", () => {
       publisher,
       resolveRunContext,
     });
-    const result = await new GoalOrchestrator({ dbPath: f.dbPath }).run({
-      goalId,
+    const result = await new HitchOrchestrator({ dbPath: f.dbPath }).run({
+      hitchId,
       runners,
       maxSteps: 20,
       createdBy: "test",
@@ -469,7 +469,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
   });
 
   it("on review failure, escalates with the salvaged workspace branch and opens no PR", async () => {
-    const goalId = createGoal(f.dbPath, "goal-orch-salvage-review-failure");
+    const hitchId = createGoal(f.dbPath, "goal-orch-salvage-review-failure");
     const coderRunner = createFakeCodexRunner({
       edit: async (cwd) => {
         writeFileSync(join(cwd, "docs/guide.md"), "# Guide\n\nChanged.\n");
@@ -496,8 +496,8 @@ describe("goal orchestrate (real git + fake codex)", () => {
       }),
     });
 
-    const result = await new GoalOrchestrator({ dbPath: f.dbPath }).run({
-      goalId,
+    const result = await new HitchOrchestrator({ dbPath: f.dbPath }).run({
+      hitchId,
       runners,
       maxSteps: 20,
       createdBy: "test",
@@ -516,9 +516,9 @@ describe("goal orchestrate (real git + fake codex)", () => {
 
     const { db, close } = openManagedDb({ dbPath: f.dbPath });
     try {
-      const repo = new GoalRepository(db);
-      expect(repo.requireSession(goalId).status).toBe("escalated");
-      const runId = latestRunId(repo, goalId);
+      const repo = new HitchRepository(db);
+      expect(repo.requireSession(hitchId).status).toBe("escalated");
+      const runId = latestRunId(repo, hitchId);
       const run = db
         .prepare("SELECT status FROM runs WHERE run_id = ?")
         .get(runId) as { status: string };
@@ -532,7 +532,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
   // approved review_consensus, so the merge gate's approval condition is met;
   // ciStatus / the merger control the outcome.
   async function driveWithAutoMerge(opts: {
-    goalId: string;
+    hitchId: string;
     ciGreen: boolean;
     merger: PrMerger;
     domain?: string;
@@ -575,8 +575,8 @@ describe("goal orchestrate (real git + fake codex)", () => {
           : {}),
       },
     });
-    return new GoalOrchestrator({ dbPath: f.dbPath }).run({
-      goalId: opts.goalId,
+    return new HitchOrchestrator({ dbPath: f.dbPath }).run({
+      hitchId: opts.hitchId,
       runners,
       maxSteps: 20,
       createdBy: "test",
@@ -584,9 +584,9 @@ describe("goal orchestrate (real git + fake codex)", () => {
   }
 
   it("auto-merge: merges the PR when the gate passes (consensus approved + CI green)", async () => {
-    const goalId = createGoal(f.dbPath, "goal-merge-ok", "docs");
+    const hitchId = createGoal(f.dbPath, "goal-merge-ok", "docs");
     const merger = fakeMerger("ok");
-    const result = await driveWithAutoMerge({ goalId, ciGreen: true, merger });
+    const result = await driveWithAutoMerge({ hitchId, ciGreen: true, merger });
 
     expect(result.outcome).toBe("merged");
     expect(merger.calls).toHaveLength(1);
@@ -595,7 +595,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
 
     const { db, close } = openManagedDb({ dbPath: f.dbPath });
     try {
-      expect(new GoalRepository(db).requireSession(goalId).status).toBe("closed");
+      expect(new HitchRepository(db).requireSession(hitchId).status).toBe("closed");
       // the merge was audited.
       const op = db
         .prepare("SELECT status, operation_type FROM operations WHERE operation_type = 'merge'")
@@ -607,10 +607,10 @@ describe("goal orchestrate (real git + fake codex)", () => {
   });
 
   it("auto-merge: an external CHANGES_REQUESTED review is ingested as a finding and escalates (fail-closed)", async () => {
-    const goalId = createGoal(f.dbPath, "goal-merge-extreview", "docs");
+    const hitchId = createGoal(f.dbPath, "goal-merge-extreview", "docs");
     const merger = fakeMerger("ok");
     const result = await driveWithAutoMerge({
-      goalId,
+      hitchId,
       ciGreen: true,
       merger,
       reviewVerdicts: async () => [
@@ -624,8 +624,8 @@ describe("goal orchestrate (real git + fake codex)", () => {
     expect(merger.calls).toHaveLength(0);
     const { db, close } = openManagedDb({ dbPath: f.dbPath });
     try {
-      const ext = new GoalRepository(db)
-        .listFindings({ goalId })
+      const ext = new HitchRepository(db)
+        .listFindings({ hitchId })
         .find((x) => x.category === "external-review-changes-requested");
       expect(ext).toBeDefined();
       expect(ext?.scopeStatus).toBe("unknown");
@@ -635,10 +635,10 @@ describe("goal orchestrate (real git + fake codex)", () => {
   });
 
   it("auto-merge: an external APPROVED review does NOT gate (CI-green merge proceeds)", async () => {
-    const goalId = createGoal(f.dbPath, "goal-merge-extapprove", "docs");
+    const hitchId = createGoal(f.dbPath, "goal-merge-extapprove", "docs");
     const merger = fakeMerger("ok");
     const result = await driveWithAutoMerge({
-      goalId,
+      hitchId,
       ciGreen: true,
       merger,
       reviewVerdicts: async () => [{ author: "copilot", state: "APPROVED" }],
@@ -651,7 +651,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
   });
 
   it("auto-merge: bounded await polls until a late external CHANGES_REQUESTED appears, then escalates", async () => {
-    const goalId = createGoal(f.dbPath, "goal-merge-extawait", "docs");
+    const hitchId = createGoal(f.dbPath, "goal-merge-extawait", "docs");
     const merger = fakeMerger("ok");
     // The reviewer is slow: the first two fetches see nothing, the third posts a
     // blocking verdict — the bounded await must keep polling and catch it.
@@ -659,7 +659,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
     const sleeps: number[] = [];
     let clock = 0;
     const result = await driveWithAutoMerge({
-      goalId,
+      hitchId,
       ciGreen: true,
       merger,
       reviewVerdicts: async () => {
@@ -686,8 +686,8 @@ describe("goal orchestrate (real git + fake codex)", () => {
     expect(sleeps).toEqual([15_000, 15_000]);
     const { db, close } = openManagedDb({ dbPath: f.dbPath });
     try {
-      const ext = new GoalRepository(db)
-        .listFindings({ goalId })
+      const ext = new HitchRepository(db)
+        .listFindings({ hitchId })
         .find((x) => x.category === "external-review-changes-requested");
       expect(ext).toBeDefined();
     } finally {
@@ -696,12 +696,12 @@ describe("goal orchestrate (real git + fake codex)", () => {
   });
 
   it("auto-merge: bounded await proceeds to merge when no blocking verdict appears before the budget is spent", async () => {
-    const goalId = createGoal(f.dbPath, "goal-merge-extawait-clean", "docs");
+    const hitchId = createGoal(f.dbPath, "goal-merge-extawait-clean", "docs");
     const merger = fakeMerger("ok");
     let fetchCount = 0;
     let clock = 0;
     const result = await driveWithAutoMerge({
-      goalId,
+      hitchId,
       ciGreen: true,
       merger,
       reviewVerdicts: async () => {
@@ -727,9 +727,9 @@ describe("goal orchestrate (real git + fake codex)", () => {
   });
 
   it("auto-merge: pins the merge to the reviewed commit (from createPullRequest)", async () => {
-    const goalId = createGoal(f.dbPath, "goal-merge-pin", "docs");
+    const hitchId = createGoal(f.dbPath, "goal-merge-pin", "docs");
     const merger = fakeMerger("ok");
-    const result = await driveWithAutoMerge({ goalId, ciGreen: true, merger });
+    const result = await driveWithAutoMerge({ hitchId, ciGreen: true, merger });
     expect(result.outcome).toBe("merged");
     // the pinned SHA is the run branch's reviewed commit (a real, resolvable
     // git SHA), not a later-observed PR head.
@@ -743,9 +743,9 @@ describe("goal orchestrate (real git + fake codex)", () => {
   });
 
   it("auto-merge: CI-not-green leaves the PR open and the goal close_ready (re-checkable)", async () => {
-    const goalId = createGoal(f.dbPath, "goal-merge-ci", "docs");
+    const hitchId = createGoal(f.dbPath, "goal-merge-ci", "docs");
     const merger = fakeMerger("ok");
-    const result = await driveWithAutoMerge({ goalId, ciGreen: false, merger });
+    const result = await driveWithAutoMerge({ hitchId, ciGreen: false, merger });
 
     expect(result.outcome).toBe("pr_created");
     expect(merger.calls).toHaveLength(0);
@@ -753,7 +753,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
     try {
       // NOT closed: a CI-not-green transient is re-checkable, so the goal is
       // left close_ready with the PR open for a later merge.
-      expect(new GoalRepository(db).requireSession(goalId).status).toBe(
+      expect(new HitchRepository(db).requireSession(hitchId).status).toBe(
         "close_ready",
       );
     } finally {
@@ -762,10 +762,10 @@ describe("goal orchestrate (real git + fake codex)", () => {
   });
 
   it("auto-merge: a close_ready (CI-not-green) goal merges on a later re-run", async () => {
-    const goalId = createGoal(f.dbPath, "goal-merge-recheck", "docs");
+    const hitchId = createGoal(f.dbPath, "goal-merge-recheck", "docs");
     // first pass: CI not green → PR open, goal left close_ready.
     const first = await driveWithAutoMerge({
-      goalId,
+      hitchId,
       ciGreen: false,
       merger: fakeMerger("ok"),
     });
@@ -773,7 +773,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
     {
       const { db, close } = openManagedDb({ dbPath: f.dbPath });
       try {
-        expect(new GoalRepository(db).requireSession(goalId).status).toBe(
+        expect(new HitchRepository(db).requireSession(hitchId).status).toBe(
           "close_ready",
         );
       } finally {
@@ -782,13 +782,13 @@ describe("goal orchestrate (real git + fake codex)", () => {
     }
     // second pass: CI now green → re-enters closeAndPr (idempotent PR) and merges.
     const merger = fakeMerger("ok");
-    const second = await driveWithAutoMerge({ goalId, ciGreen: true, merger });
+    const second = await driveWithAutoMerge({ hitchId, ciGreen: true, merger });
     expect(second.outcome).toBe("merged");
     expect(merger.calls).toHaveLength(1);
     {
       const { db, close } = openManagedDb({ dbPath: f.dbPath });
       try {
-        expect(new GoalRepository(db).requireSession(goalId).status).toBe(
+        expect(new HitchRepository(db).requireSession(hitchId).status).toBe(
           "closed",
         );
       } finally {
@@ -798,10 +798,10 @@ describe("goal orchestrate (real git + fake codex)", () => {
   });
 
   it("await-merge: the poll loop auto-merges a close_ready (CI-not-green) goal once CI greens", async () => {
-    const goalId = createGoal(f.dbPath, "goal-awaitmerge-e2e", "docs");
+    const hitchId = createGoal(f.dbPath, "goal-awaitmerge-e2e", "docs");
     // reach close_ready + PR open with CI not green → goal stays close_ready.
     const first = await driveWithAutoMerge({
-      goalId,
+      hitchId,
       ciGreen: false,
       merger: fakeMerger("ok"),
     });
@@ -837,14 +837,14 @@ describe("goal orchestrate (real git + fake codex)", () => {
       const { db, close } = openManagedDb({ dbPath: f.dbPath });
       let decision: string;
       try {
-        decision = new ConvergenceService(new GoalRepository(db)).evaluate(
-          goalId,
+        decision = new ConvergenceService(new HitchRepository(db)).evaluate(
+          hitchId,
         ).decision;
       } finally {
         close();
       }
       if (decision !== "close_ready") return { kind: "not_awaiting", decision };
-      const r = await runners.closeAndPr(goalId);
+      const r = await runners.closeAndPr(hitchId);
       return awaitStepFromCloseResult(r);
     };
 
@@ -866,7 +866,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
     expect(merger.calls).toHaveLength(1);
     const { db, close } = openManagedDb({ dbPath: f.dbPath });
     try {
-      expect(new GoalRepository(db).requireSession(goalId).status).toBe(
+      expect(new HitchRepository(db).requireSession(hitchId).status).toBe(
         "closed",
       );
     } finally {
@@ -877,7 +877,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
   it("stopAtCloseReady halts before the PR (no publisher needed) and returns close_ready", async () => {
     // drives an empty goal: coder → review → close_ready, then HALTS without
     // running closeAndPr (the classify --then-rerun contract: rerun, don't PR).
-    const goalId = createGoal(f.dbPath, "goal-stopclose", "docs");
+    const hitchId = createGoal(f.dbPath, "goal-stopclose", "docs");
     const { coderRunner, reviewerRunner } = approveFakes("docs/guide.md");
     const publisher = fakePublisher();
     const runners = createOrchestratorRunners({
@@ -895,8 +895,8 @@ describe("goal orchestrate (real git + fake codex)", () => {
         baseBranch: "main",
       }),
     });
-    const result = await new GoalOrchestrator({ dbPath: f.dbPath }).run({
-      goalId,
+    const result = await new HitchOrchestrator({ dbPath: f.dbPath }).run({
+      hitchId,
       runners,
       maxSteps: 20,
       createdBy: "test",
@@ -907,7 +907,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
     const { db, close } = openManagedDb({ dbPath: f.dbPath });
     try {
       // the goal is NOT closed — it is left close_ready for a deliberate PR step.
-      expect(new GoalRepository(db).requireSession(goalId).status).toBe(
+      expect(new HitchRepository(db).requireSession(hitchId).status).toBe(
         "close_ready",
       );
     } finally {
@@ -917,7 +917,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
 
   it("closeAndPr throws a typed GoalNotCloseReadyError on a non-close_ready goal (drift signal)", async () => {
     // a fresh goal sits at `continue` (needs a run/review), not close_ready.
-    const goalId = createGoal(f.dbPath, "goal-notready", "docs");
+    const hitchId = createGoal(f.dbPath, "goal-notready", "docs");
     const { coderRunner, reviewerRunner } = approveFakes("docs/guide.md");
     const runners = createOrchestratorRunners({
       dbPath: f.dbPath,
@@ -939,20 +939,20 @@ describe("goal orchestrate (real git + fake codex)", () => {
       },
     });
     // the typed error lets await-merge tell a benign drift from a real failure.
-    await expect(runners.closeAndPr(goalId)).rejects.toBeInstanceOf(
+    await expect(runners.closeAndPr(hitchId)).rejects.toBeInstanceOf(
       GoalNotCloseReadyError,
     );
-    await runners.closeAndPr(goalId).catch((e: unknown) => {
+    await runners.closeAndPr(hitchId).catch((e: unknown) => {
       expect(e).toBeInstanceOf(GoalNotCloseReadyError);
       expect((e as GoalNotCloseReadyError).decision).not.toBe("close_ready");
     });
   });
 
   it("auto-merge: tier-2 paths leave the PR open even with CI green and consensus", async () => {
-    const goalId = createGoal(f.dbPath, "goal-merge-tier2", "src/policy");
+    const hitchId = createGoal(f.dbPath, "goal-merge-tier2", "src/policy");
     const merger = fakeMerger("ok");
     const result = await driveWithAutoMerge({
-      goalId,
+      hitchId,
       ciGreen: true,
       merger,
       domain: "src/policy",
@@ -963,7 +963,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
     expect(merger.calls).toHaveLength(0);
     const { db, close } = openManagedDb({ dbPath: f.dbPath });
     try {
-      expect(new GoalRepository(db).requireSession(goalId).status).toBe("closed");
+      expect(new HitchRepository(db).requireSession(hitchId).status).toBe("closed");
       const op = db
         .prepare("SELECT COUNT(*) c FROM operations WHERE operation_type = 'merge'")
         .get() as { c: number };
@@ -974,15 +974,15 @@ describe("goal orchestrate (real git + fake codex)", () => {
   });
 
   it("auto-merge: a merge failure escalates (fail-closed), audited as failed", async () => {
-    const goalId = createGoal(f.dbPath, "goal-merge-fail", "docs");
+    const hitchId = createGoal(f.dbPath, "goal-merge-fail", "docs");
     const merger = fakeMerger("throw");
-    const result = await driveWithAutoMerge({ goalId, ciGreen: true, merger });
+    const result = await driveWithAutoMerge({ hitchId, ciGreen: true, merger });
 
     expect(result.outcome).toBe("escalated");
     expect(merger.calls).toHaveLength(1);
     const { db, close } = openManagedDb({ dbPath: f.dbPath });
     try {
-      expect(new GoalRepository(db).requireSession(goalId).status).toBe("escalated");
+      expect(new HitchRepository(db).requireSession(hitchId).status).toBe("escalated");
       const op = db
         .prepare("SELECT status FROM operations WHERE operation_type = 'merge'")
         .get() as { status: string } | undefined;
@@ -996,7 +996,7 @@ describe("goal orchestrate (real git + fake codex)", () => {
     // No `autoMerge` in deps → the merger is never constructed/called and the
     // goal terminates at pr_created (covered by the main flow, asserted here
     // explicitly for the opt-in default).
-    const goalId = createGoal(f.dbPath, "goal-merge-off", "docs");
+    const hitchId = createGoal(f.dbPath, "goal-merge-off", "docs");
     const { coderRunner, reviewerRunner } = approveFakes();
     const runners = createOrchestratorRunners({
       dbPath: f.dbPath,
@@ -1013,8 +1013,8 @@ describe("goal orchestrate (real git + fake codex)", () => {
         baseBranch: "main",
       }),
     });
-    const result = await new GoalOrchestrator({ dbPath: f.dbPath }).run({
-      goalId,
+    const result = await new HitchOrchestrator({ dbPath: f.dbPath }).run({
+      hitchId,
       runners,
       maxSteps: 20,
       createdBy: "test",

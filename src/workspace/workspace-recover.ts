@@ -8,16 +8,16 @@ import type { WorkspaceInspection } from "./agent-workspace.js";
  * `nextSteps` are projected from the deterministic signals only (§0 asymmetry).
  */
 
-export interface RecoveryGoalConvergence {
+export interface RecoveryHitchConvergence {
   decision: string;
   reason: string;
   nextActionKind: string;
 }
 
-export interface RecoveryGoal {
-  goalId: string;
+export interface RecoveryHitch {
+  hitchId: string;
   /** null when the linked goal no longer exists (a dangling advisory link). */
-  convergence: RecoveryGoalConvergence | null;
+  convergence: RecoveryHitchConvergence | null;
 }
 
 export interface RecoveryCheckpoint {
@@ -29,7 +29,7 @@ export interface RecoveryCheckpoint {
 export interface RecoveryBriefingInput {
   inspection: WorkspaceInspection;
   objective: string | null;
-  goal: RecoveryGoal | null;
+  goal: RecoveryHitch | null;
   latestCheckpoint: RecoveryCheckpoint | null;
 }
 
@@ -63,17 +63,17 @@ function computeNextSteps(input: RecoveryBriefingInput): string[] {
   if (goal !== null) {
     if (goal.convergence === null) {
       steps.push(
-        `linked goal ${goal.goalId} no longer exists — re-link or clear it`,
+        `linked goal ${goal.hitchId} no longer exists — re-link or clear it`,
       );
     } else {
       const { decision, reason, nextActionKind } = goal.convergence;
       switch (decision) {
         case "needs_fix":
-          steps.push(`run the coder for goal ${goal.goalId} (needs_fix: ${reason})`);
+          steps.push(`run the coder for goal ${goal.hitchId} (needs_fix: ${reason})`);
           break;
         case "needs_classification":
           steps.push(
-            `classify unknown-scope findings for goal ${goal.goalId}`,
+            `classify unknown-scope findings for goal ${goal.hitchId}`,
           );
           break;
         case "continue":
@@ -82,21 +82,21 @@ function computeNextSteps(input: RecoveryBriefingInput): string[] {
           // rather than guessing "review".
           if (nextActionKind === "defer_followups") {
             steps.push(
-              `defer out-of-scope follow-ups for goal ${goal.goalId} before closing`,
+              `defer out-of-scope follow-ups for goal ${goal.hitchId} before closing`,
             );
           } else if (nextActionKind === "run_close_check") {
             steps.push(
-              `run review / record close-check evidence for goal ${goal.goalId}`,
+              `run review / record close-check evidence for goal ${goal.hitchId}`,
             );
           } else {
             steps.push(
-              `goal ${goal.goalId} needs an unsupported action ` +
+              `goal ${goal.hitchId} needs an unsupported action ` +
                 `(continue/${nextActionKind}) — escalate`,
             );
           }
           break;
         case "close_ready":
-          steps.push(`close goal ${goal.goalId} and open the PR`);
+          steps.push(`close goal ${goal.hitchId} and open the PR`);
           break;
         case "closed":
         case "cancel":
@@ -104,12 +104,12 @@ function computeNextSteps(input: RecoveryBriefingInput): string[] {
         case "diverging":
         case "budget_exhausted":
         case "escalate":
-          steps.push(`escalate goal ${goal.goalId} (${decision}: ${reason})`);
+          steps.push(`escalate goal ${goal.hitchId} (${decision}: ${reason})`);
           break;
         default:
           // an unrecognized decision is fail-closed: escalate, never guess.
           steps.push(
-            `goal ${goal.goalId} has an unrecognized convergence decision ` +
+            `goal ${goal.hitchId} has an unrecognized convergence decision ` +
               `(${decision}) — escalate`,
           );
       }

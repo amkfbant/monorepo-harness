@@ -18,7 +18,7 @@ import {
   listMcpConfirmationRequests,
 } from "../../../src/mcp/security/confirmation.js";
 import { processReviewDecision } from "../../../src/core/review-processor.js";
-import { GoalRepository } from "../../../src/goal/repository.js";
+import { HitchRepository } from "../../../src/hitch/repository.js";
 
 function freshRoot(seed: (db: Database.Database, root: string) => void = () => {}): string {
   const root = mkdtempSync(join(tmpdir(), "harness-mcp-mut-"));
@@ -1182,15 +1182,15 @@ describe("MCP mutation, confirmation, and audit", () => {
 
   it("rejects goal-linked run.start when convergence is budget_exhausted", async () => {
     const root = freshRoot((db) => {
-      new GoalRepository(db).createSession({
-        goalId: "goal-budget-stop",
+      new HitchRepository(db).createSession({
+        hitchId: "goal-budget-stop",
         title: "Budget exhausted goal",
         projectId: "demo",
         domain: "apps/web",
         createdBy: "test",
         createdSource: "mcp",
       });
-      new GoalRepository(db).updateStatus(
+      new HitchRepository(db).updateStatus(
         "goal-budget-stop",
         "budget_exhausted",
         "budget exhausted",
@@ -1208,7 +1208,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         projectId: "demo",
         domain: "apps/web",
         goal: "Should be blocked",
-        goalId: "goal-budget-stop",
+        hitchId: "goal-budget-stop",
         idempotencyKey: "goal-budget-stop-run",
       },
     );
@@ -1231,7 +1231,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         projectId: "demo",
         domain: "apps/web",
         goal: "Should be blocked",
-        goalId: "goal-does-not-exist",
+        hitchId: "goal-does-not-exist",
         idempotencyKey: "goal-missing-run",
       },
     );
@@ -1244,9 +1244,9 @@ describe("MCP mutation, confirmation, and audit", () => {
   it("rejects goal-linked rerun.start when convergence needs classification", async () => {
     const root = freshRoot((db) => {
       seedRun(db, "run-needs-classification", "demo");
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       repo.createSession({
-        goalId: "goal-needs-classification",
+        hitchId: "goal-needs-classification",
         title: "Needs classification",
         projectId: "demo",
         repoId: "demo-repo",
@@ -1256,7 +1256,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         createdSource: "mcp",
       });
       repo.upsertFinding({
-        goalId: "goal-needs-classification",
+        hitchId: "goal-needs-classification",
         source: "review",
         severity: "P2",
         category: "correctness",
@@ -1274,7 +1274,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       "harness.rerun.start",
       {
         runId: "run-needs-classification",
-        goalId: "goal-needs-classification",
+        hitchId: "goal-needs-classification",
         idempotencyKey: "goal-classification-rerun",
       },
     );
@@ -1285,9 +1285,9 @@ describe("MCP mutation, confirmation, and audit", () => {
 
   it("rejects goal-linked run.start when convergence is close_ready", async () => {
     const root = freshRoot((db) => {
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       repo.createSession({
-        goalId: "goal-close-ready",
+        hitchId: "goal-close-ready",
         title: "Close ready",
         projectId: "demo",
         domain: "apps/web",
@@ -1296,7 +1296,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         createdSource: "mcp",
       });
       repo.recordCloseCheck({
-        goalId: "goal-close-ready",
+        hitchId: "goal-close-ready",
         conditionId: "typecheck",
         status: "passed",
         checkedBy: "test",
@@ -1314,7 +1314,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         projectId: "demo",
         domain: "apps/web",
         goal: "Should be blocked",
-        goalId: "goal-close-ready",
+        hitchId: "goal-close-ready",
         idempotencyKey: "goal-close-ready-run",
       },
     );
@@ -1326,9 +1326,9 @@ describe("MCP mutation, confirmation, and audit", () => {
   it("rejects goal-linked run.start when close checks are pending", async () => {
     const root = freshRoot((db) => {
       seedRun(db, "run-close-check-pending", "demo");
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       repo.createSession({
-        goalId: "goal-close-check-pending",
+        hitchId: "goal-close-check-pending",
         title: "Close check pending",
         projectId: "demo",
         repoId: "demo-repo",
@@ -1339,7 +1339,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       });
       // a coding pass has already run; the goal awaits close-check evidence.
       repo.createAttempt({
-        goalId: "goal-close-check-pending",
+        hitchId: "goal-close-check-pending",
         attemptType: "implement",
       });
     });
@@ -1355,7 +1355,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         projectId: "demo",
         domain: "apps/web",
         goal: "Should run close check first",
-        goalId: "goal-close-check-pending",
+        hitchId: "goal-close-check-pending",
         idempotencyKey: "goal-close-check-pending-run",
       },
     );
@@ -1373,7 +1373,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       "harness.rerun.start",
       {
         runId: "run-close-check-pending",
-        goalId: "goal-close-check-pending",
+        hitchId: "goal-close-check-pending",
         idempotencyKey: "goal-close-check-pending-rerun",
       },
     );
@@ -1384,9 +1384,9 @@ describe("MCP mutation, confirmation, and audit", () => {
   it("allows goal-linked review.auto when close-check evidence is pending", async () => {
     const root = freshRoot((db, harnessRoot) => {
       seedReviewableRun(db, harnessRoot, { runId: "run-review-auto-close-check" });
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       repo.createSession({
-        goalId: "goal-review-auto-close-check",
+        hitchId: "goal-review-auto-close-check",
         title: "Review auto close check",
         projectId: "demo",
         repoId: "demo-repo",
@@ -1399,7 +1399,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       });
       // a coding pass has already run; the goal awaits close-check evidence.
       repo.createAttempt({
-        goalId: "goal-review-auto-close-check",
+        hitchId: "goal-review-auto-close-check",
         attemptType: "implement",
       });
     });
@@ -1413,7 +1413,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       "harness.review.auto",
       {
         runId: "run-review-auto-close-check",
-        goalId: "goal-review-auto-close-check",
+        hitchId: "goal-review-auto-close-check",
         idempotencyKey: "goal-review-auto-close-check",
       },
     );
@@ -1425,9 +1425,9 @@ describe("MCP mutation, confirmation, and audit", () => {
   it("rejects goal-linked implementation mutations when follow-ups need deferral", async () => {
     const root = freshRoot((db) => {
       seedRun(db, "run-defer-followups", "demo");
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       repo.createSession({
-        goalId: "goal-defer-followups",
+        hitchId: "goal-defer-followups",
         title: "Defer followups",
         projectId: "demo",
         repoId: "demo-repo",
@@ -1437,7 +1437,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         createdSource: "mcp",
       });
       repo.upsertFinding({
-        goalId: "goal-defer-followups",
+        hitchId: "goal-defer-followups",
         source: "review",
         severity: "P2",
         category: "follow-up",
@@ -1445,7 +1445,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         summary: "Defer this dashboard follow-up",
       });
       repo.recordCloseCheck({
-        goalId: "goal-defer-followups",
+        hitchId: "goal-defer-followups",
         conditionId: "typecheck",
         status: "passed",
         checkedBy: "test",
@@ -1463,7 +1463,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       projectId: "demo",
       domain: "apps/web",
       goal: "Should defer followups first",
-      goalId: "goal-defer-followups",
+      hitchId: "goal-defer-followups",
       idempotencyKey: "goal-defer-followups-run",
     });
     expect(run.status).toBe("permission_denied");
@@ -1471,7 +1471,7 @@ describe("MCP mutation, confirmation, and audit", () => {
 
     const rerun = await callTool(s, "harness.rerun.start", {
       runId: "run-defer-followups",
-      goalId: "goal-defer-followups",
+      hitchId: "goal-defer-followups",
       idempotencyKey: "goal-defer-followups-rerun",
     });
     expect(rerun.status).toBe("permission_denied");
@@ -1480,9 +1480,9 @@ describe("MCP mutation, confirmation, and audit", () => {
 
   it("allows goal-linked run.start gate when convergence needs a fix", async () => {
     const root = freshRoot((db) => {
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       repo.createSession({
-        goalId: "goal-needs-fix",
+        hitchId: "goal-needs-fix",
         title: "Needs fix",
         projectId: "demo",
         domain: "apps/web",
@@ -1491,7 +1491,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         createdSource: "mcp",
       });
       repo.upsertFinding({
-        goalId: "goal-needs-fix",
+        hitchId: "goal-needs-fix",
         source: "review",
         severity: "P1",
         category: "correctness",
@@ -1511,7 +1511,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         projectId: "demo",
         domain: "apps/web",
         goal: "Allowed past goal gate",
-        goalId: "goal-needs-fix",
+        hitchId: "goal-needs-fix",
         idempotencyKey: "goal-needs-fix-run",
       },
     );
@@ -1523,9 +1523,9 @@ describe("MCP mutation, confirmation, and audit", () => {
   it("allows goal-linked rerun.start gate when convergence needs a fix", async () => {
     const root = freshRoot((db) => {
       seedRun(db, "run-needs-fix-rerun", "demo");
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       repo.createSession({
-        goalId: "goal-needs-fix-rerun",
+        hitchId: "goal-needs-fix-rerun",
         title: "Needs fix rerun",
         projectId: "demo",
         repoId: "demo-repo",
@@ -1535,7 +1535,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         createdSource: "mcp",
       });
       repo.upsertFinding({
-        goalId: "goal-needs-fix-rerun",
+        hitchId: "goal-needs-fix-rerun",
         source: "review",
         severity: "P1",
         category: "correctness",
@@ -1553,7 +1553,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       "harness.rerun.start",
       {
         runId: "run-needs-fix-rerun",
-        goalId: "goal-needs-fix-rerun",
+        hitchId: "goal-needs-fix-rerun",
         idempotencyKey: "goal-needs-fix-rerun",
       },
     );
@@ -1565,9 +1565,9 @@ describe("MCP mutation, confirmation, and audit", () => {
   it("allows implementation mutations when a required close check failed", async () => {
     const root = freshRoot((db) => {
       seedRun(db, "run-failed-close-check", "demo");
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       repo.createSession({
-        goalId: "goal-failed-close-check",
+        hitchId: "goal-failed-close-check",
         title: "Failed close check",
         projectId: "demo",
         repoId: "demo-repo",
@@ -1577,7 +1577,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         createdSource: "mcp",
       });
       repo.recordCloseCheck({
-        goalId: "goal-failed-close-check",
+        hitchId: "goal-failed-close-check",
         conditionId: "typecheck",
         status: "failed",
         checkedBy: "test",
@@ -1595,7 +1595,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       projectId: "demo",
       domain: "apps/web",
       goal: "Fix failed close check",
-      goalId: "goal-failed-close-check",
+      hitchId: "goal-failed-close-check",
       idempotencyKey: "goal-failed-close-check-run",
     });
     expect(run.status).toBe("error");
@@ -1603,7 +1603,7 @@ describe("MCP mutation, confirmation, and audit", () => {
 
     const rerun = await callTool(s, "harness.rerun.start", {
       runId: "run-failed-close-check",
-      goalId: "goal-failed-close-check",
+      hitchId: "goal-failed-close-check",
       idempotencyKey: "goal-failed-close-check-rerun",
     });
     expect(rerun.status).toBe("error");
@@ -1616,9 +1616,9 @@ describe("MCP mutation, confirmation, and audit", () => {
         runId: "run-needs-fix-review-process",
         projectId: "demo",
       });
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       repo.createSession({
-        goalId: "goal-needs-fix-review-process",
+        hitchId: "goal-needs-fix-review-process",
         title: "Needs fix review process",
         projectId: "demo",
         repoId: "demo-repo",
@@ -1628,7 +1628,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         createdSource: "mcp",
       });
       repo.upsertFinding({
-        goalId: "goal-needs-fix-review-process",
+        hitchId: "goal-needs-fix-review-process",
         source: "review",
         severity: "P1",
         category: "correctness",
@@ -1647,7 +1647,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       {
         runId: "run-needs-fix-review-process",
         decision: "approved",
-        goalId: "goal-needs-fix-review-process",
+        hitchId: "goal-needs-fix-review-process",
         idempotencyKey: "goal-needs-fix-review-process",
       },
     );
@@ -1675,9 +1675,9 @@ describe("MCP mutation, confirmation, and audit", () => {
         runId: "run-goal-review-process-close",
         projectId: "demo",
       });
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       repo.createSession({
-        goalId: "goal-review-process-close",
+        hitchId: "goal-review-process-close",
         title: "Review process close",
         projectId: "demo",
         repoId: "demo-repo",
@@ -1690,7 +1690,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       });
       // a coding pass has already run; the goal awaits review consensus.
       repo.createAttempt({
-        goalId: "goal-review-process-close",
+        hitchId: "goal-review-process-close",
         attemptType: "implement",
       });
     });
@@ -1703,12 +1703,12 @@ describe("MCP mutation, confirmation, and audit", () => {
     const pending = await callTool(s, "harness.review.process", {
       runId: "run-goal-review-process-close",
       decision: "approved",
-      goalId: "goal-review-process-close",
+      hitchId: "goal-review-process-close",
       idempotencyKey: "goal-review-process-close",
     });
 
     expect(pending.status).toBe("confirmation_required");
-    expect(pending.data.preview.data.goalId).toBe("goal-review-process-close");
+    expect(pending.data.preview.data.hitchId).toBe("goal-review-process-close");
 
     const confirmed = await confirmMcpRequest({
       harnessRoot: root,
@@ -1773,8 +1773,8 @@ describe("MCP mutation, confirmation, and audit", () => {
           "",
         ].join("\n"),
       );
-      new GoalRepository(db).createSession({
-        goalId: "goal-rerun-repo",
+      new HitchRepository(db).createSession({
+        hitchId: "goal-rerun-repo",
         title: "Goal rerun repo",
         projectId: "demo",
         repoId: "demo-repo",
@@ -1783,8 +1783,8 @@ describe("MCP mutation, confirmation, and audit", () => {
         createdBy: "test",
         createdSource: "mcp",
       });
-      new GoalRepository(db).upsertFinding({
-        goalId: "goal-rerun-repo",
+      new HitchRepository(db).upsertFinding({
+        hitchId: "goal-rerun-repo",
         source: "review",
         severity: "P1",
         category: "correctness",
@@ -1838,7 +1838,7 @@ describe("MCP mutation, confirmation, and audit", () => {
     };
     const result = await callTool(server(root, config), "harness.rerun.start", {
       runId: "run-rerun-repo",
-      goalId: "goal-rerun-repo",
+      hitchId: "goal-rerun-repo",
       idempotencyKey: "rerun-repo-mismatch",
     });
     expect(result.status).toBe("error");

@@ -11,8 +11,8 @@ function base(over: Partial<WorkspaceStatusInput> = {}): WorkspaceStatusInput {
     agent: "alice",
     branch: "agent/alice",
     git: { ahead: 0, behind: 0, baseResolved: true, dirtyCount: 0 },
-    goalId: null,
-    goalDecision: null,
+    hitchId: null,
+    hitchDecision: null,
     objective: null,
     lastActiveAt: null,
     lastCheckpointAt: null,
@@ -28,42 +28,42 @@ describe("progressLabel (deterministic projection)", () => {
 
   it("stale dominates everything", () => {
     expect(
-      progressLabel(base({ stale: true, git: null, goalDecision: "needs_fix", goalId: "g" })),
+      progressLabel(base({ stale: true, git: null, hitchDecision: "needs_fix", hitchId: "g" })),
     ).toBe("stale");
   });
 
   it("treats a non-stale entry with no git state as stale (fail-closed)", () => {
     // a degenerate input (missing/failed inspection) must not read as `clean`.
-    expect(progressLabel(base({ stale: false, git: null, goalId: "g", goalDecision: "needs_fix" }))).toBe("stale");
+    expect(progressLabel(base({ stale: false, git: null, hitchId: "g", hitchDecision: "needs_fix" }))).toBe("stale");
   });
 
   it("goal-missing for a dangling link", () => {
-    expect(progressLabel(base({ goalId: "gone", goalDecision: null }))).toBe(
+    expect(progressLabel(base({ hitchId: "gone", hitchDecision: null }))).toBe(
       "goal-missing",
     );
   });
 
   it("blocked for diverging / budget_exhausted / escalate", () => {
     for (const d of ["diverging", "budget_exhausted", "escalate"]) {
-      expect(progressLabel(base({ goalId: "g", goalDecision: d }))).toBe("blocked");
+      expect(progressLabel(base({ hitchId: "g", hitchDecision: d }))).toBe("blocked");
     }
   });
 
   it("needs-work for needs_fix / needs_classification", () => {
-    expect(progressLabel(base({ goalId: "g", goalDecision: "needs_fix" }))).toBe("needs-work");
-    expect(progressLabel(base({ goalId: "g", goalDecision: "needs_classification" }))).toBe("needs-work");
+    expect(progressLabel(base({ hitchId: "g", hitchDecision: "needs_fix" }))).toBe("needs-work");
+    expect(progressLabel(base({ hitchId: "g", hitchDecision: "needs_classification" }))).toBe("needs-work");
   });
 
   it("ready-to-close for close_ready", () => {
-    expect(progressLabel(base({ goalId: "g", goalDecision: "close_ready" }))).toBe("ready-to-close");
+    expect(progressLabel(base({ hitchId: "g", hitchDecision: "close_ready" }))).toBe("ready-to-close");
   });
 
   it("in-progress for a `continue` goal (does not fall through to clean)", () => {
-    expect(progressLabel(base({ goalId: "g", goalDecision: "continue" }))).toBe("in-progress");
+    expect(progressLabel(base({ hitchId: "g", hitchDecision: "continue" }))).toBe("in-progress");
   });
 
   it("blocked (fail-closed) for an unrecognized decision", () => {
-    expect(progressLabel(base({ goalId: "g", goalDecision: "brand_new" }))).toBe("blocked");
+    expect(progressLabel(base({ hitchId: "g", hitchDecision: "brand_new" }))).toBe("blocked");
   });
 
   it("base-unknown when the base ref does not resolve (hides ahead/behind)", () => {
@@ -83,11 +83,11 @@ describe("progressLabel (deterministic projection)", () => {
   });
 
   it("a calm closed goal with a tidy tree is clean", () => {
-    expect(progressLabel(base({ goalId: "g", goalDecision: "closed" }))).toBe("clean");
+    expect(progressLabel(base({ hitchId: "g", hitchDecision: "closed" }))).toBe("clean");
   });
 
   it("summarizeWorkspace attaches the label", () => {
-    const s = summarizeWorkspace(base({ goalId: "g", goalDecision: "needs_fix" }));
+    const s = summarizeWorkspace(base({ hitchId: "g", hitchDecision: "needs_fix" }));
     expect(s.label).toBe("needs-work");
     expect(s.agent).toBe("alice");
   });

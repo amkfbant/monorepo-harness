@@ -10,34 +10,34 @@ import {
   runOperation,
 } from "../../operations/operation-runner.js";
 import {
-  classifyFindingForGoal,
-  type ClassifiableGoalFinding,
-} from "../../goal/classification.js";
-import { ConvergenceService } from "../../goal/convergence.js";
+  classifyFindingForHitch,
+  type ClassifiableHitchFinding,
+} from "../../hitch/classification.js";
+import { ConvergenceService } from "../../hitch/convergence.js";
 import {
   evaluateConvergenceAndRecordStatus,
   recordConvergenceDecisionWithStatus,
-} from "../../goal/convergence-status.js";
-import { deferFindingToBacklog } from "../../goal/followups.js";
-import { nextReviewMode } from "../../goal/review-mode.js";
+} from "../../hitch/convergence-status.js";
+import { deferFindingToBacklog } from "../../hitch/followups.js";
+import { nextReviewMode } from "../../hitch/review-mode.js";
 import {
-  GoalRepository,
-  type CreateGoalSessionInput,
-  type UpsertGoalFindingInput,
-} from "../../goal/repository.js";
-import { parseGoalScope } from "../../goal/schemas.js";
+  HitchRepository,
+  type CreateHitchSessionInput,
+  type UpsertHitchFindingInput,
+} from "../../hitch/repository.js";
+import { parseHitchScope } from "../../hitch/schemas.js";
 import type {
-  GoalCloseCheckStatus,
-  GoalCloseCondition,
-  GoalFinding,
-  GoalFindingSeverity,
-  GoalFindingSource,
-  GoalPolicy,
-  GoalScope,
-  GoalScopeStatus,
-  GoalSession,
-  GoalStatus,
-} from "../../goal/types.js";
+  HitchCloseCheckStatus,
+  HitchCloseCondition,
+  HitchFinding,
+  HitchFindingSeverity,
+  HitchFindingSource,
+  HitchPolicy,
+  HitchScope,
+  HitchScopeStatus,
+  HitchSession,
+  HitchStatus,
+} from "../../hitch/types.js";
 import { redactMcpAuditValue, redactMcpText } from "../audit/redaction.js";
 import { errorResult, ok, permissionDenied, type HarnessMcpToolResult } from "../schemas/outputs.js";
 import { createMcpConfirmationRequest } from "../security/confirmation.js";
@@ -56,7 +56,7 @@ interface MutationBaseArgs {
 }
 
 export interface GoalListArgs {
-  status?: GoalStatus;
+  status?: HitchStatus;
   projectId?: string;
   repoId?: string;
   domain?: string;
@@ -64,20 +64,20 @@ export interface GoalListArgs {
 }
 
 export interface GoalIdArgs {
-  goalId: string;
+  hitchId: string;
 }
 
 export interface GoalStartArgs extends MutationBaseArgs {
-  goalId?: string;
+  hitchId?: string;
   title: string;
   description?: string;
   projectId?: string;
   repoId?: string;
   domain?: string;
   backlogItemId?: string;
-  scope?: GoalScope;
-  closeConditions?: GoalCloseCondition[];
-  policy?: GoalPolicy;
+  scope?: HitchScope;
+  closeConditions?: HitchCloseCondition[];
+  policy?: HitchPolicy;
   maxIterations?: number;
   maxReviewCycles?: number;
   maxReruns?: number;
@@ -85,28 +85,28 @@ export interface GoalStartArgs extends MutationBaseArgs {
 }
 
 export interface GoalFindingInput {
-  severity: GoalFindingSeverity;
+  severity: HitchFindingSeverity;
   category: string;
   summary: string;
   detail?: string;
   filePath?: string;
   symbol?: string;
   suggestedFix?: string;
-  source?: GoalFindingSource;
+  source?: HitchFindingSource;
   sourceRef?: string;
   sourceAttemptId?: string;
   sourceCycleId?: string;
-  scopeStatus?: GoalScopeStatus;
+  scopeStatus?: HitchScopeStatus;
 }
 
 export interface GoalRecordFindingsArgs extends MutationBaseArgs {
-  goalId: string;
+  hitchId: string;
   findings: GoalFindingInput[];
 }
 
 export interface GoalClassifyFindingArgs extends MutationBaseArgs {
   findingId: string;
-  scopeStatus: GoalScopeStatus;
+  scopeStatus: HitchScopeStatus;
   reason: string;
   duplicateOf?: string;
 }
@@ -123,35 +123,35 @@ export interface GoalDeferFindingArgs extends MutationBaseArgs {
 }
 
 export interface GoalRecordCloseCheckArgs extends MutationBaseArgs {
-  goalId: string;
+  hitchId: string;
   conditionId: string;
-  status: GoalCloseCheckStatus;
+  status: HitchCloseCheckStatus;
   checkedBy?: string;
   evidence?: Record<string, unknown>;
   message?: string;
 }
 
 export interface GoalCheckConvergenceArgs extends MutationBaseArgs {
-  goalId: string;
-  /** When false, record the decision but do not sync goal_sessions.status
+  hitchId: string;
+  /** When false, record the decision but do not sync hitch_sessions.status
    *  (parity with the CLI `convergence --no-status-update`). */
   updateStatus?: boolean;
 }
 
 export interface GoalCloseArgs extends MutationBaseArgs {
-  goalId: string;
+  hitchId: string;
   summary: string;
   force?: boolean;
 }
 
 export interface GoalCancelArgs extends MutationBaseArgs {
-  goalId: string;
+  hitchId: string;
   reason: string;
 }
 
 export interface GoalExpandScopeArgs extends MutationBaseArgs {
-  goalId: string;
-  scope: GoalScope;
+  hitchId: string;
+  scope: HitchScope;
   reason: string;
 }
 
@@ -171,7 +171,7 @@ export function goalListTool(
     if (denied !== null) return denied;
   }
   return withReadonlyDb(context, ({ db }) => {
-    const repo = new GoalRepository(db);
+    const repo = new HitchRepository(db);
     const limit = args.limit ?? 50;
     const baseFilter = {
       ...(args.status !== undefined ? { status: args.status } : {}),
@@ -187,7 +187,7 @@ export function goalListTool(
           })
         : context.config.allowedProjects
             .flatMap((projectId) => repo.listSessions({ ...baseFilter, projectId }))
-            .sort(compareGoalSessions)
+            .sort(compareHitchSessions)
             .slice(0, limit);
     return ok("goal sessions", { goals });
   }) as HarnessMcpToolResult;
@@ -198,9 +198,9 @@ export function goalGetTool(
   context: McpToolContext,
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
-    const repo = new GoalRepository(db);
-    const goal = repo.getSession(args.goalId);
-    if (goal === null) return errorResult(`goal not found: ${args.goalId}`);
+    const repo = new HitchRepository(db);
+    const goal = repo.getSession(args.hitchId);
+    if (goal === null) return errorResult(`goal not found: ${args.hitchId}`);
     const denied = ensureProjectVisible(context.config, goal.projectId);
     if (denied !== null) return denied;
     return ok("goal session", { goal });
@@ -212,14 +212,14 @@ export function goalStatusTool(
   context: McpToolContext,
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
-    const repo = new GoalRepository(db);
-    const goal = repo.getSession(args.goalId);
-    if (goal === null) return errorResult(`goal not found: ${args.goalId}`);
+    const repo = new HitchRepository(db);
+    const goal = repo.getSession(args.hitchId);
+    if (goal === null) return errorResult(`goal not found: ${args.hitchId}`);
     const denied = ensureProjectVisible(context.config, goal.projectId);
     if (denied !== null) return denied;
-    const findings = mcpFindingPage(repo, args.goalId);
-    const decisions = repo.listDecisions(args.goalId);
-    const convergence = new ConvergenceService(repo).evaluate(args.goalId);
+    const findings = mcpFindingPage(repo, args.hitchId);
+    const decisions = repo.listDecisions(args.hitchId);
+    const convergence = new ConvergenceService(repo).evaluate(args.hitchId);
     return ok("goal status", {
       goal,
       findings: findings.findings,
@@ -235,12 +235,12 @@ export function goalFindingsTool(
   context: McpToolContext,
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
-    const repo = new GoalRepository(db);
-    const goal = repo.getSession(args.goalId);
-    if (goal === null) return errorResult(`goal not found: ${args.goalId}`);
+    const repo = new HitchRepository(db);
+    const goal = repo.getSession(args.hitchId);
+    if (goal === null) return errorResult(`goal not found: ${args.hitchId}`);
     const denied = ensureProjectVisible(context.config, goal.projectId);
     if (denied !== null) return denied;
-    const findings = mcpFindingPage(repo, args.goalId);
+    const findings = mcpFindingPage(repo, args.hitchId);
     return ok("goal findings", {
       findings: findings.findings,
       findingsTruncated: findings.truncated,
@@ -254,13 +254,13 @@ export function goalDecisionsTool(
   context: McpToolContext,
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
-    const repo = new GoalRepository(db);
-    const goal = repo.getSession(args.goalId);
-    if (goal === null) return errorResult(`goal not found: ${args.goalId}`);
+    const repo = new HitchRepository(db);
+    const goal = repo.getSession(args.hitchId);
+    if (goal === null) return errorResult(`goal not found: ${args.hitchId}`);
     const denied = ensureProjectVisible(context.config, goal.projectId);
     if (denied !== null) return denied;
     return ok("goal decisions", {
-      decisions: repo.listDecisions(args.goalId),
+      decisions: repo.listDecisions(args.hitchId),
     });
   }) as HarnessMcpToolResult;
 }
@@ -304,15 +304,15 @@ export async function goalStartTool(
   }
   const visible = ensureProjectVisible(context.config, effectiveProjectId);
   if (visible !== null) return visible;
-  const goalId = args.goalId ?? goalIdForIdempotencyKey(args.idempotencyKey);
+  const hitchId = args.hitchId ?? goalIdForIdempotencyKey(args.idempotencyKey);
   return runGoalOperation(context, {
     operationType: "goal.start",
-    target: { type: "goal", id: goalId },
+    target: { type: "goal", id: hitchId },
     args,
-    metadata: goalMetadata(context, "harness.goal.start", args, { goalId }),
+    metadata: goalMetadata(context, "harness.goal.start", args, { hitchId }),
     workWithDb: async (db) => {
-      const input: CreateGoalSessionInput = {
-        goalId,
+      const input: CreateHitchSessionInput = {
+        hitchId,
         title: args.title,
         ...(args.description !== undefined ? { description: args.description } : {}),
         ...(effectiveProjectId !== undefined ? { projectId: effectiveProjectId } : {}),
@@ -337,7 +337,7 @@ export async function goalStartTool(
         createdBy: `mcp:${context.clientName}`,
         createdSource: "mcp",
       };
-      return new GoalRepository(db).createSession(input);
+      return new HitchRepository(db).createSession(input);
     },
   });
 }
@@ -354,31 +354,31 @@ export async function goalRecordFindingsTool(
   }
   return runGoalOperation(context, {
     operationType: "goal.record_findings",
-    target: { type: "goal", id: args.goalId },
+    target: { type: "goal", id: args.hitchId },
     args,
     metadata: goalMetadata(context, "harness.goal.record_findings", args, {
-      goalId: args.goalId,
+      hitchId: args.hitchId,
     }),
     workWithDb: async (db, operationId) => {
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       const tx = db.transaction(() => {
-        const session = repo.requireSession(args.goalId);
+        const session = repo.requireSession(args.hitchId);
         const cycle = repo.startReviewCycle({
-          goalId: args.goalId,
-          reviewMode: nextReviewMode(session, repo.listReviewCycles(args.goalId)),
+          hitchId: args.hitchId,
+          reviewMode: nextReviewMode(session, repo.listReviewCycles(args.hitchId)),
           sourceReviewId: `mcp:${operationId}`,
         });
         const recorded = args.findings.map((finding) => {
           const source = finding.source ?? "mcp";
           const classification =
             finding.scopeStatus === undefined
-              ? classifyFindingForGoal(session, toClassifiableFinding(source, finding))
+              ? classifyFindingForHitch(session, toClassifiableFinding(source, finding))
               : {
                   scopeStatus: finding.scopeStatus,
                   reason: "scope supplied by MCP caller",
                 };
-          const input: UpsertGoalFindingInput = {
-            goalId: args.goalId,
+          const input: UpsertHitchFindingInput = {
+            hitchId: args.hitchId,
             source,
             severity: finding.severity,
             category: finding.category,
@@ -407,18 +407,18 @@ export async function goalRecordFindingsTool(
           findingsNew: recorded.filter((r) => r.created).length,
           findingsReopened: recorded.filter((r) => r.reopened).length,
           findingsFixed: repo.listFindings({
-            goalId: args.goalId,
+            hitchId: args.hitchId,
             lifecycleStatus: "fixed",
             limit: 10_000,
           }).length,
           findingsDeferred: repo.listFindings({
-            goalId: args.goalId,
+            hitchId: args.hitchId,
             lifecycleStatus: "deferred",
             limit: 10_000,
           }).length,
           findingsInScopeOpen: repo
             .listFindings({
-              goalId: args.goalId,
+              hitchId: args.hitchId,
               scopeStatus: "in_scope",
               limit: 10_000,
             })
@@ -431,13 +431,13 @@ export async function goalRecordFindingsTool(
         });
         const convergenceResult = evaluateConvergenceAndRecordStatus({
           repository: repo,
-          goalId: args.goalId,
+          hitchId: args.hitchId,
           cycleId: completedCycle.cycleId,
           createdBy: `mcp:${context.clientName}`,
         });
         const convergence = splitRecordedConvergence(convergenceResult);
         return {
-          goalId: args.goalId,
+          hitchId: args.hitchId,
           recorded,
           created: recorded.filter((r) => r.created).length,
           reopened: recorded.filter((r) => r.reopened).length,
@@ -462,7 +462,7 @@ export async function goalClassifyFindingTool(
       findingIds: [args.findingId],
     }),
     workWithDb: async (db) => {
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       const tx = db.transaction(() => {
         const finding = repo.classifyFinding({
           findingId: args.findingId,
@@ -472,7 +472,7 @@ export async function goalClassifyFindingTool(
         });
         const convergenceResult = evaluateConvergenceAndRecordStatus({
           repository: repo,
-          goalId: finding.goalId,
+          hitchId: finding.hitchId,
           createdBy: `mcp:${context.clientName}`,
         });
         const convergence = splitRecordedConvergence(convergenceResult);
@@ -498,7 +498,7 @@ export async function goalMarkFindingFixedTool(
       findingIds: [args.findingId],
     }),
     workWithDb: async (db) => {
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       const tx = db.transaction(() => {
         const finding = repo.markFindingFixed({
           findingId: args.findingId,
@@ -506,7 +506,7 @@ export async function goalMarkFindingFixedTool(
         });
         const convergenceResult = evaluateConvergenceAndRecordStatus({
           repository: repo,
-          goalId: finding.goalId,
+          hitchId: finding.hitchId,
           createdBy: `mcp:${context.clientName}`,
         });
         const convergence = splitRecordedConvergence(convergenceResult);
@@ -539,7 +539,7 @@ export async function goalDeferFindingTool(
       findingIds: [args.findingId],
     }),
     workWithDb: async (db) => {
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       const deferred = await deferFindingToBacklog({
         repository: repo,
         findingId: args.findingId,
@@ -556,7 +556,7 @@ export async function goalDeferFindingTool(
       });
       const convergenceResult = evaluateConvergenceAndRecordStatus({
         repository: repo,
-        goalId: deferred.finding.goalId,
+        hitchId: deferred.finding.hitchId,
         createdBy: `mcp:${context.clientName}`,
       });
       const convergence = splitRecordedConvergence(convergenceResult);
@@ -574,20 +574,20 @@ export async function goalRecordCloseCheckTool(
 ): Promise<HarnessMcpToolResult> {
   return runGoalOperation(context, {
     operationType: "goal.record_close_check",
-    target: { type: "goal", id: args.goalId },
+    target: { type: "goal", id: args.hitchId },
     args,
     metadata: goalMetadata(context, "harness.goal.record_close_check", args, {
-      goalId: args.goalId,
+      hitchId: args.hitchId,
     }),
     workWithDb: async (db) => {
       const evidence =
         args.evidence === undefined
           ? undefined
           : (redactMcpAuditValue(args.evidence) as Record<string, unknown>);
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       const tx = db.transaction(() => {
         const check = repo.recordCloseCheck({
-          goalId: args.goalId,
+          hitchId: args.hitchId,
           conditionId: args.conditionId,
           status: args.status,
           checkedBy: args.checkedBy ?? `mcp:${context.clientName}`,
@@ -598,7 +598,7 @@ export async function goalRecordCloseCheckTool(
         });
         const convergenceResult = evaluateConvergenceAndRecordStatus({
           repository: repo,
-          goalId: args.goalId,
+          hitchId: args.hitchId,
           createdBy: `mcp:${context.clientName}`,
         });
         const convergence = splitRecordedConvergence(convergenceResult);
@@ -618,17 +618,17 @@ export async function goalCheckConvergenceTool(
 ): Promise<HarnessMcpToolResult> {
   return runGoalOperation(context, {
     operationType: "goal.check_convergence",
-    target: { type: "goal", id: args.goalId },
+    target: { type: "goal", id: args.hitchId },
     args,
     metadata: goalMetadata(context, "harness.goal.check_convergence", args, {
-      goalId: args.goalId,
+      hitchId: args.hitchId,
     }),
     workWithDb: async (db) => {
-      const repo = new GoalRepository(db);
-      const result = new ConvergenceService(repo).evaluate(args.goalId);
+      const repo = new HitchRepository(db);
+      const result = new ConvergenceService(repo).evaluate(args.hitchId);
       const recorded = recordConvergenceDecisionWithStatus({
         repository: repo,
-        goalId: args.goalId,
+        hitchId: args.hitchId,
         decision: result.decision,
         reason: result.reason,
         metrics: { ...result.metrics },
@@ -662,7 +662,7 @@ export async function goalCloseTool(
   if (requiresConfirmation && !isConfirmed(context)) {
     return confirmationResult(context, "harness.goal.close", "goal.close", args, preview, {
       type: "goal",
-      id: args.goalId,
+      id: args.hitchId,
     });
   }
   if (!requiresConfirmation && !isConfirmed(context)) {
@@ -671,16 +671,16 @@ export async function goalCloseTool(
   }
   return runGoalOperation(context, {
     operationType: "goal.close",
-    target: { type: "goal", id: args.goalId },
+    target: { type: "goal", id: args.hitchId },
     args,
     metadata: goalMetadata(context, "harness.goal.close", args, {
-      goalId: args.goalId,
+      hitchId: args.hitchId,
     }),
     workWithDb: async (db) => {
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       const tx = db.transaction(() => {
         if (!confirmedOverrideClose) {
-          const current = new ConvergenceService(repo).evaluate(args.goalId);
+          const current = new ConvergenceService(repo).evaluate(args.hitchId);
           if (current.decision !== "close_ready") {
             const error = new Error(
               `goal is no longer close_ready: decision=${current.decision}`,
@@ -689,7 +689,7 @@ export async function goalCloseTool(
             throw error;
           }
         }
-        return repo.updateStatus(args.goalId, "closed", redactMcpText(args.summary));
+        return repo.updateStatus(args.hitchId, "closed", redactMcpText(args.summary));
       });
       return tx.immediate();
     },
@@ -701,25 +701,25 @@ export async function goalCancelTool(
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   const preview = ok("would cancel goal", {
-    goalId: args.goalId,
+    hitchId: args.hitchId,
     reason: redactMcpText(args.reason),
   });
   if (!isConfirmed(context)) {
     return confirmationResult(context, "harness.goal.cancel", "goal.cancel", args, preview, {
       type: "goal",
-      id: args.goalId,
+      id: args.hitchId,
     });
   }
   return runGoalOperation(context, {
     operationType: "goal.cancel",
-    target: { type: "goal", id: args.goalId },
+    target: { type: "goal", id: args.hitchId },
     args,
     metadata: goalMetadata(context, "harness.goal.cancel", args, {
-      goalId: args.goalId,
+      hitchId: args.hitchId,
     }),
     workWithDb: async (db) =>
-      new GoalRepository(db).updateStatus(
-        args.goalId,
+      new HitchRepository(db).updateStatus(
+        args.hitchId,
         "cancelled",
         redactMcpText(args.reason),
       ),
@@ -731,7 +731,7 @@ export async function goalExpandScopeTool(
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   const preview = ok("would expand goal scope", {
-    goalId: args.goalId,
+    hitchId: args.hitchId,
     scope: args.scope,
     reason: redactMcpText(args.reason),
   });
@@ -742,33 +742,33 @@ export async function goalExpandScopeTool(
       "goal.expand_scope",
       args,
       preview,
-      { type: "goal", id: args.goalId },
+      { type: "goal", id: args.hitchId },
     );
   }
   return runGoalOperation(context, {
     operationType: "goal.expand_scope",
-    target: { type: "goal", id: args.goalId },
+    target: { type: "goal", id: args.hitchId },
     args,
     metadata: goalMetadata(context, "harness.goal.expand_scope", args, {
-      goalId: args.goalId,
+      hitchId: args.hitchId,
     }),
     workWithDb: async (db) => expandGoalScope(db, args),
   });
 }
 
 export function resolveGoalProjectId(
-  args: { goalId?: string },
+  args: { hitchId?: string },
   context: McpToolContext,
 ): string | null | undefined {
-  if (args.goalId === undefined) return undefined;
+  if (args.hitchId === undefined) return undefined;
   const unresolved =
     context.config.allowedProjects.length > 0
       ? "__mcp_unresolved_goal_project__"
       : undefined;
   return withReadonlyDb(context, ({ db }) => {
     const row = db
-      .prepare("SELECT project_id FROM goal_sessions WHERE goal_id = ?")
-      .get(args.goalId) as { project_id: string | null } | undefined;
+      .prepare("SELECT project_id FROM hitch_sessions WHERE hitch_id = ?")
+      .get(args.hitchId) as { project_id: string | null } | undefined;
     return row?.project_id ?? unresolved;
   }) as string | null | undefined;
 }
@@ -786,8 +786,8 @@ export function resolveGoalFindingProjectId(
     const row = db
       .prepare(
         `SELECT s.project_id
-           FROM goal_findings f
-           JOIN goal_sessions s ON s.goal_id = f.goal_id
+           FROM hitch_findings f
+           JOIN hitch_sessions s ON s.hitch_id = f.hitch_id
           WHERE f.finding_id = ?`,
       )
       .get(args.findingId) as { project_id: string | null } | undefined;
@@ -896,10 +896,10 @@ function goalClosePreview(
   context: McpToolContext,
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
-    const repo = new GoalRepository(db);
-    const goal = repo.getSession(args.goalId);
-    if (goal === null) return errorResult(`goal not found: ${args.goalId}`);
-    const convergence = new ConvergenceService(repo).evaluate(args.goalId);
+    const repo = new HitchRepository(db);
+    const goal = repo.getSession(args.hitchId);
+    if (goal === null) return errorResult(`goal not found: ${args.hitchId}`);
+    const convergence = new ConvergenceService(repo).evaluate(args.hitchId);
     return {
       status: "dry_run",
       summary:
@@ -983,17 +983,17 @@ function ensureUnconfirmedGoalCloseAllowed(
   return null;
 }
 
-function compareGoalSessions(a: GoalSession, b: GoalSession): number {
+function compareHitchSessions(a: HitchSession, b: HitchSession): number {
   const byUpdated = b.updatedAt.localeCompare(a.updatedAt);
-  return byUpdated === 0 ? b.goalId.localeCompare(a.goalId) : byUpdated;
+  return byUpdated === 0 ? b.hitchId.localeCompare(a.hitchId) : byUpdated;
 }
 
 function mcpFindingPage(
-  repo: GoalRepository,
-  goalId: string,
-): { findings: GoalFinding[]; truncated: boolean } {
+  repo: HitchRepository,
+  hitchId: string,
+): { findings: HitchFinding[]; truncated: boolean } {
   const rows = repo.listFindings({
-    goalId,
+    hitchId,
     limit: MAX_MCP_FINDINGS + 1,
   });
   return {
@@ -1002,7 +1002,7 @@ function mcpFindingPage(
   };
 }
 
-function redactGoalFindingForMcp(finding: GoalFinding): GoalFinding {
+function redactGoalFindingForMcp(finding: HitchFinding): HitchFinding {
   return {
     ...finding,
     sourceRef: cappedNullableMcpText(finding.sourceRef),
@@ -1030,11 +1030,11 @@ function goalMetadata(
   args: MutationBaseArgs,
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> {
-  const goalId =
-    typeof extra.goalId === "string"
-      ? extra.goalId
-      : typeof (args as unknown as { goalId?: unknown }).goalId === "string"
-        ? (args as unknown as { goalId: string }).goalId
+  const hitchId =
+    typeof extra.hitchId === "string"
+      ? extra.hitchId
+      : typeof (args as unknown as { hitchId?: unknown }).hitchId === "string"
+        ? (args as unknown as { hitchId: string }).hitchId
         : undefined;
   return {
     source: "mcp",
@@ -1042,7 +1042,7 @@ function goalMetadata(
     sessionId: context.sessionId,
     toolName,
     idempotencyKey: args.idempotencyKey,
-    ...(goalId !== undefined ? { goal_id: goalId } : {}),
+    ...(hitchId !== undefined ? { hitch_id: hitchId } : {}),
     ...(args.actorNote !== undefined ? { actorNote: args.actorNote } : {}),
     ...(context.confirmedConfirmationId !== undefined
       ? { confirmationId: context.confirmedConfirmationId }
@@ -1057,9 +1057,9 @@ function goalIdForIdempotencyKey(idempotencyKey: string): string {
 }
 
 function toClassifiableFinding(
-  source: GoalFindingSource,
+  source: HitchFindingSource,
   finding: GoalFindingInput,
-): ClassifiableGoalFinding {
+): ClassifiableHitchFinding {
   return {
     source,
     severity: finding.severity,
@@ -1075,24 +1075,24 @@ function toClassifiableFinding(
 function expandGoalScope(
   db: Database.Database,
   args: GoalExpandScopeArgs,
-): { goalId: string; scope: GoalScope; reason: string } {
-  const repo = new GoalRepository(db);
-  const current = repo.requireSession(args.goalId);
-  const scope = parseGoalScope(mergeScope(current.scope, args.scope));
+): { hitchId: string; scope: HitchScope; reason: string } {
+  const repo = new HitchRepository(db);
+  const current = repo.requireSession(args.hitchId);
+  const scope = parseHitchScope(mergeScope(current.scope, args.scope));
   db.prepare(
-    `UPDATE goal_sessions
+    `UPDATE hitch_sessions
         SET scope_json = ?, updated_at = ?
-      WHERE goal_id = ?`,
-  ).run(JSON.stringify(scope), new Date().toISOString(), args.goalId);
+      WHERE hitch_id = ?`,
+  ).run(JSON.stringify(scope), new Date().toISOString(), args.hitchId);
   return {
-    goalId: args.goalId,
+    hitchId: args.hitchId,
     scope,
     reason: redactMcpText(args.reason),
   };
 }
 
-function mergeScope(current: GoalScope, incoming: GoalScope): GoalScope {
-  const scope: GoalScope = {
+function mergeScope(current: HitchScope, incoming: HitchScope): HitchScope {
+  const scope: HitchScope = {
     ...current,
     ...incoming,
   };
@@ -1119,7 +1119,7 @@ function mergeScope(current: GoalScope, incoming: GoalScope): GoalScope {
 }
 
 function putMerged(
-  scope: GoalScope,
+  scope: HitchScope,
   key:
     | "targetFiles"
     | "targetOperations"

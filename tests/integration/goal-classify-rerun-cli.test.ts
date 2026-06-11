@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { harnessPaths } from "../../src/config/paths.js";
 import { openManagedDb } from "../../src/db/managed-connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
-import { GoalRepository } from "../../src/goal/repository.js";
+import { HitchRepository } from "../../src/hitch/repository.js";
 
 const CLI = join(process.cwd(), "src/cli/run.ts");
 
@@ -27,16 +27,16 @@ function runCli(root: string, args: string[]): { out: string; code: number } {
 
 /** Seed a goal with ONE unknown-scope P1 finding (as an external review ingest
  *  would). Classifying it in-scope makes the goal `needs_fix`. Returns the ids. */
-function seed(): { root: string; goalId: string; findingId: string } {
+function seed(): { root: string; hitchId: string; findingId: string } {
   const root = mkdtempSync(join(tmpdir(), "harness-classify-rerun-"));
   mkdirSync(join(root, ".harness"), { recursive: true });
   const { db, close } = openManagedDb({ dbPath: harnessPaths(root).dbPath });
   try {
     runMigrations(db);
-    const repo = new GoalRepository(db);
-    const goalId = "goal-cr";
+    const repo = new HitchRepository(db);
+    const hitchId = "goal-cr";
     repo.createSession({
-      goalId,
+      hitchId,
       title: "t",
       description: "d",
       repoId: "t",
@@ -45,14 +45,14 @@ function seed(): { root: string; goalId: string; findingId: string } {
       createdSource: "worker",
     });
     const { finding } = repo.upsertFinding({
-      goalId,
+      hitchId,
       source: "codex", // external review origin
       severity: "P1",
       category: "external-review-changes-requested",
       scopeStatus: "unknown",
       summary: "address the reviewer's change request",
     });
-    return { root, goalId, findingId: finding.findingId };
+    return { root, hitchId, findingId: finding.findingId };
   } finally {
     close();
   }

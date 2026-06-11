@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
-import { ConvergenceService } from "../../../src/goal/convergence.js";
-import { GoalRepository } from "../../../src/goal/repository.js";
+import { ConvergenceService } from "../../../src/hitch/convergence.js";
+import { HitchRepository } from "../../../src/hitch/repository.js";
 import { HarnessMcpServer } from "../../../src/mcp/server.js";
 import {
   DEFAULT_MCP_CONFIG,
@@ -48,9 +48,9 @@ function withDb(root: string, fn: (db: ReturnType<typeof openDb>) => void): void
   }
 }
 
-function mockedConvergence(goalId: string, decision: string): Record<string, unknown> {
+function mockedConvergence(hitchId: string, decision: string): Record<string, unknown> {
   return {
-    goalId,
+    hitchId,
     decision,
     reason: "mocked convergence",
     metrics: {
@@ -122,37 +122,37 @@ describe("MCP goal tools", () => {
       projectId: "demo",
       domain: "goal",
       scope: {
-        targetFiles: ["src/goal/**"],
+        targetFiles: ["src/hitch/**"],
         allowedFindingCategories: ["correctness"],
       },
       closeConditions: [{ id: "typecheck", kind: "command", required: true }],
       idempotencyKey: "goal-start",
     });
     expect(started.status).toBe("operation_started");
-    const goalId = started.data.result.goalId as string;
+    const hitchId = started.data.result.hitchId as string;
     const startedOperation = await callTool(s, "harness.operation.get", {
       operationId: started.operationId,
     });
     expect(startedOperation.status).toBe("ok");
-    expect(startedOperation.data.operation.metadata.goalId).toBe(goalId);
-    expect(startedOperation.data.operation.metadata.goal_id).toBe(goalId);
+    expect(startedOperation.data.operation.metadata.hitchId).toBe(hitchId);
+    expect(startedOperation.data.operation.metadata.goal_id).toBe(hitchId);
 
     // a coding pass has already run; convergence reflects post-run behavior.
     withDb(root, (db) => {
-      new GoalRepository(db).createAttempt({
-        goalId,
+      new HitchRepository(db).createAttempt({
+        hitchId,
         attemptType: "implement",
       });
     });
 
     const recorded = await callTool(s, "harness.goal.record_findings", {
-      goalId,
+      hitchId,
       findings: [
         {
           severity: "P1",
           category: "correctness",
           summary: "Goal repository drops evidence",
-          filePath: "src/goal/repository.ts",
+          filePath: "src/hitch/repository.ts",
         },
       ],
       idempotencyKey: "goal-findings",
@@ -172,7 +172,7 @@ describe("MCP goal tools", () => {
     expect(fixed.data.result.decisionRecord.decision).toBe("continue");
     const secret = `sk-${"c".repeat(40)}`;
     const checked = await callTool(s, "harness.goal.record_close_check", {
-      goalId,
+      hitchId,
       conditionId: "typecheck",
       status: "passed",
       evidence: { output: `typecheck passed with ${secret}` },
@@ -200,17 +200,17 @@ describe("MCP goal tools", () => {
     ).toContain(checked.operationId);
 
     const convergence = await callTool(s, "harness.goal.check_convergence", {
-      goalId,
+      hitchId,
       idempotencyKey: "goal-convergence",
     });
     expect(convergence.data.result.decision).toBe("close_ready");
 
-    const resource = await readResource(s, `harness://goal/${goalId}`);
+    const resource = await readResource(s, `harness://goal/${hitchId}`);
     expect(resource.status).toBe("ok");
     expect(resource.data.convergence.decision).toBe("close_ready");
 
     const closed = await callTool(s, "harness.goal.close", {
-      goalId,
+      hitchId,
       summary: "done",
       idempotencyKey: "goal-close",
     });
@@ -228,12 +228,12 @@ describe("MCP goal tools", () => {
       title: "Goal MCP defer",
       projectId: "demo",
       domain: "goal",
-      scope: { targetFiles: ["src/goal/**"] },
+      scope: { targetFiles: ["src/hitch/**"] },
       idempotencyKey: "goal-start-defer",
     });
-    const goalId = started.data.result.goalId as string;
+    const hitchId = started.data.result.hitchId as string;
     const recorded = await callTool(s, "harness.goal.record_findings", {
-      goalId,
+      hitchId,
       findings: [
         {
           severity: "P2",
@@ -267,10 +267,10 @@ describe("MCP goal tools", () => {
       domain: "goal",
       idempotencyKey: "goal-start-duplicate-finding",
     });
-    const goalId = started.data.result.goalId as string;
+    const hitchId = started.data.result.hitchId as string;
 
     const recorded = await callTool(s, "harness.goal.record_findings", {
-      goalId,
+      hitchId,
       findings: [
         {
           severity: "P1",
@@ -300,13 +300,13 @@ describe("MCP goal tools", () => {
       title: "Goal MCP post mutation audit",
       projectId: "demo",
       domain: "goal",
-      scope: { targetFiles: ["src/goal/**"] },
+      scope: { targetFiles: ["src/hitch/**"] },
       closeConditions: [{ id: "typecheck", kind: "command", required: true }],
       idempotencyKey: "goal-start-post-mutation-audit",
     });
-    const goalId = started.data.result.goalId as string;
+    const hitchId = started.data.result.hitchId as string;
     const unknown = await callTool(s, "harness.goal.record_findings", {
-      goalId,
+      hitchId,
       findings: [
         {
           severity: "P1",
@@ -330,7 +330,7 @@ describe("MCP goal tools", () => {
     expect(classified.data.result.decisionRecord.decision).toBe("needs_fix");
 
     const outOfScope = await callTool(s, "harness.goal.record_findings", {
-      goalId,
+      hitchId,
       findings: [
         {
           severity: "P2",
@@ -363,28 +363,28 @@ describe("MCP goal tools", () => {
       projectId: "demo",
       domain: "goal",
       scope: {
-        targetFiles: ["src/goal/**"],
+        targetFiles: ["src/hitch/**"],
         allowedFindingCategories: ["correctness"],
       },
       maxTotalNewFindings: 1,
       idempotencyKey: "goal-start-mcp-divergence",
     });
-    const goalId = started.data.result.goalId as string;
+    const hitchId = started.data.result.hitchId as string;
 
     const recorded = await callTool(s, "harness.goal.record_findings", {
-      goalId,
+      hitchId,
       findings: [
         {
           severity: "P2",
           category: "correctness",
           summary: "First MCP finding",
-          filePath: "src/goal/repository.ts",
+          filePath: "src/hitch/repository.ts",
         },
         {
           severity: "P2",
           category: "correctness",
           summary: "Second MCP finding",
-          filePath: "src/goal/convergence.ts",
+          filePath: "src/hitch/convergence.ts",
         },
       ],
       idempotencyKey: "goal-record-mcp-divergence",
@@ -401,9 +401,9 @@ describe("MCP goal tools", () => {
   it("check_convergence honors updateStatus:false (no status sync), matching the CLI", async () => {
     const root = freshRoot();
     withDb(root, (db) => {
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       repo.createSession({
-        goalId: "goal-no-sync",
+        hitchId: "goal-no-sync",
         title: "NoSync",
         projectId: "demo",
         closeConditions: [{ id: "typecheck", kind: "command", required: true }],
@@ -411,7 +411,7 @@ describe("MCP goal tools", () => {
         createdSource: "mcp",
       });
       repo.recordCloseCheck({
-        goalId: "goal-no-sync",
+        hitchId: "goal-no-sync",
         conditionId: "typecheck",
         status: "passed",
         checkedBy: "test",
@@ -420,7 +420,7 @@ describe("MCP goal tools", () => {
     const s = server(root, mutationConfig(["goal.check_convergence"]));
 
     const res = await callTool(s, "harness.goal.check_convergence", {
-      goalId: "goal-no-sync",
+      hitchId: "goal-no-sync",
       idempotencyKey: "goal-no-sync",
       updateStatus: false,
     });
@@ -428,7 +428,7 @@ describe("MCP goal tools", () => {
     expect(res.data.result.decision).toBe("close_ready");
     expect(res.data.result.goalStatus).toBeNull();
     withDb(root, (db) => {
-      expect(new GoalRepository(db).requireSession("goal-no-sync").status).not.toBe(
+      expect(new HitchRepository(db).requireSession("goal-no-sync").status).not.toBe(
         "close_ready",
       );
     });
@@ -437,9 +437,9 @@ describe("MCP goal tools", () => {
   it("check_convergence syncs durable stop and close_ready statuses", async () => {
     const root = freshRoot();
     withDb(root, (db) => {
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       repo.createSession({
-        goalId: "goal-sync-diverging",
+        hitchId: "goal-sync-diverging",
         title: "Diverging",
         projectId: "demo",
         maxTotalNewFindings: 0,
@@ -448,13 +448,13 @@ describe("MCP goal tools", () => {
         createdSource: "mcp",
       });
       const cycle = repo.startReviewCycle({
-        goalId: "goal-sync-diverging",
+        hitchId: "goal-sync-diverging",
         reviewMode: "initial",
       });
       repo.completeReviewCycle({ cycleId: cycle.cycleId, findingsNew: 1 });
 
       repo.createSession({
-        goalId: "goal-sync-budget",
+        hitchId: "goal-sync-budget",
         title: "Budget",
         projectId: "demo",
         maxIterations: 0,
@@ -464,7 +464,7 @@ describe("MCP goal tools", () => {
       });
 
       repo.createSession({
-        goalId: "goal-sync-close",
+        hitchId: "goal-sync-close",
         title: "Close",
         projectId: "demo",
         closeConditions: [{ id: "typecheck", kind: "command", required: true }],
@@ -472,7 +472,7 @@ describe("MCP goal tools", () => {
         createdSource: "mcp",
       });
       repo.recordCloseCheck({
-        goalId: "goal-sync-close",
+        hitchId: "goal-sync-close",
         conditionId: "typecheck",
         status: "passed",
         checkedBy: "test",
@@ -481,28 +481,28 @@ describe("MCP goal tools", () => {
     const s = server(root, mutationConfig(["goal.check_convergence"]));
 
     const diverging = await callTool(s, "harness.goal.check_convergence", {
-      goalId: "goal-sync-diverging",
+      hitchId: "goal-sync-diverging",
       idempotencyKey: "goal-sync-diverging",
     });
     expect(diverging.data.result.decision).toBe("diverging");
     expect(diverging.data.result.goalStatus.status).toBe("diverging");
 
     const budget = await callTool(s, "harness.goal.check_convergence", {
-      goalId: "goal-sync-budget",
+      hitchId: "goal-sync-budget",
       idempotencyKey: "goal-sync-budget",
     });
     expect(budget.data.result.decision).toBe("budget_exhausted");
     expect(budget.data.result.goalStatus.status).toBe("budget_exhausted");
 
     const closeReady = await callTool(s, "harness.goal.check_convergence", {
-      goalId: "goal-sync-close",
+      hitchId: "goal-sync-close",
       idempotencyKey: "goal-sync-close",
     });
     expect(closeReady.data.result.decision).toBe("close_ready");
     expect(closeReady.data.result.goalStatus.status).toBe("close_ready");
 
     withDb(root, (db) => {
-      const repo = new GoalRepository(db);
+      const repo = new HitchRepository(db);
       expect(repo.requireSession("goal-sync-diverging").status).toBe("diverging");
       expect(repo.requireSession("goal-sync-budget").status).toBe(
         "budget_exhausted",
@@ -520,11 +520,11 @@ describe("MCP goal tools", () => {
       domain: "goal",
       idempotencyKey: "goal-start-raw-findings",
     });
-    const goalId = started.data.result.goalId as string;
+    const hitchId = started.data.result.hitchId as string;
     const secret = `sk-${"d".repeat(40)}`;
     withDb(root, (db) => {
-      new GoalRepository(db).upsertFinding({
-        goalId,
+      new HitchRepository(db).upsertFinding({
+        hitchId,
         source: "review",
         severity: "P1",
         category: "correctness",
@@ -535,7 +535,7 @@ describe("MCP goal tools", () => {
       });
     });
 
-    const status = await callTool(s, "harness.goal.status", { goalId });
+    const status = await callTool(s, "harness.goal.status", { hitchId });
     expect(JSON.stringify(status)).not.toContain(secret);
     expect(status.data.findings).toHaveLength(1);
     expect(status.data.findings[0].summary).toBe("[redacted]");
@@ -544,11 +544,11 @@ describe("MCP goal tools", () => {
     expect(status.data.findings[0].suggestedFix).toMatch(/\.\.\.\[truncated\]$/);
     expect(status.data.findingsTruncated).toBe(false);
 
-    const findings = await callTool(s, "harness.goal.findings", { goalId });
+    const findings = await callTool(s, "harness.goal.findings", { hitchId });
     expect(JSON.stringify(findings)).not.toContain(secret);
     expect(findings.data.findings[0].summary).toBe("[redacted]");
 
-    const resource = await readResource(s, `harness://goal/${goalId}`);
+    const resource = await readResource(s, `harness://goal/${hitchId}`);
     expect(JSON.stringify(resource)).not.toContain(secret);
     expect(resource.data.findings[0].detail).toBe("[redacted]");
   });
@@ -566,16 +566,16 @@ describe("MCP goal tools", () => {
       closeConditions: [{ id: "typecheck", kind: "command", required: true }],
       idempotencyKey: "goal-close-denied-start",
     });
-    const goalId = started.data.result.goalId as string;
+    const hitchId = started.data.result.hitchId as string;
     await callTool(s, "harness.goal.record_close_check", {
-      goalId,
+      hitchId,
       conditionId: "typecheck",
       status: "passed",
       idempotencyKey: "goal-close-denied-check",
     });
 
     const denied = await callTool(s, "harness.goal.close", {
-      goalId,
+      hitchId,
       summary: "done",
       idempotencyKey: "goal-close-denied",
     });
@@ -593,21 +593,21 @@ describe("MCP goal tools", () => {
       closeConditions: [{ id: "typecheck", kind: "command", required: true }],
       idempotencyKey: "goal-close-stale-start",
     });
-    const goalId = started.data.result.goalId as string;
+    const hitchId = started.data.result.hitchId as string;
     const evaluate = vi
       .spyOn(ConvergenceService.prototype, "evaluate")
-      .mockImplementationOnce(() => mockedConvergence(goalId, "close_ready") as any)
-      .mockImplementationOnce(() => mockedConvergence(goalId, "needs_fix") as any);
+      .mockImplementationOnce(() => mockedConvergence(hitchId, "close_ready") as any)
+      .mockImplementationOnce(() => mockedConvergence(hitchId, "needs_fix") as any);
     try {
       const denied = await callTool(s, "harness.goal.close", {
-        goalId,
+        hitchId,
         summary: "done",
         idempotencyKey: "goal-close-stale",
       });
       expect(denied.status).toBe("error");
       expect(denied.summary).toContain("goal is no longer close_ready");
       withDb(root, (db) => {
-        expect(new GoalRepository(db).requireSession(goalId).status).toBe("open");
+        expect(new HitchRepository(db).requireSession(hitchId).status).toBe("open");
       });
     } finally {
       evaluate.mockRestore();
@@ -624,10 +624,10 @@ describe("MCP goal tools", () => {
       closeConditions: [{ id: "typecheck", kind: "command", required: true }],
       idempotencyKey: "goal-close-confirm-start",
     });
-    const goalId = started.data.result.goalId as string;
+    const hitchId = started.data.result.hitchId as string;
 
     const pending = await callTool(s, "harness.goal.close", {
-      goalId,
+      hitchId,
       summary: "force after human review",
       idempotencyKey: "goal-close-confirm",
     });
@@ -647,17 +647,17 @@ describe("MCP goal tools", () => {
       domain: "goal",
       idempotencyKey: "goal-empty-close-start",
     });
-    const goalId = started.data.result.goalId as string;
+    const hitchId = started.data.result.hitchId as string;
     // a coding pass has already run; convergence reflects post-run behavior.
     withDb(root, (db) => {
-      new GoalRepository(db).createAttempt({
-        goalId,
+      new HitchRepository(db).createAttempt({
+        hitchId,
         attemptType: "implement",
       });
     });
 
     const pending = await callTool(s, "harness.goal.close", {
-      goalId,
+      hitchId,
       summary: "should require confirmation",
       idempotencyKey: "goal-empty-close",
     });
@@ -679,16 +679,16 @@ describe("MCP goal tools", () => {
       closeConditions: [{ id: "typecheck", kind: "command", required: true }],
       idempotencyKey: "goal-close-force-start",
     });
-    const goalId = started.data.result.goalId as string;
+    const hitchId = started.data.result.hitchId as string;
     await callTool(s, "harness.goal.record_close_check", {
-      goalId,
+      hitchId,
       conditionId: "typecheck",
       status: "passed",
       idempotencyKey: "goal-close-force-check",
     });
 
     const pending = await callTool(s, "harness.goal.close", {
-      goalId,
+      hitchId,
       summary: "done with force",
       force: true,
       idempotencyKey: "goal-close-force",
@@ -712,7 +712,7 @@ describe("MCP goal tools", () => {
       id: 2,
       method: "resources/templates/list",
     })) as any;
-    expect(JSON.stringify(resources)).toContain("harness://goal/{goalId}");
+    expect(JSON.stringify(resources)).toContain("harness://goal/{hitchId}");
 
     const prompts = (await s.handleMessage({
       jsonrpc: "2.0",
@@ -728,7 +728,7 @@ describe("MCP goal tools", () => {
       method: "prompts/get",
       params: {
         name: "harness.prompt.drive_goal_convergence",
-        arguments: { goalId: "goal-test" },
+        arguments: { hitchId: "goal-test" },
       },
     })) as any;
     const promptText = prompt.result.messages[0].content.text as string;
@@ -749,7 +749,7 @@ describe("MCP goal tools", () => {
       domain: "goal",
       idempotencyKey: "goal-domain-link-start",
     });
-    const goalId = started.data.result.goalId as string;
+    const hitchId = started.data.result.hitchId as string;
     withDb(root, (db) => {
       db.prepare(
         `INSERT INTO runs
@@ -766,7 +766,7 @@ describe("MCP goal tools", () => {
 
     const result = await callTool(s, "harness.review.process", {
       runId: "run-other-domain",
-      goalId,
+      hitchId,
       decision: "approved",
       idempotencyKey: "goal-domain-link-review",
     });
@@ -788,7 +788,7 @@ describe("MCP goal tools", () => {
       domain: "goal",
       idempotencyKey: "goal-project-link-start",
     });
-    const goalId = started.data.result.goalId as string;
+    const hitchId = started.data.result.hitchId as string;
     withDb(root, (db) => {
       db.prepare(
         `INSERT INTO runs
@@ -805,7 +805,7 @@ describe("MCP goal tools", () => {
 
     const result = await callTool(s, "harness.review.process", {
       runId: "run-unprojected",
-      goalId,
+      hitchId,
       decision: "approved",
       idempotencyKey: "goal-project-link-review",
     });
@@ -826,13 +826,13 @@ function seedProject(
   ).run(projectId, repoId);
 }
 
-function goalProjectId(root: string, goalId: string): string | null {
+function goalProjectId(root: string, hitchId: string): string | null {
   let pid: string | null = null;
   withDb(root, (db) => {
     pid = (
       db
         .prepare("SELECT project_id FROM goal_sessions WHERE goal_id = ?")
-        .get(goalId) as { project_id: string | null }
+        .get(hitchId) as { project_id: string | null }
     ).project_id;
   });
   return pid;
@@ -851,8 +851,8 @@ describe("goal.start repoId → projectId derivation (#81)", () => {
       idempotencyKey: "goal-derive-ok",
     });
     expect(started.status).toBe("operation_started");
-    const goalId = started.data.result.goalId as string;
-    expect(goalProjectId(root, goalId)).toBe("demo");
+    const hitchId = started.data.result.hitchId as string;
+    expect(goalProjectId(root, hitchId)).toBe("demo");
   });
 
   it("does NOT derive an ambiguous repoId (two projects) — denies with the actionable message", async () => {

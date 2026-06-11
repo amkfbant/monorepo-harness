@@ -118,7 +118,7 @@ export function resolveTrackedWorkspaceRepo(
 
   const data = readWorkspaceStatusData(db, tracked.repoPath);
   const projectOf = (r: WorkspaceRecord): string | null =>
-    r.goalId !== null ? (data.goalInfo.get(r.goalId)?.projectId ?? null) : null;
+    r.hitchId !== null ? (data.hitchInfo.get(r.hitchId)?.projectId ?? null) : null;
   const include =
     allowed.length === 0
       ? undefined

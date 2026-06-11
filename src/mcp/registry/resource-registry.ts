@@ -138,7 +138,7 @@ export const MCP_RESOURCE_TEMPLATES: McpResourceTemplateDefinition[] = [
     mimeType: "application/json",
   },
   {
-    uriTemplate: "harness://goal/{goalId}",
+    uriTemplate: "harness://goal/{hitchId}",
     name: "Goal",
     description: "Goal convergence status, findings, and decisions.",
     mimeType: "application/json",
@@ -350,11 +350,11 @@ function resolveGoalResource(
   segments: string[],
 ): McpResourceReadTarget {
   if (segments.length !== 1 || segments[0] === undefined || segments[0].length === 0) {
-    return errorTarget(uri, "expected harness://goal/{goalId}");
+    return errorTarget(uri, "expected harness://goal/{hitchId}");
   }
-  const goalId = segments[0];
-  return toolTarget(uri, "harness.goal.status", { goalId }, (context) =>
-    goalStatusTool({ goalId }, context),
+  const hitchId = segments[0];
+  return toolTarget(uri, "harness.goal.status", { hitchId }, (context) =>
+    goalStatusTool({ hitchId }, context),
   );
 }
 

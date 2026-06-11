@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { harnessPaths } from "../../config/paths.js";
 import { openManagedDb } from "../../db/managed-connection.js";
-import { ConvergenceService } from "../../goal/convergence.js";
-import { GoalRepository } from "../../goal/repository.js";
+import { ConvergenceService } from "../../hitch/convergence.js";
+import { HitchRepository } from "../../hitch/repository.js";
 import {
   WorkspaceRepository,
   type WorkspaceRecord,
@@ -22,7 +22,7 @@ import {
 } from "../../workspace/workspace-conflicts.js";
 import {
   buildRecoveryBriefing,
-  type RecoveryGoal,
+  type RecoveryHitch,
 } from "../../workspace/workspace-recover.js";
 import { errorResult, ok, type HarnessMcpToolResult } from "../schemas/outputs.js";
 import type { McpToolContext } from "../registry/tool-registry.js";
@@ -225,18 +225,18 @@ export async function workspaceRecoverTool(
   const allowed = context.config.allowedProjects;
   const paths = harnessPaths(context.harnessRoot);
   const handle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
-  let goal: RecoveryGoal | null = null;
+  let goal: RecoveryHitch | null = null;
   let objective: string | null = null;
   let latestCheckpoint: { note: string | null; createdAt: string; createdBy: string } | null =
     null;
   let authorized = true;
   try {
     const wsRepo = new WorkspaceRepository(handle.db);
-    const goalRepo = new GoalRepository(handle.db);
+    const goalRepo = new HitchRepository(handle.db);
     const row = wsRepo.get(resolution.repoKey, args.agent);
     const projectId =
-      row !== null && row.goalId !== null
-        ? (goalRepo.getSession(row.goalId)?.projectId ?? null)
+      row !== null && row.hitchId !== null
+        ? (goalRepo.getSession(row.hitchId)?.projectId ?? null)
         : null;
     // re-authorize: absent row, or (restricted client) a project not allowed.
     if (
@@ -251,13 +251,13 @@ export async function workspaceRecoverTool(
         latest === null
           ? null
           : { note: latest.note, createdAt: latest.createdAt, createdBy: latest.createdBy };
-      if (row.goalId !== null) {
-        const exists = goalRepo.getSession(row.goalId) !== null;
+      if (row.hitchId !== null) {
+        const exists = goalRepo.getSession(row.hitchId) !== null;
         goal = {
-          goalId: row.goalId,
+          hitchId: row.hitchId,
           convergence: exists
             ? (() => {
-                const c = new ConvergenceService(goalRepo).evaluate(row.goalId as string);
+                const c = new ConvergenceService(goalRepo).evaluate(row.hitchId as string);
                 return {
                   decision: c.decision,
                   reason: c.reason,

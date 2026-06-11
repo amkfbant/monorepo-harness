@@ -18,9 +18,9 @@ export interface WorkspaceStatusInput {
   branch: string;
   /** null for a stale entry (DB row whose git worktree is gone). */
   git: WorkspaceGitState | null;
-  goalId: string | null;
+  hitchId: string | null;
   /** the goal's convergence decision; null if no goal or a dangling link. */
-  goalDecision: string | null;
+  hitchDecision: string | null;
   objective: string | null;
   lastActiveAt: string | null;
   lastCheckpointAt: string | null;
@@ -42,8 +42,8 @@ export function progressLabel(input: WorkspaceStatusInput): string {
   // `clean`, which would contradict how the CLI renders it.
   if (input.stale || input.git === null) return "stale";
 
-  const d = input.goalDecision;
-  if (input.goalId !== null && d === null) return "goal-missing";
+  const d = input.hitchDecision;
+  if (input.hitchId !== null && d === null) return "goal-missing";
   if (d !== null) {
     switch (d) {
       case "diverging":

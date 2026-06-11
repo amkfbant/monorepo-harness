@@ -111,17 +111,17 @@ import {
 } from "../tools/goal-tools.js";
 import type { McpPermissionDecision } from "../security/permissions.js";
 import {
-  GOAL_CLOSE_CHECK_STATUSES,
-  GOAL_FINDING_SEVERITIES,
-  GOAL_FINDING_SOURCES,
-  GOAL_SCOPE_STATUSES,
-  GOAL_STATUSES,
-} from "../../goal/types.js";
+  HITCH_CLOSE_CHECK_STATUSES,
+  HITCH_FINDING_SEVERITIES,
+  HITCH_FINDING_SOURCES,
+  HITCH_SCOPE_STATUSES,
+  HITCH_STATUSES,
+} from "../../hitch/types.js";
 import {
-  GoalCloseConditionSchema,
-  GoalPolicySchema,
-  GoalScopeSchema,
-} from "../../goal/schemas.js";
+  HitchCloseConditionSchema,
+  HitchPolicySchema,
+  HitchScopeSchema,
+} from "../../hitch/schemas.js";
 
 export interface McpToolContext {
   harnessRoot: string;
@@ -208,7 +208,7 @@ const runDryRunArgs = z
 
 const runStartArgs = runDryRunArgs
   .extend({
-    goalId: z.string().min(1).optional(),
+    hitchId: z.string().min(1).optional(),
   })
   .merge(MutationArgsBaseSchema)
   .strict();
@@ -216,7 +216,7 @@ const runStartArgs = runDryRunArgs
 const reviewAutoArgs = z
   .object({
     runId: z.string().min(1),
-    goalId: z.string().min(1).optional(),
+    hitchId: z.string().min(1).optional(),
     reviewer: z.string().min(1).optional(),
   })
   .merge(MutationArgsBaseSchema)
@@ -225,7 +225,7 @@ const reviewAutoArgs = z
 const reviewProcessArgs = z
   .object({
     runId: z.string().min(1),
-    goalId: z.string().min(1).optional(),
+    hitchId: z.string().min(1).optional(),
     decision: z.enum(["approved", "changes_requested", "rejected"]),
     proposalId: z.number().int().positive().optional(),
     sourceSha256: z.string().min(1).optional(),
@@ -376,7 +376,7 @@ const operationGetArgs = z
 
 const goalListArgs = z
   .object({
-    status: z.enum(GOAL_STATUSES).optional(),
+    status: z.enum(HITCH_STATUSES).optional(),
     projectId: z.string().min(1).optional(),
     repoId: z.string().min(1).optional(),
     domain: z.string().min(1).optional(),
@@ -386,22 +386,22 @@ const goalListArgs = z
 
 const goalGetArgs = z
   .object({
-    goalId: z.string().min(1),
+    hitchId: z.string().min(1),
   })
   .strict();
 
 const goalStartArgs = z
   .object({
-    goalId: z.string().min(1).optional(),
+    hitchId: z.string().min(1).optional(),
     title: z.string().min(1),
     description: z.string().min(1).optional(),
     projectId: z.string().min(1).optional(),
     repoId: z.string().min(1).optional(),
     domain: z.string().min(1).optional(),
     backlogItemId: z.string().min(1).optional(),
-    scope: GoalScopeSchema.optional(),
-    closeConditions: z.array(GoalCloseConditionSchema).optional(),
-    policy: GoalPolicySchema.optional(),
+    scope: HitchScopeSchema.optional(),
+    closeConditions: z.array(HitchCloseConditionSchema).optional(),
+    policy: HitchPolicySchema.optional(),
     maxIterations: z.number().int().min(1).optional(),
     maxReviewCycles: z.number().int().min(1).optional(),
     maxReruns: z.number().int().min(0).optional(),
@@ -412,24 +412,24 @@ const goalStartArgs = z
 
 const goalFindingInputArgs = z
   .object({
-    severity: z.enum(GOAL_FINDING_SEVERITIES),
+    severity: z.enum(HITCH_FINDING_SEVERITIES),
     category: z.string().min(1),
     summary: z.string().min(1),
     detail: z.string().min(1).optional(),
     filePath: z.string().min(1).optional(),
     symbol: z.string().min(1).optional(),
     suggestedFix: z.string().min(1).optional(),
-    source: z.enum(GOAL_FINDING_SOURCES).optional(),
+    source: z.enum(HITCH_FINDING_SOURCES).optional(),
     sourceRef: z.string().min(1).optional(),
     sourceAttemptId: z.string().min(1).optional(),
     sourceCycleId: z.string().min(1).optional(),
-    scopeStatus: z.enum(GOAL_SCOPE_STATUSES).optional(),
+    scopeStatus: z.enum(HITCH_SCOPE_STATUSES).optional(),
   })
   .strict();
 
 const goalRecordFindingsArgs = z
   .object({
-    goalId: z.string().min(1),
+    hitchId: z.string().min(1),
     findings: z.array(goalFindingInputArgs).min(1).max(50),
   })
   .merge(MutationArgsBaseSchema)
@@ -438,7 +438,7 @@ const goalRecordFindingsArgs = z
 const goalClassifyFindingArgs = z
   .object({
     findingId: z.string().min(1),
-    scopeStatus: z.enum(GOAL_SCOPE_STATUSES),
+    scopeStatus: z.enum(HITCH_SCOPE_STATUSES),
     reason: z.string().min(1),
     duplicateOf: z.string().min(1).optional(),
   })
@@ -464,9 +464,9 @@ const goalDeferFindingArgs = z
 
 const goalRecordCloseCheckArgs = z
   .object({
-    goalId: z.string().min(1),
+    hitchId: z.string().min(1),
     conditionId: z.string().min(1),
-    status: z.enum(GOAL_CLOSE_CHECK_STATUSES),
+    status: z.enum(HITCH_CLOSE_CHECK_STATUSES),
     checkedBy: z.string().min(1).optional(),
     evidence: z.record(z.unknown()).optional(),
     message: z.string().min(1).optional(),
@@ -476,7 +476,7 @@ const goalRecordCloseCheckArgs = z
 
 const goalCheckConvergenceArgs = z
   .object({
-    goalId: z.string().min(1),
+    hitchId: z.string().min(1),
     updateStatus: z.boolean().optional(),
   })
   .merge(MutationArgsBaseSchema)
@@ -484,7 +484,7 @@ const goalCheckConvergenceArgs = z
 
 const goalCloseArgs = z
   .object({
-    goalId: z.string().min(1),
+    hitchId: z.string().min(1),
     summary: z.string().min(1),
     force: z.boolean().optional(),
   })
@@ -493,7 +493,7 @@ const goalCloseArgs = z
 
 const goalCancelArgs = z
   .object({
-    goalId: z.string().min(1),
+    hitchId: z.string().min(1),
     reason: z.string().min(1),
   })
   .merge(MutationArgsBaseSchema)
@@ -501,8 +501,8 @@ const goalCancelArgs = z
 
 const goalExpandScopeArgs = z
   .object({
-    goalId: z.string().min(1),
-    scope: GoalScopeSchema,
+    hitchId: z.string().min(1),
+    scope: HitchScopeSchema,
     reason: z.string().min(1),
   })
   .merge(MutationArgsBaseSchema)
@@ -518,14 +518,14 @@ const dangerousRunArgs = z
 const rerunStartArgs = z
   .object({
     runId: z.string().min(1),
-    goalId: z.string().min(1).optional(),
+    hitchId: z.string().min(1).optional(),
   })
   .merge(MutationArgsBaseSchema)
   .strict();
 
 const orchestrateGoalArgs = z
   .object({
-    goalId: z.string().min(1),
+    hitchId: z.string().min(1),
     maxSteps: z.number().int().positive().max(50).optional(),
   })
   .merge(MutationArgsBaseSchema)
@@ -658,7 +658,7 @@ const workspaceCheckpointArgs = z
     repoPath: z.string().min(1),
     agent: z.string().min(1),
     note: z.string().optional(),
-    goalId: z.string().min(1).optional(),
+    hitchId: z.string().min(1).optional(),
     objective: z.string().optional(),
     idempotencyKey: z.string().min(1),
     actorNote: z.string().optional(),
@@ -1146,7 +1146,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     argsSchema: goalListArgs,
     projectIdFromArgs: (args) => args.projectId,
     inputSchema: objectSchema({
-      status: enumSchema(GOAL_STATUSES),
+      status: enumSchema(HITCH_STATUSES),
       projectId: projectIdJson,
       repoId: { type: "string" },
       domain: { type: "string" },
@@ -1162,7 +1162,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     operation: "goal.get",
     argsSchema: goalGetArgs,
     resolveProjectIdForPermission: resolveGoalProjectId,
-    inputSchema: objectSchema({ goalId: goalIdJson }, ["goalId"]),
+    inputSchema: objectSchema({ hitchId: goalIdJson }, ["hitchId"]),
     handler: goalGetTool,
   }),
   define({
@@ -1173,7 +1173,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     operation: "goal.status",
     argsSchema: goalGetArgs,
     resolveProjectIdForPermission: resolveGoalProjectId,
-    inputSchema: objectSchema({ goalId: goalIdJson }, ["goalId"]),
+    inputSchema: objectSchema({ hitchId: goalIdJson }, ["hitchId"]),
     handler: goalStatusTool,
   }),
   define({
@@ -1184,7 +1184,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     operation: "goal.findings",
     argsSchema: goalGetArgs,
     resolveProjectIdForPermission: resolveGoalProjectId,
-    inputSchema: objectSchema({ goalId: goalIdJson }, ["goalId"]),
+    inputSchema: objectSchema({ hitchId: goalIdJson }, ["hitchId"]),
     handler: goalFindingsTool,
   }),
   define({
@@ -1195,7 +1195,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     operation: "goal.decisions",
     argsSchema: goalGetArgs,
     resolveProjectIdForPermission: resolveGoalProjectId,
-    inputSchema: objectSchema({ goalId: goalIdJson }, ["goalId"]),
+    inputSchema: objectSchema({ hitchId: goalIdJson }, ["hitchId"]),
     handler: goalDecisionsTool,
   }),
   define({
@@ -1307,7 +1307,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         projectId: projectIdJson,
         domain: { type: "string" },
         goal: { type: "string" },
-        goalId: goalIdJson,
+        hitchId: goalIdJson,
         contextPack: { type: "string" },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
@@ -1327,7 +1327,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     inputSchema: objectSchema(
       {
         runId: runIdJson,
-        goalId: goalIdJson,
+        hitchId: goalIdJson,
         reviewer: { type: "string" },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
@@ -1347,7 +1347,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     inputSchema: objectSchema(
       {
         runId: runIdJson,
-        goalId: goalIdJson,
+        hitchId: goalIdJson,
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
       },
@@ -1367,7 +1367,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     resolveProjectIdForPermission: resolveGoalProjectId,
     inputSchema: objectSchema(
       {
-        goalId: goalIdJson,
+        hitchId: goalIdJson,
         maxSteps: {
           type: "number",
           description: "Max orchestrator steps to run (1-50, default 20)",
@@ -1375,7 +1375,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
       },
-      ["goalId", "idempotencyKey"],
+      ["hitchId", "idempotencyKey"],
     ),
     handler: orchestrateGoalTool,
   }),
@@ -1453,7 +1453,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     projectIdFromArgs: (args) => args.projectId,
     inputSchema: objectSchema(
       {
-        goalId: goalIdJson,
+        hitchId: goalIdJson,
         title: { type: "string" },
         description: { type: "string" },
         projectId: projectIdJson,
@@ -1484,12 +1484,12 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     resolveProjectIdForPermission: resolveGoalProjectId,
     inputSchema: objectSchema(
       {
-        goalId: goalIdJson,
+        hitchId: goalIdJson,
         findings: { type: "array", items: goalFindingJson },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
       },
-      ["goalId", "findings", "idempotencyKey"],
+      ["hitchId", "findings", "idempotencyKey"],
     ),
     handler: goalRecordFindingsTool,
   }),
@@ -1504,7 +1504,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     inputSchema: objectSchema(
       {
         findingId: { type: "string" },
-        scopeStatus: enumSchema(GOAL_SCOPE_STATUSES),
+        scopeStatus: enumSchema(HITCH_SCOPE_STATUSES),
         reason: { type: "string" },
         duplicateOf: { type: "string" },
         idempotencyKey: idempotencyJson,
@@ -1563,16 +1563,16 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     resolveProjectIdForPermission: resolveGoalProjectId,
     inputSchema: objectSchema(
       {
-        goalId: goalIdJson,
+        hitchId: goalIdJson,
         conditionId: { type: "string" },
-        status: enumSchema(GOAL_CLOSE_CHECK_STATUSES),
+        status: enumSchema(HITCH_CLOSE_CHECK_STATUSES),
         checkedBy: { type: "string" },
         evidence: { type: "object", additionalProperties: true },
         message: { type: "string" },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
       },
-      ["goalId", "conditionId", "status", "idempotencyKey"],
+      ["hitchId", "conditionId", "status", "idempotencyKey"],
     ),
     handler: goalRecordCloseCheckTool,
   }),
@@ -1586,12 +1586,12 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     resolveProjectIdForPermission: resolveGoalProjectId,
     inputSchema: objectSchema(
       {
-        goalId: goalIdJson,
+        hitchId: goalIdJson,
         updateStatus: { type: "boolean" },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
       },
-      ["goalId", "idempotencyKey"],
+      ["hitchId", "idempotencyKey"],
     ),
     handler: goalCheckConvergenceTool,
   }),
@@ -1644,7 +1644,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     inputSchema: objectSchema(
       {
         runId: runIdJson,
-        goalId: goalIdJson,
+        hitchId: goalIdJson,
         decision: enumSchema(["approved", "changes_requested", "rejected"]),
         proposalId: { type: "number" },
         sourceSha256: { type: "string" },
@@ -1693,13 +1693,13 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     resolveProjectIdForPermission: resolveGoalProjectId,
     inputSchema: objectSchema(
       {
-        goalId: goalIdJson,
+        hitchId: goalIdJson,
         summary: { type: "string" },
         force: { type: "boolean" },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
       },
-      ["goalId", "summary", "idempotencyKey"],
+      ["hitchId", "summary", "idempotencyKey"],
     ),
     handler: goalCloseTool,
   }),
@@ -1713,12 +1713,12 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     resolveProjectIdForPermission: resolveGoalProjectId,
     inputSchema: objectSchema(
       {
-        goalId: goalIdJson,
+        hitchId: goalIdJson,
         reason: { type: "string" },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
       },
-      ["goalId", "reason", "idempotencyKey"],
+      ["hitchId", "reason", "idempotencyKey"],
     ),
     handler: goalCancelTool,
   }),
@@ -1732,13 +1732,13 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     resolveProjectIdForPermission: resolveGoalProjectId,
     inputSchema: objectSchema(
       {
-        goalId: goalIdJson,
+        hitchId: goalIdJson,
         scope: goalScopeJson,
         reason: { type: "string" },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
       },
-      ["goalId", "scope", "reason", "idempotencyKey"],
+      ["hitchId", "scope", "reason", "idempotencyKey"],
     ),
     handler: goalExpandScopeTool,
   }),
@@ -1931,7 +1931,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         repoPath: { type: "string" },
         agent: { type: "string" },
         note: { type: "string" },
-        goalId: { type: "string" },
+        hitchId: { type: "string" },
         objective: { type: "string" },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },

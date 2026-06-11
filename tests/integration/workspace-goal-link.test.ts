@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openManagedDb } from "../../src/db/managed-connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
-import { GoalRepository } from "../../src/goal/repository.js";
+import { HitchRepository } from "../../src/hitch/repository.js";
 import { createAgentWorkspace } from "../../src/workspace/agent-workspace.js";
-import { linkAgentWorkspaceToGoal } from "../../src/workspace/workspace-goal-link.js";
+import { linkAgentWorkspaceToHitch } from "../../src/workspace/workspace-hitch-link.js";
 
 function setup(): { harnessRoot: string; repoPath: string; workspacesDir: string } {
   const harnessRoot = mkdtempSync(join(tmpdir(), "harness-gl-"));
@@ -24,8 +24,8 @@ function setup(): { harnessRoot: string; repoPath: string; workspacesDir: string
   // init the harness DB + a goal.
   const handle = openManagedDb({ dbPath: join(harnessRoot, ".harness", "harness.sqlite") });
   runMigrations(handle.db);
-  new GoalRepository(handle.db).createSession({
-    goalId: "g1",
+  new HitchRepository(handle.db).createSession({
+    hitchId: "g1",
     title: "Goal",
     closeConditions: [{ id: "tc", kind: "command", required: true }],
     createdBy: "test",
@@ -50,16 +50,16 @@ function goalIdOfWorkspace(harnessRoot: string, agent: string): string | null {
   }
 }
 
-describe("linkAgentWorkspaceToGoal", () => {
+describe("linkAgentWorkspaceToHitch", () => {
   it("links an agent worktree to the goal and records the workspace row", async () => {
     const { harnessRoot, repoPath, workspacesDir } = setup();
     const ws = await createAgentWorkspace(
       { repoPath, workspacesDir },
       { agent: "alice", base: "main" },
     );
-    const res = await linkAgentWorkspaceToGoal({
+    const res = await linkAgentWorkspaceToHitch({
       repoPath: ws.path, // orchestrate ran in the agent worktree
-      goalId: "g1",
+      hitchId: "g1",
       harnessRoot,
     });
     expect(res.linked).toBe(true);
@@ -75,9 +75,9 @@ describe("linkAgentWorkspaceToGoal", () => {
     );
     const sub = join(ws.path, "src", "deep");
     mkdirSync(sub, { recursive: true });
-    const res = await linkAgentWorkspaceToGoal({
+    const res = await linkAgentWorkspaceToHitch({
       repoPath: sub, // a subdir of the agent worktree, not its root
-      goalId: "g1",
+      hitchId: "g1",
       harnessRoot,
     });
     expect(res.linked).toBe(true);
@@ -87,9 +87,9 @@ describe("linkAgentWorkspaceToGoal", () => {
 
   it("does not link when run from the main (non-agent) worktree", async () => {
     const { harnessRoot, repoPath } = setup();
-    const res = await linkAgentWorkspaceToGoal({
+    const res = await linkAgentWorkspaceToHitch({
       repoPath,
-      goalId: "g1",
+      hitchId: "g1",
       harnessRoot,
     });
     expect(res.linked).toBe(false);
@@ -102,9 +102,9 @@ describe("linkAgentWorkspaceToGoal", () => {
       cwd: repoPath,
       stdio: "ignore",
     });
-    const res = await linkAgentWorkspaceToGoal({
+    const res = await linkAgentWorkspaceToHitch({
       repoPath,
-      goalId: "g1",
+      hitchId: "g1",
       harnessRoot,
     });
     expect(res.linked).toBe(false);
@@ -112,9 +112,9 @@ describe("linkAgentWorkspaceToGoal", () => {
 
   it("never throws outside a git repo (best-effort)", async () => {
     const notRepo = mkdtempSync(join(tmpdir(), "harness-gl-norepo-"));
-    const res = await linkAgentWorkspaceToGoal({
+    const res = await linkAgentWorkspaceToHitch({
       repoPath: notRepo,
-      goalId: "g1",
+      hitchId: "g1",
       harnessRoot: notRepo,
     });
     expect(res.linked).toBe(false);

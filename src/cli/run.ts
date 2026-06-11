@@ -90,10 +90,10 @@ import {
 import { WorkspaceRepository } from "../db/repositories/workspaces.js";
 import {
   buildRecoveryBriefing,
-  type RecoveryGoal,
+  type RecoveryHitch,
 } from "../workspace/workspace-recover.js";
-import { GoalRepository } from "../goal/repository.js";
-import { ConvergenceService } from "../goal/convergence.js";
+import { HitchRepository } from "../hitch/repository.js";
+import { ConvergenceService } from "../hitch/convergence.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import {
   processReviewDecision,
@@ -3731,7 +3731,7 @@ workspaceCmd
         const r = recordByPath.get(normalizeWorktreePath(w.path)) ?? null;
         return {
           ...w,
-          goalId: r?.goalId ?? null,
+          hitchId: r?.hitchId ?? null,
           objective: r?.objective ?? null,
           lastActiveAt: r?.lastActiveAt ?? null,
         };
@@ -3747,7 +3747,7 @@ workspaceCmd
         return;
       }
       for (const w of enriched) {
-        const goal = w.goalId ? ` goal=${w.goalId}` : "";
+        const goal = w.hitchId ? ` goal=${w.hitchId}` : "";
         const obj = w.objective ? ` — ${w.objective}` : "";
         process.stdout.write(`${w.agent}\t${w.branch}\t${w.path}${goal}${obj}\n`);
       }
@@ -3930,7 +3930,7 @@ workspaceCmd
             : s.git.baseResolved
               ? `+${s.git.ahead}/-${s.git.behind} ${s.git.dirtyCount}dirty`
               : `base? ${s.git.dirtyCount}dirty`;
-        const goal = s.goalId ? `${s.goalId}${s.goalDecision ? `:${s.goalDecision}` : ":missing"}` : "-";
+        const goal = s.hitchId ? `${s.hitchId}${s.hitchDecision ? `:${s.hitchDecision}` : ":missing"}` : "-";
         const obj = s.objective ? ` — ${s.objective}` : "";
         const active = `${s.lastActiveAt ?? "-"}${s.staleHeartbeat ? " ⚠idle" : ""}`;
         process.stdout.write(
@@ -3979,7 +3979,7 @@ workspaceCmd
           branch: ws.branch,
           worktreePath: ws.path,
         });
-        if (goalId !== null) repo.linkGoal(repoKey, agent, goalId);
+        if (goalId !== null) repo.linkHitch(repoKey, agent, goalId);
         if (typeof raw.objective === "string") {
           repo.setObjective(repoKey, agent, raw.objective);
         }
@@ -3988,7 +3988,7 @@ workspaceCmd
           note: typeof raw.note === "string" ? raw.note : null,
           headSha: insp.head,
           dirtyCount: insp.dirtyFiles.length,
-          goalId: goalId ?? record.goalId,
+          hitchId: goalId ?? record.hitchId,
           createdBy: String(raw.by ?? "cli"),
         });
       });
@@ -4000,7 +4000,7 @@ workspaceCmd
         `checkpoint saved for agent "${agent}"\n` +
           `  head:  ${checkpoint.headSha ? checkpoint.headSha.slice(0, 8) : "(none)"}\n` +
           `  dirty: ${checkpoint.dirtyCount} file(s)\n` +
-          (checkpoint.goalId ? `  goal:  ${checkpoint.goalId}\n` : "") +
+          (checkpoint.hitchId ? `  goal:  ${checkpoint.hitchId}\n` : "") +
           (checkpoint.note ? `  note:  ${checkpoint.note}\n` : ""),
       );
     } catch (e) {
@@ -4039,17 +4039,17 @@ workspaceCmd
             record === null
               ? null
               : wsRepo.latestCheckpoint(record.workspaceId);
-          let goalSummary: RecoveryGoal | null = null;
-          if (record?.goalId != null) {
-            const goalRepo = new GoalRepository(db);
+          let goalSummary: RecoveryHitch | null = null;
+          if (record?.hitchId != null) {
+            const goalRepo = new HitchRepository(db);
             // a dangling advisory link (goal deleted) → convergence stays null.
-            const exists = goalRepo.getSession(record.goalId) !== null;
+            const exists = goalRepo.getSession(record.hitchId) !== null;
             goalSummary = {
-              goalId: record.goalId,
+              hitchId: record.hitchId,
               convergence: exists
                 ? (() => {
                     const c = new ConvergenceService(goalRepo).evaluate(
-                      record.goalId as string,
+                      record.hitchId as string,
                     );
                     return {
                       decision: c.decision,
@@ -4092,8 +4092,8 @@ workspaceCmd
         briefing.goal === null
           ? "(none)"
           : briefing.goal.convergence === null
-            ? `${briefing.goal.goalId} (no longer exists)`
-            : `${briefing.goal.goalId} — ${briefing.goal.convergence.decision} (${briefing.goal.convergence.reason})`;
+            ? `${briefing.goal.hitchId} (no longer exists)`
+            : `${briefing.goal.hitchId} — ${briefing.goal.convergence.decision} (${briefing.goal.convergence.reason})`;
       const cp = briefing.latestCheckpoint;
       process.stdout.write(
         `recover "${agent}" (${insp.branch})\n` +

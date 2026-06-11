@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { harnessPaths } from "../../src/config/paths.js";
 import { openManagedDb } from "../../src/db/managed-connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
-import { GoalRepository } from "../../src/goal/repository.js";
+import { HitchRepository } from "../../src/hitch/repository.js";
 
 const CLI = join(process.cwd(), "src/cli/run.ts");
 
@@ -31,12 +31,12 @@ function newRoot(): string {
   return root;
 }
 
-function seedGoal(root: string, goalId: string, repoId: string): void {
+function seedGoal(root: string, hitchId: string, repoId: string): void {
   const { db, close } = openManagedDb({ dbPath: harnessPaths(root).dbPath });
   try {
     runMigrations(db);
-    new GoalRepository(db).createSession({
-      goalId,
+    new HitchRepository(db).createSession({
+      hitchId,
       title: "t",
       description: "d",
       repoId,

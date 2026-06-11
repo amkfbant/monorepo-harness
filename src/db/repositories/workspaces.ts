@@ -14,7 +14,7 @@ export interface WorkspaceRecord {
   repoPath: string;
   branch: string;
   worktreePath: string;
-  goalId: string | null;
+  hitchId: string | null;
   objective: string | null;
   status: "active" | "archived";
   createdAt: string;
@@ -29,7 +29,7 @@ function rowToRecord(r: Record<string, unknown>): WorkspaceRecord {
     repoPath: r.repo_path as string,
     branch: r.branch as string,
     worktreePath: r.worktree_path as string,
-    goalId: (r.hitch_id as string | null) ?? null,
+    hitchId: (r.hitch_id as string | null) ?? null,
     objective: (r.objective as string | null) ?? null,
     status: r.status as "active" | "archived",
     createdAt: r.created_at as string,
@@ -52,7 +52,7 @@ export interface WorkspaceCheckpointRecord {
   note: string | null;
   headSha: string | null;
   dirtyCount: number;
-  goalId: string | null;
+  hitchId: string | null;
   createdAt: string;
   createdBy: string;
 }
@@ -62,7 +62,7 @@ export interface RecordCheckpointInput {
   note?: string | null;
   headSha?: string | null;
   dirtyCount?: number;
-  goalId?: string | null;
+  hitchId?: string | null;
   createdBy: string;
   now?: string;
 }
@@ -74,7 +74,7 @@ function rowToCheckpoint(r: Record<string, unknown>): WorkspaceCheckpointRecord 
     note: (r.note as string | null) ?? null,
     headSha: (r.head_sha as string | null) ?? null,
     dirtyCount: r.dirty_count as number,
-    goalId: (r.hitch_id as string | null) ?? null,
+    hitchId: (r.hitch_id as string | null) ?? null,
     createdAt: r.created_at as string,
     createdBy: r.created_by as string,
   };
@@ -190,10 +190,10 @@ export class WorkspaceRepository {
   }
 
   /** Link (or unlink with null) an advisory goal for the workspace. */
-  linkGoal(
+  linkHitch(
     repoPath: string,
     agent: string,
-    goalId: string | null,
+    hitchId: string | null,
     now?: string,
   ): void {
     const ts = now ?? new Date().toISOString();
@@ -202,7 +202,7 @@ export class WorkspaceRepository {
         `UPDATE workspaces SET hitch_id = ?, updated_at = ?, last_active_at = ?
            WHERE repo_path = ? AND agent = ?`,
       )
-      .run(goalId, ts, ts, repoPath, agent);
+      .run(hitchId, ts, ts, repoPath, agent);
   }
 
   /** Set the workspace's free-text objective. */
@@ -239,7 +239,7 @@ export class WorkspaceRepository {
         input.note ?? null,
         input.headSha ?? null,
         input.dirtyCount ?? 0,
-        input.goalId ?? null,
+        input.hitchId ?? null,
         now,
         input.createdBy,
       );

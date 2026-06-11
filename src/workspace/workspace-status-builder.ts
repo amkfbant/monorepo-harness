@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
-import { ConvergenceService } from "../goal/convergence.js";
-import { GoalRepository } from "../goal/repository.js";
+import { ConvergenceService } from "../hitch/convergence.js";
+import { HitchRepository } from "../hitch/repository.js";
 import {
   WorkspaceRepository,
   type WorkspaceRecord,
@@ -22,7 +22,7 @@ export interface WorkspaceStatusFull extends WorkspaceStatus {
   staleHeartbeat: boolean;
 }
 
-interface GoalInfo {
+interface HitchInfo {
   decision: string | null;
   projectId: string | null;
 }
@@ -34,8 +34,8 @@ interface GoalInfo {
  */
 export interface WorkspaceStatusData {
   rows: WorkspaceRecord[];
-  /** decision + project per linked goalId (for labels and scoping) */
-  goalInfo: Map<string, GoalInfo>;
+  /** decision + project per linked hitchId (for labels and scoping) */
+  hitchInfo: Map<string, HitchInfo>;
   /** latest checkpoint timestamp per workspaceId */
   checkpointAt: Map<string, string>;
 }
@@ -45,24 +45,24 @@ export function readWorkspaceStatusData(
   repoKey: string,
 ): WorkspaceStatusData {
   const wsRepo = new WorkspaceRepository(db);
-  const goalRepo = new GoalRepository(db);
+  const hitchRepo = new HitchRepository(db);
   const rows = wsRepo.listByRepo(repoKey);
-  const goalInfo = new Map<string, GoalInfo>();
+  const hitchInfo = new Map<string, HitchInfo>();
   for (const r of rows) {
-    if (r.goalId === null || goalInfo.has(r.goalId)) continue;
-    const session = goalRepo.getSession(r.goalId);
-    goalInfo.set(r.goalId, {
+    if (r.hitchId === null || hitchInfo.has(r.hitchId)) continue;
+    const session = hitchRepo.getSession(r.hitchId);
+    hitchInfo.set(r.hitchId, {
       decision:
         session === null
           ? null
-          : new ConvergenceService(goalRepo).evaluate(r.goalId).decision,
+          : new ConvergenceService(hitchRepo).evaluate(r.hitchId).decision,
       projectId: session?.projectId ?? null,
     });
   }
   const checkpointAt = wsRepo.latestCheckpointAtForWorkspaces(
     rows.map((r) => r.workspaceId),
   );
-  return { rows, goalInfo, checkpointAt };
+  return { rows, hitchInfo, checkpointAt };
 }
 
 export interface AssembleStatusOpts {
@@ -74,7 +74,7 @@ export interface AssembleStatusOpts {
    * out-of-scope workspace is never inspected. Receives the DB row (null for a
    * convention-only worktree with no row) and its linked-goal project.
    */
-  include?: (record: WorkspaceRecord | null, goalProjectId: string | null) => boolean;
+  include?: (record: WorkspaceRecord | null, hitchProjectId: string | null) => boolean;
   /**
    * When set, each live worktree is VERIFIED to still belong to this canonical
    * repo key before git runs in it — so a worktree whose dir was reused for a
@@ -100,11 +100,11 @@ export async function assembleWorkspaceStatuses(
     data.rows,
   );
   const projectOf = (r: WorkspaceRecord | null): string | null =>
-    r?.goalId != null ? (data.goalInfo.get(r.goalId)?.projectId ?? null) : null;
+    r?.hitchId != null ? (data.hitchInfo.get(r.hitchId)?.projectId ?? null) : null;
   const visible = (r: WorkspaceRecord | null): boolean =>
     opts.include === undefined || opts.include(r, projectOf(r));
-  const decisionOf = (goalId: string | null): string | null =>
-    goalId === null ? null : (data.goalInfo.get(goalId)?.decision ?? null);
+  const decisionOf = (hitchId: string | null): string | null =>
+    hitchId === null ? null : (data.hitchInfo.get(hitchId)?.decision ?? null);
 
   const out: WorkspaceStatusFull[] = [];
   for (const w of live) {
@@ -135,8 +135,8 @@ export async function assembleWorkspaceStatuses(
           baseResolved: insp.baseResolved,
           dirtyCount: insp.dirtyFiles.length,
         },
-        goalId: r?.goalId ?? null,
-        goalDecision: decisionOf(r?.goalId ?? null),
+        hitchId: r?.hitchId ?? null,
+        hitchDecision: decisionOf(r?.hitchId ?? null),
         objective: r?.objective ?? null,
         lastActiveAt: r?.lastActiveAt ?? null,
         lastCheckpointAt:
@@ -157,8 +157,8 @@ export async function assembleWorkspaceStatuses(
         agent: r.agent,
         branch: r.branch,
         git: null,
-        goalId: r.goalId,
-        goalDecision: decisionOf(r.goalId),
+        hitchId: r.hitchId,
+        hitchDecision: decisionOf(r.hitchId),
         objective: r.objective,
         lastActiveAt: r.lastActiveAt,
         lastCheckpointAt: data.checkpointAt.get(r.workspaceId) ?? null,
