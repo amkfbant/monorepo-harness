@@ -37,7 +37,9 @@ dangerous tools: confirmation_required
 raw shell: never exposed
 ```
 
-All mutation tools use `OperationRunner`. MCP is not a privileged side door
+Mutation tools use the shared operation/idempotency/audit wrappers. Guarded data
+mutations use `OperationRunner`; bounded driver tools may use `runMcpOperation`
+when they need runtime-specific gate checks. MCP is not a privileged side door
 around the CLI, dashboard, DB repositories, idempotency ledger, or audit
 records.
 
@@ -470,20 +472,24 @@ read surface。データモデル・ロールアップ仕様は [`roadmap.md`](.
 
 すべて read tool なので allowlist 不要。`allowedProjects` が空（unrestricted）なら全 course 可視。
 
-**`harness.course.create` / `harness.phase.add` / `harness.phase.update` /
-`harness.phase.link_hitch`（guarded mutation、SP-1）** は course → phase の構造変更。
+**`harness.course.create` / `harness.course.orchestrate` / `harness.phase.add` /
+`harness.phase.update` / `harness.phase.link_hitch`（guarded mutation、SP-1/SP-2）**
+は course → phase の構造変更・drive surface。
 `guarded-mutation` モード ＋ `allowedOperations` への operation key 追加が必須（deny-by-default）。
-`idempotencyKey` 必須。`OperationRunner` 経由で idempotency ledger / operation audit / mutation
-budget が効く。confirmation は不要（reversible な tracking write。外部破壊効果なし）。
+`idempotencyKey` 必須。`course.create` / phase mutation は `OperationRunner` 経由で idempotency
+ledger / operation audit / mutation budget が効く。`course.orchestrate` は hitch 版同様
+`runMcpOperation` 経由で 1 pass を監査し、per-hitch gate / repo 解決を runtime 側で行う。
+confirmation は不要（PR を開かず、hitch/phase close もしない bounded drive）。
 
 | Tool | Operation key | 主な制約 |
 |------|---------------|---------|
 | `harness.course.create` | `course.create` | `projectId` を `ensureProjectVisible` で事前チェック |
+| `harness.course.orchestrate` | `course.orchestrate` | `courseId`, `maxDrivenHitches?`, `maxStepsPerHitch?`, `idempotencyKey`, `actorNote?`。親 course の visibility を事前チェック。`maxDrivenHitches` は既定 3 / 最大 10、`maxStepsPerHitch` は既定 20 / 最大 50 に clamp。course-pass lease `course:<id>` を使い、PR は開かない |
 | `harness.phase.add` | `phase.add` | 親 course の visibility を `OperationRunner` 前に確認。cross-course parent は拒否 |
 | `harness.phase.update` | `phase.update` | 親 course 経由で visibility 確認。`status` のみ更新（SP-1） |
 | `harness.phase.link_hitch` | `phase.link_hitch` | cross-project mismatch と double-link（PK）は操作内で拒否 |
 
-project-restricted client の scope: null-`project_id` course の create / phase 操作は拒否。
+project-restricted client の scope: null-`project_id` course の create / orchestrate / phase 操作は拒否。
 
 Dry-run tools:
 
@@ -518,6 +524,7 @@ harness.hitch.record_close_check
 harness.hitch.check_convergence
 harness.hitch.orchestrate
 harness.course.create
+harness.course.orchestrate
 harness.phase.add
 harness.phase.update
 harness.phase.link_hitch

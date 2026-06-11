@@ -32,6 +32,27 @@ N/A — operational knowledge is authored directly (no untrusted generator to ga
 
 Recorded 2026-06 when the `release plan` CLI landed.
 
+## Course orchestrate follow-ups (SP-2 out of scope)
+
+SP-2 shipped `course orchestrate` as a drive-only, single-pass bounded driver over
+manually linked hitches. These adjacent capabilities are intentionally out of
+scope and should go through their own design/plan before implementation:
+
+- **Auto-spawn from `needs_link`** — `needs_link` is the deterministic junction
+  where a future increment can spawn/link a hitch for an actionable leaf phase.
+  Current behavior reports the phase and continues.
+- **Course-level PR automation (`--open-prs`)** — a future opt-in may open PRs
+  for hitches that become close-ready during the pass. SP-2 stops at close-ready
+  and leaves PR/close to explicit follow-up commands.
+- **Phase auto-close** — `readyToClose` is derived from live convergence and
+  `PhaseRollup`; SP-2 does not write `phase.status = closed`.
+- **Parallel hitch drive** — SP-2 drives hitches serially within a course-pass
+  budget and one course lease.
+- **Durable `course_orchestration_runs` table** — SP-2 records operation audit
+  only; it does not add a new run table or migration.
+- **Phase dependency edges** — ordering is the current phase tree pre-order.
+  Cross-phase dependency modeling is a later roadmap-layer extension.
+
 ## Atomic authorization for MCP mutations (TOCTOU)
 
 MCP mutation tools authorize (project scope / existing-entry checks) in a

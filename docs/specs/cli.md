@@ -1501,7 +1501,7 @@ promote された md は `<out>/`（既定 `docs/knowledge/`）に書かれ、`r
 
 ### Exit code（list / reject / promote / deprecate 共通）
 
-- `0`: 成功
+- `0`: 成功（`course orchestrate` は `stopReason=completed`。`--dry-run` は plan 成功）
 - `1`: invalid runId / candidates yaml 不在 or parse 失敗 / 候補の `kind` が unsafe / reject の index 範囲外 / reviewer 空 / actor 空 / knowledge entry 不在
 - `2`: 予期しない例外
 
@@ -1806,6 +1806,7 @@ harness course create --title <text> [--description <text>] [--project <id>] [--
 harness course list [--status active|paused|closed] [--json]
 harness course show <id> [--json]
 harness course status <id> [--json]
+harness course orchestrate <id> [--max-driven-hitches <n>] [--max-steps-per-hitch <n>] [--dry-run] [--json]
 harness course close <id>
 harness course export <id> --md [--out <path>]
 ```
@@ -1816,16 +1817,23 @@ harness course export <id> --md [--out <path>]
 | `list` | course 一覧（id / status / title をタブ区切り、または JSON） |
 | `show` | 単一 course を表示 |
 | `status` | phase ツリーを walk し open P0/P1 + phase ごとの declared status + latest hitch decision を表示する決定論的ロールアップ |
+| `orchestrate` | active course の phase ツリーを 1 pass だけ walk し、eligible な linked hitch を `hitch.orchestrate` gate に従って drive。`--dry-run` は lease/write/drive なしで phase action のみ出力 |
 | `close` | course status を `closed` に設定 |
 | `export --md` | DB → markdown の一方向ビュー（DB が canonical。markdown → DB の round-trip 編集パスは無い） |
+
+`course orchestrate` の budget は course pass 単位。`--max-driven-hitches` は既定 `3` /
+最大 `10`、`--max-steps-per-hitch` は既定 `20` / 最大 `50` に clamp される。drive pass は
+`domain_locks` の `course:<id>` lease を取る。書く phase status は `pending -> in_progress`
+の CAS のみで、PR 作成・hitch close・phase close・hitch spawn はしない。
 
 ### Exit code
 
 - `0`: 成功
 - `1`: user-fixable エラー（not found / 異なる course の parent / already linked /
   project mismatch / 無効な `--status` / `--position` が整数でない / `--md` 未指定 /
-  DB エラー）
-- `2`: 予期しない例外
+  non-active course / course lease busy / `orchestrate` budget exhausted /
+  project 解決エラー / DB エラー）
+- `2`: `course orchestrate` の driver 例外など、user-fixable ではない予期しない例外
 
 ## `harness phase`
 
