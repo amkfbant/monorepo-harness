@@ -254,35 +254,6 @@ export class CourseOrchestrator {
           break;
         }
 
-        if (
-          options.transitionPhaseStatus &&
-          phaseDriven.length === 0 &&
-          currentPhase.status === "pending"
-        ) {
-          const transitioned = phases.transitionStatus(
-            phase.phaseId,
-            ["pending"],
-            "in_progress",
-          );
-          if (!transitioned) {
-            const rereadPhase = phases.require(phase.phaseId);
-            if (
-              rereadPhase.status === "blocked" ||
-              rereadPhase.status === "closed"
-            ) {
-              phaseOutcomes.push({
-                phaseId: phase.phaseId,
-                action:
-                  rereadPhase.status === "blocked"
-                    ? "skip_blocked"
-                    : "skip_closed",
-                drivenHitches: phaseDriven,
-              });
-              break;
-            }
-          }
-        }
-
         const hitchId = action.hitchIds[j]!;
         if (options.driveHitch !== undefined) {
           options.beforeDriveHitch?.();
@@ -304,6 +275,18 @@ export class CourseOrchestrator {
             reportOnly = true;
             continue;
           }
+        }
+
+        if (
+          !this.transitionPhaseBeforeFirstDrive({
+            phases,
+            phaseId: phase.phaseId,
+            phaseDriven,
+            options,
+            phaseOutcomes,
+          })
+        ) {
+          break;
         }
 
         const driven =
@@ -361,6 +344,54 @@ export class CourseOrchestrator {
       phaseOutcomes,
       drivenHitches,
     };
+  }
+
+  private transitionPhaseBeforeFirstDrive(input: {
+    phases: PhaseRepository;
+    phaseId: string;
+    phaseDriven: DrivenHitch[];
+    options: WalkCourseOptions;
+    phaseOutcomes: PhaseOutcome[];
+  }): boolean {
+    if (!input.options.transitionPhaseStatus || input.phaseDriven.length > 0) {
+      return true;
+    }
+
+    const currentPhase = input.phases.require(input.phaseId);
+    if (currentPhase.status === "blocked" || currentPhase.status === "closed") {
+      this.recordPhaseStatusSkip(input, currentPhase.status);
+      return false;
+    }
+    if (currentPhase.status !== "pending") return true;
+
+    const transitioned = input.phases.transitionStatus(
+      input.phaseId,
+      ["pending"],
+      "in_progress",
+    );
+    if (transitioned) return true;
+
+    const rereadPhase = input.phases.require(input.phaseId);
+    if (rereadPhase.status === "blocked" || rereadPhase.status === "closed") {
+      this.recordPhaseStatusSkip(input, rereadPhase.status);
+      return false;
+    }
+    return true;
+  }
+
+  private recordPhaseStatusSkip(
+    input: {
+      phaseId: string;
+      phaseDriven: DrivenHitch[];
+      phaseOutcomes: PhaseOutcome[];
+    },
+    status: "blocked" | "closed",
+  ): void {
+    input.phaseOutcomes.push({
+      phaseId: input.phaseId,
+      action: status === "blocked" ? "skip_blocked" : "skip_closed",
+      drivenHitches: input.phaseDriven,
+    });
   }
 
   private actionForPhase(

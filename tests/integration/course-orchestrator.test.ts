@@ -59,7 +59,7 @@ function fakeRunners(): OrchestratorRunners {
   };
 }
 
-function seedDrivableHitch(db: Database.Database, hitchId: string): void {
+function seedDrivableHitch(db: Database.Database, hitchId: string): string {
   const hitches = new HitchRepository(db);
   hitches.createSession({
     hitchId,
@@ -70,7 +70,7 @@ function seedDrivableHitch(db: Database.Database, hitchId: string): void {
     createdBy: "test",
     createdSource: "cli",
   });
-  hitches.upsertFinding({
+  const { finding } = hitches.upsertFinding({
     hitchId,
     severity: "P1",
     source: "human",
@@ -78,6 +78,39 @@ function seedDrivableHitch(db: Database.Database, hitchId: string): void {
     summary: "needs fix",
     scopeStatus: "in_scope",
   });
+  return finding.findingId;
+}
+
+function seedDrivableHitchThatClosesAfterFix(
+  db: Database.Database,
+  hitchId: string,
+): string {
+  const hitches = new HitchRepository(db);
+  hitches.createSession({
+    hitchId,
+    title: hitchId,
+    projectId: "demo",
+    scope: {},
+    closeConditions: [{ id: "manual-pass", kind: "manual", required: true }],
+    createdBy: "test",
+    createdSource: "cli",
+  });
+  hitches.recordCloseCheck({
+    hitchId,
+    conditionId: "manual-pass",
+    status: "passed",
+    checkedBy: "test",
+    checkedAt: "2026-06-12T00:01:00.000Z",
+  });
+  const { finding } = hitches.upsertFinding({
+    hitchId,
+    severity: "P1",
+    source: "human",
+    category: "correctness",
+    summary: "needs fix",
+    scopeStatus: "in_scope",
+  });
+  return finding.findingId;
 }
 
 function seedCloseReadyHitch(db: Database.Database, hitchId: string): void {
@@ -308,20 +341,25 @@ describe("CourseOrchestrator", () => {
 
   it("rechecks the hitch mutation gate immediately before driving", async () => {
     const courseId = newCourse(db, "course-gate-drift");
+    const domainKey = `course:${courseId}`;
     const phases = new PhaseRepository(db);
     const phase = phases.add({ courseId, phaseId: "phase-gate-drift", title: "Drift", position: 1, createdBy: "test", createdSource: "cli" });
-    seedDrivableHitch(db, "h-gate-drift");
+    const findingId = seedDrivableHitch(db, "h-gate-drift");
     phases.linkHitch(phase.phaseId, "h-gate-drift");
-    db.prepare(
-      `CREATE TRIGGER drift_hitch_before_course_drive
-         AFTER UPDATE OF status ON phases
-         WHEN NEW.phase_id = 'phase-gate-drift' AND NEW.status = 'in_progress'
-       BEGIN
-         UPDATE hitch_findings
-            SET scope_status = 'unknown'
-          WHERE hitch_id = 'h-gate-drift';
-       END`,
-    ).run();
+    domainLockHook.wrapAcquire = (handle, opts) => {
+      if (opts.domainKey !== domainKey) return handle;
+      return {
+        ...handle,
+        heartbeat(now?: Date): void {
+          handle.heartbeat(now);
+          new HitchRepository(db).classifyFinding({
+            findingId,
+            scopeStatus: "unknown",
+            reason: "test drift",
+          });
+        },
+      };
+    };
     const calls: string[] = [];
 
     const result = await makeOrchestrator(db, {}, calls).run({
@@ -343,6 +381,58 @@ describe("CourseOrchestrator", () => {
       }),
     );
     expect(result.drivenHitches).toEqual([]);
+    expect(phases.require(phase.phaseId).status).toBe("pending");
+  });
+
+  it("keeps a phase pending when every dispatch-drivable hitch drifts to report-only at the per-hitch gate", async () => {
+    const courseId = newCourse(db, "course-report-only-drift");
+    const domainKey = `course:${courseId}`;
+    const phases = new PhaseRepository(db);
+    const phase = phases.add({ courseId, phaseId: "phase-report-only-drift", title: "Report drift", position: 1, createdBy: "test", createdSource: "cli" });
+    const findingIds = [
+      seedDrivableHitchThatClosesAfterFix(db, "h-report-drift-one"),
+      seedDrivableHitchThatClosesAfterFix(db, "h-report-drift-two"),
+    ];
+    phases.linkHitch(phase.phaseId, "h-report-drift-one");
+    phases.linkHitch(phase.phaseId, "h-report-drift-two");
+    let heartbeatCount = 0;
+    domainLockHook.wrapAcquire = (handle, opts) => {
+      if (opts.domainKey !== domainKey) return handle;
+      return {
+        ...handle,
+        heartbeat(now?: Date): void {
+          handle.heartbeat(now);
+          const findingId = findingIds[heartbeatCount];
+          heartbeatCount += 1;
+          if (findingId !== undefined) {
+            new HitchRepository(db).markFindingFixed({
+              findingId,
+              fixedAt: `2026-06-12T00:00:0${heartbeatCount}.000Z`,
+            });
+          }
+        },
+      };
+    };
+    const calls: string[] = [];
+
+    const result = await makeOrchestrator(db, {}, calls).run({
+      courseId,
+      maxDrivenHitches: 3,
+      maxStepsPerHitch: 2,
+      createdBy: "test",
+    });
+
+    expect(calls).toEqual([]);
+    expect(result.drivenHitches).toEqual([]);
+    expect(result.phaseOutcomes).toContainEqual(
+      expect.objectContaining({
+        phaseId: "phase-report-only-drift",
+        action: "report_only",
+        note: "report_only",
+        drivenHitches: [],
+      }),
+    );
+    expect(phases.require(phase.phaseId).status).toBe("pending");
   });
 
   it("isolates an escalated top-level subtree and continues the next subtree", async () => {
