@@ -1795,3 +1795,58 @@ pre-push hook から呼べる（「常時ハーネス強制」はしない）。
 > スコープ: committed 履歴の帰属（どの過去コミットがレビュー済み run 由来か）は健全に判定するには
 > reviewed-head-sha の記録が要るため本コマンドの対象外（commit author/message での推測は spoofable で
 > fail-closed にならない）。follow-up（`docs/future-features.md`）。
+
+## `harness course`
+
+course ロードマップ管理（SP-1）。データモデル・MCP ツール・ロールアップ仕様は
+[`roadmap.md`](./roadmap.md)。
+
+```bash
+harness course create --title <text> [--description <text>] [--project <id>] [--repo-id <id>] [--created-by <actor>] [--json]
+harness course list [--status active|paused|closed] [--json]
+harness course show <id> [--json]
+harness course status <id> [--json]
+harness course close <id>
+harness course export <id> --md [--out <path>]
+```
+
+| サブコマンド | 動作 |
+|-------------|------|
+| `create` | course を作成（status=`active`）。`course=<id> status=active` または JSON を出力 |
+| `list` | course 一覧（id / status / title をタブ区切り、または JSON） |
+| `show` | 単一 course を表示 |
+| `status` | phase ツリーを walk し open P0/P1 + phase ごとの declared status + latest hitch decision を表示する決定論的ロールアップ |
+| `close` | course status を `closed` に設定 |
+| `export --md` | DB → markdown の一方向ビュー（DB が canonical。markdown → DB の round-trip 編集パスは無い） |
+
+### Exit code
+
+- `0`: 成功
+- `1`: user-fixable エラー（not found / 異なる course の parent / already linked /
+  project mismatch / 無効な `--status` / `--position` が整数でない / `--md` 未指定 /
+  DB エラー）
+- `2`: 予期しない例外
+
+## `harness phase`
+
+course 内 phase 管理（SP-1）。データモデルは [`roadmap.md`](./roadmap.md)。
+
+```bash
+harness phase add --course <id> --title <text> [--parent <phase-id>] [--position <n>] [--scope-file <path>] [--close-file <path>] [--created-by <actor>] [--json]
+harness phase list --course <id> [--json]
+harness phase show <id> [--json]
+harness phase update <id> [--status pending|in_progress|closed|blocked] [--scope-file <path>] [--close-file <path>]
+harness phase link-hitch <phase-id> <hitch-id>
+harness phase unlink-hitch <hitch-id>
+```
+
+| サブコマンド | 動作 |
+|-------------|------|
+| `add` | phase を course に追加。`--scope-file` / `--close-file` は JSON または YAML を受け付ける。cross-course parent は拒否 |
+| `list` | course の phase 一覧（position/id 順のフラット一覧） |
+| `show` | 単一 phase ＋ リンク済み hitch id を表示 |
+| `update` | phase の declared status または scope/close conditions を更新 |
+| `link-hitch` | hitch を phase にリンク（cross-project mismatch と double-link は拒否） |
+| `unlink-hitch` | hitch の phase リンクを解除 |
+
+Exit code は `harness course` と同じ（0 / 1 / 2）。

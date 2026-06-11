@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1593,6 +1593,49 @@ export const V20_TABLE_NAMES: readonly string[] = [
   "hitch_convergence_decisions",
 ];
 
+/**
+ * v21 — course → phase roadmap layer (SP-1).
+ *
+ * Additive only: three new tables that index an aspirational roadmap on top of
+ * the existing hitch (execution) layer. A `course` is a long-lived initiative;
+ * `phases` form an ordered tree under a course (`parent_phase_id` self-ref);
+ * `phase_hitches` is a 1:1 link table that attaches at most one phase to each
+ * hitch session (the `hitch_id` PK enforces a hitch belongs to a single phase).
+ * No existing table is altered, so all current behaviour is unchanged.
+ */
+export const MIGRATION_V21_STATEMENTS: readonly string[] = [
+  `CREATE TABLE courses (
+     course_id TEXT PRIMARY KEY NOT NULL, project_id TEXT, repo_id TEXT,
+     title TEXT NOT NULL, description TEXT,
+     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','closed')),
+     created_by TEXT, created_source TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+   )`,
+  `CREATE INDEX courses_project_idx ON courses(project_id, status)`,
+  `CREATE TABLE phases (
+     phase_id TEXT PRIMARY KEY NOT NULL,
+     course_id TEXT NOT NULL REFERENCES courses(course_id) ON DELETE CASCADE,
+     parent_phase_id TEXT REFERENCES phases(phase_id) ON DELETE CASCADE,
+     title TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0,
+     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','in_progress','closed','blocked')),
+     scope_json TEXT, close_conditions_json TEXT, review_state_json TEXT,
+     created_by TEXT, created_source TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+   )`,
+  `CREATE INDEX phases_course_idx ON phases(course_id, parent_phase_id, position)`,
+  `CREATE TABLE phase_hitches (
+     hitch_id TEXT PRIMARY KEY NOT NULL REFERENCES hitch_sessions(hitch_id) ON DELETE CASCADE,
+     phase_id TEXT NOT NULL REFERENCES phases(phase_id) ON DELETE CASCADE,
+     linked_at TEXT NOT NULL
+   )`,
+  `CREATE INDEX phase_hitches_phase_idx ON phase_hitches(phase_id)`,
+] as const;
+
+/** Tables added by v21 (SP-1 — course → phase roadmap layer). */
+export const V21_TABLE_NAMES = [
+  "courses",
+  "phases",
+  "phase_hitches",
+] as const;
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -1633,4 +1676,5 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V20_TABLE_NAMES,
   ...V17_TABLE_NAMES,
   ...V18_TABLE_NAMES,
+  ...V21_TABLE_NAMES,
 ];
