@@ -73,15 +73,23 @@ export function mergeMcpConfig(
   let mutationsEnabled = false;
   if (input.starter !== null) {
     const clients = Array.isArray(mcp.clients) ? [...(mcp.clients as unknown[])] : [];
-    const has = clients.some(
+    const existingIdx = clients.findIndex(
       (c) => (c as { names?: string[] }).names?.includes(input.starter!.clientName),
     );
-    if (!has) {
+    if (existingIdx === -1) {
       clients.push({
         id: input.starter.clientName,
         names: [input.starter.clientName],
         mode: "guarded-mutation",
       });
+    } else {
+      // Operator explicitly opted in for this client name — promote to guarded-mutation
+      // even if the existing entry has a lower mode (e.g. read-only). Without this,
+      // decideMcpPermission would still deny mutations (#81 trap).
+      const existing = clients[existingIdx] as { id: string; names: string[]; mode: string };
+      if (existing.mode !== "guarded-mutation") {
+        clients[existingIdx] = { ...existing, mode: "guarded-mutation" };
+      }
     }
     mcp.clients = clients;
     const ops = Array.isArray(mcp.allowedOperations)

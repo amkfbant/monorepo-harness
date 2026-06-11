@@ -23,9 +23,15 @@ function preflightStep(): OnboardStep {
     probe: (ctx) => (existsSync(ctx.repoPath) ? "pending" : "blocked"),
     describe: (ctx) => `onboard ${ctx.repoPath} as project "${ctx.projectId}"`,
     run: async (ctx) => {
-      ctx.log.push(`repo: ${ctx.repoPath}`);
-      ctx.log.push(probeTool("codex", ["--version"]));
-      ctx.log.push(probeTool("gh", ["auth", "status"]));
+      const repoLine = `repo: ${ctx.repoPath}`;
+      const codexLine = probeTool("codex", ["--version"]);
+      const ghLine = probeTool("gh", ["auth", "status"]);
+      ctx.log.push(repoLine);
+      ctx.log.push(codexLine);
+      ctx.log.push(ghLine);
+      ctx.print(repoLine);
+      ctx.print(codexLine);
+      ctx.print(ghLine);
       return { ok: true, message: "preflight ok (codex/gh are reported, not required)" };
     },
   };
@@ -57,6 +63,8 @@ function profileStep(): OnboardStep {
         generatedAt,
       });
       ctx.log.push(dry.profileYaml);
+      ctx.print("Proposed profile:");
+      ctx.print(dry.profileYaml);
       const ok = await ctx.prompts.confirm(`Write profile + policy for "${ctx.projectId}"?`);
       if (!ok) return { ok: false, message: "declined", remediation: "re-run when ready" };
       const res = await runProjectInit({
@@ -120,11 +128,19 @@ function dbStep(): OnboardStep {
     run: async (ctx) => {
       const paths = harnessPaths(ctx.harnessRoot);
       const h = openManagedDb({ dbPath: paths.dbPath });
+      const counters = emptyCounters();
       try {
         runMigrations(h.db);
-        importProjects(h.db, paths.projectsDir, emptyCounters());
+        importProjects(h.db, paths.projectsDir, counters);
       } finally {
         h.close();
+      }
+      if (counters.errors > 0) {
+        return {
+          ok: false,
+          message: "db import had errors",
+          remediation: "see project profile; fix and re-run",
+        };
       }
       return { ok: true, message: "project imported" };
     },
@@ -144,11 +160,13 @@ function mcpStep(): OnboardStep {
     run: async (ctx) => {
       const path = defaultMcpConfigPath(ctx.harnessRoot);
       const existing = existsSync(path) ? readFileSync(path, "utf8") : null;
-      // P2-e: warn if a profile-embedded mcp config will be shadowed by the new file.
+      // warn if a profile-embedded mcp config will be shadowed by the new file.
       if (existing === null) {
         const eff = loadMcpConfig({ harnessRoot: ctx.harnessRoot });
         if (eff.clients.length > 0 || eff.allowedOperations.length > 0) {
-          ctx.log.push("note: a profiles/*.yaml mcp section exists; .harness/mcp.yaml will take precedence");
+          const warning = "note: a profiles/*.yaml mcp section exists; .harness/mcp.yaml will take precedence";
+          ctx.log.push(warning);
+          ctx.print(warning);
         }
       }
       const existingProjectIds = listProjectIds(ctx);
@@ -173,6 +191,12 @@ function mcpStep(): OnboardStep {
         starter,
         allowAll,
       });
+      ctx.print("Proposed .harness/mcp.yaml:");
+      ctx.print(yaml);
+      const confirmWrite = await ctx.prompts.confirm("Write this .harness/mcp.yaml?");
+      if (!confirmWrite) {
+        return { ok: false, message: "declined", remediation: "re-run when ready" };
+      }
       writeFileSync(path, yaml, "utf8");
       ctx.log.push(report.mutationsEnabled ? "mcp: mutations enabled" : "mcp: read-only");
       return { ok: true, message: "wrote .harness/mcp.yaml" };

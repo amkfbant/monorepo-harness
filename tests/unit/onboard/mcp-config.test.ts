@@ -78,6 +78,24 @@ describe("mergeMcpConfig (#92)", () => {
     expect(report.allowAllPreserved).toBe(true);
   });
 
+  it("promotes an existing same-name client to guarded-mutation on opt-in (no silent no-op, #81 trap)", () => {
+    const existing = [
+      "version: 1", "mcp:",
+      "  allowedProjects: [demo]",
+      "  clients:",
+      "    - { id: codex, names: [codex], mode: read-only }",
+      "",
+    ].join("\n");
+    const { yaml, report } = mergeMcpConfig(existing, {
+      projectId: "demo", existingProjectIds: ["demo"],
+      starter: { clientName: "codex", operations: ["goal.start"] },
+    });
+    const cfg = parseYaml(yaml).mcp;
+    expect(cfg.clients).toEqual([{ id: "codex", names: ["codex"], mode: "guarded-mutation" }]);
+    expect(cfg.allowedOperations).toEqual(["goal.start"]);
+    expect(report.mutationsEnabled).toBe(true);
+  });
+
   it("when the operator chooses to enumerate, seeds the list from existing project ids + the new one", () => {
     const existing = ["version: 1", "mcp:", "  allowedProjects: []", ""].join("\n");
     const { yaml } = mergeMcpConfig(existing, {

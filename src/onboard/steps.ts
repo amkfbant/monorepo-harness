@@ -20,6 +20,8 @@ export interface OnboardCtx {
   prompts: Prompts;
   /** accumulated human-readable log lines for the final summary */
   log: string[];
+  /** output sink — write a line to the user; defaults to stdout in the CLI */
+  print: (line: string) => void;
 }
 
 export interface OnboardStep {

@@ -7,6 +7,8 @@ import { parse as parseYaml } from "yaml";
 import { buildOnboardSteps } from "../../src/onboard/step-impls.js";
 import { scriptedPrompts } from "../../src/onboard/prompts.js";
 import type { OnboardCtx } from "../../src/onboard/steps.js";
+import { loadMcpConfig } from "../../src/mcp/security/config.js";
+import { decideMcpPermission, modeForClient } from "../../src/mcp/security/permissions.js";
 
 const tmps: string[] = [];
 afterEach(() => { for (const t of tmps.splice(0)) rmSync(t, { recursive: true, force: true }); });
@@ -29,7 +31,7 @@ function ctxFor(answers: string[]): OnboardCtx {
   cpSync(join(process.cwd(), "templates"), join(root, "templates"), { recursive: true });
   return {
     harnessRoot: root, repoPath: miniRepo(), projectId: "demo",
-    prompts: scriptedPrompts(answers), log: [],
+    prompts: scriptedPrompts(answers), log: [], print: () => {},
   };
 }
 
@@ -45,8 +47,8 @@ describe("onboard steps (integration)", () => {
   });
 
   it("mcp step merges the project and, on starter opt-in, writes a guarded-mutation client", async () => {
-    // answers: enable-starter=y, client-name=codex, goal.start=y, run.start=n
-    const ctx = ctxFor(["y", "codex", "y", "n"]);
+    // answers: enable-starter=y, client-name=codex, goal.start=y, run.start=n, write-mcp-yaml=y
+    const ctx = ctxFor(["y", "codex", "y", "n", "y"]);
     mkdirSync(join(ctx.harnessRoot, "projects"), { recursive: true });
     writeFileSync(join(ctx.harnessRoot, "projects", "demo.yaml"),
       "version: 1\nproject_id: demo\nrepo:\n  id: demo\ndomains:\n  - { id: web, root: apps/web }\n");
@@ -70,5 +72,35 @@ describe("onboard steps (integration)", () => {
     const res = await checkStep.run(ctx);
     expect(res.ok).toBe(false);
     expect(res.remediation).toMatch(/fix the profile/i);
+  });
+
+  it("permission round-trip: after mcp opt-in the gate actually opens for the opted-in operation (P2-4)", async () => {
+    // answers: enable-starter=y, client-name=codex, goal.start=y, run.start=n, write-mcp-yaml=y
+    const ctx = ctxFor(["y", "codex", "y", "n", "y"]);
+    mkdirSync(join(ctx.harnessRoot, "projects"), { recursive: true });
+    writeFileSync(join(ctx.harnessRoot, "projects", "demo.yaml"),
+      "version: 1\nproject_id: demo\nrepo:\n  id: demo\ndomains:\n  - { id: web, root: apps/web }\n");
+    const mcpStep = buildOnboardSteps().find((s) => s.id === "mcp")!;
+    const res = await mcpStep.run(ctx);
+    expect(res.ok).toBe(true);
+
+    // Verify the written config actually opens the gate for goal.start
+    const cfg = loadMcpConfig({ harnessRoot: ctx.harnessRoot });
+    const allowed = decideMcpPermission(cfg, {
+      toolName: "harness.goal.start",
+      kind: "mutation",
+      projectId: "demo",
+      clientMode: modeForClient(cfg, "codex"),
+    });
+    expect(allowed.reason).toBe("mutation_allowed");
+
+    // run.start was declined — operation not in allowlist
+    const denied = decideMcpPermission(cfg, {
+      toolName: "harness.run.start",
+      kind: "mutation",
+      projectId: "demo",
+      clientMode: modeForClient(cfg, "codex"),
+    });
+    expect(denied.reason).toBe("operation_not_allowlisted");
   });
 });

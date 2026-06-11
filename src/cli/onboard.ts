@@ -9,6 +9,8 @@ export interface RunOnboardOptions {
   projectId: string;
   isTTY: boolean;
   prompts: Prompts;
+  /** output sink; defaults to process.stdout */
+  print?: (line: string) => void;
 }
 
 export interface OnboardOutcome {
@@ -24,12 +26,17 @@ export async function runOnboard(opts: RunOnboardOptions): Promise<OnboardOutcom
         "then edit .harness/mcp.yaml (see docs/specs/cli.md).",
     );
   }
+  const print =
+    opts.print ??
+    ((s: string) => process.stdout.write(s.endsWith("\n") ? s : s + "\n"));
+
   const ctx: OnboardCtx = {
     harnessRoot: opts.harnessRoot,
     repoPath: opts.repoPath,
     projectId: opts.projectId,
     prompts: opts.prompts,
     log: [],
+    print,
   };
   const steps = buildOnboardSteps();
   for (const step of steps) {
@@ -51,6 +58,15 @@ export async function runOnboard(opts: RunOnboardOptions): Promise<OnboardOutcom
     }
   }
   process.stdout.write(`\nOnboarding complete for "${opts.projectId}".\n`);
+  process.stdout.write(`\nSummary:\n`);
+  for (const line of ctx.log) {
+    process.stdout.write(`  ${line}\n`);
+  }
+  process.stdout.write(
+    `\nNext steps:\n` +
+      `  • If codex or gh were reported missing above, install/authenticate them first.\n` +
+      `  • Start the MCP server: harness mcp serve --transport stdio\n`,
+  );
   return { completed: true, log: ctx.log };
 }
 

@@ -29,7 +29,10 @@ describe("runOnboard", () => {
     const { repo, root } = repoRoot();
     const result = await runOnboard({
       harnessRoot: root, repoPath: repo, projectId: "demo",
-      isTTY: true, prompts: scriptedPrompts(["y", "n"]), // confirm write, decline mutations
+      isTTY: true,
+      // confirm write profile, decline mutations, confirm write mcp.yaml
+      prompts: scriptedPrompts(["y", "n", "y"]),
+      print: () => {},
     });
     expect(result.completed).toBe(true);
     expect(existsSync(join(root, "projects", "demo.yaml"))).toBe(true);
