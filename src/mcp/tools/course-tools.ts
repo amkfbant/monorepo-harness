@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { CourseRepository } from "../../roadmap/course-repository.js";
 import { PhaseRepository } from "../../roadmap/phase-repository.js";
 import { rollupCourse } from "../../roadmap/rollup.js";
-import { redactMcpAuditValue } from "../audit/redaction.js";
 import { errorResult, ok, type HarnessMcpToolResult } from "../schemas/outputs.js";
 import type { McpToolContext } from "../registry/tool-registry.js";
 import { ensureProjectVisible, withReadonlyDb } from "./tool-helpers.js";
@@ -261,6 +260,20 @@ export async function phaseAddTool(
   args: PhaseAddArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
+  // Resolve visibility of the parent course BEFORE entering runMcpMutationOperation so
+  // a denied call returns permission_denied (not a generic error thrown inside workWithDb).
+  const visibilityResult = withReadonlyDb(context, ({ db }) => {
+    const row = db
+      .prepare("SELECT project_id FROM courses WHERE course_id = ?")
+      .get(args.courseId) as { project_id: string | null } | undefined;
+    if (row === undefined) return errorResult(`course ${args.courseId} not found`);
+    return ensureProjectVisible(context.config, row.project_id);
+  });
+  // withReadonlyDb returns a tool result directly when the DB is missing.
+  // ensureProjectVisible returns null (ok) or a permission_denied result.
+  // errorResult returns a tool result.
+  if (visibilityResult !== null) return visibilityResult as HarnessMcpToolResult;
+
   const phaseId = `phase-${randomUUID()}`;
   return runMcpMutationOperation(context, {
     operationType: "phase.add",
@@ -271,12 +284,9 @@ export async function phaseAddTool(
       phaseId,
     }),
     workWithDb: async (db) => {
-      // Visibility check via course
       const courseRepo = new CourseRepository(db);
       const course = courseRepo.get(args.courseId);
       if (course === null) throw new Error(`course ${args.courseId} not found`);
-      const denied = ensureProjectVisible(context.config, course.projectId);
-      if (denied !== null) throw new Error(denied.summary);
       const phaseRepo = new PhaseRepository(db);
       const phase = phaseRepo.add({
         courseId: args.courseId,
@@ -297,6 +307,22 @@ export async function phaseUpdateTool(
   args: PhaseUpdateArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
+  // Resolve visibility of the parent course BEFORE entering runMcpMutationOperation so
+  // a denied call returns permission_denied (not a generic error thrown inside workWithDb).
+  const visibilityResult = withReadonlyDb(context, ({ db }) => {
+    const row = db
+      .prepare(
+        `SELECT c.project_id
+           FROM phases p
+           JOIN courses c ON c.course_id = p.course_id
+          WHERE p.phase_id = ?`,
+      )
+      .get(args.phaseId) as { project_id: string | null } | undefined;
+    if (row === undefined) return errorResult(`phase ${args.phaseId} not found`);
+    return ensureProjectVisible(context.config, row.project_id);
+  });
+  if (visibilityResult !== null) return visibilityResult as HarnessMcpToolResult;
+
   return runMcpMutationOperation(context, {
     operationType: "phase.update",
     target: { type: "phase", id: args.phaseId },
@@ -308,11 +334,6 @@ export async function phaseUpdateTool(
       const phaseRepo = new PhaseRepository(db);
       const phase = phaseRepo.get(args.phaseId);
       if (phase === null) throw new Error(`phase ${args.phaseId} not found`);
-      // Visibility check via course
-      const courseRepo = new CourseRepository(db);
-      const course = courseRepo.get(phase.courseId);
-      const denied = ensureProjectVisible(context.config, course?.projectId ?? null);
-      if (denied !== null) throw new Error(denied.summary);
       if (args.status !== undefined) {
         const updated = phaseRepo.setStatus(args.phaseId, args.status);
         return { phaseId: args.phaseId, phase: updated };
@@ -329,7 +350,7 @@ export async function phaseLinkHitchTool(
   return runMcpMutationOperation(context, {
     operationType: "phase.link_hitch",
     target: { type: "phase", id: args.phaseId },
-    args: redactMcpAuditValue(args) as typeof args,
+    args,
     metadata: courseMetadata(context, "harness.phase.link_hitch", args, {
       phaseId: args.phaseId,
       hitchId: args.hitchId,

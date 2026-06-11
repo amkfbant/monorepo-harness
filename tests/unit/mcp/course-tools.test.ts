@@ -247,3 +247,290 @@ describe("MCP course-tools harness.course.status", () => {
     expect(result.data.rollup.phases[0].title).toBe("Phase A");
   });
 });
+
+// ---------------------------------------------------------------------------
+// P1 regression: phase.link_hitch idempotency key corruption
+// ---------------------------------------------------------------------------
+
+describe("MCP course-tools phase.link_hitch — idempotency key regression (P1)", () => {
+  it("two distinct link_hitch calls on the same phase with different idempotencyKeys and hitchIds both persist", async () => {
+    const root = freshRoot();
+    let phaseId = "";
+    let hitchId1 = "";
+    let hitchId2 = "";
+
+    withDb(root, (db) => {
+      const courseRepo = new CourseRepository(db);
+      const course = courseRepo.create({
+        title: "Idempotency Course",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "test",
+      });
+
+      const phaseRepo = new PhaseRepository(db);
+      const phase = phaseRepo.add({
+        courseId: course.courseId,
+        title: "Phase A",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      phaseId = phase.phaseId;
+
+      // Two same-project hitches
+      const hitchRepo = new HitchRepository(db);
+      const h1 = hitchRepo.createSession({
+        title: "Hitch 1",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      hitchId1 = h1.hitchId;
+
+      const h2 = hitchRepo.createSession({
+        title: "Hitch 2",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      hitchId2 = h2.hitchId;
+    });
+
+    const s = server(root, {
+      ...mutationConfig(["phase.link_hitch"]),
+      allowedProjects: [],
+    });
+
+    // First link
+    const result1 = await callTool(s, "harness.phase.link_hitch", {
+      phaseId,
+      hitchId: hitchId1,
+      idempotencyKey: "link-hitch-first",
+    });
+    expect(result1.status).toBe("operation_started");
+    expect(result1.data.replayed).toBe(false);
+
+    // Second link — different idempotencyKey and different hitchId
+    const result2 = await callTool(s, "harness.phase.link_hitch", {
+      phaseId,
+      hitchId: hitchId2,
+      idempotencyKey: "link-hitch-second",
+    });
+    // With the P1 bug the second call would be treated as an idempotency replay
+    // (key collapsed to "[redacted]") and silently return the first op result.
+    // With the fix it must be a new, non-replayed operation.
+    expect(result2.status).toBe("operation_started");
+    expect(result2.data.replayed).toBe(false);
+    // The second link must have actually persisted
+    expect(result2.data.result.hitchId).toBe(hitchId2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Single-read gating: project-restricted client denied on wrong-project reads
+// ---------------------------------------------------------------------------
+
+describe("MCP course-tools single-read project gating", () => {
+  it("course.get returns permission_denied for a project-restricted client on a different-project course", async () => {
+    const root = freshRoot();
+    let otherCourseId = "";
+    withDb(root, (db) => {
+      const repo = new CourseRepository(db);
+      const course = repo.create({
+        title: "Other Project Course",
+        projectId: "other",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      otherCourseId = course.courseId;
+    });
+
+    // Client scoped to "demo" — "other" project is not visible
+    const s = server(root, mutationConfig([]));
+    const result = await callTool(s, "harness.course.get", { courseId: otherCourseId });
+    expect(result.status).toBe("permission_denied");
+  });
+
+  it("course.status returns permission_denied for a project-restricted client on a different-project course", async () => {
+    const root = freshRoot();
+    let otherCourseId = "";
+    withDb(root, (db) => {
+      const repo = new CourseRepository(db);
+      const course = repo.create({
+        title: "Other Project Course",
+        projectId: "other",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      otherCourseId = course.courseId;
+    });
+
+    const s = server(root, mutationConfig([]));
+    const result = await callTool(s, "harness.course.status", { courseId: otherCourseId });
+    expect(result.status).toBe("permission_denied");
+  });
+
+  it("phase.get returns permission_denied for a project-restricted client on a different-project phase", async () => {
+    const root = freshRoot();
+    let otherPhaseId = "";
+    withDb(root, (db) => {
+      const courseRepo = new CourseRepository(db);
+      const course = courseRepo.create({
+        title: "Other Project Course",
+        projectId: "other",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      const phaseRepo = new PhaseRepository(db);
+      const phase = phaseRepo.add({
+        courseId: course.courseId,
+        title: "Phase X",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      otherPhaseId = phase.phaseId;
+    });
+
+    const s = server(root, mutationConfig([]));
+    const result = await callTool(s, "harness.phase.get", { phaseId: otherPhaseId });
+    expect(result.status).toBe("permission_denied");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Deny-by-default: phase mutations not allowlisted are rejected
+// ---------------------------------------------------------------------------
+
+describe("MCP course-tools phase mutation deny-by-default", () => {
+  it("phase.add is denied when not in allowedOperations", async () => {
+    const root = freshRoot();
+    let courseId = "";
+    withDb(root, (db) => {
+      const repo = new CourseRepository(db);
+      const course = repo.create({
+        title: "Demo Course",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      courseId = course.courseId;
+    });
+
+    // allowedOperations does NOT include phase.add
+    const s = server(root, mutationConfig([]));
+    const result = await callTool(s, "harness.phase.add", {
+      courseId,
+      title: "Should be denied",
+      idempotencyKey: "phase-add-denied",
+    });
+    expect(result.status).toBe("permission_denied");
+  });
+
+  it("phase.link_hitch is denied when not in allowedOperations", async () => {
+    const root = freshRoot();
+    let phaseId = "";
+    let hitchId = "";
+    withDb(root, (db) => {
+      const courseRepo = new CourseRepository(db);
+      const course = courseRepo.create({
+        title: "Demo Course",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      const phaseRepo = new PhaseRepository(db);
+      const phase = phaseRepo.add({
+        courseId: course.courseId,
+        title: "Phase 1",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      phaseId = phase.phaseId;
+
+      const hitchRepo = new HitchRepository(db);
+      const hitch = hitchRepo.createSession({
+        title: "Hitch for deny test",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      hitchId = hitch.hitchId;
+    });
+
+    // allowedOperations does NOT include phase.link_hitch
+    const s = server(root, mutationConfig([]));
+    const result = await callTool(s, "harness.phase.link_hitch", {
+      phaseId,
+      hitchId,
+      idempotencyKey: "phase-link-denied",
+    });
+    expect(result.status).toBe("permission_denied");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2 consistency: phase.add / phase.update denial returns permission_denied
+// ---------------------------------------------------------------------------
+
+describe("MCP course-tools phase.add and phase.update visibility denial (P2)", () => {
+  it("phase.add returns permission_denied (not error) when course project is not visible to client", async () => {
+    const root = freshRoot();
+    let otherCourseId = "";
+    withDb(root, (db) => {
+      const repo = new CourseRepository(db);
+      const course = repo.create({
+        title: "Other Course",
+        projectId: "other",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      otherCourseId = course.courseId;
+    });
+
+    // Client scoped to "demo" with phase.add allowed — but the course is in "other"
+    const s = server(root, {
+      ...mutationConfig(["phase.add"]),
+      allowedProjects: ["demo"],
+    });
+    const result = await callTool(s, "harness.phase.add", {
+      courseId: otherCourseId,
+      title: "Denied Phase",
+      idempotencyKey: "phase-add-visibility-denied",
+    });
+    expect(result.status).toBe("permission_denied");
+  });
+
+  it("phase.update returns permission_denied (not error) when phase project is not visible to client", async () => {
+    const root = freshRoot();
+    let otherPhaseId = "";
+    withDb(root, (db) => {
+      const courseRepo = new CourseRepository(db);
+      const course = courseRepo.create({
+        title: "Other Course",
+        projectId: "other",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      const phaseRepo = new PhaseRepository(db);
+      const phase = phaseRepo.add({
+        courseId: course.courseId,
+        title: "Phase in Other",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      otherPhaseId = phase.phaseId;
+    });
+
+    // Client scoped to "demo" with phase.update allowed — but the phase is in "other"
+    const s = server(root, {
+      ...mutationConfig(["phase.update"]),
+      allowedProjects: ["demo"],
+    });
+    const result = await callTool(s, "harness.phase.update", {
+      phaseId: otherPhaseId,
+      status: "in_progress",
+      idempotencyKey: "phase-update-visibility-denied",
+    });
+    expect(result.status).toBe("permission_denied");
+  });
+});
