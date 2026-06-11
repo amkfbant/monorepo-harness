@@ -10,8 +10,13 @@ README sections and `docs/ops/`: inspect → init (profile/policy) → check →
 `db init` / `db import` → write `.harness/mcp.yaml` by hand → serve. The biggest
 pitfalls:
 
-- **`.harness/mcp.yaml` is fully manual** and defaults to deny-all, so a repo set
-  up without it has every MCP mutation denied with no obvious cause (cf. #81).
+- **`.harness/mcp.yaml` is fully manual.** MCP mutations are gated **twice**
+  (`decideMcpPermission`, `src/mcp/security/permissions.ts:120-135`): the client
+  must resolve to `mode: guarded-mutation` **and** the operation must be in
+  `allowedOperations` (read tools and dry-run are unaffected — only the mutation
+  allowlist defaults to deny-all). A repo set up without a `clients` entry +
+  `allowedOperations` has every MCP mutation denied with no obvious cause
+  (`mutation_disabled_for_client` / `operation_not_allowed`; cf. #81).
 - `project import` vs `db import --from-files` is undocumented/ambiguous.
 - A first-time operator has no single, ordered, resumable path; setup-induced
   escalations result.
@@ -29,12 +34,18 @@ In scope (the wizard **drives**, up to a serve smoke check):
    `projects/<id>.yaml` + `policies/repos/<id>.yaml` (+ scaffold
    `policies/global.yaml` if missing, via #78).
 4. `check` the profile (ok/warn/error).
-5. DB: `db init` (if missing) → `db import --from-files` → `db check-consistency`.
-6. Generate/merge `.harness/mcp.yaml` (add the project to `allowedProjects`;
-   `allowedOperations` defaults to deny-all with an explicit opt-in starter set).
-7. Serve smoke: resolve the effective MCP config and build the tool registry
-   **in-process** to confirm the project is visible and the chosen operations are
-   permitted — report only, **without spawning a long-lived `serve` daemon**.
+5. DB: `db import --from-files` (registers the project DB-canonically; it runs
+   migrations, so a standalone `db init` is redundant) → `db check-consistency`.
+6. Generate/merge `.harness/mcp.yaml` (add the project to `allowedProjects`,
+   respecting the allow-all case; mutations stay deny-all unless the operator
+   opts in, which then also adds a `clients` entry so the opt-in actually works).
+7. Serve smoke: resolve the **effective** MCP config (`loadMcpConfig` — note this
+   falls back to a `projects/*.yaml` `mcp:` section, so a generated
+   `.harness/mcp.yaml` shadows it; the wizard shows the effective config and warns
+   if profile-embedded MCP settings exist) and evaluate
+   `isProjectAllowed` + `decideMcpPermission` as pure functions to confirm the
+   project is visible and the chosen operations would be permitted for the named
+   client — report only, **without spawning a long-lived `serve` daemon**.
 8. Final summary + remaining manual steps.
 
 Out of scope (YAGNI): driving codex/gh interactive auth; managing a long-lived
@@ -72,12 +83,12 @@ Each step **reuses existing logic** rather than reimplementing it:
 
 | Step | Reused surface |
 |------|----------------|
-| inspect | `inspectProject` / `scanRepoSignals` (`src/project/`) |
-| profile+policy | `buildPolicyProposal` + the `project init --write` writers; `compileProjectPolicy` for the global scaffold (#78) |
-| check | `runChecks` (`src/project/checker.ts`) |
-| db | `db init` + `importProjects` (`src/db/import/projects.ts`) + `check-consistency` |
+| inspect | `inspectProject` (`src/project/inspector.ts`) / `scanRepoSignals` |
+| profile+policy | `buildPolicyProposal` (`src/project/policy-proposal.ts`) + `runProjectInit` writers (`src/project/init.ts`, profile + repo policy + provenance; linkSync no-clobber); a small **global-only writer** for `policies/global.yaml` (writes only when missing — `runProjectInit` does NOT write global, and `writeCompiledPolicyFiles` writes repo-first and would conflict, so onboard writes the global from `proposal.result.globalPolicy`) |
+| check | `checkProject` (`src/project/checker.ts:61`) → `status: ok\|warn\|error` |
+| db | `importProjects` (`src/db/import/projects.ts`; it runs migrations, so a separate `db init` is redundant) + `db check-consistency` |
 | mcp.yaml | new small YAML **merge** writer (`src/onboard/mcp-config.ts`) |
-| serve smoke | effective-config resolution (`mcp config`) + in-process tool-registry probe (no daemon) |
+| serve smoke | `loadMcpConfig` (effective config, incl. `projects/*.yaml` fallback) + `isProjectAllowed` + `decideMcpPermission` evaluated **as pure functions** (no daemon, no static registry); `listMcpTools` for the catalog |
 
 ## Data flow
 
@@ -96,15 +107,28 @@ content are shown and confirmed before anything is written.
 
 ## Safety boundaries
 
-- **Permission grants are explicit.** `.harness/mcp.yaml` is generated with
-  `defaultMode: dry-run` and `allowedOperations: []` (deny-all). A curated safe
-  **starter set** (all read + `goal.start` + `run.start`) is added **only** on an
-  explicit y/n opt-in; declining leaves it read-only. The wizard never silently
-  grants mutation permissions.
-- **No-clobber.** Existing `projects/<id>.yaml` / policy files reuse the init
-  writers' no-clobber + `--force`-on-confirm semantics. `.harness/mcp.yaml` is
-  **merged, not overwritten** (the project is appended to `allowedProjects`; a
-  pre-existing config is preserved).
+- **Permission grants are explicit and actually take effect.** `.harness/mcp.yaml`
+  is generated with `defaultMode: dry-run` and `allowedOperations: []` (the
+  mutation allowlist is deny-all; read tools are unaffected). Because mutations
+  need a `guarded-mutation` **client** too (P1: two-stage gate), the opt-in is a
+  single explicit step that, when accepted, asks for a client name and writes
+  BOTH a `clients` entry (`mode: guarded-mutation`, that name) AND the chosen
+  operations — otherwise the allowlist would silently never apply (the #81 trap).
+  `defaultMode` stays `dry-run` so unknown clients are never elevated. The starter
+  set is offered as **two separate opt-ins**: `goal.start` (cheap) and
+  `run.start` (**starts a codex run — incurs cost / edits the repo**); declining
+  both leaves the repo read-only. The wizard never silently grants mutations.
+- **No-clobber, and the merge never widens or silently narrows.**
+  `projects/<id>.yaml` / policy files reuse the init writers' no-clobber +
+  `--force`-on-confirm semantics. `.harness/mcp.yaml` is **merged, not
+  overwritten** — `deniedOperations` / `requireConfirmation` defaults are kept. A
+  pre-existing config with `allowedProjects: []` means **allow-all**; appending
+  one project would flip it to "only that one" and break other projects' access,
+  so the wizard detects the allow-all case and **does not silently append** — it
+  surfaces it and asks whether to keep allow-all or switch to an explicit list
+  (seeded from the existing `projects` rows). The MCP step's `probe` is defined by
+  `isProjectAllowed(effectiveConfig, projectId)` (not raw list membership) so an
+  allow-all repo is not reported as forever-pending.
 - **Idempotent + resumable.** `probe` skips completed steps; a Ctrl-C'd run
   resumes from where it stopped; nothing is half-written without the next run
   detecting it.
@@ -133,9 +157,16 @@ content are shown and confirmed before anything is written.
   done-step skipping, blocked-step stop, ordering — with a fake `ctx`.
 - **Step `run`** : integration tests over a temp repo + `HARNESS_ROOT` with a
   **scripted fake prompt adapter**: asserts profile/policy files written, the
-  global scaffold, `.harness/mcp.yaml` **merge** (project appended, existing
-  config preserved), starter-set **opt-in vs decline**, and existing-file
-  no-clobber.
+  global-only scaffold (missing → written; present → untouched),
+  `.harness/mcp.yaml` **merge** (project appended to a non-empty list; existing
+  `clients` / `deniedOperations` preserved), the **allow-all case** (`allowedProjects: []`
+  is not silently narrowed), starter-set **opt-in (writes a `clients` entry +
+  ops) vs decline (stays read-only)**, and existing-file no-clobber.
+- **Permission round-trip**: after an opt-in, `decideMcpPermission` returns
+  `mutation_allowed` for the named client on the chosen op, and stays denied for
+  a different client / a non-chosen op (guards the two-stage gate, P1-1).
+- **`check` error stop**: an uncompilable profile makes `checkProject` return
+  `error`; the wizard stops with guidance and **preserves prior results** (resumable).
 - **Non-TTY fallback**: asserts a fail-closed error naming the equivalent
   commands.
 - No skip/xfail; full suite + `npm run typecheck` green; no schema change
@@ -144,10 +175,16 @@ content are shown and confirmed before anything is written.
 ## Files
 
 New:
-- `src/cli/onboard.ts` — command wiring.
-- `src/onboard/steps.ts` — pure step model + state machine.
+- `src/cli/onboard.ts` — command wiring + TTY detection (`process.stdin.isTTY`,
+  the existing precedent in `src/cli/run.ts`).
+- `src/onboard/steps.ts` — pure step model + state machine (probes per the table:
+  profile = `existsSync(projects/<id>.yaml)`; DB = `projects` row whose
+  `project_profiles.source_sha256` matches the file sha; MCP =
+  `isProjectAllowed(effectiveConfig, projectId)`).
 - `src/onboard/prompts.ts` — `readline/promises` adapter (injectable).
-- `src/onboard/mcp-config.ts` — `.harness/mcp.yaml` merge writer + starter set.
+- `src/onboard/mcp-config.ts` — `.harness/mcp.yaml` merge writer (allow-all-aware
+  `allowedProjects` merge; `clients` + `allowedOperations` starter opt-in).
+- a small global-policy writer (in `onboard/` or reusing a shared helper).
 - tests under `tests/unit/onboard/` and `tests/integration/`.
 
 Touched (registration / docs only):
@@ -159,4 +196,7 @@ Touched (registration / docs only):
 
 - A non-interactive `--yes`/flag-driven onboard for CI (could be added later on
   the same step model; deferred — the interactive flow is the requested surface).
+- A `--reconfigure` mode to revisit a done step (e.g. opt into the starter set
+  after declining): since `probe` done → skip, re-opting-in is not possible in v1;
+  the operator edits `.harness/mcp.yaml` directly. Deferred.
 - Driving codex/gh auth; serve daemon supervision.
