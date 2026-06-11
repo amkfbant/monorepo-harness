@@ -4,7 +4,7 @@
 徹する。詳細は [`policy.md`](./policy.md) / [`workflow.md`](./workflow.md) /
 [`cli.md`](./cli.md) / [`project.md`](./project.md) / [`db.md`](./db.md) /
 [`dashboard.md`](./dashboard.md) / [`mcp.md`](./mcp.md) /
-[`goal-convergence.md`](./goal-convergence.md) を参照。
+[`hitch-convergence.md`](./hitch-convergence.md) を参照。
 
 ## ハーネスの目的
 
@@ -123,16 +123,16 @@ harness は 2 種類の LLM agent と harness 自身の 3 ロールに権限を�
   stdio` の JSON-RPC server。read / dry-run / mutation tools を公開し、mutation は
   permission allowlist + out-of-band confirmation + rate budget + audit/redaction
   でガードする。raw shell は公開しない。
-- **goal convergence（Phase 19）**（[`goal-convergence.md`](./goal-convergence.md)）—
-  bounded coding-agent goal loop の DB-backed 収束コントローラ。`harness goal` CLI
-  + MCP goal tools。scope freeze / finding lifecycle / close decision を持ち、
+- **hitch convergence（Phase 19）**（[`hitch-convergence.md`](./hitch-convergence.md)）—
+  bounded coding-agent hitch loop の DB-backed 収束コントローラ。`harness hitch` CLI
+  + MCP hitch tools。scope freeze / finding lifecycle / close decision を持ち、
   convergence decision（`continue` / `needs_fix` / `needs_classification` /
   `close_ready` / `diverging` / `budget_exhausted` / `escalate` 等）を返す。
 
 ## できないこと（現状の deferred / 範囲外）
 
 - **autonomous orchestration** — run → review → rerun → close → PR の bounded
-  loop は `harness goal orchestrate`（goal convergence の収束制御）で提供する。
+  loop は `harness hitch orchestrate`（hitch convergence の収束制御）で提供する。
   close-ready ∧ consensus approved(quorum) ∧ CI green な PR の **自動マージは
   opt-in（既定 OFF、`--auto-merge`）** で提供する（[`workflow.md`](./workflow.md)）。
   人手トリガ無しの常駐 worker / daemon・無制限ループは未実装。
@@ -199,11 +199,11 @@ interface RunDomainCodingResult {
   secretSuspectCount: number;
 }
 // RunMeta は加えて reviewer?: string | null と reviewedAt?: string | null を持つ。
-// goal convergence の decision 列挙は goal-convergence.md を参照。
+// hitch convergence の decision 列挙は hitch-convergence.md を参照。
 ```
 
 詳細は [`policy.md`](./policy.md) / [`workflow.md`](./workflow.md) /
-[`goal-convergence.md`](./goal-convergence.md) を参照。
+[`hitch-convergence.md`](./hitch-convergence.md) を参照。
 
 ## ディレクトリレイアウト（harness root）
 
@@ -220,7 +220,7 @@ interface RunDomainCodingResult {
     harness.sqlite                 # canonical DB（run state / events / blob / lock / proposal）
     db.lock                        # DB-wide maintenance lock（Phase 9）
   src/                             # 実装
-    cli/                           # commander based subcommand entry（run / db / project / goal …）
+    cli/                           # commander based subcommand entry（run / db / project / hitch …）
     core/                          # workflow オーケストレーション
     policy/, workspace/, git/, codex/, logging/, reporter/, config/
     project/                       # Project Abstraction（Phase 5）
@@ -229,7 +229,7 @@ interface RunDomainCodingResult {
     operations/                    # OperationRunner（mutation の単一経路）
     storage/                       # blob store adapter（local。Phase 16）
     mcp/                           # MCP server（Phase 18）
-    goal/                          # goal convergence controller（Phase 19）
+    hitch/                         # hitch convergence controller（Phase 19）
   tests/
     unit/, integration/            # 各モジュール単体 + 実 git + fake codex
   runs/                            # runtime。export OFF（既定）では空で DB が canonical。
@@ -280,11 +280,11 @@ HARNESS_ROOT="$PWD" npm run --silent harness -- dashboard serve [--enable-mutati
 # MCP server（coding agent 向け JSON-RPC, stdio）
 HARNESS_ROOT="$PWD" npm run --silent harness -- mcp serve --transport stdio
 
-# goal convergence（bounded goal loop）
-HARNESS_ROOT="$PWD" npm run --silent harness -- goal start \
+# hitch convergence（bounded hitch loop）
+HARNESS_ROOT="$PWD" npm run --silent harness -- hitch start \
   --title "..." --scope-file scope.yaml --close-file close.yaml
-HARNESS_ROOT="$PWD" npm run --silent harness -- goal status <goal-id>
-HARNESS_ROOT="$PWD" npm run --silent harness -- goal check-convergence <goal-id> --json
+HARNESS_ROOT="$PWD" npm run --silent harness -- hitch status <hitch-id>
+HARNESS_ROOT="$PWD" npm run --silent harness -- hitch check-convergence <hitch-id> --json
 ```
 
 ## 関連 docs

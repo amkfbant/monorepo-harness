@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { harnessPaths } from "../../config/paths.js";
 import { openManagedDb } from "../../db/managed-connection.js";
-import { ConvergenceService } from "../../goal/convergence.js";
-import { GoalRepository } from "../../goal/repository.js";
+import { ConvergenceService } from "../../hitch/convergence.js";
+import { HitchRepository } from "../../hitch/repository.js";
 import {
   WorkspaceRepository,
   type WorkspaceRecord,
@@ -22,7 +22,7 @@ import {
 } from "../../workspace/workspace-conflicts.js";
 import {
   buildRecoveryBriefing,
-  type RecoveryGoal,
+  type RecoveryHitch,
 } from "../../workspace/workspace-recover.js";
 import { errorResult, ok, type HarnessMcpToolResult } from "../schemas/outputs.js";
 import type { McpToolContext } from "../registry/tool-registry.js";
@@ -182,9 +182,9 @@ export interface WorkspaceRecoverArgs {
 }
 
 /**
- * Reconstruct ONE agent's workspace state (git + linked goal) and recommend
+ * Reconstruct ONE agent's workspace state (git + linked hitch) and recommend
  * deterministic next-steps over MCP — the read-only counterpart of the CLI
- * `workspace recover`. The next-steps are projected from git + goal convergence
+ * `workspace recover`. The next-steps are projected from git + hitch convergence
  * ONLY (the checkpoint narrative is advisory context, never a driver — §0).
  * The agent's workspace must be IN SCOPE or it is reported as not found.
  */
@@ -218,25 +218,25 @@ export async function workspaceRecoverTool(
   });
 
   // a SECOND, short DB window (after git) for the advisory DB facts (objective /
-  // goal convergence / latest checkpoint). The DB was closed during git, so the
+  // hitch convergence / latest checkpoint). The DB was closed during git, so the
   // workspace could have been relinked / deleted / moved out of scope meanwhile:
   // RE-FETCH by (repoKey, agent) and RE-AUTHORIZE before reading anything — a now
   // absent / out-of-scope workspace must NOT leak its checkpoint.
   const allowed = context.config.allowedProjects;
   const paths = harnessPaths(context.harnessRoot);
   const handle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
-  let goal: RecoveryGoal | null = null;
+  let hitch: RecoveryHitch | null = null;
   let objective: string | null = null;
   let latestCheckpoint: { note: string | null; createdAt: string; createdBy: string } | null =
     null;
   let authorized = true;
   try {
     const wsRepo = new WorkspaceRepository(handle.db);
-    const goalRepo = new GoalRepository(handle.db);
+    const hitchRepo = new HitchRepository(handle.db);
     const row = wsRepo.get(resolution.repoKey, args.agent);
     const projectId =
-      row !== null && row.goalId !== null
-        ? (goalRepo.getSession(row.goalId)?.projectId ?? null)
+      row !== null && row.hitchId !== null
+        ? (hitchRepo.getSession(row.hitchId)?.projectId ?? null)
         : null;
     // re-authorize: absent row, or (restricted client) a project not allowed.
     if (
@@ -251,13 +251,13 @@ export async function workspaceRecoverTool(
         latest === null
           ? null
           : { note: latest.note, createdAt: latest.createdAt, createdBy: latest.createdBy };
-      if (row.goalId !== null) {
-        const exists = goalRepo.getSession(row.goalId) !== null;
-        goal = {
-          goalId: row.goalId,
+      if (row.hitchId !== null) {
+        const exists = hitchRepo.getSession(row.hitchId) !== null;
+        hitch = {
+          hitchId: row.hitchId,
           convergence: exists
             ? (() => {
-                const c = new ConvergenceService(goalRepo).evaluate(row.goalId as string);
+                const c = new ConvergenceService(hitchRepo).evaluate(row.hitchId as string);
                 return {
                   decision: c.decision,
                   reason: c.reason,
@@ -273,6 +273,6 @@ export async function workspaceRecoverTool(
   }
   if (!authorized) return notFound();
 
-  const briefing = buildRecoveryBriefing({ inspection, objective, goal, latestCheckpoint });
+  const briefing = buildRecoveryBriefing({ inspection, objective, hitch, latestCheckpoint });
   return ok(`recovery briefing for "${args.agent}"`, briefing);
 }

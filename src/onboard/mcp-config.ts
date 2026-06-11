@@ -3,7 +3,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 export interface StarterOptIn {
   /** the client name the agent connects as (e.g. "codex"); becomes a guarded-mutation client */
   clientName: string;
-  /** the mutation operations to allowlist (e.g. ["goal.start", "run.start"]) */
+  /** the mutation operations to allowlist (e.g. ["hitch.start", "run.start"]) */
   operations: string[];
 }
 

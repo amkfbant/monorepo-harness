@@ -12,10 +12,10 @@ monorepo-harness の **現状仕様** をまとめたディレクトリ。
 - [`db.md`](./db.md) — `harness.sqlite`（DB read model）と file からの import、source-of-truth transition（Phase 6）
 - [`dashboard.md`](./dashboard.md) — DB-backed な project-aware ダッシュボード（Phase 6）
 - [`mcp.md`](./mcp.md) — coding agent 向け MCP server（tools / resources / prompts / permission / confirmation）
-- [`goal-convergence.md`](./goal-convergence.md) — Phase 19 goal convergence controller（scope freeze / finding lifecycle / close decision）
+- [`hitch-convergence.md`](./hitch-convergence.md) — Phase 19 hitch convergence controller（scope freeze / finding lifecycle / close decision）
 - [`workspace.md`](./workspace.md) — agent workspaces（per-agent 隔離 worktree / checkpoint / status / conflicts / adopt / 並行協調の安全モデル）
 - [`workflow.md`](./workflow.md) — `domain-coding` workflow の status machine と artifact レイアウト
-- [`cli.md`](./cli.md) — 全 CLI subcommand リファレンス（`run` / `workspace` / `goal` / `lock` / `review` / `rerun` / `cleanup` / `knowledge` / `release` …）
+- [`cli.md`](./cli.md) — 全 CLI subcommand リファレンス（`run` / `workspace` / `hitch` / `lock` / `review` / `rerun` / `cleanup` / `knowledge` / `release` …）
 - [`release.md`](./release.md) — `harness release plan`（リリース計画 / 互換性解析、release-please 補完）
 
 関連 docs:

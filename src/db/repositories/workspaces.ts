@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 /**
  * Agent-workspace write repository (W2). An additive index over the per-agent
  * git worktrees: git owns a worktree's existence/branch, this row carries the
- * harness-side metadata git does not track (objective, advisory goal link,
+ * harness-side metadata git does not track (objective, advisory hitch link,
  * heartbeat). Keyed by (repo_path, agent); `upsert` keeps one row per agent.
  */
 
@@ -14,7 +14,7 @@ export interface WorkspaceRecord {
   repoPath: string;
   branch: string;
   worktreePath: string;
-  goalId: string | null;
+  hitchId: string | null;
   objective: string | null;
   status: "active" | "archived";
   createdAt: string;
@@ -29,7 +29,7 @@ function rowToRecord(r: Record<string, unknown>): WorkspaceRecord {
     repoPath: r.repo_path as string,
     branch: r.branch as string,
     worktreePath: r.worktree_path as string,
-    goalId: (r.goal_id as string | null) ?? null,
+    hitchId: (r.hitch_id as string | null) ?? null,
     objective: (r.objective as string | null) ?? null,
     status: r.status as "active" | "archived",
     createdAt: r.created_at as string,
@@ -52,7 +52,7 @@ export interface WorkspaceCheckpointRecord {
   note: string | null;
   headSha: string | null;
   dirtyCount: number;
-  goalId: string | null;
+  hitchId: string | null;
   createdAt: string;
   createdBy: string;
 }
@@ -62,7 +62,7 @@ export interface RecordCheckpointInput {
   note?: string | null;
   headSha?: string | null;
   dirtyCount?: number;
-  goalId?: string | null;
+  hitchId?: string | null;
   createdBy: string;
   now?: string;
 }
@@ -74,7 +74,7 @@ function rowToCheckpoint(r: Record<string, unknown>): WorkspaceCheckpointRecord 
     note: (r.note as string | null) ?? null,
     headSha: (r.head_sha as string | null) ?? null,
     dirtyCount: r.dirty_count as number,
-    goalId: (r.goal_id as string | null) ?? null,
+    hitchId: (r.hitch_id as string | null) ?? null,
     createdAt: r.created_at as string,
     createdBy: r.created_by as string,
   };
@@ -189,20 +189,20 @@ export class WorkspaceRepository {
       .run(ts, ts, repoPath, agent);
   }
 
-  /** Link (or unlink with null) an advisory goal for the workspace. */
-  linkGoal(
+  /** Link (or unlink with null) an advisory hitch for the workspace. */
+  linkHitch(
     repoPath: string,
     agent: string,
-    goalId: string | null,
+    hitchId: string | null,
     now?: string,
   ): void {
     const ts = now ?? new Date().toISOString();
     this.db
       .prepare(
-        `UPDATE workspaces SET goal_id = ?, updated_at = ?, last_active_at = ?
+        `UPDATE workspaces SET hitch_id = ?, updated_at = ?, last_active_at = ?
            WHERE repo_path = ? AND agent = ?`,
       )
-      .run(goalId, ts, ts, repoPath, agent);
+      .run(hitchId, ts, ts, repoPath, agent);
   }
 
   /** Set the workspace's free-text objective. */
@@ -229,7 +229,7 @@ export class WorkspaceRepository {
       .prepare(
         `INSERT INTO workspace_checkpoints (
            checkpoint_id, workspace_id, note, head_sha, dirty_count,
-           goal_id, created_at, created_by
+           hitch_id, created_at, created_by
          )
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
@@ -239,7 +239,7 @@ export class WorkspaceRepository {
         input.note ?? null,
         input.headSha ?? null,
         input.dirtyCount ?? 0,
-        input.goalId ?? null,
+        input.hitchId ?? null,
         now,
         input.createdBy,
       );

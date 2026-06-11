@@ -39,20 +39,20 @@ import {
 } from "../../core/operational-knowledge.js";
 import { processReviewDecision } from "../../core/review-processor.js";
 import {
-  latestGoalAttemptForRun,
-  recordGoalAttemptForOperationResult,
-} from "../../goal/operation-integration.js";
-import { importReviewProposalToGoal } from "../../goal/review-integration.js";
-import { GoalRepository } from "../../goal/repository.js";
-import { GoalOrchestrator } from "../../goal/orchestrator.js";
-import { createOrchestratorRunners } from "../../goal/orchestrator-runners.js";
+  latestHitchAttemptForRun,
+  recordHitchAttemptForOperationResult,
+} from "../../hitch/operation-integration.js";
+import { importReviewProposalToHitch } from "../../hitch/review-integration.js";
+import { HitchRepository } from "../../hitch/repository.js";
+import { HitchOrchestrator } from "../../hitch/orchestrator.js";
+import { createOrchestratorRunners } from "../../hitch/orchestrator-runners.js";
 import {
-  assertGoalCanStartMutation,
-  evaluateGoalMutationGate,
-  GoalMutationGateError,
-  type GoalLinkedMutationKind,
-} from "../../goal/mutation-gate.js";
-import { syncGoalStatusForConvergence } from "../../goal/convergence-status.js";
+  assertHitchCanStartMutation,
+  evaluateHitchMutationGate,
+  HitchMutationGateError,
+  type HitchLinkedMutationKind,
+} from "../../hitch/mutation-gate.js";
+import { syncHitchStatusForConvergence } from "../../hitch/convergence-status.js";
 import { cleanupRun } from "../../core/cleanup.js";
 import { createPullRequest } from "../../core/pr-creator.js";
 import { createGhPrPublisher } from "../../core/gh-pr-publisher.js";
@@ -75,16 +75,16 @@ interface RunStartArgs extends MutationBaseArgs {
   domain: string;
   goal: string;
   contextPack?: string;
-  goalId?: string;
+  hitchId?: string;
 }
 
 interface RunArgs extends MutationBaseArgs {
   runId: string;
-  goalId?: string;
+  hitchId?: string;
 }
 
-interface OrchestrateGoalArgs extends MutationBaseArgs {
-  goalId: string;
+interface OrchestrateHitchArgs extends MutationBaseArgs {
+  hitchId: string;
   maxSteps?: number;
 }
 
@@ -169,21 +169,21 @@ export async function runStartTool(
 ): Promise<HarnessMcpToolResult> {
   const visible = ensureProjectVisible(context.config, args.projectId);
   if (visible !== null) return visible;
-  const goalVisible = validateGoalLinkForProject(
+  const hitchVisible = validateHitchLinkForProject(
     context,
-    args.goalId,
+    args.hitchId,
     args.projectId,
     args.domain,
   );
-  if (goalVisible !== null) return goalVisible;
+  if (hitchVisible !== null) return hitchVisible;
   return runMcpOperation(context, {
     operationType: "run.start",
     target: { type: "project_domain", id: `${args.projectId}:${args.domain}` },
     idempotencyKey: args.idempotencyKey,
     input: args,
     metadata: operationMetadata(context, "harness.run.start", args),
-    goalGate: {
-      goalId: args.goalId,
+    hitchGate: {
+      hitchId: args.hitchId,
       mutationKind: "run.start",
     },
     workWithDb: async (db, operationId) => {
@@ -192,8 +192,8 @@ export async function runStartTool(
         projectId: args.projectId,
         domain: args.domain,
       });
-      if (args.goalId !== undefined) {
-        assertGoalRepoMatches(db, args.goalId, prepared.repoId);
+      if (args.hitchId !== undefined) {
+        assertHitchRepoMatches(db, args.hitchId, prepared.repoId);
       }
       let result: Awaited<ReturnType<typeof runDomainCoding>>;
       try {
@@ -212,9 +212,9 @@ export async function runStartTool(
             : {}),
         });
       } catch (e) {
-        if (args.goalId !== undefined && e instanceof RunFinalizedError) {
-          recordGoalAttemptForOperationResult(db, {
-            goalId: args.goalId,
+        if (args.hitchId !== undefined && e instanceof RunFinalizedError) {
+          recordHitchAttemptForOperationResult(db, {
+            hitchId: args.hitchId,
             attemptType: "implement",
             operationId,
             runId: e.runId,
@@ -230,9 +230,9 @@ export async function runStartTool(
         }
         throw e;
       }
-      if (args.goalId !== undefined) {
-        const attempt = recordGoalAttemptForOperationResult(db, {
-          goalId: args.goalId,
+      if (args.hitchId !== undefined) {
+        const attempt = recordHitchAttemptForOperationResult(db, {
+          hitchId: args.hitchId,
           attemptType: "implement",
           operationId,
           runId: result.runId,
@@ -244,7 +244,7 @@ export async function runStartTool(
           },
           result: { ...result, projectId: args.projectId },
         });
-        return { ...result, projectId: args.projectId, goalAttempt: attempt };
+        return { ...result, projectId: args.projectId, hitchAttempt: attempt };
       }
       return { ...result, projectId: args.projectId };
     },
@@ -255,16 +255,16 @@ export async function reviewAutoTool(
   args: ReviewAutoArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
-  const goalVisible = validateGoalLinkForRun(context, args.goalId, args.runId);
-  if (goalVisible !== null) return goalVisible;
+  const hitchVisible = validateHitchLinkForRun(context, args.hitchId, args.runId);
+  if (hitchVisible !== null) return hitchVisible;
   return runMcpOperation(context, {
     operationType: "review.auto",
     target: { type: "run", id: args.runId },
     idempotencyKey: args.idempotencyKey,
     input: args,
     metadata: operationMetadata(context, "harness.review.auto", args),
-    goalGate: {
-      goalId: args.goalId,
+    hitchGate: {
+      hitchId: args.hitchId,
       mutationKind: "review.auto",
     },
     workWithDb: async (db, operationId) => {
@@ -278,10 +278,10 @@ export async function reviewAutoTool(
           sandbox: "read-only",
         }),
       });
-      if (args.goalId !== undefined) {
-        const relatedAttempt = latestGoalAttemptForRun(db, args.goalId, args.runId);
-        const attempt = recordGoalAttemptForOperationResult(db, {
-          goalId: args.goalId,
+      if (args.hitchId !== undefined) {
+        const relatedAttempt = latestHitchAttemptForRun(db, args.hitchId, args.runId);
+        const attempt = recordHitchAttemptForOperationResult(db, {
+          hitchId: args.hitchId,
           attemptType: "fix-review",
           operationId,
           runId: args.runId,
@@ -298,7 +298,7 @@ export async function reviewAutoTool(
           },
           result: { ...result },
         });
-        return { ...result, goalAttempt: attempt };
+        return { ...result, hitchAttempt: attempt };
       }
       return result;
     },
@@ -310,16 +310,16 @@ export async function rerunStartTool(
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   const paths = harnessPaths(context.harnessRoot);
-  const goalVisible = validateGoalLinkForRun(context, args.goalId, args.runId);
-  if (goalVisible !== null) return goalVisible;
+  const hitchVisible = validateHitchLinkForRun(context, args.hitchId, args.runId);
+  if (hitchVisible !== null) return hitchVisible;
   return runMcpOperation(context, {
     operationType: "rerun.start",
     target: { type: "run", id: args.runId },
     idempotencyKey: args.idempotencyKey,
     input: args,
     metadata: operationMetadata(context, "harness.rerun.start", args),
-    goalGate: {
-      goalId: args.goalId,
+    hitchGate: {
+      hitchId: args.hitchId,
       mutationKind: "rerun.start",
     },
     workWithDb: async (db, operationId) => {
@@ -343,8 +343,8 @@ export async function rerunStartTool(
               `now resolves to ${JSON.stringify(prepared.repoId)}`,
           );
         }
-        if (args.goalId !== undefined) {
-          assertGoalRepoMatches(db, args.goalId, prepared.repoId);
+        if (args.hitchId !== undefined) {
+          assertHitchRepoMatches(db, args.hitchId, prepared.repoId);
         }
         try {
           result = await runDomainCoding({
@@ -365,10 +365,10 @@ export async function rerunStartTool(
               : {}),
           });
         } catch (e) {
-          if (args.goalId !== undefined && e instanceof RunFinalizedError) {
-            const parentAttempt = latestGoalAttemptForRun(db, args.goalId, args.runId);
-            recordGoalAttemptForOperationResult(db, {
-              goalId: args.goalId,
+          if (args.hitchId !== undefined && e instanceof RunFinalizedError) {
+            const parentAttempt = latestHitchAttemptForRun(db, args.hitchId, args.runId);
+            recordHitchAttemptForOperationResult(db, {
+              hitchId: args.hitchId,
               attemptType: "rerun",
               operationId,
               runId: e.runId,
@@ -401,10 +401,10 @@ export async function rerunStartTool(
             rerunAttempt: prep.rerunAttempt,
           });
         } catch (e) {
-          if (args.goalId !== undefined && e instanceof RunFinalizedError) {
-            const parentAttempt = latestGoalAttemptForRun(db, args.goalId, args.runId);
-            recordGoalAttemptForOperationResult(db, {
-              goalId: args.goalId,
+          if (args.hitchId !== undefined && e instanceof RunFinalizedError) {
+            const parentAttempt = latestHitchAttemptForRun(db, args.hitchId, args.runId);
+            recordHitchAttemptForOperationResult(db, {
+              hitchId: args.hitchId,
               attemptType: "rerun",
               operationId,
               runId: e.runId,
@@ -423,10 +423,10 @@ export async function rerunStartTool(
           throw e;
         }
       }
-      if (args.goalId !== undefined) {
-        const parentAttempt = latestGoalAttemptForRun(db, args.goalId, args.runId);
-        const attempt = recordGoalAttemptForOperationResult(db, {
-          goalId: args.goalId,
+      if (args.hitchId !== undefined) {
+        const parentAttempt = latestHitchAttemptForRun(db, args.hitchId, args.runId);
+        const attempt = recordHitchAttemptForOperationResult(db, {
+          hitchId: args.hitchId,
           attemptType: "rerun",
           operationId,
           runId: result.runId,
@@ -440,22 +440,22 @@ export async function rerunStartTool(
           },
           result: { ...result },
         });
-        return { ...result, goalAttempt: attempt };
+        return { ...result, hitchAttempt: attempt };
       }
       return result;
     },
   });
 }
 
-// (#83) Bounded MCP driver for the goal convergence loop. Advances the goal a
+// (#83) Bounded MCP driver for the hitch convergence loop. Advances the hitch a
 // capped number of orchestrator steps (coder rerun -> review -> convergence) and
-// halts at close_ready WITHOUT opening a PR or closing the goal — opening the PR
-// stays a deliberate, separately-confirmed step (CLI `goal orchestrate`).
+// halts at close_ready WITHOUT opening a PR or closing the hitch — opening the PR
+// stays a deliberate, separately-confirmed step (CLI `hitch orchestrate`).
 const DEFAULT_ORCHESTRATE_STEPS = 20;
 const MAX_ORCHESTRATE_STEPS = 50;
 
-export async function orchestrateGoalTool(
-  args: OrchestrateGoalArgs,
+export async function orchestrateHitchTool(
+  args: OrchestrateHitchArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   // Bounded: clamp to [1, MAX_ORCHESTRATE_STEPS]; a missing/invalid value falls
@@ -469,22 +469,22 @@ export async function orchestrateGoalTool(
   const maxSteps = Math.min(MAX_ORCHESTRATE_STEPS, Math.max(1, requested));
   const dbPath = harnessPaths(context.harnessRoot).dbPath;
   return runMcpOperation(context, {
-    operationType: "goal.orchestrate",
-    target: { type: "goal", id: args.goalId },
+    operationType: "hitch.orchestrate",
+    target: { type: "goal", id: args.hitchId },
     idempotencyKey: args.idempotencyKey,
     input: { ...args, maxSteps },
-    metadata: operationMetadata(context, "harness.goal.orchestrate", args),
-    goalGate: { goalId: args.goalId, mutationKind: "goal.orchestrate" },
+    metadata: operationMetadata(context, "harness.hitch.orchestrate", args),
+    hitchGate: { hitchId: args.hitchId, mutationKind: "hitch.orchestrate" },
     workWithDb: async (db) => {
-      // Resolve the target repo SERVER-SIDE from the goal's own project/domain —
+      // Resolve the target repo SERVER-SIDE from the hitch's own project/domain —
       // never a client-supplied path (safety boundary: MCP must not accept an
       // arbitrary repo path). prepareProjectRun also compiles the policy the
       // per-run guardrails enforce.
-      const session = new GoalRepository(db).requireSession(args.goalId);
+      const session = new HitchRepository(db).requireSession(args.hitchId);
       if (session.projectId === null || session.domain === null) {
         throw new Error(
-          `goal ${args.goalId} has no projectId/domain; harness.goal.orchestrate ` +
-            "only drives project-scoped goals",
+          `hitch ${args.hitchId} has no projectId/domain; harness.hitch.orchestrate ` +
+            "only drives project-scoped hitches",
         );
       }
       const prepared = await prepareProjectRun({
@@ -494,8 +494,8 @@ export async function orchestrateGoalTool(
       });
       const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
       const createdBy = `mcp:${context.clientName}`;
-      const result = await new GoalOrchestrator({ dbPath }).run({
-        goalId: args.goalId,
+      const result = await new HitchOrchestrator({ dbPath }).run({
+        hitchId: args.hitchId,
         runners: createOrchestratorRunners({
           dbPath,
           harnessRoot: context.harnessRoot,
@@ -503,7 +503,7 @@ export async function orchestrateGoalTool(
           coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
           reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
           // NO publisher: the MCP driver never opens a PR. stopAtCloseReady below
-          // halts at close_ready; opening the PR / closing the goal stays a
+          // halts at close_ready; opening the PR / closing the hitch stays a
           // deliberate, separately-confirmed step.
           repoPath: prepared.repoPath,
           baseBranch: prepared.baseBranch,
@@ -513,7 +513,7 @@ export async function orchestrateGoalTool(
         stopAtCloseReady: true,
       });
       return {
-        goalId: result.goalId,
+        hitchId: result.hitchId,
         outcome: result.outcome,
         finalDecision: result.finalDecision,
         stepCount: result.steps.length,
@@ -788,8 +788,8 @@ export async function reviewProcessTool(
     idempotencyKey: args.idempotencyKey,
     input: args,
     metadata: operationMetadata(context, "harness.review.process", args),
-    goalGate: {
-      goalId: args.goalId,
+    hitchGate: {
+      hitchId: args.hitchId,
       mutationKind: "review.process",
     },
     workWithDb: async (db) => {
@@ -801,21 +801,21 @@ export async function reviewProcessTool(
         proposalId: args.proposalId as number,
         sourceSha256: args.sourceSha256 as string,
       });
-      if (args.goalId === undefined) return result;
+      if (args.hitchId === undefined) return result;
       const proposal = new ReviewProposalRepository(db).getById(
         args.proposalId as number,
       );
       if (proposal === null) {
         throw new Error(`review proposal ${String(args.proposalId)} not found after processing`);
       }
-      const goalIntegration = importReviewProposalToGoal({
-        repository: new GoalRepository(db),
-        goalId: args.goalId,
+      const hitchIntegration = importReviewProposalToHitch({
+        repository: new HitchRepository(db),
+        hitchId: args.hitchId,
         proposal,
         processResult: result,
         createdBy: `mcp:${context.clientName}`,
       });
-      return { ...result, goalIntegration };
+      return { ...result, hitchIntegration };
     },
   });
 }
@@ -1315,9 +1315,9 @@ async function runMcpOperation<T>(
     pendingExternalExecutor?: boolean;
     work?: () => Promise<T>;
     workWithDb?: (db: Database.Database, operationId: string) => Promise<T>;
-    goalGate?: {
-      goalId: string | undefined;
-      mutationKind: GoalLinkedMutationKind;
+    hitchGate?: {
+      hitchId: string | undefined;
+      mutationKind: HitchLinkedMutationKind;
     };
   },
 ): Promise<HarnessMcpToolResult> {
@@ -1342,11 +1342,11 @@ async function runMcpOperation<T>(
         metadata: opts.metadata,
         ...(opts.pendingExternalExecutor === true ? { pendingExternalExecutor: true } : {}),
         beforeStart: (db) => {
-          if (opts.goalGate?.goalId !== undefined) {
-            assertGoalCanStartMutation({
-              repository: new GoalRepository(db),
-              goalId: opts.goalGate.goalId,
-              mutationKind: opts.goalGate.mutationKind,
+          if (opts.hitchGate?.hitchId !== undefined) {
+            assertHitchCanStartMutation({
+              repository: new HitchRepository(db),
+              hitchId: opts.hitchGate.hitchId,
+              mutationKind: opts.hitchGate.mutationKind,
             });
           }
           assertMutationBudget(db, context.config, {
@@ -1389,18 +1389,18 @@ async function runMcpOperation<T>(
         resetAt: budget.resetAt ?? null,
       });
     }
-    if (e instanceof GoalMutationGateError) {
+    if (e instanceof HitchMutationGateError) {
       const gate = e.denial;
       if (gate.convergence) {
-        syncGoalStatusForConvergence(
-          new GoalRepository(handle.db),
+        syncHitchStatusForConvergence(
+          new HitchRepository(handle.db),
           gate.convergence,
         );
       }
       return permissionDenied(gate.message, {
         reason: gate.code,
-        goalId: opts.goalGate?.goalId ?? gate.convergence?.goalId ?? null,
-        mutationKind: opts.goalGate?.mutationKind ?? null,
+        hitchId: opts.hitchGate?.hitchId ?? gate.convergence?.hitchId ?? null,
+        mutationKind: opts.hitchGate?.mutationKind ?? null,
         ...(gate.convergence ? { convergence: gate.convergence } : {}),
       });
     }
@@ -1482,11 +1482,11 @@ function reviewProcessPreview(
         { runId: args.runId, status: run.status },
       );
     }
-    if (args.goalId !== undefined) {
-      const linked = validateGoalRunLinkFromDb(
+    if (args.hitchId !== undefined) {
+      const linked = validateHitchRunLinkFromDb(
         db,
         context,
-        args.goalId,
+        args.hitchId,
         args.runId,
         {
           projectId: typeof run.project_id === "string" ? run.project_id : null,
@@ -1495,16 +1495,16 @@ function reviewProcessPreview(
         },
       );
       if (linked !== null) return linked;
-      const gate = evaluateGoalMutationGate({
-        repository: new GoalRepository(db),
-        goalId: args.goalId,
+      const gate = evaluateHitchMutationGate({
+        repository: new HitchRepository(db),
+        hitchId: args.hitchId,
         mutationKind: "review.process",
         syncStatus: false,
       });
       if (!gate.allowed) {
         return permissionDenied(gate.message, {
           reason: gate.code,
-          goalId: args.goalId,
+          hitchId: args.hitchId,
           mutationKind: "review.process",
           convergence: gate.convergence,
         });
@@ -1550,7 +1550,7 @@ function reviewProcessPreview(
       summary: `would process review proposal ${proposal.proposalId} for ${args.runId}`,
       data: {
         run,
-        ...(args.goalId !== undefined ? { goalId: args.goalId } : {}),
+        ...(args.hitchId !== undefined ? { hitchId: args.hitchId } : {}),
         decision: args.decision,
         proposal: reviewProposalPreview(proposal),
         sourceSha256: proposal.sourceSha256,
@@ -1614,33 +1614,33 @@ function bindReviewProcessArgs(
   };
 }
 
-function validateGoalLinkForProject(
+function validateHitchLinkForProject(
   context: McpToolContext,
-  goalId: string | undefined,
+  hitchId: string | undefined,
   projectId: string,
   domain?: string,
 ): HarnessMcpToolResult | null {
-  if (goalId === undefined) return null;
+  if (hitchId === undefined) return null;
   return withReadonlyDb(context, ({ db }) => {
-    const goal = db
-      .prepare("SELECT project_id, repo_id, domain FROM goal_sessions WHERE goal_id = ?")
-      .get(goalId) as GoalLinkRow | undefined;
-    if (goal === undefined) {
-      return permissionDenied(`goal not found: ${goalId}`, { reason: "goal_not_found", goalId });
+    const hitch = db
+      .prepare("SELECT project_id, repo_id, domain FROM hitch_sessions WHERE hitch_id = ?")
+      .get(hitchId) as HitchLinkRow | undefined;
+    if (hitch === undefined) {
+      return permissionDenied(`hitch not found: ${hitchId}`, { reason: "hitch_not_found", hitchId });
     }
-    const denied = ensureProjectVisible(context.config, goal.project_id);
+    const denied = ensureProjectVisible(context.config, hitch.project_id);
     if (denied !== null) return denied;
-    if (goal.project_id !== null && goal.project_id !== projectId) {
-      return errorResult("goal project does not match run project", {
-        goalId,
-        goalProjectId: goal.project_id,
+    if (hitch.project_id !== null && hitch.project_id !== projectId) {
+      return errorResult("hitch project does not match run project", {
+        hitchId,
+        hitchProjectId: hitch.project_id,
         runProjectId: projectId,
       });
     }
-    if (domain !== undefined && goal.domain !== null && goal.domain !== domain) {
-      return errorResult("goal domain does not match run domain", {
-        goalId,
-        goalDomain: goal.domain,
+    if (domain !== undefined && hitch.domain !== null && hitch.domain !== domain) {
+      return errorResult("hitch domain does not match run domain", {
+        hitchId,
+        hitchDomain: hitch.domain,
         runDomain: domain,
       });
     }
@@ -1648,18 +1648,18 @@ function validateGoalLinkForProject(
   }) as HarnessMcpToolResult | null;
 }
 
-function validateGoalLinkForRun(
+function validateHitchLinkForRun(
   context: McpToolContext,
-  goalId: string | undefined,
+  hitchId: string | undefined,
   runId: string,
 ): HarnessMcpToolResult | null {
-  if (goalId === undefined) return null;
+  if (hitchId === undefined) return null;
   return withReadonlyDb(context, ({ db }) => {
     const run = db
       .prepare("SELECT project_id, repo_id, domain FROM runs WHERE run_id = ?")
       .get(runId) as RunLinkRow | undefined;
     if (run === undefined) return errorResult(`run not found: ${runId}`, { runId });
-    return validateGoalRunLinkFromDb(db, context, goalId, runId, {
+    return validateHitchRunLinkFromDb(db, context, hitchId, runId, {
       projectId: run.project_id,
       repoId: run.repo_id,
       domain: run.domain,
@@ -1667,47 +1667,47 @@ function validateGoalLinkForRun(
   }) as HarnessMcpToolResult | null;
 }
 
-function validateGoalRunLinkFromDb(
+function validateHitchRunLinkFromDb(
   db: Database.Database,
   context: McpToolContext,
-  goalId: string,
+  hitchId: string,
   runId: string,
   run: { projectId: string | null; repoId: string | null; domain: string | null },
 ): HarnessMcpToolResult | null {
-  const goal = db
-    .prepare("SELECT project_id, repo_id, domain FROM goal_sessions WHERE goal_id = ?")
-    .get(goalId) as GoalLinkRow | undefined;
-  if (goal === undefined) return permissionDenied(`goal not found: ${goalId}`, { reason: "goal_not_found", goalId });
-  const denied = ensureProjectVisible(context.config, goal.project_id);
+  const hitch = db
+    .prepare("SELECT project_id, repo_id, domain FROM hitch_sessions WHERE hitch_id = ?")
+    .get(hitchId) as HitchLinkRow | undefined;
+  if (hitch === undefined) return permissionDenied(`hitch not found: ${hitchId}`, { reason: "hitch_not_found", hitchId });
+  const denied = ensureProjectVisible(context.config, hitch.project_id);
   if (denied !== null) return denied;
-  if (goal.project_id !== null && run.projectId !== goal.project_id) {
-    return errorResult("goal project does not match run project", {
-      goalId,
+  if (hitch.project_id !== null && run.projectId !== hitch.project_id) {
+    return errorResult("hitch project does not match run project", {
+      hitchId,
       runId,
-      goalProjectId: goal.project_id,
+      hitchProjectId: hitch.project_id,
       runProjectId: run.projectId,
     });
   }
-  if (goal.repo_id !== null && run.repoId !== goal.repo_id) {
-    return errorResult("goal repo does not match run repo", {
-      goalId,
+  if (hitch.repo_id !== null && run.repoId !== hitch.repo_id) {
+    return errorResult("hitch repo does not match run repo", {
+      hitchId,
       runId,
-      goalRepoId: goal.repo_id,
+      hitchRepoId: hitch.repo_id,
       runRepoId: run.repoId,
     });
   }
-  if (goal.domain !== null && run.domain !== goal.domain) {
-    return errorResult("goal domain does not match run domain", {
-      goalId,
+  if (hitch.domain !== null && run.domain !== hitch.domain) {
+    return errorResult("hitch domain does not match run domain", {
+      hitchId,
       runId,
-      goalDomain: goal.domain,
+      hitchDomain: hitch.domain,
       runDomain: run.domain,
     });
   }
   return null;
 }
 
-interface GoalLinkRow {
+interface HitchLinkRow {
   project_id: string | null;
   repo_id: string | null;
   domain: string | null;
@@ -1719,17 +1719,17 @@ interface RunLinkRow {
   domain: string | null;
 }
 
-function assertGoalRepoMatches(
+function assertHitchRepoMatches(
   db: Database.Database,
-  goalId: string,
+  hitchId: string,
   repoId: string,
 ): void {
-  const goal = db
-    .prepare("SELECT repo_id FROM goal_sessions WHERE goal_id = ?")
-    .get(goalId) as { repo_id: string | null } | undefined;
-  if (goal !== undefined && goal.repo_id !== null && goal.repo_id !== repoId) {
+  const hitch = db
+    .prepare("SELECT repo_id FROM hitch_sessions WHERE hitch_id = ?")
+    .get(hitchId) as { repo_id: string | null } | undefined;
+  if (hitch !== undefined && hitch.repo_id !== null && hitch.repo_id !== repoId) {
     throw new Error(
-      `goal repo does not match run repo: goal=${goalId} goalRepo=${goal.repo_id} runRepo=${repoId}`,
+      `hitch repo does not match run repo: hitch=${hitchId} hitchRepo=${hitch.repo_id} runRepo=${repoId}`,
     );
   }
 }
@@ -1780,9 +1780,9 @@ function operationMetadata(
   toolName: string,
   args: MutationBaseArgs,
 ): Record<string, unknown> {
-  const goalId =
-    typeof (args as unknown as { goalId?: unknown }).goalId === "string"
-      ? (args as unknown as { goalId: string }).goalId
+  const hitchId =
+    typeof (args as unknown as { hitchId?: unknown }).hitchId === "string"
+      ? (args as unknown as { hitchId: string }).hitchId
       : undefined;
   return {
     source: "mcp",
@@ -1790,7 +1790,7 @@ function operationMetadata(
     sessionId: context.sessionId,
     toolName,
     idempotencyKey: args.idempotencyKey,
-    ...(goalId !== undefined ? { goalId, goal_id: goalId } : {}),
+    ...(hitchId !== undefined ? { hitchId, hitch_id: hitchId } : {}),
     ...(args.actorNote !== undefined ? { actorNote: args.actorNote } : {}),
     ...(context.confirmedConfirmationId !== undefined
       ? { confirmationId: context.confirmedConfirmationId }

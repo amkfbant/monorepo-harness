@@ -30,7 +30,7 @@ export interface ReconcileResult {
    * Live worktree metadata keyed by NORMALIZED worktree PATH (not agent name):
    * attribution must follow the exact live path so a name collision (an
    * `agent/<name>` worktree whose DB row points elsewhere) cannot attach a
-   * different row's goal/project. A convention-only live worktree with no row at
+   * different row's hitch/project. A convention-only live worktree with no row at
    * its path is absent here → null record → out-of-scope for restricted clients.
    */
   recordByPath: Map<string, WorkspaceRecord>;

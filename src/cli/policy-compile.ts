@@ -5,7 +5,7 @@ import type { GlobalPolicy, RepoPolicy } from "../policy/schema.js";
 import { ProjectError } from "../project/errors.js";
 
 /**
- * (#78) Materialize a compiled project policy to the files `goal orchestrate`
+ * (#78) Materialize a compiled project policy to the files `hitch orchestrate`
  * reads in repoId mode (`policies/repos/<repoId>.yaml` and `policies/global.yaml`),
  * so a hand-written profile no longer needs a one-off compile script.
  *

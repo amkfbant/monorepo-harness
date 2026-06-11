@@ -47,15 +47,15 @@ describe("schema v16 goal convergence", () => {
     try {
       expect(currentSchemaVersion(db)).toBe(15);
       const result = runMigrations(db);
-      expect(result.applied).toEqual([16, 17, 18, 19]);
+      expect(result.applied).toEqual([16, 17, 18, 19, 20]);
       expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
       for (const table of [
-        "goal_sessions",
-        "goal_attempts",
-        "goal_review_cycles",
-        "goal_findings",
-        "goal_close_checks",
-        "goal_convergence_decisions",
+        "hitch_sessions",
+        "hitch_attempts",
+        "hitch_review_cycles",
+        "hitch_findings",
+        "hitch_close_checks",
+        "hitch_convergence_decisions",
       ]) {
         expect(tableExists(db, table)).toBe(true);
       }
@@ -69,8 +69,8 @@ describe("schema v16 goal convergence", () => {
     try {
       runMigrations(db);
       db.prepare(
-        `INSERT INTO goal_sessions (
-           goal_id, title, status, scope_json, close_conditions_json,
+        `INSERT INTO hitch_sessions (
+           hitch_id, title, status, scope_json, close_conditions_json,
            policy_json, max_iterations, max_review_cycles, max_reruns,
            max_total_new_findings, created_by, created_source, created_at,
            updated_at
@@ -79,8 +79,8 @@ describe("schema v16 goal convergence", () => {
            'test', 'cli', 't', 't')`,
       ).run();
       const insert = db.prepare(
-        `INSERT INTO goal_findings (
-           finding_id, goal_id, stable_key, source, severity, category,
+        `INSERT INTO hitch_findings (
+           finding_id, hitch_id, stable_key, source, severity, category,
            scope_status, lifecycle_status, summary, first_seen_at,
            last_seen_at
          )

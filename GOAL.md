@@ -1,6 +1,11 @@
 # GOAL.md — 実装ロードマップ
 
-monorepo-harness を **goal モード**で実装させるための作業項目定義。実行ルール
+> **⚠️ このロードマップは SP-1 で計画中の DB ベース roadmap に置き換えられる予定**
+> （historical reference として残置）。新規の作業計画は SP-1 の DB roadmap を正本と
+> する。なお「goal モード」は **hitch モード**、`harness goal` は `harness hitch` に
+> 改名済み（SP-0、`docs/specs/hitch-convergence.md`）。
+
+monorepo-harness を **hitch モード**で実装させるための作業項目定義。実行ルール
 （レビュー・close 条件・テスト粒度・ブランチ運用・安全境界）は
 [`GOAL_RULES.md`](./GOAL_RULES.md) を参照。本ファイルは「何を作るか」を、
 `GOAL_RULES.md` は「どう作るか」を定める。
@@ -36,7 +41,7 @@ follow-up A〜D は**すべて実装・main merge 済み**（close 条件＝テ�
   `harness.inbox` / scoped CLI / dashboard）。
 - **F: goal / reviewer context 注入** — ✅ 完了（`buildOperationalKnowledgeReviewSection`
   を reviewer prompt に append。project+repo scope・bounded・**coder には注入しない**。
-  goal モードの review も同 path）。
+  hitch モードの review も同 path）。
 - **G: MCP write（`ops_knowledge.record` / `deprecate`）** — ✅ 完了（guarded-mutation：
   `allowedOperations` allowlist + OperationRunner の idempotency / audit / budget）。
 - **H: file-export parity** — operational entry の `docs/ops-knowledge/` compat export
@@ -50,7 +55,7 @@ E/F/G は完了、残るは H（+ reviewer prompt provenance audit、`docs/futur
 
 ## 大 Phase R — self-driving 信頼性バグ修正（再起動不要・#72 #73 #75 #80 #96）
 
-> **✅ 完了・全サブ Phase main merge 済み**（2026-06-09、goal モード駆動）。
+> **✅ 完了・全サブ Phase main merge 済み**（2026-06-09、hitch モード駆動）。
 > R1 #96→PR #97 / R2 #72→PR #98（salvage gate・codex App P1×2 修正）/ R3 #75→PR #99 /
 > R4 #80→PR #100 / R5 #73→PR #101。各 PR は CI（node 20/24 typecheck+build+test）緑 +
 > codex App レビューを経て squash merge。R5 は codex rate-limit のため最終の 2 P1
@@ -152,7 +157,7 @@ R4（#80・outcome 表面）→ R5（#73・consensus セマンティクス）。
   条件未達＝codex 指摘）。② escalate 時でも workspace の変更を **commit/push してブランチを surface**し、
   **escalation の reason text にブランチ名を含める**（schema を増やさず既存 reason に載せる）。
 - **対象**: `src/core/reviewer-agent.ts`（`decisionPath` 未存在 `:290`/`:325` のハンドリング・根因・
-  再 materialize）、`src/core/run-materialize.ts`（review-decision 欠落時の再生成）、`src/cli/goal.ts`
+  再 materialize）、`src/core/run-materialize.ts`（review-decision 欠落時の再生成）、`src/cli/hitch.ts`
   （orchestrate 最終化〜escalate 状態遷移 `~1061-1073`、reason にブランチ付与）、`src/core/pr-creator.ts`
   （commit/PR 段の冪等性・salvage gate）、workspace（per-run worktree）層。
 - **安全境界（P0 ガード必須・codex 指摘）**: escalate 時の自動 commit/push は **salvage 専用 gate**を
@@ -178,9 +183,9 @@ R4（#80・outcome 表面）→ R5（#73・consensus セマンティクス）。
   （environment meta note）を harness 側で決定論的に分類**し、goal finding 化（escalate を誘発する
   unknown-scope finding）から分離。環境メタ注記は **surface はするが finding 化・escalate しない**
   （R5 と境界を共有）。実 finding（correctness）の escalate は**従来どおり維持**。
-- **対象（実 finding 経路・codex 指摘）**: `src/goal/review-integration.ts`（finding seed の実経路
+- **対象（実 finding 経路・codex 指摘）**: `src/hitch/review-integration.ts`（finding seed の実経路
   `proposalFindingSeeds` `:205` ／ `non_blocking_comments` → unknown-scope 化）、
-  `src/goal/classification.ts`（finding 分類）。参考: `src/core/review-evaluator.ts` /
+  `src/hitch/classification.ts`（finding 分類）。参考: `src/core/review-evaluator.ts` /
   `src/core/review-processor.ts`（reviewer 出力の `out_of_scope`）。
 - **安全境界**: 「escalate しない」を fail-open にしない。対象は**環境メタ注記に限定**し、判定は
   harness 側パターン分類で行う（LLM の「これは scope 外」を鵜呑みにしない）。
@@ -196,11 +201,11 @@ R4（#80・outcome 表面）→ R5（#73・consensus セマンティクス）。
   `src/core/gh-pr-publisher.ts:88` `--draft`）が、outcome（`pr_created`）に draft が出ず、後で
   merge 時 `Pull Request is still a draft` で弾かれる。
 - **修正方針（最小）**: PR 結果型（`OrchestrationResult` / `closeAndPr` result＝
-  `src/goal/orchestrator-types.ts:44`）に **`draft: boolean` を追加**して伝播し、**CLI 表示のみ**
+  `src/hitch/orchestrator-types.ts:44`）に **`draft: boolean` を追加**して伝播し、**CLI 表示のみ**
   `outcome=pr_created draft=true`（または `pr_created(draft)`）と明示。**typed outcome enum は不変**
   （文字列 enum を崩さない＝codex 指摘）。**自動 ready 化／設定化は defer**。
-- **対象**: `src/goal/orchestrator-types.ts`（result に draft）、`src/core/pr-creator.ts`（戻り値に
-  draft 状態）、`src/cli/goal.ts`（CLI 表示 `:~886`）。
+- **対象**: `src/hitch/orchestrator-types.ts`（result に draft）、`src/core/pr-creator.ts`（戻り値に
+  draft 状態）、`src/cli/hitch.ts`（CLI 表示 `:~886`）。
 - **TDD**: draft で PR 作成時に outcome に draft が明示されること。
 - **mini-commerce 動作確認**: orchestrate で PR 作成 → outcome に `(draft)` を確認。
 - **close**: 関連テスト+typecheck 緑／P0 ゼロ／`docs/specs/{workflow,cli}.md` 更新。
@@ -215,17 +220,17 @@ R4（#80・outcome 表面）→ R5（#73・consensus セマンティクス）。
   設ける。**既存 schema の `command` close condition を使う**（or orchestrate が required な test
   condition を合成する）方式とし、テスト実行の確証が無い限り **`close_ready` にせず
   `continue`/`run_close_check` に留める**（現行 convergence は `session.closeConditions` のみ参照＝
-  `src/goal/convergence.ts:247`。`review_consensus` だけの goal が素通りで close_ready にならないことを
+  `src/hitch/convergence.ts:247`。`review_consensus` だけの goal が素通りで close_ready にならないことを
   **回帰テストで固定**＝codex 指摘）。**LLM の「テストした」自己申告を根拠にしない**。③「テスト未実行」を
   operator に **明示 surface**（escalate はしない＝R3 連動）。**実テスト実行（依存解決・ephemeral DB）は
   defer**。
 - **schema 不変の徹底（codex 指摘）**: `static-approved` を `review_consensus.status` や
   `review_proposals.decision` の enum に**入れない**（CHECK 制約違反で schema 不変が崩れる＝
   `src/db/schema.ts:535`/`:720`）。`summary_json` ／ `review-decision.source_yaml` の文言 ／
-  `goal_close_checks.evidence_json`・`message` ／ CLI 表示**のみ**に限定。status/decision enum は現状維持。
-- **対象**: `src/core/review-consensus.ts`、`src/goal/convergence.ts`（close 条件評価 `:247`）、
-  `src/cli/goal.ts`（close 経路）、`src/core/reviewer-agent.ts`（テスト未実行の検出/記録）、
-  `docs/specs/workflow.md` / `docs/specs/goal-convergence.md`。
+  `hitch_close_checks.evidence_json`・`message` ／ CLI 表示**のみ**に限定。status/decision enum は現状維持。
+- **対象**: `src/core/review-consensus.ts`、`src/hitch/convergence.ts`（close 条件評価 `:247`）、
+  `src/cli/hitch.ts`（close 経路）、`src/core/reviewer-agent.ts`（テスト未実行の検出/記録）、
+  `docs/specs/workflow.md` / `docs/specs/hitch-convergence.md`。
 - **安全境界（重要）**: これは「弱いゲートを**弱いと明示**し fail-closed 寄りにする」変更。
   **ゲートを緩めない**。状態遷移・ゲート判定は harness 側ロジック。**schema を増やさない**（既存の
   review-decision artifact / 既存フィールドに記録）。
@@ -253,7 +258,7 @@ R4（#80・outcome 表面）→ R5（#73・consensus セマンティクス）。
 
 ## 大 Phase S — 運用実害 + 安全・信頼性修正（#79 #77 #103 / #69 #76 #83 #104）
 
-大 Phase R を **goal モードで自走実装した運用中に観測した実害** と、未対応の
+大 Phase R を **hitch モードで自走実装した運用中に観測した実害** と、未対応の
 **安全・信頼性** 課題を 1 本の feature branch（大 Phase）で修正する。スコープは
 ユーザー合意済み（実害: #79 #77 #103／安全・信頼性: #69 #76 #83 #104）。
 
@@ -293,7 +298,7 @@ orchestrator / #76 lifecycle / #83 MCP tool / #103 pr-creator）は、merge 後�
   から呼べる形にする（強制は呼び出し側の選択）。git hook の自動設置や CI 必須化は本 Phase で
   はやらず defer。→ **この方向で良いか確認**。
 - **#83（orchestrate MCP tool）**: 1 回の呼び出しで**有界ステップ**だけ loop を進め status を
-  返す guarded-mutation tool（`harness.goal.orchestrate`）にし、client が繰り返し呼ぶ（単発の
+  返す guarded-mutation tool（`harness.hitch.orchestrate`）にし、client が繰り返し呼ぶ（単発の
   長時間ブロッキングにしない）。**MCP tool 追加は serve 再起動が必要**（registration）＝本 Phase
   の中で唯一 ops 反映に **serve 再起動を要する**。dangerous（run/PR を駆動）なので
   `allowedOperations` + OperationRunner（idempotency/audit/budget）必須。→ **同期/有界方式で
@@ -350,7 +355,7 @@ reopen→needs_fix→fix-rerun→再 close できる」を確認（S6）。期�
 - **着手前 repro（必須）**: #77 で実際に当該文言を出したゲート（:324 か :331 か）を再現確認して
   から実装（観測時の status を特定）。
 - **対象**: `src/core/reviewer-agent.ts`（:324 status gate・:331 欠落メッセージ）、escalation reason を
-  載せる goal 経路（`src/cli/goal.ts`）。
+  載せる goal 経路（`src/cli/hitch.ts`）。
 - **安全境界**: 状態遷移は harness のまま。`already_approved` を「成功」と誤認して状態を進めない
   （区別は表示・reason のみ、判定は決定論）。
 - **TDD**: fake で (a) 既存 approved decision → `already_approved` 文言、(b) decision 欠落 →
@@ -372,8 +377,8 @@ reopen→needs_fix→fix-rerun→再 close できる」を確認（S6）。期�
   1 つに固定（`gh pr merge --squash` で subject 明示 or PR title 既定を前提）し TDD/動作確認に含める。
   `closeAndPr` は `createPullRequest` を `title` 未指定で呼ぶが `opts.title` は既存（`pr-creator.ts:412`）
   ＝配線は軽量。既存 harness: commit の release-please 補完運用も docs 化。
-- **対象**: `src/core/pr-creator.ts`（:386 commit / :413 title）、`src/cli/goal.ts`（commit-type）、
-  `src/goal/orchestrator-runners.ts`（closeAndPr 伝播 :554-566）、`src/goal/repository.ts`（永続先）。
+- **対象**: `src/core/pr-creator.ts`（:386 commit / :413 title）、`src/cli/hitch.ts`（commit-type）、
+  `src/hitch/orchestrator-runners.ts`（closeAndPr 伝播 :554-566）、`src/hitch/repository.ts`（永続先）。
 - **TDD**: commit-type 指定時に PR title/commit が `fix:`/`feat:` 形式になる。既定の回帰なし。
 - **動作確認**: 本 Phase の各 PR が conventional タイトルで作られ release-please に拾われる。
 - **close**: 関連テスト+typecheck 緑／P0 ゼロ／`docs/specs/{workflow,cli}.md` 更新。schema 不変。
@@ -422,9 +427,9 @@ reopen→needs_fix→fix-rerun→再 close できる」を確認（S6）。期�
   review→approve→close/PR に進める。raw-SQL での budget 改変に頼らない。
 - **S6 と統合**: ② の「terminal status からの監査付き再開 + budget 延長」は **#76 reopen（S6）と同一
   プリミティブ**。共通化して **loop を触る面積を減らす**（下記 S6 参照）。
-- **対象**: `src/goal/orchestrator.ts` / `orchestrator-dispatch.ts` / `orchestrator-runners.ts`、
-  `src/goal/convergence.ts`（:264 budget 判定 / :434 terminal）、`src/goal/convergence-status.ts`、
-  `src/cli/goal.ts`、`docs/specs/goal-convergence.md`。
+- **対象**: `src/hitch/orchestrator.ts` / `orchestrator-dispatch.ts` / `orchestrator-runners.ts`、
+  `src/hitch/convergence.ts`（:264 budget 判定 / :434 terminal）、`src/hitch/convergence-status.ts`、
+  `src/cli/hitch.ts`、`docs/specs/hitch-convergence.md`。
 - **安全境界**: 状態遷移・budget 会計は harness 側決定論。force-review も **実 review を回す**
   （LLM 自己申告で approve しない）。close 条件・未解決 P0 ゼロ gate は不変。budget 例外は決定論材料
   のみで判定（attempts/cycles）。
@@ -432,7 +437,7 @@ reopen→needs_fix→fix-rerun→再 close できる」を確認（S6）。期�
   budget_exhausted を回避すること、budget_exhausted からの出口で needs_review run を review→close
   できること。
 - **動作確認**: mini-commerce で P1 を出す goal を回し、rerun→re-review→close が budget 内で収束。
-- **close**: 関連テスト+typecheck 緑／P0 ゼロ／`docs/specs/goal-convergence.md` 更新。**merge 後、
+- **close**: 関連テスト+typecheck 緑／P0 ゼロ／`docs/specs/hitch-convergence.md` 更新。**merge 後、
   以降のサブ Phase の orchestrate がこの改善 loop で回ることを 1 本検証**。
 
 #### S6 — #76 close 済み（approved）goal への後発 finding 反映経路（信頼性）
@@ -449,9 +454,9 @@ reopen→needs_fix→fix-rerun→再 close できる」を確認（S6）。期�
   reopen は dangerous 操作として確認（MCP は confirmation）。
 - **S5 と統合**: S5 ② の「terminal status からの監査付き再開 + budget 延長」と **同一プリミティブ**として
   実装し、reopen（closed→needs_fix）と budget_exhausted 再開を 1 つの harness-native 経路に。
-- **対象**: `src/goal/repository.ts`（:380 `updateStatus`・closed_at クリア・budget 延長）、
-  `src/goal/convergence.ts`、`src/cli/goal.ts`（reopen サブコマンド）、`src/goal/orchestrator-dispatch.ts`、
-  `docs/specs/goal-convergence.md`。
+- **対象**: `src/hitch/repository.ts`（:380 `updateStatus`・closed_at クリア・budget 延長）、
+  `src/hitch/convergence.ts`、`src/cli/hitch.ts`（reopen サブコマンド）、`src/hitch/orchestrator-dispatch.ts`、
+  `docs/specs/hitch-convergence.md`。
 - **安全境界**: reopen は harness 側状態遷移のみ。reopen 後も未解決 P0 ゼロ gate・close 条件は不変。
   LLM が close/reopen を直接駆動しない。
 - **TDD**: closed goal に finding record → reopen → needs_fix → orchestrate で fix-rerun が回る。
@@ -460,12 +465,12 @@ reopen→needs_fix→fix-rerun→再 close できる」を確認（S6）。期�
 - **close**: 関連テスト+typecheck 緑／P0 ゼロ／spec 更新。schema 追加が要れば additive + ops migrate
   明記。
 
-#### S7 — #83 `harness.goal.orchestrate` MCP tool（信頼性・MCP 自走）
+#### S7 — #83 `harness.hitch.orchestrate` MCP tool（信頼性・MCP 自走）
 
 - **観測**: goal の lifecycle 操作は MCP で完結するが、convergence ループ駆動（orchestrate）だけ MCP
   に無く、自走ループが CLI 必須＝MCP client から完結できない・経路/認証/ログが二分。
 - **修正方針（提案・要確認／Fable レビューで timeout・confirmation を補強）**: guarded-mutation tool
-  `harness.goal.orchestrate` を追加。**1 呼び出しで有界ステップ**進め status（次アクション/outcome）を
+  `harness.hitch.orchestrate` を追加。**1 呼び出しで有界ステップ**進め status（次アクション/outcome）を
   返し client が繰り返し呼ぶ。**注意: maxSteps=1 でも 1 ステップ＝coder/review 実行で数分〜数十分**
   （codex 実行を含む）→ MCP client の timeout / progress 通知の扱いを明記。**PR 作成は別の確認付き
   呼び出しに分離**: ループ途中で `confirmation_required` を返すのでなく、既存 `stopAtCloseReady`
@@ -500,7 +505,7 @@ reopen→needs_fix→fix-rerun→再 close できる」を確認（S6）。期�
 
 ## 大 Phase T — 運用セットアップ・DX のつまずき修正（#78 #81 #82 #68）
 
-大 Phase R/S を実プロジェクト（mini-commerce / 実機）に対し goal モードで運用した際に
+大 Phase R/S を実プロジェクト（mini-commerce / 実機）に対し hitch モードで運用した際に
 観測した **セットアップ／DX のつまずき** を 1 本の feature branch（大 Phase）で修正する。
 4 件いずれも **CLI / config / workspace 表面の追加で DB schema に触れず・goal loop に非依存**
 （回帰リスクが低い）。**#74（マルチドメイン1論理変更・協調マージ）はユーザー合意により今回
@@ -575,7 +580,7 @@ T3 先行で T4 の検証 worktree 作成が preflight を自然に再利用で�
 
 #### T1 — #81 `project_not_allowed (projectId: null)` メッセージ改善 + repoId 導出
 
-- **観測**: MCP `harness.goal.start` を repoId 指定で呼ぶと `permission_denied: project_not_allowed
+- **観測**: MCP `harness.hitch.start` を repoId 指定で呼ぶと `permission_denied: project_not_allowed
   (projectId: null)`。projectId が別途必須だと気づけない。
 - **修正方針**: `ensureProjectVisible`（`src/mcp/tools/tool-helpers.ts:113-125`）で projectId が
   null/undefined かつ `allowedProjects` 非空のとき、メッセージを「**projectId 未指定（null）。

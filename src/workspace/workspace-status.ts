@@ -1,6 +1,6 @@
 /**
  * Per-workspace progress projection (W3). A deterministic, scannable status for
- * each agent workspace, derived ONLY from git state + the linked goal's
+ * each agent workspace, derived ONLY from git state + the linked hitch's
  * convergence decision (never from the advisory checkpoint note). Used by
  * `harness workspace status` to give a human coordinating several agents an
  * at-a-glance view.
@@ -18,9 +18,9 @@ export interface WorkspaceStatusInput {
   branch: string;
   /** null for a stale entry (DB row whose git worktree is gone). */
   git: WorkspaceGitState | null;
-  goalId: string | null;
-  /** the goal's convergence decision; null if no goal or a dangling link. */
-  goalDecision: string | null;
+  hitchId: string | null;
+  /** the hitch's convergence decision; null if no hitch or a dangling link. */
+  hitchDecision: string | null;
   objective: string | null;
   lastActiveAt: string | null;
   lastCheckpointAt: string | null;
@@ -33,8 +33,8 @@ export interface WorkspaceStatus extends WorkspaceStatusInput {
 }
 
 /**
- * A single scannable label, by priority: a missing worktree or goal dominates,
- * then a blocked/needs-work goal, then the working-tree state. Pure.
+ * A single scannable label, by priority: a missing worktree or hitch dominates,
+ * then a blocked/needs-work hitch, then the working-tree state. Pure.
  */
 export function progressLabel(input: WorkspaceStatusInput): string {
   // A missing worktree (explicitly stale, or degenerate null git state) is
@@ -42,8 +42,8 @@ export function progressLabel(input: WorkspaceStatusInput): string {
   // `clean`, which would contradict how the CLI renders it.
   if (input.stale || input.git === null) return "stale";
 
-  const d = input.goalDecision;
-  if (input.goalId !== null && d === null) return "goal-missing";
+  const d = input.hitchDecision;
+  if (input.hitchId !== null && d === null) return "hitch-missing";
   if (d !== null) {
     switch (d) {
       case "diverging":
@@ -56,18 +56,18 @@ export function progressLabel(input: WorkspaceStatusInput): string {
       case "close_ready":
         return "ready-to-close";
       case "continue":
-        // the goal is active and needs review / close-check / deferral.
+        // the hitch is active and needs review / close-check / deferral.
         return "in-progress";
       case "closed":
       case "cancel":
-        break; // terminal goal → fall through to the working-tree state.
+        break; // terminal hitch → fall through to the working-tree state.
       default:
         // an unrecognized decision is fail-closed: surface it, never hide it.
         return "blocked";
     }
   }
 
-  // No (live) goal, or a terminal goal: project the working-tree state.
+  // No (live) hitch, or a terminal hitch: project the working-tree state.
   // (git is non-null here: a null worktree was handled fail-closed above.)
   const g = input.git;
   if (g.dirtyCount > 0) return "dirty";

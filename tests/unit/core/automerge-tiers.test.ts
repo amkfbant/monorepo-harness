@@ -5,7 +5,7 @@ describe("computeAutoMergeTier", () => {
   it.each([
     ["src/policy/rules.ts", 2],
     ["docs/workflow.md", 0],
-    ["src/cli/goal.ts", 1],
+    ["src/cli/hitch.ts", 1],
     ["tests/unit/core/example.test.ts", 0],
   ] as const)("%s maps to Tier-%d", (path, tier) => {
     expect(computeAutoMergeTier([path])).toBe(tier);
@@ -23,7 +23,7 @@ describe("computeAutoMergeTier", () => {
 
   it("returns the highest tier when one path matches multiple rules", () => {
     expect(
-      computeAutoMergeTier(["docs/specs/goal-convergence.md"], [
+      computeAutoMergeTier(["docs/specs/hitch-convergence.md"], [
         { glob: "docs/**", tier: 0 },
         { glob: "docs/specs/**", tier: 2 },
       ]),

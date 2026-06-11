@@ -7,16 +7,16 @@ import { DEFAULT_MCP_CONFIG, type McpConfig } from "../../../src/mcp/security/co
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { WorkspaceRepository } from "../../../src/db/repositories/workspaces.js";
-import { GoalRepository } from "../../../src/goal/repository.js";
+import { HitchRepository } from "../../../src/hitch/repository.js";
 
 function freshHarness(): string {
   const root = mkdtempSync(join(tmpdir(), "harness-mcp-ws-"));
   const db = openDb(join(root, ".harness", "harness.sqlite"));
   runMigrations(db);
   const ws = new WorkspaceRepository(db);
-  const goals = new GoalRepository(db);
+  const goals = new HitchRepository(db);
   goals.createSession({
-    goalId: "g1",
+    hitchId: "g1",
     title: "Goal one",
     closeConditions: [{ id: "tc", kind: "command", required: true }],
     createdBy: "test",
@@ -28,7 +28,7 @@ function freshHarness(): string {
     branch: "agent/alice",
     worktreePath: "/repo.agents/alice",
   });
-  ws.linkGoal("/repo/.git", "alice", "g1");
+  ws.linkHitch("/repo/.git", "alice", "g1");
   ws.setObjective("/repo/.git", "alice", "ship the thing");
   ws.recordCheckpoint({
     workspaceId: alice.workspaceId,
@@ -82,15 +82,15 @@ describe("harness.workspace.list MCP tool", () => {
 
     const alice = byAgent.get("alice") as any;
     expect(alice.branch).toBe("agent/alice");
-    expect(alice.goalId).toBe("g1");
+    expect(alice.hitchId).toBe("g1");
     // a real (live) goal → a non-null convergence decision.
-    expect(typeof alice.goalDecision).toBe("string");
+    expect(typeof alice.hitchDecision).toBe("string");
     expect(alice.objective).toBe("ship the thing");
     expect(alice.lastCheckpointAt).toBe("2026-06-07T03:00:00.000Z");
 
     const bob = byAgent.get("bob") as any;
-    expect(bob.goalId).toBeNull();
-    expect(bob.goalDecision).toBeNull();
+    expect(bob.hitchId).toBeNull();
+    expect(bob.hitchDecision).toBeNull();
     expect(bob.lastCheckpointAt).toBeNull();
   });
 
@@ -196,14 +196,14 @@ describe("harness.workspace.list MCP tool", () => {
     const db = openDb(join(root, ".harness", "harness.sqlite"));
     runMigrations(db);
     const ws = new WorkspaceRepository(db);
-    const goals = new GoalRepository(db);
-    for (const [goalId, projectId] of [
+    const goals = new HitchRepository(db);
+    for (const [hitchId, projectId] of [
       ["g-alice", aliceGoalProject],
       ["g-demo", "demo"],
     ] as const) {
       goals.createSession({
-        goalId,
-        title: goalId,
+        hitchId,
+        title: hitchId,
         projectId,
         closeConditions: [{ id: "tc", kind: "command", required: true }],
         createdBy: "t",
@@ -211,18 +211,18 @@ describe("harness.workspace.list MCP tool", () => {
       });
     }
     ws.upsert({ agent: "alice", repoPath: "/r/.git", branch: "agent/alice", worktreePath: "/r.agents/alice" });
-    ws.linkGoal("/r/.git", "alice", "g-alice");
+    ws.linkHitch("/r/.git", "alice", "g-alice");
     db.close();
     return root;
   }
 
-  it("checkpoint scoping: denies an out-of-scope workspace even with an allowed goalId (no bypass)", async () => {
+  it("checkpoint scoping: denies an out-of-scope workspace even with an allowed hitchId (no bypass)", async () => {
     // alice's workspace is in project "other"; the client is restricted to "demo".
     const s = mutationServer(scopedHarness("other"), ["workspace.checkpoint"], ["demo"]);
     const out = await callTool(s, "harness.workspace.checkpoint", {
       repoPath: "/r/.git",
       agent: "alice",
-      goalId: "g-demo", // an allowed goal — must NOT unlock the out-of-scope workspace
+      hitchId: "g-demo", // an allowed goal — must NOT unlock the out-of-scope workspace
       idempotencyKey: "x",
     });
     expect(out.status).toBe("permission_denied");
@@ -243,14 +243,14 @@ describe("harness.workspace.list MCP tool", () => {
     const db = openDb(join(root, ".harness", "harness.sqlite"));
     runMigrations(db);
     const ws = new WorkspaceRepository(db);
-    const goals = new GoalRepository(db);
-    for (const [goalId, projectId] of [
+    const goals = new HitchRepository(db);
+    for (const [hitchId, projectId] of [
       ["g-demo", "demo"],
       ["g-other", "other"],
     ] as const) {
       goals.createSession({
-        goalId,
-        title: goalId,
+        hitchId,
+        title: hitchId,
         projectId,
         closeConditions: [{ id: "tc", kind: "command", required: true }],
         createdBy: "test",
@@ -258,9 +258,9 @@ describe("harness.workspace.list MCP tool", () => {
       });
     }
     ws.upsert({ agent: "alice", repoPath: "/r/.git", branch: "agent/alice", worktreePath: "/r.agents/alice" });
-    ws.linkGoal("/r/.git", "alice", "g-demo");
+    ws.linkHitch("/r/.git", "alice", "g-demo");
     ws.upsert({ agent: "bob", repoPath: "/r/.git", branch: "agent/bob", worktreePath: "/r.agents/bob" });
-    ws.linkGoal("/r/.git", "bob", "g-other");
+    ws.linkHitch("/r/.git", "bob", "g-other");
     ws.upsert({ agent: "carol", repoPath: "/r/.git", branch: "agent/carol", worktreePath: "/r.agents/carol" });
     db.close();
 

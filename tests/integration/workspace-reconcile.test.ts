@@ -32,7 +32,7 @@ function record(over: Partial<WorkspaceRecord>): WorkspaceRecord {
     repoPath: "/r/.git",
     branch: "agent/x",
     worktreePath: "/x",
-    goalId: null,
+    hitchId: null,
     objective: null,
     status: "active",
     createdAt: "t",
@@ -97,7 +97,7 @@ describe("reconcileWorkspaces (real git)", () => {
     const rows = [
       record({
         agent: "alice",
-        goalId: "goal-secret",
+        hitchId: "goal-secret",
         objective: "out-of-scope work",
         worktreePath: "/some/other/stale/alice",
       }),
@@ -108,7 +108,7 @@ describe("reconcileWorkspaces (real git)", () => {
     const liveKey = normalizeWorktreePath(aliceLive!.path);
     // the row is keyed by ITS (stale) path, not the live worktree's path …
     expect(recordByPath.has(liveKey)).toBe(false);
-    // … so attribution by live path yields null — the foreign goal never leaks.
+    // … so attribution by live path yields null — the foreign hitch never leaks.
     expect(recordByPath.get(liveKey) ?? null).toBeNull();
   });
 

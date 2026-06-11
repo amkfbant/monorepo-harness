@@ -3,21 +3,21 @@ import type { WorkspaceInspection } from "./agent-workspace.js";
 /**
  * Recovery briefing for an agent workspace (W2c). Reconstructs the
  * AUTHORITATIVE state deterministically — the git inspection plus the linked
- * goal's convergence decision — and overlays the latest advisory checkpoint
+ * hitch's convergence decision — and overlays the latest advisory checkpoint
  * note for context. The note is never trusted to drive the recommendation: the
  * `nextSteps` are projected from the deterministic signals only (§0 asymmetry).
  */
 
-export interface RecoveryGoalConvergence {
+export interface RecoveryHitchConvergence {
   decision: string;
   reason: string;
   nextActionKind: string;
 }
 
-export interface RecoveryGoal {
-  goalId: string;
-  /** null when the linked goal no longer exists (a dangling advisory link). */
-  convergence: RecoveryGoalConvergence | null;
+export interface RecoveryHitch {
+  hitchId: string;
+  /** null when the linked hitch no longer exists (a dangling advisory link). */
+  convergence: RecoveryHitchConvergence | null;
 }
 
 export interface RecoveryCheckpoint {
@@ -29,18 +29,18 @@ export interface RecoveryCheckpoint {
 export interface RecoveryBriefingInput {
   inspection: WorkspaceInspection;
   objective: string | null;
-  goal: RecoveryGoal | null;
+  hitch: RecoveryHitch | null;
   latestCheckpoint: RecoveryCheckpoint | null;
 }
 
 export interface RecoveryBriefing extends RecoveryBriefingInput {
-  /** deterministic, ordered actions derived from git + goal state only. */
+  /** deterministic, ordered actions derived from git + hitch state only. */
   nextSteps: string[];
 }
 
-/** Deterministic next steps from git + goal signals (never from the note). */
+/** Deterministic next steps from git + hitch signals (never from the note). */
 function computeNextSteps(input: RecoveryBriefingInput): string[] {
-  const { inspection: insp, goal } = input;
+  const { inspection: insp, hitch } = input;
   const steps: string[] = [];
 
   if (insp.dirtyFiles.length > 0) {
@@ -60,20 +60,20 @@ function computeNextSteps(input: RecoveryBriefingInput): string[] {
     );
   }
 
-  if (goal !== null) {
-    if (goal.convergence === null) {
+  if (hitch !== null) {
+    if (hitch.convergence === null) {
       steps.push(
-        `linked goal ${goal.goalId} no longer exists — re-link or clear it`,
+        `linked hitch ${hitch.hitchId} no longer exists — re-link or clear it`,
       );
     } else {
-      const { decision, reason, nextActionKind } = goal.convergence;
+      const { decision, reason, nextActionKind } = hitch.convergence;
       switch (decision) {
         case "needs_fix":
-          steps.push(`run the coder for goal ${goal.goalId} (needs_fix: ${reason})`);
+          steps.push(`run the coder for hitch ${hitch.hitchId} (needs_fix: ${reason})`);
           break;
         case "needs_classification":
           steps.push(
-            `classify unknown-scope findings for goal ${goal.goalId}`,
+            `classify unknown-scope findings for hitch ${hitch.hitchId}`,
           );
           break;
         case "continue":
@@ -82,34 +82,34 @@ function computeNextSteps(input: RecoveryBriefingInput): string[] {
           // rather than guessing "review".
           if (nextActionKind === "defer_followups") {
             steps.push(
-              `defer out-of-scope follow-ups for goal ${goal.goalId} before closing`,
+              `defer out-of-scope follow-ups for hitch ${hitch.hitchId} before closing`,
             );
           } else if (nextActionKind === "run_close_check") {
             steps.push(
-              `run review / record close-check evidence for goal ${goal.goalId}`,
+              `run review / record close-check evidence for hitch ${hitch.hitchId}`,
             );
           } else {
             steps.push(
-              `goal ${goal.goalId} needs an unsupported action ` +
+              `hitch ${hitch.hitchId} needs an unsupported action ` +
                 `(continue/${nextActionKind}) — escalate`,
             );
           }
           break;
         case "close_ready":
-          steps.push(`close goal ${goal.goalId} and open the PR`);
+          steps.push(`close hitch ${hitch.hitchId} and open the PR`);
           break;
         case "closed":
         case "cancel":
-          break; // terminal — nothing to do for the goal
+          break; // terminal — nothing to do for the hitch
         case "diverging":
         case "budget_exhausted":
         case "escalate":
-          steps.push(`escalate goal ${goal.goalId} (${decision}: ${reason})`);
+          steps.push(`escalate hitch ${hitch.hitchId} (${decision}: ${reason})`);
           break;
         default:
           // an unrecognized decision is fail-closed: escalate, never guess.
           steps.push(
-            `goal ${goal.goalId} has an unrecognized convergence decision ` +
+            `hitch ${hitch.hitchId} has an unrecognized convergence decision ` +
               `(${decision}) — escalate`,
           );
       }

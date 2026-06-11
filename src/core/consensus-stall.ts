@@ -9,7 +9,7 @@ import type {
  * Pure, deterministic: given a time-ordered history of consensus
  * evaluation snapshots, decide whether the consensus is "stuck" (long
  * pending / unresolved blocking / quorum not reached with no progress) so
- * the goal orchestrator can escalate (fail-closed). Inputs are derived only
+ * the hitch orchestrator can escalate (fail-closed). Inputs are derived only
  * from harness-side consensus evaluations — never from LLM output.
  */
 
@@ -117,7 +117,7 @@ export function detectConsensusStall(
 
 /**
  * Build a progress snapshot from a persisted consensus evaluation. The
- * goal wiring uses this to turn `review_consensus` rows into the detector's
+ * hitch wiring uses this to turn `review_consensus` rows into the detector's
  * input.
  */
 export function snapshotFromConsensus(input: {

@@ -18,7 +18,7 @@ import {
   runGetTool,
   runTimelineTool,
 } from "../tools/read-tools.js";
-import { goalStatusTool } from "../tools/goal-tools.js";
+import { hitchStatusTool } from "../tools/hitch-tools.js";
 import {
   artifactIdFromUriSegment,
   ensureProjectVisible,
@@ -138,9 +138,9 @@ export const MCP_RESOURCE_TEMPLATES: McpResourceTemplateDefinition[] = [
     mimeType: "application/json",
   },
   {
-    uriTemplate: "harness://goal/{goalId}",
-    name: "Goal",
-    description: "Goal convergence status, findings, and decisions.",
+    uriTemplate: "harness://hitch/{hitchId}",
+    name: "Hitch",
+    description: "Hitch convergence status, findings, and decisions.",
     mimeType: "application/json",
   },
   {
@@ -183,7 +183,7 @@ export function resolveMcpResourceRead(uri: string): McpResourceReadTarget | nul
   if (host === "run") return resolveRunResource(uri, segments);
   if (host === "artifact") return resolveArtifactResource(uri, segments);
   if (host === "backlog") return resolveBacklogResource(uri, segments);
-  if (host === "goal") return resolveGoalResource(uri, segments);
+  if (host === "hitch") return resolveHitchResource(uri, segments);
   if (host === "knowledge") return resolveKnowledgeResource(uri, segments);
   if (host === "operation") return resolveOperationResource(uri, segments);
   return errorTarget(uri, `unknown harness resource host: ${host}`);
@@ -345,16 +345,16 @@ function resolveBacklogResource(
   );
 }
 
-function resolveGoalResource(
+function resolveHitchResource(
   uri: string,
   segments: string[],
 ): McpResourceReadTarget {
   if (segments.length !== 1 || segments[0] === undefined || segments[0].length === 0) {
-    return errorTarget(uri, "expected harness://goal/{goalId}");
+    return errorTarget(uri, "expected harness://hitch/{hitchId}");
   }
-  const goalId = segments[0];
-  return toolTarget(uri, "harness.goal.status", { goalId }, (context) =>
-    goalStatusTool({ goalId }, context),
+  const hitchId = segments[0];
+  return toolTarget(uri, "harness.hitch.status", { hitchId }, (context) =>
+    hitchStatusTool({ hitchId }, context),
   );
 }
 

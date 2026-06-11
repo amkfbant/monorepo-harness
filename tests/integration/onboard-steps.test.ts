@@ -47,7 +47,7 @@ describe("onboard steps (integration)", () => {
   });
 
   it("mcp step merges the project and, on starter opt-in, writes a guarded-mutation client", async () => {
-    // answers: enable-starter=y, client-name=codex, goal.start=y, run.start=n, write-mcp-yaml=y
+    // answers: enable-starter=y, client-name=codex, hitch.start=y, run.start=n, write-mcp-yaml=y
     const ctx = ctxFor(["y", "codex", "y", "n", "y"]);
     mkdirSync(join(ctx.harnessRoot, "projects"), { recursive: true });
     writeFileSync(join(ctx.harnessRoot, "projects", "demo.yaml"),
@@ -58,7 +58,7 @@ describe("onboard steps (integration)", () => {
     const cfg = parseYaml(readFileSync(join(ctx.harnessRoot, ".harness", "mcp.yaml"), "utf8")).mcp;
     expect(cfg.allowedProjects).toContain("demo");
     expect(cfg.clients).toEqual([{ id: "codex", names: ["codex"], mode: "guarded-mutation" }]);
-    expect(cfg.allowedOperations).toEqual(["goal.start"]); // run.start declined
+    expect(cfg.allowedOperations).toEqual(["hitch.start"]); // run.start declined
   });
 
   it("check step returns ok=false (stops the wizard) when the profile is uncompilable", async () => {
@@ -75,7 +75,7 @@ describe("onboard steps (integration)", () => {
   });
 
   it("permission round-trip: after mcp opt-in the gate actually opens for the opted-in operation (P2-4)", async () => {
-    // answers: enable-starter=y, client-name=codex, goal.start=y, run.start=n, write-mcp-yaml=y
+    // answers: enable-starter=y, client-name=codex, hitch.start=y, run.start=n, write-mcp-yaml=y
     const ctx = ctxFor(["y", "codex", "y", "n", "y"]);
     mkdirSync(join(ctx.harnessRoot, "projects"), { recursive: true });
     writeFileSync(join(ctx.harnessRoot, "projects", "demo.yaml"),
@@ -84,10 +84,10 @@ describe("onboard steps (integration)", () => {
     const res = await mcpStep.run(ctx);
     expect(res.ok).toBe(true);
 
-    // Verify the written config actually opens the gate for goal.start
+    // Verify the written config actually opens the gate for hitch.start
     const cfg = loadMcpConfig({ harnessRoot: ctx.harnessRoot });
     const allowed = decideMcpPermission(cfg, {
-      toolName: "harness.goal.start",
+      toolName: "harness.hitch.start",
       kind: "mutation",
       projectId: "demo",
       clientMode: modeForClient(cfg, "codex"),

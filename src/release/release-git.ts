@@ -132,13 +132,13 @@ const SCHEMA_PATH = "src/db/schema.ts";
 const MCP_REGISTRY_PATH = "src/mcp/registry/tool-registry.ts";
 // CLI commands are registered across run.ts plus the per-domain modules
 // (`registerXCommands`), so all must be scanned — otherwise a removal in e.g.
-// db.ts / goal.ts is invisible.
+// db.ts / hitch.ts is invisible.
 const CLI_PATHS = [
   "src/cli/run.ts",
   "src/cli/project.ts",
   "src/cli/policy.ts",
   "src/cli/db.ts",
-  "src/cli/goal.ts",
+  "src/cli/hitch.ts",
   "src/mcp/cli.ts",
 ];
 

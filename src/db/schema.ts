@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1429,15 +1429,14 @@ export const MIGRATION_V16_STATEMENTS: readonly string[] = [
      ON goal_convergence_decisions(goal_id, created_at)`,
 ];
 
-/** Tables added by v16 (Phase 19). */
-export const V16_TABLE_NAMES: readonly string[] = [
-  "goal_sessions",
-  "goal_attempts",
-  "goal_review_cycles",
-  "goal_findings",
-  "goal_close_checks",
-  "goal_convergence_decisions",
-];
+/**
+ * v16 created six `goal_*` tables; v20 (SP-0) renames them to `hitch_*`. The
+ * live name list is `V20_TABLE_NAMES` — there is no `V16_TABLE_NAMES` constant
+ * (it would only duplicate the now-renamed surface and risk being mistaken for
+ * the current table names). The v16 CREATE statements above intentionally still
+ * say `goal_*` so the in-order migration chain has a `goal_*` surface for v20's
+ * RENAME to act on.
+ */
 
 /**
  * v17 — agent workspaces (W2). An additive index over the per-agent git
@@ -1521,6 +1520,79 @@ export const MIGRATION_V19_STATEMENTS: readonly string[] = [
 /** Tables added by v19 (operational knowledge — additive column only). */
 export const V19_TABLE_NAMES: readonly string[] = [];
 
+/**
+ * v20 — rename goal_* → hitch_* (SP-0 rename refactor).
+ *
+ * Renames the six goal-convergence tables, the eight goal_id columns across
+ * those tables plus workspaces/workspace_checkpoints, and recreates all ten
+ * indexes under their hitch_* names. v16 DDL still creates goal_* so that
+ * fresh DBs built by applying all migrations in order have a goal_* surface
+ * for v20's RENAME to act on. This migration is additive-safe: a second
+ * application is a no-op because runMigrations checks schema_migrations first.
+ */
+export const MIGRATION_V20_STATEMENTS: readonly string[] = [
+  // --- table renames ---
+  `ALTER TABLE goal_sessions RENAME TO hitch_sessions`,
+  `ALTER TABLE goal_attempts RENAME TO hitch_attempts`,
+  `ALTER TABLE goal_review_cycles RENAME TO hitch_review_cycles`,
+  `ALTER TABLE goal_findings RENAME TO hitch_findings`,
+  `ALTER TABLE goal_close_checks RENAME TO hitch_close_checks`,
+  `ALTER TABLE goal_convergence_decisions RENAME TO hitch_convergence_decisions`,
+
+  // --- column renames: goal_id → hitch_id in all 8 locations ---
+  `ALTER TABLE hitch_sessions RENAME COLUMN goal_id TO hitch_id`,
+  `ALTER TABLE hitch_attempts RENAME COLUMN goal_id TO hitch_id`,
+  `ALTER TABLE hitch_review_cycles RENAME COLUMN goal_id TO hitch_id`,
+  `ALTER TABLE hitch_findings RENAME COLUMN goal_id TO hitch_id`,
+  `ALTER TABLE hitch_close_checks RENAME COLUMN goal_id TO hitch_id`,
+  `ALTER TABLE hitch_convergence_decisions RENAME COLUMN goal_id TO hitch_id`,
+  `ALTER TABLE workspaces RENAME COLUMN goal_id TO hitch_id`,
+  `ALTER TABLE workspace_checkpoints RENAME COLUMN goal_id TO hitch_id`,
+
+  // --- drop old indexes ---
+  `DROP INDEX IF EXISTS goal_sessions_status_idx`,
+  `DROP INDEX IF EXISTS goal_sessions_project_idx`,
+  `DROP INDEX IF EXISTS goal_attempts_goal_idx`,
+  `DROP INDEX IF EXISTS goal_attempts_run_idx`,
+  `DROP INDEX IF EXISTS goal_attempts_operation_idx`,
+  `DROP INDEX IF EXISTS goal_review_cycles_unique_idx`,
+  `DROP INDEX IF EXISTS goal_findings_stable_idx`,
+  `DROP INDEX IF EXISTS goal_findings_goal_status_idx`,
+  `DROP INDEX IF EXISTS goal_close_checks_goal_idx`,
+  `DROP INDEX IF EXISTS goal_convergence_decisions_goal_idx`,
+
+  // --- recreate indexes under hitch_* names ---
+  `CREATE INDEX hitch_sessions_status_idx
+     ON hitch_sessions(status, updated_at)`,
+  `CREATE INDEX hitch_sessions_project_idx
+     ON hitch_sessions(project_id, domain, status)`,
+  `CREATE INDEX hitch_attempts_hitch_idx
+     ON hitch_attempts(hitch_id, iteration, created_at)`,
+  `CREATE INDEX hitch_attempts_run_idx ON hitch_attempts(run_id)`,
+  `CREATE INDEX hitch_attempts_operation_idx ON hitch_attempts(operation_id)`,
+  `CREATE UNIQUE INDEX hitch_review_cycles_unique_idx
+     ON hitch_review_cycles(hitch_id, cycle_number)`,
+  `CREATE UNIQUE INDEX hitch_findings_stable_idx
+     ON hitch_findings(hitch_id, stable_key)
+    WHERE duplicate_of IS NULL`,
+  `CREATE INDEX hitch_findings_hitch_status_idx
+     ON hitch_findings(hitch_id, lifecycle_status, scope_status, severity)`,
+  `CREATE INDEX hitch_close_checks_hitch_idx
+     ON hitch_close_checks(hitch_id, checked_at)`,
+  `CREATE INDEX hitch_convergence_decisions_hitch_idx
+     ON hitch_convergence_decisions(hitch_id, created_at)`,
+];
+
+/** Tables renamed by v20 (SP-0 hitch rename). */
+export const V20_TABLE_NAMES: readonly string[] = [
+  "hitch_sessions",
+  "hitch_attempts",
+  "hitch_review_cycles",
+  "hitch_findings",
+  "hitch_close_checks",
+  "hitch_convergence_decisions",
+];
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -1558,7 +1630,7 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V10_TABLE_NAMES,
   ...V11_TABLE_NAMES,
   ...V13_TABLE_NAMES,
-  ...V16_TABLE_NAMES,
+  ...V20_TABLE_NAMES,
   ...V17_TABLE_NAMES,
   ...V18_TABLE_NAMES,
 ];

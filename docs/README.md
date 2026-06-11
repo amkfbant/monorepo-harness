@@ -35,7 +35,7 @@ docs/
 | `harness knowledge build-context --domain <d>` | promote 済み knowledge を domain 別に集約（`run --with-knowledge` 用、Phase 3-4） |
 | `harness cleanup --run-id <id> [--scope …]` | worktree / branch / run dir を scope 単位で削除 |
 | `harness workflow reviewed-run …` | run → review auto → review process → rerun を bounded loop で束ねる（Phase 3-1） |
-| `harness goal ...` | scope / findings / close checks / convergence decision を DB に記録し、長い agent loop を止める（Phase 19）。`goal orchestrate` / `goal await-merge`（close_ready の PR を poll でマージ）/ `goal finding classify --then-rerun`（分類→coder rerun 自動連鎖）を含む |
+| `harness hitch ...` | scope / findings / close checks / convergence decision を DB に記録し、長い agent loop を止める（Phase 19）。`hitch orchestrate` / `hitch await-merge`（close_ready の PR を poll でマージ）/ `hitch finding classify --then-rerun`（分類→coder rerun 自動連鎖）を含む |
 | `harness workspace create/adopt/list/status/conflicts/inspect/checkpoint/recover/remove` | per-agent 隔離 worktree。並行 multi-agent 作業の競合 pre-check・状態同期・heartbeat（[`specs/workspace.md`](./specs/workspace.md)） |
 | `harness mcp serve` | coding agent 向け MCP server（tools / resources / prompts・[`specs/mcp.md`](./specs/mcp.md)） |
 | `harness index` | Phase 8-7 で撤去（`harness.sqlite` read model に置換）。exit 1 の stub のみ残置 |

@@ -19,14 +19,14 @@ describe("mergeMcpConfig (#92)", () => {
     const { yaml } = mergeMcpConfig(null, {
       projectId: "demo",
       existingProjectIds: ["demo"],
-      starter: { clientName: "codex", operations: ["goal.start", "run.start"] },
+      starter: { clientName: "codex", operations: ["hitch.start", "run.start"] },
     });
     const cfg = parseYaml(yaml).mcp;
     expect(cfg.defaultMode).toBe("dry-run"); // unknown clients stay un-elevated
     expect(cfg.clients).toEqual([
       { id: "codex", names: ["codex"], mode: "guarded-mutation" },
     ]);
-    expect(cfg.allowedOperations).toEqual(["goal.start", "run.start"]);
+    expect(cfg.allowedOperations).toEqual(["hitch.start", "run.start"]);
   });
 
   it("appends the project to a non-empty allowedProjects list, preserving other fields", () => {
@@ -88,11 +88,11 @@ describe("mergeMcpConfig (#92)", () => {
     ].join("\n");
     const { yaml, report } = mergeMcpConfig(existing, {
       projectId: "demo", existingProjectIds: ["demo"],
-      starter: { clientName: "codex", operations: ["goal.start"] },
+      starter: { clientName: "codex", operations: ["hitch.start"] },
     });
     const cfg = parseYaml(yaml).mcp;
     expect(cfg.clients).toEqual([{ id: "codex", names: ["codex"], mode: "guarded-mutation" }]);
-    expect(cfg.allowedOperations).toEqual(["goal.start"]);
+    expect(cfg.allowedOperations).toEqual(["hitch.start"]);
     expect(report.mutationsEnabled).toBe(true);
   });
 

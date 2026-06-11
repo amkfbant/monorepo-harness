@@ -19,11 +19,11 @@ function insp(over: Partial<WorkspaceInspection> = {}): WorkspaceInspection {
 }
 
 describe("buildRecoveryBriefing nextSteps (deterministic)", () => {
-  it("reports nothing pending for a clean, up-to-date workspace with no goal", () => {
+  it("reports nothing pending for a clean, up-to-date workspace with no hitch", () => {
     const b = buildRecoveryBriefing({
       inspection: insp(),
       objective: null,
-      goal: null,
+      hitch: null,
       latestCheckpoint: null,
     });
     expect(b.nextSteps).toEqual([
@@ -35,7 +35,7 @@ describe("buildRecoveryBriefing nextSteps (deterministic)", () => {
     const b = buildRecoveryBriefing({
       inspection: insp({ dirtyFiles: ["a.ts", "b.ts"], ahead: 2, behind: 1 }),
       objective: null,
-      goal: null,
+      hitch: null,
       latestCheckpoint: null,
     });
     expect(b.nextSteps[0]).toMatch(/commit or stash 2/);
@@ -47,28 +47,28 @@ describe("buildRecoveryBriefing nextSteps (deterministic)", () => {
     const b = buildRecoveryBriefing({
       inspection: insp({ baseResolved: false, ahead: 0, behind: 0 }),
       objective: null,
-      goal: null,
+      hitch: null,
       latestCheckpoint: null,
     });
     expect(b.nextSteps.join(" ")).not.toMatch(/ahead|behind/);
   });
 
-  it("projects the linked goal's convergence decision into a step", () => {
+  it("projects the linked hitch's convergence decision into a step", () => {
     // realistic (decision, nextActionKind) pairs as ConvergenceService emits.
     const mk = (decision: string, nextActionKind: string) =>
       buildRecoveryBriefing({
         inspection: insp(),
         objective: null,
-        goal: { goalId: "g1", convergence: { decision, reason: "r", nextActionKind } },
+        hitch: { hitchId: "g1", convergence: { decision, reason: "r", nextActionKind } },
         latestCheckpoint: null,
       }).nextSteps.join(" | ");
-    expect(mk("needs_fix", "fix_findings")).toMatch(/run the coder for goal g1/);
+    expect(mk("needs_fix", "fix_findings")).toMatch(/run the coder for hitch g1/);
     expect(mk("needs_classification", "classify_findings")).toMatch(/classify unknown-scope/);
     expect(mk("continue", "run_close_check")).toMatch(/run review \/ record close-check/);
-    expect(mk("close_ready", "close_goal")).toMatch(/close goal g1 and open the PR/);
-    expect(mk("escalate", "ask_human")).toMatch(/escalate goal g1 \(escalate: r\)/);
-    // a closed goal contributes no goal step → clean message.
-    expect(mk("closed", "close_goal")).toMatch(/nothing pending/);
+    expect(mk("close_ready", "close_hitch")).toMatch(/close hitch g1 and open the PR/);
+    expect(mk("escalate", "ask_human")).toMatch(/escalate hitch g1 \(escalate: r\)/);
+    // a closed hitch contributes no hitch step → clean message.
+    expect(mk("closed", "close_hitch")).toMatch(/nothing pending/);
   });
 
   it("fail-closes (escalate) on an unrecognized decision or an unsupported continue action", () => {
@@ -76,7 +76,7 @@ describe("buildRecoveryBriefing nextSteps (deterministic)", () => {
       buildRecoveryBriefing({
         inspection: insp(),
         objective: null,
-        goal: { goalId: "g1", convergence: { decision, reason: "r", nextActionKind } },
+        hitch: { hitchId: "g1", convergence: { decision, reason: "r", nextActionKind } },
         latestCheckpoint: null,
       }).nextSteps.join(" | ");
     // a future/unknown decision must not be guessed as "review".
@@ -95,29 +95,29 @@ describe("buildRecoveryBriefing nextSteps (deterministic)", () => {
       buildRecoveryBriefing({
         inspection: insp(),
         objective: null,
-        goal: { goalId: "g1", convergence: { decision: "continue", reason: "r", nextActionKind } },
+        hitch: { hitchId: "g1", convergence: { decision: "continue", reason: "r", nextActionKind } },
         latestCheckpoint: null,
       }).nextSteps.join(" | ");
-    expect(mk("defer_followups")).toMatch(/defer out-of-scope follow-ups for goal g1/);
+    expect(mk("defer_followups")).toMatch(/defer out-of-scope follow-ups for hitch g1/);
     expect(mk("defer_followups")).not.toMatch(/review/);
     expect(mk("run_close_check")).toMatch(/run review \/ record close-check/);
   });
 
-  it("flags a dangling goal link (goal no longer exists)", () => {
+  it("flags a dangling hitch link (hitch no longer exists)", () => {
     const b = buildRecoveryBriefing({
       inspection: insp(),
       objective: null,
-      goal: { goalId: "gone", convergence: null },
+      hitch: { hitchId: "gone", convergence: null },
       latestCheckpoint: null,
     });
-    expect(b.nextSteps.join(" ")).toMatch(/goal gone no longer exists/);
+    expect(b.nextSteps.join(" ")).toMatch(/hitch gone no longer exists/);
   });
 
   it("treats the checkpoint note as advisory: it never adds a step", () => {
     const withNote = buildRecoveryBriefing({
       inspection: insp(),
       objective: "ship it",
-      goal: null,
+      hitch: null,
       latestCheckpoint: {
         note: "I think we should rewrite everything",
         createdAt: "t",

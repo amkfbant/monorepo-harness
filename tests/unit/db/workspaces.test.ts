@@ -29,7 +29,7 @@ describe("WorkspaceRepository", () => {
     });
     expect(ws.agent).toBe("alice");
     expect(ws.status).toBe("active");
-    expect(ws.goalId).toBeNull();
+    expect(ws.hitchId).toBeNull();
     expect(ws.workspaceId).toMatch(/^ws-/);
     expect(repo.get(REPO, "alice")?.branch).toBe("agent/alice");
   });
@@ -88,13 +88,13 @@ describe("WorkspaceRepository", () => {
 
   it("links an advisory goal and sets an objective", () => {
     repo.upsert({ agent: "alice", repoPath: REPO, branch: "agent/alice", worktreePath: "/p/alice" });
-    repo.linkGoal(REPO, "alice", "goal-123");
+    repo.linkHitch(REPO, "alice", "goal-123");
     repo.setObjective(REPO, "alice", "ship the workspace feature");
     const ws = repo.get(REPO, "alice");
-    expect(ws?.goalId).toBe("goal-123");
+    expect(ws?.hitchId).toBe("goal-123");
     expect(ws?.objective).toBe("ship the workspace feature");
-    repo.linkGoal(REPO, "alice", null);
-    expect(repo.get(REPO, "alice")?.goalId).toBeNull();
+    repo.linkHitch(REPO, "alice", null);
+    expect(repo.get(REPO, "alice")?.hitchId).toBeNull();
   });
 
   it("removes a workspace row", () => {
@@ -122,7 +122,7 @@ describe("WorkspaceRepository", () => {
     const c2 = repo.recordCheckpoint({
       workspaceId: ws.workspaceId,
       note: "second",
-      goalId: "goal-1",
+      hitchId: "goal-1",
       dirtyCount: 0,
       createdBy: "alice",
       now: "2026-06-07T01:00:00.000Z",
@@ -132,7 +132,7 @@ describe("WorkspaceRepository", () => {
     const list = repo.listCheckpoints(ws.workspaceId);
     expect(list.map((c) => c.note)).toEqual(["second", "first"]);
     expect(repo.latestCheckpoint(ws.workspaceId)?.note).toBe("second");
-    expect(repo.latestCheckpoint(ws.workspaceId)?.goalId).toBe("goal-1");
+    expect(repo.latestCheckpoint(ws.workspaceId)?.hitchId).toBe("goal-1");
     expect(c2.createdBy).toBe("alice");
   });
 

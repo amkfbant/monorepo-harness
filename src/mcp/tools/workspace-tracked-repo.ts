@@ -51,11 +51,11 @@ export interface TrackedRepoResolution {
    * DIFFERENT repo — existsSync alone is not enough).
    */
   candidateGitCwds: string[];
-  /** DB facts for the repo's workspaces (rows + per-goal info + checkpoint ts) */
+  /** DB facts for the repo's workspaces (rows + per-hitch info + checkpoint ts) */
   data: WorkspaceStatusData;
   /** project-scope predicate (undefined when the client is unrestricted) */
-  include?: (record: WorkspaceRecord | null, goalProjectId: string | null) => boolean;
-  /** linked-goal project of a row (for the scope predicate) */
+  include?: (record: WorkspaceRecord | null, hitchProjectId: string | null) => boolean;
+  /** linked-hitch project of a row (for the scope predicate) */
   projectOf: (record: WorkspaceRecord) => string | null;
 }
 
@@ -118,7 +118,7 @@ export function resolveTrackedWorkspaceRepo(
 
   const data = readWorkspaceStatusData(db, tracked.repoPath);
   const projectOf = (r: WorkspaceRecord): string | null =>
-    r.goalId !== null ? (data.goalInfo.get(r.goalId)?.projectId ?? null) : null;
+    r.hitchId !== null ? (data.hitchInfo.get(r.hitchId)?.projectId ?? null) : null;
   const include =
     allowed.length === 0
       ? undefined

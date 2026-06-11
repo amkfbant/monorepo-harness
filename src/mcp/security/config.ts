@@ -176,9 +176,9 @@ export const DEFAULT_MCP_CONFIG: McpConfig = {
     "review.process",
     "cleanup.apply",
     "pr.create",
-    "goal.close",
-    "goal.cancel",
-    "goal.expand_scope",
+    "hitch.close",
+    "hitch.cancel",
+    "hitch.expand_scope",
     "db.repair.apply",
     "db.archive.apply",
     "db.migrate_blobs.apply",
@@ -213,6 +213,29 @@ export function defaultMcpConfigPath(harnessRoot: string): string {
   return join(harnessRoot, ".harness", "mcp.yaml");
 }
 
+/**
+ * Fail-closed guard for the goal→hitch rename (SP-0): a config still listing a
+ * `goal.*` operation is a stale, pre-rename file that would silently allow/deny
+ * the wrong (now nonexistent) operation. Refuse to load it. NOT applied to the
+ * snapshot parser, which re-verifies past `goal.*` confirmation snapshots.
+ */
+export function assertNoRenamedGoalOps(cfg: {
+  allowedOperations?: string[] | undefined;
+  requireConfirmation?: string[] | undefined;
+  deniedOperations?: string[] | undefined;
+}): void {
+  const stale = [
+    ...(cfg.allowedOperations ?? []),
+    ...(cfg.requireConfirmation ?? []),
+    ...(cfg.deniedOperations ?? []),
+  ].filter((op) => op.startsWith("goal."));
+  if (stale.length > 0) {
+    throw new McpConfigError(
+      `MCP config uses renamed operations [${stale.join(", ")}] — "goal.*" was renamed to "hitch.*". Update .harness/mcp.yaml.`,
+    );
+  }
+}
+
 export function loadMcpConfig(opts: LoadMcpConfigOptions): McpConfig {
   if (opts.configPath !== undefined) {
     if (!existsSync(opts.configPath)) {
@@ -232,6 +255,7 @@ function loadMcpConfigFile(path: string): McpConfig | undefined {
   const rawText = readFileSync(path, "utf8");
   const parsedYaml = parseYaml(rawText) as unknown;
   const parsed = rawConfigSchema.parse(parsedYaml);
+  if (parsed.mcp !== undefined) assertNoRenamedGoalOps(parsed.mcp);
   return mergeMcpConfig(DEFAULT_MCP_CONFIG, parsed.mcp);
 }
 
@@ -252,6 +276,7 @@ function loadProjectProfileMcpConfig(harnessRoot: string): McpConfig | undefined
       ...(rawRecord.version !== undefined ? { version: rawRecord.version } : {}),
       mcp: rawRecord.mcp,
     });
+    if (parsed.mcp !== undefined) assertNoRenamedGoalOps(parsed.mcp);
     config = mergeMcpConfig(config ?? DEFAULT_MCP_CONFIG, parsed.mcp);
   }
   return config;

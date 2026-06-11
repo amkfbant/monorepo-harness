@@ -86,17 +86,17 @@ export const MCP_PROMPTS: McpPromptDefinition[] = [
       ),
   },
   {
-    name: "harness.prompt.drive_goal_convergence",
-    title: "Drive goal convergence",
-    description: "Work a goal toward close, defer, or escalation without expanding scope.",
-    arguments: [{ name: "goalId", description: "Goal id", required: true }],
+    name: "harness.prompt.drive_hitch_convergence",
+    title: "Drive hitch convergence",
+    description: "Work a hitch toward close, defer, or escalation without expanding scope.",
+    arguments: [{ name: "hitchId", description: "Hitch id", required: true }],
     buildMessages: (args) =>
       textPrompt(
-        `Drive goal ${String(args.goalId)} toward convergence. Read ` +
-          `harness://goal/${encoded(args.goalId)} first. Then use ` +
-          "`harness.goal.findings`, `harness.goal.record_findings`, " +
-          "`harness.goal.classify_finding`, `harness.goal.mark_finding_fixed`, " +
-          "`harness.goal.defer_finding`, and `harness.goal.check_convergence` " +
+        `Drive hitch ${String(args.hitchId)} toward convergence. Read ` +
+          `harness://hitch/${encoded(args.hitchId)} first. Then use ` +
+          "`harness.hitch.findings`, `harness.hitch.record_findings`, " +
+          "`harness.hitch.classify_finding`, `harness.hitch.mark_finding_fixed`, " +
+          "`harness.hitch.defer_finding`, and `harness.hitch.check_convergence` " +
           "as needed. Fix only in-scope P1 findings, escalate and stop on P0, " +
           "classify unknowns, defer out-of-scope findings, and stop on " +
           "escalate, diverging, budget_exhausted, or needs_classification.",
