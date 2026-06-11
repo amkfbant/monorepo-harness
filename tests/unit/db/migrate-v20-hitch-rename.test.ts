@@ -88,7 +88,7 @@ describe("schema v20 hitch rename", () => {
 
       const result = runMigrations(db);
       expect(result.applied).toContain(20);
-      expect(currentSchemaVersion(db)).toBe(20);
+      expect(currentSchemaVersion(db)).toBe(21);
 
       const tables = tableNames(db);
 
@@ -213,7 +213,7 @@ describe("schema v20 hitch rename", () => {
     try {
       runMigrations(db);
       expect(() => runMigrations(db)).not.toThrow();
-      expect(currentSchemaVersion(db)).toBe(20);
+      expect(currentSchemaVersion(db)).toBe(21);
     } finally {
       db.close();
     }

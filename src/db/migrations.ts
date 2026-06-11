@@ -21,6 +21,7 @@ import {
   MIGRATION_V18_STATEMENTS,
   MIGRATION_V19_STATEMENTS,
   MIGRATION_V20_STATEMENTS,
+  MIGRATION_V21_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -135,6 +136,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 20,
     name: "rename-goal-to-hitch",
     statements: MIGRATION_V20_STATEMENTS,
+  },
+  {
+    version: 21,
+    name: "course-phase-roadmap",
+    statements: MIGRATION_V21_STATEMENTS,
   },
 ];
 
