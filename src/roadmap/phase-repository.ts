@@ -29,6 +29,8 @@ export class PhaseRepository {
     phaseId?: string;
     createdBy: string; createdSource: string; now?: string;
   }): Phase {
+    const course = this.db.prepare("SELECT 1 FROM courses WHERE course_id = ?").get(input.courseId) as { "1": number } | undefined;
+    if (course === undefined) throw new Error(`course ${input.courseId} not found`);
     // integrity: parent must exist AND be in the same course
     if (input.parentPhaseId !== undefined) {
       const parent = this.db.prepare("SELECT course_id FROM phases WHERE phase_id = ?").get(input.parentPhaseId) as { course_id: string } | undefined;

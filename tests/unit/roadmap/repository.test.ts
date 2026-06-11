@@ -34,6 +34,10 @@ describe("Course/Phase repositories (SP-1)", () => {
     expect(() => phases.add({ courseId: c2.courseId, parentPhaseId: p1.phaseId, title: "X", createdBy: "t", createdSource: "cli" })).toThrow(/different course|parent/i);
   });
 
+  it("rejects adding a phase to a non-existent course (no parent) with a clean not-found error", () => {
+    expect(() => phases.add({ courseId: "course-does-not-exist", title: "x", createdBy: "t", createdSource: "t" })).toThrow(/course .* not found/);
+  });
+
   it("links a hitch to a phase and rejects a second link (schema PK + repo guard)", () => {
     const c = courses.create({ title: "C", projectId: "demo", createdBy: "t", createdSource: "cli" });
     const p = phases.add({ courseId: c.courseId, title: "P", createdBy: "t", createdSource: "cli" });
