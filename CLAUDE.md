@@ -37,8 +37,11 @@ pin**（`git describe --tags --exact-match` が成功）、dev は **`main` / fe
 このハーネスを **hitch モード**（`harness hitch` 系で実装/レビュー/修正ループを
 回す）で動かす・実装する際は、以下を**必ず**参照する。
 
-1. **[`GOAL.md`](./GOAL.md)** — 「何を作るか」。大 Phase / サブ Phase の定義と
-   実装順、スコープ確定メモ（含む/含まない）。
+1. **roadmap（DB 正本）** — 「何を作るか」。大 Phase / サブ Phase / 実装順 / スコープは
+   **DB の `course → phase` roadmap**（SP-1/SP-2）が正本。`harness course list` /
+   `harness course status <id>` / `harness course export <id> --md` で読む（仕様は
+   [`docs/specs/roadmap.md`](./docs/specs/roadmap.md)）。旧 `GOAL.md`（markdown
+   roadmap）は廃止済み（git 履歴に残置）。
 2. **[`GOAL_RULES.md`](./GOAL_RULES.md)** — 「どう作るか」。レビューのリトライ
    と続行判断（未解決 P0 ゼロが続行/close の必須条件）、finding の P0〜P3 分類、
    close 条件、テスト粒度、ブランチ/マージ運用、スコープ管理、安全境界、開発規律、
@@ -95,9 +98,10 @@ npm run harness -- <args>   # 開発時の CLI 起動（tsx 経由、HARNESS_ROO
 
 | 場所 | 内容 | いつ読む |
 |------|------|---------|
-| [`GOAL.md`](./GOAL.md) | 実装ロードマップ（大/サブ Phase） | hitch モードの実装着手前 |
+| roadmap（DB 正本: `harness course` / [`docs/specs/roadmap.md`](./docs/specs/roadmap.md)） | 実装ロードマップ（大/サブ Phase）。旧 `GOAL.md` は廃止 | hitch モードの実装着手前 |
 | [`GOAL_RULES.md`](./GOAL_RULES.md) | hitch モード実行ルール | hitch モードの実装中ずっと |
 | [`AGENTS.md`](./AGENTS.md) | hitch convergence 運用ルール | hitch セッション運用時 |
+| [`docs/ops/release-and-upgrade.md`](./docs/ops/release-and-upgrade.md) | リリース（release-please）/ ハーネスのアップデート手順 | 版上げ・ops checkout 更新時 |
 | [`docs/README.md`](./docs/README.md) | docs 全体の index | 迷ったらまず |
 | [`docs/specs/overview.md`](./docs/specs/overview.md) | 何ができて何ができないか | 全体像把握 |
 | [`docs/specs/cli.md`](./docs/specs/cli.md) | 全 CLI subcommand リファレンス | コマンドを使う前 |

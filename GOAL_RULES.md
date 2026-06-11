@@ -1,14 +1,16 @@
 # GOAL_RULES.md — hitch モード実行ルール
 
-> **⚠️ この roadmap 系ファイル（`GOAL.md` / `GOAL_RULES.md`）は SP-1 で計画中の
-> DB ベース roadmap に置き換えられる予定**（historical reference として残置）。
+> **roadmap（何を作るか）は DB の `course → phase`（SP-1/SP-2）が正本**になり、旧
+> markdown roadmap `GOAL.md` は廃止した。本ファイル（どう作るか＝リトライ/レビュー/
+> close 条件/安全境界）は **DB に移さず docs/prompt-context として残す正本**（SP-1 設計）。
 > 「goal モード」は **hitch モード**、`harness goal` は `harness hitch` に改名済み
 > （SP-0、`docs/specs/hitch-convergence.md`）。
 
 このリポジトリを **hitch モード**（`harness hitch` 系）で自律実装させる際の実行
-ルール。`GOAL.md` は **大 Phase**（feature 単位）と、その下の **サブ Phase**
-（1〜数コミット規模の作業単位）に分割される前提とする。本ファイルはその分割を
-どう進め、どこでレビューし、何をもって完了とみなすかを定める。
+ルール。作業は **大 Phase**（feature 単位）と、その下の **サブ Phase**（1〜数コミット
+規模の作業単位）に分割される前提とする（roadmap の正本は DB の course/phase。
+`harness course status` 等で読む）。本ファイルはその分割をどう進め、どこでレビューし、
+何をもって完了とみなすかを定める。
 
 > 本ルールは [`/Users/kn/.claude/CLAUDE.md`](file:///Users/kn/.claude/CLAUDE.md)
 > 配下のグローバル規約（immutability / 小ファイル / Conventional Commits /
@@ -19,8 +21,8 @@
 
 ## 0. 用語
 
-- **大 Phase** — `GOAL.md` のトップレベル項目。1 機能（例: auto-merge、Copilot
-  review 連携）に対応。feature branch 1 本 ＝ 大 Phase 1 つ。
+- **大 Phase** — DB roadmap の course のトップレベル phase。1 機能（例: auto-merge、
+  Copilot review 連携）に対応。feature branch 1 本 ＝ 大 Phase 1 つ。
 - **サブ Phase** — 大 Phase を構成する作業単位。1〜数コミットで完結し、関連
   テストと typecheck が緑になる粒度。
 - **codex レビュー** — 外部 LLM による差分レビュー。コマンドは常に（`-s read-only` ＋
