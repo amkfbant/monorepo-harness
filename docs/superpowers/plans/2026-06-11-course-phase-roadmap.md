@@ -59,7 +59,13 @@ describe("v21 roadmap migration", () => {
     db.prepare("INSERT INTO courses (course_id,title,status,created_at,updated_at) VALUES ('c1','C','active','t','t')").run();
     db.prepare("INSERT INTO phases (phase_id,course_id,title,position,status,created_at,updated_at) VALUES ('p1','c1','P',0,'pending','t','t')").run();
     db.prepare("INSERT INTO phases (phase_id,course_id,title,position,status,created_at,updated_at) VALUES ('p2','c1','P2',1,'pending','t','t')").run();
-    db.prepare("INSERT INTO hitch_sessions (hitch_id,title,status,created_at,updated_at) VALUES ('h1','H','open','t','t')").run();
+    // hitch_sessions has many NOT NULL columns (no defaults) — seed them all.
+    // (mirror tests/unit/db/migrate-v20-hitch-rename.test.ts's full seed shape.)
+    db.prepare(
+      `INSERT INTO hitch_sessions (hitch_id, title, status, scope_json, close_conditions_json, policy_json,
+         max_iterations, max_review_cycles, max_reruns, max_total_new_findings, created_by, created_source, created_at, updated_at)
+       VALUES ('h1','H','open','{}','[]','{}',3,3,2,12,'test','cli','t','t')`,
+    ).run();
     db.prepare("INSERT INTO phase_hitches (hitch_id,phase_id,linked_at) VALUES ('h1','p1','t')").run();
     expect(() =>
       db.prepare("INSERT INTO phase_hitches (hitch_id,phase_id,linked_at) VALUES ('h1','p2','t')").run(),
@@ -69,7 +75,8 @@ describe("v21 roadmap migration", () => {
 
   it("bumps SCHEMA_VERSION to 21 (re-running runMigrations does not throw)", () => {
     const db = new Database(":memory:");
-    runMigrations(db);
+    const r = runMigrations(db);
+    expect(r.version).toBe(21); // confirm head version (adapt to runMigrations' return shape)
     expect(() => runMigrations(db)).not.toThrow();
   });
 });
@@ -121,7 +128,9 @@ export const MIGRATION_V21_STATEMENTS: readonly string[] = [
   `CREATE INDEX phase_hitches_phase_idx ON phase_hitches(phase_id)`,
 ] as const;
 ```
-In `schema.ts`: `export const SCHEMA_VERSION = 21;` and add `"courses","phases","phase_hitches"` to `ALL_TABLE_NAMES`. In `migrations.ts`: import `MIGRATION_V21_STATEMENTS` and add `{ version: 21, name: "course-phase-roadmap", statements: MIGRATION_V21_STATEMENTS }` to `MIGRATIONS`.
+In `schema.ts`: `export const SCHEMA_VERSION = 21;`. `ALL_TABLE_NAMES` is composed by spreading `V*_TABLE_NAMES` arrays — follow the precedent: add `export const V21_TABLE_NAMES = ["courses","phases","phase_hitches"] as const;` and spread it into `ALL_TABLE_NAMES`. In `migrations.ts`: import `MIGRATION_V21_STATEMENTS` and add `{ version: 21, name: "course-phase-roadmap", statements: MIGRATION_V21_STATEMENTS }` to `MIGRATIONS`.
+
+Also update the **existing** `tests/unit/db/migrations.test.ts` whose `applied` assertion hardcodes `[1..20]` → add `21` (this is a legitimate expected-value update for the new migration, NOT test weakening).
 
 - [ ] **Step 4: Run the test → PASS. Typecheck. Run `tests/unit/db` (no regression). Commit.**
 ```bash
@@ -179,7 +188,7 @@ describe("Course/Phase repositories (SP-1)", () => {
   it("links a hitch to a phase and rejects a second link (schema PK + repo guard)", () => {
     const c = courses.create({ title: "C", projectId: "demo", createdBy: "t", createdSource: "cli" });
     const p = phases.add({ courseId: c.courseId, title: "P", createdBy: "t", createdSource: "cli" });
-    conn.prepare("INSERT INTO hitch_sessions (hitch_id,project_id,title,status,created_at,updated_at) VALUES ('h1','demo','H','open','t','t')").run();
+    conn.prepare(`INSERT INTO hitch_sessions (hitch_id,project_id,title,status,scope_json,close_conditions_json,policy_json,max_iterations,max_review_cycles,max_reruns,max_total_new_findings,created_by,created_source,created_at,updated_at) VALUES ('h1','demo','H','open','{}','[]','{}',3,3,2,12,'t','cli','t','t')`).run();
     phases.linkHitch(p.phaseId, "h1");
     expect(phases.hitchIdsFor(p.phaseId)).toEqual(["h1"]);
     const p2 = phases.add({ courseId: c.courseId, title: "P2", createdBy: "t", createdSource: "cli" });
@@ -189,7 +198,7 @@ describe("Course/Phase repositories (SP-1)", () => {
   it("rejects linking a hitch whose project differs from the course's project (no cross-project leak)", () => {
     const c = courses.create({ title: "C", projectId: "demo", createdBy: "t", createdSource: "cli" });
     const p = phases.add({ courseId: c.courseId, title: "P", createdBy: "t", createdSource: "cli" });
-    conn.prepare("INSERT INTO hitch_sessions (hitch_id,project_id,title,status,created_at,updated_at) VALUES ('h2','other','H','open','t','t')").run();
+    conn.prepare(`INSERT INTO hitch_sessions (hitch_id,project_id,title,status,scope_json,close_conditions_json,policy_json,max_iterations,max_review_cycles,max_reruns,max_total_new_findings,created_by,created_source,created_at,updated_at) VALUES ('h2','other','H','open','{}','[]','{}',3,3,2,12,'t','cli','t','t')`).run();
     expect(() => phases.linkHitch(p.phaseId, "h2")).toThrow(/project/i);
   });
 });
@@ -411,7 +420,11 @@ export class PhaseRepository {
       this.db.prepare("INSERT INTO phase_hitches (hitch_id, phase_id, linked_at) VALUES (?, ?, ?)")
         .run(hitchId, phaseId, now ?? new Date().toISOString());
     } catch (e) {
-      throw new Error(`hitch ${hitchId} is already linked to a phase`, { cause: e });
+      // only the PK violation means "already linked"; rethrow anything else.
+      if ((e as { code?: string }).code === "SQLITE_CONSTRAINT_PRIMARYKEY") {
+        throw new Error(`hitch ${hitchId} is already linked to a phase`, { cause: e });
+      }
+      throw e;
     }
   }
 
@@ -461,8 +474,8 @@ describe("rollupCourse (SP-1)", () => {
     const p = phases.add({ courseId: c.courseId, title: "P", createdBy: "t", createdSource: "cli" });
     const h = hitches.createSession({ title: "H", projectId: "demo", scope: {}, closeConditions: [], createdBy: "t", createdSource: "cli" });
     phases.linkHitch(p.phaseId, h.hitchId);
-    // record an open in-scope P1 finding on the hitch (use HitchRepository's finding API; verify its exact shape)
-    hitches.upsertFinding({ hitchId: h.hitchId, severity: "P1", category: "correctness", summary: "bug", scopeStatus: "in_scope" } as never);
+    // record an open in-scope P1 finding (UpsertHitchFindingInput requires `source`)
+    hitches.upsertFinding({ hitchId: h.hitchId, severity: "P1", source: "human", category: "correctness", summary: "bug", scopeStatus: "in_scope" });
     // even if the operator marks the phase "closed", the rollup still reports the open P1
     phases.setStatus(p.phaseId, "closed");
     const rollup = rollupCourse({ db: conn, courseId: c.courseId });
@@ -503,9 +516,11 @@ export interface CourseRollup {
   phaseCountsByStatus: Record<PhaseStatus, number>;
 }
 
-/** Live open in-scope P0/P1 for a hitch — read from hitch_findings, never a snapshot. */
+/** Live open in-scope P0/P1 for a hitch — read from hitch_findings, never a snapshot.
+ * NOTE: listFindings defaults to limit 200; pass an explicit large limit so a
+ * hitch with >200 findings cannot silently hide open P0/P1 (the SP-1 invariant). */
 function openCounts(hitches: HitchRepository, hitchId: string): { p0: number; p1: number } {
-  const open = hitches.listFindings({ hitchId, scopeStatus: "in_scope", lifecycleStatus: "open" });
+  const open = hitches.listFindings({ hitchId, scopeStatus: "in_scope", lifecycleStatus: "open", limit: 100_000 });
   return {
     p0: open.filter((f) => f.severity === "P0").length,
     p1: open.filter((f) => f.severity === "P1").length,
@@ -572,7 +587,7 @@ git add -A && git commit -m "feat: harness course/phase CLI (create/list/status/
 
 **Files:** Create `src/mcp/tools/course-tools.ts`; Modify `src/mcp/registry/tool-registry.ts`; Test `tests/unit/mcp/course-tools.test.ts`.
 
-Mirror `src/mcp/tools/hitch-tools.ts`. Read tools apply `ensureProjectVisible(context.config, course.projectId)` and the list filters by `context.config.allowedProjects` (a null-project course is invisible to a project-restricted client — fail-closed). Mutation tools go through the generic operation wrapper (`runHitchOperation` is generic over `operationType` — reuse it, or factor a `runRoadmapOperation`; verify its signature `{operationType, target, args, metadata, workWithDb}`).
+Mirror `src/mcp/tools/hitch-tools.ts`. Read tools apply `ensureProjectVisible(context.config, course.projectId)` and the list filters by `context.config.allowedProjects` (a null-project course is invisible to a project-restricted client — fail-closed). For mutations: `runHitchOperation` (`hitch-tools.ts:798`) is **module-private** — it cannot be imported as-is. **Extract the generic operation wrapper** (signature `(context, {operationType, target, args, metadata, workWithDb})`, internally `openManagedDb` + `runMigrations` + `runOperation` + `assertMutationBudget`) into a shared module (e.g. `src/mcp/tools/operation-wrapper.ts` or `tool-helpers.ts`) and have BOTH `hitch-tools.ts` and `course-tools.ts` use it. Keep the hitch behaviour identical (it's a pure extraction — run the hitch MCP tests after).
 
 - Read: `harness.course.list`, `harness.course.get`, `harness.course.status`, `harness.phase.list`, `harness.phase.get`.
 - Guarded-mutation (operation strings, deny-by-default allow-list): `course.create`, `phase.add`, `phase.update`, `phase.link_hitch`.
