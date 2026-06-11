@@ -20,7 +20,7 @@
 |------|----------------|
 | `src/onboard/prompts.ts` (new) | `Prompts` interface + real `readline/promises` impl + injectable. IO only. |
 | `src/onboard/mcp-config.ts` (new) | Pure `.harness/mcp.yaml` merge: allow-all-aware `allowedProjects`, starter opt-in (`clients` + `allowedOperations`). The safety core. |
-| `src/onboard/steps.ts` (new) | Pure `OnboardStep` model + state machine (`firstPending`), `OnboardCtx`, the per-step probe/describe/run, and a global-policy write-if-missing helper. Reuses existing project/db/mcp functions. |
+| `src/onboard/steps.ts` (new) | Pure `OnboardStep` model + types (`OnboardCtx`, `StepResult`) + a global-policy write-if-missing helper. (Resume is the loop in `onboard.ts`.) |
 | `src/cli/onboard.ts` (new) | commander command, TTY detection, the run loop, final summary. |
 | `src/cli/run.ts` (modify, ~:233 import, ~:4157 registration) | register the command. |
 | `docs/specs/cli.md`, `docs/specs/mcp.md`, `README.md` (modify) | document `harness onboard`. |
@@ -245,6 +245,20 @@ describe("mergeMcpConfig (#92)", () => {
     expect(report.allowAllPreserved).toBe(true);
   });
 
+  it("treats a KEY-ABSENT allowedProjects as allow-all too (does not narrow)", () => {
+    // no allowedProjects key at all — runtime treats this as allow-all
+    const existing = ["version: 1", "mcp:", "  defaultMode: dry-run", ""].join("\n");
+    const { yaml, report } = mergeMcpConfig(existing, {
+      projectId: "demo",
+      existingProjectIds: ["demo"],
+      starter: null,
+      allowAll: "keep",
+    });
+    const cfg = parseYaml(yaml).mcp;
+    expect(cfg.allowedProjects).toEqual([]); // not narrowed to [demo]
+    expect(report.allowAllPreserved).toBe(true);
+  });
+
   it("when the operator chooses to enumerate, seeds the list from existing project ids + the new one", () => {
     const existing = ["version: 1", "mcp:", "  allowedProjects: []", ""].join("\n");
     const { yaml } = mergeMcpConfig(existing, {
@@ -327,8 +341,11 @@ export function mergeMcpConfig(
     ? (mcp.allowedProjects as string[])
     : [];
   let allowAllPreserved = false;
-  if (existingText !== null && currentProjects.length === 0 && "allowedProjects" in mcp) {
-    // allow-all config: do not silently narrow.
+  // An existing config whose EFFECTIVE allowedProjects is empty is allow-all —
+  // whether the key is present-and-empty OR absent entirely (a missing key also
+  // means allow-all at runtime, src/mcp/security/config.ts:277 + permissions.ts:60).
+  // Do NOT silently narrow it.
+  if (existingText !== null && currentProjects.length === 0) {
     if ((input.allowAll ?? "keep") === "enumerate") {
       mcp.allowedProjects = unique(input.existingProjectIds);
     } else {
@@ -375,7 +392,7 @@ function unique(xs: string[]): string[] {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `HARNESS_SUPPRESS_EXPORT_MODE_WARNING=1 npx vitest run tests/unit/onboard/mcp-config.test.ts`
-Expected: PASS (5 tests).
+Expected: PASS (6 tests).
 
 - [ ] **Step 5: typecheck + commit**
 
@@ -403,36 +420,11 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { firstPending, writeGlobalPolicyIfMissing } from "../../../src/onboard/steps.js";
-import type { OnboardStep, OnboardCtx } from "../../../src/onboard/steps.js";
+import { writeGlobalPolicyIfMissing } from "../../../src/onboard/steps.js";
 
-function step(id: string, status: "done" | "pending" | "blocked"): OnboardStep {
-  return {
-    id,
-    title: id,
-    probe: () => status,
-    describe: () => id,
-    run: async () => ({ ok: true, message: id }),
-  };
-}
-
-const ctx = {} as OnboardCtx;
-
-describe("firstPending (resume model)", () => {
-  it("skips leading done steps and returns the first pending one", () => {
-    const steps = [step("a", "done"), step("b", "done"), step("c", "pending"), step("d", "pending")];
-    expect(firstPending(steps, ctx)?.id).toBe("c");
-  });
-
-  it("returns a blocked step (so the caller can stop with remediation)", () => {
-    const steps = [step("a", "done"), step("b", "blocked"), step("c", "pending")];
-    expect(firstPending(steps, ctx)?.id).toBe("b");
-  });
-
-  it("returns undefined when all steps are done", () => {
-    expect(firstPending([step("a", "done"), step("b", "done")], ctx)).toBeUndefined();
-  });
-});
+// Resume is implemented by runOnboard's loop (per-step probe → skip done / stop
+// on blocked) and covered by the CLI integration test (Task 5). The pure helper
+// tested here is the global-policy write-if-missing.
 
 describe("writeGlobalPolicyIfMissing", () => {
   it("writes policies/global.yaml when absent and skips when present", () => {
@@ -455,7 +447,8 @@ Expected: FAIL — cannot find module `steps.js`.
 
 ```typescript
 // src/onboard/steps.ts
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import { harnessPaths } from "../config/paths.js";
 import type { Prompts } from "./prompts.js";
@@ -489,15 +482,11 @@ export interface OnboardStep {
   run(ctx: OnboardCtx): Promise<StepResult>;
 }
 
-/** First step that is not done — pending OR blocked (caller stops on blocked). */
-export function firstPending(steps: OnboardStep[], ctx: OnboardCtx): OnboardStep | undefined {
-  return steps.find((s) => s.probe(ctx) !== "done");
-}
-
 /** Write policies/global.yaml only when missing (the #78 ENOENT fix); returns whether written. */
 export function writeGlobalPolicyIfMissing(harnessRoot: string, globalPolicy: unknown): boolean {
   const path = harnessPaths(harnessRoot).globalPolicyPath;
   if (existsSync(path)) return false;
+  mkdirSync(dirname(path), { recursive: true }); // policies/ may not exist yet
   writeFileSync(path, stringifyYaml(globalPolicy), "utf8");
   return true;
 }
@@ -506,7 +495,7 @@ export function writeGlobalPolicyIfMissing(harnessRoot: string, globalPolicy: un
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `HARNESS_SUPPRESS_EXPORT_MODE_WARNING=1 npx vitest run tests/unit/onboard/steps.test.ts`
-Expected: PASS (5 tests).
+Expected: PASS (1 test).
 
 - [ ] **Step 5: typecheck + commit**
 
@@ -523,8 +512,8 @@ git commit -m "feat: onboard step model + resume state machine + global-policy h
 The 7 steps reusing existing functions. Each `probe` is deterministic; each `run` reuses an existing module. Integration-tested over a temp `HARNESS_ROOT` + a mini repo + scripted prompts.
 
 **Reused signatures (verified):**
-- `runProjectInit(opts: { harnessRoot, projectId, repoPath?, write, force }): Promise<InitResult>` (`src/project/init.ts`). `InitResult.proposal.result.globalPolicy` is the compiled global policy. `InitResult.written: string[]`.
-- `checkProject(opts: { harnessRoot, projectId, repoPath? }): Promise<ProjectCheckReport>` (`src/project/checker.ts`); `report.status: "ok"|"warn"|"error"`.
+- `runProjectInit(opts: { harnessRoot, projectId, repoPath?, write, force, generatedAt }): Promise<InitResult>` (`src/project/init.ts:49`; **`generatedAt` is required**). `InitResult.proposal.result.globalPolicy` is the compiled global policy. `InitResult.written: string[]`.
+- `checkProject(opts: { harnessRoot, projectId, repoOverride?, generatedAt }): Promise<ProjectCheckReport>` (`src/project/checker.ts:53`; note **`repoOverride`** not `repoPath`, and `generatedAt` required); `report.status: "ok"|"warn"|"error"`.
 - `importProjects(db, projectsDir, counters, opts?)` (`src/db/import/projects.ts`); open the DB with `openManagedDb`/`runMigrations` first (see `src/cli/db.ts` `db import`).
 - `loadMcpConfig({ harnessRoot }): McpConfig` (`src/mcp/security/config.ts`).
 - `isProjectAllowed(config, projectId)` and `modeForClient(config, clientName)`, `decideMcpPermission(config, req)`, `operationNameForTool(toolName)` (`src/mcp/security/permissions.ts`).
@@ -631,12 +620,14 @@ Expected: FAIL — cannot find module `step-impls.js`.
 ```typescript
 // src/onboard/step-impls.ts
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { harnessPaths } from "../config/paths.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { runProjectInit } from "../project/init.js";
 import { checkProject } from "../project/checker.js";
 import { importProjects } from "../db/import/projects.js";
+import { emptyCounters } from "../db/import/common.js";
 import { loadMcpConfig, defaultMcpConfigPath } from "../mcp/security/config.js";
 import { isProjectAllowed, modeForClient, decideMcpPermission } from "../mcp/security/permissions.js";
 import { mergeMcpConfig, type StarterOptIn } from "./mcp-config.js";
@@ -645,10 +636,38 @@ import { writeGlobalPolicyIfMissing, type OnboardStep, type OnboardCtx } from ".
 const STARTER_OPS = ["goal.start", "run.start"] as const;
 
 export function buildOnboardSteps(): OnboardStep[] {
-  return [profileStep(), checkStep(), dbStep(), mcpStep(), serveSmokeStep()];
-  // NOTE: preflight + inspect steps are added in Task 5 (CLI wiring) where the
-  // repoPath/projectId are resolved; the wizard prepends them. Keeping the
-  // write-bearing steps here keeps this module integration-testable in isolation.
+  return [preflightStep(), profileStep(), checkStep(), dbStep(), mcpStep(), serveSmokeStep()];
+}
+
+function preflightStep(): OnboardStep {
+  // Report-only (spec scope step 1): names the repo, probes external tools.
+  // Never blocks except on a missing repo path (HARNESS_ROOT/projectId are
+  // already resolved by the caller). inspect/domain candidates are surfaced by
+  // profileStep's dry-run (it prints the profile proposal), so there is no
+  // separate inspect step.
+  return {
+    id: "preflight",
+    title: "Preflight",
+    probe: (ctx) => (existsSync(ctx.repoPath) ? "pending" : "blocked"),
+    describe: (ctx) => `onboard ${ctx.repoPath} as project "${ctx.projectId}"`,
+    run: async (ctx) => {
+      ctx.log.push(`repo: ${ctx.repoPath}`);
+      ctx.log.push(probeTool("codex", ["--version"]));
+      ctx.log.push(probeTool("gh", ["auth", "status"]));
+      return { ok: true, message: "preflight ok (codex/gh are reported, not required)" };
+    },
+  };
+}
+
+/** Best-effort presence probe; never throws (external auth is guided, not driven). */
+function probeTool(bin: string, args: string[]): string {
+  try {
+    // import at top: import { execFileSync } from "node:child_process";
+    execFileSync(bin, args, { stdio: "ignore" });
+    return `${bin}: present`;
+  } catch {
+    return `${bin}: NOT found — install/authenticate before using the harness`;
+  }
 }
 
 function profileStep(): OnboardStep {
@@ -659,11 +678,13 @@ function profileStep(): OnboardStep {
     describe: (ctx) => `inspect ${ctx.repoPath} and write projects/${ctx.projectId}.yaml + policies/repos/<repo>.yaml`,
     run: async (ctx) => {
       // dry-run first: show the proposal, confirm, then write.
-      const dry = await runProjectInit({ harnessRoot: ctx.harnessRoot, projectId: ctx.projectId, repoPath: ctx.repoPath, write: false, force: false });
+      // NOTE: `generatedAt` is REQUIRED by InitOptions (src/project/init.ts:50).
+      const generatedAt = new Date().toISOString();
+      const dry = await runProjectInit({ harnessRoot: ctx.harnessRoot, projectId: ctx.projectId, repoPath: ctx.repoPath, write: false, force: false, generatedAt });
       ctx.log.push(dry.profileYaml);
       const ok = await ctx.prompts.confirm(`Write profile + policy for "${ctx.projectId}"?`);
       if (!ok) return { ok: false, message: "declined", remediation: "re-run when ready" };
-      const res = await runProjectInit({ harnessRoot: ctx.harnessRoot, projectId: ctx.projectId, repoPath: ctx.repoPath, write: true, force: false });
+      const res = await runProjectInit({ harnessRoot: ctx.harnessRoot, projectId: ctx.projectId, repoPath: ctx.repoPath, write: true, force: false, generatedAt });
       writeGlobalPolicyIfMissing(ctx.harnessRoot, res.proposal.result.globalPolicy);
       return { ok: true, message: `wrote ${res.written.length} file(s)` };
     },
@@ -678,7 +699,8 @@ function checkStep(): OnboardStep {
     probe: (ctx) => existsSync(harnessPaths(ctx.harnessRoot).projectProfilePath(ctx.projectId)) ? "pending" : "blocked",
     describe: () => "run project check (ok/warn/error)",
     run: async (ctx) => {
-      const report = await checkProject({ harnessRoot: ctx.harnessRoot, projectId: ctx.projectId, repoPath: ctx.repoPath });
+      // CheckOptions = { harnessRoot, projectId, repoOverride?, generatedAt } (checker.ts:53)
+      const report = await checkProject({ harnessRoot: ctx.harnessRoot, projectId: ctx.projectId, repoOverride: ctx.repoPath, generatedAt: new Date().toISOString() });
       ctx.log.push(`check: ${report.status}`);
       if (report.status === "error") {
         return { ok: false, message: "check failed", remediation: "fix the profile (see project check output) and re-run" };
@@ -701,14 +723,15 @@ function dbStep(): OnboardStep {
         return row !== undefined ? "done" : "pending";
       } catch { return "pending"; } finally { h.close(); }
     },
-    describe: () => "db import --from-files (runs migrations) + check-consistency",
+    describe: () => "register the project DB-canonically (db import; runs migrations)",
     run: async (ctx) => {
       const paths = harnessPaths(ctx.harnessRoot);
       const h = openManagedDb({ dbPath: paths.dbPath });
       try {
         runMigrations(h.db);
-        const counters = { inserted: 0, updated: 0, skipped: 0, errors: 0 } as Parameters<typeof importProjects>[2];
-        importProjects(h.db, paths.projectsDir, counters);
+        // ImportCounters has named domain counters — use the exported factory
+        // (src/db/import/common.ts:34 `emptyCounters()`), NOT a hand-built literal.
+        importProjects(h.db, paths.projectsDir, emptyCounters());
       } finally { h.close(); }
       return { ok: true, message: "project imported" };
     },
@@ -785,7 +808,7 @@ function listProjectIds(ctx: OnboardCtx): string[] {
 - [ ] **Step 4: Run the integration test (iterate until green)**
 
 Run: `HARNESS_SUPPRESS_EXPORT_MODE_WARNING=1 npx vitest run tests/integration/onboard-steps.test.ts`
-Expected: PASS (2 tests). Fix any signature mismatches surfaced by typecheck/test (see implementer note).
+Expected: PASS (3 tests). Fix any signature mismatches surfaced by typecheck/test (see implementer note).
 
 - [ ] **Step 5: typecheck + commit**
 
@@ -863,7 +886,7 @@ Expected: FAIL — cannot find module `onboard.js`.
 // src/cli/onboard.ts
 import type { Command } from "commander";
 import { buildOnboardSteps } from "../onboard/step-impls.js";
-import { firstPending, type OnboardCtx, type OnboardStep } from "../onboard/steps.js";
+import type { OnboardCtx } from "../onboard/steps.js";
 import { readlinePrompts, type Prompts } from "../onboard/prompts.js";
 
 export interface RunOnboardOptions {
@@ -995,7 +1018,8 @@ git commit -m "docs: document 'harness onboard' wizard (#92)"
 ## Notes for the implementer
 
 - **Signature verification first.** Before writing each step's `run`, open the reused module and confirm the exact export name/shape (the spec's reuse table cites them, but verify `InitResult.proposal.result.globalPolicy`, `ImportCounters` field names, `ProjectCheckReport.status`). Fix imports to match; do not invent fields.
-- **Preflight + inspect steps** (codex/gh probe; domain-candidate display) are report-only and live in the CLI wiring (Task 5) or as two extra report-only steps prepended in `buildOnboardSteps`; they must never block except on a missing `HARNESS_ROOT`/repo. If you add them, give them `probe → "pending"` and a `run` that only logs. Keep them out of the write path so Task 4's integration tests stay focused.
+- **Preflight / inspect:** the report-only `preflightStep` (codex/gh probe, repo naming) is implemented in Task 4 as the first step; inspect/domain candidates surface via `profileStep`'s dry-run (the printed profile proposal), so there is no separate inspect step. These never block except on a missing repo path.
 - **No schema change.** Onboard only writes files and reads/imports via existing DB code. Do not add tables/migrations.
+- **Profile-embedded MCP config (P2-e).** When `.harness/mcp.yaml` is absent, `loadMcpConfig` falls back to a `projects/*.yaml` `mcp:` section. Writing a new `.harness/mcp.yaml` shadows it. In `mcpStep`, if `existing === null` but `loadMcpConfig` returns a non-default config (i.e. it came from a profile), `ctx.log.push` a warning that the new file will take precedence (do not silently drop profile MCP settings).
 - **Safety invariants to keep green:** mutations deny-all unless opt-in writes BOTH a guarded-mutation client and ops; allow-all `allowedProjects` never silently narrowed; non-TTY fails closed; writes are confirm-gated; existing `.harness/mcp.yaml` fields preserved on merge.
 ```
