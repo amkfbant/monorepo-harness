@@ -231,6 +231,7 @@ import {
 import { registerProjectCommands } from "./project.js";
 import { registerPolicyCommands } from "./policy.js";
 import { registerDbCommands } from "./db.js";
+import { registerOnboardCommands } from "./onboard.js";
 import { registerGoalCommands } from "./goal.js";
 import { registerMcpCommands } from "../mcp/cli.js";
 import {
@@ -4155,6 +4156,7 @@ workspaceCmd
 registerProjectCommands(program);
 registerPolicyCommands(program);
 registerDbCommands(program);
+registerOnboardCommands(program);
 registerGoalCommands(program, { getHarnessRoot });
 registerMcpCommands(program, { getHarnessRoot });
 
