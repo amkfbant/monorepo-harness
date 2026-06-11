@@ -212,6 +212,68 @@ describe("MCP course-tools mutations", () => {
     expect(result.status).toBe("error");
     expect(result.summary).toMatch(/project/i);
   });
+
+  // P1 (codex App): a project-restricted client must not be able to probe or
+  // audit-log out-of-scope source hitches via phase.link_hitch.
+  it("phase.link_hitch hides out-of-scope source hitches from a project-restricted client (no oracle, no audit leak)", async () => {
+    const root = freshRoot();
+    let phaseId = "";
+    const forbiddenHitchId = "hitch-in-other-project";
+    withDb(root, (db) => {
+      const courseRepo = new CourseRepository(db);
+      const course = courseRepo.create({
+        title: "Demo Course",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      const phaseRepo = new PhaseRepository(db);
+      phaseId = phaseRepo.add({
+        courseId: course.courseId,
+        title: "Phase 1",
+        createdBy: "test",
+        createdSource: "test",
+      }).phaseId;
+      // A hitch that belongs to a DIFFERENT project the client cannot see.
+      new HitchRepository(db).createSession({
+        hitchId: forbiddenHitchId,
+        title: "Other project hitch",
+        projectId: "other",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+    });
+
+    // Client scoped to "demo" only; phase is in demo so the destination gate passes.
+    const s = server(root, mutationConfig(["phase.link_hitch"]));
+
+    // Forbidden (exists, other project) and unknown hitch must be INDISTINGUISHABLE.
+    const forbidden = await callTool(s, "harness.phase.link_hitch", {
+      phaseId,
+      hitchId: forbiddenHitchId,
+      idempotencyKey: "probe-forbidden",
+    });
+    const unknown = await callTool(s, "harness.phase.link_hitch", {
+      phaseId,
+      hitchId: "hitch-does-not-exist",
+      idempotencyKey: "probe-unknown",
+    });
+
+    expect(forbidden.status).toBe("permission_denied");
+    expect(unknown.status).toBe("permission_denied");
+    // Same shape — no existence oracle.
+    expect(forbidden.summary).toBe(unknown.summary);
+
+    // The out-of-scope hitchId must NOT be written into the operation audit log.
+    withDb(root, (db) => {
+      const leaked = db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM operations WHERE input_json LIKE ? OR target_id = ?",
+        )
+        .get(`%${forbiddenHitchId}%`, forbiddenHitchId) as { n: number };
+      expect(leaked.n).toBe(0);
+    });
+  });
 });
 
 describe("MCP course-tools harness.course.status", () => {

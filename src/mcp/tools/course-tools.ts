@@ -399,6 +399,32 @@ export async function phaseLinkHitchTool(
   args: PhaseLinkHitchArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
+  // A project-restricted client authorizes on the DESTINATION phase (registry-layer
+  // resolvePhaseProjectId gate), but the SOURCE hitch is otherwise unchecked. Without
+  // this pre-check a client scoped to project A could submit arbitrary hitch IDs from
+  // other projects and (a) distinguish "not found" from "different project" via the
+  // business-logic error (an existence oracle) and (b) get the out-of-scope hitchId
+  // written into the failed-operation audit input/metadata. Resolve the hitch's project
+  // and gate it BEFORE entering runMcpMutationOperation: an unknown hitch maps to a
+  // sentinel so not-found and forbidden return the SAME permission_denied shape for
+  // restricted clients, and nothing about the hitch is audit-logged. Unrestricted
+  // (operator) clients pass the gate and still get the descriptive cross-project /
+  // not-found errors from linkHitch.
+  const hitchVisibility = withReadonlyDb(context, ({ db }) => {
+    const row = db
+      .prepare("SELECT project_id FROM hitch_sessions WHERE hitch_id = ?")
+      .get(args.hitchId) as { project_id: string | null } | undefined;
+    const hitchProject =
+      row?.project_id ??
+      (context.config.allowedProjects.length > 0
+        ? "__mcp_unresolved_hitch_project__"
+        : null);
+    return ensureProjectVisible(context.config, hitchProject);
+  });
+  // withReadonlyDb returns a tool result directly when the DB is missing;
+  // ensureProjectVisible returns null (ok) or a permission_denied result.
+  if (hitchVisibility !== null) return hitchVisibility as HarnessMcpToolResult;
+
   return runMcpMutationOperation(context, {
     operationType: "phase.link_hitch",
     target: { type: "phase", id: args.phaseId },
