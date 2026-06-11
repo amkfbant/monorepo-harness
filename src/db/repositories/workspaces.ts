@@ -29,7 +29,7 @@ function rowToRecord(r: Record<string, unknown>): WorkspaceRecord {
     repoPath: r.repo_path as string,
     branch: r.branch as string,
     worktreePath: r.worktree_path as string,
-    goalId: (r.goal_id as string | null) ?? null,
+    goalId: (r.hitch_id as string | null) ?? null,
     objective: (r.objective as string | null) ?? null,
     status: r.status as "active" | "archived",
     createdAt: r.created_at as string,
@@ -74,7 +74,7 @@ function rowToCheckpoint(r: Record<string, unknown>): WorkspaceCheckpointRecord 
     note: (r.note as string | null) ?? null,
     headSha: (r.head_sha as string | null) ?? null,
     dirtyCount: r.dirty_count as number,
-    goalId: (r.goal_id as string | null) ?? null,
+    goalId: (r.hitch_id as string | null) ?? null,
     createdAt: r.created_at as string,
     createdBy: r.created_by as string,
   };
@@ -199,7 +199,7 @@ export class WorkspaceRepository {
     const ts = now ?? new Date().toISOString();
     this.db
       .prepare(
-        `UPDATE workspaces SET goal_id = ?, updated_at = ?, last_active_at = ?
+        `UPDATE workspaces SET hitch_id = ?, updated_at = ?, last_active_at = ?
            WHERE repo_path = ? AND agent = ?`,
       )
       .run(goalId, ts, ts, repoPath, agent);
@@ -229,7 +229,7 @@ export class WorkspaceRepository {
       .prepare(
         `INSERT INTO workspace_checkpoints (
            checkpoint_id, workspace_id, note, head_sha, dirty_count,
-           goal_id, created_at, created_by
+           hitch_id, created_at, created_by
          )
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
