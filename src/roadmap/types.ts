@@ -1,6 +1,9 @@
 export type CourseStatus = "active" | "paused" | "closed";
 export type PhaseStatus = "pending" | "in_progress" | "closed" | "blocked";
 
+export const COURSE_STATUSES = ["active", "paused", "closed"] as const;
+export const PHASE_STATUSES = ["pending", "in_progress", "closed", "blocked"] as const;
+
 export interface Course {
   courseId: string;
   projectId: string | null;

@@ -153,6 +153,33 @@ describe("course/phase CLI (SP-1)", () => {
     expect(mdResult.out).toMatch(/^#+ /m);
   });
 
+  it("course show <missing> exits 1, not 2", () => {
+    const { root } = setup();
+    const result = runCli(root, ["course", "show", "course-does-not-exist"]);
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/harness error:.*not found/i);
+  });
+
+  it("course list --status bogus exits 1 with clear error, not empty/exit 0", () => {
+    const { root } = setup();
+    const result = runCli(root, ["course", "list", "--status", "bogus"]);
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/harness error:.*--status.*active\|paused\|closed/i);
+  });
+
+  it("phase update --status bogus exits 1 with clear error", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Status Test", "--json"]),
+    );
+    const phase = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "Ph", "--json"]),
+    );
+    const result = runCli(root, ["phase", "update", phase.phaseId, "--status", "close"]);
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/harness error:.*--status.*pending\|in_progress\|closed\|blocked/i);
+  });
+
   it("course list and course close work", () => {
     const { root } = setup();
 
