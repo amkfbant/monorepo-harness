@@ -288,6 +288,133 @@ describe("CourseOrchestrator", () => {
     }
   });
 
+  it("keeps heartbeating the course lease during a long hitch drive", async () => {
+    const previousLeaseMs = process.env.HARNESS_LOCK_LEASE_MS;
+    const previousHeartbeatMs = process.env.HARNESS_LOCK_HEARTBEAT_MS;
+    process.env.HARNESS_LOCK_LEASE_MS = "40";
+    process.env.HARNESS_LOCK_HEARTBEAT_MS = "10";
+    try {
+      const courseId = newCourse(db, "course-long-drive-heartbeat");
+      const domainKey = `course:${courseId}`;
+      const phases = new PhaseRepository(db);
+      const phase = phases.add({ courseId, phaseId: "phase-long-drive-heartbeat", title: "Long", position: 1, createdBy: "test", createdSource: "cli" });
+      seedDrivableHitch(db, "h-long-drive-heartbeat");
+      phases.linkHitch(phase.phaseId, "h-long-drive-heartbeat");
+      const calls: string[] = [];
+      let heartbeatCalls = 0;
+      let heartbeatCallsAtDriveStart = 0;
+
+      domainLockHook.wrapAcquire = (handle, opts) => {
+        if (opts.domainKey !== domainKey) return handle;
+        return {
+          ...handle,
+          heartbeat(now?: Date): void {
+            heartbeatCalls += 1;
+            handle.heartbeat(now);
+          },
+        };
+      };
+
+      await makeOrchestrator(db, {}, calls, [], async () => {
+        heartbeatCallsAtDriveStart = heartbeatCalls;
+        await delay(65);
+        expect(heartbeatCalls).toBeGreaterThan(heartbeatCallsAtDriveStart);
+        expect(() =>
+          acquireDomainLock(db, {
+            domainKey,
+            repoId: "repo-demo",
+            domain: "course-orchestrate",
+            runId: "contender-during-drive",
+            pid: process.pid,
+            hostname: hostname(),
+          }),
+        ).toThrow(DomainLockBusyError);
+      }).run({
+        courseId,
+        maxDrivenHitches: 1,
+        maxStepsPerHitch: 50,
+        createdBy: "test",
+      });
+
+      expect(calls).toEqual(["h-long-drive-heartbeat"]);
+      expect(heartbeatCallsAtDriveStart).toBeGreaterThanOrEqual(1);
+      expect(heartbeatCalls).toBeGreaterThan(2);
+    } finally {
+      if (previousLeaseMs === undefined) delete process.env.HARNESS_LOCK_LEASE_MS;
+      else process.env.HARNESS_LOCK_LEASE_MS = previousLeaseMs;
+      if (previousHeartbeatMs === undefined) delete process.env.HARNESS_LOCK_HEARTBEAT_MS;
+      else process.env.HARNESS_LOCK_HEARTBEAT_MS = previousHeartbeatMs;
+    }
+  });
+
+  it("aborts fail-closed when a drive-time course lease heartbeat reports LeaseLostError", async () => {
+    const previousLeaseMs = process.env.HARNESS_LOCK_LEASE_MS;
+    const previousHeartbeatMs = process.env.HARNESS_LOCK_HEARTBEAT_MS;
+    process.env.HARNESS_LOCK_LEASE_MS = "100";
+    process.env.HARNESS_LOCK_HEARTBEAT_MS = "10";
+    try {
+      const courseId = newCourse(db, "course-drive-time-lease-lost");
+      const domainKey = `course:${courseId}`;
+      const phases = new PhaseRepository(db);
+      const phase = phases.add({ courseId, phaseId: "phase-drive-time-lease-lost", title: "Lost", position: 1, createdBy: "test", createdSource: "cli" });
+      const nextPhase = phases.add({ courseId, phaseId: "phase-drive-time-after-lost", title: "After lost", position: 2, createdBy: "test", createdSource: "cli" });
+      seedDrivableHitch(db, "h-drive-time-lease-lost");
+      seedDrivableHitch(db, "h-drive-time-after-lost");
+      phases.linkHitch(phase.phaseId, "h-drive-time-lease-lost");
+      phases.linkHitch(nextPhase.phaseId, "h-drive-time-after-lost");
+      const calls: string[] = [];
+      let heartbeatCalls = 0;
+      let firstDriveCompleted = false;
+      let afterLeaseLostDriveCount = 0;
+
+      domainLockHook.wrapAcquire = (handle, opts) => {
+        if (opts.domainKey !== domainKey) return handle;
+        return {
+          ...handle,
+          heartbeat(now?: Date): void {
+            heartbeatCalls += 1;
+            if (heartbeatCalls === 2) {
+              throw new LeaseLostError(opts.domainKey, handle.lockId);
+            }
+            handle.heartbeat(now);
+          },
+        };
+      };
+
+      await expect(
+        makeOrchestrator(db, {}, calls, [], async (hitchId) => {
+          if (hitchId === "h-drive-time-lease-lost") {
+            await delay(80);
+            firstDriveCompleted = true;
+            return;
+          }
+          afterLeaseLostDriveCount += 1;
+        }).run({
+          courseId,
+          maxDrivenHitches: 2,
+          maxStepsPerHitch: 50,
+          createdBy: "test",
+        }),
+      ).rejects.toBeInstanceOf(LeaseLostError);
+
+      expect(calls).toEqual(["h-drive-time-lease-lost"]);
+      expect(firstDriveCompleted).toBe(true);
+      expect(afterLeaseLostDriveCount).toBe(0);
+      expect(heartbeatCalls).toBe(2);
+      expect(findActiveDomainLock(db, domainKey)).toBeNull();
+      expect(latestReleaseReason(db, courseId)).toBe("aborted");
+      await delay(90);
+      expect(calls).toEqual(["h-drive-time-lease-lost"]);
+      expect(afterLeaseLostDriveCount).toBe(0);
+      expect(heartbeatCalls).toBe(2);
+    } finally {
+      if (previousLeaseMs === undefined) delete process.env.HARNESS_LOCK_LEASE_MS;
+      else process.env.HARNESS_LOCK_LEASE_MS = previousLeaseMs;
+      if (previousHeartbeatMs === undefined) delete process.env.HARNESS_LOCK_HEARTBEAT_MS;
+      else process.env.HARNESS_LOCK_HEARTBEAT_MS = previousHeartbeatMs;
+    }
+  });
+
   it("aborts fail-closed when the course lease heartbeat reports LeaseLostError", async () => {
     const courseId = newCourse(db, "course-lease-lost");
     const domainKey = `course:${courseId}`;

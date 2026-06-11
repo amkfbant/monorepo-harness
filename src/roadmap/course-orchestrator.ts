@@ -15,6 +15,8 @@ import { HitchRepository } from "../hitch/repository.js";
 import {
   acquireDomainLock,
   DomainLockBusyError,
+  heartbeatIntervalMs,
+  leaseDurationMs,
   type DomainLockHandle,
 } from "../workspace/db-domain-lock.js";
 import { CourseRepository } from "./course-repository.js";
@@ -167,18 +169,20 @@ export class CourseOrchestrator {
       transitionPhaseStatus: true,
       beforeDriveHitch: () => lease.heartbeat(),
       driveHitch: async ({ hitchId, maxStepsPerHitch, createdBy }) => {
-        const runners = await this.deps.makeRunners(hitchId);
-        const hitchResult = await this.deps.makeHitchOrchestrator(hitchId).run({
-          hitchId,
-          runners,
-          maxSteps: maxStepsPerHitch,
-          stopAtCloseReady: true,
-          createdBy,
+        return await this.runWithLeaseHeartbeat(lease, async () => {
+          const runners = await this.deps.makeRunners(hitchId);
+          const hitchResult = await this.deps.makeHitchOrchestrator(hitchId).run({
+            hitchId,
+            runners,
+            maxSteps: maxStepsPerHitch,
+            stopAtCloseReady: true,
+            createdBy,
+          });
+          return {
+            ...toDrivenHitch(hitchResult),
+            finalDecision: hitchResult.finalDecision,
+          };
         });
-        return {
-          ...toDrivenHitch(hitchResult),
-          finalDecision: hitchResult.finalDecision,
-        };
       },
     });
     return this.finalize(
@@ -187,6 +191,51 @@ export class CourseOrchestrator {
       result.phaseOutcomes,
       result.drivenHitches,
     );
+  }
+
+  private async runWithLeaseHeartbeat<T>(
+    lease: DomainLockHandle,
+    drive: () => Promise<T>,
+  ): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    let leaseLost = false;
+    let leaseLostError: unknown;
+
+    const stopTimer = (): void => {
+      if (timer === undefined) return;
+      clearInterval(timer);
+      timer = undefined;
+    };
+
+    timer = setInterval(() => {
+      try {
+        lease.heartbeat();
+      } catch (e) {
+        leaseLost = true;
+        leaseLostError = e;
+        stopTimer();
+      }
+    }, courseLeaseHeartbeatIntervalMs());
+    timer.unref?.();
+
+    let driveResult!: T;
+    let driveRejected = false;
+    let driveError: unknown;
+    try {
+      driveResult = await drive();
+    } catch (e) {
+      driveRejected = true;
+      driveError = e;
+    } finally {
+      stopTimer();
+    }
+
+    // Do not race away from an in-flight hitch drive on course-lease loss.
+    // The hitch/run layer's domain lock and heartbeat still prevent same-domain
+    // concurrent execution; force-aborting Codex via AbortSignal is future work.
+    if (leaseLost) throw leaseLostError;
+    if (driveRejected) throw driveError;
+    return driveResult;
   }
 
   private async walkCourse(
@@ -475,6 +524,13 @@ export class CourseOrchestrator {
       ),
     };
   }
+}
+
+function courseLeaseHeartbeatIntervalMs(): number {
+  return Math.max(
+    1,
+    Math.min(heartbeatIntervalMs(), Math.floor(leaseDurationMs() / 2)),
+  );
 }
 
 function normalizeRunInput(
