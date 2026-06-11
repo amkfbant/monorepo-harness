@@ -398,6 +398,96 @@ describe("MCP course-tools single-read project gating", () => {
 });
 
 // ---------------------------------------------------------------------------
+// P1 idempotency regression: course.create / phase.add replay must not duplicate
+// ---------------------------------------------------------------------------
+
+describe("MCP course-tools create/add idempotency replay (P1)", () => {
+  it("course.create called twice with the same idempotencyKey creates exactly ONE course", async () => {
+    const root = freshRoot();
+    const s = server(root, mutationConfig(["course.create"]));
+
+    const idempotencyKey = "course-create-replay-test-01";
+    const result1 = await callTool(s, "harness.course.create", {
+      title: "Idempotent Course",
+      projectId: "demo",
+      idempotencyKey,
+    });
+    expect(result1.status).toBe("operation_started");
+    expect(result1.data.replayed).toBe(false);
+    const courseId1 = result1.data.result.courseId as string;
+
+    // Second call with the same idempotencyKey — must be treated as a replay
+    const result2 = await callTool(s, "harness.course.create", {
+      title: "Idempotent Course",
+      projectId: "demo",
+      idempotencyKey,
+    });
+    expect(result2.status).toBe("operation_started");
+    expect(result2.data.replayed).toBe(true);
+
+    // Both calls must return the SAME courseId (not a new random one)
+    const courseId2 = result2.data.result.courseId as string;
+    expect(courseId2).toBe(courseId1);
+
+    // Verify exactly one course row exists in the DB
+    withDb(root, (db) => {
+      const repo = new CourseRepository(db);
+      const all = repo.list({ projectIds: ["demo"] });
+      const matching = all.filter((c) => c.title === "Idempotent Course");
+      expect(matching).toHaveLength(1);
+    });
+  });
+
+  it("phase.add called twice with the same idempotencyKey creates exactly ONE phase", async () => {
+    const root = freshRoot();
+    let courseId = "";
+    withDb(root, (db) => {
+      const repo = new CourseRepository(db);
+      const course = repo.create({
+        title: "Replay Test Course",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      courseId = course.courseId;
+    });
+
+    const s = server(root, mutationConfig(["phase.add"]));
+    const idempotencyKey = "phase-add-replay-test-01";
+
+    const result1 = await callTool(s, "harness.phase.add", {
+      courseId,
+      title: "Idempotent Phase",
+      idempotencyKey,
+    });
+    expect(result1.status).toBe("operation_started");
+    expect(result1.data.replayed).toBe(false);
+    const phaseId1 = result1.data.result.phaseId as string;
+
+    // Second call with the same idempotencyKey — must be treated as a replay
+    const result2 = await callTool(s, "harness.phase.add", {
+      courseId,
+      title: "Idempotent Phase",
+      idempotencyKey,
+    });
+    expect(result2.status).toBe("operation_started");
+    expect(result2.data.replayed).toBe(true);
+
+    // Both calls must return the SAME phaseId
+    const phaseId2 = result2.data.result.phaseId as string;
+    expect(phaseId2).toBe(phaseId1);
+
+    // Verify exactly one phase row exists in the DB
+    withDb(root, (db) => {
+      const repo = new PhaseRepository(db);
+      const phases = repo.listForCourse(courseId);
+      const matching = phases.filter((p) => p.title === "Idempotent Phase");
+      expect(matching).toHaveLength(1);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Deny-by-default: phase mutations not allowlisted are rejected
 // ---------------------------------------------------------------------------
 

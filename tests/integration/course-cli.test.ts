@@ -160,6 +160,13 @@ describe("course/phase CLI (SP-1)", () => {
     expect(result.out).toMatch(/harness error:.*not found/i);
   });
 
+  it("course status <missing> exits 1 with not-found error (Fable P2-1)", () => {
+    const { root } = setup();
+    const result = runCli(root, ["course", "status", "course-does-not-exist"]);
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/harness error:.*not found/i);
+  });
+
   it("course list --status bogus exits 1 with clear error, not empty/exit 0", () => {
     const { root } = setup();
     const result = runCli(root, ["course", "list", "--status", "bogus"]);

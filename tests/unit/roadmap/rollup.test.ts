@@ -83,6 +83,65 @@ describe("rollupCourse (SP-1)", () => {
     expect(rollup.phases[0]!.latestDecision).toBe("needs_fix");
   });
 
+  it("counts reopened in-scope P1 findings (P0 fix: reopened must not be silently dropped)", () => {
+    // Regression for SP-1 codex P0: rollup previously only counted lifecycleStatus='open',
+    // so a reopened in-scope P1 could let a declared-closed phase hide a live blocker.
+    const courses = new CourseRepository(conn);
+    const phases = new PhaseRepository(conn);
+    const hitches = new HitchRepository(conn);
+    const c = courses.create({
+      title: "C-reopen",
+      projectId: "demo",
+      createdBy: "t",
+      createdSource: "cli",
+    });
+    const p = phases.add({
+      courseId: c.courseId,
+      title: "P-reopen",
+      createdBy: "t",
+      createdSource: "cli",
+    });
+    const h = hitches.createSession({
+      title: "H-reopen",
+      projectId: "demo",
+      scope: {},
+      closeConditions: [],
+      createdBy: "t",
+      createdSource: "cli",
+    });
+    phases.linkHitch(p.phaseId, h.hitchId);
+    // Insert finding as 'open', then mark it 'fixed', then upsert again to transition to 'reopened'.
+    // upsertFinding transitions fixed → reopened when the same stable_key is seen again.
+    hitches.upsertFinding({
+      hitchId: h.hitchId,
+      severity: "P1",
+      source: "human",
+      category: "correctness",
+      summary: "reopenable bug",
+      scopeStatus: "in_scope",
+    });
+    // Mark the finding fixed so we can reopen it
+    const findings = hitches.listFindings({ hitchId: h.hitchId, limit: 10 });
+    expect(findings.length).toBeGreaterThanOrEqual(1);
+    hitches.markFindingFixed({ findingId: findings[0]!.findingId });
+    // Upsert the same finding again — this transitions lifecycle_status from 'fixed' → 'reopened'
+    hitches.upsertFinding({
+      hitchId: h.hitchId,
+      severity: "P1",
+      source: "human",
+      category: "correctness",
+      summary: "reopenable bug",
+      scopeStatus: "in_scope",
+    });
+    // Declare the phase closed — rollup must still surface the reopened P1
+    phases.setStatus(p.phaseId, "closed");
+    const rollup = rollupCourse({ db: conn, courseId: c.courseId });
+    expect(rollup.openP1).toBeGreaterThanOrEqual(1);
+    const node = rollup.phases[0]!;
+    expect(node.declaredStatus).toBe("closed");
+    expect(node.derivedOpenP1).toBeGreaterThanOrEqual(1);
+  });
+
   it("throws on cycle/orphan — fail-closed integrity guard", () => {
     const courses = new CourseRepository(conn);
     const c = courses.create({ title: "C3", createdBy: "t", createdSource: "cli" });

@@ -188,7 +188,10 @@ export function registerCourseCommands(
     .option("--json", "emit JSON", false)
     .action((id: string, raw: Record<string, unknown>) => {
       withCourseErrorExit(() => {
-        const rollup = withCourseDb(opts, (db) => rollupCourse({ db, courseId: id }));
+        const rollup = withCourseDb(opts, (db) => {
+          new CourseRepository(db).require(id);
+          return rollupCourse({ db, courseId: id });
+        });
         if (raw.json === true) {
           process.stdout.write(`${JSON.stringify(rollup, null, 2)}\n`);
         } else {
@@ -379,7 +382,7 @@ export function registerCourseCommands(
               `UPDATE phases SET
                  scope_json = COALESCE(?, scope_json),
                  close_conditions_json = COALESCE(?, close_conditions_json),
-                 updated_at = datetime('now')
+                 updated_at = ?
                WHERE phase_id = ?`,
             ).run(
               raw.scopeFile !== undefined
@@ -388,6 +391,7 @@ export function registerCourseCommands(
               raw.closeFile !== undefined
                 ? JSON.stringify(readStructuredFile(String(raw.closeFile)))
                 : null,
+              new Date().toISOString(),
               id,
             );
           }

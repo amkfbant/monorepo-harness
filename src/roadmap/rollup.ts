@@ -22,23 +22,30 @@ export interface CourseRollup {
   phaseCountsByStatus: Record<PhaseStatus, number>;
 }
 
-/** Live open in-scope P0/P1 for a hitch — read from hitch_findings, never a snapshot.
- * NOTE: listFindings defaults to limit 200; pass an explicit large limit so a
- * hitch with >200 findings cannot silently hide open P0/P1 (the SP-1 invariant). */
+/** Live open in-scope P0/P1 for a hitch — SQL aggregate over hitch_findings.
+ * Counts both `open` and `reopened` lifecycle statuses (both are active blockers
+ * per the SP-1 invariant). Uses a direct COUNT aggregate — no row-fetch LIMIT. */
 function openCounts(
-  hitches: HitchRepository,
+  db: Database.Database,
   hitchId: string,
 ): { p0: number; p1: number } {
-  const open = hitches.listFindings({
-    hitchId,
-    scopeStatus: "in_scope",
-    lifecycleStatus: "open",
-    limit: 100_000,
-  });
-  return {
-    p0: open.filter((f) => f.severity === "P0").length,
-    p1: open.filter((f) => f.severity === "P1").length,
-  };
+  const rows = db
+    .prepare(
+      `SELECT severity, COUNT(*) AS n FROM hitch_findings
+        WHERE hitch_id = ?
+          AND scope_status = 'in_scope'
+          AND lifecycle_status IN ('open','reopened')
+          AND severity IN ('P0','P1')
+        GROUP BY severity`,
+    )
+    .all(hitchId) as Array<{ severity: string; n: number }>;
+  let p0 = 0;
+  let p1 = 0;
+  for (const row of rows) {
+    if (row.severity === "P0") p0 = row.n;
+    else if (row.severity === "P1") p1 = row.n;
+  }
+  return { p0, p1 };
 }
 
 /** Latest convergence decision across all hitches of a phase, or null if none. */
@@ -85,7 +92,7 @@ export function rollupCourse(opts: {
       let p0 = 0,
         p1 = 0;
       for (const hid of hitchIds) {
-        const c = openCounts(hitches, hid);
+        const c = openCounts(opts.db, hid);
         p0 += c.p0;
         p1 += c.p1;
       }

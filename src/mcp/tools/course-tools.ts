@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { CourseRepository } from "../../roadmap/course-repository.js";
 import { PhaseRepository } from "../../roadmap/phase-repository.js";
 import { rollupCourse } from "../../roadmap/rollup.js";
@@ -209,6 +209,20 @@ export function resolvePhaseProjectId(
 }
 
 // ---------------------------------------------------------------------------
+// Deterministic id derivation (idempotency — mirrors hitchIdForIdempotencyKey)
+// ---------------------------------------------------------------------------
+
+function courseIdForIdempotencyKey(idempotencyKey: string): string {
+  const digest = createHash("sha256").update(idempotencyKey).digest("hex");
+  return `course-${digest.slice(0, 32)}`;
+}
+
+function phaseIdForIdempotencyKey(idempotencyKey: string): string {
+  const digest = createHash("sha256").update(idempotencyKey).digest("hex");
+  return `phase-${digest.slice(0, 32)}`;
+}
+
+// ---------------------------------------------------------------------------
 // Mutation tools
 // ---------------------------------------------------------------------------
 
@@ -235,7 +249,10 @@ export async function courseCreateTool(
 ): Promise<HarnessMcpToolResult> {
   const denied = ensureProjectVisible(context.config, args.projectId ?? null);
   if (denied !== null) return denied;
-  const courseId = `course-${randomUUID()}`;
+  // Derive a stable courseId from the idempotency key so that retrying the same
+  // call with the same idempotencyKey produces the same target.id and is correctly
+  // treated as an idempotency replay (not a duplicate row with a new random id).
+  const courseId = courseIdForIdempotencyKey(args.idempotencyKey);
   return runMcpMutationOperation(context, {
     operationType: "course.create",
     target: { type: "course", id: courseId },
@@ -244,6 +261,7 @@ export async function courseCreateTool(
     workWithDb: async (db) => {
       const repo = new CourseRepository(db);
       const course = repo.create({
+        courseId,
         title: args.title,
         ...(args.description !== undefined ? { description: args.description } : {}),
         ...(args.projectId !== undefined ? { projectId: args.projectId } : {}),
@@ -274,7 +292,10 @@ export async function phaseAddTool(
   // errorResult returns a tool result.
   if (visibilityResult !== null) return visibilityResult as HarnessMcpToolResult;
 
-  const phaseId = `phase-${randomUUID()}`;
+  // Derive a stable phaseId from the idempotency key so that retrying the same
+  // call with the same idempotencyKey produces the same target.id and is correctly
+  // treated as an idempotency replay (not a duplicate row with a new random id).
+  const phaseId = phaseIdForIdempotencyKey(args.idempotencyKey);
   return runMcpMutationOperation(context, {
     operationType: "phase.add",
     target: { type: "phase", id: phaseId },
@@ -289,6 +310,7 @@ export async function phaseAddTool(
       if (course === null) throw new Error(`course ${args.courseId} not found`);
       const phaseRepo = new PhaseRepository(db);
       const phase = phaseRepo.add({
+        phaseId,
         courseId: args.courseId,
         title: args.title,
         ...(args.parentPhaseId !== undefined ? { parentPhaseId: args.parentPhaseId } : {}),

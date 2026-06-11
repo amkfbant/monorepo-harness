@@ -23,9 +23,10 @@ export class CourseRepository {
 
   create(input: {
     title: string; description?: string; projectId?: string; repoId?: string;
+    courseId?: string;
     createdBy: string; createdSource: string; now?: string;
   }): Course {
-    const id = `course-${randomUUID()}`;
+    const id = input.courseId ?? `course-${randomUUID()}`;
     const now = input.now ?? new Date().toISOString();
     this.db.prepare(
       `INSERT INTO courses (course_id, project_id, repo_id, title, description, status, created_by, created_source, created_at, updated_at)

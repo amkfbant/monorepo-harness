@@ -26,6 +26,7 @@ export class PhaseRepository {
   add(input: {
     courseId: string; parentPhaseId?: string; title: string; position?: number;
     scope?: unknown; closeConditions?: unknown;
+    phaseId?: string;
     createdBy: string; createdSource: string; now?: string;
   }): Phase {
     // integrity: parent must exist AND be in the same course
@@ -34,7 +35,7 @@ export class PhaseRepository {
       if (parent === undefined) throw new Error(`parent phase ${input.parentPhaseId} not found`);
       if (parent.course_id !== input.courseId) throw new Error(`parent phase ${input.parentPhaseId} is in a different course`);
     }
-    const id = `phase-${randomUUID()}`;
+    const id = input.phaseId ?? `phase-${randomUUID()}`;
     const now = input.now ?? new Date().toISOString();
     this.db.prepare(
       `INSERT INTO phases (phase_id, course_id, parent_phase_id, title, position, status, scope_json, close_conditions_json, created_by, created_source, created_at, updated_at)
@@ -90,7 +91,7 @@ export class PhaseRepository {
     const hitch = this.db.prepare("SELECT project_id FROM hitch_sessions WHERE hitch_id = ?").get(hitchId) as { project_id: string | null } | undefined;
     if (hitch === undefined) throw new Error(`hitch ${hitchId} not found`);
     if (course?.project_id != null && hitch.project_id !== course.project_id) {
-      throw new Error(`hitch ${hitchId} project (${hitch.project_id}) differs from course project (${course.project_id})`);
+      throw new Error(`hitch ${hitchId} belongs to a different project than course ${phase.courseId}`);
     }
     try {
       this.db.prepare("INSERT INTO phase_hitches (hitch_id, phase_id, linked_at) VALUES (?, ?, ?)")
