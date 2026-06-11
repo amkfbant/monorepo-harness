@@ -82,6 +82,12 @@ describe("MCP course-tools registration", () => {
     expect(names).toContain("harness.phase.list");
     expect(names).toContain("harness.phase.get");
   });
+
+  it("registers harness.course.orchestrate in tools/list", async () => {
+    const s = server(freshRoot(), DEFAULT_MCP_CONFIG);
+    const names = await listTools(s);
+    expect(names).toContain("harness.course.orchestrate");
+  });
 });
 
 describe("MCP course-tools project-gating", () => {
@@ -129,6 +135,127 @@ describe("MCP course-tools project-gating", () => {
 });
 
 describe("MCP course-tools mutations", () => {
+  it("course.orchestrate is denied by default permissions (no allowedOperations)", async () => {
+    const root = freshRoot();
+    let courseId = "";
+    withDb(root, (db) => {
+      courseId = new CourseRepository(db).create({
+        title: "Orchestrate Denied Course",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "test",
+      }).courseId;
+    });
+
+    const s = server(root, mutationConfig([]));
+    const result = await callTool(s, "harness.course.orchestrate", {
+      courseId,
+      idempotencyKey: "course-orchestrate-denied",
+    });
+    expect(result.status).toBe("permission_denied");
+  });
+
+  it("course.orchestrate denies a different-project course before driving", async () => {
+    const root = freshRoot();
+    let otherCourseId = "";
+    withDb(root, (db) => {
+      otherCourseId = new CourseRepository(db).create({
+        title: "Other Project Course",
+        projectId: "other",
+        createdBy: "test",
+        createdSource: "test",
+      }).courseId;
+    });
+
+    const s = server(root, mutationConfig(["course.orchestrate"]));
+    const result = await callTool(s, "harness.course.orchestrate", {
+      courseId: otherCourseId,
+      idempotencyKey: "course-orchestrate-other-project",
+    });
+    expect(result.status).toBe("permission_denied");
+
+    withDb(root, (db) => {
+      const audited = db
+        .prepare("SELECT COUNT(*) AS n FROM operations WHERE target_id = ?")
+        .get(otherCourseId) as { n: number };
+      expect(audited.n).toBe(0);
+    });
+  });
+
+  it("course.orchestrate denies a null-project course for restricted clients before auditing", async () => {
+    const root = freshRoot();
+    let nullCourseId = "";
+    withDb(root, (db) => {
+      nullCourseId = new CourseRepository(db).create({
+        title: "Null Project Course",
+        createdBy: "test",
+        createdSource: "test",
+      }).courseId;
+    });
+
+    const s = server(root, mutationConfig(["course.orchestrate"]));
+    const result = await callTool(s, "harness.course.orchestrate", {
+      courseId: nullCourseId,
+      idempotencyKey: "course-orchestrate-null-project",
+    });
+    expect(result.status).toBe("permission_denied");
+
+    withDb(root, (db) => {
+      const audited = db
+        .prepare("SELECT COUNT(*) AS n FROM operations WHERE target_id = ?")
+        .get(nullCourseId) as { n: number };
+      expect(audited.n).toBe(0);
+    });
+  });
+
+  it("course.orchestrate clamps audit input and replays by idempotencyKey without driving codex", async () => {
+    const root = freshRoot();
+    let courseId = "";
+    withDb(root, (db) => {
+      courseId = new CourseRepository(db).create({
+        title: "Empty Course",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "test",
+      }).courseId;
+    });
+
+    const s = server(root, mutationConfig(["course.orchestrate"]));
+    const args = {
+      courseId,
+      maxDrivenHitches: 999,
+      maxStepsPerHitch: 999,
+      idempotencyKey: "course-orchestrate-clamp-replay",
+    };
+
+    const result1 = await callTool(s, "harness.course.orchestrate", args);
+    expect(result1.status).toBe("operation_started");
+    expect(result1.data.replayed).toBe(false);
+    expect(result1.data.result).toMatchObject({
+      courseId,
+      stopReason: "completed",
+      drivenHitches: [],
+    });
+
+    const result2 = await callTool(s, "harness.course.orchestrate", args);
+    expect(result2.status).toBe("operation_started");
+    expect(result2.data.replayed).toBe(true);
+    expect(result2.data.result).toEqual(result1.data.result);
+
+    withDb(root, (db) => {
+      const row = db
+        .prepare(
+          "SELECT input_json FROM operations WHERE operation_type = ? AND target_id = ?",
+        )
+        .get("course.orchestrate", courseId) as { input_json: string };
+      expect(JSON.parse(row.input_json)).toMatchObject({
+        courseId,
+        maxDrivenHitches: 10,
+        maxStepsPerHitch: 50,
+      });
+    });
+  });
+
   it("course.create is denied by default permissions (no allowedOperations)", async () => {
     const root = freshRoot();
     // No allowedOperations for course.create

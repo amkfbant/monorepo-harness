@@ -1,11 +1,16 @@
 import { createHash } from "node:crypto";
+import { harnessPaths } from "../../config/paths.js";
 import { CourseRepository } from "../../roadmap/course-repository.js";
+import { createProductionCourseOrchestrator } from "../../roadmap/course-orchestrate-runtime.js";
 import { PhaseRepository } from "../../roadmap/phase-repository.js";
 import { rollupCourse } from "../../roadmap/rollup.js";
 import { errorResult, ok, type HarnessMcpToolResult } from "../schemas/outputs.js";
 import type { McpToolContext } from "../registry/tool-registry.js";
 import { ensureProjectVisible, withReadonlyDb } from "./tool-helpers.js";
-import { runMcpMutationOperation } from "./operation-wrapper.js";
+import {
+  runMcpMutationOperation,
+  runMcpOperation,
+} from "./operation-wrapper.js";
 import type { CourseStatus, PhaseStatus } from "../../roadmap/types.js";
 
 // ---------------------------------------------------------------------------
@@ -31,6 +36,14 @@ export interface CourseCreateArgs {
   description?: string;
   projectId?: string;
   repoId?: string;
+  idempotencyKey: string;
+  actorNote?: string;
+}
+
+export interface CourseOrchestrateArgs {
+  courseId: string;
+  maxDrivenHitches?: number;
+  maxStepsPerHitch?: number;
   idempotencyKey: string;
   actorNote?: string;
 }
@@ -326,6 +339,23 @@ function phaseIdForIdempotencyKey(
 // Mutation tools
 // ---------------------------------------------------------------------------
 
+const DEFAULT_MAX_DRIVEN_HITCHES = 3;
+const MAX_DRIVEN_HITCHES = 10;
+const DEFAULT_MAX_STEPS_PER_HITCH = 20;
+const MAX_STEPS_PER_HITCH = 50;
+
+function normalizeBoundedPositiveInt(
+  value: number | undefined,
+  defaultValue: number,
+  maxValue: number,
+): number {
+  const requested =
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.trunc(value)
+      : defaultValue;
+  return Math.min(maxValue, Math.max(1, requested));
+}
+
 function courseMetadata(
   context: McpToolContext,
   toolName: string,
@@ -373,6 +403,65 @@ export async function courseCreateTool(
         createdSource: "mcp",
       });
       return { courseId: course.courseId, course };
+    },
+  });
+}
+
+export async function courseOrchestrateTool(
+  args: CourseOrchestrateArgs,
+  context: McpToolContext,
+): Promise<HarnessMcpToolResult> {
+  const visibilityResult = withReadonlyDb(context, ({ db }) => {
+    const repo = new CourseRepository(db);
+    const course = repo.get(args.courseId);
+    if (course === null) return errorResult(`course not found: ${args.courseId}`);
+    return ensureProjectVisible(context.config, course.projectId);
+  });
+  if (visibilityResult !== null) return visibilityResult as HarnessMcpToolResult;
+
+  const normalizedArgs: CourseOrchestrateArgs = {
+    ...args,
+    maxDrivenHitches: normalizeBoundedPositiveInt(
+      args.maxDrivenHitches,
+      DEFAULT_MAX_DRIVEN_HITCHES,
+      MAX_DRIVEN_HITCHES,
+    ),
+    maxStepsPerHitch: normalizeBoundedPositiveInt(
+      args.maxStepsPerHitch,
+      DEFAULT_MAX_STEPS_PER_HITCH,
+      MAX_STEPS_PER_HITCH,
+    ),
+  };
+  const dbPath = harnessPaths(context.harnessRoot).dbPath;
+  return runMcpOperation(context, {
+    operationType: "course.orchestrate",
+    target: { type: "course", id: args.courseId },
+    idempotencyKey: args.idempotencyKey,
+    input: normalizedArgs,
+    metadata: courseMetadata(
+      context,
+      "harness.course.orchestrate",
+      normalizedArgs,
+      {
+        courseId: args.courseId,
+      },
+    ),
+    workWithDb: async (db) => {
+      const course = new CourseRepository(db).require(args.courseId);
+      const createdBy = `mcp:${context.clientName}`;
+      return createProductionCourseOrchestrator({
+        db,
+        dbPath,
+        harnessRoot: context.harnessRoot,
+        courseId: course.courseId,
+        courseProjectId: course.projectId,
+        createdBy,
+      }).run({
+        courseId: course.courseId,
+        maxDrivenHitches: normalizedArgs.maxDrivenHitches!,
+        maxStepsPerHitch: normalizedArgs.maxStepsPerHitch!,
+        createdBy,
+      });
     },
   });
 }

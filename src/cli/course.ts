@@ -8,24 +8,18 @@ import { harnessPaths } from "../config/paths.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { DbError } from "../db/connection.js";
-import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
 import {
   startOperation,
   succeedOperation,
   failOperation,
 } from "../db/repositories/operations.js";
-import { HitchOrchestrator } from "../hitch/orchestrator.js";
-import { createOrchestratorRunners } from "../hitch/orchestrator-runners.js";
-import type { OrchestratorRunners } from "../hitch/orchestrator-types.js";
-import { HitchRepository } from "../hitch/repository.js";
-import type { HitchSession } from "../hitch/types.js";
 import { ProjectError } from "../project/errors.js";
-import { prepareProjectRun } from "../project/run-project.js";
 import { CourseRepository } from "../roadmap/course-repository.js";
 import {
   CourseOrchestrateError,
   CourseOrchestrator,
 } from "../roadmap/course-orchestrator.js";
+import { createProductionCourseOrchestrator } from "../roadmap/course-orchestrate-runtime.js";
 import type {
   CourseOrchestrationResult,
   PhaseOutcome,
@@ -221,66 +215,6 @@ async function buildCourseOrchestrateDryRun(
     rollupAfter: rollupCourse({ db, courseId }),
     followUps: [],
   };
-}
-
-async function makeCourseHitchRunners(input: {
-  db: Database.Database;
-  dbPath: string;
-  harnessRoot: string;
-  codexBin: string;
-  courseId: string;
-  courseProjectId: string | null;
-  hitchId: string;
-  runnersByHitch: Map<string, OrchestratorRunners>;
-}): Promise<OrchestratorRunners> {
-  const cached = input.runnersByHitch.get(input.hitchId);
-  if (cached !== undefined) return cached;
-
-  const session = new HitchRepository(input.db).requireSession(input.hitchId);
-  const projectId = session.projectId ?? input.courseProjectId;
-  if (projectId === null) {
-    throw new CourseCliError(
-      `hitch ${input.hitchId} has no projectId and course ${input.courseId} has no projectId`,
-    );
-  }
-  if (session.domain === null) {
-    throw new CourseCliError(`hitch ${input.hitchId} has no domain`);
-  }
-
-  const prepared = await prepareProjectRun({
-    harnessRoot: input.harnessRoot,
-    projectId,
-    domain: session.domain,
-  });
-  const runners = createOrchestratorRunners({
-    dbPath: input.dbPath,
-    harnessRoot: input.harnessRoot,
-    createdBy: "cli",
-    coderRunner: createCodexCliRunner({
-      codexBin: input.codexBin,
-      sandbox: "workspace-write",
-    }),
-    reviewerRunner: createCodexCliRunner({
-      codexBin: input.codexBin,
-      sandbox: "read-only",
-    }),
-    resolveRunContext: (runSession) => ({
-      repoPath: prepared.repoPath,
-      repoId: prepared.repoId,
-      domain: prepared.domain,
-      goal: hitchGoalText(runSession),
-      baseBranch: prepared.baseBranch,
-    }),
-  });
-  input.runnersByHitch.set(input.hitchId, runners);
-  return runners;
-}
-
-function hitchGoalText(session: HitchSession): string {
-  return [session.title, session.description ?? ""]
-    .map((part) => part.trim())
-    .filter((part) => part !== "")
-    .join("\n\n");
 }
 
 function operationErrorCode(e: unknown): string {
@@ -493,38 +427,20 @@ export function registerCourseCommands(
               );
             }
             const dbPath = harnessPaths(opts.getHarnessRoot()).dbPath;
-            const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
-            const runnersByHitch = new Map<string, OrchestratorRunners>();
-            const orchestrated = await new CourseOrchestrator({
+            const orchestrated = await createProductionCourseOrchestrator({
               db,
-              makeHitchOrchestrator: () => new HitchOrchestrator({ dbPath }),
-              makeRunners: (hitchId) =>
-                makeCourseHitchRunners({
-                  db,
-                  dbPath,
-                  harnessRoot: opts.getHarnessRoot(),
-                  codexBin,
-                  courseId: course.courseId,
-                  courseProjectId: course.projectId,
-                  hitchId,
-                  runnersByHitch,
-                }),
+              dbPath,
+              harnessRoot: opts.getHarnessRoot(),
+              courseId: course.courseId,
+              courseProjectId: course.projectId,
+              createdBy: "cli",
             }).run({
               courseId,
               maxDrivenHitches,
               maxStepsPerHitch,
               createdBy: "cli",
             });
-            if (orchestrated.stopReason === "budget_exhausted") {
-              failOperation(
-                db,
-                operationId,
-                "budget_exhausted",
-                `course ${courseId} orchestration budget exhausted`,
-              );
-            } else {
-              succeedOperation(db, operationId, orchestrated);
-            }
+            succeedOperation(db, operationId, orchestrated);
             return orchestrated;
           } catch (e) {
             failOperation(

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -11,13 +11,18 @@ import { PhaseRepository } from "../../src/roadmap/phase-repository.js";
 
 const CLI = join(process.cwd(), "src/cli/run.ts");
 
-function runCli(root: string, args: string[]): { out: string; code: number } {
+function runCli(
+  root: string,
+  args: string[],
+  extraEnv: NodeJS.ProcessEnv = {},
+): { out: string; code: number } {
   try {
     const out = execFileSync("node", ["--import", "tsx", CLI, ...args], {
       env: {
         ...process.env,
         HARNESS_ROOT: root,
         HARNESS_SUPPRESS_EXPORT_MODE_WARNING: "1",
+        ...extraEnv,
       },
     }).toString();
     return { out, code: 0 };
@@ -36,6 +41,76 @@ function setup(): { root: string } {
   return { root };
 }
 
+function setupRepo(): string {
+  const repo = mkdtempSync(join(tmpdir(), "harness-course-cli-repo-"));
+  const git = (args: string[]) =>
+    execFileSync("git", args, { cwd: repo, stdio: "ignore" });
+  git(["init", "-q", "-b", "main"]);
+  git(["config", "user.email", "t@example.invalid"]);
+  git(["config", "user.name", "Test"]);
+  mkdirSync(join(repo, "apps/user/src"), { recursive: true });
+  writeFileSync(join(repo, "apps/user/src/profile.ts"), "export const x = 0;\n");
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "target" }));
+  git(["add", "."]);
+  git(["commit", "-qm", "init"]);
+  return repo;
+}
+
+function setupProjectHarness(root: string, repoPath: string): void {
+  cpSync(join(process.cwd(), "templates"), join(root, "templates"), {
+    recursive: true,
+  });
+  mkdirSync(join(root, "projects"), { recursive: true });
+  writeFileSync(
+    join(root, "projects", "demo.yaml"),
+    [
+      "version: 1",
+      "project_id: demo",
+      "repo:",
+      "  id: t",
+      `  path: ${repoPath}`,
+      "  package_manager: npm",
+      "policy:",
+      "  template: strict-monorepo-v1",
+      "domains:",
+      "  - id: apps/user",
+      "    root: apps/user",
+      "    kind: app",
+      "",
+    ].join("\n"),
+  );
+}
+
+function writeFakeCodexBin(): string {
+  const dir = mkdtempSync(join(tmpdir(), "harness-course-cli-fake-codex-"));
+  const bin = join(dir, "codex");
+  writeFileSync(
+    bin,
+    [
+      "#!/bin/sh",
+      "cat > /dev/null",
+      "case \"$*\" in",
+      "  *read-only*)",
+      "    cat <<'YAML'",
+      "decision: approved",
+      "required_changes: []",
+      "non_blocking_comments: []",
+      "out_of_scope_suggestions: []",
+      "YAML",
+      "    ;;",
+      "  *)",
+      "    echo 'export const x = 1;' > apps/user/src/profile.ts",
+      "    echo 'fake codex done'",
+      "    ;;",
+      "esac",
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
+  execFileSync("chmod", ["+x", bin]);
+  return bin;
+}
+
 function json<T>(result: { out: string; code: number }): T {
   expect(result.code, `expected exit 0, got:\n${result.out}`).toBe(0);
   return JSON.parse(result.out) as T;
@@ -51,13 +126,17 @@ function withSeedDb(root: string, seed: (db: ReturnType<typeof openDb>) => void)
   }
 }
 
-function seedDrivableHitch(db: ReturnType<typeof openDb>, hitchId: string): void {
+function seedDrivableHitch(
+  db: ReturnType<typeof openDb>,
+  hitchId: string,
+  opts: { projectId?: string; domain?: string } = {},
+): void {
   const hitches = new HitchRepository(db);
   hitches.createSession({
     hitchId,
     title: hitchId,
-    projectId: "demo",
-    domain: "app",
+    projectId: opts.projectId ?? "demo",
+    domain: opts.domain ?? "app",
     scope: {},
     closeConditions: [],
     createdBy: "test",
@@ -339,6 +418,75 @@ describe("course/phase CLI (SP-1)", () => {
         )
         .get() as { status: string; error_code: string } | undefined;
       expect(row).toEqual({ status: "failed", error_code: "project_error" });
+    });
+  });
+
+  it("course orchestrate records budget_exhausted as succeeded while exiting 1", () => {
+    const { root } = setup();
+    const repoPath = setupRepo();
+    setupProjectHarness(root, repoPath);
+    const fakeCodexBin = writeFakeCodexBin();
+    const course = json<{ courseId: string }>(
+      runCli(root, [
+        "course",
+        "create",
+        "--title",
+        "Budget Course",
+        "--project",
+        "demo",
+        "--json",
+      ]),
+    );
+    const p1 = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "One", "--json"]),
+    );
+    const p2 = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "Two", "--json"]),
+    );
+    withSeedDb(root, (db) => {
+      const phases = new PhaseRepository(db);
+      seedDrivableHitch(db, "h-budget-one", { domain: "apps/user" });
+      seedDrivableHitch(db, "h-budget-two", { domain: "apps/user" });
+      phases.linkHitch(p1.phaseId, "h-budget-one");
+      phases.linkHitch(p2.phaseId, "h-budget-two");
+    });
+
+    const result = runCli(
+      root,
+      [
+        "course",
+        "orchestrate",
+        course.courseId,
+        "--max-driven-hitches",
+        "1",
+        "--json",
+      ],
+      { HARNESS_CODEX_BIN: fakeCodexBin },
+    );
+    expect(result.code).toBe(1);
+    const body = JSON.parse(result.out) as {
+      stopReason: string;
+      drivenHitches: Array<{ hitchId: string }>;
+    };
+    expect(body.stopReason).toBe("budget_exhausted");
+    expect(body.drivenHitches).toHaveLength(1);
+    expect(["h-budget-one", "h-budget-two"]).toContain(
+      body.drivenHitches[0]?.hitchId,
+    );
+
+    withSeedDb(root, (db) => {
+      const row = db
+        .prepare(
+          "SELECT status, error_code, result_json FROM operations WHERE operation_type = 'course.orchestrate' ORDER BY created_at DESC LIMIT 1",
+        )
+        .get() as
+        | { status: string; error_code: string | null; result_json: string | null }
+        | undefined;
+      expect(row?.status).toBe("succeeded");
+      expect(row?.error_code).toBeNull();
+      expect(JSON.parse(row?.result_json ?? "{}")).toMatchObject({
+        stopReason: "budget_exhausted",
+      });
     });
   });
 
