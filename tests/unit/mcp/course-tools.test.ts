@@ -274,6 +274,70 @@ describe("MCP course-tools mutations", () => {
       expect(leaked.n).toBe(0);
     });
   });
+
+  // P2 (codex App): phase.add must not let a restricted client probe an out-of-scope
+  // parentPhaseId (same oracle/audit-leak class as the link_hitch source-hitch gate).
+  it("phase.add hides an out-of-scope parentPhaseId from a project-restricted client", async () => {
+    const root = freshRoot();
+    let demoCourseId = "";
+    const forbiddenParentId = "phase-in-other-course";
+    withDb(root, (db) => {
+      const courseRepo = new CourseRepository(db);
+      demoCourseId = courseRepo.create({
+        title: "Demo Course",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "test",
+      }).courseId;
+      // A phase in a DIFFERENT, out-of-scope project's course.
+      const otherCourse = courseRepo.create({
+        title: "Other Course",
+        projectId: "other",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      const phaseRepo = new PhaseRepository(db);
+      phaseRepo.add({
+        phaseId: forbiddenParentId,
+        courseId: otherCourse.courseId,
+        title: "Other-project phase",
+        createdBy: "test",
+        createdSource: "test",
+      });
+    });
+
+    const s = server(root, mutationConfig(["phase.add"]));
+
+    // Add to the VISIBLE demo course but with an out-of-scope parentPhaseId.
+    const forbidden = await callTool(s, "harness.phase.add", {
+      courseId: demoCourseId,
+      title: "Should be denied",
+      parentPhaseId: forbiddenParentId,
+      idempotencyKey: "parent-probe-forbidden",
+    });
+    const unknown = await callTool(s, "harness.phase.add", {
+      courseId: demoCourseId,
+      title: "Should be denied",
+      parentPhaseId: "phase-does-not-exist",
+      idempotencyKey: "parent-probe-unknown",
+    });
+
+    expect(forbidden.status).toBe("permission_denied");
+    expect(unknown.status).toBe("permission_denied");
+    expect(forbidden.summary).toBe(unknown.summary);
+
+    // The out-of-scope parent phase id must NOT be audit-logged, and no phase added.
+    withDb(root, (db) => {
+      const leaked = db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM operations WHERE input_json LIKE ? OR target_id = ?",
+        )
+        .get(`%${forbiddenParentId}%`, forbiddenParentId) as { n: number };
+      expect(leaked.n).toBe(0);
+      const phases = new PhaseRepository(db).listForCourse(demoCourseId);
+      expect(phases).toHaveLength(0);
+    });
+  });
 });
 
 describe("MCP course-tools harness.course.status", () => {

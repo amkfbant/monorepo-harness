@@ -322,6 +322,34 @@ export async function phaseAddTool(
   // errorResult returns a tool result.
   if (visibilityResult !== null) return visibilityResult as HarnessMcpToolResult;
 
+  // Same protection as phase.link_hitch's source-hitch gate, applied to the optional
+  // parentPhaseId: a restricted client adding to a VISIBLE course could otherwise pass
+  // an out-of-scope parentPhaseId and have PhaseRepository.add throw a distinguishable
+  // "different course" / "not found" error (existence oracle) + audit-log that id.
+  // Resolve the parent phase's owning project and gate it BEFORE the mutation; an
+  // unknown parent maps to a sentinel so not-found and forbidden are indistinguishable
+  // for restricted clients. (linkHitch/add still enforce same-course parentage for
+  // operators with the descriptive error.)
+  if (args.parentPhaseId !== undefined) {
+    const parentVisibility = withReadonlyDb(context, ({ db }) => {
+      const row = db
+        .prepare(
+          `SELECT c.project_id
+             FROM phases p
+             JOIN courses c ON c.course_id = p.course_id
+            WHERE p.phase_id = ?`,
+        )
+        .get(args.parentPhaseId) as { project_id: string | null } | undefined;
+      const parentProject =
+        row?.project_id ??
+        (context.config.allowedProjects.length > 0
+          ? "__mcp_unresolved_parent_phase_project__"
+          : null);
+      return ensureProjectVisible(context.config, parentProject);
+    });
+    if (parentVisibility !== null) return parentVisibility as HarnessMcpToolResult;
+  }
+
   // Derive a stable phaseId from the idempotency key so that retrying the same
   // call with the same idempotencyKey produces the same target.id and is correctly
   // treated as an idempotency replay (not a duplicate row with a new random id).
