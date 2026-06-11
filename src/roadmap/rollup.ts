@@ -11,6 +11,7 @@ export interface PhaseRollup {
   derivedOpenP0: number;
   derivedOpenP1: number;
   depth: number;
+  latestDecision: string | null;
 }
 
 export interface CourseRollup {
@@ -40,6 +41,24 @@ function openCounts(
   };
 }
 
+/** Latest convergence decision across all hitches of a phase, or null if none. */
+function latestDecisionForPhase(
+  hitches: HitchRepository,
+  hitchIds: string[],
+): string | null {
+  let latest: { createdAt: string; decision: string } | null = null;
+  for (const hid of hitchIds) {
+    const decisions = hitches.listDecisions(hid);
+    if (decisions.length === 0) continue;
+    // listDecisions returns records in ASC order; last item is newest
+    const newest = decisions[decisions.length - 1]!;
+    if (latest === null || newest.createdAt >= latest.createdAt) {
+      latest = { createdAt: newest.createdAt, decision: newest.decision };
+    }
+  }
+  return latest !== null ? latest.decision : null;
+}
+
 export function rollupCourse(opts: {
   db: Database.Database;
   courseId: string;
@@ -47,6 +66,7 @@ export function rollupCourse(opts: {
   const phases = new PhaseRepository(opts.db);
   const hitches = new HitchRepository(opts.db);
   const tree = phases.tree(opts.courseId);
+  const allPhases = phases.listForCourse(opts.courseId);
   const flat: PhaseRollup[] = [];
   const counts: Record<PhaseStatus, number> = {
     pending: 0,
@@ -80,11 +100,20 @@ export function rollupCourse(opts: {
         derivedOpenP0: p0,
         derivedOpenP1: p1,
         depth,
+        latestDecision: latestDecisionForPhase(hitches, hitchIds),
       });
       walk(n.children, depth + 1);
     }
   };
   walk(tree, 0);
+  // Tree integrity guard (fail-closed): if the tree walk did not reach all
+  // phases, there is a cycle or orphaned parent — throw rather than
+  // under-reporting open P0/P1.
+  if (flat.length !== allPhases.length) {
+    throw new Error(
+      `course ${opts.courseId} phase tree is inconsistent (cycle or orphan parent)`,
+    );
+  }
   return {
     courseId: opts.courseId,
     phases: flat,

@@ -233,6 +233,7 @@ import { registerPolicyCommands } from "./policy.js";
 import { registerDbCommands } from "./db.js";
 import { registerOnboardCommands } from "./onboard.js";
 import { registerHitchCommands } from "./hitch.js";
+import { registerCourseCommands } from "./course.js";
 import { registerMcpCommands } from "../mcp/cli.js";
 import {
   confirmMcpRequest,
@@ -4158,6 +4159,7 @@ registerPolicyCommands(program);
 registerDbCommands(program);
 registerOnboardCommands(program);
 registerHitchCommands(program, { getHarnessRoot });
+registerCourseCommands(program, { getHarnessRoot });
 
 program
   .command("goal", { hidden: true })
