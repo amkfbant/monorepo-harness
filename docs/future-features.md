@@ -91,11 +91,10 @@ designed/reviewed separately rather than folded into F. Flagged by the F codex r
 
 ## Transactional run-status guard on `review auto` proposal insert
 
-**Promoted to an active follow-up** — now tracked as **Follow-up A** in
-[`GOAL.md`](../GOAL.md) (TOCTOU on the shared `insertProposal` path: re-read
+**Promoted to an active follow-up** — was tracked as Follow-up A in the retired
+`GOAL.md` (TOCTOU on the shared `insertProposal` path: re-read
 `status` / `source_mode` inside `tx.immediate()` and throw
-`ReviewerAgentGateError` when not `db-first && needs_review`). See GOAL.md for
-the scoped sub-phase and close conditions. Flagged by the Phase 2 round-5 review;
+`ReviewerAgentGateError` when not `db-first && needs_review`). Flagged by the Phase 2 round-5 review;
 recorded 2026-06.
 
 ## Multi-reviewer consensus orchestration (drive the stall trigger)

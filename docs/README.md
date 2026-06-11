@@ -16,6 +16,9 @@ docs/
     README.md, TEMPLATE.md,
     2026-05-20-mvp-validation-*.md,
     2026-05-21-phase2-*.md   (review-commands-cleanup / 2-4〜2-9 demo / phase2-close)
+  ops/                     ← 運用 manual（認証/secret・DB メンテ・リリース/アップデート）
+    setup-and-secrets.md, db-maintenance-runbook.md,
+    personal-operating-manual.md, release-and-upgrade.md
   superpowers/plans/       ← 実装計画 (history 含む; 完了後も残す)
 ```
 

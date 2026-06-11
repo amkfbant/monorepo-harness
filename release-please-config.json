@@ -5,6 +5,7 @@
     ".": {
       "release-type": "node",
       "include-component-in-tag": false,
+      "bump-minor-pre-major": true,
       "changelog-path": "CHANGELOG.md",
       "changelog-sections": [
         { "type": "feat", "section": "Features" },

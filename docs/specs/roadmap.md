@@ -307,8 +307,8 @@ null-`project_id` courses. This is fail-closed: `course.list` excludes them,
 - The GOAL_RULES.md build rules (retry limits, P0–P3 classification, gates) stay as
   docs / prompt-context — not duplicated into the DB.
 - The individual roadmap features (#84–#93) build on this model in later sub-projects.
-- A markdown → DB auto-importer. The existing `GOAL.md` is migrated by hand via the
-  API or kept as historical context.
+- A markdown → DB auto-importer. The old `GOAL.md` markdown roadmap has been retired
+  (kept in git history); new courses/phases are created through the API.
 - `course.close` / `phase.update → closed` do not require MCP `confirmation_required`
   (reversible tracking writes with no destructive or external effect).
 - Phase reparent (`phase update --parent`) is not exposed; a new node added via
