@@ -340,6 +340,156 @@ describe("MCP course-tools mutations", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// P2 (codex App round 3): when these ops are in requireConfirmation, the generic
+// confirmation path persists parsed.data (incl. the secondary id) BEFORE the handler
+// runs. The secondary-resource gate therefore lives at the PERMISSION layer
+// (resolvePhaseAddProjectId / resolvePhaseLinkHitchProjectId), which runs before the
+// confirmation record is written. These tests prove an out-of-scope secondary id is
+// denied (not confirmation_required) and never reaches mcp_confirmation_requests.
+// ---------------------------------------------------------------------------
+
+describe("MCP course-tools confirmation-path secondary-resource gate (P2)", () => {
+  it("phase.link_hitch under requireConfirmation denies an out-of-scope hitch before any confirmation record", async () => {
+    const root = freshRoot();
+    let phaseId = "";
+    const forbiddenHitchId = "hitch-other-confirm";
+    withDb(root, (db) => {
+      const course = new CourseRepository(db).create({
+        title: "Demo Course",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      phaseId = new PhaseRepository(db).add({
+        courseId: course.courseId,
+        title: "P1",
+        createdBy: "test",
+        createdSource: "test",
+      }).phaseId;
+      new HitchRepository(db).createSession({
+        hitchId: forbiddenHitchId,
+        title: "Other project hitch",
+        projectId: "other",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+    });
+
+    const s = server(root, {
+      ...mutationConfig(["phase.link_hitch"]),
+      requireConfirmation: ["phase.link_hitch"],
+    });
+    const result = await callTool(s, "harness.phase.link_hitch", {
+      phaseId,
+      hitchId: forbiddenHitchId,
+      idempotencyKey: "confirm-leak-hitch",
+    });
+
+    // Must be a permission denial, NOT confirmation_required (which would persist the id).
+    expect(result.status).toBe("permission_denied");
+
+    withDb(root, (db) => {
+      const leaked = db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM mcp_confirmation_requests WHERE input_json LIKE ? OR target_id = ?",
+        )
+        .get(`%${forbiddenHitchId}%`, forbiddenHitchId) as { n: number };
+      expect(leaked.n).toBe(0);
+    });
+  });
+
+  it("phase.add under requireConfirmation denies an out-of-scope parentPhaseId before any confirmation record", async () => {
+    const root = freshRoot();
+    let demoCourseId = "";
+    const forbiddenParentId = "phase-other-confirm";
+    withDb(root, (db) => {
+      const courseRepo = new CourseRepository(db);
+      demoCourseId = courseRepo.create({
+        title: "Demo Course",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "test",
+      }).courseId;
+      const otherCourse = courseRepo.create({
+        title: "Other Course",
+        projectId: "other",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      new PhaseRepository(db).add({
+        phaseId: forbiddenParentId,
+        courseId: otherCourse.courseId,
+        title: "Other-project phase",
+        createdBy: "test",
+        createdSource: "test",
+      });
+    });
+
+    const s = server(root, {
+      ...mutationConfig(["phase.add"]),
+      requireConfirmation: ["phase.add"],
+    });
+    const result = await callTool(s, "harness.phase.add", {
+      courseId: demoCourseId,
+      title: "Should be denied",
+      parentPhaseId: forbiddenParentId,
+      idempotencyKey: "confirm-leak-parent",
+    });
+
+    expect(result.status).toBe("permission_denied");
+
+    withDb(root, (db) => {
+      const leaked = db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM mcp_confirmation_requests WHERE input_json LIKE ? OR target_id = ?",
+        )
+        .get(`%${forbiddenParentId}%`, forbiddenParentId) as { n: number };
+      expect(leaked.n).toBe(0);
+    });
+  });
+
+  it("phase.link_hitch under requireConfirmation still reaches confirmation for an IN-scope hitch", async () => {
+    const root = freshRoot();
+    let phaseId = "";
+    const okHitchId = "hitch-demo-confirm";
+    withDb(root, (db) => {
+      const course = new CourseRepository(db).create({
+        title: "Demo Course",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      phaseId = new PhaseRepository(db).add({
+        courseId: course.courseId,
+        title: "P1",
+        createdBy: "test",
+        createdSource: "test",
+      }).phaseId;
+      new HitchRepository(db).createSession({
+        hitchId: okHitchId,
+        title: "In-scope hitch",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+    });
+
+    const s = server(root, {
+      ...mutationConfig(["phase.link_hitch"]),
+      requireConfirmation: ["phase.link_hitch"],
+    });
+    const result = await callTool(s, "harness.phase.link_hitch", {
+      phaseId,
+      hitchId: okHitchId,
+      idempotencyKey: "confirm-ok-hitch",
+    });
+
+    // In-scope secondary: the gate does NOT block; the op proceeds to confirmation.
+    expect(result.status).toBe("confirmation_required");
+  });
+});
+
 describe("MCP course-tools harness.course.status", () => {
   it("returns rollup data for a course", async () => {
     const root = freshRoot();

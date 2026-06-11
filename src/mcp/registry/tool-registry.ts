@@ -121,6 +121,8 @@ import {
   phaseUpdateTool,
   resolveCourseProjectId,
   resolvePhaseProjectId,
+  resolvePhaseAddProjectId,
+  resolvePhaseLinkHitchProjectId,
 } from "../tools/course-tools.js";
 import type { McpPermissionDecision } from "../security/permissions.js";
 import {
@@ -1962,7 +1964,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       })
       .merge(MutationArgsBaseSchema)
       .strict(),
-    resolveProjectIdForPermission: resolveCourseProjectId,
+    resolveProjectIdForPermission: resolvePhaseAddProjectId,
     inputSchema: objectSchema(
       {
         courseId: { type: "string", description: "Course id" },
@@ -2019,7 +2021,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       })
       .merge(MutationArgsBaseSchema)
       .strict(),
-    resolveProjectIdForPermission: resolvePhaseProjectId,
+    resolveProjectIdForPermission: resolvePhaseLinkHitchProjectId,
     inputSchema: objectSchema(
       {
         phaseId: { type: "string", description: "Phase id" },

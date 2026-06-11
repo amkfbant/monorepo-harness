@@ -208,6 +208,61 @@ export function resolvePhaseProjectId(
   }) as string | null | undefined;
 }
 
+// A secondary resource (an out-of-scope parentPhaseId on phase.add, or source hitchId
+// on phase.link_hitch) must force a permission denial at the PERMISSION layer, BEFORE
+// the server builds any confirmation/audit record or runs the handler. We express that
+// by returning the unresolved sentinel for the operation's resolveProjectIdForPermission
+// when the secondary resource is not visible to a restricted client: decideMcpPermission
+// then denies with `project_not_allowed` (uniform for forbidden vs unknown — no oracle,
+// no audit of the secondary id). Unrestricted (operator) clients skip the secondary gate
+// and still get the descriptive cross-resource error from the repository.
+function visibleToRestrictedClient(
+  context: McpToolContext,
+  project: string | null | undefined,
+): boolean {
+  // Caller guarantees the client is restricted (allowedProjects non-empty).
+  return (
+    typeof project === "string" && context.config.allowedProjects.includes(project)
+  );
+}
+
+export function resolvePhaseAddProjectId(
+  args: { courseId?: string; parentPhaseId?: string },
+  context: McpToolContext,
+): string | null | undefined {
+  if (
+    args.parentPhaseId !== undefined &&
+    context.config.allowedProjects.length > 0
+  ) {
+    const parentProject = resolvePhaseProjectId(
+      { phaseId: args.parentPhaseId },
+      context,
+    );
+    if (!visibleToRestrictedClient(context, parentProject)) {
+      return "__mcp_unresolved_parent_phase_project__";
+    }
+  }
+  return resolveCourseProjectId(args, context);
+}
+
+export function resolvePhaseLinkHitchProjectId(
+  args: { phaseId?: string; hitchId?: string },
+  context: McpToolContext,
+): string | null | undefined {
+  if (args.hitchId !== undefined && context.config.allowedProjects.length > 0) {
+    const hitchProject = withReadonlyDb(context, ({ db }) => {
+      const row = db
+        .prepare("SELECT project_id FROM hitch_sessions WHERE hitch_id = ?")
+        .get(args.hitchId) as { project_id: string | null } | undefined;
+      return row?.project_id ?? null;
+    }) as string | null;
+    if (!visibleToRestrictedClient(context, hitchProject)) {
+      return "__mcp_unresolved_hitch_project__";
+    }
+  }
+  return resolvePhaseProjectId(args, context);
+}
+
 // ---------------------------------------------------------------------------
 // Deterministic id derivation (idempotency — mirrors hitchIdForIdempotencyKey)
 // ---------------------------------------------------------------------------
@@ -322,33 +377,10 @@ export async function phaseAddTool(
   // errorResult returns a tool result.
   if (visibilityResult !== null) return visibilityResult as HarnessMcpToolResult;
 
-  // Same protection as phase.link_hitch's source-hitch gate, applied to the optional
-  // parentPhaseId: a restricted client adding to a VISIBLE course could otherwise pass
-  // an out-of-scope parentPhaseId and have PhaseRepository.add throw a distinguishable
-  // "different course" / "not found" error (existence oracle) + audit-log that id.
-  // Resolve the parent phase's owning project and gate it BEFORE the mutation; an
-  // unknown parent maps to a sentinel so not-found and forbidden are indistinguishable
-  // for restricted clients. (linkHitch/add still enforce same-course parentage for
-  // operators with the descriptive error.)
-  if (args.parentPhaseId !== undefined) {
-    const parentVisibility = withReadonlyDb(context, ({ db }) => {
-      const row = db
-        .prepare(
-          `SELECT c.project_id
-             FROM phases p
-             JOIN courses c ON c.course_id = p.course_id
-            WHERE p.phase_id = ?`,
-        )
-        .get(args.parentPhaseId) as { project_id: string | null } | undefined;
-      const parentProject =
-        row?.project_id ??
-        (context.config.allowedProjects.length > 0
-          ? "__mcp_unresolved_parent_phase_project__"
-          : null);
-      return ensureProjectVisible(context.config, parentProject);
-    });
-    if (parentVisibility !== null) return parentVisibility as HarnessMcpToolResult;
-  }
+  // NOTE: an out-of-scope parentPhaseId is gated at the PERMISSION layer by
+  // resolvePhaseAddProjectId (registry) — that runs before both the confirmation
+  // record and the handler, so the parent id can never reach a confirmation/audit
+  // record. We do not re-check it here.
 
   // Derive a stable phaseId from the idempotency key so that retrying the same
   // call with the same idempotencyKey produces the same target.id and is correctly
@@ -427,32 +459,11 @@ export async function phaseLinkHitchTool(
   args: PhaseLinkHitchArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
-  // A project-restricted client authorizes on the DESTINATION phase (registry-layer
-  // resolvePhaseProjectId gate), but the SOURCE hitch is otherwise unchecked. Without
-  // this pre-check a client scoped to project A could submit arbitrary hitch IDs from
-  // other projects and (a) distinguish "not found" from "different project" via the
-  // business-logic error (an existence oracle) and (b) get the out-of-scope hitchId
-  // written into the failed-operation audit input/metadata. Resolve the hitch's project
-  // and gate it BEFORE entering runMcpMutationOperation: an unknown hitch maps to a
-  // sentinel so not-found and forbidden return the SAME permission_denied shape for
-  // restricted clients, and nothing about the hitch is audit-logged. Unrestricted
-  // (operator) clients pass the gate and still get the descriptive cross-project /
-  // not-found errors from linkHitch.
-  const hitchVisibility = withReadonlyDb(context, ({ db }) => {
-    const row = db
-      .prepare("SELECT project_id FROM hitch_sessions WHERE hitch_id = ?")
-      .get(args.hitchId) as { project_id: string | null } | undefined;
-    const hitchProject =
-      row?.project_id ??
-      (context.config.allowedProjects.length > 0
-        ? "__mcp_unresolved_hitch_project__"
-        : null);
-    return ensureProjectVisible(context.config, hitchProject);
-  });
-  // withReadonlyDb returns a tool result directly when the DB is missing;
-  // ensureProjectVisible returns null (ok) or a permission_denied result.
-  if (hitchVisibility !== null) return hitchVisibility as HarnessMcpToolResult;
-
+  // NOTE: an out-of-scope SOURCE hitch is gated at the PERMISSION layer by
+  // resolvePhaseLinkHitchProjectId (registry) — that runs before both the
+  // confirmation record and the handler, so a forbidden/unknown hitch id can never
+  // reach a confirmation/audit record and not-found is indistinguishable from
+  // forbidden for restricted clients. We do not re-check it here.
   return runMcpMutationOperation(context, {
     operationType: "phase.link_hitch",
     target: { type: "phase", id: args.phaseId },
