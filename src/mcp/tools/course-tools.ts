@@ -218,14 +218,19 @@ export function resolvePhaseProjectId(
 // idempotencyKey collide on target_id → the second create is treated as a replay
 // of the first and returns the OTHER resource (cross-project leak). We therefore
 // fold the resource scope into the hashed material: a course is scoped by its
-// project, a phase by its parent course. A NUL separator keeps the scope and key
-// unambiguous (NUL cannot appear in either value).
+// project, a phase by its parent course.
+//
+// The material is a JSON-encoded [scope, key] tuple, NOT a string-joined pair, so
+// the framing is unambiguous regardless of what bytes scope/key contain: JSON
+// quoting makes [scope, key] impossible to confuse with any other (scope', key')
+// (no separator-injection), and a null scope (cross-project roadmap) is distinct
+// from an empty-string scope ([null,…] vs ["",…]).
 function scopedIdForIdempotencyKey(
   prefix: string,
   scope: string | null,
   idempotencyKey: string,
 ): string {
-  const material = `${scope ?? " null-scope"} ${idempotencyKey}`;
+  const material = JSON.stringify([scope, idempotencyKey]);
   const digest = createHash("sha256").update(material).digest("hex");
   return `${prefix}-${digest.slice(0, 32)}`;
 }
