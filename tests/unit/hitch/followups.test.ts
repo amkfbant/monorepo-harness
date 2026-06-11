@@ -65,9 +65,9 @@ describe("goal follow-up deferral", () => {
       expect(result.finding.lifecycleStatus).toBe("deferred");
       expect(result.finding.deferredBacklogItemId).toBe("item-20260526-001");
       expect(result.backlogItem?.priority).toBe("medium");
-      expect(result.backlogItem?.tags).toContain("goal-finding");
-      expect(result.backlogItem?.tags).toContain("goal:goal-followup");
-      expect(result.backlogItem?.goal).toContain("source: goal-finding");
+      expect(result.backlogItem?.tags).toContain("hitch-finding");
+      expect(result.backlogItem?.tags).toContain("hitch:goal-followup");
+      expect(result.backlogItem?.goal).toContain("source: hitch-finding");
       expect(result.backlogItem?.goal).toContain(
         `findingId: ${finding.findingId}`,
       );

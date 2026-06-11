@@ -562,7 +562,7 @@ export function registerHitchCommands(
           maxSteps: parsePositiveInt(raw.maxSteps ?? 20, "--max-steps"),
           createdBy: "cli",
           // halt before close/PR: a coder rerun must not silently open a PR /
-          // close the goal — that stays a deliberate `orchestrate` / `await-merge`.
+          // close the hitch — that stays a deliberate `orchestrate` / `await-merge`.
           stopAtCloseReady: true,
         });
         writeOutput(
@@ -912,7 +912,7 @@ export function registerHitchCommands(
           createdBy: "cli",
         });
         // Best-effort: if this ran in an agent worktree, link the workspace to
-        // the goal so `workspace status` reflects who is driving it. Never fails
+        // the hitch so `workspace status` reflects who is driving it. Never fails
         // the orchestration.
         const link = await linkAgentWorkspaceToHitch({
           repoPath,
@@ -968,10 +968,10 @@ export function registerHitchCommands(
       "seconds to await async external reviews before evaluating the gate; 0 = single check",
       "0",
     )
-    .action(async (goalArg: string | undefined, raw: Record<string, unknown>) => {
+    .action(async (hitchArg: string | undefined, raw: Record<string, unknown>) => {
       await withHitchErrorExitAsync(async () => {
         const all = raw.all === true;
-        if (all === (typeof goalArg === "string" && goalArg !== "")) {
+        if (all === (typeof hitchArg === "string" && hitchArg !== "")) {
           throw new HitchCliError(
             "hitch await-merge requires exactly one of <hitch-id> or --all",
           );
@@ -983,10 +983,10 @@ export function registerHitchCommands(
           typeof raw.repoId === "string" && raw.repoId !== ""
             ? raw.repoId
             : undefined;
-        // --all fans out across goals but the gh CI/merge probes are bound to the
+        // --all fans out across hitches but the gh CI/merge probes are bound to the
         // single --repo working dir; without a repo scope it could drive (and
         // merge) a PR of a DIFFERENT repo. Require --repo-id so --all never spans
-        // repos. (Single-goal mode names the goal explicitly, like orchestrate.)
+        // repos. (Single-hitch mode names the hitch explicitly, like orchestrate.)
         if (all && repoIdScope === undefined) {
           throw new HitchCliError(
             "hitch await-merge --all requires --repo-id <id> (it must not span repos)",
@@ -1063,7 +1063,7 @@ export function registerHitchCommands(
 
         // One probe: re-evaluate convergence and run AT MOST the close/merge step
         // (`closeAndPr` — the close/merge-ONLY runner; it can never run a coder or
-        // review). A goal that is not close_ready is reported as not_awaiting
+        // review). A hitch that is not close_ready is reported as not_awaiting
         // without mutating anything. `remainingMs` clamps this attempt's awaits to
         // the budget left.
         const probe =
@@ -1097,7 +1097,7 @@ export function registerHitchCommands(
             if (step.kind === "escalated") {
               // closeAndPr surfaces escalateReason but does NOT persist the
               // status (the generic orchestrator does); mirror that here so a
-              // hard-blocked gate leaves the goal `escalated` for a human.
+              // hard-blocked gate leaves the hitch `escalated` for a human.
               withHitchRepo(opts, ({ repo }) =>
                 repo.updateStatus(
                   hitchId,
@@ -1109,11 +1109,11 @@ export function registerHitchCommands(
             return step;
           };
 
-        // --all: drive every close_ready goal OF THE SCOPED REPO. The cap is
+        // --all: drive every close_ready hitch OF THE SCOPED REPO. The cap is
         // generous; if it is hit, surface the truncation explicitly rather than
-        // silently dropping goals.
+        // silently dropping hitches.
         const ALL_CAP = 10_000;
-        const goalIds = all
+        const hitchIds = all
           ? withHitchRepo(opts, ({ repo }) =>
               repo
                 .listSessions({
@@ -1123,34 +1123,34 @@ export function registerHitchCommands(
                 })
                 .map((s) => s.hitchId),
             )
-          : [String(goalArg)];
+          : [String(hitchArg)];
 
-        // Single-goal mode: if a --repo-id was given, the named goal must belong
-        // to it — refuse to merge a goal whose repo differs from the --repo dir.
+        // Single-hitch mode: if a --repo-id was given, the named hitch must belong
+        // to it — refuse to merge a hitch whose repo differs from the --repo dir.
         if (!all && repoIdScope !== undefined) {
-          const namedGoalId = String(goalArg);
+          const namedHitchId = String(hitchArg);
           const session = withHitchRepo(opts, ({ repo }) =>
-            repo.getSession(namedGoalId),
+            repo.getSession(namedHitchId),
           );
           if (session !== null && session.repoId !== repoIdScope) {
             throw new HitchCliError(
-              `hitch ${namedGoalId} belongs to repo "${session.repoId}", not "${repoIdScope}"`,
+              `hitch ${namedHitchId} belongs to repo "${session.repoId}", not "${repoIdScope}"`,
             );
           }
         }
 
-        if (all && goalIds.length === 0) {
+        if (all && hitchIds.length === 0) {
           process.stdout.write("no close_ready hitches to await\n");
           return;
         }
-        if (all && goalIds.length === ALL_CAP) {
+        if (all && hitchIds.length === ALL_CAP) {
           process.stderr.write(
             `warning: --all processed the first ${ALL_CAP} close_ready hitches; ` +
               `more may remain — re-run to continue\n`,
           );
         }
 
-        for (const hitchId of goalIds) {
+        for (const hitchId of hitchIds) {
           const result = await awaitHitchMerge(
             {
               pollOnce: probe(hitchId),

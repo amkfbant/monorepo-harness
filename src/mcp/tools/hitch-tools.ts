@@ -179,7 +179,7 @@ export function hitchListTool(
       ...(args.domain !== undefined ? { domain: args.domain } : {}),
       limit,
     };
-    const goals =
+    const hitches =
       args.projectId !== undefined || context.config.allowedProjects.length === 0
         ? repo.listSessions({
             ...baseFilter,
@@ -189,7 +189,7 @@ export function hitchListTool(
             .flatMap((projectId) => repo.listSessions({ ...baseFilter, projectId }))
             .sort(compareHitchSessions)
             .slice(0, limit);
-    return ok("goal sessions", { goals });
+    return ok("hitch sessions", { hitches });
   }) as HarnessMcpToolResult;
 }
 
@@ -199,11 +199,11 @@ export function hitchGetTool(
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
     const repo = new HitchRepository(db);
-    const goal = repo.getSession(args.hitchId);
-    if (goal === null) return errorResult(`goal not found: ${args.hitchId}`);
-    const denied = ensureProjectVisible(context.config, goal.projectId);
+    const hitch = repo.getSession(args.hitchId);
+    if (hitch === null) return errorResult(`hitch not found: ${args.hitchId}`);
+    const denied = ensureProjectVisible(context.config, hitch.projectId);
     if (denied !== null) return denied;
-    return ok("goal session", { goal });
+    return ok("hitch session", { hitch });
   }) as HarnessMcpToolResult;
 }
 
@@ -213,15 +213,15 @@ export function hitchStatusTool(
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
     const repo = new HitchRepository(db);
-    const goal = repo.getSession(args.hitchId);
-    if (goal === null) return errorResult(`goal not found: ${args.hitchId}`);
-    const denied = ensureProjectVisible(context.config, goal.projectId);
+    const hitch = repo.getSession(args.hitchId);
+    if (hitch === null) return errorResult(`hitch not found: ${args.hitchId}`);
+    const denied = ensureProjectVisible(context.config, hitch.projectId);
     if (denied !== null) return denied;
     const findings = mcpFindingPage(repo, args.hitchId);
     const decisions = repo.listDecisions(args.hitchId);
     const convergence = new ConvergenceService(repo).evaluate(args.hitchId);
-    return ok("goal status", {
-      goal,
+    return ok("hitch status", {
+      hitch,
       findings: findings.findings,
       findingsTruncated: findings.truncated,
       decisions,
@@ -236,12 +236,12 @@ export function hitchFindingsTool(
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
     const repo = new HitchRepository(db);
-    const goal = repo.getSession(args.hitchId);
-    if (goal === null) return errorResult(`goal not found: ${args.hitchId}`);
-    const denied = ensureProjectVisible(context.config, goal.projectId);
+    const hitch = repo.getSession(args.hitchId);
+    if (hitch === null) return errorResult(`hitch not found: ${args.hitchId}`);
+    const denied = ensureProjectVisible(context.config, hitch.projectId);
     if (denied !== null) return denied;
     const findings = mcpFindingPage(repo, args.hitchId);
-    return ok("goal findings", {
+    return ok("hitch findings", {
       findings: findings.findings,
       findingsTruncated: findings.truncated,
       limit: MAX_MCP_FINDINGS,
@@ -255,18 +255,18 @@ export function hitchDecisionsTool(
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
     const repo = new HitchRepository(db);
-    const goal = repo.getSession(args.hitchId);
-    if (goal === null) return errorResult(`goal not found: ${args.hitchId}`);
-    const denied = ensureProjectVisible(context.config, goal.projectId);
+    const hitch = repo.getSession(args.hitchId);
+    if (hitch === null) return errorResult(`hitch not found: ${args.hitchId}`);
+    const denied = ensureProjectVisible(context.config, hitch.projectId);
     if (denied !== null) return denied;
-    return ok("goal decisions", {
+    return ok("hitch decisions", {
       decisions: repo.listDecisions(args.hitchId),
     });
   }) as HarnessMcpToolResult;
 }
 
 /**
- * (#81) Derive a projectId from a repoId when the goal omits projectId but the
+ * (#81) Derive a projectId from a repoId when the hitch omits projectId but the
  * client is project-scoped. Only an UNAMBIGUOUS mapping (exactly one project for
  * the repoId) is derived; 0 or >1 matches return undefined so the caller falls
  * through to the actionable `ensureProjectVisible` denial — fail-closed, never
@@ -290,9 +290,9 @@ export async function hitchStartTool(
   args: HitchStartArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
-  // (#81) When the client is project-scoped but the goal only carries a repoId,
+  // (#81) When the client is project-scoped but the hitch only carries a repoId,
   // derive the projectId from an unambiguous repo→project mapping before the
-  // visibility gate, so a repoId-only goal.start is not rejected for a missing
+  // visibility gate, so a repoId-only hitch.start is not rejected for a missing
   // projectId it could have inferred. Ambiguous/unknown repos are NOT derived.
   let effectiveProjectId = args.projectId;
   if (
@@ -304,12 +304,12 @@ export async function hitchStartTool(
   }
   const visible = ensureProjectVisible(context.config, effectiveProjectId);
   if (visible !== null) return visible;
-  const hitchId = args.hitchId ?? goalIdForIdempotencyKey(args.idempotencyKey);
-  return runGoalOperation(context, {
+  const hitchId = args.hitchId ?? hitchIdForIdempotencyKey(args.idempotencyKey);
+  return runHitchOperation(context, {
     operationType: "hitch.start",
     target: { type: "goal", id: hitchId },
     args,
-    metadata: goalMetadata(context, "harness.hitch.start", args, { hitchId }),
+    metadata: hitchMetadata(context, "harness.hitch.start", args, { hitchId }),
     workWithDb: async (db) => {
       const input: CreateHitchSessionInput = {
         hitchId,
@@ -352,11 +352,11 @@ export async function hitchRecordFindingsTool(
       count: args.findings.length,
     });
   }
-  return runGoalOperation(context, {
+  return runHitchOperation(context, {
     operationType: "hitch.record_findings",
     target: { type: "goal", id: args.hitchId },
     args,
-    metadata: goalMetadata(context, "harness.hitch.record_findings", args, {
+    metadata: hitchMetadata(context, "harness.hitch.record_findings", args, {
       hitchId: args.hitchId,
     }),
     workWithDb: async (db, operationId) => {
@@ -454,11 +454,11 @@ export async function hitchClassifyFindingTool(
   args: HitchClassifyFindingArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
-  return runGoalOperation(context, {
+  return runHitchOperation(context, {
     operationType: "hitch.classify_finding",
     target: { type: "goal_finding", id: args.findingId },
     args,
-    metadata: goalMetadata(context, "harness.hitch.classify_finding", args, {
+    metadata: hitchMetadata(context, "harness.hitch.classify_finding", args, {
       findingIds: [args.findingId],
     }),
     workWithDb: async (db) => {
@@ -490,11 +490,11 @@ export async function hitchMarkFindingFixedTool(
   args: HitchMarkFindingFixedArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
-  return runGoalOperation(context, {
+  return runHitchOperation(context, {
     operationType: "hitch.mark_finding_fixed",
     target: { type: "goal_finding", id: args.findingId },
     args,
-    metadata: goalMetadata(context, "harness.hitch.mark_finding_fixed", args, {
+    metadata: hitchMetadata(context, "harness.hitch.mark_finding_fixed", args, {
       findingIds: [args.findingId],
     }),
     workWithDb: async (db) => {
@@ -531,11 +531,11 @@ export async function hitchDeferFindingTool(
     });
   }
   const paths = harnessPaths(context.harnessRoot);
-  return runGoalOperation(context, {
+  return runHitchOperation(context, {
     operationType: "hitch.defer_finding",
     target: { type: "goal_finding", id: args.findingId },
     args,
-    metadata: goalMetadata(context, "harness.hitch.defer_finding", args, {
+    metadata: hitchMetadata(context, "harness.hitch.defer_finding", args, {
       findingIds: [args.findingId],
     }),
     workWithDb: async (db) => {
@@ -572,11 +572,11 @@ export async function hitchRecordCloseCheckTool(
   args: HitchRecordCloseCheckArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
-  return runGoalOperation(context, {
+  return runHitchOperation(context, {
     operationType: "hitch.record_close_check",
     target: { type: "goal", id: args.hitchId },
     args,
-    metadata: goalMetadata(context, "harness.hitch.record_close_check", args, {
+    metadata: hitchMetadata(context, "harness.hitch.record_close_check", args, {
       hitchId: args.hitchId,
     }),
     workWithDb: async (db) => {
@@ -616,11 +616,11 @@ export async function hitchCheckConvergenceTool(
   args: HitchCheckConvergenceArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
-  return runGoalOperation(context, {
+  return runHitchOperation(context, {
     operationType: "hitch.check_convergence",
     target: { type: "goal", id: args.hitchId },
     args,
-    metadata: goalMetadata(context, "harness.hitch.check_convergence", args, {
+    metadata: hitchMetadata(context, "harness.hitch.check_convergence", args, {
       hitchId: args.hitchId,
     }),
     workWithDb: async (db) => {
@@ -651,7 +651,7 @@ export async function hitchCloseTool(
   args: HitchCloseArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
-  const preview = goalClosePreview(args, context);
+  const preview = hitchClosePreview(args, context);
   if (preview.status === "error" || preview.status === "permission_denied") {
     return preview;
   }
@@ -666,14 +666,14 @@ export async function hitchCloseTool(
     });
   }
   if (!requiresConfirmation && !isConfirmed(context)) {
-    const denied = ensureUnconfirmedGoalCloseAllowed(context);
+    const denied = ensureUnconfirmedHitchCloseAllowed(context);
     if (denied !== null) return denied;
   }
-  return runGoalOperation(context, {
+  return runHitchOperation(context, {
     operationType: "hitch.close",
     target: { type: "goal", id: args.hitchId },
     args,
-    metadata: goalMetadata(context, "harness.hitch.close", args, {
+    metadata: hitchMetadata(context, "harness.hitch.close", args, {
       hitchId: args.hitchId,
     }),
     workWithDb: async (db) => {
@@ -683,9 +683,9 @@ export async function hitchCloseTool(
           const current = new ConvergenceService(repo).evaluate(args.hitchId);
           if (current.decision !== "close_ready") {
             const error = new Error(
-              `goal is no longer close_ready: decision=${current.decision}`,
+              `hitch is no longer close_ready: decision=${current.decision}`,
             );
-            (error as { code?: string }).code = "goal_not_close_ready";
+            (error as { code?: string }).code = "hitch_not_close_ready";
             throw error;
           }
         }
@@ -700,7 +700,7 @@ export async function hitchCancelTool(
   args: HitchCancelArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
-  const preview = ok("would cancel goal", {
+  const preview = ok("would cancel hitch", {
     hitchId: args.hitchId,
     reason: redactMcpText(args.reason),
   });
@@ -710,11 +710,11 @@ export async function hitchCancelTool(
       id: args.hitchId,
     });
   }
-  return runGoalOperation(context, {
+  return runHitchOperation(context, {
     operationType: "hitch.cancel",
     target: { type: "goal", id: args.hitchId },
     args,
-    metadata: goalMetadata(context, "harness.hitch.cancel", args, {
+    metadata: hitchMetadata(context, "harness.hitch.cancel", args, {
       hitchId: args.hitchId,
     }),
     workWithDb: async (db) =>
@@ -730,7 +730,7 @@ export async function hitchExpandScopeTool(
   args: HitchExpandScopeArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
-  const preview = ok("would expand goal scope", {
+  const preview = ok("would expand hitch scope", {
     hitchId: args.hitchId,
     scope: args.scope,
     reason: redactMcpText(args.reason),
@@ -745,14 +745,14 @@ export async function hitchExpandScopeTool(
       { type: "goal", id: args.hitchId },
     );
   }
-  return runGoalOperation(context, {
+  return runHitchOperation(context, {
     operationType: "hitch.expand_scope",
     target: { type: "goal", id: args.hitchId },
     args,
-    metadata: goalMetadata(context, "harness.hitch.expand_scope", args, {
+    metadata: hitchMetadata(context, "harness.hitch.expand_scope", args, {
       hitchId: args.hitchId,
     }),
-    workWithDb: async (db) => expandGoalScope(db, args),
+    workWithDb: async (db) => expandHitchScope(db, args),
   });
 }
 
@@ -763,7 +763,7 @@ export function resolveHitchProjectId(
   if (args.hitchId === undefined) return undefined;
   const unresolved =
     context.config.allowedProjects.length > 0
-      ? "__mcp_unresolved_goal_project__"
+      ? "__mcp_unresolved_hitch_project__"
       : undefined;
   return withReadonlyDb(context, ({ db }) => {
     const row = db
@@ -780,7 +780,7 @@ export function resolveHitchFindingProjectId(
   if (args.findingId === undefined) return undefined;
   const unresolved =
     context.config.allowedProjects.length > 0
-      ? "__mcp_unresolved_goal_finding_project__"
+      ? "__mcp_unresolved_hitch_finding_project__"
       : undefined;
   return withReadonlyDb(context, ({ db }) => {
     const row = db
@@ -795,7 +795,7 @@ export function resolveHitchFindingProjectId(
   }) as string | null | undefined;
 }
 
-async function runGoalOperation<T>(
+async function runHitchOperation<T>(
   context: McpToolContext,
   opts: {
     operationType: string;
@@ -891,23 +891,23 @@ async function runGoalOperation<T>(
   }
 }
 
-function goalClosePreview(
+function hitchClosePreview(
   args: HitchCloseArgs,
   context: McpToolContext,
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
     const repo = new HitchRepository(db);
-    const goal = repo.getSession(args.hitchId);
-    if (goal === null) return errorResult(`goal not found: ${args.hitchId}`);
+    const hitch = repo.getSession(args.hitchId);
+    if (hitch === null) return errorResult(`hitch not found: ${args.hitchId}`);
     const convergence = new ConvergenceService(repo).evaluate(args.hitchId);
     return {
       status: "dry_run",
       summary:
         convergence.decision === "close_ready"
-          ? "goal is close_ready and can be closed"
-          : "would close a non-close_ready goal after confirmation",
+          ? "hitch is close_ready and can be closed"
+          : "would close a non-close_ready hitch after confirmation",
       data: {
-        goal,
+        hitch,
         convergence,
         summary: redactMcpText(args.summary),
         force: args.force === true || convergence.decision !== "close_ready",
@@ -965,7 +965,7 @@ function isConfirmed(context: McpToolContext): boolean {
   return context.confirmedConfirmationId !== undefined;
 }
 
-function ensureUnconfirmedGoalCloseAllowed(
+function ensureUnconfirmedHitchCloseAllowed(
   context: McpToolContext,
 ): HarnessMcpToolResult | null {
   if (modeForClient(context.config, context.clientName) !== "guarded-mutation") {
@@ -997,12 +997,12 @@ function mcpFindingPage(
     limit: MAX_MCP_FINDINGS + 1,
   });
   return {
-    findings: rows.slice(0, MAX_MCP_FINDINGS).map(redactGoalFindingForMcp),
+    findings: rows.slice(0, MAX_MCP_FINDINGS).map(redactHitchFindingForMcp),
     truncated: rows.length > MAX_MCP_FINDINGS,
   };
 }
 
-function redactGoalFindingForMcp(finding: HitchFinding): HitchFinding {
+function redactHitchFindingForMcp(finding: HitchFinding): HitchFinding {
   return {
     ...finding,
     sourceRef: cappedNullableMcpText(finding.sourceRef),
@@ -1024,7 +1024,7 @@ function cappedMcpText(value: string): string {
   return `${redacted.slice(0, MAX_MCP_FINDING_TEXT_CHARS)}...[truncated]`;
 }
 
-function goalMetadata(
+function hitchMetadata(
   context: McpToolContext,
   toolName: string,
   args: MutationBaseArgs,
@@ -1051,9 +1051,9 @@ function goalMetadata(
   };
 }
 
-function goalIdForIdempotencyKey(idempotencyKey: string): string {
+function hitchIdForIdempotencyKey(idempotencyKey: string): string {
   const digest = createHash("sha256").update(idempotencyKey).digest("hex");
-  return `goal-${digest.slice(0, 32)}`;
+  return `hitch-${digest.slice(0, 32)}`;
 }
 
 function toClassifiableFinding(
@@ -1072,7 +1072,7 @@ function toClassifiableFinding(
   };
 }
 
-function expandGoalScope(
+function expandHitchScope(
   db: Database.Database,
   args: HitchExpandScopeArgs,
 ): { hitchId: string; scope: HitchScope; reason: string } {

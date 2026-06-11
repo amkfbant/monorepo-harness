@@ -17,7 +17,7 @@ export function nextReviewMode(
 export function reviewModePurpose(mode: HitchReviewMode): string {
   switch (mode) {
     case "initial":
-      return "review the full frozen goal scope against close conditions";
+      return "review the full frozen hitch scope against close conditions";
     case "delta":
       return "verify previous fixes and changed files; default unrelated findings out of scope";
     case "close":

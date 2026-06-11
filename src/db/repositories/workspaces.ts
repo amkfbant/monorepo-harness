@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 /**
  * Agent-workspace write repository (W2). An additive index over the per-agent
  * git worktrees: git owns a worktree's existence/branch, this row carries the
- * harness-side metadata git does not track (objective, advisory goal link,
+ * harness-side metadata git does not track (objective, advisory hitch link,
  * heartbeat). Keyed by (repo_path, agent); `upsert` keeps one row per agent.
  */
 
@@ -189,7 +189,7 @@ export class WorkspaceRepository {
       .run(ts, ts, repoPath, agent);
   }
 
-  /** Link (or unlink with null) an advisory goal for the workspace. */
+  /** Link (or unlink with null) an advisory hitch for the workspace. */
   linkHitch(
     repoPath: string,
     agent: string,

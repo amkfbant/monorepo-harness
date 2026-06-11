@@ -3513,7 +3513,7 @@ async function resolveLiveWorkspace(
 /**
  * Run a function against the shared workspace DB index (HARNESS_ROOT/.harness).
  * git stays the source of truth for a worktree's existence; this row carries
- * the harness-side metadata (objective / advisory goal link / heartbeat).
+ * the harness-side metadata (objective / advisory hitch link / heartbeat).
  */
 function withWorkspaceRepo<T>(
   fn: (repo: WorkspaceRepository, db: ReturnType<typeof openManagedDb>["db"]) => T,
@@ -3747,9 +3747,9 @@ workspaceCmd
         return;
       }
       for (const w of enriched) {
-        const goal = w.hitchId ? ` hitch=${w.hitchId}` : "";
+        const hitchTag = w.hitchId ? ` hitch=${w.hitchId}` : "";
         const obj = w.objective ? ` — ${w.objective}` : "";
-        process.stdout.write(`${w.agent}\t${w.branch}\t${w.path}${goal}${obj}\n`);
+        process.stdout.write(`${w.agent}\t${w.branch}\t${w.path}${hitchTag}${obj}\n`);
       }
       for (const r of stale) {
         process.stdout.write(
@@ -3930,11 +3930,11 @@ workspaceCmd
             : s.git.baseResolved
               ? `+${s.git.ahead}/-${s.git.behind} ${s.git.dirtyCount}dirty`
               : `base? ${s.git.dirtyCount}dirty`;
-        const goal = s.hitchId ? `${s.hitchId}${s.hitchDecision ? `:${s.hitchDecision}` : ":missing"}` : "-";
+        const hitchCol = s.hitchId ? `${s.hitchId}${s.hitchDecision ? `:${s.hitchDecision}` : ":missing"}` : "-";
         const obj = s.objective ? ` — ${s.objective}` : "";
         const active = `${s.lastActiveAt ?? "-"}${s.staleHeartbeat ? " ⚠idle" : ""}`;
         process.stdout.write(
-          `${s.agent}\t${s.label}\t${git}\t${goal}\t${active}${obj}\n`,
+          `${s.agent}\t${s.label}\t${git}\t${hitchCol}\t${active}${obj}\n`,
         );
       }
     } catch (e) {
@@ -3970,7 +3970,7 @@ workspaceCmd
         { repoPath, workspacesDir },
         { agent, base: String(raw.base ?? "main"), workspace: ws },
       );
-      const goalId = typeof raw.hitch === "string" ? raw.hitch : null;
+      const hitchId = typeof raw.hitch === "string" ? raw.hitch : null;
       const checkpoint = withWorkspaceRepo((repo) => {
         // ensure the workspace is tracked, then record the advisory checkpoint.
         const record = repo.upsert({
@@ -3979,7 +3979,7 @@ workspaceCmd
           branch: ws.branch,
           worktreePath: ws.path,
         });
-        if (goalId !== null) repo.linkHitch(repoKey, agent, goalId);
+        if (hitchId !== null) repo.linkHitch(repoKey, agent, hitchId);
         if (typeof raw.objective === "string") {
           repo.setObjective(repoKey, agent, raw.objective);
         }
@@ -3988,7 +3988,7 @@ workspaceCmd
           note: typeof raw.note === "string" ? raw.note : null,
           headSha: insp.head,
           dirtyCount: insp.dirtyFiles.length,
-          hitchId: goalId ?? record.hitchId,
+          hitchId: hitchId ?? record.hitchId,
           createdBy: String(raw.by ?? "cli"),
         });
       });
@@ -4011,7 +4011,7 @@ workspaceCmd
 workspaceCmd
   .command("recover")
   .description(
-    "reconstruct a workspace's state (git + linked goal) and recommend next steps",
+    "reconstruct a workspace's state (git + linked hitch) and recommend next steps",
   )
   .argument("<agent>", "agent name")
   .option("--repo <path>", "the project repo (default: current directory)")
@@ -4039,16 +4039,16 @@ workspaceCmd
             record === null
               ? null
               : wsRepo.latestCheckpoint(record.workspaceId);
-          let goalSummary: RecoveryHitch | null = null;
+          let hitchSummary: RecoveryHitch | null = null;
           if (record?.hitchId != null) {
-            const goalRepo = new HitchRepository(db);
-            // a dangling advisory link (goal deleted) → convergence stays null.
-            const exists = goalRepo.getSession(record.hitchId) !== null;
-            goalSummary = {
+            const hitchRepo = new HitchRepository(db);
+            // a dangling advisory link (hitch deleted) → convergence stays null.
+            const exists = hitchRepo.getSession(record.hitchId) !== null;
+            hitchSummary = {
               hitchId: record.hitchId,
               convergence: exists
                 ? (() => {
-                    const c = new ConvergenceService(goalRepo).evaluate(
+                    const c = new ConvergenceService(hitchRepo).evaluate(
                       record.hitchId as string,
                     );
                     return {
@@ -4062,7 +4062,7 @@ workspaceCmd
           }
           return {
             objective: record?.objective ?? null,
-            hitch: goalSummary,
+            hitch: hitchSummary,
             latestCheckpoint:
               latest === null
                 ? null
@@ -4088,7 +4088,7 @@ workspaceCmd
       const gitLine = insp.baseResolved
         ? `${insp.ahead} ahead / ${insp.behind} behind ${insp.base}, ${insp.dirtyFiles.length} uncommitted`
         : `base "${insp.base}" not found, ${insp.dirtyFiles.length} uncommitted`;
-      const goalLine =
+      const hitchLine =
         briefing.hitch === null
           ? "(none)"
           : briefing.hitch.convergence === null
@@ -4099,7 +4099,7 @@ workspaceCmd
         `recover "${agent}" (${insp.branch})\n` +
           `  git:        ${gitLine}\n` +
           `  objective:  ${briefing.objective ?? "(none)"}\n` +
-          `  hitch:      ${goalLine}\n` +
+          `  hitch:      ${hitchLine}\n` +
           `  checkpoint: ${cp ? `${cp.createdAt} by ${cp.createdBy}${cp.note ? ` — ${cp.note}` : ""}` : "(none)"}\n` +
           `  next steps:\n` +
           briefing.nextSteps.map((s) => `    - ${s}`).join("\n") +

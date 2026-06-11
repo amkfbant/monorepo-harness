@@ -83,7 +83,7 @@ export class HitchNotCloseReadyError extends Error {
 /**
  * Lifecycle states that still demand attention (i.e. an "open" finding). A
  * finding whose scope is `unknown` and whose lifecycle is one of these must be
- * deterministically classified before the goal can converge.
+ * deterministically classified before the hitch can converge.
  */
 const OPEN_LIFECYCLE_STATUSES: readonly HitchLifecycleStatus[] = [
   "open",
@@ -104,7 +104,7 @@ const DEFERRABLE_OUT_OF_SCOPE_LIFECYCLES: readonly HitchLifecycleStatus[] = [
 ];
 
 /**
- * The concrete repo/run context a goal session does not itself store. The
+ * The concrete repo/run context a hitch session does not itself store. The
  * session has `repoId` / `domain` and the goal text (title/description), but
  * the on-disk repo path and base branch must be supplied by the caller. The
  * CLI resolves these from its `--repo` / `--base-branch` flags; tests pass a
@@ -147,7 +147,7 @@ export interface OrchestratorRunnerDeps {
     /**
      * Opt-in: fetch the PR's external review verdicts (codex GitHub App /
      * Copilot). A `CHANGES_REQUESTED` verdict is ingested ONCE as an
-     * unknown-scope advisory goal finding so the merge gate escalates
+     * unknown-scope advisory hitch finding so the merge gate escalates
      * (fail-closed) for the operator to classify (§6: external output is
      * advisory, never auto-trusted). Approvals have NO gating effect.
      */
@@ -180,7 +180,7 @@ export interface OrchestratorRunnerDeps {
     config?: Partial<CopilotReviewConfig>;
   };
   /**
-   * Resolve the repo/run context for a goal's session. Defaults to deriving
+   * Resolve the repo/run context for a hitch's session. Defaults to deriving
    * the goal text from the session title/description, the repoId/domain from
    * the session, and the base branch to `main`; the repo path is taken from
    * `repoPath` below. Override for full control (e.g. project-mode runs).
@@ -211,13 +211,13 @@ function resolveRunContext(
   }
   if (session.repoId === null || session.domain === null) {
     throw new Error(
-      `goal ${session.hitchId} has no repoId/domain; cannot run the coder ` +
-        `(provide resolveRunContext or set the goal's repoId+domain)`,
+      `hitch ${session.hitchId} has no repoId/domain; cannot run the coder ` +
+        `(provide resolveRunContext or set the hitch's repoId+domain)`,
     );
   }
   if (deps.repoPath === undefined) {
     throw new Error(
-      `goal ${session.hitchId}: no repoPath configured for the orchestrator ` +
+      `hitch ${session.hitchId}: no repoPath configured for the orchestrator ` +
         `(pass deps.repoPath or deps.resolveRunContext)`,
     );
   }
@@ -234,7 +234,7 @@ function resolveRunContext(
 const CODING_ATTEMPT_TYPES = new Set<HitchAttemptType>(["implement", "rerun"]);
 
 /**
- * The latest run id recorded against a goal — the run the review / pr steps
+ * The latest run id recorded against a hitch — the run the review / pr steps
  * operate on. Attempts are ordered (iteration ASC, created_at ASC), so the
  * last CODING attempt (implement / rerun) carrying a runId is the most recent
  * run. A close-check or other attempt's runId must not be picked.
@@ -249,11 +249,11 @@ export function latestRunId(repo: HitchRepository, hitchId: string): string {
     if (typeof runId === "string" && runId !== "") return runId;
   }
   throw new Error(
-    `goal ${hitchId} has no recorded run yet; run the coder before reviewing`,
+    `hitch ${hitchId} has no recorded run yet; run the coder before reviewing`,
   );
 }
 
-function reviewModeForGoal(
+function reviewModeForHitch(
   repo: HitchRepository,
   session: HitchSession,
 ): HitchReviewMode {
@@ -286,7 +286,7 @@ export function createOrchestratorRunners(
           const repo = new HitchRepository(db);
           const s = repo.requireSession(hitchId);
           const ctx = resolveRunContext(deps, s);
-          // a goal that already has a coding attempt is iterating on review
+          // a hitch that already has a coding attempt is iterating on review
           // feedback → "rerun"; the first pass is "implement".
           const codingAttempts = repo
             .listAttempts(hitchId)
@@ -307,7 +307,7 @@ export function createOrchestratorRunners(
                 )
               : "";
           // On a rerun, inject the open in-scope findings review raised into the
-          // coder goal so it knows what to fix (the goal-mode analogue of the
+          // coder goal so it knows what to fix (the hitch-mode analogue of the
           // run-level required_changes injection). The first `implement` pass
           // has none. unknown-scope findings are intentionally excluded — they
           // must be classified first (fail-closed).
@@ -393,7 +393,7 @@ export function createOrchestratorRunners(
         dbPath: deps.dbPath,
       });
 
-      // 3. fold the processed proposal into the goal: a review cycle, any
+      // 3. fold the processed proposal into the hitch: a review cycle, any
       //    findings it carried, and the `review_consensus` close-check that
       //    lets convergence advance toward close.
       withManagedDb({ dbPath: deps.dbPath }, (db) => {
@@ -407,7 +407,7 @@ export function createOrchestratorRunners(
           // record an empty cycle so the budget reflects the review.
           const cycle = repo.startReviewCycle({
             hitchId,
-            reviewMode: reviewModeForGoal(repo, session),
+            reviewMode: reviewModeForHitch(repo, session),
             sourceRunId: runId,
           });
           repo.completeReviewCycle({
@@ -422,7 +422,7 @@ export function createOrchestratorRunners(
           proposal,
           processResult: processed,
           createdBy: deps.createdBy,
-          // Phase 2-3: escalate if the consensus for this goal's review runs
+          // Phase 2-3: escalate if the consensus for this hitch's review runs
           // is stuck (long pending / no progress). No-op for the common
           // single-reviewer, decisive-verdict flow.
           consensusStall: { provider: dbConsensusSnapshotProvider(db) },
@@ -454,7 +454,7 @@ export function createOrchestratorRunners(
         return { resolved: true };
       }),
     defer: async (hitchId) => {
-      // No mutation gate: deferral is a goal-repo bookkeeping op (moving an
+      // No mutation gate: deferral is a hitch-repo bookkeeping op (moving an
       // out-of-scope follow-up to the backlog), not a workspace mutation.
       // `deferFindingToBacklog` opens its own managed db for the backlog write,
       // so collect the finding ids under one open, close it, then loop the
@@ -504,10 +504,10 @@ export function createOrchestratorRunners(
         (db) => {
           const repo = new HitchRepository(db);
           const session = repo.requireSession(hitchId);
-          // Defense in depth: closeAndPr must only ever run on a goal whose
+          // Defense in depth: closeAndPr must only ever run on a hitch whose
           // convergence is `close_ready`. The orchestrator dispatch already
           // guarantees this, but a direct caller (or a future code path) must
-          // not be able to close a non-ready goal — fail closed.
+          // not be able to close a non-ready hitch — fail closed.
           const convergence = new ConvergenceService(repo).evaluate(hitchId);
           if (convergence.decision !== "close_ready") {
             throw new HitchNotCloseReadyError(hitchId, convergence.decision);
@@ -518,10 +518,10 @@ export function createOrchestratorRunners(
             runId: rid,
             base: context.baseBranch,
             repoPath: context.repoPath,
-            // #103 — Conventional-Commit title derived from the goal title so
+            // #103 — Conventional-Commit title derived from the hitch title so
             // release-please picks the squash commit up.
             prTitle: conventionalPrTitle({
-              goalTitle: session.title ?? "",
+              hitchTitle: session.title ?? "",
               runId: rid,
             }),
           };
@@ -561,7 +561,7 @@ export function createOrchestratorRunners(
       }
 
       // Create the PR FIRST. A PR failure must NOT leave a permanently-closed
-      // goal with no PR, so the close is the last side effect.
+      // hitch with no PR, so the close is the last side effect.
       const pr = await createPullRequest({
         runsDir: paths.runsDir,
         workspacesDir: paths.workspacesDir,
@@ -579,7 +579,7 @@ export function createOrchestratorRunners(
 
       // Best-effort Copilot review (opt-in). Observational only: it NEVER
       // gates close/merge, and ANY failure (including an unexpected throw) is
-      // swallowed — the goal proceeds regardless (existing safety boundary:
+      // swallowed — the hitch proceeds regardless (existing safety boundary:
       // external output must not drive a state transition).
       if (deps.copilotReview !== undefined) {
         try {
@@ -643,21 +643,21 @@ export function createOrchestratorRunners(
           };
         }
         // merged → closed. A CI-not-green transient (recheckable) leaves the
-        // goal `close_ready` with the PR open: a later `goal orchestrate`
+        // hitch `close_ready` with the PR open: a later `hitch orchestrate`
         // re-enters closeAndPr (idempotent PR + a fresh gate evaluation) and
         // merges once CI is green — the resumable "later merge" path, no new
         // status / migration needed. Any other transient (e.g. tier-not-eligible)
-        // is permanent for a re-check, so the goal closes for a human merge.
+        // is permanent for a re-check, so the hitch closes for a human merge.
         const nextStatus = outcome.merged
           ? "closed"
           : outcome.recheckable === true
             ? "close_ready"
             : "closed";
         const summary = outcome.merged
-          ? "goal converged; PR merged"
+          ? "hitch converged; PR merged"
           : outcome.recheckable === true
             ? "PR open; awaiting CI — re-run orchestrate to merge"
-            : "goal converged; PR opened";
+            : "hitch converged; PR opened";
         withManagedDb({ dbPath: deps.dbPath }, (db) => {
           new HitchRepository(db).updateStatus(hitchId, nextStatus, summary);
         });
@@ -668,7 +668,7 @@ export function createOrchestratorRunners(
         new HitchRepository(db).updateStatus(
           hitchId,
           "closed",
-          "goal converged; PR opened",
+          "hitch converged; PR opened",
         );
       });
       return { prUrl: pr.prUrl, draft: pr.draft, merged: false };
@@ -692,7 +692,7 @@ export function createOrchestratorRunners(
  * Phase 3: evaluate the merge gate for a freshly-created PR and, if it passes,
  * merge (recording an operation-audit row). A hard-blocked gate returns an
  * escalateReason (fail-closed: do NOT merge, do NOT close). CI-not-green
- * returns `{ merged: false }` so the caller closes the goal and leaves the PR
+ * returns `{ merged: false }` so the caller closes the hitch and leaves the PR
  * open for a later merge.
  */
 async function runAutoMerge(
@@ -796,7 +796,7 @@ async function runAutoMerge(
   // transient: leave the PR open for a later merge. `recheckable` is true only
   // for CI-not-green (a temporal blocker that a re-run can clear); a
   // tier_not_auto_eligible block is permanent (the path's tier never changes),
-  // so the goal closes for a human merge rather than waiting on a re-check.
+  // so the hitch closes for a human merge rather than waiting on a re-check.
   return { merged: false, recheckable: gate.blockers.includes("ci_not_green") };
 }
 
@@ -889,7 +889,7 @@ function effectiveAutoMergeTier(
 /**
  * Opt-in advisory ingestion of external PR review verdicts (codex GitHub App /
  * Copilot). Each `CHANGES_REQUESTED` verdict is recorded ONCE as an
- * unknown-scope goal finding; the close-readiness re-eval in the merge gate
+ * unknown-scope hitch finding; the close-readiness re-eval in the merge gate
  * then fails, so the gate escalates for the operator to classify. External
  * approvals are NEVER ingested — an external "approve" cannot authorise a merge
  * (§0/§6: external output may only push fail-closed, never approve). Best

@@ -1429,15 +1429,14 @@ export const MIGRATION_V16_STATEMENTS: readonly string[] = [
      ON goal_convergence_decisions(goal_id, created_at)`,
 ];
 
-/** Tables added by v16 (Phase 19). */
-export const V16_TABLE_NAMES: readonly string[] = [
-  "goal_sessions",
-  "goal_attempts",
-  "goal_review_cycles",
-  "goal_findings",
-  "goal_close_checks",
-  "goal_convergence_decisions",
-];
+/**
+ * v16 created six `goal_*` tables; v20 (SP-0) renames them to `hitch_*`. The
+ * live name list is `V20_TABLE_NAMES` — there is no `V16_TABLE_NAMES` constant
+ * (it would only duplicate the now-renamed surface and risk being mistaken for
+ * the current table names). The v16 CREATE statements above intentionally still
+ * say `goal_*` so the in-order migration chain has a `goal_*` surface for v20's
+ * RENAME to act on.
+ */
 
 /**
  * v17 — agent workspaces (W2). An additive index over the per-agent git

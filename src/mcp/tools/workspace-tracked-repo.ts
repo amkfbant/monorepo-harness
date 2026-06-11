@@ -51,11 +51,11 @@ export interface TrackedRepoResolution {
    * DIFFERENT repo — existsSync alone is not enough).
    */
   candidateGitCwds: string[];
-  /** DB facts for the repo's workspaces (rows + per-goal info + checkpoint ts) */
+  /** DB facts for the repo's workspaces (rows + per-hitch info + checkpoint ts) */
   data: WorkspaceStatusData;
   /** project-scope predicate (undefined when the client is unrestricted) */
-  include?: (record: WorkspaceRecord | null, goalProjectId: string | null) => boolean;
-  /** linked-goal project of a row (for the scope predicate) */
+  include?: (record: WorkspaceRecord | null, hitchProjectId: string | null) => boolean;
+  /** linked-hitch project of a row (for the scope predicate) */
   projectOf: (record: WorkspaceRecord) => string | null;
 }
 

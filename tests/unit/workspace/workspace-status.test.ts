@@ -37,9 +37,9 @@ describe("progressLabel (deterministic projection)", () => {
     expect(progressLabel(base({ stale: false, git: null, hitchId: "g", hitchDecision: "needs_fix" }))).toBe("stale");
   });
 
-  it("goal-missing for a dangling link", () => {
+  it("hitch-missing for a dangling link", () => {
     expect(progressLabel(base({ hitchId: "gone", hitchDecision: null }))).toBe(
-      "goal-missing",
+      "hitch-missing",
     );
   });
 

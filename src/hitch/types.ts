@@ -129,7 +129,7 @@ export const HITCH_NEXT_ACTION_KINDS = [
   "classify_findings",
   "run_close_check",
   "defer_followups",
-  "close_goal",
+  "close_hitch",
   "ask_human",
 ] as const;
 

@@ -82,7 +82,7 @@ import {
   opsKnowledgeRecordTool,
   opsKnowledgeDeprecateTool,
   resolveDoctorFindingProjectId,
-  orchestrateGoalTool,
+  orchestrateHitchTool,
   prCreateTool,
   rerunStartTool,
   resolveKnowledgeCandidateProjectId,
@@ -374,7 +374,7 @@ const operationGetArgs = z
   })
   .strict();
 
-const goalListArgs = z
+const hitchListArgs = z
   .object({
     status: z.enum(HITCH_STATUSES).optional(),
     projectId: z.string().min(1).optional(),
@@ -384,13 +384,13 @@ const goalListArgs = z
   })
   .strict();
 
-const goalGetArgs = z
+const hitchGetArgs = z
   .object({
     hitchId: z.string().min(1),
   })
   .strict();
 
-const goalStartArgs = z
+const hitchStartArgs = z
   .object({
     hitchId: z.string().min(1).optional(),
     title: z.string().min(1),
@@ -410,7 +410,7 @@ const goalStartArgs = z
   .merge(MutationArgsBaseSchema)
   .strict();
 
-const goalFindingInputArgs = z
+const hitchFindingInputArgs = z
   .object({
     severity: z.enum(HITCH_FINDING_SEVERITIES),
     category: z.string().min(1),
@@ -427,15 +427,15 @@ const goalFindingInputArgs = z
   })
   .strict();
 
-const goalRecordFindingsArgs = z
+const hitchRecordFindingsArgs = z
   .object({
     hitchId: z.string().min(1),
-    findings: z.array(goalFindingInputArgs).min(1).max(50),
+    findings: z.array(hitchFindingInputArgs).min(1).max(50),
   })
   .merge(MutationArgsBaseSchema)
   .strict();
 
-const goalClassifyFindingArgs = z
+const hitchClassifyFindingArgs = z
   .object({
     findingId: z.string().min(1),
     scopeStatus: z.enum(HITCH_SCOPE_STATUSES),
@@ -445,7 +445,7 @@ const goalClassifyFindingArgs = z
   .merge(MutationArgsBaseSchema)
   .strict();
 
-const goalFindingMutationArgs = z
+const hitchFindingMutationArgs = z
   .object({
     findingId: z.string().min(1),
     note: z.string().min(1).optional(),
@@ -453,7 +453,7 @@ const goalFindingMutationArgs = z
   .merge(MutationArgsBaseSchema)
   .strict();
 
-const goalDeferFindingArgs = z
+const hitchDeferFindingArgs = z
   .object({
     findingId: z.string().min(1),
     reason: z.string().min(1),
@@ -462,7 +462,7 @@ const goalDeferFindingArgs = z
   .merge(MutationArgsBaseSchema)
   .strict();
 
-const goalRecordCloseCheckArgs = z
+const hitchRecordCloseCheckArgs = z
   .object({
     hitchId: z.string().min(1),
     conditionId: z.string().min(1),
@@ -474,7 +474,7 @@ const goalRecordCloseCheckArgs = z
   .merge(MutationArgsBaseSchema)
   .strict();
 
-const goalCheckConvergenceArgs = z
+const hitchCheckConvergenceArgs = z
   .object({
     hitchId: z.string().min(1),
     updateStatus: z.boolean().optional(),
@@ -482,7 +482,7 @@ const goalCheckConvergenceArgs = z
   .merge(MutationArgsBaseSchema)
   .strict();
 
-const goalCloseArgs = z
+const hitchCloseArgs = z
   .object({
     hitchId: z.string().min(1),
     summary: z.string().min(1),
@@ -491,7 +491,7 @@ const goalCloseArgs = z
   .merge(MutationArgsBaseSchema)
   .strict();
 
-const goalCancelArgs = z
+const hitchCancelArgs = z
   .object({
     hitchId: z.string().min(1),
     reason: z.string().min(1),
@@ -499,7 +499,7 @@ const goalCancelArgs = z
   .merge(MutationArgsBaseSchema)
   .strict();
 
-const goalExpandScopeArgs = z
+const hitchExpandScopeArgs = z
   .object({
     hitchId: z.string().min(1),
     scope: HitchScopeSchema,
@@ -523,7 +523,7 @@ const rerunStartArgs = z
   .merge(MutationArgsBaseSchema)
   .strict();
 
-const orchestrateGoalArgs = z
+const orchestrateHitchArgs = z
   .object({
     hitchId: z.string().min(1),
     maxSteps: z.number().int().positive().max(50).optional(),
@@ -1143,7 +1143,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description: "List hitch convergence sessions.",
     kind: "read",
     operation: "hitch.list",
-    argsSchema: goalListArgs,
+    argsSchema: hitchListArgs,
     projectIdFromArgs: (args) => args.projectId,
     inputSchema: objectSchema({
       status: enumSchema(HITCH_STATUSES),
@@ -1160,7 +1160,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description: "Read one hitch session.",
     kind: "read",
     operation: "hitch.get",
-    argsSchema: goalGetArgs,
+    argsSchema: hitchGetArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema({ hitchId: hitchIdJson }, ["hitchId"]),
     handler: hitchGetTool,
@@ -1171,7 +1171,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description: "Read a hitch, findings, decisions, and current convergence.",
     kind: "read",
     operation: "hitch.status",
-    argsSchema: goalGetArgs,
+    argsSchema: hitchGetArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema({ hitchId: hitchIdJson }, ["hitchId"]),
     handler: hitchStatusTool,
@@ -1182,7 +1182,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description: "List findings for a hitch.",
     kind: "read",
     operation: "hitch.findings",
-    argsSchema: goalGetArgs,
+    argsSchema: hitchGetArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema({ hitchId: hitchIdJson }, ["hitchId"]),
     handler: hitchFindingsTool,
@@ -1193,7 +1193,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description: "List recorded convergence decisions for a hitch.",
     kind: "read",
     operation: "hitch.decisions",
-    argsSchema: goalGetArgs,
+    argsSchema: hitchGetArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema({ hitchId: hitchIdJson }, ["hitchId"]),
     handler: hitchDecisionsTool,
@@ -1363,7 +1363,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       "review -> convergence), halting at close_ready WITHOUT opening a PR.",
     kind: "mutation",
     operation: "hitch.orchestrate",
-    argsSchema: orchestrateGoalArgs,
+    argsSchema: orchestrateHitchArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema(
       {
@@ -1377,7 +1377,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       },
       ["hitchId", "idempotencyKey"],
     ),
-    handler: orchestrateGoalTool,
+    handler: orchestrateHitchTool,
   }),
   define({
     name: "harness.backlog.create",
@@ -1449,7 +1449,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description: "Create a hitch convergence session through OperationRunner.",
     kind: "mutation",
     operation: "hitch.start",
-    argsSchema: goalStartArgs,
+    argsSchema: hitchStartArgs,
     projectIdFromArgs: (args) => args.projectId,
     inputSchema: objectSchema(
       {
@@ -1480,7 +1480,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description: "Record review/test/human findings for a hitch.",
     kind: "mutation",
     operation: "hitch.record_findings",
-    argsSchema: goalRecordFindingsArgs,
+    argsSchema: hitchRecordFindingsArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema(
       {
@@ -1499,7 +1499,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description: "Manually classify a hitch finding.",
     kind: "mutation",
     operation: "hitch.classify_finding",
-    argsSchema: goalClassifyFindingArgs,
+    argsSchema: hitchClassifyFindingArgs,
     resolveProjectIdForPermission: resolveHitchFindingProjectId,
     inputSchema: objectSchema(
       {
@@ -1520,7 +1520,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description: "Mark a hitch finding as fixed.",
     kind: "mutation",
     operation: "hitch.mark_finding_fixed",
-    argsSchema: goalFindingMutationArgs,
+    argsSchema: hitchFindingMutationArgs,
     resolveProjectIdForPermission: resolveHitchFindingProjectId,
     inputSchema: objectSchema(
       {
@@ -1539,7 +1539,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description: "Defer an out-of-scope finding, optionally creating a backlog follow-up.",
     kind: "mutation",
     operation: "hitch.defer_finding",
-    argsSchema: goalDeferFindingArgs,
+    argsSchema: hitchDeferFindingArgs,
     resolveProjectIdForPermission: resolveHitchFindingProjectId,
     inputSchema: objectSchema(
       {
@@ -1559,7 +1559,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description: "Record close-check evidence for a hitch.",
     kind: "mutation",
     operation: "hitch.record_close_check",
-    argsSchema: goalRecordCloseCheckArgs,
+    argsSchema: hitchRecordCloseCheckArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema(
       {
@@ -1582,7 +1582,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description: "Evaluate and record hitch convergence.",
     kind: "mutation",
     operation: "hitch.check_convergence",
-    argsSchema: goalCheckConvergenceArgs,
+    argsSchema: hitchCheckConvergenceArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema(
       {
@@ -1689,7 +1689,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description: "Close a hitch. Confirmation is required unless it is close_ready.",
     kind: "dangerous",
     operation: "hitch.close",
-    argsSchema: goalCloseArgs,
+    argsSchema: hitchCloseArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema(
       {
@@ -1709,7 +1709,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description: "Cancel a hitch after confirmation.",
     kind: "dangerous",
     operation: "hitch.cancel",
-    argsSchema: goalCancelArgs,
+    argsSchema: hitchCancelArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema(
       {
@@ -1728,7 +1728,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description: "Expand a hitch scope after confirmation.",
     kind: "dangerous",
     operation: "hitch.expand_scope",
-    argsSchema: goalExpandScopeArgs,
+    argsSchema: hitchExpandScopeArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema(
       {

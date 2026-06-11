@@ -22,8 +22,8 @@ export interface RunOrchestrationInput {
    * Halt at `close_ready` WITHOUT running close/PR (returns outcome
    * `close_ready`). For drivers that only mean to advance the work — e.g.
    * `classify --then-rerun`, which reruns the coder but must not silently open a
-   * PR / close the goal. Opening the PR stays a deliberate, separate step
-   * (`goal orchestrate` / `goal await-merge`).
+   * PR / close the hitch. Opening the PR stays a deliberate, separate step
+   * (`hitch orchestrate` / `hitch await-merge`).
    */
   stopAtCloseReady?: boolean;
 }
@@ -59,9 +59,9 @@ export class HitchOrchestrator {
         return { hitchId: input.hitchId, outcome: "escalated", steps, finalDecision, escalateReason: action.reason };
       }
       // A runner throwing (e.g. a coder/review/PR failure, or the documented
-      // "fresh goal → review before any run exists" precondition gap) must not
+      // "fresh hitch → review before any run exists" precondition gap) must not
       // crash the orchestrator. Turn it into a clean escalation: record the
-      // step, flip the goal to `escalated`, and return.
+      // step, flip the hitch to `escalated`, and return.
       try {
         if (action.kind === "coder") {
           const r = await input.runners.coder(input.hitchId);

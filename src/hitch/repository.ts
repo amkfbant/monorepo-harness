@@ -309,15 +309,15 @@ function nonNegInt(value: number | undefined): number {
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value as number)) : 0;
 }
 
-/** Terminal statuses a goal can be reopened from (#76). `cancelled` is a
+/** Terminal statuses a hitch can be reopened from (#76). `cancelled` is a
  * deliberate abandon and is excluded.
  *
  * `diverging` is intentionally NOT reopenable: divergence triggers
  * (totalNewFindings, maxReopenCount, non-decreasing finding counts) derive from
  * immutable history, and `reopenSession` only extends iteration/review/rerun
- * budgets — not the divergence budget. A reopened diverging goal would re-fire
+ * budgets — not the divergence budget. A reopened diverging hitch would re-fire
  * `diverging` on its very next convergence evaluation and re-block every
- * mutation, leaving the operator no way out. Reopening a diverging goal needs a
+ * mutation, leaving the operator no way out. Reopening a diverging hitch needs a
  * divergence-budget extension design (see docs/future-features.md). */
 const REOPENABLE_STATUSES: ReadonlySet<HitchStatus> = new Set<HitchStatus>([
   "closed",
@@ -330,7 +330,7 @@ export class HitchRepository {
 
   createSession(input: CreateHitchSessionInput): HitchSession {
     const now = input.createdAt ?? new Date().toISOString();
-    const hitchId = input.hitchId ?? `goal-${randomUUID()}`;
+    const hitchId = input.hitchId ?? `hitch-${randomUUID()}`;
     const policy = input.policy ?? DEFAULT_HITCH_POLICY;
     const maxTotalNewFindings =
       input.maxTotalNewFindings ??
@@ -379,7 +379,7 @@ export class HitchRepository {
 
   requireSession(hitchId: string): HitchSession {
     const session = this.getSession(hitchId);
-    if (session === null) throw new DbError(`goal not found: ${hitchId}`);
+    if (session === null) throw new DbError(`hitch not found: ${hitchId}`);
     return session;
   }
 
@@ -423,12 +423,12 @@ export class HitchRepository {
   }
 
   /**
-   * #76 / #104 — resume a terminal goal (closed / budget_exhausted / escalated /
+   * #76 / #104 — resume a terminal hitch (closed / budget_exhausted / escalated /
    * diverging) so a late-discovered finding can be fixed on the existing branch
    * instead of closing the PR and re-implementing. Transitions back to `open`,
    * clears the terminal markers `updateStatus` would COALESCE-preserve
    * (`closed_at` / `close_summary` / `escalation_reason`), and extends the
-   * budget (existing columns — no schema change) so a budget_exhausted goal does
+   * budget (existing columns — no schema change) so a budget_exhausted hitch does
    * not immediately re-exhaust. State transition only (harness-driven, audited
    * by the caller). `cancelled` is a deliberate abandon and is NOT reopenable.
    */
@@ -444,7 +444,7 @@ export class HitchRepository {
     const session = this.requireSession(hitchId);
     if (!REOPENABLE_STATUSES.has(session.status)) {
       throw new Error(
-        `goal ${hitchId} is "${session.status}", not a reopenable terminal ` +
+        `hitch ${hitchId} is "${session.status}", not a reopenable terminal ` +
           `status (${[...REOPENABLE_STATUSES].join(", ")})`,
       );
     }
@@ -532,7 +532,7 @@ export class HitchRepository {
 
   requireAttempt(attemptId: string): HitchAttempt {
     const attempt = this.getAttempt(attemptId);
-    if (attempt === null) throw new DbError(`goal attempt not found: ${attemptId}`);
+    if (attempt === null) throw new DbError(`hitch attempt not found: ${attemptId}`);
     return attempt;
   }
 
@@ -616,7 +616,7 @@ export class HitchRepository {
 
   requireReviewCycle(cycleId: string): HitchReviewCycle {
     const cycle = this.getReviewCycle(cycleId);
-    if (cycle === null) throw new DbError(`goal review cycle not found: ${cycleId}`);
+    if (cycle === null) throw new DbError(`hitch review cycle not found: ${cycleId}`);
     return cycle;
   }
 
@@ -853,7 +853,7 @@ export class HitchRepository {
     const canonical = this.requireFinding(duplicateOf);
     if (canonical.hitchId !== hitchId) {
       throw new DbError(
-        `duplicate finding target belongs to a different goal: ${duplicateOf}`,
+        `duplicate finding target belongs to a different hitch: ${duplicateOf}`,
       );
     }
     if (
@@ -922,7 +922,7 @@ export class HitchRepository {
     const current = this.requireFinding(input.findingId);
     if (current.scopeStatus !== "out_of_scope") {
       throw new DbError(
-        `goal finding ${input.findingId} cannot be deferred while scope is ${current.scopeStatus}; classify it out_of_scope first`,
+        `hitch finding ${input.findingId} cannot be deferred while scope is ${current.scopeStatus}; classify it out_of_scope first`,
       );
     }
     this.db
@@ -955,7 +955,7 @@ export class HitchRepository {
 
   requireFinding(findingId: string): HitchFinding {
     const finding = this.getFinding(findingId);
-    if (finding === null) throw new DbError(`goal finding not found: ${findingId}`);
+    if (finding === null) throw new DbError(`hitch finding not found: ${findingId}`);
     return finding;
   }
 
@@ -1011,7 +1011,7 @@ export class HitchRepository {
 
   requireCloseCheck(checkId: string): HitchCloseCheck {
     const check = this.getCloseCheck(checkId);
-    if (check === null) throw new DbError(`goal close check not found: ${checkId}`);
+    if (check === null) throw new DbError(`hitch close check not found: ${checkId}`);
     return check;
   }
 
@@ -1069,7 +1069,7 @@ export class HitchRepository {
   requireDecision(decisionId: string): HitchConvergenceDecisionRecord {
     const decision = this.getDecision(decisionId);
     if (decision === null) {
-      throw new DbError(`goal convergence decision not found: ${decisionId}`);
+      throw new DbError(`hitch convergence decision not found: ${decisionId}`);
     }
     return decision;
   }

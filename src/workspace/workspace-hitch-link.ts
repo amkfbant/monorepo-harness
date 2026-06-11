@@ -15,8 +15,8 @@ import {
  * Best-effort: if `repoPath` is an agent worktree — its branch is `agent/<name>`
  * (the convention) OR a DB row already adopted that exact path — record/refresh
  * the workspace row and link it to `hitchId`, refreshing the heartbeat. So
- * `workspace status` shows which agent is driving which goal, populated
- * automatically by `goal orchestrate`. NEVER throws: a failure just means no
+ * `workspace status` shows which agent is driving which hitch, populated
+ * automatically by `hitch orchestrate`. NEVER throws: a failure just means no
  * link (orchestration must not depend on this).
  */
 export async function linkAgentWorkspaceToHitch(opts: {

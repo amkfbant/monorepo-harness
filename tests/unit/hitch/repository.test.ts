@@ -185,12 +185,12 @@ describe("HitchRepository", () => {
         reason: "passed",
         metrics: { openInScopeP1: 0 },
         recommendedNextAction: {
-          kind: "close_goal",
+          kind: "close_hitch",
           message: "close",
         },
         createdBy: "test",
       });
-      expect(decision.recommendedNextAction?.kind).toBe("close_goal");
+      expect(decision.recommendedNextAction?.kind).toBe("close_hitch");
       expect(repo.listDecisions("goal-test")).toHaveLength(1);
     } finally {
       db.close();
@@ -289,7 +289,7 @@ describe("HitchRepository", () => {
           duplicateOf: other.findingId,
           reason: "same root cause",
         }),
-      ).toThrow(/different goal/);
+      ).toThrow(/different hitch/);
     } finally {
       db.close();
     }

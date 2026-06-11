@@ -55,11 +55,11 @@ describe("decideOrchestratorAction", () => {
 
   it("maps needs_classification to classify and close_ready to close_and_pr", () => {
     expect(decideOrchestratorAction(conv("needs_classification", "classify_findings")).kind).toBe("classify");
-    expect(decideOrchestratorAction(conv("close_ready", "close_goal")).kind).toBe("close_and_pr");
+    expect(decideOrchestratorAction(conv("close_ready", "close_hitch")).kind).toBe("close_and_pr");
   });
 
   it("stops on terminal decisions and escalates unsafe ones", () => {
-    expect(decideOrchestratorAction(conv("closed", "close_goal"))).toEqual({ kind: "stop", outcome: "closed" });
+    expect(decideOrchestratorAction(conv("closed", "close_hitch"))).toEqual({ kind: "stop", outcome: "closed" });
     expect(decideOrchestratorAction(conv("cancel", "ask_human"))).toEqual({ kind: "stop", outcome: "cancelled" });
     for (const d of ["diverging", "budget_exhausted", "escalate"] as const) {
       const a = decideOrchestratorAction(conv(d, "ask_human"));

@@ -46,7 +46,7 @@ export interface WorkspaceListArgs {
 
 /**
  * Read-only MCP coordination view of the per-agent workspaces (the DB index):
- * which agents exist, on what branch, their linked goal + its convergence
+ * which agents exist, on what branch, their linked hitch + its convergence
  * decision, objective, heartbeat, and last checkpoint. Pure DB read — git
  * state (dirty / ahead-behind) and the mutating create/remove/checkpoint and
  * git-inclusive inspect/recover surfaces are deliberately CLI-only for now
@@ -58,7 +58,7 @@ export function workspaceListTool(
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
     const repo = new WorkspaceRepository(db);
-    const goalRepo = new HitchRepository(db);
+    const hitchRepo = new HitchRepository(db);
     const limit = normalizeLimit(args.limit, 200);
     // filter by agent IN the query so the limit cannot drop a match.
     const rows = repo.listAll({
@@ -66,9 +66,9 @@ export function workspaceListTool(
       ...(args.agent !== undefined ? { agent: args.agent } : {}),
     });
 
-    // Memoize per hitchId: a workspace's project (for scoping) and the goal's
+    // Memoize per hitchId: a workspace's project (for scoping) and the hitch's
     // convergence decision both come from the same session lookup.
-    const goalCache = new Map<
+    const hitchCache = new Map<
       string,
       { decision: string | null; projectId: string | null }
     >();
@@ -76,23 +76,23 @@ export function workspaceListTool(
       hitchId: string | null,
     ): { decision: string | null; projectId: string | null } => {
       if (hitchId === null) return { decision: null, projectId: null };
-      const cached = goalCache.get(hitchId);
+      const cached = hitchCache.get(hitchId);
       if (cached !== undefined) return cached;
-      const session = goalRepo.getSession(hitchId);
+      const session = hitchRepo.getSession(hitchId);
       const info =
         session === null
           ? { decision: null, projectId: null }
           : {
-              decision: new ConvergenceService(goalRepo).evaluate(hitchId)
+              decision: new ConvergenceService(hitchRepo).evaluate(hitchId)
                 .decision,
               projectId: session.projectId,
             };
-      goalCache.set(hitchId, info);
+      hitchCache.set(hitchId, info);
       return info;
     };
 
     // Project scoping: a client restricted to `allowedProjects` must not see
-    // workspaces outside it. A workspace's project is its linked goal's
+    // workspaces outside it. A workspace's project is its linked hitch's
     // project_id; an unlinked or dangling workspace has no project, so it is
     // omitted for a restricted client (fail-closed).
     const allowed = context.config.allowedProjects;
@@ -136,7 +136,7 @@ export interface WorkspaceStatusArgs {
  * any subdir/file under it. It must resolve to a repo the harness already tracks
  * (≥1 workspace row) so this read tool never runs git against an arbitrary,
  * unknown path. Returns the same shape as the CLI `workspace status` (label +
- * git state + goal + heartbeat), scoped to `allowedProjects` like
+ * git state + hitch + heartbeat), scoped to `allowedProjects` like
  * `workspace.list` — a path whose workspace is out of scope is rejected with the
  * SAME "not tracked" error as an unknown path, so scope membership never leaks.
  */
@@ -205,10 +205,10 @@ export interface WorkspaceCheckpointArgs {
 
 /**
  * `allowedProjects` scoping for a workspace mutation. Authorizes the EXISTING
- * workspace's linked-goal project FIRST (a restricted client may not touch an
+ * workspace's linked-hitch project FIRST (a restricted client may not touch an
  * unlinked / dangling / out-of-scope workspace — and an absent workspace is
  * denied rather than leaking its existence). When `args.hitchId` re-links a new
- * goal, that goal's project must ALSO be allowed. Read-only; runs on the write
+ * hitch, that hitch's project must ALSO be allowed. Read-only; runs on the write
  * handle (after migrate) before the mutation. Returns permission_denied or null.
  */
 function checkWorkspaceProjectScope(
@@ -217,10 +217,10 @@ function checkWorkspaceProjectScope(
   args: WorkspaceCheckpointArgs,
 ): HarnessMcpToolResult | null {
   const wsRepo = new WorkspaceRepository(db);
-  const goalRepo = new HitchRepository(db);
+  const hitchRepo = new HitchRepository(db);
   const projectAllowed = (hitchId: string | null): boolean => {
     if (hitchId === null) return false;
-    const projectId = goalRepo.getSession(hitchId)?.projectId ?? null;
+    const projectId = hitchRepo.getSession(hitchId)?.projectId ?? null;
     return projectId !== null && allowed.includes(projectId);
   };
   const deny = (): HarnessMcpToolResult =>
@@ -235,7 +235,7 @@ function checkWorkspaceProjectScope(
 }
 
 /**
- * Save an advisory checkpoint for a workspace over MCP (DB-only: note + goal
+ * Save an advisory checkpoint for a workspace over MCP (DB-only: note + hitch
  * link + objective + heartbeat — no git snapshot). A low-risk mutation: it
  * needs `workspace.checkpoint` allowlisted but no confirmation. The mutating
  * create/remove (filesystem worktree ops + a confirmation gate) stay CLI-only.
@@ -270,7 +270,7 @@ export async function workspaceCheckpointTool(
   try {
     runMigrations(handle.db);
     // project scoping on the WRITE handle (after migrate), BEFORE the mutation:
-    // authorize the existing workspace's project first, then any re-linked goal.
+    // authorize the existing workspace's project first, then any re-linked hitch.
     if (context.config.allowedProjects.length > 0) {
       const denied = checkWorkspaceProjectScope(
         handle.db,

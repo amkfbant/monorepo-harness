@@ -1217,7 +1217,7 @@ describe("MCP mutation, confirmation, and audit", () => {
     expect(result.data.reason).toBe("hitch_budget_exhausted");
   });
 
-  it("rejects goal-linked run.start with goal_not_found when the goal is absent", async () => {
+  it("rejects hitch-linked run.start with hitch_not_found when the hitch is absent", async () => {
     const root = freshRoot();
     const result = await callTool(
       server(root, {
@@ -1231,14 +1231,14 @@ describe("MCP mutation, confirmation, and audit", () => {
         projectId: "demo",
         domain: "apps/web",
         goal: "Should be blocked",
-        hitchId: "goal-does-not-exist",
-        idempotencyKey: "goal-missing-run",
+        hitchId: "hitch-does-not-exist",
+        idempotencyKey: "hitch-missing-run",
       },
     );
 
-    // A missing goal must be a structured denial, not an opaque DB error.
+    // A missing hitch must be a structured denial, not an opaque DB error.
     expect(result.status).toBe("permission_denied");
-    expect(result.data.reason).toBe("goal_not_found");
+    expect(result.data.reason).toBe("hitch_not_found");
   });
 
   it("rejects goal-linked rerun.start when convergence needs classification", async () => {

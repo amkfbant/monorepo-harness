@@ -167,7 +167,7 @@ function isLatestCodingAttemptFailed(attempts: HitchAttempt[]): boolean {
  * review cycle (or no review cycle at all). In that state the next step must be
  * a review (so the fix can clear the open finding), not another coder rerun /
  * budget_exhausted — otherwise reruns keep re-opening the same finding without
- * ever reviewing the fix, and the goal dead-ends at budget with the finding
+ * ever reviewing the fix, and the hitch dead-ends at budget with the finding
  * still open.
  */
 function isReviewPending(
@@ -232,13 +232,13 @@ function decide(
 ): HitchConvergenceResult {
   const terminal = terminalDecision(session.status);
   if (terminal !== null) {
-    return result(session.hitchId, terminal, `goal is ${session.status}`, metrics, {
+    return result(session.hitchId, terminal, `hitch is ${session.status}`, metrics, {
       kind: "ask_human",
-      message: `Goal is already ${session.status}.`,
+      message: `Hitch is already ${session.status}.`,
     });
   }
 
-  const budgetExceededReason = goalBudgetExceededReason(session, metrics);
+  const budgetExceededReason = hitchBudgetExceededReason(session, metrics);
   if (budgetExceededReason !== null) {
     return result(
       session.hitchId,
@@ -247,7 +247,7 @@ function decide(
       metrics,
       {
         kind: "ask_human",
-        message: "Stop: goal budget is exhausted.",
+        message: "Stop: hitch budget is exhausted.",
       },
     );
   }
@@ -290,25 +290,25 @@ function decide(
       "original close conditions satisfied",
       metrics,
       {
-        kind: "close_goal",
-        message: "Close goal and defer remaining out-of-scope follow-ups.",
+        kind: "close_hitch",
+        message: "Close hitch and defer remaining out-of-scope follow-ups.",
       },
     );
   }
 
-  const budgetLimitReason = goalBudgetLimitReason(session, metrics);
+  const budgetLimitReason = hitchBudgetLimitReason(session, metrics);
   if (budgetLimitReason !== null) {
     return result(session.hitchId, "budget_exhausted", budgetLimitReason, metrics, {
       kind: "ask_human",
-      message: "Stop: goal budget is exhausted.",
+      message: "Stop: hitch budget is exhausted.",
     });
   }
 
   // #104 — when the latest coder run is unreviewed, REVIEW it before routing to
   // another coder rerun (or classification). Otherwise an open finding keeps
   // triggering needs_fix → coder reruns that are never reviewed, so the fix
-  // never clears the finding and the goal burns its rerun budget. Placed AFTER
-  // the budget checks (a genuinely over-budget goal still stops) and gated by
+  // never clears the finding and the hitch burns its rerun budget. Placed AFTER
+  // the budget checks (a genuinely over-budget hitch still stops) and gated by
   // the review-cycle budget, so it is bounded: one review per coder run.
   if (reviewPending && metrics.reviewCyclesUsed < session.maxReviewCycles) {
     return result(
@@ -408,7 +408,7 @@ function decide(
       {
         kind: "defer_followups",
         findingIds: unresolvedOutOfScopeFindingIds(findings),
-        message: "Defer out-of-scope findings before closing the goal.",
+        message: "Defer out-of-scope findings before closing the hitch.",
       },
     );
   }
@@ -421,7 +421,7 @@ function decide(
       metrics,
       {
         kind: "fix_findings",
-        message: "Run the initial coder pass for this goal.",
+        message: "Run the initial coder pass for this hitch.",
       },
     );
   }
@@ -431,7 +431,7 @@ function decide(
     // failed-command / failed-codex). There is nothing in `needs_review` to
     // review, so route to a bounded coder rerun rather than letting the review
     // runner be invoked on a non-reviewable run (which threw and dead-ended the
-    // goal). The rerun budget above terminates this cleanly as budget_exhausted
+    // hitch). The rerun budget above terminates this cleanly as budget_exhausted
     // if the run cannot be recovered.
     return result(
       session.hitchId,
@@ -453,7 +453,7 @@ function decide(
   });
 }
 
-function goalBudgetExceededReason(
+function hitchBudgetExceededReason(
   session: HitchSession,
   metrics: HitchConvergenceMetrics,
 ): string | null {
@@ -469,7 +469,7 @@ function goalBudgetExceededReason(
   return null;
 }
 
-function goalBudgetLimitReason(
+function hitchBudgetLimitReason(
   session: HitchSession,
   metrics: HitchConvergenceMetrics,
 ): string | null {
@@ -503,7 +503,7 @@ function divergenceReason(
 ): string | null {
   const policy = session.policy.divergence;
   if (metrics.totalNewFindings > session.maxTotalNewFindings) {
-    return "total new findings exceeded goal budget";
+    return "total new findings exceeded hitch budget";
   }
   if (metrics.totalNewFindings > policy.maxTotalNewFindings) {
     return "total new findings exceeded policy budget";

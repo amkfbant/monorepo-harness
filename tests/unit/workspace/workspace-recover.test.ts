@@ -65,10 +65,10 @@ describe("buildRecoveryBriefing nextSteps (deterministic)", () => {
     expect(mk("needs_fix", "fix_findings")).toMatch(/run the coder for hitch g1/);
     expect(mk("needs_classification", "classify_findings")).toMatch(/classify unknown-scope/);
     expect(mk("continue", "run_close_check")).toMatch(/run review \/ record close-check/);
-    expect(mk("close_ready", "close_goal")).toMatch(/close hitch g1 and open the PR/);
+    expect(mk("close_ready", "close_hitch")).toMatch(/close hitch g1 and open the PR/);
     expect(mk("escalate", "ask_human")).toMatch(/escalate hitch g1 \(escalate: r\)/);
     // a closed hitch contributes no hitch step → clean message.
-    expect(mk("closed", "close_goal")).toMatch(/nothing pending/);
+    expect(mk("closed", "close_hitch")).toMatch(/nothing pending/);
   });
 
   it("fail-closes (escalate) on an unrecognized decision or an unsupported continue action", () => {

@@ -5,7 +5,7 @@ describe("conventionalPrTitle (#103)", () => {
   it("prefixes a default fix: type for a non-conventional goal title", () => {
     expect(
       conventionalPrTitle({
-        goalTitle: "project import write-through",
+        hitchTitle: "project import write-through",
         runId: "run-1",
       }),
     ).toBe("fix: project import write-through (run-1)");
@@ -13,24 +13,24 @@ describe("conventionalPrTitle (#103)", () => {
 
   it("keeps an already-conventional goal title verbatim", () => {
     expect(
-      conventionalPrTitle({ goalTitle: "feat: add operational knowledge", runId: "run-1" }),
+      conventionalPrTitle({ hitchTitle: "feat: add operational knowledge", runId: "run-1" }),
     ).toBe("feat: add operational knowledge (run-1)");
   });
 
   it("recognizes a scoped / breaking conventional type", () => {
-    expect(conventionalPrTitle({ goalTitle: "fix(core)!: bug", runId: "run-2" })).toBe(
+    expect(conventionalPrTitle({ hitchTitle: "fix(core)!: bug", runId: "run-2" })).toBe(
       "fix(core)!: bug (run-2)",
     );
   });
 
   it("honors a custom default type for feature goals", () => {
     expect(
-      conventionalPrTitle({ goalTitle: "add Y", runId: "run-3", defaultType: "feat" }),
+      conventionalPrTitle({ hitchTitle: "add Y", runId: "run-3", defaultType: "feat" }),
     ).toBe("feat: add Y (run-3)");
   });
 
   it("falls back to the run id when the goal title is empty", () => {
-    expect(conventionalPrTitle({ goalTitle: "   ", runId: "run-4" })).toBe(
+    expect(conventionalPrTitle({ hitchTitle: "   ", runId: "run-4" })).toBe(
       "fix: run-4 (run-4)",
     );
   });
@@ -39,7 +39,7 @@ describe("conventionalPrTitle (#103)", () => {
     // a multi-line goal title must not smuggle a `BREAKING CHANGE:` footer into
     // the squash commit and force a major bump from non-operator input.
     const title = conventionalPrTitle({
-      goalTitle: "add a thing\n\nBREAKING CHANGE: drops the old API",
+      hitchTitle: "add a thing\n\nBREAKING CHANGE: drops the old API",
       runId: "run-5",
     });
     expect(title).toBe("fix: add a thing (run-5)");
@@ -49,13 +49,13 @@ describe("conventionalPrTitle (#103)", () => {
 
   it("strips control characters from the title", () => {
     expect(
-      conventionalPrTitle({ goalTitle: "feat: a\tb\r\nc", runId: "run-6" }),
+      conventionalPrTitle({ hitchTitle: "feat: a\tb\r\nc", runId: "run-6" }),
     ).toBe("feat: a b (run-6)");
   });
 
   it("caps an absurdly long title", () => {
     const title = conventionalPrTitle({
-      goalTitle: "fix: " + "x".repeat(500),
+      hitchTitle: "fix: " + "x".repeat(500),
       runId: "run-7",
     });
     // subject capped; run-id suffix still appended

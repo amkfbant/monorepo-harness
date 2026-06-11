@@ -70,7 +70,7 @@ function mockedConvergence(hitchId: string, decision: string): Record<string, un
       maxReopenCount: 0,
     },
     recommendedNextAction: {
-      kind: decision === "close_ready" ? "close_goal" : "fix_findings",
+      kind: decision === "close_ready" ? "close_hitch" : "fix_findings",
       message: "mocked action",
     },
   };
@@ -605,7 +605,7 @@ describe("MCP goal tools", () => {
         idempotencyKey: "goal-close-stale",
       });
       expect(denied.status).toBe("error");
-      expect(denied.summary).toContain("goal is no longer close_ready");
+      expect(denied.summary).toContain("hitch is no longer close_ready");
       withDb(root, (db) => {
         expect(new HitchRepository(db).requireSession(hitchId).status).toBe("open");
       });
@@ -772,7 +772,7 @@ describe("MCP goal tools", () => {
     });
 
     expect(result.status).toBe("error");
-    expect(result.summary).toContain("goal domain does not match run domain");
+    expect(result.summary).toContain("hitch domain does not match run domain");
   });
 
   it("rejects linking a project goal to an unprojected run", async () => {
@@ -811,7 +811,7 @@ describe("MCP goal tools", () => {
     });
 
     expect(result.status).toBe("error");
-    expect(result.summary).toContain("goal project does not match run project");
+    expect(result.summary).toContain("hitch project does not match run project");
   });
 });
 
@@ -826,7 +826,7 @@ function seedProject(
   ).run(projectId, repoId);
 }
 
-function goalProjectId(root: string, hitchId: string): string | null {
+function hitchProjectId(root: string, hitchId: string): string | null {
   let pid: string | null = null;
   withDb(root, (db) => {
     pid = (
@@ -852,7 +852,7 @@ describe("hitch.start repoId → projectId derivation (#81)", () => {
     });
     expect(started.status).toBe("operation_started");
     const hitchId = started.data.result.hitchId as string;
-    expect(goalProjectId(root, hitchId)).toBe("demo");
+    expect(hitchProjectId(root, hitchId)).toBe("demo");
   });
 
   it("does NOT derive an ambiguous repoId (two projects) — denies with the actionable message", async () => {

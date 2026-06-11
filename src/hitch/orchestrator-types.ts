@@ -4,26 +4,26 @@ export type OrchestratorAction =
   | { kind: "review" } // continue + run_close_check: review the latest run
   | { kind: "classify" } // needs_classification: deterministic scope classification
   | { kind: "defer" } // continue/defer_followups: defer out-of-scope findings to backlog
-  | { kind: "close_and_pr" } // close_ready: close the goal then create the PR
+  | { kind: "close_and_pr" } // close_ready: close the hitch then create the PR
   | { kind: "stop"; outcome: "closed" | "cancelled" } // already terminal
   | { kind: "escalate"; reason: string }; // diverging / budget / escalate / unsupported
 
 /**
  * High-level runners the orchestrator drives. Each method performs one logical
- * action against the goal's session and returns a short status. Production wires
+ * action against the hitch's session and returns a short status. Production wires
  * these to the real core operations; tests pass fakes.
  */
 export interface OrchestratorRunners {
-  /** Run/rerun the coder for the goal; records the attempt. Returns the run status. */
+  /** Run/rerun the coder for the hitch; records the attempt. Returns the run status. */
   coder(hitchId: string): Promise<{ runId: string; runStatus: string }>;
-  /** review auto + review process for the goal's latest run; records the cycle. */
+  /** review auto + review process for the hitch's latest run; records the cycle. */
   review(hitchId: string): Promise<{ runId: string; decision: string }>;
   /** Deterministically classify open unknown-scope findings. Returns whether all resolved. */
   classify(hitchId: string): Promise<{ resolved: boolean; escalateReason?: string }>;
   /** Defer open out-of-scope findings to the backlog. Returns how many were deferred. */
   defer(hitchId: string): Promise<{ deferred: number }>;
   /**
-   * Close the goal and create a PR. Returns the PR url. Phase 3: when
+   * Close the hitch and create a PR. Returns the PR url. Phase 3: when
    * auto-merge is enabled it also merges the PR (`merged: true`) or, if the
    * merge gate is hard-blocked, returns an `escalateReason` instead of closing.
    */
@@ -36,7 +36,7 @@ export interface OrchestratorRunners {
   /**
    * Best-effort, fail-closed salvage for a review-step failure: commit and push
    * the latest needs_review run's reviewed branch without creating a PR or
-   * closing the goal. Omitted by tests/fakes that do not support real git.
+   * closing the hitch. Omitted by tests/fakes that do not support real git.
    */
   salvageReviewBranch?(hitchId: string): Promise<{
     branch: string;

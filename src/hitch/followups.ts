@@ -130,7 +130,7 @@ function result(
 
 function backlogDomain(session: HitchSession, finding: HitchFinding): string {
   const category = finding.category.trim();
-  return firstNonEmpty(session.domain, session.projectId, category, "goal");
+  return firstNonEmpty(session.domain, session.projectId, category, "hitch");
 }
 
 function backlogGoalBody(
@@ -139,7 +139,7 @@ function backlogGoalBody(
   reason: string,
 ): string {
   return [
-    "source: goal-finding",
+    "source: hitch-finding",
     `hitchId: ${session.hitchId}`,
     `findingId: ${finding.findingId}`,
     `severity: ${finding.severity}`,
@@ -158,8 +158,8 @@ function backlogGoalBody(
 
 function backlogTags(session: HitchSession, finding: HitchFinding): string[] {
   return [
-    "goal-finding",
-    `goal:${session.hitchId}`,
+    "hitch-finding",
+    `hitch:${session.hitchId}`,
     `finding:${finding.findingId}`,
     `severity:${finding.severity}`,
     `scope:${finding.scopeStatus}`,
@@ -177,7 +177,7 @@ function firstNonEmpty(...values: Array<string | null>): string {
   for (const value of values) {
     if (value !== null && value.trim() !== "") return value;
   }
-  return "goal";
+  return "hitch";
 }
 
 function assertBacklogItemExists(
@@ -203,7 +203,7 @@ function assertBacklogItemExists(
 function assertFindingCanBeDeferred(finding: HitchFinding): void {
   if (finding.scopeStatus !== "out_of_scope") {
     throw new DbError(
-      `goal finding ${finding.findingId} cannot be deferred while scope is ${finding.scopeStatus}; classify it out_of_scope first`,
+      `hitch finding ${finding.findingId} cannot be deferred while scope is ${finding.scopeStatus}; classify it out_of_scope first`,
     );
   }
 }

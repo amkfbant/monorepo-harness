@@ -8,7 +8,7 @@ import { assertSymlinkCapable } from "./fs-preflight.js";
  * that lets multiple LLM agents / terminals work the same project concurrently
  * without colliding on a shared checkout. Each agent gets its OWN working tree
  * (own index / HEAD) on a dedicated `agent/<name>` branch, while the harness
- * state (HARNESS_ROOT / `.harness` DB, domain locks, goals, knowledge) stays
+ * state (HARNESS_ROOT / `.harness` DB, domain locks, hitches, knowledge) stays
  * shared. git itself is the source of truth — there is no DB mirror to drift.
  */
 

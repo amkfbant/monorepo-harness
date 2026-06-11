@@ -72,7 +72,7 @@ export interface AssembleStatusOpts {
   /**
    * Optional visibility predicate, evaluated BEFORE the git inspection so an
    * out-of-scope workspace is never inspected. Receives the DB row (null for a
-   * convention-only worktree with no row) and its linked-goal project.
+   * convention-only worktree with no row) and its linked-hitch project.
    */
   include?: (record: WorkspaceRecord | null, hitchProjectId: string | null) => boolean;
   /**
@@ -109,7 +109,7 @@ export async function assembleWorkspaceStatuses(
   const out: WorkspaceStatusFull[] = [];
   for (const w of live) {
     // attribute by the EXACT live path, never agent name: a name collision must
-    // not attach a different row's goal/project (scope authority follows path).
+    // not attach a different row's hitch/project (scope authority follows path).
     const r = recordByPath.get(normalizeWorktreePath(w.path)) ?? null;
     if (!visible(r)) continue; // skip out-of-scope BEFORE any git inspection
     // skip a worktree whose dir was reused for a foreign repo (stale git
