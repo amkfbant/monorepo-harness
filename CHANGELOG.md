@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.6.0](https://github.com/amkfbant/monorepo-harness/compare/v0.5.0...v0.6.0) (2026-06-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* rename harness 'goal' mode to 'hitch' (SP-0) ([#108](https://github.com/amkfbant/monorepo-harness/issues/108))
+
+### Features
+
+* add 'harness onboard' guided onboarding wizard ([#92](https://github.com/amkfbant/monorepo-harness/issues/92)) ([#107](https://github.com/amkfbant/monorepo-harness/issues/107)) ([c9486aa](https://github.com/amkfbant/monorepo-harness/commit/c9486aa78c91a4423a7528afa413b3b7ba158a54))
+* add MCP write for operational knowledge (ops_knowledge.record/deprecate) [[#57](https://github.com/amkfbant/monorepo-harness/issues/57)] ([#67](https://github.com/amkfbant/monorepo-harness/issues/67)) ([9ec6435](https://github.com/amkfbant/monorepo-harness/commit/9ec643576a2dda041ba69765ee22519b11d277c9))
+* close [#57](https://github.com/amkfbant/monorepo-harness/issues/57) — operational knowledge file-export parity + digest ([#95](https://github.com/amkfbant/monorepo-harness/issues/95)) ([85ae392](https://github.com/amkfbant/monorepo-harness/commit/85ae392b5d3316ce26f845ac34fecccb79f69bd9))
+* close [#73](https://github.com/amkfbant/monorepo-harness/issues/73) — review_consensus static-only semantics + test gate + surface ([#101](https://github.com/amkfbant/monorepo-harness/issues/101)) ([fd97c4c](https://github.com/amkfbant/monorepo-harness/commit/fd97c4cdb0488dc4d670f4005675d18d539f5257))
+* course/phase DB roadmap layer (SP-1) ([#109](https://github.com/amkfbant/monorepo-harness/issues/109)) ([342b07f](https://github.com/amkfbant/monorepo-harness/commit/342b07f1fa736fef897abd2f7afb0b4d5d8b291a))
+* expose release plan over MCP (harness.release.plan read tool) ([#71](https://github.com/amkfbant/monorepo-harness/issues/71)) ([b4de015](https://github.com/amkfbant/monorepo-harness/commit/b4de0150c71f75d4926d30bdb579cab105f01a5f))
+* harness release check — fail-closed release-readiness gate ([#94](https://github.com/amkfbant/monorepo-harness/issues/94)) ([7b2f786](https://github.com/amkfbant/monorepo-harness/commit/7b2f78686af4fe39e9ec691c44a238ab2610bb32))
+* harness release plan — release-readiness + compatibility analyzer ([#70](https://github.com/amkfbant/monorepo-harness/issues/70)) ([148b170](https://github.com/amkfbant/monorepo-harness/commit/148b170b777c6a540c6288a4cc401858adacd49d))
+* inject operational knowledge into the reviewer prompt (F, [#57](https://github.com/amkfbant/monorepo-harness/issues/57)) ([#66](https://github.com/amkfbant/monorepo-harness/issues/66)) ([c31c069](https://github.com/amkfbant/monorepo-harness/commit/c31c0694a6ce356e379356c5fde73057892b0735))
+* surface operational knowledge in the inbox read model [[#57](https://github.com/amkfbant/monorepo-harness/issues/57)] ([#64](https://github.com/amkfbant/monorepo-harness/issues/64)) ([83f69ea](https://github.com/amkfbant/monorepo-harness/commit/83f69ead394494334e03d1581dd3075fbea9808d))
+* 大 Phase S — 運用実害 + 安全・信頼性の修正 ([#79](https://github.com/amkfbant/monorepo-harness/issues/79) [#77](https://github.com/amkfbant/monorepo-harness/issues/77) [#103](https://github.com/amkfbant/monorepo-harness/issues/103) [#69](https://github.com/amkfbant/monorepo-harness/issues/69) [#104](https://github.com/amkfbant/monorepo-harness/issues/104) [#76](https://github.com/amkfbant/monorepo-harness/issues/76) [#83](https://github.com/amkfbant/monorepo-harness/issues/83)) ([#105](https://github.com/amkfbant/monorepo-harness/issues/105)) ([6bc50d4](https://github.com/amkfbant/monorepo-harness/commit/6bc50d4d290333efcabd231e7591298f5590ae0b))
+* 大 Phase T — 運用セットアップ・DX のつまずき修正 ([#78](https://github.com/amkfbant/monorepo-harness/issues/78) [#81](https://github.com/amkfbant/monorepo-harness/issues/81) [#82](https://github.com/amkfbant/monorepo-harness/issues/82) [#68](https://github.com/amkfbant/monorepo-harness/issues/68)) ([#106](https://github.com/amkfbant/monorepo-harness/issues/106)) ([a62db6b](https://github.com/amkfbant/monorepo-harness/commit/a62db6be8580f34ea7b00058c4ca092e352cd9ff))
+* 自律 course orchestrate — drive-only bounded driver (SP-2) ([#110](https://github.com/amkfbant/monorepo-harness/issues/110)) ([e6118f8](https://github.com/amkfbant/monorepo-harness/commit/e6118f8b763a23873b75df56d5db46d9f346180b))
+
+
+### Refactors
+
+* rename harness 'goal' mode to 'hitch' (SP-0) ([#108](https://github.com/amkfbant/monorepo-harness/issues/108)) ([82dea41](https://github.com/amkfbant/monorepo-harness/commit/82dea414776e3aef723b73223f744e9ac7027b73))
+
 ## [0.5.0](https://github.com/amkfbant/monorepo-harness/compare/v0.4.0...v0.5.0) (2026-06-08)
 
 
