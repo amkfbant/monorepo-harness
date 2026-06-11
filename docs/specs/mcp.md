@@ -346,6 +346,11 @@ harness.operation.get
 harness.workspace.list
 harness.workspace.status
 harness.workspace.checkpoint
+harness.course.list
+harness.course.get
+harness.course.status
+harness.phase.list
+harness.phase.get
 ```
 
 `harness.workspace.status`（read）は **1 repo 分**の workspace の **git-inclusive status**
@@ -449,6 +454,37 @@ read-only（git の rev-parse/show/log と source 読み取りのみ。DB / muta
 リポジトリ path を渡せると read 境界を破るため `repo` 引数は無し。別リポジトリの解析は CLI
 `--repo`）。ref 解決不能は `error`。**bump / CHANGELOG / tag は release-please の担当**。
 
+**`harness.course.list` / `harness.course.get` / `harness.course.status` /
+`harness.phase.list` / `harness.phase.get`（read、SP-1）** は course → phase ロードマップ層の
+read surface。データモデル・ロールアップ仕様は [`roadmap.md`](./roadmap.md)。
+
+- `course.list`: `status?` / `projectId?` / `limit?`（既定 50）。
+  project-restricted client（`allowedProjects` 非空）は allowed projects の course のみ表示。
+  **null-`project_id` course は project-restricted client に fail-closed invisible**。
+  explicit `projectId` は事前に visibility check。
+- `course.get`: `courseId`。不可視なら `permission_denied`。
+- `course.status`: `courseId`。course + `rollupCourse` 出力（phase ツリー全体の derived open
+  P0/P1 ＋ course 合計）。ツリーが不整合（cycle / orphan）なら `error`。
+- `phase.list`: `courseId`。親 course 経由で visibility check。phase 一覧（position/id 順）。
+- `phase.get`: `phaseId`。親 course 経由で visibility check。
+
+すべて read tool なので allowlist 不要。`allowedProjects` が空（unrestricted）なら全 course 可視。
+
+**`harness.course.create` / `harness.phase.add` / `harness.phase.update` /
+`harness.phase.link_hitch`（guarded mutation、SP-1）** は course → phase の構造変更。
+`guarded-mutation` モード ＋ `allowedOperations` への operation key 追加が必須（deny-by-default）。
+`idempotencyKey` 必須。`OperationRunner` 経由で idempotency ledger / operation audit / mutation
+budget が効く。confirmation は不要（reversible な tracking write。外部破壊効果なし）。
+
+| Tool | Operation key | 主な制約 |
+|------|---------------|---------|
+| `harness.course.create` | `course.create` | `projectId` を `ensureProjectVisible` で事前チェック |
+| `harness.phase.add` | `phase.add` | 親 course の visibility を `OperationRunner` 前に確認。cross-course parent は拒否 |
+| `harness.phase.update` | `phase.update` | 親 course 経由で visibility 確認。`status` のみ更新（SP-1） |
+| `harness.phase.link_hitch` | `phase.link_hitch` | cross-project mismatch と double-link（PK）は操作内で拒否 |
+
+project-restricted client の scope: null-`project_id` course の create / phase 操作は拒否。
+
 Dry-run tools:
 
 ```txt
@@ -481,6 +517,10 @@ harness.hitch.defer_finding
 harness.hitch.record_close_check
 harness.hitch.check_convergence
 harness.hitch.orchestrate
+harness.course.create
+harness.phase.add
+harness.phase.update
+harness.phase.link_hitch
 ```
 
 `harness.hitch.orchestrate` is a **bounded driver** for the hitch convergence

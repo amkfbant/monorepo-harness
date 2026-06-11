@@ -704,6 +704,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 18 | workspace checkpoints | workspace_checkpoints |
 | 19 | operational knowledge (issue #57) | knowledge_entries.category（additive 列・新規テーブル無し） |
 | 20 | goal→hitch rename (SP-0) | goal_* の6テーブル＋全 goal_id 列を hitch_* / hitch_id に rename（index も） |
+| 21 | course → phase roadmap layer (SP-1) | courses / phases / phase_hitches（additive。既存テーブル変更なし） |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -945,3 +946,31 @@ finding 分類・close-check 証跡・convergence decision を記録し、反復
 `hitch_sessions.status` を遷移させる（`src/hitch/convergence-status.ts` の
 `statusForConvergenceDecision`）。詳細な状態連携は
 [`workflow.md`](./workflow.md) の「Phase 19」節を参照。
+
+## SP-1 — course → phase roadmap layer（schema v21）
+
+SP-1 は hitch 実行層の**上位**に course → phase のロードマップ構造を追加する additive
+migration。既存テーブルへの変更はゼロ。機能仕様は
+[`roadmap.md`](./roadmap.md)、実装は `src/roadmap/`。
+
+### schema v21（新規 3 テーブル）
+
+- **`courses`** — ロードマップ上位の initiative（`course_id` PK / `project_id`
+  nullable / `repo_id` nullable / `title` / `description` / `status`
+  `active`|`paused`|`closed` DEFAULT `active` / `created_by` / `created_source` /
+  `created_at` / `updated_at`）。`courses_project_idx(project_id, status)`。
+  MCP read の `allowedProjects` visibility gate が `project_id` を参照する（null は
+  project-restricted client に fail-closed invisible）。
+- **`phases`** — course 配下の自己参照ツリー（`phase_id` PK / `course_id` FK →
+  courses ON DELETE CASCADE / `parent_phase_id` nullable FK → phases ON DELETE
+  CASCADE / `title` / `position` INTEGER DEFAULT 0 / `status`
+  `pending`|`in_progress`|`closed`|`blocked` DEFAULT `pending` / `scope_json` /
+  `close_conditions_json` / `review_state_json` / `created_by` / `created_source` /
+  `created_at` / `updated_at`）。`phases_course_idx(course_id, parent_phase_id,
+  position)` で tree walk を効率化。
+- **`phase_hitches`** — hitch と phase の 1:1 リンクテーブル。`hitch_id` が **PK**
+  (= 1 hitch は最大 1 phase にしか属せない。スキーマレベル強制) / `phase_id` FK →
+  phases ON DELETE CASCADE / `linked_at`。`phase_hitches_phase_idx(phase_id)`。
+
+3 テーブルはいずれも **DB-only**（compat file export なし / consistency entry なし）。
+`hitch_*` / `workspaces` と同じ先例。
