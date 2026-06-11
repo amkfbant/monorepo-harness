@@ -281,6 +281,7 @@ HARNESS_ROOT=$PWD npm run --silent harness -- run \
 ```
 
 既存 repo を移行する場合は `project init --from-policy <repo-id> --project-id <id>`。
+新しい target repo を一括オンボードするには `harness onboard --repo <path> --project-id <id>`（profile 生成 → check → DB 登録 → `.harness/mcp.yaml` 設定 → serve smoke まで TTY ウィザードで一気通貫）。
 詳細は [`docs/specs/project.md`](./docs/specs/project.md)、close 状況は
 [`docs/reports/2026-05-22-phase5-close.md`](./docs/reports/2026-05-22-phase5-close.md)。
 

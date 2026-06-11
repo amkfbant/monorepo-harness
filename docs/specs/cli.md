@@ -150,6 +150,91 @@ harness policy export --project <id> --out <path> [--domain <id>] [--json]
 `harness policy compile` は、手書き profile しかない repo で `goal orchestrate` が
 `ENOENT policies/repos/<repoId>.yaml` で escalate するセットアップの落とし穴（#78）を解消する。
 
+## `harness onboard`
+
+新しい target repo を対話形式でオンボーディングするウィザード（#92）。6 ステップを
+順に実行し、各ステップは完了済みかどうかを probe して skip する（冪等・再開可能）。
+**TTY 必須**。非インタラクティブ環境では fail-closed でエラーを返し、等価コマンドを案内する。
+
+### Synopsis
+
+```bash
+harness onboard --repo <path> --project-id <id>
+```
+
+| Option | Required | 説明 |
+|--------|:--------:|------|
+| `--repo <path>` | ✅ | オンボードする target repo のパス（絶対 or 相対） |
+| `--project-id <id>` | ✅ | 作成する project の識別子（`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`） |
+
+### ステップシーケンス
+
+| # | ステップ | 内容 |
+|---|---------|------|
+| 1 | **Preflight** | `codex` / `gh` の存在を probe して report（要件ではなく report-only。repo パスが不在なら blocked） |
+| 2 | **Generate project profile + policy** | `project init` 相当。dry-run を表示し、確認を得てから `projects/<id>.yaml` + `policies/repos/<repoId>.yaml` を書き込む。`policies/global.yaml` が不在なら併せて scaffold する |
+| 3 | **Validate the profile** | `project check` 相当（`ok` / `warn` は続行、`error` は停止） |
+| 4 | **Register the project in the DB** | `db import --from-files` 相当（DB を初期化・migration し project を登録） |
+| 5 | **Configure MCP access** | `.harness/mcp.yaml` を生成または merge。mutation は **deny-all がデフォルト**。opt-in すると `guarded-mutation` クライアントエントリと許可操作（`goal.start` / `run.start`）の**両方**を書き込む（2 段階ゲート）。既存の allow-all 設定（`allowedProjects: []`）は**黙って narrowing しない** |
+| 6 | **Verify MCP would serve this project** | デーモン不起動で実効設定を評価し、project の可視性とクライアントの permission を smoke check する |
+
+### TTY 要件と非インタラクティブ環境
+
+`harness onboard` は TTY が必要。非インタラクティブ環境（CI、パイプ経由、`isTTY=false`）では
+即座に fail-closed でエラーを返し、等価な手動コマンドを案内する:
+
+```
+harness error: harness onboard is interactive and needs a TTY. In a non-interactive shell,
+run the steps directly: project inspect/init, project check, db import --from-files,
+then edit .harness/mcp.yaml (see docs/specs/cli.md).
+```
+
+非 TTY で各ステップを手動実行する場合:
+
+```bash
+# Step 2: profile + policy 生成
+HARNESS_ROOT=$PWD harness project init --repo <path> --project-id <id> --write
+
+# Step 3: profile 検査
+HARNESS_ROOT=$PWD harness project check --project <id>
+
+# Step 4: DB 登録
+HARNESS_ROOT=$PWD harness db import --from-files
+
+# Step 5: .harness/mcp.yaml を手編集（docs/specs/mcp.md 参照）
+
+# Step 6: 実効 config 確認
+HARNESS_ROOT=$PWD harness mcp config
+```
+
+### 冪等性・再開可能
+
+各ステップは実行前に probe を行い、完了済みと判断すれば skip する:
+
+- Step 2（profile）: `projects/<id>.yaml` が存在すれば skip
+- Step 3（check）: profile 不在なら blocked（Step 2 の完了が前提）
+- Step 4（db）: DB に当該 project_id が登録済みなら skip
+- Step 5（mcp）: `.harness/mcp.yaml` が存在し、かつ project が `isProjectAllowed` を通過すれば skip
+
+途中で失敗したり中断したりした場合、`harness onboard` を再実行すると完了済みステップを
+skip して残りから再開する。
+
+### mutation opt-in の 2 段階ゲート
+
+Step 5 の mutation opt-in は明示的な 2 要素が必要:
+
+1. **`guarded-mutation` クライアントエントリ** — 指定クライアントを `guarded-mutation` mode に設定する
+2. **`allowedOperations` への操作追加** — `goal.start` / `run.start` のうち確認した操作を許可リストに追加する
+
+両方がそろって初めて mutation が実行可能になる（どちらか一方では不十分）。
+既存の allow-all 設定（`allowedProjects: []`）は黙って narrowing しない。wizard が
+「明示的なリストに切り替えるか」確認し、拒否すれば allow-all を維持する。
+
+### Exit code
+
+- `0`: 全ステップ完了
+- `1`: ステップ失敗 / ユーザが decline / blocked（profile check が error 等）/ 非 TTY
+
 ## `harness backlog`
 
 やりたいことを harness 管理下に積み、run と紐づける個人 backlog（Phase 4-3）。

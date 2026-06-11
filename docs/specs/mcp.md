@@ -94,6 +94,14 @@ the recommended deployment path for shared agent access.
 An explicit `--config <path>` is fail-closed: if the file does not exist, the
 server/CLI exits nonzero instead of falling back to broader defaults.
 
+**`harness onboard` による `.harness/mcp.yaml` の生成**: 新しい target repo をオンボードする
+際は `harness onboard --repo <path> --project-id <id>` が `.harness/mcp.yaml` の生成または
+merge を自動で行う。mutation は **deny-all がデフォルト**。opt-in すると `guarded-mutation`
+クライアントエントリと `allowedOperations`（`goal.start` / `run.start`）の**両方**を書き込む
+（2 段階パーミッションゲート — どちらか一方では不十分）。既存の allow-all 設定
+（`allowedProjects: []`）は黙って narrowing しない（wizard が確認を取り、拒否すれば allow-all
+を維持する）。詳細は [`cli.md`](./cli.md) の `harness onboard` 節を参照。
+
 `harness mcp config` prints the full effective MCP config as JSON. With
 `--client-name <name>`, it prints the effective permission view for that launch
 client instead:
