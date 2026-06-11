@@ -1,0 +1,67 @@
+import { allowedByConvergence } from "../hitch/mutation-gate.js";
+import type {
+  HitchConvergenceDecision,
+  HitchConvergenceResult,
+} from "../hitch/types.js";
+import type { CoursePhaseAction } from "./orchestrator-types.js";
+import type { PhaseStatus } from "./types.js";
+
+const BLOCKED_DECISIONS = new Set<HitchConvergenceDecision>([
+  "escalate",
+  "diverging",
+  "budget_exhausted",
+  "needs_classification",
+]);
+
+export interface CoursePhaseDispatchInput {
+  declaredStatus: PhaseStatus;
+  isLeaf: boolean;
+  hitches: { hitchId: string; convergence: HitchConvergenceResult }[];
+  derivedOpenP0: number;
+  derivedOpenP1: number;
+}
+
+/**
+ * Deterministic per-phase dispatch. Inputs are the phase's declared status and
+ * each linked hitch's live convergence only. The source of truth for
+ * drivability is allowedByConvergence.
+ */
+export function decideCoursePhaseAction(
+  input: CoursePhaseDispatchInput,
+): CoursePhaseAction {
+  if (input.declaredStatus === "closed") return { kind: "skip_closed" };
+  if (input.declaredStatus === "blocked") return { kind: "skip_blocked" };
+
+  if (input.hitches.length === 0) {
+    return input.isLeaf ? { kind: "needs_link" } : { kind: "container" };
+  }
+
+  // blocked_hitch has priority because it triggers subtree isolation.
+  for (const h of input.hitches) {
+    if (BLOCKED_DECISIONS.has(h.convergence.decision)) {
+      return {
+        kind: "blocked_hitch",
+        hitchId: h.hitchId,
+        decision: h.convergence.decision,
+      };
+    }
+  }
+
+  const drivable = input.hitches.filter((h) =>
+    allowedByConvergence("hitch.orchestrate", h.convergence),
+  );
+  if (drivable.length > 0) {
+    return { kind: "drive", hitchIds: drivable.map((h) => h.hitchId) };
+  }
+
+  const allReady = input.hitches.every(
+    (h) =>
+      h.convergence.decision === "close_ready" ||
+      h.convergence.decision === "closed",
+  );
+  if (allReady && input.derivedOpenP0 === 0 && input.derivedOpenP1 === 0) {
+    return { kind: "ready_to_close" };
+  }
+
+  return { kind: "report_only" };
+}
