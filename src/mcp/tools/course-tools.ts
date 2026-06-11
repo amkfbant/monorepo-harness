@@ -212,14 +212,36 @@ export function resolvePhaseProjectId(
 // Deterministic id derivation (idempotency — mirrors hitchIdForIdempotencyKey)
 // ---------------------------------------------------------------------------
 
-function courseIdForIdempotencyKey(idempotencyKey: string): string {
-  const digest = createHash("sha256").update(idempotencyKey).digest("hex");
-  return `course-${digest.slice(0, 32)}`;
+// The OperationRunner replay key is (operation_type, target_id, idempotency_key)
+// with NO project/client dimension. Hashing the idempotencyKey alone would let two
+// clients in different projects (or under different courses) that reuse the same
+// idempotencyKey collide on target_id → the second create is treated as a replay
+// of the first and returns the OTHER resource (cross-project leak). We therefore
+// fold the resource scope into the hashed material: a course is scoped by its
+// project, a phase by its parent course. A NUL separator keeps the scope and key
+// unambiguous (NUL cannot appear in either value).
+function scopedIdForIdempotencyKey(
+  prefix: string,
+  scope: string | null,
+  idempotencyKey: string,
+): string {
+  const material = `${scope ?? " null-scope"} ${idempotencyKey}`;
+  const digest = createHash("sha256").update(material).digest("hex");
+  return `${prefix}-${digest.slice(0, 32)}`;
 }
 
-function phaseIdForIdempotencyKey(idempotencyKey: string): string {
-  const digest = createHash("sha256").update(idempotencyKey).digest("hex");
-  return `phase-${digest.slice(0, 32)}`;
+function courseIdForIdempotencyKey(
+  projectScope: string | null,
+  idempotencyKey: string,
+): string {
+  return scopedIdForIdempotencyKey("course", projectScope, idempotencyKey);
+}
+
+function phaseIdForIdempotencyKey(
+  courseScope: string,
+  idempotencyKey: string,
+): string {
+  return scopedIdForIdempotencyKey("phase", courseScope, idempotencyKey);
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +274,10 @@ export async function courseCreateTool(
   // Derive a stable courseId from the idempotency key so that retrying the same
   // call with the same idempotencyKey produces the same target.id and is correctly
   // treated as an idempotency replay (not a duplicate row with a new random id).
-  const courseId = courseIdForIdempotencyKey(args.idempotencyKey);
+  const courseId = courseIdForIdempotencyKey(
+    args.projectId ?? null,
+    args.idempotencyKey,
+  );
   return runMcpMutationOperation(context, {
     operationType: "course.create",
     target: { type: "course", id: courseId },
@@ -295,7 +320,7 @@ export async function phaseAddTool(
   // Derive a stable phaseId from the idempotency key so that retrying the same
   // call with the same idempotencyKey produces the same target.id and is correctly
   // treated as an idempotency replay (not a duplicate row with a new random id).
-  const phaseId = phaseIdForIdempotencyKey(args.idempotencyKey);
+  const phaseId = phaseIdForIdempotencyKey(args.courseId, args.idempotencyKey);
   return runMcpMutationOperation(context, {
     operationType: "phase.add",
     target: { type: "phase", id: phaseId },

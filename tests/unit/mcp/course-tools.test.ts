@@ -488,6 +488,125 @@ describe("MCP course-tools create/add idempotency replay (P1)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// P1 (codex App): cross-resource idempotency-key collision must not leak.
+// The OperationRunner replay key is (operation_type, target_id, idempotency_key)
+// with NO project/client dimension. If the derived target_id hashes only the
+// idempotencyKey, two clients in DIFFERENT projects that happen to reuse the same
+// idempotencyKey collide → the second create is treated as a replay of the first
+// and returns the OTHER project's course. The derived id must include the
+// resource scope (project for course.create, course for phase.add) so distinct
+// resources never collide.
+// ---------------------------------------------------------------------------
+
+describe("MCP course-tools create/add idempotency scope isolation (P1)", () => {
+  it("course.create with the same idempotencyKey in DIFFERENT projects creates two distinct courses", async () => {
+    const root = freshRoot();
+    const idempotencyKey = "shared-key-across-projects";
+
+    const demoServer = server(root, {
+      ...DEFAULT_MCP_CONFIG,
+      defaultMode: "guarded-mutation",
+      allowedProjects: ["demo"],
+      allowedOperations: ["course.create"],
+    });
+    const otherServer = server(root, {
+      ...DEFAULT_MCP_CONFIG,
+      defaultMode: "guarded-mutation",
+      allowedProjects: ["other"],
+      allowedOperations: ["course.create"],
+    });
+
+    const demoResult = await callTool(demoServer, "harness.course.create", {
+      title: "Demo Project Course",
+      projectId: "demo",
+      idempotencyKey,
+    });
+    expect(demoResult.status).toBe("operation_started");
+    expect(demoResult.data.replayed).toBe(false);
+    const demoCourseId = demoResult.data.result.courseId as string;
+
+    // Different project, SAME idempotencyKey — must NOT be a cross-project replay.
+    const otherResult = await callTool(otherServer, "harness.course.create", {
+      title: "Other Project Course",
+      projectId: "other",
+      idempotencyKey,
+    });
+    expect(otherResult.status).toBe("operation_started");
+    // With the bug this is replayed=true and returns the demo course (leak).
+    expect(otherResult.data.replayed).toBe(false);
+    const otherCourseId = otherResult.data.result.courseId as string;
+
+    expect(otherCourseId).not.toBe(demoCourseId);
+
+    // Each project owns exactly its own course; no cross-project leak.
+    withDb(root, (db) => {
+      const repo = new CourseRepository(db);
+      const demoCourse = repo.get(demoCourseId);
+      const otherCourse = repo.get(otherCourseId);
+      expect(demoCourse?.projectId).toBe("demo");
+      expect(demoCourse?.title).toBe("Demo Project Course");
+      expect(otherCourse?.projectId).toBe("other");
+      expect(otherCourse?.title).toBe("Other Project Course");
+    });
+  });
+
+  it("phase.add with the same idempotencyKey under DIFFERENT courses creates two distinct phases", async () => {
+    const root = freshRoot();
+    let courseA = "";
+    let courseB = "";
+    withDb(root, (db) => {
+      const repo = new CourseRepository(db);
+      courseA = repo.create({
+        title: "Course A",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "test",
+      }).courseId;
+      courseB = repo.create({
+        title: "Course B",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "test",
+      }).courseId;
+    });
+
+    const s = server(root, mutationConfig(["phase.add"]));
+    const idempotencyKey = "shared-key-across-courses";
+
+    const resultA = await callTool(s, "harness.phase.add", {
+      courseId: courseA,
+      title: "Phase under A",
+      idempotencyKey,
+    });
+    expect(resultA.status).toBe("operation_started");
+    expect(resultA.data.replayed).toBe(false);
+    const phaseA = resultA.data.result.phaseId as string;
+
+    // Same idempotencyKey under a DIFFERENT course — must NOT be a replay.
+    const resultB = await callTool(s, "harness.phase.add", {
+      courseId: courseB,
+      title: "Phase under B",
+      idempotencyKey,
+    });
+    expect(resultB.status).toBe("operation_started");
+    expect(resultB.data.replayed).toBe(false);
+    const phaseB = resultB.data.result.phaseId as string;
+
+    expect(phaseB).not.toBe(phaseA);
+
+    withDb(root, (db) => {
+      const repo = new PhaseRepository(db);
+      expect(repo.listForCourse(courseA).map((p) => p.title)).toContain(
+        "Phase under A",
+      );
+      expect(repo.listForCourse(courseB).map((p) => p.title)).toContain(
+        "Phase under B",
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Deny-by-default: phase mutations not allowlisted are rejected
 // ---------------------------------------------------------------------------
 
