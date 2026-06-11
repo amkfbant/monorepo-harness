@@ -44,22 +44,44 @@ course   (= roadmap / program / epic — #88 epic grouping is a course)
 
 New tables (additive migration, next schema version):
 
-- **`courses`** — `course_id` PK, `title`, `description`, `status`
-  (`active` | `paused` | `closed`), `created_at`, `updated_at`.
+- **`courses`** — `course_id` PK, `project_id` (nullable), `repo_id` (nullable),
+  `title`, `description`, `status` (`active` | `paused` | `closed`), `created_by`,
+  `created_source`, `created_at`, `updated_at`. The `project_id`/`repo_id` mirror
+  `hitch_sessions` so the MCP `allowedProjects` visibility gate applies (P1 — see
+  Project scope & visibility).
 - **`phases`** — `phase_id` PK, `course_id` FK → courses, `parent_phase_id`
   (nullable self-ref; null = top-level 大 phase), `title`, `position` (int, order
   within its parent), `status` (`pending` | `in_progress` | `closed` |
   `blocked`), `scope_json` (includes/excludes, target issues/files),
   `close_conditions_json` (the phase's deterministic gates, e.g. command checks),
-  `review_state_json` (which reviews ran + verdict + open P0/P1 counts — recorded
-  state, not the rules), `created_at`, `updated_at`.
-- **`phase_hitches`** — link table: `phase_id` FK, `hitch_id` FK → hitch_sessions,
-  `linked_at`. A phase has 0..N hitches; a hitch links to at most one phase.
+  `review_state_json` (phase-level reviews recorded — see Rollup), `created_by`,
+  `created_source`, `created_at`, `updated_at`. A phase inherits its course's
+  project scope.
+- **`phase_hitches`** — link table: `hitch_id` **PRIMARY KEY** (a hitch links to at
+  most ONE phase — enforced by schema, not just the repository), `phase_id` FK →
+  phases `ON DELETE CASCADE`, `hitch_id` FK → hitch_sessions, `linked_at`. A phase
+  has 0..N hitches.
 
 A **self-referencing tree** (not two fixed entity types) represents 大/サブ in one
 table, allows deeper splits if ever needed, and keeps #88 epic grouping at the
 course level. Integrity: a phase's `parent_phase_id` must be in the same course;
-no cycles; `position` orders siblings.
+no cycles (only reachable via reparent, which SP-1 does NOT expose — `phase add`
+cannot create a cycle since a new node has no children; the cycle check is a
+defensive guard); `(position, phase_id)` orders siblings deterministically.
+
+The new tables are **DB-only** (no compat file export / consistency entry — same
+as the `hitch_*` and `workspaces` precedent).
+
+## Project scope & visibility (P1)
+
+A `course` is scoped by its `project_id` (nullable) like everything else. The
+course/phase MCP read + rollup tools apply the existing `ensureProjectVisible`
+gate: a project-restricted client (`allowedProjects` non-empty) sees only courses
+whose `project_id` is in its set; a **null-`project_id` course** (the harness's own
+cross-project roadmap) is **fail-closed invisible** to restricted clients. CLI is
+unrestricted (operator). `phase.link_hitch` **rejects** linking a hitch whose
+`hitch_sessions.project_id` differs from the course's `project_id` (no
+cross-project leak via a link); a null-project course accepts any hitch.
 
 ## API (read + write — the canonical surface)
 
@@ -71,30 +93,44 @@ CLI (`harness course` / `harness phase`):
   summary (done / in-progress / blocked / open P0-P1 counts). This rollup is the
   foundation for #84 (auto summary) and #88 (epic progress rollup).
 - `harness course close <id>`.
+- `harness course export <id> --md [--out <path>]` — one-way DB→markdown roadmap
+  view (DB stays canonical; no markdown→DB round-trip).
 - `harness phase add --course <id> [--parent <phase-id>] --title … [--position n]`.
 - `harness phase list --course <id>` (tree) / `harness phase show <id>`.
 - `harness phase update <id> [--status …] [--scope-file …] [--close-file …]`.
 - `harness phase link-hitch <phase-id> <hitch-id>` / `phase unlink-hitch …`.
 
+(CLI exposes `course close` / `phase unlink-hitch`; the MCP mutation surface is
+deliberately narrower — create/add/update/link only — terminal/destructive ops
+stay CLI-operator-driven, consistent with how `hitch.close`/`cancel` are gated.)
+
 MCP:
 - read: `harness.course.list` / `harness.course.get` / `harness.course.status` /
   `harness.phase.list` / `harness.phase.get`.
-- guarded-mutation (allowedOperations + OperationRunner: idempotency/audit/budget):
+- guarded-mutation (deny-by-default `allowedOperations` allow-list; OperationRunner
+  for idempotency/audit; the MCP security limiter enforces the mutation budget):
   `course.create`, `phase.add`, `phase.update`, `phase.link_hitch`.
 
 ## Rollup / state (DB-canonical)
 
 `course status` and the read tools are **deterministic projections** over the
 phase tree + linked hitch state:
-- per-phase: own `status` + linked hitches' latest convergence decision and open
-  in-scope P0/P1 finding counts.
-- per-course: aggregate (counts of phases by status; total open P0/P1).
+- per-phase: its declared `status` PLUS the **independently derived** state of its
+  linked hitches — latest convergence decision and open in-scope P0/P1 finding
+  counts read live from `hitch_findings` (via `HitchRepository.listFindings`).
+- per-course: aggregate (counts of phases by status; total derived open P0/P1).
 
-`review_state_json` only **records** facts ("opus sub-review done, verdict X, open
-P0/P1 = N"; "Fable large-phase review done"). It does not encode the rules — the
-review cadence / gates stay in docs/prompt-context. Recording it in the DB lets an
-agent query "which phases still need review / have open P1" instead of re-reading
-markdown.
+**The hitch-derived counts are always read live from `hitch_findings` — never from
+a stored snapshot — so a declared phase `status` cannot hide open P0/P1.** The
+declared `status` is tracking metadata; the rollup surfaces both it and the live
+truth side by side.
+
+`review_state_json` records **only phase-level reviews that are NOT a hitch's own
+convergence** — e.g. a codex/opus/Fable review of the phase's roadmap/plan — as
+facts ("Fable large-phase review done, verdict X"). It does **not** store
+hitch-derived P0/P1 counts (those are always derived, never duplicated) and does
+**not** encode the build rules (retry limits / gates stay docs/prompt-context).
+This keeps it from overlapping the hitch convergence policy.
 
 ## Importer / migration (API-first)
 
@@ -116,11 +152,19 @@ the DB is the source of truth (no round-trip edit-the-markdown path).
 ## Safety boundaries
 
 The new layer does not touch the post-hoc `git diff` policy verification, MCP
-`confirmation_required`, or the hitch convergence logic. course/phase status
-transitions are harness-only deterministic writes (the mutation tools go through
-the existing OperationRunner). No LLM output drives a course/phase state
-transition. Fail-closed on tree-integrity violations (orphan/cycle/cross-course
-parent are rejected).
+`confirmation_required`, or the hitch convergence logic. course/phase `status` is
+**declarative tracking metadata** (declared by the caller — operator or an MCP
+client — through a guarded, audited mutation), NOT a convergence verdict: unlike a
+hitch's status (synced from the deterministic `ConvergenceService`), a phase's
+status is a label. The safety guarantee is therefore narrower and explicit: the
+mutation is **deny-by-default + audited**, and crucially the **rollup derives open
+P0/P1 live from `hitch_findings` independently of the declared status**, so a
+caller cannot mark a phase "closed" to hide unresolved findings. Project
+visibility is gated (Project scope & visibility). Fail-closed on tree-integrity
+violations (cross-course parent / cycle / double-link are rejected — double-link
+by the `phase_hitches` PK). Whether `course.close` / `phase.update`→`closed`
+warrant `requireConfirmation` is decided in the plan (default: not required, since
+no destructive/external effect — they are reversible tracking writes).
 
 ## Error handling
 
@@ -145,8 +189,15 @@ parent are rejected).
 
 ## Files (sketch)
 
-- `src/db/schema.ts` — new migration (courses/phases/phase_hitches), `SCHEMA_VERSION` bump.
-- `src/roadmap/` (new) — `CourseRepository` / `PhaseRepository`, the tree + rollup logic (pure, testable).
+- `src/db/schema.ts` — new migration (`MIGRATION_V21_STATEMENTS`: courses /
+  phases / phase_hitches), `SCHEMA_VERSION` 20→21, `ALL_TABLE_NAMES` additions.
+- `src/roadmap/` (new) — `CourseRepository` / `PhaseRepository`, the tree-walk +
+  deterministic rollup logic (pure, testable; rollup reads `HitchRepository`
+  finding/decision data live).
 - `src/cli/course.ts` (new) — `harness course` / `harness phase` commands.
-- `src/mcp/tools/course-tools.ts` (new) + registry entries — read + guarded-mutation.
-- docs: `docs/specs/roadmap.md` (new), pointers from CLAUDE.md.
+- `src/mcp/tools/course-tools.ts` (new) + `tool-registry.ts` entries — read +
+  guarded-mutation, each applying `ensureProjectVisible`.
+- docs (same-commit, spec-driven): `docs/specs/roadmap.md` (new) + a CLAUDE.md
+  pointer; `docs/specs/db.md` (the migration-version table + new tables);
+  `docs/specs/cli.md` (`harness course`/`phase` subcommands — cli.md is the
+  canonical subcommand reference); `docs/specs/mcp.md` (the new tools).
