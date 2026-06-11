@@ -15,7 +15,7 @@
 
 既存 profile から **policy ファイルを直接 materialize** するには
 `harness policy compile --project <id>`（#78）を使う: `policies/repos/<repoId>.yaml`
-（`goal orchestrate` が repoId モードで読むファイル）を生成し、`policies/global.yaml`
+（`hitch orchestrate` が repoId モードで読むファイル）を生成し、`policies/global.yaml`
 不在時はそれも scaffold する（不在 ENOENT 回避）。既存ファイルは `--force` 必須。生成
 YAML 先頭に provenance ヘッダ（コメント＝loader は無視）が付く。DB は変更しない。
 

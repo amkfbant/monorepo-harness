@@ -143,11 +143,11 @@ harness policy export --project <id> --out <path> [--domain <id>] [--json]
 
 | サブコマンド | 動作 |
 |--------------|------|
-| `compile` | profile を compile し、`goal orchestrate` が **repoId モードで読む** `policies/repos/<repoId>.yaml` を生成。`policies/global.yaml` が**不在なら併せて scaffold**（不在 ENOENT 回避、#78）。既存ファイルは `--force` 必須＝誤上書き防止。生成 YAML 先頭に provenance ヘッダ（手編集非推奨）。**DB は変更しない**（snapshot 行は記録しない＝`policy snapshot` を使う）。`warnings` を stderr に surface。**`--out` を指定すると単一ファイル（repo policy）のみ出力し global.yaml は管理しない**ので、global が無い fresh な HARNESS_ROOT では `--out` を使わず既定パスに出力すること |
+| `compile` | profile を compile し、`hitch orchestrate` が **repoId モードで読む** `policies/repos/<repoId>.yaml` を生成。`policies/global.yaml` が**不在なら併せて scaffold**（不在 ENOENT 回避、#78）。既存ファイルは `--force` 必須＝誤上書き防止。生成 YAML 先頭に provenance ヘッダ（手編集非推奨）。**DB は変更しない**（snapshot 行は記録しない＝`policy snapshot` を使う）。`warnings` を stderr に surface。**`--out` を指定すると単一ファイル（repo policy）のみ出力し global.yaml は管理しない**ので、global が無い fresh な HARNESS_ROOT では `--out` を使わず既定パスに出力すること |
 | `snapshot` | effective policy snapshot を DB（`effective_policy_snapshots`）に materialize |
 | `export` | DB-current snapshot の YAML を path へ書き出す |
 
-`harness policy compile` は、手書き profile しかない repo で `goal orchestrate` が
+`harness policy compile` は、手書き profile しかない repo で `hitch orchestrate` が
 `ENOENT policies/repos/<repoId>.yaml` で escalate するセットアップの落とし穴（#78）を解消する。
 
 ## `harness onboard`
@@ -175,7 +175,7 @@ harness onboard --repo <path> --project-id <id>
 | 2 | **Generate project profile + policy** | `project init` 相当。dry-run を表示し、確認を得てから `projects/<id>.yaml` + `policies/repos/<repoId>.yaml` を書き込む。`policies/global.yaml` が不在なら併せて scaffold する |
 | 3 | **Validate the profile** | `project check` 相当（`ok` / `warn` は続行、`error` は停止） |
 | 4 | **Register the project in the DB** | `db import --from-files` 相当（DB を初期化・migration し project を登録） |
-| 5 | **Configure MCP access** | `.harness/mcp.yaml` を生成または merge。mutation は **deny-all がデフォルト**。opt-in すると `guarded-mutation` クライアントエントリと許可操作（`goal.start` / `run.start`）の**両方**を書き込む（2 段階ゲート）。既存の allow-all 設定（`allowedProjects: []`）は**黙って narrowing しない** |
+| 5 | **Configure MCP access** | `.harness/mcp.yaml` を生成または merge。mutation は **deny-all がデフォルト**。opt-in すると `guarded-mutation` クライアントエントリと許可操作（`hitch.start` / `run.start`）の**両方**を書き込む（2 段階ゲート）。既存の allow-all 設定（`allowedProjects: []`）は**黙って narrowing しない** |
 | 6 | **Verify MCP would serve this project** | デーモン不起動で実効設定を評価し、project の可視性とクライアントの permission を smoke check する |
 
 ### TTY 要件と非インタラクティブ環境
@@ -224,7 +224,7 @@ skip して残りから再開する。
 Step 5 の mutation opt-in は明示的な 2 要素が必要:
 
 1. **`guarded-mutation` クライアントエントリ** — 指定クライアントを `guarded-mutation` mode に設定する
-2. **`allowedOperations` への操作追加** — `goal.start` / `run.start` のうち確認した操作を許可リストに追加する
+2. **`allowedOperations` への操作追加** — `hitch.start` / `run.start` のうち確認した操作を許可リストに追加する
 
 両方がそろって初めて mutation が実行可能になる（どちらか一方では不十分）。
 既存の allow-all 設定（`allowedProjects: []`）は黙って narrowing しない。wizard が
@@ -351,44 +351,44 @@ harness operation reject <confirmationId> [--by <actor>]
 - `reject` は pending request を rejected にし、出力する confirmation row の `inputJson` / `previewJson` は redacted する。
 - rejected / expired / consumed request は再実行できない。
 
-## `harness goal`
+## `harness hitch`
 
-Goal convergence controller（Phase 19）。長い実装/レビュー/修正ループを 1 つの
-goal session に束ね、scope / close condition / budget / finding lifecycle を DB に
-記録する。仕様は [`goal-convergence.md`](./goal-convergence.md)。
+Hitch convergence controller（Phase 19）。長い実装/レビュー/修正ループを 1 つの
+hitch session に束ね、scope / close condition / budget / finding lifecycle を DB に
+記録する。仕様は [`hitch-convergence.md`](./hitch-convergence.md)。
 
 ```bash
-harness goal start --title <text> [--goal-id <id>] [--project <id>] [--repo-id <id>] [--domain <domain>] \
+harness hitch start --title <text> [--hitch-id <id>] [--project <id>] [--repo-id <id>] [--domain <domain>] \
   [--scope-file <path>] [--close-file <path>] [--policy-file <path>] \
   [--max-iterations <n>] [--max-review-cycles <n>] [--max-reruns <n>] \
   [--max-total-new-findings <n>] [--json]
-harness goal list [--status <status>] [--project <id>] [--repo-id <id>] [--domain <domain>] [--limit <n>] [--json]
-harness goal status <goal-id> [--json]
-harness goal close <goal-id> --summary <text> [--force] [--json]
-harness goal cancel <goal-id> --reason <text> [--json]
-harness goal reopen <goal-id> --reason <text> [--extend-iterations <n>] [--extend-review-cycles <n>] [--extend-reruns <n>] [--json]
+harness hitch list [--status <status>] [--project <id>] [--repo-id <id>] [--domain <domain>] [--limit <n>] [--json]
+harness hitch status <hitch-id> [--json]
+harness hitch close <hitch-id> --summary <text> [--force] [--json]
+harness hitch cancel <hitch-id> --reason <text> [--json]
+harness hitch reopen <hitch-id> --reason <text> [--extend-iterations <n>] [--extend-review-cycles <n>] [--extend-reruns <n>] [--json]
 ```
 
 Finding lifecycle:
 
 ```bash
-harness goal finding add <goal-id> --severity P1 --category correctness --summary <text> \
+harness hitch finding add <hitch-id> --severity P1 --category correctness --summary <text> \
   [--source review|test|doctor|human|mcp|codex|other] [--scope in-scope|out-of-scope|unknown|duplicate] [--json]
-harness goal finding classify <finding-id> --scope in-scope|out-of-scope|unknown|duplicate --reason <text> \
+harness hitch finding classify <finding-id> --scope in-scope|out-of-scope|unknown|duplicate --reason <text> \
   [--duplicate-of <finding-id>] [--then-rerun --repo <path> [--base-branch <name>] [--max-steps <n>]] [--json]
-harness goal finding fixed <finding-id> [--note <text>] [--json]
-harness goal finding defer <finding-id> --reason <text> [--backlog] [--json]
+harness hitch finding fixed <finding-id> [--note <text>] [--json]
+harness hitch finding defer <finding-id> --reason <text> [--backlog] [--json]
 ```
 
-**`goal finding classify --then-rerun`（C#8 / opt-in・要 `--repo`）**: external review 由来で
+**`hitch finding classify --then-rerun`（C#8 / opt-in・要 `--repo`）**: external review 由来で
 ingest された unknown-scope finding を operator が **in-scope に分類した直後**、coder rerun を
-**自動連鎖**する（手動の `goal orchestrate` 再実行を不要にする）。安全境界どおり: 分類は
+**自動連鎖**する（手動の `hitch orchestrate` 再実行を不要にする）。安全境界どおり: 分類は
 operator-owned な human-in-the-loop 境界（external 出力を自動分類しない）で、自動実行するのは
 分類後の convergence が **`needs_fix` のときだけ**（harness-only の決定論ゲート）。`needs_fix`
 なら orchestrator を bounded（`--max-steps`、既定 20）で回し coder が新たに in-scope となった
 finding を `augmentGoalWithOpenFindings` 経由で修正する。**ただし `close_ready` に達したら PR を
 開かず停止**する（`stopAtCloseReady`・publisher も wire しない）＝coder rerun の意図どおりで、
-PR 作成/merge は別途 `goal orchestrate` / `goal await-merge` の明示ステップに委ねる（least-surprise）。
+PR 作成/merge は別途 `hitch orchestrate` / `hitch await-merge` の明示ステップに委ねる（least-surprise）。
 分類後が `needs_fix` でない
 （`needs_classification`＝他に unknown が残る / `close_ready` 等）場合は**自動実行しない**で
 `rerun=skipped(<reason>)` を出力する（classify が暗黙に PR を作る等の副作用を避ける）。
@@ -398,48 +398,48 @@ PR 作成/merge は別途 `goal orchestrate` / `goal await-merge` の明示ス�
 Attempts, review cycles, close checks, and convergence decisions:
 
 ```bash
-harness goal attempt start <goal-id> --type plan|implement|fix-review|rerun|validate|close-check|classify-findings|defer-followups \
+harness hitch attempt start <hitch-id> --type plan|implement|fix-review|rerun|validate|close-check|classify-findings|defer-followups \
   [--iteration <n>] [--operation-id <id>] [--run-id <id>] [--parent-attempt-id <id>] [--input-json <json>] [--json]
-harness goal attempt complete <attempt-id> --status succeeded|failed|cancelled \
+harness hitch attempt complete <attempt-id> --status succeeded|failed|cancelled \
   [--operation-id <id>] [--run-id <id>] [--result-json <json>] [--error <text>] [--json]
-harness goal review-cycle start <goal-id> --mode initial|delta|close|regression|manual \
+harness hitch review-cycle start <hitch-id> --mode initial|delta|close|regression|manual \
   [--trigger-attempt-id <id>] [--source-review-id <id>] [--source-run-id <id>] [--json]
-harness goal review-cycle complete <cycle-id> [--from-findings <path>] \
+harness hitch review-cycle complete <cycle-id> [--from-findings <path>] \
   [--findings-seen <n>] [--findings-new <n>] [--findings-reopened <n>] \
   [--findings-fixed <n>] [--findings-deferred <n>] [--findings-in-scope-open <n>] [--json]
-harness goal close-check record <goal-id> --condition <id> --status passed|failed|pending|skipped|unknown \
+harness hitch close-check record <hitch-id> --condition <id> --status passed|failed|pending|skipped|unknown \
   [--checked-by <actor>] [--message <text>] [--evidence-json <json>] [--json]
-harness goal check-convergence <goal-id> [--created-by <actor>] [--no-record] [--json]
+harness hitch check-convergence <hitch-id> [--created-by <actor>] [--no-record] [--json]
 
-harness goal orchestrate <goal-id> --repo <path> [--base-branch <name>] [--max-steps <n>] \
+harness hitch orchestrate <hitch-id> --repo <path> [--base-branch <name>] [--max-steps <n>] \
   [--dry-run] [--auto-merge] [--merge-method squash|merge|rebase] \
   [--ci-await-timeout <seconds>] [--request-copilot-review] \
   [--ingest-external-reviews] [--external-review-timeout <seconds>]
 
-harness goal await-merge [<goal-id>] --repo <path> [--all] [--repo-id <id>] \
+harness hitch await-merge [<hitch-id>] --repo <path> [--all] [--repo-id <id>] \
   [--base-branch <name>] [--merge-method squash|merge|rebase] \
   [--ci-await-timeout <seconds>] [--poll-interval <seconds>] [--max-wait <seconds>] \
   [--ingest-external-reviews] [--external-review-timeout <seconds>]
 ```
 
-`goal close` は convergence が `close_ready` でない限り `--force` を要求する。
+`hitch close` は convergence が `close_ready` でない限り `--force` を要求する。
 `check-convergence` は `diverging` / `budget_exhausted` / `escalate` で exit 2。
-MCP 経由の goal close/cancel/scope expansion は confirmation-required。
+MCP 経由の hitch close/cancel/scope expansion は confirmation-required。
 
-`goal reopen`（#76）は **terminal な goal**（`closed` / `budget_exhausted` / `escalated`）を
+`hitch reopen`（#76）は **terminal な hitch**（`closed` / `budget_exhausted` / `escalated`）を
 `open` に戻し、後から判明した finding を**既存ブランチ上で**修正できるようにする
 （PR クローズ＆再実装を避ける）。`updateStatus` が COALESCE で残す terminal マーカー
 （`closed_at` / `close_summary` / `escalation_reason`）を**クリア**し、budget（`max_iterations` /
 `max_review_cycles` / `max_reruns`、既存カラム＝schema 不変）を **延長**するので、
-`budget_exhausted` の goal が再開直後に再枯渇しない。`cancelled`（意図的放棄）は reopen 不可。
+`budget_exhausted` の hitch が再開直後に再枯渇しない。`cancelled`（意図的放棄）は reopen 不可。
 `diverging` も **reopen 不可**: divergence トリガー（`totalNewFindings` / `maxReopenCount` /
 finding 数の非減少）は不変の履歴から導出され、reopen は iteration/review/rerun budget しか
 延長しない（divergence budget は延長しない）ため、再開直後の convergence 評価で即 `diverging`
 が再発火し全 mutation を再 block する＝operator に解消手段がない。divergence budget 延長を伴う
-設計は `docs/future-features.md` 参照。reopen 後は `goal finding add` で finding を記録 →
+設計は `docs/future-features.md` 参照。reopen 後は `hitch finding add` で finding を記録 →
 orchestrate が `needs_fix` → coder で修正する。
 
-`goal orchestrate` は goal を terminal 状態（closed / pr_created / merged /
+`hitch orchestrate` は hitch を terminal 状態（closed / pr_created / merged /
 escalated）まで bounded loop（`--max-steps`、既定 50）で自律駆動する。`--dry-run`
 は次の action のみ表示し実行しない。PR 作成を伴う結果では、typed outcome の値は
 `pr_created` / `merged` のまま変えず、one-line 出力に `draft=true|false` を別フィールド
@@ -454,8 +454,8 @@ audit に記録される。詳細は
 
 **workspace 自動リンク（best-effort）**: `--repo` が agent worktree（branch が
 `agent/<name>`、または adopt 済みの path。`--repo` がその worktree の**サブディレクトリ**
-でも `git rev-parse --show-toplevel` で root に解決）なら、run 後にその workspace を goal
-に**自動リンク**し heartbeat を更新する（`workspace status` がどの agent がどの goal を
+でも `git rev-parse --show-toplevel` で root に解決）なら、run 後にその workspace を hitch
+に**自動リンク**し heartbeat を更新する（`workspace status` がどの agent がどの hitch を
 回しているかを自動反映）。**main worktree は `agent/*` ブランチでも除外**（reconcile/adopt
 と同じ・primary checkout は共有ツリー）。失敗しても orchestration を止めない。出力に
 `workspace=<agent>`。
@@ -480,17 +480,17 @@ PR 公開後に非同期で post されるため、一発の orchestrate が ver
 （秒）が尽きるまで 15 秒間隔で poll する。budget 内に blocking が無ければ gate 評価に
 進む（fail-safe。遅れて来た verdict は close_ready の再 check で後から拾える）。
 
-`goal await-merge` は **`close_ready` で PR がオープン中（CI 待ち）** の goal を、
+`hitch await-merge` は **`close_ready` で PR がオープン中（CI 待ち）** の hitch を、
 merge されるまで**ポーリングで自動駆動**する（`orchestrate --auto-merge` の close/merge
-ステップだけを繰り返す薄いループ）。`<goal-id>` か **`--all`** の**どちらか一方**が必須。**`--all` は `--repo-id <id>` を
-必須**とし、その repo の `close_ready` goal だけを順に駆動する（gh の CI/merge probe は
+ステップだけを繰り返す薄いループ）。`<hitch-id>` か **`--all`** の**どちらか一方**が必須。**`--all` は `--repo-id <id>` を
+必須**とし、その repo の `close_ready` hitch だけを順に駆動する（gh の CI/merge probe は
 単一 `--repo` 作業ディレクトリに束縛されるため、`--all` が**別 repo の PR を跨いで誤マージ
-しない**ための安全策＝fail-closed）。単一 goal 指定時に `--repo-id` を渡すと、その goal の
+しない**ための安全策＝fail-closed）。単一 hitch 指定時に `--repo-id` を渡すと、その hitch の
 `repoId` と一致しなければ拒否する。await-merge は常にマージを意図するので
 auto-merge 配線（merger / CI probe / `--ingest-external-reviews`）は**常に構築**される
 （`--auto-merge` フラグは不要）。各ポーリングは convergence を再評価し、**`close_ready`
 のときだけ** close/merge ステップ（`maxSteps=1`）を 1 回走らせる（coder/review は走らせ
-ない）。`close_ready` でない goal は **`not_awaiting`** として何も変更せず報告する（状態
+ない）。`close_ready` でない hitch は **`not_awaiting`** として何も変更せず報告する（状態
 遷移は harness のみ・LLM 出力で駆動しない安全境界どおり）。結果の分類: PR が merge された
 → **`merged`**、PR オープンで CI 未 green（recheckable）→ 続行、gate hard 未達 / runner
 throw → **`escalated`** で停止、budget 超過 → **`timeout`**。`--poll-interval`（既定 `30`
@@ -500,8 +500,8 @@ wall-clock。`--ci-await-timeout` は**各**試行内で pending CI を待つ秒
 `--max-wait` を超えてブロックしない（予算切れなら新たな試行を始めない）。`closeAndPr` を
 **直接**呼ぶ close/merge 専用経路で coder/review は走らない。pre-check と closeAndPr 内部の
 close_ready 再 check の間に drift したら `not_awaiting` で停止（副作用なし）、close_ready の
-まま close/merge が**失敗**したら `escalated`（fail-closed）。出力は goal ごとに
-`goal=<id> await-merge=<outcome> polls=<n> [pr=… | decision=… | escalate=…]`。
+まま close/merge が**失敗**したら `escalated`（fail-closed）。出力は hitch ごとに
+`hitch=<id> await-merge=<outcome> polls=<n> [pr=… | decision=… | escalate=…]`。
 
 ## `harness dashboard export`
 
@@ -564,7 +564,7 @@ harness session summary         # 保留中のものの compact なスナップ�
 
 ## `harness workspace`
 
-複数の LLM エージェント / ターミナルが**同一プロジェクトを並行作業**するための、エージェントごとの**隔離 git worktree** を管理する。各エージェントは独立した作業ツリー（独立 index/HEAD）を `agent/<name>` ブランチ上に持ち、共有 checkout を取り合わない。harness の state（`HARNESS_ROOT` / `.harness` DB・domain ロック・goal・knowledge）は**共有**したまま。**git 自体が source of truth**（DB ミラーを持たず drift しない）。実装は `src/workspace/agent-workspace.ts`。
+複数の LLM エージェント / ターミナルが**同一プロジェクトを並行作業**するための、エージェントごとの**隔離 git worktree** を管理する。各エージェントは独立した作業ツリー（独立 index/HEAD）を `agent/<name>` ブランチ上に持ち、共有 checkout を取り合わない。harness の state（`HARNESS_ROOT` / `.harness` DB・domain ロック・hitch・knowledge）は**共有**したまま。**git 自体が source of truth**（DB ミラーを持たず drift しない）。実装は `src/workspace/agent-workspace.ts`。
 
 ```bash
 harness workspace create     <agent> [--repo <path>] [--base <commit-ish>] [--dir <dir>] [--json]
@@ -573,27 +573,27 @@ harness workspace list       [--repo <path>] [--json]
 harness workspace status     [--repo <path>] [--dir <dir>] [--base <commit-ish>] [--stale-after <hours>] [--json]
 harness workspace conflicts  [--repo <path>] [--dir <dir>] [--base <commit-ish>] [--json]
 harness workspace inspect    <agent> [--repo <path>] [--dir <dir>] [--base <commit-ish>] [--json]
-harness workspace checkpoint <agent> [--repo <path>] [--dir <dir>] [--base <commit-ish>] [--note <text>] [--goal <id>] [--objective <text>] [--by <actor>] [--json]
+harness workspace checkpoint <agent> [--repo <path>] [--dir <dir>] [--base <commit-ish>] [--note <text>] [--hitch <id>] [--objective <text>] [--by <actor>] [--json]
 harness workspace recover    <agent> [--repo <path>] [--dir <dir>] [--base <commit-ish>] [--json]
 harness workspace remove     <agent> [--repo <path>] [--dir <dir>] [--force] [--keep-branch]
 harness workspace verify-pr  <number> [--repo <path>] [--remote origin] [--rm] [--json]
 ```
 
-- **`create <agent>`** — `agent/<name>` ブランチ上の worktree を `<dir>/<agent>` に作成（`--base` 既定 `HEAD`・既存ブランチがあれば再利用）。**冪等**（同一 agent の再実行は既存を返す）。出力に worktree path と「`cd <path> && export HARNESS_ROOT=<sharedRoot>`」の共有手順を表示。作成した worktree は共有 DB の `workspaces` index にも記録（git が worktree 存在の正本、DB は harness 側メタ＝objective / advisory goal link / heartbeat を持つ・[`db.md`](./db.md)）。
+- **`create <agent>`** — `agent/<name>` ブランチ上の worktree を `<dir>/<agent>` に作成（`--base` 既定 `HEAD`・既存ブランチがあれば再利用）。**冪等**（同一 agent の再実行は既存を返す）。出力に worktree path と「`cd <path> && export HARNESS_ROOT=<sharedRoot>`」の共有手順を表示。作成した worktree は共有 DB の `workspaces` index にも記録（git が worktree 存在の正本、DB は harness 側メタ＝objective / advisory hitch link / heartbeat を持つ・[`db.md`](./db.md)）。
 - **`adopt <agent> --worktree <path>`** — ハーネスが作っていない**既存の git worktree を agent として登録**（`create` と違い**作らない**・任意ブランチ可）。`<path>` が repo の現 worktree でなければ拒否、**main worktree** と **detached（branch なし）** も拒否（fail-closed・path は両辺正規化して symlink 差を吸収）。**1 path 1 agent / 1 agent 1 worktree** を強制（重複 adopt は拒否）。adopted な非 `agent/*` workspace も `inspect`/`checkpoint`/`recover`/`remove`/`status`/`conflicts` 全てで扱える（**全コマンド path-first 解決**・branch/HEAD は live git から hydrate）。`git worktree add -b … <path>` で手動に切った worktree を後付け追跡する入口。
-- **`list`** — workspace を列挙: **`agent/*` worktree** ＋ **adopted（任意ブランチ・DB 行の worktree_path が現存）**。各行に DB の goal link / objective を付与。**reconcile は worktree path ベース**（DB 行の worktree が消えていれば `(stale: …)` 表示・`remove <agent>` で掃除）。main checkout や run 内部 worktree は除外。
+- **`list`** — workspace を列挙: **`agent/*` worktree** ＋ **adopted（任意ブランチ・DB 行の worktree_path が現存）**。各行に DB の hitch link / objective を付与。**reconcile は worktree path ベース**（DB 行の worktree が消えていれば `(stale: …)` 表示・`remove <agent>` で掃除）。main checkout や run 内部 worktree は除外。
 - **`verify-pr <number>`**（#82）— PR head を **detached（ブランチ非占有）worktree** にチェックアウトして検証する。run worktree が PR ブランチを占有していると `gh pr checkout <n>` が `already used by worktree` で失敗するのを回避。`--remote`（既定 `origin`）の `refs/pull/<n>/head`（**GitHub origin 前提**）を PR 専用 local ref（`refs/harness/verify-pr/<n>`・共有 `FETCH_HEAD` 不使用で並行安全）に fetch し、`<repo>.agents/verify-pr-<n>/repo` に detached worktree を作成（#68 の symlink preflight も通す）。**read-only は運用約束**（detached worktree は物理的には書ける）。`--rm` で同 PR の検証 worktree を削除。`<number>` は正の整数のみ。
-- **`status`** — 全 agent workspace の**進捗を一目で**集約（複数ターミナルを束ねる人間の統括用）。各 workspace に**決定論ラベル**を付ける（git state ＋ linked goal の convergence decision のみから射影・checkpoint note は使わない）: `stale` / `goal-missing`（dangling link）/ `blocked`（diverging・budget_exhausted・escalate・**未知 decision は fail-closed で blocked**）/ `needs-work`（needs_fix・needs_classification）/ `ready-to-close` / `in-progress`（goal `continue`）/ `dirty` / `base-unknown`（base ref 未解決＝ahead/behind 不明）/ `ahead` / `behind` / `clean`（優先順）。各行に git（ahead/behind/dirty）・goal・last-active・objective。**heartbeat staleness**: `last_active_at` が `--stale-after <hours>`（既定 24）より古い workspace は last-active に `⚠idle` を付ける（放置/忘れられた agent の検出。`staleHeartbeat` として JSON にも）。`--json` で構造化出力。
+- **`status`** — 全 agent workspace の**進捗を一目で**集約（複数ターミナルを束ねる人間の統括用）。各 workspace に**決定論ラベル**を付ける（git state ＋ linked hitch の convergence decision のみから射影・checkpoint note は使わない）: `stale` / `goal-missing`（dangling link）/ `blocked`（diverging・budget_exhausted・escalate・**未知 decision は fail-closed で blocked**）/ `needs-work`（needs_fix・needs_classification）/ `ready-to-close` / `in-progress`（hitch `continue`）/ `dirty` / `base-unknown`（base ref 未解決＝ahead/behind 不明）/ `ahead` / `behind` / `clean`（優先順）。各行に git（ahead/behind/dirty）・hitch・last-active・objective。**heartbeat staleness**: `last_active_at` が `--stale-after <hours>`（既定 24）より古い workspace は last-active に `⚠idle` を付ける（放置/忘れられた agent の検出。`staleHeartbeat` として JSON にも）。`--json` で構造化出力。
 - **`conflicts`** — 全 agent workspace の**変更ファイルの重複を事前検出**（並行作業の衝突 pre-check）。各 workspace の変更集合＝**committed-ahead**（`base...branch` の diff）∪ **uncommitted**（working tree）。2 agent が同じファイルを触る pair を共有ファイル付きで報告。git エラーは fail-closed、base 未解決は uncommitted のみに degrade（best-effort）。`--json` 可。「あまり同じファイルは触らない」前提を**検証可能**にする。
 - **`inspect <agent>`** — workspace の**決定論ブリーフィング**を git だけから再構成して返す（branch / HEAD / 最終コミット / `--base`（既定 `main`）に対する ahead-behind / 未コミット file）。保存状態に依存せず、LLM が自分や他エージェントの workspace を**自己申告抜きで理解**するための土台（save/recover の理解レイヤー）。`--json` で構造化出力。
-- **`checkpoint <agent>`** — workspace の **save**。advisory narrative（`--note`：何を/なぜ/次の一手）と、その時点の**決定論スナップショット**（HEAD sha / dirty file 数）を append-only に記録（`workspace_checkpoints`・[`db.md`](./db.md)）。`--goal <id>` で advisory goal link、`--objective <text>` で objective を設定。`--by` は actor。narrative は**非権威**で、recover 時の文脈にのみ使う（状態遷移の根拠にしない＝§0 非対称）。
-- **`recover <agent>`** — workspace 状態を**再構成**して**決定論的な next-steps** を提示。**正本**は inspect（git）＋ linked goal の `ConvergenceService` 判定（decision / next-action）から再構成し、最新 checkpoint の narrative は**文脈として**重ねるだけ（next-steps は git+goal シグナルのみから導出し、note は根拠にしない＝§0 非対称）。next-steps 例: dirty→commit/stash、ahead→push/PR、behind→integrate、goal `needs_fix`→coder、`close_ready`→close、dangling goal→re-link。クラッシュ/再開した LLM が「保存した理解を信じる」のでなく決定論的に真を取り戻すための復旧コマンド。`--json` で構造化出力。
+- **`checkpoint <agent>`** — workspace の **save**。advisory narrative（`--note`：何を/なぜ/次の一手）と、その時点の**決定論スナップショット**（HEAD sha / dirty file 数）を append-only に記録（`workspace_checkpoints`・[`db.md`](./db.md)）。`--hitch <id>` で advisory hitch link、`--objective <text>` で objective を設定。`--by` は actor。narrative は**非権威**で、recover 時の文脈にのみ使う（状態遷移の根拠にしない＝§0 非対称）。
+- **`recover <agent>`** — workspace 状態を**再構成**して**決定論的な next-steps** を提示。**正本**は inspect（git）＋ linked hitch の `ConvergenceService` 判定（decision / next-action）から再構成し、最新 checkpoint の narrative は**文脈として**重ねるだけ（next-steps は git+hitch シグナルのみから導出し、note は根拠にしない＝§0 非対称）。next-steps 例: dirty→commit/stash、ahead→push/PR、behind→integrate、hitch `needs_fix`→coder、`close_ready`→close、dangling hitch→re-link。クラッシュ/再開した LLM が「保存した理解を信じる」のでなく決定論的に真を取り戻すための復旧コマンド。`--json` で構造化出力。
 - **`remove <agent>`** — worktree とブランチを削除し、DB index 行も掃除（stale 行のみでも掃除可・checkpoint は FK cascade で消える）。未コミット変更があると **`--force` 無しでは拒否**（作業を黙って捨てない fail-closed）。`--keep-branch` でブランチを残す。
 - **`--repo`** 既定はカレントディレクトリ。**`--dir`** 既定は `<repo>.agents/`（repo の sibling）。
 - `run` 内部の worktree（`workspaces/<runId>/repo/`・codex 実行用・`harness/<runId>/<domain>` ブランチを占有）とは別レイヤー。並行運用の安全モデルは [`workflow.md`](./workflow.md) の concurrency 節を参照。run worktree がブランチを占有するため、その PR を別 checkout で検証するときは `harness workspace verify-pr <n>`（detached）を使う（#82）。
 - **MCP**: `list`（DB index coordination view）/ `status`・`inspect`・`conflicts`・`recover`（git-inclusive read）/ `checkpoint`（advisory mutation）は MCP tool でも提供（[`mcp.md`](./mcp.md)）。git の**破壊的**操作を要する `create` / `remove` は現状 CLI 専用。
 
-> **使い方（multi-agent 運用）**: ターミナルごとに `harness workspace create <agent>` で隔離 worktree を切り、表示された `HARNESS_ROOT` を全エージェントで共有する。これで「素手 git の共有作業ツリー衝突」を避けつつ、ハーネスの domain ロック / goal / knowledge を協調できる。
+> **使い方（multi-agent 運用）**: ターミナルごとに `harness workspace create <agent>` で隔離 worktree を切り、表示された `HARNESS_ROOT` を全エージェントで共有する。これで「素手 git の共有作業ツリー衝突」を避けつつ、ハーネスの domain ロック / hitch / knowledge を協調できる。
 
 ## `harness metrics`
 

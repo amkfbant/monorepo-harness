@@ -52,9 +52,9 @@
 
 worktree は **削除しない**。レビュー後の cleanup は `harness cleanup`（[`cli.md`](./cli.md)）で行う。
 
-Goal-mode executions can wrap one or more `domain-coding` runs in a
-[`goal-convergence`](./goal-convergence.md) session. The run status machine
-remains unchanged; goal convergence records the surrounding attempts, review
+Hitch-mode executions can wrap one or more `domain-coding` runs in a
+[`hitch-convergence`](./hitch-convergence.md) session. The run status machine
+remains unchanged; hitch convergence records the surrounding attempts, review
 cycles, finding classification, and close checks so an agent loop can stop at
 `close_ready`, `diverging`, or `budget_exhausted` instead of extending scope.
 
@@ -295,7 +295,7 @@ review process:
 #### reviewer prompt への operational knowledge 注入（issue #57）
 
 `runReviewerAgent` は `dbPath` がある時、reviewer codex prompt（`PROMPT_PREAMBLE`）末尾に
-**operational 知識**の `<operational-knowledge>` 参照ブロックを append する（goal モードの
+**operational 知識**の `<operational-knowledge>` 参照ブロックを append する（hitch モードの
 review も同じ path なので自動で適用される）。**coder prompt には決して注入しない**（issue
 #57 の恒久境界。coder は `buildCodexPrompt` の `<knowledge>` = codebase 知識のみ）。スコープ
 は決定論的に run の **project + repo**（どちらも portable entry を含む。domain では絞らない＝
@@ -341,7 +341,7 @@ Phase 9 は concurrency safety と runtime DB story の完結を扱う。設計�
 [`db.md`](./db.md) の「Phase 9」節を参照。本書では workflow 観点の変更を
 記述する。
 
-> **multi-agent 並行運用（concurrency の利用者側）**: ハーネスの run/goal 層は上記
+> **multi-agent 並行運用（concurrency の利用者側）**: ハーネスの run/hitch 層は上記
 > （DB domain ロック + run ごとの隔離 worktree + WAL DB）で並行安全だが、**複数の
 > LLM エージェントが同じ checkout で直接 git を叩く**と共有 index/HEAD/作業ツリーを
 > 取り合って衝突する（ハーネス管轄外）。これを避けるため `harness workspace`
@@ -503,9 +503,9 @@ if changes_requested かつ attempt < maxAttempts:
 
 workflow artifact は root run（attempt 0 の run）の dir に置く: `workflow.json` / `workflow-summary.md`。各 attempt の `parentRunId` / `rootRunId` / `rerunAttempt` は `rerun` と同じ規則で維持される。
 
-## goal orchestrate finalization salvage（R2 / issue #72）
+## hitch orchestrate finalization salvage（R2 / issue #72）
 
-`harness goal orchestrate` の finalization は review-decision 生成 →
+`harness hitch orchestrate` の finalization は review-decision 生成 →
 `review process` → commit/push → PR の順に進む。`review auto` の直前に
 `ensureRunMaterialized({ repairMissingReviewDecision: true })` を呼び、`runs/<id>/`
 に `meta.json` はあるが `review-decision.yaml` だけが欠ける部分 materialize を
@@ -518,8 +518,8 @@ reviewer gate は run 状態を **DB-canonical** に判別し、欠落した `re
 「真の未完了（recover 可 = `run_incomplete`）」で区別する（#77）。判定は `classifyReviewGate`
 （純関数）で行い、`ReviewerAgentGateError.kind` に区分を載せ、メッセージに推奨アクションを併記する。
 
-review step が失敗した場合、orchestrator は従来どおり goal を `escalated`
-に倒す。ただし、最新 run が安全に salvage 可能なときだけ、PR を作らず goal も
+review step が失敗した場合、orchestrator は従来どおり hitch を `escalated`
+に倒す。ただし、最新 run が安全に salvage 可能なときだけ、PR を作らず hitch も
 close せずに workspace branch を commit/push する。salvage gate は fail-closed:
 
 - canonical run status が `needs_review`
@@ -528,7 +528,7 @@ close せずに workspace branch を commit/push する。salvage gate は fail-
 - stage するのは reviewed path のみで、既存 index も reviewed path 以外を含まない
 - push 直前に `baseSha..HEAD` の **完全な branch diff** が reviewed path のみである
   ことを検証する（今回 stage した path だけでなく既存 local commit も対象）
-- PR 作成・goal close はしない。既存 `pr create` の `status === approved` gate と
+- PR 作成・hitch close はしない。既存 `pr create` の `status === approved` gate と
   reviewed fingerprint 再検証は維持され、salvage で迂回しない
 
 escalation reason text には元の失敗理由を残し、push に成功した場合だけ
@@ -650,8 +650,8 @@ reviewer / consensus が run artifacts と diff を静的に確認して blockin
 見つけなかったという evidence であり、`review_consensus` 自体は test command を
 実行しない。`review_consensus.summary_json.semantics` と approved
 `review-decision.yaml` の compat export comment はこの意味を明示する。
-実テスト実行を close gate にしたい goal は、別途 `kind: command` close condition
-（例: `npm test` / `npm run typecheck`）を goal 開始時に追加する。
+実テスト実行を close gate にしたい hitch は、別途 `kind: command` close condition
+（例: `npm test` / `npm run typecheck`）を hitch 開始時に追加する。
 `review_consensus` を synthetic test gate に拡張したり、reviewer の自己申告を
 test 実行状態の遷移根拠にしたりしない。
 
@@ -692,8 +692,8 @@ requirement（per-group `minApprovals` / `blockingDecisions`）に加えて以�
   直近 `stallAfterSnapshots` 件が unresolved（pending / changes_requested）のまま
   approvals / participants が増えない、または unresolved streak が
   `maxPendingHours` 超で stall。decisive（approved / rejected）は非 stall。
-  goal 連携（`src/goal/consensus-stall-check.ts`）は goal の review 対象 run の
-  `review_consensus` 履歴から timeline を再構築し、stall 検出時に goal を
+  hitch 連携（`src/hitch/consensus-stall-check.ts`）は hitch の review 対象 run の
+  `review_consensus` 履歴から timeline を再構築し、stall 検出時に hitch を
   **`escalated`** に倒す（harness のみ状態遷移、fail-closed、新スキーマ無し）。
   単一 reviewer の決着フローでは no-op（後方互換）。LLM 出力は一切判定入力にしない。
 
@@ -716,41 +716,41 @@ Phase 2 で consensus mode が実フローに接続された（`src/core/consens
 > 既定の rule は `latest-proposal`（`resolveEffectiveRule`）なので、上記 consensus
 > 経路は profile が consensus mode を宣言したときのみ作動する。既存フローは不変。
 
-## Phase 19 — goal convergence（close 済み・現状仕様）
+## Phase 19 — hitch convergence（close 済み・現状仕様）
 
 Phase 19 は `domain-coding` の **状態機械は変えない**。代わりに 1 つ以上の
-`domain-coding` run を **goal session** で束ね、反復 loop が scope を無限に
+`domain-coding` run を **hitch session** で束ね、反復 loop が scope を無限に
 広げる代わりに `close_ready` / `diverging` / `budget_exhausted` で停止できる
 ようにする。DB schema は [`db.md`](./db.md) の「Phase 19」節、feature spec は
-[`goal-convergence.md`](./goal-convergence.md)。本書では goal の状態遷移と
+[`hitch-convergence.md`](./hitch-convergence.md)。本書では hitch の状態遷移と
 `domain-coding` workflow との境界を記述する。
 
-### goal session と run の関係
+### hitch session と run の関係
 
-goal session（`goal_sessions`）は session 開始時に **scope と close 条件を
-freeze** する。session 内の各作業は `goal_attempts`（`implement` / `fix-review`
+hitch session（`hitch_sessions`）は session 開始時に **scope と close 条件を
+freeze** する。session 内の各作業は `hitch_attempts`（`implement` / `fix-review`
 / `rerun` / `validate` / `close-check` / `classify-findings` /
 `defer-followups` など）として記録され、`implement` / `rerun` 系 attempt は
-`run_id` で個別の `domain-coding` run に紐づく。review は `goal_review_cycles`
+`run_id` で個別の `domain-coding` run に紐づく。review は `hitch_review_cycles`
 （mode `initial → delta → close`）として記録され、検出された問題は
-`goal_findings` に分類（`in_scope` / `out_of_scope` / `unknown` /
+`hitch_findings` に分類（`in_scope` / `out_of_scope` / `unknown` /
 `duplicate`）されて貯まる。
 
 run / review の中身は Phase 5〜11 の挙動そのままで、新しい `RunStatus` や
-新しい review 遷移は導入しない。goal は周辺の attempt / cycle / finding /
+新しい review 遷移は導入しない。hitch は周辺の attempt / cycle / finding /
 close-check を記録する **上位 control plane** にとどまる。
 
-**review proposal → finding 分類**: goal に紐づく `review process` は proposal を
-`goal_review_cycles` に import し、`required_changes` を P1 finding seed として通常の
+**review proposal → finding 分類**: hitch に紐づく `review process` は proposal を
+`hitch_review_cycles` に import し、`required_changes` を P1 finding seed として通常の
 frozen-scope classifier に通す。scope に合う required change は in-scope blocker、
 scope 外/unknown は defer または operator 分類が必要で、fail-open にはしない。
 `non_blocking_comments` は原則 P2 finding seed だが、「tests/checks were not run /
 could not be run」および「command logs が無い / 見えないため test 実行を確認できない」
 系の generic reviewer advisory（local / environment / sandbox / reviewer context を
-含むもの）は deterministic pattern で goal finding 化しない。注記自体は review
-proposal / review decision の `non_blocking_comments` に残り、goal import の
-`reviewAdvisories` と `goal_close_checks.evidence.reviewerAdvisories` として operator に
-surface されるが、`goal_findings` には入らず `needs_classification` /
+含むもの）は deterministic pattern で hitch finding 化しない。注記自体は review
+proposal / review decision の `non_blocking_comments` に残り、hitch import の
+`reviewAdvisories` と `hitch_close_checks.evidence.reviewerAdvisories` として operator に
+surface されるが、`hitch_findings` には入らず `needs_classification` /
 auto-merge escalation の原因にしない。
 この carve-out は non-blocking comment の環境メタ注記だけに適用し、`required_changes`、
 close-check failure、実 test failure は従来どおり blocker として扱う。negative decision
@@ -762,7 +762,7 @@ follow-up として記録される。
 ある coder 実行）では、open in-scope finding（lifecycle が `open`/`reopened`/
 `escalated`）を集約して coder のゴール文言末尾に「Open in-scope findings to
 address」ブロックとして注入する（`augmentGoalWithOpenFindings`）。run 単体の
-`required_changes` 注入（`core/rerun.ts`）の goal-mode 版で、これが無いと rerun は
+`required_changes` 注入（`core/rerun.ts`）の hitch-mode 版で、これが無いと rerun は
 元のゴール文言だけで「何を直すか」を知らずに再コーディングしてしまう。初回
 `implement` pass では注入しない。`unknown`-scope finding は**分類前なので注入
 しない**（fail-closed）。件数は上限付き（既定 25・超過分は明示注記）。
@@ -770,21 +770,21 @@ address」ブロックとして注入する（`augmentGoalWithOpenFindings`）�
 **failed-run からの recovery rerun**: 直近の coding attempt が review 到達前に
 `failed`（例 `failed-command`）だった場合、convergence は review でなく `needs_fix`/
 `fix_findings`（＝coder rerun）へ route する（review runner は `needs_review` 以外で
-throw し goal を dead-end させるため）。この recovery rerun の coder ゴールには失敗した
+throw し hitch を dead-end させるため）。この recovery rerun の coder ゴールには失敗した
 run status を `augmentGoalWithFailedRun` で注入し、原因を直すよう促す（blind な再
 コーディングを避ける）。rerun budget を使い切ると `budget_exhausted` で clean に停止
 （無限 rerun しない）。
 
-### convergence decision → goal status 連携
+### convergence decision → hitch status 連携
 
-各 cycle / attempt の後に convergence evaluator（`src/goal/convergence.ts` の
+各 cycle / attempt の後に convergence evaluator（`src/hitch/convergence.ts` の
 `ConvergenceService.evaluate`）が close 条件・finding・budget を総合して
-1 つの decision を出す。decision は `goal_convergence_decisions` に audit
-記録され、**同時に `goal_sessions.status` を遷移させる**
-（`src/goal/convergence-status.ts`）:
+1 つの decision を出す。decision は `hitch_convergence_decisions` に audit
+記録され、**同時に `hitch_sessions.status` を遷移させる**
+（`src/hitch/convergence-status.ts`）:
 
 ```txt
-decision           → goal status
+decision           → hitch status
 close_ready        → close_ready
 diverging          → diverging
 budget_exhausted   → budget_exhausted
@@ -795,8 +795,8 @@ closed / cancel    → (terminal; status は close/cancel 経路で確定)
 
 `statusForConvergenceDecision` が status を持たない decision
 （`continue` / `needs_fix` / `needs_classification`）を返した場合、status は
-原則据え置きだが、`close_ready` だった goal が再び fix を要する decision を
-受けると `in_progress` へ戻す（`syncGoalStatusForConvergence`）。
+原則据え置きだが、`close_ready` だった hitch が再び fix を要する decision を
+受けると `in_progress` へ戻す（`syncHitchStatusForConvergence`）。
 `closed` / `cancelled` は terminal で、どの decision でも live status へ
 戻さない（data-layer guard）。
 
@@ -814,13 +814,13 @@ open in-scope P0                     → escalate
 
 close 条件は **opportunistic な review 拡張より先**に評価される。元の close
 条件が pass し、残るのが out-of-scope / accepted-risk / escalated / deferred の
-follow-up finding だけなら goal は close できる。open な in-scope P0/P1 finding
-は通常の deferred work として扱えない（[`goal-convergence.md`](./goal-convergence.md)
+follow-up finding だけなら hitch は close できる。open な in-scope P0/P1 finding
+は通常の deferred work として扱えない（[`hitch-convergence.md`](./hitch-convergence.md)
 の Core Rules を参照）。
 
 ## Phase 3 — auto-merge（opt-in・既定 OFF・現状仕様）
 
-`harness goal orchestrate` の terminal step（`close_and_pr`）は PR 作成後に
+`harness hitch orchestrate` の terminal step（`close_and_pr`）は PR 作成後に
 **opt-in の auto-merge** を実行できる。既定 OFF（`--auto-merge` 指定時のみ）。設計は
 [`../superpowers/specs/2026-06-05-phase3-auto-merge-design.md`](../superpowers/specs/2026-06-05-phase3-auto-merge-design.md)。
 
@@ -830,7 +830,7 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
   tier gate。承認は **consensus approved（quorum 達成）or human override approve** が
   必須（fail-closed）。`--auto-merge` 指定時も tier gate は常に有効で、auto-merge
   対象は Tier-0（既定 map: `docs/**` / `tests/**`）だけ。Tier-2（絶対 auto 不可）は
-  `src/policy/**`, `src/codex/**`, `src/core/merge-gate.ts`, `src/goal/**`,
+  `src/policy/**`, `src/codex/**`, `src/core/merge-gate.ts`, `src/hitch/**`,
   `src/core/reviewer-agent.ts`, `src/db/repositories/review-*.ts`,
   `src/db/migrations*`, `.github/**`, `policies/**`。未マップ path は Tier-1。
   blocker は hard（`not_close_ready` / `consensus_not_approved` / `quorum_not_satisfied`）
@@ -849,13 +849,13 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
   **ファイル単位**（足すだけの別ファイルが削るファイルを隠せない）で、バランスした
   rename/refactor（削除数 == 追加数）は降格しない。両誤り方向で fail-safe（false-positive
   は人手 merge=安全 / false-negative は削除・skip シグナル単独と同等）。
-- **closeAndPr の分岐**（`src/goal/orchestrator-runners.ts`）: PR 作成後、
+- **closeAndPr の分岐**（`src/hitch/orchestrator-runners.ts`）: PR 作成後、
   `deps.autoMerge` があれば gate を評価する。`closeAndPr` の PR 結果と
   `OrchestrationResult` は PR の draft 状態を `draft: boolean` として保持する。
   outcome enum の値は不変で、draft PR の作成でも `outcome` は **`pr_created`** のまま
   （CLI が `draft=true|false` を別フィールド表示）。
-  - **PR タイトル（#103）**: `closeAndPr` は goal title から **Conventional Commit** 形式の
-    タイトル（`conventionalPrTitle`：goal title が既に conventional ならそのまま、でなければ
+  - **PR タイトル（#103）**: `closeAndPr` は hitch title から **Conventional Commit** 形式の
+    タイトル（`conventionalPrTitle`：hitch title が既に conventional ならそのまま、でなければ
     `fix:` を付与し `(run-<id>)` を付す）を作り、`createPullRequest({ title })` に渡す。
     `pr-creator` はこのタイトルを **PR title かつ branch commit subject** に使う（squash 設定が
     PR title / commit message のどちらでも squash subject が conventional になり、release-please が
@@ -873,11 +873,11 @@ follow-up finding だけなら goal は close できる。open な in-scope P0/P
     `SUCCESS`）のみ green、いずれか failure/error は即 false。pending / empty rollup は
     poll interval 後に再評価し、timeout 到達・取得失敗・不明 shape は false（ABA race
     安全、不確定は fail-closed）。
-  - `hardBlocked` → **merge せず escalate**（fail-closed、goal は `escalated`）。
+  - `hardBlocked` → **merge せず escalate**（fail-closed、hitch は `escalated`）。
   - transient（CI 未 green、または Tier-1/Tier-2）→ merge せず PR を残す
     （outcome `pr_created`）。**resumable な later-merge**: transient が
-    **`ci_not_green` のみ**（再チェックで解決しうる temporal な blocker）なら goal を
-    `closed` でなく **`close_ready`** に残す。後続の `goal orchestrate` が closeAndPr に
+    **`ci_not_green` のみ**（再チェックで解決しうる temporal な blocker）なら hitch を
+    `closed` でなく **`close_ready`** に残す。後続の `hitch orchestrate` が closeAndPr に
     再入し（`createPullRequest` は既存 PR を冪等に返し、reviewed head SHA を run branch
     の tip から解決）、CI が緑になっていれば merge する。`tier_not_auto_eligible`（tier は
     変わらない＝再チェック無意味）は従来どおり `closed`（人手 merge）。新 status /

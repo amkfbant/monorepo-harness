@@ -32,9 +32,9 @@ pin**（`git describe --tags --exact-match` が成功）、dev は **`main` / fe
 
 ---
 
-## goal モードのとき（最重要）
+## hitch モードのとき（最重要）
 
-このハーネスを **goal モード**（`harness goal` 系で実装/レビュー/修正ループを
+このハーネスを **hitch モード**（`harness hitch` 系で実装/レビュー/修正ループを
 回す）で動かす・実装する際は、以下を**必ず**参照する。
 
 1. **[`GOAL.md`](./GOAL.md)** — 「何を作るか」。大 Phase / サブ Phase の定義と
@@ -43,9 +43,9 @@ pin**（`git describe --tags --exact-match` が成功）、dev は **`main` / fe
    と続行判断（未解決 P0 ゼロが続行/close の必須条件）、finding の P0〜P3 分類、
    close 条件、テスト粒度、ブランチ/マージ運用、スコープ管理、安全境界、開発規律、
    codex レビューテンプレート（サブ用 / 大用）。
-3. **[`AGENTS.md`](./AGENTS.md)** — goal convergence の運用ルール（goal session
+3. **[`AGENTS.md`](./AGENTS.md)** — hitch convergence の運用ルール（hitch session
    を先に立てる / read → dry-run → guarded mutation の順 / 各レビュー後に finding
-   記録 / `harness goal check-convergence` / escalate・diverging・budget_exhausted・
+   記録 / `harness hitch check-convergence` / escalate・diverging・budget_exhausted・
    needs_classification で自動修正を止める / MCP `confirmation_required` を shell で
    迂回しない）。
 
@@ -66,7 +66,7 @@ pin**（`git describe --tags --exact-match` が成功）、dev は **`main` / fe
 - **policy 検証は事後 `git diff` ベース**。検証を緩める/バイパスする変更は不可。
 - **LLM の出力を信用しない**。severity や「修正した」等の自己申告を状態遷移の
   根拠にしない。判定は決定論的な harness 側ロジックで行う。
-- **状態遷移は harness のみ**。goal / run / finding / review のライフサイクルを
+- **状態遷移は harness のみ**。hitch / run / finding / review のライフサイクルを
   LLM やレビュー出力が直接書き換えることを許さない。
 - **MCP `confirmation_required` を shell で迂回しない**。dangerous operation は
   `operation confirm` / `operation reject` で out-of-band に処理する。
@@ -95,9 +95,9 @@ npm run harness -- <args>   # 開発時の CLI 起動（tsx 経由、HARNESS_ROO
 
 | 場所 | 内容 | いつ読む |
 |------|------|---------|
-| [`GOAL.md`](./GOAL.md) | 実装ロードマップ（大/サブ Phase） | goal モードの実装着手前 |
-| [`GOAL_RULES.md`](./GOAL_RULES.md) | goal モード実行ルール | goal モードの実装中ずっと |
-| [`AGENTS.md`](./AGENTS.md) | goal convergence 運用ルール | goal セッション運用時 |
+| [`GOAL.md`](./GOAL.md) | 実装ロードマップ（大/サブ Phase） | hitch モードの実装着手前 |
+| [`GOAL_RULES.md`](./GOAL_RULES.md) | hitch モード実行ルール | hitch モードの実装中ずっと |
+| [`AGENTS.md`](./AGENTS.md) | hitch convergence 運用ルール | hitch セッション運用時 |
 | [`docs/README.md`](./docs/README.md) | docs 全体の index | 迷ったらまず |
 | [`docs/specs/overview.md`](./docs/specs/overview.md) | 何ができて何ができないか | 全体像把握 |
 | [`docs/specs/cli.md`](./docs/specs/cli.md) | 全 CLI subcommand リファレンス | コマンドを使う前 |
@@ -107,7 +107,7 @@ npm run harness -- <args>   # 開発時の CLI 起動（tsx 経由、HARNESS_ROO
 | [`docs/specs/db.md`](./docs/specs/db.md) | `harness.sqlite`（DB read/canonical）と import | DB を触る前 |
 | [`docs/specs/mcp.md`](./docs/specs/mcp.md) | MCP server（tools/resources/permission/confirmation） | MCP を触る前 |
 | [`docs/specs/dashboard.md`](./docs/specs/dashboard.md) | dashboard（read-only API + mutation API） | dashboard を触る前 |
-| [`docs/specs/goal-convergence.md`](./docs/specs/goal-convergence.md) | goal convergence controller の仕様 | goal 内部を触る前 |
+| [`docs/specs/hitch-convergence.md`](./docs/specs/hitch-convergence.md) | hitch convergence controller の仕様 | hitch 内部を触る前 |
 | [`docs/specs/workspace.md`](./docs/specs/workspace.md) | agent workspaces（per-agent worktree / checkpoint / 並行安全モデル） | workspace を触る/使う前 |
 | [`docs/specs/project.md`](./docs/specs/project.md) | Project Abstraction 層 | project profile を触る前 |
 | [`docs/future-features.md`](./docs/future-features.md) | 将来 feature（スコープ外の保留事項） | スコープ外を見つけたとき |
@@ -126,12 +126,12 @@ npm run harness -- <args>   # 開発時の CLI 起動（tsx 経由、HARNESS_ROO
 - **spec 駆動**: `src/` や policy の動作が変わったら、対応する `docs/specs/*` を
   **同じコミットで**更新する。`docs/specs/` は現状のスナップショット（TODO を
   書かない）。
-- **codex exec レビュー（goal モード外の通常 PR にも適用）**: 実質的な変更の PR は
+- **codex exec レビュー（hitch モード外の通常 PR にも適用）**: 実質的な変更の PR は
   **merge 前に codex exec で差分レビュー**する。コマンドは常に
   `codex exec -m gpt-5.5 -c model_reasoning_effort="xhigh" -s read-only -o <out> "<prompt>" < /dev/null`
   （`-s read-only` ＋ **stdin クローズ（`< /dev/null`）で hang 回避**）。**P0 / P1 は
   修正必須**、P2 は修正 or `docs/future-features.md` に defer（理由を記録）。PR の
-  bot レビュー（codex App / Copilot）の受け入れ指摘も併せて反映する。goal モードの
+  bot レビュー（codex App / Copilot）の受け入れ指摘も併せて反映する。hitch モードの
   リトライ上限（サブ ≤3 / 大 ≤5）・レビューテンプレート・未解決 P0 ゼロ gate は
   [`GOAL_RULES.md`](./GOAL_RULES.md) を正本とする。
 - **immutability**（新オブジェクトを作り、mutate しない）、小ファイル（〜400 行

@@ -1,13 +1,18 @@
-# GOAL_RULES.md — goal モード実行ルール
+# GOAL_RULES.md — hitch モード実行ルール
 
-このリポジトリを **goal モード**（`harness goal` 系）で自律実装させる際の実行
+> **⚠️ この roadmap 系ファイル（`GOAL.md` / `GOAL_RULES.md`）は SP-1 で計画中の
+> DB ベース roadmap に置き換えられる予定**（historical reference として残置）。
+> 「goal モード」は **hitch モード**、`harness goal` は `harness hitch` に改名済み
+> （SP-0、`docs/specs/hitch-convergence.md`）。
+
+このリポジトリを **hitch モード**（`harness hitch` 系）で自律実装させる際の実行
 ルール。`GOAL.md` は **大 Phase**（feature 単位）と、その下の **サブ Phase**
 （1〜数コミット規模の作業単位）に分割される前提とする。本ファイルはその分割を
 どう進め、どこでレビューし、何をもって完了とみなすかを定める。
 
 > 本ルールは [`/Users/kn/.claude/CLAUDE.md`](file:///Users/kn/.claude/CLAUDE.md)
 > 配下のグローバル規約（immutability / 小ファイル / Conventional Commits /
-> TDD / 80% カバレッジ / セキュリティチェック）を前提とし、それを goal モード
+> TDD / 80% カバレッジ / セキュリティチェック）を前提とし、それを hitch モード
 > 向けに具体化したもの。グローバル規約と矛盾する場合はグローバル規約が優先。
 
 ---
@@ -40,7 +45,7 @@
 ### 上限到達時（修正版ルール）
 
 1. **未解決 P0 が 1 件でも残っていれば → 停止してエスカレーション。**
-   人間の判断を仰ぐまで先に進まない。goal の状態は `escalated` に倒す。
+   人間の判断を仰ぐまで先に進まない。hitch の状態は `escalated` に倒す。
 2. **未解決 P0 がゼロなら → 続行してよい。** 残った P1/P2/P3 は下記 **F** に
    従い backlog / follow-up に積み、スコープは広げない。
 
@@ -120,13 +125,13 @@
 
 ## G. 安全境界（不可侵）
 
-harness の安全設計はいかなる goal 実装でも侵してはならない。
+harness の安全設計はいかなる hitch 実装でも侵してはならない。
 
 - **policy 検証は事後 `git diff` ベース**で行う設計を維持する。検証を緩める／
   バイパスする変更は不可。
 - **LLM の出力を信用しない。** severity・「修正した」等の自己申告を状態遷移の
   根拠にしない。判定は決定論的な harness 側ロジックで行う。
-- **状態遷移は harness のみが行う。** goal / run / finding のライフサイクルを
+- **状態遷移は harness のみが行う。** hitch / run / finding のライフサイクルを
   LLM やレビュー出力が直接書き換えることを許さない。
 - fail-closed: 判断に迷う安全関連事項は、必ず安全側（停止・エスカレーション）に
   倒す。
@@ -146,7 +151,7 @@ harness の安全設計はいかなる goal 実装でも侵してはならない
 
 ## I. サブエージェント運用（Claude 側・軽量ポリシー）
 
-goal を駆動する Claude が使うサブエージェント（`Agent` ツール）の方針。**ハーネス
+hitch を駆動する Claude が使うサブエージェント（`Agent` ツール）の方針。**ハーネス
 内部の codex coder / reviewer agent とは別層**であり、混同しない。原則は「探索に
 活用し、レビューの正本は codex に保ち、重複ゲートを作らない」。
 

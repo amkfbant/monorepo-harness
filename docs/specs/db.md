@@ -15,8 +15,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > （Phase 13）/ human-authored assets DB canonical（Phase 14）/ DB operations
 > （Phase 15）/ blob storage scale-out（Phase 16）/ DB canonical platform
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
-> goal convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
-> `src/mcp/` / `src/goal/` に実装済み。schema の確定値は `src/db/schema.ts`
+> hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
+> `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
 > （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V18_STATEMENTS`、
 > `SCHEMA_VERSION = 18`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
@@ -60,7 +60,7 @@ version を記録し、`harness db migrate` が未適用分を idempotent に適
 > **v17（agent workspaces）**: additive な `workspaces` テーブルを追加。`harness
 > workspace`（[`cli.md`](./cli.md#harness-workspace)）が作る per-agent git worktree
 > の **index**。git が worktree の存在・branch の正本で、この行は git が持たない
-> harness 側メタ（`objective` / advisory `goal_id`（FK なし＝goal 削除で cascade
+> harness 側メタ（`objective` / advisory `hitch_id`（FK なし＝hitch 削除で cascade
 > しない）/ `last_active_at` heartbeat / `status active|archived`）を持つ。
 > `UNIQUE(repo_path, agent)` で 1 agent 1 行。`list` 時に git worktree 一覧と突き
 > 合わせ、git 側に無い行は **stale** として扱う（runs の「meta は DB・worktree は
@@ -69,8 +69,8 @@ version を記録し、`harness db migrate` が未適用分を idempotent に適
 >
 > **v18（workspace checkpoints）**: append-only な `workspace_checkpoints`（`harness
 > workspace checkpoint`）。LLM の advisory narrative（`note`）＋ その時点の決定論
-> スナップショット（`head_sha` / `dirty_count` / advisory `goal_id`）。`workspaces`
-> への FK は `ON DELETE CASCADE`。recover は git/goal から正本状態を再構成し最新 note を
+> スナップショット（`head_sha` / `dirty_count` / advisory `hitch_id`）。`workspaces`
+> への FK は `ON DELETE CASCADE`。recover は git/hitch から正本状態を再構成し最新 note を
 > **文脈として**重ねる（note は状態の根拠にしない＝§0 非対称）。
 >
 > **v19（operational knowledge — issue #57）**: `knowledge_entries` に `category`
@@ -699,10 +699,11 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 13 | Phase 18 | mcp_confirmation_requests / mcp_sessions / mcp_tool_invocations |
 | 14 | Phase 18 | mcp_confirmation_requests.permission_snapshot_json |
 | 15 | Phase 18 | mcp_sessions.reported_client_* / mcp_confirmation_requests.error_message |
-| 16 | Phase 19 | goal_sessions / goal_attempts / goal_review_cycles / goal_findings / goal_close_checks / goal_convergence_decisions |
+| 16 | Phase 19 | hitch_sessions / hitch_attempts / hitch_review_cycles / hitch_findings / hitch_close_checks / hitch_convergence_decisions（v20 で goal_* から rename） |
 | 17 | agent workspaces | workspaces |
 | 18 | workspace checkpoints | workspace_checkpoints |
 | 19 | operational knowledge (issue #57) | knowledge_entries.category（additive 列・新規テーブル無し） |
+| 20 | goal→hitch rename (SP-0) | goal_* の6テーブル＋全 goal_id 列を hitch_* / hitch_id に rename（index も） |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -901,46 +902,46 @@ invocation 監査を入れる。mutation tool は preview を作って confirmat
 - `mcp_confirmation_requests.error_message` — confirmation handler の失敗を
   記録し、request が `confirmed` の中間状態で stuck しないようにする。
 
-## Phase 19 — goal convergence controller（close 済み・現状仕様）
+## Phase 19 — hitch convergence controller（close 済み・現状仕様）
 
-Phase 19 は runs / reviews / operations / backlog の上位に **goal レベルの
+Phase 19 は runs / reviews / operations / backlog の上位に **hitch レベルの
 control plane** を追加する。frozen scope・close 条件・attempt・review cycle・
 finding 分類・close-check 証跡・convergence decision を記録し、反復的な agent
 作業が scope を無限に広げる代わりに converge / defer / escalate できるように
-する。feature spec は [`goal-convergence.md`](./goal-convergence.md)、実装は
-`src/goal/`。
+する。feature spec は [`hitch-convergence.md`](./hitch-convergence.md)、実装は
+`src/hitch/`。
 
-### schema v16
+### schema v16（v20 で goal_* → hitch_* / goal_id → hitch_id に rename）
 
-- `goal_sessions` — goal session（`status` `open`/`in_progress`/`close_ready`
+- `hitch_sessions` — hitch session（`status` `open`/`in_progress`/`close_ready`
   /`closed`/`diverging`/`budget_exhausted`/`escalated`/`cancelled` /
   `scope_json` / `close_conditions_json` / `policy_json` / budget 列
   `max_iterations`/`max_review_cycles`/`max_reruns`/`max_total_new_findings`
   / `current_iteration` / `current_review_cycle` / `created_source`
   `cli`/`mcp`/`dashboard`/`worker`/`import`）。
-  `goal_sessions_status_idx` / `goal_sessions_project_idx`。
-- `goal_attempts` — goal 内の attempt（`attempt_type`
+  `hitch_sessions_status_idx` / `hitch_sessions_project_idx`。
+- `hitch_attempts` — hitch 内の attempt（`attempt_type`
   `plan`/`implement`/`fix-review`/`rerun`/`validate`/`close-check`/
   `classify-findings`/`defer-followups` / status / `operation_id` /
-  `run_id` / `parent_attempt_id`）。goal FK ON DELETE CASCADE。
-- `goal_review_cycles` — review cycle（`review_mode`
+  `run_id` / `parent_attempt_id`）。hitch FK ON DELETE CASCADE。
+- `hitch_review_cycles` — review cycle（`review_mode`
   `initial`/`delta`/`close`/`regression`/`manual` / findings_* カウンタ）。
-  `(goal_id, cycle_number)` unique。
-- `goal_findings` — 分類済み finding（`stable_key` / `duplicate_of` /
+  `(hitch_id, cycle_number)` unique。
+- `hitch_findings` — 分類済み finding（`stable_key` / `duplicate_of` /
   `source` / `severity` `P0`〜`P3`/`info` / `scope_status`
   `in_scope`/`out_of_scope`/`unknown`/`duplicate` / `lifecycle_status`
   `open`/`fixed`/`reopened`/`deferred`/`duplicate`/`out_of_scope`/
   `escalated`/`accepted_risk` / `deferred_backlog_item_id`）。
-  `goal_findings_stable_idx`（`(goal_id, stable_key)` partial unique WHERE
-  `duplicate_of IS NULL`）/ `goal_findings_goal_status_idx`。
-- `goal_close_checks` — close 条件ごとの check 証跡（status
+  `hitch_findings_stable_idx`（`(hitch_id, stable_key)` partial unique WHERE
+  `duplicate_of IS NULL`）/ `hitch_findings_hitch_status_idx`。
+- `hitch_close_checks` — close 条件ごとの check 証跡（status
   `pending`/`passed`/`failed`/`skipped`/`unknown` / `evidence_json`）。
-- `goal_convergence_decisions` — convergence decision（`decision`
+- `hitch_convergence_decisions` — convergence decision（`decision`
   `continue`/`needs_fix`/`needs_classification`/`close_ready`/`closed`/
   `diverging`/`budget_exhausted`/`escalate`/`cancel` / `reason` /
-  `metrics_json` / `recommended_next_action`）。goal FK ON DELETE CASCADE。
+  `metrics_json` / `recommended_next_action`）。hitch FK ON DELETE CASCADE。
 
-`goal_convergence_decisions` は audit ledger であり、decision を記録すると同時に
-`goal_sessions.status` を遷移させる（`src/goal/convergence-status.ts` の
+`hitch_convergence_decisions` は audit ledger であり、decision を記録すると同時に
+`hitch_sessions.status` を遷移させる（`src/hitch/convergence-status.ts` の
 `statusForConvergenceDecision`）。詳細な状態連携は
 [`workflow.md`](./workflow.md) の「Phase 19」節を参照。

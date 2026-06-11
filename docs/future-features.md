@@ -71,13 +71,13 @@ recorded 2026-06.
 
 ## Multi-reviewer consensus orchestration (drive the stall trigger)
 
-**What:** Let `harness goal orchestrate` drive **multiple reviewers** per review
-cycle so consensus-mode goals can actually reach quorum (and accumulate the
+**What:** Let `harness hitch orchestrate` drive **multiple reviewers** per review
+cycle so consensus-mode hitches can actually reach quorum (and accumulate the
 pending timeline that the Phase 2 stall detector escalates on).
 
 **Why it is NOT in scope (Phase 2 boundary):** Phase 2 implemented the consensus
 extension — quorum / staleness, the deterministic `detectConsensusStall`
-detector, and the goal integration (`evaluateConsensusStallForGoal`), all
+detector, and the hitch integration (`evaluateConsensusStallForHitch`), all
 unit-tested. But the orchestrator's review runner drives a **single** reviewer
 per cycle (`review.auto` with one reviewer), then `review process`. In consensus
 mode a single reviewer can never satisfy a `quorum > 1`, so `review process`
@@ -90,9 +90,9 @@ is missing.
 - Teach the orchestrator review runner to dispatch N reviewers (per the run's
   review rule / reviewer groups) before calling `review process`.
 - On a pending consensus, record the review cycle and run
-  `evaluateConsensusStallForGoal` (rather than escalating immediately), so the
+  `evaluateConsensusStallForHitch` (rather than escalating immediately), so the
   stall detector decides escalate-vs-keep-waiting across cycles.
-- Reconcile with the single-writer review model and the goal budget.
+- Reconcile with the single-writer review model and the hitch budget.
 
 **Prerequisites:** reachable consensus mode (profile-loaded review rules —
 `resolveEffectiveRule` currently always returns the default latest-proposal rule;
@@ -134,7 +134,7 @@ sketch（`pr create --copilot-review`）とは別の形で着地した:
 
 - 単発: `harness pr request-review <pr-number> --repo <path>`（retry-then-skip・
   非 gating。詳細は [`specs/cli.md`](./specs/cli.md#harness-pr-request-review)）。
-- 自律ループ: `harness goal orchestrate --request-copilot-review`（既定 OFF）。
+- 自律ループ: `harness hitch orchestrate --request-copilot-review`（既定 OFF）。
   `closeAndPr` で PR 作成後・auto-merge 前に best-effort で実行
   （[`specs/workflow.md`](./specs/workflow.md) の「Copilot review（観測ステップ）」）。
 
@@ -195,17 +195,17 @@ the safety model (`GOAL_RULES.md` §G, `docs/specs/workflow.md`), not a gap:
 
 ## 非同期な外部チェック（codex GitHub App review / Copilot review / CI）の bounded await + 取り込み
 
-**問題 / 観測:** `harness goal orchestrate --auto-merge` の `closeAndPr` は、PR を
+**問題 / 観測:** `harness hitch orchestrate --auto-merge` の `closeAndPr` は、PR を
 作成した**直後に merge gate を 1 回だけ評価**し（CI は `createGhCiStatus` の単発
-スナップショット＝完了を待たない）、その後 goal を `closed` にする。`closed` は
+スナップショット＝完了を待たない）、その後 hitch を `closed` にする。`closed` は
 `orchestrator-dispatch.ts` で `stop` にマップされ、`runAutoMerge` も単発評価のため、
 **PR 作成後に遅れて到着する signal は gate に一切反映されない**。実 repo では CI が
-数分かかるので通常 `ci_not_green`（transient）→ PR を残して goal close、になる。
+数分かかるので通常 `ci_not_green`（transient）→ PR を残して hitch close、になる。
 
 2026-06-05 の B（PR #15）実験で具体化: PR には codex GitHub App が**絵文字 reaction
-で ack**したが、Copilot review と CI が先に終わって harness が gate 評価・goal を
+で ack**したが、Copilot review と CI が先に終わって harness が gate 評価・hitch を
 閉じたため、**codex App の本レビューを待たず / 取り込まずに**進んだ可能性が高い
-（`goal_attempts: implement=1`、rerun ゼロ、required_changes ゼロで一発マージ）。
+（`hitch_attempts: implement=1`、rerun ゼロ、required_changes ゼロで一発マージ）。
 
 **なぜ重要（規模依存）:** 小規模変更では「即評価 → 残ったら operator が手 merge」で
 無害。だが**サブフェーズが多い大規模 PR** では、(a) 外部レビュー（特に codex GitHub
@@ -216,10 +216,10 @@ App / Copilot）が実バグを拾う価値が高く、(b) それを取りこぼ
 
 **対策案（sketch、実装はしない / 複数の方向）:**
 
-1. **resumable な "awaiting-checks" goal 状態 — CI 部分は実装済み（slice 1）。**
-   transient が **`ci_not_green` のみ**のとき goal を `closed` でなく **`close_ready`**
+1. **resumable な "awaiting-checks" hitch 状態 — CI 部分は実装済み（slice 1）。**
+   transient が **`ci_not_green` のみ**のとき hitch を `closed` でなく **`close_ready`**
    に残し（新 status / migration を避け close_ready を「PR up・CI 待ち」に二重利用）、
-   後続の `goal orchestrate` が closeAndPr に再入して CI 緑なら merge する
+   後続の `hitch orchestrate` が closeAndPr に再入して CI 緑なら merge する
    （`createPullRequest` は既存 PR を冪等返却し reviewed head SHA を run branch tip から
    解決、`runAutoMerge` が再 pin）。`tier_not_auto_eligible` は再チェック無意味なので
    `closed`（人手）。これで「later merge」が harness 経路になった（CI 待ちのみ）。
@@ -239,7 +239,7 @@ App / Copilot）が実バグを拾う価値が高く、(b) それを取りこぼ
 
    - **専用 `awaiting_checks` status（close_ready 二重利用の解消）— 高リスク migration が前提。**
      **判断（2026-06-08・defer 確定）**: C#9 として評価したが**実装しない（defer）**。当初
-     「scheduler 駆動 `goal await-merge` の前提」とされたが、**C#7 の `goal await-merge` を新
+     「scheduler 駆動 `hitch await-merge` の前提」とされたが、**C#7 の `hitch await-merge` を新
      status 無し（`close_ready` の resumable パス）で実装した**ため前提が消滅。「PR オープン・
      CI 待ち」は既に `close_ready` ＋ PR-open で表現でき、status を足すと**情報が重複**し、
      convergence（finding/close-check から decision を算出）と orchestration（PR/merge）の
@@ -247,13 +247,13 @@ App / Copilot）が実バグを拾う価値が高く、(b) それを取りこぼ
      インフラ）。可視化が要るなら base column ではなく**派生ビュー**（`close_ready` ∧ PR-open →
      `effective_status='awaiting_checks'`）で十分。よって実装せず本メモを設計記録として残す。
      以下は将来どうしても入れる場合の最小設計。
-     `goal_sessions.status` は `CHECK (status IN (...))`（`schema.ts:1253`）。新値の追加は
+     `hitch_sessions.status` は `CHECK (status IN (...))`（`schema.ts:1253`）。新値の追加は
      SQLite では **テーブル recreate** が必須だが、現状これは**現 migration runner と非互換**:
      runner は全 DDL を**トランザクション内**で実行し（`migrations.ts:197`）、接続は
-     **`foreign_keys = ON`**（`connection.ts:44`）、かつ `goal_sessions` には**子 5 本**
-     （`goal_attempts` / `goal_findings` / `goal_review_cycles` / `goal_close_checks` /
-     `goal_convergence_decisions`）が **`ON DELETE CASCADE` FK** で依存する。この状態で
-     CHECK 変更に要る `DROP TABLE goal_sessions` を実行すると、暗黙 DELETE が子の **CASCADE
+     **`foreign_keys = ON`**（`connection.ts:44`）、かつ `hitch_sessions` には**子 5 本**
+     （`hitch_attempts` / `hitch_findings` / `hitch_review_cycles` / `hitch_close_checks` /
+     `hitch_convergence_decisions`）が **`ON DELETE CASCADE` FK** で依存する。この状態で
+     CHECK 変更に要る `DROP TABLE hitch_sessions` を実行すると、暗黙 DELETE が子の **CASCADE
      を誘発し全削除**される（`PRAGMA defer_foreign_keys` は検査を遅らせるだけで cascade
      アクションは止められない）。FK-safe な recreate には `PRAGMA foreign_keys=OFF`（**tx 外
      でしか切替不可**）が要る。artifacts v4 recreate（`schema.ts:475`）は子 FK 無しの前例で、
@@ -266,24 +266,24 @@ App / Copilot）が実バグを拾う価値が高く、(b) それを取りこぼ
      recheckable 時 status を `close_ready`→`awaiting_checks`、`convergence-status.ts` の
      close_ready reversion（`:110`）を `awaiting_checks` にも適用、close_ready 決定時に現在
      `awaiting_checks` なら据え置く分岐。dispatch は decision 駆動なので不要。**migration の
-     data-survival テスト（既存 goal が子ごと生存）を必須**にする。
-   - **ingest 後の fix ループへの finding 注入 — 実装済み（slice 4）。** 以前は goal mode の
+     data-survival テスト（既存 hitch が子ごと生存）を必須**にする。
+   - **ingest 後の fix ループへの finding 注入 — 実装済み（slice 4）。** 以前は hitch mode の
      coder rerun が `runDomainCoding({ goal: context.goal })` のみで、open in-scope finding を
      coder prompt に注入していなかった（① 以前からの潜在ギャップ）。`augmentGoalWithOpenFindings`
      を追加し、`rerun` 系 attempt で open in-scope（lifecycle `open`/`reopened`/`escalated`）を
      集約してゴール文言末尾に「Open in-scope findings to address」ブロックとして注入する
-     （run 単体 `core/rerun.ts` の required_changes 注入の goal-mode 版）。初回 `implement` は
+     （run 単体 `core/rerun.ts` の required_changes 注入の hitch-mode 版）。初回 `implement` は
      非注入、`unknown`-scope は分類前なので非注入（fail-closed）、件数上限 25（超過は明示注記）。
      pure helper を単体テスト＋coder runner の prompt 捕捉で統合テスト。これで operator が
      finding を in_scope 分類した後の rerun が「何を直すか」を持つ。`runDomainCoding`/
      prompt-builder は無改変（ゴール文言だけ拡張）で最小リスク。~~**残**: 外部 finding 分類→
-     rerun の**自動連鎖**~~ → **実装済み（C#8, PR #50）**: `goal finding classify --then-rerun
+     rerun の**自動連鎖**~~ → **実装済み（C#8, PR #50）**: `hitch finding classify --then-rerun
      --repo <path>` が in-scope 分類後、convergence が `needs_fix` のときだけ orchestrator を
      bounded で回し coder rerun を連鎖する（gate 経由・operator 分類が trigger・LLM は
      execution-only）。`needs_fix` でなければ自動実行せず `rerun=skipped(<reason>)`。
-   - 定期 `goal await-merge`（scheduler 駆動の自動再 orchestrate。`awaiting_checks` status が
+   - 定期 `hitch await-merge`（scheduler 駆動の自動再 orchestrate。`awaiting_checks` status が
      前提＝上記の後）、semantic dedup（§3）。
-   - **`goal await-merge` の外部レビュー ingestion の wall-clock を完全束縛する**（codex
+   - **`hitch await-merge` の外部レビュー ingestion の wall-clock を完全束縛する**（codex
      review C#7 round4 の P2・defer）。現状 `await-merge` は各試行の CI await / external-review
      await / verdict fetch（`gh pr view`）timeout を残予算で clamp し、予算切れなら ingestion
      を省くが、`--ingest-external-reviews` 時の **initial fetch ＋ await-loop の複数 fetch が
@@ -296,10 +296,10 @@ App / Copilot）が実バグを拾う価値が高く、(b) それを取りこぼ
 
 2. **bounded poll-and-ingest lander（land を実装ループから分離）。** `ciStatus` を
    bounded poll 化し、`gh pr view --json reviews` で codex App / Copilot の verdict を
-   取得。`harness pr land` / `goal await-merge` を resumable に。
+   取得。`harness pr land` / `hitch await-merge` を resumable に。
 
 3. **外部レビュー指摘の finding 化（advisory）。** PR の review コメント（codex App /
-   Copilot）を goal finding として ingest → P0〜P3 分類 → 修正ループへ。**ただし安全
+   Copilot）を hitch finding として ingest → P0〜P3 分類 → 修正ループへ。**ただし安全
    境界（外部出力を状態遷移の根拠にしない / 現状 Copilot review は意図的に非 gating、
    [[Copilot PR review integration]] 参照）と衝突する。** 衝突回避案: 外部由来 finding は
    **operator 分類必須の advisory** とし自動 gate しない（`stopOnUnknownScope` と同様、
@@ -362,7 +362,7 @@ open 方向の誤り（偽の "LGTM" を信用）は悪コードの merge に直
   `stopOnUnknownScope` で escalate、"直した" は tests/diff で再検証）。**これが
   「外部を根拠にしない」の実体。**
 - 本当に新しい明示 close 条件を足すのは **operator の意図的操作**のみ
-  （`goal close-check` / close 条件編集）。LLM 自動追加は不可。
+  （`hitch close-check` / close 条件編集）。LLM 自動追加は不可。
 
 ### 2. 三レーン（trust / risk で分ける運用層）
 
@@ -382,7 +382,7 @@ bugfix2（PR 後の修正ループ）は Advisory レーンに置く。外部 fi
 - **semantic dedup**: 畳む/落とすは fail-open（本物の P0 を消すリスク）。
   **疑わしきは両方残す**。順序は ①anchor+category の決定論完全一致のみ畳む
   ②「重複候補」は operator へのヒント（advisory） ③embedding/意味クラスタリングは
-  後回し（goal-convergence の **non-goal** に "semantic embedding clustering" が明記）。
+  後回し（hitch-convergence の **non-goal** に "semantic embedding clustering" が明記）。
 - **operator 分類負荷**: 権威ある分類は operator から外せない（安全境界）。が
   (a) **決定論 auto-scope**（diff/domain 外を指す finding は自動 out_of_scope）、
   (b) **default-defer**（外部 finding の既定を非ブロッキングにし「沈黙=stuck」を
@@ -394,7 +394,7 @@ bugfix2（PR 後の修正ループ）は Advisory レーンに置く。外部 fi
   サブフェーズ・rerun 数 / 内部 finding プロファイル / CI coverage）。どの信号も
   **人手方向にしか押せない**。外部レビュー結果は tier を**厳しくする方向にだけ**
   使え、緩める方向には使わない。**既定は人手**（fail-closed）、積極的に全 gate を
-  クリアした薄いスライスだけ auto。`src/policy/**` `src/codex/**` `src/goal/**`
+  クリアした薄いスライスだけ auto。`src/policy/**` `src/codex/**` `src/hitch/**`
   migrations `.github/**` 等の安全境界路は常に auto 不可。
 
 ### 4. 前提（最初のベーシックな一歩）— **実装済み（P1, PR #19）**
@@ -402,7 +402,7 @@ bugfix2（PR 後の修正ループ）は Advisory レーンに置く。外部 fi
 auto-merge を実在させる前提だった **CI の bounded await**（PR 作成後に CI 完了を
 timeout 付きで poll、timeout は fail-closed で人手に残す）は **実装済み**。
 `createGhCiStatus`（`src/core/gh-pr-publisher.ts`）が単発スナップショットから
-bounded poll になり、`goal orchestrate --ci-await-timeout`（既定 1200s）で CI 完了を
+bounded poll になり、`hitch orchestrate --ci-await-timeout`（既定 1200s）で CI 完了を
 待ってから gate 評価する。head-moved / terminal failure / timeout はすべて
 fail-closed。仕様は [`specs/workflow.md`](./specs/workflow.md) の「Phase 3 — auto-merge」。
 
@@ -435,7 +435,7 @@ auto 不可 — 変更が自分のチェックを無効化しうるため。
 
 | tier | 方針 | path（例） | 理由 |
 |------|------|-----------|------|
-| **Tier-2 絶対 auto 不可** | 安全機構そのもの | `src/policy/**` / `src/codex/**` / `src/core/merge-gate.ts`・`src/goal/orchestrator*.ts`・`src/goal/convergence.ts` / `src/core/reviewer-agent.ts`・`src/db/repositories/review-*.ts` / `src/db/migrations*` / `.github/**` / `policies/**` | meta-risk: 壊れると安全境界・gate・CI 設定・policy 定義が緩む |
+| **Tier-2 絶対 auto 不可** | 安全機構そのもの | `src/policy/**` / `src/codex/**` / `src/core/merge-gate.ts`・`src/hitch/orchestrator*.ts`・`src/hitch/convergence.ts` / `src/core/reviewer-agent.ts`・`src/db/repositories/review-*.ts` / `src/db/migrations*` / `.github/**` / `policies/**` | meta-risk: 壊れると安全境界・gate・CI 設定・policy 定義が緩む |
 | **Tier-1 既定 人手** | 一般コード | 上記以外の `src/**`（cli/mcp/dashboard/knowledge/config/workspace…） | 通常の blast radius |
 | **Tier-0 auto 適格** | 低 blast・survivable | `docs/**`、**追加のみの** `tests/**` | 非実行 or テスト純増。取りこぼしても follow-up で吸収可 |
 
@@ -447,7 +447,7 @@ bootstrap: Tier-0 を最小（`docs/**` ＋ テスト純増のみ）から開始
 ### 6. default-defer の外部 P0 取りこぼしを人手 tier で拾う
 
 外部 finding を既定 deferred にする穴（本物の P0 も既定で止まらない）は、
-**defer ≠ drop**（defer は PR/goal 上に可視で残り記録される）を前提に tier で拾う:
+**defer ≠ drop**（defer は PR/hitch 上に可視で残り記録される）を前提に tier で拾う:
 
 - **非 Tier-0**: どのみち merge 前に人がレビュー。**deferred な外部 finding を
   目立つ形で surface**し、人が本物の P0 を promote → merge ブロック → bugfix2。
@@ -490,7 +490,7 @@ bound される。
 ## orchestrator が failed-command（検証失敗）から自動復帰しない
 
 **観測（P2 実装中, 2026-06-05）:** coder run の検証コマンド（typecheck / vitest）が
-失敗すると run は `failed-command` になる。だが `goal orchestrate` はこの run を
+失敗すると run は `failed-command` になる。だが `hitch orchestrate` はこの run を
 **review しようとして**「only needs_review can be auto-reviewed」で **escalate** する。
 bugfix ループ（rerun）は `review process` の `changes_requested` 経路のみが入口で
 （`harness rerun --from-review` は changes_requested 必須）、**コマンド失敗からの
@@ -498,7 +498,7 @@ rerun 経路が無い**。
 
 **なぜ重要:** P2 では codex が既存 auto-merge テストを回帰させ failed-command に
 なった（harness が正しく弾いた）。だが orchestrator が自動で coder を rerun せず
-escalate し、operator が手で goal を作り直す必要があった。回帰の多い大きめタスクで
+escalate し、operator が手で hitch を作り直す必要があった。回帰の多い大きめタスクで
 この手間が効いてくる。
 
 **対策案（sketch・未実装）:**
@@ -611,35 +611,35 @@ auto-merge sensitivity map（§5、confirm 階層と概念が近い）、安全�
 取り込み」ディスカッションに基づく。安全境界（事後 `git diff` 検証が最終判定）を
 不変条件とする上乗せ層として記録。
 
-## goal reopen の監査永続化（#76 review P2）
+## hitch reopen の監査永続化（#76 review P2）
 
-`harness goal reopen`（#76）は `--reason` を stdout にエコーするだけで、close/cancel が
+`harness hitch reopen`（#76）は `--reason` を stdout にエコーするだけで、close/cancel が
 `updateStatus` 経由で reason をカラムに残すのと違い **永続化していない**（DB から「なぜ・いつ
 reopen したか」を追えない）。lifecycle 変化自体は status で見えるが、dangerous 操作の監査としては
-弱い。`goal_decisions`（`listDecisions` が読む層）に reopen 行を 1 件記録するか、reason を
+弱い。`hitch_decisions`（`listDecisions` が読む層）に reopen 行を 1 件記録するか、reason を
 退避してから NULL クリアするのを follow-up とする。MCP 露出時の confirmation 要否も併せて判断。
 
 ## orchestrator が project profile の compiled policy を coder に thread しない（#83 review P2）
 
-`createOrchestratorRunners` の coder runner（`src/goal/orchestrator-runners.ts`）は
+`createOrchestratorRunners` の coder runner（`src/hitch/orchestrator-runners.ts`）は
 `runDomainCoding` に `compiledPolicy` / `project` を渡さず、`workflow-runner` 側の
 フォールバック（`policies/<repoId>.yaml` を読む）に委ねている。project profile から
 コンパイルした scope（テンプレ default / placeholder 込み）と raw repo policy が乖離
 しうる点が、commit `3a1d824`「verify-guarded uses the compiled policy scope」と同種の
 懸念。`OrchestratorRunnerDeps` に compiled policy を通す口が無く、**出荷済みの CLI
-`goal orchestrate` / `classify --then-rerun` も同一挙動**であり、`harness.goal.orchestrate`
+`hitch orchestrate` / `classify --then-rerun` も同一挙動**であり、`harness.hitch.orchestrate`
 （#83）が新規導入した回帰ではない。事後 `git diff` ベースの policy 検証自体は機能する
-（最終判定は変わらず git diff）が、project-scoped goal では guardrail のスコープが
+（最終判定は変わらず git diff）が、project-scoped hitch では guardrail のスコープが
 raw repo policy になる。follow-up: `OrchestratorRunnerDeps` に `compiledPolicy` を追加し
 coder / closeAndPr に thread する（CLI と MCP 共通の独立改善）。S7 のブロッカーにはしない。
 
 ## review budget だけ残して rerun が budget 境界で停止すると未レビュー run が残る（#104 review P2）
 
-#104 の reviewPending 分岐は `goalBudgetLimitReason`（iteration/rerun budget）の**後**に
-置かれている（`src/goal/convergence.ts`、`docs/specs/goal-convergence.md` step 6）。これは
-「genuinely over-budget な goal は止まる」という意図的な fail-closed 選択だが、rerun が
+#104 の reviewPending 分岐は `hitchBudgetLimitReason`（iteration/rerun budget）の**後**に
+置かれている（`src/hitch/convergence.ts`、`docs/specs/hitch-convergence.md` step 6）。これは
+「genuinely over-budget な hitch は止まる」という意図的な fail-closed 選択だが、rerun が
 budget 境界ちょうどで終わると、その fix が未レビューのまま `budget_exhausted` で停止する
-境界ケースが残る（#104 が消そうとした症状の残滓）。運用上は **#76 `goal reopen`（review
+境界ケースが残る（#104 が消そうとした症状の残滓）。運用上は **#76 `hitch reopen`（review
 budget 延長）** が救済になる。follow-up: rerun budget は尽きたが **review budget が残っている**
 ケースに限り、停止前に pending coder run のレビューを 1 回だけ許す（review は新規 coding を
 増やさないので発散しない）改善を検討。fail-closed 方向のため S の close ブロッカーにはしない。
@@ -660,5 +660,5 @@ fake した薄い action-level test で配線退行を防ぐ。本 Phase のブ�
 - **P2-2**: run/probe の例外がステップ文脈なしに漏れる（既存 policy ファイル clash の `ProjectError`・不正 mcp.yaml の zod throw 等）。exit 1 で fail-closed だが、failing step + remediation を付けて握ると親切。
 - **P2-3**: blocked 時に原因/remediation を表示していない（repo 不在で「✗ Preflight: blocked」のみ）。
 - **P2-5**: `dbStep` の probe が profile の `source_sha256` 照合でなく projects row 存在のみ。profile を編集後 resume すると stale 登録のまま skip しうる。
-- **P3**: serve smoke が `clients[0]` + `goal.start` 固定（opt-in client が先頭でない/`run.start` のみだと smoke の意味が薄い）／preflight が gh の「未インストール」と「未認証」を混同／`readlinePrompts.select` は不正入力で黙って先頭 fallback（かつ未使用）／merge rewrite で YAML コメント・`version`/`mcp` 以外の top-level キーが消える（schema が strip するので実害小）。
+- **P3**: serve smoke が `clients[0]` + `hitch.start` 固定（opt-in client が先頭でない/`run.start` のみだと smoke の意味が薄い）／preflight が gh の「未インストール」と「未認証」を混同／`readlinePrompts.select` は不正入力で黙って先頭 fallback（かつ未使用）／merge rewrite で YAML コメント・`version`/`mcp` 以外の top-level キーが消える（schema が strip するので実害小）。
 follow-up: onboard の対話 UX を磨く際にまとめて対応。本 feature のブロッカーではない。

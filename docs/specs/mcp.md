@@ -41,8 +41,8 @@ All mutation tools use `OperationRunner`. MCP is not a privileged side door
 around the CLI, dashboard, DB repositories, idempotency ledger, or audit
 records.
 
-Goal-mode agents must also obey the goal convergence controller documented in
-[`goal-convergence.md`](./goal-convergence.md). MCP goal tools record findings,
+Hitch-mode agents must also obey the hitch convergence controller documented in
+[`hitch-convergence.md`](./hitch-convergence.md). MCP hitch tools record findings,
 classification, close checks, and convergence decisions; they do not authorize
 unbounded review/fix loops or automatic scope expansion.
 
@@ -97,7 +97,7 @@ server/CLI exits nonzero instead of falling back to broader defaults.
 **`harness onboard` による `.harness/mcp.yaml` の生成**: 新しい target repo をオンボードする
 際は `harness onboard --repo <path> --project-id <id>` が `.harness/mcp.yaml` の生成または
 merge を自動で行う。mutation は **deny-all がデフォルト**。opt-in すると `guarded-mutation`
-クライアントエントリと `allowedOperations`（`goal.start` / `run.start`）の**両方**を書き込む
+クライアントエントリと `allowedOperations`（`hitch.start` / `run.start`）の**両方**を書き込む
 （2 段階パーミッションゲート — どちらか一方では不十分）。既存の allow-all 設定
 （`allowedProjects: []`）は黙って narrowing しない（wizard が確認を取り、拒否すれば allow-all
 を維持する）。詳細は [`cli.md`](./cli.md) の `harness onboard` 節を参照。
@@ -140,21 +140,21 @@ mcp:
 	    - backlog.run
 	    - knowledge.promote
 	    - knowledge.reject
-	    - goal.start
-	    - goal.record_findings
-	    - goal.classify_finding
-	    - goal.mark_finding_fixed
-	    - goal.defer_finding
-	    - goal.record_close_check
-	    - goal.check_convergence
+	    - hitch.start
+	    - hitch.record_findings
+	    - hitch.classify_finding
+	    - hitch.mark_finding_fixed
+	    - hitch.defer_finding
+	    - hitch.record_close_check
+	    - hitch.check_convergence
 
   requireConfirmation:
     - review.process
     - cleanup.apply
     - pr.create
-    - goal.close
-    - goal.cancel
-    - goal.expand_scope
+    - hitch.close
+    - hitch.cancel
+    - hitch.expand_scope
     - db.repair.apply
     - db.archive.apply
     - db.migrate_blobs.apply
@@ -228,10 +228,10 @@ distinguishes two causes (#81): an **unset** projectId returns a
 `projectId is required …` summary listing `allowedProjects`, while a
 **present-but-not-allowed** projectId keeps the `project_not_allowed` summary;
 both carry `reason: "project_not_allowed"`, `allowedProjects`, and an actionable
-`hint`. `harness.goal.start` additionally **derives** the projectId from a
+`hint`. `harness.hitch.start` additionally **derives** the projectId from a
 supplied `repoId` when the repo maps to exactly one project — an ambiguous (0 or
 >1) mapping is never guessed (fail-closed) and falls through to the
-`projectId is required` denial. A derived projectId is persisted on the goal.
+`projectId is required` denial. A derived projectId is persisted on the hitch.
 
 `requireConfirmation` is not an execution allowlist. A dangerous operation that
 appears only in `requireConfirmation` may create a preview and pending
@@ -315,11 +315,11 @@ harness.run.artifact.get
 harness.review.queue
 harness.review.proposals
 harness.review.consensus
-harness.goal.list
-harness.goal.get
-harness.goal.status
-harness.goal.findings
-harness.goal.decisions
+harness.hitch.list
+harness.hitch.get
+harness.hitch.status
+harness.hitch.findings
+harness.hitch.decisions
 harness.backlog.list
 harness.backlog.get
 harness.knowledge.search
@@ -343,22 +343,22 @@ harness.workspace.checkpoint
 **またはその配下の subpath**（worktree 内の subdir/file）。一致は純 fs の path 判定のみ
 （git は使わない）で、**未知の任意 path で git を実行しない**安全策＝harness が追跡している
 repo（workspace 行が 1 つ以上）に限定。CLI の `workspace status` と同じ shape（progress
-label + git state(dirty/ahead-behind) + linked goal + heartbeat）。read tool だが worktree
+label + git state(dirty/ahead-behind) + linked hitch + heartbeat）。read tool だが worktree
 内で **read-only git**（worktree list / status / rev-list / diff）を回す（提供 path が
 stale でも、同 repo の実在 worktree を git cwd に選んで status を組む）。`allowedProjects`
 で scope（`workspace.list` と同様）。**scope 外の workspace に当たる path は、未知 path と
 同一の "not tracked" エラー**で弾く（scope 所属を漏らさない）。
 
 `harness.workspace.list`（read）は agent workspace の coordination view（DB index）を
-返す: agent / branch / worktree_path / linked goal とその convergence decision /
+返す: agent / branch / worktree_path / linked hitch とその convergence decision /
 objective / heartbeat / last checkpoint。`agent` で絞り込み可。**read tool なので既定で
-許可**（allowlist 不要）。`allowedProjects` で scope された client には、**linked goal の
+許可**（allowlist 不要）。`allowedProjects` で scope された client には、**linked hitch の
 project_id がその集合に入る workspace のみ**返す（unlinked / dangling は project 不明なので
 restricted client では fail-closed で除外）。**git state（dirty / ahead-behind）は含めない**。**`harness.workspace.checkpoint`（mutation）** は workspace に advisory checkpoint
-（note + goal link + objective）を記録し heartbeat を更新する **DB-only mutation**（git
+（note + hitch link + objective）を記録し heartbeat を更新する **DB-only mutation**（git
 スナップショットなし）。`operation = workspace.checkpoint` を **allowlist 必須**（mutation
 の既定 deny）・guarded-mutation mode 必須。idempotencyKey で冪等・operation audit に記録・
-`allowedProjects` で scope（workspace の goal project 不可なら deny）。advisory なので
+`allowedProjects` で scope（workspace の hitch project 不可なら deny）。advisory なので
 **confirmation は不要**。
 
 **`harness.workspace.inspect` / `harness.workspace.conflicts` / `harness.workspace.recover`
@@ -369,7 +369,7 @@ subpath で、未知 path で git を実行しない。
   ahead-behind / 最終コミット）。対象 agent が scope 外/不在なら「not found」（scope を漏らさない）。
 - **conflicts**（per-repo）— 全 workspace の変更ファイル重複 pre-check（committed-ahead ∪
   uncommitted）。**in-scope の workspace のみ** inspect・報告する。
-- **recover**（per-agent）— git ブリーフィング ＋ linked goal の convergence から決定論的な
+- **recover**（per-agent）— git ブリーフィング ＋ linked hitch の convergence から決定論的な
   next-steps を再構成（checkpoint narrative は advisory 文脈で next-steps の根拠にしない＝§0）。
 
 これらは read なので **allowlist 不要**（既定許可）・`allowedProjects` で scope。**read-only git**
@@ -378,7 +378,7 @@ subpath で、未知 path で git を実行しない。
 mutating な **create / remove / adopt**（worktree lifecycle）は **CLI 専用**。create/remove は
 filesystem の git worktree を破壊的に操作する。**adopt** も MCP では出さない（2026-06 判断）:
 クライアント指定 path で server-side git を走らせること（path 探知の surface）になり、かつ
-adopt 直後の workspace は goal/project 未紐付けで `allowedProjects` scope が定まらないため、
+adopt 直後の workspace は hitch/project 未紐付けで `allowedProjects` scope が定まらないため、
 read tools の DB-first ガードや mutation の project scope と整合しない。worktree の作成・登録・
 削除は人間/CLI 側に留める（[`cli.md`](./cli.md#harness-workspace)）。observability（inspect /
 conflicts / recover / status / list）と advisory checkpoint は MCP で提供済み。
@@ -463,23 +463,23 @@ harness.backlog.run
 harness.backlog.update
 harness.knowledge.promote
 harness.knowledge.reject
-harness.goal.start
-harness.goal.record_findings
-harness.goal.classify_finding
-harness.goal.mark_finding_fixed
-harness.goal.defer_finding
-harness.goal.record_close_check
-harness.goal.check_convergence
-harness.goal.orchestrate
+harness.hitch.start
+harness.hitch.record_findings
+harness.hitch.classify_finding
+harness.hitch.mark_finding_fixed
+harness.hitch.defer_finding
+harness.hitch.record_close_check
+harness.hitch.check_convergence
+harness.hitch.orchestrate
 ```
 
-`harness.goal.orchestrate` is a **bounded driver** for the goal convergence
-loop. It advances a goal a capped number of orchestrator steps (coder rerun ->
+`harness.hitch.orchestrate` is a **bounded driver** for the hitch convergence
+loop. It advances a hitch a capped number of orchestrator steps (coder rerun ->
 review -> convergence) and **halts at `close_ready` without opening a PR or
-closing the goal** (`stopAtCloseReady`) — opening the PR / closing stays a
-deliberate, separately-confirmed step (CLI `harness goal orchestrate`). Args:
-`goalId` (required), optional `maxSteps` (1-50, default 20). The target repo is
-resolved **server-side** from the goal's own project/domain via
+closing the hitch** (`stopAtCloseReady`) — opening the PR / closing stays a
+deliberate, separately-confirmed step (CLI `harness hitch orchestrate`). Args:
+`hitchId` (required), optional `maxSteps` (1-50, default 20). The target repo is
+resolved **server-side** from the hitch's own project/domain via
 `prepareProjectRun` — the tool never accepts a client-supplied repo path. The
 convergence gate permits the driver at **entry** **exactly when a per-step
 mutation would be permitted** (`needs_fix`+`fix_findings`/`run_close_check`, or
@@ -488,16 +488,16 @@ classification decision denies the driver from *starting* (an operator drives
 those out of band). Once started, the orchestrator re-evaluates convergence each
 step and may run `classify`/`defer` steps within its bounded budget — those are
 deterministic harness-side bookkeeping (no LLM-driven state transition) — and
-still halts at `close_ready` without opening a PR. Goals with no
+still halts at `close_ready` without opening a PR. Hitches with no
 `projectId`/`domain` are rejected. Each internal coder/review step re-checks its
 own convergence gate. Adding this tool requires a `serve` restart to take
 effect.
 
 `harness.run.start`, `harness.review.auto`, `harness.rerun.start`, and
-`harness.review.process` also accept optional `goalId`. When present, the tool
-validates the goal's project/repo/domain boundary against the target project or
-run and writes goal attempt/review-cycle records after the operation succeeds.
-A project-scoped or domain-scoped goal is rejected for an unscoped or mismatched
+`harness.review.process` also accept optional `hitchId`. When present, the tool
+validates the hitch's project/repo/domain boundary against the target project or
+run and writes hitch attempt/review-cycle records after the operation succeeds.
+A project-scoped or domain-scoped hitch is rejected for an unscoped or mismatched
 run.
 
 Dangerous mutations, confirmation-required by default:
@@ -506,9 +506,9 @@ Dangerous mutations, confirmation-required by default:
 harness.review.process
 harness.cleanup.apply
 harness.pr.create
-harness.goal.close
-harness.goal.cancel
-harness.goal.expand_scope
+harness.hitch.close
+harness.hitch.cancel
+harness.hitch.expand_scope
 harness.db.repair.apply
 harness.db.archive.apply
 harness.db.migrate_blobs.apply
@@ -611,7 +611,7 @@ Input:
   "projectId": "mini-commerce",
   "domain": "catalog",
   "goal": "Add product search filter",
-  "goalId": "goal-...",
+  "hitchId": "goal-...",
   "idempotencyKey": "uuid"
 }
 ```
@@ -619,8 +619,8 @@ Input:
 Requires `run.start` allowlist, project allowlist, budget availability, and an
 idempotency key. It returns `operation_started` with `operationId` and `runId`
 when execution starts.
-If `goalId` is supplied, the operation metadata includes `goalId` and `goal_id`
-and `goal_attempts` receives an `implement` attempt linked to the resulting run.
+If `hitchId` is supplied, the operation metadata includes `hitchId` and `hitch_id`
+and `hitch_attempts` receives an `implement` attempt linked to the resulting run.
 
 `harness.review.auto`
 
@@ -629,7 +629,7 @@ Input:
 ```json
 {
   "runId": "run-...",
-  "goalId": "goal-...",
+  "hitchId": "goal-...",
   "reviewer": "codex-reviewer",
   "idempotencyKey": "uuid"
 }
@@ -637,7 +637,7 @@ Input:
 
 Allowed only for runs in `needs_review` or `changes_requested`, after resolving
 the run's project and applying project allowlist and `review.auto` allowlist.
-If `goalId` is supplied, the review attempt is linked to the latest goal attempt
+If `hitchId` is supplied, the review attempt is linked to the latest hitch attempt
 for the same run and reuses that iteration so review-only bookkeeping does not
 consume implementation budget.
 
@@ -648,12 +648,12 @@ Input:
 ```json
 {
   "runId": "run-...",
-  "goalId": "goal-...",
+  "hitchId": "goal-...",
   "idempotencyKey": "uuid"
 }
 ```
 
-When linked to a goal, the generated child run is recorded as a `rerun` attempt
+When linked to a hitch, the generated child run is recorded as a `rerun` attempt
 with the parent run attempt as `parentAttemptId` when available.
 
 `harness.review.process`
@@ -663,7 +663,7 @@ Input:
 ```json
 {
   "runId": "run-...",
-  "goalId": "goal-...",
+  "hitchId": "goal-...",
   "decision": "approved",
   "proposalId": 123,
   "sourceSha256": "...",
@@ -677,18 +677,18 @@ executed. If `proposalId` is omitted, preview binds the latest active proposal
 into the stored confirmation input. Confirm revalidates the same proposal id
 and `sourceSha256`, then uses the normal proposal-processing path. MCP
 `review.process` does not use the human override path.
-If `goalId` is supplied, confirmed execution imports the exact proposal into
-`goal_review_cycles` / `goal_findings`, records a `review_consensus` close check
-when the goal requires one, and records a convergence decision. Negative
+If `hitchId` is supplied, confirmed execution imports the exact proposal into
+`hitch_review_cycles` / `hitch_findings`, records a `review_consensus` close check
+when the hitch requires one, and records a convergence decision. Negative
 decisions with no explicit required changes become an in-scope P1 blocker.
 Reviewer non-blocking comments that only report tests/checks were not run or
 that command logs/output are missing are returned under
-`goalIntegration.reviewAdvisories` and copied into
-`goal_close_checks.evidence.reviewerAdvisories`; they are not imported as
-`goal_findings` and therefore do not trigger `needs_classification` or
+`hitchIntegration.reviewAdvisories` and copied into
+`hitch_close_checks.evidence.reviewerAdvisories`; they are not imported as
+`hitch_findings` and therefore do not trigger `needs_classification` or
 escalation by themselves. A passed `review_consensus` close check means static
 review consensus approved the run. It is not test execution evidence; MCP
-clients that need a test gate should start the goal with a normal `command`
+clients that need a test gate should start the hitch with a normal `command`
 close condition and record that command evidence separately.
 
 `harness.review.consensus` returns the persisted `review_consensus` row without
@@ -697,24 +697,24 @@ introducing extra enum values. The `active` row is returned raw, so parse
 parsed, so read `history[].summary.semantics`. `approved` means static review
 passed and `testsExecutedByConsensus=false`.
 
-Goal tools:
+Hitch tools:
 
 ```txt
-harness.goal.start
-harness.goal.record_findings
-harness.goal.classify_finding
-harness.goal.mark_finding_fixed
-harness.goal.defer_finding
-harness.goal.record_close_check
-harness.goal.check_convergence
-harness.goal.close
-harness.goal.cancel
-harness.goal.expand_scope
+harness.hitch.start
+harness.hitch.record_findings
+harness.hitch.classify_finding
+harness.hitch.mark_finding_fixed
+harness.hitch.defer_finding
+harness.hitch.record_close_check
+harness.hitch.check_convergence
+harness.hitch.close
+harness.hitch.cancel
+harness.hitch.expand_scope
 ```
 
-All goal mutation tools use `OperationRunner`, require idempotency keys, and
-write operation audit metadata with `goalId`/`goal_id` where a goal is known.
-`goal.close` is executable without confirmation only when convergence is
+All hitch mutation tools use `OperationRunner`, require idempotency keys, and
+write operation audit metadata with `hitchId`/`hitch_id` where a hitch is known.
+`hitch.close` is executable without confirmation only when convergence is
 `close_ready`; forced close, cancel, and scope expansion are always
 confirmation-required.
 
@@ -805,25 +805,25 @@ harness.prompt.plan_backlog_item
 harness.prompt.review_run
 harness.prompt.summarize_run
 harness.prompt.prepare_rerun
-harness.goal.convergence
-harness.goal.review-findings
-harness.goal.close-check
+harness.hitch.convergence
+harness.hitch.review-findings
+harness.hitch.close-check
 ```
 
-Goal prompts carry additional rules:
+Hitch prompts carry additional rules:
 
 ```txt
-harness.goal.convergence:
-  read the goal session, findings, close checks, and decisions; recommend the
+harness.hitch.convergence:
+  read the hitch session, findings, close checks, and decisions; recommend the
   next action without expanding scope
 
-harness.goal.review-findings:
+harness.hitch.review-findings:
   classify findings before fixing; new unrelated delta/close findings default
   out_of_scope; stop on unknown scope
 
-harness.goal.close-check:
+harness.hitch.close-check:
   check original close conditions only; stop on confirmation_required and run
-  harness.goal.check_convergence after recording evidence
+  harness.hitch.check_convergence after recording evidence
 ```
 
 ## Confirmation workflow
