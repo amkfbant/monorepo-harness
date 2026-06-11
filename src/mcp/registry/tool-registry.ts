@@ -109,6 +109,19 @@ import {
   resolveHitchFindingProjectId,
   resolveHitchProjectId,
 } from "../tools/hitch-tools.js";
+import {
+  courseCreateTool,
+  courseGetTool,
+  courseListTool,
+  courseStatusTool,
+  phaseAddTool,
+  phaseGetTool,
+  phaseListTool,
+  phaseLinkHitchTool,
+  phaseUpdateTool,
+  resolveCourseProjectId,
+  resolvePhaseProjectId,
+} from "../tools/course-tools.js";
 import type { McpPermissionDecision } from "../security/permissions.js";
 import {
   HITCH_CLOSE_CHECK_STATUSES,
@@ -122,6 +135,7 @@ import {
   HitchPolicySchema,
   HitchScopeSchema,
 } from "../../hitch/schemas.js";
+import { COURSE_STATUSES, PHASE_STATUSES } from "../../roadmap/types.js";
 
 export interface McpToolContext {
   harnessRoot: string;
@@ -1815,6 +1829,207 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       ["idempotencyKey"],
     ),
     handler: dbGcBlobsApplyTool,
+  }),
+  // -------------------------------------------------------------------------
+  // Course / Phase tools (SP-1)
+  // -------------------------------------------------------------------------
+  define({
+    name: "harness.course.list",
+    title: "List courses",
+    description:
+      "List roadmap courses visible to the MCP client. " +
+      "A null-project course is invisible to a project-restricted client (fail-closed).",
+    kind: "read",
+    operation: "course.list",
+    argsSchema: z
+      .object({
+        status: z.enum(COURSE_STATUSES).optional(),
+        projectId: z.string().min(1).optional(),
+        limit: LimitSchema,
+      })
+      .strict(),
+    projectIdFromArgs: (args) => args.projectId,
+    inputSchema: objectSchema({
+      status: enumSchema(COURSE_STATUSES),
+      projectId: { type: "string", description: "Project id" },
+      limit: { type: "number" },
+    }),
+    handler: courseListTool,
+  }),
+  define({
+    name: "harness.course.get",
+    title: "Get course",
+    description: "Read one roadmap course.",
+    kind: "read",
+    operation: "course.get",
+    argsSchema: z.object({ courseId: z.string().min(1) }).strict(),
+    resolveProjectIdForPermission: resolveCourseProjectId,
+    inputSchema: objectSchema(
+      { courseId: { type: "string", description: "Course id" } },
+      ["courseId"],
+    ),
+    handler: courseGetTool,
+  }),
+  define({
+    name: "harness.course.status",
+    title: "Course rollup status",
+    description:
+      "Read a course and its live phase-tree rollup (open P0/P1 derived " +
+      "from hitch_findings, phase counts by status).",
+    kind: "read",
+    operation: "course.status",
+    argsSchema: z.object({ courseId: z.string().min(1) }).strict(),
+    resolveProjectIdForPermission: resolveCourseProjectId,
+    inputSchema: objectSchema(
+      { courseId: { type: "string", description: "Course id" } },
+      ["courseId"],
+    ),
+    handler: courseStatusTool,
+  }),
+  define({
+    name: "harness.phase.list",
+    title: "List phases for a course",
+    description: "List phases for a roadmap course, ordered by position.",
+    kind: "read",
+    operation: "phase.list",
+    argsSchema: z.object({ courseId: z.string().min(1) }).strict(),
+    resolveProjectIdForPermission: resolveCourseProjectId,
+    inputSchema: objectSchema(
+      { courseId: { type: "string", description: "Course id" } },
+      ["courseId"],
+    ),
+    handler: phaseListTool,
+  }),
+  define({
+    name: "harness.phase.get",
+    title: "Get phase",
+    description: "Read one roadmap phase.",
+    kind: "read",
+    operation: "phase.get",
+    argsSchema: z.object({ phaseId: z.string().min(1) }).strict(),
+    resolveProjectIdForPermission: resolvePhaseProjectId,
+    inputSchema: objectSchema(
+      { phaseId: { type: "string", description: "Phase id" } },
+      ["phaseId"],
+    ),
+    handler: phaseGetTool,
+  }),
+  define({
+    name: "harness.course.create",
+    title: "Create course",
+    description:
+      "Create a roadmap course through OperationRunner. Guarded mutation.",
+    kind: "mutation",
+    operation: "course.create",
+    argsSchema: z
+      .object({
+        title: z.string().min(1),
+        description: z.string().min(1).optional(),
+        projectId: z.string().min(1).optional(),
+        repoId: z.string().min(1).optional(),
+      })
+      .merge(MutationArgsBaseSchema)
+      .strict(),
+    projectIdFromArgs: (args) => args.projectId,
+    inputSchema: objectSchema(
+      {
+        title: { type: "string" },
+        description: { type: "string" },
+        projectId: { type: "string", description: "Project id" },
+        repoId: { type: "string", description: "Repo id" },
+        idempotencyKey: { type: "string", description: "Required idempotency key for mutation tools" },
+        actorNote: { type: "string" },
+      },
+      ["title", "idempotencyKey"],
+    ),
+    handler: courseCreateTool,
+  }),
+  define({
+    name: "harness.phase.add",
+    title: "Add phase to course",
+    description:
+      "Add a phase to a roadmap course through OperationRunner. Guarded mutation.",
+    kind: "mutation",
+    operation: "phase.add",
+    argsSchema: z
+      .object({
+        courseId: z.string().min(1),
+        title: z.string().min(1),
+        parentPhaseId: z.string().min(1).optional(),
+        position: z.number().int().min(0).optional(),
+        scope: z.unknown().optional(),
+        closeConditions: z.unknown().optional(),
+      })
+      .merge(MutationArgsBaseSchema)
+      .strict(),
+    resolveProjectIdForPermission: resolveCourseProjectId,
+    inputSchema: objectSchema(
+      {
+        courseId: { type: "string", description: "Course id" },
+        title: { type: "string" },
+        parentPhaseId: { type: "string", description: "Parent phase id" },
+        position: { type: "number" },
+        scope: { type: "object", additionalProperties: true },
+        closeConditions: { type: "array", items: { type: "object" } },
+        idempotencyKey: { type: "string", description: "Required idempotency key for mutation tools" },
+        actorNote: { type: "string" },
+      },
+      ["courseId", "title", "idempotencyKey"],
+    ),
+    handler: phaseAddTool,
+  }),
+  define({
+    name: "harness.phase.update",
+    title: "Update phase",
+    description:
+      "Update a phase status through OperationRunner. Guarded mutation.",
+    kind: "mutation",
+    operation: "phase.update",
+    argsSchema: z
+      .object({
+        phaseId: z.string().min(1),
+        status: z.enum(PHASE_STATUSES).optional(),
+      })
+      .merge(MutationArgsBaseSchema)
+      .strict(),
+    resolveProjectIdForPermission: resolvePhaseProjectId,
+    inputSchema: objectSchema(
+      {
+        phaseId: { type: "string", description: "Phase id" },
+        status: enumSchema(PHASE_STATUSES),
+        idempotencyKey: { type: "string", description: "Required idempotency key for mutation tools" },
+        actorNote: { type: "string" },
+      },
+      ["phaseId", "idempotencyKey"],
+    ),
+    handler: phaseUpdateTool,
+  }),
+  define({
+    name: "harness.phase.link_hitch",
+    title: "Link hitch to phase",
+    description:
+      "Link a hitch session to a roadmap phase through OperationRunner. " +
+      "Rejects cross-project links and double-links. Guarded mutation.",
+    kind: "mutation",
+    operation: "phase.link_hitch",
+    argsSchema: z
+      .object({
+        phaseId: z.string().min(1),
+        hitchId: z.string().min(1),
+      })
+      .merge(MutationArgsBaseSchema)
+      .strict(),
+    resolveProjectIdForPermission: resolvePhaseProjectId,
+    inputSchema: objectSchema(
+      {
+        phaseId: { type: "string", description: "Phase id" },
+        hitchId: { type: "string", description: "Hitch id" },
+        idempotencyKey: { type: "string", description: "Required idempotency key for mutation tools" },
+        actorNote: { type: "string" },
+      },
+      ["phaseId", "hitchId", "idempotencyKey"],
+    ),
+    handler: phaseLinkHitchTool,
   }),
   define({
     name: "harness.workspace.list",
