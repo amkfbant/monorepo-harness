@@ -1567,7 +1567,7 @@ export const MIGRATION_V20_STATEMENTS: readonly string[] = [
      ON hitch_sessions(status, updated_at)`,
   `CREATE INDEX hitch_sessions_project_idx
      ON hitch_sessions(project_id, domain, status)`,
-  `CREATE INDEX hitch_attempts_goal_idx
+  `CREATE INDEX hitch_attempts_hitch_idx
      ON hitch_attempts(hitch_id, iteration, created_at)`,
   `CREATE INDEX hitch_attempts_run_idx ON hitch_attempts(run_id)`,
   `CREATE INDEX hitch_attempts_operation_idx ON hitch_attempts(operation_id)`,
@@ -1576,11 +1576,11 @@ export const MIGRATION_V20_STATEMENTS: readonly string[] = [
   `CREATE UNIQUE INDEX hitch_findings_stable_idx
      ON hitch_findings(hitch_id, stable_key)
     WHERE duplicate_of IS NULL`,
-  `CREATE INDEX hitch_findings_goal_status_idx
+  `CREATE INDEX hitch_findings_hitch_status_idx
      ON hitch_findings(hitch_id, lifecycle_status, scope_status, severity)`,
-  `CREATE INDEX hitch_close_checks_goal_idx
+  `CREATE INDEX hitch_close_checks_hitch_idx
      ON hitch_close_checks(hitch_id, checked_at)`,
-  `CREATE INDEX hitch_convergence_decisions_goal_idx
+  `CREATE INDEX hitch_convergence_decisions_hitch_idx
      ON hitch_convergence_decisions(hitch_id, created_at)`,
 ];
 

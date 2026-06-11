@@ -39,7 +39,7 @@ SP-0 renames **goal → hitch** only. `course`/`phase` are introduced by SP-1.
 
 | Surface | Change |
 |---------|--------|
-| DB tables | `goal_sessions` → `hitch_sessions`; `goal_attempts` → `hitch_attempts`; `goal_review_cycles` → `hitch_review_cycles`; `goal_findings` → `hitch_findings`; `goal_close_checks` → `hitch_close_checks`; `goal_convergence_decisions` → `hitch_convergence_decisions`; **all of their indexes** (12, by DROP + CREATE — `ALTER TABLE RENAME TO` does **not** rename indexes). |
+| DB tables | `goal_sessions` → `hitch_sessions`; `goal_attempts` → `hitch_attempts`; `goal_review_cycles` → `hitch_review_cycles`; `goal_findings` → `hitch_findings`; `goal_close_checks` → `hitch_close_checks`; `goal_convergence_decisions` → `hitch_convergence_decisions`; **all of their indexes** (10, by DROP + CREATE — `ALTER TABLE RENAME TO` does **not** rename indexes). |
 | DB columns | `goal_id` → `hitch_id` in **8 columns** (one per `RENAME COLUMN`): the 6 hitch tables' own `goal_id` refs **plus** `workspaces.goal_id` (v17) and `workspace_checkpoints.goal_id` (v18), which are advisory links to a convergence session. |
 | CLI | `harness goal …` → `harness hitch …` (start/status/orchestrate/finding/review-cycle/close-check/close/reopen/check-convergence/…). |
 | MCP tools | the 16 `harness.goal.*` → `harness.hitch.*` (operation names `goal.*` → `hitch.*`). |
@@ -107,7 +107,7 @@ migration (forward-only, inside the existing per-migration transaction):
   columns (the 6 tables + `workspaces` + `workspace_checkpoints`). SQLite 3.53
   (bundled in better-sqlite3 12.x) auto-rewrites FK clauses that reference the
   renamed table/column.
-- **`DROP INDEX` + `CREATE INDEX`** for the 12 indexes — `RENAME TO` does **not**
+- **`DROP INDEX` + `CREATE INDEX`** for the 10 indexes — `RENAME TO` does **not**
   rename indexes, so they must be recreated under `hitch_*` names (and to point
   at the renamed columns).
 - **No `PRAGMA foreign_keys` toggling** — it is a no-op inside a transaction
@@ -125,7 +125,7 @@ A mechanical, atomic rename behind green tests. Order of operations (so the buil
 never half-breaks):
 
 1. **Migration** (schema version bump): rename the 6 tables (`RENAME TO`), the 8
-   `goal_id` columns (`RENAME COLUMN`), and recreate the 12 indexes
+   `goal_id` columns (`RENAME COLUMN`), and recreate the 10 indexes
    (`DROP`/`CREATE`) — see the corrected mechanics above. Forward-only (no
    down-migrations, consistent with existing style). Migration test: a pre-rename
    DB seeded with rows in every `goal_*` table (and `workspaces`/

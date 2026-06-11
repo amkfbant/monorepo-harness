@@ -131,17 +131,78 @@ describe("schema v20 hitch rename", () => {
       const hitchIndexes = allIndexes.filter((n) => n.startsWith("hitch_"));
       expect(goalIndexes).toEqual([]);
       expect(hitchIndexes.sort()).toEqual([
-        "hitch_attempts_goal_idx",
+        "hitch_attempts_hitch_idx",
         "hitch_attempts_operation_idx",
         "hitch_attempts_run_idx",
-        "hitch_close_checks_goal_idx",
-        "hitch_convergence_decisions_goal_idx",
-        "hitch_findings_goal_status_idx",
+        "hitch_close_checks_hitch_idx",
+        "hitch_convergence_decisions_hitch_idx",
+        "hitch_findings_hitch_status_idx",
         "hitch_findings_stable_idx",
         "hitch_review_cycles_unique_idx",
         "hitch_sessions_project_idx",
         "hitch_sessions_status_idx",
       ]);
+
+      // Data-preservation: seeded workspace row keeps its hitch_id value
+      const wsRow = db
+        .prepare("SELECT hitch_id FROM workspaces WHERE workspace_id = 'ws-1'")
+        .get() as { hitch_id: string } | undefined;
+      expect(wsRow?.hitch_id).toBe("goal-1");
+
+      // Data-preservation: seeded workspace_checkpoint row keeps its hitch_id value
+      const wcpRow = db
+        .prepare(
+          "SELECT hitch_id FROM workspace_checkpoints WHERE checkpoint_id = 'wcp-1'",
+        )
+        .get() as { hitch_id: string } | undefined;
+      expect(wcpRow?.hitch_id).toBe("goal-1");
+
+      // Behavioural: hitch_findings_stable_idx is UNIQUE and partial
+      // (duplicate_of IS NULL). Inserting two non-duplicate rows with the same
+      // (hitch_id, stable_key) should throw; inserting with duplicate_of set
+      // should be allowed.
+      db.prepare(
+        `INSERT INTO hitch_findings (
+           finding_id, hitch_id, stable_key, duplicate_of,
+           source, severity, category, scope_status, lifecycle_status,
+           summary, first_seen_at, last_seen_at
+         ) VALUES
+           ('f-1', 'goal-1', 'key-A', NULL,
+            'review', 'P1', 'correctness', 'in_scope', 'open',
+            'First', 't', 't')`,
+      ).run();
+
+      // Second insert with same (hitch_id, stable_key) + duplicate_of IS NULL → must throw
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO hitch_findings (
+               finding_id, hitch_id, stable_key, duplicate_of,
+               source, severity, category, scope_status, lifecycle_status,
+               summary, first_seen_at, last_seen_at
+             ) VALUES
+               ('f-2', 'goal-1', 'key-A', NULL,
+                'review', 'P1', 'correctness', 'in_scope', 'open',
+                'Duplicate attempt', 't', 't')`,
+          )
+          .run(),
+      ).toThrow();
+
+      // Insert with duplicate_of set (partial index excludes it) → must not throw
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO hitch_findings (
+               finding_id, hitch_id, stable_key, duplicate_of,
+               source, severity, category, scope_status, lifecycle_status,
+               summary, first_seen_at, last_seen_at
+             ) VALUES
+               ('f-3', 'goal-1', 'key-A', 'f-1',
+                'review', 'P1', 'correctness', 'in_scope', 'duplicate',
+                'Known dup', 't', 't')`,
+          )
+          .run(),
+      ).not.toThrow();
     } finally {
       db.close();
     }
