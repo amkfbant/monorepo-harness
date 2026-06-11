@@ -28,7 +28,7 @@ function freshHarness(): string {
     branch: "agent/alice",
     worktreePath: "/repo.agents/alice",
   });
-  ws.linkGoal("/repo/.git", "alice", "g1");
+  ws.linkHitch("/repo/.git", "alice", "g1");
   ws.setObjective("/repo/.git", "alice", "ship the thing");
   ws.recordCheckpoint({
     workspaceId: alice.workspaceId,
@@ -211,7 +211,7 @@ describe("harness.workspace.list MCP tool", () => {
       });
     }
     ws.upsert({ agent: "alice", repoPath: "/r/.git", branch: "agent/alice", worktreePath: "/r.agents/alice" });
-    ws.linkGoal("/r/.git", "alice", "g-alice");
+    ws.linkHitch("/r/.git", "alice", "g-alice");
     db.close();
     return root;
   }
@@ -258,9 +258,9 @@ describe("harness.workspace.list MCP tool", () => {
       });
     }
     ws.upsert({ agent: "alice", repoPath: "/r/.git", branch: "agent/alice", worktreePath: "/r.agents/alice" });
-    ws.linkGoal("/r/.git", "alice", "g-demo");
+    ws.linkHitch("/r/.git", "alice", "g-demo");
     ws.upsert({ agent: "bob", repoPath: "/r/.git", branch: "agent/bob", worktreePath: "/r.agents/bob" });
-    ws.linkGoal("/r/.git", "bob", "g-other");
+    ws.linkHitch("/r/.git", "bob", "g-other");
     ws.upsert({ agent: "carol", repoPath: "/r/.git", branch: "agent/carol", worktreePath: "/r.agents/carol" });
     db.close();
 

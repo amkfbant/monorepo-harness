@@ -174,7 +174,7 @@ function mcpStep(): OnboardStep {
       if (await ctx.prompts.confirm("Enable MCP mutations for a client? (otherwise read-only/dry-run)")) {
         const clientName = await ctx.prompts.input("client name", "codex");
         const operations: string[] = [];
-        if (await ctx.prompts.confirm("Allow goal.start (start a goal session)?")) operations.push("goal.start");
+        if (await ctx.prompts.confirm("Allow hitch.start (start a hitch session)?")) operations.push("hitch.start");
         if (await ctx.prompts.confirm("Allow run.start (starts a codex run — incurs cost)?")) operations.push("run.start");
         if (operations.length > 0) starter = { clientName, operations };
       }
@@ -218,12 +218,12 @@ function serveSmokeStep(): OnboardStep {
       if (firstClient !== undefined) {
         const mode = modeForClient(cfg, firstClient);
         const d = decideMcpPermission(cfg, {
-          toolName: "harness.goal.start",
+          toolName: "harness.hitch.start",
           kind: "mutation",
           projectId: ctx.projectId,
           clientMode: mode,
         });
-        lines.push(`client "${firstClient}" goal.start: ${d.reason}`);
+        lines.push(`client "${firstClient}" hitch.start: ${d.reason}`);
       }
       ctx.log.push(lines.join("; "));
       return { ok: true, message: lines.join("; ") };

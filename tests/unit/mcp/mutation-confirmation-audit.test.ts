@@ -1726,7 +1726,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         (db) =>
           (
             db
-              .prepare("SELECT status FROM goal_sessions WHERE goal_id = ?")
+              .prepare("SELECT status FROM hitch_sessions WHERE hitch_id = ?")
               .get("goal-review-process-close") as { status: string }
           ).status,
       ),

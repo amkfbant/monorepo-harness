@@ -104,20 +104,20 @@ async function readResource(
 }
 
 const GOAL_ALLOWED = [
-  "goal.start",
-  "goal.record_findings",
-  "goal.mark_finding_fixed",
-  "goal.record_close_check",
-  "goal.check_convergence",
-  "goal.defer_finding",
-  "goal.close",
+  "hitch.start",
+  "hitch.record_findings",
+  "hitch.mark_finding_fixed",
+  "hitch.record_close_check",
+  "hitch.check_convergence",
+  "hitch.defer_finding",
+  "hitch.close",
 ];
 
 describe("MCP goal tools", () => {
   it("records findings, checks convergence, exposes resources, and closes close_ready goals", async () => {
     const root = freshRoot();
     const s = server(root, mutationConfig(GOAL_ALLOWED));
-    const started = await callTool(s, "harness.goal.start", {
+    const started = await callTool(s, "harness.hitch.start", {
       title: "Goal MCP",
       projectId: "demo",
       domain: "goal",
@@ -135,7 +135,7 @@ describe("MCP goal tools", () => {
     });
     expect(startedOperation.status).toBe("ok");
     expect(startedOperation.data.operation.metadata.hitchId).toBe(hitchId);
-    expect(startedOperation.data.operation.metadata.goal_id).toBe(hitchId);
+    expect(startedOperation.data.operation.metadata.hitch_id).toBe(hitchId);
 
     // a coding pass has already run; convergence reflects post-run behavior.
     withDb(root, (db) => {
@@ -145,7 +145,7 @@ describe("MCP goal tools", () => {
       });
     });
 
-    const recorded = await callTool(s, "harness.goal.record_findings", {
+    const recorded = await callTool(s, "harness.hitch.record_findings", {
       hitchId,
       findings: [
         {
@@ -162,7 +162,7 @@ describe("MCP goal tools", () => {
     );
     const findingId = recorded.data.result.recorded[0].finding.findingId;
 
-    const fixed = await callTool(s, "harness.goal.mark_finding_fixed", {
+    const fixed = await callTool(s, "harness.hitch.mark_finding_fixed", {
       findingId,
       note: "stored evidence",
       idempotencyKey: "goal-fixed",
@@ -171,7 +171,7 @@ describe("MCP goal tools", () => {
     expect(fixed.data.result.finding.lifecycleStatus).toBe("fixed");
     expect(fixed.data.result.decisionRecord.decision).toBe("continue");
     const secret = `sk-${"c".repeat(40)}`;
-    const checked = await callTool(s, "harness.goal.record_close_check", {
+    const checked = await callTool(s, "harness.hitch.record_close_check", {
       hitchId,
       conditionId: "typecheck",
       status: "passed",
@@ -199,17 +199,17 @@ describe("MCP goal tools", () => {
       goalOperations.data.operations.map((op: any) => op.operationId),
     ).toContain(checked.operationId);
 
-    const convergence = await callTool(s, "harness.goal.check_convergence", {
+    const convergence = await callTool(s, "harness.hitch.check_convergence", {
       hitchId,
       idempotencyKey: "goal-convergence",
     });
     expect(convergence.data.result.decision).toBe("close_ready");
 
-    const resource = await readResource(s, `harness://goal/${hitchId}`);
+    const resource = await readResource(s, `harness://hitch/${hitchId}`);
     expect(resource.status).toBe("ok");
     expect(resource.data.convergence.decision).toBe("close_ready");
 
-    const closed = await callTool(s, "harness.goal.close", {
+    const closed = await callTool(s, "harness.hitch.close", {
       hitchId,
       summary: "done",
       idempotencyKey: "goal-close",
@@ -222,9 +222,9 @@ describe("MCP goal tools", () => {
     const root = freshRoot();
     const s = server(
       root,
-      mutationConfig(["goal.start", "goal.record_findings", "goal.defer_finding"]),
+      mutationConfig(["hitch.start", "hitch.record_findings", "hitch.defer_finding"]),
     );
-    const started = await callTool(s, "harness.goal.start", {
+    const started = await callTool(s, "harness.hitch.start", {
       title: "Goal MCP defer",
       projectId: "demo",
       domain: "goal",
@@ -232,7 +232,7 @@ describe("MCP goal tools", () => {
       idempotencyKey: "goal-start-defer",
     });
     const hitchId = started.data.result.hitchId as string;
-    const recorded = await callTool(s, "harness.goal.record_findings", {
+    const recorded = await callTool(s, "harness.hitch.record_findings", {
       hitchId,
       findings: [
         {
@@ -246,7 +246,7 @@ describe("MCP goal tools", () => {
     });
     const findingId = recorded.data.result.recorded[0].finding.findingId;
 
-    const denied = await callTool(s, "harness.goal.defer_finding", {
+    const denied = await callTool(s, "harness.hitch.defer_finding", {
       findingId,
       reason: "future UI",
       createBacklogItem: true,
@@ -259,9 +259,9 @@ describe("MCP goal tools", () => {
     const root = freshRoot();
     const s = server(
       root,
-      mutationConfig(["goal.start", "goal.record_findings"]),
+      mutationConfig(["hitch.start", "hitch.record_findings"]),
     );
-    const started = await callTool(s, "harness.goal.start", {
+    const started = await callTool(s, "harness.hitch.start", {
       title: "Goal MCP duplicate finding",
       projectId: "demo",
       domain: "goal",
@@ -269,7 +269,7 @@ describe("MCP goal tools", () => {
     });
     const hitchId = started.data.result.hitchId as string;
 
-    const recorded = await callTool(s, "harness.goal.record_findings", {
+    const recorded = await callTool(s, "harness.hitch.record_findings", {
       hitchId,
       findings: [
         {
@@ -290,13 +290,13 @@ describe("MCP goal tools", () => {
     const s = server(
       root,
       mutationConfig([
-        "goal.start",
-        "goal.record_findings",
-        "goal.classify_finding",
-        "goal.defer_finding",
+        "hitch.start",
+        "hitch.record_findings",
+        "hitch.classify_finding",
+        "hitch.defer_finding",
       ]),
     );
-    const started = await callTool(s, "harness.goal.start", {
+    const started = await callTool(s, "harness.hitch.start", {
       title: "Goal MCP post mutation audit",
       projectId: "demo",
       domain: "goal",
@@ -305,7 +305,7 @@ describe("MCP goal tools", () => {
       idempotencyKey: "goal-start-post-mutation-audit",
     });
     const hitchId = started.data.result.hitchId as string;
-    const unknown = await callTool(s, "harness.goal.record_findings", {
+    const unknown = await callTool(s, "harness.hitch.record_findings", {
       hitchId,
       findings: [
         {
@@ -319,7 +319,7 @@ describe("MCP goal tools", () => {
     });
     const unknownFindingId = unknown.data.result.recorded[0].finding.findingId;
 
-    const classified = await callTool(s, "harness.goal.classify_finding", {
+    const classified = await callTool(s, "harness.hitch.classify_finding", {
       findingId: unknownFindingId,
       scopeStatus: "in_scope",
       reason: "blocks the goal",
@@ -329,7 +329,7 @@ describe("MCP goal tools", () => {
     expect(classified.data.result.convergence.decision).toBe("needs_fix");
     expect(classified.data.result.decisionRecord.decision).toBe("needs_fix");
 
-    const outOfScope = await callTool(s, "harness.goal.record_findings", {
+    const outOfScope = await callTool(s, "harness.hitch.record_findings", {
       hitchId,
       findings: [
         {
@@ -344,7 +344,7 @@ describe("MCP goal tools", () => {
     const outOfScopeFindingId =
       outOfScope.data.result.recorded[0].finding.findingId;
 
-    const deferred = await callTool(s, "harness.goal.defer_finding", {
+    const deferred = await callTool(s, "harness.hitch.defer_finding", {
       findingId: outOfScopeFindingId,
       reason: "future feature",
       createBacklogItem: false,
@@ -357,8 +357,8 @@ describe("MCP goal tools", () => {
 
   it("counts MCP-recorded findings as review cycles for divergence budgets", async () => {
     const root = freshRoot();
-    const s = server(root, mutationConfig(["goal.start", "goal.record_findings"]));
-    const started = await callTool(s, "harness.goal.start", {
+    const s = server(root, mutationConfig(["hitch.start", "hitch.record_findings"]));
+    const started = await callTool(s, "harness.hitch.start", {
       title: "Goal MCP divergence",
       projectId: "demo",
       domain: "goal",
@@ -371,7 +371,7 @@ describe("MCP goal tools", () => {
     });
     const hitchId = started.data.result.hitchId as string;
 
-    const recorded = await callTool(s, "harness.goal.record_findings", {
+    const recorded = await callTool(s, "harness.hitch.record_findings", {
       hitchId,
       findings: [
         {
@@ -417,9 +417,9 @@ describe("MCP goal tools", () => {
         checkedBy: "test",
       });
     });
-    const s = server(root, mutationConfig(["goal.check_convergence"]));
+    const s = server(root, mutationConfig(["hitch.check_convergence"]));
 
-    const res = await callTool(s, "harness.goal.check_convergence", {
+    const res = await callTool(s, "harness.hitch.check_convergence", {
       hitchId: "goal-no-sync",
       idempotencyKey: "goal-no-sync",
       updateStatus: false,
@@ -478,23 +478,23 @@ describe("MCP goal tools", () => {
         checkedBy: "test",
       });
     });
-    const s = server(root, mutationConfig(["goal.check_convergence"]));
+    const s = server(root, mutationConfig(["hitch.check_convergence"]));
 
-    const diverging = await callTool(s, "harness.goal.check_convergence", {
+    const diverging = await callTool(s, "harness.hitch.check_convergence", {
       hitchId: "goal-sync-diverging",
       idempotencyKey: "goal-sync-diverging",
     });
     expect(diverging.data.result.decision).toBe("diverging");
     expect(diverging.data.result.goalStatus.status).toBe("diverging");
 
-    const budget = await callTool(s, "harness.goal.check_convergence", {
+    const budget = await callTool(s, "harness.hitch.check_convergence", {
       hitchId: "goal-sync-budget",
       idempotencyKey: "goal-sync-budget",
     });
     expect(budget.data.result.decision).toBe("budget_exhausted");
     expect(budget.data.result.goalStatus.status).toBe("budget_exhausted");
 
-    const closeReady = await callTool(s, "harness.goal.check_convergence", {
+    const closeReady = await callTool(s, "harness.hitch.check_convergence", {
       hitchId: "goal-sync-close",
       idempotencyKey: "goal-sync-close",
     });
@@ -513,8 +513,8 @@ describe("MCP goal tools", () => {
 
   it("redacts and caps raw findings in read tools and resources", async () => {
     const root = freshRoot();
-    const s = server(root, mutationConfig(["goal.start"]));
-    const started = await callTool(s, "harness.goal.start", {
+    const s = server(root, mutationConfig(["hitch.start"]));
+    const started = await callTool(s, "harness.hitch.start", {
       title: "Goal MCP raw findings",
       projectId: "demo",
       domain: "goal",
@@ -535,7 +535,7 @@ describe("MCP goal tools", () => {
       });
     });
 
-    const status = await callTool(s, "harness.goal.status", { hitchId });
+    const status = await callTool(s, "harness.hitch.status", { hitchId });
     expect(JSON.stringify(status)).not.toContain(secret);
     expect(status.data.findings).toHaveLength(1);
     expect(status.data.findings[0].summary).toBe("[redacted]");
@@ -544,11 +544,11 @@ describe("MCP goal tools", () => {
     expect(status.data.findings[0].suggestedFix).toMatch(/\.\.\.\[truncated\]$/);
     expect(status.data.findingsTruncated).toBe(false);
 
-    const findings = await callTool(s, "harness.goal.findings", { hitchId });
+    const findings = await callTool(s, "harness.hitch.findings", { hitchId });
     expect(JSON.stringify(findings)).not.toContain(secret);
     expect(findings.data.findings[0].summary).toBe("[redacted]");
 
-    const resource = await readResource(s, `harness://goal/${hitchId}`);
+    const resource = await readResource(s, `harness://hitch/${hitchId}`);
     expect(JSON.stringify(resource)).not.toContain(secret);
     expect(resource.data.findings[0].detail).toBe("[redacted]");
   });
@@ -557,9 +557,9 @@ describe("MCP goal tools", () => {
     const root = freshRoot();
     const s = server(
       root,
-      mutationConfig(["goal.start", "goal.record_close_check"]),
+      mutationConfig(["hitch.start", "hitch.record_close_check"]),
     );
-    const started = await callTool(s, "harness.goal.start", {
+    const started = await callTool(s, "harness.hitch.start", {
       title: "Goal MCP close permission",
       projectId: "demo",
       domain: "goal",
@@ -567,14 +567,14 @@ describe("MCP goal tools", () => {
       idempotencyKey: "goal-close-denied-start",
     });
     const hitchId = started.data.result.hitchId as string;
-    await callTool(s, "harness.goal.record_close_check", {
+    await callTool(s, "harness.hitch.record_close_check", {
       hitchId,
       conditionId: "typecheck",
       status: "passed",
       idempotencyKey: "goal-close-denied-check",
     });
 
-    const denied = await callTool(s, "harness.goal.close", {
+    const denied = await callTool(s, "harness.hitch.close", {
       hitchId,
       summary: "done",
       idempotencyKey: "goal-close-denied",
@@ -585,8 +585,8 @@ describe("MCP goal tools", () => {
 
   it("rechecks convergence inside an unconfirmed close_ready close", async () => {
     const root = freshRoot();
-    const s = server(root, mutationConfig(["goal.start", "goal.close"]));
-    const started = await callTool(s, "harness.goal.start", {
+    const s = server(root, mutationConfig(["hitch.start", "hitch.close"]));
+    const started = await callTool(s, "harness.hitch.start", {
       title: "Goal MCP stale close",
       projectId: "demo",
       domain: "goal",
@@ -599,7 +599,7 @@ describe("MCP goal tools", () => {
       .mockImplementationOnce(() => mockedConvergence(hitchId, "close_ready") as any)
       .mockImplementationOnce(() => mockedConvergence(hitchId, "needs_fix") as any);
     try {
-      const denied = await callTool(s, "harness.goal.close", {
+      const denied = await callTool(s, "harness.hitch.close", {
         hitchId,
         summary: "done",
         idempotencyKey: "goal-close-stale",
@@ -616,8 +616,8 @@ describe("MCP goal tools", () => {
 
   it("returns confirmation_required when closing a non-close_ready goal", async () => {
     const root = freshRoot();
-    const s = server(root, mutationConfig(["goal.start", "goal.close"]));
-    const started = await callTool(s, "harness.goal.start", {
+    const s = server(root, mutationConfig(["hitch.start", "hitch.close"]));
+    const started = await callTool(s, "harness.hitch.start", {
       title: "Goal MCP close confirmation",
       projectId: "demo",
       domain: "goal",
@@ -626,7 +626,7 @@ describe("MCP goal tools", () => {
     });
     const hitchId = started.data.result.hitchId as string;
 
-    const pending = await callTool(s, "harness.goal.close", {
+    const pending = await callTool(s, "harness.hitch.close", {
       hitchId,
       summary: "force after human review",
       idempotencyKey: "goal-close-confirm",
@@ -640,8 +640,8 @@ describe("MCP goal tools", () => {
 
   it("does not treat empty close conditions as close_ready by default", async () => {
     const root = freshRoot();
-    const s = server(root, mutationConfig(["goal.start", "goal.close"]));
-    const started = await callTool(s, "harness.goal.start", {
+    const s = server(root, mutationConfig(["hitch.start", "hitch.close"]));
+    const started = await callTool(s, "harness.hitch.start", {
       title: "Goal MCP empty close conditions",
       projectId: "demo",
       domain: "goal",
@@ -656,7 +656,7 @@ describe("MCP goal tools", () => {
       });
     });
 
-    const pending = await callTool(s, "harness.goal.close", {
+    const pending = await callTool(s, "harness.hitch.close", {
       hitchId,
       summary: "should require confirmation",
       idempotencyKey: "goal-empty-close",
@@ -670,9 +670,9 @@ describe("MCP goal tools", () => {
     const root = freshRoot();
     const s = server(
       root,
-      mutationConfig(["goal.start", "goal.record_close_check", "goal.close"]),
+      mutationConfig(["hitch.start", "hitch.record_close_check", "hitch.close"]),
     );
-    const started = await callTool(s, "harness.goal.start", {
+    const started = await callTool(s, "harness.hitch.start", {
       title: "Goal MCP close force",
       projectId: "demo",
       domain: "goal",
@@ -680,14 +680,14 @@ describe("MCP goal tools", () => {
       idempotencyKey: "goal-close-force-start",
     });
     const hitchId = started.data.result.hitchId as string;
-    await callTool(s, "harness.goal.record_close_check", {
+    await callTool(s, "harness.hitch.record_close_check", {
       hitchId,
       conditionId: "typecheck",
       status: "passed",
       idempotencyKey: "goal-close-force-check",
     });
 
-    const pending = await callTool(s, "harness.goal.close", {
+    const pending = await callTool(s, "harness.hitch.close", {
       hitchId,
       summary: "done with force",
       force: true,
@@ -704,15 +704,15 @@ describe("MCP goal tools", () => {
       method: "tools/list",
     })) as any;
     const toolNames = tools.result.tools.map((tool: { name: string }) => tool.name);
-    expect(toolNames).toContain("harness.goal.status");
-    expect(toolNames).toContain("harness.goal.check_convergence");
+    expect(toolNames).toContain("harness.hitch.status");
+    expect(toolNames).toContain("harness.hitch.check_convergence");
 
     const resources = (await s.handleMessage({
       jsonrpc: "2.0",
       id: 2,
       method: "resources/templates/list",
     })) as any;
-    expect(JSON.stringify(resources)).toContain("harness://goal/{hitchId}");
+    expect(JSON.stringify(resources)).toContain("harness://hitch/{hitchId}");
 
     const prompts = (await s.handleMessage({
       jsonrpc: "2.0",
@@ -720,14 +720,14 @@ describe("MCP goal tools", () => {
       method: "prompts/list",
     })) as any;
     expect(JSON.stringify(prompts)).toContain(
-      "harness.prompt.drive_goal_convergence",
+      "harness.prompt.drive_hitch_convergence",
     );
     const prompt = (await s.handleMessage({
       jsonrpc: "2.0",
       id: 4,
       method: "prompts/get",
       params: {
-        name: "harness.prompt.drive_goal_convergence",
+        name: "harness.prompt.drive_hitch_convergence",
         arguments: { hitchId: "goal-test" },
       },
     })) as any;
@@ -740,9 +740,9 @@ describe("MCP goal tools", () => {
     const root = freshRoot();
     const s = server(
       root,
-      mutationConfig(["goal.start", "review.process"]),
+      mutationConfig(["hitch.start", "review.process"]),
     );
-    const started = await callTool(s, "harness.goal.start", {
+    const started = await callTool(s, "harness.hitch.start", {
       title: "Goal MCP domain link",
       projectId: "demo",
       repoId: "demo-repo",
@@ -779,9 +779,9 @@ describe("MCP goal tools", () => {
     const root = freshRoot();
     const s = server(
       root,
-      mutationConfig(["goal.start", "review.process"]),
+      mutationConfig(["hitch.start", "review.process"]),
     );
-    const started = await callTool(s, "harness.goal.start", {
+    const started = await callTool(s, "harness.hitch.start", {
       title: "Goal MCP project link",
       projectId: "demo",
       repoId: "demo-repo",
@@ -831,19 +831,19 @@ function goalProjectId(root: string, hitchId: string): string | null {
   withDb(root, (db) => {
     pid = (
       db
-        .prepare("SELECT project_id FROM goal_sessions WHERE goal_id = ?")
+        .prepare("SELECT project_id FROM hitch_sessions WHERE hitch_id = ?")
         .get(hitchId) as { project_id: string | null }
     ).project_id;
   });
   return pid;
 }
 
-describe("goal.start repoId → projectId derivation (#81)", () => {
+describe("hitch.start repoId → projectId derivation (#81)", () => {
   it("derives an unambiguous projectId from repoId and persists it", async () => {
     const root = freshRoot();
     withDb(root, (db) => seedProject(db, "demo", "demo-repo"));
-    const s = server(root, mutationConfig(["goal.start"]));
-    const started = await callTool(s, "harness.goal.start", {
+    const s = server(root, mutationConfig(["hitch.start"]));
+    const started = await callTool(s, "harness.hitch.start", {
       title: "repoId only",
       repoId: "demo-repo", // no projectId — must be derived
       domain: "goal",
@@ -862,10 +862,10 @@ describe("goal.start repoId → projectId derivation (#81)", () => {
       seedProject(db, "demo2", "shared-repo");
     });
     const s = server(root, {
-      ...mutationConfig(["goal.start"]),
+      ...mutationConfig(["hitch.start"]),
       allowedProjects: ["demo", "demo2"],
     });
-    const denied = await callTool(s, "harness.goal.start", {
+    const denied = await callTool(s, "harness.hitch.start", {
       title: "ambiguous repo",
       repoId: "shared-repo",
       domain: "goal",
@@ -881,10 +881,10 @@ describe("goal.start repoId → projectId derivation (#81)", () => {
     withDb(root, (db) => seedProject(db, "demo3", "lonely-repo"));
     // client is scoped to "demo" only; the derived "demo3" must still be denied
     const s = server(root, {
-      ...mutationConfig(["goal.start"]),
+      ...mutationConfig(["hitch.start"]),
       allowedProjects: ["demo"],
     });
-    const denied = await callTool(s, "harness.goal.start", {
+    const denied = await callTool(s, "harness.hitch.start", {
       title: "derived-but-not-allowed",
       repoId: "lonely-repo",
       domain: "goal",
@@ -900,10 +900,10 @@ describe("goal.start repoId → projectId derivation (#81)", () => {
   it("does not require derivation when allowedProjects is empty (repoId-only is allowed)", async () => {
     const root = freshRoot();
     const s = server(root, {
-      ...mutationConfig(["goal.start"]),
+      ...mutationConfig(["hitch.start"]),
       allowedProjects: [],
     });
-    const started = await callTool(s, "harness.goal.start", {
+    const started = await callTool(s, "harness.hitch.start", {
       title: "unscoped client",
       repoId: "demo-repo",
       domain: "goal",

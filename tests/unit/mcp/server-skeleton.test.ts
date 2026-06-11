@@ -63,8 +63,11 @@ describe("HarnessMcpServer skeleton", () => {
     );
     expect(toolNames).not.toContain("harness.operation.confirm");
     expect(toolNames).not.toContain("harness.operation.reject");
-    // (#83) the bounded goal-loop driver is exposed as a mutation tool
-    expect(toolNames).toContain("harness.goal.orchestrate");
+    // (#83) the bounded hitch-loop driver is exposed as a mutation tool
+    expect(toolNames).toContain("harness.hitch.orchestrate");
+    // (SP-0) goal.* tools were renamed to hitch.*
+    expect(toolNames).toContain("harness.hitch.start");
+    expect(toolNames).not.toContain("harness.goal.start");
 
     const resources = await s.handleMessage({
       jsonrpc: "2.0",
@@ -72,6 +75,7 @@ describe("HarnessMcpServer skeleton", () => {
       method: "resources/templates/list",
     });
     expect(JSON.stringify(resources)).toContain("harness://run/{runId}");
+    expect(JSON.stringify(resources)).toContain("harness://hitch/{hitchId}");
 
     const prompts = await s.handleMessage({
       jsonrpc: "2.0",
@@ -79,6 +83,7 @@ describe("HarnessMcpServer skeleton", () => {
       method: "prompts/list",
     });
     expect(JSON.stringify(prompts)).toContain("harness.prompt.review_run");
+    expect(JSON.stringify(prompts)).toContain("harness.prompt.drive_hitch_convergence");
   });
 
   it("denies mutation by default and returns confirmation_required as non-error", async () => {
@@ -114,14 +119,14 @@ describe("HarnessMcpServer skeleton", () => {
       },
     });
 
-    // (#83) the goal-loop driver is a mutation: denied by default permissions
+    // (#83) the hitch-loop driver is a mutation: denied by default permissions
     const orchestrateDenied = await s.handleMessage({
       jsonrpc: "2.0",
       id: 9,
       method: "tools/call",
       params: {
-        name: "harness.goal.orchestrate",
-        arguments: { goalId: "goal-1", idempotencyKey: "k" },
+        name: "harness.hitch.orchestrate",
+        arguments: { hitchId: "hitch-1", idempotencyKey: "k" },
       },
     });
     expect(orchestrateDenied).toMatchObject({

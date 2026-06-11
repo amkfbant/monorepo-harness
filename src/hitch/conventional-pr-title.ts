@@ -10,7 +10,7 @@
  * traceability — `(#NN)` is avoided because GitHub would autolink it to an
  * unrelated issue.
  *
- * The goal title is operator/LLM-supplied (`harness.goal.start`), so it is
+ * The hitch title is operator/LLM-supplied (`harness.hitch.start`), so it is
  * sanitized before it reaches the squash commit subject (#103 review): only the
  * first line is used — a multi-line title would otherwise let body/footer
  * content (e.g. a `BREAKING CHANGE:` footer) drive release-please version bumps

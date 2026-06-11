@@ -162,7 +162,7 @@ function splitRecordedConvergence(
   return { convergence, decisionRecord, goalStatus };
 }
 
-export function goalListTool(
+export function hitchListTool(
   args: GoalListArgs,
   context: McpToolContext,
 ): HarnessMcpToolResult {
@@ -193,7 +193,7 @@ export function goalListTool(
   }) as HarnessMcpToolResult;
 }
 
-export function goalGetTool(
+export function hitchGetTool(
   args: GoalIdArgs,
   context: McpToolContext,
 ): HarnessMcpToolResult {
@@ -207,7 +207,7 @@ export function goalGetTool(
   }) as HarnessMcpToolResult;
 }
 
-export function goalStatusTool(
+export function hitchStatusTool(
   args: GoalIdArgs,
   context: McpToolContext,
 ): HarnessMcpToolResult {
@@ -230,7 +230,7 @@ export function goalStatusTool(
   }) as HarnessMcpToolResult;
 }
 
-export function goalFindingsTool(
+export function hitchFindingsTool(
   args: GoalIdArgs,
   context: McpToolContext,
 ): HarnessMcpToolResult {
@@ -249,7 +249,7 @@ export function goalFindingsTool(
   }) as HarnessMcpToolResult;
 }
 
-export function goalDecisionsTool(
+export function hitchDecisionsTool(
   args: GoalIdArgs,
   context: McpToolContext,
 ): HarnessMcpToolResult {
@@ -286,7 +286,7 @@ function deriveProjectIdFromRepo(
   return typeof result === "string" ? result : undefined;
 }
 
-export async function goalStartTool(
+export async function hitchStartTool(
   args: GoalStartArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
@@ -306,10 +306,10 @@ export async function goalStartTool(
   if (visible !== null) return visible;
   const hitchId = args.hitchId ?? goalIdForIdempotencyKey(args.idempotencyKey);
   return runGoalOperation(context, {
-    operationType: "goal.start",
+    operationType: "hitch.start",
     target: { type: "goal", id: hitchId },
     args,
-    metadata: goalMetadata(context, "harness.goal.start", args, { hitchId }),
+    metadata: goalMetadata(context, "harness.hitch.start", args, { hitchId }),
     workWithDb: async (db) => {
       const input: CreateHitchSessionInput = {
         hitchId,
@@ -342,7 +342,7 @@ export async function goalStartTool(
   });
 }
 
-export async function goalRecordFindingsTool(
+export async function hitchRecordFindingsTool(
   args: GoalRecordFindingsArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
@@ -353,10 +353,10 @@ export async function goalRecordFindingsTool(
     });
   }
   return runGoalOperation(context, {
-    operationType: "goal.record_findings",
+    operationType: "hitch.record_findings",
     target: { type: "goal", id: args.hitchId },
     args,
-    metadata: goalMetadata(context, "harness.goal.record_findings", args, {
+    metadata: goalMetadata(context, "harness.hitch.record_findings", args, {
       hitchId: args.hitchId,
     }),
     workWithDb: async (db, operationId) => {
@@ -450,15 +450,15 @@ export async function goalRecordFindingsTool(
   });
 }
 
-export async function goalClassifyFindingTool(
+export async function hitchClassifyFindingTool(
   args: GoalClassifyFindingArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   return runGoalOperation(context, {
-    operationType: "goal.classify_finding",
+    operationType: "hitch.classify_finding",
     target: { type: "goal_finding", id: args.findingId },
     args,
-    metadata: goalMetadata(context, "harness.goal.classify_finding", args, {
+    metadata: goalMetadata(context, "harness.hitch.classify_finding", args, {
       findingIds: [args.findingId],
     }),
     workWithDb: async (db) => {
@@ -486,15 +486,15 @@ export async function goalClassifyFindingTool(
   });
 }
 
-export async function goalMarkFindingFixedTool(
+export async function hitchMarkFindingFixedTool(
   args: GoalMarkFindingFixedArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   return runGoalOperation(context, {
-    operationType: "goal.mark_finding_fixed",
+    operationType: "hitch.mark_finding_fixed",
     target: { type: "goal_finding", id: args.findingId },
     args,
-    metadata: goalMetadata(context, "harness.goal.mark_finding_fixed", args, {
+    metadata: goalMetadata(context, "harness.hitch.mark_finding_fixed", args, {
       findingIds: [args.findingId],
     }),
     workWithDb: async (db) => {
@@ -520,22 +520,22 @@ export async function goalMarkFindingFixedTool(
   });
 }
 
-export async function goalDeferFindingTool(
+export async function hitchDeferFindingTool(
   args: GoalDeferFindingArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   if (args.createBacklogItem === true && !context.config.allowedOperations.includes("backlog.create")) {
-    return permissionDenied("goal.defer_finding cannot create backlog item: backlog.create is not allowed", {
+    return permissionDenied("hitch.defer_finding cannot create backlog item: backlog.create is not allowed", {
       operation: "backlog.create",
       reason: "operation_not_allowlisted",
     });
   }
   const paths = harnessPaths(context.harnessRoot);
   return runGoalOperation(context, {
-    operationType: "goal.defer_finding",
+    operationType: "hitch.defer_finding",
     target: { type: "goal_finding", id: args.findingId },
     args,
-    metadata: goalMetadata(context, "harness.goal.defer_finding", args, {
+    metadata: goalMetadata(context, "harness.hitch.defer_finding", args, {
       findingIds: [args.findingId],
     }),
     workWithDb: async (db) => {
@@ -568,15 +568,15 @@ export async function goalDeferFindingTool(
   });
 }
 
-export async function goalRecordCloseCheckTool(
+export async function hitchRecordCloseCheckTool(
   args: GoalRecordCloseCheckArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   return runGoalOperation(context, {
-    operationType: "goal.record_close_check",
+    operationType: "hitch.record_close_check",
     target: { type: "goal", id: args.hitchId },
     args,
-    metadata: goalMetadata(context, "harness.goal.record_close_check", args, {
+    metadata: goalMetadata(context, "harness.hitch.record_close_check", args, {
       hitchId: args.hitchId,
     }),
     workWithDb: async (db) => {
@@ -612,15 +612,15 @@ export async function goalRecordCloseCheckTool(
   });
 }
 
-export async function goalCheckConvergenceTool(
+export async function hitchCheckConvergenceTool(
   args: GoalCheckConvergenceArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   return runGoalOperation(context, {
-    operationType: "goal.check_convergence",
+    operationType: "hitch.check_convergence",
     target: { type: "goal", id: args.hitchId },
     args,
-    metadata: goalMetadata(context, "harness.goal.check_convergence", args, {
+    metadata: goalMetadata(context, "harness.hitch.check_convergence", args, {
       hitchId: args.hitchId,
     }),
     workWithDb: async (db) => {
@@ -647,7 +647,7 @@ export async function goalCheckConvergenceTool(
   });
 }
 
-export async function goalCloseTool(
+export async function hitchCloseTool(
   args: GoalCloseArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
@@ -660,7 +660,7 @@ export async function goalCloseTool(
   const requiresConfirmation = args.force === true || decision !== "close_ready";
   const confirmedOverrideClose = isConfirmed(context) && requiresConfirmation;
   if (requiresConfirmation && !isConfirmed(context)) {
-    return confirmationResult(context, "harness.goal.close", "goal.close", args, preview, {
+    return confirmationResult(context, "harness.hitch.close", "hitch.close", args, preview, {
       type: "goal",
       id: args.hitchId,
     });
@@ -670,10 +670,10 @@ export async function goalCloseTool(
     if (denied !== null) return denied;
   }
   return runGoalOperation(context, {
-    operationType: "goal.close",
+    operationType: "hitch.close",
     target: { type: "goal", id: args.hitchId },
     args,
-    metadata: goalMetadata(context, "harness.goal.close", args, {
+    metadata: goalMetadata(context, "harness.hitch.close", args, {
       hitchId: args.hitchId,
     }),
     workWithDb: async (db) => {
@@ -696,7 +696,7 @@ export async function goalCloseTool(
   });
 }
 
-export async function goalCancelTool(
+export async function hitchCancelTool(
   args: GoalCancelArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
@@ -705,16 +705,16 @@ export async function goalCancelTool(
     reason: redactMcpText(args.reason),
   });
   if (!isConfirmed(context)) {
-    return confirmationResult(context, "harness.goal.cancel", "goal.cancel", args, preview, {
+    return confirmationResult(context, "harness.hitch.cancel", "hitch.cancel", args, preview, {
       type: "goal",
       id: args.hitchId,
     });
   }
   return runGoalOperation(context, {
-    operationType: "goal.cancel",
+    operationType: "hitch.cancel",
     target: { type: "goal", id: args.hitchId },
     args,
-    metadata: goalMetadata(context, "harness.goal.cancel", args, {
+    metadata: goalMetadata(context, "harness.hitch.cancel", args, {
       hitchId: args.hitchId,
     }),
     workWithDb: async (db) =>
@@ -726,7 +726,7 @@ export async function goalCancelTool(
   });
 }
 
-export async function goalExpandScopeTool(
+export async function hitchExpandScopeTool(
   args: GoalExpandScopeArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
@@ -738,25 +738,25 @@ export async function goalExpandScopeTool(
   if (!isConfirmed(context)) {
     return confirmationResult(
       context,
-      "harness.goal.expand_scope",
-      "goal.expand_scope",
+      "harness.hitch.expand_scope",
+      "hitch.expand_scope",
       args,
       preview,
       { type: "goal", id: args.hitchId },
     );
   }
   return runGoalOperation(context, {
-    operationType: "goal.expand_scope",
+    operationType: "hitch.expand_scope",
     target: { type: "goal", id: args.hitchId },
     args,
-    metadata: goalMetadata(context, "harness.goal.expand_scope", args, {
+    metadata: goalMetadata(context, "harness.hitch.expand_scope", args, {
       hitchId: args.hitchId,
     }),
     workWithDb: async (db) => expandGoalScope(db, args),
   });
 }
 
-export function resolveGoalProjectId(
+export function resolveHitchProjectId(
   args: { hitchId?: string },
   context: McpToolContext,
 ): string | null | undefined {
@@ -773,7 +773,7 @@ export function resolveGoalProjectId(
   }) as string | null | undefined;
 }
 
-export function resolveGoalFindingProjectId(
+export function resolveHitchFindingProjectId(
   args: { findingId?: string },
   context: McpToolContext,
 ): string | null | undefined {
@@ -970,13 +970,13 @@ function ensureUnconfirmedGoalCloseAllowed(
 ): HarnessMcpToolResult | null {
   if (modeForClient(context.config, context.clientName) !== "guarded-mutation") {
     return permissionDenied("MCP permission denied: mutation_disabled_for_client", {
-      operation: "goal.close",
+      operation: "hitch.close",
       reason: "mutation_disabled_for_client",
     });
   }
-  if (!context.config.allowedOperations.includes("goal.close")) {
+  if (!context.config.allowedOperations.includes("hitch.close")) {
     return permissionDenied("MCP permission denied: operation_not_allowlisted", {
-      operation: "goal.close",
+      operation: "hitch.close",
       reason: "operation_not_allowlisted",
     });
   }

@@ -469,12 +469,12 @@ export async function orchestrateGoalTool(
   const maxSteps = Math.min(MAX_ORCHESTRATE_STEPS, Math.max(1, requested));
   const dbPath = harnessPaths(context.harnessRoot).dbPath;
   return runMcpOperation(context, {
-    operationType: "goal.orchestrate",
+    operationType: "hitch.orchestrate",
     target: { type: "goal", id: args.hitchId },
     idempotencyKey: args.idempotencyKey,
     input: { ...args, maxSteps },
-    metadata: operationMetadata(context, "harness.goal.orchestrate", args),
-    goalGate: { hitchId: args.hitchId, mutationKind: "goal.orchestrate" },
+    metadata: operationMetadata(context, "harness.hitch.orchestrate", args),
+    goalGate: { hitchId: args.hitchId, mutationKind: "hitch.orchestrate" },
     workWithDb: async (db) => {
       // Resolve the target repo SERVER-SIDE from the goal's own project/domain —
       // never a client-supplied path (safety boundary: MCP must not accept an
@@ -483,7 +483,7 @@ export async function orchestrateGoalTool(
       const session = new HitchRepository(db).requireSession(args.hitchId);
       if (session.projectId === null || session.domain === null) {
         throw new Error(
-          `goal ${args.hitchId} has no projectId/domain; harness.goal.orchestrate ` +
+          `goal ${args.hitchId} has no projectId/domain; harness.hitch.orchestrate ` +
             "only drives project-scoped goals",
         );
       }
