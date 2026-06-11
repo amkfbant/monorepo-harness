@@ -427,18 +427,19 @@ export function registerCourseCommands(
               );
             }
             const dbPath = harnessPaths(opts.getHarnessRoot()).dbPath;
+            const createdBy = `course-orchestrate:${course.courseId}`;
             const orchestrated = await createProductionCourseOrchestrator({
               db,
               dbPath,
               harnessRoot: opts.getHarnessRoot(),
               courseId: course.courseId,
               courseProjectId: course.projectId,
-              createdBy: "cli",
+              createdBy,
             }).run({
               courseId,
               maxDrivenHitches,
               maxStepsPerHitch,
-              createdBy: "cli",
+              createdBy,
             });
             succeedOperation(db, operationId, orchestrated);
             return orchestrated;

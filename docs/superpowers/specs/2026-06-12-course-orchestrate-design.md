@@ -44,7 +44,7 @@ SP-2 は SP-1 のモデルの上に **drive-only の bounded driver** を 1 階�
 3. **course-pass lease ＋ active ガード**。同一 course への並行 pass / 手動 hitch
    orchestrate と domain lock が衝突すると orchestrator の fail-closed catch が
    **偽 escalation** を記録する（`src/hitch/orchestrator.ts:123-148`）。pass 開始時に
-   `domain_locks` を `course-orchestrate:<courseId>` の domainKey で取得（schema 変更
+   `domain_locks` を `course:<courseId>` の domainKey で取得（schema 変更
    不要）。busy なら即 refuse。`course.status !== "active"` も即 refuse。
 4. **hard stop は「driver 例外 / budget 枯渇 / not-active・lease busy」のみ**。
    escalation は **subtree 隔離**で扱う。phase 間依存は data model に無い
@@ -113,7 +113,7 @@ escalation 系として報告する。
 
 ```
 1. course を require、status !== "active" → 即 error（course_not_active）
-2. domain_locks に lease 取得: domainKey = `course-orchestrate:<courseId>`。busy → 即 error
+2. domain_locks に lease 取得: domainKey = `course:<courseId>`。busy → 即 error
 3. rollupCourse 実行（tree 不整合は throw を継承して abort）
 4. tree pre-order walk。top-level subtree ごとに:
    a. 各 phase: live convergence を評価 → decideCoursePhaseAction
@@ -134,8 +134,8 @@ escalation 系として報告する。
 
 repo 解決は per-hitch に `prepareProjectRun(projectId, domain)`（MCP `hitch.orchestrate`
 と同方式、`src/mcp/tools/mutation-tools.ts:479-494`。client 供給 path を受けない安全
-境界を CLI でも踏襲）。projectId/domain が null の hitch は drive せず
-`context_unresolved` outcome（fail-closed、続行）。
+境界を CLI でも踏襲）。project/domain 解決失敗（null projectId/domain を含む）は
+pass abort（fail-closed）として operation failure に記録し、後続 hitch へ続行しない。
 
 ## 停止 / escalation 条件
 
@@ -144,8 +144,7 @@ repo 解決は per-hitch に `prepareProjectRun(projectId, domain)`（MCP `hitch
 - **subtree 隔離**（pass は止めない）: `blocked_hitch`（escalate/diverging/
   budget_exhausted/needs_classification、runner 例外由来の escalated 含む）→ 当該
   top-level subtree の残りを skip、次の subtree へ続行。
-- **報告のみ（止めない）**: `needs_link`（leaf）/ `ready_to_close` / `skip_blocked`
-  / `context_unresolved`。
+- **報告のみ（止めない）**: `needs_link`（leaf）/ `ready_to_close` / `skip_blocked`。
 
 ## 戻り値
 

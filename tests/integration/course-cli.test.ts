@@ -487,6 +487,16 @@ describe("course/phase CLI (SP-1)", () => {
       expect(JSON.parse(row?.result_json ?? "{}")).toMatchObject({
         stopReason: "budget_exhausted",
       });
+      const lease = db
+        .prepare(
+          "SELECT released_by FROM domain_locks WHERE domain_key = ? ORDER BY lock_id DESC LIMIT 1",
+        )
+        .get(`course:${course.courseId}`) as
+        | { released_by: string | null }
+        | undefined;
+      expect(lease?.released_by).toBe(
+        `course-orchestrate:${course.courseId}`,
+      );
     });
   });
 

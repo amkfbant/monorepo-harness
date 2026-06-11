@@ -2,6 +2,10 @@ import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { ConvergenceService } from "../hitch/convergence.js";
+import {
+  assertHitchCanStartMutation,
+  HitchMutationGateError,
+} from "../hitch/mutation-gate.js";
 import type { HitchOrchestrator } from "../hitch/orchestrator.js";
 import type {
   HitchOrchestrationResult,
@@ -70,6 +74,7 @@ interface WalkCourseOptions {
     createdBy: string;
   }) => Promise<DrivenHitch & { finalDecision: string }>;
   transitionPhaseStatus: boolean;
+  beforeDriveHitch?: () => void;
 }
 
 interface WalkCourseResult {
@@ -140,7 +145,7 @@ export class CourseOrchestrator {
 
     let releaseReason = "aborted";
     try {
-      const result = await this.runWithLease(normalizedInput);
+      const result = await this.runWithLease(normalizedInput, lease);
       releaseReason =
         result.stopReason === "budget_exhausted"
           ? "budget_exhausted"
@@ -156,9 +161,11 @@ export class CourseOrchestrator {
 
   private async runWithLease(
     input: RunCourseOrchestrationInput,
+    lease: DomainLockHandle,
   ): Promise<CourseOrchestrationResult> {
     const result = await this.walkCourse(input, {
       transitionPhaseStatus: true,
+      beforeDriveHitch: () => lease.heartbeat(),
       driveHitch: async ({ hitchId, maxStepsPerHitch, createdBy }) => {
         const runners = await this.deps.makeRunners(hitchId);
         const hitchResult = await this.deps.makeHitchOrchestrator(hitchId).run({
@@ -217,6 +224,7 @@ export class CourseOrchestrator {
       }
 
       const phaseDriven: DrivenHitch[] = [];
+      let reportOnly = false;
       for (let j = 0; j < action.hitchIds.length; j++) {
         if (drivenHitches.length >= input.maxDrivenHitches) {
           phaseOutcomes.push({
@@ -276,6 +284,28 @@ export class CourseOrchestrator {
         }
 
         const hitchId = action.hitchIds[j]!;
+        if (options.driveHitch !== undefined) {
+          options.beforeDriveHitch?.();
+          const gate = this.checkDriveGate(hitches, convergence, hitchId);
+          if (gate.kind === "blocked_hitch") {
+            phaseOutcomes.push({
+              phaseId: phase.phaseId,
+              action: "blocked_hitch",
+              drivenHitches: phaseDriven,
+              blockedHitch: {
+                hitchId,
+                decision: gate.decision,
+              },
+            });
+            subtreeBlocked = true;
+            break;
+          }
+          if (gate.kind === "report_only") {
+            reportOnly = true;
+            continue;
+          }
+        }
+
         const driven =
           options.driveHitch === undefined
             ? {
@@ -319,8 +349,9 @@ export class CourseOrchestrator {
       if (!subtreeBlocked && !hasOutcomeFor(phaseOutcomes, phase.phaseId)) {
         phaseOutcomes.push({
           phaseId: phase.phaseId,
-          action: "drive",
+          action: phaseDriven.length === 0 && reportOnly ? "report_only" : "drive",
           drivenHitches: phaseDriven,
+          ...(reportOnly ? { note: "report_only" } : {}),
         });
       }
     }
@@ -348,6 +379,36 @@ export class CourseOrchestrator {
       derivedOpenP0: phase.derivedOpenP0,
       derivedOpenP1: phase.derivedOpenP1,
     });
+  }
+
+  private checkDriveGate(
+    hitches: HitchRepository,
+    convergence: ConvergenceService,
+    hitchId: string,
+  ):
+    | { kind: "drive" }
+    | { kind: "blocked_hitch"; decision: string }
+    | { kind: "report_only" } {
+    try {
+      assertHitchCanStartMutation({
+        repository: hitches,
+        hitchId,
+        mutationKind: "hitch.orchestrate",
+      });
+      return { kind: "drive" };
+    } catch (e) {
+      if (!(e instanceof HitchMutationGateError)) throw e;
+      const reevaluated = convergence.evaluate(hitchId);
+      if (
+        reevaluated.decision === "escalate" ||
+        reevaluated.decision === "diverging" ||
+        reevaluated.decision === "budget_exhausted" ||
+        reevaluated.decision === "needs_classification"
+      ) {
+        return { kind: "blocked_hitch", decision: reevaluated.decision };
+      }
+      return { kind: "report_only" };
+    }
   }
 
   private recordNotDriven(

@@ -1,6 +1,7 @@
 import { hostname } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 import Database from "better-sqlite3";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runMigrations } from "../../src/db/migrations.js";
 import type { RunOrchestrationInput } from "../../src/hitch/orchestrator.js";
 import { HitchRepository } from "../../src/hitch/repository.js";
@@ -17,8 +18,36 @@ import { CourseRepository } from "../../src/roadmap/course-repository.js";
 import { PhaseRepository } from "../../src/roadmap/phase-repository.js";
 import {
   acquireDomainLock,
+  type AcquireDomainLockOpts,
+  DomainLockBusyError,
+  type DomainLockHandle,
   findActiveDomainLock,
+  LeaseLostError,
 } from "../../src/workspace/db-domain-lock.js";
+
+const domainLockHook = vi.hoisted(
+  (): {
+    wrapAcquire?: (
+      handle: DomainLockHandle,
+      opts: AcquireDomainLockOpts,
+    ) => DomainLockHandle;
+  } => ({}),
+);
+
+vi.mock("../../src/workspace/db-domain-lock.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../src/workspace/db-domain-lock.js")>();
+  return {
+    ...actual,
+    acquireDomainLock: ((
+      db: Parameters<typeof actual.acquireDomainLock>[0],
+      opts: Parameters<typeof actual.acquireDomainLock>[1],
+    ) => {
+      const handle = actual.acquireDomainLock(db, opts);
+      return domainLockHook.wrapAcquire?.(handle, opts) ?? handle;
+    }) satisfies typeof actual.acquireDomainLock,
+  };
+});
 
 function fakeRunners(): OrchestratorRunners {
   return {
@@ -132,6 +161,7 @@ describe("CourseOrchestrator", () => {
   let db: Database.Database;
 
   beforeEach(() => {
+    domainLockHook.wrapAcquire = undefined;
     db = new Database(":memory:");
     db.pragma("foreign_keys = ON");
     runMigrations(db);
@@ -180,6 +210,139 @@ describe("CourseOrchestrator", () => {
     } finally {
       lock.release({ reason: "test-cleanup", releasedBy: "test" });
     }
+  });
+
+  it("heartbeats the course lease before each hitch drive", async () => {
+    const previousLeaseMs = process.env.HARNESS_LOCK_LEASE_MS;
+    process.env.HARNESS_LOCK_LEASE_MS = "10";
+    try {
+      const courseId = newCourse(db, "course-heartbeat");
+      const phases = new PhaseRepository(db);
+      const p1 = phases.add({ courseId, phaseId: "phase-heartbeat-one", title: "One", position: 1, createdBy: "test", createdSource: "cli" });
+      const p2 = phases.add({ courseId, phaseId: "phase-heartbeat-two", title: "Two", position: 2, createdBy: "test", createdSource: "cli" });
+      seedDrivableHitch(db, "h-heartbeat-one");
+      seedDrivableHitch(db, "h-heartbeat-two");
+      phases.linkHitch(p1.phaseId, "h-heartbeat-one");
+      phases.linkHitch(p2.phaseId, "h-heartbeat-two");
+      const calls: string[] = [];
+
+      await makeOrchestrator(db, {}, calls, [], async (hitchId) => {
+        if (hitchId === "h-heartbeat-one") {
+          await delay(25);
+          return;
+        }
+        expect(() =>
+          acquireDomainLock(db, {
+            domainKey: `course:${courseId}`,
+            repoId: "repo-demo",
+            domain: "course-orchestrate",
+            runId: "contender",
+            pid: process.pid,
+            hostname: hostname(),
+          }),
+        ).toThrow(DomainLockBusyError);
+      }).run({
+        courseId,
+        maxDrivenHitches: 2,
+        maxStepsPerHitch: 2,
+        createdBy: "test",
+      });
+
+      expect(calls).toEqual(["h-heartbeat-one", "h-heartbeat-two"]);
+    } finally {
+      if (previousLeaseMs === undefined) delete process.env.HARNESS_LOCK_LEASE_MS;
+      else process.env.HARNESS_LOCK_LEASE_MS = previousLeaseMs;
+    }
+  });
+
+  it("aborts fail-closed when the course lease heartbeat reports LeaseLostError", async () => {
+    const courseId = newCourse(db, "course-lease-lost");
+    const domainKey = `course:${courseId}`;
+    const phases = new PhaseRepository(db);
+    const p1 = phases.add({ courseId, phaseId: "phase-lease-lost-one", title: "One", position: 1, createdBy: "test", createdSource: "cli" });
+    const p2 = phases.add({ courseId, phaseId: "phase-lease-lost-two", title: "Two", position: 2, createdBy: "test", createdSource: "cli" });
+    seedDrivableHitch(db, "h-lease-lost-one");
+    seedDrivableHitch(db, "h-lease-lost-two");
+    phases.linkHitch(p1.phaseId, "h-lease-lost-one");
+    phases.linkHitch(p2.phaseId, "h-lease-lost-two");
+    const calls: string[] = [];
+    let heartbeatCalls = 0;
+    let releaseCalls = 0;
+    let releaseReason: string | undefined;
+
+    domainLockHook.wrapAcquire = (handle, opts) => {
+      if (opts.domainKey !== domainKey) return handle;
+      return {
+        ...handle,
+        heartbeat(now?: Date): void {
+          heartbeatCalls += 1;
+          if (heartbeatCalls === 2) {
+            throw new LeaseLostError(opts.domainKey, handle.lockId);
+          }
+          handle.heartbeat(now);
+        },
+        release(rel?: { reason?: string; releasedBy?: string }, now?: Date): void {
+          releaseCalls += 1;
+          releaseReason = rel?.reason;
+          handle.release(rel, now);
+        },
+      };
+    };
+
+    await expect(
+      makeOrchestrator(db, {}, calls).run({
+        courseId,
+        maxDrivenHitches: 3,
+        maxStepsPerHitch: 2,
+        createdBy: "test",
+      }),
+    ).rejects.toBeInstanceOf(LeaseLostError);
+
+    expect(calls).toEqual(["h-lease-lost-one"]);
+    expect(heartbeatCalls).toBe(2);
+    expect(releaseCalls).toBe(1);
+    expect(releaseReason).toBe("aborted");
+    expect(findActiveDomainLock(db, domainKey)).toBeNull();
+    expect(latestReleaseReason(db, courseId)).toBe("aborted");
+  });
+
+  it("rechecks the hitch mutation gate immediately before driving", async () => {
+    const courseId = newCourse(db, "course-gate-drift");
+    const phases = new PhaseRepository(db);
+    const phase = phases.add({ courseId, phaseId: "phase-gate-drift", title: "Drift", position: 1, createdBy: "test", createdSource: "cli" });
+    seedDrivableHitch(db, "h-gate-drift");
+    phases.linkHitch(phase.phaseId, "h-gate-drift");
+    db.prepare(
+      `CREATE TRIGGER drift_hitch_before_course_drive
+         AFTER UPDATE OF status ON phases
+         WHEN NEW.phase_id = 'phase-gate-drift' AND NEW.status = 'in_progress'
+       BEGIN
+         UPDATE hitch_findings
+            SET scope_status = 'unknown'
+          WHERE hitch_id = 'h-gate-drift';
+       END`,
+    ).run();
+    const calls: string[] = [];
+
+    const result = await makeOrchestrator(db, {}, calls).run({
+      courseId,
+      maxDrivenHitches: 3,
+      maxStepsPerHitch: 2,
+      createdBy: "test",
+    });
+
+    expect(calls).toEqual([]);
+    expect(result.phaseOutcomes).toContainEqual(
+      expect.objectContaining({
+        phaseId: "phase-gate-drift",
+        action: "blocked_hitch",
+        blockedHitch: {
+          hitchId: "h-gate-drift",
+          decision: "needs_classification",
+        },
+      }),
+    );
+    expect(result.drivenHitches).toEqual([]);
   });
 
   it("isolates an escalated top-level subtree and continues the next subtree", async () => {
@@ -389,6 +552,29 @@ describe("CourseOrchestrator", () => {
     expect(cappedRunInputs.map((input) => input.maxSteps)).toEqual(
       Array(10).fill(50),
     );
+  });
+
+  it("passes course-createdBy lineage through to hitch orchestrator runs", async () => {
+    const courseId = newCourse(db, "course-created-by-lineage");
+    const phases = new PhaseRepository(db);
+    const phase = phases.add({ courseId, phaseId: "phase-created-by-lineage", title: "Lineage", position: 1, createdBy: "test", createdSource: "cli" });
+    seedDrivableHitch(db, "h-created-by-lineage");
+    phases.linkHitch(phase.phaseId, "h-created-by-lineage");
+    const runInputs: RunOrchestrationInput[] = [];
+    const createdBy = `course-orchestrate:${courseId}`;
+
+    await makeOrchestrator(db, {}, [], runInputs).run({
+      courseId,
+      maxDrivenHitches: 3,
+      maxStepsPerHitch: 2,
+      createdBy,
+    });
+
+    expect(runInputs).toHaveLength(1);
+    expect(runInputs[0]).toMatchObject({
+      hitchId: "h-created-by-lineage",
+      createdBy,
+    });
   });
 
   it("does not include closed hitches in ready phase follow-ups", async () => {

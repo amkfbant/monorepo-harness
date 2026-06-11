@@ -448,7 +448,8 @@ export async function courseOrchestrateTool(
     ),
     workWithDb: async (db) => {
       const course = new CourseRepository(db).require(args.courseId);
-      const createdBy = `mcp:${context.clientName}`;
+      const createdBy =
+        `mcp:${context.clientName}:course-orchestrate:${course.courseId}`;
       return createProductionCourseOrchestrator({
         db,
         dbPath,
