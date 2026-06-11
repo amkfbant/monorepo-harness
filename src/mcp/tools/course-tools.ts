@@ -226,6 +226,24 @@ function visibleToRestrictedClient(
   );
 }
 
+// course.create has no existing resource to resolve a project from — it takes the
+// project from args. A restricted client that OMITS projectId is attempting a
+// null-project (cross-project roadmap) create, which is operator-only and rejected
+// fail-closed by courseCreateTool. Without this, projectIdFromArgs would yield
+// undefined → isProjectAllowed treats it as project-agnostic (allowed) → under
+// requireConfirmation the server enqueues an unactionable confirmation before the
+// handler rejects. Return the unresolved sentinel for a restricted client's
+// null-project create so decideMcpPermission denies at the permission layer.
+export function resolveCourseCreateProjectId(
+  args: { projectId?: string },
+  context: McpToolContext,
+): string | null | undefined {
+  if (args.projectId !== undefined) return args.projectId;
+  return context.config.allowedProjects.length > 0
+    ? "__mcp_unresolved_course_project__"
+    : undefined;
+}
+
 export function resolvePhaseAddProjectId(
   args: { courseId?: string; parentPhaseId?: string },
   context: McpToolContext,

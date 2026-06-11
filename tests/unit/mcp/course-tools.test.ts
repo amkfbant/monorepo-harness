@@ -449,6 +449,46 @@ describe("MCP course-tools confirmation-path secondary-resource gate (P2)", () =
     });
   });
 
+  it("course.create under requireConfirmation denies a restricted client's null-project create before any confirmation record", async () => {
+    const root = freshRoot();
+    const s = server(root, {
+      ...mutationConfig(["course.create"]),
+      requireConfirmation: ["course.create"],
+    });
+    // Restricted client (allowedProjects ["demo"]) OMITS projectId → null-project create.
+    const result = await callTool(s, "harness.course.create", {
+      title: "Cross-project roadmap",
+      idempotencyKey: "confirm-null-project",
+    });
+
+    // Fail-closed at the permission layer — NOT confirmation_required.
+    expect(result.status).toBe("permission_denied");
+
+    withDb(root, (db) => {
+      const enqueued = db
+        .prepare("SELECT COUNT(*) AS n FROM mcp_confirmation_requests")
+        .get() as { n: number };
+      expect(enqueued.n).toBe(0);
+    });
+  });
+
+  it("course.create under requireConfirmation still confirms an operator's null-project create", async () => {
+    const root = freshRoot();
+    // Unrestricted operator (allowedProjects []) may create a null-project course.
+    const s = server(root, {
+      ...DEFAULT_MCP_CONFIG,
+      defaultMode: "guarded-mutation",
+      allowedProjects: [],
+      allowedOperations: ["course.create"],
+      requireConfirmation: ["course.create"],
+    });
+    const result = await callTool(s, "harness.course.create", {
+      title: "Operator roadmap",
+      idempotencyKey: "confirm-operator-null",
+    });
+    expect(result.status).toBe("confirmation_required");
+  });
+
   it("phase.link_hitch under requireConfirmation still reaches confirmation for an IN-scope hitch", async () => {
     const root = freshRoot();
     let phaseId = "";

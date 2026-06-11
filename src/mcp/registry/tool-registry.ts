@@ -120,6 +120,7 @@ import {
   phaseLinkHitchTool,
   phaseUpdateTool,
   resolveCourseProjectId,
+  resolveCourseCreateProjectId,
   resolvePhaseProjectId,
   resolvePhaseAddProjectId,
   resolvePhaseLinkHitchProjectId,
@@ -1932,7 +1933,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       })
       .merge(MutationArgsBaseSchema)
       .strict(),
-    projectIdFromArgs: (args) => args.projectId,
+    resolveProjectIdForPermission: resolveCourseCreateProjectId,
     inputSchema: objectSchema(
       {
         title: { type: "string" },
