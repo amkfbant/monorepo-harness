@@ -653,3 +653,12 @@ budget 延長）** が救済になる。follow-up: rerun budget は尽きたが 
 action 層は既存 `policy snapshot`/`export` 同様に手動動作確認に委ねている（network fetch / project
 profile + templatesDir のフル setup が必要で hermetic test が重い）。follow-up: `loadProjectById` を
 fake した薄い action-level test で配線退行を防ぐ。本 Phase のブロッカーにはしない。
+
+## onboard ウィザードの DX 改善（#92 大レビュー P2/P3・非ブロッカー）
+
+`harness onboard`（#92）の大 Phase レビューで非ブロッカーとして残った改善（いずれも fail-closed 方向 or nit）:
+- **P2-2**: run/probe の例外がステップ文脈なしに漏れる（既存 policy ファイル clash の `ProjectError`・不正 mcp.yaml の zod throw 等）。exit 1 で fail-closed だが、failing step + remediation を付けて握ると親切。
+- **P2-3**: blocked 時に原因/remediation を表示していない（repo 不在で「✗ Preflight: blocked」のみ）。
+- **P2-5**: `dbStep` の probe が profile の `source_sha256` 照合でなく projects row 存在のみ。profile を編集後 resume すると stale 登録のまま skip しうる。
+- **P3**: serve smoke が `clients[0]` + `goal.start` 固定（opt-in client が先頭でない/`run.start` のみだと smoke の意味が薄い）／preflight が gh の「未インストール」と「未認証」を混同／`readlinePrompts.select` は不正入力で黙って先頭 fallback（かつ未使用）／merge rewrite で YAML コメント・`version`/`mcp` 以外の top-level キーが消える（schema が strip するので実害小）。
+follow-up: onboard の対話 UX を磨く際にまとめて対応。本 feature のブロッカーではない。
