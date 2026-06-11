@@ -88,7 +88,7 @@ probe 失敗は block しない（既知の symlink-EPERM に限定した早期�
   拒否・path 重複は拒否）。手動 `git worktree add` を後付け追跡する入口。
 - **checkpoint**: advisory narrative ＋ その時点の決定論スナップショット（HEAD sha /
   dirty 数）を append-only に保存。`--hitch` で advisory hitch link、`--objective` で目的設定。
-- **status**: 全 workspace の進捗を決定論ラベル（`stale` / `goal-missing` / `blocked` /
+- **status**: 全 workspace の進捗を決定論ラベル（`stale` / `hitch-missing` / `blocked` /
   `needs-work` / `ready-to-close` / `in-progress` / `dirty` / `base-unknown` / `ahead` /
   `behind` / `clean`）で一覧。**heartbeat staleness**（`--stale-after` 既定 24h）で放置
   agent を `⚠idle` 検出。

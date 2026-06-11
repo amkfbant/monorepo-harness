@@ -94,6 +94,16 @@ the recommended deployment path for shared agent access.
 An explicit `--config <path>` is fail-closed: if the file does not exist, the
 server/CLI exits nonzero instead of falling back to broader defaults.
 
+**Stale-rename detection (fail-closed)**: loading a `.harness/mcp.yaml` (or a
+`projects/*.yaml` `mcp:` section) whose `allowedOperations` / `requireConfirmation`
+/ `deniedOperations` still contain a renamed `goal.*` operation (the feature was
+renamed `goal`→`hitch` in SP-0) is **refused** with `McpConfigError`. This stops
+a stale `requireConfirmation: [goal.close, …]` from silently leaving the renamed
+`hitch.close`/`cancel`/`expand_scope` unconfirmed (gate fails open). The snapshot
+parser used to re-verify past confirmation records is exempt, so pre-rename
+pending confirmations still resolve. Operators must update `goal.*` → `hitch.*` in
+their live config.
+
 **`harness onboard` による `.harness/mcp.yaml` の生成**: 新しい target repo をオンボードする
 際は `harness onboard --repo <path> --project-id <id>` が `.harness/mcp.yaml` の生成または
 merge を自動で行う。mutation は **deny-all がデフォルト**。opt-in すると `guarded-mutation`
@@ -611,7 +621,7 @@ Input:
   "projectId": "mini-commerce",
   "domain": "catalog",
   "goal": "Add product search filter",
-  "hitchId": "goal-...",
+  "hitchId": "hitch-...",
   "idempotencyKey": "uuid"
 }
 ```
@@ -629,7 +639,7 @@ Input:
 ```json
 {
   "runId": "run-...",
-  "hitchId": "goal-...",
+  "hitchId": "hitch-...",
   "reviewer": "codex-reviewer",
   "idempotencyKey": "uuid"
 }
@@ -648,7 +658,7 @@ Input:
 ```json
 {
   "runId": "run-...",
-  "hitchId": "goal-...",
+  "hitchId": "hitch-...",
   "idempotencyKey": "uuid"
 }
 ```
@@ -663,7 +673,7 @@ Input:
 ```json
 {
   "runId": "run-...",
-  "hitchId": "goal-...",
+  "hitchId": "hitch-...",
   "decision": "approved",
   "proposalId": 123,
   "sourceSha256": "...",

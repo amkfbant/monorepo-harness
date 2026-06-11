@@ -262,7 +262,7 @@ App / Copilot）が実バグを拾う価値が高く、(b) それを取りこぼ
      `PRAGMA foreign_key_check` で整合を assert して fail-closed）。`writable_schema` で
      sqlite_master の CHECK 文字列を直接書き換える手は cascade を避けられるが SQLite が
      非推奨で corruption リスク・review で落ちるため**不採用**。consumer（v17）と同時に出す。
-     配線側は: `GOAL_STATUSES`/`SCHEMA_VERSION` 追加、`orchestrator-runners.ts:581-590` の
+     配線側は: `HITCH_STATUSES`/`SCHEMA_VERSION` 追加、`orchestrator-runners.ts:581-590` の
      recheckable 時 status を `close_ready`→`awaiting_checks`、`convergence-status.ts` の
      close_ready reversion（`:110`）を `awaiting_checks` にも適用、close_ready 決定時に現在
      `awaiting_checks` なら据え置く分岐。dispatch は decision 駆動なので不要。**migration の
@@ -662,3 +662,11 @@ fake した薄い action-level test で配線退行を防ぐ。本 Phase のブ�
 - **P2-5**: `dbStep` の probe が profile の `source_sha256` 照合でなく projects row 存在のみ。profile を編集後 resume すると stale 登録のまま skip しうる。
 - **P3**: serve smoke が `clients[0]` + `hitch.start` 固定（opt-in client が先頭でない/`run.start` のみだと smoke の意味が薄い）／preflight が gh の「未インストール」と「未認証」を混同／`readlinePrompts.select` は不正入力で黙って先頭 fallback（かつ未使用）／merge rewrite で YAML コメント・`version`/`mcp` 以外の top-level キーが消える（schema が strip するので実害小）。
 follow-up: onboard の対話 UX を磨く際にまとめて対応。本 feature のブロッカーではない。
+
+## `harness goal` erroring stub の削除（SP-0 rename follow-up）
+
+goal→hitch リネーム（SP-0）で `harness goal` は「→ `harness hitch` を使え」と案内して exit 1
+する **erroring stub**（`src/cli/run.ts`）に置き換えた。これは muscle-memory / 自動化の
+discoverability のための**1 リリース限りの暫定措置**。次のリリースサイクルでこの stub を
+削除する（その時点で `harness goal` は commander の unknown-command エラーになる）。MCP 側は
+最初から stub を置かない（`harness.goal.*` は unknown-tool で落ちる・非対称は意図的）。
