@@ -622,19 +622,19 @@ function define(
 
 const projectIdJson = { type: "string", description: "Project id" };
 const runIdJson = { type: "string", description: "Run id" };
-const goalIdJson = { type: "string", description: "Goal id" };
+const hitchIdJson = { type: "string", description: "Hitch id" };
 const idempotencyJson = {
   type: "string",
   description: "Required idempotency key for mutation tools",
 };
-const goalScopeJson = {
+const hitchScopeJson = {
   type: "object",
-  description: "Goal scope object",
+  description: "Hitch scope object",
   additionalProperties: true,
 };
-const goalFindingJson = {
+const hitchFindingJson = {
   type: "object",
-  description: "Goal finding input",
+  description: "Hitch finding input",
   additionalProperties: true,
 };
 
@@ -1139,8 +1139,8 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   }),
   define({
     name: "harness.hitch.list",
-    title: "List goals",
-    description: "List goal convergence sessions.",
+    title: "List hitches",
+    description: "List hitch convergence sessions.",
     kind: "read",
     operation: "hitch.list",
     argsSchema: goalListArgs,
@@ -1156,46 +1156,46 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   }),
   define({
     name: "harness.hitch.get",
-    title: "Get goal",
-    description: "Read one goal session.",
+    title: "Get hitch",
+    description: "Read one hitch session.",
     kind: "read",
     operation: "hitch.get",
     argsSchema: goalGetArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
-    inputSchema: objectSchema({ hitchId: goalIdJson }, ["hitchId"]),
+    inputSchema: objectSchema({ hitchId: hitchIdJson }, ["hitchId"]),
     handler: hitchGetTool,
   }),
   define({
     name: "harness.hitch.status",
-    title: "Goal status",
-    description: "Read a goal, findings, decisions, and current convergence.",
+    title: "Hitch status",
+    description: "Read a hitch, findings, decisions, and current convergence.",
     kind: "read",
     operation: "hitch.status",
     argsSchema: goalGetArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
-    inputSchema: objectSchema({ hitchId: goalIdJson }, ["hitchId"]),
+    inputSchema: objectSchema({ hitchId: hitchIdJson }, ["hitchId"]),
     handler: hitchStatusTool,
   }),
   define({
     name: "harness.hitch.findings",
-    title: "Goal findings",
-    description: "List findings for a goal.",
+    title: "Hitch findings",
+    description: "List findings for a hitch.",
     kind: "read",
     operation: "hitch.findings",
     argsSchema: goalGetArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
-    inputSchema: objectSchema({ hitchId: goalIdJson }, ["hitchId"]),
+    inputSchema: objectSchema({ hitchId: hitchIdJson }, ["hitchId"]),
     handler: hitchFindingsTool,
   }),
   define({
     name: "harness.hitch.decisions",
-    title: "Goal decisions",
-    description: "List recorded convergence decisions for a goal.",
+    title: "Hitch decisions",
+    description: "List recorded convergence decisions for a hitch.",
     kind: "read",
     operation: "hitch.decisions",
     argsSchema: goalGetArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
-    inputSchema: objectSchema({ hitchId: goalIdJson }, ["hitchId"]),
+    inputSchema: objectSchema({ hitchId: hitchIdJson }, ["hitchId"]),
     handler: hitchDecisionsTool,
   }),
   define({
@@ -1307,7 +1307,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
         projectId: projectIdJson,
         domain: { type: "string" },
         goal: { type: "string" },
-        hitchId: goalIdJson,
+        hitchId: hitchIdJson,
         contextPack: { type: "string" },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
@@ -1327,7 +1327,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     inputSchema: objectSchema(
       {
         runId: runIdJson,
-        hitchId: goalIdJson,
+        hitchId: hitchIdJson,
         reviewer: { type: "string" },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
@@ -1347,7 +1347,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     inputSchema: objectSchema(
       {
         runId: runIdJson,
-        hitchId: goalIdJson,
+        hitchId: hitchIdJson,
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
       },
@@ -1357,9 +1357,9 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   }),
   define({
     name: "harness.hitch.orchestrate",
-    title: "Drive goal loop",
+    title: "Drive hitch loop",
     description:
-      "Advance a goal a bounded number of orchestrator steps (coder rerun -> " +
+      "Advance a hitch a bounded number of orchestrator steps (coder rerun -> " +
       "review -> convergence), halting at close_ready WITHOUT opening a PR.",
     kind: "mutation",
     operation: "hitch.orchestrate",
@@ -1367,7 +1367,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema(
       {
-        hitchId: goalIdJson,
+        hitchId: hitchIdJson,
         maxSteps: {
           type: "number",
           description: "Max orchestrator steps to run (1-50, default 20)",
@@ -1445,22 +1445,22 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   }),
   define({
     name: "harness.hitch.start",
-    title: "Start goal",
-    description: "Create a goal convergence session through OperationRunner.",
+    title: "Start hitch",
+    description: "Create a hitch convergence session through OperationRunner.",
     kind: "mutation",
     operation: "hitch.start",
     argsSchema: goalStartArgs,
     projectIdFromArgs: (args) => args.projectId,
     inputSchema: objectSchema(
       {
-        hitchId: goalIdJson,
+        hitchId: hitchIdJson,
         title: { type: "string" },
         description: { type: "string" },
         projectId: projectIdJson,
         repoId: { type: "string" },
         domain: { type: "string" },
         backlogItemId: { type: "string" },
-        scope: goalScopeJson,
+        scope: hitchScopeJson,
         closeConditions: { type: "array", items: { type: "object" } },
         policy: { type: "object", additionalProperties: true },
         maxIterations: { type: "number" },
@@ -1476,16 +1476,16 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   }),
   define({
     name: "harness.hitch.record_findings",
-    title: "Record goal findings",
-    description: "Record review/test/human findings for a goal.",
+    title: "Record hitch findings",
+    description: "Record review/test/human findings for a hitch.",
     kind: "mutation",
     operation: "hitch.record_findings",
     argsSchema: goalRecordFindingsArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema(
       {
-        hitchId: goalIdJson,
-        findings: { type: "array", items: goalFindingJson },
+        hitchId: hitchIdJson,
+        findings: { type: "array", items: hitchFindingJson },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
       },
@@ -1495,8 +1495,8 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   }),
   define({
     name: "harness.hitch.classify_finding",
-    title: "Classify goal finding",
-    description: "Manually classify a goal finding.",
+    title: "Classify hitch finding",
+    description: "Manually classify a hitch finding.",
     kind: "mutation",
     operation: "hitch.classify_finding",
     argsSchema: goalClassifyFindingArgs,
@@ -1516,8 +1516,8 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   }),
   define({
     name: "harness.hitch.mark_finding_fixed",
-    title: "Mark goal finding fixed",
-    description: "Mark a goal finding as fixed.",
+    title: "Mark hitch finding fixed",
+    description: "Mark a hitch finding as fixed.",
     kind: "mutation",
     operation: "hitch.mark_finding_fixed",
     argsSchema: goalFindingMutationArgs,
@@ -1535,7 +1535,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   }),
   define({
     name: "harness.hitch.defer_finding",
-    title: "Defer goal finding",
+    title: "Defer hitch finding",
     description: "Defer an out-of-scope finding, optionally creating a backlog follow-up.",
     kind: "mutation",
     operation: "hitch.defer_finding",
@@ -1555,15 +1555,15 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   }),
   define({
     name: "harness.hitch.record_close_check",
-    title: "Record goal close check",
-    description: "Record close-check evidence for a goal.",
+    title: "Record hitch close check",
+    description: "Record close-check evidence for a hitch.",
     kind: "mutation",
     operation: "hitch.record_close_check",
     argsSchema: goalRecordCloseCheckArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema(
       {
-        hitchId: goalIdJson,
+        hitchId: hitchIdJson,
         conditionId: { type: "string" },
         status: enumSchema(HITCH_CLOSE_CHECK_STATUSES),
         checkedBy: { type: "string" },
@@ -1578,15 +1578,15 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   }),
   define({
     name: "harness.hitch.check_convergence",
-    title: "Check goal convergence",
-    description: "Evaluate and record goal convergence.",
+    title: "Check hitch convergence",
+    description: "Evaluate and record hitch convergence.",
     kind: "mutation",
     operation: "hitch.check_convergence",
     argsSchema: goalCheckConvergenceArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema(
       {
-        hitchId: goalIdJson,
+        hitchId: hitchIdJson,
         updateStatus: { type: "boolean" },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
@@ -1644,7 +1644,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     inputSchema: objectSchema(
       {
         runId: runIdJson,
-        hitchId: goalIdJson,
+        hitchId: hitchIdJson,
         decision: enumSchema(["approved", "changes_requested", "rejected"]),
         proposalId: { type: "number" },
         sourceSha256: { type: "string" },
@@ -1685,15 +1685,15 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   }),
   define({
     name: "harness.hitch.close",
-    title: "Close goal",
-    description: "Close a goal. Confirmation is required unless it is close_ready.",
+    title: "Close hitch",
+    description: "Close a hitch. Confirmation is required unless it is close_ready.",
     kind: "dangerous",
     operation: "hitch.close",
     argsSchema: goalCloseArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema(
       {
-        hitchId: goalIdJson,
+        hitchId: hitchIdJson,
         summary: { type: "string" },
         force: { type: "boolean" },
         idempotencyKey: idempotencyJson,
@@ -1705,15 +1705,15 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   }),
   define({
     name: "harness.hitch.cancel",
-    title: "Cancel goal",
-    description: "Cancel a goal after confirmation.",
+    title: "Cancel hitch",
+    description: "Cancel a hitch after confirmation.",
     kind: "dangerous",
     operation: "hitch.cancel",
     argsSchema: goalCancelArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema(
       {
-        hitchId: goalIdJson,
+        hitchId: hitchIdJson,
         reason: { type: "string" },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
@@ -1724,16 +1724,16 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
   }),
   define({
     name: "harness.hitch.expand_scope",
-    title: "Expand goal scope",
-    description: "Expand a goal scope after confirmation.",
+    title: "Expand hitch scope",
+    description: "Expand a hitch scope after confirmation.",
     kind: "dangerous",
     operation: "hitch.expand_scope",
     argsSchema: goalExpandScopeArgs,
     resolveProjectIdForPermission: resolveHitchProjectId,
     inputSchema: objectSchema(
       {
-        hitchId: goalIdJson,
-        scope: goalScopeJson,
+        hitchId: hitchIdJson,
+        scope: hitchScopeJson,
         reason: { type: "string" },
         idempotencyKey: idempotencyJson,
         actorNote: { type: "string" },
@@ -1821,7 +1821,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     title: "List agent workspaces",
     description:
       "Read-only coordination view of the per-agent workspaces (DB index): " +
-      "branch, linked goal + its convergence decision, objective, heartbeat, " +
+      "branch, linked hitch + its convergence decision, objective, heartbeat, " +
       "and last checkpoint. No git state; mutations stay CLI-only.",
     kind: "read",
     operation: "workspace.list",
@@ -1838,7 +1838,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     description:
       "Status of every workspace of one repo. repoPath = a tracked worktree " +
       "path (from workspace.list) or any subpath under it. Returns progress " +
-      "label + git state (dirty / ahead-behind) + linked goal + heartbeat. " +
+      "label + git state (dirty / ahead-behind) + linked hitch + heartbeat. " +
       "Read-only (runs read-only git in known worktrees only).",
     kind: "read",
     operation: "workspace.status",
@@ -1898,7 +1898,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     name: "harness.workspace.recover",
     title: "Reconstruct workspace state + deterministic next steps",
     description:
-      "Reconstruct one agent's workspace (git briefing + linked goal " +
+      "Reconstruct one agent's workspace (git briefing + linked hitch " +
       "convergence) and recommend deterministic next steps (the checkpoint " +
       "narrative is advisory context only, never a driver). repoPath = a " +
       "tracked worktree path or any subpath; the agent must be in scope. " +
@@ -1920,7 +1920,7 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     name: "harness.workspace.checkpoint",
     title: "Save a workspace checkpoint",
     description:
-      "Record an advisory checkpoint (note + goal link + objective) for a " +
+      "Record an advisory checkpoint (note + hitch link + objective) for a " +
       "tracked workspace; refreshes its heartbeat. DB-only (no git snapshot). " +
       "Requires the workspace.checkpoint operation to be allowlisted.",
     kind: "mutation",

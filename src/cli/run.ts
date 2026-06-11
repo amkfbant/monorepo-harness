@@ -4032,7 +4032,7 @@ workspaceCmd
         { repoPath, workspacesDir },
         { agent, base: String(raw.base ?? "main"), workspace: ws },
       );
-      const { objective, goal, latestCheckpoint } = withWorkspaceRepo(
+      const { objective, hitch, latestCheckpoint } = withWorkspaceRepo(
         (wsRepo, db) => {
           const record = wsRepo.get(repoKey, agent);
           const latest =
@@ -4062,7 +4062,7 @@ workspaceCmd
           }
           return {
             objective: record?.objective ?? null,
-            goal: goalSummary,
+            hitch: goalSummary,
             latestCheckpoint:
               latest === null
                 ? null
@@ -4077,7 +4077,7 @@ workspaceCmd
       const briefing = buildRecoveryBriefing({
         inspection,
         objective,
-        goal,
+        hitch,
         latestCheckpoint,
       });
       if (raw.json === true) {
@@ -4089,11 +4089,11 @@ workspaceCmd
         ? `${insp.ahead} ahead / ${insp.behind} behind ${insp.base}, ${insp.dirtyFiles.length} uncommitted`
         : `base "${insp.base}" not found, ${insp.dirtyFiles.length} uncommitted`;
       const goalLine =
-        briefing.goal === null
+        briefing.hitch === null
           ? "(none)"
-          : briefing.goal.convergence === null
-            ? `${briefing.goal.hitchId} (no longer exists)`
-            : `${briefing.goal.hitchId} — ${briefing.goal.convergence.decision} (${briefing.goal.convergence.reason})`;
+          : briefing.hitch.convergence === null
+            ? `${briefing.hitch.hitchId} (no longer exists)`
+            : `${briefing.hitch.hitchId} — ${briefing.hitch.convergence.decision} (${briefing.hitch.convergence.reason})`;
       const cp = briefing.latestCheckpoint;
       process.stdout.write(
         `recover "${agent}" (${insp.branch})\n` +

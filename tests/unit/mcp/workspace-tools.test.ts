@@ -84,13 +84,13 @@ describe("harness.workspace.list MCP tool", () => {
     expect(alice.branch).toBe("agent/alice");
     expect(alice.hitchId).toBe("g1");
     // a real (live) goal → a non-null convergence decision.
-    expect(typeof alice.goalDecision).toBe("string");
+    expect(typeof alice.hitchDecision).toBe("string");
     expect(alice.objective).toBe("ship the thing");
     expect(alice.lastCheckpointAt).toBe("2026-06-07T03:00:00.000Z");
 
     const bob = byAgent.get("bob") as any;
     expect(bob.hitchId).toBeNull();
-    expect(bob.goalDecision).toBeNull();
+    expect(bob.hitchDecision).toBeNull();
     expect(bob.lastCheckpointAt).toBeNull();
   });
 

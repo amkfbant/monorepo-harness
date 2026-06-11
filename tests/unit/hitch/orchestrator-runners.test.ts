@@ -9,7 +9,7 @@ import { HitchRepository } from "../../../src/hitch/repository.js";
 import {
   createOrchestratorRunners,
   latestRunId,
-  type GoalRunContext,
+  type HitchRunContext,
 } from "../../../src/hitch/orchestrator-runners.js";
 
 describe("createOrchestratorRunners.classify", () => {
@@ -242,7 +242,7 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
       close();
     }
 
-    const resolveRunContext = (): GoalRunContext => ({
+    const resolveRunContext = (): HitchRunContext => ({
       repoPath,
       repoId: "t",
       domain: "apps/user",
@@ -328,7 +328,7 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
         close();
       }
     }
-    const resolveRunContext = (): GoalRunContext => ({
+    const resolveRunContext = (): HitchRunContext => ({
       repoPath,
       repoId: "t",
       domain: "apps/user",
@@ -386,7 +386,7 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
         close();
       }
     }
-    const resolveRunContext = (): GoalRunContext => ({
+    const resolveRunContext = (): HitchRunContext => ({
       repoPath,
       repoId: "t",
       domain: "apps/user",
@@ -447,7 +447,7 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
         close();
       }
     }
-    const resolveRunContext = (): GoalRunContext => ({
+    const resolveRunContext = (): HitchRunContext => ({
       repoPath,
       repoId: "t",
       domain: "apps/user",

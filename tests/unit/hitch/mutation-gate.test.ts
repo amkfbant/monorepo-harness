@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { allowedByConvergence } from "../../../src/hitch/mutation-gate.js";
-import type { GoalLinkedMutationKind } from "../../../src/hitch/mutation-gate.js";
+import type { HitchLinkedMutationKind } from "../../../src/hitch/mutation-gate.js";
 import type {
   HitchConvergenceDecision,
   HitchConvergenceResult,
@@ -11,7 +11,7 @@ import {
   HITCH_NEXT_ACTION_KINDS,
 } from "../../../src/hitch/types.js";
 
-const ALL_MUTATIONS: GoalLinkedMutationKind[] = [
+const ALL_MUTATIONS: HitchLinkedMutationKind[] = [
   "run.start",
   "review.auto",
   "rerun.start",

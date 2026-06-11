@@ -55,7 +55,7 @@ interface MutationBaseArgs {
   actorNote?: string;
 }
 
-export interface GoalListArgs {
+export interface HitchListArgs {
   status?: HitchStatus;
   projectId?: string;
   repoId?: string;
@@ -63,11 +63,11 @@ export interface GoalListArgs {
   limit?: number;
 }
 
-export interface GoalIdArgs {
+export interface HitchIdArgs {
   hitchId: string;
 }
 
-export interface GoalStartArgs extends MutationBaseArgs {
+export interface HitchStartArgs extends MutationBaseArgs {
   hitchId?: string;
   title: string;
   description?: string;
@@ -84,7 +84,7 @@ export interface GoalStartArgs extends MutationBaseArgs {
   maxTotalNewFindings?: number;
 }
 
-export interface GoalFindingInput {
+export interface HitchFindingInput {
   severity: HitchFindingSeverity;
   category: string;
   summary: string;
@@ -99,30 +99,30 @@ export interface GoalFindingInput {
   scopeStatus?: HitchScopeStatus;
 }
 
-export interface GoalRecordFindingsArgs extends MutationBaseArgs {
+export interface HitchRecordFindingsArgs extends MutationBaseArgs {
   hitchId: string;
-  findings: GoalFindingInput[];
+  findings: HitchFindingInput[];
 }
 
-export interface GoalClassifyFindingArgs extends MutationBaseArgs {
+export interface HitchClassifyFindingArgs extends MutationBaseArgs {
   findingId: string;
   scopeStatus: HitchScopeStatus;
   reason: string;
   duplicateOf?: string;
 }
 
-export interface GoalMarkFindingFixedArgs extends MutationBaseArgs {
+export interface HitchMarkFindingFixedArgs extends MutationBaseArgs {
   findingId: string;
   note?: string;
 }
 
-export interface GoalDeferFindingArgs extends MutationBaseArgs {
+export interface HitchDeferFindingArgs extends MutationBaseArgs {
   findingId: string;
   reason: string;
   createBacklogItem?: boolean;
 }
 
-export interface GoalRecordCloseCheckArgs extends MutationBaseArgs {
+export interface HitchRecordCloseCheckArgs extends MutationBaseArgs {
   hitchId: string;
   conditionId: string;
   status: HitchCloseCheckStatus;
@@ -131,25 +131,25 @@ export interface GoalRecordCloseCheckArgs extends MutationBaseArgs {
   message?: string;
 }
 
-export interface GoalCheckConvergenceArgs extends MutationBaseArgs {
+export interface HitchCheckConvergenceArgs extends MutationBaseArgs {
   hitchId: string;
   /** When false, record the decision but do not sync hitch_sessions.status
    *  (parity with the CLI `convergence --no-status-update`). */
   updateStatus?: boolean;
 }
 
-export interface GoalCloseArgs extends MutationBaseArgs {
+export interface HitchCloseArgs extends MutationBaseArgs {
   hitchId: string;
   summary: string;
   force?: boolean;
 }
 
-export interface GoalCancelArgs extends MutationBaseArgs {
+export interface HitchCancelArgs extends MutationBaseArgs {
   hitchId: string;
   reason: string;
 }
 
-export interface GoalExpandScopeArgs extends MutationBaseArgs {
+export interface HitchExpandScopeArgs extends MutationBaseArgs {
   hitchId: string;
   scope: HitchScope;
   reason: string;
@@ -158,12 +158,12 @@ export interface GoalExpandScopeArgs extends MutationBaseArgs {
 function splitRecordedConvergence(
   result: ReturnType<typeof evaluateConvergenceAndRecordStatus>,
 ) {
-  const { decisionRecord, goalStatus, ...convergence } = result;
-  return { convergence, decisionRecord, goalStatus };
+  const { decisionRecord, hitchStatus, ...convergence } = result;
+  return { convergence, decisionRecord, hitchStatus };
 }
 
 export function hitchListTool(
-  args: GoalListArgs,
+  args: HitchListArgs,
   context: McpToolContext,
 ): HarnessMcpToolResult {
   if (args.projectId !== undefined) {
@@ -194,7 +194,7 @@ export function hitchListTool(
 }
 
 export function hitchGetTool(
-  args: GoalIdArgs,
+  args: HitchIdArgs,
   context: McpToolContext,
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
@@ -208,7 +208,7 @@ export function hitchGetTool(
 }
 
 export function hitchStatusTool(
-  args: GoalIdArgs,
+  args: HitchIdArgs,
   context: McpToolContext,
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
@@ -231,7 +231,7 @@ export function hitchStatusTool(
 }
 
 export function hitchFindingsTool(
-  args: GoalIdArgs,
+  args: HitchIdArgs,
   context: McpToolContext,
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
@@ -250,7 +250,7 @@ export function hitchFindingsTool(
 }
 
 export function hitchDecisionsTool(
-  args: GoalIdArgs,
+  args: HitchIdArgs,
   context: McpToolContext,
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
@@ -287,7 +287,7 @@ function deriveProjectIdFromRepo(
 }
 
 export async function hitchStartTool(
-  args: GoalStartArgs,
+  args: HitchStartArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   // (#81) When the client is project-scoped but the goal only carries a repoId,
@@ -343,7 +343,7 @@ export async function hitchStartTool(
 }
 
 export async function hitchRecordFindingsTool(
-  args: GoalRecordFindingsArgs,
+  args: HitchRecordFindingsArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   if (args.findings.length > MAX_FINDINGS_PER_CALL) {
@@ -451,7 +451,7 @@ export async function hitchRecordFindingsTool(
 }
 
 export async function hitchClassifyFindingTool(
-  args: GoalClassifyFindingArgs,
+  args: HitchClassifyFindingArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   return runGoalOperation(context, {
@@ -487,7 +487,7 @@ export async function hitchClassifyFindingTool(
 }
 
 export async function hitchMarkFindingFixedTool(
-  args: GoalMarkFindingFixedArgs,
+  args: HitchMarkFindingFixedArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   return runGoalOperation(context, {
@@ -521,7 +521,7 @@ export async function hitchMarkFindingFixedTool(
 }
 
 export async function hitchDeferFindingTool(
-  args: GoalDeferFindingArgs,
+  args: HitchDeferFindingArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   if (args.createBacklogItem === true && !context.config.allowedOperations.includes("backlog.create")) {
@@ -569,7 +569,7 @@ export async function hitchDeferFindingTool(
 }
 
 export async function hitchRecordCloseCheckTool(
-  args: GoalRecordCloseCheckArgs,
+  args: HitchRecordCloseCheckArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   return runGoalOperation(context, {
@@ -613,7 +613,7 @@ export async function hitchRecordCloseCheckTool(
 }
 
 export async function hitchCheckConvergenceTool(
-  args: GoalCheckConvergenceArgs,
+  args: HitchCheckConvergenceArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   return runGoalOperation(context, {
@@ -641,14 +641,14 @@ export async function hitchCheckConvergenceTool(
       return {
         ...result,
         decisionRecord: recorded.decisionRecord,
-        goalStatus: recorded.goalStatus,
+        hitchStatus: recorded.hitchStatus,
       };
     },
   });
 }
 
 export async function hitchCloseTool(
-  args: GoalCloseArgs,
+  args: HitchCloseArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   const preview = goalClosePreview(args, context);
@@ -697,7 +697,7 @@ export async function hitchCloseTool(
 }
 
 export async function hitchCancelTool(
-  args: GoalCancelArgs,
+  args: HitchCancelArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   const preview = ok("would cancel goal", {
@@ -727,7 +727,7 @@ export async function hitchCancelTool(
 }
 
 export async function hitchExpandScopeTool(
-  args: GoalExpandScopeArgs,
+  args: HitchExpandScopeArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
   const preview = ok("would expand goal scope", {
@@ -892,7 +892,7 @@ async function runGoalOperation<T>(
 }
 
 function goalClosePreview(
-  args: GoalCloseArgs,
+  args: HitchCloseArgs,
   context: McpToolContext,
 ): HarnessMcpToolResult {
   return withReadonlyDb(context, ({ db }) => {
@@ -1058,7 +1058,7 @@ function goalIdForIdempotencyKey(idempotencyKey: string): string {
 
 function toClassifiableFinding(
   source: HitchFindingSource,
-  finding: GoalFindingInput,
+  finding: HitchFindingInput,
 ): ClassifiableHitchFinding {
   return {
     source,
@@ -1074,7 +1074,7 @@ function toClassifiableFinding(
 
 function expandGoalScope(
   db: Database.Database,
-  args: GoalExpandScopeArgs,
+  args: HitchExpandScopeArgs,
 ): { hitchId: string; scope: HitchScope; reason: string } {
   const repo = new HitchRepository(db);
   const current = repo.requireSession(args.hitchId);

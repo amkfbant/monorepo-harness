@@ -115,7 +115,7 @@ export function workspaceListTool(
       worktreePath: r.worktreePath,
       status: r.status,
       hitchId: r.hitchId,
-      goalDecision: info.decision,
+      hitchDecision: info.decision,
       objective: r.objective,
       lastActiveAt: r.lastActiveAt,
       lastCheckpointAt: checkpointAt.get(r.workspaceId) ?? null,

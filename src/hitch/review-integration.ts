@@ -11,7 +11,7 @@ import { recordConvergenceDecisionWithStatus } from "./convergence-status.js";
 import {
   evaluateConsensusStallForHitch,
   type ConsensusSnapshotProvider,
-  type GoalConsensusStallResult,
+  type HitchConsensusStallResult,
 } from "./consensus-stall-check.js";
 import type { ConsensusStallConfig } from "../core/consensus-stall.js";
 import { HitchRepository } from "./repository.js";
@@ -37,7 +37,7 @@ export interface ImportReviewProposalToHitchInput {
   createdBy: string;
   /**
    * Phase 2-3: when provided, evaluate consensus stall after recording the
-   * convergence decision. A detected stall escalates the goal (harness-only,
+   * convergence decision. A detected stall escalates the hitch (harness-only,
    * fail-closed). Omitted = no stall check (backward compatible).
    */
   consensusStall?: {
@@ -46,7 +46,7 @@ export interface ImportReviewProposalToHitchInput {
   };
 }
 
-export interface ImportedGoalFinding {
+export interface ImportedHitchFinding {
   finding: HitchFinding;
   created: boolean;
   reopened: boolean;
@@ -59,15 +59,15 @@ export interface ReviewerAdvisory {
   text: string;
 }
 
-export interface ImportReviewProposalToGoalResult {
+export interface ImportReviewProposalToHitchResult {
   cycle: HitchReviewCycle;
-  findings: ImportedGoalFinding[];
+  findings: ImportedHitchFinding[];
   reviewAdvisories: ReviewerAdvisory[];
   closeChecks: HitchCloseCheck[];
   convergenceDecision: HitchConvergenceDecisionRecord;
-  goalStatus: HitchSession | null;
+  hitchStatus: HitchSession | null;
   /** Phase 2-3: present when a consensus-stall check ran for this import. */
-  consensusStall?: GoalConsensusStallResult;
+  consensusStall?: HitchConsensusStallResult;
 }
 
 interface ProposalFindingSeed {
@@ -85,7 +85,7 @@ interface ProposalFindingSeed {
 
 export function importReviewProposalToHitch(
   input: ImportReviewProposalToHitchInput,
-): ImportReviewProposalToGoalResult {
+): ImportReviewProposalToHitchResult {
   const session = input.repository.requireSession(input.hitchId);
   const mode =
     input.reviewMode ??
@@ -143,12 +143,12 @@ export function importReviewProposalToHitch(
     createdBy: input.createdBy,
   });
   // Phase 2-3: after the normal convergence decision, check whether the
-  // consensus for this goal's review runs is stuck. A stall escalates the
-  // goal (harness-only state transition, fail-closed) and supersedes the
+  // consensus for this hitch's review runs is stuck. A stall escalates the
+  // hitch (harness-only state transition, fail-closed) and supersedes the
   // just-synced status.
-  let goalStatus = recorded.goalStatus;
+  let hitchStatus = recorded.hitchStatus;
   let convergenceDecision = recorded.decisionRecord;
-  let consensusStall: GoalConsensusStallResult | undefined;
+  let consensusStall: HitchConsensusStallResult | undefined;
   if (input.consensusStall !== undefined) {
     consensusStall = evaluateConsensusStallForHitch({
       repository: input.repository,
@@ -163,8 +163,8 @@ export function importReviewProposalToHitch(
     // A stall escalation is the final decision for this import — surface its
     // record + status so callers are not misled by the earlier convergence
     // decision (which may read close_ready / continue).
-    if (consensusStall.stalled && consensusStall.goalStatus !== null) {
-      goalStatus = consensusStall.goalStatus;
+    if (consensusStall.stalled && consensusStall.hitchStatus !== null) {
+      hitchStatus = consensusStall.hitchStatus;
       if (consensusStall.decisionRecord !== undefined) {
         convergenceDecision = consensusStall.decisionRecord;
       }
@@ -177,7 +177,7 @@ export function importReviewProposalToHitch(
     reviewAdvisories,
     closeChecks,
     convergenceDecision,
-    goalStatus,
+    hitchStatus,
     ...(consensusStall !== undefined ? { consensusStall } : {}),
   };
 }
@@ -204,7 +204,7 @@ function importProposalFindings(
   session: HitchSession,
   proposal: ReviewProposalRow,
   cycle: HitchReviewCycle,
-): ImportedGoalFinding[] {
+): ImportedHitchFinding[] {
   return proposalFindingSeeds(proposal).map((seed) => {
     const finding = toClassifiableFinding(seed, proposal);
     const classification =
@@ -215,7 +215,7 @@ function importProposalFindings(
             reason:
               seed.forcedScopeStatus === "out_of_scope"
                 ? "review proposal marks this item as out of scope"
-                : "review proposal negative decision blocks goal closure",
+                : "review proposal negative decision blocks hitch closure",
           };
     return repository.upsertFinding({
       hitchId: session.hitchId,
@@ -250,7 +250,7 @@ function proposalFindingSeeds(proposal: ReviewProposalRow): ProposalFindingSeed[
             index: 0,
             text:
               `Review decision was ${proposal.decision} with no required_changes; ` +
-              "inspect the review output and resolve the negative verdict before closing this goal.",
+              "inspect the review output and resolve the negative verdict before closing this hitch.",
             severity: "P1" as const,
             category: "review-negative-decision",
             forcedScopeStatus: "in_scope" as const,

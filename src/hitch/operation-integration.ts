@@ -6,7 +6,7 @@ import type {
   HitchAttemptType,
 } from "./types.js";
 
-export interface RecordGoalAttemptForOperationInput {
+export interface RecordHitchAttemptForOperationInput {
   hitchId: string;
   attemptType: HitchAttemptType;
   operationId: string;
@@ -19,9 +19,9 @@ export interface RecordGoalAttemptForOperationInput {
   errorMessage?: string;
 }
 
-export function recordGoalAttemptForOperationResult(
+export function recordHitchAttemptForOperationResult(
   db: Database.Database,
-  input: RecordGoalAttemptForOperationInput,
+  input: RecordHitchAttemptForOperationInput,
 ): HitchAttempt {
   const repo = new HitchRepository(db);
   repo.requireSession(input.hitchId);
@@ -38,7 +38,7 @@ export function recordGoalAttemptForOperationResult(
   });
   return repo.completeAttempt({
     attemptId: attempt.attemptId,
-    status: goalAttemptStatusForRun(input.runStatus, input.errorMessage),
+    status: hitchAttemptStatusForRun(input.runStatus, input.errorMessage),
     operationId: input.operationId,
     runId: input.runId,
     result: input.result ?? {},
@@ -46,7 +46,7 @@ export function recordGoalAttemptForOperationResult(
   });
 }
 
-export function latestGoalAttemptForRun(
+export function latestHitchAttemptForRun(
   db: Database.Database,
   hitchId: string,
   runId: string,
@@ -64,7 +64,7 @@ export function latestGoalAttemptForRun(
   return new HitchRepository(db).requireAttempt(row.attempt_id);
 }
 
-function goalAttemptStatusForRun(
+function hitchAttemptStatusForRun(
   runStatus: string | undefined,
   errorMessage: string | undefined,
 ): Exclude<HitchAttemptStatus, "pending" | "running"> {

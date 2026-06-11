@@ -14,10 +14,10 @@ import type { HitchRepository } from "./repository.js";
 import type { HitchConvergenceDecisionRecord, HitchSession } from "./types.js";
 
 /**
- * Phase 2-3: consensus stall → goal escalation.
+ * Phase 2-3: consensus stall → hitch escalation.
  *
- * After a review cycle, build the consensus timeline for the goal's review
- * runs and, if the deterministic detector flags a stall, escalate the goal
+ * After a review cycle, build the consensus timeline for the hitch's review
+ * runs and, if the deterministic detector flags a stall, escalate the hitch
  * (a harness-only state transition, fail-closed). LLM output is never an
  * input — only persisted `review_consensus` rows.
  */
@@ -30,9 +30,9 @@ export const DEFAULT_CONSENSUS_STALL_CONFIG: ConsensusStallConfig = {
   stallAfterSnapshots: 3,
 };
 
-export interface GoalConsensusStallResult extends ConsensusStallResult {
+export interface HitchConsensusStallResult extends ConsensusStallResult {
   /** Non-null when the stall caused an escalate transition. */
-  goalStatus: HitchSession | null;
+  hitchStatus: HitchSession | null;
   /** The escalate convergence record, when a stall transition was made. */
   decisionRecord?: HitchConvergenceDecisionRecord;
 }
@@ -45,7 +45,7 @@ export function evaluateConsensusStallForHitch(input: {
   createdBy: string;
   now?: string;
   cycleId?: string;
-}): GoalConsensusStallResult {
+}): HitchConsensusStallResult {
   const config = input.config ?? DEFAULT_CONSENSUS_STALL_CONFIG;
   const cycles = input.repository.listReviewCycles(input.hitchId);
   const runIds = distinct(
@@ -54,7 +54,7 @@ export function evaluateConsensusStallForHitch(input: {
       .filter((id): id is string => id !== null),
   );
   if (runIds.length === 0) {
-    return { stalled: false, reason: null, goalStatus: null };
+    return { stalled: false, reason: null, hitchStatus: null };
   }
   let result: ConsensusStallResult;
   try {
@@ -67,7 +67,7 @@ export function evaluateConsensusStallForHitch(input: {
     return escalate(input, `consensus data unreadable: ${(e as Error).message}`);
   }
   if (!result.stalled) {
-    return { stalled: false, reason: result.reason, goalStatus: null };
+    return { stalled: false, reason: result.reason, hitchStatus: null };
   }
   return escalate(input, `consensus stall: ${result.reason}`, result.reason);
 }
@@ -82,7 +82,7 @@ function escalate(
   },
   reason: string,
   stallReason?: string | null,
-): GoalConsensusStallResult {
+): HitchConsensusStallResult {
   // The metrics come from the deterministic convergence evaluation; only the
   // decision/reason reflect the stall. State transition is harness-only.
   const metrics = new ConvergenceService(input.repository).evaluate(
@@ -105,7 +105,7 @@ function escalate(
   return {
     stalled: true,
     reason: stallReason ?? reason,
-    goalStatus: recorded.goalStatus,
+    hitchStatus: recorded.hitchStatus,
     decisionRecord: recorded.decisionRecord,
   };
 }

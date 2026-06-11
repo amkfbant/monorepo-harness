@@ -1,6 +1,6 @@
 /**
- * Pure poll-loop that drives a `close_ready` goal's open PR to a merge — the
- * deterministic core behind `harness goal await-merge`. It owns NO side effects:
+ * Pure poll-loop that drives a `close_ready` hitch's open PR to a merge — the
+ * deterministic core behind `harness hitch await-merge`. It owns NO side effects:
  * each iteration calls an injected `pollOnce` (which re-evaluates convergence and
  * runs at most the single close/merge step), sleeps, and re-checks. State
  * transitions remain harness-only inside `pollOnce`; this loop just decides when
@@ -8,15 +8,15 @@
  * so it stays trivially testable with a virtual clock.
  */
 
-/** One probe of the goal's merge readiness (mapped from an orchestrate step). */
+/** One probe of the hitch's merge readiness (mapped from an orchestrate step). */
 export type AwaitMergeStep =
-  /** the PR merged → goal closed */
+  /** the PR merged → hitch closed */
   | { kind: "merged"; prUrl?: string }
   /** PR open, awaiting CI (recheckable) — keep polling */
   | { kind: "awaiting"; prUrl?: string }
   /** the merge gate hard-blocked / a runner threw → human needed */
   | { kind: "escalated"; reason?: string }
-  /** the goal is not `close_ready` (e.g. needs_fix/continue) → nothing to await */
+  /** the hitch is not `close_ready` (e.g. needs_fix/continue) → nothing to await */
   | { kind: "not_awaiting"; decision: string };
 
 export type AwaitMergeOutcome =
@@ -38,7 +38,7 @@ export interface CloseStepResult {
  * `merged: true` → done; otherwise the PR is open (CI not yet green, or a
  * permanent close for a human merge) → `awaiting`. The permanent-close case
  * terminates on the NEXT poll, whose convergence re-check sees a non-close_ready
- * goal and returns `not_awaiting`. Pure, so the mapping is unit-tested without a
+ * hitch and returns `not_awaiting`. Pure, so the mapping is unit-tested without a
  * live gh/codex.
  */
 export function awaitStepFromCloseResult(
@@ -76,7 +76,7 @@ export interface AwaitMergeOpts {
   maxWaitMs: number;
 }
 
-export async function awaitGoalMerge(
+export async function awaitHitchMerge(
   deps: AwaitMergeDeps,
   opts: AwaitMergeOpts,
 ): Promise<AwaitMergeOutcome> {

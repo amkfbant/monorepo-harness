@@ -50,7 +50,7 @@ export interface ClassifiableHitchFinding {
   symbol?: string | null;
 }
 
-export interface GoalFindingClassification {
+export interface HitchFindingClassification {
   scopeStatus: HeuristicScopeStatus;
   reason: string;
 }
@@ -64,7 +64,7 @@ export interface AutoFixCandidate {
 export function classifyFindingForHitch(
   session: HitchSession,
   finding: ClassifiableHitchFinding,
-): GoalFindingClassification {
+): HitchFindingClassification {
   const category = normalizeToken(finding.category ?? "");
   const filePath = normalizePath(finding.filePath ?? "");
   const text = normalizeText(
@@ -74,7 +74,7 @@ export function classifyFindingForHitch(
   if (isCloseCheckFailure(finding)) {
     return {
       scopeStatus: "in_scope",
-      reason: "finding comes from a goal close-check failure",
+      reason: "finding comes from a hitch close-check failure",
     };
   }
 
@@ -95,7 +95,7 @@ export function classifyFindingForHitch(
   if (excludedCategory !== null) {
     return {
       scopeStatus: "out_of_scope",
-      reason: `category ${JSON.stringify(finding.category)} is excluded by goal scope`,
+      reason: `category ${JSON.stringify(finding.category)} is excluded by hitch scope`,
     };
   }
 
@@ -107,7 +107,7 @@ export function classifyFindingForHitch(
   ) {
     return {
       scopeStatus: "out_of_scope",
-      reason: `file ${JSON.stringify(finding.filePath)} is outside goal targetFiles`,
+      reason: `file ${JSON.stringify(finding.filePath)} is outside hitch targetFiles`,
     };
   }
 
@@ -118,14 +118,14 @@ export function classifyFindingForHitch(
   ) {
     return {
       scopeStatus: "in_scope",
-      reason: `file ${JSON.stringify(finding.filePath)} matches goal targetFiles`,
+      reason: `file ${JSON.stringify(finding.filePath)} matches hitch targetFiles`,
     };
   }
 
   if (matchToken(category, session.scope.allowedFindingCategories ?? []) !== null) {
     return {
       scopeStatus: "in_scope",
-      reason: `category ${JSON.stringify(finding.category)} is allowed by goal scope`,
+      reason: `category ${JSON.stringify(finding.category)} is allowed by hitch scope`,
     };
   }
 
@@ -144,13 +144,13 @@ export function classifyFindingForHitch(
   if (targetMention !== null) {
     return {
       scopeStatus: "in_scope",
-      reason: `finding text mentions goal target ${JSON.stringify(targetMention)}`,
+      reason: `finding text mentions hitch target ${JSON.stringify(targetMention)}`,
     };
   }
 
   return {
     scopeStatus: "unknown",
-    reason: "finding does not match goal scope heuristics",
+    reason: "finding does not match hitch scope heuristics",
   };
 }
 

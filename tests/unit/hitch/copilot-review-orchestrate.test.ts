@@ -9,7 +9,7 @@ import { HitchRepository } from "../../../src/hitch/repository.js";
 import { HitchOrchestrator } from "../../../src/hitch/orchestrator.js";
 import {
   createOrchestratorRunners,
-  type GoalRunContext,
+  type HitchRunContext,
 } from "../../../src/hitch/orchestrator-runners.js";
 import { createFakeCodexRunner } from "../../../src/codex/fake-codex-runner.js";
 import type {
@@ -183,7 +183,7 @@ const FAST_CONFIG = {
   requestAttempts: 1,
 };
 
-function resolveRunContext(f: Fixture): () => GoalRunContext {
+function resolveRunContext(f: Fixture): () => HitchRunContext {
   return () => ({
     repoPath: f.repoPath,
     repoId: "t",

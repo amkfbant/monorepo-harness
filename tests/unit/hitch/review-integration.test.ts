@@ -7,8 +7,8 @@ import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { ReviewProposalRepository } from "../../../src/db/repositories/review-proposals.js";
 import {
-  latestGoalAttemptForRun,
-  recordGoalAttemptForOperationResult,
+  latestHitchAttemptForRun,
+  recordHitchAttemptForOperationResult,
 } from "../../../src/hitch/operation-integration.js";
 import { ConvergenceService } from "../../../src/hitch/convergence.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
@@ -163,7 +163,7 @@ describe("goal review integration", () => {
         status: "passed",
       });
       expect(imported.convergenceDecision.decision).toBe("close_ready");
-      expect(imported.goalStatus?.status).toBe("close_ready");
+      expect(imported.hitchStatus?.status).toBe("close_ready");
       expect(goals.requireSession("goal-close-review").status).toBe("close_ready");
     } finally {
       db.close();
@@ -193,7 +193,7 @@ describe("goal review integration", () => {
       });
 
       expect(imported.convergenceDecision.decision).toBe("diverging");
-      expect(imported.goalStatus?.status).toBe("diverging");
+      expect(imported.hitchStatus?.status).toBe("diverging");
       expect(goals.requireSession("goal-review-diverging").status).toBe(
         "diverging",
       );
@@ -222,7 +222,7 @@ describe("goal review integration", () => {
       });
 
       expect(imported.convergenceDecision.decision).toBe("budget_exhausted");
-      expect(imported.goalStatus?.status).toBe("budget_exhausted");
+      expect(imported.hitchStatus?.status).toBe("budget_exhausted");
       expect(goals.requireSession("goal-review-budget").status).toBe(
         "budget_exhausted",
       );
@@ -345,7 +345,7 @@ describe("goal review integration", () => {
         ],
       });
       expect(imported.convergenceDecision.decision).toBe("close_ready");
-      expect(imported.goalStatus?.status).toBe("close_ready");
+      expect(imported.hitchStatus?.status).toBe("close_ready");
     } finally {
       db.close();
     }
@@ -400,7 +400,7 @@ describe("goal review integration", () => {
         lifecycleStatus: "open",
       });
       expect(imported.convergenceDecision.decision).toBe("needs_fix");
-      expect(imported.goalStatus).toBeNull();
+      expect(imported.hitchStatus).toBeNull();
       expect(
         goals.requireSession("goal-required-with-environment-note").status,
       ).toBe("open");
@@ -418,14 +418,14 @@ describe("goal review integration", () => {
         createdBy: "test",
         createdSource: "cli",
       });
-      const parent = recordGoalAttemptForOperationResult(db, {
+      const parent = recordHitchAttemptForOperationResult(db, {
         hitchId: "goal-rerun",
         attemptType: "implement",
         operationId: "op-parent",
         runId: "run-parent",
         runStatus: "needs_review",
       });
-      const child = recordGoalAttemptForOperationResult(db, {
+      const child = recordHitchAttemptForOperationResult(db, {
         hitchId: "goal-rerun",
         attemptType: "rerun",
         operationId: "op-rerun",
@@ -442,7 +442,7 @@ describe("goal review integration", () => {
         parentAttemptId: parent.attemptId,
         status: "succeeded",
       });
-      expect(latestGoalAttemptForRun(db, "goal-rerun", "run-child")?.attemptId).toBe(
+      expect(latestHitchAttemptForRun(db, "goal-rerun", "run-child")?.attemptId).toBe(
         child.attemptId,
       );
     } finally {
@@ -467,14 +467,14 @@ describe("goal review integration", () => {
         status: "passed",
         checkedBy: "test",
       });
-      const runAttempt = recordGoalAttemptForOperationResult(db, {
+      const runAttempt = recordHitchAttemptForOperationResult(db, {
         hitchId: "goal-review-attempt",
         attemptType: "implement",
         operationId: "op-run",
         runId: "run-review-attempt",
         runStatus: "needs_review",
       });
-      const reviewAttempt = recordGoalAttemptForOperationResult(db, {
+      const reviewAttempt = recordHitchAttemptForOperationResult(db, {
         hitchId: "goal-review-attempt",
         attemptType: "fix-review",
         operationId: "op-review",

@@ -139,8 +139,8 @@ export const MCP_RESOURCE_TEMPLATES: McpResourceTemplateDefinition[] = [
   },
   {
     uriTemplate: "harness://hitch/{hitchId}",
-    name: "Goal",
-    description: "Goal convergence status, findings, and decisions.",
+    name: "Hitch",
+    description: "Hitch convergence status, findings, and decisions.",
     mimeType: "application/json",
   },
   {

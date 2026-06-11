@@ -39,20 +39,20 @@ import {
 } from "../../core/operational-knowledge.js";
 import { processReviewDecision } from "../../core/review-processor.js";
 import {
-  latestGoalAttemptForRun,
-  recordGoalAttemptForOperationResult,
+  latestHitchAttemptForRun,
+  recordHitchAttemptForOperationResult,
 } from "../../hitch/operation-integration.js";
 import { importReviewProposalToHitch } from "../../hitch/review-integration.js";
 import { HitchRepository } from "../../hitch/repository.js";
 import { HitchOrchestrator } from "../../hitch/orchestrator.js";
 import { createOrchestratorRunners } from "../../hitch/orchestrator-runners.js";
 import {
-  assertGoalCanStartMutation,
-  evaluateGoalMutationGate,
-  GoalMutationGateError,
-  type GoalLinkedMutationKind,
+  assertHitchCanStartMutation,
+  evaluateHitchMutationGate,
+  HitchMutationGateError,
+  type HitchLinkedMutationKind,
 } from "../../hitch/mutation-gate.js";
-import { syncGoalStatusForConvergence } from "../../hitch/convergence-status.js";
+import { syncHitchStatusForConvergence } from "../../hitch/convergence-status.js";
 import { cleanupRun } from "../../core/cleanup.js";
 import { createPullRequest } from "../../core/pr-creator.js";
 import { createGhPrPublisher } from "../../core/gh-pr-publisher.js";
@@ -213,7 +213,7 @@ export async function runStartTool(
         });
       } catch (e) {
         if (args.hitchId !== undefined && e instanceof RunFinalizedError) {
-          recordGoalAttemptForOperationResult(db, {
+          recordHitchAttemptForOperationResult(db, {
             hitchId: args.hitchId,
             attemptType: "implement",
             operationId,
@@ -231,7 +231,7 @@ export async function runStartTool(
         throw e;
       }
       if (args.hitchId !== undefined) {
-        const attempt = recordGoalAttemptForOperationResult(db, {
+        const attempt = recordHitchAttemptForOperationResult(db, {
           hitchId: args.hitchId,
           attemptType: "implement",
           operationId,
@@ -244,7 +244,7 @@ export async function runStartTool(
           },
           result: { ...result, projectId: args.projectId },
         });
-        return { ...result, projectId: args.projectId, goalAttempt: attempt };
+        return { ...result, projectId: args.projectId, hitchAttempt: attempt };
       }
       return { ...result, projectId: args.projectId };
     },
@@ -279,8 +279,8 @@ export async function reviewAutoTool(
         }),
       });
       if (args.hitchId !== undefined) {
-        const relatedAttempt = latestGoalAttemptForRun(db, args.hitchId, args.runId);
-        const attempt = recordGoalAttemptForOperationResult(db, {
+        const relatedAttempt = latestHitchAttemptForRun(db, args.hitchId, args.runId);
+        const attempt = recordHitchAttemptForOperationResult(db, {
           hitchId: args.hitchId,
           attemptType: "fix-review",
           operationId,
@@ -298,7 +298,7 @@ export async function reviewAutoTool(
           },
           result: { ...result },
         });
-        return { ...result, goalAttempt: attempt };
+        return { ...result, hitchAttempt: attempt };
       }
       return result;
     },
@@ -366,8 +366,8 @@ export async function rerunStartTool(
           });
         } catch (e) {
           if (args.hitchId !== undefined && e instanceof RunFinalizedError) {
-            const parentAttempt = latestGoalAttemptForRun(db, args.hitchId, args.runId);
-            recordGoalAttemptForOperationResult(db, {
+            const parentAttempt = latestHitchAttemptForRun(db, args.hitchId, args.runId);
+            recordHitchAttemptForOperationResult(db, {
               hitchId: args.hitchId,
               attemptType: "rerun",
               operationId,
@@ -402,8 +402,8 @@ export async function rerunStartTool(
           });
         } catch (e) {
           if (args.hitchId !== undefined && e instanceof RunFinalizedError) {
-            const parentAttempt = latestGoalAttemptForRun(db, args.hitchId, args.runId);
-            recordGoalAttemptForOperationResult(db, {
+            const parentAttempt = latestHitchAttemptForRun(db, args.hitchId, args.runId);
+            recordHitchAttemptForOperationResult(db, {
               hitchId: args.hitchId,
               attemptType: "rerun",
               operationId,
@@ -424,8 +424,8 @@ export async function rerunStartTool(
         }
       }
       if (args.hitchId !== undefined) {
-        const parentAttempt = latestGoalAttemptForRun(db, args.hitchId, args.runId);
-        const attempt = recordGoalAttemptForOperationResult(db, {
+        const parentAttempt = latestHitchAttemptForRun(db, args.hitchId, args.runId);
+        const attempt = recordHitchAttemptForOperationResult(db, {
           hitchId: args.hitchId,
           attemptType: "rerun",
           operationId,
@@ -440,7 +440,7 @@ export async function rerunStartTool(
           },
           result: { ...result },
         });
-        return { ...result, goalAttempt: attempt };
+        return { ...result, hitchAttempt: attempt };
       }
       return result;
     },
@@ -484,7 +484,7 @@ export async function orchestrateGoalTool(
       if (session.projectId === null || session.domain === null) {
         throw new Error(
           `goal ${args.hitchId} has no projectId/domain; harness.hitch.orchestrate ` +
-            "only drives project-scoped goals",
+            "only drives project-scoped hitches",
         );
       }
       const prepared = await prepareProjectRun({
@@ -808,14 +808,14 @@ export async function reviewProcessTool(
       if (proposal === null) {
         throw new Error(`review proposal ${String(args.proposalId)} not found after processing`);
       }
-      const goalIntegration = importReviewProposalToHitch({
+      const hitchIntegration = importReviewProposalToHitch({
         repository: new HitchRepository(db),
         hitchId: args.hitchId,
         proposal,
         processResult: result,
         createdBy: `mcp:${context.clientName}`,
       });
-      return { ...result, goalIntegration };
+      return { ...result, hitchIntegration };
     },
   });
 }
@@ -1317,7 +1317,7 @@ async function runMcpOperation<T>(
     workWithDb?: (db: Database.Database, operationId: string) => Promise<T>;
     goalGate?: {
       hitchId: string | undefined;
-      mutationKind: GoalLinkedMutationKind;
+      mutationKind: HitchLinkedMutationKind;
     };
   },
 ): Promise<HarnessMcpToolResult> {
@@ -1343,7 +1343,7 @@ async function runMcpOperation<T>(
         ...(opts.pendingExternalExecutor === true ? { pendingExternalExecutor: true } : {}),
         beforeStart: (db) => {
           if (opts.goalGate?.hitchId !== undefined) {
-            assertGoalCanStartMutation({
+            assertHitchCanStartMutation({
               repository: new HitchRepository(db),
               hitchId: opts.goalGate.hitchId,
               mutationKind: opts.goalGate.mutationKind,
@@ -1389,10 +1389,10 @@ async function runMcpOperation<T>(
         resetAt: budget.resetAt ?? null,
       });
     }
-    if (e instanceof GoalMutationGateError) {
+    if (e instanceof HitchMutationGateError) {
       const gate = e.denial;
       if (gate.convergence) {
-        syncGoalStatusForConvergence(
+        syncHitchStatusForConvergence(
           new HitchRepository(handle.db),
           gate.convergence,
         );
@@ -1495,7 +1495,7 @@ function reviewProcessPreview(
         },
       );
       if (linked !== null) return linked;
-      const gate = evaluateGoalMutationGate({
+      const gate = evaluateHitchMutationGate({
         repository: new HitchRepository(db),
         hitchId: args.hitchId,
         mutationKind: "review.process",

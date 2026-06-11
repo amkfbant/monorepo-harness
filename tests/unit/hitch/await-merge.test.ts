@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  awaitGoalMerge,
+  awaitHitchMerge,
   awaitStepFromCloseResult,
   type AwaitMergeStep,
 } from "../../../src/hitch/await-merge.js";
@@ -39,11 +39,11 @@ function scripted(steps: AwaitMergeStep[]): {
   };
 }
 
-describe("awaitGoalMerge", () => {
+describe("awaitHitchMerge", () => {
   it("returns merged on the first poll without sleeping", async () => {
     const clock = fakeClock();
     const poll = scripted([{ kind: "merged", prUrl: "http://pr/1" }]);
-    const out = await awaitGoalMerge(
+    const out = await awaitHitchMerge(
       { pollOnce: poll.pollOnce, sleep: clock.sleep, now: clock.now },
       { pollIntervalMs: 1000, maxWaitMs: 10_000 },
     );
@@ -58,7 +58,7 @@ describe("awaitGoalMerge", () => {
       { kind: "awaiting", prUrl: "http://pr/2" },
       { kind: "merged", prUrl: "http://pr/2" },
     ]);
-    const out = await awaitGoalMerge(
+    const out = await awaitHitchMerge(
       { pollOnce: poll.pollOnce, sleep: clock.sleep, now: clock.now },
       { pollIntervalMs: 500, maxWaitMs: 10_000 },
     );
@@ -70,7 +70,7 @@ describe("awaitGoalMerge", () => {
   it("stops immediately when the goal is not awaiting (not close_ready)", async () => {
     const clock = fakeClock();
     const poll = scripted([{ kind: "not_awaiting", decision: "needs_fix" }]);
-    const out = await awaitGoalMerge(
+    const out = await awaitHitchMerge(
       { pollOnce: poll.pollOnce, sleep: clock.sleep, now: clock.now },
       { pollIntervalMs: 500, maxWaitMs: 10_000 },
     );
@@ -88,7 +88,7 @@ describe("awaitGoalMerge", () => {
       { kind: "awaiting" },
       { kind: "escalated", reason: "gate hard-blocked" },
     ]);
-    const out = await awaitGoalMerge(
+    const out = await awaitHitchMerge(
       { pollOnce: poll.pollOnce, sleep: clock.sleep, now: clock.now },
       { pollIntervalMs: 500, maxWaitMs: 10_000 },
     );
@@ -102,7 +102,7 @@ describe("awaitGoalMerge", () => {
   it("times out when the PR never merges within maxWaitMs", async () => {
     const clock = fakeClock();
     const poll = scripted([{ kind: "awaiting" }]); // always awaiting
-    const out = await awaitGoalMerge(
+    const out = await awaitHitchMerge(
       { pollOnce: poll.pollOnce, sleep: clock.sleep, now: clock.now },
       { pollIntervalMs: 1000, maxWaitMs: 2500 },
     );
@@ -116,7 +116,7 @@ describe("awaitGoalMerge", () => {
   it("single-shot (maxWaitMs=0): one poll, no sleep, then timeout if still awaiting", async () => {
     const clock = fakeClock();
     const poll = scripted([{ kind: "awaiting" }]);
-    const out = await awaitGoalMerge(
+    const out = await awaitHitchMerge(
       { pollOnce: poll.pollOnce, sleep: clock.sleep, now: clock.now },
       { pollIntervalMs: 1000, maxWaitMs: 0 },
     );
@@ -128,7 +128,7 @@ describe("awaitGoalMerge", () => {
     const clock = fakeClock();
     const poll = scripted([{ kind: "merged" }]);
     await expect(
-      awaitGoalMerge(
+      awaitHitchMerge(
         { pollOnce: poll.pollOnce, sleep: clock.sleep, now: clock.now },
         { pollIntervalMs: 0, maxWaitMs: 1000 },
       ),
@@ -139,7 +139,7 @@ describe("awaitGoalMerge", () => {
     const clock = fakeClock();
     const poll = scripted([{ kind: "merged" }]);
     await expect(
-      awaitGoalMerge(
+      awaitHitchMerge(
         { pollOnce: poll.pollOnce, sleep: clock.sleep, now: clock.now },
         { pollIntervalMs: 1000, maxWaitMs: -1 },
       ),

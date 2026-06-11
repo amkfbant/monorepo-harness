@@ -28,7 +28,7 @@ import {
 import { deferFindingToBacklog } from "../hitch/followups.js";
 import { HitchOrchestrator } from "../hitch/orchestrator.js";
 import {
-  awaitGoalMerge,
+  awaitHitchMerge,
   awaitStepFromCloseResult,
   type AwaitMergeStep,
 } from "../hitch/await-merge.js";
@@ -37,7 +37,7 @@ import { linkAgentWorkspaceToHitch } from "../workspace/workspace-hitch-link.js"
 import { decideOrchestratorAction } from "../hitch/orchestrator-dispatch.js";
 import {
   createOrchestratorRunners,
-  GoalNotCloseReadyError,
+  HitchNotCloseReadyError,
 } from "../hitch/orchestrator-runners.js";
 import {
   HitchRepository,
@@ -772,7 +772,7 @@ export function registerHitchCommands(
         const out = withHitchRepo(opts, ({ repo }) => {
           const result = new ConvergenceService(repo).evaluate(hitchId);
           if (raw.record === false) {
-            return { ...result, decisionRecord: null, goalStatus: null };
+            return { ...result, decisionRecord: null, hitchStatus: null };
           }
           const recorded = recordConvergenceDecisionWithStatus({
             repository: repo,
@@ -935,7 +935,7 @@ export function registerHitchCommands(
     .option("--repo <path>", "path to the target git repo (required)")
     .option(
       "--repo-id <id>",
-      "repo id to scope which goals are driven (REQUIRED with --all; the gh CI/merge probes are bound to the single --repo, so --all must not span repos)",
+      "repo id to scope which hitches are driven (REQUIRED with --all; the gh CI/merge probes are bound to the single --repo, so --all must not span repos)",
     )
     .option("--base-branch <name>", "base branch for the merge gate", "main")
     .option(
@@ -1080,11 +1080,11 @@ export function registerHitchCommands(
             } catch (e) {
               // Distinguish a benign DRIFT from a real close/merge failure by the
               // error TYPE (not a racy convergence re-read): closeAndPr throws a
-              // typed GoalNotCloseReadyError from its pre-side-effect guard, so a
+              // typed HitchNotCloseReadyError from its pre-side-effect guard, so a
               // drift means nothing was mutated → just stop. ANY other throw is a
               // real PR-create/push/merge failure → escalate (fail-closed, as the
               // generic orchestrator does); never swallow it as not_awaiting.
-              if (e instanceof GoalNotCloseReadyError) {
+              if (e instanceof HitchNotCloseReadyError) {
                 return { kind: "not_awaiting", decision: e.decision };
               }
               const reason = e instanceof Error ? e.message : String(e);
@@ -1151,7 +1151,7 @@ export function registerHitchCommands(
         }
 
         for (const hitchId of goalIds) {
-          const result = await awaitGoalMerge(
+          const result = await awaitHitchMerge(
             {
               pollOnce: probe(hitchId),
               sleep: (ms) => new Promise((r) => setTimeout(r, ms)),

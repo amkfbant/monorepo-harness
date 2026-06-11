@@ -9,15 +9,15 @@ import { HitchRepository } from "../../src/hitch/repository.js";
 import { HitchOrchestrator } from "../../src/hitch/orchestrator.js";
 import { ConvergenceService } from "../../src/hitch/convergence.js";
 import {
-  awaitGoalMerge,
+  awaitHitchMerge,
   awaitStepFromCloseResult,
   type AwaitMergeStep,
 } from "../../src/hitch/await-merge.js";
 import {
   createOrchestratorRunners,
-  GoalNotCloseReadyError,
+  HitchNotCloseReadyError,
   latestRunId,
-  type GoalRunContext,
+  type HitchRunContext,
 } from "../../src/hitch/orchestrator-runners.js";
 import { createFakeCodexRunner } from "../../src/codex/fake-codex-runner.js";
 import { runDomainCoding } from "../../src/core/workflow-runner.js";
@@ -217,7 +217,7 @@ describe("hitch orchestrate (real git + fake codex)", () => {
     });
     const publisher = fakePublisher();
 
-    const resolveRunContext = (): GoalRunContext => ({
+    const resolveRunContext = (): HitchRunContext => ({
       repoPath: f.repoPath,
       repoId: "t",
       domain: "apps/user",
@@ -334,7 +334,7 @@ describe("hitch orchestrate (real git + fake codex)", () => {
     });
     const publisher = fakePublisher();
 
-    const resolveRunContext = (): GoalRunContext => ({
+    const resolveRunContext = (): HitchRunContext => ({
       repoPath: f.repoPath,
       repoId: "t",
       domain: "apps/user",
@@ -397,7 +397,7 @@ describe("hitch orchestrate (real git + fake codex)", () => {
     const hitchId = createGoal(f.dbPath, "goal-orch-repair-missing-decision");
     const { coderRunner, reviewerRunner } = approveFakes("docs/guide.md");
     const publisher = fakePublisher();
-    const resolveRunContext = (): GoalRunContext => ({
+    const resolveRunContext = (): HitchRunContext => ({
       repoPath: f.repoPath,
       repoId: "t",
       domain: "docs",
@@ -487,7 +487,7 @@ describe("hitch orchestrate (real git + fake codex)", () => {
       coderRunner,
       reviewerRunner,
       publisher,
-      resolveRunContext: (): GoalRunContext => ({
+      resolveRunContext: (): HitchRunContext => ({
         repoPath: f.repoPath,
         repoId: "t",
         domain: "docs",
@@ -549,7 +549,7 @@ describe("hitch orchestrate (real git + fake codex)", () => {
   }) {
     const domain = opts.domain ?? "docs";
     const { coderRunner, reviewerRunner } = approveFakes(opts.changedPath);
-    const resolveRunContext = (): GoalRunContext => ({
+    const resolveRunContext = (): HitchRunContext => ({
       repoPath: f.repoPath,
       repoId: "t",
       domain,
@@ -820,7 +820,7 @@ describe("hitch orchestrate (real git + fake codex)", () => {
       coderRunner,
       reviewerRunner,
       publisher: fakePublisher(),
-      resolveRunContext: (): GoalRunContext => ({
+      resolveRunContext: (): HitchRunContext => ({
         repoPath: f.repoPath,
         repoId: "t",
         domain: "docs",
@@ -849,7 +849,7 @@ describe("hitch orchestrate (real git + fake codex)", () => {
     };
 
     const sleeps: number[] = [];
-    const out = await awaitGoalMerge(
+    const out = await awaitHitchMerge(
       {
         pollOnce: probe,
         sleep: async (ms) => {
@@ -887,7 +887,7 @@ describe("hitch orchestrate (real git + fake codex)", () => {
       coderRunner,
       reviewerRunner,
       publisher, // present, but must NOT be called when stopAtCloseReady halts
-      resolveRunContext: (): GoalRunContext => ({
+      resolveRunContext: (): HitchRunContext => ({
         repoPath: f.repoPath,
         repoId: "t",
         domain: "docs",
@@ -915,7 +915,7 @@ describe("hitch orchestrate (real git + fake codex)", () => {
     }
   });
 
-  it("closeAndPr throws a typed GoalNotCloseReadyError on a non-close_ready goal (drift signal)", async () => {
+  it("closeAndPr throws a typed HitchNotCloseReadyError on a non-close_ready goal (drift signal)", async () => {
     // a fresh goal sits at `continue` (needs a run/review), not close_ready.
     const hitchId = createGoal(f.dbPath, "goal-notready", "docs");
     const { coderRunner, reviewerRunner } = approveFakes("docs/guide.md");
@@ -926,7 +926,7 @@ describe("hitch orchestrate (real git + fake codex)", () => {
       coderRunner,
       reviewerRunner,
       publisher: fakePublisher(),
-      resolveRunContext: (): GoalRunContext => ({
+      resolveRunContext: (): HitchRunContext => ({
         repoPath: f.repoPath,
         repoId: "t",
         domain: "docs",
@@ -940,11 +940,11 @@ describe("hitch orchestrate (real git + fake codex)", () => {
     });
     // the typed error lets await-merge tell a benign drift from a real failure.
     await expect(runners.closeAndPr(hitchId)).rejects.toBeInstanceOf(
-      GoalNotCloseReadyError,
+      HitchNotCloseReadyError,
     );
     await runners.closeAndPr(hitchId).catch((e: unknown) => {
-      expect(e).toBeInstanceOf(GoalNotCloseReadyError);
-      expect((e as GoalNotCloseReadyError).decision).not.toBe("close_ready");
+      expect(e).toBeInstanceOf(HitchNotCloseReadyError);
+      expect((e as HitchNotCloseReadyError).decision).not.toBe("close_ready");
     });
   });
 
@@ -1005,7 +1005,7 @@ describe("hitch orchestrate (real git + fake codex)", () => {
       coderRunner,
       reviewerRunner,
       publisher: fakePublisher(),
-      resolveRunContext: (): GoalRunContext => ({
+      resolveRunContext: (): HitchRunContext => ({
         repoPath: f.repoPath,
         repoId: "t",
         domain: "docs",

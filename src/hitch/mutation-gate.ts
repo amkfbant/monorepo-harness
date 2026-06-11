@@ -1,72 +1,72 @@
 import { ConvergenceService } from "./convergence.js";
-import { syncGoalStatusForConvergence } from "./convergence-status.js";
+import { syncHitchStatusForConvergence } from "./convergence-status.js";
 import type { HitchRepository } from "./repository.js";
 import type { HitchConvergenceResult } from "./types.js";
 
-export type GoalLinkedMutationKind =
+export type HitchLinkedMutationKind =
   | "run.start"
   | "review.auto"
   | "rerun.start"
   | "review.process"
-  // (#83) The MCP driver that advances the goal loop a bounded number of steps.
+  // (#83) The MCP driver that advances the hitch loop a bounded number of steps.
   | "hitch.orchestrate";
 
-export interface GoalMutationGateDenied {
+export interface HitchMutationGateDenied {
   allowed: false;
   code: string;
   message: string;
-  /** Absent only for goal_not_found, where convergence cannot be evaluated. */
+  /** Absent only for hitch_not_found, where convergence cannot be evaluated. */
   convergence?: HitchConvergenceResult;
 }
 
-export interface GoalMutationGateAllowed {
+export interface HitchMutationGateAllowed {
   allowed: true;
   convergence: HitchConvergenceResult;
 }
 
-export type GoalMutationGateResult =
-  | GoalMutationGateAllowed
-  | GoalMutationGateDenied;
+export type HitchMutationGateResult =
+  | HitchMutationGateAllowed
+  | HitchMutationGateDenied;
 
-export class GoalMutationGateError extends Error {
-  constructor(readonly denial: GoalMutationGateDenied) {
+export class HitchMutationGateError extends Error {
+  constructor(readonly denial: HitchMutationGateDenied) {
     super(denial.message);
-    this.name = "GoalMutationGateError";
+    this.name = "HitchMutationGateError";
   }
 }
 
-export function assertGoalCanStartMutation(input: {
+export function assertHitchCanStartMutation(input: {
   repository: HitchRepository;
   hitchId: string;
-  mutationKind: GoalLinkedMutationKind;
-}): GoalMutationGateAllowed {
-  const gate = evaluateGoalMutationGate(input);
+  mutationKind: HitchLinkedMutationKind;
+}): HitchMutationGateAllowed {
+  const gate = evaluateHitchMutationGate(input);
   if (!gate.allowed) {
-    throw new GoalMutationGateError(gate);
+    throw new HitchMutationGateError(gate);
   }
   return gate;
 }
 
-export function evaluateGoalMutationGate(input: {
+export function evaluateHitchMutationGate(input: {
   repository: HitchRepository;
   hitchId: string;
-  mutationKind: GoalLinkedMutationKind;
+  mutationKind: HitchLinkedMutationKind;
   syncStatus?: boolean;
-}): GoalMutationGateResult {
-  // A linked goal that does not exist is a structured denial, not a DB error:
+}): HitchMutationGateResult {
+  // A linked hitch that does not exist is a structured denial, not a DB error:
   // ConvergenceService.evaluate would throw on a missing session.
   if (input.repository.getSession(input.hitchId) === null) {
     return {
       allowed: false,
-      code: "goal_not_found",
-      message: `goal ${input.hitchId} not found`,
+      code: "hitch_not_found",
+      message: `hitch ${input.hitchId} not found`,
     };
   }
   const convergence = new ConvergenceService(input.repository).evaluate(
     input.hitchId,
   );
   if (input.syncStatus !== false) {
-    syncGoalStatusForConvergence(input.repository, convergence);
+    syncHitchStatusForConvergence(input.repository, convergence);
   }
   if (allowedByConvergence(input.mutationKind, convergence)) {
     return { allowed: true, convergence };
@@ -76,14 +76,14 @@ export function evaluateGoalMutationGate(input: {
     allowed: false,
     code,
     message:
-      `goal ${input.hitchId} blocks ${input.mutationKind}: ` +
+      `hitch ${input.hitchId} blocks ${input.mutationKind}: ` +
       `decision=${convergence.decision} (${convergence.reason})`,
     convergence,
   };
 }
 
 export function allowedByConvergence(
-  mutationKind: GoalLinkedMutationKind,
+  mutationKind: HitchLinkedMutationKind,
   convergence: HitchConvergenceResult,
 ): boolean {
   const action = convergence.recommendedNextAction.kind;
@@ -113,21 +113,21 @@ export function allowedByConvergence(
 
 function gateCode(
   convergence: HitchConvergenceResult,
-  mutationKind: GoalLinkedMutationKind,
+  mutationKind: HitchLinkedMutationKind,
 ): string {
   const decision = convergence.decision;
-  if (decision === "budget_exhausted") return "goal_budget_exhausted";
-  if (decision === "diverging") return "goal_diverging";
-  if (decision === "escalate") return "goal_escalated";
-  if (decision === "needs_classification") return "goal_needs_classification";
-  if (decision === "close_ready") return "goal_close_ready";
-  if (decision === "closed") return "goal_closed";
-  if (decision === "cancel") return "goal_cancelled";
+  if (decision === "budget_exhausted") return "hitch_budget_exhausted";
+  if (decision === "diverging") return "hitch_diverging";
+  if (decision === "escalate") return "hitch_escalated";
+  if (decision === "needs_classification") return "hitch_needs_classification";
+  if (decision === "close_ready") return "hitch_close_ready";
+  if (decision === "closed") return "hitch_closed";
+  if (decision === "cancel") return "hitch_cancelled";
   if (decision === "continue") {
-    return `goal_next_action_${convergence.recommendedNextAction.kind}`;
+    return `hitch_next_action_${convergence.recommendedNextAction.kind}`;
   }
   if (decision === "needs_fix") {
-    return `goal_needs_fix_${convergence.recommendedNextAction.kind}_disallows_${mutationKind.replace(".", "_")}`;
+    return `hitch_needs_fix_${convergence.recommendedNextAction.kind}_disallows_${mutationKind.replace(".", "_")}`;
   }
-  return `goal_${decision}`;
+  return `hitch_${decision}`;
 }

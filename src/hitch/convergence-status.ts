@@ -25,7 +25,7 @@ export interface RecordConvergenceWithStatusInput {
 
 export interface ConvergenceStatusSyncResult {
   decisionRecord: HitchConvergenceDecisionRecord;
-  goalStatus: HitchSession | null;
+  hitchStatus: HitchSession | null;
 }
 
 export function evaluateConvergenceAndRecordStatus(input: {
@@ -68,10 +68,10 @@ export function recordConvergenceDecisionWithStatus(input: {
     createdBy: input.createdBy,
     ...(input.createdAt !== undefined ? { createdAt: input.createdAt } : {}),
   });
-  const goalStatus =
+  const hitchStatus =
     input.updateStatus === false
       ? null
-      : syncGoalStatusForConvergence(
+      : syncHitchStatusForConvergence(
           input.repository,
           {
             hitchId: input.hitchId,
@@ -86,18 +86,18 @@ export function recordConvergenceDecisionWithStatus(input: {
           },
           input.createdAt,
         );
-  return { decisionRecord, goalStatus };
+  return { decisionRecord, hitchStatus };
 }
 
-export function syncGoalStatusForConvergence(
+export function syncHitchStatusForConvergence(
   repository: HitchRepository,
   result: HitchConvergenceResult,
   now?: string,
 ): HitchSession | null {
   const current = repository.requireSession(result.hitchId);
-  // Terminal statuses are final: never move a closed/cancelled goal back to a
+  // Terminal statuses are final: never move a closed/cancelled hitch back to a
   // live status, regardless of the decision. This is the data-layer guard that
-  // backs the close_ready reversion below (which only ever runs for live goals).
+  // backs the close_ready reversion below (which only ever runs for live hitches).
   if (current.status === "closed" || current.status === "cancelled") {
     return current;
   }

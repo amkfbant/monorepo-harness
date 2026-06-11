@@ -183,7 +183,7 @@ describe("MCP goal tools", () => {
     expect(checked.data.result.check.status).toBe("passed");
     expect(checked.data.result.convergence.decision).toBe("close_ready");
     expect(checked.data.result.decisionRecord.decision).toBe("close_ready");
-    expect(checked.data.result.goalStatus.status).toBe("close_ready");
+    expect(checked.data.result.hitchStatus.status).toBe("close_ready");
     expect(JSON.stringify(checked)).not.toContain(secret);
     const closeCheckOperation = await callTool(s, "harness.operation.get", {
       operationId: checked.operationId,
@@ -426,7 +426,7 @@ describe("MCP goal tools", () => {
     });
     // decision is still computed and recorded, but status sync is suppressed.
     expect(res.data.result.decision).toBe("close_ready");
-    expect(res.data.result.goalStatus).toBeNull();
+    expect(res.data.result.hitchStatus).toBeNull();
     withDb(root, (db) => {
       expect(new HitchRepository(db).requireSession("goal-no-sync").status).not.toBe(
         "close_ready",
@@ -485,21 +485,21 @@ describe("MCP goal tools", () => {
       idempotencyKey: "goal-sync-diverging",
     });
     expect(diverging.data.result.decision).toBe("diverging");
-    expect(diverging.data.result.goalStatus.status).toBe("diverging");
+    expect(diverging.data.result.hitchStatus.status).toBe("diverging");
 
     const budget = await callTool(s, "harness.hitch.check_convergence", {
       hitchId: "goal-sync-budget",
       idempotencyKey: "goal-sync-budget",
     });
     expect(budget.data.result.decision).toBe("budget_exhausted");
-    expect(budget.data.result.goalStatus.status).toBe("budget_exhausted");
+    expect(budget.data.result.hitchStatus.status).toBe("budget_exhausted");
 
     const closeReady = await callTool(s, "harness.hitch.check_convergence", {
       hitchId: "goal-sync-close",
       idempotencyKey: "goal-sync-close",
     });
     expect(closeReady.data.result.decision).toBe("close_ready");
-    expect(closeReady.data.result.goalStatus.status).toBe("close_ready");
+    expect(closeReady.data.result.hitchStatus.status).toBe("close_ready");
 
     withDb(root, (db) => {
       const repo = new HitchRepository(db);

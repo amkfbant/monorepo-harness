@@ -225,7 +225,7 @@ export async function workspaceRecoverTool(
   const allowed = context.config.allowedProjects;
   const paths = harnessPaths(context.harnessRoot);
   const handle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
-  let goal: RecoveryHitch | null = null;
+  let hitch: RecoveryHitch | null = null;
   let objective: string | null = null;
   let latestCheckpoint: { note: string | null; createdAt: string; createdBy: string } | null =
     null;
@@ -253,7 +253,7 @@ export async function workspaceRecoverTool(
           : { note: latest.note, createdAt: latest.createdAt, createdBy: latest.createdBy };
       if (row.hitchId !== null) {
         const exists = goalRepo.getSession(row.hitchId) !== null;
-        goal = {
+        hitch = {
           hitchId: row.hitchId,
           convergence: exists
             ? (() => {
@@ -273,6 +273,6 @@ export async function workspaceRecoverTool(
   }
   if (!authorized) return notFound();
 
-  const briefing = buildRecoveryBriefing({ inspection, objective, goal, latestCheckpoint });
+  const briefing = buildRecoveryBriefing({ inspection, objective, hitch, latestCheckpoint });
   return ok(`recovery briefing for "${args.agent}"`, briefing);
 }

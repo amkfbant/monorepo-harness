@@ -109,7 +109,7 @@ describe("evaluateConsensusStallForHitch (Phase 2-3)", () => {
       });
 
       expect(result.stalled).toBe(true);
-      expect(result.goalStatus?.status).toBe("escalated");
+      expect(result.hitchStatus?.status).toBe("escalated");
       expect(goals.requireSession("goal-stall").status).toBe("escalated");
       // P3: the escalate record links the triggering cycle + is surfaced.
       expect(result.decisionRecord?.decision).toBe("escalate");
@@ -142,7 +142,7 @@ describe("evaluateConsensusStallForHitch (Phase 2-3)", () => {
       });
 
       expect(result.stalled).toBe(false);
-      expect(result.goalStatus).toBeNull();
+      expect(result.hitchStatus).toBeNull();
       expect(goals.requireSession("goal-progress").status).not.toBe("escalated");
     } finally {
       db.close();
@@ -318,7 +318,7 @@ describe("evaluateConsensusStallForHitch (Phase 2-3)", () => {
         createdBy: "test",
       });
       expect(result.stalled).toBe(false);
-      expect(result.goalStatus).toBeNull();
+      expect(result.hitchStatus).toBeNull();
     } finally {
       db.close();
     }

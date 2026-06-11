@@ -1214,7 +1214,7 @@ describe("MCP mutation, confirmation, and audit", () => {
     );
 
     expect(result.status).toBe("permission_denied");
-    expect(result.data.reason).toBe("goal_budget_exhausted");
+    expect(result.data.reason).toBe("hitch_budget_exhausted");
   });
 
   it("rejects goal-linked run.start with goal_not_found when the goal is absent", async () => {
@@ -1280,7 +1280,7 @@ describe("MCP mutation, confirmation, and audit", () => {
     );
 
     expect(result.status).toBe("permission_denied");
-    expect(result.data.reason).toBe("goal_needs_classification");
+    expect(result.data.reason).toBe("hitch_needs_classification");
   });
 
   it("rejects goal-linked run.start when convergence is close_ready", async () => {
@@ -1320,7 +1320,7 @@ describe("MCP mutation, confirmation, and audit", () => {
     );
 
     expect(result.status).toBe("permission_denied");
-    expect(result.data.reason).toBe("goal_close_ready");
+    expect(result.data.reason).toBe("hitch_close_ready");
   });
 
   it("rejects goal-linked run.start when close checks are pending", async () => {
@@ -1361,7 +1361,7 @@ describe("MCP mutation, confirmation, and audit", () => {
     );
 
     expect(result.status).toBe("permission_denied");
-    expect(result.data.reason).toBe("goal_next_action_run_close_check");
+    expect(result.data.reason).toBe("hitch_next_action_run_close_check");
 
     const rerun = await callTool(
       server(root, {
@@ -1378,7 +1378,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       },
     );
     expect(rerun.status).toBe("permission_denied");
-    expect(rerun.data.reason).toBe("goal_next_action_run_close_check");
+    expect(rerun.data.reason).toBe("hitch_next_action_run_close_check");
   });
 
   it("allows goal-linked review.auto when close-check evidence is pending", async () => {
@@ -1467,7 +1467,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       idempotencyKey: "goal-defer-followups-run",
     });
     expect(run.status).toBe("permission_denied");
-    expect(run.data.reason).toBe("goal_next_action_defer_followups");
+    expect(run.data.reason).toBe("hitch_next_action_defer_followups");
 
     const rerun = await callTool(s, "harness.rerun.start", {
       runId: "run-defer-followups",
@@ -1475,7 +1475,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       idempotencyKey: "goal-defer-followups-rerun",
     });
     expect(rerun.status).toBe("permission_denied");
-    expect(rerun.data.reason).toBe("goal_next_action_defer_followups");
+    expect(rerun.data.reason).toBe("hitch_next_action_defer_followups");
   });
 
   it("allows goal-linked run.start gate when convergence needs a fix", async () => {
@@ -1654,7 +1654,7 @@ describe("MCP mutation, confirmation, and audit", () => {
 
     expect(result.status).toBe("permission_denied");
     expect(result.data.reason).toBe(
-      "goal_needs_fix_fix_findings_disallows_review_process",
+      "hitch_needs_fix_fix_findings_disallows_review_process",
     );
     expect(
       readDb(
@@ -1716,7 +1716,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       confirmedBy: "human",
     });
     expect(confirmed.status).toBe("operation_started");
-    expect(confirmed.data.result.goalIntegration.convergenceDecision.decision).toBe(
+    expect(confirmed.data.result.hitchIntegration.convergenceDecision.decision).toBe(
       "close_ready",
     );
 

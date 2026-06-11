@@ -48,7 +48,7 @@ import {
 import { classifyFindingForHitch } from "./classification.js";
 import { deferFindingToBacklog } from "./followups.js";
 import { ConvergenceService } from "./convergence.js";
-import { assertGoalCanStartMutation } from "./mutation-gate.js";
+import { assertHitchCanStartMutation } from "./mutation-gate.js";
 import { importReviewProposalToHitch } from "./review-integration.js";
 import { dbConsensusSnapshotProvider } from "./consensus-stall-check.js";
 import { nextReviewMode } from "./review-mode.js";
@@ -61,22 +61,22 @@ import type {
 } from "./types.js";
 
 /**
- * Thrown by `closeAndPr`'s pre-side-effect guard when the goal is not
+ * Thrown by `closeAndPr`'s pre-side-effect guard when the hitch is not
  * `close_ready`. It is raised BEFORE any side effect (no PR/push/merge), so a
- * caller (e.g. `goal await-merge`) can distinguish a benign convergence DRIFT
+ * caller (e.g. `hitch await-merge`) can distinguish a benign convergence DRIFT
  * from a real close/merge failure by the error TYPE rather than re-reading
  * convergence (which is racy).
  */
-export class GoalNotCloseReadyError extends Error {
+export class HitchNotCloseReadyError extends Error {
   constructor(
     readonly hitchId: string,
     readonly decision: string,
   ) {
     super(
-      `goal ${hitchId} is not close_ready (decision=${decision}); ` +
+      `hitch ${hitchId} is not close_ready (decision=${decision}); ` +
         `refusing to close and open a PR`,
     );
-    this.name = "GoalNotCloseReadyError";
+    this.name = "HitchNotCloseReadyError";
   }
 }
 
@@ -110,7 +110,7 @@ const DEFERRABLE_OUT_OF_SCOPE_LIFECYCLES: readonly HitchLifecycleStatus[] = [
  * CLI resolves these from its `--repo` / `--base-branch` flags; tests pass a
  * throwaway git repo.
  */
-export interface GoalRunContext {
+export interface HitchRunContext {
   repoPath: string;
   repoId: string;
   domain: string;
@@ -185,7 +185,7 @@ export interface OrchestratorRunnerDeps {
    * the session, and the base branch to `main`; the repo path is taken from
    * `repoPath` below. Override for full control (e.g. project-mode runs).
    */
-  resolveRunContext?: (session: HitchSession) => GoalRunContext;
+  resolveRunContext?: (session: HitchSession) => HitchRunContext;
   /**
    * Repo path used by the default `resolveRunContext`. Ignored when a custom
    * `resolveRunContext` is supplied.
@@ -205,7 +205,7 @@ function defaultGoalText(session: HitchSession): string {
 function resolveRunContext(
   deps: OrchestratorRunnerDeps,
   session: HitchSession,
-): GoalRunContext {
+): HitchRunContext {
   if (deps.resolveRunContext !== undefined) {
     return deps.resolveRunContext(session);
   }
@@ -269,7 +269,7 @@ export function createOrchestratorRunners(
     mutationKind: "run.start" | "review.auto",
   ): void => {
     withManagedDb({ dbPath: deps.dbPath }, (db) => {
-      assertGoalCanStartMutation({
+      assertHitchCanStartMutation({
         repository: new HitchRepository(db),
         hitchId,
         mutationKind,
@@ -510,7 +510,7 @@ export function createOrchestratorRunners(
           // not be able to close a non-ready goal — fail closed.
           const convergence = new ConvergenceService(repo).evaluate(hitchId);
           if (convergence.decision !== "close_ready") {
-            throw new GoalNotCloseReadyError(hitchId, convergence.decision);
+            throw new HitchNotCloseReadyError(hitchId, convergence.decision);
           }
           const context = resolveRunContext(deps, session);
           const rid = latestRunId(repo, hitchId);
