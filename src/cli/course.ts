@@ -1,14 +1,37 @@
 import process from "node:process";
+import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import type { Command } from "commander";
 import { parse as parseYaml } from "yaml";
+import type Database from "better-sqlite3";
 import { harnessPaths } from "../config/paths.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { DbError } from "../db/connection.js";
+import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
+import {
+  startOperation,
+  succeedOperation,
+  failOperation,
+} from "../db/repositories/operations.js";
+import { HitchOrchestrator } from "../hitch/orchestrator.js";
+import { createOrchestratorRunners } from "../hitch/orchestrator-runners.js";
+import type { OrchestratorRunners } from "../hitch/orchestrator-types.js";
+import { HitchRepository } from "../hitch/repository.js";
+import type { HitchSession } from "../hitch/types.js";
+import { ProjectError } from "../project/errors.js";
+import { prepareProjectRun } from "../project/run-project.js";
 import { CourseRepository } from "../roadmap/course-repository.js";
+import {
+  CourseOrchestrateError,
+  CourseOrchestrator,
+} from "../roadmap/course-orchestrator.js";
+import type {
+  CourseOrchestrationResult,
+  PhaseOutcome,
+} from "../roadmap/orchestrator-types.js";
 import { PhaseRepository } from "../roadmap/phase-repository.js";
-import { rollupCourse } from "../roadmap/rollup.js";
+import { rollupCourse, type CourseRollup } from "../roadmap/rollup.js";
 import {
   COURSE_STATUSES,
   PHASE_STATUSES,
@@ -29,7 +52,12 @@ class CourseCliError extends Error {
 
 /** User-fixable errors: typed CLI errors, DB errors, and common "not found" / constraint messages. */
 function courseError(e: unknown): never {
-  if (e instanceof CourseCliError || e instanceof DbError) {
+  if (
+    e instanceof CourseCliError ||
+    e instanceof CourseOrchestrateError ||
+    e instanceof ProjectError ||
+    e instanceof DbError
+  ) {
     process.stderr.write(`harness error: ${e.message}\n`);
     process.exit(1);
   }
@@ -51,6 +79,27 @@ function withCourseErrorExit(fn: () => void): void {
   }
 }
 
+async function withCourseOrchestrateErrorExit(fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    if (
+      e instanceof CourseCliError ||
+      e instanceof CourseOrchestrateError ||
+      e instanceof ProjectError ||
+      e instanceof DbError ||
+      (e instanceof Error &&
+        /not found|different course|already linked|project/i.test(e.message))
+    ) {
+      process.stderr.write(`harness error: ${e.message}\n`);
+      process.exit(1);
+    }
+    const message = e instanceof Error ? e.message : String(e);
+    process.stderr.write(`harness error: ${message}\n`);
+    process.exit(2);
+  }
+}
+
 /** Opens, migrates, and closes the DB around a callback that receives the raw handle. */
 function withCourseDb<T>(
   opts: RegisterCourseCommandsOptions,
@@ -62,6 +111,21 @@ function withCourseDb<T>(
   try {
     runMigrations(handle.db);
     return fn(handle.db);
+  } finally {
+    handle.close();
+  }
+}
+
+async function withCourseDbAsync<T>(
+  opts: RegisterCourseCommandsOptions,
+  fn: (db: ReturnType<typeof openManagedDb>["db"]) => Promise<T>,
+): Promise<T> {
+  const root = opts.getHarnessRoot();
+  const paths = harnessPaths(root);
+  const handle = openManagedDb({ dbPath: paths.dbPath });
+  try {
+    runMigrations(handle.db);
+    return await fn(handle.db);
   } finally {
     handle.close();
   }
@@ -106,6 +170,166 @@ function parseNonNegativeInt(value: unknown, flag: string): number {
     throw new CourseCliError(`${flag} must be a non-negative integer`);
   }
   return n;
+}
+
+function parsePositiveInt(value: unknown, flag: string): number {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new CourseCliError(`${flag} must be a positive integer`);
+  }
+  return n;
+}
+
+function clampInt(value: number, max: number): number {
+  return Math.min(max, value);
+}
+
+interface CourseOrchestrateDryRunResult {
+  courseId: string;
+  dryRun: true;
+  phaseOutcomes: PhaseOutcome[];
+  drivenHitches: [];
+  rollupAfter: CourseRollup;
+  followUps: string[];
+}
+
+async function buildCourseOrchestrateDryRun(
+  db: Database.Database,
+  courseId: string,
+  maxDrivenHitches: number,
+  maxStepsPerHitch: number,
+): Promise<CourseOrchestrateDryRunResult> {
+  const orchestrator = new CourseOrchestrator({
+    db,
+    makeHitchOrchestrator: () => {
+      throw new CourseCliError("dry-run plan must not drive hitches");
+    },
+    makeRunners: () => {
+      throw new CourseCliError("dry-run plan must not prepare runners");
+    },
+  });
+  const phaseOutcomes = await orchestrator.plan({
+    courseId,
+    maxDrivenHitches,
+    maxStepsPerHitch,
+  });
+  return {
+    courseId,
+    dryRun: true,
+    phaseOutcomes,
+    drivenHitches: [],
+    rollupAfter: rollupCourse({ db, courseId }),
+    followUps: [],
+  };
+}
+
+async function makeCourseHitchRunners(input: {
+  db: Database.Database;
+  dbPath: string;
+  harnessRoot: string;
+  codexBin: string;
+  courseId: string;
+  courseProjectId: string | null;
+  hitchId: string;
+  runnersByHitch: Map<string, OrchestratorRunners>;
+}): Promise<OrchestratorRunners> {
+  const cached = input.runnersByHitch.get(input.hitchId);
+  if (cached !== undefined) return cached;
+
+  const session = new HitchRepository(input.db).requireSession(input.hitchId);
+  const projectId = session.projectId ?? input.courseProjectId;
+  if (projectId === null) {
+    throw new CourseCliError(
+      `hitch ${input.hitchId} has no projectId and course ${input.courseId} has no projectId`,
+    );
+  }
+  if (session.domain === null) {
+    throw new CourseCliError(`hitch ${input.hitchId} has no domain`);
+  }
+
+  const prepared = await prepareProjectRun({
+    harnessRoot: input.harnessRoot,
+    projectId,
+    domain: session.domain,
+  });
+  const runners = createOrchestratorRunners({
+    dbPath: input.dbPath,
+    harnessRoot: input.harnessRoot,
+    createdBy: "cli",
+    coderRunner: createCodexCliRunner({
+      codexBin: input.codexBin,
+      sandbox: "workspace-write",
+    }),
+    reviewerRunner: createCodexCliRunner({
+      codexBin: input.codexBin,
+      sandbox: "read-only",
+    }),
+    resolveRunContext: (runSession) => ({
+      repoPath: prepared.repoPath,
+      repoId: prepared.repoId,
+      domain: prepared.domain,
+      goal: hitchGoalText(runSession),
+      baseBranch: prepared.baseBranch,
+    }),
+  });
+  input.runnersByHitch.set(input.hitchId, runners);
+  return runners;
+}
+
+function hitchGoalText(session: HitchSession): string {
+  return [session.title, session.description ?? ""]
+    .map((part) => part.trim())
+    .filter((part) => part !== "")
+    .join("\n\n");
+}
+
+function operationErrorCode(e: unknown): string {
+  if (e instanceof CourseOrchestrateError) return e.code;
+  if (e instanceof CourseCliError) return "course_cli_error";
+  if (e instanceof DbError) return "db_error";
+  if (e instanceof ProjectError) return "project_error";
+  return "driver_exception";
+}
+
+function writeCourseOrchestrateDryRunOutput(
+  raw: Record<string, unknown>,
+  result: CourseOrchestrateDryRunResult,
+): void {
+  if (raw.json === true) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  const lines = [`course=${result.courseId} dryRun=true`];
+  for (const outcome of result.phaseOutcomes) {
+    lines.push(`phase=${outcome.phaseId} action=${outcome.action}`);
+  }
+  process.stdout.write(lines.join("\n") + "\n");
+}
+
+function writeCourseOrchestrateOutput(
+  raw: Record<string, unknown>,
+  result: CourseOrchestrationResult,
+): void {
+  if (raw.json === true) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  const lines = [
+    `course=${result.courseId} stopReason=${result.stopReason}` +
+      ` openP0=${result.rollupAfter.openP0} openP1=${result.rollupAfter.openP1}`,
+  ];
+  for (const outcome of result.phaseOutcomes) {
+    const driven =
+      outcome.drivenHitches !== undefined && outcome.drivenHitches.length > 0
+        ? ` driven=${outcome.drivenHitches.map((h) => h.hitchId).join(",")}`
+        : "";
+    const note = outcome.note !== undefined ? ` note=${outcome.note}` : "";
+    lines.push(`phase=${outcome.phaseId} action=${outcome.action}${driven}${note}`);
+  }
+  for (const followUp of result.followUps) {
+    lines.push(`followUp=${followUp}`);
+  }
+  process.stdout.write(lines.join("\n") + "\n");
 }
 
 export function registerCourseCommands(
@@ -208,6 +432,114 @@ export function registerCourseCommands(
             );
           }
           process.stdout.write(lines.join("\n") + "\n");
+        }
+      });
+    });
+
+  courseCmd
+    .command("orchestrate")
+    .description("drive linked hitches in phase-tree order")
+    .argument("<course-id>", "course id")
+    .option("--max-driven-hitches <n>", "max hitches to drive in this pass", "3")
+    .option("--max-steps-per-hitch <n>", "max hitch orchestrator steps per hitch", "20")
+    .option("--dry-run", "print phase actions only; do not lease, write, or drive", false)
+    .option("--json", "emit JSON", false)
+    .action(async (courseId: string, raw: Record<string, unknown>) => {
+      await withCourseOrchestrateErrorExit(async () => {
+        const maxDrivenHitches = clampInt(
+          parsePositiveInt(raw.maxDrivenHitches ?? 3, "--max-driven-hitches"),
+          10,
+        );
+        const maxStepsPerHitch = clampInt(
+          parsePositiveInt(raw.maxStepsPerHitch ?? 20, "--max-steps-per-hitch"),
+          50,
+        );
+        if (raw.dryRun === true) {
+          const result = await withCourseDbAsync(opts, (db) =>
+            buildCourseOrchestrateDryRun(
+              db,
+              courseId,
+              maxDrivenHitches,
+              maxStepsPerHitch,
+            ),
+          );
+          writeCourseOrchestrateDryRunOutput(raw, result);
+          return;
+        }
+
+        const result = await withCourseDbAsync(opts, async (db) => {
+          const courses = new CourseRepository(db);
+          const course = courses.require(courseId);
+          const operationId = `op-${randomUUID()}`;
+          startOperation(db, {
+            operationId,
+            operationType: "course.orchestrate",
+            targetType: "course",
+            targetId: courseId,
+            actor: "cli",
+            dryRun: false,
+            input: {
+              courseId,
+              maxDrivenHitches,
+              maxStepsPerHitch,
+            },
+          });
+          try {
+            if (course.status !== "active") {
+              throw new CourseOrchestrateError(
+                "course_not_active",
+                `course ${courseId} is not active (${course.status})`,
+                { courseId, status: course.status },
+              );
+            }
+            const dbPath = harnessPaths(opts.getHarnessRoot()).dbPath;
+            const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
+            const runnersByHitch = new Map<string, OrchestratorRunners>();
+            const orchestrated = await new CourseOrchestrator({
+              db,
+              makeHitchOrchestrator: () => new HitchOrchestrator({ dbPath }),
+              makeRunners: (hitchId) =>
+                makeCourseHitchRunners({
+                  db,
+                  dbPath,
+                  harnessRoot: opts.getHarnessRoot(),
+                  codexBin,
+                  courseId: course.courseId,
+                  courseProjectId: course.projectId,
+                  hitchId,
+                  runnersByHitch,
+                }),
+            }).run({
+              courseId,
+              maxDrivenHitches,
+              maxStepsPerHitch,
+              createdBy: "cli",
+            });
+            if (orchestrated.stopReason === "budget_exhausted") {
+              failOperation(
+                db,
+                operationId,
+                "budget_exhausted",
+                `course ${courseId} orchestration budget exhausted`,
+              );
+            } else {
+              succeedOperation(db, operationId, orchestrated);
+            }
+            return orchestrated;
+          } catch (e) {
+            failOperation(
+              db,
+              operationId,
+              operationErrorCode(e),
+              e instanceof Error ? e.message : String(e),
+            );
+            throw e;
+          }
+        });
+
+        writeCourseOrchestrateOutput(raw, result);
+        if (result.stopReason === "budget_exhausted") {
+          process.exit(1);
         }
       });
     });

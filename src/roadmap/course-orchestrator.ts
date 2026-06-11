@@ -40,7 +40,7 @@ export class CourseOrchestrateError extends Error {
 export interface CourseOrchestratorDeps {
   db: Database.Database;
   makeHitchOrchestrator(hitchId: string): HitchOrchestrator;
-  makeRunners(hitchId: string): OrchestratorRunners;
+  makeRunners(hitchId: string): OrchestratorRunners | Promise<OrchestratorRunners>;
 }
 
 export interface RunCourseOrchestrationInput {
@@ -50,8 +50,54 @@ export interface RunCourseOrchestrationInput {
   createdBy: string;
 }
 
+export interface PlanCourseOrchestrationInput {
+  courseId: string;
+  maxDrivenHitches: number;
+  maxStepsPerHitch: number;
+}
+
+interface WalkCourseInput {
+  courseId: string;
+  maxDrivenHitches: number;
+  maxStepsPerHitch: number;
+  createdBy?: string;
+}
+
+interface WalkCourseOptions {
+  driveHitch?: (input: {
+    hitchId: string;
+    maxStepsPerHitch: number;
+    createdBy: string;
+  }) => Promise<DrivenHitch & { finalDecision: string }>;
+  transitionPhaseStatus: boolean;
+}
+
+interface WalkCourseResult {
+  stopReason: CourseOrchestrationResult["stopReason"];
+  phaseOutcomes: PhaseOutcome[];
+  drivenHitches: DrivenHitch[];
+}
+
 export class CourseOrchestrator {
   constructor(private readonly deps: CourseOrchestratorDeps) {}
+
+  async plan(input: PlanCourseOrchestrationInput): Promise<PhaseOutcome[]> {
+    const normalizedInput = normalizePlanInput(input);
+    const courses = new CourseRepository(this.deps.db);
+    const course = courses.require(normalizedInput.courseId);
+    if (course.status !== "active") {
+      throw new CourseOrchestrateError(
+        "course_not_active",
+        `course ${normalizedInput.courseId} is not active (${course.status})`,
+        { courseId: normalizedInput.courseId, status: course.status },
+      );
+    }
+
+    const result = await this.walkCourse(normalizedInput, {
+      transitionPhaseStatus: false,
+    });
+    return result.phaseOutcomes;
+  }
 
   async run(
     input: RunCourseOrchestrationInput,
@@ -111,6 +157,35 @@ export class CourseOrchestrator {
   private async runWithLease(
     input: RunCourseOrchestrationInput,
   ): Promise<CourseOrchestrationResult> {
+    const result = await this.walkCourse(input, {
+      transitionPhaseStatus: true,
+      driveHitch: async ({ hitchId, maxStepsPerHitch, createdBy }) => {
+        const runners = await this.deps.makeRunners(hitchId);
+        const hitchResult = await this.deps.makeHitchOrchestrator(hitchId).run({
+          hitchId,
+          runners,
+          maxSteps: maxStepsPerHitch,
+          stopAtCloseReady: true,
+          createdBy,
+        });
+        return {
+          ...toDrivenHitch(hitchResult),
+          finalDecision: hitchResult.finalDecision,
+        };
+      },
+    });
+    return this.finalize(
+      input.courseId,
+      result.stopReason,
+      result.phaseOutcomes,
+      result.drivenHitches,
+    );
+  }
+
+  private async walkCourse(
+    input: WalkCourseInput,
+    options: WalkCourseOptions,
+  ): Promise<WalkCourseResult> {
     const rollup = rollupCourse({
       db: this.deps.db,
       courseId: input.courseId,
@@ -128,7 +203,7 @@ export class CourseOrchestrator {
       if (subtreeBlocked) {
         phaseOutcomes.push({
           phaseId: phase.phaseId,
-          action: "report_only",
+          action: "blocked_subtree",
           note: "blocked_subtree",
         });
         continue;
@@ -146,17 +221,16 @@ export class CourseOrchestrator {
         if (drivenHitches.length >= input.maxDrivenHitches) {
           phaseOutcomes.push({
             phaseId: phase.phaseId,
-            action: "drive",
+            action: "not_driven",
             drivenHitches: phaseDriven,
             note: "not_driven",
           });
           this.recordNotDriven(rollup.phases, i + 1, phaseOutcomes);
-          return this.finalize(
-            input.courseId,
-            "budget_exhausted",
+          return {
+            stopReason: "budget_exhausted",
             phaseOutcomes,
             drivenHitches,
-          );
+          };
         }
 
         const currentPhase = phases.require(phase.phaseId);
@@ -172,7 +246,11 @@ export class CourseOrchestrator {
           break;
         }
 
-        if (phaseDriven.length === 0 && currentPhase.status === "pending") {
+        if (
+          options.transitionPhaseStatus &&
+          phaseDriven.length === 0 &&
+          currentPhase.status === "pending"
+        ) {
           const transitioned = phases.transitionStatus(
             phase.phaseId,
             ["pending"],
@@ -198,25 +276,39 @@ export class CourseOrchestrator {
         }
 
         const hitchId = action.hitchIds[j]!;
-        const result = await this.deps.makeHitchOrchestrator(hitchId).run({
-          hitchId,
-          runners: this.deps.makeRunners(hitchId),
-          maxSteps: input.maxStepsPerHitch,
-          stopAtCloseReady: true,
-          createdBy: input.createdBy,
-        });
-        const driven = toDrivenHitch(result);
-        phaseDriven.push(driven);
-        drivenHitches.push(driven);
+        const driven =
+          options.driveHitch === undefined
+            ? {
+                hitchId,
+                outcome: "close_ready" as const,
+                stepCount: 0,
+                finalDecision: "planned",
+              }
+            : await options.driveHitch({
+                hitchId,
+                maxStepsPerHitch: input.maxStepsPerHitch,
+                createdBy: input.createdBy ?? "planner",
+              });
+        const drivenHitch: DrivenHitch = {
+          hitchId: driven.hitchId,
+          outcome: driven.outcome,
+          stepCount: driven.stepCount,
+        };
+        if (options.driveHitch !== undefined) {
+          phaseDriven.push(drivenHitch);
+          drivenHitches.push(drivenHitch);
+        } else {
+          drivenHitches.push(drivenHitch);
+        }
 
-        if (result.outcome === "escalated") {
+        if (options.driveHitch !== undefined && driven.outcome === "escalated") {
           phaseOutcomes.push({
             phaseId: phase.phaseId,
             action: "blocked_hitch",
             drivenHitches: phaseDriven,
             blockedHitch: {
               hitchId,
-              decision: result.finalDecision,
+              decision: driven.finalDecision,
             },
           });
           subtreeBlocked = true;
@@ -233,12 +325,11 @@ export class CourseOrchestrator {
       }
     }
 
-    return this.finalize(
-      input.courseId,
-      "completed",
+    return {
+      stopReason: "completed",
       phaseOutcomes,
       drivenHitches,
-    );
+    };
   }
 
   private actionForPhase(
@@ -267,7 +358,7 @@ export class CourseOrchestrator {
     for (let i = startIndex; i < phases.length; i++) {
       outcomes.push({
         phaseId: phases[i]!.phaseId,
-        action: "report_only",
+        action: "not_driven",
         note: "not_driven",
       });
     }
@@ -297,6 +388,20 @@ export class CourseOrchestrator {
 function normalizeRunInput(
   input: RunCourseOrchestrationInput,
 ): RunCourseOrchestrationInput {
+  return {
+    ...input,
+    maxDrivenHitches: normalizePositiveInt(
+      input.maxDrivenHitches,
+      3,
+      10,
+    ),
+    maxStepsPerHitch: normalizePositiveInt(input.maxStepsPerHitch, 20, 50),
+  };
+}
+
+function normalizePlanInput(
+  input: PlanCourseOrchestrationInput,
+): PlanCourseOrchestrationInput {
   return {
     ...input,
     maxDrivenHitches: normalizePositiveInt(

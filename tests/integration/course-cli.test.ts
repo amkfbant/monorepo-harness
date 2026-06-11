@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { openDb } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
+import { CourseRepository } from "../../src/roadmap/course-repository.js";
 import { HitchRepository } from "../../src/hitch/repository.js";
+import { PhaseRepository } from "../../src/roadmap/phase-repository.js";
 
 const CLI = join(process.cwd(), "src/cli/run.ts");
 
@@ -39,7 +41,323 @@ function json<T>(result: { out: string; code: number }): T {
   return JSON.parse(result.out) as T;
 }
 
+function withSeedDb(root: string, seed: (db: ReturnType<typeof openDb>) => void): void {
+  const db = openDb(join(root, ".harness", "harness.sqlite"));
+  try {
+    runMigrations(db);
+    seed(db);
+  } finally {
+    db.close();
+  }
+}
+
+function seedDrivableHitch(db: ReturnType<typeof openDb>, hitchId: string): void {
+  const hitches = new HitchRepository(db);
+  hitches.createSession({
+    hitchId,
+    title: hitchId,
+    projectId: "demo",
+    domain: "app",
+    scope: {},
+    closeConditions: [],
+    createdBy: "test",
+    createdSource: "cli",
+  });
+  hitches.upsertFinding({
+    hitchId,
+    severity: "P1",
+    source: "human",
+    category: "correctness",
+    summary: "needs fix",
+    scopeStatus: "in_scope",
+  });
+}
+
+function seedBlockedHitch(db: ReturnType<typeof openDb>, hitchId: string): void {
+  const hitches = new HitchRepository(db);
+  hitches.createSession({
+    hitchId,
+    title: hitchId,
+    scope: {},
+    closeConditions: [],
+    createdBy: "test",
+    createdSource: "cli",
+  });
+  hitches.upsertFinding({
+    hitchId,
+    severity: "P0",
+    source: "human",
+    category: "correctness",
+    summary: "block automation",
+    scopeStatus: "in_scope",
+  });
+}
+
 describe("course/phase CLI (SP-1)", () => {
+  it("course orchestrate --dry-run prints phase actions without side effects", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Dry Run Course", "--json"]),
+    );
+    const phase = json<{ phaseId: string }>(
+      runCli(root, [
+        "phase",
+        "add",
+        "--course",
+        course.courseId,
+        "--title",
+        "Pending leaf",
+        "--json",
+      ]),
+    );
+
+    const result = runCli(root, [
+      "course",
+      "orchestrate",
+      course.courseId,
+      "--dry-run",
+      "--json",
+    ]);
+    expect(result.code).toBe(0);
+    const dryRun = JSON.parse(result.out) as {
+      courseId: string;
+      dryRun: boolean;
+      phaseOutcomes: Array<{ phaseId: string; action: string }>;
+    };
+    expect(dryRun.courseId).toBe(course.courseId);
+    expect(dryRun.dryRun).toBe(true);
+    expect(dryRun.phaseOutcomes).toEqual([
+      { phaseId: phase.phaseId, action: "needs_link" },
+    ]);
+
+    const shown = json<{ phase: { phaseId: string; status: string } }>(
+      runCli(root, ["phase", "show", phase.phaseId, "--json"]),
+    );
+    expect(shown.phase.status).toBe("pending");
+  });
+
+  it("course orchestrate --dry-run reflects maxDrivenHitches budget", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Dry Budget Course", "--json"]),
+    );
+    const p1 = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "One", "--json"]),
+    );
+    const p2 = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "Two", "--json"]),
+    );
+    withSeedDb(root, (db) => {
+      const phases = new PhaseRepository(db);
+      seedDrivableHitch(db, "h-one");
+      seedDrivableHitch(db, "h-two");
+      phases.linkHitch(p1.phaseId, "h-one");
+      phases.linkHitch(p2.phaseId, "h-two");
+    });
+
+    const result = runCli(root, [
+      "course",
+      "orchestrate",
+      course.courseId,
+      "--dry-run",
+      "--max-driven-hitches",
+      "1",
+      "--json",
+    ]);
+    expect(result.code).toBe(0);
+    const dryRun = JSON.parse(result.out) as {
+      phaseOutcomes: Array<{ phaseId: string; action: string; note?: string }>;
+      drivenHitches: unknown[];
+    };
+    expect(dryRun.drivenHitches).toEqual([]);
+    expect(new Set(dryRun.phaseOutcomes.map((outcome) => outcome.phaseId))).toEqual(
+      new Set([p1.phaseId, p2.phaseId]),
+    );
+    expect(dryRun.phaseOutcomes.map((outcome) => outcome.action)).toEqual([
+      "drive",
+      "not_driven",
+    ]);
+    expect(dryRun.phaseOutcomes[0]).toEqual(
+      expect.objectContaining({ action: "drive", drivenHitches: [] }),
+    );
+    expect(dryRun.phaseOutcomes[1]).toEqual(
+      expect.objectContaining({
+        action: "not_driven",
+        drivenHitches: [],
+        note: "not_driven",
+      }),
+    );
+  });
+
+  it("course orchestrate --dry-run reflects blocked subtree isolation", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Dry Blocked Course", "--json"]),
+    );
+    const parent = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "Parent", "--json"]),
+    );
+    const child = json<{ phaseId: string }>(
+      runCli(root, [
+        "phase",
+        "add",
+        "--course",
+        course.courseId,
+        "--parent",
+        parent.phaseId,
+        "--title",
+        "Child",
+        "--json",
+      ]),
+    );
+    withSeedDb(root, (db) => {
+      const phases = new PhaseRepository(db);
+      seedBlockedHitch(db, "h-blocked");
+      seedDrivableHitch(db, "h-child");
+      phases.linkHitch(parent.phaseId, "h-blocked");
+      phases.linkHitch(child.phaseId, "h-child");
+    });
+
+    const result = runCli(root, [
+      "course",
+      "orchestrate",
+      course.courseId,
+      "--dry-run",
+      "--json",
+    ]);
+    expect(result.code).toBe(0);
+    const dryRun = JSON.parse(result.out) as {
+      phaseOutcomes: Array<{ phaseId: string; action: string; note?: string }>;
+    };
+    expect(dryRun.phaseOutcomes).toEqual([
+      expect.objectContaining({
+        phaseId: parent.phaseId,
+        action: "blocked_hitch",
+        blockedHitch: expect.objectContaining({ hitchId: "h-blocked" }),
+      }),
+      { phaseId: child.phaseId, action: "blocked_subtree", note: "blocked_subtree" },
+    ]);
+  });
+
+  it("course orchestrate prepares only actually driven hitches", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Lazy Prepare Course", "--json"]),
+    );
+    const parent = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "Parent", "--json"]),
+    );
+    const child = json<{ phaseId: string }>(
+      runCli(root, [
+        "phase",
+        "add",
+        "--course",
+        course.courseId,
+        "--parent",
+        parent.phaseId,
+        "--title",
+        "Child",
+        "--json",
+      ]),
+    );
+    withSeedDb(root, (db) => {
+      const phases = new PhaseRepository(db);
+      const hitches = new HitchRepository(db);
+      seedBlockedHitch(db, "h-blocked");
+      hitches.createSession({
+        hitchId: "h-bad-project",
+        title: "bad project",
+        projectId: "missing-project",
+        domain: "app",
+        scope: {},
+        closeConditions: [],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      hitches.upsertFinding({
+        hitchId: "h-bad-project",
+        severity: "P1",
+        source: "human",
+        category: "correctness",
+        summary: "would need codex if driven",
+        scopeStatus: "in_scope",
+      });
+      phases.linkHitch(parent.phaseId, "h-blocked");
+      phases.linkHitch(child.phaseId, "h-bad-project");
+    });
+
+    const result = runCli(root, ["course", "orchestrate", course.courseId, "--json"]);
+    expect(result.code).toBe(0);
+    const body = JSON.parse(result.out) as {
+      phaseOutcomes: Array<{ phaseId: string; action: string }>;
+    };
+    expect(body.phaseOutcomes).toEqual([
+      expect.objectContaining({ phaseId: parent.phaseId, action: "blocked_hitch" }),
+      { phaseId: child.phaseId, action: "blocked_subtree", note: "blocked_subtree" },
+    ]);
+  });
+
+  it("course orchestrate records project errors with project_error", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Project Error Course", "--json"]),
+    );
+    const phase = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "Needs Project", "--json"]),
+    );
+    withSeedDb(root, (db) => {
+      const phases = new PhaseRepository(db);
+      const hitches = new HitchRepository(db);
+      hitches.createSession({
+        hitchId: "h-missing-project",
+        title: "missing project",
+        projectId: "missing-project",
+        domain: "app",
+        scope: {},
+        closeConditions: [],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      hitches.upsertFinding({
+        hitchId: "h-missing-project",
+        severity: "P1",
+        source: "human",
+        category: "correctness",
+        summary: "needs fix",
+        scopeStatus: "in_scope",
+      });
+      phases.linkHitch(phase.phaseId, "h-missing-project");
+    });
+
+    const result = runCli(root, ["course", "orchestrate", course.courseId]);
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/project/i);
+    withSeedDb(root, (db) => {
+      const row = db
+        .prepare(
+          "SELECT status, error_code FROM operations WHERE operation_type = 'course.orchestrate' ORDER BY created_at DESC LIMIT 1",
+        )
+        .get() as { status: string; error_code: string } | undefined;
+      expect(row).toEqual({ status: "failed", error_code: "project_error" });
+    });
+  });
+
+  it("course orchestrate on a non-active course exits 1", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Paused Course", "--json"]),
+    );
+    const paths = { dbPath: join(root, ".harness", "harness.sqlite") };
+    const db = openDb(paths.dbPath);
+    runMigrations(db);
+    new CourseRepository(db).setStatus(course.courseId, "paused");
+    db.close();
+
+    const result = runCli(root, ["course", "orchestrate", course.courseId]);
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/not active/i);
+  });
+
   it("creates a course, adds phases (parent/child), and rollup shows phase titles + open P0/P1", () => {
     const { root } = setup();
 

@@ -10,7 +10,9 @@ export type CoursePhaseActionKind =
   | "drive"
   | "blocked_hitch"
   | "ready_to_close"
-  | "report_only";
+  | "report_only"
+  | "blocked_subtree"
+  | "not_driven";
 
 export type CoursePhaseAction =
   | { kind: "skip_closed" }
