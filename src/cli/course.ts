@@ -324,9 +324,11 @@ export function registerCourseCommands(
     .option("--json", "emit JSON", false)
     .action((raw: Record<string, unknown>) => {
       withCourseErrorExit(() => {
-        const phases = withCourseRepo(opts, ({ phases: repo }) =>
-          repo.listForCourse(String(raw.course)),
-        );
+        const phases = withCourseRepo(opts, ({ courses, phases: repo }) => {
+          const courseId = String(raw.course);
+          courses.require(courseId);
+          return repo.listForCourse(courseId);
+        });
         if (raw.json === true) {
           process.stdout.write(`${JSON.stringify({ phases }, null, 2)}\n`);
         } else {
