@@ -82,6 +82,16 @@ describe("CLI project-scoped DB queries (Phase 6-6)", () => {
     const m = JSON.parse(out) as { totalRuns: number; approved: number };
     expect(m.totalRuns).toBe(1);
     expect(m.approved).toBe(1);
+    expect(m).toHaveProperty("oneShotApprovalRate");
+    expect(m).toHaveProperty("policyViolationRate");
+    expect(m).toHaveProperty("secretSuspectRate");
+    expect(m).toHaveProperty("hitch");
+    expect(m).toHaveProperty("mcpConfirmations");
+
+    const text = runCli(root, ["metrics", "summary", "--project", "demo"]);
+    expect(text.code).toBe(0);
+    expect(text.out).toContain("hitch metrics:");
+    expect(text.out).toContain("mcp confirmations:");
   });
 
   it("metrics summary --project for an empty project reports zero", () => {

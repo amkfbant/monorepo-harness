@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -193,7 +193,14 @@ async function callMetrics(
 }
 
 describe("harness.metrics aggregate tool", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("returns run metrics plus hitch and MCP confirmation summaries", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-15T00:00:00.000Z"));
+
     const out = await callMetrics(server(setup()), {
       projectId: "demo",
       domain: "apps/web",
