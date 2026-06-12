@@ -11,6 +11,7 @@ import {
   DEFAULT_MCP_CONFIG,
   type McpConfig,
 } from "../../../src/mcp/security/config.js";
+import { scopedIdForIdempotencyKey } from "../../../src/mcp/tools/scoped-idempotency.js";
 
 function freshRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "harness-mcp-goal-"));
@@ -911,5 +912,114 @@ describe("hitch.start repoId → projectId derivation (#81)", () => {
       idempotencyKey: "goal-derive-unscoped",
     });
     expect(started.status).toBe("operation_started");
+  });
+});
+
+describe("hitch.start idempotency scope isolation (#114)", () => {
+  it("does not replay the same idempotencyKey across different project-restricted clients", async () => {
+    const root = freshRoot();
+    const idempotencyKey = "shared-hitch-key-across-projects";
+    const demoServer = server(root, {
+      ...mutationConfig(["hitch.start"]),
+      allowedProjects: ["demo"],
+    });
+    const otherServer = server(root, {
+      ...mutationConfig(["hitch.start"]),
+      allowedProjects: ["other"],
+    });
+
+    const demoResult = await callTool(demoServer, "harness.hitch.start", {
+      title: "Demo Project Hitch",
+      projectId: "demo",
+      domain: "goal",
+      idempotencyKey,
+    });
+    expect(demoResult.status).toBe("operation_started");
+    expect(demoResult.data.replayed).toBe(false);
+    const demoHitchId = demoResult.data.result.hitchId as string;
+
+    const otherResult = await callTool(otherServer, "harness.hitch.start", {
+      title: "Other Project Hitch",
+      projectId: "other",
+      domain: "goal",
+      idempotencyKey,
+    });
+    expect(otherResult.status).toBe("operation_started");
+    expect(otherResult.data.replayed).toBe(false);
+    const otherHitchId = otherResult.data.result.hitchId as string;
+
+    expect(otherHitchId).not.toBe(demoHitchId);
+    expect(hitchProjectId(root, demoHitchId)).toBe("demo");
+    expect(hitchProjectId(root, otherHitchId)).toBe("other");
+  });
+
+  it("replays the same idempotencyKey within the same project", async () => {
+    const root = freshRoot();
+    const s = server(root, mutationConfig(["hitch.start"]));
+    const idempotencyKey = "same-project-hitch-replay";
+
+    const first = await callTool(s, "harness.hitch.start", {
+      title: "First Hitch",
+      projectId: "demo",
+      domain: "goal",
+      idempotencyKey,
+    });
+    expect(first.status).toBe("operation_started");
+    expect(first.data.replayed).toBe(false);
+    const firstHitchId = first.data.result.hitchId as string;
+
+    const replay = await callTool(s, "harness.hitch.start", {
+      title: "Second Hitch Should Replay",
+      projectId: "demo",
+      domain: "goal",
+      idempotencyKey,
+    });
+    expect(replay.status).toBe("operation_started");
+    expect(replay.data.replayed).toBe(true);
+    expect(replay.data.result.hitchId).toBe(firstHitchId);
+
+    withDb(root, (db) => {
+      const count = db
+        .prepare("SELECT COUNT(*) AS count FROM hitch_sessions")
+        .get() as { count: number };
+      expect(count.count).toBe(1);
+    });
+  });
+
+  it("replays repoId-only hitches inside the same null project scope", async () => {
+    const root = freshRoot();
+    const s = server(root, {
+      ...mutationConfig(["hitch.start"]),
+      allowedProjects: [],
+    });
+    const idempotencyKey = "null-vs-empty-project-scope";
+
+    const nullProject = await callTool(s, "harness.hitch.start", {
+      title: "Null Project Hitch",
+      repoId: "repo-without-project",
+      domain: "goal",
+      idempotencyKey,
+    });
+    expect(nullProject.status).toBe("operation_started");
+    expect(nullProject.data.replayed).toBe(false);
+    const nullProjectHitchId = nullProject.data.result.hitchId as string;
+
+    const replay = await callTool(s, "harness.hitch.start", {
+      title: "Null Project Hitch Replay",
+      repoId: "another-repo-without-project",
+      domain: "goal",
+      idempotencyKey,
+    });
+    expect(replay.status).toBe("operation_started");
+    expect(replay.data.replayed).toBe(true);
+    expect(replay.data.result.hitchId).toBe(nullProjectHitchId);
+    expect(hitchProjectId(root, nullProjectHitchId)).toBeNull();
+  });
+
+  it("keeps null project scope distinct from an empty-string project scope", () => {
+    const idempotencyKey = "null-vs-empty-project-scope";
+    expect(scopedIdForIdempotencyKey("hitch", null, idempotencyKey)).not.toBe(
+      scopedIdForIdempotencyKey("hitch", "", idempotencyKey),
+    );
   });
 });

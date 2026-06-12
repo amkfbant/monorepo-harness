@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { harnessPaths } from "../../config/paths.js";
 import { runMcpMutationOperation } from "./operation-wrapper.js";
+import { scopedIdForIdempotencyKey } from "./scoped-idempotency.js";
 import {
   classifyFindingForHitch,
   type ClassifiableHitchFinding,
@@ -296,7 +296,9 @@ export async function hitchStartTool(
   }
   const visible = ensureProjectVisible(context.config, effectiveProjectId);
   if (visible !== null) return visible;
-  const hitchId = args.hitchId ?? hitchIdForIdempotencyKey(args.idempotencyKey);
+  const hitchId =
+    args.hitchId ??
+    hitchIdForIdempotencyKey(effectiveProjectId ?? null, args.idempotencyKey);
   return runHitchOperation(context, {
     operationType: "hitch.start",
     target: { type: "goal", id: hitchId },
@@ -960,9 +962,11 @@ function hitchMetadata(
   };
 }
 
-function hitchIdForIdempotencyKey(idempotencyKey: string): string {
-  const digest = createHash("sha256").update(idempotencyKey).digest("hex");
-  return `hitch-${digest.slice(0, 32)}`;
+function hitchIdForIdempotencyKey(
+  projectScope: string | null,
+  idempotencyKey: string,
+): string {
+  return scopedIdForIdempotencyKey("hitch", projectScope, idempotencyKey);
 }
 
 function toClassifiableFinding(

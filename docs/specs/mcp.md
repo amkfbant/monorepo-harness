@@ -798,6 +798,22 @@ write operation audit metadata with `hitchId`/`hitch_id` where a hitch is known.
 `close_ready`; forced close, cancel, and scope expansion are always
 confirmation-required.
 
+When `harness.hitch.start` omits an explicit `hitchId`, the deterministic
+default id is derived from the tuple `[projectScope, idempotencyKey]` using
+SHA-256 and the `hitch-` prefix. `projectScope` is the effective project id
+after repoId-to-project derivation for project-restricted clients; when no
+project id is known, the scope is `null`. The `null` scope is intentional:
+repoId-only/global hitches with the same idempotency key replay within the same
+null-project scope, while project-scoped hitches cannot replay across different
+projects. The tuple is JSON-encoded before hashing, so `null` and `""` scopes
+remain distinct.
+
+Compatibility note for upgrades: this scoped derivation replaced the earlier
+key-only `hitch.start` derivation. A retry that crosses the upgrade boundary
+with the same idempotency key but without an explicit `hitchId` may derive a
+different hitch id and create a new hitch. Callers that need replay continuity
+across the upgrade should provide an explicit `hitchId`.
+
 `harness.cleanup.apply`, `harness.pr.create`, `harness.db.repair.apply`,
 `harness.db.archive.apply`, `harness.db.migrate_blobs.apply`, and
 `harness.db.gc_blobs.apply` also return `confirmation_required` by default for
@@ -1054,6 +1070,15 @@ operation_type + target_id + idempotency_key
 Same key semantics are inherited from `OperationRunner`: success replays the
 prior result, running returns conflict, failed/cancelled returns the prior
 failure and requires a new key to retry.
+
+For create-style MCP tools whose target id is derived from the idempotency key,
+the target id must include the resource scope before it reaches
+`OperationRunner`, because the ledger key above has no project/client dimension.
+`harness.hitch.start` and `harness.course.create` scope by effective project id
+with `null` for intentionally projectless resources; `harness.phase.add` scopes
+by parent course id. Scope and key are hashed as JSON `[scope, key]`, not as a
+string-joined pair, so separator injection cannot collapse two different
+tuples.
 
 ## Error handling
 
