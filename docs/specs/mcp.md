@@ -794,6 +794,10 @@ The confirmation preview is bound to the exact copy target and includes
 `rangeEnd` metadata only; it does not filter the rows copied into the archive.
 MCP-requested archive output paths must resolve under `.harness/archives`.
 
+`harness.db.migrate_blobs.apply` is also global-scope only because blob
+migration can move artifact bodies across projects. Project-scoped clients may
+call the preview tool, but apply returns `permission_denied`.
+
 `harness.db.gc_blobs.apply` is also global-scope only because unreferenced
 external blob rows are not project-scoped. Project-scoped clients may call the
 preview tool, but it returns warnings and no apply `nextActions`.

@@ -502,7 +502,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       expect(gc.data.preview.data.candidates.map((c: any) => c.sha256)).toEqual(["c".repeat(64)]);
     });
 
-    it("confirmed blob migration mutates only stored preview candidates", async () => {
+    it("requires global MCP scope before creating db-to-external migration confirmations", async () => {
       const root = freshRoot((db, harnessRoot) => {
         const storeRoot = join(harnessRoot, "blob-store");
         mkdirSync(storeRoot, { recursive: true });
@@ -536,16 +536,8 @@ describe("MCP mutation, confirmation, and audit", () => {
         storeId: "local-main",
         idempotencyKey: "migrate-scoped-1",
       });
-      expect(pending.status).toBe("confirmation_required");
-      expect(pending.data.preview.data.candidates).toHaveLength(1);
-
-      const confirmed = await confirmMcpRequest({
-        harnessRoot: root,
-        confirmationId: pending.confirmationId,
-        confirmedBy: "human",
-        config,
-      });
-      expect(confirmed.status).toBe("operation_started");
+      expect(pending.status).toBe("permission_denied");
+      expect(pending.data.reason).toBe("global_scope_required");
       expect(
         readDb(root, (db) =>
           (db
@@ -553,7 +545,7 @@ describe("MCP mutation, confirmation, and audit", () => {
             .all() as any[]).map((r) => [r.artifact_id, r.storage]),
         ),
       ).toEqual([
-        ["artifact-demo-db", "external"],
+        ["artifact-demo-db", "db"],
         ["artifact-other-db", "db"],
       ]);
     });
@@ -611,7 +603,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       ).toBe(1);
     });
 
-    it("confirmed external-to-db migration respects allowedProjects", async () => {
+    it("requires global MCP scope before creating external-to-db migration confirmations", async () => {
       const root = freshRoot((db, harnessRoot) => {
         const storeRoot = join(harnessRoot, "blob-store");
         mkdirSync(storeRoot, { recursive: true });
@@ -652,18 +644,8 @@ describe("MCP mutation, confirmation, and audit", () => {
         storeId: "local-main",
         idempotencyKey: "migrate-db-scoped-1",
       });
-      expect(pending.status).toBe("confirmation_required");
-      expect(pending.data.preview.data.candidates.map((c: any) => c.artifactId)).toEqual([
-        "artifact-demo-ext",
-      ]);
-
-      const confirmed = await confirmMcpRequest({
-        harnessRoot: root,
-        confirmationId: pending.confirmationId,
-        confirmedBy: "human",
-        config,
-      });
-      expect(confirmed.status).toBe("operation_started");
+      expect(pending.status).toBe("permission_denied");
+      expect(pending.data.reason).toBe("global_scope_required");
       expect(
         readDb(root, (db) =>
           (db
@@ -671,7 +653,7 @@ describe("MCP mutation, confirmation, and audit", () => {
             .all() as any[]).map((r) => [r.artifact_id, r.storage]),
         ),
       ).toEqual([
-        ["artifact-demo-ext", "db"],
+        ["artifact-demo-ext", "external"],
         ["artifact-other-ext", "external"],
       ]);
     });
@@ -2257,6 +2239,84 @@ describe("MCP mutation, confirmation, and audit", () => {
       idempotencyKey: "archive-global-1",
     });
     expect(global.status).toBe("confirmation_required");
+  });
+
+  it("requires global MCP scope for db.migrate_blobs.apply", async () => {
+    const root = freshRoot((db, harnessRoot) => {
+      const storeRoot = join(harnessRoot, "blob-store");
+      mkdirSync(storeRoot, { recursive: true });
+      seedLocalBlobStore(db, storeRoot);
+      seedRun(db, "run-migrate-scope", "demo");
+      const body = Buffer.from("migrate scoped blob");
+      const sha = sha256Text(body.toString("utf8"));
+      seedDbBlob(db, sha, body);
+      db.prepare(
+        `INSERT INTO artifacts
+           (artifact_id, run_id, kind, relative_path, content_type, bytes,
+            sha256, storage, blob_sha256, body_status, created_at)
+         VALUES
+           ('artifact-migrate-scope', 'run-migrate-scope', 'log',
+            'migrate.txt', 'text/plain', ?, ?, 'db', ?, 'db_available',
+            '2026-05-25T00:00:00Z')`,
+      ).run(body.length, sha, sha);
+    });
+    const scoped: McpConfig = {
+      ...DEFAULT_MCP_CONFIG,
+      allowedProjects: ["demo"],
+    };
+
+    const denied = await callTool(server(root, scoped), "harness.db.migrate_blobs.apply", {
+      to: "external",
+      storeId: "local-main",
+      idempotencyKey: "migrate-scoped-denied-1",
+    });
+    expect(denied.status).toBe("permission_denied");
+    expect(denied.data.reason).toBe("global_scope_required");
+
+    const pending = await callTool(server(root, DEFAULT_MCP_CONFIG), "harness.db.migrate_blobs.apply", {
+      to: "external",
+      storeId: "local-main",
+      limit: 1,
+      idempotencyKey: "migrate-global-pending-1",
+    });
+    expect(pending.status).toBe("confirmation_required");
+
+    const scopedConfirm = await confirmMcpRequest({
+      harnessRoot: root,
+      confirmationId: pending.confirmationId,
+      confirmedBy: "human",
+      config: scoped,
+    });
+    expect(scopedConfirm.status).toBe("permission_denied");
+    expect(scopedConfirm.data.reason).toBe("global_scope_required");
+    expect(
+      readDb(root, (db) =>
+        (db
+          .prepare("SELECT storage FROM artifacts WHERE artifact_id = 'artifact-migrate-scope'")
+          .get() as { storage: string }).storage,
+      ),
+    ).toBe("db");
+
+    const global = await callTool(server(root, DEFAULT_MCP_CONFIG), "harness.db.migrate_blobs.apply", {
+      to: "external",
+      storeId: "local-main",
+      limit: 1,
+      idempotencyKey: "migrate-global-confirm-1",
+    });
+    expect(global.status).toBe("confirmation_required");
+    const globalConfirm = await confirmMcpRequest({
+      harnessRoot: root,
+      confirmationId: global.confirmationId,
+      confirmedBy: "human",
+    });
+    expect(globalConfirm.status).toBe("operation_started");
+    expect(
+      readDb(root, (db) =>
+        (db
+          .prepare("SELECT storage FROM artifacts WHERE artifact_id = 'artifact-migrate-scope'")
+          .get() as { storage: string }).storage,
+      ),
+    ).toBe("external");
   });
 
   it("binds db.archive.apply confirmation preview to the exact full DB copy target", async () => {
