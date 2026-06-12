@@ -999,7 +999,9 @@ describe("CourseOrchestrator", () => {
     seedCloseReadyHitch(db, "h-ready-closed");
     phases.linkHitch(phase.phaseId, "h-ready-open");
     phases.linkHitch(phase.phaseId, "h-ready-closed");
-    new HitchRepository(db).updateStatus("h-ready-closed", "closed", "done");
+    new HitchRepository(db).updateStatus("h-ready-closed", "closed", "done", {
+      createdBy: "test",
+    });
 
     const result = await makeOrchestrator(db, {}).run({
       courseId,

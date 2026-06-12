@@ -99,7 +99,12 @@ export class HitchOrchestrator {
         if (pr.escalateReason !== undefined) {
           steps.push({ step: i, decision: finalDecision, action: "escalate", detail: pr.escalateReason });
           withManagedDb({ dbPath: this.opts.dbPath }, (db) => {
-            new HitchRepository(db).updateStatus(input.hitchId, "escalated", pr.escalateReason as string);
+            new HitchRepository(db).updateStatus(
+              input.hitchId,
+              "escalated",
+              pr.escalateReason as string,
+              { createdBy: input.createdBy },
+            );
           });
           return {
             hitchId: input.hitchId,
@@ -146,7 +151,9 @@ export class HitchOrchestrator {
         }
         steps.push({ step: i, decision: finalDecision, action: "escalate", detail: message });
         withManagedDb({ dbPath: this.opts.dbPath }, (db) => {
-          new HitchRepository(db).updateStatus(input.hitchId, "escalated", message);
+          new HitchRepository(db).updateStatus(input.hitchId, "escalated", message, {
+            createdBy: input.createdBy,
+          });
         });
         return { hitchId: input.hitchId, outcome: "escalated", steps, finalDecision, escalateReason: message };
       }

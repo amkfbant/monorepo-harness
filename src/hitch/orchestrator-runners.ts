@@ -351,6 +351,7 @@ export function createOrchestratorRunners(
         repository: new HitchRepository(db),
         hitchId,
         mutationKind,
+        syncCreatedBy: deps.createdBy,
       });
     });
   };
@@ -808,7 +809,9 @@ export function createOrchestratorRunners(
             ? "PR open; awaiting CI — re-run orchestrate to merge"
             : "hitch converged; PR opened";
         withManagedDb({ dbPath: deps.dbPath }, (db) => {
-          new HitchRepository(db).updateStatus(hitchId, nextStatus, summary);
+          new HitchRepository(db).updateStatus(hitchId, nextStatus, summary, {
+            createdBy: deps.createdBy,
+          });
         });
         return { prUrl: pr.prUrl, draft: pr.draft, merged: outcome.merged };
       }
@@ -818,6 +821,7 @@ export function createOrchestratorRunners(
           hitchId,
           "closed",
           "hitch converged; PR opened",
+          { createdBy: deps.createdBy },
         );
       });
       return { prUrl: pr.prUrl, draft: pr.draft, merged: false };

@@ -124,6 +124,14 @@ export const HITCH_CONVERGENCE_DECISIONS = [
 export type HitchConvergenceDecision =
   (typeof HITCH_CONVERGENCE_DECISIONS)[number];
 
+export const HITCH_LIFECYCLE_EVENTS = [
+  "reopened",
+  "closed",
+  "cancelled",
+] as const;
+
+export type HitchLifecycleEventName = (typeof HITCH_LIFECYCLE_EVENTS)[number];
+
 export const HITCH_NEXT_ACTION_KINDS = [
   "fix_findings",
   "classify_findings",
@@ -352,6 +360,16 @@ export interface HitchConvergenceDecisionRecord {
   reason: string;
   metrics: Record<string, unknown>;
   recommendedNextAction: HitchNextAction | null;
+  createdAt: string;
+  createdBy: string;
+}
+
+export interface HitchLifecycleEvent {
+  eventId: string;
+  hitchId: string;
+  event: HitchLifecycleEventName;
+  reason: string;
+  detail: Record<string, unknown> | null;
   createdAt: string;
   createdBy: string;
 }

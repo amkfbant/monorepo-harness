@@ -683,7 +683,12 @@ export async function hitchCloseTool(
             throw error;
           }
         }
-        return repo.updateStatus(args.hitchId, "closed", redactMcpText(args.summary));
+        return repo.updateStatus(
+          args.hitchId,
+          "closed",
+          redactMcpText(args.summary),
+          { createdBy: `mcp:${context.clientName}` },
+        );
       });
       return tx.immediate();
     },
@@ -716,6 +721,7 @@ export async function hitchCancelTool(
         args.hitchId,
         "cancelled",
         redactMcpText(args.reason),
+        { createdBy: `mcp:${context.clientName}` },
       ),
   });
 }

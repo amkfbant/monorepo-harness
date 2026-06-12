@@ -1361,6 +1361,7 @@ async function runMcpOperation<T>(
               repository: new HitchRepository(db),
               hitchId: opts.hitchGate.hitchId,
               mutationKind: opts.hitchGate.mutationKind,
+              syncCreatedBy: `mcp:${context.clientName}`,
             });
           }
           assertMutationBudget(db, context.config, {
@@ -1409,6 +1410,7 @@ async function runMcpOperation<T>(
         syncHitchStatusForConvergence(
           new HitchRepository(handle.db),
           gate.convergence,
+          `mcp:${context.clientName}`,
         );
       }
       return permissionDenied(gate.message, {
@@ -1514,6 +1516,7 @@ function reviewProcessPreview(
         hitchId: args.hitchId,
         mutationKind: "review.process",
         syncStatus: false,
+        syncCreatedBy: `mcp:${context.clientName}`,
       });
       if (!gate.allowed) {
         return permissionDenied(gate.message, {

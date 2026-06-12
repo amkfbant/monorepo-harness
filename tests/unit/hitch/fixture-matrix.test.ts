@@ -47,6 +47,7 @@ class SimulatedGoalLoop {
         this.ctx.hitchId,
         status,
         `fixture decision: ${result.decision}`,
+        { createdBy: "fixture-loop" },
       );
     }
     this.decisions.push(result);

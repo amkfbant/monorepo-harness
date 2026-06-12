@@ -39,6 +39,7 @@ export function assertHitchCanStartMutation(input: {
   repository: HitchRepository;
   hitchId: string;
   mutationKind: HitchLinkedMutationKind;
+  syncCreatedBy?: string;
 }): HitchMutationGateAllowed {
   const gate = evaluateHitchMutationGate(input);
   if (!gate.allowed) {
@@ -52,6 +53,7 @@ export function evaluateHitchMutationGate(input: {
   hitchId: string;
   mutationKind: HitchLinkedMutationKind;
   syncStatus?: boolean;
+  syncCreatedBy?: string;
 }): HitchMutationGateResult {
   // A linked hitch that does not exist is a structured denial, not a DB error:
   // ConvergenceService.evaluate would throw on a missing session.
@@ -66,7 +68,11 @@ export function evaluateHitchMutationGate(input: {
     input.hitchId,
   );
   if (input.syncStatus !== false) {
-    syncHitchStatusForConvergence(input.repository, convergence);
+    syncHitchStatusForConvergence(
+      input.repository,
+      convergence,
+      input.syncCreatedBy ?? "harness",
+    );
   }
   if (allowedByConvergence(input.mutationKind, convergence)) {
     return { allowed: true, convergence };

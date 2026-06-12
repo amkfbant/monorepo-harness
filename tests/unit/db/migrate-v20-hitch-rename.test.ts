@@ -97,13 +97,14 @@ describe("schema v20 hitch rename", () => {
       const goalTables = tables.filter((t) => t.startsWith("goal_"));
       expect(goalTables).toEqual([]);
 
-      // All 6 hitch_* tables exist
+      // All hitch_* tables exist, including later additive hitch audit tables.
       const hitchTables = tables.filter((t) => t.startsWith("hitch_"));
       expect(hitchTables.sort()).toEqual([
         "hitch_attempts",
         "hitch_close_checks",
         "hitch_convergence_decisions",
         "hitch_findings",
+        "hitch_lifecycle_events",
         "hitch_review_cycles",
         "hitch_sessions",
       ]);
@@ -126,7 +127,7 @@ describe("schema v20 hitch rename", () => {
       const fkViolations = db.pragma("foreign_key_check") as unknown[];
       expect(fkViolations).toEqual([]);
 
-      // No goal_* indexes remain, exactly 10 hitch_* indexes exist
+      // No goal_* indexes remain; hitch_* indexes include later additive ones.
       const allIndexes = indexNames(db);
       const goalIndexes = allIndexes.filter((n) => n.startsWith("goal_"));
       const hitchIndexes = allIndexes.filter((n) => n.startsWith("hitch_"));
@@ -139,6 +140,7 @@ describe("schema v20 hitch rename", () => {
         "hitch_convergence_decisions_hitch_idx",
         "hitch_findings_hitch_status_idx",
         "hitch_findings_stable_idx",
+        "hitch_lifecycle_events_hitch_idx",
         "hitch_review_cycles_unique_idx",
         "hitch_sessions_project_idx",
         "hitch_sessions_status_idx",

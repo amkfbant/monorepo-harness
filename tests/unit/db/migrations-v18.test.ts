@@ -58,7 +58,7 @@ describe("schema v18 workspace checkpoints", () => {
     try {
       expect(currentSchemaVersion(db)).toBe(17);
       const result = runMigrations(db);
-      expect(result.applied).toEqual([18, 19, 20, 21, 22]);
+      expect(result.applied).toEqual([18, 19, 20, 21, 22, 23]);
       expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
       expect(tableExists(db, "workspace_checkpoints")).toBe(true);
     } finally {

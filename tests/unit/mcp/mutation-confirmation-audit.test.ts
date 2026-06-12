@@ -1185,6 +1185,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         "goal-budget-stop",
         "budget_exhausted",
         "budget exhausted",
+        { createdBy: "test" },
       );
     });
     const result = await callTool(

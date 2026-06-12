@@ -84,6 +84,7 @@ export function recordConvergenceDecisionWithStatus(input: {
                 message: input.reason,
               },
           },
+          input.createdBy,
           input.createdAt,
         );
   return { decisionRecord, hitchStatus };
@@ -92,6 +93,7 @@ export function recordConvergenceDecisionWithStatus(input: {
 export function syncHitchStatusForConvergence(
   repository: HitchRepository,
   result: HitchConvergenceResult,
+  createdBy: string,
   now?: string,
 ): HitchSession | null {
   const current = repository.requireSession(result.hitchId);
@@ -105,7 +107,10 @@ export function syncHitchStatusForConvergence(
   if (status !== null) {
     return current.status === status
       ? current
-      : repository.updateStatus(result.hitchId, status, result.reason, now);
+      : repository.updateStatus(result.hitchId, status, result.reason, {
+          createdBy,
+          ...(now !== undefined ? { now } : {}),
+        });
   }
   if (
     current.status === "close_ready" &&
@@ -116,7 +121,10 @@ export function syncHitchStatusForConvergence(
       result.hitchId,
       "in_progress",
       result.reason,
-      now,
+      {
+        createdBy,
+        ...(now !== undefined ? { now } : {}),
+      },
     );
   }
   return null;

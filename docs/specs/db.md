@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V22_STATEMENTS`、
-> `SCHEMA_VERSION = 22`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V23_STATEMENTS`、
+> `SCHEMA_VERSION = 23`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -683,7 +683,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 22`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 23`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -706,6 +706,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 20 | goal→hitch rename (SP-0) | goal_* の6テーブル＋全 goal_id 列を hitch_* / hitch_id に rename（index も） |
 | 21 | course → phase roadmap layer (SP-1) | courses / phases / phase_hitches（additive。既存テーブル変更なし） |
 | 22 | audit cleanup #126 | 未配線の db_stats_snapshots ledger を DROP（index 先、table 後）。`DROPPED_TABLE_NAMES` で現行 table 集合から除外 |
+| 23 | audit fix #130 | hitch_lifecycle_events（reopen/close/cancel reason の audit-only ledger） |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -947,6 +948,13 @@ finding 分類・close-check 証跡・convergence decision を記録し、反復
   `continue`/`needs_fix`/`needs_classification`/`close_ready`/`closed`/
   `diverging`/`budget_exhausted`/`escalate`/`cancel` / `reason` /
   `metrics_json` / `recommended_next_action`）。hitch FK ON DELETE CASCADE。
+- `hitch_lifecycle_events` — `reopened` / `closed` / `cancelled` の audit-only
+  ledger（`event_id` PK / `hitch_id` FK ON DELETE CASCADE / `reason` /
+  optional `detail_json` / `created_at` / `created_by`）。`reopenSession` は
+  status update と event insert を同一 transaction で行う。`updateStatus`
+  経由の close/cancel も同じ ledger に記録するが、状態判定の source of truth は
+  `hitch_sessions.status` と deterministic convergence 入力であり、この ledger は
+  convergence / rollup の遷移根拠には使わない。
 
 `hitch_convergence_decisions` は audit ledger であり、decision を記録すると同時に
 `hitch_sessions.status` を遷移させる（`src/hitch/convergence-status.ts` の
@@ -998,3 +1006,25 @@ append-only 規約により、v10 の DDL と `V10_TABLE_NAMES` は書き換え�
 は後続 migration で意図的に削除された table、`CURRENT_TABLE_NAMES` は latest schema で
 存在を期待する table 集合を表す。fresh migration test と `db stats` の row-count 対象は
 `CURRENT_TABLE_NAMES` を使う。
+
+## Audit fix #130 — hitch lifecycle events（schema v23）
+
+schema v23 は additive な `hitch_lifecycle_events` を追加する。`hitch reopen
+--reason` の reason と actor、`hitch close` / `hitch cancel` の reason と actor を
+永続化し、cancel reason の取りこぼしをなくす。
+
+```sql
+CREATE TABLE hitch_lifecycle_events (
+  event_id TEXT PRIMARY KEY NOT NULL,
+  hitch_id TEXT NOT NULL REFERENCES hitch_sessions(hitch_id) ON DELETE CASCADE,
+  event TEXT NOT NULL CHECK (event IN ('reopened','closed','cancelled')),
+  reason TEXT NOT NULL,
+  detail_json TEXT,
+  created_at TEXT NOT NULL,
+  created_by TEXT NOT NULL
+);
+CREATE INDEX hitch_lifecycle_events_hitch_idx
+  ON hitch_lifecycle_events(hitch_id, created_at);
+```
+
+この table は監査ログであり、hitch の状態遷移や phase rollup の判定には使わない。

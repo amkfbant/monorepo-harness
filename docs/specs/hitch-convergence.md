@@ -269,6 +269,12 @@ command checks using the existing close-condition machinery; it does not inject
 synthetic test gates and does not use reviewer self-report as state-transition
 evidence.
 
+`hitch_lifecycle_events` records `closed`, `cancelled`, and `reopened` reasons
+with actor/timestamp for audit. It is not a state-transition source.
+Convergence, mutation gates, and roadmap rollup derive state from deterministic
+harness inputs (`hitch_sessions`, findings, close checks, budgets, and
+convergence metrics), never from lifecycle event rows.
+
 Review-only attempts inherit the related coding iteration when they are linked
 to an existing run attempt. This keeps automatic review bookkeeping from
 burning the implementation iteration budget.
@@ -280,7 +286,7 @@ The CLI exposes `harness hitch`:
 ```bash
 harness hitch start --title "..." --scope-file scope.yaml --close-file close.yaml
 harness hitch status <hitch-id>
-harness hitch reopen <hitch-id> --reason "..." [--extend-iterations N] [--extend-review-cycles N] [--extend-reruns N]
+harness hitch reopen <hitch-id> --reason "..." [--created-by actor] [--extend-iterations N] [--extend-review-cycles N] [--extend-reruns N]
 harness hitch finding add <hitch-id> --severity P1 --category correctness --summary "..."
 harness hitch finding classify <finding-id> --scope in-scope --reason "..."
 harness hitch finding fixed <finding-id> --note "..."

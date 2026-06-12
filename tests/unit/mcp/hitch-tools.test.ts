@@ -6,6 +6,7 @@ import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { ConvergenceService } from "../../../src/hitch/convergence.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
+import { confirmMcpRequest } from "../../../src/mcp/confirmation-runner.js";
 import { HarnessMcpServer } from "../../../src/mcp/server.js";
 import {
   DEFAULT_MCP_CONFIG,
@@ -217,6 +218,72 @@ describe("MCP goal tools", () => {
     });
     expect(closed.status).toBe("operation_started");
     expect(closed.data.result.status).toBe("closed");
+  });
+
+  it("records the MCP client actor in close and cancel lifecycle events", async () => {
+    const root = freshRoot();
+    const s = server(
+      root,
+      mutationConfig([
+        "hitch.start",
+        "hitch.record_close_check",
+        "hitch.close",
+        "hitch.cancel",
+      ]),
+    );
+
+    const closeStarted = await callTool(s, "harness.hitch.start", {
+      title: "Goal MCP close actor",
+      projectId: "demo",
+      domain: "goal",
+      closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+      idempotencyKey: "goal-close-actor-start",
+    });
+    const closeHitchId = closeStarted.data.result.hitchId as string;
+    await callTool(s, "harness.hitch.record_close_check", {
+      hitchId: closeHitchId,
+      conditionId: "typecheck",
+      status: "passed",
+      idempotencyKey: "goal-close-actor-check",
+    });
+
+    const closed = await callTool(s, "harness.hitch.close", {
+      hitchId: closeHitchId,
+      summary: "done",
+      idempotencyKey: "goal-close-actor-close",
+    });
+    expect(closed.status).toBe("operation_started");
+
+    const cancelStarted = await callTool(s, "harness.hitch.start", {
+      title: "Goal MCP cancel actor",
+      projectId: "demo",
+      domain: "goal",
+      idempotencyKey: "goal-cancel-actor-start",
+    });
+    const cancelHitchId = cancelStarted.data.result.hitchId as string;
+    const pendingCancel = await callTool(s, "harness.hitch.cancel", {
+      hitchId: cancelHitchId,
+      reason: "abandoned",
+      idempotencyKey: "goal-cancel-actor-cancel",
+    });
+    expect(pendingCancel.status).toBe("confirmation_required");
+
+    const cancelled = await confirmMcpRequest({
+      harnessRoot: root,
+      confirmationId: pendingCancel.confirmationId,
+      confirmedBy: "human",
+    });
+    expect(cancelled.status).toBe("operation_started");
+
+    withDb(root, (db) => {
+      const repo = new HitchRepository(db);
+      expect(repo.listLifecycleEvents(closeHitchId)).toMatchObject([
+        { event: "closed", createdBy: "mcp:unit-test" },
+      ]);
+      expect(repo.listLifecycleEvents(cancelHitchId)).toMatchObject([
+        { event: "cancelled", createdBy: "mcp:unit-test" },
+      ]);
+    });
   });
 
   it("requires backlog.create permission before creating deferred backlog follow-ups", async () => {
