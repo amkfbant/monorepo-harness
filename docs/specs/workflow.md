@@ -137,7 +137,7 @@ runs/<runId>/
   codex-prompt.md          # codex に渡した prompt 全文
   codex-output.log         # codex `-o/--output-last-message` の最終 agent message
   codex-error.log          # codex stderr (生; readStderrTail で patch echo を抑制してから artifact に転載)
-  codex-events.jsonl       # codex `--json` stdout の JSONL events (保存前に command aggregated_output を secret redaction 済み; turn.completed.usage を含む)
+  codex-events.jsonl       # codex `--json` stdout の JSONL events (保存前に command aggregated_output を secret redaction 済み; turn.completed.usage を含み、run_usage の入力になる)
   final-diff.patch         # tracked changes の unified diff (against baseSha)。常に生成 (変更なしなら空)
   untracked-files.patch    # OPTIONAL: allowed untracked がある場合のみ。inline + secret hit は redact
   untracked-files.txt      # OPTIONAL: allowed untracked がある場合のみ。path list
@@ -238,6 +238,15 @@ compiled project policy. Non-project hitches are unchanged.
 `artifacts_ingested` は run 完了時の `ingestRunArtifacts` 成功直後、`finalize` 前に emit される。`count` / `totalBytes` は DB blob に取り込んだ artifact body（`meta.json` / `events.jsonl` / `review-decision.yaml` など DB から再構成される artifact を除く）のファイル数と元ファイル byte 合計、`durationMs` は同じく `performance.now()` ベースの整数 ms。
 
 `codex_events_redacted` は `codex_exec_completed` 後、artifact ingest 前に `codex-events.jsonl` を redaction した場合のみ emit される。`item.aggregated_output` の secret-shaped content は `"[redacted: secret-suspect (...)]"` に置換し、parse できない JSONL 行は `{"type":"redaction.dropped_line"}` に置換して保存する。
+
+`run_usage` 記録は `codex_exec_completed` 後、artifact 用 `codex-events.jsonl`
+redaction 前、post-codex diff 収集前に行う。runner は lease guard (`assertActiveLease`) を通して
+`run_usage` に 1 行 INSERT する。`turn.completed.usage` が正常に読める場合は
+`usage_source='exact'`、複数 turn は token fields を合算する。events file が無い /
+読めない / 空 / JSON parse 不可 / `turn.completed.usage` 無しの場合も run は止めず、
+`usage_source='unavailable'` かつ token fields `NULL` の行を明示的に記録する。
+`parsed_log` / `estimated` は予約値であり、C2 の workflow は書き込まない。
+`total_tokens` は `input_tokens + output_tokens`（`reasoning_output_tokens` は別列）。
 
 `run_completed.runElapsedMs` は `runDomainCoding` 開始から `run_completed` emit 直前までの wall-clock 整数 ms。
 

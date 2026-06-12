@@ -155,6 +155,94 @@ export function metricsSummary(
   };
 }
 
+export interface DbTokenUsageSummary {
+  runsWithUsage: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalTokens: number;
+  bySource: Record<string, number>;
+}
+
+function usageScope(filter: AggregateFilter): { sql: string; params: unknown[] } {
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (filter.projectId !== undefined) {
+    where.push("r.project_id = ?");
+    params.push(filter.projectId);
+  }
+  if (filter.repoId !== undefined) {
+    where.push("r.repo_id = ?");
+    params.push(filter.repoId);
+  }
+  if (filter.domain !== undefined) {
+    where.push("r.domain = ?");
+    params.push(filter.domain);
+  }
+  if (filter.since !== undefined) {
+    where.push("r.started_at >= ?");
+    params.push(filter.since);
+  }
+  if (filter.until !== undefined) {
+    where.push("r.started_at <= ?");
+    params.push(filter.until);
+  }
+  if (filter.status !== undefined) {
+    where.push("r.status = ?");
+    params.push(filter.status);
+  }
+  return {
+    sql: where.length > 0 ? `WHERE ${where.join(" AND ")}` : "",
+    params,
+  };
+}
+
+export function tokenUsageSummary(
+  db: Database.Database,
+  filter: AggregateFilter = {},
+): DbTokenUsageSummary {
+  const { sql, params } = usageScope(filter);
+  const bySourceRows = db
+    .prepare(
+      `SELECT u.usage_source, count(*) AS n
+         FROM run_usage u
+         JOIN runs r ON r.run_id = u.run_id
+        ${sql}
+        GROUP BY u.usage_source`,
+    )
+    .all(...params) as { usage_source: string; n: number }[];
+  const bySource: Record<string, number> = {};
+  let runsWithUsage = 0;
+  for (const row of bySourceRows) {
+    bySource[row.usage_source] = row.n;
+    runsWithUsage += row.n;
+  }
+  const totals = db
+    .prepare(
+      `SELECT
+         COALESCE(sum(CASE WHEN u.usage_source = 'exact' THEN u.input_tokens END), 0)
+           AS input_tokens,
+         COALESCE(sum(CASE WHEN u.usage_source = 'exact' THEN u.output_tokens END), 0)
+           AS output_tokens,
+         COALESCE(sum(CASE WHEN u.usage_source = 'exact' THEN u.total_tokens END), 0)
+           AS total_tokens
+       FROM run_usage u
+       JOIN runs r ON r.run_id = u.run_id
+       ${sql}`,
+    )
+    .get(...params) as {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+  };
+  return {
+    runsWithUsage,
+    totalInputTokens: totals.input_tokens,
+    totalOutputTokens: totals.output_tokens,
+    totalTokens: totals.total_tokens,
+    bySource,
+  };
+}
+
 export interface DbInboxSummary {
   needsReview: DashboardRunSummary[];
   changesRequested: DashboardRunSummary[];

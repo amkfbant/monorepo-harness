@@ -693,7 +693,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 25`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 26`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -719,6 +719,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 23 | audit fix #130 | hitch_lifecycle_events（reopen/close/cancel reason の audit-only ledger） |
 | 24 | audit fix #131 | `review_proposals.prompt_provenance_json`（reviewer prompt template と injected operational knowledge の audit-only provenance） |
 | 25 | telemetry provenance B1 | `runs` に実行環境 provenance 列（harness/schema/codex binary/prompt sha。`codex_model` は NULL 予約） |
+| 26 | telemetry usage C2 | `run_usage`（run 1:1 の Codex token usage。`exact` / `unavailable` を記録、`parsed_log` / `estimated` は予約） |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -1030,6 +1031,38 @@ append-only 規約により、v10 の DDL と `V10_TABLE_NAMES` は書き換え�
 は後続 migration で意図的に削除された table、`CURRENT_TABLE_NAMES` は latest schema で
 存在を期待する table 集合を表す。fresh migration test と `db stats` の row-count 対象は
 `CURRENT_TABLE_NAMES` を使う。
+
+## Telemetry usage C2 — run_usage（schema v26）
+
+schema v26 は additive な `run_usage` を追加する。1 run につき最大 1 行で、
+Codex CLI structured JSONL (`codex-events.jsonl`) の `turn.completed.usage` だけを
+入力にする。LLM の自然文・自己申告テキストは usage source にしない。
+
+```sql
+CREATE TABLE run_usage (
+  run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+  model TEXT,
+  input_tokens INTEGER,
+  cached_input_tokens INTEGER,
+  output_tokens INTEGER,
+  reasoning_output_tokens INTEGER,
+  total_tokens INTEGER,
+  usage_source TEXT NOT NULL
+    CHECK (usage_source IN ('exact','parsed_log','estimated','unavailable')),
+  created_at TEXT NOT NULL
+);
+```
+
+`model` は現状 `NULL`。`usage_source` の意味論:
+
+- `exact` — Codex CLI structured events の `turn.completed.usage` から決定論的に取得。
+  複数 turn は token fields を合算する。
+- `unavailable` — events file が無い、空、JSON parse 不可、または
+  `turn.completed.usage` が無い。token fields はすべて `NULL`。
+- `parsed_log` / `estimated` — 将来予約。C2 では書き込まない。
+
+`total_tokens` の正規定義は `input_tokens + output_tokens`。`reasoning_output_tokens`
+は別列であり、total に二重加算しない。
 
 ## Audit fix #130 — hitch lifecycle events（schema v23）
 

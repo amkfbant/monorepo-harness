@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 26;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1699,6 +1699,31 @@ export const MIGRATION_V25_STATEMENTS: readonly string[] = [
   `ALTER TABLE runs ADD COLUMN prompt_sha256 TEXT`,
 ];
 
+/**
+ * v26 — run token usage telemetry.
+ *
+ * One row per run, populated from Codex CLI structured JSONL events after the
+ * codex process finishes. `parsed_log` and `estimated` are reserved enum values;
+ * Phase C2 writes only `exact` or `unavailable`.
+ */
+export const MIGRATION_V26_STATEMENTS: readonly string[] = [
+  `CREATE TABLE run_usage (
+     run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+     model TEXT,
+     input_tokens INTEGER,
+     cached_input_tokens INTEGER,
+     output_tokens INTEGER,
+     reasoning_output_tokens INTEGER,
+     total_tokens INTEGER,
+     usage_source TEXT NOT NULL
+       CHECK (usage_source IN ('exact','parsed_log','estimated','unavailable')),
+     created_at TEXT NOT NULL
+   )`,
+];
+
+/** Tables added by v26 (run token usage telemetry). */
+export const V26_TABLE_NAMES = ["run_usage"] as const;
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -1741,6 +1766,7 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V18_TABLE_NAMES,
   ...V21_TABLE_NAMES,
   ...V23_TABLE_NAMES,
+  ...V26_TABLE_NAMES,
 ];
 
 /** Tables intentionally removed by later migrations. */

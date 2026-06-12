@@ -8,6 +8,7 @@ import { checkConsistency } from "../db/consistency.js";
 import { DbDashboardDataSource } from "./data-source.js";
 import type {
   DbMetricsSummary,
+  DbTokenUsageSummary,
   DbInboxSummary,
   DbKnowledgeDigest,
   DbBacklogSummary,
@@ -59,6 +60,7 @@ export interface DashboardSnapshot {
   filters: DashboardFilters;
   projects: ProjectSummary[];
   overview: DbMetricsSummary;
+  usage: DbTokenUsageSummary;
   hitchMetrics: DbHitchMetricsSummary;
   mcpConfirmations: DbMcpConfirmationSummary;
   inbox: DbInboxSummary;
@@ -125,6 +127,7 @@ export function buildDashboardSnapshot(opts: {
     filters,
     projects,
     overview: ds.metricsSummary(filters),
+    usage: ds.tokenUsageSummary(filters),
     hitchMetrics: ds.hitchMetricsSummary(filters),
     mcpConfirmations: ds.mcpConfirmationSummary({}, now.toISOString()),
     inbox: ds.inboxSummary(filters),

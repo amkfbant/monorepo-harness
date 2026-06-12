@@ -11,11 +11,13 @@ import {
 } from "../db/repositories/runs.js";
 import {
   metricsSummary,
+  tokenUsageSummary,
   inboxSummary,
   knowledgeDigest,
   backlogList,
   type AggregateFilter,
   type DbMetricsSummary,
+  type DbTokenUsageSummary,
   type DbInboxSummary,
   type DbKnowledgeDigest,
   type DbBacklogSummary,
@@ -46,6 +48,7 @@ export interface DashboardDataSource {
   getReviewDecision(runId: string): ReviewDecisionRow | null;
   // project-aware aggregates (Phase 6-6)
   metricsSummary(filter?: AggregateFilter): DbMetricsSummary;
+  tokenUsageSummary(filter?: AggregateFilter): DbTokenUsageSummary;
   hitchMetricsSummary(filter?: AggregateFilter): DbHitchMetricsSummary;
   mcpConfirmationSummary(
     filter?: Pick<AggregateFilter, "since" | "until">,
@@ -87,6 +90,9 @@ export class DbDashboardDataSource implements DashboardDataSource {
   }
   metricsSummary(filter?: AggregateFilter): DbMetricsSummary {
     return metricsSummary(this.db, filter);
+  }
+  tokenUsageSummary(filter?: AggregateFilter): DbTokenUsageSummary {
+    return tokenUsageSummary(this.db, filter);
   }
   hitchMetricsSummary(filter?: AggregateFilter): DbHitchMetricsSummary {
     return hitchMetricsSummary(this.db, filter);

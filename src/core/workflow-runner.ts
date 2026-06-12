@@ -60,6 +60,7 @@ import {
   buildCodexPrompt,
   CODER_PROMPT_TEMPLATE,
 } from "../codex/prompt-builder.js";
+import { parseCodexUsage } from "../codex/usage-parser.js";
 import { computeReviewedFingerprint } from "./reviewed-fingerprint.js";
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import { buildSummary } from "../reporter/summary.js";
@@ -83,6 +84,13 @@ function warnArtifactIngestFailed(runId: string, e: unknown): void {
   process.stderr.write(
     `warning: run ${runId}: artifact body ingestion into the DB failed: ` +
       `${(e as Error).message} — run \`harness db migrate-artifacts\` to recover\n`,
+  );
+}
+
+function warnUsageRecordFailed(runId: string, e: unknown): void {
+  process.stderr.write(
+    `warning: run ${runId}: codex usage telemetry was not recorded: ` +
+      `${(e as Error).message}\n`,
   );
 }
 
@@ -189,6 +197,36 @@ async function readOptionalUtf8(path: string): Promise<string | null> {
   } catch (e) {
     if (isNodeError(e) && e.code === "ENOENT") return null;
     throw e;
+  }
+}
+
+async function recordCodexUsage(opts: {
+  db: Database.Database;
+  runId: string;
+  eventsContent: string | null;
+}): Promise<void> {
+  const usage = parseCodexUsage(opts.eventsContent ?? "");
+  try {
+    assertActiveLease(opts.db, opts.runId);
+    opts.db
+      .prepare(
+        `INSERT INTO run_usage
+           (run_id, model, input_tokens, cached_input_tokens, output_tokens,
+            reasoning_output_tokens, total_tokens, usage_source, created_at)
+         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        opts.runId,
+        usage.inputTokens,
+        usage.cachedInputTokens,
+        usage.outputTokens,
+        usage.reasoningOutputTokens,
+        usage.totalTokens,
+        usage.usageSource,
+        new Date().toISOString(),
+      );
+  } catch (e) {
+    warnUsageRecordFailed(opts.runId, e);
   }
 }
 
@@ -737,7 +775,13 @@ async function runDomainCodingInner(
       timedOut: codex.timedOut,
       durationMs: codex.durationMs,
     });
-    const codexEventsContent = await readOptionalUtf8(codexEventsPath);
+    let codexEventsContent: string | null = null;
+    try {
+      codexEventsContent = await readOptionalUtf8(codexEventsPath);
+    } catch {
+      codexEventsContent = null;
+    }
+    await recordCodexUsage({ db, runId, eventsContent: codexEventsContent });
     if (codexEventsContent !== null) {
       const codexEventsRedaction = redactCodexEvents(codexEventsContent);
       if (

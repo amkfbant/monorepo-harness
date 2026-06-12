@@ -292,6 +292,117 @@ describe("runDomainCoding (fake codex)", () => {
     }
   });
 
+  it("records exact codex token usage from codex-events.jsonl", async () => {
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 2;\n",
+        );
+      },
+      usage: {
+        inputTokens: 120,
+        cachedInputTokens: 40,
+        outputTokens: 35,
+        reasoningOutputTokens: 9,
+      },
+    });
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "record usage",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const row = db
+        .prepare(
+          `SELECT model, input_tokens, cached_input_tokens, output_tokens,
+                  reasoning_output_tokens, total_tokens, usage_source
+             FROM run_usage WHERE run_id = ?`,
+        )
+        .get(r.runId) as {
+        model: string | null;
+        input_tokens: number | null;
+        cached_input_tokens: number | null;
+        output_tokens: number | null;
+        reasoning_output_tokens: number | null;
+        total_tokens: number | null;
+        usage_source: string;
+      };
+      expect(row).toEqual({
+        model: null,
+        input_tokens: 120,
+        cached_input_tokens: 40,
+        output_tokens: 35,
+        reasoning_output_tokens: 9,
+        total_tokens: 155,
+        usage_source: "exact",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("records unavailable usage when the codex events file is missing", async () => {
+    const runner: CodexExecRunner = {
+      async run(input) {
+        writeFileSync(
+          join(input.worktreePath, "apps/user/src/profile.ts"),
+          "export const x = 3;\n",
+        );
+        writeFileSync(input.logPaths.stdout, "done\n", "utf8");
+        writeFileSync(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false, durationMs: 10 };
+      },
+    };
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "record unavailable usage",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const row = db
+        .prepare(
+          `SELECT input_tokens, cached_input_tokens, output_tokens,
+                  reasoning_output_tokens, total_tokens, usage_source
+             FROM run_usage WHERE run_id = ?`,
+        )
+        .get(r.runId) as {
+        input_tokens: number | null;
+        cached_input_tokens: number | null;
+        output_tokens: number | null;
+        reasoning_output_tokens: number | null;
+        total_tokens: number | null;
+        usage_source: string;
+      };
+      expect(row).toEqual({
+        input_tokens: null,
+        cached_input_tokens: null,
+        output_tokens: null,
+        reasoning_output_tokens: null,
+        total_tokens: null,
+        usage_source: "unavailable",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("rejects untracked writes outside the write scope", async () => {
     const runner = createFakeCodexRunner({
       edit: async (cwd) => {

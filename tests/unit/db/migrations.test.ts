@@ -69,7 +69,7 @@ describe("runMigrations", () => {
     expect(r.version).toBe(SCHEMA_VERSION);
     expect(r.applied).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25,
+      22, 23, 24, 25, 26,
     ]);
     const tables = tableNames(dbPath);
     expect(tables.has("schema_migrations")).toBe(true);
@@ -81,6 +81,96 @@ describe("runMigrations", () => {
     }
     for (const t of DROPPED_TABLE_NAMES) {
       expect(tables.has(t)).toBe(false);
+    }
+  });
+
+  it("creates run_usage in v26 and stays idempotent", () => {
+    const db = openDb(freshDbPath());
+    try {
+      applyMigrationsBefore(db, 26);
+      expect(currentSchemaVersion(db)).toBe(25);
+      expect(hasSchemaObject(db, "table", "run_usage")).toBe(false);
+
+      const upgraded = runMigrations(db);
+      expect(upgraded.applied).toEqual([26]);
+      expect(upgraded.version).toBe(SCHEMA_VERSION);
+      expect(hasSchemaObject(db, "table", "run_usage")).toBe(true);
+
+      const columns = db
+        .prepare("PRAGMA table_info(run_usage)")
+        .all() as { name: string; type: string; notnull: number; pk: number }[];
+      expect(columns.find((r) => r.name === "run_id")).toMatchObject({
+        type: "TEXT",
+        notnull: 0,
+        pk: 1,
+      });
+      expect(columns.find((r) => r.name === "model")).toMatchObject({
+        type: "TEXT",
+        notnull: 0,
+      });
+      for (const name of [
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "reasoning_output_tokens",
+        "total_tokens",
+      ]) {
+        expect(columns.find((r) => r.name === name)).toMatchObject({
+          type: "INTEGER",
+          notnull: 0,
+        });
+      }
+      expect(columns.find((r) => r.name === "usage_source")).toMatchObject({
+        type: "TEXT",
+        notnull: 1,
+      });
+      expect(columns.find((r) => r.name === "created_at")).toMatchObject({
+        type: "TEXT",
+        notnull: 1,
+      });
+
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, updated_at)
+         VALUES ('run-v26', 'demo', 'apps/web', 'domain-coding', 'main',
+           'needs_review', '2026-06-13T00:00:00.000Z')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO run_usage
+           (run_id, input_tokens, cached_input_tokens, output_tokens,
+            reasoning_output_tokens, total_tokens, usage_source, created_at)
+         VALUES ('run-v26', 10, 2, 5, 1, 15, 'exact',
+           '2026-06-13T00:00:00.000Z')`,
+      ).run();
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO run_usage (run_id, usage_source, created_at)
+             VALUES ('run-v26-bad', 'exact', '2026-06-13T00:00:00.000Z')`,
+          )
+          .run(),
+      ).toThrow();
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, updated_at)
+         VALUES ('run-v26-bad-source', 'demo', 'apps/web', 'domain-coding',
+           'main', 'needs_review', '2026-06-13T00:00:00.000Z')`,
+      ).run();
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO run_usage (run_id, usage_source, created_at)
+             VALUES ('run-v26-bad-source', 'self_reported',
+               '2026-06-13T00:00:00.000Z')`,
+          )
+          .run(),
+      ).toThrow(/CHECK/i);
+
+      const again = runMigrations(db);
+      expect(again.applied).toEqual([]);
+      expect(again.version).toBe(SCHEMA_VERSION);
+    } finally {
+      db.close();
     }
   });
 
@@ -99,7 +189,7 @@ describe("runMigrations", () => {
       expect(before.map((r) => r.name)).not.toContain("prompt_sha256");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([25]);
+      expect(upgraded.applied).toEqual([25, 26]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       const after = db
         .prepare("PRAGMA table_info(runs)")
@@ -144,7 +234,7 @@ describe("runMigrations", () => {
       expect(before.map((r) => r.name)).not.toContain("prompt_provenance_json");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([24, 25]);
+      expect(upgraded.applied).toEqual([24, 25, 26]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       const after = db
         .prepare("PRAGMA table_info(review_proposals)")
@@ -168,7 +258,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "hitch_lifecycle_events")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([23, 24, 25]);
+      expect(upgraded.applied).toEqual([23, 24, 25, 26]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "hitch_lifecycle_events")).toBe(true);
       expect(hasSchemaObject(db, "index", "hitch_lifecycle_events_hitch_idx")).toBe(
@@ -208,7 +298,7 @@ describe("runMigrations", () => {
       ).run("2026-06-12T00:00:00.000Z", "{}");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([22, 23, 24, 25]);
+      expect(upgraded.applied).toEqual([22, 23, 24, 25, 26]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "db_stats_snapshots")).toBe(false);
       expect(hasSchemaObject(db, "index", "db_stats_snapshots_created_idx")).toBe(
