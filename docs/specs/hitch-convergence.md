@@ -200,14 +200,39 @@ hitch-linked mutations until the recommended deferral action is handled.
 linked hitch. The bounded MCP driver `hitch.orchestrate` (`harness.hitch.orchestrate`)
 is gated by the same evaluation: it is permitted **exactly when some per-step
 mutation would be permitted** (`needs_fix` with `fix_findings`/`run_close_check`,
-or `continue` with `run_close_check`). `close_ready`, the terminal decisions,
-`defer_followups`, and classification all deny the driver so an operator handles
-them out of band; each internal coder/review step the orchestrator runs
+or `continue` with `run_close_check`). The entry gate denies the driver for
+`close_ready`, the stop/terminal decisions (`escalate` / `diverging` /
+`budget_exhausted` / `closed` / `cancel`), `defer_followups`, and
+`needs_classification`. That denial is about *entering* the driver: once the
+driver is running, its loop auto-classifies and auto-defers via the internal
+deterministic runner dispatch (see the three-layer table below); only the
+deliberate `close_ready` close/PR and the escalation path are left to an
+operator out of band. Each internal coder/review step the orchestrator runs
 re-checks its own gate. `harness hitch check-convergence` and
 `harness.hitch.check_convergence` record an audit decision and synchronize the
 durable hitch status for stop/close-ready decisions by default. Review proposal
 import uses the same status synchronization after it records its convergence
 decision.
+
+### Three layers handle the same decision differently
+
+The same convergence decision is acted on at three layers. All three are
+deterministic and fail-closed; the differences are intentional, not a
+contradiction:
+
+| decision | MCP per-step gate (`mutation-gate.ts`) | hitch loop (`HitchOrchestrator`) | course dispatch (`orchestrate-dispatch.ts`) |
+|---|---|---|---|
+| `needs_fix` (`fix_findings`/`run_close_check`) | permits `run.start`/`rerun.start` | drives a bounded fix/rerun | drives the phase |
+| `continue` + `run_close_check` | permits review validation | records close-check evidence | drives the phase |
+| `needs_classification` | denies the step | **auto-classifies** via the classify runner, then continues | **blocks** the phase and isolates its subtree (operator classifies) |
+| `defer_followups` | denies the step | **auto-defers** via the defer runner, then continues | not blocked, but the hitch is not drivable (`allowedByConvergence` is false) → `report_only` unless another linked hitch is drivable |
+| `close_ready` | denies the step (operator closes/PRs) | default loop runs `closeAndPr` (close + PR); stops before the PR only when `stopAtCloseReady` is set (the MCP/course drivers set it) | `ready_to_close` when all hitches are ready and no open P0/P1; no auto-close |
+| `escalate` / `diverging` / `budget_exhausted` | denies the step | stops | blocks the phase and isolates its subtree |
+
+The in-loop classify/defer runners are internal deterministic dispatch, not
+gated mutations, which is why the MCP gate "denying classification/deferral" and
+the loop "auto-handling" them are both correct. The course layer deliberately
+stops on `needs_classification` rather than auto-resolving across phases.
 
 Implemented links:
 

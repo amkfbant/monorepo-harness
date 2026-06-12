@@ -6,6 +6,16 @@ import type {
 import type { CoursePhaseAction } from "./orchestrator-types.js";
 import type { PhaseStatus } from "./types.js";
 
+// At the course layer, a linked hitch whose convergence decision is one of
+// these blocks the phase and isolates its subtree (no auto-progress this pass).
+// `needs_classification` is treated differently across the three layers, all
+// deterministic and fail-closed:
+//   - MCP per-step gate (mutation-gate.ts): does not permit an autonomous step.
+//   - hitch loop (HitchOrchestrator): auto-classifies / auto-defers via the
+//     runner dispatch and keeps going.
+//   - course dispatch (here): stops and isolates the subtree, leaving
+//     classification to an operator rather than auto-resolving across phases.
+// See the three-layer table in docs/specs/hitch-convergence.md.
 const BLOCKED_DECISIONS = new Set<HitchConvergenceDecision>([
   "escalate",
   "diverging",

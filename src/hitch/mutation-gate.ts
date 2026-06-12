@@ -88,11 +88,20 @@ export function allowedByConvergence(
 ): boolean {
   const action = convergence.recommendedNextAction.kind;
   if (mutationKind === "hitch.orchestrate") {
-    // The bounded-step orchestrate driver is permitted exactly when the loop has
-    // a permitted autonomous next step — i.e. some per-step mutation below would
-    // be allowed. close_ready / terminal / defer / classify all require an
-    // operator, so the driver is denied (fail-closed; the operator drives the
-    // deliberate close/PR or classification path out of band).
+    // Gate for *entering* the bounded-step orchestrate driver: permitted exactly
+    // when the loop has a permitted autonomous next step that this gate guards —
+    // a per-step fix / close-check mutation below would be allowed (needs_fix →
+    // fix_findings | run_close_check, or continue → run_close_check).
+    //
+    // Every other decision denies *entry* here (fail-closed): close_ready and the
+    // stop/terminal decisions (escalate / diverging / budget_exhausted / closed /
+    // cancel), plus defer_followups and needs_classification. The denial is only
+    // about entering the driver — once it is running, HitchOrchestrator
+    // auto-classifies and auto-defers via the deterministic classify / defer
+    // runners (orchestrator.ts), which are internal dispatch, not gated
+    // mutations. What genuinely needs an operator out of band is the deliberate
+    // close_ready close/PR and the escalation path.
+    // See the three-layer table in docs/specs/hitch-convergence.md.
     return (
       (convergence.decision === "needs_fix" &&
         (action === "fix_findings" || action === "run_close_check")) ||
