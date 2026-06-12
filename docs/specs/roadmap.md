@@ -41,7 +41,7 @@ course   (long-lived initiative, project-scoped)
 | `course_id` | TEXT FK → courses | ON DELETE CASCADE |
 | `parent_phase_id` | TEXT nullable FK → phases | null = top-level (大 phase) |
 | `title` | TEXT | required |
-| `position` | INTEGER | sibling ordering; DEFAULT 0 |
+| `position` | INTEGER | sibling ordering; DEFAULT 0; repository `add` auto-assigns the next sibling position when omitted |
 | `status` | TEXT | `pending` \| `in_progress` \| `closed` \| `blocked`; DEFAULT `pending` |
 | `scope_json` | TEXT nullable | arbitrary includes/excludes/target spec |
 | `close_conditions_json` | TEXT nullable | phase-level deterministic gates |
@@ -49,9 +49,16 @@ course   (long-lived initiative, project-scoped)
 | `created_by`, `created_source` | TEXT nullable | |
 | `created_at`, `updated_at` | TEXT | |
 
-The self-referencing tree represents 大/サブ phases in a single table, ordered by
-`(position ASC, phase_id ASC)` within a parent. A phase's `parent_phase_id` must
-belong to the same course; cross-course parents are rejected by `PhaseRepository`.
+The self-referencing tree represents 大/サブ phases in a single table. New phases
+with no explicit `position` are assigned `COALESCE(MAX(position) + 1, 0)` within
+the same `(course_id, parent_phase_id)` sibling group in the same `BEGIN IMMEDIATE`
+transaction as the insert; explicit `position` values are preserved. Reads are
+ordered by `(position ASC, created_at ASC, phase_id ASC)` within a parent. The
+`created_at` tiebreak improves ordering for legacy courses whose siblings were
+all stored with `position = 0`, but it is best-effort: legacy rows created in the
+same millisecond still fall back to `phase_id` order. A phase's `parent_phase_id`
+must belong to the same course; cross-course parents are rejected by
+`PhaseRepository`.
 
 `review_state_json` records only phase-level reviews that are **not** a hitch's own
 convergence (e.g. a codex/Fable review of the phase's roadmap/plan as a fact). It
@@ -259,7 +266,7 @@ Implemented in `src/cli/course.ts`, registered via `registerCourseCommands`.
 | Subcommand | Description |
 |------------|-------------|
 | `phase add --course <id> --title <text> [--parent <phase-id>] [--position <n>] [--scope-file <path>] [--close-file <path>] [--created-by <actor>] [--json]` | Add a phase. `--scope-file` / `--close-file` accept JSON or YAML. Rejects cross-course parent. |
-| `phase list --course <id> [--json]` | List phases for a course (flat, ordered by position/id). |
+| `phase list --course <id> [--json]` | List phases for a course (flat, ordered by position/created_at/id). |
 | `phase show <id> [--json]` | Show a phase plus its linked hitch ids. |
 | `phase update <id> [--status pending\|in_progress\|closed\|blocked] [--scope-file <path>] [--close-file <path>]` | Update a phase's declared status or scope/close conditions. |
 | `phase link-hitch <phase-id> <hitch-id>` | Link a hitch to a phase. Rejects cross-project mismatch and double-link. |

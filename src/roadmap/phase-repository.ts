@@ -41,24 +41,32 @@ export class PhaseRepository {
     phaseId?: string;
     createdBy: string; createdSource: string; now?: string;
   }): Phase {
-    const course = this.db.prepare("SELECT 1 FROM courses WHERE course_id = ?").get(input.courseId) as { "1": number } | undefined;
-    if (course === undefined) throw new Error(`course ${input.courseId} not found`);
-    // integrity: parent must exist AND be in the same course
-    if (input.parentPhaseId !== undefined) {
-      const parent = this.db.prepare("SELECT course_id FROM phases WHERE phase_id = ?").get(input.parentPhaseId) as { course_id: string } | undefined;
-      if (parent === undefined) throw new Error(`parent phase ${input.parentPhaseId} not found`);
-      if (parent.course_id !== input.courseId) throw new Error(`parent phase ${input.parentPhaseId} is in a different course`);
-    }
-    const id = input.phaseId ?? `phase-${randomUUID()}`;
-    const now = input.now ?? new Date().toISOString();
-    this.db.prepare(
-      `INSERT INTO phases (phase_id, course_id, parent_phase_id, title, position, status, scope_json, close_conditions_json, created_by, created_source, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`,
-    ).run(id, input.courseId, input.parentPhaseId ?? null, input.title, input.position ?? 0,
-      input.scope === undefined ? null : JSON.stringify(input.scope),
-      input.closeConditions === undefined ? null : JSON.stringify(input.closeConditions),
-      input.createdBy, input.createdSource, now, now);
-    return this.require(id);
+    return this.db.transaction(() => {
+      const course = this.db.prepare("SELECT 1 FROM courses WHERE course_id = ?").get(input.courseId) as { "1": number } | undefined;
+      if (course === undefined) throw new Error(`course ${input.courseId} not found`);
+      // integrity: parent must exist AND be in the same course
+      if (input.parentPhaseId !== undefined) {
+        const parent = this.db.prepare("SELECT course_id FROM phases WHERE phase_id = ?").get(input.parentPhaseId) as { course_id: string } | undefined;
+        if (parent === undefined) throw new Error(`parent phase ${input.parentPhaseId} not found`);
+        if (parent.course_id !== input.courseId) throw new Error(`parent phase ${input.parentPhaseId} is in a different course`);
+      }
+      const id = input.phaseId ?? `phase-${randomUUID()}`;
+      const now = input.now ?? new Date().toISOString();
+      const parentPhaseId = input.parentPhaseId ?? null;
+      const position = input.position ?? (this.db.prepare(
+        `SELECT COALESCE(MAX(position) + 1, 0) AS position
+           FROM phases
+          WHERE course_id = ? AND parent_phase_id IS ?`,
+      ).get(input.courseId, parentPhaseId) as { position: number }).position;
+      this.db.prepare(
+        `INSERT INTO phases (phase_id, course_id, parent_phase_id, title, position, status, scope_json, close_conditions_json, created_by, created_source, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`,
+      ).run(id, input.courseId, parentPhaseId, input.title, position,
+        input.scope === undefined ? null : JSON.stringify(input.scope),
+        input.closeConditions === undefined ? null : JSON.stringify(input.closeConditions),
+        input.createdBy, input.createdSource, now, now);
+      return this.require(id);
+    }).immediate();
   }
 
   get(phaseId: string): Phase | null {
@@ -73,11 +81,11 @@ export class PhaseRepository {
 
   listForCourse(courseId: string): Phase[] {
     return (this.db.prepare(
-      "SELECT * FROM phases WHERE course_id = ? ORDER BY position ASC, phase_id ASC",
+      "SELECT * FROM phases WHERE course_id = ? ORDER BY position ASC, created_at ASC, phase_id ASC",
     ).all(courseId) as PhaseRow[]).map(mapPhase);
   }
 
-  /** Build the phase forest for a course (deterministic: position then phase_id). */
+  /** Build the phase forest for a course (deterministic: position, created_at, then phase_id). */
   tree(courseId: string): PhaseNode[] {
     const all = this.listForCourse(courseId);
     const byParent = new Map<string | null, Phase[]>();

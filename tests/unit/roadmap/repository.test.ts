@@ -31,6 +31,70 @@ describe("Course/Phase repositories (SP-1)", () => {
     expect(tree[0]!.children.map((n) => n.phase.title)).toEqual(["サブ A", "サブ B"]);
   });
 
+  it("auto-assigns omitted positions in creation order for flat lists and trees", () => {
+    const c = courses.create({ title: "Roadmap", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    phases.add({ courseId: c.courseId, phaseId: "phase-c", title: "First", createdBy: "t", createdSource: "cli", now: "2026-06-12T00:00:00.000Z" });
+    phases.add({ courseId: c.courseId, phaseId: "phase-a", title: "Second", createdBy: "t", createdSource: "cli", now: "2026-06-12T00:00:01.000Z" });
+    phases.add({ courseId: c.courseId, phaseId: "phase-b", title: "Third", createdBy: "t", createdSource: "cli", now: "2026-06-12T00:00:02.000Z" });
+
+    expect(phases.listForCourse(c.courseId).map((p) => [p.title, p.position])).toEqual([
+      ["First", 0],
+      ["Second", 1],
+      ["Third", 2],
+    ]);
+    expect(phases.tree(c.courseId).map((n) => n.phase.title)).toEqual(["First", "Second", "Third"]);
+  });
+
+  it("keeps explicit positions while auto-assigning omitted positions after the sibling max", () => {
+    const c = courses.create({ title: "Roadmap", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    phases.add({ courseId: c.courseId, phaseId: "phase-explicit-high", title: "Explicit high", position: 5, createdBy: "t", createdSource: "cli" });
+    phases.add({ courseId: c.courseId, phaseId: "phase-auto", title: "Auto", createdBy: "t", createdSource: "cli" });
+    phases.add({ courseId: c.courseId, phaseId: "phase-explicit-low", title: "Explicit low", position: 2, createdBy: "t", createdSource: "cli" });
+
+    expect(phases.listForCourse(c.courseId).map((p) => [p.title, p.position])).toEqual([
+      ["Explicit low", 2],
+      ["Explicit high", 5],
+      ["Auto", 6],
+    ]);
+  });
+
+  it("auto-assigns omitted positions independently for each parent", () => {
+    const c = courses.create({ title: "Roadmap", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const parentA = phases.add({ courseId: c.courseId, phaseId: "phase-parent-a", title: "Parent A", createdBy: "t", createdSource: "cli" });
+    const parentB = phases.add({ courseId: c.courseId, phaseId: "phase-parent-b", title: "Parent B", createdBy: "t", createdSource: "cli" });
+    phases.add({ courseId: c.courseId, parentPhaseId: parentA.phaseId, phaseId: "phase-a-child-1", title: "A child 1", createdBy: "t", createdSource: "cli" });
+    phases.add({ courseId: c.courseId, parentPhaseId: parentA.phaseId, phaseId: "phase-a-child-2", title: "A child 2", createdBy: "t", createdSource: "cli" });
+    phases.add({ courseId: c.courseId, parentPhaseId: parentB.phaseId, phaseId: "phase-b-child-1", title: "B child 1", createdBy: "t", createdSource: "cli" });
+
+    const tree = phases.tree(c.courseId);
+    expect(tree[0]!.children.map((n) => [n.phase.title, n.phase.position])).toEqual([
+      ["A child 1", 0],
+      ["A child 2", 1],
+    ]);
+    expect(tree[1]!.children.map((n) => [n.phase.title, n.phase.position])).toEqual([
+      ["B child 1", 0],
+    ]);
+  });
+
+  it("orders legacy same-position rows by created_at, then phase_id for ties", () => {
+    const c = courses.create({ courseId: "course-legacy", title: "Roadmap", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    conn.prepare(
+      `INSERT INTO phases (phase_id, course_id, parent_phase_id, title, position, status, created_by, created_source, created_at, updated_at)
+       VALUES (?, ?, NULL, ?, 0, 'pending', 't', 'cli', ?, ?)`,
+    ).run("phase-c", c.courseId, "First", "2026-06-12T00:00:00.000Z", "2026-06-12T00:00:00.000Z");
+    conn.prepare(
+      `INSERT INTO phases (phase_id, course_id, parent_phase_id, title, position, status, created_by, created_source, created_at, updated_at)
+       VALUES (?, ?, NULL, ?, 0, 'pending', 't', 'cli', ?, ?)`,
+    ).run("phase-b", c.courseId, "Tie B", "2026-06-12T00:00:01.000Z", "2026-06-12T00:00:01.000Z");
+    conn.prepare(
+      `INSERT INTO phases (phase_id, course_id, parent_phase_id, title, position, status, created_by, created_source, created_at, updated_at)
+       VALUES (?, ?, NULL, ?, 0, 'pending', 't', 'cli', ?, ?)`,
+    ).run("phase-a", c.courseId, "Tie A", "2026-06-12T00:00:01.000Z", "2026-06-12T00:00:01.000Z");
+
+    expect(phases.listForCourse(c.courseId).map((p) => p.title)).toEqual(["First", "Tie A", "Tie B"]);
+    expect(phases.tree(c.courseId).map((n) => n.phase.title)).toEqual(["First", "Tie A", "Tie B"]);
+  });
+
   it("rejects a parent from a different course (fail-closed)", () => {
     const c1 = courses.create({ title: "C1", createdBy: "t", createdSource: "cli" });
     const c2 = courses.create({ title: "C2", createdBy: "t", createdSource: "cli" });
