@@ -127,6 +127,38 @@ describe("CLI project-scoped DB queries (Phase 6-6)", () => {
     expect(code).toBe(0);
   });
 
+  it("metrics snapshot records a DB aggregate snapshot and prunes retention", () => {
+    const root = setup();
+    const json = runCli(root, [
+      "metrics",
+      "snapshot",
+      "--project",
+      "demo",
+      "--retention-days",
+      "90",
+      "--json",
+    ]);
+    expect(json.code).toBe(0);
+    const parsed = JSON.parse(json.out) as {
+      snapshot: { snapshotId: string; projectId: string | null };
+      pruned: number;
+    };
+    expect(parsed.snapshot.snapshotId).toMatch(/^msnap-[0-9a-f-]{36}$/);
+    expect(parsed.snapshot.projectId).toBe("demo");
+    expect(parsed.pruned).toBe(0);
+
+    const text = runCli(root, [
+      "metrics",
+      "snapshot",
+      "--project",
+      "demo",
+      "--retention-days",
+      "90",
+    ]);
+    expect(text.code).toBe(0);
+    expect(text.out).toMatch(/^snapshot=msnap-[0-9a-f-]{36} pruned=\d+\n$/);
+  });
+
   it("backlog list --project --status threads the status filter (Phase 6 hardening)", () => {
     const root = setup();
     mkdirSync(join(root, "backlog", "open"), { recursive: true });

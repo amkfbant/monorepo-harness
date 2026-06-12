@@ -1,0 +1,240 @@
+import { describe, expect, it } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type Database from "better-sqlite3";
+import { openDb } from "../../../src/db/connection.js";
+import { runMigrations } from "../../../src/db/migrations.js";
+import {
+  listMetricsSnapshots,
+  pruneMetricsSnapshots,
+  recordMetricsSnapshot,
+  type MetricsSnapshotPayloadV1,
+} from "../../../src/db/repositories/metrics-snapshots.js";
+
+function freshDb(): Database.Database {
+  const dir = mkdtempSync(join(tmpdir(), "harness-metrics-snap-"));
+  const db = openDb(join(dir, ".harness", "harness.sqlite"));
+  runMigrations(db);
+  return db;
+}
+
+function insertRun(
+  db: Database.Database,
+  input: {
+    runId: string;
+    projectId: string | null;
+    repoId: string;
+    domain: string;
+    status: string;
+  },
+): void {
+  db.prepare(
+    `INSERT INTO runs (run_id, repo_id, project_id, domain, workflow,
+       base_branch, status, started_at, updated_at)
+     VALUES (?, ?, ?, ?, 'domain-coding', 'main', ?,
+       '2026-06-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z')`,
+  ).run(input.runId, input.repoId, input.projectId, input.domain, input.status);
+}
+
+function insertUsage(db: Database.Database, runId: string): void {
+  db.prepare(
+    `INSERT INTO run_usage
+       (run_id, input_tokens, output_tokens, total_tokens, usage_source,
+        created_at)
+     VALUES (?, 100, 25, 125, 'exact', '2026-06-01T00:00:00.000Z')`,
+  ).run(runId);
+}
+
+function insertHitchSession(
+  db: Database.Database,
+  input: {
+    hitchId: string;
+    projectId: string | null;
+    repoId: string | null;
+    domain: string | null;
+    status: string;
+  },
+): void {
+  db.prepare(
+    `INSERT INTO hitch_sessions (
+       hitch_id, title, status, project_id, repo_id, domain, scope_json,
+       close_conditions_json, policy_json, max_iterations, max_review_cycles,
+       max_reruns, max_total_new_findings, created_by, created_source,
+       created_at, updated_at
+     )
+     VALUES (?, ?, ?, ?, ?, ?, '{}', '[]', '{}', 3, 3, 2, 12, 'test', 'cli',
+       '2026-06-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z')`,
+  ).run(
+    input.hitchId,
+    input.hitchId,
+    input.status,
+    input.projectId,
+    input.repoId,
+    input.domain,
+  );
+}
+
+function insertMcpConfirmation(db: Database.Database): void {
+  db.prepare(
+    `INSERT INTO mcp_confirmation_requests (
+       confirmation_id, client_name, actor, tool_name, operation_type,
+       input_json, preview_json, permission_snapshot_json, status, created_at,
+       expires_at
+     )
+     VALUES ('mcpconf-snap', 'test-client', 'test-actor', 'tool', 'mutation',
+       '{}', '{}', '{}', 'confirmed', '2026-06-01T00:00:00.000Z',
+       '2026-07-01T00:00:00.000Z')`,
+  ).run();
+}
+
+function payloadOf(row: { payloadJson: string }): MetricsSnapshotPayloadV1 {
+  return JSON.parse(row.payloadJson) as MetricsSnapshotPayloadV1;
+}
+
+describe("metrics snapshots repository", () => {
+  it("records a scoped aggregate payload and returns the stored snapshot", () => {
+    const db = freshDb();
+    try {
+      insertRun(db, {
+        runId: "run-demo",
+        projectId: "demo",
+        repoId: "repo-a",
+        domain: "apps/web",
+        status: "approved",
+      });
+      insertRun(db, {
+        runId: "run-other",
+        projectId: "other",
+        repoId: "repo-b",
+        domain: "apps/api",
+        status: "needs_review",
+      });
+      insertUsage(db, "run-demo");
+      insertHitchSession(db, {
+        hitchId: "hitch-demo",
+        projectId: "demo",
+        repoId: "repo-a",
+        domain: "apps/web",
+        status: "closed",
+      });
+      insertHitchSession(db, {
+        hitchId: "hitch-other",
+        projectId: "other",
+        repoId: "repo-b",
+        domain: "apps/api",
+        status: "open",
+      });
+      insertMcpConfirmation(db);
+
+      const snapshot = recordMetricsSnapshot(db, {
+        filter: { projectId: "demo", repoId: "repo-a", domain: "apps/web" },
+        now: "2026-06-13T00:00:00.000Z",
+      });
+
+      expect(snapshot.snapshotId).toMatch(/^msnap-[0-9a-f-]{36}$/);
+      expect(snapshot.createdAt).toBe("2026-06-13T00:00:00.000Z");
+      expect(snapshot.projectId).toBe("demo");
+      expect(snapshot.repoId).toBe("repo-a");
+      expect(snapshot.domain).toBe("apps/web");
+      expect(snapshot.payloadSchema).toBe(1);
+      expect(payloadOf(snapshot)).toMatchObject({
+        schema: 1,
+        capturedAt: "2026-06-13T00:00:00.000Z",
+        filter: { projectId: "demo", repoId: "repo-a", domain: "apps/web" },
+        metricsSummary: { totalRuns: 1, approved: 1 },
+        tokenUsageSummary: {
+          runsWithUsage: 1,
+          totalInputTokens: 100,
+          totalOutputTokens: 25,
+          totalTokens: 125,
+        },
+        hitchMetricsSummary: {
+          totalSessions: 1,
+          byStatus: { closed: 1 },
+        },
+        mcpConfirmationSummary: {
+          total: 1,
+          byStatus: { confirmed: 1 },
+        },
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("prunes only snapshots older than the retention boundary", () => {
+    const db = freshDb();
+    try {
+      const insert = db.prepare(
+        `INSERT INTO metrics_snapshots
+           (snapshot_id, created_at, payload_json)
+         VALUES (?, ?, '{}')`,
+      );
+      insert.run("msnap-old", "2026-03-14T23:59:59.999Z");
+      insert.run("msnap-boundary", "2026-03-15T00:00:00.000Z");
+      insert.run("msnap-new", "2026-06-13T00:00:00.000Z");
+
+      const pruned = pruneMetricsSnapshots(db, {
+        retentionDays: 90,
+        now: "2026-06-13T00:00:00.000Z",
+      });
+
+      expect(pruned).toBe(1);
+      expect(
+        listMetricsSnapshots(db, { filter: {} }).map((s) => s.snapshotId),
+      ).toEqual(["msnap-new", "msnap-boundary"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("lists newest snapshots first with scope, since, and limit filters", () => {
+    const db = freshDb();
+    try {
+      const insert = db.prepare(
+        `INSERT INTO metrics_snapshots
+           (snapshot_id, created_at, project_id, repo_id, domain, payload_json)
+         VALUES (?, ?, ?, ?, ?, '{}')`,
+      );
+      insert.run(
+        "msnap-demo-old",
+        "2026-06-01T00:00:00.000Z",
+        "demo",
+        "repo-a",
+        "apps/web",
+      );
+      insert.run(
+        "msnap-demo-new",
+        "2026-06-03T00:00:00.000Z",
+        "demo",
+        "repo-a",
+        "apps/web",
+      );
+      insert.run(
+        "msnap-demo-api",
+        "2026-06-04T00:00:00.000Z",
+        "demo",
+        "repo-a",
+        "apps/api",
+      );
+      insert.run(
+        "msnap-other",
+        "2026-06-05T00:00:00.000Z",
+        "other",
+        "repo-b",
+        "apps/web",
+      );
+
+      const rows = listMetricsSnapshots(db, {
+        filter: { projectId: "demo", repoId: "repo-a", domain: "apps/web" },
+        since: "2026-06-02T00:00:00.000Z",
+        limit: 1,
+      });
+
+      expect(rows.map((s) => s.snapshotId)).toEqual(["msnap-demo-new"]);
+    } finally {
+      db.close();
+    }
+  });
+});

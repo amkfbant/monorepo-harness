@@ -21,6 +21,11 @@ import {
   type DbHitchMetricsSummary,
   type DbMcpConfirmationSummary,
 } from "../db/repositories/convergence-aggregates.js";
+import {
+  pruneMetricsSnapshots,
+  recordMetricsSnapshot,
+  type MetricsSnapshotRow,
+} from "../db/repositories/metrics-snapshots.js";
 
 /**
  * Project-scoped CLI paths (Phase 6-6).
@@ -120,6 +125,18 @@ function fixed(value: number | null): string {
   return value === null ? "n/a" : value.toFixed(1);
 }
 
+function parseRetentionDays(raw: unknown): number {
+  const value = raw === undefined ? 90 : Number(raw);
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+    process.stderr.write(
+      `harness error: --retention-days must be a non-negative integer ` +
+        `(got ${JSON.stringify(String(raw))})\n`,
+    );
+    process.exit(1);
+  }
+  return value;
+}
+
 function statusLines(values: Record<string, number>): string {
   return Object.keys(values)
     .sort()
@@ -181,6 +198,32 @@ export function runScopedMetrics(
       `  confirmation rate: ${pct(m.mcpConfirmations.confirmationRate)}\n` +
       `  expired rate: ${pct(m.mcpConfirmations.expiredRate)}\n` +
       `${confirmationByStatus}\n`,
+  );
+}
+
+interface MetricsSnapshotCliOutput {
+  snapshot: MetricsSnapshotRow;
+  pruned: number;
+}
+
+export function runMetricsSnapshot(
+  harnessRoot: string,
+  raw: Record<string, unknown>,
+): void {
+  const filter = scopeFilter(raw);
+  const retentionDays = parseRetentionDays(raw.retentionDays);
+  const result = withRefreshedDb(harnessRoot, (db): MetricsSnapshotCliOutput => {
+    const recordAndPrune = db.transaction(() => {
+      const snapshot = recordMetricsSnapshot(db, { filter });
+      const pruned = pruneMetricsSnapshots(db, { retentionDays });
+      return { snapshot, pruned };
+    });
+    return recordAndPrune();
+  });
+  emit(
+    raw,
+    result,
+    `snapshot=${result.snapshot.snapshotId} pruned=${result.pruned}\n`,
   );
 }
 

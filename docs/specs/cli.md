@@ -611,6 +611,7 @@ harness workspace verify-pr  <number> [--repo <path>] [--remote origin] [--rm] [
 harness metrics summary --since 30d        # 全体 summary
 harness metrics summary --project <id>     # project を絞る（DB read model 経由、Phase 6）
 harness metrics summary --repo-id <id>     # repo を絞る（DB read model 経由、Phase 6）
+harness metrics snapshot [--project <id>] [--repo-id <id>] [--domain <d>] [--retention-days 90] [--json]
 harness metrics domain apps/orders         # domain 別 summary
 harness metrics failures --since 30d       # failed-* の status 別内訳
 ```
@@ -649,6 +650,14 @@ MCP confirmations の `confirmationRate` は
 stored `pending` かつ `expires_at <= 集計時刻` の request は read-only に effective `expired`
 として byStatus / rate に入れ、DB は更新しない。MCP の project-restricted client では
 同じ global 指標は fail-closed で返さない（[`mcp.md`](./mcp.md)）。
+
+`metrics snapshot` は files から DB read model を refresh した後、`metrics_snapshots`
+へ 1 行記録し、同じ DB transaction で retention prune を実行する。`--project` /
+`--repo-id` / `--domain` は snapshot の scope と live aggregate filter に使う。
+`--retention-days` は非負整数で、既定は `90`。prune は
+`created_at < now - retentionDays` の row だけを削除するため、境界時刻ちょうどの
+snapshot は残る。text 出力は `snapshot=<id> pruned=<n>`、`--json` は
+`{ "snapshot": <row>, "pruned": <n> }`。
 
 - **Runs**: total + status 別件数
 - **Review**: approved / changes_requested / rejected 件数、approved 率、reviewer 別件数

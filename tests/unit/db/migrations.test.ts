@@ -69,7 +69,7 @@ describe("runMigrations", () => {
     expect(r.version).toBe(SCHEMA_VERSION);
     expect(r.applied).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26,
+      22, 23, 24, 25, 26, 27,
     ]);
     const tables = tableNames(dbPath);
     expect(tables.has("schema_migrations")).toBe(true);
@@ -84,6 +84,70 @@ describe("runMigrations", () => {
     }
   });
 
+  it("creates metrics_snapshots in v27 and stays idempotent", () => {
+    const db = openDb(freshDbPath());
+    try {
+      applyMigrationsBefore(db, 27);
+      expect(currentSchemaVersion(db)).toBe(26);
+      expect(hasSchemaObject(db, "table", "metrics_snapshots")).toBe(false);
+
+      const upgraded = runMigrations(db);
+      expect(upgraded.applied).toEqual([27]);
+      expect(upgraded.version).toBe(SCHEMA_VERSION);
+      expect(hasSchemaObject(db, "table", "metrics_snapshots")).toBe(true);
+      expect(hasSchemaObject(db, "index", "metrics_snapshots_created_idx")).toBe(
+        true,
+      );
+      expect(
+        hasSchemaObject(db, "index", "metrics_snapshots_scope_created_idx"),
+      ).toBe(true);
+
+      const columns = db
+        .prepare("PRAGMA table_info(metrics_snapshots)")
+        .all() as { name: string; type: string; notnull: number; pk: number }[];
+      expect(columns.find((r) => r.name === "snapshot_id")).toMatchObject({
+        type: "TEXT",
+        notnull: 0,
+        pk: 1,
+      });
+      for (const name of ["created_at", "payload_json"]) {
+        expect(columns.find((r) => r.name === name)).toMatchObject({
+          type: "TEXT",
+          notnull: 1,
+        });
+      }
+      for (const name of ["project_id", "repo_id", "domain"]) {
+        expect(columns.find((r) => r.name === name)).toMatchObject({
+          type: "TEXT",
+          notnull: 0,
+        });
+      }
+      expect(columns.find((r) => r.name === "payload_schema")).toMatchObject({
+        type: "INTEGER",
+        notnull: 1,
+      });
+
+      db.prepare(
+        `INSERT INTO metrics_snapshots
+           (snapshot_id, created_at, project_id, repo_id, domain, payload_json)
+         VALUES ('msnap-v27', '2026-06-13T00:00:00.000Z',
+           'demo', 'repo-a', 'apps/web', '{}')`,
+      ).run();
+      const row = db
+        .prepare(
+          "SELECT payload_schema FROM metrics_snapshots WHERE snapshot_id = ?",
+        )
+        .get("msnap-v27") as { payload_schema: number } | undefined;
+      expect(row?.payload_schema).toBe(1);
+
+      const again = runMigrations(db);
+      expect(again.applied).toEqual([]);
+      expect(again.version).toBe(SCHEMA_VERSION);
+    } finally {
+      db.close();
+    }
+  });
+
   it("creates run_usage in v26 and stays idempotent", () => {
     const db = openDb(freshDbPath());
     try {
@@ -92,7 +156,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "run_usage")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([26]);
+      expect(upgraded.applied).toEqual([26, 27]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "run_usage")).toBe(true);
 
@@ -189,7 +253,7 @@ describe("runMigrations", () => {
       expect(before.map((r) => r.name)).not.toContain("prompt_sha256");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([25, 26]);
+      expect(upgraded.applied).toEqual([25, 26, 27]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       const after = db
         .prepare("PRAGMA table_info(runs)")
@@ -234,7 +298,7 @@ describe("runMigrations", () => {
       expect(before.map((r) => r.name)).not.toContain("prompt_provenance_json");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([24, 25, 26]);
+      expect(upgraded.applied).toEqual([24, 25, 26, 27]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       const after = db
         .prepare("PRAGMA table_info(review_proposals)")
@@ -258,7 +322,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "hitch_lifecycle_events")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([23, 24, 25, 26]);
+      expect(upgraded.applied).toEqual([23, 24, 25, 26, 27]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "hitch_lifecycle_events")).toBe(true);
       expect(hasSchemaObject(db, "index", "hitch_lifecycle_events_hitch_idx")).toBe(
@@ -298,7 +362,7 @@ describe("runMigrations", () => {
       ).run("2026-06-12T00:00:00.000Z", "{}");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([22, 23, 24, 25, 26]);
+      expect(upgraded.applied).toEqual([22, 23, 24, 25, 26, 27]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "db_stats_snapshots")).toBe(false);
       expect(hasSchemaObject(db, "index", "db_stats_snapshots_created_idx")).toBe(

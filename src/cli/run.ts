@@ -247,6 +247,7 @@ import {
 import {
   hasScopeFilter,
   runScopedMetrics,
+  runMetricsSnapshot,
   runScopedInbox,
   runScopedKnowledgeDigest,
   runScopedBacklog,
@@ -2385,6 +2386,17 @@ metricsCmd
       ...(since ? { since } : {}),
     });
     process.stdout.write(formatMetricsSummary(m));
+  });
+metricsCmd
+  .command("snapshot")
+  .description("record a metrics aggregate snapshot and prune retention")
+  .option("--project <id>", "scope to a project")
+  .option("--repo-id <id>", "scope to a repo")
+  .option("--domain <d>", "scope to a domain")
+  .option("--retention-days <n>", "snapshot retention in days", "90")
+  .option("--json", "emit JSON instead of text")
+  .action((raw: Record<string, unknown>) => {
+    runMetricsSnapshot(getHarnessRoot(), raw);
   });
 metricsCmd
   .command("domain")

@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V25_STATEMENTS`、
-> `SCHEMA_VERSION = 25`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V27_STATEMENTS`、
+> `SCHEMA_VERSION = 27`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -700,7 +700,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 26`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 27`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -727,6 +727,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 24 | audit fix #131 | `review_proposals.prompt_provenance_json`（reviewer prompt template と injected operational knowledge の audit-only provenance） |
 | 25 | telemetry provenance B1 | `runs` に実行環境 provenance 列（harness/schema/codex binary/prompt sha。`codex_model` は NULL 予約） |
 | 26 | telemetry usage C2 | `run_usage`（run 1:1 の Codex token usage。`exact` / `unavailable` を記録、`parsed_log` / `estimated` は予約） |
+| 27 | telemetry snapshots E1 | `metrics_snapshots`（live aggregate の append-only stored projection。snapshot caller と retention prune を同時実装） |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -863,7 +864,7 @@ infrastructure を入れる（CLI は [`cli.md`](./cli.md) の `harness db docto
 - `archive_catalog` — detach 済み archive の range とステータス
   （`attached`/`detached`/`missing`）。
 - `db_stats_snapshots` — `db stats` の時系列スナップショットとして v10 で追加されたが、
-  production caller が無く未配線だったため、schema v22 で
+  production caller / retention prune / downstream consumer が無く未配線だったため、schema v22 で
   `db_stats_snapshots_created_idx` → `db_stats_snapshots` の順に DROP された。
   v10 DDL / `V10_TABLE_NAMES` / `ALL_TABLE_NAMES` は migration history として残し、
   latest schema で存在すべき table は `CURRENT_TABLE_NAMES`
@@ -1075,6 +1076,45 @@ CREATE TABLE run_usage (
 
 `total_tokens` の正規定義は `input_tokens + output_tokens`。`reasoning_output_tokens`
 は別列であり、total に二重加算しない。
+
+## Telemetry snapshots E1 — metrics_snapshots（schema v27）
+
+schema v27 は additive な `metrics_snapshots` を追加する。これは
+`metricsSummary` / `hitchMetricsSummary` / `tokenUsageSummary` /
+`mcpConfirmationSummary` の live aggregate を、ある時点の read model として保存する
+append-only projection である。stored snapshot は rollup と同じ導出値であり、
+live 集計の正本性や lifecycle 判定を変えない。E2 の delta/trend はこの snapshot を
+消費するが、正本は引き続き既存 tables と aggregate repository である。
+
+```sql
+CREATE TABLE metrics_snapshots (
+  snapshot_id TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  project_id TEXT,
+  repo_id TEXT,
+  domain TEXT,
+  payload_json TEXT NOT NULL,
+  payload_schema INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX metrics_snapshots_created_idx
+  ON metrics_snapshots(created_at);
+CREATE INDEX metrics_snapshots_scope_created_idx
+  ON metrics_snapshots(project_id, repo_id, domain, created_at);
+```
+
+`snapshot_id` は `msnap-<uuid>`。`project_id` / `repo_id` / `domain` は snapshot の
+scope 記録で nullable。`payload_schema=1` の `payload_json` は
+`schema` / `capturedAt` / `filter` と、4 つの aggregate payload
+（`metricsSummary`, `hitchMetricsSummary`, `tokenUsageSummary`,
+`mcpConfirmationSummary`）を持つ JSON。MCP confirmations は global table なので、
+project/repo/domain scope は適用せず、date scope のみ aggregate に渡す。
+
+production caller は `harness metrics snapshot`。記録時に retention prune を同じ DB
+transaction で必ず実行する。repository の `recordMetricsSnapshot` は 1 行 INSERT、
+`pruneMetricsSnapshots` は `created_at < now - retentionDays` を DELETE し、境界時刻
+ちょうどの row は残す。旧 `db_stats_snapshots` との違いは、初期実装時点で
+caller（CLI）/ retention prune / downstream consumer（E2 delta/trend）が同一 Phase の
+契約に含まれており、未配線 ledger として無限成長させない点である。
 
 ## Audit fix #130 — hitch lifecycle events（schema v23）
 
