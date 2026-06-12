@@ -713,6 +713,35 @@ describe("CourseOrchestrator", () => {
     expect(latestReleaseReason(db, courseId)).toBe("budget_exhausted");
   });
 
+  it("labels a phase as partially driven when budget is exhausted mid-phase", async () => {
+    const courseId = newCourse(db, "course-budget-mid-phase");
+    const phases = new PhaseRepository(db);
+    const phase = phases.add({ courseId, phaseId: "phase-mid-budget", title: "One", position: 1, createdBy: "test", createdSource: "cli" });
+    seedDrivableHitch(db, "h-mid-one");
+    seedDrivableHitch(db, "h-mid-two");
+    phases.linkHitch(phase.phaseId, "h-mid-one");
+    phases.linkHitch(phase.phaseId, "h-mid-two");
+    const calls: string[] = [];
+
+    const result = await makeOrchestrator(db, {}, calls).run({
+      courseId,
+      maxDrivenHitches: 1,
+      maxStepsPerHitch: 2,
+      createdBy: "test",
+    });
+
+    expect(result.stopReason).toBe("budget_exhausted");
+    expect(calls).toEqual(["h-mid-one"]);
+    expect(result.phaseOutcomes).toEqual([
+      expect.objectContaining({
+        phaseId: phase.phaseId,
+        action: "partially_driven",
+        note: "partially_driven_budget_exhausted",
+        drivenHitches: [expect.objectContaining({ hitchId: "h-mid-one" })],
+      }),
+    ]);
+  });
+
   it("resumes an in-progress phase idempotently and skips close-ready hitches", async () => {
     const courseId = newCourse(db, "course-resume");
     const phases = new PhaseRepository(db);

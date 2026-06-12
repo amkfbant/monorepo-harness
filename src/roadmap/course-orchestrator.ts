@@ -313,9 +313,13 @@ export class CourseOrchestrator {
         if (drivenHitches.length >= input.maxDrivenHitches) {
           phaseOutcomes.push({
             phaseId: phase.phaseId,
-            action: "not_driven",
+            action:
+              phaseDriven.length === 0 ? "not_driven" : "partially_driven",
             drivenHitches: phaseDriven,
-            note: "not_driven",
+            note:
+              phaseDriven.length === 0
+                ? "not_driven"
+                : "partially_driven_budget_exhausted",
           });
           this.recordNotDriven(rollup.phases, i + 1, phaseOutcomes);
           return {

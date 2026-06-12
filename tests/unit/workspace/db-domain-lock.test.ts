@@ -194,6 +194,26 @@ describe("acquireDomainLock", () => {
     expect(listActiveDomainLocks(db)).toHaveLength(0);
     db.close();
   });
+
+  it("does not mark the handle released until the release UPDATE succeeds", () => {
+    const db = freshDb();
+    db.prepare(
+      `CREATE TRIGGER fail_release
+         BEFORE UPDATE OF released_at ON domain_locks
+         WHEN NEW.release_reason = 'fail-once'
+       BEGIN
+         SELECT RAISE(ABORT, 'release failed');
+       END`,
+    ).run();
+    const h = acquireDomainLock(db, { ...HOLDER, runId: "retry-release" });
+
+    expect(() => h.release({ reason: "fail-once" })).toThrow(/release failed/);
+    expect(listActiveDomainLocks(db)).toHaveLength(1);
+
+    h.release({ reason: "retry" });
+    expect(listActiveDomainLocks(db)).toHaveLength(0);
+    db.close();
+  });
 });
 
 describe("listActiveDomainLocks / findActiveDomainLock / releaseByDomain", () => {

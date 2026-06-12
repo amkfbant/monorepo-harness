@@ -116,6 +116,17 @@ describe("Course/Phase repositories (SP-1)", () => {
     expect(() => phases.linkHitch(p2.phaseId, "h1")).toThrow(/already linked|UNIQUE|PRIMARY/i);
   });
 
+  it("returns whether unlinkHitch removed an existing phase link", () => {
+    const c = courses.create({ title: "C", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P", createdBy: "t", createdSource: "cli" });
+    conn.prepare(`INSERT INTO hitch_sessions (hitch_id,project_id,title,status,scope_json,close_conditions_json,policy_json,max_iterations,max_review_cycles,max_reruns,max_total_new_findings,created_by,created_source,created_at,updated_at) VALUES ('h-unlink','demo','H','open','{}','[]','{}',3,3,2,12,'t','cli','t','t')`).run();
+    phases.linkHitch(p.phaseId, "h-unlink");
+
+    expect(phases.unlinkHitch("h-unlink")).toBe(true);
+    expect(phases.unlinkHitch("h-unlink")).toBe(false);
+    expect(phases.hitchIdsFor(p.phaseId)).toEqual([]);
+  });
+
   it("rejects linking a hitch whose project differs from the course's project (no cross-project leak)", () => {
     const c = courses.create({ title: "C", projectId: "demo", createdBy: "t", createdSource: "cli" });
     const p = phases.add({ courseId: c.courseId, title: "P", createdBy: "t", createdSource: "cli" });

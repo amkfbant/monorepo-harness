@@ -257,7 +257,6 @@ export function acquireDomainLock(
       now3: Date = new Date(),
     ): void {
       if (released) return;
-      released = true;
       db.prepare(
         `UPDATE domain_locks
             SET released_at = ?, release_reason = ?, released_by = ?
@@ -268,6 +267,7 @@ export function acquireDomainLock(
         rel.releasedBy ?? null,
         lockId,
       );
+      released = true;
     },
   };
 }

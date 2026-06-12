@@ -85,6 +85,38 @@ describe("rollupCourse (SP-1)", () => {
     expect(rollup.phases[0]!.latestDecision).toBe("needs_fix");
   });
 
+  it("breaks latestDecision created_at ties by decisionId across linked hitches", () => {
+    const courses = new CourseRepository(conn);
+    const phases = new PhaseRepository(conn);
+    const hitches = new HitchRepository(conn);
+    const c = courses.create({ title: "C-tie", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P-tie", createdBy: "t", createdSource: "cli" });
+    const high = hitches.createSession({ title: "H-high", projectId: "demo", scope: {}, closeConditions: [], createdBy: "t", createdSource: "cli" });
+    const low = hitches.createSession({ title: "H-low", projectId: "demo", scope: {}, closeConditions: [], createdBy: "t", createdSource: "cli" });
+    phases.linkHitch(p.phaseId, high.hitchId, "2026-06-12T00:00:00.000Z");
+    phases.linkHitch(p.phaseId, low.hitchId, "2026-06-12T00:00:01.000Z");
+    const createdAt = "2026-06-12T01:00:00.000Z";
+    hitches.recordConvergenceDecision({
+      decisionId: "decision-z",
+      hitchId: high.hitchId,
+      decision: "close_ready",
+      reason: "same timestamp high id",
+      createdAt,
+      createdBy: "t",
+    });
+    hitches.recordConvergenceDecision({
+      decisionId: "decision-a",
+      hitchId: low.hitchId,
+      decision: "needs_fix",
+      reason: "same timestamp low id",
+      createdAt,
+      createdBy: "t",
+    });
+
+    const rollup = rollupCourse({ db: conn, courseId: c.courseId });
+    expect(rollup.phases[0]!.latestDecision).toBe("close_ready");
+  });
+
   it("marks a phase readyToClose when its hitch evaluates close_ready with no open P0/P1", () => {
     const courses = new CourseRepository(conn);
     const phases = new PhaseRepository(conn);

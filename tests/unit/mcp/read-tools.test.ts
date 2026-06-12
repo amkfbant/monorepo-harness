@@ -340,6 +340,49 @@ describe("MCP read tools", () => {
     }
   });
 
+  it("returns project.get not-found only when the client may access that project id", async () => {
+    const { root, db } = freshHarness();
+    try {
+      const scoped = server(root, {
+        ...DEFAULT_MCP_CONFIG,
+        allowedProjects: ["demo", "missing-allowed"],
+      });
+      const missingAllowed = await callTool(scoped, "harness.project.get", {
+        projectId: "missing-allowed",
+      });
+      expect(missingAllowed.status).toBe("error");
+      expect(missingAllowed.summary).toBe("project not found: missing-allowed");
+
+      const missingUnrestricted = await callTool(server(root), "harness.project.get", {
+        projectId: "does-not-exist",
+      });
+      expect(missingUnrestricted.status).toBe("error");
+      expect(missingUnrestricted.summary).toBe("project not found: does-not-exist");
+
+      const deniedExisting = await callTool(
+        server(root, { ...DEFAULT_MCP_CONFIG, allowedProjects: ["demo"] }),
+        "harness.project.get",
+        { projectId: "other" },
+      );
+      const deniedMissing = await callTool(
+        server(root, { ...DEFAULT_MCP_CONFIG, allowedProjects: ["demo"] }),
+        "harness.project.get",
+        { projectId: "does-not-exist" },
+      );
+      expect(deniedExisting.status).toBe(deniedMissing.status);
+      expect(deniedExisting.summary).toBe(deniedMissing.summary);
+      expect(deniedExisting.data.reason).toBe(deniedMissing.data.reason);
+
+      const allowedExisting = await callTool(scoped, "harness.project.get", {
+        projectId: "demo",
+      });
+      expect(allowedExisting.status).toBe("ok");
+      expect(allowedExisting.data.project.projectId).toBe("demo");
+    } finally {
+      db.close();
+    }
+  });
+
   it("reads backlog, knowledge, and operation rows", async () => {
     const { root, db } = freshHarness();
     try {

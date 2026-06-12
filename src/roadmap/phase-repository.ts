@@ -188,8 +188,11 @@ export class PhaseRepository {
     }
   }
 
-  unlinkHitch(hitchId: string): void {
-    this.db.prepare("DELETE FROM phase_hitches WHERE hitch_id = ?").run(hitchId);
+  unlinkHitch(hitchId: string): boolean {
+    const info = this.db
+      .prepare("DELETE FROM phase_hitches WHERE hitch_id = ?")
+      .run(hitchId);
+    return info.changes > 0;
   }
 
   hitchIdsFor(phaseId: string): string[] {

@@ -353,6 +353,57 @@ describe("MCP resources and prompts", () => {
     }
   });
 
+  it("returns project resource not-found only when the client may access that project id", async () => {
+    const { root, db } = freshHarness();
+    try {
+      const scoped = server(root, {
+        ...DEFAULT_MCP_CONFIG,
+        allowedProjects: ["demo", "missing-allowed"],
+      });
+      const missingAllowedProfile = await readResource(
+        scoped,
+        "harness://project/missing-allowed/profile",
+      );
+      expect(missingAllowedProfile.status).toBe("error");
+      expect(missingAllowedProfile.summary).toBe("project not found: missing-allowed");
+
+      const missingUnrestrictedPolicy = await readResource(
+        server(root),
+        "harness://project/does-not-exist/policy/effective",
+      );
+      expect(missingUnrestrictedPolicy.status).toBe("error");
+      expect(missingUnrestrictedPolicy.summary).toBe(
+        "project not found: does-not-exist",
+      );
+
+      const deniedServer = server(root, {
+        ...DEFAULT_MCP_CONFIG,
+        allowedProjects: ["demo"],
+      });
+      const deniedExisting = await readResource(
+        deniedServer,
+        "harness://project/other/profile",
+      );
+      const deniedMissing = await readResource(
+        deniedServer,
+        "harness://project/does-not-exist/profile",
+      );
+      expect(deniedExisting.status).toBe("permission_denied");
+      expect(deniedExisting.status).toBe(deniedMissing.status);
+      expect(deniedExisting.summary).toBe(deniedMissing.summary);
+      expect(deniedExisting.data.reason).toBe(deniedMissing.data.reason);
+
+      const allowedExisting = await readResource(
+        scoped,
+        "harness://project/demo/profile",
+      );
+      expect(allowedExisting.status).toBe("ok");
+      expect(allowedExisting.data.project.projectId).toBe("demo");
+    } finally {
+      db.close();
+    }
+  });
+
   it("enforces denied operations for composite resources", async () => {
     const { root, db } = freshHarness();
     try {
