@@ -87,6 +87,13 @@ async function makeCourseHitchRunners(input: {
       goal: hitchGoalText(runSession),
       baseBranch: prepared.baseBranch,
     }),
+    projectRuntime: {
+      compiledPolicy: prepared.compiledPolicy,
+      project: prepared.project,
+      ...(prepared.projectContextPacks !== undefined
+        ? { projectContextPacks: prepared.projectContextPacks }
+        : {}),
+    },
   });
   input.runnersByHitch.set(input.hitchId, runners);
   return runners;

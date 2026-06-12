@@ -507,6 +507,13 @@ export async function orchestrateHitchTool(
           // deliberate, separately-confirmed step.
           repoPath: prepared.repoPath,
           baseBranch: prepared.baseBranch,
+          projectRuntime: {
+            compiledPolicy: prepared.compiledPolicy,
+            project: prepared.project,
+            ...(prepared.projectContextPacks !== undefined
+              ? { projectContextPacks: prepared.projectContextPacks }
+              : {}),
+          },
         }),
         maxSteps,
         createdBy,

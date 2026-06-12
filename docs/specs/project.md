@@ -140,6 +140,19 @@ harness workflow reviewed-run --project <id> --domain <domain> --goal <text>
 
 各コマンドの確定仕様は [`cli.md`](./cli.md) の `harness project` 節を参照。
 
+Project-scoped hitch drivers are project-runtime executions too. CLI
+`hitch orchestrate`, MCP `harness.hitch.orchestrate`, and course orchestration
+resolve `prepareProjectRun(projectId, domain)` before launching the coder, then
+thread the compiled policy, `RunMeta.project`, and project context packs into
+`domain-coding`. The post-run git diff validation and the
+`effective_policy_snapshots` row therefore use the same compiled policy and
+`source: project-runtime` provenance as `harness run --project`.
+
+This is a compatibility tightening for project-scoped hitches: when the project
+profile narrows a broader raw repo policy, previously accepted writes can be
+denied by the compiled profile policy. Hitches without `projectId` intentionally
+continue to load raw `policies/global.yaml` + `policies/repos/<repoId>.yaml`.
+
 ## Namespace
 
 複数 project を同じ harness root で扱うため、次を namespace 化する。

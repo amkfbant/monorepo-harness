@@ -38,6 +38,47 @@ function createRunners(dbPath: string) {
   });
 }
 
+describe("createOrchestratorRunners.projectRuntime", () => {
+  it("rejects incomplete project runtime deps atomically", () => {
+    expect(() =>
+      createOrchestratorRunners({
+        dbPath: "/tmp/harness.sqlite",
+        harnessRoot: "/tmp/harness-root",
+        createdBy: "worker",
+        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+        reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+        projectRuntime: { project: {} } as never,
+      }),
+    ).toThrow(/atomically.*compiledPolicy and project/);
+  });
+
+  it("rejects a null compiledPolicy (would silently fall back to raw policy)", () => {
+    expect(() =>
+      createOrchestratorRunners({
+        dbPath: "/tmp/harness.sqlite",
+        harnessRoot: "/tmp/harness-root",
+        createdBy: "worker",
+        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+        reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+        projectRuntime: { compiledPolicy: null, project: {} } as never,
+      }),
+    ).toThrow(/atomically.*compiledPolicy and project/);
+  });
+
+  it("rejects a compiledPolicy missing global/repo", () => {
+    expect(() =>
+      createOrchestratorRunners({
+        dbPath: "/tmp/harness.sqlite",
+        harnessRoot: "/tmp/harness-root",
+        createdBy: "worker",
+        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+        reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+        projectRuntime: { compiledPolicy: { global: {} }, project: {} } as never,
+      }),
+    ).toThrow(/compiledPolicy must contain both global and repo/);
+  });
+});
+
 describe("createOrchestratorRunners.classify", () => {
   it("returns resolved=true when there are no unknown-scope findings", async () => {
     const dbPath = join(
@@ -436,7 +477,7 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
       new HitchRepository(db).createSession({
         hitchId: "g-fail",
         title: "Fail",
-        projectId: "demo",
+        projectId: null,
         repoId: "t",
         domain: "apps/user",
         closeConditions: [{ id: "tc", kind: "command", required: true }],
@@ -508,7 +549,7 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
         repo.createSession({
           hitchId: "g-inject",
           title: "Inject",
-          projectId: "demo",
+          projectId: null,
           repoId: "t",
           domain: "apps/user",
           closeConditions: [{ id: "tc", kind: "command", required: true }],
@@ -582,7 +623,7 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
         repo.createSession({
           hitchId: "g-first",
           title: "First",
-          projectId: "demo",
+          projectId: null,
           repoId: "t",
           domain: "apps/user",
           closeConditions: [{ id: "tc", kind: "command", required: true }],
@@ -640,7 +681,7 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
         repo.createSession({
           hitchId: "g-recover",
           title: "Recover",
-          projectId: "demo",
+          projectId: null,
           repoId: "t",
           domain: "apps/user",
           closeConditions: [{ id: "tc", kind: "command", required: true }],

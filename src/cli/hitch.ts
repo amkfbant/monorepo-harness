@@ -38,6 +38,7 @@ import { decideOrchestratorAction } from "../hitch/orchestrator-dispatch.js";
 import {
   createOrchestratorRunners,
   HitchNotCloseReadyError,
+  type OrchestratorRunnerDeps,
 } from "../hitch/orchestrator-runners.js";
 import {
   HitchRepository,
@@ -69,6 +70,7 @@ import {
   type HitchStatus,
 } from "../hitch/types.js";
 import type { HitchOrchestrationResult } from "../hitch/orchestrator-types.js";
+import { prepareProjectRun } from "../project/run-project.js";
 
 export interface RegisterHitchCommandsOptions {
   getHarnessRoot: () => string;
@@ -78,6 +80,99 @@ interface HitchContext {
   root: string;
   paths: ReturnType<typeof harnessPaths>;
   repo: HitchRepository;
+}
+
+function hitchGoalText(session: { title: string; description: string | null }): string {
+  return [session.title, session.description ?? ""]
+    .map((part) => part.trim())
+    .filter((part) => part !== "")
+    .join("\n\n");
+}
+
+export function resolveHitchCloseRunnerDeps(input: {
+  dbPath: string;
+  hitchId: string;
+  repoPath: string;
+  baseBranch: string;
+}): Pick<OrchestratorRunnerDeps, "repoPath" | "baseBranch"> {
+  const { db, close } = openManagedDb({ dbPath: input.dbPath });
+  try {
+    runMigrations(db);
+    new HitchRepository(db).requireSession(input.hitchId);
+  } finally {
+    close();
+  }
+  return {
+    repoPath: input.repoPath,
+    baseBranch: input.baseBranch,
+  };
+}
+
+export async function resolveHitchCoderRunnerDeps(input: {
+  harnessRoot: string;
+  dbPath: string;
+  hitchId: string;
+  repoPath: string;
+  baseBranch: string;
+}): Promise<
+  Pick<
+    OrchestratorRunnerDeps,
+    | "repoPath"
+    | "baseBranch"
+    | "resolveRunContext"
+    | "projectRuntime"
+  >
+> {
+  const { db, close } = openManagedDb({ dbPath: input.dbPath });
+  let projectId: string | null;
+  let domain: string | null;
+  try {
+    runMigrations(db);
+    const session = new HitchRepository(db).requireSession(input.hitchId);
+    projectId = session.projectId;
+    domain = session.domain;
+  } finally {
+    close();
+  }
+
+  if (projectId === null) {
+    return resolveHitchCloseRunnerDeps({
+      dbPath: input.dbPath,
+      hitchId: input.hitchId,
+      repoPath: input.repoPath,
+      baseBranch: input.baseBranch,
+    });
+  }
+  if (domain === null) {
+    throw new HitchCliError(
+      `hitch ${input.hitchId} has projectId ${projectId} but no domain`,
+    );
+  }
+
+  const prepared = await prepareProjectRun({
+    harnessRoot: input.harnessRoot,
+    projectId,
+    domain,
+    repoOverride: input.repoPath,
+  });
+  return {
+    repoPath: prepared.repoPath,
+    baseBranch: prepared.baseBranch,
+    resolveRunContext: (session) => ({
+      repoPath: prepared.repoPath,
+      repoId: prepared.repoId,
+      domain: prepared.domain,
+      goal: hitchGoalText(session),
+      baseBranch: prepared.baseBranch,
+    }),
+    projectRuntime: {
+      compiledPolicy: prepared.compiledPolicy,
+      project: prepared.project,
+      ...(prepared.projectContextPacks !== undefined
+        ? { projectContextPacks: prepared.projectContextPacks }
+        : {}),
+    },
+  };
 }
 
 export function registerHitchCommands(
@@ -546,6 +641,13 @@ export function registerHitchCommands(
         const dbPath = harnessPaths(opts.getHarnessRoot()).dbPath;
         const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
         const repoPath = String(raw.repo);
+        const runnerDeps = await resolveHitchCoderRunnerDeps({
+          harnessRoot: opts.getHarnessRoot(),
+          dbPath,
+          hitchId: finding.hitchId,
+          repoPath,
+          baseBranch: String(raw.baseBranch ?? "main"),
+        });
         const result = await new HitchOrchestrator({ dbPath }).run({
           hitchId: finding.hitchId,
           runners: createOrchestratorRunners({
@@ -556,8 +658,7 @@ export function registerHitchCommands(
             reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
             // no publisher: --then-rerun reruns the coder and halts at
             // close_ready; it never opens a PR (stopAtCloseReady below).
-            repoPath,
-            baseBranch: String(raw.baseBranch ?? "main"),
+            ...runnerDeps,
           }),
           maxSteps: parsePositiveInt(raw.maxSteps ?? 20, "--max-steps"),
           createdBy: "cli",
@@ -894,6 +995,13 @@ export function registerHitchCommands(
           raw.requestCopilotReview === true
             ? { reviewer: createGhCopilotReviewer(repoPath, ghBin) }
             : undefined;
+        const runnerDeps = await resolveHitchCoderRunnerDeps({
+          harnessRoot: opts.getHarnessRoot(),
+          dbPath,
+          hitchId,
+          repoPath,
+          baseBranch: String(raw.baseBranch ?? "main"),
+        });
         const result = await new HitchOrchestrator({ dbPath }).run({
           hitchId,
           runners: createOrchestratorRunners({
@@ -905,8 +1013,7 @@ export function registerHitchCommands(
             publisher: createGhPrPublisher(),
             ...(autoMerge !== undefined ? { autoMerge } : {}),
             ...(copilotReview !== undefined ? { copilotReview } : {}),
-            repoPath,
-            baseBranch: String(raw.baseBranch ?? "main"),
+            ...runnerDeps,
           }),
           maxSteps: parsePositiveInt(raw.maxSteps ?? 50, "--max-steps"),
           createdBy: "cli",
@@ -1013,9 +1120,15 @@ export function registerHitchCommands(
         // --auto-merge`. BOTH bounded awaits (CI and external-review) are CLAMPED
         // to the wall-clock budget left, so a single attempt cannot block past
         // `--max-wait`; the runners are rebuilt per poll with the fresh clamps.
-        const buildRunners = (remainingMs: number) => {
+        const buildRunners = async (hitchId: string, remainingMs: number) => {
           const ciAwaitMs = Math.min(ciAwaitTimeoutMs, remainingMs);
           const reviewTimeoutMs = Math.min(externalReviewTimeoutMs, remainingMs);
+          const runnerDeps = resolveHitchCloseRunnerDeps({
+            dbPath,
+            hitchId,
+            repoPath,
+            baseBranch: String(raw.baseBranch ?? "main"),
+          });
           return createOrchestratorRunners({
             dbPath,
             harnessRoot: opts.getHarnessRoot(),
@@ -1051,8 +1164,7 @@ export function registerHitchCommands(
                   }
                 : {}),
             },
-            repoPath,
-            baseBranch: String(raw.baseBranch ?? "main"),
+            ...runnerDeps,
           });
         };
 
@@ -1073,7 +1185,7 @@ export function registerHitchCommands(
             if (decision !== "close_ready") {
               return { kind: "not_awaiting", decision };
             }
-            const runners = buildRunners(remainingMs);
+            const runners = await buildRunners(hitchId, remainingMs);
             let result;
             try {
               result = await runners.closeAndPr(hitchId);
