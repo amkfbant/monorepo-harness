@@ -99,6 +99,24 @@ function hitchMetricsSection(s: DashboardSnapshot): string {
   ].join("\n");
 }
 
+function metricsTrendSection(s: DashboardSnapshot): string {
+  if (s.metricsTrend.length === 0) {
+    return '<h2>Metrics trend</h2><p class="empty">no snapshots</p>';
+  }
+  const rows = s.metricsTrend
+    .map(
+      (p) =>
+        `<tr><td>${esc(p.createdAt)}</td><td>${p.totalRuns}</td>` +
+        `<td>${pct(p.approvedRate)}</td><td>${p.totalTokens}</td></tr>`,
+    )
+    .join("");
+  return [
+    "<h2>Metrics trend</h2>",
+    "<table><tr><th>created</th><th>runs</th><th>approved rate</th>" +
+      `<th>total tokens</th></tr>${rows}</table>`,
+  ].join("\n");
+}
+
 function mcpConfirmationsSection(s: DashboardSnapshot): string {
   const c = s.mcpConfirmations;
   const rows = Object.keys(c.byStatus)
@@ -381,6 +399,7 @@ export function renderDashboardHtml(
       ? [mutationSection(snapshot, mutation.csrfToken)]
       : []),
     overviewSection(snapshot),
+    metricsTrendSection(snapshot),
     hitchMetricsSection(snapshot),
     mcpConfirmationsSection(snapshot),
     projectsSection(snapshot),

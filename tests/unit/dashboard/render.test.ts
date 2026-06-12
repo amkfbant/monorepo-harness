@@ -33,6 +33,21 @@ function markupSnapshot(): DashboardSnapshot {
       policyViolationRate: null,
       secretSuspectRate: null,
     },
+    usage: {
+      runsWithUsage: 1,
+      totalInputTokens: 100,
+      totalOutputTokens: 23,
+      totalTokens: 123,
+      bySource: { exact: 1 },
+    },
+    metricsTrend: [
+      {
+        createdAt: "2026-05-22T00:00:00Z",
+        totalRuns: 1,
+        approvedRate: 1,
+        totalTokens: 123,
+      },
+    ],
     hitchMetrics: {
       totalSessions: 1,
       byStatus: { open: 1 },

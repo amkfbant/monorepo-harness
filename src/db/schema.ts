@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 26;
+export const SCHEMA_VERSION = 27;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1724,6 +1724,32 @@ export const MIGRATION_V26_STATEMENTS: readonly string[] = [
 /** Tables added by v26 (run token usage telemetry). */
 export const V26_TABLE_NAMES = ["run_usage"] as const;
 
+/**
+ * v27 — metrics snapshots.
+ *
+ * Append-only stored projections of the live metrics aggregates. Snapshot rows
+ * are consumers' read model, not an authority that changes live aggregate
+ * semantics; the caller is responsible for paired retention pruning.
+ */
+export const MIGRATION_V27_STATEMENTS: readonly string[] = [
+  `CREATE TABLE metrics_snapshots (
+     snapshot_id TEXT PRIMARY KEY,
+     created_at TEXT NOT NULL,
+     project_id TEXT,
+     repo_id TEXT,
+     domain TEXT,
+     payload_json TEXT NOT NULL,
+     payload_schema INTEGER NOT NULL DEFAULT 1
+   )`,
+  `CREATE INDEX metrics_snapshots_created_idx
+     ON metrics_snapshots(created_at)`,
+  `CREATE INDEX metrics_snapshots_scope_created_idx
+     ON metrics_snapshots(project_id, repo_id, domain, created_at)`,
+];
+
+/** Tables added by v27 (metrics aggregate snapshots). */
+export const V27_TABLE_NAMES = ["metrics_snapshots"] as const;
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -1767,6 +1793,7 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V21_TABLE_NAMES,
   ...V23_TABLE_NAMES,
   ...V26_TABLE_NAMES,
+  ...V27_TABLE_NAMES,
 ];
 
 /** Tables intentionally removed by later migrations. */

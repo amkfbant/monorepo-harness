@@ -21,6 +21,14 @@ import {
   type DbHitchMetricsSummary,
   type DbMcpConfirmationSummary,
 } from "../db/repositories/convergence-aggregates.js";
+import {
+  buildMetricsDelta,
+  pruneMetricsSnapshots,
+  recordMetricsSnapshot,
+  type MetricsDeltaResult,
+  type MetricsDeltaValue,
+  type MetricsSnapshotRow,
+} from "../db/repositories/metrics-snapshots.js";
 
 /**
  * Project-scoped CLI paths (Phase 6-6).
@@ -65,6 +73,14 @@ function scopeFilter(raw: Record<string, unknown>): AggregateFilter {
     ...(raw.domain !== undefined ? { domain: String(raw.domain) } : {}),
     ...(raw.status !== undefined ? { status: String(raw.status) } : {}),
     ...(since !== undefined ? { since } : {}),
+  };
+}
+
+function snapshotScopeFilter(raw: Record<string, unknown>): AggregateFilter {
+  return {
+    ...(raw.project !== undefined ? { projectId: String(raw.project) } : {}),
+    ...(raw.repoId !== undefined ? { repoId: String(raw.repoId) } : {}),
+    ...(raw.domain !== undefined ? { domain: String(raw.domain) } : {}),
   };
 }
 
@@ -116,8 +132,24 @@ function pct(rate: number | null): string {
   return rate === null ? "n/a" : `${(rate * 100).toFixed(0)}%`;
 }
 
+function pct1(rate: number | null): string {
+  return rate === null ? "n/a" : `${(rate * 100).toFixed(1)}%`;
+}
+
 function fixed(value: number | null): string {
   return value === null ? "n/a" : value.toFixed(1);
+}
+
+function parseRetentionDays(raw: unknown): number {
+  const value = raw === undefined ? 90 : Number(raw);
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+    process.stderr.write(
+      `harness error: --retention-days must be a non-negative integer ` +
+        `(got ${JSON.stringify(String(raw))})\n`,
+    );
+    process.exit(1);
+  }
+  return value;
 }
 
 function statusLines(values: Record<string, number>): string {
@@ -125,6 +157,77 @@ function statusLines(values: Record<string, number>): string {
     .sort()
     .map((s) => `  ${s}: ${values[s]}`)
     .join("\n");
+}
+
+function signed(value: number): string {
+  return value >= 0 ? `+${value}` : String(value);
+}
+
+function deltaLine(label: string, value: MetricsDeltaValue): string {
+  const delta = value.delta === null ? "n/a" : signed(value.delta);
+  return `  ${label}: ${value.baseline ?? "n/a"} -> ${value.current ?? "n/a"} (${delta})`;
+}
+
+function deltaRateLine(label: string, value: MetricsDeltaValue): string {
+  const delta =
+    value.delta === null ? "n/a" : `${signed(Number((value.delta * 100).toFixed(1)))}pp`;
+  return `  ${label}: ${pct1(value.baseline)} -> ${pct1(value.current)} (${delta})`;
+}
+
+function metricsDeltaText(result: MetricsDeltaResult): string {
+  if (result.status === "missing-baseline") {
+    return (
+      `no metrics snapshot found at or before ${result.baselineAt} ` +
+      `for ${scopeLabel(result.filter)}\n`
+    );
+  }
+  return [
+    `metrics delta ${scopeLabel(result.filter)}`,
+    `baseline: ${result.baseline.snapshotId} (${result.baseline.createdAt})`,
+    `current: ${result.currentAt}`,
+    deltaLine("total runs", result.metrics.totalRuns),
+    deltaLine("approved", result.metrics.approved),
+    deltaRateLine("approved rate", result.metrics.approvedRate),
+    deltaRateLine("one-shot approval rate", result.metrics.oneShotApprovalRate),
+    deltaRateLine("policy violation rate", result.metrics.policyViolationRate),
+    deltaRateLine("secret suspect rate", result.metrics.secretSuspectRate),
+    deltaLine("hitch total sessions", result.hitch.totalSessions),
+    deltaRateLine(
+      "finding resolution rate",
+      result.hitch.findingResolutionRate,
+    ),
+    deltaLine("total tokens", result.usage.totalTokens),
+    ...(result.mcpConfirmations === undefined
+      ? []
+      : [
+          deltaLine("mcp confirmations", result.mcpConfirmations.total),
+          deltaRateLine(
+            "mcp confirmation rate",
+            result.mcpConfirmations.confirmationRate,
+          ),
+          deltaRateLine("mcp expired rate", result.mcpConfirmations.expiredRate),
+        ]),
+    "",
+  ].join("\n");
+}
+
+function baselineAtFromSince(raw: Record<string, unknown>): string {
+  const since = raw.since === undefined ? "7d" : String(raw.since);
+  try {
+    return new Date(Date.now() - parseDuration(since)).toISOString();
+  } catch (e) {
+    process.stderr.write(`harness error: ${(e as Error).message}\n`);
+    process.exit(1);
+  }
+}
+
+function warnSkippedSnapshots(result: MetricsDeltaResult): void {
+  for (const skipped of result.skippedSnapshots) {
+    process.stderr.write(
+      `warning: skipped metrics snapshot ${skipped.snapshotId} ` +
+        `(${skipped.createdAt}): ${skipped.reason}\n`,
+    );
+  }
 }
 
 interface ScopedMetricsOutput extends DbMetricsSummary {
@@ -182,6 +285,46 @@ export function runScopedMetrics(
       `  expired rate: ${pct(m.mcpConfirmations.expiredRate)}\n` +
       `${confirmationByStatus}\n`,
   );
+}
+
+interface MetricsSnapshotCliOutput {
+  snapshot: MetricsSnapshotRow;
+  pruned: number;
+}
+
+export function runMetricsSnapshot(
+  harnessRoot: string,
+  raw: Record<string, unknown>,
+): void {
+  const filter = scopeFilter(raw);
+  const retentionDays = parseRetentionDays(raw.retentionDays);
+  const now = new Date().toISOString();
+  const result = withRefreshedDb(harnessRoot, (db): MetricsSnapshotCliOutput => {
+    const recordAndPrune = db.transaction(() => {
+      const snapshot = recordMetricsSnapshot(db, { filter, now });
+      const pruned = pruneMetricsSnapshots(db, { retentionDays, now });
+      return { snapshot, pruned };
+    });
+    return recordAndPrune();
+  });
+  emit(
+    raw,
+    result,
+    `snapshot=${result.snapshot.snapshotId} pruned=${result.pruned}\n`,
+  );
+}
+
+export function runMetricsDelta(
+  harnessRoot: string,
+  raw: Record<string, unknown>,
+): void {
+  const filter = snapshotScopeFilter(raw);
+  const baselineAt = baselineAtFromSince(raw);
+  const result = withRefreshedDb(harnessRoot, (db): MetricsDeltaResult =>
+    buildMetricsDelta(db, { filter, baselineAt }),
+  );
+  warnSkippedSnapshots(result);
+  emit(raw, result, metricsDeltaText(result));
 }
 
 export function runScopedInbox(

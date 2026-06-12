@@ -39,6 +39,12 @@ HTML エクスポートだった。Phase 6 では **DB（[`db.md`](./db.md)）�
 - `usage` — `DbTokenUsageSummary`。scope 内 `run_usage` の件数、`exact` 行だけの
   token 合算、`usage_source` 別件数。式は [`cli.md`](./cli.md) の
   `harness metrics` 節を正規定義とし、dashboard snapshot でも同じ定義を使う
+- `metricsTrend` — 直近 30 件までの `metrics_snapshots` から作る軽量 trend。
+  各点は `{ createdAt, totalRuns, approvedRate, totalTokens }` で、適用中の
+  project / repo filter に従う。未指定の project / repo / domain 列は `NULL` scope
+  の snapshot のみを対象にする。snapshot は導出値なので、trend は表示専用であり
+  状態遷移や判定には使わない。未知の `payload_schema` / payload schema は
+  fail-open でその点を除外する。
 - `hitchMetrics` — `DbHitchMetricsSummary`（hitch session / review cycle /
   rerun attempt / finding resolution KPI）
 - `mcpConfirmations` — `DbMcpConfirmationSummary`（confirmation request status
@@ -63,6 +69,8 @@ harness dashboard export [--out <path>] [--project <id>] [--repo-id <id>] [--no-
 
 `DashboardSnapshot` を自己完結の静的 HTML に描画する（既定出力先
 `docs/dashboard/index.html`）。サーバ不要・依存ゼロでブラウザから直接開ける。
+HTML は `metricsTrend` を最小テーブル（created / runs / approved rate /
+total tokens）として表示する。グラフ描画ライブラリは使わない。
 
 DB が無いときは既定で `db import --from-files` 相当を一度実行してから export し、
 その旨を出力に明示する。`--no-auto-import` で抑止できる（CI 用）。
