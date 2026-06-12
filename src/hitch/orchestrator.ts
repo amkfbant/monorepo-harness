@@ -2,6 +2,7 @@ import { withManagedDb } from "../db/managed-connection.js";
 import { HitchRepository } from "./repository.js";
 import { evaluateConvergenceAndRecordStatus } from "./convergence-status.js";
 import { decideOrchestratorAction } from "./orchestrator-dispatch.js";
+import { findTransientLeaseCause } from "../workspace/db-domain-lock.js";
 import type {
   OrchestrationOutcome,
   HitchOrchestrationResult,
@@ -121,6 +122,8 @@ export class HitchOrchestrator {
           draft: pr.draft,
         };
       } catch (e) {
+        const transientLeaseError = findTransientLeaseCause(e);
+        if (transientLeaseError !== undefined) throw transientLeaseError;
         let message = e instanceof Error ? e.message : String(e);
         if (
           action.kind === "review" &&

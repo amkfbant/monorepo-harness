@@ -11,6 +11,11 @@ import {
   latestRunId,
   type HitchRunContext,
 } from "../../../src/hitch/orchestrator-runners.js";
+import {
+  acquireDomainLock,
+  DomainLockBusyError,
+  LeaseGuardFailedError,
+} from "../../../src/workspace/db-domain-lock.js";
 
 function createRunnerTestDb(prefix: string): string {
   return join(mkdtempSync(join(tmpdir(), prefix)), "harness.sqlite");
@@ -536,6 +541,138 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
       expect(failed?.errorMessage).toMatch(/codex exploded/);
     } finally {
       close2();
+    }
+  });
+
+  it("does not consume an attempt when the domain lock is busy", async () => {
+    const { harnessRoot, dbPath, repoPath } = setupHarness();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new HitchRepository(db);
+      repo.createSession({
+        hitchId: "g-lock-busy",
+        title: "Busy",
+        projectId: null,
+        repoId: "t",
+        domain: "apps/user",
+        closeConditions: [{ id: "tc", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+      repo.upsertFinding({
+        hitchId: "g-lock-busy",
+        source: "review",
+        severity: "P1",
+        category: "bug",
+        scopeStatus: "in_scope",
+        summary: "fix the thing",
+      });
+      acquireDomainLock(db, {
+        domainKey: "t::apps/user",
+        repoId: "t",
+        domain: "apps/user",
+        runId: "holder",
+        pid: process.pid,
+        hostname: "test-host",
+      });
+    } finally {
+      close();
+    }
+
+    const resolveRunContext = (): HitchRunContext => ({
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "fix the thing",
+      baseBranch: "main",
+    });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+      resolveRunContext,
+    });
+
+    await expect(runners.coder("g-lock-busy")).rejects.toBeInstanceOf(
+      DomainLockBusyError,
+    );
+
+    const { db: db2, close: close2 } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db2);
+      expect(repo.listAttempts("g-lock-busy")).toEqual([]);
+      expect(repo.requireSession("g-lock-busy").currentIteration).toBe(0);
+    } finally {
+      close2();
+    }
+  });
+
+  it("does not consume an attempt when a finalized run has a nested lease guard cause", async () => {
+    const { harnessRoot, dbPath, repoPath } = setupHarness();
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        runMigrations(db);
+        const repo = new HitchRepository(db);
+        repo.createSession({
+          hitchId: "g-lease-finalized",
+          title: "Lease finalized",
+          projectId: null,
+          repoId: "t",
+          domain: "apps/user",
+          closeConditions: [{ id: "tc", kind: "command", required: true }],
+          createdBy: "test",
+          createdSource: "worker",
+        });
+        repo.upsertFinding({
+          hitchId: "g-lease-finalized",
+          source: "review",
+          severity: "P1",
+          category: "bug",
+          scopeStatus: "in_scope",
+          summary: "fix the thing",
+        });
+      } finally {
+        close();
+      }
+    }
+
+    const resolveRunContext = (): HitchRunContext => ({
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "fix the thing",
+      baseBranch: "main",
+    });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: {
+        run: async () => {
+          throw new Error("outer wrapper", {
+            cause: new LeaseGuardFailedError("run-stale"),
+          });
+        },
+      },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+      resolveRunContext,
+    });
+
+    await expect(runners.coder("g-lease-finalized")).rejects.toBeInstanceOf(
+      LeaseGuardFailedError,
+    );
+
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db);
+      expect(repo.listAttempts("g-lease-finalized")).toEqual([]);
+      expect(repo.requireSession("g-lease-finalized").currentIteration).toBe(0);
+    } finally {
+      close();
     }
   });
 

@@ -132,11 +132,13 @@ export interface RunDomainCodingOpts {
 export class RunFinalizedError extends Error {
   readonly runId: string;
   readonly status: RunStatus;
+  readonly cause: unknown;
   constructor(runId: string, status: RunStatus, cause: unknown) {
-    super(cause instanceof Error ? cause.message : String(cause));
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
     this.name = "RunFinalizedError";
     this.runId = runId;
     this.status = status;
+    this.cause = cause;
   }
 }
 

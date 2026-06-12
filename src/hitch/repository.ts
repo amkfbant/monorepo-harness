@@ -560,6 +560,29 @@ export class HitchRepository {
     return attempt;
   }
 
+  discardAttempt(attemptId: string, now = new Date().toISOString()): void {
+    const tx = this.db.transaction(() => {
+      const attempt = this.getAttempt(attemptId);
+      if (attempt === null) return;
+      this.db
+        .prepare("DELETE FROM hitch_attempts WHERE attempt_id = ?")
+        .run(attemptId);
+      this.db
+        .prepare(
+          `UPDATE hitch_sessions
+              SET current_iteration = (
+                    SELECT COALESCE(MAX(iteration), 0)
+                      FROM hitch_attempts
+                     WHERE hitch_id = ?
+                  ),
+                  updated_at = ?
+            WHERE hitch_id = ?`,
+        )
+        .run(attempt.hitchId, now, attempt.hitchId);
+    });
+    tx.immediate();
+  }
+
   getAttempt(attemptId: string): HitchAttempt | null {
     const row = this.db
       .prepare("SELECT * FROM hitch_attempts WHERE attempt_id = ?")

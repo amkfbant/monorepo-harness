@@ -395,7 +395,10 @@ describe("CourseOrchestrator", () => {
           maxStepsPerHitch: 50,
           createdBy: "test",
         }),
-      ).rejects.toBeInstanceOf(LeaseLostError);
+      ).rejects.toMatchObject({
+        name: "CourseOrchestrateError",
+        code: "lease_lost",
+      } satisfies Partial<CourseOrchestrateError>);
 
       expect(calls).toEqual(["h-drive-time-lease-lost"]);
       expect(firstDriveCompleted).toBe(true);
@@ -456,7 +459,10 @@ describe("CourseOrchestrator", () => {
         maxStepsPerHitch: 2,
         createdBy: "test",
       }),
-    ).rejects.toBeInstanceOf(LeaseLostError);
+    ).rejects.toMatchObject({
+      name: "CourseOrchestrateError",
+      code: "lease_lost",
+    } satisfies Partial<CourseOrchestrateError>);
 
     expect(calls).toEqual(["h-lease-lost-one"]);
     expect(heartbeatCalls).toBe(2);
@@ -464,6 +470,66 @@ describe("CourseOrchestrator", () => {
     expect(releaseReason).toBe("aborted");
     expect(findActiveDomainLock(db, domainKey)).toBeNull();
     expect(latestReleaseReason(db, courseId)).toBe("aborted");
+  });
+
+  it("fences phase status writes with the held course lease", async () => {
+    const previousLeaseMs = process.env.HARNESS_LOCK_LEASE_MS;
+    process.env.HARNESS_LOCK_LEASE_MS = "10";
+    try {
+      const courseId = newCourse(db, "course-status-write-fence");
+      const domainKey = `course:${courseId}`;
+      const phases = new PhaseRepository(db);
+      const phase = phases.add({ courseId, phaseId: "phase-status-write-fence", title: "Fence", position: 1, createdBy: "test", createdSource: "cli" });
+      seedDrivableHitch(db, "h-status-write-fence");
+      phases.linkHitch(phase.phaseId, "h-status-write-fence");
+      const calls: string[] = [];
+      let stole = false;
+
+      domainLockHook.wrapAcquire = (handle, opts) => {
+        if (opts.domainKey !== domainKey) return handle;
+        return {
+          ...handle,
+          assertHeld(now?: Date): void {
+            if (!stole) {
+              handle.assertHeld(now);
+              stole = true;
+              acquireDomainLock(db, {
+                domainKey,
+                repoId: "repo-demo",
+                domain: "course-orchestrate",
+                runId: "course-orch-contender",
+                pid: process.pid,
+                hostname: hostname(),
+                now: new Date(Date.now() + 1_000),
+              });
+              return;
+            }
+            handle.assertHeld(now);
+          },
+        };
+      };
+
+      await expect(
+        makeOrchestrator(db, {}, calls).run({
+          courseId,
+          maxDrivenHitches: 1,
+          maxStepsPerHitch: 2,
+          createdBy: "test",
+        }),
+      ).rejects.toMatchObject({
+        name: "CourseOrchestrateError",
+        code: "lease_lost",
+      } satisfies Partial<CourseOrchestrateError>);
+
+      expect(calls).toEqual([]);
+      expect(phases.require(phase.phaseId).status).toBe("pending");
+      expect(findActiveDomainLock(db, domainKey)?.holderRunId).toBe(
+        "course-orch-contender",
+      );
+    } finally {
+      if (previousLeaseMs === undefined) delete process.env.HARNESS_LOCK_LEASE_MS;
+      else process.env.HARNESS_LOCK_LEASE_MS = previousLeaseMs;
+    }
   });
 
   it("rechecks the hitch mutation gate immediately before driving", async () => {

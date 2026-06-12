@@ -33,7 +33,7 @@
 
 **対象ファイル**: src/workspace/db-domain-lock.ts:97-228 / src/roadmap/course-orchestrator.ts:33,72-80,164-239,398-429 / src/hitch/orchestrator.ts:123-148 / docs/specs/roadmap.md
 
-**挙動・互換性**: CLI `hitch orchestrate` 単体でも run 層 lock busy 時は hitch=escalated でなくエラー終了（hitch 状態不変）に変わる。CHANGELOG 記載。course orchestrate は lease 喪失で lease_lost エラー。
+**挙動・互換性**: CLI `hitch orchestrate` 単体でも run 層 lock busy 時は hitch=escalated でなくエラー終了（hitch 状態不変）に変わる。restriction 方向の breaking として、merge commit は `fix!:` または `BREAKING CHANGE:` フッタで明示し、release-please の自動 CHANGELOG 生成に拾わせる（手動 CHANGELOG 編集は不要）。course orchestrate は lease 喪失で lease_lost エラー。
 
 **安全境界考慮**: 状態遷移は決定論ロジックのまま（エラー型分岐・LLM 不使用）。escalated にしない=「遷移しない」= fail-closed。lease 検証強化は制限方向。
 

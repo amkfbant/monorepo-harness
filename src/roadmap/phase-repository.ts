@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import type { Phase, PhaseNode, PhaseStatus } from "./types.js";
+import { LeaseGuardFailedError } from "../workspace/db-domain-lock.js";
 
 interface PhaseRow {
   phase_id: string; course_id: string; parent_phase_id: string | null;
@@ -18,6 +19,17 @@ function mapPhase(r: PhaseRow): Phase {
     scope: parse(r.scope_json), closeConditions: parse(r.close_conditions_json), reviewState: parse(r.review_state_json),
     createdBy: r.created_by, createdSource: r.created_source, createdAt: r.created_at, updatedAt: r.updated_at,
   };
+}
+
+export interface PhaseLeaseGuard {
+  lockId: number;
+  holderRunId: string;
+  nowMs: number;
+}
+
+export interface TransitionStatusOptions {
+  now?: string;
+  leaseGuard?: PhaseLeaseGuard;
 }
 
 export class PhaseRepository {
@@ -92,17 +104,59 @@ export class PhaseRepository {
    * driver の自動 write が operator の宣言（blocked/closed）を後勝ちで上書きしない
    * ようにするための lost-update 防止。
    */
-  transitionStatus(phaseId: string, from: PhaseStatus[], to: PhaseStatus, now?: string): boolean {
+  transitionStatus(
+    phaseId: string,
+    from: PhaseStatus[],
+    to: PhaseStatus,
+    opts?: string | TransitionStatusOptions,
+  ): boolean {
     if (from.length === 0) return false;
     const placeholders = from.map(() => "?").join(", ");
-    const ts = now ?? new Date().toISOString();
+    const normalized = normalizeTransitionStatusOptions(opts);
+    const ts = normalized.now ?? new Date().toISOString();
+    const leaseGuard = normalized.leaseGuard;
+    const leaseGuardSql =
+      leaseGuard === undefined
+        ? ""
+        : ` AND EXISTS (
+              SELECT 1 FROM domain_locks
+               WHERE lock_id = ? AND holder_run_id = ? AND released_at IS NULL
+                 AND expires_at > ?
+            )`;
+    const leaseGuardArgs =
+      leaseGuard === undefined
+        ? []
+        : [
+            leaseGuard.lockId,
+            leaseGuard.holderRunId,
+            leaseGuardNowIso(leaseGuard),
+          ];
     const info = this.db
       .prepare(
         `UPDATE phases SET status = ?, updated_at = ?
-          WHERE phase_id = ? AND status IN (${placeholders})`,
+          WHERE phase_id = ? AND status IN (${placeholders})${leaseGuardSql}`,
       )
-      .run(to, ts, phaseId, ...from);
-    return info.changes > 0;
+      .run(to, ts, phaseId, ...from, ...leaseGuardArgs);
+    if (info.changes > 0) return true;
+    if (leaseGuard !== undefined) this.assertLeaseGuardHeld(leaseGuard);
+    return false;
+  }
+
+  assertLeaseGuardHeld(leaseGuard: PhaseLeaseGuard): void {
+    const active = this.db
+      .prepare(
+        `SELECT 1 FROM domain_locks
+          WHERE lock_id = ? AND holder_run_id = ? AND released_at IS NULL
+            AND expires_at > ?`,
+      )
+      .get(
+        leaseGuard.lockId,
+        leaseGuard.holderRunId,
+        leaseGuardNowIso(leaseGuard),
+      );
+    if (active === undefined) {
+      throw new LeaseGuardFailedError(leaseGuard.holderRunId);
+    }
   }
 
   /** Link a hitch to a phase. Rejects a project mismatch and a double-link (PK). */
@@ -133,4 +187,14 @@ export class PhaseRepository {
   hitchIdsFor(phaseId: string): string[] {
     return (this.db.prepare("SELECT hitch_id FROM phase_hitches WHERE phase_id = ? ORDER BY linked_at ASC, hitch_id ASC").all(phaseId) as Array<{ hitch_id: string }>).map((r) => r.hitch_id);
   }
+}
+
+function normalizeTransitionStatusOptions(
+  opts: string | TransitionStatusOptions | undefined,
+): TransitionStatusOptions {
+  return typeof opts === "string" ? { now: opts } : opts ?? {};
+}
+
+function leaseGuardNowIso(leaseGuard: PhaseLeaseGuard): string {
+  return new Date(leaseGuard.nowMs).toISOString();
 }
