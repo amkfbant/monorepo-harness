@@ -352,6 +352,12 @@ review process:
 `review auto` の DB write は proposal 系に限定し、status guard を通る遷移は
 一切呼ばない。LLM の出力が状態を動かさない原則は Phase 7 でも不変。
 
+`review auto` / `review evaluate` の reviewer codex JSONL も domain-coding 本体と
+同じ quarantine lifecycle を使う。codex は `.reviewer-agent.events.raw.jsonl` に
+stream し、redaction 後だけ `reviewer-agent.events.jsonl` として atomic publish する。
+raw/tmp dotfile は artifact ingest 対象外で、redaction 失敗時は sentinel のみ、sentinel
+も書けない場合は正式名ファイル無しで続行する。
+
 #### reviewer prompt への operational knowledge 注入（issue #57）
 
 `runReviewerAgent` は `dbPath` がある時、reviewer codex prompt（`PROMPT_PREAMBLE`）末尾に

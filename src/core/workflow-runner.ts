@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { minimatch } from "minimatch";
@@ -72,7 +72,10 @@ import {
   buildUntrackedDeniedReport,
   buildUntrackedSecretsReport,
 } from "../reporter/untracked-patch.js";
-import { redactCodexEvents } from "../codex/redact-events.js";
+import {
+  publishRedactedCodexEvents,
+  type CodexEventsIo,
+} from "../codex/events-lifecycle.js";
 
 /**
  * Surface a failed artifact-body ingest (Phase 8-2). The run still
@@ -143,13 +146,6 @@ export interface RunDomainCodingOpts {
   codexEventsIo?: CodexEventsIo;
 }
 
-interface CodexEventsIo {
-  readFile?: (path: string) => Promise<string>;
-  writeFile?: (path: string, content: string) => Promise<void>;
-  rename?: (oldPath: string, newPath: string) => Promise<void>;
-  rm?: (path: string) => Promise<void>;
-}
-
 /**
  * Thrown by runDomainCoding when an unexpected exception finalized the run
  * as `failed-internal-error`. The run dir DOES exist and meta.status is
@@ -207,94 +203,6 @@ async function readOptionalUtf8(path: string): Promise<string | null> {
     if (isNodeError(e) && e.code === "ENOENT") return null;
     throw e;
   }
-}
-
-interface PublishCodexEventsResult {
-  redactedCount: number;
-  droppedCount: number;
-  failed: boolean;
-}
-
-const CODEX_EVENTS_REDACTION_FAILED = "redaction.failed";
-
-function defaultCodexEventsIo(overrides?: CodexEventsIo): Required<CodexEventsIo> {
-  return {
-    readFile:
-      overrides?.readFile ??
-      (async (path: string) => await readFile(path, "utf8")),
-    writeFile:
-      overrides?.writeFile ??
-      (async (path: string, content: string) => {
-        await writeFile(path, content, "utf8");
-      }),
-    rename: overrides?.rename ?? rename,
-    rm:
-      overrides?.rm ??
-      (async (path: string) => {
-        await rm(path, { force: true });
-      }),
-  };
-}
-
-function redactionFailureSentinel(reason: string): string {
-  return `${JSON.stringify({
-    type: CODEX_EVENTS_REDACTION_FAILED,
-    reason,
-  })}\n`;
-}
-
-async function removeBestEffort(io: Required<CodexEventsIo>, path: string): Promise<void> {
-  try {
-    await io.rm(path);
-  } catch {
-    // best-effort cleanup; fail-closed publish state is already decided
-  }
-}
-
-async function publishRedactedCodexEvents(opts: {
-  rawPath: string;
-  tmpPath: string;
-  officialPath: string;
-  io?: CodexEventsIo | undefined;
-}): Promise<PublishCodexEventsResult> {
-  const io = defaultCodexEventsIo(opts.io);
-  const failClosed = async (
-    reason: string,
-  ): Promise<PublishCodexEventsResult> => {
-    try {
-      await io.writeFile(opts.officialPath, redactionFailureSentinel(reason));
-    } catch {
-      // If even the sentinel cannot be written, leave the official path absent.
-    }
-    await removeBestEffort(io, opts.rawPath);
-    await removeBestEffort(io, opts.tmpPath);
-    return { redactedCount: 0, droppedCount: 0, failed: true };
-  };
-
-  let rawContent: string;
-  try {
-    rawContent = await io.readFile(opts.rawPath);
-  } catch {
-    return await failClosed("read_failed");
-  }
-
-  const redacted = redactCodexEvents(rawContent);
-  try {
-    await io.writeFile(opts.tmpPath, redacted.content);
-  } catch {
-    return await failClosed("write_failed");
-  }
-  try {
-    await io.rename(opts.tmpPath, opts.officialPath);
-  } catch {
-    return await failClosed("rename_failed");
-  }
-  await removeBestEffort(io, opts.rawPath);
-  return {
-    redactedCount: redacted.redactedCount,
-    droppedCount: redacted.droppedCount,
-    failed: false,
-  };
 }
 
 async function recordCodexUsage(opts: {
@@ -882,6 +790,7 @@ async function runDomainCodingInner(
       tmpPath: codexRedactedTmpPath,
       officialPath: codexEventsPath,
       io: opts.codexEventsIo,
+      runId,
     });
     let codexEventsContent: string | null = null;
     try {

@@ -22,6 +22,7 @@ import {
 import { loadReviewDecision } from "./review-decision-loader.js";
 import { buildOperationalKnowledgeReviewSection } from "./operational-knowledge.js";
 import { openManagedDb } from "../db/managed-connection.js";
+import { publishRedactedCodexEvents } from "../codex/events-lifecycle.js";
 
 export class ReviewEvaluateError extends Error {
   constructor(message: string) {
@@ -129,6 +130,8 @@ export async function evaluateReviewer(
     await mkdir(evalDir, { recursive: true });
     const stdoutPath = join(evalDir, "reviewer-agent.out.log");
     const stderrPath = join(evalDir, "reviewer-agent.err.log");
+    const rawEventsPath = join(evalDir, ".reviewer-agent.events.raw.jsonl");
+    const tmpEventsPath = join(evalDir, ".reviewer-agent.events.redacted.tmp");
     const eventsPath = join(evalDir, "reviewer-agent.events.jsonl");
 
     // Observation-only: the run itself must not be mutated. Snapshot
@@ -139,9 +142,15 @@ export async function evaluateReviewer(
     const codexResult = await opts.codexRunner.run({
       worktreePath: runDir,
       prompt: PROMPT_PREAMBLE + reviewerOpsSection,
-      logPaths: { stdout: stdoutPath, stderr: stderrPath, events: eventsPath },
+      logPaths: { stdout: stdoutPath, stderr: stderrPath, events: rawEventsPath },
     });
     verifyUnchanged(before, await snapshotExcludingEvals(runDir));
+    await publishRedactedCodexEvents({
+      rawPath: rawEventsPath,
+      tmpPath: tmpEventsPath,
+      officialPath: eventsPath,
+      runId: opts.runId,
+    });
     const sample = await captureSample({
       index: i,
       evalDir,

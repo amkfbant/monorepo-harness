@@ -30,6 +30,7 @@ import { fileExportEnabled } from "../config/export-mode.js";
 import { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
 import { classifyReviewGate } from "./review-gate-classify.js";
 import { buildOperationalKnowledgeReviewSection } from "./operational-knowledge.js";
+import { publishRedactedCodexEvents } from "../codex/events-lifecycle.js";
 
 export { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
 
@@ -52,7 +53,7 @@ const RUN_ID_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const REVIEWER_WRITE_ALLOWLIST = new Set([
   "reviewer-agent.out.log",
   "reviewer-agent.err.log",
-  "reviewer-agent.events.jsonl",
+  ".reviewer-agent.events.raw.jsonl",
 ]);
 
 interface FileSnapshot {
@@ -425,6 +426,8 @@ export async function runReviewerAgent(
   // the agent doesn't need to touch the worktree, just read artifacts.
   const stdoutPath = join(runDir, "reviewer-agent.out.log");
   const stderrPath = join(runDir, "reviewer-agent.err.log");
+  const rawEventsPath = join(runDir, ".reviewer-agent.events.raw.jsonl");
+  const tmpEventsPath = join(runDir, ".reviewer-agent.events.redacted.tmp");
   const eventsPath = join(runDir, "reviewer-agent.events.jsonl");
   const errorArtifactPath = join(runDir, REVIEW_AUTO_ERROR_FILE);
 
@@ -441,7 +444,7 @@ export async function runReviewerAgent(
   const codexResult = await inputs.codexRunner.run({
     worktreePath: runDir,
     prompt: reviewerPrompt,
-    logPaths: { stdout: stdoutPath, stderr: stderrPath, events: eventsPath },
+    logPaths: { stdout: stdoutPath, stderr: stderrPath, events: rawEventsPath },
   });
   const reviewer = inputs.reviewerName ?? "codex-reviewer";
   const reviewedAt = (inputs.now ?? new Date()).toISOString();
@@ -479,6 +482,12 @@ export async function runReviewerAgent(
     // escape that mutates an artifact and THEN exits non-zero / times out
     // would otherwise slip past detection.
     await verifyArtifactsUnchanged(runDir, snapshot);
+    await publishRedactedCodexEvents({
+      rawPath: rawEventsPath,
+      tmpPath: tmpEventsPath,
+      officialPath: eventsPath,
+      runId: inputs.runId,
+    });
 
     if (codexResult.timedOut) {
       throw new ReviewerAgentGateError(

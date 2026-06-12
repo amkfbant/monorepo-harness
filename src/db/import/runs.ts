@@ -23,6 +23,7 @@ const RUN_CHILD_TABLES = [
   "review_required_changes",
   "run_changed_files",
   "policy_violations",
+  "run_usage",
   "artifacts",
   "run_context_packs",
   "run_context_pack_files",

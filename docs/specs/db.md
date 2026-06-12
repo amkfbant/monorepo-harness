@@ -1037,6 +1037,8 @@ append-only 規約により、v10 の DDL と `V10_TABLE_NAMES` は書き換え�
 schema v26 は additive な `run_usage` を追加する。1 run につき最大 1 行で、
 Codex CLI structured JSONL (`codex-events.jsonl`) の `turn.completed.usage` だけを
 入力にする。LLM の自然文・自己申告テキストは usage source にしない。
+`db import --from-files --force-legacy-reconcile` では `run_usage` を削除し、files から
+再構築しない（行なし = usage 未収集）。
 
 ```sql
 CREATE TABLE run_usage (

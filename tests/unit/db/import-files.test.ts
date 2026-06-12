@@ -188,6 +188,12 @@ describe("runFullImport", () => {
               prompt_sha256 = ?
         WHERE run_id = ?`,
     ).run(JSON.stringify({ runId, status: "db-first" }), "a".repeat(64), runId);
+    d.prepare(
+      `INSERT INTO run_usage
+         (run_id, input_tokens, cached_input_tokens, output_tokens,
+          reasoning_output_tokens, total_tokens, usage_source, created_at)
+       VALUES (?, 1, 0, 2, 0, 3, 'exact', '2026-05-21T00:00:00Z')`,
+    ).run(runId);
 
     writeRun(root, runId, { status: "approved" });
     const r2 = runFullImport(d, {
@@ -219,6 +225,10 @@ describe("runFullImport", () => {
     expect(row.codex_model).toBeNull();
     expect(row.codex_binary_version).toBeNull();
     expect(row.prompt_sha256).toBeNull();
+    const usage = d
+      .prepare("SELECT count(*) AS n FROM run_usage WHERE run_id = ?")
+      .get(runId) as { n: number };
+    expect(usage.n).toBe(0);
     d.close();
   });
 

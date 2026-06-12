@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb, openDbReadonly } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
 import { storeArtifactBlob } from "../../src/db/artifact-blobs.js";
+import { readArtifactBlob } from "../../src/db/artifact-blobs.js";
 import { runReviewerAgent } from "../../src/core/reviewer-agent.js";
 import { syncRunArtifactsToDb } from "../../src/core/run-materialize.js";
 import { recordOperationalKnowledge } from "../../src/core/operational-knowledge.js";
@@ -33,6 +34,21 @@ function fakeRunner(output: string): CodexExecRunner {
       const { writeFile } = await import("node:fs/promises");
       await writeFile(input.logPaths.stdout, output, "utf8");
       await writeFile(input.logPaths.stderr, "", "utf8");
+      return { exitCode: 0, timedOut: false, durationMs: 0 };
+    },
+  };
+}
+
+function fakeRunnerWithEvents(output: string, events: string): CodexExecRunner {
+  return {
+    async run(input) {
+      const { writeFile } = await import("node:fs/promises");
+      expect(input.logPaths.events.endsWith(".reviewer-agent.events.raw.jsonl")).toBe(
+        true,
+      );
+      await writeFile(input.logPaths.stdout, output, "utf8");
+      await writeFile(input.logPaths.stderr, "", "utf8");
+      await writeFile(input.logPaths.events, events, "utf8");
       return { exitCode: 0, timedOut: false, durationMs: 0 };
     },
   };
@@ -189,6 +205,66 @@ describe("review auto — DB-only mode (Phase 8-13)", () => {
       const paths = rows.map((r) => r.relative_path);
       // the reviewer's own log is now a DB-canonical artifact
       expect(paths).toContain("reviewer-agent.out.log");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("syncRunArtifactsToDb captures only redacted reviewer codex events", async () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const { runsDir, dbPath, runId } = dbOnlyNeedsReview();
+    await runReviewerAgent({
+      runsDir,
+      runId,
+      dbPath,
+      codexRunner: fakeRunnerWithEvents(
+        APPROVED_OUTPUT,
+        `${JSON.stringify({
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            aggregated_output: `leaked ${secret}\n`,
+          },
+        })}\n`,
+      ),
+      now: new Date("2026-05-23T01:00:00Z"),
+    });
+    const runDir = join(runsDir, runId);
+    const official = readFileSync(
+      join(runDir, "reviewer-agent.events.jsonl"),
+      "utf8",
+    );
+    expect(official).not.toContain(secret);
+    expect(official).toContain("[redacted: secret-suspect");
+    expect(existsSync(join(runDir, ".reviewer-agent.events.raw.jsonl"))).toBe(
+      false,
+    );
+
+    syncRunArtifactsToDb({ dbPath, runsDir, runId });
+
+    const db = openDbReadonly(dbPath);
+    try {
+      const rawArtifact = db
+        .prepare(
+          `SELECT count(*) AS n
+             FROM artifacts
+            WHERE run_id = ? AND relative_path = '.reviewer-agent.events.raw.jsonl'`,
+        )
+        .get(runId) as { n: number };
+      expect(rawArtifact.n).toBe(0);
+      const row = db
+        .prepare(
+          `SELECT blob_sha256
+             FROM artifacts
+            WHERE run_id = ? AND relative_path = 'reviewer-agent.events.jsonl'`,
+        )
+        .get(runId) as { blob_sha256: string | null };
+      expect(row.blob_sha256).not.toBeNull();
+      const blob = readArtifactBlob(db, row.blob_sha256 as string).toString(
+        "utf8",
+      );
+      expect(blob).not.toContain(secret);
+      expect(blob).toContain("[redacted: secret-suspect");
     } finally {
       db.close();
     }
