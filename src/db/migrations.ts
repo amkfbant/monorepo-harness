@@ -22,6 +22,7 @@ import {
   MIGRATION_V19_STATEMENTS,
   MIGRATION_V20_STATEMENTS,
   MIGRATION_V21_STATEMENTS,
+  MIGRATION_V22_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -141,6 +142,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 21,
     name: "course-phase-roadmap",
     statements: MIGRATION_V21_STATEMENTS,
+  },
+  {
+    version: 22,
+    name: "drop-db-stats-snapshots-v22",
+    statements: MIGRATION_V22_STATEMENTS,
   },
 ];
 

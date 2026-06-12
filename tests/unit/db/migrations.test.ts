@@ -2,13 +2,20 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type Database from "better-sqlite3";
 import { openDb } from "../../../src/db/connection.js";
 import {
+  MIGRATIONS,
   runMigrations,
   currentSchemaVersion,
   readSchemaVersion,
 } from "../../../src/db/migrations.js";
-import { ALL_TABLE_NAMES, SCHEMA_VERSION } from "../../../src/db/schema.js";
+import {
+  ALL_TABLE_NAMES,
+  CURRENT_TABLE_NAMES,
+  DROPPED_TABLE_NAMES,
+  SCHEMA_VERSION,
+} from "../../../src/db/schema.js";
 
 function freshDbPath(): string {
   const dir = mkdtempSync(join(tmpdir(), "harness-db-"));
@@ -27,6 +34,32 @@ function tableNames(dbPath: string): Set<string> {
   }
 }
 
+function hasSchemaObject(
+  db: Database.Database,
+  type: "table" | "index",
+  name: string,
+): boolean {
+  return (
+    db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?")
+      .get(type, name) !== undefined
+  );
+}
+
+function applyMigrationsBefore(db: Database.Database, version: number): void {
+  db.prepare(
+    `CREATE TABLE schema_migrations (
+       version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
+     )`,
+  ).run();
+  for (const m of MIGRATIONS.filter((migration) => migration.version < version)) {
+    for (const stmt of m.statements) db.prepare(stmt).run();
+    db.prepare(
+      "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+    ).run(m.version, m.name, new Date().toISOString());
+  }
+}
+
 describe("runMigrations", () => {
   it("creates the latest schema with every table on a fresh DB", () => {
     const dbPath = freshDbPath();
@@ -36,11 +69,48 @@ describe("runMigrations", () => {
     expect(r.version).toBe(SCHEMA_VERSION);
     expect(r.applied).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22,
     ]);
     const tables = tableNames(dbPath);
     expect(tables.has("schema_migrations")).toBe(true);
-    for (const t of ALL_TABLE_NAMES) {
+    expect(ALL_TABLE_NAMES).toContain("db_stats_snapshots");
+    expect(DROPPED_TABLE_NAMES).toContain("db_stats_snapshots");
+    expect(CURRENT_TABLE_NAMES).not.toContain("db_stats_snapshots");
+    for (const t of CURRENT_TABLE_NAMES) {
       expect(tables.has(t)).toBe(true);
+    }
+    for (const t of DROPPED_TABLE_NAMES) {
+      expect(tables.has(t)).toBe(false);
+    }
+  });
+
+  it("drops db_stats_snapshots in v22 and stays idempotent", () => {
+    const db = openDb(freshDbPath());
+    try {
+      applyMigrationsBefore(db, 22);
+      expect(currentSchemaVersion(db)).toBe(21);
+      expect(hasSchemaObject(db, "table", "db_stats_snapshots")).toBe(true);
+      expect(hasSchemaObject(db, "index", "db_stats_snapshots_created_idx")).toBe(
+        true,
+      );
+      db.prepare(
+        "INSERT INTO db_stats_snapshots (created_at, stats_json) VALUES (?, ?)",
+      ).run("2026-06-12T00:00:00.000Z", "{}");
+
+      const upgraded = runMigrations(db);
+      expect(upgraded.applied).toEqual([22]);
+      expect(upgraded.version).toBe(SCHEMA_VERSION);
+      expect(hasSchemaObject(db, "table", "db_stats_snapshots")).toBe(false);
+      expect(hasSchemaObject(db, "index", "db_stats_snapshots_created_idx")).toBe(
+        false,
+      );
+
+      const again = runMigrations(db);
+      expect(again.applied).toEqual([]);
+      expect(again.version).toBe(SCHEMA_VERSION);
+      expect(hasSchemaObject(db, "table", "db_stats_snapshots")).toBe(false);
+    } finally {
+      db.close();
     }
   });
 

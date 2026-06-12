@@ -2,7 +2,6 @@ import { existsSync } from "node:fs";
 import { Buffer } from "node:buffer";
 import type Database from "better-sqlite3";
 import { harnessPaths } from "../../config/paths.js";
-import { openDbReadonly } from "../../db/connection.js";
 import { openManagedDb } from "../../db/managed-connection.js";
 import type { HarnessMcpToolResult } from "../schemas/outputs.js";
 import { errorResult, permissionDenied } from "../schemas/outputs.js";
@@ -61,25 +60,6 @@ export function withReadonlyDb<T>(
   } finally {
     handle.close();
   }
-}
-
-export function withArchiveFallback<T>(
-  db: Database.Database,
-  readMain: (db: Database.Database) => T | null,
-  readArchive: (db: Database.Database) => T | null,
-): T | null {
-  const main = readMain(db);
-  if (main !== null) return main;
-  for (const archivePath of attachedArchivePaths(db)) {
-    const archiveDb = openDbReadonly(archivePath);
-    try {
-      const archived = readArchive(archiveDb);
-      if (archived !== null) return archived;
-    } finally {
-      archiveDb.close();
-    }
-  }
-  return null;
 }
 
 export function attachedArchivePaths(db: Database.Database): string[] {
