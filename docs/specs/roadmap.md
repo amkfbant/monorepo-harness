@@ -121,9 +121,11 @@ For each phase in the tree (pre-order, depth-first):
   the operator or a guarded MCP mutation).
 - **`hitchIds`**: all hitches linked to the phase via `phase_hitches`.
 - **`derivedOpenP0` / `derivedOpenP1`**: live counts of open in-scope P0 / P1
-  findings, read from `hitch_findings` via direct SQL aggregates. These are
-  **never read from a snapshot**: a caller cannot mark a phase "closed" to hide
-  open findings.
+  findings, read from `hitch_findings` via a direct `COUNT(*)` SQL aggregate
+  (`openCounts`, `src/roadmap/rollup.ts`) with no row-fetch LIMIT. They count the
+  same active lifecycle set as hitch convergence — `open`, `reopened`, and
+  `escalated` (`OPEN_FINDING_LIFECYCLES`). These are **never read from a
+  snapshot**: a caller cannot mark a phase "closed" to hide open findings.
 - **`latestDecision`**: the most recent `hitch_convergence_decisions.decision`
   across all linked hitches (latest by `created_at`), or null if none.
 - **`readyToClose`**: derived live by `derivePhaseReadiness`: at least one linked
