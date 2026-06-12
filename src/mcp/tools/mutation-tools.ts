@@ -1797,10 +1797,7 @@ function operationMetadata(
   toolName: string,
   args: MutationBaseArgs,
 ): Record<string, unknown> {
-  const hitchId =
-    typeof (args as unknown as { hitchId?: unknown }).hitchId === "string"
-      ? (args as unknown as { hitchId: string }).hitchId
-      : undefined;
+  const hitchId = hasStringHitchId(args) ? args.hitchId : undefined;
   return {
     source: "mcp",
     clientName: context.clientName,
@@ -1813,6 +1810,14 @@ function operationMetadata(
       ? { confirmationId: context.confirmedConfirmationId }
       : {}),
   };
+}
+
+function hasStringHitchId(value: unknown): value is { hitchId: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { hitchId?: unknown }).hitchId === "string"
+  );
 }
 
 function backlogContext(paths: ReturnType<typeof harnessPaths>): BacklogDbContext {

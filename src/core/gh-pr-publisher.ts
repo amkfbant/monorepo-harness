@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type {
@@ -61,12 +61,10 @@ export function createGhPrPublisher(
   return {
     async publish(inputs: PrPublishInputs): Promise<PrPublishResult> {
       // pass the body via a temp file — it is multi-line markdown.
-      const bodyFile = join(
-        tmpdir(),
-        `harness-pr-body-${process.pid}-${Date.now()}.md`,
-      );
-      await writeFile(bodyFile, inputs.body, "utf8");
+      const bodyDir = await mkdtemp(join(tmpdir(), "harness-pr-body-"));
+      const bodyFile = join(bodyDir, "body.md");
       try {
+        await writeFile(bodyFile, inputs.body, "utf8");
         // idempotency: if an OPEN PR already exists for this head branch,
         // return it instead of failing on a duplicate `gh pr create`. A
         // closed PR is NOT reused — `gh pr create` opens a fresh one.
@@ -96,7 +94,7 @@ export function createGhPrPublisher(
         }
         return { url, number: Number(m[1]) };
       } finally {
-        await rm(bodyFile, { force: true });
+        await rm(bodyDir, { recursive: true, force: true });
       }
     },
   };

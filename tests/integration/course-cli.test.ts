@@ -619,6 +619,15 @@ describe("course/phase CLI (SP-1)", () => {
     expect(shown.hitchIds).toContain(h.hitchId);
   });
 
+  it("phase unlink-hitch reports when no link existed", () => {
+    const { root } = setup();
+
+    const unlinked = runCli(root, ["phase", "unlink-hitch", "h-not-linked"]);
+    expect(unlinked.code).toBe(0);
+    expect(unlinked.out).toContain("no link");
+    expect(unlinked.out).toContain("hitch=h-not-linked");
+  });
+
   it("course export --md emits markdown with phase titles", () => {
     const { root } = setup();
 

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   createGhPrPublisher,
   createGhPrMerger,
@@ -58,6 +58,107 @@ describe("gh PR publisher", () => {
         draft: true,
       }),
     ).rejects.toThrow(/timed out/);
+  });
+
+  it("writes the PR body inside a private mkdtemp directory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "harness-fake-gh-"));
+    const bin = join(dir, "gh");
+    const metaPath = join(dir, "body-meta.json");
+    writeFileSync(
+      bin,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const args = process.argv.slice(2);",
+        "if (args[0] === 'pr' && args[1] === 'list') {",
+        "  process.stdout.write('[]');",
+        "  process.exit(0);",
+        "}",
+        "if (args[0] === 'pr' && args[1] === 'create') {",
+        "  const bodyFile = args[args.indexOf('--body-file') + 1];",
+        "  const bodyDir = path.dirname(bodyFile);",
+        `  fs.writeFileSync(${JSON.stringify(metaPath)}, JSON.stringify({`,
+        "    bodyFile,",
+        "    bodyDir,",
+        "    bodyDirMode: fs.statSync(bodyDir).mode & 0o777,",
+        "    body: fs.readFileSync(bodyFile, 'utf8'),",
+        "  }));",
+        "  process.stdout.write('https://github.com/example/repo/pull/123\\n');",
+        "  process.exit(0);",
+        "}",
+        "process.exit(1);",
+        "",
+      ].join("\n"),
+    );
+    execFileSync("chmod", ["+x", bin]);
+
+    const publisher = createGhPrPublisher(bin, 5_000);
+    const result = await publisher.publish({
+      repoDir: tmpdir(),
+      base: "main",
+      head: "harness/private-body",
+      title: "Private body",
+      body: "secret body",
+      draft: true,
+    });
+
+    expect(result).toEqual({
+      url: "https://github.com/example/repo/pull/123",
+      number: 123,
+    });
+    const meta = JSON.parse(readFileSync(metaPath, "utf8")) as {
+      bodyFile: string;
+      bodyDir: string;
+      bodyDirMode: number;
+      body: string;
+    };
+    expect(meta.body).toBe("secret body");
+    expect(basename(meta.bodyDir)).toMatch(/^harness-pr-body-/);
+    expect(meta.bodyDirMode & 0o077).toBe(0);
+    expect(existsSync(meta.bodyFile)).toBe(false);
+    expect(existsSync(meta.bodyDir)).toBe(false);
+  });
+
+  it("removes the private body directory when writing the body fails", async () => {
+    vi.resetModules();
+    let bodyDir: string | null = null;
+    vi.doMock("node:fs/promises", async () => {
+      const actual =
+        await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+      return {
+        ...actual,
+        mkdtemp: async (...args: Parameters<typeof actual.mkdtemp>) => {
+          bodyDir = await actual.mkdtemp(...args);
+          return bodyDir;
+        },
+        writeFile: async () => {
+          throw new Error("forced body write failure");
+        },
+      };
+    });
+    try {
+      const { createGhPrPublisher: createPublisherWithFailingWrite } =
+        await import("../../src/core/gh-pr-publisher.js");
+      const publisher = createPublisherWithFailingWrite("gh", 5_000);
+
+      await expect(
+        publisher.publish({
+          repoDir: tmpdir(),
+          base: "main",
+          head: "harness/private-body",
+          title: "Private body",
+          body: "secret body",
+          draft: true,
+        }),
+      ).rejects.toThrow(/forced body write failure/);
+
+      expect(bodyDir).toEqual(expect.any(String));
+      expect(existsSync(bodyDir as string)).toBe(false);
+    } finally {
+      vi.doUnmock("node:fs/promises");
+      vi.resetModules();
+    }
   });
 });
 

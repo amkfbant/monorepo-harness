@@ -12,7 +12,8 @@ export type CoursePhaseActionKind =
   | "ready_to_close"
   | "report_only"
   | "blocked_subtree"
-  | "not_driven";
+  | "not_driven"
+  | "partially_driven";
 
 export type CoursePhaseAction =
   | { kind: "skip_closed" }

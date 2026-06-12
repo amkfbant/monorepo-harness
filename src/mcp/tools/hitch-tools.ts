@@ -950,8 +950,8 @@ function hitchMetadata(
   const hitchId =
     typeof extra.hitchId === "string"
       ? extra.hitchId
-      : typeof (args as unknown as { hitchId?: unknown }).hitchId === "string"
-        ? (args as unknown as { hitchId: string }).hitchId
+      : hasStringHitchId(args)
+        ? args.hitchId
         : undefined;
   return {
     source: "mcp",
@@ -966,6 +966,14 @@ function hitchMetadata(
       : {}),
     ...extra,
   };
+}
+
+function hasStringHitchId(value: unknown): value is { hitchId: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { hitchId?: unknown }).hitchId === "string"
+  );
 }
 
 function hitchIdForIdempotencyKey(

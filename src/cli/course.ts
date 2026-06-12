@@ -673,10 +673,14 @@ export function registerCourseCommands(
     .argument("<hitch-id>", "hitch id")
     .action((hitchId: string) => {
       withCourseErrorExit(() => {
-        withCourseRepo(opts, ({ phases }) => {
-          phases.unlinkHitch(hitchId);
-        });
-        process.stdout.write(`unlinked hitch=${hitchId}\n`);
+        const removed = withCourseRepo(opts, ({ phases }) =>
+          phases.unlinkHitch(hitchId),
+        );
+        process.stdout.write(
+          removed
+            ? `unlinked hitch=${hitchId}\n`
+            : `no link for hitch=${hitchId}\n`,
+        );
       });
     });
 }

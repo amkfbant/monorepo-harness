@@ -63,14 +63,23 @@ function latestDecisionForPhase(
   hitches: HitchRepository,
   hitchIds: string[],
 ): string | null {
-  let latest: { createdAt: string; decision: string } | null = null;
+  let latest: { createdAt: string; decisionId: string; decision: string } | null = null;
   for (const hid of hitchIds) {
     const decisions = hitches.listDecisions(hid);
     if (decisions.length === 0) continue;
     // listDecisions returns records in ASC order; last item is newest
     const newest = decisions[decisions.length - 1]!;
-    if (latest === null || newest.createdAt >= latest.createdAt) {
-      latest = { createdAt: newest.createdAt, decision: newest.decision };
+    if (
+      latest === null ||
+      newest.createdAt > latest.createdAt ||
+      (newest.createdAt === latest.createdAt &&
+        newest.decisionId > latest.decisionId)
+    ) {
+      latest = {
+        createdAt: newest.createdAt,
+        decisionId: newest.decisionId,
+        decision: newest.decision,
+      };
     }
   }
   return latest !== null ? latest.decision : null;
