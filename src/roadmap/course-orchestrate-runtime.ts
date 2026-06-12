@@ -9,6 +9,11 @@ import type { HitchSession } from "../hitch/types.js";
 import { prepareProjectRun } from "../project/run-project.js";
 import { CourseOrchestrator } from "./course-orchestrator.js";
 
+export interface CourseHitchRunnersDeps {
+  prepareRun?: typeof prepareProjectRun;
+  createRunners?: typeof createCodexCliRunner;
+}
+
 export interface ProductionCourseOrchestratorInput {
   db: Database.Database;
   dbPath: string;
@@ -38,17 +43,20 @@ export function createProductionCourseOrchestrator(
   });
 }
 
-async function makeCourseHitchRunners(input: {
-  db: Database.Database;
-  dbPath: string;
-  harnessRoot: string;
-  codexBin: string;
-  courseId: string;
-  courseProjectId: string | null;
-  createdBy: string;
-  hitchId: string;
-  runnersByHitch: Map<string, OrchestratorRunners>;
-}): Promise<OrchestratorRunners> {
+export async function makeCourseHitchRunners(
+  input: {
+    db: Database.Database;
+    dbPath: string;
+    harnessRoot: string;
+    codexBin: string;
+    courseId: string;
+    courseProjectId: string | null;
+    createdBy: string;
+    hitchId: string;
+    runnersByHitch: Map<string, OrchestratorRunners>;
+  },
+  deps: CourseHitchRunnersDeps = {},
+): Promise<OrchestratorRunners> {
   const cached = input.runnersByHitch.get(input.hitchId);
   if (cached !== undefined) return cached;
 
@@ -63,7 +71,9 @@ async function makeCourseHitchRunners(input: {
     throw new Error(`hitch ${input.hitchId} has no domain`);
   }
 
-  const prepared = await prepareProjectRun({
+  const prepareRun = deps.prepareRun ?? prepareProjectRun;
+  const createRunners = deps.createRunners ?? createCodexCliRunner;
+  const prepared = await prepareRun({
     harnessRoot: input.harnessRoot,
     projectId,
     domain: session.domain,
@@ -72,11 +82,11 @@ async function makeCourseHitchRunners(input: {
     dbPath: input.dbPath,
     harnessRoot: input.harnessRoot,
     createdBy: input.createdBy,
-    coderRunner: createCodexCliRunner({
+    coderRunner: createRunners({
       codexBin: input.codexBin,
       sandbox: "workspace-write",
     }),
-    reviewerRunner: createCodexCliRunner({
+    reviewerRunner: createRunners({
       codexBin: input.codexBin,
       sandbox: "read-only",
     }),
@@ -99,7 +109,7 @@ async function makeCourseHitchRunners(input: {
   return runners;
 }
 
-function hitchGoalText(session: HitchSession): string {
+export function hitchGoalText(session: HitchSession): string {
   return [session.title, session.description ?? ""]
     .map((part) => part.trim())
     .filter((part) => part !== "")
