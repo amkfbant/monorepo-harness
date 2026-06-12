@@ -1,8 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
   chmodSync,
+  existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -183,5 +186,69 @@ describe("createCodexCliRunner", () => {
     expect(result.timedOut).toBe(true);
     expect(result.durationMs).toEqual(expect.any(Number));
     expect(result.durationMs).toBeGreaterThanOrEqual(40);
+  });
+
+  it("passes -o a log path outside the worktree without creating worktree output files", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-codex-cli-split-"));
+    const wt = join(root, "worktree");
+    const logs = join(root, "logs");
+    mkdirSync(wt);
+    const codexBin = writeExecutableScript(
+      root,
+      [
+        "const { mkdirSync, writeFileSync } = require('node:fs');",
+        "const { resolve } = require('node:path');",
+        "const args = process.argv.slice(2);",
+        "const outputIndex = args.indexOf('-o');",
+        "if (outputIndex < 0) throw new Error('missing -o');",
+        "const outputPath = resolve(args[outputIndex + 1]);",
+        "const expectedOutputPath = resolve(process.env.EXPECTED_OUTPUT_PATH);",
+        "const allowedRoot = resolve(process.env.ALLOWED_TMP_ROOT);",
+        "const worktreePath = resolve(process.env.EXPECTED_WORKTREE);",
+        "if (outputPath !== expectedOutputPath) {",
+        "  throw new Error(`unexpected -o path: ${outputPath}`);",
+        "}",
+        "if (!outputPath.startsWith(`${allowedRoot}/`)) {",
+        "  throw new Error(`output escaped tmp root: ${outputPath}`);",
+        "}",
+        "if (outputPath.startsWith(`${worktreePath}/`)) {",
+        "  throw new Error(`output unexpectedly inside worktree: ${outputPath}`);",
+        "}",
+        "mkdirSync(worktreePath, { recursive: true });",
+        "process.stdin.resume();",
+        "process.stdin.on('end', () => {",
+        "  writeFileSync(outputPath, 'final outside worktree\\n', 'utf8');",
+        "  process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n', () => process.exit(0));",
+        "});",
+      ].join("\n"),
+    );
+    const runner = createCodexCliRunner({
+      codexBin,
+      envAllowlist: [
+        "PATH",
+        "EXPECTED_OUTPUT_PATH",
+        "EXPECTED_WORKTREE",
+        "ALLOWED_TMP_ROOT",
+      ],
+    });
+    const outputPath = join(logs, "codex-output.log");
+    process.env.EXPECTED_OUTPUT_PATH = outputPath;
+    process.env.EXPECTED_WORKTREE = wt;
+    process.env.ALLOWED_TMP_ROOT = root;
+
+    const result = await runner.run({
+      worktreePath: wt,
+      prompt: "hello",
+      logPaths: {
+        stdout: outputPath,
+        stderr: join(logs, "codex-error.log"),
+        events: join(logs, "codex-events.jsonl"),
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(outputPath, "utf8")).toBe("final outside worktree\n");
+    expect(existsSync(join(wt, "codex-output.log"))).toBe(false);
+    expect(readdirSync(wt)).toEqual([]);
   });
 });

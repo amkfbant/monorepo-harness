@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runDomainCoding } from "../../src/core/workflow-runner.js";
 import { createFakeCodexRunner } from "../../src/codex/fake-codex-runner.js";
+import type { CodexExecRunner } from "../../src/codex/codex-exec-runner.js";
+import { readArtifactBlob } from "../../src/db/artifact-blobs.js";
 import { openDb } from "../../src/db/connection.js";
 import { SCHEMA_VERSION } from "../../src/db/schema.js";
 
@@ -201,6 +203,90 @@ describe("runDomainCoding (fake codex)", () => {
       expect(row.prompt_sha256).toBe(
         createHash("sha256").update(prompt).digest("hex"),
       );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("redacts codex JSONL command output before artifact ingest", async () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const runner: CodexExecRunner = {
+      async run(input) {
+        writeFileSync(
+          join(input.worktreePath, "apps/user/src/profile.ts"),
+          "export const x = 1;\n",
+        );
+        writeFileSync(input.logPaths.stdout, "done\n", "utf8");
+        writeFileSync(input.logPaths.stderr, "", "utf8");
+        writeFileSync(
+          input.logPaths.events,
+          [
+            JSON.stringify({ type: "thread.started" }),
+            "{broken-json",
+            JSON.stringify({
+              type: "item.completed",
+              item: {
+                type: "command_execution",
+                aggregated_output: `leaked ${secret}\n`,
+              },
+            }),
+            JSON.stringify({
+              type: "turn.completed",
+              usage: {
+                input_tokens: 1,
+                cached_input_tokens: 0,
+                output_tokens: 1,
+                reasoning_output_tokens: 0,
+              },
+            }),
+            "",
+          ].join("\n"),
+          "utf8",
+        );
+        return { exitCode: 0, timedOut: false, durationMs: 10 };
+      },
+    };
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "redact events",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+    const runDir = join(harness, "runs", r.runId);
+    const codexEvents = readFileSync(
+      join(runDir, "codex-events.jsonl"),
+      "utf8",
+    );
+    const runEvents = parseEvents(runDir);
+
+    expect(codexEvents).not.toContain(secret);
+    expect(codexEvents).toContain("redaction.dropped_line");
+    expect(codexEvents).toContain(
+      "[redacted: secret-suspect (content:aws-access-key-id)]",
+    );
+    expect(runEvents).toContainEqual({
+      type: "codex_events_redacted",
+      redactedCount: 1,
+      droppedCount: 1,
+    });
+
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const artifact = db
+        .prepare(
+          `SELECT blob_sha256 FROM artifacts
+           WHERE run_id = ? AND relative_path = 'codex-events.jsonl'`,
+        )
+        .get(r.runId) as { blob_sha256: string | null };
+      expect(artifact.blob_sha256).not.toBeNull();
+      const blob = readArtifactBlob(db, artifact.blob_sha256 ?? "");
+      expect(blob?.toString("utf8")).toBe(codexEvents);
+      expect(blob?.toString("utf8")).not.toContain(secret);
     } finally {
       db.close();
     }

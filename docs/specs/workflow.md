@@ -137,7 +137,7 @@ runs/<runId>/
   codex-prompt.md          # codex に渡した prompt 全文
   codex-output.log         # codex `-o/--output-last-message` の最終 agent message
   codex-error.log          # codex stderr (生; readStderrTail で patch echo を抑制してから artifact に転載)
-  codex-events.jsonl       # codex `--json` stdout の JSONL events (turn.completed.usage を含む)
+  codex-events.jsonl       # codex `--json` stdout の JSONL events (保存前に command aggregated_output を secret redaction 済み; turn.completed.usage を含む)
   final-diff.patch         # tracked changes の unified diff (against baseSha)。常に生成 (変更なしなら空)
   untracked-files.patch    # OPTIONAL: allowed untracked がある場合のみ。inline + secret hit は redact
   untracked-files.txt      # OPTIONAL: allowed untracked がある場合のみ。path list
@@ -214,6 +214,7 @@ compiled project policy. Non-project hitches are unchanged.
 {"type":"worktree_created","path":"/Users/kn/dev/monorepo-harness/workspaces/run-…/repo"}
 {"type":"codex_exec_started"}
 {"type":"codex_exec_completed","exitCode":0,"timedOut":false,"durationMs":61234}
+{"type":"codex_events_redacted","redactedCount":1,"droppedCount":0}
 {"type":"policy_validation_completed","status":"allowed","stage":"post-codex","durationMs":3}
 {"type":"commands_started","count":2}
 {"type":"commands_completed","results":[{"command":"npm test","exitCode":0,"durationMs":4521,"timedOut":false},{"command":"npm run lint","exitCode":0,"durationMs":1102,"timedOut":false}],"allPassed":true}
@@ -235,6 +236,8 @@ compiled project policy. Non-project hitches are unchanged.
 `policy_validation_completed.durationMs` は path policy 検証にかかった wall-clock の整数 ms、`diff_collected.durationMs` は当該 stage の diff / untracked 収集にかかった wall-clock の整数 ms。いずれも harness が `performance.now()` で計測し、`Math.round` で整数化する。
 
 `artifacts_ingested` は run 完了時の `ingestRunArtifacts` 成功直後、`finalize` 前に emit される。`count` / `totalBytes` は DB blob に取り込んだ artifact body（`meta.json` / `events.jsonl` / `review-decision.yaml` など DB から再構成される artifact を除く）のファイル数と元ファイル byte 合計、`durationMs` は同じく `performance.now()` ベースの整数 ms。
+
+`codex_events_redacted` は `codex_exec_completed` 後、artifact ingest 前に `codex-events.jsonl` を redaction した場合のみ emit される。`item.aggregated_output` の secret-shaped content は `"[redacted: secret-suspect (...)]"` に置換し、parse できない JSONL 行は `{"type":"redaction.dropped_line"}` に置換して保存する。
 
 `run_completed.runElapsedMs` は `runDomainCoding` 開始から `run_completed` emit 直前までの wall-clock 整数 ms。
 

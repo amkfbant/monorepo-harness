@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { minimatch } from "minimatch";
@@ -71,6 +71,7 @@ import {
   buildUntrackedDeniedReport,
   buildUntrackedSecretsReport,
 } from "../reporter/untracked-patch.js";
+import { redactCodexEvents } from "../codex/redact-events.js";
 
 /**
  * Surface a failed artifact-body ingest (Phase 8-2). The run still
@@ -175,6 +176,19 @@ async function readTail(path: string, maxBytes = 8 * 1024): Promise<string> {
     return buf.subarray(buf.length - maxBytes).toString("utf8");
   } catch {
     return "";
+  }
+}
+
+function isNodeError(value: unknown): value is NodeJS.ErrnoException {
+  return value instanceof Error;
+}
+
+async function readOptionalUtf8(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (e) {
+    if (isNodeError(e) && e.code === "ENOENT") return null;
+    throw e;
   }
 }
 
@@ -723,6 +737,26 @@ async function runDomainCodingInner(
       timedOut: codex.timedOut,
       durationMs: codex.durationMs,
     });
+    const codexEventsContent = await readOptionalUtf8(codexEventsPath);
+    if (codexEventsContent !== null) {
+      const codexEventsRedaction = redactCodexEvents(codexEventsContent);
+      if (
+        codexEventsRedaction.redactedCount +
+          codexEventsRedaction.droppedCount >
+        0
+      ) {
+        await writeFile(
+          codexEventsPath,
+          codexEventsRedaction.content,
+          "utf8",
+        );
+        await log.emit({
+          type: "codex_events_redacted",
+          redactedCount: codexEventsRedaction.redactedCount,
+          droppedCount: codexEventsRedaction.droppedCount,
+        });
+      }
+    }
     await log.setStatus("generated");
 
     // Pass 1: post-codex diff + validation. This determines whether commands

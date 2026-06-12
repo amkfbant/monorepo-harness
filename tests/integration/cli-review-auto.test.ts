@@ -76,10 +76,25 @@ function writeFakeCodexBin(): FakeCodex {
   writeFileSync(
     bin,
     [
-      "#!/bin/sh",
-      "cat > /dev/null", // consume stdin (the prompt)
-      `cat ${JSON.stringify(outputFile)}`,
-      "exit 0",
+      "#!/usr/bin/env node",
+      "const { readFileSync, writeFileSync } = require('node:fs');",
+      "const { resolve } = require('node:path');",
+      "const args = process.argv.slice(2);",
+      "const outputIndex = args.indexOf('-o');",
+      "if (!args.includes('--json')) throw new Error('missing --json');",
+      "if (outputIndex < 0) throw new Error('missing -o');",
+      "const outputPath = resolve(args[outputIndex + 1]);",
+      `const allowedTmpRoot = resolve(${JSON.stringify(tmpdir())});`,
+      "if (!outputPath.startsWith(`${allowedTmpRoot}/`)) {",
+      "  throw new Error(`output escaped tmp root: ${outputPath}`);",
+      "}",
+      "process.stdin.resume();",
+      "process.stdin.on('end', () => {",
+      `  const finalMessage = readFileSync(${JSON.stringify(outputFile)}, 'utf8');`,
+      "  writeFileSync(outputPath, finalMessage, 'utf8');",
+      "  const event = { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } };",
+      "  process.stdout.write(`${JSON.stringify(event)}\\n`, () => process.exit(0));",
+      "});",
     ].join("\n"),
   );
   execFileSync("chmod", ["+x", bin]);
