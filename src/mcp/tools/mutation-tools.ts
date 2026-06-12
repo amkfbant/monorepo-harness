@@ -973,6 +973,12 @@ export async function dbMigrateBlobsApplyTool(
   args: DbMigrateBlobsApplyArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
+  if (context.config.allowedProjects.length > 0) {
+    return permissionDenied("db.migrate_blobs.apply requires global MCP scope", {
+      reason: "global_scope_required",
+      allowedProjects: context.config.allowedProjects,
+    });
+  }
   if (!isConfirmed(context)) {
     const preview = dbMigrateBlobsPreviewTool(
       {

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { harnessPaths } from "../../config/paths.js";
 import { CourseRepository } from "../../roadmap/course-repository.js";
 import { createProductionCourseOrchestrator } from "../../roadmap/course-orchestrate-runtime.js";
@@ -7,6 +6,7 @@ import { rollupCourse } from "../../roadmap/rollup.js";
 import { errorResult, ok, type HarnessMcpToolResult } from "../schemas/outputs.js";
 import type { McpToolContext } from "../registry/tool-registry.js";
 import { ensureProjectVisible, withReadonlyDb } from "./tool-helpers.js";
+import { scopedIdForIdempotencyKey } from "./scoped-idempotency.js";
 import {
   runMcpMutationOperation,
   runMcpOperation,
@@ -292,33 +292,6 @@ export function resolvePhaseLinkHitchProjectId(
     }
   }
   return resolvePhaseProjectId(args, context);
-}
-
-// ---------------------------------------------------------------------------
-// Deterministic id derivation (idempotency — mirrors hitchIdForIdempotencyKey)
-// ---------------------------------------------------------------------------
-
-// The OperationRunner replay key is (operation_type, target_id, idempotency_key)
-// with NO project/client dimension. Hashing the idempotencyKey alone would let two
-// clients in different projects (or under different courses) that reuse the same
-// idempotencyKey collide on target_id → the second create is treated as a replay
-// of the first and returns the OTHER resource (cross-project leak). We therefore
-// fold the resource scope into the hashed material: a course is scoped by its
-// project, a phase by its parent course.
-//
-// The material is a JSON-encoded [scope, key] tuple, NOT a string-joined pair, so
-// the framing is unambiguous regardless of what bytes scope/key contain: JSON
-// quoting makes [scope, key] impossible to confuse with any other (scope', key')
-// (no separator-injection), and a null scope (cross-project roadmap) is distinct
-// from an empty-string scope ([null,…] vs ["",…]).
-function scopedIdForIdempotencyKey(
-  prefix: string,
-  scope: string | null,
-  idempotencyKey: string,
-): string {
-  const material = JSON.stringify([scope, idempotencyKey]);
-  const digest = createHash("sha256").update(material).digest("hex");
-  return `${prefix}-${digest.slice(0, 32)}`;
 }
 
 function courseIdForIdempotencyKey(

@@ -86,7 +86,7 @@ describe("HarnessMcpServer skeleton", () => {
     expect(JSON.stringify(prompts)).toContain("harness.prompt.drive_hitch_convergence");
   });
 
-  it("denies mutation by default and returns confirmation_required as non-error", async () => {
+  it("denies mutation by default and returns guarded confirmation_required as non-error", async () => {
     const root = tempRoot();
     const s = server(DEFAULT_MCP_CONFIG, root);
     await s.handleMessage({
@@ -150,7 +150,17 @@ describe("HarnessMcpServer skeleton", () => {
     ).run();
     db.close();
 
-    const confirmation = await s.handleMessage({
+    const guarded = server(
+      { ...DEFAULT_MCP_CONFIG, defaultMode: "guarded-mutation" },
+      root,
+    );
+    await guarded.handleMessage({
+      jsonrpc: "2.0",
+      id: 10,
+      method: "initialize",
+      params: { clientInfo: { name: "codex" } },
+    });
+    const confirmation = await guarded.handleMessage({
       jsonrpc: "2.0",
       id: 3,
       method: "tools/call",

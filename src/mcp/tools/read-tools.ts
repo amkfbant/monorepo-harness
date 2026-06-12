@@ -777,6 +777,36 @@ export function doctorSummaryTool(
         nextActions: [{ label: "Run doctor", command: "harness db doctor" }],
       };
     }
+    const latestHeader = {
+      doctorRunId: latest.doctor_run_id,
+      startedAt: latest.started_at,
+      completedAt: latest.completed_at,
+      status: latest.status,
+      summary: parseJson(latest.summary_json as string, {}),
+    };
+    if (context.config.allowedProjects.length > 0) {
+      const counts = db
+        .prepare(
+          `SELECT severity, status, COUNT(*) AS count
+             FROM doctor_findings
+            WHERE doctor_run_id = ?
+            GROUP BY severity, status
+            ORDER BY severity, status`,
+        )
+        .all(latest.doctor_run_id) as Record<string, unknown>[];
+      return ok(`latest doctor run ${latest.doctor_run_id}`, {
+        findingsRedacted: true,
+        reason: "project_scoped_client",
+        latest: {
+          ...latestHeader,
+          findings: counts.map((f) => ({
+            severity: f.severity,
+            status: f.status,
+            count: f.count,
+          })),
+        },
+      });
+    }
     const findings = db
       .prepare(
         `SELECT finding_id, check_id, severity, status, message,
@@ -788,11 +818,7 @@ export function doctorSummaryTool(
       .all(latest.doctor_run_id) as Record<string, unknown>[];
     return ok(`latest doctor run ${latest.doctor_run_id}`, {
       latest: {
-        doctorRunId: latest.doctor_run_id,
-        startedAt: latest.started_at,
-        completedAt: latest.completed_at,
-        status: latest.status,
-        summary: parseJson(latest.summary_json as string, {}),
+        ...latestHeader,
         findings: findings.map((f) => ({
           findingId: f.finding_id,
           checkId: f.check_id,

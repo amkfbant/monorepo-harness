@@ -699,17 +699,12 @@ discoverability のための**1 リリース限りの暫定措置**。次のリ�
 削除する（その時点で `harness goal` は commander の unknown-command エラーになる）。MCP 側は
 最初から stub を置かない（`harness.goal.*` は unknown-tool で落ちる・非対称は意図的）。
 
-## `hitch.start` idempotency id の resource scope（SP-1 codex App review 派生・既存）
+## dangerous MCP tools の allowedOperations 横展開（audit #117 follow-up）
 
-SP-1（course/phase）の PR で codex GitHub App が指摘した **cross-resource idempotency-key
-collision**（`courseIdForIdempotencyKey` が key のみを hash → 別 project の 2 クライアントが
-同一 `idempotencyKey` を使うと target_id 衝突 → 2 人目が 1 人目の resource を replay で受け取り
-project 跨ぎ leak）は course/phase 側を修正済み（target_id に project / course scope を畳み込む）。
-**同じパターンが既存の `hitch.start`（`src/mcp/tools/hitch-tools.ts`）にもある**: caller が
-`hitchId` を明示しない場合 `hitchIdForIdempotencyKey(idempotencyKey)` が key のみを hash する。
-OperationRunner の replay キー `(operation_type, target_id, idempotency_key)` に project 次元が
-無いため、別 project のクライアントが同一 key で `hitch.start` すると同様に衝突しうる
-（`hitchId` 明示時は caller 制御なので回避可）。本 PR スコープ外のため defer。follow-up:
-`hitchIdForIdempotencyKey` に effectiveProjectId scope を畳み込む（course 側 `scopedIdForIdempotencyKey`
-と同形）＋ cross-project replay regression test。fail-closed 方向（leak 防止）だが既存挙動変更を
-含むため独立 PR で扱う。
+audit #117 では dangerous / `requireConfirmation` 操作を `guarded-mutation` client mode に限定し、
+`read-only` / `dry-run` client が confirmation を起票・confirm replay できないよう fail-closed にした。
+一方で、dangerous tools へ `allowedOperations` allowlist も課す横展開は今回スコープ外にした。
+既存 `.harness/mcp.yaml` は dangerous confirmation を `allowedOperations` なしで使っている可能性があり、
+一度に要求すると breaking migration が大きい。follow-up: dangerous operation にも
+`allowedOperations` を要求するか、別 allowlist（例: `allowedDangerousOperations`）を導入するかを設計し、
+移行手順と compatibility warning を伴う独立変更として扱う。

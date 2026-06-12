@@ -222,12 +222,19 @@ interface McpPermissionDecision {
 Permission precedence is deterministic:
 
 ```txt
-1. deniedOperations always wins.
-2. requireConfirmation returns confirmation_required and permits preview only.
-3. read tools are allowed by mode unless denied/project-scoped out.
-4. dry-run tools are allowed for dry-run and guarded clients unless denied/project-scoped out.
-5. allowedOperations permits immediate execution for guarded mutation tools.
-6. safe default permits read and dry-run, denies immediate mutation.
+1. disabled MCP config and project visibility deny first.
+2. deniedOperations always wins.
+3. dangerous tools and **non-read** requireConfirmation operations require
+   guarded-mutation client mode; read-only/dry-run clients are denied with
+   dangerous_disabled_for_client before any confirmation is created. The gate
+   applies only when `kind !== "read"`; a read tool listed in requireConfirmation
+   is not gated here (the generic confirmation enqueue is mutation-kind only).
+4. guarded-mutation clients receive confirmation_required for dangerous tools
+   and requireConfirmation operations; confirmation permits preview only.
+5. read tools are allowed by mode unless denied/project-scoped out.
+6. dry-run tools are allowed for dry-run and guarded clients unless denied/project-scoped out.
+7. allowedOperations permits immediate execution for guarded mutation tools.
+8. safe default permits read and dry-run, denies immediate mutation.
 ```
 
 The permission engine normalizes MCP tool names by stripping the `harness.`
@@ -354,6 +361,14 @@ harness.course.status
 harness.phase.list
 harness.phase.get
 ```
+
+`harness.doctor.summary`（read）は最新 doctor run の header
+（doctorRunId / startedAt / completedAt / status / summary）を返す。`allowedProjects`
+が空の global client には `doctor_findings` の詳細（findingId / checkId / message /
+details / repairable）も従来どおり返す。`allowedProjects` が非空の project-scoped client
+では finding→project を決定論的に解決できないため、fail-closed で詳細を伏せる:
+`data.findingsRedacted: true`、`data.reason: "project_scoped_client"` を付け、
+`latest.findings` は `{severity,status,count}` の集計だけを返す。
 
 `harness.workspace.status`（read）は **1 repo 分**の workspace の **git-inclusive status**
 を返す。`repoPath` ＝ **追跡中の worktree path**（`workspace.list` の `worktree_path`）
@@ -572,6 +587,14 @@ harness.db.migrate_blobs.apply
 harness.db.gc_blobs.apply
 ```
 
+Dangerous tools are not opened by `allowedOperations`; they can only reach their
+handler-side confirmation preview when the effective client mode is
+`guarded-mutation`. `read-only` and `dry-run` clients fail at the permission
+layer before the handler can create a confirmation request. Confirmation replay
+uses the stored permission snapshot and re-runs the same permission decision
+before executing the handler, so a read-only/dry-run snapshot cannot be executed
+out of band.
+
 Disabled:
 
 ```txt
@@ -775,10 +798,26 @@ write operation audit metadata with `hitchId`/`hitch_id` where a hitch is known.
 `close_ready`; forced close, cancel, and scope expansion are always
 confirmation-required.
 
+When `harness.hitch.start` omits an explicit `hitchId`, the deterministic
+default id is derived from the tuple `[projectScope, idempotencyKey]` using
+SHA-256 and the `hitch-` prefix. `projectScope` is the effective project id
+after repoId-to-project derivation for project-restricted clients; when no
+project id is known, the scope is `null`. The `null` scope is intentional:
+repoId-only/global hitches with the same idempotency key replay within the same
+null-project scope, while project-scoped hitches cannot replay across different
+projects. The tuple is JSON-encoded before hashing, so `null` and `""` scopes
+remain distinct.
+
+Compatibility note for upgrades: this scoped derivation replaced the earlier
+key-only `hitch.start` derivation. A retry that crosses the upgrade boundary
+with the same idempotency key but without an explicit `hitchId` may derive a
+different hitch id and create a new hitch. Callers that need replay continuity
+across the upgrade should provide an explicit `hitchId`.
+
 `harness.cleanup.apply`, `harness.pr.create`, `harness.db.repair.apply`,
 `harness.db.archive.apply`, `harness.db.migrate_blobs.apply`, and
-`harness.db.gc_blobs.apply` also return `confirmation_required` by default and
-must have corresponding preview/dry-run paths.
+`harness.db.gc_blobs.apply` also return `confirmation_required` by default for
+guarded-mutation clients and must have corresponding preview/dry-run paths.
 
 `harness.pr.create` preview and execution both use the run row's `base_branch`
 and draft mode. Confirm rejects stale confirmations if the run base branch has
@@ -793,6 +832,10 @@ The confirmation preview is bound to the exact copy target and includes
 `candidateRunsAreInformational: true`. `before` is stored as archive
 `rangeEnd` metadata only; it does not filter the rows copied into the archive.
 MCP-requested archive output paths must resolve under `.harness/archives`.
+
+`harness.db.migrate_blobs.apply` is also global-scope only because blob
+migration can move artifact bodies across projects. Project-scoped clients may
+call the preview tool, but apply returns `permission_denied`.
 
 `harness.db.gc_blobs.apply` is also global-scope only because unreferenced
 external blob rows are not project-scoped. Project-scoped clients may call the
@@ -1027,6 +1070,15 @@ operation_type + target_id + idempotency_key
 Same key semantics are inherited from `OperationRunner`: success replays the
 prior result, running returns conflict, failed/cancelled returns the prior
 failure and requires a new key to retry.
+
+For create-style MCP tools whose target id is derived from the idempotency key,
+the target id must include the resource scope before it reaches
+`OperationRunner`, because the ledger key above has no project/client dimension.
+`harness.hitch.start` and `harness.course.create` scope by effective project id
+with `null` for intentionally projectless resources; `harness.phase.add` scopes
+by parent course id. Scope and key are hashed as JSON `[scope, key]`, not as a
+string-joined pair, so separator injection cannot collapse two different
+tuples.
 
 ## Error handling
 

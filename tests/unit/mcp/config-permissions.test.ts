@@ -123,6 +123,87 @@ describe("MCP config and permission engine", () => {
     });
   });
 
+  it("gates dangerous and confirmation-required operations by client mode before confirmation", () => {
+    const config = {
+      ...loadMcpConfig({ harnessRoot: tempHarnessRoot() }),
+      requireConfirmation: ["backlog.create"],
+    };
+    const cases = [
+      {
+        clientMode: "read-only" as const,
+        kind: "dangerous" as const,
+        toolName: "harness.pr.create",
+        expected: {
+          allowed: false,
+          mode: "mutation",
+          reason: "dangerous_disabled_for_client",
+        },
+      },
+      {
+        clientMode: "dry-run" as const,
+        kind: "dangerous" as const,
+        toolName: "harness.pr.create",
+        expected: {
+          allowed: false,
+          mode: "mutation",
+          reason: "dangerous_disabled_for_client",
+        },
+      },
+      {
+        clientMode: "guarded-mutation" as const,
+        kind: "dangerous" as const,
+        toolName: "harness.pr.create",
+        expected: {
+          allowed: true,
+          mode: "confirmation-required",
+          reason: "confirmation_required",
+          requiredConfirmation: true,
+        },
+      },
+      {
+        clientMode: "read-only" as const,
+        kind: "mutation" as const,
+        toolName: "harness.backlog.create",
+        expected: {
+          allowed: false,
+          mode: "mutation",
+          reason: "dangerous_disabled_for_client",
+        },
+      },
+      {
+        clientMode: "dry-run" as const,
+        kind: "mutation" as const,
+        toolName: "harness.backlog.create",
+        expected: {
+          allowed: false,
+          mode: "mutation",
+          reason: "dangerous_disabled_for_client",
+        },
+      },
+      {
+        clientMode: "guarded-mutation" as const,
+        kind: "mutation" as const,
+        toolName: "harness.backlog.create",
+        expected: {
+          allowed: true,
+          mode: "confirmation-required",
+          reason: "confirmation_required",
+          requiredConfirmation: true,
+        },
+      },
+    ];
+
+    for (const c of cases) {
+      expect(
+        decideMcpPermission(config, {
+          toolName: c.toolName,
+          kind: c.kind,
+          clientMode: c.clientMode,
+        }),
+      ).toMatchObject(c.expected);
+    }
+  });
+
   it("enforces project allowlist", () => {
     const root = tempHarnessRoot();
     const configPath = join(root, ".harness", "mcp.yaml");

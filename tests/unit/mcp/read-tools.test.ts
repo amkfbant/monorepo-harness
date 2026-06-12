@@ -157,6 +157,34 @@ function seed(db: Database.Database): void {
   ).run();
 }
 
+function seedDoctorRun(db: Database.Database): void {
+  db.prepare(
+    `INSERT INTO doctor_runs
+       (doctor_run_id, started_at, completed_at, status, summary_json)
+     VALUES
+       ('doctor-old', '2026-05-25T00:00:00Z', '2026-05-25T00:01:00Z',
+        'completed', '{"ok":true}'),
+       ('doctor-latest', '2026-05-26T00:00:00Z', '2026-05-26T00:01:00Z',
+        'completed', '{"checked":3}')`,
+  ).run();
+  db.prepare(
+    `INSERT INTO doctor_findings
+       (doctor_run_id, check_id, severity, status, message, repairable, details_json)
+     VALUES
+       ('doctor-old', 'old-check', 'critical', 'flagged', 'old finding', 0,
+        '{"runId":"run-other-1"}'),
+       ('doctor-latest', 'cross-project-run', 'warn', 'flagged',
+        'other project run leaked', 1,
+        '{"runId":"run-other-1","path":"/tmp/other/secret.ts"}'),
+       ('doctor-latest', 'cross-project-path', 'warn', 'flagged',
+        'other project path leaked', 0,
+        '{"path":"/tmp/other/package.json"}'),
+       ('doctor-latest', 'resolved-check', 'error', 'resolved',
+        'resolved detail', 0,
+        '{"runId":"run-demo-2"}')`,
+  ).run();
+}
+
 function attachArchive(root: string, db: Database.Database): void {
   const archivePath = join(root, ".harness", "archive.sqlite");
   mkdirSync(join(root, ".harness"), { recursive: true });
@@ -538,6 +566,106 @@ describe("MCP read tools", () => {
         operationId: "op-backlog-domain",
       });
       expect(backlogDomain.status).toBe("ok");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("redacts doctor finding details for project-scoped clients", async () => {
+    const { root, db } = freshHarness();
+    try {
+      seedDoctorRun(db);
+      const cfg: McpConfig = {
+        ...DEFAULT_MCP_CONFIG,
+        allowedProjects: ["demo"],
+      };
+      const summary = await callTool(server(root, cfg), "harness.doctor.summary");
+      const encoded = JSON.stringify(summary);
+
+      expect(summary.status).toBe("ok");
+      expect(summary.data.latest.doctorRunId).toBe("doctor-latest");
+      expect(encoded).not.toContain("other project run leaked");
+      expect(encoded).not.toContain("other project path leaked");
+      expect(encoded).not.toContain("resolved detail");
+      expect(encoded).not.toContain("run-other-1");
+      expect(encoded).not.toContain("/tmp/other/secret.ts");
+      expect(encoded).not.toContain("findingId");
+      expect(encoded).not.toContain("checkId");
+      expect(encoded).not.toContain("message");
+      expect(encoded).not.toContain("details");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("returns only doctor finding counts for project-scoped clients", async () => {
+    const { root, db } = freshHarness();
+    try {
+      seedDoctorRun(db);
+      const cfg: McpConfig = {
+        ...DEFAULT_MCP_CONFIG,
+        allowedProjects: ["demo"],
+      };
+      const summary = await callTool(server(root, cfg), "harness.doctor.summary");
+
+      expect(summary.data).toMatchObject({
+        findingsRedacted: true,
+        reason: "project_scoped_client",
+        latest: {
+          doctorRunId: "doctor-latest",
+          startedAt: "2026-05-26T00:00:00Z",
+          completedAt: "2026-05-26T00:01:00Z",
+          status: "completed",
+          summary: { checked: 3 },
+        },
+      });
+      expect(summary.data.latest.findings).toEqual([
+        { severity: "error", status: "resolved", count: 1 },
+        { severity: "warn", status: "flagged", count: 2 },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("returns doctor finding details for global clients", async () => {
+    const { root, db } = freshHarness();
+    try {
+      seedDoctorRun(db);
+      const summary = await callTool(server(root), "harness.doctor.summary");
+
+      expect(summary.status).toBe("ok");
+      expect(summary.data.findingsRedacted).toBeUndefined();
+      expect(summary.data.reason).toBeUndefined();
+      expect(summary.data.latest.findings).toEqual([
+        {
+          findingId: 2,
+          checkId: "cross-project-run",
+          severity: "warn",
+          status: "flagged",
+          message: "other project run leaked",
+          repairable: true,
+          details: { runId: "run-other-1", path: "/tmp/other/secret.ts" },
+        },
+        {
+          findingId: 3,
+          checkId: "cross-project-path",
+          severity: "warn",
+          status: "flagged",
+          message: "other project path leaked",
+          repairable: false,
+          details: { path: "/tmp/other/package.json" },
+        },
+        {
+          findingId: 4,
+          checkId: "resolved-check",
+          severity: "error",
+          status: "resolved",
+          message: "resolved detail",
+          repairable: false,
+          details: { runId: "run-demo-2" },
+        },
+      ]);
     } finally {
       db.close();
     }
