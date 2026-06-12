@@ -58,9 +58,17 @@ harness operation confirm <confirmation-id> --yes
 harness operation reject <confirmation-id>
 ```
 
-`harness.operation.confirm` is not listed as an MCP tool by default. If it is
-ever exposed, it requires an explicit `allowAgentConfirm` config setting and
-the same audit trail as other mutations.
+There is no `harness.operation.confirm` MCP tool; confirmation/rejection is an
+out-of-band CLI action.
+
+Confirmation request `input_json` and `preview_json` are stored at rest in their
+original form. This is intentional: confirmation replay reparses the stored
+arguments and executes the originally requested operation, so insert-time
+redaction would make some confirmations impossible or incorrect. Every display
+path (`harness mcp confirmations`, `harness operation confirm --preview`,
+`harness operation confirm --yes` pre-execution output, and rejection output)
+must redact those stored JSON fields before printing them. The raw DB fields are
+not a presentation surface.
 
 ## Non-goals
 
@@ -190,8 +198,6 @@ mcp:
 
   confirmation:
     ttlSeconds: 900
-    requireOutOfBand: true
-    allowAgentConfirm: false
 
   audit:
     recordReadTools: false

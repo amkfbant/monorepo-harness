@@ -1815,6 +1815,8 @@ harness course list [--status active|paused|closed] [--json]
 harness course show <id> [--json]
 harness course status <id> [--json]
 harness course orchestrate <id> [--max-driven-hitches <n>] [--max-steps-per-hitch <n>] [--dry-run] [--json]
+harness course pause <id>
+harness course resume <id>
 harness course close <id>
 harness course export <id> --md [--out <path>]
 ```
@@ -1825,7 +1827,9 @@ harness course export <id> --md [--out <path>]
 | `list` | course 一覧（id / status / title をタブ区切り、または JSON） |
 | `show` | 単一 course を表示 |
 | `status` | phase ツリーを walk し open P0/P1 + phase ごとの declared status + latest hitch decision を表示する決定論的ロールアップ |
-| `orchestrate` | active course の phase ツリーを 1 pass だけ walk し、eligible な linked hitch を `hitch.orchestrate` gate に従って drive。`--dry-run` は lease/write/drive なしで phase action のみ出力 |
+| `orchestrate` | active course の phase ツリーを 1 pass だけ walk し、eligible な linked hitch を `hitch.orchestrate` gate に従って drive。`--dry-run` は lease/write/drive なしで同じ phase action / note / blockedHitch 表示を出力 |
+| `pause` | course status を `paused` に設定。paused course は `orchestrate` の active gate で拒否される |
+| `resume` | course status を `active` に戻す |
 | `close` | course status を `closed` に設定 |
 | `export --md` | DB → markdown の一方向ビュー（DB が canonical。markdown → DB の round-trip 編集パスは無い） |
 

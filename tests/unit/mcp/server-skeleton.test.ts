@@ -182,6 +182,62 @@ describe("HarnessMcpServer skeleton", () => {
     });
   });
 
+  it("redacts raw secrets from generic confirmation_required previews while storing raw input", async () => {
+    const root = tempRoot();
+    const db = openDb(join(root, ".harness", "harness.sqlite"));
+    runMigrations(db);
+    db.close();
+
+    const secret = `sk-${"s".repeat(40)}`;
+    const guarded = server(
+      {
+        ...DEFAULT_MCP_CONFIG,
+        defaultMode: "guarded-mutation",
+        requireConfirmation: ["backlog.create"],
+      },
+      root,
+    );
+    const response = (await guarded.handleMessage({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "harness.backlog.create",
+        arguments: {
+          projectId: "demo",
+          domain: "apps/web",
+          title: "Secret pending",
+          goal: "exercise pending redaction",
+          actorNote: `operator token: ${secret}`,
+          idempotencyKey: "pending-secret-key",
+        },
+      },
+    })) as any;
+
+    const structured = response.result.structuredContent;
+    expect(structured.status).toBe("confirmation_required");
+    expect(response.result.isError).toBe(false);
+    expect(JSON.stringify(response)).not.toContain(secret);
+    expect(structured.data.preview.data.arguments.actorNote).toBe("[redacted]");
+    expect(structured.data.preview.data.arguments.idempotencyKey).toBe("[redacted]");
+
+    const stored = openDb(join(root, ".harness", "harness.sqlite"));
+    try {
+      const row = stored
+        .prepare(
+          "SELECT input_json, preview_json FROM mcp_confirmation_requests WHERE confirmation_id = ?",
+        )
+        .get(structured.confirmationId) as {
+        input_json: string;
+        preview_json: string;
+      };
+      expect(row.input_json).toContain(secret);
+      expect(row.preview_json).toContain(secret);
+    } finally {
+      stored.close();
+    }
+  });
+
   it("does not let initialize clientInfo spoof the permission client name", async () => {
     const root = tempRoot();
     const config: McpConfig = {

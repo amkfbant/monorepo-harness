@@ -15,6 +15,7 @@ import { parseToolArgs } from "./schemas/common.js";
 import {
   errorResult,
   permissionDenied,
+  redactMcpToolResult,
   toMcpToolResponse,
   type HarnessMcpToolResult,
 } from "./schemas/outputs.js";
@@ -292,6 +293,7 @@ export class HarnessMcpServer {
           input: parsed.data,
           preview,
         });
+        const responsePreview = redactMcpToolResult(preview);
         const result: HarnessMcpToolResult = {
           status: "confirmation_required",
           summary: `${tool.operation} requires confirmation`,
@@ -300,7 +302,7 @@ export class HarnessMcpServer {
             operation: tool.operation,
             target: target ?? null,
             expiresAt: row.expiresAt,
-            preview,
+            preview: responsePreview,
           },
           nextActions: [
             {

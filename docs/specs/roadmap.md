@@ -202,8 +202,11 @@ Hard stops are limited to:
 - course-level drive budget exhausted;
 - a driver/runtime exception while preparing or driving a hitch.
 
-Budget exhaustion records the current phase as `not_driven`, marks the remaining
-phases `not_driven`, and returns `stopReason = budget_exhausted`.
+Budget exhaustion after at least one hitch was driven in the current phase records
+that phase as `partially_driven` with
+`reason = partially_driven_budget_exhausted`, marks the remaining phases
+`not_driven`, and returns `stopReason = budget_exhausted`. If the budget is
+already exhausted before a phase starts, that phase is recorded as `not_driven`.
 
 ### Budget and lease
 

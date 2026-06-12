@@ -708,3 +708,17 @@ audit #124 では `operation-wrapper.ts` の公開 `runMcpOperation` /
 `runMcpOperation` には audit input redaction のみ適用した。private wrapper は
 `hitchGate` / `queued` / `pendingExternalExecutor` など公開 wrapper と追加機能差があるため、
 全体統合は独立設計で扱う。
+
+## redaction high-entropy detection（audit #134 follow-up）
+
+MCP redaction は現状、secret keyword / 代入形 regex / `scanForSecrets` の既知パターンで
+表示・監査面を redact する。任意の高 entropy 文字列検出は false positive が多く、ID・hash・
+fixture・短い opaque token まで潰して運用性を落とす可能性があるため #134 Batch B では実装しない。
+follow-up で扱う場合は、対象フィールド・最小長・allowlist・テスト fixture への影響を設計し、
+confirmation replay に必要な at-rest 原本保存とは独立した「表示時 redaction」だけに適用する。
+
+## #125 large-file staged split deferral
+
+#125（800 行超 15 ファイルの段階分割）は保守性 hygiene としての価値に比べて churn が大きいため、
+ユーザー判断で defer する。再開する場合は `run.ts` の Phase A から始め、1〜2 コマンド群/PR の
+極小 PR に分け、挙動変更ゼロを `--help` snapshot と既存 CLI テストで担保しながら進める。

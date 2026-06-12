@@ -50,6 +50,12 @@
 
 ステップ 14/15 の 2 pass 構成が F8（コマンドの副作用も path policy で再検査）の核心。`allowedCommands` が無ければ pass 2 は skip され、pass 1 の結果がそのまま使われる。
 
+Diff review and reviewed-fingerprint collection are symlink-safe by design:
+paths are evaluated as repository entries and the implementation does not follow
+symlinks to read a linked target outside the worktree. A symlink itself can still
+appear as a changed path and be checked by policy, but linked file contents are
+not traversed through the symlink for diff summaries or fingerprints.
+
 worktree は **削除しない**。レビュー後の cleanup は `harness cleanup`（[`cli.md`](./cli.md)）で行う。
 
 Hitch-mode executions can wrap one or more `domain-coding` runs in a

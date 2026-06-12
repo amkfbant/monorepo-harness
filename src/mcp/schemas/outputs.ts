@@ -61,20 +61,25 @@ export function permissionDenied(
     : { status: "permission_denied", summary, data };
 }
 
+export function redactMcpToolResult<T extends HarnessMcpToolResult>(result: T): T {
+  return redactMcpAuditValue(result) as T;
+}
+
 export function toMcpToolResponse(result: HarnessMcpToolResult): {
   content: Array<{ type: "text"; text: string }>;
   structuredContent: HarnessMcpToolResult;
   isError: boolean;
 } {
+  const safeResult = redactMcpToolResult(result);
   return {
     content: [
       {
         type: "text",
-        text: result.summary,
+        text: safeResult.summary,
       },
     ],
-    structuredContent: result,
+    structuredContent: safeResult,
     isError:
-      result.status === "error" || result.status === "permission_denied",
+      safeResult.status === "error" || safeResult.status === "permission_denied",
   };
 }

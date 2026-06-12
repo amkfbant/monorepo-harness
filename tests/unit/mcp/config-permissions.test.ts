@@ -32,6 +32,28 @@ describe("MCP config and permission engine", () => {
     expect(config.deniedOperations).toContain("db.vacuum");
   });
 
+  it("ignores removed confirmation policy keys while preserving ttlSeconds", () => {
+    const root = tempHarnessRoot();
+    const configPath = join(root, ".harness", "mcp.yaml");
+    writeFileSync(
+      configPath,
+      [
+        "version: 1",
+        "mcp:",
+        "  confirmation:",
+        "    ttlSeconds: 123",
+        "    requireOutOfBand: false",
+        "    allowAgentConfirm: true",
+        "",
+      ].join("\n"),
+    );
+
+    const config = loadMcpConfig({ harnessRoot: root, configPath });
+    expect(config.confirmation).toEqual({ ttlSeconds: 123 });
+    expect("requireOutOfBand" in config.confirmation).toBe(false);
+    expect("allowAgentConfirm" in config.confirmation).toBe(false);
+  });
+
   it("denies mutation by default but permits dry-run", () => {
     const config = loadMcpConfig({ harnessRoot: tempHarnessRoot() });
     expect(

@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
+import { CourseUserError } from "./errors.js";
 import type { Course, CourseStatus } from "./types.js";
 
 interface CourseRow {
@@ -42,7 +43,7 @@ export class CourseRepository {
 
   require(courseId: string): Course {
     const c = this.get(courseId);
-    if (c === null) throw new Error(`course ${courseId} not found`);
+    if (c === null) throw new CourseUserError(`course ${courseId} not found`);
     return c;
   }
 
