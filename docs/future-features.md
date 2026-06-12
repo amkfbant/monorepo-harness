@@ -89,14 +89,6 @@ injection), and it touches the safety-sensitive `insertProposal` hot-path, so it
 designed/reviewed separately rather than folded into F. Flagged by the F codex review
 (P2), 2026-06.
 
-## Transactional run-status guard on `review auto` proposal insert
-
-**Promoted to an active follow-up** — was tracked as Follow-up A in the retired
-`GOAL.md` (TOCTOU on the shared `insertProposal` path: re-read
-`status` / `source_mode` inside `tx.immediate()` and throw
-`ReviewerAgentGateError` when not `db-first && needs_review`). Flagged by the Phase 2 round-5 review;
-recorded 2026-06.
-
 ## Multi-reviewer consensus orchestration (drive the stall trigger)
 
 **What:** Let `harness hitch orchestrate` drive **multiple reviewers** per review
