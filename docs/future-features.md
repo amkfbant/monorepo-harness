@@ -700,3 +700,11 @@ audit #117 では dangerous / `requireConfirmation` 操作を `guarded-mutation`
 一度に要求すると breaking migration が大きい。follow-up: dangerous operation にも
 `allowedOperations` を要求するか、別 allowlist（例: `allowedDangerousOperations`）を導入するかを設計し、
 移行手順と compatibility warning を伴う独立変更として扱う。
+
+## private MCP mutation wrapper の統合（audit #124 follow-up）
+
+audit #124 では `operation-wrapper.ts` の公開 `runMcpOperation` /
+`runMcpMutationOperation` 重複を統合し、`mutation-tools.ts` の private
+`runMcpOperation` には audit input redaction のみ適用した。private wrapper は
+`hitchGate` / `queued` / `pendingExternalExecutor` など公開 wrapper と追加機能差があるため、
+全体統合は独立設計で扱う。

@@ -136,6 +136,54 @@ describe("harness.workspace.list MCP tool", () => {
     expect(out.data.result.note).toBe("saved via mcp");
   });
 
+  it("checkpoint: redacts audit input and metadata while preserving replay key and structure", async () => {
+    const root = freshHarness();
+    const s = mutationServer(root, ["workspace.checkpoint"]);
+    const secret = `sk-${"x".repeat(40)}`;
+    const out = await callTool(s, "harness.workspace.checkpoint", {
+      repoPath: "/repo/.git",
+      agent: "alice",
+      note: secret,
+      idempotencyKey: "checkpoint-redact-key",
+      actorNote: "checkpoint before risky migration",
+    });
+
+    expect(out.status).toBe("operation_started");
+    const db = openDb(join(root, ".harness", "harness.sqlite"));
+    try {
+      const row = db
+        .prepare("SELECT input_json, metadata_json, idempotency_key FROM operations WHERE operation_id = ?")
+        .get(out.data.operation.operationId) as {
+        input_json: string;
+        metadata_json: string;
+        idempotency_key: string;
+      };
+      const input = JSON.parse(row.input_json) as Record<string, unknown>;
+      const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
+
+      expect(row.idempotency_key).toBe("checkpoint-redact-key");
+      expect(row.input_json).not.toContain("checkpoint-redact-key");
+      expect(row.metadata_json).not.toContain("checkpoint-redact-key");
+      expect(row.input_json).not.toContain(secret);
+      expect(row.metadata_json).not.toContain(secret);
+      expect(input.idempotencyKey).toBe("[redacted]");
+      expect(input.note).toBe("[redacted]");
+      // workspace.checkpoint metadata does not carry idempotencyKey (it only
+      // goes to the dedicated operations.idempotency_key column), so the
+      // metadata is just the structural fields plus the plain operator note.
+      expect(metadata).toMatchObject({
+        source: "mcp",
+        toolName: "harness.workspace.checkpoint",
+        clientName: "m",
+        sessionId: "mcpsess_mut",
+        actorNote: "checkpoint before risky migration",
+      });
+      expect(metadata.idempotencyKey).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
   it("checkpoint: refreshes the heartbeat even for a note-only checkpoint", async () => {
     const root = freshHarness();
     // backdate alice's heartbeat.
