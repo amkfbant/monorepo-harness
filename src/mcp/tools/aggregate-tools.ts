@@ -1,8 +1,10 @@
 import {
   inboxSummary,
   metricsSummary,
+  tokenUsageSummary,
   type AggregateFilter,
   type DbMetricsSummary,
+  type DbTokenUsageSummary,
 } from "../../db/repositories/aggregates.js";
 import {
   hitchMetricsSummary,
@@ -29,6 +31,7 @@ export interface AggregateArgs {
 }
 
 export interface McpMetricsSummary extends DbMetricsSummary {
+  usage: DbTokenUsageSummary;
   hitch: DbHitchMetricsSummary;
   mcpConfirmations?: DbMcpConfirmationSummary;
 }
@@ -117,6 +120,7 @@ export function metricsTool(
     const runMetrics = metricsSummary(db, filter);
     const data: McpMetricsSummary = {
       ...runMetrics,
+      usage: tokenUsageSummary(db, filter),
       hitch: hitchMetricsSummary(db, filter),
       ...(context.config.allowedProjects.length === 0
         ? {

@@ -1,13 +1,16 @@
-// Codex CLI contract (confirmed against codex-cli 0.130.0):
+// Codex CLI contract (confirmed against codex-cli 0.133.0):
 //   codex exec [opts] [PROMPT|-]
 //   - prompt: stdin when omitted or `-`; otherwise positional arg.
 //   - `-C <dir>` sets the agent's working root.
 //   - `--sandbox <mode>` controls filesystem write permissions.
 //   - `--skip-git-repo-check` tolerates worktrees that look fresh to codex.
 //   - `-c approval_policy=<value>` controls non-interactive approval policy.
+//   - `--json` streams JSONL events to stdout and suppresses legacy
+//     header/footer text on stderr.
+//   - `-o/--output-last-message <file>` writes the final agent message.
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { performance } from "node:perf_hooks";
 import { finished } from "node:stream/promises";
@@ -62,11 +65,13 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
     async run(input: CodexRunInputs): Promise<CodexRunResult> {
       await mkdir(dirname(input.logPaths.stdout), { recursive: true });
       await mkdir(dirname(input.logPaths.stderr), { recursive: true });
-      const outStream = createWriteStream(input.logPaths.stdout);
+      await mkdir(dirname(input.logPaths.events), { recursive: true });
+      const eventsStream = createWriteStream(input.logPaths.events);
       const errStream = createWriteStream(input.logPaths.stderr);
 
       const args: string[] = [
         "exec",
+        "--json",
         // --ephemeral: do not persist session state under CODEX_HOME. All
         //   reviewable artifacts must live in runs/<id>/ — anything else is
         //   an artifact-boundary leak.
@@ -80,6 +85,8 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
         "-C",
         input.worktreePath,
         "--skip-git-repo-check",
+        "-o",
+        input.logPaths.stdout,
       ];
       if (opts.approvalPolicy) {
         args.push("-c", `approval_policy="${opts.approvalPolicy}"`);
@@ -107,7 +114,7 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
             killProcessTree(child);
           }, opts.timeoutMs);
         }
-        child.stdout.pipe(outStream);
+        child.stdout.pipe(eventsStream);
         child.stderr.pipe(errStream);
         // codex may exit before draining stdin (early exit / crash / a prompt
         // larger than the OS pipe buffer). The resulting EPIPE on the prompt
@@ -125,12 +132,18 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
           if (timer) clearTimeout(timer);
           const durationMs = Math.round(performance.now() - startedAt);
           // Make sure the file streams have flushed before the workflow
-          // calls readTail(). pipe() already calls .end() on outStream/
+          // calls readTail(). pipe() already calls .end() on eventsStream/
           // errStream when stdout/stderr ends, so we only need to wait
           // for the finished() signal.
-          Promise.all([finished(outStream), finished(errStream)])
+          Promise.all([finished(eventsStream), finished(errStream)])
             .catch(() => {
               // shutdown noise — exit code is the source of truth
+            })
+            .then(async () => {
+              // `-o` is written by codex itself. Preserve the historical
+              // artifact path even when codex exits before producing a final
+              // agent message.
+              await writeFile(input.logPaths.stdout, "", { flag: "a" });
             })
             .finally(() => {
               resolve({ exitCode: code ?? -1, timedOut, durationMs });

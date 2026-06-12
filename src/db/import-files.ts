@@ -72,6 +72,7 @@ const RESET_CHILD_TABLES: { table: string; key: string; parent: string }[] = [
   { table: "run_changed_files", key: "run_id", parent: "runs" },
   { table: "policy_violations", key: "run_id", parent: "runs" },
   { table: "artifacts", key: "run_id", parent: "runs" },
+  { table: "run_usage", key: "run_id", parent: "runs" },
   { table: "run_context_packs", key: "run_id", parent: "runs" },
   { table: "run_context_pack_files", key: "run_id", parent: "runs" },
   { table: "backlog_run_links", key: "item_id", parent: "backlog_items" },
@@ -98,6 +99,17 @@ export function runFullImport(
         `DELETE FROM knowledge_entries
           WHERE current_revision_id IS NULL`,
       ).run();
+      // Drop children of legacy-file runtime parents before deleting those
+      // parents. Some newer children (for example run_usage) have FKs.
+      for (const c of RESET_CHILD_TABLES) {
+        db.prepare(
+          `DELETE FROM ${c.table}
+           WHERE ${c.key} IN (
+             SELECT ${c.key} FROM ${c.parent}
+             WHERE source_mode != 'db-first'
+           )`,
+        ).run();
+      }
       // a db-first runtime row is canonical — keep it; drop legacy-file rows.
       for (const t of RESET_TABLES_RUNTIME) {
         db.prepare(`DELETE FROM ${t} WHERE source_mode != 'db-first'`).run();

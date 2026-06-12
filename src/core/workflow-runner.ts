@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { readFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { minimatch } from "minimatch";
@@ -60,6 +60,7 @@ import {
   buildCodexPrompt,
   CODER_PROMPT_TEMPLATE,
 } from "../codex/prompt-builder.js";
+import { parseCodexUsage } from "../codex/usage-parser.js";
 import { computeReviewedFingerprint } from "./reviewed-fingerprint.js";
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import { buildSummary } from "../reporter/summary.js";
@@ -71,6 +72,10 @@ import {
   buildUntrackedDeniedReport,
   buildUntrackedSecretsReport,
 } from "../reporter/untracked-patch.js";
+import {
+  publishRedactedCodexEvents,
+  type CodexEventsIo,
+} from "../codex/events-lifecycle.js";
 
 /**
  * Surface a failed artifact-body ingest (Phase 8-2). The run still
@@ -82,6 +87,13 @@ function warnArtifactIngestFailed(runId: string, e: unknown): void {
   process.stderr.write(
     `warning: run ${runId}: artifact body ingestion into the DB failed: ` +
       `${(e as Error).message} — run \`harness db migrate-artifacts\` to recover\n`,
+  );
+}
+
+function warnUsageRecordFailed(runId: string, e: unknown): void {
+  process.stderr.write(
+    `warning: run ${runId}: codex usage telemetry was not recorded: ` +
+      `${(e as Error).message}\n`,
   );
 }
 
@@ -130,6 +142,8 @@ export interface RunDomainCodingOpts {
   projectContextPacks?: { promptText: string; manifestYaml: string };
   /** `codex --version` first line, resolved by callers that know codexBin. */
   codexBinaryVersion?: string | null;
+  /** @internal test seam for fail-closed codex-events publish failures. */
+  codexEventsIo?: CodexEventsIo;
 }
 
 /**
@@ -175,6 +189,49 @@ async function readTail(path: string, maxBytes = 8 * 1024): Promise<string> {
     return buf.subarray(buf.length - maxBytes).toString("utf8");
   } catch {
     return "";
+  }
+}
+
+function isNodeError(value: unknown): value is NodeJS.ErrnoException {
+  return value instanceof Error;
+}
+
+async function readOptionalUtf8(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (e) {
+    if (isNodeError(e) && e.code === "ENOENT") return null;
+    throw e;
+  }
+}
+
+async function recordCodexUsage(opts: {
+  db: Database.Database;
+  runId: string;
+  eventsContent: string | null;
+}): Promise<void> {
+  const usage = parseCodexUsage(opts.eventsContent ?? "");
+  try {
+    assertActiveLease(opts.db, opts.runId);
+    opts.db
+      .prepare(
+        `INSERT INTO run_usage
+           (run_id, model, input_tokens, cached_input_tokens, output_tokens,
+            reasoning_output_tokens, total_tokens, usage_source, created_at)
+         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        opts.runId,
+        usage.inputTokens,
+        usage.cachedInputTokens,
+        usage.outputTokens,
+        usage.reasoningOutputTokens,
+        usage.totalTokens,
+        usage.usageSource,
+        new Date().toISOString(),
+      );
+  } catch (e) {
+    warnUsageRecordFailed(opts.runId, e);
   }
 }
 
@@ -707,10 +764,20 @@ async function runDomainCodingInner(
     await log.emit({ type: "codex_exec_started" });
     const codexStdoutPath = join(log.runDir, "codex-output.log");
     const codexStderrPath = join(log.runDir, "codex-error.log");
+    const codexEventsPath = join(log.runDir, "codex-events.jsonl");
+    const codexRawEventsPath = join(log.runDir, ".codex-events.raw.jsonl");
+    const codexRedactedTmpPath = join(
+      log.runDir,
+      ".codex-events.redacted.tmp",
+    );
     const codex = await opts.codexRunner.run({
       worktreePath: wt.path,
       prompt,
-      logPaths: { stdout: codexStdoutPath, stderr: codexStderrPath },
+      logPaths: {
+        stdout: codexStdoutPath,
+        stderr: codexStderrPath,
+        events: codexRawEventsPath,
+      },
     });
     await log.emit({
       type: "codex_exec_completed",
@@ -718,6 +785,33 @@ async function runDomainCodingInner(
       timedOut: codex.timedOut,
       durationMs: codex.durationMs,
     });
+    const codexEventsRedaction = await publishRedactedCodexEvents({
+      rawPath: codexRawEventsPath,
+      tmpPath: codexRedactedTmpPath,
+      officialPath: codexEventsPath,
+      io: opts.codexEventsIo,
+      runId,
+    });
+    let codexEventsContent: string | null = null;
+    try {
+      codexEventsContent = await readOptionalUtf8(codexEventsPath);
+    } catch {
+      codexEventsContent = null;
+    }
+    await recordCodexUsage({ db, runId, eventsContent: codexEventsContent });
+    if (!codexEventsRedaction.failed) {
+      if (
+        codexEventsRedaction.redactedCount +
+          codexEventsRedaction.droppedCount >
+        0
+      ) {
+        await log.emit({
+          type: "codex_events_redacted",
+          redactedCount: codexEventsRedaction.redactedCount,
+          droppedCount: codexEventsRedaction.droppedCount,
+        });
+      }
+    }
     await log.setStatus("generated");
 
     // Pass 1: post-codex diff + validation. This determines whether commands

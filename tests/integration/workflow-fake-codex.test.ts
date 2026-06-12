@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runDomainCoding } from "../../src/core/workflow-runner.js";
 import { createFakeCodexRunner } from "../../src/codex/fake-codex-runner.js";
+import type { CodexExecRunner } from "../../src/codex/codex-exec-runner.js";
+import { readArtifactBlob } from "../../src/db/artifact-blobs.js";
 import { openDb } from "../../src/db/connection.js";
 import { SCHEMA_VERSION } from "../../src/db/schema.js";
 
@@ -81,6 +83,65 @@ function parseEvents(runDir: string): WorkflowEvent[] {
 function expectNonNegativeNumber(value: unknown): void {
   expect(typeof value).toBe("number");
   expect(value).toBeGreaterThanOrEqual(0);
+}
+
+function secretEventsRunner(secret: string): CodexExecRunner {
+  return {
+    async run(input) {
+      writeFileSync(
+        join(input.worktreePath, "apps/user/src/profile.ts"),
+        "export const x = 4;\n",
+      );
+      writeFileSync(input.logPaths.stdout, "done\n", "utf8");
+      writeFileSync(input.logPaths.stderr, "", "utf8");
+      writeFileSync(
+        input.logPaths.events,
+        [
+          JSON.stringify({
+            type: "item.completed",
+            item: {
+              type: "command_execution",
+              aggregated_output: `leaked ${secret}\n`,
+            },
+          }),
+          JSON.stringify({
+            type: "turn.completed",
+            usage: {
+              input_tokens: 1,
+              cached_input_tokens: 0,
+              output_tokens: 1,
+              reasoning_output_tokens: 0,
+            },
+          }),
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      return { exitCode: 0, timedOut: false, durationMs: 10 };
+    },
+  };
+}
+
+function dbArtifactText(
+  dbPath: string,
+  runId: string,
+  relativePath: string,
+): string | null {
+  const db = openDb(dbPath);
+  try {
+    const row = db
+      .prepare(
+        `SELECT blob_sha256 FROM artifacts
+         WHERE run_id = ? AND relative_path = ?`,
+      )
+      .get(runId, relativePath) as { blob_sha256: string | null } | undefined;
+    if (row?.blob_sha256 === undefined || row.blob_sha256 === null) {
+      return null;
+    }
+    return readArtifactBlob(db, row.blob_sha256)?.toString("utf8") ?? null;
+  } finally {
+    db.close();
+  }
 }
 
 describe("runDomainCoding (fake codex)", () => {
@@ -206,6 +267,477 @@ describe("runDomainCoding (fake codex)", () => {
     }
   });
 
+  it("redacts codex JSONL command output before artifact ingest", async () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const runner: CodexExecRunner = {
+      async run(input) {
+        expect(input.logPaths.events.endsWith(".codex-events.raw.jsonl")).toBe(
+          true,
+        );
+        writeFileSync(
+          join(input.worktreePath, "apps/user/src/profile.ts"),
+          "export const x = 1;\n",
+        );
+        writeFileSync(input.logPaths.stdout, "done\n", "utf8");
+        writeFileSync(input.logPaths.stderr, "", "utf8");
+        writeFileSync(
+          input.logPaths.events,
+          [
+            JSON.stringify({ type: "thread.started" }),
+            "{broken-json",
+            JSON.stringify({
+              type: "item.completed",
+              item: {
+                type: "command_execution",
+                aggregated_output: `leaked ${secret}\n`,
+              },
+            }),
+            JSON.stringify({
+              type: "turn.completed",
+              usage: {
+                input_tokens: 1,
+                cached_input_tokens: 0,
+                output_tokens: 1,
+                reasoning_output_tokens: 0,
+              },
+            }),
+            "",
+          ].join("\n"),
+          "utf8",
+        );
+        return { exitCode: 0, timedOut: false, durationMs: 10 };
+      },
+    };
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "redact events",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+    const runDir = join(harness, "runs", r.runId);
+    const codexEvents = readFileSync(
+      join(runDir, "codex-events.jsonl"),
+      "utf8",
+    );
+    const runEvents = parseEvents(runDir);
+
+    expect(existsSync(join(runDir, ".codex-events.raw.jsonl"))).toBe(false);
+    expect(codexEvents).not.toContain(secret);
+    expect(codexEvents).toContain("redaction.dropped_line");
+    expect(codexEvents).toContain(
+      "[redacted: secret-suspect (content:aws-access-key-id)]",
+    );
+    expect(runEvents).toContainEqual({
+      type: "codex_events_redacted",
+      redactedCount: 1,
+      droppedCount: 1,
+    });
+
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const artifact = db
+        .prepare(
+          `SELECT blob_sha256 FROM artifacts
+           WHERE run_id = ? AND relative_path = 'codex-events.jsonl'`,
+        )
+        .get(r.runId) as { blob_sha256: string | null };
+      expect(artifact.blob_sha256).not.toBeNull();
+      const blob = readArtifactBlob(db, artifact.blob_sha256 ?? "");
+      expect(blob?.toString("utf8")).toBe(codexEvents);
+      expect(blob?.toString("utf8")).not.toContain(secret);
+      const rawArtifact = db
+        .prepare(
+          `SELECT count(*) AS n FROM artifacts
+           WHERE run_id = ? AND relative_path = '.codex-events.raw.jsonl'`,
+        )
+        .get(r.runId) as { n: number };
+      expect(rawArtifact.n).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("publishes a fail-closed sentinel when redaction publish fails", async () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const runner = secretEventsRunner(secret);
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "redaction publish fails",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+      codexEventsIo: {
+        async rename(): Promise<void> {
+          throw new Error("simulated rename failure");
+        },
+      },
+    });
+
+    expect(r.status).toBe("needs_review");
+    const runDir = join(harness, "runs", r.runId);
+    const official = readFileSync(join(runDir, "codex-events.jsonl"), "utf8");
+    expect(official).toBe(
+      `${JSON.stringify({
+        type: "redaction.failed",
+        reason: "rename_failed",
+      })}\n`,
+    );
+    expect(official).not.toContain(secret);
+    expect(existsSync(join(runDir, ".codex-events.raw.jsonl"))).toBe(false);
+    expect(existsSync(join(runDir, ".codex-events.redacted.tmp"))).toBe(false);
+
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const usage = db
+        .prepare(
+          `SELECT input_tokens, cached_input_tokens, output_tokens,
+                  reasoning_output_tokens, total_tokens, usage_source
+             FROM run_usage WHERE run_id = ?`,
+        )
+        .get(r.runId) as {
+        input_tokens: number | null;
+        cached_input_tokens: number | null;
+        output_tokens: number | null;
+        reasoning_output_tokens: number | null;
+        total_tokens: number | null;
+        usage_source: string;
+      };
+      expect(usage).toEqual({
+        input_tokens: null,
+        cached_input_tokens: null,
+        output_tokens: null,
+        reasoning_output_tokens: null,
+        total_tokens: null,
+        usage_source: "unavailable",
+      });
+      const rawArtifact = db
+        .prepare(
+          `SELECT count(*) AS n FROM artifacts
+           WHERE run_id = ? AND relative_path = '.codex-events.raw.jsonl'`,
+        )
+        .get(r.runId) as { n: number };
+      expect(rawArtifact.n).toBe(0);
+      const blob = dbArtifactText(
+        join(harness, ".harness", "harness.sqlite"),
+        r.runId,
+        "codex-events.jsonl",
+      );
+      expect(blob).toBe(official);
+      expect(blob).not.toContain(secret);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps raw bytes out of DB blobs when redaction raw read fails", async () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "redaction raw read fails",
+      baseBranch: "main",
+      codexRunner: secretEventsRunner(secret),
+      now: new Date("2026-05-20T00:00:00Z"),
+      codexEventsIo: {
+        async readFile(): Promise<string> {
+          throw new Error("simulated read failure");
+        },
+      },
+    });
+
+    const official = readFileSync(
+      join(harness, "runs", r.runId, "codex-events.jsonl"),
+      "utf8",
+    );
+    expect(official).toBe(
+      `${JSON.stringify({
+        type: "redaction.failed",
+        reason: "read_failed",
+      })}\n`,
+    );
+    expect(official).not.toContain(secret);
+    const blob = dbArtifactText(
+      join(harness, ".harness", "harness.sqlite"),
+      r.runId,
+      "codex-events.jsonl",
+    );
+    expect(blob).toBe(official);
+    expect(blob).not.toContain(secret);
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const rawArtifact = db
+        .prepare(
+          `SELECT count(*) AS n FROM artifacts
+           WHERE run_id = ? AND relative_path = '.codex-events.raw.jsonl'`,
+        )
+        .get(r.runId) as { n: number };
+      expect(rawArtifact.n).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps raw bytes out of DB blobs when redaction tmp write fails", async () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "redaction tmp write fails",
+      baseBranch: "main",
+      codexRunner: secretEventsRunner(secret),
+      now: new Date("2026-05-20T00:00:00Z"),
+      codexEventsIo: {
+        async writeFile(path, content): Promise<void> {
+          if (path.endsWith(".codex-events.redacted.tmp")) {
+            throw new Error("simulated tmp failure");
+          }
+          writeFileSync(path, content);
+        },
+      },
+    });
+
+    const official = readFileSync(
+      join(harness, "runs", r.runId, "codex-events.jsonl"),
+      "utf8",
+    );
+    expect(official).toBe(
+      `${JSON.stringify({
+        type: "redaction.failed",
+        reason: "write_failed",
+      })}\n`,
+    );
+    expect(official).not.toContain(secret);
+    const blob = dbArtifactText(
+      join(harness, ".harness", "harness.sqlite"),
+      r.runId,
+      "codex-events.jsonl",
+    );
+    expect(blob).toBe(official);
+    expect(blob).not.toContain(secret);
+  });
+
+  it("leaves no official codex-events artifact when sentinel write fails", async () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "redaction sentinel write fails",
+      baseBranch: "main",
+      codexRunner: secretEventsRunner(secret),
+      now: new Date("2026-05-20T00:00:00Z"),
+      codexEventsIo: {
+        async writeFile(): Promise<void> {
+          throw new Error("simulated write failure");
+        },
+      },
+    });
+
+    const runDir = join(harness, "runs", r.runId);
+    expect(existsSync(join(runDir, "codex-events.jsonl"))).toBe(false);
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const rows = db
+        .prepare(
+          `SELECT relative_path FROM artifacts
+           WHERE run_id = ?
+             AND relative_path IN ('codex-events.jsonl', '.codex-events.raw.jsonl')`,
+        )
+        .all(r.runId) as { relative_path: string }[];
+      expect(rows).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("warns but does not ingest raw bytes when redaction cleanup fails", async () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+    let warnings = "";
+    let runId = "";
+    try {
+      const r = await runDomainCoding({
+        harnessRoot: harness,
+        repoPath,
+        repoId: "t",
+        domain: "apps/user",
+        goal: "redaction cleanup fails",
+        baseBranch: "main",
+        codexRunner: secretEventsRunner(secret),
+        now: new Date("2026-05-20T00:00:00Z"),
+        codexEventsIo: {
+          async writeFile(path, content): Promise<void> {
+            if (path.endsWith(".codex-events.redacted.tmp")) {
+              throw new Error("simulated tmp failure");
+            }
+            writeFileSync(path, content);
+          },
+          async rm(): Promise<void> {
+            throw new Error("simulated cleanup failure");
+          },
+        },
+      });
+      runId = r.runId;
+      warnings = stderr.mock.calls.map((call) => String(call[0])).join("");
+    } finally {
+      stderr.mockRestore();
+    }
+
+    expect(warnings).toContain(`warning: run ${runId}:`);
+    expect(warnings).toContain("could not remove quarantined codex events");
+    const official = readFileSync(
+      join(harness, "runs", runId, "codex-events.jsonl"),
+      "utf8",
+    );
+    expect(official).not.toContain(secret);
+    const blob = dbArtifactText(
+      join(harness, ".harness", "harness.sqlite"),
+      runId,
+      "codex-events.jsonl",
+    );
+    expect(blob).toBe(official);
+    expect(blob).not.toContain(secret);
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const rawArtifact = db
+        .prepare(
+          `SELECT count(*) AS n FROM artifacts
+           WHERE run_id = ? AND relative_path = '.codex-events.raw.jsonl'`,
+        )
+        .get(runId) as { n: number };
+      expect(rawArtifact.n).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("records exact codex token usage from codex-events.jsonl", async () => {
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 2;\n",
+        );
+      },
+      usage: {
+        inputTokens: 120,
+        cachedInputTokens: 40,
+        outputTokens: 35,
+        reasoningOutputTokens: 9,
+      },
+    });
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "record usage",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const row = db
+        .prepare(
+          `SELECT model, input_tokens, cached_input_tokens, output_tokens,
+                  reasoning_output_tokens, total_tokens, usage_source
+             FROM run_usage WHERE run_id = ?`,
+        )
+        .get(r.runId) as {
+        model: string | null;
+        input_tokens: number | null;
+        cached_input_tokens: number | null;
+        output_tokens: number | null;
+        reasoning_output_tokens: number | null;
+        total_tokens: number | null;
+        usage_source: string;
+      };
+      expect(row).toEqual({
+        model: null,
+        input_tokens: 120,
+        cached_input_tokens: 40,
+        output_tokens: 35,
+        reasoning_output_tokens: 9,
+        total_tokens: 155,
+        usage_source: "exact",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("records unavailable usage when the codex events file is missing", async () => {
+    const runner: CodexExecRunner = {
+      async run(input) {
+        writeFileSync(
+          join(input.worktreePath, "apps/user/src/profile.ts"),
+          "export const x = 3;\n",
+        );
+        writeFileSync(input.logPaths.stdout, "done\n", "utf8");
+        writeFileSync(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false, durationMs: 10 };
+      },
+    };
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "record unavailable usage",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const row = db
+        .prepare(
+          `SELECT input_tokens, cached_input_tokens, output_tokens,
+                  reasoning_output_tokens, total_tokens, usage_source
+             FROM run_usage WHERE run_id = ?`,
+        )
+        .get(r.runId) as {
+        input_tokens: number | null;
+        cached_input_tokens: number | null;
+        output_tokens: number | null;
+        reasoning_output_tokens: number | null;
+        total_tokens: number | null;
+        usage_source: string;
+      };
+      expect(row).toEqual({
+        input_tokens: null,
+        cached_input_tokens: null,
+        output_tokens: null,
+        reasoning_output_tokens: null,
+        total_tokens: null,
+        usage_source: "unavailable",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("rejects untracked writes outside the write scope", async () => {
     const runner = createFakeCodexRunner({
       edit: async (cwd) => {
@@ -299,11 +831,15 @@ describe("runDomainCoding (fake codex)", () => {
 
       const artifacts = (
         db
-          .prepare("SELECT relative_path FROM artifacts WHERE run_id = ?")
-          .all(r.runId) as { relative_path: string }[]
-      ).map((a) => a.relative_path);
-      expect(artifacts).toContain("meta.json");
-      expect(artifacts).toContain("summary.md");
+          .prepare("SELECT relative_path, kind FROM artifacts WHERE run_id = ?")
+          .all(r.runId) as { relative_path: string; kind: string }[]
+      );
+      expect(artifacts.map((a) => a.relative_path)).toContain("meta.json");
+      expect(artifacts.map((a) => a.relative_path)).toContain("summary.md");
+      expect(artifacts).toContainEqual({
+        relative_path: "codex-events.jsonl",
+        kind: "codex-events",
+      });
 
       // Phase 8 (external review P1-2): artifacts are ingested BEFORE the
       // final export, so the artifact bodies are recorded in

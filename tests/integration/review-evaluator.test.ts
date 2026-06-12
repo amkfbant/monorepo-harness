@@ -80,6 +80,20 @@ function sequenced(outputs: string[]): CodexExecRunner {
   };
 }
 
+function sequencedWithEvents(outputs: string[], events: string): CodexExecRunner {
+  let i = 0;
+  return {
+    async run(input: CodexRunInputs): Promise<CodexRunResult> {
+      const out = outputs[Math.min(i, outputs.length - 1)] ?? "";
+      i += 1;
+      await writeFile(input.logPaths.stdout, out, "utf8");
+      await writeFile(input.logPaths.stderr, "", "utf8");
+      await writeFile(input.logPaths.events, events, "utf8");
+      return { exitCode: 0, timedOut: false, durationMs: 0 };
+    },
+  };
+}
+
 describe("evaluateReviewer operational-knowledge injection (issue #57)", () => {
   it("samples the same operational-knowledge prompt the production reviewer uses", async () => {
     const root = mkdtempSync(join(tmpdir(), "harness-reval-ops-"));
@@ -139,6 +153,42 @@ describe("evaluateReviewer", () => {
     expect(existsSync(join(evalRoot, "evaluation-summary.md"))).toBe(true);
   });
 
+  it("redacts per-sample reviewer codex events before publishing them", async () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const { runsDir, runId } = setupRun();
+    await evaluateReviewer({
+      runsDir,
+      runId,
+      samples: 1,
+      codexRunner: sequencedWithEvents(
+        [yamlBlock("approved")],
+        `${JSON.stringify({
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            aggregated_output: `leaked ${secret}\n`,
+          },
+        })}\n`,
+      ),
+    });
+
+    const evalDir = join(
+      runsDir,
+      runId,
+      "review-evaluations",
+      "eval-001",
+    );
+    const official = readFileSync(
+      join(evalDir, "reviewer-agent.events.jsonl"),
+      "utf8",
+    );
+    expect(official).not.toContain(secret);
+    expect(official).toContain("[redacted: secret-suspect");
+    expect(existsSync(join(evalDir, ".reviewer-agent.events.raw.jsonl"))).toBe(
+      false,
+    );
+  });
+
   it("surfaces decision instability across samples", async () => {
     const { runsDir, runId } = setupRun();
     const r = await evaluateReviewer({
@@ -184,6 +234,50 @@ describe("evaluateReviewer", () => {
         ),
       ),
     ).toBe(true);
+  });
+
+  it("stores only a sanitized reason for malformed YAML samples", async () => {
+    const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890";
+    const { runsDir, runId } = setupRun();
+    await evaluateReviewer({
+      runsDir,
+      runId,
+      samples: 1,
+      codexRunner: sequenced([
+        ["```yaml", "decision: approved", `  ${secret}: leaked`, "```"].join(
+          "\n",
+        ),
+      ]),
+    });
+
+    const text = readFileSync(
+      join(
+        runsDir,
+        runId,
+        "review-evaluations",
+        "eval-001",
+        "review-auto-error.json",
+      ),
+      "utf8",
+    );
+    expect(text).not.toContain(secret);
+    expect(text).not.toContain("leaked");
+    const artifact = JSON.parse(text) as {
+      reason?: {
+        reasonCode?: string;
+        field?: string;
+        valueType?: string;
+        valueLength?: number;
+        valueSha256?: string;
+      };
+    };
+    expect(artifact.reason).toMatchObject({
+      reasonCode: "reviewer_output_unparseable_yaml",
+      field: "reviewer_output",
+      valueType: "string",
+    });
+    expect(artifact.reason?.valueLength).toBeGreaterThan(secret.length);
+    expect(artifact.reason?.valueSha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("flags a sample that approved a safetyStatus=denied run", async () => {

@@ -4,6 +4,7 @@ export interface CodexRunInputs {
   logPaths: {
     stdout: string;
     stderr: string;
+    events: string;
   };
 }
 

@@ -9,6 +9,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { openDb } from "../../src/db/connection.js";
+import { runMigrations } from "../../src/db/migrations.js";
+import {
+  storeArtifactBlob,
+  readArtifactBlob,
+} from "../../src/db/artifact-blobs.js";
 
 const CLI = join(process.cwd(), "src/cli/run.ts");
 
@@ -58,6 +64,52 @@ function setupRun(decision = "pending"): { root: string; runId: string } {
   return { root, runId };
 }
 
+function setupDbFirstRun(): { root: string; runId: string } {
+  const root = mkdtempSync(join(tmpdir(), "harness-rauto-cli-dbf-"));
+  const runId = "run-20260521-apps-user-rautodb1";
+  const dbPath = join(root, ".harness", "harness.sqlite");
+  const db = openDb(dbPath);
+  try {
+    runMigrations(db);
+    const meta = {
+      runId,
+      repoId: "t",
+      repoPath: "/tmp/t",
+      domain: "apps/user",
+      workflow: "domain-coding",
+      baseBranch: "main",
+      baseSha: "abc",
+      runBranch: "harness/x",
+      status: "needs_review",
+      safetyStatus: "allowed",
+      startedAt: "2026-05-21T00:00:00Z",
+    };
+    db.prepare(
+      `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+         status, source_mode, db_revision, export_status, updated_at,
+         meta_json)
+       VALUES (?, 't', 'apps/user', 'domain-coding', 'main', 'needs_review',
+         'db-first', 2, 'disabled', '2026-05-21T00:00:00Z', ?)`,
+    ).run(runId, JSON.stringify(meta));
+    const summary = storeArtifactBlob(db, Buffer.from("# summary\nclean\n"));
+    db.prepare(
+      `INSERT INTO artifacts (artifact_id, run_id, kind, relative_path,
+         content_type, bytes, sha256, storage, blob_sha256, body_status)
+       VALUES (?, ?, 'summary', 'summary.md', 'text/markdown', ?, ?, 'db',
+         ?, 'db_available')`,
+    ).run(
+      `${runId}:summary.md`,
+      runId,
+      summary.bytes,
+      summary.sha256,
+      summary.sha256,
+    );
+  } finally {
+    db.close();
+  }
+  return { root, runId };
+}
+
 /**
  * A fake codex binary. The codex-cli-runner filters child env to a small
  * allowlist, so we can't pass the desired output via an env var — instead
@@ -76,14 +128,83 @@ function writeFakeCodexBin(): FakeCodex {
   writeFileSync(
     bin,
     [
-      "#!/bin/sh",
-      "cat > /dev/null", // consume stdin (the prompt)
-      `cat ${JSON.stringify(outputFile)}`,
-      "exit 0",
+      "#!/usr/bin/env node",
+      "const { readFileSync, writeFileSync } = require('node:fs');",
+      "const { resolve } = require('node:path');",
+      "const args = process.argv.slice(2);",
+      "const outputIndex = args.indexOf('-o');",
+      "if (!args.includes('--json')) throw new Error('missing --json');",
+      "if (outputIndex < 0) throw new Error('missing -o');",
+      "const outputPath = resolve(args[outputIndex + 1]);",
+      `const allowedTmpRoot = resolve(${JSON.stringify(tmpdir())});`,
+      "if (!outputPath.startsWith(`${allowedTmpRoot}/`)) {",
+      "  throw new Error(`output escaped tmp root: ${outputPath}`);",
+      "}",
+      "process.stdin.resume();",
+      "process.stdin.on('end', () => {",
+      `  const finalMessage = readFileSync(${JSON.stringify(outputFile)}, 'utf8');`,
+      "  writeFileSync(outputPath, finalMessage, 'utf8');",
+      "  const event = { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } };",
+      "  process.stdout.write(`${JSON.stringify(event)}\\n`, () => process.exit(0));",
+      "});",
     ].join("\n"),
   );
   execFileSync("chmod", ["+x", bin]);
   return { bin, outputFile };
+}
+
+function writeTamperingFakeCodexBin(secret: string): FakeCodex {
+  const dir = mkdtempSync(join(tmpdir(), "harness-fake-codex-tamper-"));
+  const bin = join(dir, "codex");
+  const outputFile = join(dir, "output.txt");
+  writeFileSync(outputFile, "");
+  writeFileSync(
+    bin,
+    [
+      "#!/usr/bin/env node",
+      "const { readFileSync, writeFileSync } = require('node:fs');",
+      "const { resolve } = require('node:path');",
+      "const args = process.argv.slice(2);",
+      "const outputIndex = args.indexOf('-o');",
+      "if (!args.includes('--json')) throw new Error('missing --json');",
+      "if (outputIndex < 0) throw new Error('missing -o');",
+      "const outputPath = resolve(args[outputIndex + 1]);",
+      `const finalMessage = readFileSync(${JSON.stringify(
+        outputFile,
+      )}, 'utf8');`,
+      "writeFileSync('summary.md', '# summary\\ntampered\\n', 'utf8');",
+      `writeFileSync('reviewer-agent.events.jsonl', ${JSON.stringify(
+        `{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"leaked ${secret}\\n"}}\\n`,
+      )}, 'utf8');`,
+      "writeFileSync(outputPath, finalMessage, 'utf8');",
+      "process.stdout.write(`${JSON.stringify({ type: 'turn.completed' })}\\n`, " +
+        "() => process.exit(0));",
+    ].join("\n"),
+  );
+  execFileSync("chmod", ["+x", bin]);
+  return { bin, outputFile };
+}
+
+function dbBlobText(
+  root: string,
+  runId: string,
+  relativePath: string,
+): string | null {
+  const db = openDb(join(root, ".harness", "harness.sqlite"));
+  try {
+    const row = db
+      .prepare(
+        `SELECT blob_sha256 FROM artifacts
+         WHERE run_id = ? AND relative_path = ?`,
+      )
+      .get(runId, relativePath) as { blob_sha256: string | null } | undefined;
+    if (row?.blob_sha256 === undefined || row.blob_sha256 === null) {
+      return null;
+    }
+    return readArtifactBlob(db, row.blob_sha256)?.toString("utf8") ?? null;
+  } finally {
+    db.close();
+  }
 }
 
 function run(
@@ -209,6 +330,53 @@ describe("harness review auto", () => {
       "utf8",
     );
     expect(after).toBe(before);
+  });
+
+  it("quarantines reviewer artifacts after tamper before syncing DB blobs", () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const { root, runId } = setupDbFirstRun();
+    const fake = writeTamperingFakeCodexBin(secret);
+
+    const { stderr, status } = run(
+      ["review", "auto", "--run-id", runId],
+      root,
+      VALID_YAML,
+      fake,
+    );
+
+    expect(status).toBe(1);
+    expect(stderr).toContain("artifacts_quarantined");
+    expect(dbBlobText(root, runId, "summary.md")).toBe("# summary\nclean\n");
+    expect(dbBlobText(root, runId, "reviewer-agent.events.jsonl")).toBeNull();
+    expect(dbBlobText(root, runId, "review-auto-error.json")).not.toBeNull();
+    const db = openDb(join(root, ".harness", "harness.sqlite"));
+    try {
+      const leaked = db
+        .prepare(
+          `SELECT count(*) AS n
+             FROM artifact_blob_chunks
+            WHERE instr(CAST(content AS TEXT), ?) > 0`,
+        )
+        .get(secret) as { n: number };
+      expect(leaked.n).toBe(0);
+      const event = db
+        .prepare(
+          `SELECT payload_json
+             FROM run_events
+            WHERE run_id = ? AND type = 'artifacts_quarantined'
+            ORDER BY seq DESC LIMIT 1`,
+        )
+        .get(runId) as { payload_json: string } | undefined;
+      expect(event).toBeDefined();
+      const payload = JSON.parse(event?.payload_json ?? "{}") as {
+        type?: string;
+        paths?: string[];
+      };
+      expect(payload.type).toBe("artifacts_quarantined");
+      expect(payload.paths).toContain("reviewer-agent.events.jsonl");
+    } finally {
+      db.close();
+    }
   });
 
   it("extracts the YAML block even when codex wraps it in prose", () => {

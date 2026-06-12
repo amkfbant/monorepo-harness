@@ -10,6 +10,7 @@ import {
   inboxSummary,
   knowledgeDigest,
   backlogList,
+  tokenUsageSummary,
 } from "../../../src/db/repositories/aggregates.js";
 import {
   recordOperationalKnowledge,
@@ -79,6 +80,22 @@ function insertPolicyViolation(
     `INSERT INTO policy_violations (run_id, path, rule, reason)
      VALUES (?, ?, 'deny_write', 'outside scope')`,
   ).run(runId, path);
+}
+
+function insertUsage(
+  db: Database.Database,
+  runId: string,
+  usageSource: "exact" | "parsed_log" | "estimated" | "unavailable",
+  inputTokens: number | null,
+  outputTokens: number | null,
+  totalTokens: number | null,
+): void {
+  db.prepare(
+    `INSERT INTO run_usage
+       (run_id, input_tokens, output_tokens, total_tokens, usage_source,
+        created_at)
+     VALUES (?, ?, ?, ?, ?, '2026-06-13T00:00:00.000Z')`,
+  ).run(runId, inputTokens, outputTokens, totalTokens, usageSource);
 }
 
 function insertCandidate(
@@ -230,6 +247,38 @@ describe("aggregates", () => {
       expect(demo.oneShotApprovalRate).toBe(1 / 2);
       expect(demo.policyViolationRate).toBe(1 / 2);
       expect(demo.secretSuspectRate).toBe(1 / 2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("tokenUsageSummary scopes through runs and sums exact rows only", () => {
+    const db = freshDb();
+    try {
+      insertRun(db, "demo-exact", "demo", "approved");
+      insertRun(db, "demo-unavailable", "demo", "approved");
+      insertRun(db, "other-exact", "other", "approved");
+      insertUsage(db, "demo-exact", "exact", 100, 25, 125);
+      insertUsage(db, "demo-unavailable", "unavailable", null, null, null);
+      insertUsage(db, "other-exact", "exact", 999, 111, 1110);
+
+      const all = tokenUsageSummary(db);
+      expect(all).toEqual({
+        runsWithUsage: 3,
+        totalInputTokens: 1099,
+        totalOutputTokens: 136,
+        totalTokens: 1235,
+        bySource: { exact: 2, unavailable: 1 },
+      });
+
+      const demo = tokenUsageSummary(db, { projectId: "demo" });
+      expect(demo).toEqual({
+        runsWithUsage: 2,
+        totalInputTokens: 100,
+        totalOutputTokens: 25,
+        totalTokens: 125,
+        bySource: { exact: 1, unavailable: 1 },
+      });
     } finally {
       db.close();
     }

@@ -257,6 +257,8 @@ db import --from-files
     decision state（status/decided_at/reviewer/reason）は保持
   - --reset でも runtime テーブルは source_mode != 'db-first' の行のみ削除
     （read-only scoped command が db-first 行を legacy-file へ demigrate しない）
+  - runtime child rows は parent の `source_mode != 'db-first'` 削除に追随して削除し、
+    その後 orphan prune する。対象には `run_usage` も含む。
 
 db import --from-files --force-legacy-reconcile
   - 明示指定時のみ db-first run / backlog row の files 上書きを許す（災害復旧用途）
@@ -405,6 +407,11 @@ legacy-file の行はクリアして再構築するが、**DB-first（db-complet
 行は canonical state として保持**する（stale file が DB-first state を巻き戻す
 のを防ぐため、`source_mode != 'db-first'` の行のみ削除）。「DB を files から
 丸ごと作り直す」という意図で使うものではない。
+
+runtime parent を削除する reset では、`run_events` / `artifacts` /
+`run_context_packs` / `run_usage` などの child rows も同じ parent 境界で削除する。
+DB-first parent の child rows は保持し、parent が存在しなくなった child rows は orphan
+prune で削除する。
 
 ## Phase 9 — concurrency + runtime completion（close 済み・現状仕様）
 
@@ -693,7 +700,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 25`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 26`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -719,6 +726,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 23 | audit fix #130 | hitch_lifecycle_events（reopen/close/cancel reason の audit-only ledger） |
 | 24 | audit fix #131 | `review_proposals.prompt_provenance_json`（reviewer prompt template と injected operational knowledge の audit-only provenance） |
 | 25 | telemetry provenance B1 | `runs` に実行環境 provenance 列（harness/schema/codex binary/prompt sha。`codex_model` は NULL 予約） |
+| 26 | telemetry usage C2 | `run_usage`（run 1:1 の Codex token usage。`exact` / `unavailable` を記録、`parsed_log` / `estimated` は予約） |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -1030,6 +1038,43 @@ append-only 規約により、v10 の DDL と `V10_TABLE_NAMES` は書き換え�
 は後続 migration で意図的に削除された table、`CURRENT_TABLE_NAMES` は latest schema で
 存在を期待する table 集合を表す。fresh migration test と `db stats` の row-count 対象は
 `CURRENT_TABLE_NAMES` を使う。
+
+## Telemetry usage C2 — run_usage（schema v26）
+
+schema v26 は additive な `run_usage` を追加する。1 run につき最大 1 行で、
+Codex CLI structured JSONL (`codex-events.jsonl`) の `turn.completed.usage` だけを
+入力にする。LLM の自然文・自己申告テキストは usage source にしない。
+`db import --from-files --force-legacy-reconcile` では `run_usage` を削除し、files から
+再構築しない（行なし = usage 未収集）。
+`db import --from-files --reset` でも legacy-file run が reset で消える場合、その
+`run_usage` は child row として削除する。DB-first run の `run_usage` は canonical state
+として保持する。
+
+```sql
+CREATE TABLE run_usage (
+  run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+  model TEXT,
+  input_tokens INTEGER,
+  cached_input_tokens INTEGER,
+  output_tokens INTEGER,
+  reasoning_output_tokens INTEGER,
+  total_tokens INTEGER,
+  usage_source TEXT NOT NULL
+    CHECK (usage_source IN ('exact','parsed_log','estimated','unavailable')),
+  created_at TEXT NOT NULL
+);
+```
+
+`model` は現状 `NULL`。`usage_source` の意味論:
+
+- `exact` — Codex CLI structured events の `turn.completed.usage` から決定論的に取得。
+  複数 turn は token fields を合算する。
+- `unavailable` — events file が無い、空、JSON parse 不可、または
+  `turn.completed.usage` が無い。token fields はすべて `NULL`。
+- `parsed_log` / `estimated` — 将来予約。C2 では書き込まない。
+
+`total_tokens` の正規定義は `input_tokens + output_tokens`。`reasoning_output_tokens`
+は別列であり、total に二重加算しない。
 
 ## Audit fix #130 — hitch lifecycle events（schema v23）
 

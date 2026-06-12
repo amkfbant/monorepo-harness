@@ -7,11 +7,13 @@ import { runFullImport } from "../db/import-files.js";
 import { parseDuration } from "../core/maintenance.js";
 import {
   metricsSummary,
+  tokenUsageSummary,
   inboxSummary,
   knowledgeDigest,
   backlogList,
   type AggregateFilter,
   type DbMetricsSummary,
+  type DbTokenUsageSummary,
 } from "../db/repositories/aggregates.js";
 import {
   hitchMetricsSummary,
@@ -126,6 +128,7 @@ function statusLines(values: Record<string, number>): string {
 }
 
 interface ScopedMetricsOutput extends DbMetricsSummary {
+  usage: DbTokenUsageSummary;
   hitch: DbHitchMetricsSummary;
   mcpConfirmations: DbMcpConfirmationSummary;
 }
@@ -139,6 +142,7 @@ export function runScopedMetrics(
     const runMetrics = metricsSummary(db, filter);
     return {
       ...runMetrics,
+      usage: tokenUsageSummary(db, filter),
       hitch: hitchMetricsSummary(db, filter),
       mcpConfirmations: mcpConfirmationSummary(db, {
         ...(filter.since !== undefined ? { since: filter.since } : {}),
@@ -159,6 +163,12 @@ export function runScopedMetrics(
       `policy violation rate: ${pct(m.policyViolationRate)}\n` +
       `secret suspect rate: ${pct(m.secretSuspectRate)}\n` +
       `${byStatus}\n` +
+      `usage:\n` +
+      `  runs with usage: ${m.usage.runsWithUsage}\n` +
+      `  input tokens: ${m.usage.totalInputTokens}\n` +
+      `  output tokens: ${m.usage.totalOutputTokens}\n` +
+      `  total tokens: ${m.usage.totalTokens}\n` +
+      `${statusLines(m.usage.bySource)}\n` +
       `hitch metrics:\n` +
       `  total sessions: ${m.hitch.totalSessions}\n` +
       `  avg review cycles: ${fixed(m.hitch.avgReviewCycles)}\n` +

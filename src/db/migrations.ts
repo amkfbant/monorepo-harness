@@ -26,6 +26,7 @@ import {
   MIGRATION_V23_STATEMENTS,
   MIGRATION_V24_STATEMENTS,
   MIGRATION_V25_STATEMENTS,
+  MIGRATION_V26_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -165,6 +166,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 25,
     name: "run-execution-environment-provenance-v25",
     statements: MIGRATION_V25_STATEMENTS,
+  },
+  {
+    version: 26,
+    name: "run-usage-telemetry-v26",
+    statements: MIGRATION_V26_STATEMENTS,
   },
 ];
 

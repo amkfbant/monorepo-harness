@@ -1,9 +1,13 @@
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import type Database from "better-sqlite3";
 import { DbError } from "../db/connection.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { exportRun } from "../db/export-files.js";
-import { ingestRunArtifacts } from "../db/run-artifacts.js";
+import {
+  ingestRunArtifactPaths,
+  ingestRunArtifacts,
+} from "../db/run-artifacts.js";
 import { fileExportEnabled } from "../config/export-mode.js";
 import {
   recordScratchMaterialization,
@@ -14,6 +18,79 @@ import {
 
 export const REPAIR_MISSING_REVIEW_DECISION_REASON =
   "ensureRunMaterialized:repair-missing-review-decision";
+
+export interface UntrustedReviewerArtifactsSync {
+  reviewerEventsPublished: boolean;
+}
+
+const UNTRUSTED_REVIEWER_ARTIFACTS = [
+  "reviewer-agent.out.log",
+  "reviewer-agent.err.log",
+  ".reviewer-agent.events.raw.jsonl",
+  ".reviewer-agent.events.redacted.tmp",
+] as const;
+
+const REVIEWER_GATE_ERROR_ARTIFACTS = ["review-auto-error.json"] as const;
+
+function appendRunEvent(
+  db: Database.Database,
+  runId: string,
+  type: string,
+  payload: Record<string, unknown>,
+): void {
+  const occurredAt = new Date().toISOString();
+  const seq = (
+    db
+      .prepare(
+        "SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM run_events WHERE run_id = ?",
+      )
+      .get(runId) as { next: number }
+  ).next;
+  db.prepare(
+    `INSERT INTO run_events (run_id, seq, type, occurred_at, payload_json)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(
+    runId,
+    seq,
+    type,
+    occurredAt,
+    JSON.stringify({ type, occurredAt, ...payload }),
+  );
+}
+
+function quarantineUntrustedReviewerArtifacts(opts: {
+  db: Database.Database;
+  runDir: string;
+  runId: string;
+  reviewerEventsPublished: boolean;
+}): void {
+  const candidates = [
+    ...UNTRUSTED_REVIEWER_ARTIFACTS,
+    ...(opts.reviewerEventsPublished ? [] : ["reviewer-agent.events.jsonl"]),
+  ];
+  const quarantined: string[] = [];
+  for (const rel of candidates) {
+    const source = join(opts.runDir, rel);
+    if (!existsSync(source)) continue;
+    const target = join(opts.runDir, `.quarantined.${rel.replaceAll("/", "_")}`);
+    try {
+      rmSync(target, { force: true });
+      renameSync(source, target);
+      quarantined.push(rel);
+    } catch {
+      rmSync(source, { force: true });
+      quarantined.push(rel);
+    }
+  }
+  if (quarantined.length === 0) return;
+  process.stderr.write(
+    `warning: run ${opts.runId}: artifacts_quarantined ` +
+      `${quarantined.join(", ")}\n`,
+  );
+  appendRunEvent(opts.db, opts.runId, "artifacts_quarantined", {
+    paths: quarantined,
+  });
+}
 
 /**
  * Run materialization helpers (Phase 8-13).
@@ -137,6 +214,7 @@ export function syncRunArtifactsToDb(opts: {
   dbPath: string;
   runsDir: string;
   runId: string;
+  untrustedReviewerArtifacts?: UntrustedReviewerArtifactsSync;
 }): void {
   if (!existsSync(opts.dbPath)) return;
   const runDir = join(opts.runsDir, opts.runId);
@@ -154,12 +232,30 @@ export function syncRunArtifactsToDb(opts: {
       .prepare("SELECT source_mode FROM runs WHERE run_id = ?")
       .get(opts.runId) as { source_mode: string } | undefined;
     if (row === undefined || row.source_mode !== "db-first") return;
+    if (opts.untrustedReviewerArtifacts !== undefined) {
+      quarantineUntrustedReviewerArtifacts({
+        db,
+        runDir,
+        runId: opts.runId,
+        reviewerEventsPublished:
+          opts.untrustedReviewerArtifacts.reviewerEventsPublished,
+      });
+    }
     // best-effort post-processing: a sync failure (e.g. an unreadable run
     // dir) must not crash the review command that succeeded — warn and
     // leave the prior manifest intact (ingestRunArtifacts is transactional).
     let ingestOk = false;
     try {
-      ingestRunArtifacts(db, runDir, opts.runId);
+      if (opts.untrustedReviewerArtifacts === undefined) {
+        ingestRunArtifacts(db, runDir, opts.runId);
+      } else {
+        ingestRunArtifactPaths(db, runDir, opts.runId, [
+          ...REVIEWER_GATE_ERROR_ARTIFACTS,
+          ...(opts.untrustedReviewerArtifacts.reviewerEventsPublished
+            ? ["reviewer-agent.events.jsonl"]
+            : []),
+        ]);
+      }
       ingestOk = true;
     } catch (e) {
       process.stderr.write(

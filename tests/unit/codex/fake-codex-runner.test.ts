@@ -27,6 +27,7 @@ describe("fakeCodexRunner", () => {
       logPaths: {
         stdout: join(wt, "out.log"),
         stderr: join(wt, "err.log"),
+        events: join(wt, "events.jsonl"),
       },
     });
     expect(r.exitCode).toBe(0);
@@ -44,6 +45,7 @@ describe("fakeCodexRunner", () => {
       logPaths: {
         stdout: join(wt, "out.log"),
         stderr: join(wt, "err.log"),
+        events: join(wt, "events.jsonl"),
       },
     });
     expect(r.durationMs).toBe(1234);
@@ -64,8 +66,50 @@ describe("fakeCodexRunner", () => {
       logPaths: {
         stdout: join(wt, "out.log"),
         stderr: join(wt, "err.log"),
+        events: join(wt, "events.jsonl"),
       },
     });
     expect(r.exitCode).toBe(17);
+  });
+
+  it("writes codex JSONL events with configurable usage", async () => {
+    const wt = mkdtempSync(join(tmpdir(), "harness-fake-events-"));
+    const runner = createFakeCodexRunner({
+      stdout: "fake done\n",
+      usage: {
+        inputTokens: 10,
+        cachedInputTokens: 4,
+        outputTokens: 5,
+        reasoningOutputTokens: 2,
+      },
+    });
+
+    await runner.run({
+      worktreePath: wt,
+      prompt: "",
+      logPaths: {
+        stdout: join(wt, "out.log"),
+        stderr: join(wt, "err.log"),
+        events: join(wt, "events.jsonl"),
+      },
+    });
+
+    const events = readFileSync(join(wt, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string; usage?: unknown });
+    expect(events.map((event) => event.type)).toEqual([
+      "thread.started",
+      "turn.started",
+      "item.started",
+      "item.completed",
+      "turn.completed",
+    ]);
+    expect(events.at(-1)?.usage).toEqual({
+      input_tokens: 10,
+      cached_input_tokens: 4,
+      output_tokens: 5,
+      reasoning_output_tokens: 2,
+    });
   });
 });
