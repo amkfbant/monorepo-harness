@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V23_STATEMENTS`、
-> `SCHEMA_VERSION = 23`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V24_STATEMENTS`、
+> `SCHEMA_VERSION = 24`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -683,7 +683,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 23`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 24`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -707,6 +707,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 21 | course → phase roadmap layer (SP-1) | courses / phases / phase_hitches（additive。既存テーブル変更なし） |
 | 22 | audit cleanup #126 | 未配線の db_stats_snapshots ledger を DROP（index 先、table 後）。`DROPPED_TABLE_NAMES` で現行 table 集合から除外 |
 | 23 | audit fix #130 | hitch_lifecycle_events（reopen/close/cancel reason の audit-only ledger） |
+| 24 | audit fix #131 | `review_proposals.prompt_provenance_json`（reviewer prompt template と injected operational knowledge の audit-only provenance） |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -726,6 +727,18 @@ Phase 11 は `review_proposals` を governance layer に拡張する。設計は
 `review_proposals` 追加 columns: `reviewer_id` (FK, nullable; legacy 互換) /
 `reviewer_type` / `model` / `prompt_sha256` / `context_pack_id` /
 `policy_generation_id` / `lifecycle_status` / `archived_at`。
+
+schema v24 で `prompt_provenance_json TEXT` を nullable 追加。`review auto`
+（codex 由来）は reviewer に実際に送信した最終 prompt 文字列
+（`PROMPT_PREAMBLE` + operational knowledge section）の SHA-256 を harness 側で
+決定論的に計算し、`review_proposals.prompt_sha256` に格納する。同じ insert で
+`prompt_provenance_json` に
+`{template:{name,version},knowledge:[{entryId,version}]}` を JSON として保存する。
+`review process` の file 由来 legacy import は prompt を持たないため、
+`prompt_sha256` / `prompt_provenance_json` は NULL のままにする。
+
+`prompt_sha256` と `prompt_provenance_json` は監査用 read-only メタデータであり、
+convergence / mutation gate / review・hitch の状態遷移判定には使わない。
 
 `review_decisions` 追加 columns: `consensus_id` / `proposals_summary_json`。
 

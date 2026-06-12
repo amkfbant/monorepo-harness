@@ -69,7 +69,7 @@ describe("runMigrations", () => {
     expect(r.version).toBe(SCHEMA_VERSION);
     expect(r.applied).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23,
+      22, 23, 24,
     ]);
     const tables = tableNames(dbPath);
     expect(tables.has("schema_migrations")).toBe(true);
@@ -84,6 +84,33 @@ describe("runMigrations", () => {
     }
   });
 
+  it("adds review_proposals.prompt_provenance_json in v24 and stays idempotent", () => {
+    const db = openDb(freshDbPath());
+    try {
+      applyMigrationsBefore(db, 24);
+      expect(currentSchemaVersion(db)).toBe(23);
+      const before = db
+        .prepare("PRAGMA table_info(review_proposals)")
+        .all() as { name: string }[];
+      expect(before.map((r) => r.name)).not.toContain("prompt_provenance_json");
+
+      const upgraded = runMigrations(db);
+      expect(upgraded.applied).toEqual([24]);
+      expect(upgraded.version).toBe(SCHEMA_VERSION);
+      const after = db
+        .prepare("PRAGMA table_info(review_proposals)")
+        .all() as { name: string; type: string; notnull: number }[];
+      const column = after.find((r) => r.name === "prompt_provenance_json");
+      expect(column).toMatchObject({ type: "TEXT", notnull: 0 });
+
+      const again = runMigrations(db);
+      expect(again.applied).toEqual([]);
+      expect(again.version).toBe(SCHEMA_VERSION);
+    } finally {
+      db.close();
+    }
+  });
+
   it("creates hitch_lifecycle_events in v23 and stays idempotent", () => {
     const db = openDb(freshDbPath());
     try {
@@ -92,7 +119,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "hitch_lifecycle_events")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([23]);
+      expect(upgraded.applied).toEqual([23, 24]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "hitch_lifecycle_events")).toBe(true);
       expect(hasSchemaObject(db, "index", "hitch_lifecycle_events_hitch_idx")).toBe(
@@ -132,7 +159,7 @@ describe("runMigrations", () => {
       ).run("2026-06-12T00:00:00.000Z", "{}");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([22, 23]);
+      expect(upgraded.applied).toEqual([22, 23, 24]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "db_stats_snapshots")).toBe(false);
       expect(hasSchemaObject(db, "index", "db_stats_snapshots_created_idx")).toBe(

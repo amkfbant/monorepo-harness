@@ -625,7 +625,9 @@ profile で `review.mode` が `latest-proposal` 以外を指定した場合)。�
 1. harness review auto <runId> --reviewer codex
 2. reviewer-agent が verdict を作成
 3. proposal を review_proposals に INSERT
-   (reviewer_id / reviewer_type / model / prompt_sha256 / lifecycle='active' を埋める)
+   (reviewer_id / reviewer_type / model / prompt_sha256 /
+   prompt_provenance_json / lifecycle='active' を埋める。file 由来 legacy
+   verdict は prompt を持たないため prompt_* は NULL)
 4. consensus evaluator を呼び、新 active consensus を review_consensus に
    INSERT (旧 active は superseded_at = now で update)
 5. 旧 active proposal (同 reviewer) は lifecycle='superseded' に
