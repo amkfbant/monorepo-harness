@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,6 +11,32 @@ import {
   latestRunId,
   type HitchRunContext,
 } from "../../../src/hitch/orchestrator-runners.js";
+
+function createRunnerTestDb(prefix: string): string {
+  return join(mkdtempSync(join(tmpdir(), prefix)), "harness.sqlite");
+}
+
+function createBasicHitch(repo: HitchRepository, hitchId: string): void {
+  repo.createSession({
+    hitchId,
+    title: "Fix scoped files",
+    projectId: "demo",
+    scope: { targetFiles: ["src/**"] },
+    closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+    createdBy: "test",
+    createdSource: "worker",
+  });
+}
+
+function createRunners(dbPath: string) {
+  return createOrchestratorRunners({
+    dbPath,
+    harnessRoot: dbPath,
+    createdBy: "worker",
+    coderRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+    reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+  });
+}
 
 describe("createOrchestratorRunners.classify", () => {
   it("returns resolved=true when there are no unknown-scope findings", async () => {
@@ -41,6 +67,120 @@ describe("createOrchestratorRunners.classify", () => {
     });
     const r = await runners.classify("g-c");
     expect(r.resolved).toBe(true);
+  });
+
+  it("drains more than one implicit finding page before reporting resolved", async () => {
+    const dbPath = createRunnerTestDb("harness-orch-classify-many-");
+    const total = 201;
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        runMigrations(db);
+        const repo = new HitchRepository(db);
+        createBasicHitch(repo, "g-classify-many");
+        for (let i = 0; i < total; i += 1) {
+          repo.upsertFinding({
+            hitchId: "g-classify-many",
+            source: "review",
+            severity: "P1",
+            category: "bug",
+            scopeStatus: "unknown",
+            summary: `bug in scoped file ${i}`,
+            filePath: `src/file-${i}.ts`,
+          });
+        }
+      } finally {
+        close();
+      }
+    }
+
+    const result = await createRunners(dbPath).classify("g-classify-many");
+
+    expect(result).toEqual({ resolved: true });
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db);
+      expect(
+        repo.countFindings({
+          hitchId: "g-classify-many",
+          scopeStatus: "unknown",
+          lifecycleStatusIn: ["open", "reopened", "escalated"],
+        }),
+      ).toBe(0);
+      expect(
+        repo.countFindings({
+          hitchId: "g-classify-many",
+          scopeStatus: "in_scope",
+        }),
+      ).toBe(total);
+    } finally {
+      close();
+    }
+  });
+
+  it("returns unresolved with an escalation reason when a finding cannot be classified", async () => {
+    const dbPath = createRunnerTestDb("harness-orch-classify-unknown-");
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        runMigrations(db);
+        const repo = new HitchRepository(db);
+        createBasicHitch(repo, "g-classify-unknown");
+        repo.upsertFinding({
+          hitchId: "g-classify-unknown",
+          source: "review",
+          severity: "P1",
+          category: "bug",
+          scopeStatus: "unknown",
+          summary: "ambiguous issue",
+        });
+      } finally {
+        close();
+      }
+    }
+
+    const result = await createRunners(dbPath).classify("g-classify-unknown");
+
+    expect(result.resolved).toBe(false);
+    expect(result.escalateReason).toMatch(/cannot classify finding/);
+  });
+
+  it("stops finitely when classification makes no count progress", async () => {
+    const dbPath = createRunnerTestDb("harness-orch-classify-stuck-");
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        runMigrations(db);
+        const repo = new HitchRepository(db);
+        createBasicHitch(repo, "g-classify-stuck");
+        repo.upsertFinding({
+          hitchId: "g-classify-stuck",
+          source: "review",
+          severity: "P1",
+          category: "bug",
+          scopeStatus: "unknown",
+          summary: "bug in scoped file",
+          filePath: "src/file.ts",
+        });
+      } finally {
+        close();
+      }
+    }
+    const classifySpy = vi
+      .spyOn(HitchRepository.prototype, "classifyFinding")
+      .mockImplementation(function (
+        this: HitchRepository,
+        input: Parameters<HitchRepository["classifyFinding"]>[0],
+      ) {
+        return this.requireFinding(input.findingId);
+      });
+    try {
+      const result = await createRunners(dbPath).classify("g-classify-stuck");
+      expect(result.resolved).toBe(false);
+      expect(result.escalateReason).toMatch(/no progress/i);
+    } finally {
+      classifySpy.mockRestore();
+    }
   });
 
   it.each(["out_of_scope", "escalated"] as const)(
@@ -97,6 +237,83 @@ describe("createOrchestratorRunners.classify", () => {
       }
     },
   );
+
+  it("defers more than one implicit finding page and reports the real count", async () => {
+    const dbPath = createRunnerTestDb("harness-orch-defer-many-");
+    const total = 201;
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        runMigrations(db);
+        const repo = new HitchRepository(db);
+        createBasicHitch(repo, "g-defer-many");
+        for (let i = 0; i < total; i += 1) {
+          repo.upsertFinding({
+            hitchId: "g-defer-many",
+            source: "review",
+            severity: "P2",
+            category: "future-feature",
+            scopeStatus: "out_of_scope",
+            summary: `future follow-up ${i}`,
+          });
+        }
+      } finally {
+        close();
+      }
+    }
+
+    const result = await createRunners(dbPath).defer("g-defer-many");
+
+    expect(result.deferred).toBe(total);
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      expect(
+        new HitchRepository(db).countFindings({
+          hitchId: "g-defer-many",
+          scopeStatus: "out_of_scope",
+          lifecycleStatusIn: ["open", "reopened", "out_of_scope", "escalated"],
+        }),
+      ).toBe(0);
+    } finally {
+      close();
+    }
+  });
+
+  it("stops finitely when deferral makes no count progress", async () => {
+    const dbPath = createRunnerTestDb("harness-orch-defer-stuck-");
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        runMigrations(db);
+        const repo = new HitchRepository(db);
+        createBasicHitch(repo, "g-defer-stuck");
+        repo.upsertFinding({
+          hitchId: "g-defer-stuck",
+          source: "review",
+          severity: "P2",
+          category: "future-feature",
+          scopeStatus: "out_of_scope",
+          summary: "future follow-up",
+        });
+      } finally {
+        close();
+      }
+    }
+    const deferSpy = vi
+      .spyOn(HitchRepository.prototype, "deferFinding")
+      .mockImplementation(function (
+        this: HitchRepository,
+        input: Parameters<HitchRepository["deferFinding"]>[0],
+      ) {
+        return this.requireFinding(input.findingId);
+      });
+    try {
+      const result = await createRunners(dbPath).defer("g-defer-stuck");
+      expect(result.deferred).toBe(0);
+    } finally {
+      deferSpy.mockRestore();
+    }
+  });
 });
 
 describe("latestRunId", () => {
