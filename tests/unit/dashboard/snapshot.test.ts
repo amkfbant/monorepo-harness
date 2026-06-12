@@ -6,6 +6,8 @@ import {
   loadDashboardSnapshot,
   DashboardSnapshotError,
 } from "../../../src/dashboard/snapshot.js";
+import { harnessPaths } from "../../../src/config/paths.js";
+import { openManagedDb } from "../../../src/db/managed-connection.js";
 import { SCHEMA_VERSION } from "../../../src/db/schema.js";
 
 const PROFILE = [
@@ -57,6 +59,94 @@ function normalRoot(): string {
   return root;
 }
 
+function insertHitchSession(root: string): void {
+  const { dbPath } = harnessPaths(root);
+  const handle = openManagedDb({ dbPath });
+  try {
+    handle.db
+      .prepare(
+        `INSERT INTO hitch_sessions (
+           hitch_id, title, status, project_id, repo_id, domain, scope_json,
+           close_conditions_json, policy_json, max_iterations, max_review_cycles,
+           max_reruns, max_total_new_findings, created_by, created_source,
+           created_at, updated_at
+         )
+         VALUES (
+           'hitch-demo', 'demo hitch', 'open', 'demo', 'demo', 'apps/web',
+           '{}', '[]', '{}', 3, 3, 2, 12, 'test', 'cli',
+           '2026-06-10T00:00:00.000Z', '2026-06-10T00:00:00.000Z'
+         )`,
+      )
+      .run();
+    handle.db
+      .prepare(
+        `INSERT INTO hitch_findings (
+           finding_id, hitch_id, stable_key, source, severity, category,
+           scope_status, lifecycle_status, summary, first_seen_at, last_seen_at,
+           reopen_count
+         )
+         VALUES (
+           'finding-demo', 'hitch-demo', 'finding-demo', 'review', 'P1',
+           'correctness', 'in_scope', 'fixed', 'fixed finding',
+           '2026-06-10T00:00:00.000Z', '2026-06-10T00:00:00.000Z', 0
+         )`,
+      )
+      .run();
+  } finally {
+    handle.close();
+  }
+}
+
+function insertMcpConfirmation(root: string): void {
+  const { dbPath } = harnessPaths(root);
+  const handle = openManagedDb({ dbPath });
+  try {
+    handle.db
+      .prepare(
+        `INSERT INTO mcp_confirmation_requests (
+           confirmation_id, client_name, actor, tool_name, operation_type,
+           input_json, preview_json, permission_snapshot_json, status,
+           created_at, expires_at
+         )
+         VALUES (
+           'confirm-demo', 'client', 'actor', 'harness.pr.create',
+           'pr.create', '{}', '{}', '{}', 'confirmed',
+           '2026-06-10T00:00:00.000Z', '2026-06-11T00:00:00.000Z'
+         )`,
+      )
+      .run();
+  } finally {
+    handle.close();
+  }
+}
+
+function insertPendingMcpConfirmation(
+  root: string,
+  confirmationId: string,
+  expiresAt: string,
+): void {
+  const { dbPath } = harnessPaths(root);
+  const handle = openManagedDb({ dbPath });
+  try {
+    handle.db
+      .prepare(
+        `INSERT INTO mcp_confirmation_requests (
+           confirmation_id, client_name, actor, tool_name, operation_type,
+           input_json, preview_json, permission_snapshot_json, status,
+           created_at, expires_at
+         )
+         VALUES (
+           ?, 'client', 'actor', 'harness.pr.create',
+           'pr.create', '{}', '{}', '{}', 'pending',
+           '2026-01-01T00:00:00.000Z', ?
+         )`,
+      )
+      .run(confirmationId, expiresAt);
+  } finally {
+    handle.close();
+  }
+}
+
 describe("loadDashboardSnapshot", () => {
   it("builds a snapshot from files when the DB is absent (auto-import)", () => {
     const root = normalRoot();
@@ -100,6 +190,60 @@ describe("loadDashboardSnapshot", () => {
       filters: { projectId: "demo" },
     });
     expect(snap.projects.map((p) => p.projectId)).toEqual(["demo"]);
+  });
+
+  it("includes hitch metrics and MCP confirmation summaries", () => {
+    const root = normalRoot();
+    loadDashboardSnapshot({ harnessRoot: root });
+    insertHitchSession(root);
+    insertMcpConfirmation(root);
+
+    const snap = loadDashboardSnapshot({
+      harnessRoot: root,
+      autoImport: false,
+      filters: { projectId: "demo" },
+    });
+
+    expect(snap.hitchMetrics).toMatchObject({
+      totalSessions: 1,
+      byStatus: { open: 1 },
+      findingsBySeverity: { P1: 1 },
+      findingResolutionRate: 1,
+    });
+    expect(snap.mcpConfirmations).toMatchObject({
+      total: 1,
+      byStatus: { confirmed: 1 },
+      confirmationRate: 1,
+    });
+  });
+
+  it("uses the snapshot timestamp for pending MCP confirmation expiry", () => {
+    const root = normalRoot();
+    loadDashboardSnapshot({ harnessRoot: root });
+    insertPendingMcpConfirmation(
+      root,
+      "confirm-past",
+      "2025-12-31T23:59:59.000Z",
+    );
+    insertPendingMcpConfirmation(
+      root,
+      "confirm-future",
+      "2026-01-02T00:00:00.000Z",
+    );
+
+    const snap = loadDashboardSnapshot({
+      harnessRoot: root,
+      autoImport: false,
+      now: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    expect(snap.generatedAt).toBe("2026-01-01T00:00:00.000Z");
+    expect(snap.mcpConfirmations).toMatchObject({
+      total: 2,
+      byStatus: { expired: 1, pending: 1 },
+      confirmationRate: 0,
+      expiredRate: 1,
+    });
   });
 
   it("surfaces a consistency warning when files drift after import", () => {

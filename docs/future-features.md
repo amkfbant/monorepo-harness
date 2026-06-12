@@ -10,6 +10,13 @@ The Phase 15 `db_stats_snapshots` repository/table was removed in audit cleanup
 `dbStats()` output, and snapshot/delta commands were never wired. Reintroduce this
 only with an end-to-end CLI/API surface, retention policy, and migration plan.
 
+## lock_busy event metrics
+
+`DomainLockBusyError` is thrown before a run log exists, so it cannot be recorded
+in `run_events`. Measuring `lock_busy` needs operation-level telemetry based on
+`operation_events` instead. Deferred from telemetry Phase A; backlog
+`item-20260612-001`.
+
 ## Operational knowledge — deferred surfaces (issue #57)
 
 **Issue #57 is COMPLETE** (closed). The operational knowledge category

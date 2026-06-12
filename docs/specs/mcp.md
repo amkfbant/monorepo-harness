@@ -430,9 +430,27 @@ knowledge-candidate run 数 ＋ **operational 知識**の slice（`operationalKn
 最近エントリ `recent`、issue #57。reference material であり action queue ではない）。
 （**時間窓なし**＝現在の actionable 状態。knowledge bucket が窓非対応のため `sinceHours` は
 出さない。operational は project/repo scope に **portable entry も含めて** 集計）。
-`harness.metrics` は run 件数（status 別）＋ review
-approved-rate（DB read-model の `metricsSummary`）。絞り込みは inbox=`projectId`/`repoId`/
-`domain`、metrics=それ＋`sinceHours`。**scope**: `allowedProjects` が空（unrestricted）なら
+`harness.metrics` は run 件数（status 別）＋ review approved-rate（DB read-model の
+`metricsSummary`。`oneShotApprovalRate` / `policyViolationRate` /
+`secretSuspectRate` を含む。D1 KPI の式は [`cli.md`](./cli.md) の
+`harness metrics` 節を正規定義とし、MCP でも同じ定義を使う）をトップレベルに返し、追加で `hitch`
+（`DbHitchMetricsSummary`: session status / review-cycle / rerun / finding severity /
+resolution / reopen KPI）を返す。`allowedProjects` が空の unrestricted client には
+`mcpConfirmations`（`DbMcpConfirmationSummary`: confirmation / expired KPI）も返す。
+`mcp_confirmation_requests` は project 列を持たない global table なので、
+project-restricted client（`allowedProjects` 非空）では fail-closed で
+`mcpConfirmations` フィールド自体を返さない。
+`hitch` は呼び出し元の `projectId` / `repoId` / `domain` / `sinceHours` scope を伝播し、
+unrestricted client の `mcpConfirmations` は global 値で、`sinceHours` 由来の since のみ伝播する
+（project / repo / domain filter は非適用）。`confirmationRate` は
+`(confirmed + consumed) / (confirmed + consumed + rejected + expired)`、`expiredRate` は
+`expired / (confirmed + consumed + rejected + expired)`。分母 0 は `null`。stored `pending` かつ
+`expires_at <= 集計時刻` の request は read-only に effective `expired` として byStatus / rate
+へ入れ、DB には書き戻さない。絞り込みは
+inbox=`projectId`/`repoId`/`domain`、metrics=それ＋`sinceHours`。
+`sinceHours` の対象列は、runs 指標は `runs.started_at`、hitch 指標は
+`hitch_sessions.created_at`、MCP confirmations は
+`mcp_confirmation_requests.created_at`。**scope**: `allowedProjects` が空（unrestricted）なら
 repo 横断、restricted なら `projectId` がその集合に入る必要がある（未指定時は allowed が
 1 つなら既定、複数なら `project_required` で deny＝単一 projectId 集計で部分集合を跨がない
 fail-closed）。

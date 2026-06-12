@@ -618,6 +618,30 @@ harness metrics failures --since 30d       # failed-* の status 別内訳
 `metrics summary` の `--project` / `--repo-id`（Phase 6）は DB read model 経由で
 集計する（指定時は files から DB を再構築）。scoped path でも `--since`（`runs.started_at`
 への下限）と `--domain` が効く。scope 無しは従来の file-based 集計。
+scoped path の text / JSON 出力には `metricsSummary` の KPI として
+`oneShotApprovalRate` / `policyViolationRate` / `secretSuspectRate` を含める。
+KPI の正規定義は以下。
+
+- `oneShotApprovalRate` — root run（`parent_run_id IS NULL`）の `approved` /
+  root run の decided（`approved` / `changes_requested` / `rejected`）。decided が
+  0 件なら `null`。
+- `policyViolationRate` — `safety_status='denied'` または `policy_violations`
+  行を持つ DISTINCT run / `totalRuns`。`totalRuns` が 0 件なら `null`。
+- `secretSuspectRate` — `secret_suspect_count > 0` の run / `totalRuns`。
+  `totalRuns` が 0 件なら `null`。
+
+`--since` の対象列は、runs 指標は `runs.started_at`、hitch 指標は
+`hitch_sessions.created_at`、MCP confirmations は
+`mcp_confirmation_requests.created_at`。
+text 出力は既存の section 形式に続けて hitch metrics / MCP confirmations の summary
+（hitch は project/repo/domain/since scope、MCP confirmations は global table のため
+project/repo/domain filter 非適用で since scope のみ）も表示する。
+MCP confirmations の `confirmationRate` は
+`(confirmed + consumed) / (confirmed + consumed + rejected + expired)`、`expiredRate` は
+`expired / (confirmed + consumed + rejected + expired)`。分母 0 の場合はいずれも `null`。
+stored `pending` かつ `expires_at <= 集計時刻` の request は read-only に effective `expired`
+として byStatus / rate に入れ、DB は更新しない。MCP の project-restricted client では
+同じ global 指標は fail-closed で返さない（[`mcp.md`](./mcp.md)）。
 
 - **Runs**: total + status 別件数
 - **Review**: approved / changes_requested / rejected 件数、approved 率、reviewer 別件数

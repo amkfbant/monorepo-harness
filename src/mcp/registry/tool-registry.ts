@@ -1115,9 +1115,10 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     name: "harness.metrics",
     title: "Run / review metrics",
     description:
-      "Aggregate run health: run counts by status, plus review approved-rate. " +
-      "Optional projectId / repoId / domain / sinceHours filters. Scoped to " +
-      "allowedProjects. Pure DB read.",
+      "Aggregate run health: run counts by status, review approved-rate, " +
+      "policy/secret rates, hitch session/finding KPIs, and unrestricted-only " +
+      "MCP confirmation KPIs. Optional projectId / repoId / domain / " +
+      "sinceHours filters. Scoped to allowedProjects. Pure DB read.",
     kind: "read",
     operation: "metrics",
     argsSchema: metricsArgs,

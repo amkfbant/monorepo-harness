@@ -12,6 +12,10 @@ import type {
   DbKnowledgeDigest,
   DbBacklogSummary,
 } from "../db/repositories/aggregates.js";
+import type {
+  DbHitchMetricsSummary,
+  DbMcpConfirmationSummary,
+} from "../db/repositories/convergence-aggregates.js";
 import type { DashboardRunSummary } from "../db/repositories/runs.js";
 
 /**
@@ -55,6 +59,8 @@ export interface DashboardSnapshot {
   filters: DashboardFilters;
   projects: ProjectSummary[];
   overview: DbMetricsSummary;
+  hitchMetrics: DbHitchMetricsSummary;
+  mcpConfirmations: DbMcpConfirmationSummary;
   inbox: DbInboxSummary;
   recentRuns: DashboardRunSummary[];
   backlog: DbBacklogSummary;
@@ -119,6 +125,8 @@ export function buildDashboardSnapshot(opts: {
     filters,
     projects,
     overview: ds.metricsSummary(filters),
+    hitchMetrics: ds.hitchMetricsSummary(filters),
+    mcpConfirmations: ds.mcpConfirmationSummary({}, now.toISOString()),
     inbox: ds.inboxSummary(filters),
     recentRuns: ds.listRuns({ ...filters, limit: RECENT_RUNS }),
     backlog: ds.backlogList(filters),

@@ -32,7 +32,21 @@ HTML エクスポートだった。Phase 6 では **DB（[`db.md`](./db.md)）�
 - `consistencyStatus` — `ok` / `warn` / `error`（[`db.md`](./db.md) の checker）
 - `filters` — 適用中の project / repo（`DashboardFilters` は project / repo のみ）
 - `projects` — project ごとの health / policy provenance / drift
-- `overview` — run / review / retry / safety 指標
+- `overview` — run / review / retry / safety 指標。`DbMetricsSummary` の
+  `oneShotApprovalRate` / `policyViolationRate` / `secretSuspectRate` を含む。
+  D1 KPI の式は [`cli.md`](./cli.md) の `harness metrics` 節を正規定義とし、
+  dashboard snapshot でも同じ定義を使う
+- `hitchMetrics` — `DbHitchMetricsSummary`（hitch session / review cycle /
+  rerun attempt / finding resolution KPI）
+- `mcpConfirmations` — `DbMcpConfirmationSummary`（confirmation request status
+  と confirmation / expired rate）。snapshot 内では project / repo filter 非適用の
+  global 値（`mcp_confirmation_requests` は project 列を持たない）で、dashboard の
+  filter は伝播しない。`confirmationRate` は
+  `(confirmed + consumed) / (confirmed + consumed + rejected + expired)`、
+  `expiredRate` は
+  `expired / (confirmed + consumed + rejected + expired)`。分母 0 の場合はいずれも
+  `null`。stored `pending` かつ `expires_at <= snapshot 時刻` の request は
+  read-only に effective `expired` として集計し、DB は更新しない。
 - `inbox` — needs_review / changes_requested / failed / cleanup / knowledge
 - `recentRuns` — filter 済みの run 一覧
 - `backlog` / `knowledge`

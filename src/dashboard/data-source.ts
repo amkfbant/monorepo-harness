@@ -20,6 +20,12 @@ import {
   type DbKnowledgeDigest,
   type DbBacklogSummary,
 } from "../db/repositories/aggregates.js";
+import {
+  hitchMetricsSummary,
+  mcpConfirmationSummary,
+  type DbHitchMetricsSummary,
+  type DbMcpConfirmationSummary,
+} from "../db/repositories/convergence-aggregates.js";
 
 /**
  * Dashboard data-source seam (Phase 6-5).
@@ -40,6 +46,11 @@ export interface DashboardDataSource {
   getReviewDecision(runId: string): ReviewDecisionRow | null;
   // project-aware aggregates (Phase 6-6)
   metricsSummary(filter?: AggregateFilter): DbMetricsSummary;
+  hitchMetricsSummary(filter?: AggregateFilter): DbHitchMetricsSummary;
+  mcpConfirmationSummary(
+    filter?: Pick<AggregateFilter, "since" | "until">,
+    now?: string,
+  ): DbMcpConfirmationSummary;
   inboxSummary(filter?: AggregateFilter): DbInboxSummary;
   knowledgeDigest(filter?: AggregateFilter): DbKnowledgeDigest;
   backlogList(filter?: AggregateFilter): DbBacklogSummary;
@@ -76,6 +87,15 @@ export class DbDashboardDataSource implements DashboardDataSource {
   }
   metricsSummary(filter?: AggregateFilter): DbMetricsSummary {
     return metricsSummary(this.db, filter);
+  }
+  hitchMetricsSummary(filter?: AggregateFilter): DbHitchMetricsSummary {
+    return hitchMetricsSummary(this.db, filter);
+  }
+  mcpConfirmationSummary(
+    filter?: Pick<AggregateFilter, "since" | "until">,
+    now?: string,
+  ): DbMcpConfirmationSummary {
+    return mcpConfirmationSummary(this.db, filter, now);
   }
   inboxSummary(filter?: AggregateFilter): DbInboxSummary {
     return inboxSummary(this.db, filter);

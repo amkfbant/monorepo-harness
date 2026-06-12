@@ -74,7 +74,42 @@ function overviewSection(s: DashboardSnapshot): string {
     "<h2>Overview</h2>",
     `<p>total runs: <strong>${m.totalRuns}</strong> · ` +
       `approved: ${m.approved} · needs_review: ${m.needsReview} · ` +
-      `failed: ${m.failed} · approved rate: ${pct(m.approvedRate)}</p>`,
+      `failed: ${m.failed} · approved rate: ${pct(m.approvedRate)} · ` +
+      `one-shot approval: ${pct(m.oneShotApprovalRate)} · ` +
+      `policy violation: ${pct(m.policyViolationRate)} · ` +
+      `secret suspect: ${pct(m.secretSuspectRate)}</p>`,
+    `<table><tr><th>status</th><th>count</th></tr>${rows}</table>`,
+  ].join("\n");
+}
+
+function hitchMetricsSection(s: DashboardSnapshot): string {
+  const h = s.hitchMetrics;
+  const rows = Object.keys(h.byStatus)
+    .sort()
+    .map((k) => `<tr><td>${esc(k)}</td><td>${h.byStatus[k]}</td></tr>`)
+    .join("");
+  return [
+    "<h2>Hitch metrics</h2>",
+    `<p>sessions: <strong>${h.totalSessions}</strong> · ` +
+      `avg review cycles: ${h.avgReviewCycles === null ? "n/a" : h.avgReviewCycles.toFixed(1)} · ` +
+      `avg reruns: ${h.avgRerunAttempts === null ? "n/a" : h.avgRerunAttempts.toFixed(1)} · ` +
+      `resolution rate: ${pct(h.findingResolutionRate)} · ` +
+      `reopen rate: ${pct(h.reopenRate)}</p>`,
+    `<table><tr><th>status</th><th>count</th></tr>${rows}</table>`,
+  ].join("\n");
+}
+
+function mcpConfirmationsSection(s: DashboardSnapshot): string {
+  const c = s.mcpConfirmations;
+  const rows = Object.keys(c.byStatus)
+    .sort()
+    .map((k) => `<tr><td>${esc(k)}</td><td>${c.byStatus[k]}</td></tr>`)
+    .join("");
+  return [
+    "<h2>MCP confirmations</h2>",
+    `<p>requests: <strong>${c.total}</strong> · ` +
+      `confirmation rate: ${pct(c.confirmationRate)} · ` +
+      `expired rate: ${pct(c.expiredRate)}</p>`,
     `<table><tr><th>status</th><th>count</th></tr>${rows}</table>`,
   ].join("\n");
 }
@@ -346,6 +381,8 @@ export function renderDashboardHtml(
       ? [mutationSection(snapshot, mutation.csrfToken)]
       : []),
     overviewSection(snapshot),
+    hitchMetricsSection(snapshot),
+    mcpConfirmationsSection(snapshot),
     projectsSection(snapshot),
     inboxSection(snapshot),
     recentRunsSection(snapshot),
