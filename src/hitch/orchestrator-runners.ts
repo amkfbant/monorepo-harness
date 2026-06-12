@@ -6,6 +6,7 @@ import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import {
   runDomainCoding,
   RunFinalizedError,
+  type RunDomainCodingOpts,
 } from "../core/workflow-runner.js";
 import { runReviewerAgent } from "../core/reviewer-agent.js";
 import { processReviewDecision } from "../core/review-processor.js";
@@ -113,6 +114,12 @@ export interface HitchRunContext {
   baseBranch: string;
 }
 
+export interface ProjectRuntimeDeps {
+  compiledPolicy: NonNullable<RunDomainCodingOpts["compiledPolicy"]>;
+  project: NonNullable<RunDomainCodingOpts["project"]>;
+  projectContextPacks?: NonNullable<RunDomainCodingOpts["projectContextPacks"]>;
+}
+
 export interface OrchestratorRunnerDeps {
   dbPath: string;
   harnessRoot: string;
@@ -188,6 +195,73 @@ export interface OrchestratorRunnerDeps {
   repoPath?: string;
   /** Base branch used by the default `resolveRunContext` (default "main"). */
   baseBranch?: string;
+  /**
+   * Project-profile run inputs. When present, the coder runner threads these
+   * through to runDomainCoding so post-diff validation uses the compiled
+   * project policy rather than reloading the broader raw repo policy.
+   */
+  projectRuntime?: ProjectRuntimeDeps;
+}
+
+function assertProjectRuntimeComplete(
+  projectRuntime: ProjectRuntimeDeps | undefined,
+): void {
+  if (projectRuntime === undefined) return;
+  if (projectRuntime === null || typeof projectRuntime !== "object") {
+    throw new Error(
+      "projectRuntime must be an object with compiledPolicy and project",
+    );
+  }
+  const runtime = projectRuntime as Partial<ProjectRuntimeDeps>;
+  // Reject nullish (not just undefined): runDomainCoding treats a null
+  // compiledPolicy as absent (`?? raw`), so a malformed project-runtime would
+  // silently fall back to the broader raw repo policy — the exact safety
+  // boundary this gate exists to close.
+  if (runtime.compiledPolicy == null || runtime.project == null) {
+    throw new Error(
+      "project runtime deps must be passed atomically as projectRuntime " +
+        "with compiledPolicy and project",
+    );
+  }
+  const compiled = runtime.compiledPolicy as { global?: unknown; repo?: unknown };
+  if (compiled.global == null || compiled.repo == null) {
+    throw new Error(
+      "projectRuntime.compiledPolicy must contain both global and repo policy",
+    );
+  }
+}
+
+function assertCoderProjectRuntime(
+  deps: OrchestratorRunnerDeps,
+  session: HitchSession,
+): void {
+  assertProjectRuntimeComplete(deps.projectRuntime);
+  if (session.projectId !== null && deps.projectRuntime === undefined) {
+    throw new Error(
+      `hitch ${session.hitchId} is project-scoped (projectId=${session.projectId}); ` +
+        "the coder runner requires compiled project policy via projectRuntime. " +
+        "Raw repo policy fallback is a safety boundary violation.",
+    );
+  }
+}
+
+function projectRuntimeFields(
+  deps: OrchestratorRunnerDeps,
+): Partial<
+  Pick<
+    RunDomainCodingOpts,
+    "compiledPolicy" | "project" | "projectContextPacks"
+  >
+> {
+  const projectRuntime = deps.projectRuntime;
+  if (projectRuntime === undefined) return {};
+  return {
+    compiledPolicy: projectRuntime.compiledPolicy,
+    project: projectRuntime.project,
+    ...(projectRuntime.projectContextPacks !== undefined
+      ? { projectContextPacks: projectRuntime.projectContextPacks }
+      : {}),
+  };
 }
 
 function defaultGoalText(session: HitchSession): string {
@@ -265,6 +339,7 @@ function isUnresolvedOutOfScopeFinding(finding: HitchFinding): boolean {
 export function createOrchestratorRunners(
   deps: OrchestratorRunnerDeps,
 ): OrchestratorRunners {
+  assertProjectRuntimeComplete(deps.projectRuntime);
   const paths = harnessPaths(deps.harnessRoot);
   const assertGate = (
     hitchId: string,
@@ -287,6 +362,7 @@ export function createOrchestratorRunners(
         (db) => {
           const repo = new HitchRepository(db);
           const s = repo.requireSession(hitchId);
+          assertCoderProjectRuntime(deps, s);
           const ctx = resolveRunContext(deps, s);
           // a hitch that already has a coding attempt is iterating on review
           // feedback → "rerun"; the first pass is "implement".
@@ -344,6 +420,7 @@ export function createOrchestratorRunners(
           goal: goalText,
           baseBranch: context.baseBranch,
           codexRunner: deps.coderRunner,
+          ...projectRuntimeFields(deps),
         });
         const succeeded = result.status === "needs_review";
         withManagedDb({ dbPath: deps.dbPath }, (db) => {

@@ -161,6 +161,20 @@ locks/<repoId>--<domain-slug>-<hash>.lock  # active run の lock; runId / pid / 
   `pr create` は run の `meta.repoId` から同じ lock key を導出する。`repoId` を持たない
   旧 run のみ legacy の domain-only lock。
 
+Project-scoped hitch executions (`hitch orchestrate`, MCP
+`harness.hitch.orchestrate`, and course orchestration) use the same
+project-runtime inputs as `harness run --project`: `prepareProjectRun` compiles
+the profile, and the coder run receives that compiled `{global, repo}` policy,
+`meta.project`, and any project context packs. Post-codex and post-command
+`diffAndValidate` therefore validate against the compiled project policy, and
+the effective policy snapshot records `source: project-runtime`. A hitch without
+`projectId` remains a raw repo-policy run for compatibility.
+
+Compatibility note: for project-scoped hitches this is intentionally a
+fail-closed tightening. If a project profile narrows the raw repo policy, a path
+that raw policy allowed can now finish as `failed-policy-violation` under the
+compiled project policy. Non-project hitches are unchanged.
+
 ### meta.json 例
 
 ```json

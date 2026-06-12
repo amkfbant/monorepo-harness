@@ -7,6 +7,7 @@ import { harnessPaths } from "../../src/config/paths.js";
 import { openManagedDb } from "../../src/db/managed-connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
 import { HitchRepository } from "../../src/hitch/repository.js";
+import { resolveHitchCloseRunnerDeps } from "../../src/cli/hitch.js";
 
 const CLI = join(process.cwd(), "src/cli/run.ts");
 
@@ -31,7 +32,12 @@ function newRoot(): string {
   return root;
 }
 
-function seedGoal(root: string, hitchId: string, repoId: string): void {
+function seedGoal(
+  root: string,
+  hitchId: string,
+  repoId: string,
+  projectId: string | null = null,
+): void {
   const { db, close } = openManagedDb({ dbPath: harnessPaths(root).dbPath });
   try {
     runMigrations(db);
@@ -39,6 +45,7 @@ function seedGoal(root: string, hitchId: string, repoId: string): void {
       hitchId,
       title: "t",
       description: "d",
+      projectId,
       repoId,
       domain: "docs",
       createdBy: "test",
@@ -82,5 +89,22 @@ describe("hitch await-merge CLI validation (repo scoping)", () => {
     ]);
     expect(r.code).not.toBe(0);
     expect(r.out).toMatch(/belongs to repo "repo-a", not "repo-b"/);
+  });
+
+  it("close-only deps do not resolve project policy for project hitches", () => {
+    const root = newRoot();
+    seedGoal(root, "goal-project-close", "repo-a", "demo");
+
+    expect(
+      resolveHitchCloseRunnerDeps({
+        dbPath: harnessPaths(root).dbPath,
+        hitchId: "goal-project-close",
+        repoPath: "/x",
+        baseBranch: "main",
+      }),
+    ).toEqual({
+      repoPath: "/x",
+      baseBranch: "main",
+    });
   });
 });
