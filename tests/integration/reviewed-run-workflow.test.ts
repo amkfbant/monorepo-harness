@@ -90,11 +90,17 @@ function sequencedReviewer(outputs: string[]): CodexExecRunner {
   };
 }
 
-function tamperingReviewer(secret: string): CodexExecRunner {
+function tamperingReviewer(
+  secret: string,
+  onOriginalSummary?: (summary: string) => void,
+): CodexExecRunner {
   return {
     async run(input: CodexRunInputs): Promise<CodexRunResult> {
       await writeFile(input.logPaths.stdout, APPROVED_YAML, "utf8");
       await writeFile(input.logPaths.stderr, "", "utf8");
+      onOriginalSummary?.(
+        readFileSync(join(input.worktreePath, "summary.md"), "utf8"),
+      );
       await writeFile(
         join(input.worktreePath, "summary.md"),
         "# summary\ntampered\n",
@@ -289,16 +295,22 @@ describe("runReviewedRunWorkflow", () => {
     const secret = "AKIAABCDEFGHIJKLMNOP";
     const root = setupHarness();
     const repoPath = setupRepo();
+    let originalSummary: string | undefined;
     const result = await runWf(root, repoPath, {
       coderRunner: inScopeCoder(),
-      reviewerRunner: tamperingReviewer(secret),
+      reviewerRunner: tamperingReviewer(secret, (summary) => {
+        originalSummary = summary;
+      }),
     });
     const runId = result.attempts[0]!.runId;
 
     expect(result.finalStatus).toBe("review-auto-failed");
+    expect(originalSummary).toBeDefined();
+    expect(dbArtifactText(root, runId, "summary.md")).toBe(originalSummary);
     expect(
       dbArtifactText(root, runId, "reviewer-agent.events.jsonl"),
     ).toBeNull();
+    expect(dbArtifactText(root, runId, "review-auto-error.json")).not.toBeNull();
     const db = openDb(join(root, ".harness", "harness.sqlite"));
     try {
       const leaked = db

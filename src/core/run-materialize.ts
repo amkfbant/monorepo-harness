@@ -4,7 +4,10 @@ import type Database from "better-sqlite3";
 import { DbError } from "../db/connection.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { exportRun } from "../db/export-files.js";
-import { ingestRunArtifacts } from "../db/run-artifacts.js";
+import {
+  ingestRunArtifactPaths,
+  ingestRunArtifacts,
+} from "../db/run-artifacts.js";
 import { fileExportEnabled } from "../config/export-mode.js";
 import {
   recordScratchMaterialization,
@@ -26,6 +29,8 @@ const UNTRUSTED_REVIEWER_ARTIFACTS = [
   ".reviewer-agent.events.raw.jsonl",
   ".reviewer-agent.events.redacted.tmp",
 ] as const;
+
+const REVIEWER_GATE_ERROR_ARTIFACTS = ["review-auto-error.json"] as const;
 
 function appendRunEvent(
   db: Database.Database,
@@ -241,7 +246,16 @@ export function syncRunArtifactsToDb(opts: {
     // leave the prior manifest intact (ingestRunArtifacts is transactional).
     let ingestOk = false;
     try {
-      ingestRunArtifacts(db, runDir, opts.runId);
+      if (opts.untrustedReviewerArtifacts === undefined) {
+        ingestRunArtifacts(db, runDir, opts.runId);
+      } else {
+        ingestRunArtifactPaths(db, runDir, opts.runId, [
+          ...REVIEWER_GATE_ERROR_ARTIFACTS,
+          ...(opts.untrustedReviewerArtifacts.reviewerEventsPublished
+            ? ["reviewer-agent.events.jsonl"]
+            : []),
+        ]);
+      }
       ingestOk = true;
     } catch (e) {
       process.stderr.write(

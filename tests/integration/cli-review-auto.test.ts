@@ -346,7 +346,9 @@ describe("harness review auto", () => {
 
     expect(status).toBe(1);
     expect(stderr).toContain("artifacts_quarantined");
+    expect(dbBlobText(root, runId, "summary.md")).toBe("# summary\nclean\n");
     expect(dbBlobText(root, runId, "reviewer-agent.events.jsonl")).toBeNull();
+    expect(dbBlobText(root, runId, "review-auto-error.json")).not.toBeNull();
     const db = openDb(join(root, ".harness", "harness.sqlite"));
     try {
       const leaked = db

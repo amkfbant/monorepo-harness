@@ -1,4 +1,10 @@
-import { readdirSync, readFileSync, statSync, type Dirent } from "node:fs";
+import {
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  type Dirent,
+} from "node:fs";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { sha256 } from "./import/common.js";
@@ -100,6 +106,8 @@ export interface IngestRunArtifactsResult {
   totalBytes: number;
 }
 
+type ArtifactInsertStatement = Database.Statement<unknown[]>;
+
 /**
  * Recursively yield every regular file under `dir`, keyed by a POSIX-style
  * path relative to the run dir. Dotfiles are skipped at every level: they
@@ -138,6 +146,79 @@ function* walkRunArtifacts(
   }
 }
 
+function prepareDbArtifactInsert(
+  db: Database.Database,
+  onConflict: "insert" | "replace",
+): ArtifactInsertStatement {
+  const verb = onConflict === "replace" ? "INSERT OR REPLACE" : "INSERT";
+  // schema v5 added original_bytes / original_sha256 — only set when the
+  // body was truncated to `HARD_MAX_BYTES`, NULL otherwise (Phase 9-9).
+  return db.prepare(
+    `${verb} INTO artifacts (artifact_id, run_id, kind, relative_path,
+       content_type, bytes, sha256, storage, blob_sha256, body_status,
+       created_at, redacted, secret_suspect,
+       original_bytes, original_sha256)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'db', ?, ?, ?, 0, 0, ?, ?)`,
+  );
+}
+
+function ingestRunArtifactFile(
+  db: Database.Database,
+  insert: ArtifactInsertStatement,
+  runId: string,
+  rel: string,
+  abs: string,
+): IngestRunArtifactsResult {
+  const raw = readFileSync(abs);
+  const st = statSync(abs);
+  let blobSha: string | null = null;
+  let bodyStatus = "db_available";
+  let bytes = raw.length;
+  let originalBytes: number | null = null;
+  let originalSha: string | null = null;
+  let count = 0;
+  let totalBytes = 0;
+  if (!DB_RECONSTRUCTED.has(rel)) {
+    const blob = storeArtifactBlob(db, raw);
+    blobSha = blob.sha256;
+    bytes = blob.bytes;
+    count = 1;
+    totalBytes = raw.length;
+    if (blob.truncated) {
+      bodyStatus = "truncated";
+      originalBytes = raw.length;
+      originalSha = sha256(raw);
+    }
+  }
+  insert.run(
+    `${runId}:${rel}`,
+    runId,
+    ARTIFACT_KINDS[rel] ?? "other",
+    rel,
+    contentType(rel),
+    bytes,
+    sha256(raw),
+    blobSha,
+    bodyStatus,
+    new Date(st.mtimeMs).toISOString(),
+    originalBytes,
+    originalSha,
+  );
+  return { count, totalBytes };
+}
+
+function isIngestableRelPath(rel: string): boolean {
+  if (rel === "" || rel.startsWith("/") || rel.includes("\\")) return false;
+  const parts = rel.split("/");
+  return parts.every(
+    (part) =>
+      part !== "" &&
+      part !== "." &&
+      part !== ".." &&
+      !part.startsWith("."),
+  );
+}
+
 /**
  * Ingest a DB-first run's artifact bodies into the DB (Phase 8-2).
  *
@@ -161,53 +242,52 @@ export function ingestRunArtifacts(
   runDir: string,
   runId: string,
 ): IngestRunArtifactsResult {
-  // schema v5 added original_bytes / original_sha256 — only set when the
-  // body was truncated to `HARD_MAX_BYTES`, NULL otherwise (Phase 9-9).
-  const insert = db.prepare(
-    `INSERT INTO artifacts (artifact_id, run_id, kind, relative_path,
-       content_type, bytes, sha256, storage, blob_sha256, body_status,
-       created_at, redacted, secret_suspect,
-       original_bytes, original_sha256)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'db', ?, ?, ?, 0, 0, ?, ?)`,
-  );
+  const insert = prepareDbArtifactInsert(db, "insert");
   const txn = db.transaction((): IngestRunArtifactsResult => {
     db.prepare("DELETE FROM artifacts WHERE run_id = ?").run(runId);
     let count = 0;
     let totalBytes = 0;
     for (const { rel, abs } of walkRunArtifacts(runDir)) {
-      const raw = readFileSync(abs);
-      const st = statSync(abs);
-      let blobSha: string | null = null;
-      let bodyStatus = "db_available";
-      let bytes = raw.length;
-      let originalBytes: number | null = null;
-      let originalSha: string | null = null;
-      if (!DB_RECONSTRUCTED.has(rel)) {
-        const blob = storeArtifactBlob(db, raw);
-        blobSha = blob.sha256;
-        bytes = blob.bytes;
-        count += 1;
-        totalBytes += raw.length;
-        if (blob.truncated) {
-          bodyStatus = "truncated";
-          originalBytes = raw.length;
-          originalSha = sha256(raw);
-        }
+      const result = ingestRunArtifactFile(db, insert, runId, rel, abs);
+      count += result.count;
+      totalBytes += result.totalBytes;
+    }
+    return { count, totalBytes };
+  });
+  return txn();
+}
+
+/**
+ * Upsert only selected artifact bodies for a DB-first run without rebuilding
+ * the run's manifest. This is used after reviewer-agent gate failures, where
+ * the runDir may contain untrusted tampered bytes and existing DB-canonical
+ * artifacts must not be touched.
+ */
+export function ingestRunArtifactPaths(
+  db: Database.Database,
+  runDir: string,
+  runId: string,
+  relPaths: readonly string[],
+): IngestRunArtifactsResult {
+  const insert = prepareDbArtifactInsert(db, "replace");
+  const txn = db.transaction((): IngestRunArtifactsResult => {
+    let count = 0;
+    let totalBytes = 0;
+    for (const rel of relPaths) {
+      if (!isIngestableRelPath(rel)) continue;
+      const abs = join(runDir, rel);
+      let st: ReturnType<typeof lstatSync>;
+      try {
+        st = lstatSync(abs);
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTDIR") continue;
+        throw e;
       }
-      insert.run(
-        `${runId}:${rel}`,
-        runId,
-        ARTIFACT_KINDS[rel] ?? "other",
-        rel,
-        contentType(rel),
-        bytes,
-        sha256(raw),
-        blobSha,
-        bodyStatus,
-        new Date(st.mtimeMs).toISOString(),
-        originalBytes,
-        originalSha,
-      );
+      if (!st.isFile()) continue;
+      const result = ingestRunArtifactFile(db, insert, runId, rel, abs);
+      count += result.count;
+      totalBytes += result.totalBytes;
     }
     return { count, totalBytes };
   });

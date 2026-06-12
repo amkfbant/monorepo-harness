@@ -363,11 +363,15 @@ reviewer が runDir の watched artifact を改変/追加/削除した場合は
 tamper / gate error 後に DB-first runDir を再同期する経路（`review auto` CLI と
 `workflow reviewed-run`）は、同期前に reviewer が書き換え可能だった
 `reviewer-agent.*` artifact を dotfile quarantine 名へ rename し、artifact ingest
-対象から外す。`reviewer-agent.events.jsonl` は `publishRedactedCodexEvents` が
-`failed: false` を返したことを呼び出し側が保持している場合だけ正式名のまま同期できる。
-確認できない場合は fail-closed で隔離する。隔離は stderr warning と DB
-`run_events` の `artifacts_quarantined { paths }` で観測できる。tamper なしの正常経路は
-従来どおり全 artifact を同期する。
+対象から外す。その後は runDir 全体を再 scan / DELETE→再挿入してはならない。
+代わりに DB manifest の既存 row を残したまま、harness が生成した
+`review-auto-error.json` だけを targeted upsert する。`reviewer-agent.events.jsonl` は
+`publishRedactedCodexEvents` が `failed: false` を返したことを呼び出し側が保持している
+場合だけ whitelist に追加して targeted upsert できる。確認できない場合は fail-closed で
+隔離する。`summary.md` など既存 DB-canonical artifact は、runDir 上で reviewer が改変しても
+DB 側では元の body のまま維持する。隔離は stderr warning と DB `run_events` の
+`artifacts_quarantined { paths }` で観測できる。tamper なしの正常経路は従来どおり全 artifact
+を同期する。
 
 #### reviewer prompt への operational knowledge 注入（issue #57）
 
