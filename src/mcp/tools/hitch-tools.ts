@@ -32,7 +32,7 @@ import type {
   HitchStatus,
 } from "../../hitch/types.js";
 import { redactMcpAuditValue, redactMcpText } from "../audit/redaction.js";
-import { errorResult, ok, permissionDenied, type HarnessMcpToolResult } from "../schemas/outputs.js";
+import { errorResult, ok, permissionDenied, redactMcpToolResult, type HarnessMcpToolResult } from "../schemas/outputs.js";
 import { createMcpConfirmationRequest } from "../security/confirmation.js";
 import type { McpToolContext } from "../registry/tool-registry.js";
 import { modeForClient } from "../security/permissions.js";
@@ -851,6 +851,7 @@ function confirmationResult(
     input: args,
     preview,
   });
+  const responsePreview = redactMcpToolResult(preview);
   return {
     status: "confirmation_required",
     summary: `${operationType} requires confirmation`,
@@ -859,7 +860,7 @@ function confirmationResult(
       operation: operationType,
       target,
       expiresAt: row.expiresAt,
-      preview,
+      preview: responsePreview,
     },
     nextActions: [
       {

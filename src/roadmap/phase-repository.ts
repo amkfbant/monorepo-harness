@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import type { Phase, PhaseNode, PhaseStatus } from "./types.js";
+import { CourseUserError } from "./errors.js";
 import { LeaseGuardFailedError } from "../workspace/db-domain-lock.js";
 
 interface PhaseRow {
@@ -43,12 +44,12 @@ export class PhaseRepository {
   }): Phase {
     return this.db.transaction(() => {
       const course = this.db.prepare("SELECT 1 FROM courses WHERE course_id = ?").get(input.courseId) as { "1": number } | undefined;
-      if (course === undefined) throw new Error(`course ${input.courseId} not found`);
+      if (course === undefined) throw new CourseUserError(`course ${input.courseId} not found`);
       // integrity: parent must exist AND be in the same course
       if (input.parentPhaseId !== undefined) {
         const parent = this.db.prepare("SELECT course_id FROM phases WHERE phase_id = ?").get(input.parentPhaseId) as { course_id: string } | undefined;
-        if (parent === undefined) throw new Error(`parent phase ${input.parentPhaseId} not found`);
-        if (parent.course_id !== input.courseId) throw new Error(`parent phase ${input.parentPhaseId} is in a different course`);
+        if (parent === undefined) throw new CourseUserError(`parent phase ${input.parentPhaseId} not found`);
+        if (parent.course_id !== input.courseId) throw new CourseUserError(`parent phase ${input.parentPhaseId} is in a different course`);
       }
       const id = input.phaseId ?? `phase-${randomUUID()}`;
       const now = input.now ?? new Date().toISOString();
@@ -75,7 +76,7 @@ export class PhaseRepository {
   }
   require(phaseId: string): Phase {
     const p = this.get(phaseId);
-    if (p === null) throw new Error(`phase ${phaseId} not found`);
+    if (p === null) throw new CourseUserError(`phase ${phaseId} not found`);
     return p;
   }
 
@@ -172,9 +173,9 @@ export class PhaseRepository {
     const phase = this.require(phaseId);
     const course = this.db.prepare("SELECT project_id FROM courses WHERE course_id = ?").get(phase.courseId) as { project_id: string | null } | undefined;
     const hitch = this.db.prepare("SELECT project_id FROM hitch_sessions WHERE hitch_id = ?").get(hitchId) as { project_id: string | null } | undefined;
-    if (hitch === undefined) throw new Error(`hitch ${hitchId} not found`);
+    if (hitch === undefined) throw new CourseUserError(`hitch ${hitchId} not found`);
     if (course?.project_id != null && hitch.project_id !== course.project_id) {
-      throw new Error(`hitch ${hitchId} belongs to a different project than course ${phase.courseId}`);
+      throw new CourseUserError(`hitch ${hitchId} belongs to a different project than course ${phase.courseId}`);
     }
     try {
       this.db.prepare("INSERT INTO phase_hitches (hitch_id, phase_id, linked_at) VALUES (?, ?, ?)")
@@ -182,7 +183,7 @@ export class PhaseRepository {
     } catch (e) {
       // only the PK violation means "already linked"; rethrow anything else.
       if ((e as { code?: string }).code === "SQLITE_CONSTRAINT_PRIMARYKEY") {
-        throw new Error(`hitch ${hitchId} is already linked to a phase`, { cause: e });
+        throw new CourseUserError(`hitch ${hitchId} is already linked to a phase`, { cause: e });
       }
       throw e;
     }

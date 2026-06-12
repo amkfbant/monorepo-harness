@@ -23,10 +23,15 @@ import {
   type DomainLockHandle,
 } from "../workspace/db-domain-lock.js";
 import { CourseRepository } from "./course-repository.js";
+import {
+  normalizeCourseMaxDrivenHitches,
+  normalizeCourseMaxStepsPerHitch,
+} from "./course-normalize.js";
 import { decideCoursePhaseAction } from "./orchestrate-dispatch.js";
 import type {
   CourseOrchestrationResult,
   CoursePhaseAction,
+  CourseStopReason,
   DrivenHitch,
   PhaseOutcome,
 } from "./orchestrator-types.js";
@@ -94,10 +99,15 @@ interface WalkCourseOptions {
 }
 
 interface WalkCourseResult {
-  stopReason: CourseOrchestrationResult["stopReason"];
+  stopReason: CourseStopReason;
   phaseOutcomes: PhaseOutcome[];
   drivenHitches: DrivenHitch[];
 }
+
+const COURSE_STOP_REASON = {
+  completed: "completed",
+  budgetExhausted: "budget_exhausted",
+} as const satisfies Record<string, CourseStopReason>;
 
 export class CourseOrchestrator {
   constructor(private readonly deps: CourseOrchestratorDeps) {}
@@ -284,46 +294,55 @@ export class CourseOrchestrator {
     const phases = new PhaseRepository(this.deps.db);
     const hitches = new HitchRepository(this.deps.db);
     const convergence = new ConvergenceService(hitches);
-    const phaseOutcomes: PhaseOutcome[] = [];
-    const drivenHitches: DrivenHitch[] = [];
+    let phaseOutcomes: PhaseOutcome[] = [];
+    let drivenHitches: DrivenHitch[] = [];
     let subtreeBlocked = false;
 
     for (let i = 0; i < rollup.phases.length; i++) {
       const phase = rollup.phases[i]!;
       if (phase.depth === 0) subtreeBlocked = false;
       if (subtreeBlocked) {
-        phaseOutcomes.push({
-          phaseId: phase.phaseId,
-          action: "blocked_subtree",
-          note: "blocked_subtree",
-        });
+        phaseOutcomes = [
+          ...phaseOutcomes,
+          {
+            phaseId: phase.phaseId,
+            action: "blocked_subtree",
+            note: "blocked_subtree",
+          },
+        ];
         continue;
       }
 
       const action = this.actionForPhase(rollup, i, phases, convergence);
       if (action.kind !== "drive") {
-        phaseOutcomes.push(outcomeForAction(phase.phaseId, action));
+        phaseOutcomes = [
+          ...phaseOutcomes,
+          outcomeForAction(phase.phaseId, action),
+        ];
         if (action.kind === "blocked_hitch") subtreeBlocked = true;
         continue;
       }
 
-      const phaseDriven: DrivenHitch[] = [];
+      let phaseDriven: DrivenHitch[] = [];
       let reportOnly = false;
       for (let j = 0; j < action.hitchIds.length; j++) {
         if (drivenHitches.length >= input.maxDrivenHitches) {
-          phaseOutcomes.push({
-            phaseId: phase.phaseId,
-            action:
-              phaseDriven.length === 0 ? "not_driven" : "partially_driven",
-            drivenHitches: phaseDriven,
-            note:
-              phaseDriven.length === 0
-                ? "not_driven"
-                : "partially_driven_budget_exhausted",
-          });
-          this.recordNotDriven(rollup.phases, i + 1, phaseOutcomes);
+          phaseOutcomes = [
+            ...phaseOutcomes,
+            {
+              phaseId: phase.phaseId,
+              action:
+                phaseDriven.length === 0 ? "not_driven" : "partially_driven",
+              drivenHitches: phaseDriven,
+              note:
+                phaseDriven.length === 0
+                  ? "not_driven"
+                  : "partially_driven_budget_exhausted",
+            },
+            ...this.notDrivenOutcomes(rollup.phases, i + 1),
+          ];
           return {
-            stopReason: "budget_exhausted",
+            stopReason: COURSE_STOP_REASON.budgetExhausted,
             phaseOutcomes,
             drivenHitches,
           };
@@ -334,11 +353,15 @@ export class CourseOrchestrator {
           currentPhase.status === "blocked" ||
           currentPhase.status === "closed"
         ) {
-          phaseOutcomes.push({
-            phaseId: phase.phaseId,
-            action: currentPhase.status === "blocked" ? "skip_blocked" : "skip_closed",
-            drivenHitches: phaseDriven,
-          });
+          phaseOutcomes = [
+            ...phaseOutcomes,
+            {
+              phaseId: phase.phaseId,
+              action:
+                currentPhase.status === "blocked" ? "skip_blocked" : "skip_closed",
+              drivenHitches: phaseDriven,
+            },
+          ];
           break;
         }
 
@@ -352,15 +375,18 @@ export class CourseOrchestrator {
             input.createdBy ?? "planner",
           );
           if (gate.kind === "blocked_hitch") {
-            phaseOutcomes.push({
-              phaseId: phase.phaseId,
-              action: "blocked_hitch",
-              drivenHitches: phaseDriven,
-              blockedHitch: {
-                hitchId,
-                decision: gate.decision,
+            phaseOutcomes = [
+              ...phaseOutcomes,
+              {
+                phaseId: phase.phaseId,
+                action: "blocked_hitch",
+                drivenHitches: phaseDriven,
+                blockedHitch: {
+                  hitchId,
+                  decision: gate.decision,
+                },
               },
-            });
+            ];
             subtreeBlocked = true;
             break;
           }
@@ -370,15 +396,14 @@ export class CourseOrchestrator {
           }
         }
 
-        if (
-          !this.transitionPhaseBeforeFirstDrive({
-            phases,
-            phaseId: phase.phaseId,
-            phaseDriven,
-            options,
-            phaseOutcomes,
-          })
-        ) {
+        const transition = this.transitionPhaseBeforeFirstDrive({
+          phases,
+          phaseId: phase.phaseId,
+          phaseDriven,
+          options,
+        });
+        if (!transition.ok) {
+          phaseOutcomes = [...phaseOutcomes, transition.outcome];
           break;
         }
 
@@ -401,39 +426,45 @@ export class CourseOrchestrator {
           stepCount: driven.stepCount,
         };
         if (options.driveHitch !== undefined) {
-          phaseDriven.push(drivenHitch);
-          drivenHitches.push(drivenHitch);
+          phaseDriven = [...phaseDriven, drivenHitch];
+          drivenHitches = [...drivenHitches, drivenHitch];
         } else {
-          drivenHitches.push(drivenHitch);
+          drivenHitches = [...drivenHitches, drivenHitch];
         }
 
         if (options.driveHitch !== undefined && driven.outcome === "escalated") {
-          phaseOutcomes.push({
-            phaseId: phase.phaseId,
-            action: "blocked_hitch",
-            drivenHitches: phaseDriven,
-            blockedHitch: {
-              hitchId,
-              decision: driven.finalDecision,
+          phaseOutcomes = [
+            ...phaseOutcomes,
+            {
+              phaseId: phase.phaseId,
+              action: "blocked_hitch",
+              drivenHitches: phaseDriven,
+              blockedHitch: {
+                hitchId,
+                decision: driven.finalDecision,
+              },
             },
-          });
+          ];
           subtreeBlocked = true;
           break;
         }
       }
 
       if (!subtreeBlocked && !hasOutcomeFor(phaseOutcomes, phase.phaseId)) {
-        phaseOutcomes.push({
-          phaseId: phase.phaseId,
-          action: phaseDriven.length === 0 && reportOnly ? "report_only" : "drive",
-          drivenHitches: phaseDriven,
-          ...(reportOnly ? { note: "report_only" } : {}),
-        });
+        phaseOutcomes = [
+          ...phaseOutcomes,
+          {
+            phaseId: phase.phaseId,
+            action: phaseDriven.length === 0 && reportOnly ? "report_only" : "drive",
+            drivenHitches: phaseDriven,
+            ...(reportOnly ? { note: "report_only" } : {}),
+          },
+        ];
       }
     }
 
     return {
-      stopReason: "completed",
+      stopReason: COURSE_STOP_REASON.completed,
       phaseOutcomes,
       drivenHitches,
     };
@@ -444,18 +475,23 @@ export class CourseOrchestrator {
     phaseId: string;
     phaseDriven: DrivenHitch[];
     options: WalkCourseOptions;
-    phaseOutcomes: PhaseOutcome[];
-  }): boolean {
+  }): { ok: true } | { ok: false; outcome: PhaseOutcome } {
     if (!input.options.transitionPhaseStatus || input.phaseDriven.length > 0) {
-      return true;
+      return { ok: true };
     }
 
     const currentPhase = input.phases.require(input.phaseId);
     if (currentPhase.status === "blocked" || currentPhase.status === "closed") {
-      this.recordPhaseStatusSkip(input, currentPhase.status);
-      return false;
+      return {
+        ok: false,
+        outcome: phaseStatusSkipOutcome(
+          input.phaseId,
+          input.phaseDriven,
+          currentPhase.status,
+        ),
+      };
     }
-    if (currentPhase.status !== "pending") return true;
+    if (currentPhase.status !== "pending") return { ok: true };
 
     input.options.beforeStatusWrite?.();
     const leaseGuard = input.options.statusWriteLeaseGuard?.();
@@ -465,12 +501,18 @@ export class CourseOrchestrator {
       "in_progress",
       leaseGuard === undefined ? undefined : { leaseGuard },
     );
-    if (transitioned) return true;
+    if (transitioned) return { ok: true };
 
     const rereadPhase = input.phases.require(input.phaseId);
     if (rereadPhase.status === "blocked" || rereadPhase.status === "closed") {
-      this.recordPhaseStatusSkip(input, rereadPhase.status);
-      return false;
+      return {
+        ok: false,
+        outcome: phaseStatusSkipOutcome(
+          input.phaseId,
+          input.phaseDriven,
+          rereadPhase.status,
+        ),
+      };
     }
     if (rereadPhase.status === "in_progress") {
       const rereadLeaseGuard =
@@ -479,22 +521,7 @@ export class CourseOrchestrator {
         input.phases.assertLeaseGuardHeld(rereadLeaseGuard);
       }
     }
-    return true;
-  }
-
-  private recordPhaseStatusSkip(
-    input: {
-      phaseId: string;
-      phaseDriven: DrivenHitch[];
-      phaseOutcomes: PhaseOutcome[];
-    },
-    status: "blocked" | "closed",
-  ): void {
-    input.phaseOutcomes.push({
-      phaseId: input.phaseId,
-      action: status === "blocked" ? "skip_blocked" : "skip_closed",
-      drivenHitches: input.phaseDriven,
-    });
+    return { ok: true };
   }
 
   private actionForPhase(
@@ -557,23 +584,20 @@ export class CourseOrchestrator {
     }
   }
 
-  private recordNotDriven(
+  private notDrivenOutcomes(
     phases: PhaseRollup[],
     startIndex: number,
-    outcomes: PhaseOutcome[],
-  ): void {
-    for (let i = startIndex; i < phases.length; i++) {
-      outcomes.push({
-        phaseId: phases[i]!.phaseId,
-        action: "not_driven",
-        note: "not_driven",
-      });
-    }
+  ): PhaseOutcome[] {
+    return phases.slice(startIndex).map((phase) => ({
+      phaseId: phase.phaseId,
+      action: "not_driven",
+      note: "not_driven",
+    }));
   }
 
   private finalize(
     courseId: string,
-    stopReason: CourseOrchestrationResult["stopReason"],
+    stopReason: CourseStopReason,
     phaseOutcomes: PhaseOutcome[],
     drivenHitches: DrivenHitch[],
   ): CourseOrchestrationResult {
@@ -638,12 +662,8 @@ function normalizeRunInput(
 ): RunCourseOrchestrationInput {
   return {
     ...input,
-    maxDrivenHitches: normalizePositiveInt(
-      input.maxDrivenHitches,
-      3,
-      10,
-    ),
-    maxStepsPerHitch: normalizePositiveInt(input.maxStepsPerHitch, 20, 50),
+    maxDrivenHitches: normalizeCourseMaxDrivenHitches(input.maxDrivenHitches),
+    maxStepsPerHitch: normalizeCourseMaxStepsPerHitch(input.maxStepsPerHitch),
   };
 }
 
@@ -652,22 +672,9 @@ function normalizePlanInput(
 ): PlanCourseOrchestrationInput {
   return {
     ...input,
-    maxDrivenHitches: normalizePositiveInt(
-      input.maxDrivenHitches,
-      3,
-      10,
-    ),
-    maxStepsPerHitch: normalizePositiveInt(input.maxStepsPerHitch, 20, 50),
+    maxDrivenHitches: normalizeCourseMaxDrivenHitches(input.maxDrivenHitches),
+    maxStepsPerHitch: normalizeCourseMaxStepsPerHitch(input.maxStepsPerHitch),
   };
-}
-
-function normalizePositiveInt(
-  value: number,
-  defaultValue: number,
-  maxValue: number,
-): number {
-  if (!Number.isFinite(value) || value <= 0) return defaultValue;
-  return Math.min(maxValue, Math.max(1, Math.trunc(value)));
 }
 
 function isLeafPhase(phases: PhaseRollup[], index: number): boolean {
@@ -693,6 +700,18 @@ function outcomeForAction(
     return { phaseId, action: action.kind, readyToClose: true };
   }
   return { phaseId, action: action.kind };
+}
+
+function phaseStatusSkipOutcome(
+  phaseId: string,
+  phaseDriven: DrivenHitch[],
+  status: "blocked" | "closed",
+): PhaseOutcome {
+  return {
+    phaseId,
+    action: status === "blocked" ? "skip_blocked" : "skip_closed",
+    drivenHitches: phaseDriven,
+  };
 }
 
 function toDrivenHitch(result: HitchOrchestrationResult): DrivenHitch {

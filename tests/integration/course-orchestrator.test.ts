@@ -997,6 +997,61 @@ describe("CourseOrchestrator", () => {
     );
   });
 
+  it("defaults non-positive direct run and plan budgets instead of clamping them to one", async () => {
+    const courseId = newCourse(db, "course-non-positive-budgets");
+    const phases = new PhaseRepository(db);
+    for (let i = 1; i <= 4; i++) {
+      const phase = phases.add({ courseId, phaseId: `non-positive-phase-${i}`, title: `Phase ${i}`, position: i, createdBy: "test", createdSource: "cli" });
+      const hitchId = `non-positive-h-${i}`;
+      seedDrivableHitch(db, hitchId);
+      phases.linkHitch(phase.phaseId, hitchId);
+    }
+
+    const calls: string[] = [];
+    const runInputs: RunOrchestrationInput[] = [];
+    const result = await makeOrchestrator(db, {}, calls, runInputs).run({
+      courseId,
+      maxDrivenHitches: 0,
+      maxStepsPerHitch: -5,
+      createdBy: "test",
+    });
+
+    expect(result.stopReason).toBe("budget_exhausted");
+    expect(calls).toEqual([
+      "non-positive-h-1",
+      "non-positive-h-2",
+      "non-positive-h-3",
+    ]);
+    expect(runInputs.map((input) => input.maxSteps)).toEqual([20, 20, 20]);
+
+    const planCourseId = newCourse(db, "course-non-positive-plan-budgets");
+    for (let i = 1; i <= 4; i++) {
+      const phase = phases.add({ courseId: planCourseId, phaseId: `non-positive-plan-phase-${i}`, title: `Plan ${i}`, position: i, createdBy: "test", createdSource: "cli" });
+      const hitchId = `non-positive-plan-h-${i}`;
+      seedDrivableHitch(db, hitchId);
+      phases.linkHitch(phase.phaseId, hitchId);
+    }
+
+    const plan = await makeOrchestrator(db, {}).plan({
+      courseId: planCourseId,
+      maxDrivenHitches: -1,
+      maxStepsPerHitch: 0,
+    });
+
+    expect(plan.map((outcome) => outcome.phaseId)).toEqual([
+      "non-positive-plan-phase-1",
+      "non-positive-plan-phase-2",
+      "non-positive-plan-phase-3",
+      "non-positive-plan-phase-4",
+    ]);
+    expect(plan.map((outcome) => outcome.action)).toEqual([
+      "drive",
+      "drive",
+      "drive",
+      "not_driven",
+    ]);
+  });
+
   it("passes course-createdBy lineage through to hitch orchestrator runs", async () => {
     const courseId = newCourse(db, "course-created-by-lineage");
     const phases = new PhaseRepository(db);

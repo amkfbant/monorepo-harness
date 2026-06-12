@@ -316,6 +316,20 @@ describe("course/phase CLI (SP-1)", () => {
       }),
       { phaseId: child.phaseId, action: "blocked_subtree", note: "blocked_subtree" },
     ]);
+
+    const text = runCli(root, [
+      "course",
+      "orchestrate",
+      course.courseId,
+      "--dry-run",
+    ]);
+    expect(text.code).toBe(0);
+    expect(text.out).toContain(
+      `phase=${parent.phaseId} action=blocked_hitch blockedHitch=h-blocked:`,
+    );
+    expect(text.out).toContain(
+      `phase=${child.phaseId} action=blocked_subtree note=blocked_subtree`,
+    );
   });
 
   it("course orchestrate prepares only actually driven hitches", () => {
@@ -421,6 +435,37 @@ describe("course/phase CLI (SP-1)", () => {
     });
   });
 
+  it("course orchestrate treats driver exceptions containing project as internal errors", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, [
+        "course",
+        "create",
+        "--title",
+        "Internal Driver Error Course",
+        "--json",
+      ]),
+    );
+    const phase = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "Drive", "--json"]),
+    );
+    withSeedDb(root, (db) => {
+      const phases = new PhaseRepository(db);
+      seedDrivableHitch(db, "h-driver-internal", {
+        projectId: undefined,
+        domain: "apps/user",
+      });
+      db.prepare("UPDATE hitch_sessions SET project_id = NULL WHERE hitch_id = ?")
+        .run("h-driver-internal");
+      phases.linkHitch(phase.phaseId, "h-driver-internal");
+    });
+
+    const result = runCli(root, ["course", "orchestrate", course.courseId]);
+
+    expect(result.code).toBe(2);
+    expect(result.out).toMatch(/has no projectId/i);
+  });
+
   it("course orchestrate records budget_exhausted as succeeded while exiting 1", () => {
     const { root } = setup();
     const repoPath = setupRepo();
@@ -514,6 +559,33 @@ describe("course/phase CLI (SP-1)", () => {
     const result = runCli(root, ["course", "orchestrate", course.courseId]);
     expect(result.code).toBe(1);
     expect(result.out).toMatch(/not active/i);
+  });
+
+  it("course pause and resume update status, and paused courses do not orchestrate", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Pause Resume Course", "--json"]),
+    );
+
+    const paused = runCli(root, ["course", "pause", course.courseId]);
+    expect(paused.code).toBe(0);
+    expect(paused.out).toContain(`course=${course.courseId} status=paused`);
+    expect(
+      json<{ status: string }>(runCli(root, ["course", "show", course.courseId, "--json"]))
+        .status,
+    ).toBe("paused");
+
+    const blocked = runCli(root, ["course", "orchestrate", course.courseId]);
+    expect(blocked.code).toBe(1);
+    expect(blocked.out).toMatch(/not active/i);
+
+    const resumed = runCli(root, ["course", "resume", course.courseId]);
+    expect(resumed.code).toBe(0);
+    expect(resumed.out).toContain(`course=${course.courseId} status=active`);
+    expect(
+      json<{ status: string }>(runCli(root, ["course", "show", course.courseId, "--json"]))
+        .status,
+    ).toBe("active");
   });
 
   it("creates a course, adds phases (parent/child), and rollup shows phase titles + open P0/P1", () => {

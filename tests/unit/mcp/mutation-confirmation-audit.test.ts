@@ -17,6 +17,7 @@ import {
   createMcpConfirmationRequest,
   getMcpConfirmationRequest,
   listMcpConfirmationRequests,
+  redactMcpConfirmationRow,
 } from "../../../src/mcp/security/confirmation.js";
 import { processReviewDecision } from "../../../src/core/review-processor.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
@@ -394,6 +395,11 @@ describe("MCP mutation, confirmation, and audit", () => {
       expect(JSON.parse(confirmations[0].inputJson).goal).toBe("[redacted]");
       expect(JSON.parse(confirmations[0].previewJson).data.preview).toBeUndefined();
       expect(JSON.parse(confirmations[0].previewJson).data.arguments.goal).toBe("[redacted]");
+
+      const stored = getMcpConfirmationRequest(root, pending.confirmationId);
+      expect(stored?.inputJson).toContain(secret);
+      expect(stored?.previewJson).toContain(secret);
+      expect(JSON.stringify(redactMcpConfirmationRow(stored!))).not.toContain(secret);
 
       const confirmed = await confirmMcpRequest({
         harnessRoot: root,
@@ -2335,6 +2341,9 @@ describe("MCP mutation, confirmation, and audit", () => {
       const storeRoot = join(harnessRoot, "blob-store");
       mkdirSync(storeRoot, { recursive: true });
       seedLocalBlobStore(db, storeRoot);
+      db.prepare("UPDATE blob_stores SET config_json = ? WHERE store_id = 'local-main'").run(
+        JSON.stringify({ root: storeRoot, apiToken: secret }),
+      );
       seedRun(db, "run-migrate-redact", "demo");
       const body = Buffer.from("migrate redact blob");
       const sha = sha256Text(body.toString("utf8"));
@@ -2358,6 +2367,16 @@ describe("MCP mutation, confirmation, and audit", () => {
       idempotencyKey: "migrate-redact-key",
     });
     expect(pendingSecret.status).toBe("confirmation_required");
+    expect(JSON.stringify(pendingSecret)).not.toContain(secret);
+    expect(pendingSecret.data.preview.data.defaultStore.config.apiToken).toBe("[redacted]");
+
+    const pendingStored = readDb(root, (db) =>
+      db
+        .prepare("SELECT input_json, preview_json FROM mcp_confirmation_requests WHERE confirmation_id = ?")
+        .get(pendingSecret.confirmationId) as { input_json: string; preview_json: string },
+    );
+    expect(pendingStored.input_json).toContain(secret);
+    expect(pendingStored.preview_json).toContain(secret);
 
     const confirmedSecret = await confirmMcpRequest({
       harnessRoot: root,

@@ -19,6 +19,11 @@ import {
   CourseOrchestrateError,
   CourseOrchestrator,
 } from "../roadmap/course-orchestrator.js";
+import {
+  normalizeCourseMaxDrivenHitches,
+  normalizeCourseMaxStepsPerHitch,
+} from "../roadmap/course-normalize.js";
+import { CourseUserError } from "../roadmap/errors.js";
 import { createProductionCourseOrchestrator } from "../roadmap/course-orchestrate-runtime.js";
 import type {
   CourseOrchestrationResult,
@@ -44,20 +49,14 @@ class CourseCliError extends Error {
   }
 }
 
-/** User-fixable errors: typed CLI errors, DB errors, and common "not found" / constraint messages. */
+/** User-fixable errors are explicit domain/CLI/configuration errors only. */
 function courseError(e: unknown): never {
   if (
     e instanceof CourseCliError ||
+    e instanceof CourseUserError ||
     e instanceof CourseOrchestrateError ||
     e instanceof ProjectError ||
     e instanceof DbError
-  ) {
-    process.stderr.write(`harness error: ${e.message}\n`);
-    process.exit(1);
-  }
-  if (
-    e instanceof Error &&
-    /not found|different course|already linked|project/i.test(e.message)
   ) {
     process.stderr.write(`harness error: ${e.message}\n`);
     process.exit(1);
@@ -79,11 +78,10 @@ async function withCourseOrchestrateErrorExit(fn: () => Promise<void>): Promise<
   } catch (e) {
     if (
       e instanceof CourseCliError ||
+      e instanceof CourseUserError ||
       e instanceof CourseOrchestrateError ||
       e instanceof ProjectError ||
-      e instanceof DbError ||
-      (e instanceof Error &&
-        /not found|different course|already linked|project/i.test(e.message))
+      e instanceof DbError
     ) {
       process.stderr.write(`harness error: ${e.message}\n`);
       process.exit(1);
@@ -174,10 +172,6 @@ function parsePositiveInt(value: unknown, flag: string): number {
   return n;
 }
 
-function clampInt(value: number, max: number): number {
-  return Math.min(max, value);
-}
-
 interface CourseOrchestrateDryRunResult {
   courseId: string;
   dryRun: true;
@@ -235,7 +229,7 @@ function writeCourseOrchestrateDryRunOutput(
   }
   const lines = [`course=${result.courseId} dryRun=true`];
   for (const outcome of result.phaseOutcomes) {
-    lines.push(`phase=${outcome.phaseId} action=${outcome.action}`);
+    lines.push(formatPhaseOutcome(outcome));
   }
   process.stdout.write(lines.join("\n") + "\n");
 }
@@ -253,17 +247,27 @@ function writeCourseOrchestrateOutput(
       ` openP0=${result.rollupAfter.openP0} openP1=${result.rollupAfter.openP1}`,
   ];
   for (const outcome of result.phaseOutcomes) {
-    const driven =
-      outcome.drivenHitches !== undefined && outcome.drivenHitches.length > 0
-        ? ` driven=${outcome.drivenHitches.map((h) => h.hitchId).join(",")}`
-        : "";
-    const note = outcome.note !== undefined ? ` note=${outcome.note}` : "";
-    lines.push(`phase=${outcome.phaseId} action=${outcome.action}${driven}${note}`);
+    lines.push(formatPhaseOutcome(outcome));
   }
   for (const followUp of result.followUps) {
     lines.push(`followUp=${followUp}`);
   }
   process.stdout.write(lines.join("\n") + "\n");
+}
+
+function formatPhaseOutcome(outcome: PhaseOutcome): string {
+  const driven =
+    outcome.drivenHitches !== undefined && outcome.drivenHitches.length > 0
+      ? ` driven=${outcome.drivenHitches.map((h) => h.hitchId).join(",")}`
+      : "";
+  const blocked =
+    outcome.blockedHitch !== undefined
+      ? ` blockedHitch=${outcome.blockedHitch.hitchId}:${outcome.blockedHitch.decision}`
+      : "";
+  const ready =
+    outcome.readyToClose === true ? " readyToClose=true" : "";
+  const note = outcome.note !== undefined ? ` note=${outcome.note}` : "";
+  return `phase=${outcome.phaseId} action=${outcome.action}${driven}${blocked}${ready}${note}`;
 }
 
 export function registerCourseCommands(
@@ -380,13 +384,11 @@ export function registerCourseCommands(
     .option("--json", "emit JSON", false)
     .action(async (courseId: string, raw: Record<string, unknown>) => {
       await withCourseOrchestrateErrorExit(async () => {
-        const maxDrivenHitches = clampInt(
+        const maxDrivenHitches = normalizeCourseMaxDrivenHitches(
           parsePositiveInt(raw.maxDrivenHitches ?? 3, "--max-driven-hitches"),
-          10,
         );
-        const maxStepsPerHitch = clampInt(
+        const maxStepsPerHitch = normalizeCourseMaxStepsPerHitch(
           parsePositiveInt(raw.maxStepsPerHitch ?? 20, "--max-steps-per-hitch"),
-          50,
         );
         if (raw.dryRun === true) {
           const result = await withCourseDbAsync(opts, (db) =>
@@ -458,6 +460,32 @@ export function registerCourseCommands(
         if (result.stopReason === "budget_exhausted") {
           process.exit(1);
         }
+      });
+    });
+
+  courseCmd
+    .command("pause")
+    .description("pause a course")
+    .argument("<id>", "course id")
+    .action((id: string) => {
+      withCourseErrorExit(() => {
+        const result = withCourseRepo(opts, ({ courses }) =>
+          courses.setStatus(id, "paused"),
+        );
+        process.stdout.write(`course=${result.courseId} status=${result.status}\n`);
+      });
+    });
+
+  courseCmd
+    .command("resume")
+    .description("resume a paused course")
+    .argument("<id>", "course id")
+    .action((id: string) => {
+      withCourseErrorExit(() => {
+        const result = withCourseRepo(opts, ({ courses }) =>
+          courses.setStatus(id, "active"),
+        );
+        process.stdout.write(`course=${result.courseId} status=${result.status}\n`);
       });
     });
 

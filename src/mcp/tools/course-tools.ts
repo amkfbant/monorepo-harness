@@ -1,6 +1,10 @@
 import { harnessPaths } from "../../config/paths.js";
 import { CourseRepository } from "../../roadmap/course-repository.js";
 import { createProductionCourseOrchestrator } from "../../roadmap/course-orchestrate-runtime.js";
+import {
+  normalizeCourseMaxDrivenHitches,
+  normalizeCourseMaxStepsPerHitch,
+} from "../../roadmap/course-normalize.js";
 import { PhaseRepository } from "../../roadmap/phase-repository.js";
 import { rollupCourse } from "../../roadmap/rollup.js";
 import { errorResult, ok, type HarnessMcpToolResult } from "../schemas/outputs.js";
@@ -312,23 +316,6 @@ function phaseIdForIdempotencyKey(
 // Mutation tools
 // ---------------------------------------------------------------------------
 
-const DEFAULT_MAX_DRIVEN_HITCHES = 3;
-const MAX_DRIVEN_HITCHES = 10;
-const DEFAULT_MAX_STEPS_PER_HITCH = 20;
-const MAX_STEPS_PER_HITCH = 50;
-
-function normalizeBoundedPositiveInt(
-  value: number | undefined,
-  defaultValue: number,
-  maxValue: number,
-): number {
-  const requested =
-    typeof value === "number" && Number.isFinite(value)
-      ? Math.trunc(value)
-      : defaultValue;
-  return Math.min(maxValue, Math.max(1, requested));
-}
-
 function courseMetadata(
   context: McpToolContext,
   toolName: string,
@@ -394,16 +381,8 @@ export async function courseOrchestrateTool(
 
   const normalizedArgs: CourseOrchestrateArgs = {
     ...args,
-    maxDrivenHitches: normalizeBoundedPositiveInt(
-      args.maxDrivenHitches,
-      DEFAULT_MAX_DRIVEN_HITCHES,
-      MAX_DRIVEN_HITCHES,
-    ),
-    maxStepsPerHitch: normalizeBoundedPositiveInt(
-      args.maxStepsPerHitch,
-      DEFAULT_MAX_STEPS_PER_HITCH,
-      MAX_STEPS_PER_HITCH,
-    ),
+    maxDrivenHitches: normalizeCourseMaxDrivenHitches(args.maxDrivenHitches),
+    maxStepsPerHitch: normalizeCourseMaxStepsPerHitch(args.maxStepsPerHitch),
   };
   const dbPath = harnessPaths(context.harnessRoot).dbPath;
   return runMcpOperation(context, {

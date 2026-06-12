@@ -7,7 +7,7 @@ import { openManagedDb } from "../../db/managed-connection.js";
 import { runMigrations } from "../../db/migrations.js";
 import { runOperation, OperationInFlightError, OperationReplayedFailureError } from "../../operations/operation-runner.js";
 import type { HarnessMcpToolResult } from "../schemas/outputs.js";
-import { errorResult, permissionDenied } from "../schemas/outputs.js";
+import { errorResult, permissionDenied, redactMcpToolResult } from "../schemas/outputs.js";
 import { redactMcpAuditValue } from "../audit/redaction.js";
 import type { McpToolContext } from "../registry/tool-registry.js";
 import { ensureProjectVisible, withReadonlyDb, parseJson } from "./tool-helpers.js";
@@ -1456,6 +1456,7 @@ function confirmationResult(
     input: args,
     preview,
   });
+  const responsePreview = redactMcpToolResult(preview);
   return {
     status: "confirmation_required",
     summary: `${operationType} requires confirmation`,
@@ -1464,7 +1465,7 @@ function confirmationResult(
       operation: operationType,
       target,
       expiresAt: row.expiresAt,
-      preview,
+      preview: responsePreview,
     },
     nextActions: [
       {

@@ -28,8 +28,6 @@ export interface McpResourcesConfig {
 
 export interface McpConfirmationConfig {
   ttlSeconds: number;
-  requireOutOfBand: boolean;
-  allowAgentConfirm: boolean;
 }
 
 export interface McpAuditConfig {
@@ -110,8 +108,6 @@ const rawConfigSchema = z.object({
       confirmation: z
         .object({
           ttlSeconds: z.number().int().min(1).optional(),
-          requireOutOfBand: z.boolean().optional(),
-          allowAgentConfirm: z.boolean().optional(),
         })
         .optional(),
       audit: z
@@ -155,8 +151,6 @@ const fullConfigSchema: z.ZodType<McpConfig> = z
     }),
     confirmation: z.object({
       ttlSeconds: z.number().int().min(1),
-      requireOutOfBand: z.boolean(),
-      allowAgentConfirm: z.boolean(),
     }),
     audit: z.object({
       recordReadTools: z.boolean(),
@@ -199,8 +193,6 @@ export const DEFAULT_MCP_CONFIG: McpConfig = {
   },
   confirmation: {
     ttlSeconds: 900,
-    requireOutOfBand: true,
-    allowAgentConfirm: false,
   },
   audit: {
     recordReadTools: false,
@@ -329,11 +321,6 @@ function mergeMcpConfig(base: McpConfig, mcp: RawMcpSection): McpConfig {
     confirmation: {
       ttlSeconds:
         confirmation.ttlSeconds ?? base.confirmation.ttlSeconds,
-      requireOutOfBand:
-        confirmation.requireOutOfBand ??
-        base.confirmation.requireOutOfBand,
-      allowAgentConfirm:
-        confirmation.allowAgentConfirm ?? base.confirmation.allowAgentConfirm,
     },
     audit: {
       recordReadTools:
