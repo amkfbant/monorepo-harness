@@ -124,6 +124,65 @@ describe("ReviewProposalRepository", () => {
     db.close();
   });
 
+  it("rejects superseding an active proposal when failIfSupersedes is true", () => {
+    const db = freshDb();
+    const repo = new ReviewProposalRepository(db);
+    const first = repo.insertProposal(baseProposal());
+
+    expect(() =>
+      repo.insertProposal(
+        baseProposal({
+          decision: "changes_requested",
+          requiredChanges: ["fix it"],
+          reviewedAt: "2026-05-23T11:00:00Z",
+          createdAt: "2026-05-23T11:00:00Z",
+          failIfSupersedes: true,
+        }),
+      ),
+    ).toThrow(ReviewerAgentGateError);
+
+    const active = repo.getLatestActiveProposal(RUN_ID);
+    expect(active?.proposalId).toBe(first.proposalId);
+    expect(active?.decision).toBe("approved");
+    const rows = db
+      .prepare(
+        `SELECT proposal_id, superseded_at
+           FROM review_proposals
+          WHERE run_id = ?
+          ORDER BY proposal_id`,
+      )
+      .all(RUN_ID) as { proposal_id: number; superseded_at: string | null }[];
+    expect(rows).toEqual([
+      { proposal_id: first.proposalId, superseded_at: null },
+    ]);
+    db.close();
+  });
+
+  it("keeps the legacy supersede behavior when failIfSupersedes is false", () => {
+    const db = freshDb();
+    const repo = new ReviewProposalRepository(db);
+    const first = repo.insertProposal(baseProposal());
+
+    const second = repo.insertProposal(
+      baseProposal({
+        decision: "changes_requested",
+        requiredChanges: ["fix it"],
+        reviewedAt: "2026-05-23T11:00:00Z",
+        createdAt: "2026-05-23T11:00:00Z",
+        failIfSupersedes: false,
+      }),
+    );
+
+    expect(repo.getLatestActiveProposal(RUN_ID)?.proposalId).toBe(
+      second.proposalId,
+    );
+    const old = db
+      .prepare("SELECT superseded_at FROM review_proposals WHERE proposal_id = ?")
+      .get(first.proposalId) as { superseded_at: string | null };
+    expect(old.superseded_at).toBe("2026-05-23T11:00:00Z");
+    db.close();
+  });
+
   it("--reviewer scopes the active query", () => {
     const db = freshDb();
     const repo = new ReviewProposalRepository(db);

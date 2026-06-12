@@ -28,6 +28,7 @@ export interface ReviewProposalInput {
   sourceYaml: string;
   sourceSha256: string;
   createdAt: string;
+  failIfSupersedes?: boolean;
 }
 
 export interface ReviewProposalRow {
@@ -79,13 +80,19 @@ export class ReviewProposalRepository {
       // Phase 11-7: when superseding a prior active proposal, flip its
       // lifecycle_status to 'superseded' as well so list/vacuum and
       // consensus filters see a consistent state machine.
-      this.db
+      const superseded = this.db
         .prepare(
           `UPDATE review_proposals
               SET superseded_at = ?, lifecycle_status = 'superseded'
             WHERE run_id = ? AND reviewer = ? AND superseded_at IS NULL`,
         )
         .run(input.createdAt, input.runId, input.reviewer);
+      if (input.failIfSupersedes === true && superseded.changes > 0) {
+        throw new ReviewerAgentGateError(
+          `既存 active proposal を supersede しようとした（並行 review 競合）: ` +
+            `run ${input.runId}, reviewer ${input.reviewer}`,
+        );
+      }
       const info = this.db
         .prepare(
           `INSERT INTO review_proposals

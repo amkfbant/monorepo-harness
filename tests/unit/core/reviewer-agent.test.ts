@@ -9,6 +9,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { openDb } from "../../../src/db/connection.js";
+import { runMigrations } from "../../../src/db/migrations.js";
+import { ReviewProposalRepository } from "../../../src/db/repositories/review-proposals.js";
 import {
   runReviewerAgent,
   extractYamlBlock,
@@ -93,6 +96,27 @@ function setup(
     );
   }
   return { runsDir, runId };
+}
+
+function setupReviewDb(runId: string): string {
+  const dbPath = join(
+    mkdtempSync(join(tmpdir(), "harness-reviewer-db-")),
+    ".harness",
+    "harness.sqlite",
+  );
+  const db = openDb(dbPath);
+  try {
+    runMigrations(db);
+    db.prepare(
+      `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+         status, source_mode, db_revision, export_status, updated_at, meta_json)
+       VALUES (?, 't', 'apps/user', 'domain-coding', 'main', 'needs_review',
+         'db-first', 1, 'disabled', '2026-05-21T00:00:00Z', '{}')`,
+    ).run(runId);
+  } finally {
+    db.close();
+  }
+  return dbPath;
 }
 
 function fakeRunnerWithOutput(
@@ -519,6 +543,73 @@ describe("runReviewerAgent", () => {
   });
 
   describe("review-auto-error.json artifact", () => {
+    it("is written when an active DB proposal appears between probe and insert", async () => {
+      const { runsDir, runId } = setup();
+      const dbPath = setupReviewDb(runId);
+      const runner: CodexExecRunner = {
+        async run(input) {
+          const db = openDb(dbPath);
+          try {
+            new ReviewProposalRepository(db).insertProposal({
+              runId,
+              reviewer: "codex-reviewer",
+              decision: "approved",
+              requiredChanges: [],
+              nonBlockingComments: [],
+              outOfScopeSuggestions: [],
+              reviewedAt: "2026-05-21T00:30:00.000Z",
+              sourceYaml: "decision: approved\n",
+              sourceSha256: "conflict",
+              createdAt: "2026-05-21T00:30:00.000Z",
+            });
+          } finally {
+            db.close();
+          }
+          const { writeFile } = await import("node:fs/promises");
+          await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
+          await writeFile(input.logPaths.stderr, "", "utf8");
+          return { exitCode: 0, timedOut: false };
+        },
+      };
+
+      await expect(
+        runReviewerAgent({
+          runsDir,
+          runId,
+          dbPath,
+          codexRunner: runner,
+          now: new Date("2026-05-21T01:00:00.000Z"),
+        }),
+      ).rejects.toThrow(/active proposal|supersede|競合/);
+
+      const errPath = join(runsDir, runId, "review-auto-error.json");
+      expect(existsSync(errPath)).toBe(true);
+      const err = JSON.parse(readFileSync(errPath, "utf8"));
+      expect(err.type).toBe("review-auto-error");
+      expect(err.runId).toBe(runId);
+      expect(err.reason).toMatch(/active proposal|supersede|競合/);
+
+      const db = openDb(dbPath);
+      try {
+        const active = new ReviewProposalRepository(db).getLatestActiveProposal(
+          runId,
+        );
+        expect(active?.sourceSha256).toBe("conflict");
+        expect(active?.supersededAt).toBeNull();
+        expect(
+          (
+            db
+              .prepare(
+                "SELECT count(*) AS n FROM review_proposals WHERE run_id = ?",
+              )
+              .get(runId) as { n: number }
+          ).n,
+        ).toBe(1);
+      } finally {
+        db.close();
+      }
+    });
+
     it("is written when codex output cannot be parsed (invalid decision)", async () => {
       const { runsDir, runId } = setup();
       const runner = fakeRunnerWithOutput(

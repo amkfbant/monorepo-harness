@@ -437,6 +437,28 @@ export async function runReviewerAgent(
   });
   const reviewer = inputs.reviewerName ?? "codex-reviewer";
   const reviewedAt = (inputs.now ?? new Date()).toISOString();
+  const writeGateErrorArtifact = async (
+    e: ReviewerAgentGateError,
+  ): Promise<void> => {
+    await writeFile(
+      errorArtifactPath,
+      `${JSON.stringify(
+        {
+          type: "review-auto-error",
+          runId: inputs.runId,
+          reviewer,
+          failedAt: reviewedAt,
+          reason: e.message,
+          rawOutputPath: "reviewer-agent.out.log",
+          codexExitCode: codexResult.exitCode,
+          timedOut: codexResult.timedOut,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+  };
 
   // Everything after codex runs is wrapped: ANY ReviewerAgentGateError —
   // artifact tampering, codex timeout, non-zero exit, or unparseable /
@@ -488,24 +510,7 @@ export async function runReviewerAgent(
     );
   } catch (e) {
     if (e instanceof ReviewerAgentGateError && !inputs.dryRun) {
-      await writeFile(
-        errorArtifactPath,
-        `${JSON.stringify(
-          {
-            type: "review-auto-error",
-            runId: inputs.runId,
-            reviewer,
-            failedAt: reviewedAt,
-            reason: e.message,
-            rawOutputPath: "reviewer-agent.out.log",
-            codexExitCode: codexResult.exitCode,
-            timedOut: codexResult.timedOut,
-          },
-          null,
-          2,
-        )}\n`,
-        "utf8",
-      );
+      await writeGateErrorArtifact(e);
     }
     throw e;
   }
@@ -554,6 +559,7 @@ export async function runReviewerAgent(
         sourceYaml,
         sourceSha256: sha,
         createdAt: reviewedAt,
+        failIfSupersedes: !inputs.allowOverwrite,
       });
       // Phase 2: in consensus mode, re-evaluate consensus over all active
       // proposals and record a (possibly pending) consensus row so the
@@ -561,6 +567,11 @@ export async function runReviewerAgent(
       // reflects every reviewer. latest-proposal mode keeps its
       // single-writer flow untouched.
       recordConsensusReEvaluation(dbHandle.db, inputs.runId, reviewedAt);
+    } catch (e) {
+      if (e instanceof ReviewerAgentGateError) {
+        await writeGateErrorArtifact(e);
+      }
+      throw e;
     } finally {
       dbHandle.close();
     }
