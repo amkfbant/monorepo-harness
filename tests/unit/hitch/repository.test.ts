@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
-import { HitchRepository } from "../../../src/hitch/repository.js";
+import {
+  HitchRepository,
+  OPEN_FINDING_LIFECYCLES,
+} from "../../../src/hitch/repository.js";
 
 function freshRepo(): { db: ReturnType<typeof openDb>; repo: HitchRepository } {
   const dir = mkdtempSync(join(tmpdir(), "harness-goal-repo-"));
@@ -140,6 +143,101 @@ describe("HitchRepository", () => {
       expect(reopened.reopened).toBe(true);
       expect(reopened.finding.lifecycleStatus).toBe("reopened");
       expect(reopened.finding.reopenCount).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("counts open, reopened, and escalated findings as active", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const active = [
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          severity: "P1",
+          category: "correctness",
+          scopeStatus: "in_scope",
+          lifecycleStatus: "open",
+          summary: "open in-scope",
+        }).finding.findingId,
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          severity: "P1",
+          category: "correctness",
+          scopeStatus: "in_scope",
+          lifecycleStatus: "reopened",
+          summary: "reopened in-scope",
+        }).finding.findingId,
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          severity: "P1",
+          category: "correctness",
+          scopeStatus: "in_scope",
+          lifecycleStatus: "escalated",
+          summary: "escalated in-scope",
+        }).finding.findingId,
+      ];
+      repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "fixed",
+        summary: "fixed in-scope",
+      });
+      repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "unknown",
+        lifecycleStatus: "escalated",
+        summary: "escalated unknown",
+      });
+      repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "follow-up",
+        scopeStatus: "out_of_scope",
+        summary: "out-of-scope default lifecycle",
+      });
+      repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "follow-up",
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "escalated",
+        summary: "escalated out-of-scope",
+      });
+
+      expect(repo.countFindingSummary("goal-test")).toMatchObject({
+        openInScopeP1: 3,
+        openUnknownScope: 1,
+        openOutOfScope: 2,
+      });
+      expect(
+        repo.countFindings({
+          hitchId: "goal-test",
+          lifecycleStatusIn: OPEN_FINDING_LIFECYCLES,
+        }),
+      ).toBe(5);
+      const listedActive = repo
+        .listFindings({
+          hitchId: "goal-test",
+          scopeStatus: "in_scope",
+          severity: "P1",
+          lifecycleStatusIn: OPEN_FINDING_LIFECYCLES,
+        })
+        .map((finding) => finding.findingId);
+      expect(listedActive).toHaveLength(active.length);
+      expect(listedActive).toEqual(expect.arrayContaining(active));
     } finally {
       db.close();
     }

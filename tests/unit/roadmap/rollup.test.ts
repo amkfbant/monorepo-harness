@@ -145,6 +145,7 @@ describe("rollupCourse (SP-1)", () => {
 
   it.each([
     ["close_ready", "open"],
+    ["close_ready", "escalated"],
     ["closed", "reopened"],
   ] as const)(
     "keeps readyToClose false when hitch convergence is %s but DB has a %s in-scope P1",
@@ -194,6 +195,9 @@ describe("rollupCourse (SP-1)", () => {
         summary: "live blocker",
         scopeStatus: "in_scope",
         seenAt: "2026-01-01T00:00:00.000Z",
+        ...(findingLifecycle === "escalated"
+          ? { lifecycleStatus: "escalated" as const }
+          : {}),
       });
       if (findingLifecycle === "reopened") {
         const findings = hitches.listFindings({ hitchId: h.hitchId, limit: 10 });

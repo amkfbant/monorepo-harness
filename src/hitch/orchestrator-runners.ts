@@ -40,7 +40,11 @@ import {
   type CopilotReviewConfig,
 } from "../core/copilot-review-run.js";
 import type { ConsensusSummary } from "../core/review-consensus.js";
-import { HitchRepository } from "./repository.js";
+import {
+  HitchRepository,
+  OPEN_FINDING_LIFECYCLES,
+  UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES,
+} from "./repository.js";
 import {
   augmentGoalWithFailedRun,
   augmentGoalWithOpenFindings,
@@ -59,6 +63,12 @@ import type {
   HitchReviewMode,
   HitchSession,
 } from "./types.js";
+
+const OPEN_FINDING_LIFECYCLE_SET: ReadonlySet<HitchLifecycleStatus> = new Set(
+  OPEN_FINDING_LIFECYCLES,
+);
+const UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLE_SET: ReadonlySet<HitchLifecycleStatus> =
+  new Set(UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES);
 
 /**
  * Thrown by `closeAndPr`'s pre-side-effect guard when the hitch is not
@@ -85,24 +95,6 @@ export class HitchNotCloseReadyError extends Error {
  * finding whose scope is `unknown` and whose lifecycle is one of these must be
  * deterministically classified before the hitch can converge.
  */
-const OPEN_LIFECYCLE_STATUSES: readonly HitchLifecycleStatus[] = [
-  "open",
-  "reopened",
-  "escalated",
-];
-
-/**
- * Lifecycle states of an out-of-scope finding that convergence still treats as
- * needing deferral (`UNRESOLVED_OUT_OF_SCOPE_LIFECYCLES` in convergence.ts).
- * `classifyFinding` sets an out-of-scope finding's lifecycle to `out_of_scope`,
- * so the defer runner must include it (the generic OPEN set does not).
- */
-const DEFERRABLE_OUT_OF_SCOPE_LIFECYCLES: readonly HitchLifecycleStatus[] = [
-  "open",
-  "reopened",
-  "out_of_scope",
-];
-
 /**
  * The concrete repo/run context a hitch session does not itself store. The
  * session has `repoId` / `domain` and the goal text (title/description), but
@@ -315,7 +307,7 @@ export function createOrchestratorRunners(
             ? repo
                 .listFindings({ hitchId, scopeStatus: "in_scope", limit: 200 })
                 .filter((fnd) =>
-                  OPEN_LIFECYCLE_STATUSES.includes(fnd.lifecycleStatus),
+                  OPEN_FINDING_LIFECYCLE_SET.has(fnd.lifecycleStatus),
                 )
             : [];
           const attempt = repo.createAttempt({
@@ -436,7 +428,7 @@ export function createOrchestratorRunners(
         const session = repo.requireSession(hitchId);
         const unknown = repo
           .listFindings({ hitchId, scopeStatus: "unknown" })
-          .filter((f) => OPEN_LIFECYCLE_STATUSES.includes(f.lifecycleStatus));
+          .filter((f) => OPEN_FINDING_LIFECYCLE_SET.has(f.lifecycleStatus));
         for (const finding of unknown) {
           const classification = classifyFindingForHitch(session, finding);
           if (classification.scopeStatus === "unknown") {
@@ -464,7 +456,9 @@ export function createOrchestratorRunners(
         return repo
           .listFindings({ hitchId, scopeStatus: "out_of_scope" })
           .filter((f) =>
-            DEFERRABLE_OUT_OF_SCOPE_LIFECYCLES.includes(f.lifecycleStatus),
+            UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLE_SET.has(
+              f.lifecycleStatus,
+            ),
           )
           .map((f) => f.findingId);
       });
