@@ -129,6 +129,7 @@ export async function evaluateReviewer(
     await mkdir(evalDir, { recursive: true });
     const stdoutPath = join(evalDir, "reviewer-agent.out.log");
     const stderrPath = join(evalDir, "reviewer-agent.err.log");
+    const eventsPath = join(evalDir, "reviewer-agent.events.jsonl");
 
     // Observation-only: the run itself must not be mutated. Snapshot
     // everything OUTSIDE review-evaluations/ and verify it after codex —
@@ -138,7 +139,7 @@ export async function evaluateReviewer(
     const codexResult = await opts.codexRunner.run({
       worktreePath: runDir,
       prompt: PROMPT_PREAMBLE + reviewerOpsSection,
-      logPaths: { stdout: stdoutPath, stderr: stderrPath },
+      logPaths: { stdout: stdoutPath, stderr: stderrPath, events: eventsPath },
     });
     verifyUnchanged(before, await snapshotExcludingEvals(runDir));
     const sample = await captureSample({

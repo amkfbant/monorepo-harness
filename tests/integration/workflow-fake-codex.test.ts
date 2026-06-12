@@ -299,11 +299,15 @@ describe("runDomainCoding (fake codex)", () => {
 
       const artifacts = (
         db
-          .prepare("SELECT relative_path FROM artifacts WHERE run_id = ?")
-          .all(r.runId) as { relative_path: string }[]
-      ).map((a) => a.relative_path);
-      expect(artifacts).toContain("meta.json");
-      expect(artifacts).toContain("summary.md");
+          .prepare("SELECT relative_path, kind FROM artifacts WHERE run_id = ?")
+          .all(r.runId) as { relative_path: string; kind: string }[]
+      );
+      expect(artifacts.map((a) => a.relative_path)).toContain("meta.json");
+      expect(artifacts.map((a) => a.relative_path)).toContain("summary.md");
+      expect(artifacts).toContainEqual({
+        relative_path: "codex-events.jsonl",
+        kind: "codex-events",
+      });
 
       // Phase 8 (external review P1-2): artifacts are ingested BEFORE the
       // final export, so the artifact bodies are recorded in

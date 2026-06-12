@@ -21,7 +21,11 @@ describe("createCodexCliRunner stdin robustness", () => {
     const result = await runner.run({
       prompt: "x".repeat(1_000_000), // exceeds the ~64KB pipe buffer
       worktreePath: dir,
-      logPaths: { stdout: join(dir, "out.log"), stderr: join(dir, "err.log") },
+      logPaths: {
+        stdout: join(dir, "out.log"),
+        stderr: join(dir, "err.log"),
+        events: join(dir, "events.jsonl"),
+      },
     });
 
     // The child's exit code is the source of truth; a closed stdin pipe must

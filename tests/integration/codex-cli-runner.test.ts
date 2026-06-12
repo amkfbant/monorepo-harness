@@ -16,6 +16,7 @@ describe.skipIf(!HAS_CODEX)("codex-cli-runner (real codex)", () => {
       logPaths: {
         stdout: join(wt, "out.log"),
         stderr: join(wt, "err.log"),
+        events: join(wt, "events.jsonl"),
       },
     });
     expect(typeof r.exitCode).toBe("number");

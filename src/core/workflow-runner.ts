@@ -707,10 +707,15 @@ async function runDomainCodingInner(
     await log.emit({ type: "codex_exec_started" });
     const codexStdoutPath = join(log.runDir, "codex-output.log");
     const codexStderrPath = join(log.runDir, "codex-error.log");
+    const codexEventsPath = join(log.runDir, "codex-events.jsonl");
     const codex = await opts.codexRunner.run({
       worktreePath: wt.path,
       prompt,
-      logPaths: { stdout: codexStdoutPath, stderr: codexStderrPath },
+      logPaths: {
+        stdout: codexStdoutPath,
+        stderr: codexStderrPath,
+        events: codexEventsPath,
+      },
     });
     await log.emit({
       type: "codex_exec_completed",

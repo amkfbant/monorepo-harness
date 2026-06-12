@@ -40,10 +40,10 @@ const RUN_ID_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /**
  * The ONLY files allowed to appear/change during the codex window. The
- * codex runner pipes the agent's stdout/stderr into these two files, so
- * they legitimately change. Everything else under runDir — including
- * review-decision.yaml and review-auto-error.json — must match its
- * pre-codex snapshot, or the run is rejected as tampering.
+ * codex runner writes the agent's final message, stderr, and JSONL events
+ * into these files, so they legitimately change. Everything else under
+ * runDir — including review-decision.yaml and review-auto-error.json —
+ * must match its pre-codex snapshot, or the run is rejected as tampering.
  *
  * review-decision.yaml / review-auto-error.json are written (and the
  * latter rm'd) by the harness itself, but ONLY after snapshot
@@ -52,6 +52,7 @@ const RUN_ID_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const REVIEWER_WRITE_ALLOWLIST = new Set([
   "reviewer-agent.out.log",
   "reviewer-agent.err.log",
+  "reviewer-agent.events.jsonl",
 ]);
 
 interface FileSnapshot {
@@ -424,6 +425,7 @@ export async function runReviewerAgent(
   // the agent doesn't need to touch the worktree, just read artifacts.
   const stdoutPath = join(runDir, "reviewer-agent.out.log");
   const stderrPath = join(runDir, "reviewer-agent.err.log");
+  const eventsPath = join(runDir, "reviewer-agent.events.jsonl");
   const errorArtifactPath = join(runDir, REVIEW_AUTO_ERROR_FILE);
 
   // Defense in depth: even though the runner is configured with
@@ -439,7 +441,7 @@ export async function runReviewerAgent(
   const codexResult = await inputs.codexRunner.run({
     worktreePath: runDir,
     prompt: reviewerPrompt,
-    logPaths: { stdout: stdoutPath, stderr: stderrPath },
+    logPaths: { stdout: stdoutPath, stderr: stderrPath, events: eventsPath },
   });
   const reviewer = inputs.reviewerName ?? "codex-reviewer";
   const reviewedAt = (inputs.now ?? new Date()).toISOString();

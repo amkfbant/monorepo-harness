@@ -300,7 +300,7 @@ describe("runReviewerAgent", () => {
       async run(input: {
         worktreePath: string;
         prompt: string;
-        logPaths: { stdout: string; stderr: string };
+        logPaths: { stdout: string; stderr: string; events: string };
       }): Promise<{ exitCode: number; timedOut: boolean }> {
         // mutate summary.md during codex execution (simulating sandbox escape)
         writeFileSync(summary, "tampered\n");

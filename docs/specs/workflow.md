@@ -15,8 +15,10 @@
 8. build codex prompt from goal + policy → write codex-prompt.md and update
    `runs.prompt_sha256`
 9. emit codex_exec_started
-10. spawn codex exec (detached process group, sandbox/approval/timeout from policy)
-11. read codex-output.log + codex-error.log (after stream flush)
+10. spawn `codex exec --json -o runs/<runId>/codex-output.log`
+    (detached process group, sandbox/approval/timeout from policy)
+11. pipe codex stdout JSONL to codex-events.jsonl; read codex-output.log +
+    codex-error.log after streams flush
 12. emit codex_exec_completed (exitCode, timedOut, durationMs)
 13. setStatus('generated')
 14. PASS 1 — post-codex diffAndValidate(worktree, baseSha, policy):
@@ -133,8 +135,9 @@ runs/<runId>/
   events.jsonl             # 各イベント 1 行 JSON (run_started / worktree_created / codex_* / diff_* / run_completed)
   resolved-policy.yaml     # ResolvedPolicy を YAML で
   codex-prompt.md          # codex に渡した prompt 全文
-  codex-output.log         # codex stdout (生)
+  codex-output.log         # codex `-o/--output-last-message` の最終 agent message
   codex-error.log          # codex stderr (生; readStderrTail で patch echo を抑制してから artifact に転載)
+  codex-events.jsonl       # codex `--json` stdout の JSONL events (turn.completed.usage を含む)
   final-diff.patch         # tracked changes の unified diff (against baseSha)。常に生成 (変更なしなら空)
   untracked-files.patch    # OPTIONAL: allowed untracked がある場合のみ。inline + secret hit は redact
   untracked-files.txt      # OPTIONAL: allowed untracked がある場合のみ。path list

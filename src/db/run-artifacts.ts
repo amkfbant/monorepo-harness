@@ -20,6 +20,7 @@ const ARTIFACT_KINDS: Record<string, string> = {
   "codex-prompt.md": "codex-prompt",
   "codex-output.log": "codex-output",
   "codex-error.log": "codex-error",
+  "codex-events.jsonl": "codex-events",
   "final-diff.patch": "diff",
   "summary.md": "summary",
   "review-request.md": "review-request",
