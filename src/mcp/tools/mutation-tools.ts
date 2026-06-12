@@ -8,6 +8,7 @@ import { runMigrations } from "../../db/migrations.js";
 import { runOperation, OperationInFlightError, OperationReplayedFailureError } from "../../operations/operation-runner.js";
 import type { HarnessMcpToolResult } from "../schemas/outputs.js";
 import { errorResult, permissionDenied } from "../schemas/outputs.js";
+import { redactMcpAuditValue } from "../audit/redaction.js";
 import type { McpToolContext } from "../registry/tool-registry.js";
 import { ensureProjectVisible, withReadonlyDb, parseJson } from "./tool-helpers.js";
 import {
@@ -1351,8 +1352,8 @@ async function runMcpOperation<T>(
         actor: `mcp:${context.clientName}`,
         idempotencyKey: opts.idempotencyKey,
         dryRun: false,
-        input: opts.input,
-        metadata: opts.metadata,
+        input: redactMcpAuditValue(opts.input),
+        metadata: redactMcpAuditValue(opts.metadata) as Record<string, unknown>,
         ...(opts.pendingExternalExecutor === true ? { pendingExternalExecutor: true } : {}),
         beforeStart: (db) => {
           if (opts.hitchGate?.hitchId !== undefined) {

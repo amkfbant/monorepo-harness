@@ -289,15 +289,13 @@ export async function workspaceCheckpointTool(
         idempotencyKey: args.idempotencyKey,
         dryRun: false,
         input: redactMcpAuditValue(args),
-        metadata: {
+        metadata: redactMcpAuditValue({
           source: "mcp",
           toolName: "harness.workspace.checkpoint",
           clientName: context.clientName,
           sessionId: context.sessionId,
-          ...(args.actorNote !== undefined
-            ? { actorNote: redactMcpAuditValue(args.actorNote) }
-            : {}),
-        },
+          ...(args.actorNote !== undefined ? { actorNote: args.actorNote } : {}),
+        }) as Record<string, unknown>,
         beforeStart: (db) => {
           assertMutationBudget(db, context.config, {
             clientName: context.clientName,

@@ -5,6 +5,9 @@ const SECRET_KEY_RE =
 const SECRET_ASSIGNMENT_RE =
   /\b(secret|token|password|credential|api[_-]?key|idempotency)\s*[:=]/i;
 
+// actorNote is an intentional operator audit annotation. Keep it readable and
+// apply only the key/shape-based secret scrub below; full-note redaction would
+// destroy its audit value.
 export function redactMcpAuditValue(value: unknown, key?: string): unknown {
   if (key !== undefined && SECRET_KEY_RE.test(key)) return "[redacted]";
   if (typeof value === "string") {

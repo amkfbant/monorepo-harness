@@ -2328,6 +2328,124 @@ describe("MCP mutation, confirmation, and audit", () => {
     ).toBe("external");
   });
 
+  it("persists private dangerous operation audit with policy redaction and readable plain actorNote", async () => {
+    const secret = `sk-${"e".repeat(40)}`;
+    const root = freshRoot((db, harnessRoot) => {
+      const storeRoot = join(harnessRoot, "blob-store");
+      mkdirSync(storeRoot, { recursive: true });
+      seedLocalBlobStore(db, storeRoot);
+      seedRun(db, "run-migrate-redact", "demo");
+      const body = Buffer.from("migrate redact blob");
+      const sha = sha256Text(body.toString("utf8"));
+      seedDbBlob(db, sha, body);
+      db.prepare(
+        `INSERT INTO artifacts
+           (artifact_id, run_id, kind, relative_path, content_type, bytes,
+            sha256, storage, blob_sha256, body_status, created_at)
+         VALUES
+           ('artifact-migrate-redact', 'run-migrate-redact', 'log',
+            'redact.txt', 'text/plain', ?, ?, 'db', ?, 'db_available',
+            '2026-05-25T00:00:00Z')`,
+      ).run(body.length, sha, sha);
+    });
+
+    const pendingSecret = await callTool(server(root, guardedConfig()), "harness.db.migrate_blobs.apply", {
+      to: "external",
+      storeId: "local-main",
+      limit: 1,
+      actorNote: `do not persist ${secret}`,
+      idempotencyKey: "migrate-redact-key",
+    });
+    expect(pendingSecret.status).toBe("confirmation_required");
+
+    const confirmedSecret = await confirmMcpRequest({
+      harnessRoot: root,
+      confirmationId: pendingSecret.confirmationId,
+      confirmedBy: "human",
+    });
+    expect(confirmedSecret.status).toBe("operation_started");
+
+    const pendingPlain = await callTool(server(root, guardedConfig()), "harness.db.migrate_blobs.apply", {
+      to: "db",
+      storeId: "local-main",
+      limit: 1,
+      actorNote: "retrying after infra flake",
+      idempotencyKey: "migrate-plain-key",
+    });
+    expect(pendingPlain.status).toBe("confirmation_required");
+
+    const confirmedPlain = await confirmMcpRequest({
+      harnessRoot: root,
+      confirmationId: pendingPlain.confirmationId,
+      confirmedBy: "human",
+    });
+    expect(confirmedPlain.status).toBe("operation_started");
+
+    const secretAudit = readDb(root, (db) =>
+      db
+        .prepare("SELECT input_json, metadata_json, idempotency_key FROM operations WHERE operation_id = ?")
+        .get(confirmedSecret.operationId) as {
+        input_json: string;
+        metadata_json: string;
+        idempotency_key: string;
+      },
+    );
+    const secretInput = JSON.parse(secretAudit.input_json) as Record<string, unknown>;
+    const secretMetadata = JSON.parse(secretAudit.metadata_json) as Record<string, unknown>;
+
+    expect(secretAudit.idempotency_key).toBe("migrate-redact-key");
+    expect(secretAudit.input_json).not.toContain(secret);
+    expect(secretAudit.metadata_json).not.toContain(secret);
+    expect(secretAudit.input_json).not.toContain("migrate-redact-key");
+    expect(secretAudit.metadata_json).not.toContain("migrate-redact-key");
+    expect(secretInput).toMatchObject({
+      to: "external",
+      storeId: "local-main",
+      limit: 1,
+      actorNote: "[redacted]",
+      idempotencyKey: "[redacted]",
+    });
+    expect(secretMetadata).toMatchObject({
+      source: "mcp",
+      clientName: "unit-test",
+      toolName: "harness.db.migrate_blobs.apply",
+      actorNote: "[redacted]",
+      idempotencyKey: "[redacted]",
+    });
+    expect(secretMetadata.sessionId).toEqual(expect.any(String));
+
+    const plainAudit = readDb(root, (db) =>
+      db
+        .prepare("SELECT input_json, metadata_json, idempotency_key FROM operations WHERE operation_id = ?")
+        .get(confirmedPlain.operationId) as {
+        input_json: string;
+        metadata_json: string;
+        idempotency_key: string;
+      },
+    );
+    const plainInput = JSON.parse(plainAudit.input_json) as Record<string, unknown>;
+    const plainMetadata = JSON.parse(plainAudit.metadata_json) as Record<string, unknown>;
+
+    expect(plainAudit.idempotency_key).toBe("migrate-plain-key");
+    expect(plainAudit.input_json).not.toContain("migrate-plain-key");
+    expect(plainAudit.metadata_json).not.toContain("migrate-plain-key");
+    expect(plainInput).toMatchObject({
+      to: "db",
+      storeId: "local-main",
+      limit: 1,
+      actorNote: "retrying after infra flake",
+      idempotencyKey: "[redacted]",
+    });
+    expect(plainMetadata).toMatchObject({
+      source: "mcp",
+      clientName: "unit-test",
+      toolName: "harness.db.migrate_blobs.apply",
+      sessionId: expect.any(String),
+      actorNote: "retrying after infra flake",
+      idempotencyKey: "[redacted]",
+    });
+  });
+
   it("binds db.archive.apply confirmation preview to the exact full DB copy target", async () => {
     const root = freshRoot((db) => {
       seedProject(db);
