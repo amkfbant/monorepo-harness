@@ -6,8 +6,20 @@ export interface DbHitchMetricsSummary {
   byStatus: Record<string, number>;
   avgReviewCycles: number | null;
   avgRerunAttempts: number | null;
+  /** in-scope findings only, counted per severity */
   findingsBySeverity: Record<string, number>;
+  /**
+   * fixed / (fixed + open + reopened + escalated) over in-scope findings.
+   * deferred / duplicate / accepted_risk are outside both numerator and
+   * denominator — they were never resolved by fixing.
+   */
   findingResolutionRate: number | null;
+  /**
+   * in-scope findings with reopen_count > 0 / ALL in-scope findings.
+   * Unlike findingResolutionRate this deliberately keeps deferred /
+   * accepted_risk in the denominator: a finding that churned before
+   * being deferred still counts as review churn.
+   */
   reopenRate: number | null;
 }
 
