@@ -17,6 +17,10 @@ import type {
   DbHitchMetricsSummary,
   DbMcpConfirmationSummary,
 } from "../db/repositories/convergence-aggregates.js";
+import {
+  listMetricsTrend,
+  type MetricsTrendPoint,
+} from "../db/repositories/metrics-snapshots.js";
 import type { DashboardRunSummary } from "../db/repositories/runs.js";
 
 /**
@@ -61,6 +65,7 @@ export interface DashboardSnapshot {
   projects: ProjectSummary[];
   overview: DbMetricsSummary;
   usage: DbTokenUsageSummary;
+  metricsTrend: MetricsTrendPoint[];
   hitchMetrics: DbHitchMetricsSummary;
   mcpConfirmations: DbMcpConfirmationSummary;
   inbox: DbInboxSummary;
@@ -72,6 +77,7 @@ export interface DashboardSnapshot {
 
 /** How many recent runs the snapshot carries. */
 const RECENT_RUNS = 15;
+const METRICS_TREND_POINTS = 30;
 
 export function buildDashboardSnapshot(opts: {
   db: Database.Database;
@@ -128,6 +134,10 @@ export function buildDashboardSnapshot(opts: {
     projects,
     overview: ds.metricsSummary(filters),
     usage: ds.tokenUsageSummary(filters),
+    metricsTrend: listMetricsTrend(db, {
+      filter: filters,
+      limit: METRICS_TREND_POINTS,
+    }),
     hitchMetrics: ds.hitchMetricsSummary(filters),
     mcpConfirmations: ds.mcpConfirmationSummary({}, now.toISOString()),
     inbox: ds.inboxSummary(filters),

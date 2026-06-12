@@ -246,6 +246,7 @@ import {
 } from "../mcp/security/confirmation.js";
 import {
   hasScopeFilter,
+  runMetricsDelta,
   runScopedMetrics,
   runMetricsSnapshot,
   runScopedInbox,
@@ -2397,6 +2398,17 @@ metricsCmd
   .option("--json", "emit JSON instead of text")
   .action((raw: Record<string, unknown>) => {
     runMetricsSnapshot(getHarnessRoot(), raw);
+  });
+metricsCmd
+  .command("delta")
+  .description("compare live metrics to an older aggregate snapshot")
+  .option("--since <dur>", "baseline age, e.g. 7d / 12h", "7d")
+  .option("--project <id>", "scope to a project")
+  .option("--repo-id <id>", "scope to a repo")
+  .option("--domain <d>", "scope to a domain")
+  .option("--json", "emit JSON instead of text")
+  .action((raw: Record<string, unknown>) => {
+    runMetricsDelta(getHarnessRoot(), raw);
   });
 metricsCmd
   .command("domain")

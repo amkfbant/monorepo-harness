@@ -612,6 +612,7 @@ harness metrics summary --since 30d        # 全体 summary
 harness metrics summary --project <id>     # project を絞る（DB read model 経由、Phase 6）
 harness metrics summary --repo-id <id>     # repo を絞る（DB read model 経由、Phase 6）
 harness metrics snapshot [--project <id>] [--repo-id <id>] [--domain <d>] [--retention-days 90] [--json]
+harness metrics delta [--since 7d] [--project <id>] [--repo-id <id>] [--domain <d>] [--json]
 harness metrics domain apps/orders         # domain 別 summary
 harness metrics failures --since 30d       # failed-* の status 別内訳
 ```
@@ -658,6 +659,27 @@ stored `pending` かつ `expires_at <= 集計時刻` の request は read-only �
 `created_at < now - retentionDays` の row だけを削除するため、境界時刻ちょうどの
 snapshot は残る。text 出力は `snapshot=<id> pruned=<n>`、`--json` は
 `{ "snapshot": <row>, "pruned": <n> }`。
+
+`metrics delta` は files から DB read model を refresh した後、`--since <dur>`
+（既定 `7d`、`30d` / `12h` 形式）で求めた基準時刻以前の最新
+`metrics_snapshots` row を baseline とし、現在の live aggregate と比較する。
+`--project` / `--repo-id` / `--domain` は baseline snapshot の検索 scope と live
+aggregate filter に使う。`--since` は baseline の時点指定であり、live aggregate の
+期間 filter ではない。baseline が無い場合は正常終了（exit 0）し、text では
+`no metrics snapshot found ...`、`--json` では `status: "missing-baseline"` を返す。
+`payload_schema` または payload 内 `schema` が想定外の snapshot は fail-open で
+スキップし、古い snapshot を探す。スキップした snapshot は stderr warning と
+`--json` の `skippedSnapshots` に出す。
+
+delta の text 出力は以下の KPI を `基準値 -> 現在値 (Δ)` で表示する。
+rate の Δ は percentage point。
+
+- runs: `totalRuns` / `approved` / `approvedRate` /
+  `oneShotApprovalRate` / `policyViolationRate` / `secretSuspectRate`
+- hitch: `totalSessions` / `findingResolutionRate`
+- usage: `totalTokens`
+- baseline payload が `mcpConfirmationSummary` を持つ場合のみ MCP confirmations の
+  `total` / `confirmationRate` / `expiredRate`
 
 - **Runs**: total + status 別件数
 - **Review**: approved / changes_requested / rejected 件数、approved 率、reviewer 別件数

@@ -9,6 +9,7 @@ import {
 import { harnessPaths } from "../../../src/config/paths.js";
 import { openManagedDb } from "../../../src/db/managed-connection.js";
 import { SCHEMA_VERSION } from "../../../src/db/schema.js";
+import type { MetricsSnapshotPayloadV1 } from "../../../src/db/repositories/metrics-snapshots.js";
 
 const PROFILE = [
   "version: 1",
@@ -147,6 +148,76 @@ function insertPendingMcpConfirmation(
   }
 }
 
+function insertMetricsSnapshot(
+  root: string,
+  input: {
+    index: number;
+    createdAt: string;
+    projectId?: string;
+    totalRuns: number;
+    approvedRate: number | null;
+    totalTokens: number;
+  },
+): void {
+  const { dbPath } = harnessPaths(root);
+  const handle = openManagedDb({ dbPath });
+  try {
+    const payload: MetricsSnapshotPayloadV1 = {
+      schema: 1,
+      capturedAt: input.createdAt,
+      filter:
+        input.projectId === undefined ? {} : { projectId: input.projectId },
+      metricsSummary: {
+        totalRuns: input.totalRuns,
+        byStatus: {},
+        approved: 0,
+        needsReview: 0,
+        failed: 0,
+        approvedRate: input.approvedRate,
+        oneShotApprovalRate: null,
+        policyViolationRate: null,
+        secretSuspectRate: null,
+      },
+      hitchMetricsSummary: {
+        totalSessions: 0,
+        byStatus: {},
+        avgReviewCycles: null,
+        avgRerunAttempts: null,
+        findingsBySeverity: {},
+        findingResolutionRate: null,
+        reopenRate: null,
+      },
+      tokenUsageSummary: {
+        runsWithUsage: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalTokens: input.totalTokens,
+        bySource: {},
+      },
+      mcpConfirmationSummary: {
+        total: 0,
+        byStatus: {},
+        confirmationRate: null,
+        expiredRate: null,
+      },
+    };
+    handle.db
+      .prepare(
+        `INSERT INTO metrics_snapshots
+           (snapshot_id, created_at, project_id, payload_json, payload_schema)
+         VALUES (?, ?, ?, ?, 1)`,
+      )
+      .run(
+        `msnap-trend-${String(input.index).padStart(2, "0")}`,
+        input.createdAt,
+        input.projectId ?? null,
+        JSON.stringify(payload),
+      );
+  } finally {
+    handle.close();
+  }
+}
+
 describe("loadDashboardSnapshot", () => {
   it("builds a snapshot from files when the DB is absent (auto-import)", () => {
     const root = normalRoot();
@@ -243,6 +314,41 @@ describe("loadDashboardSnapshot", () => {
       byStatus: { expired: 1, pending: 1 },
       confirmationRate: 0,
       expiredRate: 1,
+    });
+  });
+
+  it("includes a 30-point metrics trend from recent snapshots", () => {
+    const root = normalRoot();
+    loadDashboardSnapshot({ harnessRoot: root });
+    for (let i = 0; i < 31; i += 1) {
+      insertMetricsSnapshot(root, {
+        index: i,
+        createdAt: `2026-01-${String(i + 1).padStart(2, "0")}T00:00:00.000Z`,
+        projectId: "demo",
+        totalRuns: i,
+        approvedRate: i / 100,
+        totalTokens: i * 10,
+      });
+    }
+
+    const snap = loadDashboardSnapshot({
+      harnessRoot: root,
+      autoImport: false,
+      filters: { projectId: "demo" },
+    });
+
+    expect(snap.metricsTrend).toHaveLength(30);
+    expect(snap.metricsTrend[0]).toEqual({
+      createdAt: "2026-01-02T00:00:00.000Z",
+      totalRuns: 1,
+      approvedRate: 0.01,
+      totalTokens: 10,
+    });
+    expect(snap.metricsTrend.at(-1)).toEqual({
+      createdAt: "2026-01-31T00:00:00.000Z",
+      totalRuns: 30,
+      approvedRate: 0.3,
+      totalTokens: 300,
     });
   });
 

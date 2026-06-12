@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { harnessPaths } from "../../src/config/paths.js";
+import { openManagedDb } from "../../src/db/managed-connection.js";
 
 const CLI = join(process.cwd(), "src/cli/run.ts");
 
@@ -19,6 +21,38 @@ function runCli(root: string, args: string[]): { out: string; code: number } {
       code: err.status ?? 1,
     };
   }
+}
+
+function writeProjectRun(
+  root: string,
+  input: { runId: string; status: string },
+): void {
+  const runId = input.runId;
+  const runDir = join(root, "runs", runId);
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(
+    join(runDir, "meta.json"),
+    JSON.stringify({
+      runId,
+      repoId: "demo",
+      repoPath: "/tmp/demo",
+      domain: "apps/web",
+      workflow: "domain-coding",
+      baseBranch: "main",
+      baseSha: "abc",
+      runBranch: `harness/${runId}`,
+      status: input.status,
+      startedAt: "2026-05-21T00:00:00Z",
+      project: {
+        projectId: "demo",
+        profilePath: join(root, "projects", "demo.yaml"),
+        profileVersion: 1,
+        commandPresetIds: [],
+        contextPackIds: [],
+      },
+    }),
+  );
+  writeFileSync(join(runDir, "events.jsonl"), `{"type":"run_started"}\n`);
 }
 
 /** A harness root with project "demo" and one approved run attributed to it. */
@@ -39,33 +73,30 @@ function setup(): string {
       "",
     ].join("\n"),
   );
-  const runId = "run-20260521-apps-web-aaa";
-  const runDir = join(root, "runs", runId);
-  mkdirSync(runDir, { recursive: true });
-  writeFileSync(
-    join(runDir, "meta.json"),
-    JSON.stringify({
-      runId,
-      repoId: "demo",
-      repoPath: "/tmp/demo",
-      domain: "apps/web",
-      workflow: "domain-coding",
-      baseBranch: "main",
-      baseSha: "abc",
-      runBranch: `harness/${runId}`,
-      status: "approved",
-      startedAt: "2026-05-21T00:00:00Z",
-      project: {
-        projectId: "demo",
-        profilePath: join(root, "projects", "demo.yaml"),
-        profileVersion: 1,
-        commandPresetIds: [],
-        contextPackIds: [],
-      },
-    }),
-  );
-  writeFileSync(join(runDir, "events.jsonl"), `{"type":"run_started"}\n`);
+  writeProjectRun(root, {
+    runId: "run-20260521-apps-web-aaa",
+    status: "approved",
+  });
   return root;
+}
+
+function moveLatestMetricsSnapshotTo(root: string, createdAt: string): void {
+  const handle = openManagedDb({ dbPath: harnessPaths(root).dbPath });
+  try {
+    handle.db
+      .prepare(
+        `UPDATE metrics_snapshots
+            SET created_at = ?
+          WHERE snapshot_id = (
+            SELECT snapshot_id FROM metrics_snapshots
+             ORDER BY created_at DESC, snapshot_id DESC
+             LIMIT 1
+          )`,
+      )
+      .run(createdAt);
+  } finally {
+    handle.close();
+  }
 }
 
 describe("CLI project-scoped DB queries (Phase 6-6)", () => {
@@ -157,6 +188,70 @@ describe("CLI project-scoped DB queries (Phase 6-6)", () => {
     ]);
     expect(text.code).toBe(0);
     expect(text.out).toMatch(/^snapshot=msnap-[0-9a-f-]{36} pruned=\d+\n$/);
+  });
+
+  it("metrics delta reports current live metrics against an older snapshot", () => {
+    const root = setup();
+    const snapshot = runCli(root, [
+      "metrics",
+      "snapshot",
+      "--project",
+      "demo",
+      "--json",
+    ]);
+    expect(snapshot.code).toBe(0);
+    moveLatestMetricsSnapshotTo(root, "2000-01-01T00:00:00.000Z");
+    writeProjectRun(root, {
+      runId: "run-20260521-apps-web-bbb",
+      status: "needs_review",
+    });
+
+    const json = runCli(root, [
+      "metrics",
+      "delta",
+      "--project",
+      "demo",
+      "--since",
+      "1d",
+      "--json",
+    ]);
+
+    expect(json.code).toBe(0);
+    const parsed = JSON.parse(json.out) as {
+      status: string;
+      metrics: { totalRuns: { baseline: number; current: number; delta: number } };
+    };
+    expect(parsed.status).toBe("ok");
+    expect(parsed.metrics.totalRuns).toEqual({
+      baseline: 1,
+      current: 2,
+      delta: 1,
+    });
+
+    const text = runCli(root, [
+      "metrics",
+      "delta",
+      "--project",
+      "demo",
+      "--since",
+      "1d",
+    ]);
+    expect(text.code).toBe(0);
+    expect(text.out).toContain("total runs: 1 -> 2 (+1)");
+  });
+
+  it("metrics delta exits normally with a clear message when no baseline exists", () => {
+    const root = setup();
+    const result = runCli(root, [
+      "metrics",
+      "delta",
+      "--project",
+      "demo",
+      "--since",
+      "1d",
+    ]);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain("no metrics snapshot found");
   });
 
   it("backlog list --project --status threads the status filter (Phase 6 hardening)", () => {

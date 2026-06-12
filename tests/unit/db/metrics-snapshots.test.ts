@@ -6,6 +6,7 @@ import type Database from "better-sqlite3";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import {
+  buildMetricsDelta,
   listMetricsSnapshots,
   pruneMetricsSnapshots,
   recordMetricsSnapshot,
@@ -27,14 +28,33 @@ function insertRun(
     repoId: string;
     domain: string;
     status: string;
+    startedAt?: string;
+    totalTokens?: number;
   },
 ): void {
+  const startedAt = input.startedAt ?? "2026-06-01T00:00:00.000Z";
   db.prepare(
     `INSERT INTO runs (run_id, repo_id, project_id, domain, workflow,
        base_branch, status, started_at, updated_at)
      VALUES (?, ?, ?, ?, 'domain-coding', 'main', ?,
-       '2026-06-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z')`,
-  ).run(input.runId, input.repoId, input.projectId, input.domain, input.status);
+       ?, ?)`,
+  ).run(
+    input.runId,
+    input.repoId,
+    input.projectId,
+    input.domain,
+    input.status,
+    startedAt,
+    startedAt,
+  );
+  if (input.totalTokens !== undefined) {
+    db.prepare(
+      `INSERT INTO run_usage
+         (run_id, input_tokens, output_tokens, total_tokens, usage_source,
+          created_at)
+       VALUES (?, 0, 0, ?, 'exact', ?)`,
+    ).run(input.runId, input.totalTokens, startedAt);
+  }
 }
 
 function insertUsage(db: Database.Database, runId: string): void {
@@ -233,6 +253,141 @@ describe("metrics snapshots repository", () => {
       });
 
       expect(rows.map((s) => s.snapshotId)).toEqual(["msnap-demo-new"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("computes a delta from the newest valid snapshot at or before the baseline time", () => {
+    const db = freshDb();
+    try {
+      insertRun(db, {
+        runId: "run-baseline-approved",
+        projectId: "demo",
+        repoId: "repo-a",
+        domain: "apps/web",
+        status: "approved",
+        totalTokens: 100,
+      });
+      recordMetricsSnapshot(db, {
+        filter: { projectId: "demo", repoId: "repo-a", domain: "apps/web" },
+        now: "2026-06-01T00:00:00.000Z",
+      });
+      insertRun(db, {
+        runId: "run-current-review",
+        projectId: "demo",
+        repoId: "repo-a",
+        domain: "apps/web",
+        status: "needs_review",
+        totalTokens: 50,
+      });
+      insertHitchSession(db, {
+        hitchId: "hitch-demo",
+        projectId: "demo",
+        repoId: "repo-a",
+        domain: "apps/web",
+        status: "open",
+      });
+
+      const delta = buildMetricsDelta(db, {
+        filter: { projectId: "demo", repoId: "repo-a", domain: "apps/web" },
+        baselineAt: "2026-06-08T00:00:00.000Z",
+        now: "2026-06-13T00:00:00.000Z",
+      });
+
+      expect(delta.status).toBe("ok");
+      if (delta.status !== "ok") return;
+      expect(delta.baseline.snapshotId).toMatch(/^msnap-/);
+      expect(delta.baseline.createdAt).toBe("2026-06-01T00:00:00.000Z");
+      expect(delta.metrics.totalRuns).toEqual({
+        baseline: 1,
+        current: 2,
+        delta: 1,
+      });
+      expect(delta.metrics.approvedRate).toEqual({
+        baseline: 1,
+        current: 1,
+        delta: 0,
+      });
+      expect(delta.hitch.totalSessions).toEqual({
+        baseline: 0,
+        current: 1,
+        delta: 1,
+      });
+      expect(delta.usage.totalTokens).toEqual({
+        baseline: 100,
+        current: 150,
+        delta: 50,
+      });
+      expect(delta.skippedSnapshots).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("returns a normal missing-baseline result when no snapshot exists before the baseline time", () => {
+    const db = freshDb();
+    try {
+      recordMetricsSnapshot(db, {
+        filter: { projectId: "demo" },
+        now: "2026-06-10T00:00:00.000Z",
+      });
+
+      const delta = buildMetricsDelta(db, {
+        filter: { projectId: "demo" },
+        baselineAt: "2026-06-08T00:00:00.000Z",
+        now: "2026-06-13T00:00:00.000Z",
+      });
+
+      expect(delta).toMatchObject({
+        status: "missing-baseline",
+        baselineAt: "2026-06-08T00:00:00.000Z",
+        skippedSnapshots: [],
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("skips unsupported payload schemas and uses the next older valid snapshot", () => {
+    const db = freshDb();
+    try {
+      insertRun(db, {
+        runId: "run-baseline",
+        projectId: "demo",
+        repoId: "repo-a",
+        domain: "apps/web",
+        status: "approved",
+      });
+      const valid = recordMetricsSnapshot(db, {
+        filter: { projectId: "demo" },
+        now: "2026-06-01T00:00:00.000Z",
+      });
+      db.prepare(
+        `INSERT INTO metrics_snapshots
+           (snapshot_id, created_at, project_id, payload_json, payload_schema)
+         VALUES (
+           'msnap-future-schema', '2026-06-07T00:00:00.000Z', 'demo',
+           '{"schema":99}', 99
+         )`,
+      ).run();
+
+      const delta = buildMetricsDelta(db, {
+        filter: { projectId: "demo" },
+        baselineAt: "2026-06-08T00:00:00.000Z",
+        now: "2026-06-13T00:00:00.000Z",
+      });
+
+      expect(delta.status).toBe("ok");
+      if (delta.status !== "ok") return;
+      expect(delta.baseline.snapshotId).toBe(valid.snapshotId);
+      expect(delta.skippedSnapshots).toEqual([
+        {
+          snapshotId: "msnap-future-schema",
+          createdAt: "2026-06-07T00:00:00.000Z",
+          reason: "unsupported payload_schema 99",
+        },
+      ]);
     } finally {
       db.close();
     }
