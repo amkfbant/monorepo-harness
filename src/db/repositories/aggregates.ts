@@ -74,6 +74,12 @@ export interface DbMetricsSummary {
   failed: number;
   /** approved / (approved + changes_requested + rejected), or null if none */
   approvedRate: number | null;
+  /** root approved / root decided, or null if no root run is decided */
+  oneShotApprovalRate: number | null;
+  /** runs with at least one policy violation / totalRuns, or null if no runs */
+  policyViolationRate: number | null;
+  /** runs with secret_suspect_count > 0 / totalRuns, or null if no runs */
+  secretSuspectRate: number | null;
 }
 
 export function metricsSummary(
@@ -97,6 +103,42 @@ export function metricsSummary(
   const failed = Object.entries(byStatus)
     .filter(([s]) => s.startsWith("failed"))
     .reduce((sum, [, n]) => sum + n, 0);
+  const rootSql =
+    sql === ""
+      ? "WHERE parent_run_id IS NULL"
+      : `${sql} AND parent_run_id IS NULL`;
+  const secretSql =
+    sql === ""
+      ? "WHERE secret_suspect_count > 0"
+      : `${sql} AND secret_suspect_count > 0`;
+  const rootDecision = db
+    .prepare(
+      `SELECT
+         sum(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved,
+         sum(CASE WHEN status IN ('approved', 'changes_requested', 'rejected')
+           THEN 1 ELSE 0 END) AS decided
+       FROM runs ${rootSql}`,
+    )
+    .get(...params) as { approved: number | null; decided: number | null };
+  const rootApproved = rootDecision.approved ?? 0;
+  const rootDecided = rootDecision.decided ?? 0;
+  const policyViolationRuns = (
+    db
+      .prepare(
+        `SELECT count(DISTINCT v.run_id) AS n
+         FROM policy_violations v
+         JOIN (SELECT run_id FROM runs ${sql}) scoped
+           ON scoped.run_id = v.run_id`,
+      )
+      .get(...params) as { n: number }
+  ).n;
+  const secretSuspectRuns = (
+    db
+      .prepare(
+        `SELECT count(*) AS n FROM runs ${secretSql}`,
+      )
+      .get(...params) as { n: number }
+  ).n;
   return {
     totalRuns: total,
     byStatus,
@@ -104,6 +146,10 @@ export function metricsSummary(
     needsReview: byStatus.needs_review ?? 0,
     failed,
     approvedRate: decided === 0 ? null : approved / decided,
+    oneShotApprovalRate:
+      rootDecided === 0 ? null : rootApproved / rootDecided,
+    policyViolationRate: total === 0 ? null : policyViolationRuns / total,
+    secretSuspectRate: total === 0 ? null : secretSuspectRuns / total,
   };
 }
 

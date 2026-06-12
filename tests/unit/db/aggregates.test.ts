@@ -41,18 +41,42 @@ function preV19Db(): Database.Database {
   return db;
 }
 
+interface InsertRunOptions {
+  parentRunId?: string;
+  secretSuspectCount?: number;
+}
+
 function insertRun(
   db: Database.Database,
   runId: string,
   projectId: string | null,
   status: string,
+  options: InsertRunOptions = {},
 ): void {
   db.prepare(
     `INSERT INTO runs (run_id, repo_id, project_id, domain, workflow,
-       base_branch, status, started_at, source_meta_sha256, updated_at)
+       base_branch, status, started_at, parent_run_id, secret_suspect_count,
+       source_meta_sha256, updated_at)
      VALUES (?, 'demo', ?, 'apps/web', 'domain-coding', 'main', ?,
-       '2026-05-21T00:00:00Z', 'x', '2026-05-22T00:00:00Z')`,
-  ).run(runId, projectId, status);
+       '2026-05-21T00:00:00Z', ?, ?, 'x', '2026-05-22T00:00:00Z')`,
+  ).run(
+    runId,
+    projectId,
+    status,
+    options.parentRunId ?? null,
+    options.secretSuspectCount ?? null,
+  );
+}
+
+function insertPolicyViolation(
+  db: Database.Database,
+  runId: string,
+  path: string,
+): void {
+  db.prepare(
+    `INSERT INTO policy_violations (run_id, path, rule, reason)
+     VALUES (?, ?, 'deny_write', 'outside scope')`,
+  ).run(runId, path);
 }
 
 function insertCandidate(
@@ -96,6 +120,92 @@ describe("aggregates", () => {
     const other = metricsSummary(db, { projectId: "other" });
     expect(other.totalRuns).toBe(1);
     expect(other.needsReview).toBe(1);
+  });
+
+  it("metricsSummary reports one-shot approval rate over root decided runs", () => {
+    const db = freshDb();
+    try {
+      insertRun(db, "root-approved-a", "demo", "approved");
+      insertRun(db, "root-approved-b", "demo", "approved");
+      insertRun(db, "root-changes", "demo", "changes_requested");
+      insertRun(db, "child-approved", "demo", "approved", {
+        parentRunId: "root-changes",
+      });
+
+      expect(metricsSummary(db).oneShotApprovalRate).toBe(2 / 3);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("metricsSummary reports policy violation rate over scoped runs", () => {
+    const db = freshDb();
+    try {
+      insertRun(db, "run-with-violation", "demo", "approved");
+      insertRun(db, "run-clean-a", "demo", "approved");
+      insertRun(db, "run-clean-b", "demo", "approved");
+      insertPolicyViolation(db, "run-with-violation", "src/app.ts");
+      insertPolicyViolation(db, "run-with-violation", "src/other.ts");
+
+      expect(metricsSummary(db).policyViolationRate).toBe(1 / 3);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("metricsSummary reports secret suspect rate", () => {
+    const db = freshDb();
+    try {
+      insertRun(db, "run-secret-a", "demo", "approved", {
+        secretSuspectCount: 2,
+      });
+      insertRun(db, "run-secret-b", "demo", "approved", {
+        secretSuspectCount: 1,
+      });
+      insertRun(db, "run-clean", "demo", "approved", {
+        secretSuspectCount: 0,
+      });
+
+      expect(metricsSummary(db).secretSuspectRate).toBe(2 / 3);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("metricsSummary reports null run KPI rates for an empty DB", () => {
+    const db = freshDb();
+    try {
+      const summary = metricsSummary(db);
+      expect(summary.oneShotApprovalRate).toBeNull();
+      expect(summary.policyViolationRate).toBeNull();
+      expect(summary.secretSuspectRate).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("metricsSummary applies project scope to run KPI rates", () => {
+    const db = freshDb();
+    try {
+      insertRun(db, "demo-approved", "demo", "approved", {
+        secretSuspectCount: 1,
+      });
+      insertRun(db, "demo-changes", "demo", "changes_requested", {
+        secretSuspectCount: 0,
+      });
+      insertRun(db, "other-approved", "other", "approved", {
+        secretSuspectCount: 0,
+      });
+      insertPolicyViolation(db, "demo-approved", "src/demo.ts");
+      insertPolicyViolation(db, "other-approved", "src/other.ts");
+
+      const demo = metricsSummary(db, { projectId: "demo" });
+      expect(demo.oneShotApprovalRate).toBe(1 / 2);
+      expect(demo.policyViolationRate).toBe(1 / 2);
+      expect(demo.secretSuspectRate).toBe(1 / 2);
+    } finally {
+      db.close();
+    }
   });
 
   it("inboxSummary buckets runs and scopes by project", () => {
