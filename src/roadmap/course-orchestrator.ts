@@ -341,7 +341,12 @@ export class CourseOrchestrator {
         const hitchId = action.hitchIds[j]!;
         if (options.driveHitch !== undefined) {
           options.beforeDriveHitch?.();
-          const gate = this.checkDriveGate(hitches, convergence, hitchId);
+          const gate = this.checkDriveGate(
+            hitches,
+            convergence,
+            hitchId,
+            input.createdBy ?? "planner",
+          );
           if (gate.kind === "blocked_hitch") {
             phaseOutcomes.push({
               phaseId: phase.phaseId,
@@ -520,6 +525,7 @@ export class CourseOrchestrator {
     hitches: HitchRepository,
     convergence: ConvergenceService,
     hitchId: string,
+    createdBy: string,
   ):
     | { kind: "drive" }
     | { kind: "blocked_hitch"; decision: string }
@@ -529,6 +535,7 @@ export class CourseOrchestrator {
         repository: hitches,
         hitchId,
         mutationKind: "hitch.orchestrate",
+        syncCreatedBy: createdBy,
       });
       return { kind: "drive" };
     } catch (e) {

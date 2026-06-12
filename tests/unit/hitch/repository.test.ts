@@ -639,11 +639,15 @@ describe("reopenSession (#76)", () => {
     const { db, repo } = freshRepo();
     try {
       createGoal(repo);
-      repo.updateStatus("goal-test", "closed", "all done");
+      repo.updateStatus("goal-test", "closed", "all done", {
+        createdBy: "closer",
+      });
       const before = repo.requireSession("goal-test");
       expect(before.status).toBe("closed");
       expect(before.closedAt).not.toBeNull();
       const after = repo.reopenSession("goal-test", {
+        reason: "late P1",
+        createdBy: "operator",
         extendIterations: 3,
         extendReviewCycles: 2,
         extendReruns: 1,
@@ -654,6 +658,10 @@ describe("reopenSession (#76)", () => {
       expect(after.maxIterations).toBe(before.maxIterations + 3);
       expect(after.maxReviewCycles).toBe(before.maxReviewCycles + 2);
       expect(after.maxReruns).toBe(before.maxReruns + 1);
+      expect(repo.listLifecycleEvents("goal-test")).toMatchObject([
+        { event: "closed", reason: "all done", createdBy: "closer" },
+        { event: "reopened", reason: "late P1", createdBy: "operator" },
+      ]);
     } finally {
       db.close();
     }
@@ -663,10 +671,127 @@ describe("reopenSession (#76)", () => {
     const { db, repo } = freshRepo();
     try {
       createGoal(repo);
-      repo.updateStatus("goal-test", "budget_exhausted", "out of budget");
-      expect(repo.reopenSession("goal-test").status).toBe("open");
+      repo.updateStatus("goal-test", "budget_exhausted", "out of budget", {
+        createdBy: "budgeter",
+      });
+      expect(
+        repo.reopenSession("goal-test", {
+          reason: "add budget",
+          createdBy: "operator",
+        }).status,
+      ).toBe("open");
     } finally {
       db.close();
+    }
+  });
+
+  it("persists cancel reasons in lifecycle events", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.updateStatus("goal-test", "cancelled", "abandoned", {
+        createdBy: "operator",
+        now: "2026-06-12T00:00:00.000Z",
+      });
+      expect(repo.listLifecycleEvents("goal-test")).toMatchObject([
+        {
+          event: "cancelled",
+          reason: "abandoned",
+          createdAt: "2026-06-12T00:00:00.000Z",
+          createdBy: "operator",
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("records each reopen as a separate lifecycle event", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.updateStatus("goal-test", "closed", "first close", {
+        createdBy: "closer",
+      });
+      repo.reopenSession("goal-test", {
+        reason: "first late finding",
+        createdBy: "operator",
+      });
+      repo.updateStatus("goal-test", "closed", "second close", {
+        createdBy: "closer",
+      });
+      repo.reopenSession("goal-test", {
+        reason: "second late finding",
+        createdBy: "operator",
+      });
+      expect(
+        repo
+          .listLifecycleEvents("goal-test")
+          .filter((event) => event.event === "reopened")
+          .map((event) => event.reason),
+      ).toEqual(["first late finding", "second late finding"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not record a reopen event when the status update rolls back", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.updateStatus("goal-test", "closed", "done", { createdBy: "closer" });
+      db.prepare(
+        `CREATE TRIGGER fail_reopen_update
+           BEFORE UPDATE OF status ON hitch_sessions
+           WHEN NEW.hitch_id = 'goal-test' AND NEW.status = 'open'
+         BEGIN
+           SELECT RAISE(ABORT, 'forced reopen failure');
+         END`,
+      ).run();
+      expect(() =>
+        repo.reopenSession("goal-test", {
+          reason: "should roll back",
+          createdBy: "operator",
+        }),
+      ).toThrow(/forced reopen failure/);
+      expect(repo.requireSession("goal-test").status).toBe("closed");
+      expect(
+        repo
+          .listLifecycleEvents("goal-test")
+          .filter((event) => event.event === "reopened"),
+      ).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not record close or cancel events when the status update rolls back", () => {
+    for (const status of ["closed", "cancelled"] as const) {
+      const { db, repo } = freshRepo();
+      try {
+        createGoal(repo);
+        db.prepare(
+          `CREATE TRIGGER fail_terminal_update
+             BEFORE UPDATE OF status ON hitch_sessions
+             WHEN NEW.hitch_id = 'goal-test' AND NEW.status = '${status}'
+           BEGIN
+             SELECT RAISE(ABORT, 'forced terminal failure');
+           END`,
+        ).run();
+        expect(() =>
+          repo.updateStatus("goal-test", status, "should roll back", {
+            createdBy: "operator",
+          }),
+        ).toThrow(/forced terminal failure/);
+        expect(repo.requireSession("goal-test").status).toBe("open");
+        expect(
+          repo
+            .listLifecycleEvents("goal-test")
+            .filter((event) => event.event === status),
+        ).toEqual([]);
+      } finally {
+        db.close();
+      }
     }
   });
 
@@ -674,8 +799,15 @@ describe("reopenSession (#76)", () => {
     const { db, repo } = freshRepo();
     try {
       createGoal(repo);
-      repo.updateStatus("goal-test", "cancelled", "abandoned");
-      expect(() => repo.reopenSession("goal-test")).toThrow(/not a reopenable/);
+      repo.updateStatus("goal-test", "cancelled", "abandoned", {
+        createdBy: "operator",
+      });
+      expect(() =>
+        repo.reopenSession("goal-test", {
+          reason: "retry",
+          createdBy: "operator",
+        }),
+      ).toThrow(/not a reopenable/);
     } finally {
       db.close();
     }
@@ -685,7 +817,12 @@ describe("reopenSession (#76)", () => {
     const { db, repo } = freshRepo();
     try {
       createGoal(repo);
-      expect(() => repo.reopenSession("goal-test")).toThrow(/not a reopenable/);
+      expect(() =>
+        repo.reopenSession("goal-test", {
+          reason: "retry",
+          createdBy: "operator",
+        }),
+      ).toThrow(/not a reopenable/);
     } finally {
       db.close();
     }
@@ -698,8 +835,15 @@ describe("reopenSession (#76)", () => {
     const { db, repo } = freshRepo();
     try {
       createGoal(repo);
-      repo.updateStatus("goal-test", "diverging", "finding churn");
-      expect(() => repo.reopenSession("goal-test")).toThrow(/not a reopenable/);
+      repo.updateStatus("goal-test", "diverging", "finding churn", {
+        createdBy: "operator",
+      });
+      expect(() =>
+        repo.reopenSession("goal-test", {
+          reason: "retry",
+          createdBy: "operator",
+        }),
+      ).toThrow(/not a reopenable/);
     } finally {
       db.close();
     }

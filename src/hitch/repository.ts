@@ -21,6 +21,8 @@ import {
   type HitchFinding,
   type HitchFindingSeverity,
   type HitchFindingSource,
+  type HitchLifecycleEvent,
+  type HitchLifecycleEventName,
   type HitchLifecycleStatus,
   type HitchNextAction,
   type HitchPolicy,
@@ -198,6 +200,20 @@ export interface RecordHitchConvergenceDecisionInput {
   createdBy: string;
 }
 
+export interface UpdateHitchStatusOptions {
+  createdBy: string;
+  now?: string;
+}
+
+export interface ReopenHitchSessionOptions {
+  reason: string;
+  createdBy: string;
+  extendIterations?: number;
+  extendReviewCycles?: number;
+  extendReruns?: number;
+  now?: string;
+}
+
 interface HitchSessionRow {
   hitch_id: string;
   title: string;
@@ -321,6 +337,16 @@ interface HitchDecisionRow {
   created_by: string;
 }
 
+interface HitchLifecycleEventRow {
+  event_id: string;
+  hitch_id: string;
+  event: HitchLifecycleEventName;
+  reason: string;
+  detail_json: string | null;
+  created_at: string;
+  created_by: string;
+}
+
 /** Clamp a budget extension to a non-negative integer; non-finite (e.g. a NaN
  * from a bad CLI string) becomes 0 rather than reaching the SQL bind. */
 function nonNegInt(value: number | undefined): number {
@@ -439,24 +465,39 @@ export class HitchRepository {
   updateStatus(
     hitchId: string,
     status: HitchStatus,
-    note?: string,
-    now = new Date().toISOString(),
+    note: string | undefined,
+    opts: UpdateHitchStatusOptions,
   ): HitchSession {
+    const now = opts.now ?? new Date().toISOString();
     const closedAt =
       status === "closed" || status === "cancelled" ? now : null;
     const escalationReason = status === "escalated" ? note ?? null : null;
     const closeSummary = status === "closed" ? note ?? null : null;
-    this.db
-      .prepare(
-        `UPDATE hitch_sessions
-            SET status = ?, updated_at = ?,
-                closed_at = COALESCE(?, closed_at),
-                close_summary = COALESCE(?, close_summary),
-                escalation_reason = COALESCE(?, escalation_reason)
-          WHERE hitch_id = ?`,
-      )
-      .run(status, now, closedAt, closeSummary, escalationReason, hitchId);
-    return this.requireSession(hitchId);
+    const tx = this.db.transaction(() => {
+      const result = this.db
+        .prepare(
+          `UPDATE hitch_sessions
+              SET status = ?, updated_at = ?,
+                  closed_at = COALESCE(?, closed_at),
+                  close_summary = COALESCE(?, close_summary),
+                  escalation_reason = COALESCE(?, escalation_reason)
+            WHERE hitch_id = ?`,
+        )
+        .run(status, now, closedAt, closeSummary, escalationReason, hitchId);
+      if (result.changes !== 1) throw new DbError(`hitch not found: ${hitchId}`);
+      if (status === "closed" || status === "cancelled") {
+        this.insertLifecycleEvent({
+          hitchId,
+          event: status,
+          reason: note ?? "",
+          detail: null,
+          createdAt: now,
+          createdBy: opts.createdBy,
+        });
+      }
+      return this.requireSession(hitchId);
+    });
+    return tx.immediate();
   }
 
   /**
@@ -471,12 +512,7 @@ export class HitchRepository {
    */
   reopenSession(
     hitchId: string,
-    opts: {
-      extendIterations?: number;
-      extendReviewCycles?: number;
-      extendReruns?: number;
-      now?: string;
-    } = {},
+    opts: ReopenHitchSessionOptions,
   ): HitchSession {
     const session = this.requireSession(hitchId);
     if (!REOPENABLE_STATUSES.has(session.status)) {
@@ -486,24 +522,57 @@ export class HitchRepository {
       );
     }
     const now = opts.now ?? new Date().toISOString();
-    this.db
-      .prepare(
-        `UPDATE hitch_sessions
-            SET status = 'open', updated_at = ?,
-                closed_at = NULL, close_summary = NULL, escalation_reason = NULL,
-                max_iterations = max_iterations + ?,
-                max_review_cycles = max_review_cycles + ?,
-                max_reruns = max_reruns + ?
-          WHERE hitch_id = ?`,
-      )
-      .run(
-        now,
-        nonNegInt(opts.extendIterations),
-        nonNegInt(opts.extendReviewCycles),
-        nonNegInt(opts.extendReruns),
+    const extendIterations = nonNegInt(opts.extendIterations);
+    const extendReviewCycles = nonNegInt(opts.extendReviewCycles);
+    const extendReruns = nonNegInt(opts.extendReruns);
+    const tx = this.db.transaction(() => {
+      const result = this.db
+        .prepare(
+          `UPDATE hitch_sessions
+              SET status = 'open', updated_at = ?,
+                  closed_at = NULL, close_summary = NULL, escalation_reason = NULL,
+                  max_iterations = max_iterations + ?,
+                  max_review_cycles = max_review_cycles + ?,
+                  max_reruns = max_reruns + ?
+            WHERE hitch_id = ?`,
+        )
+        .run(
+          now,
+          extendIterations,
+          extendReviewCycles,
+          extendReruns,
+          hitchId,
+        );
+      if (result.changes !== 1) throw new DbError(`hitch not found: ${hitchId}`);
+      this.insertLifecycleEvent({
         hitchId,
-      );
-    return this.requireSession(hitchId);
+        event: "reopened",
+        reason: opts.reason,
+        detail: {
+          previousStatus: session.status,
+          budgetExtensions: {
+            iterations: extendIterations,
+            reviewCycles: extendReviewCycles,
+            reruns: extendReruns,
+          },
+        },
+        createdAt: now,
+        createdBy: opts.createdBy,
+      });
+      return this.requireSession(hitchId);
+    });
+    return tx.immediate();
+  }
+
+  listLifecycleEvents(hitchId: string): HitchLifecycleEvent[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM hitch_lifecycle_events
+          WHERE hitch_id = ?
+          ORDER BY created_at ASC, rowid ASC`,
+      )
+      .all(hitchId) as HitchLifecycleEventRow[];
+    return rows.map(rowToLifecycleEvent);
   }
 
   createAttempt(input: CreateHitchAttemptInput): HitchAttempt {
@@ -1241,6 +1310,32 @@ export class HitchRepository {
     return rows.map(rowToDecision);
   }
 
+  private insertLifecycleEvent(input: {
+    hitchId: string;
+    event: HitchLifecycleEventName;
+    reason: string;
+    detail: Record<string, unknown> | null;
+    createdAt: string;
+    createdBy: string;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO hitch_lifecycle_events (
+           event_id, hitch_id, event, reason, detail_json, created_at, created_by
+         )
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        `event-${randomUUID()}`,
+        input.hitchId,
+        input.event,
+        input.reason,
+        input.detail === null ? null : json(input.detail),
+        input.createdAt,
+        input.createdBy,
+      );
+  }
+
   private nextIteration(hitchId: string): number {
     const row = this.db
       .prepare(
@@ -1436,6 +1531,18 @@ function rowToDecision(row: HitchDecisionRow): HitchConvergenceDecisionRecord {
       row.recommended_next_action === null
         ? null
         : (JSON.parse(row.recommended_next_action) as HitchNextAction),
+    createdAt: row.created_at,
+    createdBy: row.created_by,
+  };
+}
+
+function rowToLifecycleEvent(row: HitchLifecycleEventRow): HitchLifecycleEvent {
+  return {
+    eventId: row.event_id,
+    hitchId: row.hitch_id,
+    event: row.event,
+    reason: row.reason,
+    detail: row.detail_json === null ? null : parseRecord(row.detail_json),
     createdAt: row.created_at,
     createdBy: row.created_by,
   };

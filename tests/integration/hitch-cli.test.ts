@@ -191,6 +191,86 @@ describe("hitch CLI", () => {
     expect(closed.status).toBe("closed");
   });
 
+  it("records reopen lifecycle events and exposes them in status JSON", () => {
+    const { root, scopePath, closePath } = setup();
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch",
+        "start",
+        "--title",
+        "Reopen audit",
+        "--domain",
+        "hitch",
+        "--scope-file",
+        scopePath,
+        "--close-file",
+        closePath,
+        "--json",
+      ]),
+    );
+
+    expect(
+      runCli(root, [
+        "hitch",
+        "close",
+        hitch.hitchId,
+        "--summary",
+        "done once",
+        "--force",
+      ]).code,
+    ).toBe(0);
+    expect(
+      runCli(root, [
+        "hitch",
+        "reopen",
+        hitch.hitchId,
+        "--reason",
+        "late finding",
+      ]).code,
+    ).toBe(0);
+    expect(
+      runCli(root, [
+        "hitch",
+        "close",
+        hitch.hitchId,
+        "--summary",
+        "done twice",
+        "--force",
+        "--created-by",
+        "closer",
+      ]).code,
+    ).toBe(0);
+    expect(
+      runCli(root, [
+        "hitch",
+        "reopen",
+        hitch.hitchId,
+        "--reason",
+        "second late finding",
+        "--created-by",
+        "operator",
+      ]).code,
+    ).toBe(0);
+
+    const status = json<{
+      lifecycleEvents: {
+        event: string;
+        reason: string;
+        createdBy: string;
+      }[];
+    }>(runCli(root, ["hitch", "status", hitch.hitchId, "--json"]));
+    expect(status.lifecycleEvents).toMatchObject([
+      { event: "closed", reason: "done once", createdBy: "cli" },
+      { event: "reopened", reason: "late finding", createdBy: "cli" },
+      { event: "closed", reason: "done twice", createdBy: "closer" },
+      {
+        event: "reopened",
+        reason: "second late finding",
+        createdBy: "operator",
+      },
+    ]);
+  });
+
   it("defers an out-of-scope finding to a backlog follow-up", () => {
     const { root, scopePath, closePath } = setup();
     const hitch = json<{ hitchId: string }>(

@@ -308,9 +308,17 @@ export function registerHitchCommands(
           const session = repo.requireSession(hitchId);
           const findings = repo.listFindings({ hitchId, limit: 10_000 });
           const decisions = repo.listDecisions(hitchId);
+          const lifecycleEvents = repo.listLifecycleEvents(hitchId);
           const closeChecks = repo.listCloseChecks(hitchId);
           const convergence = new ConvergenceService(repo).evaluate(hitchId);
-          return { session, findings, decisions, closeChecks, convergence };
+          return {
+            session,
+            findings,
+            decisions,
+            lifecycleEvents,
+            closeChecks,
+            convergence,
+          };
         });
         if (raw.json === true) {
           process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -325,6 +333,7 @@ export function registerHitchCommands(
     .description("close a hitch after convergence says close_ready")
     .argument("<hitch-id>", "hitch id")
     .requiredOption("--summary <text>", "close summary")
+    .option("--created-by <actor>", "actor label", "cli")
     .option("--force", "close even when convergence is not close_ready", false)
     .option("--json", "emit JSON", false)
     .action((hitchId: string, raw: Record<string, unknown>) => {
@@ -336,7 +345,9 @@ export function registerHitchCommands(
               `hitch ${hitchId} is not close_ready (decision=${convergence.decision}); use --force to override`,
             );
           }
-          return repo.updateStatus(hitchId, "closed", String(raw.summary));
+          return repo.updateStatus(hitchId, "closed", String(raw.summary), {
+            createdBy: String(raw.createdBy),
+          });
         });
         writeOutput(raw, result, `hitch=${result.hitchId} status=${result.status}\n`);
       });
@@ -347,11 +358,14 @@ export function registerHitchCommands(
     .description("cancel a hitch")
     .argument("<hitch-id>", "hitch id")
     .requiredOption("--reason <text>", "cancel reason")
+    .option("--created-by <actor>", "actor label", "cli")
     .option("--json", "emit JSON", false)
     .action((hitchId: string, raw: Record<string, unknown>) => {
       withHitchErrorExit(() => {
         const result = withHitchRepo(opts, ({ repo }) =>
-          repo.updateStatus(hitchId, "cancelled", String(raw.reason)),
+          repo.updateStatus(hitchId, "cancelled", String(raw.reason), {
+            createdBy: String(raw.createdBy),
+          }),
         );
         writeOutput(raw, result, `hitch=${result.hitchId} status=${result.status}\n`);
       });
@@ -365,6 +379,7 @@ export function registerHitchCommands(
     )
     .argument("<hitch-id>", "hitch id")
     .requiredOption("--reason <text>", "reopen reason")
+    .option("--created-by <actor>", "actor label", "cli")
     .option("--extend-iterations <n>", "extend the iteration budget", "3")
     .option("--extend-review-cycles <n>", "extend the review-cycle budget", "3")
     .option("--extend-reruns <n>", "extend the rerun budget", "2")
@@ -373,6 +388,8 @@ export function registerHitchCommands(
       withHitchErrorExit(() => {
         const result = withHitchRepo(opts, ({ repo }) =>
           repo.reopenSession(hitchId, {
+            reason: String(raw.reason),
+            createdBy: String(raw.createdBy),
             extendIterations: parseNonNegativeInt(
               raw.extendIterations,
               "--extend-iterations",
@@ -1201,7 +1218,9 @@ export function registerHitchCommands(
               }
               const reason = e instanceof Error ? e.message : String(e);
               withHitchRepo(opts, ({ repo }) =>
-                repo.updateStatus(hitchId, "escalated", reason),
+                repo.updateStatus(hitchId, "escalated", reason, {
+                  createdBy: "cli",
+                }),
               );
               return { kind: "escalated", reason };
             }
@@ -1215,6 +1234,7 @@ export function registerHitchCommands(
                   hitchId,
                   "escalated",
                   result.escalateReason as string,
+                  { createdBy: "cli" },
                 ),
               );
             }

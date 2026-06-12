@@ -364,9 +364,9 @@ harness hitch start --title <text> [--hitch-id <id>] [--project <id>] [--repo-id
   [--max-total-new-findings <n>] [--json]
 harness hitch list [--status <status>] [--project <id>] [--repo-id <id>] [--domain <domain>] [--limit <n>] [--json]
 harness hitch status <hitch-id> [--json]
-harness hitch close <hitch-id> --summary <text> [--force] [--json]
-harness hitch cancel <hitch-id> --reason <text> [--json]
-harness hitch reopen <hitch-id> --reason <text> [--extend-iterations <n>] [--extend-review-cycles <n>] [--extend-reruns <n>] [--json]
+harness hitch close <hitch-id> --summary <text> [--created-by <actor>] [--force] [--json]
+harness hitch cancel <hitch-id> --reason <text> [--created-by <actor>] [--json]
+harness hitch reopen <hitch-id> --reason <text> [--created-by <actor>] [--extend-iterations <n>] [--extend-review-cycles <n>] [--extend-reruns <n>] [--json]
 ```
 
 Finding lifecycle:
@@ -422,6 +422,10 @@ harness hitch await-merge [<hitch-id>] --repo <path> [--all] [--repo-id <id>] \
   [--ingest-external-reviews] [--external-review-timeout <seconds>]
 ```
 
+`hitch status --json` は session / findings / convergence decisions /
+close checks / current convergence に加え、`lifecycleEvents`（`closed` /
+`cancelled` / `reopened` の reason・actor・timestamp）を返す。
+
 `hitch close` は convergence が `close_ready` でない限り `--force` を要求する。
 `check-convergence` は `diverging` / `budget_exhausted` / `escalate` で exit 2。
 MCP 経由の hitch close/cancel/scope expansion は confirmation-required。
@@ -438,6 +442,10 @@ finding 数の非減少）は不変の履歴から導出され、reopen は iter
 が再発火し全 mutation を再 block する＝operator に解消手段がない。divergence budget 延長を伴う
 設計は `docs/future-features.md` 参照。reopen 後は `hitch finding add` で finding を記録 →
 orchestrate が `needs_fix` → coder で修正する。
+`--reason` は `hitch_lifecycle_events` に `reopened` event として永続化される。
+`--created-by` 未指定時の actor は CLI では `cli`、MCP では `mcp:<clientName>`。
+close/cancel も同じ audit ledger に reason と actor を記録する。ledger は監査用で、
+convergence / rollup の状態判定には使わない。
 
 `hitch orchestrate` は hitch を terminal 状態（closed / pr_created / merged /
 escalated）まで bounded loop（`--max-steps`、既定 50）で自律駆動する。`--dry-run`

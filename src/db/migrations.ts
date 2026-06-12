@@ -23,6 +23,7 @@ import {
   MIGRATION_V20_STATEMENTS,
   MIGRATION_V21_STATEMENTS,
   MIGRATION_V22_STATEMENTS,
+  MIGRATION_V23_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -147,6 +148,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 22,
     name: "drop-db-stats-snapshots-v22",
     statements: MIGRATION_V22_STATEMENTS,
+  },
+  {
+    version: 23,
+    name: "hitch-lifecycle-events-v23",
+    statements: MIGRATION_V23_STATEMENTS,
   },
 ];
 

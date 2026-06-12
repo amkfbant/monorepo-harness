@@ -217,7 +217,9 @@ describe("rollupCourse (SP-1)", () => {
         });
       }
       if (targetDecision === "closed") {
-        hitches.updateStatus(h.hitchId, "closed", "declared closed");
+        hitches.updateStatus(h.hitchId, "closed", "declared closed", {
+          createdBy: "test",
+        });
       } else {
         hitches.recordCloseCheck({
           hitchId: h.hitchId,

@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1648,6 +1648,29 @@ export const MIGRATION_V22_STATEMENTS: readonly string[] = [
   "DROP TABLE IF EXISTS db_stats_snapshots",
 ];
 
+/**
+ * v23 — hitch lifecycle audit events.
+ *
+ * Audit-only ledger for operator-facing terminal/reopen transitions. It is not
+ * a state machine input; hitch_sessions.status remains the canonical lifecycle.
+ */
+export const MIGRATION_V23_STATEMENTS: readonly string[] = [
+  `CREATE TABLE hitch_lifecycle_events (
+     event_id TEXT PRIMARY KEY NOT NULL,
+     hitch_id TEXT NOT NULL REFERENCES hitch_sessions(hitch_id) ON DELETE CASCADE,
+     event TEXT NOT NULL CHECK (event IN ('reopened','closed','cancelled')),
+     reason TEXT NOT NULL,
+     detail_json TEXT,
+     created_at TEXT NOT NULL,
+     created_by TEXT NOT NULL
+   )`,
+  `CREATE INDEX hitch_lifecycle_events_hitch_idx
+     ON hitch_lifecycle_events(hitch_id, created_at)`,
+];
+
+/** Tables added by v23 (hitch lifecycle audit events). */
+export const V23_TABLE_NAMES = ["hitch_lifecycle_events"] as const;
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -1689,6 +1712,7 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V17_TABLE_NAMES,
   ...V18_TABLE_NAMES,
   ...V21_TABLE_NAMES,
+  ...V23_TABLE_NAMES,
 ];
 
 /** Tables intentionally removed by later migrations. */

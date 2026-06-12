@@ -57,7 +57,7 @@ describe("schema v12", () => {
 
       const result = runMigrations(db);
       expect(result.applied).toEqual([
-        12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+        12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
       ]);
       expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
 
