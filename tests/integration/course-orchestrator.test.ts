@@ -500,7 +500,12 @@ describe("CourseOrchestrator", () => {
                 runId: "course-orch-contender",
                 pid: process.pid,
                 hostname: hostname(),
-                now: new Date(Date.now() + 1_000),
+                // HARNESS_LOCK_LEASE_MS is 10ms here so the original course
+                // lease expires fast enough to be stolen. Acquire the contender
+                // far in the future so its own (10ms) lease is still active when
+                // the final assertion runs — otherwise a slow CI runner can let
+                // the contender lock expire before then (flaky `undefined`).
+                now: new Date(Date.now() + 600_000),
               });
               return;
             }
