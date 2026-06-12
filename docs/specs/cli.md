@@ -618,6 +618,10 @@ harness metrics failures --since 30d       # failed-* の status 別内訳
 `metrics summary` の `--project` / `--repo-id`（Phase 6）は DB read model 経由で
 集計する（指定時は files から DB を再構築）。scoped path でも `--since`（`runs.started_at`
 への下限）と `--domain` が効く。scope 無しは従来の file-based 集計。
+scoped path の text / JSON 出力には `metricsSummary` の KPI として
+`oneShotApprovalRate` / `policyViolationRate` / `secretSuspectRate` を含める。
+text 出力は既存の section 形式に続けて hitch metrics / MCP confirmations の summary
+（hitch は project/repo/domain/since scope、MCP confirmations は since scope のみ）も表示する。
 
 - **Runs**: total + status 別件数
 - **Review**: approved / changes_requested / rejected 件数、approved 率、reviewer 別件数

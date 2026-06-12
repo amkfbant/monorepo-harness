@@ -11,7 +11,14 @@ import {
   knowledgeDigest,
   backlogList,
   type AggregateFilter,
+  type DbMetricsSummary,
 } from "../db/repositories/aggregates.js";
+import {
+  hitchMetricsSummary,
+  mcpConfirmationSummary,
+  type DbHitchMetricsSummary,
+  type DbMcpConfirmationSummary,
+} from "../db/repositories/convergence-aggregates.js";
 
 /**
  * Project-scoped CLI paths (Phase 6-6).
@@ -103,25 +110,67 @@ function emit(raw: Record<string, unknown>, value: unknown, text: string): void 
   );
 }
 
+function pct(rate: number | null): string {
+  return rate === null ? "n/a" : `${(rate * 100).toFixed(0)}%`;
+}
+
+function fixed(value: number | null): string {
+  return value === null ? "n/a" : value.toFixed(1);
+}
+
+function statusLines(values: Record<string, number>): string {
+  return Object.keys(values)
+    .sort()
+    .map((s) => `  ${s}: ${values[s]}`)
+    .join("\n");
+}
+
+interface ScopedMetricsOutput extends DbMetricsSummary {
+  hitch: DbHitchMetricsSummary;
+  mcpConfirmations: DbMcpConfirmationSummary;
+}
+
 export function runScopedMetrics(
   harnessRoot: string,
   raw: Record<string, unknown>,
 ): void {
   const filter = scopeFilter(raw);
-  const m = withRefreshedDb(harnessRoot, (db) => metricsSummary(db, filter));
-  const rate =
-    m.approvedRate === null ? "n/a" : `${(m.approvedRate * 100).toFixed(0)}%`;
-  const byStatus = Object.keys(m.byStatus)
-    .sort()
-    .map((s) => `  ${s}: ${m.byStatus[s]}`)
-    .join("\n");
+  const m = withRefreshedDb(harnessRoot, (db): ScopedMetricsOutput => {
+    const runMetrics = metricsSummary(db, filter);
+    return {
+      ...runMetrics,
+      hitch: hitchMetricsSummary(db, filter),
+      mcpConfirmations: mcpConfirmationSummary(db, {
+        ...(filter.since !== undefined ? { since: filter.since } : {}),
+      }),
+    };
+  });
+  const byStatus = statusLines(m.byStatus);
+  const hitchByStatus = statusLines(m.hitch.byStatus);
+  const confirmationByStatus = statusLines(m.mcpConfirmations.byStatus);
   emit(
     raw,
     m,
     `metrics ${scopeLabel(filter)}\n` +
       `total runs: ${m.totalRuns}  approved: ${m.approved}  ` +
       `needs_review: ${m.needsReview}  failed: ${m.failed}  ` +
-      `approved rate: ${rate}\n${byStatus}\n`,
+      `approved rate: ${pct(m.approvedRate)}\n` +
+      `one-shot approval rate: ${pct(m.oneShotApprovalRate)}\n` +
+      `policy violation rate: ${pct(m.policyViolationRate)}\n` +
+      `secret suspect rate: ${pct(m.secretSuspectRate)}\n` +
+      `${byStatus}\n` +
+      `hitch metrics:\n` +
+      `  total sessions: ${m.hitch.totalSessions}\n` +
+      `  avg review cycles: ${fixed(m.hitch.avgReviewCycles)}\n` +
+      `  avg rerun attempts: ${fixed(m.hitch.avgRerunAttempts)}\n` +
+      `  finding resolution rate: ${pct(m.hitch.findingResolutionRate)}\n` +
+      `  reopen rate: ${pct(m.hitch.reopenRate)}\n` +
+      `${hitchByStatus}\n` +
+      `mcp confirmations:\n` +
+      `  total: ${m.mcpConfirmations.total}\n` +
+      `  confirmation rate: ${pct(m.mcpConfirmations.confirmationRate)}\n` +
+      `  expired rate: ${pct(m.mcpConfirmations.expiredRate)}\n` +
+      `${confirmationByStatus}\n`,
   );
 }
 

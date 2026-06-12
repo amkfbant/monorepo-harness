@@ -32,7 +32,12 @@ HTML エクスポートだった。Phase 6 では **DB（[`db.md`](./db.md)）�
 - `consistencyStatus` — `ok` / `warn` / `error`（[`db.md`](./db.md) の checker）
 - `filters` — 適用中の project / repo（`DashboardFilters` は project / repo のみ）
 - `projects` — project ごとの health / policy provenance / drift
-- `overview` — run / review / retry / safety 指標
+- `overview` — run / review / retry / safety 指標。`DbMetricsSummary` の
+  `oneShotApprovalRate` / `policyViolationRate` / `secretSuspectRate` を含む
+- `hitchMetrics` — `DbHitchMetricsSummary`（hitch session / review cycle /
+  rerun attempt / finding resolution KPI）
+- `mcpConfirmations` — `DbMcpConfirmationSummary`（confirmation request status
+  と confirmation / expired rate）
 - `inbox` — needs_review / changes_requested / failed / cleanup / knowledge
 - `recentRuns` — filter 済みの run 一覧
 - `backlog` / `knowledge`

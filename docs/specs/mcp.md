@@ -430,9 +430,13 @@ knowledge-candidate run 数 ＋ **operational 知識**の slice（`operationalKn
 最近エントリ `recent`、issue #57。reference material であり action queue ではない）。
 （**時間窓なし**＝現在の actionable 状態。knowledge bucket が窓非対応のため `sinceHours` は
 出さない。operational は project/repo scope に **portable entry も含めて** 集計）。
-`harness.metrics` は run 件数（status 別）＋ review
-approved-rate（DB read-model の `metricsSummary`）。絞り込みは inbox=`projectId`/`repoId`/
-`domain`、metrics=それ＋`sinceHours`。**scope**: `allowedProjects` が空（unrestricted）なら
+`harness.metrics` は run 件数（status 別）＋ review approved-rate（DB read-model の
+`metricsSummary`。`oneShotApprovalRate` / `policyViolationRate` /
+`secretSuspectRate` を含む）をトップレベルに返し、追加で `hitch`
+（`DbHitchMetricsSummary`）と `mcpConfirmations`（`DbMcpConfirmationSummary`）を返す。
+`hitch` は呼び出し元の `projectId` / `repoId` / `domain` / `sinceHours` scope を伝播し、
+`mcpConfirmations` は `sinceHours` 由来の since のみ伝播する。絞り込みは
+inbox=`projectId`/`repoId`/`domain`、metrics=それ＋`sinceHours`。**scope**: `allowedProjects` が空（unrestricted）なら
 repo 横断、restricted なら `projectId` がその集合に入る必要がある（未指定時は allowed が
 1 つなら既定、複数なら `project_required` で deny＝単一 projectId 集計で部分集合を跨がない
 fail-closed）。

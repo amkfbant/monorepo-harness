@@ -2,7 +2,14 @@ import {
   inboxSummary,
   metricsSummary,
   type AggregateFilter,
+  type DbMetricsSummary,
 } from "../../db/repositories/aggregates.js";
+import {
+  hitchMetricsSummary,
+  mcpConfirmationSummary,
+  type DbHitchMetricsSummary,
+  type DbMcpConfirmationSummary,
+} from "../../db/repositories/convergence-aggregates.js";
 import type { McpConfig } from "../security/config.js";
 import {
   errorResult,
@@ -19,6 +26,11 @@ export interface AggregateArgs {
   domain?: string;
   /** lower bound on the table's date column, in hours back from now */
   sinceHours?: number;
+}
+
+export interface McpMetricsSummary extends DbMetricsSummary {
+  hitch: DbHitchMetricsSummary;
+  mcpConfirmations: DbMcpConfirmationSummary;
 }
 
 /**
@@ -101,7 +113,15 @@ export function metricsTool(
   if ("error" in scoped) return scoped.error;
   const filter = buildFilter(args, scoped.projectId);
   if ("error" in filter) return filter.error;
-  return withReadonlyDb(context, ({ db }) =>
-    ok("metrics", metricsSummary(db, filter)),
-  ) as HarnessMcpToolResult;
+  return withReadonlyDb(context, ({ db }) => {
+    const runMetrics = metricsSummary(db, filter);
+    const data: McpMetricsSummary = {
+      ...runMetrics,
+      hitch: hitchMetricsSummary(db, filter),
+      mcpConfirmations: mcpConfirmationSummary(db, {
+        ...(filter.since !== undefined ? { since: filter.since } : {}),
+      }),
+    };
+    return ok("metrics", data);
+  }) as HarnessMcpToolResult;
 }
