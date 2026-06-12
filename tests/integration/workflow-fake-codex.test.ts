@@ -212,6 +212,9 @@ describe("runDomainCoding (fake codex)", () => {
     const secret = "AKIAABCDEFGHIJKLMNOP";
     const runner: CodexExecRunner = {
       async run(input) {
+        expect(input.logPaths.events.endsWith(".codex-events.raw.jsonl")).toBe(
+          true,
+        );
         writeFileSync(
           join(input.worktreePath, "apps/user/src/profile.ts"),
           "export const x = 1;\n",
@@ -264,6 +267,7 @@ describe("runDomainCoding (fake codex)", () => {
     );
     const runEvents = parseEvents(runDir);
 
+    expect(existsSync(join(runDir, ".codex-events.raw.jsonl"))).toBe(false);
     expect(codexEvents).not.toContain(secret);
     expect(codexEvents).toContain("redaction.dropped_line");
     expect(codexEvents).toContain(
@@ -287,6 +291,115 @@ describe("runDomainCoding (fake codex)", () => {
       const blob = readArtifactBlob(db, artifact.blob_sha256 ?? "");
       expect(blob?.toString("utf8")).toBe(codexEvents);
       expect(blob?.toString("utf8")).not.toContain(secret);
+      const rawArtifact = db
+        .prepare(
+          `SELECT count(*) AS n FROM artifacts
+           WHERE run_id = ? AND relative_path = '.codex-events.raw.jsonl'`,
+        )
+        .get(r.runId) as { n: number };
+      expect(rawArtifact.n).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("publishes a fail-closed sentinel when redaction publish fails", async () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const runner: CodexExecRunner = {
+      async run(input) {
+        writeFileSync(
+          join(input.worktreePath, "apps/user/src/profile.ts"),
+          "export const x = 4;\n",
+        );
+        writeFileSync(input.logPaths.stdout, "done\n", "utf8");
+        writeFileSync(input.logPaths.stderr, "", "utf8");
+        writeFileSync(
+          input.logPaths.events,
+          [
+            JSON.stringify({
+              type: "item.completed",
+              item: {
+                type: "command_execution",
+                aggregated_output: `leaked ${secret}\n`,
+              },
+            }),
+            JSON.stringify({
+              type: "turn.completed",
+              usage: {
+                input_tokens: 1,
+                cached_input_tokens: 0,
+                output_tokens: 1,
+                reasoning_output_tokens: 0,
+              },
+            }),
+            "",
+          ].join("\n"),
+          "utf8",
+        );
+        return { exitCode: 0, timedOut: false, durationMs: 10 };
+      },
+    };
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "redaction publish fails",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+      codexEventsIo: {
+        async rename(): Promise<void> {
+          throw new Error("simulated rename failure");
+        },
+      },
+    });
+
+    expect(r.status).toBe("needs_review");
+    const runDir = join(harness, "runs", r.runId);
+    const official = readFileSync(join(runDir, "codex-events.jsonl"), "utf8");
+    expect(official).toBe(
+      `${JSON.stringify({
+        type: "redaction.failed",
+        reason: "rename_failed",
+      })}\n`,
+    );
+    expect(official).not.toContain(secret);
+    expect(existsSync(join(runDir, ".codex-events.raw.jsonl"))).toBe(false);
+    expect(existsSync(join(runDir, ".codex-events.redacted.tmp"))).toBe(false);
+
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const usage = db
+        .prepare(
+          `SELECT input_tokens, cached_input_tokens, output_tokens,
+                  reasoning_output_tokens, total_tokens, usage_source
+             FROM run_usage WHERE run_id = ?`,
+        )
+        .get(r.runId) as {
+        input_tokens: number | null;
+        cached_input_tokens: number | null;
+        output_tokens: number | null;
+        reasoning_output_tokens: number | null;
+        total_tokens: number | null;
+        usage_source: string;
+      };
+      expect(usage).toEqual({
+        input_tokens: null,
+        cached_input_tokens: null,
+        output_tokens: null,
+        reasoning_output_tokens: null,
+        total_tokens: null,
+        usage_source: "unavailable",
+      });
+      const rawArtifact = db
+        .prepare(
+          `SELECT count(*) AS n FROM artifacts
+           WHERE run_id = ? AND relative_path = '.codex-events.raw.jsonl'`,
+        )
+        .get(r.runId) as { n: number };
+      expect(rawArtifact.n).toBe(0);
     } finally {
       db.close();
     }

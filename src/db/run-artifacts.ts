@@ -102,9 +102,12 @@ export interface IngestRunArtifactsResult {
 
 /**
  * Recursively yield every regular file under `dir`, keyed by a POSIX-style
- * path relative to the run dir. Dotfiles (the transient `.exporting`
- * marker, atomic-write temp files) and symlinks are skipped at every level
- * — a symlink artifact is never followed into the blob store.
+ * path relative to the run dir. Dotfiles are skipped at every level: they
+ * include transient `.exporting` markers, atomic-write temp files, and the
+ * quarantined raw Codex JSONL stream (`.codex-events.raw.jsonl`). Raw streams
+ * must never become artifact blobs; only the published `codex-events.jsonl`
+ * is ingestable. Symlinks are also skipped and never followed into the blob
+ * store.
  */
 function* walkRunArtifacts(
   dir: string,

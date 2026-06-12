@@ -222,6 +222,32 @@ describe("ingestRunArtifacts", () => {
     db.close();
   });
 
+  it("skips quarantined codex event dotfiles during artifact ingest", () => {
+    const db = freshDb();
+    const root = mkdtempSync(join(tmpdir(), "harness-ingest-"));
+    const runId = "run-x-dotfiles";
+    const runDir = join(root, runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(join(runDir, ".codex-events.raw.jsonl"), "raw secret\n");
+    writeFileSync(join(runDir, ".codex-events.redacted.tmp"), "tmp\n");
+    writeFileSync(
+      join(runDir, "codex-events.jsonl"),
+      `${JSON.stringify({ type: "turn.completed" })}\n`,
+    );
+
+    ingestRunArtifacts(db, runDir, runId);
+
+    const paths = (
+      db
+        .prepare(
+          "SELECT relative_path FROM artifacts WHERE run_id = ? ORDER BY relative_path",
+        )
+        .all(runId) as { relative_path: string }[]
+    ).map((r) => r.relative_path);
+    expect(paths).toEqual(["codex-events.jsonl"]);
+    db.close();
+  });
+
   it("replaces the run's artifacts on re-ingest", () => {
     const db = freshDb();
     const root = mkdtempSync(join(tmpdir(), "harness-ingest-"));

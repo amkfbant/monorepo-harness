@@ -11,8 +11,26 @@ export interface RedactedCodexEvents {
 
 type JsonObject = { readonly [key: string]: unknown };
 
+const SECRET_SCAN_CHUNK_OVERLAP_BYTES = 1024;
+
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function scanAggregatedOutputForSecrets(aggregatedOutput: string): {
+  matched: boolean;
+  reasons: readonly string[];
+} {
+  const step = SCAN_SAMPLE_BYTES - SECRET_SCAN_CHUNK_OVERLAP_BYTES;
+  const reasons = new Set<string>();
+  for (let start = 0; start < aggregatedOutput.length; start += step) {
+    const chunk = aggregatedOutput.slice(start, start + SCAN_SAMPLE_BYTES);
+    const scan = scanForSecrets("aggregated-output.txt", chunk);
+    for (const reason of scan.reasons) {
+      reasons.add(reason);
+    }
+  }
+  return { matched: reasons.size > 0, reasons: [...reasons] };
 }
 
 function redactEventLine(line: string): {
@@ -40,8 +58,7 @@ function redactEventLine(line: string): {
     return { line, redacted: false, dropped: false };
   }
 
-  const sample = aggregatedOutput.slice(0, SCAN_SAMPLE_BYTES);
-  const scan = scanForSecrets("aggregated-output.txt", sample);
+  const scan = scanAggregatedOutputForSecrets(aggregatedOutput);
   if (!scan.matched) {
     return { line, redacted: false, dropped: false };
   }

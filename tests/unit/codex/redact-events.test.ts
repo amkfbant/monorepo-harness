@@ -30,6 +30,27 @@ describe("redactCodexEvents", () => {
     expect(result.content).not.toContain("AKIAABCDEFGHIJKLMNOP");
   });
 
+  it("redacts secret-shaped output beyond the first scan sample", () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const content = jsonl([
+      {
+        type: "item.completed",
+        item: {
+          type: "command_execution",
+          aggregated_output: `${"x".repeat(40 * 1024)}\n${secret}\n`,
+        },
+      },
+    ]);
+
+    const result = redactCodexEvents(content);
+
+    expect(result.redactedCount).toBe(1);
+    expect(result.content).toContain(
+      "[redacted: secret-suspect (content:aws-access-key-id)]",
+    );
+    expect(result.content).not.toContain(secret);
+  });
+
   it("drops unparsable JSONL lines fail-closed", () => {
     const result = redactCodexEvents(
       [

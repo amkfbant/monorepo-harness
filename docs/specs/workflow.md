@@ -17,42 +17,48 @@
 9. emit codex_exec_started
 10. spawn `codex exec --json -o runs/<runId>/codex-output.log`
     (detached process group, sandbox/approval/timeout from policy)
-11. pipe codex stdout JSONL to codex-events.jsonl; read codex-output.log +
-    codex-error.log after streams flush
+11. pipe codex stdout JSONL to quarantined `.codex-events.raw.jsonl`;
+    read codex-output.log + codex-error.log after streams flush
 12. emit codex_exec_completed (exitCode, timedOut, durationMs)
-13. setStatus('generated')
-14. PASS 1 — post-codex diffAndValidate(worktree, baseSha, policy):
+13. redact `.codex-events.raw.jsonl`, write `.codex-events.redacted.tmp`,
+    atomically rename it to `codex-events.jsonl`, then delete the raw dotfile;
+    if read/write/rename fails, publish only
+    `{"type":"redaction.failed","reason":"<short>"}` to `codex-events.jsonl`
+    when possible and continue the run
+14. record run_usage from the published `codex-events.jsonl`
+15. setStatus('generated')
+16. PASS 1 — post-codex diffAndValidate(worktree, baseSha, policy):
     attemptDiff → DiffOutcome { ok, trackedChangedPaths, untrackedAll, patch, error? }
     partitionUntracked(untrackedAll, ignoreUntracked) → { kept, ignored }
     if diff.ok: validateChangedPaths(policy, tracked ∪ kept) → violations + safetyStatus
     emit diff_collection_failed / policy_validation_completed with stage="post-codex" (validation durationMs on success)
-15. PASS 2 — if diff.ok && safetyStatus=allowed && codex ok && allowedCommands non-empty:
+17. PASS 2 — if diff.ok && safetyStatus=allowed && codex ok && allowedCommands non-empty:
     setStatus('verified'); emit commands_started
     runAllowedCommands(worktree, allowedCommands) → results; emit commands_completed
     RE-RUN diffAndValidate against the post-command worktree
     emit diff_collection_failed / policy_validation_completed with stage="post-command" (validation durationMs on success)
-16. setSafetyStatus  (from the final — post-command if commands ran — validation)
-17. split kept untracked → (allowed, denied) based on the final violations set
-18. write final-diff.patch
-19. write untracked-files.{txt,patch} for allowed (with secret-scan redaction)
-20. write untracked-denied.txt for denied (metadata only)
-21. write untracked-secrets.txt for secret suspects (metadata only)
-22. emit diff_collected (stage = post-command if commands ran, else post-codex, durationMs)
-23. determine RunStatus from priority:
+18. setSafetyStatus  (from the final — post-command if commands ran — validation)
+19. split kept untracked → (allowed, denied) based on the final violations set
+20. write final-diff.patch
+21. write untracked-files.{txt,patch} for allowed (with secret-scan redaction)
+22. write untracked-denied.txt for denied (metadata only)
+23. write untracked-secrets.txt for secret suspects (metadata only)
+24. emit diff_collected (stage = post-command if commands ran, else post-codex, durationMs)
+25. determine RunStatus from priority:
     diff failure > codex timeout > codex non-zero > policy violation
     > command failure > needs_review
-24. readTail(codex-output.log), readStderrTail(codex-error.log)
-25. write summary.md
-26. write knowledge-candidates.yaml (4 signal kinds)
-27. write review-decision.yaml (initial: pending)
-28. write review-request.md
-29. ingestRunArtifacts into the DB; emit artifacts_ingested (count, totalBytes, durationMs)
-30. finalize(meta, status, safetyStatus, counts, commandResults, finishedAt)
-31. emit run_completed (runElapsedMs)
-32. release domain lock (finally)
+26. readTail(codex-output.log), readStderrTail(codex-error.log)
+27. write summary.md
+28. write knowledge-candidates.yaml (4 signal kinds)
+29. write review-decision.yaml (initial: pending)
+30. write review-request.md
+31. ingestRunArtifacts into the DB; emit artifacts_ingested (count, totalBytes, durationMs)
+32. finalize(meta, status, safetyStatus, counts, commandResults, finishedAt)
+33. emit run_completed (runElapsedMs)
+34. release domain lock (finally)
 ```
 
-ステップ 14/15 の 2 pass 構成が F8（コマンドの副作用も path policy で再検査）の核心。`allowedCommands` が無ければ pass 2 は skip され、pass 1 の結果がそのまま使われる。
+ステップ 16/17 の 2 pass 構成が F8（コマンドの副作用も path policy で再検査）の核心。`allowedCommands` が無ければ pass 2 は skip され、pass 1 の結果がそのまま使われる。
 
 Diff review and reviewed-fingerprint collection are symlink-safe by design:
 paths are evaluated as repository entries and the implementation does not follow
@@ -137,7 +143,7 @@ runs/<runId>/
   codex-prompt.md          # codex に渡した prompt 全文
   codex-output.log         # codex `-o/--output-last-message` の最終 agent message
   codex-error.log          # codex stderr (生; readStderrTail で patch echo を抑制してから artifact に転載)
-  codex-events.jsonl       # codex `--json` stdout の JSONL events (保存前に command aggregated_output を secret redaction 済み; turn.completed.usage を含み、run_usage の入力になる)
+  codex-events.jsonl       # codex `--json` stdout の JSONL events (raw stdout は一時 dotfile に隔離し、redaction 後に atomic publish; command aggregated_output は secret redaction 済み; turn.completed.usage を含み、run_usage の入力になる。redaction 失敗時は redaction.failed sentinel のみ)
   final-diff.patch         # tracked changes の unified diff (against baseSha)。常に生成 (変更なしなら空)
   untracked-files.patch    # OPTIONAL: allowed untracked がある場合のみ。inline + secret hit は redact
   untracked-files.txt      # OPTIONAL: allowed untracked がある場合のみ。path list
@@ -237,10 +243,11 @@ compiled project policy. Non-project hitches are unchanged.
 
 `artifacts_ingested` は run 完了時の `ingestRunArtifacts` 成功直後、`finalize` 前に emit される。`count` / `totalBytes` は DB blob に取り込んだ artifact body（`meta.json` / `events.jsonl` / `review-decision.yaml` など DB から再構成される artifact を除く）のファイル数と元ファイル byte 合計、`durationMs` は同じく `performance.now()` ベースの整数 ms。
 
-`codex_events_redacted` は `codex_exec_completed` 後、artifact ingest 前に `codex-events.jsonl` を redaction した場合のみ emit される。`item.aggregated_output` の secret-shaped content は `"[redacted: secret-suspect (...)]"` に置換し、parse できない JSONL 行は `{"type":"redaction.dropped_line"}` に置換して保存する。
+`codex_events_redacted` は `codex_exec_completed` 後、artifact ingest 前に quarantined raw dotfile を redaction して `codex-events.jsonl` へ atomic publish した結果、実際に置換または drop が発生した場合のみ emit される。`item.aggregated_output` の secret-shaped content は `SCAN_SAMPLE_BYTES` ごとの 1KB overlap chunk で全量 scan し、hit した場合は `"[redacted: secret-suspect (...)]"` に置換する。parse できない JSONL 行は `{"type":"redaction.dropped_line"}` に置換して保存する。raw dotfile と redaction tmp dotfile は dotfile であり、artifact ingest の対象外。成功時は raw dotfile を削除する。
 
-`run_usage` 記録は `codex_exec_completed` 後、artifact 用 `codex-events.jsonl`
-redaction 前、post-codex diff 収集前に行う。runner は lease guard (`assertActiveLease`) を通して
+redaction の raw 読み込み、redacted tmp 書き込み、または `codex-events.jsonl` への rename が失敗した場合、workflow は raw を正式 artifact 名に置かない。可能なら `codex-events.jsonl` には `{"type":"redaction.failed","reason":"<short>"}` の 1 行だけを書き、raw/tmp dotfile の削除を試みる。sentinel 書き込みも失敗した場合は正式名ファイル無しのまま続行する。この場合、run は redaction 失敗だけでは失敗しない。
+
+`run_usage` 記録は `codex_exec_completed` 後、redaction/atomic publish 済みの artifact 用 `codex-events.jsonl` から、post-codex diff 収集前に行う。runner は lease guard (`assertActiveLease`) を通して
 `run_usage` に 1 行 INSERT する。`turn.completed.usage` が正常に読める場合は
 `usage_source='exact'`、複数 turn は token fields を合算する。events file が無い /
 読めない / 空 / JSON parse 不可 / `turn.completed.usage` 無しの場合も run は止めず、
