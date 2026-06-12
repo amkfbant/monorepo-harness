@@ -28,7 +28,14 @@ export interface ReviewProposalInput {
   sourceYaml: string;
   sourceSha256: string;
   createdAt: string;
+  promptSha256?: string;
+  promptProvenance?: ReviewPromptProvenance;
   failIfSupersedes?: boolean;
+}
+
+export interface ReviewPromptProvenance {
+  template: { name: string; version: number };
+  knowledge: { entryId: string; version: number }[];
 }
 
 export interface ReviewProposalRow {
@@ -46,6 +53,8 @@ export interface ReviewProposalRow {
   supersededAt: string | null;
   processedAt: string | null;
   reviewDecisionId: string | null;
+  promptSha256: string | null;
+  promptProvenanceJson: string | null;
 }
 
 export class ReviewProposalRepository {
@@ -98,8 +107,9 @@ export class ReviewProposalRepository {
           `INSERT INTO review_proposals
              (run_id, reviewer, decision, required_changes_json,
               non_blocking_comments_json, out_of_scope_suggestions_json,
-              reviewed_at, source_yaml, source_sha256, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              reviewed_at, source_yaml, source_sha256, created_at,
+              prompt_sha256, prompt_provenance_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           input.runId,
@@ -112,6 +122,10 @@ export class ReviewProposalRepository {
           input.sourceYaml,
           input.sourceSha256,
           input.createdAt,
+          input.promptSha256 ?? null,
+          input.promptProvenance === undefined
+            ? null
+            : JSON.stringify(input.promptProvenance),
         );
       return Number(info.lastInsertRowid);
     });
@@ -350,5 +364,7 @@ function toReviewProposalRow(raw: unknown): ReviewProposalRow {
     supersededAt: (r.superseded_at as string | null) ?? null,
     processedAt: (r.processed_at as string | null) ?? null,
     reviewDecisionId: (r.review_decision_id as string | null) ?? null,
+    promptSha256: (r.prompt_sha256 as string | null) ?? null,
+    promptProvenanceJson: (r.prompt_provenance_json as string | null) ?? null,
   };
 }

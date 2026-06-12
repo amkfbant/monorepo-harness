@@ -24,6 +24,7 @@ import {
   MIGRATION_V21_STATEMENTS,
   MIGRATION_V22_STATEMENTS,
   MIGRATION_V23_STATEMENTS,
+  MIGRATION_V24_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -153,6 +154,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 23,
     name: "hitch-lifecycle-events-v23",
     statements: MIGRATION_V23_STATEMENTS,
+  },
+  {
+    version: 24,
+    name: "review-prompt-provenance-v24",
+    statements: MIGRATION_V24_STATEMENTS,
   },
 ];
 

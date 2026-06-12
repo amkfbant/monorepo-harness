@@ -80,21 +80,14 @@ move into the same `immediate()` transaction as the mutation (e.g. an authorize
 callback the core write invokes inside its tx). Flagged by the G codex review
 (P2), 2026-06.
 
-## Reviewer prompt provenance audit (prompt_sha256 + injected knowledge)
+## Coder prompt knowledge provenance audit
 
-The reviewer prompt is now DB-dependent (operational-knowledge injection, issue #57
-roadmap F; codebase-knowledge injection already feeds the coder prompt). Neither path
-records WHAT was injected: `review_proposals.prompt_sha256` exists in the schema but is
-not populated, and the injected operational `entryId`/`version` list is not recorded.
-After an entry is edited/deprecated a past verdict can no longer be reproduced exactly.
-
-**Sketch:** compute the assembled reviewer prompt once, record `prompt_sha256` on the
-proposal (extend `ReviewProposalInput` + the insert), and capture the injected
-operational entry ids/versions (e.g. as proposal metadata or an audit artifact). This is
-a cross-cutting provenance improvement (should also cover the coder's codebase-knowledge
-injection), and it touches the safety-sensitive `insertProposal` hot-path, so it is
-designed/reviewed separately rather than folded into F. Flagged by the F codex review
-(P2), 2026-06.
+Reviewer prompt provenance is implemented in schema v24:
+`review_proposals.prompt_sha256` is populated by `review auto`, and
+`prompt_provenance_json` records the reviewer template and injected operational
+knowledge entry ids/versions as audit-only metadata. A remaining follow-up is the
+analogous coder-side codebase-knowledge provenance for prompts assembled by
+`runDomainCoding`.
 
 ## Multi-reviewer consensus orchestration (drive the stall trigger)
 

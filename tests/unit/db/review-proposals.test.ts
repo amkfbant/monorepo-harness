@@ -100,6 +100,63 @@ describe("ReviewProposalRepository", () => {
     db.close();
   });
 
+  it("round-trips reviewer prompt hash and provenance when supplied", () => {
+    const db = freshDb();
+    const repo = new ReviewProposalRepository(db);
+    const provenance = {
+      template: { name: "reviewer-run-artifacts", version: 2 },
+      knowledge: [{ entryId: "ops/ci-note", version: 3 }],
+    };
+
+    const { proposalId } = repo.insertProposal(
+      baseProposal({
+        promptSha256: "a".repeat(64),
+        promptProvenance: provenance,
+      }),
+    );
+
+    const got = repo.getById(proposalId);
+    expect(got?.promptSha256).toBe("a".repeat(64));
+    expect(got?.promptProvenanceJson).toBe(JSON.stringify(provenance));
+    const raw = db
+      .prepare(
+        `SELECT prompt_sha256, prompt_provenance_json
+           FROM review_proposals WHERE proposal_id = ?`,
+      )
+      .get(proposalId) as {
+      prompt_sha256: string | null;
+      prompt_provenance_json: string | null;
+    };
+    expect(raw.prompt_sha256).toBe("a".repeat(64));
+    expect(JSON.parse(raw.prompt_provenance_json ?? "")).toEqual(provenance);
+    db.close();
+  });
+
+  it("leaves reviewer prompt audit fields NULL when omitted", () => {
+    const db = freshDb();
+    const repo = new ReviewProposalRepository(db);
+
+    const { proposalId } = repo.insertProposal(baseProposal());
+
+    const got = repo.getById(proposalId);
+    expect(got?.promptSha256).toBeNull();
+    expect(got?.promptProvenanceJson).toBeNull();
+    const raw = db
+      .prepare(
+        `SELECT prompt_sha256, prompt_provenance_json
+           FROM review_proposals WHERE proposal_id = ?`,
+      )
+      .get(proposalId) as {
+      prompt_sha256: string | null;
+      prompt_provenance_json: string | null;
+    };
+    expect(raw).toEqual({
+      prompt_sha256: null,
+      prompt_provenance_json: null,
+    });
+    db.close();
+  });
+
   it("supersedes the previous active proposal when the same reviewer re-reviews", () => {
     const db = freshDb();
     const repo = new ReviewProposalRepository(db);

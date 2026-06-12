@@ -384,6 +384,7 @@ export async function runReviewerAgent(
   // (never the coder prompt). Scoped to this run's project + repo (not domain),
   // bounded — see the call below.
   let reviewerOpsSection = "";
+  let reviewerOpsKnowledge: { entryId: string; version: number }[] = [];
   if (inputs.dbPath !== undefined && existsSync(inputs.dbPath)) {
     const probe = openManagedDb({ dbPath: inputs.dbPath, readonly: true });
     try {
@@ -394,10 +395,12 @@ export async function runReviewerAgent(
       // entries). Operational knowledge is rarely domain-specific, and the
       // domain filter would exclude portable notes — so it is intentionally not
       // applied here.
-      reviewerOpsSection = buildOperationalKnowledgeReviewSection(probe.db, {
+      const reviewerOps = buildOperationalKnowledgeReviewSection(probe.db, {
         projectId: meta.project?.projectId ?? null,
         repoId: meta.repoId ?? null,
       });
+      reviewerOpsSection = reviewerOps.section;
+      reviewerOpsKnowledge = reviewerOps.included;
     } finally {
       probe.close();
     }
@@ -430,9 +433,12 @@ export async function runReviewerAgent(
   // verify nothing outside the writable allowlist changed.
   const snapshot = await snapshotRunDir(runDir);
 
+  const reviewerPrompt = PROMPT_PREAMBLE + reviewerOpsSection;
+  const promptSha256 = createHash("sha256").update(reviewerPrompt).digest("hex");
+
   const codexResult = await inputs.codexRunner.run({
     worktreePath: runDir,
-    prompt: PROMPT_PREAMBLE + reviewerOpsSection,
+    prompt: reviewerPrompt,
     logPaths: { stdout: stdoutPath, stderr: stderrPath },
   });
   const reviewer = inputs.reviewerName ?? "codex-reviewer";
@@ -559,6 +565,11 @@ export async function runReviewerAgent(
         sourceYaml,
         sourceSha256: sha,
         createdAt: reviewedAt,
+        promptSha256,
+        promptProvenance: {
+          template: REVIEWER_PROMPT_TEMPLATE,
+          knowledge: reviewerOpsKnowledge,
+        },
         failIfSupersedes: !inputs.allowOverwrite,
       });
       // Phase 2: in consensus mode, re-evaluate consensus over all active

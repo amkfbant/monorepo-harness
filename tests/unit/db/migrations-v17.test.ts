@@ -47,7 +47,7 @@ describe("schema v17 agent workspaces", () => {
     try {
       expect(currentSchemaVersion(db)).toBe(16);
       const result = runMigrations(db);
-      expect(result.applied).toEqual([17, 18, 19, 20, 21, 22, 23]);
+      expect(result.applied).toEqual([17, 18, 19, 20, 21, 22, 23, 24]);
       expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
       expect(tableExists(db, "workspaces")).toBe(true);
     } finally {

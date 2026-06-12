@@ -136,6 +136,21 @@ function fakeRunnerWithOutput(
   };
 }
 
+function capturingRunner(
+  output: string,
+  seen: { prompt?: string },
+): CodexExecRunner {
+  return {
+    async run(input) {
+      seen.prompt = input.prompt;
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(input.logPaths.stdout, output, "utf8");
+      await writeFile(input.logPaths.stderr, "", "utf8");
+      return { exitCode: 0, timedOut: false };
+    },
+  };
+}
+
 const APPROVED_OUTPUT = [
   "Here is my review:",
   "",
@@ -447,6 +462,72 @@ describe("runReviewerAgent", () => {
       codexRunner: fakeRunnerWithOutput(APPROVED_OUTPUT),
     });
     expect(r.dryRun).toBe(false);
+  });
+
+  it("stores the sha256 of the exact prompt sent to codex", async () => {
+    const { runsDir, runId } = setup();
+    const dbPath = setupReviewDb(runId);
+    const seen: { prompt?: string } = {};
+
+    await runReviewerAgent({
+      runsDir,
+      runId,
+      dbPath,
+      codexRunner: capturingRunner(APPROVED_OUTPUT, seen),
+      now: new Date("2026-05-21T01:00:00.000Z"),
+    });
+
+    expect(seen.prompt).toBe(PROMPT_PREAMBLE);
+    const expectedPromptSha = createHash("sha256")
+      .update(seen.prompt ?? "")
+      .digest("hex");
+    const db = openDb(dbPath);
+    try {
+      const row = db
+        .prepare(
+          `SELECT prompt_sha256, prompt_provenance_json
+             FROM review_proposals WHERE run_id = ?`,
+        )
+        .get(runId) as {
+        prompt_sha256: string | null;
+        prompt_provenance_json: string | null;
+      };
+      expect(row.prompt_sha256).toBe(expectedPromptSha);
+      expect(JSON.parse(row.prompt_provenance_json ?? "")).toEqual({
+        template: REVIEWER_PROMPT_TEMPLATE,
+        knowledge: [],
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("records an empty knowledge provenance list when no operational knowledge is injected", async () => {
+    const { runsDir, runId } = setup();
+    const dbPath = setupReviewDb(runId);
+
+    await runReviewerAgent({
+      runsDir,
+      runId,
+      dbPath,
+      codexRunner: fakeRunnerWithOutput(APPROVED_OUTPUT),
+      now: new Date("2026-05-21T01:00:00.000Z"),
+    });
+
+    const db = openDb(dbPath);
+    try {
+      const row = db
+        .prepare(
+          `SELECT prompt_provenance_json
+             FROM review_proposals WHERE run_id = ?`,
+        )
+        .get(runId) as { prompt_provenance_json: string | null };
+      expect(JSON.parse(row.prompt_provenance_json ?? "")).toMatchObject({
+        knowledge: [],
+      });
+    } finally {
+      db.close();
+    }
   });
 
   describe("--allow-overwrite gate", () => {

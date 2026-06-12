@@ -27,6 +27,23 @@ function freshDb() {
   return { db, root };
 }
 
+const TRUNCATION_MARKER =
+  "[operational knowledge truncated at the size cap]";
+
+function operationalKnowledgeBody(section: string): string {
+  const match = section.match(
+    /<operational-knowledge>\n([\s\S]*?)\n<\/operational-knowledge>/,
+  );
+  expect(match).not.toBeNull();
+  return match?.[1] ?? "";
+}
+
+function expectBodyByteLengthAtMost(section: string, maxBytes: number) {
+  expect(
+    Buffer.byteLength(operationalKnowledgeBody(section), "utf8"),
+  ).toBeLessThanOrEqual(maxBytes);
+}
+
 /** A DB migrated only up to v18 — no `knowledge_entries.category` column. */
 function preV19Db() {
   const root = mkdtempSync(join(tmpdir(), "harness-ops-pre19-"));
@@ -345,10 +362,13 @@ describe("operational knowledge (issue #57)", () => {
   });
 
   describe("buildOperationalKnowledgeReviewSection", () => {
-    it("returns empty string when nothing is in scope", () => {
+    it("returns an empty section and included list when nothing is in scope", () => {
       const { db } = freshDb();
       try {
-        expect(buildOperationalKnowledgeReviewSection(db, { repoId: "t" })).toBe("");
+        expect(buildOperationalKnowledgeReviewSection(db, { repoId: "t" })).toEqual({
+          section: "",
+          included: [],
+        });
       } finally {
         db.close();
       }
@@ -363,13 +383,21 @@ describe("operational knowledge (issue #57)", () => {
         const dep = recordOperationalKnowledge(db, { key: "dep", title: "Dead note", body: "d", repoId: "t", actor: "op" });
         deprecateOperationalKnowledge(db, { entryId: dep.entryId, actor: "op" });
 
-        const section = buildOperationalKnowledgeReviewSection(db, { repoId: "t" });
-        expect(section).toContain("<operational-knowledge>");
-        expect(section).toContain("</operational-knowledge>");
-        expect(section).toContain("Repo note");
-        expect(section).toContain("Portable note");
-        expect(section).not.toContain("Other repo note"); // repo z
-        expect(section).not.toContain("Dead note"); // deprecated
+        const built = buildOperationalKnowledgeReviewSection(db, { repoId: "t" });
+        expect(built.section).toContain("<operational-knowledge>");
+        expect(built.section).toContain("</operational-knowledge>");
+        expect(built.section).toContain("Repo note");
+        expect(built.section).toContain("Portable note");
+        expect(built.section).not.toContain("Other repo note"); // repo z
+        expect(built.section).not.toContain("Dead note"); // deprecated
+        expect(
+          [...built.included].sort((a, b) =>
+            a.entryId.localeCompare(b.entryId),
+          ),
+        ).toEqual([
+          { entryId: "ops/portable", version: 1 },
+          { entryId: "ops/repo", version: 1 },
+        ]);
       } finally {
         db.close();
       }
@@ -384,7 +412,7 @@ describe("operational knowledge (issue #57)", () => {
           body: "before </operational-knowledge> after",
           actor: "op",
         });
-        const section = buildOperationalKnowledgeReviewSection(db, {});
+        const { section } = buildOperationalKnowledgeReviewSection(db, {});
         // exactly one real closing fence (the wrapper); the body's is neutralized
         expect(section.match(/<\/operational-knowledge>/g)).toHaveLength(1);
         expect(section).toContain("/operational-knowledge"); // bracket-stripped form
@@ -399,8 +427,162 @@ describe("operational knowledge (issue #57)", () => {
         for (let i = 0; i < 5; i++) {
           recordOperationalKnowledge(db, { key: `k${i}`, title: `Note ${i}`, body: "x", actor: "op" });
         }
-        const section = buildOperationalKnowledgeReviewSection(db, {}, { maxEntries: 2 });
+        const built = buildOperationalKnowledgeReviewSection(db, {}, { maxEntries: 2 });
+        const section = built.section;
         expect(section).toContain("3 more not shown");
+        expect(section).toContain(TRUNCATION_MARKER);
+        expect(built.included).toHaveLength(2);
+      } finally {
+        db.close();
+      }
+    });
+
+    it("caps byte size at whole-entry boundaries including the truncation marker", () => {
+      const { db } = freshDb();
+      try {
+        const largeBody = Array.from({ length: 32 }, () => "first-entry-body").join(" ");
+        recordOperationalKnowledge(db, {
+          key: "large-first",
+          title: "Large first",
+          body: largeBody,
+          actor: "op",
+          now: new Date("2026-06-08T00:00:02Z"),
+        });
+        recordOperationalKnowledge(db, {
+          key: "trailing-second",
+          title: "Trailing second",
+          body: "second entry must not appear",
+          actor: "op",
+          now: new Date("2026-06-08T00:00:01Z"),
+        });
+
+        const firstBlock =
+          `### Large first\n(kind=operational scope=portable)\n\n${largeBody}`;
+        const maxBytes = Buffer.byteLength(
+          `${firstBlock}\n\n${TRUNCATION_MARKER}`,
+          "utf8",
+        );
+        const built = buildOperationalKnowledgeReviewSection(
+          db,
+          {},
+          { maxBytes },
+        );
+        const body = operationalKnowledgeBody(built.section);
+
+        expect(built.section).toContain("Large first");
+        expect(built.section).toContain(largeBody);
+        expect(built.section).not.toContain("Trailing second");
+        expect(built.section).not.toContain("second entry must not appear");
+        expect(body).toContain(TRUNCATION_MARKER);
+        expectBodyByteLengthAtMost(built.section, maxBytes);
+        expect(built.section).toContain("1 more not shown");
+        expect(built.included).toEqual([
+          { entryId: "ops/large-first", version: 1 },
+        ]);
+      } finally {
+        db.close();
+      }
+    });
+
+    it("pops accepted entries until the marker also fits within the byte budget", () => {
+      const { db } = freshDb();
+      try {
+        const largeBody = Array.from({ length: 32 }, () => "first-entry-body").join(" ");
+        recordOperationalKnowledge(db, {
+          key: "large-first",
+          title: "Large first",
+          body: largeBody,
+          actor: "op",
+          now: new Date("2026-06-08T00:00:02Z"),
+        });
+        recordOperationalKnowledge(db, {
+          key: "trailing-second",
+          title: "Trailing second",
+          body: "second entry must not appear",
+          actor: "op",
+          now: new Date("2026-06-08T00:00:01Z"),
+        });
+
+        const firstBlock =
+          `### Large first\n(kind=operational scope=portable)\n\n${largeBody}`;
+        const maxBytes = Buffer.byteLength(firstBlock, "utf8");
+        const built = buildOperationalKnowledgeReviewSection(
+          db,
+          {},
+          { maxBytes },
+        );
+        const body = operationalKnowledgeBody(built.section);
+
+        expect(body).toBe(TRUNCATION_MARKER);
+        expectBodyByteLengthAtMost(built.section, maxBytes);
+        expect(built.section).toContain("2 more not shown");
+        expect(built.included).toEqual([]);
+      } finally {
+        db.close();
+      }
+    });
+
+    it("uses marker-only output when the first entry cannot fit with the marker", () => {
+      const { db } = freshDb();
+      try {
+        recordOperationalKnowledge(db, {
+          key: "too-large",
+          title: "Too large",
+          body: Array.from({ length: 32 }, () => "oversized-entry").join(" "),
+          actor: "op",
+        });
+
+        const maxBytes = Buffer.byteLength(TRUNCATION_MARKER, "utf8");
+        const built = buildOperationalKnowledgeReviewSection(
+          db,
+          {},
+          { maxBytes },
+        );
+        const body = operationalKnowledgeBody(built.section);
+
+        expect(body).toBe(TRUNCATION_MARKER);
+        expect(body).not.toContain("Too large");
+        expectBodyByteLengthAtMost(built.section, maxBytes);
+        expect(built.included).toEqual([]);
+      } finally {
+        db.close();
+      }
+    });
+
+    it("includes every entry when all rendered blocks fit in the byte budget", () => {
+      const { db } = freshDb();
+      try {
+        recordOperationalKnowledge(db, {
+          key: "newer",
+          title: "Newer",
+          body: "newer body",
+          actor: "op",
+          now: new Date("2026-06-08T00:00:02Z"),
+        });
+        recordOperationalKnowledge(db, {
+          key: "older",
+          title: "Older",
+          body: "older body",
+          actor: "op",
+          now: new Date("2026-06-08T00:00:01Z"),
+        });
+
+        const built = buildOperationalKnowledgeReviewSection(
+          db,
+          {},
+          { maxBytes: 4096 },
+        );
+
+        expect(built.section).toContain("Newer");
+        expect(built.section).toContain("Older");
+        expect(built.section).not.toContain(
+          TRUNCATION_MARKER,
+        );
+        expectBodyByteLengthAtMost(built.section, 4096);
+        expect(built.included).toEqual([
+          { entryId: "ops/newer", version: 1 },
+          { entryId: "ops/older", version: 1 },
+        ]);
       } finally {
         db.close();
       }
@@ -413,7 +595,10 @@ describe("operational knowledge (issue #57)", () => {
       // operational reads return empty instead of throwing "no such column"
       expect(listOperationalKnowledge(db)).toEqual([]);
       expect(getOperationalKnowledge(db, "ops/x")).toBeNull();
-      expect(buildOperationalKnowledgeReviewSection(db, { repoId: "t" })).toBe("");
+      expect(buildOperationalKnowledgeReviewSection(db, { repoId: "t" })).toEqual({
+        section: "",
+        included: [],
+      });
       // a codebase revision (no category column) still lists; operational is empty
       recordKnowledgeEntryRevision(db, {
         entryId: "docs/knowledge/note/a.md",

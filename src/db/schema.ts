@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 23;
+export const SCHEMA_VERSION = 24;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1670,6 +1670,18 @@ export const MIGRATION_V23_STATEMENTS: readonly string[] = [
 
 /** Tables added by v23 (hitch lifecycle audit events). */
 export const V23_TABLE_NAMES = ["hitch_lifecycle_events"] as const;
+
+/**
+ * v24 — reviewer prompt provenance audit metadata.
+ *
+ * Additive nullable column. `prompt_sha256` already exists from v7; this stores
+ * the deterministic harness-side provenance JSON for the prompt template and
+ * operational knowledge entries injected into reviewer prompts. Audit-only:
+ * no state transition or gate may depend on this metadata.
+ */
+export const MIGRATION_V24_STATEMENTS: readonly string[] = [
+  `ALTER TABLE review_proposals ADD COLUMN prompt_provenance_json TEXT`,
+];
 
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [

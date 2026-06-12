@@ -114,7 +114,7 @@ export async function evaluateReviewer(
       reviewerOpsSection = buildOperationalKnowledgeReviewSection(probe.db, {
         projectId: meta.project?.projectId ?? null,
         repoId: meta.repoId ?? null,
-      });
+      }).section;
     } finally {
       probe.close();
     }
