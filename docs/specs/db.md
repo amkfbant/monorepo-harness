@@ -257,6 +257,8 @@ db import --from-files
     decision state（status/decided_at/reviewer/reason）は保持
   - --reset でも runtime テーブルは source_mode != 'db-first' の行のみ削除
     （read-only scoped command が db-first 行を legacy-file へ demigrate しない）
+  - runtime child rows は parent の `source_mode != 'db-first'` 削除に追随して削除し、
+    その後 orphan prune する。対象には `run_usage` も含む。
 
 db import --from-files --force-legacy-reconcile
   - 明示指定時のみ db-first run / backlog row の files 上書きを許す（災害復旧用途）
@@ -405,6 +407,11 @@ legacy-file の行はクリアして再構築するが、**DB-first（db-complet
 行は canonical state として保持**する（stale file が DB-first state を巻き戻す
 のを防ぐため、`source_mode != 'db-first'` の行のみ削除）。「DB を files から
 丸ごと作り直す」という意図で使うものではない。
+
+runtime parent を削除する reset では、`run_events` / `artifacts` /
+`run_context_packs` / `run_usage` などの child rows も同じ parent 境界で削除する。
+DB-first parent の child rows は保持し、parent が存在しなくなった child rows は orphan
+prune で削除する。
 
 ## Phase 9 — concurrency + runtime completion（close 済み・現状仕様）
 
@@ -1039,6 +1046,9 @@ Codex CLI structured JSONL (`codex-events.jsonl`) の `turn.completed.usage` だ
 入力にする。LLM の自然文・自己申告テキストは usage source にしない。
 `db import --from-files --force-legacy-reconcile` では `run_usage` を削除し、files から
 再構築しない（行なし = usage 未収集）。
+`db import --from-files --reset` でも legacy-file run が reset で消える場合、その
+`run_usage` は child row として削除する。DB-first run の `run_usage` は canonical state
+として保持する。
 
 ```sql
 CREATE TABLE run_usage (

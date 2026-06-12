@@ -1176,12 +1176,19 @@ reviewCmd
     // re-ingest the run's artifacts so reviewer-agent logs / the decision
     // become DB-canonical too (Phase 8-13). Skipped for --dry-run, which
     // writes nothing.
-    const syncArtifacts = (): void => {
+    const syncArtifacts = (untrustedReviewerEventsPublished?: boolean): void => {
       if (!dryRun) {
         syncRunArtifactsToDb({
           dbPath: paths.dbPath,
           runsDir: paths.runsDir,
           runId,
+          ...(untrustedReviewerEventsPublished !== undefined
+            ? {
+                untrustedReviewerArtifacts: {
+                  reviewerEventsPublished: untrustedReviewerEventsPublished,
+                },
+              }
+            : {}),
         });
       }
     };
@@ -1213,7 +1220,7 @@ reviewCmd
     } catch (e) {
       if (e instanceof ReviewerAgentGateError) {
         // the gate path may have written review-auto-error.json — capture it
-        syncArtifacts();
+        syncArtifacts(e.reviewerEventsPublished);
         process.stderr.write(`harness error: ${(e as Error).message}\n`);
         process.exit(1);
       }

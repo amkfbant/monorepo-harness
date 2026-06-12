@@ -7,9 +7,14 @@ export type ReviewGateKind = "already_decided" | "run_incomplete";
 
 export class ReviewerAgentGateError extends Error {
   readonly kind?: ReviewGateKind;
-  constructor(message: string, opts?: { kind?: ReviewGateKind }) {
+  readonly reviewerEventsPublished: boolean;
+  constructor(
+    message: string,
+    opts?: { kind?: ReviewGateKind; reviewerEventsPublished?: boolean },
+  ) {
     super(message);
     this.name = "ReviewerAgentGateError";
     if (opts?.kind !== undefined) this.kind = opts.kind;
+    this.reviewerEventsPublished = opts?.reviewerEventsPublished === true;
   }
 }

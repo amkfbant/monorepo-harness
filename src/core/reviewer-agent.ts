@@ -477,17 +477,19 @@ export async function runReviewerAgent(
   // operator (and `harness workflow reviewed-run`) can inspect what went
   // wrong. review-decision.yaml is NOT touched on this path.
   let decision: ReviewDecisionFile;
+  let reviewerEventsPublished = false;
   try {
     // Tamper check FIRST — before the timeout/exitCode gates. A sandbox
     // escape that mutates an artifact and THEN exits non-zero / times out
     // would otherwise slip past detection.
     await verifyArtifactsUnchanged(runDir, snapshot);
-    await publishRedactedCodexEvents({
+    const publishResult = await publishRedactedCodexEvents({
       rawPath: rawEventsPath,
       tmpPath: tmpEventsPath,
       officialPath: eventsPath,
       runId: inputs.runId,
     });
+    reviewerEventsPublished = !publishResult.failed;
 
     if (codexResult.timedOut) {
       throw new ReviewerAgentGateError(
@@ -528,6 +530,12 @@ export async function runReviewerAgent(
   } catch (e) {
     if (e instanceof ReviewerAgentGateError && !inputs.dryRun) {
       await writeGateErrorArtifact(e);
+    }
+    if (e instanceof ReviewerAgentGateError) {
+      throw new ReviewerAgentGateError(e.message, {
+        ...(e.kind !== undefined ? { kind: e.kind } : {}),
+        reviewerEventsPublished,
+      });
     }
     throw e;
   }

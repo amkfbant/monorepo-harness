@@ -115,6 +115,7 @@ export async function runReviewedRunWorkflow(
   let finalStatus: WorkflowFinalStatus;
   let attempt = 0;
   let prevRunId: string | undefined;
+  const untrustedReviewerSync = new Map<string, boolean>();
 
   for (;;) {
     // --- coder run (attempt 0) or rerun (attempt >= 1) ---
@@ -210,6 +211,10 @@ export async function runReviewedRunWorkflow(
     } catch (e) {
       if (e instanceof ReviewerAgentGateError) {
         // review-auto-error.json is left in place by runReviewerAgent.
+        untrustedReviewerSync.set(
+          runResult.runId,
+          e.reviewerEventsPublished,
+        );
         attempts.push({
           runId: runResult.runId,
           attempt,
@@ -269,7 +274,19 @@ export async function runReviewedRunWorkflow(
   // workflow-summary.md — are DB-canonical too (Phase 8-13).
   const dbPath = harnessPaths(opts.harnessRoot).dbPath;
   for (const id of new Set([rootRunId, ...attempts.map((a) => a.runId)])) {
-    syncRunArtifactsToDb({ dbPath, runsDir: opts.runsDir, runId: id });
+    const reviewerEventsPublished = untrustedReviewerSync.get(id);
+    syncRunArtifactsToDb({
+      dbPath,
+      runsDir: opts.runsDir,
+      runId: id,
+      ...(reviewerEventsPublished !== undefined
+        ? {
+            untrustedReviewerArtifacts: {
+              reviewerEventsPublished,
+            },
+          }
+        : {}),
+    });
   }
   return result;
 }

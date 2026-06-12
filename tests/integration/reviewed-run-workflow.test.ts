@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runReviewedRunWorkflow } from "../../src/core/reviewed-run-workflow.js";
 import { createFakeCodexRunner } from "../../src/codex/fake-codex-runner.js";
+import { openDb } from "../../src/db/connection.js";
+import { readArtifactBlob } from "../../src/db/artifact-blobs.js";
 import type {
   CodexExecRunner,
   CodexRunInputs,
@@ -88,6 +90,37 @@ function sequencedReviewer(outputs: string[]): CodexExecRunner {
   };
 }
 
+function tamperingReviewer(secret: string): CodexExecRunner {
+  return {
+    async run(input: CodexRunInputs): Promise<CodexRunResult> {
+      await writeFile(input.logPaths.stdout, APPROVED_YAML, "utf8");
+      await writeFile(input.logPaths.stderr, "", "utf8");
+      await writeFile(
+        join(input.worktreePath, "summary.md"),
+        "# summary\ntampered\n",
+        "utf8",
+      );
+      await writeFile(
+        join(input.worktreePath, "reviewer-agent.events.jsonl"),
+        `${JSON.stringify({
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            aggregated_output: `leaked ${secret}\n`,
+          },
+        })}\n`,
+        "utf8",
+      );
+      await writeFile(
+        input.logPaths.events,
+        '{"type":"turn.completed"}\n',
+        "utf8",
+      );
+      return { exitCode: 0, timedOut: false, durationMs: 0 };
+    },
+  };
+}
+
 interface RunWorkflowOpts {
   coderRunner: CodexExecRunner;
   reviewerRunner: CodexExecRunner;
@@ -127,6 +160,28 @@ function inScopeCoder(seedValue = 1): CodexExecRunner {
       );
     },
   });
+}
+
+function dbArtifactText(
+  root: string,
+  runId: string,
+  relativePath: string,
+): string | null {
+  const db = openDb(join(root, ".harness", "harness.sqlite"));
+  try {
+    const row = db
+      .prepare(
+        `SELECT blob_sha256 FROM artifacts
+         WHERE run_id = ? AND relative_path = ?`,
+      )
+      .get(runId, relativePath) as { blob_sha256: string | null } | undefined;
+    if (row?.blob_sha256 === undefined || row.blob_sha256 === null) {
+      return null;
+    }
+    return readArtifactBlob(db, row.blob_sha256)?.toString("utf8") ?? null;
+  } finally {
+    db.close();
+  }
 }
 
 describe("runReviewedRunWorkflow", () => {
@@ -228,6 +283,48 @@ describe("runReviewedRunWorkflow", () => {
         join(root, "runs", result.attempts[0]!.runId, "review-auto-error.json"),
       ),
     ).toBe(true);
+  });
+
+  it("quarantines reviewer artifacts after tamper before failed-attempt sync", async () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const root = setupHarness();
+    const repoPath = setupRepo();
+    const result = await runWf(root, repoPath, {
+      coderRunner: inScopeCoder(),
+      reviewerRunner: tamperingReviewer(secret),
+    });
+    const runId = result.attempts[0]!.runId;
+
+    expect(result.finalStatus).toBe("review-auto-failed");
+    expect(
+      dbArtifactText(root, runId, "reviewer-agent.events.jsonl"),
+    ).toBeNull();
+    const db = openDb(join(root, ".harness", "harness.sqlite"));
+    try {
+      const leaked = db
+        .prepare(
+          `SELECT count(*) AS n
+             FROM artifact_blob_chunks
+            WHERE instr(CAST(content AS TEXT), ?) > 0`,
+        )
+        .get(secret) as { n: number };
+      expect(leaked.n).toBe(0);
+      const event = db
+        .prepare(
+          `SELECT payload_json
+             FROM run_events
+            WHERE run_id = ? AND type = 'artifacts_quarantined'
+            ORDER BY seq DESC LIMIT 1`,
+        )
+        .get(runId) as { payload_json: string } | undefined;
+      expect(event).toBeDefined();
+      const payload = JSON.parse(event?.payload_json ?? "{}") as {
+        paths?: string[];
+      };
+      expect(payload.paths).toContain("reviewer-agent.events.jsonl");
+    } finally {
+      db.close();
+    }
   });
 
   it("--stop-on-changes-requested stops without rerunning", async () => {

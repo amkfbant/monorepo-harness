@@ -358,6 +358,17 @@ stream し、redaction 後だけ `reviewer-agent.events.jsonl` として atomic 
 raw/tmp dotfile は artifact ingest 対象外で、redaction 失敗時は sentinel のみ、sentinel
 も書けない場合は正式名ファイル無しで続行する。
 
+reviewer が runDir の watched artifact を改変/追加/削除した場合は
+`verifyArtifactsUnchanged` が fail-closed で `ReviewerAgentGateError` にする。この
+tamper / gate error 後に DB-first runDir を再同期する経路（`review auto` CLI と
+`workflow reviewed-run`）は、同期前に reviewer が書き換え可能だった
+`reviewer-agent.*` artifact を dotfile quarantine 名へ rename し、artifact ingest
+対象から外す。`reviewer-agent.events.jsonl` は `publishRedactedCodexEvents` が
+`failed: false` を返したことを呼び出し側が保持している場合だけ正式名のまま同期できる。
+確認できない場合は fail-closed で隔離する。隔離は stderr warning と DB
+`run_events` の `artifacts_quarantined { paths }` で観測できる。tamper なしの正常経路は
+従来どおり全 artifact を同期する。
+
 #### reviewer prompt への operational knowledge 注入（issue #57）
 
 `runReviewerAgent` は `dbPath` がある時、reviewer codex prompt（`PROMPT_PREAMBLE`）末尾に
