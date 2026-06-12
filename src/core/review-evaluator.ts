@@ -23,6 +23,11 @@ import { loadReviewDecision } from "./review-decision-loader.js";
 import { buildOperationalKnowledgeReviewSection } from "./operational-knowledge.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { publishRedactedCodexEvents } from "../codex/events-lifecycle.js";
+import {
+  sanitizeGateReason,
+  type SanitizedGateReason,
+} from "./gate-reason.js";
+import { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
 
 export class ReviewEvaluateError extends Error {
   constructor(message: string) {
@@ -273,7 +278,9 @@ interface CaptureArgs {
 
 /** Parse one sample's codex output into a SampleResult + per-sample artifact. */
 async function captureSample(a: CaptureArgs): Promise<SampleResult> {
-  const invalid = async (reason: string): Promise<SampleResult> => {
+  const invalid = async (
+    reason: SanitizedGateReason,
+  ): Promise<SampleResult> => {
     await writeFile(
       join(a.evalDir, "review-auto-error.json"),
       `${JSON.stringify(
@@ -289,26 +296,51 @@ async function captureSample(a: CaptureArgs): Promise<SampleResult> {
       requiredChanges: 0,
       nonBlocking: 0,
       outOfScope: 0,
-      error: reason,
+      error: reason.reasonCode,
     };
   };
 
-  if (a.codexFailed) return invalid(a.codexNote);
+  if (a.codexFailed) {
+    return invalid(
+      sanitizeGateReason({
+        code: "reviewer_codex_failed",
+        field: "codex",
+        value: a.codexNote,
+      }),
+    );
+  }
 
   let raw: string;
   try {
     raw = await readFile(a.stdoutPath, "utf8");
   } catch (e) {
-    return invalid(`could not read codex output: ${(e as Error).message}`);
+    return invalid(
+      sanitizeGateReason({
+        code: "reviewer_output_read_failed",
+      }),
+    );
   }
   let parsed: PartialDecision;
+  const yamlText = extractYamlBlock(raw);
   try {
-    parsed = parseYaml(extractYamlBlock(raw)) as PartialDecision;
+    parsed = parseYaml(yamlText) as PartialDecision;
   } catch (e) {
-    return invalid(`unparseable YAML: ${(e as Error).message}`);
+    return invalid(
+      sanitizeGateReason({
+        code: "reviewer_output_unparseable_yaml",
+        field: "reviewer_output",
+        value: yamlText,
+      }),
+    );
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return invalid("codex output is not a YAML object");
+    return invalid(
+      sanitizeGateReason({
+        code: "reviewer_output_not_yaml_object",
+        field: "reviewer_output",
+        value: parsed,
+      }),
+    );
   }
   let decision;
   try {
@@ -320,7 +352,11 @@ async function captureSample(a: CaptureArgs): Promise<SampleResult> {
       a.reviewedAt,
     );
   } catch (e) {
-    return invalid((e as Error).message);
+    return invalid(
+      e instanceof ReviewerAgentGateError && e.sanitizedReason !== undefined
+        ? e.sanitizedReason
+        : sanitizeGateReason({ code: "reviewer_output_invalid_decision" }),
+    );
   }
   // valid — persist the parsed decision for this sample
   await writeFile(

@@ -31,6 +31,7 @@ import { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
 import { classifyReviewGate } from "./review-gate-classify.js";
 import { buildOperationalKnowledgeReviewSection } from "./operational-knowledge.js";
 import { publishRedactedCodexEvents } from "../codex/events-lifecycle.js";
+import { sanitizeGateReason } from "./gate-reason.js";
 
 export { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
 
@@ -232,12 +233,26 @@ function requireStringArray(field: string, v: unknown): string[] {
   if (!Array.isArray(v)) {
     throw new ReviewerAgentGateError(
       `reviewer output field "${field}" must be an array of strings`,
+      {
+        sanitizedReason: sanitizeGateReason({
+          code: "reviewer_output_field_not_string_array",
+          field,
+          value: v,
+        }),
+      },
     );
   }
   for (const x of v) {
     if (typeof x !== "string") {
       throw new ReviewerAgentGateError(
         `reviewer output field "${field}" contains non-string entries`,
+        {
+          sanitizedReason: sanitizeGateReason({
+            code: "reviewer_output_field_non_string_entry",
+            field,
+            value: x,
+          }),
+        },
       );
     }
   }
@@ -258,6 +273,13 @@ export function buildDecision(
   ) {
     throw new ReviewerAgentGateError(
       `reviewer output has missing or unknown decision: ${JSON.stringify(raw.decision)} (expected approved | changes_requested | rejected)`,
+      {
+        sanitizedReason: sanitizeGateReason({
+          code: "reviewer_output_unknown_decision",
+          field: "decision",
+          value: raw.decision,
+        }),
+      },
     );
   }
   const required = requireStringArray("required_changes", raw.required_changes);
@@ -272,6 +294,13 @@ export function buildDecision(
   if (raw.decision === "changes_requested" && required.length === 0) {
     throw new ReviewerAgentGateError(
       "reviewer output is decision=changes_requested but required_changes is empty",
+      {
+        sanitizedReason: sanitizeGateReason({
+          code: "reviewer_output_empty_required_changes",
+          field: "required_changes",
+          value: raw.required_changes,
+        }),
+      },
     );
   }
   const file: ReviewDecisionFile = {
@@ -451,6 +480,11 @@ export async function runReviewerAgent(
   const writeGateErrorArtifact = async (
     e: ReviewerAgentGateError,
   ): Promise<void> => {
+    const reason =
+      e.sanitizedReason ??
+      sanitizeGateReason({
+        code: e.kind ?? "reviewer_agent_gate_error",
+      });
     await writeFile(
       errorArtifactPath,
       `${JSON.stringify(
@@ -459,7 +493,7 @@ export async function runReviewerAgent(
           runId: inputs.runId,
           reviewer,
           failedAt: reviewedAt,
-          reason: e.message,
+          reason,
           rawOutputPath: "reviewer-agent.out.log",
           codexExitCode: codexResult.exitCode,
           timedOut: codexResult.timedOut,
@@ -494,15 +528,33 @@ export async function runReviewerAgent(
     if (codexResult.timedOut) {
       throw new ReviewerAgentGateError(
         `reviewer codex timed out for ${inputs.runId}`,
+        {
+          sanitizedReason: sanitizeGateReason({
+            code: "reviewer_codex_timed_out",
+          }),
+        },
       );
     }
     if (codexResult.exitCode !== 0) {
       throw new ReviewerAgentGateError(
         `reviewer codex exited ${codexResult.exitCode} for ${inputs.runId}; see ${stderrPath}`,
+        {
+          sanitizedReason: sanitizeGateReason({
+            code: "reviewer_codex_nonzero_exit",
+            field: "exitCode",
+            value: codexResult.exitCode,
+          }),
+        },
       );
     }
     if (typeof meta.domain !== "string") {
-      throw new ReviewerAgentGateError(`meta.json domain is not a string`);
+      throw new ReviewerAgentGateError(`meta.json domain is not a string`, {
+        sanitizedReason: sanitizeGateReason({
+          code: "reviewer_meta_domain_not_string",
+          field: "domain",
+          value: meta.domain,
+        }),
+      });
     }
 
     const rawOutput = await readFile(stdoutPath, "utf8");
@@ -513,11 +565,25 @@ export async function runReviewerAgent(
     } catch (e) {
       throw new ReviewerAgentGateError(
         `reviewer agent produced unparseable YAML: ${(e as Error).message}`,
+        {
+          sanitizedReason: sanitizeGateReason({
+            code: "reviewer_output_unparseable_yaml",
+            field: "reviewer_output",
+            value: yamlText,
+          }),
+        },
       );
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new ReviewerAgentGateError(
         `reviewer agent output is not a YAML object`,
+        {
+          sanitizedReason: sanitizeGateReason({
+            code: "reviewer_output_not_yaml_object",
+            field: "reviewer_output",
+            value: parsed,
+          }),
+        },
       );
     }
     decision = buildDecision(
@@ -534,6 +600,9 @@ export async function runReviewerAgent(
     if (e instanceof ReviewerAgentGateError) {
       throw new ReviewerAgentGateError(e.message, {
         ...(e.kind !== undefined ? { kind: e.kind } : {}),
+        ...(e.sanitizedReason !== undefined
+          ? { sanitizedReason: e.sanitizedReason }
+          : {}),
         reviewerEventsPublished,
       });
     }

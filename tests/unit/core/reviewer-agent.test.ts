@@ -670,7 +670,9 @@ describe("runReviewerAgent", () => {
       const err = JSON.parse(readFileSync(errPath, "utf8"));
       expect(err.type).toBe("review-auto-error");
       expect(err.runId).toBe(runId);
-      expect(err.reason).toMatch(/active proposal|supersede|競合/);
+      expect(err.reason).toMatchObject({
+        reasonCode: "reviewer_agent_gate_error",
+      });
 
       const db = openDb(dbPath);
       try {
@@ -706,7 +708,11 @@ describe("runReviewerAgent", () => {
       const err = JSON.parse(readFileSync(errPath, "utf8"));
       expect(err.type).toBe("review-auto-error");
       expect(err.runId).toBe(runId);
-      expect(err.reason).toMatch(/decision/);
+      expect(err.reason).toMatchObject({
+        reasonCode: "reviewer_output_unknown_decision",
+        field: "decision",
+        valueType: "string",
+      });
       expect(err.codexExitCode).toBe(0);
     });
 

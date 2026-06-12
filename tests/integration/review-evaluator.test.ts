@@ -236,6 +236,50 @@ describe("evaluateReviewer", () => {
     ).toBe(true);
   });
 
+  it("stores only a sanitized reason for malformed YAML samples", async () => {
+    const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890";
+    const { runsDir, runId } = setupRun();
+    await evaluateReviewer({
+      runsDir,
+      runId,
+      samples: 1,
+      codexRunner: sequenced([
+        ["```yaml", "decision: approved", `  ${secret}: leaked`, "```"].join(
+          "\n",
+        ),
+      ]),
+    });
+
+    const text = readFileSync(
+      join(
+        runsDir,
+        runId,
+        "review-evaluations",
+        "eval-001",
+        "review-auto-error.json",
+      ),
+      "utf8",
+    );
+    expect(text).not.toContain(secret);
+    expect(text).not.toContain("leaked");
+    const artifact = JSON.parse(text) as {
+      reason?: {
+        reasonCode?: string;
+        field?: string;
+        valueType?: string;
+        valueLength?: number;
+        valueSha256?: string;
+      };
+    };
+    expect(artifact.reason).toMatchObject({
+      reasonCode: "reviewer_output_unparseable_yaml",
+      field: "reviewer_output",
+      valueType: "string",
+    });
+    expect(artifact.reason?.valueLength).toBeGreaterThan(secret.length);
+    expect(artifact.reason?.valueSha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
   it("flags a sample that approved a safetyStatus=denied run", async () => {
     const { runsDir, runId } = setupRun({ safetyStatus: "denied" });
     const r = await evaluateReviewer({

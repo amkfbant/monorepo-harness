@@ -373,6 +373,12 @@ DB 側では元の body のまま維持する。隔離は stderr warning と DB 
 `artifacts_quarantined { paths }` で観測できる。tamper なしの正常経路は従来どおり全 artifact
 を同期する。
 
+`review-auto-error.json.reason` は保存用の sanitized object であり、human 向け
+`Error.message`、YAML parser message、reviewer stdout 断片、raw decision 値は含めない。
+形式は `{ reasonCode, field?, valueType?, valueLength?, valueSha256? }`。`reasonCode` は
+固定コード、`field` は対象 field 名、`value*` は raw 値の型・長さ・SHA-256 だけを表す。
+DB blob へ targeted upsert される内容も同じ sanitized 形式に限定する。
+
 #### reviewer prompt への operational knowledge 注入（issue #57）
 
 `runReviewerAgent` は `dbPath` がある時、reviewer codex prompt（`PROMPT_PREAMBLE`）末尾に

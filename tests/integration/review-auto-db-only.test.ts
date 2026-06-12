@@ -6,7 +6,10 @@ import { openDb, openDbReadonly } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
 import { storeArtifactBlob } from "../../src/db/artifact-blobs.js";
 import { readArtifactBlob } from "../../src/db/artifact-blobs.js";
-import { runReviewerAgent } from "../../src/core/reviewer-agent.js";
+import {
+  ReviewerAgentGateError,
+  runReviewerAgent,
+} from "../../src/core/reviewer-agent.js";
 import { syncRunArtifactsToDb } from "../../src/core/run-materialize.js";
 import { recordOperationalKnowledge } from "../../src/core/operational-knowledge.js";
 import type { CodexExecRunner } from "../../src/codex/codex-exec-runner.js";
@@ -265,6 +268,82 @@ describe("review auto — DB-only mode (Phase 8-13)", () => {
       );
       expect(blob).not.toContain(secret);
       expect(blob).toContain("[redacted: secret-suspect");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("stores only a sanitized gate reason for invalid reviewer decisions", async () => {
+    const secret = "ghp_abcdefghijklmnopqrstuvwxyz123456";
+    const output = [
+      "```yaml",
+      `decision: ${secret}`,
+      "required_changes: []",
+      "non_blocking_comments: []",
+      "out_of_scope_suggestions: []",
+      "```",
+    ].join("\n");
+    const { runsDir, dbPath, runId } = dbOnlyNeedsReview();
+
+    let reviewerEventsPublished = false;
+    await expect(
+      runReviewerAgent({
+        runsDir,
+        runId,
+        dbPath,
+        codexRunner: fakeRunner(output),
+        now: new Date("2026-05-23T01:00:00Z"),
+      }),
+    ).rejects.toSatisfy((e: unknown) => {
+      if (e instanceof ReviewerAgentGateError) {
+        reviewerEventsPublished = e.reviewerEventsPublished;
+        return true;
+      }
+      return false;
+    });
+
+    const artifactPath = join(runsDir, runId, "review-auto-error.json");
+    const fileText = readFileSync(artifactPath, "utf8");
+    expect(fileText).not.toContain(secret);
+    const fileArtifact = JSON.parse(fileText) as {
+      reason?: {
+        reasonCode?: string;
+        field?: string;
+        valueType?: string;
+        valueLength?: number;
+        valueSha256?: string;
+      };
+    };
+    expect(fileArtifact.reason).toMatchObject({
+      reasonCode: "reviewer_output_unknown_decision",
+      field: "decision",
+      valueType: "string",
+      valueLength: secret.length,
+    });
+    expect(fileArtifact.reason?.valueSha256).toMatch(/^[a-f0-9]{64}$/);
+
+    syncRunArtifactsToDb({
+      dbPath,
+      runsDir,
+      runId,
+      untrustedReviewerArtifacts: { reviewerEventsPublished },
+    });
+
+    const db = openDbReadonly(dbPath);
+    try {
+      const row = db
+        .prepare(
+          `SELECT blob_sha256
+             FROM artifacts
+            WHERE run_id = ? AND relative_path = 'review-auto-error.json'`,
+        )
+        .get(runId) as { blob_sha256: string | null };
+      expect(row.blob_sha256).not.toBeNull();
+      const blob = readArtifactBlob(db, row.blob_sha256 as string).toString(
+        "utf8",
+      );
+      expect(blob).not.toContain(secret);
+      expect(blob).toContain("reviewer_output_unknown_decision");
     } finally {
       db.close();
     }
