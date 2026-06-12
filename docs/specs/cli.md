@@ -655,6 +655,8 @@ stored `pending` かつ `expires_at <= 集計時刻` の request は read-only �
 `metrics snapshot` は files から DB read model を refresh した後、`metrics_snapshots`
 へ 1 行記録し、同じ DB transaction で retention prune を実行する。`--project` /
 `--repo-id` / `--domain` は snapshot の scope と live aggregate filter に使う。
+snapshot scope は exact match で、未指定の project / repo / domain 列は `NULL` scope
+のみを対象にする。
 `--retention-days` は非負整数で、既定は `90`。prune は
 `created_at < now - retentionDays` の row だけを削除するため、境界時刻ちょうどの
 snapshot は残る。text 出力は `snapshot=<id> pruned=<n>`、`--json` は

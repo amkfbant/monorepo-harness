@@ -298,10 +298,11 @@ export function runMetricsSnapshot(
 ): void {
   const filter = scopeFilter(raw);
   const retentionDays = parseRetentionDays(raw.retentionDays);
+  const now = new Date().toISOString();
   const result = withRefreshedDb(harnessRoot, (db): MetricsSnapshotCliOutput => {
     const recordAndPrune = db.transaction(() => {
-      const snapshot = recordMetricsSnapshot(db, { filter });
-      const pruned = pruneMetricsSnapshots(db, { retentionDays });
+      const snapshot = recordMetricsSnapshot(db, { filter, now });
+      const pruned = pruneMetricsSnapshots(db, { retentionDays, now });
       return { snapshot, pruned };
     });
     return recordAndPrune();

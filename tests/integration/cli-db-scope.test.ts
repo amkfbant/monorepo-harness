@@ -99,6 +99,19 @@ function moveLatestMetricsSnapshotTo(root: string, createdAt: string): void {
   }
 }
 
+function metricsSnapshotCount(root: string): number {
+  const handle = openManagedDb({ dbPath: harnessPaths(root).dbPath });
+  try {
+    return (
+      handle.db
+        .prepare("SELECT count(*) AS n FROM metrics_snapshots")
+        .get() as { n: number }
+    ).n;
+  } finally {
+    handle.close();
+  }
+}
+
 describe("CLI project-scoped DB queries (Phase 6-6)", () => {
   it("metrics summary --project answers from the DB read model", () => {
     const root = setup();
@@ -188,6 +201,28 @@ describe("CLI project-scoped DB queries (Phase 6-6)", () => {
     ]);
     expect(text.code).toBe(0);
     expect(text.out).toMatch(/^snapshot=msnap-[0-9a-f-]{36} pruned=\d+\n$/);
+  });
+
+  it("metrics snapshot keeps the just-recorded row with zero-day retention", () => {
+    const root = setup();
+    const json = runCli(root, [
+      "metrics",
+      "snapshot",
+      "--project",
+      "demo",
+      "--retention-days",
+      "0",
+      "--json",
+    ]);
+
+    expect(json.code).toBe(0);
+    const parsed = JSON.parse(json.out) as {
+      snapshot: { snapshotId: string };
+      pruned: number;
+    };
+    expect(parsed.snapshot.snapshotId).toMatch(/^msnap-[0-9a-f-]{36}$/);
+    expect(parsed.pruned).toBe(0);
+    expect(metricsSnapshotCount(root)).toBe(1);
   });
 
   it("metrics delta reports current live metrics against an older snapshot", () => {

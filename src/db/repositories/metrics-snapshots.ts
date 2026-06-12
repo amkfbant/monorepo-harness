@@ -150,6 +150,27 @@ function confirmationDateFilter(
   };
 }
 
+function exactSnapshotScope(filter: AggregateFilter): {
+  clauses: string[];
+  params: unknown[];
+} {
+  const normalized = normalizeFilter(filter);
+  return {
+    clauses: [
+      normalized.projectId === undefined
+        ? "project_id IS NULL"
+        : "project_id = ?",
+      normalized.repoId === undefined ? "repo_id IS NULL" : "repo_id = ?",
+      normalized.domain === undefined ? "domain IS NULL" : "domain = ?",
+    ],
+    params: [
+      ...(normalized.projectId === undefined ? [] : [normalized.projectId]),
+      ...(normalized.repoId === undefined ? [] : [normalized.repoId]),
+      ...(normalized.domain === undefined ? [] : [normalized.domain]),
+    ],
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -365,27 +386,15 @@ export function listMetricsSnapshots(
   db: Database.Database,
   input: ListMetricsSnapshotsInput,
 ): MetricsSnapshotRow[] {
-  const where: string[] = [];
-  const params: unknown[] = [];
-  const filter = normalizeFilter(input.filter);
-  if (filter.projectId !== undefined) {
-    where.push("project_id = ?");
-    params.push(filter.projectId);
-  }
-  if (filter.repoId !== undefined) {
-    where.push("repo_id = ?");
-    params.push(filter.repoId);
-  }
-  if (filter.domain !== undefined) {
-    where.push("domain = ?");
-    params.push(filter.domain);
-  }
-  if (input.since !== undefined) {
-    where.push("created_at >= ?");
-    params.push(input.since);
-  }
-  const whereSql = where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`;
+  const scope = exactSnapshotScope(input.filter);
+  const sinceClauses = input.since === undefined ? [] : ["created_at >= ?"];
+  const whereSql = `WHERE ${[...scope.clauses, ...sinceClauses].join(" AND ")}`;
   const limitSql = input.limit === undefined ? "" : " LIMIT ?";
+  const params = [
+    ...scope.params,
+    ...(input.since === undefined ? [] : [input.since]),
+    ...(input.limit === undefined ? [] : [input.limit]),
+  ];
   if (input.limit !== undefined) {
     if (
       !Number.isFinite(input.limit) ||
@@ -394,7 +403,6 @@ export function listMetricsSnapshots(
     ) {
       throw new Error(`limit must be a non-negative integer: ${String(input.limit)}`);
     }
-    params.push(input.limit);
   }
   const rows = db
     .prepare(
@@ -413,21 +421,9 @@ function listBaselineCandidates(
   filter: AggregateFilter,
   baselineAt: string,
 ): MetricsSnapshotRow[] {
-  const where: string[] = ["created_at <= ?"];
-  const params: unknown[] = [baselineAt];
-  const normalized = normalizeFilter(filter);
-  if (normalized.projectId !== undefined) {
-    where.push("project_id = ?");
-    params.push(normalized.projectId);
-  }
-  if (normalized.repoId !== undefined) {
-    where.push("repo_id = ?");
-    params.push(normalized.repoId);
-  }
-  if (normalized.domain !== undefined) {
-    where.push("domain = ?");
-    params.push(normalized.domain);
-  }
+  const scope = exactSnapshotScope(filter);
+  const where = ["created_at <= ?", ...scope.clauses];
+  const params = [baselineAt, ...scope.params];
   const rows = db
     .prepare(
       `SELECT snapshot_id, created_at, project_id, repo_id, domain,

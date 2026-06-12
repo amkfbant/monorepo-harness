@@ -41,7 +41,8 @@ HTML エクスポートだった。Phase 6 では **DB（[`db.md`](./db.md)）�
   `harness metrics` 節を正規定義とし、dashboard snapshot でも同じ定義を使う
 - `metricsTrend` — 直近 30 件までの `metrics_snapshots` から作る軽量 trend。
   各点は `{ createdAt, totalRuns, approvedRate, totalTokens }` で、適用中の
-  project / repo filter に従う。snapshot は導出値なので、trend は表示専用であり
+  project / repo filter に従う。未指定の project / repo / domain 列は `NULL` scope
+  の snapshot のみを対象にする。snapshot は導出値なので、trend は表示専用であり
   状態遷移や判定には使わない。未知の `payload_schema` / payload schema は
   fail-open でその点を除外する。
 - `hitchMetrics` — `DbHitchMetricsSummary`（hitch session / review cycle /

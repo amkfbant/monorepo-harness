@@ -8,6 +8,7 @@ import { runMigrations } from "../../../src/db/migrations.js";
 import {
   buildMetricsDelta,
   listMetricsSnapshots,
+  listMetricsTrend,
   pruneMetricsSnapshots,
   recordMetricsSnapshot,
   type MetricsSnapshotPayloadV1,
@@ -258,6 +259,56 @@ describe("metrics snapshots repository", () => {
     }
   });
 
+  it("lists and trends only snapshots with the exact requested scope", () => {
+    const db = freshDb();
+    try {
+      const global = recordMetricsSnapshot(db, {
+        filter: {},
+        now: "2026-06-01T00:00:00.000Z",
+      });
+      const project = recordMetricsSnapshot(db, {
+        filter: { projectId: "demo" },
+        now: "2026-06-02T00:00:00.000Z",
+      });
+      const projectDomain = recordMetricsSnapshot(db, {
+        filter: { projectId: "demo", domain: "apps/api" },
+        now: "2026-06-03T00:00:00.000Z",
+      });
+
+      expect(
+        listMetricsSnapshots(db, { filter: {} }).map((s) => s.snapshotId),
+      ).toEqual([global.snapshotId]);
+      expect(
+        listMetricsSnapshots(db, { filter: { projectId: "demo" } }).map(
+          (s) => s.snapshotId,
+        ),
+      ).toEqual([project.snapshotId]);
+      expect(
+        listMetricsSnapshots(db, {
+          filter: { projectId: "demo", domain: "apps/api" },
+        }).map((s) => s.snapshotId),
+      ).toEqual([projectDomain.snapshotId]);
+
+      expect(
+        listMetricsTrend(db, { filter: {}, limit: 10 }).map((p) => p.createdAt),
+      ).toEqual([global.createdAt]);
+      expect(
+        listMetricsTrend(db, {
+          filter: { projectId: "demo" },
+          limit: 10,
+        }).map((p) => p.createdAt),
+      ).toEqual([project.createdAt]);
+      expect(
+        listMetricsTrend(db, {
+          filter: { projectId: "demo", domain: "apps/api" },
+          limit: 10,
+        }).map((p) => p.createdAt),
+      ).toEqual([projectDomain.createdAt]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("computes a delta from the newest valid snapshot at or before the baseline time", () => {
     const db = freshDb();
     try {
@@ -320,6 +371,58 @@ describe("metrics snapshots repository", () => {
         delta: 50,
       });
       expect(delta.skippedSnapshots).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("selects delta baselines only from the exact requested scope", () => {
+    const db = freshDb();
+    try {
+      const global = recordMetricsSnapshot(db, {
+        filter: {},
+        now: "2026-06-01T00:00:00.000Z",
+      });
+      const project = recordMetricsSnapshot(db, {
+        filter: { projectId: "demo" },
+        now: "2026-06-02T00:00:00.000Z",
+      });
+      const projectDomain = recordMetricsSnapshot(db, {
+        filter: { projectId: "demo", domain: "apps/api" },
+        now: "2026-06-03T00:00:00.000Z",
+      });
+
+      const globalDelta = buildMetricsDelta(db, {
+        filter: {},
+        baselineAt: "2026-06-08T00:00:00.000Z",
+        now: "2026-06-13T00:00:00.000Z",
+      });
+      const projectDelta = buildMetricsDelta(db, {
+        filter: { projectId: "demo" },
+        baselineAt: "2026-06-08T00:00:00.000Z",
+        now: "2026-06-13T00:00:00.000Z",
+      });
+      const projectDomainDelta = buildMetricsDelta(db, {
+        filter: { projectId: "demo", domain: "apps/api" },
+        baselineAt: "2026-06-08T00:00:00.000Z",
+        now: "2026-06-13T00:00:00.000Z",
+      });
+
+      expect(globalDelta.status).toBe("ok");
+      expect(projectDelta.status).toBe("ok");
+      expect(projectDomainDelta.status).toBe("ok");
+      if (
+        globalDelta.status !== "ok" ||
+        projectDelta.status !== "ok" ||
+        projectDomainDelta.status !== "ok"
+      ) {
+        return;
+      }
+      expect(globalDelta.baseline.snapshotId).toBe(global.snapshotId);
+      expect(projectDelta.baseline.snapshotId).toBe(project.snapshotId);
+      expect(projectDomainDelta.baseline.snapshotId).toBe(
+        projectDomain.snapshotId,
+      );
     } finally {
       db.close();
     }
