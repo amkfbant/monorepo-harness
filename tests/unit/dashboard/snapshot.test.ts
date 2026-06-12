@@ -120,6 +120,33 @@ function insertMcpConfirmation(root: string): void {
   }
 }
 
+function insertPendingMcpConfirmation(
+  root: string,
+  confirmationId: string,
+  expiresAt: string,
+): void {
+  const { dbPath } = harnessPaths(root);
+  const handle = openManagedDb({ dbPath });
+  try {
+    handle.db
+      .prepare(
+        `INSERT INTO mcp_confirmation_requests (
+           confirmation_id, client_name, actor, tool_name, operation_type,
+           input_json, preview_json, permission_snapshot_json, status,
+           created_at, expires_at
+         )
+         VALUES (
+           ?, 'client', 'actor', 'harness.pr.create',
+           'pr.create', '{}', '{}', '{}', 'pending',
+           '2026-01-01T00:00:00.000Z', ?
+         )`,
+      )
+      .run(confirmationId, expiresAt);
+  } finally {
+    handle.close();
+  }
+}
+
 describe("loadDashboardSnapshot", () => {
   it("builds a snapshot from files when the DB is absent (auto-import)", () => {
     const root = normalRoot();
@@ -187,6 +214,35 @@ describe("loadDashboardSnapshot", () => {
       total: 1,
       byStatus: { confirmed: 1 },
       confirmationRate: 1,
+    });
+  });
+
+  it("uses the snapshot timestamp for pending MCP confirmation expiry", () => {
+    const root = normalRoot();
+    loadDashboardSnapshot({ harnessRoot: root });
+    insertPendingMcpConfirmation(
+      root,
+      "confirm-past",
+      "2025-12-31T23:59:59.000Z",
+    );
+    insertPendingMcpConfirmation(
+      root,
+      "confirm-future",
+      "2026-01-02T00:00:00.000Z",
+    );
+
+    const snap = loadDashboardSnapshot({
+      harnessRoot: root,
+      autoImport: false,
+      now: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    expect(snap.generatedAt).toBe("2026-01-01T00:00:00.000Z");
+    expect(snap.mcpConfirmations).toMatchObject({
+      total: 2,
+      byStatus: { expired: 1, pending: 1 },
+      confirmationRate: 0,
+      expiredRate: 1,
     });
   });
 

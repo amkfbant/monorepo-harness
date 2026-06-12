@@ -126,7 +126,7 @@ export function buildDashboardSnapshot(opts: {
     projects,
     overview: ds.metricsSummary(filters),
     hitchMetrics: ds.hitchMetricsSummary(filters),
-    mcpConfirmations: ds.mcpConfirmationSummary({}),
+    mcpConfirmations: ds.mcpConfirmationSummary({}, now.toISOString()),
     inbox: ds.inboxSummary(filters),
     recentRuns: ds.listRuns({ ...filters, limit: RECENT_RUNS }),
     backlog: ds.backlogList(filters),

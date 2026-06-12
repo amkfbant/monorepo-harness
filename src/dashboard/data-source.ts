@@ -49,6 +49,7 @@ export interface DashboardDataSource {
   hitchMetricsSummary(filter?: AggregateFilter): DbHitchMetricsSummary;
   mcpConfirmationSummary(
     filter?: Pick<AggregateFilter, "since" | "until">,
+    now?: string,
   ): DbMcpConfirmationSummary;
   inboxSummary(filter?: AggregateFilter): DbInboxSummary;
   knowledgeDigest(filter?: AggregateFilter): DbKnowledgeDigest;
@@ -92,8 +93,9 @@ export class DbDashboardDataSource implements DashboardDataSource {
   }
   mcpConfirmationSummary(
     filter?: Pick<AggregateFilter, "since" | "until">,
+    now?: string,
   ): DbMcpConfirmationSummary {
-    return mcpConfirmationSummary(this.db, filter);
+    return mcpConfirmationSummary(this.db, filter, now);
   }
   inboxSummary(filter?: AggregateFilter): DbInboxSummary {
     return inboxSummary(this.db, filter);

@@ -33,7 +33,9 @@ HTML エクスポートだった。Phase 6 では **DB（[`db.md`](./db.md)）�
 - `filters` — 適用中の project / repo（`DashboardFilters` は project / repo のみ）
 - `projects` — project ごとの health / policy provenance / drift
 - `overview` — run / review / retry / safety 指標。`DbMetricsSummary` の
-  `oneShotApprovalRate` / `policyViolationRate` / `secretSuspectRate` を含む
+  `oneShotApprovalRate` / `policyViolationRate` / `secretSuspectRate` を含む。
+  D1 KPI の式は [`cli.md`](./cli.md) の `harness metrics` 節を正規定義とし、
+  dashboard snapshot でも同じ定義を使う
 - `hitchMetrics` — `DbHitchMetricsSummary`（hitch session / review cycle /
   rerun attempt / finding resolution KPI）
 - `mcpConfirmations` — `DbMcpConfirmationSummary`（confirmation request status

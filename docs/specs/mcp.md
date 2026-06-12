@@ -432,7 +432,8 @@ knowledge-candidate run 数 ＋ **operational 知識**の slice（`operationalKn
 出さない。operational は project/repo scope に **portable entry も含めて** 集計）。
 `harness.metrics` は run 件数（status 別）＋ review approved-rate（DB read-model の
 `metricsSummary`。`oneShotApprovalRate` / `policyViolationRate` /
-`secretSuspectRate` を含む）をトップレベルに返し、追加で `hitch`
+`secretSuspectRate` を含む。D1 KPI の式は [`cli.md`](./cli.md) の
+`harness metrics` 節を正規定義とし、MCP でも同じ定義を使う）をトップレベルに返し、追加で `hitch`
 （`DbHitchMetricsSummary`: session status / review-cycle / rerun / finding severity /
 resolution / reopen KPI）を返す。`allowedProjects` が空の unrestricted client には
 `mcpConfirmations`（`DbMcpConfirmationSummary`: confirmation / expired KPI）も返す。
@@ -446,7 +447,10 @@ unrestricted client の `mcpConfirmations` は global 値で、`sinceHours` 由�
 `expired / (confirmed + consumed + rejected + expired)`。分母 0 は `null`。stored `pending` かつ
 `expires_at <= 集計時刻` の request は read-only に effective `expired` として byStatus / rate
 へ入れ、DB には書き戻さない。絞り込みは
-inbox=`projectId`/`repoId`/`domain`、metrics=それ＋`sinceHours`。**scope**: `allowedProjects` が空（unrestricted）なら
+inbox=`projectId`/`repoId`/`domain`、metrics=それ＋`sinceHours`。
+`sinceHours` の対象列は、runs 指標は `runs.started_at`、hitch 指標は
+`hitch_sessions.created_at`、MCP confirmations は
+`mcp_confirmation_requests.created_at`。**scope**: `allowedProjects` が空（unrestricted）なら
 repo 横断、restricted なら `projectId` がその集合に入る必要がある（未指定時は allowed が
 1 つなら既定、複数なら `project_required` で deny＝単一 projectId 集計で部分集合を跨がない
 fail-closed）。
