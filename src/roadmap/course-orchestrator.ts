@@ -32,7 +32,12 @@ import type {
 } from "./orchestrator-types.js";
 import { PhaseRepository } from "./phase-repository.js";
 import type { PhaseLeaseGuard } from "./phase-repository.js";
-import { rollupCourse, type CourseRollup, type PhaseRollup } from "./rollup.js";
+import {
+  openCounts,
+  rollupCourse,
+  type CourseRollup,
+  type PhaseRollup,
+} from "./rollup.js";
 
 export type CourseOrchestrateErrorCode =
   | "course_not_active"
@@ -295,7 +300,7 @@ export class CourseOrchestrator {
         continue;
       }
 
-      const action = this.actionForPhase(rollup, i, convergence);
+      const action = this.actionForPhase(rollup, i, phases, convergence);
       if (action.kind !== "drive") {
         phaseOutcomes.push(outcomeForAction(phase.phaseId, action));
         if (action.kind === "blocked_hitch") subtreeBlocked = true;
@@ -486,18 +491,28 @@ export class CourseOrchestrator {
   private actionForPhase(
     rollup: CourseRollup,
     index: number,
+    phases: PhaseRepository,
     convergence: ConvergenceService,
   ): CoursePhaseAction {
-    const phase = rollup.phases[index]!;
+    const phaseSnapshot = rollup.phases[index]!;
+    const phase = phases.require(phaseSnapshot.phaseId);
+    const hitchIds = phases.hitchIdsFor(phase.phaseId);
+    let derivedOpenP0 = 0;
+    let derivedOpenP1 = 0;
+    for (const hitchId of hitchIds) {
+      const counts = openCounts(this.deps.db, hitchId);
+      derivedOpenP0 += counts.p0;
+      derivedOpenP1 += counts.p1;
+    }
     return decideCoursePhaseAction({
-      declaredStatus: phase.declaredStatus,
+      declaredStatus: phase.status,
       isLeaf: isLeafPhase(rollup.phases, index),
-      hitches: phase.hitchIds.map((hitchId) => ({
+      hitches: hitchIds.map((hitchId) => ({
         hitchId,
         convergence: convergence.evaluate(hitchId),
       })),
-      derivedOpenP0: phase.derivedOpenP0,
-      derivedOpenP1: phase.derivedOpenP1,
+      derivedOpenP0,
+      derivedOpenP1,
     });
   }
 
