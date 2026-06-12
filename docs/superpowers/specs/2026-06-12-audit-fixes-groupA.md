@@ -37,9 +37,11 @@
 
 **安全境界考慮**: 状態遷移は決定論ロジックのまま（エラー型分岐・LLM 不使用）。escalated にしない=「遷移しない」= fail-closed。lease 検証強化は制限方向。
 
-**テスト**: assertHeld 単体（held/expired/奪取/released）/ phase transition 直前に lease 奪取 → transitionStatus 走らず lease_lost abort（HARNESS_LOCK_LEASE_MS 短縮・既存 lease-stolen-finalize.test.ts 流用）/ coder runner が DomainLockBusyError を投げる fake で hitch が escalated にならない。
+**codex 改訂（P1）**: rethrow だけでは不足。`createOrchestratorRunners` は coder 実行前に attempt を作り例外時に一律 failed 完了 + iteration を進める（src/hitch/orchestrator-runners.ts:321,359 / repository.ts:472,1088）ので、lock/lease 衝突（一時状態）を「failed coding attempt + budget 消費」として残してしまう。→ **runner 側で `DomainLockBusyError`/`LeaseLostError`/`LeaseGuardFailedError` を attempt 非消費（cancelled/no-op）扱い**にする設計まで含める。さらに run 中の `LeaseGuardFailedError` は最終的に `RunFinalizedError` に包まれて投げられる（workflow-runner.ts:502,573）ため、catch は **`RunFinalizedError` の cause も判定**する。
 
-**規模**: 中（~100 行 + テスト）
+**テスト**: assertHeld 単体（held/expired/奪取/released）/ phase transition 直前に lease 奪取 → transitionStatus 走らず lease_lost abort（HARNESS_LOCK_LEASE_MS 短縮・既存 lease-stolen-finalize.test.ts 流用）/ coder runner が DomainLockBusyError を投げる fake で hitch が escalated にならず**かつ attempt が failed として残らない** / RunFinalizedError(cause=LeaseGuardFailedError) も lease_lost として扱う。
+
+**規模**: 中（~120 行 + テスト）
 
 ### #114 [P1] hitch.start の idempotency id に project scope 欠如（cross-project replay leak）
 **現状**: `hitchIdForIdempotencyKey` は key 単体の sha256（src/mcp/tools/hitch-tools.ts:963-966）。`hitchStartTool` は `args.hitchId ?? hitchIdForIdempotencyKey(args.idempotencyKey)`（:299）→ `target: {type:"goal", id:hitchId}`（:302）。OperationRunner replay キー UNIQUE `(operation_type,target_id,idempotency_key)`（src/operations/operation-runner.ts:20-27）に project 次元無し → 別 project の restricted クライアント同士が同一 key で 2 人目が 1 人目の hitch を replay 受領。course/phase は修正済み（`scopedIdForIdempotencyKey` が JSON `[scope,key]` tuple を hash、src/mcp/tools/course-tools.ts:297-336）。
@@ -49,6 +51,8 @@
 2. hitch-tools.ts:963 を `hitchIdForIdempotencyKey(projectScope, key) => scopedIdForIdempotencyKey("hitch", projectScope, key)` に。呼び出し（:299）は `hitchIdForIdempotencyKey(effectiveProjectId ?? null, args.idempotencyKey)`（effectiveProjectId は #81 repoId 導出後 :289-296）。`args.hitchId` 明示パス不変。
 
 **対象ファイル**: src/mcp/tools/hitch-tools.ts:299,963-966 / src/mcp/tools/course-tools.ts:297-336 / 新規 src/mcp/tools/scoped-idempotency.ts / docs/specs/mcp.md
+
+**codex 補正（P2）**: repoId-only で `effectiveProjectId` が導出されない global client では同一 idempotencyKey が **null scope で衝突し得る**（hitch-tools.ts:289）。これは「同一 null-project 内の正当な replay」として許容する仕様（restricted client 跨ぎの leak は projectScope で塞がる）。→ **projectId 不明時は null scope で導出する**ことを意図仕様として spec に明文化（course 側と同じ扱い）。
 
 **挙動・互換性**: **replay 非互換**: 同一 idempotencyKey の再送が別 hitchId 導出で新規作成になる（upgrade 跨ぎ）。`hitch-` プレフィックス不変。CHANGELOG 明記。
 
@@ -65,6 +69,7 @@
 1. `OrchestratorRunnerDeps` に `compiledPolicy?: {global;repo}` / `project?: RunMeta["project"]` 追加。
 2. coder runner（:337-345）で `runDomainCoding` に spread thread。`closeAndPr` は policy 消費しないため thread 不要（issue 文言との差を spec 明記）。
 3. wiring: mutation-tools.ts:499 / course-orchestrate-runtime.ts:71 に `compiledPolicy: prepared.compiledPolicy, project: prepared.project`。CLI（src/cli/hitch.ts:551,899,1019）は projectId ある hitch で `prepareProjectRun(...)` 解決して渡す共通ヘルパー `resolveHitchRunnerDeps` 導入。projectId 無し素 repo hitch は従来 raw policy（非 project モード仕様）。
+4. **codex 補正（P2）**: `prepareProjectRun` は `projectContextPacks` も返す（run-project.ts:32）が MCP/course hitch 経路はこれも捨てている（mutation-tools.ts:490 / course-orchestrate-runtime.ts:66）。安全境界ではないが project-runtime 同等性として **`projectContextPacks` も thread 対象に含める**（`run --project` 経路と挙動を揃える）。
 
 **対象ファイル**: src/hitch/orchestrator-runners.ts:121-196,337-345 / src/mcp/tools/mutation-tools.ts:490-510 / src/roadmap/course-orchestrate-runtime.ts:66-90 / src/cli/hitch.ts:551,899,1019 / docs/specs/workflow.md・project.md
 
@@ -97,7 +102,7 @@
 ### #117 [P2] dangerous 系 MCP が per-client mode を素通り
 **現状**: `decideMcpPermission` は `kind==="dangerous" || requireConfirmation.includes(operation)` を kind 別ゲートより前に評価し clientMode を見ず `confirmation-required(allowed:true)`（src/mcp/security/permissions.ts:93-103）。mutation は guarded-mutation 以外拒否（:120-127）、dry-run は read-only 拒否（:109-118）と非対称。confirm 時再評価（src/mcp/confirmation-runner.ts:60-71）も同様素通り → read-only クライアントが dangerous 10 tools（tool-registry.ts:1655-1823: review.process/cleanup.apply/pr.create/hitch.close/hitch.cancel/hitch.expand_scope/db.repair.apply/db.archive.apply/db.migrate_blobs.apply/db.gc_blobs.apply）の confirmation 起票でき人間 confirm 後実行。hitch.close close_ready fast-path のみ guarded-mutation+allowlist 要求（src/mcp/tools/hitch-tools.ts:877-893）。
 
-**変更内容**: confirmation-required 分岐（:93-103）に clientMode ゲート追加: `kind!=="read" && clientMode!=="guarded-mutation"` なら `permissionDenied(reason:"dangerous_disabled_for_client")`。この 1 箇所で起票（server.ts:260）と confirm 後実行（confirmation-runner.ts:60-71）の両方が閉じる。`allowedOperations` allowlist を dangerous に課す横展開は既存 config breaking のため見送り→docs/future-features.md に defer。
+**変更内容**: confirmation-required 分岐（:93-103）に clientMode ゲート追加: `kind!=="read" && clientMode!=="guarded-mutation"` なら `permissionDenied(reason:"dangerous_disabled_for_client")`。**codex 補正（P2）**: 「permissions.ts 1 箇所で起票も閉じる」は不正確 — server の汎用 confirmation 起票は `tool.kind==="mutation"` 限定（server.ts:269）で dangerous は handler 側 `confirmationResult` 経由。ただし **permission 層 deny は handler 実行前に効く**ため、`decideMcpPermission` で deny すれば dangerous 起票も confirm 後実行も止まる（正）。テスト観点は「permission 層が handler 前に dangerous を deny する」で書く。`allowedOperations` allowlist を dangerous に課す横展開は既存 config breaking のため見送り→docs/future-features.md に defer。
 
 **対象ファイル**: src/mcp/security/permissions.ts:93-103 / docs/specs/mcp.md / docs/future-features.md
 
@@ -146,7 +151,7 @@
 
 **対象ファイル**: src/roadmap/phase-repository.ts:26-50,62-80 / docs/specs/roadmap.md
 
-**挙動・互換性**: 既存「全 0」course の順が UUID→作成順に（意図に近づく・CHANGELOG）。明示 position 不変。migration 不要。
+**挙動・互換性**: 既存「全 0」course の順が UUID→作成順に（意図に近づく・CHANGELOG）。明示 position 不変。migration 不要。**codex 補正（P2）**: 既存データで `created_at` が同一ミリ秒なら `phase_id` 順に戻るため「全0 course が作成順に直る」は**完全保証ではない**（自動採番は新規 phase に有効・既存救済は best-effort）旨を注記。
 
 **安全境界考慮**: 決定論順序の確定のみ。drive 可否判定に触れない。
 
@@ -157,7 +162,7 @@
 ### #121 [P2] classify/defer runner の暗黙 limit 200 で resolved:true の contract violation
 **現状**: classify runner は `listFindings({hitchId,scopeStatus:"unknown"})`（limit→200）処理して無条件 `{resolved:true}`（src/hitch/orchestrator-runners.ts:437-454）。defer も同様（:462-470）。200 件超で未処理残るのに resolved:true（orchestrator.ts:76-82 が信じて continue）。
 
-**変更内容**: 両 runner をバッチループ + 最終 COUNT 検証に。classify はバッチ取得→classifyFinding（scope 変わるので次バッチに出ない＝有限）→最終 `countFindings(unknown,open)` が 0 なら resolved:true・残れば resolved:false+escalateReason。defer も同形（deferred 実数累積・進捗ゼロバッチ検知で停止し無限ループ防止）。countFindings は #112 追加メソッド流用。
+**変更内容**: 両 runner をバッチループ + 最終 COUNT 検証に。classify はバッチ取得→classifyFinding（scope 変わるので次バッチに出ない＝有限）→最終 COUNT が 0 なら resolved:true・残れば resolved:false+escalateReason。defer も同形（deferred 実数累積・進捗ゼロバッチ検知で停止し無限ループ防止）。countFindings は #112 追加メソッド流用。**codex 改訂（P1）**: 現行 classify runner は unknown を `open/reopened/escalated` で処理、defer runner は `open/reopened/out_of_scope` を処理する（orchestrator-runners.ts:437,465）。`countFindings(unknown, open)` だけだと reopened/escalated/out_of_scope を残して完了扱いにできてしまう。→ **#112 の `countFindings` に `lifecycleStatusIn` 相当の filter を持たせ、classify の残数検証は `scope=unknown かつ lifecycle IN(open,reopened,escalated)`、defer は `scope=out_of_scope かつ lifecycle IN(open,reopened,out_of_scope)` を数える**と明記（処理対象 lifecycle と検証対象 lifecycle を一致させる）。
 
 **対象ファイル**: src/hitch/orchestrator-runners.ts:433-492 / src/hitch/repository.ts（countFindings, #112 共有）/ docs/specs/hitch-convergence.md
 
@@ -202,13 +207,13 @@
 ### #124 [P2] runMcpMutationOperation / runMcpOperation の重複統合
 **現状**: src/mcp/tools/operation-wrapper.ts:29-123 と :125-220 が ~90 行ほぼ同一（差分は引数形のみ・エラー mapping 完全重複）。利用: hitch-tools(runHitchOperation 1)/course-tools(mutation 7+operation 1)。**第三の** private runMcpOperation が mutation-tools.ts:1307-1423 に別存在（input を redact しない :1341）。
 
-**変更内容**: (1) runMcpOperation を共通コアに、runMcpMutationOperation を薄 adapter に（export 名・シグネチャ維持・呼び出し側無変更）。(2) mutation-tools.ts:1307-1423 private 版統合は機能差ありスコープ外→future-features defer。**ただし :1341 が input を redact しない点は監査 leak の可能性→別 issue 起票を明記**（本 issue 範囲外）。
+**変更内容**: (1) runMcpOperation を共通コアに、runMcpMutationOperation を薄 adapter に（export 名・シグネチャ維持・呼び出し側無変更）。(2) **codex 改訂（P1）**: private `runMcpOperation`（mutation-tools.ts:1341）が `opts.input` を生で `operations.input_json` に渡し redact しない（wrapper 版は :59,156 で redact）。これは dangerous 系（review.process / pr.create / DB apply）から使われ監査ログに機微混入の可能性。**defer せず本バッチの先行 P1 として #124 に含める**: private 版の input 永続化にも `redactMcpAuditValue` を適用（または共通コアに寄せる）。private 版自体の wrapper 統合（hitchGate/queued/pendingExternalExecutor の機能差あり）は引き続きスコープ外で future-features defer 可。
 
-**対象ファイル**: src/mcp/tools/operation-wrapper.ts:29-220 / docs/future-features.md
+**対象ファイル**: src/mcp/tools/operation-wrapper.ts:29-220 / src/mcp/tools/mutation-tools.ts:1341（redaction 適用）/ docs/future-features.md
 
-**挙動・互換性**: 不変（純 refactor）。
+**挙動・互換性**: 応答形不変。監査ログの input が redact されるようになる（機微情報を残さない方向）。
 
-**安全境界考慮**: エラー mapping 片側修正漏れ除去。redaction 維持。
+**安全境界考慮**: エラー mapping 片側修正漏れ除去 + 監査ログの機微情報残留を塞ぐ（fail-closed 方向）。
 
 **テスト**: adapter 経由の budget-exceeded/in-flight/replayed-failure の応答形 regression（両版同一 mapping）+ フルスイート緑。
 
