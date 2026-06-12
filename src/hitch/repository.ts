@@ -158,9 +158,20 @@ export interface DeferHitchFindingInput {
 export interface HitchFindingFilter {
   hitchId?: string;
   scopeStatus?: HitchScopeStatus;
+  scopeStatusIn?: readonly HitchScopeStatus[];
   lifecycleStatus?: HitchLifecycleStatus;
+  lifecycleStatusIn?: readonly HitchLifecycleStatus[];
   severity?: HitchFindingSeverity;
+  severityIn?: readonly HitchFindingSeverity[];
   limit?: number;
+}
+
+export interface HitchFindingSummaryCounts {
+  openInScopeP0: number;
+  openInScopeP1: number;
+  openInScopeP2: number;
+  openUnknownScope: number;
+  openOutOfScope: number;
 }
 
 export interface RecordHitchCloseCheckInput {
@@ -279,6 +290,13 @@ interface HitchFindingRow {
   resolution_note: string | null;
 }
 
+interface HitchFindingSummaryRow {
+  scope_status: HitchScopeStatus;
+  severity: HitchFindingSeverity;
+  lifecycle_status: HitchLifecycleStatus;
+  n: number;
+}
+
 interface HitchCloseCheckRow {
   check_id: string;
   hitch_id: string;
@@ -324,6 +342,25 @@ const REOPENABLE_STATUSES: ReadonlySet<HitchStatus> = new Set<HitchStatus>([
   "budget_exhausted",
   "escalated",
 ]);
+
+export const OPEN_FINDING_LIFECYCLES = [
+  "open",
+  "reopened",
+  "escalated",
+] as const satisfies readonly HitchLifecycleStatus[];
+
+export const UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES = [
+  "open",
+  "reopened",
+  "out_of_scope",
+  "escalated",
+] as const satisfies readonly HitchLifecycleStatus[];
+
+const OPEN_FINDING_LIFECYCLE_SET = new Set<HitchLifecycleStatus>(
+  OPEN_FINDING_LIFECYCLES,
+);
+const UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLE_SET =
+  new Set<HitchLifecycleStatus>(UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES);
 
 export class HitchRepository {
   constructor(private readonly db: Database.Database) {}
@@ -962,10 +999,7 @@ export class HitchRepository {
   listFindings(filter: HitchFindingFilter = {}): HitchFinding[] {
     const clauses: string[] = [];
     const args: unknown[] = [];
-    addWhere(clauses, args, "hitch_id", filter.hitchId);
-    addWhere(clauses, args, "scope_status", filter.scopeStatus);
-    addWhere(clauses, args, "lifecycle_status", filter.lifecycleStatus);
-    addWhere(clauses, args, "severity", filter.severity);
+    addFindingWhereClauses(clauses, args, filter);
     const limit = filter.limit ?? 200;
     const rows = this.db
       .prepare(
@@ -975,6 +1009,105 @@ export class HitchRepository {
       )
       .all(...args, limit) as HitchFindingRow[];
     return rows.map(rowToFinding);
+  }
+
+  countFindings(filter: HitchFindingFilter = {}): number {
+    const clauses: string[] = [];
+    const args: unknown[] = [];
+    addFindingWhereClauses(clauses, args, filter);
+    const row = this.db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM hitch_findings" + whereSql(clauses),
+      )
+      .get(...args) as { n: number };
+    return row.n;
+  }
+
+  countFindingSummary(hitchId: string): HitchFindingSummaryCounts {
+    const activePlaceholders = placeholders(OPEN_FINDING_LIFECYCLES.length);
+    const outOfScopePlaceholders = placeholders(
+      UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES.length,
+    );
+    const rows = this.db
+      .prepare(
+        `SELECT scope_status, severity, lifecycle_status, COUNT(*) AS n
+           FROM hitch_findings
+          WHERE hitch_id = ?
+            AND (
+              lifecycle_status IN (${activePlaceholders})
+              OR (
+                scope_status = 'out_of_scope'
+                AND lifecycle_status IN (${outOfScopePlaceholders})
+              )
+            )
+          GROUP BY scope_status, severity, lifecycle_status`,
+      )
+      .all(
+        hitchId,
+        ...OPEN_FINDING_LIFECYCLES,
+        ...UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES,
+      ) as HitchFindingSummaryRow[];
+
+    const counts: HitchFindingSummaryCounts = {
+      openInScopeP0: 0,
+      openInScopeP1: 0,
+      openInScopeP2: 0,
+      openUnknownScope: 0,
+      openOutOfScope: 0,
+    };
+    for (const row of rows) {
+      if (row.scope_status === "out_of_scope") {
+        if (
+          UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLE_SET.has(
+            row.lifecycle_status,
+          )
+        ) {
+          counts.openOutOfScope += row.n;
+        }
+        continue;
+      }
+      if (!OPEN_FINDING_LIFECYCLE_SET.has(row.lifecycle_status)) continue;
+      if (row.scope_status === "unknown") {
+        counts.openUnknownScope += row.n;
+      } else if (row.scope_status === "in_scope") {
+        if (row.severity === "P0") counts.openInScopeP0 += row.n;
+        else if (row.severity === "P1") counts.openInScopeP1 += row.n;
+        else if (row.severity === "P2") counts.openInScopeP2 += row.n;
+      }
+    }
+    return counts;
+  }
+
+  maxFindingReopenCount(hitchId: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(MAX(reopen_count), 0) AS n
+           FROM hitch_findings
+          WHERE hitch_id = ?`,
+      )
+      .get(hitchId) as { n: number };
+    return row.n;
+  }
+
+  latestFindingMutationAt(hitchId: string): string | null {
+    const row = this.db
+      .prepare(
+        `WITH finding_mutations(ts) AS (
+           SELECT last_seen_at FROM hitch_findings WHERE hitch_id = ?
+           UNION ALL
+           SELECT fixed_at FROM hitch_findings
+            WHERE hitch_id = ? AND fixed_at IS NOT NULL
+           UNION ALL
+           SELECT deferred_at FROM hitch_findings
+            WHERE hitch_id = ? AND deferred_at IS NOT NULL
+           UNION ALL
+           SELECT escalated_at FROM hitch_findings
+            WHERE hitch_id = ? AND escalated_at IS NOT NULL
+         )
+         SELECT MAX(ts) AS latest FROM finding_mutations`,
+      )
+      .get(hitchId, hitchId, hitchId, hitchId) as { latest: string | null };
+    return row.latest;
   }
 
   recordCloseCheck(input: RecordHitchCloseCheckInput): HitchCloseCheck {
@@ -1294,6 +1427,39 @@ function addWhere(
   if (value === undefined) return;
   clauses.push(`${column} = ?`);
   args.push(value);
+}
+
+function addWhereIn(
+  clauses: string[],
+  args: unknown[],
+  column: string,
+  values: readonly string[] | undefined,
+): void {
+  if (values === undefined) return;
+  if (values.length === 0) {
+    clauses.push("0 = 1");
+    return;
+  }
+  clauses.push(`${column} IN (${placeholders(values.length)})`);
+  args.push(...values);
+}
+
+function addFindingWhereClauses(
+  clauses: string[],
+  args: unknown[],
+  filter: HitchFindingFilter,
+): void {
+  addWhere(clauses, args, "hitch_id", filter.hitchId);
+  addWhere(clauses, args, "scope_status", filter.scopeStatus);
+  addWhereIn(clauses, args, "scope_status", filter.scopeStatusIn);
+  addWhere(clauses, args, "lifecycle_status", filter.lifecycleStatus);
+  addWhereIn(clauses, args, "lifecycle_status", filter.lifecycleStatusIn);
+  addWhere(clauses, args, "severity", filter.severity);
+  addWhereIn(clauses, args, "severity", filter.severityIn);
+}
+
+function placeholders(count: number): string {
+  return Array.from({ length: count }, () => "?").join(", ");
 }
 
 function whereSql(clauses: string[]): string {

@@ -313,6 +313,7 @@ export interface HitchCloseCheck {
 
 export interface HitchNextAction {
   kind: HitchNextActionKind;
+  /** Advisory context for operators; convergence may truncate this list. */
   findingIds?: string[];
   message: string;
 }

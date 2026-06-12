@@ -1,4 +1,10 @@
-import type { HitchRepository } from "./repository.js";
+import {
+  OPEN_FINDING_LIFECYCLES,
+  UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES,
+  type HitchFindingFilter,
+  type HitchFindingSummaryCounts,
+  type HitchRepository,
+} from "./repository.js";
 import { evaluateCloseConditions } from "./close-checks.js";
 import type {
   HitchAttempt,
@@ -6,46 +12,49 @@ import type {
   HitchConvergenceMetrics,
   HitchConvergenceResult,
   HitchFinding,
-  HitchLifecycleStatus,
   HitchNextAction,
   HitchReviewCycle,
   HitchSession,
 } from "./types.js";
 
-const OPEN_LIFECYCLES = new Set<HitchLifecycleStatus>(["open", "reopened"]);
-const UNRESOLVED_OUT_OF_SCOPE_LIFECYCLES = new Set<HitchLifecycleStatus>([
-  "open",
-  "reopened",
-  "out_of_scope",
-]);
+const OPEN_FINDING_LIFECYCLE_SET = new Set<HitchFinding["lifecycleStatus"]>(
+  OPEN_FINDING_LIFECYCLES,
+);
+const UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLE_SET = new Set<
+  HitchFinding["lifecycleStatus"]
+>(UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES);
 const CLOSE_CHECK_ATTEMPT_TYPE = "close-check";
+const ADVISORY_FINDING_ID_LIMIT = 200;
 
 export class ConvergenceService {
   constructor(private readonly repo: HitchRepository) {}
 
   evaluate(hitchId: string): HitchConvergenceResult {
     const session = this.repo.requireSession(hitchId);
-    const findings = this.repo.listFindings({ hitchId, limit: 10_000 });
+    const findingCounts = this.repo.countFindingSummary(hitchId);
+    const maxReopenCount = this.repo.maxFindingReopenCount(hitchId);
+    const latestFindingMutationAt = this.repo.latestFindingMutationAt(hitchId);
     const cycles = this.repo.listReviewCycles(hitchId);
     const attempts = this.repo.listAttempts(hitchId);
     const closeChecks = this.repo.listCloseChecks(hitchId);
     const close = evaluateCloseConditions({
       conditions: session.closeConditions,
       checks: closeChecks,
-      findings,
+      findingCounts,
       freshAfter: lastCloseCheckInvalidatingMutationAt({
         attempts,
-        findings,
+        latestFindingMutationAt,
         cycles,
       }),
       allowEmptyCloseConditions: session.policy.allowEmptyCloseConditions,
     });
     const metrics = buildMetrics(
       session,
-      findings,
+      findingCounts,
       cycles,
       maxAttemptIteration(attempts),
       attempts.filter((a) => a.attemptType === "rerun").length,
+      maxReopenCount,
       {
         passed: close.requiredPassed,
         failed: close.requiredFailed,
@@ -54,8 +63,8 @@ export class ConvergenceService {
     );
     const latestCodingFailed = isLatestCodingAttemptFailed(attempts);
     return decide(
+      this.repo,
       session,
-      findings,
       cycles,
       metrics,
       close.allRequiredPassed,
@@ -77,10 +86,14 @@ export function buildConvergenceMetrics(input: {
 }): HitchConvergenceMetrics {
   return buildMetrics(
     input.session,
-    input.findings,
+    summarizeFindings(input.findings),
     input.cycles,
     input.attemptsUsed,
     input.rerunsUsed ?? 0,
+    input.findings.reduce(
+      (max, finding) => Math.max(max, finding.reopenCount),
+      0,
+    ),
     {
       passed: input.closeConditionsPassed,
       failed: input.closeConditionsFailed,
@@ -91,30 +104,20 @@ export function buildConvergenceMetrics(input: {
 
 function buildMetrics(
   session: HitchSession,
-  findings: HitchFinding[],
+  findingCounts: HitchFindingSummaryCounts,
   cycles: HitchReviewCycle[],
   attemptsUsed: number,
   rerunsUsed: number,
+  maxReopenCount: number,
   closeCounts: { passed: number; failed: number; pending: number },
 ): HitchConvergenceMetrics {
-  const open = findings.filter((f) => OPEN_LIFECYCLES.has(f.lifecycleStatus));
   const latestCycle = cycles[cycles.length - 1];
   return {
-    openInScopeP0: open.filter(
-      (f) => f.scopeStatus === "in_scope" && f.severity === "P0",
-    ).length,
-    openInScopeP1: open.filter(
-      (f) => f.scopeStatus === "in_scope" && f.severity === "P1",
-    ).length,
-    openInScopeP2: open.filter(
-      (f) => f.scopeStatus === "in_scope" && f.severity === "P2",
-    ).length,
-    openUnknownScope: open.filter((f) => f.scopeStatus === "unknown").length,
-    openOutOfScope: findings.filter(
-      (f) =>
-        f.scopeStatus === "out_of_scope" &&
-        UNRESOLVED_OUT_OF_SCOPE_LIFECYCLES.has(f.lifecycleStatus),
-    ).length,
+    openInScopeP0: findingCounts.openInScopeP0,
+    openInScopeP1: findingCounts.openInScopeP1,
+    openInScopeP2: findingCounts.openInScopeP2,
+    openUnknownScope: findingCounts.openUnknownScope,
+    openOutOfScope: findingCounts.openOutOfScope,
     totalNewFindings: cycles.reduce(
       (sum, cycle) => sum + cycle.findingsNew,
       0,
@@ -126,11 +129,39 @@ function buildMetrics(
     closeConditionsPassed: closeCounts.passed,
     closeConditionsFailed: closeCounts.failed,
     closeConditionsPending: closeCounts.pending,
-    maxReopenCount: findings.reduce(
-      (max, finding) => Math.max(max, finding.reopenCount),
-      0,
-    ),
+    maxReopenCount,
   };
+}
+
+function summarizeFindings(findings: HitchFinding[]): HitchFindingSummaryCounts {
+  const counts: HitchFindingSummaryCounts = {
+    openInScopeP0: 0,
+    openInScopeP1: 0,
+    openInScopeP2: 0,
+    openUnknownScope: 0,
+    openOutOfScope: 0,
+  };
+  for (const finding of findings) {
+    if (finding.scopeStatus === "out_of_scope") {
+      if (
+        UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLE_SET.has(
+          finding.lifecycleStatus,
+        )
+      ) {
+        counts.openOutOfScope += 1;
+      }
+      continue;
+    }
+    if (!OPEN_FINDING_LIFECYCLE_SET.has(finding.lifecycleStatus)) continue;
+    if (finding.scopeStatus === "unknown") {
+      counts.openUnknownScope += 1;
+    } else if (finding.scopeStatus === "in_scope") {
+      if (finding.severity === "P0") counts.openInScopeP0 += 1;
+      else if (finding.severity === "P1") counts.openInScopeP1 += 1;
+      else if (finding.severity === "P2") counts.openInScopeP2 += 1;
+    }
+  }
+  return counts;
 }
 
 function maxAttemptIteration(attempts: HitchAttempt[]): number {
@@ -195,7 +226,7 @@ function isReviewPending(
 
 function lastCloseCheckInvalidatingMutationAt(input: {
   attempts: HitchAttempt[];
-  findings: HitchFinding[];
+  latestFindingMutationAt: string | null;
   cycles: HitchReviewCycle[];
 }): string | null {
   const timestamps: string[] = [];
@@ -205,11 +236,8 @@ function lastCloseCheckInvalidatingMutationAt(input: {
       attempt.completedAt ?? attempt.startedAt ?? attempt.createdAt;
     timestamps.push(timestamp);
   }
-  for (const finding of input.findings) {
-    timestamps.push(finding.lastSeenAt);
-    if (finding.fixedAt !== null) timestamps.push(finding.fixedAt);
-    if (finding.deferredAt !== null) timestamps.push(finding.deferredAt);
-    if (finding.escalatedAt !== null) timestamps.push(finding.escalatedAt);
+  if (input.latestFindingMutationAt !== null) {
+    timestamps.push(input.latestFindingMutationAt);
   }
   for (const cycle of input.cycles) {
     timestamps.push(cycle.completedAt ?? cycle.createdAt);
@@ -222,8 +250,8 @@ function lastCloseCheckInvalidatingMutationAt(input: {
 }
 
 function decide(
+  repo: HitchRepository,
   session: HitchSession,
-  findings: HitchFinding[],
   cycles: HitchReviewCycle[],
   metrics: HitchConvergenceMetrics,
   allRequiredCloseConditionsPassed: boolean,
@@ -261,8 +289,12 @@ function decide(
       {
         kind: "ask_human",
         findingIds: openFindingIds(
-          findings,
-          (f) => f.scopeStatus === "in_scope" && f.severity === "P0",
+          repo,
+          {
+            hitchId: session.hitchId,
+            scopeStatus: "in_scope",
+            severity: "P0",
+          },
         ),
         message: "Escalate open in-scope P0 findings.",
       },
@@ -335,7 +367,10 @@ function decide(
       metrics,
       {
         kind: "classify_findings",
-        findingIds: openFindingIds(findings, (f) => f.scopeStatus === "unknown"),
+        findingIds: openFindingIds(repo, {
+          hitchId: session.hitchId,
+          scopeStatus: "unknown",
+        }),
         message: "Classify unknown-scope findings before another fix pass.",
       },
     );
@@ -353,8 +388,12 @@ function decide(
       {
         kind: "fix_findings",
         findingIds: openFindingIds(
-          findings,
-          (f) => f.scopeStatus === "in_scope" && f.severity === "P1",
+          repo,
+          {
+            hitchId: session.hitchId,
+            scopeStatus: "in_scope",
+            severity: "P1",
+          },
         ),
         message: "Fix open in-scope P1 findings.",
       },
@@ -374,8 +413,12 @@ function decide(
       {
         kind: "fix_findings",
         findingIds: openFindingIds(
-          findings,
-          (f) => f.scopeStatus === "in_scope" && f.severity === "P2",
+          repo,
+          {
+            hitchId: session.hitchId,
+            scopeStatus: "in_scope",
+            severity: "P2",
+          },
         ),
         message: "Fix or defer in-scope P2 findings required by close policy.",
       },
@@ -407,7 +450,7 @@ function decide(
       metrics,
       {
         kind: "defer_followups",
-        findingIds: unresolvedOutOfScopeFindingIds(findings),
+        findingIds: unresolvedOutOfScopeFindingIds(repo, session.hitchId),
         message: "Defer out-of-scope findings before closing the hitch.",
       },
     );
@@ -548,22 +591,34 @@ function closeRequirementsSatisfied(
   return true;
 }
 
+/**
+ * Advisory finding IDs for the next action. Convergence decisions are based on
+ * SQL aggregate metrics; this list is intentionally capped for display.
+ */
 function openFindingIds(
-  findings: HitchFinding[],
-  predicate: (finding: HitchFinding) => boolean,
+  repo: HitchRepository,
+  filter: HitchFindingFilter,
 ): string[] {
-  return findings
-    .filter((f) => OPEN_LIFECYCLES.has(f.lifecycleStatus) && predicate(f))
+  return repo
+    .listFindings({
+      ...filter,
+      lifecycleStatusIn: OPEN_FINDING_LIFECYCLES,
+      limit: ADVISORY_FINDING_ID_LIMIT,
+    })
     .map((f) => f.findingId);
 }
 
-function unresolvedOutOfScopeFindingIds(findings: HitchFinding[]): string[] {
-  return findings
-    .filter(
-      (f) =>
-        f.scopeStatus === "out_of_scope" &&
-        UNRESOLVED_OUT_OF_SCOPE_LIFECYCLES.has(f.lifecycleStatus),
-    )
+function unresolvedOutOfScopeFindingIds(
+  repo: HitchRepository,
+  hitchId: string,
+): string[] {
+  return repo
+    .listFindings({
+      hitchId,
+      scopeStatus: "out_of_scope",
+      lifecycleStatusIn: UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES,
+      limit: ADVISORY_FINDING_ID_LIMIT,
+    })
     .map((f) => f.findingId);
 }
 

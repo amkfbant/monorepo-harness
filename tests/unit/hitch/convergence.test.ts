@@ -86,6 +86,43 @@ function addCycle(repo: HitchRepository, cycleNumber: number, findingsNew: numbe
   repo.completeReviewCycle({ cycleId: cycle.cycleId, findingsNew });
 }
 
+function insertFixedFindings(
+  db: ReturnType<typeof openDb>,
+  input: {
+    hitchId: string;
+    count: number;
+    prefix: string;
+    firstSeenAt: string;
+    lastSeenAt: string;
+    fixedAt: string;
+  },
+) {
+  const insert = db.prepare(
+    `INSERT INTO hitch_findings (
+       finding_id, hitch_id, stable_key, source, severity, category,
+       scope_status, lifecycle_status, summary, first_seen_at, last_seen_at,
+       fixed_at, reopen_count
+     )
+     VALUES (?, ?, ?, 'review', 'P2', 'correctness', 'in_scope', 'fixed',
+       ?, ?, ?, ?, 0)`,
+  );
+  const tx = db.transaction(() => {
+    for (let i = 0; i < input.count; i += 1) {
+      const id = `${input.prefix}-${i}`;
+      insert.run(
+        id,
+        input.hitchId,
+        id,
+        `${input.prefix} finding ${i}`,
+        input.firstSeenAt,
+        input.lastSeenAt,
+        input.fixedAt,
+      );
+    }
+  });
+  tx();
+}
+
 describe("ConvergenceService", () => {
   it("returns close_ready when checks pass and no blockers remain", () => {
     const { db, repo, service } = fresh();
@@ -150,6 +187,28 @@ describe("ConvergenceService", () => {
       const result = service.evaluate("goal-test");
       expect(result.decision).toBe("needs_fix");
       expect(result.recommendedNextAction.kind).toBe("fix_findings");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("treats escalated in-scope findings as active blockers", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo);
+      passClose(repo);
+      const finding = addFinding(repo, {
+        scopeStatus: "in_scope",
+        severity: "P1",
+        lifecycleStatus: "escalated",
+      });
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("needs_fix");
+      expect(result.metrics.openInScopeP1).toBe(1);
+      expect(result.recommendedNextAction).toMatchObject({
+        kind: "fix_findings",
+        findingIds: [finding.findingId],
+      });
     } finally {
       db.close();
     }
@@ -376,6 +435,144 @@ describe("ConvergenceService", () => {
       passClose(repo, "goal-test", "2026-05-25T00:02:00.000Z");
 
       expect(service.evaluate("goal-test").decision).toBe("close_ready");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("treats close-check evidence as stale after a fixed finding beyond 10k rows", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo);
+      const attempt = repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "implement",
+        createdAt: "2026-05-25T00:00:00.000Z",
+        startedAt: "2026-05-25T00:00:00.000Z",
+      });
+      repo.completeAttempt({
+        attemptId: attempt.attemptId,
+        status: "succeeded",
+        completedAt: "2026-05-25T00:00:10.000Z",
+      });
+      const cycle = repo.startReviewCycle({
+        hitchId: "goal-test",
+        cycleNumber: 1,
+        reviewMode: "initial",
+        createdAt: "2026-05-25T00:00:20.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle.cycleId,
+        findingsNew: 0,
+        completedAt: "2026-05-25T00:00:30.000Z",
+      });
+      insertFixedFindings(db, {
+        hitchId: "goal-test",
+        count: 10_000,
+        prefix: "older-fixed",
+        firstSeenAt: "2026-05-24T00:00:00.000Z",
+        lastSeenAt: "2026-05-24T00:00:00.000Z",
+        fixedAt: "2026-05-24T00:00:10.000Z",
+      });
+      passClose(repo, "goal-test", "2026-05-25T00:01:00.000Z");
+      insertFixedFindings(db, {
+        hitchId: "goal-test",
+        count: 1,
+        prefix: "late-fixed",
+        firstSeenAt: "2026-05-25T00:02:00.000Z",
+        lastSeenAt: "2026-05-25T00:02:00.000Z",
+        fixedAt: "2026-05-25T00:03:00.000Z",
+      });
+
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("continue");
+      expect(result.metrics.closeConditionsPending).toBe(1);
+      expect(result.reason).toBe("more validation required");
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([
+    ["P0", "escalate", "openInScopeP0"],
+    ["P1", "needs_fix", "openInScopeP1"],
+  ] as const)(
+    "does not fail-open when the tail finding beyond 10k rows is an open in-scope %s",
+    (severity, decision, metric) => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo);
+        insertFixedFindings(db, {
+          hitchId: "goal-test",
+          count: 10_000,
+          prefix: `older-${severity}`,
+          firstSeenAt: "2026-05-24T00:00:00.000Z",
+          lastSeenAt: "2026-05-24T00:00:00.000Z",
+          fixedAt: "2026-05-24T00:00:10.000Z",
+        });
+        passClose(repo, "goal-test", "2026-05-25T00:00:00.000Z");
+        addFinding(repo, {
+          scopeStatus: "in_scope",
+          severity,
+          seenAt: "2026-05-25T00:01:00.000Z",
+          summary: `tail open ${severity}`,
+        });
+
+        const result = service.evaluate("goal-test");
+        expect(result.decision).toBe(decision);
+        expect(result.metrics[metric]).toBe(1);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("treats close-check evidence before a later finding escalation timestamp as stale", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo);
+      const attempt = repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "implement",
+        createdAt: "2026-05-25T00:00:00.000Z",
+        startedAt: "2026-05-25T00:00:00.000Z",
+      });
+      repo.completeAttempt({
+        attemptId: attempt.attemptId,
+        status: "succeeded",
+        completedAt: "2026-05-25T00:00:10.000Z",
+      });
+      const cycle = repo.startReviewCycle({
+        hitchId: "goal-test",
+        cycleNumber: 1,
+        reviewMode: "initial",
+        createdAt: "2026-05-25T00:00:20.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle.cycleId,
+        findingsNew: 1,
+        completedAt: "2026-05-25T00:00:30.000Z",
+      });
+      const finding = addFinding(repo, {
+        scopeStatus: "in_scope",
+        severity: "P2",
+        seenAt: "2026-05-25T00:00:25.000Z",
+      });
+      repo.markFindingFixed({
+        findingId: finding.findingId,
+        fixedAt: "2026-05-25T00:00:40.000Z",
+      });
+      passClose(repo, "goal-test", "2026-05-25T00:01:00.000Z");
+      db.prepare(
+        `UPDATE hitch_findings
+            SET escalated_at = ?
+          WHERE finding_id = ?`,
+      ).run("2026-05-25T00:02:00.000Z", finding.findingId);
+
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("continue");
+      expect(result.metrics.closeConditionsPending).toBe(1);
+      expect(result.reason).toBe("more validation required");
     } finally {
       db.close();
     }

@@ -2,8 +2,6 @@ import type {
   HitchCloseCheck,
   HitchCloseCheckStatus,
   HitchCloseCondition,
-  HitchFinding,
-  HitchLifecycleStatus,
 } from "./types.js";
 
 export interface EvaluatedCloseCondition {
@@ -21,7 +19,12 @@ export interface CloseConditionEvaluation {
   allRequiredPassed: boolean;
 }
 
-const OPEN_LIFECYCLES = new Set<HitchLifecycleStatus>(["open", "reopened"]);
+export interface FindingPolicyCounts {
+  openInScopeP0: number;
+  openInScopeP1: number;
+  openInScopeP2: number;
+  openUnknownScope: number;
+}
 
 export function latestCloseChecksByCondition(
   checks: HitchCloseCheck[],
@@ -43,7 +46,7 @@ export function latestCloseChecksByCondition(
 export function evaluateCloseConditions(input: {
   conditions: HitchCloseCondition[];
   checks: HitchCloseCheck[];
-  findings: HitchFinding[];
+  findingCounts: FindingPolicyCounts;
   freshAfter?: string | null;
   allowEmptyCloseConditions?: boolean;
 }): CloseConditionEvaluation {
@@ -62,7 +65,7 @@ export function evaluateCloseConditions(input: {
   const latest = latestCloseChecksByCondition(input.checks);
   const conditions = input.conditions.map((condition) =>
     condition.kind === "finding_policy"
-      ? evaluateFindingPolicy(condition, input.findings)
+      ? evaluateFindingPolicy(condition, input.findingCounts)
       : evaluateRecordedCheck(
           condition,
           latest.get(condition.id) ?? null,
@@ -119,28 +122,31 @@ function evaluateRecordedCheck(
 
 function evaluateFindingPolicy(
   condition: HitchCloseCondition,
-  findings: HitchFinding[],
+  counts: FindingPolicyCounts,
 ): EvaluatedCloseCondition {
   const rule = condition.rule ?? {};
-  const open = findings.filter((f) => OPEN_LIFECYCLES.has(f.lifecycleStatus));
-  const openInScopeP0 = open.filter(
-    (f) => f.scopeStatus === "in_scope" && f.severity === "P0",
-  ).length;
-  const openInScopeP1 = open.filter(
-    (f) => f.scopeStatus === "in_scope" && f.severity === "P1",
-  ).length;
-  const openInScopeP2 = open.filter(
-    (f) => f.scopeStatus === "in_scope" && f.severity === "P2",
-  ).length;
-  const openUnknownScope = open.filter(
-    (f) => f.scopeStatus === "unknown",
-  ).length;
 
   const checks: Array<[string, number, number]> = [
-    ["maxOpenInScopeP0", numberRule(rule.maxOpenInScopeP0, Number.POSITIVE_INFINITY), openInScopeP0],
-    ["maxOpenInScopeP1", numberRule(rule.maxOpenInScopeP1, Number.POSITIVE_INFINITY), openInScopeP1],
-    ["maxOpenInScopeP2", numberRule(rule.maxOpenInScopeP2, Number.POSITIVE_INFINITY), openInScopeP2],
-    ["maxOpenUnknownScope", numberRule(rule.maxOpenUnknownScope, Number.POSITIVE_INFINITY), openUnknownScope],
+    [
+      "maxOpenInScopeP0",
+      numberRule(rule.maxOpenInScopeP0, Number.POSITIVE_INFINITY),
+      counts.openInScopeP0,
+    ],
+    [
+      "maxOpenInScopeP1",
+      numberRule(rule.maxOpenInScopeP1, Number.POSITIVE_INFINITY),
+      counts.openInScopeP1,
+    ],
+    [
+      "maxOpenInScopeP2",
+      numberRule(rule.maxOpenInScopeP2, Number.POSITIVE_INFINITY),
+      counts.openInScopeP2,
+    ],
+    [
+      "maxOpenUnknownScope",
+      numberRule(rule.maxOpenUnknownScope, Number.POSITIVE_INFINITY),
+      counts.openUnknownScope,
+    ],
   ];
   const failed = checks.filter(([, max, actual]) => actual > max);
   return {

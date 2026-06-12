@@ -1,6 +1,9 @@
 import type Database from "better-sqlite3";
 import { ConvergenceService } from "../hitch/convergence.js";
-import { HitchRepository } from "../hitch/repository.js";
+import {
+  HitchRepository,
+  OPEN_FINDING_LIFECYCLES,
+} from "../hitch/repository.js";
 import { PhaseRepository } from "./phase-repository.js";
 import { derivePhaseReadiness } from "./ready-to-close.js";
 import type { PhaseStatus } from "./types.js";
@@ -26,22 +29,26 @@ export interface CourseRollup {
 }
 
 /** Live open in-scope P0/P1 for a hitch — SQL aggregate over hitch_findings.
- * Counts both `open` and `reopened` lifecycle statuses (both are active blockers
- * per the SP-1 invariant). Uses a direct COUNT aggregate — no row-fetch LIMIT. */
+ * Uses the same active lifecycle set as hitch convergence. Uses a direct COUNT
+ * aggregate — no row-fetch LIMIT. */
 function openCounts(
   db: Database.Database,
   hitchId: string,
 ): { p0: number; p1: number } {
+  const lifecyclePlaceholders = OPEN_FINDING_LIFECYCLES.map(() => "?").join(",");
   const rows = db
     .prepare(
       `SELECT severity, COUNT(*) AS n FROM hitch_findings
         WHERE hitch_id = ?
           AND scope_status = 'in_scope'
-          AND lifecycle_status IN ('open','reopened')
+          AND lifecycle_status IN (${lifecyclePlaceholders})
           AND severity IN ('P0','P1')
         GROUP BY severity`,
     )
-    .all(hitchId) as Array<{ severity: string; n: number }>;
+    .all(hitchId, ...OPEN_FINDING_LIFECYCLES) as Array<{
+    severity: string;
+    n: number;
+  }>;
   let p0 = 0;
   let p1 = 0;
   for (const row of rows) {

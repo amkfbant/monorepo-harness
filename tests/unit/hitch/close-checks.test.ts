@@ -3,38 +3,14 @@ import { evaluateCloseConditions } from "../../../src/hitch/close-checks.js";
 import type {
   HitchCloseCheck,
   HitchCloseCondition,
-  HitchFinding,
 } from "../../../src/hitch/types.js";
 
-function finding(overrides: Partial<HitchFinding>): HitchFinding {
+function noFindingCounts() {
   return {
-    findingId: "finding-a",
-    hitchId: "goal-a",
-    stableKey: "stable",
-    duplicateOf: null,
-    source: "review",
-    sourceRef: null,
-    sourceAttemptId: null,
-    sourceCycleId: null,
-    severity: "P1",
-    category: "correctness",
-    scopeStatus: "in_scope",
-    lifecycleStatus: "open",
-    summary: "summary",
-    detail: null,
-    filePath: null,
-    symbol: null,
-    suggestedFix: null,
-    firstSeenAt: "t1",
-    lastSeenAt: "t1",
-    fixedAt: null,
-    deferredAt: null,
-    escalatedAt: null,
-    reopenCount: 0,
-    deferredBacklogItemId: null,
-    classificationReason: null,
-    resolutionNote: null,
-    ...overrides,
+    openInScopeP0: 0,
+    openInScopeP1: 0,
+    openInScopeP2: 0,
+    openUnknownScope: 0,
   };
 }
 
@@ -71,7 +47,7 @@ describe("close check evaluation", () => {
         check({ checkId: "old", status: "failed", checkedAt: "t1" }),
         check({ checkId: "new", status: "passed", checkedAt: "t2" }),
       ],
-      findings: [],
+      findingCounts: noFindingCounts(),
     });
     expect(result.requiredPassed).toBe(1);
     expect(result.allRequiredPassed).toBe(true);
@@ -81,7 +57,7 @@ describe("close check evaluation", () => {
     const result = evaluateCloseConditions({
       conditions: [condition({})],
       checks: [check({ status: "failed" })],
-      findings: [],
+      findingCounts: noFindingCounts(),
     });
     expect(result.requiredFailed).toBe(1);
     expect(result.allRequiredPassed).toBe(false);
@@ -91,7 +67,7 @@ describe("close check evaluation", () => {
     const result = evaluateCloseConditions({
       conditions: [condition({ required: false })],
       checks: [check({ status: "failed" })],
-      findings: [],
+      findingCounts: noFindingCounts(),
     });
     expect(result.requiredFailed).toBe(0);
     expect(result.allRequiredPassed).toBe(true);
@@ -107,20 +83,11 @@ describe("close check evaluation", () => {
         }),
       ],
       checks: [],
-      findings: [
-        finding({ severity: "P1", scopeStatus: "in_scope" }),
-        finding({
-          findingId: "finding-b",
-          severity: "P2",
-          scopeStatus: "unknown",
-        }),
-        finding({
-          findingId: "finding-c",
-          severity: "P1",
-          scopeStatus: "in_scope",
-          lifecycleStatus: "fixed",
-        }),
-      ],
+      findingCounts: {
+        ...noFindingCounts(),
+        openInScopeP1: 1,
+        openUnknownScope: 1,
+      },
     });
     expect(result.requiredFailed).toBe(1);
     expect(result.conditions[0]?.message).toMatch(/maxOpenInScopeP1/);

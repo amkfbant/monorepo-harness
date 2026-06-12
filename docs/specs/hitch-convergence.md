@@ -24,9 +24,10 @@ hitch session so the loop has a bounded close condition.
 ## Core Rules
 
 Close conditions are evaluated before opportunistic review expansion. If the
-original close conditions pass and only out-of-scope, accepted-risk, escalated,
-or deferred follow-up findings remain, the hitch may close. Open in-scope P0/P1
-findings cannot be treated as ordinary deferred work.
+original close conditions pass and only out-of-scope, accepted-risk, or deferred
+follow-up findings remain (including out-of-scope findings that were escalated),
+the hitch may close. Open, reopened, or escalated in-scope/unknown P0/P1 findings
+are active blockers and cannot be treated as ordinary deferred work.
 
 Hitch scope is frozen at session start:
 
