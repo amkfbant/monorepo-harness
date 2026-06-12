@@ -189,7 +189,10 @@ export function importRuns(
         db.prepare(
           `UPDATE runs
              SET meta_json = ?, db_revision = db_revision + 1,
-                 export_status = 'dirty', last_export_error = NULL
+                 export_status = 'dirty', last_export_error = NULL,
+                 harness_version = NULL, schema_version_at_run = NULL,
+                 codex_model = NULL, codex_binary_version = NULL,
+                 prompt_sha256 = NULL
            WHERE run_id = ?`,
         ).run(metaRaw, runId);
       }
