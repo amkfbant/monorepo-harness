@@ -15,6 +15,9 @@ import { HitchRepository } from "../hitch/repository.js";
 import {
   acquireDomainLock,
   DomainLockBusyError,
+  findTransientLeaseCause,
+  LeaseGuardFailedError,
+  LeaseLostError,
   heartbeatIntervalMs,
   leaseDurationMs,
   type DomainLockHandle,
@@ -28,9 +31,13 @@ import type {
   PhaseOutcome,
 } from "./orchestrator-types.js";
 import { PhaseRepository } from "./phase-repository.js";
+import type { PhaseLeaseGuard } from "./phase-repository.js";
 import { rollupCourse, type CourseRollup, type PhaseRollup } from "./rollup.js";
 
-export type CourseOrchestrateErrorCode = "course_not_active" | "lease_busy";
+export type CourseOrchestrateErrorCode =
+  | "course_not_active"
+  | "lease_busy"
+  | "lease_lost";
 
 export class CourseOrchestrateError extends Error {
   constructor(
@@ -77,6 +84,8 @@ interface WalkCourseOptions {
   }) => Promise<DrivenHitch & { finalDecision: string }>;
   transitionPhaseStatus: boolean;
   beforeDriveHitch?: () => void;
+  beforeStatusWrite?: () => void;
+  statusWriteLeaseGuard?: () => PhaseLeaseGuard;
 }
 
 interface WalkCourseResult {
@@ -120,13 +129,14 @@ export class CourseOrchestrator {
       );
     }
 
+    const leaseRunId = `course-orch-${randomUUID()}`;
     let lease: DomainLockHandle;
     try {
       lease = acquireDomainLock(this.deps.db, {
         domainKey: `course:${normalizedInput.courseId}`,
         repoId: course.repoId ?? course.projectId ?? course.courseId,
         domain: "course-orchestrate",
-        runId: `course-orch-${randomUUID()}`,
+        runId: leaseRunId,
         pid: process.pid,
         hostname: hostname(),
       });
@@ -147,7 +157,7 @@ export class CourseOrchestrator {
 
     let releaseReason = "aborted";
     try {
-      const result = await this.runWithLease(normalizedInput, lease);
+      const result = await this.runWithLease(normalizedInput, lease, leaseRunId);
       releaseReason =
         result.stopReason === "budget_exhausted"
           ? "budget_exhausted"
@@ -164,27 +174,41 @@ export class CourseOrchestrator {
   private async runWithLease(
     input: RunCourseOrchestrationInput,
     lease: DomainLockHandle,
+    leaseRunId: string,
   ): Promise<CourseOrchestrationResult> {
-    const result = await this.walkCourse(input, {
-      transitionPhaseStatus: true,
-      beforeDriveHitch: () => lease.heartbeat(),
-      driveHitch: async ({ hitchId, maxStepsPerHitch, createdBy }) => {
-        return await this.runWithLeaseHeartbeat(lease, async () => {
-          const runners = await this.deps.makeRunners(hitchId);
-          const hitchResult = await this.deps.makeHitchOrchestrator(hitchId).run({
-            hitchId,
-            runners,
-            maxSteps: maxStepsPerHitch,
-            stopAtCloseReady: true,
-            createdBy,
+    let result: WalkCourseResult;
+    try {
+      result = await this.walkCourse(input, {
+        transitionPhaseStatus: true,
+        beforeDriveHitch: () => lease.heartbeat(),
+        beforeStatusWrite: () => lease.assertHeld(),
+        statusWriteLeaseGuard: () => ({
+          lockId: lease.lockId,
+          holderRunId: leaseRunId,
+          nowMs: Date.now(),
+        }),
+        driveHitch: async ({ hitchId, maxStepsPerHitch, createdBy }) => {
+          return await this.runWithLeaseHeartbeat(lease, async () => {
+            const runners = await this.deps.makeRunners(hitchId);
+            const hitchResult = await this.deps.makeHitchOrchestrator(hitchId).run({
+              hitchId,
+              runners,
+              maxSteps: maxStepsPerHitch,
+              stopAtCloseReady: true,
+              createdBy,
+            });
+            return {
+              ...toDrivenHitch(hitchResult),
+              finalDecision: hitchResult.finalDecision,
+            };
           });
-          return {
-            ...toDrivenHitch(hitchResult),
-            finalDecision: hitchResult.finalDecision,
-          };
-        });
-      },
-    });
+        },
+      });
+    } catch (e) {
+      if (isCourseLeaseLostError(e)) throw courseLeaseLostError(e);
+      if (isCourseLeaseBusyError(e)) throw courseLeaseBusyError(e);
+      throw e;
+    }
     return this.finalize(
       input.courseId,
       result.stopReason,
@@ -233,7 +257,13 @@ export class CourseOrchestrator {
     // Do not race away from an in-flight hitch drive on course-lease loss.
     // The hitch/run layer's domain lock and heartbeat still prevent same-domain
     // concurrent execution; force-aborting Codex via AbortSignal is future work.
-    if (leaseLost) throw leaseLostError;
+    if (leaseLost) throw courseLeaseLostError(leaseLostError);
+    if (isCourseLeaseLostError(driveError)) {
+      throw courseLeaseLostError(driveError);
+    }
+    if (isCourseLeaseBusyError(driveError)) {
+      throw courseLeaseBusyError(driveError);
+    }
     if (driveRejected) throw driveError;
     return driveResult;
   }
@@ -413,10 +443,13 @@ export class CourseOrchestrator {
     }
     if (currentPhase.status !== "pending") return true;
 
+    input.options.beforeStatusWrite?.();
+    const leaseGuard = input.options.statusWriteLeaseGuard?.();
     const transitioned = input.phases.transitionStatus(
       input.phaseId,
       ["pending"],
       "in_progress",
+      leaseGuard === undefined ? undefined : { leaseGuard },
     );
     if (transitioned) return true;
 
@@ -424,6 +457,13 @@ export class CourseOrchestrator {
     if (rereadPhase.status === "blocked" || rereadPhase.status === "closed") {
       this.recordPhaseStatusSkip(input, rereadPhase.status);
       return false;
+    }
+    if (rereadPhase.status === "in_progress") {
+      const rereadLeaseGuard =
+        input.options.statusWriteLeaseGuard?.() ?? leaseGuard;
+      if (rereadLeaseGuard !== undefined) {
+        input.phases.assertLeaseGuardHeld(rereadLeaseGuard);
+      }
     }
     return true;
   }
@@ -524,6 +564,40 @@ export class CourseOrchestrator {
       ),
     };
   }
+}
+
+function isCourseLeaseLostError(e: unknown): boolean {
+  const cause = findTransientLeaseCause(e);
+  return cause instanceof LeaseLostError || cause instanceof LeaseGuardFailedError;
+}
+
+function isCourseLeaseBusyError(e: unknown): boolean {
+  return findTransientLeaseCause(e) instanceof DomainLockBusyError;
+}
+
+function courseLeaseLostError(e: unknown): CourseOrchestrateError {
+  const cause = findTransientLeaseCause(e) ?? e;
+  return new CourseOrchestrateError(
+    "lease_lost",
+    cause instanceof Error ? cause.message : "course orchestration lease lost",
+    {
+      causeName: cause instanceof Error ? cause.name : typeof cause,
+    },
+  );
+}
+
+function courseLeaseBusyError(e: unknown): CourseOrchestrateError {
+  const cause = findTransientLeaseCause(e);
+  if (!(cause instanceof DomainLockBusyError)) {
+    return new CourseOrchestrateError(
+      "lease_busy",
+      e instanceof Error ? e.message : "course orchestration lease is busy",
+    );
+  }
+  return new CourseOrchestrateError("lease_busy", cause.message, {
+    domainKey: cause.domainKey,
+    holder: cause.holder,
+  });
 }
 
 function courseLeaseHeartbeatIntervalMs(): number {

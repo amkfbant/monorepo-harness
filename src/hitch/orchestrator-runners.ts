@@ -65,6 +65,7 @@ import type {
   HitchReviewMode,
   HitchSession,
 } from "./types.js";
+import { findTransientLeaseCause } from "../workspace/db-domain-lock.js";
 
 const FINDING_BATCH_LIMIT = 200;
 
@@ -436,6 +437,18 @@ export function createOrchestratorRunners(
         });
         return { runId: result.runId, runStatus: result.status };
       } catch (e) {
+        const transientLeaseError = findTransientLeaseCause(e);
+        if (transientLeaseError !== undefined) {
+          try {
+            withManagedDb({ dbPath: deps.dbPath }, (db) => {
+              new HitchRepository(db).discardAttempt(attemptId);
+            });
+          } catch {
+            // Preserve the original transient lock/lease error. A cleanup race
+            // must not convert a fail-closed retry condition into escalation.
+          }
+          throw transientLeaseError;
+        }
         // a finalized run still produced a runId — record the failed attempt
         // so convergence can see the budget was spent.
         const runId =

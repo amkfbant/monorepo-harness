@@ -7,6 +7,11 @@ import { runMigrations } from "../../../src/db/migrations.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
 import { HitchOrchestrator } from "../../../src/hitch/orchestrator.js";
 import type { OrchestratorRunners } from "../../../src/hitch/orchestrator-types.js";
+import { RunFinalizedError } from "../../../src/core/workflow-runner.js";
+import {
+  DomainLockBusyError,
+  LeaseGuardFailedError,
+} from "../../../src/workspace/db-domain-lock.js";
 
 function freshDbPath(): string {
   return join(mkdtempSync(join(tmpdir(), "harness-orch-")), "harness.sqlite");
@@ -169,6 +174,120 @@ describe("HitchOrchestrator", () => {
     try {
       expect(new HitchRepository(db2).requireSession("g-throw").status).toBe(
         "escalated",
+      );
+    } finally {
+      close2();
+    }
+  });
+
+  it("rethrows transient domain lock conflicts without escalating the hitch", async () => {
+    const dbPath = freshDbPath();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new HitchRepository(db);
+      repo.createSession({
+        hitchId: "g-lock-busy",
+        title: "Lock busy",
+        projectId: "demo",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+      repo.upsertFinding({
+        hitchId: "g-lock-busy",
+        source: "review",
+        severity: "P1",
+        category: "bug",
+        scopeStatus: "in_scope",
+        summary: "fix",
+      });
+    } finally {
+      close();
+    }
+    const busy = new DomainLockBusyError("demo::apps/web", {
+      runId: "holder",
+      pid: 123,
+      hostname: "host",
+      expiresAt: "2026-06-12T00:00:10.000Z",
+    });
+    const runners: OrchestratorRunners = {
+      ...fakeRunners([]),
+      coder: async () => {
+        throw busy;
+      },
+    };
+
+    await expect(
+      new HitchOrchestrator({ dbPath }).run({
+        hitchId: "g-lock-busy",
+        runners,
+        maxSteps: 10,
+        createdBy: "worker",
+      }),
+    ).rejects.toBe(busy);
+
+    const { db: db2, close: close2 } = openManagedDb({ dbPath });
+    try {
+      expect(new HitchRepository(db2).requireSession("g-lock-busy").status).toBe(
+        "open",
+      );
+    } finally {
+      close2();
+    }
+  });
+
+  it("unwraps nested transient lease causes without escalating the hitch", async () => {
+    const dbPath = freshDbPath();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new HitchRepository(db);
+      repo.createSession({
+        hitchId: "g-nested-lease",
+        title: "Nested lease",
+        projectId: "demo",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+      repo.upsertFinding({
+        hitchId: "g-nested-lease",
+        source: "review",
+        severity: "P1",
+        category: "bug",
+        scopeStatus: "in_scope",
+        summary: "fix",
+      });
+    } finally {
+      close();
+    }
+    const leaseLost = new LeaseGuardFailedError("run-stale");
+    const wrapped = new RunFinalizedError(
+      "run-stale",
+      "failed-internal-error",
+      new Error("middle", { cause: leaseLost }),
+    );
+    const runners: OrchestratorRunners = {
+      ...fakeRunners([]),
+      coder: async () => {
+        throw wrapped;
+      },
+    };
+
+    await expect(
+      new HitchOrchestrator({ dbPath }).run({
+        hitchId: "g-nested-lease",
+        runners,
+        maxSteps: 10,
+        createdBy: "worker",
+      }),
+    ).rejects.toBe(leaseLost);
+
+    const { db: db2, close: close2 } = openManagedDb({ dbPath });
+    try {
+      expect(new HitchRepository(db2).requireSession("g-nested-lease").status).toBe(
+        "open",
       );
     } finally {
       close2();

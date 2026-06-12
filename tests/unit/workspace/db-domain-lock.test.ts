@@ -10,6 +10,7 @@ import {
   findActiveDomainLock,
   releaseDomainLockByDomain,
   DomainLockBusyError,
+  LeaseGuardFailedError,
   LeaseLostError,
 } from "../../../src/workspace/db-domain-lock.js";
 
@@ -114,6 +115,74 @@ describe("acquireDomainLock", () => {
     // b takes the lease while a is unaware
     acquireDomainLock(db, { ...HOLDER, runId: "run-b", now: expiredAt });
     expect(() => a.heartbeat(expiredAt)).toThrow(LeaseLostError);
+    db.close();
+  });
+
+  it("assertHeld accepts the current active lease without extending it", () => {
+    const db = freshDb();
+    const start = new Date("2026-06-12T00:00:00.000Z");
+    const handle = acquireDomainLock(db, {
+      ...HOLDER,
+      runId: "run-held",
+      now: start,
+    });
+    const before = findActiveDomainLock(db, HOLDER.domainKey);
+
+    expect(() =>
+      handle.assertHeld(new Date("2026-06-12T00:01:00.000Z")),
+    ).not.toThrow();
+
+    const after = findActiveDomainLock(db, HOLDER.domainKey);
+    expect(after?.expiresAt).toBe(before?.expiresAt);
+    expect(after?.heartbeatAt).toBe(before?.heartbeatAt);
+    handle.release();
+    db.close();
+  });
+
+  it("assertHeld rejects an expired lease", () => {
+    process.env.HARNESS_LOCK_LEASE_MS = "10";
+    const db = freshDb();
+    const handle = acquireDomainLock(db, {
+      ...HOLDER,
+      runId: "run-expired",
+      now: new Date("2026-06-12T00:00:00.000Z"),
+    });
+
+    expect(() =>
+      handle.assertHeld(new Date("2026-06-12T00:00:01.000Z")),
+    ).toThrow(LeaseGuardFailedError);
+    db.close();
+  });
+
+  it("assertHeld rejects a lease whose holder was replaced", () => {
+    process.env.HARNESS_LOCK_LEASE_MS = "10";
+    const db = freshDb();
+    const handle = acquireDomainLock(db, {
+      ...HOLDER,
+      runId: "run-old",
+      now: new Date("2026-06-12T00:00:00.000Z"),
+    });
+    acquireDomainLock(db, {
+      ...HOLDER,
+      runId: "run-new",
+      now: new Date("2026-06-12T00:00:01.000Z"),
+    });
+
+    expect(() =>
+      handle.assertHeld(new Date("2026-06-12T00:00:01.001Z")),
+    ).toThrow(LeaseGuardFailedError);
+    db.close();
+  });
+
+  it("assertHeld rejects a released lease", () => {
+    const db = freshDb();
+    const handle = acquireDomainLock(db, {
+      ...HOLDER,
+      runId: "run-released",
+    });
+    handle.release();
+
+    expect(() => handle.assertHeld()).toThrow(LeaseGuardFailedError);
     db.close();
   });
 

@@ -98,6 +98,42 @@ describe("HitchRepository", () => {
     }
   });
 
+  it("discardAttempt is idempotent and recomputes current_iteration", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const first = repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "implement",
+      });
+      const second = repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "rerun",
+      });
+      expect(repo.requireSession("goal-test").currentIteration).toBe(2);
+
+      repo.discardAttempt(second.attemptId, "2026-06-12T00:00:00.000Z");
+      expect(repo.listAttempts("goal-test").map((a) => a.attemptId)).toEqual([
+        first.attemptId,
+      ]);
+      expect(repo.requireSession("goal-test").currentIteration).toBe(1);
+
+      expect(() =>
+        repo.discardAttempt(second.attemptId, "2026-06-12T00:00:01.000Z"),
+      ).not.toThrow();
+      expect(repo.listAttempts("goal-test").map((a) => a.attemptId)).toEqual([
+        first.attemptId,
+      ]);
+      expect(repo.requireSession("goal-test").currentIteration).toBe(1);
+
+      repo.discardAttempt(first.attemptId, "2026-06-12T00:00:02.000Z");
+      expect(repo.listAttempts("goal-test")).toEqual([]);
+      expect(repo.requireSession("goal-test").currentIteration).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
   it("upserts findings by stable key and reopens fixed findings", () => {
     const { db, repo } = freshRepo();
     try {

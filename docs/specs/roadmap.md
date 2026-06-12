@@ -201,6 +201,32 @@ course or busy lease refuses the pass before any hitch is driven. `--dry-run` pl
 the same phase actions without taking the lease, writing phase status, preparing
 runners, or driving hitches.
 
+The drive pass fences every course-layer write with the held lease. It heartbeats
+before each hitch drive, calls the lock handle's non-extending `assertHeld`
+immediately before the only course-layer CAS write (`pending -> in_progress`),
+and folds the same `lock_id` / `holder_run_id` lease predicate into the phase
+CAS as a single `UPDATE ... EXISTS (SELECT 1 FROM domain_locks ...)`.
+If the lease is released, expired, or replaced after the pre-check but before the
+CAS statement, the phase write gets zero changes; the repository rechecks the
+lease predicate, reports `LeaseGuardFailedError`, and the pass aborts as
+`CourseOrchestrateError("lease_lost")`.
+
+During a long hitch drive, the course lease is also heartbeated in the background.
+If that heartbeat reports lease loss the course pass normalizes the failure to
+`lease_lost`; if the driven hitch/run layer surfaces a domain lock *busy*
+conflict (another holder is active), it normalizes to `lease_busy`. In either
+case the pass performs no further course-layer writes. The current hitch drive
+is allowed to finish at the run layer; subsequent phase/hitch work in this course
+pass is not started.
+
+Compatibility note: `hitch orchestrate` invoked underneath `course orchestrate`
+does not mark the hitch `escalated` for transient domain lock / lease conflicts
+(`DomainLockBusyError`, `LeaseLostError`, `LeaseGuardFailedError`). Those errors
+are rethrown so the caller can stop without converting "another process is
+working" into a false escalation. Coder attempts that hit those transient
+conflicts are discarded as no-op attempts, so iteration/rerun budgets are not
+consumed.
+
 ### Safety boundary mapping
 
 - Project visibility and null-project fail-closed behavior are unchanged.

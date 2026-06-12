@@ -47,6 +47,27 @@ agent workspace は、エージェントごとに `git worktree` で**独立し�
 - 迷ったら安全側（停止・除外・`stale` 表示）に倒す（fail-closed）。未解決の git や未知の
   hitch decision は `blocked` / `base-unknown` 等で**握りつぶさず可視化**する。
 
+### 共有 DB domain lock と fencing
+
+run 層と course-pass 層は同じ `.harness` DB の `domain_locks` lease を共有する。
+lock handle は `heartbeat()`（lease 延長）に加えて、`assertHeld()`（延長しない検証）を
+持つ。`assertHeld()` は `lock_id` / `holder_run_id` / `released_at IS NULL` /
+`expires_at > now` を DB で確認し、lease が released / expired / replaced の場合は
+`LeaseGuardFailedError` として fail-closed する。
+
+状態遷移や write の直前 fencing はこの DB 検証を使う。course-pass の phase CAS
+(`pending -> in_progress`) は `assertHeld()` 成功後に実行され、さらに同じ lease 条件を
+単一 `UPDATE` の `EXISTS` 述語に畳み込む。`changes=0` の場合は lease 述語だけを再評価し、
+lease 喪失なら `LeaseGuardFailedError`、lease 保持中の status mismatch なら通常の CAS miss
+として扱う。dry-run / plan パスは lease を取らず write もしない。run 層の write は従来どおり
+`assertActiveLease` で `runs.lease_lock_id` と active `domain_locks` 行を照合する。
+
+一時的な lock / lease 衝突（`DomainLockBusyError`, `LeaseLostError`,
+`LeaseGuardFailedError`、および `RunFinalizedError` の cause がこれらの場合）は
+「他プロセスが同じ domain を作業中」という停止条件であり、hitch を `escalated` にしない。
+hitch coder runner はこの場合、作成済み attempt を no-op として discard し、iteration /
+rerun budget を消費しない。
+
 ---
 
 ## レイアウトと同定

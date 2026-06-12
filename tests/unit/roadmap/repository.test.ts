@@ -3,6 +3,10 @@ import Database from "better-sqlite3";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { CourseRepository } from "../../../src/roadmap/course-repository.js";
 import { PhaseRepository } from "../../../src/roadmap/phase-repository.js";
+import {
+  acquireDomainLock,
+  LeaseGuardFailedError,
+} from "../../../src/workspace/db-domain-lock.js";
 
 function db() {
   const d = new Database(":memory:");
@@ -83,5 +87,95 @@ describe("Course/Phase repositories (SP-1)", () => {
 
   it("transitionStatus returns false for an unknown phase (no throw)", () => {
     expect(phases.transitionStatus("phase-does-not-exist", ["pending"], "in_progress")).toBe(false);
+  });
+
+  it("transitionStatus folds a held lease guard into the phase CAS", () => {
+    const c = courses.create({ title: "C", projectId: "demo", repoId: "repo-demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P", createdBy: "t", createdSource: "cli" });
+    const lease = acquireDomainLock(conn, {
+      domainKey: `course:${c.courseId}`,
+      repoId: "repo-demo",
+      domain: "course-orchestrate",
+      runId: "course-run-held",
+      pid: process.pid,
+      hostname: "test-host",
+      now: new Date("2026-06-12T00:00:00.000Z"),
+    });
+
+    expect(phases.transitionStatus(p.phaseId, ["pending"], "in_progress", {
+      now: "2026-06-12T00:00:01.000Z",
+      leaseGuard: {
+        lockId: lease.lockId,
+        holderRunId: "course-run-held",
+        nowMs: Date.parse("2026-06-12T00:00:01.000Z"),
+      },
+    })).toBe(true);
+    expect(phases.require(p.phaseId).status).toBe("in_progress");
+  });
+
+  it("transitionStatus does not write when the lease guard was stolen after a prior assert", () => {
+    const previousLeaseMs = process.env.HARNESS_LOCK_LEASE_MS;
+    process.env.HARNESS_LOCK_LEASE_MS = "10";
+    try {
+      const c = courses.create({ title: "C", projectId: "demo", repoId: "repo-demo", createdBy: "t", createdSource: "cli" });
+      const p = phases.add({ courseId: c.courseId, title: "P", createdBy: "t", createdSource: "cli" });
+      const oldLease = acquireDomainLock(conn, {
+        domainKey: `course:${c.courseId}`,
+        repoId: "repo-demo",
+        domain: "course-orchestrate",
+        runId: "course-run-old",
+        pid: process.pid,
+        hostname: "test-host",
+        now: new Date("2026-06-12T00:00:00.000Z"),
+      });
+      oldLease.assertHeld(new Date("2026-06-12T00:00:00.001Z"));
+      acquireDomainLock(conn, {
+        domainKey: `course:${c.courseId}`,
+        repoId: "repo-demo",
+        domain: "course-orchestrate",
+        runId: "course-run-new",
+        pid: process.pid,
+        hostname: "test-host",
+        now: new Date("2026-06-12T00:00:01.000Z"),
+      });
+
+      expect(() => phases.transitionStatus(p.phaseId, ["pending"], "in_progress", {
+        now: "2026-06-12T00:00:01.001Z",
+        leaseGuard: {
+          lockId: oldLease.lockId,
+          holderRunId: "course-run-old",
+          nowMs: Date.parse("2026-06-12T00:00:01.001Z"),
+        },
+      })).toThrow(LeaseGuardFailedError);
+      expect(phases.require(p.phaseId).status).toBe("pending");
+    } finally {
+      if (previousLeaseMs === undefined) delete process.env.HARNESS_LOCK_LEASE_MS;
+      else process.env.HARNESS_LOCK_LEASE_MS = previousLeaseMs;
+    }
+  });
+
+  it("transitionStatus returns false for a CAS miss when the lease guard is still held", () => {
+    const c = courses.create({ title: "C", projectId: "demo", repoId: "repo-demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P", createdBy: "t", createdSource: "cli" });
+    phases.setStatus(p.phaseId, "in_progress");
+    const lease = acquireDomainLock(conn, {
+      domainKey: `course:${c.courseId}`,
+      repoId: "repo-demo",
+      domain: "course-orchestrate",
+      runId: "course-run-held-cas-miss",
+      pid: process.pid,
+      hostname: "test-host",
+      now: new Date("2026-06-12T00:00:00.000Z"),
+    });
+
+    expect(phases.transitionStatus(p.phaseId, ["pending"], "in_progress", {
+      now: "2026-06-12T00:00:01.000Z",
+      leaseGuard: {
+        lockId: lease.lockId,
+        holderRunId: "course-run-held-cas-miss",
+        nowMs: Date.parse("2026-06-12T00:00:01.000Z"),
+      },
+    })).toBe(false);
+    expect(phases.require(p.phaseId).status).toBe("in_progress");
   });
 });

@@ -83,6 +83,36 @@ export class LeaseLostError extends Error {
   }
 }
 
+export type TransientLeaseError =
+  | DomainLockBusyError
+  | LeaseLostError
+  | LeaseGuardFailedError;
+
+export function findTransientLeaseCause(
+  err: unknown,
+): TransientLeaseError | undefined {
+  const visited = new Set<object>();
+  let current: unknown = err;
+  for (let depth = 0; depth < 16; depth++) {
+    if (
+      current instanceof DomainLockBusyError ||
+      current instanceof LeaseLostError ||
+      current instanceof LeaseGuardFailedError
+    ) {
+      return current;
+    }
+    if (current === null || typeof current !== "object") return undefined;
+    if (visited.has(current)) return undefined;
+    visited.add(current);
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+export function isTransientLeaseError(err: unknown): boolean {
+  return findTransientLeaseCause(err) !== undefined;
+}
+
 export interface AcquireDomainLockOpts {
   domainKey: string;
   repoId: string;
@@ -104,6 +134,11 @@ export interface DomainLockHandle {
    * matches (released or replaced).
    */
   heartbeat(now?: Date): void;
+  /**
+   * Verify the lease is still held without extending it. Throws
+   * `LeaseGuardFailedError` if the lease is released, expired, or replaced.
+   */
+  assertHeld(now?: Date): void;
   /** Soft-release the lease. Safe to call twice. */
   release(
     opts?: { reason?: string; releasedBy?: string },
@@ -206,6 +241,16 @@ export function acquireDomainLock(
       if (info.changes === 0) {
         throw new LeaseLostError(opts.domainKey, lockId);
       }
+    },
+    assertHeld(now2: Date = new Date()): void {
+      const active = db
+        .prepare(
+          `SELECT 1 FROM domain_locks
+            WHERE lock_id = ? AND holder_run_id = ? AND released_at IS NULL
+              AND expires_at > ?`,
+        )
+        .get(lockId, opts.runId, now2.toISOString());
+      if (active === undefined) throw new LeaseGuardFailedError(opts.runId);
     },
     release(
       rel: { reason?: string; releasedBy?: string } = {},
