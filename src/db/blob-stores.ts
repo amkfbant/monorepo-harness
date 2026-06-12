@@ -210,16 +210,6 @@ export function setExternalBlobStatus(
   return info.changes > 0;
 }
 
-export function deleteExternalBlobRow(
-  db: Database.Database,
-  sha256: string,
-): boolean {
-  const info = db
-    .prepare(`DELETE FROM external_artifact_blobs WHERE sha256 = ?`)
-    .run(sha256);
-  return info.changes > 0;
-}
-
 function toExtRow(r: Record<string, unknown>): ExternalBlobRow {
   return {
     sha256: r.sha256 as string,

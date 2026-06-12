@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1636,6 +1636,18 @@ export const V21_TABLE_NAMES = [
   "phase_hitches",
 ] as const;
 
+/**
+ * v22 — drop unused DB stats snapshot ledger.
+ *
+ * `db_stats_snapshots` was created by v10, but the snapshot/delta feature never
+ * got wired into production callers. Keep the v10 DDL and table-name history
+ * append-only, then remove the physical table here.
+ */
+export const MIGRATION_V22_STATEMENTS: readonly string[] = [
+  "DROP INDEX IF EXISTS db_stats_snapshots_created_idx",
+  "DROP TABLE IF EXISTS db_stats_snapshots",
+];
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -1660,7 +1672,7 @@ export const V1_TABLE_NAMES: readonly string[] = [
   "import_errors",
 ];
 
-/** Every data table at the latest schema version. */
+/** Every data table ever created by this append-only migration history. */
 export const ALL_TABLE_NAMES: readonly string[] = [
   ...V1_TABLE_NAMES,
   ...V2_TABLE_NAMES,
@@ -1678,3 +1690,13 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V18_TABLE_NAMES,
   ...V21_TABLE_NAMES,
 ];
+
+/** Tables intentionally removed by later migrations. */
+export const DROPPED_TABLE_NAMES: readonly string[] = ["db_stats_snapshots"];
+
+const DROPPED_TABLE_NAME_SET = new Set<string>(DROPPED_TABLE_NAMES);
+
+/** Data tables expected to exist at the latest schema version. */
+export const CURRENT_TABLE_NAMES: readonly string[] = ALL_TABLE_NAMES.filter(
+  (name) => !DROPPED_TABLE_NAME_SET.has(name),
+);

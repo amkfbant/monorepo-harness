@@ -16,7 +16,7 @@ import {
   DbError,
 } from "./connection.js";
 import { readSchemaVersion, LATEST_SCHEMA_VERSION } from "./migrations.js";
-import { ALL_TABLE_NAMES } from "./schema.js";
+import { CURRENT_TABLE_NAMES } from "./schema.js";
 
 /**
  * DB operational commands (Phase 8-8).
@@ -371,7 +371,7 @@ export function dbStats(dbPath: string): DbStats {
   try {
     const tableRows: Record<string, number> = {};
     let totalRows = 0;
-    for (const t of ALL_TABLE_NAMES) {
+    for (const t of CURRENT_TABLE_NAMES) {
       // an older-schema DB may not have every table yet — skip absent ones.
       if (!tableExists(db, t)) continue;
       const n = (

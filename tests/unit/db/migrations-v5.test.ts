@@ -114,6 +114,7 @@ describe("schema v5 migration", () => {
     const r = runMigrations(db);
     expect(r.applied).toEqual([
       5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22,
     ]);
     expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
     const row = db

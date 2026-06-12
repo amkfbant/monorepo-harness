@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V18_STATEMENTS`、
-> `SCHEMA_VERSION = 18`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V22_STATEMENTS`、
+> `SCHEMA_VERSION = 22`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -683,7 +683,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 16`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 22`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -705,6 +705,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 19 | operational knowledge (issue #57) | knowledge_entries.category（additive 列・新規テーブル無し） |
 | 20 | goal→hitch rename (SP-0) | goal_* の6テーブル＋全 goal_id 列を hitch_* / hitch_id に rename（index も） |
 | 21 | course → phase roadmap layer (SP-1) | courses / phases / phase_hitches（additive。既存テーブル変更なし） |
+| 22 | audit cleanup #126 | 未配線の db_stats_snapshots ledger を DROP（index 先、table 後）。`DROPPED_TABLE_NAMES` で現行 table 集合から除外 |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -828,7 +829,12 @@ infrastructure を入れる（CLI は [`cli.md`](./cli.md) の `harness db docto
   sha256 / verified_at / status `available`/`missing`/`failed`）。
 - `archive_catalog` — detach 済み archive の range とステータス
   （`attached`/`detached`/`missing`）。
-- `db_stats_snapshots` — `db stats` の時系列スナップショット。
+- `db_stats_snapshots` — `db stats` の時系列スナップショットとして v10 で追加されたが、
+  production caller が無く未配線だったため、schema v22 で
+  `db_stats_snapshots_created_idx` → `db_stats_snapshots` の順に DROP された。
+  v10 DDL / `V10_TABLE_NAMES` / `ALL_TABLE_NAMES` は migration history として残し、
+  latest schema で存在すべき table は `CURRENT_TABLE_NAMES`
+  （`ALL_TABLE_NAMES - DROPPED_TABLE_NAMES`）で表す。
 
 ## Phase 16 — blob storage scale-out（close 済み・現状仕様）
 
@@ -974,3 +980,21 @@ migration。既存テーブルへの変更はゼロ。機能仕様は
 
 3 テーブルはいずれも **DB-only**（compat file export なし / consistency entry なし）。
 `hitch_*` / `workspaces` と同じ先例。
+
+## Audit cleanup #126 — db_stats_snapshots drop（schema v22）
+
+schema v22 は未配線だった DB stats snapshot/delta ledger を削除する一方向
+migration。既存ポリシーどおり no-downgrade で、v22 へ上げた DB を古い harness が
+開けないことは許容する。migration は冪等にするため `IF EXISTS` を使い、index を先に
+落としてから table を落とす。
+
+```sql
+DROP INDEX IF EXISTS db_stats_snapshots_created_idx;
+DROP TABLE IF EXISTS db_stats_snapshots;
+```
+
+append-only 規約により、v10 の DDL と `V10_TABLE_NAMES` は書き換えない。
+`ALL_TABLE_NAMES` は「migration history 上で作成された全 table」、`DROPPED_TABLE_NAMES`
+は後続 migration で意図的に削除された table、`CURRENT_TABLE_NAMES` は latest schema で
+存在を期待する table 集合を表す。fresh migration test と `db stats` の row-count 対象は
+`CURRENT_TABLE_NAMES` を使う。

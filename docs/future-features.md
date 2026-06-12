@@ -3,6 +3,13 @@
 Ideas recorded for later implementation. Each entry is a sketch, not an approved
 design — run it through brainstorming → spec → plan when picked up.
 
+## DB stats snapshot/delta
+
+The Phase 15 `db_stats_snapshots` repository/table was removed in audit cleanup
+#126 because it had no production callers: `harness db stats` only reads live
+`dbStats()` output, and snapshot/delta commands were never wired. Reintroduce this
+only with an end-to-end CLI/API surface, retention policy, and migration plan.
+
 ## Operational knowledge — deferred surfaces (issue #57)
 
 **Issue #57 is COMPLETE** (closed). The operational knowledge category

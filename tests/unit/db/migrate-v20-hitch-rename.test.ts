@@ -9,6 +9,7 @@ import {
   currentSchemaVersion,
   runMigrations,
 } from "../../../src/db/migrations.js";
+import { SCHEMA_VERSION } from "../../../src/db/schema.js";
 
 function freshDbPath(): string {
   const dir = mkdtempSync(join(tmpdir(), "harness-db-v20-"));
@@ -88,7 +89,7 @@ describe("schema v20 hitch rename", () => {
 
       const result = runMigrations(db);
       expect(result.applied).toContain(20);
-      expect(currentSchemaVersion(db)).toBe(21);
+      expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
 
       const tables = tableNames(db);
 
@@ -213,7 +214,7 @@ describe("schema v20 hitch rename", () => {
     try {
       runMigrations(db);
       expect(() => runMigrations(db)).not.toThrow();
-      expect(currentSchemaVersion(db)).toBe(21);
+      expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
     } finally {
       db.close();
     }

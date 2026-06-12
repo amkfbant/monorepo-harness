@@ -60,7 +60,12 @@ interface AddItemInput {
   projectId?: string;
 }
 
-/** Create a new backlog item in backlog/open/. */
+/**
+ * Create a new backlog item in backlog/open/.
+ *
+ * @internal test-fixture support for legacy file-backlog → DB import
+ * compatibility coverage.
+ */
 export async function addItem(
   backlogDir: string,
   input: AddItemInput,

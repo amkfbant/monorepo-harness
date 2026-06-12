@@ -93,6 +93,10 @@ harness db migrate           # 未適用 migration を冪等に適用（schema �
 - **自律 `course orchestrate`（SP-2・migration ゼロ）**: CLI `harness course orchestrate`、
   MCP `harness.course.orchestrate`（guarded mutation）を追加。**serve 再起動**で露出。
 - **schema**: `SCHEMA_VERSION = 21`（SP-2 は schema 追加なし）。migration は自動・additive。
+- **schema V22（非 additive DROP）**: dead-code 整理で未配線の `db_stats_snapshots` テーブルを
+  **DROP**（`SCHEMA_VERSION = 22`）。実データは未使用のため実質ゼロだが、**V22 適用前に
+  `harness db backup`（または DB ファイルのコピー）を推奨**。no-downgrade ガードにより、
+  V22 適用後の DB は V21 以前のハーネスでは開けない（後方限定・既存ポリシー）。
 
 ---
 

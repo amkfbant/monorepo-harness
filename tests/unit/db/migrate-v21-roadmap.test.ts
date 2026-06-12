@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "../../../src/db/migrations.js";
+import { SCHEMA_VERSION } from "../../../src/db/schema.js";
 
 describe("v21 roadmap migration", () => {
   it("creates courses/phases/phase_hitches with FKs + the hitch_id link PK", () => {
@@ -44,10 +45,10 @@ describe("v21 roadmap migration", () => {
     expect(db.pragma("foreign_key_check")).toEqual([]);
   });
 
-  it("bumps SCHEMA_VERSION to 21 (re-running runMigrations does not throw)", () => {
+  it("is present in the latest schema (re-running runMigrations does not throw)", () => {
     const db = new Database(":memory:");
     const r = runMigrations(db);
-    expect(r.version).toBe(21);
+    expect(r.version).toBe(SCHEMA_VERSION);
     expect(() => runMigrations(db)).not.toThrow();
   });
 });
