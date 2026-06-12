@@ -790,6 +790,132 @@ describe("CourseOrchestrator", () => {
     );
   });
 
+  it("uses live phase status and hitch links when later phases are reached", async () => {
+    const courseId = newCourse(db, "course-live-later-phase");
+    const phases = new PhaseRepository(db);
+    const first = phases.add({ courseId, phaseId: "phase-live-first", title: "First", position: 1, createdBy: "test", createdSource: "cli" });
+    const later = phases.add({ courseId, phaseId: "phase-live-later", title: "Later", position: 2, createdBy: "test", createdSource: "cli" });
+    seedDrivableHitch(db, "h-live-first");
+    seedDrivableHitch(db, "h-live-later");
+    phases.linkHitch(first.phaseId, "h-live-first");
+    const calls: string[] = [];
+
+    const result = await makeOrchestrator(db, {}, calls, [], (hitchId) => {
+      if (hitchId !== "h-live-first") return;
+      phases.linkHitch(later.phaseId, "h-live-later");
+      phases.setStatus(later.phaseId, "blocked");
+    }).run({
+      courseId,
+      maxDrivenHitches: 3,
+      maxStepsPerHitch: 2,
+      createdBy: "test",
+    });
+
+    expect(calls).toEqual(["h-live-first"]);
+    expect(result.phaseOutcomes).toContainEqual(
+      expect.objectContaining({
+        phaseId: "phase-live-later",
+        action: "skip_blocked",
+      }),
+    );
+  });
+
+  it("uses live hitch links when a later phase is reached", async () => {
+    const courseId = newCourse(db, "course-live-link");
+    const phases = new PhaseRepository(db);
+    const first = phases.add({ courseId, phaseId: "phase-link-first", title: "First", position: 1, createdBy: "test", createdSource: "cli" });
+    const later = phases.add({ courseId, phaseId: "phase-link-later", title: "Later", position: 2, createdBy: "test", createdSource: "cli" });
+    seedDrivableHitch(db, "h-link-first");
+    seedCloseReadyHitch(db, "h-link-later");
+    phases.linkHitch(first.phaseId, "h-link-first");
+
+    const result = await makeOrchestrator(db, {}, [], [], (hitchId) => {
+      if (hitchId === "h-link-first") {
+        phases.linkHitch(later.phaseId, "h-link-later");
+      }
+    }).run({
+      courseId,
+      maxDrivenHitches: 3,
+      maxStepsPerHitch: 2,
+      createdBy: "test",
+    });
+
+    expect(result.phaseOutcomes).toContainEqual(
+      expect.objectContaining({
+        phaseId: "phase-link-later",
+        action: "ready_to_close",
+      }),
+    );
+  });
+
+  it("uses live derived open counts before reporting a later phase ready to close", async () => {
+    const courseId = newCourse(db, "course-live-counts");
+    const phases = new PhaseRepository(db);
+    const first = phases.add({ courseId, phaseId: "phase-count-first", title: "First", position: 1, createdBy: "test", createdSource: "cli" });
+    const later = phases.add({ courseId, phaseId: "phase-count-later", title: "Later", position: 2, createdBy: "test", createdSource: "cli" });
+    seedDrivableHitch(db, "h-count-first");
+    const findingId = seedDrivableHitchThatClosesAfterFix(db, "h-count-later");
+    phases.linkHitch(first.phaseId, "h-count-first");
+    phases.linkHitch(later.phaseId, "h-count-later");
+
+    const result = await makeOrchestrator(db, {}, [], [], (hitchId) => {
+      if (hitchId === "h-count-first") {
+        const hitches = new HitchRepository(db);
+        hitches.markFindingFixed({ findingId });
+        hitches.recordCloseCheck({
+          hitchId: "h-count-later",
+          conditionId: "manual-pass",
+          status: "passed",
+          checkedBy: "test",
+        });
+      }
+    }).run({
+      courseId,
+      maxDrivenHitches: 3,
+      maxStepsPerHitch: 2,
+      createdBy: "test",
+    });
+
+    expect(result.phaseOutcomes).toContainEqual(
+      expect.objectContaining({
+        phaseId: "phase-count-later",
+        action: "ready_to_close",
+      }),
+    );
+  });
+
+  it("keeps the pass-start phase tree fixed when a phase is added mid-pass", async () => {
+    const courseId = newCourse(db, "course-fixed-tree");
+    const phases = new PhaseRepository(db);
+    const first = phases.add({ courseId, phaseId: "phase-fixed-first", title: "First", position: 1, createdBy: "test", createdSource: "cli" });
+    seedDrivableHitch(db, "h-fixed-first");
+    phases.linkHitch(first.phaseId, "h-fixed-first");
+
+    const result = await makeOrchestrator(db, {}, [], [], (hitchId) => {
+      if (hitchId !== "h-fixed-first") return;
+      phases.add({
+        courseId,
+        phaseId: "phase-added-mid-pass",
+        title: "Added mid-pass",
+        position: 2,
+        createdBy: "test",
+        createdSource: "cli",
+      });
+    }).run({
+      courseId,
+      maxDrivenHitches: 3,
+      maxStepsPerHitch: 2,
+      createdBy: "test",
+    });
+
+    expect(result.phaseOutcomes.map((outcome) => outcome.phaseId)).toEqual([
+      "phase-fixed-first",
+    ]);
+    expect(result.rollupAfter.phases.map((phase) => phase.phaseId)).toContain(
+      "phase-added-mid-pass",
+    );
+  });
+
   it("normalizes budgets and passes close-ready halt to hitch drivers", async () => {
     const courseId = newCourse(db, "course-normalized-budgets");
     const phases = new PhaseRepository(db);

@@ -121,9 +121,9 @@ For each phase in the tree (pre-order, depth-first):
   the operator or a guarded MCP mutation).
 - **`hitchIds`**: all hitches linked to the phase via `phase_hitches`.
 - **`derivedOpenP0` / `derivedOpenP1`**: live counts of open in-scope P0 / P1
-  findings, read from `hitch_findings` via `HitchRepository.listFindings` with
-  `limit: 100_000`. These are **never read from a snapshot**: a caller cannot mark
-  a phase "closed" to hide open findings.
+  findings, read from `hitch_findings` via direct SQL aggregates. These are
+  **never read from a snapshot**: a caller cannot mark a phase "closed" to hide
+  open findings.
 - **`latestDecision`**: the most recent `hitch_convergence_decisions.decision`
   across all linked hitches (latest by `created_at`), or null if none.
 - **`readyToClose`**: derived live by `derivePhaseReadiness`: at least one linked
@@ -161,6 +161,14 @@ stopAtCloseReady: true)`, so a ready hitch stops at `close_ready`.
 
 `decideCoursePhaseAction` is a pure function over phase declared status, leaf-ness,
 linked hitch ids with live convergence, and derived open P0/P1 counts:
+
+At the beginning of each `course orchestrate` pass, the orchestrator fixes only
+the phase tree structure: pre-order walk order, depth, and leaf/container shape.
+Each phase's dispatch inputs are then read live when that phase is reached:
+declared status, linked hitch ids, linked hitch convergence, and derived open
+P0/P1 counts all come from the database at evaluation time. Phases added after
+the pass begins are outside the fixed tree structure and become visible on the
+next pass.
 
 | Condition | Action |
 |-----------|--------|

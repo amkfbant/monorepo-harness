@@ -31,7 +31,7 @@ export interface CourseRollup {
 /** Live open in-scope P0/P1 for a hitch — SQL aggregate over hitch_findings.
  * Uses the same active lifecycle set as hitch convergence. Uses a direct COUNT
  * aggregate — no row-fetch LIMIT. */
-function openCounts(
+export function openCounts(
   db: Database.Database,
   hitchId: string,
 ): { p0: number; p1: number } {
