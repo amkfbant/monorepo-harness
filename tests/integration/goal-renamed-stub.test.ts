@@ -31,11 +31,11 @@ function newRoot(): string {
   return root;
 }
 
-describe("renamed goal command", () => {
-  it("errors with guidance pointing at 'harness hitch'", () => {
+describe("removed goal command", () => {
+  it("is rejected by commander as an unknown command", () => {
     const root = newRoot();
-    const { code, stderr } = runCli(root, ["goal", "status", "x"]);
+    const { code, stderr } = runCli(root, ["goal"]);
     expect(code).not.toBe(0);
-    expect(stderr).toMatch(/renamed to "hitch"|use 'harness hitch'/i);
+    expect(stderr).toMatch(/error: unknown command 'goal'/i);
   });
 });

@@ -4160,18 +4160,6 @@ registerDbCommands(program);
 registerOnboardCommands(program);
 registerHitchCommands(program, { getHarnessRoot });
 registerCourseCommands(program, { getHarnessRoot });
-
-program
-  .command("goal", { hidden: true })
-  .allowUnknownOption()
-  .argument("[args...]")
-  .description("(removed) renamed to 'harness hitch'")
-  .action(() => {
-    process.stderr.write(
-      "harness error: goal mode was renamed to \"hitch\" — use 'harness hitch …'\n",
-    );
-    process.exit(1);
-  });
 registerMcpCommands(program, { getHarnessRoot });
 
 // #69 — read-only guardrail: detect uncommitted out-of-band (non-harness)
@@ -4369,6 +4357,27 @@ releaseCmd
     }
   });
 
+function rejectUnknownTopLevelCommandBeforeDefaultRun(
+  rootCommand: Command,
+  argv: string[],
+): void {
+  const firstArg = argv[2];
+  if (firstArg === undefined || firstArg.startsWith("-")) return;
+  const commandNames = new Set(
+    rootCommand.commands.flatMap((command) => [
+      command.name(),
+      ...command.aliases(),
+    ]),
+  );
+  commandNames.add("help");
+  if (!commandNames.has(firstArg)) {
+    rootCommand.error(`error: unknown command '${firstArg}'`, {
+      code: "commander.unknownCommand",
+    });
+  }
+}
+
+rejectUnknownTopLevelCommandBeforeDefaultRun(program, process.argv);
 program.parseAsync(process.argv).catch((e: unknown) => {
   process.stderr.write(`harness error: ${(e as Error).message}\n`);
   // user-fixable conditions (e.g. legacy-file rows pending migration) →
