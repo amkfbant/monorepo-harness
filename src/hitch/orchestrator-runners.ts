@@ -58,11 +58,14 @@ import { dbConsensusSnapshotProvider } from "./consensus-stall-check.js";
 import { nextReviewMode } from "./review-mode.js";
 import type { OrchestratorRunners } from "./orchestrator-types.js";
 import type {
+  HitchFinding,
   HitchAttemptType,
   HitchLifecycleStatus,
   HitchReviewMode,
   HitchSession,
 } from "./types.js";
+
+const FINDING_BATCH_LIMIT = 200;
 
 const OPEN_FINDING_LIFECYCLE_SET: ReadonlySet<HitchLifecycleStatus> = new Set(
   OPEN_FINDING_LIFECYCLES,
@@ -252,6 +255,13 @@ function reviewModeForHitch(
   return nextReviewMode(session, repo.listReviewCycles(session.hitchId));
 }
 
+function isUnresolvedOutOfScopeFinding(finding: HitchFinding): boolean {
+  return (
+    finding.scopeStatus === "out_of_scope" &&
+    UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLE_SET.has(finding.lifecycleStatus)
+  );
+}
+
 export function createOrchestratorRunners(
   deps: OrchestratorRunnerDeps,
 ): OrchestratorRunners {
@@ -426,24 +436,54 @@ export function createOrchestratorRunners(
       withManagedDb({ dbPath: deps.dbPath }, (db) => {
         const repo = new HitchRepository(db);
         const session = repo.requireSession(hitchId);
-        const unknown = repo
-          .listFindings({ hitchId, scopeStatus: "unknown" })
-          .filter((f) => OPEN_FINDING_LIFECYCLE_SET.has(f.lifecycleStatus));
-        for (const finding of unknown) {
-          const classification = classifyFindingForHitch(session, finding);
-          if (classification.scopeStatus === "unknown") {
+        const filter = {
+          hitchId,
+          scopeStatus: "unknown" as const,
+          lifecycleStatusIn: OPEN_FINDING_LIFECYCLES,
+        };
+        let previousRemaining = repo.countFindings(filter);
+        while (true) {
+          const batch = repo.listFindings({
+            ...filter,
+            limit: FINDING_BATCH_LIMIT,
+          });
+          if (batch.length === 0) break;
+
+          for (const finding of batch) {
+            const classification = classifyFindingForHitch(session, finding);
+            if (classification.scopeStatus === "unknown") {
+              return {
+                resolved: false,
+                escalateReason: `cannot classify finding ${finding.findingId}`,
+              };
+            }
+            repo.classifyFinding({
+              findingId: finding.findingId,
+              scopeStatus: classification.scopeStatus,
+              reason: classification.reason,
+            });
+          }
+
+          const remaining = repo.countFindings(filter);
+          if (remaining === 0) return { resolved: true };
+          if (remaining >= previousRemaining) {
             return {
               resolved: false,
-              escalateReason: `cannot classify finding ${finding.findingId}`,
+              escalateReason:
+                `classification made no progress for hitch ${hitchId}; ` +
+                `${remaining} unknown findings remain`,
             };
           }
-          repo.classifyFinding({
-            findingId: finding.findingId,
-            scopeStatus: classification.scopeStatus,
-            reason: classification.reason,
-          });
+          previousRemaining = remaining;
         }
-        return { resolved: true };
+        const remaining = repo.countFindings(filter);
+        if (remaining === 0) return { resolved: true };
+        return {
+          resolved: false,
+          escalateReason:
+            `classification did not drain hitch ${hitchId}; ` +
+            `${remaining} unknown findings remain`,
+        };
       }),
     defer: async (hitchId) => {
       // No mutation gate: deferral is a hitch-repo bookkeeping op (moving an
@@ -451,37 +491,62 @@ export function createOrchestratorRunners(
       // `deferFindingToBacklog` opens its own managed db for the backlog write,
       // so collect the finding ids under one open, close it, then loop the
       // async defers each with a fresh repo to avoid a same-dbPath lock clash.
-      const findingIds = withManagedDb({ dbPath: deps.dbPath }, (db) => {
-        const repo = new HitchRepository(db);
-        return repo
-          .listFindings({ hitchId, scopeStatus: "out_of_scope" })
-          .filter((f) =>
-            UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLE_SET.has(
-              f.lifecycleStatus,
-            ),
-          )
-          .map((f) => f.findingId);
-      });
+      const filter = {
+        hitchId,
+        scopeStatus: "out_of_scope" as const,
+        lifecycleStatusIn: UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES,
+      };
       let deferred = 0;
-      for (const findingId of findingIds) {
-        const { db, close } = openManagedDb({ dbPath: deps.dbPath });
-        try {
-          await deferFindingToBacklog({
-            repository: new HitchRepository(db),
-            findingId,
-            reason:
-              "auto-deferred by orchestrator (out-of-scope follow-up)",
-            createBacklogItem: true,
-            backlogContext: {
-              backlogDir: paths.backlogDir,
-              dbPath: deps.dbPath,
-            },
-          });
-        } finally {
-          close();
+      let previousRemaining = withManagedDb({ dbPath: deps.dbPath }, (db) =>
+        new HitchRepository(db).countFindings(filter),
+      );
+      while (true) {
+        const findingIds = withManagedDb({ dbPath: deps.dbPath }, (db) => {
+          const repo = new HitchRepository(db);
+          return repo
+            .listFindings({ ...filter, limit: FINDING_BATCH_LIMIT })
+            .map((f) => f.findingId);
+        });
+        if (findingIds.length === 0) break;
+
+        let batchDeferred = 0;
+        for (const findingId of findingIds) {
+          const { db, close } = openManagedDb({ dbPath: deps.dbPath });
+          try {
+            const result = await deferFindingToBacklog({
+              repository: new HitchRepository(db),
+              findingId,
+              reason:
+                "auto-deferred by orchestrator (out-of-scope follow-up)",
+              createBacklogItem: true,
+              backlogContext: {
+                backlogDir: paths.backlogDir,
+                dbPath: deps.dbPath,
+              },
+            });
+            if (
+              result.finding.lifecycleStatus === "deferred" &&
+              !isUnresolvedOutOfScopeFinding(result.finding)
+            ) {
+              batchDeferred += 1;
+            }
+          } finally {
+            close();
+          }
         }
-        deferred += 1;
+        deferred += batchDeferred;
+
+        const remaining = withManagedDb({ dbPath: deps.dbPath }, (db) =>
+          new HitchRepository(db).countFindings(filter),
+        );
+        if (remaining === 0) return { deferred };
+        if (batchDeferred === 0 || remaining >= previousRemaining) {
+          return { deferred };
+        }
+        previousRemaining = remaining;
       }
+      // Loop only breaks when the unresolved out-of-scope set is empty, so
+      // `deferred` already reflects every finding that reached the backlog.
       return { deferred };
     },
     closeAndPr: async (hitchId) => {
