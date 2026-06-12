@@ -30,7 +30,7 @@ export interface AggregateArgs {
 
 export interface McpMetricsSummary extends DbMetricsSummary {
   hitch: DbHitchMetricsSummary;
-  mcpConfirmations: DbMcpConfirmationSummary;
+  mcpConfirmations?: DbMcpConfirmationSummary;
 }
 
 /**
@@ -118,9 +118,13 @@ export function metricsTool(
     const data: McpMetricsSummary = {
       ...runMetrics,
       hitch: hitchMetricsSummary(db, filter),
-      mcpConfirmations: mcpConfirmationSummary(db, {
-        ...(filter.since !== undefined ? { since: filter.since } : {}),
-      }),
+      ...(context.config.allowedProjects.length === 0
+        ? {
+            mcpConfirmations: mcpConfirmationSummary(db, {
+              ...(filter.since !== undefined ? { since: filter.since } : {}),
+            }),
+          }
+        : {}),
     };
     return ok("metrics", data);
   }) as HarnessMcpToolResult;

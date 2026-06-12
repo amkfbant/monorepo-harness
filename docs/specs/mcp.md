@@ -433,9 +433,14 @@ knowledge-candidate run 数 ＋ **operational 知識**の slice（`operationalKn
 `harness.metrics` は run 件数（status 別）＋ review approved-rate（DB read-model の
 `metricsSummary`。`oneShotApprovalRate` / `policyViolationRate` /
 `secretSuspectRate` を含む）をトップレベルに返し、追加で `hitch`
-（`DbHitchMetricsSummary`）と `mcpConfirmations`（`DbMcpConfirmationSummary`）を返す。
+（`DbHitchMetricsSummary`: session status / review-cycle / rerun / finding severity /
+resolution / reopen KPI）を返す。`allowedProjects` が空の unrestricted client には
+`mcpConfirmations`（`DbMcpConfirmationSummary`: confirmation / expired KPI）も返す。
+`mcp_confirmation_requests` は project 列を持たない global table なので、
+project-restricted client（`allowedProjects` 非空）では fail-closed で
+`mcpConfirmations` フィールド自体を返さない。
 `hitch` は呼び出し元の `projectId` / `repoId` / `domain` / `sinceHours` scope を伝播し、
-`mcpConfirmations` は `sinceHours` 由来の since のみ伝播する。絞り込みは
+unrestricted client の `mcpConfirmations` は `sinceHours` 由来の since のみ伝播する。絞り込みは
 inbox=`projectId`/`repoId`/`domain`、metrics=それ＋`sinceHours`。**scope**: `allowedProjects` が空（unrestricted）なら
 repo 横断、restricted なら `projectId` がその集合に入る必要がある（未指定時は allowed が
 1 つなら既定、複数なら `project_required` で deny＝単一 projectId 集計で部分集合を跨がない

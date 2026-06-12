@@ -20,7 +20,7 @@ interface MetricsToolData {
     byStatus: Record<string, number>;
     findingsBySeverity: Record<string, number>;
   };
-  mcpConfirmations: {
+  mcpConfirmations?: {
     total: number;
     byStatus: Record<string, number>;
     confirmationRate: number | null;
@@ -92,6 +92,7 @@ function insertFinding(
 function insertMcpConfirmation(
   db: Database.Database,
   confirmationId: string,
+  projectId: string,
   status: string,
   createdAt: string,
 ): void {
@@ -102,8 +103,8 @@ function insertMcpConfirmation(
        created_at, expires_at
      )
      VALUES (?, 'client', 'actor', 'harness.pr.create', 'pr.create',
-       '{}', '{}', '{}', ?, ?, '2026-07-01T00:00:00.000Z')`,
-  ).run(confirmationId, status, createdAt);
+       ?, '{}', '{}', ?, ?, '2026-07-01T00:00:00.000Z')`,
+  ).run(confirmationId, JSON.stringify({ projectId }), status, createdAt);
 }
 
 function setup(): string {
@@ -140,13 +141,22 @@ function setup(): string {
     insertFinding(handle.db, "hitch-demo", "finding-demo");
     insertMcpConfirmation(
       handle.db,
-      "confirm-new",
+      "confirm-demo-new",
+      "demo",
+      "confirmed",
+      "2026-06-10T00:00:00.000Z",
+    );
+    insertMcpConfirmation(
+      handle.db,
+      "confirm-other-new",
+      "other",
       "confirmed",
       "2026-06-10T00:00:00.000Z",
     );
     insertMcpConfirmation(
       handle.db,
       "confirm-old",
+      "demo",
       "expired",
       "2026-05-01T00:00:00.000Z",
     );
@@ -195,9 +205,12 @@ describe("harness.metrics aggregate tool", () => {
     expect(out.data.hitch.totalSessions).toBe(1);
     expect(out.data.hitch.byStatus).toEqual({ open: 1 });
     expect(out.data.hitch.findingsBySeverity).toEqual({ P1: 1 });
-    expect(out.data.mcpConfirmations.total).toBe(1);
-    expect(out.data.mcpConfirmations.byStatus).toEqual({ confirmed: 1 });
-    expect(out.data.mcpConfirmations.confirmationRate).toBe(1);
+    expect(out.data.mcpConfirmations).toEqual({
+      total: 2,
+      byStatus: { confirmed: 2 },
+      confirmationRate: 1,
+      expiredRate: 0,
+    });
   });
 
   it("keeps project-restricted default scoping for hitch metrics", async () => {
@@ -210,5 +223,6 @@ describe("harness.metrics aggregate tool", () => {
     expect(out.data.totalRuns).toBe(1);
     expect(out.data.hitch.totalSessions).toBe(2);
     expect(out.data.hitch.byStatus).toEqual({ closed: 1, open: 1 });
+    expect(out.data).not.toHaveProperty("mcpConfirmations");
   });
 });
