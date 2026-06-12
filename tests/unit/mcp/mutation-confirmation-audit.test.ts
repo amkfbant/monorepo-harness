@@ -14,6 +14,7 @@ import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { confirmMcpRequest, rejectMcpRequest } from "../../../src/mcp/confirmation-runner.js";
 import {
+  createMcpConfirmationRequest,
   getMcpConfirmationRequest,
   listMcpConfirmationRequests,
 } from "../../../src/mcp/security/confirmation.js";
@@ -44,6 +45,14 @@ function server(root: string, config: McpConfig): HarnessMcpServer {
     transport: "stdio",
     sessionId: "mcpsess_mut",
   });
+}
+
+function guardedConfig(overrides: Partial<McpConfig> = {}): McpConfig {
+  return {
+    ...DEFAULT_MCP_CONFIG,
+    defaultMode: "guarded-mutation",
+    ...overrides,
+  };
 }
 
 async function callTool(
@@ -473,7 +482,7 @@ describe("MCP mutation, confirmation, and audit", () => {
           ).run(sha, `file://${sha}`);
         }
       });
-      const s = server(root, DEFAULT_MCP_CONFIG);
+      const s = server(root, guardedConfig());
 
       const toExternal = await callTool(s, "harness.db.migrate_blobs.apply", {
         to: "external",
@@ -528,7 +537,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         ).run(demoBody.length, demoSha, demoSha, otherBody.length, otherSha, otherSha);
       });
       const config: McpConfig = {
-        ...DEFAULT_MCP_CONFIG,
+        ...guardedConfig(),
         allowedProjects: ["demo"],
       };
       const pending = await callTool(server(root, config), "harness.db.migrate_blobs.apply", {
@@ -574,7 +583,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         }
       });
 
-      const pending = await callTool(server(root, DEFAULT_MCP_CONFIG), "harness.db.migrate_blobs.apply", {
+      const pending = await callTool(server(root, guardedConfig()), "harness.db.migrate_blobs.apply", {
         to: "external",
         storeId: "local-main",
         limit: 1,
@@ -635,7 +644,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         }
       });
       const config: McpConfig = {
-        ...DEFAULT_MCP_CONFIG,
+        ...guardedConfig(),
         allowedProjects: ["demo"],
       };
 
@@ -698,7 +707,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         }
       });
 
-      const toDb = await callTool(server(root, DEFAULT_MCP_CONFIG), "harness.db.migrate_blobs.apply", {
+      const toDb = await callTool(server(root, guardedConfig()), "harness.db.migrate_blobs.apply", {
         to: "db",
         storeId: "local-main",
         limit: 1,
@@ -720,7 +729,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         ),
       ).toBe(1);
 
-      const gc = await callTool(server(root, DEFAULT_MCP_CONFIG), "harness.db.gc_blobs.apply", {
+      const gc = await callTool(server(root, guardedConfig()), "harness.db.gc_blobs.apply", {
         storeId: "local-main",
         idempotencyKey: "gc-limit-1",
       });
@@ -1098,7 +1107,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         ).run(JSON.stringify({ lock_id: lock.lock_id, run_id: "run-demo" }));
       });
       const config: McpConfig = {
-        ...DEFAULT_MCP_CONFIG,
+        ...guardedConfig(),
         allowedProjects: ["demo"],
       };
       const pending = await callTool(server(root, config), "harness.db.repair.apply", {
@@ -1950,7 +1959,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       ).run(JSON.stringify({ lock_id: lock.lock_id, run_id: "run-demo" }));
     });
     const config: McpConfig = {
-      ...DEFAULT_MCP_CONFIG,
+      ...guardedConfig(),
       allowedProjects: ["demo"],
     };
     const pending = await callTool(server(root, config), "harness.db.repair.apply", {
@@ -1992,7 +2001,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         .prepare("SELECT proposal_id, source_sha256 FROM review_proposals WHERE run_id = ?")
         .get("run-review-bound") as { proposal_id: number; source_sha256: string },
     );
-    const s = server(root, DEFAULT_MCP_CONFIG);
+    const s = server(root, guardedConfig());
     const pending = await callTool(s, "harness.review.process", {
       runId: "run-review-bound",
       decision: "approved",
@@ -2035,7 +2044,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       seedProject(db);
       seedReviewableRun(db, harnessRoot, { runId: "run-review-stale" });
     });
-    const staleServer = server(staleRoot, DEFAULT_MCP_CONFIG);
+    const staleServer = server(staleRoot, guardedConfig());
     const stalePending = await callTool(staleServer, "harness.review.process", {
       runId: "run-review-stale",
       decision: "approved",
@@ -2068,7 +2077,7 @@ describe("MCP mutation, confirmation, and audit", () => {
 	      seedProject(db);
 	      seedReviewableRun(db, harnessRoot, { runId: "run-review-newer-active" });
 	    });
-	    const newerServer = server(newerRoot, DEFAULT_MCP_CONFIG);
+	    const newerServer = server(newerRoot, guardedConfig());
 	    const newerPending = await callTool(newerServer, "harness.review.process", {
 	      runId: "run-review-newer-active",
 	      decision: "approved",
@@ -2107,7 +2116,7 @@ describe("MCP mutation, confirmation, and audit", () => {
 	      seedProject(db);
 	      seedReviewableRun(db, harnessRoot, { runId: "run-review-competing" });
 	    });
-	    const competingServer = server(competingRoot, DEFAULT_MCP_CONFIG);
+	    const competingServer = server(competingRoot, guardedConfig());
 	    const competingPending = await callTool(competingServer, "harness.review.process", {
 	      runId: "run-review-competing",
 	      decision: "approved",
@@ -2155,7 +2164,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       seedRun(db, "run-pr-develop", "demo");
       db.prepare("UPDATE runs SET base_branch = 'develop' WHERE run_id = ?").run("run-pr-develop");
     });
-    const s = server(root, DEFAULT_MCP_CONFIG);
+    const s = server(root, guardedConfig());
     const pending = await callTool(s, "harness.pr.create", {
       runId: "run-pr-develop",
       idempotencyKey: "pr-develop-1",
@@ -2195,7 +2204,7 @@ describe("MCP mutation, confirmation, and audit", () => {
 	            '2026-05-25T00:00:00Z')`,
 	      ).run();
 	    });
-	    const failedPending = await callTool(server(failedRoot, DEFAULT_MCP_CONFIG), "harness.pr.create", {
+	    const failedPending = await callTool(server(failedRoot, guardedConfig()), "harness.pr.create", {
 	      runId: "run-pr-failed-retry",
 	      idempotencyKey: "pr-failed-retry-1",
 	    });
@@ -2224,7 +2233,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       seedRun(db, "run-archive-scope", "demo");
     });
     const scoped: McpConfig = {
-      ...DEFAULT_MCP_CONFIG,
+      ...guardedConfig(),
       allowedProjects: ["demo"],
     };
     const denied = await callTool(server(root, scoped), "harness.db.archive.apply", {
@@ -2234,7 +2243,7 @@ describe("MCP mutation, confirmation, and audit", () => {
     expect(denied.status).toBe("permission_denied");
     expect(denied.data.reason).toBe("global_scope_required");
 
-    const global = await callTool(server(root, DEFAULT_MCP_CONFIG), "harness.db.archive.apply", {
+    const global = await callTool(server(root, guardedConfig()), "harness.db.archive.apply", {
       before: "2026-05-25T00:00:00Z",
       idempotencyKey: "archive-global-1",
     });
@@ -2261,7 +2270,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       ).run(body.length, sha, sha);
     });
     const scoped: McpConfig = {
-      ...DEFAULT_MCP_CONFIG,
+      ...guardedConfig(),
       allowedProjects: ["demo"],
     };
 
@@ -2273,7 +2282,7 @@ describe("MCP mutation, confirmation, and audit", () => {
     expect(denied.status).toBe("permission_denied");
     expect(denied.data.reason).toBe("global_scope_required");
 
-    const pending = await callTool(server(root, DEFAULT_MCP_CONFIG), "harness.db.migrate_blobs.apply", {
+    const pending = await callTool(server(root, guardedConfig()), "harness.db.migrate_blobs.apply", {
       to: "external",
       storeId: "local-main",
       limit: 1,
@@ -2297,7 +2306,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       ),
     ).toBe("db");
 
-    const global = await callTool(server(root, DEFAULT_MCP_CONFIG), "harness.db.migrate_blobs.apply", {
+    const global = await callTool(server(root, guardedConfig()), "harness.db.migrate_blobs.apply", {
       to: "external",
       storeId: "local-main",
       limit: 1,
@@ -2324,7 +2333,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       seedProject(db);
       seedRun(db, "run-archive-preview", "demo");
     });
-    const pending = await callTool(server(root, DEFAULT_MCP_CONFIG), "harness.db.archive.apply", {
+    const pending = await callTool(server(root, guardedConfig()), "harness.db.archive.apply", {
       before: "2026-05-25T00:00:00Z",
       out: "manual/full-db.sqlite",
       idempotencyKey: "archive-preview-1",
@@ -2348,7 +2357,7 @@ describe("MCP mutation, confirmation, and audit", () => {
 
   it("rejects db.archive.apply out paths outside .harness/archives", async () => {
     const root = freshRoot();
-    const denied = await callTool(server(root, DEFAULT_MCP_CONFIG), "harness.db.archive.apply", {
+    const denied = await callTool(server(root, guardedConfig()), "harness.db.archive.apply", {
       before: "2026-05-25T00:00:00Z",
       out: join(tmpdir(), "outside-archive.sqlite"),
       idempotencyKey: "archive-outside-1",
@@ -2359,7 +2368,7 @@ describe("MCP mutation, confirmation, and audit", () => {
 
   it("rejects stale db.archive.apply confirmations when stored input and preview outPath diverge", async () => {
     const root = freshRoot();
-    const pending = await callTool(server(root, DEFAULT_MCP_CONFIG), "harness.db.archive.apply", {
+    const pending = await callTool(server(root, guardedConfig()), "harness.db.archive.apply", {
       before: "2026-05-25T00:00:00Z",
       out: "bound.sqlite",
       idempotencyKey: "archive-stale-1",
@@ -2399,7 +2408,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       seedProject(db);
     });
     const scoped: McpConfig = {
-      ...DEFAULT_MCP_CONFIG,
+      ...guardedConfig(),
       allowedProjects: ["demo"],
     };
     const preview = await callTool(server(root, scoped), "harness.db.gc_blobs.preview", {});
@@ -2413,7 +2422,7 @@ describe("MCP mutation, confirmation, and audit", () => {
     expect(denied.status).toBe("permission_denied");
     expect(denied.data.reason).toBe("global_scope_required");
 
-    const global = await callTool(server(root, DEFAULT_MCP_CONFIG), "harness.db.gc_blobs.apply", {
+    const global = await callTool(server(root, guardedConfig()), "harness.db.gc_blobs.apply", {
       idempotencyKey: "gc-global-1",
     });
     expect(global.status).toBe("confirmation_required");
@@ -2424,7 +2433,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       seedProject(db);
       seedRun(db, "run-throw-confirm", "demo");
     });
-    const s = server(root, DEFAULT_MCP_CONFIG);
+    const s = server(root, guardedConfig());
     const pending = await callTool(s, "harness.pr.create", {
       runId: "run-throw-confirm",
       idempotencyKey: "throw-confirm-1",
@@ -2502,7 +2511,7 @@ describe("MCP mutation, confirmation, and audit", () => {
       ).run(JSON.stringify({ lock_id: lock.lock_id, run_id: "run-demo" }));
     });
 
-    const s = server(root, DEFAULT_MCP_CONFIG);
+    const s = server(root, guardedConfig());
     await s.handleMessage({
       jsonrpc: "2.0",
       id: 0,
@@ -2576,6 +2585,57 @@ describe("MCP mutation, confirmation, and audit", () => {
     });
     expect(expired.status).toBe("error");
     expect(readDb(root, (db) => (db.prepare("SELECT status FROM mcp_confirmation_requests WHERE confirmation_id = ?").get(expiring.confirmationId) as any).status)).toBe("expired");
+  });
+
+  it("rejects read-only dangerous confirmations during confirmation re-evaluation before the handler", async () => {
+    const root = freshRoot((db) => {
+      seedProject(db);
+      seedRun(db, "run-demo", "demo");
+    });
+    const config: McpConfig = {
+      ...DEFAULT_MCP_CONFIG,
+      defaultMode: "read-only",
+      clients: [],
+      allowedProjects: ["demo"],
+    };
+    const row = createMcpConfirmationRequest({
+      context: {
+        harnessRoot: root,
+        config,
+        clientName: "unit-test",
+        sessionId: "mcpsess_mut",
+      },
+      toolName: "harness.pr.create",
+      operationType: "pr.create",
+      target: { type: "project", id: "demo" },
+      input: { runId: "run-demo", idempotencyKey: "readonly-pr-1" },
+      preview: {
+        status: "dry_run",
+        summary: "would create PR",
+        data: { runId: "run-demo" },
+      },
+    });
+
+    const confirmed = await confirmMcpRequest({
+      harnessRoot: root,
+      confirmationId: row.confirmationId,
+      confirmedBy: "human",
+    });
+
+    expect(confirmed).toMatchObject({
+      status: "error",
+      data: {
+        reason: "dangerous_disabled_for_client",
+        operation: "pr.create",
+      },
+    });
+    expect(
+      readDb(root, (db) =>
+        db
+          .prepare("SELECT status, confirmed_by FROM mcp_confirmation_requests WHERE confirmation_id = ?")
+          .get(row.confirmationId),
+      ),
+    ).toMatchObject({ status: "pending", confirmed_by: null });
   });
 
   it("audits dry-runs by default and keeps read tools unaudited unless enabled", async () => {

@@ -222,12 +222,19 @@ interface McpPermissionDecision {
 Permission precedence is deterministic:
 
 ```txt
-1. deniedOperations always wins.
-2. requireConfirmation returns confirmation_required and permits preview only.
-3. read tools are allowed by mode unless denied/project-scoped out.
-4. dry-run tools are allowed for dry-run and guarded clients unless denied/project-scoped out.
-5. allowedOperations permits immediate execution for guarded mutation tools.
-6. safe default permits read and dry-run, denies immediate mutation.
+1. disabled MCP config and project visibility deny first.
+2. deniedOperations always wins.
+3. dangerous tools and **non-read** requireConfirmation operations require
+   guarded-mutation client mode; read-only/dry-run clients are denied with
+   dangerous_disabled_for_client before any confirmation is created. The gate
+   applies only when `kind !== "read"`; a read tool listed in requireConfirmation
+   is not gated here (the generic confirmation enqueue is mutation-kind only).
+4. guarded-mutation clients receive confirmation_required for dangerous tools
+   and requireConfirmation operations; confirmation permits preview only.
+5. read tools are allowed by mode unless denied/project-scoped out.
+6. dry-run tools are allowed for dry-run and guarded clients unless denied/project-scoped out.
+7. allowedOperations permits immediate execution for guarded mutation tools.
+8. safe default permits read and dry-run, denies immediate mutation.
 ```
 
 The permission engine normalizes MCP tool names by stripping the `harness.`
@@ -572,6 +579,14 @@ harness.db.migrate_blobs.apply
 harness.db.gc_blobs.apply
 ```
 
+Dangerous tools are not opened by `allowedOperations`; they can only reach their
+handler-side confirmation preview when the effective client mode is
+`guarded-mutation`. `read-only` and `dry-run` clients fail at the permission
+layer before the handler can create a confirmation request. Confirmation replay
+uses the stored permission snapshot and re-runs the same permission decision
+before executing the handler, so a read-only/dry-run snapshot cannot be executed
+out of band.
+
 Disabled:
 
 ```txt
@@ -777,8 +792,8 @@ confirmation-required.
 
 `harness.cleanup.apply`, `harness.pr.create`, `harness.db.repair.apply`,
 `harness.db.archive.apply`, `harness.db.migrate_blobs.apply`, and
-`harness.db.gc_blobs.apply` also return `confirmation_required` by default and
-must have corresponding preview/dry-run paths.
+`harness.db.gc_blobs.apply` also return `confirmation_required` by default for
+guarded-mutation clients and must have corresponding preview/dry-run paths.
 
 `harness.pr.create` preview and execution both use the run row's `base_branch`
 and draft mode. Confirm rejects stale confirmations if the run base branch has

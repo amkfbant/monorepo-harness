@@ -713,3 +713,13 @@ OperationRunner の replay キー `(operation_type, target_id, idempotency_key)`
 `hitchIdForIdempotencyKey` に effectiveProjectId scope を畳み込む（course 側 `scopedIdForIdempotencyKey`
 と同形）＋ cross-project replay regression test。fail-closed 方向（leak 防止）だが既存挙動変更を
 含むため独立 PR で扱う。
+
+## dangerous MCP tools の allowedOperations 横展開（audit #117 follow-up）
+
+audit #117 では dangerous / `requireConfirmation` 操作を `guarded-mutation` client mode に限定し、
+`read-only` / `dry-run` client が confirmation を起票・confirm replay できないよう fail-closed にした。
+一方で、dangerous tools へ `allowedOperations` allowlist も課す横展開は今回スコープ外にした。
+既存 `.harness/mcp.yaml` は dangerous confirmation を `allowedOperations` なしで使っている可能性があり、
+一度に要求すると breaking migration が大きい。follow-up: dangerous operation にも
+`allowedOperations` を要求するか、別 allowlist（例: `allowedDangerousOperations`）を導入するかを設計し、
+移行手順と compatibility warning を伴う独立変更として扱う。

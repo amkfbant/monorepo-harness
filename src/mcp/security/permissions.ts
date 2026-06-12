@@ -94,6 +94,13 @@ export function decideMcpPermission(
     request.kind === "dangerous" ||
     config.requireConfirmation.includes(operation)
   ) {
+    if (request.kind !== "read" && request.clientMode !== "guarded-mutation") {
+      return {
+        allowed: false,
+        mode: request.kind === "dry-run" ? "dry-run" : "mutation",
+        reason: "dangerous_disabled_for_client",
+      };
+    }
     return {
       allowed: true,
       mode: "confirmation-required",
