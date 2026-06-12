@@ -10,6 +10,7 @@ export interface CodexRunInputs {
 export interface CodexRunResult {
   exitCode: number;
   timedOut: boolean;
+  durationMs: number;
 }
 
 export interface CodexExecRunner {

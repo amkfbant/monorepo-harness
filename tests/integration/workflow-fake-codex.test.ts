@@ -63,6 +63,20 @@ function setupHarness(opts?: { ignoreUntracked?: string[] }): string {
   return root;
 }
 
+type WorkflowEvent = { type: string; [key: string]: unknown };
+
+function parseEvents(runDir: string): WorkflowEvent[] {
+  return readFileSync(join(runDir, "events.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as WorkflowEvent);
+}
+
+function expectNonNegativeNumber(value: unknown): void {
+  expect(typeof value).toBe("number");
+  expect(value).toBeGreaterThanOrEqual(0);
+}
+
 describe("runDomainCoding (fake codex)", () => {
   let repoPath: string;
   let harness: string;
@@ -85,6 +99,7 @@ describe("runDomainCoding (fake codex)", () => {
       },
       stdout: "applied 2 files\n",
       stderr: "warning: nothing\n",
+      durationMs: 1234,
     });
     const r = await runDomainCoding({
       harnessRoot: harness,
@@ -118,6 +133,42 @@ describe("runDomainCoding (fake codex)", () => {
     const meta = JSON.parse(readFileSync(join(runDir, "meta.json"), "utf8"));
     expect(meta.baseSha).toMatch(/^[0-9a-f]{40}$/);
     expect(meta.safetyStatus).toBe("allowed");
+    const events = parseEvents(runDir);
+    const codexCompleted = events.find(
+      (event) => event.type === "codex_exec_completed",
+    );
+    expect(codexCompleted).toBeDefined();
+    expect(codexCompleted?.durationMs).toBe(1234);
+    const validationCompleted = events.find(
+      (event) => event.type === "policy_validation_completed",
+    );
+    expect(validationCompleted).toBeDefined();
+    expectNonNegativeNumber(validationCompleted?.durationMs);
+    const diffCollected = events.find(
+      (event) => event.type === "diff_collected",
+    );
+    expect(diffCollected).toBeDefined();
+    expectNonNegativeNumber(diffCollected?.durationMs);
+    const artifactsIngested = events.find(
+      (event) => event.type === "artifacts_ingested",
+    );
+    const artifactsIngestedIndex = events.findIndex(
+      (event) => event.type === "artifacts_ingested",
+    );
+    const runCompletedIndex = events.findIndex(
+      (event) => event.type === "run_completed",
+    );
+    expect(artifactsIngested).toBeDefined();
+    expect(artifactsIngestedIndex).toBeGreaterThanOrEqual(0);
+    expect(runCompletedIndex).toBeGreaterThan(artifactsIngestedIndex);
+    expect(typeof artifactsIngested?.count).toBe("number");
+    expect(artifactsIngested?.count).toBeGreaterThanOrEqual(1);
+    expect(typeof artifactsIngested?.totalBytes).toBe("number");
+    expect(artifactsIngested?.totalBytes).toBeGreaterThan(0);
+    expectNonNegativeNumber(artifactsIngested?.durationMs);
+    const runCompleted = events.find((event) => event.type === "run_completed");
+    expect(runCompleted).toBeDefined();
+    expectNonNegativeNumber(runCompleted?.runElapsedMs);
     expect(existsSync(join(harness, "workspaces", r.runId, "repo"))).toBe(true);
   });
 

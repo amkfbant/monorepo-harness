@@ -16,25 +16,25 @@
 9. emit codex_exec_started
 10. spawn codex exec (detached process group, sandbox/approval/timeout from policy)
 11. read codex-output.log + codex-error.log (after stream flush)
-12. emit codex_exec_completed (exitCode, timedOut)
+12. emit codex_exec_completed (exitCode, timedOut, durationMs)
 13. setStatus('generated')
 14. PASS 1 — post-codex diffAndValidate(worktree, baseSha, policy):
     attemptDiff → DiffOutcome { ok, trackedChangedPaths, untrackedAll, patch, error? }
     partitionUntracked(untrackedAll, ignoreUntracked) → { kept, ignored }
     if diff.ok: validateChangedPaths(policy, tracked ∪ kept) → violations + safetyStatus
-    emit diff_collection_failed / policy_validation_completed with stage="post-codex"
+    emit diff_collection_failed / policy_validation_completed with stage="post-codex" (validation durationMs on success)
 15. PASS 2 — if diff.ok && safetyStatus=allowed && codex ok && allowedCommands non-empty:
     setStatus('verified'); emit commands_started
     runAllowedCommands(worktree, allowedCommands) → results; emit commands_completed
     RE-RUN diffAndValidate against the post-command worktree
-    emit diff_collection_failed / policy_validation_completed with stage="post-command"
+    emit diff_collection_failed / policy_validation_completed with stage="post-command" (validation durationMs on success)
 16. setSafetyStatus  (from the final — post-command if commands ran — validation)
 17. split kept untracked → (allowed, denied) based on the final violations set
 18. write final-diff.patch
 19. write untracked-files.{txt,patch} for allowed (with secret-scan redaction)
 20. write untracked-denied.txt for denied (metadata only)
 21. write untracked-secrets.txt for secret suspects (metadata only)
-22. emit diff_collected (stage = post-command if commands ran, else post-codex)
+22. emit diff_collected (stage = post-command if commands ran, else post-codex, durationMs)
 23. determine RunStatus from priority:
     diff failure > codex timeout > codex non-zero > policy violation
     > command failure > needs_review
@@ -43,9 +43,10 @@
 26. write knowledge-candidates.yaml (4 signal kinds)
 27. write review-decision.yaml (initial: pending)
 28. write review-request.md
-29. finalize(meta, status, safetyStatus, counts, commandResults, finishedAt)
-30. emit run_completed
-31. release domain lock (finally)
+29. ingestRunArtifacts into the DB; emit artifacts_ingested (count, totalBytes, durationMs)
+30. finalize(meta, status, safetyStatus, counts, commandResults, finishedAt)
+31. emit run_completed (runElapsedMs)
+32. release domain lock (finally)
 ```
 
 ステップ 14/15 の 2 pass 構成が F8（コマンドの副作用も path policy で再検査）の核心。`allowedCommands` が無ければ pass 2 は skip され、pass 1 の結果がそのまま使われる。
@@ -208,13 +209,14 @@ compiled project policy. Non-project hitches are unchanged.
 {"type":"run_started","runId":"run-…","baseSha":"ca427b9…"}
 {"type":"worktree_created","path":"/Users/kn/dev/monorepo-harness/workspaces/run-…/repo"}
 {"type":"codex_exec_started"}
-{"type":"codex_exec_completed","exitCode":0,"timedOut":false}
-{"type":"policy_validation_completed","status":"allowed","stage":"post-codex"}
+{"type":"codex_exec_completed","exitCode":0,"timedOut":false,"durationMs":61234}
+{"type":"policy_validation_completed","status":"allowed","stage":"post-codex","durationMs":3}
 {"type":"commands_started","count":2}
 {"type":"commands_completed","results":[{"command":"npm test","exitCode":0,"durationMs":4521,"timedOut":false},{"command":"npm run lint","exitCode":0,"durationMs":1102,"timedOut":false}],"allPassed":true}
-{"type":"policy_validation_completed","status":"allowed","stage":"post-command"}
-{"type":"diff_collected","tracked":["apps/catalog/src/validation.ts"],"untrackedAllowed":[],"untrackedDenied":[],"ignored":[],"stage":"post-command"}
-{"type":"run_completed","status":"needs_review","safetyStatus":"allowed","ignoredUntrackedCount":0,"secretSuspectCount":0,"commandResultsCount":2}
+{"type":"policy_validation_completed","status":"allowed","stage":"post-command","durationMs":2}
+{"type":"diff_collected","tracked":["apps/catalog/src/validation.ts"],"untrackedAllowed":[],"untrackedDenied":[],"ignored":[],"stage":"post-command","durationMs":18}
+{"type":"artifacts_ingested","count":8,"totalBytes":123456,"durationMs":11}
+{"type":"run_completed","status":"needs_review","safetyStatus":"allowed","ignoredUntrackedCount":0,"secretSuspectCount":0,"commandResultsCount":2,"runElapsedMs":66422}
 ```
 
 ### diff / validation の stage
@@ -225,6 +227,12 @@ compiled project policy. Non-project hitches are unchanged.
 - `post-command` — `allowedCommands` 実行後の **再** diff / 再 validation（F8: コマンドの副作用も同じ安全境界で検査）
 
 `allowedCommands` が空、または codex / 初回 validation で既に失敗している場合、`post-command` の validation は走らず post-codex のみが残る。`diff_collected`（最終 diff の確定）の `stage` は、コマンドが走ったなら `post-command`、そうでなければ `post-codex`。
+
+`policy_validation_completed.durationMs` は path policy 検証にかかった wall-clock の整数 ms、`diff_collected.durationMs` は当該 stage の diff / untracked 収集にかかった wall-clock の整数 ms。いずれも harness が `performance.now()` で計測し、`Math.round` で整数化する。
+
+`artifacts_ingested` は run 完了時の `ingestRunArtifacts` 成功直後、`finalize` 前に emit される。`count` / `totalBytes` は DB blob に取り込んだ artifact body（`meta.json` / `events.jsonl` / `review-decision.yaml` など DB から再構成される artifact を除く）のファイル数と元ファイル byte 合計、`durationMs` は同じく `performance.now()` ベースの整数 ms。
+
+`run_completed.runElapsedMs` は `runDomainCoding` 開始から `run_completed` emit 直前までの wall-clock 整数 ms。
 
 コマンドが作った副作用（scope 外書き込み / secret-shaped file / ignored output / symlink / huge / binary）はすべて post-command の再検査で codex 直後と同じ扱いになる — 詳細は [`policy.md`](./policy.md#allowedcommands-実行) の「commands 実行後」。
 

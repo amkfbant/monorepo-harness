@@ -131,6 +131,7 @@ function fakeRunnerWithOutput(
       return {
         exitCode: opts.exitCode ?? 0,
         timedOut: opts.timedOut ?? false,
+        durationMs: 0,
       };
     },
   };
@@ -146,7 +147,7 @@ function capturingRunner(
       const { writeFile } = await import("node:fs/promises");
       await writeFile(input.logPaths.stdout, output, "utf8");
       await writeFile(input.logPaths.stderr, "", "utf8");
-      return { exitCode: 0, timedOut: false };
+      return { exitCode: 0, timedOut: false, durationMs: 0 };
     },
   };
 }
@@ -310,7 +311,7 @@ describe("runReviewerAgent", () => {
         const { writeFile } = await import("node:fs/promises");
         await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
         await writeFile(input.logPaths.stderr, "", "utf8");
-        return { exitCode: 0, timedOut: false };
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
       },
     };
     await expect(
@@ -337,6 +338,7 @@ describe("runReviewerAgent", () => {
         return {
           exitCode: opts.exitCode ?? 0,
           timedOut: opts.timedOut ?? false,
+          durationMs: 0,
         };
       },
     };
@@ -567,7 +569,7 @@ describe("runReviewerAgent", () => {
           const { writeFile } = await import("node:fs/promises");
           await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
           await writeFile(input.logPaths.stderr, "", "utf8");
-          return { exitCode: 0, timedOut: false };
+          return { exitCode: 0, timedOut: false, durationMs: 0 };
         },
       };
       await expect(
@@ -649,7 +651,7 @@ describe("runReviewerAgent", () => {
           const { writeFile } = await import("node:fs/promises");
           await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
           await writeFile(input.logPaths.stderr, "", "utf8");
-          return { exitCode: 0, timedOut: false };
+          return { exitCode: 0, timedOut: false, durationMs: 0 };
         },
       };
 

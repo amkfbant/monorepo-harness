@@ -68,7 +68,7 @@ function fakePrepareRun(calls: Parameters<PrepareRun>[0][]): PrepareRun {
 
 function fakeCodexRunner(): CodexExecRunner {
   return {
-    run: async () => ({ exitCode: 0, timedOut: false }),
+    run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }),
   };
 }
 

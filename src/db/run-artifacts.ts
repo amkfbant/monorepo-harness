@@ -94,6 +94,11 @@ export const DB_RECONSTRUCTED = new Set([
   "review-decision.yaml",
 ]);
 
+export interface IngestRunArtifactsResult {
+  count: number;
+  totalBytes: number;
+}
+
 /**
  * Recursively yield every regular file under `dir`, keyed by a POSIX-style
  * path relative to the run dir. Dotfiles (the transient `.exporting`
@@ -151,7 +156,7 @@ export function ingestRunArtifacts(
   db: Database.Database,
   runDir: string,
   runId: string,
-): void {
+): IngestRunArtifactsResult {
   // schema v5 added original_bytes / original_sha256 — only set when the
   // body was truncated to `HARD_MAX_BYTES`, NULL otherwise (Phase 9-9).
   const insert = db.prepare(
@@ -161,8 +166,10 @@ export function ingestRunArtifacts(
        original_bytes, original_sha256)
      VALUES (?, ?, ?, ?, ?, ?, ?, 'db', ?, ?, ?, 0, 0, ?, ?)`,
   );
-  const txn = db.transaction(() => {
+  const txn = db.transaction((): IngestRunArtifactsResult => {
     db.prepare("DELETE FROM artifacts WHERE run_id = ?").run(runId);
+    let count = 0;
+    let totalBytes = 0;
     for (const { rel, abs } of walkRunArtifacts(runDir)) {
       const raw = readFileSync(abs);
       const st = statSync(abs);
@@ -175,6 +182,8 @@ export function ingestRunArtifacts(
         const blob = storeArtifactBlob(db, raw);
         blobSha = blob.sha256;
         bytes = blob.bytes;
+        count += 1;
+        totalBytes += raw.length;
         if (blob.truncated) {
           bodyStatus = "truncated";
           originalBytes = raw.length;
@@ -196,6 +205,7 @@ export function ingestRunArtifacts(
         originalSha,
       );
     }
+    return { count, totalBytes };
   });
-  txn();
+  return txn();
 }

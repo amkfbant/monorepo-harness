@@ -38,8 +38,8 @@ function createRunners(dbPath: string) {
     dbPath,
     harnessRoot: dbPath,
     createdBy: "worker",
-    coderRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
-    reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+    coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+    reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
   });
 }
 
@@ -50,8 +50,8 @@ describe("createOrchestratorRunners.projectRuntime", () => {
         dbPath: "/tmp/harness.sqlite",
         harnessRoot: "/tmp/harness-root",
         createdBy: "worker",
-        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
-        reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+        reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
         projectRuntime: { project: {} } as never,
       }),
     ).toThrow(/atomically.*compiledPolicy and project/);
@@ -63,8 +63,8 @@ describe("createOrchestratorRunners.projectRuntime", () => {
         dbPath: "/tmp/harness.sqlite",
         harnessRoot: "/tmp/harness-root",
         createdBy: "worker",
-        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
-        reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+        reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
         projectRuntime: { compiledPolicy: null, project: {} } as never,
       }),
     ).toThrow(/atomically.*compiledPolicy and project/);
@@ -76,8 +76,8 @@ describe("createOrchestratorRunners.projectRuntime", () => {
         dbPath: "/tmp/harness.sqlite",
         harnessRoot: "/tmp/harness-root",
         createdBy: "worker",
-        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
-        reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+        reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
         projectRuntime: { compiledPolicy: { global: {} }, project: {} } as never,
       }),
     ).toThrow(/compiledPolicy must contain both global and repo/);
@@ -108,8 +108,8 @@ describe("createOrchestratorRunners.classify", () => {
       dbPath,
       harnessRoot: dbPath,
       createdBy: "worker",
-      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
-      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
     });
     const r = await runners.classify("g-c");
     expect(r.resolved).toBe(true);
@@ -268,8 +268,8 @@ describe("createOrchestratorRunners.classify", () => {
         dbPath,
         harnessRoot: dbPath,
         createdBy: "worker",
-        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
-        reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+        reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
       });
       const result = await runners.defer("g-defer");
       expect(result.deferred).toBe(1);
@@ -524,7 +524,7 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
           throw new Error("codex exploded");
         },
       },
-      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
       resolveRunContext,
     });
 
@@ -591,8 +591,8 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
       dbPath,
       harnessRoot,
       createdBy: "worker",
-      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
-      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
       resolveRunContext,
     });
 
@@ -658,7 +658,7 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
           });
         },
       },
-      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
       resolveRunContext,
     });
 
@@ -738,10 +738,10 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
       coderRunner: {
         run: async (input) => {
           captured = input.prompt;
-          return { exitCode: 0, timedOut: false };
+          return { exitCode: 0, timedOut: false, durationMs: 0 };
         },
       },
-      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
       resolveRunContext,
     });
     await runners.coder("g-inject");
@@ -796,10 +796,10 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
       coderRunner: {
         run: async (input) => {
           captured = input.prompt;
-          return { exitCode: 0, timedOut: false };
+          return { exitCode: 0, timedOut: false, durationMs: 0 };
         },
       },
-      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
       resolveRunContext,
     });
     await runners.coder("g-first");
@@ -857,10 +857,10 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
       coderRunner: {
         run: async (input) => {
           captured = input.prompt;
-          return { exitCode: 0, timedOut: false };
+          return { exitCode: 0, timedOut: false, durationMs: 0 };
         },
       },
-      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
       resolveRunContext,
     });
     await runners.coder("g-recover");
