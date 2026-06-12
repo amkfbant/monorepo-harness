@@ -440,7 +440,12 @@ resolution / reopen KPI）を返す。`allowedProjects` が空の unrestricted c
 project-restricted client（`allowedProjects` 非空）では fail-closed で
 `mcpConfirmations` フィールド自体を返さない。
 `hitch` は呼び出し元の `projectId` / `repoId` / `domain` / `sinceHours` scope を伝播し、
-unrestricted client の `mcpConfirmations` は `sinceHours` 由来の since のみ伝播する。絞り込みは
+unrestricted client の `mcpConfirmations` は global 値で、`sinceHours` 由来の since のみ伝播する
+（project / repo / domain filter は非適用）。`confirmationRate` は
+`(confirmed + consumed) / (confirmed + consumed + rejected + expired)`、`expiredRate` は
+`expired / (confirmed + consumed + rejected + expired)`。分母 0 は `null`。stored `pending` かつ
+`expires_at <= 集計時刻` の request は read-only に effective `expired` として byStatus / rate
+へ入れ、DB には書き戻さない。絞り込みは
 inbox=`projectId`/`repoId`/`domain`、metrics=それ＋`sinceHours`。**scope**: `allowedProjects` が空（unrestricted）なら
 repo 横断、restricted なら `projectId` がその集合に入る必要がある（未指定時は allowed が
 1 つなら既定、複数なら `project_required` で deny＝単一 projectId 集計で部分集合を跨がない

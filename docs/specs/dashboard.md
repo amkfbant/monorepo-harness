@@ -37,7 +37,14 @@ HTML エクスポートだった。Phase 6 では **DB（[`db.md`](./db.md)）�
 - `hitchMetrics` — `DbHitchMetricsSummary`（hitch session / review cycle /
   rerun attempt / finding resolution KPI）
 - `mcpConfirmations` — `DbMcpConfirmationSummary`（confirmation request status
-  と confirmation / expired rate）
+  と confirmation / expired rate）。snapshot 内では project / repo filter 非適用の
+  global 値（`mcp_confirmation_requests` は project 列を持たない）で、dashboard の
+  filter は伝播しない。`confirmationRate` は
+  `(confirmed + consumed) / (confirmed + consumed + rejected + expired)`、
+  `expiredRate` は
+  `expired / (confirmed + consumed + rejected + expired)`。分母 0 の場合はいずれも
+  `null`。stored `pending` かつ `expires_at <= snapshot 時刻` の request は
+  read-only に effective `expired` として集計し、DB は更新しない。
 - `inbox` — needs_review / changes_requested / failed / cleanup / knowledge
 - `recentRuns` — filter 済みの run 一覧
 - `backlog` / `knowledge`

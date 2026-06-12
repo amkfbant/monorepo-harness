@@ -111,7 +111,12 @@ function insertFinding(
 
 function insertMcpConfirmation(
   db: Database.Database,
-  input: { confirmationId: string; status: string; createdAt: string },
+  input: {
+    confirmationId: string;
+    status: string;
+    createdAt: string;
+    expiresAt?: string;
+  },
 ): void {
   db.prepare(
     `INSERT INTO mcp_confirmation_requests (
@@ -120,8 +125,13 @@ function insertMcpConfirmation(
        expires_at
      )
      VALUES (?, 'test-client', 'test-actor', 'tool', 'mutation', '{}', '{}',
-       '{}', ?, ?, '2026-07-01T00:00:00.000Z')`,
-  ).run(input.confirmationId, input.status, input.createdAt);
+       '{}', ?, ?, ?)`,
+  ).run(
+    input.confirmationId,
+    input.status,
+    input.createdAt,
+    input.expiresAt ?? "2026-07-01T00:00:00.000Z",
+  );
 }
 
 describe("convergence aggregates", () => {
@@ -391,10 +401,14 @@ describe("convergence aggregates", () => {
         createdAt: "2026-05-01T00:00:00.000Z",
       });
 
-      const summary = mcpConfirmationSummary(db, {
-        since: "2026-06-01T00:00:00.000Z",
-        until: "2026-06-30T00:00:00.000Z",
-      });
+      const summary = mcpConfirmationSummary(
+        db,
+        {
+          since: "2026-06-01T00:00:00.000Z",
+          until: "2026-06-30T00:00:00.000Z",
+        },
+        "2026-06-15T00:00:00.000Z",
+      );
 
       expect(summary.total).toBe(7);
       expect(summary.byStatus).toEqual({
@@ -420,12 +434,62 @@ describe("convergence aggregates", () => {
         createdAt: "2026-06-10T00:00:00.000Z",
       });
 
-      const summary = mcpConfirmationSummary(db);
+      const summary = mcpConfirmationSummary(
+        db,
+        {},
+        "2026-06-15T00:00:00.000Z",
+      );
 
       expect(summary.total).toBe(1);
       expect(summary.byStatus).toEqual({ pending: 1 });
       expect(summary.confirmationRate).toBeNull();
       expect(summary.expiredRate).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("treats stale pending confirmations as expired in read-only MCP aggregates", () => {
+    const db = freshDb();
+    try {
+      insertMcpConfirmation(db, {
+        confirmationId: "stale-pending",
+        status: "pending",
+        createdAt: "2026-06-10T00:00:00.000Z",
+        expiresAt: "2026-06-11T00:00:00.000Z",
+      });
+      insertMcpConfirmation(db, {
+        confirmationId: "future-pending",
+        status: "pending",
+        createdAt: "2026-06-10T00:00:00.000Z",
+        expiresAt: "2026-06-13T00:00:00.000Z",
+      });
+      insertMcpConfirmation(db, {
+        confirmationId: "confirmed",
+        status: "confirmed",
+        createdAt: "2026-06-10T00:00:00.000Z",
+      });
+
+      const summary = mcpConfirmationSummary(
+        db,
+        {},
+        "2026-06-12T00:00:00.000Z",
+      );
+      const storedPending = db
+        .prepare(
+          "SELECT status FROM mcp_confirmation_requests WHERE confirmation_id = ?",
+        )
+        .get("stale-pending") as { status: string } | undefined;
+
+      expect(summary.total).toBe(3);
+      expect(summary.byStatus).toEqual({
+        confirmed: 1,
+        expired: 1,
+        pending: 1,
+      });
+      expect(summary.confirmationRate).toBe(1 / 2);
+      expect(summary.expiredRate).toBe(1 / 2);
+      expect(storedPending?.status).toBe("pending");
     } finally {
       db.close();
     }

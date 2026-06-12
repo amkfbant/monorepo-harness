@@ -621,7 +621,14 @@ harness metrics failures --since 30d       # failed-* の status 別内訳
 scoped path の text / JSON 出力には `metricsSummary` の KPI として
 `oneShotApprovalRate` / `policyViolationRate` / `secretSuspectRate` を含める。
 text 出力は既存の section 形式に続けて hitch metrics / MCP confirmations の summary
-（hitch は project/repo/domain/since scope、MCP confirmations は since scope のみ）も表示する。
+（hitch は project/repo/domain/since scope、MCP confirmations は global table のため
+project/repo/domain filter 非適用で since scope のみ）も表示する。
+MCP confirmations の `confirmationRate` は
+`(confirmed + consumed) / (confirmed + consumed + rejected + expired)`、`expiredRate` は
+`expired / (confirmed + consumed + rejected + expired)`。分母 0 の場合はいずれも `null`。
+stored `pending` かつ `expires_at <= 集計時刻` の request は read-only に effective `expired`
+として byStatus / rate に入れ、DB は更新しない。MCP の project-restricted client では
+同じ global 指標は fail-closed で返さない（[`mcp.md`](./mcp.md)）。
 
 - **Runs**: total + status 別件数
 - **Review**: approved / changes_requested / rejected 件数、approved 率、reviewer 別件数

@@ -24,9 +24,25 @@ export interface DbHitchMetricsSummary {
 }
 
 export interface DbMcpConfirmationSummary {
+  /** Total confirmation requests after the since/until filter. */
   total: number;
+  /**
+   * Counts by effective status after the since/until filter. A stored
+   * `pending` request whose `expires_at <= now` is reported as `expired`
+   * without mutating the database.
+   */
   byStatus: Record<string, number>;
+  /**
+   * (confirmed + consumed) / (confirmed + consumed + rejected + expired),
+   * using effective expired status. Pending requests are excluded from the
+   * denominator; returns null when that denominator is zero.
+   */
   confirmationRate: number | null;
+  /**
+   * expired / (confirmed + consumed + rejected + expired), using effective
+   * expired status. Pending requests are excluded from the denominator;
+   * returns null when that denominator is zero.
+   */
   expiredRate: number | null;
 }
 
@@ -180,15 +196,24 @@ export function hitchMetricsSummary(
 export function mcpConfirmationSummary(
   db: Database.Database,
   filter: Pick<AggregateFilter, "since" | "until"> = {},
+  now: string = new Date().toISOString(),
 ): DbMcpConfirmationSummary {
   const { whereSql, params } = dateScope(filter);
   const statusRows = db
     .prepare(
-      `SELECT status AS key, count(*) AS n
-         FROM mcp_confirmation_requests ${whereSql}
+      `WITH effective_requests AS (
+         SELECT
+           CASE
+             WHEN status = 'pending' AND expires_at <= ? THEN 'expired'
+             ELSE status
+           END AS status
+          FROM mcp_confirmation_requests ${whereSql}
+       )
+       SELECT status AS key, count(*) AS n
+         FROM effective_requests
         GROUP BY status`,
     )
-    .all(...params) as GroupCountRow[];
+    .all(now, ...params) as GroupCountRow[];
   const byStatus = groupCounts(statusRows);
   const total = Object.values(byStatus).reduce((sum, n) => sum + n, 0);
   const confirmed = byStatus.confirmed ?? 0;

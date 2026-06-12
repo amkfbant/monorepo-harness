@@ -122,14 +122,16 @@ export function metricsSummary(
     .get(...params) as { approved: number | null; decided: number | null };
   const rootApproved = rootDecision.approved ?? 0;
   const rootDecided = rootDecision.decided ?? 0;
+  const policyPredicate =
+    "safety_status = 'denied' OR EXISTS " +
+    "(SELECT 1 FROM policy_violations v WHERE v.run_id = runs.run_id)";
+  const policySql =
+    sql === ""
+      ? `WHERE ${policyPredicate}`
+      : `${sql} AND (${policyPredicate})`;
   const policyViolationRuns = (
     db
-      .prepare(
-        `SELECT count(DISTINCT v.run_id) AS n
-         FROM policy_violations v
-         JOIN (SELECT run_id FROM runs ${sql}) scoped
-           ON scoped.run_id = v.run_id`,
-      )
+      .prepare(`SELECT count(*) AS n FROM runs ${policySql}`)
       .get(...params) as { n: number }
   ).n;
   const secretSuspectRuns = (

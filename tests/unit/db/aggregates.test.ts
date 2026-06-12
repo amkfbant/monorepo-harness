@@ -44,6 +44,7 @@ function preV19Db(): Database.Database {
 interface InsertRunOptions {
   parentRunId?: string;
   secretSuspectCount?: number;
+  safetyStatus?: string | null;
 }
 
 function insertRun(
@@ -55,14 +56,15 @@ function insertRun(
 ): void {
   db.prepare(
     `INSERT INTO runs (run_id, repo_id, project_id, domain, workflow,
-       base_branch, status, started_at, parent_run_id, secret_suspect_count,
-       source_meta_sha256, updated_at)
+       base_branch, status, safety_status, started_at, parent_run_id,
+       secret_suspect_count, source_meta_sha256, updated_at)
      VALUES (?, 'demo', ?, 'apps/web', 'domain-coding', 'main', ?,
-       '2026-05-21T00:00:00Z', ?, ?, 'x', '2026-05-22T00:00:00Z')`,
+       ?, '2026-05-21T00:00:00Z', ?, ?, 'x', '2026-05-22T00:00:00Z')`,
   ).run(
     runId,
     projectId,
     status,
+    options.safetyStatus ?? null,
     options.parentRunId ?? null,
     options.secretSuspectCount ?? null,
   );
@@ -148,6 +150,31 @@ describe("aggregates", () => {
       insertPolicyViolation(db, "run-with-violation", "src/other.ts");
 
       expect(metricsSummary(db).policyViolationRate).toBe(1 / 3);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("metricsSummary counts safety denied and policy violation rows as distinct violating runs", () => {
+    const db = freshDb();
+    try {
+      insertRun(db, "denied-without-row", "demo", "approved", {
+        safetyStatus: "denied",
+      });
+      insertRun(db, "allowed-with-row", "demo", "approved", {
+        safetyStatus: "allowed",
+      });
+      insertRun(db, "denied-with-row", "demo", "failed-policy-violation", {
+        safetyStatus: "denied",
+      });
+      insertRun(db, "clean", "demo", "approved", {
+        safetyStatus: "allowed",
+      });
+      insertPolicyViolation(db, "allowed-with-row", "src/app.ts");
+      insertPolicyViolation(db, "denied-with-row", "src/one.ts");
+      insertPolicyViolation(db, "denied-with-row", "src/two.ts");
+
+      expect(metricsSummary(db).policyViolationRate).toBe(3 / 4);
     } finally {
       db.close();
     }
