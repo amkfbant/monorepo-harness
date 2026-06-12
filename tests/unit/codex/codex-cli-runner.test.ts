@@ -45,15 +45,17 @@ function writeExecutableScript(dir: string, body: string): string {
 }
 
 describe("createCodexCliRunner", () => {
-  it("returns a non-negative durationMs on successful close", async () => {
+  it("returns durationMs for elapsed successful work", async () => {
     const wt = mkdtempSync(join(tmpdir(), "harness-codex-cli-"));
     const codexBin = writeExecutableScript(
       wt,
       [
         "process.stdin.resume();",
         "process.stdin.on('end', () => {",
-        "  process.stdout.write('ok\\n');",
-        "  process.exit(0);",
+        "  setTimeout(() => {",
+        "    process.stdout.write('ok\\n');",
+        "    process.exit(0);",
+        "  }, 50);",
         "});",
       ].join("\n"),
     );
@@ -74,7 +76,7 @@ describe("createCodexCliRunner", () => {
     expect(result.exitCode).toBe(0);
     expect(result.timedOut).toBe(false);
     expect(result.durationMs).toEqual(expect.any(Number));
-    expect(result.durationMs).toBeGreaterThanOrEqual(0);
+    expect(result.durationMs).toBeGreaterThanOrEqual(40);
     expect(readFileSync(join(wt, "out.log"), "utf8")).toBe("ok\n");
   });
 
@@ -90,7 +92,7 @@ describe("createCodexCliRunner", () => {
     const runner = createCodexCliRunner({
       codexBin,
       envAllowlist: ["PATH"],
-      timeoutMs: 20,
+      timeoutMs: 60,
     });
 
     const result = await runner.run({
@@ -104,6 +106,6 @@ describe("createCodexCliRunner", () => {
 
     expect(result.timedOut).toBe(true);
     expect(result.durationMs).toEqual(expect.any(Number));
-    expect(result.durationMs).toBeGreaterThanOrEqual(0);
+    expect(result.durationMs).toBeGreaterThanOrEqual(40);
   });
 });

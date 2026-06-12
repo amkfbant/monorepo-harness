@@ -85,6 +85,7 @@ describe("runDomainCoding (fake codex)", () => {
       },
       stdout: "applied 2 files\n",
       stderr: "warning: nothing\n",
+      durationMs: 1234,
     });
     const r = await runDomainCoding({
       harnessRoot: harness,
@@ -126,7 +127,7 @@ describe("runDomainCoding (fake codex)", () => {
       (event) => event.type === "codex_exec_completed",
     );
     expect(codexCompleted).toBeDefined();
-    expect(codexCompleted?.durationMs).toEqual(expect.any(Number));
+    expect(codexCompleted?.durationMs).toBe(1234);
     expect(existsSync(join(harness, "workspaces", r.runId, "repo"))).toBe(true);
   });
 
