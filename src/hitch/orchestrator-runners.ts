@@ -126,6 +126,7 @@ export interface OrchestratorRunnerDeps {
   harnessRoot: string;
   createdBy: string;
   coderRunner: CodexExecRunner;
+  coderCodexBinaryVersion?: string | null;
   reviewerRunner: CodexExecRunner;
   /**
    * Publisher used by `closeAndPr`. The git side is exercised with a local
@@ -422,6 +423,7 @@ export function createOrchestratorRunners(
           goal: goalText,
           baseBranch: context.baseBranch,
           codexRunner: deps.coderRunner,
+          codexBinaryVersion: deps.coderCodexBinaryVersion ?? null,
           ...projectRuntimeFields(deps),
         });
         const succeeded = result.status === "needs_review";

@@ -172,6 +172,56 @@ describe("runFullImport", () => {
     d.close();
   });
 
+  it("--force-legacy-reconcile clears stale db-first run provenance from files", () => {
+    const runId = "run-20260521-apps-web-aaa";
+    const root = normalRoot();
+    const d = db(root);
+    runFullImport(d, { harnessRoot: root });
+    d.prepare(
+      `UPDATE runs
+          SET source_mode = 'db-first',
+              meta_json = ?,
+              harness_version = '0.1.0',
+              schema_version_at_run = 25,
+              codex_model = 'gpt-5',
+              codex_binary_version = 'codex-cli 1.2.3',
+              prompt_sha256 = ?
+        WHERE run_id = ?`,
+    ).run(JSON.stringify({ runId, status: "db-first" }), "a".repeat(64), runId);
+
+    writeRun(root, runId, { status: "approved" });
+    const r2 = runFullImport(d, {
+      harnessRoot: root,
+      forceLegacyReconcile: true,
+    });
+
+    expect(r2.runs).toBe(1);
+    const row = d
+      .prepare(
+        `SELECT status, source_mode, harness_version, schema_version_at_run,
+                codex_model, codex_binary_version, prompt_sha256
+           FROM runs
+          WHERE run_id = ?`,
+      )
+      .get(runId) as {
+      status: string;
+      source_mode: string;
+      harness_version: string | null;
+      schema_version_at_run: number | null;
+      codex_model: string | null;
+      codex_binary_version: string | null;
+      prompt_sha256: string | null;
+    };
+    expect(row.status).toBe("approved");
+    expect(row.source_mode).toBe("db-first");
+    expect(row.harness_version).toBeNull();
+    expect(row.schema_version_at_run).toBeNull();
+    expect(row.codex_model).toBeNull();
+    expect(row.codex_binary_version).toBeNull();
+    expect(row.prompt_sha256).toBeNull();
+    d.close();
+  });
+
   it("records a malformed meta.json in import_errors and keeps other runs", () => {
     const root = normalRoot();
     const badDir = join(root, "runs", "run-20260521-apps-web-bad");

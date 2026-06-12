@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import process from "node:process";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
+import { codexBinaryVersion } from "../codex/codex-version.js";
 import { createOrchestratorRunners } from "../hitch/orchestrator-runners.js";
 import type { OrchestratorRunners } from "../hitch/orchestrator-types.js";
 import { HitchOrchestrator } from "../hitch/orchestrator.js";
@@ -86,6 +87,7 @@ export async function makeCourseHitchRunners(
       codexBin: input.codexBin,
       sandbox: "workspace-write",
     }),
+    coderCodexBinaryVersion: codexBinaryVersion(input.codexBin),
     reviewerRunner: createRunners({
       codexBin: input.codexBin,
       sandbox: "read-only",

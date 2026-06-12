@@ -1,9 +1,11 @@
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { minimatch } from "minimatch";
 import { stringify as yamlStringify } from "yaml";
 import { harnessPaths } from "../config/paths.js";
+import { harnessVersion } from "../config/version.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
 import {
@@ -24,6 +26,7 @@ import {
 } from "../logging/run-log.js";
 import { openManagedDb, type ManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
+import { SCHEMA_VERSION } from "../db/schema.js";
 import { createDbRunLog } from "../db/run-log-db.js";
 import { ingestRunArtifacts } from "../db/run-artifacts.js";
 import { fileExportEnabled } from "../config/export-mode.js";
@@ -125,6 +128,8 @@ export interface RunDomainCodingOpts {
    * the `context-pack-manifest.yaml` artifact.
    */
   projectContextPacks?: { promptText: string; manifestYaml: string };
+  /** `codex --version` first line, resolved by callers that know codexBin. */
+  codexBinaryVersion?: string | null;
 }
 
 /**
@@ -466,6 +471,12 @@ export async function runDomainCoding(
         },
         startedAt,
       },
+      provenance: {
+        harnessVersion: harnessVersion(),
+        schemaVersionAtRun: SCHEMA_VERSION,
+        codexModel: null,
+        codexBinaryVersion: opts.codexBinaryVersion ?? null,
+      },
       // Phase 9 post-close P2 #1 fix — stamp the lease fencing token in
       // the SAME INSERT as the run row so `assertActiveLease` is
       // enforceable from the very first write (Phase 9-6 fencing guard).
@@ -677,6 +688,9 @@ async function runDomainCodingInner(
         : {}),
     });
     await writeArtifact(join(log.runDir, "codex-prompt.md"), prompt);
+    await log.setPromptSha256(
+      createHash("sha256").update(prompt).digest("hex"),
+    );
     if (opts.knowledgeContext !== undefined) {
       await log.emit({
         type: "knowledge_context_loaded",
