@@ -91,6 +91,7 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
         // detached: true → codex becomes a new process-group leader so the
         // timeout can SIGKILL the entire tree (test runners, dev servers,
         // package managers) via killProcessTree, not just the parent.
+        const startedAt = Date.now();
         const child = spawn(opts.codexBin, args, {
           cwd: input.worktreePath,
           stdio: ["pipe", "pipe", "pipe"],
@@ -121,6 +122,7 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
         });
         child.on("close", (code) => {
           if (timer) clearTimeout(timer);
+          const durationMs = Date.now() - startedAt;
           // Make sure the file streams have flushed before the workflow
           // calls readTail(). pipe() already calls .end() on outStream/
           // errStream when stdout/stderr ends, so we only need to wait
@@ -130,7 +132,7 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
               // shutdown noise — exit code is the source of truth
             })
             .finally(() => {
-              resolve({ exitCode: code ?? -1, timedOut });
+              resolve({ exitCode: code ?? -1, timedOut, durationMs });
             });
         });
       });

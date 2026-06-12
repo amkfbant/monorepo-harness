@@ -83,7 +83,7 @@ function sequencedReviewer(outputs: string[]): CodexExecRunner {
       i += 1;
       await writeFile(input.logPaths.stdout, out, "utf8");
       await writeFile(input.logPaths.stderr, "", "utf8");
-      return { exitCode: 0, timedOut: false };
+      return { exitCode: 0, timedOut: false, durationMs: 0 };
     },
   };
 }

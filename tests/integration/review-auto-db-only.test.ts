@@ -33,7 +33,7 @@ function fakeRunner(output: string): CodexExecRunner {
       const { writeFile } = await import("node:fs/promises");
       await writeFile(input.logPaths.stdout, output, "utf8");
       await writeFile(input.logPaths.stderr, "", "utf8");
-      return { exitCode: 0, timedOut: false };
+      return { exitCode: 0, timedOut: false, durationMs: 0 };
     },
   };
 }
@@ -50,7 +50,7 @@ function capturingRunner(output: string): {
       const { writeFile } = await import("node:fs/promises");
       await writeFile(input.logPaths.stdout, output, "utf8");
       await writeFile(input.logPaths.stderr, "", "utf8");
-      return { exitCode: 0, timedOut: false };
+      return { exitCode: 0, timedOut: false, durationMs: 0 };
     },
   };
   return { runner, prompts };

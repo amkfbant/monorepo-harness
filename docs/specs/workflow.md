@@ -16,7 +16,7 @@
 9. emit codex_exec_started
 10. spawn codex exec (detached process group, sandbox/approval/timeout from policy)
 11. read codex-output.log + codex-error.log (after stream flush)
-12. emit codex_exec_completed (exitCode, timedOut)
+12. emit codex_exec_completed (exitCode, timedOut, durationMs)
 13. setStatus('generated')
 14. PASS 1 — post-codex diffAndValidate(worktree, baseSha, policy):
     attemptDiff → DiffOutcome { ok, trackedChangedPaths, untrackedAll, patch, error? }
@@ -208,7 +208,7 @@ compiled project policy. Non-project hitches are unchanged.
 {"type":"run_started","runId":"run-…","baseSha":"ca427b9…"}
 {"type":"worktree_created","path":"/Users/kn/dev/monorepo-harness/workspaces/run-…/repo"}
 {"type":"codex_exec_started"}
-{"type":"codex_exec_completed","exitCode":0,"timedOut":false}
+{"type":"codex_exec_completed","exitCode":0,"timedOut":false,"durationMs":61234}
 {"type":"policy_validation_completed","status":"allowed","stage":"post-codex"}
 {"type":"commands_started","count":2}
 {"type":"commands_completed","results":[{"command":"npm test","exitCode":0,"durationMs":4521,"timedOut":false},{"command":"npm run lint","exitCode":0,"durationMs":1102,"timedOut":false}],"allPassed":true}

@@ -118,6 +118,15 @@ describe("runDomainCoding (fake codex)", () => {
     const meta = JSON.parse(readFileSync(join(runDir, "meta.json"), "utf8"));
     expect(meta.baseSha).toMatch(/^[0-9a-f]{40}$/);
     expect(meta.safetyStatus).toBe("allowed");
+    const events = readFileSync(join(runDir, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string; durationMs?: unknown });
+    const codexCompleted = events.find(
+      (event) => event.type === "codex_exec_completed",
+    );
+    expect(codexCompleted).toBeDefined();
+    expect(codexCompleted?.durationMs).toEqual(expect.any(Number));
     expect(existsSync(join(harness, "workspaces", r.runId, "repo"))).toBe(true);
   });
 

@@ -75,7 +75,7 @@ function sequenced(outputs: string[]): CodexExecRunner {
       i += 1;
       await writeFile(input.logPaths.stdout, out, "utf8");
       await writeFile(input.logPaths.stderr, "", "utf8");
-      return { exitCode: 0, timedOut: false };
+      return { exitCode: 0, timedOut: false, durationMs: 0 };
     },
   };
 }
@@ -109,7 +109,7 @@ describe("evaluateReviewer operational-knowledge injection (issue #57)", () => {
         prompts.push(input.prompt);
         await writeFile(input.logPaths.stdout, yamlBlock("approved"), "utf8");
         await writeFile(input.logPaths.stderr, "", "utf8");
-        return { exitCode: 0, timedOut: false };
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
       },
     };
     await evaluateReviewer({ runsDir, runId, samples: 2, dbPath, codexRunner: runner });
@@ -247,7 +247,7 @@ describe("evaluateReviewer", () => {
         );
         await writeFile(input.logPaths.stdout, yamlBlock("approved"), "utf8");
         await writeFile(input.logPaths.stderr, "", "utf8");
-        return { exitCode: 0, timedOut: false };
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
       },
     };
     await expect(

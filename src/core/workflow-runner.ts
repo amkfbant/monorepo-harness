@@ -661,6 +661,7 @@ async function runDomainCodingInner(
       type: "codex_exec_completed",
       exitCode: codex.exitCode,
       timedOut: codex.timedOut,
+      durationMs: codex.durationMs,
     });
     await log.setStatus("generated");
 

@@ -30,8 +30,23 @@ describe("fakeCodexRunner", () => {
       },
     });
     expect(r.exitCode).toBe(0);
+    expect(r.durationMs).toBe(0);
     expect(existsSync(join(wt, "apps/user/profile.ts"))).toBe(true);
     expect(readFileSync(join(wt, "out.log"), "utf8")).toContain("fake done");
+  });
+
+  it("returns the configured durationMs", async () => {
+    const wt = mkdtempSync(join(tmpdir(), "harness-fake-"));
+    const runner = createFakeCodexRunner({ durationMs: 1234 });
+    const r = await runner.run({
+      worktreePath: wt,
+      prompt: "",
+      logPaths: {
+        stdout: join(wt, "out.log"),
+        stderr: join(wt, "err.log"),
+      },
+    });
+    expect(r.durationMs).toBe(1234);
   });
 
   it("forwards an exit code when the fake fails", async () => {

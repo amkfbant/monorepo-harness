@@ -12,6 +12,7 @@ export interface FakeOpts {
   stderr?: string;
   exitCode?: number;
   timedOut?: boolean;
+  durationMs?: number;
 }
 
 export function createFakeCodexRunner(opts: FakeOpts = {}): CodexExecRunner {
@@ -28,7 +29,11 @@ export function createFakeCodexRunner(opts: FakeOpts = {}): CodexExecRunner {
       await mkdir(dirname(input.logPaths.stdout), { recursive: true });
       await writeFile(input.logPaths.stdout, opts.stdout ?? "", "utf8");
       await writeFile(input.logPaths.stderr, stderr, "utf8");
-      return { exitCode, timedOut: opts.timedOut ?? false };
+      return {
+        exitCode,
+        timedOut: opts.timedOut ?? false,
+        durationMs: opts.durationMs ?? 0,
+      };
     },
   };
 }
