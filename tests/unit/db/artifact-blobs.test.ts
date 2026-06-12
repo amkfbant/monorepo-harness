@@ -112,7 +112,7 @@ describe("ingestRunArtifacts", () => {
     writeFileSync(join(runDir, "summary.md"), "# summary\n");
     writeFileSync(join(runDir, "meta.json"), '{"runId":"run-x-001"}\n');
 
-    ingestRunArtifacts(db, runDir, runId);
+    const result = ingestRunArtifacts(db, runDir, runId);
 
     const rows = db
       .prepare(
@@ -125,6 +125,10 @@ describe("ingestRunArtifacts", () => {
       body_status: string;
     }[];
     expect(rows).toHaveLength(3);
+    expect(result).toEqual({
+      count: 2,
+      totalBytes: "codex ran\n".length + "# summary\n".length,
+    });
     for (const r of rows) expect(r.storage).toBe("db");
 
     // a genuine file-only artifact gets a blob

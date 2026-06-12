@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
+import { performance } from "node:perf_hooks";
 import { minimatch } from "minimatch";
 import { stringify as yamlStringify } from "yaml";
 import { harnessPaths } from "../config/paths.js";
@@ -79,6 +80,10 @@ function warnArtifactIngestFailed(runId: string, e: unknown): void {
     `warning: run ${runId}: artifact body ingestion into the DB failed: ` +
       `${(e as Error).message} — run \`harness db migrate-artifacts\` to recover\n`,
   );
+}
+
+function elapsedMs(start: number): number {
+  return Math.round(performance.now() - start);
 }
 
 export interface RunDomainCodingOpts {
@@ -220,6 +225,8 @@ interface DiffAndValidate {
   untrackedIgnored: string[];
   violations: Violation[];
   safetyStatus: SafetyStatus;
+  diffDurationMs: number;
+  policyValidationDurationMs: number;
 }
 
 async function diffAndValidate(opts: {
@@ -228,6 +235,7 @@ async function diffAndValidate(opts: {
   gitTimeoutMs: number;
   policy: ResolvedPolicy;
 }): Promise<DiffAndValidate> {
+  const diffStartedAt = performance.now();
   const diff = await attemptDiff(
     opts.worktreePath,
     opts.baseSha,
@@ -237,17 +245,37 @@ async function diffAndValidate(opts: {
     diff.untrackedAll,
     opts.policy.ignoreUntracked,
   );
+  const diffDurationMs = elapsedMs(diffStartedAt);
   let violations: Violation[] = [];
   let safetyStatus: SafetyStatus;
   if (!diff.ok) {
     safetyStatus = "skipped";
   } else {
     const allChangedPaths = [...diff.trackedChangedPaths, ...untrackedKept];
+    const policyValidationStartedAt = performance.now();
     const validation = validateChangedPaths(opts.policy, allChangedPaths);
     violations = validation.violations;
     safetyStatus = validation.status === "allowed" ? "allowed" : "denied";
+    const policyValidationDurationMs = elapsedMs(policyValidationStartedAt);
+    return {
+      diff,
+      untrackedKept,
+      untrackedIgnored,
+      violations,
+      safetyStatus,
+      diffDurationMs,
+      policyValidationDurationMs,
+    };
   }
-  return { diff, untrackedKept, untrackedIgnored, violations, safetyStatus };
+  return {
+    diff,
+    untrackedKept,
+    untrackedIgnored,
+    violations,
+    safetyStatus,
+    diffDurationMs,
+    policyValidationDurationMs: 0,
+  };
 }
 
 async function attemptDiff(
@@ -281,6 +309,7 @@ async function attemptDiff(
 export async function runDomainCoding(
   opts: RunDomainCodingOpts,
 ): Promise<RunDomainCodingResult> {
+  const runStartedAt = performance.now();
   const paths = harnessPaths(opts.harnessRoot);
   // a `--project` run supplies a pre-compiled {global, repo}; otherwise
   // load the policy YAML files for the given repo id.
@@ -493,6 +522,7 @@ export async function runDomainCoding(
         gitTimeoutMs,
         log,
         db,
+        runStartedAt,
       });
     } catch (e) {
       // Phase 9 post-close (second review) P1-6 — detect a stolen-lease
@@ -602,13 +632,24 @@ interface InnerOpts {
   gitTimeoutMs: number;
   log: RunLog;
   db: Database.Database;
+  runStartedAt: number;
 }
 
 async function runDomainCodingInner(
   inner: InnerOpts,
 ): Promise<RunDomainCodingResult> {
-  const { opts, policy, paths, runId, branch, baseSha, gitTimeoutMs, log, db } =
-    inner;
+  const {
+    opts,
+    policy,
+    paths,
+    runId,
+    branch,
+    baseSha,
+    gitTimeoutMs,
+    log,
+    db,
+    runStartedAt,
+  } = inner;
     await log.emit({ type: "run_started", runId, baseSha });
     await writeArtifact(
       join(log.runDir, "resolved-policy.yaml"),
@@ -685,6 +726,7 @@ async function runDomainCodingInner(
         type: "policy_validation_completed",
         status: dv.safetyStatus === "allowed" ? "allowed" : "denied",
         stage: "post-codex",
+        durationMs: dv.policyValidationDurationMs,
       });
     }
 
@@ -753,6 +795,7 @@ async function runDomainCodingInner(
           type: "policy_validation_completed",
           status: dv.safetyStatus === "allowed" ? "allowed" : "denied",
           stage: "post-command",
+          durationMs: dv.policyValidationDurationMs,
         });
       }
     }
@@ -825,6 +868,7 @@ async function runDomainCodingInner(
         // reflects which worktree state these lists describe: when commands
         // ran, the diff was re-collected against the post-command worktree.
         stage: commandsRan ? "post-command" : "post-codex",
+        durationMs: dv.diffDurationMs,
       });
       const reviewedPaths = [
         ...diff.trackedChangedPaths,
@@ -1007,12 +1051,24 @@ async function runDomainCodingInner(
     // A failure does NOT flip a completed run to failed-internal-error —
     // the run succeeded — but it IS surfaced as a warning.
     let ingestOk = false;
+    let ingestedArtifacts: ReturnType<typeof ingestRunArtifacts> | undefined;
+    let artifactIngestDurationMs = 0;
     try {
       assertActiveLease(db, runId);
-      ingestRunArtifacts(db, log.runDir, runId);
+      const artifactIngestStartedAt = performance.now();
+      ingestedArtifacts = ingestRunArtifacts(db, log.runDir, runId);
+      artifactIngestDurationMs = elapsedMs(artifactIngestStartedAt);
       ingestOk = true;
     } catch (e) {
       warnArtifactIngestFailed(runId, e);
+    }
+    if (ingestedArtifacts !== undefined) {
+      await log.emit({
+        type: "artifacts_ingested",
+        count: ingestedArtifacts.count,
+        totalBytes: ingestedArtifacts.totalBytes,
+        durationMs: artifactIngestDurationMs,
+      });
     }
     await log.finalize({
       status,
@@ -1032,6 +1088,7 @@ async function runDomainCodingInner(
       secretSuspectCount,
       commandResultsCount: commandResults.length,
       changedFilesCount,
+      runElapsedMs: elapsedMs(runStartedAt),
     });
     // Phase 9-7: with file export OFF the run dir is scratch — delete it
     // once artifacts are safely DB-canonical. On ingest failure we keep
