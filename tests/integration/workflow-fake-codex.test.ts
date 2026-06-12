@@ -438,6 +438,56 @@ describe("runDomainCoding (fake codex)", () => {
     }
   });
 
+  it("keeps raw bytes out of DB blobs when redaction raw read fails", async () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "redaction raw read fails",
+      baseBranch: "main",
+      codexRunner: secretEventsRunner(secret),
+      now: new Date("2026-05-20T00:00:00Z"),
+      codexEventsIo: {
+        async readFile(): Promise<string> {
+          throw new Error("simulated read failure");
+        },
+      },
+    });
+
+    const official = readFileSync(
+      join(harness, "runs", r.runId, "codex-events.jsonl"),
+      "utf8",
+    );
+    expect(official).toBe(
+      `${JSON.stringify({
+        type: "redaction.failed",
+        reason: "read_failed",
+      })}\n`,
+    );
+    expect(official).not.toContain(secret);
+    const blob = dbArtifactText(
+      join(harness, ".harness", "harness.sqlite"),
+      r.runId,
+      "codex-events.jsonl",
+    );
+    expect(blob).toBe(official);
+    expect(blob).not.toContain(secret);
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const rawArtifact = db
+        .prepare(
+          `SELECT count(*) AS n FROM artifacts
+           WHERE run_id = ? AND relative_path = '.codex-events.raw.jsonl'`,
+        )
+        .get(r.runId) as { n: number };
+      expect(rawArtifact.n).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
   it("keeps raw bytes out of DB blobs when redaction tmp write fails", async () => {
     const secret = "AKIAABCDEFGHIJKLMNOP";
     const r = await runDomainCoding({

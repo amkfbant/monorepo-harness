@@ -12,25 +12,30 @@ export interface RedactedCodexEvents {
 type JsonObject = { readonly [key: string]: unknown };
 
 const SECRET_SCAN_CHUNK_OVERLAP_BYTES = 1024;
+const CODEX_OUTPUT_STRING_FIELDS = ["aggregated_output", "text"] as const;
 
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function scanAggregatedOutputForSecrets(aggregatedOutput: string): {
+function scanCodexOutputForSecrets(filename: string, content: string): {
   matched: boolean;
   reasons: readonly string[];
 } {
   const step = SCAN_SAMPLE_BYTES - SECRET_SCAN_CHUNK_OVERLAP_BYTES;
   const reasons = new Set<string>();
-  for (let start = 0; start < aggregatedOutput.length; start += step) {
-    const chunk = aggregatedOutput.slice(start, start + SCAN_SAMPLE_BYTES);
-    const scan = scanForSecrets("aggregated-output.txt", chunk);
+  for (let start = 0; start < content.length; start += step) {
+    const chunk = content.slice(start, start + SCAN_SAMPLE_BYTES);
+    const scan = scanForSecrets(filename, chunk);
     for (const reason of scan.reasons) {
       reasons.add(reason);
     }
   }
   return { matched: reasons.size > 0, reasons: [...reasons] };
+}
+
+function redactionMarker(reasons: readonly string[]): string {
+  return `[redacted: secret-suspect (${reasons.join(", ")})]`;
 }
 
 function redactEventLine(line: string): {
@@ -53,20 +58,28 @@ function redactEventLine(line: string): {
     return { line, redacted: false, dropped: false };
   }
 
-  const aggregatedOutput = parsed.item.aggregated_output;
-  if (typeof aggregatedOutput !== "string") {
+  let redacted = false;
+  let redactedItem = parsed.item;
+  for (const field of CODEX_OUTPUT_STRING_FIELDS) {
+    const value = redactedItem[field];
+    if (typeof value !== "string") {
+      continue;
+    }
+    const scan = scanCodexOutputForSecrets(`${field}.txt`, value);
+    if (!scan.matched) {
+      continue;
+    }
+    redactedItem = {
+      ...redactedItem,
+      [field]: redactionMarker(scan.reasons),
+    };
+    redacted = true;
+  }
+
+  if (!redacted) {
     return { line, redacted: false, dropped: false };
   }
 
-  const scan = scanAggregatedOutputForSecrets(aggregatedOutput);
-  if (!scan.matched) {
-    return { line, redacted: false, dropped: false };
-  }
-
-  const redactedItem = {
-    ...parsed.item,
-    aggregated_output: `[redacted: secret-suspect (${scan.reasons.join(", ")})]`,
-  };
   const redactedEvent = { ...parsed, item: redactedItem };
   return {
     line: JSON.stringify(redactedEvent),

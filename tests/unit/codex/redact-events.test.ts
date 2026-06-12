@@ -51,6 +51,49 @@ describe("redactCodexEvents", () => {
     expect(result.content).not.toContain(secret);
   });
 
+  it("redacts secret-shaped agent message text", () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const content = jsonl([
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: `the key is ${secret}`,
+        },
+      },
+    ]);
+
+    const result = redactCodexEvents(content);
+    const redacted = JSON.parse(result.content.trim()) as {
+      item: { text: string };
+    };
+
+    expect(result.redactedCount).toBe(1);
+    expect(result.droppedCount).toBe(0);
+    expect(redacted.item.text).toBe(
+      "[redacted: secret-suspect (content:aws-access-key-id)]",
+    );
+    expect(result.content).not.toContain(secret);
+  });
+
+  it("leaves clean agent message text unchanged", () => {
+    const content = jsonl([
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: "The implementation looks correct.",
+        },
+      },
+    ]);
+
+    expect(redactCodexEvents(content)).toEqual({
+      content,
+      redactedCount: 0,
+      droppedCount: 0,
+    });
+  });
+
   it("drops unparsable JSONL lines fail-closed", () => {
     const result = redactCodexEvents(
       [

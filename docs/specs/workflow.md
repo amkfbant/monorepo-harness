@@ -243,7 +243,7 @@ compiled project policy. Non-project hitches are unchanged.
 
 `artifacts_ingested` は run 完了時の `ingestRunArtifacts` 成功直後、`finalize` 前に emit される。`count` / `totalBytes` は DB blob に取り込んだ artifact body（`meta.json` / `events.jsonl` / `review-decision.yaml` など DB から再構成される artifact を除く）のファイル数と元ファイル byte 合計、`durationMs` は同じく `performance.now()` ベースの整数 ms。
 
-`codex_events_redacted` は `codex_exec_completed` 後、artifact ingest 前に quarantined raw dotfile を redaction して `codex-events.jsonl` へ atomic publish した結果、実際に置換または drop が発生した場合のみ emit される。`item.aggregated_output` の secret-shaped content は `SCAN_SAMPLE_BYTES` ごとの 1KB overlap chunk で全量 scan し、hit した場合は `"[redacted: secret-suspect (...)]"` に置換する。parse できない JSONL 行は `{"type":"redaction.dropped_line"}` に置換して保存する。raw dotfile と redaction tmp dotfile は dotfile であり、artifact ingest の対象外。成功時は raw dotfile を削除する。
+`codex_events_redacted` は `codex_exec_completed` 後、artifact ingest 前に quarantined raw dotfile を redaction して `codex-events.jsonl` へ atomic publish した結果、実際に置換または drop が発生した場合のみ emit される。`item.aggregated_output` と `item.text` の secret-shaped content は `SCAN_SAMPLE_BYTES` ごとの 1KB overlap chunk で全量 scan し、hit した field は `"[redacted: secret-suspect (...)]"` に置換する。parse できない JSONL 行は `{"type":"redaction.dropped_line"}` に置換して保存する。raw dotfile と redaction tmp dotfile は dotfile であり、artifact ingest の対象外。成功時は raw dotfile を削除する。
 
 redaction の raw 読み込み、redacted tmp 書き込み、または `codex-events.jsonl` への rename が失敗した場合、workflow は raw を正式 artifact 名に置かない。可能なら `codex-events.jsonl` には `{"type":"redaction.failed","reason":"<short>"}` の 1 行だけを書き、raw/tmp dotfile の削除を試みる。sentinel 書き込みも失敗した場合は正式名ファイル無しのまま続行する。この場合、run は redaction 失敗だけでは失敗しない。
 

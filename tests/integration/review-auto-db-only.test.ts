@@ -273,6 +273,71 @@ describe("review auto — DB-only mode (Phase 8-13)", () => {
     }
   });
 
+  it("syncRunArtifactsToDb captures redacted reviewer agent message text after invalid decisions", async () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const output = [
+      "```yaml",
+      "decision: maybe",
+      "required_changes: []",
+      "non_blocking_comments: []",
+      "out_of_scope_suggestions: []",
+      "```",
+    ].join("\n");
+    const { runsDir, dbPath, runId } = dbOnlyNeedsReview();
+
+    let reviewerEventsPublished = false;
+    await expect(
+      runReviewerAgent({
+        runsDir,
+        runId,
+        dbPath,
+        codexRunner: fakeRunnerWithEvents(
+          output,
+          `${JSON.stringify({
+            type: "item.completed",
+            item: {
+              type: "agent_message",
+              text: `review details include ${secret}`,
+            },
+          })}\n`,
+        ),
+        now: new Date("2026-05-23T01:00:00Z"),
+      }),
+    ).rejects.toSatisfy((e: unknown) => {
+      if (e instanceof ReviewerAgentGateError) {
+        reviewerEventsPublished = e.reviewerEventsPublished;
+        return true;
+      }
+      return false;
+    });
+
+    syncRunArtifactsToDb({
+      dbPath,
+      runsDir,
+      runId,
+      untrustedReviewerArtifacts: { reviewerEventsPublished },
+    });
+
+    const db = openDbReadonly(dbPath);
+    try {
+      const row = db
+        .prepare(
+          `SELECT blob_sha256
+             FROM artifacts
+            WHERE run_id = ? AND relative_path = 'reviewer-agent.events.jsonl'`,
+        )
+        .get(runId) as { blob_sha256: string | null };
+      expect(row.blob_sha256).not.toBeNull();
+      const blob = readArtifactBlob(db, row.blob_sha256 as string).toString(
+        "utf8",
+      );
+      expect(blob).not.toContain(secret);
+      expect(blob).toContain("[redacted: secret-suspect");
+    } finally {
+      db.close();
+    }
+  });
+
   it("stores only a sanitized gate reason for invalid reviewer decisions", async () => {
     const secret = "ghp_abcdefghijklmnopqrstuvwxyz123456";
     const output = [
