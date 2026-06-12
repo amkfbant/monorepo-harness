@@ -25,6 +25,7 @@ import {
   MIGRATION_V22_STATEMENTS,
   MIGRATION_V23_STATEMENTS,
   MIGRATION_V24_STATEMENTS,
+  MIGRATION_V25_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -159,6 +160,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 24,
     name: "review-prompt-provenance-v24",
     statements: MIGRATION_V24_STATEMENTS,
+  },
+  {
+    version: 25,
+    name: "run-execution-environment-provenance-v25",
+    statements: MIGRATION_V25_STATEMENTS,
   },
 ];
 

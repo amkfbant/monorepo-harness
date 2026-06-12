@@ -12,7 +12,8 @@
 5. emit run_started event, write resolved-policy.yaml
 6. createWorktree(repo, baseSha, runId) — git worktree add -b harness/<runId>/<domain> at baseSha (occupies that branch)
 7. emit worktree_created event
-8. build codex prompt from goal + policy → write codex-prompt.md
+8. build codex prompt from goal + policy → write codex-prompt.md and update
+   `runs.prompt_sha256`
 9. emit codex_exec_started
 10. spawn codex exec (detached process group, sandbox/approval/timeout from policy)
 11. read codex-output.log + codex-error.log (after stream flush)
@@ -295,6 +296,15 @@ openDb(read-write)
 トランザクション + export** を行う（run 作成 / codex 完了 / diff 検証 /
 finalize）。crash 時は最後に commit した stage で `runs` 行が止まり、現行の部分
 `meta.json` と同じ観測挙動になる。
+
+Run 作成時、`runs` 行には harness 側で決定できる実行環境 provenance を保存する:
+`harness_version`（package version）、`schema_version_at_run`（run 時点の
+`SCHEMA_VERSION`）、`codex_model=NULL`（harness は model を指定しないため予約列）、
+`codex_binary_version`（CLI 層が `<codexBin> --version` を fail-open で取得した値）。
+codex prompt は run 行作成後に worktree / policy / context から確定するため、
+`codex-prompt.md` を書いた直後にその全文の SHA-256 hex を計算し、lease guard 付きの
+短い UPDATE で `runs.prompt_sha256` に保存する。この provenance は DB-only で、
+`meta.json` / compat export / file import 形式は変更しない。
 
 ### state transition guard
 

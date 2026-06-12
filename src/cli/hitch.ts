@@ -12,6 +12,7 @@ import {
   type ClassifiableHitchFinding,
 } from "../hitch/classification.js";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
+import { codexBinaryVersion } from "../codex/codex-version.js";
 import {
   createGhPrPublisher,
   createGhPrMerger,
@@ -672,6 +673,7 @@ export function registerHitchCommands(
             harnessRoot: opts.getHarnessRoot(),
             createdBy: "cli",
             coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
+            coderCodexBinaryVersion: codexBinaryVersion(codexBin),
             reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
             // no publisher: --then-rerun reruns the coder and halts at
             // close_ready; it never opens a PR (stopAtCloseReady below).
@@ -1026,6 +1028,7 @@ export function registerHitchCommands(
             harnessRoot: opts.getHarnessRoot(),
             createdBy: "cli",
             coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
+            coderCodexBinaryVersion: codexBinaryVersion(codexBin),
             reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
             publisher: createGhPrPublisher(),
             ...(autoMerge !== undefined ? { autoMerge } : {}),
@@ -1151,6 +1154,7 @@ export function registerHitchCommands(
             harnessRoot: opts.getHarnessRoot(),
             createdBy: "cli",
             coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
+            coderCodexBinaryVersion: codexBinaryVersion(codexBin),
             reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
             publisher: createGhPrPublisher(),
             autoMerge: {

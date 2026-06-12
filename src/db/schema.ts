@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 24;
+export const SCHEMA_VERSION = 25;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1681,6 +1681,22 @@ export const V23_TABLE_NAMES = ["hitch_lifecycle_events"] as const;
  */
 export const MIGRATION_V24_STATEMENTS: readonly string[] = [
   `ALTER TABLE review_proposals ADD COLUMN prompt_provenance_json TEXT`,
+];
+
+/**
+ * v25 — run execution environment provenance.
+ *
+ * DB-only nullable audit columns for reproducing a run's harness-side
+ * execution environment. `codex_model` is intentionally a reserved NULL
+ * column: the harness does not pass a model flag today and delegates model
+ * choice to codex config defaults.
+ */
+export const MIGRATION_V25_STATEMENTS: readonly string[] = [
+  `ALTER TABLE runs ADD COLUMN harness_version TEXT`,
+  `ALTER TABLE runs ADD COLUMN schema_version_at_run INTEGER`,
+  `ALTER TABLE runs ADD COLUMN codex_model TEXT`,
+  `ALTER TABLE runs ADD COLUMN codex_binary_version TEXT`,
+  `ALTER TABLE runs ADD COLUMN prompt_sha256 TEXT`,
 ];
 
 /** Table names created by v1 — used by `db status` and tests. */

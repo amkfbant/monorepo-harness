@@ -24,6 +24,7 @@ import {
   compileProjectPolicy,
 } from "../project/policy-compiler.js";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
+import { codexBinaryVersion } from "../codex/codex-version.js";
 import { StateConflictError, SourceModeError } from "../db/errors.js";
 import { runMigrations, MIGRATIONS } from "../db/migrations.js";
 import {
@@ -414,6 +415,7 @@ async function cmdRun(o: RunOpts): Promise<RunOutcome> {
   }
 
   const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
+  const resolvedCodexBinaryVersion = codexBinaryVersion(codexBin);
   const runner = createCodexCliRunner({
     codexBin,
     sandbox: resolved.codex.sandbox,
@@ -434,6 +436,7 @@ async function cmdRun(o: RunOpts): Promise<RunOutcome> {
     baseBranch,
     ...(o.keepWorktree !== undefined ? { keepWorktree: o.keepWorktree } : {}),
     codexRunner: runner,
+    codexBinaryVersion: resolvedCodexBinaryVersion,
     ...(knowledgeContext !== undefined ? { knowledgeContext } : {}),
     ...(prepared !== undefined
       ? {
@@ -525,6 +528,7 @@ async function cmdReviewedRun(o: ReviewedRunOpts): Promise<ReviewedRunOutcome> {
   }
 
   const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
+  const resolvedCodexBinaryVersion = codexBinaryVersion(codexBin);
   const coderRunner = createCodexCliRunner({
     codexBin,
     sandbox: resolved.codex.sandbox,
@@ -552,6 +556,7 @@ async function cmdReviewedRun(o: ReviewedRunOpts): Promise<ReviewedRunOutcome> {
     baseBranch,
     coderRunner,
     reviewerRunner,
+    coderCodexBinaryVersion: resolvedCodexBinaryVersion,
     maxAttempts: o.maxAttempts,
     ...(o.reviewerName !== undefined ? { reviewerName: o.reviewerName } : {}),
     ...(o.noAutoReview !== undefined ? { noAutoReview: o.noAutoReview } : {}),
@@ -2567,6 +2572,7 @@ const rerunCmd = program
     // from the parent's canonical meta (the `runs` row for a db-first
     // parent), not a possibly-stale exported meta.json (P1-b).
     const parentRepoPath = prep.repoPath;
+    const resolvedCodexBinaryVersion = codexBinaryVersion(codexBin);
     let prepared: PreparedProjectRun | undefined;
     let resolved;
     let repoPath: string;
@@ -2625,6 +2631,7 @@ const rerunCmd = program
       goal: prep.goal,
       baseBranch: prep.baseBranch,
       codexRunner: runner,
+      codexBinaryVersion: resolvedCodexBinaryVersion,
       parentRunId: prep.parentRunId,
       rootRunId: prep.rootRunId,
       rerunAttempt: prep.rerunAttempt,

@@ -24,6 +24,7 @@ import { assertMutationBudget, McpMutationBudgetExceededError } from "../securit
 import { prepareProjectRun } from "../../project/run-project.js";
 import { RunFinalizedError, runDomainCoding } from "../../core/workflow-runner.js";
 import { createCodexCliRunner } from "../../codex/codex-cli-runner.js";
+import { codexBinaryVersion } from "../../codex/codex-version.js";
 import { runReviewerAgent } from "../../core/reviewer-agent.js";
 import { prepareRerunFromReview } from "../../core/rerun.js";
 import { addBacklogItem, resolveBacklogItemForRun, type BacklogDbContext } from "../../core/backlog-db.js";
@@ -196,6 +197,7 @@ export async function runStartTool(
       if (args.hitchId !== undefined) {
         assertHitchRepoMatches(db, args.hitchId, prepared.repoId);
       }
+      const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
       let result: Awaited<ReturnType<typeof runDomainCoding>>;
       try {
         result = await runDomainCoding({
@@ -205,7 +207,8 @@ export async function runStartTool(
           domain: prepared.domain,
           goal: args.goal,
           baseBranch: prepared.baseBranch,
-          codexRunner: createCodexCliRunner({ codexBin: process.env.HARNESS_CODEX_BIN ?? "codex" }),
+          codexRunner: createCodexCliRunner({ codexBin }),
+          codexBinaryVersion: codexBinaryVersion(codexBin),
           compiledPolicy: prepared.compiledPolicy,
           project: prepared.project,
           ...(prepared.projectContextPacks !== undefined
@@ -329,6 +332,8 @@ export async function rerunStartTool(
         parentRunId: args.runId,
         dbPath: paths.dbPath,
       });
+      const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
+      const resolvedCodexBinaryVersion = codexBinaryVersion(codexBin);
       let result: Awaited<ReturnType<typeof runDomainCoding>>;
       if (prep.projectId !== undefined) {
         const prepared = await prepareProjectRun({
@@ -355,7 +360,8 @@ export async function rerunStartTool(
             domain: prepared.domain,
             goal: prep.goal,
             baseBranch: prepared.baseBranch,
-            codexRunner: createCodexCliRunner({ codexBin: process.env.HARNESS_CODEX_BIN ?? "codex" }),
+            codexRunner: createCodexCliRunner({ codexBin }),
+            codexBinaryVersion: resolvedCodexBinaryVersion,
             parentRunId: prep.parentRunId,
             rootRunId: prep.rootRunId,
             rerunAttempt: prep.rerunAttempt,
@@ -396,7 +402,8 @@ export async function rerunStartTool(
             domain: prep.domain,
             goal: prep.goal,
             baseBranch: prep.baseBranch,
-            codexRunner: createCodexCliRunner({ codexBin: process.env.HARNESS_CODEX_BIN ?? "codex" }),
+            codexRunner: createCodexCliRunner({ codexBin }),
+            codexBinaryVersion: resolvedCodexBinaryVersion,
             parentRunId: prep.parentRunId,
             rootRunId: prep.rootRunId,
             rerunAttempt: prep.rerunAttempt,
@@ -502,6 +509,7 @@ export async function orchestrateHitchTool(
           harnessRoot: context.harnessRoot,
           createdBy,
           coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
+          coderCodexBinaryVersion: codexBinaryVersion(codexBin),
           reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
           // NO publisher: the MCP driver never opens a PR. stopAtCloseReady below
           // halts at close_ready; opening the PR / closing the hitch stays a

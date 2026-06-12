@@ -52,6 +52,8 @@ export interface ReviewedRunWorkflowOpts {
   baseBranch: string;
   /** runner for the coder run (workspace-write per policy) */
   coderRunner: CodexExecRunner;
+  /** `codex --version` first line for coder runs, or null on lookup failure. */
+  coderCodexBinaryVersion?: string | null;
   /** runner for `review auto` (read-only sandbox) */
   reviewerRunner: CodexExecRunner;
   reviewerName?: string;
@@ -127,6 +129,7 @@ export async function runReviewedRunWorkflow(
           goal: opts.goal,
           baseBranch: opts.baseBranch,
           codexRunner: opts.coderRunner,
+          codexBinaryVersion: opts.coderCodexBinaryVersion ?? null,
           ...projectRunFields(opts),
         });
         rootRunId = runResult.runId;
@@ -145,6 +148,7 @@ export async function runReviewedRunWorkflow(
           goal: prep.goal,
           baseBranch: prep.baseBranch,
           codexRunner: opts.coderRunner,
+          codexBinaryVersion: opts.coderCodexBinaryVersion ?? null,
           parentRunId: prep.parentRunId,
           rootRunId: prep.rootRunId,
           rerunAttempt: prep.rerunAttempt,

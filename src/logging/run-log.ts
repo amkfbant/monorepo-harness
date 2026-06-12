@@ -155,6 +155,7 @@ export interface RunLog {
     reviewer: string | null;
     reviewedAt: string;
   }): Promise<void>;
+  setPromptSha256(promptSha256: string): Promise<void>;
   finalize(p: {
     status: RunStatus;
     safetyStatus: SafetyStatus;
@@ -197,6 +198,9 @@ export async function createRunLog(opts: {
     },
     async setReviewerInfo({ reviewer, reviewedAt }) {
       await updateMeta({ reviewer, reviewedAt });
+    },
+    async setPromptSha256() {
+      // File-backed run logs do not have DB-only provenance columns.
     },
     async finalize({
       status,

@@ -33,6 +33,12 @@ export interface CreateDbRunLogOpts {
   runsDir: string;
   runId: string;
   meta: RunMeta;
+  provenance?: {
+    harnessVersion: string | null;
+    schemaVersionAtRun: number | null;
+    codexModel: string | null;
+    codexBinaryVersion: string | null;
+  };
   /**
    * Phase 9 post-close P2 #1 fix — when set, the initial `runs` row is
    * stamped with the DB lease columns in the same INSERT as the row
@@ -93,6 +99,7 @@ function insertRunRow(
   db: Database.Database,
   runId: string,
   meta: RunMeta,
+  provenance: CreateDbRunLogOpts["provenance"],
   lease?: CreateDbRunLogOpts["lease"],
 ): void {
   const cols = runColumns(meta);
@@ -106,7 +113,8 @@ function insertRunRow(
        project_profile_revision_id, effective_policy_snapshot_id,
        knowledge_revision_ids_json, meta_json, imported_from, updated_at,
        source_mode, db_revision, export_status, lease_lock_id, lease_token,
-       lease_domain_key)
+       lease_domain_key, harness_version, schema_version_at_run, codex_model,
+       codex_binary_version, prompt_sha256)
      VALUES (@run_id, @repo_id, @project_id, @repo_path, @domain, @workflow,
        @base_branch, @base_sha, @run_branch, @status, @safety_status,
        @reviewer, @reviewed_at, @started_at, @finished_at, @parent_run_id,
@@ -116,7 +124,9 @@ function insertRunRow(
        @knowledge_context_path, @project_profile_revision_id,
        @effective_policy_snapshot_id, @knowledge_revision_ids_json,
        @meta_json, 'runtime', @updated_at, 'db-first', 1, 'dirty',
-       @lease_lock_id, @lease_token, @lease_domain_key)`,
+       @lease_lock_id, @lease_token, @lease_domain_key, @harness_version,
+       @schema_version_at_run, @codex_model, @codex_binary_version,
+       @prompt_sha256)`,
   ).run({
     ...cols,
     run_id: runId,
@@ -124,6 +134,11 @@ function insertRunRow(
     lease_lock_id: lease?.lockId ?? null,
     lease_token: lease?.fencingToken ?? null,
     lease_domain_key: lease?.domainKey ?? null,
+    harness_version: provenance?.harnessVersion ?? null,
+    schema_version_at_run: provenance?.schemaVersionAtRun ?? null,
+    codex_model: provenance?.codexModel ?? null,
+    codex_binary_version: provenance?.codexBinaryVersion ?? null,
+    prompt_sha256: null,
   });
 }
 
@@ -182,6 +197,22 @@ function appendEvent(
   ).run(runId, seq, event.type, occurredAt, JSON.stringify(event));
 }
 
+function updatePromptSha256(
+  db: Database.Database,
+  runId: string,
+  promptSha256: string,
+): void {
+  db.prepare(
+    `UPDATE runs
+        SET prompt_sha256 = @prompt_sha256, updated_at = @updated_at
+      WHERE run_id = @run_id`,
+  ).run({
+    run_id: runId,
+    prompt_sha256: promptSha256,
+    updated_at: new Date().toISOString(),
+  });
+}
+
 function writeCommandResults(
   db: Database.Database,
   runId: string,
@@ -213,7 +244,7 @@ export function createDbRunLog(opts: CreateDbRunLogOpts): RunLog {
   mkdirSync(runDir, { recursive: false });
 
   let meta: RunMeta = opts.meta;
-  insertRunRow(db, runId, meta, opts.lease);
+  insertRunRow(db, runId, meta, opts.provenance, opts.lease);
   warnIfExportFailed(exportRun(db, runId, { runsDir }));
 
   /**
@@ -254,6 +285,12 @@ export function createDbRunLog(opts: CreateDbRunLogOpts): RunLog {
     },
     async setReviewerInfo({ reviewer, reviewedAt }): Promise<void> {
       persist({ ...meta, reviewer, reviewedAt });
+    },
+    async setPromptSha256(promptSha256): Promise<void> {
+      commitThenExport(() => {
+        updatePromptSha256(db, runId, promptSha256);
+        bumpRevision(db, "run", runId);
+      });
     },
     async finalize(p): Promise<void> {
       meta = {

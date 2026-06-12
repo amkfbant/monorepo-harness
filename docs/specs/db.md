@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V24_STATEMENTS`、
-> `SCHEMA_VERSION = 24`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V25_STATEMENTS`、
+> `SCHEMA_VERSION = 25`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -106,6 +106,16 @@ v1 は read-side が必要とするテーブルのみを作る。
 | import | `import_errors` |
 
 `runs` は project / repo / domain / status / parent / root に index を持つ。
+
+schema v25 で `runs` に実行環境 provenance の nullable columns を追加する:
+`harness_version TEXT`（実行した harness の `package.json` version）/
+`schema_version_at_run INTEGER`（run 作成時点の `SCHEMA_VERSION`）/
+`codex_model TEXT`（現状は常に NULL。harness は model を指定せず codex config
+既定に委ねるため、将来 model を明示指定できるようになったときの予約列）/
+`codex_binary_version TEXT`（`<codexBin> --version` の stdout 1 行目を trim。
+取得失敗時 NULL）/ `prompt_sha256 TEXT`（codex に渡した組み立て済み prompt 全文の
+SHA-256 hex）。これらは DB-only の監査メタデータで、`meta.json` compatibility export
+や file import 形式には含めない。file import で復元された run は NULL のまま。
 
 `run_events` は `events.jsonl` を取り込む append-only ログ。`runs` は current
 state、`run_events` は lifecycle ログという event-sourced 寄りの構成にして、
@@ -683,7 +693,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 24`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 25`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -708,6 +718,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 22 | audit cleanup #126 | 未配線の db_stats_snapshots ledger を DROP（index 先、table 後）。`DROPPED_TABLE_NAMES` で現行 table 集合から除外 |
 | 23 | audit fix #130 | hitch_lifecycle_events（reopen/close/cancel reason の audit-only ledger） |
 | 24 | audit fix #131 | `review_proposals.prompt_provenance_json`（reviewer prompt template と injected operational knowledge の audit-only provenance） |
+| 25 | telemetry provenance B1 | `runs` に実行環境 provenance 列（harness/schema/codex binary/prompt sha。`codex_model` は NULL 予約） |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 

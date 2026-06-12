@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync,
@@ -14,6 +16,10 @@ import { join } from "node:path";
 import { runDomainCoding } from "../../src/core/workflow-runner.js";
 import { createFakeCodexRunner } from "../../src/codex/fake-codex-runner.js";
 import { openDb } from "../../src/db/connection.js";
+import { SCHEMA_VERSION } from "../../src/db/schema.js";
+
+const require = createRequire(import.meta.url);
+const packageJson = require("../../package.json") as { version: string };
 
 function setupRepo(): string {
   const repo = mkdtempSync(join(tmpdir(), "harness-target-"));
@@ -109,6 +115,7 @@ describe("runDomainCoding (fake codex)", () => {
       goal: "bump x",
       baseBranch: "main",
       codexRunner: runner,
+      codexBinaryVersion: "fake-codex 0.0.25",
       now: new Date("2026-05-20T00:00:00Z"),
     });
     expect(r.status).toBe("needs_review");
@@ -170,6 +177,33 @@ describe("runDomainCoding (fake codex)", () => {
     expect(runCompleted).toBeDefined();
     expectNonNegativeNumber(runCompleted?.runElapsedMs);
     expect(existsSync(join(harness, "workspaces", r.runId, "repo"))).toBe(true);
+
+    const prompt = readFileSync(join(runDir, "codex-prompt.md"), "utf8");
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const row = db
+        .prepare(
+          `SELECT harness_version, schema_version_at_run, codex_model,
+                  codex_binary_version, prompt_sha256
+             FROM runs WHERE run_id = ?`,
+        )
+        .get(r.runId) as {
+        harness_version: string | null;
+        schema_version_at_run: number | null;
+        codex_model: string | null;
+        codex_binary_version: string | null;
+        prompt_sha256: string | null;
+      };
+      expect(row.harness_version).toBe(packageJson.version);
+      expect(row.schema_version_at_run).toBe(SCHEMA_VERSION);
+      expect(row.codex_model).toBeNull();
+      expect(row.codex_binary_version).toBe("fake-codex 0.0.25");
+      expect(row.prompt_sha256).toBe(
+        createHash("sha256").update(prompt).digest("hex"),
+      );
+    } finally {
+      db.close();
+    }
   });
 
   it("rejects untracked writes outside the write scope", async () => {
