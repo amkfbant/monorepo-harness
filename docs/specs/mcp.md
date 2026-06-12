@@ -362,6 +362,14 @@ harness.phase.list
 harness.phase.get
 ```
 
+`harness.doctor.summary`（read）は最新 doctor run の header
+（doctorRunId / startedAt / completedAt / status / summary）を返す。`allowedProjects`
+が空の global client には `doctor_findings` の詳細（findingId / checkId / message /
+details / repairable）も従来どおり返す。`allowedProjects` が非空の project-scoped client
+では finding→project を決定論的に解決できないため、fail-closed で詳細を伏せる:
+`data.findingsRedacted: true`、`data.reason: "project_scoped_client"` を付け、
+`latest.findings` は `{severity,status,count}` の集計だけを返す。
+
 `harness.workspace.status`（read）は **1 repo 分**の workspace の **git-inclusive status**
 を返す。`repoPath` ＝ **追跡中の worktree path**（`workspace.list` の `worktree_path`）
 **またはその配下の subpath**（worktree 内の subdir/file）。一致は純 fs の path 判定のみ
