@@ -1,8 +1,13 @@
 import process from "node:process";
 import { readFileSync } from "node:fs";
 import type { Command } from "commander";
+import type Database from "better-sqlite3";
 import { parse as parseYaml } from "yaml";
 import { harnessPaths } from "../config/paths.js";
+import {
+  hitchTokenUsage,
+  type DbHitchTokenUsage,
+} from "../db/repositories/aggregates.js";
 import { BacklogError } from "../core/backlog.js";
 import { DbError } from "../db/connection.js";
 import { openManagedDb } from "../db/managed-connection.js";
@@ -83,6 +88,7 @@ interface HitchContext {
   root: string;
   paths: ReturnType<typeof harnessPaths>;
   repo: HitchRepository;
+  db: Database.Database;
 }
 
 function hitchGoalText(session: { title: string; description: string | null }): string {
@@ -307,13 +313,14 @@ export function registerHitchCommands(
     .option("--json", "emit JSON", false)
     .action((hitchId: string, raw: Record<string, unknown>) => {
       withHitchErrorExit(() => {
-        const result = withHitchRepo(opts, ({ repo }) => {
+        const result = withHitchRepo(opts, ({ repo, db }) => {
           const session = repo.requireSession(hitchId);
           const findings = repo.listFindings({ hitchId, limit: 10_000 });
           const decisions = repo.listDecisions(hitchId);
           const lifecycleEvents = repo.listLifecycleEvents(hitchId);
           const closeChecks = repo.listCloseChecks(hitchId);
           const convergence = new ConvergenceService(repo).evaluate(hitchId);
+          const tokenUsage = hitchTokenUsage(db, hitchId);
           return {
             session,
             findings,
@@ -321,6 +328,7 @@ export function registerHitchCommands(
             lifecycleEvents,
             closeChecks,
             convergence,
+            tokenUsage,
           };
         });
         if (raw.json === true) {
@@ -1491,6 +1499,7 @@ export function formatHitchStatusLine(result: {
     createdAt?: string;
     detail?: Record<string, unknown> | null;
   }>;
+  tokenUsage?: DbHitchTokenUsage;
 }): string {
   const reviewAdvisoryCount = countReviewConsensusAdvisories(result);
   const staticConsensus = hasPassedReviewConsensusCheck(result)
@@ -1501,14 +1510,32 @@ export function formatHitchStatusLine(result: {
   const adoptedPr = latestAdoptedPrEvent(result.lifecycleEvents ?? []);
   const adoptedPrText =
     adoptedPr === null ? "" : formatAdoptedPrStatusFields(adoptedPr.detail);
-  return (
+  const statusLine =
     `hitch=${result.session.hitchId} status=${result.session.status} ` +
     `decision=${result.convergence.decision} ` +
     `openP1=${result.convergence.metrics.openInScopeP1} ` +
     `unknown=${result.convergence.metrics.openUnknownScope}` +
     adoptedPrText +
     staticConsensus +
-    advisories
+    advisories;
+  return statusLine + formatHitchTokenUsageLine(result.tokenUsage);
+}
+
+/**
+ * Render the per-hitch token usage as a second status line (retry-inclusive
+ * sum over the hitch's attempts, with the coder/reviewer/evaluator split).
+ * Empty string when no usage telemetry is present so older hitches stay quiet.
+ */
+function formatHitchTokenUsageLine(usage?: DbHitchTokenUsage): string {
+  if (usage === undefined || usage.runsWithUsage === 0) return "";
+  const k = usage.byKind;
+  return (
+    `\ntokens total=${usage.totalTokens} ` +
+    `(in=${usage.inputTokens} cached=${usage.cachedInputTokens} ` +
+    `out=${usage.outputTokens} reasoning=${usage.reasoningOutputTokens}) ` +
+    `runsWithUsage=${usage.runsWithUsage} ` +
+    `byKind[coder=${k.coder.totalTokens} reviewer=${k.reviewer.totalTokens} ` +
+    `evaluator=${k.evaluator.totalTokens}]`
   );
 }
 
@@ -1661,7 +1688,7 @@ function withHitchRepo<T>(
   const handle = openManagedDb({ dbPath: paths.dbPath });
   try {
     runMigrations(handle.db);
-    return fn({ root, paths, repo: new HitchRepository(handle.db) });
+    return fn({ root, paths, repo: new HitchRepository(handle.db), db: handle.db });
   } finally {
     handle.close();
   }
@@ -1676,7 +1703,12 @@ async function withHitchRepoAsync<T>(
   const handle = openManagedDb({ dbPath: paths.dbPath });
   try {
     runMigrations(handle.db);
-    return await fn({ root, paths, repo: new HitchRepository(handle.db) });
+    return await fn({
+      root,
+      paths,
+      repo: new HitchRepository(handle.db),
+      db: handle.db,
+    });
   } finally {
     handle.close();
   }

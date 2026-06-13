@@ -11,6 +11,7 @@ import {
   knowledgeDigest,
   backlogList,
   tokenUsageSummary,
+  hitchTokenUsage,
 } from "../../../src/db/repositories/aggregates.js";
 import {
   recordOperationalKnowledge,
@@ -105,6 +106,34 @@ function insertUsage(
     totalTokens,
     usageSource,
   );
+}
+
+function insertHitch(db: Database.Database, hitchId: string): void {
+  db.prepare(
+    `INSERT INTO hitch_sessions
+       (hitch_id, title, status, scope_json, close_conditions_json,
+        policy_json, max_iterations, max_review_cycles, max_reruns,
+        max_total_new_findings, created_by, created_source, created_at,
+        updated_at)
+     VALUES (?, 't', 'open', '{}', '[]', '{}', 8, 5, 4, 12, 'cli', 'cli',
+       '2026-06-13T00:00:00Z', '2026-06-13T00:00:00Z')`,
+  ).run(hitchId);
+}
+
+let attemptSeq = 0;
+function insertAttempt(
+  db: Database.Database,
+  hitchId: string,
+  runId: string | null,
+  attemptType = "implement",
+): void {
+  attemptSeq += 1;
+  db.prepare(
+    `INSERT INTO hitch_attempts
+       (attempt_id, hitch_id, iteration, attempt_type, status, run_id,
+        created_at)
+     VALUES (?, ?, ?, ?, 'succeeded', ?, '2026-06-13T00:00:00Z')`,
+  ).run(`attempt-${attemptSeq}`, hitchId, attemptSeq, attemptType, runId);
 }
 
 function insertLockContention(
@@ -599,5 +628,84 @@ describe("aggregate date / status filters", () => {
       backlogList(db, { status: "open" }).items.map((i) => i.itemId),
     ).toEqual(["item-1"]);
     db.close();
+  });
+});
+
+describe("hitchTokenUsage", () => {
+  it("sums run_usage over the hitch's distinct attempt runs (retry-inclusive) by kind", () => {
+    const db = freshDb();
+    try {
+      insertRun(db, "run-a", "demo", "approved");
+      insertRun(db, "run-b", "demo", "approved");
+      insertHitch(db, "hitch-1");
+      // run-a is referenced by two attempts (implement + rerun) — DISTINCT
+      // dedups it. run-b by one. A close-check attempt has no run_id.
+      insertAttempt(db, "hitch-1", "run-a", "implement");
+      insertAttempt(db, "hitch-1", "run-a", "rerun");
+      insertAttempt(db, "hitch-1", "run-b", "rerun");
+      insertAttempt(db, "hitch-1", null, "close-check");
+
+      insertUsage(db, "run-a", "exact", 10, 5, 15, { kind: "coder" });
+      insertUsage(db, "run-a", "exact", 3, 2, 5, { kind: "reviewer" });
+      // an unavailable coder row on run-a adds no tokens but is still a row
+      insertUsage(db, "run-a", "unavailable", null, null, null, {
+        kind: "coder",
+        seq: 1,
+      });
+      insertUsage(db, "run-b", "exact", 20, 8, 28, { kind: "coder" });
+      insertUsage(db, "run-b", "exact", 1, 1, 2, { kind: "evaluator" });
+
+      const usage = hitchTokenUsage(db, "hitch-1");
+      expect(usage).toEqual({
+        inputTokens: 34,
+        cachedInputTokens: 0,
+        outputTokens: 16,
+        reasoningOutputTokens: 0,
+        totalTokens: 50,
+        runsWithUsage: 2,
+        byKind: {
+          coder: {
+            inputTokens: 30,
+            cachedInputTokens: 0,
+            outputTokens: 13,
+            reasoningOutputTokens: 0,
+            totalTokens: 43,
+            runsWithUsage: 2,
+          },
+          reviewer: {
+            inputTokens: 3,
+            cachedInputTokens: 0,
+            outputTokens: 2,
+            reasoningOutputTokens: 0,
+            totalTokens: 5,
+            runsWithUsage: 1,
+          },
+          evaluator: {
+            inputTokens: 1,
+            cachedInputTokens: 0,
+            outputTokens: 1,
+            reasoningOutputTokens: 0,
+            totalTokens: 2,
+            runsWithUsage: 1,
+          },
+        },
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("returns all-zero totals for a hitch with no usage", () => {
+    const db = freshDb();
+    try {
+      insertHitch(db, "hitch-empty");
+      const usage = hitchTokenUsage(db, "hitch-empty");
+      expect(usage.totalTokens).toBe(0);
+      expect(usage.runsWithUsage).toBe(0);
+      expect(usage.byKind.coder.totalTokens).toBe(0);
+      expect(usage.byKind.reviewer.runsWithUsage).toBe(0);
+    } finally {
+      db.close();
+    }
   });
 });

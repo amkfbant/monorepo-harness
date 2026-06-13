@@ -702,4 +702,59 @@ describe("hitch CLI", () => {
     );
     expect(none.findings).toEqual([]);
   });
+
+  it("surfaces per-hitch token usage in `hitch status --json` (G3 wiring)", () => {
+    const { root, scopePath, closePath } = setup();
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch", "start", "--title", "tok", "--domain", "apps/web",
+        "--scope-file", scopePath, "--close-file", closePath, "--json",
+      ]),
+    );
+    // Seed a run linked to the hitch via an attempt, plus its run_usage rows.
+    const db = openDb(harnessPaths(root).dbPath);
+    try {
+      runMigrations(db);
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, updated_at)
+         VALUES ('run-tok', 't', 'apps/web', 'domain-coding', 'main',
+           'needs_review', '2026-06-13T00:00:00Z')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO hitch_attempts
+           (attempt_id, hitch_id, iteration, attempt_type, status, run_id,
+            created_at)
+         VALUES ('att-tok', ?, 1, 'implement', 'succeeded', 'run-tok',
+           '2026-06-13T00:00:00Z')`,
+      ).run(hitch.hitchId);
+      for (const [kind, total] of [
+        ["coder", 40],
+        ["reviewer", 6],
+      ] as const) {
+        db.prepare(
+          `INSERT INTO run_usage
+             (run_id, kind, seq, input_tokens, output_tokens, total_tokens,
+              usage_source, created_at)
+           VALUES ('run-tok', ?, 0, ?, ?, ?, 'exact', '2026-06-13T00:00:00Z')`,
+        ).run(kind, total - 1, 1, total);
+      }
+    } finally {
+      db.close();
+    }
+    const status = json<{
+      tokenUsage: {
+        totalTokens: number;
+        runsWithUsage: number;
+        byKind: Record<string, { totalTokens: number }>;
+      };
+    }>(runCli(root, ["hitch", "status", hitch.hitchId, "--json"]));
+    expect(status.tokenUsage.totalTokens).toBe(46);
+    expect(status.tokenUsage.runsWithUsage).toBe(1);
+    expect(status.tokenUsage.byKind.coder.totalTokens).toBe(40);
+    expect(status.tokenUsage.byKind.reviewer.totalTokens).toBe(6);
+    // text output also carries the token line
+    const text = runCli(root, ["hitch", "status", hitch.hitchId]);
+    expect(text.out).toContain("tokens total=46");
+  });
 });

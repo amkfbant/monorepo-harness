@@ -458,9 +458,14 @@ harness hitch await-merge [<hitch-id>] --repo <path> [--all] [--repo-id <id>] \
 `hitch status --json` は session / findings / convergence decisions /
 close checks / current convergence に加え、`lifecycleEvents`（`closed` /
 `cancelled` / `reopened` / `pr_adopted` / `updated` の
-reason・actor・timestamp・`detail`）を返す。テキスト出力は最新の
+reason・actor・timestamp・`detail`）と `tokenUsage`（per-hitch の `run_usage`
+集計）を返す。`tokenUsage` は hitch の attempts が参照する distinct run の
+`run_usage` を SUM したもの（retry 込み）で、総計（`inputTokens` /
+`cachedInputTokens` / `outputTokens` / `reasoningOutputTokens` / `totalTokens` /
+`runsWithUsage`）＋ `byKind`（coder / reviewer / evaluator）を持つ。テキスト出力は最新の
 `pr_adopted` があれば adopted PR を `pr=...` として優先表示し、旧 run 由来 PR は
-`supersededPr=...` として併記する（表示のみ）。
+`supersededPr=...` として併記する（表示のみ）。usage がある hitch では
+`tokens total=… (in=… …) runsWithUsage=… byKind[…]` の 1 行を追加表示する。
 
 `hitch close` は convergence が `close_ready` でない限り `--force` を要求する。
 `check-convergence` は `diverging` / `budget_exhausted` / `escalate` で exit 2。

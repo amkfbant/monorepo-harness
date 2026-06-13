@@ -348,7 +348,7 @@ The CLI exposes `harness hitch`:
 
 ```bash
 harness hitch start --title "..." --scope-file scope.yaml --close-file close.yaml
-harness hitch status <hitch-id>
+harness hitch status <hitch-id>   # also reports per-hitch token usage (run_usage SUM over attempt runs, retry-inclusive, by kind)
 harness hitch reopen <hitch-id> --reason "..." [--created-by actor] [--extend-iterations N] [--extend-review-cycles N] [--extend-reruns N]
 harness hitch adopt-pr <hitch-id> <pr-url-or-number> --reason "..." [--created-by actor]
 harness hitch update <hitch-id> [--close-file close.yaml] [--scope-file scope.yaml] [--policy-file policy.yaml] --reason "..." [--allow-scope-widen] [--allow-gate-loosen] [--created-by actor]
