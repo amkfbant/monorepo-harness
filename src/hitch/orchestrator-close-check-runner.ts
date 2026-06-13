@@ -392,6 +392,12 @@ export async function runCommandCloseChecks(
         const excerpts = logExcerptByCommandId.get(item.command.id);
         if (status === "passed") passed += 1;
         else failed += 1;
+        // The resolved command is operator-defined policy, but gate it too:
+        // a secret-shaped allowlist command must not be persisted raw into DB
+        // evidence / attempt message (fail-closed, same guard as the output).
+        const safeCommand = containsLikelySecret(result.command)
+          ? "[redacted]"
+          : result.command;
         repo.recordCloseCheck({
           hitchId: input.hitchId,
           conditionId: item.condition.id,
@@ -401,7 +407,7 @@ export async function runCommandCloseChecks(
             runId: prep.runId,
             conditionKind: "command",
             policyCommandId: item.command.id,
-            command: result.command,
+            command: safeCommand,
             exitCode: result.exitCode,
             durationMs: result.durationMs,
             timedOut: result.timedOut,
@@ -412,8 +418,8 @@ export async function runCommandCloseChecks(
           },
           message:
             status === "passed"
-              ? `command close-check passed: ${result.command}`
-              : `command close-check failed: ${result.command} ` +
+              ? `command close-check passed: ${safeCommand}`
+              : `command close-check failed: ${safeCommand} ` +
                 `(exit=${result.exitCode}, timedOut=${result.timedOut})`,
         });
       }

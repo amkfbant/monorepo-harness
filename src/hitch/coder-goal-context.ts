@@ -100,7 +100,7 @@ function renderCloseCheckFailure(failure: CloseCheckFailureContext): string {
       ? ` (${clipField(failure.description.trim())})`
       : "";
   const parts = [
-    `- ${failure.conditionId}${description} [${failure.conditionKind}]`,
+    `- ${clipField(failure.conditionId)}${description} [${failure.conditionKind}]`,
   ];
   if (failure.command !== undefined && failure.command.trim() !== "") {
     parts.push(`  command: ${clipField(failure.command.trim())}`);
