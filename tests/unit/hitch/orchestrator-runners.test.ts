@@ -422,10 +422,18 @@ describe("createOrchestratorRunners.closeCheck", () => {
 
   function seedCloseCheckHitch(
     dbPath: string,
+    worktreePath: string,
     closeConditions: HitchCloseCondition[] = [
       { id: "typecheck", kind: "command", required: true },
     ],
   ): void {
+    // The run's base SHA is the commit the worktree was created at (its current
+    // HEAD) — the close-check fingerprint diffs the worktree against this.
+    const baseSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: worktreePath,
+    })
+      .toString()
+      .trim();
     const { db, close } = openManagedDb({ dbPath });
     try {
       runMigrations(db);
@@ -446,6 +454,13 @@ describe("createOrchestratorRunners.closeCheck", () => {
         status: "succeeded",
         runId: "run-close",
       });
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           base_sha, status, source_mode, db_revision, export_status,
+           updated_at)
+         VALUES (?, 't', 'apps/user', 'domain-coding', 'main', ?, 'approved',
+           'db-first', 1, 'disabled', '2026-06-13T00:00:00.000Z')`,
+      ).run("run-close", baseSha);
     } finally {
       close();
     }
@@ -453,7 +468,7 @@ describe("createOrchestratorRunners.closeCheck", () => {
 
   it("runs pending command close checks from the domain policy allowlist", async () => {
     const { harnessRoot, dbPath, worktreePath } = setupCloseCheckHarness();
-    seedCloseCheckHitch(dbPath);
+    seedCloseCheckHitch(dbPath, worktreePath);
     const runners = createOrchestratorRunners({
       dbPath,
       harnessRoot,
@@ -513,7 +528,7 @@ describe("createOrchestratorRunners.closeCheck", () => {
     const { harnessRoot, dbPath, worktreePath } =
       setupCloseCheckHarness("    commands:\n      allow: []");
     const marker = join(worktreePath, "must-not-exist.txt");
-    seedCloseCheckHitch(dbPath, [
+    seedCloseCheckHitch(dbPath, worktreePath, [
       {
         id: "danger",
         kind: "command",
@@ -556,7 +571,7 @@ describe("createOrchestratorRunners.closeCheck", () => {
     // A required allowlisted condition plus an OPTIONAL condition whose command
     // is NOT allowlisted. The optional one must be ignored, not executed or
     // escalated — otherwise it would throw before the required evidence lands.
-    seedCloseCheckHitch(dbPath, [
+    seedCloseCheckHitch(dbPath, worktreePath, [
       { id: "typecheck", kind: "command", required: true },
       {
         id: "advisory",
@@ -598,7 +613,7 @@ describe("createOrchestratorRunners.closeCheck", () => {
         "        timeout_ms: 30000",
       ].join("\n"),
     );
-    seedCloseCheckHitch(dbPath);
+    seedCloseCheckHitch(dbPath, worktreePath);
     const runners = createOrchestratorRunners({
       dbPath,
       harnessRoot,
@@ -645,7 +660,7 @@ describe("createOrchestratorRunners.closeCheck", () => {
     execFileSync("git", ["add", "tracked.txt"], { cwd: worktreePath });
     execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd: worktreePath });
     writeFileSync(tracked, "coder-edit\n");
-    seedCloseCheckHitch(dbPath);
+    seedCloseCheckHitch(dbPath, worktreePath);
     const runners = createOrchestratorRunners({
       dbPath,
       harnessRoot,
@@ -682,7 +697,7 @@ describe("createOrchestratorRunners.closeCheck", () => {
     execFileSync("git", ["commit", "-q", "-m", "ignore gen"], {
       cwd: worktreePath,
     });
-    seedCloseCheckHitch(dbPath);
+    seedCloseCheckHitch(dbPath, worktreePath);
     const runners = createOrchestratorRunners({
       dbPath,
       harnessRoot,

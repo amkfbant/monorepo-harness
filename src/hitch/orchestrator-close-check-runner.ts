@@ -1,11 +1,11 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { harnessPaths } from "../config/paths.js";
 import { withManagedDb } from "../db/managed-connection.js";
 import { runAllowedCommands } from "../core/command-runner.js";
-import { gitCliOrThrow } from "../git/git-cli.js";
+import { collectDiff } from "../git/diff.js";
+import { computeReviewedFingerprint } from "../core/reviewed-fingerprint.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
 import { partitionUntracked } from "../policy/untracked-filter.js";
@@ -71,48 +71,33 @@ function displayResolvedCommand(command: ResolvedCommand): string {
 }
 
 // A deterministic fingerprint of the worktree's policy-relevant surface — the
-// SAME surface the post-hoc policy validation sees: tracked changes vs the run's
-// base (HEAD, since a run worktree is checked out at base with uncommitted
-// coder edits) plus untracked files that survive `policy.ignoreUntracked`.
-// Comparing two fingerprints detects ANY mutation a close-check command makes —
-// a content change to a file ALREADY dirty from the coder run (its `git status`
-// line is unchanged), a new untracked file, or a `.gitignore`'d-but-not-policy-
-// ignored write (the surface mirrors collectDiff, which runs `ls-files` WITHOUT
-// `--exclude-standard`). `-z` output avoids porcelain path quoting. Used to
+// SAME surface the post-hoc policy validation sees, computed via the exact same
+// `collectDiff` against the run's RECORDED base SHA (NOT HEAD: a run worktree
+// may carry committed reviewed changes, so HEAD != base; diffing HEAD would let
+// a command modify-and-commit a tracked file invisibly). The surface is:
+//   - tracked changes vs base (collectDiff.patch), and
+//   - untracked files surviving policy.ignoreUntracked.
+// Comparing two fingerprints detects ANY mutation a close-check command makes:
+// a content change to a file already dirty from the coder run, a modify-and-
+// commit, a new untracked or `.gitignore`'d-but-not-policy-ignored write, and —
+// via computeReviewedFingerprint's lstat/O_NOFOLLOW classifier — symlink swaps,
+// retargets, and mode-only (chmod) changes on untracked entries. Used to
 // fail-closed if a command dirties the tree.
 async function worktreePolicyFingerprint(opts: {
   worktreePath: string;
+  baseSha: string;
   ignoreUntracked: readonly string[];
 }): Promise<string> {
-  const g = { cwd: opts.worktreePath };
-  // Tracked surface: a single patch vs HEAD captures content for every tracked
-  // change (including files already modified by the coder). --no-ext-diff /
-  // --no-textconv block target-repo diff drivers from running shell.
-  const patch = await gitCliOrThrow(
-    ["diff", "--no-ext-diff", "--no-textconv", "HEAD"],
-    g,
-  );
-  // Untracked surface: NUL-separated, NOT --exclude-standard (so .gitignore'd
-  // files surface), then filtered by the policy ignore list — exactly the
-  // collectDiff + partitionUntracked surface used for write-scope validation.
-  const untrackedRaw = await gitCliOrThrow(["ls-files", "--others", "-z"], g);
-  const untracked = untrackedRaw.split("\0").filter((p) => p.length > 0);
-  const { kept } = partitionUntracked(untracked, opts.ignoreUntracked);
-  const parts: string[] = [
-    `tracked\t${createHash("sha256").update(patch).digest("hex")}`,
-  ];
-  for (const path of [...kept].sort()) {
-    let hash = "absent";
-    try {
-      hash = createHash("sha256")
-        .update(await readFile(join(opts.worktreePath, path)))
-        .digest("hex");
-    } catch {
-      // unreadable entry (e.g. a directory) → keep the "absent" content marker
-    }
-    parts.push(`untracked\t${path}\t${hash}`);
-  }
-  return parts.join("\n");
+  const diff = await collectDiff({
+    repoPath: opts.worktreePath,
+    baseSha: opts.baseSha,
+  });
+  const { kept } = partitionUntracked(diff.untrackedPaths, opts.ignoreUntracked);
+  const trackedHash = createHash("sha256").update(diff.patch).digest("hex");
+  // Type-tagged, symlink-safe (never followed), mode-sensitive digest of the
+  // kept untracked entries — the same classifier `harness pr create` uses.
+  const untrackedHash = await computeReviewedFingerprint(opts.worktreePath, kept);
+  return `tracked\t${trackedHash}\nuntracked\t${untrackedHash}`;
 }
 
 function resolveCommandForCondition(input: {
@@ -214,6 +199,20 @@ export async function runCommandCloseChecks(
             `close conditions`,
         );
       }
+      // The run's RECORDED base SHA — the same anchor the post-hoc policy diff
+      // used. Required for the worktree-mutation fingerprint; without it we
+      // cannot prove the close-check left the policy surface untouched, so
+      // fail-closed rather than guess (e.g. HEAD).
+      const runRow = db
+        .prepare("SELECT base_sha FROM runs WHERE run_id = ?")
+        .get(latest.runId) as { base_sha: string | null } | undefined;
+      const baseSha = runRow?.base_sha;
+      if (typeof baseSha !== "string" || baseSha === "") {
+        throw new Error(
+          `run ${latest.runId} has no recorded base_sha; cannot verify the ` +
+            `close-check left the worktree clean — request external evidence`,
+        );
+      }
       const attempt = repo.createAttempt({
         hitchId: input.hitchId,
         attemptType: "close-check",
@@ -226,6 +225,7 @@ export async function runCommandCloseChecks(
         attemptId: attempt.attemptId,
         context,
         runId: latest.runId,
+        baseSha,
         conditions,
       };
     });
@@ -261,6 +261,7 @@ export async function runCommandCloseChecks(
     // `passed` check over a polluted tree (review findings P1/P0).
     const fingerprintBefore = await worktreePolicyFingerprint({
       worktreePath,
+      baseSha: prep.baseSha,
       ignoreUntracked: policy.ignoreUntracked,
     });
     const cmdRun = await runAllowedCommands({
@@ -274,6 +275,7 @@ export async function runCommandCloseChecks(
     });
     const fingerprintAfter = await worktreePolicyFingerprint({
       worktreePath,
+      baseSha: prep.baseSha,
       ignoreUntracked: policy.ignoreUntracked,
     });
     if (fingerprintAfter !== fingerprintBefore) {
