@@ -30,14 +30,17 @@ review-evaluator はいずれも同じ `runId` 配下で `codexRunner.run` を�
     `codex exec`）。ハーネスが関与しないため構造的に収集不能。収集するには codex 呼び出しの
     全ラッパー化という大きな前提変更が要るため対象外。
 
-## データモデル — `run_usage` を per-invocation 粒度に再設計（migration V29）
+## データモデル — `run_usage` を per-invocation 粒度に再設計（migration V30）
+
+> 実装時、main が先行マージ（#185）で V29（`hitch_lifecycle_events`）を取得していたため、
+> この migration は **V30** に renumber した（当初設計は V29）。以下の番号は V30 を指す。
 
 現 `run_usage` は `run_id TEXT PRIMARY KEY`。これを「1 run 配下の各 codex 実行 = 1 行」に
 変更する。SQLite は主キー変更ができないためテーブル再作成で移行する。
 
 ```sql
--- migration V29
-CREATE TABLE run_usage_v29 (
+-- migration V30
+CREATE TABLE run_usage_v30 (
   run_id                 TEXT NOT NULL REFERENCES runs(run_id),
   kind                   TEXT NOT NULL CHECK (kind IN ('coder','reviewer','evaluator')),
   seq                    INTEGER NOT NULL DEFAULT 0,
@@ -51,13 +54,13 @@ CREATE TABLE run_usage_v29 (
   created_at             TEXT NOT NULL,
   PRIMARY KEY (run_id, kind, seq)
 );
-INSERT INTO run_usage_v29 (run_id, kind, seq, model, input_tokens, cached_input_tokens,
+INSERT INTO run_usage_v30 (run_id, kind, seq, model, input_tokens, cached_input_tokens,
   output_tokens, reasoning_output_tokens, total_tokens, usage_source, created_at)
   SELECT run_id, 'coder', 0, model, input_tokens, cached_input_tokens,
     output_tokens, reasoning_output_tokens, total_tokens, usage_source, created_at
   FROM run_usage;
 DROP TABLE run_usage;
-ALTER TABLE run_usage_v29 RENAME TO run_usage;
+ALTER TABLE run_usage_v30 RENAME TO run_usage;
 CREATE INDEX run_usage_run_idx ON run_usage(run_id);
 ```
 
@@ -141,8 +144,8 @@ G2 着手時に確認する。保持していれば記録、していない経�
 
 ## テスト
 
-- migration V29: 既存 coder 行が `kind='coder', seq=0` に移行されること、PK・index、24→29 や
-  既存 vN→29 の前方移行（既存 migration テスト群の applied 配列追従）。
+- migration V30: 既存 coder 行が `kind='coder', seq=0` に移行されること、PK・index、24→30 や
+  既存 vN→30 の前方移行（既存 migration テスト群の applied 配列追従）。
 - `recordCodexUsage`: 各 kind の記録、同 `(run_id,kind)` の seq 採番、fail-open（壊した DB で
   throw しない）。
 - reviewer/evaluator 経路: 失敗/成功それぞれで該当 kind 行が入る（記録経路を持つ場合）。
@@ -154,7 +157,7 @@ G2 着手時に確認する。保持していれば記録、していない経�
 
 ## サブ Phase 分割（feature branch `feat/token-usage-expansion` 1 本）
 
-- **G1**: migration V29 + `recordCodexUsage` の kind/seq 化 + coder 経路の per-invocation 化 +
+- **G1**: migration V30 + `recordCodexUsage` の kind/seq 化 + coder 経路の per-invocation 化 +
   `tokenUsageSummary` / snapshot payload(schema 2) の追従。既存挙動を per-invocation に
   置き換える土台。
 - **G2**: reviewer / evaluator 経路の記録（未確定点の DB アクセス確認込み）。

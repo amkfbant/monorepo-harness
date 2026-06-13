@@ -19,7 +19,7 @@ import type {
   CodexRunResult,
 } from "../../src/codex/codex-exec-runner.js";
 import { openDb } from "../../src/db/connection.js";
-import { runMigrations } from "../../src/db/migrations.js";
+import { runMigrations, MIGRATIONS } from "../../src/db/migrations.js";
 import { recordOperationalKnowledge } from "../../src/core/operational-knowledge.js";
 
 interface SetupOpts {
@@ -531,5 +531,43 @@ describe("evaluator codex usage telemetry (token-usage G2)", () => {
       codexRunner: sequencedWithEvents([yamlBlock("approved")], EVAL_USAGE_EVENT),
     });
     expect(r.samples).toHaveLength(1);
+  });
+
+  it("migrates a pre-v30 DB so evaluator usage is recorded (not lost on the old schema)", async () => {
+    const { runsDir, runId } = setupRun();
+    const dir = mkdtempSync(join(tmpdir(), "harness-reval-v29-"));
+    mkdirSync(join(dir, ".harness"), { recursive: true });
+    const dbPath = join(dir, ".harness", "harness.sqlite");
+    const db = openDb(dbPath);
+    try {
+      db.prepare(
+        `CREATE TABLE schema_migrations
+           (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`,
+      ).run();
+      for (const m of MIGRATIONS.filter((mig) => mig.version < 30)) {
+        for (const stmt of m.statements) db.prepare(stmt).run();
+        db.prepare(
+          "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+        ).run(m.version, m.name, "2026-06-13T00:00:00Z");
+      }
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, source_mode, db_revision, export_status, updated_at, meta_json)
+         VALUES (?, 't', 'apps/user', 'domain-coding', 'main', 'needs_review',
+           'db-first', 1, 'disabled', '2026-05-21T00:00:00Z', '{}')`,
+      ).run(runId);
+    } finally {
+      db.close();
+    }
+    await evaluateReviewer({
+      runsDir,
+      runId,
+      samples: 1,
+      dbPath,
+      codexRunner: sequencedWithEvents([yamlBlock("approved")], EVAL_USAGE_EVENT),
+    });
+    const rows = readEvaluatorUsage(dbPath, runId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: "evaluator", usage_source: "exact" });
   });
 });

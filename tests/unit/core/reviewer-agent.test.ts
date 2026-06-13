@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { openDb } from "../../../src/db/connection.js";
-import { runMigrations } from "../../../src/db/migrations.js";
+import { runMigrations, MIGRATIONS } from "../../../src/db/migrations.js";
 import { ReviewProposalRepository } from "../../../src/db/repositories/review-proposals.js";
 import {
   runReviewerAgent,
@@ -892,5 +892,46 @@ describe("reviewer codex usage telemetry (token-usage G2)", () => {
       codexRunner: fakeRunnerWithUsage(APPROVED_OUTPUT, REVIEWER_USAGE),
     });
     expect(r.decision).toBe("approved");
+  });
+
+  it("migrates a pre-v30 DB so reviewer usage is recorded (not lost on the old schema)", async () => {
+    const { runsDir, runId } = setup();
+    // A DB still at v29: run_usage has the old single-row shape (no kind/seq).
+    // Without migrating the telemetry handle the INSERT would fail-open and
+    // the reviewer usage would be lost.
+    const dir = mkdtempSync(join(tmpdir(), "harness-reviewer-v29-"));
+    mkdirSync(join(dir, ".harness"), { recursive: true });
+    const dbPath = join(dir, ".harness", "harness.sqlite");
+    const db = openDb(dbPath);
+    try {
+      db.prepare(
+        `CREATE TABLE schema_migrations
+           (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`,
+      ).run();
+      for (const m of MIGRATIONS.filter((mig) => mig.version < 30)) {
+        for (const stmt of m.statements) db.prepare(stmt).run();
+        db.prepare(
+          "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+        ).run(m.version, m.name, "2026-06-13T00:00:00Z");
+      }
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, source_mode, db_revision, export_status, updated_at, meta_json)
+         VALUES (?, 't', 'apps/user', 'domain-coding', 'main', 'needs_review',
+           'db-first', 1, 'disabled', '2026-05-21T00:00:00Z', '{}')`,
+      ).run(runId);
+    } finally {
+      db.close();
+    }
+    const r = await runReviewerAgent({
+      runsDir,
+      runId,
+      dbPath,
+      codexRunner: fakeRunnerWithUsage(APPROVED_OUTPUT, REVIEWER_USAGE),
+    });
+    expect(r.decision).toBe("approved");
+    const rows = readReviewerUsage(dbPath, runId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: "reviewer", usage_source: "exact" });
   });
 });

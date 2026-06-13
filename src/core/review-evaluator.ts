@@ -29,6 +29,7 @@ import {
 } from "./gate-reason.js";
 import { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
 import { recordCodexUsage } from "../db/repositories/run-usage.js";
+import { runMigrations } from "../db/migrations.js";
 
 /**
  * Telemetry-only warning (token-usage G2). Recording evaluator codex usage is
@@ -149,8 +150,13 @@ export async function evaluateReviewer(
   if (opts.dbPath !== undefined && existsSync(opts.dbPath)) {
     try {
       usageDb = openManagedDb({ dbPath: opts.dbPath });
+      // Ensure the run_usage schema is current so a not-yet-migrated (e.g.
+      // v29) DB still records evaluator usage instead of failing the INSERT.
+      runMigrations(usageDb.db);
     } catch (err) {
       warnEvaluatorUsageRecordFailed(opts.runId, err);
+      usageDb?.close();
+      usageDb = null;
     }
   }
   try {

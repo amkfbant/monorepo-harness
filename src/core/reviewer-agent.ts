@@ -68,6 +68,11 @@ async function recordReviewerUsage(
   try {
     const usageDb = openManagedDb({ dbPath });
     try {
+      // Ensure the run_usage schema is current (per-invocation kind/seq).
+      // On a not-yet-migrated (e.g. v29) DB the INSERT would otherwise fail
+      // and the reviewer usage would be silently lost. runMigrations is
+      // idempotent; the surrounding fail-open guard still covers any error.
+      runMigrations(usageDb.db);
       recordCodexUsage({
         db: usageDb.db,
         runId,
