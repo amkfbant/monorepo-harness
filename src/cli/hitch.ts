@@ -766,6 +766,11 @@ export function registerHitchCommands(
     .description("defer an out-of-scope finding")
     .argument("<finding-id>", "finding id")
     .option("--backlog", "create and link a backlog follow-up", false)
+    .option(
+      "--classify-out-of-scope",
+      "classify the finding out of scope before deferring it",
+      false,
+    )
     .requiredOption("--reason <text>", "deferral reason")
     .option("--json", "emit JSON", false)
     .action(async (findingId: string, raw: Record<string, unknown>) => {
@@ -776,6 +781,7 @@ export function registerHitchCommands(
             findingId,
             reason: String(raw.reason),
             createBacklogItem: raw.backlog === true,
+            classifyOutOfScope: raw.classifyOutOfScope === true,
             ...(raw.backlog === true
               ? {
                   backlogContext: {
@@ -786,6 +792,7 @@ export function registerHitchCommands(
               : {}),
           }),
         );
+        warnBacklogExport(result.exportWarning);
         writeOutput(
           raw,
           result,
@@ -1555,6 +1562,12 @@ class HitchCliError extends Error {
 
 function writeOutput(raw: Record<string, unknown>, value: unknown, text: string): void {
   process.stdout.write(raw.json === true ? `${JSON.stringify(value, null, 2)}\n` : text);
+}
+
+function warnBacklogExport(exportWarning: string | undefined): void {
+  if (exportWarning !== undefined) {
+    process.stderr.write(`warning: ${exportWarning}\n`);
+  }
 }
 
 function writeConvergence(

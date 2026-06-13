@@ -1,9 +1,16 @@
 import {
   addBacklogItem,
+  exportBacklogItemForContext,
+  prepareAddBacklogItemInput,
   type BacklogDbContext,
   type BacklogWriteResult,
 } from "../core/backlog-db.js";
-import type { BacklogItem, BacklogPriority } from "../core/backlog.js";
+import {
+  dayKey,
+  maxDaySequenceFromFiles,
+  type BacklogItem,
+  type BacklogPriority,
+} from "../core/backlog.js";
 import { DbError } from "../db/connection.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
@@ -16,6 +23,7 @@ export interface DeferFindingToBacklogInput {
   reason: string;
   backlogContext?: BacklogDbContext;
   createBacklogItem?: boolean;
+  classifyOutOfScope?: boolean;
   now?: Date;
 }
 
@@ -31,6 +39,10 @@ export async function deferFindingToBacklog(
   input: DeferFindingToBacklogInput,
 ): Promise<DeferFindingToBacklogResult> {
   const now = input.now ?? new Date();
+  if (input.classifyOutOfScope === true) {
+    return classifyAndDeferFindingToBacklog(input, now);
+  }
+
   const initial = input.repository.requireFinding(input.findingId);
   assertFindingCanBeDeferred(initial);
 
@@ -88,6 +100,93 @@ export async function deferFindingToBacklog(
     deferredAt: now.toISOString(),
   });
   return result(finding, write);
+}
+
+async function classifyAndDeferFindingToBacklog(
+  input: DeferFindingToBacklogInput,
+  now: Date,
+): Promise<DeferFindingToBacklogResult> {
+  const initial = input.repository.requireFinding(input.findingId);
+
+  if (initial.deferredBacklogItemId !== null) {
+    if (input.backlogContext === undefined) {
+      throw new Error(
+        "backlogContext is required to verify an existing deferred backlog link",
+      );
+    }
+    assertBacklogItemExists(input.backlogContext, initial.deferredBacklogItemId);
+    const deferred = input.repository.classifyAndDeferFinding({
+      findingId: input.findingId,
+      reason: input.reason,
+      now,
+    });
+    return {
+      finding: deferred.finding,
+      backlogItemId: deferred.backlogItemId,
+      createdBacklogItem: false,
+    };
+  }
+
+  const createBacklogItem = input.createBacklogItem ?? true;
+  if (!createBacklogItem) {
+    const deferred = input.repository.classifyAndDeferFinding({
+      findingId: input.findingId,
+      reason: input.reason,
+      now,
+    });
+    return {
+      finding: deferred.finding,
+      backlogItemId: deferred.backlogItemId,
+      createdBacklogItem: false,
+    };
+  }
+
+  if (input.backlogContext === undefined) {
+    throw new Error("backlogContext is required when createBacklogItem is true");
+  }
+
+  const session = input.repository.requireSession(initial.hitchId);
+  const backlogInput = prepareAddBacklogItemInput(
+    buildBacklogInput(
+      session,
+      {
+        ...initial,
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "out_of_scope",
+        classificationReason: input.reason,
+      },
+      input.reason,
+    ),
+  );
+  const fsFloor = await maxDaySequenceFromFiles(
+    input.backlogContext.backlogDir,
+    dayKey(now),
+  );
+  const deferred = input.repository.classifyAndDeferFinding({
+    findingId: input.findingId,
+    reason: input.reason,
+    now,
+    backlogItem: {
+      input: backlogInput,
+      fsFloor,
+    },
+  });
+  const exportWarning =
+    deferred.backlogItem === undefined
+      ? undefined
+      : exportBacklogItemForContext(
+          input.backlogContext,
+          deferred.backlogItem.id,
+        );
+  return {
+    finding: deferred.finding,
+    backlogItemId: deferred.backlogItemId,
+    ...(deferred.backlogItem !== undefined
+      ? { backlogItem: deferred.backlogItem }
+      : {}),
+    createdBacklogItem: deferred.createdBacklogItem,
+    ...(exportWarning !== undefined ? { exportWarning } : {}),
+  };
 }
 
 export function buildBacklogInput(

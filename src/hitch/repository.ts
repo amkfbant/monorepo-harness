@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import type { BacklogItem } from "../core/backlog.js";
+import {
+  insertBacklogItemInTransaction,
+  type PreparedAddBacklogItemInput,
+} from "../core/backlog-db.js";
 import { DbError } from "../db/connection.js";
 import { hitchFindingStableKey } from "./stable-key.js";
 import {
@@ -142,6 +147,7 @@ export interface ClassifyHitchFindingInput {
   scopeStatus: HitchScopeStatus;
   reason: string;
   duplicateOf?: string;
+  classifiedAt?: string;
 }
 
 export interface MarkHitchFindingFixedInput {
@@ -155,6 +161,23 @@ export interface DeferHitchFindingInput {
   note?: string;
   backlogItemId?: string;
   deferredAt?: string;
+}
+
+export interface ClassifyAndDeferHitchFindingInput {
+  findingId: string;
+  reason: string;
+  now?: Date;
+  backlogItem?: {
+    input: PreparedAddBacklogItemInput;
+    fsFloor: number;
+  };
+}
+
+export interface ClassifyAndDeferHitchFindingResult {
+  finding: HitchFinding;
+  backlogItemId: string | null;
+  backlogItem?: BacklogItem;
+  createdBacklogItem: boolean;
 }
 
 export interface HitchFindingFilter {
@@ -903,7 +926,7 @@ export class HitchRepository {
   }
 
   classifyFinding(input: ClassifyHitchFindingInput): HitchFinding {
-    const now = new Date().toISOString();
+    const now = input.classifiedAt ?? new Date().toISOString();
     const current = this.requireFinding(input.findingId);
     const duplicateOf =
       input.scopeStatus === "duplicate"
@@ -966,6 +989,46 @@ export class HitchRepository {
       this.promoteDuplicateCanonical(duplicateOf, current.severity, now);
     }
     return this.requireFinding(input.findingId);
+  }
+
+  classifyAndDeferFinding(
+    input: ClassifyAndDeferHitchFindingInput,
+  ): ClassifyAndDeferHitchFindingResult {
+    const nowDate = input.now ?? new Date();
+    const now = nowDate.toISOString();
+    const tx = this.db.transaction((): ClassifyAndDeferHitchFindingResult => {
+      const current = this.requireFinding(input.findingId);
+      this.classifyFinding({
+        findingId: input.findingId,
+        scopeStatus: "out_of_scope",
+        reason: input.reason,
+        classifiedAt: now,
+      });
+      const backlogItem =
+        input.backlogItem === undefined
+          ? null
+          : insertBacklogItemInTransaction(
+              this.db,
+              input.backlogItem.input,
+              nowDate,
+              input.backlogItem.fsFloor,
+            );
+      const backlogItemId =
+        backlogItem?.id ?? current.deferredBacklogItemId ?? undefined;
+      const finding = this.deferFinding({
+        findingId: input.findingId,
+        note: input.reason,
+        deferredAt: now,
+        ...(backlogItemId !== undefined ? { backlogItemId } : {}),
+      });
+      return {
+        finding,
+        backlogItemId: finding.deferredBacklogItemId,
+        ...(backlogItem !== null ? { backlogItem } : {}),
+        createdBacklogItem: backlogItem !== null,
+      };
+    });
+    return tx.immediate();
   }
 
   private requireCanonicalDuplicateFinding(

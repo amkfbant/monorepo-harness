@@ -1,4 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -198,6 +204,269 @@ describe("goal follow-up deferral", () => {
           .prepare("SELECT COUNT(*) AS count FROM backlog_items")
           .get() as { count: number },
       ).toEqual({ count: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("classifies and defers an in-scope finding when requested", async () => {
+    const { db, repo } = setup();
+    try {
+      const goal = repo.createSession({
+        hitchId: "goal-followup",
+        title: "Fix MCP confirmation safety",
+        domain: "mcp",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const finding = repo.upsertFinding({
+        hitchId: goal.hitchId,
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary: "Document a process-only advisory",
+      }).finding;
+
+      const result = await deferFindingToBacklog({
+        repository: repo,
+        findingId: finding.findingId,
+        reason: "operator confirmed this is process-only",
+        classifyOutOfScope: true,
+        createBacklogItem: false,
+        now: new Date("2026-05-26T07:00:00.000Z"),
+      });
+
+      expect(result.createdBacklogItem).toBe(false);
+      expect(result.backlogItemId).toBeNull();
+      expect(result.finding.scopeStatus).toBe("out_of_scope");
+      expect(result.finding.lifecycleStatus).toBe("deferred");
+      expect(result.finding.classificationReason).toBe(
+        "operator confirmed this is process-only",
+      );
+      expect(result.finding.resolutionNote).toBe(
+        "operator confirmed this is process-only",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("creates a backlog item while classifying an in-scope finding out of scope", async () => {
+    const { root, db, repo } = setup();
+    try {
+      const paths = harnessPaths(root);
+      const goal = repo.createSession({
+        hitchId: "goal-followup",
+        title: "Fix MCP confirmation safety",
+        projectId: "monorepo-harness",
+        domain: "mcp",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const finding = repo.upsertFinding({
+        hitchId: goal.hitchId,
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary: "Track future reviewer advisory automation",
+      }).finding;
+
+      const result = await deferFindingToBacklog({
+        repository: repo,
+        findingId: finding.findingId,
+        reason: "operator confirmed future follow-up",
+        classifyOutOfScope: true,
+        createBacklogItem: true,
+        backlogContext: {
+          backlogDir: paths.backlogDir,
+          dbPath: paths.dbPath,
+        },
+        now: new Date("2026-05-26T08:00:00.000Z"),
+      });
+
+      expect(result.createdBacklogItem).toBe(true);
+      expect(result.backlogItemId).toBe("item-20260526-001");
+      expect(result.finding.scopeStatus).toBe("out_of_scope");
+      expect(result.finding.lifecycleStatus).toBe("deferred");
+      expect(result.finding.deferredBacklogItemId).toBe("item-20260526-001");
+      expect(result.backlogItem?.tags).toContain("scope:out_of_scope");
+      expect(
+        db
+          .prepare("SELECT source_mode FROM backlog_items WHERE item_id = ?")
+          .get("item-20260526-001") as { source_mode: string },
+      ).toEqual({ source_mode: "db-first" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rolls back classification and backlog insert when the deferred update fails", async () => {
+    const { root, db, repo } = setup();
+    try {
+      const paths = harnessPaths(root);
+      const goal = repo.createSession({
+        hitchId: "goal-followup",
+        title: "Fix MCP confirmation safety",
+        domain: "mcp",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const finding = repo.upsertFinding({
+        hitchId: goal.hitchId,
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary: "Track rollback on defer failure",
+      }).finding;
+      db.prepare(
+        `CREATE TRIGGER fail_hitch_defer
+         BEFORE UPDATE OF lifecycle_status ON hitch_findings
+         WHEN NEW.lifecycle_status = 'deferred'
+         BEGIN
+           SELECT RAISE(ABORT, 'defer blocked');
+         END`,
+      ).run();
+
+      await expect(
+        deferFindingToBacklog({
+          repository: repo,
+          findingId: finding.findingId,
+          reason: "operator confirmed future follow-up",
+          classifyOutOfScope: true,
+          createBacklogItem: true,
+          backlogContext: {
+            backlogDir: paths.backlogDir,
+            dbPath: paths.dbPath,
+          },
+          now: new Date("2026-05-26T09:00:00.000Z"),
+        }),
+      ).rejects.toThrow(/defer blocked/);
+
+      expect(repo.requireFinding(finding.findingId)).toMatchObject({
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        classificationReason: null,
+        deferredBacklogItemId: null,
+      });
+      expect(
+        db
+          .prepare("SELECT COUNT(*) AS count FROM backlog_items")
+          .get() as { count: number },
+      ).toEqual({ count: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rolls back classification when the backlog insert (mid-transaction) fails", async () => {
+    const { root, db, repo } = setup();
+    try {
+      const paths = harnessPaths(root);
+      const goal = repo.createSession({
+        hitchId: "goal-followup",
+        title: "Fix MCP confirmation safety",
+        domain: "mcp",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const finding = repo.upsertFinding({
+        hitchId: goal.hitchId,
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary: "Track rollback on backlog insert failure",
+      }).finding;
+      // abort the middle step (the backlog row insert) — classification must
+      // not survive and no finding lifecycle change may leak.
+      db.prepare(
+        `CREATE TRIGGER fail_backlog_insert
+         BEFORE INSERT ON backlog_items
+         BEGIN
+           SELECT RAISE(ABORT, 'backlog insert blocked');
+         END`,
+      ).run();
+
+      await expect(
+        deferFindingToBacklog({
+          repository: repo,
+          findingId: finding.findingId,
+          reason: "operator confirmed future follow-up",
+          classifyOutOfScope: true,
+          createBacklogItem: true,
+          backlogContext: {
+            backlogDir: paths.backlogDir,
+            dbPath: paths.dbPath,
+          },
+          now: new Date("2026-05-26T09:00:00.000Z"),
+        }),
+      ).rejects.toThrow(/backlog insert blocked/);
+
+      expect(repo.requireFinding(finding.findingId)).toMatchObject({
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        classificationReason: null,
+        deferredBacklogItemId: null,
+      });
+      expect(
+        db
+          .prepare("SELECT COUNT(*) AS count FROM backlog_items")
+          .get() as { count: number },
+      ).toEqual({ count: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("commits the DB state and returns a warning when backlog export fails", async () => {
+    const { root, db, repo } = setup();
+    try {
+      const paths = harnessPaths(root);
+      mkdirSync(paths.backlogDir, { recursive: true });
+      writeFileSync(join(paths.backlogDir, "open"), "blocker\n");
+      const goal = repo.createSession({
+        hitchId: "goal-followup",
+        title: "Fix MCP confirmation safety",
+        domain: "mcp",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const finding = repo.upsertFinding({
+        hitchId: goal.hitchId,
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary: "Track export warning behavior",
+      }).finding;
+
+      const result = await deferFindingToBacklog({
+        repository: repo,
+        findingId: finding.findingId,
+        reason: "operator confirmed future follow-up",
+        classifyOutOfScope: true,
+        createBacklogItem: true,
+        backlogContext: {
+          backlogDir: paths.backlogDir,
+          dbPath: paths.dbPath,
+        },
+        now: new Date("2026-05-26T10:00:00.000Z"),
+      });
+
+      expect(result.exportWarning).toMatch(/exporting .* failed/i);
+      expect(repo.requireFinding(finding.findingId)).toMatchObject({
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "deferred",
+        deferredBacklogItemId: "item-20260526-001",
+      });
+      expect(
+        db
+          .prepare("SELECT status FROM backlog_items WHERE item_id = ?")
+          .get("item-20260526-001") as { status: string },
+      ).toEqual({ status: "open" });
     } finally {
       db.close();
     }

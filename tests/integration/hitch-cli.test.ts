@@ -339,6 +339,79 @@ describe("hitch CLI", () => {
     }
   });
 
+  it("classifies an in-scope finding out of scope while deferring it", () => {
+    const { root, scopePath, closePath } = setup();
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch",
+        "start",
+        "--title",
+        "Hitch convergence CLI",
+        "--domain",
+        "hitch",
+        "--scope-file",
+        scopePath,
+        "--close-file",
+        closePath,
+        "--json",
+      ]),
+    );
+    const finding = json<{
+      finding: { findingId: string; scopeStatus: string; lifecycleStatus: string };
+    }>(
+      runCli(root, [
+        "hitch",
+        "finding",
+        "add",
+        hitch.hitchId,
+        "--severity",
+        "P2",
+        "--category",
+        "correctness",
+        "--summary",
+        "Process advisory needs follow-up",
+        "--json",
+      ]),
+    );
+    expect(finding.finding.scopeStatus).toBe("in_scope");
+    expect(
+      runCli(root, [
+        "hitch",
+        "finding",
+        "defer",
+        finding.finding.findingId,
+        "--reason",
+        "still in scope",
+      ]).code,
+    ).not.toBe(0);
+
+    const deferred = json<{
+      backlogItemId: string | null;
+      finding: {
+        scopeStatus: string;
+        lifecycleStatus: string;
+        classificationReason: string;
+      };
+    }>(
+      runCli(root, [
+        "hitch",
+        "finding",
+        "defer",
+        finding.finding.findingId,
+        "--classify-out-of-scope",
+        "--reason",
+        "operator confirmed process-only advisory",
+        "--json",
+      ]),
+    );
+    expect(deferred.backlogItemId).toBeNull();
+    expect(deferred.finding.scopeStatus).toBe("out_of_scope");
+    expect(deferred.finding.lifecycleStatus).toBe("deferred");
+    expect(deferred.finding.classificationReason).toBe(
+      "operator confirmed process-only advisory",
+    );
+  });
+
   it("orchestrate --dry-run prints the next action without running codex", () => {
     const { root } = setup();
     expect(
