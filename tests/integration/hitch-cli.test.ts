@@ -271,6 +271,125 @@ describe("hitch CLI", () => {
     ]);
   });
 
+  it("adopt-pr records the adopted PR as an audit-only lifecycle event", () => {
+    const { root, scopePath, closePath } = setup();
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch",
+        "start",
+        "--title",
+        "Adopt PR audit",
+        "--domain",
+        "hitch",
+        "--scope-file",
+        scopePath,
+        "--close-file",
+        closePath,
+        "--json",
+      ]),
+    );
+
+    const adopted = json<{ status: string }>(
+      runCli(root, [
+        "hitch",
+        "adopt-pr",
+        hitch.hitchId,
+        "https://github.com/acme/app/pull/42",
+        "--reason",
+        "operator takeover",
+        "--json",
+      ]),
+    );
+    expect(adopted.status).toBe("open");
+    const status = json<{
+      lifecycleEvents: Array<{
+        event: string;
+        reason: string;
+        detail: Record<string, unknown> | null;
+      }>;
+    }>(runCli(root, ["hitch", "status", hitch.hitchId, "--json"]));
+    expect(status.lifecycleEvents).toMatchObject([
+      {
+        event: "pr_adopted",
+        reason: "operator takeover",
+        detail: {
+          adoptedPr: {
+            url: "https://github.com/acme/app/pull/42",
+            number: 42,
+          },
+          supersededPr: null,
+          runId: null,
+        },
+      },
+    ]);
+  });
+
+  it("update requires a config file and records updated lifecycle events", () => {
+    const { root, scopePath, closePath } = setup();
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch",
+        "start",
+        "--title",
+        "Update audit",
+        "--domain",
+        "hitch",
+        "--scope-file",
+        scopePath,
+        "--close-file",
+        closePath,
+        "--json",
+      ]),
+    );
+
+    const none = runCli(root, [
+      "hitch",
+      "update",
+      hitch.hitchId,
+      "--reason",
+      "nothing selected",
+    ]);
+    expect(none.code).not.toBe(0);
+    expect(none.out).toMatch(/at least one/);
+
+    const nextClose = join(root, "close-next.yaml");
+    writeFileSync(
+      nextClose,
+      [
+        "- id: typecheck",
+        "  kind: command",
+        "  required: true",
+        "  description: typecheck passed",
+        "- id: manual-ok",
+        "  kind: manual",
+        "  required: true",
+        "",
+      ].join("\n"),
+    );
+    const updated = json<{ closeConditions: Array<{ id: string }> }>(
+      runCli(root, [
+        "hitch",
+        "update",
+        hitch.hitchId,
+        "--close-file",
+        nextClose,
+        "--reason",
+        "add manual signoff",
+        "--json",
+      ]),
+    );
+    expect(updated.closeConditions.map((c) => c.id)).toEqual([
+      "typecheck",
+      "manual-ok",
+    ]);
+    const status = json<{
+      lifecycleEvents: Array<{ event: string; reason: string }>;
+    }>(runCli(root, ["hitch", "status", hitch.hitchId, "--json"]));
+    expect(status.lifecycleEvents).toMatchObject([
+      { event: "updated", reason: "add manual signoff" },
+    ]);
+  });
+
   it("defers an out-of-scope finding to a backlog follow-up", () => {
     const { root, scopePath, closePath } = setup();
     const hitch = json<{ hitchId: string }>(

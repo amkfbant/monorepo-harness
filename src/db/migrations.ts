@@ -29,6 +29,7 @@ import {
   MIGRATION_V26_STATEMENTS,
   MIGRATION_V27_STATEMENTS,
   MIGRATION_V28_STATEMENTS,
+  MIGRATION_V29_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -183,6 +184,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 28,
     name: "domain-lock-contention-v28",
     statements: MIGRATION_V28_STATEMENTS,
+  },
+  {
+    version: 29,
+    name: "hitch-lifecycle-events-adopt-update-v29",
+    statements: MIGRATION_V29_STATEMENTS,
   },
 ];
 

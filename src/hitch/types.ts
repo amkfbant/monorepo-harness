@@ -128,6 +128,8 @@ export const HITCH_LIFECYCLE_EVENTS = [
   "reopened",
   "closed",
   "cancelled",
+  "pr_adopted",
+  "updated",
 ] as const;
 
 export type HitchLifecycleEventName = (typeof HITCH_LIFECYCLE_EVENTS)[number];

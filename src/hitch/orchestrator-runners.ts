@@ -106,6 +106,17 @@ export class HitchNotCloseReadyError extends Error {
   }
 }
 
+export class HitchHasAdoptedPrError extends Error {
+  constructor(readonly hitchId: string) {
+    super(
+      `hitch ${hitchId} has an adopted PR; adopt-pr is audit/status-only and ` +
+        `adopted PRs are human-merge only. Refusing to create or auto-merge a ` +
+        `PR. Use hitch close --force after the human merge to close the record.`,
+    );
+    this.name = "HitchHasAdoptedPrError";
+  }
+}
+
 /**
  * Lifecycle states that still demand attention (i.e. an "open" finding). A
  * finding whose scope is `unknown` and whose lifecycle is one of these must be
@@ -863,6 +874,16 @@ export function createOrchestratorRunners(
         (db) => {
           const repo = new HitchRepository(db);
           const session = repo.requireSession(hitchId);
+          // Safety boundary (#169): an operator-adopted PR is audit/status-only
+          // and human-merge only. The merge execution path is shared by
+          // closeAndPr / orchestrate --auto-merge / await-merge, so the guard
+          // must live here — before any PR create/reuse/merge side effect —
+          // not only on the await-merge CLI. Fail closed: never let the harness
+          // create or auto-merge a PR for a hitch whose record points at an
+          // adopted (externally verified) PR.
+          if (repo.hasAdoptedPr(hitchId)) {
+            throw new HitchHasAdoptedPrError(hitchId);
+          }
           // Defense in depth: closeAndPr must only ever run on a hitch whose
           // convergence is `close_ready`. The orchestrator dispatch already
           // guarantees this, but a direct caller (or a future code path) must

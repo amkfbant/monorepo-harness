@@ -237,6 +237,27 @@ export interface ReopenHitchSessionOptions {
   now?: string;
 }
 
+export interface AdoptHitchPrInput {
+  hitchId: string;
+  prUrl?: string | null;
+  prNumber?: number | null;
+  reason: string;
+  createdBy: string;
+  now?: string;
+}
+
+export interface UpdateHitchSessionConfigInput {
+  hitchId: string;
+  scope?: HitchScope;
+  closeConditions?: HitchCloseCondition[];
+  policy?: HitchPolicy;
+  reason: string;
+  allowScopeWiden?: boolean;
+  allowGateLoosen?: boolean;
+  createdBy: string;
+  now?: string;
+}
+
 interface HitchSessionRow {
   hitch_id: string;
   title: string;
@@ -410,6 +431,23 @@ const OPEN_FINDING_LIFECYCLE_SET = new Set<HitchLifecycleStatus>(
 );
 const UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLE_SET =
   new Set<HitchLifecycleStatus>(UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES);
+
+const CONFIG_UPDATE_STATUSES = new Set<HitchStatus>([
+  "open",
+  "in_progress",
+  "close_ready",
+]);
+
+const REOPEN_BEFORE_UPDATE_STATUSES = new Set<HitchStatus>([
+  "closed",
+  "budget_exhausted",
+  "escalated",
+]);
+
+const CODING_RUN_ATTEMPT_TYPES = new Set<HitchAttemptType>([
+  "implement",
+  "rerun",
+]);
 
 export class HitchRepository {
   constructor(private readonly db: Database.Database) {}
@@ -587,6 +625,140 @@ export class HitchRepository {
     return tx.immediate();
   }
 
+  adoptPr(input: AdoptHitchPrInput): HitchSession {
+    if ((input.prUrl ?? null) === null && (input.prNumber ?? null) === null) {
+      throw new Error("adoptPr requires prUrl or prNumber");
+    }
+    if (input.reason.trim() === "") {
+      throw new Error("adoptPr requires a non-empty reason");
+    }
+    const now = input.now ?? new Date().toISOString();
+    const tx = this.db.transaction(() => {
+      this.requireSession(input.hitchId);
+      const runId = this.latestCodingRunId(input.hitchId);
+      const supersededPr = runId === null ? null : this.runPr(runId);
+      this.insertLifecycleEvent({
+        hitchId: input.hitchId,
+        event: "pr_adopted",
+        reason: input.reason,
+        detail: {
+          adoptedPr: {
+            url: input.prUrl ?? null,
+            number: input.prNumber ?? null,
+          },
+          supersededPr,
+          runId,
+        },
+        createdAt: now,
+        createdBy: input.createdBy,
+      });
+      this.touchSession(input.hitchId, now);
+      return this.requireSession(input.hitchId);
+    });
+    return tx.immediate();
+  }
+
+  updateSessionConfig(input: UpdateHitchSessionConfigInput): HitchSession {
+    if (
+      input.scope === undefined &&
+      input.closeConditions === undefined &&
+      input.policy === undefined
+    ) {
+      throw new Error(
+        "updateSessionConfig requires at least one of scope, closeConditions, or policy",
+      );
+    }
+    if (input.reason.trim() === "") {
+      throw new Error("updateSessionConfig requires a non-empty reason");
+    }
+    const nextScope =
+      input.scope === undefined ? undefined : parseHitchScope(input.scope);
+    const nextCloseConditions =
+      input.closeConditions === undefined
+        ? undefined
+        : parseHitchCloseConditions(input.closeConditions);
+    const nextPolicy =
+      input.policy === undefined ? undefined : parseHitchPolicy(input.policy);
+    const now = input.now ?? new Date().toISOString();
+
+    const tx = this.db.transaction(() => {
+      const session = this.requireSession(input.hitchId);
+      assertConfigUpdateAllowed(session);
+      if (
+        nextScope !== undefined &&
+        input.allowScopeWiden !== true &&
+        isScopeWidening(session.scope, nextScope)
+      ) {
+        throw new Error(
+          `hitch ${input.hitchId} scope widen requires --allow-scope-widen`,
+        );
+      }
+      if (
+        nextCloseConditions !== undefined &&
+        input.allowGateLoosen !== true &&
+        closeConditionsLoosenGate(session.closeConditions, nextCloseConditions)
+      ) {
+        throw new Error(
+          `hitch ${input.hitchId} gate loosen requires --allow-gate-loosen`,
+        );
+      }
+      if (
+        nextPolicy !== undefined &&
+        input.allowGateLoosen !== true &&
+        policyLoosensGate(session.policy, nextPolicy)
+      ) {
+        throw new Error(
+          `hitch ${input.hitchId} gate loosen requires --allow-gate-loosen`,
+        );
+      }
+
+      const sets: string[] = [];
+      const args: unknown[] = [];
+      const updatedFields: string[] = [];
+      const detail: Record<string, unknown> = { updatedFields };
+      if (nextScope !== undefined) {
+        sets.push("scope_json = ?");
+        args.push(json(nextScope));
+        updatedFields.push("scope");
+        detail.previousScope = session.scope;
+      }
+      if (nextCloseConditions !== undefined) {
+        sets.push("close_conditions_json = ?");
+        args.push(json(nextCloseConditions));
+        updatedFields.push("closeConditions");
+        detail.previousCloseConditions = session.closeConditions;
+      }
+      if (nextPolicy !== undefined) {
+        sets.push("policy_json = ?");
+        args.push(json(nextPolicy));
+        updatedFields.push("policy");
+        detail.previousPolicy = session.policy;
+      }
+      sets.push("updated_at = ?");
+      args.push(now, input.hitchId);
+      const result = this.db
+        .prepare(
+          `UPDATE hitch_sessions
+              SET ${sets.join(", ")}
+            WHERE hitch_id = ?`,
+        )
+        .run(...args);
+      if (result.changes !== 1) {
+        throw new DbError(`hitch not found: ${input.hitchId}`);
+      }
+      this.insertLifecycleEvent({
+        hitchId: input.hitchId,
+        event: "updated",
+        reason: input.reason,
+        detail,
+        createdAt: now,
+        createdBy: input.createdBy,
+      });
+      return this.requireSession(input.hitchId);
+    });
+    return tx.immediate();
+  }
+
   listLifecycleEvents(hitchId: string): HitchLifecycleEvent[] {
     const rows = this.db
       .prepare(
@@ -596,6 +768,22 @@ export class HitchRepository {
       )
       .all(hitchId) as HitchLifecycleEventRow[];
     return rows.map(rowToLifecycleEvent);
+  }
+
+  /**
+   * Whether the hitch has an operator-adopted PR. adopt-pr is audit/status-only
+   * for operator takeover, so an adopted PR is human-merge only — the merge
+   * execution path (closeAndPr / auto-merge / await-merge) must refuse it. This
+   * is the shared, fail-closed source for that guard.
+   */
+  hasAdoptedPr(hitchId: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM hitch_lifecycle_events
+          WHERE hitch_id = ? AND event = 'pr_adopted' LIMIT 1`,
+      )
+      .get(hitchId);
+    return row !== undefined;
   }
 
   createAttempt(input: CreateHitchAttemptInput): HitchAttempt {
@@ -1425,11 +1613,191 @@ export class HitchRepository {
     return row.n;
   }
 
+  private latestCodingRunId(hitchId: string): string | null {
+    const attempts = this.listAttempts(hitchId);
+    for (let i = attempts.length - 1; i >= 0; i--) {
+      const attempt = attempts[i];
+      if (attempt === undefined) continue;
+      if (!CODING_RUN_ATTEMPT_TYPES.has(attempt.attemptType)) continue;
+      if (attempt.runId !== null && attempt.runId !== "") return attempt.runId;
+    }
+    return null;
+  }
+
+  private runPr(runId: string): { url: string | null; number: number | null } | null {
+    const row = this.db
+      .prepare("SELECT pr_url, pr_number FROM runs WHERE run_id = ?")
+      .get(runId) as
+      | { pr_url: string | null; pr_number: number | null }
+      | undefined;
+    if (row === undefined) return null;
+    if (row.pr_url === null && row.pr_number === null) return null;
+    return { url: row.pr_url, number: row.pr_number };
+  }
+
   private touchSession(hitchId: string, updatedAt: string): void {
     this.db
       .prepare("UPDATE hitch_sessions SET updated_at = ? WHERE hitch_id = ?")
       .run(updatedAt, hitchId);
   }
+}
+
+function assertConfigUpdateAllowed(session: HitchSession): void {
+  if (CONFIG_UPDATE_STATUSES.has(session.status)) return;
+  if (REOPEN_BEFORE_UPDATE_STATUSES.has(session.status)) {
+    throw new Error(
+      `hitch ${session.hitchId} is ${session.status}; reopen the hitch before updating config`,
+    );
+  }
+  throw new Error(
+    `hitch ${session.hitchId} is ${session.status} and cannot be reopened; ` +
+      "start a new hitch for config changes",
+  );
+}
+
+function isScopeWidening(previous: HitchScope, next: HitchScope): boolean {
+  if (targetFilesWiden(previous.targetFiles, next.targetFiles)) return true;
+  if (arrayFieldWidens(previous.targetOperations, next.targetOperations)) {
+    return true;
+  }
+  if (
+    arrayFieldWidens(
+      previous.allowedFindingCategories,
+      next.allowedFindingCategories,
+    )
+  ) {
+    return true;
+  }
+  if (
+    excludedCategoriesWiden(
+      previous.excludedCategories,
+      next.excludedCategories,
+    )
+  ) {
+    return true;
+  }
+  return (previous.targetSummary ?? null) !== (next.targetSummary ?? null);
+}
+
+function arrayFieldWidens(
+  previous: readonly string[] | undefined,
+  next: readonly string[] | undefined,
+): boolean {
+  // `targetOperations` / `allowedFindingCategories` are positive in-scope
+  // matchers (classification.ts): the matcher set is what each field lists.
+  // Widening means the next set is not a subset of the previous one.
+  // - next undefined/empty → matcher set shrinks to ∅ → narrowing (or a no-op),
+  //   never widening (so notes-only edits that omit matchers are allowed).
+  // - next non-empty with previous undefined/empty → ∅ → non-empty is widening.
+  const nextArr = next ?? [];
+  if (nextArr.length === 0) return false;
+  const previousSet = new Set(previous ?? []);
+  return nextArr.some((value) => !previousSet.has(value));
+}
+
+function targetFilesWiden(
+  previous: readonly string[] | undefined,
+  next: readonly string[] | undefined,
+): boolean {
+  // `targetFiles` is not a pure positive matcher: when non-empty it also gates
+  // findings *outside* the patterns to out_of_scope (classification.ts). So its
+  // widening direction differs from the matcher fields:
+  // - both empty → no-op.
+  // - next empty while previous non-empty → the gate is removed; previously
+  //   out-of-scope files can now become in_scope → widening.
+  // - previous empty → next non-empty adds a gate (non-monotonic: gates out
+  //   some files but admits in-target ones) → conservatively widening.
+  // - both non-empty → only a strict subset (tightening the gate) is provably
+  //   non-widening; any added pattern widens the gate.
+  const prev = previous ?? [];
+  const nxt = next ?? [];
+  if (prev.length === 0 && nxt.length === 0) return false;
+  if (nxt.length === 0 || prev.length === 0) return true;
+  const previousSet = new Set(prev);
+  return nxt.some((value) => !previousSet.has(value));
+}
+
+function excludedCategoriesWiden(
+  previous: readonly string[] | undefined,
+  next: readonly string[] | undefined,
+): boolean {
+  if (previous === undefined) return false;
+  if (next === undefined) return true;
+  const nextSet = new Set(next);
+  return previous.some((value) => !nextSet.has(value));
+}
+
+function closeConditionsLoosenGate(
+  previous: readonly HitchCloseCondition[],
+  next: readonly HitchCloseCondition[],
+): boolean {
+  const nextById = new Map(next.map((condition) => [condition.id, condition]));
+  for (const condition of previous) {
+    if (!condition.required) continue;
+    const replacement = nextById.get(condition.id);
+    if (replacement === undefined) return true;
+    if (!replacement.required) return true;
+    if (conditionGateFingerprint(condition) !== conditionGateFingerprint(replacement)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function conditionGateFingerprint(condition: HitchCloseCondition): string {
+  return json({
+    kind: condition.kind,
+    command: condition.command ?? null,
+    rule: condition.rule ?? null,
+    metadata: condition.metadata ?? null,
+  });
+}
+
+function policyLoosensGate(previous: HitchPolicy, next: HitchPolicy): boolean {
+  if (!previous.allowEmptyCloseConditions && next.allowEmptyCloseConditions) {
+    return true;
+  }
+  if (
+    boolGateLoosened(
+      previous.closeRequires.noOpenInScopeP0,
+      next.closeRequires.noOpenInScopeP0,
+    )
+  ) {
+    return true;
+  }
+  if (
+    boolGateLoosened(
+      previous.closeRequires.noOpenInScopeP1,
+      next.closeRequires.noOpenInScopeP1,
+    )
+  ) {
+    return true;
+  }
+  if (
+    boolGateLoosened(
+      previous.closeRequires.noUnknownScope,
+      next.closeRequires.noUnknownScope,
+    )
+  ) {
+    return true;
+  }
+  return numericMaxGateLoosened(
+    previous.closeRequires.maxOpenInScopeP2,
+    next.closeRequires.maxOpenInScopeP2,
+  );
+}
+
+function boolGateLoosened(previous: boolean, next: boolean): boolean {
+  return previous && !next;
+}
+
+function numericMaxGateLoosened(
+  previous: number | undefined,
+  next: number | undefined,
+): boolean {
+  if (previous === undefined) return false;
+  if (next === undefined) return true;
+  return next > previous;
 }
 
 function defaultLifecycleForScope(

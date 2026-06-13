@@ -376,6 +376,9 @@ harness hitch status <hitch-id> [--json]
 harness hitch close <hitch-id> --summary <text> [--created-by <actor>] [--force] [--json]
 harness hitch cancel <hitch-id> --reason <text> [--created-by <actor>] [--json]
 harness hitch reopen <hitch-id> --reason <text> [--created-by <actor>] [--extend-iterations <n>] [--extend-review-cycles <n>] [--extend-reruns <n>] [--json]
+harness hitch adopt-pr <hitch-id> <pr-url-or-number> --reason <text> [--created-by <actor>] [--json]
+harness hitch update <hitch-id> [--close-file <path>] [--scope-file <path>] [--policy-file <path>] \
+  --reason <text> [--allow-scope-widen] [--allow-gate-loosen] [--created-by <actor>] [--json]
 ```
 
 Finding lifecycle:
@@ -454,7 +457,10 @@ harness hitch await-merge [<hitch-id>] --repo <path> [--all] [--repo-id <id>] \
 
 `hitch status --json` は session / findings / convergence decisions /
 close checks / current convergence に加え、`lifecycleEvents`（`closed` /
-`cancelled` / `reopened` の reason・actor・timestamp）を返す。
+`cancelled` / `reopened` / `pr_adopted` / `updated` の
+reason・actor・timestamp・`detail`）を返す。テキスト出力は最新の
+`pr_adopted` があれば adopted PR を `pr=...` として優先表示し、旧 run 由来 PR は
+`supersededPr=...` として併記する（表示のみ）。
 
 `hitch close` は convergence が `close_ready` でない限り `--force` を要求する。
 `check-convergence` は `diverging` / `budget_exhausted` / `escalate` で exit 2。
@@ -476,6 +482,24 @@ orchestrate が `needs_fix` → coder で修正する。
 `--created-by` 未指定時の actor は CLI では `cli`、MCP では `mcp:<clientName>`。
 close/cancel も同じ audit ledger に reason と actor を記録する。ledger は監査用で、
 convergence / rollup の状態判定には使わない。
+
+`hitch adopt-pr`（#169）は operator takeover で外部 PR に差し替えた事実を
+audit/status 表示用に記録する。`detail` は
+`{adoptedPr:{url,number}, supersededPr:{url,number}|null, runId:<latestRunId>|null}`
+で、`supersededPr` は hitch の最新 coding attempt（`implement` / `rerun`）の
+`runs.pr_url` / `runs.pr_number` から解決する。**`runs` の PR 列は書き換えない**。
+adopt-pr は状態を変更せず、convergence / rollup / merge 判定の source にはならない。
+
+`hitch update`（#142）は live な hitch（`open` / `in_progress` / `close_ready`）の
+`scope_json` / `close_conditions_json` / `policy_json` を部分更新する。少なくとも 1 つの
+`--*-file` と `--reason` が必須で、各 file は start 時と同じ parser で検証される。
+`targetFiles` / `targetOperations` / `allowedFindingCategories` /
+`excludedCategories` / `targetSummary` の変更が旧 scope の subset と証明できない場合は
+scope widen として `--allow-scope-widen` が必要（`notes` のみは非意味フィールドとして許可）。
+必須 close condition の削除・任意化・曖昧な書き換え、または `closeRequires` /
+`allowEmptyCloseConditions` の close gate 緩和には `--allow-gate-loosen` が必要。
+`closed` / `budget_exhausted` / `escalated` は reopen 後に更新し、`cancelled` /
+`diverging` は更新不可。更新は `updated` lifecycle event に previous config を記録する。
 
 `hitch orchestrate` は hitch を terminal 状態（closed / pr_created / merged /
 escalated）まで bounded loop（`--max-steps`、既定 50）で自律駆動する。`--dry-run`
@@ -540,6 +564,9 @@ wall-clock。`--ci-await-timeout` は**各**試行内で pending CI を待つ秒
 close_ready 再 check の間に drift したら `not_awaiting` で停止（副作用なし）、close_ready の
 まま close/merge が**失敗**したら `escalated`（fail-closed）。出力は hitch ごとに
 `hitch=<id> await-merge=<outcome> polls=<n> [pr=… | decision=… | escalate=…]`。
+`pr_adopted` event を持つ hitch は fail-closed で拒否する。adopted PR は harness が
+reviewed head SHA / 検証済み run 対応を持たないため human merge 専用であり、merge 後は
+`hitch close --force` で記録上 close する。
 
 ## `harness dashboard export`
 

@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V28_STATEMENTS`、
-> `SCHEMA_VERSION = 28`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V29_STATEMENTS`、
+> `SCHEMA_VERSION = 29`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -717,7 +717,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 28`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 29`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -746,6 +746,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 26 | telemetry usage C2 | `run_usage`（run 1:1 の Codex token usage。`exact` / `unavailable` を記録、`parsed_log` / `estimated` は予約） |
 | 27 | telemetry snapshots E1 | `metrics_snapshots`（live aggregate の append-only stored projection。snapshot caller と retention prune を同時実装） |
 | 28 | telemetry follow-up F4 | `domain_lock_contention`（run log 作成前の domain lock busy を append-only に記録する純テレメトリ） |
+| 29 | course-ext G4 | `hitch_lifecycle_events.event` CHECK を rebuild で拡張し `pr_adopted` / `updated` を許容（v23 の FK/NOT NULL/index は維持） |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -1002,11 +1003,13 @@ finding 分類・close-check 証跡・convergence decision を記録し、反復
   `continue`/`needs_fix`/`needs_classification`/`close_ready`/`closed`/
   `diverging`/`budget_exhausted`/`escalate`/`cancel` / `reason` /
   `metrics_json` / `recommended_next_action`）。hitch FK ON DELETE CASCADE。
-- `hitch_lifecycle_events` — `reopened` / `closed` / `cancelled` の audit-only
+- `hitch_lifecycle_events` — `reopened` / `closed` / `cancelled` /
+  `pr_adopted` / `updated` の audit-only
   ledger（`event_id` PK / `hitch_id` FK ON DELETE CASCADE / `reason` /
   optional `detail_json` / `created_at` / `created_by`）。`reopenSession` は
   status update と event insert を同一 transaction で行う。`updateStatus`
-  経由の close/cancel も同じ ledger に記録するが、状態判定の source of truth は
+  経由の close/cancel、`adoptPr`、`updateSessionConfig` も同じ ledger に記録するが、
+  状態判定の source of truth は
   `hitch_sessions.status` と deterministic convergence 入力であり、この ledger は
   convergence / rollup の遷移根拠には使わない。
 
@@ -1165,17 +1168,31 @@ active `domain_locks` 行から取得できる場合に記録する。`metricsSu
 count する。`project_id` 列は持たないため、project scope はこの table には直接適用せず、
 repo/domain/date scope のみを使う。
 
+## Course external fixes G4 — hitch lifecycle event enum（schema v29）
+
+schema v29 は `hitch_lifecycle_events.event` の CHECK 制約を rebuild で拡張し、
+`pr_adopted` と `updated` を追加する。SQLite は CHECK 制約を直接変更できないため、
+`PRAGMA foreign_keys = OFF` → `hitch_lifecycle_events_v29` 作成 → `INSERT ... SELECT`
+で既存行移行 → 旧 table drop → rename → index 再作成 → `PRAGMA foreign_keys = ON`
+の順で実行する。v23 の DDL 契約は完全維持する: `hitch_id` は
+`hitch_sessions(hitch_id) ON DELETE CASCADE`、`reason` と `created_by` は
+`NOT NULL`、index は `hitch_lifecycle_events_hitch_idx(hitch_id, created_at)`。
+
+この migration は audit table の enum だけを広げる。`hitch_sessions.status`、
+convergence decision、phase rollup、auto-merge gate の source は変わらない。
+
 ## Audit fix #130 — hitch lifecycle events（schema v23）
 
 schema v23 は additive な `hitch_lifecycle_events` を追加する。`hitch reopen
 --reason` の reason と actor、`hitch close` / `hitch cancel` の reason と actor を
-永続化し、cancel reason の取りこぼしをなくす。
+永続化し、cancel reason の取りこぼしをなくす。現行 schema では v29 により
+`pr_adopted` と `updated` も同じ audit-only ledger に記録できる。
 
 ```sql
 CREATE TABLE hitch_lifecycle_events (
   event_id TEXT PRIMARY KEY NOT NULL,
   hitch_id TEXT NOT NULL REFERENCES hitch_sessions(hitch_id) ON DELETE CASCADE,
-  event TEXT NOT NULL CHECK (event IN ('reopened','closed','cancelled')),
+  event TEXT NOT NULL CHECK (event IN ('reopened','closed','cancelled','pr_adopted','updated')),
   reason TEXT NOT NULL,
   detail_json TEXT,
   created_at TEXT NOT NULL,
