@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { harnessPaths } from "../config/paths.js";
 import { withManagedDb } from "../db/managed-connection.js";
@@ -20,6 +21,7 @@ import {
 } from "./convergence.js";
 import { HitchRepository } from "./repository.js";
 import type {
+  HitchCloseCheckStatus,
   HitchAttemptType,
   HitchCloseCondition,
   HitchSession,
@@ -53,6 +55,12 @@ interface LatestCodingRun {
 }
 
 const CODING_ATTEMPT_TYPES = new Set<HitchAttemptType>(["implement", "rerun"]);
+const RUNNABLE_CLOSE_CHECK_STATUSES = new Set<HitchCloseCheckStatus>([
+  "pending",
+  "skipped",
+  "unknown",
+]);
+const CLOSE_CHECK_LOG_EXCERPT_BYTES = 8 * 1024;
 
 function latestCodingRun(repo: HitchRepository, hitchId: string): LatestCodingRun {
   const attempts = repo.listAttempts(hitchId);
@@ -95,11 +103,19 @@ async function assertWorktreeMatchesReviewed(opts: {
   runId: string;
   reviewedPaths: string[];
   phase: string;
+  gitTimeoutMs: number;
 }): Promise<void> {
   const diff = await collectDiff({
     repoPath: opts.worktreePath,
     baseSha: opts.baseSha,
+    timeoutMs: opts.gitTimeoutMs,
   });
+  if (diff.stagedChangedPaths.length > 0) {
+    throw new Error(
+      `close-check ${opts.phase} staged index contains path(s): ` +
+        diff.stagedChangedPaths.join(", "),
+    );
+  }
   const { kept } = partitionUntracked(diff.untrackedPaths, opts.ignoreUntracked);
   assertPathsSubset(
     [...diff.trackedChangedPaths, ...kept],
@@ -177,23 +193,38 @@ function pendingCommandCloseConditions(input: {
     }),
     allowEmptyCloseConditions: input.session.policy.allowEmptyCloseConditions,
   });
-  // Only REQUIRED, PENDING command conditions gate close.
+  // Only REQUIRED, runnable command conditions gate close.
   // - required: optional/advisory conditions never block close, and running a
   //   non-allowlisted optional command would throw before the required evidence
   //   is recorded (review finding P1).
-  // - pending only: a `failed` condition was already checked against the
-  //   current run and routes to needs_fix (coder rerun); re-running it here
-  //   would re-execute a known-failed check and could overwrite the failed
-  //   evidence with a passed one on the same run (review finding P1, retry 2).
-  //   A fresh run invalidates the stale check back to `pending`.
+  // - pending/skipped/unknown: `skipped`/`unknown` are inconclusive required
+  //   command evidence, so a deterministic re-run is safe and bounded.
+  // - not failed: a `failed` condition was already checked against the current
+  //   run and routes to needs_fix (coder rerun); re-running it here would
+  //   re-execute a known-failed check and could overwrite the failed evidence
+  //   with a passed one on the same run. A fresh run invalidates the stale check
+  //   back to `pending`.
   return close.conditions
     .filter(
       (evaluated) =>
         evaluated.condition.required &&
         evaluated.condition.kind === "command" &&
-        evaluated.status === "pending",
+        RUNNABLE_CLOSE_CHECK_STATUSES.has(evaluated.status),
     )
     .map((evaluated) => evaluated.condition);
+}
+
+async function readLogExcerpt(path: string): Promise<string> {
+  try {
+    const buffer = await readFile(path);
+    const sliced =
+      buffer.length > CLOSE_CHECK_LOG_EXCERPT_BYTES
+        ? buffer.subarray(buffer.length - CLOSE_CHECK_LOG_EXCERPT_BYTES)
+        : buffer;
+    return sliced.toString("utf8");
+  } catch (e) {
+    return `[unavailable: ${e instanceof Error ? e.message : String(e)}]`;
+  }
 }
 
 export async function runCommandCloseChecks(
@@ -294,6 +325,7 @@ export async function runCommandCloseChecks(
       runId: prep.runId,
       reviewedPaths: prep.reviewedPaths,
       phase: "baseline",
+      gitTimeoutMs: policy.limits.gitTimeoutMs,
     });
     const cmdRun = await runAllowedCommands({
       worktreePath,
@@ -312,9 +344,21 @@ export async function runCommandCloseChecks(
       runId: prep.runId,
       reviewedPaths: prep.reviewedPaths,
       phase: "post-command",
+      gitTimeoutMs: policy.limits.gitTimeoutMs,
     });
     const resultByCommandId = new Map(
       cmdRun.results.map((result) => [result.id, result]),
+    );
+    const logExcerptByCommandId = new Map(
+      await Promise.all(
+        cmdRun.results.map(async (result) => [
+          result.id,
+          {
+            stdoutTail: await readLogExcerpt(result.stdoutPath),
+            stderrTail: await readLogExcerpt(result.stderrPath),
+          },
+        ] as const),
+      ),
     );
 
     let passed = 0;
@@ -331,6 +375,7 @@ export async function runCommandCloseChecks(
         }
         const status =
           result.exitCode === 0 && !result.timedOut ? "passed" : "failed";
+        const excerpts = logExcerptByCommandId.get(item.command.id);
         if (status === "passed") passed += 1;
         else failed += 1;
         repo.recordCloseCheck({
@@ -348,6 +393,8 @@ export async function runCommandCloseChecks(
             timedOut: result.timedOut,
             stdoutPath: result.stdoutPath,
             stderrPath: result.stderrPath,
+            stdoutTail: excerpts?.stdoutTail ?? "",
+            stderrTail: excerpts?.stderrTail ?? "",
           },
           message:
             status === "passed"

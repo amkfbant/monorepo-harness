@@ -45,8 +45,20 @@ describe("collectDiff", () => {
   it("returns empty patch and empty lists when nothing changed", async () => {
     const d = await collectDiff({ repoPath: repo, baseSha: await baseSha() });
     expect(d.trackedChangedPaths).toEqual([]);
+    expect(d.stagedChangedPaths).toEqual([]);
     expect(d.untrackedPaths).toEqual([]);
     expect(d.patch).toBe("");
+  });
+
+  it("reports staged index changes separately from the working tree diff", async () => {
+    writeFileSync(join(repo, "apps/user/a.ts"), "export const a = 2;\n");
+    execFileSync("git", ["add", "apps/user/a.ts"], { cwd: repo });
+    writeFileSync(join(repo, "apps/user/a.ts"), "export const a = 1;\n");
+
+    const d = await collectDiff({ repoPath: repo, baseSha: await baseSha() });
+
+    expect(d.trackedChangedPaths).toEqual([]);
+    expect(d.stagedChangedPaths).toEqual(["apps/user/a.ts"]);
   });
 
   it("does not pollute the index with intent-to-add markers", async () => {

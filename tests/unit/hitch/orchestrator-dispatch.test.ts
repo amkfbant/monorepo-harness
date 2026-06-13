@@ -57,6 +57,13 @@ describe("decideOrchestratorAction", () => {
     expect(decideOrchestratorAction(conv("continue", "defer_followups")).kind).toBe("defer");
   });
 
+  it("maps continue + ask_human to wait instead of escalate", () => {
+    expect(decideOrchestratorAction(conv("continue", "ask_human"))).toEqual({
+      kind: "wait",
+      reason: "m",
+    });
+  });
+
   it("maps needs_classification to classify and close_ready to close_and_pr", () => {
     expect(decideOrchestratorAction(conv("needs_classification", "classify_findings")).kind).toBe("classify");
     expect(decideOrchestratorAction(conv("close_ready", "close_hitch")).kind).toBe("close_and_pr");

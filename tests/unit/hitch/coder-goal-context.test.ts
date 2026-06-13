@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  augmentGoalWithFailedCloseChecks,
   augmentGoalWithFailedRun,
   augmentGoalWithOpenFindings,
 } from "../../../src/hitch/coder-goal-context.js";
@@ -95,5 +96,38 @@ describe("augmentGoalWithFailedRun", () => {
     expect(out.startsWith("do the thing")).toBe(true);
     expect(out).toContain("Previous attempt failed");
     expect(out).toContain("`failed-command`");
+  });
+});
+
+describe("augmentGoalWithFailedCloseChecks", () => {
+  it("returns the goal unchanged when there are no failed checks", () => {
+    expect(augmentGoalWithFailedCloseChecks("do the thing", [])).toBe(
+      "do the thing",
+    );
+  });
+
+  it("appends failed command evidence with stdout and stderr excerpts", () => {
+    const out = augmentGoalWithFailedCloseChecks("do the thing", [
+      {
+        conditionId: "typecheck",
+        conditionKind: "command",
+        command: "npm run typecheck",
+        exitCode: 2,
+        timedOut: false,
+        message: "command close-check failed",
+        stdout: "tsc stdout",
+        stderr: "src/a.ts(1,1): error TS1005",
+      },
+    ]);
+
+    expect(out.startsWith("do the thing")).toBe(true);
+    expect(out).toContain("Failed close-check evidence to address");
+    expect(out).toContain("typecheck");
+    expect(out).toContain("npm run typecheck");
+    expect(out).toContain("exitCode=2");
+    expect(out).toContain("stdout:");
+    expect(out).toContain("tsc stdout");
+    expect(out).toContain("stderr:");
+    expect(out).toContain("error TS1005");
   });
 });

@@ -20,6 +20,9 @@ export function decideOrchestratorAction(
       if (action === "run_review") return { kind: "review" };
       if (action === "run_close_check") return { kind: "close_check" };
       if (action === "defer_followups") return { kind: "defer" };
+      if (action === "ask_human") {
+        return { kind: "wait", reason: convergence.recommendedNextAction.message };
+      }
       return { kind: "escalate", reason: `continue with unsupported action ${action}` };
     case "needs_classification":
       return { kind: "classify" };

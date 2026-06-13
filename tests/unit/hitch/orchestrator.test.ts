@@ -193,6 +193,65 @@ describe("HitchOrchestrator", () => {
     expect(result.outcome).toBe("pr_created");
   });
 
+  it("waits without escalating when only manual close-check evidence is pending", async () => {
+    const dbPath = freshDbPath();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new HitchRepository(db);
+      repo.createSession({
+        hitchId: "g-manual-wait",
+        title: "Manual wait",
+        projectId: "demo",
+        closeConditions: [
+          { id: "manual-signoff", kind: "manual", required: true },
+        ],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+      repo.createAttempt({
+        hitchId: "g-manual-wait",
+        attemptType: "implement",
+        status: "succeeded",
+        runId: "r1",
+        createdAt: "2026-05-25T00:00:00.000Z",
+      });
+      const cycle = repo.startReviewCycle({
+        hitchId: "g-manual-wait",
+        reviewMode: "initial",
+        createdAt: "2026-05-25T00:01:00.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle.cycleId,
+        completedAt: "2026-05-25T00:01:30.000Z",
+      });
+    } finally {
+      close();
+    }
+    const calls: string[] = [];
+
+    const result = await new HitchOrchestrator({ dbPath }).run({
+      hitchId: "g-manual-wait",
+      runners: fakeRunners(calls),
+      maxSteps: 3,
+      createdBy: "worker",
+    });
+
+    expect(result.outcome).toBe("waiting");
+    expect(result.steps).toMatchObject([
+      { action: "wait", decision: "continue" },
+    ]);
+    expect(calls).toEqual([]);
+    const { db: db2, close: close2 } = openManagedDb({ dbPath });
+    try {
+      expect(new HitchRepository(db2).requireSession("g-manual-wait").status).toBe(
+        "open",
+      );
+    } finally {
+      close2();
+    }
+  });
+
   it("escalates (and flips the goal status) when a runner throws", async () => {
     const dbPath = freshDbPath();
     const { db, close } = openManagedDb({ dbPath });

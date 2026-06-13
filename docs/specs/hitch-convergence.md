@@ -145,8 +145,16 @@ Evaluation is deterministic and conservative:
     evidence — for an already-approved run via the short-circuit above. Routing
     such a condition to the command close-check runner would mishandle it (that
     runner only executes `kind: command` conditions).
-13. Otherwise the decision is `continue` with `run_close_check` (record command
-    close-check evidence).
+13. If a required command close-check is runnable (`pending`, `skipped`, or
+    `unknown`), the decision is `continue` with `run_close_check` (record fresh
+    command evidence). Required `failed` close-checks still route to
+    `needs_fix` first so the next coder pass fixes the failure before the
+    command is re-run.
+14. If the only remaining required close checks need external/operator evidence
+    (`manual`, `artifact_exists`, `operation_status`, or another non-command
+    condition), the decision is `continue` with `ask_human`; the orchestrator
+    waits for recorded evidence and does not auto-escalate by invoking the
+    command runner with no runnable command.
 
 Recorded close-check evidence is fresh only when it is at or after the latest
 invalidating hitch event: a non-close-check attempt, finding seen/fixed/deferred
@@ -204,7 +212,8 @@ review-derived evidence can be generated, but still blocks implementation
 mutations. `continue` with `run_close_check` is reserved for deterministic
 command close checks and does not permit review tools. `continue` with
 `defer_followups` blocks these hitch-linked mutations until the recommended
-deferral action is handled.
+deferral action is handled. `continue` with `ask_human` blocks linked mutations
+until an operator records the required external close-check evidence.
 `review.process` confirmation requests are not created when this gate denies the
 linked hitch. The bounded MCP driver `hitch.orchestrate` (`harness.hitch.orchestrate`)
 is gated by the same evaluation: it is permitted **exactly when some per-step
@@ -213,10 +222,11 @@ or `continue` with `run_review`) or when it can run a deterministic command
 close check (`continue` with `run_close_check`). The entry gate denies the
 driver for `close_ready`, the stop/terminal decisions (`escalate` /
 `diverging` / `budget_exhausted` / `closed` / `cancel`), `defer_followups`, and
-`needs_classification`. That denial is about *entering* the driver: once the
-driver is running, its loop auto-classifies, auto-defers, and runs allowlisted
-command close checks via the internal deterministic runner dispatch (see the
-three-layer table below); only the deliberate `close_ready` close/PR and the
+`needs_classification`, plus `continue` / `ask_human` external-evidence waits.
+That denial is about *entering* the driver: once the driver is running, its loop
+auto-classifies, auto-defers, and runs allowlisted command close checks via the
+internal deterministic runner dispatch (see the three-layer table below); only
+the deliberate `close_ready` close/PR, external-evidence waits, and the
 escalation path are left to an operator out of band. Each internal coder/review
 step the orchestrator runs re-checks its own gate. `harness hitch check-convergence` and
 `harness.hitch.check_convergence` record an audit decision and synchronize the
@@ -235,6 +245,7 @@ contradiction:
 | `needs_fix` (`fix_findings`/`run_close_check`) | permits `run.start`/`rerun.start` | drives a bounded fix/rerun | drives the phase |
 | `continue` + `run_review` | permits review validation | reviews the latest coding run | drives the phase |
 | `continue` + `run_close_check` | no review/run mutation; driver entry is allowed | runs allowlisted command close checks and records evidence | drives the phase |
+| `continue` + `ask_human` | denies the step | waits for external evidence without changing hitch status to escalated | `report_only` |
 | `needs_classification` | denies the step | **auto-classifies** via the classify runner, then continues | **blocks** the phase and isolates its subtree (operator classifies) |
 | `defer_followups` | denies the step | **auto-defers** via the defer runner, then continues | not blocked, but the hitch is not drivable (`allowedByConvergence` is false) → `report_only` unless another linked hitch is drivable |
 | `close_ready` | denies the step (operator closes/PRs) | default loop runs `closeAndPr` (close + PR); stops before the PR only when `stopAtCloseReady` is set (the MCP/course drivers set it) | `ready_to_close` when all hitches are ready and no open P0/P1; no auto-close |
@@ -299,14 +310,25 @@ fresh but another required close condition is still pending, the loop escalates
 with the pending condition id(s) instead of starting another review.
 
 When the loop reaches `continue` / `run_close_check`, the orchestrator resolves
-each pending `kind: command` condition to the effective domain policy
-`ResolvedCommand` allowlist. A condition without `command` selects by condition
-id; a condition with `command` may select either the allowlisted command id or
-the exact display command. Matching commands are run with `runAllowedCommands`
-against the latest reviewed run worktree, and evidence is recorded only in
-`hitch_close_checks` plus `runs/<runId>/close-checks/`. If a condition cannot be
-resolved to exactly one allowlisted command, the command is not executed and the
-orchestrator escalates with an external-evidence request.
+each required `kind: command` condition whose latest status is `pending`,
+`skipped`, or `unknown` to the effective domain policy `ResolvedCommand`
+allowlist. A condition without `command` selects by condition id; a condition
+with `command` may select either the allowlisted command id or the exact display
+command. Matching commands are run with `runAllowedCommands` against the latest
+reviewed run worktree, and evidence is recorded only in `hitch_close_checks`
+plus `runs/<runId>/close-checks/`. Failed command evidence records the command
+result plus bounded stdout/stderr excerpts; a following coder rerun injects
+that failed close-check evidence into the goal so it can fix the concrete
+failure instead of re-running the original task blindly. If a condition cannot
+be resolved to exactly one allowlisted command, the command is not executed and
+the orchestrator escalates with an external-evidence request.
+
+Before and after command execution, the close-check runner verifies the latest
+reviewed run worktree against the recorded reviewed surface. The diff collection
+uses the resolved policy `limits.gitTimeoutMs`; timeout or git failure is
+fail-closed. Validation includes untracked policy surface and the cached/index
+state: any staged index path is rejected, so a command cannot hide a side effect
+by staging a mutation and restoring the working tree.
 
 `hitch_lifecycle_events` records `closed`, `cancelled`, `reopened`,
 `pr_adopted`, and `updated` reasons with actor/timestamp for audit. It is not a

@@ -97,6 +97,20 @@ export class HitchOrchestrator {
           steps.push({ step: i, decision: finalDecision, action: "defer", detail: String(r.deferred) });
           continue;
         }
+        if (action.kind === "wait") {
+          steps.push({
+            step: i,
+            decision: finalDecision,
+            action: "wait",
+            detail: action.reason,
+          });
+          return {
+            hitchId: input.hitchId,
+            outcome: "waiting",
+            steps,
+            finalDecision,
+          };
+        }
         // Halt before the close/PR step when the caller only means to advance
         // the work (e.g. classify --then-rerun): reaching close_ready is the
         // signal to stop; opening the PR is a deliberate, separate step.

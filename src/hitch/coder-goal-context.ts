@@ -2,6 +2,22 @@ import type { HitchFinding } from "./types.js";
 
 /** Default cap on findings injected into a coder rerun goal (keeps the prompt bounded). */
 const DEFAULT_MAX_INJECTED_FINDINGS = 25;
+const DEFAULT_MAX_INJECTED_CLOSE_CHECKS = 10;
+const DEFAULT_MAX_CLOSE_CHECK_OUTPUT_CHARS = 4000;
+
+export interface CloseCheckFailureContext {
+  conditionId: string;
+  conditionKind: string;
+  description?: string;
+  command?: string;
+  exitCode?: number;
+  timedOut?: boolean;
+  message?: string;
+  stdout?: string;
+  stderr?: string;
+  stdoutPath?: string;
+  stderrPath?: string;
+}
 
 function renderFinding(finding: HitchFinding): string {
   const where =
@@ -44,6 +60,74 @@ export function augmentGoalWithOpenFindings(
     "",
     "Apply fixes for these specific findings raised by review on top of the previous attempt:",
     bullets.join("\n"),
+  ].join("\n");
+}
+
+function clipOutput(value: string): string {
+  if (value.length <= DEFAULT_MAX_CLOSE_CHECK_OUTPUT_CHARS) return value;
+  return value.slice(value.length - DEFAULT_MAX_CLOSE_CHECK_OUTPUT_CHARS);
+}
+
+function renderCloseCheckFailure(failure: CloseCheckFailureContext): string {
+  const description =
+    failure.description !== undefined && failure.description.trim() !== ""
+      ? ` (${failure.description.trim()})`
+      : "";
+  const parts = [
+    `- ${failure.conditionId}${description} [${failure.conditionKind}]`,
+  ];
+  if (failure.command !== undefined && failure.command.trim() !== "") {
+    parts.push(`  command: ${failure.command.trim()}`);
+  }
+  if (failure.exitCode !== undefined || failure.timedOut !== undefined) {
+    parts.push(
+      `  result: exitCode=${failure.exitCode ?? "(unknown)"}, ` +
+        `timedOut=${failure.timedOut ?? "(unknown)"}`,
+    );
+  }
+  if (failure.message !== undefined && failure.message.trim() !== "") {
+    parts.push(`  message: ${failure.message.trim()}`);
+  }
+  if (failure.stdoutPath !== undefined && failure.stdoutPath.trim() !== "") {
+    parts.push(`  stdoutPath: ${failure.stdoutPath.trim()}`);
+  }
+  if (failure.stderrPath !== undefined && failure.stderrPath.trim() !== "") {
+    parts.push(`  stderrPath: ${failure.stderrPath.trim()}`);
+  }
+  if (failure.stdout !== undefined && failure.stdout.trim() !== "") {
+    parts.push(["  stdout:", clipOutput(failure.stdout).trimEnd()].join("\n"));
+  }
+  if (failure.stderr !== undefined && failure.stderr.trim() !== "") {
+    parts.push(["  stderr:", clipOutput(failure.stderr).trimEnd()].join("\n"));
+  }
+  return parts.join("\n");
+}
+
+/**
+ * Append failed close-check command evidence to the coder goal. This carries the
+ * deterministic command result into the next rerun without trusting an LLM
+ * summary or requiring the coder to discover logs outside the repo.
+ */
+export function augmentGoalWithFailedCloseChecks(
+  goal: string,
+  failures: readonly CloseCheckFailureContext[],
+  maxFailures: number = DEFAULT_MAX_INJECTED_CLOSE_CHECKS,
+): string {
+  if (failures.length === 0) return goal;
+  const shown = failures.slice(0, maxFailures);
+  const blocks = shown.map(renderCloseCheckFailure);
+  if (failures.length > shown.length) {
+    blocks.push(
+      `- and ${failures.length - shown.length} more failed close-check(s) not shown`,
+    );
+  }
+  return [
+    goal,
+    "",
+    "## Failed close-check evidence to address",
+    "",
+    "Fix the cause of these required close-check failures before rerunning the checks:",
+    blocks.join("\n"),
   ].join("\n");
 }
 

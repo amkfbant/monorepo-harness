@@ -3,6 +3,8 @@ import { gitCliOrThrow } from "./git-cli.js";
 export interface DiffResult {
   /** tracked-file changes between baseSha and the working tree */
   trackedChangedPaths: string[];
+  /** staged/index changes between baseSha and the git index */
+  stagedChangedPaths: string[];
   /**
    * Files present in the working tree but not yet tracked.
    * .gitignore is NOT honored here — callers must apply their own
@@ -54,6 +56,10 @@ export async function collectDiff(opts: DiffOpts): Promise<DiffResult> {
     [...DIFF_BASE_ARGS, "--name-only", "-z", opts.baseSha],
     g,
   );
+  const staged = await gitCliOrThrow(
+    [...DIFF_BASE_ARGS, "--cached", "--name-only", "-z", opts.baseSha],
+    g,
+  );
   // NOTE: no --exclude-standard so .gitignore'd files still surface.
   // Filtering belongs in the harness (policy.ignoreUntracked) so codex
   // cannot hide behavior in throwaway / generated files.
@@ -64,6 +70,7 @@ export async function collectDiff(opts: DiffOpts): Promise<DiffResult> {
   const patch = await gitCliOrThrow([...DIFF_BASE_ARGS, opts.baseSha], g);
   return {
     trackedChangedPaths: parseNullSeparated(tracked),
+    stagedChangedPaths: parseNullSeparated(staged),
     untrackedPaths: parseNullSeparated(untracked),
     patch,
   };
