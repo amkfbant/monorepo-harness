@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { harnessPaths } from "../config/paths.js";
 import { withManagedDb } from "../db/managed-connection.js";
@@ -14,12 +15,14 @@ import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
 import { partitionUntracked } from "../policy/untracked-filter.js";
 import type { ResolvedCommand } from "../policy/schema.js";
+import { containsLikelySecret } from "../reporter/secret-scan.js";
 import { evaluateCloseConditions } from "./close-checks.js";
 import {
   lastCloseCheckInvalidatingMutationAt,
 } from "./convergence.js";
 import { HitchRepository } from "./repository.js";
 import type {
+  HitchCloseCheckStatus,
   HitchAttemptType,
   HitchCloseCondition,
   HitchSession,
@@ -53,6 +56,12 @@ interface LatestCodingRun {
 }
 
 const CODING_ATTEMPT_TYPES = new Set<HitchAttemptType>(["implement", "rerun"]);
+const RUNNABLE_CLOSE_CHECK_STATUSES = new Set<HitchCloseCheckStatus>([
+  "pending",
+  "skipped",
+  "unknown",
+]);
+const CLOSE_CHECK_LOG_EXCERPT_BYTES = 8 * 1024;
 
 function latestCodingRun(repo: HitchRepository, hitchId: string): LatestCodingRun {
   const attempts = repo.listAttempts(hitchId);
@@ -95,11 +104,19 @@ async function assertWorktreeMatchesReviewed(opts: {
   runId: string;
   reviewedPaths: string[];
   phase: string;
+  gitTimeoutMs: number;
 }): Promise<void> {
   const diff = await collectDiff({
     repoPath: opts.worktreePath,
     baseSha: opts.baseSha,
+    timeoutMs: opts.gitTimeoutMs,
   });
+  if (diff.stagedChangedPaths.length > 0) {
+    throw new Error(
+      `close-check ${opts.phase} staged index contains path(s): ` +
+        diff.stagedChangedPaths.join(", "),
+    );
+  }
   const { kept } = partitionUntracked(diff.untrackedPaths, opts.ignoreUntracked);
   assertPathsSubset(
     [...diff.trackedChangedPaths, ...kept],
@@ -177,23 +194,51 @@ function pendingCommandCloseConditions(input: {
     }),
     allowEmptyCloseConditions: input.session.policy.allowEmptyCloseConditions,
   });
-  // Only REQUIRED, PENDING command conditions gate close.
+  // Only REQUIRED, runnable command conditions gate close.
   // - required: optional/advisory conditions never block close, and running a
   //   non-allowlisted optional command would throw before the required evidence
   //   is recorded (review finding P1).
-  // - pending only: a `failed` condition was already checked against the
-  //   current run and routes to needs_fix (coder rerun); re-running it here
-  //   would re-execute a known-failed check and could overwrite the failed
-  //   evidence with a passed one on the same run (review finding P1, retry 2).
-  //   A fresh run invalidates the stale check back to `pending`.
+  // - pending/skipped/unknown: `skipped`/`unknown` are inconclusive required
+  //   command evidence, so a deterministic re-run is safe and bounded.
+  // - not failed: a `failed` condition was already checked against the current
+  //   run and routes to needs_fix (coder rerun); re-running it here would
+  //   re-execute a known-failed check and could overwrite the failed evidence
+  //   with a passed one on the same run. A fresh run invalidates the stale check
+  //   back to `pending`.
   return close.conditions
     .filter(
       (evaluated) =>
         evaluated.condition.required &&
         evaluated.condition.kind === "command" &&
-        evaluated.status === "pending",
+        RUNNABLE_CLOSE_CHECK_STATUSES.has(evaluated.status),
     )
     .map((evaluated) => evaluated.condition);
+}
+
+const CLOSE_CHECK_OUTPUT_WITHHELD =
+  "[redacted: secret-shaped content detected; close-check output withheld]";
+
+// Read the tail of a close-check log for injection into the next coder prompt.
+// Fail-closed at the SOURCE: scan the FULL file buffer for secrets BEFORE the
+// 8KiB tail clip. Slicing first would let a secret sitting just before the tail
+// boundary lose its prefix/header (e.g. `ghp_`, `-----BEGIN PRIVATE KEY-----`)
+// while its suffix/body survives into the evidence and the coder prompt. Only
+// real, secret-free content is sliced and returned; on ANY match we return the
+// whole-stream withheld marker.
+async function readLogExcerpt(path: string): Promise<string> {
+  try {
+    const buffer = await readFile(path);
+    if (containsLikelySecret(buffer.toString("utf8"))) {
+      return CLOSE_CHECK_OUTPUT_WITHHELD;
+    }
+    const sliced =
+      buffer.length > CLOSE_CHECK_LOG_EXCERPT_BYTES
+        ? buffer.subarray(buffer.length - CLOSE_CHECK_LOG_EXCERPT_BYTES)
+        : buffer;
+    return sliced.toString("utf8");
+  } catch (e) {
+    return `[unavailable: ${e instanceof Error ? e.message : String(e)}]`;
+  }
 }
 
 export async function runCommandCloseChecks(
@@ -294,6 +339,7 @@ export async function runCommandCloseChecks(
       runId: prep.runId,
       reviewedPaths: prep.reviewedPaths,
       phase: "baseline",
+      gitTimeoutMs: policy.limits.gitTimeoutMs,
     });
     const cmdRun = await runAllowedCommands({
       worktreePath,
@@ -312,9 +358,21 @@ export async function runCommandCloseChecks(
       runId: prep.runId,
       reviewedPaths: prep.reviewedPaths,
       phase: "post-command",
+      gitTimeoutMs: policy.limits.gitTimeoutMs,
     });
     const resultByCommandId = new Map(
       cmdRun.results.map((result) => [result.id, result]),
+    );
+    const logExcerptByCommandId = new Map(
+      await Promise.all(
+        cmdRun.results.map(async (result) => [
+          result.id,
+          {
+            stdoutTail: await readLogExcerpt(result.stdoutPath),
+            stderrTail: await readLogExcerpt(result.stderrPath),
+          },
+        ] as const),
+      ),
     );
 
     let passed = 0;
@@ -331,8 +389,15 @@ export async function runCommandCloseChecks(
         }
         const status =
           result.exitCode === 0 && !result.timedOut ? "passed" : "failed";
+        const excerpts = logExcerptByCommandId.get(item.command.id);
         if (status === "passed") passed += 1;
         else failed += 1;
+        // The resolved command is operator-defined policy, but gate it too:
+        // a secret-shaped allowlist command must not be persisted raw into DB
+        // evidence / attempt message (fail-closed, same guard as the output).
+        const safeCommand = containsLikelySecret(result.command)
+          ? "[redacted]"
+          : result.command;
         repo.recordCloseCheck({
           hitchId: input.hitchId,
           conditionId: item.condition.id,
@@ -342,17 +407,19 @@ export async function runCommandCloseChecks(
             runId: prep.runId,
             conditionKind: "command",
             policyCommandId: item.command.id,
-            command: result.command,
+            command: safeCommand,
             exitCode: result.exitCode,
             durationMs: result.durationMs,
             timedOut: result.timedOut,
             stdoutPath: result.stdoutPath,
             stderrPath: result.stderrPath,
+            stdoutTail: excerpts?.stdoutTail ?? "",
+            stderrTail: excerpts?.stderrTail ?? "",
           },
           message:
             status === "passed"
-              ? `command close-check passed: ${result.command}`
-              : `command close-check failed: ${result.command} ` +
+              ? `command close-check passed: ${safeCommand}`
+              : `command close-check failed: ${safeCommand} ` +
                 `(exit=${result.exitCode}, timedOut=${result.timedOut})`,
         });
       }

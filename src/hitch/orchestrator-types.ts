@@ -5,6 +5,7 @@ export type OrchestratorAction =
   | { kind: "close_check" } // continue + run_close_check: run deterministic command close checks
   | { kind: "classify" } // needs_classification: deterministic scope classification
   | { kind: "defer" } // continue/defer_followups: defer out-of-scope findings to backlog
+  | { kind: "wait"; reason: string } // continue/ask_human: wait for external evidence
   | { kind: "close_and_pr" } // close_ready: close the hitch then create the PR
   | { kind: "stop"; outcome: "closed" | "cancelled" } // already terminal
   | { kind: "escalate"; reason: string }; // diverging / budget / escalate / unsupported
@@ -67,6 +68,7 @@ export type OrchestrationOutcome =
   | "pr_created"
   | "merged"
   | "close_ready"
+  | "waiting"
   | "max_steps_exhausted";
 
 export interface HitchOrchestrationResult {

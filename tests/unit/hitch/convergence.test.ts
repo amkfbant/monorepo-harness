@@ -748,6 +748,115 @@ describe("ConvergenceService", () => {
     }
   });
 
+  it.each(["skipped", "unknown"] as const)(
+    "routes required command close checks with latest %s evidence back to the command runner",
+    (status) => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo);
+        repo.createAttempt({
+          hitchId: "goal-test",
+          attemptType: "implement",
+          status: "succeeded",
+          createdAt: "2026-06-13T00:00:00.000Z",
+        });
+        const cycle = repo.startReviewCycle({
+          hitchId: "goal-test",
+          cycleNumber: 1,
+          reviewMode: "initial",
+          createdAt: "2026-06-13T00:01:00.000Z",
+        });
+        repo.completeReviewCycle({
+          cycleId: cycle.cycleId,
+          completedAt: "2026-06-13T00:01:10.000Z",
+        });
+        repo.recordCloseCheck({
+          hitchId: "goal-test",
+          conditionId: "typecheck",
+          status,
+          checkedBy: "test",
+          checkedAt: "2026-06-13T00:02:00.000Z",
+        });
+
+        const result = service.evaluate("goal-test");
+        expect(result.decision).toBe("continue");
+        expect(result.recommendedNextAction.kind).toBe("run_close_check");
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("waits for external evidence when only manual close conditions remain pending", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, {
+        closeConditions: [
+          { id: "manual-signoff", kind: "manual", required: true },
+        ],
+      });
+      repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "implement",
+        status: "succeeded",
+        createdAt: "2026-06-13T00:00:00.000Z",
+      });
+      const cycle = repo.startReviewCycle({
+        hitchId: "goal-test",
+        cycleNumber: 1,
+        reviewMode: "initial",
+        createdAt: "2026-06-13T00:01:00.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle.cycleId,
+        completedAt: "2026-06-13T00:01:10.000Z",
+      });
+
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("continue");
+      expect(result.recommendedNextAction).toMatchObject({
+        kind: "ask_human",
+      });
+      expect(result.reason).toMatch(/external close-check evidence/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("runs pending command evidence before waiting on non-command evidence", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, {
+        closeConditions: [
+          { id: "typecheck", kind: "command", required: true },
+          { id: "artifact", kind: "artifact_exists", required: true },
+        ],
+      });
+      repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "implement",
+        status: "succeeded",
+        createdAt: "2026-06-13T00:00:00.000Z",
+      });
+      const cycle = repo.startReviewCycle({
+        hitchId: "goal-test",
+        cycleNumber: 1,
+        reviewMode: "initial",
+        createdAt: "2026-06-13T00:01:00.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle.cycleId,
+        completedAt: "2026-06-13T00:01:10.000Z",
+      });
+
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("continue");
+      expect(result.recommendedNextAction.kind).toBe("run_close_check");
+    } finally {
+      db.close();
+    }
+  });
+
   it("routes to a rerun (not review) when the latest coding attempt failed before review", () => {
     const { db, repo, service } = fresh();
     try {

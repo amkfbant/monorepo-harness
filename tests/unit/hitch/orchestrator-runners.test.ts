@@ -275,12 +275,12 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
     }
   });
 
-  it("escalates explicitly when approved review evidence is fresh but another required condition is pending", async () => {
+  it("refreshes review consensus and waits (no escalate) when a non-command required condition is pending", async () => {
     const { harnessRoot, dbPath } = createHarnessRoot(
       "harness-orch-review-pending-",
     );
     const hitchId = "g-approved-pending";
-    insertApprovedRunWithProcessedProposal({
+    const runId = insertApprovedRunWithProcessedProposal({
       dbPath,
       hitchId,
       closeConditions: [
@@ -301,7 +301,11 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
       reviewerRunner,
     });
 
-    await expect(runners.review(hitchId)).rejects.toThrow(/manual-signoff/);
+    // #184: the short-circuit refreshes review_consensus and does NOT throw on a
+    // remaining pending condition; convergence routes the non-command evidence
+    // (manual) to an operator wait (ask_human), not an escalation.
+    const result = await runners.review(hitchId);
+    expect(result).toEqual({ runId, decision: "approved" });
     expect(reviewerRunner.run).not.toHaveBeenCalled();
     const { db, close } = openManagedDb({ dbPath });
     try {
@@ -311,6 +315,10 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
       expect(repo.listCloseChecks(hitchId).map((c) => c.conditionId)).toEqual([
         "review-ok",
       ]);
+      const convergence = new ConvergenceService(repo).evaluate(hitchId);
+      expect(convergence.decision).toBe("continue");
+      expect(convergence.recommendedNextAction.kind).toBe("ask_human");
+      expect(convergence.recommendedNextAction.message).toMatch(/manual-signoff/);
     } finally {
       close();
     }
@@ -977,6 +985,48 @@ describe("createOrchestratorRunners.closeCheck", () => {
     }
   });
 
+  it.each(["skipped", "unknown"] as const)(
+    "re-runs a required command close check whose latest evidence is %s",
+    async (status) => {
+      const { harnessRoot, dbPath, worktreePath } = setupCloseCheckHarness();
+      await seedCloseCheckHitch(dbPath, worktreePath);
+      {
+        const { db, close } = openManagedDb({ dbPath });
+        try {
+          new HitchRepository(db).recordCloseCheck({
+            hitchId: "g-close-check",
+            conditionId: "typecheck",
+            status,
+            checkedBy: "test",
+            checkedAt: "2026-06-13T00:10:00.000Z",
+          });
+        } finally {
+          close();
+        }
+      }
+      const runners = createOrchestratorRunners({
+        dbPath,
+        harnessRoot,
+        createdBy: "worker",
+        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+        reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+        repoPath: worktreePath,
+        baseBranch: "main",
+      });
+
+      const result = await runners.closeCheck("g-close-check");
+
+      expect(result).toMatchObject({ checked: 1, passed: 1, failed: 0 });
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        const checks = new HitchRepository(db).listCloseChecks("g-close-check");
+        expect(checks.map((c) => c.status)).toEqual([status, "passed"]);
+      } finally {
+        close();
+      }
+    },
+  );
+
   it("fails closed when a command close check dirties the run worktree (#140 P1)", async () => {
     const { harnessRoot, dbPath, worktreePath } = setupCloseCheckHarness(
       [
@@ -1051,6 +1101,41 @@ describe("createOrchestratorRunners.closeCheck", () => {
     // tracked.txt is a reviewed path; rewriting its content drifts the run.
     await expect(runners.closeCheck("g-close-check")).rejects.toThrow(
       /drifted/,
+    );
+  });
+
+  it("fails closed when a command leaves a staged-only index mutation", async () => {
+    const script = [
+      "const fs = require('fs')",
+      "const cp = require('child_process')",
+      "fs.writeFileSync('reviewed.txt', 'MUTATED\\n')",
+      "cp.execFileSync('git', ['add', 'reviewed.txt'])",
+      "fs.writeFileSync('reviewed.txt', 'approved edit\\n')",
+    ].join(";");
+    const { harnessRoot, dbPath, worktreePath } = setupCloseCheckHarness(
+      [
+        "    commands:",
+        "      allow:",
+        "        - id: typecheck",
+        "          cmd: node",
+        `          args: ["-e", ${JSON.stringify(script)}]`,
+        "      defaults:",
+        "        timeout_ms: 30000",
+      ].join("\n"),
+    );
+    await seedCloseCheckHitch(dbPath, worktreePath);
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      repoPath: worktreePath,
+      baseBranch: "main",
+    });
+
+    await expect(runners.closeCheck("g-close-check")).rejects.toThrow(
+      /staged index/,
     );
   });
 
@@ -1621,6 +1706,93 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
     expect(captured).toContain("improve the profile feature");
     expect(captured).toContain("Previous attempt failed");
     expect(captured).toContain("failed-command");
+  });
+
+  it("injects failed close-check command output into the coder goal", async () => {
+    const { harnessRoot, dbPath, repoPath } = setupHarness();
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        runMigrations(db);
+        const repo = new HitchRepository(db);
+        repo.createSession({
+          hitchId: "g-close-fail-context",
+          title: "Close check context",
+          projectId: null,
+          repoId: "t",
+          domain: "apps/user",
+          closeConditions: [
+            { id: "typecheck", kind: "command", required: true },
+          ],
+          createdBy: "test",
+          createdSource: "worker",
+        });
+        repo.createAttempt({
+          hitchId: "g-close-fail-context",
+          attemptType: "implement",
+          status: "succeeded",
+          runId: "run-reviewed",
+          createdAt: "2026-06-13T00:00:00.000Z",
+        });
+        const cycle = repo.startReviewCycle({
+          hitchId: "g-close-fail-context",
+          cycleNumber: 1,
+          reviewMode: "initial",
+          createdAt: "2026-06-13T00:01:00.000Z",
+        });
+        repo.completeReviewCycle({
+          cycleId: cycle.cycleId,
+          completedAt: "2026-06-13T00:01:10.000Z",
+        });
+        repo.recordCloseCheck({
+          hitchId: "g-close-fail-context",
+          conditionId: "typecheck",
+          status: "failed",
+          checkedBy: "worker",
+          checkedAt: "2026-06-13T00:02:00.000Z",
+          evidence: {
+            conditionKind: "command",
+            command: "npm run typecheck",
+            exitCode: 2,
+            timedOut: false,
+            stdoutTail: "stdout from tsc",
+            stderrTail: "stderr from tsc",
+          },
+          message: "command close-check failed",
+        });
+      } finally {
+        close();
+      }
+    }
+    const resolveRunContext = (): HitchRunContext => ({
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "improve the profile feature",
+      baseBranch: "main",
+    });
+    let captured = "";
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: {
+        run: async (input) => {
+          captured = input.prompt;
+          return { exitCode: 0, timedOut: false, durationMs: 0 };
+        },
+      },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      resolveRunContext,
+    });
+
+    await runners.coder("g-close-fail-context");
+
+    expect(captured).toContain("Failed close-check evidence to address");
+    expect(captured).toContain("typecheck");
+    expect(captured).toContain("npm run typecheck");
+    expect(captured).toContain("stdout from tsc");
+    expect(captured).toContain("stderr from tsc");
   });
 });
 

@@ -5,7 +5,10 @@ import {
   type HitchFindingSummaryCounts,
   type HitchRepository,
 } from "./repository.js";
-import { evaluateCloseConditions } from "./close-checks.js";
+import {
+  evaluateCloseConditions,
+  type EvaluatedCloseCondition,
+} from "./close-checks.js";
 import type {
   HitchAttempt,
   HitchConvergenceDecision,
@@ -25,6 +28,16 @@ const UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLE_SET = new Set<
 >(UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES);
 const CLOSE_CHECK_ATTEMPT_TYPE = "close-check";
 const ADVISORY_FINDING_ID_LIMIT = 200;
+const RUNNABLE_CLOSE_CHECK_STATUSES = new Set([
+  "pending",
+  "skipped",
+  "unknown",
+]);
+
+interface PendingCloseCheckRouting {
+  hasRunnableCommand: boolean;
+  externalEvidenceLabels: string[];
+}
 
 export class ConvergenceService {
   constructor(private readonly repo: HitchRepository) {}
@@ -71,6 +84,10 @@ export class ConvergenceService {
         evaluated.condition.kind === "review_consensus" &&
         evaluated.status !== "passed",
     );
+    const pendingCloseCheckRouting = requiredPendingCloseCheckRouting(
+      close.conditions,
+      close.requiredPending,
+    );
     return decide(
       this.repo,
       session,
@@ -80,6 +97,7 @@ export class ConvergenceService {
       latestCodingFailed,
       isReviewPending(attempts, cycles, latestCodingFailed),
       reviewConsensusPending,
+      pendingCloseCheckRouting,
     );
   }
 }
@@ -234,6 +252,47 @@ function isReviewPending(
   return latestCodingAt > latestCycleAt;
 }
 
+function closeConditionLabel(
+  condition: EvaluatedCloseCondition["condition"],
+): string {
+  const description =
+    condition.description !== undefined && condition.description.trim() !== ""
+      ? ` (${condition.description.trim()})`
+      : "";
+  return `${condition.id}${description} [${condition.kind}]`;
+}
+
+function requiredPendingCloseCheckRouting(
+  conditions: EvaluatedCloseCondition[],
+  requiredPending: number,
+): PendingCloseCheckRouting {
+  let hasRunnableCommand = false;
+  const externalEvidenceLabels: string[] = [];
+  for (const evaluated of conditions) {
+    if (!evaluated.condition.required) continue;
+    if (evaluated.status === "passed" || evaluated.status === "failed") {
+      continue;
+    }
+    if (
+      evaluated.condition.kind === "command" &&
+      RUNNABLE_CLOSE_CHECK_STATUSES.has(evaluated.status)
+    ) {
+      hasRunnableCommand = true;
+      continue;
+    }
+    if (evaluated.condition.kind === "review_consensus") continue;
+    externalEvidenceLabels.push(closeConditionLabel(evaluated.condition));
+  }
+  if (
+    conditions.length === 0 &&
+    requiredPending > 0 &&
+    !hasRunnableCommand
+  ) {
+    externalEvidenceLabels.push("close conditions [none configured]");
+  }
+  return { hasRunnableCommand, externalEvidenceLabels };
+}
+
 export function lastCloseCheckInvalidatingMutationAt(input: {
   attempts: HitchAttempt[];
   latestFindingMutationAt: string | null;
@@ -268,6 +327,7 @@ function decide(
   latestCodingFailed: boolean,
   reviewPending: boolean,
   reviewConsensusPending: boolean,
+  pendingCloseCheckRouting: PendingCloseCheckRouting,
 ): HitchConvergenceResult {
   const terminal = terminalDecision(session.status);
   if (terminal !== null) {
@@ -516,6 +576,34 @@ function decide(
       {
         kind: "run_review",
         message: "Refresh the review consensus close-check for this run.",
+      },
+    );
+  }
+
+  if (pendingCloseCheckRouting.hasRunnableCommand) {
+    return result(
+      session.hitchId,
+      "continue",
+      "more validation required",
+      metrics,
+      {
+        kind: "run_close_check",
+        message: "Record command close-check evidence.",
+      },
+    );
+  }
+
+  if (pendingCloseCheckRouting.externalEvidenceLabels.length > 0) {
+    return result(
+      session.hitchId,
+      "continue",
+      "external close-check evidence required",
+      metrics,
+      {
+        kind: "ask_human",
+        message:
+          "Record external close-check evidence for: " +
+          pendingCloseCheckRouting.externalEvidenceLabels.join(", "),
       },
     );
   }
