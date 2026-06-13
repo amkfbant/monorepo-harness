@@ -454,15 +454,12 @@ export function tryShortCircuitApprovedDecidedReview(input: {
     });
   }
 
-  const pending = pendingRequiredCloseConditionLabels(repo, session);
-  if (pending.length > 0) {
-    throw new Error(
-      `approved run ${input.runId} already decided; review_consensus was ` +
-        `refreshed, but required close conditions are still pending: ` +
-        `${pending.join(", ")}`,
-    );
-  }
-
+  // Do NOT escalate here when other required conditions are still pending.
+  // After refreshing the review_consensus evidence, let convergence re-evaluate
+  // and route the remaining pending conditions deterministically: a pending
+  // command close-check → run_close_check (auto-run), non-command/external
+  // evidence (manual/artifact/operation) → operator wait (ask_human). Throwing
+  // here would mis-escalate an auto-satisfiable command close-check (#184).
   const convergence = new ConvergenceService(repo).evaluate(input.hitchId);
   recordConvergenceDecisionWithStatus({
     repository: repo,
@@ -475,25 +472,6 @@ export function tryShortCircuitApprovedDecidedReview(input: {
   });
 
   return { runId: input.runId, decision: "approved" };
-}
-
-function pendingRequiredCloseConditionLabels(
-  repo: HitchRepository,
-  session: HitchSession,
-): string[] {
-  const close = evaluateCloseConditions({
-    conditions: session.closeConditions,
-    checks: repo.listCloseChecks(session.hitchId),
-    findingCounts: repo.countFindingSummary(session.hitchId),
-    freshAfter: closeCheckFreshAfter(repo, session.hitchId),
-    allowEmptyCloseConditions: session.policy.allowEmptyCloseConditions,
-  });
-  return close.conditions
-    .filter(
-      (condition) =>
-        condition.condition.required && condition.status === "pending",
-    )
-    .map((condition) => closeConditionLabel(condition.condition));
 }
 
 function closeConditionLabel(condition: HitchCloseCondition): string {

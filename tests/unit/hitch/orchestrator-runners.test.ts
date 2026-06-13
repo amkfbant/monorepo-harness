@@ -275,12 +275,12 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
     }
   });
 
-  it("escalates explicitly when approved review evidence is fresh but another required condition is pending", async () => {
+  it("refreshes review consensus and waits (no escalate) when a non-command required condition is pending", async () => {
     const { harnessRoot, dbPath } = createHarnessRoot(
       "harness-orch-review-pending-",
     );
     const hitchId = "g-approved-pending";
-    insertApprovedRunWithProcessedProposal({
+    const runId = insertApprovedRunWithProcessedProposal({
       dbPath,
       hitchId,
       closeConditions: [
@@ -301,7 +301,11 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
       reviewerRunner,
     });
 
-    await expect(runners.review(hitchId)).rejects.toThrow(/manual-signoff/);
+    // #184: the short-circuit refreshes review_consensus and does NOT throw on a
+    // remaining pending condition; convergence routes the non-command evidence
+    // (manual) to an operator wait (ask_human), not an escalation.
+    const result = await runners.review(hitchId);
+    expect(result).toEqual({ runId, decision: "approved" });
     expect(reviewerRunner.run).not.toHaveBeenCalled();
     const { db, close } = openManagedDb({ dbPath });
     try {
@@ -311,6 +315,10 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
       expect(repo.listCloseChecks(hitchId).map((c) => c.conditionId)).toEqual([
         "review-ok",
       ]);
+      const convergence = new ConvergenceService(repo).evaluate(hitchId);
+      expect(convergence.decision).toBe("continue");
+      expect(convergence.recommendedNextAction.kind).toBe("ask_human");
+      expect(convergence.recommendedNextAction.message).toMatch(/manual-signoff/);
     } finally {
       close();
     }

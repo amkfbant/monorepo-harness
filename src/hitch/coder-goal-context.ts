@@ -1,4 +1,5 @@
 import type { HitchFinding } from "./types.js";
+import { scanForSecrets } from "../reporter/secret-scan.js";
 
 /** Default cap on findings injected into a coder rerun goal (keeps the prompt bounded). */
 const DEFAULT_MAX_INJECTED_FINDINGS = 25;
@@ -63,9 +64,28 @@ export function augmentGoalWithOpenFindings(
   ].join("\n");
 }
 
+// Redact secret-shaped lines before the close-check output is injected into the
+// next Codex prompt. An allowlisted command can print tokens/keys; this output
+// does NOT pass through the run's codex-events redaction, so scrub it here
+// (line-granular so genuine error lines stay useful). Mirrors the harness's
+// secret-scan heuristics; fail-safe = drop the whole line on any match.
+function redactSecretLines(value: string): string {
+  return value
+    .split("\n")
+    .map((line) =>
+      scanForSecrets("", line).matched
+        ? "[redacted: secret-shaped output withheld]"
+        : line,
+    )
+    .join("\n");
+}
+
 function clipOutput(value: string): string {
-  if (value.length <= DEFAULT_MAX_CLOSE_CHECK_OUTPUT_CHARS) return value;
-  return value.slice(value.length - DEFAULT_MAX_CLOSE_CHECK_OUTPUT_CHARS);
+  const clipped =
+    value.length <= DEFAULT_MAX_CLOSE_CHECK_OUTPUT_CHARS
+      ? value
+      : value.slice(value.length - DEFAULT_MAX_CLOSE_CHECK_OUTPUT_CHARS);
+  return redactSecretLines(clipped);
 }
 
 function renderCloseCheckFailure(failure: CloseCheckFailureContext): string {

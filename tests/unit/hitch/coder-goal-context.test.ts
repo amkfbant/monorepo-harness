@@ -130,4 +130,25 @@ describe("augmentGoalWithFailedCloseChecks", () => {
     expect(out).toContain("stderr:");
     expect(out).toContain("error TS1005");
   });
+
+  it("redacts secret-shaped lines from injected command output", () => {
+    const out = augmentGoalWithFailedCloseChecks("do the thing", [
+      {
+        conditionId: "typecheck",
+        conditionKind: "command",
+        command: "npm run typecheck",
+        exitCode: 1,
+        timedOut: false,
+        stdout: "harmless line\nAWS_KEY=AKIAIOSFODNN7EXAMPLE\nanother harmless line",
+        stderr: "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 leaked",
+      },
+    ]);
+
+    // secret-shaped lines are withheld; non-secret lines stay for the coder.
+    expect(out).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(out).not.toContain("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+    expect(out).toContain("[redacted: secret-shaped output withheld]");
+    expect(out).toContain("harmless line");
+    expect(out).toContain("another harmless line");
+  });
 });
