@@ -1,15 +1,20 @@
+import { existsSync } from "node:fs";
+import { dirname } from "node:path";
 import type Database from "better-sqlite3";
 import { openManagedDb, withManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import { SourceModeError } from "../db/errors.js";
+import { runFullImport } from "../db/import-files.js";
 import {
   BacklogRepository,
   getItemWithRuns,
+  type BacklogItemFilter,
 } from "../db/repositories/backlog.js";
 import { exportBacklogItem } from "../db/export-files.js";
 import {
   BacklogError,
+  listItems,
   setItemStatus,
   recordBacklogRun,
   showItem,
@@ -64,6 +69,8 @@ export interface BacklogWriteResult {
   exportWarning?: string;
 }
 
+export type BacklogReadFilter = BacklogItemFilter;
+
 const PRIORITIES: readonly BacklogPriority[] = ["high", "medium", "low"];
 
 /**
@@ -111,6 +118,59 @@ export async function addBacklogItem(
       fsFloor,
     );
     return result(toItem(record), exportItem(db, record.id, ctx.backlogDir));
+  });
+}
+
+/**
+ * List backlog items through the DB-canonical read path when the harness DB
+ * exists. Before the read, import/refresh file-derived legacy rows so
+ * file-only backlog items stay visible alongside DB-first rows. Old harness
+ * roots without `.harness/harness.sqlite` keep the previous file-only path.
+ */
+export async function listBacklogItems(
+  ctx: BacklogDbContext,
+  filter: BacklogReadFilter = {},
+): Promise<BacklogItem[]> {
+  if (!existsSync(ctx.dbPath)) {
+    // repo scoping is resolved through the DB (project→repo). Without a DB we
+    // cannot honour it, so fail closed rather than silently returning nothing.
+    if (filter.repoId !== undefined) {
+      throw new BacklogError(
+        "backlog --repo-id filter requires the harness DB; none found at this root",
+      );
+    }
+    return filterFileItems(await listItems(ctx.backlogDir, filter.status), filter);
+  }
+  return withManagedDb({ dbPath: ctx.dbPath }, (db) => {
+    runMigrations(db);
+    runFullImport(db, { harnessRoot: harnessRootOf(ctx), reset: true });
+    return new BacklogRepository(db)
+      .listItemsWithRuns(filter)
+      .map((record) => toItem(record));
+  });
+}
+
+/**
+ * Show one backlog item through the DB-canonical read path. Old roots without
+ * a DB keep the legacy YAML reader. When the DB exists it is canonical: the
+ * refresh import pulls every legacy file in first, so a missing record means
+ * the item genuinely does not exist — we never fall back to the file reader,
+ * which could otherwise surface a stale/unimported row off the DB path.
+ */
+export async function showBacklogItem(
+  ctx: BacklogDbContext,
+  itemId: string,
+): Promise<BacklogItem> {
+  assertItemId(itemId);
+  if (!existsSync(ctx.dbPath)) return showItem(ctx.backlogDir, itemId);
+  return withManagedDb({ dbPath: ctx.dbPath }, (db) => {
+    runMigrations(db);
+    runFullImport(db, { harnessRoot: harnessRootOf(ctx), reset: true });
+    const record = new BacklogRepository(db).getItemWithRuns(itemId);
+    if (record === null) {
+      throw new BacklogError(`backlog item ${itemId} not found`);
+    }
+    return toItem(record);
   });
 }
 
@@ -279,6 +339,22 @@ function requireItem(db: Database.Database, itemId: string): BacklogItem {
 function toItem(record: BacklogItem & { sourceMode?: string }): BacklogItem {
   const { sourceMode: _sourceMode, ...item } = record;
   return item;
+}
+
+function harnessRootOf(ctx: BacklogDbContext): string {
+  return dirname(ctx.backlogDir);
+}
+
+function filterFileItems(
+  items: BacklogItem[],
+  filter: BacklogReadFilter,
+): BacklogItem[] {
+  // repoId is rejected before this point when no DB exists, so only the
+  // project filter applies here.
+  return items.filter(
+    (item) =>
+      filter.projectId === undefined || item.projectId === filter.projectId,
+  );
 }
 
 /** Build a `BacklogWriteResult`, attaching `exportWarning` only when set. */

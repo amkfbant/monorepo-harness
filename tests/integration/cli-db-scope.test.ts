@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { harnessPaths } from "../../src/config/paths.js";
@@ -97,6 +103,36 @@ function moveLatestMetricsSnapshotTo(root: string, createdAt: string): void {
   } finally {
     handle.close();
   }
+}
+
+function writeBacklogYaml(
+  root: string,
+  input: {
+    id: string;
+    status: "open" | "doing" | "done" | "deferred";
+    title: string;
+    projectId?: string;
+  },
+): void {
+  mkdirSync(join(root, "backlog", input.status), { recursive: true });
+  writeFileSync(
+    join(root, "backlog", input.status, `${input.id}.yaml`),
+    [
+      `id: ${input.id}`,
+      `title: ${input.title}`,
+      "domain: apps/web",
+      "goal: g",
+      `status: ${input.status}`,
+      "priority: medium",
+      "tags:",
+      "  - legacy",
+      ...(input.projectId !== undefined ? [`projectId: ${input.projectId}`] : []),
+      "createdAt: 2026-05-21T00:00:00Z",
+      "linkedRuns:",
+      "  - run-20260521-apps-web-aaa",
+      "",
+    ].join("\n"),
+  );
 }
 
 function metricsSnapshotCount(root: string): number {
@@ -332,6 +368,153 @@ describe("CLI project-scoped DB queries (Phase 6-6)", () => {
     ]);
     expect(done.code).toBe(0);
     expect((JSON.parse(done.out) as { items: unknown[] }).items).toHaveLength(0);
+  });
+
+  it("backlog list/show read DB-only db-first items before exported YAML exists", () => {
+    const root = setup();
+    const added = runCli(root, [
+      "backlog",
+      "add",
+      "--title",
+      "db only",
+      "--domain",
+      "apps/web",
+      "--goal",
+      "fix the canonical read path",
+      "--tags",
+      "db,read",
+    ]);
+    expect(added.code).toBe(0);
+    const itemId = added.out.match(/added (item-\d{8}-\d{3})/)?.[1];
+    expect(itemId).toBeDefined();
+    unlinkSync(join(root, "backlog", "open", `${itemId}.yaml`));
+
+    const listed = runCli(root, ["backlog", "list", "--json"]);
+    expect(listed.code).toBe(0);
+    const payload = JSON.parse(listed.out) as {
+      items: {
+        itemId: string;
+        title: string;
+        goal: string;
+        status: string;
+        tags: string[];
+        linkedRuns: string[];
+        createdAt: string;
+      }[];
+    };
+    expect(payload.items).toEqual([
+      expect.objectContaining({
+        itemId,
+        title: "db only",
+        goal: "fix the canonical read path",
+        status: "open",
+        tags: ["db", "read"],
+        linkedRuns: [],
+      }),
+    ]);
+    expect(payload.items[0].createdAt).toMatch(/^20/);
+
+    const shown = runCli(root, ["backlog", "show", "--item-id", itemId!]);
+    expect(shown.code).toBe(0);
+    expect(shown.out).toContain("Title: db only");
+    expect(shown.out).toContain("Goal:\n  fix the canonical read path");
+  });
+
+  it("backlog done status is visible from DB even when export fails", () => {
+    const root = setup();
+    const added = runCli(root, [
+      "backlog",
+      "add",
+      "--title",
+      "finish me",
+      "--domain",
+      "apps/web",
+      "--goal",
+      "complete the item",
+    ]);
+    expect(added.code).toBe(0);
+    const itemId = added.out.match(/added (item-\d{8}-\d{3})/)?.[1];
+    expect(itemId).toBeDefined();
+    rmSync(join(root, "backlog", "done"), { recursive: true, force: true });
+    writeFileSync(join(root, "backlog", "done"), "not a directory\n");
+
+    const done = runCli(root, ["backlog", "done", "--item-id", itemId!]);
+    expect(done.code).toBe(0);
+    expect(done.out).toContain(`${itemId} → done`);
+
+    const listed = runCli(root, ["backlog", "list", "--status", "done", "--json"]);
+    expect(listed.code).toBe(0);
+    expect(
+      (JSON.parse(listed.out) as { items: { itemId: string; status: string }[] })
+        .items,
+    ).toEqual([expect.objectContaining({ itemId, status: "done" })]);
+    const shown = runCli(root, ["backlog", "show", "--item-id", itemId!]);
+    expect(shown.code).toBe(0);
+    expect(shown.out).toContain("Status: done");
+  });
+
+  it("backlog list imports legacy file rows and still includes db-first rows", () => {
+    const root = setup();
+    writeBacklogYaml(root, {
+      id: "item-20260521-001",
+      status: "open",
+      title: "legacy file",
+      projectId: "demo",
+    });
+    const added = runCli(root, [
+      "backlog",
+      "add",
+      "--title",
+      "db item",
+      "--domain",
+      "apps/web",
+      "--goal",
+      "g",
+    ]);
+    expect(added.code).toBe(0);
+    const dbItemId = added.out.match(/added (item-\d{8}-\d{3})/)?.[1];
+    expect(dbItemId).toBeDefined();
+    unlinkSync(join(root, "backlog", "open", `${dbItemId}.yaml`));
+
+    const listed = runCli(root, ["backlog", "list", "--status", "open", "--json"]);
+    expect(listed.code).toBe(0);
+    const { items } = JSON.parse(listed.out) as {
+      items: { itemId: string; title: string }[];
+    };
+    expect(items).toEqual([
+      expect.objectContaining({ itemId: dbItemId, title: "db item" }),
+      expect.objectContaining({
+        itemId: "item-20260521-001",
+        title: "legacy file",
+      }),
+    ]);
+  });
+
+  it("backlog list falls back to files when the harness DB is absent", () => {
+    const root = setup();
+    rmSync(join(root, ".harness"), { recursive: true, force: true });
+    writeBacklogYaml(root, {
+      id: "item-20260521-001",
+      status: "open",
+      title: "file fallback",
+    });
+
+    const listed = runCli(root, ["backlog", "list", "--json"]);
+    expect(listed.code).toBe(0);
+    expect((JSON.parse(listed.out) as { items: unknown[] }).items).toEqual([
+      expect.objectContaining({
+        itemId: "item-20260521-001",
+        title: "file fallback",
+      }),
+    ]);
+    const shown = runCli(root, [
+      "backlog",
+      "show",
+      "--item-id",
+      "item-20260521-001",
+    ]);
+    expect(shown.code).toBe(0);
+    expect(shown.out).toContain("Title: file fallback");
   });
 
   it("metrics summary --project --since is accepted (date filter threaded)", () => {

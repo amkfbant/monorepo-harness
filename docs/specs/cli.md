@@ -248,10 +248,19 @@ harness backlog done --item-id <id>
 harness backlog defer --item-id <id>
 ```
 
-- item は `backlog/<status>/item-YYYYMMDD-NNN.yaml`（status = open / doing / done / deferred、ディレクトリが status の source of truth）。`backlog/` は harness root 直下、gitignore 対象
+- item は DB の `backlog_items` / `backlog_run_links` が source of truth。
+  `backlog/<status>/item-YYYYMMDD-NNN.yaml` は compatibility export（status =
+  open / doing / done / deferred）。`.harness/harness.sqlite` がまだ無い旧 root
+  では read は従来どおり file に fallback する
 - `backlog run` は item の domain + goal で run を起動（default `reviewed-run`、`--workflow run` で単発 run）。完了後、item の `linkedRuns` に runId を追記し item を `doing` へ移動する
 - link は **backlog 側（item の `linkedRuns`）にのみ**保持する。run の meta.json は patch しない（並行 review/cleanup と競合しないため）。`harness run show` は backlog を走査し `linkedRuns` に当該 runId を含む item を逆引きして表示する
-- `backlog list --project` / `--repo-id`（Phase 6）は DB read model 経由で絞る（指定時は files から DB を再構築してから集計）。`--status` は scoped path でも効く。scope 無しは従来の file-based 一覧
+- `backlog list` / `backlog show` は DB を読む。read 前に file 由来の
+  legacy backlog を DB に refresh するため、未 import の legacy YAML と
+  DB-only の db-first row（export 前 / export 失敗）は同じ一覧・詳細で見える。
+  `--status` / `--project` / `--repo-id` はこの DB read に渡される
+- `backlog list --json` は `{ items, byStatus }`。`items[]` は
+  `itemId` / `domain` / `title` / `goal` / `status` / `priority` / `tags` /
+  `createdAt` / `linkedRuns` / `projectId` を返す
 - `backlog run` は item に `projectId` があれば project mode で起動（`--repo-id` は不要）、無ければ `--repo` + `--repo-id` 必須（Phase 6-1）
 
 ## `harness db`

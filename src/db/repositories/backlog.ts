@@ -34,6 +34,13 @@ export interface BacklogItemRecord extends BacklogItem {
   sourceMode: string;
 }
 
+/** Filters supported by full backlog item reads. */
+export interface BacklogItemFilter {
+  status?: BacklogStatus;
+  projectId?: string;
+  repoId?: string;
+}
+
 /** Fields needed to create a backlog item; the id is allocated here. */
 export interface InsertItemInput {
   domain: string;
@@ -58,6 +65,10 @@ interface ItemRow {
   source_mode: string;
 }
 
+interface ItemWithRunRow extends ItemRow {
+  run_id: string | null;
+}
+
 export class BacklogRepository {
   constructor(private readonly db: Database.Database) {}
 
@@ -72,6 +83,43 @@ export class BacklogRepository {
       .get(itemId) as ItemRow | undefined;
     if (row === undefined) return null;
     return { ...rowToItem(row), sourceMode: row.source_mode };
+  }
+
+  /** A single item with its linked runs and source mode, or null. */
+  getItemWithRuns(itemId: string): BacklogItemRecord | null {
+    const item = this.getItem(itemId);
+    if (item === null) return null;
+    const links = this.db
+      .prepare(
+        "SELECT run_id FROM backlog_run_links WHERE item_id = ? ORDER BY linked_at, run_id",
+      )
+      .all(itemId) as { run_id: string }[];
+    return { ...item, linkedRuns: links.map((l) => l.run_id) };
+  }
+
+  /** Full backlog items, including goal/tags/createdAt/linkedRuns. */
+  listItemsWithRuns(filter: BacklogItemFilter = {}): BacklogItemRecord[] {
+    const { whereSql, params } = backlogWhere(filter);
+    const rows = this.db
+      .prepare(
+        `SELECT b.item_id, b.project_id, b.domain, b.title, b.goal, b.status,
+                b.priority, b.tags_json, b.created_at, b.source_mode, l.run_id
+           FROM backlog_items b
+           LEFT JOIN backlog_run_links l ON l.item_id = b.item_id
+           ${whereSql}
+          ORDER BY b.item_id DESC, l.linked_at, l.run_id`,
+      )
+      .all(...params) as ItemWithRunRow[];
+    const byId = new Map<string, BacklogItemRecord>();
+    for (const row of rows) {
+      let item = byId.get(row.item_id);
+      if (item === undefined) {
+        item = { ...rowToItem(row), sourceMode: row.source_mode };
+        byId.set(row.item_id, item);
+      }
+      if (row.run_id !== null) item.linkedRuns.push(row.run_id);
+    }
+    return Array.from(byId.values());
   }
 
   /**
@@ -281,15 +329,31 @@ export function getItemWithRuns(
   db: Database.Database,
   itemId: string,
 ): BacklogItemRecord | null {
-  const repo = new BacklogRepository(db);
-  const item = repo.getItem(itemId);
-  if (item === null) return null;
-  const links = db
-    .prepare(
-      "SELECT run_id FROM backlog_run_links WHERE item_id = ? ORDER BY linked_at, run_id",
-    )
-    .all(itemId) as { run_id: string }[];
-  return { ...item, linkedRuns: links.map((l) => l.run_id) };
+  return new BacklogRepository(db).getItemWithRuns(itemId);
+}
+
+function backlogWhere(filter: BacklogItemFilter): {
+  whereSql: string;
+  params: unknown[];
+} {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (filter.status !== undefined) {
+    clauses.push("b.status = ?");
+    params.push(filter.status);
+  }
+  if (filter.projectId !== undefined) {
+    clauses.push("b.project_id = ?");
+    params.push(filter.projectId);
+  }
+  if (filter.repoId !== undefined) {
+    clauses.push("b.repo_id = ?");
+    params.push(filter.repoId);
+  }
+  return {
+    whereSql: clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "",
+    params,
+  };
 }
 
 function normaliseStatus(s: string): BacklogStatus {

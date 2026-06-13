@@ -56,6 +56,21 @@ export function importBacklog(
   for (const status of STATUS_DIRS) {
     const dir = join(backlogDir, status);
     if (!existsSync(dir)) continue;
+    try {
+      if (!statSync(dir).isDirectory()) {
+        recordImportError(
+          db,
+          counters,
+          dir,
+          "backlog",
+          "backlog status path is not a directory",
+        );
+        continue;
+      }
+    } catch (e) {
+      recordImportError(db, counters, dir, "backlog", (e as Error).message);
+      continue;
+    }
     for (const file of readdirSync(dir).filter((f) => f.endsWith(".yaml"))) {
       const path = join(dir, file);
       let doc: Record<string, unknown>;
@@ -89,7 +104,8 @@ export function importBacklog(
       }
       // the source file's mtime keeps re-imports of an unchanged item
       // idempotent (no wall-clock time enters the row).
-      const mtime = new Date(statSync(path).mtimeMs).toISOString();
+      const mtimeMs = statSync(path).mtimeMs;
+      const mtime = new Date(mtimeMs).toISOString();
       const tags = Array.isArray(doc.tags)
         ? doc.tags.filter((t): t is string => typeof t === "string")
         : [];
@@ -133,7 +149,12 @@ export function importBacklog(
           ).run(id);
         }
         deleteLinks.run(id);
-        for (const runId of links) insertLink.run(id, runId, mtime);
+        // give each link a per-index timestamp so the read side (ordered by
+        // linked_at) preserves the YAML array order instead of falling back
+        // to lexical run_id order; stays idempotent since mtimeMs is stable.
+        links.forEach((runId, i) =>
+          insertLink.run(id, runId, new Date(mtimeMs + i).toISOString()),
+        );
       });
       tx();
       clearImportError(db, path);

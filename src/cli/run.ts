@@ -130,16 +130,17 @@ import {
   type InboxSection,
 } from "../core/inbox.js";
 import {
-  listItems,
-  showItem,
   formatItem,
   formatItemList,
   BacklogError,
+  type BacklogItem,
   type BacklogStatus,
   type BacklogPriority,
 } from "../core/backlog.js";
 import {
   addBacklogItem,
+  listBacklogItems,
+  showBacklogItem,
   transitionBacklogItem,
   linkBacklogRun,
   resolveBacklogItemForRun,
@@ -251,7 +252,6 @@ import {
   runMetricsSnapshot,
   runScopedInbox,
   runScopedKnowledgeDigest,
-  runScopedBacklog,
 } from "./db-scope.js";
 import {
   prepareProjectRun,
@@ -1794,6 +1794,47 @@ function warnBacklogExport(exportWarning: string | undefined): void {
     process.stderr.write(`warning: ${exportWarning}\n`);
   }
 }
+
+interface BacklogListJsonItem {
+  itemId: string;
+  domain: string;
+  title: string;
+  goal: string;
+  status: BacklogStatus;
+  priority: BacklogPriority;
+  tags: string[];
+  createdAt: string;
+  linkedRuns: string[];
+  projectId: string | null;
+}
+
+interface BacklogListJson {
+  items: BacklogListJsonItem[];
+  byStatus: Record<string, number>;
+}
+
+function backlogListJson(items: BacklogItem[]): BacklogListJson {
+  const byStatus: Record<string, number> = {};
+  for (const item of items) {
+    byStatus[item.status] = (byStatus[item.status] ?? 0) + 1;
+  }
+  return {
+    items: items.map((item) => ({
+      itemId: item.id,
+      domain: item.domain,
+      title: item.title,
+      goal: item.goal,
+      status: item.status,
+      priority: item.priority,
+      tags: item.tags,
+      createdAt: item.createdAt,
+      linkedRuns: item.linkedRuns,
+      projectId: item.projectId ?? null,
+    })),
+    byStatus,
+  };
+}
+
 backlogCmd
   .command("add")
   .description("add a backlog item")
@@ -1839,11 +1880,6 @@ backlogCmd
   .option("--repo-id <id>", "scope to a repo (DB-backed, Phase 6)")
   .option("--json", "emit JSON instead of text")
   .action(async (raw: Record<string, unknown>) => {
-    if (hasScopeFilter(raw)) {
-      runScopedBacklog(getHarnessRoot(), raw);
-      return;
-    }
-    const paths = harnessPaths(getHarnessRoot());
     const status =
       raw.status !== undefined
         ? (String(raw.status) as BacklogStatus)
@@ -1857,8 +1893,16 @@ backlogCmd
       );
       process.exit(1);
     }
-    const items = await listItems(paths.backlogDir, status);
-    process.stdout.write(formatItemList(items));
+    const items = await listBacklogItems(backlogDbContext(), {
+      ...(status !== undefined ? { status } : {}),
+      ...(raw.project !== undefined ? { projectId: String(raw.project) } : {}),
+      ...(raw.repoId !== undefined ? { repoId: String(raw.repoId) } : {}),
+    });
+    process.stdout.write(
+      raw.json === true
+        ? `${JSON.stringify(backlogListJson(items), null, 2)}\n`
+        : formatItemList(items),
+    );
   });
 backlogCmd
   .command("show")
@@ -1867,7 +1911,7 @@ backlogCmd
   .action(async (raw: Record<string, unknown>) => {
     const paths = harnessPaths(getHarnessRoot());
     try {
-      const item = await showItem(paths.backlogDir, String(raw.itemId));
+      const item = await showBacklogItem(backlogDbContext(), String(raw.itemId));
       // a linked run whose run dir is gone (cleanup --scope run) is marked
       const missingRuns = new Set(
         item.linkedRuns.filter(
