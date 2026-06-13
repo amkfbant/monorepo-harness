@@ -2,6 +2,8 @@ type JsonObject = { readonly [key: string]: unknown };
 
 const DEFAULT_MAX_ITEMS = 10;
 const AGENT_MESSAGE_MAX_CHARS = 120;
+const COMMAND_OMITTED_UNRECOGNIZED_SHAPE =
+  "(command omitted: unrecognized shape)";
 const REDACTION_DROPPED_LINE_MARKER = "__codex_redaction_dropped_line__";
 
 function isJsonObject(value: unknown): value is JsonObject {
@@ -15,6 +17,10 @@ function integerField(record: JsonObject, key: string): number | null {
     : null;
 }
 
+function hasOwnField(record: JsonObject, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
 function commandName(item: JsonObject): string {
   const command = item.command;
   if (typeof command === "string" && command.trim() !== "") {
@@ -25,11 +31,17 @@ function commandName(item: JsonObject): string {
     command.every((part): part is string => typeof part === "string")
   ) {
     const joined = command.join(" ").trim();
-    if (joined !== "") return joined;
+    return joined !== "" ? joined : COMMAND_OMITTED_UNRECOGNIZED_SHAPE;
+  }
+  if (Array.isArray(command)) {
+    return COMMAND_OMITTED_UNRECOGNIZED_SHAPE;
   }
   if (isJsonObject(command) && typeof command.name === "string") {
     const name = command.name.trim();
     if (name !== "") return name;
+  }
+  if (hasOwnField(item, "command")) {
+    return COMMAND_OMITTED_UNRECOGNIZED_SHAPE;
   }
   const commandNameValue = item.command_name;
   if (typeof commandNameValue === "string" && commandNameValue.trim() !== "") {

@@ -104,6 +104,42 @@ describe("summarizeCodexEvents", () => {
     );
   });
 
+  it("omits unrecognized command shapes instead of falling back to display names", () => {
+    const nestedArraySummary = summarizeCodexEvents(
+      jsonl([
+        {
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            command: [["npm", "test"]],
+            command_name: "fallback must not render",
+            exit_code: 1,
+          },
+        },
+      ]),
+    );
+    const objectSummary = summarizeCodexEvents(
+      jsonl([
+        {
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            command: { argv: ["npm", "test"] },
+            name: "fallback must not render",
+            exitCode: 1,
+          },
+        },
+      ]),
+    );
+
+    expect(nestedArraySummary).toBe(
+      "- item.completed command_execution command=`(command omitted: unrecognized shape)` exit_code=1",
+    );
+    expect(objectSummary).toBe(
+      "- item.completed command_execution command=`(command omitted: unrecognized shape)` exit_code=1",
+    );
+  });
+
   it("summarizes redaction sentinels with fixed safe text", () => {
     const summary = summarizeCodexEvents(
       jsonl([

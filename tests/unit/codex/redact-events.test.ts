@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { summarizeCodexEvents } from "../../../src/codex/events-summary.js";
 import { redactCodexEvents } from "../../../src/codex/redact-events.js";
 
 function jsonl(events: readonly unknown[]): string {
@@ -106,6 +107,68 @@ describe("redactCodexEvents", () => {
       "[redacted: secret-suspect (content:aws-access-key-id)]",
     );
     expect(result.content).not.toContain(secret);
+  });
+
+  it("redacts secret-shaped string elements in array command summaries before summary rendering", () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const content = jsonl([
+      {
+        type: "item.completed",
+        item: {
+          type: "command_execution",
+          command: ["npm", "test", secret],
+          exit_code: 1,
+        },
+      },
+    ]);
+
+    const result = redactCodexEvents(content);
+    const redacted = JSON.parse(result.content.trim()) as {
+      item: { command: readonly string[] };
+    };
+    const summary = summarizeCodexEvents(result.content);
+
+    expect(result.redactedCount).toBe(1);
+    expect(redacted.item.command).toEqual([
+      "npm",
+      "test",
+      "[redacted: secret-suspect (content:aws-access-key-id)]",
+    ]);
+    expect(result.content).not.toContain(secret);
+    expect(summary).not.toContain(secret);
+    expect(summary).toContain(
+      "command=`npm test [redacted: secret-suspect (content:aws-access-key-id)]`",
+    );
+  });
+
+  it("redacts secret-shaped object command names before summary rendering", () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const content = jsonl([
+      {
+        type: "item.completed",
+        item: {
+          type: "command_execution",
+          command: { name: `npm test ${secret}` },
+          exit_code: 1,
+        },
+      },
+    ]);
+
+    const result = redactCodexEvents(content);
+    const redacted = JSON.parse(result.content.trim()) as {
+      item: { command: { name: string } };
+    };
+    const summary = summarizeCodexEvents(result.content);
+
+    expect(result.redactedCount).toBe(1);
+    expect(redacted.item.command.name).toBe(
+      "[redacted: secret-suspect (content:aws-access-key-id)]",
+    );
+    expect(result.content).not.toContain(secret);
+    expect(summary).not.toContain(secret);
+    expect(summary).toContain(
+      "command=`[redacted: secret-suspect (content:aws-access-key-id)]`",
+    );
   });
 
   it("leaves clean agent message text unchanged", () => {
