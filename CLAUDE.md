@@ -30,17 +30,30 @@ pin**（`git describe --tags --exact-match` が成功）、dev は **`main` / fe
 ブランチ上**。ディレクトリ規約（`ops/monorepo-harness` vs `dev/monorepo-harness`）も
 補助。迷ったら**人間に確認**し、安全側（= ops とみなして `src/` を触らない）に倒す。
 
-### 自己開発の駆動は ops ハーネスで行う（不可侵）
+### 開発の駆動は必ず ops ハーネスで行う（不可侵）
 
-このハーネス自身を開発する self-hosting（`domain=self` の course / hitch を
-`course orchestrate` / `hitch orchestrate` で回す）では、**駆動側 = orchestrator は必ず
-別 checkout の ops ハーネス**を使い、**dev クローンを target リポジトリ**として編集する。
-**dev クローン内の dev ハーネス（`npm run harness`）で自分自身を駆動してはならない。**
+**用語（このリポジトリ固有・厳密に区別する）**:
 
-- **理由（bootstrapping）**: 開発中のハーネスで自分の変更を駆動すると、被験体自身の
-  orchestrate / convergence / workspace-base のバグが駆動ループを壊す（例: command-kind
-  close-check が自己 orchestrate で充足不能 / run workspace が stale base から分岐 /
-  良性 finding での誤 escalate）。安定した別 checkout の ops ハーネスを driver にすれば、
+- **dev クローン** = `~/dev/monorepo-harness`。ハーネスの**編集対象（target）**。`main` /
+  feature ブランチ上にあり、ここのコードを変更していく。
+- **dev ハーネス** = dev クローン内で動かすハーネス CLI（`npm run harness`）。
+  ＝**開発中の・まだ確定していないコード**で動くハーネス。
+- **ops ハーネス** = 別 checkout `~/ops/monorepo-harness` で動かすハーネス CLI。
+  ＝**release タグに pin した安定版**で動くハーネス。
+
+**鉄則（これだけ守れば良い）**:
+**「ops ハーネスで dev クローンを開発する。dev ハーネスで dev クローンを開発しない。」**
+
+具体的には、course / hitch を `course orchestrate` / `hitch orchestrate` で回す
+**駆動側（orchestrator）は必ず ops ハーネス**、**編集対象（`--repo`）は dev クローン**。
+**dev ハーネスで開発を駆動してはならない**（＝開発中の未確定コードで自分自身を開発しない）。
+※「ハーネス自身の開発（self-hosting）」を禁止しているのではない。**どのハーネスが駆動するか**
+（安定版 ops か、未確定の dev か）の問題であり、答えは常に ops。
+
+- **理由（bootstrapping）**: 開発中の（＝未確定の）dev ハーネスで開発を駆動すると、その
+  被験コード自身の orchestrate / convergence / workspace-base のバグが駆動ループを壊す
+  （例: command-kind close-check が充足不能 / run workspace が stale base から分岐 /
+  良性 finding での誤 escalate）。**pin された安定版の ops ハーネスを driver にする**ことで、
   この自己参照的な不安定さを避けられる。
 - **構成**: course / hitch レコードは **ops DB**（`~/ops/monorepo-harness/.harness`）に置く。
   駆動は ops checkout から `node dist/cli/run.js course|hitch orchestrate --repo
