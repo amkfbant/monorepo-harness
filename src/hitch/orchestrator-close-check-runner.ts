@@ -15,6 +15,7 @@ import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
 import { partitionUntracked } from "../policy/untracked-filter.js";
 import type { ResolvedCommand } from "../policy/schema.js";
+import { containsLikelySecret } from "../reporter/secret-scan.js";
 import { evaluateCloseConditions } from "./close-checks.js";
 import {
   lastCloseCheckInvalidatingMutationAt,
@@ -214,9 +215,22 @@ function pendingCommandCloseConditions(input: {
     .map((evaluated) => evaluated.condition);
 }
 
+const CLOSE_CHECK_OUTPUT_WITHHELD =
+  "[redacted: secret-shaped content detected; close-check output withheld]";
+
+// Read the tail of a close-check log for injection into the next coder prompt.
+// Fail-closed at the SOURCE: scan the FULL file buffer for secrets BEFORE the
+// 8KiB tail clip. Slicing first would let a secret sitting just before the tail
+// boundary lose its prefix/header (e.g. `ghp_`, `-----BEGIN PRIVATE KEY-----`)
+// while its suffix/body survives into the evidence and the coder prompt. Only
+// real, secret-free content is sliced and returned; on ANY match we return the
+// whole-stream withheld marker.
 async function readLogExcerpt(path: string): Promise<string> {
   try {
     const buffer = await readFile(path);
+    if (containsLikelySecret(buffer.toString("utf8"))) {
+      return CLOSE_CHECK_OUTPUT_WITHHELD;
+    }
     const sliced =
       buffer.length > CLOSE_CHECK_LOG_EXCERPT_BYTES
         ? buffer.subarray(buffer.length - CLOSE_CHECK_LOG_EXCERPT_BYTES)

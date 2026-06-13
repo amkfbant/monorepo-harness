@@ -184,4 +184,52 @@ describe("augmentGoalWithFailedCloseChecks", () => {
     ]);
     expect(out).toContain("error TS1005");
   });
+
+  it("withholds a NAME-BASED secret (no vendor prefix) — broadened scanner", () => {
+    // No AKIA…/ghp_…/sk-… prefix; only the assignment shape gives it away.
+    const out = augmentGoalWithFailedCloseChecks("g", [
+      {
+        conditionId: "typecheck",
+        conditionKind: "command",
+        command: "npm run typecheck",
+        exitCode: 1,
+        stdout:
+          "config loaded\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIbKxyzzzzzz0123456789ABCDEFG\ndone",
+        stderr: "api_key: hunter2longvaluethatlookssecret",
+      },
+    ]);
+    expect(out).not.toContain("wJalrXUtnFEMIbKxyzzzzzz0123456789ABCDEFG");
+    expect(out).not.toContain("hunter2longvaluethatlookssecret");
+    expect(out).toContain("close-check output withheld");
+  });
+
+  it("withholds a secret in the COMMAND free-text field (not just stdout/stderr)", () => {
+    const out = augmentGoalWithFailedCloseChecks("g", [
+      {
+        conditionId: "deploy",
+        conditionKind: "command",
+        command: "deploy --token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+        exitCode: 1,
+        stdout: "plain failure",
+      },
+    ]);
+    expect(out).not.toContain("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+    expect(out).toContain("command: [redacted]");
+    // non-secret stdout still flows through.
+    expect(out).toContain("plain failure");
+  });
+
+  it("withholds a secret in the MESSAGE free-text field", () => {
+    const out = augmentGoalWithFailedCloseChecks("g", [
+      {
+        conditionId: "auth",
+        conditionKind: "command",
+        command: "npm run check",
+        exitCode: 1,
+        message: "failed with Authorization: Bearer abcdef0123456789TOKEN",
+      },
+    ]);
+    expect(out).not.toContain("abcdef0123456789TOKEN");
+    expect(out).toContain("message: [redacted]");
+  });
 });
