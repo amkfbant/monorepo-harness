@@ -319,16 +319,16 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
     await expect(runners.salvageReviewBranch?.(hitchId)).resolves.toBeNull();
   });
 
-  it("imports the proposal when re-driving an approved run whose import never ran (crash recovery)", async () => {
-    // processReviewDecision ran (run approved, proposal processed) but the
-    // import crashed before folding the proposal into the hitch — no review
-    // cycle exists. The short-circuit must complete the import (review cycle +
-    // findings/advisories accounting), not just record a close-check.
+  it("fails closed (no silent close) when an approved run has no completed review import", async () => {
+    // processReviewDecision ran (run approved) but no COMPLETED review cycle
+    // exists — the import never ran, or crashed mid-way (cycle persisted before
+    // findings). The short-circuit must NOT record a passed close-check (which
+    // could close the hitch without its findings); it fails closed → escalate.
     const { harnessRoot, dbPath } = createHarnessRoot(
       "harness-orch-review-crash-",
     );
     const hitchId = "g-approved-crash";
-    const runId = insertApprovedRunWithProcessedProposal({
+    insertApprovedRunWithProcessedProposal({
       dbPath,
       hitchId,
       priorCycle: false,
@@ -346,18 +346,60 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
       reviewerRunner,
     });
 
-    const result = await runners.review(hitchId);
-
-    expect(result).toEqual({ runId, decision: "approved" });
+    await expect(runners.review(hitchId)).rejects.toThrow(
+      /no completed review import/,
+    );
     expect(reviewerRunner.run).not.toHaveBeenCalled();
     const { db, close } = openManagedDb({ dbPath });
     try {
       const repo = new HitchRepository(db);
-      // The interrupted import was completed: a review cycle now exists.
-      const cycles = repo.listReviewCycles(hitchId);
-      expect(cycles).toHaveLength(1);
-      expect(cycles[0]?.sourceRunId).toBe(runId);
-      expect(repo.listCloseChecks(hitchId)).toHaveLength(1);
+      // No spurious close-check recorded over an unimported/partial review.
+      expect(repo.listCloseChecks(hitchId)).toHaveLength(0);
+    } finally {
+      close();
+    }
+  });
+
+  it("fails closed when only an INCOMPLETE review cycle exists (crash mid-import)", async () => {
+    // A cycle row was persisted but its findings import crashed before
+    // completeReviewCycle (completedAt stays null). Treating that as a finished
+    // import would skip the findings; the short-circuit must reject it.
+    const { harnessRoot, dbPath } = createHarnessRoot(
+      "harness-orch-review-partial-",
+    );
+    const hitchId = "g-approved-partial";
+    const runId = insertApprovedRunWithProcessedProposal({
+      dbPath,
+      hitchId,
+      priorCycle: false,
+    });
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        // An incomplete cycle: started, never completed.
+        new HitchRepository(db).startReviewCycle({
+          hitchId,
+          reviewMode: "close",
+          sourceRunId: runId,
+        });
+      } finally {
+        close();
+      }
+    }
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+    });
+
+    await expect(runners.review(hitchId)).rejects.toThrow(
+      /no completed review import/,
+    );
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      expect(new HitchRepository(db).listCloseChecks(hitchId)).toHaveLength(0);
     } finally {
       close();
     }

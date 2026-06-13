@@ -354,16 +354,17 @@ export function tryShortCircuitApprovedDecidedReview(input: {
   // individual proposal. In consensus mode the latest processed proposal can be
   // a non-approving member while the aggregated run decision is approved; gating
   // on the proposal would miss it and fall through to a re-review that escalates
-  // an already-approved run (codex review).
+  // an already-approved run (codex review). The canonical reviewer / source SHA
+  // also come from here, so the refreshed evidence describes the decision, not
+  // one member proposal.
   const decisionRow = input.db
-    .prepare("SELECT decision FROM review_decisions WHERE run_id = ?")
-    .get(input.runId) as { decision: string } | undefined;
+    .prepare(
+      "SELECT decision, reviewer, source_sha256 FROM review_decisions WHERE run_id = ?",
+    )
+    .get(input.runId) as
+    | { decision: string; reviewer: string | null; source_sha256: string }
+    | undefined;
   if (decisionRow?.decision !== "approved") return null;
-
-  const proposal = new ReviewProposalRepository(
-    input.db,
-  ).getLatestProcessedProposal(input.runId);
-  if (proposal === null) return null;
 
   const repo = new HitchRepository(input.db);
   const session = repo.requireSession(input.hitchId);
@@ -372,45 +373,56 @@ export function tryShortCircuitApprovedDecidedReview(input: {
   );
   if (reviewConditions.length === 0) return null;
 
-  // If the prior review crashed after processReviewDecision but before
-  // importReviewProposalToHitch, no review cycle exists for this run and the
-  // proposal's findings / advisories / required follow-ups were never folded
-  // into the hitch. Complete that import now instead of recording only a close-
-  // check — otherwise the hitch could close without its P1 findings or deferred
-  // out-of-scope suggestions (codex review). The normal idempotent re-drive (a
-  // cycle already exists for this run) must NOT re-import, or it double-counts.
-  const alreadyImported = repo
+  // This path is ONLY an idempotent refresh of an already-completed review
+  // import. Require a COMPLETED review cycle for this run: a cycle row is
+  // persisted BEFORE its findings are imported and withManagedDb is not
+  // transactional, so a crash mid-import leaves an incomplete cycle whose
+  // findings / advisories / required follow-ups were never folded in. If no
+  // completed import exists (never imported, or a crashed partial), fail-closed
+  // and escalate rather than record a passed close-check that could close the
+  // hitch without its findings (codex review).
+  const completedImport = repo
     .listReviewCycles(input.hitchId)
-    .some((cycle) => cycle.sourceRunId === input.runId);
-  if (!alreadyImported) {
-    importReviewProposalToHitch({
-      repository: repo,
-      hitchId: input.hitchId,
-      proposal,
-      createdBy: input.createdBy,
-    });
+    .some(
+      (cycle) =>
+        cycle.sourceRunId === input.runId && cycle.completedAt !== null,
+    );
+  if (!completedImport) {
+    throw new Error(
+      `approved run ${input.runId} has no completed review import; refusing ` +
+        `to short-circuit close (a crashed/partial review import must be ` +
+        `re-reviewed or resolved by an operator)`,
+    );
   }
 
-  // Carry the reviewer advisories (e.g. "tests were not run") into the refreshed
-  // close-check evidence, matching the normal import path (codex review).
-  const advisories = proposalReviewerAdvisories(proposal);
+  // Supplementary proposal fields (proposalId, advisories) for traceability;
+  // the authoritative decision/reviewer/source come from review_decisions.
+  const proposal = new ReviewProposalRepository(
+    input.db,
+  ).getLatestProcessedProposal(input.runId);
+  const advisories =
+    proposal !== null ? proposalReviewerAdvisories(proposal) : [];
   const checkedAt = new Date().toISOString();
   for (const condition of reviewConditions) {
     repo.recordCloseCheck({
       hitchId: input.hitchId,
       conditionId: condition.id,
       status: "passed",
-      checkedBy: proposal.reviewer,
+      checkedBy: decisionRow.reviewer ?? proposal?.reviewer ?? "review",
       checkedAt,
       evidence: {
         runId: input.runId,
-        proposalId: proposal.proposalId,
-        reviewDecisionId: proposal.reviewDecisionId,
         decision: "approved",
         processStatus: "approved",
-        sourceSha256: proposal.sourceSha256,
+        sourceSha256: decisionRow.source_sha256,
         reviewConsensusSemantics: REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS,
         idempotentRedrive: true,
+        ...(proposal !== null
+          ? {
+              proposalId: proposal.proposalId,
+              reviewDecisionId: proposal.reviewDecisionId,
+            }
+          : {}),
         ...(advisories.length > 0 ? { reviewerAdvisories: advisories } : {}),
       },
       message:
