@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openManagedDb } from "../../../src/db/managed-connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
+import { ConvergenceService } from "../../../src/hitch/convergence.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
 import {
   createOrchestratorRunners,
@@ -41,6 +43,90 @@ function createRunners(dbPath: string) {
     coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
     reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
   });
+}
+
+function createHarnessRoot(prefix: string): { harnessRoot: string; dbPath: string } {
+  const harnessRoot = mkdtempSync(join(tmpdir(), prefix));
+  mkdirSync(join(harnessRoot, ".harness"), { recursive: true });
+  return { harnessRoot, dbPath: join(harnessRoot, ".harness", "harness.sqlite") };
+}
+
+function approvedDecisionYaml(runId: string, domain = "docs"): string {
+  return [
+    `runId: ${runId}`,
+    `domain: ${domain}`,
+    "decision: approved",
+    "required_changes: []",
+    "non_blocking_comments: []",
+    "out_of_scope_suggestions: []",
+    "reviewer: codex-reviewer",
+    "reviewed_at: 2026-06-13T00:00:00.000Z",
+    "",
+  ].join("\n");
+}
+
+function insertApprovedRunWithProcessedProposal(input: {
+  dbPath: string;
+  hitchId: string;
+  closeConditions?: Parameters<HitchRepository["createSession"]>[0]["closeConditions"];
+}): string {
+  const runId = `run-${input.hitchId}`;
+  const sourceYaml = approvedDecisionYaml(runId);
+  const sourceSha = createHash("sha256").update(sourceYaml).digest("hex");
+  const { db, close } = openManagedDb({ dbPath: input.dbPath });
+  try {
+    runMigrations(db);
+    const repo = new HitchRepository(db);
+    repo.createSession({
+      hitchId: input.hitchId,
+      title: "Approved decided run",
+      repoId: "t",
+      domain: "docs",
+      closeConditions:
+        input.closeConditions ?? [
+          { id: "review-ok", kind: "review_consensus", required: true },
+        ],
+      createdBy: "test",
+      createdSource: "worker",
+    });
+    repo.createAttempt({
+      hitchId: input.hitchId,
+      attemptType: "implement",
+      status: "succeeded",
+      runId,
+      createdAt: "2026-06-13T00:00:00.000Z",
+    });
+    db.prepare(
+      `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+         status, reviewer, reviewed_at, source_mode, db_revision,
+         export_status, updated_at, meta_json)
+       VALUES (?, 't', 'docs', 'domain-coding', 'main', 'approved',
+         'codex-reviewer', '2026-06-13T00:00:00.000Z', 'db-first', 1,
+         'disabled', '2026-06-13T00:00:00.000Z', ?)`,
+    ).run(
+      runId,
+      JSON.stringify({
+        runId,
+        repoId: "t",
+        domain: "docs",
+        status: "approved",
+      }),
+    );
+    db.prepare(
+      `INSERT INTO review_proposals (
+         run_id, reviewer, decision, required_changes_json,
+         non_blocking_comments_json, out_of_scope_suggestions_json,
+         reviewed_at, source_yaml, source_sha256, created_at, processed_at,
+         review_decision_id, lifecycle_status
+       )
+       VALUES (?, 'codex-reviewer', 'approved', '[]', '[]', '[]',
+         '2026-06-13T00:00:00.000Z', ?, ?, '2026-06-13T00:00:00.000Z',
+         '2026-06-13T00:00:00.000Z', ?, 'processed')`,
+    ).run(runId, sourceYaml, sourceSha, runId);
+    return runId;
+  } finally {
+    close();
+  }
 }
 
 describe("createOrchestratorRunners.projectRuntime", () => {
@@ -81,6 +167,114 @@ describe("createOrchestratorRunners.projectRuntime", () => {
         projectRuntime: { compiledPolicy: { global: {} }, project: {} } as never,
       }),
     ).toThrow(/compiledPolicy must contain both global and repo/);
+  });
+});
+
+describe("createOrchestratorRunners.review decided run re-drive", () => {
+  it("short-circuits an approved processed run without invoking the reviewer", async () => {
+    const { harnessRoot, dbPath } = createHarnessRoot(
+      "harness-orch-review-redrive-",
+    );
+    const hitchId = "g-approved-redrive";
+    const runId = insertApprovedRunWithProcessedProposal({ dbPath, hitchId });
+    const reviewerRunner = {
+      run: vi.fn(async () => {
+        throw new Error("reviewer must not run");
+      }),
+    };
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-13T01:00:00.000Z"));
+    try {
+      const runners = createOrchestratorRunners({
+        dbPath,
+        harnessRoot,
+        createdBy: "worker",
+        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+        reviewerRunner,
+      });
+
+      const result = await runners.review(hitchId);
+
+      expect(result).toEqual({ runId, decision: "approved" });
+      expect(reviewerRunner.run).not.toHaveBeenCalled();
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        const repo = new HitchRepository(db);
+        expect(repo.listReviewCycles(hitchId)).toHaveLength(0);
+        const checks = repo.listCloseChecks(hitchId);
+        expect(checks).toHaveLength(1);
+        expect(checks[0]).toMatchObject({
+          conditionId: "review-ok",
+          status: "passed",
+          checkedAt: "2026-06-13T01:00:00.000Z",
+          checkedBy: "codex-reviewer",
+        });
+        expect(new ConvergenceService(repo).evaluate(hitchId).decision).toBe(
+          "close_ready",
+        );
+      } finally {
+        close();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("escalates explicitly when approved review evidence is fresh but another required condition is pending", async () => {
+    const { harnessRoot, dbPath } = createHarnessRoot(
+      "harness-orch-review-pending-",
+    );
+    const hitchId = "g-approved-pending";
+    insertApprovedRunWithProcessedProposal({
+      dbPath,
+      hitchId,
+      closeConditions: [
+        { id: "review-ok", kind: "review_consensus", required: true },
+        { id: "manual-signoff", kind: "manual", required: true },
+      ],
+    });
+    const reviewerRunner = {
+      run: vi.fn(async () => {
+        throw new Error("reviewer must not run");
+      }),
+    };
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).rejects.toThrow(/manual-signoff/);
+    expect(reviewerRunner.run).not.toHaveBeenCalled();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db);
+      expect(repo.listReviewCycles(hitchId)).toHaveLength(0);
+      expect(repo.listCloseChecks(hitchId).map((c) => c.conditionId)).toEqual([
+        "review-ok",
+      ]);
+    } finally {
+      close();
+    }
+  });
+
+  it("does not salvage a review branch when the latest run is already decided", async () => {
+    const { harnessRoot, dbPath } = createHarnessRoot(
+      "harness-orch-review-salvage-",
+    );
+    const hitchId = "g-approved-salvage";
+    insertApprovedRunWithProcessedProposal({ dbPath, hitchId });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+    });
+
+    await expect(runners.salvageReviewBranch?.(hitchId)).resolves.toBeNull();
   });
 });
 

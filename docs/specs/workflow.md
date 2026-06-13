@@ -622,6 +622,15 @@ reviewer gate は run 状態を **DB-canonical** に判別し、欠落した `re
 「真の未完了（recover 可 = `run_incomplete`）」で区別する（#77）。判定は `classifyReviewGate`
 （純関数）で行い、`ReviewerAgentGateError.kind` に区分を載せ、メッセージに推奨アクションを併記する。
 
+`hitch orchestrate` の review runner は `runReviewerAgent` を呼ぶ前に DB 正本の最新
+run status と最新 processed proposal を確認する。最新 run が `approved` かつ最新
+processed proposal も `approved` の場合、Codex reviewer は起動しない。代わりに既存の
+`review_consensus` close 条件へ現在時刻の passed check を再記録し、review cycle は新規
+作成しない。その後の convergence 再評価が `close_ready` なら通常ループが次 step で
+`close_and_pr` に進む。review consensus は fresh だが他の required close 条件が
+pending の場合は、その condition id を含む明示的な escalation として fail-closed する。
+この短絡は LLM 出力を根拠にせず、DB の run status / processed proposal だけを入力にする。
+
 review step が失敗した場合、orchestrator は従来どおり hitch を `escalated`
 に倒す。ただし、最新 run が安全に salvage 可能なときだけ、PR を作らず hitch も
 close せずに workspace branch を commit/push する。salvage gate は fail-closed:
@@ -634,6 +643,8 @@ close せずに workspace branch を commit/push する。salvage gate は fail-
   ことを検証する（今回 stage した path だけでなく既存 local commit も対象）
 - PR 作成・hitch close はしない。既存 `pr create` の `status === approved` gate と
   reviewed fingerprint 再検証は維持され、salvage で迂回しない
+- review-step failure salvage は最新 run の canonical status が `needs_review` でない場合
+  `null` を返し、branch push を試みない
 
 escalation reason text には元の失敗理由を残し、push に成功した場合だけ
 `workspace branch pushed: <branch> (<sha>)` を追記する。schema は変更しない。salvage

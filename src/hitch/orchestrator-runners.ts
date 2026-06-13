@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type Database from "better-sqlite3";
 import { openManagedDb, withManagedDb } from "../db/managed-connection.js";
 import { harnessPaths } from "../config/paths.js";
 import { conventionalPrTitle } from "./conventional-pr-title.js";
@@ -40,7 +41,10 @@ import {
   runCopilotReview,
   type CopilotReviewConfig,
 } from "../core/copilot-review-run.js";
-import type { ConsensusSummary } from "../core/review-consensus.js";
+import {
+  REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS,
+  type ConsensusSummary,
+} from "../core/review-consensus.js";
 import {
   HitchRepository,
   OPEN_FINDING_LIFECYCLES,
@@ -53,6 +57,8 @@ import {
 import { classifyFindingForHitch } from "./classification.js";
 import { deferFindingToBacklog } from "./followups.js";
 import { ConvergenceService } from "./convergence.js";
+import { evaluateCloseConditions } from "./close-checks.js";
+import { recordConvergenceDecisionWithStatus } from "./convergence-status.js";
 import { assertHitchCanStartMutation } from "./mutation-gate.js";
 import { importReviewProposalToHitch } from "./review-integration.js";
 import { dbConsensusSnapshotProvider } from "./consensus-stall-check.js";
@@ -62,6 +68,7 @@ import type {
   HitchFinding,
   HitchAttemptType,
   HitchLifecycleStatus,
+  HitchCloseCondition,
   HitchReviewMode,
   HitchSession,
 } from "./types.js";
@@ -324,6 +331,124 @@ export function latestRunId(repo: HitchRepository, hitchId: string): string {
   );
 }
 
+function tryShortCircuitApprovedDecidedReview(input: {
+  db: Database.Database;
+  hitchId: string;
+  runId: string;
+  createdBy: string;
+}): { runId: string; decision: "approved" } | null {
+  const run = input.db
+    .prepare("SELECT status FROM runs WHERE run_id = ?")
+    .get(input.runId) as { status: string } | undefined;
+  if (run?.status !== "approved") return null;
+
+  const proposal = new ReviewProposalRepository(
+    input.db,
+  ).getLatestProcessedProposal(input.runId);
+  if (proposal?.decision !== "approved") return null;
+
+  const repo = new HitchRepository(input.db);
+  const session = repo.requireSession(input.hitchId);
+  const reviewConditions = session.closeConditions.filter(
+    (condition) => condition.kind === "review_consensus",
+  );
+  if (reviewConditions.length === 0) return null;
+
+  const checkedAt = new Date().toISOString();
+  for (const condition of reviewConditions) {
+    repo.recordCloseCheck({
+      hitchId: input.hitchId,
+      conditionId: condition.id,
+      status: "passed",
+      checkedBy: proposal.reviewer,
+      checkedAt,
+      evidence: {
+        runId: input.runId,
+        proposalId: proposal.proposalId,
+        reviewDecisionId: proposal.reviewDecisionId,
+        decision: proposal.decision,
+        processStatus: "approved",
+        sourceSha256: proposal.sourceSha256,
+        reviewConsensusSemantics: REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS,
+        idempotentRedrive: true,
+      },
+      message:
+        "review consensus approved the run (static pass; tests not executed by review_consensus)",
+    });
+  }
+
+  const pending = pendingRequiredCloseConditionLabels(repo, session);
+  if (pending.length > 0) {
+    throw new Error(
+      `approved run ${input.runId} already decided; review_consensus was ` +
+        `refreshed, but required close conditions are still pending: ` +
+        `${pending.join(", ")}`,
+    );
+  }
+
+  const convergence = new ConvergenceService(repo).evaluate(input.hitchId);
+  recordConvergenceDecisionWithStatus({
+    repository: repo,
+    hitchId: input.hitchId,
+    decision: convergence.decision,
+    reason: convergence.reason,
+    metrics: { ...convergence.metrics },
+    recommendedNextAction: convergence.recommendedNextAction,
+    createdBy: input.createdBy,
+  });
+
+  return { runId: input.runId, decision: "approved" };
+}
+
+function pendingRequiredCloseConditionLabels(
+  repo: HitchRepository,
+  session: HitchSession,
+): string[] {
+  const close = evaluateCloseConditions({
+    conditions: session.closeConditions,
+    checks: repo.listCloseChecks(session.hitchId),
+    findingCounts: repo.countFindingSummary(session.hitchId),
+    freshAfter: closeCheckFreshAfter(repo, session.hitchId),
+    allowEmptyCloseConditions: session.policy.allowEmptyCloseConditions,
+  });
+  return close.conditions
+    .filter(
+      (condition) =>
+        condition.condition.required && condition.status === "pending",
+    )
+    .map((condition) => closeConditionLabel(condition.condition));
+}
+
+function closeConditionLabel(condition: HitchCloseCondition): string {
+  return condition.description === undefined ||
+    condition.description.trim() === ""
+    ? condition.id
+    : `${condition.id} (${condition.description})`;
+}
+
+function closeCheckFreshAfter(
+  repo: HitchRepository,
+  hitchId: string,
+): string | null {
+  const timestamps: string[] = [];
+  for (const attempt of repo.listAttempts(hitchId)) {
+    if (attempt.attemptType === "close-check") continue;
+    timestamps.push(attempt.completedAt ?? attempt.startedAt ?? attempt.createdAt);
+  }
+  const latestFindingMutationAt = repo.latestFindingMutationAt(hitchId);
+  if (latestFindingMutationAt !== null) {
+    timestamps.push(latestFindingMutationAt);
+  }
+  for (const cycle of repo.listReviewCycles(hitchId)) {
+    timestamps.push(cycle.completedAt ?? cycle.createdAt);
+  }
+  return timestamps.reduce<string | null>(
+    (latest, timestamp) =>
+      latest === null || timestamp > latest ? timestamp : latest,
+    null,
+  );
+}
+
 function reviewModeForHitch(
   repo: HitchRepository,
   session: HitchSession,
@@ -472,6 +597,15 @@ export function createOrchestratorRunners(
       const runId = withManagedDb({ dbPath: deps.dbPath }, (db) =>
         latestRunId(new HitchRepository(db), hitchId),
       );
+      const decided = withManagedDb({ dbPath: deps.dbPath }, (db) =>
+        tryShortCircuitApprovedDecidedReview({
+          db,
+          hitchId,
+          runId,
+          createdBy: deps.createdBy,
+        }),
+      );
+      if (decided !== null) return decided;
 
       // 1. produce a review proposal (review_proposals row) for the run.
       const reviewResult = await runReviewerAgent({
@@ -829,9 +963,16 @@ export function createOrchestratorRunners(
       return { prUrl: pr.prUrl, draft: pr.draft, merged: false };
     },
     salvageReviewBranch: async (hitchId) => {
-      const runId = withManagedDb({ dbPath: deps.dbPath }, (db) =>
-        latestRunId(new HitchRepository(db), hitchId),
-      );
+      const runId = withManagedDb({ dbPath: deps.dbPath }, (db) => {
+        const rid = latestRunId(new HitchRepository(db), hitchId);
+        const run = db
+          .prepare("SELECT status FROM runs WHERE run_id = ?")
+          .get(rid) as { status: string } | undefined;
+        return run !== undefined && run.status !== "needs_review"
+          ? null
+          : rid;
+      });
+      if (runId === null) return null;
       return pushReviewedBranchForEscalation({
         runsDir: paths.runsDir,
         workspacesDir: paths.workspacesDir,

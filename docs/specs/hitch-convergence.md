@@ -269,6 +269,15 @@ command checks using the existing close-condition machinery; it does not inject
 synthetic test gates and does not use reviewer self-report as state-transition
 evidence.
 
+When a hitch review step is re-driven for a DB-canonical run that is already
+`approved`, and the latest processed review proposal is also `approved`, the
+orchestrator refreshes the `review_consensus` close-check evidence at the
+current time without starting a new review cycle and without invoking Codex.
+This lets stale-but-approved review evidence advance to `close_ready` and then
+to `close_and_pr` on the next loop step. If that refreshed review evidence is
+fresh but another required close condition is still pending, the loop escalates
+with the pending condition id(s) instead of starting another review.
+
 `hitch_lifecycle_events` records `closed`, `cancelled`, and `reopened` reasons
 with actor/timestamp for audit. It is not a state-transition source.
 Convergence, mutation gates, and roadmap rollup derive state from deterministic
