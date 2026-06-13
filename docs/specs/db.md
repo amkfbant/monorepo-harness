@@ -264,6 +264,23 @@ db import --from-files --force-legacy-reconcile
   - 明示指定時のみ db-first run / backlog row の files 上書きを許す（災害復旧用途）
 ```
 
+### backlog read path（現状仕様）
+
+`backlog_items` / `backlog_run_links` は backlog の canonical state。`backlog add`
+と `hitch finding defer --backlog` は `db-first` row を作り、`backlog done` /
+`backlog defer` / `backlog run` も DB を先に更新する。したがって read path も
+DB を正本にする。
+
+- `harness backlog list` / `show` は DB が存在する root では DB から full item
+  （`goal` / `tags` / `created_at` / `backlog_run_links` を含む）を読む。
+- read の直前に通常の file import refresh を実行し、file-only の legacy YAML を
+  `legacy-file` row として取り込む。`db-first` row は import で上書きしないため、
+  export 前・export 失敗後の DB-only backlog item も一覧・詳細に出る。
+- `.harness/harness.sqlite` が存在しない旧 root では、後方互換のため従来の
+  `backlog/<status>/*.yaml` read に fallback する。
+- `backlog/<status>` が export 失敗などで directory ではない場合、import は
+  `import_errors` に記録してその status dir を skip し、DB read 自体は継続する。
+
 ### db export-files（Phase 7-11）
 
 `harness db export-files` は DB canonical な state の compatibility files を

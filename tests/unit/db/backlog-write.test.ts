@@ -38,6 +38,68 @@ function baseInput(overrides: Record<string, unknown> = {}) {
 }
 
 describe("BacklogRepository", () => {
+  it("listItemsWithRuns returns full backlog items with linked runs", () => {
+    const db = freshDb();
+    const repo = new BacklogRepository(db);
+    const item = repo.insertItem(
+      baseInput({
+        domain: "apps/web",
+        title: "full",
+        goal: "ship the full item",
+        priority: "high",
+        tags: ["bug", "db"],
+      }),
+      DAY,
+      0,
+    );
+    repo.linkRun({ itemId: item.id, runId: "run-20260522-web-a" });
+    repo.linkRun({ itemId: item.id, runId: "run-20260522-web-b" });
+
+    const rows = repo.listItemsWithRuns();
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: item.id,
+        domain: "apps/web",
+        title: "full",
+        goal: "ship the full item",
+        status: "doing",
+        priority: "high",
+        tags: ["bug", "db"],
+        createdAt: "2026-05-22T00:00:00.000Z",
+        linkedRuns: ["run-20260522-web-a", "run-20260522-web-b"],
+        sourceMode: "db-first",
+      }),
+    ]);
+    db.close();
+  });
+
+  it("listItemsWithRuns filters by status, project, and repo", () => {
+    const db = freshDb();
+    db.prepare(
+      "INSERT INTO projects (project_id, repo_id) VALUES ('demo', 'demo-repo')",
+    ).run();
+    const repo = new BacklogRepository(db);
+    const scoped = repo.insertItem(
+      baseInput({ title: "scoped", projectId: "demo" }),
+      DAY,
+      0,
+    );
+    repo.insertItem(baseInput({ title: "other" }), DAY, 0);
+
+    expect(
+      repo
+        .listItemsWithRuns({
+          status: "open",
+          projectId: "demo",
+          repoId: "demo-repo",
+        })
+        .map((i) => i.id),
+    ).toEqual([scoped.id]);
+    expect(repo.listItemsWithRuns({ status: "done" })).toEqual([]);
+    db.close();
+  });
+
   it("insertItem creates a db-first row with an allocated id", () => {
     const db = freshDb();
     const repo = new BacklogRepository(db);

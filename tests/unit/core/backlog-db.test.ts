@@ -11,12 +11,14 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import {
   addBacklogItem,
+  listBacklogItems,
+  showBacklogItem,
   transitionBacklogItem,
   linkBacklogRun,
   resolveBacklogItemForRun,
   type BacklogDbContext,
 } from "../../../src/core/backlog-db.js";
-import { addItem } from "../../../src/core/backlog.js";
+import { addItem, BacklogError } from "../../../src/core/backlog.js";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { runFullImport } from "../../../src/db/import-files.js";
@@ -339,5 +341,55 @@ describe("backlog DB-first", () => {
     await expect(
       transitionBacklogItem(ctx, legacy.id, "done"),
     ).rejects.toThrow(/legacy-file row/);
+  });
+});
+
+/**
+ * G1 (#177) read-path hardening — DB-canonical reads stay authoritative and
+ * fail closed: no file fallback when the DB exists, a clear error for repo
+ * scoping without a DB, and legacy link order preserved through import.
+ */
+describe("backlog DB-canonical read hardening", () => {
+  it("show throws not-found (no file fallback) when the DB exists but lacks the item", async () => {
+    const ctx = setup();
+    await addBacklogItem(ctx, { title: "present", domain: "d", goal: "g" }, NOW);
+    await expect(showBacklogItem(ctx, "item-20991231-999")).rejects.toThrow(
+      /not found/,
+    );
+  });
+
+  it("list rejects a --repo-id filter when no harness DB exists", async () => {
+    const ctx = setup();
+    // no DB created — only the legacy file path is available
+    await addItem(ctx.backlogDir, { title: "f", domain: "d", goal: "g" }, NOW);
+    await expect(
+      listBacklogItems(ctx, { repoId: "repo-x" }),
+    ).rejects.toBeInstanceOf(BacklogError);
+  });
+
+  it("preserves the YAML linkedRuns order through import (not lexical run_id)", async () => {
+    const ctx = setup();
+    mkdirSync(join(ctx.backlogDir, "open"), { recursive: true });
+    // links in deliberately non-lexical order
+    writeFileSync(
+      join(ctx.backlogDir, "open", "item-20260522-050.yaml"),
+      [
+        "id: item-20260522-050",
+        "domain: d",
+        "title: ordered",
+        "goal: g",
+        "status: open",
+        "priority: medium",
+        "tags: []",
+        "createdAt: 2026-05-22T00:00:00.000Z",
+        "linkedRuns:",
+        "  - run-c",
+        "  - run-a",
+        "  - run-b",
+        "",
+      ].join("\n"),
+    );
+    const item = await showBacklogItem(ctx, "item-20260522-050");
+    expect(item.linkedRuns).toEqual(["run-c", "run-a", "run-b"]);
   });
 });
