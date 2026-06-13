@@ -23,8 +23,7 @@ import {
 } from "../db/repositories/convergence-aggregates.js";
 import {
   buildMetricsDelta,
-  pruneMetricsSnapshots,
-  recordMetricsSnapshot,
+  recordAndPruneMetricsSnapshot,
   type MetricsDeltaResult,
   type MetricsDeltaValue,
   type MetricsSnapshotRow,
@@ -300,12 +299,12 @@ export function runMetricsSnapshot(
   const retentionDays = parseRetentionDays(raw.retentionDays);
   const now = new Date().toISOString();
   const result = withRefreshedDb(harnessRoot, (db): MetricsSnapshotCliOutput => {
-    const recordAndPrune = db.transaction(() => {
-      const snapshot = recordMetricsSnapshot(db, { filter, now });
-      const pruned = pruneMetricsSnapshots(db, { retentionDays, now });
-      return { snapshot, pruned };
+    const { snapshot, prunedCount } = recordAndPruneMetricsSnapshot(db, {
+      filter,
+      retentionDays,
+      now,
     });
-    return recordAndPrune();
+    return { snapshot, pruned: prunedCount };
   });
   emit(
     raw,

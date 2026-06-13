@@ -10,6 +10,7 @@ import {
   listMetricsSnapshots,
   listMetricsTrend,
   pruneMetricsSnapshots,
+  recordAndPruneMetricsSnapshot,
   recordMetricsSnapshot,
   type MetricsSnapshotPayloadV1,
 } from "../../../src/db/repositories/metrics-snapshots.js";
@@ -114,6 +115,47 @@ function payloadOf(row: { payloadJson: string }): MetricsSnapshotPayloadV1 {
 }
 
 describe("metrics snapshots repository", () => {
+  it("records and prunes in one repository transaction", () => {
+    const db = freshDb();
+    try {
+      db.prepare(
+        `INSERT INTO metrics_snapshots
+           (snapshot_id, created_at, payload_json)
+         VALUES (?, ?, '{}')`,
+      ).run("msnap-old", "2026-03-14T23:59:59.999Z");
+
+      const result = recordAndPruneMetricsSnapshot(db, {
+        filter: {},
+        retentionDays: 90,
+        now: "2026-06-13T00:00:00.000Z",
+      });
+
+      expect(result.snapshot.createdAt).toBe("2026-06-13T00:00:00.000Z");
+      expect(result.prunedCount).toBe(1);
+      expect(
+        listMetricsSnapshots(db, { filter: {} }).map((s) => s.snapshotId),
+      ).toEqual([result.snapshot.snapshotId]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rolls back recordAndPrune when pruning input is invalid", () => {
+    const db = freshDb();
+    try {
+      expect(() =>
+        recordAndPruneMetricsSnapshot(db, {
+          filter: {},
+          retentionDays: -1,
+          now: "2026-06-13T00:00:00.000Z",
+        }),
+      ).toThrow(/retentionDays must be a non-negative integer/);
+      expect(listMetricsSnapshots(db, { filter: {} })).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("records a scoped aggregate payload and returns the stored snapshot", () => {
     const db = freshDb();
     try {
@@ -491,6 +533,64 @@ describe("metrics snapshots repository", () => {
           reason: "unsupported payload_schema 99",
         },
       ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("fills metrics trends up to the requested valid point count after invalid schemas are skipped", () => {
+    const db = freshDb();
+    try {
+      for (let i = 0; i < 30; i += 1) {
+        insertRun(db, {
+          runId: `run-trend-${i}`,
+          projectId: "demo",
+          repoId: "repo-a",
+          domain: "apps/web",
+          status: "approved",
+        });
+        recordMetricsSnapshot(db, {
+          filter: { projectId: "demo" },
+          now: `2026-06-${String(i + 1).padStart(2, "0")}T00:00:00.000Z`,
+        });
+      }
+      db.prepare(
+        `INSERT INTO metrics_snapshots
+           (snapshot_id, created_at, project_id, payload_json, payload_schema)
+         VALUES (?, ?, 'demo', '{"schema":99}', 99)`,
+      ).run("msnap-invalid-newest", "2026-07-01T00:00:00.000Z");
+
+      const trend = listMetricsTrend(db, {
+        filter: { projectId: "demo" },
+        limit: 30,
+      });
+
+      expect(trend).toHaveLength(30);
+      expect(trend[0]?.createdAt).toBe("2026-06-01T00:00:00.000Z");
+      expect(trend.at(-1)?.createdAt).toBe("2026-06-30T00:00:00.000Z");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("returns an empty metrics trend when every fetched snapshot is invalid", () => {
+    const db = freshDb();
+    try {
+      const insert = db.prepare(
+        `INSERT INTO metrics_snapshots
+           (snapshot_id, created_at, project_id, payload_json, payload_schema)
+         VALUES (?, ?, 'demo', '{"schema":99}', 99)`,
+      );
+      for (let i = 0; i < 35; i += 1) {
+        insert.run(
+          `msnap-invalid-${i}`,
+          `2026-06-${String(i + 1).padStart(2, "0")}T00:00:00.000Z`,
+        );
+      }
+
+      expect(
+        listMetricsTrend(db, { filter: { projectId: "demo" }, limit: 30 }),
+      ).toEqual([]);
     } finally {
       db.close();
     }

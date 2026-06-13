@@ -47,6 +47,17 @@ export interface PruneMetricsSnapshotsInput {
   now?: string | Date;
 }
 
+export interface RecordAndPruneMetricsSnapshotInput {
+  filter: AggregateFilter;
+  retentionDays: number;
+  now?: string | Date;
+}
+
+export interface RecordAndPruneMetricsSnapshotResult {
+  snapshot: MetricsSnapshotRow;
+  prunedCount: number;
+}
+
 export interface ListMetricsSnapshotsInput {
   filter: AggregateFilter;
   since?: string;
@@ -313,6 +324,12 @@ function rowFromDb(row: {
   };
 }
 
+/**
+ * Insert one snapshot row.
+ *
+ * Production callers should use `recordAndPruneMetricsSnapshot` so snapshot
+ * creation and retention pruning happen in one transaction.
+ */
 export function recordMetricsSnapshot(
   db: Database.Database,
   input: RecordMetricsSnapshotInput,
@@ -361,6 +378,12 @@ export function recordMetricsSnapshot(
   return rowFromDb(row);
 }
 
+/**
+ * Delete snapshots older than the retention boundary.
+ *
+ * Production callers should use `recordAndPruneMetricsSnapshot` so snapshot
+ * creation and retention pruning happen in one transaction.
+ */
 export function pruneMetricsSnapshots(
   db: Database.Database,
   input: PruneMetricsSnapshotsInput,
@@ -380,6 +403,24 @@ export function pruneMetricsSnapshots(
     .prepare("DELETE FROM metrics_snapshots WHERE created_at < ?")
     .run(cutoff);
   return result.changes;
+}
+
+export function recordAndPruneMetricsSnapshot(
+  db: Database.Database,
+  input: RecordAndPruneMetricsSnapshotInput,
+): RecordAndPruneMetricsSnapshotResult {
+  const recordAndPrune = db.transaction(() => {
+    const snapshot = recordMetricsSnapshot(db, {
+      filter: input.filter,
+      ...(input.now !== undefined ? { now: input.now } : {}),
+    });
+    const prunedCount = pruneMetricsSnapshots(db, {
+      retentionDays: input.retentionDays,
+      ...(input.now !== undefined ? { now: input.now } : {}),
+    });
+    return { snapshot, prunedCount };
+  });
+  return recordAndPrune();
 }
 
 export function listMetricsSnapshots(
@@ -545,21 +586,25 @@ export function listMetricsTrend(
   input: ListMetricsTrendInput,
 ): MetricsTrendPoint[] {
   const limit = input.limit ?? 30;
+  if (!Number.isFinite(limit) || !Number.isInteger(limit) || limit < 0) {
+    throw new Error(`limit must be a non-negative integer: ${String(limit)}`);
+  }
+  const fetchLimit = limit * 4;
   const rows = listMetricsSnapshots(db, {
     filter: input.filter,
-    limit,
+    limit: fetchLimit,
   });
-  return rows
-    .map((row): MetricsTrendPoint | null => {
-      const parsed = parseSnapshotPayload(row);
-      if ("reason" in parsed) return null;
-      return {
-        createdAt: row.createdAt,
-        totalRuns: parsed.payload.metricsSummary.totalRuns,
-        approvedRate: parsed.payload.metricsSummary.approvedRate,
-        totalTokens: parsed.payload.tokenUsageSummary.totalTokens,
-      };
-    })
-    .filter((point): point is MetricsTrendPoint => point !== null)
-    .reverse();
+  const points: MetricsTrendPoint[] = [];
+  for (const row of rows) {
+    const parsed = parseSnapshotPayload(row);
+    if ("reason" in parsed) continue;
+    points.push({
+      createdAt: row.createdAt,
+      totalRuns: parsed.payload.metricsSummary.totalRuns,
+      approvedRate: parsed.payload.metricsSummary.approvedRate,
+      totalTokens: parsed.payload.tokenUsageSummary.totalTokens,
+    });
+    if (points.length >= limit) break;
+  }
+  return points.reverse();
 }
