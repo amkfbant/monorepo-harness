@@ -388,7 +388,7 @@ harness hitch finding add <hitch-id> --severity P1 --category correctness --summ
 harness hitch finding classify <finding-id> --scope in-scope|out-of-scope|unknown|duplicate --reason <text> \
   [--duplicate-of <finding-id>] [--then-rerun --repo <path> [--base-branch <name>] [--max-steps <n>]] [--json]
 harness hitch finding fixed <finding-id> [--note <text>] [--json]
-harness hitch finding defer <finding-id> --reason <text> [--backlog] [--json]
+harness hitch finding defer <finding-id> --reason <text> [--backlog] [--classify-out-of-scope] [--json]
 ```
 
 `hitch finding list` は hitch の存在を `requireSession()` で検証してから finding を読む
@@ -416,6 +416,14 @@ PR 作成/merge は別途 `hitch orchestrate` / `hitch await-merge` の明示ス
 `rerun=skipped(<reason>)` を出力する（classify が暗黙に PR を作る等の副作用を避ける）。
 `--then-rerun` 無指定時は従来どおり分類のみ（出力不変）。codex coder は execution-only で
 状態遷移の決定権は持たない。
+
+**`hitch finding defer --classify-out-of-scope`（G3 / opt-in）**: 通常の `defer` は従来どおり
+`scope_status = out_of_scope` の finding だけを受け付ける。`--classify-out-of-scope` を明示した
+場合だけ、同じ `--reason` を分類理由と deferral note の両方に使い、finding を
+`out_of_scope` に分類してから `deferred` にする。`--backlog` 併用時は backlog row 作成も同じ
+DB transaction に含めるため、分類だけ済む / backlog item だけ残る部分状態は残らない。backlog
+YAML export は DB commit 後の best-effort で、失敗時はコマンド成功のまま stderr warning として
+返る。
 
 Attempts, review cycles, close checks, and convergence decisions:
 

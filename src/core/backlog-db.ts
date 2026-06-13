@@ -62,6 +62,15 @@ export interface AddBacklogItemInput {
   projectId?: string;
 }
 
+export interface PreparedAddBacklogItemInput {
+  title: string;
+  domain: string;
+  goal: string;
+  priority: BacklogPriority;
+  tags: string[];
+  projectId?: string;
+}
+
 /** The outcome of a backlog write: the item, plus any export warning. */
 export interface BacklogWriteResult {
   item: BacklogItem;
@@ -84,6 +93,18 @@ export async function addBacklogItem(
   input: AddBacklogItemInput,
   now: Date = new Date(),
 ): Promise<BacklogWriteResult> {
+  const prepared = prepareAddBacklogItemInput(input);
+  const fsFloor = await maxDaySequenceFromFiles(ctx.backlogDir, dayKey(now));
+
+  return withDb(ctx.dbPath, (db) => {
+    const item = insertBacklogItemInTransaction(db, prepared, now, fsFloor);
+    return result(item, exportItem(db, item.id, ctx.backlogDir));
+  });
+}
+
+export function prepareAddBacklogItemInput(
+  input: AddBacklogItemInput,
+): PreparedAddBacklogItemInput {
   const title = input.title.trim();
   const domain = input.domain.trim();
   const goal = input.goal.trim();
@@ -96,29 +117,47 @@ export async function addBacklogItem(
       `backlog add: invalid priority ${JSON.stringify(priority)} (high|medium|low)`,
     );
   }
-  const day = dayKey(now);
-  const fsFloor = await maxDaySequenceFromFiles(ctx.backlogDir, day);
+  return {
+    domain,
+    title,
+    goal,
+    priority,
+    tags: input.tags ?? [],
+    ...(input.projectId !== undefined && input.projectId !== ""
+      ? { projectId: input.projectId }
+      : {}),
+  };
+}
 
-  return withDb(ctx.dbPath, (db) => {
-    // Phase 9-11: legacy-file rows must be migrated before runtime writes.
-    assertNoLegacyRuntimeRows(db);
-    const record = new BacklogRepository(db).insertItem(
-      {
-        domain,
-        title,
-        goal,
-        priority,
-        tags: input.tags ?? [],
-        createdAt: now.toISOString(),
-        ...(input.projectId !== undefined && input.projectId !== ""
-          ? { projectId: input.projectId }
-          : {}),
-      },
-      day,
-      fsFloor,
-    );
-    return result(toItem(record), exportItem(db, record.id, ctx.backlogDir));
-  });
+export function insertBacklogItemInTransaction(
+  db: Database.Database,
+  input: PreparedAddBacklogItemInput,
+  now: Date,
+  fsFloor: number,
+): BacklogItem {
+  // Phase 9-11: legacy-file rows must be migrated before runtime writes.
+  assertNoLegacyRuntimeRows(db);
+  const record = new BacklogRepository(db).insertItem(
+    {
+      domain: input.domain,
+      title: input.title,
+      goal: input.goal,
+      priority: input.priority,
+      tags: input.tags,
+      createdAt: now.toISOString(),
+      ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
+    },
+    dayKey(now),
+    fsFloor,
+  );
+  return toItem(record);
+}
+
+export function exportBacklogItemForContext(
+  ctx: BacklogDbContext,
+  itemId: string,
+): string | undefined {
+  return withDb(ctx.dbPath, (db) => exportItem(db, itemId, ctx.backlogDir));
 }
 
 /**
