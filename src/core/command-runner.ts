@@ -2,9 +2,12 @@ import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { Transform, type TransformCallback } from "node:stream";
 import { finished } from "node:stream/promises";
+import { StringDecoder } from "node:string_decoder";
 import { killProcessTree } from "../codex/process-tree.js";
 import type { ResolvedCommand } from "../policy/schema.js";
+import { redactSecretLines } from "../reporter/secret-scan.js";
 
 export interface CommandResult {
   /** stable command identifier from policy (or generated "cmd-N" for legacy string entries) */
@@ -79,6 +82,40 @@ function displayCommand(c: ResolvedCommand): string {
   return [c.cmd, ...c.args].join(" ");
 }
 
+function makeRedactingTransform(): Transform {
+  const decoder = new StringDecoder("utf8");
+  let pending = "";
+
+  function pushCompleteLines(stream: Transform): void {
+    const lastNewline = pending.lastIndexOf("\n");
+    if (lastNewline === -1) return;
+    const complete = pending.slice(0, lastNewline + 1);
+    pending = pending.slice(lastNewline + 1);
+    stream.push(redactSecretLines(complete), "utf8");
+  }
+
+  return new Transform({
+    transform(
+      this: Transform,
+      chunk: Buffer | string,
+      _encoding: BufferEncoding,
+      callback: TransformCallback,
+    ) {
+      pending +=
+        typeof chunk === "string" ? chunk : decoder.write(chunk);
+      pushCompleteLines(this);
+      callback();
+    },
+    flush(this: Transform, callback: TransformCallback) {
+      pending += decoder.end();
+      if (pending.length > 0) {
+        this.push(redactSecretLines(pending), "utf8");
+      }
+      callback();
+    },
+  });
+}
+
 export async function runAllowedCommands(
   input: RunAllowedCommandsInputs,
 ): Promise<{ results: CommandResult[]; allPassed: boolean }> {
@@ -147,8 +184,8 @@ function runOne(input: RunOneInputs): Promise<CommandResult> {
       timedOut = true;
       killProcessTree(child);
     }, input.timeoutMs);
-    child.stdout.pipe(outStream);
-    child.stderr.pipe(errStream);
+    child.stdout.pipe(makeRedactingTransform()).pipe(outStream);
+    child.stderr.pipe(makeRedactingTransform()).pipe(errStream);
     child.on("error", (e) => {
       clearTimeout(timer);
       reject(e);

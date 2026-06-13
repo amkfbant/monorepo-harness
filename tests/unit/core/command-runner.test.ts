@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { runAllowedCommands } from "../../../src/core/command-runner.js";
 import type { ResolvedCommand } from "../../../src/policy/schema.js";
+import { COMMAND_LOG_LINE_WITHHELD } from "../../../src/reporter/secret-scan.js";
 import { makeTmpDir } from "../../helpers/tmp.js";
 
 function shellCmd(id: string, raw: string): ResolvedCommand {
@@ -41,6 +42,67 @@ describe("runAllowedCommands", () => {
     expect(existsSync(r.results[0]!.stdoutPath)).toBe(true);
     expect(readFileSync(r.results[0]!.stdoutPath, "utf8")).toMatch(/hello/);
     expect(r.results[0]!.stdoutPath).toMatch(/cmd-0\.out\.log$/);
+  });
+
+  it("redacts a secret-shaped line in the on-disk stdout log", async () => {
+    const wt = makeTmpDir("harness-cmd-");
+    const logDir = makeTmpDir("harness-cmd-log-");
+    const rawToken = `ghp_${"a".repeat(36)}`;
+    const r = await runAllowedCommands({
+      worktreePath: wt,
+      commands: [shellCmd("secret-stdout", `echo "token=${rawToken}"`)],
+      logDir,
+    });
+    const stdout = readFileSync(r.results[0]!.stdoutPath, "utf8");
+    expect(stdout).not.toContain(rawToken);
+    expect(stdout).toContain(COMMAND_LOG_LINE_WITHHELD);
+  });
+
+  it("preserves benign stdout lines verbatim while redacting only the secret line", async () => {
+    const wt = makeTmpDir("harness-cmd-");
+    const logDir = makeTmpDir("harness-cmd-log-");
+    const rawToken = `ghp_${"b".repeat(36)}`;
+    const r = await runAllowedCommands({
+      worktreePath: wt,
+      commands: [
+        shellCmd(
+          "mixed-stdout",
+          [
+            "printf 'build started\\n'",
+            `printf 'token=${rawToken}\\n'`,
+            "printf 'build finished\\n'",
+          ].join("; "),
+        ),
+      ],
+      logDir,
+    });
+    expect(readFileSync(r.results[0]!.stdoutPath, "utf8")).toBe(
+      ["build started", COMMAND_LOG_LINE_WITHHELD, "build finished", ""].join(
+        "\n",
+      ),
+    );
+  });
+
+  it("redacts a secret split across stream-chunk boundaries", async () => {
+    const wt = makeTmpDir("harness-cmd-");
+    const logDir = makeTmpDir("harness-cmd-log-");
+    const tokenHead = `ghp_${"c".repeat(12)}`;
+    const tokenTail = "d".repeat(24);
+    const rawToken = `${tokenHead}${tokenTail}`;
+    const script = [
+      `process.stdout.write("prefix token=${tokenHead}");`,
+      `setTimeout(() => process.stdout.write("${tokenTail} suffix"), 25);`,
+    ].join("");
+    const r = await runAllowedCommands({
+      worktreePath: wt,
+      commands: [argvCmd("split-secret", process.execPath, ["-e", script])],
+      logDir,
+    });
+    const stdout = readFileSync(r.results[0]!.stdoutPath, "utf8");
+    expect(stdout).not.toContain(rawToken);
+    expect(stdout).not.toContain("ghp_");
+    expect(stdout).not.toContain(tokenTail);
+    expect(stdout).toBe(COMMAND_LOG_LINE_WITHHELD);
   });
 
   it("flags failure when a command returns non-zero", async () => {

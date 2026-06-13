@@ -78,6 +78,8 @@ export function scanForSecrets(
 }
 
 export const SCAN_SAMPLE_BYTES = 32 * 1024;
+export const COMMAND_LOG_LINE_WITHHELD =
+  "[redacted: secret-shaped line withheld]";
 
 // A conservative assignment / key-name heuristic for free text that will be
 // injected into an LLM prompt (close-check command output, command strings,
@@ -104,17 +106,27 @@ const BEARER_TOKEN_RE = /\bbearer\s+[A-Za-z0-9._~+/=-]{12,}/i;
 /**
  * Whole-text fail-closed gate for free text bound for an LLM prompt.
  *
- * Returns true when the text either matches a vendor-shaped token
- * (`scanForSecrets`) OR a conservative name-based assignment / bearer-token
- * heuristic. Callers MUST withhold the entire field/stream on a true result —
- * never partial — so a tail-clip window cannot sever a token and let the
- * remainder evade detection.
+ * Returns true when the text includes a prior command-log redaction marker,
+ * matches a vendor-shaped token (`scanForSecrets`), OR matches a conservative
+ * name-based assignment / bearer-token heuristic. Callers MUST withhold the
+ * entire field/stream on a true result — never partial — so a tail-clip window
+ * cannot sever a token and let the remainder evade detection.
  */
 export function containsLikelySecret(text: string): boolean {
+  if (text.includes(COMMAND_LOG_LINE_WITHHELD)) return true;
   if (scanForSecrets("", text).matched) return true;
   return (
     SECRET_ASSIGNMENT_RE.test(text) ||
     GENERIC_KEY_ASSIGNMENT_RE.test(text) ||
     BEARER_TOKEN_RE.test(text)
   );
+}
+
+export function redactSecretLines(text: string): string {
+  return text
+    .split("\n")
+    .map((line) =>
+      containsLikelySecret(line) ? COMMAND_LOG_LINE_WITHHELD : line,
+    )
+    .join("\n");
 }

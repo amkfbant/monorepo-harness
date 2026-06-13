@@ -169,10 +169,13 @@ runs/<runId>/
   review-request.md        # reviewer 向け詳細 (status / safety / lists / artifacts / codex tails / redacted events tail on codex failure / checklist)
   review-decision.yaml     # 初期: { decision: pending, … } — reviewer がここを編集する
   commands/                # OPTIONAL: policy.allowedCommands があるときだけ生成
-    00-<slug>.out.log
-    00-<slug>.err.log
+    00-<slug>.out.log      # command stdout; secret-shaped lines are redacted at the write layer
+    00-<slug>.err.log      # command stderr; secret-shaped lines are redacted at the write layer
     01-<slug>.out.log
     ...
+  close-checks/            # OPTIONAL: hitch close-check command logs; same runAllowedCommands write-layer redaction
+    <id>.out.log
+    <id>.err.log
   context-pack-manifest.yaml  # OPTIONAL: `run --project` で context pack を注入したときのみ
 workspaces/<runId>/repo/   # git worktree (削除しない)
 locks/<repoId>--<domain-slug>-<hash>.lock  # active run の lock; runId / pid / hostname / acquiredAt

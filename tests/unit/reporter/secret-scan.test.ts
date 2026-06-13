@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { scanForSecrets } from "../../../src/reporter/secret-scan.js";
+import {
+  COMMAND_LOG_LINE_WITHHELD,
+  redactSecretLines,
+  scanForSecrets,
+} from "../../../src/reporter/secret-scan.js";
 
 describe("scanForSecrets — filename heuristics", () => {
   it("flags .env / .env.local / .env.production", () => {
@@ -99,5 +103,44 @@ describe("scanForSecrets — content heuristics", () => {
     const r = scanForSecrets(".env", "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE");
     expect(r.reasons).toContain("filename:.env");
     expect(r.reasons).toContain("content:aws-access-key-id");
+  });
+});
+
+describe("redactSecretLines", () => {
+  it("replaces a whole line when it contains secret-shaped content", () => {
+    expect(redactSecretLines(`token=ghp_${"a".repeat(36)}`)).toBe(
+      COMMAND_LOG_LINE_WITHHELD,
+    );
+  });
+
+  it("passes benign lines through unchanged", () => {
+    const input = "build started\nno secrets here\nbuild finished";
+    expect(redactSecretLines(input)).toBe(input);
+  });
+
+  it("redacts only offending lines in multi-line input", () => {
+    const input = [
+      "build started",
+      `token=ghp_${"b".repeat(36)}`,
+      "build finished",
+    ].join("\n");
+    expect(redactSecretLines(input)).toBe(
+      ["build started", COMMAND_LOG_LINE_WITHHELD, "build finished"].join(
+        "\n",
+      ),
+    );
+  });
+
+  it("preserves trailing newline structure", () => {
+    const input = `before\nOPENAI_API_KEY=sk-${"c".repeat(40)}\nafter\n`;
+    expect(redactSecretLines(input)).toBe(
+      ["before", COMMAND_LOG_LINE_WITHHELD, "after", ""].join("\n"),
+    );
+  });
+
+  it("redacts a newline-less final secret line", () => {
+    expect(redactSecretLines(`AWS_SECRET_ACCESS_KEY=${"d".repeat(40)}`)).toBe(
+      COMMAND_LOG_LINE_WITHHELD,
+    );
   });
 });
