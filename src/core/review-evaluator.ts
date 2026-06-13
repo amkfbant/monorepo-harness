@@ -28,6 +28,19 @@ import {
   type SanitizedGateReason,
 } from "./gate-reason.js";
 import { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
+import { recordCodexUsage } from "../db/repositories/run-usage.js";
+import { runMigrations } from "../db/migrations.js";
+
+/**
+ * Telemetry-only warning (token-usage G2). Recording evaluator codex usage is
+ * fail-open: a telemetry write must never change the evaluation outcome.
+ */
+function warnEvaluatorUsageRecordFailed(runId: string, e: unknown): void {
+  process.stderr.write(
+    `warning: run ${runId}: evaluator codex usage telemetry was not recorded: ` +
+      `${(e as Error).message}\n`,
+  );
+}
 
 export class ReviewEvaluateError extends Error {
   constructor(message: string) {
@@ -127,49 +140,93 @@ export async function evaluateReviewer(
   }
 
   const samples: SampleResult[] = [];
-  for (let i = 1; i <= opts.samples; i++) {
-    const evalDir = join(evalRoot, `eval-${String(i).padStart(3, "0")}`);
-    // a re-evaluation must start each eval dir clean — never mix a stale
-    // review-decision.yaml with a fresh review-auto-error.json (or vice versa).
-    await rm(evalDir, { recursive: true, force: true });
-    await mkdir(evalDir, { recursive: true });
-    const stdoutPath = join(evalDir, "reviewer-agent.out.log");
-    const stderrPath = join(evalDir, "reviewer-agent.err.log");
-    const rawEventsPath = join(evalDir, ".reviewer-agent.events.raw.jsonl");
-    const tmpEventsPath = join(evalDir, ".reviewer-agent.events.redacted.tmp");
-    const eventsPath = join(evalDir, "reviewer-agent.events.jsonl");
+  // token-usage G2: record evaluator codex usage per sample when a writable
+  // DB handle is available (opts.dbPath set). Per the design's safety
+  // guidance, a missing dbPath stays unavailable — no new connection is
+  // forced. Fail-open; reads only the redacted official events.
+  // Opening the telemetry DB is itself fail-open: an open/lock failure must
+  // not break the evaluation. On failure, warn and continue with no usageDb.
+  let usageDb: ReturnType<typeof openManagedDb> | null = null;
+  if (opts.dbPath !== undefined && existsSync(opts.dbPath)) {
+    try {
+      usageDb = openManagedDb({ dbPath: opts.dbPath });
+      // Ensure the run_usage schema is current so a not-yet-migrated (e.g.
+      // v29) DB still records evaluator usage instead of failing the INSERT.
+      runMigrations(usageDb.db);
+    } catch (err) {
+      warnEvaluatorUsageRecordFailed(opts.runId, err);
+      usageDb?.close();
+      usageDb = null;
+    }
+  }
+  try {
+    for (let i = 1; i <= opts.samples; i++) {
+      const evalDir = join(evalRoot, `eval-${String(i).padStart(3, "0")}`);
+      // a re-evaluation must start each eval dir clean — never mix a stale
+      // review-decision.yaml with a fresh review-auto-error.json (or vice versa).
+      await rm(evalDir, { recursive: true, force: true });
+      await mkdir(evalDir, { recursive: true });
+      const stdoutPath = join(evalDir, "reviewer-agent.out.log");
+      const stderrPath = join(evalDir, "reviewer-agent.err.log");
+      const rawEventsPath = join(evalDir, ".reviewer-agent.events.raw.jsonl");
+      const tmpEventsPath = join(evalDir, ".reviewer-agent.events.redacted.tmp");
+      const eventsPath = join(evalDir, "reviewer-agent.events.jsonl");
 
-    // Observation-only: the run itself must not be mutated. Snapshot
-    // everything OUTSIDE review-evaluations/ and verify it after codex —
-    // a misconfigured HARNESS_CODEX_BIN / sandbox failure that touches
-    // meta.json or review-decision.yaml is then detected.
-    const before = await snapshotExcludingEvals(runDir);
-    const codexResult = await opts.codexRunner.run({
-      worktreePath: runDir,
-      prompt: PROMPT_PREAMBLE + reviewerOpsSection,
-      logPaths: { stdout: stdoutPath, stderr: stderrPath, events: rawEventsPath },
-    });
-    verifyUnchanged(before, await snapshotExcludingEvals(runDir));
-    await publishRedactedCodexEvents({
-      rawPath: rawEventsPath,
-      tmpPath: tmpEventsPath,
-      officialPath: eventsPath,
-      runId: opts.runId,
-    });
-    const sample = await captureSample({
-      index: i,
-      evalDir,
-      stdoutPath,
-      runId: opts.runId,
-      domain: typeof meta.domain === "string" ? meta.domain : "unknown",
-      reviewer,
-      reviewedAt: (opts.now ?? new Date()).toISOString(),
-      codexFailed: codexResult.timedOut || codexResult.exitCode !== 0,
-      codexNote: codexResult.timedOut
-        ? "reviewer codex timed out"
-        : `reviewer codex exited ${codexResult.exitCode}`,
-    });
-    samples.push(sample);
+      // Observation-only: the run itself must not be mutated. Snapshot
+      // everything OUTSIDE review-evaluations/ and verify it after codex —
+      // a misconfigured HARNESS_CODEX_BIN / sandbox failure that touches
+      // meta.json or review-decision.yaml is then detected.
+      const before = await snapshotExcludingEvals(runDir);
+      const codexResult = await opts.codexRunner.run({
+        worktreePath: runDir,
+        prompt: PROMPT_PREAMBLE + reviewerOpsSection,
+        logPaths: {
+          stdout: stdoutPath,
+          stderr: stderrPath,
+          events: rawEventsPath,
+        },
+      });
+      verifyUnchanged(before, await snapshotExcludingEvals(runDir));
+      await publishRedactedCodexEvents({
+        rawPath: rawEventsPath,
+        tmpPath: tmpEventsPath,
+        officialPath: eventsPath,
+        runId: opts.runId,
+      });
+      if (usageDb !== null) {
+        try {
+          const eventsContent = await readFile(eventsPath, "utf8").catch(
+            () => null,
+          );
+          recordCodexUsage({
+            db: usageDb.db,
+            runId: opts.runId,
+            kind: "evaluator",
+            eventsContent,
+            onError: (err) =>
+              warnEvaluatorUsageRecordFailed(opts.runId, err),
+          });
+        } catch (err) {
+          warnEvaluatorUsageRecordFailed(opts.runId, err);
+        }
+      }
+      const sample = await captureSample({
+        index: i,
+        evalDir,
+        stdoutPath,
+        runId: opts.runId,
+        domain: typeof meta.domain === "string" ? meta.domain : "unknown",
+        reviewer,
+        reviewedAt: (opts.now ?? new Date()).toISOString(),
+        codexFailed: codexResult.timedOut || codexResult.exitCode !== 0,
+        codexNote: codexResult.timedOut
+          ? "reviewer codex timed out"
+          : `reviewer codex exited ${codexResult.exitCode}`,
+      });
+      samples.push(sample);
+    }
+  } finally {
+    usageDb?.close();
   }
 
   const decisionCounts: Record<string, number> = {};

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { openDb } from "../../../src/db/connection.js";
-import { runMigrations } from "../../../src/db/migrations.js";
+import { runMigrations, MIGRATIONS } from "../../../src/db/migrations.js";
 import { ReviewProposalRepository } from "../../../src/db/repositories/review-proposals.js";
 import {
   runReviewerAgent,
@@ -753,5 +753,185 @@ describe("runReviewerAgent", () => {
       });
       expect(existsSync(errPath)).toBe(false);
     });
+  });
+});
+
+const REVIEWER_USAGE = {
+  input: 30,
+  cachedInput: 5,
+  output: 12,
+  reasoning: 4,
+  total: 42,
+};
+
+function fakeRunnerWithUsage(
+  output: string,
+  usage: typeof REVIEWER_USAGE,
+  opts: { exitCode?: number; timedOut?: boolean } = {},
+): CodexExecRunner {
+  return {
+    async run(input) {
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(input.logPaths.stdout, output, "utf8");
+      await writeFile(input.logPaths.stderr, "", "utf8");
+      await writeFile(
+        input.logPaths.events,
+        JSON.stringify({
+          type: "turn.completed",
+          usage: {
+            input_tokens: usage.input,
+            cached_input_tokens: usage.cachedInput,
+            output_tokens: usage.output,
+            reasoning_output_tokens: usage.reasoning,
+            total_tokens: usage.total,
+          },
+        }) + "\n",
+        "utf8",
+      );
+      return {
+        exitCode: opts.exitCode ?? 0,
+        timedOut: opts.timedOut ?? false,
+        durationMs: 0,
+      };
+    },
+  };
+}
+
+function readReviewerUsage(
+  dbPath: string,
+  runId: string,
+): Array<Record<string, unknown>> {
+  const db = openDb(dbPath);
+  try {
+    return db
+      .prepare(
+        `SELECT kind, seq, input_tokens, output_tokens, total_tokens,
+                usage_source
+           FROM run_usage
+          WHERE run_id = ? AND kind = 'reviewer'
+          ORDER BY seq`,
+      )
+      .all(runId) as Array<Record<string, unknown>>;
+  } finally {
+    db.close();
+  }
+}
+
+describe("reviewer codex usage telemetry (token-usage G2)", () => {
+  it("records a reviewer run_usage row from the published events on success", async () => {
+    const { runsDir, runId } = setup();
+    const dbPath = setupReviewDb(runId);
+    const r = await runReviewerAgent({
+      runsDir,
+      runId,
+      dbPath,
+      codexRunner: fakeRunnerWithUsage(APPROVED_OUTPUT, REVIEWER_USAGE),
+    });
+    expect(r.decision).toBe("approved");
+    const rows = readReviewerUsage(dbPath, runId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: "reviewer",
+      seq: 0,
+      input_tokens: 30,
+      output_tokens: 12,
+      total_tokens: 42,
+      usage_source: "exact",
+    });
+  });
+
+  it("records reviewer usage even when the reviewer codex exits non-zero", async () => {
+    const { runsDir, runId } = setup();
+    const dbPath = setupReviewDb(runId);
+    await expect(
+      runReviewerAgent({
+        runsDir,
+        runId,
+        dbPath,
+        codexRunner: fakeRunnerWithUsage(APPROVED_OUTPUT, REVIEWER_USAGE, {
+          exitCode: 7,
+        }),
+      }),
+    ).rejects.toThrow();
+    // codex still consumed tokens — usage is recorded on the failure outcome.
+    const rows = readReviewerUsage(dbPath, runId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: "reviewer",
+      usage_source: "exact",
+      total_tokens: 42,
+    });
+  });
+
+  it("does not record reviewer usage when no dbPath is supplied", async () => {
+    const { runsDir, runId } = setup();
+    // No dbPath: the recording path is skipped and the review still succeeds.
+    const r = await runReviewerAgent({
+      runsDir,
+      runId,
+      codexRunner: fakeRunnerWithUsage(APPROVED_OUTPUT, REVIEWER_USAGE),
+    });
+    expect(r.decision).toBe("approved");
+  });
+
+  it("is fail-open: a telemetry write failure does not break the review", async () => {
+    const { runsDir, runId } = setup();
+    const dbPath = setupReviewDb(runId);
+    // Drop run_usage so the telemetry insert fails, while the proposal write
+    // path (a different table) still works. The review must still succeed.
+    const broken = openDb(dbPath);
+    try {
+      broken.prepare("DROP TABLE run_usage").run();
+    } finally {
+      broken.close();
+    }
+    const r = await runReviewerAgent({
+      runsDir,
+      runId,
+      dbPath,
+      codexRunner: fakeRunnerWithUsage(APPROVED_OUTPUT, REVIEWER_USAGE),
+    });
+    expect(r.decision).toBe("approved");
+  });
+
+  it("migrates a pre-v30 DB so reviewer usage is recorded (not lost on the old schema)", async () => {
+    const { runsDir, runId } = setup();
+    // A DB still at v29: run_usage has the old single-row shape (no kind/seq).
+    // Without migrating the telemetry handle the INSERT would fail-open and
+    // the reviewer usage would be lost.
+    const dir = mkdtempSync(join(tmpdir(), "harness-reviewer-v29-"));
+    mkdirSync(join(dir, ".harness"), { recursive: true });
+    const dbPath = join(dir, ".harness", "harness.sqlite");
+    const db = openDb(dbPath);
+    try {
+      db.prepare(
+        `CREATE TABLE schema_migrations
+           (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`,
+      ).run();
+      for (const m of MIGRATIONS.filter((mig) => mig.version < 30)) {
+        for (const stmt of m.statements) db.prepare(stmt).run();
+        db.prepare(
+          "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+        ).run(m.version, m.name, "2026-06-13T00:00:00Z");
+      }
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, source_mode, db_revision, export_status, updated_at, meta_json)
+         VALUES (?, 't', 'apps/user', 'domain-coding', 'main', 'needs_review',
+           'db-first', 1, 'disabled', '2026-05-21T00:00:00Z', '{}')`,
+      ).run(runId);
+    } finally {
+      db.close();
+    }
+    const r = await runReviewerAgent({
+      runsDir,
+      runId,
+      dbPath,
+      codexRunner: fakeRunnerWithUsage(APPROVED_OUTPUT, REVIEWER_USAGE),
+    });
+    expect(r.decision).toBe("approved");
+    const rows = readReviewerUsage(dbPath, runId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: "reviewer", usage_source: "exact" });
   });
 });

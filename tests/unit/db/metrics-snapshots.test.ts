@@ -12,7 +12,7 @@ import {
   pruneMetricsSnapshots,
   recordAndPruneMetricsSnapshot,
   recordMetricsSnapshot,
-  type MetricsSnapshotPayloadV1,
+  type MetricsSnapshotPayloadV2,
 } from "../../../src/db/repositories/metrics-snapshots.js";
 
 function freshDb(): Database.Database {
@@ -52,9 +52,9 @@ function insertRun(
   if (input.totalTokens !== undefined) {
     db.prepare(
       `INSERT INTO run_usage
-         (run_id, input_tokens, output_tokens, total_tokens, usage_source,
-          created_at)
-       VALUES (?, 0, 0, ?, 'exact', ?)`,
+         (run_id, kind, seq, input_tokens, output_tokens, total_tokens,
+          usage_source, created_at)
+       VALUES (?, 'coder', 0, 0, 0, ?, 'exact', ?)`,
     ).run(input.runId, input.totalTokens, startedAt);
   }
 }
@@ -62,9 +62,10 @@ function insertRun(
 function insertUsage(db: Database.Database, runId: string): void {
   db.prepare(
     `INSERT INTO run_usage
-       (run_id, input_tokens, output_tokens, total_tokens, usage_source,
-        created_at)
-     VALUES (?, 100, 25, 125, 'exact', '2026-06-01T00:00:00.000Z')`,
+       (run_id, kind, seq, input_tokens, output_tokens, total_tokens,
+        usage_source, created_at)
+     VALUES (?, 'coder', 0, 100, 25, 125, 'exact',
+       '2026-06-01T00:00:00.000Z')`,
   ).run(runId);
 }
 
@@ -110,8 +111,8 @@ function insertMcpConfirmation(db: Database.Database): void {
   ).run();
 }
 
-function payloadOf(row: { payloadJson: string }): MetricsSnapshotPayloadV1 {
-  return JSON.parse(row.payloadJson) as MetricsSnapshotPayloadV1;
+function payloadOf(row: { payloadJson: string }): MetricsSnapshotPayloadV2 {
+  return JSON.parse(row.payloadJson) as MetricsSnapshotPayloadV2;
 }
 
 describe("metrics snapshots repository", () => {
@@ -200,9 +201,9 @@ describe("metrics snapshots repository", () => {
       expect(snapshot.projectId).toBe("demo");
       expect(snapshot.repoId).toBe("repo-a");
       expect(snapshot.domain).toBe("apps/web");
-      expect(snapshot.payloadSchema).toBe(1);
+      expect(snapshot.payloadSchema).toBe(2);
       expect(payloadOf(snapshot)).toMatchObject({
-        schema: 1,
+        schema: 2,
         capturedAt: "2026-06-13T00:00:00.000Z",
         filter: { projectId: "demo", repoId: "repo-a", domain: "apps/web" },
         metricsSummary: { totalRuns: 1, approved: 1 },
@@ -211,6 +212,29 @@ describe("metrics snapshots repository", () => {
           totalInputTokens: 100,
           totalOutputTokens: 25,
           totalTokens: 125,
+          byKind: {
+            coder: {
+              runsWithUsage: 1,
+              totalInputTokens: 100,
+              totalOutputTokens: 25,
+              totalTokens: 125,
+              bySource: { exact: 1 },
+            },
+            reviewer: {
+              runsWithUsage: 0,
+              totalInputTokens: 0,
+              totalOutputTokens: 0,
+              totalTokens: 0,
+              bySource: {},
+            },
+            evaluator: {
+              runsWithUsage: 0,
+              totalInputTokens: 0,
+              totalOutputTokens: 0,
+              totalTokens: 0,
+              bySource: {},
+            },
+          },
         },
         hitchMetricsSummary: {
           totalSessions: 1,
@@ -407,6 +431,79 @@ describe("metrics snapshots repository", () => {
         current: 1,
         delta: 1,
       });
+      expect(delta.usage.totalTokens).toEqual({
+        baseline: 100,
+        current: 150,
+        delta: 50,
+      });
+      expect(delta.skippedSnapshots).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("uses schema 1 snapshots as compatible baselines without requiring by-kind usage", () => {
+    const db = freshDb();
+    try {
+      insertRun(db, {
+        runId: "run-current",
+        projectId: "demo",
+        repoId: "repo-a",
+        domain: "apps/web",
+        status: "approved",
+        totalTokens: 150,
+      });
+      db.prepare(
+        `INSERT INTO metrics_snapshots
+           (snapshot_id, created_at, project_id, repo_id, domain, payload_json,
+            payload_schema)
+         VALUES (?, ?, 'demo', 'repo-a', 'apps/web', ?, 1)`,
+      ).run(
+        "msnap-schema1",
+        "2026-06-01T00:00:00.000Z",
+        JSON.stringify({
+          schema: 1,
+          capturedAt: "2026-06-01T00:00:00.000Z",
+          filter: { projectId: "demo", repoId: "repo-a", domain: "apps/web" },
+          metricsSummary: {
+            totalRuns: 1,
+            byStatus: { approved: 1 },
+            approved: 1,
+            needsReview: 0,
+            failed: 0,
+            approvedRate: 1,
+            oneShotApprovalRate: 1,
+            policyViolationRate: 0,
+            secretSuspectRate: 0,
+          },
+          hitchMetricsSummary: {
+            totalSessions: 0,
+            byStatus: {},
+            avgReviewCycles: null,
+            avgRerunAttempts: null,
+            findingsBySeverity: {},
+            findingResolutionRate: null,
+            reopenRate: null,
+          },
+          tokenUsageSummary: {
+            runsWithUsage: 1,
+            totalInputTokens: 80,
+            totalOutputTokens: 20,
+            totalTokens: 100,
+            bySource: { exact: 1 },
+          },
+        }),
+      );
+
+      const delta = buildMetricsDelta(db, {
+        filter: { projectId: "demo", repoId: "repo-a", domain: "apps/web" },
+        baselineAt: "2026-06-08T00:00:00.000Z",
+        now: "2026-06-13T00:00:00.000Z",
+      });
+
+      expect(delta.status).toBe("ok");
+      if (delta.status !== "ok") return;
+      expect(delta.baseline.snapshotId).toBe("msnap-schema1");
       expect(delta.usage.totalTokens).toEqual({
         baseline: 100,
         current: 150,

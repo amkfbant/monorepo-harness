@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V29_STATEMENTS`、
-> `SCHEMA_VERSION = 29`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V30_STATEMENTS`、
+> `SCHEMA_VERSION = 30`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -258,7 +258,8 @@ db import --from-files
   - --reset でも runtime テーブルは source_mode != 'db-first' の行のみ削除
     （read-only scoped command が db-first 行を legacy-file へ demigrate しない）
   - runtime child rows は parent の `source_mode != 'db-first'` 削除に追随して削除し、
-    その後 orphan prune する。対象には `run_usage` も含む。
+    その後 orphan prune する。対象には `run_usage` も含み、per-invocation の
+    複数行も `run_id` 単位でまとめて削除する。
 
 db import --from-files --force-legacy-reconcile
   - 明示指定時のみ db-first run / backlog row の files 上書きを許す（災害復旧用途）
@@ -427,6 +428,8 @@ legacy-file の行はクリアして再構築するが、**DB-first（db-complet
 
 runtime parent を削除する reset では、`run_events` / `artifacts` /
 `run_context_packs` / `run_usage` などの child rows も同じ parent 境界で削除する。
+`run_usage` は v30 以降 1 run 複数行になり得るため、reset / force reconcile は
+`run_id` 単位で既存 usage rows を削除し、files からは再構築しない。
 DB-first parent の child rows は保持し、parent が存在しなくなった child rows は orphan
 prune で削除する。
 
@@ -717,7 +720,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 29`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 30`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -743,10 +746,11 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 23 | audit fix #130 | hitch_lifecycle_events（reopen/close/cancel reason の audit-only ledger） |
 | 24 | audit fix #131 | `review_proposals.prompt_provenance_json`（reviewer prompt template と injected operational knowledge の audit-only provenance） |
 | 25 | telemetry provenance B1 | `runs` に実行環境 provenance 列（harness/schema/codex binary/prompt sha。`codex_model` は NULL 予約） |
-| 26 | telemetry usage C2 | `run_usage`（run 1:1 の Codex token usage。`exact` / `unavailable` を記録、`parsed_log` / `estimated` は予約） |
+| 26 | telemetry usage C2 | `run_usage`（Codex token usage。v30 で per-invocation key に再作成。`exact` / `unavailable` を記録、`parsed_log` / `estimated` は予約） |
 | 27 | telemetry snapshots E1 | `metrics_snapshots`（live aggregate の append-only stored projection。snapshot caller と retention prune を同時実装） |
 | 28 | telemetry follow-up F4 | `domain_lock_contention`（run log 作成前の domain lock busy を append-only に記録する純テレメトリ） |
 | 29 | course-ext G4 | `hitch_lifecycle_events.event` CHECK を rebuild で拡張し `pr_adopted` / `updated` を許容（v23 の FK/NOT NULL/index は維持） |
+| 30 | token-usage G1 | `run_usage` を `(run_id, kind, seq)` primary key へ再作成。既存行は `kind='coder', seq=0` で移行し、snapshot payload schema は 2 |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -1066,18 +1070,28 @@ append-only 規約により、v10 の DDL と `V10_TABLE_NAMES` は書き換え�
 
 ## Telemetry usage C2 — run_usage（schema v26）
 
-schema v26 は additive な `run_usage` を追加する。1 run につき最大 1 行で、
-Codex CLI structured JSONL (`codex-events.jsonl`) の `turn.completed.usage` だけを
-入力にする。LLM の自然文・自己申告テキストは usage source にしない。
+schema v26 は additive な `run_usage` を追加し、schema v30 は同じ table name のまま
+per-invocation 粒度へ再作成する。latest schema では 1 run に coder / reviewer /
+evaluator の各 invocation が複数行入り得る。Codex CLI structured JSONL
+(`codex-events.jsonl`) の `turn.completed.usage` だけを入力にし、LLM の自然文・
+自己申告テキストは usage source にしない。書き込み経路は: coder（`workflow-runner`、G1）、
+reviewer（`reviewer-agent`、publish 直後に全 outcome で記録、G2）、evaluator
+（`review-evaluator`、`dbPath` 指定時のみ per-sample 記録、G2）。いずれも fail-open で、
+記録失敗は run/review/evaluation の成否に波及しない。書込可能な DB ハンドルを持たない経路
+（例: `dbPath` 無しの `review auto`）は記録なし（unavailable のまま）。
 `db import --from-files --force-legacy-reconcile` では `run_usage` を削除し、files から
-再構築しない（行なし = usage 未収集）。
+再構築しない（行なし = usage 未収集）。削除は `run_id` 単位なので、同一 run に複数
+usage rows があっても全て置き換え境界に含まれる。
 `db import --from-files --reset` でも legacy-file run が reset で消える場合、その
 `run_usage` は child row として削除する。DB-first run の `run_usage` は canonical state
 として保持する。
 
 ```sql
 CREATE TABLE run_usage (
-  run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+  run_id TEXT NOT NULL REFERENCES runs(run_id),
+  kind TEXT NOT NULL
+    CHECK (kind IN ('coder','reviewer','evaluator')),
+  seq INTEGER NOT NULL DEFAULT 0,
   model TEXT,
   input_tokens INTEGER,
   cached_input_tokens INTEGER,
@@ -1086,11 +1100,19 @@ CREATE TABLE run_usage (
   total_tokens INTEGER,
   usage_source TEXT NOT NULL
     CHECK (usage_source IN ('exact','parsed_log','estimated','unavailable')),
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, kind, seq)
 );
+CREATE INDEX run_usage_run_idx ON run_usage(run_id);
 ```
 
-`model` は現状 `NULL`。`usage_source` の意味論:
+v30 migration は既存 v26 rows を `kind='coder'`, `seq=0` として `INSERT ... SELECT`
+で移行してから旧 table を drop / rename する。`V26_TABLE_NAMES` /
+`CURRENT_TABLE_NAMES` の table 名は引き続き `run_usage` のまま変わらない。
+`model` は現状 `NULL`。`seq` は同一 `(run_id, kind)` 内で
+`COALESCE(MAX(seq) + 1, 0)` により採番し、採番と INSERT は同じ `BEGIN IMMEDIATE`
+transaction 内で行う。usage 記録は fail-open で、記録失敗は run を止めない。
+`usage_source` の意味論:
 
 - `exact` — Codex CLI structured events の `turn.completed.usage` から決定論的に取得。
   複数 turn は token fields を合算する。
@@ -1127,11 +1149,16 @@ CREATE INDEX metrics_snapshots_scope_created_idx
 ```
 
 `snapshot_id` は `msnap-<uuid>`。`project_id` / `repo_id` / `domain` は snapshot の
-scope 記録で nullable。`payload_schema=1` の `payload_json` は
-`schema` / `capturedAt` / `filter` と、4 つの aggregate payload
+scope 記録で nullable。現行 writer は `payload_schema=2` を明示し、`payload_json`
+は `schema: 2` / `capturedAt` / `filter` と、4 つの aggregate payload
 （`metricsSummary`, `hitchMetricsSummary`, `tokenUsageSummary`,
-`mcpConfirmationSummary`）を持つ JSON。MCP confirmations は global table なので、
-project/repo/domain scope は適用せず、date scope のみ aggregate に渡す。
+`mcpConfirmationSummary`）を持つ JSON。schema 2 の `tokenUsageSummary` は
+top-level totals（kind を問わず exact rows を SUM）に加えて
+`byKind.{coder,reviewer,evaluator}` の内訳を持つ。`runsWithUsage` は scoped runs の
+distinct count、`bySource` は invocation rows の source 別 count。保存済み
+`payload_schema=1` は読み出し時に互換 payload として扱い、kind 内訳は要求しない。
+MCP confirmations は global table なので、project/repo/domain scope は適用せず、
+date scope のみ aggregate に渡す。
 
 production caller は `harness metrics snapshot`。記録時に retention prune を同じ DB
 transaction で必ず実行する。repository の `recordMetricsSnapshot` は 1 行 INSERT、

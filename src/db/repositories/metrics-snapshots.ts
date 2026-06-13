@@ -5,6 +5,7 @@ import {
   tokenUsageSummary,
   type AggregateFilter,
   type DbMetricsSummary,
+  type DbTokenUsageBreakdown,
   type DbTokenUsageSummary,
 } from "./aggregates.js";
 import {
@@ -14,8 +15,16 @@ import {
   type DbMcpConfirmationSummary,
 } from "./convergence-aggregates.js";
 
-const PAYLOAD_SCHEMA = 1;
+const PAYLOAD_SCHEMA = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+export interface MetricsSnapshotTokenUsageSummaryV1 {
+  runsWithUsage: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalTokens: number;
+  bySource: Record<string, number>;
+}
 
 export interface MetricsSnapshotPayloadV1 {
   schema: 1;
@@ -23,9 +32,23 @@ export interface MetricsSnapshotPayloadV1 {
   filter: AggregateFilter;
   metricsSummary: DbMetricsSummary;
   hitchMetricsSummary: DbHitchMetricsSummary;
+  tokenUsageSummary: MetricsSnapshotTokenUsageSummaryV1;
+  mcpConfirmationSummary?: DbMcpConfirmationSummary;
+}
+
+export interface MetricsSnapshotPayloadV2 {
+  schema: 2;
+  capturedAt: string;
+  filter: AggregateFilter;
+  metricsSummary: DbMetricsSummary;
+  hitchMetricsSummary: DbHitchMetricsSummary;
   tokenUsageSummary: DbTokenUsageSummary;
   mcpConfirmationSummary?: DbMcpConfirmationSummary;
 }
+
+type ParsedMetricsSnapshotPayload =
+  | MetricsSnapshotPayloadV1
+  | MetricsSnapshotPayloadV2;
 
 export interface MetricsSnapshotRow {
   snapshotId: string;
@@ -228,7 +251,7 @@ function isHitchMetricsSummary(value: unknown): value is DbHitchMetricsSummary {
   );
 }
 
-function isTokenUsageSummary(value: unknown): value is DbTokenUsageSummary {
+function isTokenUsageBreakdown(value: unknown): value is DbTokenUsageBreakdown {
   if (!isRecord(value)) return false;
   return (
     typeof value.runsWithUsage === "number" &&
@@ -236,6 +259,23 @@ function isTokenUsageSummary(value: unknown): value is DbTokenUsageSummary {
     typeof value.totalOutputTokens === "number" &&
     typeof value.totalTokens === "number" &&
     isNumberRecord(value.bySource)
+  );
+}
+
+function isTokenUsageSummaryV1(
+  value: unknown,
+): value is MetricsSnapshotTokenUsageSummaryV1 {
+  return isTokenUsageBreakdown(value);
+}
+
+function isTokenUsageSummary(value: unknown): value is DbTokenUsageSummary {
+  if (!isTokenUsageBreakdown(value)) return false;
+  const record = value as unknown as Record<string, unknown>;
+  if (!isRecord(record.byKind)) return false;
+  return (
+    isTokenUsageBreakdown(record.byKind.coder) &&
+    isTokenUsageBreakdown(record.byKind.reviewer) &&
+    isTokenUsageBreakdown(record.byKind.evaluator)
   );
 }
 
@@ -253,8 +293,8 @@ function isMcpConfirmationSummary(
 
 function parseSnapshotPayload(
   row: MetricsSnapshotRow,
-): { payload: MetricsSnapshotPayloadV1 } | { reason: string } {
-  if (row.payloadSchema !== PAYLOAD_SCHEMA) {
+): { payload: ParsedMetricsSnapshotPayload } | { reason: string } {
+  if (row.payloadSchema !== 1 && row.payloadSchema !== PAYLOAD_SCHEMA) {
     return { reason: `unsupported payload_schema ${row.payloadSchema}` };
   }
   let parsed: unknown;
@@ -263,15 +303,23 @@ function parseSnapshotPayload(
   } catch {
     return { reason: "invalid payload_json" };
   }
-  if (!isRecord(parsed) || parsed.schema !== PAYLOAD_SCHEMA) {
+  if (
+    !isRecord(parsed) ||
+    (parsed.schema !== 1 && parsed.schema !== PAYLOAD_SCHEMA) ||
+    parsed.schema !== row.payloadSchema
+  ) {
     return { reason: "unsupported payload schema" };
   }
+  const tokenUsageOk =
+    parsed.schema === 1
+      ? isTokenUsageSummaryV1(parsed.tokenUsageSummary)
+      : isTokenUsageSummary(parsed.tokenUsageSummary);
   if (
     typeof parsed.capturedAt !== "string" ||
     !isRecord(parsed.filter) ||
     !isMetricsSummary(parsed.metricsSummary) ||
     !isHitchMetricsSummary(parsed.hitchMetricsSummary) ||
-    !isTokenUsageSummary(parsed.tokenUsageSummary)
+    !tokenUsageOk
   ) {
     return { reason: "invalid payload shape" };
   }
@@ -283,7 +331,7 @@ function parseSnapshotPayload(
   }
   return {
     payload: {
-      schema: PAYLOAD_SCHEMA,
+      schema: parsed.schema,
       capturedAt: parsed.capturedAt,
       filter: normalizeFilter(parsed.filter),
       metricsSummary: {
@@ -295,7 +343,7 @@ function parseSnapshotPayload(
       ...(parsed.mcpConfirmationSummary !== undefined
         ? { mcpConfirmationSummary: parsed.mcpConfirmationSummary }
         : {}),
-    },
+    } as ParsedMetricsSnapshotPayload,
   };
 }
 
@@ -342,7 +390,7 @@ export function recordMetricsSnapshot(
 ): MetricsSnapshotRow {
   const capturedAt = isoNow(input.now);
   const filter = normalizeFilter(input.filter);
-  const payload: MetricsSnapshotPayloadV1 = {
+  const payload: MetricsSnapshotPayloadV2 = {
     schema: PAYLOAD_SCHEMA,
     capturedAt,
     filter,

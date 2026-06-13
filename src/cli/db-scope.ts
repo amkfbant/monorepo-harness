@@ -272,6 +272,9 @@ export function runScopedMetrics(
       `  input tokens: ${m.usage.totalInputTokens}\n` +
       `  output tokens: ${m.usage.totalOutputTokens}\n` +
       `  total tokens: ${m.usage.totalTokens}\n` +
+      `  by kind: coder=${m.usage.byKind.coder.totalTokens} ` +
+      `reviewer=${m.usage.byKind.reviewer.totalTokens} ` +
+      `evaluator=${m.usage.byKind.evaluator.totalTokens}\n` +
       `${statusLines(m.usage.bySource)}\n` +
       `hitch metrics:\n` +
       `  total sessions: ${m.hitch.totalSessions}\n` +

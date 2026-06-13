@@ -434,8 +434,10 @@ knowledge-candidate run 数 ＋ **operational 知識**の slice（`operationalKn
 `metricsSummary`。`oneShotApprovalRate` / `policyViolationRate` /
 `secretSuspectRate` / `lockContentionCount` を含む。D1 KPI の式は [`cli.md`](./cli.md) の
 `harness metrics` 節を正規定義とし、MCP でも同じ定義を使う）をトップレベルに返し、
-追加で `usage`（`DbTokenUsageSummary`: `exact` token 合算と `usage_source` 別件数。
-式は [`cli.md`](./cli.md) の `harness metrics` 節を正規定義とする）と `hitch`
+追加で `usage`（`DbTokenUsageSummary`: v30 の per-invocation `run_usage` を集計し、
+`exact` token 合算・`runsWithUsage`（`COUNT(DISTINCT run_id)`）・`usage_source` 別件数に加え、
+`byKind`（coder / reviewer / evaluator）内訳を持つ。式は [`cli.md`](./cli.md) の
+`harness metrics` 節を正規定義とする）と `hitch`
 （`DbHitchMetricsSummary`: session status / review-cycle / rerun / finding severity /
 resolution / reopen KPI）を返す。`allowedProjects` が空の unrestricted client には
 `mcpConfirmations`（`DbMcpConfirmationSummary`: confirmation / expired KPI）も返す。

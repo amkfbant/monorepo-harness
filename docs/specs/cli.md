@@ -458,9 +458,14 @@ harness hitch await-merge [<hitch-id>] --repo <path> [--all] [--repo-id <id>] \
 `hitch status --json` は session / findings / convergence decisions /
 close checks / current convergence に加え、`lifecycleEvents`（`closed` /
 `cancelled` / `reopened` / `pr_adopted` / `updated` の
-reason・actor・timestamp・`detail`）を返す。テキスト出力は最新の
+reason・actor・timestamp・`detail`）と `tokenUsage`（per-hitch の `run_usage`
+集計）を返す。`tokenUsage` は hitch の attempts が参照する distinct run の
+`run_usage` を SUM したもの（retry 込み）で、総計（`inputTokens` /
+`cachedInputTokens` / `outputTokens` / `reasoningOutputTokens` / `totalTokens` /
+`runsWithUsage`）＋ `byKind`（coder / reviewer / evaluator）を持つ。テキスト出力は最新の
 `pr_adopted` があれば adopted PR を `pr=...` として優先表示し、旧 run 由来 PR は
-`supersededPr=...` として併記する（表示のみ）。
+`supersededPr=...` として併記する（表示のみ）。usage がある hitch では
+`tokens total=… (in=… …) runsWithUsage=… byKind[…]` の 1 行を追加表示する。
 
 `hitch close` は convergence が `close_ready` でない限り `--force` を要求する。
 `check-convergence` は `diverging` / `budget_exhausted` / `escalate` で exit 2。
@@ -714,13 +719,15 @@ KPI / usage の正規定義は以下。
   `--domain` は同 table の `repo_id` / `domain` に、`--since` / `--until` 相当の
   date scope は `observed_at` に適用する。`project_id` 列は無いため `--project`
   はこの KPI には直接適用しない。
-- `usage.runsWithUsage` — scope 内で `runs` に join できる `run_usage` 行数。
+- `usage.runsWithUsage` — scope 内で usage を持つ DISTINCT run 数。
 - `usage.totalInputTokens` / `usage.totalOutputTokens` / `usage.totalTokens` —
-  `usage_source='exact'` の行だけを合算する。`NULL` token field は除外される。
-  `totalTokens` は DB に保存された `total_tokens` の合算で、run ごとの
-  `total_tokens` は `input_tokens + output_tokens`。
-- `usage.bySource` — scope 内 `run_usage.usage_source` 別の行数。`unavailable` も
-  欠損テレメトリとして数えるが token 合算対象ではない。
+  `usage_source='exact'` の invocation rows だけを kind 問わず合算する。
+  `NULL` token field は除外される。`totalTokens` は DB に保存された
+  `total_tokens` の合算で、各 row の `total_tokens` は `input_tokens + output_tokens`。
+- `usage.bySource` — scope 内 `run_usage.usage_source` 別の invocation row 数。
+  `unavailable` も欠損テレメトリとして数えるが token 合算対象ではない。
+- `usage.byKind.{coder,reviewer,evaluator}` — kind 別の同じ内訳。G1 では coder のみ
+  書き込むが、summary shape は reviewer/evaluator の予約 bucket も常に返す。
 
 `--since` の対象列は、runs 指標は `runs.started_at`、lock contention 指標は
 `domain_lock_contention.observed_at`、hitch 指標は `hitch_sessions.created_at`、
@@ -1961,7 +1968,7 @@ course ロードマップ管理（SP-1）。データモデル・MCP ツール�
 harness course create --title <text> [--description <text>] [--project <id>] [--repo-id <id>] [--created-by <actor>] [--json]
 harness course list [--status active|paused|closed] [--json]
 harness course show <id> [--json]
-harness course status <id> [--json]
+harness course status <id> [--json]   # rollup: per-phase open P0/P1 + course openP0/P1 + live tokenTotals (per-hitch run_usage sum, by kind)
 harness course orchestrate <id> [--max-driven-hitches <n>] [--max-steps-per-hitch <n>] [--dry-run] [--json]
 harness course pause <id>
 harness course resume <id>

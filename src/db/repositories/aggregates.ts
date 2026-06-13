@@ -195,13 +195,25 @@ export function metricsSummary(
   };
 }
 
-export interface DbTokenUsageSummary {
+export type DbTokenUsageKind = "coder" | "reviewer" | "evaluator";
+
+export interface DbTokenUsageBreakdown {
   runsWithUsage: number;
   totalInputTokens: number;
   totalOutputTokens: number;
   totalTokens: number;
   bySource: Record<string, number>;
 }
+
+export interface DbTokenUsageSummary extends DbTokenUsageBreakdown {
+  byKind: Record<DbTokenUsageKind, DbTokenUsageBreakdown>;
+}
+
+const TOKEN_USAGE_KINDS: readonly DbTokenUsageKind[] = [
+  "coder",
+  "reviewer",
+  "evaluator",
+] as const;
 
 function usageScope(filter: AggregateFilter): { sql: string; params: unknown[] } {
   const where: string[] = [];
@@ -236,6 +248,16 @@ function usageScope(filter: AggregateFilter): { sql: string; params: unknown[] }
   };
 }
 
+function emptyTokenUsageBreakdown(): DbTokenUsageBreakdown {
+  return {
+    runsWithUsage: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalTokens: 0,
+    bySource: {},
+  };
+}
+
 export function tokenUsageSummary(
   db: Database.Database,
   filter: AggregateFilter = {},
@@ -251,11 +273,19 @@ export function tokenUsageSummary(
     )
     .all(...params) as { usage_source: string; n: number }[];
   const bySource: Record<string, number> = {};
-  let runsWithUsage = 0;
   for (const row of bySourceRows) {
     bySource[row.usage_source] = row.n;
-    runsWithUsage += row.n;
   }
+  const runsWithUsage = (
+    db
+      .prepare(
+        `SELECT count(DISTINCT u.run_id) AS n
+           FROM run_usage u
+           JOIN runs r ON r.run_id = u.run_id
+          ${sql}`,
+      )
+      .get(...params) as { n: number }
+  ).n;
   const totals = db
     .prepare(
       `SELECT
@@ -274,13 +304,223 @@ export function tokenUsageSummary(
     output_tokens: number;
     total_tokens: number;
   };
+  const byKind: Record<DbTokenUsageKind, DbTokenUsageBreakdown> = {
+    coder: emptyTokenUsageBreakdown(),
+    reviewer: emptyTokenUsageBreakdown(),
+    evaluator: emptyTokenUsageBreakdown(),
+  };
+  const kindTotals = db
+    .prepare(
+      `SELECT
+         u.kind,
+         count(DISTINCT u.run_id) AS runs_with_usage,
+         COALESCE(sum(CASE WHEN u.usage_source = 'exact' THEN u.input_tokens END), 0)
+           AS input_tokens,
+         COALESCE(sum(CASE WHEN u.usage_source = 'exact' THEN u.output_tokens END), 0)
+           AS output_tokens,
+         COALESCE(sum(CASE WHEN u.usage_source = 'exact' THEN u.total_tokens END), 0)
+           AS total_tokens
+       FROM run_usage u
+       JOIN runs r ON r.run_id = u.run_id
+       ${sql}
+       GROUP BY u.kind`,
+    )
+    .all(...params) as {
+    kind: DbTokenUsageKind;
+    runs_with_usage: number;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+  }[];
+  for (const row of kindTotals) {
+    if (!TOKEN_USAGE_KINDS.includes(row.kind)) continue;
+    byKind[row.kind] = {
+      ...byKind[row.kind],
+      runsWithUsage: row.runs_with_usage,
+      totalInputTokens: row.input_tokens,
+      totalOutputTokens: row.output_tokens,
+      totalTokens: row.total_tokens,
+    };
+  }
+  const kindSourceRows = db
+    .prepare(
+      `SELECT u.kind, u.usage_source, count(*) AS n
+         FROM run_usage u
+         JOIN runs r ON r.run_id = u.run_id
+        ${sql}
+        GROUP BY u.kind, u.usage_source`,
+    )
+    .all(...params) as {
+    kind: DbTokenUsageKind;
+    usage_source: string;
+    n: number;
+  }[];
+  for (const row of kindSourceRows) {
+    if (!TOKEN_USAGE_KINDS.includes(row.kind)) continue;
+    byKind[row.kind].bySource[row.usage_source] = row.n;
+  }
   return {
     runsWithUsage,
     totalInputTokens: totals.input_tokens,
     totalOutputTokens: totals.output_tokens,
     totalTokens: totals.total_tokens,
     bySource,
+    byKind,
   };
+}
+
+/** Per-hitch token totals (all token fields), keyed for the whole hitch and per kind. */
+export interface DbHitchTokenUsageTotals {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+  runsWithUsage: number;
+}
+
+export interface DbHitchTokenUsage extends DbHitchTokenUsageTotals {
+  byKind: Record<DbTokenUsageKind, DbHitchTokenUsageTotals>;
+}
+
+function emptyHitchTokenUsageTotals(): DbHitchTokenUsageTotals {
+  return {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+    runsWithUsage: 0,
+  };
+}
+
+const HITCH_USAGE_SUM_COLUMNS = `
+  COALESCE(sum(CASE WHEN usage_source = 'exact' THEN input_tokens END), 0)
+    AS input_tokens,
+  COALESCE(sum(CASE WHEN usage_source = 'exact' THEN cached_input_tokens END), 0)
+    AS cached_input_tokens,
+  COALESCE(sum(CASE WHEN usage_source = 'exact' THEN output_tokens END), 0)
+    AS output_tokens,
+  COALESCE(sum(CASE WHEN usage_source = 'exact' THEN reasoning_output_tokens END), 0)
+    AS reasoning_output_tokens,
+  COALESCE(sum(CASE WHEN usage_source = 'exact' THEN total_tokens END), 0)
+    AS total_tokens,
+  count(DISTINCT run_id) AS runs_with_usage`;
+
+interface HitchUsageSumRow {
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  reasoning_output_tokens: number;
+  total_tokens: number;
+  runs_with_usage: number;
+}
+
+function hitchUsageTotalsFromRow(
+  row: HitchUsageSumRow,
+): DbHitchTokenUsageTotals {
+  return {
+    inputTokens: row.input_tokens,
+    cachedInputTokens: row.cached_input_tokens,
+    outputTokens: row.output_tokens,
+    reasoningOutputTokens: row.reasoning_output_tokens,
+    totalTokens: row.total_tokens,
+    runsWithUsage: row.runs_with_usage,
+  };
+}
+
+/**
+ * Per-hitch token usage: sum `run_usage` over the distinct (non-null) run ids
+ * recorded on the hitch's attempts. This is retry-inclusive — `hitch_attempts`
+ * carries every implement/rerun attempt — and breaks down by kind
+ * (coder/reviewer/evaluator). Only `exact` rows contribute tokens (matching
+ * `tokenUsageSummary`); `unavailable` rows count toward `runsWithUsage` but add
+ * no tokens. A hitch with no usage returns all-zero totals.
+ */
+export function hitchTokenUsage(
+  db: Database.Database,
+  hitchId: string,
+): DbHitchTokenUsage {
+  const runScope = `run_id IN (
+    SELECT DISTINCT run_id FROM hitch_attempts
+     WHERE hitch_id = ? AND run_id IS NOT NULL
+  )`;
+  const totalsRow = db
+    .prepare(
+      `SELECT ${HITCH_USAGE_SUM_COLUMNS} FROM run_usage WHERE ${runScope}`,
+    )
+    .get(hitchId) as HitchUsageSumRow;
+  const byKind: Record<DbTokenUsageKind, DbHitchTokenUsageTotals> = {
+    coder: emptyHitchTokenUsageTotals(),
+    reviewer: emptyHitchTokenUsageTotals(),
+    evaluator: emptyHitchTokenUsageTotals(),
+  };
+  const kindRows = db
+    .prepare(
+      `SELECT kind, ${HITCH_USAGE_SUM_COLUMNS}
+         FROM run_usage WHERE ${runScope} GROUP BY kind`,
+    )
+    .all(hitchId) as (HitchUsageSumRow & { kind: DbTokenUsageKind })[];
+  for (const row of kindRows) {
+    if (!TOKEN_USAGE_KINDS.includes(row.kind)) continue;
+    byKind[row.kind] = hitchUsageTotalsFromRow(row);
+  }
+  return { ...hitchUsageTotalsFromRow(totalsRow), byKind };
+}
+
+/** Zero token usage (whole + per kind). */
+export function emptyHitchTokenUsage(): DbHitchTokenUsage {
+  return {
+    ...emptyHitchTokenUsageTotals(),
+    byKind: {
+      coder: emptyHitchTokenUsageTotals(),
+      reviewer: emptyHitchTokenUsageTotals(),
+      evaluator: emptyHitchTokenUsageTotals(),
+    },
+  };
+}
+
+function addHitchTokenUsageTotals(
+  a: DbHitchTokenUsageTotals,
+  b: DbHitchTokenUsageTotals,
+): DbHitchTokenUsageTotals {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    reasoningOutputTokens: a.reasoningOutputTokens + b.reasoningOutputTokens,
+    totalTokens: a.totalTokens + b.totalTokens,
+    runsWithUsage: a.runsWithUsage + b.runsWithUsage,
+  };
+}
+
+/**
+ * Sum several per-hitch token usages into one (whole + per kind). Used by the
+ * course rollup to fold every linked hitch's usage into a course total. The
+ * sum is a plain per-hitch fold: a run shared across two hitches' attempts
+ * would be counted once per hitch (the same approximation the rollup uses for
+ * open P0/P1), but `phase_hitches` keeps a hitch in at most one phase.
+ */
+export function sumHitchTokenUsage(
+  items: readonly DbHitchTokenUsage[],
+): DbHitchTokenUsage {
+  return items.reduce<DbHitchTokenUsage>(
+    (acc, u) => ({
+      ...addHitchTokenUsageTotals(acc, u),
+      byKind: {
+        coder: addHitchTokenUsageTotals(acc.byKind.coder, u.byKind.coder),
+        reviewer: addHitchTokenUsageTotals(
+          acc.byKind.reviewer,
+          u.byKind.reviewer,
+        ),
+        evaluator: addHitchTokenUsageTotals(
+          acc.byKind.evaluator,
+          u.byKind.evaluator,
+        ),
+      },
+    }),
+    emptyHitchTokenUsage(),
+  );
 }
 
 export interface DbInboxSummary {

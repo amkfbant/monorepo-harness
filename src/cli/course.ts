@@ -357,8 +357,17 @@ export function registerCourseCommands(
         if (raw.json === true) {
           process.stdout.write(`${JSON.stringify(rollup, null, 2)}\n`);
         } else {
+          const tt = rollup.tokenTotals;
+          const tokenSuffix =
+            tt.runsWithUsage === 0
+              ? ""
+              : ` tokens=${tt.totalTokens}` +
+                ` (coder=${tt.byKind.coder.totalTokens}` +
+                ` reviewer=${tt.byKind.reviewer.totalTokens}` +
+                ` evaluator=${tt.byKind.evaluator.totalTokens})`;
           const lines: string[] = [
-            `course=${rollup.courseId} openP0=${rollup.openP0} openP1=${rollup.openP1}`,
+            `course=${rollup.courseId} openP0=${rollup.openP0} openP1=${rollup.openP1}` +
+              tokenSuffix,
           ];
           for (const p of rollup.phases) {
             const indent = "  ".repeat(p.depth);

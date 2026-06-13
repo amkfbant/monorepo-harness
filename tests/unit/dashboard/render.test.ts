@@ -40,6 +40,29 @@ function markupSnapshot(): DashboardSnapshot {
       totalOutputTokens: 23,
       totalTokens: 123,
       bySource: { exact: 1 },
+      byKind: {
+        coder: {
+          runsWithUsage: 1,
+          totalInputTokens: 100,
+          totalOutputTokens: 23,
+          totalTokens: 123,
+          bySource: { exact: 1 },
+        },
+        reviewer: {
+          runsWithUsage: 0,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          totalTokens: 0,
+          bySource: {},
+        },
+        evaluator: {
+          runsWithUsage: 0,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          totalTokens: 0,
+          bySource: {},
+        },
+      },
     },
     metricsTrend: [
       {

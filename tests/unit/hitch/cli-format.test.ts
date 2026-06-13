@@ -103,4 +103,60 @@ describe("hitch CLI formatting", () => {
       line.indexOf("supersededPr=https://github.com/acme/app/pull/7"),
     );
   });
+
+  const baseStatus = {
+    session: { hitchId: "g-tok", status: "open", closeConditions: [] },
+    convergence: {
+      decision: "continue",
+      metrics: { openInScopeP1: 0, openUnknownScope: 0 },
+    },
+    closeChecks: [],
+  };
+
+  function totals(total: number) {
+    return {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: total,
+      runsWithUsage: total === 0 ? 0 : 1,
+    };
+  }
+
+  it("appends a token-usage line with the kind split when usage is present", () => {
+    const line = formatHitchStatusLine({
+      ...baseStatus,
+      tokenUsage: {
+        inputTokens: 34,
+        cachedInputTokens: 2,
+        outputTokens: 16,
+        reasoningOutputTokens: 4,
+        totalTokens: 50,
+        runsWithUsage: 2,
+        byKind: {
+          coder: totals(43),
+          reviewer: totals(5),
+          evaluator: totals(2),
+        },
+      },
+    });
+    expect(line).toContain("\ntokens total=50");
+    expect(line).toContain("in=34 cached=2 out=16 reasoning=4");
+    expect(line).toContain("runsWithUsage=2");
+    expect(line).toContain("byKind[coder=43 reviewer=5 evaluator=2]");
+  });
+
+  it("omits the token-usage line when there is no usage", () => {
+    const withZero = formatHitchStatusLine({
+      ...baseStatus,
+      tokenUsage: {
+        ...totals(0),
+        byKind: { coder: totals(0), reviewer: totals(0), evaluator: totals(0) },
+      },
+    });
+    expect(withZero).not.toContain("tokens total=");
+    const withUndefined = formatHitchStatusLine(baseStatus);
+    expect(withUndefined).not.toContain("tokens total=");
+  });
 });

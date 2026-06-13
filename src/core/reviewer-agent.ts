@@ -32,11 +32,61 @@ import { classifyReviewGate } from "./review-gate-classify.js";
 import { buildOperationalKnowledgeReviewSection } from "./operational-knowledge.js";
 import { publishRedactedCodexEvents } from "../codex/events-lifecycle.js";
 import { sanitizeGateReason } from "./gate-reason.js";
+import { recordCodexUsage } from "../db/repositories/run-usage.js";
 
 export { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
 
 /** Diagnostic artifact written when codex output cannot be parsed/validated. */
 export const REVIEW_AUTO_ERROR_FILE = "review-auto-error.json";
+
+/**
+ * Telemetry-only warning (token-usage G2). Recording reviewer codex usage is
+ * fail-open: a telemetry write must never change the review outcome.
+ */
+function warnReviewerUsageRecordFailed(runId: string, e: unknown): void {
+  process.stderr.write(
+    `warning: run ${runId}: reviewer codex usage telemetry was not recorded: ` +
+      `${(e as Error).message}\n`,
+  );
+}
+
+/**
+ * Record the reviewer codex invocation's token usage (kind='reviewer') from
+ * the already-read redacted events content (null when the events were not
+ * published / unreadable → an `unavailable` row). Fail-open and best-effort:
+ * any error (missing DB, write failure, lock) is warned and swallowed so the
+ * review path is never affected. Called on ALL reviewer outcomes (success,
+ * timeout, non-zero exit, invalid YAML) because codex consumed tokens
+ * regardless of whether the verdict later passes its gate.
+ */
+async function recordReviewerUsage(
+  dbPath: string | undefined,
+  runId: string,
+  eventsContent: string | null,
+): Promise<void> {
+  if (dbPath === undefined || !existsSync(dbPath)) return;
+  try {
+    const usageDb = openManagedDb({ dbPath });
+    try {
+      // Ensure the run_usage schema is current (per-invocation kind/seq).
+      // On a not-yet-migrated (e.g. v29) DB the INSERT would otherwise fail
+      // and the reviewer usage would be silently lost. runMigrations is
+      // idempotent; the surrounding fail-open guard still covers any error.
+      runMigrations(usageDb.db);
+      recordCodexUsage({
+        db: usageDb.db,
+        runId,
+        kind: "reviewer",
+        eventsContent,
+        onError: (err) => warnReviewerUsageRecordFailed(runId, err),
+      });
+    } finally {
+      usageDb.close();
+    }
+  } catch (err) {
+    warnReviewerUsageRecordFailed(runId, err);
+  }
+}
 
 const RUN_ID_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -524,6 +574,19 @@ export async function runReviewerAgent(
       runId: inputs.runId,
     });
     reviewerEventsPublished = !publishResult.failed;
+
+    // token-usage G2: record reviewer codex usage right after the publish
+    // attempt, BEFORE the timeout/exit/parse gates, so usage is captured on
+    // EVERY outcome (success, timeout, non-zero exit, invalid YAML). Reads
+    // ONLY the redacted official events; when publish failed the events are
+    // unavailable, so a null content records an `unavailable` row rather than
+    // reading a possibly-stale file. fail-open: telemetry never affects review.
+    if (!inputs.dryRun) {
+      const eventsContent = reviewerEventsPublished
+        ? await readFile(eventsPath, "utf8").catch(() => null)
+        : null;
+      await recordReviewerUsage(inputs.dbPath, inputs.runId, eventsContent);
+    }
 
     if (codexResult.timedOut) {
       throw new ReviewerAgentGateError(

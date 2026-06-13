@@ -348,4 +348,97 @@ describe("rollupCourse (SP-1)", () => {
       /phase tree is inconsistent \(cycle or orphan parent\)/,
     );
   });
+
+  function seedHitchRunUsage(
+    hitchId: string,
+    runId: string,
+    kinds: ReadonlyArray<["coder" | "reviewer" | "evaluator", number]>,
+  ): void {
+    conn
+      .prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, updated_at)
+         VALUES (?, 't', 'apps/web', 'domain-coding', 'main', 'needs_review',
+           '2026-06-13T00:00:00Z')`,
+      )
+      .run(runId);
+    conn
+      .prepare(
+        `INSERT INTO hitch_attempts
+           (attempt_id, hitch_id, iteration, attempt_type, status, run_id,
+            created_at)
+         VALUES (?, ?, 1, 'implement', 'succeeded', ?, '2026-06-13T00:00:00Z')`,
+      )
+      .run(`att-${runId}`, hitchId, runId);
+    kinds.forEach(([kind, total], i) => {
+      conn
+        .prepare(
+          `INSERT INTO run_usage
+             (run_id, kind, seq, input_tokens, output_tokens, total_tokens,
+              usage_source, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'exact', '2026-06-13T00:00:00Z')`,
+        )
+        .run(runId, kind, i, total - 1, 1, total);
+    });
+  }
+
+  it("sums per-hitch token usage into course tokenTotals (live, by kind)", () => {
+    const courses = new CourseRepository(conn);
+    const phases = new PhaseRepository(conn);
+    const hitches = new HitchRepository(conn);
+    const c = courses.create({
+      title: "C", projectId: "demo", createdBy: "t", createdSource: "cli",
+    });
+    const mkPhase = (title: string) =>
+      phases.add({
+        courseId: c.courseId, title, createdBy: "t", createdSource: "cli",
+      });
+    const mkHitch = (title: string) =>
+      hitches.createSession({
+        title, projectId: "demo", scope: {}, closeConditions: [],
+        createdBy: "t", createdSource: "cli",
+      });
+    const p1 = mkPhase("P1");
+    const p2 = mkPhase("P2");
+    const h1 = mkHitch("H1");
+    const h2 = mkHitch("H2");
+    phases.linkHitch(p1.phaseId, h1.hitchId);
+    phases.linkHitch(p2.phaseId, h2.hitchId);
+    seedHitchRunUsage(h1.hitchId, "run-1", [
+      ["coder", 30],
+      ["reviewer", 5],
+    ]);
+    seedHitchRunUsage(h2.hitchId, "run-2", [
+      ["coder", 12],
+      ["evaluator", 3],
+    ]);
+
+    const rollup = rollupCourse({ db: conn, courseId: c.courseId });
+    expect(rollup.tokenTotals.totalTokens).toBe(50);
+    expect(rollup.tokenTotals.runsWithUsage).toBe(2);
+    expect(rollup.tokenTotals.byKind.coder.totalTokens).toBe(42);
+    expect(rollup.tokenTotals.byKind.reviewer.totalTokens).toBe(5);
+    expect(rollup.tokenTotals.byKind.evaluator.totalTokens).toBe(3);
+  });
+
+  it("reports zero course tokenTotals when no hitch has usage", () => {
+    const courses = new CourseRepository(conn);
+    const phases = new PhaseRepository(conn);
+    const hitches = new HitchRepository(conn);
+    const c = courses.create({
+      title: "C", projectId: "demo", createdBy: "t", createdSource: "cli",
+    });
+    const p = phases.add({
+      courseId: c.courseId, title: "P", createdBy: "t", createdSource: "cli",
+    });
+    const h = hitches.createSession({
+      title: "H", projectId: "demo", scope: {}, closeConditions: [],
+      createdBy: "t", createdSource: "cli",
+    });
+    phases.linkHitch(p.phaseId, h.hitchId);
+    const rollup = rollupCourse({ db: conn, courseId: c.courseId });
+    expect(rollup.tokenTotals.totalTokens).toBe(0);
+    expect(rollup.tokenTotals.runsWithUsage).toBe(0);
+    expect(rollup.tokenTotals.byKind.reviewer.totalTokens).toBe(0);
+  });
 });

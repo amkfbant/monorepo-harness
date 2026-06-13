@@ -7,6 +7,11 @@ import {
 import { PhaseRepository } from "./phase-repository.js";
 import { derivePhaseReadiness } from "./ready-to-close.js";
 import type { PhaseStatus } from "./types.js";
+import {
+  hitchTokenUsage,
+  sumHitchTokenUsage,
+  type DbHitchTokenUsage,
+} from "../db/repositories/aggregates.js";
 
 export interface PhaseRollup {
   phaseId: string;
@@ -26,6 +31,12 @@ export interface CourseRollup {
   openP0: number;
   openP1: number;
   phaseCountsByStatus: Record<PhaseStatus, number>;
+  /**
+   * Live token usage across the whole course: the sum of every linked hitch's
+   * `hitchTokenUsage` (retry-inclusive, by kind). A derived projection like the
+   * open P0/P1 counts — never a stored snapshot.
+   */
+  tokenTotals: DbHitchTokenUsage;
 }
 
 /** Live open in-scope P0/P1 for a hitch — SQL aggregate over hitch_findings.
@@ -103,6 +114,7 @@ export function rollupCourse(opts: {
   };
   let totalP0 = 0,
     totalP1 = 0;
+  const hitchUsages: DbHitchTokenUsage[] = [];
   const walk = (
     nodes: ReturnType<PhaseRepository["tree"]>,
     depth: number,
@@ -115,6 +127,7 @@ export function rollupCourse(opts: {
         const c = openCounts(opts.db, hid);
         p0 += c.p0;
         p1 += c.p1;
+        hitchUsages.push(hitchTokenUsage(opts.db, hid));
       }
       const hitchConvergences = hitchIds.map((hitchId) =>
         convergence.evaluate(hitchId),
@@ -155,5 +168,6 @@ export function rollupCourse(opts: {
     openP0: totalP0,
     openP1: totalP1,
     phaseCountsByStatus: counts,
+    tokenTotals: sumHitchTokenUsage(hitchUsages),
   };
 }

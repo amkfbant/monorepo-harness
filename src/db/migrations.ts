@@ -30,6 +30,7 @@ import {
   MIGRATION_V27_STATEMENTS,
   MIGRATION_V28_STATEMENTS,
   MIGRATION_V29_STATEMENTS,
+  MIGRATION_V30_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -189,6 +190,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 29,
     name: "hitch-lifecycle-events-adopt-update-v29",
     statements: MIGRATION_V29_STATEMENTS,
+  },
+  {
+    version: 30,
+    name: "run-usage-per-invocation-v30",
+    statements: MIGRATION_V30_STATEMENTS,
   },
 ];
 
