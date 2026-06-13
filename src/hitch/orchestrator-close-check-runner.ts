@@ -8,6 +8,7 @@ import { runAllowedCommands } from "../core/command-runner.js";
 import { gitCliOrThrow } from "../git/git-cli.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
+import { partitionUntracked } from "../policy/untracked-filter.js";
 import type { ResolvedCommand } from "../policy/schema.js";
 import { evaluateCloseConditions } from "./close-checks.js";
 import {
@@ -69,36 +70,47 @@ function displayResolvedCommand(command: ResolvedCommand): string {
   return [command.cmd, ...command.args].join(" ");
 }
 
-// A deterministic fingerprint of the worktree's policy-relevant surface
-// (tracked changes + non-ignored untracked files), keyed by path with a content
-// hash. Comparing two fingerprints detects ANY mutation a close-check command
-// makes — including a content change to a file that was ALREADY dirty from the
-// coder run (whose `git status` porcelain line is unchanged) and writes to new
-// untracked files. Ignored files are intentionally excluded: they never enter
-// the post-hoc policy diff. Used to fail-closed if a command dirties the tree.
-async function worktreePolicyFingerprint(worktreePath: string): Promise<string> {
-  const status = await gitCliOrThrow(
-    ["status", "--porcelain", "--untracked-files=all"],
-    { cwd: worktreePath },
+// A deterministic fingerprint of the worktree's policy-relevant surface — the
+// SAME surface the post-hoc policy validation sees: tracked changes vs the run's
+// base (HEAD, since a run worktree is checked out at base with uncommitted
+// coder edits) plus untracked files that survive `policy.ignoreUntracked`.
+// Comparing two fingerprints detects ANY mutation a close-check command makes —
+// a content change to a file ALREADY dirty from the coder run (its `git status`
+// line is unchanged), a new untracked file, or a `.gitignore`'d-but-not-policy-
+// ignored write (the surface mirrors collectDiff, which runs `ls-files` WITHOUT
+// `--exclude-standard`). `-z` output avoids porcelain path quoting. Used to
+// fail-closed if a command dirties the tree.
+async function worktreePolicyFingerprint(opts: {
+  worktreePath: string;
+  ignoreUntracked: readonly string[];
+}): Promise<string> {
+  const g = { cwd: opts.worktreePath };
+  // Tracked surface: a single patch vs HEAD captures content for every tracked
+  // change (including files already modified by the coder). --no-ext-diff /
+  // --no-textconv block target-repo diff drivers from running shell.
+  const patch = await gitCliOrThrow(
+    ["diff", "--no-ext-diff", "--no-textconv", "HEAD"],
+    g,
   );
-  const lines = status.split("\n").filter((line) => line.trim() !== "");
-  const parts: string[] = [];
-  for (const line of lines) {
-    const code = line.slice(0, 2);
-    const rawPath = line.slice(3);
-    // Renames render as "old -> new"; fingerprint the destination content.
-    const path = rawPath.includes(" -> ")
-      ? rawPath.slice(rawPath.indexOf(" -> ") + 4)
-      : rawPath;
+  // Untracked surface: NUL-separated, NOT --exclude-standard (so .gitignore'd
+  // files surface), then filtered by the policy ignore list — exactly the
+  // collectDiff + partitionUntracked surface used for write-scope validation.
+  const untrackedRaw = await gitCliOrThrow(["ls-files", "--others", "-z"], g);
+  const untracked = untrackedRaw.split("\0").filter((p) => p.length > 0);
+  const { kept } = partitionUntracked(untracked, opts.ignoreUntracked);
+  const parts: string[] = [
+    `tracked\t${createHash("sha256").update(patch).digest("hex")}`,
+  ];
+  for (const path of [...kept].sort()) {
     let hash = "absent";
     try {
       hash = createHash("sha256")
-        .update(await readFile(join(worktreePath, path)))
+        .update(await readFile(join(opts.worktreePath, path)))
         .digest("hex");
     } catch {
-      // deleted or unreadable entry → keep the "absent" content marker
+      // unreadable entry (e.g. a directory) → keep the "absent" content marker
     }
-    parts.push(`${code} ${path}\t${hash}`);
+    parts.push(`untracked\t${path}\t${hash}`);
   }
   return parts.join("\n");
 }
@@ -247,7 +259,10 @@ export async function runCommandCloseChecks(
     // allowlisted command changed ANY entry — including re-writing a file that
     // was already dirty from the coder run — fail-closed rather than record a
     // `passed` check over a polluted tree (review findings P1/P0).
-    const fingerprintBefore = await worktreePolicyFingerprint(worktreePath);
+    const fingerprintBefore = await worktreePolicyFingerprint({
+      worktreePath,
+      ignoreUntracked: policy.ignoreUntracked,
+    });
     const cmdRun = await runAllowedCommands({
       worktreePath,
       commands: [...commandsById.values()],
@@ -257,7 +272,10 @@ export async function runCommandCloseChecks(
         ? { envAllowlist: policy.commandDefaults.envAllowlist }
         : {}),
     });
-    const fingerprintAfter = await worktreePolicyFingerprint(worktreePath);
+    const fingerprintAfter = await worktreePolicyFingerprint({
+      worktreePath,
+      ignoreUntracked: policy.ignoreUntracked,
+    });
     if (fingerprintAfter !== fingerprintBefore) {
       const beforeLines = new Set(fingerprintBefore.split("\n"));
       const afterLines = new Set(fingerprintAfter.split("\n"));

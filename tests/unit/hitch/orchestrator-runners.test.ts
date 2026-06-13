@@ -393,6 +393,11 @@ describe("createOrchestratorRunners.closeCheck", () => {
       cwd: worktreePath,
     });
     execFileSync("git", ["config", "user.name", "t"], { cwd: worktreePath });
+    // An initial commit so `git diff HEAD` (the close-check tracked-surface
+    // fingerprint) has a base, mirroring a real run worktree checked out at base.
+    writeFileSync(join(worktreePath, ".gitkeep"), "");
+    execFileSync("git", ["add", ".gitkeep"], { cwd: worktreePath });
+    execFileSync("git", ["commit", "-q", "-m", "init"], { cwd: worktreePath });
     writeFileSync(
       join(harnessRoot, "policies/global.yaml"),
       "always_deny_write: []\nignore_untracked: []\n",
@@ -640,6 +645,43 @@ describe("createOrchestratorRunners.closeCheck", () => {
     execFileSync("git", ["add", "tracked.txt"], { cwd: worktreePath });
     execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd: worktreePath });
     writeFileSync(tracked, "coder-edit\n");
+    seedCloseCheckHitch(dbPath);
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      repoPath: worktreePath,
+      baseBranch: "main",
+    });
+
+    await expect(runners.closeCheck("g-close-check")).rejects.toThrow(
+      /mutated the run worktree/,
+    );
+  });
+
+  it("fails closed when a command writes a .gitignored path not in policy ignore (#140 P0)", async () => {
+    // `git status` hides .gitignore'd files, but the policy surface uses
+    // `ls-files --others` WITHOUT --exclude-standard, then filters by
+    // policy.ignoreUntracked (empty here). A command writing into a gitignored
+    // dir therefore still pollutes the validated tree → must fail-closed.
+    const { harnessRoot, dbPath, worktreePath } = setupCloseCheckHarness(
+      [
+        "    commands:",
+        "      allow:",
+        "        - id: typecheck",
+        "          cmd: node",
+        "          args: [\"-e\", \"const fs=require('fs');fs.mkdirSync('gen',{recursive:true});fs.writeFileSync('gen/out.txt','x')\"]",
+        "      defaults:",
+        "        timeout_ms: 30000",
+      ].join("\n"),
+    );
+    writeFileSync(join(worktreePath, ".gitignore"), "gen/\n");
+    execFileSync("git", ["add", ".gitignore"], { cwd: worktreePath });
+    execFileSync("git", ["commit", "-q", "-m", "ignore gen"], {
+      cwd: worktreePath,
+    });
     seedCloseCheckHitch(dbPath);
     const runners = createOrchestratorRunners({
       dbPath,
