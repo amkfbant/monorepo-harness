@@ -381,6 +381,8 @@ harness hitch reopen <hitch-id> --reason <text> [--created-by <actor>] [--extend
 Finding lifecycle:
 
 ```bash
+harness hitch finding list <hitch-id> [--open] [--severity P0|P1|P2|P3|info] \
+  [--scope in-scope|out-of-scope|unknown|duplicate] [--limit <n>] [--json]
 harness hitch finding add <hitch-id> --severity P1 --category correctness --summary <text> \
   [--source review|test|doctor|human|mcp|codex|other] [--scope in-scope|out-of-scope|unknown|duplicate] [--json]
 harness hitch finding classify <finding-id> --scope in-scope|out-of-scope|unknown|duplicate --reason <text> \
@@ -388,6 +390,17 @@ harness hitch finding classify <finding-id> --scope in-scope|out-of-scope|unknow
 harness hitch finding fixed <finding-id> [--note <text>] [--json]
 harness hitch finding defer <finding-id> --reason <text> [--backlog] [--json]
 ```
+
+`hitch finding list` は hitch の存在を `requireSession()` で検証してから finding を読む
+read-only command。text 出力は `findingId / severity / lifecycleStatus / scopeStatus /
+category / summary` のタブ区切りで、`--json` は `{ findings: HitchFinding[] }` を返す。
+並び順は repository 既定の `first_seen_at ASC, finding_id ASC`。`--open` は
+`open` / `reopened` / `escalated` lifecycle のみ、`--severity` と `--scope` は
+repository filter に直結する。`--limit` 未指定時は `hitch status --json` と同様に
+`limit: 10000` を明示し、repository default（200）による silent truncation を避ける。
+finding が 0 件の実在 hitch は空一覧、存在しない hitch-id はエラー。read-only とは
+**hitch の状態遷移を起こさない**意味で、DB open + migration は `hitch status` と同じ標準
+read 経路（schema 整備であって hitch state の書き換えではない）。
 
 **`hitch finding classify --then-rerun`（C#8 / opt-in・要 `--repo`）**: external review 由来で
 ingest された unknown-scope finding を operator が **in-scope に分類した直後**、coder rerun を

@@ -43,6 +43,7 @@ import {
 } from "../hitch/orchestrator-runners.js";
 import {
   HitchRepository,
+  OPEN_FINDING_LIFECYCLES,
   type CompleteHitchReviewCycleInput,
   type UpsertHitchFindingInput,
 } from "../hitch/repository.js";
@@ -60,6 +61,7 @@ import {
   HITCH_REVIEW_MODES,
   HITCH_SCOPE_STATUSES,
   HITCH_STATUSES,
+  type HitchFinding,
   type HitchAttemptStatus,
   type HitchAttemptType,
   type HitchCloseCheckStatus,
@@ -500,6 +502,48 @@ export function registerHitchCommands(
     });
 
   const findingCmd = hitchCmd.command("finding").description("hitch findings");
+  findingCmd
+    .command("list")
+    .description("list findings for a hitch")
+    .argument("<hitch-id>", "hitch id")
+    .option("--open", "only open, reopened, or escalated findings", false)
+    .option("--severity <severity>", "P0 | P1 | P2 | P3 | info")
+    .option("--scope <scope>", "in-scope | out-of-scope | unknown | duplicate")
+    .option("--limit <n>", "max rows")
+    .option("--json", "emit JSON", false)
+    .action((hitchId: string, raw: Record<string, unknown>) => {
+      withHitchErrorExit(() => {
+        const findings = withHitchRepo(opts, ({ repo }) => {
+          repo.requireSession(hitchId);
+          return repo.listFindings({
+            hitchId,
+            ...(raw.open === true
+              ? { lifecycleStatusIn: OPEN_FINDING_LIFECYCLES }
+              : {}),
+            ...(raw.severity !== undefined
+              ? {
+                  severity: parseChoice(
+                    raw.severity,
+                    HITCH_FINDING_SEVERITIES,
+                    "--severity",
+                  ) as HitchFindingSeverity,
+                }
+              : {}),
+            ...(raw.scope !== undefined ? { scopeStatus: parseScope(raw.scope) } : {}),
+            limit:
+              raw.limit === undefined
+                ? 10_000
+                : parsePositiveInt(raw.limit, "--limit"),
+          });
+        });
+        if (raw.json === true) {
+          process.stdout.write(`${JSON.stringify({ findings }, null, 2)}\n`);
+        } else {
+          process.stdout.write(formatHitchFindingList(findings));
+        }
+      });
+    });
+
   findingCmd
     .command("add")
     .description("record a finding")
@@ -1357,6 +1401,24 @@ export function formatHitchStatusLine(result: {
     `unknown=${result.convergence.metrics.openUnknownScope}` +
     staticConsensus +
     advisories
+  );
+}
+
+export function formatHitchFindingList(findings: HitchFinding[]): string {
+  if (findings.length === 0) return "";
+  return (
+    findings
+      .map((finding) =>
+        [
+          finding.findingId,
+          finding.severity,
+          finding.lifecycleStatus,
+          finding.scopeStatus,
+          finding.category,
+          finding.summary,
+        ].join("\t"),
+      )
+      .join("\n") + "\n"
   );
 }
 

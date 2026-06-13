@@ -412,4 +412,102 @@ describe("hitch CLI", () => {
       recommendedNextAction: { kind: "classify_findings" },
     });
   });
+
+  it("lists findings with open/severity/scope/limit filters and errors on an unknown hitch", () => {
+    const { root, scopePath, closePath } = setup();
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch", "start", "--title", "list findings", "--domain", "hitch",
+        "--scope-file", scopePath, "--close-file", closePath, "--json",
+      ]),
+    );
+    const add = (severity: string, summary: string) =>
+      json<{ finding: { findingId: string } }>(
+        runCli(root, [
+          "hitch", "finding", "add", hitch.hitchId, "--severity", severity,
+          "--category", "correctness", "--summary", summary, "--json",
+        ]),
+      ).finding.findingId;
+    const p1 = add("P1", "a P1 bug");
+    const p2 = add("P2", "a P2 nit");
+    const p3 = add("P2", "an out-of-scope note");
+    // p2 → fixed (should drop out of --open); p3 → out_of_scope (for --scope)
+    expect(runCli(root, ["hitch", "finding", "fixed", p2]).code).toBe(0);
+    expect(
+      runCli(root, [
+        "hitch", "finding", "classify", p3, "--scope", "out-of-scope",
+        "--reason", "not this hitch",
+      ]).code,
+    ).toBe(0);
+
+    // all findings, with full HitchFinding rows in JSON
+    const all = json<{
+      findings: {
+        findingId: string;
+        severity: string;
+        lifecycleStatus: string;
+        scopeStatus: string;
+        category: string;
+        summary: string;
+        firstSeenAt: string;
+      }[];
+    }>(runCli(root, ["hitch", "finding", "list", hitch.hitchId, "--json"]));
+    expect(all.findings.map((f) => f.findingId).sort()).toEqual([p1, p2, p3].sort());
+    const first = all.findings.find((f) => f.findingId === p1)!;
+    expect(first).toMatchObject({
+      severity: "P1",
+      lifecycleStatus: "open",
+      scopeStatus: "in_scope",
+      category: "correctness",
+      summary: "a P1 bug",
+    });
+    expect(typeof first.firstSeenAt).toBe("string");
+
+    // --open excludes the fixed p2 and the out-of-scope p3 keeps its lifecycle
+    const open = json<{ findings: { findingId: string }[] }>(
+      runCli(root, ["hitch", "finding", "list", hitch.hitchId, "--open", "--json"]),
+    );
+    expect(open.findings.map((f) => f.findingId)).not.toContain(p2);
+
+    // --severity filter
+    const onlyP1 = json<{ findings: { findingId: string }[] }>(
+      runCli(root, ["hitch", "finding", "list", hitch.hitchId, "--severity", "P1", "--json"]),
+    );
+    expect(onlyP1.findings.map((f) => f.findingId)).toEqual([p1]);
+
+    // --scope filter
+    const oos = json<{ findings: { findingId: string }[] }>(
+      runCli(root, ["hitch", "finding", "list", hitch.hitchId, "--scope", "out-of-scope", "--json"]),
+    );
+    expect(oos.findings.map((f) => f.findingId)).toEqual([p3]);
+
+    // --limit caps the rows
+    const limited = json<{ findings: unknown[] }>(
+      runCli(root, ["hitch", "finding", "list", hitch.hitchId, "--limit", "1", "--json"]),
+    );
+    expect(limited.findings).toHaveLength(1);
+
+    // text output carries the 6 tab-separated columns
+    const text = runCli(root, ["hitch", "finding", "list", hitch.hitchId]);
+    expect(text.code).toBe(0);
+    const p1Line = text.out.split("\n").find((l) => l.startsWith(p1))!;
+    expect(p1Line.split("\t")).toEqual([
+      p1, "P1", "open", "in_scope", "correctness", "a P1 bug",
+    ]);
+
+    // unknown hitch id fails (requireSession), not a silent empty list
+    expect(runCli(root, ["hitch", "finding", "list", "hitch-does-not-exist"]).code).not.toBe(0);
+
+    // a real hitch with no findings lists empty without error
+    const empty = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch", "start", "--title", "empty", "--domain", "hitch",
+        "--scope-file", scopePath, "--close-file", closePath, "--json",
+      ]),
+    );
+    const none = json<{ findings: unknown[] }>(
+      runCli(root, ["hitch", "finding", "list", empty.hitchId, "--json"]),
+    );
+    expect(none.findings).toEqual([]);
+  });
 });
