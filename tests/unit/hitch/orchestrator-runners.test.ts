@@ -11,6 +11,7 @@ import { HitchRepository } from "../../../src/hitch/repository.js";
 import {
   createOrchestratorRunners,
   latestRunId,
+  tryShortCircuitApprovedDecidedReview,
   type HitchRunContext,
 } from "../../../src/hitch/orchestrator-runners.js";
 import {
@@ -51,11 +52,15 @@ function createHarnessRoot(prefix: string): { harnessRoot: string; dbPath: strin
   return { harnessRoot, dbPath: join(harnessRoot, ".harness", "harness.sqlite") };
 }
 
-function approvedDecisionYaml(runId: string, domain = "docs"): string {
+function decisionYaml(
+  runId: string,
+  decision: string,
+  domain = "docs",
+): string {
   return [
     `runId: ${runId}`,
     `domain: ${domain}`,
-    "decision: approved",
+    `decision: ${decision}`,
     "required_changes: []",
     "non_blocking_comments: []",
     "out_of_scope_suggestions: []",
@@ -68,10 +73,15 @@ function approvedDecisionYaml(runId: string, domain = "docs"): string {
 function insertApprovedRunWithProcessedProposal(input: {
   dbPath: string;
   hitchId: string;
+  // The decided status the run + processed proposal carry. Defaults to the
+  // happy path ("approved"); pass "changes_requested" / "rejected" to pin that
+  // a non-approved decided run is NOT short-circuited.
+  decision?: string;
   closeConditions?: Parameters<HitchRepository["createSession"]>[0]["closeConditions"];
 }): string {
+  const decision = input.decision ?? "approved";
   const runId = `run-${input.hitchId}`;
-  const sourceYaml = approvedDecisionYaml(runId);
+  const sourceYaml = decisionYaml(runId, decision);
   const sourceSha = createHash("sha256").update(sourceYaml).digest("hex");
   const { db, close } = openManagedDb({ dbPath: input.dbPath });
   try {
@@ -100,16 +110,17 @@ function insertApprovedRunWithProcessedProposal(input: {
       `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
          status, reviewer, reviewed_at, source_mode, db_revision,
          export_status, updated_at, meta_json)
-       VALUES (?, 't', 'docs', 'domain-coding', 'main', 'approved',
+       VALUES (?, 't', 'docs', 'domain-coding', 'main', ?,
          'codex-reviewer', '2026-06-13T00:00:00.000Z', 'db-first', 1,
          'disabled', '2026-06-13T00:00:00.000Z', ?)`,
     ).run(
       runId,
+      decision,
       JSON.stringify({
         runId,
         repoId: "t",
         domain: "docs",
-        status: "approved",
+        status: decision,
       }),
     );
     db.prepare(
@@ -119,10 +130,10 @@ function insertApprovedRunWithProcessedProposal(input: {
          reviewed_at, source_yaml, source_sha256, created_at, processed_at,
          review_decision_id, lifecycle_status
        )
-       VALUES (?, 'codex-reviewer', 'approved', '[]', '[]', '[]',
+       VALUES (?, 'codex-reviewer', ?, '[]', '[]', '[]',
          '2026-06-13T00:00:00.000Z', ?, ?, '2026-06-13T00:00:00.000Z',
          '2026-06-13T00:00:00.000Z', ?, 'processed')`,
-    ).run(runId, sourceYaml, sourceSha, runId);
+    ).run(runId, decision, sourceYaml, sourceSha, runId);
     return runId;
   } finally {
     close();
@@ -276,6 +287,40 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
 
     await expect(runners.salvageReviewBranch?.(hitchId)).resolves.toBeNull();
   });
+
+  // Safety boundary (#167): the short-circuit applies ONLY to an approved
+  // decided run. A changes_requested / rejected decided run must fall through
+  // to the normal reviewer path (which escalates via the already_decided gate)
+  // and must NOT have a spurious `review_consensus` close-check recorded — a
+  // close-check derived from a non-approval would be a state transition the
+  // harness never authorized.
+  for (const decision of ["changes_requested", "rejected"] as const) {
+    it(`does not short-circuit a ${decision} decided run (no close-check)`, () => {
+      const { dbPath } = createHarnessRoot(
+        `harness-orch-review-${decision}-`,
+      );
+      const hitchId = `g-${decision}-redrive`;
+      const runId = insertApprovedRunWithProcessedProposal({
+        dbPath,
+        hitchId,
+        decision,
+      });
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        const result = tryShortCircuitApprovedDecidedReview({
+          db,
+          hitchId,
+          runId,
+          createdBy: "worker",
+        });
+        expect(result).toBeNull();
+        const repo = new HitchRepository(db);
+        expect(repo.listCloseChecks(hitchId)).toHaveLength(0);
+      } finally {
+        close();
+      }
+    });
+  }
 });
 
 describe("createOrchestratorRunners.classify", () => {

@@ -331,7 +331,12 @@ export function latestRunId(repo: HitchRepository, hitchId: string): string {
   );
 }
 
-function tryShortCircuitApprovedDecidedReview(input: {
+// Exported for unit tests: the safety boundary "only short-circuit a run that
+// is approved" must be pinned directly. A changes_requested / rejected decided
+// run must NOT short-circuit and must NOT append a close-check. Exercising this
+// through `review()` would require an on-disk reviewer fixture; the helper is a
+// deterministic DB-only function, so it is the precise unit under test.
+export function tryShortCircuitApprovedDecidedReview(input: {
   db: Database.Database;
   hitchId: string;
   runId: string;
