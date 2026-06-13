@@ -16,6 +16,7 @@ export interface SummaryInputs {
   codexTimedOut: boolean;
   codexStdoutTail: string;
   codexStderrTail: string;
+  codexEventsSummary?: string;
   diffCollectionError?: string;
 }
 
@@ -78,5 +79,10 @@ export function buildSummary(i: SummaryInputs): string {
   lines.push("## Codex output (stderr tail)");
   lines.push(...fenced(i.codexStderrTail));
   lines.push("");
+  if (i.codexEventsSummary !== undefined && i.codexEventsSummary !== "") {
+    lines.push("## codex events (tail, redacted)");
+    lines.push(i.codexEventsSummary);
+    lines.push("");
+  }
   return lines.join("\n");
 }

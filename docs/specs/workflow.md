@@ -47,7 +47,9 @@
 25. determine RunStatus from priority:
     diff failure > codex timeout > codex non-zero > policy violation
     > command failure > needs_review
-26. readTail(codex-output.log), readStderrTail(codex-error.log)
+26. readTail(codex-output.log), readStderrTail(codex-error.log);
+    codex が失敗（exitCode != 0 / timedOut）した場合は、publish 済みの
+    redacted `codex-events.jsonl` から events tail を要約
 27. write summary.md
 28. write knowledge-candidates.yaml (4 signal kinds)
 29. write review-decision.yaml (initial: pending)
@@ -101,6 +103,14 @@ running ──► generated ──► verified ──► needs_review  │
 
 failed-* で終わった run も worktree は残る（人間が原因を調べられるように）。
 
+codex 自体が失敗した run（`codex.exitCode !== 0` または `codex.timedOut`）では、
+`summary.md` と `review-request.md` に `## codex events (tail, redacted)` セクションを
+追加する。入力は artifact 用に publish 済みの `codex-events.jsonl` のみで、
+quarantined raw dotfile（`.codex-events.raw.jsonl`）は読まない。セクションは
+`item.completed` の `command_execution`（command / exit_code）と `agent_message`
+（先頭 120 文字）、および `turn.completed.usage` を時系列 tail（既定 10 件）で表示する。
+成功 run にはこのセクションを出さず、既存の summary / review-request 形式を維持する。
+
 ### RunStatus 優先順位
 
 priority は上から下（post-command pass が走った場合は、その後の状態で評価される）:
@@ -149,9 +159,9 @@ runs/<runId>/
   untracked-files.txt      # OPTIONAL: allowed untracked がある場合のみ。path list
   untracked-denied.txt     # OPTIONAL: denied untracked がある場合のみ。size + sha256、content なし
   untracked-secrets.txt    # OPTIONAL: secret hit がある場合のみ。reasons のみ、content なし
-  summary.md               # 人間向け短いサマリ
+  summary.md               # 人間向け短いサマリ。codex が非ゼロ exit / timeout で失敗した run のみ redacted codex events tail を載せる
   knowledge-candidates.yaml # 自動抽出 signal (4 kinds; 後述)
-  review-request.md        # reviewer 向け詳細 (status / safety / lists / artifacts / codex tails / checklist)
+  review-request.md        # reviewer 向け詳細 (status / safety / lists / artifacts / codex tails / redacted events tail on codex failure / checklist)
   review-decision.yaml     # 初期: { decision: pending, … } — reviewer がここを編集する
   commands/                # OPTIONAL: policy.allowedCommands があるときだけ生成
     00-<slug>.out.log

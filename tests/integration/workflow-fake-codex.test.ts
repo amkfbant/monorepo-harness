@@ -955,6 +955,110 @@ describe("runDomainCoding (fake codex)", () => {
     );
   });
 
+  it("adds redacted codex events tail to summary and review request when codex fails", async () => {
+    const runner: CodexExecRunner = {
+      async run(input) {
+        writeFileSync(input.logPaths.stdout, "failed final message\n", "utf8");
+        writeFileSync(input.logPaths.stderr, "codex failed\n", "utf8");
+        writeFileSync(
+          input.logPaths.events,
+          [
+            JSON.stringify({
+              type: "item.completed",
+              item: {
+                type: "command_execution",
+                command: "npm test",
+                exit_code: 1,
+              },
+            }),
+            JSON.stringify({
+              type: "item.completed",
+              item: {
+                type: "agent_message",
+                text: "[redacted: secret-suspect (content:aws-access-key-id)]",
+              },
+            }),
+            JSON.stringify({
+              type: "turn.completed",
+              usage: {
+                input_tokens: 10,
+                cached_input_tokens: 2,
+                output_tokens: 3,
+                reasoning_output_tokens: 1,
+              },
+            }),
+            "",
+          ].join("\n"),
+          "utf8",
+        );
+        return { exitCode: 9, timedOut: false, durationMs: 10 };
+      },
+    };
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+
+    expect(r.status).toBe("failed-codex");
+    const runDir = join(harness, "runs", r.runId);
+    const summary = readFileSync(join(runDir, "summary.md"), "utf8");
+    const reviewRequest = readFileSync(
+      join(runDir, "review-request.md"),
+      "utf8",
+    );
+    for (const markdown of [summary, reviewRequest]) {
+      expect(markdown).toContain("## codex events (tail, redacted)");
+      expect(markdown).toContain(
+        '- item.completed command_execution command="npm test" exit_code=1',
+      );
+      expect(markdown).toContain(
+        "- turn.completed usage input=10 cached_input=2 output=3 reasoning_output=1 total=13",
+      );
+      expect(markdown).toContain(
+        "[redacted: secret-suspect (content:aws-access-key-id)]",
+      );
+    }
+  });
+
+  it("does not add codex events tail to successful runs", async () => {
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 5;\n",
+        );
+      },
+      stdout: "success\n",
+    });
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+
+    expect(r.status).toBe("needs_review");
+    const runDir = join(harness, "runs", r.runId);
+    expect(readFileSync(join(runDir, "summary.md"), "utf8")).not.toContain(
+      "## codex events (tail, redacted)",
+    );
+    expect(
+      readFileSync(join(runDir, "review-request.md"), "utf8"),
+    ).not.toContain("## codex events (tail, redacted)");
+  });
+
   it("never writes denied untracked content into artifacts (security boundary)", async () => {
     // Codex drops a .env-like file at the repo root. This is out of scope
     // (apps/user/** is the write scope) AND likely contains secrets.
