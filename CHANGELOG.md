@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.7.0](https://github.com/amkfbant/monorepo-harness/compare/v0.6.0...v0.7.0) (2026-06-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `harness goal` no longer prints a rename hint; it now fails as a generic unknown command. Use `harness hitch …`.
+* **roadmap:** `hitch orchestrate` now ends with an error (hitch state unchanged) instead of escalating the hitch when the run layer reports a domain lock-busy / lost lease; `course orchestrate` aborts with lease_lost / lease_busy.
+* **hitch:** project-scoped hitch runs now validate diffs against the compiled project policy; a profile that narrowed scope can now deny diffs the raw repo policy previously allowed.
+* **mcp:** hitch.start idempotent replay is not preserved across this upgrade (the id derivation changed). Documented in docs/specs/mcp.md.
+
+### Features
+
+* **dashboard:** split mutation API into `operations serve` — dashboard read-only (course D2) ([#194](https://github.com/amkfbant/monorepo-harness/issues/194)) ([ebecff8](https://github.com/amkfbant/monorepo-harness/commit/ebecff8d77c03ae8c31f1f90b96cf9f753683895))
+* **hitch:** add `hitch finding list` to enumerate findings without scraping status JSON ([#170](https://github.com/amkfbant/monorepo-harness/issues/170)) ([#180](https://github.com/amkfbant/monorepo-harness/issues/180)) ([602084d](https://github.com/amkfbant/monorepo-harness/commit/602084d018e15cd94cb01a1ba119da69b69d377a))
+* **hitch:** adopt-pr (audit-only) + hitch update with scope-freeze guards, migration V29 ([#169](https://github.com/amkfbant/monorepo-harness/issues/169), [#142](https://github.com/amkfbant/monorepo-harness/issues/142)) ([#185](https://github.com/amkfbant/monorepo-harness/issues/185)) ([9cfa7f6](https://github.com/amkfbant/monorepo-harness/commit/9cfa7f6491d203fc8d260c202d7e99ead552a2d3))
+* **hitch:** finding defer --classify-out-of-scope to defer advisories in one step ([#172](https://github.com/amkfbant/monorepo-harness/issues/172)) ([#182](https://github.com/amkfbant/monorepo-harness/issues/182)) ([2e136fb](https://github.com/amkfbant/monorepo-harness/commit/2e136fbb9271522879ec8d210b4512fbda502e45))
+* **hitch:** persist reopen/close/cancel reasons in hitch_lifecycle_events (migration V23) ([#130](https://github.com/amkfbant/monorepo-harness/issues/130)) ([#156](https://github.com/amkfbant/monorepo-harness/issues/156)) ([1d29791](https://github.com/amkfbant/monorepo-harness/commit/1d297917ee9db5ffe7e892155af26060be0e2a9a))
+* **metrics:** KPI wiring over existing data (course telemetry Phase D) ([#161](https://github.com/amkfbant/monorepo-harness/issues/161)) ([1ace655](https://github.com/amkfbant/monorepo-harness/commit/1ace655b777c97afcfa6b08aea2c024c5a76fce6))
+* **metrics:** metrics snapshots time series with retention and delta, migration V27 (course telemetry Phase E) ([#175](https://github.com/amkfbant/monorepo-harness/issues/175)) ([2df0bcb](https://github.com/amkfbant/monorepo-harness/commit/2df0bcbe13f45d898e3da1d21e965710d0007ca7))
+* **metrics:** telemetry follow-ups — lock contention (V28), events tail, probe cwd isolation ([#176](https://github.com/amkfbant/monorepo-harness/issues/176)) ([6006af9](https://github.com/amkfbant/monorepo-harness/commit/6006af9d0f5a3fde26d1dc1487c7714ea62054df))
+* **provenance:** run execution environment provenance, migration V25 (course telemetry Phase B) ([#162](https://github.com/amkfbant/monorepo-harness/issues/162)) ([0625199](https://github.com/amkfbant/monorepo-harness/commit/062519986c3371d4fa41ebd4b0cdff9688a168c4))
+* **review:** populate prompt_sha256 and prompt provenance (migration V24) ([#131](https://github.com/amkfbant/monorepo-harness/issues/131)) ([#157](https://github.com/amkfbant/monorepo-harness/issues/157)) ([1db9d84](https://github.com/amkfbant/monorepo-harness/commit/1db9d840e95f75193a4b29d67162df4cc0ad846d))
+* **telemetry:** per-phase run timing instrumentation (course telemetry Phase A) ([#160](https://github.com/amkfbant/monorepo-harness/issues/160)) ([0a8585d](https://github.com/amkfbant/monorepo-harness/commit/0a8585df48230363104996b1411b89357058b2f0))
+* **usage:** codex token usage collection via --json, migration V26 (course telemetry Phase C) ([#174](https://github.com/amkfbant/monorepo-harness/issues/174)) ([412f793](https://github.com/amkfbant/monorepo-harness/commit/412f7932c111885967c4a68b0b6a4f6c79e3227a))
+* **usage:** run_usage を per-invocation 化し coder/reviewer/evaluator token を集計 ([#85](https://github.com/amkfbant/monorepo-harness/issues/85)) ([#200](https://github.com/amkfbant/monorepo-harness/issues/200)) ([8030d5a](https://github.com/amkfbant/monorepo-harness/commit/8030d5ae300838b9dc09277716569628749f93f2))
+
+
+### Bug Fixes
+
+* [dashboard-split D1] read contract 棚卸し&確定 (doc のみ) (run-20260613-self-mqc9v4ja9a0b26e7) ([#189](https://github.com/amkfbant/monorepo-harness/issues/189)) ([e9bc4fe](https://github.com/amkfbant/monorepo-harness/commit/e9bc4feaf0cd730c785d36d4d2873b6146dcc07f))
+* audit minor findings, batch A — lock release order, decision tiebreak, scoped not-found, PR-body perms ([#134](https://github.com/amkfbant/monorepo-harness/issues/134)) ([#158](https://github.com/amkfbant/monorepo-harness/issues/158)) ([1e8107e](https://github.com/amkfbant/monorepo-harness/commit/1e8107e0bfbeab8b02dd63b7c24d2b2c19ac78da))
+* audit minor findings, batch B — confirmation preview redaction, dead config, course pause/resume, typed errors ([#134](https://github.com/amkfbant/monorepo-harness/issues/134)) ([#159](https://github.com/amkfbant/monorepo-harness/issues/159)) ([3d2f915](https://github.com/amkfbant/monorepo-harness/commit/3d2f915f7bb26a0b570d51c5d8dbea79c51916bf))
+* **backlog:** list/show を DB 正本化（defer --backlog 由来の行を可視化, [#177](https://github.com/amkfbant/monorepo-harness/issues/177)） ([#179](https://github.com/amkfbant/monorepo-harness/issues/179)) ([b37c2a5](https://github.com/amkfbant/monorepo-harness/commit/b37c2a5a9630131fa1f5a75b5b1e07f6d4f20479))
+* **cli:** remove the harness goal erroring stub ([#133](https://github.com/amkfbant/monorepo-harness/issues/133)) ([#151](https://github.com/amkfbant/monorepo-harness/issues/151)) ([4e9f889](https://github.com/amkfbant/monorepo-harness/commit/4e9f8898d7431763a8ef39e055c00d72491cf434))
+* **hitch:** batch classify/defer runners with deterministic final COUNT ([#121](https://github.com/amkfbant/monorepo-harness/issues/121)) ([#138](https://github.com/amkfbant/monorepo-harness/issues/138)) ([f76fb3c](https://github.com/amkfbant/monorepo-harness/commit/f76fb3cd9e8b16273cc61616b9e011e93511ff1d))
+* **hitch:** close_check hardening — routing, git timeout, index, runnable states, secret-safe coder injection ([#184](https://github.com/amkfbant/monorepo-harness/issues/184)) ([#188](https://github.com/amkfbant/monorepo-harness/issues/188)) ([91bcb15](https://github.com/amkfbant/monorepo-harness/commit/91bcb1547978664ab1202a649611df4f998f58df))
+* **hitch:** deterministic command close-checks in autonomous orchestrate ([#140](https://github.com/amkfbant/monorepo-harness/issues/140)) ([#181](https://github.com/amkfbant/monorepo-harness/issues/181)) ([a2927d4](https://github.com/amkfbant/monorepo-harness/commit/a2927d4962a17068cde2bb00d20cd3b35d33f0af))
+* **hitch:** SQL-aggregate finding scans + escalated active-blocker alignment (audit [#112](https://github.com/amkfbant/monorepo-harness/issues/112)) ([#135](https://github.com/amkfbant/monorepo-harness/issues/135)) ([217ebb9](https://github.com/amkfbant/monorepo-harness/commit/217ebb925991fdd17105e7f7a6b56aa4e0f9cb2c))
+* **hitch:** thread compiled project policy into orchestrator/MCP/course coder runs ([#115](https://github.com/amkfbant/monorepo-harness/issues/115)) ([#143](https://github.com/amkfbant/monorepo-harness/issues/143)) ([56d34a0](https://github.com/amkfbant/monorepo-harness/commit/56d34a07a12367c7270ce869646b3724c9471070))
+* **mcp:** client-scope hardening — 4 audit findings ([#119](https://github.com/amkfbant/monorepo-harness/issues/119)/[#117](https://github.com/amkfbant/monorepo-harness/issues/117)/[#118](https://github.com/amkfbant/monorepo-harness/issues/118)/[#114](https://github.com/amkfbant/monorepo-harness/issues/114)) ([#136](https://github.com/amkfbant/monorepo-harness/issues/136)) ([836661e](https://github.com/amkfbant/monorepo-harness/commit/836661e216bca25260bc2a537135312b38c84541))
+* **mcp:** redact audit input+metadata across all operation paths, consolidate wrappers ([#124](https://github.com/amkfbant/monorepo-harness/issues/124)) ([#149](https://github.com/amkfbant/monorepo-harness/issues/149)) ([246700d](https://github.com/amkfbant/monorepo-harness/commit/246700d7eca0f79221fe2a589560222f7ce7f9eb))
+* **review:** fail review-auto insert when it would silently supersede a rival proposal ([#116](https://github.com/amkfbant/monorepo-harness/issues/116)) ([#139](https://github.com/amkfbant/monorepo-harness/issues/139)) ([3eaab68](https://github.com/amkfbant/monorepo-harness/commit/3eaab688ed4e44a72d9adef1e688a8b13103c06b))
+* **roadmap:** auto-number phase position so drive order follows creation order ([#120](https://github.com/amkfbant/monorepo-harness/issues/120)) ([#145](https://github.com/amkfbant/monorepo-harness/issues/145)) ([dcb2c33](https://github.com/amkfbant/monorepo-harness/commit/dcb2c332fbd7d39c0ca6eb9477fc3e2bdb1dd16c))
+* **roadmap:** fence course-pass phase writes by lease and stop false escalation on lock conflicts ([#113](https://github.com/amkfbant/monorepo-harness/issues/113)) ([#144](https://github.com/amkfbant/monorepo-harness/issues/144)) ([aa836b4](https://github.com/amkfbant/monorepo-harness/commit/aa836b4d77bc4f4005135021cd32f7ff39898608))
+* **roadmap:** re-read phase rollup live per phase during a course pass ([#122](https://github.com/amkfbant/monorepo-harness/issues/122)) ([#146](https://github.com/amkfbant/monorepo-harness/issues/146)) ([0e842bd](https://github.com/amkfbant/monorepo-harness/commit/0e842bd402652859e2ce2cb677e36b35608d5a34))
+* untrack node_modules symlink and ignore it (.gitignore) ([#193](https://github.com/amkfbant/monorepo-harness/issues/193)) ([95e3ff4](https://github.com/amkfbant/monorepo-harness/commit/95e3ff44fbd0812231469199900f00cbad9f5d69))
+
+
+### Refactors
+
+* **db:** drop unused db_stats_snapshots (migration V22) and remove dead code ([#126](https://github.com/amkfbant/monorepo-harness/issues/126)) ([#153](https://github.com/amkfbant/monorepo-harness/issues/153)) ([dc9dcd2](https://github.com/amkfbant/monorepo-harness/commit/dc9dcd28867f15f1be78f3fe9bbab888b89df13c))
+
 ## [0.6.0](https://github.com/amkfbant/monorepo-harness/compare/v0.5.0...v0.6.0) (2026-06-11)
 
 
