@@ -428,7 +428,7 @@ legacy-file の行はクリアして再構築するが、**DB-first（db-complet
 
 runtime parent を削除する reset では、`run_events` / `artifacts` /
 `run_context_packs` / `run_usage` などの child rows も同じ parent 境界で削除する。
-`run_usage` は v29 以降 1 run 複数行になり得るため、reset / force reconcile は
+`run_usage` は v30 以降 1 run 複数行になり得るため、reset / force reconcile は
 `run_id` 単位で既存 usage rows を削除し、files からは再構築しない。
 DB-first parent の child rows は保持し、parent が存在しなくなった child rows は orphan
 prune で削除する。
@@ -1070,12 +1070,15 @@ append-only 規約により、v10 の DDL と `V10_TABLE_NAMES` は書き換え�
 
 ## Telemetry usage C2 — run_usage（schema v26）
 
-schema v26 は additive な `run_usage` を追加し、schema v29 は同じ table name のまま
+schema v26 は additive な `run_usage` を追加し、schema v30 は同じ table name のまま
 per-invocation 粒度へ再作成する。latest schema では 1 run に coder / reviewer /
 evaluator の各 invocation が複数行入り得る。Codex CLI structured JSONL
 (`codex-events.jsonl`) の `turn.completed.usage` だけを入力にし、LLM の自然文・
-自己申告テキストは usage source にしない。G1 で書き込むのは coder invocation のみで、
-reviewer/evaluator 記録は後続 scope。
+自己申告テキストは usage source にしない。書き込み経路は: coder（`workflow-runner`、G1）、
+reviewer（`reviewer-agent`、publish 直後に全 outcome で記録、G2）、evaluator
+（`review-evaluator`、`dbPath` 指定時のみ per-sample 記録、G2）。いずれも fail-open で、
+記録失敗は run/review/evaluation の成否に波及しない。書込可能な DB ハンドルを持たない経路
+（例: `dbPath` 無しの `review auto`）は記録なし（unavailable のまま）。
 `db import --from-files --force-legacy-reconcile` では `run_usage` を削除し、files から
 再構築しない（行なし = usage 未収集）。削除は `run_id` 単位なので、同一 run に複数
 usage rows があっても全て置き換え境界に含まれる。
@@ -1103,7 +1106,7 @@ CREATE TABLE run_usage (
 CREATE INDEX run_usage_run_idx ON run_usage(run_id);
 ```
 
-v29 migration は既存 v26 rows を `kind='coder'`, `seq=0` として `INSERT ... SELECT`
+v30 migration は既存 v26 rows を `kind='coder'`, `seq=0` として `INSERT ... SELECT`
 で移行してから旧 table を drop / rename する。`V26_TABLE_NAMES` /
 `CURRENT_TABLE_NAMES` の table 名は引き続き `run_usage` のまま変わらない。
 `model` は現状 `NULL`。`seq` は同一 `(run_id, kind)` 内で

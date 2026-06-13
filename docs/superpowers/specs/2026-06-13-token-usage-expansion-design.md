@@ -102,6 +102,20 @@ G2 着手時に確認する。保持していれば記録、していない経�
 とし、無理に DB 接続を新設しない（安全側）。確認結果は G2 のコミット message と本 spec の
 追補に残す。
 
+#### G2 着手時の確認結果（2026-06-14, commit で実装）
+
+- **reviewer**（`src/core/reviewer-agent.ts` `runReviewerAgent`）: `publishRedactedCodexEvents` の
+  直後に `inputs.dbPath` が存在すれば短命の writable managed db を開いて `kind='reviewer'` を記録する
+  （`recordReviewerUsage`）。**timeout / 非ゼロ exit / unparseable YAML を含む全 outcome** で記録できるよう、
+  gate（throw）より前・publish 直後に配置（codex は verdict 失敗時もトークンを消費するため）。redaction 済み
+  official events のみ読む。`dbPath` 未指定（`review auto` を DB 無しで動かす経路）は記録なし（unavailable）。
+- **evaluator**（`src/core/review-evaluator.ts` `evaluateReviewer`）: sample ループは元来 readonly probe しか
+  持たない。`opts.dbPath` が指定されているときのみ writable managed db を 1 本開き、各 sample の publish 後に
+  `kind='evaluator'` を per-sample 記録（`finally` で close）。`dbPath` 未指定の経路は記録なし（unavailable、
+  無理に接続を新設しない＝設計の安全ガイダンスどおり）。
+- いずれも **fail-open**: 記録失敗（DB 不在 / events 読めない / 書込失敗）は warn して握りつぶし、
+  review/evaluation の成否に波及させない。usage は codex の `turn.completed.usage` のみ。
+
 ## 集計の露出（3 単位）
 
 1. **per-hitch** — 新 `hitchTokenUsage(db, hitchId)`:

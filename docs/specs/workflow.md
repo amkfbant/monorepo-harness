@@ -25,7 +25,10 @@
     if read/write/rename fails, publish only
     `{"type":"redaction.failed","reason":"<short>"}` to `codex-events.jsonl`
     when possible and continue the run
-14. record run_usage from the published `codex-events.jsonl`
+14. record run_usage (`kind='coder'`) from the published `codex-events.jsonl`
+    (reviewer / evaluator codex invocations record their own `kind='reviewer'` /
+    `kind='evaluator'` rows from their published events on their own paths;
+    all per-invocation and fail-open — see [`db.md`](./db.md) run_usage)
 15. setStatus('generated')
 16. PASS 1 — post-codex diffAndValidate(worktree, baseSha, policy):
     attemptDiff → DiffOutcome { ok, trackedChangedPaths, untrackedAll, patch, error? }
