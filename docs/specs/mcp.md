@@ -432,7 +432,7 @@ knowledge-candidate run 数 ＋ **operational 知識**の slice（`operationalKn
 出さない。operational は project/repo scope に **portable entry も含めて** 集計）。
 `harness.metrics` は run 件数（status 別）＋ review approved-rate（DB read-model の
 `metricsSummary`。`oneShotApprovalRate` / `policyViolationRate` /
-`secretSuspectRate` を含む。D1 KPI の式は [`cli.md`](./cli.md) の
+`secretSuspectRate` / `lockContentionCount` を含む。D1 KPI の式は [`cli.md`](./cli.md) の
 `harness metrics` 節を正規定義とし、MCP でも同じ定義を使う）をトップレベルに返し、
 追加で `usage`（`DbTokenUsageSummary`: `exact` token 合算と `usage_source` 別件数。
 式は [`cli.md`](./cli.md) の `harness metrics` 節を正規定義とする）と `hitch`
@@ -441,7 +441,9 @@ resolution / reopen KPI）を返す。`allowedProjects` が空の unrestricted c
 `mcpConfirmations`（`DbMcpConfirmationSummary`: confirmation / expired KPI）も返す。
 `mcp_confirmation_requests` は project 列を持たない global table なので、
 project-restricted client（`allowedProjects` 非空）では fail-closed で
-`mcpConfirmations` フィールド自体を返さない。
+`mcpConfirmations` フィールド自体を返さない。同じく `domain_lock_contention` は
+`project_id` 列を持たず project scope を決定論的に適用できないため、
+project-restricted client では fail-closed で `lockContentionCount` フィールド自体を返さない。
 `hitch` は呼び出し元の `projectId` / `repoId` / `domain` / `sinceHours` scope を伝播し、
 unrestricted client の `mcpConfirmations` は global 値で、`sinceHours` 由来の since のみ伝播する
 （project / repo / domain filter は非適用）。`confirmationRate` は

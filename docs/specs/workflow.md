@@ -47,7 +47,9 @@
 25. determine RunStatus from priority:
     diff failure > codex timeout > codex non-zero > policy violation
     > command failure > needs_review
-26. readTail(codex-output.log), readStderrTail(codex-error.log)
+26. readTail(codex-output.log), readStderrTail(codex-error.log);
+    codex が失敗（exitCode != 0 / timedOut）した場合は、publish 済みの
+    redacted `codex-events.jsonl` から events tail を要約
 27. write summary.md
 28. write knowledge-candidates.yaml (4 signal kinds)
 29. write review-decision.yaml (initial: pending)
@@ -101,6 +103,16 @@ running ──► generated ──► verified ──► needs_review  │
 
 failed-* で終わった run も worktree は残る（人間が原因を調べられるように）。
 
+codex 自体が失敗した run（`codex.exitCode !== 0` または `codex.timedOut`）では、
+`summary.md` と `review-request.md` に `## codex events (tail, redacted)` セクションを
+追加する。入力は artifact 用に publish 済みの `codex-events.jsonl` のみで、
+quarantined raw dotfile（`.codex-events.raw.jsonl`）は読まない。セクションは
+`item.completed` の `command_execution`（command / exit_code）と `agent_message`
+（先頭 120 文字）、および `turn.completed.usage` を時系列 tail（既定 10 件）で表示する。
+`command` は string、string[]、`{name: string}` のみ表示し、それ以外の shape は
+`(command omitted: unrecognized shape)` として fail-closed する。
+成功 run にはこのセクションを出さず、既存の summary / review-request 形式を維持する。
+
 ### RunStatus 優先順位
 
 priority は上から下（post-command pass が走った場合は、その後の状態で評価される）:
@@ -143,15 +155,15 @@ runs/<runId>/
   codex-prompt.md          # codex に渡した prompt 全文
   codex-output.log         # codex `-o/--output-last-message` の最終 agent message
   codex-error.log          # codex stderr (生; readStderrTail で patch echo を抑制してから artifact に転載)
-  codex-events.jsonl       # codex `--json` stdout の JSONL events (raw stdout は一時 dotfile に隔離し、redaction 後に atomic publish; command aggregated_output は secret redaction 済み; turn.completed.usage を含み、run_usage の入力になる。redaction 失敗時は redaction.failed sentinel のみ)
+  codex-events.jsonl       # codex `--json` stdout の JSONL events (raw stdout は一時 dotfile に隔離し、redaction 後に atomic publish; command aggregated_output / text / command / command_name / name は secret redaction 済み; turn.completed.usage を含み、run_usage の入力になる。redaction 失敗時は redaction.failed sentinel のみ)
   final-diff.patch         # tracked changes の unified diff (against baseSha)。常に生成 (変更なしなら空)
   untracked-files.patch    # OPTIONAL: allowed untracked がある場合のみ。inline + secret hit は redact
   untracked-files.txt      # OPTIONAL: allowed untracked がある場合のみ。path list
   untracked-denied.txt     # OPTIONAL: denied untracked がある場合のみ。size + sha256、content なし
   untracked-secrets.txt    # OPTIONAL: secret hit がある場合のみ。reasons のみ、content なし
-  summary.md               # 人間向け短いサマリ
+  summary.md               # 人間向け短いサマリ。codex が非ゼロ exit / timeout で失敗した run のみ redacted codex events tail を載せる
   knowledge-candidates.yaml # 自動抽出 signal (4 kinds; 後述)
-  review-request.md        # reviewer 向け詳細 (status / safety / lists / artifacts / codex tails / checklist)
+  review-request.md        # reviewer 向け詳細 (status / safety / lists / artifacts / codex tails / redacted events tail on codex failure / checklist)
   review-decision.yaml     # 初期: { decision: pending, … } — reviewer がここを編集する
   commands/                # OPTIONAL: policy.allowedCommands があるときだけ生成
     00-<slug>.out.log
@@ -243,7 +255,7 @@ compiled project policy. Non-project hitches are unchanged.
 
 `artifacts_ingested` は run 完了時の `ingestRunArtifacts` 成功直後、`finalize` 前に emit される。`count` / `totalBytes` は DB blob に取り込んだ artifact body（`meta.json` / `events.jsonl` / `review-decision.yaml` など DB から再構成される artifact を除く）のファイル数と元ファイル byte 合計、`durationMs` は同じく `performance.now()` ベースの整数 ms。
 
-`codex_events_redacted` は `codex_exec_completed` 後、artifact ingest 前に quarantined raw dotfile を redaction して `codex-events.jsonl` へ atomic publish した結果、実際に置換または drop が発生した場合のみ emit される。`item.aggregated_output` と `item.text` の secret-shaped content は `SCAN_SAMPLE_BYTES` ごとの 1KB overlap chunk で全量 scan し、hit した field は `"[redacted: secret-suspect (...)]"` に置換する。parse できない JSONL 行は `{"type":"redaction.dropped_line"}` に置換して保存する。raw dotfile と redaction tmp dotfile は dotfile であり、artifact ingest の対象外。成功時は raw dotfile を削除する。
+`codex_events_redacted` は `codex_exec_completed` 後、artifact ingest 前に quarantined raw dotfile を redaction して `codex-events.jsonl` へ atomic publish した結果、実際に置換または drop が発生した場合のみ emit される。`item.aggregated_output`、`item.text`、`item.command_name`、`item.name`、および `item.command`（string、string[] の各 string 要素、`{name: string}` の name）の secret-shaped content は `SCAN_SAMPLE_BYTES` ごとの 1KB overlap chunk で全量 scan し、hit した field または要素は `"[redacted: secret-suspect (...)]"` に置換する。parse できない JSONL 行は `{"type":"redaction.dropped_line"}` に置換して保存する。raw dotfile と redaction tmp dotfile は dotfile であり、artifact ingest の対象外。成功時は raw dotfile を削除する。
 
 redaction の raw 読み込み、redacted tmp 書き込み、または `codex-events.jsonl` への rename が失敗した場合、workflow は raw を正式 artifact 名に置かない。可能なら `codex-events.jsonl` には `{"type":"redaction.failed","reason":"<short>"}` の 1 行だけを書き、raw/tmp dotfile の削除を試みる。sentinel 書き込みも失敗した場合は正式名ファイル無しのまま続行する。この場合、run は redaction 失敗だけでは失敗しない。
 
@@ -441,6 +453,9 @@ Phase 9 は concurrency safety と runtime DB story の完結を扱う。設計�
   heartbeat (1 分) + fencing token (= `domain_locks.lock_id`) を持つ。
   Phase 9 期間中は file lock が primary serialization のため、runtime 経路の
   lease stealing は発生しにくい（full-path integration は Phase 10）。
+  active lease が残っていて busy と判定した場合、`DomainLockBusyError` を throw
+  する直前に同じ DB 接続で `domain_lock_contention` へ best-effort INSERT する。
+  記録失敗は fail-open で握りつぶし、lock 取得・解放・fencing の意味論は変えない。
 - **lease guard / state guard 分離** — run execution stage writes
   （`runs` 行 status 更新 / `run_events` / `artifacts` の DB-first ingest
   等）は `assertActiveLease` で active domain lock を verify。`review process`
@@ -548,6 +563,8 @@ codex exec \
 
 - `detached: true` で新 process group → timeout 時に `process.kill(-pid, "SIGKILL")` でツリー kill (Windows は `taskkill /T /F`)
 - env は `DEFAULT_CODEX_ENV_ALLOWLIST` (`PATH / HOME / USER / SHELL / LANG / LC_ALL / TERM / TMPDIR / CODEX_HOME`) のみ通す
+- `codexBin` は PATH 名ならそのまま、path separator を含む相対パスなら `process.cwd()` 基準の絶対パスへ解決して runner / version probe の両方で使う
+- version probe は解決済み `codexBin` を `os.tmpdir()` cwd で実行し、相対 path の副作用を harness cwd から隔離する
 - stdout/stderr は file stream に pipe、close 後 `finished()` で flush 完了を待つ
 
 ## limits / timeout

@@ -30,10 +30,28 @@ export interface AggregateArgs {
   sinceHours?: number;
 }
 
-export interface McpMetricsSummary extends DbMetricsSummary {
+type McpMetricsBase = Omit<DbMetricsSummary, "lockContentionCount"> & {
+  lockContentionCount?: number;
+};
+
+export interface McpMetricsSummary extends McpMetricsBase {
   usage: DbTokenUsageSummary;
   hitch: DbHitchMetricsSummary;
   mcpConfirmations?: DbMcpConfirmationSummary;
+}
+
+function omitLockContention(summary: DbMetricsSummary): McpMetricsBase {
+  return {
+    totalRuns: summary.totalRuns,
+    byStatus: summary.byStatus,
+    approved: summary.approved,
+    needsReview: summary.needsReview,
+    failed: summary.failed,
+    approvedRate: summary.approvedRate,
+    oneShotApprovalRate: summary.oneShotApprovalRate,
+    policyViolationRate: summary.policyViolationRate,
+    secretSuspectRate: summary.secretSuspectRate,
+  };
 }
 
 /**
@@ -118,11 +136,12 @@ export function metricsTool(
   if ("error" in filter) return filter.error;
   return withReadonlyDb(context, ({ db }) => {
     const runMetrics = metricsSummary(db, filter);
+    const restrictedClient = context.config.allowedProjects.length > 0;
     const data: McpMetricsSummary = {
-      ...runMetrics,
+      ...(restrictedClient ? omitLockContention(runMetrics) : runMetrics),
       usage: tokenUsageSummary(db, filter),
       hitch: hitchMetricsSummary(db, filter),
-      ...(context.config.allowedProjects.length === 0
+      ...(!restrictedClient
         ? {
             mcpConfirmations: mcpConfirmationSummary(db, {
               ...(filter.since !== undefined ? { since: filter.since } : {}),

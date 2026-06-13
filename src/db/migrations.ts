@@ -28,6 +28,7 @@ import {
   MIGRATION_V25_STATEMENTS,
   MIGRATION_V26_STATEMENTS,
   MIGRATION_V27_STATEMENTS,
+  MIGRATION_V28_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -177,6 +178,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 27,
     name: "metrics-snapshots-v27",
     statements: MIGRATION_V27_STATEMENTS,
+  },
+  {
+    version: 28,
+    name: "domain-lock-contention-v28",
+    statements: MIGRATION_V28_STATEMENTS,
   },
 ];
 

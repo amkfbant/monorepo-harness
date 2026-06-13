@@ -98,6 +98,28 @@ function insertUsage(
   ).run(runId, inputTokens, outputTokens, totalTokens, usageSource);
 }
 
+function insertLockContention(
+  db: Database.Database,
+  input: {
+    contentionId: string;
+    repoId: string;
+    domain: string;
+    observedAt: string;
+  },
+): void {
+  db.prepare(
+    `INSERT INTO domain_lock_contention
+       (contention_id, domain_key, repo_id, domain, observed_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(
+    input.contentionId,
+    `${input.repoId}::${input.domain}`,
+    input.repoId,
+    input.domain,
+    input.observedAt,
+  );
+}
+
 function insertCandidate(
   db: Database.Database,
   candidateId: string,
@@ -247,6 +269,53 @@ describe("aggregates", () => {
       expect(demo.oneShotApprovalRate).toBe(1 / 2);
       expect(demo.policyViolationRate).toBe(1 / 2);
       expect(demo.secretSuspectRate).toBe(1 / 2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("metricsSummary counts domain lock contention scoped by repo, domain, and since", () => {
+    const db = freshDb();
+    try {
+      insertLockContention(db, {
+        contentionId: "dlc-old",
+        repoId: "demo",
+        domain: "apps/web",
+        observedAt: "2026-06-01T00:00:00.000Z",
+      });
+      insertLockContention(db, {
+        contentionId: "dlc-demo-web-a",
+        repoId: "demo",
+        domain: "apps/web",
+        observedAt: "2026-06-13T00:00:00.000Z",
+      });
+      insertLockContention(db, {
+        contentionId: "dlc-demo-web-b",
+        repoId: "demo",
+        domain: "apps/web",
+        observedAt: "2026-06-14T00:00:00.000Z",
+      });
+      insertLockContention(db, {
+        contentionId: "dlc-demo-api",
+        repoId: "demo",
+        domain: "apps/api",
+        observedAt: "2026-06-13T00:00:00.000Z",
+      });
+      insertLockContention(db, {
+        contentionId: "dlc-other-web",
+        repoId: "other",
+        domain: "apps/web",
+        observedAt: "2026-06-13T00:00:00.000Z",
+      });
+
+      expect(
+        metricsSummary(db, {
+          projectId: "not-a-contention-column",
+          repoId: "demo",
+          domain: "apps/web",
+          since: "2026-06-13T00:00:00.000Z",
+        }).lockContentionCount,
+      ).toBe(2);
     } finally {
       db.close();
     }

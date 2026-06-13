@@ -21,6 +21,7 @@ import type {
 } from "./codex-exec-runner.js";
 import type { SandboxMode } from "../policy/schema.js";
 import { killProcessTree } from "./process-tree.js";
+import { resolveCodexBin } from "./resolve-codex-bin.js";
 
 // Default env vars passed to the codex subprocess. Anything outside this
 // allowlist (OPENAI_* / AWS_* / etc.) is stripped unless the operator
@@ -95,12 +96,13 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
       args.push("-");
 
       const env = filterEnv(process.env, envAllowlist);
+      const codexBin = resolveCodexBin(opts.codexBin);
       return await new Promise<CodexRunResult>((resolve, reject) => {
         // detached: true → codex becomes a new process-group leader so the
         // timeout can SIGKILL the entire tree (test runners, dev servers,
         // package managers) via killProcessTree, not just the parent.
         const startedAt = performance.now();
-        const child = spawn(opts.codexBin, args, {
+        const child = spawn(codexBin, args, {
           cwd: input.worktreePath,
           stdio: ["pipe", "pipe", "pipe"],
           env,

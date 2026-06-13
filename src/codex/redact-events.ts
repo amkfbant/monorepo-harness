@@ -12,7 +12,12 @@ export interface RedactedCodexEvents {
 type JsonObject = { readonly [key: string]: unknown };
 
 const SECRET_SCAN_CHUNK_OVERLAP_BYTES = 1024;
-const CODEX_OUTPUT_STRING_FIELDS = ["aggregated_output", "text"] as const;
+const CODEX_OUTPUT_STRING_FIELDS = [
+  "aggregated_output",
+  "text",
+  "command_name",
+  "name",
+] as const;
 
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -38,6 +43,49 @@ function redactionMarker(reasons: readonly string[]): string {
   return `[redacted: secret-suspect (${reasons.join(", ")})]`;
 }
 
+function redactSecretString(
+  filename: string,
+  value: string,
+): { value: string; redacted: boolean } {
+  const scan = scanCodexOutputForSecrets(filename, value);
+  if (!scan.matched) {
+    return { value, redacted: false };
+  }
+  return { value: redactionMarker(scan.reasons), redacted: true };
+}
+
+function redactCommandValue(
+  command: unknown,
+): { value: unknown; redacted: boolean } {
+  if (typeof command === "string") {
+    return redactSecretString("command.txt", command);
+  }
+  if (Array.isArray(command)) {
+    const parts = command.map((part) => {
+      if (typeof part !== "string") {
+        return { value: part, redacted: false };
+      }
+      const result = redactSecretString("command.txt", part);
+      return { value: result.value, redacted: result.redacted };
+    });
+    return {
+      value: parts.map((part) => part.value),
+      redacted: parts.some((part) => part.redacted),
+    };
+  }
+  if (isJsonObject(command) && typeof command.name === "string") {
+    const result = redactSecretString("command.name.txt", command.name);
+    if (!result.redacted) {
+      return { value: command, redacted: false };
+    }
+    return {
+      value: { ...command, name: result.value },
+      redacted: true,
+    };
+  }
+  return { value: command, redacted: false };
+}
+
 function redactEventLine(line: string): {
   line: string;
   redacted: boolean;
@@ -60,18 +108,26 @@ function redactEventLine(line: string): {
 
   let redacted = false;
   let redactedItem = parsed.item;
+  const commandResult = redactCommandValue(redactedItem.command);
+  if (commandResult.redacted) {
+    redactedItem = {
+      ...redactedItem,
+      command: commandResult.value,
+    };
+    redacted = true;
+  }
   for (const field of CODEX_OUTPUT_STRING_FIELDS) {
     const value = redactedItem[field];
     if (typeof value !== "string") {
       continue;
     }
-    const scan = scanCodexOutputForSecrets(`${field}.txt`, value);
-    if (!scan.matched) {
+    const result = redactSecretString(`${field}.txt`, value);
+    if (!result.redacted) {
       continue;
     }
     redactedItem = {
       ...redactedItem,
-      [field]: redactionMarker(scan.reasons),
+      [field]: result.value,
     };
     redacted = true;
   }

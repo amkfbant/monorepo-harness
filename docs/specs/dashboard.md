@@ -32,8 +32,9 @@ HTML エクスポートだった。Phase 6 では **DB（[`db.md`](./db.md)）�
 - `consistencyStatus` — `ok` / `warn` / `error`（[`db.md`](./db.md) の checker）
 - `filters` — 適用中の project / repo（`DashboardFilters` は project / repo のみ）
 - `projects` — project ごとの health / policy provenance / drift
-- `overview` — run / review / retry / safety 指標。`DbMetricsSummary` の
-  `oneShotApprovalRate` / `policyViolationRate` / `secretSuspectRate` を含む。
+- `overview` — run / review / retry / safety / lock-contention 指標。
+  `DbMetricsSummary` の `oneShotApprovalRate` / `policyViolationRate` /
+  `secretSuspectRate` / `lockContentionCount` を含む。
   D1 KPI の式は [`cli.md`](./cli.md) の `harness metrics` 節を正規定義とし、
   dashboard snapshot でも同じ定義を使う
 - `usage` — `DbTokenUsageSummary`。scope 内 `run_usage` の件数、`exact` 行だけの

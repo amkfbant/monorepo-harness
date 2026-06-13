@@ -44,6 +44,28 @@ const HOLDER = {
   hostname: "h1",
 };
 
+interface DomainLockContentionTestRow {
+  contention_id: string;
+  domain_key: string;
+  repo_id: string | null;
+  domain: string | null;
+  holder_run_id: string | null;
+  contender_pid: number | null;
+  contender_hostname: string | null;
+  observed_at: string;
+}
+
+function contentionRows(db: ReturnType<typeof freshDb>): DomainLockContentionTestRow[] {
+  return db
+    .prepare(
+      `SELECT contention_id, domain_key, repo_id, domain, holder_run_id,
+              contender_pid, contender_hostname, observed_at
+         FROM domain_lock_contention
+        ORDER BY observed_at, contention_id`,
+    )
+    .all() as DomainLockContentionTestRow[];
+}
+
 describe("acquireDomainLock", () => {
   it("acquires and releases a lease cleanly", () => {
     const db = freshDb();
@@ -62,6 +84,68 @@ describe("acquireDomainLock", () => {
     expect(() =>
       acquireDomainLock(db, { ...HOLDER, runId: "run-b" }),
     ).toThrow(DomainLockBusyError);
+    a.release();
+    db.close();
+  });
+
+  it("records lock contention telemetry before throwing DomainLockBusyError", () => {
+    const db = freshDb();
+    const observedAt = new Date("2026-06-13T00:00:00.000Z");
+    const a = acquireDomainLock(db, {
+      ...HOLDER,
+      runId: "run-a",
+      now: observedAt,
+    });
+
+    expect(() =>
+      acquireDomainLock(db, {
+        ...HOLDER,
+        runId: "run-b",
+        pid: 200,
+        hostname: "h2",
+        now: observedAt,
+      }),
+    ).toThrow(DomainLockBusyError);
+
+    expect(contentionRows(db)).toEqual([
+      {
+        contention_id: expect.stringMatching(/^dlc-[0-9a-f-]{36}$/),
+        domain_key: "demo::apps/web",
+        repo_id: "demo",
+        domain: "apps/web",
+        holder_run_id: "run-a",
+        contender_pid: 200,
+        contender_hostname: "h2",
+        observed_at: "2026-06-13T00:00:00.000Z",
+      },
+    ]);
+    a.release();
+    db.close();
+  });
+
+  it("does not record contention telemetry for successful lock acquisition", () => {
+    const db = freshDb();
+    const a = acquireDomainLock(db, { ...HOLDER, runId: "run-a" });
+    expect(contentionRows(db)).toEqual([]);
+    a.release();
+    db.close();
+  });
+
+  it("keeps DomainLockBusyError semantics when contention telemetry insert fails", () => {
+    const db = freshDb();
+    const a = acquireDomainLock(db, { ...HOLDER, runId: "run-a" });
+    db.prepare(
+      `CREATE TRIGGER fail_domain_lock_contention_insert
+         BEFORE INSERT ON domain_lock_contention
+       BEGIN
+         SELECT RAISE(ABORT, 'contention insert failed');
+       END`,
+    ).run();
+
+    expect(() =>
+      acquireDomainLock(db, { ...HOLDER, runId: "run-b" }),
+    ).toThrow(DomainLockBusyError);
+    expect(contentionRows(db)).toEqual([]);
     a.release();
     db.close();
   });

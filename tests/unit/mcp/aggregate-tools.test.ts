@@ -15,6 +15,7 @@ interface ToolContent<T> {
 
 interface MetricsToolData {
   totalRuns: number;
+  lockContentionCount?: number;
   hitch: {
     totalSessions: number;
     byStatus: Record<string, number>;
@@ -107,6 +108,15 @@ function insertMcpConfirmation(
   ).run(confirmationId, JSON.stringify({ projectId }), status, createdAt);
 }
 
+function insertDomainLockContention(db: Database.Database): void {
+  db.prepare(
+    `INSERT INTO domain_lock_contention
+       (contention_id, domain_key, repo_id, domain, observed_at)
+     VALUES ('contention-demo', 'demo::apps/web', 'demo', 'apps/web',
+       '2026-06-10T00:00:00.000Z')`,
+  ).run();
+}
+
 function setup(): string {
   const harnessRoot = mkdtempSync(join(tmpdir(), "harness-mcp-agg-unit-"));
   mkdirSync(join(harnessRoot, ".harness"), { recursive: true });
@@ -160,6 +170,7 @@ function setup(): string {
       "expired",
       "2026-05-01T00:00:00.000Z",
     );
+    insertDomainLockContention(handle.db);
   } finally {
     handle.close();
   }
@@ -212,6 +223,7 @@ describe("harness.metrics aggregate tool", () => {
     expect(out.data.hitch.totalSessions).toBe(1);
     expect(out.data.hitch.byStatus).toEqual({ open: 1 });
     expect(out.data.hitch.findingsBySeverity).toEqual({ P1: 1 });
+    expect(out.data.lockContentionCount).toBe(1);
     expect(out.data.mcpConfirmations).toEqual({
       total: 2,
       byStatus: { confirmed: 2 },
@@ -230,6 +242,7 @@ describe("harness.metrics aggregate tool", () => {
     expect(out.data.totalRuns).toBe(1);
     expect(out.data.hitch.totalSessions).toBe(2);
     expect(out.data.hitch.byStatus).toEqual({ closed: 1, open: 1 });
+    expect(out.data).not.toHaveProperty("lockContentionCount");
     expect(out.data).not.toHaveProperty("mcpConfirmations");
   });
 });

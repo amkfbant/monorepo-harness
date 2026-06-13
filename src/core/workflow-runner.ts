@@ -61,6 +61,7 @@ import {
   CODER_PROMPT_TEMPLATE,
 } from "../codex/prompt-builder.js";
 import { parseCodexUsage } from "../codex/usage-parser.js";
+import { summarizeCodexEvents } from "../codex/events-summary.js";
 import { computeReviewedFingerprint } from "./reviewed-fingerprint.js";
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import { buildSummary } from "../reporter/summary.js";
@@ -1064,6 +1065,10 @@ async function runDomainCodingInner(
 
     const codexStdoutTail = await readTail(codexStdoutPath);
     const codexStderrTail = await readStderrTail(codexStderrPath);
+    const codexEventsSummary =
+      codex.timedOut || codex.exitCode !== 0
+        ? summarizeCodexEvents(codexEventsContent ?? "")
+        : "";
     const finalDiffPath = join(log.runDir, "final-diff.patch");
     const summaryPath = join(log.runDir, "summary.md");
     const knowledgeCandidatesPath = join(
@@ -1092,6 +1097,7 @@ async function runDomainCodingInner(
       codexTimedOut: codex.timedOut,
       codexStdoutTail,
       codexStderrTail,
+      ...(codexEventsSummary !== "" ? { codexEventsSummary } : {}),
       ...(diff.error ? { diffCollectionError: diff.error } : {}),
     });
     await writeArtifact(summaryPath, summary);
@@ -1134,6 +1140,7 @@ async function runDomainCodingInner(
         codexTimedOut: codex.timedOut,
         codexStdoutTail,
         codexStderrTail,
+        ...(codexEventsSummary !== "" ? { codexEventsSummary } : {}),
         ...(diff.error ? { diffCollectionError: diff.error } : {}),
         finalDiffPath,
         ...(untrackedPatchPath ? { untrackedPatchPath } : {}),

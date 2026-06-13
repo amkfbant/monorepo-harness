@@ -19,6 +19,7 @@ export interface ReviewRequestInputs {
   codexTimedOut: boolean;
   codexStdoutTail: string;
   codexStderrTail: string;
+  codexEventsSummary?: string;
   diffCollectionError?: string;
   finalDiffPath: string;
   untrackedPatchPath?: string;
@@ -102,6 +103,11 @@ export function buildReviewRequest(i: ReviewRequestInputs): string {
   lines.push("## Codex output (stderr tail)");
   lines.push(...fenced(i.codexStderrTail));
   lines.push("");
+  if (i.codexEventsSummary !== undefined && i.codexEventsSummary !== "") {
+    lines.push("## codex events (tail, redacted)");
+    lines.push(i.codexEventsSummary);
+    lines.push("");
+  }
   lines.push("## Review checklist");
   lines.push("- [ ] Goal addressed by the diff");
   lines.push("- [ ] Changes scoped to writable domain");

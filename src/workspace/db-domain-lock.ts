@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 
 /**
@@ -154,6 +155,33 @@ interface ActiveLeaseRow {
   expires_at: string;
 }
 
+function recordDomainLockContention(
+  db: Database.Database,
+  opts: AcquireDomainLockOpts,
+  holder: ActiveLeaseRow,
+  observedAt: string,
+): void {
+  try {
+    db.prepare(
+      `INSERT INTO domain_lock_contention
+         (contention_id, domain_key, repo_id, domain, holder_run_id,
+          contender_pid, contender_hostname, observed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      `dlc-${randomUUID()}`,
+      opts.domainKey,
+      opts.repoId,
+      opts.domain,
+      holder.holder_run_id,
+      opts.pid,
+      opts.hostname,
+      observedAt,
+    );
+  } catch {
+    // Telemetry is fail-open: lock-busy semantics must not depend on recording.
+  }
+}
+
 /**
  * Acquire a DB-backed domain lease, expiring stale rows in the same
  * transaction. The returned `lockId` is the fencing token.
@@ -179,7 +207,10 @@ export function acquireDomainLock(
         )
         .get(opts.domainKey) as ActiveLeaseRow | undefined;
       if (existing) {
-        if (existing.expires_at > nowISO) return { busy: existing };
+        if (existing.expires_at > nowISO) {
+          recordDomainLockContention(db, opts, existing, nowISO);
+          return { busy: existing };
+        }
         // expired — soft-release first so the partial unique index lets
         // a new row in.
         db.prepare(
