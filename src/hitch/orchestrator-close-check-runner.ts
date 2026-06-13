@@ -105,7 +105,8 @@ async function assertWorktreeMatchesReviewed(opts: {
   reviewedPaths: string[];
   phase: string;
   gitTimeoutMs: number;
-}): Promise<void> {
+  priorIgnored?: readonly string[];
+}): Promise<{ ignored: string[] }> {
   const diff = await collectDiff({
     repoPath: opts.worktreePath,
     baseSha: opts.baseSha,
@@ -117,7 +118,10 @@ async function assertWorktreeMatchesReviewed(opts: {
         diff.stagedChangedPaths.join(", "),
     );
   }
-  const { kept } = partitionUntracked(diff.untrackedPaths, opts.ignoreUntracked);
+  const { kept, ignored } = partitionUntracked(
+    diff.untrackedPaths,
+    opts.ignoreUntracked,
+  );
   assertPathsSubset(
     [...diff.trackedChangedPaths, ...kept],
     opts.reviewedPaths,
@@ -130,6 +134,17 @@ async function assertWorktreeMatchesReviewed(opts: {
     reviewedPaths: opts.reviewedPaths,
     refusal: `run close checks (${opts.phase})`,
   });
+  if (opts.priorIgnored !== undefined) {
+    const priorSet = new Set(opts.priorIgnored);
+    const newlyIgnored = ignored.filter((p) => !priorSet.has(p));
+    if (newlyIgnored.length > 0) {
+      throw new Error(
+        `close-check ${opts.phase} command polluted the worktree with ` +
+          `new ignore_untracked file(s): ${newlyIgnored.join(", ")}`,
+      );
+    }
+  }
+  return { ignored };
 }
 
 function resolveCommandForCondition(input: {
@@ -330,8 +345,8 @@ export async function runCommandCloseChecks(
     // BEFORE: the baseline worktree must already equal the reviewed state — a
     // tree polluted between review and close-check is rejected here, not used as
     // the baseline (review finding P0). AFTER: the command must have left that
-    // reviewed surface untouched.
-    await assertWorktreeMatchesReviewed({
+    // reviewed surface untouched and created no new ignored untracked paths.
+    const { ignored: baselineIgnored } = await assertWorktreeMatchesReviewed({
       worktreePath,
       baseSha: prep.baseSha,
       ignoreUntracked: policy.ignoreUntracked,
@@ -359,6 +374,7 @@ export async function runCommandCloseChecks(
       reviewedPaths: prep.reviewedPaths,
       phase: "post-command",
       gitTimeoutMs: policy.limits.gitTimeoutMs,
+      priorIgnored: baselineIgnored,
     });
     const resultByCommandId = new Map(
       cmdRun.results.map((result) => [result.id, result]),

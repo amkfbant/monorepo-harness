@@ -329,6 +329,12 @@ uses the resolved policy `limits.gitTimeoutMs`; timeout or git failure is
 fail-closed. Validation includes untracked policy surface and the cached/index
 state: any staged index path is rejected, so a command cannot hide a side effect
 by staging a mutation and restoring the working tree.
+Additionally, the close-check runner rejects net-new untracked files under
+`ignore_untracked` globs via a baseline-to-post-command delta, so a command
+cannot pollute the run worktree through an ignored path; this is intentionally
+stricter than the normal coding-path `ignore_untracked` behavior documented in
+`policy.md`, which suppresses build artifacts from write-scope validation and is
+unchanged.
 
 `hitch_lifecycle_events` records `closed`, `cancelled`, `reopened`,
 `pr_adopted`, and `updated` reasons with actor/timestamp for audit. It is not a

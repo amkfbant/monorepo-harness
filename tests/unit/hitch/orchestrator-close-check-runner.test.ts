@@ -237,4 +237,234 @@ describe("runCommandCloseChecks", () => {
       close2();
     }
   });
+
+  it("fails closed when a close-check command creates a NEW file under an ignore_untracked path", async () => {
+    const { runCommandCloseChecks } = await import(
+      "../../../src/hitch/orchestrator-close-check-runner.js"
+    );
+    collectDiffMock.mockReset();
+    collectDiffMock
+      .mockResolvedValueOnce({
+        trackedChangedPaths: ["reviewed.txt"],
+        stagedChangedPaths: [],
+        untrackedPaths: [],
+        patch: "",
+      })
+      .mockResolvedValueOnce({
+        trackedChangedPaths: ["reviewed.txt"],
+        stagedChangedPaths: [],
+        untrackedPaths: ["dist/leak.js"],
+        patch: "",
+      });
+    const harnessRoot = mkdtempSync(join(tmpdir(), "harness-close-ignored-new-"));
+    const dbPath = join(harnessRoot, ".harness", "harness.sqlite");
+    const worktreePath = join(harnessRoot, "workspaces", "run-close", "repo");
+    mkdirSync(worktreePath, { recursive: true });
+    mkdirSync(join(harnessRoot, "policies", "repos"), { recursive: true });
+    writeFileSync(join(worktreePath, "reviewed.txt"), "approved\n");
+    writeFileSync(
+      join(harnessRoot, "policies", "global.yaml"),
+      [
+        "always_deny_write: []",
+        "ignore_untracked: [\"dist/**\"]",
+        "",
+      ].join("\n"),
+    );
+    const script =
+      "const fs = require('node:fs');" +
+      "fs.mkdirSync('dist', { recursive: true });" +
+      "fs.writeFileSync('dist/leak.js', 'leak\\n');";
+    writeFileSync(
+      join(harnessRoot, "policies", "repos", "t.yaml"),
+      [
+        "repo_id: t",
+        "read: []",
+        "domains:",
+        "  apps/user:",
+        "    read: [apps/user/**]",
+        "    write: [apps/user/**]",
+        "    deny_write: []",
+        "    commands:",
+        "      allow:",
+        "        - id: typecheck",
+        "          cmd: node",
+        `          args: ["-e", ${JSON.stringify(script)}]`,
+        "",
+      ].join("\n"),
+    );
+    const fingerprint = await computeReviewedFingerprint(worktreePath, [
+      "reviewed.txt",
+    ]);
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new HitchRepository(db);
+      repo.createSession({
+        hitchId: "g-ignored-new",
+        title: "Ignored new",
+        repoId: "t",
+        domain: "apps/user",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+      repo.createAttempt({
+        hitchId: "g-ignored-new",
+        attemptType: "implement",
+        status: "succeeded",
+        runId: "run-close",
+      });
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           base_sha, status, source_mode, db_revision, export_status,
+           updated_at, meta_json)
+         VALUES ('run-close', 't', 'apps/user', 'domain-coding', 'main',
+           'base-sha', 'approved', 'db-first', 1, 'disabled',
+           '2026-06-13T00:00:00.000Z', ?)`,
+      ).run(
+        JSON.stringify({ reviewed: { paths: ["reviewed.txt"], fingerprint } }),
+      );
+    } finally {
+      close();
+    }
+
+    await expect(
+      runCommandCloseChecks({
+        deps: { dbPath, harnessRoot, createdBy: "worker" },
+        hitchId: "g-ignored-new",
+        resolveContext: () => ({
+          repoPath: worktreePath,
+          repoId: "t",
+          domain: "apps/user",
+          goal: "g",
+          baseBranch: "main",
+        }),
+      }),
+    ).rejects.toThrow(/ignore_untracked|polluted|worktree/);
+
+    const { db: db2, close: close2 } = openManagedDb({ dbPath });
+    try {
+      const attempt = new HitchRepository(db2)
+        .listAttempts("g-ignored-new")
+        .find((a) => a.attemptType === "close-check");
+      expect(attempt?.status).toBe("failed");
+      expect(attempt?.errorMessage).toMatch(
+        /ignore_untracked|polluted|worktree/,
+      );
+    } finally {
+      close2();
+    }
+  });
+
+  it("allows a pre-existing ignored artifact present in BOTH baseline and post-command", async () => {
+    const { runCommandCloseChecks } = await import(
+      "../../../src/hitch/orchestrator-close-check-runner.js"
+    );
+    collectDiffMock.mockReset();
+    collectDiffMock
+      .mockResolvedValueOnce({
+        trackedChangedPaths: ["reviewed.txt"],
+        stagedChangedPaths: [],
+        untrackedPaths: ["dist/old.js"],
+        patch: "",
+      })
+      .mockResolvedValueOnce({
+        trackedChangedPaths: ["reviewed.txt"],
+        stagedChangedPaths: [],
+        untrackedPaths: ["dist/old.js"],
+        patch: "",
+      });
+    const harnessRoot = mkdtempSync(
+      join(tmpdir(), "harness-close-ignored-existing-"),
+    );
+    const dbPath = join(harnessRoot, ".harness", "harness.sqlite");
+    const worktreePath = join(harnessRoot, "workspaces", "run-close", "repo");
+    mkdirSync(join(worktreePath, "dist"), { recursive: true });
+    mkdirSync(join(harnessRoot, "policies", "repos"), { recursive: true });
+    writeFileSync(join(worktreePath, "reviewed.txt"), "approved\n");
+    writeFileSync(join(worktreePath, "dist", "old.js"), "old\n");
+    writeFileSync(
+      join(harnessRoot, "policies", "global.yaml"),
+      [
+        "always_deny_write: []",
+        "ignore_untracked: [\"dist/**\"]",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(harnessRoot, "policies", "repos", "t.yaml"),
+      [
+        "repo_id: t",
+        "read: []",
+        "domains:",
+        "  apps/user:",
+        "    read: [apps/user/**]",
+        "    write: [apps/user/**]",
+        "    deny_write: []",
+        "    commands:",
+        "      allow:",
+        "        - id: typecheck",
+        "          cmd: node",
+        "          args: [\"-e\", \"console.log('ok')\"]",
+        "",
+      ].join("\n"),
+    );
+    const fingerprint = await computeReviewedFingerprint(worktreePath, [
+      "reviewed.txt",
+    ]);
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new HitchRepository(db);
+      repo.createSession({
+        hitchId: "g-ignored-existing",
+        title: "Ignored existing",
+        repoId: "t",
+        domain: "apps/user",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+      repo.createAttempt({
+        hitchId: "g-ignored-existing",
+        attemptType: "implement",
+        status: "succeeded",
+        runId: "run-close",
+      });
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           base_sha, status, source_mode, db_revision, export_status,
+           updated_at, meta_json)
+         VALUES ('run-close', 't', 'apps/user', 'domain-coding', 'main',
+           'base-sha', 'approved', 'db-first', 1, 'disabled',
+           '2026-06-13T00:00:00.000Z', ?)`,
+      ).run(
+        JSON.stringify({ reviewed: { paths: ["reviewed.txt"], fingerprint } }),
+      );
+    } finally {
+      close();
+    }
+
+    await runCommandCloseChecks({
+      deps: { dbPath, harnessRoot, createdBy: "worker" },
+      hitchId: "g-ignored-existing",
+      resolveContext: () => ({
+        repoPath: worktreePath,
+        repoId: "t",
+        domain: "apps/user",
+        goal: "g",
+        baseBranch: "main",
+      }),
+    });
+
+    const { db: db2, close: close2 } = openManagedDb({ dbPath });
+    try {
+      const check = new HitchRepository(db2)
+        .listCloseChecks("g-ignored-existing")
+        .find((c) => c.conditionId === "typecheck");
+      expect(check?.status).toBe("passed");
+    } finally {
+      close2();
+    }
+  });
 });
