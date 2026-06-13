@@ -12,7 +12,13 @@ export interface RedactedCodexEvents {
 type JsonObject = { readonly [key: string]: unknown };
 
 const SECRET_SCAN_CHUNK_OVERLAP_BYTES = 1024;
-const CODEX_OUTPUT_STRING_FIELDS = ["aggregated_output", "text"] as const;
+const CODEX_OUTPUT_STRING_FIELDS = [
+  "aggregated_output",
+  "text",
+  "command",
+  "command_name",
+  "name",
+] as const;
 
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);

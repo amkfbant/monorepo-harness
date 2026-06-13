@@ -441,7 +441,9 @@ resolution / reopen KPI）を返す。`allowedProjects` が空の unrestricted c
 `mcpConfirmations`（`DbMcpConfirmationSummary`: confirmation / expired KPI）も返す。
 `mcp_confirmation_requests` は project 列を持たない global table なので、
 project-restricted client（`allowedProjects` 非空）では fail-closed で
-`mcpConfirmations` フィールド自体を返さない。
+`mcpConfirmations` フィールド自体を返さない。同じく `domain_lock_contention` は
+`project_id` 列を持たず project scope を決定論的に適用できないため、
+project-restricted client では fail-closed で `lockContentionCount` フィールド自体を返さない。
 `hitch` は呼び出し元の `projectId` / `repoId` / `domain` / `sinceHours` scope を伝播し、
 unrestricted client の `mcpConfirmations` は global 値で、`sinceHours` 由来の since のみ伝播する
 （project / repo / domain filter は非適用）。`confirmationRate` は

@@ -39,7 +39,7 @@ describe("summarizeCodexEvents", () => {
 
     expect(summary).toBe(
       [
-        '- item.completed command_execution command="npm test" exit_code=0',
+        "- item.completed command_execution command=`npm test` exit_code=0",
         "- item.completed agent_message: Implemented the requested change.",
         "- turn.completed usage input=12 cached_input=3 output=5 reasoning_output=2 total=17",
       ].join("\n"),
@@ -81,6 +81,42 @@ describe("summarizeCodexEvents", () => {
       [
         `- item.completed agent_message: ${"A".repeat(120)}`,
         "- turn.completed usage input=1 cached_input=0 output=2 reasoning_output=0 total=3",
+      ].join("\n"),
+    );
+  });
+
+  it("renders command text as safe markdown with normalized whitespace", () => {
+    const summary = summarizeCodexEvents(
+      jsonl([
+        {
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            command: "-   rm\t\nrf `tmp`",
+            exit_code: 1,
+          },
+        },
+      ]),
+    );
+
+    expect(summary).toBe(
+      "- item.completed command_execution command=`` - rm rf `tmp` `` exit_code=1",
+    );
+  });
+
+  it("summarizes redaction sentinels with fixed safe text", () => {
+    const summary = summarizeCodexEvents(
+      jsonl([
+        { type: "redaction.failed", reason: "write_failed" },
+        { type: "redaction.dropped_line" },
+        { type: "redaction.dropped_line" },
+      ]),
+    );
+
+    expect(summary).toBe(
+      [
+        "- (events redaction failed - raw events quarantined)",
+        "- (2 lines dropped by redaction)",
       ].join("\n"),
     );
   });

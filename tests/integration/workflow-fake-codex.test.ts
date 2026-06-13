@@ -956,6 +956,7 @@ describe("runDomainCoding (fake codex)", () => {
   });
 
   it("adds redacted codex events tail to summary and review request when codex fails", async () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
     const runner: CodexExecRunner = {
       async run(input) {
         writeFileSync(input.logPaths.stdout, "failed final message\n", "utf8");
@@ -967,7 +968,7 @@ describe("runDomainCoding (fake codex)", () => {
               type: "item.completed",
               item: {
                 type: "command_execution",
-                command: "npm test",
+                command: `npm test ${secret}`,
                 exit_code: 1,
               },
             }),
@@ -1013,10 +1014,15 @@ describe("runDomainCoding (fake codex)", () => {
       join(runDir, "review-request.md"),
       "utf8",
     );
+    const redactedEvents = readFileSync(
+      join(runDir, "codex-events.jsonl"),
+      "utf8",
+    );
+    expect(redactedEvents).not.toContain(secret);
     for (const markdown of [summary, reviewRequest]) {
       expect(markdown).toContain("## codex events (tail, redacted)");
       expect(markdown).toContain(
-        '- item.completed command_execution command="npm test" exit_code=1',
+        "- item.completed command_execution command=`[redacted: secret-suspect (content:aws-access-key-id)]` exit_code=1",
       );
       expect(markdown).toContain(
         "- turn.completed usage input=10 cached_input=2 output=3 reasoning_output=1 total=13",
@@ -1024,6 +1030,60 @@ describe("runDomainCoding (fake codex)", () => {
       expect(markdown).toContain(
         "[redacted: secret-suspect (content:aws-access-key-id)]",
       );
+      expect(markdown).not.toContain(secret);
+    }
+  });
+
+  it("adds a safe codex events unavailable note when a failed run redaction fails", async () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const runner: CodexExecRunner = {
+      async run(input) {
+        writeFileSync(input.logPaths.stdout, "failed final message\n", "utf8");
+        writeFileSync(input.logPaths.stderr, "codex failed\n", "utf8");
+        writeFileSync(
+          input.logPaths.events,
+          `${JSON.stringify({
+            type: "item.completed",
+            item: {
+              type: "command_execution",
+              aggregated_output: `leaked ${secret}`,
+            },
+          })}\n`,
+          "utf8",
+        );
+        return { exitCode: 9, timedOut: false, durationMs: 10 };
+      },
+    };
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+      codexEventsIo: {
+        async readFile(): Promise<string> {
+          throw new Error("simulated read failure");
+        },
+      },
+    });
+
+    expect(r.status).toBe("failed-codex");
+    const runDir = join(harness, "runs", r.runId);
+    const summary = readFileSync(join(runDir, "summary.md"), "utf8");
+    const reviewRequest = readFileSync(
+      join(runDir, "review-request.md"),
+      "utf8",
+    );
+    for (const markdown of [summary, reviewRequest]) {
+      expect(markdown).toContain("## codex events (tail, redacted)");
+      expect(markdown).toContain(
+        "- (events redaction failed - raw events quarantined)",
+      );
+      expect(markdown).not.toContain(secret);
     }
   });
 

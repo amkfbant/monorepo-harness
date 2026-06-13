@@ -76,6 +76,38 @@ describe("redactCodexEvents", () => {
     expect(result.content).not.toContain(secret);
   });
 
+  it("redacts secret-shaped command summary string fields", () => {
+    const secret = "AKIAABCDEFGHIJKLMNOP";
+    const content = jsonl([
+      {
+        type: "item.completed",
+        item: {
+          type: "command_execution",
+          command: `npm test ${secret}`,
+          command_name: `lint ${secret}`,
+          name: `build ${secret}`,
+        },
+      },
+    ]);
+
+    const result = redactCodexEvents(content);
+    const redacted = JSON.parse(result.content.trim()) as {
+      item: { command: string; command_name: string; name: string };
+    };
+
+    expect(result.redactedCount).toBe(1);
+    expect(redacted.item.command).toBe(
+      "[redacted: secret-suspect (content:aws-access-key-id)]",
+    );
+    expect(redacted.item.command_name).toBe(
+      "[redacted: secret-suspect (content:aws-access-key-id)]",
+    );
+    expect(redacted.item.name).toBe(
+      "[redacted: secret-suspect (content:aws-access-key-id)]",
+    );
+    expect(result.content).not.toContain(secret);
+  });
+
   it("leaves clean agent message text unchanged", () => {
     const content = jsonl([
       {

@@ -2,6 +2,7 @@ type JsonObject = { readonly [key: string]: unknown };
 
 const DEFAULT_MAX_ITEMS = 10;
 const AGENT_MESSAGE_MAX_CHARS = 120;
+const REDACTION_DROPPED_LINE_MARKER = "__codex_redaction_dropped_line__";
 
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -51,14 +52,32 @@ function exitCode(item: JsonObject): string {
   return "unknown";
 }
 
+function normalizeInlineText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function markdownCodeSpan(text: string): string {
+  const normalized = normalizeInlineText(text);
+  const runs = normalized.match(/`+/g) ?? [];
+  const longestRun = runs.reduce((max, run) => Math.max(max, run.length), 0);
+  const delimiter = "`".repeat(longestRun + 1);
+  return longestRun === 0
+    ? `${delimiter}${normalized}${delimiter}`
+    : `${delimiter} ${normalized} ${delimiter}`;
+}
+
 function oneLinePrefix(text: string): string {
-  return text.replace(/\s+/g, " ").trim().slice(0, AGENT_MESSAGE_MAX_CHARS);
+  return normalizeInlineText(text).slice(0, AGENT_MESSAGE_MAX_CHARS);
 }
 
 function summarizeItemCompleted(event: JsonObject): string | null {
   if (!isJsonObject(event.item)) return null;
   if (event.item.type === "command_execution") {
-    return `item.completed command_execution command="${commandName(event.item)}" exit_code=${exitCode(event.item)}`;
+    return (
+      `item.completed command_execution command=${markdownCodeSpan(
+        commandName(event.item),
+      )} ` + `exit_code=${exitCode(event.item)}`
+    );
   }
   if (event.item.type === "agent_message") {
     const text = typeof event.item.text === "string" ? event.item.text : "";
@@ -98,7 +117,39 @@ function summarizeLine(line: string): string | null {
   if (!isJsonObject(parsed)) return null;
   if (parsed.type === "item.completed") return summarizeItemCompleted(parsed);
   if (parsed.type === "turn.completed") return summarizeTurnCompleted(parsed);
+  if (parsed.type === "redaction.failed") {
+    return "(events redaction failed - raw events quarantined)";
+  }
+  if (parsed.type === "redaction.dropped_line") {
+    return REDACTION_DROPPED_LINE_MARKER;
+  }
   return null;
+}
+
+function summarizeDroppedLineCount(count: number): string {
+  return count === 1
+    ? "(1 line dropped by redaction)"
+    : `(${count} lines dropped by redaction)`;
+}
+
+function collapseDroppedLineMarkers(items: readonly string[]): string[] {
+  const collapsed: string[] = [];
+  let droppedCount = 0;
+  for (const item of items) {
+    if (item === REDACTION_DROPPED_LINE_MARKER) {
+      droppedCount += 1;
+      continue;
+    }
+    if (droppedCount > 0) {
+      collapsed.push(summarizeDroppedLineCount(droppedCount));
+      droppedCount = 0;
+    }
+    collapsed.push(item);
+  }
+  if (droppedCount > 0) {
+    collapsed.push(summarizeDroppedLineCount(droppedCount));
+  }
+  return collapsed;
 }
 
 export function summarizeCodexEvents(
@@ -107,11 +158,13 @@ export function summarizeCodexEvents(
 ): string {
   const maxItems = opts.maxItems ?? DEFAULT_MAX_ITEMS;
   if (maxItems <= 0) return "";
-  const items = content
-    .split(/\r?\n/)
-    .filter((line) => line.trim() !== "")
-    .map((line) => summarizeLine(line))
-    .filter((line): line is string => line !== null);
+  const items = collapseDroppedLineMarkers(
+    content
+      .split(/\r?\n/)
+      .filter((line) => line.trim() !== "")
+      .map((line) => summarizeLine(line))
+      .filter((line): line is string => line !== null),
+  );
   if (items.length === 0) return "";
   return items
     .slice(-maxItems)

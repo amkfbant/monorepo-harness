@@ -1136,7 +1136,7 @@ CREATE TABLE domain_lock_contention (
   observed_at TEXT NOT NULL
 );
 CREATE INDEX domain_lock_contention_domain_observed_idx
-  ON domain_lock_contention(domain_key, observed_at);
+  ON domain_lock_contention(repo_id, domain, observed_at);
 ```
 
 `contention_id` は `dlc-<uuid>`。`holder_run_id` は busy 判定時に読んだ

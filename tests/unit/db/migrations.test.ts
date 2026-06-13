@@ -98,6 +98,14 @@ describe("runMigrations", () => {
       expect(
         hasSchemaObject(db, "index", "domain_lock_contention_domain_observed_idx"),
       ).toBe(true);
+      const indexColumns = db
+        .prepare("PRAGMA index_info(domain_lock_contention_domain_observed_idx)")
+        .all() as { name: string }[];
+      expect(indexColumns.map((r) => r.name)).toEqual([
+        "repo_id",
+        "domain",
+        "observed_at",
+      ]);
 
       const columns = db.prepare("PRAGMA table_info(domain_lock_contention)").all() as {
         name: string;
