@@ -53,8 +53,8 @@ const PERMITTED = new Set<string>([
   "needs_fix|fix_findings|rerun.start",
   "needs_fix|run_close_check|run.start",
   "needs_fix|run_close_check|rerun.start",
-  "continue|run_close_check|review.auto",
-  "continue|run_close_check|review.process",
+  "continue|run_review|review.auto",
+  "continue|run_review|review.process",
 ]);
 
 describe("allowedByConvergence — permit matrix is fail-closed", () => {
@@ -114,31 +114,31 @@ describe("allowedByConvergence — permit matrix is fail-closed", () => {
     expect(allowedByConvergence("run.start", convergence("continue", "run_close_check"))).toBe(false);
     expect(allowedByConvergence("rerun.start", convergence("continue", "run_close_check"))).toBe(false);
   });
+
+  it("does not permit review mutations for command close-check execution", () => {
+    expect(allowedByConvergence("review.auto", convergence("continue", "run_close_check"))).toBe(false);
+    expect(allowedByConvergence("review.process", convergence("continue", "run_close_check"))).toBe(false);
+  });
 });
 
 // (#83) The MCP `harness.hitch.orchestrate` driver is permitted exactly when the
-// loop has a permitted autonomous next step — i.e. when SOME per-step mutation
-// would be allowed. Everything else (close_ready, terminal, defer/classify) must
-// require an operator, so the driver is denied.
+// loop has a permitted autonomous next step. Some steps are guarded mutations
+// (fix/review), while command close checks are internal deterministic dispatch.
+// Everything else (close_ready, terminal, defer/classify) must require an
+// operator, so the driver is denied.
 const ORCHESTRATE_PERMITTED = new Set<string>([
   "needs_fix|fix_findings",
   "needs_fix|run_close_check",
+  "continue|run_review",
   "continue|run_close_check",
 ]);
 
 describe("allowedByConvergence — hitch.orchestrate driver is fail-closed", () => {
-  it("permits the driver iff a per-step mutation is permitted", () => {
+  it("permits the driver for autonomous fix, review, and command close-check steps", () => {
     for (const decision of HITCH_CONVERGENCE_DECISIONS) {
       for (const actionKind of HITCH_NEXT_ACTION_KINDS) {
         const c = convergence(decision, actionKind);
-        const anyStepPermitted = ALL_MUTATIONS.some((m) =>
-          allowedByConvergence(m, c),
-        );
         const expected = ORCHESTRATE_PERMITTED.has(`${decision}|${actionKind}`);
-        // the driver gate must agree with "some step is permitted"
-        expect(anyStepPermitted, `${decision}|${actionKind} step-permit`).toBe(
-          expected,
-        );
         expect(
           allowedByConvergence("hitch.orchestrate", c),
           `${decision}|${actionKind} orchestrate-permit`,

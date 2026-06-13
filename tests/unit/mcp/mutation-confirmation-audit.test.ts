@@ -1340,6 +1340,11 @@ describe("MCP mutation, confirmation, and audit", () => {
         hitchId: "goal-close-check-pending",
         attemptType: "implement",
       });
+      const cycle = repo.startReviewCycle({
+        hitchId: "goal-close-check-pending",
+        reviewMode: "initial",
+      });
+      repo.completeReviewCycle({ cycleId: cycle.cycleId });
     });
     const result = await callTool(
       server(root, {
@@ -1379,7 +1384,7 @@ describe("MCP mutation, confirmation, and audit", () => {
     expect(rerun.data.reason).toBe("hitch_next_action_run_close_check");
   });
 
-  it("allows goal-linked review.auto when close-check evidence is pending", async () => {
+  it("allows goal-linked review.auto when review evidence is pending", async () => {
     const root = freshRoot((db, harnessRoot) => {
       seedReviewableRun(db, harnessRoot, { runId: "run-review-auto-close-check" });
       const repo = new HitchRepository(db);
@@ -1395,7 +1400,7 @@ describe("MCP mutation, confirmation, and audit", () => {
         createdBy: "test",
         createdSource: "mcp",
       });
-      // a coding pass has already run; the goal awaits close-check evidence.
+      // a coding pass has already run; the goal awaits review evidence.
       repo.createAttempt({
         hitchId: "goal-review-auto-close-check",
         attemptType: "implement",

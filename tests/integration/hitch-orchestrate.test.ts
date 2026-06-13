@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openManagedDb } from "../../src/db/managed-connection.js";
@@ -103,6 +109,35 @@ function setup(): Fixture {
   const dbPath = join(harnessRoot, ".harness", "harness.sqlite");
   mkdirSync(join(harnessRoot, ".harness"), { recursive: true });
   return { harnessRoot, dbPath, repoPath, bareRemote };
+}
+
+function enableAppsUserTypecheckCommand(harnessRoot: string): void {
+  writeFileSync(
+    join(harnessRoot, "policies/repos/t.yaml"),
+    [
+      "repo_id: t",
+      "read: []",
+      "domains:",
+      "  apps/user:",
+      "    read: [apps/user/**]",
+      "    write: [apps/user/**]",
+      "    deny_write: []",
+      "    commands:",
+      "      allow:",
+      "        - id: typecheck",
+      "          cmd: node",
+      "          args: [\"-e\", \"console.log('typecheck ok')\"]",
+      "  docs:",
+      "    read: [docs/**]",
+      "    write: [docs/**]",
+      "    deny_write: []",
+      "  src/policy:",
+      "    read: [src/policy/**]",
+      "    write: [src/policy/**]",
+      "    deny_write: []",
+      "",
+    ].join("\n"),
+  );
 }
 
 function createGoal(
@@ -388,6 +423,102 @@ describe("hitch orchestrate (real git + fake codex)", () => {
       expect(implement).toBeDefined();
       expect(implement?.runId).toMatch(/^run-/);
       expect(repo.listReviewCycles(hitchId).length).toBeGreaterThan(0);
+    } finally {
+      close();
+    }
+  });
+
+  it("runs allowlisted command close checks before close_ready", async () => {
+    enableAppsUserTypecheckCommand(f.harnessRoot);
+    const hitchId = "goal-orch-command-close-check";
+    {
+      const { db, close } = openManagedDb({ dbPath: f.dbPath });
+      try {
+        runMigrations(db);
+        new HitchRepository(db).createSession({
+          hitchId,
+          title: "Add a field with command check",
+          description: "update apps/user",
+          repoId: "t",
+          domain: "apps/user",
+          closeConditions: [
+            { id: "review-ok", kind: "review_consensus", required: true },
+            { id: "typecheck", kind: "command", required: true },
+          ],
+          createdBy: "test",
+          createdSource: "worker",
+        });
+      } finally {
+        close();
+      }
+    }
+
+    const coderRunner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 2; // command checked\n",
+        );
+      },
+      stdout: "applied 1 file\n",
+    });
+    const reviewerRunner = createFakeCodexRunner({
+      stdout: [
+        "```yaml",
+        "decision: approved",
+        "required_changes: []",
+        "non_blocking_comments: []",
+        "out_of_scope_suggestions: []",
+        "```",
+        "",
+      ].join("\n"),
+    });
+    const publisher = fakePublisher();
+    const resolveRunContext = (): HitchRunContext => ({
+      repoPath: f.repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "bump x in apps/user",
+      baseBranch: "main",
+    });
+    const runners = createOrchestratorRunners({
+      dbPath: f.dbPath,
+      harnessRoot: f.harnessRoot,
+      createdBy: "test",
+      coderRunner,
+      reviewerRunner,
+      publisher,
+      resolveRunContext,
+    });
+
+    const result = await new HitchOrchestrator({ dbPath: f.dbPath }).run({
+      hitchId,
+      runners,
+      maxSteps: 20,
+      createdBy: "test",
+    });
+
+    expect(result.outcome).toBe("pr_created");
+    expect(result.steps.map((s) => s.action)).toContain("close_check");
+    const { db, close } = openManagedDb({ dbPath: f.dbPath });
+    try {
+      const repo = new HitchRepository(db);
+      const runId = latestRunId(repo, hitchId);
+      const checks = repo.listCloseChecks(hitchId);
+      expect(
+        checks.some(
+          (check) =>
+            check.conditionId === "typecheck" &&
+            check.status === "passed" &&
+            check.evidence.policyCommandId === "typecheck",
+        ),
+      ).toBe(true);
+      expect(
+        existsSync(
+          join(f.harnessRoot, "runs", runId, "close-checks", "typecheck.out.log"),
+        ),
+      ).toBe(true);
+      expect(repo.requireSession(hitchId).status).toBe("closed");
     } finally {
       close();
     }

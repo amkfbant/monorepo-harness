@@ -64,7 +64,8 @@ describe("buildRecoveryBriefing nextSteps (deterministic)", () => {
       }).nextSteps.join(" | ");
     expect(mk("needs_fix", "fix_findings")).toMatch(/run the coder for hitch g1/);
     expect(mk("needs_classification", "classify_findings")).toMatch(/classify unknown-scope/);
-    expect(mk("continue", "run_close_check")).toMatch(/run review \/ record close-check/);
+    expect(mk("continue", "run_review")).toMatch(/run review for hitch g1/);
+    expect(mk("continue", "run_close_check")).toMatch(/run command close-check evidence/);
     expect(mk("close_ready", "close_hitch")).toMatch(/close hitch g1 and open the PR/);
     expect(mk("escalate", "ask_human")).toMatch(/escalate hitch g1 \(escalate: r\)/);
     // a closed hitch contributes no hitch step → clean message.
@@ -100,7 +101,8 @@ describe("buildRecoveryBriefing nextSteps (deterministic)", () => {
       }).nextSteps.join(" | ");
     expect(mk("defer_followups")).toMatch(/defer out-of-scope follow-ups for hitch g1/);
     expect(mk("defer_followups")).not.toMatch(/review/);
-    expect(mk("run_close_check")).toMatch(/run review \/ record close-check/);
+    expect(mk("run_review")).toMatch(/run review for hitch g1/);
+    expect(mk("run_close_check")).toMatch(/run command close-check evidence/);
   });
 
   it("flags a dangling hitch link (hitch no longer exists)", () => {

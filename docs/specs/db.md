@@ -978,6 +978,9 @@ finding 分類・close-check 証跡・convergence decision を記録し、反復
   `duplicate_of IS NULL`）/ `hitch_findings_hitch_status_idx`。
 - `hitch_close_checks` — close 条件ごとの check 証跡（status
   `pending`/`passed`/`failed`/`skipped`/`unknown` / `evidence_json`）。
+  Autonomous command close checks store stdout/stderr artifacts under
+  `runs/<runId>/close-checks/` and reference them from `evidence_json`; they do
+  not write evidence into the target repo tree.
 - `hitch_convergence_decisions` — convergence decision（`decision`
   `continue`/`needs_fix`/`needs_classification`/`close_ready`/`closed`/
   `diverging`/`budget_exhausted`/`escalate`/`cancel` / `reason` /

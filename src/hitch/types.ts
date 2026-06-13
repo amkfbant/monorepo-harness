@@ -135,6 +135,7 @@ export type HitchLifecycleEventName = (typeof HITCH_LIFECYCLE_EVENTS)[number];
 export const HITCH_NEXT_ACTION_KINDS = [
   "fix_findings",
   "classify_findings",
+  "run_review",
   "run_close_check",
   "defer_followups",
   "close_hitch",

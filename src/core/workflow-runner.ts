@@ -2,12 +2,12 @@ import { join } from "node:path";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { minimatch } from "minimatch";
 import { stringify as yamlStringify } from "yaml";
 import { harnessPaths } from "../config/paths.js";
 import { harnessVersion } from "../config/version.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
+import { partitionUntracked } from "../policy/untracked-filter.js";
 import {
   validateChangedPaths,
   type Violation,
@@ -181,8 +181,6 @@ export interface RunDomainCodingResult {
   }>;
 }
 
-const MATCH_OPTS = { dot: true, nocomment: true } as const;
-
 async function readTail(path: string, maxBytes = 8 * 1024): Promise<string> {
   try {
     const buf = await readFile(path);
@@ -255,23 +253,6 @@ async function readStderrTail(
   maxBytes = 8 * 1024,
 ): Promise<string> {
   return filterPatchEcho(await readTail(path, maxBytes));
-}
-
-function partitionUntracked(
-  paths: readonly string[],
-  ignoreGlobs: readonly string[],
-): { kept: string[]; ignored: string[] } {
-  if (ignoreGlobs.length === 0) return { kept: [...paths], ignored: [] };
-  const kept: string[] = [];
-  const ignored: string[] = [];
-  for (const p of paths) {
-    if (ignoreGlobs.some((g) => minimatch(p, g, MATCH_OPTS))) {
-      ignored.push(p);
-    } else {
-      kept.push(p);
-    }
-  }
-  return { kept, ignored };
 }
 
 interface DiffOutcome {

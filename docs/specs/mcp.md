@@ -575,20 +575,23 @@ harness.phase.link_hitch
 
 `harness.hitch.orchestrate` is a **bounded driver** for the hitch convergence
 loop. It advances a hitch a capped number of orchestrator steps (coder rerun ->
-review -> convergence) and **halts at `close_ready` without opening a PR or
-closing the hitch** (`stopAtCloseReady`) — opening the PR / closing stays a
-deliberate, separately-confirmed step (CLI `harness hitch orchestrate`). Args:
+review / command close-check -> convergence) and **halts at `close_ready`
+without opening a PR or closing the hitch** (`stopAtCloseReady`) — opening the
+PR / closing stays a deliberate, separately-confirmed step (CLI
+`harness hitch orchestrate`). Args:
 `hitchId` (required), optional `maxSteps` (1-50, default 20). The target repo is
 resolved **server-side** from the hitch's own project/domain via
 `prepareProjectRun` — the tool never accepts a client-supplied repo path. The
-convergence gate permits the driver at **entry** **exactly when a per-step
-mutation would be permitted** (`needs_fix`+`fix_findings`/`run_close_check`, or
-`continue`+`run_close_check`); a `close_ready`, terminal, `defer_followups`, or
-classification decision denies the driver from *starting* (an operator drives
-those out of band). Once started, the orchestrator re-evaluates convergence each
-step and may run `classify`/`defer` steps within its bounded budget — those are
-deterministic harness-side bookkeeping (no LLM-driven state transition) — and
-still halts at `close_ready` without opening a PR. Hitches with no
+convergence gate permits the driver at **entry** when a per-step mutation would
+be permitted (`needs_fix`+`fix_findings`/`run_close_check`, or
+`continue`+`run_review`) or when the next step is an internal deterministic
+command close-check (`continue`+`run_close_check`); a `close_ready`, terminal,
+`defer_followups`, or classification decision denies the driver from *starting*
+(an operator drives those out of band). Once started, the orchestrator
+re-evaluates convergence each step and may run `classify`/`defer`/allowlisted
+command-close-check steps within its bounded budget — those are deterministic
+harness-side bookkeeping (no LLM-driven state transition) — and still halts at
+`close_ready` without opening a PR. Hitches with no
 `projectId`/`domain` are rejected. Each internal coder/review step re-checks its
 own convergence gate. Adding this tool requires a `serve` restart to take
 effect.
@@ -797,7 +800,11 @@ that command logs/output are missing are returned under
 escalation by themselves. A passed `review_consensus` close check means static
 review consensus approved the run. It is not test execution evidence; MCP
 clients that need a test gate should start the hitch with a normal `command`
-close condition and record that command evidence separately.
+close condition. `harness.hitch.orchestrate` may satisfy that condition by
+running the matching effective domain-policy command allowlist entry and writing
+evidence to `hitch_close_checks` plus `runs/<runId>/close-checks/`. If the
+condition does not resolve to exactly one allowlisted command, no command is
+run and the hitch escalates for external evidence.
 
 `harness.review.consensus` returns the persisted `review_consensus` row without
 introducing extra enum values. The `active` row is returned raw, so parse
