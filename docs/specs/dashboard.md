@@ -93,25 +93,70 @@ DB-first 化された write は即時この read model に反映されるため�
 再生成手順は不要。`export` は依存ゼロの静的成果物、`serve` は常時最新の動的 UI と
 いう住み分け。
 
-### Read endpoints（GET, Phase 12 / 14）
+### Read contract（dashboard-split D1）
 
-| Path | 内容 |
-|------|------|
-| `GET /` | live HTML ダッシュボード |
-| `GET /api/health` | `ok` / schema_version 等の health |
-| `GET /api/snapshot` | `DashboardSnapshot` 全体 |
-| `GET /api/runs` / `GET /api/runs/:runId` | run 一覧 / 単体 |
-| `GET /api/runs/:runId/timeline` | run の timeline |
-| `GET /api/runs/:runId/artifacts` | run の artifact 一覧 |
-| `GET /api/runs/:runId/review` | run の review 状態 |
-| `GET /api/review/proposals` / `consensus` / `reviewers` | review governance |
-| `GET /api/artifacts/:artifactIdB64` | artifact メタ（id は base64url） |
-| `GET /api/artifacts/:artifactIdB64/body` | artifact 本体（`--no-artifact-body` で無効化、`--max-inline-artifact-bytes` で上限） |
-| `GET /api/db/status` / `stats` / `consistency` | DB 状態 |
-| `GET /api/locks` | runtime lock |
-| `GET /api/operations` / `GET /api/operations/:operationId` | operation audit（Phase 13） |
-| `GET /api/assets/exports` / `projects` / `policies` / `knowledge`（および `:id` 系の詳細） | human-authored asset の health / revision（Phase 14） |
-| `GET /api/storage/blobs` / `GET /api/archives` / `GET /api/doctor/latest` | infrastructure 系 read（Phase 15/16） |
+この節が dashboard read side の確定契約。将来 `src/dashboard/server/server.ts`
+の route table を分割しても、ここに列挙した挙動を維持する。
+
+- **read surface**: `defaultRoutes()` が read 契約。`mutationRoutes()` は
+  `--enable-mutation` 時だけ追加される別 surface で、read side には含めない。
+- **method**: `GET` と `HEAD` のみが read。`HEAD` は `GET` handler を使う。
+  `--enable-mutation` なしの `POST` / `PUT` / `PATCH` / `DELETE` は
+  `405 method_not_allowed`。存在しない path は `404 not_found`。
+- **dispatch**: route match は method + path で行う。同一 path を共有する
+  `GET /api/runs/:runId/review` と `POST /api/runs/:runId/review` は別契約であり、
+  POST が read handler に吸われてはいけない。
+- **DB mutation**: HTTP read handlers は DB を read-only handle で開くか、
+  `loadDashboardSnapshot(..., autoImport: false)` を使う。read request は import /
+  migration / workflow state transition / operation execution を起動しない。
+  `mcpConfirmations` の expired 判定などの derived value は response 内だけで
+  effective status を計算し、DB row は更新しない。
+- **auth**: `--token-env` 設定時は read request も含めて全 request に
+  `Authorization: Bearer <token>` が必要。token 未設定の localhost read-only bind は
+  operator UX として許可し、非 localhost bind で token 未設定なら `401`。
+  CSRF は POST mutation 専用で、read-only HTML には CSRF meta / inline JS /
+  mutation controls を出さない。
+- **response shape**: JSON API は `application/json; charset=utf-8`。error は
+  `{ "error": { "code": "<snake_case>", "message": "...", "details"?: ... } }`。
+  `GET /` は HTML、artifact body endpoint は artifact の `content_type` または
+  `application/octet-stream` の raw bytes を返す。
+- **security headers**: 全 response に `X-Content-Type-Options: nosniff` /
+  `X-Frame-Options: DENY` / `Referrer-Policy: no-referrer`。`--cors-origin`
+  指定時のみ `Access-Control-Allow-Origin` と `Vary: Origin` を返す。
+
+### Read endpoint inventory（GET / HEAD）
+
+| Path | Query / path contract | Response |
+|------|------------------------|----------|
+| `/` | query なし | live HTML dashboard。`autoImport: false` の snapshot を描画。mutation disabled では JS / CSRF meta / mutation controls なし |
+| `/api/health` | query なし | `{ status, version, dbSchemaVersion, schemaVersionExpected, generatedAt }`。DB unavailable でも troubleshooting 用に `200` + `dbSchemaVersion: null` |
+| `/api/snapshot` | `project`, `repo` を `DashboardFilters` に反映。`domain` / `status` / `since` / `until` 等の未知 query は無視 | `DashboardSnapshot` 全体 |
+| `/api/runs` | `project`, `repo` を `DashboardFilters` に反映 | snapshot の `recentRuns` slice を `{ runs }` で返す |
+| `/api/runs/:runId` | `runId` は `run-` prefix + `[A-Za-z0-9._-]`。不正 shape は `400` | run meta。未存在は `404` |
+| `/api/runs/:runId/timeline` | `runId` shape は上記と同じ | `{ events }`。未存在は `404` |
+| `/api/runs/:runId/artifacts` | `runId` shape は上記と同じ | `{ artifacts }`。未存在は `404` |
+| `/api/runs/:runId/review` | `runId` shape は上記と同じ | `{ runId, proposals, consensus }` |
+| `/api/review/proposals` | `runId` 必須。`includeArchived=1` のとき archived proposal も含める | `{ runId, proposals }`。`runId` 欠落 / 不正 shape は `400` |
+| `/api/review/consensus` | `runId` 必須 | `{ runId, consensus }`。`runId` 欠落 / 不正 shape は `400` |
+| `/api/review/reviewers` | query なし | `{ reviewers }` |
+| `/api/artifacts/:artifactIdB64` | path segment は canonical artifact id `<runId>:<relativePath>` の base64url。loose base64 も許容 | artifact metadata row。empty / undecodable segment は `400`、decoded id 未存在は `404` |
+| `/api/artifacts/:artifactIdB64/body` | artifact id contract は上記と同じ。`--no-artifact-body` で `403` | artifact body bytes。missing blob は `404`、external blob integrity mismatch は `409 blob_integrity_error`。`secret_suspect=1` は `X-Harness-Secret-Suspect: 1`、`--max-inline-artifact-bytes` 超過時は attachment disposition |
+| `/api/db/status` | query なし | `{ dbPath, schemaVersion, schemaVersionExpected, runs, generatedAt }` |
+| `/api/db/stats` | query なし | DB stats。shared maintenance lock を保持して読む |
+| `/api/db/consistency` | query なし | DB/file consistency report。read-only check で修復はしない |
+| `/api/locks` | query なし | `{ locks }` active domain locks |
+| `/api/operations` | `targetType`, `targetId`, `status`, `limit`。`limit` が数値でなければ `100` | `{ operations }`。operation audit read は mutation disabled でも利用可 |
+| `/api/operations/:operationId` | operation id path segment | `{ operation, events }`。未存在は `404` |
+| `/api/assets/exports` | `assetType` optional | `{ exports }` |
+| `/api/assets/projects` | query なし | project profile current revision summary |
+| `/api/assets/projects/:projectId` | project id path segment | `{ current, history }`。current revision 未存在は `404` |
+| `/api/assets/policies` | query なし | policy template summary + recent effective policy snapshots |
+| `/api/assets/policies/:scopeType/:scopeId` | `scopeType` は `repo` / `project` / `domain` / `global` | `{ current, history }`。scopeType 不正は `400`、current template 未存在は `404` |
+| `/api/assets/knowledge` | query なし | codebase knowledge asset summary。operational knowledge はこの surface から除外 |
+| `/api/assets/knowledge/:entryId` | entry id path segment | codebase knowledge の `{ current, history }`。operational knowledge または未存在は `404` |
+| `/api/storage/blobs` | query なし | DB blobs aggregate + blob stores + external blobs |
+| `/api/archives` | query なし | `{ archives }` |
+| `/api/doctor/latest` | query なし | latest doctor run + findings。run 未存在時は `{ run: null, findings: [] }` |
 
 ### Mutation endpoints（POST, Phase 13 — `--enable-mutation` 時のみ）
 
