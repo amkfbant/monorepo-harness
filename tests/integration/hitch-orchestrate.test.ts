@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
@@ -1043,6 +1043,123 @@ describe("hitch orchestrate (real git + fake codex)", () => {
       );
     } finally {
       close();
+    }
+  });
+
+  it("re-drives an approved run by refreshing review consensus, then opens the PR without re-review", async () => {
+    const hitchId = createGoal(f.dbPath, "goal-approved-redrive", "docs");
+    const { coderRunner, reviewerRunner } = approveFakes("docs/guide.md");
+    const firstPublisher = fakePublisher();
+    const firstRunners = createOrchestratorRunners({
+      dbPath: f.dbPath,
+      harnessRoot: f.harnessRoot,
+      createdBy: "test",
+      coderRunner,
+      reviewerRunner,
+      publisher: firstPublisher,
+      resolveRunContext: (): HitchRunContext => ({
+        repoPath: f.repoPath,
+        repoId: "t",
+        domain: "docs",
+        goal: "update docs",
+        baseBranch: "main",
+      }),
+    });
+
+    const first = await new HitchOrchestrator({ dbPath: f.dbPath }).run({
+      hitchId,
+      runners: firstRunners,
+      maxSteps: 20,
+      createdBy: "test",
+      stopAtCloseReady: true,
+    });
+    expect(first.outcome).toBe("close_ready");
+    expect(firstPublisher.calls).toHaveLength(0);
+
+    let cyclesBefore = 0;
+    let redriveNow = new Date();
+    {
+      const { db, close } = openManagedDb({ dbPath: f.dbPath });
+      try {
+        const repo = new HitchRepository(db);
+        const latestCheckAt = repo
+          .listCloseChecks(hitchId)
+          .reduce((max, check) => (check.checkedAt > max ? check.checkedAt : max), "");
+        const staleAt = new Date(Date.parse(latestCheckAt) + 1_000).toISOString();
+        redriveNow = new Date(Date.parse(latestCheckAt) + 2_000);
+        const staleCycle = repo.startReviewCycle({
+          hitchId,
+          reviewMode: "close",
+          sourceRunId: latestRunId(repo, hitchId),
+          createdAt: staleAt,
+        });
+        repo.completeReviewCycle({
+          cycleId: staleCycle.cycleId,
+          completedAt: staleAt,
+          summary: "test setup: stale prior close-check evidence",
+        });
+        cyclesBefore = repo.listReviewCycles(hitchId).length;
+        expect(new ConvergenceService(repo).evaluate(hitchId).decision).toBe(
+          "continue",
+        );
+      } finally {
+        close();
+      }
+    }
+
+    const reviewerMustNotRun = createFakeCodexRunner({
+      edit: async () => {
+        throw new Error("reviewer must not run");
+      },
+    });
+    const publisher = fakePublisher();
+    const secondRunners = createOrchestratorRunners({
+      dbPath: f.dbPath,
+      harnessRoot: f.harnessRoot,
+      createdBy: "test",
+      coderRunner,
+      reviewerRunner: reviewerMustNotRun,
+      publisher,
+      resolveRunContext: (): HitchRunContext => ({
+        repoPath: f.repoPath,
+        repoId: "t",
+        domain: "docs",
+        goal: "update docs",
+        baseBranch: "main",
+      }),
+    });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(redriveNow);
+    try {
+      const second = await new HitchOrchestrator({ dbPath: f.dbPath }).run({
+        hitchId,
+        runners: secondRunners,
+        maxSteps: 20,
+        createdBy: "test",
+      });
+
+      expect(second.outcome).toBe("pr_created");
+      expect(second.steps.map((step) => step.action)).toEqual([
+        "review",
+        "close_and_pr",
+      ]);
+      expect(publisher.calls).toHaveLength(1);
+      const { db, close } = openManagedDb({ dbPath: f.dbPath });
+      try {
+        const repo = new HitchRepository(db);
+        expect(repo.listReviewCycles(hitchId)).toHaveLength(cyclesBefore);
+        const latestCheck = repo.listCloseChecks(hitchId).at(-1);
+        expect(latestCheck).toMatchObject({
+          conditionId: "review-ok",
+          status: "passed",
+          checkedAt: redriveNow.toISOString(),
+        });
+      } finally {
+        close();
+      }
+    } finally {
+      vi.useRealTimers();
     }
   });
 

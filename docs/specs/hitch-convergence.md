@@ -139,7 +139,14 @@ Evaluation is deterministic and conservative:
     the hitch). The rerun budget (step 2) terminates this as `budget_exhausted`
     if the run cannot be recovered. The recovery rerun's coder goal carries the
     failed run status so it fixes the cause instead of re-coding blind.
-12. Otherwise the decision is `continue`.
+12. If a required `review_consensus` close check is not passed (e.g. stale after
+    an approved run), the decision is `continue` with `run_review` (bounded by
+    the review-cycle budget) so the review runner refreshes the consensus
+    evidence — for an already-approved run via the short-circuit above. Routing
+    such a condition to the command close-check runner would mishandle it (that
+    runner only executes `kind: command` conditions).
+13. Otherwise the decision is `continue` with `run_close_check` (record command
+    close-check evidence).
 
 Recorded close-check evidence is fresh only when it is at or after the latest
 invalidating hitch event: a non-close-check attempt, finding seen/fixed/deferred
@@ -274,6 +281,22 @@ it does not prove tests executed. Hitches that require tests must include normal
 command checks using the existing close-condition machinery; it does not inject
 synthetic test gates and does not use reviewer self-report as state-transition
 evidence.
+
+When a hitch review step is re-driven for a run whose **DB-canonical decision**
+(`review_decisions`, not any single participant proposal) is `approved`, AND a
+**completed** review cycle already exists for that run, the orchestrator
+refreshes the `review_consensus` close-check evidence at the current time
+without starting a new review cycle and without invoking Codex. The evidence's
+`decision` / `reviewer` / `sourceSha256` come from `review_decisions` (the
+canonical decision); the latest processed proposal only supplies supplementary
+`proposalId` / advisories. If the run is approved but no completed review cycle
+exists (the import never ran, or crashed after persisting the cycle row but
+before importing findings), the short-circuit fails closed and escalates rather
+than recording a passed check over an unimported/partial review.
+This lets stale-but-approved review evidence advance to `close_ready` and then
+to `close_and_pr` on the next loop step. If that refreshed review evidence is
+fresh but another required close condition is still pending, the loop escalates
+with the pending condition id(s) instead of starting another review.
 
 When the loop reaches `continue` / `run_close_check`, the orchestrator resolves
 each pending `kind: command` condition to the effective domain policy

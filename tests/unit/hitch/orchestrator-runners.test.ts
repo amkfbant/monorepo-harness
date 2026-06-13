@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
@@ -11,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openManagedDb } from "../../../src/db/managed-connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
+import { ConvergenceService } from "../../../src/hitch/convergence.js";
 import { collectDiff } from "../../../src/git/diff.js";
 import { computeReviewedFingerprint } from "../../../src/core/reviewed-fingerprint.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
@@ -18,6 +20,7 @@ import type { HitchCloseCondition } from "../../../src/hitch/types.js";
 import {
   createOrchestratorRunners,
   latestRunId,
+  tryShortCircuitApprovedDecidedReview,
   type HitchRunContext,
 } from "../../../src/hitch/orchestrator-runners.js";
 import {
@@ -50,6 +53,129 @@ function createRunners(dbPath: string) {
     coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
     reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
   });
+}
+
+function createHarnessRoot(prefix: string): { harnessRoot: string; dbPath: string } {
+  const harnessRoot = mkdtempSync(join(tmpdir(), prefix));
+  mkdirSync(join(harnessRoot, ".harness"), { recursive: true });
+  return { harnessRoot, dbPath: join(harnessRoot, ".harness", "harness.sqlite") };
+}
+
+function decisionYaml(
+  runId: string,
+  decision: string,
+  domain = "docs",
+): string {
+  return [
+    `runId: ${runId}`,
+    `domain: ${domain}`,
+    `decision: ${decision}`,
+    "required_changes: []",
+    "non_blocking_comments: []",
+    "out_of_scope_suggestions: []",
+    "reviewer: codex-reviewer",
+    "reviewed_at: 2026-06-13T00:00:00.000Z",
+    "",
+  ].join("\n");
+}
+
+function insertApprovedRunWithProcessedProposal(input: {
+  dbPath: string;
+  hitchId: string;
+  // The decided status the run + processed proposal carry. Defaults to the
+  // happy path ("approved"); pass "changes_requested" / "rejected" to pin that
+  // a non-approved decided run is NOT short-circuited.
+  decision?: string;
+  // Whether a prior review cycle exists for the run (the normal idempotent
+  // re-drive). false models a crash between processReviewDecision and the
+  // proposal import, so the short-circuit must complete the import.
+  priorCycle?: boolean;
+  closeConditions?: Parameters<HitchRepository["createSession"]>[0]["closeConditions"];
+}): string {
+  const decision = input.decision ?? "approved";
+  const priorCycle = input.priorCycle ?? true;
+  const runId = `run-${input.hitchId}`;
+  const sourceYaml = decisionYaml(runId, decision);
+  const sourceSha = createHash("sha256").update(sourceYaml).digest("hex");
+  const { db, close } = openManagedDb({ dbPath: input.dbPath });
+  try {
+    runMigrations(db);
+    const repo = new HitchRepository(db);
+    repo.createSession({
+      hitchId: input.hitchId,
+      title: "Approved decided run",
+      repoId: "t",
+      domain: "docs",
+      closeConditions:
+        input.closeConditions ?? [
+          { id: "review-ok", kind: "review_consensus", required: true },
+        ],
+      createdBy: "test",
+      createdSource: "worker",
+    });
+    repo.createAttempt({
+      hitchId: input.hitchId,
+      attemptType: "implement",
+      status: "succeeded",
+      runId,
+      createdAt: "2026-06-13T00:00:00.000Z",
+    });
+    db.prepare(
+      `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+         status, reviewer, reviewed_at, source_mode, db_revision,
+         export_status, updated_at, meta_json)
+       VALUES (?, 't', 'docs', 'domain-coding', 'main', ?,
+         'codex-reviewer', '2026-06-13T00:00:00.000Z', 'db-first', 1,
+         'disabled', '2026-06-13T00:00:00.000Z', ?)`,
+    ).run(
+      runId,
+      decision,
+      JSON.stringify({
+        runId,
+        repoId: "t",
+        domain: "docs",
+        status: decision,
+      }),
+    );
+    db.prepare(
+      `INSERT INTO review_proposals (
+         run_id, reviewer, decision, required_changes_json,
+         non_blocking_comments_json, out_of_scope_suggestions_json,
+         reviewed_at, source_yaml, source_sha256, created_at, processed_at,
+         review_decision_id, lifecycle_status
+       )
+       VALUES (?, 'codex-reviewer', ?, '[]', '[]', '[]',
+         '2026-06-13T00:00:00.000Z', ?, ?, '2026-06-13T00:00:00.000Z',
+         '2026-06-13T00:00:00.000Z', ?, 'processed')`,
+    ).run(runId, decision, sourceYaml, sourceSha, runId);
+    // The DB-canonical run decision (the short-circuit gates on this, not the
+    // latest individual proposal).
+    db.prepare(
+      `INSERT INTO review_decisions (run_id, decision, reviewer, reviewed_at,
+         source_yaml, source_sha256)
+       VALUES (?, ?, 'codex-reviewer', '2026-06-13T00:00:00.000Z', ?, ?)`,
+    ).run(runId, decision, sourceYaml, sourceSha);
+    if (priorCycle) {
+      // Model a completed prior import (a review cycle for this run already
+      // exists) so the short-circuit treats this as an idempotent re-drive.
+      // Timestamp the prior cycle at the run's review time so it predates any
+      // later close-check refresh (otherwise the refreshed check reads stale).
+      const cycle = repo.startReviewCycle({
+        hitchId: input.hitchId,
+        reviewMode: "close",
+        sourceRunId: runId,
+        createdAt: "2026-06-13T00:00:00.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle.cycleId,
+        completedAt: "2026-06-13T00:00:00.000Z",
+        summary: "prior import",
+      });
+    }
+    return runId;
+  } finally {
+    close();
+  }
 }
 
 describe("createOrchestratorRunners.projectRuntime", () => {
@@ -91,6 +217,236 @@ describe("createOrchestratorRunners.projectRuntime", () => {
       }),
     ).toThrow(/compiledPolicy must contain both global and repo/);
   });
+});
+
+describe("createOrchestratorRunners.review decided run re-drive", () => {
+  it("short-circuits an approved processed run without invoking the reviewer", async () => {
+    const { harnessRoot, dbPath } = createHarnessRoot(
+      "harness-orch-review-redrive-",
+    );
+    const hitchId = "g-approved-redrive";
+    const runId = insertApprovedRunWithProcessedProposal({ dbPath, hitchId });
+    const reviewerRunner = {
+      run: vi.fn(async () => {
+        throw new Error("reviewer must not run");
+      }),
+    };
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-13T01:00:00.000Z"));
+    try {
+      const runners = createOrchestratorRunners({
+        dbPath,
+        harnessRoot,
+        createdBy: "worker",
+        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+        reviewerRunner,
+      });
+
+      const result = await runners.review(hitchId);
+
+      expect(result).toEqual({ runId, decision: "approved" });
+      expect(reviewerRunner.run).not.toHaveBeenCalled();
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        const repo = new HitchRepository(db);
+        // Idempotent re-drive: the prior import's cycle stays; NO new one.
+        expect(repo.listReviewCycles(hitchId)).toHaveLength(1);
+        const checks = repo.listCloseChecks(hitchId);
+        expect(checks).toHaveLength(1);
+        expect(checks[0]).toMatchObject({
+          conditionId: "review-ok",
+          status: "passed",
+          checkedAt: "2026-06-13T01:00:00.000Z",
+          checkedBy: "codex-reviewer",
+        });
+        expect(new ConvergenceService(repo).evaluate(hitchId).decision).toBe(
+          "close_ready",
+        );
+      } finally {
+        close();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("escalates explicitly when approved review evidence is fresh but another required condition is pending", async () => {
+    const { harnessRoot, dbPath } = createHarnessRoot(
+      "harness-orch-review-pending-",
+    );
+    const hitchId = "g-approved-pending";
+    insertApprovedRunWithProcessedProposal({
+      dbPath,
+      hitchId,
+      closeConditions: [
+        { id: "review-ok", kind: "review_consensus", required: true },
+        { id: "manual-signoff", kind: "manual", required: true },
+      ],
+    });
+    const reviewerRunner = {
+      run: vi.fn(async () => {
+        throw new Error("reviewer must not run");
+      }),
+    };
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).rejects.toThrow(/manual-signoff/);
+    expect(reviewerRunner.run).not.toHaveBeenCalled();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db);
+      // Idempotent re-drive: only the prior import's cycle, no new one.
+      expect(repo.listReviewCycles(hitchId)).toHaveLength(1);
+      expect(repo.listCloseChecks(hitchId).map((c) => c.conditionId)).toEqual([
+        "review-ok",
+      ]);
+    } finally {
+      close();
+    }
+  });
+
+  it("does not salvage a review branch when the latest run is already decided", async () => {
+    const { harnessRoot, dbPath } = createHarnessRoot(
+      "harness-orch-review-salvage-",
+    );
+    const hitchId = "g-approved-salvage";
+    insertApprovedRunWithProcessedProposal({ dbPath, hitchId });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+    });
+
+    await expect(runners.salvageReviewBranch?.(hitchId)).resolves.toBeNull();
+  });
+
+  it("fails closed (no silent close) when an approved run has no completed review import", async () => {
+    // processReviewDecision ran (run approved) but no COMPLETED review cycle
+    // exists — the import never ran, or crashed mid-way (cycle persisted before
+    // findings). The short-circuit must NOT record a passed close-check (which
+    // could close the hitch without its findings); it fails closed → escalate.
+    const { harnessRoot, dbPath } = createHarnessRoot(
+      "harness-orch-review-crash-",
+    );
+    const hitchId = "g-approved-crash";
+    insertApprovedRunWithProcessedProposal({
+      dbPath,
+      hitchId,
+      priorCycle: false,
+    });
+    const reviewerRunner = {
+      run: vi.fn(async () => {
+        throw new Error("reviewer must not run");
+      }),
+    };
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).rejects.toThrow(
+      /no completed review import/,
+    );
+    expect(reviewerRunner.run).not.toHaveBeenCalled();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db);
+      // No spurious close-check recorded over an unimported/partial review.
+      expect(repo.listCloseChecks(hitchId)).toHaveLength(0);
+    } finally {
+      close();
+    }
+  });
+
+  it("fails closed when only an INCOMPLETE review cycle exists (crash mid-import)", async () => {
+    // A cycle row was persisted but its findings import crashed before
+    // completeReviewCycle (completedAt stays null). Treating that as a finished
+    // import would skip the findings; the short-circuit must reject it.
+    const { harnessRoot, dbPath } = createHarnessRoot(
+      "harness-orch-review-partial-",
+    );
+    const hitchId = "g-approved-partial";
+    const runId = insertApprovedRunWithProcessedProposal({
+      dbPath,
+      hitchId,
+      priorCycle: false,
+    });
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        // An incomplete cycle: started, never completed.
+        new HitchRepository(db).startReviewCycle({
+          hitchId,
+          reviewMode: "close",
+          sourceRunId: runId,
+        });
+      } finally {
+        close();
+      }
+    }
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+    });
+
+    await expect(runners.review(hitchId)).rejects.toThrow(
+      /no completed review import/,
+    );
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      expect(new HitchRepository(db).listCloseChecks(hitchId)).toHaveLength(0);
+    } finally {
+      close();
+    }
+  });
+
+  // Safety boundary (#167): the short-circuit applies ONLY to an approved
+  // decided run. A changes_requested / rejected decided run must fall through
+  // to the normal reviewer path (which escalates via the already_decided gate)
+  // and must NOT have a spurious `review_consensus` close-check recorded — a
+  // close-check derived from a non-approval would be a state transition the
+  // harness never authorized.
+  for (const decision of ["changes_requested", "rejected"] as const) {
+    it(`does not short-circuit a ${decision} decided run (no close-check)`, () => {
+      const { dbPath } = createHarnessRoot(
+        `harness-orch-review-${decision}-`,
+      );
+      const hitchId = `g-${decision}-redrive`;
+      const runId = insertApprovedRunWithProcessedProposal({
+        dbPath,
+        hitchId,
+        decision,
+      });
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        const result = tryShortCircuitApprovedDecidedReview({
+          db,
+          hitchId,
+          runId,
+          createdBy: "worker",
+        });
+        expect(result).toBeNull();
+        const repo = new HitchRepository(db);
+        expect(repo.listCloseChecks(hitchId)).toHaveLength(0);
+      } finally {
+        close();
+      }
+    });
+  }
 });
 
 describe("createOrchestratorRunners.classify", () => {

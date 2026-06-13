@@ -62,6 +62,15 @@ export class ConvergenceService {
       },
     );
     const latestCodingFailed = isLatestCodingAttemptFailed(attempts);
+    // A required review_consensus close-check that is not passed (e.g. stale
+    // after an approved run) must be refreshed by a review step, not the command
+    // close-check runner.
+    const reviewConsensusPending = close.conditions.some(
+      (evaluated) =>
+        evaluated.condition.required &&
+        evaluated.condition.kind === "review_consensus" &&
+        evaluated.status !== "passed",
+    );
     return decide(
       this.repo,
       session,
@@ -70,6 +79,7 @@ export class ConvergenceService {
       close.allRequiredPassed,
       latestCodingFailed,
       isReviewPending(attempts, cycles, latestCodingFailed),
+      reviewConsensusPending,
     );
   }
 }
@@ -257,6 +267,7 @@ function decide(
   allRequiredCloseConditionsPassed: boolean,
   latestCodingFailed: boolean,
   reviewPending: boolean,
+  reviewConsensusPending: boolean,
 ): HitchConvergenceResult {
   const terminal = terminalDecision(session.status);
   if (terminal !== null) {
@@ -486,6 +497,25 @@ function decide(
         message:
           "The previous coder run failed before review (a failing command, " +
           "policy violation, or codex error). Re-run the coder to fix the cause.",
+      },
+    );
+  }
+
+  // A required `review_consensus` close-check that went stale (e.g. a finding
+  // mutation after an approved run) needs a REVIEW step, not a command close-
+  // check: the review runner refreshes the consensus evidence (and, for an
+  // already-approved run, short-circuits without re-invoking Codex). Routing it
+  // to `run_close_check` would hand it to the command runner, which only handles
+  // `kind: command` conditions. Bounded by the review-cycle budget.
+  if (reviewConsensusPending && metrics.reviewCyclesUsed < session.maxReviewCycles) {
+    return result(
+      session.hitchId,
+      "continue",
+      "refresh stale review consensus before close",
+      metrics,
+      {
+        kind: "run_review",
+        message: "Refresh the review consensus close-check for this run.",
       },
     );
   }
