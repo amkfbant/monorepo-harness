@@ -39,23 +39,32 @@ Verify: `codex --version` and a `--dry-run` first; then one real run (see
 with `gh auth status`. No token is read from harness config — `gh` owns the
 credential. The PR is created as a draft against the project's base branch.
 
-## 3. Dashboard server auth (`harness dashboard serve`)
+## 3. Dashboard and operations server auth
 
-The HTTP dashboard is read-only by default and gains mutation routes only with
-an explicit flag (`src/cli/run.ts`):
+The HTTP dashboard (`harness dashboard serve`) is read-only. It never mounts
+POST mutation routes; the legacy `--enable-mutation` flag exits at startup and
+points operators to `harness operations serve`.
 
 - `--token-env <ENV_NAME>` — read the **Bearer token** from the named env var.
   Binding to a non-local host **without** a token only warns; set the token to
   enable auth. Compared with `crypto.timingSafeEqual`.
-- `--enable-mutation` — turns on POST mutation routes. **Requires** a bearer
-  token (fails fast at startup otherwise) and generates a **CSRF token** at boot
-  (printed once). Browser POSTs must send it as the `X-CSRF-Token` header.
+
+Run mutation APIs through `harness operations serve`:
+
+- `--token-env <ENV_NAME>` is required. The named env var must contain the
+  Bearer token or startup fails before listening.
+- `--csrf-token-env <ENV_NAME>` may provide the CSRF token. If omitted, the
+  operations server generates one at boot and prints it once to stdout.
+- Browser or HTTP POSTs must send both `Authorization: Bearer <token>` and
+  `X-CSRF-Token: <csrf-token>`.
 
 Operating rules:
 
 - Keep the dashboard bound to localhost unless you have set a strong token.
-- Treat the boot-printed CSRF token as a per-process secret; it rotates on every
-  restart.
+- Keep `harness operations serve` behind an explicit token; it fails closed
+  without one.
+- Treat any boot-printed operations CSRF token as a per-process secret; it
+  rotates on every restart.
 - Put the bearer token in an env var sourced from your secret manager, never in
   a committed file.
 

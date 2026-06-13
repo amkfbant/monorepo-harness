@@ -116,8 +116,8 @@ harness は 2 種類の LLM agent と harness 自身の 3 ロールに権限を�
   proposals` / `reviewers`）と human override。
 - **dashboard（Phase 12-14）**（[`dashboard.md`](./dashboard.md)）— `dashboard export`
   は依存ゼロの静的 HTML 成果物、`dashboard serve` は DB を read model とする HTTP
-  サーバ。既定は localhost / GET・HEAD のみの read-only。`--enable-mutation` で
-  POST mutation route を有効化（Bearer token 必須 + CSRF）。Phase 14 で
+  サーバ。既定は localhost / GET・HEAD のみの read-only。POST mutation route は
+  `operations serve` が bearer token + CSRF 必須で分離提供する。Phase 14 で
   human-authored asset の read も提供。
 - **MCP server（Phase 18）**（[`mcp.md`](./mcp.md)）— `harness mcp serve --transport
   stdio` の JSON-RPC server。read / dry-run / mutation tools を公開し、mutation は
@@ -275,7 +275,8 @@ HARNESS_ROOT="$PWD" npm run --silent harness -- workflow reviewed-run \
 
 # dashboard（依存ゼロ静的 / 常時最新 HTTP）
 HARNESS_ROOT="$PWD" npm run --silent harness -- dashboard export
-HARNESS_ROOT="$PWD" npm run --silent harness -- dashboard serve [--enable-mutation]
+HARNESS_ROOT="$PWD" npm run --silent harness -- dashboard serve
+HARNESS_ROOT="$PWD" npm run --silent harness -- operations serve --token-env HARNESS_OP_TOKEN
 
 # MCP server（coding agent 向け JSON-RPC, stdio）
 HARNESS_ROOT="$PWD" npm run --silent harness -- mcp serve --transport stdio

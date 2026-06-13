@@ -247,158 +247,19 @@ function knowledgeSection(s: DashboardSnapshot): string {
   ].join("\n");
 }
 
-/**
- * Phase 4: opt-in mutation UI options. Present ONLY when `dashboard serve`
- * runs with `--enable-mutation`; the static export / read-only server pass no
- * options and emit a JS-free, read-only page.
- */
-export interface RenderOptions {
-  mutation?: { csrfToken: string };
-}
-
-/**
- * Phase 4: the mutation panel — a CSRF meta tag, a bearer-token input, a
- * dry-run toggle, per-run / per-backlog action buttons, and the inline JS that
- * POSTs to the mutation API with the required headers. Emitted only when
- * mutation is enabled. All snapshot-derived ids go into escaped data-* attrs;
- * the script itself is a static string (no untrusted interpolation).
- */
-function mutationSection(s: DashboardSnapshot, csrfToken: string): string {
-  const runActionRow = (
-    r: DashboardSnapshot["recentRuns"][number],
-  ): string => {
-    const id = esc(r.runId);
-    const reviewBtns =
-      r.status === "needs_review"
-        ? ["approved", "changes_requested", "rejected"]
-            .map(
-              (d) =>
-                `<button data-run-id="${id}" data-act="review-${d}">review:${esc(d)}</button>`,
-            )
-            .join("")
-        : "";
-    return (
-      `<tr><td><code>${id}</code></td><td>${esc(r.status)}</td><td>` +
-      reviewBtns +
-      `<button data-run-id="${id}" data-act="pr">pr</button>` +
-      `<button data-run-id="${id}" data-act="rerun">rerun</button>` +
-      '<select class="mut-scope" aria-label="cleanup scope">' +
-      '<option value="workspace">workspace</option>' +
-      '<option value="run">run</option>' +
-      '<option value="all">all</option></select>' +
-      `<button data-run-id="${id}" data-act="cleanup">cleanup</button>` +
-      "</td></tr>"
-    );
-  };
-  const runRowsHtml =
-    s.recentRuns.length === 0
-      ? '<tr><td class="empty" colspan="3">no runs</td></tr>'
-      : s.recentRuns.map(runActionRow).join("");
-  const backlogRowsHtml =
-    s.backlog.items.length === 0
-      ? '<tr><td class="empty" colspan="3">no items</td></tr>'
-      : s.backlog.items
-          .map(
-            (it) =>
-              `<tr><td><code>${esc(it.itemId)}</code></td><td>${esc(it.title)}</td>` +
-              `<td><button data-item-id="${esc(it.itemId)}" data-act="backlog-run">run</button></td></tr>`,
-          )
-          .join("");
-  return [
-    "<h2>Mutations</h2>",
-    '<div class="mut">',
-    "Mutation API enabled. POSTs require a bearer token and the CSRF token " +
-      '(read from <code>&lt;meta name="harness-csrf-token"&gt;</code>).',
-    "<div>",
-    '<label>Bearer token <input type="password" id="harness-bearer" autocomplete="off"></label>',
-    ' <label><input type="checkbox" id="harness-dryrun" checked> dry-run</label>',
-    "</div>",
-    "</div>",
-    '<div id="harness-result" class="mut-result" aria-live="polite"></div>',
-    "<h3>Run actions</h3>",
-    `<table><tr><th>run</th><th>status</th><th>actions</th></tr>${runRowsHtml}</table>`,
-    "<h3>Backlog actions</h3>",
-    `<table><tr><th>item</th><th>title</th><th>actions</th></tr>${backlogRowsHtml}</table>`,
-    `<script>${MUTATION_SCRIPT}</script>`,
-  ].join("\n");
-}
-
-/**
- * Static client script for the mutation UI. No untrusted data is interpolated
- * — ids come from escaped data-* attributes read via dataset at click time.
- */
-const MUTATION_SCRIPT = `
-(function(){
-  function csrf(){var m=document.querySelector('meta[name="harness-csrf-token"]');return m?m.getAttribute("content"):"";}
-  function bearer(){var i=document.getElementById("harness-bearer");return i?i.value:"";}
-  function dry(){var c=document.getElementById("harness-dryrun");return c?c.checked:true;}
-  function uuid(){return (window.crypto&&crypto.randomUUID)?crypto.randomUUID():String(Date.now())+"-"+Math.round(Math.random()*1e9);}
-  var out=document.getElementById("harness-result");
-  function show(t){if(out){out.textContent=t;}}
-  async function post(path,body,destructive){
-    var isDry=dry();
-    body=Object.assign({dryRun:isDry},body);
-    if(!isDry&&destructive&&!window.confirm("Run a REAL (non-dry-run) "+path+"? This changes state.")){return;}
-    if(!bearer()){show("error: enter a bearer token first");return;}
-    var headers={"Content-Type":"application/json","X-CSRF-Token":csrf(),"Authorization":"Bearer "+bearer()};
-    if(!isDry){headers["Idempotency-Key"]=uuid();}
-    show("POST "+path+" ...");
-    try{
-      var res=await fetch(path,{method:"POST",headers:headers,body:JSON.stringify(body)});
-      var text=await res.text();var data;try{data=JSON.parse(text);}catch(e){data=text;}
-      var label=res.ok?"OK":"ERROR";
-      if(res.status===409){label="CONFLICT (stale state / replayed) — reload and retry";}
-      if(res.status===401){label="UNAUTHORIZED (bad bearer token)";}
-      if(res.status===403){label="FORBIDDEN (bad CSRF token)";}
-      show("HTTP "+res.status+" "+label+"\\n"+(typeof data==="string"?data:JSON.stringify(data,null,2)));
-    }catch(e){show("network error: "+e);}
-  }
-  document.addEventListener("click",function(ev){
-    var b=ev.target.closest&&ev.target.closest("button[data-act]");if(!b){return;}
-    var run=b.getAttribute("data-run-id");var item=b.getAttribute("data-item-id");var act=b.getAttribute("data-act");
-    if(act.indexOf("review-")===0){
-      var decision=act.slice(7);var body={decision:decision};
-      if(!dry()){
-        // Apply the CLICKED decision as an audited human override (the backend
-        // otherwise promotes whatever the stored proposal says, ignoring the
-        // button). The reason prompt also serves as the confirmation.
-        var reason=window.prompt('Apply review "'+decision+'" to '+run+' as an override? Enter an audited reason:');
-        if(!reason){return;}
-        body.override={reason:reason};
-      }
-      post("/api/runs/"+encodeURIComponent(run)+"/review",body,false);
-    }
-    else if(act==="cleanup"){var sel=b.parentElement?b.parentElement.querySelector("select.mut-scope"):null;var scope=sel?sel.value:"workspace";post("/api/runs/"+encodeURIComponent(run)+"/cleanup",{confirm:"cleanup",scope:scope},true);}
-    else if(act==="pr"){post("/api/runs/"+encodeURIComponent(run)+"/pr",{confirm:"create-pr"},true);}
-    else if(act==="rerun"){post("/api/runs/"+encodeURIComponent(run)+"/rerun",{},true);}
-    else if(act==="backlog-run"){post("/api/backlog/"+encodeURIComponent(item)+"/run",{},true);}
-  });
-})();
-`.trim();
-
 /** Render the whole dashboard page from a snapshot. */
-export function renderDashboardHtml(
-  snapshot: DashboardSnapshot,
-  options: RenderOptions = {},
-): string {
-  const mutation = options.mutation;
+export function renderDashboardHtml(snapshot: DashboardSnapshot): string {
   return [
     "<!doctype html>",
     '<html lang="en">',
     "<head>",
     '<meta charset="utf-8">',
-    ...(mutation !== undefined
-      ? [`<meta name="harness-csrf-token" content="${esc(mutation.csrfToken)}">`]
-      : []),
     "<title>monorepo-harness dashboard</title>",
     `<style>${STYLE}</style>`,
     "</head>",
     "<body>",
     "<h1>monorepo-harness dashboard</h1>",
     statusBanner(snapshot),
-    ...(mutation !== undefined
-      ? [mutationSection(snapshot, mutation.csrfToken)]
-      : []),
     overviewSection(snapshot),
     metricsTrendSection(snapshot),
     hitchMetricsSection(snapshot),

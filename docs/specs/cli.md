@@ -592,7 +592,7 @@ harness dashboard export --no-auto-import     # DB を files から再構築せ�
 ## `harness dashboard serve`
 
 DB read model を配信する HTTP ダッシュボードを起動する（Phase 12 read-only /
-Phase 13 mutation / Phase 14 asset reads）。エンドポイント一覧・auth は
+Phase 14 asset reads）。エンドポイント一覧・auth は
 [`dashboard.md`](./dashboard.md) の `serve` 節を参照。
 
 ```bash
@@ -603,17 +603,38 @@ harness dashboard serve --token-env <ENV>     # env var から Bearer token を�
 harness dashboard serve --cors-origin <origin># 指定 origin に CORS を許可
 harness dashboard serve --no-artifact-body    # GET /api/artifacts/:id/body を無効化
 harness dashboard serve --max-inline-artifact-bytes <n>  # artifact 本体の上限（既定 1048576）
-harness dashboard serve --enable-mutation     # POST mutation route を有効化（token + CSRF 必須）
+harness dashboard serve --enable-mutation     # 非推奨: operations serve へ誘導して fail-fast
 ```
 
 - 既定は **read-only**（GET / HEAD のみ、POST は `405`）。`GET /` は live HTML、
   `/api/*` は JSON
 - `--token-env` 設定時は全リクエストに `Authorization: Bearer <token>` が必要。
   非ローカル bind で未設定なら fail-closed で `401`
-- `--enable-mutation` は bearer token を必須とし（未設定なら起動時 fail-fast）、
-  boot 時に CSRF token を生成して一度だけ表示。ブラウザ POST は `X-CSRF-Token`
-  ヘッダで送る
+- `--enable-mutation` は互換用に受け付けるが、listen 前に非 0 終了し
+  `harness operations serve` へ誘導する。dashboard は POST route を mount しない
 - auth の運用詳細は [`../ops/setup-and-secrets.md`](../ops/setup-and-secrets.md) を参照
+
+## `harness operations serve`
+
+操作系 POST API を dashboard から分離して起動する。dashboard の read API と同じ
+DB を使うが、HTTP surface は以下 5 つの mutation route のみ。
+
+```bash
+harness operations serve                         # 127.0.0.1:8788 で起動（--token-env 必須）
+harness operations serve --host <host>           # bind host（既定 127.0.0.1）
+harness operations serve --port <port>           # bind port（既定 8788）
+harness operations serve --token-env <ENV>       # env var から Bearer token を読む（必須）
+harness operations serve --csrf-token-env <ENV>  # env var から CSRF token を読む
+harness operations serve --cors-origin <origin>  # 指定 origin に CORS を許可
+```
+
+- bearer token は必須。未指定 / env 空なら listen 前に fail-fast
+- `--csrf-token-env` 未指定時は起動時に CSRF token を生成し stdout に一度だけ表示する。
+  指定時は env の値を使い、secret 値は stdout に出さない
+- POST は `Authorization: Bearer <token>` と `X-CSRF-Token: <token>` が必要。不一致は
+  それぞれ `401` / `403`
+- route: `POST /api/runs/:runId/review`, `/cleanup`, `/pr`, `/rerun`,
+  `POST /api/backlog/:itemId/run`
 
 ## `harness session`
 
