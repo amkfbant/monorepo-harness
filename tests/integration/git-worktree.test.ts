@@ -1,19 +1,19 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   createWorktree,
   removeWorktree,
 } from "../../src/workspace/git-worktree.js";
+import { makeTmpDir } from "../helpers/tmp.js";
 
 let repoRoot: string;
 let worktreesDir: string;
 
 beforeEach(() => {
-  repoRoot = mkdtempSync(join(tmpdir(), "harness-src-"));
-  worktreesDir = mkdtempSync(join(tmpdir(), "harness-wt-"));
+  repoRoot = makeTmpDir("harness-src-");
+  worktreesDir = makeTmpDir("harness-wt-");
   const r = (args: string[]) =>
     execFileSync("git", args, { cwd: repoRoot, stdio: "ignore" });
   r(["init", "-q", "-b", "main"]);
