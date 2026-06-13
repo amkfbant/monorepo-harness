@@ -714,13 +714,15 @@ KPI / usage の正規定義は以下。
   `--domain` は同 table の `repo_id` / `domain` に、`--since` / `--until` 相当の
   date scope は `observed_at` に適用する。`project_id` 列は無いため `--project`
   はこの KPI には直接適用しない。
-- `usage.runsWithUsage` — scope 内で `runs` に join できる `run_usage` 行数。
+- `usage.runsWithUsage` — scope 内で usage を持つ DISTINCT run 数。
 - `usage.totalInputTokens` / `usage.totalOutputTokens` / `usage.totalTokens` —
-  `usage_source='exact'` の行だけを合算する。`NULL` token field は除外される。
-  `totalTokens` は DB に保存された `total_tokens` の合算で、run ごとの
-  `total_tokens` は `input_tokens + output_tokens`。
-- `usage.bySource` — scope 内 `run_usage.usage_source` 別の行数。`unavailable` も
-  欠損テレメトリとして数えるが token 合算対象ではない。
+  `usage_source='exact'` の invocation rows だけを kind 問わず合算する。
+  `NULL` token field は除外される。`totalTokens` は DB に保存された
+  `total_tokens` の合算で、各 row の `total_tokens` は `input_tokens + output_tokens`。
+- `usage.bySource` — scope 内 `run_usage.usage_source` 別の invocation row 数。
+  `unavailable` も欠損テレメトリとして数えるが token 合算対象ではない。
+- `usage.byKind.{coder,reviewer,evaluator}` — kind 別の同じ内訳。G1 では coder のみ
+  書き込むが、summary shape は reviewer/evaluator の予約 bucket も常に返す。
 
 `--since` の対象列は、runs 指標は `runs.started_at`、lock contention 指標は
 `domain_lock_contention.observed_at`、hitch 指標は `hitch_sessions.created_at`、

@@ -60,7 +60,6 @@ import {
   buildCodexPrompt,
   CODER_PROMPT_TEMPLATE,
 } from "../codex/prompt-builder.js";
-import { parseCodexUsage } from "../codex/usage-parser.js";
 import { summarizeCodexEvents } from "../codex/events-summary.js";
 import { computeReviewedFingerprint } from "./reviewed-fingerprint.js";
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
@@ -77,6 +76,7 @@ import {
   publishRedactedCodexEvents,
   type CodexEventsIo,
 } from "../codex/events-lifecycle.js";
+import { recordCodexUsage } from "../db/repositories/run-usage.js";
 
 /**
  * Surface a failed artifact-body ingest (Phase 8-2). The run still
@@ -201,36 +201,6 @@ async function readOptionalUtf8(path: string): Promise<string | null> {
   } catch (e) {
     if (isNodeError(e) && e.code === "ENOENT") return null;
     throw e;
-  }
-}
-
-async function recordCodexUsage(opts: {
-  db: Database.Database;
-  runId: string;
-  eventsContent: string | null;
-}): Promise<void> {
-  const usage = parseCodexUsage(opts.eventsContent ?? "");
-  try {
-    assertActiveLease(opts.db, opts.runId);
-    opts.db
-      .prepare(
-        `INSERT INTO run_usage
-           (run_id, model, input_tokens, cached_input_tokens, output_tokens,
-            reasoning_output_tokens, total_tokens, usage_source, created_at)
-         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        opts.runId,
-        usage.inputTokens,
-        usage.cachedInputTokens,
-        usage.outputTokens,
-        usage.reasoningOutputTokens,
-        usage.totalTokens,
-        usage.usageSource,
-        new Date().toISOString(),
-      );
-  } catch (e) {
-    warnUsageRecordFailed(opts.runId, e);
   }
 }
 
@@ -780,7 +750,14 @@ async function runDomainCodingInner(
     } catch {
       codexEventsContent = null;
     }
-    await recordCodexUsage({ db, runId, eventsContent: codexEventsContent });
+    recordCodexUsage({
+      db,
+      runId,
+      kind: "coder",
+      eventsContent: codexEventsContent,
+      beforeWrite: () => assertActiveLease(db, runId),
+      onError: (error) => warnUsageRecordFailed(runId, error),
+    });
     if (!codexEventsRedaction.failed) {
       if (
         codexEventsRedaction.redactedCount +

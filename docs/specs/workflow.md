@@ -260,11 +260,13 @@ compiled project policy. Non-project hitches are unchanged.
 redaction の raw 読み込み、redacted tmp 書き込み、または `codex-events.jsonl` への rename が失敗した場合、workflow は raw を正式 artifact 名に置かない。可能なら `codex-events.jsonl` には `{"type":"redaction.failed","reason":"<short>"}` の 1 行だけを書き、raw/tmp dotfile の削除を試みる。sentinel 書き込みも失敗した場合は正式名ファイル無しのまま続行する。この場合、run は redaction 失敗だけでは失敗しない。
 
 `run_usage` 記録は `codex_exec_completed` 後、redaction/atomic publish 済みの artifact 用 `codex-events.jsonl` から、post-codex diff 収集前に行う。runner は lease guard (`assertActiveLease`) を通して
-`run_usage` に 1 行 INSERT する。`turn.completed.usage` が正常に読める場合は
+`run_usage` に `kind='coder'` の invocation row を INSERT する。`seq` は同一
+`(run_id, kind)` 内で採番し、lease guard / seq 採番 / INSERT は同じ `BEGIN IMMEDIATE`
+transaction 内で行う。`turn.completed.usage` が正常に読める場合は
 `usage_source='exact'`、複数 turn は token fields を合算する。events file が無い /
 読めない / 空 / JSON parse 不可 / `turn.completed.usage` 無しの場合も run は止めず、
 `usage_source='unavailable'` かつ token fields `NULL` の行を明示的に記録する。
-`parsed_log` / `estimated` は予約値であり、C2 の workflow は書き込まない。
+`parsed_log` / `estimated` は予約値であり、G1 の workflow は書き込まない。
 `total_tokens` は `input_tokens + output_tokens`（`reasoning_output_tokens` は別列）。
 
 `run_completed.runElapsedMs` は `runDomainCoding` 開始から `run_completed` emit 直前までの wall-clock 整数 ms。

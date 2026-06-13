@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 29;
+export const SCHEMA_VERSION = 30;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1805,6 +1805,47 @@ export const MIGRATION_V29_STATEMENTS: readonly string[] = [
   "PRAGMA foreign_keys = ON",
 ] as const;
 
+/**
+ * v30 — run usage per invocation.
+ *
+ * SQLite cannot change a table primary key in place, so this migration
+ * recreates `run_usage` with `(run_id, kind, seq)` as the key. Historical v26
+ * rows are preserved as the first coder invocation for their run.
+ */
+export const MIGRATION_V30_STATEMENTS: readonly string[] = [
+  `CREATE TABLE run_usage_v30 (
+     run_id TEXT NOT NULL REFERENCES runs(run_id),
+     kind TEXT NOT NULL
+       CHECK (kind IN ('coder','reviewer','evaluator')),
+     seq INTEGER NOT NULL DEFAULT 0,
+     model TEXT,
+     input_tokens INTEGER,
+     cached_input_tokens INTEGER,
+     output_tokens INTEGER,
+     reasoning_output_tokens INTEGER,
+     total_tokens INTEGER,
+     usage_source TEXT NOT NULL
+       CHECK (usage_source IN ('exact','parsed_log','estimated','unavailable')),
+     created_at TEXT NOT NULL,
+     PRIMARY KEY (run_id, kind, seq)
+   )`,
+  `INSERT INTO run_usage_v30 (
+     run_id, kind, seq, model, input_tokens, cached_input_tokens,
+     output_tokens, reasoning_output_tokens, total_tokens, usage_source,
+     created_at
+   )
+   SELECT run_id, 'coder', 0, model, input_tokens, cached_input_tokens,
+          output_tokens, reasoning_output_tokens, total_tokens, usage_source,
+          created_at
+     FROM run_usage`,
+  `DROP TABLE run_usage`,
+  `ALTER TABLE run_usage_v30 RENAME TO run_usage`,
+  `CREATE INDEX run_usage_run_idx ON run_usage(run_id)`,
+] as const;
+
+/** v30 recreates run_usage in place; no latest-schema table name changes. */
+export const V30_TABLE_NAMES = [] as const;
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -1850,6 +1891,7 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V26_TABLE_NAMES,
   ...V27_TABLE_NAMES,
   ...V28_TABLE_NAMES,
+  ...V30_TABLE_NAMES,
 ];
 
 /** Tables intentionally removed by later migrations. */

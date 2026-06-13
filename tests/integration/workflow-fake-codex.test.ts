@@ -400,7 +400,8 @@ describe("runDomainCoding (fake codex)", () => {
       const usage = db
         .prepare(
           `SELECT input_tokens, cached_input_tokens, output_tokens,
-                  reasoning_output_tokens, total_tokens, usage_source
+                  reasoning_output_tokens, total_tokens, usage_source,
+                  kind, seq
              FROM run_usage WHERE run_id = ?`,
         )
         .get(r.runId) as {
@@ -410,6 +411,8 @@ describe("runDomainCoding (fake codex)", () => {
         reasoning_output_tokens: number | null;
         total_tokens: number | null;
         usage_source: string;
+        kind: string;
+        seq: number;
       };
       expect(usage).toEqual({
         input_tokens: null,
@@ -418,6 +421,8 @@ describe("runDomainCoding (fake codex)", () => {
         reasoning_output_tokens: null,
         total_tokens: null,
         usage_source: "unavailable",
+        kind: "coder",
+        seq: 0,
       });
       const rawArtifact = db
         .prepare(
@@ -659,7 +664,8 @@ describe("runDomainCoding (fake codex)", () => {
       const row = db
         .prepare(
           `SELECT model, input_tokens, cached_input_tokens, output_tokens,
-                  reasoning_output_tokens, total_tokens, usage_source
+                  reasoning_output_tokens, total_tokens, usage_source,
+                  kind, seq
              FROM run_usage WHERE run_id = ?`,
         )
         .get(r.runId) as {
@@ -670,6 +676,8 @@ describe("runDomainCoding (fake codex)", () => {
         reasoning_output_tokens: number | null;
         total_tokens: number | null;
         usage_source: string;
+        kind: string;
+        seq: number;
       };
       expect(row).toEqual({
         model: null,
@@ -679,6 +687,8 @@ describe("runDomainCoding (fake codex)", () => {
         reasoning_output_tokens: 9,
         total_tokens: 155,
         usage_source: "exact",
+        kind: "coder",
+        seq: 0,
       });
     } finally {
       db.close();
@@ -714,7 +724,8 @@ describe("runDomainCoding (fake codex)", () => {
       const row = db
         .prepare(
           `SELECT input_tokens, cached_input_tokens, output_tokens,
-                  reasoning_output_tokens, total_tokens, usage_source
+                  reasoning_output_tokens, total_tokens, usage_source,
+                  kind, seq
              FROM run_usage WHERE run_id = ?`,
         )
         .get(r.runId) as {
@@ -724,6 +735,8 @@ describe("runDomainCoding (fake codex)", () => {
         reasoning_output_tokens: number | null;
         total_tokens: number | null;
         usage_source: string;
+        kind: string;
+        seq: number;
       };
       expect(row).toEqual({
         input_tokens: null,
@@ -732,6 +745,8 @@ describe("runDomainCoding (fake codex)", () => {
         reasoning_output_tokens: null,
         total_tokens: null,
         usage_source: "unavailable",
+        kind: "coder",
+        seq: 0,
       });
     } finally {
       db.close();

@@ -89,13 +89,22 @@ function insertUsage(
   inputTokens: number | null,
   outputTokens: number | null,
   totalTokens: number | null,
+  options: { kind?: "coder" | "reviewer" | "evaluator"; seq?: number } = {},
 ): void {
   db.prepare(
     `INSERT INTO run_usage
-       (run_id, input_tokens, output_tokens, total_tokens, usage_source,
-        created_at)
-     VALUES (?, ?, ?, ?, ?, '2026-06-13T00:00:00.000Z')`,
-  ).run(runId, inputTokens, outputTokens, totalTokens, usageSource);
+       (run_id, kind, seq, input_tokens, output_tokens, total_tokens,
+        usage_source, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, '2026-06-13T00:00:00.000Z')`,
+  ).run(
+    runId,
+    options.kind ?? "coder",
+    options.seq ?? 0,
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    usageSource,
+  );
 }
 
 function insertLockContention(
@@ -338,6 +347,29 @@ describe("aggregates", () => {
         totalOutputTokens: 136,
         totalTokens: 1235,
         bySource: { exact: 2, unavailable: 1 },
+        byKind: {
+          coder: {
+            runsWithUsage: 3,
+            totalInputTokens: 1099,
+            totalOutputTokens: 136,
+            totalTokens: 1235,
+            bySource: { exact: 2, unavailable: 1 },
+          },
+          reviewer: {
+            runsWithUsage: 0,
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            totalTokens: 0,
+            bySource: {},
+          },
+          evaluator: {
+            runsWithUsage: 0,
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            totalTokens: 0,
+            bySource: {},
+          },
+        },
       });
 
       const demo = tokenUsageSummary(db, { projectId: "demo" });
@@ -347,6 +379,86 @@ describe("aggregates", () => {
         totalOutputTokens: 25,
         totalTokens: 125,
         bySource: { exact: 1, unavailable: 1 },
+        byKind: {
+          coder: {
+            runsWithUsage: 2,
+            totalInputTokens: 100,
+            totalOutputTokens: 25,
+            totalTokens: 125,
+            bySource: { exact: 1, unavailable: 1 },
+          },
+          reviewer: {
+            runsWithUsage: 0,
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            totalTokens: 0,
+            bySource: {},
+          },
+          evaluator: {
+            runsWithUsage: 0,
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            totalTokens: 0,
+            bySource: {},
+          },
+        },
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("tokenUsageSummary counts distinct runs while summing all exact invocations by kind", () => {
+    const db = freshDb();
+    try {
+      insertRun(db, "run-multi", "demo", "approved");
+      insertRun(db, "run-evaluator", "demo", "approved");
+      insertUsage(db, "run-multi", "exact", 100, 20, 120, {
+        kind: "coder",
+        seq: 0,
+      });
+      insertUsage(db, "run-multi", "exact", 10, 5, 15, {
+        kind: "coder",
+        seq: 1,
+      });
+      insertUsage(db, "run-multi", "exact", 30, 8, 38, {
+        kind: "reviewer",
+        seq: 0,
+      });
+      insertUsage(db, "run-evaluator", "unavailable", null, null, null, {
+        kind: "evaluator",
+        seq: 0,
+      });
+
+      expect(tokenUsageSummary(db, { projectId: "demo" })).toEqual({
+        runsWithUsage: 2,
+        totalInputTokens: 140,
+        totalOutputTokens: 33,
+        totalTokens: 173,
+        bySource: { exact: 3, unavailable: 1 },
+        byKind: {
+          coder: {
+            runsWithUsage: 1,
+            totalInputTokens: 110,
+            totalOutputTokens: 25,
+            totalTokens: 135,
+            bySource: { exact: 2 },
+          },
+          reviewer: {
+            runsWithUsage: 1,
+            totalInputTokens: 30,
+            totalOutputTokens: 8,
+            totalTokens: 38,
+            bySource: { exact: 1 },
+          },
+          evaluator: {
+            runsWithUsage: 1,
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            totalTokens: 0,
+            bySource: { unavailable: 1 },
+          },
+        },
       });
     } finally {
       db.close();

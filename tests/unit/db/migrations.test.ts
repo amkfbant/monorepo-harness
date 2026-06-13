@@ -70,7 +70,7 @@ describe("runMigrations", () => {
     expect(r.version).toBe(SCHEMA_VERSION);
     expect(r.applied).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27, 28, 29,
+      22, 23, 24, 25, 26, 27, 28, 29, 30,
     ]);
     const tables = tableNames(dbPath);
     expect(tables.has("schema_migrations")).toBe(true);
@@ -115,7 +115,7 @@ describe("runMigrations", () => {
       ).toThrow(/CHECK/i);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([29]);
+      expect(upgraded.applied).toEqual([29, 30]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "index", "hitch_lifecycle_events_hitch_idx")).toBe(
         true,
@@ -200,7 +200,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "domain_lock_contention")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([28, 29]);
+      expect(upgraded.applied).toEqual([28, 29, 30]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "domain_lock_contention")).toBe(true);
       expect(
@@ -257,6 +257,121 @@ describe("runMigrations", () => {
     }
   });
 
+  it("recreates run_usage in v30 with per-invocation primary key and preserves v26 rows", () => {
+    const db = openDb(freshDbPath());
+    try {
+      applyMigrationsBefore(db, 30);
+      expect(currentSchemaVersion(db)).toBe(29);
+
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, updated_at)
+         VALUES ('run-v30', 'demo', 'apps/web', 'domain-coding', 'main',
+           'needs_review', '2026-06-13T00:00:00.000Z')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO run_usage
+           (run_id, model, input_tokens, cached_input_tokens, output_tokens,
+            reasoning_output_tokens, total_tokens, usage_source, created_at)
+         VALUES ('run-v30', 'gpt-5', 10, 2, 5, 1, 15, 'exact',
+           '2026-06-13T00:00:00.000Z')`,
+      ).run();
+
+      const upgraded = runMigrations(db);
+      expect(upgraded.applied).toEqual([30]);
+      expect(upgraded.version).toBe(SCHEMA_VERSION);
+
+      const columns = db
+        .prepare("PRAGMA table_info(run_usage)")
+        .all() as { name: string; type: string; notnull: number; pk: number }[];
+      expect(columns.map((r) => r.name)).toEqual([
+        "run_id",
+        "kind",
+        "seq",
+        "model",
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "reasoning_output_tokens",
+        "total_tokens",
+        "usage_source",
+        "created_at",
+      ]);
+      expect(columns.find((r) => r.name === "run_id")).toMatchObject({
+        type: "TEXT",
+        notnull: 1,
+        pk: 1,
+      });
+      expect(columns.find((r) => r.name === "kind")).toMatchObject({
+        type: "TEXT",
+        notnull: 1,
+        pk: 2,
+      });
+      expect(columns.find((r) => r.name === "seq")).toMatchObject({
+        type: "INTEGER",
+        notnull: 1,
+        pk: 3,
+      });
+      expect(hasSchemaObject(db, "index", "run_usage_run_idx")).toBe(true);
+
+      const migrated = db
+        .prepare(
+          `SELECT run_id, kind, seq, model, input_tokens, cached_input_tokens,
+                  output_tokens, reasoning_output_tokens, total_tokens,
+                  usage_source, created_at
+             FROM run_usage
+            WHERE run_id = ?`,
+        )
+        .get("run-v30") as Record<string, unknown> | undefined;
+      expect(migrated).toEqual({
+        run_id: "run-v30",
+        kind: "coder",
+        seq: 0,
+        model: "gpt-5",
+        input_tokens: 10,
+        cached_input_tokens: 2,
+        output_tokens: 5,
+        reasoning_output_tokens: 1,
+        total_tokens: 15,
+        usage_source: "exact",
+        created_at: "2026-06-13T00:00:00.000Z",
+      });
+
+      db.prepare(
+        `INSERT INTO run_usage
+           (run_id, kind, seq, usage_source, created_at)
+         VALUES ('run-v30', 'coder', 1, 'unavailable',
+           '2026-06-13T00:00:01.000Z')`,
+      ).run();
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO run_usage
+               (run_id, kind, seq, usage_source, created_at)
+             VALUES ('run-v30', 'coder', 1, 'unavailable',
+               '2026-06-13T00:00:02.000Z')`,
+          )
+          .run(),
+      ).toThrow();
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO run_usage
+               (run_id, kind, seq, usage_source, created_at)
+             VALUES ('run-v30', 'planner', 2, 'unavailable',
+               '2026-06-13T00:00:03.000Z')`,
+          )
+          .run(),
+      ).toThrow(/CHECK/i);
+
+      const again = runMigrations(db);
+      expect(again.applied).toEqual([]);
+      expect(again.version).toBe(SCHEMA_VERSION);
+    } finally {
+      db.close();
+    }
+  });
+
   it("creates metrics_snapshots in v27 and stays idempotent", () => {
     const db = openDb(freshDbPath());
     try {
@@ -265,7 +380,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "metrics_snapshots")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([27, 28, 29]);
+      expect(upgraded.applied).toEqual([27, 28, 29, 30]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "metrics_snapshots")).toBe(true);
       expect(hasSchemaObject(db, "index", "metrics_snapshots_created_idx")).toBe(
@@ -321,7 +436,7 @@ describe("runMigrations", () => {
     }
   });
 
-  it("creates run_usage in v26 and stays idempotent", () => {
+  it("creates run_usage from v26 and upgrades it to the latest per-invocation shape", () => {
     const db = openDb(freshDbPath());
     try {
       applyMigrationsBefore(db, 26);
@@ -329,17 +444,40 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "run_usage")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([26, 27, 28, 29]);
+      expect(upgraded.applied).toEqual([26, 27, 28, 29, 30]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "run_usage")).toBe(true);
 
       const columns = db
         .prepare("PRAGMA table_info(run_usage)")
         .all() as { name: string; type: string; notnull: number; pk: number }[];
+      expect(columns.map((r) => r.name)).toEqual([
+        "run_id",
+        "kind",
+        "seq",
+        "model",
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "reasoning_output_tokens",
+        "total_tokens",
+        "usage_source",
+        "created_at",
+      ]);
       expect(columns.find((r) => r.name === "run_id")).toMatchObject({
         type: "TEXT",
-        notnull: 0,
+        notnull: 1,
         pk: 1,
+      });
+      expect(columns.find((r) => r.name === "kind")).toMatchObject({
+        type: "TEXT",
+        notnull: 1,
+        pk: 2,
+      });
+      expect(columns.find((r) => r.name === "seq")).toMatchObject({
+        type: "INTEGER",
+        notnull: 1,
+        pk: 3,
       });
       expect(columns.find((r) => r.name === "model")).toMatchObject({
         type: "TEXT",
@@ -374,16 +512,17 @@ describe("runMigrations", () => {
       ).run();
       db.prepare(
         `INSERT INTO run_usage
-           (run_id, input_tokens, cached_input_tokens, output_tokens,
+           (run_id, kind, seq, input_tokens, cached_input_tokens, output_tokens,
             reasoning_output_tokens, total_tokens, usage_source, created_at)
-         VALUES ('run-v26', 10, 2, 5, 1, 15, 'exact',
+         VALUES ('run-v26', 'coder', 0, 10, 2, 5, 1, 15, 'exact',
            '2026-06-13T00:00:00.000Z')`,
       ).run();
       expect(() =>
         db
           .prepare(
-            `INSERT INTO run_usage (run_id, usage_source, created_at)
-             VALUES ('run-v26-bad', 'exact', '2026-06-13T00:00:00.000Z')`,
+            `INSERT INTO run_usage (run_id, kind, seq, usage_source, created_at)
+             VALUES ('run-v26-bad', 'coder', 0, 'exact',
+               '2026-06-13T00:00:00.000Z')`,
           )
           .run(),
       ).toThrow();
@@ -396,8 +535,8 @@ describe("runMigrations", () => {
       expect(() =>
         db
           .prepare(
-            `INSERT INTO run_usage (run_id, usage_source, created_at)
-             VALUES ('run-v26-bad-source', 'self_reported',
+            `INSERT INTO run_usage (run_id, kind, seq, usage_source, created_at)
+             VALUES ('run-v26-bad-source', 'coder', 0, 'self_reported',
                '2026-06-13T00:00:00.000Z')`,
           )
           .run(),
@@ -426,7 +565,7 @@ describe("runMigrations", () => {
       expect(before.map((r) => r.name)).not.toContain("prompt_sha256");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([25, 26, 27, 28, 29]);
+      expect(upgraded.applied).toEqual([25, 26, 27, 28, 29, 30]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       const after = db
         .prepare("PRAGMA table_info(runs)")
@@ -471,7 +610,7 @@ describe("runMigrations", () => {
       expect(before.map((r) => r.name)).not.toContain("prompt_provenance_json");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([24, 25, 26, 27, 28, 29]);
+      expect(upgraded.applied).toEqual([24, 25, 26, 27, 28, 29, 30]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       const after = db
         .prepare("PRAGMA table_info(review_proposals)")
@@ -495,7 +634,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "hitch_lifecycle_events")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([23, 24, 25, 26, 27, 28, 29]);
+      expect(upgraded.applied).toEqual([23, 24, 25, 26, 27, 28, 29, 30]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "hitch_lifecycle_events")).toBe(true);
       expect(hasSchemaObject(db, "index", "hitch_lifecycle_events_hitch_idx")).toBe(
@@ -535,7 +674,7 @@ describe("runMigrations", () => {
       ).run("2026-06-12T00:00:00.000Z", "{}");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([22, 23, 24, 25, 26, 27, 28, 29]);
+      expect(upgraded.applied).toEqual([22, 23, 24, 25, 26, 27, 28, 29, 30]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "db_stats_snapshots")).toBe(false);
       expect(hasSchemaObject(db, "index", "db_stats_snapshots_created_idx")).toBe(

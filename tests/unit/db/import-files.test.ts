@@ -190,10 +190,12 @@ describe("runFullImport", () => {
     ).run(JSON.stringify({ runId, status: "db-first" }), "a".repeat(64), runId);
     d.prepare(
       `INSERT INTO run_usage
-         (run_id, input_tokens, cached_input_tokens, output_tokens,
+         (run_id, kind, seq, input_tokens, cached_input_tokens, output_tokens,
           reasoning_output_tokens, total_tokens, usage_source, created_at)
-       VALUES (?, 1, 0, 2, 0, 3, 'exact', '2026-05-21T00:00:00Z')`,
-    ).run(runId);
+       VALUES
+         (?, 'coder', 0, 1, 0, 2, 0, 3, 'exact', '2026-05-21T00:00:00Z'),
+         (?, 'coder', 1, 4, 0, 5, 0, 9, 'exact', '2026-05-21T00:00:01Z')`,
+    ).run(runId, runId);
 
     writeRun(root, runId, { status: "approved" });
     const r2 = runFullImport(d, {
@@ -239,10 +241,12 @@ describe("runFullImport", () => {
     runFullImport(d, { harnessRoot: root });
     d.prepare(
       `INSERT INTO run_usage
-         (run_id, input_tokens, cached_input_tokens, output_tokens,
+         (run_id, kind, seq, input_tokens, cached_input_tokens, output_tokens,
           reasoning_output_tokens, total_tokens, usage_source, created_at)
-       VALUES (?, 1, 0, 2, 0, 3, 'exact', '2026-05-21T00:00:00Z')`,
-    ).run(runId);
+       VALUES
+         (?, 'coder', 0, 1, 0, 2, 0, 3, 'exact', '2026-05-21T00:00:00Z'),
+         (?, 'reviewer', 0, 4, 0, 5, 0, 9, 'exact', '2026-05-21T00:00:01Z')`,
+    ).run(runId, runId);
     rmSync(join(root, "runs", runId), { recursive: true, force: true });
 
     const r2 = runFullImport(d, { harnessRoot: root, reset: true });
