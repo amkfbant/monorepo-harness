@@ -1,4 +1,6 @@
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { harnessPaths } from "../config/paths.js";
 import { withManagedDb } from "../db/managed-connection.js";
@@ -67,6 +69,40 @@ function displayResolvedCommand(command: ResolvedCommand): string {
   return [command.cmd, ...command.args].join(" ");
 }
 
+// A deterministic fingerprint of the worktree's policy-relevant surface
+// (tracked changes + non-ignored untracked files), keyed by path with a content
+// hash. Comparing two fingerprints detects ANY mutation a close-check command
+// makes — including a content change to a file that was ALREADY dirty from the
+// coder run (whose `git status` porcelain line is unchanged) and writes to new
+// untracked files. Ignored files are intentionally excluded: they never enter
+// the post-hoc policy diff. Used to fail-closed if a command dirties the tree.
+async function worktreePolicyFingerprint(worktreePath: string): Promise<string> {
+  const status = await gitCliOrThrow(
+    ["status", "--porcelain", "--untracked-files=all"],
+    { cwd: worktreePath },
+  );
+  const lines = status.split("\n").filter((line) => line.trim() !== "");
+  const parts: string[] = [];
+  for (const line of lines) {
+    const code = line.slice(0, 2);
+    const rawPath = line.slice(3);
+    // Renames render as "old -> new"; fingerprint the destination content.
+    const path = rawPath.includes(" -> ")
+      ? rawPath.slice(rawPath.indexOf(" -> ") + 4)
+      : rawPath;
+    let hash = "absent";
+    try {
+      hash = createHash("sha256")
+        .update(await readFile(join(worktreePath, path)))
+        .digest("hex");
+    } catch {
+      // deleted or unreadable entry → keep the "absent" content marker
+    }
+    parts.push(`${code} ${path}\t${hash}`);
+  }
+  return parts.join("\n");
+}
+
 function resolveCommandForCondition(input: {
   condition: HitchCloseCondition;
   commands: readonly ResolvedCommand[];
@@ -129,16 +165,21 @@ function pendingCommandCloseConditions(input: {
     }),
     allowEmptyCloseConditions: input.session.policy.allowEmptyCloseConditions,
   });
-  // Only REQUIRED pending command conditions gate close. Executing an optional
-  // (advisory) command condition could throw on a non-allowlisted command and
-  // block the hitch before the required evidence is even recorded (review
-  // finding P1). Optional conditions never block close, so they are not run.
+  // Only REQUIRED, PENDING command conditions gate close.
+  // - required: optional/advisory conditions never block close, and running a
+  //   non-allowlisted optional command would throw before the required evidence
+  //   is recorded (review finding P1).
+  // - pending only: a `failed` condition was already checked against the
+  //   current run and routes to needs_fix (coder rerun); re-running it here
+  //   would re-execute a known-failed check and could overwrite the failed
+  //   evidence with a passed one on the same run (review finding P1, retry 2).
+  //   A fresh run invalidates the stale check back to `pending`.
   return close.conditions
     .filter(
       (evaluated) =>
         evaluated.condition.required &&
         evaluated.condition.kind === "command" &&
-        evaluated.status !== "passed",
+        evaluated.status === "pending",
     )
     .map((evaluated) => evaluated.condition);
 }
@@ -201,14 +242,12 @@ export async function runCommandCloseChecks(
     }
     // A close-check command MUST NOT mutate the run worktree: evidence is
     // recorded only in the DB and runs/<runId>/close-checks/, and the post-hoc
-    // policy diff is computed from this tree. Snapshot the worktree before and
-    // after; if an allowlisted command added or changed any entry, fail-closed
-    // rather than record a `passed` check over a polluted tree (review finding
-    // P1). Untracked entries are included so generated/coverage files count.
-    const statusArgs = ["status", "--porcelain", "--untracked-files=all"];
-    const worktreeStatusBefore = await gitCliOrThrow(statusArgs, {
-      cwd: worktreePath,
-    });
+    // policy diff is computed from this tree. Fingerprint the worktree's
+    // policy-relevant surface (content-hashed) before and after; if an
+    // allowlisted command changed ANY entry — including re-writing a file that
+    // was already dirty from the coder run — fail-closed rather than record a
+    // `passed` check over a polluted tree (review findings P1/P0).
+    const fingerprintBefore = await worktreePolicyFingerprint(worktreePath);
     const cmdRun = await runAllowedCommands({
       worktreePath,
       commands: [...commandsById.values()],
@@ -218,19 +257,23 @@ export async function runCommandCloseChecks(
         ? { envAllowlist: policy.commandDefaults.envAllowlist }
         : {}),
     });
-    const worktreeStatusAfter = await gitCliOrThrow(statusArgs, {
-      cwd: worktreePath,
-    });
-    const before = new Set(worktreeStatusBefore.split("\n"));
-    const dirtied = worktreeStatusAfter
-      .split("\n")
-      .filter((line) => line.trim() !== "" && !before.has(line));
-    if (dirtied.length > 0) {
+    const fingerprintAfter = await worktreePolicyFingerprint(worktreePath);
+    if (fingerprintAfter !== fingerprintBefore) {
+      const beforeLines = new Set(fingerprintBefore.split("\n"));
+      const afterLines = new Set(fingerprintAfter.split("\n"));
+      const added = fingerprintAfter
+        .split("\n")
+        .filter((line) => line !== "" && !beforeLines.has(line))
+        .map((line) => `+ ${line}`);
+      const removed = fingerprintBefore
+        .split("\n")
+        .filter((line) => line !== "" && !afterLines.has(line))
+        .map((line) => `- ${line}`);
       throw new Error(
         `close-check commands mutated the run worktree (${prep.runId}); ` +
           `close-checks must not write into the repo tree (write-scope / ` +
-          `post-hoc diff integrity). Newly dirtied entries:\n` +
-          dirtied.join("\n"),
+          `post-hoc diff integrity). Changed entries:\n` +
+          [...added, ...removed].join("\n"),
       );
     }
     const resultByCommandId = new Map(

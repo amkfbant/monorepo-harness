@@ -617,6 +617,44 @@ describe("createOrchestratorRunners.closeCheck", () => {
       close();
     }
   });
+
+  it("fails closed when a command rewrites an already-dirty tracked file (#140 P0)", async () => {
+    // The run worktree always carries the coder's uncommitted changes. A
+    // command that REWRITES an already-dirty tracked file leaves the `git
+    // status` porcelain line unchanged (` M tracked.txt`), so a status-line-set
+    // check would miss it. The content-hashed fingerprint must still fail-closed.
+    const { harnessRoot, dbPath, worktreePath } = setupCloseCheckHarness(
+      [
+        "    commands:",
+        "      allow:",
+        "        - id: typecheck",
+        "          cmd: node",
+        "          args: [\"-e\", \"require('fs').writeFileSync('tracked.txt','MUTATED')\"]",
+        "      defaults:",
+        "        timeout_ms: 30000",
+      ].join("\n"),
+    );
+    // Commit a file, then dirty it — mirroring the coder's uncommitted edits.
+    const tracked = join(worktreePath, "tracked.txt");
+    writeFileSync(tracked, "committed\n");
+    execFileSync("git", ["add", "tracked.txt"], { cwd: worktreePath });
+    execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd: worktreePath });
+    writeFileSync(tracked, "coder-edit\n");
+    seedCloseCheckHitch(dbPath);
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      repoPath: worktreePath,
+      baseBranch: "main",
+    });
+
+    await expect(runners.closeCheck("g-close-check")).rejects.toThrow(
+      /mutated the run worktree/,
+    );
+  });
 });
 
 describe("latestRunId", () => {
