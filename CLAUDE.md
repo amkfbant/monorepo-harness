@@ -30,6 +30,27 @@ pin**（`git describe --tags --exact-match` が成功）、dev は **`main` / fe
 ブランチ上**。ディレクトリ規約（`ops/monorepo-harness` vs `dev/monorepo-harness`）も
 補助。迷ったら**人間に確認**し、安全側（= ops とみなして `src/` を触らない）に倒す。
 
+### 自己開発の駆動は ops ハーネスで行う（不可侵）
+
+このハーネス自身を開発する self-hosting（`domain=self` の course / hitch を
+`course orchestrate` / `hitch orchestrate` で回す）では、**駆動側 = orchestrator は必ず
+別 checkout の ops ハーネス**を使い、**dev クローンを target リポジトリ**として編集する。
+**dev クローン内の dev ハーネス（`npm run harness`）で自分自身を駆動してはならない。**
+
+- **理由（bootstrapping）**: 開発中のハーネスで自分の変更を駆動すると、被験体自身の
+  orchestrate / convergence / workspace-base のバグが駆動ループを壊す（例: command-kind
+  close-check が自己 orchestrate で充足不能 / run workspace が stale base から分岐 /
+  良性 finding での誤 escalate）。安定した別 checkout の ops ハーネスを driver にすれば、
+  この自己参照的な不安定さを避けられる。
+- **構成**: course / hitch レコードは **ops DB**（`~/ops/monorepo-harness/.harness`）に置く。
+  駆動は ops checkout から `node dist/cli/run.js course|hitch orchestrate --repo
+  /Users/kn/dev/monorepo-harness --base-branch <branch> …`。target は ops に project 登録済みの
+  `monorepo-harness`（profile は dev クローン由来）。PR は dev クローンのブランチから `main` へ。
+- **dev ハーネスの用途は限定**: dev クローン内の `npm run harness` は、編集の局所確認
+  （typecheck / test / 単発 CLI 動作確認 / `--dry-run`）に留める。**self course / hitch の
+  orchestrate ループ駆動には使わない。**
+- 迷ったら安全側: ops 駆動が確立できないときは**人間に確認**し、dev 自己駆動に倒さない。
+
 ---
 
 ## hitch モードのとき（最重要）
