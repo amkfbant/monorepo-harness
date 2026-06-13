@@ -269,10 +269,17 @@ command checks using the existing close-condition machinery; it does not inject
 synthetic test gates and does not use reviewer self-report as state-transition
 evidence.
 
-When a hitch review step is re-driven for a DB-canonical run that is already
-`approved`, and the latest processed review proposal is also `approved`, the
-orchestrator refreshes the `review_consensus` close-check evidence at the
-current time without starting a new review cycle and without invoking Codex.
+When a hitch review step is re-driven for a run whose **DB-canonical decision**
+(`review_decisions`, not any single participant proposal) is `approved`, AND a
+**completed** review cycle already exists for that run, the orchestrator
+refreshes the `review_consensus` close-check evidence at the current time
+without starting a new review cycle and without invoking Codex. The evidence's
+`decision` / `reviewer` / `sourceSha256` come from `review_decisions` (the
+canonical decision); the latest processed proposal only supplies supplementary
+`proposalId` / advisories. If the run is approved but no completed review cycle
+exists (the import never ran, or crashed after persisting the cycle row but
+before importing findings), the short-circuit fails closed and escalates rather
+than recording a passed check over an unimported/partial review.
 This lets stale-but-approved review evidence advance to `close_ready` and then
 to `close_and_pr` on the next loop step. If that refreshed review evidence is
 fresh but another required close condition is still pending, the loop escalates
