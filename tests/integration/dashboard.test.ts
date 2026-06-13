@@ -161,6 +161,16 @@ describe("exportDashboard", () => {
     expect(r.out).not.toMatch(/listening on/);
   });
 
+  it("CLI: dashboard serve help marks --enable-mutation as deprecated", () => {
+    const root = harnessRoot();
+    const r = runCli(root, ["dashboard", "serve", "--help"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toMatch(
+      /--enable-mutation\s+deprecated: exits; use `harness operations\s+serve`/,
+    );
+    expect(r.out).not.toMatch(/enable POST mutation routes/);
+  });
+
   it("CLI: operations serve fails before listen when bearer or CSRF env is missing", () => {
     const root = harnessRoot();
     const noToken = runCli(root, ["operations", "serve"]);

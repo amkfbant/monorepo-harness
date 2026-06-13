@@ -2145,7 +2145,7 @@ dashboardCmd
   .option("--cors-origin <origin>", "enable CORS for this origin")
   .option(
     "--enable-mutation",
-    "Phase 13: enable POST mutation routes (token + CSRF required)",
+    "deprecated: exits; use `harness operations serve`",
     false,
   )
   .action(async (raw: Record<string, unknown>) => {

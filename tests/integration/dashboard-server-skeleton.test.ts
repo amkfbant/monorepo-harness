@@ -11,6 +11,13 @@ import { SCHEMA_VERSION } from "../../src/db/schema.js";
 import { createDashboardServer } from "../../src/dashboard/server/server.js";
 import { createOperationsServer } from "../../src/operations/server.js";
 import {
+  failOperation,
+  markOperationPending,
+  startOperation,
+  succeedOperation,
+  type OperationStatus,
+} from "../../src/db/repositories/operations.js";
+import {
   recordExternalBlob,
   registerBlobStore,
 } from "../../src/db/blob-stores.js";
@@ -42,6 +49,29 @@ async function startServer(dbPath: string) {
   };
 }
 
+async function startOperationsServer(dbPath: string) {
+  const server = createOperationsServer({
+    dbPath,
+    host: "127.0.0.1",
+    port: 0,
+    token: "topsecret",
+    csrfToken: "csrf-123",
+  });
+  await new Promise<void>((resolve) =>
+    server.listen(0, "127.0.0.1", () => resolve()),
+  );
+  const addr = server.address() as AddressInfo;
+  const baseUrl = `http://127.0.0.1:${addr.port}`;
+  return {
+    server,
+    baseUrl,
+    close: () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((err) => (err ? reject(err) : resolve())),
+      ),
+  };
+}
+
 async function get(baseUrl: string, path: string, init?: RequestInit) {
   const r = await fetch(`${baseUrl}${path}`, init);
   const text = await r.text();
@@ -52,6 +82,118 @@ async function get(baseUrl: string, path: string, init?: RequestInit) {
     body = text;
   }
   return { status: r.status, body };
+}
+
+async function postJson(
+  baseUrl: string,
+  path: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+) {
+  return get(baseUrl, path, {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer topsecret",
+      "X-CSRF-Token": "csrf-123",
+      "Content-Type": "application/json",
+      ...headers,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+const operationRouteCases = [
+  {
+    label: "review",
+    path: "/api/runs/run-parity-review/review",
+    targetId: "run-parity-review",
+    targetType: "run",
+    operationType: "review.apply",
+    requestBody: { decision: "approved", dryRun: true },
+    endpointStatus: 200,
+  },
+  {
+    label: "cleanup",
+    path: "/api/runs/run-parity-cleanup/cleanup",
+    targetId: "run-parity-cleanup",
+    targetType: "run",
+    operationType: "run.cleanup",
+    requestBody: { dryRun: true },
+    endpointStatus: 200,
+  },
+  {
+    label: "pr",
+    path: "/api/runs/run-parity-pr/pr",
+    targetId: "run-parity-pr",
+    targetType: "run",
+    operationType: "run.pr_create",
+    requestBody: { dryRun: true },
+    endpointStatus: 202,
+  },
+  {
+    label: "rerun",
+    path: "/api/runs/run-parity-rerun/rerun",
+    targetId: "run-parity-rerun",
+    targetType: "run",
+    operationType: "run.rerun",
+    requestBody: { dryRun: true },
+    endpointStatus: 202,
+  },
+  {
+    label: "backlog",
+    path: "/api/backlog/item-parity-backlog/run",
+    targetId: "item-parity-backlog",
+    targetType: "backlog_item",
+    operationType: "backlog.run",
+    requestBody: { dryRun: true },
+    endpointStatus: 202,
+  },
+] as const;
+
+function seedPriorOperation(
+  dbPath: string,
+  routeCase: (typeof operationRouteCases)[number],
+  status: OperationStatus,
+  idempotencyKey: string,
+) {
+  const db = openDb(dbPath);
+  try {
+    const operationId = `op-${routeCase.label}-${status}-${idempotencyKey}`;
+    startOperation(db, {
+      operationId,
+      operationType: routeCase.operationType,
+      targetType: routeCase.targetType,
+      targetId: routeCase.targetId,
+      actor: "http:test",
+      idempotencyKey,
+      dryRun: false,
+      input: { seeded: true },
+    });
+    const result = {
+      seeded: true,
+      route: routeCase.label,
+      status,
+    };
+    if (status === "succeeded") {
+      succeedOperation(db, operationId, result);
+    } else if (status === "pending") {
+      markOperationPending(db, operationId, result);
+    } else if (status === "failed") {
+      failOperation(db, operationId, "seed_failure", "seed failed");
+    } else if (status === "cancelled") {
+      db.prepare(
+        `UPDATE operations
+            SET status = 'cancelled',
+                error_code = 'seed_cancelled',
+                error_message = 'seed cancelled',
+                completed_at = ?
+          WHERE operation_id = ?`,
+      ).run(new Date().toISOString(), operationId);
+    }
+    return operationId;
+  } finally {
+    db.close();
+  }
 }
 
 describe("Dashboard server skeleton (Phase 12-1)", () => {
@@ -306,6 +448,235 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
       await new Promise<void>((r) => srv.close(() => r()));
       env.server = await startServer(env.dbPath);
     }
+  });
+
+  it("operations serve parity: auth is required for every POST route before CSRF or method checks", async () => {
+    await env.server.close();
+    const srv = await startOperationsServer(env.dbPath);
+    try {
+      for (const routeCase of operationRouteCases) {
+        const missingAuth = await get(srv.baseUrl, routeCase.path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(routeCase.requestBody),
+        });
+        expect(missingAuth.status, routeCase.label).toBe(401);
+        expect((missingAuth.body as { error: { code: string } }).error.code).toBe(
+          "unauthorized",
+        );
+
+        const wrongAuth = await get(srv.baseUrl, routeCase.path, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer wrong",
+            "X-CSRF-Token": "csrf-123",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(routeCase.requestBody),
+        });
+        expect(wrongAuth.status, routeCase.label).toBe(401);
+
+        const missingAuthWrongMethod = await get(srv.baseUrl, routeCase.path, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(routeCase.requestBody),
+        });
+        expect(missingAuthWrongMethod.status, routeCase.label).toBe(401);
+      }
+    } finally {
+      await srv.close();
+      env.server = await startServer(env.dbPath);
+    }
+  });
+
+  it("operations serve parity: idempotency replay semantics match the operation ledger", async () => {
+    await env.server.close();
+    const srv = await startOperationsServer(env.dbPath);
+    try {
+      for (const routeCase of operationRouteCases) {
+        for (const priorStatus of ["succeeded", "pending"] as const) {
+          const key = `${routeCase.label}-${priorStatus}`;
+          const priorId = seedPriorOperation(env.dbPath, routeCase, priorStatus, key);
+          const replay = await postJson(
+            srv.baseUrl,
+            routeCase.path,
+            routeCase.requestBody,
+            { "Idempotency-Key": key },
+          );
+          expect(replay.status, `${routeCase.label}:${priorStatus}`).toBe(
+            routeCase.endpointStatus,
+          );
+          const body = replay.body as {
+            operationId: string;
+            status: string;
+            replayed: boolean;
+            result: Record<string, unknown>;
+          };
+          expect(body.operationId).toBe(priorId);
+          expect(body.status).toBe(priorStatus);
+          expect(body.replayed).toBe(true);
+          expect(body.result).toMatchObject({
+            seeded: true,
+            route: routeCase.label,
+            status: priorStatus,
+          });
+        }
+
+        const runningKey = `${routeCase.label}-running`;
+        seedPriorOperation(env.dbPath, routeCase, "running", runningKey);
+        const running = await postJson(
+          srv.baseUrl,
+          routeCase.path,
+          routeCase.requestBody,
+          { "Idempotency-Key": runningKey },
+        );
+        expect(running.status, `${routeCase.label}:running`).toBe(409);
+        expect((running.body as { error: { code: string } }).error.code).toBe(
+          "conflict",
+        );
+
+        for (const priorStatus of ["failed", "cancelled"] as const) {
+          const key = `${routeCase.label}-${priorStatus}`;
+          const priorId = seedPriorOperation(env.dbPath, routeCase, priorStatus, key);
+          const replayedFailure = await postJson(
+            srv.baseUrl,
+            routeCase.path,
+            routeCase.requestBody,
+            { "Idempotency-Key": key },
+          );
+          expect(replayedFailure.status, `${routeCase.label}:${priorStatus}`).toBe(
+            409,
+          );
+          const error = (replayedFailure.body as {
+            error: {
+              code: string;
+              details: { operationId: string; priorStatus: string };
+            };
+          }).error;
+          expect(error.code).toBe("idempotency_replayed_failure");
+          expect(error.details.operationId).toBe(priorId);
+          expect(error.details.priorStatus).toBe(priorStatus);
+        }
+      }
+    } finally {
+      await srv.close();
+      env.server = await startServer(env.dbPath);
+    }
+  });
+
+  it("operations serve parity: validates request bodies without changing behavior", async () => {
+    await env.server.close();
+    const srv = await startOperationsServer(env.dbPath);
+    try {
+      const invalidDecision = await postJson(
+        srv.baseUrl,
+        "/api/runs/run-invalid-review/review",
+        { decision: "ship_it", dryRun: true },
+      );
+      expect(invalidDecision.status).toBe(400);
+      expect(
+        (invalidDecision.body as { error: { message: string } }).error.message,
+      ).toMatch(/decision must be/);
+
+      const cleanupMissingConfirm = await postJson(
+        srv.baseUrl,
+        "/api/runs/run-confirm-cleanup/cleanup",
+        {},
+      );
+      expect(cleanupMissingConfirm.status).toBe(400);
+      expect(
+        (cleanupMissingConfirm.body as { error: { message: string } }).error
+          .message,
+      ).toMatch(/confirm: 'cleanup'/);
+
+      const prMissingConfirm = await postJson(
+        srv.baseUrl,
+        "/api/runs/run-confirm-pr/pr",
+        {},
+      );
+      expect(prMissingConfirm.status).toBe(400);
+      expect(
+        (prMissingConfirm.body as { error: { message: string } }).error.message,
+      ).toMatch(/confirm: 'create-pr'/);
+    } finally {
+      await srv.close();
+      env.server = await startServer(env.dbPath);
+    }
+  });
+
+  it("operations serve parity: dry-run requests leave target records unchanged", async () => {
+    const db = openDb(env.dbPath);
+    try {
+      for (const routeCase of operationRouteCases.filter(
+        (c) => c.targetType === "run",
+      )) {
+        db.prepare(
+          `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+             status, source_mode, db_revision, export_status, started_at,
+             updated_at, meta_json)
+           VALUES (?, 'repo', 'domain', 'domain-coding', 'main',
+             'needs_review', 'db-first', 1, 'disabled',
+             '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', '{}')`,
+        ).run(routeCase.targetId);
+      }
+      db.prepare(
+        `INSERT INTO backlog_items
+           (item_id, project_id, repo_id, domain, title, goal, status, priority,
+            tags_json, created_at, updated_at)
+         VALUES
+           ('item-parity-backlog', 'demo', 'repo', 'domain', 'Fix thing',
+            'Make it work', 'open', 'medium', '[]',
+            '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')`,
+      ).run();
+    } finally {
+      db.close();
+    }
+
+    const readTargetSnapshot = () => {
+      const handle = openDb(env.dbPath);
+      try {
+        return {
+          runs: handle
+            .prepare(
+              `SELECT run_id, status, updated_at, meta_json
+                 FROM runs
+                WHERE run_id LIKE 'run-parity-%'
+                ORDER BY run_id`,
+            )
+            .all(),
+          backlog: handle
+            .prepare(
+              `SELECT item_id, status, updated_at
+                 FROM backlog_items
+                WHERE item_id = 'item-parity-backlog'`,
+            )
+            .all(),
+        };
+      } finally {
+        handle.close();
+      }
+    };
+
+    const before = readTargetSnapshot();
+    await env.server.close();
+    const srv = await startOperationsServer(env.dbPath);
+    try {
+      for (const routeCase of operationRouteCases) {
+        const response = await postJson(
+          srv.baseUrl,
+          routeCase.path,
+          routeCase.requestBody,
+          { "Idempotency-Key": `${routeCase.label}-dry-run-target-invariant` },
+        );
+        expect(response.status, routeCase.label).toBe(routeCase.endpointStatus);
+        expect((response.body as { replayed: boolean }).replayed).toBe(false);
+      }
+    } finally {
+      await srv.close();
+      env.server = await startServer(env.dbPath);
+    }
+
+    expect(readTargetSnapshot()).toEqual(before);
   });
 
   it("operations serve: non-GET/POST verbs are 405 (not 404)", async () => {
