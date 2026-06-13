@@ -1,11 +1,15 @@
 import { existsSync } from "node:fs";
-import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { harnessPaths } from "../config/paths.js";
 import { withManagedDb } from "../db/managed-connection.js";
 import { runAllowedCommands } from "../core/command-runner.js";
 import { collectDiff } from "../git/diff.js";
-import { computeReviewedFingerprint } from "../core/reviewed-fingerprint.js";
+import {
+  assertPathsSubset,
+  assertReviewedFingerprintMatches,
+  reviewedPathsFromMeta,
+} from "../core/reviewed-branch-push.js";
+import type { RunMeta } from "../logging/run-log.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
 import { partitionUntracked } from "../policy/untracked-filter.js";
@@ -70,34 +74,45 @@ function displayResolvedCommand(command: ResolvedCommand): string {
   return [command.cmd, ...command.args].join(" ");
 }
 
-// A deterministic fingerprint of the worktree's policy-relevant surface — the
-// SAME surface the post-hoc policy validation sees, computed via the exact same
-// `collectDiff` against the run's RECORDED base SHA (NOT HEAD: a run worktree
-// may carry committed reviewed changes, so HEAD != base; diffing HEAD would let
-// a command modify-and-commit a tracked file invisibly). The surface is:
-//   - tracked changes vs base (collectDiff.patch), and
-//   - untracked files surviving policy.ignoreUntracked.
-// Comparing two fingerprints detects ANY mutation a close-check command makes:
-// a content change to a file already dirty from the coder run, a modify-and-
-// commit, a new untracked or `.gitignore`'d-but-not-policy-ignored write, and —
-// via computeReviewedFingerprint's lstat/O_NOFOLLOW classifier — symlink swaps,
-// retargets, and mode-only (chmod) changes on untracked entries. Used to
-// fail-closed if a command dirties the tree.
-async function worktreePolicyFingerprint(opts: {
+// Assert the worktree's policy-relevant surface still equals the run's IMMUTABLE
+// reviewed record (meta.reviewed) — the exact state `harness pr create` will
+// commit. Validating against the reviewed record (not a self-relative before/
+// after) means a worktree ALREADY polluted before close-check is rejected too
+// (review finding P0): its baseline is checked, not just whether the command
+// left it unchanged. Two complementary gates, reused from the PR-creation path:
+//   - assertPathsSubset: the current policy surface (tracked changes vs the
+//     RECORDED base + untracked survivors of policy.ignoreUntracked, the same
+//     surface collectDiff feeds to write-scope validation) introduces NO path
+//     beyond the reviewed set — catches new/`.gitignore`'d-but-kept files.
+//   - assertReviewedFingerprintMatches: the reviewed paths' content still
+//     matches the approved fingerprint (lstat/O_NOFOLLOW: symlink swaps,
+//     retargets, chmod, and content edits all flip it).
+async function assertWorktreeMatchesReviewed(opts: {
   worktreePath: string;
   baseSha: string;
   ignoreUntracked: readonly string[];
-}): Promise<string> {
+  meta: RunMeta;
+  runId: string;
+  reviewedPaths: string[];
+  phase: string;
+}): Promise<void> {
   const diff = await collectDiff({
     repoPath: opts.worktreePath,
     baseSha: opts.baseSha,
   });
   const { kept } = partitionUntracked(diff.untrackedPaths, opts.ignoreUntracked);
-  const trackedHash = createHash("sha256").update(diff.patch).digest("hex");
-  // Type-tagged, symlink-safe (never followed), mode-sensitive digest of the
-  // kept untracked entries — the same classifier `harness pr create` uses.
-  const untrackedHash = await computeReviewedFingerprint(opts.worktreePath, kept);
-  return `tracked\t${trackedHash}\nuntracked\t${untrackedHash}`;
+  assertPathsSubset(
+    [...diff.trackedChangedPaths, ...kept],
+    opts.reviewedPaths,
+    `close-check ${opts.phase} worktree`,
+  );
+  await assertReviewedFingerprintMatches({
+    worktree: opts.worktreePath,
+    meta: opts.meta,
+    runId: opts.runId,
+    reviewedPaths: opts.reviewedPaths,
+    refusal: `run close checks (${opts.phase})`,
+  });
 }
 
 function resolveCommandForCondition(input: {
@@ -199,13 +214,15 @@ export async function runCommandCloseChecks(
             `close conditions`,
         );
       }
-      // The run's RECORDED base SHA — the same anchor the post-hoc policy diff
-      // used. Required for the worktree-mutation fingerprint; without it we
-      // cannot prove the close-check left the policy surface untouched, so
-      // fail-closed rather than guess (e.g. HEAD).
+      // The run's RECORDED base SHA + reviewed record — the exact anchors the
+      // post-hoc policy diff and `harness pr create` use. Required to verify the
+      // close-check ran over (and left) the reviewed surface; without them we
+      // cannot prove it, so fail-closed rather than guess (e.g. HEAD).
       const runRow = db
-        .prepare("SELECT base_sha FROM runs WHERE run_id = ?")
-        .get(latest.runId) as { base_sha: string | null } | undefined;
+        .prepare("SELECT base_sha, meta_json FROM runs WHERE run_id = ?")
+        .get(latest.runId) as
+        | { base_sha: string | null; meta_json: string | null }
+        | undefined;
       const baseSha = runRow?.base_sha;
       if (typeof baseSha !== "string" || baseSha === "") {
         throw new Error(
@@ -213,6 +230,14 @@ export async function runCommandCloseChecks(
             `close-check left the worktree clean — request external evidence`,
         );
       }
+      if (runRow?.meta_json == null) {
+        throw new Error(
+          `run ${latest.runId} has no recorded meta; cannot verify the ` +
+            `worktree against the reviewed state — request external evidence`,
+        );
+      }
+      const meta = JSON.parse(runRow.meta_json) as RunMeta;
+      const reviewedPaths = reviewedPathsFromMeta(meta, latest.runId);
       const attempt = repo.createAttempt({
         hitchId: input.hitchId,
         attemptType: "close-check",
@@ -226,6 +251,8 @@ export async function runCommandCloseChecks(
         context,
         runId: latest.runId,
         baseSha,
+        meta,
+        reviewedPaths,
         conditions,
       };
     });
@@ -254,15 +281,19 @@ export async function runCommandCloseChecks(
     }
     // A close-check command MUST NOT mutate the run worktree: evidence is
     // recorded only in the DB and runs/<runId>/close-checks/, and the post-hoc
-    // policy diff is computed from this tree. Fingerprint the worktree's
-    // policy-relevant surface (content-hashed) before and after; if an
-    // allowlisted command changed ANY entry — including re-writing a file that
-    // was already dirty from the coder run — fail-closed rather than record a
-    // `passed` check over a polluted tree (review findings P1/P0).
-    const fingerprintBefore = await worktreePolicyFingerprint({
+    // policy diff (and `harness pr create`) commit only the reviewed surface.
+    // BEFORE: the baseline worktree must already equal the reviewed state — a
+    // tree polluted between review and close-check is rejected here, not used as
+    // the baseline (review finding P0). AFTER: the command must have left that
+    // reviewed surface untouched.
+    await assertWorktreeMatchesReviewed({
       worktreePath,
       baseSha: prep.baseSha,
       ignoreUntracked: policy.ignoreUntracked,
+      meta: prep.meta,
+      runId: prep.runId,
+      reviewedPaths: prep.reviewedPaths,
+      phase: "baseline",
     });
     const cmdRun = await runAllowedCommands({
       worktreePath,
@@ -273,29 +304,15 @@ export async function runCommandCloseChecks(
         ? { envAllowlist: policy.commandDefaults.envAllowlist }
         : {}),
     });
-    const fingerprintAfter = await worktreePolicyFingerprint({
+    await assertWorktreeMatchesReviewed({
       worktreePath,
       baseSha: prep.baseSha,
       ignoreUntracked: policy.ignoreUntracked,
+      meta: prep.meta,
+      runId: prep.runId,
+      reviewedPaths: prep.reviewedPaths,
+      phase: "post-command",
     });
-    if (fingerprintAfter !== fingerprintBefore) {
-      const beforeLines = new Set(fingerprintBefore.split("\n"));
-      const afterLines = new Set(fingerprintAfter.split("\n"));
-      const added = fingerprintAfter
-        .split("\n")
-        .filter((line) => line !== "" && !beforeLines.has(line))
-        .map((line) => `+ ${line}`);
-      const removed = fingerprintBefore
-        .split("\n")
-        .filter((line) => line !== "" && !afterLines.has(line))
-        .map((line) => `- ${line}`);
-      throw new Error(
-        `close-check commands mutated the run worktree (${prep.runId}); ` +
-          `close-checks must not write into the repo tree (write-scope / ` +
-          `post-hoc diff integrity). Changed entries:\n` +
-          [...added, ...removed].join("\n"),
-      );
-    }
     const resultByCommandId = new Map(
       cmdRun.results.map((result) => [result.id, result]),
     );
