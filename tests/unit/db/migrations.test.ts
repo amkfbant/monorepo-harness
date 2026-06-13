@@ -16,6 +16,7 @@ import {
   DROPPED_TABLE_NAMES,
   SCHEMA_VERSION,
 } from "../../../src/db/schema.js";
+import { HitchRepository } from "../../../src/hitch/repository.js";
 
 function freshDbPath(): string {
   const dir = mkdtempSync(join(tmpdir(), "harness-db-"));
@@ -69,7 +70,7 @@ describe("runMigrations", () => {
     expect(r.version).toBe(SCHEMA_VERSION);
     expect(r.applied).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27, 28,
+      22, 23, 24, 25, 26, 27, 28, 29,
     ]);
     const tables = tableNames(dbPath);
     expect(tables.has("schema_migrations")).toBe(true);
@@ -84,6 +85,113 @@ describe("runMigrations", () => {
     }
   });
 
+  it("rebuilds hitch_lifecycle_events in v29 without loosening constraints", () => {
+    const db = openDb(freshDbPath());
+    try {
+      applyMigrationsBefore(db, 29);
+      expect(currentSchemaVersion(db)).toBe(28);
+      const repo = new HitchRepository(db);
+      repo.createSession({
+        hitchId: "hitch-v29",
+        title: "v29",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      db.prepare(
+        `INSERT INTO hitch_lifecycle_events
+           (event_id, hitch_id, event, reason, created_at, created_by)
+         VALUES ('event-old', 'hitch-v29', 'closed', 'done',
+           '2026-06-13T00:00:00.000Z', 'test')`,
+      ).run();
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO hitch_lifecycle_events
+               (event_id, hitch_id, event, reason, created_at, created_by)
+             VALUES ('event-too-new', 'hitch-v29', 'pr_adopted', 'new',
+               '2026-06-13T00:00:01.000Z', 'test')`,
+          )
+          .run(),
+      ).toThrow(/CHECK/i);
+
+      const upgraded = runMigrations(db);
+      expect(upgraded.applied).toEqual([29]);
+      expect(upgraded.version).toBe(SCHEMA_VERSION);
+      expect(hasSchemaObject(db, "index", "hitch_lifecycle_events_hitch_idx")).toBe(
+        true,
+      );
+
+      const preserved = db
+        .prepare("SELECT event, reason FROM hitch_lifecycle_events WHERE event_id = ?")
+        .get("event-old") as { event: string; reason: string } | undefined;
+      expect(preserved).toEqual({ event: "closed", reason: "done" });
+
+      for (const event of ["reopened", "closed", "cancelled", "pr_adopted", "updated"]) {
+        db.prepare(
+          `INSERT INTO hitch_lifecycle_events
+             (event_id, hitch_id, event, reason, created_at, created_by)
+           VALUES (?, 'hitch-v29', ?, 'why', '2026-06-13T00:00:02.000Z',
+             'test')`,
+        ).run(`event-${event}`, event);
+      }
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO hitch_lifecycle_events
+               (event_id, hitch_id, event, reason, created_at, created_by)
+             VALUES ('event-bad', 'hitch-v29', 'bad', 'why',
+               '2026-06-13T00:00:03.000Z', 'test')`,
+          )
+          .run(),
+      ).toThrow(/CHECK/i);
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO hitch_lifecycle_events
+               (event_id, hitch_id, event, created_at, created_by)
+             VALUES ('event-null-reason', 'hitch-v29', 'updated',
+               '2026-06-13T00:00:04.000Z', 'test')`,
+          )
+          .run(),
+      ).toThrow(/NOT NULL/i);
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO hitch_lifecycle_events
+               (event_id, hitch_id, event, reason, created_at)
+             VALUES ('event-null-actor', 'hitch-v29', 'updated', 'why',
+               '2026-06-13T00:00:05.000Z')`,
+          )
+          .run(),
+      ).toThrow(/NOT NULL/i);
+
+      const fks = db
+        .prepare("PRAGMA foreign_key_list(hitch_lifecycle_events)")
+        .all() as { table: string; from: string; to: string; on_delete: string }[];
+      expect(fks).toContainEqual(
+        expect.objectContaining({
+          table: "hitch_sessions",
+          from: "hitch_id",
+          to: "hitch_id",
+          on_delete: "CASCADE",
+        }),
+      );
+      db.prepare("DELETE FROM hitch_sessions WHERE hitch_id = 'hitch-v29'").run();
+      const remaining = db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM hitch_lifecycle_events WHERE hitch_id = 'hitch-v29'",
+        )
+        .get() as { n: number };
+      expect(remaining.n).toBe(0);
+
+      const again = runMigrations(db);
+      expect(again.applied).toEqual([]);
+      expect(again.version).toBe(SCHEMA_VERSION);
+    } finally {
+      db.close();
+    }
+  });
+
   it("creates domain_lock_contention in v28 and stays idempotent", () => {
     const db = openDb(freshDbPath());
     try {
@@ -92,7 +200,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "domain_lock_contention")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([28]);
+      expect(upgraded.applied).toEqual([28, 29]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "domain_lock_contention")).toBe(true);
       expect(
@@ -157,7 +265,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "metrics_snapshots")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([27, 28]);
+      expect(upgraded.applied).toEqual([27, 28, 29]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "metrics_snapshots")).toBe(true);
       expect(hasSchemaObject(db, "index", "metrics_snapshots_created_idx")).toBe(
@@ -221,7 +329,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "run_usage")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([26, 27, 28]);
+      expect(upgraded.applied).toEqual([26, 27, 28, 29]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "run_usage")).toBe(true);
 
@@ -318,7 +426,7 @@ describe("runMigrations", () => {
       expect(before.map((r) => r.name)).not.toContain("prompt_sha256");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([25, 26, 27, 28]);
+      expect(upgraded.applied).toEqual([25, 26, 27, 28, 29]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       const after = db
         .prepare("PRAGMA table_info(runs)")
@@ -363,7 +471,7 @@ describe("runMigrations", () => {
       expect(before.map((r) => r.name)).not.toContain("prompt_provenance_json");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([24, 25, 26, 27, 28]);
+      expect(upgraded.applied).toEqual([24, 25, 26, 27, 28, 29]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       const after = db
         .prepare("PRAGMA table_info(review_proposals)")
@@ -387,7 +495,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "hitch_lifecycle_events")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([23, 24, 25, 26, 27, 28]);
+      expect(upgraded.applied).toEqual([23, 24, 25, 26, 27, 28, 29]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "hitch_lifecycle_events")).toBe(true);
       expect(hasSchemaObject(db, "index", "hitch_lifecycle_events_hitch_idx")).toBe(
@@ -427,7 +535,7 @@ describe("runMigrations", () => {
       ).run("2026-06-12T00:00:00.000Z", "{}");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([22, 23, 24, 25, 26, 27, 28]);
+      expect(upgraded.applied).toEqual([22, 23, 24, 25, 26, 27, 28, 29]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "db_stats_snapshots")).toBe(false);
       expect(hasSchemaObject(db, "index", "db_stats_snapshots_created_idx")).toBe(

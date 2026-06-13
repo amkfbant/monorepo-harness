@@ -8,6 +8,12 @@ import {
   HitchRepository,
   OPEN_FINDING_LIFECYCLES,
 } from "../../../src/hitch/repository.js";
+import {
+  DEFAULT_HITCH_POLICY,
+  type HitchCloseCondition,
+  type HitchPolicy,
+  type HitchScope,
+} from "../../../src/hitch/types.js";
 
 function freshRepo(): { db: ReturnType<typeof openDb>; repo: HitchRepository } {
   const dir = mkdtempSync(join(tmpdir(), "harness-goal-repo-"));
@@ -41,6 +47,22 @@ function createGoal(
     createdSource: "cli",
     createdAt: "2026-05-26T00:00:00.000Z",
   });
+}
+
+function seedRun(
+  db: ReturnType<typeof openDb>,
+  input: {
+    runId: string;
+    prUrl?: string | null;
+    prNumber?: number | null;
+  },
+): void {
+  db.prepare(
+    `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch, status,
+       pr_url, pr_number, updated_at)
+     VALUES (?, 'repo', 'goal', 'domain-coding', 'main', 'approved', ?, ?,
+       '2026-06-13T00:00:00.000Z')`,
+  ).run(input.runId, input.prUrl ?? null, input.prNumber ?? null);
 }
 
 describe("HitchRepository", () => {
@@ -628,6 +650,429 @@ describe("HitchRepository", () => {
       }).finding;
       expect(second.findingId).toBe(first.findingId);
       expect(second.severity).toBe("P0");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("adoptPr (#169)", () => {
+  it("records an adopted PR event with the superseded run PR without rewriting runs", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo, { hitchId: "hitch-adopt" });
+      seedRun(db, {
+        runId: "run-old",
+        prUrl: "https://github.com/acme/app/pull/7",
+        prNumber: 7,
+      });
+      repo.createAttempt({
+        hitchId: "hitch-adopt",
+        attemptType: "implement",
+        status: "succeeded",
+        runId: "run-old",
+      });
+
+      const result = repo.adoptPr({
+        hitchId: "hitch-adopt",
+        prUrl: "https://github.com/acme/app/pull/42",
+        prNumber: 42,
+        reason: "operator takeover",
+        createdBy: "operator",
+        now: "2026-06-13T01:00:00.000Z",
+      });
+      expect(result.status).toBe("open");
+      const run = db
+        .prepare("SELECT pr_url, pr_number FROM runs WHERE run_id = 'run-old'")
+        .get() as { pr_url: string; pr_number: number };
+      expect(run).toEqual({
+        pr_url: "https://github.com/acme/app/pull/7",
+        pr_number: 7,
+      });
+      expect(repo.listLifecycleEvents("hitch-adopt")).toMatchObject([
+        {
+          event: "pr_adopted",
+          reason: "operator takeover",
+          createdBy: "operator",
+          detail: {
+            adoptedPr: {
+              url: "https://github.com/acme/app/pull/42",
+              number: 42,
+            },
+            supersededPr: {
+              url: "https://github.com/acme/app/pull/7",
+              number: 7,
+            },
+            runId: "run-old",
+          },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("records null supersededPr when the latest run has no PR", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo, { hitchId: "hitch-adopt-no-pr" });
+      seedRun(db, { runId: "run-no-pr" });
+      repo.createAttempt({
+        hitchId: "hitch-adopt-no-pr",
+        attemptType: "implement",
+        status: "succeeded",
+        runId: "run-no-pr",
+      });
+
+      repo.adoptPr({
+        hitchId: "hitch-adopt-no-pr",
+        prNumber: 52,
+        reason: "operator takeover",
+        createdBy: "operator",
+      });
+      expect(repo.listLifecycleEvents("hitch-adopt-no-pr")[0]?.detail).toEqual({
+        adoptedPr: { url: null, number: 52 },
+        supersededPr: null,
+        runId: "run-no-pr",
+      });
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("updateSessionConfig (#142)", () => {
+  const closeConditions: HitchCloseCondition[] = [
+    { id: "typecheck", kind: "command", required: true, command: "npm run typecheck" },
+  ];
+  const broadScope: HitchScope = {
+    targetFiles: ["src/**", "docs/**"],
+    targetOperations: ["run", "review"],
+    allowedFindingCategories: ["correctness", "security"],
+    excludedCategories: ["future-feature"],
+    targetSummary: "hitch convergence",
+    notes: "initial",
+  };
+
+  function createUpdateGoal(repo: HitchRepository, hitchId = "hitch-update") {
+    return repo.createSession({
+      hitchId,
+      title: "Update",
+      scope: broadScope,
+      closeConditions,
+      policy: DEFAULT_HITCH_POLICY,
+      createdBy: "test",
+      createdSource: "cli",
+      createdAt: "2026-06-13T00:00:00.000Z",
+    });
+  }
+
+  it("updates close conditions and records previous config in an updated event", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createUpdateGoal(repo);
+      const nextClose: HitchCloseCondition[] = [
+        ...closeConditions,
+        { id: "manual-ok", kind: "manual", required: true },
+      ];
+      const updated = repo.updateSessionConfig({
+        hitchId: "hitch-update",
+        closeConditions: nextClose,
+        reason: "add manual signoff",
+        createdBy: "operator",
+        now: "2026-06-13T01:00:00.000Z",
+      });
+      expect(updated.closeConditions.map((c) => c.id)).toEqual([
+        "typecheck",
+        "manual-ok",
+      ]);
+      expect(updated.updatedAt).toBe("2026-06-13T01:00:00.000Z");
+      expect(repo.listLifecycleEvents("hitch-update")).toMatchObject([
+        {
+          event: "updated",
+          reason: "add manual signoff",
+          detail: {
+            updatedFields: ["closeConditions"],
+            previousCloseConditions: closeConditions,
+          },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("allows scope narrowing and notes-only edits without --allow-scope-widen", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createUpdateGoal(repo);
+      const updated = repo.updateSessionConfig({
+        hitchId: "hitch-update",
+        scope: {
+          targetFiles: ["src/**"],
+          targetOperations: ["run"],
+          allowedFindingCategories: ["correctness"],
+          excludedCategories: ["future-feature", "docs"],
+          targetSummary: "hitch convergence",
+          notes: "narrowed",
+        },
+        reason: "narrow to source work",
+        createdBy: "operator",
+      });
+      expect(updated.scope).toMatchObject({
+        targetFiles: ["src/**"],
+        targetOperations: ["run"],
+        allowedFindingCategories: ["correctness"],
+        excludedCategories: ["future-feature", "docs"],
+        targetSummary: "hitch convergence",
+        notes: "narrowed",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("allows dropping positive matchers (targetOperations/allowedFindingCategories) without --allow-scope-widen", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createUpdateGoal(repo);
+      // drop the pure positive matchers — their sets shrink to ∅ (narrowing).
+      // targetFiles (a gate), excludedCategories, and targetSummary are kept
+      // unchanged: dropping the file gate or an exclusion would legitimately
+      // widen, so those stay put to isolate the positive-matcher-drop case.
+      const updated = repo.updateSessionConfig({
+        hitchId: "hitch-update",
+        scope: {
+          targetFiles: ["src/**", "docs/**"],
+          excludedCategories: ["future-feature"],
+          targetSummary: "hitch convergence",
+          notes: "doc-only pass",
+        },
+        reason: "drop matchers",
+        createdBy: "operator",
+      });
+      expect(updated.scope.targetOperations).toBeUndefined();
+      expect(updated.scope.allowedFindingCategories).toBeUndefined();
+      expect(updated.scope.notes).toBe("doc-only pass");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("treats removing the targetFiles gate as widening (fail-closed)", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createUpdateGoal(repo); // baseline targetFiles: ["src/**", "docs/**"]
+      // dropping targetFiles removes the out-of-scope gate, so findings outside
+      // the old patterns can become in_scope — widening, requires the flag.
+      const withoutFiles = {
+        targetOperations: ["run", "review"],
+        allowedFindingCategories: ["correctness", "security"],
+        excludedCategories: ["future-feature"],
+        targetSummary: "hitch convergence",
+        notes: "drop the file gate",
+      };
+      expect(() =>
+        repo.updateSessionConfig({
+          hitchId: "hitch-update",
+          scope: withoutFiles,
+          reason: "drop gate",
+          createdBy: "operator",
+        }),
+      ).toThrow(/scope widen/i);
+      // tightening the gate to a subset is allowed (narrowing)
+      expect(
+        repo.updateSessionConfig({
+          hitchId: "hitch-update",
+          scope: { ...withoutFiles, targetFiles: ["src/**"] },
+          reason: "tighten gate",
+          createdBy: "operator",
+        }).scope.targetFiles,
+      ).toEqual(["src/**"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("allows non-gate policy updates without --allow-gate-loosen", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createUpdateGoal(repo);
+      const nextPolicy: HitchPolicy = {
+        ...DEFAULT_HITCH_POLICY,
+        autoFixSeverities: ["P0", "P1"],
+      };
+      const updated = repo.updateSessionConfig({
+        hitchId: "hitch-update",
+        policy: nextPolicy,
+        reason: "allow P0 autofix under operator control",
+        createdBy: "operator",
+      });
+      expect(updated.policy.autoFixSeverities).toEqual(["P0", "P1"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([
+    ["targetFiles", { ...broadScope, targetFiles: ["src/**", "docs/**", "tests/**"] }],
+    ["targetOperations", { ...broadScope, targetOperations: ["run", "review", "merge"] }],
+    [
+      "allowedFindingCategories",
+      {
+        ...broadScope,
+        allowedFindingCategories: ["correctness", "security", "performance"],
+      },
+    ],
+    ["targetSummary", { ...broadScope, targetSummary: "hitch convergence and release" }],
+  ] satisfies Array<[string, HitchScope]>)(
+    "rejects %s widening unless --allow-scope-widen is set",
+    (_field, scope) => {
+      const { db, repo } = freshRepo();
+      try {
+        createUpdateGoal(repo);
+        expect(() =>
+          repo.updateSessionConfig({
+            hitchId: "hitch-update",
+            scope,
+            reason: "widen",
+            createdBy: "operator",
+          }),
+        ).toThrow(/scope widen/i);
+        expect(
+          repo.updateSessionConfig({
+            hitchId: "hitch-update",
+            scope,
+            reason: "approved widen",
+            allowScopeWiden: true,
+            createdBy: "operator",
+          }).scope,
+        ).toEqual(scope);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it.each([
+    ["allowedFindingCategories", { allowedFindingCategories: ["correctness"] }],
+    ["targetOperations", { targetOperations: ["run"] }],
+    ["targetFiles", { targetFiles: ["src/**"] }],
+  ] satisfies Array<[string, HitchScope]>)(
+    "treats adding %s from an undefined baseline as widening (fail-closed)",
+    (_field, added) => {
+      const { db, repo } = freshRepo();
+      try {
+        // baseline leaves the positive matcher fields undefined
+        repo.createSession({
+          hitchId: "hitch-min",
+          title: "min",
+          scope: { notes: "narrow start" },
+          closeConditions,
+          policy: DEFAULT_HITCH_POLICY,
+          createdBy: "test",
+          createdSource: "cli",
+        });
+        // undefined → non-empty matcher widens the in-scope surface, so it must
+        // be rejected without --allow-scope-widen (the earlier bug let it pass)
+        expect(() =>
+          repo.updateSessionConfig({
+            hitchId: "hitch-min",
+            scope: { notes: "narrow start", ...added },
+            reason: "widen from empty",
+            createdBy: "operator",
+          }),
+        ).toThrow(/scope widen/i);
+        expect(
+          repo.updateSessionConfig({
+            hitchId: "hitch-min",
+            scope: { notes: "narrow start", ...added },
+            reason: "approved widen",
+            allowScopeWiden: true,
+            createdBy: "operator",
+          }).scope,
+        ).toMatchObject(added);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("requires --allow-gate-loosen when close conditions or policy relax the close gate", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createUpdateGoal(repo);
+      expect(() =>
+        repo.updateSessionConfig({
+          hitchId: "hitch-update",
+          closeConditions: [],
+          reason: "remove typecheck",
+          createdBy: "operator",
+        }),
+      ).toThrow(/gate loosen/i);
+      expect(() =>
+        repo.updateSessionConfig({
+          hitchId: "hitch-update",
+          policy: {
+            ...DEFAULT_HITCH_POLICY,
+            closeRequires: {
+              ...DEFAULT_HITCH_POLICY.closeRequires,
+              noOpenInScopeP1: false,
+            },
+          },
+          reason: "allow P1",
+          createdBy: "operator",
+        }),
+      ).toThrow(/gate loosen/i);
+
+      const updated = repo.updateSessionConfig({
+        hitchId: "hitch-update",
+        closeConditions: [],
+        reason: "operator accepts looser gate",
+        allowGateLoosen: true,
+        createdBy: "operator",
+      });
+      expect(updated.closeConditions).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([
+    ["closed", /reopen.*before updating/i],
+    ["budget_exhausted", /reopen.*before updating/i],
+    ["escalated", /reopen.*before updating/i],
+    ["cancelled", /cannot be reopened/i],
+    ["diverging", /cannot be reopened/i],
+  ] as const)("rejects updates for terminal status %s with state guidance", (status, pattern) => {
+    const { db, repo } = freshRepo();
+    try {
+      createUpdateGoal(repo);
+      repo.updateStatus("hitch-update", status, "terminal", { createdBy: "test" });
+      expect(() =>
+        repo.updateSessionConfig({
+          hitchId: "hitch-update",
+          closeConditions,
+          reason: "try update",
+          createdBy: "operator",
+        }),
+      ).toThrow(pattern);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects updates with no config fields", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createUpdateGoal(repo);
+      expect(() =>
+        repo.updateSessionConfig({
+          hitchId: "hitch-update",
+          reason: "nothing",
+          createdBy: "operator",
+        }),
+      ).toThrow(/at least one/i);
     } finally {
       db.close();
     }

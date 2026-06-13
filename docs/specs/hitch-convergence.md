@@ -308,11 +308,13 @@ against the latest reviewed run worktree, and evidence is recorded only in
 resolved to exactly one allowlisted command, the command is not executed and the
 orchestrator escalates with an external-evidence request.
 
-`hitch_lifecycle_events` records `closed`, `cancelled`, and `reopened` reasons
-with actor/timestamp for audit. It is not a state-transition source.
-Convergence, mutation gates, and roadmap rollup derive state from deterministic
-harness inputs (`hitch_sessions`, findings, close checks, budgets, and
-convergence metrics), never from lifecycle event rows.
+`hitch_lifecycle_events` records `closed`, `cancelled`, `reopened`,
+`pr_adopted`, and `updated` reasons with actor/timestamp for audit. It is not a
+state-transition source. Convergence, mutation gates, roadmap rollup, and
+auto-merge derive state from deterministic harness inputs (`hitch_sessions`,
+findings, close checks, budgets, and convergence metrics), never from lifecycle
+event rows. `pr_adopted` affects status display only; it never authorizes
+`await-merge`.
 
 Review-only and close-check attempts inherit the related coding iteration when
 they are linked to an existing run attempt. This keeps automatic review and
@@ -326,6 +328,8 @@ The CLI exposes `harness hitch`:
 harness hitch start --title "..." --scope-file scope.yaml --close-file close.yaml
 harness hitch status <hitch-id>
 harness hitch reopen <hitch-id> --reason "..." [--created-by actor] [--extend-iterations N] [--extend-review-cycles N] [--extend-reruns N]
+harness hitch adopt-pr <hitch-id> <pr-url-or-number> --reason "..." [--created-by actor]
+harness hitch update <hitch-id> [--close-file close.yaml] [--scope-file scope.yaml] [--policy-file policy.yaml] --reason "..." [--allow-scope-widen] [--allow-gate-loosen] [--created-by actor]
 harness hitch finding add <hitch-id> --severity P1 --category correctness --summary "..."
 harness hitch finding classify <finding-id> --scope in-scope --reason "..."
 harness hitch finding fixed <finding-id> --note "..."
@@ -340,6 +344,24 @@ CLI/MCP close-check record tools may still record externally supplied command
 evidence. Autonomous orchestrate only runs commands that resolve to the domain
 policy allowlist; non-allowlisted command conditions fail fast and require
 external evidence.
+
+`hitch adopt-pr` is audit/status-only for operator takeover. It records the
+adopted PR and the latest run PR it supersedes, but it does not rewrite
+`runs.pr_url` / `runs.pr_number` and does not change hitch status. A hitch with
+`pr_adopted` is rejected by `hitch await-merge`; adopted PRs are human-merge
+only, followed by `hitch close --force` to close the record.
+
+`hitch update` changes the frozen config only under explicit guards. It accepts
+live statuses (`open`, `in_progress`, `close_ready`) and rejects terminal
+statuses; `closed` / `budget_exhausted` / `escalated` must be reopened first,
+while `cancelled` / `diverging` cannot be updated. Scope edits are fail-closed:
+`targetFiles`, `targetOperations`, `allowedFindingCategories`,
+`excludedCategories`, and `targetSummary` must be provably non-widening unless
+`--allow-scope-widen` is supplied; `notes` is the only non-semantic scope field.
+Close-condition or policy edits that remove required close evidence or relax
+`closeRequires` / `allowEmptyCloseConditions` require `--allow-gate-loosen`.
+Each update writes an `updated` lifecycle event containing the changed fields and
+previous config snapshot.
 
 ## MCP Contract
 

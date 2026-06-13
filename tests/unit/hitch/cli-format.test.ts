@@ -62,4 +62,45 @@ describe("hitch CLI formatting", () => {
     expect(line).toContain("tests=not_run_by_consensus");
     expect(line).toContain("review_advisories=1");
   });
+
+  it("shows the latest adopted PR before the superseded run PR", () => {
+    const line = formatHitchStatusLine({
+      session: {
+        hitchId: "g-adopted",
+        status: "close_ready",
+        closeConditions: [],
+      },
+      convergence: {
+        decision: "close_ready",
+        metrics: {
+          openInScopeP1: 0,
+          openUnknownScope: 0,
+        },
+      },
+      closeChecks: [],
+      lifecycleEvents: [
+        {
+          event: "pr_adopted",
+          createdAt: "2026-06-13T01:00:00.000Z",
+          detail: {
+            adoptedPr: {
+              url: "https://github.com/acme/app/pull/42",
+              number: 42,
+            },
+            supersededPr: {
+              url: "https://github.com/acme/app/pull/7",
+              number: 7,
+            },
+            runId: "run-old",
+          },
+        },
+      ],
+    });
+
+    expect(line).toContain("pr=https://github.com/acme/app/pull/42");
+    expect(line).toContain("supersededPr=https://github.com/acme/app/pull/7");
+    expect(line.indexOf("pr=https://github.com/acme/app/pull/42")).toBeLessThan(
+      line.indexOf("supersededPr=https://github.com/acme/app/pull/7"),
+    );
+  });
 });

@@ -417,6 +417,86 @@ export function registerHitchCommands(
       });
     });
 
+  hitchCmd
+    .command("adopt-pr")
+    .description("record an operator-adopted PR for hitch status/audit only")
+    .argument("<hitch-id>", "hitch id")
+    .argument("<pr-url-or-number>", "adopted PR URL or number")
+    .requiredOption("--reason <text>", "adoption reason")
+    .option("--created-by <actor>", "actor label", "cli")
+    .option("--json", "emit JSON", false)
+    .action((hitchId: string, prArg: string, raw: Record<string, unknown>) => {
+      withHitchErrorExit(() => {
+        const pr = parsePrReference(prArg);
+        const result = withHitchRepo(opts, ({ repo }) =>
+          repo.adoptPr({
+            hitchId,
+            ...pr,
+            reason: String(raw.reason),
+            createdBy: String(raw.createdBy),
+          }),
+        );
+        writeOutput(
+          raw,
+          result,
+          `hitch=${result.hitchId} adoptedPr=${formatPrReference(pr)} status=${result.status}\n`,
+        );
+      });
+    });
+
+  hitchCmd
+    .command("update")
+    .description("update a live hitch's scope, close conditions, or policy")
+    .argument("<hitch-id>", "hitch id")
+    .option("--close-file <path>", "YAML/JSON close conditions file")
+    .option("--scope-file <path>", "YAML/JSON hitch scope file")
+    .option("--policy-file <path>", "YAML/JSON hitch policy file")
+    .requiredOption("--reason <text>", "update reason")
+    .option("--allow-scope-widen", "permit scope-widening changes", false)
+    .option("--allow-gate-loosen", "permit close-gate loosening changes", false)
+    .option("--created-by <actor>", "actor label", "cli")
+    .option("--json", "emit JSON", false)
+    .action((hitchId: string, raw: Record<string, unknown>) => {
+      withHitchErrorExit(() => {
+        if (
+          raw.closeFile === undefined &&
+          raw.scopeFile === undefined &&
+          raw.policyFile === undefined
+        ) {
+          throw new HitchCliError(
+            "hitch update requires at least one of --close-file, --scope-file, or --policy-file",
+          );
+        }
+        const result = withHitchRepo(opts, ({ repo }) =>
+          repo.updateSessionConfig({
+            hitchId,
+            ...(raw.scopeFile !== undefined
+              ? { scope: parseHitchScope(readStructuredFile(String(raw.scopeFile))) }
+              : {}),
+            ...(raw.closeFile !== undefined
+              ? {
+                  closeConditions: parseHitchCloseConditions(
+                    readStructuredFile(String(raw.closeFile)),
+                  ),
+                }
+              : {}),
+            ...(raw.policyFile !== undefined
+              ? { policy: parseHitchPolicy(readStructuredFile(String(raw.policyFile))) }
+              : {}),
+            reason: String(raw.reason),
+            allowScopeWiden: raw.allowScopeWiden === true,
+            allowGateLoosen: raw.allowGateLoosen === true,
+            createdBy: String(raw.createdBy),
+          }),
+        );
+        writeOutput(
+          raw,
+          result,
+          `hitch=${result.hitchId} status=${result.status} updated\n`,
+        );
+      });
+    });
+
   const attemptCmd = hitchCmd.command("attempt").description("hitch attempts");
   attemptCmd
     .command("start")
@@ -1326,6 +1406,18 @@ export function registerHitchCommands(
           }
         }
 
+        const adopted = withHitchRepo(opts, ({ repo }) =>
+          hitchIds.filter(
+            (hitchId) => latestAdoptedPrEvent(repo.listLifecycleEvents(hitchId)) !== null,
+          ),
+        );
+        if (adopted.length > 0) {
+          throw new HitchCliError(
+            `hitch ${adopted.join(", ")} has an adopted PR; adopted PR is human merge only. ` +
+              "Use hitch close --force after the human merge to close the record.",
+          );
+        }
+
         if (all && hitchIds.length === 0) {
           process.stdout.write("no close_ready hitches to await\n");
           return;
@@ -1394,6 +1486,11 @@ export function formatHitchStatusLine(result: {
     checkedAt?: string;
     evidence?: Record<string, unknown>;
   }>;
+  lifecycleEvents?: Array<{
+    event: string;
+    createdAt?: string;
+    detail?: Record<string, unknown> | null;
+  }>;
 }): string {
   const reviewAdvisoryCount = countReviewConsensusAdvisories(result);
   const staticConsensus = hasPassedReviewConsensusCheck(result)
@@ -1401,11 +1498,15 @@ export function formatHitchStatusLine(result: {
     : "";
   const advisories =
     reviewAdvisoryCount > 0 ? ` review_advisories=${reviewAdvisoryCount}` : "";
+  const adoptedPr = latestAdoptedPrEvent(result.lifecycleEvents ?? []);
+  const adoptedPrText =
+    adoptedPr === null ? "" : formatAdoptedPrStatusFields(adoptedPr.detail);
   return (
     `hitch=${result.session.hitchId} status=${result.session.status} ` +
     `decision=${result.convergence.decision} ` +
     `openP1=${result.convergence.metrics.openInScopeP1} ` +
     `unknown=${result.convergence.metrics.openUnknownScope}` +
+    adoptedPrText +
     staticConsensus +
     advisories
   );
@@ -1443,6 +1544,58 @@ function hasPassedReviewConsensusCheck(result: {
     if (latest?.status === "passed") return true;
   }
   return false;
+}
+
+function latestAdoptedPrEvent(
+  events: Array<{
+    event: string;
+    createdAt?: string;
+    detail?: Record<string, unknown> | null;
+  }>,
+): { detail: Record<string, unknown> | null } | null {
+  let latest: { createdAt: string; detail: Record<string, unknown> | null } | null =
+    null;
+  for (const event of events) {
+    if (event.event !== "pr_adopted") continue;
+    const normalized = {
+      createdAt: event.createdAt ?? "",
+      detail: event.detail ?? null,
+    };
+    if (latest === null || normalized.createdAt >= latest.createdAt) {
+      latest = normalized;
+    }
+  }
+  return latest === null ? null : { detail: latest.detail };
+}
+
+function formatAdoptedPrStatusFields(
+  detail: Record<string, unknown> | null,
+): string {
+  const adopted = readPrRef(detail, "adoptedPr");
+  const superseded = readPrRef(detail, "supersededPr");
+  const adoptedText = adopted === null ? null : formatPrReference(adopted);
+  const supersededText =
+    superseded === null ? null : formatPrReference(superseded);
+  return (
+    (adoptedText === null ? "" : ` pr=${adoptedText}`) +
+    (supersededText === null ? "" : ` supersededPr=${supersededText}`)
+  );
+}
+
+function readPrRef(
+  detail: Record<string, unknown> | null,
+  key: string,
+): { prUrl?: string | null; prNumber?: number | null } | null {
+  if (detail === null) return null;
+  const value = detail[key];
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const url = typeof record.url === "string" ? record.url : null;
+  const number = typeof record.number === "number" ? record.number : null;
+  if (url === null && number === null) return null;
+  return { prUrl: url, prNumber: number };
 }
 
 function countReviewConsensusAdvisories(result: {
@@ -1581,6 +1734,35 @@ function writeConvergence(
   process.stdout.write(
     `hitch=${value.hitchId} decision=${value.decision} reason=${value.reason}\n`,
   );
+}
+
+function parsePrReference(text: string): {
+  prUrl?: string | null;
+  prNumber?: number | null;
+} {
+  const trimmed = text.trim();
+  if (trimmed === "") {
+    throw new HitchCliError("<pr-url-or-number> must not be empty");
+  }
+  if (/^\d+$/.test(trimmed)) {
+    return { prNumber: Number(trimmed) };
+  }
+  const match = /\/pull\/(\d+)(?:[/?#]|$)/.exec(trimmed);
+  return {
+    prUrl: trimmed,
+    ...(match?.[1] !== undefined ? { prNumber: Number(match[1]) } : {}),
+  };
+}
+
+function formatPrReference(input: {
+  prUrl?: string | null;
+  prNumber?: number | null;
+}): string {
+  if (input.prUrl !== undefined && input.prUrl !== null) return input.prUrl;
+  if (input.prNumber !== undefined && input.prNumber !== null) {
+    return `#${input.prNumber}`;
+  }
+  return "-";
 }
 
 function readStructuredFile(path: string): unknown {

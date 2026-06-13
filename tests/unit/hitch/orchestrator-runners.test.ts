@@ -21,8 +21,13 @@ import {
   createOrchestratorRunners,
   latestRunId,
   tryShortCircuitApprovedDecidedReview,
+  HitchHasAdoptedPrError,
   type HitchRunContext,
 } from "../../../src/hitch/orchestrator-runners.js";
+import type {
+  PrPublisher,
+  PrPublishInputs,
+} from "../../../src/core/pr-creator.js";
 import {
   acquireDomainLock,
   DomainLockBusyError,
@@ -1616,5 +1621,61 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
     expect(captured).toContain("improve the profile feature");
     expect(captured).toContain("Previous attempt failed");
     expect(captured).toContain("failed-command");
+  });
+});
+
+describe("createOrchestratorRunners.closeAndPr (adopted PR guard)", () => {
+  function recordingPublisher(): PrPublisher & { calls: PrPublishInputs[] } {
+    const calls: PrPublishInputs[] = [];
+    return {
+      calls,
+      async publish(inputs: PrPublishInputs) {
+        calls.push(inputs);
+        return { url: "https://github.com/acme/repo/pull/99", number: 99 };
+      },
+    };
+  }
+
+  it("refuses closeAndPr (the shared auto-merge path) for a hitch with an adopted PR", async () => {
+    const dbPath = createRunnerTestDb("orch-adopted-");
+    const publisher = recordingPublisher();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new HitchRepository(db);
+      createBasicHitch(repo, "goal-adopted");
+      // operator takeover: adopt an external PR (audit/status-only)
+      repo.adoptPr({
+        hitchId: "goal-adopted",
+        prNumber: 7,
+        reason: "took over; replaced the orchestrate PR with a new one",
+        createdBy: "operator",
+      });
+    } finally {
+      close();
+    }
+
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot: dbPath,
+      createdBy: "worker",
+      coderRunner: {
+        run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }),
+      },
+      reviewerRunner: {
+        run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }),
+      },
+      publisher,
+      autoMerge: { merger: { async merge() {
+        throw new Error("merge must not be reached for an adopted-PR hitch");
+      } } },
+    });
+
+    // the guard must fire before any PR create/merge side effect, regardless of
+    // convergence state — adopted PRs are human-merge only.
+    await expect(runners.closeAndPr("goal-adopted")).rejects.toBeInstanceOf(
+      HitchHasAdoptedPrError,
+    );
+    expect(publisher.calls).toHaveLength(0);
   });
 });

@@ -91,6 +91,37 @@ describe("hitch await-merge CLI validation (repo scoping)", () => {
     expect(r.out).toMatch(/belongs to repo "repo-a", not "repo-b"/);
   });
 
+  it("refuses to auto-merge hitches with an adopted PR", () => {
+    const root = newRoot();
+    seedGoal(root, "goal-adopted", "repo-a");
+    const { db, close } = openManagedDb({ dbPath: harnessPaths(root).dbPath });
+    try {
+      runMigrations(db);
+      new HitchRepository(db).adoptPr({
+        hitchId: "goal-adopted",
+        prUrl: "https://github.com/acme/app/pull/42",
+        prNumber: 42,
+        reason: "operator takeover",
+        createdBy: "operator",
+      });
+    } finally {
+      close();
+    }
+
+    const r = runCli(root, [
+      "hitch",
+      "await-merge",
+      "goal-adopted",
+      "--repo",
+      "/x",
+      "--max-wait",
+      "0",
+    ]);
+    expect(r.code).not.toBe(0);
+    expect(r.out).toMatch(/adopted PR.*human merge/i);
+    expect(r.out).toMatch(/hitch close --force/i);
+  });
+
   it("close-only deps do not resolve project policy for project hitches", () => {
     const root = newRoot();
     seedGoal(root, "goal-project-close", "repo-a", "demo");
