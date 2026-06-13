@@ -1,16 +1,15 @@
 import { describe, it, expect } from "vitest";
 import {
-  mkdtempSync,
   mkdirSync,
   writeFileSync,
   readFileSync,
   existsSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportDashboard } from "../../src/dashboard/export.js";
 import { DashboardSnapshotError } from "../../src/dashboard/snapshot.js";
+import { makeTmpDir } from "../helpers/tmp.js";
 
 const CLI = join(process.cwd(), "src/cli/run.ts");
 
@@ -55,7 +54,7 @@ function writeRun(root: string, runId: string, status: string): void {
 }
 
 function harnessRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), "harness-dash-"));
+  const root = makeTmpDir("harness-dash-");
   mkdirSync(join(root, "projects"), { recursive: true });
   writeFileSync(join(root, "projects", "demo.yaml"), PROFILE);
   writeRun(root, "run-20260521-apps-web-aaa", "approved");

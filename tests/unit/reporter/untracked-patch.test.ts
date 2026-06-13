@@ -1,28 +1,27 @@
 import { describe, it, expect } from "vitest";
 import {
-  mkdtempSync,
   writeFileSync,
   mkdirSync,
   symlinkSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildUntrackedPatch,
   buildUntrackedDeniedReport,
   buildUntrackedSecretsReport,
 } from "../../../src/reporter/untracked-patch.js";
+import { makeTmpDir } from "../../helpers/tmp.js";
 
 describe("buildUntrackedPatch", () => {
   it("returns empty when no untracked files", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
+    const dir = makeTmpDir("harness-up-");
     const r = await buildUntrackedPatch(dir, []);
     expect(r.patch).toBe("");
     expect(r.secretSuspects).toEqual([]);
   });
 
   it("emits a new-file unified diff per text path", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
+    const dir = makeTmpDir("harness-up-");
     mkdirSync(join(dir, "apps/user"), { recursive: true });
     writeFileSync(
       join(dir, "apps/user/new.ts"),
@@ -37,7 +36,7 @@ describe("buildUntrackedPatch", () => {
   });
 
   it("omits oversized files with size + sha256 instead of inlining content", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
+    const dir = makeTmpDir("harness-up-");
     const big = "x".repeat(300 * 1024);
     writeFileSync(join(dir, "big.txt"), big);
     const r = await buildUntrackedPatch(dir, ["big.txt"]);
@@ -46,7 +45,7 @@ describe("buildUntrackedPatch", () => {
   });
 
   it("flags NUL-free random binary as binary via UTF-8 validity check", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
+    const dir = makeTmpDir("harness-up-");
     // 1KB of bytes guaranteed to fail strict UTF-8 (lone continuation bytes)
     const bytes = Buffer.alloc(1024);
     for (let i = 0; i < bytes.length; i++) bytes[i] = 0x80 + (i % 64);
@@ -58,7 +57,7 @@ describe("buildUntrackedPatch", () => {
   });
 
   it("does NOT misflag valid UTF-8 (Japanese) as binary", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
+    const dir = makeTmpDir("harness-up-");
     writeFileSync(
       join(dir, "notes.md"),
       "こんにちは世界\nこれはテストです\n",
@@ -69,7 +68,7 @@ describe("buildUntrackedPatch", () => {
   });
 
   it("omits binary files with size + sha256 instead of inlining bytes", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
+    const dir = makeTmpDir("harness-up-");
     const bytes = Buffer.from([
       0x7f, 0x45, 0x4c, 0x46, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
       0x08, 0x09, 0x0a, 0x0b,
@@ -82,8 +81,8 @@ describe("buildUntrackedPatch", () => {
   });
 
   it("does not follow symlinks; records target instead", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
-    const outside = mkdtempSync(join(tmpdir(), "harness-secret-"));
+    const dir = makeTmpDir("harness-up-");
+    const outside = makeTmpDir("harness-secret-");
     writeFileSync(join(outside, "secret"), "SUPERSECRET\n");
     symlinkSync(join(outside, "secret"), join(dir, "leak.ts"));
     const r = await buildUntrackedPatch(dir, ["leak.ts"]);
@@ -93,13 +92,13 @@ describe("buildUntrackedPatch", () => {
   });
 
   it("annotates unreadable paths instead of throwing", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
+    const dir = makeTmpDir("harness-up-");
     const r = await buildUntrackedPatch(dir, ["does-not-exist.ts"]);
     expect(r.patch).toMatch(/unreadable/);
   });
 
   it("redacts files matched by secret filename heuristic (no content inline)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
+    const dir = makeTmpDir("harness-up-");
     mkdirSync(join(dir, "apps/user"), { recursive: true });
     writeFileSync(
       join(dir, "apps/user/.env.local"),
@@ -116,7 +115,7 @@ describe("buildUntrackedPatch", () => {
   });
 
   it("redacts files matched by secret content heuristic (PEM, AWS, OpenAI)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "harness-up-"));
+    const dir = makeTmpDir("harness-up-");
     writeFileSync(
       join(dir, "notes.md"),
       "Here is a key: AKIAIOSFODNN7EXAMPLE\n",
@@ -131,7 +130,7 @@ describe("buildUntrackedPatch", () => {
 
 describe("buildUntrackedDeniedReport", () => {
   it("records path + size + sha256 without exposing content", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "harness-upd-"));
+    const dir = makeTmpDir("harness-upd-");
     writeFileSync(join(dir, ".env"), "SECRET=hunter2\n");
     const report = await buildUntrackedDeniedReport(dir, [".env"]);
     expect(report).not.toMatch(/hunter2/);
@@ -139,8 +138,8 @@ describe("buildUntrackedDeniedReport", () => {
   });
 
   it("records symlinks as target-only (no follow)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "harness-upd-"));
-    const outside = mkdtempSync(join(tmpdir(), "harness-secret-"));
+    const dir = makeTmpDir("harness-upd-");
+    const outside = makeTmpDir("harness-secret-");
     writeFileSync(join(outside, "secret"), "SUPERSECRET\n");
     symlinkSync(join(outside, "secret"), join(dir, "leak"));
     const report = await buildUntrackedDeniedReport(dir, ["leak"]);
@@ -149,7 +148,7 @@ describe("buildUntrackedDeniedReport", () => {
   });
 
   it("returns empty when no denied paths", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "harness-upd-"));
+    const dir = makeTmpDir("harness-upd-");
     expect(await buildUntrackedDeniedReport(dir, [])).toBe("");
   });
 });

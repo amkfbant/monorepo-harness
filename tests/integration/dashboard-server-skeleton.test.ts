@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
@@ -22,6 +21,7 @@ import {
   registerBlobStore,
 } from "../../src/db/blob-stores.js";
 import { LocalBlobStore } from "../../src/storage/local-blob-store.js";
+import { makeTmpDir } from "../helpers/tmp.js";
 
 interface Env {
   dbPath: string;
@@ -200,7 +200,7 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
   let env: Env;
 
   beforeEach(async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-dash-srv-"));
+    const root = makeTmpDir("harness-dash-srv-");
     mkdirSync(join(root, ".harness"), { recursive: true });
     const dbPath = join(root, ".harness", "harness.sqlite");
     const db = openDb(dbPath);
@@ -912,7 +912,7 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
 
   it("GET /api/artifacts/:idB64/body returns integrity error for corrupt external blobs", async () => {
     const db = openDb(env.dbPath);
-    const storeRoot = mkdtempSync(join(tmpdir(), "harness-dash-blob-"));
+    const storeRoot = makeTmpDir("harness-dash-blob-");
     try {
       const runId = "run-ext-body";
       db.prepare(

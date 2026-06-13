@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   listReviews,
   formatTable,
   formatJson,
 } from "../../../src/core/review-lister.js";
+import { makeTmpDir } from "../../helpers/tmp.js";
 
 function writeRun(
   runsDir: string,
@@ -40,7 +40,7 @@ describe("listReviews", () => {
   });
 
   it("default queue = needs_review + changes_requested", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-list-"));
+    const root = makeTmpDir("harness-list-");
     writeRun(root, "run-20260521-a-nr", baseMeta("run-20260521-a-nr", {
       status: "needs_review",
     }));
@@ -64,7 +64,7 @@ describe("listReviews", () => {
   });
 
   it("--all includes every status", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-list-"));
+    const root = makeTmpDir("harness-list-");
     writeRun(root, "run-20260521-a-nr", baseMeta("run-20260521-a-nr"));
     writeRun(root, "run-20260521-d-cl", baseMeta("run-20260521-d-cl", {
       status: "cleaned",
@@ -74,7 +74,7 @@ describe("listReviews", () => {
   });
 
   it("--status filters to the requested statuses", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-list-"));
+    const root = makeTmpDir("harness-list-");
     writeRun(root, "run-20260521-a-nr", baseMeta("run-20260521-a-nr"));
     writeRun(root, "run-20260521-e-fpv", baseMeta("run-20260521-e-fpv", {
       status: "failed-policy-violation",
@@ -87,7 +87,7 @@ describe("listReviews", () => {
   });
 
   it("--domain filters to a single domain", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-list-"));
+    const root = makeTmpDir("harness-list-");
     writeRun(root, "run-20260521-cat", baseMeta("run-20260521-cat", {
       domain: "apps/catalog",
     }));
@@ -99,7 +99,7 @@ describe("listReviews", () => {
   });
 
   it("--limit caps the number of valid rows", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-list-"));
+    const root = makeTmpDir("harness-list-");
     for (let i = 0; i < 5; i++) {
       writeRun(root, `run-20260521-x-${i}`, baseMeta(`run-20260521-x-${i}`, {
         startedAt: `2026-05-21T1${i}:00:00Z`,
@@ -110,7 +110,7 @@ describe("listReviews", () => {
   });
 
   it("sorts valid entries newest-first by startedAt", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-list-"));
+    const root = makeTmpDir("harness-list-");
     writeRun(root, "run-20260521-x-a", baseMeta("run-20260521-x-a", {
       startedAt: "2026-05-21T10:00:00Z",
     }));
@@ -129,7 +129,7 @@ describe("listReviews", () => {
   });
 
   it("surfaces parentRunId / reviewer / commandSummary", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-list-"));
+    const root = makeTmpDir("harness-list-");
     writeRun(root, "run-20260521-rich", baseMeta("run-20260521-rich", {
       status: "changes_requested",
       reviewer: "knkn",
@@ -148,14 +148,14 @@ describe("listReviews", () => {
   });
 
   it("commandSummary is null when the run ran no commands", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-list-"));
+    const root = makeTmpDir("harness-list-");
     writeRun(root, "run-20260521-nocmd", baseMeta("run-20260521-nocmd"));
     const r = await listReviews({ runsDir: root });
     expect(r.valid[0]?.commandSummary).toBeNull();
   });
 
   it("separates unreadable / malformed run dirs into invalid", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-list-"));
+    const root = makeTmpDir("harness-list-");
     writeRun(root, "run-20260521-ok", baseMeta("run-20260521-ok"));
     mkdirSync(join(root, "run-20260521-badjson"), { recursive: true });
     writeFileSync(
@@ -172,7 +172,7 @@ describe("listReviews", () => {
   });
 
   it("treats runId / directory-name mismatch as invalid", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-list-"));
+    const root = makeTmpDir("harness-list-");
     writeRun(root, "run-20260521-dir", baseMeta("run-20260521-OTHER"));
     const r = await listReviews({ runsDir: root, all: true });
     expect(r.valid).toEqual([]);
@@ -180,7 +180,7 @@ describe("listReviews", () => {
   });
 
   it("ignores directories that don't match the run-id shape", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-list-"));
+    const root = makeTmpDir("harness-list-");
     mkdirSync(join(root, "not-a-run"), { recursive: true });
     mkdirSync(join(root, ".cache"), { recursive: true });
     writeRun(root, "run-20260521-real", baseMeta("run-20260521-real"));
@@ -190,7 +190,7 @@ describe("listReviews", () => {
   });
 
   it("missing counts render as null", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-list-"));
+    const root = makeTmpDir("harness-list-");
     writeRun(root, "run-20260521-old", baseMeta("run-20260521-old"));
     const r = await listReviews({ runsDir: root });
     expect(r.valid[0]?.changedFilesCount).toBeNull();
@@ -198,7 +198,7 @@ describe("listReviews", () => {
   });
 
   it("routes a run with malformed commandResults to invalid (no crash)", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-list-"));
+    const root = makeTmpDir("harness-list-");
     writeRun(root, "run-20260521-badcmd", baseMeta("run-20260521-badcmd", {
       commandResults: [null],
     }));
@@ -208,7 +208,7 @@ describe("listReviews", () => {
   });
 
   it("routes a run with an unknown status to invalid", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-list-"));
+    const root = makeTmpDir("harness-list-");
     writeRun(root, "run-20260521-weird", baseMeta("run-20260521-weird", {
       status: "totally-made-up",
     }));
@@ -218,7 +218,7 @@ describe("listReviews", () => {
   });
 
   it("routes a run with a non-string runId to invalid", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-list-"));
+    const root = makeTmpDir("harness-list-");
     writeRun(root, "run-20260521-numid", baseMeta("run-20260521-numid", {
       runId: 42,
     }));
@@ -228,7 +228,7 @@ describe("listReviews", () => {
   });
 
   it("throws RangeError for a non-integer / negative limit", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-list-"));
+    const root = makeTmpDir("harness-list-");
     writeRun(root, "run-20260521-x", baseMeta("run-20260521-x"));
     await expect(
       listReviews({ runsDir: root, limit: -1 }),

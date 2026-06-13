@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, chmodSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDb } from "../../src/db/connection.js";
 import { storeArtifactBlob } from "../../src/db/artifact-blobs.js";
 import { SCHEMA_VERSION } from "../../src/db/schema.js";
 import { buildKnowledgeContextFromDb } from "../../src/core/knowledge-context.js";
+import { makeTmpDir } from "../helpers/tmp.js";
 
 const CLI = join(process.cwd(), "src/cli/run.ts");
 
@@ -32,14 +32,14 @@ function runCli(
 
 describe("CLI harness db", () => {
   it("status reports 'not initialized' before db init", () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
+    const root = makeTmpDir("harness-clidb-");
     const { out, code } = runCli(root, ["db", "status"]);
     expect(code).toBe(0);
     expect(out).toMatch(/not initialized/);
   });
 
   it("init creates harness.sqlite at the latest schema version", () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
+    const root = makeTmpDir("harness-clidb-");
     const { out, code } = runCli(root, ["db", "init"]);
     expect(code).toBe(0);
     expect(out).toMatch(new RegExp(`schema version: ${SCHEMA_VERSION}`));
@@ -47,7 +47,7 @@ describe("CLI harness db", () => {
   });
 
   it("status after init shows the latest version and the tables", () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
+    const root = makeTmpDir("harness-clidb-");
     runCli(root, ["db", "init"]);
     const { out, code } = runCli(root, ["db", "status"]);
     expect(code).toBe(0);
@@ -56,7 +56,7 @@ describe("CLI harness db", () => {
   });
 
   it("migrate is idempotent after init", () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
+    const root = makeTmpDir("harness-clidb-");
     runCli(root, ["db", "init"]);
     const { out, code } = runCli(root, ["db", "migrate"]);
     expect(code).toBe(0);
@@ -66,7 +66,7 @@ describe("CLI harness db", () => {
   });
 
   it("migrate-blobs --to db refuses corrupted external object bytes", () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
+    const root = makeTmpDir("harness-clidb-");
     runCli(root, ["db", "init"]);
     const dbPath = join(root, ".harness", "harness.sqlite");
     const db = openDb(dbPath);
@@ -152,7 +152,7 @@ describe("CLI harness db", () => {
   });
 
   it("init is idempotent — re-running keeps the schema current", () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
+    const root = makeTmpDir("harness-clidb-");
     runCli(root, ["db", "init"]);
     const { out, code } = runCli(root, ["db", "init"]);
     expect(code).toBe(0);
@@ -160,14 +160,14 @@ describe("CLI harness db", () => {
   });
 
   it("import requires --from-files", () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
+    const root = makeTmpDir("harness-clidb-");
     const { out, code } = runCli(root, ["db", "import"]);
     expect(code).toBe(1);
     expect(out).toMatch(/requires --from-files/);
   });
 
   it("import --from-files builds the read model from a project tree", () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
+    const root = makeTmpDir("harness-clidb-");
     mkdirSync(join(root, "projects"), { recursive: true });
     writeFileSync(
       join(root, "projects", "demo.yaml"),
@@ -198,7 +198,7 @@ describe("CLI harness db", () => {
   });
 
   it("knowledge edit updates indexed metadata so DB context moves domains", async () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
+    const root = makeTmpDir("harness-clidb-");
     const knowledgeDir = join(root, "docs", "knowledge", "domain_rule");
     mkdirSync(knowledgeDir, { recursive: true });
     writeFileSync(
@@ -263,7 +263,7 @@ describe("CLI harness db", () => {
   });
 
   it("check-consistency reports ok right after an import", () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
+    const root = makeTmpDir("harness-clidb-");
     mkdirSync(join(root, "projects"), { recursive: true });
     writeFileSync(
       join(root, "projects", "demo.yaml"),
@@ -286,7 +286,7 @@ describe("CLI harness db", () => {
   });
 
   it("check-consistency exits 1 when a profile drifts", () => {
-    const root = mkdtempSync(join(tmpdir(), "harness-clidb-"));
+    const root = makeTmpDir("harness-clidb-");
     mkdirSync(join(root, "projects"), { recursive: true });
     const profile = [
       "version: 1",

@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { processReviewDecision } from "../../../src/core/review-processor.js";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
+import { makeTmpDir } from "../../helpers/tmp.js";
 
 /** Seed the DB with a `db-first` run row matching an on-disk meta.json. */
 function seedDbFirstRun(
@@ -101,7 +101,7 @@ function writeFakeRun(
 
 describe("processReviewDecision", () => {
   it("transitions needs_review → approved when decision=approved + reviewer set", async () => {
-    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
+    const runsDir = makeTmpDir("harness-rp-");
     writeFakeRun(runsDir, "run-A", {}, {
       decision: "approved",
       reviewer: "alice",
@@ -120,7 +120,7 @@ describe("processReviewDecision", () => {
   });
 
   it("transitions to changes_requested and rejected likewise", async () => {
-    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
+    const runsDir = makeTmpDir("harness-rp-");
     writeFakeRun(runsDir, "run-B", {}, {
       decision: "changes_requested",
       reviewer: "bob",
@@ -139,7 +139,7 @@ describe("processReviewDecision", () => {
   });
 
   it("auto-fills reviewed_at when null and writes back to file", async () => {
-    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
+    const runsDir = makeTmpDir("harness-rp-");
     writeFakeRun(runsDir, "run-D", {}, {
       decision: "approved",
       reviewer: "alice",
@@ -159,7 +159,7 @@ describe("processReviewDecision", () => {
   });
 
   it("rejects when decision is still pending", async () => {
-    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
+    const runsDir = makeTmpDir("harness-rp-");
     writeFakeRun(runsDir, "run-E", {}, { decision: "pending" });
     await expect(
       processReviewDecision({ runsDir, locksDir: runsDir, dbPath: join(runsDir, "harness.sqlite"), runId: "run-E" }),
@@ -167,7 +167,7 @@ describe("processReviewDecision", () => {
   });
 
   it("rejects when current meta.status is not needs_review", async () => {
-    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
+    const runsDir = makeTmpDir("harness-rp-");
     writeFakeRun(runsDir, "run-F", { status: "approved" }, {
       decision: "approved",
       reviewer: "alice",
@@ -178,7 +178,7 @@ describe("processReviewDecision", () => {
   });
 
   it("rejects when runId in file does not match dir name", async () => {
-    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
+    const runsDir = makeTmpDir("harness-rp-");
     writeFakeRun(runsDir, "run-G", {}, {
       runId: "run-different",
       decision: "approved",
@@ -190,7 +190,7 @@ describe("processReviewDecision", () => {
   });
 
   it("rejects when domain in file does not match meta.json", async () => {
-    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
+    const runsDir = makeTmpDir("harness-rp-");
     writeFakeRun(runsDir, "run-H", { domain: "apps/user" }, {
       domain: "apps/other",
       decision: "approved",
@@ -202,7 +202,7 @@ describe("processReviewDecision", () => {
   });
 
   it("appends a review_processed event", async () => {
-    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
+    const runsDir = makeTmpDir("harness-rp-");
     writeFakeRun(runsDir, "run-I", {}, {
       decision: "approved",
       reviewer: "alice",
@@ -223,14 +223,14 @@ describe("processReviewDecision", () => {
   });
 
   it("rejects path-traversal runId (../)", async () => {
-    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
+    const runsDir = makeTmpDir("harness-rp-");
     await expect(
       processReviewDecision({ runsDir, locksDir: runsDir, dbPath: join(runsDir, "harness.sqlite"), runId: "../escape" }),
     ).rejects.toThrow(/invalid runId/);
   });
 
   it("rejects malformed meta.json (not an object) as gate error", async () => {
-    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
+    const runsDir = makeTmpDir("harness-rp-");
     const runDir = join(runsDir, "run-bad-meta-001");
     const { mkdirSync, writeFileSync } = await import("node:fs");
     mkdirSync(runDir, { recursive: true });
@@ -255,7 +255,7 @@ describe("processReviewDecision", () => {
   });
 
   it("returns a warning flag when reviewer is null", async () => {
-    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-"));
+    const runsDir = makeTmpDir("harness-rp-");
     writeFakeRun(runsDir, "run-J", {}, {
       decision: "approved",
       reviewer: null,
@@ -276,7 +276,7 @@ describe("processReviewDecision", () => {
 
 describe("processReviewDecision — DB-first run (Phase 7-5)", () => {
   it("applies the decision through the DB and re-exports the files", async () => {
-    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-dbf-"));
+    const runsDir = makeTmpDir("harness-rp-dbf-");
     const dbPath = join(runsDir, "harness.sqlite");
     writeFakeRun(runsDir, "run-dbf", {}, {
       decision: "approved",
@@ -321,7 +321,7 @@ describe("processReviewDecision — DB-first run (Phase 7-5)", () => {
   });
 
   it("rejects a run row with an unknown source_mode", async () => {
-    const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-dbf-"));
+    const runsDir = makeTmpDir("harness-rp-dbf-");
     const dbPath = join(runsDir, "harness.sqlite");
     writeFakeRun(runsDir, "run-weird", {}, { decision: "approved" });
     const meta = JSON.parse(
@@ -350,7 +350,7 @@ describe("processReviewDecision — DB-first run (Phase 7-5)", () => {
     "re-processing a run that already left needs_review is an idempotent " +
       "no-op (Phase 9 post-close P1 #1 + P2-2 file→proposal import)",
     async () => {
-      const runsDir = mkdtempSync(join(tmpdir(), "harness-rp-dbf-"));
+      const runsDir = makeTmpDir("harness-rp-dbf-");
       const dbPath = join(runsDir, "harness.sqlite");
       writeFakeRun(runsDir, "run-dbf2", {}, {
         decision: "approved",

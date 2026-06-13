@@ -572,6 +572,21 @@ codex exec \
 - version probe は解決済み `codexBin` を `os.tmpdir()` cwd で実行し、相対 path の副作用を harness cwd から隔離する
 - stdout/stderr は file stream に pipe、close 後 `finished()` で flush 完了を待つ
 
+## Test isolation: temp-dir cleanup + fork-pool bounds
+
+Unit and integration tests that allocate temp roots use
+`tests/helpers/tmp.ts` `makeTmpDir(prefix)` instead of raw
+`mkdtempSync(join(tmpdir(), prefix))`. The Vitest setup file runs
+`flushTmpDirs()` after each test and again after each file, so helper-created
+roots are removed in-process.
+
+`vitest run` uses the forks pool with `maxForks=4`, `minForks=1`, and
+`teardownTimeout=20s`. Before a run starts, `tests/global-tmp-sweep.ts` sweeps
+stale real directories under `os.tmpdir()` whose basenames start with
+`harness-`, `onb-`, `ws-repo-`, or `legacy-lock-warn-`. The sweep is maxdepth 1,
+prefix-scoped, skips files/symlinks/fresh directories, and never reads the root
+from env or config.
+
 ## limits / timeout
 
 - codex: `policy.codex.timeoutMs` (default 15 min)
