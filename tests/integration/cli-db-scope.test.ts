@@ -173,6 +173,10 @@ describe("CLI project-scoped DB queries (Phase 6-6)", () => {
     expect(text.code).toBe(0);
     expect(text.out).toContain("hitch metrics:");
     expect(text.out).toContain("mcp confirmations:");
+    // usage section surfaces the per-kind token breakdown (token-usage G2/G3)
+    expect(text.out).toMatch(
+      /by kind: coder=\d+ reviewer=\d+ evaluator=\d+/,
+    );
   });
 
   it("metrics summary --project for an empty project reports zero", () => {

@@ -41,6 +41,8 @@ HTML エクスポートだった。Phase 6 では **DB（[`db.md`](./db.md)）�
   `exact` invocation rows の token 合算、`usage_source` 別件数、kind 別内訳。
   式は [`cli.md`](./cli.md) の
   `harness metrics` 節を正規定義とし、dashboard snapshot でも同じ定義を使う
+  （snapshot / read API が `usage`(byKind 込み)を持つ。HTML dashboard 上の usage
+  section 描画は未実装で `docs/future-features.md` の follow-up）
 - `metricsTrend` — 直近 30 件までの `metrics_snapshots` から作る軽量 trend。
   各点は `{ createdAt, totalRuns, approvedRate, totalTokens }` で、適用中の
   project / repo filter に従う。未指定の project / repo / domain 列は `NULL` scope

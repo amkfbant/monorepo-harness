@@ -729,3 +729,14 @@ confirmation replay に必要な at-rest 原本保存とは独立した「表示
 #125（800 行超 15 ファイルの段階分割）は保守性 hygiene としての価値に比べて churn が大きいため、
 ユーザー判断で defer する。再開する場合は `run.ts` の Phase A から始め、1〜2 コマンド群/PR の
 極小 PR に分け、挙動変更ゼロを `--help` snapshot と既存 CLI テストで担保しながら進める。
+
+## token usage の HTML dashboard 描画（#85 follow-up）
+
+token-usage 拡張（#85）で `run_usage` を per-invocation 化し、`DbTokenUsageSummary` は
+total / `usage_source` 別件数 / `byKind`（coder/reviewer/evaluator）を持つ。これは
+**dashboard snapshot・read API・CLI `harness metrics`・MCP には露出済み**だが、**HTML
+dashboard（`src/dashboard/render.ts`）は usage section 自体を描画していない**（per-invocation
+化以前からの既存ギャップで、#85 の完了の定義 — hitch status / course status / harness metrics —
+には含まれない）。follow-up として `render.ts` に usage section（total + `bySource` +
+`byKind`）を追加する。データは snapshot に既にあるため描画と render テストのみ。
+コスト推定（USD、model→単価テーブル）も #85 の別 follow-up として未実装。
