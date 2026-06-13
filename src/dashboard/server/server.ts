@@ -53,11 +53,6 @@ import {
   listKnowledgeRevisions,
   knowledgeEntriesHasCategory,
 } from "../../db/repositories/knowledge-entry-revisions.js";
-import {
-  runOperation,
-  OperationInFlightError,
-  OperationReplayedFailureError,
-} from "../../operations/operation-runner.js";
 
 /**
  * Dashboard read-only HTTP server (Phase 12-1 skeleton).
@@ -84,16 +79,12 @@ export interface DashboardServerConfig {
   /** Optional CORS origin (Phase 12-7). */
   corsOrigin?: string;
   /**
-   * Phase 13-4: when true, POST mutation routes are wired (review /
-   * rerun / cleanup / pr / backlog). Default OFF — POST returns 405 by
-   * the method guard exactly as Phase 12 did.
+   * Internal HTTP listener switch used by the operations server. Dashboard
+   * creation sanitizes this to false and always serves read-only routes.
    */
   mutationEnabled?: boolean;
   /**
-   * Phase 13-4: when mutation is enabled, browser POST requests must
-   * carry `X-CSRF-Token: <csrfToken>`. The token is generated at server
-   * start and embedded in the HTML dashboard (Phase 13-7) for JS to
-   * read.
+   * Internal CSRF token used by the operations server POST listener.
    */
   csrfToken?: string;
 }
@@ -203,566 +194,11 @@ export function writeError(
   writeJson(res, status, { error: err });
 }
 
-/** Phase 13-4: mutation routes — wired only when mutationEnabled=true. */
-export function mutationRoutes(): Route[] {
-  return [
-    {
-      method: "POST",
-      pattern: "/api/runs/:runId/review",
-      handler: async ({ req, res, ctx, params }) => {
-        const runId = params.runId!;
-        if (!validRunId(runId)) {
-          writeError(res, 400, "bad_request", "invalid runId shape");
-          return;
-        }
-        const body = await readJsonBody(req);
-        if (body === "oversize") {
-          writeError(
-            res,
-            413,
-            "payload_too_large",
-            `request body exceeds ${MAX_JSON_BODY_BYTES} bytes`,
-          );
-          return;
-        }
-        if (body === null) {
-          writeError(res, 400, "bad_request", "invalid JSON body");
-          return;
-        }
-        const decision = String(body.decision ?? "");
-        if (
-          decision !== "approved" &&
-          decision !== "changes_requested" &&
-          decision !== "rejected"
-        ) {
-          writeError(
-            res,
-            400,
-            "bad_request",
-            "decision must be approved | changes_requested | rejected",
-          );
-          return;
-        }
-        const dryRun = body.dryRun === true;
-        const idempotencyKey =
-          typeof req.headers["idempotency-key"] === "string"
-            ? (req.headers["idempotency-key"] as string)
-            : undefined;
-        const actor = `http:${req.socket.remoteAddress ?? "?"}`;
-        const handle = openManagedDb({ dbPath: ctx.config.dbPath });
-        try {
-          const outcome = await runOperation(
-            handle.db,
-            {
-              operationType: "review.apply",
-              target: { type: "run", id: runId },
-              actor,
-              ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
-              dryRun,
-              input: body,
-            },
-            async () => {
-              if (dryRun) {
-                return { dryRun: true, plannedDecision: decision };
-              }
-              // Phase 13-5 minimum: delegate to processReviewDecision via
-              // CLI core. The HTTP path imports the core lazily to keep
-              // the server free of run-folder side effects for read-only
-              // operation modes.
-              const { processReviewDecision } = await import(
-                "../../core/review-processor.js"
-              );
-              const { harnessPaths } = await import(
-                "../../config/paths.js"
-              );
-              const paths = harnessPaths(
-                dirname(dirname(ctx.config.dbPath)),
-              );
-              const override = body.override as
-                | {
-                    actorReviewerId?: string;
-                    reason?: string;
-                  }
-                | undefined;
-              const r = await processReviewDecision({
-                runsDir: paths.runsDir,
-                locksDir: paths.locksDir,
-                dbPath: paths.dbPath,
-                runId,
-                ...(override !== undefined && override.reason !== undefined
-                  ? {
-                      override: {
-                        decision: decision as
-                          | "approved"
-                          | "changes_requested"
-                          | "rejected",
-                        reason: override.reason,
-                        ...(override.actorReviewerId !== undefined
-                          ? { actorReviewerId: override.actorReviewerId }
-                          : {}),
-                      },
-                    }
-                  : {}),
-              });
-              return r;
-            },
-          );
-          writeJson(res, outcome.replayed ? 200 : 200, {
-            operationId: outcome.operation.operationId,
-            status: outcome.operation.status,
-            result: outcome.result,
-            replayed: outcome.replayed,
-          });
-        } catch (e) {
-          if (e instanceof OperationInFlightError) {
-            writeError(res, 409, "conflict", e.message);
-            return;
-          }
-          if (e instanceof OperationReplayedFailureError) {
-            // Phase 13 post-close fix (external review P1-3): the prior
-            // attempt with this idempotency key failed. Surface 409 with
-            // the prior error so the client mints a new key.
-            writeError(res, 409, "idempotency_replayed_failure", e.message, {
-              operationId: e.operationId,
-              priorStatus: e.priorStatus,
-              priorErrorCode: e.priorErrorCode,
-              priorErrorMessage: e.priorErrorMessage,
-            });
-            return;
-          }
-          writeError(res, 500, "internal_error", (e as Error).message);
-        } finally {
-          handle.close();
-        }
-      },
-    },
-    {
-      method: "POST",
-      pattern: "/api/runs/:runId/cleanup",
-      handler: async ({ req, res, ctx, params }) => {
-        const runId = params.runId!;
-        if (!validRunId(runId)) {
-          writeError(res, 400, "bad_request", "invalid runId shape");
-          return;
-        }
-        const body = await readJsonBody(req);
-        if (body === "oversize") {
-          writeError(
-            res,
-            413,
-            "payload_too_large",
-            `request body exceeds ${MAX_JSON_BODY_BYTES} bytes`,
-          );
-          return;
-        }
-        if (body === null) {
-          writeError(res, 400, "bad_request", "invalid JSON body");
-          return;
-        }
-        const dryRun = body.dryRun === true;
-        if (!dryRun && body.confirm !== "cleanup") {
-          writeError(
-            res,
-            400,
-            "bad_request",
-            "real cleanup requires confirm: 'cleanup'",
-          );
-          return;
-        }
-        const idempotencyKey =
-          typeof req.headers["idempotency-key"] === "string"
-            ? (req.headers["idempotency-key"] as string)
-            : undefined;
-        const actor = `http:${req.socket.remoteAddress ?? "?"}`;
-        const handle = openManagedDb({ dbPath: ctx.config.dbPath });
-        try {
-          const outcome = await runOperation(
-            handle.db,
-            {
-              operationType: "run.cleanup",
-              target: { type: "run", id: runId },
-              actor,
-              ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
-              dryRun,
-              input: body,
-            },
-            async () => {
-              if (dryRun) {
-                return {
-                  dryRun: true,
-                  plannedAction: "cleanup",
-                  scope: body.scope ?? "workspace",
-                };
-              }
-              const { cleanupRun } = await import("../../core/cleanup.js");
-              const { harnessPaths } = await import(
-                "../../config/paths.js"
-              );
-              const paths = harnessPaths(
-                dirname(dirname(ctx.config.dbPath)),
-              );
-              const scope =
-                body.scope === "run" || body.scope === "all"
-                  ? body.scope
-                  : "workspace";
-              return await cleanupRun({
-                runsDir: paths.runsDir,
-                workspacesDir: paths.workspacesDir,
-                locksDir: paths.locksDir,
-                dbPath: paths.dbPath,
-                runId,
-                scope,
-                force: body.force === true,
-              });
-            },
-          );
-          writeJson(res, 200, {
-            operationId: outcome.operation.operationId,
-            status: outcome.operation.status,
-            result: outcome.result,
-            replayed: outcome.replayed,
-          });
-        } catch (e) {
-          if (e instanceof OperationInFlightError) {
-            writeError(res, 409, "conflict", e.message);
-            return;
-          }
-          if (e instanceof OperationReplayedFailureError) {
-            // Phase 13 post-close fix (external review P1-3): the prior
-            // attempt with this idempotency key failed. Surface 409 with
-            // the prior error so the client mints a new key.
-            writeError(res, 409, "idempotency_replayed_failure", e.message, {
-              operationId: e.operationId,
-              priorStatus: e.priorStatus,
-              priorErrorCode: e.priorErrorCode,
-              priorErrorMessage: e.priorErrorMessage,
-            });
-            return;
-          }
-          writeError(res, 500, "internal_error", (e as Error).message);
-        } finally {
-          handle.close();
-        }
-      },
-    },
-    {
-      method: "POST",
-      pattern: "/api/runs/:runId/pr",
-      handler: async ({ req, res, ctx, params }) => {
-        const runId = params.runId!;
-        if (!validRunId(runId)) {
-          writeError(res, 400, "bad_request", "invalid runId shape");
-          return;
-        }
-        const body = await readJsonBody(req);
-        if (body === "oversize") {
-          writeError(
-            res,
-            413,
-            "payload_too_large",
-            `request body exceeds ${MAX_JSON_BODY_BYTES} bytes`,
-          );
-          return;
-        }
-        if (body === null) {
-          writeError(res, 400, "bad_request", "invalid JSON body");
-          return;
-        }
-        const dryRun = body.dryRun === true;
-        if (!dryRun && body.confirm !== "create-pr") {
-          writeError(
-            res,
-            400,
-            "bad_request",
-            "real pr create requires confirm: 'create-pr'",
-          );
-          return;
-        }
-        const idempotencyKey =
-          typeof req.headers["idempotency-key"] === "string"
-            ? (req.headers["idempotency-key"] as string)
-            : undefined;
-        const actor = `http:${req.socket.remoteAddress ?? "?"}`;
-        const handle = openManagedDb({ dbPath: ctx.config.dbPath });
-        try {
-          const outcome = await runOperation(
-            handle.db,
-            {
-              operationType: "run.pr_create",
-              target: { type: "run", id: runId },
-              actor,
-              ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
-              dryRun,
-              input: body,
-              // Phase 13 post-close fix (codex P1.1): the HTTP path only
-              // records the accept; an out-of-process CLI runner does the
-              // actual `gh` invocation. dry-run is in-process so it can
-              // still finalize as `succeeded`.
-              pendingExternalExecutor: !dryRun,
-            },
-            async () => {
-              if (dryRun) {
-                return { dryRun: true, plannedAction: "pr-create" };
-              }
-              return {
-                accepted: true,
-                executed: false,
-                note: "pr create execution is deferred to a CLI runner; operation will remain status=pending until a worker completes it",
-              };
-            },
-          );
-          writeJson(res, 202, {
-            operationId: outcome.operation.operationId,
-            status: outcome.operation.status,
-            result: outcome.result,
-            replayed: outcome.replayed,
-          });
-        } catch (e) {
-          if (e instanceof OperationInFlightError) {
-            writeError(res, 409, "conflict", e.message);
-            return;
-          }
-          if (e instanceof OperationReplayedFailureError) {
-            // Phase 13 post-close fix (external review P1-3): the prior
-            // attempt with this idempotency key failed. Surface 409 with
-            // the prior error so the client mints a new key.
-            writeError(res, 409, "idempotency_replayed_failure", e.message, {
-              operationId: e.operationId,
-              priorStatus: e.priorStatus,
-              priorErrorCode: e.priorErrorCode,
-              priorErrorMessage: e.priorErrorMessage,
-            });
-            return;
-          }
-          writeError(res, 500, "internal_error", (e as Error).message);
-        } finally {
-          handle.close();
-        }
-      },
-    },
-    {
-      method: "POST",
-      pattern: "/api/backlog/:itemId/run",
-      handler: async ({ req, res, ctx, params }) => {
-        const itemId = params.itemId!;
-        const body = await readJsonBody(req);
-        if (body === "oversize") {
-          writeError(
-            res,
-            413,
-            "payload_too_large",
-            `request body exceeds ${MAX_JSON_BODY_BYTES} bytes`,
-          );
-          return;
-        }
-        if (body === null) {
-          writeError(res, 400, "bad_request", "invalid JSON body");
-          return;
-        }
-        const idempotencyKey =
-          typeof req.headers["idempotency-key"] === "string"
-            ? (req.headers["idempotency-key"] as string)
-            : undefined;
-        const actor = `http:${req.socket.remoteAddress ?? "?"}`;
-        const handle = openManagedDb({ dbPath: ctx.config.dbPath });
-        try {
-          const dryRun = body.dryRun === true;
-          const outcome = await runOperation(
-            handle.db,
-            {
-              operationType: "backlog.run",
-              target: { type: "backlog_item", id: itemId },
-              actor,
-              ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
-              dryRun,
-              input: body,
-              // Phase 13 post-close fix (codex P1.1): audit-only; an
-              // external CLI runner picks up the backlog item.
-              pendingExternalExecutor: !dryRun,
-            },
-            async () => {
-              return {
-                accepted: true,
-                executed: false,
-                note: "backlog run execution is deferred to a CLI runner; operation will remain status=pending until a worker completes it",
-              };
-            },
-          );
-          writeJson(res, 202, {
-            operationId: outcome.operation.operationId,
-            status: outcome.operation.status,
-            result: outcome.result,
-            replayed: outcome.replayed,
-          });
-        } catch (e) {
-          if (e instanceof OperationInFlightError) {
-            writeError(res, 409, "conflict", e.message);
-            return;
-          }
-          if (e instanceof OperationReplayedFailureError) {
-            // Phase 13 post-close fix (external review P1-3): the prior
-            // attempt with this idempotency key failed. Surface 409 with
-            // the prior error so the client mints a new key.
-            writeError(res, 409, "idempotency_replayed_failure", e.message, {
-              operationId: e.operationId,
-              priorStatus: e.priorStatus,
-              priorErrorCode: e.priorErrorCode,
-              priorErrorMessage: e.priorErrorMessage,
-            });
-            return;
-          }
-          writeError(res, 500, "internal_error", (e as Error).message);
-        } finally {
-          handle.close();
-        }
-      },
-    },
-    {
-      method: "POST",
-      pattern: "/api/runs/:runId/rerun",
-      handler: async ({ req, res, ctx, params }) => {
-        const runId = params.runId!;
-        if (!validRunId(runId)) {
-          writeError(res, 400, "bad_request", "invalid runId shape");
-          return;
-        }
-        const body = await readJsonBody(req);
-        if (body === "oversize") {
-          writeError(
-            res,
-            413,
-            "payload_too_large",
-            `request body exceeds ${MAX_JSON_BODY_BYTES} bytes`,
-          );
-          return;
-        }
-        if (body === null) {
-          writeError(res, 400, "bad_request", "invalid JSON body");
-          return;
-        }
-        const dryRun = body.dryRun === true;
-        const idempotencyKey =
-          typeof req.headers["idempotency-key"] === "string"
-            ? (req.headers["idempotency-key"] as string)
-            : undefined;
-        const actor = `http:${req.socket.remoteAddress ?? "?"}`;
-        const handle = openManagedDb({ dbPath: ctx.config.dbPath });
-        try {
-          const outcome = await runOperation(
-            handle.db,
-            {
-              operationType: "run.rerun",
-              target: { type: "run", id: runId },
-              actor,
-              ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
-              dryRun,
-              input: body,
-              // Phase 13 post-close fix (codex P1.1): audit-only; real
-              // rerun is long-running and lives in the CLI runner.
-              pendingExternalExecutor: !dryRun,
-            },
-            async () => {
-              if (dryRun) {
-                return {
-                  dryRun: true,
-                  plannedAction: "rerun-from-review",
-                  reason: body.reason ?? null,
-                };
-              }
-              return {
-                accepted: true,
-                executed: false,
-                note: "rerun execution is deferred to a CLI runner; operation will remain status=pending until a worker completes it",
-              };
-            },
-          );
-          writeJson(res, 202, {
-            operationId: outcome.operation.operationId,
-            status: outcome.operation.status,
-            result: outcome.result,
-            replayed: outcome.replayed,
-          });
-        } catch (e) {
-          if (e instanceof OperationInFlightError) {
-            writeError(res, 409, "conflict", e.message);
-            return;
-          }
-          if (e instanceof OperationReplayedFailureError) {
-            // Phase 13 post-close fix (external review P1-3): the prior
-            // attempt with this idempotency key failed. Surface 409 with
-            // the prior error so the client mints a new key.
-            writeError(res, 409, "idempotency_replayed_failure", e.message, {
-              operationId: e.operationId,
-              priorStatus: e.priorStatus,
-              priorErrorCode: e.priorErrorCode,
-              priorErrorMessage: e.priorErrorMessage,
-            });
-            return;
-          }
-          writeError(res, 500, "internal_error", (e as Error).message);
-        } finally {
-          handle.close();
-        }
-      },
-    },
-  ];
-}
-
-/**
- * Phase 12 post-close fix (external review P2-3): cap JSON body size so
- * a runaway POST cannot exhaust server memory. 1 MiB is generous for the
- * mutation API (its bodies are short JSON). Returns `"oversize"` so the
- * route handler can map to 413; returns `null` for parse / shape errors.
- */
-const MAX_JSON_BODY_BYTES = 1 * 1024 * 1024;
-
-async function readJsonBody(
-  req: IncomingMessage,
-): Promise<Record<string, unknown> | null | "oversize"> {
-  return new Promise((resolve) => {
-    const chunks: Buffer[] = [];
-    let total = 0;
-    let oversize = false;
-    req.on("data", (c: Buffer) => {
-      total += c.length;
-      if (total > MAX_JSON_BODY_BYTES) {
-        // Stop accumulating but keep draining the stream so the client
-        // can finish sending and receive a clean 413 instead of EPIPE.
-        oversize = true;
-        return;
-      }
-      if (!oversize) chunks.push(c);
-    });
-    req.on("end", () => {
-      if (oversize) {
-        resolve("oversize");
-        return;
-      }
-      if (chunks.length === 0) {
-        resolve({});
-        return;
-      }
-      try {
-        const text = Buffer.concat(chunks).toString("utf8");
-        const parsed = JSON.parse(text);
-        if (parsed === null || typeof parsed !== "object") {
-          resolve(null);
-          return;
-        }
-        resolve(parsed as Record<string, unknown>);
-      } catch {
-        resolve(null);
-      }
-    });
-    req.on("error", () => resolve(null));
-  });
-}
-
 /** Default route table for the dashboard server. */
 export function defaultRoutes(): Route[] {
   return [
-    // Phase 13-4: operation audit endpoints (read-only; available even
-    // when --enable-mutation is OFF so operators can inspect past ops).
+    // Operation audit endpoints are read-only dashboard routes so operators can
+    // inspect operations created by the separate operations POST listener.
     {
       method: "GET",
       pattern: "/api/operations",
@@ -1436,27 +872,14 @@ export function defaultRoutes(): Route[] {
       method: "GET",
       pattern: "/",
       handler: ({ ctx, res }) => {
-        // Phase 12-6 + 13-7: serve the same HTML the static export
-        // writes, but with a live snapshot. When mutation is enabled,
-        // inject a CSRF meta tag + a mutation banner so browser JS can
-        // POST against the mutation endpoints with a valid token.
+        // Phase 12-6: serve the same read-only HTML the static export
+        // writes, but with a live snapshot.
         try {
           const snapshot = loadDashboardSnapshot({
             harnessRoot: dirname(dirname(ctx.config.dbPath)),
             autoImport: false,
           });
-          // Phase 4: when mutation is enabled, render the mutation UI (CSRF
-          // meta + bearer input + action buttons + inline JS). renderDashboardHtml
-          // owns the escaping; the server only supplies the token. Read-only
-          // mode passes no options and gets a JS-free page.
-          const mutationEnabled =
-            ctx.config.mutationEnabled === true &&
-            ctx.config.csrfToken !== undefined;
-          const html = mutationEnabled
-            ? renderDashboardHtml(snapshot, {
-                mutation: { csrfToken: ctx.config.csrfToken as string },
-              })
-            : renderDashboardHtml(snapshot);
+          const html = renderDashboardHtml(snapshot);
           res.statusCode = 200;
           res.setHeader("Content-Type", "text/html; charset=utf-8");
           res.setHeader("X-Content-Type-Options", "nosniff");
@@ -1664,17 +1087,17 @@ function checkAuth(
   config: DashboardServerConfig,
 ): { ok: true } | { ok: false; status: number; code: string; message: string } {
   const tokenConfigured = config.token !== undefined && config.token !== "";
-  // Phase 13 post-close fix (codex P1.3): mutation-enabled mode MUST have
-  // a bearer token, even on localhost. Without one a local process could
-  // POST to /api/runs/:id/review and bypass review governance.
+  // Operations mutation mode MUST have a bearer token, even on localhost.
+  // Without one a local process could POST to /api/runs/:id/review and bypass
+  // review governance.
   if (config.mutationEnabled === true && !tokenConfigured) {
     return {
       ok: false,
       status: 401,
       code: "unauthorized",
       message:
-        "--enable-mutation requires a bearer token (--token-env). " +
-        "Read-only dashboard still works without one.",
+        "operations serve requires a bearer token (--token-env). " +
+        "Read-only dashboard serve still works without one.",
     };
   }
   // Read-only + local + no token → skip (existing operator UX).
@@ -1737,10 +1160,10 @@ export function buildListener(
         return;
       }
 
-      // The dashboard only defines GET and POST routes. POST is allowed only
-      // when mutation is enabled; every other verb (PUT/PATCH/DELETE/...) is
-      // 405, not 404 — keep the contract explicit rather than relying on a
-      // later route miss.
+      // Dashboard defines GET/HEAD read routes. Operations serve enables POST
+      // for mutation routes. Every other verb (PUT/PATCH/DELETE/...) is 405,
+      // not 404 — keep the contract explicit rather than relying on a later
+      // route miss.
       const isPost = req.method === "POST";
 
       if (
@@ -1752,16 +1175,15 @@ export function buildListener(
           res,
           405,
           "method_not_allowed",
-          `dashboard accepts GET / HEAD${
+          `${config.mutationEnabled === true ? "operations" : "dashboard"} accepts GET / HEAD${
             config.mutationEnabled === true ? " / POST" : ""
           } only (got ${req.method ?? "?"})`,
         );
         return;
       }
 
-      // Phase 13-4: CSRF for POST. token check is the bearer auth gate
-      // above; CSRF is an additional same-origin defense for browser UI.
-      // Phase 13 post-close fix (codex P1.3): csrfToken is required when
+      // CSRF for operations POST. Token check is the bearer auth gate above;
+      // CSRF is an additional same-origin defense. csrfToken is required when
       // mutationEnabled, and compared in constant time.
       if (req.method === "POST" && config.mutationEnabled === true) {
         const expected = config.csrfToken;
@@ -1770,7 +1192,7 @@ export function buildListener(
             res,
             500,
             "internal_error",
-            "--enable-mutation requires a csrf token (server misconfigured)",
+            "operations serve requires a csrf token (server misconfigured)",
           );
           return;
         }
@@ -1817,25 +1239,16 @@ export function createDashboardServer(
   config: DashboardServerConfig,
   routes?: Route[],
 ): Server {
-  // Phase 13 post-close fix (codex P1.3): fail fast when mutation is
-  // enabled without an auth shape. Catching this at startup is friendlier
-  // than 401-ing every POST.
-  if (config.mutationEnabled === true) {
-    if (config.token === undefined || config.token === "") {
-      throw new Error(
-        "--enable-mutation requires a bearer token (set via --token-env)",
-      );
-    }
-    if (config.csrfToken === undefined || config.csrfToken === "") {
-      throw new Error(
-        "--enable-mutation requires a csrf token (csrfToken)",
-      );
-    }
-  }
-  const effective =
-    routes ??
-    (config.mutationEnabled === true
-      ? [...defaultRoutes(), ...mutationRoutes()]
-      : defaultRoutes());
-  return createServer(buildListener(effective, config));
+  const effective = routes ?? defaultRoutes();
+  const {
+    mutationEnabled: _mutationEnabled,
+    csrfToken: _csrfToken,
+    ...readOnlyConfig
+  } = config;
+  return createServer(
+    buildListener(effective, {
+      ...readOnlyConfig,
+      mutationEnabled: false,
+    }),
+  );
 }

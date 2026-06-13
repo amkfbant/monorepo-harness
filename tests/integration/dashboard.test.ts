@@ -63,6 +63,25 @@ function harnessRoot(): string {
   return root;
 }
 
+function runCli(
+  root: string,
+  args: string[],
+  extraEnv: Record<string, string> = {},
+): { out: string; code: number } {
+  try {
+    const out = execFileSync("node", ["--import", "tsx", CLI, ...args], {
+      env: { ...process.env, HARNESS_ROOT: root, ...extraEnv },
+    }).toString();
+    return { out, code: 0 };
+  } catch (e) {
+    const err = e as { status?: number; stdout?: Buffer; stderr?: Buffer };
+    return {
+      out: `${err.stdout?.toString() ?? ""}${err.stderr?.toString() ?? ""}`,
+      code: err.status ?? 1,
+    };
+  }
+}
+
 describe("exportDashboard", () => {
   it("writes a self-contained HTML dashboard from the DB read model", () => {
     const root = harnessRoot();
@@ -131,5 +150,31 @@ describe("exportDashboard", () => {
     expect(
       existsSync(join(root, "docs", "dashboard", "index.html")),
     ).toBe(true);
+  });
+
+  it("CLI: dashboard serve --enable-mutation fails before listen and points to operations serve", () => {
+    const root = harnessRoot();
+    const r = runCli(root, ["dashboard", "serve", "--enable-mutation"]);
+    expect(r.code).not.toBe(0);
+    expect(r.out).toMatch(/dashboard serve --enable-mutation has moved/);
+    expect(r.out).toMatch(/harness operations serve/);
+    expect(r.out).not.toMatch(/listening on/);
+  });
+
+  it("CLI: operations serve fails before listen when bearer or CSRF env is missing", () => {
+    const root = harnessRoot();
+    const noToken = runCli(root, ["operations", "serve"]);
+    expect(noToken.code).not.toBe(0);
+    expect(noToken.out).toMatch(/requires --token-env/);
+    expect(noToken.out).not.toMatch(/listening on/);
+
+    const noCsrf = runCli(
+      root,
+      ["operations", "serve", "--token-env", "HARNESS_OP_TOKEN", "--csrf-token-env", "HARNESS_OP_CSRF"],
+      { HARNESS_OP_TOKEN: "secret" },
+    );
+    expect(noCsrf.code).not.toBe(0);
+    expect(noCsrf.out).toMatch(/HARNESS_OP_CSRF is empty/);
+    expect(noCsrf.out).not.toMatch(/listening on/);
   });
 });

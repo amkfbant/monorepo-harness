@@ -138,64 +138,15 @@ describe("renderDashboardHtml", () => {
     expect(html).not.toMatch(/<script\s/);
   });
 
-  describe("mutation UI (Phase 4)", () => {
-    it("is absent by default (read-only): no CSRF meta, no JS, no mutation controls", () => {
+  describe("read-only dashboard HTML", () => {
+    it("never emits CSRF meta, JS, or mutation controls", () => {
       const html = renderDashboardHtml(markupSnapshot());
       expect(html).not.toMatch(/harness-csrf-token/);
       expect(html).not.toMatch(/<script/);
       expect(html).not.toMatch(/harness-bearer/);
-      expect(html).not.toMatch(/\/api\/runs\//);
-    });
-
-    it("is present when mutation is enabled: CSRF meta, bearer input, auth headers, POST paths", () => {
-      const html = renderDashboardHtml(markupSnapshot(), {
-        mutation: { csrfToken: "tok-123" },
-      });
-      // CSRF meta carries the token.
-      expect(html).toMatch(/<meta name="harness-csrf-token" content="tok-123">/);
-      // bearer input + dry-run toggle.
-      expect(html).toMatch(/id="harness-bearer"/);
-      expect(html).toMatch(/id="harness-dryrun"/);
-      // the JS sends the required auth headers.
-      expect(html).toMatch(/X-CSRF-Token/);
-      expect(html).toMatch(/Authorization/);
-      expect(html).toMatch(/Bearer/);
-      expect(html).toMatch(/Idempotency-Key/);
-      // each mutation endpoint is reachable from the UI.
-      expect(html).toMatch(/\/review/);
-      expect(html).toMatch(/\/cleanup/);
-      expect(html).toMatch(/\/pr/);
-      expect(html).toMatch(/\/rerun/);
-      expect(html).toMatch(/\/api\/backlog\//);
-      // destructive ops confirm; dry-run is the default.
-      expect(html).toMatch(/confirm\(/);
-      expect(html).toMatch(/id="harness-dryrun" checked/);
-      // cleanup offers a scope selector (workspace/run/all).
-      expect(html).toMatch(/class="mut-scope"/);
-      expect(html).toMatch(/<option value="workspace">/);
-      expect(html).toMatch(/<option value="run">/);
-      expect(html).toMatch(/<option value="all">/);
-      // review actions apply the clicked decision as an audited override on
-      // non-dry-run (the backend ignores the body decision otherwise), and the
-      // reason prompt serves as the confirmation.
-      expect(html).toMatch(/body\.override=\{reason:reason\}/);
-      expect(html).toMatch(/window\.prompt\(/);
-      expect(html).toMatch(/decision:decision/);
-    });
-
-    it("escapes the CSRF token and run/backlog ids in the mutation UI", () => {
-      const html = renderDashboardHtml(markupSnapshot(), {
-        mutation: { csrfToken: '"><script>x</script>' },
-      });
-      // the token is escaped inside the meta attribute.
-      expect(html).not.toMatch(/content="">/);
-      expect(html).toMatch(/&quot;&gt;&lt;script&gt;/);
-      // run id (which contains markup) is escaped in its data attribute.
-      expect(html).not.toMatch(/data-run-id="run-<script>/);
-      expect(html).toMatch(/run-&lt;script&gt;/);
-      // backlog item id is escaped in its data attribute too.
-      expect(html).not.toMatch(/data-item-id="item-<script>/);
-      expect(html).toMatch(/item-&lt;script&gt;/);
+      expect(html).not.toMatch(/X-CSRF-Token/);
+      expect(html).not.toMatch(/Idempotency-Key/);
+      expect(html).not.toMatch(/data-act=/);
     });
   });
 });

@@ -115,7 +115,7 @@ import {
   succeedOperation,
   failOperation,
 } from "../db/repositories/operations.js";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   renderRunShow,
   renderRunTimeline,
@@ -170,6 +170,7 @@ import {
 } from "../core/session.js";
 import { exportDashboard } from "../dashboard/export.js";
 import { createDashboardServer } from "../dashboard/server/server.js";
+import { createOperationsServer } from "../operations/server.js";
 import {
   listOperations,
   getOperation,
@@ -2156,6 +2157,14 @@ dashboardCmd
       );
       process.exit(1);
     }
+    if (raw.enableMutation === true) {
+      process.stderr.write(
+        "harness error: dashboard serve --enable-mutation has moved to " +
+          "`harness operations serve`; dashboard serve is read-only and never " +
+          "mounts POST mutation routes.\n",
+      );
+      process.exit(1);
+    }
     const host = String(raw.host);
     const isLocal =
       host === "127.0.0.1" || host === "::1" || host === "localhost";
@@ -2179,28 +2188,6 @@ dashboardCmd
     }
     const token =
       raw.tokenEnv !== undefined ? process.env[String(raw.tokenEnv)] : undefined;
-    const mutationEnabled = Boolean(raw.enableMutation);
-    let csrfToken: string | undefined;
-    if (mutationEnabled) {
-      // Phase 13 post-close fix (codex P1.3): mutation requires a bearer
-      // token everywhere, including localhost. Fail fast with a clear
-      // error rather than a warning + stack trace from createDashboardServer.
-      if (token === undefined || token === "") {
-        process.stderr.write(
-          "error: --enable-mutation requires a bearer token. " +
-            "Set --token-env <ENV_NAME> with a strong secret.\n",
-        );
-        process.exit(1);
-      }
-      // Phase 13-4: csrfToken は server boot 時生成。HTML dashboard
-      // (Phase 13-7) が <meta> で読めるよう embed する。
-      const { randomBytes } = await import("node:crypto");
-      csrfToken = randomBytes(24).toString("base64url");
-      process.stdout.write(
-        `mutation enabled — CSRF token: ${csrfToken}\n` +
-          "  pass it in browser POSTs as X-CSRF-Token header.\n",
-      );
-    }
     const server = createDashboardServer({
       dbPath: paths.dbPath,
       host,
@@ -2211,8 +2198,6 @@ dashboardCmd
       ...(raw.corsOrigin !== undefined
         ? { corsOrigin: String(raw.corsOrigin) }
         : {}),
-      mutationEnabled,
-      ...(csrfToken !== undefined ? { csrfToken } : {}),
     });
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -2230,6 +2215,88 @@ dashboardCmd
 const operationsCmd = program
   .command("operations")
   .description("operation audit ledger (Phase 13)");
+operationsCmd
+  .command("serve")
+  .description("start the authenticated operations mutation API")
+  .option("--host <host>", "bind host (default 127.0.0.1)", "127.0.0.1")
+  .option("--port <port>", "bind port (default 8788)", "8788")
+  .option(
+    "--token-env <name>",
+    "env var name holding the bearer token (required)",
+  )
+  .option(
+    "--csrf-token-env <name>",
+    "env var name holding the CSRF token (default: generate and print once)",
+  )
+  .option("--cors-origin <origin>", "enable CORS for this origin")
+  .action(async (raw: Record<string, unknown>) => {
+    const paths = harnessPaths(getHarnessRoot());
+    const port = Number(raw.port);
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+      process.stderr.write(
+        `harness error: --port must be 0..65535 (got ${JSON.stringify(String(raw.port))})\n`,
+      );
+      process.exit(1);
+    }
+    if (raw.tokenEnv === undefined) {
+      process.stderr.write(
+        "harness error: operations serve requires --token-env <ENV_NAME>\n",
+      );
+      process.exit(1);
+    }
+    const token = process.env[String(raw.tokenEnv)];
+    if (token === undefined || token === "") {
+      process.stderr.write(
+        `harness error: ${String(raw.tokenEnv)} is empty; operations serve requires a bearer token\n`,
+      );
+      process.exit(1);
+    }
+    let csrfToken: string;
+    if (raw.csrfTokenEnv !== undefined) {
+      const envName = String(raw.csrfTokenEnv);
+      const fromEnv = process.env[envName];
+      if (fromEnv === undefined || fromEnv === "") {
+        process.stderr.write(
+          `harness error: ${envName} is empty; operations serve requires a CSRF token\n`,
+        );
+        process.exit(1);
+      }
+      csrfToken = fromEnv;
+    } else {
+      csrfToken = randomBytes(24).toString("base64url");
+      process.stdout.write(
+        `operations CSRF token: ${csrfToken}\n` +
+          "  pass it on POST requests as X-CSRF-Token.\n",
+      );
+    }
+    const host = String(raw.host);
+    if (host === "0.0.0.0") {
+      process.stderr.write(
+        "warning: binding operations serve to 0.0.0.0 exposes mutation APIs to the network.\n",
+      );
+    }
+    const server = createOperationsServer({
+      dbPath: paths.dbPath,
+      host,
+      port,
+      token,
+      csrfToken,
+      ...(raw.corsOrigin !== undefined
+        ? { corsOrigin: String(raw.corsOrigin) }
+        : {}),
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(port, host, () => {
+        const addr = server.address();
+        const actualPort = addr && typeof addr === "object" ? addr.port : port;
+        process.stdout.write(
+          `harness operations listening on http://${host}:${actualPort}\n`,
+        );
+        resolve();
+      });
+    });
+  });
 operationsCmd
   .command("list")
   .description("list recent operations")

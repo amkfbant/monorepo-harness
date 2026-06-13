@@ -9,6 +9,7 @@ import { openDb } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
 import { SCHEMA_VERSION } from "../../src/db/schema.js";
 import { createDashboardServer } from "../../src/dashboard/server/server.js";
+import { createOperationsServer } from "../../src/operations/server.js";
 import {
   recordExternalBlob,
   registerBlobStore,
@@ -180,31 +181,29 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
     expect(after).toBe(before);
   });
 
-  // Phase 13 post-close fix (codex P1.3): mutation requires bearer + csrf.
-  it("Phase 13 post-close: createDashboardServer throws when mutationEnabled without bearer token", () => {
+  it("operations serve: createOperationsServer throws without bearer token", () => {
     expect(() =>
-      createDashboardServer({
+      createOperationsServer({
         dbPath: env.dbPath,
         host: "127.0.0.1",
         port: 0,
-        mutationEnabled: true,
+        csrfToken: "csrf-123",
       }),
     ).toThrow(/bearer token/i);
   });
 
-  it("Phase 13 post-close: createDashboardServer throws when mutationEnabled without csrf token", () => {
+  it("operations serve: createOperationsServer throws without csrf token", () => {
     expect(() =>
-      createDashboardServer({
+      createOperationsServer({
         dbPath: env.dbPath,
         host: "127.0.0.1",
         port: 0,
-        mutationEnabled: true,
         token: "topsecret",
       }),
     ).toThrow(/csrf/i);
   });
 
-  it("Phase 4: GET / on a read-only server has NO mutation UI", async () => {
+  it("GET / on a dashboard server has no mutation UI", async () => {
     const r = await get(env.server.baseUrl, "/");
     expect(r.status).toBe(200);
     const html = r.body as string;
@@ -213,7 +212,7 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
     expect(html).not.toMatch(/<script/);
   });
 
-  it("Phase 4: GET / with mutation enabled renders the mutation UI + CSRF meta", async () => {
+  it("dashboard remains read-only even if old mutation config is passed directly", async () => {
     await env.server.close();
     const srv = createDashboardServer({
       dbPath: env.dbPath,
@@ -227,30 +226,94 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
     const addr = srv.address() as AddressInfo;
     const base = `http://127.0.0.1:${addr.port}`;
     try {
-      // When a bearer token is configured (mutation mode) every request needs
-      // it — including loading the page that hosts the mutation UI.
       const res = await fetch(`${base}/`, {
         headers: { Authorization: "Bearer topsecret" },
       });
       const html = await res.text();
       expect(res.status).toBe(200);
-      expect(html).toMatch(/<meta name="harness-csrf-token" content="csrf-123">/);
-      expect(html).toMatch(/id="harness-bearer"/);
-      expect(html).toMatch(/X-CSRF-Token/);
-      expect(html).toMatch(/\/api\/runs\//);
+      expect(html).not.toMatch(/harness-csrf-token/);
+      expect(html).not.toMatch(/id="harness-bearer"/);
+      expect(html).not.toMatch(/X-CSRF-Token/);
+      const post = await fetch(`${base}/api/runs/run-x/review`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer topsecret",
+          "X-CSRF-Token": "csrf-123",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ decision: "approved", dryRun: true }),
+      });
+      expect(post.status).toBe(405);
     } finally {
       await new Promise<void>((r) => srv.close(() => r()));
       env.server = await startServer(env.dbPath);
     }
   });
 
-  it("Phase 4: in mutation mode, non-GET/POST verbs are 405 (not 404)", async () => {
+  it("dashboard returns 405 for the five operation POST routes", async () => {
+    const cases = [
+      ["/api/runs/run-x/review", { decision: "approved", dryRun: true }],
+      ["/api/runs/run-x/cleanup", { dryRun: true }],
+      ["/api/runs/run-x/pr", { dryRun: true }],
+      ["/api/runs/run-x/rerun", { dryRun: true }],
+      ["/api/backlog/item-x/run", { dryRun: true }],
+    ] as const;
+    for (const [path, body] of cases) {
+      const res = await fetch(`${env.server.baseUrl}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(405);
+    }
+  });
+
+  it("operations serve owns the five POST routes with bearer + CSRF", async () => {
     await env.server.close();
-    const srv = createDashboardServer({
+    const srv = createOperationsServer({
       dbPath: env.dbPath,
       host: "127.0.0.1",
       port: 0,
-      mutationEnabled: true,
+      token: "topsecret",
+      csrfToken: "csrf-123",
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const addr = srv.address() as AddressInfo;
+    const base = `http://127.0.0.1:${addr.port}`;
+    const cases = [
+      ["/api/runs/run-x/review", { decision: "approved", dryRun: true }, 200],
+      ["/api/runs/run-x/cleanup", { dryRun: true }, 200],
+      ["/api/runs/run-x/pr", { dryRun: true }, 202],
+      ["/api/runs/run-x/rerun", { dryRun: true }, 202],
+      ["/api/backlog/item-x/run", { dryRun: true }, 202],
+    ] as const;
+    try {
+      for (const [path, requestBody, expectedStatus] of cases) {
+        const res = await fetch(`${base}${path}`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer topsecret",
+            "X-CSRF-Token": "csrf-123",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+        });
+        expect(res.status).toBe(expectedStatus);
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body).toHaveProperty("operationId");
+      }
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+      env.server = await startServer(env.dbPath);
+    }
+  });
+
+  it("operations serve: non-GET/POST verbs are 405 (not 404)", async () => {
+    await env.server.close();
+    const srv = createOperationsServer({
+      dbPath: env.dbPath,
+      host: "127.0.0.1",
+      port: 0,
       token: "topsecret",
       csrfToken: "csrf-123",
     });
@@ -273,11 +336,10 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
 
   it("Phase 4: POST /api/runs/:id/review dispatches to the POST handler (not the GET route)", async () => {
     await env.server.close();
-    const srv = createDashboardServer({
+    const srv = createOperationsServer({
       dbPath: env.dbPath,
       host: "127.0.0.1",
       port: 0,
-      mutationEnabled: true,
       token: "topsecret",
       csrfToken: "csrf-123",
     });
@@ -307,11 +369,10 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
 
   it("Phase 13 post-close: POST mutation without X-CSRF-Token returns 403", async () => {
     await env.server.close();
-    const srv = createDashboardServer({
+    const srv = createOperationsServer({
       dbPath: env.dbPath,
       host: "127.0.0.1",
       port: 0,
-      mutationEnabled: true,
       token: "topsecret",
       csrfToken: "csrf-123",
     });
@@ -349,11 +410,10 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
   // finalized as `pending` so `GET /api/operations/:id` is truthful.
   it("Phase 13 post-close: deferred POST /api/runs/:id/rerun finalizes operation as pending (non-dry-run)", async () => {
     await env.server.close();
-    const srv = createDashboardServer({
+    const srv = createOperationsServer({
       dbPath: env.dbPath,
       host: "127.0.0.1",
       port: 0,
-      mutationEnabled: true,
       token: "topsecret",
       csrfToken: "csrf-123",
     });
@@ -375,14 +435,20 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
       expect(body.status).toBe("pending");
       const result = body.result as Record<string, unknown>;
       expect(result.executed).toBe(false);
-      // Poll via GET /api/operations/:id and confirm pending.
+      // Poll via the dashboard read API and confirm pending; operations serve
+      // owns only the POST mutation surface.
       const opId = body.operationId as string;
-      const poll = await fetch(`${base}/api/operations/${opId}`, {
-        headers: { Authorization: "Bearer topsecret" },
-      });
-      expect(poll.status).toBe(200);
-      const pollBody = (await poll.json()) as { operation: Record<string, unknown> };
-      expect(pollBody.operation.status).toBe("pending");
+      const dashboard = await startServer(env.dbPath);
+      try {
+        const poll = await fetch(`${dashboard.baseUrl}/api/operations/${opId}`);
+        expect(poll.status).toBe(200);
+        const pollBody = (await poll.json()) as {
+          operation: Record<string, unknown>;
+        };
+        expect(pollBody.operation.status).toBe("pending");
+      } finally {
+        await dashboard.close();
+      }
     } finally {
       await new Promise<void>((r) => srv.close(() => r()));
       env.server = await startServer(env.dbPath);
@@ -393,11 +459,10 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
   // is rejected with 413 instead of being read into memory.
   it("Phase 12 post-close: POST mutation body > 1 MiB returns 413 payload_too_large", async () => {
     await env.server.close();
-    const srv = createDashboardServer({
+    const srv = createOperationsServer({
       dbPath: env.dbPath,
       host: "127.0.0.1",
       port: 0,
-      mutationEnabled: true,
       token: "topsecret",
       csrfToken: "csrf-123",
     });
@@ -530,11 +595,10 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
 
   it("Phase 13 post-close: dry-run rerun still finalizes as succeeded (no executor needed)", async () => {
     await env.server.close();
-    const srv = createDashboardServer({
+    const srv = createOperationsServer({
       dbPath: env.dbPath,
       host: "127.0.0.1",
       port: 0,
-      mutationEnabled: true,
       token: "topsecret",
       csrfToken: "csrf-123",
     });
