@@ -1,4 +1,7 @@
-node_modules/
+# `node_modules` (no trailing slash) so a symlink named node_modules is also
+# ignored — a trailing-slash pattern only matches a directory, which let
+# workspace node_modules symlinks slip into commits.
+node_modules
 dist/
 *.log
 
