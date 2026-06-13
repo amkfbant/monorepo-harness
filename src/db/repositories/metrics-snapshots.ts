@@ -90,6 +90,7 @@ export interface MetricsDeltaOk {
     oneShotApprovalRate: MetricsDeltaValue;
     policyViolationRate: MetricsDeltaValue;
     secretSuspectRate: MetricsDeltaValue;
+    lockContentionCount: MetricsDeltaValue;
   };
   hitch: {
     totalSessions: MetricsDeltaValue;
@@ -208,7 +209,9 @@ function isMetricsSummary(value: unknown): value is DbMetricsSummary {
     isNumberOrNull(value.approvedRate) &&
     isNumberOrNull(value.oneShotApprovalRate) &&
     isNumberOrNull(value.policyViolationRate) &&
-    isNumberOrNull(value.secretSuspectRate)
+    isNumberOrNull(value.secretSuspectRate) &&
+    (value.lockContentionCount === undefined ||
+      typeof value.lockContentionCount === "number")
   );
 }
 
@@ -283,7 +286,10 @@ function parseSnapshotPayload(
       schema: PAYLOAD_SCHEMA,
       capturedAt: parsed.capturedAt,
       filter: normalizeFilter(parsed.filter),
-      metricsSummary: parsed.metricsSummary,
+      metricsSummary: {
+        ...parsed.metricsSummary,
+        lockContentionCount: parsed.metricsSummary.lockContentionCount ?? 0,
+      },
       hitchMetricsSummary: parsed.hitchMetricsSummary,
       tokenUsageSummary: parsed.tokenUsageSummary,
       ...(parsed.mcpConfirmationSummary !== undefined
@@ -534,6 +540,10 @@ export function buildMetricsDelta(
         secretSuspectRate: deltaValue(
           baseline.metricsSummary.secretSuspectRate,
           currentMetrics.secretSuspectRate,
+        ),
+        lockContentionCount: deltaValue(
+          baseline.metricsSummary.lockContentionCount,
+          currentMetrics.lockContentionCount,
         ),
       },
       hitch: {

@@ -621,8 +621,9 @@ harness metrics failures --since 30d       # failed-* の status 別内訳
 集計する（指定時は files から DB を再構築）。scoped path でも `--since`（`runs.started_at`
 への下限）と `--domain` が効く。scope 無しは従来の file-based 集計。
 scoped path の text / JSON 出力には `metricsSummary` の KPI として
-`oneShotApprovalRate` / `policyViolationRate` / `secretSuspectRate` を含め、
-さらに `usage`（`tokenUsageSummary`）を含める。KPI / usage の正規定義は以下。
+`oneShotApprovalRate` / `policyViolationRate` / `secretSuspectRate` /
+`lockContentionCount` を含め、さらに `usage`（`tokenUsageSummary`）を含める。
+KPI / usage の正規定義は以下。
 
 - `oneShotApprovalRate` — root run（`parent_run_id IS NULL`）の `approved` /
   root run の decided（`approved` / `changes_requested` / `rejected`）。decided が
@@ -631,6 +632,10 @@ scoped path の text / JSON 出力には `metricsSummary` の KPI として
   行を持つ DISTINCT run / `totalRuns`。`totalRuns` が 0 件なら `null`。
 - `secretSuspectRate` — `secret_suspect_count > 0` の run / `totalRuns`。
   `totalRuns` が 0 件なら `null`。
+- `lockContentionCount` — `domain_lock_contention` の行数。`--repo-id` /
+  `--domain` は同 table の `repo_id` / `domain` に、`--since` / `--until` 相当の
+  date scope は `observed_at` に適用する。`project_id` 列は無いため `--project`
+  はこの KPI には直接適用しない。
 - `usage.runsWithUsage` — scope 内で `runs` に join できる `run_usage` 行数。
 - `usage.totalInputTokens` / `usage.totalOutputTokens` / `usage.totalTokens` —
   `usage_source='exact'` の行だけを合算する。`NULL` token field は除外される。
@@ -639,9 +644,9 @@ scoped path の text / JSON 出力には `metricsSummary` の KPI として
 - `usage.bySource` — scope 内 `run_usage.usage_source` 別の行数。`unavailable` も
   欠損テレメトリとして数えるが token 合算対象ではない。
 
-`--since` の対象列は、runs 指標は `runs.started_at`、hitch 指標は
-`hitch_sessions.created_at`、MCP confirmations は
-`mcp_confirmation_requests.created_at`。
+`--since` の対象列は、runs 指標は `runs.started_at`、lock contention 指標は
+`domain_lock_contention.observed_at`、hitch 指標は `hitch_sessions.created_at`、
+MCP confirmations は `mcp_confirmation_requests.created_at`。
 text 出力は既存の section 形式に続けて hitch metrics / MCP confirmations の summary
 （usage と hitch は project/repo/domain/since scope、MCP confirmations は global
 table のため project/repo/domain filter 非適用で since scope のみ）も表示する。
@@ -677,7 +682,8 @@ delta の text 出力は以下の KPI を `基準値 -> 現在値 (Δ)` で表�
 rate の Δ は percentage point。
 
 - runs: `totalRuns` / `approved` / `approvedRate` /
-  `oneShotApprovalRate` / `policyViolationRate` / `secretSuspectRate`
+  `oneShotApprovalRate` / `policyViolationRate` / `secretSuspectRate` /
+  `lockContentionCount`
 - hitch: `totalSessions` / `findingResolutionRate`
 - usage: `totalTokens`
 - baseline payload が `mcpConfirmationSummary` を持つ場合のみ MCP confirmations の

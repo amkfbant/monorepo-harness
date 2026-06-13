@@ -10,12 +10,12 @@ The Phase 15 `db_stats_snapshots` repository/table was removed in audit cleanup
 `dbStats()` output, and snapshot/delta commands were never wired. Reintroduce this
 only with an end-to-end CLI/API surface, retention policy, and migration plan.
 
-## lock_busy event metrics
+## lock_busy event metrics — implemented
 
-`DomainLockBusyError` is thrown before a run log exists, so it cannot be recorded
-in `run_events`. Measuring `lock_busy` needs operation-level telemetry based on
-`operation_events` instead. Deferred from telemetry Phase A; backlog
-`item-20260612-001`.
+Implemented by schema v28 as `domain_lock_contention`. `DomainLockBusyError`
+still happens before a run log exists, so the signal is recorded in a dedicated
+append-only telemetry table instead of `run_events`. The scoped KPI is exposed as
+`metricsSummary.lockContentionCount`.
 
 ## Operational knowledge — deferred surfaces (issue #57)
 

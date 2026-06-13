@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V27_STATEMENTS`、
-> `SCHEMA_VERSION = 27`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V28_STATEMENTS`、
+> `SCHEMA_VERSION = 28`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -700,7 +700,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 27`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 28`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -728,6 +728,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 25 | telemetry provenance B1 | `runs` に実行環境 provenance 列（harness/schema/codex binary/prompt sha。`codex_model` は NULL 予約） |
 | 26 | telemetry usage C2 | `run_usage`（run 1:1 の Codex token usage。`exact` / `unavailable` を記録、`parsed_log` / `estimated` は予約） |
 | 27 | telemetry snapshots E1 | `metrics_snapshots`（live aggregate の append-only stored projection。snapshot caller と retention prune を同時実装） |
+| 28 | telemetry follow-up F4 | `domain_lock_contention`（run log 作成前の domain lock busy を append-only に記録する純テレメトリ） |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -1115,6 +1116,34 @@ transaction で必ず実行する。repository の `recordMetricsSnapshot` は 1
 ちょうどの row は残す。旧 `db_stats_snapshots` との違いは、初期実装時点で
 caller（CLI）/ retention prune / downstream consumer（E2 delta/trend）が同一 Phase の
 契約に含まれており、未配線 ledger として無限成長させない点である。
+
+## Telemetry follow-up F4 — domain_lock_contention（schema v28）
+
+schema v28 は additive な `domain_lock_contention` を追加する。これは
+`DomainLockBusyError` が run log 生成前に発生するため `run_events` に残せない
+lock-busy 発生回数を数えるための append-only telemetry table である。
+lock ownership / lease fencing / state transition の根拠には使わない。
+
+```sql
+CREATE TABLE domain_lock_contention (
+  contention_id TEXT PRIMARY KEY,
+  domain_key TEXT NOT NULL,
+  repo_id TEXT,
+  domain TEXT,
+  holder_run_id TEXT,
+  contender_pid INTEGER,
+  contender_hostname TEXT,
+  observed_at TEXT NOT NULL
+);
+CREATE INDEX domain_lock_contention_domain_observed_idx
+  ON domain_lock_contention(domain_key, observed_at);
+```
+
+`contention_id` は `dlc-<uuid>`。`holder_run_id` は busy 判定時に読んだ
+active `domain_locks` 行から取得できる場合に記録する。`metricsSummary` は
+`lockContentionCount` として `repo_id` / `domain` / `observed_at` の scope を適用して
+count する。`project_id` 列は持たないため、project scope はこの table には直接適用せず、
+repo/domain/date scope のみを使う。
 
 ## Audit fix #130 — hitch lifecycle events（schema v23）
 

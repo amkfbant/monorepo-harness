@@ -177,6 +177,7 @@ function insertMetricsSnapshot(
         oneShotApprovalRate: null,
         policyViolationRate: null,
         secretSuspectRate: null,
+        lockContentionCount: 0,
       },
       hitchMetricsSummary: {
         totalSessions: 0,

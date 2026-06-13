@@ -32,6 +32,7 @@ function markupSnapshot(): DashboardSnapshot {
       oneShotApprovalRate: null,
       policyViolationRate: null,
       secretSuspectRate: null,
+      lockContentionCount: 0,
     },
     usage: {
       runsWithUsage: 1,

@@ -190,6 +190,7 @@ function metricsDeltaText(result: MetricsDeltaResult): string {
     deltaRateLine("one-shot approval rate", result.metrics.oneShotApprovalRate),
     deltaRateLine("policy violation rate", result.metrics.policyViolationRate),
     deltaRateLine("secret suspect rate", result.metrics.secretSuspectRate),
+    deltaLine("lock contention count", result.metrics.lockContentionCount),
     deltaLine("hitch total sessions", result.hitch.totalSessions),
     deltaRateLine(
       "finding resolution rate",
@@ -264,6 +265,7 @@ export function runScopedMetrics(
       `one-shot approval rate: ${pct(m.oneShotApprovalRate)}\n` +
       `policy violation rate: ${pct(m.policyViolationRate)}\n` +
       `secret suspect rate: ${pct(m.secretSuspectRate)}\n` +
+      `lock contention count: ${m.lockContentionCount}\n` +
       `${byStatus}\n` +
       `usage:\n` +
       `  runs with usage: ${m.usage.runsWithUsage}\n` +

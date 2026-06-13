@@ -77,7 +77,8 @@ function overviewSection(s: DashboardSnapshot): string {
       `failed: ${m.failed} · approved rate: ${pct(m.approvedRate)} · ` +
       `one-shot approval: ${pct(m.oneShotApprovalRate)} · ` +
       `policy violation: ${pct(m.policyViolationRate)} · ` +
-      `secret suspect: ${pct(m.secretSuspectRate)}</p>`,
+      `secret suspect: ${pct(m.secretSuspectRate)} · ` +
+      `lock contention: ${m.lockContentionCount}</p>`,
     `<table><tr><th>status</th><th>count</th></tr>${rows}</table>`,
   ].join("\n");
 }

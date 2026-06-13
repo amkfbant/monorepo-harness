@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 27;
+export const SCHEMA_VERSION = 28;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1750,6 +1750,31 @@ export const MIGRATION_V27_STATEMENTS: readonly string[] = [
 /** Tables added by v27 (metrics aggregate snapshots). */
 export const V27_TABLE_NAMES = ["metrics_snapshots"] as const;
 
+/**
+ * v28 — domain lock contention telemetry.
+ *
+ * Append-only, best-effort telemetry for lock-busy failures that happen before
+ * a run log exists. These rows are pure metrics input and are never used for
+ * lock ownership, fencing, or state transitions.
+ */
+export const MIGRATION_V28_STATEMENTS: readonly string[] = [
+  `CREATE TABLE domain_lock_contention (
+     contention_id TEXT PRIMARY KEY,
+     domain_key TEXT NOT NULL,
+     repo_id TEXT,
+     domain TEXT,
+     holder_run_id TEXT,
+     contender_pid INTEGER,
+     contender_hostname TEXT,
+     observed_at TEXT NOT NULL
+   )`,
+  `CREATE INDEX domain_lock_contention_domain_observed_idx
+     ON domain_lock_contention(domain_key, observed_at)`,
+] as const;
+
+/** Tables added by v28 (domain lock contention telemetry). */
+export const V28_TABLE_NAMES = ["domain_lock_contention"] as const;
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -1794,6 +1819,7 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V23_TABLE_NAMES,
   ...V26_TABLE_NAMES,
   ...V27_TABLE_NAMES,
+  ...V28_TABLE_NAMES,
 ];
 
 /** Tables intentionally removed by later migrations. */

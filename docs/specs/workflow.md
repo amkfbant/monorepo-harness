@@ -451,6 +451,9 @@ Phase 9 は concurrency safety と runtime DB story の完結を扱う。設計�
   heartbeat (1 分) + fencing token (= `domain_locks.lock_id`) を持つ。
   Phase 9 期間中は file lock が primary serialization のため、runtime 経路の
   lease stealing は発生しにくい（full-path integration は Phase 10）。
+  active lease が残っていて busy と判定した場合、`DomainLockBusyError` を throw
+  する直前に同じ DB 接続で `domain_lock_contention` へ best-effort INSERT する。
+  記録失敗は fail-open で握りつぶし、lock 取得・解放・fencing の意味論は変えない。
 - **lease guard / state guard 分離** — run execution stage writes
   （`runs` 行 status 更新 / `run_events` / `artifacts` の DB-first ingest
   等）は `assertActiveLease` で active domain lock を verify。`review process`

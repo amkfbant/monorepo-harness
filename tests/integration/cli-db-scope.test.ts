@@ -129,6 +129,7 @@ describe("CLI project-scoped DB queries (Phase 6-6)", () => {
     expect(m).toHaveProperty("oneShotApprovalRate");
     expect(m).toHaveProperty("policyViolationRate");
     expect(m).toHaveProperty("secretSuspectRate");
+    expect(m).toHaveProperty("lockContentionCount");
     expect(m).toHaveProperty("hitch");
     expect(m).toHaveProperty("mcpConfirmations");
 

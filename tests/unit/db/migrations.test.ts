@@ -69,7 +69,7 @@ describe("runMigrations", () => {
     expect(r.version).toBe(SCHEMA_VERSION);
     expect(r.applied).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27,
+      22, 23, 24, 25, 26, 27, 28,
     ]);
     const tables = tableNames(dbPath);
     expect(tables.has("schema_migrations")).toBe(true);
@@ -84,6 +84,63 @@ describe("runMigrations", () => {
     }
   });
 
+  it("creates domain_lock_contention in v28 and stays idempotent", () => {
+    const db = openDb(freshDbPath());
+    try {
+      applyMigrationsBefore(db, 28);
+      expect(currentSchemaVersion(db)).toBe(27);
+      expect(hasSchemaObject(db, "table", "domain_lock_contention")).toBe(false);
+
+      const upgraded = runMigrations(db);
+      expect(upgraded.applied).toEqual([28]);
+      expect(upgraded.version).toBe(SCHEMA_VERSION);
+      expect(hasSchemaObject(db, "table", "domain_lock_contention")).toBe(true);
+      expect(
+        hasSchemaObject(db, "index", "domain_lock_contention_domain_observed_idx"),
+      ).toBe(true);
+
+      const columns = db.prepare("PRAGMA table_info(domain_lock_contention)").all() as {
+        name: string;
+        type: string;
+        notnull: number;
+        pk: number;
+      }[];
+      expect(columns.find((r) => r.name === "contention_id")).toMatchObject({
+        type: "TEXT",
+        pk: 1,
+      });
+      for (const name of ["domain_key", "observed_at"]) {
+        expect(columns.find((r) => r.name === name)).toMatchObject({
+          type: "TEXT",
+          notnull: 1,
+        });
+      }
+      for (const name of ["repo_id", "domain", "holder_run_id", "contender_hostname"]) {
+        expect(columns.find((r) => r.name === name)).toMatchObject({
+          type: "TEXT",
+          notnull: 0,
+        });
+      }
+      expect(columns.find((r) => r.name === "contender_pid")).toMatchObject({
+        type: "INTEGER",
+        notnull: 0,
+      });
+
+      db.prepare(
+        `INSERT INTO domain_lock_contention
+           (contention_id, domain_key, repo_id, domain, holder_run_id,
+            contender_pid, contender_hostname, observed_at)
+         VALUES ('dlc-v28', 'demo::apps/web', 'demo', 'apps/web', 'run-a',
+           200, 'h2', '2026-06-13T00:00:00.000Z')`,
+      ).run();
+      const again = runMigrations(db);
+      expect(again.applied).toEqual([]);
+      expect(again.version).toBe(SCHEMA_VERSION);
+    } finally {
+      db.close();
+    }
+  });
+
   it("creates metrics_snapshots in v27 and stays idempotent", () => {
     const db = openDb(freshDbPath());
     try {
@@ -92,7 +149,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "metrics_snapshots")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([27]);
+      expect(upgraded.applied).toEqual([27, 28]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "metrics_snapshots")).toBe(true);
       expect(hasSchemaObject(db, "index", "metrics_snapshots_created_idx")).toBe(
@@ -156,7 +213,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "run_usage")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([26, 27]);
+      expect(upgraded.applied).toEqual([26, 27, 28]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "run_usage")).toBe(true);
 
@@ -253,7 +310,7 @@ describe("runMigrations", () => {
       expect(before.map((r) => r.name)).not.toContain("prompt_sha256");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([25, 26, 27]);
+      expect(upgraded.applied).toEqual([25, 26, 27, 28]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       const after = db
         .prepare("PRAGMA table_info(runs)")
@@ -298,7 +355,7 @@ describe("runMigrations", () => {
       expect(before.map((r) => r.name)).not.toContain("prompt_provenance_json");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([24, 25, 26, 27]);
+      expect(upgraded.applied).toEqual([24, 25, 26, 27, 28]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       const after = db
         .prepare("PRAGMA table_info(review_proposals)")
@@ -322,7 +379,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "hitch_lifecycle_events")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([23, 24, 25, 26, 27]);
+      expect(upgraded.applied).toEqual([23, 24, 25, 26, 27, 28]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "hitch_lifecycle_events")).toBe(true);
       expect(hasSchemaObject(db, "index", "hitch_lifecycle_events_hitch_idx")).toBe(
@@ -362,7 +419,7 @@ describe("runMigrations", () => {
       ).run("2026-06-12T00:00:00.000Z", "{}");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([22, 23, 24, 25, 26, 27]);
+      expect(upgraded.applied).toEqual([22, 23, 24, 25, 26, 27, 28]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "db_stats_snapshots")).toBe(false);
       expect(hasSchemaObject(db, "index", "db_stats_snapshots_created_idx")).toBe(

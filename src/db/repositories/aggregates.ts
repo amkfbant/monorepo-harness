@@ -80,6 +80,36 @@ export interface DbMetricsSummary {
   policyViolationRate: number | null;
   /** runs with secret_suspect_count > 0 / totalRuns, or null if no runs */
   secretSuspectRate: number | null;
+  /** best-effort lock-busy observations in `domain_lock_contention` */
+  lockContentionCount: number;
+}
+
+function lockContentionScope(filter: AggregateFilter): {
+  sql: string;
+  params: unknown[];
+} {
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (filter.repoId !== undefined) {
+    where.push("repo_id = ?");
+    params.push(filter.repoId);
+  }
+  if (filter.domain !== undefined) {
+    where.push("domain = ?");
+    params.push(filter.domain);
+  }
+  if (filter.since !== undefined) {
+    where.push("observed_at >= ?");
+    params.push(filter.since);
+  }
+  if (filter.until !== undefined) {
+    where.push("observed_at <= ?");
+    params.push(filter.until);
+  }
+  return {
+    sql: where.length > 0 ? `WHERE ${where.join(" AND ")}` : "",
+    params,
+  };
 }
 
 export function metricsSummary(
@@ -141,6 +171,15 @@ export function metricsSummary(
       )
       .get(...params) as { n: number }
   ).n;
+  const contentionScope = lockContentionScope(filter);
+  const lockContentionCount = (
+    db
+      .prepare(
+        `SELECT count(*) AS n
+           FROM domain_lock_contention ${contentionScope.sql}`,
+      )
+      .get(...contentionScope.params) as { n: number }
+  ).n;
   return {
     totalRuns: total,
     byStatus,
@@ -152,6 +191,7 @@ export function metricsSummary(
       rootDecided === 0 ? null : rootApproved / rootDecided,
     policyViolationRate: total === 0 ? null : policyViolationRuns / total,
     secretSuspectRate: total === 0 ? null : secretSuspectRuns / total,
+    lockContentionCount,
   };
 }
 
