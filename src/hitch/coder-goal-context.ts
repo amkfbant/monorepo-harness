@@ -64,28 +64,22 @@ export function augmentGoalWithOpenFindings(
   ].join("\n");
 }
 
-// Redact secret-shaped lines before the close-check output is injected into the
-// next Codex prompt. An allowlisted command can print tokens/keys; this output
-// does NOT pass through the run's codex-events redaction, so scrub it here
-// (line-granular so genuine error lines stay useful). Mirrors the harness's
-// secret-scan heuristics; fail-safe = drop the whole line on any match.
-function redactSecretLines(value: string): string {
-  return value
-    .split("\n")
-    .map((line) =>
-      scanForSecrets("", line).matched
-        ? "[redacted: secret-shaped output withheld]"
-        : line,
-    )
-    .join("\n");
-}
-
+// An allowlisted close-check command can print tokens/keys, and this output does
+// NOT pass through the run's codex-events redaction — so scrub it before it lands
+// in the next Codex prompt. Fail-closed and WHOLE-stream:
+//   - scan the FULL output BEFORE clipping, so a tail-clip window cannot sever a
+//     token's prefix (e.g. `ghp_`) and let the suffix evade detection;
+//   - scan as one blob (not per line), so a multi-line secret (PEM private key
+//     block) is caught even though only its BEGIN line matches a line pattern;
+//   - on ANY match, withhold the entire stream rather than risk a partial leak.
+// Secrets in typecheck/vitest output are rare, so the lost detail is an
+// acceptable price for not leaking a key into the coder prompt.
 function clipOutput(value: string): string {
-  const clipped =
-    value.length <= DEFAULT_MAX_CLOSE_CHECK_OUTPUT_CHARS
-      ? value
-      : value.slice(value.length - DEFAULT_MAX_CLOSE_CHECK_OUTPUT_CHARS);
-  return redactSecretLines(clipped);
+  if (scanForSecrets("", value).matched) {
+    return "[redacted: secret-shaped content detected; close-check output withheld]";
+  }
+  if (value.length <= DEFAULT_MAX_CLOSE_CHECK_OUTPUT_CHARS) return value;
+  return value.slice(value.length - DEFAULT_MAX_CLOSE_CHECK_OUTPUT_CHARS);
 }
 
 function renderCloseCheckFailure(failure: CloseCheckFailureContext): string {

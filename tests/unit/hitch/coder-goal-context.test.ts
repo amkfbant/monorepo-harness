@@ -131,7 +131,7 @@ describe("augmentGoalWithFailedCloseChecks", () => {
     expect(out).toContain("error TS1005");
   });
 
-  it("redacts secret-shaped lines from injected command output", () => {
+  it("withholds the whole stream when secret-shaped content is present (fail-closed)", () => {
     const out = augmentGoalWithFailedCloseChecks("do the thing", [
       {
         conditionId: "typecheck",
@@ -144,11 +144,44 @@ describe("augmentGoalWithFailedCloseChecks", () => {
       },
     ]);
 
-    // secret-shaped lines are withheld; non-secret lines stay for the coder.
     expect(out).not.toContain("AKIAIOSFODNN7EXAMPLE");
     expect(out).not.toContain("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
-    expect(out).toContain("[redacted: secret-shaped output withheld]");
-    expect(out).toContain("harmless line");
-    expect(out).toContain("another harmless line");
+    expect(out).toContain("close-check output withheld");
+  });
+
+  it("withholds a MULTI-LINE secret (PEM key) entirely, not just the header line", () => {
+    const pem = [
+      "starting checks",
+      "-----BEGIN PRIVATE KEY-----",
+      "MIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEA0secretbodyline",
+      "-----END PRIVATE KEY-----",
+    ].join("\n");
+    const out = augmentGoalWithFailedCloseChecks("g", [
+      {
+        conditionId: "typecheck",
+        conditionKind: "command",
+        command: "npm run typecheck",
+        exitCode: 1,
+        stdout: pem,
+      },
+    ]);
+
+    // No part of the key body or END marker may survive.
+    expect(out).not.toContain("MIIBVwIBADANBgkqhkiG");
+    expect(out).not.toContain("END PRIVATE KEY");
+    expect(out).toContain("close-check output withheld");
+  });
+
+  it("preserves non-secret output for the coder", () => {
+    const out = augmentGoalWithFailedCloseChecks("g", [
+      {
+        conditionId: "typecheck",
+        conditionKind: "command",
+        command: "npm run typecheck",
+        exitCode: 2,
+        stdout: "src/a.ts(1,1): error TS1005: ';' expected.",
+      },
+    ]);
+    expect(out).toContain("error TS1005");
   });
 });
