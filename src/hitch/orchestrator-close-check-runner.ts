@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { harnessPaths } from "../config/paths.js";
 import { withManagedDb } from "../db/managed-connection.js";
 import { runAllowedCommands } from "../core/command-runner.js";
+import { gitCliOrThrow } from "../git/git-cli.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
 import type { ResolvedCommand } from "../policy/schema.js";
@@ -71,10 +72,18 @@ function resolveCommandForCondition(input: {
   commands: readonly ResolvedCommand[];
 }): ResolvedCommand {
   const selector = input.condition.command ?? input.condition.id;
-  const matches = input.commands.filter(
-    (command) =>
-      command.id === selector || displayResolvedCommand(command) === selector,
-  );
+  // A condition WITH an explicit `command` may select by policy command id or
+  // by the exact display command string. A condition WITHOUT `command` selects
+  // by condition id ONLY — matching a bare condition on the display string
+  // would broaden what it can execute (review finding P2).
+  const matches =
+    input.condition.command !== undefined
+      ? input.commands.filter(
+          (command) =>
+            command.id === selector ||
+            displayResolvedCommand(command) === selector,
+        )
+      : input.commands.filter((command) => command.id === selector);
   if (matches.length === 1) return matches[0] as ResolvedCommand;
   if (matches.length > 1) {
     throw new Error(
@@ -120,9 +129,14 @@ function pendingCommandCloseConditions(input: {
     }),
     allowEmptyCloseConditions: input.session.policy.allowEmptyCloseConditions,
   });
+  // Only REQUIRED pending command conditions gate close. Executing an optional
+  // (advisory) command condition could throw on a non-allowlisted command and
+  // block the hitch before the required evidence is even recorded (review
+  // finding P1). Optional conditions never block close, so they are not run.
   return close.conditions
     .filter(
       (evaluated) =>
+        evaluated.condition.required &&
         evaluated.condition.kind === "command" &&
         evaluated.status !== "passed",
     )
@@ -185,6 +199,16 @@ export async function runCommandCloseChecks(
           `command close checks`,
       );
     }
+    // A close-check command MUST NOT mutate the run worktree: evidence is
+    // recorded only in the DB and runs/<runId>/close-checks/, and the post-hoc
+    // policy diff is computed from this tree. Snapshot the worktree before and
+    // after; if an allowlisted command added or changed any entry, fail-closed
+    // rather than record a `passed` check over a polluted tree (review finding
+    // P1). Untracked entries are included so generated/coverage files count.
+    const statusArgs = ["status", "--porcelain", "--untracked-files=all"];
+    const worktreeStatusBefore = await gitCliOrThrow(statusArgs, {
+      cwd: worktreePath,
+    });
     const cmdRun = await runAllowedCommands({
       worktreePath,
       commands: [...commandsById.values()],
@@ -194,6 +218,21 @@ export async function runCommandCloseChecks(
         ? { envAllowlist: policy.commandDefaults.envAllowlist }
         : {}),
     });
+    const worktreeStatusAfter = await gitCliOrThrow(statusArgs, {
+      cwd: worktreePath,
+    });
+    const before = new Set(worktreeStatusBefore.split("\n"));
+    const dirtied = worktreeStatusAfter
+      .split("\n")
+      .filter((line) => line.trim() !== "" && !before.has(line));
+    if (dirtied.length > 0) {
+      throw new Error(
+        `close-check commands mutated the run worktree (${prep.runId}); ` +
+          `close-checks must not write into the repo tree (write-scope / ` +
+          `post-hoc diff integrity). Newly dirtied entries:\n` +
+          dirtied.join("\n"),
+      );
+    }
     const resultByCommandId = new Map(
       cmdRun.results.map((result) => [result.id, result]),
     );
