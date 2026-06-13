@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexBinaryVersion } from "../../../src/codex/codex-version.js";
@@ -36,6 +42,32 @@ describe("codexBinaryVersion", () => {
     const bin = writeExecutableScript(dir, "process.exit(7);");
 
     expect(codexBinaryVersion(bin)).toBeNull();
+  });
+
+  it("does not write relative version probe side effects into process cwd", () => {
+    const dir = mkdtempSync(join(tmpdir(), "harness-codex-version-side-effect-"));
+    const cwd = mkdtempSync(join(tmpdir(), "harness-codex-version-cwd-"));
+    const sideEffectFile = `codex-version-side-effect-${Date.now()}-${Math.random()
+      .toString(16)
+      .slice(2)}.txt`;
+    const bin = writeExecutableScript(
+      dir,
+      [
+        "const fs = require('node:fs');",
+        `fs.writeFileSync(${JSON.stringify(sideEffectFile)}, 'probe side effect');`,
+        "process.stdout.write('codex-cli 4.5.6\\n');",
+      ].join("\n"),
+    );
+    const previousCwd = process.cwd();
+
+    try {
+      process.chdir(cwd);
+
+      expect(codexBinaryVersion(bin)).toBe("codex-cli 4.5.6");
+      expect(existsSync(join(process.cwd(), sideEffectFile))).toBe(false);
+    } finally {
+      process.chdir(previousCwd);
+    }
   });
 
   it("does not pass env outside the codex allowlist to the version probe", () => {

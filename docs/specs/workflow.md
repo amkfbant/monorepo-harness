@@ -549,6 +549,7 @@ codex exec \
 - `detached: true` で新 process group → timeout 時に `process.kill(-pid, "SIGKILL")` でツリー kill (Windows は `taskkill /T /F`)
 - env は `DEFAULT_CODEX_ENV_ALLOWLIST` (`PATH / HOME / USER / SHELL / LANG / LC_ALL / TERM / TMPDIR / CODEX_HOME`) のみ通す
 - `codexBin` は PATH 名ならそのまま、path separator を含む相対パスなら `process.cwd()` 基準の絶対パスへ解決して runner / version probe の両方で使う
+- version probe は解決済み `codexBin` を `os.tmpdir()` cwd で実行し、相対 path の副作用を harness cwd から隔離する
 - stdout/stderr は file stream に pipe、close 後 `finished()` で flush 完了を待つ
 
 ## limits / timeout

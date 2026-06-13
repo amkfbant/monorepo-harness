@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import * as os from "node:os";
 import {
   DEFAULT_CODEX_ENV_ALLOWLIST,
   filterEnv,
@@ -15,6 +16,8 @@ export function codexBinaryVersion(codexBin: string): string | null {
   }
 
   const result = spawnSync(resolvedCodexBin, ["--version"], {
+    // Resolve before spawning so relative codexBin remains process.cwd()-based while the probe cwd is isolated.
+    cwd: os.tmpdir(),
     encoding: "utf8",
     env: filterEnv(process.env, DEFAULT_CODEX_ENV_ALLOWLIST),
     timeout: 5_000,
