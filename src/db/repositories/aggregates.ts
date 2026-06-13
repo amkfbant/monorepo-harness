@@ -468,6 +468,61 @@ export function hitchTokenUsage(
   return { ...hitchUsageTotalsFromRow(totalsRow), byKind };
 }
 
+/** Zero token usage (whole + per kind). */
+export function emptyHitchTokenUsage(): DbHitchTokenUsage {
+  return {
+    ...emptyHitchTokenUsageTotals(),
+    byKind: {
+      coder: emptyHitchTokenUsageTotals(),
+      reviewer: emptyHitchTokenUsageTotals(),
+      evaluator: emptyHitchTokenUsageTotals(),
+    },
+  };
+}
+
+function addHitchTokenUsageTotals(
+  a: DbHitchTokenUsageTotals,
+  b: DbHitchTokenUsageTotals,
+): DbHitchTokenUsageTotals {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    reasoningOutputTokens: a.reasoningOutputTokens + b.reasoningOutputTokens,
+    totalTokens: a.totalTokens + b.totalTokens,
+    runsWithUsage: a.runsWithUsage + b.runsWithUsage,
+  };
+}
+
+/**
+ * Sum several per-hitch token usages into one (whole + per kind). Used by the
+ * course rollup to fold every linked hitch's usage into a course total. The
+ * sum is a plain per-hitch fold: a run shared across two hitches' attempts
+ * would be counted once per hitch (the same approximation the rollup uses for
+ * open P0/P1), but `phase_hitches` keeps a hitch in at most one phase.
+ */
+export function sumHitchTokenUsage(
+  items: readonly DbHitchTokenUsage[],
+): DbHitchTokenUsage {
+  return items.reduce<DbHitchTokenUsage>(
+    (acc, u) => ({
+      ...addHitchTokenUsageTotals(acc, u),
+      byKind: {
+        coder: addHitchTokenUsageTotals(acc.byKind.coder, u.byKind.coder),
+        reviewer: addHitchTokenUsageTotals(
+          acc.byKind.reviewer,
+          u.byKind.reviewer,
+        ),
+        evaluator: addHitchTokenUsageTotals(
+          acc.byKind.evaluator,
+          u.byKind.evaluator,
+        ),
+      },
+    }),
+    emptyHitchTokenUsage(),
+  );
+}
+
 export interface DbInboxSummary {
   needsReview: DashboardRunSummary[];
   changesRequested: DashboardRunSummary[];

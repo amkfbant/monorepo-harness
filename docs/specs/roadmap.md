@@ -137,6 +137,14 @@ For each phase in the tree (pre-order, depth-first):
 
 - `openP0` / `openP1`: sum of derived counts across all phases.
 - `phaseCountsByStatus`: counts of phases in each status category.
+- `tokenTotals`: **live** sum of every linked hitch's `hitchTokenUsage`
+  (`run_usage` over the hitch's distinct attempt runs, retry-inclusive) across
+  the whole course — total tokens (input / cached / output / reasoning / total),
+  `runsWithUsage`, and a `byKind` (coder / reviewer / evaluator) split. Like the
+  open P0/P1 counts this is a derived projection, never a stored snapshot. The
+  per-hitch fold counts a run once per hitch (`phase_hitches` keeps a hitch in
+  at most one phase). `course status` prints `tokens=<total> (coder=… reviewer=…
+  evaluator=…)` on the course line when any usage is present.
 
 ### Tree integrity guard (fail-closed)
 

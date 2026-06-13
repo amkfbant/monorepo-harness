@@ -1968,7 +1968,7 @@ course ロードマップ管理（SP-1）。データモデル・MCP ツール�
 harness course create --title <text> [--description <text>] [--project <id>] [--repo-id <id>] [--created-by <actor>] [--json]
 harness course list [--status active|paused|closed] [--json]
 harness course show <id> [--json]
-harness course status <id> [--json]
+harness course status <id> [--json]   # rollup: per-phase open P0/P1 + course openP0/P1 + live tokenTotals (per-hitch run_usage sum, by kind)
 harness course orchestrate <id> [--max-driven-hitches <n>] [--max-steps-per-hitch <n>] [--dry-run] [--json]
 harness course pause <id>
 harness course resume <id>
