@@ -60,7 +60,10 @@ import { ConvergenceService } from "./convergence.js";
 import { evaluateCloseConditions } from "./close-checks.js";
 import { recordConvergenceDecisionWithStatus } from "./convergence-status.js";
 import { assertHitchCanStartMutation } from "./mutation-gate.js";
-import { importReviewProposalToHitch } from "./review-integration.js";
+import {
+  importReviewProposalToHitch,
+  proposalReviewerAdvisories,
+} from "./review-integration.js";
 import { dbConsensusSnapshotProvider } from "./consensus-stall-check.js";
 import { nextReviewMode } from "./review-mode.js";
 import type { OrchestratorRunners } from "./orchestrator-types.js";
@@ -347,10 +350,20 @@ export function tryShortCircuitApprovedDecidedReview(input: {
     .get(input.runId) as { status: string } | undefined;
   if (run?.status !== "approved") return null;
 
+  // Gate on the run's DB-canonical decision (review_decisions), NOT the latest
+  // individual proposal. In consensus mode the latest processed proposal can be
+  // a non-approving member while the aggregated run decision is approved; gating
+  // on the proposal would miss it and fall through to a re-review that escalates
+  // an already-approved run (codex review).
+  const decisionRow = input.db
+    .prepare("SELECT decision FROM review_decisions WHERE run_id = ?")
+    .get(input.runId) as { decision: string } | undefined;
+  if (decisionRow?.decision !== "approved") return null;
+
   const proposal = new ReviewProposalRepository(
     input.db,
   ).getLatestProcessedProposal(input.runId);
-  if (proposal?.decision !== "approved") return null;
+  if (proposal === null) return null;
 
   const repo = new HitchRepository(input.db);
   const session = repo.requireSession(input.hitchId);
@@ -359,6 +372,28 @@ export function tryShortCircuitApprovedDecidedReview(input: {
   );
   if (reviewConditions.length === 0) return null;
 
+  // If the prior review crashed after processReviewDecision but before
+  // importReviewProposalToHitch, no review cycle exists for this run and the
+  // proposal's findings / advisories / required follow-ups were never folded
+  // into the hitch. Complete that import now instead of recording only a close-
+  // check — otherwise the hitch could close without its P1 findings or deferred
+  // out-of-scope suggestions (codex review). The normal idempotent re-drive (a
+  // cycle already exists for this run) must NOT re-import, or it double-counts.
+  const alreadyImported = repo
+    .listReviewCycles(input.hitchId)
+    .some((cycle) => cycle.sourceRunId === input.runId);
+  if (!alreadyImported) {
+    importReviewProposalToHitch({
+      repository: repo,
+      hitchId: input.hitchId,
+      proposal,
+      createdBy: input.createdBy,
+    });
+  }
+
+  // Carry the reviewer advisories (e.g. "tests were not run") into the refreshed
+  // close-check evidence, matching the normal import path (codex review).
+  const advisories = proposalReviewerAdvisories(proposal);
   const checkedAt = new Date().toISOString();
   for (const condition of reviewConditions) {
     repo.recordCloseCheck({
@@ -371,11 +406,12 @@ export function tryShortCircuitApprovedDecidedReview(input: {
         runId: input.runId,
         proposalId: proposal.proposalId,
         reviewDecisionId: proposal.reviewDecisionId,
-        decision: proposal.decision,
+        decision: "approved",
         processStatus: "approved",
         sourceSha256: proposal.sourceSha256,
         reviewConsensusSemantics: REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS,
         idempotentRedrive: true,
+        ...(advisories.length > 0 ? { reviewerAdvisories: advisories } : {}),
       },
       message:
         "review consensus approved the run (static pass; tests not executed by review_consensus)",

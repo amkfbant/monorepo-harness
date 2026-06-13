@@ -182,7 +182,10 @@ export function importReviewProposalToHitch(
   };
 }
 
-function proposalReviewerAdvisories(
+// Exported so the approved-run short-circuit can carry the same reviewer
+// advisories (e.g. "tests were not run") into the refreshed close-check
+// evidence that the normal import path records.
+export function proposalReviewerAdvisories(
   proposal: ReviewProposalRow,
 ): ReviewerAdvisory[] {
   return proposal.nonBlockingComments.flatMap((text, index) =>

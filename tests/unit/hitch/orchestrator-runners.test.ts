@@ -77,9 +77,14 @@ function insertApprovedRunWithProcessedProposal(input: {
   // happy path ("approved"); pass "changes_requested" / "rejected" to pin that
   // a non-approved decided run is NOT short-circuited.
   decision?: string;
+  // Whether a prior review cycle exists for the run (the normal idempotent
+  // re-drive). false models a crash between processReviewDecision and the
+  // proposal import, so the short-circuit must complete the import.
+  priorCycle?: boolean;
   closeConditions?: Parameters<HitchRepository["createSession"]>[0]["closeConditions"];
 }): string {
   const decision = input.decision ?? "approved";
+  const priorCycle = input.priorCycle ?? true;
   const runId = `run-${input.hitchId}`;
   const sourceYaml = decisionYaml(runId, decision);
   const sourceSha = createHash("sha256").update(sourceYaml).digest("hex");
@@ -134,6 +139,30 @@ function insertApprovedRunWithProcessedProposal(input: {
          '2026-06-13T00:00:00.000Z', ?, ?, '2026-06-13T00:00:00.000Z',
          '2026-06-13T00:00:00.000Z', ?, 'processed')`,
     ).run(runId, decision, sourceYaml, sourceSha, runId);
+    // The DB-canonical run decision (the short-circuit gates on this, not the
+    // latest individual proposal).
+    db.prepare(
+      `INSERT INTO review_decisions (run_id, decision, reviewer, reviewed_at,
+         source_yaml, source_sha256)
+       VALUES (?, ?, 'codex-reviewer', '2026-06-13T00:00:00.000Z', ?, ?)`,
+    ).run(runId, decision, sourceYaml, sourceSha);
+    if (priorCycle) {
+      // Model a completed prior import (a review cycle for this run already
+      // exists) so the short-circuit treats this as an idempotent re-drive.
+      // Timestamp the prior cycle at the run's review time so it predates any
+      // later close-check refresh (otherwise the refreshed check reads stale).
+      const cycle = repo.startReviewCycle({
+        hitchId: input.hitchId,
+        reviewMode: "close",
+        sourceRunId: runId,
+        createdAt: "2026-06-13T00:00:00.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle.cycleId,
+        completedAt: "2026-06-13T00:00:00.000Z",
+        summary: "prior import",
+      });
+    }
     return runId;
   } finally {
     close();
@@ -211,7 +240,8 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
       const { db, close } = openManagedDb({ dbPath });
       try {
         const repo = new HitchRepository(db);
-        expect(repo.listReviewCycles(hitchId)).toHaveLength(0);
+        // Idempotent re-drive: the prior import's cycle stays; NO new one.
+        expect(repo.listReviewCycles(hitchId)).toHaveLength(1);
         const checks = repo.listCloseChecks(hitchId);
         expect(checks).toHaveLength(1);
         expect(checks[0]).toMatchObject({
@@ -262,7 +292,8 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
     const { db, close } = openManagedDb({ dbPath });
     try {
       const repo = new HitchRepository(db);
-      expect(repo.listReviewCycles(hitchId)).toHaveLength(0);
+      // Idempotent re-drive: only the prior import's cycle, no new one.
+      expect(repo.listReviewCycles(hitchId)).toHaveLength(1);
       expect(repo.listCloseChecks(hitchId).map((c) => c.conditionId)).toEqual([
         "review-ok",
       ]);
@@ -286,6 +317,50 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
     });
 
     await expect(runners.salvageReviewBranch?.(hitchId)).resolves.toBeNull();
+  });
+
+  it("imports the proposal when re-driving an approved run whose import never ran (crash recovery)", async () => {
+    // processReviewDecision ran (run approved, proposal processed) but the
+    // import crashed before folding the proposal into the hitch — no review
+    // cycle exists. The short-circuit must complete the import (review cycle +
+    // findings/advisories accounting), not just record a close-check.
+    const { harnessRoot, dbPath } = createHarnessRoot(
+      "harness-orch-review-crash-",
+    );
+    const hitchId = "g-approved-crash";
+    const runId = insertApprovedRunWithProcessedProposal({
+      dbPath,
+      hitchId,
+      priorCycle: false,
+    });
+    const reviewerRunner = {
+      run: vi.fn(async () => {
+        throw new Error("reviewer must not run");
+      }),
+    };
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    const result = await runners.review(hitchId);
+
+    expect(result).toEqual({ runId, decision: "approved" });
+    expect(reviewerRunner.run).not.toHaveBeenCalled();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db);
+      // The interrupted import was completed: a review cycle now exists.
+      const cycles = repo.listReviewCycles(hitchId);
+      expect(cycles).toHaveLength(1);
+      expect(cycles[0]?.sourceRunId).toBe(runId);
+      expect(repo.listCloseChecks(hitchId)).toHaveLength(1);
+    } finally {
+      close();
+    }
   });
 
   // Safety boundary (#167): the short-circuit applies ONLY to an approved
