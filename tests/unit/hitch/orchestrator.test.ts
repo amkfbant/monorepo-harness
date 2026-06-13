@@ -45,6 +45,10 @@ function fakeRunners(calls: string[]): OrchestratorRunners {
   return {
     coder: async () => { calls.push("coder"); return { runId: "r1", runStatus: "needs_review" }; },
     review: async () => { calls.push("review"); return { runId: "r1", decision: "approved" }; },
+    closeCheck: async () => {
+      calls.push("closeCheck");
+      return { runId: "r1", checked: 1, passed: 1, failed: 0 };
+    },
     classify: async () => { calls.push("classify"); return { resolved: true }; },
     defer: async () => { calls.push("defer"); return { deferred: 1 }; },
     closeAndPr: async () => { calls.push("closeAndPr"); return { prUrl: "https://example/pr/1", draft: true }; },
@@ -126,6 +130,69 @@ describe("HitchOrchestrator", () => {
     expect(result.steps.length).toBe(3);
   });
 
+  it("runs closeCheck instead of re-reviewing when command evidence is pending", async () => {
+    const dbPath = freshDbPath();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new HitchRepository(db);
+      repo.createSession({
+        hitchId: "g-command-check",
+        title: "Command check",
+        projectId: "demo",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+      repo.createAttempt({
+        hitchId: "g-command-check",
+        attemptType: "implement",
+        status: "succeeded",
+        runId: "r1",
+        createdAt: "2026-05-25T00:00:00.000Z",
+      });
+      const cycle = repo.startReviewCycle({
+        hitchId: "g-command-check",
+        reviewMode: "initial",
+        createdAt: "2026-05-25T00:01:00.000Z",
+      });
+      repo.completeReviewCycle({ cycleId: cycle.cycleId, completedAt: "2026-05-25T00:01:30.000Z" });
+    } finally {
+      close();
+    }
+    const calls: string[] = [];
+    const runners: OrchestratorRunners = {
+      ...fakeRunners(calls),
+      closeCheck: async (hitchId) => {
+        calls.push("closeCheck");
+        const { db: db2, close: close2 } = openManagedDb({ dbPath });
+        try {
+          new HitchRepository(db2).recordCloseCheck({
+            hitchId,
+            conditionId: "typecheck",
+            status: "passed",
+            checkedBy: "test",
+            checkedAt: "2026-05-25T00:02:00.000Z",
+          });
+        } finally {
+          close2();
+        }
+        return { runId: "r1", checked: 1, passed: 1, failed: 0 };
+      },
+    };
+
+    const result = await new HitchOrchestrator({ dbPath }).run({
+      hitchId: "g-command-check",
+      runners,
+      maxSteps: 5,
+      createdBy: "worker",
+    });
+
+    expect(calls).toContain("closeCheck");
+    expect(calls).not.toContain("review");
+    expect(result.outcome).toBe("pr_created");
+  });
+
   it("escalates (and flips the goal status) when a runner throws", async () => {
     const dbPath = freshDbPath();
     const { db, close } = openManagedDb({ dbPath });
@@ -152,6 +219,7 @@ describe("HitchOrchestrator", () => {
       review: async () => {
         throw new Error("review boom");
       },
+      closeCheck: async () => ({ runId: "r1", checked: 1, passed: 1, failed: 0 }),
       classify: async () => ({ resolved: true }),
       defer: async () => ({ deferred: 0 }),
       closeAndPr: async () => ({ prUrl: "https://example/pr/1", draft: true }),
@@ -332,7 +400,7 @@ describe("HitchOrchestrator", () => {
       });
       // Record the close-check LAST so its evidence is fresh relative to the
       // finding mutation (otherwise convergence treats it as stale → pending
-      // → run_close_check/review instead of continue/defer_followups).
+      // → run_close_check/close_check instead of continue/defer_followups).
       repo.recordCloseCheck({
         hitchId: "g-defer-loop",
         conditionId: "typecheck",

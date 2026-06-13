@@ -1,7 +1,8 @@
 /** One logical action the orchestrator can take per loop step. */
 export type OrchestratorAction =
   | { kind: "coder" } // needs_fix: run/rerun the coder to fix findings / run close checks
-  | { kind: "review" } // continue + run_close_check: review the latest run
+  | { kind: "review" } // continue + run_review: review the latest run
+  | { kind: "close_check" } // continue + run_close_check: run deterministic command close checks
   | { kind: "classify" } // needs_classification: deterministic scope classification
   | { kind: "defer" } // continue/defer_followups: defer out-of-scope findings to backlog
   | { kind: "close_and_pr" } // close_ready: close the hitch then create the PR
@@ -18,6 +19,13 @@ export interface OrchestratorRunners {
   coder(hitchId: string): Promise<{ runId: string; runStatus: string }>;
   /** review auto + review process for the hitch's latest run; records the cycle. */
   review(hitchId: string): Promise<{ runId: string; decision: string }>;
+  /** Run deterministic command close checks from the domain policy allowlist. */
+  closeCheck(hitchId: string): Promise<{
+    runId: string;
+    checked: number;
+    passed: number;
+    failed: number;
+  }>;
   /** Deterministically classify open unknown-scope findings. Returns whether all resolved. */
   classify(hitchId: string): Promise<{ resolved: boolean; escalateReason?: string }>;
   /** Defer open out-of-scope findings to the backlog. Returns how many were deferred. */

@@ -122,7 +122,7 @@ Evaluation is deterministic and conservative:
 5. Passed fresh required close checks plus configured `closeRequires` blockers clear is `close_ready`.
 6. (#104) An **unreviewed** coder run — the latest coding attempt (implement/
    rerun) is newer than the latest review cycle — is **reviewed** (`continue` →
-   `run_close_check`) before routing to another rerun, classification, or fix
+   `run_review`) before routing to another rerun, classification, or fix
    pass. Placed *after* the budget checks (a genuinely over-budget hitch still
    stops) and gated by the review-cycle budget, so an open finding cannot drive
    endless reruns that never review the fix that would clear it (otherwise the
@@ -192,23 +192,26 @@ harness rejects implementation/review/rerun/process mutations when the hitch is
 next action: `needs_fix` with `fix_findings` permits only `run.start` and
 `rerun.start`; `needs_fix` with `run_close_check` also permits `run.start` and
 `rerun.start` so failed close checks can be fixed. `continue` with
-`run_close_check` permits review validation (`review.auto` and
-`review.process`) so close-check evidence can be generated, but still blocks
-implementation mutations. `continue` with `defer_followups` blocks these
-hitch-linked mutations until the recommended deferral action is handled.
+`run_review` permits review validation (`review.auto` and `review.process`) so
+review-derived evidence can be generated, but still blocks implementation
+mutations. `continue` with `run_close_check` is reserved for deterministic
+command close checks and does not permit review tools. `continue` with
+`defer_followups` blocks these hitch-linked mutations until the recommended
+deferral action is handled.
 `review.process` confirmation requests are not created when this gate denies the
 linked hitch. The bounded MCP driver `hitch.orchestrate` (`harness.hitch.orchestrate`)
 is gated by the same evaluation: it is permitted **exactly when some per-step
 mutation would be permitted** (`needs_fix` with `fix_findings`/`run_close_check`,
-or `continue` with `run_close_check`). The entry gate denies the driver for
-`close_ready`, the stop/terminal decisions (`escalate` / `diverging` /
-`budget_exhausted` / `closed` / `cancel`), `defer_followups`, and
+or `continue` with `run_review`) or when it can run a deterministic command
+close check (`continue` with `run_close_check`). The entry gate denies the
+driver for `close_ready`, the stop/terminal decisions (`escalate` /
+`diverging` / `budget_exhausted` / `closed` / `cancel`), `defer_followups`, and
 `needs_classification`. That denial is about *entering* the driver: once the
-driver is running, its loop auto-classifies and auto-defers via the internal
-deterministic runner dispatch (see the three-layer table below); only the
-deliberate `close_ready` close/PR and the escalation path are left to an
-operator out of band. Each internal coder/review step the orchestrator runs
-re-checks its own gate. `harness hitch check-convergence` and
+driver is running, its loop auto-classifies, auto-defers, and runs allowlisted
+command close checks via the internal deterministic runner dispatch (see the
+three-layer table below); only the deliberate `close_ready` close/PR and the
+escalation path are left to an operator out of band. Each internal coder/review
+step the orchestrator runs re-checks its own gate. `harness hitch check-convergence` and
 `harness.hitch.check_convergence` record an audit decision and synchronize the
 durable hitch status for stop/close-ready decisions by default. Review proposal
 import uses the same status synchronization after it records its convergence
@@ -223,16 +226,18 @@ contradiction:
 | decision | MCP per-step gate (`mutation-gate.ts`) | hitch loop (`HitchOrchestrator`) | course dispatch (`orchestrate-dispatch.ts`) |
 |---|---|---|---|
 | `needs_fix` (`fix_findings`/`run_close_check`) | permits `run.start`/`rerun.start` | drives a bounded fix/rerun | drives the phase |
-| `continue` + `run_close_check` | permits review validation | records close-check evidence | drives the phase |
+| `continue` + `run_review` | permits review validation | reviews the latest coding run | drives the phase |
+| `continue` + `run_close_check` | no review/run mutation; driver entry is allowed | runs allowlisted command close checks and records evidence | drives the phase |
 | `needs_classification` | denies the step | **auto-classifies** via the classify runner, then continues | **blocks** the phase and isolates its subtree (operator classifies) |
 | `defer_followups` | denies the step | **auto-defers** via the defer runner, then continues | not blocked, but the hitch is not drivable (`allowedByConvergence` is false) → `report_only` unless another linked hitch is drivable |
 | `close_ready` | denies the step (operator closes/PRs) | default loop runs `closeAndPr` (close + PR); stops before the PR only when `stopAtCloseReady` is set (the MCP/course drivers set it) | `ready_to_close` when all hitches are ready and no open P0/P1; no auto-close |
 | `escalate` / `diverging` / `budget_exhausted` | denies the step | stops | blocks the phase and isolates its subtree |
 
-The in-loop classify/defer runners are internal deterministic dispatch, not
-gated mutations, which is why the MCP gate "denying classification/deferral" and
-the loop "auto-handling" them are both correct. The course layer deliberately
-stops on `needs_classification` rather than auto-resolving across phases.
+The in-loop classify/defer/command-close-check runners are internal
+deterministic dispatch, not gated mutations, which is why the MCP gate
+"denying classification/deferral/review tools" and the loop "auto-handling"
+them are both correct. The course layer deliberately stops on
+`needs_classification` rather than auto-resolving across phases.
 
 Implemented links:
 
@@ -241,6 +246,7 @@ run.start        -> hitch_attempts(attempt_type='implement')
 review.auto      -> hitch_attempts(attempt_type='fix-review')
 rerun.start      -> hitch_attempts(attempt_type='rerun')
 review.process   -> hitch_review_cycles + hitch_findings + close checks
+close_check      -> hitch_attempts(attempt_type='close-check') + hitch_close_checks + runs/<runId>/close-checks/
 ```
 
 Review proposal import maps `required_changes` to P1 finding seeds, then runs
@@ -269,15 +275,25 @@ command checks using the existing close-condition machinery; it does not inject
 synthetic test gates and does not use reviewer self-report as state-transition
 evidence.
 
+When the loop reaches `continue` / `run_close_check`, the orchestrator resolves
+each pending `kind: command` condition to the effective domain policy
+`ResolvedCommand` allowlist. A condition without `command` selects by condition
+id; a condition with `command` may select either the allowlisted command id or
+the exact display command. Matching commands are run with `runAllowedCommands`
+against the latest reviewed run worktree, and evidence is recorded only in
+`hitch_close_checks` plus `runs/<runId>/close-checks/`. If a condition cannot be
+resolved to exactly one allowlisted command, the command is not executed and the
+orchestrator escalates with an external-evidence request.
+
 `hitch_lifecycle_events` records `closed`, `cancelled`, and `reopened` reasons
 with actor/timestamp for audit. It is not a state-transition source.
 Convergence, mutation gates, and roadmap rollup derive state from deterministic
 harness inputs (`hitch_sessions`, findings, close checks, budgets, and
 convergence metrics), never from lifecycle event rows.
 
-Review-only attempts inherit the related coding iteration when they are linked
-to an existing run attempt. This keeps automatic review bookkeeping from
-burning the implementation iteration budget.
+Review-only and close-check attempts inherit the related coding iteration when
+they are linked to an existing run attempt. This keeps automatic review and
+command-check bookkeeping from burning the implementation iteration budget.
 
 ## CLI Contract
 
@@ -297,8 +313,10 @@ harness hitch check-convergence <hitch-id> --json
 harness hitch close <hitch-id> --summary "..."
 ```
 
-CLI command close checks may record command evidence, but Phase 19 does not
-make MCP run arbitrary shell commands.
+CLI/MCP close-check record tools may still record externally supplied command
+evidence. Autonomous orchestrate only runs commands that resolve to the domain
+policy allowlist; non-allowlisted command conditions fail fast and require
+external evidence.
 
 ## MCP Contract
 

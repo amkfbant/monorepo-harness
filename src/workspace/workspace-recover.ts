@@ -84,9 +84,13 @@ function computeNextSteps(input: RecoveryBriefingInput): string[] {
             steps.push(
               `defer out-of-scope follow-ups for hitch ${hitch.hitchId} before closing`,
             );
+          } else if (nextActionKind === "run_review") {
+            steps.push(
+              `run review for hitch ${hitch.hitchId}`,
+            );
           } else if (nextActionKind === "run_close_check") {
             steps.push(
-              `run review / record close-check evidence for hitch ${hitch.hitchId}`,
+              `run command close-check evidence for hitch ${hitch.hitchId}`,
             );
           } else {
             steps.push(

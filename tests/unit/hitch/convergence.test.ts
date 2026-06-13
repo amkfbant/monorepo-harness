@@ -156,7 +156,7 @@ describe("ConvergenceService", () => {
       const result = service.evaluate("goal-test");
       expect(result.decision).toBe("continue");
       expect(result.metrics.closeConditionsPending).toBe(1);
-      expect(result.recommendedNextAction.kind).toBe("run_close_check");
+      expect(result.recommendedNextAction.kind).toBe("run_review");
     } finally {
       db.close();
     }
@@ -353,7 +353,7 @@ describe("ConvergenceService", () => {
       // burns the rerun budget), convergence reviews the pending run.
       const result = service.evaluate("goal-test");
       expect(result.decision).toBe("continue");
-      expect(result.recommendedNextAction.kind).toBe("run_close_check");
+      expect(result.recommendedNextAction.kind).toBe("run_review");
       expect(result.reason).toMatch(/review the latest coder run/);
     } finally {
       db.close();
@@ -784,7 +784,7 @@ describe("ConvergenceService", () => {
       });
       const r = service.evaluate("goal-test");
       expect(r.decision).toBe("continue");
-      expect(r.recommendedNextAction.kind).toBe("run_close_check");
+      expect(r.recommendedNextAction.kind).toBe("run_review");
     } finally {
       db.close();
     }

@@ -1,11 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openManagedDb } from "../../../src/db/managed-connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
+import type { HitchCloseCondition } from "../../../src/hitch/types.js";
 import {
   createOrchestratorRunners,
   latestRunId,
@@ -358,6 +365,177 @@ describe("createOrchestratorRunners.classify", () => {
       expect(result.deferred).toBe(0);
     } finally {
       deferSpy.mockRestore();
+    }
+  });
+});
+
+describe("createOrchestratorRunners.closeCheck", () => {
+  function setupCloseCheckHarness(
+    commandYaml = [
+      "    commands:",
+      "      allow:",
+      "        - id: typecheck",
+      "          cmd: node",
+      "          args: [\"-e\", \"console.log('close ok')\"]",
+      "      defaults:",
+      "        timeout_ms: 30000",
+    ].join("\n"),
+  ): { harnessRoot: string; dbPath: string; worktreePath: string } {
+    const harnessRoot = mkdtempSync(join(tmpdir(), "harness-orch-close-check-"));
+    mkdirSync(join(harnessRoot, "policies/repos"), { recursive: true });
+    mkdirSync(join(harnessRoot, ".harness"), { recursive: true });
+    const worktreePath = join(harnessRoot, "workspaces", "run-close", "repo");
+    mkdirSync(worktreePath, { recursive: true });
+    writeFileSync(
+      join(harnessRoot, "policies/global.yaml"),
+      "always_deny_write: []\nignore_untracked: []\n",
+    );
+    writeFileSync(
+      join(harnessRoot, "policies/repos/t.yaml"),
+      [
+        "repo_id: t",
+        "read: []",
+        "domains:",
+        "  apps/user:",
+        "    read: [apps/user/**]",
+        "    write: [apps/user/**]",
+        "    deny_write: []",
+        commandYaml,
+        "",
+      ].join("\n"),
+    );
+    const dbPath = join(harnessRoot, ".harness", "harness.sqlite");
+    return { harnessRoot, dbPath, worktreePath };
+  }
+
+  function seedCloseCheckHitch(
+    dbPath: string,
+    closeConditions: HitchCloseCondition[] = [
+      { id: "typecheck", kind: "command", required: true },
+    ],
+  ): void {
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new HitchRepository(db);
+      repo.createSession({
+        hitchId: "g-close-check",
+        title: "Close check",
+        projectId: null,
+        repoId: "t",
+        domain: "apps/user",
+        closeConditions,
+        createdBy: "test",
+        createdSource: "worker",
+      });
+      repo.createAttempt({
+        hitchId: "g-close-check",
+        attemptType: "implement",
+        status: "succeeded",
+        runId: "run-close",
+      });
+    } finally {
+      close();
+    }
+  }
+
+  it("runs pending command close checks from the domain policy allowlist", async () => {
+    const { harnessRoot, dbPath, worktreePath } = setupCloseCheckHarness();
+    seedCloseCheckHitch(dbPath);
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      repoPath: worktreePath,
+      baseBranch: "main",
+    });
+
+    const result = await runners.closeCheck("g-close-check");
+
+    expect(result).toMatchObject({
+      runId: "run-close",
+      checked: 1,
+      passed: 1,
+      failed: 0,
+    });
+    const logPath = join(
+      harnessRoot,
+      "runs",
+      "run-close",
+      "close-checks",
+      "typecheck.out.log",
+    );
+    expect(readFileSync(logPath, "utf8")).toContain("close ok");
+
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db);
+      const check = repo.listCloseChecks("g-close-check").at(-1);
+      expect(check?.status).toBe("passed");
+      expect(check?.evidence).toMatchObject({
+        runId: "run-close",
+        conditionKind: "command",
+        policyCommandId: "typecheck",
+        exitCode: 0,
+        timedOut: false,
+      });
+      expect(String(check?.evidence.stdoutPath)).toContain(
+        join("runs", "run-close", "close-checks", "typecheck.out.log"),
+      );
+      const attempt = repo
+        .listAttempts("g-close-check")
+        .find((a) => a.attemptType === "close-check");
+      expect(attempt).toMatchObject({
+        status: "succeeded",
+        runId: "run-close",
+        iteration: 1,
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it("fails fast without execution when a command close check is not allowlisted", async () => {
+    const { harnessRoot, dbPath, worktreePath } =
+      setupCloseCheckHarness("    commands:\n      allow: []");
+    const marker = join(worktreePath, "must-not-exist.txt");
+    seedCloseCheckHitch(dbPath, [
+      {
+        id: "danger",
+        kind: "command",
+        required: true,
+        command: `node -e "require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')"`,
+      },
+    ]);
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      repoPath: worktreePath,
+      baseBranch: "main",
+    });
+
+    await expect(runners.closeCheck("g-close-check")).rejects.toThrow(
+      /not in the resolved domain policy allowlist/,
+    );
+    expect(existsSync(marker)).toBe(false);
+    expect(
+      existsSync(join(harnessRoot, "runs", "run-close", "close-checks")),
+    ).toBe(false);
+
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const attempt = new HitchRepository(db)
+        .listAttempts("g-close-check")
+        .find((a) => a.attemptType === "close-check");
+      expect(attempt?.status).toBe("failed");
+      expect(attempt?.errorMessage).toMatch(/external evidence/);
+    } finally {
+      close();
     }
   });
 });
