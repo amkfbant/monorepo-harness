@@ -74,6 +74,16 @@ export class HitchOrchestrator {
           steps.push({ step: i, decision: finalDecision, action: "review", detail: r.decision });
           continue;
         }
+        if (action.kind === "close_check") {
+          const r = await input.runners.closeCheck(input.hitchId);
+          steps.push({
+            step: i,
+            decision: finalDecision,
+            action: "close_check",
+            detail: `${r.passed}/${r.checked} passed`,
+          });
+          continue;
+        }
         if (action.kind === "classify") {
           const r = await input.runners.classify(input.hitchId);
           steps.push({ step: i, decision: finalDecision, action: "classify", detail: String(r.resolved) });

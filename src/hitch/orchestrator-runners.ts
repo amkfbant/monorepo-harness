@@ -55,6 +55,7 @@ import { deferFindingToBacklog } from "./followups.js";
 import { ConvergenceService } from "./convergence.js";
 import { assertHitchCanStartMutation } from "./mutation-gate.js";
 import { importReviewProposalToHitch } from "./review-integration.js";
+import { runCommandCloseChecks } from "./orchestrator-close-check-runner.js";
 import { dbConsensusSnapshotProvider } from "./consensus-stall-check.js";
 import { nextReviewMode } from "./review-mode.js";
 import type { OrchestratorRunners } from "./orchestrator-types.js";
@@ -304,6 +305,11 @@ function resolveRunContext(
 /** Attempt types that produce a coding run whose runId review/PR operate on. */
 const CODING_ATTEMPT_TYPES = new Set<HitchAttemptType>(["implement", "rerun"]);
 
+interface LatestCodingRun {
+  runId: string;
+  iteration: number;
+}
+
 /**
  * The latest run id recorded against a hitch — the run the review / pr steps
  * operate on. Attempts are ordered (iteration ASC, created_at ASC), so the
@@ -311,13 +317,18 @@ const CODING_ATTEMPT_TYPES = new Set<HitchAttemptType>(["implement", "rerun"]);
  * run. A close-check or other attempt's runId must not be picked.
  */
 export function latestRunId(repo: HitchRepository, hitchId: string): string {
+  return latestCodingRun(repo, hitchId).runId;
+}
+
+function latestCodingRun(repo: HitchRepository, hitchId: string): LatestCodingRun {
   const attempts = repo.listAttempts(hitchId);
   for (let i = attempts.length - 1; i >= 0; i--) {
     const attempt = attempts[i];
     if (attempt === undefined) continue;
     if (!CODING_ATTEMPT_TYPES.has(attempt.attemptType)) continue;
-    const runId = attempt.runId;
-    if (typeof runId === "string" && runId !== "") return runId;
+    if (typeof attempt.runId === "string" && attempt.runId !== "") {
+      return { runId: attempt.runId, iteration: attempt.iteration };
+    }
   }
   throw new Error(
     `hitch ${hitchId} has no recorded run yet; run the coder before reviewing`,
@@ -525,6 +536,15 @@ export function createOrchestratorRunners(
       });
       return { runId, decision: reviewResult.decision };
     },
+    closeCheck: async (hitchId) =>
+      runCommandCloseChecks({
+        deps,
+        hitchId,
+        resolveContext: (session) => {
+          assertCoderProjectRuntime(deps, session);
+          return resolveRunContext(deps, session);
+        },
+      }),
     classify: async (hitchId) =>
       withManagedDb({ dbPath: deps.dbPath }, (db) => {
         const repo = new HitchRepository(db);

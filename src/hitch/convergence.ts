@@ -224,7 +224,7 @@ function isReviewPending(
   return latestCodingAt > latestCycleAt;
 }
 
-function lastCloseCheckInvalidatingMutationAt(input: {
+export function lastCloseCheckInvalidatingMutationAt(input: {
   attempts: HitchAttempt[];
   latestFindingMutationAt: string | null;
   cycles: HitchReviewCycle[];
@@ -349,7 +349,7 @@ function decide(
       "review the latest coder run before another fix pass",
       metrics,
       {
-        kind: "run_close_check",
+        kind: "run_review",
         message: "Review the latest coder run before another fix pass.",
       },
     );
@@ -492,7 +492,7 @@ function decide(
 
   return result(session.hitchId, "continue", "more validation required", metrics, {
     kind: "run_close_check",
-    message: "Record close-check evidence or run the next review mode.",
+    message: "Record command close-check evidence.",
   });
 }
 

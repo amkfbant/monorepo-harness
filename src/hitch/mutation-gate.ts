@@ -95,9 +95,11 @@ export function allowedByConvergence(
   const action = convergence.recommendedNextAction.kind;
   if (mutationKind === "hitch.orchestrate") {
     // Gate for *entering* the bounded-step orchestrate driver: permitted exactly
-    // when the loop has a permitted autonomous next step that this gate guards —
-    // a per-step fix / close-check mutation below would be allowed (needs_fix →
-    // fix_findings | run_close_check, or continue → run_close_check).
+    // when the loop has a permitted autonomous next step that this gate guards
+    // or internally executes — a per-step fix / review mutation below would be
+    // allowed (needs_fix → fix_findings | run_close_check, or continue →
+    // run_review), or the loop can execute a deterministic command close-check
+    // from the domain policy allowlist (continue → run_close_check).
     //
     // Every other decision denies *entry* here (fail-closed): close_ready and the
     // stop/terminal decisions (escalate / diverging / budget_exhausted / closed /
@@ -111,7 +113,8 @@ export function allowedByConvergence(
     return (
       (convergence.decision === "needs_fix" &&
         (action === "fix_findings" || action === "run_close_check")) ||
-      (convergence.decision === "continue" && action === "run_close_check")
+      (convergence.decision === "continue" &&
+        (action === "run_review" || action === "run_close_check"))
     );
   }
   if (convergence.decision === "needs_fix") {
@@ -120,7 +123,7 @@ export function allowedByConvergence(
     }
     return false;
   }
-  if (convergence.decision === "continue" && action === "run_close_check") {
+  if (convergence.decision === "continue" && action === "run_review") {
     return mutationKind === "review.auto" || mutationKind === "review.process";
   }
   return false;

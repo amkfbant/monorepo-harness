@@ -44,8 +44,12 @@ describe("decideOrchestratorAction", () => {
     expect(decideOrchestratorAction(conv("needs_fix", "ask_human")).kind).toBe("escalate");
   });
 
-  it("maps continue + run_close_check to review, escalates other continue actions", () => {
-    expect(decideOrchestratorAction(conv("continue", "run_close_check")).kind).toBe("review");
+  it("maps continue + run_review to review and run_close_check to close_check", () => {
+    expect(decideOrchestratorAction(conv("continue", "run_review")).kind).toBe("review");
+    expect(decideOrchestratorAction(conv("continue", "run_close_check")).kind).toBe("close_check");
+  });
+
+  it("escalates unsupported continue actions", () => {
     expect(decideOrchestratorAction(conv("continue", "fix_findings")).kind).toBe("escalate");
   });
 

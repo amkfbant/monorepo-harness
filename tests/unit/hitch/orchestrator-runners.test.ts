@@ -1,11 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openManagedDb } from "../../../src/db/managed-connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
+import { collectDiff } from "../../../src/git/diff.js";
+import { computeReviewedFingerprint } from "../../../src/core/reviewed-fingerprint.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
+import type { HitchCloseCondition } from "../../../src/hitch/types.js";
 import {
   createOrchestratorRunners,
   latestRunId,
@@ -359,6 +368,390 @@ describe("createOrchestratorRunners.classify", () => {
     } finally {
       deferSpy.mockRestore();
     }
+  });
+});
+
+describe("createOrchestratorRunners.closeCheck", () => {
+  function setupCloseCheckHarness(
+    commandYaml = [
+      "    commands:",
+      "      allow:",
+      "        - id: typecheck",
+      "          cmd: node",
+      "          args: [\"-e\", \"console.log('close ok')\"]",
+      "      defaults:",
+      "        timeout_ms: 30000",
+    ].join("\n"),
+  ): { harnessRoot: string; dbPath: string; worktreePath: string } {
+    const harnessRoot = mkdtempSync(join(tmpdir(), "harness-orch-close-check-"));
+    mkdirSync(join(harnessRoot, "policies/repos"), { recursive: true });
+    mkdirSync(join(harnessRoot, ".harness"), { recursive: true });
+    const worktreePath = join(harnessRoot, "workspaces", "run-close", "repo");
+    mkdirSync(worktreePath, { recursive: true });
+    // A real run worktree is a git repo checked out at the run's base, with the
+    // coder's reviewed changes in the tree. The close-check runner verifies the
+    // worktree still matches the run's reviewed surface before/after running.
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: worktreePath });
+    execFileSync("git", ["config", "user.email", "t@example.com"], {
+      cwd: worktreePath,
+    });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: worktreePath });
+    // Initial commit = the run base. Then a tracked edit standing in for the
+    // coder's reviewed change, so the run has a non-empty reviewed surface.
+    writeFileSync(join(worktreePath, "reviewed.txt"), "approved\n");
+    execFileSync("git", ["add", "reviewed.txt"], { cwd: worktreePath });
+    execFileSync("git", ["commit", "-q", "-m", "init"], { cwd: worktreePath });
+    writeFileSync(join(worktreePath, "reviewed.txt"), "approved edit\n");
+    writeFileSync(
+      join(harnessRoot, "policies/global.yaml"),
+      "always_deny_write: []\nignore_untracked: []\n",
+    );
+    writeFileSync(
+      join(harnessRoot, "policies/repos/t.yaml"),
+      [
+        "repo_id: t",
+        "read: []",
+        "domains:",
+        "  apps/user:",
+        "    read: [apps/user/**]",
+        "    write: [apps/user/**]",
+        "    deny_write: []",
+        commandYaml,
+        "",
+      ].join("\n"),
+    );
+    const dbPath = join(harnessRoot, ".harness", "harness.sqlite");
+    return { harnessRoot, dbPath, worktreePath };
+  }
+
+  async function seedCloseCheckHitch(
+    dbPath: string,
+    worktreePath: string,
+    closeConditions: HitchCloseCondition[] = [
+      { id: "typecheck", kind: "command", required: true },
+    ],
+  ): Promise<void> {
+    // The run's base SHA is the commit the worktree was created at (its current
+    // HEAD); the reviewed surface is computed against it with the SAME functions
+    // the runner uses, so the recorded meta.reviewed exactly matches the tree.
+    const baseSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: worktreePath,
+    })
+      .toString()
+      .trim();
+    const diff = await collectDiff({ repoPath: worktreePath, baseSha });
+    const reviewedPaths = [
+      ...diff.trackedChangedPaths,
+      ...diff.untrackedPaths,
+    ].sort();
+    const fingerprint = await computeReviewedFingerprint(
+      worktreePath,
+      reviewedPaths,
+    );
+    const metaJson = JSON.stringify({ reviewed: { paths: reviewedPaths, fingerprint } });
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new HitchRepository(db);
+      repo.createSession({
+        hitchId: "g-close-check",
+        title: "Close check",
+        projectId: null,
+        repoId: "t",
+        domain: "apps/user",
+        closeConditions,
+        createdBy: "test",
+        createdSource: "worker",
+      });
+      repo.createAttempt({
+        hitchId: "g-close-check",
+        attemptType: "implement",
+        status: "succeeded",
+        runId: "run-close",
+      });
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           base_sha, status, source_mode, db_revision, export_status,
+           updated_at, meta_json)
+         VALUES (?, 't', 'apps/user', 'domain-coding', 'main', ?, 'approved',
+           'db-first', 1, 'disabled', '2026-06-13T00:00:00.000Z', ?)`,
+      ).run("run-close", baseSha, metaJson);
+    } finally {
+      close();
+    }
+  }
+
+  it("runs pending command close checks from the domain policy allowlist", async () => {
+    const { harnessRoot, dbPath, worktreePath } = setupCloseCheckHarness();
+    await seedCloseCheckHitch(dbPath, worktreePath);
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      repoPath: worktreePath,
+      baseBranch: "main",
+    });
+
+    const result = await runners.closeCheck("g-close-check");
+
+    expect(result).toMatchObject({
+      runId: "run-close",
+      checked: 1,
+      passed: 1,
+      failed: 0,
+    });
+    const logPath = join(
+      harnessRoot,
+      "runs",
+      "run-close",
+      "close-checks",
+      "typecheck.out.log",
+    );
+    expect(readFileSync(logPath, "utf8")).toContain("close ok");
+
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db);
+      const check = repo.listCloseChecks("g-close-check").at(-1);
+      expect(check?.status).toBe("passed");
+      expect(check?.evidence).toMatchObject({
+        runId: "run-close",
+        conditionKind: "command",
+        policyCommandId: "typecheck",
+        exitCode: 0,
+        timedOut: false,
+      });
+      expect(String(check?.evidence.stdoutPath)).toContain(
+        join("runs", "run-close", "close-checks", "typecheck.out.log"),
+      );
+      const attempt = repo
+        .listAttempts("g-close-check")
+        .find((a) => a.attemptType === "close-check");
+      expect(attempt).toMatchObject({
+        status: "succeeded",
+        runId: "run-close",
+        iteration: 1,
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it("fails fast without execution when a command close check is not allowlisted", async () => {
+    const { harnessRoot, dbPath, worktreePath } =
+      setupCloseCheckHarness("    commands:\n      allow: []");
+    const marker = join(worktreePath, "must-not-exist.txt");
+    await seedCloseCheckHitch(dbPath, worktreePath, [
+      {
+        id: "danger",
+        kind: "command",
+        required: true,
+        command: `node -e "require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')"`,
+      },
+    ]);
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      repoPath: worktreePath,
+      baseBranch: "main",
+    });
+
+    await expect(runners.closeCheck("g-close-check")).rejects.toThrow(
+      /not in the resolved domain policy allowlist/,
+    );
+    expect(existsSync(marker)).toBe(false);
+    expect(
+      existsSync(join(harnessRoot, "runs", "run-close", "close-checks")),
+    ).toBe(false);
+
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const attempt = new HitchRepository(db)
+        .listAttempts("g-close-check")
+        .find((a) => a.attemptType === "close-check");
+      expect(attempt?.status).toBe("failed");
+      expect(attempt?.errorMessage).toMatch(/external evidence/);
+    } finally {
+      close();
+    }
+  });
+
+  it("does not execute optional (non-required) command close conditions (#140 P1)", async () => {
+    const { harnessRoot, dbPath, worktreePath } = setupCloseCheckHarness();
+    // A required allowlisted condition plus an OPTIONAL condition whose command
+    // is NOT allowlisted. The optional one must be ignored, not executed or
+    // escalated — otherwise it would throw before the required evidence lands.
+    await seedCloseCheckHitch(dbPath, worktreePath, [
+      { id: "typecheck", kind: "command", required: true },
+      {
+        id: "advisory",
+        kind: "command",
+        required: false,
+        command: "definitely-not-allowlisted",
+      },
+    ]);
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      repoPath: worktreePath,
+      baseBranch: "main",
+    });
+
+    const result = await runners.closeCheck("g-close-check");
+    expect(result).toMatchObject({ checked: 1, passed: 1, failed: 0 });
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const checks = new HitchRepository(db).listCloseChecks("g-close-check");
+      expect(checks.map((c) => c.conditionId)).toEqual(["typecheck"]);
+    } finally {
+      close();
+    }
+  });
+
+  it("fails closed when a command close check dirties the run worktree (#140 P1)", async () => {
+    const { harnessRoot, dbPath, worktreePath } = setupCloseCheckHarness(
+      [
+        "    commands:",
+        "      allow:",
+        "        - id: typecheck",
+        "          cmd: node",
+        "          args: [\"-e\", \"require('fs').writeFileSync('side-effect.txt','x')\"]",
+        "      defaults:",
+        "        timeout_ms: 30000",
+      ].join("\n"),
+    );
+    await seedCloseCheckHitch(dbPath, worktreePath);
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      repoPath: worktreePath,
+      baseBranch: "main",
+    });
+
+    // A new untracked file is not in the reviewed surface → unreviewed path.
+    await expect(runners.closeCheck("g-close-check")).rejects.toThrow(
+      /unreviewed path/,
+    );
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const attempt = new HitchRepository(db)
+        .listAttempts("g-close-check")
+        .find((a) => a.attemptType === "close-check");
+      expect(attempt?.status).toBe("failed");
+    } finally {
+      close();
+    }
+  });
+
+  it("fails closed when a command rewrites an already-dirty tracked file (#140 P0)", async () => {
+    // The run worktree carries the coder's reviewed changes. A command that
+    // REWRITES an already-dirty (reviewed) tracked file leaves the `git status`
+    // porcelain line unchanged (` M tracked.txt`), so a status-line check would
+    // miss it. The reviewed-content fingerprint must still fail-closed (drift).
+    const { harnessRoot, dbPath, worktreePath } = setupCloseCheckHarness(
+      [
+        "    commands:",
+        "      allow:",
+        "        - id: typecheck",
+        "          cmd: node",
+        "          args: [\"-e\", \"require('fs').writeFileSync('tracked.txt','MUTATED')\"]",
+        "      defaults:",
+        "        timeout_ms: 30000",
+      ].join("\n"),
+    );
+    // Commit a file, then dirty it — mirroring the coder's uncommitted edits.
+    const tracked = join(worktreePath, "tracked.txt");
+    writeFileSync(tracked, "committed\n");
+    execFileSync("git", ["add", "tracked.txt"], { cwd: worktreePath });
+    execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd: worktreePath });
+    writeFileSync(tracked, "coder-edit\n");
+    await seedCloseCheckHitch(dbPath, worktreePath);
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      repoPath: worktreePath,
+      baseBranch: "main",
+    });
+
+    // tracked.txt is a reviewed path; rewriting its content drifts the run.
+    await expect(runners.closeCheck("g-close-check")).rejects.toThrow(
+      /drifted/,
+    );
+  });
+
+  it("fails closed when a command writes a .gitignored path not in policy ignore (#140 P0)", async () => {
+    // `git status` hides .gitignore'd files, but the policy surface uses
+    // `ls-files --others` WITHOUT --exclude-standard, then filters by
+    // policy.ignoreUntracked (empty here). A command writing into a gitignored
+    // dir therefore still pollutes the validated tree → must fail-closed.
+    const { harnessRoot, dbPath, worktreePath } = setupCloseCheckHarness(
+      [
+        "    commands:",
+        "      allow:",
+        "        - id: typecheck",
+        "          cmd: node",
+        "          args: [\"-e\", \"const fs=require('fs');fs.mkdirSync('gen',{recursive:true});fs.writeFileSync('gen/out.txt','x')\"]",
+        "      defaults:",
+        "        timeout_ms: 30000",
+      ].join("\n"),
+    );
+    writeFileSync(join(worktreePath, ".gitignore"), "gen/\n");
+    execFileSync("git", ["add", ".gitignore"], { cwd: worktreePath });
+    execFileSync("git", ["commit", "-q", "-m", "ignore gen"], {
+      cwd: worktreePath,
+    });
+    await seedCloseCheckHitch(dbPath, worktreePath);
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      repoPath: worktreePath,
+      baseBranch: "main",
+    });
+
+    // gen/out.txt is kept (policy ignore empty) but not reviewed → unreviewed path.
+    await expect(runners.closeCheck("g-close-check")).rejects.toThrow(
+      /unreviewed path/,
+    );
+  });
+
+  it("fails closed when the worktree is polluted before the close-check (#140 P0)", async () => {
+    // Baseline integrity: if the worktree drifted from the reviewed state
+    // BETWEEN review and close-check (e.g. an out-of-band extra file), the
+    // close-check must reject that polluted baseline — not adopt it and pass.
+    const { harnessRoot, dbPath, worktreePath } = setupCloseCheckHarness();
+    await seedCloseCheckHitch(dbPath, worktreePath);
+    // Pollute AFTER the reviewed surface was recorded.
+    writeFileSync(join(worktreePath, "snuck-in.txt"), "not reviewed\n");
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      repoPath: worktreePath,
+      baseBranch: "main",
+    });
+
+    await expect(runners.closeCheck("g-close-check")).rejects.toThrow(
+      /unreviewed path/,
+    );
   });
 });
 

@@ -53,6 +53,7 @@ function fakeRunners(): OrchestratorRunners {
   return {
     coder: async () => ({ runId: "run-1", runStatus: "needs_review" }),
     review: async () => ({ runId: "run-1", decision: "approved" }),
+    closeCheck: async () => ({ runId: "run-1", checked: 1, passed: 1, failed: 0 }),
     classify: async () => ({ resolved: true }),
     defer: async () => ({ deferred: 0 }),
     closeAndPr: async () => ({ prUrl: "https://example.invalid/pr/1", draft: true }),
