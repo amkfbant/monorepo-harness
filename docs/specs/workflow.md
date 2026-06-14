@@ -31,12 +31,14 @@
     all per-invocation and fail-open — see [`db.md`](./db.md) run_usage)
 15. setStatus('generated')
 16. PASS 1 — post-codex diffAndValidate(worktree, baseSha, policy):
-    attemptDiff → DiffOutcome { ok, trackedChangedPaths, untrackedAll, stat, patch, error? }
+    attemptDiff → DiffOutcome { ok, trackedChangedPaths, stagedChangedPaths, untrackedAll, stat, patch, error? }
     partitionUntracked(untrackedAll, ignoreUntracked) → { kept, ignored }
     if diff.ok: validateChangedPaths(policy, tracked ∪ kept) → violations + safetyStatus
     emit diff_collection_failed / policy_validation_completed with stage="post-codex" (validation durationMs on success)
     if diff.ok: validateDiffBudget(policy.limits.changeBudget, stat) and emit
-    diff_budget_evaluated; enforce:false also emits change_budget_disabled
+    diff_budget_evaluated; stat covers the whole PR-bound surface (working-tree + staged tracked
+    changes + allowed-untracked-kept additions); enforce:false still blocks breaches as
+    failed-budget-exceeded and records change_budget_disabled (audit), never letting a breach through
 17. PASS 2 — if diff.ok && safetyStatus=allowed && codex ok && allowedCommands non-empty:
     setStatus('verified'); emit commands_started
     runAllowedCommands(worktree, allowedCommands) → results; emit commands_completed
@@ -265,9 +267,12 @@ Change budget evaluation follows the same stage rule. If the post-codex budget
 is already `exceeded`, allowed commands are not invoked and the run finalizes as
 `failed-budget-exceeded` after artifacts are written. If commands run, the
 post-command budget evaluation replaces the post-codex result for final status
-and artifacts. `enforce:false` returns `within`, emits `change_budget_disabled`,
-and is surfaced in `summary.md` / `review-request.md` as a fail-open operator
-override.
+and artifacts. The budget stat covers tracked worktree changes, staged/index
+changes, and allowed untracked files that can be committed into the PR.
+`enforce:false` does not silently pass breaches: the evaluation still returns
+`exceeded`, emits `change_budget_disabled`, and stops at
+`failed-budget-exceeded` so a human sees that `enforce:false` was configured
+while the blocking budget result remained in force.
 
 `policy_validation_completed.durationMs` は path policy 検証にかかった wall-clock の整数 ms、`diff_collected.durationMs` は当該 stage の diff / untracked 収集にかかった wall-clock の整数 ms。いずれも harness が `performance.now()` で計測し、`Math.round` で整数化する。
 

@@ -64,7 +64,7 @@ function pushChangeBudget(
   );
   if (report.disabled) {
     lines.push(
-      "- Change budget disabled: enforce=false is a fail-open operator override.",
+      "- Change budget enforce=false recorded: breaches still block as failed-budget-exceeded; the flag is audit metadata.",
     );
   }
   if (report.breaches.length === 0) {

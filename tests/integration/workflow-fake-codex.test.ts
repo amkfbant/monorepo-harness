@@ -349,6 +349,242 @@ describe("runDomainCoding (fake codex)", () => {
     );
   });
 
+  it("counts allowed untracked text lines in the change budget", async () => {
+    harness = setupHarness({
+      domainPolicyExtra: [
+        "    change_budget:",
+        "      max_total_changed_lines: 3",
+      ].join("\n"),
+    });
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(join(cwd, "apps/user/src/new.ts"), numberedLines(4));
+      },
+    });
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "add too much untracked code",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+
+    expect(r.status).toBe("failed-budget-exceeded");
+    const runDir = join(harness, "runs", r.runId);
+    const events = parseEvents(runDir);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "diff_budget_evaluated",
+          status: "exceeded",
+          stat: expect.objectContaining({
+            filesChanged: 1,
+            insertions: 4,
+          }),
+          breaches: expect.arrayContaining([
+            expect.objectContaining({
+              metric: "total_changed_lines",
+              actual: 4,
+              limit: 3,
+            }),
+          ]),
+        }),
+      ]),
+    );
+  });
+
+  it("counts staged-only index changes in the change budget", async () => {
+    harness = setupHarness({
+      domainPolicyExtra: [
+        "    change_budget:",
+        "      max_total_changed_lines: 1",
+      ].join("\n"),
+    });
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 2;\n",
+        );
+        execFileSync("git", ["add", "apps/user/src/profile.ts"], {
+          cwd,
+          stdio: "ignore",
+        });
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 0;\n",
+        );
+      },
+    });
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "stage only",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+
+    expect(r.status).toBe("failed-budget-exceeded");
+    const events = parseEvents(join(harness, "runs", r.runId));
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "diff_budget_evaluated",
+          status: "exceeded",
+          stat: expect.objectContaining({
+            filesChanged: 1,
+            insertions: 1,
+            deletions: 1,
+          }),
+          breaches: expect.arrayContaining([
+            expect.objectContaining({
+              metric: "total_changed_lines",
+              actual: 2,
+              limit: 1,
+            }),
+          ]),
+        }),
+      ]),
+    );
+  });
+
+  it("blocks a single deletion when max_deleted_lines is zero", async () => {
+    harness = setupHarness({
+      domainPolicyExtra: [
+        "    change_budget:",
+        "      max_deleted_lines: 0",
+      ].join("\n"),
+    });
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(join(cwd, "apps/user/src/profile.ts"), "");
+      },
+    });
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "delete one line",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+
+    expect(r.status).toBe("failed-budget-exceeded");
+    const events = parseEvents(join(harness, "runs", r.runId));
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "diff_budget_evaluated",
+          status: "exceeded",
+          breaches: expect.arrayContaining([
+            expect.objectContaining({
+              metric: "deleted_lines",
+              actual: 1,
+              limit: 0,
+            }),
+          ]),
+        }),
+      ]),
+    );
+  });
+
+  it("does not allow change budget overrides to tighten policy limits", async () => {
+    harness = setupHarness({
+      domainPolicyExtra: [
+        "    change_budget:",
+        "      max_total_changed_lines: 4",
+      ].join("\n"),
+    });
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(join(cwd, "apps/user/src/new.ts"), numberedLines(3));
+      },
+    });
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "override cannot tighten",
+      baseBranch: "main",
+      codexRunner: runner,
+      changeBudgetOverride: { maxTotalChangedLines: 1 },
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+
+    expect(r.status).toBe("needs_review");
+    const events = parseEvents(join(harness, "runs", r.runId));
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "diff_budget_evaluated",
+          status: "within",
+          budget: expect.objectContaining({ maxTotalChangedLines: 4 }),
+        }),
+      ]),
+    );
+  });
+
+  it("does not let change budget overrides neutralize enforce:false breaches", async () => {
+    commitTrackedFile(
+      repoPath,
+      "apps/user/src/large.ts",
+      numberedLines(DEFAULT_CHANGE_BUDGET.maxDeletedLines + 1),
+    );
+    harness = setupHarness({
+      domainPolicyExtra: [
+        "    change_budget:",
+        "      enforce: false",
+      ].join("\n"),
+    });
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        rmSync(join(cwd, "apps/user/src/large.ts"));
+      },
+    });
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "override cannot silence enforce false breach",
+      baseBranch: "main",
+      codexRunner: runner,
+      changeBudgetOverride: {
+        maxDeletedLines: DEFAULT_CHANGE_BUDGET.maxDeletedLines + 100,
+      },
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+
+    expect(r.status).toBe("failed-budget-exceeded");
+    const events = parseEvents(join(harness, "runs", r.runId));
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "diff_budget_evaluated",
+          status: "exceeded",
+          budget: expect.objectContaining({
+            enforce: false,
+            maxDeletedLines: DEFAULT_CHANGE_BUDGET.maxDeletedLines,
+          }),
+        }),
+      ]),
+    );
+  });
+
   it("fails budget before commands and reviewed-run does not invoke the reviewer", async () => {
     commitTrackedFile(repoPath, "apps/user/src/large.ts", numberedLines(6));
     harness = setupHarness({
@@ -458,7 +694,7 @@ describe("runDomainCoding (fake codex)", () => {
     );
   });
 
-  it("surfaces enforce:false as a loud disabled budget in events and artifacts", async () => {
+  it("blocks enforce:false breaches instead of silently reaching needs_review", async () => {
     commitTrackedFile(
       repoPath,
       "apps/user/src/large.ts",
@@ -487,23 +723,35 @@ describe("runDomainCoding (fake codex)", () => {
       now: new Date("2026-05-20T00:00:00Z"),
     });
 
-    expect(r.status).toBe("needs_review");
+    expect(r.status).toBe("failed-budget-exceeded");
     const runDir = join(harness, "runs", r.runId);
     const events = parseEvents(runDir);
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: "diff_budget_evaluated",
-          status: "within",
+          status: "exceeded",
           disabled: true,
         }),
-        expect.objectContaining({ type: "change_budget_disabled" }),
+        expect.objectContaining({
+          type: "change_budget_disabled",
+          status: "exceeded",
+          breaches: expect.arrayContaining([
+            expect.objectContaining({ metric: "deleted_lines" }),
+          ]),
+        }),
       ]),
     );
     const summary = readFileSync(join(runDir, "summary.md"), "utf8");
     const reviewRequest = readFileSync(join(runDir, "review-request.md"), "utf8");
-    expect(summary).toMatch(/Change budget disabled/);
-    expect(reviewRequest).toMatch(/Change budget disabled/);
+    expect(summary).toMatch(/Change budget enforce=false recorded/);
+    expect(summary).toMatch(/breaches still block as failed-budget-exceeded/);
+    expect(summary).not.toMatch(/fail-open/i);
+    expect(summary).not.toMatch(/override/i);
+    expect(reviewRequest).toMatch(/Change budget enforce=false recorded/);
+    expect(reviewRequest).toMatch(/breaches still block as failed-budget-exceeded/);
+    expect(reviewRequest).not.toMatch(/fail-open/i);
+    expect(reviewRequest).not.toMatch(/override/i);
   });
 
   it("redacts codex JSONL command output before artifact ingest", async () => {

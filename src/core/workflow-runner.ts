@@ -351,6 +351,7 @@ interface DiffOutcome {
   ok: boolean;
   error?: string;
   trackedChangedPaths: string[];
+  stagedChangedPaths: string[];
   untrackedAll: string[];
   stat?: DiffStat;
   patch: string;
@@ -362,8 +363,55 @@ interface DiffAndValidate {
   untrackedIgnored: string[];
   violations: Violation[];
   safetyStatus: SafetyStatus;
+  budgetStat?: DiffStat;
   diffDurationMs: number;
   policyValidationDurationMs: number;
+}
+
+function uniquePaths(paths: readonly string[]): string[] {
+  return [...new Set(paths)];
+}
+
+function looksBinary(buf: Buffer): boolean {
+  const sample = buf.subarray(0, Math.min(8192, buf.length));
+  if (sample.length === 0) return false;
+  if (sample.includes(0)) return true;
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(sample, {
+      stream: true,
+    });
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function countTextLines(buf: Buffer): number {
+  if (looksBinary(buf)) return 0;
+  const lines = buf.toString("utf8").split("\n");
+  return lines.length > 0 && lines[lines.length - 1] === ""
+    ? lines.length - 1
+    : lines.length;
+}
+
+async function statWithAllowedUntracked(
+  worktreePath: string,
+  trackedStat: DiffStat,
+  untrackedAllowed: readonly string[],
+): Promise<DiffStat> {
+  if (untrackedAllowed.length === 0) return trackedStat;
+  let untrackedInsertions = 0;
+  for (const p of untrackedAllowed) {
+    const fullPath = join(worktreePath, p);
+    const st = await lstat(fullPath);
+    if (!st.isFile()) continue;
+    untrackedInsertions += countTextLines(await readFile(fullPath));
+  }
+  return {
+    ...trackedStat,
+    filesChanged: trackedStat.filesChanged + untrackedAllowed.length,
+    insertions: trackedStat.insertions + untrackedInsertions,
+  };
 }
 
 async function diffAndValidate(opts: {
@@ -388,18 +436,33 @@ async function diffAndValidate(opts: {
   if (!diff.ok) {
     safetyStatus = "skipped";
   } else {
-    const allChangedPaths = [...diff.trackedChangedPaths, ...untrackedKept];
+    if (diff.stat === undefined) {
+      throw new Error("diff collection succeeded without a diff stat");
+    }
+    const allChangedPaths = uniquePaths([
+      ...diff.trackedChangedPaths,
+      ...diff.stagedChangedPaths,
+      ...untrackedKept,
+    ]);
     const policyValidationStartedAt = performance.now();
     const validation = validateChangedPaths(opts.policy, allChangedPaths);
     violations = validation.violations;
     safetyStatus = validation.status === "allowed" ? "allowed" : "denied";
     const policyValidationDurationMs = elapsedMs(policyValidationStartedAt);
+    const violatedPaths = new Set<string>(violations.map((v) => v.path));
+    const untrackedAllowed = untrackedKept.filter((p) => !violatedPaths.has(p));
+    const budgetStat = await statWithAllowedUntracked(
+      opts.worktreePath,
+      diff.stat,
+      untrackedAllowed,
+    );
     return {
       diff,
       untrackedKept,
       untrackedIgnored,
       violations,
       safetyStatus,
+      budgetStat,
       diffDurationMs,
       policyValidationDurationMs,
     };
@@ -429,6 +492,7 @@ async function attemptDiff(
     return {
       ok: true,
       trackedChangedPaths: d.trackedChangedPaths,
+      stagedChangedPaths: d.stagedChangedPaths,
       untrackedAll: d.untrackedPaths,
       stat: d.stat,
       patch: d.patch,
@@ -438,6 +502,7 @@ async function attemptDiff(
       ok: false,
       error: (e as Error).message,
       trackedChangedPaths: [],
+      stagedChangedPaths: [],
       untrackedAll: [],
       patch: "",
     };
@@ -496,6 +561,8 @@ async function evaluateChangeBudget(opts: {
       stage: opts.stage,
       stat: opts.stat,
       budget,
+      status: result.status,
+      breaches: result.breaches,
     });
   }
   return {
@@ -1290,11 +1357,11 @@ async function runDomainCodingInner(
         durationMs: dv.policyValidationDurationMs,
       });
     }
-    if (dv.diff.ok && dv.diff.stat !== undefined) {
+    if (dv.diff.ok && dv.budgetStat !== undefined) {
       changeBudgetResult = await evaluateChangeBudget({
         log,
         budget: changeBudget,
-        stat: dv.diff.stat,
+        stat: dv.budgetStat,
         stage: "post-codex",
       });
     }
@@ -1368,17 +1435,18 @@ async function runDomainCodingInner(
           durationMs: dv.policyValidationDurationMs,
         });
       }
-      if (dv.diff.ok && dv.diff.stat !== undefined) {
+      if (dv.diff.ok && dv.budgetStat !== undefined) {
         changeBudgetResult = await evaluateChangeBudget({
           log,
           budget: changeBudget,
-          stat: dv.diff.stat,
+          stat: dv.budgetStat,
           stage: "post-command",
         });
       }
     }
 
     const { diff, untrackedKept, untrackedIgnored } = dv;
+    const finalDiffStat = dv.budgetStat ?? diff.stat;
     const safetyStatus = dv.safetyStatus;
     const violations = dv.violations;
     const violatedPaths = new Set<string>(violations.map((v) => v.path));
@@ -1565,7 +1633,7 @@ async function runDomainCodingInner(
       ignoredUntrackedPaths: untrackedIgnored,
       secretSuspectPaths,
       violations,
-      ...(diff.stat !== undefined ? { diffStat: diff.stat } : {}),
+      ...(finalDiffStat !== undefined ? { diffStat: finalDiffStat } : {}),
       ...(changeBudgetResult !== undefined
         ? { changeBudget: changeBudgetResult }
         : {}),
@@ -1612,7 +1680,7 @@ async function runDomainCodingInner(
         ignoredUntrackedPaths: untrackedIgnored,
         secretSuspectPaths,
         violations,
-        ...(diff.stat !== undefined ? { diffStat: diff.stat } : {}),
+        ...(finalDiffStat !== undefined ? { diffStat: finalDiffStat } : {}),
         ...(changeBudgetResult !== undefined
           ? { changeBudget: changeBudgetResult }
           : {}),
@@ -1672,7 +1740,7 @@ async function runDomainCodingInner(
       secretSuspectCount,
       commandResults,
       changedFilesCount,
-      ...(diff.stat !== undefined ? { diffStat: diff.stat } : {}),
+      ...(finalDiffStat !== undefined ? { diffStat: finalDiffStat } : {}),
       ...(changeBudgetResult !== undefined
         ? { changeBudget: changeBudgetResult }
         : {}),

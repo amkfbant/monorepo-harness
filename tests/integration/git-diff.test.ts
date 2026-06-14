@@ -71,6 +71,12 @@ describe("collectDiff", () => {
 
     expect(d.trackedChangedPaths).toEqual([]);
     expect(d.stagedChangedPaths).toEqual(["apps/user/a.ts"]);
+    expect(d.stat).toEqual({
+      filesChanged: 1,
+      insertions: 1,
+      deletions: 1,
+      deletedFiles: 0,
+    });
   });
 
   it("does not pollute the index with intent-to-add markers", async () => {

@@ -101,8 +101,9 @@ export interface RunMeta {
   /** Final tracked diff stat used by the change-budget gate. */
   diffStat?: DiffStat;
   /**
-   * Final change-budget gate outcome. `disabled=true` means a policy
-   * `enforce:false` fail-open override was active and surfaced in artifacts.
+   * Final change-budget gate outcome. `disabled=true` records that policy
+   * set `enforce:false`; budget breaches remain blocking and surface as
+   * `failed-budget-exceeded`.
    */
   changeBudget?: {
     status: DiffBudgetValidationResult["status"];

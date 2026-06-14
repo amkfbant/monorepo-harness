@@ -120,6 +120,31 @@ describe("resolvePolicy", () => {
     });
   });
 
+  it("accepts zero change_budget limits", () => {
+    const r = resolvePolicy(
+      {
+        always_deny_write: [],
+        ignore_untracked: [],
+        limits: {
+          change_budget: {
+            max_deleted_lines: 0,
+            max_deleted_files: 0,
+          },
+        },
+      },
+      REPO as never,
+      "apps/user",
+    );
+
+    expect(r.limits.changeBudget).toEqual({
+      enforce: true,
+      maxDeletedLines: 0,
+      maxTotalChangedLines: DEFAULT_CHANGE_BUDGET.maxTotalChangedLines,
+      maxDeletedFiles: 0,
+      maxChangedFiles: DEFAULT_CHANGE_BUDGET.maxChangedFiles,
+    });
+  });
+
   it("lets domain change_budget override global per field and folds defaults", () => {
     const r = resolvePolicy(
       {

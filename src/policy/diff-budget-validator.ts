@@ -49,7 +49,6 @@ export function validateDiffBudget(
   stat: DiffStat,
 ): DiffBudgetValidationResult {
   const budget = normalizeDiffBudget(budgetInput);
-  if (!budget.enforce) return { status: "within", breaches: [] };
 
   const totalChangedLines = stat.insertions + stat.deletions;
   const breaches: DiffBudgetBreach[] = [];

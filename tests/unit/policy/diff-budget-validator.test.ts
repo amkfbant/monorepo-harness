@@ -99,14 +99,28 @@ describe("validateDiffBudget", () => {
     ]);
   });
 
-  it("treats enforce:false as within", () => {
+  it("still reports breaches when enforce:false", () => {
     const r = validateDiffBudget(
       { ...budget({ maxDeletedLines: 1 }), enforce: false },
       { ...BASE_STAT, deletions: 100 },
     );
 
-    expect(r.status).toBe("within");
-    expect(r.breaches).toEqual([]);
+    expect(r.status).toBe("exceeded");
+    expect(r.breaches).toEqual([
+      { metric: "deleted_lines", actual: 100, limit: 1 },
+    ]);
+  });
+
+  it("allows zero as an inclusive deletion limit", () => {
+    const r = validateDiffBudget(
+      budget({ maxDeletedLines: 0 }),
+      { ...BASE_STAT, deletions: 1 },
+    );
+
+    expect(r.status).toBe("exceeded");
+    expect(r.breaches).toEqual([
+      { metric: "deleted_lines", actual: 1, limit: 0 },
+    ]);
   });
 
   it("does not count binary-file numstat dashes as line changes but still applies file budgets", () => {

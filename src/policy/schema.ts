@@ -25,10 +25,10 @@ export const DEFAULT_MAX_CHANGED_FILES = 40;
 
 export const ChangeBudgetSchema = z
   .object({
-    max_deleted_lines: z.number().int().positive().optional(),
-    max_total_changed_lines: z.number().int().positive().optional(),
-    max_deleted_files: z.number().int().positive().optional(),
-    max_changed_files: z.number().int().positive().optional(),
+    max_deleted_lines: z.number().int().nonnegative().optional(),
+    max_total_changed_lines: z.number().int().nonnegative().optional(),
+    max_deleted_files: z.number().int().nonnegative().optional(),
+    max_changed_files: z.number().int().nonnegative().optional(),
     enforce: z.boolean().optional(),
   })
   .strict();

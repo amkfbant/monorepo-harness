@@ -112,4 +112,39 @@ describe("buildReviewRequest", () => {
     });
     expect(md).toMatch(/untracked-files\.patch/);
   });
+
+  it("describes enforce=false as blocking audit metadata when budget is exceeded", () => {
+    const md = buildReviewRequest({
+      ...BASE,
+      status: "failed-budget-exceeded",
+      safetyStatus: "allowed",
+      changedPaths: ["apps/user/profile.ts"],
+      untrackedPaths: [],
+      violations: [],
+      diffStat: {
+        filesChanged: 1,
+        insertions: 0,
+        deletions: 2,
+        deletedFiles: 0,
+      },
+      changeBudget: {
+        status: "exceeded",
+        disabled: true,
+        stage: "post-codex",
+        budget: {
+          maxDeletedLines: 1,
+          maxTotalChangedLines: 10,
+          maxDeletedFiles: 1,
+          maxChangedFiles: 10,
+          enforce: false,
+        },
+        breaches: [{ metric: "deleted_lines", actual: 2, limit: 1 }],
+      },
+    });
+
+    expect(md).toMatch(/Change budget enforce=false recorded/);
+    expect(md).toMatch(/breaches still block as failed-budget-exceeded/);
+    expect(md).not.toMatch(/fail-open/i);
+    expect(md).not.toMatch(/override/i);
+  });
 });

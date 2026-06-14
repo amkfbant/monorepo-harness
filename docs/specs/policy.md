@@ -40,11 +40,11 @@ defaults:
 limits:
   git_timeout_ms: 30000               # 各 git invocation の kill timeout (30 s)
   change_budget:
-    max_deleted_lines: 800            # tracked diff の削除行上限
+    max_deleted_lines: 800            # tracked/index diff の削除行上限
     max_total_changed_lines: 5000     # insertions + deletions の上限
-    max_deleted_files: 20             # 削除された tracked file 数上限
-    max_changed_files: 40             # changed tracked file 数上限
-    enforce: true                     # false は fail-open（後述）
+    max_deleted_files: 20             # 削除された tracked/index file 数上限
+    max_changed_files: 40             # changed tracked/index + allowed untracked file 数上限
+    enforce: true                     # false でも breach は停止し human surface する
 
 always_deny_write:
   - .git/**
@@ -183,8 +183,13 @@ ResolvedPolicy {
 ## change_budget の扱い
 
 `change_budget` は path policy の後に重ねる deterministic guard。LLM 出力は入力にせず、
-`git diff --no-ext-diff --no-textconv --numstat -z <baseSha>` と
-`--diff-filter=D --name-only -z` から得た tracked diff の整数だけで評価する。
+`git diff --no-ext-diff --no-textconv --numstat -z <baseSha>` と staged/index
+側の `--cached --numstat -z <baseSha>` を path 単位に統合し、
+`--diff-filter=D --name-only -z` / `--cached --diff-filter=D --name-only -z`
+から得た tracked/index diff の整数で評価する。さらに、policy validation 後に
+PR に乗りうる allowed untracked file は `insertions` / `total_changed_lines` /
+`changed_files` に含める（テキスト file の行数を加算し、binary / symlink / non-file は
+行数 0 だが changed file として数える）。
 numstat で binary file が `-` として出る場合、行数は 0 として扱うが
 `filesChanged` には数える。deleted file 数は `--diff-filter=D` の結果だけを正本にし、
 numstat から推測しない。
@@ -219,11 +224,11 @@ global の `limits.change_budget` は全 domain の default。domain の `change
 field ごとに global を上書きし、未指定 field は global、さらに未指定なら上記 default
 に fallback する。
 
-`enforce: false` は fail-open 操作。これはその domain の唯一の pre-review mass-deletion
-guard を無効化し、run は `change_budget_disabled` event を出し、`summary.md` /
-`review-request.md` に **Change budget disabled** と表示するだけで停止しない。self domain
-では `enforce:false` を設定しないことを推奨する。必要な場合は、別途 operator decision
-として記録してから deliberate に設定する。
+`enforce: false` は budget breach を silent pass しない。breach が無ければ通常どおり
+通過するが、breach がある場合は `change_budget_disabled` event で `enforce:false`
+設定を監査記録しつつ `failed-budget-exceeded` で停止する。つまり `enforce:false` は
+human surface 用の metadata であり、pre-review mass-deletion guard を無監督に無効化
+する escape hatch ではない。
 
 ## 評価順 (validateChangedPaths)
 
