@@ -14,6 +14,7 @@ import {
 } from "./schemas.js";
 import {
   DEFAULT_HITCH_POLICY,
+  HARNESS_ORIGIN_FINDING_SOURCES,
   type HitchAttempt,
   type HitchAttemptStatus,
   type HitchAttemptType,
@@ -26,6 +27,7 @@ import {
   type HitchFinding,
   type HitchFindingSeverity,
   type HitchFindingSource,
+  type HitchHarnessOriginDivergenceMetrics,
   type HitchLifecycleEvent,
   type HitchLifecycleEventName,
   type HitchLifecycleStatus,
@@ -355,6 +357,12 @@ interface HitchFindingSummaryRow {
   severity: HitchFindingSeverity;
   lifecycle_status: HitchLifecycleStatus;
   n: number;
+}
+
+interface HitchDivergenceCycleFindingRow {
+  cycle_id: string;
+  cycle_number: number;
+  findings_new: number;
 }
 
 interface HitchCloseCheckRow {
@@ -1027,8 +1035,8 @@ export class HitchRepository {
         this.db
           .prepare(
             `UPDATE hitch_findings
-                SET last_seen_at = ?, source = ?, source_ref = ?,
-                    source_attempt_id = ?, source_cycle_id = ?,
+                SET last_seen_at = ?, source_ref = ?,
+                    source_attempt_id = ?,
                     severity = ?,
                     detail = COALESCE(?, detail),
                     suggested_fix = COALESCE(?, suggested_fix),
@@ -1048,10 +1056,8 @@ export class HitchRepository {
           )
           .run(
             now,
-            input.source,
             input.sourceRef ?? null,
             input.sourceAttemptId ?? null,
-            input.sourceCycleId ?? null,
             severity,
             input.detail ?? null,
             input.suggestedFix ?? null,
@@ -1419,6 +1425,53 @@ export class HitchRepository {
       }
     }
     return counts;
+  }
+
+  harnessOriginDivergenceMetrics(
+    hitchId: string,
+  ): HitchHarnessOriginDivergenceMetrics {
+    const sourcePlaceholders = placeholders(
+      HARNESS_ORIGIN_FINDING_SOURCES.length,
+    );
+    const totals = this.db
+      .prepare(
+        `SELECT COUNT(*) AS total, COALESCE(MAX(reopen_count), 0) AS maxReopen
+           FROM hitch_findings
+          WHERE hitch_id = ?
+            AND duplicate_of IS NULL
+            AND source IN (${sourcePlaceholders})`,
+      )
+      .get(hitchId, ...HARNESS_ORIGIN_FINDING_SOURCES) as {
+      total: number;
+      maxReopen: number;
+    };
+    const cycleRows = this.db
+      .prepare(
+        `SELECT
+            c.cycle_id,
+            c.cycle_number,
+            COUNT(f.finding_id) AS findings_new
+           FROM hitch_review_cycles c
+           LEFT JOIN hitch_findings f
+             ON f.hitch_id = c.hitch_id
+            AND f.source_cycle_id = c.cycle_id
+            AND f.duplicate_of IS NULL
+            AND f.source IN (${sourcePlaceholders})
+          WHERE c.hitch_id = ?
+          GROUP BY c.cycle_id, c.cycle_number, c.created_at
+          ORDER BY c.cycle_number ASC, c.created_at ASC, c.cycle_id ASC`,
+      )
+      .all(...HARNESS_ORIGIN_FINDING_SOURCES, hitchId) as
+      HitchDivergenceCycleFindingRow[];
+    return {
+      harnessOriginNewFindings: totals.total,
+      harnessOriginMaxReopenCount: totals.maxReopen,
+      harnessOriginNewFindingsByCycle: cycleRows.map((row) => ({
+        cycleId: row.cycle_id,
+        cycleNumber: row.cycle_number,
+        findingsNew: row.findings_new,
+      })),
+    };
   }
 
   maxFindingReopenCount(hitchId: string): number {

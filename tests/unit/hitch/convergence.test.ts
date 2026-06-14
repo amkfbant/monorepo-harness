@@ -6,7 +6,12 @@ import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { ConvergenceService } from "../../../src/hitch/convergence.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
-import { DEFAULT_HITCH_POLICY, type HitchPolicy } from "../../../src/hitch/types.js";
+import {
+  DEFAULT_HITCH_POLICY,
+  type HitchFindingSource,
+  type HitchPolicy,
+  type HitchReviewCycle,
+} from "../../../src/hitch/types.js";
 
 function fresh(): {
   db: ReturnType<typeof openDb>;
@@ -77,13 +82,37 @@ function addFinding(
   }).finding;
 }
 
-function addCycle(repo: HitchRepository, cycleNumber: number, findingsNew: number) {
+function addCycle(
+  repo: HitchRepository,
+  cycleNumber: number,
+  findingsNew: number,
+): HitchReviewCycle {
   const cycle = repo.startReviewCycle({
     hitchId: "goal-test",
     cycleNumber,
     reviewMode: cycleNumber === 1 ? "initial" : "delta",
   });
-  repo.completeReviewCycle({ cycleId: cycle.cycleId, findingsNew });
+  return repo.completeReviewCycle({ cycleId: cycle.cycleId, findingsNew });
+}
+
+function addCycleFindings(
+  repo: HitchRepository,
+  cycleNumber: number,
+  sources: HitchFindingSource[],
+  overrides: Partial<Parameters<typeof addFinding>[1]> = {},
+): HitchReviewCycle {
+  const cycle = addCycle(repo, cycleNumber, sources.length);
+  sources.forEach((source, index) => {
+    addFinding(repo, {
+      source,
+      sourceCycleId: cycle.cycleId,
+      scopeStatus: "out_of_scope",
+      severity: "P2",
+      summary: `cycle-${cycleNumber}-${source}-${index}`,
+      ...overrides,
+    });
+  });
+  return cycle;
 }
 
 function insertFixedFindings(
@@ -95,6 +124,7 @@ function insertFixedFindings(
     firstSeenAt: string;
     lastSeenAt: string;
     fixedAt: string;
+    source?: HitchFindingSource;
   },
 ) {
   const insert = db.prepare(
@@ -103,7 +133,7 @@ function insertFixedFindings(
        scope_status, lifecycle_status, summary, first_seen_at, last_seen_at,
        fixed_at, reopen_count
      )
-     VALUES (?, ?, ?, 'review', 'P2', 'correctness', 'in_scope', 'fixed',
+     VALUES (?, ?, ?, ?, 'P2', 'correctness', 'in_scope', 'fixed',
        ?, ?, ?, ?, 0)`,
   );
   const tx = db.transaction(() => {
@@ -113,6 +143,7 @@ function insertFixedFindings(
         id,
         input.hitchId,
         id,
+        input.source ?? "review",
         `${input.prefix} finding ${i}`,
         input.firstSeenAt,
         input.lastSeenAt,
@@ -473,6 +504,7 @@ describe("ConvergenceService", () => {
         firstSeenAt: "2026-05-24T00:00:00.000Z",
         lastSeenAt: "2026-05-24T00:00:00.000Z",
         fixedAt: "2026-05-24T00:00:10.000Z",
+        source: "human",
       });
       passClose(repo, "goal-test", "2026-05-25T00:01:00.000Z");
       insertFixedFindings(db, {
@@ -482,6 +514,7 @@ describe("ConvergenceService", () => {
         firstSeenAt: "2026-05-25T00:02:00.000Z",
         lastSeenAt: "2026-05-25T00:02:00.000Z",
         fixedAt: "2026-05-25T00:03:00.000Z",
+        source: "human",
       });
 
       const result = service.evaluate("goal-test");
@@ -509,6 +542,7 @@ describe("ConvergenceService", () => {
           firstSeenAt: "2026-05-24T00:00:00.000Z",
           lastSeenAt: "2026-05-24T00:00:00.000Z",
           fixedAt: "2026-05-24T00:00:10.000Z",
+          source: "human",
         });
         passClose(repo, "goal-test", "2026-05-25T00:00:00.000Z");
         addFinding(repo, {
@@ -640,8 +674,8 @@ describe("ConvergenceService", () => {
     const { db, repo, service } = fresh();
     try {
       createGoal(repo, { maxTotalNewFindings: 2 });
+      addCycleFindings(repo, 1, ["review", "review", "review"]);
       passClose(repo);
-      addCycle(repo, 1, 3);
       expect(service.evaluate("goal-test").decision).toBe("diverging");
     } finally {
       db.close();
@@ -652,9 +686,9 @@ describe("ConvergenceService", () => {
     const { db, repo, service } = fresh();
     try {
       createGoal(repo);
+      addCycleFindings(repo, 1, ["review", "review"]);
+      addCycleFindings(repo, 2, ["review", "review"]);
       passClose(repo);
-      addCycle(repo, 1, 2);
-      addCycle(repo, 2, 2);
       expect(service.evaluate("goal-test").decision).toBe("diverging");
     } finally {
       db.close();
@@ -665,14 +699,190 @@ describe("ConvergenceService", () => {
     const { db, repo, service } = fresh();
     try {
       createGoal(repo);
-      passClose(repo);
       addFinding(repo, { scopeStatus: "in_scope", severity: "P1" });
-      addCycle(repo, 1, 2);
-      addCycle(repo, 2, 2);
+      addCycleFindings(repo, 1, ["review", "review"]);
+      addCycleFindings(repo, 2, ["review", "review"]);
+      passClose(repo);
       expect(service.evaluate("goal-test").decision).toBe("diverging");
     } finally {
       db.close();
     }
+  });
+
+  describe("source-aware divergence", () => {
+    function reopenFindingPastPolicy(
+      repo: HitchRepository,
+      source: HitchFindingSource,
+    ) {
+      const finding = addFinding(repo, {
+        source,
+        scopeStatus: "out_of_scope",
+        severity: "P2",
+        summary: `reopens-${source}`,
+      });
+      for (let i = 0; i < 3; i += 1) {
+        repo.markFindingFixed({ findingId: finding.findingId });
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source,
+          severity: "P2",
+          category: "correctness",
+          scopeStatus: "out_of_scope",
+          summary: `reopens-${source}`,
+        });
+      }
+      return repo.requireFinding(finding.findingId);
+    }
+
+    it("operator/human-origin new findings do NOT trigger diverging", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxTotalNewFindings: 2 });
+        addCycleFindings(repo, 1, ["human", "human", "human"]);
+        addCycleFindings(repo, 2, ["mcp", "mcp", "mcp"]);
+        passClose(repo);
+
+        const result = service.evaluate("goal-test");
+        expect(result.decision).not.toBe("diverging");
+        expect(result.metrics.harnessOriginNewFindings).toBe(0);
+        expect(result.metrics.harnessOriginNewFindingsThisCycle).toBe(0);
+      } finally {
+        db.close();
+      }
+    });
+
+    it.each(["review", "other"] as const)(
+      "harness-origin %s churn STILL triggers diverging",
+      (source) => {
+        const { db, repo, service } = fresh();
+        try {
+          createGoal(repo, { maxTotalNewFindings: 10 });
+          addCycleFindings(repo, 1, [
+            source,
+            source,
+            source,
+            source,
+            source,
+            source,
+          ]);
+          passClose(repo);
+
+          const result = service.evaluate("goal-test");
+          expect(result.decision).toBe("diverging");
+          expect(result.metrics.harnessOriginNewFindings).toBe(6);
+          expect(result.metrics.harnessOriginNewFindingsThisCycle).toBe(6);
+        } finally {
+          db.close();
+        }
+      },
+    );
+
+    it("makes the maxReopenCount divergence branch source-aware", () => {
+      const operator = fresh();
+      try {
+        createGoal(operator.repo);
+        reopenFindingPastPolicy(operator.repo, "human");
+        passClose(operator.repo);
+
+        const result = operator.service.evaluate("goal-test");
+        expect(result.metrics.maxReopenCount).toBeGreaterThan(
+          DEFAULT_HITCH_POLICY.divergence.maxReopenedPerFinding,
+        );
+        expect(result.metrics.harnessOriginMaxReopenCount).toBe(0);
+        expect(result.decision).not.toBe("diverging");
+      } finally {
+        operator.db.close();
+      }
+
+      const harness = fresh();
+      try {
+        createGoal(harness.repo);
+        reopenFindingPastPolicy(harness.repo, "review");
+        passClose(harness.repo);
+
+        const result = harness.service.evaluate("goal-test");
+        expect(result.metrics.harnessOriginMaxReopenCount).toBeGreaterThan(
+          DEFAULT_HITCH_POLICY.divergence.maxReopenedPerFinding,
+        );
+        expect(result.decision).toBe("diverging");
+      } finally {
+        harness.db.close();
+      }
+    });
+
+    it("open human P1 still blocks close but does not diverge", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxTotalNewFindings: 2 });
+        addFinding(repo, {
+          source: "human",
+          scopeStatus: "in_scope",
+          severity: "P1",
+          summary: "operator-blocker",
+        });
+        addCycleFindings(repo, 1, ["human", "human"]);
+        addCycleFindings(repo, 2, ["mcp", "mcp"]);
+        passClose(repo);
+
+        const result = service.evaluate("goal-test");
+        expect(result.decision).not.toBe("diverging");
+        expect(result.decision).not.toBe("close_ready");
+        expect(result.metrics.openInScopeP1).toBe(1);
+      } finally {
+        db.close();
+      }
+    });
+
+    it("operator-origin in-scope P0 still escalates outside divergence", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo);
+        addFinding(repo, {
+          source: "human",
+          scopeStatus: "in_scope",
+          severity: "P0",
+          summary: "operator p0 blocker",
+        });
+        passClose(repo);
+
+        const result = service.evaluate("goal-test");
+        expect(result.decision).toBe("escalate");
+        expect(result.reason).toBe("open in-scope P0 findings");
+        expect(result.metrics.harnessOriginNewFindings).toBe(0);
+      } finally {
+        db.close();
+      }
+    });
+
+    it("non-decreasing divergence excludes operator-origin findings only", () => {
+      const operator = fresh();
+      try {
+        createGoal(operator.repo);
+        addCycleFindings(operator.repo, 1, ["human", "human"]);
+        addCycleFindings(operator.repo, 2, ["mcp", "mcp"]);
+        passClose(operator.repo);
+
+        const result = operator.service.evaluate("goal-test");
+        expect(result.decision).not.toBe("diverging");
+        expect(result.metrics.harnessOriginNewFindings).toBe(0);
+      } finally {
+        operator.db.close();
+      }
+
+      const harness = fresh();
+      try {
+        createGoal(harness.repo);
+        addCycleFindings(harness.repo, 1, ["review", "review"]);
+        addCycleFindings(harness.repo, 2, ["review", "review"]);
+        passClose(harness.repo);
+
+        expect(harness.service.evaluate("goal-test").decision).toBe(
+          "diverging",
+        );
+      } finally {
+        harness.db.close();
+      }
+    });
   });
 
   it("requires defer_followups when out-of-scope findings remain", () => {

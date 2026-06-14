@@ -89,6 +89,15 @@ describe("HitchOrchestrator", () => {
       });
       const cycle = repo.startReviewCycle({ hitchId: "g-div", reviewMode: "initial" });
       repo.completeReviewCycle({ cycleId: cycle.cycleId, findingsNew: 1 });
+      repo.upsertFinding({
+        hitchId: "g-div",
+        source: "review",
+        sourceCycleId: cycle.cycleId,
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        summary: "harness-origin churn",
+      });
     } finally {
       close();
     }

@@ -14,18 +14,12 @@ import type {
   HitchConvergenceDecision,
   HitchConvergenceMetrics,
   HitchConvergenceResult,
-  HitchFinding,
+  HitchHarnessOriginDivergenceMetrics,
   HitchNextAction,
   HitchReviewCycle,
   HitchSession,
 } from "./types.js";
 
-const OPEN_FINDING_LIFECYCLE_SET = new Set<HitchFinding["lifecycleStatus"]>(
-  OPEN_FINDING_LIFECYCLES,
-);
-const UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLE_SET = new Set<
-  HitchFinding["lifecycleStatus"]
->(UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES);
 const CLOSE_CHECK_ATTEMPT_TYPE = "close-check";
 const ADVISORY_FINDING_ID_LIMIT = 200;
 const RUNNABLE_CLOSE_CHECK_STATUSES = new Set([
@@ -46,6 +40,8 @@ export class ConvergenceService {
     const session = this.repo.requireSession(hitchId);
     const findingCounts = this.repo.countFindingSummary(hitchId);
     const maxReopenCount = this.repo.maxFindingReopenCount(hitchId);
+    const harnessOriginDivergenceMetrics =
+      this.repo.harnessOriginDivergenceMetrics(hitchId);
     const latestFindingMutationAt = this.repo.latestFindingMutationAt(hitchId);
     const cycles = this.repo.listReviewCycles(hitchId);
     const attempts = this.repo.listAttempts(hitchId);
@@ -68,6 +64,7 @@ export class ConvergenceService {
       maxAttemptIteration(attempts),
       attempts.filter((a) => a.attemptType === "rerun").length,
       maxReopenCount,
+      harnessOriginDivergenceMetrics,
       {
         passed: close.requiredPassed,
         failed: close.requiredFailed,
@@ -102,34 +99,6 @@ export class ConvergenceService {
   }
 }
 
-export function buildConvergenceMetrics(input: {
-  session: HitchSession;
-  findings: HitchFinding[];
-  cycles: HitchReviewCycle[];
-  attemptsUsed: number;
-  rerunsUsed?: number;
-  closeConditionsPassed: number;
-  closeConditionsFailed: number;
-  closeConditionsPending: number;
-}): HitchConvergenceMetrics {
-  return buildMetrics(
-    input.session,
-    summarizeFindings(input.findings),
-    input.cycles,
-    input.attemptsUsed,
-    input.rerunsUsed ?? 0,
-    input.findings.reduce(
-      (max, finding) => Math.max(max, finding.reopenCount),
-      0,
-    ),
-    {
-      passed: input.closeConditionsPassed,
-      failed: input.closeConditionsFailed,
-      pending: input.closeConditionsPending,
-    },
-  );
-}
-
 function buildMetrics(
   session: HitchSession,
   findingCounts: HitchFindingSummaryCounts,
@@ -137,9 +106,14 @@ function buildMetrics(
   attemptsUsed: number,
   rerunsUsed: number,
   maxReopenCount: number,
+  harnessOriginDivergenceMetrics: HitchHarnessOriginDivergenceMetrics,
   closeCounts: { passed: number; failed: number; pending: number },
 ): HitchConvergenceMetrics {
   const latestCycle = cycles[cycles.length - 1];
+  const latestHarnessOriginCycle =
+    harnessOriginDivergenceMetrics.harnessOriginNewFindingsByCycle[
+      harnessOriginDivergenceMetrics.harnessOriginNewFindingsByCycle.length - 1
+    ];
   return {
     openInScopeP0: findingCounts.openInScopeP0,
     openInScopeP1: findingCounts.openInScopeP1,
@@ -158,38 +132,15 @@ function buildMetrics(
     closeConditionsFailed: closeCounts.failed,
     closeConditionsPending: closeCounts.pending,
     maxReopenCount,
+    harnessOriginNewFindings:
+      harnessOriginDivergenceMetrics.harnessOriginNewFindings,
+    harnessOriginNewFindingsThisCycle:
+      latestHarnessOriginCycle?.findingsNew ?? 0,
+    harnessOriginMaxReopenCount:
+      harnessOriginDivergenceMetrics.harnessOriginMaxReopenCount,
+    harnessOriginNewFindingsByCycle:
+      harnessOriginDivergenceMetrics.harnessOriginNewFindingsByCycle,
   };
-}
-
-function summarizeFindings(findings: HitchFinding[]): HitchFindingSummaryCounts {
-  const counts: HitchFindingSummaryCounts = {
-    openInScopeP0: 0,
-    openInScopeP1: 0,
-    openInScopeP2: 0,
-    openUnknownScope: 0,
-    openOutOfScope: 0,
-  };
-  for (const finding of findings) {
-    if (finding.scopeStatus === "out_of_scope") {
-      if (
-        UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLE_SET.has(
-          finding.lifecycleStatus,
-        )
-      ) {
-        counts.openOutOfScope += 1;
-      }
-      continue;
-    }
-    if (!OPEN_FINDING_LIFECYCLE_SET.has(finding.lifecycleStatus)) continue;
-    if (finding.scopeStatus === "unknown") {
-      counts.openUnknownScope += 1;
-    } else if (finding.scopeStatus === "in_scope") {
-      if (finding.severity === "P0") counts.openInScopeP0 += 1;
-      else if (finding.severity === "P1") counts.openInScopeP1 += 1;
-      else if (finding.severity === "P2") counts.openInScopeP2 += 1;
-    }
-  }
-  return counts;
 }
 
 function maxAttemptIteration(attempts: HitchAttempt[]): number {
@@ -372,7 +323,7 @@ function decide(
     );
   }
 
-  const divergingReason = divergenceReason(session, cycles, metrics);
+  const divergingReason = divergenceReason(session, metrics);
   if (divergingReason !== null) {
     return result(session.hitchId, "diverging", divergingReason, metrics, {
       kind: "ask_human",
@@ -659,26 +610,29 @@ function terminalDecision(
 
 function divergenceReason(
   session: HitchSession,
-  cycles: HitchReviewCycle[],
   metrics: HitchConvergenceMetrics,
 ): string | null {
   const policy = session.policy.divergence;
-  if (metrics.totalNewFindings > session.maxTotalNewFindings) {
+  if (metrics.harnessOriginNewFindings > session.maxTotalNewFindings) {
     return "total new findings exceeded hitch budget";
   }
-  if (metrics.totalNewFindings > policy.maxTotalNewFindings) {
+  if (metrics.harnessOriginNewFindings > policy.maxTotalNewFindings) {
     return "total new findings exceeded policy budget";
   }
-  if (metrics.newFindingsThisCycle > policy.maxNewFindingsPerCycle) {
+  if (
+    metrics.harnessOriginNewFindingsThisCycle >
+    policy.maxNewFindingsPerCycle
+  ) {
     return "new findings in current cycle exceeded policy budget";
   }
-  if (metrics.maxReopenCount > policy.maxReopenedPerFinding) {
+  if (metrics.harnessOriginMaxReopenCount > policy.maxReopenedPerFinding) {
     return "a finding reopened too many times";
   }
   const threshold = policy.requireNewFindingsDecreaseAfterCycle;
-  if (threshold > 0 && cycles.length >= threshold) {
-    const latest = cycles[cycles.length - 1];
-    const previous = cycles[cycles.length - 2];
+  const cycleCounts = metrics.harnessOriginNewFindingsByCycle;
+  if (threshold > 0 && cycleCounts.length >= threshold) {
+    const latest = cycleCounts[cycleCounts.length - 1];
+    const previous = cycleCounts[cycleCounts.length - 2];
     if (
       latest !== undefined &&
       previous !== undefined &&

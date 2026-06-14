@@ -13,6 +13,10 @@ function conv(decision: HitchConvergenceResult["decision"]): HitchConvergenceRes
       reviewCyclesUsed: 0, iterationsUsed: 0, rerunsUsed: 0,
       closeConditionsPassed: 0, closeConditionsFailed: 0, closeConditionsPending: 0,
       maxReopenCount: 0,
+      harnessOriginNewFindings: 0,
+      harnessOriginNewFindingsThisCycle: 0,
+      harnessOriginMaxReopenCount: 0,
+      harnessOriginNewFindingsByCycle: [],
     },
     recommendedNextAction: { kind: "close_hitch", message: "" },
   };
