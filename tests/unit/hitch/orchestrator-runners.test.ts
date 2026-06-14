@@ -1851,3 +1851,462 @@ describe("createOrchestratorRunners.closeAndPr (adopted PR guard)", () => {
     expect(publisher.calls).toHaveLength(0);
   });
 });
+
+describe("createOrchestratorRunners.coder rerun continuation (#163)", () => {
+  // A real target repo + harness root (the continuation reads the parent run's
+  // worktree under workspaces/<id>/repo and the run policy from the files).
+  function setupContinuationHarness(): {
+    harnessRoot: string;
+    dbPath: string;
+    repoPath: string;
+  } {
+    const harnessRoot = mkdtempSync(join(tmpdir(), "harness-orch-cont-"));
+    mkdirSync(join(harnessRoot, "policies/repos"), { recursive: true });
+    mkdirSync(join(harnessRoot, ".harness"), { recursive: true });
+    writeFileSync(
+      join(harnessRoot, "policies/global.yaml"),
+      "always_deny_write: []\nignore_untracked: []\n",
+    );
+    writeFileSync(
+      join(harnessRoot, "policies/repos/t.yaml"),
+      [
+        "repo_id: t",
+        "read: []",
+        "domains:",
+        "  apps/user:",
+        "    read: [apps/user/**]",
+        "    write: [apps/user/**]",
+        "    deny_write: []",
+        "",
+      ].join("\n"),
+    );
+    const repoPath = mkdtempSync(join(tmpdir(), "harness-orch-cont-target-"));
+    const g = (a: string[]) =>
+      execFileSync("git", a, { cwd: repoPath, stdio: "ignore" });
+    g(["init", "-q", "-b", "main"]);
+    g(["config", "user.email", "t@e.com"]);
+    g(["config", "user.name", "T"]);
+    mkdirSync(join(repoPath, "apps/user/src"), { recursive: true });
+    writeFileSync(
+      join(repoPath, "apps/user/src/profile.ts"),
+      "export const x = 0;\n",
+    );
+    g(["add", "."]);
+    g(["commit", "-qm", "init"]);
+    return {
+      harnessRoot,
+      dbPath: join(harnessRoot, ".harness", "harness.sqlite"),
+      repoPath,
+    };
+  }
+
+  // Seed a hitch with an open in-scope P1 finding (so convergence routes to
+  // needs_fix → fix_findings, permitting the coder) and generous budgets so a
+  // multi-rerun sequence is not stopped by budget_exhausted.
+  function seedFixableHitch(dbPath: string, hitchId: string): void {
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new HitchRepository(db);
+      repo.createSession({
+        hitchId,
+        title: "Continue parent work",
+        projectId: null,
+        repoId: "t",
+        domain: "apps/user",
+        closeConditions: [{ id: "tc", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "worker",
+        maxIterations: 20,
+        maxReviewCycles: 20,
+        maxReruns: 20,
+      });
+      repo.upsertFinding({
+        hitchId,
+        source: "review",
+        severity: "P1",
+        category: "bug",
+        scopeStatus: "in_scope",
+        summary: "keep fixing the profile",
+      });
+    } finally {
+      close();
+    }
+  }
+
+  // A codex runner that writes `file` with `content` into the worktree and then
+  // EXITS NON-ZERO. A failed-codex run keeps its worktree (with the carried
+  // parent work + this edit), and convergence routes the next pass to a coder
+  // rerun (latestCodingFailed → needs_fix) — so we can drive R1→R2→R3 through
+  // the real mutation gate without a review cycle between each.
+  function failingEditRunner(
+    edits: () => { file: string; content: string },
+  ): { run: (input: { worktreePath: string; logPaths: { stdout: string; stderr: string; events: string } }) => Promise<{ exitCode: number; timedOut: boolean; durationMs: number }> } {
+    return {
+      run: async (input) => {
+        const { file, content } = edits();
+        writeFileSync(join(input.worktreePath, file), content);
+        writeFileSync(input.logPaths.stdout, "", "utf8");
+        writeFileSync(input.logPaths.stderr, "boom\n", "utf8");
+        writeFileSync(input.logPaths.events, "", "utf8");
+        return { exitCode: 1, timedOut: false, durationMs: 1 };
+      },
+    };
+  }
+
+  function runContext(repoPath: string): HitchRunContext {
+    return {
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "improve the profile feature",
+      baseBranch: "main",
+    };
+  }
+
+  function worktreeOf(harnessRoot: string, runId: string): string {
+    return join(harnessRoot, "workspaces", runId, "repo");
+  }
+
+  function runRow(
+    dbPath: string,
+    runId: string,
+  ): { rootRunId: string | null; rerunAttempt: number | null; parentRunId: string | null } {
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const r = db
+        .prepare(
+          "SELECT root_run_id, rerun_attempt, parent_run_id FROM runs WHERE run_id = ?",
+        )
+        .get(runId) as
+        | { root_run_id: string | null; rerun_attempt: number | null; parent_run_id: string | null }
+        | undefined;
+      return {
+        rootRunId: r?.root_run_id ?? null,
+        rerunAttempt: r?.rerun_attempt ?? null,
+        parentRunId: r?.parent_run_id ?? null,
+      };
+    } finally {
+      close();
+    }
+  }
+
+  it("SEQUENTIAL R1→R2→R3: cumulative carry + lineage chain (root stays R1, attempt increments), no escalation", async () => {
+    const { harnessRoot, dbPath, repoPath } = setupContinuationHarness();
+    seedFixableHitch(dbPath, "g-seq");
+    let pass = 0;
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: failingEditRunner(() => {
+        pass += 1;
+        return {
+          file: `apps/user/src/pass-${pass}.ts`,
+          content: `export const p = ${pass};\n`,
+        };
+      }),
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      resolveRunContext: () => runContext(repoPath),
+    });
+
+    const r1 = await runners.coder("g-seq"); // implement
+    const r2 = await runners.coder("g-seq"); // rerun, continues r1
+    const r3 = await runners.coder("g-seq"); // rerun, continues r2
+
+    // No escalation / RerunGateError: all three returned a runId.
+    expect(r1.runId).toMatch(/^run-/);
+    expect(r2.runId).toMatch(/^run-/);
+    expect(r3.runId).toMatch(/^run-/);
+    expect(new Set([r1.runId, r2.runId, r3.runId]).size).toBe(3);
+
+    // Cumulative carry: the R3 worktree contains R1's AND R2's edits (carried
+    // forward as uncommitted state) plus R3's own edit.
+    const wt3 = worktreeOf(harnessRoot, r3.runId);
+    expect(readFileSync(join(wt3, "apps/user/src/pass-1.ts"), "utf8")).toBe(
+      "export const p = 1;\n",
+    );
+    expect(readFileSync(join(wt3, "apps/user/src/pass-2.ts"), "utf8")).toBe(
+      "export const p = 2;\n",
+    );
+    expect(readFileSync(join(wt3, "apps/user/src/pass-3.ts"), "utf8")).toBe(
+      "export const p = 3;\n",
+    );
+
+    // Lineage: root stays R1; rerunAttempt increments 1 → 2.
+    const row2 = runRow(dbPath, r2.runId);
+    const row3 = runRow(dbPath, r3.runId);
+    expect(row2.rootRunId).toBe(r1.runId);
+    expect(row2.rerunAttempt).toBe(1);
+    expect(row3.rootRunId).toBe(r1.runId);
+    expect(row3.rerunAttempt).toBe(2);
+
+    // No new commit on any run branch — verify the R2 branch tip stayed at base.
+    const baseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath })
+      .toString()
+      .trim();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const branch = (
+        db.prepare("SELECT run_branch FROM runs WHERE run_id = ?").get(r2.runId) as
+          | { run_branch: string }
+          | undefined
+      )?.run_branch;
+      expect(branch).toBeDefined();
+      const tip = execFileSync("git", ["rev-parse", branch as string], {
+        cwd: repoPath,
+      })
+        .toString()
+        .trim();
+      expect(tip).toBe(baseSha);
+    } finally {
+      close();
+    }
+  });
+
+  it("LINEAGE legacy-root: a parent rerun row with parentRunId but no rootRunId → child rootRunId via chain-walk (not parent.runId)", async () => {
+    const { harnessRoot, dbPath, repoPath } = setupContinuationHarness();
+    seedFixableHitch(dbPath, "g-legacy");
+    // Seed a legacy chain in the DB: original O ← legacy rerun L (parentRunId=O,
+    // NO root_run_id). The next coder rerun's parent is L; its rootRunId must be
+    // derived by walking L→O = O, NOT defaulted to L.runId.
+    const baseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath })
+      .toString()
+      .trim();
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        const repo = new HitchRepository(db);
+        const insertRun = (runId: string, parent: string | null, attempt: number | null) =>
+          db
+            .prepare(
+              `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+                 base_sha, run_branch, status, source_mode, db_revision,
+                 export_status, updated_at, parent_run_id, root_run_id,
+                 rerun_attempt, meta_json)
+               VALUES (?, 't', 'apps/user', 'domain-coding', 'main', ?, ?,
+                 'changes_requested', 'db-first', 1, 'disabled',
+                 '2026-06-13T00:00:00.000Z', ?, NULL, ?, ?)`,
+            )
+            .run(
+              runId,
+              baseSha,
+              `run/${runId}/apps-user`,
+              parent,
+              attempt,
+              JSON.stringify({ runId, status: "changes_requested" }),
+            );
+        insertRun("run-O", null, null);
+        // legacy rerun: has parent_run_id but NO root_run_id (NULL above).
+        insertRun("run-L", "run-O", 1);
+        repo.createAttempt({
+          hitchId: "g-legacy",
+          attemptType: "implement",
+          status: "succeeded",
+          runId: "run-O",
+        });
+        repo.createAttempt({
+          hitchId: "g-legacy",
+          attemptType: "rerun",
+          status: "failed",
+          runId: "run-L",
+        });
+      } finally {
+        close();
+      }
+    }
+    // Create L's worktree so the continuation can read it (base == fresh base).
+    mkdirSync(join(harnessRoot, "workspaces", "run-L"), { recursive: true });
+    execFileSync(
+      "git",
+      ["worktree", "add", "-q", "--detach", worktreeOf(harnessRoot, "run-L"), baseSha],
+      { cwd: repoPath },
+    );
+    writeFileSync(
+      join(worktreeOf(harnessRoot, "run-L"), "apps/user/src/legacy.ts"),
+      "export const l = 1;\n",
+    );
+
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: failingEditRunner(() => ({
+        file: "apps/user/src/child.ts",
+        content: "export const c = 1;\n",
+      })),
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      resolveRunContext: () => runContext(repoPath),
+    });
+
+    const child = await runners.coder("g-legacy");
+    const row = runRow(dbPath, child.runId);
+    // chain-walk: L→O ⇒ root is O, NOT L (the legacy parent's own runId).
+    expect(row.rootRunId).toBe("run-O");
+    expect(row.rerunAttempt).toBe(2); // (L.rerunAttempt=1) + 1
+    // continuation carried L's uncommitted work into the child worktree.
+    expect(
+      readFileSync(join(worktreeOf(harnessRoot, child.runId), "apps/user/src/legacy.ts"), "utf8"),
+    ).toBe("export const l = 1;\n");
+  });
+
+  it("FALLBACK base_advanced: the parent's base != fresh base → fresh-from-base + recorded reason, no throw, no carry", async () => {
+    const { harnessRoot, dbPath, repoPath } = setupContinuationHarness();
+    seedFixableHitch(dbPath, "g-advanced");
+    // Seed a prior coding run pinned to a STALE base sha (not the repo HEAD),
+    // with a worktree holding work that must NOT be carried once the base moved.
+    const staleBase = "0".repeat(40);
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        const repo = new HitchRepository(db);
+        db.prepare(
+          `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+             base_sha, run_branch, status, source_mode, db_revision,
+             export_status, updated_at, meta_json)
+           VALUES ('run-stale', 't', 'apps/user', 'domain-coding', 'main', ?,
+             'run/run-stale/apps-user', 'changes_requested', 'db-first', 1,
+             'disabled', '2026-06-13T00:00:00.000Z', ?)`,
+        ).run(staleBase, JSON.stringify({ runId: "run-stale", status: "changes_requested" }));
+        repo.createAttempt({
+          hitchId: "g-advanced",
+          attemptType: "implement",
+          status: "failed",
+          runId: "run-stale",
+        });
+      } finally {
+        close();
+      }
+    }
+    // give run-stale a worktree (off the real HEAD) with carry-worthy work.
+    const realBase = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath })
+      .toString()
+      .trim();
+    mkdirSync(join(harnessRoot, "workspaces", "run-stale"), { recursive: true });
+    execFileSync(
+      "git",
+      ["worktree", "add", "-q", "--detach", worktreeOf(harnessRoot, "run-stale"), realBase],
+      { cwd: repoPath },
+    );
+    writeFileSync(
+      join(worktreeOf(harnessRoot, "run-stale"), "apps/user/src/stale.ts"),
+      "export const s = 1;\n",
+    );
+
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: failingEditRunner(() => ({
+        file: "apps/user/src/fresh.ts",
+        content: "export const f = 1;\n",
+      })),
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      resolveRunContext: () => runContext(repoPath),
+    });
+
+    const child = await runners.coder("g-advanced");
+    expect(child.runId).toMatch(/^run-/);
+    const childWt = worktreeOf(harnessRoot, child.runId);
+    // fresh-from-base: the parent's stale work is NOT carried.
+    expect(existsSync(join(childWt, "apps/user/src/stale.ts"))).toBe(false);
+    expect(readFileSync(join(childWt, "apps/user/src/fresh.ts"), "utf8")).toBe(
+      "export const f = 1;\n",
+    );
+    // the skip reason is recorded as a continuation_skipped run event.
+    const events = readFileSync(
+      join(harnessRoot, "runs", child.runId, "events.jsonl"),
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string; reason?: string });
+    const skip = events.find((e) => e.type === "continuation_skipped");
+    expect(skip?.reason).toBe("base_advanced");
+  });
+
+  it("FALLBACK parent_work_unavailable: the parent worktree was cleaned → fresh-from-base + recorded reason", async () => {
+    const { harnessRoot, dbPath, repoPath } = setupContinuationHarness();
+    seedFixableHitch(dbPath, "g-cleaned");
+    const baseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath })
+      .toString()
+      .trim();
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        const repo = new HitchRepository(db);
+        db.prepare(
+          `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+             base_sha, run_branch, status, source_mode, db_revision,
+             export_status, updated_at, meta_json)
+           VALUES ('run-cleaned', 't', 'apps/user', 'domain-coding', 'main', ?,
+             'run/run-cleaned/apps-user', 'changes_requested', 'db-first', 1,
+             'disabled', '2026-06-13T00:00:00.000Z', ?)`,
+        ).run(baseSha, JSON.stringify({ runId: "run-cleaned", status: "changes_requested" }));
+        repo.createAttempt({
+          hitchId: "g-cleaned",
+          attemptType: "implement",
+          status: "failed",
+          runId: "run-cleaned",
+        });
+        // NOTE: no worktree created under workspaces/run-cleaned — simulating a
+        // cleaned parent.
+      } finally {
+        close();
+      }
+    }
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: failingEditRunner(() => ({
+        file: "apps/user/src/fresh.ts",
+        content: "export const f = 1;\n",
+      })),
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      resolveRunContext: () => runContext(repoPath),
+    });
+
+    const child = await runners.coder("g-cleaned");
+    const events = readFileSync(
+      join(harnessRoot, "runs", child.runId, "events.jsonl"),
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string; reason?: string });
+    const skip = events.find((e) => e.type === "continuation_skipped");
+    expect(skip?.reason).toBe("parent_work_unavailable");
+    expect(
+      readFileSync(join(worktreeOf(harnessRoot, child.runId), "apps/user/src/fresh.ts"), "utf8"),
+    ).toBe("export const f = 1;\n");
+  });
+
+  it("first implement pass does not attempt continuation (no skip / no materialize event)", async () => {
+    const { harnessRoot, dbPath, repoPath } = setupContinuationHarness();
+    seedFixableHitch(dbPath, "g-first-pass");
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: failingEditRunner(() => ({
+        file: "apps/user/src/first.ts",
+        content: "export const f = 1;\n",
+      })),
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      resolveRunContext: () => runContext(repoPath),
+    });
+
+    const r = await runners.coder("g-first-pass");
+    const events = readFileSync(
+      join(harnessRoot, "runs", r.runId, "events.jsonl"),
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string });
+    const types = events.map((e) => e.type);
+    expect(types).not.toContain("continuation_materialized");
+    expect(types).not.toContain("continuation_skipped");
+  });
+});

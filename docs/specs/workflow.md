@@ -918,6 +918,39 @@ run status を `augmentGoalWithFailedRun` で注入し、原因を直すよう�
 コーディングを避ける）。rerun budget を使い切ると `budget_exhausted` で clean に停止
 （無限 rerun しない）。
 
+**rerun の continuation（親 run の作業を引き継ぐ・#163）**: hitch の fix-loop rerun は
+親 coding run の作業を **uncommitted な working-tree state として子 run の worktree に
+materialize** し、codex がゼロから再実装せず in-place で amend できるようにする。
+**commit は一切しない**（`git add`/branch mutation も無し）。親の作業は子 worktree の
+uncommitted state としてのみ存在するため、既存の untracked-denied / secret-suspect /
+redaction 処理が子 run の diff に特例なしでそのまま効き、git object store / branch /
+`final-diff.patch`（committed object）に何も漏れない。
+
+- **resolution（read-only, mutation 無し）**: orchestrator の `coder()` は rerun のとき
+  最新 coding run（＝親）の行・worktree path を読み、**base-equality gate**（`parent.baseSha`
+  === fresh に解決した base）を read-only な `git rev-parse` で判定する（policy の
+  `gitTimeoutMs` で timeout。domain lock 取得前に mutation は一切しない）。gate を通れば
+  `continueFrom`（親 worktree）と gate 済み `resolvedBaseSha` を `runDomainCoding` に渡す。
+- **materialize（domain lock 下・`createWorktree` 後）**: 子 worktree を base から新規作成した
+  **後**に、親 worktree の **policy-validated diff surface** を子へ反映する。surface は
+  live run と同一定義 = tracked changed paths（add/modify/delete）＋
+  `partitionUntracked(untracked, policy.ignoreUntracked).kept`。**policy で ignore される
+  untracked（node_modules/dist/.harness 等）は除外**。add/modify はファイル内容を copy、
+  delete は子で削除。すべて uncommitted。
+- **diff/policy base は常に fresh な `baseSha`**（親 tip ではない）。`git diff baseSha` of
+  child = 親の変更 + codex の amend。親が触った deny path はそのまま violation。
+- **lineage**: 子 `rerunAttempt` = `parent.rerunAttempt + 1`、`rootRunId` = `parent.rootRunId`
+  （親に rootRunId が無ければ `parentRunId` chain を root まで walk して導出。legacy 親が
+  自身 parentRunId を持つ場合に `parent.runId` を root と誤らない）。continuation は
+  **`continueFrom` 専用フィールド**で parentRunId と decouple され、duplicate-rerun-child
+  gate（`runDomainCoding`）が連続 rerun で誤発火しない。
+- **fail-closed**: 曖昧さは全て fresh-from-base に倒し、escalate / throw しない。理由を
+  `continuation_skipped` run event に記録する: `parent_run_missing`（親 run 行が無い）/
+  `parent_work_unavailable`（worktree が無い/cleaned/clean/surface 無し）/ `base_advanced`
+  （`parent.baseSha != fresh base`）/ `parent_work_unmaterializable`（git/copy 失敗）。
+  git 例外は throw でなく fallback にマップする。継続成功時は `continuation_materialized`
+  event（parentRunId / baseSha / paths）を記録する。
+
 ### convergence decision → hitch status 連携
 
 各 cycle / attempt の後に convergence evaluator（`src/hitch/convergence.ts` の

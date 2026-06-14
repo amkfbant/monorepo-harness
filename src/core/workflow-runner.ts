@@ -1,5 +1,5 @@
-import { join } from "node:path";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { stringify as yamlStringify } from "yaml";
@@ -54,7 +54,7 @@ import {
 import { hostname } from "node:os";
 import { runBranchName } from "../workspace/branch-name.js";
 import { createWorktree } from "../workspace/git-worktree.js";
-import { collectDiff, resolveBaseSha } from "../git/diff.js";
+import { collectDiff, resolveBaseSha, type DiffResult } from "../git/diff.js";
 import { detectsTestWeakening } from "./automerge-tiers.js";
 import {
   buildCodexPrompt,
@@ -102,6 +102,34 @@ function elapsedMs(start: number): number {
   return Math.round(performance.now() - start);
 }
 
+/**
+ * (#163) Reason a rerun fell back to a fresh-from-base run instead of
+ * continuing the parent run's work. Recorded on the `continuation_skipped`
+ * run event so an operator can see WHY a continuation did not happen.
+ *   - parent_run_missing: no resolvable parent run row.
+ *   - parent_work_unavailable: parent worktree absent/cleaned, or its diff
+ *     against the base is empty (no policy surface to carry forward).
+ *   - base_advanced: parent.baseSha != the freshly-resolved base (the base
+ *     branch moved; carrying stale work would diverge — fail closed).
+ *   - parent_work_unmaterializable: a git/copy failure while materializing.
+ */
+export type ContinueFromSkipReason =
+  | "parent_run_missing"
+  | "parent_work_unavailable"
+  | "base_advanced"
+  | "parent_work_unmaterializable";
+
+/**
+ * (#163) Where to find the parent run's work to materialize. The resolver
+ * passes the parent's run id (for audit) and its worktree path; the surface
+ * is the parent worktree's policy-validated diff against the shared base.
+ */
+export interface ContinueFromSpec {
+  parentRunId: string;
+  /** absolute path to the parent run's worktree (`workspaces/<id>/repo`). */
+  parentWorktreePath: string;
+}
+
 export interface RunDomainCodingOpts {
   harnessRoot: string;
   repoPath: string;
@@ -122,6 +150,34 @@ export interface RunDomainCodingOpts {
   rootRunId?: string;
   /** rerun attempt count from rootRunId (see RunMeta.rerunAttempt). */
   rerunAttempt?: number;
+  /**
+   * (#163) Continuation source for a rerun: the parent run's worktree whose
+   * policy-validated diff surface is materialized into THIS run's freshly
+   * created worktree as UNCOMMITTED working-tree changes, so codex amends the
+   * parent's work in place rather than re-implementing from a clean base.
+   *
+   * Decoupled from `parentRunId` (which is lineage only): the resolver in the
+   * orchestrator builds it after a read-only base-equality gate; `runDomainCoding`
+   * performs the materialization under the domain lock, after `createWorktree`.
+   * Any failure (worktree missing/clean, copy/git error) fails CLOSED to a
+   * fresh-from-base run, recording a `continuation_skipped` event — never a throw.
+   */
+  continueFrom?: ContinueFromSpec;
+  /**
+   * (#163) Gate-validated base SHA. When set, `runDomainCoding` uses this as the
+   * worktree base + diff base instead of re-resolving `baseBranch` — so the
+   * diff base equals the base the continuation gate validated against (no
+   * re-resolve TOCTOU between the gate and the run). Must be a 40-char SHA.
+   */
+  resolvedBaseSha?: string;
+  /**
+   * (#163) When a rerun's continuation was DECLINED by the read-only resolver
+   * (parent_run_missing / parent_work_unavailable / base_advanced /
+   * parent_work_unmaterializable), the reason is recorded as a
+   * `continuation_skipped` run event for audit. The run still proceeds
+   * fresh-from-base — this is a fail-closed fallback, never a throw.
+   */
+  continueFromSkipped?: ContinueFromSkipReason;
   /**
    * Promoted-knowledge context to inject into the codex prompt (Phase 3-4).
    * `text` is appended to the prompt; `path` is recorded in meta/events.
@@ -320,6 +376,107 @@ async function attemptDiff(
   }
 }
 
+export interface MaterializeOutcome {
+  /** true when at least one path was carried forward into the child worktree. */
+  materialized: boolean;
+  /** the policy-validated surface that was copied/removed (audit). */
+  paths: string[];
+  /** set when materialization fell back to fresh-from-base. */
+  skippedReason?: ContinueFromSkipReason;
+}
+
+/**
+ * (#163) Materialize the parent run's policy-validated diff surface INTO the
+ * child worktree as UNCOMMITTED working-tree changes. This is the whole
+ * continuation mechanism — there is NO commit, NO `git add`, NO branch
+ * mutation anywhere. The parent's work lives only as the child worktree's
+ * uncommitted state, so the existing untracked-denied / secret-suspect /
+ * redaction handling applies to the child run with no special-casing, and
+ * `git diff baseSha` of the child = parent's changes + codex's amends.
+ *
+ * Surface (mirrors the live-run validated surface in `diffAndValidate`):
+ *   tracked changed paths (added/modified/deleted) +
+ *   partitionUntracked(untracked, policy.ignoreUntracked).kept
+ * Policy-IGNORED untracked (node_modules/dist/.harness) are EXCLUDED.
+ *
+ * Fail-closed: ANY git/copy failure (or an empty surface) returns a
+ * `skippedReason` and leaves the child worktree fresh-from-base. It never
+ * throws — the caller records the reason and proceeds with a normal run.
+ */
+export async function materializeParentWork(opts: {
+  parentWorktreePath: string;
+  childWorktreePath: string;
+  baseSha: string;
+  policy: ResolvedPolicy;
+  gitTimeoutMs: number;
+}): Promise<MaterializeOutcome> {
+  let diff: DiffResult;
+  try {
+    diff = await collectDiff({
+      repoPath: opts.parentWorktreePath,
+      baseSha: opts.baseSha,
+      timeoutMs: opts.gitTimeoutMs,
+    });
+  } catch {
+    // parent worktree absent/cleaned, base SHA unknown there, or any git
+    // failure → fail closed, no carry-forward.
+    return {
+      materialized: false,
+      paths: [],
+      skippedReason: "parent_work_unavailable",
+    };
+  }
+  const { kept: untrackedKept } = partitionUntracked(
+    diff.untrackedPaths,
+    opts.policy.ignoreUntracked,
+  );
+  // de-dup while preserving a deterministic order (tracked first).
+  const surface = Array.from(
+    new Set([...diff.trackedChangedPaths, ...untrackedKept]),
+  );
+  if (surface.length === 0) {
+    // parent has no policy-relevant changes vs the base — nothing to carry.
+    return {
+      materialized: false,
+      paths: [],
+      skippedReason: "parent_work_unavailable",
+    };
+  }
+  try {
+    for (const rel of surface) {
+      const src = join(opts.parentWorktreePath, rel);
+      const dst = join(opts.childWorktreePath, rel);
+      if (await pathExists(src)) {
+        // added/modified/untracked → copy content into the child (uncommitted).
+        await mkdir(dirname(dst), { recursive: true });
+        await copyFile(src, dst);
+      } else {
+        // deleted in the parent vs base → remove it in the child too.
+        await rm(dst, { force: true });
+      }
+    }
+  } catch {
+    return {
+      materialized: false,
+      paths: [],
+      skippedReason: "parent_work_unmaterializable",
+    };
+  }
+  return { materialized: true, paths: surface };
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (e) {
+    if (isNodeError(e) && e.code === "ENOENT") return false;
+    // a non-ENOENT stat error (EACCES …) is treated as "exists" so the copy
+    // attempt surfaces the real failure (→ parent_work_unmaterializable).
+    return true;
+  }
+}
+
 export async function runDomainCoding(
   opts: RunDomainCodingOpts,
 ): Promise<RunDomainCodingResult> {
@@ -411,11 +568,17 @@ export async function runDomainCoding(
       }
     }
 
-    const baseSha = await resolveBaseSha({
-      repoPath: opts.repoPath,
-      baseBranch: opts.baseBranch,
-      timeoutMs: gitTimeoutMs,
-    });
+    // (#163) Use the gate-validated base when the continuation resolver
+    // supplied one — the diff base must equal the base the base-equality gate
+    // checked against, with no re-resolve TOCTOU between gate and run. A bare
+    // run (no continuation) re-resolves the base branch as before.
+    const baseSha =
+      opts.resolvedBaseSha ??
+      (await resolveBaseSha({
+        repoPath: opts.repoPath,
+        baseBranch: opts.baseBranch,
+        timeoutMs: gitTimeoutMs,
+      }));
 
     const policySnapshot = recordEffectivePolicySnapshot(db, {
       runId,
@@ -455,9 +618,15 @@ export async function runDomainCoding(
         baseSha,
         runBranch: branch,
         status: "running",
+        // (#163) Lineage parent recorded in meta. The hitch continuation path
+        // sets `continueFrom` (not `opts.parentRunId`) so the duplicate-child
+        // gate stays keyed on `opts.parentRunId` alone and cannot false-trip
+        // across sequential reruns; lineage still records the real parent.
         ...(opts.parentRunId !== undefined
           ? { parentRunId: opts.parentRunId }
-          : {}),
+          : opts.continueFrom !== undefined
+            ? { parentRunId: opts.continueFrom.parentRunId }
+            : {}),
         ...(opts.rootRunId !== undefined
           ? { rootRunId: opts.rootRunId }
           : {}),
@@ -685,6 +854,43 @@ async function runDomainCodingInner(
       timeoutMs: gitTimeoutMs,
     });
     await log.emit({ type: "worktree_created", path: wt.path });
+
+    // (#163) The resolver DECLINED a continuation up front (e.g. base advanced,
+    // worktree cleaned). Record the reason; the run proceeds fresh-from-base.
+    if (opts.continueFrom === undefined && opts.continueFromSkipped !== undefined) {
+      await log.emit({
+        type: "continuation_skipped",
+        reason: opts.continueFromSkipped,
+      });
+    }
+    // (#163) Continuation: materialize the parent run's policy-validated diff
+    // surface into THIS fresh worktree as UNCOMMITTED changes, under the domain
+    // lock, after the worktree exists. The branch tip stays at baseSha — there
+    // is no commit anywhere. A fail-closed outcome leaves the worktree
+    // fresh-from-base and records why (no throw, no escalation).
+    if (opts.continueFrom !== undefined) {
+      const outcome = await materializeParentWork({
+        parentWorktreePath: opts.continueFrom.parentWorktreePath,
+        childWorktreePath: wt.path,
+        baseSha,
+        policy,
+        gitTimeoutMs,
+      });
+      if (outcome.materialized) {
+        await log.emit({
+          type: "continuation_materialized",
+          parentRunId: opts.continueFrom.parentRunId,
+          baseSha,
+          paths: outcome.paths,
+        });
+      } else {
+        await log.emit({
+          type: "continuation_skipped",
+          parentRunId: opts.continueFrom.parentRunId,
+          reason: outcome.skippedReason,
+        });
+      }
+    }
 
     const prompt = buildCodexPrompt({
       goal: opts.goal,
