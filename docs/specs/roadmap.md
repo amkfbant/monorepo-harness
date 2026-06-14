@@ -194,7 +194,9 @@ next pass.
 `blocked_hitch` isolates the current top-level subtree: the phase records
 `blocked_hitch`, the remaining descendants in that subtree are reported as
 `blocked_subtree`, and the pass continues with the next top-level phase. This is
-an escalation boundary, not a whole-course hard stop.
+an escalation boundary, not a whole-course hard stop. `blocked_hitch` and
+`blocked_subtree` are exit-0 structured phase outcomes; the course pass
+`stopReason` remains `completed`.
 
 ### Writes and stopping
 
@@ -207,14 +209,24 @@ Hard stops are limited to:
 
 - non-active course (`paused` / `closed`) before planning or driving;
 - course-pass lease busy;
-- course-level drive budget exhausted;
 - a driver/runtime exception while preparing or driving a hitch.
 
-Budget exhaustion after at least one hitch was driven in the current phase records
-that phase as `partially_driven` with
-`reason = partially_driven_budget_exhausted`, marks the remaining phases
-`not_driven`, and returns `stopReason = budget_exhausted`. If the budget is
-already exhausted before a phase starts, that phase is recorded as `not_driven`.
+Course-pass budget consumption is a normal bounded-pass terminal condition, not a
+hard stop. If the deterministic `drivenHitches.length >= maxDrivenHitches`
+counter is reached after at least one hitch was driven in the current phase, that
+phase is recorded as `partially_driven` with
+`reason = partially_driven_budget_reached`, remaining phases are marked
+`not_driven`, and the pass returns `stopReason = budget_reached`. If the budget is
+already reached before a phase starts, that phase is recorded as `not_driven`.
+Both `completed` and `budget_reached` are successful course-pass results.
+
+The course-pass `budget_reached` stop reason is intentionally distinct from the
+hitch-convergence `budget_exhausted` decision. A linked hitch whose convergence
+decision is `budget_exhausted` still records a `blocked_hitch` phase outcome and
+isolates the subtree, while the course pass continues and exits 0 unless a
+separate fatal error occurs. Fatal course orchestration failures surface through
+`CourseOrchestrateError` / unexpected exceptions, not through the course-pass
+budget label.
 
 ### Budget and lease
 
@@ -228,6 +240,10 @@ A drive pass takes a course lease through the existing `domain_locks` table with
 course or busy lease refuses the pass before any hitch is driven. `--dry-run` plans
 the same phase actions without taking the lease, writing phase status, preparing
 runners, or driving hitches.
+
+JSON output uses `stopReason = completed | budget_reached`; the pre-1.0 contract
+change from the former course-level `budget_exhausted` literal is semver-minor and
+does not require a DB schema change.
 
 The drive pass fences every course-layer write with the held lease. It heartbeats
 before each hitch drive, calls the lock handle's non-extending `assertHeld`
@@ -295,10 +311,11 @@ Implemented in `src/cli/course.ts`, registered via `registerCourseCommands`.
 
 ### Exit codes
 
-- `0`: success (`course orchestrate` completed; dry-run planned successfully)
+- `0`: success (`course orchestrate` returned `completed` or `budget_reached`;
+  dry-run planned successfully)
 - `1`: user-fixable error (not found / different course / already linked / project
   mismatch / invalid `--status` choice / `--position` not an integer / missing
-  `--md` flag for export / non-active course / course lease busy / budget exhausted
+  `--md` flag for export / non-active course / course lease busy
   / project resolution error / DB error)
 - `2`: unexpected exception (rethrown)
 

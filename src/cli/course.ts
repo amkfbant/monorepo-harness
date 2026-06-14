@@ -466,9 +466,6 @@ export function registerCourseCommands(
         });
 
         writeCourseOrchestrateOutput(raw, result);
-        if (result.stopReason === "budget_exhausted") {
-          process.exit(1);
-        }
       });
     });
 

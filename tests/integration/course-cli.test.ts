@@ -382,8 +382,10 @@ describe("course/phase CLI (SP-1)", () => {
     const result = runCli(root, ["course", "orchestrate", course.courseId, "--json"]);
     expect(result.code).toBe(0);
     const body = JSON.parse(result.out) as {
+      stopReason: string;
       phaseOutcomes: Array<{ phaseId: string; action: string }>;
     };
+    expect(body.stopReason).toBe("completed");
     expect(body.phaseOutcomes).toEqual([
       expect.objectContaining({ phaseId: parent.phaseId, action: "blocked_hitch" }),
       { phaseId: child.phaseId, action: "blocked_subtree", note: "blocked_subtree" },
@@ -466,7 +468,7 @@ describe("course/phase CLI (SP-1)", () => {
     expect(result.out).toMatch(/has no projectId/i);
   });
 
-  it("course orchestrate records budget_exhausted as succeeded while exiting 1", () => {
+  it("course orchestrate records budget_reached as succeeded with exit 0", () => {
     const { root } = setup();
     const repoPath = setupRepo();
     setupProjectHarness(root, repoPath);
@@ -508,15 +510,22 @@ describe("course/phase CLI (SP-1)", () => {
       ],
       { HARNESS_CODEX_BIN: fakeCodexBin },
     );
-    expect(result.code).toBe(1);
+    expect(result.code).toBe(0);
     const body = JSON.parse(result.out) as {
       stopReason: string;
       drivenHitches: Array<{ hitchId: string }>;
+      phaseOutcomes: Array<{ phaseId: string; action: string; note?: string }>;
     };
-    expect(body.stopReason).toBe("budget_exhausted");
+    expect(body.stopReason).toBe("budget_reached");
     expect(body.drivenHitches).toHaveLength(1);
     expect(["h-budget-one", "h-budget-two"]).toContain(
       body.drivenHitches[0]?.hitchId,
+    );
+    expect(body.phaseOutcomes).toContainEqual(
+      expect.objectContaining({
+        action: "not_driven",
+        note: "not_driven",
+      }),
     );
 
     withSeedDb(root, (db) => {
@@ -530,19 +539,47 @@ describe("course/phase CLI (SP-1)", () => {
       expect(row?.status).toBe("succeeded");
       expect(row?.error_code).toBeNull();
       expect(JSON.parse(row?.result_json ?? "{}")).toMatchObject({
-        stopReason: "budget_exhausted",
+        stopReason: "budget_reached",
       });
       const lease = db
         .prepare(
-          "SELECT released_by FROM domain_locks WHERE domain_key = ? ORDER BY lock_id DESC LIMIT 1",
+          "SELECT released_by, release_reason FROM domain_locks WHERE domain_key = ? ORDER BY lock_id DESC LIMIT 1",
         )
         .get(`course:${course.courseId}`) as
-        | { released_by: string | null }
+        | { released_by: string | null; release_reason: string | null }
         | undefined;
       expect(lease?.released_by).toBe(
         `course-orchestrate:${course.courseId}`,
       );
+      expect(lease?.release_reason).toBe("budget_reached");
     });
+  });
+
+  it("course orchestrate without budget or blockers exits 0 with completed", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Completed Course", "--json"]),
+    );
+    const phase = json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "Needs Link", "--json"]),
+    );
+
+    const result = runCli(root, [
+      "course",
+      "orchestrate",
+      course.courseId,
+      "--json",
+    ]);
+
+    expect(result.code).toBe(0);
+    const body = JSON.parse(result.out) as {
+      stopReason: string;
+      phaseOutcomes: Array<{ phaseId: string; action: string }>;
+    };
+    expect(body.stopReason).toBe("completed");
+    expect(body.phaseOutcomes).toEqual([
+      { phaseId: phase.phaseId, action: "needs_link" },
+    ]);
   });
 
   it("course orchestrate on a non-active course exits 1", () => {

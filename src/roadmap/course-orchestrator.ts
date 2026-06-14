@@ -106,7 +106,7 @@ interface WalkCourseResult {
 
 const COURSE_STOP_REASON = {
   completed: "completed",
-  budgetExhausted: "budget_exhausted",
+  budgetReached: "budget_reached",
 } as const satisfies Record<string, CourseStopReason>;
 
 export class CourseOrchestrator {
@@ -174,8 +174,8 @@ export class CourseOrchestrator {
     try {
       const result = await this.runWithLease(normalizedInput, lease, leaseRunId);
       releaseReason =
-        result.stopReason === "budget_exhausted"
-          ? "budget_exhausted"
+        result.stopReason === "budget_reached"
+          ? "budget_reached"
           : "normal";
       return result;
     } finally {
@@ -337,12 +337,12 @@ export class CourseOrchestrator {
               note:
                 phaseDriven.length === 0
                   ? "not_driven"
-                  : "partially_driven_budget_exhausted",
+                  : "partially_driven_budget_reached",
             },
             ...this.notDrivenOutcomes(rollup.phases, i + 1),
           ];
           return {
-            stopReason: COURSE_STOP_REASON.budgetExhausted,
+            stopReason: COURSE_STOP_REASON.budgetReached,
             phaseOutcomes,
             drivenHitches,
           };
