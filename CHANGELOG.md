@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.1](https://github.com/amkfbant/monorepo-harness/compare/v0.7.0...v0.7.1) (2026-06-14)
+
+
+### Bug Fixes
+
+* **orchestrate:** hitch rerun continues parent run work, fail-closed on base-advance ([#163](https://github.com/amkfbant/monorepo-harness/issues/163)) ([#207](https://github.com/amkfbant/monorepo-harness/issues/207)) ([cbc16b4](https://github.com/amkfbant/monorepo-harness/commit/cbc16b415152ce39b7ce47af3c1ce2e76f2a1386))
+* **test-infra:** bound vitest fork pool + stop tmp-dir disk leak so full vitest run no longer hangs ([#198](https://github.com/amkfbant/monorepo-harness/issues/198)) ([#202](https://github.com/amkfbant/monorepo-harness/issues/202)) ([2d7f1fc](https://github.com/amkfbant/monorepo-harness/commit/2d7f1fcf6c7a294b3019245a7e7b17021547a761))
+
 ## [0.7.0](https://github.com/amkfbant/monorepo-harness/compare/v0.6.0...v0.7.0) (2026-06-13)
 
 
