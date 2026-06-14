@@ -936,7 +936,10 @@ redaction 処理が子 run の diff に特例なしでそのまま効き、git o
   live run と同一定義 = tracked changed paths（add/modify/delete）＋
   `partitionUntracked(untracked, policy.ignoreUntracked).kept`。**policy で ignore される
   untracked（node_modules/dist/.harness 等）は除外**。add/modify はファイル内容を copy、
-  delete は子で削除。すべて uncommitted。
+  delete は子で削除。すべて uncommitted。**symlink は live run の no-follow モデルに合わせ
+  て決して dereference しない**: `lstat` で判定し、symlink entry は `readlink`/`symlink` で
+  子に **symlink として再作成**する（target の bytes を regular file に展開しない）。
+  broken/dangling symlink も symlink のまま再作成し、削除扱いにしない。
 - **diff/policy base は常に fresh な `baseSha`**（親 tip ではない）。`git diff baseSha` of
   child = 親の変更 + codex の amend。親が触った deny path はそのまま violation。
 - **lineage**: 子 `rerunAttempt` = `parent.rerunAttempt + 1`、`rootRunId` = `parent.rootRunId`
@@ -944,12 +947,18 @@ redaction 処理が子 run の diff に特例なしでそのまま効き、git o
   自身 parentRunId を持つ場合に `parent.runId` を root と誤らない）。continuation は
   **`continueFrom` 専用フィールド**で parentRunId と decouple され、duplicate-rerun-child
   gate（`runDomainCoding`）が連続 rerun で誤発火しない。
-- **fail-closed**: 曖昧さは全て fresh-from-base に倒し、escalate / throw しない。理由を
+- **fail-closed（atomic）**: 曖昧さは全て fresh-from-base に倒し、escalate / throw しない。
+  materialize は **all-or-nothing**: copy/remove loop の途中で 1 entry でも失敗したら、
+  fallback する **前に** 子 worktree を clean fresh-from-base に reset する
+  （domain lock 下で `git reset --hard <baseSha>` + `git clean -ffdx`）。半分だけ
+  materialize された partial carry の上で codex が amend することは無い。理由を
   `continuation_skipped` run event に記録する: `parent_run_missing`（親 run 行が無い）/
   `parent_work_unavailable`（worktree が無い/cleaned/clean/surface 無し）/ `base_advanced`
-  （`parent.baseSha != fresh base`）/ `parent_work_unmaterializable`（git/copy 失敗）。
-  git 例外は throw でなく fallback にマップする。継続成功時は `continuation_materialized`
-  event（parentRunId / baseSha / paths）を記録する。
+  （`parent.baseSha != fresh base`）/ `parent_work_unmaterializable`（git/copy 失敗——reset
+  で fresh-from-base 化済み）。git 例外は throw でなく fallback にマップする。base resolve
+  が gate で失敗した場合は `resolvedBaseSha` を渡さず、`runDomainCoding` が通常 run と同じく
+  自前で base を解決する clean な no-throw skip になる（run 行作成前に throw を増やさない）。
+  継続成功時は `continuation_materialized` event（parentRunId / baseSha / paths）を記録する。
 
 ### convergence decision → hitch status 連携
 

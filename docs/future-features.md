@@ -220,6 +220,30 @@ the safety model (`GOAL_RULES.md` §G, `docs/specs/workflow.md`), not a gap:
 **Status:** idea only — not designed or scheduled; recorded 2026-06 during
 `GOAL.md` planning.
 
+## rerun parent-work continuation for non-hitch paths (#163 follow-up)
+
+**Idea:** Extend the #163 parent-work continuation (a rerun materializes the
+parent run's uncommitted policy surface into the child worktree so codex amends
+in place instead of re-implementing from a clean base) to the non-hitch rerun
+entrypoints.
+
+**Why considered:** #163 is **scoped to the hitch fix-loop only** — the
+continuation is set up in the hitch orchestrator's `coder()`
+(`src/hitch/orchestrator-runners.ts`), which resolves `continueFrom` and threads
+it into `runDomainCoding`. The other rerun paths — `harness rerun` /
+`harness rerun --from-review` (`src/core/rerun.ts`), `harness workflow
+reviewed-run`, and the MCP rerun tools — do **not** pass `continueFrom`, so they
+still run **fresh-from-base** (carry context only via prompt-injected
+`required_changes`). The materialization mechanism in `runDomainCoding`
+(`continueFrom` / `resolvedBaseSha`) is general and could be wired into them.
+
+**Why it is NOT in scope:** #163 deliberately landed the minimal hitch-loop fix
+(where back-to-back reruns dominate). The other paths need their own
+base-equality gate + parent-worktree resolution and tests; folding them in would
+widen the change beyond the reviewed surface.
+
+**Status:** idea only — recorded 2026-06 alongside the #163 fix.
+
 ## 非同期な外部チェック（codex GitHub App review / Copilot review / CI）の bounded await + 取り込み
 
 **問題 / 観測:** `harness hitch orchestrate --auto-merge` の `closeAndPr` は、PR を

@@ -545,7 +545,12 @@ async function gateContinuation(opts: {
       timeoutMs: opts.gitTimeoutMs,
     });
   } catch {
-    // cannot resolve the base → cannot prove base-equality; fail closed.
+    // Cannot resolve the base → cannot prove base-equality; fail closed to a
+    // fresh run. We deliberately return NO `resolvedBaseSha`: `runDomainCoding`
+    // then resolves its own base for a normal fresh-from-base run (the existing
+    // behavior) and records the skip reason once the run row exists. This is a
+    // clean no-throw skip — the resolver does not pin a base it could not
+    // resolve, and introduces no throw path before the run/attempt row.
     return { skippedReason: "parent_work_unmaterializable" };
   }
 

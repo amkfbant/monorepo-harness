@@ -1,5 +1,14 @@
 import { dirname, join } from "node:path";
-import { copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  lstat,
+  mkdir,
+  readFile,
+  readlink,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { stringify as yamlStringify } from "yaml";
@@ -54,6 +63,7 @@ import {
 import { hostname } from "node:os";
 import { runBranchName } from "../workspace/branch-name.js";
 import { createWorktree } from "../workspace/git-worktree.js";
+import { gitCli } from "../git/git-cli.js";
 import { collectDiff, resolveBaseSha, type DiffResult } from "../git/diff.js";
 import { detectsTestWeakening } from "./automerge-tiers.js";
 import {
@@ -399,6 +409,18 @@ export interface MaterializeOutcome {
  *   partitionUntracked(untracked, policy.ignoreUntracked).kept
  * Policy-IGNORED untracked (node_modules/dist/.harness) are EXCLUDED.
  *
+ * Symlinks are NEVER dereferenced (matches the live-run no-follow model):
+ * a symlink entry in the surface is recreated AS A SYMLINK in the child
+ * (its link target is copied via `readlink`/`symlink`, not its dereferenced
+ * bytes). A broken/dangling symlink stays a symlink — it is not treated as a
+ * deletion.
+ *
+ * Atomicity (all-or-nothing): the copy/remove loop applies the surface entry
+ * by entry. If ANY entry fails after earlier entries were already applied, the
+ * child worktree is RESET back to clean fresh-from-base (`git reset --hard
+ * <baseSha>` + `git clean -ffdx`) BEFORE returning, so a mid-copy failure never
+ * leaves a partial carry for codex to amend.
+ *
  * Fail-closed: ANY git/copy failure (or an empty surface) returns a
  * `skippedReason` and leaves the child worktree fresh-from-base. It never
  * throws — the caller records the reason and proceeds with a normal run.
@@ -446,16 +468,17 @@ export async function materializeParentWork(opts: {
     for (const rel of surface) {
       const src = join(opts.parentWorktreePath, rel);
       const dst = join(opts.childWorktreePath, rel);
-      if (await pathExists(src)) {
-        // added/modified/untracked → copy content into the child (uncommitted).
-        await mkdir(dirname(dst), { recursive: true });
-        await copyFile(src, dst);
-      } else {
-        // deleted in the parent vs base → remove it in the child too.
-        await rm(dst, { force: true });
-      }
+      await materializeEntry(src, dst);
     }
   } catch {
+    // ATOMICITY: a copy/remove threw after earlier entries were already
+    // applied. Reset the child back to clean fresh-from-base BEFORE falling
+    // back, so the run never proceeds on a half-materialized partial carry.
+    await resetWorktreeToBase(
+      opts.childWorktreePath,
+      opts.baseSha,
+      opts.gitTimeoutMs,
+    );
     return {
       materialized: false,
       paths: [],
@@ -465,15 +488,60 @@ export async function materializeParentWork(opts: {
   return { materialized: true, paths: surface };
 }
 
-async function pathExists(path: string): Promise<boolean> {
+/**
+ * (#163) Materialize ONE surface entry from the parent worktree into the child,
+ * using `lstat` (NO symlink dereference):
+ *   - absent in the parent (deleted vs base) → remove it in the child too.
+ *   - a symlink → recreate it AS A SYMLINK (copy the link target, never the
+ *     dereferenced bytes); a broken/dangling target stays a symlink.
+ *   - a regular file → copy its content into the child (uncommitted).
+ * Throws on any unexpected error so the caller's atomic reset fires.
+ */
+async function materializeEntry(src: string, dst: string): Promise<void> {
+  let info: Awaited<ReturnType<typeof lstat>>;
   try {
-    await stat(path);
-    return true;
+    info = await lstat(src);
   } catch (e) {
-    if (isNodeError(e) && e.code === "ENOENT") return false;
-    // a non-ENOENT stat error (EACCES …) is treated as "exists" so the copy
-    // attempt surfaces the real failure (→ parent_work_unmaterializable).
-    return true;
+    if (isNodeError(e) && e.code === "ENOENT") {
+      // deleted in the parent vs base → remove it in the child too.
+      await rm(dst, { force: true });
+      return;
+    }
+    throw e;
+  }
+  if (info.isSymbolicLink()) {
+    // recreate AS a symlink — never follow it into a regular file. Drop any
+    // pre-existing dst (a base file/symlink) first so `symlink` does not EEXIST.
+    const target = await readlink(src);
+    await mkdir(dirname(dst), { recursive: true });
+    await rm(dst, { force: true });
+    await symlink(target, dst);
+    return;
+  }
+  // added/modified/untracked regular file → copy content into the child.
+  await mkdir(dirname(dst), { recursive: true });
+  await copyFile(src, dst);
+}
+
+/**
+ * (#163) Reset a worktree back to clean fresh-from-base: discard all tracked
+ * changes (`reset --hard <baseSha>`) and remove every untracked/ignored file
+ * (`clean -ffdx`). Best-effort under the domain lock — used to undo a partial
+ * materialization. Errors are swallowed: the caller already fails closed to
+ * `parent_work_unmaterializable`, and the child run re-validates its own
+ * worktree surface against the base regardless.
+ */
+async function resetWorktreeToBase(
+  worktreePath: string,
+  baseSha: string,
+  gitTimeoutMs: number,
+): Promise<void> {
+  const opts = { cwd: worktreePath, timeoutMs: gitTimeoutMs };
+  try {
+    await gitCli(["reset", "--hard", baseSha], opts);
+    await gitCli(["clean", "-ffdx"], opts);
+  } catch {
+    // unrecoverable git failure in the child worktree — nothing more to do.
   }
 }
 
@@ -571,7 +639,20 @@ export async function runDomainCoding(
     // (#163) Use the gate-validated base when the continuation resolver
     // supplied one — the diff base must equal the base the base-equality gate
     // checked against, with no re-resolve TOCTOU between gate and run. A bare
-    // run (no continuation) re-resolves the base branch as before.
+    // run (no continuation) — and a continuation the resolver DECLINED without a
+    // base (e.g. its own base resolve failed) — re-resolves the base branch as
+    // before: the normal fresh-from-base behavior. The skip reason is recorded
+    // once the run row exists (no extra throw is introduced on that path).
+    if (
+      opts.resolvedBaseSha !== undefined &&
+      !/^[0-9a-f]{7,40}$/.test(opts.resolvedBaseSha)
+    ) {
+      // defense-in-depth: a gate-validated base must be a hex SHA. A malformed
+      // value would otherwise become the diff/policy base — fail closed.
+      throw new Error(
+        `resolvedBaseSha is not a valid git SHA: ${opts.resolvedBaseSha}`,
+      );
+    }
     const baseSha =
       opts.resolvedBaseSha ??
       (await resolveBaseSha({

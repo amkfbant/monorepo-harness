@@ -6,6 +6,9 @@ import {
   writeFileSync,
   readFileSync,
   existsSync,
+  lstatSync,
+  readlinkSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -308,6 +311,58 @@ describe("runDomainCoding rerun continuation (#163)", () => {
     );
   });
 
+  it("FALLBACK base-resolve-failure shape (skip reason + NO resolvedBaseSha): runDomainCoding resolves its own base, runs fresh-from-base, records the skip, no throw", async () => {
+    // The resolver's own base resolve failed → it returns
+    // `parent_work_unmaterializable` WITHOUT a resolvedBaseSha and WITHOUT a
+    // continueFrom. runDomainCoding must NOT re-resolve-and-throw before the run
+    // row exists: it resolves its own base (the normal fresh-from-base path) and
+    // records the skip reason once the run row exists. No throw / no escalation.
+    const child = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "rerun base-resolve failed in gate",
+      baseBranch: "main",
+      codexRunner: editRunner((cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 11;\n",
+        );
+      }),
+      // resolver base-resolve failure shape: reason only, no base, no carry.
+      continueFromSkipped: "parent_work_unmaterializable",
+    });
+    expect(child.status).toBe("needs_review");
+    const skip = readEvents(harness, child.runId).find(
+      (e) => e.type === "continuation_skipped",
+    );
+    expect(skip).toBeDefined();
+    expect((skip as { reason?: string }).reason).toBe(
+      "parent_work_unmaterializable",
+    );
+    // fresh-from-base: only the child's own edit is present (no parent carry).
+    const childWt = parentWorktree(harness, child.runId);
+    expect(readFileSync(join(childWt, "apps/user/src/profile.ts"), "utf8")).toBe(
+      "export const x = 11;\n",
+    );
+  });
+
+  it("GUARD: a malformed resolvedBaseSha is rejected (defense-in-depth)", async () => {
+    await expect(
+      runDomainCoding({
+        harnessRoot: harness,
+        repoPath,
+        repoId: "t",
+        domain: "apps/user",
+        goal: "bad base",
+        baseBranch: "main",
+        codexRunner: noopRunner,
+        resolvedBaseSha: "not-a-sha",
+      }),
+    ).rejects.toThrow(/not a valid git SHA/);
+  });
+
   it("FALLBACK continueFromSkipped reason is recorded on the fresh path (resolver-declined)", async () => {
     const baseSha = gitHead(repoPath);
     const child = await runDomainCoding({
@@ -498,5 +553,101 @@ describe("materializeParentWork (#163)", () => {
     });
     expect(outcome.materialized).toBe(false);
     expect(outcome.skippedReason).toBe("parent_work_unavailable");
+  });
+
+  it("SYMLINK no-follow: a parent symlink is materialized AS A SYMLINK (target preserved, not dereferenced)", async () => {
+    const baseSha = gitHead(repoPath);
+    const policy = await resolvedTestPolicy(harness);
+    // parent adds an untracked symlink (in-scope) whose target is OUTSIDE the
+    // worktree. The live-run model never follows symlinks; materialization must
+    // recreate it AS a symlink, NOT copy the target's bytes into a regular file.
+    const parentWt = buildWorktree("parent-link", baseSha, (cwd) => {
+      symlinkSync("/etc/hostname", join(cwd, "apps/user/src/link.ts"));
+    });
+    const childWt = buildWorktree("child-link", baseSha, () => {});
+    const outcome = await materializeParentWork({
+      parentWorktreePath: parentWt,
+      childWorktreePath: childWt,
+      baseSha,
+      policy,
+      gitTimeoutMs: policy.limits.gitTimeoutMs,
+    });
+    expect(outcome.materialized).toBe(true);
+    expect(outcome.paths).toContain("apps/user/src/link.ts");
+    const dst = join(childWt, "apps/user/src/link.ts");
+    // It is a SYMLINK in the child (not a dereferenced regular file)...
+    expect(lstatSync(dst).isSymbolicLink()).toBe(true);
+    // ...and its link target is preserved verbatim.
+    expect(readlinkSync(dst)).toBe("/etc/hostname");
+  });
+
+  it("SYMLINK broken/dangling: a parent symlink to a missing target stays a SYMLINK in the child (not a deletion)", async () => {
+    const baseSha = gitHead(repoPath);
+    const policy = await resolvedTestPolicy(harness);
+    const parentWt = buildWorktree("parent-dangling", baseSha, (cwd) => {
+      symlinkSync(
+        "./does-not-exist.ts",
+        join(cwd, "apps/user/src/dangling.ts"),
+      );
+    });
+    const childWt = buildWorktree("child-dangling", baseSha, () => {});
+    const outcome = await materializeParentWork({
+      parentWorktreePath: parentWt,
+      childWorktreePath: childWt,
+      baseSha,
+      policy,
+      gitTimeoutMs: policy.limits.gitTimeoutMs,
+    });
+    expect(outcome.materialized).toBe(true);
+    const dst = join(childWt, "apps/user/src/dangling.ts");
+    // Even though the target is missing, the entry is a symlink — NOT removed.
+    expect(lstatSync(dst).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(dst)).toBe("./does-not-exist.ts");
+  });
+
+  it("ATOMICITY: a mid-materialization copy failure resets the child to clean fresh-from-base (no partial carry) + records parent_work_unmaterializable", async () => {
+    const baseSha = gitHead(repoPath);
+    const policy = await resolvedTestPolicy(harness);
+    // Parent: modify a tracked file (surface entry 1, copies fine) AND add an
+    // untracked file (surface entry 2). Surface order is tracked-first, so
+    // profile.ts is applied before added.ts.
+    const parentWt = buildWorktree("parent-fail", baseSha, (cwd) => {
+      writeFileSync(
+        join(cwd, "apps/user/src/profile.ts"),
+        "export const x = 42; // parent edit\n",
+      );
+      writeFileSync(join(cwd, "apps/user/src/added.ts"), "export const a = 1;\n");
+    });
+    // Child: pre-create a DIRECTORY where added.ts must be copied, so copyFile
+    // throws EISDIR on entry 2 AFTER entry 1 (profile.ts) was already applied.
+    const childWt = buildWorktree("child-fail", baseSha, (cwd) => {
+      mkdirSync(join(cwd, "apps/user/src/added.ts"), { recursive: true });
+    });
+
+    const outcome = await materializeParentWork({
+      parentWorktreePath: parentWt,
+      childWorktreePath: childWt,
+      baseSha,
+      policy,
+      gitTimeoutMs: policy.limits.gitTimeoutMs,
+    });
+    expect(outcome.materialized).toBe(false);
+    expect(outcome.skippedReason).toBe("parent_work_unmaterializable");
+
+    // The child is RESET to clean fresh-from-base: the partial carry (the
+    // already-copied profile.ts edit) is GONE — it is back to the base content.
+    expect(readFileSync(join(childWt, "apps/user/src/profile.ts"), "utf8")).toBe(
+      "export const x = 0;\n",
+    );
+    // The blocking directory (untracked) was cleaned away by the reset, and no
+    // partial added.ts file was carried.
+    expect(existsSync(join(childWt, "apps/user/src/added.ts"))).toBe(false);
+    // The working tree is clean vs the base (no leftover partial state).
+    const status = execFileSync("git", ["status", "--porcelain"], {
+      cwd: childWt,
+    })
+      .toString()
+      .trim();
+    expect(status).toBe("");
   });
 });
