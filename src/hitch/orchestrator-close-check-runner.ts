@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants, existsSync } from "node:fs";
 import { lstat, open, readFile, readlink } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { harnessPaths } from "../config/paths.js";
 import { withManagedDb } from "../db/managed-connection.js";
@@ -73,6 +74,14 @@ interface AssertWorktreeMatchesReviewedResult {
   ignored: IgnoredUntrackedSnapshotEntry[];
 }
 
+async function sha256FileHandle(fh: FileHandle): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of fh.createReadStream()) {
+    hash.update(chunk as Buffer);
+  }
+  return hash.digest("hex");
+}
+
 function latestCodingRun(repo: HitchRepository, hitchId: string): LatestCodingRun {
   const attempts = repo.listAttempts(hitchId);
   for (let i = attempts.length - 1; i >= 0; i--) {
@@ -132,12 +141,16 @@ async function classifyIgnoredUntrackedPath(full: string): Promise<unknown[]> {
     }
     try {
       const fhStat = await fh.stat();
-      const bytes = await fh.readFile();
       return [
         "file",
-        createHash("sha256").update(bytes).digest("hex"),
+        await sha256FileHandle(fh),
         fhStat.mode & 0o7777,
       ];
+    } catch (e) {
+      throw new Error(
+        `close-check cannot fingerprint ignore_untracked path ${full}: ` +
+          `${e instanceof Error ? e.message : String(e)}`,
+      );
     } finally {
       await fh.close();
     }

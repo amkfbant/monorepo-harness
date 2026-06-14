@@ -31,6 +31,10 @@ afterEach(() => {
   flushTmpDirs();
 });
 
+// Root/CAP_DAC_OVERRIDE can read chmod 000 files, so this permission-based
+// unreadable fixture is only deterministic for normal users.
+const itUnlessRoot = process.getuid?.() === 0 ? it.skip : it;
+
 async function createCommandCloseCheckFixture(input: {
   hitchId: string;
   harnessPrefix: string;
@@ -429,7 +433,7 @@ describe("runCommandCloseChecks", () => {
     }
   });
 
-  it("fails closed when a pre-existing ignored artifact cannot be fingerprinted", async () => {
+  itUnlessRoot("fails closed when a pre-existing ignored artifact cannot be fingerprinted", async () => {
     collectDiffMock.mockReset();
     collectDiffMock
       .mockResolvedValueOnce({

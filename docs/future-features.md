@@ -3,6 +3,20 @@
 Ideas recorded for later implementation. Each entry is a sketch, not an approved
 design — run it through brainstorming → spec → plan when picked up.
 
+## close-check ignored-untracked directory fingerprints
+
+- **P2: recursive directory fingerprinting** — ignored untracked directories can
+  appear as directory-granularity entries from `git ls-files --others` (for
+  example nested git checkouts). The current close-check snapshot fingerprints
+  that path as `["dir"]`, so it does not recursively detect changes inside the
+  directory. Normal file, symlink, and listed-path fingerprints remain covered,
+  and unreadable fingerprints still fail closed. Recursive directory
+  fingerprinting is deferred because it needs explicit cost and traversal
+  bounds.
+- **P3: empty ignored directories** — `git ls-files --others` does not list empty
+  directories, so creating an empty ignored directory is not detected. This does
+  not provide a path to mix unreviewed file content into a PR, so it is deferred.
+
 ## DB stats snapshot/delta
 
 The Phase 15 `db_stats_snapshots` repository/table was removed in audit cleanup
