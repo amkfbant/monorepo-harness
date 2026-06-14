@@ -70,6 +70,10 @@ function mockedConvergence(hitchId: string, decision: string): Record<string, un
       closeConditionsFailed: 0,
       closeConditionsPending: decision === "close_ready" ? 0 : 1,
       maxReopenCount: 0,
+      harnessOriginNewFindings: 0,
+      harnessOriginNewFindingsThisCycle: 0,
+      harnessOriginMaxReopenCount: 0,
+      harnessOriginNewFindingsByCycle: [],
     },
     recommendedNextAction: {
       kind: decision === "close_ready" ? "close_hitch" : "fix_findings",
@@ -423,7 +427,7 @@ describe("MCP goal tools", () => {
     expect(deferred.data.result.decisionRecord).toBeTruthy();
   });
 
-  it("counts MCP-recorded findings as review cycles for divergence budgets", async () => {
+  it("excludes MCP-recorded findings from divergence budgets", async () => {
     const root = freshRoot();
     const s = server(root, mutationConfig(["hitch.start", "hitch.record_findings"]));
     const started = await callTool(s, "harness.hitch.start", {
@@ -461,8 +465,11 @@ describe("MCP goal tools", () => {
     expect(recorded.status).toBe("operation_started");
     expect(recorded.data.result.cycle.findingsNew).toBe(2);
     expect(recorded.data.result.cycle.findingsSeen).toBe(2);
-    expect(recorded.data.result.convergence.decision).toBe("diverging");
+    expect(recorded.data.result.convergence.decision).not.toBe("diverging");
     expect(recorded.data.result.convergence.metrics.totalNewFindings).toBe(2);
+    expect(
+      recorded.data.result.convergence.metrics.harnessOriginNewFindings,
+    ).toBe(0);
     expect(recorded.data.result.convergence.metrics.reviewCyclesUsed).toBe(1);
   });
 
@@ -520,6 +527,15 @@ describe("MCP goal tools", () => {
         reviewMode: "initial",
       });
       repo.completeReviewCycle({ cycleId: cycle.cycleId, findingsNew: 1 });
+      repo.upsertFinding({
+        hitchId: "goal-sync-diverging",
+        source: "review",
+        sourceCycleId: cycle.cycleId,
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        summary: "harness-origin churn",
+      });
 
       repo.createSession({
         hitchId: "goal-sync-budget",

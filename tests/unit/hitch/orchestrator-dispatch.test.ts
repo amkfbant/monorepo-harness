@@ -29,6 +29,10 @@ function conv(
       closeConditionsFailed: 0,
       closeConditionsPending: 0,
       maxReopenCount: 0,
+      harnessOriginNewFindings: 0,
+      harnessOriginNewFindingsThisCycle: 0,
+      harnessOriginMaxReopenCount: 0,
+      harnessOriginNewFindingsByCycle: [],
     },
     recommendedNextAction: { kind: actionKind, message: "m" },
   };

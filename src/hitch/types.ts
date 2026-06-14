@@ -66,6 +66,37 @@ export const HITCH_FINDING_SOURCES = [
 
 export type HitchFindingSource = (typeof HITCH_FINDING_SOURCES)[number];
 
+export const OPERATOR_ORIGIN_FINDING_SOURCES = [
+  "human",
+  "mcp",
+] as const satisfies readonly HitchFindingSource[];
+
+export const HARNESS_ORIGIN_FINDING_SOURCES = [
+  "review",
+  "test",
+  "doctor",
+  "codex",
+  "other",
+] as const satisfies readonly HitchFindingSource[];
+
+export const HARNESS_ORIGIN_FINDING_SOURCE_SET = new Set<HitchFindingSource>(
+  HARNESS_ORIGIN_FINDING_SOURCES,
+);
+
+// Compile-time guard: every HitchFindingSource MUST be classified as either
+// operator-origin or harness-origin. An unclassified source would silently
+// drop out of divergence accounting (fail-open of the safety circuit-breaker,
+// #196), so adding a source without classifying it must fail typecheck.
+type UnclassifiedFindingSource = Exclude<
+  HitchFindingSource,
+  | (typeof OPERATOR_ORIGIN_FINDING_SOURCES)[number]
+  | (typeof HARNESS_ORIGIN_FINDING_SOURCES)[number]
+>;
+const _assertAllFindingSourcesClassified: UnclassifiedFindingSource extends never
+  ? true
+  : never = true;
+void _assertAllFindingSourcesClassified;
+
 export const HITCH_FINDING_SEVERITIES = [
   "P0",
   "P1",
@@ -344,6 +375,22 @@ export interface HitchConvergenceMetrics {
   closeConditionsFailed: number;
   closeConditionsPending: number;
   maxReopenCount: number;
+  harnessOriginNewFindings: number;
+  harnessOriginNewFindingsThisCycle: number;
+  harnessOriginMaxReopenCount: number;
+  harnessOriginNewFindingsByCycle: HitchConvergenceCycleFindingCount[];
+}
+
+export interface HitchConvergenceCycleFindingCount {
+  cycleId: string;
+  cycleNumber: number;
+  findingsNew: number;
+}
+
+export interface HitchHarnessOriginDivergenceMetrics {
+  harnessOriginNewFindings: number;
+  harnessOriginMaxReopenCount: number;
+  harnessOriginNewFindingsByCycle: HitchConvergenceCycleFindingCount[];
 }
 
 export interface HitchConvergenceResult {

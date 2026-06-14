@@ -14,6 +14,8 @@ import {
 } from "./schemas.js";
 import {
   DEFAULT_HITCH_POLICY,
+  HARNESS_ORIGIN_FINDING_SOURCE_SET,
+  HARNESS_ORIGIN_FINDING_SOURCES,
   type HitchAttempt,
   type HitchAttemptStatus,
   type HitchAttemptType,
@@ -26,6 +28,7 @@ import {
   type HitchFinding,
   type HitchFindingSeverity,
   type HitchFindingSource,
+  type HitchHarnessOriginDivergenceMetrics,
   type HitchLifecycleEvent,
   type HitchLifecycleEventName,
   type HitchLifecycleStatus,
@@ -357,6 +360,12 @@ interface HitchFindingSummaryRow {
   n: number;
 }
 
+interface HitchDivergenceCycleFindingRow {
+  cycle_id: string;
+  cycle_number: number;
+  findings_new: number;
+}
+
 interface HitchCloseCheckRow {
   check_id: string;
   hitch_id: string;
@@ -401,8 +410,9 @@ function nonNegInt(value: number | undefined): number {
  * deliberate abandon and is excluded.
  *
  * `diverging` is intentionally NOT reopenable: divergence triggers
- * (totalNewFindings, maxReopenCount, non-decreasing finding counts) derive from
- * immutable history, and `reopenSession` only extends iteration/review/rerun
+ * (harnessOriginNewFindings, harnessOriginMaxReopenCount, non-decreasing
+ * harness-origin per-cycle counts) derive from immutable first-seen origin
+ * history, and `reopenSession` only extends iteration/review/rerun
  * budgets — not the divergence budget. A reopened diverging hitch would re-fire
  * `diverging` on its very next convergence evaluation and re-block every
  * mutation, leaving the operator no way out. Reopening a diverging hitch needs a
@@ -431,6 +441,10 @@ const OPEN_FINDING_LIFECYCLE_SET = new Set<HitchLifecycleStatus>(
 );
 const UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLE_SET =
   new Set<HitchLifecycleStatus>(UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES);
+
+function isHarnessOriginFindingSource(source: HitchFindingSource): boolean {
+  return HARNESS_ORIGIN_FINDING_SOURCE_SET.has(source);
+}
 
 const CONFIG_UPDATE_STATUSES = new Set<HitchStatus>([
   "open",
@@ -1019,16 +1033,18 @@ export class HitchRepository {
           canonicalReopened = this.promoteDuplicateCanonical(
             duplicateCanonical,
             input.severity,
+            input.source,
             now,
           );
         }
         const reopened = existing.lifecycle_status === "fixed" || canonicalReopened;
         const severity = moreSevere(existing.severity, input.severity);
+        const countReopen = isHarnessOriginFindingSource(input.source);
         this.db
           .prepare(
             `UPDATE hitch_findings
-                SET last_seen_at = ?, source = ?, source_ref = ?,
-                    source_attempt_id = ?, source_cycle_id = ?,
+                SET last_seen_at = ?, source_ref = ?,
+                    source_attempt_id = ?,
                     severity = ?,
                     detail = COALESCE(?, detail),
                     suggested_fix = COALESCE(?, suggested_fix),
@@ -1041,20 +1057,19 @@ export class HitchRepository {
                       ELSE fixed_at
                     END,
                     reopen_count = CASE
-                      WHEN lifecycle_status = 'fixed' THEN reopen_count + 1
+                      WHEN lifecycle_status = 'fixed' AND ? THEN reopen_count + 1
                       ELSE reopen_count
                     END
               WHERE finding_id = ?`,
           )
           .run(
             now,
-            input.source,
             input.sourceRef ?? null,
             input.sourceAttemptId ?? null,
-            input.sourceCycleId ?? null,
             severity,
             input.detail ?? null,
             input.suggestedFix ?? null,
+            countReopen ? 1 : 0,
             existing.finding_id,
           );
         this.touchSession(input.hitchId, now);
@@ -1067,7 +1082,12 @@ export class HitchRepository {
 
       const reopened =
         duplicateOf !== null
-          ? this.promoteDuplicateCanonical(duplicateOf, input.severity, now)
+          ? this.promoteDuplicateCanonical(
+              duplicateOf,
+              input.severity,
+              input.source,
+              now,
+            )
           : false;
       const findingId = input.findingId ?? `finding-${randomUUID()}`;
       this.db
@@ -1174,7 +1194,12 @@ export class HitchRepository {
       );
     this.touchSession(current.hitchId, now);
     if (duplicateOf !== null) {
-      this.promoteDuplicateCanonical(duplicateOf, current.severity, now);
+      this.promoteDuplicateCanonical(
+        duplicateOf,
+        current.severity,
+        current.source,
+        now,
+      );
     }
     return this.requireFinding(input.findingId);
   }
@@ -1251,11 +1276,13 @@ export class HitchRepository {
   private promoteDuplicateCanonical(
     canonicalFindingId: string,
     incomingSeverity: HitchFindingSeverity,
+    incomingSource: HitchFindingSource,
     now: string,
   ): boolean {
     const canonical = this.requireFinding(canonicalFindingId);
     const severity = moreSevere(canonical.severity, incomingSeverity);
     const reopened = canonical.lifecycleStatus === "fixed";
+    const countReopen = isHarnessOriginFindingSource(incomingSource);
     this.db
       .prepare(
         `UPDATE hitch_findings
@@ -1269,13 +1296,13 @@ export class HitchRepository {
                   ELSE fixed_at
                 END,
                 reopen_count = CASE
-                  WHEN lifecycle_status = 'fixed' THEN reopen_count + 1
+                  WHEN lifecycle_status = 'fixed' AND ? THEN reopen_count + 1
                   ELSE reopen_count
                 END,
                 last_seen_at = ?
           WHERE finding_id = ?`,
       )
-      .run(severity, now, canonicalFindingId);
+      .run(severity, countReopen ? 1 : 0, now, canonicalFindingId);
     return reopened;
   }
 
@@ -1419,6 +1446,53 @@ export class HitchRepository {
       }
     }
     return counts;
+  }
+
+  harnessOriginDivergenceMetrics(
+    hitchId: string,
+  ): HitchHarnessOriginDivergenceMetrics {
+    const sourcePlaceholders = placeholders(
+      HARNESS_ORIGIN_FINDING_SOURCES.length,
+    );
+    const totals = this.db
+      .prepare(
+        `SELECT COUNT(*) AS total, COALESCE(MAX(reopen_count), 0) AS maxReopen
+           FROM hitch_findings
+          WHERE hitch_id = ?
+            AND duplicate_of IS NULL
+            AND source IN (${sourcePlaceholders})`,
+      )
+      .get(hitchId, ...HARNESS_ORIGIN_FINDING_SOURCES) as {
+      total: number;
+      maxReopen: number;
+    };
+    const cycleRows = this.db
+      .prepare(
+        `SELECT
+            c.cycle_id,
+            c.cycle_number,
+            COUNT(f.finding_id) AS findings_new
+           FROM hitch_review_cycles c
+           LEFT JOIN hitch_findings f
+             ON f.hitch_id = c.hitch_id
+            AND f.source_cycle_id = c.cycle_id
+            AND f.duplicate_of IS NULL
+            AND f.source IN (${sourcePlaceholders})
+          WHERE c.hitch_id = ?
+          GROUP BY c.cycle_id, c.cycle_number, c.created_at
+          ORDER BY c.cycle_number ASC, c.created_at ASC, c.cycle_id ASC`,
+      )
+      .all(...HARNESS_ORIGIN_FINDING_SOURCES, hitchId) as
+      HitchDivergenceCycleFindingRow[];
+    return {
+      harnessOriginNewFindings: totals.total,
+      harnessOriginMaxReopenCount: totals.maxReopen,
+      harnessOriginNewFindingsByCycle: cycleRows.map((row) => ({
+        cycleId: row.cycle_id,
+        cycleNumber: row.cycle_number,
+        findingsNew: row.findings_new,
+      })),
+    };
   }
 
   maxFindingReopenCount(hitchId: string): number {

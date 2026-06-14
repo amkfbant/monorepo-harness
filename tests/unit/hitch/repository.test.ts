@@ -10,7 +10,9 @@ import {
 } from "../../../src/hitch/repository.js";
 import {
   DEFAULT_HITCH_POLICY,
+  HARNESS_ORIGIN_FINDING_SOURCES,
   type HitchCloseCondition,
+  type HitchFindingSource,
   type HitchPolicy,
   type HitchScope,
 } from "../../../src/hitch/types.js";
@@ -47,6 +49,27 @@ function createGoal(
     createdSource: "cli",
     createdAt: "2026-05-26T00:00:00.000Z",
   });
+}
+
+function addFinding(
+  repo: HitchRepository,
+  input: {
+    source: HitchFindingSource;
+    sourceCycleId?: string;
+    summary: string;
+    duplicateOf?: string;
+  },
+) {
+  return repo.upsertFinding({
+    hitchId: "goal-test",
+    source: input.source,
+    sourceCycleId: input.sourceCycleId,
+    duplicateOf: input.duplicateOf,
+    severity: "P2",
+    category: "correctness",
+    scopeStatus: "out_of_scope",
+    summary: input.summary,
+  }).finding;
 }
 
 function seedRun(
@@ -115,6 +138,271 @@ describe("HitchRepository", () => {
       });
       expect(done.findingsNew).toBe(1);
       expect(repo.requireSession("goal-test").currentReviewCycle).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reports source-aware harness-origin divergence metrics", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const cycle1 = repo.startReviewCycle({
+        hitchId: "goal-test",
+        cycleNumber: 1,
+        reviewMode: "initial",
+        createdAt: "2026-05-26T00:01:00.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle1.cycleId,
+        findingsNew: 4,
+        completedAt: "2026-05-26T00:01:30.000Z",
+      });
+      const cycle2 = repo.startReviewCycle({
+        hitchId: "goal-test",
+        cycleNumber: 2,
+        reviewMode: "delta",
+        createdAt: "2026-05-26T00:02:00.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle2.cycleId,
+        findingsNew: 5,
+        completedAt: "2026-05-26T00:02:30.000Z",
+      });
+
+      const review = addFinding(repo, {
+        source: "review",
+        sourceCycleId: cycle1.cycleId,
+        summary: "review finding",
+      });
+      addFinding(repo, {
+        source: "test",
+        sourceCycleId: cycle1.cycleId,
+        summary: "test finding",
+      });
+      addFinding(repo, {
+        source: "doctor",
+        sourceCycleId: cycle2.cycleId,
+        summary: "doctor finding",
+      });
+      const codex = addFinding(repo, {
+        source: "codex",
+        sourceCycleId: cycle2.cycleId,
+        summary: "codex finding",
+      });
+      addFinding(repo, {
+        source: "other",
+        sourceCycleId: cycle2.cycleId,
+        summary: "other finding",
+      });
+      addFinding(repo, {
+        source: "human",
+        sourceCycleId: cycle1.cycleId,
+        summary: "human finding",
+      });
+      const human = addFinding(repo, {
+        source: "human",
+        sourceCycleId: cycle2.cycleId,
+        summary: "human reopened finding",
+      });
+      addFinding(repo, {
+        source: "mcp",
+        sourceCycleId: cycle2.cycleId,
+        summary: "mcp finding",
+      });
+      repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        sourceCycleId: cycle1.cycleId,
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "duplicate",
+        summary: "duplicate review finding",
+        duplicateOf: review.findingId,
+      });
+
+      for (let i = 0; i < 3; i += 1) {
+        repo.markFindingFixed({ findingId: codex.findingId });
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "codex",
+          sourceCycleId: cycle2.cycleId,
+          severity: "P2",
+          category: "correctness",
+          scopeStatus: "out_of_scope",
+          summary: "codex finding",
+        });
+      }
+      for (let i = 0; i < 4; i += 1) {
+        repo.markFindingFixed({ findingId: human.findingId });
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "human",
+          sourceCycleId: cycle2.cycleId,
+          severity: "P2",
+          category: "correctness",
+          scopeStatus: "out_of_scope",
+          summary: "human reopened finding",
+        });
+      }
+
+      const metrics = repo.harnessOriginDivergenceMetrics("goal-test");
+
+      expect(metrics.harnessOriginNewFindings).toBe(
+        HARNESS_ORIGIN_FINDING_SOURCES.length,
+      );
+      expect(metrics.harnessOriginMaxReopenCount).toBe(3);
+      expect(metrics.harnessOriginNewFindingsByCycle).toEqual([
+        {
+          cycleId: cycle1.cycleId,
+          cycleNumber: 1,
+          findingsNew: 2,
+        },
+        {
+          cycleId: cycle2.cycleId,
+          cycleNumber: 2,
+          findingsNew: 3,
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps first-seen divergence origin immutable on duplicate upsert", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const cycle1 = repo.startReviewCycle({
+        hitchId: "goal-test",
+        cycleNumber: 1,
+        reviewMode: "initial",
+        createdAt: "2026-05-26T00:02:00.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle1.cycleId,
+        findingsNew: 1,
+        completedAt: "2026-05-26T00:02:30.000Z",
+      });
+      const cycle2 = repo.startReviewCycle({
+        hitchId: "goal-test",
+        cycleNumber: 2,
+        reviewMode: "delta",
+        createdAt: "2026-05-26T00:01:00.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle2.cycleId,
+        findingsNew: 1,
+        completedAt: "2026-05-26T00:01:30.000Z",
+      });
+
+      const first = addFinding(repo, {
+        source: "review",
+        sourceCycleId: cycle1.cycleId,
+        summary: "origin must stay review",
+      });
+      const second = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "human",
+        sourceCycleId: cycle2.cycleId,
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        summary: "origin must stay review",
+      });
+
+      expect(second.created).toBe(false);
+      const finding = repo.requireFinding(first.findingId);
+      expect(finding.source).toBe("review");
+      expect(finding.sourceCycleId).toBe(cycle1.cycleId);
+      expect(repo.harnessOriginDivergenceMetrics("goal-test")).toMatchObject({
+        harnessOriginNewFindings: 1,
+        harnessOriginNewFindingsByCycle: [
+          {
+            cycleId: cycle1.cycleId,
+            cycleNumber: 1,
+            findingsNew: 1,
+          },
+          {
+            cycleId: cycle2.cycleId,
+            cycleNumber: 2,
+            findingsNew: 0,
+          },
+        ],
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("counts only harness-origin driven reopens for harness divergence churn", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const direct = addFinding(repo, {
+        source: "review",
+        summary: "operator direct reopen",
+      });
+      const duplicateCanonical = addFinding(repo, {
+        source: "review",
+        summary: "operator duplicate reopen canonical",
+      });
+
+      for (let i = 0; i < 3; i += 1) {
+        repo.markFindingFixed({ findingId: direct.findingId });
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "human",
+          severity: "P2",
+          category: "correctness",
+          scopeStatus: "out_of_scope",
+          summary: "operator direct reopen",
+        });
+
+        repo.markFindingFixed({ findingId: duplicateCanonical.findingId });
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "mcp",
+          severity: "P2",
+          category: "correctness",
+          scopeStatus: "duplicate",
+          summary: `operator duplicate reopen ${i}`,
+          duplicateOf: duplicateCanonical.findingId,
+        });
+      }
+
+      expect(repo.requireFinding(direct.findingId)).toMatchObject({
+        source: "review",
+        lifecycleStatus: "reopened",
+        reopenCount: 0,
+      });
+      expect(repo.requireFinding(duplicateCanonical.findingId)).toMatchObject({
+        source: "review",
+        lifecycleStatus: "reopened",
+        reopenCount: 0,
+      });
+      expect(
+        repo.harnessOriginDivergenceMetrics("goal-test")
+          .harnessOriginMaxReopenCount,
+      ).toBe(0);
+
+      for (let i = 0; i < 3; i += 1) {
+        repo.markFindingFixed({ findingId: direct.findingId });
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          severity: "P2",
+          category: "correctness",
+          scopeStatus: "out_of_scope",
+          summary: "operator direct reopen",
+        });
+      }
+
+      expect(repo.requireFinding(direct.findingId).reopenCount).toBe(3);
+      expect(
+        repo.harnessOriginDivergenceMetrics("goal-test")
+          .harnessOriginMaxReopenCount,
+      ).toBe(3);
     } finally {
       db.close();
     }
