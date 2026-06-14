@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { computeReviewedFingerprint } from "../../../src/core/reviewed-fingerprint.js";
 import { openManagedDb } from "../../../src/db/managed-connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
@@ -134,6 +134,51 @@ async function runFixtureCloseCheck(input: {
       baseBranch: "main",
     }),
   });
+}
+
+async function expectIgnoredArtifactMutationRejected(input: {
+  hitchId: string;
+  path: string;
+  ignoreUntracked: string[];
+  beforeContent?: string;
+  afterContent: string;
+}) {
+  collectDiffMock.mockReset();
+  const beforeUntrackedPaths =
+    input.beforeContent === undefined ? [] : [input.path];
+  collectDiffMock
+    .mockResolvedValueOnce({
+      trackedChangedPaths: ["reviewed.txt"],
+      stagedChangedPaths: [],
+      untrackedPaths: beforeUntrackedPaths,
+      patch: "",
+    })
+    .mockResolvedValueOnce({
+      trackedChangedPaths: ["reviewed.txt"],
+      stagedChangedPaths: [],
+      untrackedPaths: [input.path],
+      patch: "",
+    });
+  const fixture = await createCommandCloseCheckFixture({
+    hitchId: input.hitchId,
+    harnessPrefix: `harness-close-${input.hitchId}-`,
+    ignoreUntracked: input.ignoreUntracked,
+    script:
+      `const path = ${JSON.stringify(input.path)};` +
+      "const fs = require('node:fs');" +
+      "const dirname = require('node:path').dirname;" +
+      "fs.mkdirSync(dirname(path), { recursive: true });" +
+      `fs.writeFileSync(path, ${JSON.stringify(input.afterContent)});`,
+  });
+  if (input.beforeContent !== undefined) {
+    const ignoredPath = join(fixture.worktreePath, input.path);
+    mkdirSync(dirname(ignoredPath), { recursive: true });
+    writeFileSync(ignoredPath, input.beforeContent);
+  }
+
+  await expect(
+    runFixtureCloseCheck({ ...fixture, hitchId: input.hitchId }),
+  ).rejects.toThrow(/ignore_untracked|modified|polluted|worktree/);
 }
 
 describe("runCommandCloseChecks", () => {
@@ -394,6 +439,133 @@ describe("runCommandCloseChecks", () => {
     } finally {
       close();
     }
+  });
+
+  it("allows a close-check command to create a volatile node_modules cache file", async () => {
+    collectDiffMock.mockReset();
+    collectDiffMock
+      .mockResolvedValueOnce({
+        trackedChangedPaths: ["reviewed.txt"],
+        stagedChangedPaths: [],
+        untrackedPaths: [],
+        patch: "",
+      })
+      .mockResolvedValueOnce({
+        trackedChangedPaths: ["reviewed.txt"],
+        stagedChangedPaths: [],
+        untrackedPaths: ["node_modules/.vite/vitest/results.json"],
+        patch: "",
+      });
+    const fixture = await createCommandCloseCheckFixture({
+      hitchId: "g-ignored-volatile-new",
+      harnessPrefix: "harness-close-ignored-volatile-new-",
+      ignoreUntracked: ["node_modules/**"],
+      script:
+        "require('node:fs').mkdirSync('node_modules/.vite/vitest', " +
+        "{ recursive: true });" +
+        "require('node:fs').writeFileSync(" +
+        "'node_modules/.vite/vitest/results.json', '{}\\n');",
+    });
+
+    await runFixtureCloseCheck({
+      ...fixture,
+      hitchId: "g-ignored-volatile-new",
+    });
+
+    const { db, close } = openManagedDb({ dbPath: fixture.dbPath });
+    try {
+      const check = new HitchRepository(db)
+        .listCloseChecks("g-ignored-volatile-new")
+        .find((c) => c.conditionId === "typecheck");
+      expect(check?.status).toBe("passed");
+    } finally {
+      close();
+    }
+  });
+
+  it("allows a close-check command to modify a volatile node_modules cache file", async () => {
+    collectDiffMock.mockReset();
+    collectDiffMock
+      .mockResolvedValueOnce({
+        trackedChangedPaths: ["reviewed.txt"],
+        stagedChangedPaths: [],
+        untrackedPaths: ["node_modules/.vite/vitest/results.json"],
+        patch: "",
+      })
+      .mockResolvedValueOnce({
+        trackedChangedPaths: ["reviewed.txt"],
+        stagedChangedPaths: [],
+        untrackedPaths: ["node_modules/.vite/vitest/results.json"],
+        patch: "",
+      });
+    const fixture = await createCommandCloseCheckFixture({
+      hitchId: "g-ignored-volatile-modified",
+      harnessPrefix: "harness-close-ignored-volatile-modified-",
+      ignoreUntracked: ["node_modules/**"],
+      script:
+        "require('node:fs').writeFileSync(" +
+        "'node_modules/.vite/vitest/results.json', '{\"ok\":true}\\n');",
+    });
+    mkdirSync(join(fixture.worktreePath, "node_modules/.vite/vitest"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(fixture.worktreePath, "node_modules/.vite/vitest/results.json"),
+      "{}\n",
+    );
+
+    await runFixtureCloseCheck({
+      ...fixture,
+      hitchId: "g-ignored-volatile-modified",
+    });
+
+    const { db, close } = openManagedDb({ dbPath: fixture.dbPath });
+    try {
+      const check = new HitchRepository(db)
+        .listCloseChecks("g-ignored-volatile-modified")
+        .find((c) => c.conditionId === "typecheck");
+      expect(check?.status).toBe("passed");
+    } finally {
+      close();
+    }
+  });
+
+  it.each([
+    ["dist/.vite/manifest.json", ["dist/**"]],
+    ["dist/node_modules/manifest.js", ["dist/**"]],
+    ["build/.cache/report.json", ["build/**"]],
+    ["coverage/.cache/foo.js", ["coverage/**"]],
+    ["out/.vitest/results.json", ["out/**"]],
+  ])(
+    "fails closed when a close-check command creates cache-like ignored artifact %s",
+    async (path, ignoreUntracked) => {
+      await expectIgnoredArtifactMutationRejected({
+        hitchId: `g-ignored-cache-new-${path.replaceAll("/", "-")}`,
+        path,
+        ignoreUntracked,
+        afterContent: "new\n",
+      });
+    },
+  );
+
+  it("fails closed when a close-check command modifies cache-like ignored artifact dist/.vite/manifest.json", async () => {
+    await expectIgnoredArtifactMutationRejected({
+      hitchId: "g-ignored-cache-modified-dist-vite",
+      path: "dist/.vite/manifest.json",
+      ignoreUntracked: ["dist/**"],
+      beforeContent: "old\n",
+      afterContent: "changed\n",
+    });
+  });
+
+  it("fails closed when a close-check command modifies ignored artifact dist/node_modules/manifest.js", async () => {
+    await expectIgnoredArtifactMutationRejected({
+      hitchId: "g-ignored-cache-modified-dist-node-modules",
+      path: "dist/node_modules/manifest.js",
+      ignoreUntracked: ["dist/**"],
+      beforeContent: "old\n",
+      afterContent: "changed\n",
+    });
   });
 
   it("allows a pre-existing ignored artifact present unchanged in baseline and post-command", async () => {

@@ -3,6 +3,7 @@ import { constants, existsSync } from "node:fs";
 import { lstat, open, readFile, readlink } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
+import { minimatch } from "minimatch";
 import { harnessPaths } from "../config/paths.js";
 import { withManagedDb } from "../db/managed-connection.js";
 import { runAllowedCommands } from "../core/command-runner.js";
@@ -15,7 +16,10 @@ import {
 import type { RunMeta } from "../logging/run-log.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
-import { partitionUntracked } from "../policy/untracked-filter.js";
+import {
+  partitionUntracked,
+  UNTRACKED_MATCH_OPTS,
+} from "../policy/untracked-filter.js";
 import type { ResolvedCommand } from "../policy/schema.js";
 import { containsLikelySecret } from "../reporter/secret-scan.js";
 import { evaluateCloseConditions } from "./close-checks.js";
@@ -64,6 +68,9 @@ const RUNNABLE_CLOSE_CHECK_STATUSES = new Set<HitchCloseCheckStatus>([
   "unknown",
 ]);
 const CLOSE_CHECK_LOG_EXCERPT_BYTES = 8 * 1024;
+const CLOSE_CHECK_VOLATILE_IGNORED_PATTERNS = [
+  "node_modules/**",
+] as const;
 
 interface IgnoredUntrackedSnapshotEntry {
   path: string;
@@ -100,6 +107,16 @@ function latestCodingRun(repo: HitchRepository, hitchId: string): LatestCodingRu
 function displayResolvedCommand(command: ResolvedCommand): string {
   if (command.shell) return command.cmd;
   return [command.cmd, ...command.args].join(" ");
+}
+
+function isCloseCheckVolatileIgnoredPath(path: string): boolean {
+  return CLOSE_CHECK_VOLATILE_IGNORED_PATTERNS.some((pattern) =>
+    minimatch(path, pattern, UNTRACKED_MATCH_OPTS),
+  );
+}
+
+function filterSnapshotIgnoredPaths(paths: readonly string[]): string[] {
+  return paths.filter((path) => !isCloseCheckVolatileIgnoredPath(path));
 }
 
 // Assert the worktree's policy-relevant surface still equals the run's IMMUTABLE
@@ -275,9 +292,10 @@ async function assertWorktreeMatchesReviewed(opts: {
     reviewedPaths: opts.reviewedPaths,
     refusal: `run close checks (${opts.phase})`,
   });
+  const snapshotIgnored = filterSnapshotIgnoredPaths(ignored);
   const ignoredSnapshot = await snapshotIgnoredUntrackedPaths(
     opts.worktreePath,
-    ignored,
+    snapshotIgnored,
   );
   if (opts.priorIgnored !== undefined) {
     assertIgnoredUntrackedSnapshotMatches({
