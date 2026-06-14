@@ -18,9 +18,42 @@ export const CodexDefaultsSchema = z
   .strict();
 export type CodexDefaults = z.infer<typeof CodexDefaultsSchema>;
 
+export const DEFAULT_MAX_DELETED_LINES = 800;
+export const DEFAULT_MAX_TOTAL_CHANGED_LINES = 5_000;
+export const DEFAULT_MAX_DELETED_FILES = 20;
+export const DEFAULT_MAX_CHANGED_FILES = 40;
+
+export const ChangeBudgetSchema = z
+  .object({
+    max_deleted_lines: z.number().int().positive().optional(),
+    max_total_changed_lines: z.number().int().positive().optional(),
+    max_deleted_files: z.number().int().positive().optional(),
+    max_changed_files: z.number().int().positive().optional(),
+    enforce: z.boolean().optional(),
+  })
+  .strict();
+export type ChangeBudgetConfig = z.infer<typeof ChangeBudgetSchema>;
+
+export interface ChangeBudget {
+  maxDeletedLines: number;
+  maxTotalChangedLines: number;
+  maxDeletedFiles: number;
+  maxChangedFiles: number;
+  enforce: boolean;
+}
+
+export const DEFAULT_CHANGE_BUDGET: ChangeBudget = {
+  maxDeletedLines: DEFAULT_MAX_DELETED_LINES,
+  maxTotalChangedLines: DEFAULT_MAX_TOTAL_CHANGED_LINES,
+  maxDeletedFiles: DEFAULT_MAX_DELETED_FILES,
+  maxChangedFiles: DEFAULT_MAX_CHANGED_FILES,
+  enforce: true,
+};
+
 export const LimitsSchema = z
   .object({
     git_timeout_ms: z.number().int().positive().default(30_000),
+    change_budget: ChangeBudgetSchema.optional(),
   })
   .strict();
 export type Limits = z.infer<typeof LimitsSchema>;
@@ -97,6 +130,7 @@ export const DomainPolicySchema = z
         defaults: CommandDefaultsSchema.optional(),
       })
       .optional(),
+    change_budget: ChangeBudgetSchema.optional(),
   })
   .strict();
 export type DomainPolicy = z.infer<typeof DomainPolicySchema>;
@@ -153,6 +187,7 @@ export interface ResolvedPolicy {
   };
   limits: {
     gitTimeoutMs: number;
+    changeBudget: ChangeBudget;
   };
 }
 

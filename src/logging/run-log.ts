@@ -1,6 +1,12 @@
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { makeEventWriter, type RunEvent } from "./events.js";
+import type { DiffStat } from "../git/diff.js";
+import type { ChangeBudget } from "../policy/schema.js";
+import type {
+  DiffBudgetBreach,
+  DiffBudgetValidationResult,
+} from "../policy/diff-budget-validator.js";
 
 /** All RunStatus values as a runtime array (single source of truth). */
 export const RUN_STATUSES = [
@@ -16,6 +22,7 @@ export const RUN_STATUSES = [
   "failed-codex",
   "failed-codex-timeout",
   "failed-diff-collection",
+  "failed-budget-exceeded",
   "failed-command",
   "failed-internal-error",
 ] as const;
@@ -91,6 +98,19 @@ export interface RunMeta {
    * operators can size-up runs without parsing artifacts.
    */
   changedFilesCount?: number;
+  /** Final tracked diff stat used by the change-budget gate. */
+  diffStat?: DiffStat;
+  /**
+   * Final change-budget gate outcome. `disabled=true` means a policy
+   * `enforce:false` fail-open override was active and surfaced in artifacts.
+   */
+  changeBudget?: {
+    status: DiffBudgetValidationResult["status"];
+    disabled: boolean;
+    stage: "post-codex" | "post-command";
+    budget: ChangeBudget;
+    breaches: DiffBudgetBreach[];
+  };
   /**
    * runId of the run this one was spawned from via `harness rerun`. The
    * source run is typically in 'changes_requested' state; recording the
@@ -178,6 +198,8 @@ export interface RunLog {
     secretSuspectCount: number;
     commandResults: NonNullable<RunMeta["commandResults"]>;
     changedFilesCount: number;
+    diffStat?: RunMeta["diffStat"];
+    changeBudget?: RunMeta["changeBudget"];
     reviewed?: RunMeta["reviewed"];
     finishedAt: string;
   }): Promise<void>;
@@ -224,6 +246,8 @@ export async function createRunLog(opts: {
       secretSuspectCount,
       commandResults,
       changedFilesCount,
+      diffStat,
+      changeBudget,
       reviewed,
       finishedAt,
     }) {
@@ -234,6 +258,8 @@ export async function createRunLog(opts: {
         secretSuspectCount,
         commandResults,
         changedFilesCount,
+        ...(diffStat ? { diffStat } : {}),
+        ...(changeBudget ? { changeBudget } : {}),
         ...(reviewed ? { reviewed } : {}),
         finishedAt,
       });

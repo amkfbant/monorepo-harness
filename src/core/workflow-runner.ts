@@ -26,6 +26,7 @@ import type {
   ResolvedPolicy,
   GlobalPolicy,
   RepoPolicy,
+  ChangeBudget,
 } from "../policy/schema.js";
 import type Database from "better-sqlite3";
 import {
@@ -65,7 +66,16 @@ import { hostname } from "node:os";
 import { runBranchName } from "../workspace/branch-name.js";
 import { createWorktree } from "../workspace/git-worktree.js";
 import { gitCli } from "../git/git-cli.js";
-import { collectDiff, resolveBaseSha, type DiffResult } from "../git/diff.js";
+import {
+  collectDiff,
+  resolveBaseSha,
+  type DiffResult,
+  type DiffStat,
+} from "../git/diff.js";
+import {
+  normalizeDiffBudget,
+  validateDiffBudget,
+} from "../policy/diff-budget-validator.js";
 import { detectsTestWeakening } from "./automerge-tiers.js";
 import {
   buildCodexPrompt,
@@ -163,6 +173,13 @@ export interface ContinueFromSpec {
   parentWorktreePath: string;
 }
 
+export interface RunChangeBudgetOverride {
+  maxDeletedLines?: number;
+  maxTotalChangedLines?: number;
+  maxDeletedFiles?: number;
+  maxChangedFiles?: number;
+}
+
 export interface RunDomainCodingOpts {
   harnessRoot: string;
   repoPath: string;
@@ -245,6 +262,11 @@ export interface RunDomainCodingOpts {
   codexBinaryVersion?: string | null;
   /** @internal test seam for fail-closed codex-events publish failures. */
   codexEventsIo?: CodexEventsIo;
+  /**
+   * Per-run budget override. It can only relax numeric limits while
+   * enforcement is already true; it cannot disable enforcement.
+   */
+  changeBudgetOverride?: RunChangeBudgetOverride;
 }
 
 /**
@@ -330,6 +352,7 @@ interface DiffOutcome {
   error?: string;
   trackedChangedPaths: string[];
   untrackedAll: string[];
+  stat?: DiffStat;
   patch: string;
 }
 
@@ -407,6 +430,7 @@ async function attemptDiff(
       ok: true,
       trackedChangedPaths: d.trackedChangedPaths,
       untrackedAll: d.untrackedPaths,
+      stat: d.stat,
       patch: d.patch,
     };
   } catch (e) {
@@ -418,6 +442,69 @@ async function attemptDiff(
       patch: "",
     };
   }
+}
+
+function applyChangeBudgetOverride(
+  base: ChangeBudget,
+  override: RunChangeBudgetOverride | undefined,
+): ChangeBudget {
+  if (override === undefined || !base.enforce) return base;
+  return {
+    ...base,
+    maxDeletedLines:
+      override.maxDeletedLines !== undefined
+        ? Math.max(base.maxDeletedLines, override.maxDeletedLines)
+        : base.maxDeletedLines,
+    maxTotalChangedLines:
+      override.maxTotalChangedLines !== undefined
+        ? Math.max(base.maxTotalChangedLines, override.maxTotalChangedLines)
+        : base.maxTotalChangedLines,
+    maxDeletedFiles:
+      override.maxDeletedFiles !== undefined
+        ? Math.max(base.maxDeletedFiles, override.maxDeletedFiles)
+        : base.maxDeletedFiles,
+    maxChangedFiles:
+      override.maxChangedFiles !== undefined
+        ? Math.max(base.maxChangedFiles, override.maxChangedFiles)
+        : base.maxChangedFiles,
+  };
+}
+
+type DiffBudgetStage = "post-codex" | "post-command";
+
+async function evaluateChangeBudget(opts: {
+  log: RunLog;
+  budget: ChangeBudget;
+  stat: DiffStat;
+  stage: DiffBudgetStage;
+}): Promise<NonNullable<RunMeta["changeBudget"]>> {
+  const budget = normalizeDiffBudget(opts.budget);
+  const result = validateDiffBudget(budget, opts.stat);
+  const disabled = !budget.enforce;
+  await opts.log.emit({
+    type: "diff_budget_evaluated",
+    stage: opts.stage,
+    status: result.status,
+    disabled,
+    stat: opts.stat,
+    budget,
+    breaches: result.breaches,
+  });
+  if (disabled) {
+    await opts.log.emit({
+      type: "change_budget_disabled",
+      stage: opts.stage,
+      stat: opts.stat,
+      budget,
+    });
+  }
+  return {
+    status: result.status,
+    disabled,
+    stage: opts.stage,
+    budget,
+    breaches: result.breaches,
+  };
 }
 
 export interface MaterializeOutcome {
@@ -1184,6 +1271,11 @@ async function runDomainCodingInner(
       gitTimeoutMs,
       policy,
     });
+    const changeBudget = applyChangeBudgetOverride(
+      policy.limits.changeBudget,
+      opts.changeBudgetOverride,
+    );
+    let changeBudgetResult: RunMeta["changeBudget"] | undefined;
     if (!dv.diff.ok) {
       await log.emit({
         type: "diff_collection_failed",
@@ -1196,6 +1288,14 @@ async function runDomainCodingInner(
         status: dv.safetyStatus === "allowed" ? "allowed" : "denied",
         stage: "post-codex",
         durationMs: dv.policyValidationDurationMs,
+      });
+    }
+    if (dv.diff.ok && dv.diff.stat !== undefined) {
+      changeBudgetResult = await evaluateChangeBudget({
+        log,
+        budget: changeBudget,
+        stat: dv.diff.stat,
+        stage: "post-codex",
       });
     }
 
@@ -1214,6 +1314,7 @@ async function runDomainCodingInner(
     if (
       dv.diff.ok &&
       dv.safetyStatus === "allowed" &&
+      changeBudgetResult?.status !== "exceeded" &&
       !codex.timedOut &&
       codex.exitCode === 0 &&
       policy.allowedCommands.length > 0
@@ -1265,6 +1366,14 @@ async function runDomainCodingInner(
           status: dv.safetyStatus === "allowed" ? "allowed" : "denied",
           stage: "post-command",
           durationMs: dv.policyValidationDurationMs,
+        });
+      }
+      if (dv.diff.ok && dv.diff.stat !== undefined) {
+        changeBudgetResult = await evaluateChangeBudget({
+          log,
+          budget: changeBudget,
+          stat: dv.diff.stat,
+          stage: "post-command",
         });
       }
     }
@@ -1403,9 +1512,10 @@ async function runDomainCodingInner(
 
     // Status priority (evaluated against POST-command worktree if commands ran):
     //   diff failure > codex timeout > codex non-zero > policy violation
-    //   > command failure > needs_review
+    //   > budget exceeded > command failure > needs_review
     // safetyStatus is reported independently so callers can detect e.g.
     // "timeout AND scope violation" cases.
+    const budgetExceeded = changeBudgetResult?.status === "exceeded";
     let status: RunStatus;
     if (!diff.ok) {
       status = "failed-diff-collection";
@@ -1417,6 +1527,8 @@ async function runDomainCodingInner(
       // a denied state here may be (a) codex itself, or (b) a command that
       // wrote outside scope post-validation. Either way → policy violation.
       status = "failed-policy-violation";
+    } else if (budgetExceeded) {
+      status = "failed-budget-exceeded";
     } else if (commandsRan && !commandsPassed) {
       status = "failed-command";
     } else {
@@ -1453,6 +1565,10 @@ async function runDomainCodingInner(
       ignoredUntrackedPaths: untrackedIgnored,
       secretSuspectPaths,
       violations,
+      ...(diff.stat !== undefined ? { diffStat: diff.stat } : {}),
+      ...(changeBudgetResult !== undefined
+        ? { changeBudget: changeBudgetResult }
+        : {}),
       codexExitCode: codex.exitCode,
       codexTimedOut: codex.timedOut,
       codexStdoutTail,
@@ -1496,6 +1612,10 @@ async function runDomainCodingInner(
         ignoredUntrackedPaths: untrackedIgnored,
         secretSuspectPaths,
         violations,
+        ...(diff.stat !== undefined ? { diffStat: diff.stat } : {}),
+        ...(changeBudgetResult !== undefined
+          ? { changeBudget: changeBudgetResult }
+          : {}),
         codexExitCode: codex.exitCode,
         codexTimedOut: codex.timedOut,
         codexStdoutTail,
@@ -1552,6 +1672,10 @@ async function runDomainCodingInner(
       secretSuspectCount,
       commandResults,
       changedFilesCount,
+      ...(diff.stat !== undefined ? { diffStat: diff.stat } : {}),
+      ...(changeBudgetResult !== undefined
+        ? { changeBudget: changeBudgetResult }
+        : {}),
       ...(reviewed ? { reviewed } : {}),
       finishedAt: new Date().toISOString(),
     });

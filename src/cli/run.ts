@@ -16,7 +16,10 @@ import { harnessPaths } from "../config/paths.js";
 import { harnessVersion } from "../config/version.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
-import { runDomainCoding } from "../core/workflow-runner.js";
+import {
+  runDomainCoding,
+  type RunChangeBudgetOverride,
+} from "../core/workflow-runner.js";
 import { loadProjectById } from "../project/profile-resolver.js";
 import { verifyGuarded, guardedWriteGlobs } from "../core/verify-guarded.js";
 import {
@@ -298,12 +301,44 @@ interface RunOpts {
   dryRun?: boolean;
   withKnowledge?: boolean;
   knowledgeContextPath?: string;
+  changeBudgetOverride?: RunChangeBudgetOverride;
 }
 
 interface RunOutcome {
   runId: string;
   status: string;
   failed: boolean;
+}
+
+function parseChangeBudgetOverride(
+  raw: Record<string, unknown>,
+): { changeBudgetOverride?: RunChangeBudgetOverride } {
+  const override: RunChangeBudgetOverride = {};
+  if (raw.changeBudgetMaxDeletedLines !== undefined) {
+    override.maxDeletedLines = parsePositiveInt(
+      raw.changeBudgetMaxDeletedLines,
+      "--change-budget-max-deleted-lines",
+    );
+  }
+  if (raw.changeBudgetMaxTotalChangedLines !== undefined) {
+    override.maxTotalChangedLines = parsePositiveInt(
+      raw.changeBudgetMaxTotalChangedLines,
+      "--change-budget-max-total-changed-lines",
+    );
+  }
+  if (raw.changeBudgetMaxDeletedFiles !== undefined) {
+    override.maxDeletedFiles = parsePositiveInt(
+      raw.changeBudgetMaxDeletedFiles,
+      "--change-budget-max-deleted-files",
+    );
+  }
+  if (raw.changeBudgetMaxChangedFiles !== undefined) {
+    override.maxChangedFiles = parsePositiveInt(
+      raw.changeBudgetMaxChangedFiles,
+      "--change-budget-max-changed-files",
+    );
+  }
+  return Object.keys(override).length > 0 ? { changeBudgetOverride: override } : {};
 }
 
 async function cmdRun(o: RunOpts): Promise<RunOutcome> {
@@ -442,6 +477,9 @@ async function cmdRun(o: RunOpts): Promise<RunOutcome> {
     codexRunner: runner,
     codexBinaryVersion: resolvedCodexBinaryVersion,
     ...(knowledgeContext !== undefined ? { knowledgeContext } : {}),
+    ...(o.changeBudgetOverride !== undefined
+      ? { changeBudgetOverride: o.changeBudgetOverride }
+      : {}),
     ...(prepared !== undefined
       ? {
           compiledPolicy: prepared.compiledPolicy,
@@ -749,6 +787,22 @@ const runCmd = program
     "--knowledge-context <path>",
     "inject an explicit knowledge-context file (overrides --with-knowledge)",
   )
+  .option(
+    "--change-budget-max-deleted-lines <n>",
+    "relax this run's deleted-line change budget ceiling",
+  )
+  .option(
+    "--change-budget-max-total-changed-lines <n>",
+    "relax this run's total changed-line budget ceiling",
+  )
+  .option(
+    "--change-budget-max-deleted-files <n>",
+    "relax this run's deleted-file change budget ceiling",
+  )
+  .option(
+    "--change-budget-max-changed-files <n>",
+    "relax this run's changed-file budget ceiling",
+  )
   .option("--dry-run", "resolve policy and exit", false)
   .action(async (raw: Record<string, unknown>) => {
     rejectProjectRepoIdMix(raw, "harness run");
@@ -782,6 +836,7 @@ const runCmd = program
       ...(raw.knowledgeContext !== undefined
         ? { knowledgeContextPath: String(raw.knowledgeContext) }
         : {}),
+      ...parseChangeBudgetOverride(raw),
     });
     if (outcome.failed) process.exit(1);
   });
@@ -2805,6 +2860,7 @@ const rerunCmd = program
       result.status === "failed-codex" ||
       result.status === "failed-codex-timeout" ||
       result.status === "failed-diff-collection" ||
+      result.status === "failed-budget-exceeded" ||
       result.status === "failed-command" ||
       result.status === "failed-internal-error"
     ) {

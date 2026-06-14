@@ -39,6 +39,12 @@ defaults:
 
 limits:
   git_timeout_ms: 30000               # 各 git invocation の kill timeout (30 s)
+  change_budget:
+    max_deleted_lines: 800            # tracked diff の削除行上限
+    max_total_changed_lines: 5000     # insertions + deletions の上限
+    max_deleted_files: 20             # 削除された tracked file 数上限
+    max_changed_files: 40             # changed tracked file 数上限
+    enforce: true                     # false は fail-open（後述）
 
 always_deny_write:
   - .git/**
@@ -69,6 +75,7 @@ ignore_untracked:                     # minimatch root-anchored
 | `defaults.codex.approval` | string? | codex の `-c approval_policy=…` に渡る |
 | `defaults.codex.timeout_ms` | number? | runner.timeoutMs。未設定なら 15 min default |
 | `limits.git_timeout_ms` | number | gitCli の SIGKILL タイマー。未設定なら 30 s |
+| `limits.change_budget` | object? | run ごとの tracked diff size / deletion guard。未設定でも fail-closed default が適用される |
 | `always_deny_write` | string[] | 全 domain で必ず deny される path glob |
 | `ignore_untracked` | string[] | untracked のうち validation スキップ + artifact カウント除外する glob |
 
@@ -106,6 +113,12 @@ domains:
       - pnpm-workspace.yaml
       - tsconfig.base.json
       - .github/**
+    change_budget:                    # 任意。global.limits.change_budget を field ごとに override
+      max_deleted_lines: 200
+      max_total_changed_lines: 2000
+      max_deleted_files: 5
+      max_changed_files: 25
+      enforce: true
     commands:                         # path validation 通過後にこの allowlist を順次実行
       allow:
         - "npm run lint"              # legacy string form: sh -c
@@ -154,13 +167,63 @@ ResolvedPolicy {
     approval: global.defaults?.codex?.approval,    // optional
     timeoutMs: global.defaults?.codex?.timeout_ms ?? 900_000,
   },
-  limits: { gitTimeoutMs: global.limits?.git_timeout_ms ?? 30_000 },
+  limits: {
+    gitTimeoutMs: global.limits?.git_timeout_ms ?? 30_000,
+    changeBudget: field-wise merge(global.limits.change_budget, domain.change_budget)
+      with defaults { maxDeletedLines: 800, maxTotalChangedLines: 5000,
+                      maxDeletedFiles: 20, maxChangedFiles: 40, enforce: true },
+  },
 }
 ```
 
 `repo.read` は domain.read と連結されるが、`always_deny_write` と `domain.deny_write` は OR (より広い deny を取る) で連結される。
 
 存在しない domain を指定すると `policy: domain "X" not found in repo "Y"` で throw。
+
+## change_budget の扱い
+
+`change_budget` は path policy の後に重ねる deterministic guard。LLM 出力は入力にせず、
+`git diff --no-ext-diff --no-textconv --numstat -z <baseSha>` と
+`--diff-filter=D --name-only -z` から得た tracked diff の整数だけで評価する。
+numstat で binary file が `-` として出る場合、行数は 0 として扱うが
+`filesChanged` には数える。deleted file 数は `--diff-filter=D` の結果だけを正本にし、
+numstat から推測しない。
+
+評価は inclusive: `actual == limit` は通過、`actual == limit + 1` は
+`failed-budget-exceeded`。対象 metric は:
+
+- `deleted_lines` = numstat deletions
+- `total_changed_lines` = numstat insertions + deletions
+- `deleted_files` = `--diff-filter=D` の path 数
+- `changed_files` = numstat rows
+
+未設定でも次の fail-closed default が必ず適用される:
+
+```yaml
+max_deleted_lines: 800
+max_total_changed_lines: 5000
+max_deleted_files: 20
+max_changed_files: 40
+enforce: true
+```
+
+default は self-domain の実績に合わせて、通常の大きめ spec/test sweep を誤停止しない
+値にしている。代表として #155/#165 の commit `ab754f2` は
+`git show --shortstat --no-renames ab754f2` で **16 files changed, 2640 insertions,
+52 deletions**、合計 2692 changed lines だった。`max_total_changed_lines=5000` と
+`max_changed_files=40` はこの規模を十分に通しつつ、異常な mass rewrite を止める。
+`max_deleted_lines=800` / `max_deleted_files=20` は正常な multi-file refactor の削除量を
+超える destructive deletion を pre-review で止めるための ceiling。
+
+global の `limits.change_budget` は全 domain の default。domain の `change_budget` は
+field ごとに global を上書きし、未指定 field は global、さらに未指定なら上記 default
+に fallback する。
+
+`enforce: false` は fail-open 操作。これはその domain の唯一の pre-review mass-deletion
+guard を無効化し、run は `change_budget_disabled` event を出し、`summary.md` /
+`review-request.md` に **Change budget disabled** と表示するだけで停止しない。self domain
+では `enforce:false` を設定しないことを推奨する。必要な場合は、別途 operator decision
+として記録してから deliberate に設定する。
 
 ## 評価順 (validateChangedPaths)
 

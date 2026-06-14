@@ -659,6 +659,7 @@ export class RunRepository {
       "failed-internal-error",
       "failed-policy-violation",
       "failed-codex-timeout",
+      "failed-budget-exceeded",
       "failed-command",
     ]);
     const txn = this.db.transaction((): { changed: boolean } => {

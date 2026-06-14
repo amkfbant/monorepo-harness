@@ -5,6 +5,7 @@ import { HitchRepository } from "../../../src/hitch/repository.js";
 import type { OrchestratorRunners } from "../../../src/hitch/orchestrator-types.js";
 import type { CodexExecRunner } from "../../../src/codex/codex-exec-runner.js";
 import type { PreparedProjectRun } from "../../../src/project/run-project.js";
+import { DEFAULT_CHANGE_BUDGET } from "../../../src/policy/schema.js";
 import {
   hitchGoalText,
   makeCourseHitchRunners,
@@ -47,7 +48,7 @@ function preparedProjectRun(opts: Parameters<PrepareRun>[0]): PreparedProjectRun
       commandDefaults: { timeoutMs: 300_000 },
       ignoreUntracked: [],
       codex: { sandbox: "workspace-write" },
-      limits: { gitTimeoutMs: 30_000 },
+      limits: { gitTimeoutMs: 30_000, changeBudget: DEFAULT_CHANGE_BUDGET },
     },
     project: {
       projectId: opts.projectId,

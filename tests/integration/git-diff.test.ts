@@ -38,6 +38,12 @@ describe("collectDiff", () => {
     const d = await collectDiff({ repoPath: repo, baseSha: await baseSha() });
     expect(d.trackedChangedPaths).toEqual(["apps/user/a.ts"]);
     expect(d.untrackedPaths).toEqual(["apps/user/b.ts"]);
+    expect(d.stat).toEqual({
+      filesChanged: 1,
+      insertions: 1,
+      deletions: 1,
+      deletedFiles: 0,
+    });
     expect(d.patch).toMatch(/\+export const a = 2;/);
     expect(d.patch).not.toMatch(/apps\/user\/b\.ts/);
   });
@@ -47,6 +53,12 @@ describe("collectDiff", () => {
     expect(d.trackedChangedPaths).toEqual([]);
     expect(d.stagedChangedPaths).toEqual([]);
     expect(d.untrackedPaths).toEqual([]);
+    expect(d.stat).toEqual({
+      filesChanged: 0,
+      insertions: 0,
+      deletions: 0,
+      deletedFiles: 0,
+    });
     expect(d.patch).toBe("");
   });
 
@@ -77,6 +89,59 @@ describe("collectDiff", () => {
     const d = await collectDiff({ repoPath: repo, baseSha: await baseSha() });
     expect(d.trackedChangedPaths).toEqual(["apps/user/a.ts"]);
     expect(d.untrackedPaths).toEqual([]);
+    expect(d.stat).toEqual({
+      filesChanged: 1,
+      insertions: 0,
+      deletions: 1,
+      deletedFiles: 1,
+    });
+  });
+
+  it("counts multi-line truncation and exact deleted-file totals", async () => {
+    writeFileSync(join(repo, "apps/user/multi.ts"), "a\nb\nc\nd\n");
+    execFileSync("git", ["add", "apps/user/multi.ts"], { cwd: repo });
+    execFileSync("git", ["commit", "-qm", "add multi"], { cwd: repo });
+
+    writeFileSync(join(repo, "apps/user/multi.ts"), "a\n");
+    rmSync(join(repo, "apps/user/a.ts"));
+    const d = await collectDiff({ repoPath: repo, baseSha: await baseSha() });
+
+    expect(d.stat).toEqual({
+      filesChanged: 2,
+      insertions: 0,
+      deletions: 4,
+      deletedFiles: 1,
+    });
+  });
+
+  it("parses rename numstat output as a single changed file", async () => {
+    execFileSync("git", ["mv", "apps/user/a.ts", "apps/user/renamed.ts"], {
+      cwd: repo,
+    });
+    const d = await collectDiff({ repoPath: repo, baseSha: await baseSha() });
+
+    expect(d.stat).toEqual({
+      filesChanged: 1,
+      insertions: 0,
+      deletions: 0,
+      deletedFiles: 0,
+    });
+  });
+
+  it("counts binary files as changed files without line additions or deletions", async () => {
+    writeFileSync(join(repo, "apps/user/blob.bin"), Buffer.from([0, 1, 2]));
+    execFileSync("git", ["add", "apps/user/blob.bin"], { cwd: repo });
+    execFileSync("git", ["commit", "-qm", "add binary"], { cwd: repo });
+
+    writeFileSync(join(repo, "apps/user/blob.bin"), Buffer.from([0, 1, 2, 3]));
+    const d = await collectDiff({ repoPath: repo, baseSha: await baseSha() });
+
+    expect(d.stat).toEqual({
+      filesChanged: 1,
+      insertions: 0,
+      deletions: 0,
+      deletedFiles: 0,
+    });
   });
 
   it("returns .gitignore'd files in untrackedPaths (harness applies its own filter)", async () => {

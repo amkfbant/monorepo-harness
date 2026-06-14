@@ -301,6 +301,8 @@ export function createDbRunLog(opts: CreateDbRunLogOpts): RunLog {
         secretSuspectCount: p.secretSuspectCount,
         commandResults: p.commandResults,
         changedFilesCount: p.changedFilesCount,
+        ...(p.diffStat ? { diffStat: p.diffStat } : {}),
+        ...(p.changeBudget ? { changeBudget: p.changeBudget } : {}),
         ...(p.reviewed ? { reviewed: p.reviewed } : {}),
         finishedAt: p.finishedAt,
       };

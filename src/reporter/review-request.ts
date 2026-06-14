@@ -1,5 +1,7 @@
 import type { Violation } from "../policy/path-policy-validator.js";
 import type { RunStatus, SafetyStatus } from "../logging/run-log.js";
+import type { DiffStat } from "../git/diff.js";
+import type { ChangeBudgetReport } from "./summary.js";
 
 export interface ReviewRequestInputs {
   runId: string;
@@ -15,6 +17,8 @@ export interface ReviewRequestInputs {
   ignoredUntrackedPaths: readonly string[];
   secretSuspectPaths: readonly string[];
   violations: readonly Violation[];
+  diffStat?: DiffStat;
+  changeBudget?: ChangeBudgetReport;
   codexExitCode: number;
   codexTimedOut: boolean;
   codexStdoutTail: string;
@@ -30,6 +34,43 @@ export interface ReviewRequestInputs {
 
 function fenced(s: string): string[] {
   return ["```", s.trim() || "(empty)", "```"];
+}
+
+function pushChangeBudget(
+  lines: string[],
+  stat: DiffStat | undefined,
+  report: ChangeBudgetReport | undefined,
+): void {
+  if (stat === undefined && report === undefined) return;
+  lines.push("");
+  lines.push("## Change budget");
+  if (stat !== undefined) {
+    lines.push(
+      `- Stat: filesChanged=${stat.filesChanged}, insertions=${stat.insertions}, deletions=${stat.deletions}, deletedFiles=${stat.deletedFiles}`,
+    );
+  }
+  if (report === undefined) {
+    lines.push("- Status: not evaluated");
+    return;
+  }
+  lines.push(`- Stage: ${report.stage}`);
+  lines.push(`- Status: ${report.status}`);
+  lines.push(
+    `- Limits: deleted_lines<=${report.budget.maxDeletedLines}, total_changed_lines<=${report.budget.maxTotalChangedLines}, deleted_files<=${report.budget.maxDeletedFiles}, changed_files<=${report.budget.maxChangedFiles}`,
+  );
+  if (report.disabled) {
+    lines.push(
+      "- Change budget disabled: enforce=false is a fail-open operator override.",
+    );
+  }
+  if (report.breaches.length === 0) {
+    lines.push("- Breaches: (none)");
+  } else {
+    lines.push("- Breaches:");
+    for (const b of report.breaches) {
+      lines.push(`  - ${b.metric}: actual ${b.actual} > limit ${b.limit}`);
+    }
+  }
 }
 
 export function buildReviewRequest(i: ReviewRequestInputs): string {
@@ -87,6 +128,7 @@ export function buildReviewRequest(i: ReviewRequestInputs): string {
   } else {
     for (const v of i.violations) lines.push(`- \`${v.path}\` — ${v.reason}`);
   }
+  pushChangeBudget(lines, i.diffStat, i.changeBudget);
   lines.push("");
   lines.push("## Artifacts");
   lines.push(`- diff (tracked): \`${i.finalDiffPath}\``);

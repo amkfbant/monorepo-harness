@@ -1,7 +1,10 @@
 import {
+  DEFAULT_CHANGE_BUDGET,
   DEFAULT_CODEX_TIMEOUT_MS,
   DEFAULT_COMMAND_TIMEOUT_MS,
   DEFAULT_GIT_TIMEOUT_MS,
+  type ChangeBudget,
+  type ChangeBudgetConfig,
   type CommandEntry,
   type GlobalPolicy,
   type RepoPolicy,
@@ -36,6 +39,28 @@ function resolveCommands(
     if (e.env !== undefined) resolved.env = e.env;
     return resolved;
   });
+}
+
+function resolveChangeBudget(
+  globalBudget: ChangeBudgetConfig | undefined,
+  domainBudget: ChangeBudgetConfig | undefined,
+): ChangeBudget {
+  const merged: ChangeBudgetConfig = {
+    ...(globalBudget ?? {}),
+    ...(domainBudget ?? {}),
+  };
+  return {
+    maxDeletedLines:
+      merged.max_deleted_lines ?? DEFAULT_CHANGE_BUDGET.maxDeletedLines,
+    maxTotalChangedLines:
+      merged.max_total_changed_lines ??
+      DEFAULT_CHANGE_BUDGET.maxTotalChangedLines,
+    maxDeletedFiles:
+      merged.max_deleted_files ?? DEFAULT_CHANGE_BUDGET.maxDeletedFiles,
+    maxChangedFiles:
+      merged.max_changed_files ?? DEFAULT_CHANGE_BUDGET.maxChangedFiles,
+    enforce: merged.enforce ?? DEFAULT_CHANGE_BUDGET.enforce,
+  };
 }
 
 export function resolvePolicy(
@@ -88,6 +113,10 @@ export function resolvePolicy(
     codex,
     limits: {
       gitTimeoutMs: global.limits?.git_timeout_ms ?? DEFAULT_GIT_TIMEOUT_MS,
+      changeBudget: resolveChangeBudget(
+        global.limits?.change_budget,
+        d.change_budget,
+      ),
     },
   };
 }
