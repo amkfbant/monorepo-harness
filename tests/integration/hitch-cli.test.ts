@@ -1,18 +1,28 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { mapHitchErrorExit } from "../../src/cli/hitch.js";
 import { harnessPaths } from "../../src/config/paths.js";
 import { openDb } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
+import {
+  acquireDomainLock,
+  DomainLockBusyError,
+  type DomainLockHandle,
+} from "../../src/workspace/db-domain-lock.js";
 
 const CLI = join(process.cwd(), "src/cli/run.ts");
 
-function runCli(root: string, args: string[]): { out: string; code: number } {
+function runCli(
+  root: string,
+  args: string[],
+  env: Record<string, string> = {},
+): { out: string; code: number } {
   try {
     const out = execFileSync("node", ["--import", "tsx", CLI, ...args], {
-      env: { ...process.env, HARNESS_ROOT: root },
+      env: { ...process.env, ...env, HARNESS_ROOT: root },
     }).toString();
     return { out, code: 0 };
   } catch (e) {
@@ -55,9 +65,98 @@ function setup(): { root: string; scopePath: string; closePath: string } {
   return { root, scopePath, closePath };
 }
 
+function setupProjectFixture(): { root: string; repoPath: string; scopePath: string } {
+  const root = mkdtempSync(join(tmpdir(), "harness-hitch-cli-project-"));
+  mkdirSync(root, { recursive: true });
+  cpSync(join(process.cwd(), "templates"), join(root, "templates"), {
+    recursive: true,
+  });
+  mkdirSync(join(root, "projects"), { recursive: true });
+
+  const repoPath = mkdtempSync(join(tmpdir(), "harness-hitch-cli-repo-"));
+  mkdirSync(join(repoPath, "apps/web/src"), { recursive: true });
+  writeFileSync(
+    join(repoPath, "apps/web/package.json"),
+    JSON.stringify({ name: "@demo/web" }),
+  );
+  writeFileSync(join(repoPath, "apps/web/src/page.ts"), "export const page = 1;\n");
+  execFileSync("git", ["init", "-b", "main", repoPath]);
+  execFileSync("git", ["-C", repoPath, "add", "-A"]);
+  execFileSync("git", [
+    "-C",
+    repoPath,
+    "-c",
+    "user.email=t@example.com",
+    "-c",
+    "user.name=t",
+    "commit",
+    "-m",
+    "init",
+  ]);
+
+  writeFileSync(
+    join(root, "projects", "demo.yaml"),
+    [
+      "version: 1",
+      "project_id: demo",
+      "repo:",
+      "  id: demo",
+      `  path: ${repoPath}`,
+      "  base_branch: main",
+      "policy:",
+      "  template: strict-monorepo-v1",
+      "domains:",
+      "  - id: apps/web",
+      "    root: apps/web",
+      "    kind: app",
+      "",
+    ].join("\n"),
+  );
+
+  const scopePath = join(root, "scope-apps-web.yaml");
+  writeFileSync(
+    scopePath,
+    [
+      "targetFiles:",
+      "  - apps/web/**",
+      "allowedFindingCategories:",
+      "  - correctness",
+      "targetSummary: apps web",
+      "",
+    ].join("\n"),
+  );
+
+  return { root, repoPath, scopePath };
+}
+
 function json<T>(result: { out: string; code: number }): T {
   expect(result.code).toBe(0);
   return JSON.parse(result.out) as T;
+}
+
+function holdAppsWebDomainLock(root: string): {
+  db: ReturnType<typeof openDb>;
+  lock: DomainLockHandle;
+} {
+  const db = openDb(harnessPaths(root).dbPath);
+  runMigrations(db);
+  const lock = acquireDomainLock(db, {
+    domainKey: "demo::apps/web",
+    repoId: "demo",
+    domain: "apps/web",
+    runId: "holder-run",
+    pid: process.pid,
+    hostname: "test-host",
+  });
+  return { db, lock };
+}
+
+function releaseHeldLock(held: { db: ReturnType<typeof openDb>; lock: DomainLockHandle }): void {
+  try {
+    held.lock.release({ reason: "test cleanup", releasedBy: "test" });
+  } finally {
+    held.db.close();
+  }
 }
 
 describe("hitch CLI", () => {
@@ -551,6 +650,180 @@ describe("hitch CLI", () => {
     expect(r.code).toBe(0);
     expect(r.out).toMatch(/decision=/);
     expect(r.out).toMatch(/next-action=/);
+  });
+
+  it("maps hitch orchestrate domain-lock contention to deferred exit 1", () => {
+    const { root, repoPath, scopePath } = setupProjectFixture();
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch",
+        "start",
+        "--title",
+        "Lock busy",
+        "--project",
+        "demo",
+        "--domain",
+        "apps/web",
+        "--scope-file",
+        scopePath,
+        "--json",
+      ]),
+    );
+    expect(
+      runCli(root, [
+        "hitch",
+        "finding",
+        "add",
+        hitch.hitchId,
+        "--severity",
+        "P1",
+        "--category",
+        "correctness",
+        "--summary",
+        "Fix the page",
+        "--file",
+        "apps/web/src/page.ts",
+        "--scope",
+        "in-scope",
+      ]).code,
+    ).toBe(0);
+    const before = json<{ session: { status: string } }>(
+      runCli(root, ["hitch", "status", hitch.hitchId, "--json"]),
+    );
+
+    const held = holdAppsWebDomainLock(root);
+    try {
+      const result = runCli(
+        root,
+        ["hitch", "orchestrate", hitch.hitchId, "--repo", repoPath, "--max-steps", "1"],
+        { HARNESS_CODEX_BIN: join(root, "missing-codex") },
+      );
+      expect(result.code).toBe(1);
+      expect(result.out).toContain("harness error:");
+      expect(result.out).toContain("hitch deferred/lock_busy");
+      expect(result.out).toContain("DomainLockBusyError");
+    } finally {
+      releaseHeldLock(held);
+    }
+
+    const after = json<{ session: { status: string } }>(
+      runCli(root, ["hitch", "status", hitch.hitchId, "--json"]),
+    );
+    expect(after.session.status).toBe(before.session.status);
+    expect(after.session.status).toBe("open");
+  });
+
+  it("maps classify --then-rerun domain-lock contention to deferred exit 1", () => {
+    const { root, repoPath, scopePath } = setupProjectFixture();
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch",
+        "start",
+        "--title",
+        "Classify lock busy",
+        "--project",
+        "demo",
+        "--domain",
+        "apps/web",
+        "--scope-file",
+        scopePath,
+        "--json",
+      ]),
+    );
+    const finding = json<{ finding: { findingId: string } }>(
+      runCli(root, [
+        "hitch",
+        "finding",
+        "add",
+        hitch.hitchId,
+        "--severity",
+        "P1",
+        "--category",
+        "correctness",
+        "--summary",
+        "Classify me",
+        "--file",
+        "apps/web/src/page.ts",
+        "--scope",
+        "unknown",
+        "--json",
+      ]),
+    );
+
+    const held = holdAppsWebDomainLock(root);
+    try {
+      const result = runCli(
+        root,
+        [
+          "hitch",
+          "finding",
+          "classify",
+          finding.finding.findingId,
+          "--scope",
+          "in-scope",
+          "--reason",
+          "belongs to this hitch",
+          "--then-rerun",
+          "--repo",
+          repoPath,
+          "--max-steps",
+          "1",
+        ],
+        { HARNESS_CODEX_BIN: join(root, "missing-codex") },
+      );
+      expect(result.code).toBe(1);
+      expect(result.out).toContain("harness error:");
+      expect(result.out).toContain("hitch deferred/lock_busy");
+      expect(result.out).toContain("DomainLockBusyError");
+    } finally {
+      releaseHeldLock(held);
+    }
+
+    const status = json<{ session: { status: string } }>(
+      runCli(root, ["hitch", "status", hitch.hitchId, "--json"]),
+    );
+    expect(status.session.status).toBe("open");
+  });
+
+  it("maps wrapped transient lease causes through the hitch exit mapping", () => {
+    const busy = new DomainLockBusyError("demo::apps/web", {
+      runId: "holder-run",
+      pid: 123,
+      hostname: "host",
+      expiresAt: "2026-06-14T00:00:00.000Z",
+    });
+    const mapped = mapHitchErrorExit(new Error("outer", { cause: busy }));
+    expect(mapped).toEqual({
+      code: 1,
+      message:
+        "hitch deferred/lock_busy (DomainLockBusyError): " + busy.message,
+    });
+  });
+
+  it("maps non-hitch domain-lock contention escaping to the top-level handler as exit 1", () => {
+    const { root } = setupProjectFixture();
+    const held = holdAppsWebDomainLock(root);
+    try {
+      const result = runCli(
+        root,
+        [
+          "run",
+          "--project",
+          "demo",
+          "--domain",
+          "apps/web",
+          "--goal",
+          "noop",
+        ],
+        { HARNESS_CODEX_BIN: join(root, "missing-codex") },
+      );
+      expect(result.code).toBe(1);
+      expect(result.out).toContain("harness error:");
+      expect(result.out).toContain("retryable domain lease contention");
+      expect(result.out).toContain("DomainLockBusyError");
+    } finally {
+      releaseHeldLock(held);
+    }
   });
 
   it("exits nonzero when convergence needs classification", () => {

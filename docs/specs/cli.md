@@ -471,6 +471,13 @@ reason・actor・timestamp・`detail`）と `tokenUsage`（per-hitch の `run_us
 `check-convergence` は `diverging` / `budget_exhausted` / `escalate` で exit 2。
 MCP 経由の hitch close/cancel/scope expansion は confirmation-required。
 
+`hitch orchestrate` と `hitch finding classify --then-rerun` は、coder 実行中の
+domain lease contention（`DomainLockBusyError` / `LeaseLostError` /
+`LeaseGuardFailedError`）を retryable defer として surface する。exit code は `1`、
+stderr は `harness error: hitch deferred/lock_busy ...`、hitch の状態は既存の
+runnable 状態のまま維持する。認識できない例外は従来どおり exit `2`（unexpected）で、
+CLI はこの error message を状態遷移には使わない。
+
 `hitch reopen`（#76）は **terminal な hitch**（`closed` / `budget_exhausted` / `escalated`）を
 `open` に戻し、後から判明した finding を**既存ブランチ上で**修正できるようにする
 （PR クローズ＆再実装を避ける）。`updateStatus` が COALESCE で残す terminal マーカー

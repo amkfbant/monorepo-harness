@@ -45,6 +45,7 @@ import { importKnowledgeEntries } from "../db/import/knowledge.js";
 import { emptyCounters } from "../db/import/common.js";
 import {
   DomainLockBusyError,
+  findTransientLeaseCause,
   listActiveDomainLocks,
   releaseDomainLockByDomain,
 } from "../workspace/db-domain-lock.js";
@@ -4528,6 +4529,14 @@ function rejectUnknownTopLevelCommandBeforeDefaultRun(
 
 rejectUnknownTopLevelCommandBeforeDefaultRun(program, process.argv);
 program.parseAsync(process.argv).catch((e: unknown) => {
+  const lease = findTransientLeaseCause(e);
+  if (lease !== undefined) {
+    process.stderr.write(
+      `harness error: retryable domain lease contention ` +
+        `(${lease.name}): ${lease.message}\n`,
+    );
+    process.exit(1);
+  }
   process.stderr.write(`harness error: ${(e as Error).message}\n`);
   // user-fixable conditions (e.g. legacy-file rows pending migration) →
   // exit 1 so scripts can branch on it cleanly. Truly unexpected errors

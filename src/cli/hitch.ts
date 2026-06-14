@@ -38,6 +38,7 @@ import {
   awaitStepFromCloseResult,
   type AwaitMergeStep,
 } from "../hitch/await-merge.js";
+import { findTransientLeaseCause } from "../workspace/db-domain-lock.js";
 import { classifyChainDecision } from "../hitch/classify-rerun.js";
 import { linkAgentWorkspaceToHitch } from "../workspace/workspace-hitch-link.js";
 import { decideOrchestratorAction } from "../hitch/orchestrator-dispatch.js";
@@ -1731,11 +1732,28 @@ async function withHitchErrorExitAsync(fn: () => Promise<void>): Promise<void> {
 }
 
 function hitchError(e: unknown): never {
-  if (e instanceof HitchCliError || e instanceof DbError || e instanceof BacklogError) {
-    process.stderr.write(`harness error: ${e.message}\n`);
-    process.exit(1);
+  const mapped = mapHitchErrorExit(e);
+  if (mapped !== null) {
+    process.stderr.write(`harness error: ${mapped.message}\n`);
+    process.exit(mapped.code);
   }
   throw e;
+}
+
+export function mapHitchErrorExit(
+  e: unknown,
+): { code: 1; message: string } | null {
+  const lease = findTransientLeaseCause(e);
+  if (lease !== undefined) {
+    return {
+      code: 1,
+      message: `hitch deferred/lock_busy (${lease.name}): ${lease.message}`,
+    };
+  }
+  if (e instanceof HitchCliError || e instanceof DbError || e instanceof BacklogError) {
+    return { code: 1, message: e.message };
+  }
+  return null;
 }
 
 class HitchCliError extends Error {
