@@ -21,6 +21,9 @@ import {
 } from "../../../src/mcp/security/confirmation.js";
 import { processReviewDecision } from "../../../src/core/review-processor.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
+import { ReviewRulesRepository } from "../../../src/db/repositories/review-rules.js";
+import { ReviewerRepository } from "../../../src/db/repositories/reviewers.js";
+import type { ReviewRule } from "../../../src/core/review-rule.js";
 
 function freshRoot(seed: (db: Database.Database, root: string) => void = () => {}): string {
   const root = mkdtempSync(join(tmpdir(), "harness-mcp-mut-"));
@@ -206,6 +209,74 @@ function seedReviewableRun(
      VALUES (?, 'codex-reviewer', ?, '[]', '[]', '[]',
              '2026-05-25T01:00:00Z', ?, ?, '2026-05-25T01:00:00Z')`,
   ).run(input.runId, input.decision ?? "approved", yaml, sourceSha256);
+  return { proposalId: Number(inserted.lastInsertRowid), sourceSha256 };
+}
+
+function seedConsensusRule(db: Database.Database, runId: string): void {
+  const rule: ReviewRule = {
+    mode: "consensus",
+    requirements: [
+      {
+        group: "humans",
+        minApprovals: 1,
+        blockingDecisions: ["changes_requested", "rejected"],
+        quorum: { minParticipants: 2 },
+      },
+    ],
+    overrides: { allowedReviewers: [], requireReason: true },
+    staleProposal: { rejectSuperseded: true },
+  };
+  const reviewers = new ReviewerRepository(db);
+  reviewers.add({
+    reviewerId: "reviewer-approved",
+    reviewerType: "human",
+    displayName: "Approved reviewer",
+    groupId: "humans",
+  });
+  reviewers.add({
+    reviewerId: "reviewer-blocking",
+    reviewerType: "human",
+    displayName: "Blocking reviewer",
+    groupId: "humans",
+  });
+  const rules = new ReviewRulesRepository(db);
+  const template = rules.upsertRuleTemplate({ source: "manual", rule });
+  rules.snapshotForRun({ runId, template });
+}
+
+function insertReviewProposal(
+  db: Database.Database,
+  input: {
+    runId: string;
+    reviewer: string;
+    decision: "approved" | "changes_requested" | "rejected";
+    requiredChanges?: string[];
+    reviewedAt: string;
+  },
+): { proposalId: number; sourceSha256: string } {
+  const yaml = reviewDecisionYaml({
+    runId: input.runId,
+    reviewer: input.reviewer,
+    decision: input.decision,
+    requiredChanges: input.requiredChanges ?? [],
+  });
+  const sourceSha256 = sha256Text(yaml);
+  const inserted = db.prepare(
+    `INSERT INTO review_proposals
+       (run_id, reviewer, decision, required_changes_json,
+        non_blocking_comments_json, out_of_scope_suggestions_json,
+        reviewed_at, source_yaml, source_sha256, created_at)
+     VALUES (?, ?, ?, ?, '[]', '[]', ?, ?, ?, ?)`,
+  ).run(
+    input.runId,
+    input.reviewer,
+    input.decision,
+    JSON.stringify(input.requiredChanges ?? []),
+    input.reviewedAt,
+    yaml,
+    sourceSha256,
+    input.reviewedAt,
+  );
   return { proposalId: Number(inserted.lastInsertRowid), sourceSha256 };
 }
 
@@ -2169,6 +2240,120 @@ describe("MCP mutation, confirmation, and audit", () => {
 	    expect(competingConfirm.status).toBe("error");
 	    expect(competingConfirm.summary).toContain("only needs_review can be processed");
 	  });
+
+  it("imports MCP review.process+hitchId consensus results through the canonical selector", async () => {
+    const root = freshRoot((db, harnessRoot) => {
+      seedProject(db);
+      const runId = "run-review-consensus-hitch";
+      seedReviewableRun(db, harnessRoot, {
+        runId,
+        decision: "approved",
+      });
+      db.prepare("DELETE FROM review_proposals WHERE run_id = ?").run(runId);
+      seedConsensusRule(db, runId);
+      const blocking = insertReviewProposal(db, {
+        runId,
+        reviewer: "reviewer-blocking",
+        decision: "changes_requested",
+        requiredChanges: ["Fix the DB-canonical blocker"],
+        reviewedAt: "2026-05-25T01:00:00Z",
+      });
+      const approved = insertReviewProposal(db, {
+        runId,
+        reviewer: "reviewer-approved",
+        decision: "approved",
+        reviewedAt: "2026-05-25T01:30:00Z",
+      });
+      new HitchRepository(db).createSession({
+        hitchId: "h-consensus-mcp",
+        title: "Consensus MCP",
+        projectId: "demo",
+        repoId: "demo-repo",
+        domain: "apps/web",
+        closeConditions: [
+          { id: "review-ok", kind: "review_consensus", required: true },
+        ],
+        createdBy: "test",
+        createdSource: "mcp",
+      });
+      new HitchRepository(db).createAttempt({
+        hitchId: "h-consensus-mcp",
+        attemptType: "implement",
+      });
+      expect(blocking.proposalId).not.toBe(approved.proposalId);
+    });
+    const expected = readDb(root, (db) => {
+      const rows = db
+        .prepare(
+          `SELECT reviewer AS name, proposal_id
+             FROM review_proposals
+            WHERE run_id = 'run-review-consensus-hitch'`,
+        )
+        .all() as Array<{ name: "reviewer-blocking" | "reviewer-approved"; proposal_id: number }>;
+      return {
+        blocking: rows.find((row) => row.name === "reviewer-blocking")!.proposal_id,
+        approved: rows.find((row) => row.name === "reviewer-approved")!.proposal_id,
+      } as {
+        blocking: number;
+        approved: number;
+      };
+    });
+    const s = server(root, {
+      ...DEFAULT_MCP_CONFIG,
+      defaultMode: "guarded-mutation",
+      allowedProjects: ["demo"],
+      allowedOperations: ["review.process"],
+    });
+    const pending = await callTool(s, "harness.review.process", {
+      runId: "run-review-consensus-hitch",
+      decision: "approved",
+      hitchId: "h-consensus-mcp",
+      idempotencyKey: "review-consensus-hitch-1",
+    });
+
+    expect(pending.status).toBe("confirmation_required");
+    expect(pending.data.preview.data.proposal.proposalId).toBe(expected.approved);
+
+    const confirmed = await confirmMcpRequest({
+      harnessRoot: root,
+      confirmationId: pending.confirmationId,
+      confirmedBy: "human",
+    });
+
+    expect(confirmed.status).toBe("operation_started");
+    const imported = readDb(root, (db) => {
+      const cycle = db
+        .prepare(
+          `SELECT source_review_id, source_run_id
+             FROM hitch_review_cycles
+            WHERE hitch_id = 'h-consensus-mcp'
+            ORDER BY cycle_id DESC
+            LIMIT 1`,
+        )
+        .get() as { source_review_id: string | null; source_run_id: string };
+      const finding = db
+        .prepare(
+          `SELECT summary FROM hitch_findings
+            WHERE hitch_id = 'h-consensus-mcp'
+              AND category = 'review-required-change'`,
+        )
+        .get() as { summary: string };
+      const check = db
+        .prepare(
+          `SELECT status, evidence_json FROM hitch_close_checks
+            WHERE hitch_id = 'h-consensus-mcp'
+              AND condition_id = 'review-ok'`,
+        )
+        .get() as { status: string; evidence_json: string };
+      return { cycle, finding, check };
+    });
+    expect(imported.cycle.source_run_id).toBe("run-review-consensus-hitch");
+    expect(JSON.parse(imported.check.evidence_json).proposalId).toBe(
+      expected.blocking,
+    );
+    expect(imported.finding.summary).toBe("Fix the DB-canonical blocker");
+    expect(imported.check.status).toBe("failed");
+  });
 
   it("keeps pr.create preview and confirmed execution on the run base branch", async () => {
     const root = freshRoot((db) => {

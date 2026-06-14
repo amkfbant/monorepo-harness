@@ -603,7 +603,12 @@ effect.
 validates the hitch's project/repo/domain boundary against the target project or
 run and writes hitch attempt/review-cycle records after the operation succeeds.
 A project-scoped or domain-scoped hitch is rejected for an unscoped or mismatched
-run.
+run. For `review.process` in consensus mode, the hitch review import uses the
+same DB-canonical consensus selector as the orchestrator path after processing;
+it does not import the participant proposal that happened to be bound at
+confirmation time. If the active consensus row is malformed or references a
+missing proposal, the mutation fails closed instead of falling back to the latest
+processed participant proposal.
 
 Dangerous mutations, confirmation-required by default:
 

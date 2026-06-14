@@ -428,6 +428,248 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
     }
   });
 
+  it("fails closed instead of falling back to latest processed when active consensus is malformed", () => {
+    const { dbPath } = createHarnessRoot(
+      "harness-orch-review-consensus-malformed-",
+    );
+    const runId = "run-consensus-malformed";
+    const reviewedAt = "2026-06-13T00:00:00.000Z";
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, source_mode, db_revision, export_status, updated_at, meta_json)
+         VALUES (?, 't', 'docs', 'domain-coding', 'main',
+           'changes_requested', 'db-first', 1, 'disabled', ?, '{}')`,
+      ).run(runId, reviewedAt);
+      const latestProcessedId = insertProcessedProposal({
+        db,
+        runId,
+        reviewer: "reviewer-latest",
+        decision: "approved",
+        reviewedAt,
+        reviewDecisionId: "decision-latest",
+      });
+      expect(
+        new ReviewProposalRepository(db).getLatestProcessedProposal(runId)
+          ?.proposalId,
+      ).toBe(latestProcessedId);
+      db.prepare(
+        `INSERT INTO review_consensus (
+           run_id, rule_sha256, status, summary_json, evaluated_at,
+           evaluated_by, source_proposals_json
+         )
+         VALUES (?, 'rule-sha', 'changes_requested', '{not-json', ?, 'review.process', '[]')`,
+      ).run(runId, reviewedAt);
+
+      expect(() => selectProcessedProposalForReviewImport({ db, runId })).toThrow(
+        /refusing to import latest processed participant proposal/,
+      );
+    } finally {
+      close();
+    }
+  });
+
+  it("fails closed when active consensus status has no matching proposal trace", () => {
+    const { dbPath } = createHarnessRoot(
+      "harness-orch-review-consensus-inconsistent-",
+    );
+    const runId = "run-consensus-inconsistent";
+    const reviewedAt = "2026-06-13T00:00:00.000Z";
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, source_mode, db_revision, export_status, updated_at, meta_json)
+         VALUES (?, 't', 'docs', 'domain-coding', 'main',
+           'changes_requested', 'db-first', 1, 'disabled', ?, '{}')`,
+      ).run(runId, reviewedAt);
+      const approvedProposalId = insertProcessedProposal({
+        db,
+        runId,
+        reviewer: "reviewer-approved",
+        decision: "approved",
+        reviewedAt,
+        reviewDecisionId: "decision-approved",
+      });
+      db.prepare(
+        `INSERT INTO review_consensus (
+           run_id, rule_sha256, status, summary_json, evaluated_at,
+           evaluated_by, source_proposals_json
+         )
+         VALUES (?, 'rule-sha', 'changes_requested', ?, ?, 'review.process', ?)`,
+      ).run(
+        runId,
+        JSON.stringify({
+          proposals: [
+            {
+              proposalId: approvedProposalId,
+              reviewerId: "reviewer-approved",
+              groupId: "codex",
+              decision: "approved",
+            },
+          ],
+        }),
+        reviewedAt,
+        JSON.stringify([approvedProposalId]),
+      );
+
+      expect(() => selectProcessedProposalForReviewImport({ db, runId })).toThrow(
+        /has no canonical proposal trace; refusing to import latest processed participant proposal/,
+      );
+    } finally {
+      close();
+    }
+  });
+
+  it("fails closed when active consensus points at a processed proposal from another run", () => {
+    const { dbPath } = createHarnessRoot(
+      "harness-orch-review-consensus-cross-run-",
+    );
+    const runId = "run-consensus-cross-run";
+    const otherRunId = "run-consensus-other";
+    const reviewedAt = "2026-06-13T00:00:00.000Z";
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      for (const id of [runId, otherRunId]) {
+        db.prepare(
+          `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+             status, source_mode, db_revision, export_status, updated_at,
+             meta_json)
+           VALUES (?, 't', 'docs', 'domain-coding', 'main',
+             'changes_requested', 'db-first', 1, 'disabled', ?, '{}')`,
+        ).run(id, reviewedAt);
+      }
+      const latestProcessedId = insertProcessedProposal({
+        db,
+        runId,
+        reviewer: "reviewer-latest",
+        decision: "approved",
+        reviewedAt,
+        reviewDecisionId: "decision-latest",
+      });
+      const otherProposalId = insertProcessedProposal({
+        db,
+        runId: otherRunId,
+        reviewer: "reviewer-other",
+        decision: "changes_requested",
+        requiredChanges: ["Other run blocker must never be imported."],
+        reviewedAt,
+        reviewDecisionId: "decision-other",
+      });
+      expect(
+        new ReviewProposalRepository(db).getLatestProcessedProposal(runId)
+          ?.proposalId,
+      ).toBe(latestProcessedId);
+      db.prepare(
+        `INSERT INTO review_consensus (
+           run_id, rule_sha256, status, summary_json, evaluated_at,
+           evaluated_by, source_proposals_json
+         )
+         VALUES (?, 'rule-sha', 'changes_requested', ?, ?, 'review.process', ?)`,
+      ).run(
+        runId,
+        JSON.stringify({
+          proposals: [
+            {
+              proposalId: otherProposalId,
+              reviewerId: "reviewer-other",
+              groupId: "codex",
+              decision: "changes_requested",
+            },
+          ],
+        }),
+        reviewedAt,
+        JSON.stringify([otherProposalId]),
+      );
+
+      expect(() => selectProcessedProposalForReviewImport({ db, runId })).toThrow(
+        /from run-consensus-other; refusing to import latest processed participant proposal/,
+      );
+    } finally {
+      close();
+    }
+  });
+
+  it("fails closed when active consensus points at an unprocessed proposal", () => {
+    const { dbPath } = createHarnessRoot(
+      "harness-orch-review-consensus-unprocessed-",
+    );
+    const runId = "run-consensus-unprocessed";
+    const reviewedAt = "2026-06-13T00:00:00.000Z";
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, source_mode, db_revision, export_status, updated_at,
+           meta_json)
+         VALUES (?, 't', 'docs', 'domain-coding', 'main',
+           'changes_requested', 'db-first', 1, 'disabled', ?, '{}')`,
+      ).run(runId, reviewedAt);
+      const latestProcessedId = insertProcessedProposal({
+        db,
+        runId,
+        reviewer: "reviewer-latest",
+        decision: "approved",
+        reviewedAt,
+        reviewDecisionId: "decision-latest",
+      });
+      const sourceYaml = decisionYaml(runId, "changes_requested");
+      const sourceSha = createHash("sha256").update(sourceYaml).digest("hex");
+      const unprocessedProposalId = Number(
+        db
+          .prepare(
+            `INSERT INTO review_proposals (
+               run_id, reviewer, decision, required_changes_json,
+               non_blocking_comments_json, out_of_scope_suggestions_json,
+               reviewed_at, source_yaml, source_sha256, created_at,
+               lifecycle_status
+             )
+             VALUES (?, 'reviewer-unprocessed', 'changes_requested',
+               '["Target run unprocessed blocker must not be imported."]',
+               '[]', '[]', ?, ?, ?, ?, 'active')`,
+          )
+          .run(runId, reviewedAt, sourceYaml, sourceSha, reviewedAt)
+          .lastInsertRowid,
+      );
+      expect(
+        new ReviewProposalRepository(db).getLatestProcessedProposal(runId)
+          ?.proposalId,
+      ).toBe(latestProcessedId);
+      db.prepare(
+        `INSERT INTO review_consensus (
+           run_id, rule_sha256, status, summary_json, evaluated_at,
+           evaluated_by, source_proposals_json
+         )
+         VALUES (?, 'rule-sha', 'changes_requested', ?, ?, 'review.process', ?)`,
+      ).run(
+        runId,
+        JSON.stringify({
+          proposals: [
+            {
+              proposalId: unprocessedProposalId,
+              reviewerId: "reviewer-unprocessed",
+              groupId: "codex",
+              decision: "changes_requested",
+            },
+          ],
+        }),
+        reviewedAt,
+        JSON.stringify([unprocessedProposalId]),
+      );
+
+      expect(() => selectProcessedProposalForReviewImport({ db, runId })).toThrow(
+        /references unprocessed proposal .* refusing to import latest processed participant proposal/,
+      );
+    } finally {
+      close();
+    }
+  });
+
   it("short-circuits an approved processed run without invoking the reviewer", async () => {
     const { harnessRoot, dbPath } = createHarnessRoot(
       "harness-orch-review-redrive-",

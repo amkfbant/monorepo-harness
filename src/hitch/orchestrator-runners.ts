@@ -38,10 +38,7 @@ import {
   type AutoMergeTier,
 } from "../core/automerge-tiers.js";
 import { loadAutoMergeSensitivityMap } from "../core/automerge-tiers-config.js";
-import {
-  ReviewProposalRepository,
-  type ReviewProposalRow,
-} from "../db/repositories/review-proposals.js";
+import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
 import { ReviewConsensusRepository } from "../db/repositories/review-consensus.js";
 import { ReviewOverridesRepository } from "../db/repositories/review-overrides.js";
 import {
@@ -56,7 +53,6 @@ import {
 } from "../core/copilot-review-run.js";
 import {
   REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS,
-  type ConsensusStatus,
   type ConsensusSummary,
 } from "../core/review-consensus.js";
 import {
@@ -79,6 +75,7 @@ import { assertHitchCanStartMutation } from "./mutation-gate.js";
 import {
   importReviewProposalToHitch,
   proposalReviewerAdvisories,
+  selectProcessedProposalForReviewImport,
 } from "./review-integration.js";
 import { runCommandCloseChecks } from "./orchestrator-close-check-runner.js";
 import { dbConsensusSnapshotProvider } from "./consensus-stall-check.js";
@@ -93,6 +90,8 @@ import type {
   HitchSession,
 } from "./types.js";
 import { findTransientLeaseCause } from "../workspace/db-domain-lock.js";
+
+export { selectProcessedProposalForReviewImport } from "./review-integration.js";
 
 const FINDING_BATCH_LIMIT = 200;
 
@@ -782,63 +781,6 @@ export function tryShortCircuitApprovedDecidedReview(input: {
   });
 
   return { runId: input.runId, decision: "approved" };
-}
-
-export function selectProcessedProposalForReviewImport(input: {
-  db: Database.Database;
-  runId: string;
-}): ReviewProposalRow | null {
-  const proposalRepo = new ReviewProposalRepository(input.db);
-  const activeConsensus = new ReviewConsensusRepository(input.db).findActive(
-    input.runId,
-  );
-  if (activeConsensus === null) {
-    return proposalRepo.getLatestProcessedProposal(input.runId);
-  }
-
-  const proposalId = consensusTraceProposalId(
-    activeConsensus.status,
-    activeConsensus.summaryJson,
-  );
-  if (proposalId !== null) {
-    const proposal = proposalRepo.getById(proposalId);
-    if (proposal !== null) return proposal;
-  }
-
-  return proposalRepo.getLatestProcessedProposal(input.runId);
-}
-
-function consensusTraceProposalId(
-  status: ConsensusStatus,
-  summaryJson: string,
-): number | null {
-  let summary: ConsensusSummary;
-  try {
-    summary = JSON.parse(summaryJson) as ConsensusSummary;
-  } catch {
-    return null;
-  }
-  const included = summary.proposals.filter((proposal) =>
-    Number.isSafeInteger(proposal.proposalId),
-  );
-  const approving = included
-    .filter((proposal) => proposal.decision === "approved")
-    .map((proposal) => proposal.proposalId)
-    .sort((a, b) => a - b);
-  if (status === "approved" && approving.length > 0) {
-    return approving[0] ?? null;
-  }
-
-  const decided = included
-    .filter(
-      (proposal) =>
-        proposal.decision !== "pending" && proposal.decision !== "approved",
-    )
-    .map((proposal) => proposal.proposalId)
-    .sort((a, b) => b - a);
-  if (decided.length > 0) return decided[0] ?? null;
-
-  return approving[0] ?? null;
 }
 
 function closeConditionLabel(condition: HitchCloseCondition): string {

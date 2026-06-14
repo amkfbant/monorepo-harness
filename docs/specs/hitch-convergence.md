@@ -303,8 +303,13 @@ process result is not available) as the state basis. An aggregate `approved`
 decision never imports blocking `required_change` or `negative_decision`
 findings from a non-approving participant proposal; advisory
 `non_blocking_comment` findings and forced out-of-scope suggestions are still
-imported. If the canonical decision is undeterminable, import fails closed and
-keeps the proposal's blocking findings instead of suppressing them.
+imported. When the canonical decision is `changes_requested` or `rejected`,
+blocking hitch findings are generated from the DB-canonical aggregate
+`review_required_changes` rows, not from any single participant proposal's
+self-reported `requiredChanges`. If the active consensus row cannot be parsed,
+does not identify a trace proposal, or references a missing proposal, review
+import fails closed instead of falling back to the latest processed participant
+proposal.
 Generic reviewer advisories that only say tests/checks were not run, could not
 be run in the review environment, that command logs/output are missing, or that
 observed command/test logs passed successfully are not imported as hitch

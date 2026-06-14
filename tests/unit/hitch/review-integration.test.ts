@@ -1,18 +1,27 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { processReviewDecision } from "../../../src/core/review-processor.js";
+import type { ReviewRule } from "../../../src/core/review-rule.js";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { ReviewProposalRepository } from "../../../src/db/repositories/review-proposals.js";
+import { ReviewRulesRepository } from "../../../src/db/repositories/review-rules.js";
+import { ReviewerRepository } from "../../../src/db/repositories/reviewers.js";
 import {
   latestHitchAttemptForRun,
   recordHitchAttemptForOperationResult,
 } from "../../../src/hitch/operation-integration.js";
 import { ConvergenceService } from "../../../src/hitch/convergence.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
-import { importReviewProposalToHitch } from "../../../src/hitch/review-integration.js";
+import {
+  importReviewProposalToHitch,
+  selectProcessedProposalForReviewImport,
+} from "../../../src/hitch/review-integration.js";
+
+const DEFAULT_RUN_ID = "run-review";
 
 function fresh(): {
   db: ReturnType<typeof openDb>;
@@ -25,11 +34,79 @@ function fresh(): {
   db.prepare(
     `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
        status, source_mode, db_revision, export_status, updated_at, meta_json)
-     VALUES ('run-review', 'repo', 'apps/web', 'domain-coding', 'main',
+     VALUES (?, 'repo', 'apps/web', 'domain-coding', 'main',
        'needs_review', 'db-first', 1, 'disabled',
        '2026-05-26T00:00:00.000Z', '{}')`,
-  ).run();
+  ).run(DEFAULT_RUN_ID);
   return {
+    db,
+    goals: new HitchRepository(db),
+    proposals: new ReviewProposalRepository(db),
+  };
+}
+
+function consensusRule(): ReviewRule {
+  return {
+    mode: "consensus",
+    requirements: [
+      {
+        group: "humans",
+        minApprovals: 1,
+        blockingDecisions: ["changes_requested", "rejected"],
+        quorum: { minParticipants: 2 },
+      },
+    ],
+    overrides: { allowedReviewers: [], requireReason: true },
+    staleProposal: { rejectSuperseded: true },
+  };
+}
+
+function freshConsensus(): {
+  root: string;
+  runsDir: string;
+  dbPath: string;
+  db: ReturnType<typeof openDb>;
+  goals: HitchRepository;
+  proposals: ReviewProposalRepository;
+} {
+  const root = mkdtempSync(join(tmpdir(), "harness-goal-review-consensus-"));
+  mkdirSync(join(root, ".harness"), { recursive: true });
+  const runsDir = join(root, "runs");
+  mkdirSync(runsDir, { recursive: true });
+  const dbPath = join(root, ".harness", "harness.sqlite");
+  const db = openDb(dbPath);
+  runMigrations(db);
+  db.prepare(
+    `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+       status, source_mode, db_revision, export_status, started_at,
+       updated_at, meta_json)
+     VALUES ('run-consensus-e2e', 'repo', 'apps/web', 'domain-coding', 'main',
+       'needs_review', 'db-first', 1, 'disabled',
+       '2026-05-26T00:00:00.000Z', '2026-05-26T00:00:00.000Z', '{}')`,
+  ).run();
+  const reviewers = new ReviewerRepository(db);
+  reviewers.add({
+    reviewerId: "alice",
+    reviewerType: "human",
+    displayName: "Alice",
+    groupId: "humans",
+  });
+  reviewers.add({
+    reviewerId: "bob",
+    reviewerType: "human",
+    displayName: "Bob",
+    groupId: "humans",
+  });
+  const rules = new ReviewRulesRepository(db);
+  const template = rules.upsertRuleTemplate({
+    source: "manual",
+    rule: consensusRule(),
+  });
+  rules.snapshotForRun({ runId: "run-consensus-e2e", template });
+  return {
+    root,
+    runsDir,
+    dbPath,
     db,
     goals: new HitchRepository(db),
     proposals: new ReviewProposalRepository(db),
@@ -39,6 +116,7 @@ function fresh(): {
 function createProposal(
   proposals: ReviewProposalRepository,
   input: {
+    runId?: string;
     reviewer?: string;
     decision: "approved" | "changes_requested" | "rejected";
     requiredChanges?: string[];
@@ -54,7 +132,7 @@ function createProposal(
     "",
   ].join("\n");
   const inserted = proposals.insertProposal({
-    runId: "run-review",
+    runId: input.runId ?? DEFAULT_RUN_ID,
     reviewer: input.reviewer ?? "codex-review",
     decision: input.decision,
     requiredChanges: input.requiredChanges ?? [],
@@ -82,13 +160,17 @@ function markProcessed(
 function insertReviewDecision(
   db: ReturnType<typeof openDb>,
   input: {
+    runId?: string;
     decision: "approved" | "changes_requested" | "rejected";
     reviewedAt?: string;
+    requiredChanges?: string[];
   },
 ): void {
+  const runId = input.runId ?? DEFAULT_RUN_ID;
+  const requiredChanges = input.requiredChanges ?? [];
   const sourceYaml = [
     "decision: " + input.decision,
-    "required_changes: []",
+    `required_changes: ${JSON.stringify(requiredChanges)}`,
     "non_blocking_comments: []",
     "out_of_scope_suggestions: []",
     "",
@@ -96,13 +178,21 @@ function insertReviewDecision(
   db.prepare(
     `INSERT INTO review_decisions (run_id, decision, reviewer, summary,
        reviewed_at, source_yaml, source_sha256)
-     VALUES ('run-review', ?, 'consensus', 'aggregate decision', ?, ?, ?)`,
+     VALUES (?, ?, 'consensus', 'aggregate decision', ?, ?, ?)`,
   ).run(
+    runId,
     input.decision,
     input.reviewedAt ?? "2026-05-26T00:01:00.000Z",
     sourceYaml,
     createHash("sha256").update(sourceYaml).digest("hex"),
   );
+  const stmt = db.prepare(
+    `INSERT INTO review_required_changes (run_id, idx, change_text)
+     VALUES (?, ?, ?)`,
+  );
+  requiredChanges.forEach((change, index) => {
+    stmt.run(runId, index, change);
+  });
 }
 
 describe("goal review integration", () => {
@@ -158,6 +248,140 @@ describe("goal review integration", () => {
         scopeStatus: "out_of_scope",
         lifecycleStatus: "out_of_scope",
       });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("imports DB-canonical aggregate required changes for non-approved consensus", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      goals.createSession({
+        hitchId: "goal-review-aggregate",
+        title: "Goal review aggregate",
+        projectId: "demo",
+        domain: "goal",
+        scope: {
+          targetSummary: "goal convergence controller",
+          targetFiles: ["src/goal/**"],
+        },
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const proposal = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "changes_requested",
+        requiredChanges: ["Only reviewer A local blocker"],
+      });
+      insertReviewDecision(db, {
+        decision: "changes_requested",
+        requiredChanges: [
+          "Reviewer A canonical blocker",
+          "Reviewer B canonical blocker",
+        ],
+      });
+
+      const imported = importReviewProposalToHitch({
+        repository: goals,
+        hitchId: "goal-review-aggregate",
+        proposal,
+        processResult: {
+          runId: "run-review",
+          previousStatus: "needs_review",
+          newStatus: "changes_requested",
+          reviewer: "consensus",
+          reviewedAt: "2026-05-26T00:01:00.000Z",
+          warnings: [],
+        },
+        createdBy: "test",
+      });
+
+      expect(imported.cycle.findingsSeen).toBe(2);
+      const required = goals
+        .listFindings({ hitchId: "goal-review-aggregate" })
+        .filter((f) => f.category === "review-required-change")
+        .map((f) => f.summary)
+        .sort();
+      expect(required).toEqual([
+        "Reviewer A canonical blocker",
+        "Reviewer B canonical blocker",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("imports all consensus-mode aggregate required changes after review processing", async () => {
+    const { root, runsDir, dbPath, db, goals, proposals } = freshConsensus();
+    try {
+      goals.createSession({
+        hitchId: "goal-review-consensus-e2e",
+        title: "Goal review consensus e2e",
+        projectId: "demo",
+        domain: "goal",
+        scope: {
+          targetSummary: "goal convergence controller",
+          targetFiles: ["src/goal/**"],
+        },
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      createProposal(proposals, {
+        runId: "run-consensus-e2e",
+        reviewer: "alice",
+        decision: "changes_requested",
+        requiredChanges: ["Alice canonical blocker"],
+      });
+      createProposal(proposals, {
+        runId: "run-consensus-e2e",
+        reviewer: "bob",
+        decision: "changes_requested",
+        requiredChanges: ["Bob canonical blocker"],
+      });
+
+      const processResult = await processReviewDecision({
+        runsDir,
+        runId: "run-consensus-e2e",
+        locksDir: join(root, "locks"),
+        dbPath,
+        now: new Date("2026-05-26T00:01:00.000Z"),
+      });
+
+      expect(processResult.newStatus).toBe("changes_requested");
+      expect(
+        db
+          .prepare(
+            `SELECT change_text FROM review_required_changes
+             WHERE run_id = 'run-consensus-e2e'
+             ORDER BY idx ASC`,
+          )
+          .all()
+          .map((row) => (row as { change_text: string }).change_text)
+          .sort(),
+      ).toEqual(["Alice canonical blocker", "Bob canonical blocker"]);
+
+      const proposal = selectProcessedProposalForReviewImport({
+        db,
+        runId: "run-consensus-e2e",
+      });
+      expect(proposal?.processedAt).not.toBeNull();
+
+      const imported = importReviewProposalToHitch({
+        repository: goals,
+        hitchId: "goal-review-consensus-e2e",
+        proposal: proposal!,
+        processResult,
+        createdBy: "test",
+      });
+
+      expect(imported.cycle.findingsSeen).toBe(2);
+      expect(
+        goals
+          .listFindings({ hitchId: "goal-review-consensus-e2e" })
+          .filter((f) => f.category === "review-required-change")
+          .map((f) => f.summary)
+          .sort(),
+      ).toEqual(["Alice canonical blocker", "Bob canonical blocker"]);
     } finally {
       db.close();
     }
@@ -610,6 +834,10 @@ describe("goal review integration", () => {
         decision: "changes_requested",
         requiredChanges: ["Review integration must preserve required changes."],
         nonBlockingComments: ["Tests were not run in this environment."],
+      });
+      insertReviewDecision(db, {
+        decision: "changes_requested",
+        requiredChanges: ["Review integration must preserve required changes."],
       });
 
       const imported = importReviewProposalToHitch({
