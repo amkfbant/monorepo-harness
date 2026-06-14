@@ -8,6 +8,7 @@ import {
   HitchRepository,
   OPEN_FINDING_LIFECYCLES,
 } from "../../../src/hitch/repository.js";
+import { ConvergenceService } from "../../../src/hitch/convergence.js";
 import {
   DEFAULT_HITCH_POLICY,
   HARNESS_ORIGIN_FINDING_SOURCES,
@@ -229,7 +230,7 @@ describe("HitchRepository", () => {
           sourceCycleId: cycle2.cycleId,
           severity: "P2",
           category: "correctness",
-          scopeStatus: "out_of_scope",
+          scopeStatus: "in_scope",
           summary: "codex finding",
         });
       }
@@ -345,7 +346,7 @@ describe("HitchRepository", () => {
       });
       const duplicateCanonical = addFinding(repo, {
         source: "review",
-        summary: "operator duplicate reopen canonical",
+        summary: "operator duplicate reopen canonical record",
       });
 
       for (let i = 0; i < 3; i += 1) {
@@ -355,19 +356,18 @@ describe("HitchRepository", () => {
           source: "human",
           severity: "P2",
           category: "correctness",
-          scopeStatus: "out_of_scope",
+          scopeStatus: "in_scope",
           summary: "operator direct reopen",
         });
 
         repo.markFindingFixed({ findingId: duplicateCanonical.findingId });
         repo.upsertFinding({
           hitchId: "goal-test",
-          source: "mcp",
+          source: "human",
           severity: "P2",
           category: "correctness",
-          scopeStatus: "duplicate",
-          summary: `operator duplicate reopen ${i}`,
-          duplicateOf: duplicateCanonical.findingId,
+          scopeStatus: "in_scope",
+          summary: "operator duplicate reopen canonical record again",
         });
       }
 
@@ -393,7 +393,7 @@ describe("HitchRepository", () => {
           source: "review",
           severity: "P2",
           category: "correctness",
-          scopeStatus: "out_of_scope",
+          scopeStatus: "in_scope",
           summary: "operator direct reopen",
         });
       }
@@ -489,6 +489,985 @@ describe("HitchRepository", () => {
       expect(reopened.reopened).toBe(true);
       expect(reopened.finding.lifecycleStatus).toBe("reopened");
       expect(reopened.finding.reopenCount).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([
+    ["out_of_scope", "out_of_scope"],
+    ["deferred", "in_scope"],
+    ["accepted_risk", "in_scope"],
+    ["fixed", "in_scope"],
+  ] as const)(
+    "promotes exact stable-key %s canonicals when an open blocker returns",
+    (lifecycleStatus, scopeStatus) => {
+      const { db, repo } = freshRepo();
+      try {
+        createGoal(repo);
+        const first = repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          severity: "P2",
+          category: "correctness",
+          scopeStatus,
+          lifecycleStatus,
+          summary: "Repository exact dedup must not hide returning blocker",
+        });
+
+        const duplicate = repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          severity: "P1",
+          category: "correctness",
+          scopeStatus: "in_scope",
+          lifecycleStatus: "open",
+          summary: "Repository exact dedup must not hide returning blocker",
+        });
+
+        expect(duplicate).toMatchObject({
+          created: false,
+          reopened: true,
+        });
+        expect(repo.requireFinding(first.finding.findingId)).toMatchObject({
+          scopeStatus: "in_scope",
+          lifecycleStatus: "reopened",
+          severity: "P1",
+          reopenCount: 1,
+        });
+        expect(repo.countFindingSummary("goal-test")).toMatchObject({
+          openInScopeP1: 1,
+        });
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("does not downgrade escalated exact canonicals to reopened when an open blocker returns", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const canonical = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "escalated",
+        summary: "Repository exact dedup must not downgrade escalated blockers",
+      });
+
+      const duplicate = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        summary: "Repository exact dedup must not downgrade escalated blockers",
+      });
+
+      expect(duplicate).toMatchObject({
+        created: false,
+        reopened: false,
+      });
+      expect(repo.requireFinding(canonical.finding.findingId)).toMatchObject({
+        scopeStatus: "in_scope",
+        lifecycleStatus: "escalated",
+        severity: "P1",
+        reopenCount: 0,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not increment exact stable-key promotion reopen counts for operator-origin findings", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const first = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "accepted_risk",
+        summary: "Operator reported blocker should reopen without divergence churn",
+      });
+
+      const duplicate = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "human",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        summary: "Operator reported blocker should reopen without divergence churn",
+      });
+
+      expect(duplicate.reopened).toBe(true);
+      expect(repo.requireFinding(first.finding.findingId)).toMatchObject({
+        lifecycleStatus: "reopened",
+        reopenCount: 0,
+      });
+      expect(repo.countFindingSummary("goal-test")).toMatchObject({
+        openInScopeP1: 1,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not demote exact stable-key canonicals for non-blocking incoming findings", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const first = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        summary: "Repository exact dedup keeps existing blockers blocking",
+      });
+
+      const duplicate = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P3",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        summary: "Repository exact dedup keeps existing blockers blocking",
+      });
+
+      expect(duplicate).toMatchObject({
+        created: false,
+        reopened: false,
+      });
+      expect(repo.requireFinding(first.finding.findingId)).toMatchObject({
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        severity: "P1",
+      });
+      expect(repo.countFindingSummary("goal-test")).toMatchObject({
+        openInScopeP1: 1,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not reopen a fixed exact canonical for non-blocking repeats", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const canonical = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "fixed",
+        summary:
+          "Repository exact dedup keeps fixed advisory repeats out of the blocker set",
+      });
+
+      const repeat = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "out_of_scope",
+        summary:
+          "Repository exact dedup keeps fixed advisory repeats out of the blocker set",
+      });
+
+      expect(repeat).toMatchObject({ created: false, reopened: false });
+      expect(repo.requireFinding(canonical.finding.findingId)).toMatchObject({
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "fixed",
+        reopenCount: 0,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("retains paraphrased near duplicates as duplicate audit rows", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const first = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary:
+          "Review import uses only summary text for finding identity, so paraphrased reviewer findings create new findings every cycle",
+      });
+
+      const duplicate = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P0",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary:
+          "Review import uses only summary text for finding identity; paraphrased reviewer findings create new findings each cycle",
+      });
+
+      expect(duplicate.created).toBe(true);
+      expect(duplicate.finding).toMatchObject({
+        scopeStatus: "duplicate",
+        lifecycleStatus: "duplicate",
+        duplicateOf: first.finding.findingId,
+        severity: "P0",
+      });
+      expect(duplicate.finding.classificationReason).toMatch(
+        /near-duplicate of/,
+      );
+      expect(repo.requireFinding(first.finding.findingId)).toMatchObject({
+        severity: "P0",
+        reopenCount: 0,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reopens a fixed canonical for near duplicates without inflating reopen counts", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const first = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        summary:
+          "Review import uses only summary text for finding identity, so paraphrased reviewer findings create new findings every cycle",
+      });
+      repo.markFindingFixed({ findingId: first.finding.findingId });
+
+      const duplicate = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        summary:
+          "Review import uses only summary text for finding identity; paraphrased reviewer findings create new findings each cycle",
+      });
+
+      expect(duplicate).toMatchObject({
+        created: true,
+        reopened: true,
+      });
+      expect(repo.requireFinding(first.finding.findingId)).toMatchObject({
+        lifecycleStatus: "reopened",
+        severity: "P1",
+        reopenCount: 0,
+      });
+      expect(repo.maxFindingReopenCount("goal-test")).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not reopen a fixed near-duplicate canonical for non-blocking repeats", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const canonical = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        summary:
+          "Review import keeps fixed advisory canonical rows stable when paraphrased repeats arrive",
+      });
+      repo.markFindingFixed({ findingId: canonical.finding.findingId });
+
+      const repeat = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "out_of_scope",
+        summary:
+          "Review import keeps fixed advisory canonical rows stable when paraphrase repeats arrive",
+      });
+
+      expect(repeat).toMatchObject({ created: true, reopened: false });
+      expect(repeat.finding).toMatchObject({
+        scopeStatus: "duplicate",
+        lifecycleStatus: "duplicate",
+        duplicateOf: canonical.finding.findingId,
+      });
+      expect(repo.requireFinding(canonical.finding.findingId)).toMatchObject({
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "fixed",
+        reopenCount: 0,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("promotes out-of-scope near-duplicate canonicals when an in-scope blocker returns", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const outOfScope = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        summary:
+          "Review import uses summary text for finding identity and paraphrased reviewer findings create new findings every cycle",
+      });
+
+      const inScope = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary:
+          "Review import uses summary text for finding identity; paraphrased reviewer findings create new findings each cycle",
+      });
+
+      expect(inScope.created).toBe(true);
+      expect(inScope.finding).toMatchObject({
+        scopeStatus: "duplicate",
+        lifecycleStatus: "duplicate",
+        duplicateOf: outOfScope.finding.findingId,
+      });
+      expect(repo.requireFinding(outOfScope.finding.findingId)).toMatchObject({
+        scopeStatus: "in_scope",
+        lifecycleStatus: "reopened",
+        severity: "P1",
+        reopenCount: 1,
+      });
+      expect(repo.countFindingSummary("goal-test")).toMatchObject({
+        openInScopeP1: 1,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([
+    ["out_of_scope", "out_of_scope", 1],
+    ["deferred", "in_scope", 1],
+    ["accepted_risk", "in_scope", 1],
+    ["fixed", "in_scope", 0],
+  ] as const)(
+    "promotes near-duplicate %s canonicals when an open blocker returns",
+    (lifecycleStatus, scopeStatus, reopenCount) => {
+      const { db, repo } = freshRepo();
+      try {
+        createGoal(repo);
+        const canonical = repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          severity: "P2",
+          category: "correctness",
+          scopeStatus,
+          lifecycleStatus,
+          summary:
+            "Review import uses only summary text for finding identity, so paraphrased reviewer findings create new findings every cycle",
+        });
+
+        const duplicate = repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          severity: "P1",
+          category: "correctness",
+          scopeStatus: "in_scope",
+          lifecycleStatus: "open",
+          summary:
+            "Review import uses only summary text for finding identity; paraphrased reviewer findings create new findings each cycle",
+        });
+
+        expect(duplicate.finding).toMatchObject({
+          scopeStatus: "duplicate",
+          lifecycleStatus: "duplicate",
+          duplicateOf: canonical.finding.findingId,
+        });
+        expect(repo.requireFinding(canonical.finding.findingId)).toMatchObject({
+          scopeStatus: "in_scope",
+          lifecycleStatus: "reopened",
+          severity: "P1",
+          reopenCount,
+        });
+        expect(repo.countFindingSummary("goal-test")).toMatchObject({
+          openInScopeP1: 1,
+        });
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("does not downgrade escalated near-duplicate canonicals to reopened when an open blocker returns", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const canonical = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "escalated",
+        summary:
+          "Review import must keep escalated canonical lifecycle when paraphrased blockers return every cycle",
+      });
+
+      const duplicate = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        summary:
+          "Review import must keep escalated canonical lifecycle when paraphrased blockers return each cycle",
+      });
+
+      expect(duplicate.finding).toMatchObject({
+        scopeStatus: "duplicate",
+        lifecycleStatus: "duplicate",
+        duplicateOf: canonical.finding.findingId,
+      });
+      expect(duplicate.reopened).toBe(false);
+      expect(repo.requireFinding(canonical.finding.findingId)).toMatchObject({
+        scopeStatus: "in_scope",
+        lifecycleStatus: "escalated",
+        severity: "P1",
+        reopenCount: 0,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reopens exact canonicals for unknown-scope close blockers", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.recordCloseCheck({
+        hitchId: "goal-test",
+        conditionId: "typecheck",
+        status: "passed",
+        checkedBy: "test",
+      });
+      const canonical = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "accepted_risk",
+        summary:
+          "Canonical dedup must not hide unknown scope review blockers behind accepted risk",
+        detail: "Older accepted-risk wording",
+      });
+
+      const incoming = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "unknown",
+        lifecycleStatus: "open",
+        summary:
+          "Canonical dedup must not hide unknown scope review blockers behind accepted risk",
+        detail: "Latest unknown-scope blocker wording",
+      });
+
+      expect(incoming).toMatchObject({ created: false, reopened: true });
+      expect(repo.requireFinding(canonical.finding.findingId)).toMatchObject({
+        scopeStatus: "unknown",
+        lifecycleStatus: "reopened",
+        severity: "P1",
+        summary:
+          "Canonical dedup must not hide unknown scope review blockers behind accepted risk",
+        detail: "Latest unknown-scope blocker wording",
+      });
+      expect(new ConvergenceService(repo).evaluate("goal-test").decision).toBe(
+        "needs_classification",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not promote canonicals for P3 or info incoming findings", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const canonical = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "accepted_risk",
+        summary:
+          "Canonical dedup keeps weak informational repeats out of the close blocker set",
+        detail: "Original accepted-risk detail",
+      });
+
+      const incoming = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P3",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        summary:
+          "Canonical dedup keeps weak informational repeats out of the close blocker set",
+        detail: "Weaker incoming detail",
+      });
+
+      expect(incoming).toMatchObject({ created: false, reopened: false });
+      expect(repo.requireFinding(canonical.finding.findingId)).toMatchObject({
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "accepted_risk",
+        severity: "P2",
+        summary:
+          "Canonical dedup keeps weak informational repeats out of the close blocker set",
+        detail: "Original accepted-risk detail",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("updates canonical text when near-duplicate promotion makes it blocking", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const canonical = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "accepted_risk",
+        summary:
+          "Canonical context keeps outdated accepted risk wording in coder rerun details",
+        detail: "Old accepted-risk detail",
+        filePath: "src/hitch/repository.ts",
+        symbol: "promoteDuplicateCanonical",
+      });
+
+      const duplicate = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        summary:
+          "Canonical context keeps stale accepted risk wording in coder rerun details",
+        detail: "Latest blocking detail",
+        filePath: "src/hitch/repository.ts",
+        symbol: "promoteDuplicateCanonical",
+      });
+
+      expect(duplicate.finding).toMatchObject({
+        scopeStatus: "duplicate",
+        duplicateOf: canonical.finding.findingId,
+      });
+      expect(repo.requireFinding(canonical.finding.findingId)).toMatchObject({
+        scopeStatus: "in_scope",
+        lifecycleStatus: "reopened",
+        severity: "P1",
+        summary:
+          "Canonical context keeps stale accepted risk wording in coder rerun details",
+        detail: "Latest blocking detail",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps canonical text when near-duplicate incoming is weaker", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const canonical = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        summary:
+          "Canonical context keeps existing blocker wording when weaker repeats arrive",
+        detail: "Original blocking detail",
+        filePath: "src/hitch/repository.ts",
+        symbol: "promoteDuplicateCanonical",
+      });
+
+      const duplicate = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P3",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "out_of_scope",
+        summary:
+          "Canonical context keeps current blocker wording when weaker repeats arrive",
+        detail: "Weaker repeat detail",
+        filePath: "src/hitch/repository.ts",
+        symbol: "promoteDuplicateCanonical",
+      });
+
+      expect(duplicate.finding).toMatchObject({
+        scopeStatus: "duplicate",
+        duplicateOf: canonical.finding.findingId,
+      });
+      expect(repo.requireFinding(canonical.finding.findingId)).toMatchObject({
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        severity: "P1",
+        summary:
+          "Canonical context keeps existing blocker wording when weaker repeats arrive",
+        detail: "Original blocking detail",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not increment near-duplicate promotion reopen counts for operator-origin findings", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const canonical = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "accepted_risk",
+        summary:
+          "Review import deduplication may hide operator reported blockers behind accepted risk",
+      });
+
+      const duplicate = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "human",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        summary:
+          "Review import deduplication can hide operator reported blockers behind accepted risk",
+      });
+
+      expect(duplicate.finding).toMatchObject({
+        scopeStatus: "duplicate",
+        lifecycleStatus: "duplicate",
+        duplicateOf: canonical.finding.findingId,
+      });
+      expect(repo.requireFinding(canonical.finding.findingId)).toMatchObject({
+        lifecycleStatus: "reopened",
+        reopenCount: 0,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not demote near-duplicate canonicals for non-blocking incoming findings", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const canonical = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        summary:
+          "Review import deduplication must keep existing canonical blockers blocking",
+      });
+
+      const duplicate = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P3",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        summary:
+          "Review import deduplication should keep existing canonical blockers blocking",
+      });
+
+      expect(duplicate.finding).toMatchObject({
+        scopeStatus: "duplicate",
+        lifecycleStatus: "duplicate",
+        duplicateOf: canonical.finding.findingId,
+      });
+      expect(repo.requireFinding(canonical.finding.findingId)).toMatchObject({
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        severity: "P1",
+      });
+      expect(repo.countFindingSummary("goal-test")).toMatchObject({
+        openInScopeP1: 1,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("deduplicates near duplicates while retaining duplicate audit rows", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const first = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        summary:
+          "Review import uses summary text for finding identity and paraphrased reviewer findings create new findings every cycle",
+      });
+
+      const duplicate = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        summary:
+          "Review import uses summary text for finding identity; paraphrased reviewer findings create new findings each cycle",
+      });
+
+      expect(duplicate.finding).toMatchObject({
+        scopeStatus: "duplicate",
+        lifecycleStatus: "duplicate",
+        duplicateOf: first.finding.findingId,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps same-file near duplicates separate when symbols differ", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary:
+          "Repository close gate allows paraphrased reviewer findings to escape the close blocker count",
+        filePath: "src/hitch/repository.ts",
+        symbol: "countFindingSummary",
+      });
+
+      const second = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary:
+          "Repository close gate lets paraphrased reviewer findings escape the close blocker count",
+        filePath: "src/hitch/repository.ts",
+        symbol: "findNearDuplicateForInput",
+      });
+
+      expect(second.finding).toMatchObject({
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        duplicateOf: null,
+      });
+      expect(repo.countFindingSummary("goal-test")).toMatchObject({
+        openInScopeP1: 2,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("deduplicates same-file near duplicates with the same symbol", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const first = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary:
+          "Repository close gate allows paraphrased reviewer findings to escape the close blocker count",
+        filePath: "src/hitch/repository.ts",
+        symbol: "countFindingSummary",
+      });
+
+      const duplicate = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary:
+          "Repository close gate lets paraphrased reviewer findings escape the close blocker count",
+        filePath: "src/hitch/repository.ts",
+        symbol: "countFindingSummary",
+      });
+
+      expect(duplicate.finding).toMatchObject({
+        scopeStatus: "duplicate",
+        lifecycleStatus: "duplicate",
+        duplicateOf: first.finding.findingId,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps near duplicates separate when meaningful numbers differ", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary:
+          "Close check timeout should remain 30s when waiting for review consensus",
+      });
+
+      const second = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary:
+          "Close check timeout should remain 5s when waiting for review consensus",
+      });
+
+      expect(second.finding).toMatchObject({
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        duplicateOf: null,
+      });
+      expect(repo.countFindingSummary("goal-test")).toMatchObject({
+        openInScopeP1: 2,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("skips near-duplicate matching for explicit stable keys", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary:
+          "Review import uses only summary text for finding identity, so paraphrased reviewer findings create new findings every cycle",
+      });
+
+      const explicit = repo.upsertFinding({
+        hitchId: "goal-test",
+        stableKey: "external-review:123:codex",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary:
+          "Review import uses only summary text for finding identity; paraphrased reviewer findings create new findings each cycle",
+      });
+
+      expect(explicit.created).toBe(true);
+      expect(explicit.finding).toMatchObject({
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        duplicateOf: null,
+        stableKey: "external-review:123:codex",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("skips near-duplicate matching when the policy knob is disabled", () => {
+    const { db, repo } = freshRepo();
+    try {
+      repo.createSession({
+        hitchId: "goal-test",
+        title: "Goal convergence",
+        projectId: "monorepo-harness",
+        domain: "goal",
+        policy: {
+          ...DEFAULT_HITCH_POLICY,
+          divergence: {
+            ...DEFAULT_HITCH_POLICY.divergence,
+            nearDuplicateDedup: false,
+          },
+        },
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary:
+          "Review import uses only summary text for finding identity, so paraphrased reviewer findings create new findings every cycle",
+      });
+
+      const second = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary:
+          "Review import uses only summary text for finding identity; paraphrased reviewer findings create new findings each cycle",
+      });
+
+      expect(second.created).toBe(true);
+      expect(second.finding).toMatchObject({
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+        duplicateOf: null,
+      });
     } finally {
       db.close();
     }
@@ -908,6 +1887,7 @@ describe("HitchRepository", () => {
 
       expect(seenAgain.created).toBe(false);
       expect(seenAgain.reopened).toBe(true);
+      expect(seenAgain.finding.scopeStatus).toBe("duplicate");
       expect(seenAgain.finding.lifecycleStatus).toBe("duplicate");
       expect(promoted.severity).toBe("P0");
       expect(promoted.lifecycleStatus).toBe("reopened");

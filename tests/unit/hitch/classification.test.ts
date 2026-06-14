@@ -7,7 +7,10 @@ import { runMigrations } from "../../../src/db/migrations.js";
 import {
   canAutoFixFinding,
   classifyFindingForHitch,
+  hasCommandFailureVeto,
   isEnvironmentMetaNote,
+  isCommandEvidenceAdvisory,
+  isSuccessfulCommandEvidenceAdvisory,
   isTestNotRunAdvisory,
 } from "../../../src/hitch/classification.js";
 import { ConvergenceService } from "../../../src/hitch/convergence.js";
@@ -84,6 +87,72 @@ describe("goal finding classification", () => {
       summary: "Tests were not run in this environment.",
     });
     expect(classified.scopeStatus).toBe("unknown");
+  });
+
+  it.each([
+    "Tests passed with no errors.",
+    "Checks passed without errors.",
+    "error-handling tests passed with no failures.",
+  ])("classifies review non-blocking comments as out of scope: %s", (summary) => {
+    const classified = classifyFindingForHitch(session(), {
+      source: "review",
+      severity: "P2",
+      category: "review-non-blocking-comment",
+      summary,
+    });
+
+    expect(classified).toMatchObject({
+      scopeStatus: "out_of_scope",
+      reason: "review non-blocking comments are advisory",
+    });
+  });
+
+  it("keeps review non-blocking comments from triggering classification convergence", () => {
+    const { db, repo } = freshRepo();
+    try {
+      repo.createSession({
+        hitchId: "goal-classify",
+        title: "Fix MCP confirmation safety",
+        domain: "mcp",
+        closeConditions: [
+          {
+            id: "typecheck",
+            kind: "command",
+            required: true,
+          },
+        ],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      repo.recordCloseCheck({
+        hitchId: "goal-classify",
+        conditionId: "typecheck",
+        status: "passed",
+        checkedBy: "test",
+      });
+      const classified = classifyFindingForHitch(session(), {
+        source: "review",
+        severity: "P2",
+        category: "review-non-blocking-comment",
+        summary: "Tests passed with no errors.",
+      });
+      repo.upsertFinding({
+        hitchId: "goal-classify",
+        source: "review",
+        severity: "P2",
+        category: "review-non-blocking-comment",
+        scopeStatus: classified.scopeStatus,
+        summary: "Tests passed with no errors.",
+      });
+
+      const decision = new ConvergenceService(repo).evaluate(
+        "goal-classify",
+      ).decision;
+      expect(decision).not.toBe("needs_classification");
+      expect(decision).not.toBe("escalate");
+    } finally {
+      db.close();
+    }
   });
 
   it("classifies file paths inside targetFiles as in scope", () => {
@@ -335,5 +404,73 @@ describe("isTestNotRunAdvisory", () => {
     expect(
       isTestNotRunAdvisory("The test suite fails after this change."),
     ).toBe(false);
+  });
+});
+
+describe("isCommandEvidenceAdvisory", () => {
+  it.each([
+    "No commands directory was present, so test execution is evidenced only by the run summary.",
+    "No commands folder is present; test execution evidence comes only from the run summary.",
+    "The commands dir is absent, so the test run evidence is limited to the run summary.",
+    "Test run evidence is only the run summary because there is no commands directory.",
+  ])("treats command-evidence notes as advisories: %s", (text) => {
+    expect(isCommandEvidenceAdvisory(text)).toBe(true);
+  });
+
+  it("does not treat real blockers as command-evidence advisories", () => {
+    expect(isCommandEvidenceAdvisory("missing null check in handler")).toBe(
+      false,
+    );
+  });
+});
+
+describe("isSuccessfulCommandEvidenceAdvisory", () => {
+  it.each([
+    "Command logs show npm run typecheck and npx vitest run completed successfully.",
+    "typecheck passed and vitest passed.",
+    "typecheck passed with no errors.",
+    "vitest passed with no failures.",
+    "typecheck passed without errors.",
+    "The test command ran successfully.",
+    "npx vitest run completed successfully.",
+  ])("treats successful command/test notes as advisories: %s", (text) => {
+    expect(isSuccessfulCommandEvidenceAdvisory(text)).toBe(true);
+  });
+
+  it.each([
+    "The commands array is unverified and can omit required validation.",
+    "typecheck passed, but the commands array was not verified.",
+    "Tests passed locally but command log evidence is missing.",
+    "typecheck passed, but vitest failed.",
+    "No tests passed.",
+    "The test command did not pass.",
+    "Tests were not run because vitest failed.",
+    "2 failures were reported by vitest.",
+  ])("does not suppress real command-evidence findings: %s", (text) => {
+    expect(isSuccessfulCommandEvidenceAdvisory(text)).toBe(false);
+  });
+});
+
+describe("hasCommandFailureVeto", () => {
+  it.each([
+    "typecheck passed with no errors.",
+    "vitest passed with no failures.",
+    "typecheck passed without errors.",
+    "vitest passed without any failures.",
+    "typecheck passed with 0 errors.",
+    "vitest passed with zero test failures.",
+    "vitest passed with no test failures.",
+  ])("does not veto negated failure terms: %s", (text) => {
+    expect(hasCommandFailureVeto(text)).toBe(false);
+  });
+
+  it.each([
+    "vitest failed.",
+    "2 failures were reported by vitest.",
+    "The test command did not pass.",
+    "No tests passed.",
+    "Tests were not run because vitest failed.",
+  ])("vetoes actual command/test failures: %s", (text) => {
+    expect(hasCommandFailureVeto(text)).toBe(true);
   });
 });

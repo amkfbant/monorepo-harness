@@ -114,6 +114,9 @@ export const HitchPolicySchema = z
           .int()
           .min(0)
           .default(DEFAULT_HITCH_POLICY.divergence.maxReopenedPerFinding),
+        nearDuplicateDedup: z
+          .boolean()
+          .default(DEFAULT_HITCH_POLICY.divergence.nearDuplicateDedup),
       })
       .default(DEFAULT_HITCH_POLICY.divergence),
     closeRequires: z
