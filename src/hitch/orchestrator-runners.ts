@@ -9,10 +9,12 @@ import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import {
   runDomainCoding,
   RunFinalizedError,
+  VALIDATED_CONTINUATION_STATUSES,
   type ContinueFromSpec,
   type ContinueFromSkipReason,
   type RunDomainCodingOpts,
 } from "../core/workflow-runner.js";
+import type { RunStatus } from "../logging/run-log.js";
 import { resolveBaseSha } from "../git/diff.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
@@ -386,6 +388,13 @@ function latestCodingRunOrNull(
  */
 interface ContinuationResolution {
   continueFrom?: ContinueFromSpec;
+  /**
+   * (#163 P2) Lineage parent — set on a materialized continuation AND on every
+   * fail-closed skip that has a resolvable parent, so `runDomainCoding` records
+   * the rerun chain (`parent_run_id` / dup-fence) even when materialization was
+   * skipped. Absent only for `parent_run_missing` (no parent at all).
+   */
+  parentRunId?: string;
   resolvedBaseSha?: string;
   rootRunId?: string;
   rerunAttempt?: number;
@@ -396,6 +405,7 @@ interface ContinuationResolution {
 interface ParentRunRow {
   runId: string;
   baseSha: string | null;
+  status: string | null;
   parentRunId: string | null;
   rootRunId: string | null;
   rerunAttempt: number | null;
@@ -407,13 +417,14 @@ function readRunRow(
 ): ParentRunRow | null {
   const r = db
     .prepare(
-      "SELECT run_id, base_sha, parent_run_id, root_run_id, rerun_attempt " +
+      "SELECT run_id, base_sha, status, parent_run_id, root_run_id, rerun_attempt " +
         "FROM runs WHERE run_id = ?",
     )
     .get(runId) as
     | {
         run_id: string;
         base_sha: string | null;
+        status: string | null;
         parent_run_id: string | null;
         root_run_id: string | null;
         rerun_attempt: number | null;
@@ -423,6 +434,7 @@ function readRunRow(
   return {
     runId: r.run_id,
     baseSha: r.base_sha,
+    status: r.status,
     parentRunId: r.parent_run_id,
     rootRunId: r.root_run_id,
     rerunAttempt: r.rerun_attempt,
@@ -462,6 +474,43 @@ function deriveRootRunId(db: Database.Database, parent: ParentRunRow): string {
 }
 
 /**
+ * (#163) The rerun_attempt for the NEXT child = parent depth + 1. Fast path:
+ * the parent records `rerun_attempt` (its own depth) → child is `parent + 1`.
+ * Otherwise the parent is a LEGACY rerun row whose `rerun_attempt` was never
+ * stamped: reconstruct the parent's depth by walking `parent_run_id` links (the
+ * number of ancestors), so a migrated chain keeps the correct depth instead of
+ * collapsing to `0 + 1`. A run with no parentRunId is depth 0 (its child = 1).
+ */
+function deriveRerunAttempt(db: Database.Database, parent: ParentRunRow): number {
+  if (parent.rerunAttempt !== null) {
+    return parent.rerunAttempt + 1;
+  }
+  if (parent.parentRunId === null || parent.parentRunId === "") {
+    return 1; // parent is the root (depth 0) → its first child is attempt 1.
+  }
+  // Count ancestors via the parent_run_id chain (bounded; cycle-guarded).
+  let depth = 0;
+  let current = parent;
+  const seen = new Set<string>([current.runId]);
+  for (let i = 0; i < 10_000; i++) {
+    if (current.parentRunId === null || current.parentRunId === "") break;
+    const next = readRunRow(db, current.parentRunId);
+    if (next === null) break;
+    if (seen.has(next.runId)) break; // cycle guard
+    // a stamped ancestor pins absolute depth: parent depth = ancestor + steps.
+    if (next.rerunAttempt !== null) {
+      depth += next.rerunAttempt + 1;
+      return depth + 1;
+    }
+    depth += 1;
+    seen.add(next.runId);
+    current = next;
+  }
+  // parent depth = number of ancestors walked → child = depth + 1.
+  return depth + 1;
+}
+
+/**
  * (#163) Resolve the effective `limits.gitTimeoutMs` the run will use, so the
  * resolver's read-only base `git rev-parse` is bounded by the SAME timeout as
  * the run itself. Uses the compiled project policy when present (mirroring
@@ -493,6 +542,7 @@ async function resolveGitTimeoutMs(
 interface ParentContinuationFacts {
   parentRunId: string;
   parentBaseSha: string;
+  parentStatus: string | null;
   parentWorktreePath: string;
   rootRunId: string;
   rerunAttempt: number;
@@ -513,23 +563,32 @@ function readParentContinuationFacts(opts: {
   return {
     parentRunId: parent.runId,
     parentBaseSha: parent.baseSha,
+    parentStatus: parent.status,
     parentWorktreePath: join(
       harnessPaths(opts.harnessRoot).workspacesDir,
       parent.runId,
       "repo",
     ),
     rootRunId: deriveRootRunId(opts.db, parent),
-    rerunAttempt: (parent.rerunAttempt ?? 0) + 1,
+    // (#163 P3) chain-depth aware: a legacy parent with no rerun_attempt is not
+    // collapsed to `0 + 1` — its depth is reconstructed from the parent chain.
+    rerunAttempt: deriveRerunAttempt(opts.db, parent),
   };
 }
 
 /**
- * (#163) Async base-gate half of the continuation resolver. GATEs on
- * base-equality (parent.baseSha === the freshly resolved base) and the parent
- * worktree's existence. Performs NO git mutation and NO DB write — only a
- * read-only `git rev-parse` for the base and a worktree-existence stat. Every
- * ambiguity fails CLOSED to a fresh run with a recorded `skippedReason`; a
- * thrown git error maps to `parent_work_unmaterializable`, never a throw.
+ * (#163) Async base-gate half of the continuation resolver. GATEs on (1) the
+ * parent run being POLICY-VALIDATED (a completed+passed status — see
+ * `VALIDATED_CONTINUATION_STATUSES`), (2) base-equality (parent.baseSha === the
+ * freshly resolved base), and (3) the parent worktree's existence. Performs NO
+ * git mutation and NO DB write — only a read-only `git rev-parse` for the base
+ * and a worktree-existence stat. Every ambiguity fails CLOSED to a fresh run
+ * with a recorded `skippedReason`; a thrown git error maps to
+ * `parent_work_unmaterializable`, never a throw.
+ *
+ * (#163 P2) LINEAGE is recorded on the success branch AND on every skip branch
+ * with a resolvable parent — only the MATERIALIZATION is gated, never the rerun
+ * chain / dup-fence audit.
  */
 async function gateContinuation(opts: {
   facts: ParentContinuationFacts;
@@ -537,6 +596,27 @@ async function gateContinuation(opts: {
   gitTimeoutMs: number;
 }): Promise<ContinuationResolution> {
   const { facts } = opts;
+  // Lineage is always recorded (chain + dup-fence), regardless of whether the
+  // continuation materializes or fails closed to a fresh run.
+  const lineage = {
+    parentRunId: facts.parentRunId,
+    rootRunId: facts.rootRunId,
+    rerunAttempt: facts.rerunAttempt,
+  };
+
+  // (#163 P1) Validated-parent gate: continue ONLY from a run whose status
+  // proves it passed path-policy validation (safetyStatus=allowed). A failed /
+  // non-validated parent (failed-policy-violation carries out-of-scope/deny
+  // paths; failed-internal-error may be an un-resettable partial-carry worktree;
+  // failed-codex never completed validation) must NOT be carried — a
+  // fresh-from-base rerun re-derives without the forbidden/partial changes.
+  if (
+    facts.parentStatus === null ||
+    !VALIDATED_CONTINUATION_STATUSES.has(facts.parentStatus as RunStatus)
+  ) {
+    return { ...lineage, skippedReason: "parent_not_validated" };
+  }
+
   let freshBaseSha: string;
   try {
     freshBaseSha = await resolveBaseSha({
@@ -551,32 +631,36 @@ async function gateContinuation(opts: {
     // behavior) and records the skip reason once the run row exists. This is a
     // clean no-throw skip — the resolver does not pin a base it could not
     // resolve, and introduces no throw path before the run/attempt row.
-    return { skippedReason: "parent_work_unmaterializable" };
+    return { ...lineage, skippedReason: "parent_work_unmaterializable" };
   }
 
   // Base-equality gate: the parent's work was made against parent.baseSha. If
   // the base branch advanced, carrying that work forward would diverge from
   // the new base — fail closed and let codex re-implement from the fresh base.
   if (facts.parentBaseSha !== freshBaseSha) {
-    return { skippedReason: "base_advanced", resolvedBaseSha: freshBaseSha };
+    return {
+      ...lineage,
+      skippedReason: "base_advanced",
+      resolvedBaseSha: freshBaseSha,
+    };
   }
 
   if (!existsSync(facts.parentWorktreePath)) {
     // worktree cleaned / never created — nothing to materialize.
     return {
+      ...lineage,
       skippedReason: "parent_work_unavailable",
       resolvedBaseSha: freshBaseSha,
     };
   }
 
   return {
+    ...lineage,
     continueFrom: {
       parentRunId: facts.parentRunId,
       parentWorktreePath: facts.parentWorktreePath,
     },
     resolvedBaseSha: freshBaseSha,
-    rootRunId: facts.rootRunId,
-    rerunAttempt: facts.rerunAttempt,
   };
 }
 
@@ -947,6 +1031,13 @@ export function createOrchestratorRunners(
             : {}),
           ...(continuation.resolvedBaseSha !== undefined
             ? { resolvedBaseSha: continuation.resolvedBaseSha }
+            : {}),
+          // (#163 P2) lineage (parent_run_id + dup-fence) is forwarded for a
+          // rerun whether or not materialization happened — only the carry is
+          // gated, not the chain/audit. A skipped continuation must still record
+          // its real parent (never become a new root) and be fenced to one child.
+          ...(continuation.parentRunId !== undefined
+            ? { continuationParentRunId: continuation.parentRunId }
             : {}),
           ...(continuation.rootRunId !== undefined
             ? { rootRunId: continuation.rootRunId }

@@ -611,19 +611,25 @@ describe("materializeParentWork (#163)", () => {
     const baseSha = gitHead(repoPath);
     const policy = await resolvedTestPolicy(harness);
     // Parent: modify a tracked file (surface entry 1, copies fine) AND add an
-    // untracked file (surface entry 2). Surface order is tracked-first, so
-    // profile.ts is applied before added.ts.
+    // untracked file in a SUBDIR (surface entry 2). Surface order is
+    // tracked-first, so profile.ts is applied before sub/added.ts.
     const parentWt = buildWorktree("parent-fail", baseSha, (cwd) => {
       writeFileSync(
         join(cwd, "apps/user/src/profile.ts"),
         "export const x = 42; // parent edit\n",
       );
-      writeFileSync(join(cwd, "apps/user/src/added.ts"), "export const a = 1;\n");
+      mkdirSync(join(cwd, "apps/user/src/sub"), { recursive: true });
+      writeFileSync(
+        join(cwd, "apps/user/src/sub/added.ts"),
+        "export const a = 1;\n",
+      );
     });
-    // Child: pre-create a DIRECTORY where added.ts must be copied, so copyFile
-    // throws EISDIR on entry 2 AFTER entry 1 (profile.ts) was already applied.
+    // Child: pre-create a regular FILE at `apps/user/src/sub`, so the
+    // `mkdir(dirname(dst))` for sub/added.ts throws ENOTDIR on entry 2 AFTER
+    // entry 1 (profile.ts) was already applied. (A blocking *directory* would be
+    // cleared by the recursive rm; a non-dir path component is not.)
     const childWt = buildWorktree("child-fail", baseSha, (cwd) => {
-      mkdirSync(join(cwd, "apps/user/src/added.ts"), { recursive: true });
+      writeFileSync(join(cwd, "apps/user/src/sub"), "blocker\n");
     });
 
     const outcome = await materializeParentWork({
@@ -641,9 +647,9 @@ describe("materializeParentWork (#163)", () => {
     expect(readFileSync(join(childWt, "apps/user/src/profile.ts"), "utf8")).toBe(
       "export const x = 0;\n",
     );
-    // The blocking directory (untracked) was cleaned away by the reset, and no
+    // The blocking file (untracked) was cleaned away by the reset, and no
     // partial added.ts file was carried.
-    expect(existsSync(join(childWt, "apps/user/src/added.ts"))).toBe(false);
+    expect(existsSync(join(childWt, "apps/user/src/sub"))).toBe(false);
     // The working tree is clean vs the base (no leftover partial state).
     const status = execFileSync("git", ["status", "--porcelain"], {
       cwd: childWt,
@@ -711,13 +717,18 @@ describe("materializeParentWork (#163)", () => {
         join(cwd, "apps/user/src/profile.ts"),
         "export const x = 99;\n",
       );
-      writeFileSync(join(cwd, "apps/user/src/added.ts"), "export const a = 1;\n");
+      mkdirSync(join(cwd, "apps/user/src/sub"), { recursive: true });
+      writeFileSync(
+        join(cwd, "apps/user/src/sub/added.ts"),
+        "export const a = 1;\n",
+      );
     });
-    // Child: force the copy loop to throw (blocking dir at added.ts), THEN make
-    // the atomic reset fail by removing the worktree's `.git` link so
-    // `git reset --hard` / `git clean` exit non-zero in the child.
+    // Child: force the copy loop to throw (a blocking FILE at the `sub` path
+    // component → mkdir ENOTDIR for sub/added.ts), THEN make the atomic reset
+    // fail by removing the worktree's `.git` link so `git reset --hard` /
+    // `git clean` exit non-zero in the child.
     const childWt = buildWorktree("child-resetfail", baseSha, (cwd) => {
-      mkdirSync(join(cwd, "apps/user/src/added.ts"), { recursive: true });
+      writeFileSync(join(cwd, "apps/user/src/sub"), "blocker\n");
     });
     rmSync(join(childWt, ".git"), { force: true }); // no longer a git worktree
 
@@ -730,5 +741,84 @@ describe("materializeParentWork (#163)", () => {
         gitTimeoutMs: policy.limits.gitTimeoutMs,
       }),
     ).rejects.toBeInstanceOf(WorktreeResetError);
+  });
+
+  it("DIR→FILE replacement: parent collapsed a tracked directory into a regular file → child carries the regular file (recursive rm of the base dir, not a skip)", async () => {
+    // Base commits a DIRECTORY apps/user/src/widget/ with files inside.
+    const g = (a: string[]) =>
+      execFileSync("git", a, { cwd: repoPath, stdio: "ignore" });
+    mkdirSync(join(repoPath, "apps/user/src/widget"), { recursive: true });
+    writeFileSync(join(repoPath, "apps/user/src/widget/a.ts"), "export const a = 1;\n");
+    writeFileSync(join(repoPath, "apps/user/src/widget/b.ts"), "export const b = 2;\n");
+    g(["add", "apps/user/src/widget"]);
+    g(["commit", "-qm", "add widget dir"]);
+    const baseSha = gitHead(repoPath);
+    const policy = await resolvedTestPolicy(harness);
+
+    // Parent: delete the directory, replace it with a regular FILE at the same
+    // path (a refactor that collapses widget/ into widget.ts at apps/user/src).
+    const parentWt = buildWorktree("parent-dir2file", baseSha, (cwd) => {
+      execFileSync("git", ["rm", "-rq", "apps/user/src/widget"], { cwd });
+      writeFileSync(
+        join(cwd, "apps/user/src/widget"),
+        "export const collapsed = 1;\n",
+      );
+    });
+    // Child: fresh from base → it has the DIRECTORY apps/user/src/widget/.
+    const childWt = buildWorktree("child-dir2file", baseSha, () => {});
+    expect(lstatSync(join(childWt, "apps/user/src/widget")).isDirectory()).toBe(true);
+
+    const outcome = await materializeParentWork({
+      parentWorktreePath: parentWt,
+      childWorktreePath: childWt,
+      baseSha,
+      policy,
+      gitTimeoutMs: policy.limits.gitTimeoutMs,
+    });
+    expect(outcome.materialized).toBe(true);
+    const dst = join(childWt, "apps/user/src/widget");
+    // The base directory was replaced by the parent's regular file (not skipped).
+    expect(lstatSync(dst).isFile()).toBe(true);
+    expect(readFileSync(dst, "utf8")).toBe("export const collapsed = 1;\n");
+    // the old dir contents are gone.
+    expect(existsSync(join(childWt, "apps/user/src/widget/a.ts"))).toBe(false);
+  });
+
+  it("FILE→DIR replacement: parent expanded a tracked file into a directory → child carries the directory tree (not a skip)", async () => {
+    // Base commits a regular FILE apps/user/src/mod.ts.
+    const g = (a: string[]) =>
+      execFileSync("git", a, { cwd: repoPath, stdio: "ignore" });
+    writeFileSync(join(repoPath, "apps/user/src/mod.ts"), "export const m = 0;\n");
+    g(["add", "apps/user/src/mod.ts"]);
+    g(["commit", "-qm", "add mod.ts file"]);
+    const baseSha = gitHead(repoPath);
+    const policy = await resolvedTestPolicy(harness);
+
+    // Parent: delete the file, replace it with a DIRECTORY at the same path
+    // containing new files (a refactor that expands mod.ts into mod/).
+    const parentWt = buildWorktree("parent-file2dir", baseSha, (cwd) => {
+      execFileSync("git", ["rm", "-q", "apps/user/src/mod.ts"], { cwd });
+      mkdirSync(join(cwd, "apps/user/src/mod.ts"), { recursive: true });
+      writeFileSync(
+        join(cwd, "apps/user/src/mod.ts/index.ts"),
+        "export const m = 1;\n",
+      );
+    });
+    // Child: fresh from base → it has the regular FILE apps/user/src/mod.ts.
+    const childWt = buildWorktree("child-file2dir", baseSha, () => {});
+    expect(lstatSync(join(childWt, "apps/user/src/mod.ts")).isFile()).toBe(true);
+
+    const outcome = await materializeParentWork({
+      parentWorktreePath: parentWt,
+      childWorktreePath: childWt,
+      baseSha,
+      policy,
+      gitTimeoutMs: policy.limits.gitTimeoutMs,
+    });
+    expect(outcome.materialized).toBe(true);
+    const dst = join(childWt, "apps/user/src/mod.ts");
+    // The base file was replaced by the parent's directory tree (not skipped).
+    expect(lstatSync(dst).isDirectory()).toBe(true);
+    expect(readFileSync(join(dst, "index.ts"), "utf8")).toBe("export const m = 1;\n");
   });
 });

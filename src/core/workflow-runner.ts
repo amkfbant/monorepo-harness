@@ -1,6 +1,7 @@
 import { dirname, join } from "node:path";
 import {
   copyFile,
+  cp,
   lstat,
   mkdir,
   readFile,
@@ -122,12 +123,34 @@ function elapsedMs(start: number): number {
  *   - base_advanced: parent.baseSha != the freshly-resolved base (the base
  *     branch moved; carrying stale work would diverge — fail closed).
  *   - parent_work_unmaterializable: a git/copy failure while materializing.
+ *   - parent_not_validated: the parent run is NOT a policy-validated, completed
+ *     run (e.g. `failed-policy-violation` carrying out-of-scope/deny-write
+ *     paths, or `failed-internal-error` from an un-resettable partial-carry
+ *     worktree). Continuing would carry forbidden/partial changes a
+ *     fresh-from-base rerun would omit — so fail closed.
  */
 export type ContinueFromSkipReason =
   | "parent_run_missing"
   | "parent_work_unavailable"
   | "base_advanced"
-  | "parent_work_unmaterializable";
+  | "parent_work_unmaterializable"
+  | "parent_not_validated";
+
+/**
+ * (#163) Parent run statuses a rerun may CONTINUE from. A run reaches one of
+ * these statuses ONLY after passing path-policy validation (safetyStatus =
+ * `allowed`), so its worktree surface is policy-validated and safe to carry
+ * forward. Everything else — every `failed-*` status (`failed-policy-violation`
+ * carries out-of-scope/deny-write paths; `failed-internal-error` may be the
+ * un-resettable partial-carry worktree; `failed-codex` etc. never completed
+ * validation) — is NOT validated → continuation is skipped (`parent_not_validated`)
+ * and the rerun re-derives fresh-from-base. `rejected` is excluded too: a
+ * rejected approach is completed work but should not be carried into the next
+ * attempt.
+ */
+export const VALIDATED_CONTINUATION_STATUSES: ReadonlySet<RunStatus> = new Set<
+  RunStatus
+>(["needs_review", "approved", "changes_requested"]);
 
 /**
  * (#163) Where to find the parent run's work to materialize. The resolver
@@ -188,6 +211,17 @@ export interface RunDomainCodingOpts {
    * fresh-from-base — this is a fail-closed fallback, never a throw.
    */
   continueFromSkipped?: ContinueFromSkipReason;
+  /**
+   * (#163) Lineage parent for a HITCH rerun, recorded whether or not the
+   * continuation materialized (success OR fail-closed skip). It populates the
+   * run row's `parent_run_id` and ALSO keys the under-lock duplicate-child gate,
+   * so a continuation rerun (which sets this instead of `parentRunId`) is fenced
+   * to one child per parent — even on a skipped continuation. Sequential reruns
+   * never false-trip: each child's row records its OWN parent, so the gate for
+   * the NEXT parent finds no existing child. `parentRunId` (the non-hitch rerun
+   * path) takes precedence over this when both are set.
+   */
+  continuationParentRunId?: string;
   /**
    * Promoted-knowledge context to inject into the codex prompt (Phase 3-4).
    * `text` is appended to the prompt; `path` is recorded in meta/events.
@@ -514,11 +548,18 @@ export async function materializeParentWork(opts: {
 
 /**
  * (#163) Materialize ONE surface entry from the parent worktree into the child,
- * using `lstat` (NO symlink dereference):
- *   - absent in the parent (deleted vs base) → remove it in the child too.
+ * using `lstat` (NO symlink dereference). The `dst` in the child is FIRST
+ * cleared with a recursive+force `rm` (drops a base file, symlink, OR directory
+ * without following links / EISDIR), so a parent that swapped a path's KIND
+ * still materializes cleanly:
+ *   - absent in the parent (deleted vs base) → the recursive rm removes it
+ *     (handles a base directory the parent deleted too).
  *   - a symlink → recreate it AS A SYMLINK (copy the link target, never the
  *     dereferenced bytes); a broken/dangling target stays a symlink.
- *   - a regular file → copy its content into the child (uncommitted).
+ *   - a directory (parent replaced a tracked FILE with a directory) → recreate
+ *     the directory tree, symlinks preserved (`cp` no-dereference).
+ *   - a regular file (incl. parent replaced a tracked DIRECTORY with a file)
+ *     → copy its content into the child (uncommitted).
  * Throws on any unexpected error so the caller's atomic reset fires.
  */
 async function materializeEntry(src: string, dst: string): Promise<void> {
@@ -526,30 +567,39 @@ async function materializeEntry(src: string, dst: string): Promise<void> {
   try {
     info = await lstat(src);
   } catch (e) {
-    if (isNodeError(e) && e.code === "ENOENT") {
-      // deleted in the parent vs base → remove it in the child too.
-      await rm(dst, { force: true });
+    // ENOENT → the path is gone in the parent (deleted vs base). ENOTDIR → an
+    // ANCESTOR of this path is now a non-directory in the parent (e.g. the
+    // parent collapsed a tracked DIRECTORY into a regular file, so the old
+    // `dir/child.ts` entries no longer exist). Both mean "absent in the parent"
+    // → remove it in the child too. recursive so a base DIRECTORY the parent
+    // deleted is removed, not just a file.
+    if (
+      isNodeError(e) &&
+      (e.code === "ENOENT" || e.code === "ENOTDIR")
+    ) {
+      await rm(dst, { recursive: true, force: true });
       return;
     }
     throw e;
   }
+  // Always clear the dst first (recursive + force, no-follow): drops any base
+  // file / symlink / DIRECTORY at this path so the recreate below never writes
+  // THROUGH a base symlink (escape) and never hits EEXIST/EISDIR/ENOTDIR when
+  // the parent swapped the path's kind (file↔dir, link↔file).
+  await mkdir(dirname(dst), { recursive: true });
+  await rm(dst, { recursive: true, force: true });
   if (info.isSymbolicLink()) {
-    // recreate AS a symlink — never follow it into a regular file. Drop any
-    // pre-existing dst (a base file/symlink) first so `symlink` does not EEXIST.
-    const target = await readlink(src);
-    await mkdir(dirname(dst), { recursive: true });
-    await rm(dst, { force: true });
-    await symlink(target, dst);
+    // recreate AS a symlink — never follow it into a regular file.
+    await symlink(await readlink(src), dst);
     return;
   }
-  // added/modified/untracked regular file → copy content into the child. rm the
-  // dst FIRST: if the child (fresh from base) already has a SYMLINK at this path
-  // — because baseSha had a symlink there and the parent replaced it with a
-  // regular file — `copyFile` would write THROUGH that link to its target,
-  // escaping the child worktree. `rm` (unlink, no-follow) drops the link so the
-  // copy creates a fresh regular file at the path.
-  await mkdir(dirname(dst), { recursive: true });
-  await rm(dst, { force: true });
+  if (info.isDirectory()) {
+    // parent replaced a tracked file with a directory → recreate the tree.
+    // `dereference: false` (default) preserves any symlinks inside it.
+    await cp(src, dst, { recursive: true });
+    return;
+  }
+  // added/modified/untracked regular file → copy content into the child.
   await copyFile(src, dst);
 }
 
@@ -674,16 +724,24 @@ export async function runDomainCoding(
     // do not keep the event loop alive solely for the heartbeat tick.
     heartbeatTimer.unref?.();
 
-    // Phase 7-6: a rerun produces exactly one child. The duplicate check
-    // runs UNDER the domain lock — two reruns of the same parent share a
-    // domain, so the lock serializes them and check-then-create is atomic.
-    if (opts.parentRunId !== undefined) {
+    // Phase 7-6 / (#163): a rerun produces exactly one child. The duplicate
+    // check runs UNDER the domain lock — two reruns of the same parent share a
+    // domain, so the lock serializes them and check-then-create is atomic. The
+    // gate keys on the lineage parent of EITHER rerun path: `parentRunId` (the
+    // non-hitch `harness rerun` flow) OR `continuationParentRunId` (the hitch
+    // continuation path, set on success AND on a fail-closed skip), so two
+    // concurrent orchestrators resolving the same parent cannot both create a
+    // child. Sequential reruns do not false-trip: each child's row records its
+    // OWN parent, so the gate for the NEXT parent finds no existing child.
+    const dupGateParentRunId =
+      opts.parentRunId ?? opts.continuationParentRunId;
+    if (dupGateParentRunId !== undefined) {
       const existingChild = db
         .prepare("SELECT run_id FROM runs WHERE parent_run_id = ? LIMIT 1")
-        .get(opts.parentRunId) as { run_id: string } | undefined;
+        .get(dupGateParentRunId) as { run_id: string } | undefined;
       if (existingChild !== undefined) {
         throw new RerunGateError(
-          `parent run ${opts.parentRunId} already has a rerun child ` +
+          `parent run ${dupGateParentRunId} already has a rerun child ` +
             `(${existingChild.run_id}); refusing to create a second one`,
         );
       }
@@ -752,15 +810,19 @@ export async function runDomainCoding(
         baseSha,
         runBranch: branch,
         status: "running",
-        // (#163) Lineage parent recorded in meta. The hitch continuation path
-        // sets `continueFrom` (not `opts.parentRunId`) so the duplicate-child
-        // gate stays keyed on `opts.parentRunId` alone and cannot false-trip
-        // across sequential reruns; lineage still records the real parent.
+        // (#163) Lineage parent recorded in meta → run row `parent_run_id`.
+        // The hitch continuation path sets `continuationParentRunId` (lineage +
+        // dup-fence) on BOTH a materialized continuation and a fail-closed skip,
+        // so the rerun chain/audit is recorded even when materialization was
+        // skipped (never becomes a new root). `parentRunId` (the non-hitch rerun
+        // path) takes precedence; `continueFrom` is the legacy fallback.
         ...(opts.parentRunId !== undefined
           ? { parentRunId: opts.parentRunId }
-          : opts.continueFrom !== undefined
-            ? { parentRunId: opts.continueFrom.parentRunId }
-            : {}),
+          : opts.continuationParentRunId !== undefined
+            ? { parentRunId: opts.continuationParentRunId }
+            : opts.continueFrom !== undefined
+              ? { parentRunId: opts.continueFrom.parentRunId }
+              : {}),
         ...(opts.rootRunId !== undefined
           ? { rootRunId: opts.rootRunId }
           : {}),
