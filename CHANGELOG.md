@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.4](https://github.com/amkfbant/monorepo-harness/compare/v0.7.3...v0.7.4) (2026-06-14)
+
+
+### Bug Fixes
+
+* **close-check:** exclude node_modules from ignored-untracked pollution check ([#187](https://github.com/amkfbant/monorepo-harness/issues/187) follow-up) ([#214](https://github.com/amkfbant/monorepo-harness/issues/214)) ([c5ea57b](https://github.com/amkfbant/monorepo-harness/commit/c5ea57b164da29d3f2ca20a90f6fd7b6b6123452))
+* **orchestrate:** domain-lock contention defers (lock_busy, exit 1) instead of escalating ([#166](https://github.com/amkfbant/monorepo-harness/issues/166)) ([#213](https://github.com/amkfbant/monorepo-harness/issues/213)) ([800bcf6](https://github.com/amkfbant/monorepo-harness/commit/800bcf68804d582ea9c9d514b625f88e90def5fa))
+
 ## [0.7.3](https://github.com/amkfbant/monorepo-harness/compare/v0.7.2...v0.7.3) (2026-06-14)
 
 
