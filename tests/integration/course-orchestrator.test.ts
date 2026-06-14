@@ -3,6 +3,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runMigrations } from "../../src/db/migrations.js";
+import { ConvergenceService } from "../../src/hitch/convergence.js";
+import { evaluateHitchMutationGate } from "../../src/hitch/mutation-gate.js";
 import type { RunOrchestrationInput } from "../../src/hitch/orchestrator.js";
 import { HitchRepository } from "../../src/hitch/repository.js";
 import type {
@@ -131,6 +133,27 @@ function seedCloseReadyHitch(db: Database.Database, hitchId: string): void {
     status: "passed",
     checkedBy: "test",
   });
+}
+
+function seedBudgetExhaustedHitch(
+  db: Database.Database,
+  hitchId: string,
+): void {
+  const hitches = new HitchRepository(db);
+  hitches.createSession({
+    hitchId,
+    title: hitchId,
+    projectId: "demo",
+    scope: {},
+    closeConditions: [
+      { id: "typecheck", kind: "command", required: true, command: "npm test" },
+    ],
+    maxIterations: 1,
+    createdBy: "test",
+    createdSource: "cli",
+  });
+  hitches.createAttempt({ hitchId, attemptType: "implement" });
+  hitches.createAttempt({ hitchId, attemptType: "validate" });
 }
 
 function newCourse(db: Database.Database, courseId: string): string {
@@ -701,7 +724,7 @@ describe("CourseOrchestrator", () => {
       createdBy: "test",
     });
 
-    expect(result.stopReason).toBe("budget_exhausted");
+    expect(result.stopReason).toBe("budget_reached");
     expect(calls).toEqual(["h-one"]);
     expect(result.drivenHitches.map((h) => h.hitchId)).toEqual(["h-one"]);
     expect(result.phaseOutcomes).toEqual(
@@ -711,10 +734,10 @@ describe("CourseOrchestrator", () => {
     );
     expect(phases.require(p2.phaseId).status).toBe("pending");
     expect(findActiveDomainLock(db, `course:${courseId}`)).toBeNull();
-    expect(latestReleaseReason(db, courseId)).toBe("budget_exhausted");
+    expect(latestReleaseReason(db, courseId)).toBe("budget_reached");
   });
 
-  it("labels a phase as partially driven when budget is exhausted mid-phase", async () => {
+  it("labels a phase as partially driven when budget is reached mid-phase", async () => {
     const courseId = newCourse(db, "course-budget-mid-phase");
     const phases = new PhaseRepository(db);
     const phase = phases.add({ courseId, phaseId: "phase-mid-budget", title: "One", position: 1, createdBy: "test", createdSource: "cli" });
@@ -731,14 +754,76 @@ describe("CourseOrchestrator", () => {
       createdBy: "test",
     });
 
-    expect(result.stopReason).toBe("budget_exhausted");
+    expect(result.stopReason).toBe("budget_reached");
     expect(calls).toEqual(["h-mid-one"]);
     expect(result.phaseOutcomes).toEqual([
       expect.objectContaining({
         phaseId: phase.phaseId,
         action: "partially_driven",
-        note: "partially_driven_budget_exhausted",
+        note: "partially_driven_budget_reached",
         drivenHitches: [expect.objectContaining({ hitchId: "h-mid-one" })],
+      }),
+    ]);
+  });
+
+  it("keeps hitch budget_exhausted separate from course budget_reached", async () => {
+    const courseBudgetId = newCourse(db, "course-budget-boundary");
+    const phases = new PhaseRepository(db);
+    const budgetPhaseOne = phases.add({ courseId: courseBudgetId, phaseId: "phase-budget-boundary-one", title: "One", position: 1, createdBy: "test", createdSource: "cli" });
+    const budgetPhaseTwo = phases.add({ courseId: courseBudgetId, phaseId: "phase-budget-boundary-two", title: "Two", position: 2, createdBy: "test", createdSource: "cli" });
+    seedDrivableHitch(db, "h-course-budget-one");
+    seedDrivableHitch(db, "h-course-budget-two");
+    phases.linkHitch(budgetPhaseOne.phaseId, "h-course-budget-one");
+    phases.linkHitch(budgetPhaseTwo.phaseId, "h-course-budget-two");
+
+    const courseBudgetResult = await makeOrchestrator(db, {}).run({
+      courseId: courseBudgetId,
+      maxDrivenHitches: 1,
+      maxStepsPerHitch: 2,
+      createdBy: "test",
+    });
+
+    expect(courseBudgetResult.stopReason).toBe("budget_reached");
+
+    const hitchBudgetId = "h-hitch-budget-dead-end";
+    seedBudgetExhaustedHitch(db, hitchBudgetId);
+    const hitches = new HitchRepository(db);
+    const convergence = new ConvergenceService(hitches).evaluate(hitchBudgetId);
+    expect(convergence.decision).toBe("budget_exhausted");
+
+    const gate = evaluateHitchMutationGate({
+      repository: hitches,
+      hitchId: hitchBudgetId,
+      mutationKind: "hitch.orchestrate",
+    });
+    expect(gate).toMatchObject({
+      allowed: false,
+      code: "hitch_budget_exhausted",
+      convergence: { decision: "budget_exhausted" },
+    });
+
+    const blockedCourseId = newCourse(db, "course-hitch-budget-blocked");
+    const blockedPhase = phases.add({ courseId: blockedCourseId, phaseId: "phase-hitch-budget-blocked", title: "Blocked", position: 1, createdBy: "test", createdSource: "cli" });
+    phases.linkHitch(blockedPhase.phaseId, hitchBudgetId);
+    const calls: string[] = [];
+
+    const blockedResult = await makeOrchestrator(db, {}, calls).run({
+      courseId: blockedCourseId,
+      maxDrivenHitches: 3,
+      maxStepsPerHitch: 2,
+      createdBy: "test",
+    });
+
+    expect(blockedResult.stopReason).toBe("completed");
+    expect(calls).toEqual([]);
+    expect(blockedResult.phaseOutcomes).toEqual([
+      expect.objectContaining({
+        phaseId: blockedPhase.phaseId,
+        action: "blocked_hitch",
+        blockedHitch: {
+          hitchId: hitchBudgetId,
+          decision: "budget_exhausted",
+        },
       }),
     ]);
   });
@@ -970,7 +1055,7 @@ describe("CourseOrchestrator", () => {
       createdBy: "test",
     });
 
-    expect(result.stopReason).toBe("budget_exhausted");
+    expect(result.stopReason).toBe("budget_reached");
     expect(calls).toEqual(["h-1", "h-2", "h-3"]);
     expect(runInputs.map((input) => input.maxSteps)).toEqual([20, 20, 20]);
     expect(runInputs.every((input) => input.stopAtCloseReady === true)).toBe(true);
@@ -1017,7 +1102,7 @@ describe("CourseOrchestrator", () => {
       createdBy: "test",
     });
 
-    expect(result.stopReason).toBe("budget_exhausted");
+    expect(result.stopReason).toBe("budget_reached");
     expect(calls).toEqual([
       "non-positive-h-1",
       "non-positive-h-2",

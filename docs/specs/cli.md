@@ -1674,7 +1674,8 @@ promote された md は `<out>/`（既定 `docs/knowledge/`）に書かれ、`r
 
 ### Exit code（list / reject / promote / deprecate 共通）
 
-- `0`: 成功（`course orchestrate` は `stopReason=completed`。`--dry-run` は plan 成功）
+- `0`: 成功（`course orchestrate` は `stopReason=completed` または
+  `stopReason=budget_reached`。`--dry-run` は plan 成功）
 - `1`: invalid runId / candidates yaml 不在 or parse 失敗 / 候補の `kind` が unsafe / reject の index 範囲外 / reviewer 空 / actor 空 / knowledge entry 不在
 - `2`: 予期しない例外
 
@@ -2003,13 +2004,26 @@ harness course export <id> --md [--out <path>]
 `domain_locks` の `course:<id>` lease を取る。書く phase status は `pending -> in_progress`
 の CAS のみで、PR 作成・hitch close・phase close・hitch spawn はしない。
 
+`stopReason` は `completed` または `budget_reached`。`budget_reached` は
+`--max-driven-hitches` による bounded pass の正常終了ラベルで、exit 0。これは hitch
+convergence の terminal decision `budget_exhausted`（rerun/review/iteration budget
+枯渇の dead-end）とは別概念で、rename しない。linked hitch が `budget_exhausted` /
+`escalate` / `diverging` / `needs_classification` の場合、course pass は
+`blocked_hitch` / `blocked_subtree` を structured phase outcome として返し、
+`stopReason=completed` のまま exit 0 で続行する。非 0 exit は non-active course /
+lease busy / lease lost / project・DB error などの `CourseOrchestrateError` と、
+driver 例外などの予期しない failure に限る。
+
+JSON consumer 向けの互換性: course orchestrate の bounded-budget literal は
+`budget_exhausted` から `budget_reached` に変更済み。pre-1.0 の semver-minor
+contract change であり、DB schema 変更は無い。
+
 ### Exit code
 
 - `0`: 成功
 - `1`: user-fixable エラー（not found / 異なる course の parent / already linked /
   project mismatch / 無効な `--status` / `--position` が整数でない / `--md` 未指定 /
-  non-active course / course lease busy / `orchestrate` budget exhausted /
-  project 解決エラー / DB エラー）
+  non-active course / course lease busy / project 解決エラー / DB エラー）
 - `2`: `course orchestrate` の driver 例外など、user-fixable ではない予期しない例外
 
 ## `harness phase`

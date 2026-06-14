@@ -29,7 +29,7 @@ export type CoursePhaseAction =
   | { kind: "ready_to_close" }
   | { kind: "report_only" };
 
-export type CourseStopReason = "completed" | "budget_exhausted";
+export type CourseStopReason = "completed" | "budget_reached";
 
 export interface DrivenHitch {
   hitchId: string;
