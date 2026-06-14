@@ -396,6 +396,22 @@ export interface MaterializeOutcome {
 }
 
 /**
+ * (#163) Thrown when the atomic reset that undoes a partial materialization
+ * (`git reset --hard <baseSha>` + `git clean -ffdx`) FAILS — we cannot return
+ * the child worktree to clean fresh-from-base. A worktree we cannot prove is
+ * fresh-from-base is unsafe to amend, so this is NOT a skip: it propagates out
+ * of `materializeParentWork` and `runDomainCoding` finalizes the run as a
+ * failure (fail-closed-hard), rather than proceeding on a possibly-partial
+ * worktree.
+ */
+export class WorktreeResetError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "WorktreeResetError";
+  }
+}
+
+/**
  * (#163) Materialize the parent run's policy-validated diff surface INTO the
  * child worktree as UNCOMMITTED working-tree changes. This is the whole
  * continuation mechanism — there is NO commit, NO `git add`, NO branch
@@ -421,9 +437,13 @@ export interface MaterializeOutcome {
  * <baseSha>` + `git clean -ffdx`) BEFORE returning, so a mid-copy failure never
  * leaves a partial carry for codex to amend.
  *
- * Fail-closed: ANY git/copy failure (or an empty surface) returns a
- * `skippedReason` and leaves the child worktree fresh-from-base. It never
- * throws — the caller records the reason and proceeds with a normal run.
+ * Fail-closed: a recoverable git/copy failure (or an empty surface) returns a
+ * `skippedReason` and leaves the child worktree fresh-from-base — the caller
+ * records the reason and proceeds with a normal run. The ONE case that does NOT
+ * skip is when the atomic reset itself fails: the worktree cannot be proven
+ * fresh-from-base, so a {@link WorktreeResetError} is thrown (fail-closed-hard)
+ * and `runDomainCoding` finalizes the run as a failure instead of amending a
+ * possibly-partial worktree.
  */
 export async function materializeParentWork(opts: {
   parentWorktreePath: string;
@@ -474,6 +494,10 @@ export async function materializeParentWork(opts: {
     // ATOMICITY: a copy/remove threw after earlier entries were already
     // applied. Reset the child back to clean fresh-from-base BEFORE falling
     // back, so the run never proceeds on a half-materialized partial carry.
+    // If the reset itself fails, `resetWorktreeToBase` throws a
+    // WorktreeResetError that PROPAGATES out (not swallowed): a worktree we
+    // cannot return to fresh-from-base is unsafe to amend, so the run fails
+    // hard rather than skip-with-partial.
     await resetWorktreeToBase(
       opts.childWorktreePath,
       opts.baseSha,
@@ -518,18 +542,26 @@ async function materializeEntry(src: string, dst: string): Promise<void> {
     await symlink(target, dst);
     return;
   }
-  // added/modified/untracked regular file → copy content into the child.
+  // added/modified/untracked regular file → copy content into the child. rm the
+  // dst FIRST: if the child (fresh from base) already has a SYMLINK at this path
+  // — because baseSha had a symlink there and the parent replaced it with a
+  // regular file — `copyFile` would write THROUGH that link to its target,
+  // escaping the child worktree. `rm` (unlink, no-follow) drops the link so the
+  // copy creates a fresh regular file at the path.
   await mkdir(dirname(dst), { recursive: true });
+  await rm(dst, { force: true });
   await copyFile(src, dst);
 }
 
 /**
  * (#163) Reset a worktree back to clean fresh-from-base: discard all tracked
  * changes (`reset --hard <baseSha>`) and remove every untracked/ignored file
- * (`clean -ffdx`). Best-effort under the domain lock — used to undo a partial
- * materialization. Errors are swallowed: the caller already fails closed to
- * `parent_work_unmaterializable`, and the child run re-validates its own
- * worktree surface against the base regardless.
+ * (`clean -ffdx`). Run under the domain lock to undo a partial materialization.
+ *
+ * FAIL-CLOSED: `gitCli` does NOT throw on a non-zero exit / timeout, so each
+ * result is checked explicitly. If EITHER command fails, the worktree cannot be
+ * proven fresh-from-base — a {@link WorktreeResetError} is thrown so the run
+ * fails hard rather than amending a possibly-partial worktree.
  */
 async function resetWorktreeToBase(
   worktreePath: string,
@@ -537,11 +569,32 @@ async function resetWorktreeToBase(
   gitTimeoutMs: number,
 ): Promise<void> {
   const opts = { cwd: worktreePath, timeoutMs: gitTimeoutMs };
+  await runResetStep(["reset", "--hard", baseSha], opts);
+  await runResetStep(["clean", "-ffdx"], opts);
+}
+
+async function runResetStep(
+  args: readonly string[],
+  opts: { cwd: string; timeoutMs: number },
+): Promise<void> {
+  let r: Awaited<ReturnType<typeof gitCli>>;
   try {
-    await gitCli(["reset", "--hard", baseSha], opts);
-    await gitCli(["clean", "-ffdx"], opts);
-  } catch {
-    // unrecoverable git failure in the child worktree — nothing more to do.
+    r = await gitCli(args, opts);
+  } catch (e) {
+    throw new WorktreeResetError(
+      `worktree reset step \`git ${args.join(" ")}\` errored: ${(e as Error).message}`,
+      { cause: e },
+    );
+  }
+  if (r.timedOut) {
+    throw new WorktreeResetError(
+      `worktree reset step \`git ${args.join(" ")}\` timed out after ${opts.timeoutMs}ms`,
+    );
+  }
+  if (r.exitCode !== 0) {
+    throw new WorktreeResetError(
+      `worktree reset step \`git ${args.join(" ")}\` failed (${r.exitCode}): ${r.stderr.trim()}`,
+    );
   }
 }
 

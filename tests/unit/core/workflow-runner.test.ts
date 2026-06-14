@@ -9,12 +9,14 @@ import {
   lstatSync,
   readlinkSync,
   symlinkSync,
+  rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   runDomainCoding,
   materializeParentWork,
+  WorktreeResetError,
   type ContinueFromSpec,
 } from "../../../src/core/workflow-runner.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../../../src/policy/loader.js";
@@ -649,5 +651,84 @@ describe("materializeParentWork (#163)", () => {
       .toString()
       .trim();
     expect(status).toBe("");
+  });
+
+  it("DST-SYMLINK escape: a base symlink at P that the parent replaced with a regular file → child gets a REGULAR file at P (no write-through the link; outside target untouched)", async () => {
+    // Commit a symlink at apps/user/src/link.ts → an OUTSIDE file, so baseSha
+    // (the child's fresh checkout) has a SYMLINK at that path.
+    const outsideDir = mkdtempSync(join(tmpdir(), "harness-wf-outside-"));
+    const outsideTarget = join(outsideDir, "secret.txt");
+    writeFileSync(outsideTarget, "ORIGINAL OUTSIDE CONTENT\n");
+    const g = (a: string[]) =>
+      execFileSync("git", a, { cwd: repoPath, stdio: "ignore" });
+    symlinkSync(outsideTarget, join(repoPath, "apps/user/src/link.ts"));
+    g(["add", "apps/user/src/link.ts"]);
+    g(["commit", "-qm", "add symlink"]);
+    const baseSha = gitHead(repoPath);
+    const policy = await resolvedTestPolicy(harness);
+
+    // Parent: REPLACE the symlink at that path with a REGULAR file (delete the
+    // symlink, write a real file). The surface carries P as a regular file.
+    const parentWt = buildWorktree("parent-dstlink", baseSha, (cwd) => {
+      execFileSync("git", ["rm", "-q", "apps/user/src/link.ts"], { cwd });
+      writeFileSync(
+        join(cwd, "apps/user/src/link.ts"),
+        "export const real = 1;\n",
+      );
+    });
+    // Child: fresh from base → it has the SYMLINK at apps/user/src/link.ts.
+    const childWt = buildWorktree("child-dstlink", baseSha, () => {});
+    expect(lstatSync(join(childWt, "apps/user/src/link.ts")).isSymbolicLink()).toBe(
+      true,
+    );
+
+    const outcome = await materializeParentWork({
+      parentWorktreePath: parentWt,
+      childWorktreePath: childWt,
+      baseSha,
+      policy,
+      gitTimeoutMs: policy.limits.gitTimeoutMs,
+    });
+    expect(outcome.materialized).toBe(true);
+
+    const dst = join(childWt, "apps/user/src/link.ts");
+    // The child path is now a REGULAR file with the parent's content — NOT a
+    // symlink, and NOT written through the base link.
+    expect(lstatSync(dst).isSymbolicLink()).toBe(false);
+    expect(lstatSync(dst).isFile()).toBe(true);
+    expect(readFileSync(dst, "utf8")).toBe("export const real = 1;\n");
+    // The OUTSIDE target was never written through (copyFile did not follow the
+    // base symlink) — its original content is intact.
+    expect(readFileSync(outsideTarget, "utf8")).toBe("ORIGINAL OUTSIDE CONTENT\n");
+  });
+
+  it("RESET-FAILS fail-closed-hard: when the atomic reset cannot return the child to fresh-from-base, materializeParentWork THROWS WorktreeResetError (no silent skip-with-partial)", async () => {
+    const baseSha = gitHead(repoPath);
+    const policy = await resolvedTestPolicy(harness);
+    // Parent has a real carry surface (collectDiff on the parent succeeds).
+    const parentWt = buildWorktree("parent-resetfail", baseSha, (cwd) => {
+      writeFileSync(
+        join(cwd, "apps/user/src/profile.ts"),
+        "export const x = 99;\n",
+      );
+      writeFileSync(join(cwd, "apps/user/src/added.ts"), "export const a = 1;\n");
+    });
+    // Child: force the copy loop to throw (blocking dir at added.ts), THEN make
+    // the atomic reset fail by removing the worktree's `.git` link so
+    // `git reset --hard` / `git clean` exit non-zero in the child.
+    const childWt = buildWorktree("child-resetfail", baseSha, (cwd) => {
+      mkdirSync(join(cwd, "apps/user/src/added.ts"), { recursive: true });
+    });
+    rmSync(join(childWt, ".git"), { force: true }); // no longer a git worktree
+
+    await expect(
+      materializeParentWork({
+        parentWorktreePath: parentWt,
+        childWorktreePath: childWt,
+        baseSha,
+        policy,
+        gitTimeoutMs: policy.limits.gitTimeoutMs,
+      }),
+    ).rejects.toBeInstanceOf(WorktreeResetError);
   });
 });
