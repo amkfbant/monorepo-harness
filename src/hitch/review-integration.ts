@@ -1,3 +1,4 @@
+import type Database from "better-sqlite3";
 import type { ReviewProposalRow } from "../db/repositories/review-proposals.js";
 import type { ProcessResult } from "../core/review-processor.js";
 import { REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS } from "../core/review-consensus.js";
@@ -86,10 +87,13 @@ interface ProposalFindingSeed {
   forcedScopeStatus?: HitchScopeStatus;
 }
 
+type CanonicalReviewDecision = "approved" | "changes_requested" | "rejected";
+
 export function importReviewProposalToHitch(
   input: ImportReviewProposalToHitchInput,
 ): ImportReviewProposalToHitchResult {
   const session = input.repository.requireSession(input.hitchId);
+  const canonicalDecision = resolveCanonicalReviewDecision(input);
   const mode =
     input.reviewMode ??
     nextReviewMode(session, input.repository.listReviewCycles(input.hitchId));
@@ -102,7 +106,13 @@ export function importReviewProposalToHitch(
     sourceReviewId: sourceReviewId(input.proposal),
     sourceRunId: input.proposal.runId,
   });
-  const findings = importProposalFindings(input.repository, session, input.proposal, cycle);
+  const findings = importProposalFindings(
+    input.repository,
+    session,
+    input.proposal,
+    cycle,
+    canonicalDecision,
+  );
   const reviewAdvisories = proposalReviewerAdvisories(input.proposal);
   const completedCycle = input.repository.completeReviewCycle({
     cycleId: cycle.cycleId,
@@ -212,8 +222,9 @@ function importProposalFindings(
   session: HitchSession,
   proposal: ReviewProposalRow,
   cycle: HitchReviewCycle,
+  canonicalDecision: CanonicalReviewDecision | undefined,
 ): ImportedHitchFinding[] {
-  return proposalFindingSeeds(proposal).map((seed) => {
+  return proposalFindingSeeds(proposal, canonicalDecision).map((seed) => {
     const finding = toClassifiableFinding(seed, proposal);
     const classification =
       seed.forcedScopeStatus === undefined
@@ -242,16 +253,24 @@ function importProposalFindings(
   });
 }
 
-function proposalFindingSeeds(proposal: ReviewProposalRow): ProposalFindingSeed[] {
+function proposalFindingSeeds(
+  proposal: ReviewProposalRow,
+  canonicalDecision: CanonicalReviewDecision | undefined,
+): ProposalFindingSeed[] {
+  const suppressBlockingFindings = canonicalDecision === "approved";
   return [
-    ...proposal.requiredChanges.map((text, index) => ({
-      kind: "required_change" as const,
-      index,
-      text,
-      severity: "P1" as const,
-      category: "review-required-change",
-    })),
-    ...(proposal.decision !== "approved" && proposal.requiredChanges.length === 0
+    ...(suppressBlockingFindings
+      ? []
+      : proposal.requiredChanges.map((text, index) => ({
+          kind: "required_change" as const,
+          index,
+          text,
+          severity: "P1" as const,
+          category: "review-required-change",
+        }))),
+    ...(!suppressBlockingFindings &&
+    proposal.decision !== "approved" &&
+    proposal.requiredChanges.length === 0
       ? [
           {
             kind: "negative_decision" as const,
@@ -289,6 +308,36 @@ function proposalFindingSeeds(proposal: ReviewProposalRow): ProposalFindingSeed[
   ];
 }
 
+function resolveCanonicalReviewDecision(
+  input: ImportReviewProposalToHitchInput,
+): CanonicalReviewDecision | undefined {
+  if (input.processResult !== undefined) {
+    return canonicalReviewDecision(input.processResult.newStatus);
+  }
+
+  const row = repositoryDb(input.repository)
+    .prepare("SELECT decision FROM review_decisions WHERE run_id = ?")
+    .get(input.proposal.runId) as { decision: string } | undefined;
+  return canonicalReviewDecision(row?.decision);
+}
+
+function canonicalReviewDecision(
+  decision: string | null | undefined,
+): CanonicalReviewDecision | undefined {
+  if (
+    decision === "approved" ||
+    decision === "changes_requested" ||
+    decision === "rejected"
+  ) {
+    return decision;
+  }
+  return undefined;
+}
+
+function repositoryDb(repository: HitchRepository): Database.Database {
+  return (repository as unknown as { db: Database.Database }).db;
+}
+
 function toClassifiableFinding(
   seed: ProposalFindingSeed,
   proposal: ReviewProposalRow,
@@ -322,6 +371,8 @@ function recordReviewProcessCloseChecks(
     (condition) => condition.kind === "review_consensus",
   );
   const reviewAdvisories = proposalReviewerAdvisories(proposal);
+  const matchingReviewDecisionId =
+    proposal.decision === result.newStatus ? proposal.reviewDecisionId : null;
   return reviewConditions.map((condition) =>
     repository.recordCloseCheck({
       hitchId: session.hitchId,
@@ -335,8 +386,10 @@ function recordReviewProcessCloseChecks(
       evidence: {
         runId: result.runId,
         proposalId: proposal.proposalId,
-        reviewDecisionId: proposal.reviewDecisionId,
-        decision: proposal.decision,
+        ...(matchingReviewDecisionId !== null
+          ? { reviewDecisionId: matchingReviewDecisionId }
+          : {}),
+        decision: result.newStatus,
         processStatus: result.newStatus,
         sourceSha256: proposal.sourceSha256,
         reviewConsensusSemantics: REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS,

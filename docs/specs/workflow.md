@@ -657,6 +657,18 @@ review consensus は fresh だが他の required close 条件が pending の場�
 id を含む明示的な escalation として fail-closed する。この短絡は LLM 出力を根拠にせず、
 DB の `review_decisions` / review cycle / close-check だけを入力にする。
 
+通常の review import も同じ DB-canonical 決定を状態根拠にする。import の canonical
+decision は `processResult.newStatus`、それが無い場合は `review_decisions.decision` で、
+個々の participant proposal の自己申告 decision にはフォールバックしない。canonical
+decision が `approved` と判定できる場合、非 approving member proposal 由来の
+blocking `required_change` / `negative_decision` finding は import しない（advisory
+`non_blocking_comment` と out-of-scope suggestion は保持する）。canonical decision が
+undeterminable（`processResult` も `review_decisions` 行も無い）なら fail-closed として
+proposal の blocking finding を抑制せず、approval close-check evidence も mint しない。
+`review_consensus` close-check の status / evidence.decision は canonical decision
+（normal import では `processResult.newStatus`）由来で、proposal の `reviewDecisionId` は
+proposal.decision が canonical decision と一致するときだけ補助 evidence として記録する。
+
 review step が失敗した場合、orchestrator は従来どおり hitch を `escalated`
 に倒す。ただし、最新 run が安全に salvage 可能なときだけ、PR を作らず hitch も
 close せずに workspace branch を commit/push する。salvage gate は fail-closed:

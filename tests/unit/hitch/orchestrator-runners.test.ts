@@ -20,10 +20,14 @@ import type { HitchCloseCondition } from "../../../src/hitch/types.js";
 import {
   createOrchestratorRunners,
   latestRunId,
+  selectProcessedProposalForReviewImport,
   tryShortCircuitApprovedDecidedReview,
   HitchHasAdoptedPrError,
   type HitchRunContext,
 } from "../../../src/hitch/orchestrator-runners.js";
+import { ReviewProposalRepository } from "../../../src/db/repositories/review-proposals.js";
+import { importReviewProposalToHitch } from "../../../src/hitch/review-integration.js";
+import { REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS } from "../../../src/core/review-consensus.js";
 import type {
   PrPublisher,
   PrPublishInputs,
@@ -183,6 +187,42 @@ function insertApprovedRunWithProcessedProposal(input: {
   }
 }
 
+function insertProcessedProposal(input: {
+  db: ReturnType<typeof openManagedDb>["db"];
+  runId: string;
+  reviewer: string;
+  decision: "approved" | "changes_requested" | "rejected";
+  requiredChanges?: string[];
+  reviewedAt: string;
+  reviewDecisionId: string;
+}): number {
+  const sourceYaml = decisionYaml(input.runId, input.decision);
+  const sourceSha = createHash("sha256").update(sourceYaml).digest("hex");
+  const info = input.db
+    .prepare(
+      `INSERT INTO review_proposals (
+         run_id, reviewer, decision, required_changes_json,
+         non_blocking_comments_json, out_of_scope_suggestions_json,
+         reviewed_at, source_yaml, source_sha256, created_at, processed_at,
+         review_decision_id, lifecycle_status
+       )
+       VALUES (?, ?, ?, ?, '[]', '[]', ?, ?, ?, ?, ?, ?, 'processed')`,
+    )
+    .run(
+      input.runId,
+      input.reviewer,
+      input.decision,
+      JSON.stringify(input.requiredChanges ?? []),
+      input.reviewedAt,
+      sourceYaml,
+      sourceSha,
+      input.reviewedAt,
+      input.reviewedAt,
+      input.reviewDecisionId,
+    );
+  return Number(info.lastInsertRowid);
+}
+
 describe("createOrchestratorRunners.projectRuntime", () => {
   it("rejects incomplete project runtime deps atomically", () => {
     expect(() =>
@@ -225,6 +265,169 @@ describe("createOrchestratorRunners.projectRuntime", () => {
 });
 
 describe("createOrchestratorRunners.review decided run re-drive", () => {
+  it("selects the approving consensus member for normal review import traceability", () => {
+    const { dbPath } = createHarnessRoot(
+      "harness-orch-review-consensus-import-",
+    );
+    const hitchId = "g-consensus-import";
+    const runId = `run-${hitchId}`;
+    const reviewedAt = "2026-06-13T00:00:00.000Z";
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new HitchRepository(db);
+      repo.createSession({
+        hitchId,
+        title: "Consensus import",
+        repoId: "t",
+        domain: "docs",
+        closeConditions: [
+          { id: "review-ok", kind: "review_consensus", required: true },
+        ],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, source_mode, db_revision, export_status, updated_at, meta_json)
+         VALUES (?, 't', 'docs', 'domain-coding', 'main',
+           'needs_review', 'db-first', 1, 'disabled', ?, ?)`,
+      ).run(
+        runId,
+        reviewedAt,
+        JSON.stringify({
+          runId,
+          repoId: "t",
+          domain: "docs",
+          status: "needs_review",
+        }),
+      );
+      const approvingProposalId = insertProcessedProposal({
+        db,
+        runId,
+        reviewer: "reviewer-a",
+        decision: "approved",
+        reviewedAt,
+        reviewDecisionId: "decision-approved",
+      });
+      const nonApprovingProposalId = insertProcessedProposal({
+        db,
+        runId,
+        reviewer: "reviewer-b",
+        decision: "changes_requested",
+        requiredChanges: [
+          "This member proposal must not become a blocking consensus finding.",
+        ],
+        reviewedAt,
+        reviewDecisionId: "decision-member-b",
+      });
+      expect(
+        new ReviewProposalRepository(db).getLatestProcessedProposal(runId)
+          ?.proposalId,
+      ).toBe(nonApprovingProposalId);
+      const aggregateYaml = decisionYaml(runId, "approved");
+      db.prepare(
+        `INSERT INTO review_decisions (run_id, decision, reviewer, reviewed_at,
+           source_yaml, source_sha256)
+         VALUES (?, 'approved', 'consensus', ?, ?, ?)`,
+      ).run(
+        runId,
+        reviewedAt,
+        aggregateYaml,
+        createHash("sha256").update(aggregateYaml).digest("hex"),
+      );
+      const consensusSummary = {
+        evaluatedAt: reviewedAt,
+        ruleSha256: "rule-sha",
+        semantics: REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS,
+        proposals: [
+          {
+            proposalId: approvingProposalId,
+            reviewerId: "reviewer-a",
+            groupId: "codex",
+            decision: "approved",
+          },
+          {
+            proposalId: nonApprovingProposalId,
+            reviewerId: "reviewer-b",
+            groupId: "codex",
+            decision: "changes_requested",
+          },
+        ],
+        override: null,
+        requirements: [],
+        excludedProposals: [],
+        decisionPath: "requirements-met",
+      };
+      db.prepare(
+        `INSERT INTO review_consensus (
+           run_id, rule_sha256, status, summary_json, evaluated_at,
+           evaluated_by, source_proposals_json
+         )
+         VALUES (?, 'rule-sha', 'approved', ?, ?, 'review.process', ?)`,
+      ).run(
+        runId,
+        JSON.stringify(consensusSummary),
+        reviewedAt,
+        JSON.stringify([approvingProposalId, nonApprovingProposalId]),
+      );
+
+      const selected = selectProcessedProposalForReviewImport({ db, runId });
+
+      expect(selected?.proposalId).toBe(approvingProposalId);
+      const imported = importReviewProposalToHitch({
+        repository: repo,
+        hitchId,
+        proposal: selected!,
+        processResult: {
+          runId,
+          previousStatus: "needs_review",
+          newStatus: "approved",
+          reviewer: "consensus",
+          reviewedAt,
+          warnings: [],
+        },
+        createdBy: "test",
+      });
+      expect(
+        repo
+          .listFindings({ hitchId, scopeStatus: "in_scope" })
+          .filter(
+            (f) =>
+              f.category === "review-required-change" &&
+              f.severity === "P1" &&
+              (f.lifecycleStatus === "open" ||
+                f.lifecycleStatus === "reopened"),
+          ),
+      ).toEqual([]);
+      expect(imported.closeChecks[0]).toMatchObject({
+        conditionId: "review-ok",
+        status: "passed",
+        evidence: {
+          decision: "approved",
+          proposalId: approvingProposalId,
+          reviewDecisionId: "decision-approved",
+        },
+      });
+      db.prepare(
+        `UPDATE review_consensus
+            SET status = 'changes_requested', summary_json = ?
+          WHERE run_id = ? AND superseded_at IS NULL`,
+      ).run(
+        JSON.stringify({
+          ...consensusSummary,
+          decisionPath: "blocking",
+        }),
+        runId,
+      );
+      expect(selectProcessedProposalForReviewImport({ db, runId })?.proposalId).toBe(
+        nonApprovingProposalId,
+      );
+    } finally {
+      close();
+    }
+  });
+
   it("short-circuits an approved processed run without invoking the reviewer", async () => {
     const { harnessRoot, dbPath } = createHarnessRoot(
       "harness-orch-review-redrive-",

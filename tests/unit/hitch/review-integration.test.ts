@@ -39,6 +39,7 @@ function fresh(): {
 function createProposal(
   proposals: ReviewProposalRepository,
   input: {
+    reviewer?: string;
     decision: "approved" | "changes_requested" | "rejected";
     requiredChanges?: string[];
     nonBlockingComments?: string[];
@@ -54,7 +55,7 @@ function createProposal(
   ].join("\n");
   const inserted = proposals.insertProposal({
     runId: "run-review",
-    reviewer: "codex-review",
+    reviewer: input.reviewer ?? "codex-review",
     decision: input.decision,
     requiredChanges: input.requiredChanges ?? [],
     nonBlockingComments: input.nonBlockingComments ?? [],
@@ -65,6 +66,43 @@ function createProposal(
     createdAt: "2026-05-26T00:00:00.000Z",
   });
   return proposals.getById(inserted.proposalId)!;
+}
+
+function markProcessed(
+  proposals: ReviewProposalRepository,
+  proposalId: number,
+  reviewDecisionId: string,
+  processedAt = "2026-05-26T00:01:00.000Z",
+): void {
+  expect(proposals.markProcessed(proposalId, reviewDecisionId, processedAt)).toBe(
+    true,
+  );
+}
+
+function insertReviewDecision(
+  db: ReturnType<typeof openDb>,
+  input: {
+    decision: "approved" | "changes_requested" | "rejected";
+    reviewedAt?: string;
+  },
+): void {
+  const sourceYaml = [
+    "decision: " + input.decision,
+    "required_changes: []",
+    "non_blocking_comments: []",
+    "out_of_scope_suggestions: []",
+    "",
+  ].join("\n");
+  db.prepare(
+    `INSERT INTO review_decisions (run_id, decision, reviewer, summary,
+       reviewed_at, source_yaml, source_sha256)
+     VALUES ('run-review', ?, 'consensus', 'aggregate decision', ?, ?, ?)`,
+  ).run(
+    input.decision,
+    input.reviewedAt ?? "2026-05-26T00:01:00.000Z",
+    sourceYaml,
+    createHash("sha256").update(sourceYaml).digest("hex"),
+  );
 }
 
 describe("goal review integration", () => {
@@ -165,6 +203,204 @@ describe("goal review integration", () => {
       expect(imported.convergenceDecision.decision).toBe("close_ready");
       expect(imported.hitchStatus?.status).toBe("close_ready");
       expect(goals.requireSession("goal-close-review").status).toBe("close_ready");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("suppresses blocking member findings when the process result canonical decision is approved", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      goals.createSession({
+        hitchId: "goal-consensus-approved-process",
+        title: "Goal consensus approved process",
+        closeConditions: [
+          {
+            id: "review-consensus",
+            kind: "review_consensus",
+            required: true,
+          },
+        ],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const approved = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "approved",
+      });
+      const nonApprovingLatest = createProposal(proposals, {
+        reviewer: "reviewer-b",
+        decision: "changes_requested",
+        requiredChanges: [
+          "Member B requested a change that the aggregate consensus overruled.",
+        ],
+        nonBlockingComments: ["Keep an eye on follow-up cleanup."],
+        outOfScopeSuggestions: ["Track dashboard polish separately."],
+      });
+      markProcessed(proposals, approved.proposalId, "decision-approved");
+      markProcessed(
+        proposals,
+        nonApprovingLatest.proposalId,
+        "decision-member-b",
+      );
+      expect(proposals.getLatestProcessedProposal("run-review")?.proposalId).toBe(
+        nonApprovingLatest.proposalId,
+      );
+
+      const imported = importReviewProposalToHitch({
+        repository: goals,
+        hitchId: "goal-consensus-approved-process",
+        proposal: nonApprovingLatest,
+        processResult: {
+          runId: "run-review",
+          previousStatus: "needs_review",
+          newStatus: "approved",
+          reviewer: "consensus",
+          reviewedAt: "2026-05-26T00:01:00.000Z",
+          warnings: [],
+        },
+        createdBy: "test",
+      });
+
+      expect(imported.findings.map((f) => f.finding.category)).toEqual([
+        "review-non-blocking-comment",
+        "review-out-of-scope-suggestion",
+      ]);
+      expect(
+        goals
+          .listFindings({
+            hitchId: "goal-consensus-approved-process",
+            scopeStatus: "in_scope",
+          })
+          .filter(
+            (f) =>
+              f.severity === "P1" &&
+              (f.lifecycleStatus === "open" ||
+                f.lifecycleStatus === "reopened"),
+          )
+          .map((f) => f.category),
+      ).toEqual([]);
+      expect(imported.closeChecks[0]).toMatchObject({
+        conditionId: "review-consensus",
+        status: "passed",
+        evidence: {
+          decision: "approved",
+          processStatus: "approved",
+          proposalId: nonApprovingLatest.proposalId,
+        },
+      });
+      expect(imported.closeChecks[0]?.evidence).not.toHaveProperty(
+        "reviewDecisionId",
+      );
+      expect(new ConvergenceService(goals).evaluate(
+        "goal-consensus-approved-process",
+      ).metrics.openInScopeP1).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("suppresses blocking member findings from review_decisions when processResult is absent", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      goals.createSession({
+        hitchId: "goal-consensus-approved-db",
+        title: "Goal consensus approved db",
+        closeConditions: [
+          {
+            id: "review-consensus",
+            kind: "review_consensus",
+            required: true,
+          },
+        ],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const approved = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "approved",
+      });
+      const rejectedLatest = createProposal(proposals, {
+        reviewer: "reviewer-b",
+        decision: "rejected",
+        requiredChanges: [],
+      });
+      markProcessed(proposals, approved.proposalId, "decision-approved");
+      markProcessed(proposals, rejectedLatest.proposalId, "decision-rejected");
+      insertReviewDecision(db, { decision: "approved" });
+
+      const imported = importReviewProposalToHitch({
+        repository: goals,
+        hitchId: "goal-consensus-approved-db",
+        proposal: rejectedLatest,
+        createdBy: "test",
+      });
+
+      expect(imported.findings).toEqual([]);
+      expect(
+        goals.listFindings({ hitchId: "goal-consensus-approved-db" }),
+      ).toEqual([]);
+      expect(imported.closeChecks).toEqual([]);
+      expect(goals.listCloseChecks("goal-consensus-approved-db")).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("fails closed when the canonical decision is undeterminable", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      goals.createSession({
+        hitchId: "goal-consensus-undeterminable",
+        title: "Goal consensus undeterminable",
+        scope: {
+          allowedFindingCategories: ["review-required-change"],
+        },
+        closeConditions: [
+          {
+            id: "review-consensus",
+            kind: "review_consensus",
+            required: true,
+          },
+        ],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const approved = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "approved",
+      });
+      const nonApprovingLatest = createProposal(proposals, {
+        reviewer: "reviewer-b",
+        decision: "changes_requested",
+        requiredChanges: [
+          "Without a canonical aggregate, the member blocker must remain.",
+        ],
+      });
+      markProcessed(proposals, approved.proposalId, "decision-approved");
+      markProcessed(
+        proposals,
+        nonApprovingLatest.proposalId,
+        "decision-member-b",
+      );
+
+      const imported = importReviewProposalToHitch({
+        repository: goals,
+        hitchId: "goal-consensus-undeterminable",
+        proposal: nonApprovingLatest,
+        createdBy: "test",
+      });
+
+      expect(imported.findings).toHaveLength(1);
+      expect(imported.findings[0].finding).toMatchObject({
+        category: "review-required-change",
+        severity: "P1",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+      });
+      expect(imported.closeChecks).toEqual([]);
+      expect(goals.listCloseChecks("goal-consensus-undeterminable")).toEqual([]);
+      expect(imported.convergenceDecision.decision).toBe("needs_fix");
     } finally {
       db.close();
     }
