@@ -526,12 +526,14 @@ describe("goal review integration", () => {
           nonBlockingComments: [
             "Command logs show npm run typecheck and npx vitest run completed successfully.",
             "typecheck passed and vitest passed.",
+            "typecheck passed with no errors.",
+            "vitest passed with no failures.",
           ],
         }),
         createdBy: "test",
       });
 
-      expect(imported.reviewAdvisories).toHaveLength(2);
+      expect(imported.reviewAdvisories).toHaveLength(4);
       expect(imported.findings).toHaveLength(0);
       expect(imported.cycle.findingsSeen).toBe(0);
       expect(imported.cycle.findingsNew).toBe(0);
@@ -572,12 +574,13 @@ describe("goal review integration", () => {
       expect(imported.findings[0].finding).toMatchObject({
         category: "review-non-blocking-comment",
         severity: "P2",
-        scopeStatus: "unknown",
-        lifecycleStatus: "open",
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "out_of_scope",
       });
-      expect(imported.convergenceDecision.decision).toBe(
+      expect(imported.convergenceDecision.decision).not.toBe(
         "needs_classification",
       );
+      expect(imported.convergenceDecision.decision).not.toBe("escalate");
     } finally {
       db.close();
     }
@@ -659,6 +662,48 @@ describe("goal review integration", () => {
         lifecycleStatus: "open",
         summary:
           "Command logs show npm run typecheck and npx vitest run completed successfully.",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([
+    "typecheck passed, but vitest failed.",
+    "Tests were not run because vitest failed.",
+    "No commands directory was present; no tests passed.",
+    "No tests passed.",
+    "vitest failed.",
+    "2 failures were reported by vitest.",
+  ])("imports mixed success/failure test notes as findings: %s", (comment) => {
+    const { db, goals, proposals } = fresh();
+    try {
+      goals.createSession({
+        hitchId: "goal-mixed-command-failure",
+        title: "Goal mixed command failure",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const proposal = createProposal(proposals, {
+        decision: "approved",
+        nonBlockingComments: [comment],
+      });
+
+      const imported = importReviewProposalToHitch({
+        repository: goals,
+        hitchId: "goal-mixed-command-failure",
+        proposal,
+        createdBy: "test",
+      });
+
+      expect(imported.reviewAdvisories).toEqual([]);
+      expect(imported.findings).toHaveLength(1);
+      expect(imported.findings[0].finding).toMatchObject({
+        category: "review-non-blocking-comment",
+        severity: "P2",
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "out_of_scope",
+        summary: comment,
       });
     } finally {
       db.close();

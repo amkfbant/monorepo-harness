@@ -17,6 +17,26 @@ design — run it through brainstorming → spec → plan when picked up.
   directories, so creating an empty ignored directory is not detected. This does
   not provide a path to mix unreviewed file content into a PR, so it is deferred.
 
+## near-duplicate finding dedup — residual tuning (#155)
+
+- **P2: bare `line N` / `L123` line-reference normalization** — `replaceLineReferenceNumbers`
+  normalizes filename-adjacent `:line` plus bare `line 123` / `line:123` / `l123`
+  forms so reviewer paraphrases that differ only by a line number dedup. Host/IP
+  `:port` is excluded (meaningful ports preserved), but bare `line N` without a
+  filename can still over-dedup pathless findings whose number is meaningful
+  (e.g. "queue line 1" vs "queue line 2"). Blast radius is bounded: pathless
+  near-dup additionally requires the stronger anchor (token ≥ 0.8 + distinctive
+  token), and promotion-on-merge keeps the canonical close-blocking, so no
+  blocker is hidden. Restricting bare `line N` normalization to filename-adjacent
+  context is deferred tuning.
+- **P3: benign failure-word advisories** — the command/test-evidence advisory
+  suppression vetoes notes containing failure/negation words so real failures are
+  not suppressed; environment/test-not-run notes that merely mention "error" /
+  "failed" in meta context therefore import as `review-non-blocking-comment`
+  findings. These are always classified `out_of_scope` (never `unknown`), so they
+  never escalate or block close — at worst they add deferral noise. Tightening the
+  veto to word/suite context is deferred.
+
 ## DB stats snapshot/delta
 
 The Phase 15 `db_stats_snapshots` repository/table was removed in audit cleanup

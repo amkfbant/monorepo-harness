@@ -304,11 +304,21 @@ findings when they appear in `non_blocking_comments`. This includes
 command-evidence advisories such as "no commands directory was present", "test
 execution is evidenced only by the run summary", or "typecheck/vitest passed";
 `commands/` is optional run evidence, not a required workspace artifact.
+Reviewer advisories are vetoed if the same text describes a command/test
+failure or a not-run problem caused by failure, such as "failed", "did not
+pass", or "no tests passed"; mixed pass/fail notes remain findings so failed
+validation cannot be hidden by an advisory carve-out. Negated failure words in
+successful validation notes, such as "no errors", "no failures", "without
+errors", or "0 failures", do not trigger the veto.
 They are surfaced as `reviewAdvisories` on review import and copied into
 `hitch_close_checks.evidence.reviewerAdvisories`, so operators can see the
 missing test evidence without triggering `needs_classification` or escalation.
 The carve-out does not apply to `required_changes`, close-check failures, or
 actual command-evidence defects such as unverified command arrays.
+If an advisory wording variant is still imported as a
+`review-non-blocking-comment` finding, classification treats that category as
+`out_of_scope`; only other categories can remain `unknown` and trigger the
+fail-closed classification gate.
 
 Review-imported findings are deduplicated in two tiers. Tier 1 is the stable
 SHA-256 key over the normalized file path, symbol, category, and summary and is
@@ -322,14 +332,31 @@ canonical severity/scope/lifecycle toward the more close-blocking side as
 needed, and excludes that duplicate row from review-cycle `findingsNew` and
 harness-origin divergence counts. In particular, a returning open close blocker
 must not disappear behind a canonical that was previously `out_of_scope`,
-`deferred`, `accepted_risk`, `escalated`, or `fixed`; the canonical is promoted
-back to a blocking scope and `reopened` lifecycle instead. The heuristic
+`deferred`, `accepted_risk`, or `fixed`; the canonical is promoted back to a
+blocking scope and `reopened` lifecycle instead. Non-blocking repeats do not
+reopen a `fixed` canonical. `escalated` canonicals are
+never downgraded to `reopened`; incoming blockers may still promote their
+severity/scope toward the more blocking side. Repository promotion is
+intentionally fail-closed: open incoming findings with `in_scope` or `unknown`
+scope and P0-P2 severity are treated as close-blocker candidates even though
+policy decides the final convergence action. P3/info incoming findings do not
+promote canonical scope/lifecycle. When a canonical is promoted, its
+summary/detail are refreshed from the incoming, more blocking finding so rerun
+context shows the current blocker text. The heuristic
 requires both token-set Jaccard
 similarity >= 0.6 and word-bigram Jaccard similarity >= 0.5; summaries under
 five tokens use exact-only matching to avoid broad short-text merges. Line
-reference numbers may be normalized, but other numeric tokens must match so
-meaningful differences like HTTP 404 vs 500 or timeout 30s vs 5s remain separate
-findings.
+reference numbers in forms such as "line 123", "line:123", "l123",
+"file.ts:123", and path-suffixed ":123" may be normalized only when the token
+looks like a file/path reference; host/IP ports such as "127.0.0.1:3000" and
+"example.com:443" are not line references. Other numeric tokens must match so
+meaningful differences like HTTP 404 vs 500, timeout 30s vs 5s, or port 3000 vs
+4000 remain separate findings. If neither side has a file path or symbol anchor, near-duplicate
+matching uses stricter text thresholds (token-set >= 0.75 and bigram >= 0.6) and,
+when both summaries contain distinctive path-like/quoted/identifier tokens,
+requires at least one such token to match. This keeps separate pathless review
+blockers, such as different endpoints, from being merged merely because their
+surrounding prose is similar.
 
 `review_consensus` close conditions are static review evidence only. A passed
 `review_consensus` check records that static review consensus approved the run;

@@ -32,6 +32,17 @@ const SUCCESSFUL_COMMAND_EVIDENCE_PATTERNS = [
   /\b(?:typecheck|vitest|jest|test command|npm run [a-z0-9:_-]+|npx [a-z0-9:_-]+(?: run)?)\b.{0,80}\b(?:passed|completed successfully|ran successfully|succeeded|successful)\b/,
   /\b(?:passed|completed successfully|ran successfully|succeeded)\b.{0,80}\b(?:typecheck|vitest|jest|tests?|checks?|verification|npm run [a-z0-9:_-]+|npx [a-z0-9:_-]+(?: run)?)\b/,
 ] as const;
+const NEGATED_COMMAND_FAILURE_PATTERNS = [
+  /\bno\s+(?:test\s+)?(?:errors?|failures?)(?:\s+or\s+(?:errors?|failures?))?\b/g,
+  /\bwithout\s+(?:any\s+)?(?:test\s+)?(?:errors?|failures?)(?:\s+or\s+(?:errors?|failures?))?\b/g,
+  /\b(?:0|zero)\s+(?:test\s+)?(?:errors?|failures?)\b/g,
+] as const;
+const COMMAND_FAILURE_VETO_PATTERNS = [
+  /\b(?:failed|failure|failures|error|errors)\b/,
+  /\b(?:not|never)\b.{0,20}\bpass(?:ed|es)?\b/,
+  /\b(?:did not|didn't|does not|doesn't|cannot|can't|could not|couldn't|unable to)\b.{0,30}\bpass(?:ed|es)?\b/,
+  /\bno\b.{0,20}\b(?:tests?|checks?|verification)\b.{0,20}\bpass(?:ed|es)?\b/,
+] as const;
 const COMMAND_EVIDENCE_BLOCKER_PATTERNS = [
   /\b(?:unverified|not verified|not validated|unvalidated|missing|absent|not present|not provided|no evidence|without evidence|cannot verify|can't verify|could not verify|unable to verify|commands? array)\b/,
 ] as const;
@@ -92,13 +103,10 @@ export function classifyFindingForHitch(
     };
   }
 
-  if (
-    category === "review-non-blocking-comment" &&
-    isEnvironmentMetaNote([finding.summary, finding.detail ?? ""].join(" "))
-  ) {
+  if (category === "review-non-blocking-comment") {
     return {
       scopeStatus: "out_of_scope",
-      reason: "finding text is a reviewer environment meta note",
+      reason: "review non-blocking comments are advisory",
     };
   }
 
@@ -211,9 +219,24 @@ export function isCommandEvidenceAdvisory(text: string): boolean {
   return COMMAND_EVIDENCE_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
+export function hasCommandFailureVeto(text: string): boolean {
+  let normalized = normalizeText(text.replace(/[`*_>\[\]()]/g, " "));
+  if (normalized === "") return false;
+  for (const pattern of NEGATED_COMMAND_FAILURE_PATTERNS) {
+    normalized = normalized.replace(pattern, " ");
+  }
+  normalized = normalizeText(normalized);
+  return COMMAND_FAILURE_VETO_PATTERNS.some((pattern) =>
+    pattern.test(normalized),
+  );
+}
+
 export function isSuccessfulCommandEvidenceAdvisory(text: string): boolean {
   const normalized = normalizeText(text.replace(/[`*_>\[\]()]/g, " "));
   if (normalized === "") return false;
+  if (hasCommandFailureVeto(text)) {
+    return false;
+  }
   if (COMMAND_EVIDENCE_BLOCKER_PATTERNS.some((pattern) => pattern.test(normalized))) {
     return false;
   }

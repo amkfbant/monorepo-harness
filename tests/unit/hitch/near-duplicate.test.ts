@@ -70,6 +70,26 @@ describe("findNearDuplicate", () => {
     );
   });
 
+  it.each([
+    [
+      "Finding at src/hitch/review-integration.ts:107 increments findingsNew for duplicate advisory rows",
+      "Finding at src/hitch/review-integration.ts:223 increments findingsNew for duplicate advisory rows",
+    ],
+    [
+      "Finding at src/hitch/review-integration.ts line:107 increments findingsNew for duplicate advisory rows",
+      "Finding at src/hitch/review-integration.ts line:223 increments findingsNew for duplicate advisory rows",
+    ],
+    [
+      "Finding at src/hitch/review-integration.ts l107 increments findingsNew for duplicate advisory rows",
+      "Finding at src/hitch/review-integration.ts l223 increments findingsNew for duplicate advisory rows",
+    ],
+    ["see file.ts:123", "see file.ts:456"],
+  ])("normalizes colon line references: %s", (first, second) => {
+    expect(find(second, [candidate(first)])?.findingId).toBe(
+      "finding-canonical",
+    );
+  });
+
   it("does not normalize meaningful numbers into the same defect", () => {
     expect(
       find(
@@ -91,6 +111,45 @@ describe("findNearDuplicate", () => {
         ],
       ),
     ).toBeNull();
+  });
+
+  it.each([
+    [
+      "connect to 127.0.0.1:3000 during the local validation probe",
+      "connect to 127.0.0.1:4000 during the local validation probe",
+    ],
+    [
+      "connect to example.com:443 during the remote validation probe",
+      "connect to example.com:8443 during the remote validation probe",
+    ],
+  ])("does not normalize host or IP ports: %s", (first, second) => {
+    expect(find(second, [candidate(first)])).toBeNull();
+  });
+
+  it("keeps pathless required changes for different endpoints separate", () => {
+    expect(
+      find(
+        "API endpoint GET /orders/profile returns 500 when auth token is missing in required change handling",
+        [
+          candidate(
+            "API endpoint GET /users/profile returns 500 when auth token is missing in required change handling",
+          ),
+        ],
+      ),
+    ).toBeNull();
+  });
+
+  it("deduplicates pathless paraphrases with the same distinctive endpoint", () => {
+    expect(
+      find(
+        "API endpoint GET /users/profile returns 500 when missing auth token in required change handling",
+        [
+          candidate(
+            "API endpoint GET /users/profile returns 500 when auth token is missing in required change handling",
+          ),
+        ],
+      )?.findingId,
+    ).toBe("finding-canonical");
   });
 
   it("preserves quoted identifiers as tokens", () => {
@@ -185,10 +244,46 @@ describe("findNearDuplicate", () => {
     const belowBigram =
       "theta eta zeta epsilon delta gamma beta alpha iota kappa";
 
-    expect(find(aboveBoth, [candidate(canonical)])?.findingId).toBe(
-      "finding-canonical",
-    );
-    expect(find(belowToken, [candidate(canonical)])).toBeNull();
-    expect(find(belowBigram, [candidate(canonical)])).toBeNull();
+    expect(
+      find(aboveBoth, [candidate(canonical, { filePath: "src/hitch/repository.ts" })], {
+        filePath: "src/hitch/repository.ts",
+      })?.findingId,
+    ).toBe("finding-canonical");
+    expect(
+      find(belowToken, [candidate(canonical, { filePath: "src/hitch/repository.ts" })], {
+        filePath: "src/hitch/repository.ts",
+      }),
+    ).toBeNull();
+    expect(
+      find(belowBigram, [candidate(canonical, { filePath: "src/hitch/repository.ts" })], {
+        filePath: "src/hitch/repository.ts",
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps anchored near-duplicate threshold behavior unchanged", () => {
+    const canonical =
+      "alpha beta gamma delta epsilon zeta eta theta iota kappa";
+    const anchoredParaphrase =
+      "alpha beta gamma delta epsilon zeta eta theta lambda mu";
+
+    expect(
+      find(
+        anchoredParaphrase,
+        [
+          candidate(canonical, {
+            filePath: "src/hitch/repository.ts",
+            symbol: "recordFinding",
+          }),
+        ],
+        {
+          filePath: "src/hitch/repository.ts",
+          symbol: "recordFinding",
+        },
+      )?.findingId,
+    ).toBe("finding-canonical");
+    expect(
+      find(anchoredParaphrase, [candidate(canonical)]),
+    ).toBeNull();
   });
 });

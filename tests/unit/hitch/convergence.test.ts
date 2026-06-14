@@ -716,7 +716,7 @@ describe("ConvergenceService", () => {
     ) {
       const finding = addFinding(repo, {
         source,
-        scopeStatus: "out_of_scope",
+        scopeStatus: "in_scope",
         severity: "P2",
         summary: `reopens-${source}`,
       });
@@ -727,7 +727,7 @@ describe("ConvergenceService", () => {
           source,
           severity: "P2",
           category: "correctness",
-          scopeStatus: "out_of_scope",
+          scopeStatus: "in_scope",
           summary: `reopens-${source}`,
         });
       }
@@ -975,7 +975,7 @@ describe("ConvergenceService", () => {
             sourceCycleId: cycle.cycleId,
             severity: "P2",
             category: "correctness",
-            scopeStatus: "out_of_scope",
+            scopeStatus: "in_scope",
             summary,
           });
         });
@@ -1332,7 +1332,7 @@ describe("ConvergenceService", () => {
           source: "review",
           severity: "P2",
           category: "correctness",
-          scopeStatus: "out_of_scope",
+          scopeStatus: "in_scope",
           summary: "flaky",
         });
       }

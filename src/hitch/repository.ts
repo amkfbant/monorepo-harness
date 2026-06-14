@@ -1051,6 +1051,8 @@ export class HitchRepository {
             input.severity,
             scopeStatus,
             input.lifecycleStatus ?? defaultLifecycleForScope(scopeStatus),
+            input.summary,
+            input.detail,
             input.source,
             now,
             {
@@ -1062,9 +1064,16 @@ export class HitchRepository {
         }
         const lifecycleStatus =
           input.lifecycleStatus ?? defaultLifecycleForScope(scopeStatus);
+        const incomingCloseBlocker = incomingCloseBlockerCandidate(
+          scopeStatus,
+          lifecycleStatus,
+          input.severity,
+        );
         const scopeStatusToStore = existingIsDuplicate
           ? existing.scope_status
-          : moreBlockingScope(existing.scope_status, scopeStatus);
+          : incomingCloseBlocker
+            ? moreBlockingScope(existing.scope_status, scopeStatus)
+            : existing.scope_status;
         const promoteLifecycleToReopened = existingIsDuplicate
           ? false
           : shouldReopenForIncoming(
@@ -1072,12 +1081,18 @@ export class HitchRepository {
               scopeStatus,
               lifecycleStatus,
               input.severity,
-              this.requireSession(input.hitchId).policy,
             );
-        const reopened =
-          (!existingIsDuplicate && existing.lifecycle_status === "fixed") ||
-          promoteLifecycleToReopened ||
-          canonicalReopened;
+        const fixedReopen =
+          !existingIsDuplicate &&
+          existing.lifecycle_status === "fixed" &&
+          incomingCloseBlocker;
+        const promotesCanonical =
+          !existingIsDuplicate &&
+          (moreSevere(existing.severity, input.severity) !== existing.severity ||
+            scopeStatusToStore !== existing.scope_status ||
+            promoteLifecycleToReopened ||
+            fixedReopen);
+        const reopened = fixedReopen || promoteLifecycleToReopened || canonicalReopened;
         const severity = moreSevere(existing.severity, input.severity);
         const countReopen = isHarnessOriginFindingSource(input.source);
         this.db
@@ -1087,14 +1102,21 @@ export class HitchRepository {
                     source_attempt_id = ?,
                     severity = ?,
                     scope_status = ?,
-                    detail = COALESCE(?, detail),
+                    summary = CASE
+                      WHEN ? THEN ?
+                      ELSE summary
+                    END,
+                    detail = CASE
+                      WHEN ? THEN COALESCE(?, detail)
+                      ELSE detail
+                    END,
                     suggested_fix = COALESCE(?, suggested_fix),
                     lifecycle_status = CASE
-                      WHEN lifecycle_status = 'fixed' OR ? THEN 'reopened'
+                      WHEN (lifecycle_status = 'fixed' AND ?) OR ? THEN 'reopened'
                       ELSE lifecycle_status
                     END,
                     fixed_at = CASE
-                      WHEN lifecycle_status = 'fixed' OR ? THEN NULL
+                      WHEN (lifecycle_status = 'fixed' AND ?) OR ? THEN NULL
                       ELSE fixed_at
                     END,
                     deferred_at = CASE
@@ -1106,7 +1128,7 @@ export class HitchRepository {
                       ELSE deferred_backlog_item_id
                     END,
                     reopen_count = CASE
-                      WHEN (lifecycle_status = 'fixed' OR ?) AND ?
+                      WHEN ((lifecycle_status = 'fixed' AND ?) OR ?) AND ?
                         THEN reopen_count + 1
                       ELSE reopen_count
                     END
@@ -1118,12 +1140,18 @@ export class HitchRepository {
             input.sourceAttemptId ?? null,
             severity,
             scopeStatusToStore,
+            promotesCanonical ? 1 : 0,
+            input.summary,
+            promotesCanonical ? 1 : 0,
             input.detail ?? null,
             input.suggestedFix ?? null,
+            fixedReopen ? 1 : 0,
+            promoteLifecycleToReopened ? 1 : 0,
+            fixedReopen ? 1 : 0,
             promoteLifecycleToReopened ? 1 : 0,
             promoteLifecycleToReopened ? 1 : 0,
             promoteLifecycleToReopened ? 1 : 0,
-            promoteLifecycleToReopened ? 1 : 0,
+            fixedReopen ? 1 : 0,
             promoteLifecycleToReopened ? 1 : 0,
             countReopen ? 1 : 0,
             existing.finding_id,
@@ -1165,6 +1193,8 @@ export class HitchRepository {
               input.severity,
               scopeStatus,
               input.lifecycleStatus ?? defaultLifecycleForScope(scopeStatus),
+              input.summary,
+              input.detail,
               input.source,
               now,
               nearDuplicate === null ? {} : { suppressFixedReopenCount: true },
@@ -1280,6 +1310,8 @@ export class HitchRepository {
         current.severity,
         current.scopeStatus,
         current.lifecycleStatus,
+        current.summary,
+        current.detail ?? undefined,
         current.source,
         now,
       );
@@ -1361,25 +1393,35 @@ export class HitchRepository {
     incomingSeverity: HitchFindingSeverity,
     incomingScopeStatus: HitchScopeStatus,
     incomingLifecycleStatus: HitchLifecycleStatus,
+    incomingSummary: string,
+    incomingDetail: string | undefined,
     incomingSource: HitchFindingSource,
     now: string,
     options: { suppressFixedReopenCount?: boolean } = {},
   ): boolean {
     const canonical = this.requireFinding(canonicalFindingId);
     const severity = moreSevere(canonical.severity, incomingSeverity);
-    const scopeStatus = moreBlockingScope(
-      canonical.scopeStatus,
+    const incomingCloseBlocker = incomingCloseBlockerCandidate(
       incomingScopeStatus,
+      incomingLifecycleStatus,
+      incomingSeverity,
     );
+    const scopeStatus = incomingCloseBlocker
+      ? moreBlockingScope(canonical.scopeStatus, incomingScopeStatus)
+      : canonical.scopeStatus;
     const promoteLifecycleToReopened = shouldReopenForIncoming(
       canonical.lifecycleStatus,
       incomingScopeStatus,
       incomingLifecycleStatus,
       incomingSeverity,
-      this.requireSession(canonical.hitchId).policy,
     );
-    const fixedReopen = canonical.lifecycleStatus === "fixed";
+    const fixedReopen =
+      canonical.lifecycleStatus === "fixed" && incomingCloseBlocker;
     const reopened = fixedReopen || promoteLifecycleToReopened;
+    const promotesCanonical =
+      severity !== canonical.severity ||
+      scopeStatus !== canonical.scopeStatus ||
+      reopened;
     const countReopen =
       isHarnessOriginFindingSource(incomingSource) &&
       (promoteLifecycleToReopened ||
@@ -1389,12 +1431,20 @@ export class HitchRepository {
         `UPDATE hitch_findings
             SET severity = ?,
                 scope_status = ?,
+                summary = CASE
+                  WHEN ? THEN ?
+                  ELSE summary
+                END,
+                detail = CASE
+                  WHEN ? THEN COALESCE(?, detail)
+                  ELSE detail
+                END,
                 lifecycle_status = CASE
-                  WHEN lifecycle_status = 'fixed' OR ? THEN 'reopened'
+                  WHEN (lifecycle_status = 'fixed' AND ?) OR ? THEN 'reopened'
                   ELSE lifecycle_status
                 END,
                 fixed_at = CASE
-                  WHEN lifecycle_status = 'fixed' OR ? THEN NULL
+                  WHEN (lifecycle_status = 'fixed' AND ?) OR ? THEN NULL
                   ELSE fixed_at
                 END,
                 deferred_at = CASE
@@ -1406,7 +1456,7 @@ export class HitchRepository {
                   ELSE deferred_backlog_item_id
                 END,
                 reopen_count = CASE
-                  WHEN (lifecycle_status = 'fixed' OR ?) AND ?
+                  WHEN ((lifecycle_status = 'fixed' AND ?) OR ?) AND ?
                     THEN reopen_count + 1
                   ELSE reopen_count
                 END,
@@ -1416,10 +1466,17 @@ export class HitchRepository {
       .run(
         severity,
         scopeStatus,
+        promotesCanonical ? 1 : 0,
+        incomingSummary,
+        promotesCanonical ? 1 : 0,
+        incomingDetail ?? null,
+        fixedReopen ? 1 : 0,
+        promoteLifecycleToReopened ? 1 : 0,
+        fixedReopen ? 1 : 0,
         promoteLifecycleToReopened ? 1 : 0,
         promoteLifecycleToReopened ? 1 : 0,
         promoteLifecycleToReopened ? 1 : 0,
-        promoteLifecycleToReopened ? 1 : 0,
+        fixedReopen ? 1 : 0,
         promoteLifecycleToReopened ? 1 : 0,
         countReopen ? 1 : 0,
         now,
@@ -2056,11 +2113,9 @@ function moreBlockingScope(
 }
 
 const NON_BLOCKING_CANONICAL_LIFECYCLES = new Set<HitchLifecycleStatus>([
-  "fixed",
   "deferred",
   "accepted_risk",
   "out_of_scope",
-  "escalated",
 ]);
 
 function shouldReopenForIncoming(
@@ -2068,34 +2123,25 @@ function shouldReopenForIncoming(
   incomingScopeStatus: HitchScopeStatus,
   incomingLifecycleStatus: HitchLifecycleStatus,
   incomingSeverity: HitchFindingSeverity,
-  policy: HitchPolicy,
 ): boolean {
   return (
     NON_BLOCKING_CANONICAL_LIFECYCLES.has(canonicalLifecycleStatus) &&
-    incomingBlocksClose(
+    incomingCloseBlockerCandidate(
       incomingScopeStatus,
       incomingLifecycleStatus,
       incomingSeverity,
-      policy,
     )
   );
 }
 
-function incomingBlocksClose(
+function incomingCloseBlockerCandidate(
   scopeStatus: HitchScopeStatus,
   lifecycleStatus: HitchLifecycleStatus,
   severity: HitchFindingSeverity,
-  policy: HitchPolicy,
 ): boolean {
   if (!OPEN_FINDING_LIFECYCLE_SET.has(lifecycleStatus)) return false;
-  if (scopeStatus === "unknown") return policy.closeRequires.noUnknownScope;
-  if (scopeStatus !== "in_scope") return false;
-  if (severity === "P0") return policy.closeRequires.noOpenInScopeP0;
-  if (severity === "P1") return policy.closeRequires.noOpenInScopeP1;
-  if (severity === "P2") {
-    return policy.closeRequires.maxOpenInScopeP2 !== undefined;
-  }
-  return false;
+  if (scopeStatus !== "in_scope" && scopeStatus !== "unknown") return false;
+  return severity === "P0" || severity === "P1" || severity === "P2";
 }
 
 const NEAR_DUPLICATE_CLASSIFICATION_PREFIX = "near-duplicate of ";

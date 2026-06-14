@@ -3,6 +3,7 @@ import type { ProcessResult } from "../core/review-processor.js";
 import { REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS } from "../core/review-consensus.js";
 import {
   classifyFindingForHitch,
+  hasCommandFailureVeto,
   isCommandEvidenceAdvisory,
   isSuccessfulCommandEvidenceAdvisory,
   isTestNotRunAdvisory,
@@ -302,6 +303,7 @@ function toClassifiableFinding(
 }
 
 function isReviewerAdvisory(text: string): boolean {
+  if (hasCommandFailureVeto(text)) return false;
   return (
     isTestNotRunAdvisory(text) ||
     isCommandEvidenceAdvisory(text) ||
