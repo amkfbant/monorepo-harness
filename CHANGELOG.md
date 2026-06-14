@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.5](https://github.com/amkfbant/monorepo-harness/compare/v0.7.4...v0.7.5) (2026-06-14)
+
+
+### Bug Fixes
+
+* [[#168](https://github.com/amkfbant/monorepo-harness/issues/168)] course orchestrate: bounded budget consumption is budget_reached (exit 0), not budget_exhausted (run-20260614-self-mqe4wpaabd2918dd) ([#216](https://github.com/amkfbant/monorepo-harness/issues/216)) ([c0e675c](https://github.com/amkfbant/monorepo-harness/commit/c0e675ca299cc1f5bf080a09f24126e0df44d6fa))
+* [[#183](https://github.com/amkfbant/monorepo-harness/issues/183)] fix(consensus): normal review import must use the DB-canonical decision, fail-closed when undeterminable (run-20260614-self-mqe6nl149682ab9f) ([#218](https://github.com/amkfbant/monorepo-harness/issues/218)) ([e975dc4](https://github.com/amkfbant/monorepo-harness/commit/e975dc49bb44544aa62e1ec50b6558a867714c5b))
+
 ## [0.7.4](https://github.com/amkfbant/monorepo-harness/compare/v0.7.3...v0.7.4) (2026-06-14)
 
 
