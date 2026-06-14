@@ -102,6 +102,8 @@ interface CanonicalReviewContext {
   runId: string;
   decision: CanonicalReviewDecision | undefined;
   requiredChanges: string[] | undefined;
+  reviewer: string | null | undefined;
+  sourceSha256: string | undefined;
 }
 
 export function importReviewProposalToHitch(
@@ -159,6 +161,7 @@ export function importReviewProposalToHitch(
           session,
           input.proposal,
           input.processResult,
+          canonical,
           completedCycle.completedAt,
         );
   const convergence = new ConvergenceService(input.repository).evaluate(input.hitchId);
@@ -345,6 +348,7 @@ function resolveCanonicalReviewContext(
 ): CanonicalReviewContext {
   const runId = input.processResult?.runId ?? input.proposal.runId;
   const db = repositoryDb(input.repository);
+  const row = canonicalReviewDecisionRow(db, runId);
   if (input.processResult !== undefined) {
     const decision = canonicalReviewDecision(input.processResult.newStatus);
     return {
@@ -354,12 +358,11 @@ function resolveCanonicalReviewContext(
         decision === "changes_requested" || decision === "rejected"
           ? canonicalRequiredChanges(db, runId)
           : undefined,
+      reviewer: row?.reviewer,
+      sourceSha256: row?.source_sha256,
     };
   }
 
-  const row = db
-    .prepare("SELECT decision FROM review_decisions WHERE run_id = ?")
-    .get(runId) as { decision: string } | undefined;
   const decision = canonicalReviewDecision(row?.decision);
   return {
     runId,
@@ -368,7 +371,24 @@ function resolveCanonicalReviewContext(
       decision === "changes_requested" || decision === "rejected"
         ? canonicalRequiredChanges(db, runId)
         : undefined,
+    reviewer: row?.reviewer,
+    sourceSha256: row?.source_sha256,
   };
+}
+
+function canonicalReviewDecisionRow(
+  db: Database.Database,
+  runId: string,
+): { decision: string; reviewer: string | null; source_sha256: string } | undefined {
+  return db
+    .prepare(
+      `SELECT decision, reviewer, source_sha256
+         FROM review_decisions
+        WHERE run_id = ?`,
+    )
+    .get(runId) as
+    | { decision: string; reviewer: string | null; source_sha256: string }
+    | undefined;
 }
 
 function canonicalReviewDecision(
@@ -510,6 +530,7 @@ function recordReviewProcessCloseChecks(
   session: HitchSession,
   proposal: ReviewProposalRow,
   result: ProcessResult,
+  canonical: CanonicalReviewContext,
   freshAfter: string | null,
 ): HitchCloseCheck[] {
   const reviewConditions = session.closeConditions.filter(
@@ -518,6 +539,7 @@ function recordReviewProcessCloseChecks(
   const reviewAdvisories = proposalReviewerAdvisories(proposal);
   const matchingReviewDecisionId =
     proposal.decision === result.newStatus ? proposal.reviewDecisionId : null;
+  const sourceSha256 = closeCheckSourceSha256(proposal, result, canonical);
   return reviewConditions.map((condition) =>
     repository.recordCloseCheck({
       hitchId: session.hitchId,
@@ -536,7 +558,7 @@ function recordReviewProcessCloseChecks(
           : {}),
         decision: result.newStatus,
         processStatus: result.newStatus,
-        sourceSha256: proposal.sourceSha256,
+        ...(sourceSha256 !== undefined ? { sourceSha256 } : {}),
         reviewConsensusSemantics: REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS,
         ...(reviewAdvisories.length > 0 ? { reviewerAdvisories: reviewAdvisories } : {}),
       },
@@ -549,6 +571,18 @@ function recordReviewProcessCloseChecks(
           : `review process ended as ${result.newStatus}`,
     }),
   );
+}
+
+function closeCheckSourceSha256(
+  proposal: ReviewProposalRow,
+  result: ProcessResult,
+  canonical: CanonicalReviewContext,
+): string | undefined {
+  const usesConsensusAggregate =
+    result.reviewer === "consensus" ||
+    canonical.reviewer === "consensus" ||
+    proposal.decision !== result.newStatus;
+  return usesConsensusAggregate ? canonical.sourceSha256 : proposal.sourceSha256;
 }
 
 function sourceReviewId(proposal: ReviewProposalRow): string {

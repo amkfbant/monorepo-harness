@@ -165,7 +165,7 @@ function insertReviewDecision(
     reviewedAt?: string;
     requiredChanges?: string[];
   },
-): void {
+): string {
   const runId = input.runId ?? DEFAULT_RUN_ID;
   const requiredChanges = input.requiredChanges ?? [];
   const sourceYaml = [
@@ -175,6 +175,7 @@ function insertReviewDecision(
     "out_of_scope_suggestions: []",
     "",
   ].join("\n");
+  const sourceSha256 = createHash("sha256").update(sourceYaml).digest("hex");
   db.prepare(
     `INSERT INTO review_decisions (run_id, decision, reviewer, summary,
        reviewed_at, source_yaml, source_sha256)
@@ -184,7 +185,7 @@ function insertReviewDecision(
     input.decision,
     input.reviewedAt ?? "2026-05-26T00:01:00.000Z",
     sourceYaml,
-    createHash("sha256").update(sourceYaml).digest("hex"),
+    sourceSha256,
   );
   const stmt = db.prepare(
     `INSERT INTO review_required_changes (run_id, idx, change_text)
@@ -193,6 +194,7 @@ function insertReviewDecision(
   requiredChanges.forEach((change, index) => {
     stmt.run(runId, index, change);
   });
+  return sourceSha256;
 }
 
 describe("goal review integration", () => {
@@ -432,6 +434,58 @@ describe("goal review integration", () => {
     }
   });
 
+  it("records canonical decision source hash for consensus close checks", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      goals.createSession({
+        hitchId: "goal-consensus-canonical-source",
+        title: "Goal consensus canonical source",
+        closeConditions: [
+          {
+            id: "review-consensus",
+            kind: "review_consensus",
+            required: true,
+          },
+        ],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const proposal = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "approved",
+      });
+      const canonicalSourceSha256 = insertReviewDecision(db, {
+        decision: "approved",
+        requiredChanges: ["canonical aggregate provenance marker"],
+      });
+
+      const imported = importReviewProposalToHitch({
+        repository: goals,
+        hitchId: "goal-consensus-canonical-source",
+        proposal,
+        processResult: {
+          runId: "run-review",
+          previousStatus: "needs_review",
+          newStatus: "approved",
+          reviewer: "consensus",
+          reviewedAt: "2026-05-26T00:01:00.000Z",
+          warnings: [],
+        },
+        createdBy: "test",
+      });
+
+      expect(canonicalSourceSha256).not.toBe(proposal.sourceSha256);
+      expect(imported.closeChecks[0]?.evidence).toMatchObject({
+        decision: "approved",
+        processStatus: "approved",
+        proposalId: proposal.proposalId,
+        sourceSha256: canonicalSourceSha256,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("suppresses blocking member findings when the process result canonical decision is approved", () => {
     const { db, goals, proposals } = fresh();
     try {
@@ -515,6 +569,9 @@ describe("goal review integration", () => {
       });
       expect(imported.closeChecks[0]?.evidence).not.toHaveProperty(
         "reviewDecisionId",
+      );
+      expect(imported.closeChecks[0]?.evidence).not.toHaveProperty(
+        "sourceSha256",
       );
       expect(new ConvergenceService(goals).evaluate(
         "goal-consensus-approved-process",
