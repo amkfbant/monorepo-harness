@@ -407,14 +407,15 @@ under `ignore_untracked` globs, so a close-check command cannot pollute the run
 worktree through an ignored path; this is intentionally stricter than the normal
 coding-path `ignore_untracked` semantics in `policy.md`, which still suppress
 build artifacts from write-scope validation. The close-check snapshot excludes
-only never-reviewable dependency paths under `node_modules/**`, because test
-tools may update dependency-owned caches such as
+only never-reviewable dependency paths under the repository-root
+`node_modules/**`, because test tools may update dependency-owned caches such as
 `node_modules/.vite/vitest/results.json` without changing PR-reviewable
 content. Other cache-like paths, including `.vite/`, `.vitest/`, `.cache/`,
-`.turbo/`, `*.tsbuildinfo`, and `.eslintcache` outside `node_modules/**`, are
-not in this volatile set. Reviewable ignored artifacts such as `dist/**` or
+`.turbo/`, `*.tsbuildinfo`, and `.eslintcache` outside root `node_modules/**`,
+are not in this volatile set. Reviewable ignored artifacts such as `dist/**` or
 `build/**` still fail closed on add, modify, delete, chmod, symlink retarget,
-or unreadable fingerprint errors, even when their subpaths look cache-like.
+or unreadable fingerprint errors, even when their subpaths look cache-like or
+include nested `node_modules/`.
 If an ignored path listed by git cannot be fingerprinted with lstat, no-follow
 open/read/hash, or readlink, the close-check fails closed instead of treating
 the error as a comparable unchanged state.

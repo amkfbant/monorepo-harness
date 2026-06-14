@@ -70,7 +70,6 @@ const RUNNABLE_CLOSE_CHECK_STATUSES = new Set<HitchCloseCheckStatus>([
 const CLOSE_CHECK_LOG_EXCERPT_BYTES = 8 * 1024;
 const CLOSE_CHECK_VOLATILE_IGNORED_PATTERNS = [
   "node_modules/**",
-  "**/node_modules/**",
 ] as const;
 
 interface IgnoredUntrackedSnapshotEntry {

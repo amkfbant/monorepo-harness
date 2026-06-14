@@ -532,6 +532,7 @@ describe("runCommandCloseChecks", () => {
 
   it.each([
     ["dist/.vite/manifest.json", ["dist/**"]],
+    ["dist/node_modules/manifest.js", ["dist/**"]],
     ["build/.cache/report.json", ["build/**"]],
     ["coverage/.cache/foo.js", ["coverage/**"]],
     ["out/.vitest/results.json", ["out/**"]],
@@ -551,6 +552,16 @@ describe("runCommandCloseChecks", () => {
     await expectIgnoredArtifactMutationRejected({
       hitchId: "g-ignored-cache-modified-dist-vite",
       path: "dist/.vite/manifest.json",
+      ignoreUntracked: ["dist/**"],
+      beforeContent: "old\n",
+      afterContent: "changed\n",
+    });
+  });
+
+  it("fails closed when a close-check command modifies ignored artifact dist/node_modules/manifest.js", async () => {
+    await expectIgnoredArtifactMutationRejected({
+      hitchId: "g-ignored-cache-modified-dist-node-modules",
+      path: "dist/node_modules/manifest.js",
       ignoreUntracked: ["dist/**"],
       beforeContent: "old\n",
       afterContent: "changed\n",
