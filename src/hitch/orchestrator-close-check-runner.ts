@@ -1,5 +1,6 @@
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { constants, existsSync } from "node:fs";
+import { lstat, open, readFile, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import { harnessPaths } from "../config/paths.js";
 import { withManagedDb } from "../db/managed-connection.js";
@@ -63,6 +64,15 @@ const RUNNABLE_CLOSE_CHECK_STATUSES = new Set<HitchCloseCheckStatus>([
 ]);
 const CLOSE_CHECK_LOG_EXCERPT_BYTES = 8 * 1024;
 
+interface IgnoredUntrackedSnapshotEntry {
+  path: string;
+  fingerprint: string;
+}
+
+interface AssertWorktreeMatchesReviewedResult {
+  ignored: IgnoredUntrackedSnapshotEntry[];
+}
+
 function latestCodingRun(repo: HitchRepository, hitchId: string): LatestCodingRun {
   const attempts = repo.listAttempts(hitchId);
   for (let i = attempts.length - 1; i >= 0; i--) {
@@ -96,16 +106,135 @@ function displayResolvedCommand(command: ResolvedCommand): string {
 //   - assertReviewedFingerprintMatches: the reviewed paths' content still
 //     matches the approved fingerprint (lstat/O_NOFOLLOW: symlink swaps,
 //     retargets, chmod, and content edits all flip it).
+async function classifyIgnoredUntrackedPath(full: string): Promise<unknown[]> {
+  let st;
+  try {
+    st = await lstat(full);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return ["absent"];
+    throw new Error(
+      `close-check cannot fingerprint ignore_untracked path ${full}: ` +
+        `${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  if (st.isSymbolicLink()) {
+    return ["symlink", await readlink(full)];
+  }
+  if (st.isFile()) {
+    let fh;
+    try {
+      fh = await open(full, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch (e) {
+      throw new Error(
+        `close-check cannot fingerprint ignore_untracked path ${full}: ` +
+          `open failed (${e instanceof Error ? e.message : String(e)})`,
+      );
+    }
+    try {
+      const fhStat = await fh.stat();
+      const bytes = await fh.readFile();
+      return [
+        "file",
+        createHash("sha256").update(bytes).digest("hex"),
+        fhStat.mode & 0o7777,
+      ];
+    } finally {
+      await fh.close();
+    }
+  }
+  if (st.isDirectory()) return ["dir"];
+  return ["other"];
+}
+
+async function snapshotIgnoredUntrackedPaths(
+  worktreePath: string,
+  ignoredPaths: readonly string[],
+): Promise<IgnoredUntrackedSnapshotEntry[]> {
+  const snapshot: IgnoredUntrackedSnapshotEntry[] = [];
+  for (const path of ignoredPaths) {
+    snapshot.push({
+      path,
+      fingerprint: JSON.stringify(
+        await classifyIgnoredUntrackedPath(join(worktreePath, path)),
+      ),
+    });
+  }
+  return snapshot;
+}
+
+function ignoredSnapshotByPath(input: {
+  snapshot: readonly IgnoredUntrackedSnapshotEntry[];
+  phase: string;
+  label: string;
+}): Map<string, string> {
+  const byPath = new Map<string, string>();
+  for (const entry of input.snapshot) {
+    if (byPath.has(entry.path)) {
+      throw new Error(
+        `close-check ${input.phase} duplicate ignore_untracked path in ` +
+          `${input.label} snapshot: ${entry.path}`,
+      );
+    }
+    byPath.set(entry.path, entry.fingerprint);
+  }
+  return byPath;
+}
+
+function assertIgnoredUntrackedSnapshotMatches(input: {
+  phase: string;
+  priorIgnored: readonly IgnoredUntrackedSnapshotEntry[];
+  currentIgnored: readonly IgnoredUntrackedSnapshotEntry[];
+}): void {
+  const priorByPath = ignoredSnapshotByPath({
+    snapshot: input.priorIgnored,
+    phase: input.phase,
+    label: "baseline",
+  });
+  const currentByPath = ignoredSnapshotByPath({
+    snapshot: input.currentIgnored,
+    phase: input.phase,
+    label: "post-command",
+  });
+  const added: string[] = [];
+  const modified: string[] = [];
+  const deleted: string[] = [];
+  for (const entry of input.currentIgnored) {
+    const priorFingerprint = priorByPath.get(entry.path);
+    if (priorFingerprint === undefined) {
+      added.push(entry.path);
+    } else if (priorFingerprint !== entry.fingerprint) {
+      modified.push(entry.path);
+    }
+  }
+  for (const entry of input.priorIgnored) {
+    if (!currentByPath.has(entry.path)) {
+      deleted.push(entry.path);
+    }
+  }
+  if (added.length === 0 && modified.length === 0 && deleted.length === 0) {
+    return;
+  }
+  const details: string[] = [];
+  if (added.length > 0) details.push(`added: ${added.join(", ")}`);
+  if (modified.length > 0) details.push(`modified: ${modified.join(", ")}`);
+  if (deleted.length > 0) details.push(`deleted: ${deleted.join(", ")}`);
+  throw new Error(
+    `close-check ${input.phase} command polluted the worktree under ` +
+      `ignore_untracked path(s): ${details.join("; ")}`,
+  );
+}
+
 async function assertWorktreeMatchesReviewed(opts: {
   worktreePath: string;
   baseSha: string;
   ignoreUntracked: readonly string[];
+  priorIgnored?: readonly IgnoredUntrackedSnapshotEntry[];
   meta: RunMeta;
   runId: string;
   reviewedPaths: string[];
   phase: string;
   gitTimeoutMs: number;
-}): Promise<void> {
+}): Promise<AssertWorktreeMatchesReviewedResult> {
   const diff = await collectDiff({
     repoPath: opts.worktreePath,
     baseSha: opts.baseSha,
@@ -117,7 +246,10 @@ async function assertWorktreeMatchesReviewed(opts: {
         diff.stagedChangedPaths.join(", "),
     );
   }
-  const { kept } = partitionUntracked(diff.untrackedPaths, opts.ignoreUntracked);
+  const { kept, ignored } = partitionUntracked(
+    diff.untrackedPaths,
+    opts.ignoreUntracked,
+  );
   assertPathsSubset(
     [...diff.trackedChangedPaths, ...kept],
     opts.reviewedPaths,
@@ -130,6 +262,18 @@ async function assertWorktreeMatchesReviewed(opts: {
     reviewedPaths: opts.reviewedPaths,
     refusal: `run close checks (${opts.phase})`,
   });
+  const ignoredSnapshot = await snapshotIgnoredUntrackedPaths(
+    opts.worktreePath,
+    ignored,
+  );
+  if (opts.priorIgnored !== undefined) {
+    assertIgnoredUntrackedSnapshotMatches({
+      phase: opts.phase,
+      priorIgnored: opts.priorIgnored,
+      currentIgnored: ignoredSnapshot,
+    });
+  }
+  return { ignored: ignoredSnapshot };
 }
 
 function resolveCommandForCondition(input: {
@@ -331,7 +475,7 @@ export async function runCommandCloseChecks(
     // tree polluted between review and close-check is rejected here, not used as
     // the baseline (review finding P0). AFTER: the command must have left that
     // reviewed surface untouched.
-    await assertWorktreeMatchesReviewed({
+    const { ignored: baselineIgnored } = await assertWorktreeMatchesReviewed({
       worktreePath,
       baseSha: prep.baseSha,
       ignoreUntracked: policy.ignoreUntracked,
@@ -354,6 +498,7 @@ export async function runCommandCloseChecks(
       worktreePath,
       baseSha: prep.baseSha,
       ignoreUntracked: policy.ignoreUntracked,
+      priorIgnored: baselineIgnored,
       meta: prep.meta,
       runId: prep.runId,
       reviewedPaths: prep.reviewedPaths,
