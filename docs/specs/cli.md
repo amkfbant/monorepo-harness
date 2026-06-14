@@ -480,7 +480,8 @@ MCP 経由の hitch close/cancel/scope expansion は confirmation-required。
 `diverging` も **reopen 不可**: divergence トリガー（harness-origin finding の総数
 `harnessOriginNewFindings` / reopen 数 `harnessOriginMaxReopenCount` / cycle 毎 finding 数の
 非減少。operator/human 由来 finding は除外＝#196。origin は first-seen で immutable）は不変の
-履歴から導出され、reopen は iteration/review/rerun budget しか
+source 付き finding 行の履歴から導出される。`--findings-new` だけの summary-only cycle 完了は
+source-blind なので divergence を駆動しない。reopen は iteration/review/rerun budget しか
 延長しない（divergence budget は延長しない）ため、再開直後の convergence 評価で即 `diverging`
 が再発火し全 mutation を再 block する＝operator に解消手段がない。divergence budget 延長を伴う
 設計は `docs/future-features.md` 参照。reopen 後は `hitch finding add` で finding を記録 →

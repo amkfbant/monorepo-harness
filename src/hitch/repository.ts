@@ -14,6 +14,7 @@ import {
 } from "./schemas.js";
 import {
   DEFAULT_HITCH_POLICY,
+  HARNESS_ORIGIN_FINDING_SOURCE_SET,
   HARNESS_ORIGIN_FINDING_SOURCES,
   type HitchAttempt,
   type HitchAttemptStatus,
@@ -409,8 +410,9 @@ function nonNegInt(value: number | undefined): number {
  * deliberate abandon and is excluded.
  *
  * `diverging` is intentionally NOT reopenable: divergence triggers
- * (totalNewFindings, maxReopenCount, non-decreasing finding counts) derive from
- * immutable history, and `reopenSession` only extends iteration/review/rerun
+ * (harnessOriginNewFindings, harnessOriginMaxReopenCount, non-decreasing
+ * harness-origin per-cycle counts) derive from immutable first-seen origin
+ * history, and `reopenSession` only extends iteration/review/rerun
  * budgets — not the divergence budget. A reopened diverging hitch would re-fire
  * `diverging` on its very next convergence evaluation and re-block every
  * mutation, leaving the operator no way out. Reopening a diverging hitch needs a
@@ -439,6 +441,10 @@ const OPEN_FINDING_LIFECYCLE_SET = new Set<HitchLifecycleStatus>(
 );
 const UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLE_SET =
   new Set<HitchLifecycleStatus>(UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES);
+
+function isHarnessOriginFindingSource(source: HitchFindingSource): boolean {
+  return HARNESS_ORIGIN_FINDING_SOURCE_SET.has(source);
+}
 
 const CONFIG_UPDATE_STATUSES = new Set<HitchStatus>([
   "open",
@@ -1027,11 +1033,13 @@ export class HitchRepository {
           canonicalReopened = this.promoteDuplicateCanonical(
             duplicateCanonical,
             input.severity,
+            input.source,
             now,
           );
         }
         const reopened = existing.lifecycle_status === "fixed" || canonicalReopened;
         const severity = moreSevere(existing.severity, input.severity);
+        const countReopen = isHarnessOriginFindingSource(input.source);
         this.db
           .prepare(
             `UPDATE hitch_findings
@@ -1049,7 +1057,7 @@ export class HitchRepository {
                       ELSE fixed_at
                     END,
                     reopen_count = CASE
-                      WHEN lifecycle_status = 'fixed' THEN reopen_count + 1
+                      WHEN lifecycle_status = 'fixed' AND ? THEN reopen_count + 1
                       ELSE reopen_count
                     END
               WHERE finding_id = ?`,
@@ -1061,6 +1069,7 @@ export class HitchRepository {
             severity,
             input.detail ?? null,
             input.suggestedFix ?? null,
+            countReopen ? 1 : 0,
             existing.finding_id,
           );
         this.touchSession(input.hitchId, now);
@@ -1073,7 +1082,12 @@ export class HitchRepository {
 
       const reopened =
         duplicateOf !== null
-          ? this.promoteDuplicateCanonical(duplicateOf, input.severity, now)
+          ? this.promoteDuplicateCanonical(
+              duplicateOf,
+              input.severity,
+              input.source,
+              now,
+            )
           : false;
       const findingId = input.findingId ?? `finding-${randomUUID()}`;
       this.db
@@ -1180,7 +1194,12 @@ export class HitchRepository {
       );
     this.touchSession(current.hitchId, now);
     if (duplicateOf !== null) {
-      this.promoteDuplicateCanonical(duplicateOf, current.severity, now);
+      this.promoteDuplicateCanonical(
+        duplicateOf,
+        current.severity,
+        current.source,
+        now,
+      );
     }
     return this.requireFinding(input.findingId);
   }
@@ -1257,11 +1276,13 @@ export class HitchRepository {
   private promoteDuplicateCanonical(
     canonicalFindingId: string,
     incomingSeverity: HitchFindingSeverity,
+    incomingSource: HitchFindingSource,
     now: string,
   ): boolean {
     const canonical = this.requireFinding(canonicalFindingId);
     const severity = moreSevere(canonical.severity, incomingSeverity);
     const reopened = canonical.lifecycleStatus === "fixed";
+    const countReopen = isHarnessOriginFindingSource(incomingSource);
     this.db
       .prepare(
         `UPDATE hitch_findings
@@ -1275,13 +1296,13 @@ export class HitchRepository {
                   ELSE fixed_at
                 END,
                 reopen_count = CASE
-                  WHEN lifecycle_status = 'fixed' THEN reopen_count + 1
+                  WHEN lifecycle_status = 'fixed' AND ? THEN reopen_count + 1
                   ELSE reopen_count
                 END,
                 last_seen_at = ?
           WHERE finding_id = ?`,
       )
-      .run(severity, now, canonicalFindingId);
+      .run(severity, countReopen ? 1 : 0, now, canonicalFindingId);
     return reopened;
   }
 

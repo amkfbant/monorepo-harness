@@ -79,6 +79,10 @@ export const HARNESS_ORIGIN_FINDING_SOURCES = [
   "other",
 ] as const satisfies readonly HitchFindingSource[];
 
+export const HARNESS_ORIGIN_FINDING_SOURCE_SET = new Set<HitchFindingSource>(
+  HARNESS_ORIGIN_FINDING_SOURCES,
+);
+
 // Compile-time guard: every HitchFindingSource MUST be classified as either
 // operator-origin or harness-origin. An unclassified source would silently
 // drop out of divergence accounting (fail-open of the safety circuit-breaker,

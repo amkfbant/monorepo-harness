@@ -335,6 +335,79 @@ describe("HitchRepository", () => {
     }
   });
 
+  it("counts only harness-origin driven reopens for harness divergence churn", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const direct = addFinding(repo, {
+        source: "review",
+        summary: "operator direct reopen",
+      });
+      const duplicateCanonical = addFinding(repo, {
+        source: "review",
+        summary: "operator duplicate reopen canonical",
+      });
+
+      for (let i = 0; i < 3; i += 1) {
+        repo.markFindingFixed({ findingId: direct.findingId });
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "human",
+          severity: "P2",
+          category: "correctness",
+          scopeStatus: "out_of_scope",
+          summary: "operator direct reopen",
+        });
+
+        repo.markFindingFixed({ findingId: duplicateCanonical.findingId });
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "mcp",
+          severity: "P2",
+          category: "correctness",
+          scopeStatus: "duplicate",
+          summary: `operator duplicate reopen ${i}`,
+          duplicateOf: duplicateCanonical.findingId,
+        });
+      }
+
+      expect(repo.requireFinding(direct.findingId)).toMatchObject({
+        source: "review",
+        lifecycleStatus: "reopened",
+        reopenCount: 0,
+      });
+      expect(repo.requireFinding(duplicateCanonical.findingId)).toMatchObject({
+        source: "review",
+        lifecycleStatus: "reopened",
+        reopenCount: 0,
+      });
+      expect(
+        repo.harnessOriginDivergenceMetrics("goal-test")
+          .harnessOriginMaxReopenCount,
+      ).toBe(0);
+
+      for (let i = 0; i < 3; i += 1) {
+        repo.markFindingFixed({ findingId: direct.findingId });
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          severity: "P2",
+          category: "correctness",
+          scopeStatus: "out_of_scope",
+          summary: "operator direct reopen",
+        });
+      }
+
+      expect(repo.requireFinding(direct.findingId).reopenCount).toBe(3);
+      expect(
+        repo.harnessOriginDivergenceMetrics("goal-test")
+          .harnessOriginMaxReopenCount,
+      ).toBe(3);
+    } finally {
+      db.close();
+    }
+  });
+
   it("discardAttempt is idempotent and recomputes current_iteration", () => {
     const { db, repo } = freshRepo();
     try {

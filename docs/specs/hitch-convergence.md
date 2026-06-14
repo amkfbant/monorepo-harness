@@ -119,13 +119,21 @@ Evaluation is deterministic and conservative:
 2. Iteration/review/rerun budgets are enforced.
 3. Open in-scope P0 escalates.
 4. Growing finding counts or reopened churn is `diverging`. Divergence churn
-   counts only harness-origin findings (`review`, `test`, `doctor`, `codex`,
-   and fail-closed `other`) and excludes operator-origin findings (`human`,
-   `mcp`). Operator-origin findings still count for close blockers: open
-   in-scope P0 escalates, open in-scope P1 blocks close, and configured P2 /
+   is derived from recorded finding rows that carry a `source`. It counts only
+   harness-origin findings (`review`, `test`, `doctor`, `codex`, and
+   fail-closed `other`) and excludes operator-origin findings (`human`, `mcp`).
+   Operator-origin findings still count for close blockers: open in-scope P0
+   escalates, open in-scope P1 blocks close, and configured P2 /
    unknown-scope blockers are enforced. A finding's divergence origin is the
    first-seen `source` / `source_cycle_id`; later duplicate upserts do not move
-   it between operator and harness origin.
+   it between operator and harness origin. Summary-only cycle completion counts
+   such as `hitch review-cycle complete --findings-new` do not drive
+   divergence because they are source-blind and cannot distinguish harness from
+   operator findings. The orchestrate review-import path records harness-origin
+   (`review`) finding rows, so the automated review loop always feeds the
+   circuit breaker. MCP `record_findings` also records source-bearing rows, but
+   as operator-origin (`mcp`), which (by design) block close yet do not drive
+   divergence.
 5. Passed fresh required close checks plus configured `closeRequires` blockers clear is `close_ready`.
 6. (#104) An **unreviewed** coder run — the latest coding attempt (implement/
    rerun) is newer than the latest review cycle — is **reviewed** (`continue` →

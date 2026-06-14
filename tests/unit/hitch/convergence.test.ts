@@ -781,13 +781,46 @@ describe("ConvergenceService", () => {
       const operator = fresh();
       try {
         createGoal(operator.repo);
-        reopenFindingPastPolicy(operator.repo, "human");
+        const direct = addFinding(operator.repo, {
+          source: "review",
+          scopeStatus: "out_of_scope",
+          severity: "P2",
+          summary: "operator-reported direct reopen",
+        });
+        const duplicateCanonical = addFinding(operator.repo, {
+          source: "review",
+          scopeStatus: "out_of_scope",
+          severity: "P2",
+          summary: "operator-reported duplicate reopen",
+        });
+        for (let i = 0; i < 3; i += 1) {
+          operator.repo.markFindingFixed({ findingId: direct.findingId });
+          operator.repo.upsertFinding({
+            hitchId: "goal-test",
+            source: "human",
+            severity: "P2",
+            category: "correctness",
+            scopeStatus: "out_of_scope",
+            summary: "operator-reported direct reopen",
+          });
+
+          operator.repo.markFindingFixed({
+            findingId: duplicateCanonical.findingId,
+          });
+          operator.repo.upsertFinding({
+            hitchId: "goal-test",
+            source: "mcp",
+            severity: "P2",
+            category: "correctness",
+            scopeStatus: "duplicate",
+            summary: `operator-reported duplicate ${i}`,
+            duplicateOf: duplicateCanonical.findingId,
+          });
+        }
         passClose(operator.repo);
 
         const result = operator.service.evaluate("goal-test");
-        expect(result.metrics.maxReopenCount).toBeGreaterThan(
-          DEFAULT_HITCH_POLICY.divergence.maxReopenedPerFinding,
-        );
+        expect(result.metrics.maxReopenCount).toBe(0);
         expect(result.metrics.harnessOriginMaxReopenCount).toBe(0);
         expect(result.decision).not.toBe("diverging");
       } finally {
