@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { openManagedDb, withManagedDb } from "../db/managed-connection.js";
 import { harnessPaths } from "../config/paths.js";
@@ -7,8 +9,16 @@ import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import {
   runDomainCoding,
   RunFinalizedError,
+  VALIDATED_CONTINUATION_STATUSES,
+  type ContinueFromSpec,
+  type ContinueFromSkipReason,
   type RunDomainCodingOpts,
 } from "../core/workflow-runner.js";
+import type { RunStatus } from "../logging/run-log.js";
+import { resolveBaseSha } from "../git/diff.js";
+import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
+import { resolvePolicy } from "../policy/resolver.js";
+import { DEFAULT_GIT_TIMEOUT_MS } from "../policy/schema.js";
 import { runReviewerAgent } from "../core/reviewer-agent.js";
 import { processReviewDecision } from "../core/review-processor.js";
 import {
@@ -344,6 +354,19 @@ export function latestRunId(repo: HitchRepository, hitchId: string): string {
 }
 
 function latestCodingRun(repo: HitchRepository, hitchId: string): LatestCodingRun {
+  const found = latestCodingRunOrNull(repo, hitchId);
+  if (found === null) {
+    throw new Error(
+      `hitch ${hitchId} has no recorded run yet; run the coder before reviewing`,
+    );
+  }
+  return found;
+}
+
+function latestCodingRunOrNull(
+  repo: HitchRepository,
+  hitchId: string,
+): LatestCodingRun | null {
   const attempts = repo.listAttempts(hitchId);
   for (let i = attempts.length - 1; i >= 0; i--) {
     const attempt = attempts[i];
@@ -353,9 +376,292 @@ function latestCodingRun(repo: HitchRepository, hitchId: string): LatestCodingRu
       return { runId: attempt.runId, iteration: attempt.iteration };
     }
   }
-  throw new Error(
-    `hitch ${hitchId} has no recorded run yet; run the coder before reviewing`,
-  );
+  return null;
+}
+
+/**
+ * (#163) The continuation inputs for a rerun, threaded into `runDomainCoding`.
+ * `continueFrom` + `resolvedBaseSha` drive the uncommitted materialization of
+ * the parent run's work; the lineage fields populate meta.json / the rerun
+ * chain. When a continuation cannot be set up safely the resolver returns
+ * `continueFrom: undefined` and a `skippedReason` (fail-closed → fresh run).
+ */
+interface ContinuationResolution {
+  continueFrom?: ContinueFromSpec;
+  /**
+   * (#163 P2) Lineage parent — set on a materialized continuation AND on every
+   * fail-closed skip that has a resolvable parent, so `runDomainCoding` records
+   * the rerun chain (`parent_run_id` / dup-fence) even when materialization was
+   * skipped. Absent only for `parent_run_missing` (no parent at all).
+   */
+  parentRunId?: string;
+  resolvedBaseSha?: string;
+  rootRunId?: string;
+  rerunAttempt?: number;
+  skippedReason?: ContinueFromSkipReason;
+}
+
+/** Minimal run-row fields the continuation resolver reads (read-only). */
+interface ParentRunRow {
+  runId: string;
+  baseSha: string | null;
+  status: string | null;
+  parentRunId: string | null;
+  rootRunId: string | null;
+  rerunAttempt: number | null;
+}
+
+function readRunRow(
+  db: Database.Database,
+  runId: string,
+): ParentRunRow | null {
+  const r = db
+    .prepare(
+      "SELECT run_id, base_sha, status, parent_run_id, root_run_id, rerun_attempt " +
+        "FROM runs WHERE run_id = ?",
+    )
+    .get(runId) as
+    | {
+        run_id: string;
+        base_sha: string | null;
+        status: string | null;
+        parent_run_id: string | null;
+        root_run_id: string | null;
+        rerun_attempt: number | null;
+      }
+    | undefined;
+  if (r === undefined) return null;
+  return {
+    runId: r.run_id,
+    baseSha: r.base_sha,
+    status: r.status,
+    parentRunId: r.parent_run_id,
+    rootRunId: r.root_run_id,
+    rerunAttempt: r.rerun_attempt,
+  };
+}
+
+/**
+ * (#163) Derive the rerun-chain root for a parent run. Fast path: the parent
+ * already records `root_run_id`. Otherwise walk `parent_run_id` links up to
+ * the root — a legacy parent that itself has a parentRunId must NOT default to
+ * its own runId (that would re-root a chain mid-way). A parent with no
+ * parentRunId is itself the root.
+ */
+function deriveRootRunId(db: Database.Database, parent: ParentRunRow): string {
+  if (parent.rootRunId !== null && parent.rootRunId !== "") {
+    return parent.rootRunId;
+  }
+  if (parent.parentRunId === null || parent.parentRunId === "") {
+    return parent.runId;
+  }
+  // Walk up parent_run_id links, bounded by the row count to avoid a cycle
+  // hang (a corrupt self/loop link falls back to the deepest node reached).
+  let current = parent;
+  const seen = new Set<string>([current.runId]);
+  for (let i = 0; i < 10_000; i++) {
+    const next =
+      current.parentRunId !== null && current.parentRunId !== ""
+        ? readRunRow(db, current.parentRunId)
+        : null;
+    if (next === null) return current.runId;
+    if (seen.has(next.runId)) return current.runId; // cycle guard
+    if (next.rootRunId !== null && next.rootRunId !== "") return next.rootRunId;
+    seen.add(next.runId);
+    current = next;
+  }
+  return current.runId;
+}
+
+/**
+ * (#163) The rerun_attempt for the NEXT child = parent depth + 1. Fast path:
+ * the parent records `rerun_attempt` (its own depth) → child is `parent + 1`.
+ * Otherwise the parent is a LEGACY rerun row whose `rerun_attempt` was never
+ * stamped: reconstruct the parent's depth by walking `parent_run_id` links (the
+ * number of ancestors), so a migrated chain keeps the correct depth instead of
+ * collapsing to `0 + 1`. A run with no parentRunId is depth 0 (its child = 1).
+ */
+function deriveRerunAttempt(db: Database.Database, parent: ParentRunRow): number {
+  if (parent.rerunAttempt !== null) {
+    return parent.rerunAttempt + 1;
+  }
+  if (parent.parentRunId === null || parent.parentRunId === "") {
+    return 1; // parent is the root (depth 0) → its first child is attempt 1.
+  }
+  // Count ancestors via the parent_run_id chain (bounded; cycle-guarded).
+  let depth = 0;
+  let current = parent;
+  const seen = new Set<string>([current.runId]);
+  for (let i = 0; i < 10_000; i++) {
+    if (current.parentRunId === null || current.parentRunId === "") break;
+    const next = readRunRow(db, current.parentRunId);
+    if (next === null) break;
+    if (seen.has(next.runId)) break; // cycle guard
+    // a stamped ancestor pins absolute depth: parent depth = ancestor + steps.
+    if (next.rerunAttempt !== null) {
+      depth += next.rerunAttempt + 1;
+      return depth + 1;
+    }
+    depth += 1;
+    seen.add(next.runId);
+    current = next;
+  }
+  // parent depth = number of ancestors walked → child = depth + 1.
+  return depth + 1;
+}
+
+/**
+ * (#163) Resolve the effective `limits.gitTimeoutMs` the run will use, so the
+ * resolver's read-only base `git rev-parse` is bounded by the SAME timeout as
+ * the run itself. Uses the compiled project policy when present (mirroring
+ * `runDomainCoding`), else loads the repo policy files; any load failure falls
+ * back to the harness default rather than throwing on the read-only path.
+ */
+async function resolveGitTimeoutMs(
+  deps: OrchestratorRunnerDeps,
+  context: HitchRunContext,
+): Promise<number> {
+  try {
+    const paths = harnessPaths(deps.harnessRoot);
+    const { global, repo } = deps.projectRuntime?.compiledPolicy ?? {
+      global: await loadGlobalPolicy(paths.globalPolicyPath),
+      repo: await loadRepoPolicy(paths.repoPolicyPath(context.repoId)),
+    };
+    return resolvePolicy(global, repo, context.domain).limits.gitTimeoutMs;
+  } catch {
+    return DEFAULT_GIT_TIMEOUT_MS;
+  }
+}
+
+/**
+ * (#163) Sync DB-read half of the continuation resolver. Reads the latest
+ * coding run row + derives the rerun-chain root + computes the parent worktree
+ * path — all read-only, inside one short-lived DB handle. Returns null when
+ * there is no resolvable parent (→ fresh-from-base, `parent_run_missing`).
+ */
+interface ParentContinuationFacts {
+  parentRunId: string;
+  parentBaseSha: string;
+  parentStatus: string | null;
+  parentWorktreePath: string;
+  rootRunId: string;
+  rerunAttempt: number;
+}
+
+function readParentContinuationFacts(opts: {
+  db: Database.Database;
+  repo: HitchRepository;
+  hitchId: string;
+  harnessRoot: string;
+}): ParentContinuationFacts | null {
+  const latest = latestCodingRunOrNull(opts.repo, opts.hitchId);
+  if (latest === null) return null;
+  const parent = readRunRow(opts.db, latest.runId);
+  if (parent === null || parent.baseSha === null || parent.baseSha === "") {
+    return null;
+  }
+  return {
+    parentRunId: parent.runId,
+    parentBaseSha: parent.baseSha,
+    parentStatus: parent.status,
+    parentWorktreePath: join(
+      harnessPaths(opts.harnessRoot).workspacesDir,
+      parent.runId,
+      "repo",
+    ),
+    rootRunId: deriveRootRunId(opts.db, parent),
+    // (#163 P3) chain-depth aware: a legacy parent with no rerun_attempt is not
+    // collapsed to `0 + 1` — its depth is reconstructed from the parent chain.
+    rerunAttempt: deriveRerunAttempt(opts.db, parent),
+  };
+}
+
+/**
+ * (#163) Async base-gate half of the continuation resolver. GATEs on (1) the
+ * parent run being POLICY-VALIDATED (a completed+passed status — see
+ * `VALIDATED_CONTINUATION_STATUSES`), (2) base-equality (parent.baseSha === the
+ * freshly resolved base), and (3) the parent worktree's existence. Performs NO
+ * git mutation and NO DB write — only a read-only `git rev-parse` for the base
+ * and a worktree-existence stat. Every ambiguity fails CLOSED to a fresh run
+ * with a recorded `skippedReason`; a thrown git error maps to
+ * `parent_work_unmaterializable`, never a throw.
+ *
+ * (#163 P2) LINEAGE is recorded on the success branch AND on every skip branch
+ * with a resolvable parent — only the MATERIALIZATION is gated, never the rerun
+ * chain / dup-fence audit.
+ */
+async function gateContinuation(opts: {
+  facts: ParentContinuationFacts;
+  context: HitchRunContext;
+  gitTimeoutMs: number;
+}): Promise<ContinuationResolution> {
+  const { facts } = opts;
+  // Lineage is always recorded (chain + dup-fence), regardless of whether the
+  // continuation materializes or fails closed to a fresh run.
+  const lineage = {
+    parentRunId: facts.parentRunId,
+    rootRunId: facts.rootRunId,
+    rerunAttempt: facts.rerunAttempt,
+  };
+
+  // (#163 P1) Validated-parent gate: continue ONLY from a run whose status
+  // proves it passed path-policy validation (safetyStatus=allowed). A failed /
+  // non-validated parent (failed-policy-violation carries out-of-scope/deny
+  // paths; failed-internal-error may be an un-resettable partial-carry worktree;
+  // failed-codex never completed validation) must NOT be carried — a
+  // fresh-from-base rerun re-derives without the forbidden/partial changes.
+  if (
+    facts.parentStatus === null ||
+    !VALIDATED_CONTINUATION_STATUSES.has(facts.parentStatus as RunStatus)
+  ) {
+    return { ...lineage, skippedReason: "parent_not_validated" };
+  }
+
+  let freshBaseSha: string;
+  try {
+    freshBaseSha = await resolveBaseSha({
+      repoPath: opts.context.repoPath,
+      baseBranch: opts.context.baseBranch,
+      timeoutMs: opts.gitTimeoutMs,
+    });
+  } catch {
+    // Cannot resolve the base → cannot prove base-equality; fail closed to a
+    // fresh run. We deliberately return NO `resolvedBaseSha`: `runDomainCoding`
+    // then resolves its own base for a normal fresh-from-base run (the existing
+    // behavior) and records the skip reason once the run row exists. This is a
+    // clean no-throw skip — the resolver does not pin a base it could not
+    // resolve, and introduces no throw path before the run/attempt row.
+    return { ...lineage, skippedReason: "parent_work_unmaterializable" };
+  }
+
+  // Base-equality gate: the parent's work was made against parent.baseSha. If
+  // the base branch advanced, carrying that work forward would diverge from
+  // the new base — fail closed and let codex re-implement from the fresh base.
+  if (facts.parentBaseSha !== freshBaseSha) {
+    return {
+      ...lineage,
+      skippedReason: "base_advanced",
+      resolvedBaseSha: freshBaseSha,
+    };
+  }
+
+  if (!existsSync(facts.parentWorktreePath)) {
+    // worktree cleaned / never created — nothing to materialize.
+    return {
+      ...lineage,
+      skippedReason: "parent_work_unavailable",
+      resolvedBaseSha: freshBaseSha,
+    };
+  }
+
+  return {
+    ...lineage,
+    continueFrom: {
+      parentRunId: facts.parentRunId,
+      parentWorktreePath: facts.parentWorktreePath,
+    },
+    resolvedBaseSha: freshBaseSha,
+  };
 }
 
 // Exported for unit tests: the safety boundary "only short-circuit a run that
@@ -615,7 +921,7 @@ export function createOrchestratorRunners(
   return {
     coder: async (hitchId) => {
       assertGate(hitchId, "run.start");
-      const { attemptId, context, goalText } = withManagedDb(
+      const { attemptId, context, goalText, parentFacts, isRerun } = withManagedDb(
         { dbPath: deps.dbPath },
         (db) => {
           const repo = new HitchRepository(db);
@@ -631,6 +937,19 @@ export function createOrchestratorRunners(
                 a.attemptType === "implement" || a.attemptType === "rerun",
             );
           const prior = codingAttempts.length > 0;
+          // (#163) On a rerun, gather the read-only facts needed to CONTINUE the
+          // parent run's work (parent run row + chain root + worktree path) in
+          // this same DB read. The async base-equality gate runs AFTER the DB
+          // handle closes (no async work under withManagedDb). The first
+          // `implement` pass has no parent → no continuation.
+          const facts = prior
+            ? readParentContinuationFacts({
+                db,
+                repo,
+                hitchId,
+                harnessRoot: deps.harnessRoot,
+              })
+            : null;
           // If the most recent coding run failed before review, this is a
           // recovery rerun — inject the failed run status so the coder fixes the
           // cause rather than re-coding blind (convergence routes here).
@@ -665,6 +984,8 @@ export function createOrchestratorRunners(
           return {
             attemptId: attempt.attemptId,
             context: ctx,
+            parentFacts: facts,
+            isRerun: prior,
             goalText: augmentGoalWithFailedRun(
               augmentGoalWithFailedCloseChecks(
                 augmentGoalWithOpenFindings(ctx.goal, openInScope),
@@ -675,6 +996,22 @@ export function createOrchestratorRunners(
           };
         },
       );
+      // (#163) Resolve the continuation OUTSIDE the DB handle: the base-equality
+      // gate does a read-only `git rev-parse` (async). A skipped/absent
+      // continuation → fresh-from-base (the runDomainCoding default); no throw,
+      // no escalation. `runDomainCoding` records the skip reason as a run event.
+      const continuation: ContinuationResolution =
+        parentFacts !== null
+          ? await gateContinuation({
+              facts: parentFacts,
+              context,
+              gitTimeoutMs: await resolveGitTimeoutMs(deps, context),
+            })
+          : isRerun
+            ? // a rerun with no resolvable parent run row: fail closed and record
+              // why (the run still proceeds fresh-from-base).
+              { skippedReason: "parent_run_missing" }
+            : {};
       try {
         const result = await runDomainCoding({
           harnessRoot: deps.harnessRoot,
@@ -686,6 +1023,31 @@ export function createOrchestratorRunners(
           codexRunner: deps.coderRunner,
           codexBinaryVersion: deps.coderCodexBinaryVersion ?? null,
           ...projectRuntimeFields(deps),
+          // (#163) Continuation: when the gate passed, carry the parent run's
+          // uncommitted work into this run's worktree and pin the gate-validated
+          // base; the lineage fields populate meta.json + the rerun chain.
+          ...(continuation.continueFrom !== undefined
+            ? { continueFrom: continuation.continueFrom }
+            : {}),
+          ...(continuation.resolvedBaseSha !== undefined
+            ? { resolvedBaseSha: continuation.resolvedBaseSha }
+            : {}),
+          // (#163 P2) lineage (parent_run_id + dup-fence) is forwarded for a
+          // rerun whether or not materialization happened — only the carry is
+          // gated, not the chain/audit. A skipped continuation must still record
+          // its real parent (never become a new root) and be fenced to one child.
+          ...(continuation.parentRunId !== undefined
+            ? { continuationParentRunId: continuation.parentRunId }
+            : {}),
+          ...(continuation.rootRunId !== undefined
+            ? { rootRunId: continuation.rootRunId }
+            : {}),
+          ...(continuation.rerunAttempt !== undefined
+            ? { rerunAttempt: continuation.rerunAttempt }
+            : {}),
+          ...(continuation.skippedReason !== undefined
+            ? { continueFromSkipped: continuation.skippedReason }
+            : {}),
         });
         const succeeded = result.status === "needs_review";
         withManagedDb({ dbPath: deps.dbPath }, (db) => {

@@ -23,6 +23,21 @@ export const RUN_STATUSES = [
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
 /**
+ * (#163) Run-event `type` values emitted by the rerun continuation path
+ * (see `runDomainCoding`). Events flow through the open `RunEvent` shape, but
+ * these names are pinned here so the audit vocabulary is discoverable:
+ *   - `continuation_materialized`: the parent run's policy-validated diff
+ *     surface was copied into THIS run's worktree as UNCOMMITTED changes
+ *     (payload: parentRunId, baseSha, paths). No commit was made.
+ *   - `continuation_skipped`: a rerun fell back to fresh-from-base; the
+ *     payload `reason` is one of the fail-closed continuation skip reasons.
+ */
+export const CONTINUATION_EVENT_TYPES = [
+  "continuation_materialized",
+  "continuation_skipped",
+] as const;
+
+/**
  * Orthogonal verdict from path-policy validation. Tracked separately from
  * RunStatus so that e.g. (status=failed-codex-timeout, safetyStatus=denied)
  * is queryable from meta.json without re-parsing artifacts.

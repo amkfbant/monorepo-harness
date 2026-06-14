@@ -918,6 +918,74 @@ run status を `augmentGoalWithFailedRun` で注入し、原因を直すよう�
 コーディングを避ける）。rerun budget を使い切ると `budget_exhausted` で clean に停止
 （無限 rerun しない）。
 
+**rerun の continuation（親 run の作業を引き継ぐ・#163）**: hitch の fix-loop rerun は
+親 coding run の作業を **uncommitted な working-tree state として子 run の worktree に
+materialize** し、codex がゼロから再実装せず in-place で amend できるようにする。
+**commit は一切しない**（`git add`/branch mutation も無し）。親の作業は子 worktree の
+uncommitted state としてのみ存在するため、既存の untracked-denied / secret-suspect /
+redaction 処理が子 run の diff に特例なしでそのまま効き、git object store / branch /
+`final-diff.patch`（committed object）に何も漏れない。
+
+- **resolution（read-only, mutation 無し）**: orchestrator の `coder()` は rerun のとき
+  最新 coding run（＝親）の行・worktree path を読み、3 つの gate を read-only に判定する
+  （domain lock 取得前に mutation は一切しない）:
+  1. **validated-parent gate**: 親 run の **status が policy-validated（完了＋通過）** な場合
+     のみ継続する。継続可能 status は `needs_review` / `approved` / `changes_requested`
+     （いずれも path-policy validation を `allowed` で通過済み ＝ worktree surface が
+     policy-valid）。`failed-policy-violation`（scope 外/deny path を抱える）・
+     `failed-internal-error`（reset 不能の partial-carry worktree かもしれない）・
+     `failed-codex` 等の **全 `failed-*` と `rejected` は非 validated** → 継続せず
+     `parent_not_validated` で skip し、fresh-from-base で再導出する（禁止/部分変更を
+     carry しない）。
+  2. **base-equality gate**: `parent.baseSha === fresh に解決した base`（read-only
+     `git rev-parse`、policy の `gitTimeoutMs` で timeout）。
+  3. **worktree existence**: 親 worktree が在ること。
+
+  全て通れば `continueFrom`（親 worktree）と gate 済み `resolvedBaseSha` を `runDomainCoding`
+  に渡す。どの gate で落ちても **lineage（parentRunId / rootRunId / rerunAttempt）は必ず
+  渡す**（後述）。
+- **materialize（domain lock 下・`createWorktree` 後）**: 子 worktree を base から新規作成した
+  **後**に、親 worktree の **policy-validated diff surface** を子へ反映する。surface は
+  live run と同一定義 = tracked changed paths（add/modify/delete）＋
+  `partitionUntracked(untracked, policy.ignoreUntracked).kept`。**policy で ignore される
+  untracked（node_modules/dist/.harness 等）は除外**。各 entry は反映前に **子側 dst を
+  recursive+force で rm**（no-follow）してから再作成する: これで (a) base symlink を通した
+  write-through（worktree 脱出）を防ぎ、(b) 親が path の **kind を入れ替えた**ケース
+  （file↔dir / link↔file）でも EEXIST/EISDIR/ENOTDIR にならず継続する。具体的には —
+  **symlink は live run の no-follow モデルに合わせて決して dereference しない**（`lstat`
+  判定 → `readlink`/`symlink` で symlink として再作成、broken/dangling も symlink のまま）/
+  **親が tracked dir を regular file に潰した**ら子の dir を recursive 削除して file を copy /
+  **親が tracked file を dir に展開した**ら（src が directory）`cp -r`（no-dereference）で
+  tree を再作成 / 親で消えた path（ENOENT・祖先が file 化した ENOTDIR）は子から recursive
+  削除。すべて uncommitted。
+- **diff/policy base は常に fresh な `baseSha`**（親 tip ではない）。`git diff baseSha` of
+  child = 親の変更 + codex の amend。親が触った deny path はそのまま violation。
+- **lineage（materialize の有無に関わらず必ず記録）**: 子 `rerunAttempt` は親の **chain
+  depth + 1**（親が `rerun_attempt` を持てば `+1`、持たない legacy 親は `parentRunId` chain
+  を walk して depth を再構成し `0+1` に潰さない）。`rootRunId` = `parent.rootRunId`（無ければ
+  `parentRunId` chain を root まで walk。legacy 親が自身 parentRunId を持つ場合に
+  `parent.runId` を root と誤らない）。**継続が skip された場合でも parentRunId / rootRunId /
+  rerunAttempt を `runDomainCoding` に渡す**（gate されるのは materialization だけで chain/
+  audit ではない）— skip した fresh-from-base 子が新 root になり chain が切れることはない。
+  この lineage parent（`continuationParentRunId`）は **duplicate-child gate**（domain lock 下・
+  `runDomainCoding`）も keying するので、同一親を解決した 2 つの並行 orchestrator が両方とも
+  子を作ることはない（one child per parent）。各子は自分の親を行に記録するので連続 rerun では
+  誤発火しない。
+- **fail-closed（atomic）**: 曖昧さは全て fresh-from-base に倒し、escalate / throw しない。
+  materialize は **all-or-nothing**: copy/remove loop の途中で 1 entry でも失敗したら、
+  fallback する **前に** 子 worktree を clean fresh-from-base に reset する
+  （domain lock 下で `git reset --hard <baseSha>` + `git clean -ffdx`）。半分だけ
+  materialize された partial carry の上で codex が amend することは無い。**reset 自体が失敗
+  したら**（clean fresh-from-base に戻せない ＝ amend 不能）skip ではなく `WorktreeResetError`
+  を throw して run を hard fail させる。理由を `continuation_skipped` run event に記録する:
+  `parent_run_missing`（親 run 行が無い）/ `parent_not_validated`（親 status が非 validated）/
+  `parent_work_unavailable`（worktree が無い/cleaned/clean/surface 無し）/ `base_advanced`
+  （`parent.baseSha != fresh base`）/ `parent_work_unmaterializable`（git/copy 失敗——reset
+  で fresh-from-base 化済み）。git 例外は throw でなく fallback にマップする。base resolve
+  が gate で失敗した場合は `resolvedBaseSha` を渡さず、`runDomainCoding` が通常 run と同じく
+  自前で base を解決する clean な no-throw skip になる（run 行作成前に throw を増やさない）。
+  継続成功時は `continuation_materialized` event（parentRunId / baseSha / paths）を記録する。
+
 ### convergence decision → hitch status 連携
 
 各 cycle / attempt の後に convergence evaluator（`src/hitch/convergence.ts` の
