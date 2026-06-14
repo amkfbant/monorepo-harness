@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.2](https://github.com/amkfbant/monorepo-harness/compare/v0.7.1...v0.7.2) (2026-06-14)
+
+
+### Bug Fixes
+
+* **close-check:** detect add/modify/delete of ignored untracked paths ([#187](https://github.com/amkfbant/monorepo-harness/issues/187)) ([#208](https://github.com/amkfbant/monorepo-harness/issues/208)) ([0f5dfd6](https://github.com/amkfbant/monorepo-harness/commit/0f5dfd6aaf7104659da33b91720d544c8f7a1718))
+* **convergence:** source-aware divergence — operator findings don't falsely diverge ([#196](https://github.com/amkfbant/monorepo-harness/issues/196)) ([#210](https://github.com/amkfbant/monorepo-harness/issues/210)) ([e8b9a7d](https://github.com/amkfbant/monorepo-harness/commit/e8b9a7d0635019629f93c3f5243b3a7155fef3a8))
+
 ## [0.7.1](https://github.com/amkfbant/monorepo-harness/compare/v0.7.0...v0.7.1) (2026-06-14)
 
 
