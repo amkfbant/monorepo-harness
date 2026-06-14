@@ -210,6 +210,7 @@ export interface HitchDivergencePolicy {
   maxTotalNewFindings: number;
   requireNewFindingsDecreaseAfterCycle: number;
   maxReopenedPerFinding: number;
+  nearDuplicateDedup: boolean;
 }
 
 export interface HitchPolicy {
@@ -242,6 +243,7 @@ export const DEFAULT_HITCH_POLICY: HitchPolicy = {
     maxTotalNewFindings: 12,
     requireNewFindingsDecreaseAfterCycle: 2,
     maxReopenedPerFinding: 2,
+    nearDuplicateDedup: true,
   },
   closeRequires: {
     noOpenInScopeP0: true,

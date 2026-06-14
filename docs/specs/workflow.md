@@ -168,7 +168,7 @@ runs/<runId>/
   knowledge-candidates.yaml # 自動抽出 signal (4 kinds; 後述)
   review-request.md        # reviewer 向け詳細 (status / safety / lists / artifacts / codex tails / redacted events tail on codex failure / checklist)
   review-decision.yaml     # 初期: { decision: pending, … } — reviewer がここを編集する
-  commands/                # OPTIONAL: policy.allowedCommands があるときだけ生成
+  commands/                # OPTIONAL: policy.allowedCommands があるときだけ runs/<runId>/commands/ に生成（workspace 内に作らない）
     00-<slug>.out.log
     00-<slug>.err.log
     01-<slug>.out.log

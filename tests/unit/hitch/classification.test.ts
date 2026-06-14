@@ -8,6 +8,8 @@ import {
   canAutoFixFinding,
   classifyFindingForHitch,
   isEnvironmentMetaNote,
+  isCommandEvidenceAdvisory,
+  isSuccessfulCommandEvidenceAdvisory,
   isTestNotRunAdvisory,
 } from "../../../src/hitch/classification.js";
 import { ConvergenceService } from "../../../src/hitch/convergence.js";
@@ -335,5 +337,41 @@ describe("isTestNotRunAdvisory", () => {
     expect(
       isTestNotRunAdvisory("The test suite fails after this change."),
     ).toBe(false);
+  });
+});
+
+describe("isCommandEvidenceAdvisory", () => {
+  it.each([
+    "No commands directory was present, so test execution is evidenced only by the run summary.",
+    "No commands folder is present; test execution evidence comes only from the run summary.",
+    "The commands dir is absent, so the test run evidence is limited to the run summary.",
+    "Test run evidence is only the run summary because there is no commands directory.",
+  ])("treats command-evidence notes as advisories: %s", (text) => {
+    expect(isCommandEvidenceAdvisory(text)).toBe(true);
+  });
+
+  it("does not treat real blockers as command-evidence advisories", () => {
+    expect(isCommandEvidenceAdvisory("missing null check in handler")).toBe(
+      false,
+    );
+  });
+});
+
+describe("isSuccessfulCommandEvidenceAdvisory", () => {
+  it.each([
+    "Command logs show npm run typecheck and npx vitest run completed successfully.",
+    "typecheck passed and vitest passed.",
+    "The test command ran successfully.",
+    "npx vitest run completed successfully.",
+  ])("treats successful command/test notes as advisories: %s", (text) => {
+    expect(isSuccessfulCommandEvidenceAdvisory(text)).toBe(true);
+  });
+
+  it.each([
+    "The commands array is unverified and can omit required validation.",
+    "typecheck passed, but the commands array was not verified.",
+    "Tests passed locally but command log evidence is missing.",
+  ])("does not suppress real command-evidence findings: %s", (text) => {
+    expect(isSuccessfulCommandEvidenceAdvisory(text)).toBe(false);
   });
 });

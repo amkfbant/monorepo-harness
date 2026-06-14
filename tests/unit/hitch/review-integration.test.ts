@@ -409,6 +409,262 @@ describe("goal review integration", () => {
     }
   });
 
+  it("does not count retained paraphrase duplicates as new review findings", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      goals.createSession({
+        hitchId: "goal-paraphrase-duplicate",
+        title: "Goal paraphrase duplicate",
+        scope: {
+          allowedFindingCategories: ["review-required-change"],
+        },
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const first = createProposal(proposals, {
+        decision: "changes_requested",
+        requiredChanges: [
+          "Review import uses only summary text for finding identity, so paraphrased reviewer findings create new findings every cycle",
+        ],
+      });
+      importReviewProposalToHitch({
+        repository: goals,
+        hitchId: "goal-paraphrase-duplicate",
+        proposal: first,
+        createdBy: "test",
+      });
+
+      const second = createProposal(proposals, {
+        decision: "changes_requested",
+        requiredChanges: [
+          "Review import uses only summary text for finding identity; paraphrased reviewer findings create new findings each cycle",
+        ],
+      });
+      const imported = importReviewProposalToHitch({
+        repository: goals,
+        hitchId: "goal-paraphrase-duplicate",
+        proposal: second,
+        createdBy: "test",
+      });
+
+      expect(imported.findings).toHaveLength(1);
+      expect(imported.findings[0]).toMatchObject({
+        created: true,
+        finding: {
+          scopeStatus: "duplicate",
+          lifecycleStatus: "duplicate",
+        },
+      });
+      expect(imported.cycle.findingsSeen).toBe(1);
+      expect(imported.cycle.findingsNew).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("suppresses command-evidence non-blocking advisories across cycles", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      goals.createSession({
+        hitchId: "goal-command-evidence-note",
+        title: "Goal command evidence note",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+
+      const first = importReviewProposalToHitch({
+        repository: goals,
+        hitchId: "goal-command-evidence-note",
+        proposal: createProposal(proposals, {
+          decision: "approved",
+          nonBlockingComments: [
+            "No commands directory was present, so test execution is evidenced only by the run summary.",
+          ],
+        }),
+        createdBy: "test",
+      });
+      const second = importReviewProposalToHitch({
+        repository: goals,
+        hitchId: "goal-command-evidence-note",
+        proposal: createProposal(proposals, {
+          decision: "approved",
+          nonBlockingComments: [
+            "The commands dir is absent, so the test run evidence is limited to the run summary.",
+          ],
+        }),
+        createdBy: "test",
+      });
+
+      expect(first.reviewAdvisories).toHaveLength(1);
+      expect(second.reviewAdvisories).toHaveLength(1);
+      expect(first.findings).toHaveLength(0);
+      expect(second.findings).toHaveLength(0);
+      expect(second.cycle.findingsSeen).toBe(0);
+      expect(second.cycle.findingsNew).toBe(0);
+      expect(goals.listFindings({ hitchId: "goal-command-evidence-note" }))
+        .toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("suppresses successful command/test non-blocking advisories", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      goals.createSession({
+        hitchId: "goal-successful-command-note",
+        title: "Goal successful command note",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+
+      const imported = importReviewProposalToHitch({
+        repository: goals,
+        hitchId: "goal-successful-command-note",
+        proposal: createProposal(proposals, {
+          decision: "approved",
+          nonBlockingComments: [
+            "Command logs show npm run typecheck and npx vitest run completed successfully.",
+            "typecheck passed and vitest passed.",
+          ],
+        }),
+        createdBy: "test",
+      });
+
+      expect(imported.reviewAdvisories).toHaveLength(2);
+      expect(imported.findings).toHaveLength(0);
+      expect(imported.cycle.findingsSeen).toBe(0);
+      expect(imported.cycle.findingsNew).toBe(0);
+      expect(imported.convergenceDecision.decision).not.toBe(
+        "needs_classification",
+      );
+      expect(goals.listFindings({ hitchId: "goal-successful-command-note" }))
+        .toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps command evidence defects as non-blocking findings", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      goals.createSession({
+        hitchId: "goal-command-evidence-defect",
+        title: "Goal command evidence defect",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+
+      const imported = importReviewProposalToHitch({
+        repository: goals,
+        hitchId: "goal-command-evidence-defect",
+        proposal: createProposal(proposals, {
+          decision: "approved",
+          nonBlockingComments: [
+            "The commands array is unverified and can omit required validation.",
+          ],
+        }),
+        createdBy: "test",
+      });
+
+      expect(imported.reviewAdvisories).toEqual([]);
+      expect(imported.findings).toHaveLength(1);
+      expect(imported.findings[0].finding).toMatchObject({
+        category: "review-non-blocking-comment",
+        severity: "P2",
+        scopeStatus: "unknown",
+        lifecycleStatus: "open",
+      });
+      expect(imported.convergenceDecision.decision).toBe(
+        "needs_classification",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("never suppresses required changes that match command-evidence advisory text", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      goals.createSession({
+        hitchId: "goal-command-evidence-required",
+        title: "Goal command evidence required",
+        scope: {
+          allowedFindingCategories: ["review-required-change"],
+        },
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const proposal = createProposal(proposals, {
+        decision: "changes_requested",
+        requiredChanges: [
+          "No commands directory was present, so test execution is evidenced only by the run summary.",
+        ],
+      });
+
+      const imported = importReviewProposalToHitch({
+        repository: goals,
+        hitchId: "goal-command-evidence-required",
+        proposal,
+        createdBy: "test",
+      });
+
+      expect(imported.reviewAdvisories).toEqual([]);
+      expect(imported.findings).toHaveLength(1);
+      expect(imported.cycle.findingsSeen).toBe(1);
+      expect(imported.cycle.findingsNew).toBe(1);
+      expect(imported.findings[0].finding).toMatchObject({
+        category: "review-required-change",
+        severity: "P1",
+        lifecycleStatus: "open",
+        summary:
+          "No commands directory was present, so test execution is evidenced only by the run summary.",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("never suppresses required changes that match successful command advisory text", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      goals.createSession({
+        hitchId: "goal-successful-command-required",
+        title: "Goal successful command required",
+        scope: {
+          allowedFindingCategories: ["review-required-change"],
+        },
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const proposal = createProposal(proposals, {
+        decision: "changes_requested",
+        requiredChanges: [
+          "Command logs show npm run typecheck and npx vitest run completed successfully.",
+        ],
+      });
+
+      const imported = importReviewProposalToHitch({
+        repository: goals,
+        hitchId: "goal-successful-command-required",
+        proposal,
+        createdBy: "test",
+      });
+
+      expect(imported.reviewAdvisories).toEqual([]);
+      expect(imported.findings).toHaveLength(1);
+      expect(imported.findings[0].finding).toMatchObject({
+        category: "review-required-change",
+        severity: "P1",
+        lifecycleStatus: "open",
+        summary:
+          "Command logs show npm run typecheck and npx vitest run completed successfully.",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("records operation and run ids on rerun goal attempts", () => {
     const { db, goals } = fresh();
     try {

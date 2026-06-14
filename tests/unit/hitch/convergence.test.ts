@@ -734,6 +734,26 @@ describe("ConvergenceService", () => {
       return repo.requireFinding(finding.findingId);
     }
 
+    function addDuplicateFinding(
+      repo: HitchRepository,
+      input: {
+        canonicalId: string;
+        cycleId: string;
+        summary: string;
+      },
+    ) {
+      return repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        sourceCycleId: input.cycleId,
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "duplicate",
+        duplicateOf: input.canonicalId,
+        summary: input.summary,
+      }).finding;
+    }
+
     it("operator/human-origin new findings do NOT trigger diverging", () => {
       const { db, repo, service } = fresh();
       try {
@@ -840,6 +860,137 @@ describe("ConvergenceService", () => {
         expect(result.decision).toBe("diverging");
       } finally {
         harness.db.close();
+      }
+    });
+
+    it("does not diverge when current-cycle review churn is retained as duplicates", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo);
+        const cycle = addCycle(repo, 1, 7);
+        const canonical = addFinding(repo, {
+          source: "review",
+          sourceCycleId: cycle.cycleId,
+          scopeStatus: "out_of_scope",
+          severity: "P2",
+          summary: "canonical paraphrased review defect",
+        });
+        for (let i = 0; i < 6; i += 1) {
+          addDuplicateFinding(repo, {
+            canonicalId: canonical.findingId,
+            cycleId: cycle.cycleId,
+            summary: `duplicate paraphrased review defect ${i}`,
+          });
+        }
+        passClose(repo);
+
+        const result = service.evaluate("goal-test");
+        expect(result.metrics.newFindingsThisCycle).toBe(7);
+        expect(result.metrics.harnessOriginNewFindingsThisCycle).toBe(1);
+        expect(result.decision).not.toBe("diverging");
+      } finally {
+        db.close();
+      }
+    });
+
+    it("handles mixed pre-fix and deduped cycle histories deterministically", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo);
+        const first = addCycle(repo, 1, 6);
+        addFinding(repo, {
+          source: "review",
+          sourceCycleId: first.cycleId,
+          scopeStatus: "out_of_scope",
+          severity: "P2",
+          summary: "first canonical finding",
+        });
+        addFinding(repo, {
+          source: "review",
+          sourceCycleId: first.cycleId,
+          scopeStatus: "out_of_scope",
+          severity: "P2",
+          summary: "second canonical finding",
+        });
+
+        const second = addCycle(repo, 2, 1);
+        const canonical = addFinding(repo, {
+          source: "review",
+          sourceCycleId: second.cycleId,
+          scopeStatus: "out_of_scope",
+          severity: "P2",
+          summary: "deduped cycle canonical finding",
+        });
+        for (let i = 0; i < 5; i += 1) {
+          addDuplicateFinding(repo, {
+            canonicalId: canonical.findingId,
+            cycleId: second.cycleId,
+            summary: `deduped cycle paraphrase ${i}`,
+          });
+        }
+        passClose(repo);
+
+        const result = service.evaluate("goal-test");
+        expect(result.metrics.totalNewFindings).toBe(7);
+        expect(result.metrics.harnessOriginNewFindingsByCycle).toEqual([
+          {
+            cycleId: first.cycleId,
+            cycleNumber: 1,
+            findingsNew: 2,
+          },
+          {
+            cycleId: second.cycleId,
+            cycleNumber: 2,
+            findingsNew: 1,
+          },
+        ]);
+        expect(result.decision).not.toBe("diverging");
+      } finally {
+        db.close();
+      }
+    });
+
+    it("does not let paraphrase duplicates inflate the maxReopenCount divergence branch", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo);
+        const canonical = addFinding(repo, {
+          source: "review",
+          scopeStatus: "out_of_scope",
+          severity: "P2",
+          summary:
+            "Review import uses only summary text for finding identity, so paraphrased reviewer findings create new findings every cycle",
+        });
+        const paraphrases = [
+          "Review import uses only summary text for finding identity; paraphrased reviewer findings create new findings each cycle",
+          "Review import uses only summary text for finding identity, so reviewer paraphrases create new findings every cycle",
+          "Review import uses only summary text for finding identity, so paraphrased reviewer findings create duplicate findings each cycle",
+        ];
+        paraphrases.forEach((summary, index) => {
+          const cycle = addCycle(repo, index + 1, 0);
+          repo.markFindingFixed({ findingId: canonical.findingId });
+          repo.upsertFinding({
+            hitchId: "goal-test",
+            source: "review",
+            sourceCycleId: cycle.cycleId,
+            severity: "P2",
+            category: "correctness",
+            scopeStatus: "out_of_scope",
+            summary,
+          });
+        });
+        passClose(repo);
+
+        const result = service.evaluate("goal-test");
+        expect(repo.requireFinding(canonical.findingId)).toMatchObject({
+          lifecycleStatus: "reopened",
+          reopenCount: 0,
+        });
+        expect(result.metrics.maxReopenCount).toBe(0);
+        expect(result.metrics.harnessOriginMaxReopenCount).toBe(0);
+        expect(result.decision).not.toBe("diverging");
+      } finally {
+        db.close();
       }
     });
 

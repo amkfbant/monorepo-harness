@@ -21,6 +21,20 @@ const MISSING_COMMAND_LOG_PATTERNS = [
   /\b(?:command|test|check|verification)\b.{0,30}\b(?:logs?|output)\b.{0,60}\b(?:missing|absent|unavailable|not provided|not present|not included|not attached)\b/,
   /\b(?:cannot|can't|could not|couldn't|unable to|not able to)\b.{0,60}\b(?:find|see|inspect|verify)\b.{0,60}\b(?:command|test|check|verification)\b.{0,30}\b(?:logs?|output)\b/,
 ] as const;
+const COMMAND_EVIDENCE_PATTERNS = [
+  /\bno\b.{0,20}\bcommands?\b.{0,20}\b(?:directory|dir|folder)\b/,
+  /\bcommands?\b.{0,20}\b(?:directory|dir|folder)\b.{0,40}\b(?:absent|missing|not present|unavailable|not provided)\b/,
+  /\btest (?:execution|run)\b.{0,40}\b(?:evidenced|evidence|limited|only)\b.{0,40}\brun summary\b/,
+  /\brun summary\b.{0,40}\b(?:only|sole|limited)\b.{0,40}\b(?:evidence|evidenced)\b/,
+] as const;
+const SUCCESSFUL_COMMAND_EVIDENCE_PATTERNS = [
+  /\b(?:command|commands|command logs?|test|tests|check|checks|verification)\b.{0,80}\b(?:show|shows|showed|indicate|indicates|reported|confirm|confirms)\b.{0,80}\b(?:passed|completed successfully|ran successfully|succeeded|successful)\b/,
+  /\b(?:typecheck|vitest|jest|test command|npm run [a-z0-9:_-]+|npx [a-z0-9:_-]+(?: run)?)\b.{0,80}\b(?:passed|completed successfully|ran successfully|succeeded|successful)\b/,
+  /\b(?:passed|completed successfully|ran successfully|succeeded)\b.{0,80}\b(?:typecheck|vitest|jest|tests?|checks?|verification|npm run [a-z0-9:_-]+|npx [a-z0-9:_-]+(?: run)?)\b/,
+] as const;
+const COMMAND_EVIDENCE_BLOCKER_PATTERNS = [
+  /\b(?:unverified|not verified|not validated|unvalidated|missing|absent|not present|not provided|no evidence|without evidence|cannot verify|can't verify|could not verify|unable to verify|commands? array)\b/,
+] as const;
 const ENVIRONMENT_META_CONTEXT_RE =
   /\b(?:ci|container|environment|env|here|local|locally|machine|runner|sandbox)\b|\bthis setup\b/;
 const REVIEWER_META_CONTEXT_RE =
@@ -188,6 +202,23 @@ export function isTestNotRunAdvisory(text: string): boolean {
   return (
     TEST_NOT_RUN_PATTERNS.some((pattern) => pattern.test(normalized)) ||
     MISSING_COMMAND_LOG_PATTERNS.some((pattern) => pattern.test(normalized))
+  );
+}
+
+export function isCommandEvidenceAdvisory(text: string): boolean {
+  const normalized = normalizeText(text.replace(/[`*_>\[\]()]/g, " "));
+  if (normalized === "") return false;
+  return COMMAND_EVIDENCE_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+export function isSuccessfulCommandEvidenceAdvisory(text: string): boolean {
+  const normalized = normalizeText(text.replace(/[`*_>\[\]()]/g, " "));
+  if (normalized === "") return false;
+  if (COMMAND_EVIDENCE_BLOCKER_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return false;
+  }
+  return SUCCESSFUL_COMMAND_EVIDENCE_PATTERNS.some((pattern) =>
+    pattern.test(normalized),
   );
 }
 

@@ -207,6 +207,12 @@ stopOnUnknownScope: true
 allowEmptyCloseConditions: false
 deferOutOfScope: true
 reviewModeSequence: [initial, delta, close]
+divergence:
+  maxNewFindingsPerCycle: 5
+  maxTotalNewFindings: 12
+  requireNewFindingsDecreaseAfterCycle: 2
+  maxReopenedPerFinding: 2
+  nearDuplicateDedup: true
 ```
 
 ## Operation And Review Integration
@@ -292,13 +298,38 @@ review decision with no required changes still creates an in-scope P1 blocker
 so a rejected/changes-requested verdict cannot accidentally become
 `close_ready`.
 Generic reviewer advisories that only say tests/checks were not run, could not
-be run in the review environment, or that command logs/output are missing are
-not imported as hitch findings when they appear in `non_blocking_comments`.
+be run in the review environment, that command logs/output are missing, or that
+observed command/test logs passed successfully are not imported as hitch
+findings when they appear in `non_blocking_comments`. This includes
+command-evidence advisories such as "no commands directory was present", "test
+execution is evidenced only by the run summary", or "typecheck/vitest passed";
+`commands/` is optional run evidence, not a required workspace artifact.
 They are surfaced as `reviewAdvisories` on review import and copied into
 `hitch_close_checks.evidence.reviewerAdvisories`, so operators can see the
 missing test evidence without triggering `needs_classification` or escalation.
 The carve-out does not apply to `required_changes`, close-check failures, or
-actual failing command evidence.
+actual command-evidence defects such as unverified command arrays.
+
+Review-imported findings are deduplicated in two tiers. Tier 1 is the stable
+SHA-256 key over the normalized file path, symbol, category, and summary and is
+unchanged for DB compatibility. If Tier 1 misses, no explicit stable key was
+provided, and `policy.divergence.nearDuplicateDedup` is true, the repository
+runs a deterministic same-hitch near-duplicate check over canonical findings in
+the same category, with compatible file paths and symbols (both absent or
+normalized-equal). A hit inserts a retained audit row with
+`scope_status='duplicate'` and `duplicate_of=<canonical>`, promotes the
+canonical severity/scope/lifecycle toward the more close-blocking side as
+needed, and excludes that duplicate row from review-cycle `findingsNew` and
+harness-origin divergence counts. In particular, a returning open close blocker
+must not disappear behind a canonical that was previously `out_of_scope`,
+`deferred`, `accepted_risk`, `escalated`, or `fixed`; the canonical is promoted
+back to a blocking scope and `reopened` lifecycle instead. The heuristic
+requires both token-set Jaccard
+similarity >= 0.6 and word-bigram Jaccard similarity >= 0.5; summaries under
+five tokens use exact-only matching to avoid broad short-text merges. Line
+reference numbers may be normalized, but other numeric tokens must match so
+meaningful differences like HTTP 404 vs 500 or timeout 30s vs 5s remain separate
+findings.
 
 `review_consensus` close conditions are static review evidence only. A passed
 `review_consensus` check records that static review consensus approved the run;

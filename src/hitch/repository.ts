@@ -8,6 +8,10 @@ import {
 import { DbError } from "../db/connection.js";
 import { hitchFindingStableKey } from "./stable-key.js";
 import {
+  findNearDuplicate,
+  type NearDuplicateCandidate,
+} from "./near-duplicate.js";
+import {
   parseHitchCloseConditions,
   parseHitchPolicy,
   parseHitchScope,
@@ -351,6 +355,16 @@ interface HitchFindingRow {
   deferred_backlog_item_id: string | null;
   classification_reason: string | null;
   resolution_note: string | null;
+}
+
+interface HitchFindingIdentityRow {
+  finding_id: string;
+  hitch_id: string;
+  category: string;
+  scope_status: HitchScopeStatus;
+  summary: string;
+  file_path: string | null;
+  symbol: string | null;
 }
 
 interface HitchFindingSummaryRow {
@@ -996,7 +1010,7 @@ export class HitchRepository {
         summary: input.summary,
       });
     const scopeStatus = input.scopeStatus ?? "unknown";
-    const duplicateOf =
+    const explicitDuplicateOf =
       scopeStatus === "duplicate"
         ? this.requireCanonicalDuplicateFinding(
             input.hitchId,
@@ -1004,12 +1018,11 @@ export class HitchRepository {
             input.duplicateOf,
           )
         : null;
-    const lifecycleStatus =
-      input.lifecycleStatus ?? defaultLifecycleForScope(scopeStatus);
     const tx = this.db.transaction((): UpsertHitchFindingResult => {
       const existing = this.db
         .prepare(
-          `SELECT finding_id, lifecycle_status, severity, duplicate_of
+          `SELECT finding_id, scope_status, lifecycle_status, severity,
+                  duplicate_of, classification_reason
              FROM hitch_findings
             WHERE hitch_id = ? AND stable_key = ?
             ORDER BY
@@ -1021,23 +1034,50 @@ export class HitchRepository {
         .get(input.hitchId, stableKey) as
         | {
             finding_id: string;
+            scope_status: HitchScopeStatus;
             lifecycle_status: HitchLifecycleStatus;
             severity: HitchFindingSeverity;
             duplicate_of: string | null;
+            classification_reason: string | null;
           }
         | undefined;
       if (existing !== undefined) {
-        const duplicateCanonical = duplicateOf ?? existing.duplicate_of;
+        const duplicateCanonical = explicitDuplicateOf ?? existing.duplicate_of;
+        const existingIsDuplicate = existing.duplicate_of !== null;
         let canonicalReopened = false;
         if (duplicateCanonical !== null) {
           canonicalReopened = this.promoteDuplicateCanonical(
             duplicateCanonical,
             input.severity,
+            scopeStatus,
+            input.lifecycleStatus ?? defaultLifecycleForScope(scopeStatus),
             input.source,
             now,
+            {
+              suppressFixedReopenCount: isNearDuplicateClassificationReason(
+                existing.classification_reason,
+              ),
+            },
           );
         }
-        const reopened = existing.lifecycle_status === "fixed" || canonicalReopened;
+        const lifecycleStatus =
+          input.lifecycleStatus ?? defaultLifecycleForScope(scopeStatus);
+        const scopeStatusToStore = existingIsDuplicate
+          ? existing.scope_status
+          : moreBlockingScope(existing.scope_status, scopeStatus);
+        const promoteLifecycleToReopened = existingIsDuplicate
+          ? false
+          : shouldReopenForIncoming(
+              existing.lifecycle_status,
+              scopeStatus,
+              lifecycleStatus,
+              input.severity,
+              this.requireSession(input.hitchId).policy,
+            );
+        const reopened =
+          (!existingIsDuplicate && existing.lifecycle_status === "fixed") ||
+          promoteLifecycleToReopened ||
+          canonicalReopened;
         const severity = moreSevere(existing.severity, input.severity);
         const countReopen = isHarnessOriginFindingSource(input.source);
         this.db
@@ -1046,18 +1086,28 @@ export class HitchRepository {
                 SET last_seen_at = ?, source_ref = ?,
                     source_attempt_id = ?,
                     severity = ?,
+                    scope_status = ?,
                     detail = COALESCE(?, detail),
                     suggested_fix = COALESCE(?, suggested_fix),
                     lifecycle_status = CASE
-                      WHEN lifecycle_status = 'fixed' THEN 'reopened'
+                      WHEN lifecycle_status = 'fixed' OR ? THEN 'reopened'
                       ELSE lifecycle_status
                     END,
                     fixed_at = CASE
-                      WHEN lifecycle_status = 'fixed' THEN NULL
+                      WHEN lifecycle_status = 'fixed' OR ? THEN NULL
                       ELSE fixed_at
                     END,
+                    deferred_at = CASE
+                      WHEN ? THEN NULL
+                      ELSE deferred_at
+                    END,
+                    deferred_backlog_item_id = CASE
+                      WHEN ? THEN NULL
+                      ELSE deferred_backlog_item_id
+                    END,
                     reopen_count = CASE
-                      WHEN lifecycle_status = 'fixed' AND ? THEN reopen_count + 1
+                      WHEN (lifecycle_status = 'fixed' OR ?) AND ?
+                        THEN reopen_count + 1
                       ELSE reopen_count
                     END
               WHERE finding_id = ?`,
@@ -1067,8 +1117,14 @@ export class HitchRepository {
             input.sourceRef ?? null,
             input.sourceAttemptId ?? null,
             severity,
+            scopeStatusToStore,
             input.detail ?? null,
             input.suggestedFix ?? null,
+            promoteLifecycleToReopened ? 1 : 0,
+            promoteLifecycleToReopened ? 1 : 0,
+            promoteLifecycleToReopened ? 1 : 0,
+            promoteLifecycleToReopened ? 1 : 0,
+            promoteLifecycleToReopened ? 1 : 0,
             countReopen ? 1 : 0,
             existing.finding_id,
           );
@@ -1080,13 +1136,38 @@ export class HitchRepository {
         };
       }
 
+      const nearDuplicate =
+        explicitDuplicateOf === null &&
+        input.stableKey === undefined &&
+        scopeStatus !== "duplicate" &&
+        this.requireSession(input.hitchId).policy.divergence.nearDuplicateDedup
+          ? this.findNearDuplicateForInput(input)
+          : null;
+      const insertScopeStatus =
+        nearDuplicate === null ? scopeStatus : ("duplicate" as const);
+      const insertDuplicateOf =
+        nearDuplicate === null ? explicitDuplicateOf : nearDuplicate.findingId;
+      const insertLifecycleStatus =
+        nearDuplicate === null && input.lifecycleStatus !== undefined
+          ? input.lifecycleStatus
+          : defaultLifecycleForScope(insertScopeStatus);
+      const insertClassificationReason =
+        nearDuplicate === null
+          ? input.classificationReason ?? null
+          : nearDuplicateClassificationReason(
+              nearDuplicate.findingId,
+              input.classificationReason,
+            );
       const reopened =
-        duplicateOf !== null
+        insertDuplicateOf !== null
           ? this.promoteDuplicateCanonical(
-              duplicateOf,
+              insertDuplicateOf,
               input.severity,
+              scopeStatus,
+              input.lifecycleStatus ?? defaultLifecycleForScope(scopeStatus),
               input.source,
               now,
+              nearDuplicate === null ? {} : { suppressFixedReopenCount: true },
             )
           : false;
       const findingId = input.findingId ?? `finding-${randomUUID()}`;
@@ -1105,15 +1186,15 @@ export class HitchRepository {
           findingId,
           input.hitchId,
           stableKey,
-          duplicateOf,
+          insertDuplicateOf,
           input.source,
           input.sourceRef ?? null,
           input.sourceAttemptId ?? null,
           input.sourceCycleId ?? null,
           input.severity,
           input.category,
-          scopeStatus,
-          lifecycleStatus,
+          insertScopeStatus,
+          insertLifecycleStatus,
           input.summary,
           input.detail ?? null,
           input.filePath ?? null,
@@ -1121,7 +1202,7 @@ export class HitchRepository {
           input.suggestedFix ?? null,
           now,
           now,
-          input.classificationReason ?? null,
+          insertClassificationReason,
         );
       this.touchSession(input.hitchId, now);
       return {
@@ -1197,6 +1278,8 @@ export class HitchRepository {
       this.promoteDuplicateCanonical(
         duplicateOf,
         current.severity,
+        current.scopeStatus,
+        current.lifecycleStatus,
         current.source,
         now,
       );
@@ -1276,34 +1359,97 @@ export class HitchRepository {
   private promoteDuplicateCanonical(
     canonicalFindingId: string,
     incomingSeverity: HitchFindingSeverity,
+    incomingScopeStatus: HitchScopeStatus,
+    incomingLifecycleStatus: HitchLifecycleStatus,
     incomingSource: HitchFindingSource,
     now: string,
+    options: { suppressFixedReopenCount?: boolean } = {},
   ): boolean {
     const canonical = this.requireFinding(canonicalFindingId);
     const severity = moreSevere(canonical.severity, incomingSeverity);
-    const reopened = canonical.lifecycleStatus === "fixed";
-    const countReopen = isHarnessOriginFindingSource(incomingSource);
+    const scopeStatus = moreBlockingScope(
+      canonical.scopeStatus,
+      incomingScopeStatus,
+    );
+    const promoteLifecycleToReopened = shouldReopenForIncoming(
+      canonical.lifecycleStatus,
+      incomingScopeStatus,
+      incomingLifecycleStatus,
+      incomingSeverity,
+      this.requireSession(canonical.hitchId).policy,
+    );
+    const fixedReopen = canonical.lifecycleStatus === "fixed";
+    const reopened = fixedReopen || promoteLifecycleToReopened;
+    const countReopen =
+      isHarnessOriginFindingSource(incomingSource) &&
+      (promoteLifecycleToReopened ||
+        (fixedReopen && options.suppressFixedReopenCount !== true));
     this.db
       .prepare(
         `UPDATE hitch_findings
             SET severity = ?,
+                scope_status = ?,
                 lifecycle_status = CASE
-                  WHEN lifecycle_status = 'fixed' THEN 'reopened'
+                  WHEN lifecycle_status = 'fixed' OR ? THEN 'reopened'
                   ELSE lifecycle_status
                 END,
                 fixed_at = CASE
-                  WHEN lifecycle_status = 'fixed' THEN NULL
+                  WHEN lifecycle_status = 'fixed' OR ? THEN NULL
                   ELSE fixed_at
                 END,
+                deferred_at = CASE
+                  WHEN ? THEN NULL
+                  ELSE deferred_at
+                END,
+                deferred_backlog_item_id = CASE
+                  WHEN ? THEN NULL
+                  ELSE deferred_backlog_item_id
+                END,
                 reopen_count = CASE
-                  WHEN lifecycle_status = 'fixed' AND ? THEN reopen_count + 1
+                  WHEN (lifecycle_status = 'fixed' OR ?) AND ?
+                    THEN reopen_count + 1
                   ELSE reopen_count
                 END,
                 last_seen_at = ?
           WHERE finding_id = ?`,
       )
-      .run(severity, countReopen ? 1 : 0, now, canonicalFindingId);
+      .run(
+        severity,
+        scopeStatus,
+        promoteLifecycleToReopened ? 1 : 0,
+        promoteLifecycleToReopened ? 1 : 0,
+        promoteLifecycleToReopened ? 1 : 0,
+        promoteLifecycleToReopened ? 1 : 0,
+        promoteLifecycleToReopened ? 1 : 0,
+        countReopen ? 1 : 0,
+        now,
+        canonicalFindingId,
+      );
     return reopened;
+  }
+
+  private findNearDuplicateForInput(
+    input: UpsertHitchFindingInput,
+  ): NearDuplicateCandidate | null {
+    const rows = this.db
+      .prepare(
+        `SELECT finding_id, hitch_id, category, scope_status, summary,
+                file_path, symbol
+           FROM hitch_findings
+          WHERE hitch_id = ?
+            AND duplicate_of IS NULL
+          ORDER BY first_seen_at ASC, finding_id ASC`,
+      )
+      .all(input.hitchId) as HitchFindingIdentityRow[];
+    return findNearDuplicate({
+      hitchId: input.hitchId,
+      category: input.category,
+      scopeStatus: input.scopeStatus ?? "unknown",
+      summary: input.summary,
+      filePath: input.filePath ?? null,
+      symbol: input.symbol ?? null,
+      candidates: rows.map(rowToNearDuplicateCandidate),
+    });
   }
 
   markFindingFixed(input: MarkHitchFindingFixedInput): HitchFinding {
@@ -1896,6 +2042,79 @@ function moreSevere(
   return rank[incoming] < rank[current] ? incoming : current;
 }
 
+function moreBlockingScope(
+  current: HitchScopeStatus,
+  incoming: HitchScopeStatus,
+): HitchScopeStatus {
+  const rank: Record<HitchScopeStatus, number> = {
+    duplicate: -1,
+    out_of_scope: 0,
+    unknown: 1,
+    in_scope: 2,
+  };
+  return rank[incoming] > rank[current] ? incoming : current;
+}
+
+const NON_BLOCKING_CANONICAL_LIFECYCLES = new Set<HitchLifecycleStatus>([
+  "fixed",
+  "deferred",
+  "accepted_risk",
+  "out_of_scope",
+  "escalated",
+]);
+
+function shouldReopenForIncoming(
+  canonicalLifecycleStatus: HitchLifecycleStatus,
+  incomingScopeStatus: HitchScopeStatus,
+  incomingLifecycleStatus: HitchLifecycleStatus,
+  incomingSeverity: HitchFindingSeverity,
+  policy: HitchPolicy,
+): boolean {
+  return (
+    NON_BLOCKING_CANONICAL_LIFECYCLES.has(canonicalLifecycleStatus) &&
+    incomingBlocksClose(
+      incomingScopeStatus,
+      incomingLifecycleStatus,
+      incomingSeverity,
+      policy,
+    )
+  );
+}
+
+function incomingBlocksClose(
+  scopeStatus: HitchScopeStatus,
+  lifecycleStatus: HitchLifecycleStatus,
+  severity: HitchFindingSeverity,
+  policy: HitchPolicy,
+): boolean {
+  if (!OPEN_FINDING_LIFECYCLE_SET.has(lifecycleStatus)) return false;
+  if (scopeStatus === "unknown") return policy.closeRequires.noUnknownScope;
+  if (scopeStatus !== "in_scope") return false;
+  if (severity === "P0") return policy.closeRequires.noOpenInScopeP0;
+  if (severity === "P1") return policy.closeRequires.noOpenInScopeP1;
+  if (severity === "P2") {
+    return policy.closeRequires.maxOpenInScopeP2 !== undefined;
+  }
+  return false;
+}
+
+const NEAR_DUPLICATE_CLASSIFICATION_PREFIX = "near-duplicate of ";
+
+function nearDuplicateClassificationReason(
+  canonicalFindingId: string,
+  classificationReason: string | undefined,
+): string {
+  const suffix =
+    classificationReason === undefined || classificationReason.trim() === ""
+      ? ""
+      : `; ${classificationReason.trim()}`;
+  return `${NEAR_DUPLICATE_CLASSIFICATION_PREFIX}${canonicalFindingId}${suffix}`;
+}
+
+function isNearDuplicateClassificationReason(reason: string | null): boolean {
+  return reason?.startsWith(NEAR_DUPLICATE_CLASSIFICATION_PREFIX) ?? false;
+}
+
 function json(value: unknown): string {
   return JSON.stringify(value);
 }
@@ -2007,6 +2226,20 @@ function rowToFinding(row: HitchFindingRow): HitchFinding {
     deferredBacklogItemId: row.deferred_backlog_item_id,
     classificationReason: row.classification_reason,
     resolutionNote: row.resolution_note,
+  };
+}
+
+function rowToNearDuplicateCandidate(
+  row: HitchFindingIdentityRow,
+): NearDuplicateCandidate {
+  return {
+    findingId: row.finding_id,
+    hitchId: row.hitch_id,
+    category: row.category,
+    scopeStatus: row.scope_status,
+    summary: row.summary,
+    filePath: row.file_path,
+    symbol: row.symbol,
   };
 }
 

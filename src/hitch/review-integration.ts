@@ -3,6 +3,8 @@ import type { ProcessResult } from "../core/review-processor.js";
 import { REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS } from "../core/review-consensus.js";
 import {
   classifyFindingForHitch,
+  isCommandEvidenceAdvisory,
+  isSuccessfulCommandEvidenceAdvisory,
   isTestNotRunAdvisory,
   type ClassifiableHitchFinding,
 } from "./classification.js";
@@ -104,7 +106,9 @@ export function importReviewProposalToHitch(
   const completedCycle = input.repository.completeReviewCycle({
     cycleId: cycle.cycleId,
     findingsSeen: findings.length,
-    findingsNew: findings.filter((f) => f.created).length,
+    findingsNew: findings.filter(
+      (f) => f.created && f.finding.scopeStatus !== "duplicate",
+    ).length,
     findingsReopened: findings.filter((f) => f.reopened).length,
     findingsFixed: input.repository
       .listFindings({ hitchId: input.hitchId, lifecycleStatus: "fixed", limit: 10_000 })
@@ -189,7 +193,7 @@ export function proposalReviewerAdvisories(
   proposal: ReviewProposalRow,
 ): ReviewerAdvisory[] {
   return proposal.nonBlockingComments.flatMap((text, index) =>
-    isTestNotRunAdvisory(text)
+    isReviewerAdvisory(text)
       ? [
           {
             source: "non_blocking_comment" as const,
@@ -261,7 +265,7 @@ function proposalFindingSeeds(proposal: ReviewProposalRow): ProposalFindingSeed[
         ]
       : []),
     ...proposal.nonBlockingComments.flatMap((text, index) =>
-      isTestNotRunAdvisory(text)
+      isReviewerAdvisory(text)
         ? []
         : [
             {
@@ -295,6 +299,14 @@ function toClassifiableFinding(
     category: seed.category,
     summary: seed.text,
   };
+}
+
+function isReviewerAdvisory(text: string): boolean {
+  return (
+    isTestNotRunAdvisory(text) ||
+    isCommandEvidenceAdvisory(text) ||
+    isSuccessfulCommandEvidenceAdvisory(text)
+  );
 }
 
 function recordReviewProcessCloseChecks(

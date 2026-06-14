@@ -29,8 +29,8 @@ describe("reviewer prompt template (tripwire)", () => {
       .update(PROMPT_PREAMBLE)
       .digest("hex")
       .slice(0, 16);
-    expect(REVIEWER_PROMPT_TEMPLATE.version).toBe(2);
-    expect(hash).toBe("2fe7b149384d076d");
+    expect(REVIEWER_PROMPT_TEMPLATE.version).toBe(3);
+    expect(hash).toBe("9df6fc0b96a9b29f");
   });
 
   it("tells reviewers to surface missing test execution as non-blocking advisory", () => {
@@ -38,6 +38,8 @@ describe("reviewer prompt template (tripwire)", () => {
     expect(PROMPT_PREAMBLE).toMatch(/does not execute tests/i);
     expect(PROMPT_PREAMBLE).toMatch(/non_blocking_comments/);
     expect(PROMPT_PREAMBLE).toMatch(/command logs/i);
+    expect(PROMPT_PREAMBLE).toMatch(/absence of\s+commands\/\s+is normal/i);
+    expect(PROMPT_PREAMBLE).toMatch(/MUST NOT be treated as a deficiency or required_change/);
   });
 });
 

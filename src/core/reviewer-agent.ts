@@ -215,7 +215,7 @@ export interface ReviewerAgentResult {
  */
 export const REVIEWER_PROMPT_TEMPLATE = {
   name: "reviewer-run-artifacts",
-  version: 2,
+  version: 3,
 } as const;
 
 export const PROMPT_PREAMBLE = `You are an automated code reviewer. Read the run artifacts in the
@@ -250,10 +250,14 @@ Artifacts to read (in this order of priority):
 
 Be strict but fair. Prefer specific required_changes over vague ones.
 An approved decision means static review passed; review_consensus does not execute tests.
-If commands/<id>.out.log / commands/<id>.err.log do not show
-tests/checks actually ran, do not block approval solely for that reason; add a
-concise non_blocking_comments advisory that tests/checks were not run or no
-command logs were present.
+Command logs live only under runs/<runId>/commands/ and are present only when
+policy.allowedCommands defines commands for the harness to run. The absence of
+commands/ is normal and MUST NOT be treated as a deficiency or required_change.
+Never instruct or expect the coder to create commands/ inside the write scope.
+If command logs that do exist do not show tests/checks actually ran, do not
+block approval solely for that reason; add a concise non_blocking_comments
+advisory that tests/checks were not run or evidence is limited to the run
+summary.
 `;
 
 /**
