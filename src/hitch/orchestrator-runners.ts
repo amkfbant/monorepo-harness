@@ -75,6 +75,7 @@ import { assertHitchCanStartMutation } from "./mutation-gate.js";
 import {
   importReviewProposalToHitch,
   proposalReviewerAdvisories,
+  selectProcessedProposalForReviewImport,
 } from "./review-integration.js";
 import { runCommandCloseChecks } from "./orchestrator-close-check-runner.js";
 import { dbConsensusSnapshotProvider } from "./consensus-stall-check.js";
@@ -89,6 +90,8 @@ import type {
   HitchSession,
 } from "./types.js";
 import { findTransientLeaseCause } from "../workspace/db-domain-lock.js";
+
+export { selectProcessedProposalForReviewImport } from "./review-integration.js";
 
 const FINDING_BATCH_LIMIT = 200;
 
@@ -1126,9 +1129,7 @@ export function createOrchestratorRunners(
       withManagedDb({ dbPath: deps.dbPath }, (db) => {
         const repo = new HitchRepository(db);
         const session = repo.requireSession(hitchId);
-        const proposal = new ReviewProposalRepository(
-          db,
-        ).getLatestProcessedProposal(runId);
+        const proposal = selectProcessedProposalForReviewImport({ db, runId });
         if (proposal === null) {
           // no DB proposal (should not happen on the db-first path) — still
           // record an empty cycle so the budget reflects the review.

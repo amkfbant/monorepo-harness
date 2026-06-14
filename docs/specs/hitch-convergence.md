@@ -297,6 +297,19 @@ must be deferred or classified before the loop can continue safely.
 review decision with no required changes still creates an in-scope P1 blocker
 so a rejected/changes-requested verdict cannot accidentally become
 `close_ready`.
+In consensus mode, the normal review import uses the DB-canonical aggregate
+decision (`processResult.newStatus`, or `review_decisions.decision` when the
+process result is not available) as the state basis. An aggregate `approved`
+decision never imports blocking `required_change` or `negative_decision`
+findings from a non-approving participant proposal; advisory
+`non_blocking_comment` findings and forced out-of-scope suggestions are still
+imported. When the canonical decision is `changes_requested` or `rejected`,
+blocking hitch findings are generated from the DB-canonical aggregate
+`review_required_changes` rows, not from any single participant proposal's
+self-reported `requiredChanges`. If the active consensus row cannot be parsed,
+does not identify a trace proposal, or references a missing proposal, review
+import fails closed instead of falling back to the latest processed participant
+proposal.
 Generic reviewer advisories that only say tests/checks were not run, could not
 be run in the review environment, that command logs/output are missing, or that
 observed command/test logs passed successfully are not imported as hitch
@@ -381,6 +394,12 @@ This lets stale-but-approved review evidence advance to `close_ready` and then
 to `close_and_pr` on the next loop step. If that refreshed review evidence is
 fresh but another required close condition is still pending, the loop escalates
 with the pending condition id(s) instead of starting another review.
+The normal (non-short-circuit) import path follows the same canonicality rule:
+close-check status and evidence decision come from `processResult.newStatus`;
+member proposal ids and advisories are traceability-only. If a member proposal's
+self-reported decision contradicts the canonical aggregate, its
+`reviewDecisionId` is omitted from close-check evidence rather than recording a
+contradicting id.
 
 When the loop reaches `continue` / `run_close_check`, the orchestrator resolves
 each required `kind: command` condition whose latest status is `pending`,

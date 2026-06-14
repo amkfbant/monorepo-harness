@@ -44,7 +44,10 @@ import {
   latestHitchAttemptForRun,
   recordHitchAttemptForOperationResult,
 } from "../../hitch/operation-integration.js";
-import { importReviewProposalToHitch } from "../../hitch/review-integration.js";
+import {
+  importReviewProposalToHitch,
+  selectProcessedProposalForReviewImport,
+} from "../../hitch/review-integration.js";
 import { HitchRepository } from "../../hitch/repository.js";
 import { HitchOrchestrator } from "../../hitch/orchestrator.js";
 import { createOrchestratorRunners } from "../../hitch/orchestrator-runners.js";
@@ -818,11 +821,12 @@ export async function reviewProcessTool(
         sourceSha256: args.sourceSha256 as string,
       });
       if (args.hitchId === undefined) return result;
-      const proposal = new ReviewProposalRepository(db).getById(
-        args.proposalId as number,
-      );
+      const proposal = selectProcessedProposalForReviewImport({
+        db,
+        runId: args.runId,
+      });
       if (proposal === null) {
-        throw new Error(`review proposal ${String(args.proposalId)} not found after processing`);
+        throw new Error(`no processed review proposal found for ${args.runId} after processing`);
       }
       const hitchIntegration = importReviewProposalToHitch({
         repository: new HitchRepository(db),
