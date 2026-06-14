@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/amkfbant/monorepo-harness/compare/v0.7.2...v0.7.3) (2026-06-14)
+
+
+### Bug Fixes
+
+* **convergence:** near-duplicate finding dedup + command-evidence advisory sanction ([#155](https://github.com/amkfbant/monorepo-harness/issues/155), [#165](https://github.com/amkfbant/monorepo-harness/issues/165)) ([#211](https://github.com/amkfbant/monorepo-harness/issues/211)) ([ab754f2](https://github.com/amkfbant/monorepo-harness/commit/ab754f2b34fc8af74a217be393924d0126e6a682))
+
 ## [0.7.2](https://github.com/amkfbant/monorepo-harness/compare/v0.7.1...v0.7.2) (2026-06-14)
 
 
