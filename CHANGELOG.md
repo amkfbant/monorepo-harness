@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.6](https://github.com/amkfbant/monorepo-harness/compare/v0.7.5...v0.7.6) (2026-06-15)
+
+
+### Bug Fixes
+
+* [[#141](https://github.com/amkfbant/monorepo-harness/issues/141)] coder run per-run change budget (diff-size / deletion guard) — fail-closed pre-review gate (run-20260614-self-mqea1sf0e3e8c24f) ([#219](https://github.com/amkfbant/monorepo-harness/issues/219)) ([7945f8a](https://github.com/amkfbant/monorepo-harness/commit/7945f8ae6e21d985fa7fe25c520c8ced60fec4eb))
+
 ## [0.7.5](https://github.com/amkfbant/monorepo-harness/compare/v0.7.4...v0.7.5) (2026-06-14)
 
 
