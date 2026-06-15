@@ -896,3 +896,10 @@ follow-up: review surface に staged/index 側の path も含め、budget と re
 として数え得る。通常の binary は 0 行扱いで、現状は budget の近似精度の問題に留まる。
 follow-up: untracked file の binary 判定をより厳密にし、巨大 file でも sample 偏りで text
 扱いになりにくい実装へ寄せる。
+
+## escalation 事後レビュー・ループ（合議制 案G — design/applications.md）
+
+escalate / 誤分類のログ（`docs/reports/` finding registry）を定期的に合議でレビューし、分類
+heuristic・評価軸・プロンプトを更新する運用ループ。小粒・低リスクだが、案 A/B の運用知見が
+溜まってから issue 化する。設計は [`design/applications.md`](./design/applications.md#案g)、
+前提は [`design/deliberation.md`](./design/deliberation.md)。
