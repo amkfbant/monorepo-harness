@@ -21,11 +21,23 @@
   release PR / `vX.Y.Z` tag + GitHub Release** を自動生成・維持する。
 - **版を切るのは release PR の merge**。merge した瞬間に tag と GitHub Release ができる。
 - bump 規則（`release-please-config.json`）:
-  - `release-type: node`、`bump-minor-pre-major: true`。
-  - **pre-1.0（0.x）では breaking change も MINOR bump**（`feat!` / `BREAKING CHANGE:`
-    → 0.5.0 なら 0.6.0）。`feat` → minor、`fix`/`perf` → patch。
-  - これは `docs/specs/release.md` の「0.x では breaking も MINOR」と整合。1.0.0 に
-    上げたい場合のみ別途判断（`bump-minor-pre-major` を外す or `Release-As: 1.0.0`）。
+  - `release-type: node`、`bump-minor-pre-major: true`、
+    **`bump-patch-for-minor-pre-major: true`**。
+  - **【リリースラインのポリシー（不可侵）】このプロジェクトは `0.7.x` 系の patch を
+    永続維持する。主要 issue の解決はすべて `0.7.x`（0.7.7 → 0.7.8 → … → 0.7.10 →
+    … 0.7.20 …）で行い、x が2桁になっても `0.8.0` には決して上げない。** これは
+    オーナーの明示方針（2026-06-15）。
+  - これを技術的に担保するのが `bump-patch-for-minor-pre-major: true`: pre-1.0（0.x）
+    では **`feat:` も breaking change も PATCH bump** になる（`feat:` → 0.7.7 なら
+    0.7.8、`feat!`/`BREAKING CHANGE:` も同様に patch）。`fix:`/`perf:` も patch。
+    したがって**通常のコミットで 0.8.0 に上がることはない**。
+  - **コミット規律**: 原則 `fix:` / `chore:` / `docs:` / `test:` / `refactor:` /
+    `perf:` / `ci:` を使う。`feat:` / breaking は避ける（changelog 区分のためだけに
+    `feat:` を使わない。version は config が patch に抑えるが、意味論を patch に保つ）。
+  - **0.8.0 を提案する release PR は merge しない**。もし上がっていたら commit type を
+    直すか、release commit footer の `Release-As: 0.7.x` で patch に override する。
+  - 1.0.0 へ上げる判断はオーナーのみ（このポリシーを覆すとき）。`bump-minor-pre-major`
+    /`bump-patch-for-minor-pre-major` を外し `Release-As: 1.0.0` を付ける。
 - 特定版を強制したいときは、コミット footer に `Release-As: X.Y.Z` を付ける（one-time
   override）。通常は不要（config の bump 規則に従う）。
 
