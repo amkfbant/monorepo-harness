@@ -41,7 +41,7 @@ import { SCHEMA_VERSION } from "../db/schema.js";
 import { createDbRunLog } from "../db/run-log-db.js";
 import { ingestRunArtifacts } from "../db/run-artifacts.js";
 import { fileExportEnabled } from "../config/export-mode.js";
-import { rmSync } from "node:fs";
+import { createReadStream, rmSync } from "node:fs";
 import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import {
   RunRepository,
@@ -386,12 +386,34 @@ function looksBinary(buf: Buffer): boolean {
   }
 }
 
-function countTextLines(buf: Buffer): number {
-  if (looksBinary(buf)) return 0;
-  const lines = buf.toString("utf8").split("\n");
-  return lines.length > 0 && lines[lines.length - 1] === ""
-    ? lines.length - 1
-    : lines.length;
+export async function countTextLinesStreaming(path: string): Promise<number> {
+  let sawAnyByte = false;
+  let lastByteWasNewline = false;
+  let newlineCount = 0;
+  let sample = Buffer.alloc(0);
+  let binary = false;
+  const sampleBytes = 8192;
+
+  for await (const chunk of createReadStream(path)) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    if (buf.length === 0) continue;
+    sawAnyByte = true;
+
+    if (sample.length < sampleBytes) {
+      const need = sampleBytes - sample.length;
+      sample = Buffer.concat([sample, buf.subarray(0, need)]);
+      binary = looksBinary(sample);
+      if (binary) return 0;
+    }
+
+    for (const byte of buf) {
+      if (byte === 0x0a) newlineCount += 1;
+    }
+    lastByteWasNewline = buf[buf.length - 1] === 0x0a;
+  }
+
+  if (binary || !sawAnyByte) return 0;
+  return newlineCount + (lastByteWasNewline ? 0 : 1);
 }
 
 async function statWithAllowedUntracked(
@@ -405,7 +427,7 @@ async function statWithAllowedUntracked(
     const fullPath = join(worktreePath, p);
     const st = await lstat(fullPath);
     if (!st.isFile()) continue;
-    untrackedInsertions += countTextLines(await readFile(fullPath));
+    untrackedInsertions += await countTextLinesStreaming(fullPath);
   }
   return {
     ...trackedStat,
@@ -1580,7 +1602,7 @@ async function runDomainCodingInner(
 
     // Status priority (evaluated against POST-command worktree if commands ran):
     //   diff failure > codex timeout > codex non-zero > policy violation
-    //   > budget exceeded > command failure > needs_review
+    //   > enforced budget exceeded > command failure > needs_review
     // safetyStatus is reported independently so callers can detect e.g.
     // "timeout AND scope violation" cases.
     const budgetExceeded = changeBudgetResult?.status === "exceeded";

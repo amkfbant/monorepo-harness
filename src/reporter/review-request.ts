@@ -60,7 +60,9 @@ function pushChangeBudget(
   );
   if (report.disabled) {
     lines.push(
-      "- Change budget enforce=false recorded: breaches still block as failed-budget-exceeded; the flag is audit metadata.",
+      report.breaches.length === 0
+        ? "- Change budget enforce=false: pre-review budget gate disabled; evaluation retained for audit."
+        : "- Change budget enforce=false: budget breach allowed to proceed to review; inspect the breached metrics below.",
     );
   }
   if (report.breaches.length === 0) {

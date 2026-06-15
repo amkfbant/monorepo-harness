@@ -537,7 +537,7 @@ describe("runDomainCoding (fake codex)", () => {
     );
   });
 
-  it("does not let change budget overrides neutralize enforce:false breaches", async () => {
+  it("does not let change budget overrides silence enforce:false breach audit", async () => {
     commitTrackedFile(
       repoPath,
       "apps/user/src/large.ts",
@@ -569,17 +569,20 @@ describe("runDomainCoding (fake codex)", () => {
       now: new Date("2026-05-20T00:00:00Z"),
     });
 
-    expect(r.status).toBe("failed-budget-exceeded");
+    expect(r.status).toBe("needs_review");
     const events = parseEvents(join(harness, "runs", r.runId));
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: "diff_budget_evaluated",
-          status: "exceeded",
+          status: "exceeded-but-allowed",
           budget: expect.objectContaining({
             enforce: false,
             maxDeletedLines: DEFAULT_CHANGE_BUDGET.maxDeletedLines,
           }),
+          breaches: expect.arrayContaining([
+            expect.objectContaining({ metric: "deleted_lines" }),
+          ]),
         }),
       ]),
     );
@@ -694,7 +697,7 @@ describe("runDomainCoding (fake codex)", () => {
     );
   });
 
-  it("blocks enforce:false breaches instead of silently reaching needs_review", async () => {
+  it("allows enforce:false breaches to reach needs_review with loud audit", async () => {
     commitTrackedFile(
       repoPath,
       "apps/user/src/large.ts",
@@ -723,19 +726,26 @@ describe("runDomainCoding (fake codex)", () => {
       now: new Date("2026-05-20T00:00:00Z"),
     });
 
-    expect(r.status).toBe("failed-budget-exceeded");
+    expect(r.status).toBe("needs_review");
     const runDir = join(harness, "runs", r.runId);
     const events = parseEvents(runDir);
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: "diff_budget_evaluated",
-          status: "exceeded",
+          status: "exceeded-but-allowed",
           disabled: true,
+          breaches: expect.arrayContaining([
+            expect.objectContaining({
+              metric: "deleted_lines",
+              actual: DEFAULT_CHANGE_BUDGET.maxDeletedLines + 1,
+              limit: DEFAULT_CHANGE_BUDGET.maxDeletedLines,
+            }),
+          ]),
         }),
         expect.objectContaining({
           type: "change_budget_disabled",
-          status: "exceeded",
+          status: "exceeded-but-allowed",
           breaches: expect.arrayContaining([
             expect.objectContaining({ metric: "deleted_lines" }),
           ]),
@@ -744,12 +754,16 @@ describe("runDomainCoding (fake codex)", () => {
     );
     const summary = readFileSync(join(runDir, "summary.md"), "utf8");
     const reviewRequest = readFileSync(join(runDir, "review-request.md"), "utf8");
-    expect(summary).toMatch(/Change budget enforce=false recorded/);
-    expect(summary).toMatch(/breaches still block as failed-budget-exceeded/);
+    expect(summary).toMatch(/Status: needs_review/);
+    expect(summary).toMatch(/Change budget enforce=false/);
+    expect(summary).toMatch(/budget breach allowed to proceed to review/);
+    expect(summary).toMatch(/deleted_lines: actual 801 > limit 800/);
     expect(summary).not.toMatch(/fail-open/i);
     expect(summary).not.toMatch(/override/i);
-    expect(reviewRequest).toMatch(/Change budget enforce=false recorded/);
-    expect(reviewRequest).toMatch(/breaches still block as failed-budget-exceeded/);
+    expect(reviewRequest).toMatch(/Status: \*\*needs_review\*\*/);
+    expect(reviewRequest).toMatch(/Change budget enforce=false/);
+    expect(reviewRequest).toMatch(/budget breach allowed to proceed to review/);
+    expect(reviewRequest).toMatch(/deleted_lines: actual 801 > limit 800/);
     expect(reviewRequest).not.toMatch(/fail-open/i);
     expect(reviewRequest).not.toMatch(/override/i);
   });

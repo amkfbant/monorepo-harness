@@ -44,7 +44,7 @@ limits:
     max_total_changed_lines: 5000     # insertions + deletions の上限
     max_deleted_files: 20             # 削除された tracked/index file 数上限
     max_changed_files: 40             # changed tracked/index + allowed untracked file 数上限
-    enforce: true                     # false でも breach は停止し human surface する
+    enforce: true                     # false は pre-gate skip + loud audit + review backstop
 
 always_deny_write:
   - .git/**
@@ -195,7 +195,7 @@ numstat で binary file が `-` として出る場合、行数は 0 として扱
 numstat から推測しない。
 
 評価は inclusive: `actual == limit` は通過、`actual == limit + 1` は
-`failed-budget-exceeded`。対象 metric は:
+`enforce:true` なら `failed-budget-exceeded`。対象 metric は:
 
 - `deleted_lines` = numstat deletions
 - `total_changed_lines` = numstat insertions + deletions
@@ -224,11 +224,12 @@ global の `limits.change_budget` は全 domain の default。domain の `change
 field ごとに global を上書きし、未指定 field は global、さらに未指定なら上記 default
 に fallback する。
 
-`enforce: false` は budget breach を silent pass しない。breach が無ければ通常どおり
-通過するが、breach がある場合は `change_budget_disabled` event で `enforce:false`
-設定を監査記録しつつ `failed-budget-exceeded` で停止する。つまり `enforce:false` は
-human surface 用の metadata であり、pre-review mass-deletion guard を無監督に無効化
-する escape hatch ではない。
+`enforce: false` は operator の明示 opt-out として pre-review budget hard gate を
+skip し、breach があっても `needs_review` へ進める。ただし silent pass ではない:
+validator は常に breach を計算し、breach 時は `exceeded-but-allowed` と
+`change_budget_disabled` event、summary、review-request に超過 metric / actual / limit を
+loud に記録する。review gate（codex reviewer / human reviewer）は必ず走るため、
+`enforce:false` は fail-open ではなく「pre-gate skip + review backstop」。
 
 ## 評価順 (validateChangedPaths)
 

@@ -25,7 +25,7 @@ export interface DiffBudgetInput {
 }
 
 export interface DiffBudgetValidationResult {
-  status: "within" | "exceeded";
+  status: "within" | "exceeded" | "exceeded-but-allowed";
   breaches: DiffBudgetBreach[];
 }
 
@@ -82,7 +82,12 @@ export function validateDiffBudget(
   }
 
   return {
-    status: breaches.length === 0 ? "within" : "exceeded",
+    status:
+      breaches.length === 0
+        ? "within"
+        : budget.enforce
+          ? "exceeded"
+          : "exceeded-but-allowed",
     breaches,
   };
 }

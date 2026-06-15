@@ -37,8 +37,8 @@
     emit diff_collection_failed / policy_validation_completed with stage="post-codex" (validation durationMs on success)
     if diff.ok: validateDiffBudget(policy.limits.changeBudget, stat) and emit
     diff_budget_evaluated; stat covers the whole PR-bound surface (working-tree + staged tracked
-    changes + allowed-untracked-kept additions); enforce:false still blocks breaches as
-    failed-budget-exceeded and records change_budget_disabled (audit), never letting a breach through
+    changes + allowed-untracked-kept additions); enforce:false records breach audit as
+    exceeded-but-allowed / change_budget_disabled and proceeds toward review
 17. PASS 2 — if diff.ok && safetyStatus=allowed && codex ok && allowedCommands non-empty:
     setStatus('verified'); emit commands_started
     runAllowedCommands(worktree, allowedCommands) → results; emit commands_completed
@@ -54,7 +54,7 @@
 24. emit diff_collected (stage = post-command if commands ran, else post-codex, durationMs)
 25. determine RunStatus from priority:
     diff failure > codex timeout > codex non-zero > policy violation
-    > budget exceeded > command failure > needs_review
+    > enforced budget exceeded > command failure > needs_review
 26. readTail(codex-output.log), readStderrTail(codex-error.log);
     codex が失敗（exitCode != 0 / timedOut）した場合は、publish 済みの
     redacted `codex-events.jsonl` から events tail を要約
@@ -98,7 +98,7 @@ running ──► generated ──► verified ──► needs_review  │
    │            │              │                          └─► cleaned (harness cleanup)
    │            │              │
    │            │              ├─► failed-command (allowed command の exit≠0 / timeout)
-   │            │              ├─► failed-budget-exceeded (change_budget exceeded)
+   │            │              ├─► failed-budget-exceeded (enforced change_budget exceeded)
    │            │              ├─► failed-policy-violation (safetyStatus=denied)
    │            │
    │            ├─► failed-codex             (codex exit ≠ 0)
@@ -131,7 +131,7 @@ priority は上から下（post-command pass が走った場合は、その後�
 3. `codex.exitCode !== 0` → `failed-codex`
 4. `safetyStatus === "denied"` → `failed-policy-violation`
    （codex 直後 / commands 実行後のどちらの validation で denied になっても）
-5. `change_budget` が exceeded → `failed-budget-exceeded`
+5. `change_budget` が enforced exceeded → `failed-budget-exceeded`
 6. `allowedCommands` が走り 1 つでも失敗 → `failed-command`
 7. else → `needs_review`
 
@@ -263,16 +263,16 @@ compiled project policy. Non-project hitches are unchanged.
 
 `allowedCommands` が空、または codex / 初回 validation で既に失敗している場合、`post-command` の validation は走らず post-codex のみが残る。`diff_collected`（最終 diff の確定）の `stage` は、コマンドが走ったなら `post-command`、そうでなければ `post-codex`。
 
-Change budget evaluation follows the same stage rule. If the post-codex budget
-is already `exceeded`, allowed commands are not invoked and the run finalizes as
-`failed-budget-exceeded` after artifacts are written. If commands run, the
-post-command budget evaluation replaces the post-codex result for final status
-and artifacts. The budget stat covers tracked worktree changes, staged/index
-changes, and allowed untracked files that can be committed into the PR.
-`enforce:false` does not silently pass breaches: the evaluation still returns
-`exceeded`, emits `change_budget_disabled`, and stops at
-`failed-budget-exceeded` so a human sees that `enforce:false` was configured
-while the blocking budget result remained in force.
+Change budget evaluation follows the same stage rule. If an enforced post-codex
+budget is already `exceeded`, allowed commands are not invoked and the run
+finalizes as `failed-budget-exceeded` after artifacts are written. If commands
+run, the post-command budget evaluation replaces the post-codex result for final
+status and artifacts. The budget stat covers tracked worktree changes,
+staged/index changes, and allowed untracked files that can be committed into the
+PR. `enforce:false` does not silently pass breaches: the evaluation returns
+`exceeded-but-allowed`, emits `change_budget_disabled`, records the breached
+metric / actual / limit in summary and review request artifacts, and proceeds to
+`needs_review` so the reviewer remains the backstop.
 
 `policy_validation_completed.durationMs` は path policy 検証にかかった wall-clock の整数 ms、`diff_collected.durationMs` は当該 stage の diff / untracked 収集にかかった wall-clock の整数 ms。いずれも harness が `performance.now()` で計測し、`Math.round` で整数化する。
 

@@ -99,13 +99,13 @@ describe("validateDiffBudget", () => {
     ]);
   });
 
-  it("still reports breaches when enforce:false", () => {
+  it("reports breaches as allowed when enforce:false", () => {
     const r = validateDiffBudget(
       { ...budget({ maxDeletedLines: 1 }), enforce: false },
       { ...BASE_STAT, deletions: 100 },
     );
 
-    expect(r.status).toBe("exceeded");
+    expect(r.status).toBe("exceeded-but-allowed");
     expect(r.breaches).toEqual([
       { metric: "deleted_lines", actual: 100, limit: 1 },
     ]);

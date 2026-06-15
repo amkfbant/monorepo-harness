@@ -101,9 +101,9 @@ export interface RunMeta {
   /** Final tracked diff stat used by the change-budget gate. */
   diffStat?: DiffStat;
   /**
-   * Final change-budget gate outcome. `disabled=true` records that policy
-   * set `enforce:false`; budget breaches remain blocking and surface as
-   * `failed-budget-exceeded`.
+   * Final change-budget gate outcome. `disabled=true` records that policy set
+   * `enforce:false`; breaches are still calculated and audited, but only
+   * enforced budgets block with `failed-budget-exceeded`.
    */
   changeBudget?: {
     status: DiffBudgetValidationResult["status"];
