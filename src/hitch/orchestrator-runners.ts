@@ -166,6 +166,13 @@ export interface OrchestratorRunnerDeps {
   coderCodexBinaryVersion?: string | null;
   reviewerRunner: CodexExecRunner;
   /**
+   * Abort the in-flight coder/reviewer codex run (#132). Threaded to
+   * `runDomainCoding` / `runReviewerAgent`, which forward it to the codex runner;
+   * the course orchestrator aborts it on lease loss so the killed codex run
+   * finalizes `failed-codex` (fail-closed).
+   */
+  signal?: AbortSignal;
+  /**
    * Publisher used by `closeAndPr`. The git side is exercised with a local
    * bare remote in tests via a fake; production wires the real `gh` publisher.
    * Required for `closeAndPr` (a clear error is thrown if it is missing).
@@ -1025,6 +1032,7 @@ export function createOrchestratorRunners(
           baseBranch: context.baseBranch,
           codexRunner: deps.coderRunner,
           codexBinaryVersion: deps.coderCodexBinaryVersion ?? null,
+          ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
           ...projectRuntimeFields(deps),
           // (#163) Continuation: when the gate passed, carry the parent run's
           // uncommitted work into this run's worktree and pin the gate-validated
@@ -1114,6 +1122,7 @@ export function createOrchestratorRunners(
         runId,
         dbPath: deps.dbPath,
         codexRunner: deps.reviewerRunner,
+        ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
       });
       // 2. promote the proposal to the run's status (approved / ...).
       const processed = await processReviewDecision({

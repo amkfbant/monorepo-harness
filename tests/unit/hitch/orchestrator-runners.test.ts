@@ -2034,6 +2034,64 @@ describe("createOrchestratorRunners.coder (failed run)", () => {
     expect(captured).toContain("missing null check in profile loader");
   });
 
+  it("forwards deps.signal end-to-end to the coder codex run (#132 plumbing)", async () => {
+    const { harnessRoot, dbPath, repoPath } = setupHarness();
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        runMigrations(db);
+        const repo = new HitchRepository(db);
+        repo.createSession({
+          hitchId: "g-signal",
+          title: "Signal",
+          projectId: null,
+          repoId: "t",
+          domain: "apps/user",
+          closeConditions: [{ id: "tc", kind: "command", required: true }],
+          createdBy: "test",
+          createdSource: "worker",
+        });
+        repo.upsertFinding({
+          hitchId: "g-signal",
+          source: "review",
+          severity: "P1",
+          category: "bug",
+          scopeStatus: "in_scope",
+          summary: "permits the coder gate",
+        });
+      } finally {
+        close();
+      }
+    }
+    const resolveRunContext = (): HitchRunContext => ({
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "improve the profile feature",
+      baseBranch: "main",
+    });
+    const controller = new AbortController();
+    let capturedSignal: AbortSignal | undefined | "absent" = "absent";
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      signal: controller.signal,
+      coderRunner: {
+        run: async (input) => {
+          capturedSignal = input.signal;
+          return { exitCode: 0, timedOut: false, durationMs: 0 };
+        },
+      },
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      resolveRunContext,
+    });
+    await runners.coder("g-signal");
+    // The exact run-scoped signal must reach codexRunner.run through
+    // createOrchestratorRunners → runDomainCoding (a dropped/typo'd spread ships green otherwise).
+    expect(capturedSignal).toBe(controller.signal);
+  });
+
   it("does NOT inject the findings block on the first implement pass", async () => {
     const { harnessRoot, dbPath, repoPath } = setupHarness();
     {

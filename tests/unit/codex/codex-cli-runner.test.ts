@@ -188,6 +188,111 @@ describe("createCodexCliRunner", () => {
     expect(result.durationMs).toBeGreaterThanOrEqual(40);
   });
 
+  it("kills the process tree and reports aborted when the AbortSignal fires mid-run (#132)", async () => {
+    const wt = mkdtempSync(join(tmpdir(), "harness-codex-cli-abort-"));
+    const codexBin = writeExecutableScript(
+      wt,
+      ["process.stdin.resume();", "setInterval(() => {}, 1000);"].join("\n"),
+    );
+    const runner = createCodexCliRunner({
+      codexBin,
+      envAllowlist: ["PATH"],
+    });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 60);
+
+    const startedAt = Date.now();
+    const result = await runner.run({
+      worktreePath: wt,
+      prompt: "hello",
+      logPaths: {
+        stdout: join(wt, "out.log"),
+        stderr: join(wt, "err.log"),
+        events: join(wt, "events.jsonl"),
+      },
+      signal: controller.signal,
+    });
+
+    // Returned promptly (killed) rather than hanging on the 1000ms interval.
+    expect(Date.now() - startedAt).toBeLessThan(3000);
+    expect(result.aborted).toBe(true);
+    // A killed codex exits non-zero so the run executor marks it failed-codex.
+    expect(result.exitCode).not.toBe(0);
+  });
+
+  it("kills codex when the signal aborts during the spawn window, after the pre-spawn check (#132 race)", async () => {
+    const wt = mkdtempSync(join(tmpdir(), "harness-codex-cli-race-"));
+    const codexBin = writeExecutableScript(
+      wt,
+      ["process.stdin.resume();", "setInterval(() => {}, 1000);"].join("\n"),
+    );
+    const runner = createCodexCliRunner({ codexBin, envAllowlist: ["PATH"] });
+    const controller = new AbortController();
+
+    // run() passes the pre-spawn `signal.aborted` check synchronously (signal
+    // not yet aborted), then suspends at the first `await` (mkdir). Aborting now
+    // fires DURING the spawn window — the abort listener is registered later on
+    // an already-aborted signal and would not replay, so only the post-register
+    // re-check kills codex.
+    const startedAt = Date.now();
+    const pending = runner.run({
+      worktreePath: wt,
+      prompt: "hello",
+      logPaths: {
+        stdout: join(wt, "out.log"),
+        stderr: join(wt, "err.log"),
+        events: join(wt, "events.jsonl"),
+      },
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    const result = await pending;
+    expect(Date.now() - startedAt).toBeLessThan(3000);
+    expect(result.aborted).toBe(true);
+    expect(result.exitCode).not.toBe(0);
+  });
+
+  // NOTE (#132 fail-closed): when a run is aborted the runner forces a non-zero
+  // exit even if the child happened to exit 0 before the SIGKILL landed (see the
+  // `aborted ? -1` guard in codex-cli-runner). That interleaving — a natural
+  // exit-0 racing the abort — is not deterministically reproducible (in the
+  // setup-window case the kill always wins, so such a test would be vacuous), so
+  // the guard is asserted by review; the deterministic abort paths (already-
+  // aborted → exit -1; long-running → killed non-zero) are covered above/below.
+
+  it("does not spawn codex and reports aborted when the signal is already aborted (#132 fail-closed)", async () => {
+    const wt = mkdtempSync(join(tmpdir(), "harness-codex-cli-preabort-"));
+    // A script that would FAIL the test if ever executed (writes a marker file).
+    const markerPath = join(wt, "spawned.marker");
+    const codexBin = writeExecutableScript(
+      wt,
+      [
+        "const { writeFileSync } = require('node:fs');",
+        `writeFileSync(${JSON.stringify(markerPath)}, 'spawned', 'utf8');`,
+        "process.exit(0);",
+      ].join("\n"),
+    );
+    const runner = createCodexCliRunner({ codexBin, envAllowlist: ["PATH"] });
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await runner.run({
+      worktreePath: wt,
+      prompt: "hello",
+      logPaths: {
+        stdout: join(wt, "out.log"),
+        stderr: join(wt, "err.log"),
+        events: join(wt, "events.jsonl"),
+      },
+      signal: controller.signal,
+    });
+
+    expect(result.aborted).toBe(true);
+    expect(result.exitCode).not.toBe(0);
+    expect(existsSync(markerPath)).toBe(false);
+  });
+
   it("passes -o a log path outside the worktree without creating worktree output files", async () => {
     const root = mkdtempSync(join(tmpdir(), "harness-codex-cli-split-"));
     const wt = join(root, "worktree");

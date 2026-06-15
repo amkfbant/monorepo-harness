@@ -72,6 +72,140 @@ describe("HitchOrchestrator", () => {
     expect(calls).toContain("closeAndPr");
   });
 
+  it("aborts the drive fail-closed (no runner call, propagates the lease cause) when the signal is already aborted (#132)", async () => {
+    const dbPath = freshDbPath();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      // Fresh session with no attempt → would route to a coder step.
+      new HitchRepository(db).createSession({
+        hitchId: "g-abort",
+        title: "Abort",
+        projectId: "demo",
+        closeConditions: [],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+    } finally {
+      close();
+    }
+    const calls: string[] = [];
+    const controller = new AbortController();
+    const leaseLost = new LeaseGuardFailedError("course:abort");
+    controller.abort(leaseLost);
+
+    const run = new HitchOrchestrator({ dbPath }).run({
+      hitchId: "g-abort",
+      runners: fakeRunners(calls),
+      maxSteps: 10,
+      createdBy: "worker",
+      signal: controller.signal,
+    });
+    // Propagates the abort cause (a transient lease error) — NOT escalate/close.
+    await expect(run).rejects.toBe(leaseLost);
+    // No step ran: the coder was never invoked.
+    expect(calls).toEqual([]);
+  });
+
+  it("propagates the abort cause instead of escalating when the signal aborts during a step (#132)", async () => {
+    const dbPath = freshDbPath();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      new HitchRepository(db).createSession({
+        hitchId: "g-abort-mid",
+        title: "Abort mid",
+        projectId: "demo",
+        closeConditions: [],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+    } finally {
+      close();
+    }
+    const controller = new AbortController();
+    const leaseLost = new LeaseGuardFailedError("course:abort-mid");
+    // The coder step aborts the signal mid-flight, then throws (as a killed
+    // codex run would surface). The orchestrator must propagate the abort, not
+    // turn it into an `escalated` outcome.
+    const runners: OrchestratorRunners = {
+      ...fakeRunners([]),
+      coder: async () => {
+        controller.abort(leaseLost);
+        throw new Error("codex killed");
+      },
+    };
+    const run = new HitchOrchestrator({ dbPath }).run({
+      hitchId: "g-abort-mid",
+      runners,
+      maxSteps: 10,
+      createdBy: "worker",
+      signal: controller.signal,
+    });
+    await expect(run).rejects.toBe(leaseLost);
+    // The hitch must NOT have been flipped to escalated by the abort.
+    const { db: db2, close: close2 } = openManagedDb({ dbPath });
+    try {
+      expect(new HitchRepository(db2).requireSession("g-abort-mid").status).not.toBe(
+        "escalated",
+      );
+    } finally {
+      close2();
+    }
+  });
+
+  it("propagates the abort via the loop-top guard when a killed coder returns failed-codex normally (#132 dominant path)", async () => {
+    // The real production path on lease loss: codex is SIGKILLed → the coder run
+    // finalizes `failed-codex` and the coder runner RETURNS NORMALLY (no throw);
+    // the next loop-top guard is what propagates the abort.
+    const dbPath = freshDbPath();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      new HitchRepository(db).createSession({
+        hitchId: "g-abort-looptop",
+        title: "Abort looptop",
+        projectId: "demo",
+        closeConditions: [],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+    } finally {
+      close();
+    }
+    const controller = new AbortController();
+    const leaseLost = new LeaseGuardFailedError("course:abort-looptop");
+    let coderCalls = 0;
+    const runners: OrchestratorRunners = {
+      ...fakeRunners([]),
+      coder: async () => {
+        coderCalls += 1;
+        // emulate: lease lost mid-codex → codex SIGKILLed → failed-codex,
+        // returned normally (NOT thrown).
+        controller.abort(leaseLost);
+        return { runId: "r-killed", runStatus: "failed-codex" };
+      },
+    };
+    const run = new HitchOrchestrator({ dbPath }).run({
+      hitchId: "g-abort-looptop",
+      runners,
+      maxSteps: 10,
+      createdBy: "worker",
+      signal: controller.signal,
+    });
+    await expect(run).rejects.toBe(leaseLost);
+    // exactly one coder step ran; the next loop-top guard stopped the drive.
+    expect(coderCalls).toBe(1);
+    const { db: db2, close: close2 } = openManagedDb({ dbPath });
+    try {
+      expect(new HitchRepository(db2).requireSession("g-abort-looptop").status).not.toBe(
+        "escalated",
+      );
+    } finally {
+      close2();
+    }
+  });
+
   it("escalates a diverging goal without calling runners", async () => {
     const dbPath = freshDbPath();
     const { db, close } = openManagedDb({ dbPath });

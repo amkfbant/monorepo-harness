@@ -128,14 +128,6 @@ scope and should go through their own design/plan before implementation:
   `PhaseRollup`; SP-2 does not write `phase.status = closed`.
 - **Parallel hitch drive** — SP-2 drives hitches serially within a course-pass
   budget and one course lease.
-- **Abort in-flight hitch drive on course-lease loss** — SP-2 keeps the course
-  lease alive with a before-drive heartbeat plus a periodic heartbeat during
-  each hitch drive. If that lease is lost mid-drive, the current behavior waits
-  for the already-started drive to finish, then fail-closed aborts before the
-  next drive or phase. The run layer's domain lock and own heartbeat remain the
-  backstop against same-domain concurrent execution. Propagating an
-  `AbortSignal` through course orchestration, hitch orchestration, runners, and
-  Codex execution is future work.
 - **Durable `course_orchestration_runs` table** — SP-2 records operation audit
   only; it does not add a new run table or migration.
 - **Phase dependency edges** — ordering is the current phase tree pre-order.

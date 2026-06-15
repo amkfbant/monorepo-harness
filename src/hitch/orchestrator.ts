@@ -27,6 +27,32 @@ export interface RunOrchestrationInput {
    * (`hitch orchestrate` / `hitch await-merge`).
    */
   stopAtCloseReady?: boolean;
+  /**
+   * Interrupt the in-flight drive (#132). The course orchestrator aborts this on
+   * lease loss; the loop stops between steps and the abort is propagated (as a
+   * transient lease error, so the course maps it to `lease_lost`) rather than
+   * escalating the hitch. The signal is also threaded to the codex runner, which
+   * SIGKILLs the in-flight codex process.
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * The error to throw when the drive is aborted (#132): the abort reason set by
+ * `AbortController.abort(leaseError)` (a `LeaseLostError`/`LeaseGuardFailedError`,
+ * which `findTransientLeaseCause` recognizes), or a generic fallback.
+ */
+function abortCause(signal: AbortSignal): unknown {
+  return signal.reason ?? new Error("hitch drive aborted (course lease lost)");
+}
+
+/**
+ * Whether the drive signal has fired. A function call (not an inline
+ * `signal?.aborted` check) so TS does not narrow `aborted` to `false` after the
+ * loop-top guard — an awaited runner step can flip it to true mid-iteration.
+ */
+function driveAborted(signal: AbortSignal | undefined): signal is AbortSignal {
+  return signal?.aborted === true;
 }
 
 export class HitchOrchestrator {
@@ -41,6 +67,10 @@ export class HitchOrchestrator {
     const steps: OrchestrationStep[] = [];
     let finalDecision = "";
     for (let i = 1; i <= input.maxSteps; i++) {
+      // #132 — stop between steps when the course lease was lost mid-drive.
+      // Propagate the abort cause (a transient lease error) so the course maps
+      // it to `lease_lost`; do not run another step or escalate the hitch.
+      if (driveAborted(input.signal)) throw abortCause(input.signal);
       const convergence = withManagedDb({ dbPath: this.opts.dbPath }, (db) =>
         evaluateConvergenceAndRecordStatus({
           repository: new HitchRepository(db),
@@ -151,6 +181,10 @@ export class HitchOrchestrator {
           draft: pr.draft,
         };
       } catch (e) {
+        // #132 — an abort that fired during this step (e.g. the course lease was
+        // lost and the codex process was SIGKILLed, surfacing as a step error)
+        // must propagate as the lease cause, NOT escalate the hitch.
+        if (driveAborted(input.signal)) throw abortCause(input.signal);
         const transientLeaseError = findTransientLeaseCause(e);
         if (transientLeaseError !== undefined) throw transientLeaseError;
         let message = e instanceof Error ? e.message : String(e);

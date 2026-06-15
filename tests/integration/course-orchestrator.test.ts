@@ -371,6 +371,89 @@ describe("CourseOrchestrator", () => {
     }
   });
 
+  it("aborts the in-flight drive via AbortSignal on lease loss; a signal-aware drive returns promptly (#132)", async () => {
+    const previousLeaseMs = process.env.HARNESS_LOCK_LEASE_MS;
+    const previousHeartbeatMs = process.env.HARNESS_LOCK_HEARTBEAT_MS;
+    process.env.HARNESS_LOCK_LEASE_MS = "100";
+    process.env.HARNESS_LOCK_HEARTBEAT_MS = "10";
+    try {
+      const courseId = newCourse(db, "course-abort-inflight");
+      const domainKey = `course:${courseId}`;
+      const phases = new PhaseRepository(db);
+      const phase = phases.add({ courseId, phaseId: "phase-abort-inflight", title: "Abort", position: 1, createdBy: "test", createdSource: "cli" });
+      seedDrivableHitch(db, "h-abort-inflight");
+      phases.linkHitch(phase.phaseId, "h-abort-inflight");
+
+      let heartbeatCalls = 0;
+      const leaseLost = new LeaseLostError(domainKey, 1);
+      domainLockHook.wrapAcquire = (handle, opts) => {
+        if (opts.domainKey !== domainKey) return handle;
+        return {
+          ...handle,
+          heartbeat(now?: Date): void {
+            heartbeatCalls += 1;
+            if (heartbeatCalls === 2) throw leaseLost;
+            handle.heartbeat(now);
+          },
+        };
+      };
+
+      let makeRunnersSignal: AbortSignal | undefined;
+      let driveSignalAbortedReason: unknown;
+      let driveReturnedPromptly = false;
+
+      const orchestrator = new CourseOrchestrator({
+        db,
+        makeHitchOrchestrator: () =>
+          ({
+            run: async (runInput: RunOrchestrationInput): Promise<HitchOrchestrationResult> => {
+              // A signal-aware drive: wait for the lease-loss abort instead of
+              // running to completion, then propagate the abort cause (as the
+              // real hitch orchestrator does).
+              const startedAt = Date.now();
+              await new Promise<void>((resolve) => {
+                if (runInput.signal?.aborted === true) return resolve();
+                runInput.signal?.addEventListener("abort", () => resolve(), { once: true });
+              });
+              driveReturnedPromptly = Date.now() - startedAt < 5000;
+              driveSignalAbortedReason = runInput.signal?.reason;
+              throw runInput.signal?.reason ?? new Error("aborted without reason");
+            },
+          }) as never,
+        makeRunners: (_hitchId, signal) => {
+          makeRunnersSignal = signal;
+          return fakeRunners();
+        },
+      });
+
+      await expect(
+        orchestrator.run({
+          courseId,
+          maxDrivenHitches: 1,
+          maxStepsPerHitch: 50,
+          createdBy: "test",
+        }),
+      ).rejects.toMatchObject({
+        name: "CourseOrchestrateError",
+        code: "lease_lost",
+      } satisfies Partial<CourseOrchestrateError>);
+
+      // The signal reached makeRunners AND the hitch drive, and was aborted with
+      // the lease error as its reason on lease loss.
+      expect(makeRunnersSignal).toBeInstanceOf(AbortSignal);
+      expect(makeRunnersSignal?.aborted).toBe(true);
+      expect(driveSignalAbortedReason).toBe(leaseLost);
+      expect(driveReturnedPromptly).toBe(true);
+      // Lease released; no orphan lock left behind.
+      expect(findActiveDomainLock(db, domainKey)).toBeNull();
+    } finally {
+      if (previousLeaseMs === undefined) delete process.env.HARNESS_LOCK_LEASE_MS;
+      else process.env.HARNESS_LOCK_LEASE_MS = previousLeaseMs;
+      if (previousHeartbeatMs === undefined) delete process.env.HARNESS_LOCK_HEARTBEAT_MS;
+      else process.env.HARNESS_LOCK_HEARTBEAT_MS = previousHeartbeatMs;
+    }
+  });
+
   it("aborts fail-closed when a drive-time course lease heartbeat reports LeaseLostError", async () => {
     const previousLeaseMs = process.env.HARNESS_LOCK_LEASE_MS;
     const previousHeartbeatMs = process.env.HARNESS_LOCK_HEARTBEAT_MS;

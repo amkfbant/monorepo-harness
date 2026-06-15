@@ -25,6 +25,15 @@ export interface ProductionCourseOrchestratorInput {
   codexBin?: string;
 }
 
+/**
+ * Build a production `CourseOrchestrator`. ONE-SHOT: construct a fresh instance
+ * per orchestrate invocation and call `.run()` once. The per-hitch runner cache
+ * (`runnersByHitch`) captures the `AbortSignal` of the run that first built a
+ * hitch's runners (#132), so reusing one instance across `.run()` calls would
+ * bind a stale signal (an old aborted signal pre-aborting a new run, or a new
+ * lease-loss abort not reaching cached runners). All CLI/MCP callers construct
+ * per invocation, which is correct.
+ */
 export function createProductionCourseOrchestrator(
   input: ProductionCourseOrchestratorInput,
 ): CourseOrchestrator {
@@ -34,12 +43,13 @@ export function createProductionCourseOrchestrator(
   return new CourseOrchestrator({
     db: input.db,
     makeHitchOrchestrator: () => new HitchOrchestrator({ dbPath: input.dbPath }),
-    makeRunners: (hitchId) =>
+    makeRunners: (hitchId, signal) =>
       makeCourseHitchRunners({
         ...input,
         codexBin,
         hitchId,
         runnersByHitch,
+        ...(signal !== undefined ? { signal } : {}),
       }),
   });
 }
@@ -55,6 +65,7 @@ export async function makeCourseHitchRunners(
     createdBy: string;
     hitchId: string;
     runnersByHitch: Map<string, OrchestratorRunners>;
+    signal?: AbortSignal;
   },
   deps: CourseHitchRunnersDeps = {},
 ): Promise<OrchestratorRunners> {
@@ -83,6 +94,7 @@ export async function makeCourseHitchRunners(
     dbPath: input.dbPath,
     harnessRoot: input.harnessRoot,
     createdBy: input.createdBy,
+    ...(input.signal !== undefined ? { signal: input.signal } : {}),
     coderRunner: createRunners({
       codexBin: input.codexBin,
       sandbox: "workspace-write",

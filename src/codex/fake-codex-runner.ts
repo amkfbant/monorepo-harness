@@ -23,6 +23,16 @@ export interface FakeOpts {
   usage?: FakeUsage;
 }
 
+/**
+ * Result for an already-aborted signal: no edit runs (mirrors the real runner).
+ * A killed/short-circuited codex is always a failure, so the exit code is forced
+ * non-zero regardless of `opts.exitCode` — matching the real runner's fail-closed
+ * behavior so abort tests don't pass vacuously under `{ exitCode: 0 }`.
+ */
+function abortedResult(): CodexRunResult {
+  return { exitCode: -1, timedOut: false, aborted: true, durationMs: 0 };
+}
+
 const DEFAULT_USAGE: FakeUsage = {
   inputTokens: 0,
   cachedInputTokens: 0,
@@ -60,6 +70,9 @@ function fakeCodexEvents(finalMessage: string, usage: FakeUsage): string {
 export function createFakeCodexRunner(opts: FakeOpts = {}): CodexExecRunner {
   return {
     async run(input: CodexRunInputs): Promise<CodexRunResult> {
+      // Fail-closed: an already-aborted signal short-circuits before any edit,
+      // mirroring the real runner not spawning codex once the lease is gone.
+      if (input.signal?.aborted === true) return abortedResult();
       let exitCode = opts.exitCode ?? 0;
       let stderr = opts.stderr ?? "";
       try {
@@ -82,6 +95,7 @@ export function createFakeCodexRunner(opts: FakeOpts = {}): CodexExecRunner {
       return {
         exitCode,
         timedOut: opts.timedOut ?? false,
+        aborted: false,
         durationMs: opts.durationMs ?? 0,
       };
     },
