@@ -64,4 +64,15 @@ describe("verifyGuarded (#69, integration)", () => {
     // Committed (clean tree) — the working-tree gate passes.
     expect(verifyGuarded({ guardedGlobs, repo }).ok).toBe(true);
   });
+
+  it("fails closed on a rename of a guarded source out of scope (--no-renames)", () => {
+    // Renaming a guarded source to an unguarded path would, with rename
+    // detection on, collapse to the unguarded destination only — hiding the
+    // guarded source DELETION. `--no-renames` surfaces it so the guard flags it.
+    const repo = setupRepo();
+    git(repo, ["mv", "src/base.ts", "docs/moved.ts"]);
+    const r = verifyGuarded({ guardedGlobs, repo });
+    expect(r.ok).toBe(false);
+    expect(r.violations).toContain("src/base.ts");
+  });
 });

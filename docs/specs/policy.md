@@ -183,10 +183,15 @@ ResolvedPolicy {
 ## change_budget の扱い
 
 `change_budget` は path policy の後に重ねる deterministic guard。LLM 出力は入力にせず、
-`git diff --no-ext-diff --no-textconv --numstat -z <baseSha>` と staged/index
+`git diff --no-ext-diff --no-textconv --no-renames --numstat -z <baseSha>` と staged/index
 側の `--cached --numstat -z <baseSha>` を path 単位に統合し、
 `--diff-filter=D --name-only -z` / `--cached --diff-filter=D --name-only -z`
-から得た tracked/index diff の整数で評価する。さらに、policy validation 後に
+から得た tracked/index diff の整数で評価する。**`--no-renames` は安全フラグ**: rename 検出
+が有効だと out-of-scope な tracked source を in-scope path に rename したとき destination
+だけに collapse し、source 削除を policy/budget から隠してしまう。`--no-renames` で rename は
+常に delete（source）+ add（destination）として現れ、out-of-scope source 削除が必ず検査される
+（fail-closed・保守側）。同じ `DIFF_BASE_ARGS`（`--no-ext-diff --no-textconv --no-renames`）が
+collectDiff の全 path list / numstat / patch 収集に適用される。さらに、policy validation 後に
 PR に乗りうる allowed untracked file は `insertions` / `total_changed_lines` /
 `changed_files` に含める（テキスト file の行数を加算し、binary / symlink / non-file は
 行数 0 だが changed file として数える）。

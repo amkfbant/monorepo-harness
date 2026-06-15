@@ -397,7 +397,7 @@ async function createUnderLock(
   //    NOT validated, so they stay out.
   await runGit(["add", "--", ...reviewedPaths], git);
   const stagedPaths = parseGitPathList(
-    await runGit(["diff", "--cached", "-z", "--name-only"], git),
+    await runGit(["diff", "--no-renames", "--cached", "-z", "--name-only"], git),
   );
   assertPathsSubset(stagedPaths, reviewedPaths, "staged diff");
   // When HEAD already carries this run's reviewed commit (idempotent retry after
@@ -427,7 +427,7 @@ async function createUnderLock(
   //    invocation. `baseRef` was computed above (the history gate uses it too).
   await assertSingleReviewedCommit({ git, runId: opts.runId, baseRef });
   const branchPaths = parseGitPathList(
-    await runGit(["diff", "-z", "--name-only", baseRef, "HEAD"], git),
+    await runGit(["diff", "--no-renames", "-z", "--name-only", baseRef, "HEAD"], git),
   );
   assertPathsSubset(branchPaths, reviewedPaths, "branch diff");
 
