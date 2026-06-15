@@ -127,7 +127,24 @@ For each phase in the tree (pre-order, depth-first):
   `escalated` (`OPEN_FINDING_LIFECYCLES`). These are **never read from a
   snapshot**: a caller cannot mark a phase "closed" to hide open findings.
 - **`latestDecision`**: the most recent `hitch_convergence_decisions.decision`
-  across all linked hitches (latest by `created_at`), or null if none.
+  across all linked hitches (latest by `created_at`, tie-broken by `decision_id`),
+  or null if none. **#171** — when the selected hitch has been terminally
+  closed/cancelled (`hitch close --force` / `cancel` record no decision row), its
+  stored last decision is a stale mid-flight value (e.g. `diverging`); the rollup
+  reports that hitch's **live** decision (`closed` / `cancel`) instead so a
+  force-closed phase does not read as unresolved. Active (non-terminal) hitches
+  keep their recorded decision — the genuine latest audit value — and
+  `readyToClose` already reflects live convergence independently. For a
+  multi-hitch phase this is a single-value display projection (the
+  recency-selected hitch); `readyToClose` / `derivedOpenP0` / `derivedOpenP1`
+  are the authoritative, all-hitch readiness signals and are what `course
+  orchestrate` depends on — never `latestDecision`.
+- **`note`**: the phase's operator audit note (#171b), or null. Set with
+  `phase update --note <text>` (a force-close reason / PR ref), stored verbatim
+  under the generic `review_state_json` blob as `{ note }` (no schema migration;
+  merges with any other review-state keys). `course export --md` renders it as a
+  `**Note**:` line with newlines collapsed to spaces so a note cannot inject
+  extra Markdown blocks into the audit export.
 - **`readyToClose`**: derived live by `derivePhaseReadiness`: at least one linked
   hitch, every linked hitch is `close_ready` or `closed`, and independently
   aggregated open in-scope P0/P1 counts are both zero. This is not stored.

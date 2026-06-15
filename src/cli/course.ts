@@ -49,6 +49,16 @@ class CourseCliError extends Error {
   }
 }
 
+/**
+ * Render a phase note onto a single Markdown line for `course export --md`.
+ * Newlines are collapsed to spaces so a note cannot break out of the
+ * `**Note**:` line and inject extra Markdown blocks/headings into the audit
+ * export (the stored note stays verbatim for `--json` / the DB). #171b.
+ */
+export function noteForMarkdownLine(note: string): string {
+  return note.replace(/\s*[\r\n]+\s*/g, " ").trim();
+}
+
 /** User-fixable errors are explicit domain/CLI/configuration errors only. */
 function courseError(e: unknown): never {
   if (
@@ -545,6 +555,9 @@ export function registerCourseCommands(
             if (p.latestDecision !== null) {
               lines.push(`**Latest Decision**: ${p.latestDecision}  `);
             }
+            if (p.note !== null) {
+              lines.push(`**Note**: ${noteForMarkdownLine(p.note)}  `);
+            }
             if (p.hitchIds.length > 0) {
               lines.push(`**Hitches**: ${p.hitchIds.join(", ")}  `);
             }
@@ -647,11 +660,15 @@ export function registerCourseCommands(
 
   phaseCmd
     .command("update")
-    .description("update a phase's status or scope/close files")
+    .description("update a phase's status, scope/close files, or audit note")
     .argument("<id>", "phase id")
     .option("--status <s>", "new status (pending|in_progress|closed|blocked)")
     .option("--scope-file <path>", "replace scope with YAML/JSON file")
     .option("--close-file <path>", "replace close conditions with YAML/JSON file")
+    .option(
+      "--note <text>",
+      "operator audit note (e.g. force-close reason / PR ref); shown in course export",
+    )
     .action((id: string, raw: Record<string, unknown>) => {
       withCourseErrorExit(() => {
         const newStatus =
@@ -662,6 +679,9 @@ export function registerCourseCommands(
           const phases = new PhaseRepository(db);
           if (newStatus !== undefined) {
             phases.setStatus(id, newStatus);
+          }
+          if (raw.note !== undefined) {
+            phases.setNote(id, String(raw.note));
           }
           if (raw.scopeFile !== undefined || raw.closeFile !== undefined) {
             db.prepare(

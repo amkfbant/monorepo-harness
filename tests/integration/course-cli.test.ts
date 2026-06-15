@@ -691,6 +691,53 @@ describe("course/phase CLI (SP-1)", () => {
     expect(parentLine).toContain("readyToClose=false");
   });
 
+  it("phase update --note records an audit note shown in status JSON and export --md (#171b)", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Note Course", "--json"]),
+    );
+    const phase = json<{ phaseId: string }>(
+      runCli(root, [
+        "phase",
+        "add",
+        "--course",
+        course.courseId,
+        "--title",
+        "Phase With Note",
+        "--json",
+      ]),
+    );
+
+    // include a newline + markdown to prove export sanitization keeps it on one line
+    const note = "force-closed: PR #999 merged\n## not a real heading";
+    const updated = runCli(root, [
+      "phase",
+      "update",
+      phase.phaseId,
+      "--status",
+      "closed",
+      "--note",
+      note,
+    ]);
+    expect(updated.code).toBe(0);
+
+    // status --json exposes the note verbatim on the phase rollup
+    const status = JSON.parse(
+      runCli(root, ["course", "status", course.courseId, "--json"]).out,
+    ) as { phases: Array<{ phaseId: string; note: string | null }> };
+    const node = status.phases.find((p) => p.phaseId === phase.phaseId)!;
+    expect(node.note).toBe(note);
+
+    // export --md renders a single Note line — the newline is collapsed so it
+    // cannot inject a heading into the audit export
+    const exported = runCli(root, ["course", "export", course.courseId, "--md"]);
+    expect(exported.code).toBe(0);
+    expect(exported.out).toContain(
+      "**Note**: force-closed: PR #999 merged ## not a real heading",
+    );
+    expect(exported.out).not.toContain("\n## not a real heading");
+  });
+
   it("phase link-hitch links a seeded hitch and phase show reflects it", () => {
     const { root } = setup();
 

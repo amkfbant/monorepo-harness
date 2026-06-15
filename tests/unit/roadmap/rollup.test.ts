@@ -117,6 +117,152 @@ describe("rollupCourse (SP-1)", () => {
     expect(rollup.phases[0]!.latestDecision).toBe("close_ready");
   });
 
+  it("re-derives the rollup decision to `closed` for a force-closed hitch (#171: stale stored `diverging` is suppressed)", () => {
+    const courses = new CourseRepository(conn);
+    const phases = new PhaseRepository(conn);
+    const hitches = new HitchRepository(conn);
+    const c = courses.create({ title: "C-force", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P-force", createdBy: "t", createdSource: "cli" });
+    const h = hitches.createSession({ title: "H-force", projectId: "demo", scope: {}, closeConditions: [], createdBy: "t", createdSource: "cli" });
+    phases.linkHitch(p.phaseId, h.hitchId);
+    // The orchestrator stopped on divergence and recorded it as the latest decision …
+    hitches.recordConvergenceDecision({
+      hitchId: h.hitchId,
+      decision: "diverging",
+      reason: "total new findings exceeded hitch budget",
+      createdBy: "t",
+    });
+    // … then the operator took over, resolved/deferred everything, and force-closed
+    // the hitch + phase. `hitch close --force` (updateStatus) records NO decision row,
+    // so the stored latest decision stays the stale `diverging`.
+    hitches.updateStatus(h.hitchId, "closed", "operator takeover: PR #999 merged", { createdBy: "op" });
+    phases.setStatus(p.phaseId, "closed");
+
+    const rollup = rollupCourse({ db: conn, courseId: c.courseId });
+    // The closed session re-derives live to `closed`; the stale `diverging` must NOT show.
+    expect(rollup.phases[0]!.latestDecision).toBe("closed");
+  });
+
+  it("re-derives the rollup decision to `cancel` for a cancelled hitch whose last recorded decision was `diverging` (#171)", () => {
+    const courses = new CourseRepository(conn);
+    const phases = new PhaseRepository(conn);
+    const hitches = new HitchRepository(conn);
+    const c = courses.create({ title: "C-cancel", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P-cancel", createdBy: "t", createdSource: "cli" });
+    const h = hitches.createSession({ title: "H-cancel", projectId: "demo", scope: {}, closeConditions: [], createdBy: "t", createdSource: "cli" });
+    phases.linkHitch(p.phaseId, h.hitchId);
+    hitches.recordConvergenceDecision({
+      hitchId: h.hitchId,
+      decision: "diverging",
+      reason: "a finding reopened too many times",
+      createdBy: "t",
+    });
+    hitches.updateStatus(h.hitchId, "cancelled", "abandoned, superseded by new hitch", { createdBy: "op" });
+
+    const rollup = rollupCourse({ db: conn, courseId: c.courseId });
+    expect(rollup.phases[0]!.latestDecision).toBe("cancel");
+  });
+
+  it("preserves a recorded `diverging` decision for an ACTIVE (non-terminal) hitch — #171 only re-derives terminal closures (audit value kept)", () => {
+    const courses = new CourseRepository(conn);
+    const phases = new PhaseRepository(conn);
+    const hitches = new HitchRepository(conn);
+    const c = courses.create({ title: "C-active", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P-active", createdBy: "t", createdSource: "cli" });
+    const h = hitches.createSession({ title: "H-active", projectId: "demo", scope: {}, closeConditions: [], createdBy: "t", createdSource: "cli" });
+    phases.linkHitch(p.phaseId, h.hitchId);
+    hitches.recordConvergenceDecision({
+      hitchId: h.hitchId,
+      decision: "diverging",
+      reason: "total new findings exceeded hitch budget",
+      createdBy: "t",
+    });
+    // Hitch is left in_progress (not closed/cancelled): the recorded decision is the
+    // most recent audit value and must remain displayed for an active hitch.
+    const rollup = rollupCourse({ db: conn, courseId: c.courseId });
+    expect(rollup.phases[0]!.latestDecision).toBe("diverging");
+  });
+
+  it("multi-hitch phase: terminal-selected hitch shows `closed` but an active sibling's open P1 keeps it unready (#171)", () => {
+    const courses = new CourseRepository(conn);
+    const phases = new PhaseRepository(conn);
+    const hitches = new HitchRepository(conn);
+    const c = courses.create({ title: "C-multi", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P-multi", createdBy: "t", createdSource: "cli" });
+    const active = hitches.createSession({ title: "H-active", projectId: "demo", scope: {}, closeConditions: [], createdBy: "t", createdSource: "cli" });
+    const forced = hitches.createSession({ title: "H-forced", projectId: "demo", scope: {}, closeConditions: [], createdBy: "t", createdSource: "cli" });
+    phases.linkHitch(p.phaseId, active.hitchId, "2026-06-12T00:00:00.000Z");
+    phases.linkHitch(p.phaseId, forced.hitchId, "2026-06-12T00:00:01.000Z");
+    // active sibling: older recorded decision + a live open in-scope P1 blocker
+    hitches.recordConvergenceDecision({
+      hitchId: active.hitchId,
+      decision: "needs_fix",
+      reason: "open P1",
+      createdAt: "2026-06-12T01:00:00.000Z",
+      createdBy: "t",
+    });
+    hitches.upsertFinding({
+      hitchId: active.hitchId,
+      severity: "P1",
+      source: "human",
+      category: "correctness",
+      summary: "still open on the active sibling",
+      scopeStatus: "in_scope",
+    });
+    // forced hitch: newest recorded decision was `diverging`, then force-closed
+    hitches.recordConvergenceDecision({
+      hitchId: forced.hitchId,
+      decision: "diverging",
+      reason: "budget",
+      createdAt: "2026-06-12T02:00:00.000Z",
+      createdBy: "t",
+    });
+    hitches.updateStatus(forced.hitchId, "closed", "takeover", { createdBy: "op" });
+
+    const rollup = rollupCourse({ db: conn, courseId: c.courseId });
+    const node = rollup.phases[0]!;
+    // The recency-selected (forced) hitch re-derives to `closed` for display …
+    expect(node.latestDecision).toBe("closed");
+    // … but the live, independent aggregates still surface the active sibling's blocker.
+    expect(node.derivedOpenP1).toBeGreaterThanOrEqual(1);
+    expect(node.readyToClose).toBe(false);
+  });
+
+  it("a force-closed hitch with NO recorded decision row reports latestDecision=null (benign — not `diverging`/unresolved; #171)", () => {
+    const courses = new CourseRepository(conn);
+    const phases = new PhaseRepository(conn);
+    const hitches = new HitchRepository(conn);
+    const c = courses.create({ title: "C-nodec", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P-nodec", createdBy: "t", createdSource: "cli" });
+    const h = hitches.createSession({ title: "H-nodec", projectId: "demo", scope: {}, closeConditions: [], createdBy: "t", createdSource: "cli" });
+    phases.linkHitch(p.phaseId, h.hitchId);
+    // Never recorded a convergence decision; force-closed directly.
+    hitches.updateStatus(h.hitchId, "closed", "closed without ever deciding", { createdBy: "op" });
+    const rollup = rollupCourse({ db: conn, courseId: c.courseId });
+    expect(rollup.phases[0]!.latestDecision).toBeNull();
+  });
+
+  it("exposes a phase operator note in the rollup (#171b)", () => {
+    const courses = new CourseRepository(conn);
+    const phases = new PhaseRepository(conn);
+    const c = courses.create({ title: "C-note", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P-note", createdBy: "t", createdSource: "cli" });
+    phases.setNote(p.phaseId, "force-closed after PR #999 merged; findings all fixed/deferred");
+    const rollup = rollupCourse({ db: conn, courseId: c.courseId });
+    expect(rollup.phases[0]!.note).toBe(
+      "force-closed after PR #999 merged; findings all fixed/deferred",
+    );
+  });
+
+  it("reports a null phase note when none is set (#171b)", () => {
+    const courses = new CourseRepository(conn);
+    const phases = new PhaseRepository(conn);
+    const c = courses.create({ title: "C-nonote", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    phases.add({ courseId: c.courseId, title: "P-nonote", createdBy: "t", createdSource: "cli" });
+    const rollup = rollupCourse({ db: conn, courseId: c.courseId });
+    expect(rollup.phases[0]!.note).toBeNull();
+  });
+
   it("marks a phase readyToClose when its hitch evaluates close_ready with no open P0/P1", () => {
     const courses = new CourseRepository(conn);
     const phases = new PhaseRepository(conn);
