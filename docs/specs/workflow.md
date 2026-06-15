@@ -720,6 +720,22 @@ close せずに workspace branch を commit/push する。salvage gate は fail-
 - stage するのは reviewed path のみで、既存 index も reviewed path 以外を含まない
 - push 直前に `baseSha..HEAD` の **完全な branch diff** が reviewed path のみである
   ことを検証する（今回 stage した path だけでなく既存 local commit も対象）
+- **object-graph tampering を fail-closed 拒否**（salvage push と `pr create` の双方）:
+  `refs/replace/*` ref / `info/grafts` file / shallow repository（`git rev-parse
+  --is-shallow-repository`）のいずれかが在れば push しない。`git diff`/`rev-list` は
+  これらの tampering で sanitized view を返しうるが `git push` は real object を送るため、
+  history gate より前に拒否する（`GIT_NO_REPLACE_OBJECTS=1` は read を無害化するが、
+  defense-in-depth として push gate でも明示拒否する）。
+- harness の commit は **hook 無効化 + verbatim**（`git -c core.hooksPath=/dev/null commit
+  --cleanup=verbatim -m <msg>`）で mint する。target repo の `prepare-commit-msg` hook が
+  `-m` message に secret を追記する（`--no-verify` では抑止できない）ことと、git の message
+  cleanup による改変を防ぐ。
+- commit 後に **HEAD commit の message が deterministic harness message と一致**することを
+  検証する（`%B`、trailing newline は両側除去）。これは新規 mint commit（hook 抑止の検証）と
+  idempotent-retry 許容枝（base+1 commit かつ tracked clean）の双方を認証する。message は
+  salvage が `harness salvage: <runId>`、`pr create` が `opts.title`（空/空白なら既定
+  `harness: <runId>` に強制）。tree が reviewed fingerprint と一致しても message に secret を
+  載せた out-of-band/hook 由来 commit は拒否する（unauthenticated retry commit）
 - PR 作成・hitch close はしない。既存 `pr create` の `status === approved` gate と
   reviewed fingerprint 再検証は維持され、salvage で迂回しない
 - review-step failure salvage は最新 run の canonical status が `needs_review` でない場合

@@ -191,7 +191,12 @@ ResolvedPolicy {
 だけに collapse し、source 削除を policy/budget から隠してしまう。`--no-renames` で rename は
 常に delete（source）+ add（destination）として現れ、out-of-scope source 削除が必ず検査される
 （fail-closed・保守側）。同じ `DIFF_BASE_ARGS`（`--no-ext-diff --no-textconv --no-renames`）が
-collectDiff の全 path list / numstat / patch 収集に適用される。さらに、policy validation 後に
+collectDiff の全 path list / numstat / patch 収集に適用される。あわせて `gitCli` は
+**`GIT_NO_REPLACE_OBJECTS=1` を中央で強制**し（caller env / 継承 env で override 不可）、
+全 git read が `refs/replace/*` を無視して **REAL object graph** を見る。これがないと coder が
+`git replace <real> <sanitized>` を仕込んで diff/rev-list/reset を sanitized view で通しつつ
+`git push` で real object を送り出せる（grafts / shallow は別途 push gate で fail-closed 拒否、
+[`workflow.md`](./workflow.md) の salvage / `pr create` gate 参照）。さらに、policy validation 後に
 PR に乗りうる allowed untracked file は `insertions` / `total_changed_lines` /
 `changed_files` に含める（テキスト file の行数を加算し、binary / symlink / non-file は
 行数 0 だが changed file として数える）。

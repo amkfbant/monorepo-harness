@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type Database from "better-sqlite3";
 import type { RunMeta } from "../logging/run-log.js";
 import { gitCli } from "../git/git-cli.js";
@@ -237,11 +237,16 @@ async function commitAndPushReviewedBranch(input: {
     );
   }
 
+  // Fail-closed: refuse to push if the repo's object graph is tampered (replace
+  // refs / grafts / shallow). The history gates below are object-graph based, so
+  // this must run first. `git push` ships the REAL objects regardless.
+  await assertNoObjectGraphTampering({ git, runId: input.runId });
+
   // Fail-closed: refuse any unreviewed commit history beyond base (an
   // intermediate commit touching only reviewed paths whose final content matches
   // the fingerprint would otherwise pass the net branch-diff gate below and push
   // its history). Tolerates this run's own single reviewed commit re-pushed
-  // idempotently after a failed publish/push.
+  // idempotently after a failed publish/push (its message is authenticated below).
   const headAtBase = await assertNoUnreviewedHistory({
     git,
     runId: input.runId,
@@ -267,7 +272,20 @@ async function commitAndPushReviewedBranch(input: {
   }
   let committed = false;
   if (stagedPaths.length > 0) {
-    await runGit(["commit", "-m", input.commitMessage], git);
+    // Mint with hooks disabled + verbatim so neither a target-repo
+    // `prepare-commit-msg` hook nor git's message cleanup can mutate the
+    // deterministic message (authenticated post-commit below).
+    await runGit(
+      [
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "--cleanup=verbatim",
+        "-m",
+        input.commitMessage,
+      ],
+      git,
+    );
     committed = true;
   }
 
@@ -275,6 +293,14 @@ async function commitAndPushReviewedBranch(input: {
     git,
     runId: input.runId,
     baseRef: input.baseRef,
+  });
+  // Authenticate HEAD's commit message (covers both the freshly minted commit and
+  // a tolerated single retry commit) — fail-closed if it is not the exact harness
+  // message (e.g. a hook-appended secret or an out-of-band commit message).
+  await assertHeadCommitMessageAuthentic({
+    git,
+    runId: input.runId,
+    expectedCommitMessage: input.commitMessage,
   });
   const branchPaths = parseGitPathList(
     await runGit(["diff", "--no-renames", "-z", "--name-only", input.baseRef, "HEAD"], git),
@@ -309,6 +335,65 @@ export function assertPathsSubset(
   if (unreviewed.length > 0) {
     throw new PrGateError(
       `${label} contains unreviewed path(s): ${unreviewed.join(", ")}`,
+    );
+  }
+}
+
+// Fail-closed: refuse to push if the repo's object graph is tampered via
+// `refs/replace/*`, an `info/grafts` file, or shallowness. `GIT_NO_REPLACE_OBJECTS=1`
+// (forced centrally in gitCli) already neutralizes replace refs for every harness
+// READ, but the push gates must additionally refuse such tampering OUTRIGHT: a
+// replace ref or graft makes `git diff` / `git rev-list` validate a sanitized
+// object view while `git push` still transmits the REAL (unreviewed/secret)
+// objects; a shallow repo hides ancestry so the history-count gate can be fooled.
+// This is defense-in-depth — the coder's `--sandbox workspace-write` likely blocks
+// writes to the shared commondir where these live, but the deterministic git
+// validation must not RELY on the sandbox.
+//
+// `objects/info/alternates` and the commit-graph are deliberately NOT gated: an
+// alternate object store is content-addressed lookup and the commit-graph is a
+// consistency-verified cache, so neither can make a given SHA read as a sanitized
+// object while `git push` ships a different real one — only replace/grafts/shallow
+// create that read-view-vs-pushed-bytes divergence. The check is point-in-time
+// (re-introducing tampering AFTER this call but before the push is out of scope:
+// the run is already terminal-reviewed and single-threaded here, and an attacker
+// with concurrent commondir write could `git push` directly anyway).
+export async function assertNoObjectGraphTampering(input: {
+  git: { cwd: string; timeoutMs: number };
+  runId: string;
+}): Promise<void> {
+  const replaceRefs = (
+    await runGit(
+      ["for-each-ref", "--format=%(refname)", "refs/replace/"],
+      input.git,
+    )
+  ).trim();
+  if (replaceRefs !== "") {
+    throw new PrGateError(
+      `worktree for ${input.runId} carries replace ref(s) ` +
+        `(${replaceRefs.split("\n").join(", ")}); refusing to push ` +
+        `(object-graph tampering)`,
+    );
+  }
+  // `git rev-parse --git-path info/grafts` resolves to the (shared commondir)
+  // grafts path, relative to the worktree when linked. Any grafts content rewrites
+  // commit parents, so refuse if the file exists at all.
+  const graftsPath = (
+    await runGit(["rev-parse", "--git-path", "info/grafts"], input.git)
+  ).trim();
+  if (graftsPath !== "" && existsSync(resolve(input.git.cwd, graftsPath))) {
+    throw new PrGateError(
+      `worktree for ${input.runId} carries a commit-graft file ` +
+        `(${graftsPath}); refusing to push (object-graph tampering)`,
+    );
+  }
+  const isShallow = (
+    await runGit(["rev-parse", "--is-shallow-repository"], input.git)
+  ).trim();
+  if (isShallow === "true") {
+    throw new PrGateError(
+      `worktree for ${input.runId} is a shallow repository; refusing to push ` +
+        `(object-graph tampering)`,
     );
   }
 }
@@ -352,6 +437,11 @@ export async function assertNoUnreviewedHistory(input: {
   const trackedDirty = (
     await runGit(["diff", "--no-renames", "--name-only", "HEAD"], input.git)
   ).trim();
+  // A single clean commit beyond base is the tolerated idempotent retry. Its
+  // commit MESSAGE is authenticated separately, post-commit, by
+  // assertHeadCommitMessageAuthentic (which covers both this tolerated retry and a
+  // freshly minted commit) — so an out-of-band commit whose tree matches the
+  // reviewed fingerprint but whose message carries a secret is still rejected.
   if (commitCount === "1" && trackedDirty === "") return false;
   throw new PrGateError(
     `worktree for ${input.runId} has commit history beyond base ` +
@@ -377,6 +467,32 @@ export async function assertSingleReviewedCommit(input: {
     throw new PrGateError(
       `worktree for ${input.runId} would push ${commitCount} commits beyond ` +
         `base; refusing to push unreviewed history`,
+    );
+  }
+}
+
+// Fail-closed: authenticate that HEAD's commit MESSAGE is exactly the deterministic
+// harness message. Harness commits are minted with hooks disabled + `--cleanup=verbatim`
+// so the stored message equals the `-m` argument verbatim. This single post-commit check
+// covers BOTH a freshly minted commit (the HEAD==base mint path the history gate does not
+// otherwise message-check — e.g. a target-repo `prepare-commit-msg` hook appending a
+// secret to the message, which `--no-verify` does NOT suppress) AND the tolerated single
+// retry commit (an out-of-band commit whose tree matches the reviewed fingerprint but
+// whose MESSAGE carries unreviewed content). Trailing newlines are stripped on both sides
+// (git's mandatory final LF); verbatim means no other cleanup, so the compare is exact.
+export async function assertHeadCommitMessageAuthentic(input: {
+  git: { cwd: string; timeoutMs: number };
+  runId: string;
+  expectedCommitMessage: string;
+}): Promise<void> {
+  const headMessage = (
+    await runGit(["log", "-1", "--format=%B", "HEAD"], input.git)
+  ).replace(/\n+$/, "");
+  if (headMessage !== input.expectedCommitMessage.replace(/\n+$/, "")) {
+    throw new PrGateError(
+      `worktree for ${input.runId} has a HEAD commit whose message does not ` +
+        `match the deterministic harness commit message; refusing to push ` +
+        `(unauthenticated retry commit)`,
     );
   }
 }
