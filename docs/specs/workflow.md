@@ -118,6 +118,16 @@ running ──► generated ──► verified ──► needs_review  │
 
 failed-* で終わった run も worktree は残る（人間が原因を調べられるように）。
 
+**codex の中断（`AbortSignal` / #132）**: `runDomainCoding` / `runReviewerAgent` は
+optional な `signal` を codex runner に渡す。`course orchestrate` がドライブ中に
+course lease を失うと、この signal を abort し、codex プロセスツリーを timeout と
+同じ経路（`detached` プロセスグループ → `killProcessTree` で SIGKILL）で kill する。
+kill された codex は exit≠0 になるので、上記の status priority により run は
+`failed-codex` で finalize される（fail-closed＝消費した attempt は記録され、hitch は
+resumable なまま）。すでに abort 済みの signal では codex を **spawn せず** に
+`aborted` を返す（lease を失った後に新しい codex を起動しない）。`signal` 未指定なら
+従来どおり（runner は abort を観測しない）。
+
 codex 自体が失敗した run（`codex.exitCode !== 0` または `codex.timedOut`）では、
 `summary.md` と `review-request.md` に `## codex events (tail, redacted)` セクションを
 追加する。入力は artifact 用に publish 済みの `codex-events.jsonl` のみで、

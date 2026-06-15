@@ -190,6 +190,12 @@ export interface RunDomainCodingOpts {
   /** retained for forward compat with a future cleanup tool; ignored by the workflow */
   keepWorktree?: boolean;
   codexRunner: CodexExecRunner;
+  /**
+   * Abort the in-flight codex run (#132): forwarded to `codexRunner.run`. The
+   * course orchestrator aborts it on lease loss, SIGKILLing codex; the killed
+   * run finalizes `failed-codex` via the existing non-zero-exit path.
+   */
+  signal?: AbortSignal;
   now?: Date;
   /**
    * Set when this run is a rerun spawned from a previous changes_requested
@@ -1340,6 +1346,7 @@ async function runDomainCodingInner(
         stderr: codexStderrPath,
         events: codexRawEventsPath,
       },
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     });
     await log.emit({
       type: "codex_exec_completed",

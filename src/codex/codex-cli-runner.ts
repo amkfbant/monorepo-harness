@@ -64,6 +64,10 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
   const envAllowlist = opts.envAllowlist ?? DEFAULT_CODEX_ENV_ALLOWLIST;
   return {
     async run(input: CodexRunInputs): Promise<CodexRunResult> {
+      // Fail-closed (#132): once the course lease is gone, do not launch codex.
+      if (input.signal?.aborted === true) {
+        return { exitCode: -1, timedOut: false, aborted: true, durationMs: 0 };
+      }
       await mkdir(dirname(input.logPaths.stdout), { recursive: true });
       await mkdir(dirname(input.logPaths.stderr), { recursive: true });
       await mkdir(dirname(input.logPaths.events), { recursive: true });
@@ -109,6 +113,7 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
           detached: true,
         });
         let timedOut = false;
+        let aborted = false;
         let timer: NodeJS.Timeout | undefined;
         if (opts.timeoutMs !== undefined && opts.timeoutMs > 0) {
           timer = setTimeout(() => {
@@ -116,6 +121,20 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
             killProcessTree(child);
           }, opts.timeoutMs);
         }
+        // #132 — SIGKILL the codex process tree if the course orchestrator
+        // aborts mid-drive on lease loss. Same kill path as the timeout above;
+        // the killed child exits non-zero → finalized `failed-codex` (fail-closed).
+        const onAbort = (): void => {
+          aborted = true;
+          killProcessTree(child);
+        };
+        input.signal?.addEventListener("abort", onAbort, { once: true });
+        // Close the race between the pre-spawn `signal.aborted` check and this
+        // listener registration: if the signal fired during mkdir / spawn setup,
+        // adding a listener to an already-aborted signal does NOT replay the
+        // event, so the kill would be missed and codex would run to completion
+        // (the original #132 failure mode). Re-check and kill explicitly.
+        if (input.signal?.aborted === true) onAbort();
         child.stdout.pipe(eventsStream);
         child.stderr.pipe(errStream);
         // codex may exit before draining stdin (early exit / crash / a prompt
@@ -128,10 +147,12 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
         child.stdin.end();
         child.on("error", (e) => {
           if (timer) clearTimeout(timer);
+          input.signal?.removeEventListener("abort", onAbort);
           reject(e);
         });
         child.on("close", (code) => {
           if (timer) clearTimeout(timer);
+          input.signal?.removeEventListener("abort", onAbort);
           const durationMs = Math.round(performance.now() - startedAt);
           // Make sure the file streams have flushed before the workflow
           // calls readTail(). pipe() already calls .end() on eventsStream/
@@ -148,7 +169,17 @@ export function createCodexCliRunner(opts: CodexCliOpts): CodexExecRunner {
               await writeFile(input.logPaths.stdout, "", { flag: "a" });
             })
             .finally(() => {
-              resolve({ exitCode: code ?? -1, timedOut, durationMs });
+              // Fail-closed (#132): if the run was aborted, force a non-zero exit
+              // even when the child happened to exit 0 before the SIGKILL landed
+              // (fast-success racing the abort). Once the course lease is lost the
+              // run is no longer authoritative, so it must finalize `failed-codex`
+              // (status selection keys on exitCode), never `needs_review`.
+              resolve({
+                exitCode: aborted ? -1 : code ?? -1,
+                timedOut,
+                aborted,
+                durationMs,
+              });
             });
         });
       });

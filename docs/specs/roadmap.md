@@ -276,9 +276,20 @@ During a long hitch drive, the course lease is also heartbeated in the backgroun
 If that heartbeat reports lease loss the course pass normalizes the failure to
 `lease_lost`; if the driven hitch/run layer surfaces a domain lock *busy*
 conflict (another holder is active), it normalizes to `lease_busy`. In either
-case the pass performs no further course-layer writes. The current hitch drive
-is allowed to finish at the run layer; subsequent phase/hitch work in this course
-pass is not started.
+case the pass performs no further course-layer writes, and subsequent phase/hitch
+work in this course pass is not started.
+
+The in-flight hitch drive is interrupted, not run to completion (#132). A
+run-scoped `AbortSignal` is threaded through the drive — course orchestrator →
+hitch orchestrator → runners → codex runner. On lease loss the heartbeat aborts
+it with the lease error as the abort reason, so: the hitch orchestrator stops
+between steps and propagates the abort as a transient lease cause (mapped to
+`lease_lost`, not an `escalated` hitch); and the in-flight codex process is
+SIGKILLed (an already-aborted signal short-circuits before launching codex). A
+killed codex run finalizes `failed-codex` via the existing non-zero-exit path, so
+the abort is fail-closed — the spent attempt is recorded and the hitch stays in a
+resumable state. The run layer's own domain lock + heartbeat remain the backstop
+against same-domain concurrent execution.
 
 Compatibility note: `hitch orchestrate` invoked underneath `course orchestrate`
 does not mark the hitch `escalated` for transient domain lock / lease conflicts

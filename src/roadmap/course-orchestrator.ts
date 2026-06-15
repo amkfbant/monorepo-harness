@@ -63,7 +63,15 @@ export class CourseOrchestrateError extends Error {
 export interface CourseOrchestratorDeps {
   db: Database.Database;
   makeHitchOrchestrator(hitchId: string): HitchOrchestrator;
-  makeRunners(hitchId: string): OrchestratorRunners | Promise<OrchestratorRunners>;
+  /**
+   * Build the runners for a hitch. The optional `signal` (#132) is aborted when
+   * the course loses its lease mid-drive; production runners thread it to the
+   * codex runner so the in-flight codex process is SIGKILLed (fail-closed).
+   */
+  makeRunners(
+    hitchId: string,
+    signal?: AbortSignal,
+  ): OrchestratorRunners | Promise<OrchestratorRunners>;
 }
 
 export interface RunCourseOrchestrationInput {
@@ -192,6 +200,11 @@ export class CourseOrchestrator {
     leaseRunId: string,
   ): Promise<CourseOrchestrationResult> {
     let result: WalkCourseResult;
+    // #132 — one run-scoped controller. A lease-loss heartbeat aborts it, which
+    // interrupts the in-flight hitch drive (loop stops between steps; codex is
+    // SIGKILLed). Lease loss then stops the whole walk, so no later drive reuses
+    // a still-fresh signal.
+    const abortController = new AbortController();
     try {
       result = await this.walkCourse(input, {
         transitionPhaseStatus: true,
@@ -203,14 +216,18 @@ export class CourseOrchestrator {
           nowMs: Date.now(),
         }),
         driveHitch: async ({ hitchId, maxStepsPerHitch, createdBy }) => {
-          return await this.runWithLeaseHeartbeat(lease, async () => {
-            const runners = await this.deps.makeRunners(hitchId);
+          return await this.runWithLeaseHeartbeat(lease, abortController, async () => {
+            const runners = await this.deps.makeRunners(
+              hitchId,
+              abortController.signal,
+            );
             const hitchResult = await this.deps.makeHitchOrchestrator(hitchId).run({
               hitchId,
               runners,
               maxSteps: maxStepsPerHitch,
               stopAtCloseReady: true,
               createdBy,
+              signal: abortController.signal,
             });
             return {
               ...toDrivenHitch(hitchResult),
@@ -234,6 +251,7 @@ export class CourseOrchestrator {
 
   private async runWithLeaseHeartbeat<T>(
     lease: DomainLockHandle,
+    abortController: AbortController,
     drive: () => Promise<T>,
   ): Promise<T> {
     let timer: NodeJS.Timeout | undefined;
@@ -252,6 +270,10 @@ export class CourseOrchestrator {
       } catch (e) {
         leaseLost = true;
         leaseLostError = e;
+        // #132 — interrupt the in-flight drive: abort with the lease error as the
+        // reason so the hitch orchestrator propagates it (a transient lease cause
+        // → course `lease_lost`) and the codex runner SIGKILLs its process.
+        if (!abortController.signal.aborted) abortController.abort(e);
         stopTimer();
       }
     }, courseLeaseHeartbeatIntervalMs());
@@ -269,9 +291,11 @@ export class CourseOrchestrator {
       stopTimer();
     }
 
-    // Do not race away from an in-flight hitch drive on course-lease loss.
-    // The hitch/run layer's domain lock and heartbeat still prevent same-domain
-    // concurrent execution; force-aborting Codex via AbortSignal is future work.
+    // On course-lease loss the heartbeat above aborts `abortController`, which
+    // interrupts the in-flight drive (the hitch loop stops between steps and the
+    // codex process is SIGKILLed), so `drive()` settles promptly here rather than
+    // running the whole hitch to completion (#132). The hitch/run layer's domain
+    // lock + heartbeat remain the backstop against same-domain concurrency.
     if (leaseLost) throw courseLeaseLostError(leaseLostError);
     if (isCourseLeaseLostError(driveError)) {
       throw courseLeaseLostError(driveError);

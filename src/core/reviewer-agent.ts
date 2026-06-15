@@ -194,6 +194,8 @@ export interface ReviewerAgentInputs {
    */
   dryRun?: boolean;
   codexRunner: CodexExecRunner;
+  /** Abort the in-flight reviewer codex run on course-lease loss (#132). */
+  signal?: AbortSignal;
   now?: Date;
 }
 
@@ -528,6 +530,7 @@ export async function runReviewerAgent(
     worktreePath: runDir,
     prompt: reviewerPrompt,
     logPaths: { stdout: stdoutPath, stderr: stderrPath, events: rawEventsPath },
+    ...(inputs.signal !== undefined ? { signal: inputs.signal } : {}),
   });
   const reviewer = inputs.reviewerName ?? "codex-reviewer";
   const reviewedAt = (inputs.now ?? new Date()).toISOString();
