@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.11](https://github.com/amkfbant/monorepo-harness/compare/v0.7.10...v0.7.11) (2026-06-15)
+
+
+### Bug Fixes
+
+* **orchestrate:** resolve the run base from origin/&lt;base&gt;, fail-fast on an unresolvable base ([#154](https://github.com/amkfbant/monorepo-harness/issues/154), [#195](https://github.com/amkfbant/monorepo-harness/issues/195)) ([#242](https://github.com/amkfbant/monorepo-harness/issues/242)) ([4f81dc8](https://github.com/amkfbant/monorepo-harness/commit/4f81dc8e5fafe98e57331ef86b04c86134ab41ea))
+
 ## [0.7.10](https://github.com/amkfbant/monorepo-harness/compare/v0.7.9...v0.7.10) (2026-06-15)
 
 
