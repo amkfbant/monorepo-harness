@@ -78,6 +78,7 @@ repo:
 policy:
   template: strict-monorepo-v1
   global_deny: [ ... ]
+  ignore_untracked: [ ... ]   # optional; merged with the template's ignore_untracked
 context_packs:
   default-docs: { description, globs, max_bytes, deny_secret_like }
 commands:
@@ -109,7 +110,15 @@ profile 内 `domains` と外部 reusable registry（`templates/domain-registries
 ### Policy template / command preset / context pack
 
 - **policy template** (`templates/policy/*.yaml`): domain kind ごとの default
-  read / write / deny。
+  read / write / deny。**`ignore_untracked`** も供給する（validation skip + artifact
+  カウント除外の glob、`policy.md` 参照）。`strict-monorepo-v1` は JS（`node_modules`
+  / `dist` / `coverage` / `.turbo`）に加え Python のビルド/キャッシュ（`.venv` /
+  `__pycache__` / `*.pyc` / `.mypy_cache` / `.pytest_cache` / `.ruff_cache`）も既定で
+  ignore する。
+- **`policy.global_deny` / `policy.ignore_untracked`** (profile): compile 時に template
+  値とマージされる。`global_deny` は template `root_deny` に、`ignore_untracked` は
+  template `ignore_untracked` に追加される（`uniqSort` で dedup）。project 固有の
+  言語/ツール由来の untracked を、template を編集せず profile 側で宣言できる。
 - **command preset** (`templates/commands/*.yaml`): 現行 policy `commands.allow`
   へコンパイル。structured argv form を標準とし、shell は明示 opt-in。
 - **context pack** (`templates/context-packs/*.yaml` または profile inline):

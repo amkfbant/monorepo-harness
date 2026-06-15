@@ -121,6 +121,35 @@ describe("compileProjectPolicy", () => {
     expect(r.globalPolicy.ignore_untracked).toContain("**/node_modules/**");
   });
 
+  it("the strict-monorepo-v1 template ignores common Python build/cache artifacts", async () => {
+    const r = await compile();
+    for (const p of [
+      "**/.venv/**",
+      "**/.mypy_cache/**",
+      "**/.pytest_cache/**",
+      "**/.ruff_cache/**",
+      "**/__pycache__/**",
+    ]) {
+      expect(r.globalPolicy.ignore_untracked).toContain(p);
+    }
+  });
+
+  it("merges profile.policy.ignore_untracked with the template ignore_untracked", async () => {
+    const r = await compile(
+      profile({
+        policy: {
+          template: "strict-monorepo-v1",
+          ignore_untracked: ["**/.tox/**", "**/build/**"],
+        },
+      }),
+    );
+    // template-provided entries survive
+    expect(r.globalPolicy.ignore_untracked).toContain("**/node_modules/**");
+    // profile-provided entries are merged in
+    expect(r.globalPolicy.ignore_untracked).toContain("**/.tox/**");
+    expect(r.globalPolicy.ignore_untracked).toContain("**/build/**");
+  });
+
   it("compiles a package_script command when the package manager is known", async () => {
     const r = await compile();
     const allow = r.repoPolicy.domains["apps/web"]?.commands?.allow ?? [];
