@@ -120,18 +120,46 @@ describe("collectDiff", () => {
     });
   });
 
-  it("parses rename numstat output as a single changed file", async () => {
+  it("surfaces a rename as delete + add (--no-renames), not a collapsed single file", async () => {
+    // SECURITY: rename detection would collapse a rename to the destination
+    // path only, hiding the SOURCE deletion. `--no-renames` makes collectDiff
+    // report both sides, so a coder cannot delete an out-of-scope file by
+    // renaming it into scope without the source deletion surfacing to policy.
     execFileSync("git", ["mv", "apps/user/a.ts", "apps/user/renamed.ts"], {
       cwd: repo,
     });
     const d = await collectDiff({ repoPath: repo, baseSha: await baseSha() });
 
+    // a.ts (1 line) deleted + renamed.ts (1 line) added — two distinct paths.
+    expect(d.trackedChangedPaths.sort()).toEqual([
+      "apps/user/a.ts",
+      "apps/user/renamed.ts",
+    ]);
     expect(d.stat).toEqual({
-      filesChanged: 1,
-      insertions: 0,
-      deletions: 0,
-      deletedFiles: 0,
+      filesChanged: 2,
+      insertions: 1,
+      deletions: 1,
+      deletedFiles: 1,
     });
+  });
+
+  it("surfaces an out-of-scope rename source so policy can catch the deletion", async () => {
+    // The threat: rename an OUT-OF-SCOPE tracked file into an in-scope path.
+    // With --no-renames the out-of-scope source appears as a tracked deletion,
+    // so write-scope validation (which consumes trackedChangedPaths) sees it.
+    mkdirSync(join(repo, "outside"), { recursive: true });
+    writeFileSync(join(repo, "outside/secret.ts"), "export const a = 1;\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-qm", "add out-of-scope file"], {
+      cwd: repo,
+    });
+    const base = await baseSha();
+    execFileSync("git", ["mv", "outside/secret.ts", "apps/user/pulled-in.ts"], {
+      cwd: repo,
+    });
+    const d = await collectDiff({ repoPath: repo, baseSha: base });
+    expect(d.trackedChangedPaths).toContain("outside/secret.ts");
+    expect(d.trackedChangedPaths).toContain("apps/user/pulled-in.ts");
   });
 
   it("counts binary files as changed files without line additions or deletions", async () => {

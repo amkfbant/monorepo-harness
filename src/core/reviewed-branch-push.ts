@@ -250,7 +250,7 @@ async function commitAndPushReviewedBranch(input: {
 
   await runGit(["add", "--", ...reviewedPaths], git);
   const stagedPaths = parseGitPathList(
-    await runGit(["diff", "--cached", "-z", "--name-only"], git),
+    await runGit(["diff", "--no-renames", "--cached", "-z", "--name-only"], git),
   );
   assertPathsSubset(stagedPaths, reviewedPaths, "staged diff");
   // When HEAD already carries this run's reviewed commit (idempotent retry),
@@ -277,7 +277,7 @@ async function commitAndPushReviewedBranch(input: {
     baseRef: input.baseRef,
   });
   const branchPaths = parseGitPathList(
-    await runGit(["diff", "-z", "--name-only", input.baseRef, "HEAD"], git),
+    await runGit(["diff", "--no-renames", "-z", "--name-only", input.baseRef, "HEAD"], git),
   );
   assertPathsSubset(branchPaths, reviewedPaths, "branch diff");
 
@@ -350,7 +350,7 @@ export async function assertNoUnreviewedHistory(input: {
     await runGit(["rev-list", "--count", `${base}..HEAD`], input.git)
   ).trim();
   const trackedDirty = (
-    await runGit(["diff", "--name-only", "HEAD"], input.git)
+    await runGit(["diff", "--no-renames", "--name-only", "HEAD"], input.git)
   ).trim();
   if (commitCount === "1" && trackedDirty === "") return false;
   throw new PrGateError(

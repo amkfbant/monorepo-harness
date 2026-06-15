@@ -40,7 +40,20 @@ interface NumStatRow {
 // blocks per-file textconv filters. Either could be configured in the
 // TARGET repo to run arbitrary shell commands during artifact collection
 // — outside the codex env allowlist — so we disable them on every diff.
-const DIFF_BASE_ARGS = ["diff", "--no-ext-diff", "--no-textconv"] as const;
+//
+// `--no-renames` is a SECURITY flag, not cosmetic: with rename detection on
+// (git's default), a rename of an OUT-OF-SCOPE tracked source into an in-scope
+// destination collapses to the destination path only, hiding the out-of-scope
+// SOURCE DELETION from policy/budget/subset validation — a coder could delete
+// arbitrary out-of-scope files by renaming them into scope. With `--no-renames`
+// every rename surfaces as a delete (source) + add (destination), so the
+// out-of-scope source deletion is always validated (fail-closed, conservative).
+const DIFF_BASE_ARGS = [
+  "diff",
+  "--no-ext-diff",
+  "--no-textconv",
+  "--no-renames",
+] as const;
 
 function withTimeout(repoPath: string, timeoutMs: number | undefined) {
   const o: { cwd: string; timeoutMs?: number } = { cwd: repoPath };

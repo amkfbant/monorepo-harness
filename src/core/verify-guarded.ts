@@ -86,7 +86,10 @@ export function gitWorkingTreeChangedPaths(repo: string): string[] {
     return r.stdout;
   };
   return [
-    ...parseNulPaths(run(["diff", "--name-only", "-z", "HEAD"])),
+    // `--no-renames`: a rename of a GUARDED source to an unguarded path would
+    // otherwise collapse to the destination only, hiding the guarded source
+    // deletion from the guard check. Surface it as delete(source) + add(dest).
+    ...parseNulPaths(run(["diff", "--no-renames", "--name-only", "-z", "HEAD"])),
     ...parseNulPaths(run(["ls-files", "--others", "--exclude-standard", "-z"])),
   ];
 }
