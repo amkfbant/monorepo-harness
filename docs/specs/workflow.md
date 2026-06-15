@@ -7,7 +7,11 @@
 ```text
 1. load global + repo policy, resolve into ResolvedPolicy
 2. generate unique runId, acquire per-domain lockfile
-3. resolveBaseSha(baseBranch) — pin the commit to diff against
+3. resolveBaseSha(baseBranch) — pin the commit to diff against. best-effort
+   `git fetch origin <baseBranch>` first, then resolve in priority order:
+   `origin/<baseBranch>` (fresh remote tip; #154 — never a stale local ref) →
+   local `<baseBranch>` (local-only branches / a raw SHA; #195) → **fail-fast**
+   (never silently fall back to a different base; #195)
 4. createRunLog(runsDir, runId, meta) — atomic mkdir + meta.json + events.jsonl
 5. emit run_started event, write resolved-policy.yaml
 6. createWorktree(repo, baseSha, runId) — git worktree add -b harness/<runId>/<domain> at baseSha (occupies that branch)
@@ -69,6 +73,8 @@
 ```
 
 ステップ 16/17 の 2 pass 構成が F8（コマンドの副作用も path policy で再検査）の核心。`allowedCommands` が無ければ pass 2 は skip され、pass 1 の結果がそのまま使われる。
+
+**base 解決の運用上の含意（ステップ 3 / #154 #195）**: `git fetch` が成功したときだけ `origin/<base>` を信頼する（失敗時は stale な remote-tracking ref を local より優先しない）。したがって (1) **origin が authoritative** — base branch に push せず local commit だけ重ねても base 解決はそれを無視し origin tip を使う（PR-merge-via-`gh pr merge` 運用では正しい）。(2) **origin が設定済みだが到達不能**（firewall / offline）な場合、best-effort fetch が `gitTimeoutMs`（既定 30s）まで blocking してから local に degrade するので、base 解決ごとに最大その分の latency を払う（無限 hang はしない）。offline / firewalled 環境では `fetchRemote:false` 相当の運用 or 短い timeout で緩和できる。base branch 名は branch 名 or 40-hex SHA のみ受理（`main~1` 等の rev-expression / refspec は拒否）。
 
 Diff review and reviewed-fingerprint collection are symlink-safe by design:
 paths are evaluated as repository entries and the implementation does not follow

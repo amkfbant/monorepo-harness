@@ -296,6 +296,65 @@ describe("runDomainCoding (fake codex)", () => {
     }
   });
 
+  it("bases the run on origin/<base>, not a stale local ref (#154)", async () => {
+    // Give the target a remote, push main, then advance origin/main beyond the
+    // local clone (merges landing remotely via `gh pr merge` leave local behind).
+    const g = (a: string[]) =>
+      execFileSync("git", a, { cwd: repoPath, stdio: "ignore" });
+    const out = (a: string[]) =>
+      execFileSync("git", a, { cwd: repoPath, encoding: "utf8" }).trim();
+    const bare = mkdtempSync(join(tmpdir(), "harness-target-bare-")) + ".git";
+    execFileSync("git", ["init", "-q", "--bare", bare]);
+    g(["remote", "add", "origin", bare]);
+    g(["push", "-q", "-u", "origin", "main"]);
+    const staleLocal = out(["rev-parse", "main"]);
+
+    const other = mkdtempSync(join(tmpdir(), "harness-target-other-"));
+    const og = (a: string[]) =>
+      execFileSync("git", a, { cwd: other, stdio: "ignore" });
+    og(["clone", "-q", bare, "."]);
+    og(["config", "user.email", "t@e.com"]);
+    og(["config", "user.name", "T"]);
+    writeFileSync(join(other, "REMOTE_ADVANCE.md"), "advanced remotely\n");
+    og(["add", "."]);
+    og(["commit", "-qm", "remote advance"]);
+    og(["push", "-q", "origin", "main"]);
+    const remoteTip = execFileSync("git", ["rev-parse", "main"], {
+      cwd: other,
+      encoding: "utf8",
+    }).trim();
+    expect(remoteTip).not.toBe(staleLocal);
+
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 9;\n",
+        );
+      },
+      stdout: "ok\n",
+      stderr: "",
+      durationMs: 1,
+    });
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "edit on the fresh base",
+      baseBranch: "main",
+      codexRunner: runner,
+      codexBinaryVersion: "fake-codex 0.0.25",
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+    const meta = JSON.parse(
+      readFileSync(join(harness, "runs", r.runId, "meta.json"), "utf8"),
+    );
+    // the run worktree + diff base is the FRESH remote tip, not the stale local
+    expect(meta.baseSha).toBe(remoteTip);
+    expect(meta.baseSha).not.toBe(staleLocal);
+  });
+
   it("normalizes the coder's committed work into the working tree (clean index, no leaked commit) (#141/#197)", async () => {
     // codex sometimes COMMITS its work in the run worktree. The run must fold it
     // back into the working tree (`git reset --mixed <base>`) so close-check sees

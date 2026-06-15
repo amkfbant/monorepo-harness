@@ -1,4 +1,4 @@
-import { gitCliOrThrow } from "./git-cli.js";
+import { gitCli, gitCliOrThrow } from "./git-cli.js";
 
 export interface DiffStat {
   filesChanged: number;
@@ -139,16 +139,108 @@ function combineNumStat(
   };
 }
 
+const FULL_SHA_RE = /^[0-9a-f]{40}$/;
+
+// A real branch/tag name, NOT a rev-expression or refspec: blocks rev-syntax
+// (`~ ^ : ? * [ \`), control chars, `@{`, `..`, and a leading `-` (git
+// option-injection) / leading or trailing `/`. baseBranch is operator-supplied
+// (CLI / project config), so this is defense-in-depth, but it keeps the value
+// safe to pass to `git fetch` / `rev-parse` as a ref and avoids `main~1`-style
+// rev-expressions silently resolving to an unexpected commit.
+function isSafeRefName(s: string): boolean {
+  if (s.length === 0 || s.length > 255) return false;
+  if (s.startsWith("-") || s.startsWith("/") || s.endsWith("/")) return false;
+  if (s.includes("..") || s.includes("@{")) return false;
+  return !/[\x00-\x20~^:?*[\\\x7f]/.test(s);
+}
+
+async function revParseCommit(
+  ref: string,
+  g: { cwd: string; timeoutMs?: number },
+): Promise<string | null> {
+  // `--end-of-options` so a hostile `ref` cannot be parsed as a git option;
+  // `^{commit}` peels tags/commit-ish to a commit; `--quiet` → exit 1 (no SHA)
+  // on failure instead of throwing.
+  const r = await gitCli(
+    ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`],
+    g,
+  );
+  const sha = r.stdout.trim();
+  return r.exitCode === 0 && FULL_SHA_RE.test(sha) ? sha : null;
+}
+
 export async function resolveBaseSha(opts: {
   repoPath: string;
   baseBranch: string;
   timeoutMs?: number;
+  /**
+   * Best-effort `git fetch origin <base>` before resolving (default true) so the
+   * run worktree + diff base branch from the REMOTE tip, not a stale local ref
+   * (#154). Set false for hermetic / offline resolution (e.g. tests, repos with
+   * no remote where local refs are authoritative).
+   */
+  fetchRemote?: boolean;
 }): Promise<string> {
-  const out = await gitCliOrThrow(
-    ["rev-parse", "--verify", opts.baseBranch],
-    withTimeout(opts.repoPath, opts.timeoutMs),
+  const g = withTimeout(opts.repoPath, opts.timeoutMs);
+  const { baseBranch } = opts;
+
+  // A pinned full SHA resolves directly — no fetch, no remote-tracking candidate.
+  if (FULL_SHA_RE.test(baseBranch)) {
+    const sha = await revParseCommit(baseBranch, g);
+    if (sha !== null) return sha;
+    throw new Error(
+      `cannot resolve base commit "${baseBranch}" in ${opts.repoPath}`,
+    );
+  }
+  if (!isSafeRefName(baseBranch)) {
+    throw new Error(
+      `invalid base branch "${baseBranch}": expected a branch name or 40-hex ` +
+        `SHA (no rev-expression / refspec syntax)`,
+    );
+  }
+
+  // Refresh origin/<base> so we branch from the remote tip, not a stale local ref
+  // (#154: merges landing via `gh pr merge` leave the local clone behind). The
+  // fetch is BEST-EFFORT and its result GATES whether origin is trusted: offline,
+  // no remote, a local-only base branch (#195), or a transient spawn error make
+  // it fail, and a STALE `origin/<base>` remote-tracking ref must NOT then be
+  // preferred over the local branch (it is no fresher than local).
+  let fetchOk = false;
+  if (opts.fetchRemote !== false) {
+    try {
+      const r = await gitCli(
+        [
+          "fetch",
+          "--no-tags",
+          "origin",
+          `+${baseBranch}:refs/remotes/origin/${baseBranch}`,
+        ],
+        g,
+      );
+      fetchOk = r.exitCode === 0 && !r.timedOut;
+    } catch {
+      fetchOk = false; // spawn error (ENOENT/EACCES/EAGAIN) → degrade to local
+    }
+  }
+
+  // Resolve in priority order, NEVER silently falling back to a DIFFERENT base
+  // (#195: a `--base-branch` that resolved nowhere used to slide to main, wasting
+  // the run). When the fetch refreshed origin, prefer the fresh remote tip;
+  // otherwise prefer the local branch (the operator's current state) and only
+  // fall back to a possibly-stale remote-tracking ref as a last resort.
+  const originRef = `refs/remotes/origin/${baseBranch}`;
+  const candidates = fetchOk
+    ? [originRef, baseBranch]
+    : [baseBranch, originRef];
+  for (const ref of candidates) {
+    const sha = await revParseCommit(ref, g);
+    if (sha !== null) return sha;
+  }
+  throw new Error(
+    `cannot resolve base branch "${baseBranch}" in ${opts.repoPath}: ` +
+      `no origin/${baseBranch} or local ${baseBranch} ` +
+      `(refusing to silently fall back to a different base)`,
   );
-  return out.trim();
 }
 
 export async function collectDiff(opts: DiffOpts): Promise<DiffResult> {
