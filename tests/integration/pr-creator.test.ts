@@ -534,6 +534,53 @@ describe("createPullRequest", () => {
     expect(remoteMsg).not.toMatch(/SECRET/);
   });
 
+  it("coerces a whitespace-only --title to the deterministic default", async () => {
+    const f = await setup("approved");
+    const r = await createPullRequest({
+      runsDir: join(f.root, "runs"),
+      workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+      runId: f.runId,
+      base: "main",
+      draft: true,
+      title: "   ",
+      publisher: fakePublisher(),
+    });
+    expect(r.prNumber).toBe(7);
+    const remoteMsg = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "log", "-1", "--format=%B", `harness/${f.runId}/apps-x`],
+      { encoding: "utf8" },
+    ).trim();
+    expect(remoteMsg).toBe("harness: run-20260521-apps-x-pr01");
+  });
+
+  it("verbatim mint: a title with trailing whitespace round-trips and passes message auth", async () => {
+    // --cleanup=verbatim preserves the message exactly, so the post-commit %B
+    // auth (trailing-newline-only normalization) stays SYMMETRIC. Without verbatim,
+    // git's default cleanup would strip the trailing spaces and the auth would
+    // falsely reject — so success here proves verbatim is in effect.
+    const f = await setup("approved");
+    const title = "fix: trailing space title  ";
+    const r = await createPullRequest({
+      runsDir: join(f.root, "runs"),
+      workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+      runId: f.runId,
+      base: "main",
+      draft: true,
+      title,
+      publisher: fakePublisher(),
+    });
+    expect(r.prNumber).toBe(7);
+    const remoteMsg = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "log", "-1", "--format=%B", `harness/${f.runId}/apps-x`],
+      { encoding: "utf8" },
+    ).replace(/\n+$/, "");
+    expect(remoteMsg).toBe(title);
+  });
+
   it("P1: refuses when a reviewed file drifted after approval", async () => {
     const f = await setup("approved");
     // someone edits a reviewed path AFTER the run was approved

@@ -3,6 +3,20 @@
 Ideas recorded for later implementation. Each entry is a sketch, not an approved
 design — run it through brainstorming → spec → plan when picked up.
 
+## commit-object identity metadata exfil (author / committer)
+
+- **P3 (defense-in-depth, deferred)** — the git-validation hardening PR
+  authenticates the commit MESSAGE (`%B`) and suppresses hook / message-cleanup /
+  `gpgsig`-header injection at mint (`-c core.hooksPath=/dev/null --no-gpg-sign
+  --cleanup=verbatim`). The remaining unauthenticated bytes in a pushed commit
+  object are the author/committer identity fields (name / email / date), which a
+  target-repo `user.name` / `user.email` config could carry. Capacity is bounded
+  and the values are surfaced/auditable in the PR + commit metadata, and pinning a
+  fixed harness identity would discard real authorship — so it is deferred rather
+  than fixed. If picked up: pin author+committer at mint (`-c user.name=… -c
+  user.email=…` or `GIT_AUTHOR_*`/`GIT_COMMITTER_*`) and/or assert them post-commit.
+  Surfaced by codex gpt-5.5 xhigh during the Part B review.
+
 ## tracked out-of-scope file modifications surface bytes in final-diff.patch
 
 - **P3 (pre-existing, by design)** — a committed (or plain) MODIFICATION of a

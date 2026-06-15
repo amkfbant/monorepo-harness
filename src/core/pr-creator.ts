@@ -434,13 +434,16 @@ async function createUnderLock(
     // #103 — use the (Conventional-Commit) PR title as the branch commit
     // subject too, so the squash merge subject is Conventional regardless of
     // whether the repo squashes from the PR title or the commit message. Mint
-    // with hooks disabled + verbatim so neither a target-repo `prepare-commit-msg`
-    // hook nor git's message cleanup can mutate the deterministic message.
+    // with hooks disabled + verbatim + no signing so neither a target-repo
+    // `prepare-commit-msg` hook, git's message cleanup, nor a `commit.gpgsign` +
+    // `gpg.program` config can mutate the deterministic message or embed
+    // unauthenticated bytes (a `gpgsig` header) into the pushed commit object.
     await runGit(
       [
         "-c",
         "core.hooksPath=/dev/null",
         "commit",
+        "--no-gpg-sign",
         "--cleanup=verbatim",
         "-m",
         commitMessage,

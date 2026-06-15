@@ -451,6 +451,39 @@ describe("pushReviewedBranchForEscalation (salvage push guard)", () => {
     expect(remoteMsg).not.toMatch(/SECRET/);
   });
 
+  it("commit signing: a commit.gpgsign config cannot embed unauthenticated bytes in the pushed commit object", async () => {
+    // A target-repo `commit.gpgsign=true` + `gpg.program` would embed a `gpgsig`
+    // header (attacker-controlled bytes) into the pushed commit object, which the
+    // %B message auth does not see. The mint must pass --no-gpg-sign.
+    const f = await setupSalvage();
+    const fakeGpg = join(f.root, "fakegpg.sh");
+    writeFileSync(
+      fakeGpg,
+      '#!/bin/sh\ncat >/dev/null\necho "[GNUPG:] SIG_CREATED " >&2\n' +
+        'printf -- "-----BEGIN PGP SIGNATURE-----\\n\\nSECRET_SIG_EXFIL\\n-----END PGP SIGNATURE-----\\n"\n',
+    );
+    execFileSync("chmod", ["+x", fakeGpg]);
+    git(f.worktree, ["config", "gpg.program", fakeGpg]);
+    git(f.worktree, ["config", "user.signingkey", "DEADBEEF"]);
+    git(f.worktree, ["config", "commit.gpgsign", "true"]);
+
+    const r = await pushReviewedBranchForEscalation({
+      runsDir: join(f.root, "runs"),
+      workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+      runId: f.runId,
+    });
+    expect(r.committed).toBe(true);
+    // the pushed commit object carries NO gpgsig header / exfil bytes
+    const obj = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "cat-file", "-p", r.headSha],
+      { encoding: "utf8" },
+    );
+    expect(obj).not.toMatch(/gpgsig/);
+    expect(obj).not.toMatch(/SECRET_SIG_EXFIL/);
+  });
+
   it("retry-commit auth: refuses a single clean commit beyond base whose message is not the harness message", async () => {
     // The idempotent-retry tolerance accepts exactly one clean commit beyond base
     // whose tree matches the reviewed fingerprint. Without authenticating its
