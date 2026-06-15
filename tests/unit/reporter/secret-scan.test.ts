@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { scanForSecrets } from "../../../src/reporter/secret-scan.js";
+import {
+  scanForSecrets,
+  redactSecretLines,
+  createSecretLineRedactor,
+  COMMAND_LOG_LINE_WITHHELD,
+} from "../../../src/reporter/secret-scan.js";
 
 describe("scanForSecrets — filename heuristics", () => {
   it("flags .env / .env.local / .env.production", () => {
@@ -99,5 +104,91 @@ describe("scanForSecrets — content heuristics", () => {
     const r = scanForSecrets(".env", "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE");
     expect(r.reasons).toContain("filename:.env");
     expect(r.reasons).toContain("content:aws-access-key-id");
+  });
+});
+
+describe("redactSecretLines (single-shot)", () => {
+  it("withholds a whole line that contains a secret-shaped token", () => {
+    expect(redactSecretLines(`token=ghp_${"a".repeat(36)}`)).toBe(
+      COMMAND_LOG_LINE_WITHHELD,
+    );
+  });
+
+  it("passes benign lines through unchanged (incl. blank lines)", () => {
+    const input = "build started\n\nno secrets here\nbuild finished";
+    expect(redactSecretLines(input)).toBe(input);
+  });
+
+  it("redacts only the offending line in multi-line input", () => {
+    const input = [
+      "build started",
+      `OPENAI_API_KEY=sk-${"c".repeat(40)}`,
+      "build finished",
+    ].join("\n");
+    expect(redactSecretLines(input)).toBe(
+      ["build started", COMMAND_LOG_LINE_WITHHELD, "build finished"].join("\n"),
+    );
+  });
+
+  it("preserves a trailing newline (final empty segment)", () => {
+    const input = `before\nAWS_SECRET_ACCESS_KEY=${"d".repeat(40)}\nafter\n`;
+    expect(redactSecretLines(input)).toBe(
+      ["before", COMMAND_LOG_LINE_WITHHELD, "after", ""].join("\n"),
+    );
+  });
+
+  it("withholds EVERY line of a multi-line PEM private-key block (P1)", () => {
+    const pem = [
+      "preamble line",
+      "-----BEGIN RSA PRIVATE KEY-----",
+      "MIIEpAIBAAKCAQEArandombase64bodyline1",
+      "morebase64bodyline2WithoutAnyTokenShape",
+      "-----END RSA PRIVATE KEY-----",
+      "trailer line",
+    ].join("\n");
+    const out = redactSecretLines(pem);
+    // the base64 body lines must NOT survive (they match no token pattern alone)
+    expect(out).not.toContain("MIIEpAIBAA");
+    expect(out).not.toContain("morebase64bodyline2");
+    expect(out).not.toContain("BEGIN RSA PRIVATE KEY");
+    expect(out).not.toContain("END RSA PRIVATE KEY");
+    expect(out).toBe(
+      [
+        "preamble line",
+        COMMAND_LOG_LINE_WITHHELD,
+        COMMAND_LOG_LINE_WITHHELD,
+        COMMAND_LOG_LINE_WITHHELD,
+        COMMAND_LOG_LINE_WITHHELD,
+        "trailer line",
+      ].join("\n"),
+    );
+  });
+
+  it("handles a single-line PEM (BEGIN+END same line) without leaving the block open", () => {
+    const input = [
+      "-----BEGIN PRIVATE KEY----- inlinebody -----END PRIVATE KEY-----",
+      "next benign line",
+    ].join("\n");
+    expect(redactSecretLines(input)).toBe(
+      [COMMAND_LOG_LINE_WITHHELD, "next benign line"].join("\n"),
+    );
+  });
+});
+
+describe("createSecretLineRedactor (streaming, stateful PEM)", () => {
+  it("keeps the PEM block open across separate redactLine calls", () => {
+    const r = createSecretLineRedactor();
+    expect(r.redactLine("ok before")).toBe("ok before");
+    expect(r.redactLine("-----BEGIN OPENSSH PRIVATE KEY-----")).toBe(
+      COMMAND_LOG_LINE_WITHHELD,
+    );
+    expect(r.redactLine("b3BlbnNzaC1rZXktdjEAAAAABG5vbmU")).toBe(
+      COMMAND_LOG_LINE_WITHHELD,
+    );
+    expect(r.redactLine("-----END OPENSSH PRIVATE KEY-----")).toBe(
+      COMMAND_LOG_LINE_WITHHELD,
+    );
+    // block closed — benign content flows again
+    expect(r.redactLine("ok after")).toBe("ok after");
   });
 });

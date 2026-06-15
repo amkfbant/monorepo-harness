@@ -176,14 +176,16 @@ runs/<runId>/
   review-request.md        # reviewer 向け詳細 (status / safety / lists / change budget / artifacts / codex tails / redacted events tail on codex failure / checklist)
   review-decision.yaml     # 初期: { decision: pending, … } — reviewer がここを編集する
   commands/                # OPTIONAL: policy.allowedCommands があるときだけ runs/<runId>/commands/ に生成（workspace 内に作らない）
-    00-<slug>.out.log
-    00-<slug>.err.log
+    00-<slug>.out.log      # command stdout; secret-shaped 行は write 層で redaction (#186)
+    00-<slug>.err.log      # command stderr; secret-shaped 行は write 層で redaction (#186)
     01-<slug>.out.log
     ...
   context-pack-manifest.yaml  # OPTIONAL: `run --project` で context pack を注入したときのみ
 workspaces/<runId>/repo/   # git worktree (削除しない)
 locks/<repoId>--<domain-slug>-<hash>.lock  # active run の lock; runId / pid / hostname / acquiredAt
 ```
+
+**command log redaction (#186)**: `runAllowedCommands`（全 command 種別 — policy commands と hitch close-check の双方）は子プロセスの stdout/stderr を **write 層の Transform で行単位 redaction** してから `*.out.log` / `*.err.log` に書く。secret-shaped な行（`containsLikelySecret`: vendor token / name-based assignment / bearer）は `[redacted: secret-shaped line withheld]` に**丸ごと**置換する（partial 置換はしない＝chunk/行境界で token が断たれて残りが漏れるのを防ぐ）。PEM 秘密鍵は **BEGIN..END の block 全行**を redaction する（base64 本体行は単体では token pattern に一致しないため、redactor が block 状態を持つ）。byte stream は `StringDecoder` で multi-byte char を再結合し、token が chunk をまたいでも行確定時に判定する。partial-line buffer は `COMMAND_LOG_MAX_LINE_CHARS`（1 MiB）で**上限**を設け、改行無しの巨大行は丸ごと withhold する（無界 buffer の OOM と flush 境界での token 断裂を防ぐ）。marker 自体も `containsLikelySecret` で secret 扱いなので、redact 済みログを再 scan（close-check の log excerpt 等）しても withheld のまま。
 
 ## Phase 5: project-driven run
 
