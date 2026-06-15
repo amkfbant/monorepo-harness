@@ -1,0 +1,713 @@
+# 実装設計ノート v2 — issue #229「[案B] multi-lens review consensus + 反証 verify」
+
+> これは計画のみ。コードは変更しない。実装は別セッションが dev クローンの
+> `origin/main` ベース隔離ブランチで行う（着手順は A→B→C 確定。#229 は2番手・#230 の後）。
+> 本ノートの file:line は ops checkout (**v0.7.10**, `git describe --tags --exact-match`=v0.7.10,
+> origin/main と同一) で全件裏取り済み。
+
+---
+
+## v2 改訂履歴（codex P0/P1 反映）
+
+- **P0-1（`review:` 不正時の DEFAULT 降格 = fail-open）**: `review:` 欠落のみ DEFAULT。`review:` が
+  存在して不正なら run 生成を typed error（`ReviewRuleCompileError`）で拒否し fail-closed。
+  `compileProfileReviewRule` は invalid を warning+DEFAULT ではなく throw（§3.1/§3.2/§4 P1-B/§5/§6 RED#1a）。
+- **P0-2（多レンズが実体なし: `reviewerName` が prompt に届かない）**: 採用ルートを確定 —
+  Phase 1 を **Phase 1a『reachable consensus（正直に N reviewer・同一 prompt）』** と
+  **Phase 1b『lens 別 prompt 配線（`reviewerName`/lens label を reviewer prompt に実渡し）』** に分割。
+  受け入れ条件の表現を Phase 1a では「multi-reviewer consensus（同一 lens）」、Phase 1b 完了時のみ
+  「multi-lens」と正直に表現する（§3.0/§3.3b/§4/§6/§8。どちらに倒すかは unresolvedForHuman に明示）。
+- **P1-a（pending→stall 経路が未到達）**: `processReviewDecision` の `ReviewGateError`(pending) を
+  orchestrator review runner 内で catch し、review cycle を記録してから
+  `evaluateConsensusStallForHitch` を **直接呼ぶ**。pending 行は `recordConsensusReEvaluation`
+  (reviewer-agent.ts:735) が各 dispatch 後に書く `review_consensus` 行で timeline が成立する
+  ことを根拠にする（§3.4 step7/§5/§6 RED#8/#9）。
+- **P1-b（allowOverwrite: 1体目も既存 active で止まる）**: orchestrator 管理の lens dispatch では
+  **全 reviewer に `allowOverwrite:true`**。dispatch 前に expected reviewer set と既存 active
+  proposal set を検証する preflight を追加（§2.5/§3.4 step3.5/§5/§6 RED#7b）。
+- **P1-c（profile→rule thread が全入口に届かない）**: `reviewRuleResolution` 値を
+  `PreparedProjectRun`→`RunDomainCodingOpts` まで全入口（CLI run/rerun, hitch CLI, MCP orchestrate,
+  reviewed-run, orchestrator `projectRuntime`）で thread。入口別 integration test を追加（§3.1/§4 P1-C/§6 RED#7c）。
+- **P1-d（reviewed-run が consensus profile で必ず pending fail）**: reviewed-run は consensus rule の
+  run を **明示拒否（typed error）** する（Phase 1a の最小選択）。N-dispatch helper 共有は follow-up
+  に明記（§3.4b/§4 P1-H/§6 RED#10b）。
+- **P1-e（refute の target binding が無い）**: Phase 2 着手前に **target id/hash 付き refute
+  input/output DSL** を設計する前提条件として固定。review decision schema は global decision +
+  text array のみ（review-decision-schema.ts:11, schema.ts:184）なので、refute 票を対象 finding に
+  決定論 bind できる data model を Phase 2-0 として先行（§3.5/§4 P2-0）。
+- **P2-determinism（summary.proposals / sourceProposalIds も order 依存）**: `includedRows` /
+  `summary.proposals` / `sourceProposalIds` を **reviewer_id, proposal_id の固定順**に揃える。
+  order independence test は required_changes だけでなく summary まで見る（§3.6/§6 RED#5）。
+- **P2-dispatch上限**: profile rule に `max_reviewers` または explicit `reviewer_ids` を持たせ、
+  preflight で dispatch 数を制限/表示する（§3.2/§3.4/§4 P1-A）。
+- **P3（severity が close gate に効く訂正は正しい）**: §2.6 維持（追加対処なし、確認のみ）。
+
+---
+
+## 1. 背景と #229 ゴール
+
+レビューの見落としを減らす。`harness hitch orchestrate` で **quorum > 1 の consensus に
+実際に到達できる**ようにし、加えて (1) 異レンズ reviewer、(2) 反証 verify、(3) judge
+バイアス対策 を入れる。
+
+設計ノート案B が明示するスコープ: quorum>1 到達には **(0)+(1) が両方必須**。
+- **(0)** profile-loaded review rules: `resolveEffectiveRule` が profile から
+  consensus(quorum>1)+per-group requirements rule を返す。
+- **(1)** orchestrator review runner が review process の前に **N reviewer を dispatch**。
+- **(2)** review-consensus への lens 設定 + 反証 verify ステップ。
+- 集約は既存の決定論 quorum / tie-break のまま。**多数決結果を直接 run.status にしない**。
+
+**Phase 分割（v2: P0-2 反映で 1a/1b に細分）**:
+- **Phase 1a = (0)+(1) reachable consensus（同一 prompt の N reviewer）を 1 PR で land**。
+  これで #229 の「quorum>1 実到達」「集約決定論」「回帰なし」「spec 更新」を満たす。
+  受け入れ条件は **「multi-reviewer consensus」**と表現（"multi-lens" とは言わない）。
+- **Phase 1b = lens 別 prompt 配線**（`reviewerName`/lens label/persona を reviewer prompt に実渡し）。
+  これで初めて「異レンズ」が本物になる。**"multi-lens" 受け入れ条件はここで満たす**。
+- **Phase 2 = 反証 verify**を「登録済み refute reviewer group + target-bound refute DSL による
+  第2 consensus requirement」として再設計して land。
+
+委員会推奨 backbone（minimal-vertical-slice + test-architecture の RED-first + profile-and-datamodel
+の datamodel 層）を採用しつつ、全 draft が誤った「severity 降格＝反証 verify」案は **棄却**する
+(根拠は §3.5 と §5)。
+
+---
+
+## 2. 検証済みの現状 (file:line, 全件 v0.7.10 でコード確認済み)
+
+### 2.1 (0) profile→rule ブリッジが欠落
+
+- `src/core/review-rule.ts:116-122` `resolveEffectiveRule(_scope)` は引数 `_scope`(underscore=無視)を
+  受けるが **常に `DEFAULT_REVIEW_RULE` を返す**。`DEFAULT_REVIEW_RULE`(:71-81) は
+  `mode:"latest-proposal"`, `requirements:[]`。コメント(:11-14)が「profile 読み込みは Phase 14 送り」と明記。
+- `src/core/workflow-runner.ts:1080-1102` が **唯一の呼び出し側**。既に
+  `projectId`(opts.project.projectId)/`repoId`/`domain` を渡している(:1081-1085) が、
+  `source` は **ハードコードで `"default"`**(:1091)。返った rule を `upsertRuleTemplate`→`snapshotForRun`
+  で run に凍結(:1086-1094)。失敗は best-effort で握りつぶし(:1095-1102)、欠落時は後段が DEFAULT に fallback。
+- **重要**: workflow-runner は run 生成時に **profile body(`ProjectProfile`)を手元に持たない**。
+  `opts.project` の型は `RunMeta["project"]`(workflow-runner.ts:254) = provenance metadata のみ。
+  profile body は `src/project/run-project.ts:56` の `resolved.profile`(distill 元は :109-122) に在る。
+- `ProjectProfileSchema`(`src/project/schema.ts:146-188`) は `version/project_id/description/repo/
+  policy/context_packs/commands/mcp/domains` のみ。**`review:` セクションは無い**。schema は
+  `.strict()`(:188) なので新フィールドは **optional 宣言必須**(既存 profile を壊さないため)。
+- **profile loader は schema violation を `ProjectProfileError` で throw**(profile-loader.ts:42-48)。
+  → **P0-1 の fail-closed 化はこの loader 層と整合する**（profile parse は既に fail-closed。
+  問題は rule compile 層の DEFAULT 降格だけ）。
+
+### 2.2 (1) orchestrator が 1体しか dispatch しない
+
+- `src/hitch/orchestrator-runners.ts:1096-1160` review runner は `runReviewerAgent` を
+  **1回**(:1112)→ 即 `processReviewDecision`(:1119)→ `importReviewProposalToHitch`(:1147)。
+  ループ無し・N dispatch 無し。
+- consensus rule(quorum>1) だと proposal が1件しか貯まらず、`processConsensusModePath`
+  (`src/core/review-processor.ts:163-277`) が `result.status==="pending"` で
+  `ReviewGateError` を throw(:208-213) → transaction rollback(fail-closed)。
+- **その throw は `processReviewDecision`(:1119) から伝播し、`src/hitch/orchestrator.ts:153` の
+  outer catch が即 escalate(:176-182)**。`importReviewProposalToHitch`(:1147) には到達せず、
+  そこに wire された `consensusStall`(:1156) も実行されない。**→ P1-a の根拠**。
+
+### 2.3 consensus 機構は完成済み・決定論(中核は変更しない)
+
+- `src/core/review-consensus.ts` `evaluateConsensus`(:99-255) は純粋関数。override(:134-142)
+  → latest-proposal/no-requirements(:148-173) → consensus mode(:175-254)。
+  tie-break `rejected > changes_requested > approved > pending`。quorum `isQuorumMet`(fail-closed)。
+  staleness `filterStaleProposals`(決定論 drop)。
+- **`baseSummary.proposals` は `proposals.map(...)`(review-consensus.ts:123) で入力配列順**を保存する
+  → **P2-determinism の根拠（後述 §3.6 で固定順を強制）**。
+- `processConsensusModePath` は **ONE immediate transaction**(:184, `gate.immediate()` :263)。
+  expected-status guard(:191-195)→ active proposals snapshot(:196-201)→ evaluate → pending throw(:208-213)
+  → decisive 時のみ insertActive + applyReviewDecision(:237-256)。
+- **`includedRows = rows.filter(...)`(review-processor.ts:219) の `rows` は `activeProposalRows`
+  (`listForRun` ORDER BY `created_at DESC, proposal_id DESC`, review-proposals.ts:241)** に従う
+  → required_changes 集約(:222-226)・`sourceProposalIds`(:244) が **挿入順依存**。→ P2-determinism。
+
+### 2.4 lens proposal の前提
+
+- `src/core/consensus-enrichment.ts` `enrichRows`(:28-44) は `reviewerRepo.findById(p.reviewer)`
+  で groupId/type を引く。**未登録 reviewer は groupId=null / reviewerType=`"unknown"`(:37-38)**
+  → per-group checks を必ず落とす(安全方向)。
+- `evaluateConsensus` の per-group filter は `p.groupId === req.group && p.reviewerId !== null`
+  (:181-183)。participants は distinct reviewerId の Set cardinality(:194-198)。
+- `src/db/repositories/review-proposals.ts:70-133` `insertProposal` は **同 `(runId, reviewer)`**
+  の旧 active を supersede(:92-98)。`failIfSupersedes: !inputs.allowOverwrite`(reviewer-agent.ts:728)。
+  → **N proposal には N 個の distinct reviewer_id が必要**(同 reviewer_id は supersede される)。
+
+### 2.5 runReviewerAgent の overwrite guard(N-dispatch の中核制約)
+
+- `src/core/reviewer-agent.ts:395` `runReviewerAgent`。reviewer 名は `inputs.reviewerName ?? "codex-reviewer"`(:532)。
+- **preflight overwrite guard**(:493-506): `allowOverwrite` が無いと (a) DB に active proposal が
+  あれば throw。この preflight は **`getLatestActiveProposal(runId)`(reviewer 引数なし=グローバル)**
+  (:476-478, review-proposals.ts:147-173) を見る。(b) `review-decision.yaml` が non-pending なら throw。
+- **→ P1-b: 「1体目は allowOverwrite 不要」は fresh run 限定の誤り**。resume / partial / manual
+  proposal が既に1件でもあると、別 reviewer の1体目すら global guard で止まる。非冪等。
+- insert 側の supersede は **同一 reviewer のみ**(review-proposals.ts:96 `WHERE reviewer=?`)。
+  → 全 reviewer に `allowOverwrite:true` を渡せば `failIfSupersedes:false`(:728) になり、distinct
+  reviewerName 同士は互いを supersede しない → **N proposal が全部 active で残る**(正しい)。
+- 各 insert 後に `recordConsensusReEvaluation`(:735, 776-828) が consensus mode のとき consensus を
+  再評価して **(pending も含め) `review_consensus` 行を insert**(:809-819)。status guard を tx 内で読み
+  (:790)、`rule.mode !== "consensus"` は no-op(:796)。**→ P1-a の鍵: pending consensus 行が timeline に
+  蓄積されるので、後段で `evaluateConsensusStallForHitch` を直接呼べば stall を検出できる**。
+
+### 2.6 severity マッピングと close-check の実態(P3: 訂正は正しい)
+
+- `src/hitch/review-integration.ts` `proposalFindingSeeds`(:276-344): required_change→**P1固定**(:291) /
+  negative_decision→**P1固定**(:310) / non_blocking_comment→**P2固定**(:330) /
+  out_of_scope→**P2固定 + forcedScopeStatus:"out_of_scope"**(:339-341)。reviewer 申告 severity は不使用。
+- `src/hitch/convergence.ts` は `openInScopeP0/P1/P2` を別集計(:121-123) し、close 判定で
+  `noOpenInScopeP1`(:449-471)/`maxOpenInScopeP2`(:473-494) を severity ごとに参照する。
+  **P1→P2 降格は close gate の挙動を実際に変える**(P1 は hard block、P2 は閾値以下なら許容)。
+- → だからこそ severity 降格を **LLM の refute 自己申告で直接駆動するのは安全境界違反**。
+  反証 verify は決定論 gate 経由に限る(§3.5)。**codex P3 がこの訂正を正しいと確認済**。
+
+---
+
+## 3. 中核設計判断
+
+### 3.0 Phase 分割と「lens」表現の正直さ（P0-2 反映）
+
+codex P0-2: 現 `runReviewerAgent` は `reviewerName` を **Codex runner input / prompt に渡していない**
+(reviewer-agent.ts:524 `reviewerPrompt = PROMPT_PREAMBLE + reviewerOpsSection` に reviewer/lens identity
+無し、:527-531 で runner に渡るのは `worktreePath/prompt/logPaths` のみ、:532 で実行後に stamp)。
+→ **同一 prompt の N reviewer は「異レンズ」ではない**。
+
+**採用ルート（確定）**: Phase 1 を分割する。
+- **Phase 1a（reachable consensus・同一 prompt の N reviewer）**: (0)+(1) を land。受け入れ条件は
+  「multi-reviewer consensus が quorum>1 に実到達／集約決定論／回帰なし」。**"multi-lens" とは言わない**。
+- **Phase 1b（lens 別 prompt）**: reviewer の登録 metadata（後述 §3.3b で `metadata_json` に
+  `lens_prompt` / `persona` を持たせる）から **prompt variant** を生成し、`runReviewerAgent` に
+  lens label / reviewer_id を渡して prompt に注入する最小配線を入れる。**ここで "multi-lens" を満たす**。
+
+Phase 1a と 1b は依存順（1a→1b）。1b を 1a と同一 PR にするか別 PR にするかは
+**unresolvedForHuman Q-A**（配線コストと PR レビュー容易性のトレードオフ。推奨: 別 PR）。
+#229 の受け入れ条件文言（"multi-lens"）を満たすには **1b までが必要**である点を人間に明示する。
+
+### 3.1 `resolveEffectiveRule` の署名と profile 解決経路 (0) + P0-1 + P1-c
+
+**判断**: 署名を `profile?` を明示的に受け取る形に拡張する。隠れた DB I/O を避け、決定論・
+テスト容易性を確保する。
+
+```ts
+// src/core/review-rule.ts
+export class ReviewRuleCompileError extends Error {}   // NEW (typed, fail-closed)
+
+export function compileProfileReviewRule(
+  profile: ProjectProfile,
+  domain?: string,
+): ReviewRule {
+  // profile.review が無ければ呼ばない（呼び出し側で分岐）。
+  // 不正なら ReviewRuleCompileError を throw。warning+DEFAULT には絶対に落とさない。
+}
+
+export function resolveEffectiveRule(scope: {
+  projectId?: string;
+  repoId?: string;
+  domain?: string;
+  profile?: ProjectProfile | null;   // NEW: 呼び出し側が読み込んで渡す
+}): { rule: ReviewRule; source: "default" | "project-profile" }
+```
+
+**P0-1 の fail-closed 化（最重要）**:
+- `scope.profile?.review` が **欠落** → `{ rule: DEFAULT_REVIEW_RULE, source: "default" }`（後方互換）。
+- `scope.profile?.review` が **存在して有効** → `compileProfileReviewRule` で変換し
+  `{ rule, source: "project-profile" }`。
+- `scope.profile?.review` が **存在して不正** → `ReviewRuleCompileError` を **throw**（DEFAULT に落とさない）。
+  - 理由: DEFAULT は `latest-proposal` / requirements 空（review-rule.ts:71-81）なので、意図した
+    quorum>1 を **単一 reviewer path に静かに降格** してしまう = fail-open。これは安全境界違反。
+  - この throw は **run 生成を拒否**する（§3.1 の供給経路で run-project.ts/workflow-runner が捕まえ、
+    typed error として CLI/MCP に exit 1 で返す。best-effort の握り潰し（workflow-runner.ts:1095-1102）は
+    **`source==="project-profile"` で review が宣言されている run では行わない**）。
+  - schema violation（zod）は `compileProfileReviewRule` 到達前に profile-loader.ts:42 で既に弾かれる。
+    `compileProfileReviewRule` の throw は「zod は通ったが意味的に不整合（例: requirement の group が
+    どの reviewer group とも一致せず quorum 充足不能、min_approvals > 期待 group size）」を担う。
+    → **MECE: 構文不正=loader / 意味不正=compile / 欠落=DEFAULT**。
+
+**profile body の供給（P1-c: 全入口 thread）** — open Q1 は **案A 採用（人間批准済み）**:
+- rule 解決を **profile を持つ層(`src/project/run-project.ts`)で行う**。`prepareProjectRun` が
+  `compileProfileReviewRule`/`resolveEffectiveRule` を呼び、**`reviewRuleResolution: { rule, source,
+  ruleSha256 }`** を `PreparedProjectRun`(run-project.ts:32-43) の新フィールドとして返す。
+  `resolveEffectiveRule` は profile を引数で受ける **純関数**のまま（隠れ I/O なし、決定論テスト容易）。
+- **P1-c: thread すべき全入口を列挙**（`reviewRuleResolution` を端から端まで運ぶ）:
+  1. `PreparedProjectRun`(run-project.ts:32) に `reviewRuleResolution` 追加。
+  2. `RunDomainCodingOpts`(workflow-runner.ts:248-270) に `reviewRuleResolution` 追加。
+     workflow-runner.ts:1080-1102 の snapshot は **opts.reviewRuleResolution があればそれを凍結**し、
+     `source` をその値（`"default"`/`"project-profile"`）に分岐。無ければ従来どおり default。
+  3. `ReviewedRunWorkflowOpts.projectRun`(reviewed-run-workflow.ts:71-75) に `reviewRuleResolution` 追加 →
+     `projectRunFields`(reviewed-run-workflow.ts:85+) で各 coder run に spread。
+  4. orchestrator `ProjectRuntimeDeps`/`projectRuntime`(orchestrator-runners.ts:155 周辺,
+     mutation-tools.ts:522-528) に `reviewRuleResolution` 追加。
+  5. CLI run/rerun（`harness run --project` / `harness workflow reviewed-run` の prepare 経路）。
+  6. MCP orchestrate（mutation-tools.ts:508-533 が `prepared` を `projectRuntime` に詰める箇所）。
+  7. hitch CLI orchestrate（同じ orchestrator runner factory を通る）。
+- **入口別 integration test を追加**（§6 RED#7c）: 各入口で profile consensus rule の run が
+  正しく `source="project-profile"` の snapshot を凍結することを検証。
+
+**スナップショット凍結は不変**: rule は run 生成時に `run_review_rule_snapshots` に凍結され、後の
+profile 編集は in-flight run に retroactive に効かない。
+
+### 3.2 profile `review:` schema（+ P2: dispatch 上限）
+
+`src/project/schema.ts` の `ProjectProfileSchema.object({...})` に **optional** `review` を追加。
+`ReviewRule` interface(review-rule.ts:37-61) に 1:1 対応する zod schema。
+
+```yaml
+review:
+  mode: consensus            # 'latest-proposal' | 'consensus'
+  max_reviewers: 4           # NEW (P2): group ごとの dispatch 上限（省略時は明示 reviewer_ids 必須 or default 上限）
+  requirements:
+    - group: humans          # reviewer.group_id
+      min_approvals: 1
+      blocking_decisions: [changes_requested, rejected]
+      quorum: { min_participants: 2 }
+      reviewer_ids: [alice, bob]   # NEW (P2, optional): 明示列挙。あれば全 dispatch、無ければ listByGroup ∩ max_reviewers
+  overrides: { allowed_reviewers: [], require_reason: true }   # optional
+  stale_proposal: { reject_superseded: true }                  # optional
+```
+
+zod 検証(fail-closed): `quorum.min_participants >= 0`, `min_participation_rate ∈ [0,1]`,
+`blocking_decisions ⊆ {changes_requested, rejected}`, `group` 非空文字列, `max_reviewers >= 1`。
+`.strict()` 配下なので未知キーは reject。`review` 欠落 = `DEFAULT_REVIEW_RULE`(後方互換)。
+**新 table / migration は不要**(`review_rules.source` が既に `"project-profile"` をサポート、
+`run_review_rule_snapshots` も既存)。
+
+**P2 dispatch 上限**: orchestrator は group の登録 reviewer を **全員無制限に dispatch しない**。
+`reviewer_ids` があればそれを使い、無ければ `listByGroup ∩ max_reviewers`（reviewer_id 字句順で上位
+`max_reviewers` 体）。preflight で dispatch 予定数を表示し、`quorum.min_participants` 未満なら
+**事前に escalate（fail-silent 防止）**。
+
+### 3.3 reviewer group 登録経路（Phase 1a）
+
+- Phase 1a の reviewer = **distinct reviewer_id + group_id（同一 prompt）**。これは「異レンズ」ではなく
+  「N reviewer consensus」。**異レンズは Phase 1b（§3.3b）**。
+- 既存 CLI `harness review reviewers add <id> --group <g> --type <t> --display-name <n>`
+  (`src/cli/run.ts` の reviewers add, `reviewers.ts:83 add(groupId)`) で N 体登録。
+  **`--type` の許容値は `human|codex|external|system`**（reviewers.ts:13。設計 v1 の `--type <t>` 一般化は
+  この union に従う）。
+- **新規 `ReviewerRepository.listByGroup(groupId)` を追加**(検証済: 現状 `list()/findById()/
+  resolveOrThrow()/add()` のみ。reviewers.ts:48-114)。reviewer_id 字句順で distinct。
+  orchestrator が requirement の group ごとに登録済み reviewer を引いて dispatch する。
+- 未登録 reviewer は groupId=null で per-group check を落とす(安全方向、変更なし)。
+
+### 3.3b lens 別 prompt 配線（Phase 1b — P0-2 を本物にする）
+
+- reviewer 登録時の `metadata_json`（reviewers.ts:22, 既存カラム）に **`lens` メタ**を持たせる:
+  例 `{ "lens": "security", "lens_prompt": "Focus on auth, secrets, injection..." }`。
+- `runReviewerAgent` に **`lensPrompt?: string` / `reviewerName` を prompt に注入**する配線を追加:
+  `reviewerPrompt = PROMPT_PREAMBLE + lensSection(reviewerName, lensPrompt) + reviewerOpsSection`
+  （reviewer-agent.ts:524 を拡張）。`promptSha256`(:525) は lens section 込みで再計算され、
+  `prompt_provenance_json`(:724-727) に lens 由来が記録される（監査性）。
+- orchestrator は dispatch 時、`listByGroup` で引いた各 reviewer 行の `metadata_json.lens_prompt` を
+  `runReviewerAgent({ reviewerName: reviewer_id, lensPrompt, allowOverwrite: true })` に渡す。
+- **安全境界**: lens prompt は **proposal（入力）を多様化するだけ**で、集約は依然
+  `evaluateConsensus`（決定論）。lens 自己申告は状態遷移の根拠にならない。
+- **Phase 1b を #229 の "multi-lens" 受け入れ条件に割り当てる**。Phase 1a 単独では受け入れ条件文言を
+  「multi-reviewer」に正直化する（誇張しない）。
+
+### 3.4 orchestrator N reviewer dispatch (1) + P1-a + P1-b
+
+`src/hitch/orchestrator-runners.ts:1096-1160` review runner を改修:
+1. run snapshot rule を `ReviewRulesRepository.findSnapshotByRun(runId)` で読む。
+2. `rule.mode==="consensus"` かつ requirements あり → 各 requirement の dispatch 対象 reviewer を確定
+   （`reviewer_ids` 明示 or `listByGroup(group) ∩ max_reviewers`、reviewer_id 字句順）。
+   latest-proposal mode(=DEFAULT, 後方互換) は **従来どおり 1体 dispatch**（else 分岐）。
+3. **preflight（P2 fail-silent 防止）**: dispatch 対象数が各 requirement の `quorum.min_participants`
+   未満なら、dispatch 前に **決定論 escalate**（reason に `group`/`required`/`registered` を含む）。
+   **P1-b preflight**: 現在の active proposal set を読み、expected reviewer set と照合（resume / 手動
+   proposal による既存 active を検出してログ）。
+3.5. 各 reviewer を `runReviewerAgent({..., reviewerName: reviewer_id, lensPrompt?, allowOverwrite: true})`
+   で **逐次** dispatch（parallel ではない、§3.6）。**P1-b: 全 reviewer に `allowOverwrite:true`**
+   （1体目も既存 active で止まらないように。distinct reviewerName 同士は supersede しない）。
+4. 全 N proposal が貯まった後に `processReviewDecision` を **1回**。これで quorum>1 が first call で
+   充足 → pending throw を回避 → escalate しない。
+5. **P1-a（pending fail-closed 経路を本物にする）**: `processReviewDecision` が `ReviewGateError`(pending)
+   を throw した場合、orchestrator review runner が **その throw を catch** し:
+   - review cycle を記録（`startReviewCycle`/`completeReviewCycle`, orchestrator-runners.ts:1136-1144 と同様）。
+   - **`evaluateConsensusStallForHitch` を直接呼ぶ**（consensus-stall-check.ts:40）。
+     `dbConsensusSnapshotProvider`(同 :118) は `recordConsensusReEvaluation`(reviewer-agent.ts:735, 809)
+     が各 dispatch 後に書いた **pending `review_consensus` 行**から timeline を再構築できる（§2.5）。
+   - stall（既定 `stallAfterSnapshots=3`）なら決定論 escalate（harness-only state transition、fail-closed）。
+     stall 未満（true pending・進行中）なら **review runner は「pending・継続」を返し、outer catch の
+     即 escalate(orchestrator.ts:153) には伝播させない**（pending を握り潰さず、cycle として記録して次 step へ）。
+   - この catch→直接 stall 経路により、codex P1-a の「pending で stall detector に届かない」を塞ぐ。
+6. required_changes / summary / sourceProposalIds 集約の決定論は §3.6（P2）で固定。
+
+`runReviewerAgent` は `reviewerName`(:184) を既にサポートするので Phase 1a の dispatch 自体は
+agent コード変更不要（lens prompt 注入は Phase 1b の §3.3b で追加）。
+
+### 3.4b reviewed-run の consensus profile 扱い（P1-d）
+
+- `runReviewedRunWorkflow`(reviewed-run-workflow.ts) は `runReviewerAgent` 1回(:202)→
+  `processReviewDecision` 1回(:231) で **N dispatch しない**。consensus(quorum>1) profile を
+  そのまま適用すると **必ず pending fail**（fail-closed なので安全だが、運用上は dead-end）。
+- **Phase 1a の判断: reviewed-run は consensus rule の run を明示拒否（typed error）する**。
+  `reviewRuleResolution.rule.mode === "consensus"` を検出したら、run を始める前に
+  `ReviewWorkflowUnsupportedError`（"reviewed-run does not support consensus rules; use `hitch
+  orchestrate`"）を返す。これで「片方の入口だけ静かに半壊」を防ぐ。
+- N-dispatch helper（orchestrator と reviewed-run で共有）化は **follow-up（§9）**に明記。Phase 1a は
+  orchestrator のみが consensus を駆動できる、と spec で正直に書く。
+
+### 3.5 反証 verify 機構(Phase 2。全 draft の severity 降格案を棄却 + P1-e target binding)
+
+**棄却する案**(safety-and-determinism / refute-verify-and-lenses): 「過半 refute で finding を
+P1→P2 に降格」。理由は §2.6 の通り（LLM 自己申告で close gate を動かす安全境界違反）。動的ハッシュ
+由来の未登録 refute reviewer_id は登録不変量に反する。新 `review_refutes` table で監査ゲート外に
+quorum 再実装するのは duplication で禁止。
+
+**採用する案**: 反証 verify を **登録済み reviewer GROUP による第2 consensus requirement** として
+モデル化する。refute group の reviewer は「この required_change は本当に approval を block するか?」を
+判定する別 prompt の reviewer agent variant（distinct reviewer_id で登録）。集約は **既存
+`evaluateConsensus` の決定論ロジックに通す**。降格効果は `evaluateConsensus` の出力として現れ、
+`processConsensusModePath` の expected-status(needs_review) ゲートを通って run.status に反映される。
+**severity フィールドの mutation は経由しない**。fail-closed: refute 票が集まらない/判定エラー時は
+元の blocking requirement のまま。
+
+**P1-e（target binding の data model を Phase 2-0 として先行）**:
+- 現 data model には **「どの required_change を refute したか」を表す構造が無い**。review decision
+  schema は `decision/required_changes/non_blocking_comments/out_of_scope_suggestions` のみ
+  (review-decision-schema.ts:11)、required changes DB も `idx/change_text` のみ(schema.ts:184)。
+  → このままでは refute group の票を **対象 finding に決定論 bind できない**。
+- **Phase 2-0（Phase 2 着手の前提条件）**: target id / hash 付き **refute input/output DSL** を設計する。
+  - 各 required_change に **安定 target id**（例: `(runId, normalized_change_text) の sha256` or
+    `finding` への FK）を付与する data model 拡張。
+  - refute reviewer の出力は `{ target_id, refute_verdict }` の構造を持ち、harness 側で
+    **既存 consensus requirement に入る前に target binding を決定論検証**する（未知 target / hash
+    不一致は fail-closed で reject）。
+  - この DSL と binding 検証ができて初めて、refute 票を「対象 finding に効く第2 consensus
+    requirement」として `evaluateConsensus` に通せる。
+- **#229 の受け入れ条件「反証 verify が finding を advisory に降格できる経路のテスト」**は、この
+  第2 consensus requirement 経路の **決定論テスト**で満たす（severity テストではない）。
+
+### 3.6 バイアス対策 + 決定論（P2-determinism 反映）
+
+- **dispatch 順は reviewer_id 字句順で固定**(§3.4 step2)。`evaluateConsensus` は集合濃度ベースの
+  quorum / 固定 tie-break order なので **提示順に依存しない**。
+- **seeded shuffle は導入しない**（safety-and-determinism / refute-verify draft の shuffle 案は棄却）。
+- **P2-determinism（required_changes だけでなく summary / sourceProposalIds も固定順に）**:
+  `evaluateConsensus` の `baseSummary.proposals = proposals.map(...)`(review-consensus.ts:123) は
+  **入力配列順**を保存する。`processConsensusModePath` の `includedRows`(review-processor.ts:219) は
+  `activeProposalRows`(`listForRun` ORDER BY `created_at DESC, proposal_id DESC`) 由来で **挿入順依存**。
+  → 以下を **reviewer_id, proposal_id の固定順**に揃える:
+  1. `processConsensusModePath` が `evaluateConsensus` に渡す proposals を **reviewer_id, proposal_id
+     昇順にソート**してから渡す（→ `summary.proposals` が固定順）。
+  2. `includedRows`(:219) を同じ固定順にソート → required_changes 集約(:222-226) が dispatch/挿入順非依存。
+  3. `sourceProposalIds`(:244) と `recordConsensusReEvaluation` の `sourceProposalIds`(reviewer-agent.ts:818)
+     も同じ固定順。
+  - `dedupeStrings`(review-processor.ts:222) は固定順の包含集合に対して安定。
+- order independence test（§6 RED#5）は **required_changes に加え `summary.proposals` /
+  `sourceProposalIds` まで**入替不変を検証する。
+- 並行 review との競合は不変: `processReviewDecision` は N reviewer 完了後に1回のみ呼ぶので、
+  全 proposal が単一 transaction の snapshot に見える(review-processor.ts:184 immediate)。
+
+---
+
+## 4. work item DAG (依存順 / サブPhase / 触るファイル)
+
+### Phase 1a — reachable consensus（同一 prompt の N reviewer。1 PR で land）
+
+| id | title | files | depends |
+|----|-------|-------|---------|
+| P1-A | `review:` schema を `ProjectProfileSchema` に optional 追加 + zod 検証 + `max_reviewers`/`reviewer_ids`(P2) | src/project/schema.ts | — |
+| P1-B | `compileProfileReviewRule`(invalid=**throw `ReviewRuleCompileError`**) + `resolveEffectiveRule(profile?)` が `{rule,source}` を返す。**欠落=DEFAULT、不正=throw（P0-1 fail-closed）** | src/core/review-rule.ts | P1-A |
+| P1-C | profile→rule の **全入口 thread**(P1-c): `reviewRuleResolution` を `PreparedProjectRun`→`RunDomainCodingOpts`→reviewed-run.projectRun→orchestrator projectRuntime→MCP→CLI run/rerun。workflow-runner snapshot source 分岐。**review 宣言済 run では snapshot 失敗を握り潰さない** | src/project/run-project.ts, src/core/workflow-runner.ts, src/core/reviewed-run-workflow.ts, src/hitch/orchestrator-runners.ts, src/mcp/tools/mutation-tools.ts, src/cli/run.ts | P1-B |
+| P1-D | `ReviewerRepository.listByGroup(groupId)`(reviewer_id 字句順 distinct) | src/db/repositories/reviewers.ts | — |
+| P1-E | orchestrator review runner: consensus mode で N reviewer 逐次 dispatch(**全 `allowOverwrite:true`** P1-b, **preflight で expected/registered/quorum 照合** P1-b/P2)→1回 processReviewDecision。**pending throw を catch→cycle 記録→`evaluateConsensusStallForHitch` 直接呼び（P1-a）**。escalate メッセージに group/required/registered | src/hitch/orchestrator-runners.ts | P1-C, P1-D |
+| P1-F | CLI `reviewers list --group`(listByGroup) / `add --group` の spec 整合 + 効果検証 | src/cli/run.ts | P1-D |
+| P1-G | consensus 集約の決定論固定(P2): `processConsensusModePath` の proposals/includedRows/sourceProposalIds を reviewer_id,proposal_id 昇順に。`recordConsensusReEvaluation` も同順 | src/core/review-processor.ts, src/core/reviewer-agent.ts | P1-E |
+| P1-H | reviewed-run は consensus rule を**明示拒否(typed error)**（P1-d） | src/core/reviewed-run-workflow.ts | P1-C |
+| P1-SPEC | docs/specs 同コミット更新(§7) | docs/specs/{project,workflow,db,cli}.md, docs/future-features.md | P1-B, P1-E |
+| P1-TEST | RED→GREEN テスト群(§6) | tests/unit/**, tests/integration/** | 各実装 item |
+
+### Phase 1b — lens 別 prompt（"multi-lens" を本物にする。別 PR 推奨）
+
+| id | title | files | depends |
+|----|-------|-------|---------|
+| P1b-A | reviewer `metadata_json` に `lens`/`lens_prompt` を持たせる（既存カラム活用） + CLI で設定可能に | src/cli/run.ts, src/db/repositories/reviewers.ts | Phase 1a |
+| P1b-B | `runReviewerAgent` に `lensPrompt?`/`reviewerName` を **prompt 注入**(reviewer-agent.ts:524 拡張)。promptSha256/prompt_provenance に lens 反映 | src/core/reviewer-agent.ts | P1b-A |
+| P1b-C | orchestrator が dispatch 時に各 reviewer の lens_prompt を渡す | src/hitch/orchestrator-runners.ts | P1b-B |
+| P1b-SPEC | docs/specs/{project,workflow}.md に lens prompt + multi-lens を明記 | docs/specs/** | P1b-A..C |
+| P1b-TEST | 異 lens prompt が proposal に反映され集約が決定論 / lens 別 promptSha256 | tests/** | P1b-A..C |
+
+### Phase 2 — 反証 verify（別 PR。Phase 1 land 後。Phase 2-0 が前提）
+
+| id | title | files | depends |
+|----|-------|-------|---------|
+| P2-0 | **refute target binding data model + DSL**(P1-e): required_change に安定 target id/hash、refute output `{target_id,refute_verdict}`、harness 側 binding 決定論検証(未知 target/hash 不一致=reject) | src/core/review-decision-schema.ts, src/db/schema.ts(+migration), src/core/review-rule.ts | Phase 1 |
+| P2-A | refute requirement の rule 表現(DSL) + schema(`review.refute`) | src/project/schema.ts, src/core/review-rule.ts | P2-0 |
+| P2-B | refute reviewer agent variant(別 prompt, distinct registered reviewer_id) | src/core/refute-agent.ts(新) or reviewer-agent.ts flag | P2-A |
+| P2-C | refute 票を `evaluateConsensus` の決定論集約に通す(target-bound 第2 requirement として) | src/core/review-consensus.ts | P2-0, P2-A |
+| P2-D | orchestrator: consensus pending→refute group dispatch→再 processReviewDecision | src/hitch/orchestrator-runners.ts | P2-B, P2-C |
+| P2-SPEC | docs/specs/{hitch-convergence,project,workflow}.md 更新 | docs/specs/** | P2-0..D |
+| P2-TEST | refute→決定論 advisory 降格経路テスト(target binding 込み) + 回帰 | tests/** | P2-0..D |
+
+**Phase 境界の妥当性**: (0)+(1) は **Phase 1a で land 必須**（どちらも単独では headline 受け入れテストが
+半機能）。**lens 実体（1b）を 1a と分けた**のは、P0-2 の通り「異レンズ」は prompt 配線を要し、1a の
+"reachable consensus" とは独立にレビューできるため。refute(P2)は **P2-0 の target binding data model が
+前提**で、proven core から完全分離する。
+
+---
+
+## 5. 安全境界マッピング(各 item が不可侵境界を侵さない理由)
+
+| 不可侵境界 | 該当コード | 設計でどう守るか |
+|-----------|-----------|----------------|
+| policy 検証は事後 git diff ベース | (本変更は review 層のみ) | review rule / consensus は policy gate と直交。触らない。 |
+| LLM 出力を状態遷移の根拠にしない | review-processor.ts:191-213, reviewer-agent.ts:524 | (1) N 体の verdict は **proposal 行(入力)**。集約は `evaluateConsensus`(決定論)。**lens prompt(1b) も proposal を多様化するだけ**で状態遷移に直接効かない。(2) refute 票も入力に過ぎず、§3.5 で **severity mutation を経由せず** `evaluateConsensus` の決定論 requirement に通す。target binding(P2-0) も harness 側で決定論検証。run.status は harness gate のみ。 |
+| 状態遷移は harness のみ | review-processor.ts:246-256, convergence.ts, consensus-stall-check.ts | run/finding/consensus の promote は `applyReviewDecision`/expected-status guard 経由のまま。**P1-a の stall escalate も `evaluateConsensusStallForHitch`(harness-only, fail-closed) 経由**で、LLM 出力ではなく persisted `review_consensus` 行のみが入力。N-dispatch は proposal を貯めるだけ。 |
+| expected-status(needs_review) guard 不可迂回 | review-processor.ts:191-195, reviewer-agent.ts:790 | N-dispatch も最終 `processReviewDecision` 1回がこのガードを通る。各 insertProposal も needs_review/db-first を検証(review-proposals.ts:82-88)。`allowOverwrite:true`(P1-b) は **同 reviewer の supersede 抑止を外すだけ**で、status guard・db-first guard は無効化しない。 |
+| pending で fail-closed | review-processor.ts:208-213 | quorum 未充足は throw→rollback のまま。**P1-a: throw を catch しても run.status は promote しない**（catch は cycle 記録 + stall 評価のみ。decisive にするのは次サイクルで quorum が揃ったときだけ）。group 未充足の真の pending は stall 検出器経由で決定論 escalate。 |
+| 反証 verify の過半 refute も決定論集約 | review-consensus.ts(Phase 2), P2-0 binding | refute は **登録済み reviewer group の決定論票**で、**target id/hash で対象に決定論 bind**してから `evaluateConsensus` に通す。動的未登録 reviewer_id / 外部 quorum 再実装 / severity 直接 mutation は **禁止**。binding 不一致は fail-closed reject。 |
+| 提示順シャッフル等も決定論 | orchestrator-runners.ts(dispatch 順), review-processor.ts:218-226, review-consensus.ts:123 | dispatch は reviewer_id 字句順固定。**集約(required_changes / summary.proposals / sourceProposalIds)を reviewer_id,proposal_id 昇順に固定(P1-G, P2-determinism)**。seeded shuffle は導入しない。 |
+| 迷ったら fail-closed | review-rule.ts(profile compile), consensus quorum | **review 欠落→DEFAULT、review 不正→throw(run 拒否, P0-1)**。quorum 不正→false。dispatch 数<quorum→preflight escalate。refute 不成立/binding 不一致→元 blocking 維持。 |
+| MCP confirmation を shell で迂回しない | (本変更は MCP confirmation 経路を触らない) | MCP orchestrate(mutation-tools.ts:508) は `reviewRuleResolution` を thread するだけ。confirmation モデルは不変。 |
+
+---
+
+## 6. TDD テスト計画
+
+### RED 一覧(失敗テストを先に書く)
+
+**Unit**
+1. `resolveEffectiveRule({profile})`: profile.review から consensus(quorum>1) rule + `source="project-profile"` /
+   profile=null or review 欠落で `{DEFAULT, "default"}` / 同入力→同 ruleSha256(決定論)。
+   **1a. P0-1: review が存在して不正なら `compileProfileReviewRule`/`resolveEffectiveRule` が
+   `ReviewRuleCompileError` を throw（DEFAULT に落ちない）**。`tests/unit/core/review-rule.test.ts`。
+2. `ProjectProfileSchema` の review 検証: 不正 quorum(neg/NaN)/rate∉[0,1]/不正 blocking_decisions /
+   空 group / `max_reviewers<1` を reject。**review 欠落 profile が通る**(後方互換)。`tests/unit/project/*`。
+3. `ReviewerRepository.listByGroup`: reviewer_id 字句順 distinct / 空 group→空 / 未登録 group→空(非エラー)。
+   `tests/unit/db/reviewers.test.ts`。
+4. `evaluateConsensus` 回帰: tie-break / override / latest-proposal / quorum / staleness /
+   **proposal 配列順入替で status 不変**。`tests/unit/core/review-consensus.test.ts`(既存に追加)。
+5. **P2-determinism: 集約の決定論**: 2 reviewer が重複・順序違いの required_changes を出しても、
+   **required_changes 集約 ∧ `summary.proposals` ∧ `sourceProposalIds` が dispatch/挿入順に依らず同一**。
+   `tests/unit/core/review-processor-consensus.test.ts`。
+6. enrichRows: 未登録 reviewer→groupId=null→per-group check を落とす(安全方向)。
+
+**Integration — quorum>1 実到達(ヘッドライン, Phase 1a)**
+7. `tests/integration/hitch-orchestrate-consensus.test.ts`(新):
+   - profile に `review: consensus, requirements:[{group:reviewers, min_approvals:1, quorum:{min_participants:2}}]`。
+   - reviewer alice/bob を groupId=reviewers で登録。
+   - `createFakeCodexRunner` で reviewer_id→runner の Map(各 distinct YAML)を作る `FakeMultiReviewerRunner`
+     fixture(`tests/fixtures/fake-codex-multi-reviewer.ts` 新)。**`reviewerName` で出力を切り替える wrapper**。
+   - orchestrate review step: **runReviewerAgent が 2回(alice/bob)**、2 proposal が active で貯まり、
+     `processReviewDecision` が **1回**で `approved` に promote。run.status==='approved'。
+   - rule snapshot `source='project-profile'`、ruleSha256 が profile rule と一致。
+   - **7b. P1-b: 1体目 dispatch 前に既存 active proposal(resume/manual)が1件あっても、全 `allowOverwrite:true`
+     で 2体目まで dispatch が落ちない。preflight が expected/registered/quorum を照合する**。
+   - **7c. P1-c: 入口別 thread**: CLI run / reviewed-run prepare / MCP orchestrate / hitch CLI の各入口で
+     profile consensus rule の run が `source='project-profile'` snapshot を凍結する（入口ごとに小テスト）。
+8. **P1-a pending fail-closed → stall 経路**: quorum=2, 1体のみ approved → `processReviewDecision` が
+   ReviewGateError → **orchestrator が catch し cycle 記録 + `evaluateConsensusStallForHitch` 直接呼び**。
+   run.status は needs_review のまま。pending `review_consensus` 行が timeline に蓄積されている
+   (recordConsensusReEvaluation 由来)ことを DB アサート。stall 未満なら継続、`stallAfterSnapshots` 到達で escalate。
+9. **escalate メッセージ内容**: required group に 1体しか登録が無い(quorum=2)→ preflight or 反復 pending →
+   escalate reason に group 名 + required=2/registered=1 が含まれる。
+
+**Regression**
+10. latest-proposal(DEFAULT)後方互換: review 欠落 profile / --project なし run → 1体 dispatch、
+    最新 proposal で promote、consensus 評価に入らない。`tests/integration/cli-review-process.test.ts` 系。
+    **10b. P1-d: consensus rule の run を reviewed-run に流すと typed error で拒否される**。
+11. **override × consensus**: consensus rule の run に per-run override をかけた時の挙動(override が
+    consensus を short-circuit する。review-consensus.ts:134-142)を明示テスト。
+
+**Phase 1b（別 PR）**
+12. 異 `lens_prompt` を持つ alice/bob を dispatch すると、各 proposal の `prompt_sha256` が異なり、
+    `prompt_provenance_json` に lens 由来が残る。集約は決定論(order 非依存)。
+
+### quorum>1 実到達テストの組み方の要点
+- FakeCodexRunner を **reviewer_id ごとに分岐**させる fixture が肝（`reviewerName` で出力を切替える wrapper）。
+- `allowOverwrite:true` が全 reviewer に伝播し、既存 active があっても 2体目以降 dispatch が guard で
+  落ちないことを検証。
+- N proposal が `insertProposal` で全部 active(supersede されない)ことを DB アサート。
+
+### 決定論テストの方針
+- 同一(profile, proposals)→同一 rule_sha256 + 同一 consensus decision + 同一(required_changes /
+  summary.proposals / sourceProposalIds)。proposal 配列順 / dispatch 順を入れ替えても不変。
+
+### 緑化規律
+- サブ Phase = 関連テスト + typecheck 緑。大 Phase = フルスイート + typecheck 緑。
+- テストを弱める/skip する緑化は禁止。
+
+---
+
+## 7. docs/specs 更新一覧(同コミット)
+
+| ファイル | 追記内容 | Phase |
+|---------|---------|-------|
+| docs/specs/project.md | `review:` セクション schema(`mode/requirements/quorum/max_reviewers/reviewer_ids`) + 例。後方互換(欠落=DEFAULT)。**review 不正は run 拒否(fail-closed)**。repo-level のみ(per-domain は future) | 1a |
+| docs/specs/workflow.md | resolveEffectiveRule が profile から `{rule,source}` を返す→ snapshotForRun 凍結。**全入口 thread**。consensus mode で orchestrator が N reviewer 逐次 dispatch(全 allowOverwrite:true)→1回 processReviewDecision。**pending=fail-closed→catch→stall escalate 経路**。determinism(required_changes/summary/sourceProposalIds 固定順)。**reviewed-run は consensus 非対応(明示拒否)** | 1a |
+| docs/specs/db.md | review_rules.source='project-profile' の使用。**Phase1 は新 table/migration 不要**。run_review_rule_snapshots 凍結。recordConsensusReEvaluation が pending consensus 行を蓄積し stall timeline を成す | 1a |
+| docs/specs/cli.md | `reviewers add --group`(type 値は human/codex/external/system) / 新 `reviewers list --group`(listByGroup) | 1a |
+| docs/future-features.md(165-194) | Multi-reviewer consensus orchestration を「Phase1a=(0)+(1)実装済（同一 prompt N reviewer）」に更新。**lens 別 prompt=Phase1b**, **N-dispatch helper 共有(reviewed-run)**, persona/異モデル/per-domain cascade/dashboard・MCP 露出を follow-up として記載 | 1a |
+| docs/specs/project.md / workflow.md | lens prompt(metadata.lens_prompt)→reviewer prompt 注入。"multi-lens" の正確な定義 | 1b |
+| docs/specs/hitch-convergence.md | 反証 verify = 登録済み refute group の **target-bound** 第2 consensus requirement。決定論集約。severity 経由しない | 2 |
+
+---
+
+## 8. 受け入れ条件(#229)対応表
+
+| 受け入れ条件 | 対応 work item / テスト |
+|-------------|----------------------|
+| resolveEffectiveRule が profile から consensus(quorum>1) rule を返すテスト | P1-A/P1-B + RED #1（+ **#1a: review 不正=throw, P0-1**） |
+| (0)+(1) が揃った状態で hitch orchestrate が quorum>1 consensus に**実際に到達**するテスト | P1-C/P1-D/P1-E + RED #7(headline) + #7b(allowOverwrite) + #7c(入口別 thread) |
+| 異レンズ proposal の集約が決定論(同入力→同出力) | **Phase 1a: 「multi-reviewer」集約決定論** = P1-G + RED #4/#5(order 非依存, summary まで)。**「multi-lens」= Phase 1b** = P1b-B/C + RED #12（文言を 1a で誇張しない） |
+| 反証 verify が finding を advisory に降格できる経路のテスト | **Phase 2**: P2-0(target binding)→P2-A..D + 第2 consensus requirement 経路の決定論テスト(severity 経由しない) |
+| 既存 consensus の tie-break / override / latest-proposal に回帰なし | RED #4/#10/#11(回帰禁止) |
+| docs/specs/* を同コミットで更新 | P1-SPEC / P1b-SPEC / P2-SPEC |
+| (P1-a) pending consensus が escalate ではなく stall 経路で扱われる | RED #8/#9 |
+| (P1-d) reviewed-run が consensus profile を安全に拒否 | RED #10b |
+
+---
+
+## 9. スコープ外 / follow-up(その場で直さない)
+
+- per-domain review rule cascade(domain>repo>default)。署名は domain を受けるが Phase1 は repo-level top-level のみ。
+- **N-dispatch helper を orchestrator と reviewed-run で共有**（Phase 1a は reviewed-run を consensus
+  非対応で明示拒否。共有 helper 化は budget/timeout 設計が前提）。
+- lens persona / 異モデル procurement（ReviewerType に model field 無し、reviewerRunner は単一 DI）。
+  Phase 1b は同一 runner + lens prompt 変化まで。**異モデル調達は別 Phase**。
+- parallel N-reviewer dispatch(budget/timeout 設計が前提)。Phase1 は逐次。
+- dashboard / MCP の N-proposal・consensus 露出(docs/specs/dashboard.md / mcp.md は単一 reviewer 形状前提)。
+- N=N codex の budget/コスト計上単位(run_usage per-invocation は既存、wire は follow-up)。
+- `harness project check` で「required group に quorum 分の reviewer 登録済みか」検証(fail-silent 防止)。
+  Phase1 は orchestrator preflight(§3.4 step3)で escalate するが、run 生成時の事前検証は follow-up。
+
+---
+
+# 付録C: 反証検証した主要アーキ前提
+
+### 前提1 — **confirmed**
+- 主張: resolveEffectiveRule(review-rule.ts:116) is the run's review mode's sole determinant. Currently it always returns DEFAULT_REVIEW_RULE (latest-proposal, no requirements). The rule is frozen onto each run at creation time (workflow-runner.ts:1080-1094), and later profile changes don't retroactively alter the run's review semantics. The orchestrator review runner (orchestrator-runners.ts:1112) dispatches exactly one `runReviewerAgent` per review cycle, immediately followed by `processReviewDecision` (1119). In consensus mode, a single proposal cannot satisfy quorum>1, so processReviewDecision fails closed on pending (review-processor.ts:208-213) and orchestrator escalates.
+- 根拠: 
+
+### 前提2 — **confirmed**
+- 主張: orchestrator-runners.ts:1096-1159 dispatches exactly 1 reviewer per review cycle via a single runReviewerAgent call (not a loop), and when consensus mode is active (rule.mode==="consensus"), processReviewDecision throws ReviewGateError on pending consensus (quorum unmet), causing the orchestrator to escalate on the first cycle. Thus current code cannot reach quorum>1 consensus without additional dispatcher logic.
+- 根拠: 
+
+### 前提3 — **confirmed**
+- 主張: The architectural premise that "consensus per-group requirements are aggregated by reviewer.group_id (from reviewers registry), unregistered reviewers get groupId=null→fail per-group checks, insertProposal supersedes same reviewer_id rows (1 active per reviewer), and N consensus proposals require N distinct reviewer_ids" is sound and cannot be bypassed.
+- 根拠: src/core/review-rule.ts:116-122 — resolveEffectiveRule ALWAYS returns DEFAULT_REVIEW_RULE(mode: latest-proposal), is the sole entry point via src/core/workflow-runner.ts:1081. Consensus rules only via upsertRuleTemplate(:1087). No other code constructs ReviewRule with mode="consensus".
+
+### 前提4 — **confirmed**
+- 主張: Project profile schema (src/project/schema.ts) currently has no `review` rule section. The `ReviewRulesRepository` supports `source: "project-profile"` but with no mechanism to load the rule from the profile. The reviewer registration CLI (`harness review reviewers add --group`, cli/run.ts:1461,1505) exists and fully supports `groupId` assignment. However, `resolveEffectiveRule` (review-rule.ts:116) unconditionally returns `DEFAULT_REVIEW_RULE` regardless of input parameters—the call signature carries projectId/repoId/domain for future Phase 14 integration, but the rule is never loaded from the profile today. This blocks consensus mode (which requires quorum>1) from being reached via the orchestrator's single-reviewer dispatch (orchestrator-runners.ts:1112-1124).
+- 根拠: 
+
+### 前提5 — **confirmed**
+- 主張: 反証 verify による「blocking finding の advisory 降格」を入れる場合、review-processor の expected-status(needs_review)ガードと processConsensusModePath の決定論集約を迂回してはならない。現状 severity は review-integration.ts で required_changes→P1固定 / non_blocking→P2固定 であり reviewer 申告 severity は使われていない。
+- 根拠: 
+
+---
+
+# 付録F: codex exec gpt-5.5 xhigh レビュー（v1 設計への指摘 = v2 の改訂根拠）
+
+結論: **NO-GO as written**。§2 の現状分析は大半が実コードと一致しますが、Phase 1 設計には P0/P1 の修正が必要です。GitHub issue 本文そのものは未検証で、ここでは提示された設計ノートと ops checkout の実コードを照合しました。
+
+**P0**
+- 該当: §3.1/§3.2 `profile.review` parse/compile 失敗時の DEFAULT fallback
+  問題: `review:` が存在するのに不正な場合に `DEFAULT_REVIEW_RULE` へ落とすのは fail-closed ではありません。DEFAULT は `latest-proposal` かつ requirements 空なので、意図した quorum>1 を単一 reviewer path に降格します。
+  根拠: DEFAULT は latest-proposal/no requirements ([review-rule.ts](/Users/kn/ops/monorepo-harness/src/core/review-rule.ts:71))、現 `resolveEffectiveRule` も常に DEFAULT ([review-rule.ts](/Users/kn/ops/monorepo-harness/src/core/review-rule.ts:116))。profile loader は schema violation を `ProjectProfileError` で止める設計 ([profile-loader.ts](/Users/kn/ops/monorepo-harness/src/project/profile-loader.ts:42))。
+  推奨: `review` 欠落だけ DEFAULT。`review` が存在して不正なら run 作成を拒否する。`compileProfileReviewRule` も invalid は warning+DEFAULT ではなく typed error にする。
+
+- 該当: §3.3/§3.4/§6 「異レンズ」「FakeLensRunners fixture」
+  問題: 現 `runReviewerAgent` は `reviewerName` を Codex runner input/prompt に渡していません。runner は reviewer_id で出力を切り替えられず、実運用でも全 reviewer が同一 prompt の同一 lens です。Phase 1 が「異レンズ集約決定論」を満たすとは言えません。
+  根拠: `codexRunner.run` に渡るのは `worktreePath/prompt/logPaths` のみ ([reviewer-agent.ts](/Users/kn/ops/monorepo-harness/src/core/reviewer-agent.ts:527), [codex-exec-runner.ts](/Users/kn/ops/monorepo-harness/src/codex/codex-exec-runner.ts:1))。`reviewer` は runner 実行後に stamp される ([reviewer-agent.ts](/Users/kn/ops/monorepo-harness/src/core/reviewer-agent.ts:532))。prompt に reviewer/lens identity は無い ([reviewer-agent.ts](/Users/kn/ops/monorepo-harness/src/core/reviewer-agent.ts:221))。
+  推奨: runner input または prompt に reviewer_id/lens metadata を明示的に渡す。登録 reviewer metadata から prompt variant を作る。Phase 1 でそこまでやらないなら「multi-lens」受け入れ条件から外す。
+
+**P1**
+- 該当: §3.4 step 7 / §6 RED #8/#9
+  問題: pending consensus 時に stall detector へ到達する、という記述は現コード経路と合いません。`processReviewDecision` が throw すると `importReviewProposalToHitch` は呼ばれず、そこに wire された `consensusStall` も実行されません。
+  根拠: orchestrator は `runReviewerAgent` 後すぐ `processReviewDecision` を呼ぶ ([orchestrator-runners.ts](/Users/kn/ops/monorepo-harness/src/hitch/orchestrator-runners.ts:1112))。import/stall はその後 ([orchestrator-runners.ts](/Users/kn/ops/monorepo-harness/src/hitch/orchestrator-runners.ts:1147))。throw は outer catch で即 escalate ([orchestrator.ts](/Users/kn/ops/monorepo-harness/src/hitch/orchestrator.ts:153))。stall check は import 内だけ ([review-integration.ts](/Users/kn/ops/monorepo-harness/src/hitch/review-integration.ts:184))。
+  推奨: consensus pending を catch し、review cycle を記録して `evaluateConsensusStallForHitch` を直接呼ぶ経路を設計する。future-features もその必要性を書いています ([future-features.md](/Users/kn/ops/monorepo-harness/docs/future-features.md:185))。
+
+- 該当: §2.5/§3.4 allowOverwrite
+  問題: 「1体目は allowOverwrite 不要」は fresh run だけに依存します。既存 active proposal が1件でもあると、reviewer が別でも global guard で1体目が止まります。resume/partial/manual proposal があると N-dispatch が非冪等になります。
+  根拠: preflight は reviewer 指定なし `getLatestActiveProposal(runId)` ([reviewer-agent.ts](/Users/kn/ops/monorepo-harness/src/core/reviewer-agent.ts:473), [review-proposals.ts](/Users/kn/ops/monorepo-harness/src/db/repositories/review-proposals.ts:147))。guard は active があれば拒否 ([reviewer-agent.ts](/Users/kn/ops/monorepo-harness/src/core/reviewer-agent.ts:493))。insert 側の supersede は同一 reviewer だけ ([review-proposals.ts](/Users/kn/ops/monorepo-harness/src/db/repositories/review-proposals.ts:92))。
+  推奨: orchestrator 管理の lens dispatch では全 reviewer に `allowOverwrite:true` を渡し、事前に expected reviewer set と既存 proposal set を検証する。
+
+- 該当: §4 P1-C work item DAG
+  問題: profile→rule の thread 対象ファイルが足りません。`PreparedProjectRun` に rule/profile を追加するだけでは、CLI run/rerun、hitch CLI、MCP orchestrate、reviewed-run workflow、orchestrator `projectRuntimeFields` まで全入口に伝播しません。
+  根拠: `PreparedProjectRun` は現在 policy/project/context packs のみ ([run-project.ts](/Users/kn/ops/monorepo-harness/src/project/run-project.ts:32))。reviewed-run の `projectRun` も同じ ([reviewed-run-workflow.ts](/Users/kn/ops/monorepo-harness/src/core/reviewed-run-workflow.ts:71))。orchestrator `ProjectRuntimeDeps` も同じ ([orchestrator-runners.ts](/Users/kn/ops/monorepo-harness/src/hitch/orchestrator-runners.ts:155))。MCP も同 fields だけ渡す ([mutation-tools.ts](/Users/kn/ops/monorepo-harness/src/mcp/tools/mutation-tools.ts:520))。
+  推奨: `reviewRuleResolution` のような値を `PreparedProjectRun` から `RunDomainCodingOpts` まで全入口で thread し、入口別 integration test を追加する。
+
+- 該当: §4/§6 reviewed-run
+  問題: profile consensus rule を全 run に適用すると、`runReviewedRunWorkflow` は 1 reviewer しか dispatch しないため quorum>1 profile で必ず pending fail します。
+  根拠: reviewed-run は `runReviewerAgent` 1回 ([reviewed-run-workflow.ts](/Users/kn/ops/monorepo-harness/src/core/reviewed-run-workflow.ts:202))、その後 `processReviewDecision` 1回 ([reviewed-run-workflow.ts](/Users/kn/ops/monorepo-harness/src/core/reviewed-run-workflow.ts:231))。
+  推奨: N-dispatch helper を orchestrator と reviewed-run で共有するか、reviewed-run は consensus profile 非対応として明示的に拒否する。
+
+- 該当: §3.5 Phase 2 refute verify
+  問題: 安全境界の方向性は良いですが、現データモデルでは「どの required_change を refute したか」を表す構造がありません。既存 YAML は global decision と text arrays だけなので、このままでは refute group の票が対象 finding に deterministic に bind できません。
+  根拠: review decision schema は `decision/required_changes/non_blocking_comments/out_of_scope_suggestions` のみ ([review-decision-schema.ts](/Users/kn/ops/monorepo-harness/src/core/review-decision-schema.ts:11))。required changes DB も `idx/change_text` のみ ([schema.ts](/Users/kn/ops/monorepo-harness/src/db/schema.ts:184))。
+  推奨: Phase 2 前に target id/hash 付き refute input/output DSL を設計し、既存 consensus requirement に入る前の binding を harness 側で検証する。
+
+**P2**
+- 該当: §3.6/§6 determinism
+  問題: `required_changes` だけでなく consensus summary/source proposal ids も proposal order に依存します。`evaluateConsensus` は summary.proposals を入力順で保存し、`processConsensusModePath` も DB order の includedRows を使います。
+  根拠: summary proposals は `proposals.map` ([review-consensus.ts](/Users/kn/ops/monorepo-harness/src/core/review-consensus.ts:123))。active rows は `created_at DESC, proposal_id DESC` ([review-proposals.ts](/Users/kn/ops/monorepo-harness/src/db/repositories/review-proposals.ts:236))。required changes aggregation も現状 includedRows order ([review-processor.ts](/Users/kn/ops/monorepo-harness/src/core/review-processor.ts:218))。
+  推奨: includedRows、summary proposals、sourceProposalIds を reviewer_id/proposal_id の固定順に揃える。order independence test は summary まで見る。
+
+- 該当: §3.4 dispatch all registered reviewers
+  問題: group 内 reviewer を全員 dispatch する設計は cost/budget/latency が登録数に比例して無制限に増えます。
+  根拠: reviewer usage は invocation ごとに `kind="reviewer"` で記録される ([reviewer-agent.ts](/Users/kn/ops/monorepo-harness/src/core/reviewer-agent.ts:62)) が、orchestrator 側の N 上限設計はありません。
+  推奨: profile rule に max reviewers または explicit reviewer ids を持たせる。最低でも preflight で dispatch count を表示/制限する。
+
+**P3**
+- 該当: §2.6
+  確認: severity が close gate に効く、という設計ノートの訂正は正しいです。review import は required_change/negative を P1、non_blocking/out_of_scope を P2 に固定 ([review-integration.ts](/Users/kn/ops/monorepo-harness/src/hitch/review-integration.ts:276))。convergence は P1/P2 を別 gate で見る ([convergence.ts](/Users/kn/ops/monorepo-harness/src/hitch/convergence.ts:449))。
+
+**総合判定**
+Phase 1 を「この設計のまま」実装着手するのは **NO-GO**。P0 を直し、P1 の経路設計とテスト計画を更新すれば **GO-with-fixes** にできます。特に `review:` 不正時の扱い、実 lens identity、pending stall 経路、全入口への rule threading は先に設計を確定してください。
+
+---
+
+# 付録G: v2 changeLog（codex finding ごとの対処）
+
+### P0-1
+- 対処: review: 欠落のみ DEFAULT。review: が存在して不正なら resolveEffectiveRule / compileProfileReviewRule が新 typed error ReviewRuleCompileError を throw し run 生成を拒否(fail-closed)。best-effort 握り潰し(workflow-runner.ts:1095-1102)は review 宣言済 run では行わない。zod 構文不正=loader / 意味不正=compile / 欠落=DEFAULT の MECE を明記。RED #1a 追加。
+- 反映 §: §3.1, §3.2, §4 P1-B, §5(迷ったら fail-closed 行), §6 RED#1a, §7 project.md, §8
+
+### P0-2
+- 対処: 現 runReviewerAgent は reviewerName を prompt/runner input に渡さない(reviewer-agent.ts:524,527-531,532 を確認)ため同一 prompt の N reviewer は異レンズではない、を §2.4/§3.0 に明記。Phase1 を Phase1a(reachable consensus・同一 prompt の N reviewer、受け入れ条件文言を multi-reviewer に正直化)と Phase1b(metadata.lens_prompt を reviewer prompt に実注入する最小配線、ここで multi-lens を満たす)に分割。1a/1b の同一PR か別PRかは unresolvedForHuman Q-A(推奨: 別PR)。
+- 反映 §: §1, §3.0, §3.3b, §4 Phase1b DAG, §6 RED#12, §7 1b 行, §8(multi-lens 行)
+
+### P1-a (pending→stall 未到達)
+- 対処: processReviewDecision の pending throw は orchestrator.ts:153 outer catch で即 escalate し importReviewProposalToHitch(:1147) の consensusStall に到達しないことを §2.2 で確認。修正: orchestrator review runner が ReviewGateError(pending) を catch→review cycle 記録→evaluateConsensusStallForHitch を直接呼ぶ。recordConsensusReEvaluation(reviewer-agent.ts:735,809)が各 dispatch 後に pending review_consensus 行を書くため dbConsensusSnapshotProvider が timeline を再構築できる、を根拠に明記。stall 未満は継続、到達で決定論 escalate。
+- 反映 §: §2.2, §2.5, §3.4 step5, §5(pending fail-closed / 状態遷移行), §6 RED#8/#9, §8
+
+### P1-b (allowOverwrite 1体目も止まる)
+- 対処: preflight guard が getLatestActiveProposal(runId)(reviewer なし=グローバル, reviewer-agent.ts:476)を見るため、既存 active が1件でもあると別 reviewer の1体目も止まる(非冪等)、を §2.5 で確認。修正: orchestrator 管理 dispatch では全 reviewer に allowOverwrite:true。dispatch 前に expected reviewer set と既存 active proposal set を照合する preflight を追加。insert 側 supersede は同一 reviewer のみ(:96)なので distinct reviewerName は互いを supersede しない。
+- 反映 §: §2.5, §3.4 step3/3.5, §5(expected-status guard 行), §6 RED#7b
+
+### P1-c (profile→rule thread が全入口に届かない)
+- 対処: PreparedProjectRun は policy/project/context packs のみ(run-project.ts:32)で reviewRuleResolution が CLI run/rerun・reviewed-run・orchestrator projectRuntime・MCP まで伝播しない、を §2.1/§3.1 で確認。修正: reviewRuleResolution{rule,source,ruleSha256} を PreparedProjectRun→RunDomainCodingOpts→reviewed-run.projectRun→orchestrator ProjectRuntimeDeps→MCP mutation-tools→CLI の全7入口で thread。入口別 integration test(RED#7c)。
+- 反映 §: §2.1, §3.1(P1-c 列挙), §4 P1-C, §6 RED#7c
+
+### P1-d (reviewed-run が consensus で必ず pending fail)
+- 対処: runReviewedRunWorkflow は runReviewerAgent 1回(:202)→processReviewDecision 1回(:231)で N dispatch しないため quorum>1 profile で必ず pending fail、を §3.4b で確認。修正(Phase1a): reviewed-run は consensus rule の run を ReviewWorkflowUnsupportedError で明示拒否。N-dispatch helper 共有は follow-up(§9)に明記。RED#10b。
+- 反映 §: §3.4b, §4 P1-H, §6 RED#10b, §9
+
+### P1-e (refute の target binding が無い)
+- 対処: review-decision schema は global decision + text array のみ(review-decision-schema.ts:11)、required changes DB も idx/change_text のみ(schema.ts:184)で refute 票を対象 finding に決定論 bind できない、を §3.5 で確認。修正: Phase2-0 として target id/hash 付き refute input/output DSL + harness 側 binding 決定論検証(未知 target/hash 不一致=fail-closed reject)を Phase2 着手の前提条件に固定。受け入れ条件は第2 consensus requirement 経路の決定論テストで満たす(severity 経由しない)。
+- 反映 §: §3.5, §4 P2-0, §5(反証 verify 行), §8
+
+### P2-determinism (summary.proposals/sourceProposalIds も order 依存)
+- 対処: baseSummary.proposals=proposals.map(review-consensus.ts:123)が入力順保存、includedRows(review-processor.ts:219)が activeProposalRows(listForRun ORDER BY created_at DESC,proposal_id DESC)由来で挿入順依存、を §2.3 で確認。修正: processConsensusModePath が evaluateConsensus に渡す proposals / includedRows / sourceProposalIds と recordConsensusReEvaluation の sourceProposalIds を reviewer_id,proposal_id 昇順に固定。order independence test を summary まで拡張(RED#5)。
+- 反映 §: §2.3, §3.6, §4 P1-G, §5(提示順シャッフル行), §6 RED#5
+
+### P2-dispatch 上限
+- 対処: group 内 reviewer 全員 dispatch は cost/latency が登録数比例で無制限、を反映。修正: profile rule に max_reviewers / explicit reviewer_ids を追加。orchestrator は reviewer_ids 明示 or listByGroup∩max_reviewers(字句順上位)を dispatch。preflight で dispatch 数を表示し quorum 未満は事前 escalate(fail-silent 防止)。
+- 反映 §: §3.2, §3.4 step2/3, §4 P1-A
+
+### P3 (severity が close gate に効く訂正は正しい)
+- 対処: codex が §2.6 の訂正(required_change/negative=P1, non_blocking/out_of_scope=P2 固定; convergence が P1/P2 を別 gate で参照)を正しいと確認。追加対処不要。severity 降格を LLM 自己申告で駆動しない方針(§3.5)の根拠として維持。
+- 反映 §: §2.6, §3.5
+
+---
+
+# 付録H: v2 残件（人間批准が要る）
+
+## H1. P0-2 の採用ルート: Phase1b(lens 別 prompt 配線)を Phase1a と同一 PR に入れるか、別 PR にするか。#229 の受け入れ条件文言は "multi-lens" だが、Phase1a 単独では同一 prompt の N reviewer(=multi-reviewer)に留まり "multi-lens" を満たさない。1a だけ land して受け入れ条件文言を "multi-reviewer consensus" に正直化し、"multi-lens" を 1b で満たす運用で良いか。
+推奨: 別 PR を推奨。1a(reachable consensus)は prompt 配線を含まず独立にレビュー可能で land リスクが低い。1a の受け入れ条件は "multi-reviewer consensus が quorum>1 実到達" と正直に表現し、#229 を閉じる前に 1b(lens prompt 注入)まで land して "multi-lens" を満たす。1a と 1b を同一 issue #229 のスコープに留め、PR は2本に分ける。誇張(1a 完了時点で multi-lens 達成と書く)は避ける。
+
+## H2. #229 のクローズ条件に反証 verify(Phase 2)を含めるか、別 issue に切り出すか。受け入れ条件は "反証 verify が finding を advisory に降格できる経路のテスト" を含むが、安全な機構は P2-0(target id/hash binding data model + DSL)の追加設計を要し、proven core(Phase1)とは分離して land すべき。
+推奨: 別 issue 切り出しを推奨。Phase1(a+b)だけで主要受け入れ条件(quorum>1 実到達・異レンズ集約決定論・回帰なし・spec 更新)を満たし独立にレビュー可能。refute は P2-0 の target binding data model が前提で、Phase1 land 後に follow-up issue として設計する方が安全。ただし #229 のクローズ条件は人間批准事項なので、#229 を Phase1 で閉じ refute を新 issue にするか、#229 を Phase2 まで開き続けるかを明示的に決めてほしい。
+
+## H3. P0-1 fail-closed の挙動確定: review: が存在して意味的に不正(例: requirement.group がどの reviewer group とも一致せず quorum 充足不能、min_approvals > 登録 reviewer 数)な profile で run を作ろうとしたとき、CLI/MCP/orchestrate の各入口で run 生成を typed error(exit 1)で完全拒否する設計で良いか。それとも『不正 review は無効化して DEFAULT に落とすが stderr で強警告』のような緩和を許すか。
+推奨: 完全拒否(typed error, exit 1)を推奨。DEFAULT 降格は quorum>1 を単一 reviewer path に静かに落とす fail-open であり安全境界違反。意味的不正(group 不一致/充足不能)は profile のバグなので fail-closed で運用者に直させるのが正しい。ただし『どの程度の意味検証を compileProfileReviewRule に持たせるか(登録 reviewer との突合まで run 生成時にやるか、それは scope を広げる follow-up とするか)』は判断が割れる。推奨は『compile では rule 内部整合(quorum/min_approvals/blocking_decisions の形)のみ検証して throw、登録 reviewer 数との突合は orchestrator preflight(§3.4)に委ね、run 生成時の事前突合は follow-up(§9 project check)』とし、人間に確定してもらう。
+
