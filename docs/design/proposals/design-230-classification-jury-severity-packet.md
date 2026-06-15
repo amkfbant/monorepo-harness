@@ -1,5 +1,3 @@
-概要: 下記は issue #230 設計ノート v2 全文。codex P1-1〜P1-4 を §3/§4/§5/§6/§8 の本文に織り込み、P2-1/P2-2/P2-3・P3-1 を反映した。
-
 # 実装設計ノート v2 — issue #230「[案A] escalation 決定パケット格上げ / needs_classification jury / severity クロスチェック / [案F] RACI」
 
 > これは**計画のみ**。コードは変更しない。実装は別セッションが dev クローンの
@@ -22,6 +20,7 @@
 - **P2-2（"confirmation-required gate" 表現が現状仕様と違う）** → §3.4/§5.6/§7/§9 を改訂。`harness.hitch.classify_finding` は `kind:"mutation"`（dangerous/confirmation-required list 外: mcp.md:613-626）。表現を **「guarded mutation / 権限・audit gate」**に修正。confirmation-required にするのは別途 MCP spec/registry 変更が要るので follow-up。
 - **P2-3（fixture-matrix に jury runner 注入できない）** → §4(WI-11)/§6 fixtures を改訂。jury flow は **`orchestrator-runners.test.ts` + `hitch-orchestrate.test.ts` 中心**に置く。`fixture-matrix.test.ts` は convergence-only 回帰に限定（`SimulatedGoalLoop` は `ConvergenceService.evaluate()`+手動 `repo.classifyFinding()` のみで runner 注入口が無い: fixture-matrix.test.ts:28-56）。
 - **P3-1（docs/design 存在判定が ref 依存）** → §2.7 を改訂。`origin/main`/`v0.7.10` には `docs/design/deliberation.md` と `docs/design/consulting-frameworks.md` が**存在する**。current main 実装の grounding はこれらも含める。
+- **codex PR#246 対応**: unanimous 定義を frozen contract に整合（lens 集合の distinct 要求・proposedScope='unknown'+proposalStatus で未確定を表現・severity diverged/inconclusive は unanimous でも escalate surface・v31 テーブルは Phase1 follow-up 非） → §3.1/§3.2/§4/§5.2/§6.2/§8 改訂。
 
 ---
 
@@ -85,7 +84,7 @@ fail-closed で人間に残す**。epic #228 の案A。案F(RACI 決定権限モ
 - divergence は **harness-origin finding のみ**で算出(`divergenceReason()`:659-695、`harnessOriginNewFindings` 等:664-690)。operator-origin(human/mcp)は除外(types.ts:69-98、#196)。P0 escalate(:326)/budget(:316,403)/diverging(:347-349)は needs_classification より**前**に評価。
 
 ### 2.7 migration head / docs/design の事実（**base ref 依存** — P3-1 反映）
-- **migration head は V30**(src/db/migrations.ts:197 `MIGRATION_V30_STATEMENTS`)。**次は V31**。Phase1/2 は新テーブル不要(§3.3: additive JSON のみ)。
+- **migration head は V30**(src/db/migrations.ts:197 `MIGRATION_V30_STATEMENTS`)。**次は V31**。Phase1/2 は新テーブル不要(§3.3: additive JSON のみ)。ただし **V31 テーブル(jury_classification_proposals / jury_severity_audits)は将来導入するなら Phase1 follow-up ではなく v31 基盤として設計・確保する** — codex PR#246 指摘・frozen contract 反映。
 - **docs/design の存在は ref 依存**: `v0.7.9`(a4bcca4) では `docs/design/proposals/` に `design-229-*` `design-231-*` のみ。**現 base `origin/main`/`v0.7.10` には `docs/design/deliberation.md` と `docs/design/consulting-frameworks.md` が存在する**（P3-1）。
   → 実装は `origin/main` ベースなので、**統合フォーマット(`HitchDecisionPacket`)の grounding は #230 issue 本文 + 兄弟 #229 設計の安全パターン（「LLM verdict は proposal-row 入力、決定論 gate が裁定」）+ 既存 `docs/design/deliberation.md`・`consulting-frameworks.md`** に置く（評価軸マトリクスの語彙を既存 doc に揃える）。
 - 兄弟 #229 設計: harness は単一 `reviewerRunner` DI、per-lens model フィールド無し。Phase1 lens は「同一 backend に対する別プロンプト」。spec で正直に書く(異モデルを oversell しない)。
@@ -182,20 +181,20 @@ classify: async (hitchId): Promise<ClassifyRunnerResult> => {
 
 **重要な分離**:
 - `generateJuryProposals` = LLM-driven proposer。`proposerDeps.reviewerRunner` を使い 3 体別プロンプトで **入力データのみ**生成。DB を書かない・**DB が閉じた状態でのみ走る**（P1-2）。
-- `aggregateJuryVotes` = **純関数・決定論**(同入力→同出力)。全3票同一 scope のときのみ `unanimous`。**2-1 / 1-1-1 / いずれかが unknown_inconclusive** は全て `split`。
+- `aggregateJuryVotes` = **純関数・決定論**(同入力→同出力)。**frozen contract**: unanimous = proposals.length===3 かつ lens 集合が {correctness,scope_fit,spec_adherence} と完全一致 かつ 全票同一 scope(in/out) かつ 判定不能ゼロ。同一 lens 重複・欠落・4票以上は split(codex PR#246 指摘・frozen contract 整合)。**2-1 / 1-1-1 / いずれかが判定不能（proposedScope='unknown' + proposalStatus∈{complete,timeout,parse_error,inconclusive}）** は全て `split`。
 - 状態遷移(`repo.classifyFinding`)は **Phase3 で再検証後・unanimous のときだけ**。
 - **confidence float gate は不採用**（LLM 自己申告 confidence を state-transition gate にしない）。confidence/reasoning は packet に advisory 記録するが gate を駆動しない。
 
 **lens 定義(同一 backend・別プロンプト)**:
 - **correctness**: finding text の意味的妥当性(future/aspirational 表現か、実 actionable か)。
 - **scope-fit**: hitch scope(targetFiles/targetOperations/allowed/excludedCategories/targetSummary)との照合を独立な視点で再述。
-- **spec準拠**: finding が domain spec / policy 契約に合致するか。context 欠如時は `unknown_inconclusive`(fail-closed)。
+- **spec準拠**: finding が domain spec / policy 契約に合致するか。context 欠如時は proposedScope='unknown' + proposalStatus="inconclusive" で表現(fail-closed)。
 
 ### 3.2 severity クロスチェック（**Phase1 に含む・advisory-only** — P1-4 反映）
 
 **Phase1 に最小実装を含める**（#230 受け入れ条件を Phase1 だけで満たすため。issue 分割しない）。スコープは厳しく絞る:
 - **harness 固定マッピング(review-integration.ts:291/310/330/339)は authoritative・絶対に上書きしない**。convergence を駆動する唯一の severity はこれ。
-- jury severity proposer(advisory)が固定 severity と乖離したら、**escalate packet に `severityAudit` を記録**して人間に提示するのみ。**自動で severity を変えない**（P1→P2 降格は close gate(convergence.ts:703,707)を動かすため）。
+- jury severity proposer(advisory)が固定 severity と乖離したら、**scope jury が unanimous でも escalate packet に `severityAudit` を記録**して人間に提示するのみ(frozen contract 反映)。**自動で severity を変えない**（P1→P2 降格は close gate(convergence.ts:703,707)を動かすため）。
 - **`auditSeverity()` は純関数・決定論**: 入力 `{ harnessSeverity, jurySeverityProposals }` → 出力 `{ harnessSeverity, juryConsensus, status:"aligned"|"diverged"|"inconclusive", escalate:boolean }`。同入力→同出力テストを **Phase1 に含む**(§6.2 / 受け入れ条件②)。
 - severity audit の起動は **jury が走る finding（harness-origin unknown）に限定**し、scope jury proposal と同一 runner 呼び出しで severity 提案も同時に得る（呼び出し回数を増やさない: 1 finding = 3 lens 1 ラウンド）。あるいは scope proposal の parse schema に severity フィールドを足し、別呼び出しを増やさない。
 - precedence を **docs に 1 箇所**で書く（double-definition drift 防止）: **harness mapping = authoritative（convergence 駆動の唯一）/ jury severity = advisory-only（packet 記録のみ）**。
@@ -290,14 +289,14 @@ interface JuryProposerDeps {
   logPaths: (findingId: string, lens: JuryLens) => { stdout; stderr; events };
                                        // harnessPaths(harnessRoot).runsDir 配下に
                                        //   jury/<hitchId>/<findingId>/<lens>.{stdout,stderr,events} 規則で生成
-  timeoutMs: number;                   // lens あたり。超過 → timedOut → unknown_inconclusive(fail-closed)
+  timeoutMs: number;                   // lens あたり。超過 → timedOut → proposedScope='unknown' + proposalStatus="timeout"(fail-closed)
   parseSchema: JuryProposalSchema;     // events/stdout の JSON を { lens, scope, reasoning, confidence?, severity? }
-                                       //   に厳格 parse。parse 失敗 → unknown_inconclusive(fail-closed)
+                                       //   に厳格 parse。parse 失敗 → proposedScope='unknown' + proposalStatus="parse_error"(fail-closed)
   auditDir: string;                    // raw log + parsed proposal + aggregate を audit 保存（RACI: I=audit trail）
 }
 ```
 
-- **fail-closed 規則**: `exitCode!==0` / `timedOut` / parse 失敗 / context 欠如 → その lens は `unknown_inconclusive` → 集約 split → escalate。LLM 自己申告で gate しない。
+- **fail-closed 規則**: `exitCode!==0` / `timedOut` / parse 失敗 / context 欠如 → その lens は `proposedScope='unknown' + proposalStatus∈{complete,timeout,parse_error,inconclusive}` で表現(fail-closed、frozen contract 反映)。
 - **raw log + parsed proposal を `auditDir` に保存**（決定の監査性。packet は要約、auditDir は原本）。
 - worktreePath は **proposer が finding を書き換えないこと**を前提（read-only proposal）。run worktree を共有する場合も jury は mutation しない。
 
@@ -313,33 +312,33 @@ interface JuryProposerDeps {
 
 | ID | title | files | dependsOn |
 |---|---|---|---|
-| WI-1 | 型定義: JuryProposal / JuryAggregate / **JuryProposerDeps(§3.5)** / HitchDecisionPacket、`HitchNextAction.decisionPacket?` additive、**`ClassifyRunnerResult`(構造化戻り型, §3.1)** | src/hitch/types.ts, src/hitch/orchestrator-types.ts | — |
-| WI-2 | RED: `aggregateJuryVotes` 決定論集約のユニットテスト(unanimous/2-1/1-1-1/unknown_inconclusive/同入力→同出力) | tests/unit/hitch/jury-aggregation.test.ts | WI-1 |
-| WI-3 | GREEN: `aggregateJuryVotes` 純関数実装(全3票一致のみ unanimous、それ以外 split、float gate なし) | src/hitch/jury-aggregation.ts | WI-2 |
-| WI-4 | RED: jury proposer のユニットテスト(3 lens 別プロンプト・DB 非書込・**fail-closed: timeout/parse 失敗/exit≠0 → unknown_inconclusive**・logPaths/auditDir 書込) | tests/unit/hitch/jury-proposer.test.ts | WI-1 |
-| WI-5 | GREEN: `generateJuryProposals(finding, sessionSnapshot, JuryProposerDeps)` 実装(**§3.5 contract: worktreePath/logPaths/timeout/parseSchema/auditDir**、3体・入力専用、events/stdout から parse、fail-closed) | src/hitch/jury-proposer.ts | WI-4 |
-| WI-6 | RED: 決定パケット formatter のユニットテスト(round-trip / additive / message に JSON を詰めない / fallback message / 統合フィールド網羅) | tests/unit/hitch/decision-packet.test.ts | WI-1 |
-| WI-7 | GREEN: `buildJurySplitPacket()` / `buildOperatorOriginPacket()` formatter 実装 | src/hitch/decision-packet.ts | WI-6 |
-| WI-8 | RED: classify runner の jury 統合フローのユニットテスト(**3フェーズ DB分離**: snapshot→DB閉→jury→DB再open再検証 / unanimous→classify / split→`{resolved:false, decision:"escalate", recommendedNextAction.decisionPacket}` / **operator-origin→heuristic も jury も通らず即 escalate** / **再open 時に finding が分類済→skip**) | tests/unit/hitch/orchestrator-runners.test.ts | WI-2,WI-4,WI-6 |
-| WI-9 | GREEN: classify runner を **async 化 + 3フェーズ DB分離 + source filter(heuristic 前) + jury + 集約 + packet**(§3.1)。`ClassifyRunnerResult` を返す。既存 heuristic 確定パスは不変 | src/hitch/orchestrator-runners.ts, src/hitch/orchestrator-types.ts | WI-3,WI-5,WI-7,WI-8 |
+| WI-1 | 型定義: JuryProposal(proposedScope='unknown'\|'in_scope'\|'out_of_scope', proposalStatus∈{complete,timeout,parse_error,inconclusive}) / JuryAggregate / **JuryProposerDeps(§3.5)** / HitchDecisionPacket、`HitchNextAction.decisionPacket?` additive、**`ClassifyRunnerResult`(構造化戻り型, §3.1)** | src/hitch/types.ts, src/hitch/orchestrator-types.ts | — |
+| WI-2 | RED: `aggregateJuryVotes` 決定論集約のユニットテスト(unanimous=proposals.length===3∧distinct lens 3個∧全票同一scope∧判定不能ゼロ / 2-1/1-1-1/判定不能混在→split / 同入力→同出力、codex PR#246 整合) | tests/unit/hitch/jury-aggregation.test.ts | WI-1 |
+| WI-3 | GREEN: `aggregateJuryVotes` 純関数実装(全3票一致のみ unanimous、lens 集合 distinct 確認・判定不能フィルタ・同入力→同出力、frozen contract 反映、float gate なし) | src/hitch/jury-aggregation.ts | WI-2 |
+| WI-4 | RED: jury proposer のユニットテスト(3 lens 別プロンプト・DB 非書込・**fail-closed: timeout/parse 失敗/exit≠0 → proposedScope='unknown' + proposalStatus("timeout"\|"parse_error"\|"inconclusive")**(frozen contract 反映)・logPaths/auditDir 書込) | tests/unit/hitch/jury-proposer.test.ts | WI-1 |
+| WI-5 | GREEN: `generateJuryProposals(finding, sessionSnapshot, JuryProposerDeps)` 実装(**§3.5 contract: worktreePath/logPaths/timeout/parseSchema/auditDir**、3体・入力専用、events/stdout から parse、proposedScope+proposalStatus で未確定を表現(frozen contract)、fail-closed) | src/hitch/jury-proposer.ts | WI-4 |
+| WI-6 | RED: 決定パケット formatter のユニットテスト(round-trip / additive / message に JSON を詰めない / fallback message / 統合フィールド網羅、severity diverged/inconclusive でも surface) | tests/unit/hitch/decision-packet.test.ts | WI-1 |
+| WI-7 | GREEN: `buildJurySplitPacket()` / `buildOperatorOriginPacket()` formatter 実装(scope jury unanimous でも severityAudit diverged/inconclusive なら packet に surface - frozen contract) | src/hitch/decision-packet.ts | WI-6 |
+| WI-8 | RED: classify runner の jury 統合フローのユニットテスト(**3フェーズ DB分離**: snapshot→DB閉→jury→DB再open再検証 / unanimous→classify / split→`{resolved:false, decision:"escalate", recommendedNextAction.decisionPacket}` / **operator-origin→heuristic も jury も通らず即 escalate** / **再open 時に finding が分類済→skip** / **scope unanimous でも severityAudit diverged/inconclusive なら packet に surface** - codex PR#246・frozen contract) | tests/unit/hitch/orchestrator-runners.test.ts | WI-2,WI-4,WI-6 |
+| WI-9 | GREEN: classify runner を **async 化 + 3フェーズ DB分離 + source filter(heuristic 前) + jury + 集約 + packet**(§3.1、frozen contract)。`ClassifyRunnerResult` を返す。既存 heuristic 確定パスは不変 | src/hitch/orchestrator-runners.ts, src/hitch/orchestrator-types.ts | WI-3,WI-5,WI-7,WI-8 |
 | **WI-9b** | **RED+GREEN: orchestrator が classify 失敗時に `recordConvergenceDecisionWithStatus`(decision:"escalate" + decisionPacket) を呼んでから escalate return（P1-1）**。orchestrator.ts:87-92 改修 + 永続化検証テスト | src/hitch/orchestrator.ts, tests/unit/hitch/orchestrator.test.ts | WI-7,WI-9 |
 | WI-10 | RED+GREEN: convergence の **直接 escalate 経路**(P0 等)にも decisionPacket を additive で付与可能にする(fallback message/findingIds 常時、既存挙動不変) | src/hitch/convergence.ts, tests/unit/hitch/convergence.test.ts | WI-7 |
-| **WI-10s** | **RED: `auditSeverity()` 決定論テスト(harness mapping vs jury severity consensus、aligned/diverged/inconclusive、乖離→escalate flag、同入力→同出力、自動降格しない)（P1-4・受け入れ条件②）** | tests/unit/hitch/severity-audit.test.ts | WI-1 |
-| **WI-11s** | **GREEN: severity audit 実装(advisory-only、固定マッピング不変、packet に severityAudit、jury 呼び出し回数を増やさない=scope proposal に severity 同梱)（P1-4）** | src/hitch/severity-audit.ts, src/hitch/jury-proposer.ts, src/hitch/decision-packet.ts | WI-5,WI-7,WI-10s |
-| WI-11 | RED: **jury flow 統合テスト(orchestrator-runners.test.ts 中心: unknown→jury unanimous→分類前進 / jury split→escalate+packet / 良性 finding を unanimous で救済→誤escalate 削減)**。fixture-matrix には置かない(P2-3) | tests/unit/hitch/orchestrator-runners.test.ts | WI-9,WI-9b,WI-11s |
-| WI-12 | RED: 回帰テスト(P0/budget/divergence は jury 不通過で従来通り / heuristic 確定は jury bypass / operator-origin は manual / 固定 severity 不変 / severity 自動降格なし) | tests/unit/hitch/convergence.test.ts, tests/unit/hitch/fixture-matrix.test.ts(convergence-only), tests/unit/hitch/review-integration.test.ts | WI-9,WI-9b,WI-11s |
-| WI-13 | RED: integration(hitch-orchestrate.test.ts)で needs_classification→classify→(fake reviewerRunner で)jury→escalate/continue の e2e + **escalate 時 decisionPacket が DB に永続化される**(P1-1 e2e) | tests/integration/hitch-orchestrate.test.ts | WI-9,WI-9b,WI-11 |
-| WI-14 | docs: hitch-convergence.md に jury flow(3フェーズ) + RACI 表(§3.4) + 決定パケット format + **severity precedence(mapping authoritative / jury advisory-only)** | docs/specs/hitch-convergence.md | WI-9,WI-9b,WI-11s |
+| **WI-10s** | **RED: `auditSeverity()` 決定論テスト(harness mapping vs jury severity consensus、aligned/diverged/inconclusive、乖離→escalate flag、同入力→同出力、自動降格しない、scope unanimous でも diverged/inconclusive なら escalate flag - frozen contract・codex PR#246)**（P1-4・受け入れ条件②）** | tests/unit/hitch/severity-audit.test.ts | WI-1 |
+| **WI-11s** | **GREEN: severity audit 実装(advisory-only、固定マッピング不変、scope unanimous でも severity diverged/inconclusive なら packet に severityAudit surface - frozen contract・codex PR#246、jury 呼び出し回数を増やさない=scope proposal に severity 同梱)（P1-4）** | src/hitch/severity-audit.ts, src/hitch/jury-proposer.ts, src/hitch/decision-packet.ts | WI-5,WI-7,WI-10s |
+| WI-11 | RED: **jury flow 統合テスト(orchestrator-runners.test.ts 中心: unknown→jury unanimous→分類前進 / jury split→escalate+packet / scope unanimous でも severity diverged→packet surface / 良性 finding を unanimous で救済→誤escalate 削減)**。fixture-matrix には置かない(P2-3) | tests/unit/hitch/orchestrator-runners.test.ts | WI-9,WI-9b,WI-11s |
+| WI-12 | RED: 回帰テスト(P0/budget/divergence は jury 不通過で従来通り / heuristic 確定は jury bypass / operator-origin は manual / 固定 severity 不変 / severity 自動降格なし、scope unanimous でも severity diverged なら packet記録→escalate なし) | tests/unit/hitch/convergence.test.ts, tests/unit/hitch/fixture-matrix.test.ts(convergence-only), tests/unit/hitch/review-integration.test.ts | WI-9,WI-9b,WI-11s |
+| WI-13 | RED: integration(hitch-orchestrate.test.ts)で needs_classification→classify→(fake reviewerRunner で)jury→escalate/continue の e2e + **escalate 時 decisionPacket が DB に永続化される**(P1-1 e2e)、scope unanimous でも severity diverged なら packet に surface(frozen contract) | tests/integration/hitch-orchestrate.test.ts | WI-9,WI-9b,WI-11 |
+| WI-14 | docs: hitch-convergence.md に jury flow(3フェーズ) + RACI 表(§3.4) + 決定パケット format + **severity precedence(mapping authoritative / jury advisory-only、scope unanimous でも diverged/inconclusive なら escalate)** | docs/specs/hitch-convergence.md | WI-9,WI-9b,WI-11s |
 | WI-15 | docs: workflow.md に jury 起動条件(harness-origin unknown のみ)/ DB 分離方式 / escalate packet 構造 / RACI link、mcp.md・cli.md に **override は guarded mutation(classify_finding)** の 1 行 note(P2-2) | docs/specs/workflow.md, docs/specs/mcp.md, docs/specs/cli.md | WI-14 |
 
-### Phase 2（別 PR・follow-up）— severity の自動適用 / 異モデル lens 等
+### Phase 2（別 PR・follow-up）— jury vote 正規化テーブル / severity の自動適用 / 異モデル lens 等
 
 > Phase1 で #230 は閉じる。以下は #230 受け入れ条件**外**の発展（§9）。
 
 | ID | title | files | dependsOn |
 |---|---|---|---|
 | WI-16 | (将来 epic) severity 自動降格を convergence gate に反映（close gate を動かすため要設計） | — | Phase1 |
-| WI-17 | (将来) jury vote 正規化テーブル = **migration V31**(live で番号再確認・ノート番号を信用しない) | src/db/migrations.ts, src/db/schema.ts, src/hitch/repository.ts, docs/specs/db.md | Phase1 |
+| **WI-17** | **(将来) jury vote 正規化テーブル = v31 基盤(follow-up ではなく将来設計・確保)** — frozen contract・codex PR#246: DB v31 設計時に review_refute_votes/jury_classification_proposals/jury_severity_audits の schema、FK(無し=advisory)、business key(prompt_sha256 含む)を定義 | src/db/migrations.ts, src/db/schema.ts, src/hitch/repository.ts, docs/specs/db.md | Phase1 後の v31 詳細化 |
 
 ---
 
@@ -350,10 +349,10 @@ interface JuryProposerDeps {
 1. **分類・severity の最終確定は決定論集約**:
    - jury proposers(WI-5)は **入力データのみ**生成、DB を書かない。**DB が閉じた状態でのみ走る**(§3.1 Phase2)。
    - `aggregateJuryVotes`(WI-3)・`auditSeverity`(WI-11s)は **純関数・決定論**(同入力→同出力テスト WI-2/WI-10s)。`repo.classifyFinding` は **Phase3 で再検証後・unanimous のときだけ**(WI-9)。
-   - severity は **harness mapping が authoritative**、jury は **advisory-only**(WI-11s)。LLM 申告で scope/severity を直接確定しない。
+   - severity は **harness mapping が authoritative**、jury は **advisory-only**(WI-11s)。**scope unanimous でも severityAudit diverged/inconclusive なら escalate packet に必ず surface**(frozen contract 反映)。LLM 申告で scope/severity を直接確定しない。
 
 2. **jury 不一致は必ず人間 escalate(自動確定しない・fail-closed)**:
-   - `aggregateJuryVotes` は **2-1 / 1-1-1 / いずれか unknown_inconclusive を全て split**(WI-2/WI-3)。多数決自動確定なし。
+   - `aggregateJuryVotes` は **2-1 / 1-1-1 / いずれか proposedScope='unknown'(判定不能) を全て split**(WI-2/WI-3)。多数決自動確定なし。
    - split → `{ resolved:false, decision:"escalate", recommendedNextAction.decisionPacket }`(WI-9)。**orchestrator が `recordConvergenceDecisionWithStatus` で永続化してから escalate return**(WI-9b, P1-1)。テスト WI-8/WI-11/WI-13 が assert。
 
 3. **状態遷移は harness の決定論ゲートのみ**:
@@ -373,7 +372,7 @@ interface JuryProposerDeps {
    - packet は executable instruction でなく、operator が **`harness.hitch.classify_finding`(guarded mutation: `guarded-mutation` mode + 権限スナップショット + audit)** 経由で override する。shell bypass しない。**confirmation-required ではない**ので spec/RACI も「guarded mutation/audit gate」と書く。
 
 7. **迷ったら fail-closed**:
-   - lens の context 欠如 / timeout / parse 失敗 / exit≠0 → `unknown_inconclusive`(WI-5)→ 集約 split → escalate。confidence は gate を駆動しない(advisory)。
+   - lens の context 欠如 / timeout / parse 失敗 / exit≠0 → `proposedScope='unknown' + proposalStatus∈{timeout,parse_error,inconclusive}`(frozen contract)(WI-5)→ 集約 split → escalate。confidence は gate を駆動しない(advisory)。
    - jury 実行中に他経路で分類された finding は **Phase3 再検証で skip**(stale 確定を防ぐ, P1-2)。
 
 ---
@@ -385,18 +384,20 @@ interface JuryProposerDeps {
 ### 6.1 不一致 → 人間 escalate (fail-closed, 受け入れ条件①)
 - `jury-split-2-1-escalates`(WI-8): proposals=(in_scope, in_scope, out_of_scope) → split → `{resolved:false, decision:"escalate", recommendedNextAction.decisionPacket}`、finding は unknown のまま。
 - `jury-1-1-1-escalates`(WI-8): (in_scope, out_of_scope, unknown) → split → escalate。
-- `jury-any-inconclusive-escalates`(WI-8): いずれかが unknown_inconclusive(timeout/parse 失敗) → 票一致でも split → escalate。
+- `jury-any-inconclusive-escalates`(WI-8): いずれかが proposedScope='unknown'(timeout/parse 失敗) → 票一致でも split → escalate。
 - `operator-origin-unknown-skips-heuristic-and-jury`(WI-8, P2-1): source=mcp/human の unknown → **heuristic も jury も通らず**直接 escalate(packet decisionKind="operator_origin_unknown")。
 - `jury-runs-with-db-closed`(WI-8, P1-2): proposer が呼ばれる時点で DB handle が解放されていることを assert（同期 callback 内 await が無い）。
 - `stale-finding-skipped-on-reopen`(WI-8, P1-2): jury 実行中に他経路で分類された finding は Phase3 で skip され再分類しない。
 
 ### 6.2 決定論集約 / severity audit (受け入れ条件②: 同入力→同出力)
 - `aggregate-deterministic`(WI-2): 同一 proposals を2回 → 同一 `JuryAggregate`。
-- `aggregate-unanimous-confirms`(WI-2): 全3票 in_scope → `{decision:"unanimous", scope:"in_scope"}`(out_of_scope も)。
+- `aggregate-unanimous-requires-distinct-lenses`(WI-2, codex PR#246): proposals.length===3 かつ lens 集合 {correctness,scope_fit,spec_adherence} 完全一致 かつ 全票同一 scope → unanimous。同一 lens 重複 → split。
+- `aggregate-no-inconclusive-in-unanimous`(WI-2, frozen contract): 全票 in_scope でも 1 票が proposalStatus="inconclusive" → split(判定不能ゼロ条件)。
 - `aggregate-no-float-gate`(WI-2): confidence を変えても decision 不変。
 - `severity-audit-deterministic`(WI-10s, P1-4): 同一 `{harnessSeverity, jurySeverity[]}` を2回 → 同一 audit 結果。
 - `severity-audit-diverged-escalates`(WI-10s): jury consensus が harness mapping と乖離 → `status:"diverged", escalate:true`（**固定 severity は変えない**）。
 - `severity-audit-inconclusive-escalates`(WI-10s): jury severity 不一致 → `status:"inconclusive", escalate:true`。
+- `scope-unanimous-severity-diverged-surfaces-audit`(WI-10s, WI-13, codex PR#246・frozen contract): scope jury unanimous でも severityAudit diverged/inconclusive → decision=unanimous に影響なし、packet に severityAudit を surface(escalate しない scope 確定、severity 乖離は escalate packet に記録)。
 
 ### 6.3 escalate payload 統合フォーマット (受け入れ条件③)
 - `packet-has-integrated-fields`(WI-6): split packet が `recommendation / evaluationAxes(3軸 lensVotes) / rejectedProposals / minorityView / riskFlags / unvalidatedAssumptions / nextActions(owner=operator) / severityAudit?` を満たす。
@@ -412,13 +413,14 @@ interface JuryProposerDeps {
 - `regression-budget-exhausted`(WI-12): budget 超過 → stop(:316/403)、jury 不通過。
 - `regression-diverging`(WI-12): harness-origin finding 急増 → diverging(:659)、jury に masked されない。
 - `regression-heuristic-confirmed-bypasses-jury`(WI-12): heuristic in_scope → jury 非起動、即確定。
-- `regression-fixed-severity-unchanged`(WI-12): required_change=P1 / non_blocking=P2 のまま(review-integration.ts:291/330)、severity audit は escalate flag を立てるだけで mapping 不変。
+- `regression-fixed-severity-unchanged`(WI-12): required_change=P1 / non_blocking=P2 のまま(review-integration.ts:291/330)、severity audit は escalate flag を立てるだけで mapping 不変、scope unanimous でも severity diverged は escalate packet に記録し escalate しない(frozen contract)。
 - `regression-close-gate-unchanged`(WI-12): severity 自動降格なし → close gate(convergence.ts:702-708)不変。
 - `regression-existing-suites-green`(WI-12): 既存 convergence.test.ts / fixture-matrix.test.ts 全件緑（テストを弱めない）。
 
 ### 6.6 end-to-end (integration, hitch-orchestrate.test.ts)
 - `orchestrate-unknown-jury-unanimous-continue`(WI-13): needs_classification → classify(fake reviewerRunner で 3体 unanimous) → loop 継続。
 - `orchestrate-unknown-jury-split-escalate-persists-packet`(WI-13, P1-1): jury split → outcome="escalated"、`recommended_next_action.decisionPacket` が DB に残る。
+- `orchestrate-scope-unanimous-severity-diverged-surfaces-audit`(WI-13, frozen contract): jury scope unanimous でも severity diverged → scope decision=unanimous で分類確定、DB に保存された packet に severityAudit を含む。
 
 ---
 
@@ -428,10 +430,10 @@ interface JuryProposerDeps {
   - `## Convergence Decisions` 配下に「needs_classification jury」サブセクション（operator-origin filter は heuristic 前 → harness-origin に heuristic → なお unknown を **DB 閉じてから** 3 lens 提案 → 純関数集約 → Phase3 再検証 → unanimous:auto-confirm / split:escalate）。
   - **`### RACI: Decision Transitions` 表**(§3.4、Accountable=人間1名、override は guarded mutation、非 jury 経路も網羅)。
   - 決定パケット統合フォーマット(`HitchDecisionPacket`) + **永続化先(`recommended_next_action`、orchestrator が record)**。
-  - **severity precedence(1 箇所)**: harness mapping = authoritative、jury = advisory-only、自動降格なし、乖離は escalate packet 記録のみ。
+  - **severity precedence(1 箇所、frozen contract 反映)**: harness mapping = authoritative、jury = advisory-only、**scope unanimous でも severityAudit diverged/inconclusive なら escalate packet に必ず surface**(自動確定しない、乖離は escalate packet 記録のみ)、自動降格なし。
 - **docs/specs/workflow.md**(WI-15): jury 起動条件(harness-origin unknown のみ、operator-origin は manual)。**DB 分離方式(snapshot→閉→jury→再open再検証)**。escalate packet 構造。RACI link。
 - **docs/specs/mcp.md / cli.md**(WI-15, P2-2): operator override は `harness.hitch.classify_finding`(**guarded mutation**、confirmation-required ではない)で行い、決定パケットを read してから classify する旨の 1 行 note。
-- **docs/specs/db.md**(将来 WI-17 のみ): 正規化テーブルを足す場合に **V31** schema(live で番号再確認)。Phase1 では更新不要(additive JSON のみ)。
+- **docs/specs/db.md**(将来 WI-17 のみ、frozen contract・codex PR#246): v31 設計時に jury vote 正規化テーブル(review_refute_votes / jury_classification_proposals / jury_severity_audits)の schema・FK(advisory なので無し)・business key(prompt_sha256 含む)を定義。Phase1 では更新不要(additive JSON のみ)。
 
 ---
 
@@ -440,10 +442,10 @@ interface JuryProposerDeps {
 | #230 受け入れ条件 | 対応 WI | 検証テスト |
 |---|---|---|
 | jury 不一致時は必ず人間 escalate(自動確定しない) | WI-3,WI-9,WI-9b | `jury-split-2-1-escalates`, `jury-1-1-1-escalates`, `jury-any-inconclusive-escalates`, `orchestrate-unknown-jury-split-escalate-persists-packet` (§6.1/6.6) |
-| severity 集約が決定論的(同入力→同出力) | **WI-10s,WI-11s(Phase1)** + WI-3 | `severity-audit-deterministic`, `severity-audit-diverged/inconclusive-escalates`, `aggregate-deterministic`, `aggregate-no-float-gate` (§6.2) |
+| severity 集約が決定論的(同入力→同出力、scope unanimous でも diverged/inconclusive なら surface) | **WI-10s,WI-11s(Phase1)** + WI-3 | `severity-audit-deterministic`, `severity-audit-diverged/inconclusive-escalates`, `scope-unanimous-severity-diverged-surfaces-audit`, `aggregate-deterministic`, `aggregate-no-float-gate` (§6.2) |
 | escalate payload が統合フォーマットを満たす **かつ永続化される** | WI-1,WI-7,WI-9b,WI-10 | `packet-has-integrated-fields`, `packet-additive-backward-compat`, `packet-roundtrip`, **`packet-persisted-on-escalate`**(P1-1) (§6.3) |
-| 既存 divergence / fail-closed / severity 挙動に回帰なし | WI-12 | `regression-p0/budget/diverging/heuristic-bypass/fixed-severity/close-gate`, 既存スイート緑 (§6.5) |
-| docs/specs/* を同コミット更新(RACI / severity precedence 含む) | WI-14,WI-15 | doc レビュー(RACI 表 / jury flow / precedence / guarded mutation 記載) |
+| 既存 divergence / fail-closed / severity 挙動に回帰なし、scope unanimous でも severity diverged は escalate packet に記録のみ | WI-12 | `regression-p0/budget/diverging/heuristic-bypass/fixed-severity/close-gate`, `scope-unanimous-severity-diverged-surfaces-audit`, 既存スイート緑 (§6.5) |
+| docs/specs/* を同コミット更新(RACI / severity precedence・frozen contract 反映 含む) | WI-14,WI-15 | doc レビュー(RACI 表 / jury flow / precedence / guarded mutation・frozen contract 記載) |
 
 ---
 
@@ -451,7 +453,7 @@ interface JuryProposerDeps {
 
 - **severity の自動降格適用**(P1→P2 を convergence gate に反映)= 将来 epic(WI-16)。close gate(convergence.ts:702-708)を動かすため `docs/future-features.md` に defer。Phase1 は audit-only。
 - **異モデル lens**(per-lens に別 model/backend)= #229 と同様に大改修(単一 `reviewerRunner` DI を多 reviewer 化)。Phase1 は同一 backend 別プロンプト。
-- **jury vote 正規化テーブル / drill-down query**(WI-17, V31)= 実 query 要件が出たときの follow-up。
+- **jury vote 正規化テーブル / drill-down query**(WI-17, v31 基盤・frozen contract・codex PR#246)= v31 設計・確保の follow-up。Phase1 では additive JSON のみで、v31 テーブル(review_refute_votes / jury_classification_proposals / jury_severity_audits)は follow-up ではなく v31 基盤として設計・導入するまで defer。
 - **dashboard での決定パケット可視化**(drill-down UI)= follow-up(dashboard-viz course 系)。
 - **jury latency / review budget への計上**(run_usage per-invocation telemetry への jury 呼び出し計上、budget で jury 回数を bound)= follow-up(token-usage course と連携)。Phase1 は jury single-shot・per-finding 独立・timeout→escalate のみ実装し、telemetry 統合は後続。
 - **classify_finding を confirmation-required に格上げ**(MCP registry/spec 変更)= follow-up(P2-2)。Phase1 は guarded mutation のまま spec を正確化。
@@ -517,7 +519,7 @@ interface JuryProposerDeps {
 根拠: source 分類は [types.ts](/Users/kn/ops/monorepo-harness/src/hitch/types.ts:69), [types.ts](/Users/kn/ops/monorepo-harness/src/hitch/types.ts:74)。CLI は default `human` でも heuristic を通す [cli/hitch.ts](/Users/kn/ops/monorepo-harness/src/cli/hitch.ts:647), [cli/hitch.ts](/Users/kn/ops/monorepo-harness/src/cli/hitch.ts:680)。MCP も `mcp` source を heuristic に通す [hitch-tools.ts](/Users/kn/ops/monorepo-harness/src/mcp/tools/hitch-tools.ts:366), [hitch-tools.ts](/Users/kn/ops/monorepo-harness/src/mcp/tools/hitch-tools.ts:369)。  
 推奨修正: 「jury だけ除外」なのか「heuristic も含め operator-origin unknown は全て人間分類」なのかを明文化し、source filter の位置に対応したテストを追加する。
 
-2. §5.6 / §7: operator override の “confirmation-required gate” 表現が現状仕様と違う  
+2. §5.6 / §7: operator override の "confirmation-required gate" 表現が現状仕様と違う  
 問題: `harness.hitch.classify_finding` は MCP mutation だが dangerous/confirmation-required list にはない。CLI classify も confirmation なし。  
 根拠: tool 定義は `kind:"mutation"` [tool-registry.ts](/Users/kn/ops/monorepo-harness/src/mcp/registry/tool-registry.ts:1516)。dangerous list は [mcp.md](/Users/kn/ops/monorepo-harness/docs/specs/mcp.md:613) 以降で classify は含まれない。CLI surface は [cli.md](/Users/kn/ops/monorepo-harness/docs/specs/cli.md:391)。  
 推奨修正: 「guarded mutation / audit gate」と書くか、本当に confirmation-required にするなら MCP spec/registry 変更を WI に入れる。
@@ -549,11 +551,11 @@ GO-with-fixes。§2 の主要な現状把握は概ね正しいです。ただし
 - 反映 §: v2 改訂履歴, §2.2, §3.1 疑似コード, §4 WI-5/WI-9, §5.1/§5.7, §6.1
 
 ### P1-3
-- 対処: §3.5 を新設し JuryProposerDeps を定義: reviewerRunner / harnessRoot / worktreePath(read-only proposer の cwd) / logPaths 生成規則(harnessPaths(harnessRoot).runsDir 配下 jury/<hitchId>/<findingId>/<lens>.{stdout,stderr,events}) / timeoutMs / parseSchema(events・stdout の JSON を厳格 parse) / auditDir(raw log+parsed proposal 保存)。CodexExecRunner.run が worktreePath/prompt/logPaths 必須で結果が exitCode/timedOut/durationMs のみ(codex-exec-runner.ts:1-19)なので出力は events/stdout から parse する点を明記。fail-closed(timeout/parse 失敗/exit≠0→unknown_inconclusive)を契約に含めた。
+- 対処: §3.5 を新設し JuryProposerDeps を定義: reviewerRunner / harnessRoot / worktreePath(read-only proposer の cwd) / logPaths 生成規則(harnessPaths(harnessRoot).runsDir 配下 jury/<hitchId>/<findingId>/<lens>.{stdout,stderr,events}) / timeoutMs / parseSchema(events・stdout の JSON を厳格 parse) / auditDir(raw log+parsed proposal 保存)。CodexExecRunner.run が worktreePath/prompt/logPaths 必須で結果が exitCode/timedOut/durationMs のみ(codex-exec-runner.ts:1-19)なので出力は events/stdout から parse する点を明記。fail-closed(timeout/parse 失敗/exit≠0→proposedScope='unknown'+proposalStatus)を契約に含めた。
 - 反映 §: v2 改訂履歴, §3.1, §3.5(新設), §4 WI-1/WI-4/WI-5, §6.1
 
 ### P1-4
-- 対処: issue 分割せず、Phase1 に最小の advisory-only severity audit を組み込み。§3.2 を『Phase1 に含む・advisory-only』に全面改訂: 固定マッピング(review-integration.ts:291/310/330/339)は authoritative で上書きしない、auditSeverity() は純関数・決定論(aligned/diverged/inconclusive→escalate flag)、乖離は packet の severityAudit 記録のみ、P1→P2 降格は close gate(convergence.ts:702-708)を動かすため自動適用しない、jury 呼び出し回数を増やさず scope proposal に severity 同梱。WI-10s/WI-11s を Phase1 に追加。受け入れ条件②(同入力→同出力)を auditSeverity 純関数テストで Phase1 充足。§8 対応表を Phase1 単独充足に更新。
+- 対処: issue 分割せず、Phase1 に最小の advisory-only severity audit を組み込み。§3.2 を『Phase1 に含む・advisory-only』に全面改訂: 固定マッピング(review-integration.ts:291/310/330/339)は authoritative で上書きしない、auditSeverity() は純関数・決定論(aligned/diverged/inconclusive→escalate flag)、**scope unanimous でも乖離は escalate packet に必ず surface**(frozen contract 反映)、乖離は packet の severityAudit 記録のみ、P1→P2 降格は close gate(convergence.ts:702-708)を動かすため自動適用しない、jury 呼び出し回数を増やさず scope proposal に severity 同梱。WI-10s/WI-11s を Phase1 に追加。受け入れ条件②(同入力→同出力)を auditSeverity 純関数テストで Phase1 充足。§8 対応表を Phase1 単独充足に更新。
 - 反映 §: v2 改訂履歴, §1, §3.2, §4 WI-10s/WI-11s, §6.2, §8
 
 ### P2-1
@@ -572,6 +574,10 @@ GO-with-fixes。§2 の主要な現状把握は概ね正しいです。ただし
 - 対処: base ref を v0.7.10/origin/main に訂正(HEAD=8c9e6b8)。docs/design の存在は ref 依存で、現 base には deliberation.md と consulting-frameworks.md が存在することを §2.7 に記録。HitchDecisionPacket の grounding に #230 issue・#229 安全パターンに加え既存 docs/design の2ファイル(評価軸マトリクス語彙)を含めた。冒頭に実装 base=origin/main を明記。
 - 反映 §: 冒頭ヘッダ, v2 改訂履歴, §2.7, §3.3
 
+### codex PR#246 対応
+- 対処(frozen contract 整合): unanimous 定義を frozen contract に整合(unanimious = proposals.length===3 ∧ lens 集合 {correctness,scope_fit,spec_adherence} 完全一致 ∧ 全票同一 scope ∧ 判定不能ゼロ、同一 lens 重複・欠落・4票以上は split) / proposer が proposedScope='unknown'+proposalStatus∈{complete,timeout,parse_error,inconclusive} で判定不能を表現(unknown_inconclusive 廃止) / scope unanimous でも severityAudit diverged/inconclusive なら escalate packet に必ず surface(自動確定しない) / jury_classification_proposals/jury_severity_audits は v31 基盤で follow-up ではなく将来設計・確保。§3.1/§3.2/§3.5/§4 WI-1/WI-2/WI-3/WI-4/WI-5/WI-8/WI-10s/WI-11s/WI-12/WI-13 / §6.2/§7/§8/§9 改訂。
+- 反映 §: v2 改訂履歴(新規), §2.7, §3.1, §3.2, §3.5, §4 全 WI, §5.1/§5.2, §6.2, §7, §8, §9 WI-17
+
 ### base-ref 訂正
 - 対処: v1 の『v0.7.9, HEAD=a4bcca4』を実 checkout『v0.7.10, HEAD=8c9e6b8(release 0.7.10 #241)』に訂正。src/** は v0.7.9→v0.7.10 で差分なしのため file:line は有効である旨を注記し、全 file:line を v0.7.10 で再確認した。
 - 反映 §: 冒頭ヘッダ, §2 見出し
@@ -588,4 +594,3 @@ GO-with-fixes。§2 の主要な現状把握は概ね正しいです。ただし
 
 ## H3. operator-origin unknown が混在するバッチで、harness-origin の unanimous 分類は確定しつつ operator-origin だけ escalate する『部分前進』を許すか、operator-origin が1件でもあればバッチ全体を即 escalate(harness-origin の jury もスキップ)するか。
 推奨: 部分前進を許す(harness-origin は jury まで進めて確定 / operator-origin は同一 escalate packet に operator_origin_unknown として束ねる)を推奨。誤 escalate 削減という headline benefit を最大化しつつ、operator-origin の fail-closed は維持できる。ただし packet が複数 decisionKind を運ぶ実装複雑性が増えるため、Phase1 で『operator-origin が在れば即 escalate・harness-origin jury は次ループに回す』の単純案に倒すかは実装者判断。安全側はどちらも同じ(operator-origin は機械分類しない)。
-

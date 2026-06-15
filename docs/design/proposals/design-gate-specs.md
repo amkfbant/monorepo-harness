@@ -344,8 +344,8 @@ const ReviewRuleSchema = z
     mode: z.enum(["latest-proposal", "consensus"]).default("latest-proposal"),
     requirements: z.array(ReviewRuleRequirementSchema).optional(),
     refute: z.array(ReviewRuleRefuteRequirementSchema).optional(),
-    overrides: ReviewRuleOverridesSchema,
-    stale_proposal: ReviewRuleStaleProposalSchema,
+    overrides: ReviewRuleOverridesSchema.optional(),
+    stale_proposal: ReviewRuleStaleProposalSchema.optional(),
   })
   .strict()
   .optional();
@@ -445,7 +445,7 @@ export function resolveEffectiveRule(scope: { projectId?: string; repoId?: strin
 - [unit] compileProfileReviewRule: consensus mode with empty requirements throws ReviewRuleCompileError: throw ReviewRuleCompileError; message contains 'consensus mode requires at least one requirement'
 - [unit] compileProfileReviewRule: requirement with min_approvals < 1 throws ReviewRuleCompileError: throw ReviewRuleCompileError; context.profileReview preserved
 - [unit] compileProfileReviewRule: snake_case YAML correctly maps to camelCase ReviewRule: min_approvals→minApprovals; blocking_decisions→blockingDecisions; min_participants→minParticipants; reviewer_ids→reviewerIds; max_reviewers→maxReviewers
-- [unit] compileProfileReviewRule: refute requirement validation on threshold >= 1: threshold < 1 throws ReviewRuleCompileError
+- [unit] compileProfileReviewRule: refute min_refute_fraction は (0,1] — 0/負/1超 のみ ReviewRuleCompileError、(0,1] の値(0.5・1.0 含む)は valid（codex PR#246 :448: 「1未満は throw」は誤り。strict-majority の 0.5 等を弾かない）
 - [unit] resolveEffectiveRule with profile.review returns ReviewRuleResolution with source='project-profile': result.source === 'project-profile'; result.rule is compiled rule; ruleSha256 matches ruleSha256(rule)
 - [unit] resolveEffectiveRule without profile returns ReviewRuleResolution with source='default': result.source === 'default'; result.rule === DEFAULT_REVIEW_RULE
 - [integration] prepareProjectRun: ReviewRuleCompileError caught and rethrown as ProjectError before run row creation: throw ProjectError; RunRepository.countByProject() === 0 (no orphan row)
@@ -487,7 +487,7 @@ export interface RefuteVoteData {
 export interface RefuteConsensusInput {
   requirement: ReviewRuleRefuteRequirement;
   refuteVotes: RefuteVoteData[];  // reviewerId lex sort 済み
-  activeRequiredChanges: Array<{ idx: number; change_text: string }>;  // CC16⑥: snake_case DB DTO
+  activeRequiredChanges: Array<{ idx: number; change_text: string }>;  // CC16⑥: included from ReviewProposalRow.requiredChanges (snake_case DB DTO)
   out: NonNullable<ConsensusSummary["refuteDropped"]>;
 }
 ```
@@ -796,12 +796,8 @@ async function orchestrateReviewPhase(
   });
   const rule = reviewResolution.rule;
   
-  // 1. consensus mode check & preflight — spec3 preflight と同じ
-  if (rule.mode === "consensus" && (rule.refuteRequirements?.length ?? 0) > 0) {
-    throw new UnsupportedConsensusInReviewedRunError(
-      `consensus mode with refute is not supported`
-    );
-  }
+  // 1. N-dispatch: expected reviewers を昇順で loop → runReviewerAgent
+  // (consensus rejection happens in reviewed-run only)
   
   // 2. N-dispatch: expected reviewers を昇順で loop → runReviewerAgent
   const expectedReviewers = resolveExpectedReviewers(rule, new ReviewerRepository(db));
@@ -920,11 +916,9 @@ export class ReviewWorkflowUnsupportedError extends Error {}
 
 function assertReviewedRunRuleCompatible(rule: ReviewRule, domain: string): void {
   if (rule.mode === "consensus") {
-    if ((rule.refuteRequirements?.length ?? 0) > 0) {
-      throw new ReviewWorkflowUnsupportedError(
-        `reviewed-run does not support consensus rules with refute`
-      );
-    }
+    throw new ReviewWorkflowUnsupportedError(
+      `reviewed-run does not support consensus rules`
+    );
   }
 }
 
@@ -959,7 +953,7 @@ export interface RefuteVoteRow {
   group_id: string | null;
   verdict: "uphold" | "refute" | "inconclusive";
   confidence?: number | null;
-  prompt_sha256?: string | null;  // CC16②
+  prompt_sha256: string;  // CC16②: NOT NULL, required for UNIQUE + tie-break
   created_at: string;
 }
 
@@ -968,9 +962,10 @@ export class ReviewRefuteVoteRepository {
     runId: string;
     reviewerId: string;
     targetChangeHash: string;
+    groupId: string | null;
     verdict: "uphold" | "refute" | "inconclusive";
     confidence?: number;
-    promptSha256?: string;
+    promptSha256: string;
     createdAt: string;
   }): RefuteVoteRow { ... }
   
@@ -988,16 +983,15 @@ Database schema migration — `review_refute_votes`:
 ```sql
 CREATE TABLE review_refute_votes (
   refute_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  run_id TEXT NOT NULL REFERENCES runs(run_id),
-  reviewer_id TEXT NOT NULL REFERENCES reviewers(reviewer_id),
+  run_id TEXT NOT NULL,
+  reviewer_id TEXT NOT NULL,
   target_change_hash TEXT NOT NULL,
   group_id TEXT,
   verdict TEXT NOT NULL CHECK (verdict IN ('uphold','refute','inconclusive')),
   confidence REAL,
-  prompt_sha256 TEXT,
+  prompt_sha256 TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  UNIQUE (run_id, reviewer_id, target_change_hash),
-  FOREIGN KEY (reviewer_id) REFERENCES reviewers(reviewer_id)
+  UNIQUE (run_id, reviewer_id, target_change_hash, prompt_sha256)
 );
 CREATE INDEX review_refute_votes_run_idx ON review_refute_votes(run_id, group_id);
 CREATE INDEX review_refute_votes_target_idx ON review_refute_votes(target_change_hash);
