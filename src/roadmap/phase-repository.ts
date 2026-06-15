@@ -22,6 +22,21 @@ function mapPhase(r: PhaseRow): Phase {
   };
 }
 
+/**
+ * Operator audit note for a phase (#171b). Stored under the generic
+ * `review_state_json` blob as `{ note }` (no schema migration), so it composes
+ * with any other review-state keys a future feature owns. Returns null when
+ * absent or empty.
+ */
+export function phaseNote(phase: Phase): string | null {
+  const rs = phase.reviewState;
+  if (rs !== null && typeof rs === "object" && !Array.isArray(rs)) {
+    const note = (rs as Record<string, unknown>).note;
+    if (typeof note === "string" && note !== "") return note;
+  }
+  return null;
+}
+
 export interface PhaseLeaseGuard {
   lockId: number;
   holderRunId: string;
@@ -104,6 +119,27 @@ export class PhaseRepository {
     this.require(phaseId);
     this.db.prepare("UPDATE phases SET status = ?, updated_at = ? WHERE phase_id = ?")
       .run(status, now ?? new Date().toISOString(), phaseId);
+    return this.require(phaseId);
+  }
+
+  /**
+   * Set an operator audit note (#171b) — e.g. a force-close reason or PR ref —
+   * making `phase update --status closed` symmetric with `hitch close --summary`
+   * / `hitch cancel --reason`. Immutably merges `{ note }` into the existing
+   * `review_state_json` blob so unrelated keys survive.
+   */
+  setNote(phaseId: string, note: string, now?: string): Phase {
+    const phase = this.require(phaseId);
+    const existing =
+      phase.reviewState !== null &&
+      typeof phase.reviewState === "object" &&
+      !Array.isArray(phase.reviewState)
+        ? (phase.reviewState as Record<string, unknown>)
+        : {};
+    const next = { ...existing, note };
+    this.db
+      .prepare("UPDATE phases SET review_state_json = ?, updated_at = ? WHERE phase_id = ?")
+      .run(JSON.stringify(next), now ?? new Date().toISOString(), phaseId);
     return this.require(phaseId);
   }
 

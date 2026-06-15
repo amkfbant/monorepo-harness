@@ -4,7 +4,7 @@ import {
   HitchRepository,
   OPEN_FINDING_LIFECYCLES,
 } from "../hitch/repository.js";
-import { PhaseRepository } from "./phase-repository.js";
+import { PhaseRepository, phaseNote } from "./phase-repository.js";
 import { derivePhaseReadiness } from "./ready-to-close.js";
 import type { PhaseStatus } from "./types.js";
 import {
@@ -22,6 +22,8 @@ export interface PhaseRollup {
   derivedOpenP1: number;
   depth: number;
   latestDecision: string | null;
+  /** Operator audit note (#171b), or null. Stored via `phase update --note`. */
+  note: string | null;
   readyToClose: boolean;
 }
 
@@ -69,12 +71,28 @@ export function openCounts(
   return { p0, p1 };
 }
 
-/** Latest convergence decision across all hitches of a phase, or null if none. */
+/**
+ * Decision shown for a phase: the most recently recorded `hitch_convergence_
+ * decisions.decision` across its hitches (latest by created_at, tie-broken by
+ * decisionId), or null if none.
+ *
+ * #171 — a force-closed / cancelled hitch keeps its last recorded *mid-flight*
+ * decision (e.g. `diverging`) in the audit log, but the session is now
+ * terminally closed and `hitch close --force` / `cancel` record no decision row,
+ * so that stored value is stale for the rollup display. When the selected hitch
+ * has been terminally closed/cancelled, report its LIVE decision (`closed` /
+ * `cancel`) instead. Active (non-terminal) hitches keep their recorded decision
+ * — that is the genuine latest audit value and `readyToClose` already reflects
+ * live convergence independently.
+ */
 function latestDecisionForPhase(
   hitches: HitchRepository,
   hitchIds: string[],
+  liveDecisionByHitch: ReadonlyMap<string, string>,
 ): string | null {
-  let latest: { createdAt: string; decisionId: string; decision: string } | null = null;
+  let latest:
+    | { createdAt: string; decisionId: string; decision: string; hitchId: string }
+    | null = null;
   for (const hid of hitchIds) {
     const decisions = hitches.listDecisions(hid);
     if (decisions.length === 0) continue;
@@ -90,10 +108,14 @@ function latestDecisionForPhase(
         createdAt: newest.createdAt,
         decisionId: newest.decisionId,
         decision: newest.decision,
+        hitchId: hid,
       };
     }
   }
-  return latest !== null ? latest.decision : null;
+  if (latest === null) return null;
+  const live = liveDecisionByHitch.get(latest.hitchId);
+  if (live === "closed" || live === "cancel") return live;
+  return latest.decision;
 }
 
 export function rollupCourse(opts: {
@@ -132,6 +154,9 @@ export function rollupCourse(opts: {
       const hitchConvergences = hitchIds.map((hitchId) =>
         convergence.evaluate(hitchId),
       );
+      const liveDecisionByHitch = new Map<string, string>(
+        hitchIds.map((hid, i) => [hid, hitchConvergences[i]!.decision]),
+      );
       counts[n.phase.status] += 1;
       totalP0 += p0;
       totalP1 += p1;
@@ -143,7 +168,12 @@ export function rollupCourse(opts: {
         derivedOpenP0: p0,
         derivedOpenP1: p1,
         depth,
-        latestDecision: latestDecisionForPhase(hitches, hitchIds),
+        latestDecision: latestDecisionForPhase(
+          hitches,
+          hitchIds,
+          liveDecisionByHitch,
+        ),
+        note: phaseNote(n.phase),
         readyToClose: derivePhaseReadiness({
           hitchConvergences,
           derivedOpenP0: p0,

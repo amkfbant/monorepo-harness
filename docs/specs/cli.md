@@ -2034,7 +2034,7 @@ course 内 phase 管理（SP-1）。データモデルは [`roadmap.md`](./roadm
 harness phase add --course <id> --title <text> [--parent <phase-id>] [--position <n>] [--scope-file <path>] [--close-file <path>] [--created-by <actor>] [--json]
 harness phase list --course <id> [--json]
 harness phase show <id> [--json]
-harness phase update <id> [--status pending|in_progress|closed|blocked] [--scope-file <path>] [--close-file <path>]
+harness phase update <id> [--status pending|in_progress|closed|blocked] [--scope-file <path>] [--close-file <path>] [--note <text>]
 harness phase link-hitch <phase-id> <hitch-id>
 harness phase unlink-hitch <hitch-id>
 ```
@@ -2044,7 +2044,7 @@ harness phase unlink-hitch <hitch-id>
 | `add` | phase を course に追加。`--scope-file` / `--close-file` は JSON または YAML を受け付ける。cross-course parent は拒否 |
 | `list` | course の phase 一覧（position/id 順のフラット一覧） |
 | `show` | 単一 phase ＋ リンク済み hitch id を表示 |
-| `update` | phase の declared status または scope/close conditions を更新 |
+| `update` | phase の declared status / scope/close conditions / 監査 note を更新。`--note <text>` は force-close 理由や PR ref を記録し（`review_state_json` の `{ note }` に保存・migration 不要）、`course export --md` に `**Note**:` 行として出る（#171b） |
 | `link-hitch` | hitch を phase にリンク（cross-project mismatch と double-link は拒否） |
 | `unlink-hitch` | hitch の phase リンクを解除 |
 

@@ -45,6 +45,28 @@ describe("Course/Phase repositories (SP-1)", () => {
     expect(phases.tree(c.courseId).map((n) => n.phase.title)).toEqual(["First", "Second", "Third"]);
   });
 
+  it("setNote stores an operator audit note on the phase (#171b)", () => {
+    const c = courses.create({ title: "Roadmap", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P", createdBy: "t", createdSource: "cli" });
+    expect(phases.require(p.phaseId).reviewState).toBeNull();
+    phases.setNote(p.phaseId, "force-closed: PR #999 merged");
+    const updated = phases.require(p.phaseId);
+    expect((updated.reviewState as { note?: string }).note).toBe("force-closed: PR #999 merged");
+  });
+
+  it("setNote preserves other review_state keys (immutable merge — #171b)", () => {
+    const c = courses.create({ title: "Roadmap", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P", createdBy: "t", createdSource: "cli" });
+    // seed an unrelated review_state key that a future feature might own
+    conn
+      .prepare("UPDATE phases SET review_state_json = ? WHERE phase_id = ?")
+      .run(JSON.stringify({ reviewRuleResolution: "strict" }), p.phaseId);
+    phases.setNote(p.phaseId, "takeover note");
+    const rs = phases.require(p.phaseId).reviewState as Record<string, unknown>;
+    expect(rs.reviewRuleResolution).toBe("strict");
+    expect(rs.note).toBe("takeover note");
+  });
+
   it("keeps explicit positions while auto-assigning omitted positions after the sibling max", () => {
     const c = courses.create({ title: "Roadmap", projectId: "demo", createdBy: "t", createdSource: "cli" });
     phases.add({ courseId: c.courseId, phaseId: "phase-explicit-high", title: "Explicit high", position: 5, createdBy: "t", createdSource: "cli" });
