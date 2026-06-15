@@ -49,8 +49,9 @@ fail-closed で人間に残す。
 **提案**:
 1. **needs_classification jury**: 決定論ヒューリスティック分類器がなお `unknown` を返す
    finding を、異レンズ 3 体（correctness / scope-fit / spec 準拠）が独立に分類提案 →
-   決定論的多数決で集約。**不一致は人間へ**（fail-closed 維持）。＝ heuristic 分類器の
-   後段に多体提案層を足す（分類器自体の置き換えではない）。
+   **決定論的に集約。集約ルールは fail-closed: 全 3 票が同一 scope のときのみ自動確定し、
+   1 票でも割れたら（例 2-1）人間へ escalate**（「多数決で 2-1 を自動確定」はしない）。
+   ＝ heuristic 分類器の後段に多体提案層を足す（分類器自体の置き換えではない）。
 2. **severity クロスチェック**: 現状 severity は harness マッピング（P1/P2 固定）なので、
    reviewer proposal に明示 severity フィールドを足すか、harness マッピングの妥当性を
    多体でクロスチェックする。最終集約は決定論。
@@ -165,7 +166,8 @@ mode 前提）。
 - 生成された closeConditions が実在する `HitchCloseConditionKind` のみで構成され、
   `HitchCloseConditionSchema` を通ることの検査（`count` 等の無効 kind を出さない）。
 - 「自動検証 kind」と「外部証拠待ち kind」がテンプレート上で区別され、自動ゲートを意図した
-  条件が `manual`/`artifact_exists`/`operation_status` に化けない検査。
+  条件が外部証拠待ち kind（`manual`/`artifact_exists`/`operation_status`/`db_doctor`）に
+  化けない検査。
 
 **安全境界チェック**: spec の enforcement（close 判定）は決定論ゲート。合議は起草のみ。
 

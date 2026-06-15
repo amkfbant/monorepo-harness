@@ -27,7 +27,7 @@
 | 合議制の原則 | このハーネスでの既存実装 |
 |---|---|
 | LLM 評価者の出力は提案。判定は集約ルール | `review_proposals` に記録するだけ／状態遷移は `src/core/review-processor.ts` の決定論ゲート |
-| Accountable は原則人間 | `escalate` / `needs_classification` / `budget_exhausted` で人間に返す（`src/hitch/convergence.ts`） |
+| Accountable は原則人間 | `escalate` / `budget_exhausted` で人間に返す。`needs_classification` は hitch loop が `classifyFindingForHitch` で自動分類を試み、**なお `unknown` のときのみ**人間へ（`src/hitch/convergence.ts` / `orchestrator-runners.ts`） |
 | 出典なき合意を避ける（一次情報・検証担当を分離） | close condition は `command` exit code / `artifact_exists`。`review_consensus` は static approval のみでテスト実行を証明しない（`src/hitch/close-checks.ts`） |
 | 評価者バイアス（自己選好）対策 | coder agent と reviewer agent を別層に分離（`src/core/`） |
 | 多数決は独立・有能のときだけ強い（Condorcet） | 同一基盤モデルの複数インスタンスは独立投票者ではない → 異レンズ/異モデルで割る（§4） |
