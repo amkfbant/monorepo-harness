@@ -3,6 +3,37 @@
 Ideas recorded for later implementation. Each entry is a sketch, not an approved
 design — run it through brainstorming → spec → plan when picked up.
 
+## git-validation hardening — follow-up PR (collects the deferred fail-opens)
+
+A focused security PR should land these together (own codex+Opus review + dedicated
+tests). All are PRE-EXISTING in the harness git-validation surface and are NOT
+introduced or worsened by the #141/#197 change (PR #221); they were surfaced during
+its review.
+
+- **`--no-renames` on policy/diff path lists (codex App P1 on #221, coder-REACHABLE — prioritize)**:
+  `collectDiff` uses `git diff --name-only` / `--cached --name-only` with rename
+  detection on by default, so an R100 rename of an out-of-scope tracked source into an
+  in-scope destination reports ONLY the destination — the out-of-scope SOURCE DELETION
+  is hidden from policy validation, so a coder can delete arbitrary out-of-scope files
+  by renaming them into scope and the run can reach needs_review / PR. Fix: force
+  `--no-renames` on every name-only/numstat path list used for policy/budget/subset
+  gates (rename → delete + add, strictly more conservative). Add a regression where a
+  rename source outside the write scope fails closed. (Same family: the post-normalize
+  re-collect inherits the same collapse, so "re-validate post" is not enough — the flag
+  is the fix.)
+- **git object-graph tampering (replace refs / grafts / shallow) — see next section**
+  (out-of-band; defense-in-depth).
+- **Authenticate the tolerated retry commit (codex App P1 on #221, out-of-band only —
+  defense-in-depth)**: the push-gate idempotent-retry tolerance accepts ANY single clean
+  commit whose tree matches the reviewed fingerprint, including an out-of-band commit
+  with an unreviewed/secret commit MESSAGE (content reviewed). NOT coder-reachable — the
+  run normalizes the coder's worktree to HEAD==base before the push gate, so a non-base
+  HEAD at push time is either the harness's own publish-failure retry or an out-of-band
+  operator commit. Fix sketch: in the retry branch, additionally require HEAD's commit
+  message to equal the deterministic harness message (`opts.title` / `harness salvage:
+  <runId>`) — an attacker cannot embed a secret without diverging from the exact harness
+  message. Bundle with the object-graph hardening (same out-of-band threat class).
+
 ## git object-graph tampering hardening (replace refs / grafts / shallow) — follow-up
 
 - **P0 (defense-in-depth, deferred to a focused PR)** — every harness git read
