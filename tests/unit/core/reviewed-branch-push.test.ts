@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   parseGitPathList,
   assertPathsSubset,
+  assertNoObjectGraphTampering,
   pushReviewedBranchForEscalation,
 } from "../../../src/core/reviewed-branch-push.js";
 import { computeReviewedFingerprint } from "../../../src/core/reviewed-fingerprint.js";
@@ -35,6 +36,117 @@ describe("parseGitPathList (git diff -z parsing)", () => {
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" });
 }
+
+/** A throwaway git repo with one commit. */
+function makeRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), "harness-objgraph-"));
+  git(dir, ["init", "-q", "-b", "main"]);
+  git(dir, ["config", "user.email", "t@e.com"]);
+  git(dir, ["config", "user.name", "T"]);
+  writeFileSync(join(dir, "f.txt"), "v0\n");
+  git(dir, ["add", "."]);
+  git(dir, ["commit", "-qm", "init"]);
+  return dir;
+}
+
+const GIT = { timeoutMs: 30_000 };
+
+describe("assertNoObjectGraphTampering (push-gate object-graph guard)", () => {
+  it("passes on a clean repo", async () => {
+    const dir = makeRepo();
+    await expect(
+      assertNoObjectGraphTampering({
+        git: { cwd: dir, ...GIT },
+        runId: "run-clean",
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("refuses a repo carrying a refs/replace/* ref", async () => {
+    const dir = makeRepo();
+    const real = git(dir, ["rev-parse", "HEAD"]).trim();
+    // a sanitized sibling commit to replace the real one with
+    git(dir, ["checkout", "-q", "--orphan", "san"]);
+    writeFileSync(join(dir, "f.txt"), "sanitized\n");
+    git(dir, ["add", "."]);
+    git(dir, ["commit", "-qm", "sanitized"]);
+    const san = git(dir, ["rev-parse", "HEAD"]).trim();
+    git(dir, ["checkout", "-q", "main"]);
+    git(dir, ["replace", real, san]);
+
+    await expect(
+      assertNoObjectGraphTampering({
+        git: { cwd: dir, ...GIT },
+        runId: "run-replace",
+      }),
+    ).rejects.toThrow(/replace ref.*object-graph tampering/s);
+  });
+
+  it("refuses a replace ref targeting a NON-head (ancestor) object", async () => {
+    // The for-each-ref glob has no SHA filter, so a replace ref aimed at an
+    // ancestor on base..HEAD is caught too — lock that blanket coverage.
+    const dir = makeRepo();
+    const root = git(dir, ["rev-parse", "HEAD"]).trim();
+    writeFileSync(join(dir, "f.txt"), "v1\n");
+    git(dir, ["commit", "-aqm", "c1"]); // HEAD is now c1; root is the ancestor
+    // sanitized sibling (same tree, different message) via plumbing
+    const tree = git(dir, ["rev-parse", "HEAD^{tree}"]).trim();
+    const san = git(dir, ["commit-tree", tree, "-m", "san"]).trim();
+    git(dir, ["replace", root, san]); // replace the ANCESTOR, not HEAD
+
+    await expect(
+      assertNoObjectGraphTampering({
+        git: { cwd: dir, ...GIT },
+        runId: "run-replace-ancestor",
+      }),
+    ).rejects.toThrow(/replace ref.*object-graph tampering/s);
+  });
+
+  it("refuses a repo carrying an info/grafts file", async () => {
+    const dir = makeRepo();
+    const real = git(dir, ["rev-parse", "HEAD"]).trim();
+    const graftsPath = git(dir, [
+      "rev-parse",
+      "--git-path",
+      "info/grafts",
+    ]).trim();
+    // graft the real commit to have no parent (any grafts content triggers)
+    writeFileSync(join(dir, graftsPath), `${real}\n`);
+
+    await expect(
+      assertNoObjectGraphTampering({
+        git: { cwd: dir, ...GIT },
+        runId: "run-graft",
+      }),
+    ).rejects.toThrow(/graft.*object-graph tampering/s);
+  });
+
+  it("refuses a shallow repository", async () => {
+    // upstream with 3 commits, then a depth-1 shallow clone
+    const upstream = makeRepo();
+    writeFileSync(join(upstream, "f.txt"), "v1\n");
+    git(upstream, ["commit", "-aqm", "c1"]);
+    writeFileSync(join(upstream, "f.txt"), "v2\n");
+    git(upstream, ["commit", "-aqm", "c2"]);
+    const cloneParent = mkdtempSync(join(tmpdir(), "harness-shallow-"));
+    const clone = join(cloneParent, "clone");
+    execFileSync("git", [
+      "clone",
+      "-q",
+      "--depth",
+      "1",
+      `file://${upstream}`,
+      clone,
+    ]);
+
+    await expect(
+      assertNoObjectGraphTampering({
+        git: { cwd: clone, ...GIT },
+        runId: "run-shallow",
+      }),
+    ).rejects.toThrow(/shallow repository.*object-graph tampering/s);
+  });
+});
 
 interface SalvageFixture {
   root: string;
@@ -215,9 +327,16 @@ describe("pushReviewedBranchForEscalation (salvage push guard)", () => {
     const meta = JSON.parse(readFileSync(metaPath, "utf8"));
     meta.reviewed = { paths: reviewedPaths, fingerprint };
     writeFileSync(metaPath, JSON.stringify(meta, null, 2));
-    // commit ONLY the tracked reviewed change; leave g.ts untracked.
+    // commit ONLY the tracked reviewed change; leave g.ts untracked. The commit
+    // message is the AUTHENTICATED harness salvage message so this exercises the
+    // stage-nothing invariant (not the retry-commit message auth, which is
+    // covered separately below).
     git(f.worktree, ["add", "apps/x/f.ts"]);
-    git(f.worktree, ["commit", "-qm", "unreviewed message: sk-secret-leak"]);
+    git(f.worktree, [
+      "commit",
+      "-qm",
+      "harness salvage: run-20260521-apps-x-salv1",
+    ]);
 
     await expect(
       pushReviewedBranchForEscalation({
@@ -227,6 +346,168 @@ describe("pushReviewedBranchForEscalation (salvage push guard)", () => {
         runId: f.runId,
       }),
     ).rejects.toThrow(/refusing to add a second commit onto pre-existing history/);
+
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-salv1/);
+  });
+
+  it("object-graph guard: refuses to push when the repo carries a replace ref", async () => {
+    // End-to-end wiring: the salvage gate must invoke the object-graph guard so a
+    // replace ref (which `git push` would ship the real object for) is rejected
+    // before any push. GIT_NO_REPLACE_OBJECTS=1 neutralizes the read view, but the
+    // push gate must still refuse outright (defense-in-depth).
+    const f = await setupSalvage();
+    const head = git(f.worktree, ["rev-parse", "HEAD"]).trim();
+    // Install a refs/replace/<head> ref pointing at a sanitized sibling commit
+    // (same tree, different message → different SHA), built with `commit-tree`
+    // plumbing so the worktree HEAD/branch/index are untouched.
+    const tree = git(f.worktree, ["rev-parse", "HEAD^{tree}"]).trim();
+    const sanitized = git(f.worktree, [
+      "commit-tree",
+      tree,
+      "-m",
+      "sanitized",
+    ]).trim();
+    git(f.worktree, ["replace", head, sanitized]);
+
+    await expect(
+      pushReviewedBranchForEscalation({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+        locksDir: join(f.root, "locks"),
+        runId: f.runId,
+      }),
+    ).rejects.toThrow(/replace ref.*object-graph tampering/s);
+
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-salv1/);
+  });
+
+  it("object-graph guard: refuses to push when the repo carries an info/grafts file (end-to-end)", async () => {
+    // Graft branch wired through the real salvage push gate (not just the unit
+    // test): a grafts file rewrites commit parents and can fool the rev-list
+    // history gate, so it must be refused before the push.
+    const f = await setupSalvage();
+    const head = git(f.worktree, ["rev-parse", "HEAD"]).trim();
+    const graftsPath = git(f.worktree, [
+      "rev-parse",
+      "--git-path",
+      "info/grafts",
+    ]).trim();
+    writeFileSync(graftsPath, `${head}\n`);
+
+    await expect(
+      pushReviewedBranchForEscalation({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+        locksDir: join(f.root, "locks"),
+        runId: f.runId,
+      }),
+    ).rejects.toThrow(/graft.*object-graph tampering/s);
+
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-salv1/);
+  });
+
+  it("commit-message hook injection: a prepare-commit-msg hook cannot taint the pushed commit message", async () => {
+    // A target-repo `prepare-commit-msg` hook that appends a secret to the
+    // deterministic `-m` message must NOT reach origin: the mint commits with
+    // hooks disabled + verbatim, and the message is authenticated post-commit.
+    const f = await setupSalvage();
+    const hooksDir = join(
+      git(f.worktree, ["rev-parse", "--git-path", "hooks"]).trim(),
+    );
+    mkdirSync(hooksDir, { recursive: true });
+    const hook = join(hooksDir, "prepare-commit-msg");
+    writeFileSync(hook, '#!/bin/sh\necho "SECRET=sk_hook_leak" >> "$1"\n');
+    execFileSync("chmod", ["+x", hook]);
+
+    const r = await pushReviewedBranchForEscalation({
+      runsDir: join(f.root, "runs"),
+      workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+      runId: f.runId,
+    });
+    expect(r.committed).toBe(true);
+    // the pushed commit message is exactly the harness message — no hook leak
+    const remoteMsg = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "log", "-1", "--format=%B", `harness/${f.runId}/apps-x`],
+      { encoding: "utf8" },
+    ).trim();
+    expect(remoteMsg).toBe("harness salvage: run-20260521-apps-x-salv1");
+    expect(remoteMsg).not.toMatch(/SECRET/);
+  });
+
+  it("commit signing: a commit.gpgsign config cannot embed unauthenticated bytes in the pushed commit object", async () => {
+    // A target-repo `commit.gpgsign=true` + `gpg.program` would embed a `gpgsig`
+    // header (attacker-controlled bytes) into the pushed commit object, which the
+    // %B message auth does not see. The mint must pass --no-gpg-sign.
+    const f = await setupSalvage();
+    const fakeGpg = join(f.root, "fakegpg.sh");
+    writeFileSync(
+      fakeGpg,
+      '#!/bin/sh\ncat >/dev/null\necho "[GNUPG:] SIG_CREATED " >&2\n' +
+        'printf -- "-----BEGIN PGP SIGNATURE-----\\n\\nSECRET_SIG_EXFIL\\n-----END PGP SIGNATURE-----\\n"\n',
+    );
+    execFileSync("chmod", ["+x", fakeGpg]);
+    git(f.worktree, ["config", "gpg.program", fakeGpg]);
+    git(f.worktree, ["config", "user.signingkey", "DEADBEEF"]);
+    git(f.worktree, ["config", "commit.gpgsign", "true"]);
+
+    const r = await pushReviewedBranchForEscalation({
+      runsDir: join(f.root, "runs"),
+      workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+      runId: f.runId,
+    });
+    expect(r.committed).toBe(true);
+    // the pushed commit object carries NO gpgsig header / exfil bytes
+    const obj = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "cat-file", "-p", r.headSha],
+      { encoding: "utf8" },
+    );
+    expect(obj).not.toMatch(/gpgsig/);
+    expect(obj).not.toMatch(/SECRET_SIG_EXFIL/);
+  });
+
+  it("retry-commit auth: refuses a single clean commit beyond base whose message is not the harness message", async () => {
+    // The idempotent-retry tolerance accepts exactly one clean commit beyond base
+    // whose tree matches the reviewed fingerprint. Without authenticating its
+    // MESSAGE, an out-of-band commit carrying a secret in its commit message (the
+    // content matches the fingerprint) would be tolerated and pushed. The gate
+    // must require the message to equal the deterministic harness salvage message.
+    const f = await setupSalvage();
+    // a single clean commit beyond base, reviewed content, but a non-harness
+    // (secret-bearing) message
+    git(f.worktree, ["add", "apps/x/f.ts"]);
+    git(f.worktree, [
+      "commit",
+      "-qm",
+      "exfil: AWS_SECRET=AKIAIOSFODNN7EXAMPLE",
+    ]);
+
+    await expect(
+      pushReviewedBranchForEscalation({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+        locksDir: join(f.root, "locks"),
+        runId: f.runId,
+      }),
+    ).rejects.toThrow(/unauthenticated retry commit/);
 
     const remoteBranches = execFileSync(
       "git",

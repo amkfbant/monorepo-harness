@@ -77,6 +77,10 @@ export function gitWorkingTreeChangedPaths(repo: string): string[] {
     const r = spawnSync("git", ["-C", repo, ...args], {
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024,
+      // Mirror the central gitCli hardening for this sync read: force-disable
+      // replace-ref resolution (see git-cli.ts) so the guard sees the real
+      // object graph regardless of any local refs/replace/*.
+      env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" },
     });
     if (r.status !== 0) {
       throw new Error(
@@ -89,7 +93,19 @@ export function gitWorkingTreeChangedPaths(repo: string): string[] {
     // `--no-renames`: a rename of a GUARDED source to an unguarded path would
     // otherwise collapse to the destination only, hiding the guarded source
     // deletion from the guard check. Surface it as delete(source) + add(dest).
-    ...parseNulPaths(run(["diff", "--no-renames", "--name-only", "-z", "HEAD"])),
+    // `--no-ext-diff --no-textconv`: never run a target-repo diff driver
+    // (defense-in-depth; matches DIFF_BASE_ARGS in git/diff.ts).
+    ...parseNulPaths(
+      run([
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--name-only",
+        "-z",
+        "HEAD",
+      ]),
+    ),
     ...parseNulPaths(run(["ls-files", "--others", "--exclude-standard", "-z"])),
   ];
 }

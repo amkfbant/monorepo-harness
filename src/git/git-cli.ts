@@ -20,7 +20,14 @@ export function gitCli(
   return new Promise((resolve, reject) => {
     const child = spawn("git", args as string[], {
       cwd: opts.cwd,
-      env: opts.env ?? process.env,
+      // Security: force-disable replace-ref resolution so every harness git read
+      // sees the REAL object graph. A malicious coder that installs `git replace
+      // <real> <sanitized>` could otherwise make diff/rev-list/reset validate a
+      // sanitized object view while `git push` still transmits the real
+      // (unreviewed/secret) objects. Set LAST so neither a caller's `opts.env`
+      // nor the inherited process env can re-enable it. (Grafts + shallowness are
+      // not covered by this flag; the push gates refuse those separately.)
+      env: { ...(opts.env ?? process.env), GIT_NO_REPLACE_OBJECTS: "1" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";

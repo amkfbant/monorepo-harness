@@ -366,10 +366,12 @@ describe("createPullRequest", () => {
     const meta = JSON.parse(readFileSync(metaPath, "utf8"));
     meta.reviewed = { paths: reviewedPaths, fingerprint };
     writeFileSync(metaPath, JSON.stringify(meta, null, 2));
-    // Commit ONLY the tracked reviewed change with an attacker-chosen message;
-    // leave g.ts untracked. HEAD is now base + 1 clean commit, g.ts pending.
+    // Commit ONLY the tracked reviewed change with the AUTHENTICATED harness
+    // commit message (so this exercises the stage-nothing invariant, not the
+    // retry-commit message auth covered separately); leave g.ts untracked. HEAD
+    // is now base + 1 clean commit, g.ts pending.
     git(worktree, ["add", "apps/x/f.ts"]);
-    git(worktree, ["commit", "-qm", "unreviewed message: sk-secret-leak"]);
+    git(worktree, ["commit", "-qm", "harness: run-20260521-apps-x-pr01"]);
     // sanity: working tree matches the recorded reviewed fingerprint
     expect(await computeReviewedFingerprint(worktree, reviewedPaths)).toBe(
       meta.reviewed.fingerprint,
@@ -393,6 +395,195 @@ describe("createPullRequest", () => {
       { encoding: "utf8" },
     );
     expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-pr01/);
+  });
+
+  it("object-graph guard: refuses to create a PR when the repo carries a replace ref", async () => {
+    // End-to-end wiring for the PR gate: a refs/replace/* ref (whose real object
+    // `git push` would ship) must be rejected before any push/publish.
+    const f = await setup("approved");
+    const worktree = join(f.root, "workspaces", f.runId, "repo");
+    const head = git(worktree, ["rev-parse", "HEAD"]).trim();
+    // Install a refs/replace/<head> ref pointing at a sanitized sibling commit
+    // (same tree, different message), built with `commit-tree` plumbing so the
+    // worktree HEAD/branch/index are untouched.
+    const tree = git(worktree, ["rev-parse", "HEAD^{tree}"]).trim();
+    const sanitized = git(worktree, [
+      "commit-tree",
+      tree,
+      "-m",
+      "sanitized",
+    ]).trim();
+    git(worktree, ["replace", head, sanitized]);
+
+    const pub = fakePublisher();
+    await expect(
+      createPullRequest({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+        locksDir: join(f.root, "locks"),
+        runId: f.runId,
+        base: "main",
+        draft: true,
+        publisher: pub,
+      }),
+    ).rejects.toThrow(/replace ref.*object-graph tampering/s);
+    expect(pub.calls).toHaveLength(0);
+
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-pr01/);
+  });
+
+  it("retry-commit auth: refuses a single clean commit beyond base whose message is not the harness message", async () => {
+    // The PR gate tolerates this run's own single reviewed commit re-pushed after
+    // a failed publish, but must authenticate its MESSAGE — an out-of-band commit
+    // carrying a secret in its message (content matching the fingerprint) is
+    // rejected.
+    const f = await setup("approved");
+    const worktree = join(f.root, "workspaces", f.runId, "repo");
+    git(worktree, ["add", "apps/x/f.ts"]);
+    git(worktree, ["commit", "-qm", "exfil: AWS_SECRET=AKIAIOSFODNN7EXAMPLE"]);
+
+    const pub = fakePublisher();
+    await expect(
+      createPullRequest({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+        locksDir: join(f.root, "locks"),
+        runId: f.runId,
+        base: "main",
+        draft: true,
+        publisher: pub,
+      }),
+    ).rejects.toThrow(/unauthenticated retry commit/);
+    expect(pub.calls).toHaveLength(0);
+    // the push happens before publish, so prove the secret-bearing commit never
+    // reached origin (fail-closed BEFORE push), matching the salvage twin.
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-pr01/);
+  });
+
+  it("retry-commit auth: an authenticated single retry commit proceeds to push + publish", async () => {
+    // No-over-refusal: the run already committed (authenticated message) + pushed
+    // its single reviewed commit, then publish failed; a retry must tolerate it —
+    // stage nothing, mint no second commit, and publish the same commit.
+    const f = await setup("approved");
+    const worktree = join(f.root, "workspaces", f.runId, "repo");
+    git(worktree, ["add", "apps/x/f.ts"]);
+    git(worktree, [
+      "-c",
+      "core.hooksPath=/dev/null",
+      "commit",
+      "--cleanup=verbatim",
+      "-qm",
+      "harness: run-20260521-apps-x-pr01",
+    ]);
+    const committedSha = git(worktree, ["rev-parse", "HEAD"]).trim();
+    git(worktree, ["push", "-q", "-u", "origin", `harness/${f.runId}/apps-x`]);
+
+    const pub = fakePublisher();
+    const r = await createPullRequest({
+      runsDir: join(f.root, "runs"),
+      workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+      runId: f.runId,
+      base: "main",
+      draft: true,
+      publisher: pub,
+    });
+    expect(r.prNumber).toBe(7);
+    expect(pub.calls).toHaveLength(1);
+    // no second commit was minted — HEAD is still the original reviewed commit
+    expect(git(worktree, ["rev-parse", "HEAD"]).trim()).toBe(committedSha);
+  });
+
+  it("commit-message hook injection: a prepare-commit-msg hook cannot taint the PR commit message", async () => {
+    // A target-repo prepare-commit-msg hook appending a secret must not reach
+    // origin: the mint commits with hooks disabled + verbatim, authenticated post-commit.
+    const f = await setup("approved");
+    const worktree = join(f.root, "workspaces", f.runId, "repo");
+    const hooksDir = git(worktree, ["rev-parse", "--git-path", "hooks"]).trim();
+    mkdirSync(hooksDir, { recursive: true });
+    const hook = join(hooksDir, "prepare-commit-msg");
+    writeFileSync(hook, '#!/bin/sh\necho "SECRET=sk_hook_leak" >> "$1"\n');
+    execFileSync("chmod", ["+x", hook]);
+
+    const r = await createPullRequest({
+      runsDir: join(f.root, "runs"),
+      workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+      runId: f.runId,
+      base: "main",
+      draft: true,
+      publisher: fakePublisher(),
+    });
+    expect(r.prNumber).toBe(7);
+    const remoteMsg = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "log", "-1", "--format=%B", `harness/${f.runId}/apps-x`],
+      { encoding: "utf8" },
+    ).trim();
+    expect(remoteMsg).toBe("harness: run-20260521-apps-x-pr01");
+    expect(remoteMsg).not.toMatch(/SECRET/);
+  });
+
+  it("coerces a whitespace-only --title to the deterministic default (commit + PR title)", async () => {
+    const f = await setup("approved");
+    const pub = fakePublisher();
+    const r = await createPullRequest({
+      runsDir: join(f.root, "runs"),
+      workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+      runId: f.runId,
+      base: "main",
+      draft: true,
+      title: "   ",
+      publisher: pub,
+    });
+    expect(r.prNumber).toBe(7);
+    const remoteMsg = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "log", "-1", "--format=%B", `harness/${f.runId}/apps-x`],
+      { encoding: "utf8" },
+    ).trim();
+    expect(remoteMsg).toBe("harness: run-20260521-apps-x-pr01");
+    // the PUBLISHED PR title is also coerced — never the blank whitespace title.
+    expect(pub.calls[0]?.title).toBe(
+      "harness run-20260521-apps-x-pr01 (apps/x)",
+    );
+  });
+
+  it("verbatim mint: a title with trailing whitespace round-trips and passes message auth", async () => {
+    // --cleanup=verbatim preserves the message exactly, so the post-commit %B
+    // auth (trailing-newline-only normalization) stays SYMMETRIC. Without verbatim,
+    // git's default cleanup would strip the trailing spaces and the auth would
+    // falsely reject — so success here proves verbatim is in effect.
+    const f = await setup("approved");
+    const title = "fix: trailing space title  ";
+    const r = await createPullRequest({
+      runsDir: join(f.root, "runs"),
+      workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+      runId: f.runId,
+      base: "main",
+      draft: true,
+      title,
+      publisher: fakePublisher(),
+    });
+    expect(r.prNumber).toBe(7);
+    const remoteMsg = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "log", "-1", "--format=%B", `harness/${f.runId}/apps-x`],
+      { encoding: "utf8" },
+    ).replace(/\n+$/, "");
+    expect(remoteMsg).toBe(title);
   });
 
   it("P1: refuses when a reviewed file drifted after approval", async () => {

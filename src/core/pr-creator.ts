@@ -14,6 +14,8 @@ import { exportRun, warnIfExportFailed } from "../db/export-files.js";
 import { SourceModeError } from "../db/errors.js";
 import { PrGateError } from "./pr-gate-error.js";
 import {
+  assertHeadCommitMessageAuthentic,
+  assertNoObjectGraphTampering,
   assertNoUnreviewedHistory,
   assertPathsSubset,
   assertReviewedFingerprintMatches,
@@ -376,12 +378,30 @@ async function createUnderLock(
     );
   }
 
+  // Fail-closed: refuse to push if the repo's object graph is tampered (replace
+  // refs / grafts / shallow). The history gates below are object-graph based, so
+  // this must run first; `git push` ships the REAL objects regardless.
+  await assertNoObjectGraphTampering({ git, runId: opts.runId });
+
+  // An empty/whitespace-only title is treated as absent for BOTH the commit
+  // subject and the published/recorded PR title — so the message authenticator is
+  // never degraded to an empty (forgeable) string, and the PR is never opened with
+  // a blank title. The two fall back to their own defaults below.
+  const hasTitle = typeof opts.title === "string" && opts.title.trim() !== "";
+  // The deterministic commit message the harness uses for the run-branch commit
+  // (#103 — reuse the Conventional-Commit PR title as the commit subject). The
+  // post-commit message authentication compares the HEAD commit against this value.
+  const commitMessage = hasTitle
+    ? (opts.title as string)
+    : `harness: ${opts.runId}`;
+
   // Fail-closed: refuse any unreviewed commit history beyond base (an
   // intermediate commit touching only reviewed paths whose final content matches
   // the fingerprint would otherwise pass the step-4 net branch-diff gate and
   // push its history). Tolerates this run's own single reviewed commit re-pushed
-  // idempotently after a failed publish/push. `baseRef` is the same ref step 4
-  // uses; baseRef may be a SHA (meta.baseSha) or a symbolic ref (opts.base).
+  // idempotently after a failed publish/push (its message is authenticated below).
+  // `baseRef` is the same ref step 4 uses; baseRef may be a SHA (meta.baseSha) or
+  // a symbolic ref (opts.base).
   const baseRef =
     typeof meta.baseSha === "string" && meta.baseSha !== ""
       ? meta.baseSha
@@ -415,9 +435,21 @@ async function createUnderLock(
   if (stagedPaths.length > 0) {
     // #103 — use the (Conventional-Commit) PR title as the branch commit
     // subject too, so the squash merge subject is Conventional regardless of
-    // whether the repo squashes from the PR title or the commit message.
+    // whether the repo squashes from the PR title or the commit message. Mint
+    // with hooks disabled + verbatim + no signing so neither a target-repo
+    // `prepare-commit-msg` hook, git's message cleanup, nor a `commit.gpgsign` +
+    // `gpg.program` config can mutate the deterministic message or embed
+    // unauthenticated bytes (a `gpgsig` header) into the pushed commit object.
     await runGit(
-      ["commit", "-m", opts.title ?? `harness: ${opts.runId}`],
+      [
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "--no-gpg-sign",
+        "--cleanup=verbatim",
+        "-m",
+        commitMessage,
+      ],
       git,
     );
   }
@@ -426,6 +458,14 @@ async function createUnderLock(
   //    existing local commits on the run branch, not just paths staged by this
   //    invocation. `baseRef` was computed above (the history gate uses it too).
   await assertSingleReviewedCommit({ git, runId: opts.runId, baseRef });
+  // Authenticate HEAD's commit message (covers both the freshly minted commit and
+  // a tolerated single retry commit) — fail-closed if it is not the exact harness
+  // message (e.g. a hook-appended secret or an out-of-band commit message).
+  await assertHeadCommitMessageAuthentic({
+    git,
+    runId: opts.runId,
+    expectedCommitMessage: commitMessage,
+  });
   const branchPaths = parseGitPathList(
     await runGit(["diff", "--no-renames", "-z", "--name-only", baseRef, "HEAD"], git),
   );
@@ -442,9 +482,12 @@ async function createUnderLock(
   // above). Capture it so auto-merge can pin the merge to THIS exact commit.
   const reviewedHeadSha = (await runGit(["rev-parse", "HEAD"], git)).trim();
 
-  // 6. open the PR (publisher should be idempotent on the head branch).
-  const title =
-    opts.title ?? `harness ${opts.runId} (${meta.domain ?? "unknown"})`;
+  // 6. open the PR (publisher should be idempotent on the head branch). Reuse the
+  // same empty/whitespace coercion as the commit subject so a blank --title never
+  // becomes the published/recorded PR title.
+  const title = hasTitle
+    ? (opts.title as string)
+    : `harness ${opts.runId} (${meta.domain ?? "unknown"})`;
   const body = await buildPrBody(runDir, meta, opts.runId);
   const occurredAt = (opts.now ?? new Date()).toISOString();
   const repo = typeof meta.repoId === "string" ? meta.repoId : null;
