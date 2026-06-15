@@ -115,7 +115,14 @@ create a backlog item and stores the linked item id.
 
 Evaluation is deterministic and conservative:
 
-1. Terminal sessions stay terminal.
+1. Terminal sessions stay terminal — with one exception. `closed` / `cancelled`
+   are hard-terminal, and `budget_exhausted` / `escalated` are operator-gated
+   (require an explicit `reopen`). `diverging`, however, is **re-derived live, not
+   cached** (#164): a stored `diverging` status does not short-circuit evaluation
+   — the divergence circuit breaker (rule 4) is re-run against current metrics, so
+   a divergence whose trigger no longer holds **self-clears** and the hitch
+   returns to normal flow (the status syncs off `diverging` back to `in_progress`
+   / `close_ready`). A still-active trigger simply re-derives to `diverging`.
 2. Iteration/review/rerun budgets are enforced.
 3. Open in-scope P0 escalates.
 4. Growing finding counts or reopened churn is `diverging`. Divergence churn
@@ -500,7 +507,11 @@ only, followed by `hitch close --force` to close the record.
 `hitch update` changes the frozen config only under explicit guards. It accepts
 live statuses (`open`, `in_progress`, `close_ready`) and rejects terminal
 statuses; `closed` / `budget_exhausted` / `escalated` must be reopened first,
-while `cancelled` / `diverging` cannot be updated. Scope edits are fail-closed:
+and `cancelled` cannot be updated. `diverging` is not directly updatable either,
+but it is not a dead end: it is re-derived live (rule 1, #164), so a transient
+divergence self-clears to a live status on the next evaluation and then accepts
+updates — `reopen` is not needed (and is not the recovery for a still-cumulative
+divergence; see REOPENABLE_STATUSES in the repository). Scope edits are fail-closed:
 `targetFiles`, `targetOperations`, `allowedFindingCategories`,
 `excludedCategories`, and `targetSummary` must be provably non-widening unless
 `--allow-scope-widen` is supplied; `notes` is the only non-semantic scope field.

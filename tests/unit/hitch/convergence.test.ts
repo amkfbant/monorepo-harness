@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { ConvergenceService } from "../../../src/hitch/convergence.js";
+import { evaluateConvergenceAndRecordStatus } from "../../../src/hitch/convergence-status.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
 import {
   DEFAULT_HITCH_POLICY,
@@ -921,6 +922,139 @@ describe("ConvergenceService", () => {
     } finally {
       db.close();
     }
+  });
+
+  describe("#164: diverging is re-derived live (self-clearing), not a cached terminal", () => {
+    it("clears a stored-diverging session to a LIVE decision when a transient trigger no longer holds", () => {
+      const { db, repo, service } = fresh();
+      try {
+        // high review-cycle budget so the clean cycle does NOT trip
+        // budget_exhausted and mask the self-clear with another stop.
+        createGoal(repo, { maxReviewCycles: 20 });
+        addCycleFindings(repo, 1, ["review", "review"]);
+        addCycleFindings(repo, 2, ["review", "review"]); // non-decreasing → diverging
+        expect(service.evaluate("goal-test").decision).toBe("diverging");
+        // persist the diverging status (as syncHitchStatusForConvergence would)
+        repo.updateStatus("goal-test", "diverging", "diverged", {
+          createdBy: "test",
+        });
+        // a fresh CLEAN review cycle (0 new findings) clears the non-decreasing trigger
+        addCycle(repo, 3, 0);
+        // BEFORE the fix the stored status short-circuited to diverging; now it
+        // re-derives live and clears to a live-work decision (not another stop).
+        const after = service.evaluate("goal-test");
+        expect(after.decision).not.toBe("diverging");
+        expect(after.decision).not.toBe("budget_exhausted");
+        expect(after.decision).not.toBe("escalate");
+      } finally {
+        db.close();
+      }
+    });
+
+    it("keeps a stored-diverging session diverging when a CUMULATIVE budget trigger still holds (no false clear)", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxTotalNewFindings: 2, maxReviewCycles: 20 });
+        addCycleFindings(repo, 1, ["review", "review", "review"]); // 3 > 2 → diverging
+        expect(service.evaluate("goal-test").decision).toBe("diverging");
+        repo.updateStatus("goal-test", "diverging", "diverged", {
+          createdBy: "test",
+        });
+        // a clean cycle does NOT reduce the cumulative total (3 > budget 2):
+        // re-derived live, it correctly STAYS diverging.
+        addCycle(repo, 2, 0);
+        expect(service.evaluate("goal-test").decision).toBe("diverging");
+      } finally {
+        db.close();
+      }
+    });
+
+    it("syncs the hitch status from diverging back to in_progress when the live decision clears", () => {
+      const { db, repo } = fresh();
+      try {
+        // maxReviewCycles high + no passed close check, so the cleared decision is
+        // a live-work decision (NOT budget_exhausted / close_ready) and the status
+        // reversion branch (diverging → in_progress) is the ONLY path off diverging.
+        createGoal(repo, { maxReviewCycles: 20 });
+        addCycleFindings(repo, 1, ["review", "review"]);
+        addCycleFindings(repo, 2, ["review", "review"]);
+        evaluateConvergenceAndRecordStatus({
+          repository: repo,
+          hitchId: "goal-test",
+          createdBy: "test",
+        });
+        expect(repo.requireSession("goal-test").status).toBe("diverging");
+        addCycle(repo, 3, 0); // clean cycle clears the transient trigger
+        evaluateConvergenceAndRecordStatus({
+          repository: repo,
+          hitchId: "goal-test",
+          createdBy: "test",
+        });
+        // the data-layer reversion moved it OFF diverging, back to live work.
+        expect(repo.requireSession("goal-test").status).toBe("in_progress");
+      } finally {
+        db.close();
+      }
+    });
+
+    it("does NOT clear divergence on a STARTED-but-incomplete review cycle (requires completed evidence)", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxReviewCycles: 20 });
+        addCycleFindings(repo, 1, ["review", "review"]);
+        addCycleFindings(repo, 2, ["review", "review"]); // non-decreasing → diverging
+        expect(service.evaluate("goal-test").decision).toBe("diverging");
+        repo.updateStatus("goal-test", "diverging", "diverged", {
+          createdBy: "test",
+        });
+        // merely START cycle 3 — no findings imported, NOT completed. An
+        // incomplete cycle is not clean review evidence and must not self-clear.
+        repo.startReviewCycle({
+          hitchId: "goal-test",
+          cycleNumber: 3,
+          reviewMode: "delta",
+        });
+        expect(service.evaluate("goal-test").decision).toBe("diverging");
+      } finally {
+        db.close();
+      }
+    });
+
+    it("precedence: a stored-diverging session with an open in-scope P0 escalates (P0 gate wins)", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxReviewCycles: 20 });
+        addCycleFindings(repo, 1, ["review", "review"]);
+        addCycleFindings(repo, 2, ["review", "review"]);
+        expect(service.evaluate("goal-test").decision).toBe("diverging");
+        repo.updateStatus("goal-test", "diverging", "diverged", {
+          createdBy: "test",
+        });
+        addFinding(repo, { scopeStatus: "in_scope", severity: "P0" });
+        // re-derived live: the open in-scope P0 gate (step 3) precedes divergence.
+        expect(service.evaluate("goal-test").decision).toBe("escalate");
+      } finally {
+        db.close();
+      }
+    });
+
+    it("precedence: a stored-diverging session over the review-cycle budget reports budget_exhausted", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxReviewCycles: 2 });
+        addCycleFindings(repo, 1, ["review", "review"]);
+        addCycleFindings(repo, 2, ["review", "review"]); // diverging + cycles at max
+        expect(service.evaluate("goal-test").decision).toBe("diverging");
+        repo.updateStatus("goal-test", "diverging", "diverged", {
+          createdBy: "test",
+        });
+        addCycle(repo, 3, 0); // now over the review-cycle budget
+        // re-derived live: the budget gate (step 2) precedes divergence.
+        expect(service.evaluate("goal-test").decision).toBe("budget_exhausted");
+      } finally {
+        db.close();
+      }
+    });
   });
 
   describe("source-aware divergence", () => {

@@ -423,14 +423,16 @@ function nonNegInt(value: number | undefined): number {
 /** Terminal statuses a hitch can be reopened from (#76). `cancelled` is a
  * deliberate abandon and is excluded.
  *
- * `diverging` is intentionally NOT reopenable: divergence triggers
- * (harnessOriginNewFindings, harnessOriginMaxReopenCount, non-decreasing
- * harness-origin per-cycle counts) derive from immutable first-seen origin
- * history, and `reopenSession` only extends iteration/review/rerun
- * budgets — not the divergence budget. A reopened diverging hitch would re-fire
- * `diverging` on its very next convergence evaluation and re-block every
- * mutation, leaving the operator no way out. Reopening a diverging hitch needs a
- * divergence-budget extension design (see docs/future-features.md). */
+ * `diverging` is intentionally NOT reopenable — but it does not need to be:
+ * since #164 a stored `diverging` status is RE-DERIVED live by the convergence
+ * evaluator (it is not a cached terminal). A TRANSIENT trigger (per-cycle count /
+ * non-decreasing) self-clears once a later review cycle is clean, returning the
+ * hitch to normal flow with no reopen. `reopen` is still the wrong recovery for a
+ * CUMULATIVE trigger (total-over-budget / max-reopen): those do not decrease, and
+ * `reopenSession` extends only the iteration/review/rerun budgets — not the
+ * divergence budget — so a reopened cumulatively-diverging hitch would re-fire
+ * `diverging` at once. Recovering that case needs a divergence-budget extension
+ * design (see docs/future-features.md). */
 const REOPENABLE_STATUSES: ReadonlySet<HitchStatus> = new Set<HitchStatus>([
   "closed",
   "budget_exhausted",
@@ -590,9 +592,11 @@ export class HitchRepository {
   }
 
   /**
-   * #76 / #104 — resume a terminal hitch (closed / budget_exhausted / escalated /
-   * diverging) so a late-discovered finding can be fixed on the existing branch
-   * instead of closing the PR and re-implementing. Transitions back to `open`,
+   * #76 / #104 — resume a terminal hitch (closed / budget_exhausted / escalated)
+   * so a late-discovered finding can be fixed on the existing branch instead of
+   * closing the PR and re-implementing. (`diverging` is NOT reopenable — it
+   * self-clears via live re-derivation; see REOPENABLE_STATUSES.) Transitions
+   * back to `open`,
    * clears the terminal markers `updateStatus` would COALESCE-preserve
    * (`closed_at` / `close_summary` / `escalation_reason`), and extends the
    * budget (existing columns — no schema change) so a budget_exhausted hitch does
@@ -1682,6 +1686,11 @@ export class HitchRepository {
             AND f.duplicate_of IS NULL
             AND f.source IN (${sourcePlaceholders})
           WHERE c.hitch_id = ?
+            -- only COMPLETED cycles are review evidence (#164): a
+            -- started-but-incomplete cycle has 0 imported findings and would
+            -- otherwise look like a "clean" cycle, prematurely clearing a
+            -- non-decreasing divergence before any review evidence exists.
+            AND c.completed_at IS NOT NULL
           GROUP BY c.cycle_id, c.cycle_number, c.created_at
           ORDER BY c.cycle_number ASC, c.created_at ASC, c.cycle_id ASC`,
       )

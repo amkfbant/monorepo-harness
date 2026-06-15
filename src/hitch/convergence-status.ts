@@ -112,8 +112,14 @@ export function syncHitchStatusForConvergence(
           ...(now !== undefined ? { now } : {}),
         });
   }
+  // Revert a soft, re-derivable status back to live work when the decision no
+  // longer maps to a status. `close_ready` reverts when it is no longer ready;
+  // `diverging` reverts when divergence has cleared (#164) — a stored diverging
+  // hitch whose live decision is now `continue` / `needs_fix` / etc. must not
+  // stay stuck on the stale stop (the decision itself is re-derived live; a
+  // genuinely-still-diverging hitch re-derives to `diverging`, handled above).
   if (
-    current.status === "close_ready" &&
+    (current.status === "close_ready" || current.status === "diverging") &&
     result.decision !== "closed" &&
     result.decision !== "cancel"
   ) {
