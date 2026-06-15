@@ -10,6 +10,8 @@ docs/
   policy-semantics.md      ← minimatch root-anchored の落とし穴 (policy 書く前に必読)
   specs/                   ← 現状仕様 (実装と同期、TODO は書かない)
     README.md, overview.md, policy.md, workflow.md, cli.md
+  design/                  ← 設計ノート (提案・思想の正本; specs より前段)
+    README.md, deliberation.md, consulting-frameworks.md, applications.md
   examples/                ← サンプル / 検証 fixture の仕様
     mini-commerce.md
   reports/                 ← 開発サイクルの記録 + finding registry
