@@ -98,14 +98,20 @@ scope/severity を直接確定しない。
 3. **LLM-as-judge バイアス対策**: 提示順シャッフル / coder の出力を coder 自身に評価させない
    （既に層分離済み）。
 
-**スコープ**: (1) **orchestrator review runner が `review process` の前に N reviewer を
-dispatch** する（`quorum > 1` を満たせるようにする。これが無いと multi-lens consensus は
-hitch から到達不能）。(2) `src/core/review-consensus.ts` への lens 設定 + verify ステップ。
+**スコープ**: `quorum > 1` を hitch から到達可能にするには **2 つの前提が両方**要る:
+(0) **profile-loaded review rules**: 現状 `src/core/review-rule.ts` の `resolveEffectiveRule`
+は常に `DEFAULT_REVIEW_RULE`（`mode: latest-proposal`、requirements なし）を返すため、
+たとえ N reviewer を回しても `review process` は quorum 要件を無視する。consensus /
+requirements rule を profile からロードする（`docs/future-features.md` の reachable consensus
+mode 前提）。
+(1) **orchestrator review runner が `review process` の前に N reviewer を dispatch** する。
+(2) `src/core/review-consensus.ts` への lens 設定 + verify ステップ。
 **集約は既存の決定論 quorum / tie-break のまま。**
 
 **受け入れ条件**:
-- `harness hitch orchestrate` で `quorum > 1` の consensus に実際に到達できるテスト
-  （N reviewer dispatch が effくこと）。
+- `resolveEffectiveRule` が profile から consensus(`quorum > 1`) rule を返せるテスト。
+- 上記 (0)+(1) が揃った状態で `harness hitch orchestrate` が `quorum > 1` の consensus に
+  実際に到達できるテスト。
 - 異レンズ proposal の集約が決定論的（同入力→同出力）。
 - 反証 verify が finding を advisory に降格できる経路のテスト。
 - 既存 consensus の tie-break / override パスに回帰なし。
@@ -139,10 +145,15 @@ hitch から到達不能）。(2) `src/core/review-consensus.ts` への lens 設
 
 **不可侵の制約**:
 - 成果物（spec）は**人間が批准**し、harness が canonical scope として記録（委員会は決めない）。
-- closeConditions は**機械検証可能な kind**（実在する `HitchCloseConditionKind`:
-  `command` / `finding_policy`（count 系ゲート）/ `operation_status` / `artifact_exists` /
-  `db_doctor` / `review_consensus`、必須化は `manual`）に限る。合議は条件文を*書く*が、判定は
-  決定論ゲートのまま。さもないと曖昧合意への spec drift を招き close-check が骨抜きになる。
+- closeConditions は実在する `HitchCloseConditionKind` のみを使い、かつ
+  **「自動検証される kind」と「外部証拠待ち(ask_human)の kind」を区別**する:
+  - **自動検証**（決定論ゲートが自動判定）: `command`（close-check runner が実行）/
+    `finding_policy`（count 系ゲート）/ `db_doctor` / `review_consensus`（static approval）。
+  - **外部証拠待ち**（convergence が `ask_human` に routing し、operator の記録を待つ）:
+    `manual` / `artifact_exists` / `operation_status`。
+  「schema を通る」≠「自動検証される」。後者を自動ゲートのつもりで多用すると、hitch が
+  `HitchCloseConditionSchema` を通っても operator 証拠待ちで stall する。合議は条件文を*書く*が
+  判定は決定論ゲート。さもないと曖昧合意への spec drift を招き close-check が骨抜きになる。
 
 **スコープ**: 主に新規ドキュメント/ワークフロー（オフライン・人間批准）。`docs/specs/roadmap.md`
 （course→phase）と `hitch start` 入力の橋渡し。コア状態機械は変更しない見込み。
@@ -151,6 +162,8 @@ hitch から到達不能）。(2) `src/core/review-consensus.ts` への lens 設
 - 起案 → 批判 → 統合の成果物テンプレートが存在し、人間批准ステップが明示。
 - 生成された closeConditions が実在する `HitchCloseConditionKind` のみで構成され、
   `HitchCloseConditionSchema` を通ることの検査（`count` 等の無効 kind を出さない）。
+- 「自動検証 kind」と「外部証拠待ち kind」がテンプレート上で区別され、自動ゲートを意図した
+  条件が `manual`/`artifact_exists`/`operation_status` に化けない検査。
 
 **安全境界チェック**: spec の enforcement（close 判定）は決定論ゲート。合議は起草のみ。
 

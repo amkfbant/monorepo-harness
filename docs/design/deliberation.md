@@ -69,7 +69,7 @@ convergence の決定論判定で gate する。`docs/specs/hitch-convergence.md
 | close-check（finding count / command exit） | 決定論的 | **載せない**（条件の*文面策定*は合議の対象＝[案C](./applications.md#案c)） |
 | `needs_classification`（unknown scope の finding） | 判断 | **最有力**。多角レンズの jury 投票で scope 分類 → 不一致は人間 |
 | `diverging`（本当に発散か、良性 finding の急増か） | 判断 | 有力。同じ metrics を複数視点で評価し集約 |
-| severity P0–P3（現状 reviewer 単独） | 判断 | 有力。複数 reviewer のクロスチェック |
+| severity P0–P3（現状 reviewer 単独ではなく **harness 由来マッピング**: required_changes→P1 / non_blocking→P2 固定） | 判断 | 有力。明示 severity フィールド追加 or マッピングの多体クロスチェック |
 
 判断系であっても、合議の役割は**「人間への提示パケットを豊かにする」**まで。
 Accountable を人間から委員会に移してはならない（責任希釈の防止）。escalate 時に出す情報を
