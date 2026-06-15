@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.13](https://github.com/amkfbant/monorepo-harness/compare/v0.7.12...v0.7.13) (2026-06-15)
+
+
+### Bug Fixes
+
+* **orchestrate:** abort the in-flight hitch drive on course-lease loss ([#132](https://github.com/amkfbant/monorepo-harness/issues/132)) ([#249](https://github.com/amkfbant/monorepo-harness/issues/249)) ([3b41a4c](https://github.com/amkfbant/monorepo-harness/commit/3b41a4c33eafc8ada9ba4d256acd24585858546e))
+* **rollup:** re-derive force-closed phase decision live + add phase audit note ([#171](https://github.com/amkfbant/monorepo-harness/issues/171)) ([#247](https://github.com/amkfbant/monorepo-harness/issues/247)) ([b666e70](https://github.com/amkfbant/monorepo-harness/commit/b666e70ee38dfde568badd0b8e4f718acc205649))
+
 ## [0.7.12](https://github.com/amkfbant/monorepo-harness/compare/v0.7.11...v0.7.12) (2026-06-15)
 
 
