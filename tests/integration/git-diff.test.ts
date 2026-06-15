@@ -21,13 +21,155 @@ beforeEach(() => {
 });
 
 async function baseSha(): Promise<string> {
-  return await resolveBaseSha({ repoPath: repo, baseBranch: "main" });
+  // hermetic: the collectDiff fixtures have no remote — skip the best-effort fetch
+  return await resolveBaseSha({
+    repoPath: repo,
+    baseBranch: "main",
+    fetchRemote: false,
+  });
+}
+
+function git(cwd: string, a: string[]): string {
+  return execFileSync("git", a, { cwd, encoding: "utf8" });
 }
 
 describe("resolveBaseSha", () => {
-  it("returns the SHA of the given ref", async () => {
+  it("returns the SHA of the given ref (local, no fetch)", async () => {
     const sha = await baseSha();
     expect(sha).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it("prefers origin/<base> over a STALE local <base> (#154)", async () => {
+    // a bare remote + a clone; advance origin/main beyond the clone's local main
+    const bare = mkdtempSync(join(tmpdir(), "harness-base-bare-")) + ".git";
+    execFileSync("git", ["init", "-q", "--bare", bare]);
+    git(repo, ["remote", "add", "origin", bare]);
+    git(repo, ["push", "-q", "-u", "origin", "main"]);
+    const staleLocal = git(repo, ["rev-parse", "main"]).trim();
+
+    // a second clone advances origin/main (simulating merges landing remotely)
+    const other = mkdtempSync(join(tmpdir(), "harness-base-other-"));
+    git(other, ["clone", "-q", bare, "."]);
+    git(other, ["config", "user.email", "t@e.com"]);
+    git(other, ["config", "user.name", "T"]);
+    // explicit so the clone is on `main` regardless of the host's
+    // init.defaultBranch (CI defaults to `master`, which would leave no local main)
+    git(other, ["checkout", "-B", "main", "origin/main"]);
+    writeFileSync(join(other, "advanced.ts"), "export const x = 1;\n");
+    git(other, ["add", "."]);
+    git(other, ["commit", "-qm", "advance origin/main"]);
+    git(other, ["push", "-q", "origin", "main"]);
+    const remoteTip = git(other, ["rev-parse", "main"]).trim();
+
+    // resolveBaseSha (fetch=default) must return the REMOTE tip, not stale local
+    const resolved = await resolveBaseSha({ repoPath: repo, baseBranch: "main" });
+    expect(resolved).toBe(remoteTip);
+    expect(resolved).not.toBe(staleLocal);
+  });
+
+  it("on fetch failure, prefers the LOCAL branch over a STALE origin/<base> ref (codex P1)", async () => {
+    // origin/main exists locally (from the push), then origin becomes unreachable
+    // and local main advances. resolveBaseSha must NOT prefer the now-stale
+    // origin/main remote-tracking ref — it should resolve the fresh local main.
+    const bare = mkdtempSync(join(tmpdir(), "harness-base-stale-")) + ".git";
+    execFileSync("git", ["init", "-q", "--bare", bare]);
+    git(repo, ["remote", "add", "origin", bare]);
+    git(repo, ["push", "-q", "-u", "origin", "main"]);
+    const staleOrigin = git(repo, ["rev-parse", "refs/remotes/origin/main"]).trim();
+    // break the remote so the best-effort fetch fails
+    git(repo, ["remote", "set-url", "origin", "/nonexistent/repo.git"]);
+    // local main advances beyond the stale origin/main
+    writeFileSync(join(repo, "local-advance.ts"), "export const a = 1;\n");
+    git(repo, ["add", "."]);
+    git(repo, ["commit", "-qm", "local advance"]);
+    const localTip = git(repo, ["rev-parse", "main"]).trim();
+    expect(localTip).not.toBe(staleOrigin);
+
+    const resolved = await resolveBaseSha({ repoPath: repo, baseBranch: "main" });
+    expect(resolved).toBe(localTip);
+    expect(resolved).not.toBe(staleOrigin);
+  });
+
+  it("swallows a best-effort fetch failure when there is no remote at all", async () => {
+    // no `origin` remote configured; fetchRemote defaults true → the fetch fails
+    // and must be ignored, resolving the local main.
+    const localMain = git(repo, ["rev-parse", "main"]).trim();
+    const resolved = await resolveBaseSha({ repoPath: repo, baseBranch: "main" });
+    expect(resolved).toBe(localMain);
+  });
+
+  it("passes a raw 40-hex SHA through (no fetch, no remote candidate)", async () => {
+    const sha = git(repo, ["rev-parse", "main"]).trim();
+    const resolved = await resolveBaseSha({ repoPath: repo, baseBranch: sha });
+    expect(resolved).toBe(sha);
+  });
+
+  it("rejects a rev-expression / refspec base name (no silent resolution)", async () => {
+    await expect(
+      resolveBaseSha({ repoPath: repo, baseBranch: "main~1" }),
+    ).rejects.toThrow(/invalid base branch "main~1"/);
+    await expect(
+      resolveBaseSha({ repoPath: repo, baseBranch: "--output=/tmp/x" }),
+    ).rejects.toThrow(/invalid base branch/);
+  });
+
+  it("fails fast when only a STALE origin/<base> remote-tracking ref survives (deleted/renamed remote branch)", async () => {
+    // origin is reachable but does NOT have `ghost`; a leftover
+    // refs/remotes/origin/ghost remote-tracking ref lingers and there is no local
+    // ghost branch. The fetch reports the ref is gone, so the stale remote-tracking
+    // ref must NOT be used as a base — fail-closed instead.
+    const bare = mkdtempSync(join(tmpdir(), "harness-base-ghost-")) + ".git";
+    execFileSync("git", ["init", "-q", "--bare", bare]);
+    git(repo, ["remote", "add", "origin", bare]);
+    git(repo, ["push", "-q", "-u", "origin", "main"]);
+    // plant a stale remote-tracking ref for a branch origin does not have
+    const someSha = git(repo, ["rev-parse", "main"]).trim();
+    git(repo, ["update-ref", "refs/remotes/origin/ghost", someSha]);
+
+    await expect(
+      resolveBaseSha({ repoPath: repo, baseBranch: "ghost" }),
+    ).rejects.toThrow(/cannot resolve base branch "ghost"/);
+  });
+
+  it("rejects pseudo-refs (HEAD / @ / FETCH_HEAD) as a base branch", async () => {
+    // HEAD would otherwise resolve via refs/remotes/origin/HEAD (default-branch
+    // symref); @/FETCH_HEAD/ORIG_HEAD resolve transient state — none is a branch.
+    for (const name of ["HEAD", "@", "FETCH_HEAD", "ORIG_HEAD"]) {
+      await expect(
+        resolveBaseSha({ repoPath: repo, baseBranch: name }),
+      ).rejects.toThrow(/invalid base branch/);
+    }
+  });
+
+  it("resolves a LOCAL-only base branch via the local candidate when origin lacks it (#195a)", async () => {
+    const bare = mkdtempSync(join(tmpdir(), "harness-base-bare2-")) + ".git";
+    execFileSync("git", ["init", "-q", "--bare", bare]);
+    git(repo, ["remote", "add", "origin", bare]);
+    git(repo, ["push", "-q", "-u", "origin", "main"]);
+    // a local-only branch never pushed to origin
+    git(repo, ["checkout", "-q", "-b", "feat/local-only"]);
+    writeFileSync(join(repo, "local.ts"), "export const l = 1;\n");
+    git(repo, ["add", "."]);
+    git(repo, ["commit", "-qm", "local-only work"]);
+    const localTip = git(repo, ["rev-parse", "feat/local-only"]).trim();
+    git(repo, ["checkout", "-q", "main"]);
+
+    const resolved = await resolveBaseSha({
+      repoPath: repo,
+      baseBranch: "feat/local-only",
+    });
+    expect(resolved).toBe(localTip);
+  });
+
+  it("fails fast (no silent fallback) when the base branch resolves nowhere (#195)", async () => {
+    const bare = mkdtempSync(join(tmpdir(), "harness-base-bare3-")) + ".git";
+    execFileSync("git", ["init", "-q", "--bare", bare]);
+    git(repo, ["remote", "add", "origin", bare]);
+    git(repo, ["push", "-q", "-u", "origin", "main"]);
+
+    await expect(
+      resolveBaseSha({ repoPath: repo, baseBranch: "does-not-exist" }),
+    ).rejects.toThrow(/cannot resolve base branch "does-not-exist"/);
   });
 });
 
