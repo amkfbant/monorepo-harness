@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.10](https://github.com/amkfbant/monorepo-harness/compare/v0.7.9...v0.7.10) (2026-06-15)
+
+
+### Bug Fixes
+
+* **project:** extend ignore_untracked from profile + add Python artifacts to strict-monorepo-v1 ([#240](https://github.com/amkfbant/monorepo-harness/issues/240)) ([a52b607](https://github.com/amkfbant/monorepo-harness/commit/a52b607739d4de6bac662976f69231dc18b1b6ac)), closes [#239](https://github.com/amkfbant/monorepo-harness/issues/239)
+* **security:** redact secret-shaped content in on-disk command logs ([#186](https://github.com/amkfbant/monorepo-harness/issues/186)) ([#238](https://github.com/amkfbant/monorepo-harness/issues/238)) ([368188e](https://github.com/amkfbant/monorepo-harness/commit/368188e534e592f106f0e1d85e7542ea6c45240f))
+
 ## [0.7.9](https://github.com/amkfbant/monorepo-harness/compare/v0.7.8...v0.7.9) (2026-06-15)
 
 
