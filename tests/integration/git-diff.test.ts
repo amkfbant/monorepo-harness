@@ -110,6 +110,16 @@ describe("resolveBaseSha", () => {
     ).rejects.toThrow(/invalid base branch/);
   });
 
+  it("rejects pseudo-refs (HEAD / @ / FETCH_HEAD) as a base branch", async () => {
+    // HEAD would otherwise resolve via refs/remotes/origin/HEAD (default-branch
+    // symref); @/FETCH_HEAD/ORIG_HEAD resolve transient state — none is a branch.
+    for (const name of ["HEAD", "@", "FETCH_HEAD", "ORIG_HEAD"]) {
+      await expect(
+        resolveBaseSha({ repoPath: repo, baseBranch: name }),
+      ).rejects.toThrow(/invalid base branch/);
+    }
+  });
+
   it("resolves a LOCAL-only base branch via the local candidate when origin lacks it (#195a)", async () => {
     const bare = mkdtempSync(join(tmpdir(), "harness-base-bare2-")) + ".git";
     execFileSync("git", ["init", "-q", "--bare", bare]);

@@ -141,16 +141,32 @@ function combineNumStat(
 
 const FULL_SHA_RE = /^[0-9a-f]{40}$/;
 
-// A real branch/tag name, NOT a rev-expression or refspec: blocks rev-syntax
-// (`~ ^ : ? * [ \`), control chars, `@{`, `..`, and a leading `-` (git
-// option-injection) / leading or trailing `/`. baseBranch is operator-supplied
-// (CLI / project config), so this is defense-in-depth, but it keeps the value
-// safe to pass to `git fetch` / `rev-parse` as a ref and avoids `main~1`-style
-// rev-expressions silently resolving to an unexpected commit.
+// git pseudo-refs that resolve specially at the top level (and `@`, the HEAD
+// alias). A base of `HEAD` would otherwise resolve via `refs/remotes/origin/HEAD`
+// (a clone's default-branch symref) and `FETCH_HEAD`/`ORIG_HEAD` resolve transient
+// state — none are "a branch", so reject them outright.
+const PSEUDO_REFS = new Set([
+  "@",
+  "HEAD",
+  "FETCH_HEAD",
+  "ORIG_HEAD",
+  "MERGE_HEAD",
+  "CHERRY_PICK_HEAD",
+  "REVERT_HEAD",
+  "BISECT_HEAD",
+]);
+
+// A real branch name, NOT a rev-expression, refspec, or pseudo-ref: blocks
+// rev-syntax (`~ ^ : ? * [ \`), control chars, `@{`, `..`, a leading `-` (git
+// option-injection) / leading or trailing `/`, and the pseudo-refs above.
+// baseBranch is operator-supplied (CLI / project config), so this is
+// defense-in-depth, but it keeps the value safe to pass to `git fetch` /
+// `rev-parse` and avoids `main~1` / `HEAD` silently resolving to an unexpected
+// commit.
 function isSafeRefName(s: string): boolean {
   if (s.length === 0 || s.length > 255) return false;
   if (s.startsWith("-") || s.startsWith("/") || s.endsWith("/")) return false;
-  if (s.includes("..") || s.includes("@{")) return false;
+  if (s.includes("..") || s.includes("@{") || PSEUDO_REFS.has(s)) return false;
   return !/[\x00-\x20~^:?*[\\\x7f]/.test(s);
 }
 
@@ -165,6 +181,11 @@ async function revParseCommit(
     ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`],
     g,
   );
+  if (r.timedOut) {
+    // fail-closed: a timeout must NOT silently fall through to the next candidate
+    // (which could resolve a different/stale base).
+    throw new Error(`git rev-parse of "${ref}" timed out`);
+  }
   const sha = r.stdout.trim();
   return r.exitCode === 0 && FULL_SHA_RE.test(sha) ? sha : null;
 }
@@ -213,7 +234,9 @@ export async function resolveBaseSha(opts: {
           "fetch",
           "--no-tags",
           "origin",
-          `+${baseBranch}:refs/remotes/origin/${baseBranch}`,
+          // anchor the src to refs/heads/<base> so only the remote BRANCH is
+          // fetched (not a tag / pseudo-ref of the same name).
+          `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`,
         ],
         g,
       );
@@ -227,11 +250,14 @@ export async function resolveBaseSha(opts: {
   // (#195: a `--base-branch` that resolved nowhere used to slide to main, wasting
   // the run). When the fetch refreshed origin, prefer the fresh remote tip;
   // otherwise prefer the local branch (the operator's current state) and only
-  // fall back to a possibly-stale remote-tracking ref as a last resort.
+  // fall back to a possibly-stale remote-tracking ref as a last resort. The local
+  // candidate is anchored to refs/heads/<base> so only a real branch resolves (not
+  // HEAD / a tag / a pseudo-ref).
   const originRef = `refs/remotes/origin/${baseBranch}`;
+  const localRef = `refs/heads/${baseBranch}`;
   const candidates = fetchOk
-    ? [originRef, baseBranch]
-    : [baseBranch, originRef];
+    ? [originRef, localRef]
+    : [localRef, originRef];
   for (const ref of candidates) {
     const sha = await revParseCommit(ref, g);
     if (sha !== null) return sha;
