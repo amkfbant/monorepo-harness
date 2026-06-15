@@ -170,4 +170,69 @@ describe("pushReviewedBranchForEscalation (salvage push guard)", () => {
     );
     expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-salv1/);
   });
+
+  it("idempotent retry: re-pushes the run's own single reviewed commit without minting a new one", async () => {
+    // The MUST-PASS side of the history gate: this run already committed +
+    // pushed its single reviewed commit (HEAD == base + 1 clean reviewed
+    // commit), then a retry runs. The gate must tolerate it — `git add` stages
+    // nothing, no second commit is created, and the same branch re-pushes (no
+    // divergent SHA). This locks the no-over-refusal invariant.
+    const f = await setupSalvage();
+    // simulate the prior successful commit + push of the reviewed commit
+    git(f.worktree, ["add", "apps/x/f.ts"]);
+    git(f.worktree, ["commit", "-qm", "harness salvage: run-20260521-apps-x-salv1"]);
+    const committedSha = git(f.worktree, ["rev-parse", "HEAD"]).trim();
+    git(f.worktree, ["push", "-q", "-u", "origin", `harness/${f.runId}/apps-x`]);
+
+    const r = await pushReviewedBranchForEscalation({
+      runsDir: join(f.root, "runs"),
+      workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+      runId: f.runId,
+    });
+    // nothing new was committed; the same commit is the branch head.
+    expect(r.committed).toBe(false);
+    expect(r.headSha).toBe(committedSha);
+    const remoteHead = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "rev-parse", `harness/${f.runId}/apps-x`],
+      { encoding: "utf8" },
+    ).trim();
+    expect(remoteHead).toBe(committedSha);
+  });
+
+  it("refuses a one-commit-beyond-base worktree that still has reviewed content to stage", async () => {
+    // History-gate ordering (codex P1) for the salvage path: exactly one clean
+    // commit beyond base, but an untracked reviewed file remains. A bare
+    // count==1 && clean-tracked check passes; `git add` would then stage the
+    // untracked reviewed file and mint a SECOND commit onto the first. The
+    // post-`git add` stage-nothing invariant must refuse instead.
+    const f = await setupSalvage();
+    writeFileSync(join(f.worktree, "apps/x/g.ts"), "export const g = 2;\n");
+    const reviewedPaths = ["apps/x/f.ts", "apps/x/g.ts"];
+    const fingerprint = await computeReviewedFingerprint(f.worktree, reviewedPaths);
+    const metaPath = join(f.root, "runs", f.runId, "meta.json");
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    meta.reviewed = { paths: reviewedPaths, fingerprint };
+    writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+    // commit ONLY the tracked reviewed change; leave g.ts untracked.
+    git(f.worktree, ["add", "apps/x/f.ts"]);
+    git(f.worktree, ["commit", "-qm", "unreviewed message: sk-secret-leak"]);
+
+    await expect(
+      pushReviewedBranchForEscalation({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+        locksDir: join(f.root, "locks"),
+        runId: f.runId,
+      }),
+    ).rejects.toThrow(/refusing to add a second commit onto pre-existing history/);
+
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-salv1/);
+  });
 });
