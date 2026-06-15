@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.8](https://github.com/amkfbant/monorepo-harness/compare/v0.7.7...v0.7.8) (2026-06-15)
+
+
+### Bug Fixes
+
+* [[#197](https://github.com/amkfbant/monorepo-harness/issues/197)] review the last succeeded coder run before budget_exhausted ([#224](https://github.com/amkfbant/monorepo-harness/issues/224)) ([602181f](https://github.com/amkfbant/monorepo-harness/commit/602181f58e3fcdec9b4f9d1cbfac832f36d4465a))
+* **git:** force --no-renames across all security diff gates so renames can't hide out-of-scope deletions ([#226](https://github.com/amkfbant/monorepo-harness/issues/226)) ([cf83033](https://github.com/amkfbant/monorepo-harness/commit/cf8303395bfd9bae89c820548b74afc0779a52cf))
+
 ## [0.7.7](https://github.com/amkfbant/monorepo-harness/compare/v0.7.6...v0.7.7) (2026-06-15)
 
 
