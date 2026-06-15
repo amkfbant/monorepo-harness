@@ -242,19 +242,40 @@ async function commitAndPushReviewedBranch(input: {
   // the fingerprint would otherwise pass the net branch-diff gate below and push
   // its history). Tolerates this run's own single reviewed commit re-pushed
   // idempotently after a failed publish/push.
-  await assertNoUnreviewedHistory({ git, runId: input.runId, baseRef: input.baseRef });
+  const headAtBase = await assertNoUnreviewedHistory({
+    git,
+    runId: input.runId,
+    baseRef: input.baseRef,
+  });
 
   await runGit(["add", "--", ...reviewedPaths], git);
   const stagedPaths = parseGitPathList(
     await runGit(["diff", "--cached", "-z", "--name-only"], git),
   );
   assertPathsSubset(stagedPaths, reviewedPaths, "staged diff");
+  // When HEAD already carries this run's reviewed commit (idempotent retry),
+  // `git add` must stage NOTHING — the reviewed content is already that commit.
+  // If it staged new content (e.g. an untracked reviewed file the prior commit
+  // didn't include), committing it would push a SECOND commit on top of the
+  // existing (potentially unreviewed-message) one. Refuse instead.
+  if (!headAtBase && stagedPaths.length > 0) {
+    throw new PrGateError(
+      `worktree for ${input.runId} carries a commit beyond base plus ` +
+        `additional reviewed content to stage; refusing to add a second commit ` +
+        `onto pre-existing history`,
+    );
+  }
   let committed = false;
   if (stagedPaths.length > 0) {
     await runGit(["commit", "-m", input.commitMessage], git);
     committed = true;
   }
 
+  await assertSingleReviewedCommit({
+    git,
+    runId: input.runId,
+    baseRef: input.baseRef,
+  });
   const branchPaths = parseGitPathList(
     await runGit(["diff", "-z", "--name-only", input.baseRef, "HEAD"], git),
   );
@@ -307,28 +328,57 @@ export function assertPathsSubset(
 // longer matches (a restored intermediate secret commit) — is rejected. We do
 // NOT reset/re-commit here: that would mint a new commit SHA and diverge from an
 // already-pushed branch, breaking the idempotent retry.
+//
+// Returns whether HEAD is AT base. The caller MUST use it: when HEAD is already a
+// (retry) commit beyond base, the reviewed content must ALREADY be exactly that
+// commit, so the caller's `git add` must stage NOTHING — otherwise it would mint a
+// SECOND commit on top of the (unreviewed-message / pre-existing) first one. A
+// clean TRACKED worktree here does not preclude an untracked reviewed file that
+// `git add` would still stage, so the count/clean check alone is not sufficient;
+// the caller enforces the stage-nothing invariant after `git add`.
 export async function assertNoUnreviewedHistory(input: {
   git: { cwd: string; timeoutMs: number };
   runId: string;
   baseRef: string;
-}): Promise<void> {
+}): Promise<boolean> {
   const head = (await runGit(["rev-parse", "HEAD"], input.git)).trim();
   // baseRef may be a SHA (meta.baseSha) or a symbolic ref (opts.base, e.g.
   // "main"); resolve to a commit so the compare is over identity, not text.
   const base = (await runGit(["rev-parse", input.baseRef], input.git)).trim();
-  if (head === base) return;
+  if (head === base) return true;
   const commitCount = (
     await runGit(["rev-list", "--count", `${base}..HEAD`], input.git)
   ).trim();
   const trackedDirty = (
     await runGit(["diff", "--name-only", "HEAD"], input.git)
   ).trim();
-  if (commitCount === "1" && trackedDirty === "") return;
+  if (commitCount === "1" && trackedDirty === "") return false;
   throw new PrGateError(
     `worktree for ${input.runId} has commit history beyond base ` +
       `(HEAD ${head} != base ${base}, ${commitCount} commit(s)); refusing to ` +
       `push unreviewed history`,
   );
+}
+
+// Fail-closed: after the caller stages + (optionally) commits the reviewed paths,
+// the branch must carry EXACTLY one commit beyond base — the single fresh reviewed
+// commit. More than one means unreviewed history (a pre-existing commit plus the
+// one just added) would push to origin.
+export async function assertSingleReviewedCommit(input: {
+  git: { cwd: string; timeoutMs: number };
+  runId: string;
+  baseRef: string;
+}): Promise<void> {
+  const base = (await runGit(["rev-parse", input.baseRef], input.git)).trim();
+  const commitCount = (
+    await runGit(["rev-list", "--count", `${base}..HEAD`], input.git)
+  ).trim();
+  if (Number(commitCount) > 1) {
+    throw new PrGateError(
+      `worktree for ${input.runId} would push ${commitCount} commits beyond ` +
+        `base; refusing to push unreviewed history`,
+    );
+  }
 }
 
 async function runGit(

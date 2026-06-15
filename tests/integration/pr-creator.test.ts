@@ -348,6 +348,53 @@ describe("createPullRequest", () => {
     expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-pr01/);
   });
 
+  it("P1: refuses a one-commit-beyond-base worktree that still has reviewed content to stage", async () => {
+    // codex P1 (history-shape gate ordering): the gate sees EXACTLY one clean
+    // commit beyond base (here a pre-existing commit with an attacker-chosen
+    // message), but an untracked reviewed file is still present. A bare
+    // "count==1 && clean tracked" check would pass; then `git add` stages the
+    // untracked reviewed file and a SECOND commit is created on top of the
+    // unreviewed first one — pushing its history. The post-`git add`
+    // stage-nothing invariant must refuse instead.
+    const f = await setup("approved");
+    const worktree = join(f.root, "workspaces", f.runId, "repo");
+    // A second reviewed path that the run produced as a NEW (untracked) file.
+    writeFileSync(join(worktree, "apps/x/g.ts"), "export const g = 2;\n");
+    const reviewedPaths = ["apps/x/f.ts", "apps/x/g.ts"];
+    const fingerprint = await computeReviewedFingerprint(worktree, reviewedPaths);
+    const metaPath = join(f.root, "runs", f.runId, "meta.json");
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    meta.reviewed = { paths: reviewedPaths, fingerprint };
+    writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+    // Commit ONLY the tracked reviewed change with an attacker-chosen message;
+    // leave g.ts untracked. HEAD is now base + 1 clean commit, g.ts pending.
+    git(worktree, ["add", "apps/x/f.ts"]);
+    git(worktree, ["commit", "-qm", "unreviewed message: sk-secret-leak"]);
+    // sanity: working tree matches the recorded reviewed fingerprint
+    expect(await computeReviewedFingerprint(worktree, reviewedPaths)).toBe(
+      meta.reviewed.fingerprint,
+    );
+
+    await expect(
+      createPullRequest({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+        locksDir: join(f.root, "locks"),
+        runId: f.runId,
+        base: "main",
+        draft: true,
+        publisher: fakePublisher(),
+      }),
+    ).rejects.toThrow(/refusing to add a second commit onto pre-existing history/);
+
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-pr01/);
+  });
+
   it("P1: refuses when a reviewed file drifted after approval", async () => {
     const f = await setup("approved");
     // someone edits a reviewed path AFTER the run was approved
