@@ -39,8 +39,8 @@ fail-closed で人間に残す。
 - `unknown` scope の finding は、決定論ヒューリスティック分類器 `classifyFindingForHitch`
   （`src/hitch/classification.ts`、正規表現/パス照合/カテゴリ許可リスト。**LLM は使わない**）が
   `orchestrator-runners.ts` で再分類し、なお `unknown` のときだけ人間へ escalate する
-  （`convergence.ts`）。memory `hitch-divergence-pitfalls` の「良性 finding での誤 escalate」
-  「0→1 誤発火」はこの分類/発散判定の精度問題。
+  （`convergence.ts`）。過去の運用で観測した「良性 finding での誤 escalate」「0→1 誤発火」は
+  この分類/発散判定の精度問題。
 - severity P0–P3 は reviewer ごとのフィールドではなく **harness 由来のマッピング**で決まる
   （`src/hitch/review-integration.ts`: required_changes→P1 固定 / non_blocking→P2 固定）。
   P0/P1/P2 ゲートは convergence が算出する。
@@ -91,8 +91,8 @@ scope/severity を直接確定しない。
 
 **提案**:
 1. **異レンズ reviewer**: N 体の同一 reviewer ではなく correctness / security / regression /
-   efficacy / spec 準拠で割る（可能なら異モデル）。memory `review-multi-reviewer-complex`
-   （#163 で単一 xhigh が efficacy 欠陥を見逃した教訓）。
+   efficacy / spec 準拠で割る（可能なら異モデル）。#163 で単一 xhigh reviewer が efficacy
+   欠陥を見逃し multi-angle のみ検出した教訓（[`deliberation.md`](./deliberation.md) §4）。
 2. **反証 verify**: `required_changes` の各 finding を独立に refute させ、過半 refute なら
    advisory 降格。plausible-but-wrong finding が `changes_requested` を引き起こすのを防ぐ。
 3. **LLM-as-judge バイアス対策**: 提示順シャッフル / coder の出力を coder 自身に評価させない
@@ -147,10 +147,12 @@ mode 前提）。
 - 成果物（spec）は**人間が批准**し、harness が canonical scope として記録（委員会は決めない）。
 - closeConditions は実在する `HitchCloseConditionKind` のみを使い、かつ
   **「自動検証される kind」と「外部証拠待ち(ask_human)の kind」を区別**する:
-  - **自動検証**（決定論ゲートが自動判定）: `command`（close-check runner が実行）/
-    `finding_policy`（count 系ゲート）/ `db_doctor` / `review_consensus`（static approval）。
+  - **自動検証**（harness が決定論的に判定/実行）: `command`（close-check runner が実行）/
+    `finding_policy`（count 系ゲートを finding 状態から評価）/ `review_consensus`（review/consensus
+    step で充足、ask_human 行きではない）。
   - **外部証拠待ち**（convergence が `ask_human` に routing し、operator の記録を待つ）:
-    `manual` / `artifact_exists` / `operation_status`。
+    `manual` / `artifact_exists` / `operation_status` / **`db_doctor`（現状 runner 未実装のため
+    自動実行されず ask_human 行き）**。
   「schema を通る」≠「自動検証される」。後者を自動ゲートのつもりで多用すると、hitch が
   `HitchCloseConditionSchema` を通っても operator 証拠待ちで stall する。合議は条件文を*書く*が
   判定は決定論ゲート。さもないと曖昧合意への spec drift を招き close-check が骨抜きになる。

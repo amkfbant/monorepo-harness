@@ -83,8 +83,8 @@ Accountable を人間から委員会に移してはならない（責任希釈�
 - codex を N 体並べても、同一基盤モデルは Condorcet 的独立投票者にならない。
   **N 人の同一 reviewer ではなく、異レンズ**（correctness / security / regression /
   efficacy / spec 準拠）で割る。可能なら異モデルも混ぜる。
-- 実証: `memory/review-multi-reviewer-complex` の「単一 xhigh reviewer が efficacy 欠陥を
-  見逃し、multi-angle のみ検出」（#163）。
+- 実証（#163）: 単一の codex xhigh reviewer が efficacy 欠陥を見逃し、角度を分けた
+  multi-angle レビューのみが検出した。＝同一モデルを N 体並べても盲点は共有される。
 - フレームワークは固定スキーマなので、全エージェントを同じ型に流し込むと多様性が下がる。
   型は**「出力成果物の契約」と「問いのチェックリスト」**として使い、推論経路は縛らない
   （`agent({schema})` で出力形だけ固定する）。
@@ -146,7 +146,7 @@ DAG**（相互参照）も組める。詳細な型は [`consulting-frameworks.md
 | 早すぎる収束 | 初期 finding に全員が寄る | 独立ラウンド / 反対役 / 遅延合意 |
 | 批判の儀式化 | 表面的懸念のみ | 反証条件・最悪ケース・棄却基準を要求 |
 | 評価者バイアス | 長い/先出し/自文体を好む | シャッフル・匿名化・複数評価者・自己評価禁止 |
-| 出典なき合意 | close 判定を review_consensus 単独に依存 | 合議は条件を*書く*、harness が `command`/`artifact` で*検証する* |
+| 出典なき合意 | close 判定を review_consensus 単独に依存 | 合議は条件を*書く*、harness が `command`/`finding_policy` 等の**自動検証 kind**で*検証する*（`artifact_exists`/`manual`/`operation_status` は operator 証拠待ち） |
 | 責任希釈 | 誰が決めたか不明 | RACI（Accountable=人間 1 人）を状態遷移ごとに固定 |
 | ログ過多 | 会話全文で要点が埋もれる | 会話全文でなく「判断ログ」（§5 形式）を残す |
 | bootstrapping | 未確定の dev ハーネスで自分の合議を駆動 | 駆動は pin した ops ハーネス（`CLAUDE.md`） |
