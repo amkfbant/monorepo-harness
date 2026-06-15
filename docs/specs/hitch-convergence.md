@@ -135,14 +135,23 @@ Evaluation is deterministic and conservative:
    as operator-origin (`mcp`), which (by design) block close yet do not drive
    divergence.
 5. Passed fresh required close checks plus configured `closeRequires` blockers clear is `close_ready`.
-6. (#104) An **unreviewed** coder run — the latest coding attempt (implement/
-   rerun) is newer than the latest review cycle — is **reviewed** (`continue` →
-   `run_review`) before routing to another rerun, classification, or fix
-   pass. Placed *after* the budget checks (a genuinely over-budget hitch still
-   stops) and gated by the review-cycle budget, so an open finding cannot drive
-   endless reruns that never review the fix that would clear it (otherwise the
-   hitch burns its rerun budget and dead-ends as `budget_exhausted` with the
-   finding still open).
+6. (#104/#197) An **unreviewed** coder run — the latest coding attempt
+   (implement/rerun) is newer than the latest review cycle — is **reviewed**
+   (`continue` → `run_review`) before routing to another rerun,
+   classification, or fix pass. Two placements: (#104) ordinary **under-budget**
+   reviews happen after the budget-limit gate; (#197) when the soft budget LIMIT
+   has been reached, a latest coding attempt whose deterministic DB status is
+   `succeeded` **and that carries a `runId`** is reviewed once — gated on an
+   actual `budgetLimitReason` (so it does not shadow the #104 branch) and on
+   remaining review-cycle budget (so it cannot loop) — before the `>=`
+   budget-limit `budget_exhausted` stop, so its successful work is not discarded.
+   The strict `>` over-budget (EXCEEDED) stop, P0 escalation, divergence, and
+   close_ready all precede it and still win. A failed, running, pending, or
+   cancelled final coding run — or a succeeded one without a `runId` (the review
+   runner reviews the latest coding attempt that has a run) — is not reviewable
+   here and still stops at budget (or follows the failed-run recovery path), so
+   an open finding cannot drive endless reruns that never review the fix that
+   would clear it.
 7. Unknown-scope findings block automation when policy requires it.
 8. Open in-scope P1 needs a fix.
 9. Failed required close checks need a fix.
