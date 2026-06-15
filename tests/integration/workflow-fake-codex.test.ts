@@ -315,6 +315,9 @@ describe("runDomainCoding (fake codex)", () => {
     og(["clone", "-q", bare, "."]);
     og(["config", "user.email", "t@e.com"]);
     og(["config", "user.name", "T"]);
+    // explicit so the clone is on `main` regardless of the host's
+    // init.defaultBranch (CI defaults to `master`, which would leave no local main)
+    og(["checkout", "-B", "main", "origin/main"]);
     writeFileSync(join(other, "REMOTE_ADVANCE.md"), "advanced remotely\n");
     og(["add", "."]);
     og(["commit", "-qm", "remote advance"]);

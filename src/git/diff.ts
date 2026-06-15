@@ -248,23 +248,24 @@ export async function resolveBaseSha(opts: {
 
   // Resolve in priority order, NEVER silently falling back to a DIFFERENT base
   // (#195: a `--base-branch` that resolved nowhere used to slide to main, wasting
-  // the run). When the fetch refreshed origin, prefer the fresh remote tip;
-  // otherwise prefer the local branch (the operator's current state) and only
-  // fall back to a possibly-stale remote-tracking ref as a last resort. The local
-  // candidate is anchored to refs/heads/<base> so only a real branch resolves (not
-  // HEAD / a tag / a pseudo-ref).
+  // the run). When the fetch refreshed origin, prefer the fresh remote tip (then
+  // local as a within-branch backstop). When the fetch did NOT refresh origin
+  // (offline / no remote / a local-only base / the remote reported the ref is
+  // gone), use ONLY the local branch: a leftover `refs/remotes/origin/<base>`
+  // remote-tracking ref is of unverifiable freshness, so it must NOT be a base —
+  // fail-closed instead. Candidates are anchored to refs/heads/<base> /
+  // refs/remotes/origin/<base> so only a real branch resolves (not HEAD / a tag /
+  // a pseudo-ref).
   const originRef = `refs/remotes/origin/${baseBranch}`;
   const localRef = `refs/heads/${baseBranch}`;
-  const candidates = fetchOk
-    ? [originRef, localRef]
-    : [localRef, originRef];
+  const candidates = fetchOk ? [originRef, localRef] : [localRef];
   for (const ref of candidates) {
     const sha = await revParseCommit(ref, g);
     if (sha !== null) return sha;
   }
   throw new Error(
     `cannot resolve base branch "${baseBranch}" in ${opts.repoPath}: ` +
-      `no origin/${baseBranch} or local ${baseBranch} ` +
+      `no ${fetchOk ? "" : "fresh "}origin/${baseBranch} or local ${baseBranch} ` +
       `(refusing to silently fall back to a different base)`,
   );
 }

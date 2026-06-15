@@ -52,6 +52,9 @@ describe("resolveBaseSha", () => {
     git(other, ["clone", "-q", bare, "."]);
     git(other, ["config", "user.email", "t@e.com"]);
     git(other, ["config", "user.name", "T"]);
+    // explicit so the clone is on `main` regardless of the host's
+    // init.defaultBranch (CI defaults to `master`, which would leave no local main)
+    git(other, ["checkout", "-B", "main", "origin/main"]);
     writeFileSync(join(other, "advanced.ts"), "export const x = 1;\n");
     git(other, ["add", "."]);
     git(other, ["commit", "-qm", "advance origin/main"]);
@@ -108,6 +111,24 @@ describe("resolveBaseSha", () => {
     await expect(
       resolveBaseSha({ repoPath: repo, baseBranch: "--output=/tmp/x" }),
     ).rejects.toThrow(/invalid base branch/);
+  });
+
+  it("fails fast when only a STALE origin/<base> remote-tracking ref survives (deleted/renamed remote branch)", async () => {
+    // origin is reachable but does NOT have `ghost`; a leftover
+    // refs/remotes/origin/ghost remote-tracking ref lingers and there is no local
+    // ghost branch. The fetch reports the ref is gone, so the stale remote-tracking
+    // ref must NOT be used as a base — fail-closed instead.
+    const bare = mkdtempSync(join(tmpdir(), "harness-base-ghost-")) + ".git";
+    execFileSync("git", ["init", "-q", "--bare", bare]);
+    git(repo, ["remote", "add", "origin", bare]);
+    git(repo, ["push", "-q", "-u", "origin", "main"]);
+    // plant a stale remote-tracking ref for a branch origin does not have
+    const someSha = git(repo, ["rev-parse", "main"]).trim();
+    git(repo, ["update-ref", "refs/remotes/origin/ghost", someSha]);
+
+    await expect(
+      resolveBaseSha({ repoPath: repo, baseBranch: "ghost" }),
+    ).rejects.toThrow(/cannot resolve base branch "ghost"/);
   });
 
   it("rejects pseudo-refs (HEAD / @ / FETCH_HEAD) as a base branch", async () => {
