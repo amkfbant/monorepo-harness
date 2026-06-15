@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { runAllowedCommands } from "../../../src/core/command-runner.js";
 import type { ResolvedCommand } from "../../../src/policy/schema.js";
+import { COMMAND_LOG_LINE_WITHHELD } from "../../../src/reporter/secret-scan.js";
 import { makeTmpDir } from "../../helpers/tmp.js";
 
 function shellCmd(id: string, raw: string): ResolvedCommand {
@@ -164,5 +165,219 @@ describe("runAllowedCommands", () => {
     expect(readFileSync(r.results[0]!.stdoutPath, "utf8").trim()).toBe(
       "merged-ok",
     );
+  });
+});
+
+describe("runAllowedCommands — on-disk log redaction (#186)", () => {
+  it("withholds a secret-shaped stdout line on disk", async () => {
+    const wt = makeTmpDir("harness-cmd-");
+    const logDir = makeTmpDir("harness-cmd-log-");
+    const token = `ghp_${"a".repeat(36)}`;
+    const r = await runAllowedCommands({
+      worktreePath: wt,
+      commands: [shellCmd("sec", `echo "token=${token}"`)],
+      logDir,
+    });
+    const out = readFileSync(r.results[0]!.stdoutPath, "utf8");
+    expect(out).not.toContain(token);
+    expect(out).toContain(COMMAND_LOG_LINE_WITHHELD);
+  });
+
+  it("preserves benign lines and withholds only the secret line", async () => {
+    const wt = makeTmpDir("harness-cmd-");
+    const logDir = makeTmpDir("harness-cmd-log-");
+    const token = `sk-${"b".repeat(40)}`;
+    const r = await runAllowedCommands({
+      worktreePath: wt,
+      commands: [
+        shellCmd(
+          "mixed",
+          [
+            "printf 'build started\\n'",
+            `printf 'OPENAI_API_KEY=${token}\\n'`,
+            "printf 'build finished\\n'",
+          ].join("; "),
+        ),
+      ],
+      logDir,
+    });
+    expect(readFileSync(r.results[0]!.stdoutPath, "utf8")).toBe(
+      ["build started", COMMAND_LOG_LINE_WITHHELD, "build finished", ""].join(
+        "\n",
+      ),
+    );
+  });
+
+  it("withholds a secret split across stream-chunk boundaries", async () => {
+    const wt = makeTmpDir("harness-cmd-");
+    const logDir = makeTmpDir("harness-cmd-log-");
+    const head = `ghp_${"c".repeat(12)}`;
+    const tail = "d".repeat(24);
+    const token = `${head}${tail}`;
+    // one logical line (no newline) emitted in two writes 25ms apart
+    const script = [
+      `process.stdout.write("prefix token=${head}");`,
+      `setTimeout(() => process.stdout.write("${tail} suffix"), 25);`,
+    ].join("");
+    const r = await runAllowedCommands({
+      worktreePath: wt,
+      commands: [argvCmd("split", process.execPath, ["-e", script])],
+      logDir,
+    });
+    const out = readFileSync(r.results[0]!.stdoutPath, "utf8");
+    expect(out).not.toContain(token);
+    expect(out).not.toContain("ghp_");
+    expect(out).not.toContain(tail);
+    expect(out).toBe(COMMAND_LOG_LINE_WITHHELD);
+  });
+
+  it("withholds EVERY line of a multi-line PEM block on disk (P1)", async () => {
+    const wt = makeTmpDir("harness-cmd-");
+    const logDir = makeTmpDir("harness-cmd-log-");
+    const body1 = "MIIEpAIBAAKCAQEArealkeymaterialbase64line1";
+    const body2 = "secondbase64bodylineWithNoTokenShapeAtAll";
+    const script = [
+      "printf 'starting\\n';",
+      "printf -- '-----BEGIN RSA PRIVATE KEY-----\\n';",
+      `printf '${body1}\\n';`,
+      `printf '${body2}\\n';`,
+      "printf -- '-----END RSA PRIVATE KEY-----\\n';",
+      "printf 'done\\n';",
+    ].join("");
+    const r = await runAllowedCommands({
+      worktreePath: wt,
+      commands: [shellCmd("pem", script)],
+      logDir,
+    });
+    const out = readFileSync(r.results[0]!.stdoutPath, "utf8");
+    // the key body lines must NOT survive (they match no token pattern alone)
+    expect(out).not.toContain(body1);
+    expect(out).not.toContain(body2);
+    expect(out).not.toContain("BEGIN RSA PRIVATE KEY");
+    expect(out).not.toContain("END RSA PRIVATE KEY");
+    expect(out).toBe(
+      [
+        "starting",
+        COMMAND_LOG_LINE_WITHHELD,
+        COMMAND_LOG_LINE_WITHHELD,
+        COMMAND_LOG_LINE_WITHHELD,
+        COMMAND_LOG_LINE_WITHHELD,
+        "done",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("no leak: a huge newline-less line carrying a secret is withheld wholesale (P2)", async () => {
+    const wt = makeTmpDir("harness-cmd-");
+    const logDir = makeTmpDir("harness-cmd-log-");
+    const token = `AKIA${"Z".repeat(16)}`;
+    // a single ~2 MiB line (no newline) carrying a secret — must not leak.
+    const script =
+      `process.stdout.write("lead token=${token}" + "A".repeat(2*1024*1024));`;
+    const r = await runAllowedCommands({
+      worktreePath: wt,
+      commands: [argvCmd("huge", process.execPath, ["-e", script])],
+      logDir,
+    });
+    const out = readFileSync(r.results[0]!.stdoutPath, "utf8");
+    expect(out).not.toContain(token);
+    expect(out).toContain(COMMAND_LOG_LINE_WITHHELD);
+    expect(out.length).toBeLessThan(10_000);
+  });
+
+  it("bounds memory: a BENIGN over-cap newline-less line is withheld, not written verbatim (P2)", async () => {
+    const wt = makeTmpDir("harness-cmd-");
+    const logDir = makeTmpDir("harness-cmd-log-");
+    // NO secret token — only the cap can collapse this. With an unbounded buffer
+    // the whole ~2 MiB would be written verbatim; this test fails in that case.
+    const script = `process.stdout.write("Z".repeat(2*1024*1024));`;
+    const r = await runAllowedCommands({
+      worktreePath: wt,
+      commands: [argvCmd("huge-benign", process.execPath, ["-e", script])],
+      logDir,
+    });
+    const out = readFileSync(r.results[0]!.stdoutPath, "utf8");
+    expect(out).toContain(COMMAND_LOG_LINE_WITHHELD);
+    expect(out).not.toMatch(/Z{1000}/); // no long run survived
+    expect(out.length).toBeLessThan(10_000);
+  });
+
+  it("P1: a PEM BEGIN hidden inside an over-cap line still opens the block (body withheld)", async () => {
+    const wt = makeTmpDir("harness-cmd-");
+    const logDir = makeTmpDir("harness-cmd-log-");
+    const body1 = "MIIByyKeyMaterialBase64BodyLineOne";
+    const body2 = "secondKeyBodyLineNoTokenShapeAtAll";
+    // first line = 1 MiB+ padding THEN the BEGIN marker (no newline until after
+    // it), so the dropping path must still observe the marker and open the block.
+    const script = [
+      `process.stdout.write("Z".repeat(1024*1024+50)+"-----BEGIN RSA PRIVATE KEY-----\\n");`,
+      `process.stdout.write("${body1}\\n${body2}\\n-----END RSA PRIVATE KEY-----\\nafter\\n");`,
+    ].join("");
+    const r = await runAllowedCommands({
+      worktreePath: wt,
+      commands: [argvCmd("huge-pem", process.execPath, ["-e", script])],
+      logDir,
+    });
+    const out = readFileSync(r.results[0]!.stdoutPath, "utf8");
+    expect(out).not.toContain(body1);
+    expect(out).not.toContain(body2);
+    expect(out).not.toContain("BEGIN RSA PRIVATE KEY");
+    expect(out).not.toContain("END RSA PRIVATE KEY");
+    expect(out).toContain("after");
+    expect(out.length).toBeLessThan(10_000);
+  });
+
+  it("resync: after an over-cap line, the next secret line is still redacted", async () => {
+    const wt = makeTmpDir("harness-cmd-");
+    const logDir = makeTmpDir("harness-cmd-log-");
+    const token = `ghp_${"e".repeat(36)}`;
+    const script = [
+      `process.stdout.write("Z".repeat(2*1024*1024)+"\\n");`,
+      `process.stdout.write("token=${token}\\nplain tail\\n");`,
+    ].join("");
+    const r = await runAllowedCommands({
+      worktreePath: wt,
+      commands: [argvCmd("resync", process.execPath, ["-e", script])],
+      logDir,
+    });
+    const out = readFileSync(r.results[0]!.stdoutPath, "utf8");
+    expect(out).not.toContain(token);
+    expect(out).toContain("plain tail");
+    expect(out.length).toBeLessThan(10_000);
+  });
+
+  it("PEM with no END marker stays withheld to EOF (fail-closed)", async () => {
+    const wt = makeTmpDir("harness-cmd-");
+    const logDir = makeTmpDir("harness-cmd-log-");
+    const body = "openEndedKeyBodyBase64NoTokenShape";
+    const script = [
+      "printf 'lead\\n';",
+      "printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\\n';",
+      `printf '${body}\\n';`,
+      `printf '${body}-2\\n';`, // EOF without an END marker
+    ].join("");
+    const r = await runAllowedCommands({
+      worktreePath: wt,
+      commands: [shellCmd("pem-noend", script)],
+      logDir,
+    });
+    const out = readFileSync(r.results[0]!.stdoutPath, "utf8");
+    expect(out).not.toContain(body);
+    expect(out).toContain("lead");
+  });
+
+  it("redacts secret-shaped lines on STDERR too", async () => {
+    const wt = makeTmpDir("harness-cmd-");
+    const logDir = makeTmpDir("harness-cmd-log-");
+    const token = `sk-${"f".repeat(40)}`;
+    const r = await runAllowedCommands({
+      worktreePath: wt,
+      commands: [shellCmd("stderr-sec", `printf 'OPENAI_API_KEY=${token}\\n' 1>&2`)],
+      logDir,
+    });
+    const err = readFileSync(r.results[0]!.stderrPath, "utf8");
+    expect(err).not.toContain(token);
+    expect(err).toContain(COMMAND_LOG_LINE_WITHHELD);
   });
 });

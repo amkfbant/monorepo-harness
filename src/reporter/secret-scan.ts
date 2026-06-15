@@ -111,10 +111,95 @@ const BEARER_TOKEN_RE = /\bbearer\s+[A-Za-z0-9._~+/=-]{12,}/i;
  * remainder evade detection.
  */
 export function containsLikelySecret(text: string): boolean {
+  // A line that already carries a redaction marker stays withheld when a
+  // redacted log is later re-scanned (e.g. close-check log excerpts).
+  if (text.includes(COMMAND_LOG_LINE_WITHHELD)) return true;
   if (scanForSecrets("", text).matched) return true;
   return (
     SECRET_ASSIGNMENT_RE.test(text) ||
     GENERIC_KEY_ASSIGNMENT_RE.test(text) ||
     BEARER_TOKEN_RE.test(text)
   );
+}
+
+// ---------------------------------------------------------------------------
+// On-disk command-log redaction (#186)
+//
+// `runAllowedCommands` writes command stdout/stderr to `runs/<id>/.../*.log`.
+// Raw bytes can carry secrets, so the write layer redacts secret-shaped LINES
+// to this marker. A redacted line withholds the WHOLE line (never partial), so a
+// chunk/line boundary cannot sever a token and leak the remainder.
+// ---------------------------------------------------------------------------
+
+export const COMMAND_LOG_LINE_WITHHELD =
+  "[redacted: secret-shaped line withheld]";
+
+// Per-line memory bound for the streaming redactor: a line longer than this
+// (e.g. a newline-less multi-MB blob) is withheld wholesale rather than buffered,
+// so a misbehaving command cannot OOM the harness or sever a token at a flush
+// boundary. Compared against UTF-16 length (≈ bytes for log text).
+export const COMMAND_LOG_MAX_LINE_CHARS = 1 << 20; // 1 MiB
+
+// PEM private-key blocks span many lines; only the BEGIN line matches a token
+// pattern, so a line-at-a-time scan would leak the base64 body. Track the block
+// (BEGIN..END) and withhold every line inside it.
+const PEM_MARKER_RE = /-----(?:BEGIN|END) (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/;
+
+// The net open/closed state after applying every PEM marker in `text` in order
+// (last marker wins): a trailing BEGIN opens the block, a trailing END closes it,
+// no marker leaves `prev` unchanged. A fresh regex per call avoids shared
+// lastIndex state.
+function pemNetState(prev: boolean, text: string): boolean {
+  const re = /-----(BEGIN|END) (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/g;
+  let state = prev;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) state = m[1] === "BEGIN";
+  return state;
+}
+
+/**
+ * A stateful, single-stream line redactor. Call `redactLine` on each line (no
+ * trailing newline) IN ORDER: it withholds secret-shaped lines and, statefully,
+ * every line of an open PEM private-key block until its END marker. For an
+ * over-long line whose bytes are discarded rather than buffered, call
+ * `observeDiscardedFragment` on each discarded fragment so the PEM block state
+ * still advances (a BEGIN hidden in a multi-MB line must still open the block,
+ * else the following body lines would leak).
+ */
+export function createSecretLineRedactor(): {
+  redactLine(line: string): string;
+  observeDiscardedFragment(fragment: string): void;
+} {
+  let inPemBlock = false;
+  return {
+    redactLine(line: string): string {
+      const wasInBlock = inPemBlock;
+      const hasMarker = PEM_MARKER_RE.test(line);
+      if (hasMarker) inPemBlock = pemNetState(inPemBlock, line);
+      if (wasInBlock || hasMarker || containsLikelySecret(line)) {
+        return COMMAND_LOG_LINE_WITHHELD;
+      }
+      return line;
+    },
+    observeDiscardedFragment(fragment: string): void {
+      inPemBlock = pemNetState(inPemBlock, fragment);
+    },
+  };
+}
+
+/**
+ * Single-shot redaction of a complete text blob (handles multi-line PEM blocks
+ * within it). A trailing newline is preserved (its final empty segment is left
+ * as-is). For streaming use `createSecretLineRedactor` via the command-runner
+ * transform, which also bounds per-line memory.
+ */
+export function redactSecretLines(text: string): string {
+  const r = createSecretLineRedactor();
+  const lines = text.split("\n");
+  const lastIdx = lines.length - 1;
+  return lines
+    .map((line, i) =>
+      i === lastIdx && line === "" ? line : r.redactLine(line),
+    )
+    .join("\n");
 }
