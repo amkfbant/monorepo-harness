@@ -629,6 +629,220 @@ describe("ConvergenceService", () => {
     }
   });
 
+  it("reviews the last succeeded coder run before budget_exhausted at the rerun limit (#197)", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, { maxReruns: 1, maxReviewCycles: 3 });
+      passClose(repo, "goal-test", "2026-05-25T00:00:00.000Z");
+      repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "implement",
+        status: "failed",
+        createdAt: "2026-05-25T00:01:00.000Z",
+      });
+      repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "rerun",
+        status: "succeeded",
+        runId: "run-197a",
+        createdAt: "2026-05-25T00:02:00.000Z",
+      });
+
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("continue");
+      expect(result.recommendedNextAction.kind).toBe("run_review");
+      expect(result.reason).toMatch(/review the last succeeded coder run/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reviews the last succeeded coder run before budget_exhausted with an open P1 (#197)", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, { maxReruns: 1, maxReviewCycles: 3 });
+      passClose(repo, "goal-test", "2026-05-25T00:00:00.000Z");
+      repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "implement",
+        status: "failed",
+        createdAt: "2026-05-25T00:01:00.000Z",
+      });
+      repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "rerun",
+        status: "succeeded",
+        runId: "run-197b",
+        createdAt: "2026-05-25T00:02:00.000Z",
+      });
+      addFinding(repo, { scopeStatus: "in_scope", severity: "P1" });
+
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("continue");
+      expect(result.recommendedNextAction.kind).toBe("run_review");
+      expect(result.reason).toMatch(/review the last succeeded coder run/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("preserves P0 and strict over-budget precedence before the final succeeded-run review", () => {
+    const p0 = fresh();
+    try {
+      createGoal(p0.repo, { maxReruns: 1, maxReviewCycles: 3 });
+      passClose(p0.repo, "goal-test", "2026-05-25T00:00:00.000Z");
+      p0.repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "implement",
+        status: "failed",
+        createdAt: "2026-05-25T00:01:00.000Z",
+      });
+      p0.repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "rerun",
+        status: "succeeded",
+        createdAt: "2026-05-25T00:02:00.000Z",
+      });
+      addFinding(p0.repo, { scopeStatus: "in_scope", severity: "P0" });
+
+      const result = p0.service.evaluate("goal-test");
+      expect(result.decision).toBe("escalate");
+      expect(result.recommendedNextAction.kind).not.toBe("run_review");
+    } finally {
+      p0.db.close();
+    }
+
+    const overBudget = fresh();
+    try {
+      createGoal(overBudget.repo, { maxReruns: 1, maxReviewCycles: 3 });
+      passClose(overBudget.repo, "goal-test", "2026-05-25T00:00:00.000Z");
+      overBudget.repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "implement",
+        status: "failed",
+        createdAt: "2026-05-25T00:01:00.000Z",
+      });
+      overBudget.repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "rerun",
+        status: "succeeded",
+        createdAt: "2026-05-25T00:02:00.000Z",
+      });
+      overBudget.repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "rerun",
+        status: "succeeded",
+        createdAt: "2026-05-25T00:03:00.000Z",
+      });
+
+      const result = overBudget.service.evaluate("goal-test");
+      expect(result.decision).toBe("budget_exhausted");
+      expect(result.reason).toBe("max reruns exceeded");
+      expect(result.recommendedNextAction.kind).not.toBe("run_review");
+    } finally {
+      overBudget.db.close();
+    }
+  });
+
+  it("does not review a succeeded final rerun when the review-cycle budget is spent", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, { maxReruns: 1, maxReviewCycles: 1 });
+      passClose(repo, "goal-test", "2026-05-25T00:00:00.000Z");
+      repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "implement",
+        status: "failed",
+        createdAt: "2026-05-25T00:01:00.000Z",
+      });
+      const cycle = repo.startReviewCycle({
+        hitchId: "goal-test",
+        cycleNumber: 1,
+        reviewMode: "initial",
+        createdAt: "2026-05-25T00:02:00.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle.cycleId,
+        findingsNew: 0,
+        completedAt: "2026-05-25T00:02:30.000Z",
+      });
+      repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "rerun",
+        status: "succeeded",
+        createdAt: "2026-05-25T00:03:00.000Z",
+      });
+
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("budget_exhausted");
+      expect(result.reason).toBe("max review cycles reached");
+      expect(result.recommendedNextAction.kind).not.toBe("run_review");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not review a non-succeeded final rerun at the budget limit even with review budget left (#197)", () => {
+    // The #197 review-before-budget branch is gated on the latest coding attempt
+    // being deterministically `succeeded`. A still-`running` (or otherwise
+    // non-succeeded, non-failed) final rerun at the rerun limit must NOT be
+    // reviewed — it is not reviewable — and still stops at budget, even though
+    // the review-cycle budget is wide open.
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, { maxReruns: 1, maxReviewCycles: 3 });
+      passClose(repo, "goal-test", "2026-05-25T00:00:00.000Z");
+      repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "implement",
+        status: "failed",
+        createdAt: "2026-05-25T00:01:00.000Z",
+      });
+      repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "rerun",
+        status: "running",
+        createdAt: "2026-05-25T00:03:00.000Z",
+      });
+
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("budget_exhausted");
+      expect(result.recommendedNextAction.kind).not.toBe("run_review");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not review a succeeded final rerun that has no runId (#197)", () => {
+    // The review runner reviews the latest coding attempt WITH a runId; a
+    // succeeded final attempt lacking one would make run_review review an older
+    // run and clear this attempt's pending-review state. The #197 branch
+    // therefore requires a runId — without it, stop at budget instead.
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, { maxReruns: 1, maxReviewCycles: 3 });
+      passClose(repo, "goal-test", "2026-05-25T00:00:00.000Z");
+      repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "implement",
+        status: "failed",
+        createdAt: "2026-05-25T00:01:00.000Z",
+      });
+      repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "rerun",
+        status: "succeeded",
+        createdAt: "2026-05-25T00:03:00.000Z",
+      });
+
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("budget_exhausted");
+      expect(result.recommendedNextAction.kind).not.toBe("run_review");
+    } finally {
+      db.close();
+    }
+  });
+
   it("returns budget_exhausted when reruns exceed the goal budget", () => {
     const { db, repo, service } = fresh();
     try {

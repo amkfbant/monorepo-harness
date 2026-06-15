@@ -72,6 +72,8 @@ export class ConvergenceService {
       },
     );
     const latestCodingFailed = isLatestCodingAttemptFailed(attempts);
+    const latestCodingSucceeded = isLatestCodingAttemptSucceeded(attempts);
+    const reviewPending = isReviewPending(attempts, cycles, latestCodingFailed);
     // A required review_consensus close-check that is not passed (e.g. stale
     // after an approved run) must be refreshed by a review step, not the command
     // close-check runner.
@@ -92,7 +94,8 @@ export class ConvergenceService {
       metrics,
       close.allRequiredPassed,
       latestCodingFailed,
-      isReviewPending(attempts, cycles, latestCodingFailed),
+      reviewPending,
+      latestCodingSucceeded,
       reviewConsensusPending,
       pendingCloseCheckRouting,
     );
@@ -167,6 +170,23 @@ function isLatestCodingAttemptFailed(attempts: HitchAttempt[]): boolean {
     if (attempt === undefined) continue;
     if (!CODING_ATTEMPT_TYPES.has(attempt.attemptType)) continue;
     return attempt.status === "failed";
+  }
+  return false;
+}
+
+function isLatestCodingAttemptSucceeded(attempts: HitchAttempt[]): boolean {
+  for (let i = attempts.length - 1; i >= 0; i--) {
+    const attempt = attempts[i];
+    if (attempt === undefined) continue;
+    if (!CODING_ATTEMPT_TYPES.has(attempt.attemptType)) continue;
+    // Require a runId: the review runner reviews the latest coding attempt that
+    // HAS a run, so a succeeded latest attempt without one would review an OLDER
+    // run and clear this attempt's pending-review state without reviewing it.
+    return (
+      attempt.status === "succeeded" &&
+      typeof attempt.runId === "string" &&
+      attempt.runId !== ""
+    );
   }
   return false;
 }
@@ -277,6 +297,7 @@ function decide(
   allRequiredCloseConditionsPassed: boolean,
   latestCodingFailed: boolean,
   reviewPending: boolean,
+  latestCodingSucceeded: boolean,
   reviewConsensusPending: boolean,
   pendingCloseCheckRouting: PendingCloseCheckRouting,
 ): HitchConvergenceResult {
@@ -350,7 +371,34 @@ function decide(
     );
   }
 
+  // #197 — review a SUCCEEDED-but-unreviewed coder run ONCE before stopping at
+  // the soft budget LIMIT, so its successful work is not discarded. Gated on an
+  // actual `budgetLimitReason` (only this stop is deferred — the hard EXCEEDED
+  // stop above still wins) so it does not shadow the ordinary under-budget #104
+  // review branch below; and on review-cycle budget so it cannot loop. The
+  // latest coding attempt must be deterministically `succeeded` AND carry a
+  // runId (the review runner reviews the latest coding attempt WITH a run, so a
+  // succeeded attempt without one would review an older run and wrongly clear
+  // this one's pending-review state).
   const budgetLimitReason = hitchBudgetLimitReason(session, metrics);
+  if (
+    budgetLimitReason !== null &&
+    reviewPending &&
+    latestCodingSucceeded &&
+    metrics.reviewCyclesUsed < session.maxReviewCycles
+  ) {
+    return result(
+      session.hitchId,
+      "continue",
+      "review the last succeeded coder run before budget_exhausted",
+      metrics,
+      {
+        kind: "run_review",
+        message:
+          "Review the latest succeeded coder run before stopping at budget.",
+      },
+    );
+  }
   if (budgetLimitReason !== null) {
     return result(session.hitchId, "budget_exhausted", budgetLimitReason, metrics, {
       kind: "ask_human",
