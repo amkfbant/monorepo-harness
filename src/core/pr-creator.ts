@@ -14,6 +14,7 @@ import { exportRun, warnIfExportFailed } from "../db/export-files.js";
 import { SourceModeError } from "../db/errors.js";
 import { PrGateError } from "./pr-gate-error.js";
 import {
+  assertNoUnreviewedHistory,
   assertPathsSubset,
   assertReviewedFingerprintMatches,
   parseGitPathList,
@@ -374,6 +375,18 @@ async function createUnderLock(
     );
   }
 
+  // Fail-closed: refuse any unreviewed commit history beyond base (an
+  // intermediate commit touching only reviewed paths whose final content matches
+  // the fingerprint would otherwise pass the step-4 net branch-diff gate and
+  // push its history). Tolerates this run's own single reviewed commit re-pushed
+  // idempotently after a failed publish/push. `baseRef` is the same ref step 4
+  // uses; baseRef may be a SHA (meta.baseSha) or a symbolic ref (opts.base).
+  const baseRef =
+    typeof meta.baseSha === "string" && meta.baseSha !== ""
+      ? meta.baseSha
+      : opts.base;
+  await assertNoUnreviewedHistory({ git, runId: opts.runId, baseRef });
+
   // 3. Stage ONLY the reviewed paths and commit onto the run branch.
   //    ignore_untracked files (dist/** etc.) are in the worktree but were
   //    NOT validated, so they stay out.
@@ -394,10 +407,7 @@ async function createUnderLock(
 
   // 4. Verify the FULL branch diff before push. This catches existing local
   //    commits on the run branch, not just paths staged by this invocation.
-  const baseRef =
-    typeof meta.baseSha === "string" && meta.baseSha !== ""
-      ? meta.baseSha
-      : opts.base;
+  //    `baseRef` was computed above (the HEAD == base guard uses the same ref).
   const branchPaths = parseGitPathList(
     await runGit(["diff", "-z", "--name-only", baseRef, "HEAD"], git),
   );

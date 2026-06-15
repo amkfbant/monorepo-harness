@@ -2563,4 +2563,65 @@ describe("runDomainCoding (fake codex)", () => {
     ).rejects.toThrow(/locked|domain lock busy/);
     await p1;
   });
+
+  it("suppresses committed out-of-scope bytes from final-diff.patch while still failing policy (#141/#197)", async () => {
+    // A coder that COMMITS out-of-scope content (writes a repo-root secret file
+    // outside apps/user/**, then `git add` + `git commit`) makes it a TRACKED
+    // addition pre-normalize — so it must still be DETECTED as a policy
+    // violation. But the worktree is normalized (`git reset --mixed <base>`)
+    // BEFORE artifacts are written, folding the committed file back to UNTRACKED
+    // (untracked-denied: metadata only). So the secret BYTES must NOT leak into
+    // final-diff.patch.
+    const secret = "AKIAZZZZSECRETLEAKKEY";
+    const runner: CodexExecRunner = {
+      async run(input) {
+        // a legit in-scope edit, plus a committed out-of-scope secret file.
+        writeFileSync(
+          join(input.worktreePath, "apps/user/src/profile.ts"),
+          "export const x = 9;\n",
+        );
+        writeFileSync(
+          join(input.worktreePath, "secret.txt"),
+          `password=${secret}\n`,
+        );
+        execFileSync("git", ["add", "secret.txt"], {
+          cwd: input.worktreePath,
+          stdio: "ignore",
+        });
+        execFileSync("git", ["commit", "-qm", "coder: leak secret"], {
+          cwd: input.worktreePath,
+          stdio: "ignore",
+        });
+        writeFileSync(input.logPaths.stdout, "done\n", "utf8");
+        writeFileSync(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false, durationMs: 10 };
+      },
+    };
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "leak via commit",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+
+    // (a) the committed out-of-scope path is still detected.
+    expect(r.status).toBe("failed-policy-violation");
+    expect(r.safetyStatus).toBe("denied");
+
+    // (b) the committed out-of-scope secret BYTES are suppressed by
+    // normalization — they do not appear in the persisted final-diff.patch.
+    const runDir = join(harness, "runs", r.runId);
+    const finalDiff = readFileSync(join(runDir, "final-diff.patch"), "utf8");
+    expect(finalDiff).not.toContain(secret);
+    expect(finalDiff).not.toMatch(/secret\.txt/);
+    // the path is surfaced as untracked-denied metadata (no bytes).
+    const denied = readFileSync(join(runDir, "untracked-denied.txt"), "utf8");
+    expect(denied).toMatch(/secret\.txt/);
+    expect(denied).not.toContain(secret);
+  });
 });

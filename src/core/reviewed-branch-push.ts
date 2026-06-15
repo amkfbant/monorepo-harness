@@ -237,6 +237,13 @@ async function commitAndPushReviewedBranch(input: {
     );
   }
 
+  // Fail-closed: refuse any unreviewed commit history beyond base (an
+  // intermediate commit touching only reviewed paths whose final content matches
+  // the fingerprint would otherwise pass the net branch-diff gate below and push
+  // its history). Tolerates this run's own single reviewed commit re-pushed
+  // idempotently after a failed publish/push.
+  await assertNoUnreviewedHistory({ git, runId: input.runId, baseRef: input.baseRef });
+
   await runGit(["add", "--", ...reviewedPaths], git);
   const stagedPaths = parseGitPathList(
     await runGit(["diff", "--cached", "-z", "--name-only"], git),
@@ -283,6 +290,45 @@ export function assertPathsSubset(
       `${label} contains unreviewed path(s): ${unreviewed.join(", ")}`,
     );
   }
+}
+
+// Fail-closed: the reviewed worktree must carry NO unreviewed commit HISTORY
+// beyond the run base. The net branch-diff gate the callers run only checks the
+// FINAL changed-path set (`git diff <base> HEAD`), so an intermediate commit
+// that touches only reviewed paths — with transient/secret content later
+// restored to the reviewed fingerprint — would pass the path subset and still
+// push its unreviewed history to origin. The run flow normalizes every reviewed
+// worktree to HEAD == base (`git reset --mixed`), so the ONLY legitimate
+// non-base HEAD here is this run's OWN single reviewed commit re-pushed
+// idempotently after a failed publish/push: EXACTLY one commit beyond base AND a
+// clean tracked worktree (working tree == that commit, so the caller's
+// `git add` finds nothing new and merely re-pushes the same commit). Anything
+// else — multiple commits, or a single commit whose content the working tree no
+// longer matches (a restored intermediate secret commit) — is rejected. We do
+// NOT reset/re-commit here: that would mint a new commit SHA and diverge from an
+// already-pushed branch, breaking the idempotent retry.
+export async function assertNoUnreviewedHistory(input: {
+  git: { cwd: string; timeoutMs: number };
+  runId: string;
+  baseRef: string;
+}): Promise<void> {
+  const head = (await runGit(["rev-parse", "HEAD"], input.git)).trim();
+  // baseRef may be a SHA (meta.baseSha) or a symbolic ref (opts.base, e.g.
+  // "main"); resolve to a commit so the compare is over identity, not text.
+  const base = (await runGit(["rev-parse", input.baseRef], input.git)).trim();
+  if (head === base) return;
+  const commitCount = (
+    await runGit(["rev-list", "--count", `${base}..HEAD`], input.git)
+  ).trim();
+  const trackedDirty = (
+    await runGit(["diff", "--name-only", "HEAD"], input.git)
+  ).trim();
+  if (commitCount === "1" && trackedDirty === "") return;
+  throw new PrGateError(
+    `worktree for ${input.runId} has commit history beyond base ` +
+      `(HEAD ${head} != base ${base}, ${commitCount} commit(s)); refusing to ` +
+      `push unreviewed history`,
+  );
 }
 
 async function runGit(
