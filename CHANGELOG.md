@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.12](https://github.com/amkfbant/monorepo-harness/compare/v0.7.11...v0.7.12) (2026-06-15)
+
+
+### Bug Fixes
+
+* **convergence:** re-derive diverging live so a cleared trigger self-heals ([#164](https://github.com/amkfbant/monorepo-harness/issues/164)) ([#244](https://github.com/amkfbant/monorepo-harness/issues/244)) ([cd85e84](https://github.com/amkfbant/monorepo-harness/commit/cd85e84a06c417e78922e282106fcef7d38c6179))
+
 ## [0.7.11](https://github.com/amkfbant/monorepo-harness/compare/v0.7.10...v0.7.11) (2026-06-15)
 
 
