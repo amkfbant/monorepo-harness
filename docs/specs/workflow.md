@@ -274,6 +274,27 @@ PR. `enforce:false` does not silently pass breaches: the evaluation returns
 metric / actual / limit in summary and review request artifacts, and proceeds to
 `needs_review` so the reviewer remains the backstop.
 
+#### worktree index normalization
+
+The reviewed-surface model is working-tree based: the reviewed fingerprint is
+computed over the working tree, close-check requires a clean index against it, and
+`harness pr create` re-derives a SINGLE reviewed commit from the working tree
+(`git add -- reviewedPaths`). A coder, however, may COMMIT or stage its work in
+the run worktree (codex does this non-deterministically). After the change-budget
+passes — so a staged-only mutation is still gated by the budget — and before the
+reviewed surface is frozen, the run normalizes the worktree with
+`normalizeWorktreeIndexToBase` (`git reset --mixed <baseSha>`): HEAD and the index
+are moved back to the run base while every working-tree edit and untracked file is
+left in place. This folds the coder's commits/staging into the working tree (the
+net change is preserved; only the commit/staging STRUCTURE is discarded), so the
+worktree the close-check and PR-creation paths consume has a clean index. Without
+it a committed worktree would escalate close-check (its index ≠ base) and, worse,
+leak the coder's intermediate unreviewed commits onto the pushed run branch (PR
+creation pushes the branch as-is and only validates the NET `base..HEAD` diff).
+The reset is fail-closed: a non-zero / timed-out reset throws and the run
+finalizes as `failed-internal-error` rather than proceeding on a worktree that
+cannot be proven index-clean.
+
 `policy_validation_completed.durationMs` は path policy 検証にかかった wall-clock の整数 ms、`diff_collected.durationMs` は当該 stage の diff / untracked 収集にかかった wall-clock の整数 ms。いずれも harness が `performance.now()` で計測し、`Math.round` で整数化する。
 
 `artifacts_ingested` は run 完了時の `ingestRunArtifacts` 成功直後、`finalize` 前に emit される。`count` / `totalBytes` は DB blob に取り込んだ artifact body（`meta.json` / `events.jsonl` / `review-decision.yaml` など DB から再構成される artifact を除く）のファイル数と元ファイル byte 合計、`durationMs` は同じく `performance.now()` ベースの整数 ms。

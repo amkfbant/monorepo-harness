@@ -296,6 +296,81 @@ describe("runDomainCoding (fake codex)", () => {
     }
   });
 
+  it("normalizes the coder's committed work into the working tree (clean index, no leaked commit) (#141/#197)", async () => {
+    // codex sometimes COMMITS its work in the run worktree. The run must fold it
+    // back into the working tree (`git reset --mixed <base>`) so close-check sees
+    // a clean index and PR creation publishes a single fresh reviewed commit —
+    // no unreviewed intermediate commit leaks onto the pushed run branch. Two
+    // coder commits (an edit + a new file) exercise multi-commit history.
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 7; // coder edit\n",
+        );
+        execFileSync("git", ["add", "apps/user/src/profile.ts"], {
+          cwd,
+          stdio: "ignore",
+        });
+        execFileSync("git", ["commit", "-qm", "coder: bump x"], {
+          cwd,
+          stdio: "ignore",
+        });
+        writeFileSync(join(cwd, "apps/user/src/new.ts"), "export const n = 1;\n");
+        execFileSync("git", ["add", "apps/user/src/new.ts"], {
+          cwd,
+          stdio: "ignore",
+        });
+        execFileSync("git", ["commit", "-qm", "coder: add new"], {
+          cwd,
+          stdio: "ignore",
+        });
+      },
+    });
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "bump x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+
+    expect(r.status).toBe("needs_review");
+    expect(r.safetyStatus).toBe("allowed");
+
+    const runDir = join(harness, "runs", r.runId);
+    const meta = JSON.parse(readFileSync(join(runDir, "meta.json"), "utf8"));
+    const base = meta.baseSha as string;
+    const wt = join(harness, "workspaces", r.runId, "repo");
+
+    // The index/HEAD were normalized back to base: no staged paths survive and no
+    // coder commit is left on the run branch (HEAD == base).
+    const staged = execFileSync(
+      "git",
+      ["diff", "--cached", "--name-only", base],
+      { cwd: wt },
+    )
+      .toString()
+      .trim();
+    expect(staged).toBe("");
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: wt })
+      .toString()
+      .trim();
+    expect(head).toBe(base);
+
+    // The coder's net change survives as working-tree edits, in the reviewed
+    // surface. The committed new file is folded back to an untracked kept file.
+    expect(
+      readFileSync(join(wt, "apps/user/src/profile.ts"), "utf8"),
+    ).toMatch(/coder edit/);
+    expect(meta.reviewed.paths).toContain("apps/user/src/profile.ts");
+    expect(meta.reviewed.paths).toContain("apps/user/src/new.ts");
+  });
+
   it("fails closed when the unconfigured default deleted-line ceiling is exceeded", async () => {
     commitTrackedFile(
       repoPath,
@@ -2487,5 +2562,66 @@ describe("runDomainCoding (fake codex)", () => {
       }),
     ).rejects.toThrow(/locked|domain lock busy/);
     await p1;
+  });
+
+  it("suppresses committed out-of-scope bytes from final-diff.patch while still failing policy (#141/#197)", async () => {
+    // A coder that COMMITS out-of-scope content (writes a repo-root secret file
+    // outside apps/user/**, then `git add` + `git commit`) makes it a TRACKED
+    // addition pre-normalize — so it must still be DETECTED as a policy
+    // violation. But the worktree is normalized (`git reset --mixed <base>`)
+    // BEFORE artifacts are written, folding the committed file back to UNTRACKED
+    // (untracked-denied: metadata only). So the secret BYTES must NOT leak into
+    // final-diff.patch.
+    const secret = "AKIAZZZZSECRETLEAKKEY";
+    const runner: CodexExecRunner = {
+      async run(input) {
+        // a legit in-scope edit, plus a committed out-of-scope secret file.
+        writeFileSync(
+          join(input.worktreePath, "apps/user/src/profile.ts"),
+          "export const x = 9;\n",
+        );
+        writeFileSync(
+          join(input.worktreePath, "secret.txt"),
+          `password=${secret}\n`,
+        );
+        execFileSync("git", ["add", "secret.txt"], {
+          cwd: input.worktreePath,
+          stdio: "ignore",
+        });
+        execFileSync("git", ["commit", "-qm", "coder: leak secret"], {
+          cwd: input.worktreePath,
+          stdio: "ignore",
+        });
+        writeFileSync(input.logPaths.stdout, "done\n", "utf8");
+        writeFileSync(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false, durationMs: 10 };
+      },
+    };
+
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "leak via commit",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+
+    // (a) the committed out-of-scope path is still detected.
+    expect(r.status).toBe("failed-policy-violation");
+    expect(r.safetyStatus).toBe("denied");
+
+    // (b) the committed out-of-scope secret BYTES are suppressed by
+    // normalization — they do not appear in the persisted final-diff.patch.
+    const runDir = join(harness, "runs", r.runId);
+    const finalDiff = readFileSync(join(runDir, "final-diff.patch"), "utf8");
+    expect(finalDiff).not.toContain(secret);
+    expect(finalDiff).not.toMatch(/secret\.txt/);
+    // the path is surfaced as untracked-denied metadata (no bytes).
+    const denied = readFileSync(join(runDir, "untracked-denied.txt"), "utf8");
+    expect(denied).toMatch(/secret\.txt/);
+    expect(denied).not.toContain(secret);
   });
 });

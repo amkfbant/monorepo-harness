@@ -3,6 +3,86 @@
 Ideas recorded for later implementation. Each entry is a sketch, not an approved
 design — run it through brainstorming → spec → plan when picked up.
 
+## git-validation hardening — follow-up PR (collects the deferred fail-opens)
+
+A focused security PR should land these together (own codex+Opus review + dedicated
+tests). All are PRE-EXISTING in the harness git-validation surface and are NOT
+introduced or worsened by the #141/#197 change (PR #221); they were surfaced during
+its review.
+
+- **`--no-renames` on policy/diff path lists (codex App P1 on #221, coder-REACHABLE — prioritize)**:
+  `collectDiff` uses `git diff --name-only` / `--cached --name-only` with rename
+  detection on by default, so an R100 rename of an out-of-scope tracked source into an
+  in-scope destination reports ONLY the destination — the out-of-scope SOURCE DELETION
+  is hidden from policy validation, so a coder can delete arbitrary out-of-scope files
+  by renaming them into scope and the run can reach needs_review / PR. Fix: force
+  `--no-renames` on every name-only/numstat path list used for policy/budget/subset
+  gates (rename → delete + add, strictly more conservative). Add a regression where a
+  rename source outside the write scope fails closed. (Same family: the post-normalize
+  re-collect inherits the same collapse, so "re-validate post" is not enough — the flag
+  is the fix.)
+- **git object-graph tampering (replace refs / grafts / shallow) — see next section**
+  (out-of-band; defense-in-depth).
+- **Authenticate the tolerated retry commit (codex App P1 on #221, out-of-band only —
+  defense-in-depth)**: the push-gate idempotent-retry tolerance accepts ANY single clean
+  commit whose tree matches the reviewed fingerprint, including an out-of-band commit
+  with an unreviewed/secret commit MESSAGE (content reviewed). NOT coder-reachable — the
+  run normalizes the coder's worktree to HEAD==base before the push gate, so a non-base
+  HEAD at push time is either the harness's own publish-failure retry or an out-of-band
+  operator commit. Fix sketch: in the retry branch, additionally require HEAD's commit
+  message to equal the deterministic harness message (`opts.title` / `harness salvage:
+  <runId>`) — an attacker cannot embed a secret without diverging from the exact harness
+  message. Bundle with the object-graph hardening (same out-of-band threat class).
+
+## git object-graph tampering hardening (replace refs / grafts / shallow) — follow-up
+
+- **P0 (defense-in-depth, deferred to a focused PR)** — every harness git read
+  (`collectDiff`, the reviewed-fingerprint path is file-based and immune, but the
+  push-path history gates `assertNoUnreviewedHistory` / `assertSingleReviewedCommit`
+  and the policy/close-check diffs are object-graph based) honors local
+  `refs/replace/*` and `.git/info/grafts`. A malicious coder that could install a
+  replace ref (`git replace <real-head> <sanitized-commit>`) or a graft makes
+  `git rev-list` / `git diff` / `git reset` validate a SANITIZED object view while
+  `git push` still transmits the REAL objects — so unreviewed/secret content can
+  reach origin past gates that "pass". Replace rewrites the whole commit (fools
+  diff + rev-list); a graft only rewrites parents (fools rev-list count, not the
+  tree diff, so it leaks an added-then-removed secret carried in an intermediate
+  commit). Surfaced by codex gpt-5.5 xhigh during the #141/#197 review.
+- **Reachability is uncertain**: the coder runs under codex `--sandbox
+  workspace-write` scoped to the run worktree, while `refs/replace/*` and
+  `info/grafts` live in the shared commondir OUTSIDE the worktree, so the sandbox
+  likely blocks the write. The harness still must not RELY on the sandbox — the
+  deterministic git validation should be robust regardless. Hence defense-in-depth.
+- **Fix sketch** (own PR, own codex+Opus review + dedicated replace/graft/shallow
+  tests): (1) force `GIT_NO_REPLACE_OBJECTS=1` centrally in `gitCli` (cannot be
+  overridden by caller env) so every read sees real objects — this alone closes
+  the replace attack for `collectDiff`/policy/close-check/gates. (2) In the push
+  gates, fail-closed if the repo carries any `refs/replace/*`, an `info/grafts`
+  file, or is shallow (`git rev-parse --is-shallow-repository`) — closes grafts +
+  shallow, which `GIT_NO_REPLACE_OBJECTS` does not. `git diff` is graft-immune for
+  tree content, so `collectDiff`/policy need only (1); the rev-list-based history
+  gates need (2). Verified empirically: `GIT_NO_REPLACE_OBJECTS=1` makes
+  `git diff`/`rev-list` see the real objects under a replace ref, but grafts stay
+  honored (deprecated in git 2.39 but still applied).
+
+## tracked out-of-scope file modifications surface bytes in final-diff.patch
+
+- **P3 (pre-existing, by design)** — a committed (or plain) MODIFICATION of a
+  base-tracked out-of-scope file stays a tracked modification after the run-flow
+  `git reset --mixed <base>` normalization (the working-tree content still differs
+  from base), so its bytes appear in `final-diff.patch` / the DB artifact blob.
+  This already occurs on `main` (no normalize there; `git diff <base>` of a
+  committed tracked-modify shows the same bytes) and is NOT worsened by the
+  #141/#197 change. The run still finalizes `failed-policy-violation` (the modify
+  is detected via the pre-normalize evaluation), so it cannot reach
+  needs_review/approved/PR — the bytes only enter a reviewer-facing artifact of a
+  FAILED run, which is the intended behavior that tracked denied-file diffs are
+  surfaced for the reviewer to understand the violation. Only committed/staged
+  out-of-scope ADDs are byte-suppressed (they fold to untracked → metadata-only).
+  A dedicated tracked-denied redaction pass is deferred (it would withhold the
+  bytes of out-of-scope tracked modifications too). Surfaced by Opus during the
+  #141/#197 review.
+
 ## close-check ignored-untracked directory fingerprints
 
 - **P2: recursive directory fingerprinting** — ignored untracked directories can

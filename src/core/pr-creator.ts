@@ -14,8 +14,10 @@ import { exportRun, warnIfExportFailed } from "../db/export-files.js";
 import { SourceModeError } from "../db/errors.js";
 import { PrGateError } from "./pr-gate-error.js";
 import {
+  assertNoUnreviewedHistory,
   assertPathsSubset,
   assertReviewedFingerprintMatches,
+  assertSingleReviewedCommit,
   parseGitPathList,
   reviewedPathsFromMeta,
 } from "./reviewed-branch-push.js";
@@ -374,6 +376,22 @@ async function createUnderLock(
     );
   }
 
+  // Fail-closed: refuse any unreviewed commit history beyond base (an
+  // intermediate commit touching only reviewed paths whose final content matches
+  // the fingerprint would otherwise pass the step-4 net branch-diff gate and
+  // push its history). Tolerates this run's own single reviewed commit re-pushed
+  // idempotently after a failed publish/push. `baseRef` is the same ref step 4
+  // uses; baseRef may be a SHA (meta.baseSha) or a symbolic ref (opts.base).
+  const baseRef =
+    typeof meta.baseSha === "string" && meta.baseSha !== ""
+      ? meta.baseSha
+      : opts.base;
+  const headAtBase = await assertNoUnreviewedHistory({
+    git,
+    runId: opts.runId,
+    baseRef,
+  });
+
   // 3. Stage ONLY the reviewed paths and commit onto the run branch.
   //    ignore_untracked files (dist/** etc.) are in the worktree but were
   //    NOT validated, so they stay out.
@@ -382,6 +400,18 @@ async function createUnderLock(
     await runGit(["diff", "--cached", "-z", "--name-only"], git),
   );
   assertPathsSubset(stagedPaths, reviewedPaths, "staged diff");
+  // When HEAD already carries this run's reviewed commit (idempotent retry after
+  // a failed publish/push), `git add` must stage NOTHING — the reviewed content
+  // is already that commit. If it staged new content (e.g. an untracked reviewed
+  // file the prior commit didn't include), committing it would push a SECOND
+  // commit on top of the existing one. Refuse instead of creating it.
+  if (!headAtBase && stagedPaths.length > 0) {
+    throw new PrGateError(
+      `worktree for ${opts.runId} carries a commit beyond base plus additional ` +
+        `reviewed content to stage; refusing to add a second commit onto ` +
+        `pre-existing history`,
+    );
+  }
   if (stagedPaths.length > 0) {
     // #103 — use the (Conventional-Commit) PR title as the branch commit
     // subject too, so the squash merge subject is Conventional regardless of
@@ -392,12 +422,10 @@ async function createUnderLock(
     );
   }
 
-  // 4. Verify the FULL branch diff before push. This catches existing local
-  //    commits on the run branch, not just paths staged by this invocation.
-  const baseRef =
-    typeof meta.baseSha === "string" && meta.baseSha !== ""
-      ? meta.baseSha
-      : opts.base;
+  // 4. Verify the FULL branch diff + history shape before push. This catches
+  //    existing local commits on the run branch, not just paths staged by this
+  //    invocation. `baseRef` was computed above (the history gate uses it too).
+  await assertSingleReviewedCommit({ git, runId: opts.runId, baseRef });
   const branchPaths = parseGitPathList(
     await runGit(["diff", "-z", "--name-only", baseRef, "HEAD"], git),
   );

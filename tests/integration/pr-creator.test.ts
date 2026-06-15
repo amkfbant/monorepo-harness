@@ -269,6 +269,10 @@ describe("createPullRequest", () => {
     git(worktree, ["add", "apps/x/extra.ts"]);
     git(worktree, ["commit", "-qm", "unreviewed local commit"]);
 
+    // The push guard now refuses earlier — HEAD carries commit history beyond
+    // base (the unreviewed local commit), so the fail-closed HEAD == base check
+    // rejects before the branch-diff path gate is reached. This is still a hard
+    // REFUSAL: the run has no prior failed PR, so no recovery is attempted.
     await expect(
       createPullRequest({
         runsDir: join(f.root, "runs"),
@@ -279,7 +283,109 @@ describe("createPullRequest", () => {
         draft: true,
         publisher: fakePublisher(),
       }),
-    ).rejects.toThrow(/branch diff contains unreviewed path.*apps\/x\/extra\.ts/);
+    ).rejects.toThrow(
+      /has commit history beyond base.*refusing to push unreviewed history/s,
+    );
+
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-pr01/);
+  });
+
+  it("P0: refuses an intermediate reviewed-path commit even when the final content matches the fingerprint", async () => {
+    // Regression for the codex P0: an intermediate commit touches ONLY a
+    // reviewed path with transient/secret content, then a later commit
+    // restores the reviewed content. The NET branch diff (base..HEAD) is only
+    // reviewed paths and the working tree matches the recorded fingerprint, so
+    // the fingerprint + branch-diff-subset gates BOTH pass — yet the
+    // intermediate (secret) commit is still on the branch. The HEAD == base
+    // guard must refuse, so that unreviewed history never reaches origin.
+    const f = await setup("approved");
+    const worktree = join(f.root, "workspaces", f.runId, "repo");
+    // intermediate commit on the reviewed path with transient/secret content
+    writeFileSync(
+      join(worktree, "apps/x/f.ts"),
+      'export const TOKEN = "sk-secret-leak";\n',
+    );
+    git(worktree, ["add", "apps/x/f.ts"]);
+    git(worktree, ["commit", "-qm", "transient secret (reviewed path)"]);
+    // restore the reviewed content so the working tree matches the fingerprint
+    writeFileSync(join(worktree, "apps/x/f.ts"), "export const v = 1;\n");
+    git(worktree, ["add", "apps/x/f.ts"]);
+    git(worktree, ["commit", "-qm", "restore reviewed content"]);
+    // sanity: the working tree now matches the recorded reviewed fingerprint
+    const reviewedFp = await computeReviewedFingerprint(worktree, [
+      "apps/x/f.ts",
+    ]);
+    const meta = JSON.parse(
+      readFileSync(join(f.root, "runs", f.runId, "meta.json"), "utf8"),
+    );
+    expect(reviewedFp).toBe(meta.reviewed.fingerprint);
+
+    await expect(
+      createPullRequest({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+        locksDir: join(f.root, "locks"),
+        runId: f.runId,
+        base: "main",
+        draft: true,
+        publisher: fakePublisher(),
+      }),
+    ).rejects.toThrow(
+      /has commit history beyond base.*refusing to push unreviewed history/s,
+    );
+
+    // the intermediate (secret) commit never reached origin
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-pr01/);
+  });
+
+  it("P1: refuses a one-commit-beyond-base worktree that still has reviewed content to stage", async () => {
+    // codex P1 (history-shape gate ordering): the gate sees EXACTLY one clean
+    // commit beyond base (here a pre-existing commit with an attacker-chosen
+    // message), but an untracked reviewed file is still present. A bare
+    // "count==1 && clean tracked" check would pass; then `git add` stages the
+    // untracked reviewed file and a SECOND commit is created on top of the
+    // unreviewed first one — pushing its history. The post-`git add`
+    // stage-nothing invariant must refuse instead.
+    const f = await setup("approved");
+    const worktree = join(f.root, "workspaces", f.runId, "repo");
+    // A second reviewed path that the run produced as a NEW (untracked) file.
+    writeFileSync(join(worktree, "apps/x/g.ts"), "export const g = 2;\n");
+    const reviewedPaths = ["apps/x/f.ts", "apps/x/g.ts"];
+    const fingerprint = await computeReviewedFingerprint(worktree, reviewedPaths);
+    const metaPath = join(f.root, "runs", f.runId, "meta.json");
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    meta.reviewed = { paths: reviewedPaths, fingerprint };
+    writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+    // Commit ONLY the tracked reviewed change with an attacker-chosen message;
+    // leave g.ts untracked. HEAD is now base + 1 clean commit, g.ts pending.
+    git(worktree, ["add", "apps/x/f.ts"]);
+    git(worktree, ["commit", "-qm", "unreviewed message: sk-secret-leak"]);
+    // sanity: working tree matches the recorded reviewed fingerprint
+    expect(await computeReviewedFingerprint(worktree, reviewedPaths)).toBe(
+      meta.reviewed.fingerprint,
+    );
+
+    await expect(
+      createPullRequest({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+        locksDir: join(f.root, "locks"),
+        runId: f.runId,
+        base: "main",
+        draft: true,
+        publisher: fakePublisher(),
+      }),
+    ).rejects.toThrow(/refusing to add a second commit onto pre-existing history/);
 
     const remoteBranches = execFileSync(
       "git",

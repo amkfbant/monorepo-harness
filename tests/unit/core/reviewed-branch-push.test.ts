@@ -1,8 +1,14 @@
 import { describe, it, expect } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   parseGitPathList,
   assertPathsSubset,
+  pushReviewedBranchForEscalation,
 } from "../../../src/core/reviewed-branch-push.js";
+import { computeReviewedFingerprint } from "../../../src/core/reviewed-fingerprint.js";
 
 describe("parseGitPathList (git diff -z parsing)", () => {
   it("splits NUL-terminated paths and preserves leading/trailing whitespace", () => {
@@ -23,5 +29,210 @@ describe("parseGitPathList (git diff -z parsing)", () => {
     expect(() => assertPathsSubset(changed, reviewed, "branch diff")).toThrow(
       /unreviewed path/,
     );
+  });
+});
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8" });
+}
+
+interface SalvageFixture {
+  root: string;
+  runId: string;
+  worktree: string;
+  bareRemote: string;
+}
+
+/**
+ * A harness root with one `needs_review` / safetyStatus=`allowed` run ready
+ * for the salvage push path (`pushReviewedBranchForEscalation`): a target repo
+ * with a bare remote, a run worktree on the run branch with an uncommitted
+ * reviewed change, and a meta.json carrying the reviewed fingerprint.
+ */
+async function setupSalvage(): Promise<SalvageFixture> {
+  const root = mkdtempSync(join(tmpdir(), "harness-salvage-"));
+  mkdirSync(join(root, "runs"), { recursive: true });
+  mkdirSync(join(root, "workspaces"), { recursive: true });
+
+  const target = mkdtempSync(join(tmpdir(), "harness-salvage-target-"));
+  git(target, ["init", "-q", "-b", "main"]);
+  git(target, ["config", "user.email", "t@e.com"]);
+  git(target, ["config", "user.name", "T"]);
+  mkdirSync(join(target, "apps/x"), { recursive: true });
+  writeFileSync(join(target, "apps/x/f.ts"), "export const v = 0;\n");
+  git(target, ["add", "."]);
+  git(target, ["commit", "-qm", "init"]);
+
+  const bareRemote =
+    mkdtempSync(join(tmpdir(), "harness-salvage-bare-")) + ".git";
+  execFileSync("git", ["init", "-q", "--bare", bareRemote]);
+  git(target, ["remote", "add", "origin", bareRemote]);
+  git(target, ["push", "-q", "-u", "origin", "main"]);
+
+  const runId = "run-20260521-apps-x-salv1";
+  const runBranch = `harness/${runId}/apps-x`;
+  const worktree = join(root, "workspaces", runId, "repo");
+  git(target, ["worktree", "add", "-q", "-b", runBranch, worktree, "main"]);
+  // an uncommitted codex change in the worktree
+  writeFileSync(join(worktree, "apps/x/f.ts"), "export const v = 1;\n");
+
+  // the run's base SHA — the salvage path validates HEAD against this.
+  const baseSha = git(worktree, ["rev-parse", "main"]).trim();
+
+  const runDir = join(root, "runs", runId);
+  mkdirSync(runDir, { recursive: true });
+  const reviewedPaths = ["apps/x/f.ts"];
+  const fingerprint = await computeReviewedFingerprint(worktree, reviewedPaths);
+  writeFileSync(
+    join(runDir, "meta.json"),
+    JSON.stringify(
+      {
+        runId,
+        domain: "apps/x",
+        status: "needs_review",
+        safetyStatus: "allowed",
+        runBranch,
+        baseSha,
+        reviewer: "knkn",
+        reviewedAt: "2026-05-21T00:00:00Z",
+        reviewed: { paths: reviewedPaths, fingerprint },
+        startedAt: "2026-05-21T00:00:00Z",
+      },
+      null,
+      2,
+    ),
+  );
+  writeFileSync(join(runDir, "events.jsonl"), "");
+  return { root, runId, worktree, bareRemote };
+}
+
+describe("pushReviewedBranchForEscalation (salvage push guard)", () => {
+  it("pushes a clean HEAD == base worktree (happy path)", async () => {
+    const f = await setupSalvage();
+    const r = await pushReviewedBranchForEscalation({
+      runsDir: join(f.root, "runs"),
+      workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+      runId: f.runId,
+    });
+    expect(r.committed).toBe(true);
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).toMatch(/harness\/run-20260521-apps-x-salv1/);
+  });
+
+  it("P0: refuses an intermediate reviewed-path commit even when the final content matches the fingerprint", async () => {
+    // Regression for the codex P0: an intermediate commit touches ONLY the
+    // reviewed path with transient/secret content, then a later commit
+    // restores the reviewed content so the working tree matches the recorded
+    // fingerprint. The NET branch diff is only reviewed paths and the
+    // fingerprint matches, so the fingerprint + branch-diff-subset gates BOTH
+    // pass — yet the intermediate (secret) commit is still on the branch. The
+    // HEAD == base guard must refuse so that history never reaches origin.
+    const f = await setupSalvage();
+    // intermediate commit on the reviewed path with transient/secret content
+    writeFileSync(
+      join(f.worktree, "apps/x/f.ts"),
+      'export const TOKEN = "sk-secret-leak";\n',
+    );
+    git(f.worktree, ["add", "apps/x/f.ts"]);
+    git(f.worktree, ["commit", "-qm", "transient secret (reviewed path)"]);
+    // restore the reviewed content so the working tree matches the fingerprint
+    writeFileSync(join(f.worktree, "apps/x/f.ts"), "export const v = 1;\n");
+    git(f.worktree, ["add", "apps/x/f.ts"]);
+    git(f.worktree, ["commit", "-qm", "restore reviewed content"]);
+    // sanity: the working tree matches the recorded reviewed fingerprint
+    const fp = await computeReviewedFingerprint(f.worktree, ["apps/x/f.ts"]);
+    const meta = JSON.parse(
+      readFileSync(join(f.root, "runs", f.runId, "meta.json"), "utf8"),
+    );
+    expect(fp).toBe(meta.reviewed.fingerprint);
+
+    await expect(
+      pushReviewedBranchForEscalation({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+        locksDir: join(f.root, "locks"),
+        runId: f.runId,
+      }),
+    ).rejects.toThrow(
+      /has commit history beyond base.*refusing to push unreviewed history/s,
+    );
+
+    // the intermediate (secret) commit never reached origin
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-salv1/);
+  });
+
+  it("idempotent retry: re-pushes the run's own single reviewed commit without minting a new one", async () => {
+    // The MUST-PASS side of the history gate: this run already committed +
+    // pushed its single reviewed commit (HEAD == base + 1 clean reviewed
+    // commit), then a retry runs. The gate must tolerate it — `git add` stages
+    // nothing, no second commit is created, and the same branch re-pushes (no
+    // divergent SHA). This locks the no-over-refusal invariant.
+    const f = await setupSalvage();
+    // simulate the prior successful commit + push of the reviewed commit
+    git(f.worktree, ["add", "apps/x/f.ts"]);
+    git(f.worktree, ["commit", "-qm", "harness salvage: run-20260521-apps-x-salv1"]);
+    const committedSha = git(f.worktree, ["rev-parse", "HEAD"]).trim();
+    git(f.worktree, ["push", "-q", "-u", "origin", `harness/${f.runId}/apps-x`]);
+
+    const r = await pushReviewedBranchForEscalation({
+      runsDir: join(f.root, "runs"),
+      workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+      runId: f.runId,
+    });
+    // nothing new was committed; the same commit is the branch head.
+    expect(r.committed).toBe(false);
+    expect(r.headSha).toBe(committedSha);
+    const remoteHead = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "rev-parse", `harness/${f.runId}/apps-x`],
+      { encoding: "utf8" },
+    ).trim();
+    expect(remoteHead).toBe(committedSha);
+  });
+
+  it("refuses a one-commit-beyond-base worktree that still has reviewed content to stage", async () => {
+    // History-gate ordering (codex P1) for the salvage path: exactly one clean
+    // commit beyond base, but an untracked reviewed file remains. A bare
+    // count==1 && clean-tracked check passes; `git add` would then stage the
+    // untracked reviewed file and mint a SECOND commit onto the first. The
+    // post-`git add` stage-nothing invariant must refuse instead.
+    const f = await setupSalvage();
+    writeFileSync(join(f.worktree, "apps/x/g.ts"), "export const g = 2;\n");
+    const reviewedPaths = ["apps/x/f.ts", "apps/x/g.ts"];
+    const fingerprint = await computeReviewedFingerprint(f.worktree, reviewedPaths);
+    const metaPath = join(f.root, "runs", f.runId, "meta.json");
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    meta.reviewed = { paths: reviewedPaths, fingerprint };
+    writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+    // commit ONLY the tracked reviewed change; leave g.ts untracked.
+    git(f.worktree, ["add", "apps/x/f.ts"]);
+    git(f.worktree, ["commit", "-qm", "unreviewed message: sk-secret-leak"]);
+
+    await expect(
+      pushReviewedBranchForEscalation({
+        runsDir: join(f.root, "runs"),
+        workspacesDir: join(f.root, "workspaces"),
+        locksDir: join(f.root, "locks"),
+        runId: f.runId,
+      }),
+    ).rejects.toThrow(/refusing to add a second commit onto pre-existing history/);
+
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-salv1/);
   });
 });

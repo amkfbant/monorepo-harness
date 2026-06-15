@@ -270,6 +270,15 @@ async function assertWorktreeMatchesReviewed(opts: {
     baseSha: opts.baseSha,
     timeoutMs: opts.gitTimeoutMs,
   });
+  // The run worktree's index must equal the base: the coder's net change is
+  // normalized to the WORKING TREE in the run flow (workflow-runner
+  // `normalizeWorktreeIndexToBase` folds any commits/staging back via `git reset
+  // --mixed <base>`), so `harness pr create` commits exactly the reviewed surface
+  // as a single fresh commit. Any staged index entry here is an unreviewed
+  // mutation — a worktree polluted between review and close-check, or a
+  // close-check command that staged a side effect and restored the working tree
+  // — and is rejected (review finding P0: a polluted baseline is rejected, not
+  // adopted).
   if (diff.stagedChangedPaths.length > 0) {
     throw new Error(
       `close-check ${opts.phase} staged index contains path(s): ` +

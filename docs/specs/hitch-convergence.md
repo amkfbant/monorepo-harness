@@ -420,7 +420,13 @@ reviewed run worktree against the recorded reviewed surface. The diff collection
 uses the resolved policy `limits.gitTimeoutMs`; timeout or git failure is
 fail-closed. Validation includes untracked policy surface and the cached/index
 state: any staged index path is rejected, so a command cannot hide a side effect
-by staging a mutation and restoring the working tree.
+by staging a mutation and restoring the working tree. The run worktree's index is
+expected to equal the base because the run flow normalizes the coder's net change
+into the working tree before review (see `workflow.md`, "worktree index
+normalization"): the coder may COMMIT or stage its work, but
+`normalizeWorktreeIndexToBase` (`git reset --mixed <base>`) folds that back into
+the working tree so `harness pr create` publishes exactly the reviewed surface as
+a single fresh commit and no unreviewed intermediate commit reaches the run branch.
 The runner also rejects any baseline-to-post-command change to untracked files
 under `ignore_untracked` globs, so a close-check command cannot pollute the run
 worktree through an ignored path; this is intentionally stricter than the normal

@@ -799,6 +799,38 @@ async function resetWorktreeToBase(
   await runResetStep(["clean", "-ffdx"], opts);
 }
 
+/**
+ * Fold any commits or staged-index entries the coder (or an allowed command)
+ * created in the run worktree back into the WORKING TREE: `git reset --mixed
+ * <baseSha>` moves HEAD and the index to the run base while leaving every
+ * working-tree edit — and every untracked file — in place. The reviewed-surface
+ * model is working-tree-based: the reviewed fingerprint is computed over the
+ * working tree, close-check requires a clean index against it, and `harness pr
+ * create` re-derives a SINGLE reviewed commit via `git add -- reviewedPaths`.
+ *
+ * codex sometimes COMMITS its work in the worktree. Without this normalization a
+ * committed worktree would (a) escalate close-check (its index != base) and,
+ * worse, (b) leak the coder's intermediate, unreviewed commits onto the pushed
+ * run branch (PR creation pushes the branch as-is and only validates the NET
+ * base..HEAD diff). Unlike `reset --hard`, this preserves the net change; it only
+ * discards the commit/staging STRUCTURE, never the content.
+ *
+ * FAIL-CLOSED: a non-zero / timed-out reset throws {@link WorktreeResetError} so
+ * the run cannot proceed on a worktree we cannot prove is index-clean. The throw
+ * is transitive — it is raised by the shared {@link runResetStep} helper, not in
+ * this function body.
+ */
+async function normalizeWorktreeIndexToBase(
+  worktreePath: string,
+  baseSha: string,
+  gitTimeoutMs: number,
+): Promise<void> {
+  await runResetStep(["reset", "--mixed", baseSha], {
+    cwd: worktreePath,
+    timeoutMs: gitTimeoutMs,
+  });
+}
+
 async function runResetStep(
   args: readonly string[],
   opts: { cwd: string; timeoutMs: number },
@@ -1467,10 +1499,49 @@ async function runDomainCodingInner(
       }
     }
 
-    const { diff, untrackedKept, untrackedIgnored } = dv;
-    const finalDiffStat = dv.budgetStat ?? diff.stat;
-    const safetyStatus = dv.safetyStatus;
-    const violations = dv.violations;
+    // Capture the PRE-normalize evaluation BEFORE folding any coder commits /
+    // staged index back into the working tree. STATUS (safetyStatus +
+    // change-budget) and the RECORDED violations are derived from this PRE view:
+    // it preserves the #141 change-budget gating of staged-only mutations AND
+    // the detection of COMMITTED out-of-scope content (a committed/staged
+    // out-of-scope file is a TRACKED addition here, so it is in `preViolations`
+    // → drives failed-policy-violation / failed-budget-exceeded).
+    const preSafetyStatus = dv.safetyStatus;
+    const preViolations = dv.violations;
+    const preBudgetStat = dv.budgetStat;
+    // Normalize + RE-COLLECT for the ARTIFACT / REVIEWED view (only when the
+    // worktree diff is ok). `git reset --mixed <base>` folds coder commits and
+    // staged-index entries back into the working tree, so a COMMITTED
+    // out-of-scope file (a tracked addition pre-normalize) folds to an UNTRACKED
+    // file post-normalize. `diffAndValidate` is a pure function and emits NO
+    // events, so this re-collection does not double-emit policy/budget/diff
+    // events. The re-collected `dv` describes the POST-normalize worktree.
+    if (dv.diff.ok) {
+      await normalizeWorktreeIndexToBase(wt.path, baseSha, gitTimeoutMs);
+      dv = await diffAndValidate({
+        worktreePath: wt.path,
+        baseSha,
+        gitTimeoutMs,
+        policy,
+      });
+    }
+
+    // STATUS / budget / violations use the PRE-normalize evaluation (preserves
+    // #141 staged-only gating + committed-out-of-scope detection). Artifacts
+    // (final-diff.patch, untracked-files.{txt,patch}, untracked-denied.txt,
+    // secret reports) and the reviewed surface (reviewedPaths, fingerprint) use
+    // the POST-normalize re-collected `dv`: this SUPPRESSES committed
+    // out-of-scope BYTES (the committed file is now untracked, not in
+    // diff.patch) and treats it as untracked-denied (metadata only).
+    const { diff, untrackedKept, untrackedIgnored } = dv; // now POST-normalize
+    const finalDiffStat = preBudgetStat ?? diff.stat;
+    const safetyStatus = preSafetyStatus;
+    const violations = preViolations;
+    // `violatedPaths` is derived from the PRE violation set, then used to split
+    // the POST-normalize `untrackedKept`: a committed out-of-scope file (now
+    // POST-untracked) is in PRE violatedPaths → untrackedDenied (metadata only,
+    // no bytes); a committed IN-scope new file (now POST-untracked, not a
+    // violation) → untrackedAllowed → reviewedPaths.
     const violatedPaths = new Set<string>(violations.map((v) => v.path));
     await log.setSafetyStatus(safetyStatus);
 
@@ -1527,6 +1598,15 @@ async function runDomainCodingInner(
       | { paths: string[]; fingerprint: string; weakensTests?: boolean }
       | undefined;
     if (diff.ok) {
+      // The worktree was already normalized (`git reset --mixed <base>`) above —
+      // BEFORE the artifacts were written — folding any coder commits /
+      // staged-index entries back into the working tree. So `diff` here is the
+      // POST-normalize re-collection: the reviewed surface sees a clean index,
+      // PR-creation publishes exactly one fresh reviewed commit, and a coder
+      // that COMMITTED its work neither escalates close-check nor leaks its
+      // intermediate, unreviewed commits onto the pushed run branch (#141/#197).
+      // The change-budget already ran on the PRE-normalize evaluation, so a
+      // staged-only mutation is still gated by the budget (#141).
       await log.emit({
         type: "diff_collected",
         tracked: diff.trackedChangedPaths,
