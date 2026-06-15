@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.9](https://github.com/amkfbant/monorepo-harness/compare/v0.7.8...v0.7.9) (2026-06-15)
+
+
+### Bug Fixes
+
+* **git:** harden git object-graph integrity and authenticate harness commits in push gates ([#234](https://github.com/amkfbant/monorepo-harness/issues/234)) ([4024906](https://github.com/amkfbant/monorepo-harness/commit/402490626352c1f880010fe511fc18dc0fe7c401))
+
 ## [0.7.8](https://github.com/amkfbant/monorepo-harness/compare/v0.7.7...v0.7.8) (2026-06-15)
 
 
