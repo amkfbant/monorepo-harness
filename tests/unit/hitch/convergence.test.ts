@@ -997,6 +997,29 @@ describe("ConvergenceService", () => {
       }
     });
 
+    it("does NOT clear divergence on a STARTED-but-incomplete review cycle (requires completed evidence)", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxReviewCycles: 20 });
+        addCycleFindings(repo, 1, ["review", "review"]);
+        addCycleFindings(repo, 2, ["review", "review"]); // non-decreasing → diverging
+        expect(service.evaluate("goal-test").decision).toBe("diverging");
+        repo.updateStatus("goal-test", "diverging", "diverged", {
+          createdBy: "test",
+        });
+        // merely START cycle 3 — no findings imported, NOT completed. An
+        // incomplete cycle is not clean review evidence and must not self-clear.
+        repo.startReviewCycle({
+          hitchId: "goal-test",
+          cycleNumber: 3,
+          reviewMode: "delta",
+        });
+        expect(service.evaluate("goal-test").decision).toBe("diverging");
+      } finally {
+        db.close();
+      }
+    });
+
     it("precedence: a stored-diverging session with an open in-scope P0 escalates (P0 gate wins)", () => {
       const { db, repo, service } = fresh();
       try {

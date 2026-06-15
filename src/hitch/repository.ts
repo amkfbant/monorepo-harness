@@ -1686,6 +1686,11 @@ export class HitchRepository {
             AND f.duplicate_of IS NULL
             AND f.source IN (${sourcePlaceholders})
           WHERE c.hitch_id = ?
+            -- only COMPLETED cycles are review evidence (#164): a
+            -- started-but-incomplete cycle has 0 imported findings and would
+            -- otherwise look like a "clean" cycle, prematurely clearing a
+            -- non-decreasing divergence before any review evidence exists.
+            AND c.completed_at IS NOT NULL
           GROUP BY c.cycle_id, c.cycle_number, c.created_at
           ORDER BY c.cycle_number ASC, c.created_at ASC, c.cycle_id ASC`,
       )
