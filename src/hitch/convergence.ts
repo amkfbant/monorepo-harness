@@ -650,7 +650,14 @@ function terminalDecision(
 ): HitchConvergenceDecision | null {
   if (status === "closed") return "closed";
   if (status === "cancelled") return "cancel";
-  if (status === "diverging") return "diverging";
+  // `diverging` is intentionally NOT short-circuited here (#164): unlike the
+  // hard terminals above (and the operator-gated budget_exhausted / escalated),
+  // divergence is a DERIVED condition. A transient trigger (per-cycle count /
+  // non-decreasing) clears once a later review cycle is clean, so a stored
+  // `diverging` status must be RE-DERIVED live via `divergenceReason` below —
+  // otherwise it caches a stale stop and never re-evaluates. A genuinely
+  // persistent (cumulative budget / max-reopen) divergence simply re-fires on
+  // re-derivation, so it stays diverging; only a cleared one self-heals.
   if (status === "budget_exhausted") return "budget_exhausted";
   if (status === "escalated") return "escalate";
   return null;

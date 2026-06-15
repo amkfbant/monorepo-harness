@@ -115,7 +115,14 @@ create a backlog item and stores the linked item id.
 
 Evaluation is deterministic and conservative:
 
-1. Terminal sessions stay terminal.
+1. Terminal sessions stay terminal — with one exception. `closed` / `cancelled`
+   are hard-terminal, and `budget_exhausted` / `escalated` are operator-gated
+   (require an explicit `reopen`). `diverging`, however, is **re-derived live, not
+   cached** (#164): a stored `diverging` status does not short-circuit evaluation
+   — the divergence circuit breaker (rule 4) is re-run against current metrics, so
+   a divergence whose trigger no longer holds **self-clears** and the hitch
+   returns to normal flow (the status syncs off `diverging` back to `in_progress`
+   / `close_ready`). A still-active trigger simply re-derives to `diverging`.
 2. Iteration/review/rerun budgets are enforced.
 3. Open in-scope P0 escalates.
 4. Growing finding counts or reopened churn is `diverging`. Divergence churn

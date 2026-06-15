@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { ConvergenceService } from "../../../src/hitch/convergence.js";
+import { evaluateConvergenceAndRecordStatus } from "../../../src/hitch/convergence-status.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
 import {
   DEFAULT_HITCH_POLICY,
@@ -921,6 +922,77 @@ describe("ConvergenceService", () => {
     } finally {
       db.close();
     }
+  });
+
+  describe("#164: diverging is re-derived live (self-clearing), not a cached terminal", () => {
+    it("clears a stored-diverging session when a transient (non-decreasing) trigger no longer holds", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo); // default maxTotalNewFindings=12 → cumulative stays under
+        addCycleFindings(repo, 1, ["review", "review"]);
+        addCycleFindings(repo, 2, ["review", "review"]); // non-decreasing → diverging
+        passClose(repo);
+        expect(service.evaluate("goal-test").decision).toBe("diverging");
+        // persist the diverging status (as syncHitchStatusForConvergence would)
+        repo.updateStatus("goal-test", "diverging", "diverged", {
+          createdBy: "test",
+        });
+        // a fresh CLEAN review cycle (0 new findings) clears the non-decreasing trigger
+        addCycle(repo, 3, 0);
+        // BEFORE the fix the stored status short-circuited to diverging; now it
+        // re-derives live and the transient trigger is gone.
+        const after = service.evaluate("goal-test");
+        expect(after.decision).not.toBe("diverging");
+      } finally {
+        db.close();
+      }
+    });
+
+    it("keeps a stored-diverging session diverging when a CUMULATIVE budget trigger still holds (no false clear)", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxTotalNewFindings: 2 });
+        addCycleFindings(repo, 1, ["review", "review", "review"]); // 3 > 2 → diverging
+        passClose(repo);
+        expect(service.evaluate("goal-test").decision).toBe("diverging");
+        repo.updateStatus("goal-test", "diverging", "diverged", {
+          createdBy: "test",
+        });
+        // a clean cycle does NOT reduce the cumulative total (3 > budget 2)
+        addCycle(repo, 2, 0);
+        expect(service.evaluate("goal-test").decision).toBe("diverging");
+      } finally {
+        db.close();
+      }
+    });
+
+    it("syncs the hitch status OUT of diverging when the live decision clears", () => {
+      const { db, repo } = fresh();
+      try {
+        createGoal(repo);
+        addCycleFindings(repo, 1, ["review", "review"]);
+        addCycleFindings(repo, 2, ["review", "review"]);
+        passClose(repo);
+        // first evaluation persists status=diverging
+        evaluateConvergenceAndRecordStatus({
+          repository: repo,
+          hitchId: "goal-test",
+          createdBy: "test",
+        });
+        expect(repo.requireSession("goal-test").status).toBe("diverging");
+        // clean cycle clears the transient trigger
+        addCycle(repo, 3, 0);
+        evaluateConvergenceAndRecordStatus({
+          repository: repo,
+          hitchId: "goal-test",
+          createdBy: "test",
+        });
+        // status moved off diverging back to a live status (not stuck)
+        expect(repo.requireSession("goal-test").status).not.toBe("diverging");
+      } finally {
+        db.close();
+      }
+    });
   });
 
   describe("source-aware divergence", () => {
