@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.7](https://github.com/amkfbant/monorepo-harness/compare/v0.7.6...v0.7.7) (2026-06-15)
+
+
+### Bug Fixes
+
+* [[#141](https://github.com/amkfbant/monorepo-harness/issues/141)/[#197](https://github.com/amkfbant/monorepo-harness/issues/197)] normalize the coder-committed worktree before review (close-check regression) + close two fail-opens it surfaced ([#221](https://github.com/amkfbant/monorepo-harness/issues/221)) ([a8ee6fa](https://github.com/amkfbant/monorepo-harness/commit/a8ee6fa9b373d0106230a9db4662af9aac8a580e))
+
 ## [0.7.6](https://github.com/amkfbant/monorepo-harness/compare/v0.7.5...v0.7.6) (2026-06-15)
 
 
