@@ -31,15 +31,20 @@
     all per-invocation and fail-open — see [`db.md`](./db.md) run_usage)
 15. setStatus('generated')
 16. PASS 1 — post-codex diffAndValidate(worktree, baseSha, policy):
-    attemptDiff → DiffOutcome { ok, trackedChangedPaths, untrackedAll, patch, error? }
+    attemptDiff → DiffOutcome { ok, trackedChangedPaths, stagedChangedPaths, untrackedAll, stat, patch, error? }
     partitionUntracked(untrackedAll, ignoreUntracked) → { kept, ignored }
     if diff.ok: validateChangedPaths(policy, tracked ∪ kept) → violations + safetyStatus
     emit diff_collection_failed / policy_validation_completed with stage="post-codex" (validation durationMs on success)
+    if diff.ok: validateDiffBudget(policy.limits.changeBudget, stat) and emit
+    diff_budget_evaluated; stat covers the whole PR-bound surface (working-tree + staged tracked
+    changes + allowed-untracked-kept additions); enforce:false records breach audit as
+    exceeded-but-allowed / change_budget_disabled and proceeds toward review
 17. PASS 2 — if diff.ok && safetyStatus=allowed && codex ok && allowedCommands non-empty:
     setStatus('verified'); emit commands_started
     runAllowedCommands(worktree, allowedCommands) → results; emit commands_completed
     RE-RUN diffAndValidate against the post-command worktree
     emit diff_collection_failed / policy_validation_completed with stage="post-command" (validation durationMs on success)
+    re-run validateDiffBudget against the post-command stat so formatter/build churn is included
 18. setSafetyStatus  (from the final — post-command if commands ran — validation)
 19. split kept untracked → (allowed, denied) based on the final violations set
 20. write final-diff.patch
@@ -49,7 +54,7 @@
 24. emit diff_collected (stage = post-command if commands ran, else post-codex, durationMs)
 25. determine RunStatus from priority:
     diff failure > codex timeout > codex non-zero > policy violation
-    > command failure > needs_review
+    > enforced budget exceeded > command failure > needs_review
 26. readTail(codex-output.log), readStderrTail(codex-error.log);
     codex が失敗（exitCode != 0 / timedOut）した場合は、publish 済みの
     redacted `codex-events.jsonl` から events tail を要約
@@ -93,6 +98,7 @@ running ──► generated ──► verified ──► needs_review  │
    │            │              │                          └─► cleaned (harness cleanup)
    │            │              │
    │            │              ├─► failed-command (allowed command の exit≠0 / timeout)
+   │            │              ├─► failed-budget-exceeded (enforced change_budget exceeded)
    │            │              ├─► failed-policy-violation (safetyStatus=denied)
    │            │
    │            ├─► failed-codex             (codex exit ≠ 0)
@@ -125,8 +131,9 @@ priority は上から下（post-command pass が走った場合は、その後�
 3. `codex.exitCode !== 0` → `failed-codex`
 4. `safetyStatus === "denied"` → `failed-policy-violation`
    （codex 直後 / commands 実行後のどちらの validation で denied になっても）
-5. `allowedCommands` が走り 1 つでも失敗 → `failed-command`
-6. else → `needs_review`
+5. `change_budget` が enforced exceeded → `failed-budget-exceeded`
+6. `allowedCommands` が走り 1 つでも失敗 → `failed-command`
+7. else → `needs_review`
 
 `safetyStatus` は orthogonal: status が `failed-codex-timeout` でも、validation が走った結果として `denied` のことがある。reviewer はこの 2 軸を両方確認する。
 
@@ -164,9 +171,9 @@ runs/<runId>/
   untracked-files.txt      # OPTIONAL: allowed untracked がある場合のみ。path list
   untracked-denied.txt     # OPTIONAL: denied untracked がある場合のみ。size + sha256、content なし
   untracked-secrets.txt    # OPTIONAL: secret hit がある場合のみ。reasons のみ、content なし
-  summary.md               # 人間向け短いサマリ。codex が非ゼロ exit / timeout で失敗した run のみ redacted codex events tail を載せる
+  summary.md               # 人間向け短いサマリ。diff stat / change budget evidence を載せる。codex が非ゼロ exit / timeout で失敗した run のみ redacted codex events tail も載せる
   knowledge-candidates.yaml # 自動抽出 signal (4 kinds; 後述)
-  review-request.md        # reviewer 向け詳細 (status / safety / lists / artifacts / codex tails / redacted events tail on codex failure / checklist)
+  review-request.md        # reviewer 向け詳細 (status / safety / lists / change budget / artifacts / codex tails / redacted events tail on codex failure / checklist)
   review-decision.yaml     # 初期: { decision: pending, … } — reviewer がここを編集する
   commands/                # OPTIONAL: policy.allowedCommands があるときだけ runs/<runId>/commands/ に生成（workspace 内に作らない）
     00-<slug>.out.log
@@ -237,9 +244,11 @@ compiled project policy. Non-project hitches are unchanged.
 {"type":"codex_exec_completed","exitCode":0,"timedOut":false,"durationMs":61234}
 {"type":"codex_events_redacted","redactedCount":1,"droppedCount":0}
 {"type":"policy_validation_completed","status":"allowed","stage":"post-codex","durationMs":3}
+{"type":"diff_budget_evaluated","stage":"post-codex","status":"within","disabled":false,"stat":{"filesChanged":1,"insertions":4,"deletions":1,"deletedFiles":0},"budget":{"maxDeletedLines":800,"maxTotalChangedLines":5000,"maxDeletedFiles":20,"maxChangedFiles":40,"enforce":true},"breaches":[]}
 {"type":"commands_started","count":2}
 {"type":"commands_completed","results":[{"command":"npm test","exitCode":0,"durationMs":4521,"timedOut":false},{"command":"npm run lint","exitCode":0,"durationMs":1102,"timedOut":false}],"allPassed":true}
 {"type":"policy_validation_completed","status":"allowed","stage":"post-command","durationMs":2}
+{"type":"diff_budget_evaluated","stage":"post-command","status":"within","disabled":false,"stat":{"filesChanged":1,"insertions":4,"deletions":1,"deletedFiles":0},"budget":{"maxDeletedLines":800,"maxTotalChangedLines":5000,"maxDeletedFiles":20,"maxChangedFiles":40,"enforce":true},"breaches":[]}
 {"type":"diff_collected","tracked":["apps/catalog/src/validation.ts"],"untrackedAllowed":[],"untrackedDenied":[],"ignored":[],"stage":"post-command","durationMs":18}
 {"type":"artifacts_ingested","count":8,"totalBytes":123456,"durationMs":11}
 {"type":"run_completed","status":"needs_review","safetyStatus":"allowed","ignoredUntrackedCount":0,"secretSuspectCount":0,"commandResultsCount":2,"runElapsedMs":66422}
@@ -253,6 +262,17 @@ compiled project policy. Non-project hitches are unchanged.
 - `post-command` — `allowedCommands` 実行後の **再** diff / 再 validation（F8: コマンドの副作用も同じ安全境界で検査）
 
 `allowedCommands` が空、または codex / 初回 validation で既に失敗している場合、`post-command` の validation は走らず post-codex のみが残る。`diff_collected`（最終 diff の確定）の `stage` は、コマンドが走ったなら `post-command`、そうでなければ `post-codex`。
+
+Change budget evaluation follows the same stage rule. If an enforced post-codex
+budget is already `exceeded`, allowed commands are not invoked and the run
+finalizes as `failed-budget-exceeded` after artifacts are written. If commands
+run, the post-command budget evaluation replaces the post-codex result for final
+status and artifacts. The budget stat covers tracked worktree changes,
+staged/index changes, and allowed untracked files that can be committed into the
+PR. `enforce:false` does not silently pass breaches: the evaluation returns
+`exceeded-but-allowed`, emits `change_budget_disabled`, records the breached
+metric / actual / limit in summary and review request artifacts, and proceeds to
+`needs_review` so the reviewer remains the backstop.
 
 `policy_validation_completed.durationMs` は path policy 検証にかかった wall-clock の整数 ms、`diff_collected.durationMs` は当該 stage の diff / untracked 収集にかかった wall-clock の整数 ms。いずれも harness が `performance.now()` で計測し、`Math.round` で整数化する。
 

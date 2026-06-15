@@ -26,6 +26,7 @@ import type {
   ResolvedPolicy,
   GlobalPolicy,
   RepoPolicy,
+  ChangeBudget,
 } from "../policy/schema.js";
 import type Database from "better-sqlite3";
 import {
@@ -40,7 +41,7 @@ import { SCHEMA_VERSION } from "../db/schema.js";
 import { createDbRunLog } from "../db/run-log-db.js";
 import { ingestRunArtifacts } from "../db/run-artifacts.js";
 import { fileExportEnabled } from "../config/export-mode.js";
-import { rmSync } from "node:fs";
+import { createReadStream, rmSync } from "node:fs";
 import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import {
   RunRepository,
@@ -65,7 +66,16 @@ import { hostname } from "node:os";
 import { runBranchName } from "../workspace/branch-name.js";
 import { createWorktree } from "../workspace/git-worktree.js";
 import { gitCli } from "../git/git-cli.js";
-import { collectDiff, resolveBaseSha, type DiffResult } from "../git/diff.js";
+import {
+  collectDiff,
+  resolveBaseSha,
+  type DiffResult,
+  type DiffStat,
+} from "../git/diff.js";
+import {
+  normalizeDiffBudget,
+  validateDiffBudget,
+} from "../policy/diff-budget-validator.js";
 import { detectsTestWeakening } from "./automerge-tiers.js";
 import {
   buildCodexPrompt,
@@ -163,6 +173,13 @@ export interface ContinueFromSpec {
   parentWorktreePath: string;
 }
 
+export interface RunChangeBudgetOverride {
+  maxDeletedLines?: number;
+  maxTotalChangedLines?: number;
+  maxDeletedFiles?: number;
+  maxChangedFiles?: number;
+}
+
 export interface RunDomainCodingOpts {
   harnessRoot: string;
   repoPath: string;
@@ -245,6 +262,11 @@ export interface RunDomainCodingOpts {
   codexBinaryVersion?: string | null;
   /** @internal test seam for fail-closed codex-events publish failures. */
   codexEventsIo?: CodexEventsIo;
+  /**
+   * Per-run budget override. It can only relax numeric limits while
+   * enforcement is already true; it cannot disable enforcement.
+   */
+  changeBudgetOverride?: RunChangeBudgetOverride;
 }
 
 /**
@@ -329,7 +351,9 @@ interface DiffOutcome {
   ok: boolean;
   error?: string;
   trackedChangedPaths: string[];
+  stagedChangedPaths: string[];
   untrackedAll: string[];
+  stat?: DiffStat;
   patch: string;
 }
 
@@ -339,8 +363,77 @@ interface DiffAndValidate {
   untrackedIgnored: string[];
   violations: Violation[];
   safetyStatus: SafetyStatus;
+  budgetStat?: DiffStat;
   diffDurationMs: number;
   policyValidationDurationMs: number;
+}
+
+function uniquePaths(paths: readonly string[]): string[] {
+  return [...new Set(paths)];
+}
+
+function looksBinary(buf: Buffer): boolean {
+  const sample = buf.subarray(0, Math.min(8192, buf.length));
+  if (sample.length === 0) return false;
+  if (sample.includes(0)) return true;
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(sample, {
+      stream: true,
+    });
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+export async function countTextLinesStreaming(path: string): Promise<number> {
+  let sawAnyByte = false;
+  let lastByteWasNewline = false;
+  let newlineCount = 0;
+  let sample = Buffer.alloc(0);
+  let binary = false;
+  const sampleBytes = 8192;
+
+  for await (const chunk of createReadStream(path)) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    if (buf.length === 0) continue;
+    sawAnyByte = true;
+
+    if (sample.length < sampleBytes) {
+      const need = sampleBytes - sample.length;
+      sample = Buffer.concat([sample, buf.subarray(0, need)]);
+      binary = looksBinary(sample);
+      if (binary) return 0;
+    }
+
+    for (const byte of buf) {
+      if (byte === 0x0a) newlineCount += 1;
+    }
+    lastByteWasNewline = buf[buf.length - 1] === 0x0a;
+  }
+
+  if (binary || !sawAnyByte) return 0;
+  return newlineCount + (lastByteWasNewline ? 0 : 1);
+}
+
+async function statWithAllowedUntracked(
+  worktreePath: string,
+  trackedStat: DiffStat,
+  untrackedAllowed: readonly string[],
+): Promise<DiffStat> {
+  if (untrackedAllowed.length === 0) return trackedStat;
+  let untrackedInsertions = 0;
+  for (const p of untrackedAllowed) {
+    const fullPath = join(worktreePath, p);
+    const st = await lstat(fullPath);
+    if (!st.isFile()) continue;
+    untrackedInsertions += await countTextLinesStreaming(fullPath);
+  }
+  return {
+    ...trackedStat,
+    filesChanged: trackedStat.filesChanged + untrackedAllowed.length,
+    insertions: trackedStat.insertions + untrackedInsertions,
+  };
 }
 
 async function diffAndValidate(opts: {
@@ -365,18 +458,33 @@ async function diffAndValidate(opts: {
   if (!diff.ok) {
     safetyStatus = "skipped";
   } else {
-    const allChangedPaths = [...diff.trackedChangedPaths, ...untrackedKept];
+    if (diff.stat === undefined) {
+      throw new Error("diff collection succeeded without a diff stat");
+    }
+    const allChangedPaths = uniquePaths([
+      ...diff.trackedChangedPaths,
+      ...diff.stagedChangedPaths,
+      ...untrackedKept,
+    ]);
     const policyValidationStartedAt = performance.now();
     const validation = validateChangedPaths(opts.policy, allChangedPaths);
     violations = validation.violations;
     safetyStatus = validation.status === "allowed" ? "allowed" : "denied";
     const policyValidationDurationMs = elapsedMs(policyValidationStartedAt);
+    const violatedPaths = new Set<string>(violations.map((v) => v.path));
+    const untrackedAllowed = untrackedKept.filter((p) => !violatedPaths.has(p));
+    const budgetStat = await statWithAllowedUntracked(
+      opts.worktreePath,
+      diff.stat,
+      untrackedAllowed,
+    );
     return {
       diff,
       untrackedKept,
       untrackedIgnored,
       violations,
       safetyStatus,
+      budgetStat,
       diffDurationMs,
       policyValidationDurationMs,
     };
@@ -406,7 +514,9 @@ async function attemptDiff(
     return {
       ok: true,
       trackedChangedPaths: d.trackedChangedPaths,
+      stagedChangedPaths: d.stagedChangedPaths,
       untrackedAll: d.untrackedPaths,
+      stat: d.stat,
       patch: d.patch,
     };
   } catch (e) {
@@ -414,10 +524,76 @@ async function attemptDiff(
       ok: false,
       error: (e as Error).message,
       trackedChangedPaths: [],
+      stagedChangedPaths: [],
       untrackedAll: [],
       patch: "",
     };
   }
+}
+
+function applyChangeBudgetOverride(
+  base: ChangeBudget,
+  override: RunChangeBudgetOverride | undefined,
+): ChangeBudget {
+  if (override === undefined || !base.enforce) return base;
+  return {
+    ...base,
+    maxDeletedLines:
+      override.maxDeletedLines !== undefined
+        ? Math.max(base.maxDeletedLines, override.maxDeletedLines)
+        : base.maxDeletedLines,
+    maxTotalChangedLines:
+      override.maxTotalChangedLines !== undefined
+        ? Math.max(base.maxTotalChangedLines, override.maxTotalChangedLines)
+        : base.maxTotalChangedLines,
+    maxDeletedFiles:
+      override.maxDeletedFiles !== undefined
+        ? Math.max(base.maxDeletedFiles, override.maxDeletedFiles)
+        : base.maxDeletedFiles,
+    maxChangedFiles:
+      override.maxChangedFiles !== undefined
+        ? Math.max(base.maxChangedFiles, override.maxChangedFiles)
+        : base.maxChangedFiles,
+  };
+}
+
+type DiffBudgetStage = "post-codex" | "post-command";
+
+async function evaluateChangeBudget(opts: {
+  log: RunLog;
+  budget: ChangeBudget;
+  stat: DiffStat;
+  stage: DiffBudgetStage;
+}): Promise<NonNullable<RunMeta["changeBudget"]>> {
+  const budget = normalizeDiffBudget(opts.budget);
+  const result = validateDiffBudget(budget, opts.stat);
+  const disabled = !budget.enforce;
+  await opts.log.emit({
+    type: "diff_budget_evaluated",
+    stage: opts.stage,
+    status: result.status,
+    disabled,
+    stat: opts.stat,
+    budget,
+    breaches: result.breaches,
+  });
+  if (disabled) {
+    await opts.log.emit({
+      type: "change_budget_disabled",
+      stage: opts.stage,
+      stat: opts.stat,
+      budget,
+      status: result.status,
+      breaches: result.breaches,
+    });
+  }
+  return {
+    status: result.status,
+    disabled,
+    stage: opts.stage,
+    budget,
+    breaches: result.breaches,
+  };
 }
 
 export interface MaterializeOutcome {
@@ -1184,6 +1360,11 @@ async function runDomainCodingInner(
       gitTimeoutMs,
       policy,
     });
+    const changeBudget = applyChangeBudgetOverride(
+      policy.limits.changeBudget,
+      opts.changeBudgetOverride,
+    );
+    let changeBudgetResult: RunMeta["changeBudget"] | undefined;
     if (!dv.diff.ok) {
       await log.emit({
         type: "diff_collection_failed",
@@ -1196,6 +1377,14 @@ async function runDomainCodingInner(
         status: dv.safetyStatus === "allowed" ? "allowed" : "denied",
         stage: "post-codex",
         durationMs: dv.policyValidationDurationMs,
+      });
+    }
+    if (dv.diff.ok && dv.budgetStat !== undefined) {
+      changeBudgetResult = await evaluateChangeBudget({
+        log,
+        budget: changeBudget,
+        stat: dv.budgetStat,
+        stage: "post-codex",
       });
     }
 
@@ -1214,6 +1403,7 @@ async function runDomainCodingInner(
     if (
       dv.diff.ok &&
       dv.safetyStatus === "allowed" &&
+      changeBudgetResult?.status !== "exceeded" &&
       !codex.timedOut &&
       codex.exitCode === 0 &&
       policy.allowedCommands.length > 0
@@ -1267,9 +1457,18 @@ async function runDomainCodingInner(
           durationMs: dv.policyValidationDurationMs,
         });
       }
+      if (dv.diff.ok && dv.budgetStat !== undefined) {
+        changeBudgetResult = await evaluateChangeBudget({
+          log,
+          budget: changeBudget,
+          stat: dv.budgetStat,
+          stage: "post-command",
+        });
+      }
     }
 
     const { diff, untrackedKept, untrackedIgnored } = dv;
+    const finalDiffStat = dv.budgetStat ?? diff.stat;
     const safetyStatus = dv.safetyStatus;
     const violations = dv.violations;
     const violatedPaths = new Set<string>(violations.map((v) => v.path));
@@ -1403,9 +1602,10 @@ async function runDomainCodingInner(
 
     // Status priority (evaluated against POST-command worktree if commands ran):
     //   diff failure > codex timeout > codex non-zero > policy violation
-    //   > command failure > needs_review
+    //   > enforced budget exceeded > command failure > needs_review
     // safetyStatus is reported independently so callers can detect e.g.
     // "timeout AND scope violation" cases.
+    const budgetExceeded = changeBudgetResult?.status === "exceeded";
     let status: RunStatus;
     if (!diff.ok) {
       status = "failed-diff-collection";
@@ -1417,6 +1617,8 @@ async function runDomainCodingInner(
       // a denied state here may be (a) codex itself, or (b) a command that
       // wrote outside scope post-validation. Either way → policy violation.
       status = "failed-policy-violation";
+    } else if (budgetExceeded) {
+      status = "failed-budget-exceeded";
     } else if (commandsRan && !commandsPassed) {
       status = "failed-command";
     } else {
@@ -1453,6 +1655,10 @@ async function runDomainCodingInner(
       ignoredUntrackedPaths: untrackedIgnored,
       secretSuspectPaths,
       violations,
+      ...(finalDiffStat !== undefined ? { diffStat: finalDiffStat } : {}),
+      ...(changeBudgetResult !== undefined
+        ? { changeBudget: changeBudgetResult }
+        : {}),
       codexExitCode: codex.exitCode,
       codexTimedOut: codex.timedOut,
       codexStdoutTail,
@@ -1496,6 +1702,10 @@ async function runDomainCodingInner(
         ignoredUntrackedPaths: untrackedIgnored,
         secretSuspectPaths,
         violations,
+        ...(finalDiffStat !== undefined ? { diffStat: finalDiffStat } : {}),
+        ...(changeBudgetResult !== undefined
+          ? { changeBudget: changeBudgetResult }
+          : {}),
         codexExitCode: codex.exitCode,
         codexTimedOut: codex.timedOut,
         codexStdoutTail,
@@ -1552,6 +1762,10 @@ async function runDomainCodingInner(
       secretSuspectCount,
       commandResults,
       changedFilesCount,
+      ...(finalDiffStat !== undefined ? { diffStat: finalDiffStat } : {}),
+      ...(changeBudgetResult !== undefined
+        ? { changeBudget: changeBudgetResult }
+        : {}),
       ...(reviewed ? { reviewed } : {}),
       finishedAt: new Date().toISOString(),
     });

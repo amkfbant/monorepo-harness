@@ -798,3 +798,21 @@ dashboard（`src/dashboard/render.ts`）は usage section 自体を描画して�
 には含まれない）。follow-up として `render.ts` に usage section（total + `bySource` +
 `byKind`）を追加する。データは snapshot に既にあるため描画と render テストのみ。
 コスト推定（USD、model→単価テーブル）も #85 の別 follow-up として未実装。
+
+## staged-only path の review surface 反映（#141 follow-up P2）
+
+#141 の codex レビューで非 fail-open と確認済み。staged-only path は change budget には
+算入されるが、最終 review surface（`reviewed.paths` / review artifacts）には tracked
+working-tree path しか載らない。このため budget surface と pre-review surface が一致せず、
+staged-only 変更が budget 内なら `needs_review` に行ける一方、reviewer の通常 surface からは
+見えない。PR 作成側の staged-diff-subset gate で実害は止まるため release blocker にはしない。
+follow-up: review surface に staged/index 側の path も含め、budget と reviewer 入力の path
+集合を揃える。
+
+## allowed untracked binary line count の厳密化（#141 follow-up P3）
+
+#141 の codex レビューで非 fail-open と確認済み。allowed untracked binary の line count は
+8KiB sample heuristic と whole-file read に依存しており、末尾だけ binary な巨大ファイルを text
+として数え得る。通常の binary は 0 行扱いで、現状は budget の近似精度の問題に留まる。
+follow-up: untracked file の binary 判定をより厳密にし、巨大 file でも sample 偏りで text
+扱いになりにくい実装へ寄せる。

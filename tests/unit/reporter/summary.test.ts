@@ -86,4 +86,37 @@ describe("buildSummary", () => {
     expect(md).toMatch(/git diff exited 128/);
     expect(md).toMatch(/Safety status: skipped/);
   });
+
+  it("describes enforce=false breaches as review backstop audit", () => {
+    const md = buildSummary({
+      ...BASE,
+      status: "needs_review",
+      safetyStatus: "allowed",
+      diffStat: {
+        filesChanged: 1,
+        insertions: 0,
+        deletions: 2,
+        deletedFiles: 0,
+      },
+      changeBudget: {
+        status: "exceeded-but-allowed",
+        disabled: true,
+        stage: "post-codex",
+        budget: {
+          maxDeletedLines: 1,
+          maxTotalChangedLines: 10,
+          maxDeletedFiles: 1,
+          maxChangedFiles: 10,
+          enforce: false,
+        },
+        breaches: [{ metric: "deleted_lines", actual: 2, limit: 1 }],
+      },
+    });
+
+    expect(md).toMatch(/Change budget enforce=false/);
+    expect(md).toMatch(/budget breach allowed to proceed to review/);
+    expect(md).toMatch(/deleted_lines: actual 2 > limit 1/);
+    expect(md).not.toMatch(/fail-open/i);
+    expect(md).not.toMatch(/override/i);
+  });
 });

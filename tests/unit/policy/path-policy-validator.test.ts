@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { validateChangedPaths } from "../../../src/policy/path-policy-validator.js";
-import type { ResolvedPolicy } from "../../../src/policy/schema.js";
+import {
+  DEFAULT_CHANGE_BUDGET,
+  type ResolvedPolicy,
+} from "../../../src/policy/schema.js";
 
 const POLICY: ResolvedPolicy = {
   repoId: "sample",
@@ -12,7 +15,7 @@ const POLICY: ResolvedPolicy = {
   commandDefaults: { timeoutMs: 300_000 },
   ignoreUntracked: [],
   codex: { sandbox: "workspace-write" },
-  limits: { gitTimeoutMs: 30_000 },
+  limits: { gitTimeoutMs: 30_000, changeBudget: DEFAULT_CHANGE_BUDGET },
 };
 
 describe("validateChangedPaths", () => {

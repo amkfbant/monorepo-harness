@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { resolvePolicy } from "../../../src/policy/resolver.js";
 import {
+  DEFAULT_CHANGE_BUDGET,
   DEFAULT_CODEX_TIMEOUT_MS,
   DEFAULT_COMMAND_TIMEOUT_MS,
   DEFAULT_GIT_TIMEOUT_MS,
@@ -51,6 +52,7 @@ describe("resolvePolicy", () => {
     expect(r.codex.approval).toBeUndefined();
     expect(r.codex.timeoutMs).toBe(DEFAULT_CODEX_TIMEOUT_MS);
     expect(r.limits.gitTimeoutMs).toBe(DEFAULT_GIT_TIMEOUT_MS);
+    expect(r.limits.changeBudget).toEqual(DEFAULT_CHANGE_BUDGET);
     expect(r.ignoreUntracked).toEqual([]);
   });
 
@@ -66,7 +68,15 @@ describe("resolvePolicy", () => {
             timeout_ms: 60_000,
           },
         },
-        limits: { git_timeout_ms: 10_000 },
+        limits: {
+          git_timeout_ms: 10_000,
+          change_budget: {
+            max_deleted_lines: 11,
+            max_total_changed_lines: 22,
+            max_deleted_files: 3,
+            max_changed_files: 4,
+          },
+        },
       },
       REPO as never,
       "apps/user",
@@ -75,7 +85,134 @@ describe("resolvePolicy", () => {
     expect(r.codex.approval).toBe("on-request");
     expect(r.codex.timeoutMs).toBe(60_000);
     expect(r.limits.gitTimeoutMs).toBe(10_000);
+    expect(r.limits.changeBudget).toEqual({
+      enforce: true,
+      maxDeletedLines: 11,
+      maxTotalChangedLines: 22,
+      maxDeletedFiles: 3,
+      maxChangedFiles: 4,
+    });
     expect(r.ignoreUntracked).toEqual(["node_modules/**", "dist/**"]);
+  });
+
+  it("applies global change_budget when the domain leaves it unset", () => {
+    const r = resolvePolicy(
+      {
+        always_deny_write: [],
+        ignore_untracked: [],
+        limits: {
+          change_budget: {
+            max_deleted_lines: 12,
+            max_total_changed_lines: 34,
+          },
+        },
+      },
+      REPO as never,
+      "apps/user",
+    );
+
+    expect(r.limits.changeBudget).toEqual({
+      enforce: true,
+      maxDeletedLines: 12,
+      maxTotalChangedLines: 34,
+      maxDeletedFiles: DEFAULT_CHANGE_BUDGET.maxDeletedFiles,
+      maxChangedFiles: DEFAULT_CHANGE_BUDGET.maxChangedFiles,
+    });
+  });
+
+  it("accepts zero change_budget limits", () => {
+    const r = resolvePolicy(
+      {
+        always_deny_write: [],
+        ignore_untracked: [],
+        limits: {
+          change_budget: {
+            max_deleted_lines: 0,
+            max_deleted_files: 0,
+          },
+        },
+      },
+      REPO as never,
+      "apps/user",
+    );
+
+    expect(r.limits.changeBudget).toEqual({
+      enforce: true,
+      maxDeletedLines: 0,
+      maxTotalChangedLines: DEFAULT_CHANGE_BUDGET.maxTotalChangedLines,
+      maxDeletedFiles: 0,
+      maxChangedFiles: DEFAULT_CHANGE_BUDGET.maxChangedFiles,
+    });
+  });
+
+  it("lets domain change_budget override global per field and folds defaults", () => {
+    const r = resolvePolicy(
+      {
+        always_deny_write: [],
+        ignore_untracked: [],
+        limits: {
+          change_budget: {
+            max_deleted_lines: 12,
+            max_total_changed_lines: 34,
+            max_deleted_files: 2,
+            max_changed_files: 3,
+          },
+        },
+      },
+      {
+        repo_id: "x",
+        read: [],
+        domains: {
+          "apps/user": {
+            read: [],
+            write: [],
+            deny_write: [],
+            change_budget: {
+              max_total_changed_lines: 99,
+              max_changed_files: 9,
+            },
+          },
+        },
+      } as never,
+      "apps/user",
+    );
+
+    expect(r.limits.changeBudget).toEqual({
+      enforce: true,
+      maxDeletedLines: 12,
+      maxTotalChangedLines: 99,
+      maxDeletedFiles: 2,
+      maxChangedFiles: 9,
+    });
+  });
+
+  it("carries enforce:false through the domain override", () => {
+    const r = resolvePolicy(
+      {
+        always_deny_write: [],
+        ignore_untracked: [],
+        limits: { change_budget: { max_deleted_lines: 12 } },
+      },
+      {
+        repo_id: "x",
+        read: [],
+        domains: {
+          "apps/user": {
+            read: [],
+            write: [],
+            deny_write: [],
+            change_budget: { enforce: false },
+          },
+        },
+      } as never,
+      "apps/user",
+    );
+
+    expect(r.limits.changeBudget).toEqual({
+      ...DEFAULT_CHANGE_BUDGET,
+      maxDeletedLines: 12,
+      enforce: false,
+    });
   });
 
   it("defaults commandDefaults.timeoutMs and leaves envAllowlist absent", () => {
