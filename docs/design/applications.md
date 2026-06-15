@@ -23,34 +23,45 @@
 | [D](#案d) | 型付き finding triage パイプライン（段間 verify つき） | 中 | pipeline / lineage |
 | [E](#案e) | ダッシュボード可視化テンプレート | 低 | dashboard（可視化主体） |
 | [F](#案f) | RACI 決定権限モデルの明文化（A に折込可） | 低 | — |
-| [G](#案g) | escalation 事後レビュー・ループ | 低 | reports / finding registry |
+| [G](#案g) | escalation 事後レビュー・ループ | 低 | hitch tables（findings/decisions） |
 
 ---
 
-## 案A {#案a}
+<a id="案a"></a>
+
+## 案A
 ### escalation 決定パケットの格上げ / needs_classification jury / severity クロスチェック
 
 **目的**: 判断系エスカレーションの質を上げ、人間に飛ぶ頻度を下げつつ、誤った自動判定は
 fail-closed で人間に残す。
 
 **現状**:
-- `needs_classification` は単一 heuristic + 単一 LLM が `unknown` を吐くと人間に飛ぶ
-  （`src/hitch/classification.ts` / `convergence.ts`）。memory `hitch-divergence-pitfalls` の
-  「良性 finding での誤 escalate」「0→1 誤発火」はここ。
-- severity P0–P3 は reviewer 単独が決める。
+- `unknown` scope の finding は、決定論ヒューリスティック分類器 `classifyFindingForHitch`
+  （`src/hitch/classification.ts`、正規表現/パス照合/カテゴリ許可リスト。**LLM は使わない**）が
+  `orchestrator-runners.ts` で再分類し、なお `unknown` のときだけ人間へ escalate する
+  （`convergence.ts`）。memory `hitch-divergence-pitfalls` の「良性 finding での誤 escalate」
+  「0→1 誤発火」はこの分類/発散判定の精度問題。
+- severity P0–P3 は reviewer ごとのフィールドではなく **harness 由来のマッピング**で決まる
+  （`src/hitch/review-integration.ts`: required_changes→P1 固定 / non_blocking→P2 固定）。
+  P0/P1/P2 ゲートは convergence が算出する。
 - escalate 時の提示は finding ID 列に近い。
 
 **提案**:
-1. **needs_classification jury**: `unknown` scope finding を、異レンズ 3 体
-   （correctness / scope-fit / spec 準拠）が独立に分類 → 決定論的多数決。**不一致は人間へ**
-   （fail-closed 維持）。
-2. **severity クロスチェック**: 複数 reviewer に severity を独立採点させ、決定論集約。
+1. **needs_classification jury**: 決定論ヒューリスティック分類器がなお `unknown` を返す
+   finding を、異レンズ 3 体（correctness / scope-fit / spec 準拠）が独立に分類提案 →
+   決定論的多数決で集約。**不一致は人間へ**（fail-closed 維持）。＝ heuristic 分類器の
+   後段に多体提案層を足す（分類器自体の置き換えではない）。
+2. **severity クロスチェック**: 現状 severity は harness マッピング（P1/P2 固定）なので、
+   reviewer proposal に明示 severity フィールドを足すか、harness マッピングの妥当性を
+   多体でクロスチェックする。最終集約は決定論。
 3. **決定パケット格上げ**: escalate 時の出力を [`deliberation.md`](./deliberation.md) §5 の
    統合フォーマット（推奨/少数意見/反証条件/確信度/次アクション）にする。意思決定
    マトリクス型（[`consulting-frameworks.md`](./consulting-frameworks.md) §2.2）。
 
-**スコープ**: `src/hitch/classification.ts` の分類入力を多体化 / convergence の escalate
-payload 整形。分類の**最終集約は決定論**（多数決ルールを事前登録）。
+**スコープ**: `classification.ts` の後段に多体分類提案層 + 決定論集約 /
+`review-integration.ts` の severity 付与（明示フィールド or マッピングのクロスチェック）/
+convergence の escalate payload 整形。分類・severity の**最終集約は決定論**（多数決ルールを
+事前登録）。
 
 **受け入れ条件**:
 - jury 不一致時は必ず人間 escalate（自動確定しない）テストが緑。
@@ -65,14 +76,18 @@ scope/severity を直接確定しない。
 
 ---
 
-## 案B {#案b}
+<a id="案b"></a>
+
+## 案B
 ### multi-lens review consensus + 反証 verify
 
 **目的**: レビューの見落としを減らす。最小リスク・基盤ありなので最初に着手。
 
 **現状**: Phase 11 consensus mode（`src/core/review-consensus.ts`）は複数 proposal の
-`decision` を quorum + 決定論 tie-break で集約済み。ただし既定は単一 reviewer 寄り、かつ
-同一モデル複数は疑似多様性。
+`decision` を quorum + 決定論 tie-break で集約済み。ただし **orchestrator review runner は
+1 reviewer→即 `review process`** のため、wired な `harness hitch orchestrate` では
+`quorum > 1` に到達できない（`docs/future-features.md` の multi-reviewer driving follow-up）。
+集約能力はあるが駆動側が単数。加えて同一モデル複数は疑似多様性。
 
 **提案**:
 1. **異レンズ reviewer**: N 体の同一 reviewer ではなく correctness / security / regression /
@@ -83,10 +98,14 @@ scope/severity を直接確定しない。
 3. **LLM-as-judge バイアス対策**: 提示順シャッフル / coder の出力を coder 自身に評価させない
    （既に層分離済み）。
 
-**スコープ**: `src/core/review-consensus.ts` への lens 設定追加 / verify ステップ。
-**集約は既存の決定論 quorum のまま**（拡張しても tie-break 規則は維持）。
+**スコープ**: (1) **orchestrator review runner が `review process` の前に N reviewer を
+dispatch** する（`quorum > 1` を満たせるようにする。これが無いと multi-lens consensus は
+hitch から到達不能）。(2) `src/core/review-consensus.ts` への lens 設定 + verify ステップ。
+**集約は既存の決定論 quorum / tie-break のまま。**
 
 **受け入れ条件**:
+- `harness hitch orchestrate` で `quorum > 1` の consensus に実際に到達できるテスト
+  （N reviewer dispatch が effくこと）。
 - 異レンズ proposal の集約が決定論的（同入力→同出力）。
 - 反証 verify が finding を advisory に降格できる経路のテスト。
 - 既存 consensus の tie-break / override パスに回帰なし。
@@ -98,7 +117,9 @@ scope/severity を直接確定しない。
 
 ---
 
-## 案C {#案c}
+<a id="案c"></a>
+
+## 案C
 ### spec 策定 / レビュー層（As-Is/To-Be + ギャップ → closeConditions）
 
 **目的**: 上流（仕様）の品質を上げる。合議制の価値が最も高い領域（決定論的 ground truth が
@@ -118,16 +139,18 @@ scope/severity を直接確定しない。
 
 **不可侵の制約**:
 - 成果物（spec）は**人間が批准**し、harness が canonical scope として記録（委員会は決めない）。
-- closeConditions は**機械検証可能な形**（`command` / `artifact_exists` / `operation_status` /
-  count）を保つ。合議は条件文を*書く*が、判定は決定論ゲートのまま。さもないと曖昧合意への
-  spec drift を招き close-check が骨抜きになる。
+- closeConditions は**機械検証可能な kind**（実在する `HitchCloseConditionKind`:
+  `command` / `finding_policy`（count 系ゲート）/ `operation_status` / `artifact_exists` /
+  `db_doctor` / `review_consensus`、必須化は `manual`）に限る。合議は条件文を*書く*が、判定は
+  決定論ゲートのまま。さもないと曖昧合意への spec drift を招き close-check が骨抜きになる。
 
 **スコープ**: 主に新規ドキュメント/ワークフロー（オフライン・人間批准）。`docs/specs/roadmap.md`
 （course→phase）と `hitch start` 入力の橋渡し。コア状態機械は変更しない見込み。
 
 **受け入れ条件**:
 - 起案 → 批判 → 統合の成果物テンプレートが存在し、人間批准ステップが明示。
-- 生成された closeConditions が機械検証可能な kind のみで構成されることの検査。
+- 生成された closeConditions が実在する `HitchCloseConditionKind` のみで構成され、
+  `HitchCloseConditionSchema` を通ることの検査（`count` 等の無効 kind を出さない）。
 
 **安全境界チェック**: spec の enforcement（close 判定）は決定論ゲート。合議は起草のみ。
 
@@ -135,7 +158,9 @@ scope/severity を直接確定しない。
 
 ---
 
-## 案D {#案d}
+<a id="案d"></a>
+
+## 案D
 ### 型付き finding triage パイプライン（段間 verify つき）
 
 **目的**: finding の整理・優先度付け・escalation 準備を、相互参照する型付き DAG にする。
@@ -160,7 +185,9 @@ scope/severity を直接確定しない。
 
 ---
 
-## 案E {#案e}
+<a id="案e"></a>
+
+## 案E
 ### ダッシュボード可視化テンプレート
 
 **目的**: フレームワークの正準的視覚形をダッシュボード（可視化主体、`docs/specs/dashboard.md`）の
@@ -182,7 +209,9 @@ As-Is/To-Be / ロードマップ）。**各セルは示唆/次アクションへ
 
 ---
 
-## 案F {#案f}
+<a id="案f"></a>
+
+## 案F
 ### RACI 決定権限モデルの明文化（A に折込可）
 
 状態遷移の種類ごとに R/A/C/I を定義し、**Accountable は人間 1 人**を明示
@@ -190,9 +219,13 @@ As-Is/To-Be / ロードマップ）。**各セルは示唆/次アクションへ
 （「状態遷移は harness のみ」「Accountable=人間」）の*表現*であって新機能ではない。
 小粒なので A の受け入れ条件に折り込んでよい。成果物は `docs/specs/` への RACI 表追記。
 
-## 案G {#案g}
+<a id="案g"></a>
+
+## 案G
 ### escalation 事後レビュー・ループ
 
-escalate / 誤分類のログ（`docs/reports/` の finding registry）を定期的に合議でレビューし、
-分類 heuristic・評価軸・プロンプトを更新する運用ループ。小粒・低リスク。優先度は最後。
-当面は `docs/future-features.md` の保留項目として扱い、A/B の運用知見が溜まってから issue 化。
+escalate / 誤分類の**イベント**（runtime ログは `hitch_findings` / `hitch_convergence_decisions`
+等の hitch テーブル。`docs/reports/` は手動の F1/F2 index であって runtime ログではない）を
+定期的に合議でレビューし、分類 heuristic・評価軸・プロンプトを更新する運用ループ。小粒・
+低リスク。優先度は最後。当面は `docs/future-features.md` の保留項目として扱い、A/B の運用
+知見が溜まってから issue 化。

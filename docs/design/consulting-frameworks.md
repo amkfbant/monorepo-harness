@@ -85,8 +85,9 @@ escalationCond    # エスカレーション条件
 ```
 asIs / toBe / gap / cause / action / owner / deadline / metric
 ```
-`metric` は**機械検証可能な形**（`command` exit / `artifact_exists` / count）で書くこと。
-合議は条件を*書く*が、判定は決定論ゲートが*行う*。
+`metric` は**実在する `HitchCloseConditionKind`**（`command` exit / `artifact_exists` /
+`finding_policy`（count 系ゲート）/ `operation_status` 等）で書くこと（`count` という kind は
+存在しない）。合議は条件を*書く*が、判定は決定論ゲートが*行う*。
 
 ---
 

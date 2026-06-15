@@ -899,7 +899,9 @@ follow-up: untracked file の binary 判定をより厳密にし、巨大 file �
 
 ## escalation 事後レビュー・ループ（合議制 案G — design/applications.md）
 
-escalate / 誤分類のログ（`docs/reports/` finding registry）を定期的に合議でレビューし、分類
-heuristic・評価軸・プロンプトを更新する運用ループ。小粒・低リスクだが、案 A/B の運用知見が
-溜まってから issue 化する。設計は [`design/applications.md`](./design/applications.md#案g)、
-前提は [`design/deliberation.md`](./design/deliberation.md)。
+escalate / 誤分類のイベント（runtime ログは `hitch_findings` / `hitch_convergence_decisions`
+等の hitch テーブル。`docs/reports/` は手動 index であって runtime ログではない）を定期的に
+合議でレビューし、分類 heuristic・評価軸・プロンプトを更新する運用ループ。小粒・低リスクだが、
+案 A/B の運用知見が溜まってから issue 化する。設計は
+[`design/applications.md`](./design/applications.md#案g)、前提は
+[`design/deliberation.md`](./design/deliberation.md)。
