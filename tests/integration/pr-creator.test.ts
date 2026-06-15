@@ -534,8 +534,9 @@ describe("createPullRequest", () => {
     expect(remoteMsg).not.toMatch(/SECRET/);
   });
 
-  it("coerces a whitespace-only --title to the deterministic default", async () => {
+  it("coerces a whitespace-only --title to the deterministic default (commit + PR title)", async () => {
     const f = await setup("approved");
+    const pub = fakePublisher();
     const r = await createPullRequest({
       runsDir: join(f.root, "runs"),
       workspacesDir: join(f.root, "workspaces"),
@@ -544,7 +545,7 @@ describe("createPullRequest", () => {
       base: "main",
       draft: true,
       title: "   ",
-      publisher: fakePublisher(),
+      publisher: pub,
     });
     expect(r.prNumber).toBe(7);
     const remoteMsg = execFileSync(
@@ -553,6 +554,10 @@ describe("createPullRequest", () => {
       { encoding: "utf8" },
     ).trim();
     expect(remoteMsg).toBe("harness: run-20260521-apps-x-pr01");
+    // the PUBLISHED PR title is also coerced — never the blank whitespace title.
+    expect(pub.calls[0]?.title).toBe(
+      "harness run-20260521-apps-x-pr01 (apps/x)",
+    );
   });
 
   it("verbatim mint: a title with trailing whitespace round-trips and passes message auth", async () => {

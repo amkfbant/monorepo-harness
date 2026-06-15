@@ -383,15 +383,17 @@ async function createUnderLock(
   // this must run first; `git push` ships the REAL objects regardless.
   await assertNoObjectGraphTampering({ git, runId: opts.runId });
 
+  // An empty/whitespace-only title is treated as absent for BOTH the commit
+  // subject and the published/recorded PR title — so the message authenticator is
+  // never degraded to an empty (forgeable) string, and the PR is never opened with
+  // a blank title. The two fall back to their own defaults below.
+  const hasTitle = typeof opts.title === "string" && opts.title.trim() !== "";
   // The deterministic commit message the harness uses for the run-branch commit
-  // (#103 — reuse the Conventional-Commit PR title as the commit subject). An
-  // empty/whitespace-only title is coerced to the default so the authenticator is
-  // never degraded to an empty (trivially forgeable) message. The post-commit
-  // message authentication compares the HEAD commit against this exact value.
-  const commitMessage =
-    typeof opts.title === "string" && opts.title.trim() !== ""
-      ? opts.title
-      : `harness: ${opts.runId}`;
+  // (#103 — reuse the Conventional-Commit PR title as the commit subject). The
+  // post-commit message authentication compares the HEAD commit against this value.
+  const commitMessage = hasTitle
+    ? (opts.title as string)
+    : `harness: ${opts.runId}`;
 
   // Fail-closed: refuse any unreviewed commit history beyond base (an
   // intermediate commit touching only reviewed paths whose final content matches
@@ -480,9 +482,12 @@ async function createUnderLock(
   // above). Capture it so auto-merge can pin the merge to THIS exact commit.
   const reviewedHeadSha = (await runGit(["rev-parse", "HEAD"], git)).trim();
 
-  // 6. open the PR (publisher should be idempotent on the head branch).
-  const title =
-    opts.title ?? `harness ${opts.runId} (${meta.domain ?? "unknown"})`;
+  // 6. open the PR (publisher should be idempotent on the head branch). Reuse the
+  // same empty/whitespace coercion as the commit subject so a blank --title never
+  // becomes the published/recorded PR title.
+  const title = hasTitle
+    ? (opts.title as string)
+    : `harness ${opts.runId} (${meta.domain ?? "unknown"})`;
   const body = await buildPrBody(runDir, meta, opts.runId);
   const occurredAt = (opts.now ?? new Date()).toISOString();
   const repo = typeof meta.repoId === "string" ? meta.repoId : null;
