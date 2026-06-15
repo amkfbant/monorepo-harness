@@ -507,7 +507,11 @@ only, followed by `hitch close --force` to close the record.
 `hitch update` changes the frozen config only under explicit guards. It accepts
 live statuses (`open`, `in_progress`, `close_ready`) and rejects terminal
 statuses; `closed` / `budget_exhausted` / `escalated` must be reopened first,
-while `cancelled` / `diverging` cannot be updated. Scope edits are fail-closed:
+and `cancelled` cannot be updated. `diverging` is not directly updatable either,
+but it is not a dead end: it is re-derived live (rule 1, #164), so a transient
+divergence self-clears to a live status on the next evaluation and then accepts
+updates — `reopen` is not needed (and is not the recovery for a still-cumulative
+divergence; see REOPENABLE_STATUSES in the repository). Scope edits are fail-closed:
 `targetFiles`, `targetOperations`, `allowedFindingCategories`,
 `excludedCategories`, and `targetSummary` must be provably non-widening unless
 `--allow-scope-widen` is supplied; `notes` is the only non-semantic scope field.

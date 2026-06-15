@@ -2541,10 +2541,11 @@ describe("reopenSession (#76)", () => {
     }
   });
 
-  it("refuses to reopen a diverging goal (would immediately re-diverge)", () => {
-    // divergence triggers derive from immutable history; reopen only extends
-    // iteration/review/rerun budgets, so a reopened diverging goal would re-fire
-    // `diverging` at once. Reopening it needs a divergence-budget design.
+  it("refuses to reopen a diverging goal (recovery is live self-clear, not reopen)", () => {
+    // `diverging` is not reopenable: since #164 it self-clears via live
+    // re-derivation (a transient trigger clears on a clean cycle). reopen extends
+    // only iteration/review/rerun budgets — not the divergence budget — so it is
+    // also the wrong recovery for a cumulative trigger (it would re-fire at once).
     const { db, repo } = freshRepo();
     try {
       createGoal(repo);
