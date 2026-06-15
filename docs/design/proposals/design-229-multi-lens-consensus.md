@@ -262,7 +262,7 @@ review:
   stale_proposal: { reject_superseded: true }                  # optional
 ```
 
-zod 検証(fail-closed): `quorum.min_participants >= 0`, `min_participation_rate ∈ [0,1]`,
+zod 検証(fail-closed): `quorum.min_participants >= 1`（0 は許さない、consensus quorum は必ず >1）, `min_participation_rate ∈ [0,1]`,
 `blocking_decisions ⊆ {changes_requested, rejected}`, `group` 非空文字列, `max_reviewers >= 1`。
 `.strict()` 配下なので未知キーは reject。`review` 欠落 = `DEFAULT_REVIEW_RULE`(後方互換)。
 **新 table / migration は不要**(`review_rules.source` が既に `"project-profile"` をサポート、
@@ -468,9 +468,11 @@ quorum 再実装するのは duplication で禁止。
 1. `resolveEffectiveRule({profile})`: profile.review から consensus(quorum>1) rule + `source="project-profile"` /
    profile=null or review 欠落で `{DEFAULT, "default"}` / 同入力→同 ruleSha256(決定論)。
    **1a. P0-1: review が存在して不正なら `compileProfileReviewRule`/`resolveEffectiveRule` が
-   `ReviewRuleCompileError` を throw（DEFAULT に落ちない）**。`tests/unit/core/review-rule.test.ts`。
-2. `ProjectProfileSchema` の review 検証: 不正 quorum(neg/NaN)/rate∉[0,1]/不正 blocking_decisions /
+   `ReviewRuleCompileError` を throw（DEFAULT に落ちない）。特に `quorum.min_participants ∉ [1,∞)` を schema と compile 両層で reject**。
+   `tests/unit/core/review-rule.test.ts`。
+2. `ProjectProfileSchema` の review 検証: 不正 quorum(`min_participants < 1`/neg/NaN)/rate∉[0,1]/不正 blocking_decisions /
    空 group / `max_reviewers<1` を reject。**review 欠落 profile が通る**(後方互換)。`tests/unit/project/*`。
+   **特に** `min_participants=0` が zod validation で reject されることを検証。
 3. `ReviewerRepository.listByGroup`: reviewer_id 字句順 distinct / 空 group→空 / 未登録 group→空(非エラー)。
    `tests/unit/db/reviewers.test.ts`。
 4. `evaluateConsensus` 回帰: tie-break / override / latest-proposal / quorum / staleness /

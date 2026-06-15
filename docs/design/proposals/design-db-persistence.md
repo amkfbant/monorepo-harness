@@ -22,8 +22,9 @@
 **P2（反映済み）**:
 - **P2-1（severity CHECK に `info` 不足）** → §3.2 `jury_severity_audits` を改訂。現 `hitch_findings.severity` は `info` を含む（schema.ts:1353 / types.ts:100-106）。CHECK に `info` を追加（`P0..P3,info`）。
 - **P2-2（`unknown_inconclusive` が scope enum と不一致）** → §3.2 `jury_classification_proposals` を改訂。現 scope enum は `in_scope/out_of_scope/unknown/duplicate`（types.ts:110-115）。`proposed_scope` は **`unknown` に寄せ**、jury の「判定不能」は別列 **`proposal_status`**（`complete/timeout/parse_error/inconclusive`）で表す。
-- **P2-3（`UNIQUE(...,created_at)` が retry dedupe として弱い）** → §3.1 / §3.2 を改訂。同一 timestamp 衝突があり得る。append-only audit は **UNIQUE を落として INDEX のみ**にし、dedupe が要る箇所は **実 business key**（refute は `(run_id, target_change_hash, reviewer_id, prompt_sha256)`、jury は `(hitch_id, finding_id, lens, reviewer_id, prompt_sha256)`）の UNIQUE にする。
+- **P2-3（`UNIQUE(...,created_at)` が retry dedupe として弱い）** → §3.1 / §3.2 を改訂。同一 timestamp 衝突があり得る。append-only audit は **UNIQUE を落として INDEX のみ**にし、dedupe が要る箇所は **実 business key**（refute は `(run_id, target_change_hash, reviewer_id, prompt_sha256)`、jury は `(finding_id, lens, reviewer_id, prompt_sha256)`）の UNIQUE にする。
 - **P2-4（`run_usage` JOIN を `run_id` のみにすると invocation を一意に戻せない）** → §3.0 / §3.5 を改訂。v30 PK は `(run_id, kind, seq)`（schema.ts:1816）で writer は seq を増分採番（run-usage.ts:42）。各合議行に nullable **`usage_kind` / `usage_seq`** を持たせ、`(run_id, usage_kind, usage_seq)` で run_usage と JOIN 可能にする（FK は張らない＝P1-1）。
+- **P2-5（UNIQUE INDEX が reviewer_id NULL 許容で SQLite UNIQUE NULL 重複 bug）** → §3.2 `jury_classification_proposals` を改訂。UNIQUE(finding_id, lens, reviewer_id, prompt_sha256) は reviewer_id=NULL を複数許し同一 finding/lens/prompt の重複行を生み、aggregateJuryVotes が GROUP BY で fail-closed split。**reviewer_id を NOT NULL に確定**（未登録 proposer は別流程で処理）。
 
 **P3（反映済み）**:
 - **P3-1（`escalate_flag` / `confidence` の CHECK 欠如）** → §3.2 を改訂。gate 監査 DDL なので厳格化。`CHECK (escalate_flag IN (0,1))`、`CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1)` を全該当列に付与。
@@ -189,7 +190,7 @@ CREATE TABLE jury_classification_proposals (
   run_id        TEXT,                 -- codex invocation lineage (advisory。FK しない)
   lens          TEXT NOT NULL
     CHECK (lens IN ('correctness','scope_fit','spec_adherence')),
-  reviewer_id   TEXT,                 -- 登録 jury reviewer (NULL 可、advisory)
+  reviewer_id   TEXT NOT NULL,        -- 登録 jury reviewer (advisory。FK しない。free-text proposer は別流)(P2-修正)
   proposed_scope TEXT NOT NULL
     CHECK (proposed_scope IN ('in_scope','out_of_scope','unknown')),  -- scope enum と一致 (P2-2)
   proposal_status TEXT NOT NULL
@@ -206,6 +207,7 @@ CREATE TABLE jury_classification_proposals (
   created_at    TEXT NOT NULL
 );
 -- 1 invocation = 1 行。dedupe は business key (P2-3)
+-- business key UNIQUE: finding_id + lens + reviewer_id(NOT NULL) + prompt_sha256 で dedupe
 CREATE UNIQUE INDEX jury_classification_proposals_dedup_idx
   ON jury_classification_proposals(finding_id, lens, reviewer_id, prompt_sha256);
 CREATE INDEX jury_classification_proposals_finding_idx

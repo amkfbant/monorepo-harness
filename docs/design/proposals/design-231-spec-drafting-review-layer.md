@@ -117,12 +117,11 @@ epic #228 案C。上流(仕様)の品質を上げる。決定論的 ground truth
 
 **HARD error(fail-closed、DB write を rollback)**:
 1. kind が実在7種外(Zod で既に弾くが念のため二重)。
-2. **(P1-2 訂正)** `kind=command` で `command` field が空、**かつ** condition `id` が `context.allowedCommands` に**一意解決できない**。
-   - 訂正前は「command 必須」だったが、現 runner `resolveCommandForCondition`(`src/hitch/orchestrator-close-check-runner.ts:319-348`)は **`command` 未指定なら condition `id` を allowed command id として解決**する(:323, :335)。既存 docs(hitch-convergence.md:413)・README 例(README.md:167)・fixture(tests/integration/hitch-orchestrate.test.ts:444)がこの bare-id 形式に依存。
-   - 新 hard rule: 「`command` 非空 **OR** `id` が `allowedCommands` に**一意解決**できる」。両方満たさない場合のみ hard error。ambiguous(複数解決)も runner 側で throw する(:337-342)ので、validator でも「一意解決不可(0 件 or 複数件)」を hard error にして起案時に前倒し検出する。
+2. **(P1-2 訂正)** `kind=command` の validator は **context.allowedCommands を resolver へ delay** する。create-session/phase-write 時点で allowedCommands context 無い場合、「形式のみ(TOTAL kind)」をチェックし bare-id 解決は後段 runner(`orchestrator-close-check-runner.ts:319-348`)に委ねる。既存 bare-id fixture 依存と runner 解決ロジックを保全。
+   - WI 計画: validator は 2-phase。(a)choke-point phase(create-session/updateSpec)= syntax + kind hard-gate、allow-command 解決スキップ、(b)run-time resolver phase(runner) = allow-commands context 有で一意解決＆ambiguous 検出。
 3. `kind=finding_policy` で `rule` キーが `{maxOpenInScopeP0, maxOpenInScopeP1, maxOpenInScopeP2, maxOpenUnknownScope}` 以外を含む(**`rule.count` 等は hard error**。close-checks.ts:129-150 が silent ignore する事実の防御)。各値は非負数。
-4. external-evidence kind(`manual`/`artifact_exists`/`operation_status`/`db_doctor`)で `description` が空。
-5. `kind=artifact_exists` で `metadata.path`(対象指定)が無い/曖昧。
+4. external-evidence kind(`manual`/`artifact_exists`/`operation_status`/`db_doctor`)で `description` が空 → **ADVISORY warning のみ**(既存の valid spec で description 空の fixture 存在)。hard error は撤回。
+5. `kind=artifact_exists` で `metadata.path`(対象指定)が無い/曖昧 → **ADVISORY warning のみ**。hard error は撤回。
 6. 同一 closeConditions array 内の **duplicate condition id**。
 7. **`kind=db_doctor` かつ `required:true`** は、runner 未実装の間は **hard error**(明示的 `--allow-external-evidence` acknowledge が無い限り)。理由: 自動 runner が無いため決定論実行されず、まさに「自動ゲート意図が外部証拠待ちに化ける」失敗。**(P2-3)** これは「永久 stall」ではなく「自動 runner なしで ask_human に落ちる」だが、誤分類防止として hard error は妥当。
 8. **(P2-1 追加)** `kind=operation_status` で `metadata.operationId` が無い。`operation_status` も runner 未実装で ask_human group に落ちる(convergence.ts:254 で除外されず external へ)ため、最低限 operationId を必須化して外部証拠記録の宛先を確定させる。
@@ -167,7 +166,7 @@ phase(fail-open を閉じる中核):
 **批准前は提案、批准で canonical**。委員会は決めず、accountable owner 1名が署名。
 
 - `harness course phase ratify <phase-id> --close-file <path> [--scope-file <path>] --approved-by <actor> [--reason <text>]` を新設。
-- ratify は (a) validator + parse + loosen gate(spec-gates.ts)を通し、(b) phase の `scope_json`/`close_conditions_json` を `updateSpec()` 経由で更新、(c) **既存 `review_state_json` カラム**(migration 不要)に最小 canonical 記録を書く。
+- ratify は (a) validator + parse + loosen gate(spec-gates.ts)を通し、(b) phase の `scope_json`/`close_conditions_json` を `updateSpec()` 経由で更新、(c) **`review_state_json` + 新規 `review_state_version` カラム + CAS write path への依存**。DB スキーマ migration (v31→v32) で `review_state_version` INTEGER DEFAULT 0 を phases テーブルに追加、lost-update 防止の CAS(version 一致 check)を ratify write に埋め込む。
 - **(P3-2)** `review_state_json` は既存 docs(roadmap.md:63)で「phase-level review facts(hitch convergence でない codex/Fable レビュー)」用に予約済み。**key 衝突を避けるため namespaced key に固定**する:
   ```jsonc
   {
@@ -257,7 +256,7 @@ phase(fail-open を閉じる中核):
 - **R9 kind 分類表 = auto/external 区別表示**: validator 出力が分類表で 7 kind を明確に区別。
 - **R16a spec-gates 抽出の挙動不変**(P2-2): 抽出した `isScopeWidening`/`closeConditionsLoosenGate` が抽出前と同一判定(代表ケース parametrized)。
 
-### 6.2 integration(`src/__tests__/` / `tests/integration/`)
+### 6.2 integration(`tests/unit/` / `tests/integration/`)
 - **R10 phase write barrier(fail-open 修正の回帰)**: 不正 closeConditions を `course phase update --close-file` / `phase add --close-file` / MCP `phaseAddTool` に渡す → **DB write されず error**(現状は素通しで永続化される回帰を防ぐ)。
 - **R10b expand_scope が update path を通る**(P1-4): MCP `hitch.expand_scope` で `scope_json` 更新後、`updateSessionConfig` 経由(widen gate 継承)を assert。明示例外を取った場合は raw path の threat-model 限定動作を assert。
 - **R10c createSession が真の choke point**(P1-3): `HitchRepository.createSession` に**未検証(parse 前)**の不正 scope/closeConditions を直接渡す → validator/parse で reject(CLI 事前 parse に依存しないことを assert)。

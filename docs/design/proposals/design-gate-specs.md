@@ -605,8 +605,12 @@ function processConsensusModePath(
     // ... existing gate logic ...
     
     // NEW: resolve expected reviewer sets for refute requirements (CC17①)
+    // CC17①: activeRequiredChanges を processConsensusModePath の transaction 内で直接読む
+    // (applyReviewDecision が後で書くため review_required_changes は常に入力としての状態)
     const refuteInputs: RefuteConsensusInput[] = [];
     if (rule.refuteRequirements !== undefined && rule.refuteRequirements.length > 0) {
+      // Query review_required_changes directly from DB within transaction
+      // to ensure consistency with RefuteConsensusInput contract
       const activeChanges = db
         .prepare(
           `SELECT idx, change_text FROM review_required_changes WHERE run_id = ? ORDER BY idx`
@@ -618,6 +622,7 @@ function processConsensusModePath(
         const expectedReviewers = resolveExpectedReviewers(req, reviewerRepo);
         
         // Load refute votes for this group/expected-reviewers
+        // Contract: listByGroupAndExpectedReviewers ensures v.groupId === req.group
         const votes = refuteVoteRepo.listByGroupAndExpectedReviewers(
           opts.runId,
           req.group,
@@ -626,8 +631,8 @@ function processConsensusModePath(
         
         refuteInputs.push({
           requirement: req,
-          refuteVotes: votes,  // CC17①: 既に期待値で filter 済み
-          activeRequiredChanges: activeChanges,
+          refuteVotes: votes,  // CC17①: 既に期待値で filter 済み & groupId確定
+          activeRequiredChanges: activeChanges,  // DB read 済み実体
           out: [],  // filled by evaluateRefuteRequirement
         });
       }
@@ -958,22 +963,33 @@ export interface RefuteVoteRow {
 }
 
 export class ReviewRefuteVoteRepository {
+  /**
+   * Insert a refute vote with groupId persisted.
+   * Contract: groupId must be saved to DB and match req.group during evaluation.
+   * CC17①: evaluateRefuteRequirement filters votes by v.groupId === group
+   */
   insert(input: {
     runId: string;
     reviewerId: string;
     targetChangeHash: string;
-    groupId: string | null;
+    groupId: string | null;  // CC17①: repository が reviewer の group を解決・保存
     verdict: "uphold" | "refute" | "inconclusive";
     confidence?: number;
     promptSha256: string;
     createdAt: string;
   }): RefuteVoteRow { ... }
   
+  /**
+   * Query refute votes filtered by group and expected reviewers.
+   * Contract: all returned votes satisfy v.groupId === groupId (filter applied).
+   * Used by processConsensusModePath to build RefuteConsensusInput.refuteVotes.
+   * CC17①: ensures v.groupId === group match in evaluateRefuteRequirement
+   */
   listByGroupAndExpectedReviewers(
     runId: string,
     groupId: string,
     expectedReviewerIds: string[],
-  ): RefuteVoteData[] { ... }
+  ): RefuteVoteData[] { ... }  // all returned votes: groupId === groupId parameter
 }
 ```
 
@@ -1028,7 +1044,7 @@ export class ReviewRefuteVoteRepository { insert(input: { runId: string; reviewe
 - **WI-9** ProjectProfileSchema: add optional snake_case review section — /Users/kn/ops/monorepo-harness/src/project/schema.ts
 - **WI-10** HitchDecisionPacket type + HitchNextAction.decisionPacket additive field — /Users/kn/ops/monorepo-harness/src/hitch/types.ts
 - **WI-11** resolveEffectiveRule return value: {rule, source, ruleSha256} — /Users/kn/ops/monorepo-harness/src/core/review-rule.ts
-- **WI-12** Thread reviewRuleResolution through entry points — /Users/kn/ops/monorepo-harness/src/core/run-project.ts, /Users/kn/ops/monorepo-harness/src/core/workflow-runner.ts, /Users/kn/ops/monorepo-harness/src/core/reviewed-run-workflow.ts, /Users/kn/ops/monorepo-harness/src/hitch/mutation-tools.ts
+- **WI-12** Thread reviewRuleResolution through entry points — /Users/kn/ops/monorepo-harness/src/project/run-project.ts, /Users/kn/ops/monorepo-harness/src/core/workflow-runner.ts, /Users/kn/ops/monorepo-harness/src/core/reviewed-run-workflow.ts, /Users/kn/ops/monorepo-harness/src/mcp/tools/mutation-tools.ts
 
 ## RED テスト (v3)
 - [unit] RED-1a: resolveEffectiveRule({profile with review consensus}) → {rule, source:'project-profile', ruleSha256} matches compile hash
