@@ -799,6 +799,36 @@ async function resetWorktreeToBase(
   await runResetStep(["clean", "-ffdx"], opts);
 }
 
+/**
+ * Fold any commits or staged-index entries the coder (or an allowed command)
+ * created in the run worktree back into the WORKING TREE: `git reset --mixed
+ * <baseSha>` moves HEAD and the index to the run base while leaving every
+ * working-tree edit — and every untracked file — in place. The reviewed-surface
+ * model is working-tree-based: the reviewed fingerprint is computed over the
+ * working tree, close-check requires a clean index against it, and `harness pr
+ * create` re-derives a SINGLE reviewed commit via `git add -- reviewedPaths`.
+ *
+ * codex sometimes COMMITS its work in the worktree. Without this normalization a
+ * committed worktree would (a) escalate close-check (its index != base) and,
+ * worse, (b) leak the coder's intermediate, unreviewed commits onto the pushed
+ * run branch (PR creation pushes the branch as-is and only validates the NET
+ * base..HEAD diff). Unlike `reset --hard`, this preserves the net change; it only
+ * discards the commit/staging STRUCTURE, never the content.
+ *
+ * FAIL-CLOSED: a non-zero / timed-out reset throws {@link WorktreeResetError} so
+ * the run cannot proceed on a worktree we cannot prove is index-clean.
+ */
+async function normalizeWorktreeIndexToBase(
+  worktreePath: string,
+  baseSha: string,
+  gitTimeoutMs: number,
+): Promise<void> {
+  await runResetStep(["reset", "--mixed", baseSha], {
+    cwd: worktreePath,
+    timeoutMs: gitTimeoutMs,
+  });
+}
+
 async function runResetStep(
   args: readonly string[],
   opts: { cwd: string; timeoutMs: number },
@@ -1527,6 +1557,16 @@ async function runDomainCodingInner(
       | { paths: string[]; fingerprint: string; weakensTests?: boolean }
       | undefined;
     if (diff.ok) {
+      // Fold any commits / staged-index entries the coder (or a command) created
+      // back into the working tree (`git reset --mixed <base>`) before freezing
+      // the reviewed surface. This runs AFTER the change-budget passes, so a
+      // staged-only mutation is still gated by the budget (#141); it only
+      // normalizes the worktree the close-check and PR-creation paths consume, so
+      // they see a clean index, publish exactly one fresh reviewed commit, and a
+      // coder that COMMITTED its work neither escalates close-check nor leaks its
+      // intermediate, unreviewed commits onto the pushed run branch (#141/#197).
+      // The net working-tree change — the reviewed surface — is untouched.
+      await normalizeWorktreeIndexToBase(wt.path, baseSha, gitTimeoutMs);
       await log.emit({
         type: "diff_collected",
         tracked: diff.trackedChangedPaths,
