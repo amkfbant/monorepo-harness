@@ -13,10 +13,18 @@ defaults:
     git_timeout_ms: 30000
 
 ignore_untracked:
+  # JS / build
   - "**/node_modules/**"
   - "**/dist/**"
   - "**/coverage/**"
   - "**/.turbo/**"
+  # Python build / cache (uv venv, byte-compiled, tool caches)
+  - "**/.venv/**"
+  - "**/__pycache__/**"
+  - "**/*.pyc"
+  - "**/.mypy_cache/**"
+  - "**/.pytest_cache/**"
+  - "**/.ruff_cache/**"
 
 root_deny:
   - .git/**

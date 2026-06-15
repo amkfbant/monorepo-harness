@@ -170,6 +170,10 @@ export const ProjectProfileSchema = z
       .object({
         template: z.string().min(1).optional(),
         global_deny: z.array(SafeGlob).optional(),
+        // Project-level untracked-ignore globs, merged with the template's
+        // ignore_untracked (mirrors how global_deny extends root_deny). Lets a
+        // profile declare language-specific build/cache dirs the template omits.
+        ignore_untracked: z.array(SafeGlob).optional(),
       })
       .strict()
       .optional(),

@@ -82,7 +82,10 @@ export function compileProjectPolicy(
 
   const globalPolicy: GlobalPolicy = {
     always_deny_write: rootDeny,
-    ignore_untracked: uniqSort(tpl.ignore_untracked ?? []),
+    ignore_untracked: uniqSort([
+      ...(tpl.ignore_untracked ?? []),
+      ...(profile.policy?.ignore_untracked ?? []),
+    ]),
     ...(tpl.defaults?.codex ? { defaults: { codex: tpl.defaults.codex } } : {}),
     ...(tpl.defaults?.limits ? { limits: tpl.defaults.limits } : {}),
   };
