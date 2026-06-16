@@ -7,7 +7,7 @@
 # 統合実装ロードマップ — epic #228 AI 合議制（DB → 案A → 案B → 案C）
 
 > 計画のみ。実装は別セッションが **dev クローンの `origin/main` ベース隔離ブランチ**で TDD（RED→GREEN→REFACTOR）。
-> 駆動は ops ハーネス（v0.7.10 pin）。base ref 裏取り済み: `SCHEMA_VERSION=30`、migration head=v30、`run_usage` PK=`(run_id,kind,seq)`、`phases.review_state_json` は read-only（書込経路ゼロ）、`ALL_TABLE_NAMES` は手動 union（`V30_TABLE_NAMES=[]`）。
+> 駆動は ops ハーネス（v0.7.10 pin）。base ref 裏取り済み: `SCHEMA_VERSION=30`、migration head=v30、`run_usage` PK=`(run_id,kind,seq)`、`phases.review_state_json` は specApproval 専用書込経路が無い（既存 writer は note 用 `setNote()` のみ・CAS なし）、`ALL_TABLE_NAMES` は手動 union（`V30_TABLE_NAMES=[]`）。
 
 ## 1. 背景
 
@@ -158,6 +158,7 @@ DB 永続化（v31 単一ブロック + repository + review_state_json 書込経
 - CAS: review_state_version をインクリメント、WHERE review_state_version=? で楽観ロック。version 不一致で書込失敗（後勝ち禁止）
 - CAS 競合ポリシー: stale version 衝突を bounded retry（read→merge→retry 最大 N 回）で吸収、N 超過で **typed conflict error を throw（後勝ち禁止・fail-closed）**。retry 内で他 key を消さない
 - 後方互換: review_state_json=null または specApproval 無しの phase が deserialize OK、updateReviewState で初期化される
+- **既存 writer の CAS 統一**: `setNote()`（`phase-repository.ts:131-144` の note 用 review_state_json RMW・現状 `.immediate()`/CAS なし）も同 CAS 経路（`review_state_version` bump + `transaction.immediate`）へ移行し、setNote↔specApproval 間の lost-update を塞ぐ（design-db §2.4）
 
 **SP-3D consistency-doctor 整合 check（orphan proposal/vote/audit + hitch_id 整合）**
 - consistency RUNTIME 列挙に v31 監査 3表が出ない（export drift 非対象）

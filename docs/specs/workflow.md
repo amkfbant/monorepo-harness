@@ -829,8 +829,11 @@ caller_id）を入れて debug 性を確保する。
 
 ## Phase 11 — Review governance / consensus flow（close 済み・現状仕様）
 
-Phase 11 で review process は **consensus mode** が default となる (project
-profile で `review.mode` が `latest-proposal` 以外を指定した場合)。設計は
+Phase 11 で review consensus 機構（複数 proposal の決定論集約 `evaluateConsensus`）は
+実装済み。**ただし現状 `resolveEffectiveRule` は scope（profile）を無視して常に
+`DEFAULT_REVIEW_RULE`（mode=`latest-proposal`・1 体 dispatch）を返す**（`review-rule.ts:116-122`、
+コメントで後続 Phase 送りを明記）ため、**project profile の `review.mode` から consensus を
+選択する経路は未配線**（profile→rule ブリッジは #229=案B が追加する。design-229 §2.1/§3.1）。設計は
 [`../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md`](../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md)。
 
 ### review auto → consensus re-evaluate flow
@@ -945,6 +948,37 @@ Phase 2 で consensus mode が実フローに接続された（`src/core/consens
 
 > 既定の rule は `latest-proposal`（`resolveEffectiveRule`）なので、上記 consensus
 > 経路は profile が consensus mode を宣言したときのみ作動する。既存フローは不変。
+
+### 安全境界マッピング（LLM 出力 = 入力 / 集約・状態遷移 = 決定論ゲート）
+
+review → consensus → `run.status` の全経路は「**LLM の出力は入力（提案）に過ぎず、集約と
+状態遷移は決定論ゲートのみが行う**」という不可侵境界の上に載る。各層の現状の責務と根拠を
+1 枚に集約する（本節は既述の分散した保証を整理したもので、新規挙動ではない）。
+
+| 層 | 担い手 | 入力 / 権威 | 根拠（本ファイル内） |
+|---|---|---|---|
+| **(1) 提案（入力）** | LLM reviewer（codex agent） | proposal を `review_proposals` に INSERT するだけ。`runs.status` は一切動かさない | 「review auto と review process の権限境界」 |
+| **(2) 集約** | `evaluateConsensus`（`src/core/review-consensus.ts`、純関数・決定論） | proposal の **decision ラベル**の集合濃度 quorum + 固定 tie-break（`rejected > changes_requested > approved > pending`）+ stale filter。LLM 自己申告 severity / confidence は集約入力にしない | 「Phase 2 — consensus 拡張」 |
+| **(3) 状態遷移** | `review process` の review-decision guard（`RunRepository.applyReviewDecision`、`status='needs_review'` ガード） | 現 status が `needs_review` のときだけ遷移（`WHERE status='needs_review'`）。consensus が `pending` なら **promote せず fail-closed**（`ReviewGateError`）。多数決結果を直接 `run.status` にしない | 「review process — consensus mode」 / 「state transition guard」 |
+
+不可侵の帰結（いずれも現状で成立）:
+
+- **severity は harness 由来マッピング**（`required_change`→P1 / `non_blocking`→P2 等）で、
+  reviewer の自己申告 severity を遷移根拠にしない。
+- **stall escalation は harness のみ**が決定論で行う（`review_consensus` 履歴の timeline が
+  入力で、LLM 出力は判定入力にしない）。
+- **artifact tamper は fail-closed**（`verifyArtifactsUnchanged` → `ReviewerAgentGateError`）。
+- 迷ったら fail-closed（quorum 未達 / rule 不正 / timestamp 解析不能はいずれも安全側）。
+
+> **設計段階（現状仕様ではない）**: profile から `quorum > 1` consensus を到達可能にする経路
+> （`resolveEffectiveRule` の profile 解決 / orchestrator の N-reviewer dispatch）、**異レンズ
+> （lens）reviewer** による視点多様化、**反証 verify（refute。#229 close に含めるか別 issue 切り出しかは
+> 人間批准事項＝設計 付録H2/I.3 参照）** は #229 の設計段階であり
+> **まだ実装されていない**（既定 rule は `latest-proposal`、profile に `review:` セクションは無く、
+> `src/` に lens 配線は無い）。設計は
+> [`../design/proposals/design-229-multi-lens-consensus.md`](../design/proposals/design-229-multi-lens-consensus.md)
+> （特に付録I = lens 中核化 + 詰め残し G1〜G3 + 新規論点 C1〜C4）。これらが入っても上表 (2)(3) の
+> 決定論ゲートは**凍結契約として不変**で、lens / refute は (1) 提案（入力）の多様化に留まる。
 
 ## Phase 19 — hitch convergence（close 済み・現状仕様）
 
