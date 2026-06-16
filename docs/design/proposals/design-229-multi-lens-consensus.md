@@ -366,8 +366,10 @@ quorum 再実装するのは duplication で禁止。
   → このままでは refute group の票を **対象 finding に決定論 bind できない**。
 - **Phase 2-0（Phase 2 着手の前提条件）**: target id / hash 付き **refute input/output DSL** を設計する。
   - 各 required_change に **安定 target id**（例: `(runId, normalized_change_text) の sha256` or
-    `finding` への FK）を付与する data model 拡張。
-  - refute reviewer の出力は `{ target_id, refute_verdict }` の構造を持ち、harness 側で
+    `finding` への FK）を付与する data model 拡張。→ **付録I.1.2(G2) で content-hash（`target_change_hash =
+    sha256(normalizeChangeText(change_text))`、FK なし）に確定**。
+  - refute reviewer の出力は `{ target_id, refute_verdict }` の構造を持ち（→ 付録I.1.3(G3) で
+    `{ target_change_hash, refute_verdict ∈ uphold|refute|inconclusive, refute_reason, … }` に確定）、harness 側で
     **既存 consensus requirement に入る前に target binding を決定論検証**する（未知 target / hash
     不一致は fail-closed で reject）。
   - この DSL と binding 検証ができて初めて、refute 票を「対象 finding に効く第2 consensus
@@ -429,7 +431,7 @@ quorum 再実装するのは duplication で禁止。
 
 | id | title | files | depends |
 |----|-------|-------|---------|
-| P2-0 | **refute target binding data model + DSL**(P1-e): required_change に安定 target id/hash、refute output `{target_id,refute_verdict}`、harness 側 binding 決定論検証(未知 target/hash 不一致=reject) | src/core/review-decision-schema.ts, src/db/schema.ts(+migration), src/core/review-rule.ts | Phase 1 |
+| P2-0 | **refute target binding data model + DSL**(P1-e): required_change に安定 target id/hash、refute output `{target_id,refute_verdict}`、harness 側 binding 決定論検証(未知 target/hash 不一致=reject)（→ 付録I.1.2/I.1.3 で `target_change_hash` / `uphold\|refute\|inconclusive` に契約確定） | src/core/review-decision-schema.ts, src/db/schema.ts(+migration), src/core/review-rule.ts | Phase 1 |
 | P2-A | refute requirement の rule 表現(DSL) + schema(`review.refute`) | src/project/schema.ts, src/core/review-rule.ts | P2-0 |
 | P2-B | refute reviewer agent variant(別 prompt, distinct registered reviewer_id) | src/core/refute-agent.ts(新) or reviewer-agent.ts flag | P2-A |
 | P2-C | refute 票を `evaluateConsensus` の決定論集約に通す(target-bound 第2 requirement として) | src/core/review-consensus.ts | P2-0, P2-A |
@@ -713,3 +715,585 @@ Phase 1 を「この設計のまま」実装着手するのは **NO-GO**。P0 �
 ## H3. P0-1 fail-closed の挙動確定: review: が存在して意味的に不正(例: requirement.group がどの reviewer group とも一致せず quorum 充足不能、min_approvals > 登録 reviewer 数)な profile で run を作ろうとしたとき、CLI/MCP/orchestrate の各入口で run 生成を typed error(exit 1)で完全拒否する設計で良いか。それとも『不正 review は無効化して DEFAULT に落とすが stderr で強警告』のような緩和を許すか。
 推奨: 完全拒否(typed error, exit 1)を推奨。DEFAULT 降格は quorum>1 を単一 reviewer path に静かに落とす fail-open であり安全境界違反。意味的不正(group 不一致/充足不能)は profile のバグなので fail-closed で運用者に直させるのが正しい。ただし『どの程度の意味検証を compileProfileReviewRule に持たせるか(登録 reviewer との突合まで run 生成時にやるか、それは scope を広げる follow-up とするか)』は判断が割れる。推奨は『compile では rule 内部整合(quorum/min_approvals/blocking_decisions の形)のみ検証して throw、登録 reviewer 数との突合は orchestrator preflight(§3.4)に委ね、run 生成時の事前突合は follow-up(§9 project check)』とし、人間に確定してもらう。
 
+> **更新（付録I.3）**: H1/H2/H3 の現状は付録I（特に I.0 = G0 の lens 中核化）で精緻化された。詳細は I.3 を参照。
+
+
+---
+
+# 付録I: 8論点の深掘り再構成（lens 中核化 + 詰め残し + 新規論点）
+
+> 本付録は、付録F の codex P0/P1 と付録H の残件を踏まえ、(1) Phase 構成の組織原理を
+> **lens 中核化**に組み替える意思決定（G0）を冒頭に置き、(2) その前提で G1〜G3（詰め残し）と
+> C1〜C4（新規論点）を節立てする。file:line は対象 dev クローン
+> （`origin/main` ベース, 6d0a610）で裏取り済み。**安全境界（§5）は不可侵**で、
+> 本付録のいずれの推奨も `evaluateConsensus`（ラベル集合濃度 quorum + 固定 tie-break = 凍結契約）と
+> 状態遷移ゲートを書き換えない。各論点末尾に in-scope / follow-up を明記する。
+
+## I.0 組織原理 — G0: Phase 構成を lens 中核に組み替える
+
+§3.0 の P0-2 対処は「同一 prompt の N reviewer を multi-lens と誇張しない」点で正しいが、その帰結
+として **『Phase 1a = 配管 only（同一 prompt N 体で quorum>1 到達）』を独立 land 完了点**にしていた。
+これを本付録の組織原理として改める。
+
+**論証（同一 prompt-only path の格下げ根拠）**: 同一基盤モデル・同一 prompt の N reviewer は
+Condorcet 的独立投票者ではなく（M02, [deliberation.md](../deliberation.md):33,83-85）盲点を共有する。
+#163 実証（[deliberation.md](../deliberation.md):86-87）= 単一 xhigh が efficacy 欠陥を見逃し
+multi-angle のみ検出。現コードでは `reviewerPrompt = PROMPT_PREAMBLE + reviewerOpsSection`
+（[reviewer-agent.ts](../../../src/core/reviewer-agent.ts):526）に lens identity が無く、`reviewerName`
+（:184）は prompt に届かない（:529-534、`promptSha256` は :527）ので、同一 prompt N 体は全部同じ
+盲点で同方向に票を入れ得る。→ quorum>1 という**数値条件**は満たすが、#229 の真のゴール（§1 見落とし
+削減）に対する**実価値はほぼ無い**。よって配管 only land を独立完了点としない。
+
+なお同一 prompt-only path の格下げ根拠に用いた研究 `tmp/consultant/ai_gougisei_research_ja.md`
+（:105,251,441「同一モデルの疑似多様性＝表現は違うが盲点が同じ」）は、対象 worktree には存在しない
+（ops checkout のみ・git 非追跡）。本付録では研究参照として扱い、現コード状態の根拠には混ぜない。
+
+**採用ルート（確定。(a)+(b)+(c) を重ねる）**:
+
+- **(a) headline land 単位 = lens-based consensus**。配管（profile→rule thread / N dispatch /
+  pending stall / 決定論集約固定）＋ lens 注入（§3.3b）を **#229 の close 条件に両方含める**。
+  配管 only PR を独立完了点と見なさない（物理 2 PR チェーンは可、close は lens land 必須）。
+- **(b) 同一 prompt-only consensus path は後方互換・test fixture 専用に格下げ**。`latest-proposal`
+  (DEFAULT) は不変の後方互換。consensus mode かつ lens 未宣言の path は production 到達点ではなく、
+  `FakeMultiReviewerRunner`（§6 RED#7）で quorum 配管（allowOverwrite/determinism）を検証する fixture
+  用と位置づける。
+- **(c) profile review schema が lens 宣言を要求**。`quorum.min_participants > 1` の requirement で
+  lens 宣言が無いなら、zod（§3.2 の review schema 追加分）と `compileProfileReviewRule`（§3.1）両層で
+  **`ReviewRuleCompileError` を throw（fail-closed）**。production で疑似多様性 consensus が成立不能になる。
+  MECE: 構文不正=loader / 意味不正(lens 未宣言含む)=compile / review 欠落=DEFAULT。
+  **前提**: 現 `ProjectProfileSchema`（[schema.ts](../../../src/project/schema.ts):146-188, `.strict()`）に
+  `review:` セクションは無く、`ReviewRuleCompileError` / `compileProfileReviewRule` もコードに不在。
+  本 PR で **review schema 自体・compile 層・compile error 型を新設**する作業であり「1 条足すだけ」ではない
+  （schema 新設＋compile 層追加＋fail-closed 検証の 3 点が #229 内 in-scope）。
+
+**付録H1 との関係（棄却ではなく精緻化）**: 付録H1 の close 条件（#229 を閉じる前に lens prompt 注入まで
+land して multi-lens を満たす / 1a と 1b を同一 issue #229 のスコープに留める / 1a 完了時点で multi-lens
+達成と書く誇張は避ける）は**踏襲する**。本 G0 が追加するのは「**1a 配管 only を独立完了点と見なさない**」
+という headline land 単位の組み替えであって、close 条件の反転ではない。
+
+**安全境界（不可侵・無改修）**: lens は proposal（入力）を多様化するだけで、`evaluateConsensus` は
+凍結契約のまま無改修。run.status 遷移は `processConsensusModePath` の expected-status guard（決定論）が
+握る。lens 宣言は profile 側の静的メタで、LLM 自己申告 severity/confidence を票減点・参加除外に使わない。
+fail-closed: lens 宣言不正/欠落の consensus rule は run 拒否。
+
+**受け入れ条件・PR 分割への影響（付録H1 精緻化）**:
+- §8 受け入れ条件対応表の「異レンズ proposal の集約が決定論」は **lens 配線込み**で 1 条件に統合
+  （lens 別 promptSha256 + order 非依存 + 同入力→同出力）。現 RED#12 を headline に昇格、現 RED#7（lens
+  無し）は配管/fixture テストへ格下げ。新 RED: quorum>1 requirement で lens 未宣言を compile/schema が
+  reject（(c)）。
+- §3.3b 本体の reviewer-agent 行参照は v0.7.10 当時の `:524/:525` 表記。現行（6d0a610）コードでは
+  **`:526`(reviewerPrompt) / `:527`(promptSha256)** であり、本付録の file:line は現行で再取得済み（本体側の
+  v0.7.10 表記は当時のスナップショットとして残す。実装着手時に本体を現行行へ追従させる）。
+- **refute(Phase 2)依存**: refute reviewer の別 prompt は lens 注入機構（reviewer-agent.ts:526 拡張）の
+  再利用。lens を #229 の中核 land（headline）に入れることで「refute は lens 後」が自然に整理され、Phase 2 の前提は
+  Phase 2-0(target binding)のみに純化する。
+
+**G0 スコープ**:
+- **#229 内（in-scope）**: lens 宣言 schema 新設 + quorum>1→lens 必須の fail-closed（compile/zod 両層）+
+  最小 prompt 注入機構（metadata.lens_prompt → reviewerPrompt、既存 reviewerName:184 / metadata_json 活用）+
+  promptSha256/provenance への lens 反映 + land 単位の組み替え。
+- **follow-up（[docs/future-features.md](../../future-features.md)）**: lens persona ライブラリ / 推奨
+  lens セットのプリセット化、異モデル調達（runner DI 改修）、lens 多様性の定量評価・外部正解較正・全
+  proposal 証拠採点(M15)、dashboard/MCP の lens 露出。
+
+---
+
+## I.1 詰め残し（G1〜G3）
+
+### I.1.1 G1 — lens 軸の宣言と決定論 MECE preflight（M01: lens 自由文一本足を塞ぐ）
+
+§3.3b は lens を reviewer 登録 `metadata_json` の自由文 `lens_prompt` で注入するが、(a) lens 軸の語彙が
+固定されず、(b) 同一 group の dispatch reviewer 群で lens が重複/欠落しても、(c) quorum>1 group が
+同一/空 lens（＝同一 prompt N reviewer への退化, P0-2）でも、**decision-determining gate が一切検査
+しない**。lens は集約に不参加の純入力概念（[review-consensus.ts](../../../src/core/review-consensus.ts):180-198
+は groupId と distinct reviewerId 濃度のみ参照、lens 次元なし）なので、**lens の品質を gate にするのは
+過大（凍結契約／安全境界違反）**だが、**lens が宣言され実体化されたかの構造検査は registry/profile という
+決定論データのみで閉じる**。これを G0(c) と一体で Phase 1b に追加する。
+
+**判断**: lens 軸を型として宣言し、orchestrator の §3.4 既存 preflight（C2 連携先）に決定論 MECE 検査を
+一段足す。集約（`evaluateConsensus`）には一切触れない。
+
+1. **reviewer 登録の lens 宣言**（[reviewers.ts](../../../src/db/repositories/reviewers.ts):22 の
+   `metadata_json` 上、新 table/migration 不要）。`metadata_json.lens` を zod 検証する: 許可 enum
+   `correctness | security | regression | efficacy | spec_compliance` ＋任意拡張 axis（非空文字列）。
+   `lens_prompt` は従来通り自由文。`add()`（[reviewers.ts](../../../src/db/repositories/reviewers.ts):108-109
+   の素通し）は lens schema 不正を **reject**（fail-closed）。
+2. **profile review requirement の lens_axes 宣言**（§3.2 schema に optional 追加、`.strict()` 配下）。
+   ```yaml
+   requirements:
+     - group: reviewers
+       quorum: { min_participants: 2 }
+       lens_axes: [correctness, security]   # NEW(M01, optional): この group が要求する軸集合
+   ```
+   `lens_axes` 欠落＝**`quorum.min_participants <= 1` / `latest-proposal` の互換ケースに限り**検査 no-op
+   （後方互換。§3.1 P0-1 の「欠落=DEFAULT」と同型 MECE）。**`quorum > 1` requirement での lens 宣言欠落は
+   G0(c) の `compileProfileReviewRule` が reject**（fail-closed・疑似多様性を schema/compile 層で禁止）するため、
+   quorum>1 でここが no-op になることはない（G0(c) と矛盾しない）。
+3. **orchestrator preflight の決定論 MECE 検査**（§3.4 step3 の preflight＝C2 に一段追加）。dispatch 対象
+   reviewer 集合に対し決定論的に:
+   - **quorum 必須**: `quorum.min_participants > 1` の group は全 dispatch reviewer が**非空 lens** を持つ
+     （持たない＝同一 prompt 退化）。
+   - **宣言カバレッジ**: `lens_axes ⊆ {dispatch reviewer の lens}`（不足 axis あり＝escalate）。
+   - **重複なし**: dispatch reviewer の lens 多重集合に重複が無い。
+   いずれか不充足なら **dispatch 前に決定論 escalate**（reason に `group` / `required_axes` /
+   `covered_axes` / `missing` / `duplicates`）。**LLM 出力は一切見ない**（registry/profile のみ入力）
+   → 安全境界内。
+4. **監査 stamp**: 注入 lens を `prompt_provenance_json`（DB カラムは
+   [schema.ts](../../../src/db/schema.ts):1683 で ADD、値は [reviewer-agent.ts](../../../src/core/reviewer-agent.ts):727
+   の `insertProposal` の `promptProvenance` で書込、現フィールドは `{ template, knowledge }`。lens は
+   **additive に 1 フィールド追加**で既存を破壊しない）と proposal metadata に stamp し、proposal 単位で
+   「実際にどの lens 別 prompt だったか」を事後検証可能にする。
+
+**安全境界**: lens は入力多様化のみ。集約（quorum＋固定 tie-break）は不変。lens 検査は集合演算（決定論）で、
+不充足は fail-closed escalate。lens を票の重み/除外に効かせる案、lens 品質を LLM judge で検査する案は
+**#229 外 / 安全境界違反として棄却**（follow-up）。
+
+**受け入れ条件（§8 の "multi-lens"＝Phase 1b 行に下記 RED を追加）**:
+- quorum>1 group で全 reviewer 同一/空 lens → 決定論 escalate（退化検出）。
+- 宣言 lens_axes の一部未カバー → escalate（missing axis）。
+- lens 重複 → escalate。
+- lens_axes 未宣言 profile（Phase 1a/既存）→ 検査 no-op で従来 dispatch（後方互換）。
+- lens enum 外/不正 metadata → `add()`/schema で reject。
+- 注入 lens が provenance＋proposal metadata に stamp される。
+これらは決定論データ入力のテストで、`evaluateConsensus` の凍結契約テスト（tie-break / quorum / order
+非依存）に回帰を与えない（lens は集約に不参加）。
+
+**G1 スコープ**:
+- **#229 内（Phase 1b）**: reviewer metadata の lens を zod 宣言・検証（enum 5 軸＋任意 axis、`add()` で
+  reject、metadata_json 上で migration 不要）/ profile review requirement に optional lens_axes 追加 /
+  orchestrator preflight に決定論 MECE 検査（不充足 fail-closed escalate）/ 注入 lens を
+  prompt_provenance_json＋proposal metadata に stamp / RED→GREEN + docs/specs/{project,workflow}.md 更新。
+- **follow-up**: lens を ReviewerRow 第一級カラム化＋migration / lens 集約反映（票多様性ボーナス＝凍結契約
+  書換、禁止）/ lens 品質の LLM judge / lens×異モデル / run 生成時の事前 lens 充足検証（project check 拡張）/
+  dashboard・MCP への lens カバレッジ露出。
+
+### I.1.2 G2 — refute target binding を content-hash に pin（M10/P1-e の二択を確定）
+
+§3.5/§4 P2-0 では各 required_change の安定 target id を『`(runId, normalized_change_text)` の sha256
+or `finding` への FK』の **二択・例示**で残していた。本節でこれを **content-hash 一本に確定**し、
+design-db-persistence.md §3.1（`review_refute_votes.target_change_hash TEXT NOT NULL`、
+`= sha256(normalizeChangeText(change_text))`、FK 一切なし）と一致させる。
+
+**確定: target id = `target_change_hash = sha256(normalizeChangeText(change_text))`（app 層計算）**
+- `target_change_idx` は記録時点の idx を **advisory** として持つのみ。**binding には使わない**（idx は
+  import で再番号される: `review_required_changes` は RESET_CHILD、import-files.ts:71）。
+- **FK は一切張らない**（design-db P1-1）。`openDb` は `foreign_keys=ON`（connection.ts:44）。finding 表
+  `hitch_findings`（[schema.ts](../../../src/db/schema.ts):1342 = `CREATE TABLE goal_findings` の定義、v20 で
+  `hitch_findings` に rename: :1538/:1546）は親 FK
+  `goal_id/hitch_id → goal_sessions/hitch_sessions ON DELETE CASCADE`（[schema.ts](../../../src/db/schema.ts):1344）を
+  持ち、かつ import reset の `RESET_CHILD_TABLES`（import-files.ts:67-77）に含まれない（＝finding は run の子
+  ではなく session の子）。よって refute が `finding_id` を FK 参照すると、(1) session 親 purge 時に CASCADE
+  で audit 行が巻き添え削除され append-only audit が成立しない、(2) export-backed の
+  `review_required_changes`（RESET_CHILD: import-files.ts:71）の idx 再番号と組み合わさり binding が orphan
+  化する。`run_id`/`finding_id` は **advisory ID**（FK にしない）。
+
+**finding FK 案を棄却する理由**: finding の `sourceRef` は
+`review_decision:${runId}:required_change:${index}`（[review-integration.ts](../../../src/hitch/review-integration.ts):293-298、
+`canonicalBlocking` 分岐でのみ設定）で **index ベース**。FK にしても安定性は content-hash より弱く、refute の
+対象は『required_change という主張』であって、それを P1 化した **下流投影の finding** ではない（finding 化は
+review-integration.ts:287-298）。content（change_text）に bind するのが意味的に正しい。
+
+**`normalizeChangeText` の決定論仕様（design-db 付録B の未定義リスクを閉じる）**: binding は app 層計算なので
+（SQLite に sha256 無し）、正規化規則が決定論でないと環境差で hash がブレて binding が壊れる。既存ハッシュ
+規約（`canonicaliseRule` の whitespace-free JSON: [review-rule.ts](../../../src/core/review-rule.ts):88、
+`slugify` の NFKC: [knowledge-promoter.ts](../../../src/core/knowledge-promoter.ts):170-171。なお同 `contentHash`:158 は
+JSON+sha256 で normalize しない）に倣い、**純関数・依存なし**で以下に固定する:
+1. Unicode 正規化 **NFC**（NFKC ではない: 全角→半角等の意味折りを避け、過剰正規化で別 change を同一視しない）。
+2. 改行正規化: `CRLF`/`CR` → `LF`。
+3. 各行の trailing whitespace 除去 + 行内の連続空白（tab/space）を単一スペースに畳む。
+4. 文書全体の先頭/末尾の空行を trim。
+5. **case 折りはしない / 句読点除去もしない**（意味差は別 target として残す。安全境界: 迷ったら fail-closed）。
+6. 上記文字列を UTF-8 で `sha256` → hex。
+実装は `src/core/` の純関数 + 専用テスト（whitespace/CRLF/NFC 差が同一 hash に畳まれ、語句・大小文字差は別
+hash になること、同一入力の安定性、別入力の非衝突）。
+
+**binding 決定論検証（未知 target / hash 不一致 = fail-closed reject）**: refute reviewer 出力
+`{ target_change_hash?(or target_change_text), refute_verdict }` を `evaluateConsensus` に入れる前に、
+harness が **100% 決定論**で検証する:
+1. **候補集合 H の構築**: 対象 run の active proposal が確定した required_changes 集合 C を読み、各
+   `change_text` に `normalizeChangeText`→`sha256` を施した有効 hash 集合 `H = { h_i }` を作る。
+2. **binding**: refute 出力が `target_change_text` を持つ場合は **harness 側で再計算**する。LLM 申告の
+   `target_change_hash` は **権威にしない**（安全境界: LLM 自己申告を状態根拠にしない）。
+3. **未知 target**: 計算した `h ∉ H` → その refute 票を **reject（drop）**。binding できない票は集約に一切
+   入れない（fail-closed: 元の blocking requirement を維持）。
+4. **hash 不一致**: LLM が `target_change_hash` を申告し、harness 再計算値と食い違う → **reject**（harness
+   再計算値のみが権威）。
+5. **集約投入**: binding 成立票のみ `target_change_hash` で group 化し、§3.5 の『第2 consensus requirement』
+   として `evaluateConsensus`（quorum + 固定 tie-break = **凍結契約**）に渡す。降格効果は `evaluateConsensus`
+   出力 → expected-status(needs_review) guard → `run.status` の決定論経路でのみ現れる。**severity フィールドの
+   mutation は経由しない**。
+6. **DB 記録**: 検証を通った票のみ `review_refute_votes` に business-key
+   `(run_id, target_change_hash, reviewer_id, prompt_sha256)`（design-db §3.1）で append。
+
+本 P2-0 は `review-decision-schema.ts` / `schema.ts(+migration v31)` / `review-rule.ts` のみを触り、
+`evaluateConsensus`（[review-consensus.ts](../../../src/core/review-consensus.ts):99, quorum + 固定 tie-break =
+凍結契約）も `refute_verdict(uphold/refute/inconclusive)→consensus label` の決定論マッピングも**改変しない**。
+マッピングと「第2 requirement への投入経路」は P2-A/P2-C の責務（本論点はその前提となる binding の確定のみ）。
+
+→ #229 受け入れ条件『反証 verify が finding を advisory に降格できる経路のテスト』は、この binding 込みの
+**第2 consensus requirement 経路の決定論テスト**で満たす（severity テストではない）。
+
+**G2 スコープ**:
+- **#229 Phase 2-0（前提・本論点のスコープ）**: target id content-hash 確定（§3.5/§4 P2-0 を content-hash に
+  書き換え design-db §3.1 と一致）/ `normalizeChangeText` 仕様+純関数+単体テスト / `review_refute_votes.target_change_hash`
+  + harness 側 binding 決定論検証（未知/不一致=reject）。**binding 確定までが P2-0** で、`evaluateConsensus` /
+  `review-processor.ts` には触れない。
+- **follow-up**: binding 成立票を第2 consensus requirement に通す経路（**P2-C** = `review-consensus.ts` /
+  `review-processor.ts` 変更を伴う Phase 2 実装。本 P2-0 の binding 確定とは別レイヤー）/ reject 票の入力監査記録の
+  形式 / refute reviewer agent の異モデル調達（runner DI・異モデルは
+  #229 外）/ change_text への per-id schema 逆輸入（content-hash で足り dashboard/MCP 露出時に検討）/
+  normalizeChangeText の追加緩和（Markdown 整形吸収等は過剰正規化リスクで要件確定後）。
+
+### I.1.3 G3 — refute output DSL の構造化必須フィールド（儀式化対策）
+
+§3.5 の refute output DSL は `{ target_id, refute_verdict }` だけでは**「批判の儀式化」**
+（[deliberation.md](../deliberation.md):147「表面的懸念のみ → 反証条件・最悪ケース・
+棄却基準を要求」。元の合議制リサーチは I.0 注記のとおり worktree 非追跡のため、写像先の deliberation.md を引く）を防げない。decision ラベル（refute_verdict）だけでは harness は中身ゼロの反対票と実質
+反証を**決定論で区別できない**。
+
+**判断**: 証拠で票を締める規律を **refute DSL に限定して畳む**（全 proposal=M15 は**不可**。M15 は
+`evaluateConsensus` のラベル集合濃度 quorum + 固定 tie-break の**凍結集約契約**を書き換える＝#229 過大・
+不可侵境界違反。§3.5 棄却方針・付録H H2 と整合）。refute 票は Phase2 で新設する**別 layer**なので、凍結
+された通常 reviewer path（[review-decision-schema.ts](../../../src/core/review-decision-schema.ts):11-22,
+`.strict()`（decision + 3 text array = レビュー内容 4 項目、メタ含め計 8 フィールド））を一切触らずに refute
+専用 schema を追加できる。
+
+元 §3.5/§4 P2-0 は `{target_id, refute_verdict}` のみだったので、G3 でリサーチ正本（反証条件/撤回条件/棄却
+基準）に 1:1 写像する 4 フィールド（refute_reason / counter_evidence_ref / refute_condition / retract_condition）を
+P2-0 DSL に**新規追加**する。
+
+| field | 必須 | 決定論評価（観測可能なもののみ） |
+|---|---|---|
+| target_change_hash（or target_change_text、harness 再計算） | 必須 | 既存 required_change への binding 検証（hash 不一致=reject）。G2 / design-db §3.1 と契約名を統一 |
+| refute_verdict | 必須 | `uphold` \| `refute` \| `inconclusive`（design-db §3.1 の CHECK と統一）。participant カウントは uphold/refute のみ |
+| refute_reason | 必須 | presence + min length のみ（**質は評価しない**＝LLM 自己申告不使用） |
+| counter_evidence_ref | 必須 | refute DSL の**新フィールド**（既存 close-condition kind ではない）。`{ kind: diff\|test\|spec_line\|none; ref }`。kind!=none は ref が run 成果物に実在するかを、既存 automatic-verification 系 kind（`command` / `finding_policy` / `artifact_exists`、[deliberation.md](../deliberation.md):149 と同型）の検証機構で確認 |
+| refute_condition | 必須 | presence のみ（[deliberation.md](../deliberation.md):147「反証条件 / 最悪ケース」） |
+| retract_condition | 必須 | presence のみ（同 deliberation.md:147「反証されたら撤回する条件」） |
+
+**欠落/不成立 refute 票の決定論的扱い（fail-closed）**:
+1. **refute layer（集約前）**で DSL 構文 + target binding + counter_evidence artifact 実在を検証。必須
+   フィールド欠落 / binding 不一致 / artifact 不在 / `counter_evidence_ref.kind=none` → その refute 票を
+   **無効化（participant 除外）**。無効票は監査のため `review_refute_votes`（design-db §3.1）に
+   `validation_status` / `reject_reason` を添えて記録し、**`review_proposals` には入れない**（review_proposals は
+   通常 reviewer consensus の active 入力で、`reviewer-agent.ts`:715-738 が insert 後に consensus を再評価するため、
+   refute 票を混ぜると通常 consensus を汚染する）。無効票の `refute_verdict` は第2 consensus requirement の
+   participant set に渡さない。新 `review_refutes` table で監査ゲート外に quorum を再実装するのは §3.5 が禁止済み。
+2. **有効化済み refute 票だけ**を `evaluateConsensus` の第2 requirement に投入。`evaluateConsensus` 本体
+   （ラベル集合濃度 quorum + 固定 tie-break）は**不変**。これは既存
+   [consensus-enrichment.ts](../../../src/core/consensus-enrichment.ts) の「未登録 reviewer→groupId=null→
+   per-group check 落とし」と同型の**安全方向 filter**であり、集約器の中で票を減点する M15 とは機構が異なる。
+3. 有効 refute 票が quorum 未満 → 元の blocking requirement のまま（advisory 降格しない）。
+
+**安全境界**: 評価対象は「必須フィールドの presence」「artifact 実在」「target binding hash 一致」のみ＝全て
+観測可能=決定論。**refute_reason の説得力 / 証拠の質は harness も LLM-judge も評価しない**（LLM 自己申告
+severity/confidence を状態遷移根拠にしない境界のまま）。run.status 遷移は processConsensusModePath の
+expected-status guard 経由（不変）。
+
+**受け入れ条件への反映（§8「反証 verify が finding を advisory に降格できる経路のテスト」）**:
+(a) 必須フィールド欠落/artifact 不在 refute 票が決定論無効化され降格が起きない（fail-closed）、
+(b) 全フィールド充足 + binding 一致 + artifact 実在 + quorum 充足で第2 requirement 経由降格（severity
+mutation 不経由・evaluateConsensus 不変を DB アサート）、(c) `counter_evidence_ref.kind=none`（証拠なし明示）の
+refute 票は presence は満たすが participant カウントから除外される、の RED を含める。
+
+**G3 スコープ**:
+- **#229 内（設計のみ）**: 本節（§3.5 / §4 P2-0 の refute DSL 定義の inline 確定）。実コード変更は #229 内
+  では不要（refute DSL は未実装、Phase2/付録H H2 は別 issue 切り出し推奨）。
+- **follow-up**: refute DSL の実装本体（schema 追加 / binding 検証 / counter_evidence artifact 実在検証の
+  automatic verification kind 配線 / refute layer の participant 除外ロジック）= Phase2。**M15（全 proposal
+  証拠採点）は凍結集約契約侵害として恒久的に #229 外**（採用しない理由を future-features に記録）。
+
+---
+
+## I.2 新規論点（C1〜C4）
+
+### I.2.1 C1【高】多エージェント tool/MCP 攻撃面の拡大（1→N + lens prompt 注入面）
+
+> 研究 §5.5（MCP とセキュリティ）/ §9（権限過大）反映。本節は「#229 が *新規に* 作る攻撃面」だけを扱う。
+> 集約・状態遷移の安全は §5 の不可侵境界マッピングで既に担保される。
+
+**脅威モデル（#229 で増える分だけ・実コード裏取り）**:
+
+| 脅威 | #229 での実態 | 増分か |
+|------|--------------|--------|
+| prompt injection（lens 経由） | Phase1b が [reviewer-agent.ts](../../../src/core/reviewer-agent.ts):526 の `PROMPT_PREAMBLE + reviewerOpsSection` に lensSection を連結。lens_prompt は新規 untrusted 注入テキスト | **増分（唯一の新規面）** |
+| tool poisoning | reviewer 経路の実 runner [codex-cli-runner.ts](../../../src/codex/codex-cli-runner.ts) に mcp_servers 注入は無く、`--ignore-rules`(:87) で target .rules も無視。reviewer は tool を持たず diff を読むだけ | 増えない |
+| 権限過大 | reviewer runner は全入口で `sandbox:"read-only"` 固定（cli/run.ts:585-587, cli/hitch.ts:832/1204/1335, mcp/tools/mutation-tools.ts:516, roadmap/course-orchestrate-runtime.ts:103-105） | 増えない（N 倍化のみ） |
+| 秘密流出 | env は `DEFAULT_CODEX_ENV_ALLOWLIST`（codex-cli-runner.ts:29-39）で OPENAI_*/AWS_* を strip。codex に機密 env は見えない | 増えない |
+| 票の独立性汚染 | reviewer prompt に **他 reviewer の proposal は渡さない**。N 体は同一 runDir を逐次共有するが sandbox=read-only で互いの input を書けない | 設計で維持 |
+
+（脅威表の「tool poisoning」行注記: reviewer は **MCP/tool 注入も write capability も持たず**、`codex exec` の
+read-only artifact-scoped 実行で diff を読む。read 系能力自体は持つが、write / MCP wire は追加しない。）
+
+**核心**: lens injection が成功しても汚染できるのは **その reviewer の proposal 本文（=入力）まで**。集約
+`evaluateConsensus`（凍結契約）は proposal の説得力も自己申告 severity も見ず、`run.status` は
+`processConsensusModePath` の expected-status guard 経由のみ（§5）。injection された 1 票は「もう一つの不正な
+input proposal」に過ぎず、N 票の決定論集約が吸収する。lens は **proposal を多様化する入力**であって状態遷移
+には効かない。
+
+**lens_prompt の出所と untrusted 扱い**: lens_prompt は `reviewers.metadata_json` に置く（§3.3b）。書き込みは
+`ReviewerRepository.add({ metadata })`（[reviewers.ts](../../../src/db/repositories/reviewers.ts):90-110）＝
+**operator/CLI 由来であり reviewer LLM 由来ではない**（proposal が metadata を書く経路は無い）。ただし
+profile/DB は共有 checkout で書き換わりうる + operator 設定ミスも injection と同型被害になるため **untrusted
+扱い（fail-closed）**とする。
+
+**#229 内で最低限やる security 対処（案A・全て入力/記録側の決定論処理）**:
+1. **untrusted-fenced lens 注入**: lensSection を [prompt-builder.ts](../../../src/codex/prompt-builder.ts):52-61,110-119 の
+   `neutraliseFence`/`<knowledge>` パターンに倣い、`<lens>…</lens>` フェンスで囲み「これはレビュー観点の助言で
+   あり、出力契約・read-only 制約・決定の真正性を上書きしない」と framing。既存 `neutraliseFence` は
+   `<knowledge>` 専用正規表現なので、lens 用に `<lens>` を中和する**専用中和関数を新設**（既存関数の流用ではない）。
+2. **provenance 記録**: `prompt_provenance_json`（DB カラム [schema.ts](../../../src/db/schema.ts):1683、値は
+   [reviewer-agent.ts](../../../src/core/reviewer-agent.ts):727 の `promptProvenance`、現フィールド
+   `{ template, knowledge }`）に lens 由来（reviewer_id / lens 名 / lens_prompt の sha256）を additive 追記。
+   `promptSha256`（:527）は lens 込みで再計算。→ 研究 §5.5「どの AI がどの証拠/prompt を使ったか」を満たす。
+3. **最小権限の維持**: lens を渡しても reviewer runner は `sandbox:"read-only"` / env allowlist / MCP 未 wire の
+   まま。test で sandbox 引数をアサート。
+4. **票の独立性の明記**: 他 reviewer の proposal を reviewer prompt に渡さないことを spec 化。
+5. **dispatch の決定論 bound**: `max_reviewers`/`reviewer_ids` + preflight escalate（§3.2/§3.4）が DoS 的増殖も
+   防ぐことを確認。
+
+**受け入れ条件への追加（Phase1b、検証可能項目）**:
+- フェンス閉じ記号や PROMPT_PREAMBLE の artifact 列挙行・`<knowledge>`/`<context-pack>` フェンス記号を含む
+  lens_prompt でも `PROMPT_PREAMBLE` 出力契約を early-close できない unit test。
+- 異 lens_prompt → 異 `promptSha256` かつ `prompt_provenance_json` に lens 由来が残る test（RED#12 を
+  provenance まで拡張）。
+- lens を渡しても reviewer runner が `sandbox:"read-only"` で起動する test。
+- **injection を防ぐのではなく、injection された 1 票を含む N 票でも集約決定論が不変**であることを検証する test
+  （境界 2 と整合：最終防壁は集約決定論）。
+
+**C1 スコープ**:
+- **#229 内（Phase1b に内包）**: 上記 1〜5 + spec（docs/specs/workflow.md, project.md）に「lens は proposal を
+  多様化する入力に過ぎず集約・遷移には効かない／lens_prompt は untrusted／他 reviewer proposal は渡さない」を明記。
+- **follow-up**: lens enum/許可リスト構造化（案B）/ per-reviewer 別 worktree 物理分離（案C）/ reviewer codex への
+  MCP/tool 付与時の per-reviewer 最小権限 + 承認ゲート（現状 tool 無しなので #229 では不要）/ M15 全 proposal 証拠
+  採点 / 異モデル調達 / dashboard・MCP への lens provenance 露出。
+
+**棄却案（不可侵境界違反）**: proposal 本文の証拠有無/injection 痕跡で票を減点・除外する案は
+`evaluateConsensus` 凍結契約の書き換え＝境界違反。LLM 出力本文を遷移根拠にする（境界 2 違反）ため採用しない。
+**集約の決定論性そのものが injection 耐性である**、という設計を維持する。
+
+### I.2.2 C2 — 合議プロセス品質メトリクス（論点 PM-1: preflight は quorum 数しか見ない）
+
+§3.4 step3 の preflight は dispatch 数 ≥ `quorum.min_participants` の『頭数』だけを決定論判定する（fail-silent
+防止）。だが研究 §8.2「合議プロセス品質」(独立性 / 多様性 / 反証の強さ / 追跡ログ) と
+[deliberation.md](../deliberation.md):81-91「疑似多様性の罠」が要求する **lens 多様性が実体として担保されたか**は
+観測しない。Phase 1a は同一 prompt の N reviewer（lens 多様性ゼロ）でも quorum>1 を満たし、Phase 1b で lens を
+宣言しても宣言と実参加の乖離を誰も観測しない。これを **記録 + warning** で観測可能化する。
+
+> 注: `evaluateConsensus` 既存コメント（[review-consensus.ts](../../../src/core/review-consensus.ts):12-16）が
+> §C1/§C2 を override/tie-break の意味で使うため、本論点は記号衝突回避で **PM-1** とする。
+
+**安全境界（最重要・不可侵）**: メトリクスは **集約結果（quorum / tie-break / status 遷移）に一切影響させない**。
+`evaluateConsensus` は**凍結契約**で書き換えない。メトリクスはその出力（`participants` 等）と reviewer 登録
+metadata を入力に取る**別の決定論純関数 `computeProcessMetrics`** が算出し、記録と warning のみに使う。LLM 自己
+申告・proposal 本文の内容判定は入力にしない。
+
+**決定論算出可能なメトリクス（harness 由来データのみ）**:
+- `participation`: active proposal を出した distinct `reviewer_id` 数（合議全体値）。根拠は
+  [review-consensus.ts](../../../src/core/review-consensus.ts):194-198 の per-group participants の合議横断拡張。
+- `declaredLensCardinality`: dispatch 対象 reviewer の `reviewers.metadata_json.lens`
+  （[reviewers.ts](../../../src/db/repositories/reviewers.ts):16-25）の distinct 個数。proposal 本文ではなく
+  **登録 metadata** 由来。Phase 1a（lens 未配線、現状 src/ に lens 参照ゼロ）では **1**（reviewer 登録 metadata に
+  lens なし時の決定論 fallback）。
+- `lensCoverage`: 実参加 reviewer の distinct lens 数 / 宣言 lens 数。登録 metadata × 参加 `reviewer_id` 突合のみ。
+  **Phase 1b で実値化**。
+- `refuteEngagedRatio`: target-bound refute 票が立った required_change 数 / 総数。**Phase 2 のみ**（P2-0 target
+  binding の決定論検証済みカウント。verdict 真偽は判定しない）。
+- `bypassedByOverride`: `decisionPath==="override"`（[review-consensus.ts](../../../src/core/review-consensus.ts):134-142,
+  C1 連携）のとき true。
+
+**算出不能 → スコープ外**: 「初期回答の独立性」を**実体**で測る（回答間の意味的類似度・盲点共有度）には proposal
+本文の相互比較が要り LLM 内容判定になる。#229 は `declaredLensCardinality` を独立性の**宣言ベース proxy** とする
+に留める。本物の独立性測定・反証の**強さ**（論拠の質）は follow-up。
+
+**記録先**: `ConsensusSummary` に optional `processMetrics` を同梱する。`review_consensus.summary_json` は既に JSON
+（[schema.ts](../../../src/db/schema.ts):720-732）なので **新 table / migration は不要**（§7 と整合）。記録経路は
+`recordConsensusReEvaluation`（[reviewer-agent.ts](../../../src/core/reviewer-agent.ts):779-822、insertActive は
+:812-822）と `processConsensusModePath` の既存 insertActive を流用。`review_decisions` 側には持たせない（合議
+プロセスの時系列は `review_consensus` が正本）。
+
+**健全性 gate（fail-closed の倒し方）**:
+- profile review rule に lens 多様性下限を**宣言した requirement のみ**、`declaredLensCardinality` /
+  `lensCoverage` の下限割れで **決定論 warning**（status は動かさない）。
+- 既存 preflight escalate（§3.4 step3）への participation/lens 下限の追加は、**未宣言 requirement への拡大は過剰
+  escalate（既存運用を止める）**ため #229 では行わず follow-up。
+
+**G0/G1/C1 連携**: preflight に participation/lens メトリクスを供給可能にしつつ、**算出は `evaluateConsensus` 内に
+押し込まない**（凍結契約を侵さない）。C1 override 時は `bypassedByOverride:true` で「合議をバイパスした」を
+decisionPath と併せて記録する。
+
+**work item（PM-1 最小コア。Phase 割当は §4 に従う）**:
+| id | title | files | phase |
+|----|-------|-------|-------|
+| PM-1-A | `ConsensusSummary.processMetrics`（optional）型 + `computeProcessMetrics` 決定論純関数（`evaluateConsensus` 不変） | src/core/review-consensus.ts（型のみ追加） | 1a |
+| PM-1-B | 記録経路で summary に同梱（participation / declaredLensCardinality=1 を Phase1a で記録） | src/core/reviewer-agent.ts, src/core/review-processor.ts | 1a |
+| PM-1-C | lens cardinality / coverage の実値化（reviewer metadata.lens × 参加突合） | src/hitch/orchestrator-runners.ts, src/db/repositories/reviewers.ts | 1b |
+| PM-1-D | lens 多様性下限を宣言した requirement の決定論 warning（status 不変） | src/core/review-processor.ts | 1b |
+| PM-1-SPEC | docs/specs/{db,workflow}.md に processMetrics 記録を明記 | docs/specs/** | 1a/1b |
+
+**RED（§6 に追加。集約結果不変を必須アサート）**:
+- `computeProcessMetrics` 決定論: 同一(proposals, 登録 lens)→同一 metrics / proposal 順入替不変。lens 未配線の
+  Phase1a では `declaredLensCardinality=1`（決定論 fallback）として記録し、fallback 自体が決定論（同一入力→同一値）
+  であることをアサート。
+- Phase 1a: review_consensus.summary_json に `processMetrics.participation` 記録、`declaredLensCardinality=1` を
+  DB アサート。**status/required_changes/sourceProposalIds が processMetrics 導入で変わらない回帰アサート**
+  （メトリクスが票に効かない証明）。
+- Phase 1b: lens prompt 配線後に `declaredLensCardinality>1` / `lensCoverage` 記録 + 下限割れ warning。
+
+**C2 スコープ**:
+- **#229 内（optional observability・#229 の close blocker ではない）**: PM-1-A〜PM-1-SPEC（最小コア）。これらは
+  集約結果（票 / status）に一切効かない観測層で、acceptance を阻害しない。最小実装が重い場合は丸ごと follow-up 化可。
+- **follow-up**: escalate を伴う厳格な多様性 gate の未宣言 requirement 拡大 / `refuteEngagedRatio` の実値
+  （Phase 2 / P2-0 前提）/ 本物の独立性測定（埋め込み類似度・盲点共有度）/ 新 table `review_process_metrics` 化 +
+  dashboard・MCP 露出 / 異モデル procurement 連動の独立性メトリクス。
+
+### I.2.3 C3 — consensus escalate 要約 projection（ログ過多 / M14 dissent を使える形に）
+
+研究 §9（ログ過多: 要点が埋もれる→判断ログ/差分ログ/要約レイヤー）・§4.4（情報流の設計）対応。
+**安全境界: 状態遷移非関与の決定論監査支援**（run.status / finding severity / consensus status を一切書き換えない
+読み取り専用 projection）。
+
+**膨張の定量**（N=requirement group の dispatch reviewer 数, C=escalate までの review cycle 数）:
+- `review_proposals`: active は distinct reviewer ごとに最大 1 本（`insertProposal` が
+  `WHERE run_id=? AND reviewer=? AND superseded_at IS NULL` で同一 reviewer の prior active を supersede。
+  [review-proposals.ts](../../../src/db/repositories/review-proposals.ts):92-98、insert は :105-130）→ active は
+  最大 N 本。膨張するのは superseded 行を含む history（規模 〜N×C）。
+- `review_consensus`: 約 (N+1)×C 行（各 dispatch 後 `recordConsensusReEvaluation` が 1 行 + 確定で 1 行。
+  [reviewer-agent.ts](../../../src/core/reviewer-agent.ts):802-821 / review-processor.ts:237-245）。active は常に
+  1 本だが `listHistory`（review-consensus.ts:99-111）は全 superseded 行を返す。
+- finding: **N× ではない**。consensus 確定は `processReviewDecision` を 1 回だけ呼び `reviewer="consensus"` の単一
+  canonical decision を作り、required_changes を `dedupeStrings` で union する（review-processor.ts:217-256）。
+  finding は union 1 セット由来で cycle 毎に再評価される（review-integration.ts:276-344）。
+- escalate payload: stall escalate は reason 文字列＋数値 metrics のみ（consensus-stall-check.ts:91-104,
+  types.ts:365-384）。**決定的票 / 未解決 P0・P1 / dissent が埋もれる** = 本論点の本質。
+
+**判断（A案採用）**: 新 table/migration を足さず（生データは `review_consensus.summary_json`
+（[review-consensus.ts](../../../src/core/review-consensus.ts):72-92）と finding registry に既に persist 済み）、
+**純関数 projection** で要約を抽出し escalate payload に添付する。`materialize`（新 table）と LLM 要約は棄却
+（前者は §7『Phase1 は新 table/migration 不要』に反しスコープ過大かつ膨張源を増やす、後者は LLM 出力を人間判断の
+正本に混ぜ安全境界違反）。
+
+```ts
+// src/hitch/consensus-escalation-summary.ts (新, 読み取り専用 reducer)
+export interface ConsensusEscalationSummary {
+  decisiveVotes: Array<{ reviewerId: string | null; groupId: string | null; decision: ConsensusStatus | "pending" }>;
+  requirementStatus: ConsensusRequirementCheck[];   // 型: review-consensus.ts:54-64 / 構築: 同:208-220
+  unresolvedBlocking: { p0Count: number; p1Count: number; findingIds: string[] };  // finding registry / convergence.ts:121-123 由来
+  dissentingProposals: Array<{ reviewerId: string | null; groupId: string | null; decision: ConsensusStatus }>;
+  stallCycles: { unresolvedStreak: number; stallAfterSnapshots: number };
+}
+// LLM 不使用。reviewer_id, proposal_id 昇順固定（§3.6 P2-determinism と同順）で order 非依存。
+```
+
+**`dissentingProposals` の定義**: active consensus status を多数派とし、それと異なる decision を出した
+summary.proposals の集合。**active status が pending(UNRESOLVED) の場合**（stall escalate 時点は多くこれ）は、
+非 pending decision のうち最頻を多数派とし、それ以外を dissent、pending は abstained と扱う（基準を明示して
+order/基準非依存を固める）。
+
+**`stallCycles` の注記**: `trailingUnresolvedStreak`（[consensus-stall.ts](../../../src/core/consensus-stall.ts):142-150）は `maxPendingHours` 定義済みの
+time-based 経路でのみ使う。既定（未設定）の progress-based stall（同 :100-113）は streak 長でなく
+trailing window(`stallAfterSnapshots`) 一致で発火。要約の `unresolvedStreak` は監査参考値で stall trigger とは
+別条件。
+
+**配線**:
+- `evaluateConsensusStallForHitch` の `escalate()`（consensus-stall-check.ts:75-111）で
+  `summarizeConsensusForEscalation` を呼び、`recordConvergenceDecisionWithStatus` の `metrics`（types.ts:413 =
+  `Record<string, unknown>`、後方互換）に構造体を、`recommendedNextAction.message` に決定論 1 行サマリを載せる。
+- orchestrator review runner の pending-catch（§3.4 step5）から同 projection を通す。
+- **fail-closed**: `summary_json` 破損時は consensus-stall-check.ts:130-139 と同様 throw→escalate（空要約で握り
+  潰さない）。
+
+**M14（dissent 保存）の補完**: dissent は `review_consensus.summary_json.proposals` に保存済みだが「抽出」が
+無かった。本 projection の `dissentingProposals` が active status（多数派）と異なる decision の集合を決定論抽出し、
+escalate payload で surface する＝『保存→使える形』。
+
+**受け入れ条件追加（#229 内）**: consensus stall escalate 時、payload に `decisiveVotes / requirementStatus /
+unresolvedBlocking(in-scope P0/P1) / dissentingProposals / stallCycles` が含まれ、同一 history に対し dispatch/
+評価順を入替えても要約が bit 一致する（order 非依存）。close gate（未解決 in-scope P0 ゼロ）には非関与。
+
+**C3 スコープ**:
+- **#229 内（optional observability・#229 の close blocker ではない・状態遷移非関与）**: 純関数 `summarizeConsensusForEscalation` 新設 / escalate decision record の metrics +
+  recommendedNextAction.message に要約添付 / fail-closed / docs/specs/hitch-convergence.md（or workflow.md）に
+  「consensus escalate は決定論要約 projection を payload に載せる／状態遷移非関与」を同コミット追記 / unit +
+  integration RED。
+- **follow-up**: dashboard / MCP への consensus 要約・差分ビュー露出 / `review_consensus_summary` materialized
+  table / cycle 跨ぎ差分ビュー / Phase2 refute 票の要約統合（P2-0 target binding 後）。
+
+### I.2.4 C4 — 部分失敗時の quorum 分母決定論（参加者集合の固定）
+
+**問題**: §3.4 の逐次 N-dispatch 中に 1 体の reviewer が crash / timeout / parse 失敗すると、その proposal が
+`review_proposals` に land しない。`evaluateConsensus` の quorum 分母 `participants` は **active proposal を残した
+distinct reviewerId 数**から導かれる（[review-consensus.ts](../../../src/core/review-consensus.ts):194-198）ため、
+dispatch 開始後に途中で 1 体落ちると landed 集合が運に依存して縮み非決定論に揺れる。最悪は落ちた reviewer 抜きの
+少数 approval が `approvals >= minApprovals` を満たし **approved に silent promote**（fail-open / quorum の暗黙
+降格）。fail-closed 側に倒れても、再駆動で同じ reviewer が成功/失敗すれば結果が変わり再現性が無い。
+
+**#230 との関係（誤解の是正）**: #230 refute（gate-specs §2 `evaluateRefuteRequirement`）も #229 consensus
+（`evaluateConsensus`）も、分母は **landed/active participant 数**（refute 側は `byReviewer.length`、consensus 側は
+active proposal の distinct reviewerId 数）であり、**いずれも expected reviewer set の濃度を分母にしていない**。
+refute 側は `listByGroupAndExpectedReviewers` で landed 票を expected set で *∩ 絞り込む*（濃度に置換するのでは
+ない）。両側の fail-closed 挙動（landed participant が quorum 未満→非昇格/blocking 維持）は既に同一であり、C4 が
+解くべきは『分母定義の非対称』ではなく『**dispatch 開始後の途中 crash で landed 集合が運に依存して縮む非決定性**』
+である。
+
+**判断（採用）**: expected reviewer set を run に **freeze** し、preflight/dispatch 層で landed 不足を決定論判定する
+（`evaluateConsensus` の participants 計算式は不変）。
+
+1. **expected 集合の freeze（再現性）**: dispatch 開始時、`resolveExpectedReviewers`（reviewer_ids 明示 or
+   `listByGroup(group) ∩ max_reviewers`、reviewer_id 字句昇順）の結果をその run のレビューサイクルに記録する
+   （新 table 不要。`review_consensus` summary または cycle メタに載せる）。再駆動時はこの freeze 値を分母期待値の
+   基準にする。reviewer registry が後から変わっても、その run の分母期待値は不変。
+2. **失敗 reviewer = non-participant（fail-closed・ループ継続）**: dispatch loop は各 `runReviewerAgent` を
+   try/catch で囲む（spec5 の dispatch ループには現状 per-reviewer 例外境界が無く、throw すると
+   [orchestrator.ts](../../../src/hitch/orchestrator.ts):96(try)/:183(catch)/:210-216(escalate flip) まで伝播して
+   全捨て即 escalate になる）。失敗 reviewer は `expected=N / landed=M / failed=[ids]` としてログ記録し、**他
+   reviewer の proposal を捨てずループを継続**。失敗 reviewer は active proposal を残さないので `participants` に
+   寄与せず、`participants < quorum.minParticipants` が成立 → §2.3 の pending throw（review-processor.ts:208-213）で
+   **必ず fail-closed**。これにより少数 approval での silent promote（fail-open）を構造的に封じる。
+3. **escalate reason の区別**: preflight（§3.4 step3）の事前不足 escalate に加え、dispatch 後の participant 不足
+   escalate でも reason に `group / expected / landed / failed` を含め、**reviewer crash** と **真の quorum 不足** を
+   triage 可能にする。
+
+**§3.4 との非重複**: §3.4 が既規定の N-dispatch / preflight quorum escalate / P1-a catch→stall とは二重に書かない。
+C4 固有の差分は **spec5 dispatch ループの per-reviewer try/catch 欠落の補完** + **escalate reason での crash vs 真の
+quorum 不足の区別**に限定する。
+
+**M05（順序非依存）との関係**: M05 / P2-determinism（§3.6）は「**成功して active になった proposal 集合**」の内部
+順序（required_changes / summary.proposals / sourceProposalIds）を固定する。C4 はその前段、**どの reviewer が成功
+集合に入るか（参加者集合の同定）** の決定論を担う。両者は直交・補完: M05(順序)+ C4(集合)= 集約全体の決定論。
+`max_reviewers`（§3.2）は expected 集合の上限を一意化し、`reviewer_ids` 明示なら集合は完全決定論、
+`listByGroup ∩ max_reviewers` でも字句順 slice で決定論になる。
+
+**安全境界**: `evaluateConsensus` 凍結契約を触らない。LLM の crash/timeout/自己申告は遷移根拠にせず、「期待
+reviewer が active proposal を残せたか」という harness 観測事実だけで分母を判定する。部分失敗は **landed
+participant が quorum 未達なら** fail-closed pending に倒れ（quorum を満たせば従来どおり decisive＝C4b）、
+落ちた reviewer 抜きの少数 approval による silent promote（fail-open）を構造的に封じる（「迷ったら fail-closed」
+「状態遷移は harness のみ」に整合）。
+
+**RED 追加（§6）**:
+- **C4a（分母固定/fail-closed）**: expected={alice,bob}, `quorum.min_participants=2`、bob を
+  `FakeMultiReviewerRunner` で throw させる → alice の proposal は active だが participants=1<2 →
+  processReviewDecision が ReviewGateError(pending) → run.status は needs_review のまま（approved に promote
+  しない）。escalate reason に expected=2/landed=1/failed=[bob]。
+- **C4b（回復性/ループ継続）**: 3 reviewer 中 1 体失敗でも残り 2 体が dispatch・active 化され、2 体で quorum 充足
+  なら approved（1 体失敗で全捨て escalate にしない）。
+- **C4c（再現性）**: expected 集合 freeze 後に reviewer を add しても、その run の再駆動時の分母期待値は freeze 値
+  で不変。
+
+**C4 スコープ**:
+- **#229 内（Phase 1a）**: dispatch loop の per-reviewer try/catch（失敗→non-participant、全捨て escalate にしない）/
+  expected reviewer set の freeze（分母期待値基準、新 table 不要）/ escalate reason に expected/landed/failed /
+  `evaluateConsensus` は不触 / RED-C4a/b/c。
+- **follow-up**: 失敗 reviewer の bounded retry（budget/timeout 設計が前提）/ parallel N-dispatch 時の部分失敗集約 /
+  run 生成時の事前 reviewer 充足検証（§9 既出の `harness project check`）/ 異モデル procurement 時の failure-domain
+  独立性評価 / dashboard・MCP への expected/landed/failed 露出。
+
+---
+
+## I.3 付録H 残件（H1/H2/H3）の更新
+
+付録H の 3 残件は本付録で以下のように更新される。
+
+- **H1**（Phase1b を 1a と同一 PR か別 PR か）: I.0(G0) で**再定義**。H1 の close 条件（#229 を閉じる前に lens prompt 注入まで land して multi-lens を満たす / 1a・1b を同一 issue #229 のスコープに留める / 1a 完了時点で multi-lens 達成と書く誇張は避ける）は**踏襲**したまま、G0 が「1a 配管 only を独立完了点と見なさない」headline land 単位の組み替えを追加する。物理 2 PR チェーンは可（H1 推奨維持）だが、(a) headline land = lens-based consensus、(b) 同一 prompt path は fixture 専用、(c) `quorum>1`→lens 必須を fail-closed reject、を重ね「1a だけ land して multi-reviewer に正直化」を独立完了点として扱わない方向に精緻化する（close 条件の反転ではなく重心移動）。I.1.1(G1) と I.2.1(C1) が lens 配線を実体・安全・観測の三面で補完する。
+- **H2**（#229 close に Phase 2 = 反証 verify を含めるか別 issue か）: 「別 issue 切り出し推奨／#229 を Phase2 まで開くかは人間批准事項」を**維持**。I.1.2(G2)・I.1.3(G3)・I.2.3(C3 refute 統合)・I.2.2(C2 refuteEngagedRatio) は Phase 2 / P2-0 前提の**設計確定（inline）**であり #229 内の実コード変更を増やさない（G3 は設計のみ in-scope、実装は Phase2 follow-up）。M15（全 proposal 証拠採点）は G3 で恒久的に #229 外（凍結契約侵害）と明記し H2 の安全方針を強化する。
+- **H3**（P0-1 fail-closed の意味検証範囲）: G0(c) が H3 に意味不正クラスを 1 つ追加 =「`quorum>1` requirement で lens 宣言が無い」を `compileProfileReviewRule` の throw 対象（fail-closed）にする。H3 推奨（compile=rule 内部整合のみ throw / 登録 reviewer 突合は orchestrator preflight / 事前突合は follow-up）と整合: lens 必須は profile 内の静的宣言で完結する内部整合チェックなので compile 層で throw でき、登録 reviewer との lens 突合（G1 の MECE preflight）は preflight 側に置く。H3 の三分割（compile=内部整合 / preflight=登録突合 / 事前突合=follow-up）は本付録でも保たれる。
