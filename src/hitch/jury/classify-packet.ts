@@ -92,6 +92,21 @@ export function buildBundledPacket(bundle: EscalateBundle): HitchDecisionPacket 
     return buildOperatorOriginPacket({ findings: [], deliberationIds: {} });
   }
   const other = lead === splitPacket ? operatorPacket : splitPacket;
+  // The merge is TOTAL over the per-finding ARRAY fields: a mixed batch must not
+  // drop one side's findings / axes / actions / risks / assumptions (R14: no
+  // finding's required manual action is ever hidden). Every list-shaped field is
+  // concatenated (decisionKinds additionally de-duped).
+  //
+  // The non-list SUMMARY fields are intentionally LEAD-ONLY (inherited via the
+  // `...lead` spread): `minorityView`, `deliberation` (critiqueRan / refuter /
+  // gateTrace), and `severityAudit` summarize a SINGLE deliberation and cannot be
+  // meaningfully fused across multiple bundled deliberations — there is no
+  // single "minority" or "refuter verdict" for a batch. Per-finding linkage is
+  // preserved in `findings[].deliberationId`, and the Layer 0 doctor only maps
+  // the shared `deliberation.refuter` block to the LEAD finding (jury-doctor-
+  // checks FIX 3), so a lead-only summary never produces false matches for the
+  // non-lead findings (those are validated against their OWN per-deliberation
+  // rows). `recommendation` is likewise the lead's.
   return {
     ...lead,
     decisionKinds: dedupeKinds([
@@ -104,6 +119,7 @@ export function buildBundledPacket(bundle: EscalateBundle): HitchDecisionPacket 
       ...lead.rejectedProposals,
       ...(other?.rejectedProposals ?? []),
     ],
+    riskFlags: [...lead.riskFlags, ...(other?.riskFlags ?? [])],
     unvalidatedAssumptions: [
       ...lead.unvalidatedAssumptions,
       ...(other?.unvalidatedAssumptions ?? []),

@@ -298,6 +298,30 @@ Per-finding codex cost: a clean unanimous finding costs 3 (propose) + 1 (refute)
 The deliberation can only *add* safety; it can never relax a decision (design
 §3, mirrored in the harness safety boundary):
 
+0. **Two deterministic deciders, MECE over the finding population — no LLM
+   utterance ever drives a classification.** Every open + `unknown` finding is
+   resolved by **exactly one** of two *deterministic* (non-LLM) deciders, and the
+   two cover the population without overlap:
+   - **The deterministic heuristic** (`classifyFindingForHitch`, non-LLM, Phase 1):
+     clear-cut **harness-origin** findings the frozen-scope classifier can resolve
+     (e.g. a target-file / category / glob hit) are classified **BEFORE the jury
+     ever runs** and the scope is written **directly** (`repo.classifyFinding`).
+     The jury is **bypassed** for these — no proposer/critique/refuter call, no
+     jury audit rows. (Operator-origin `unknown` findings are also handled here:
+     they are never machine-classified at all — bundled to escalate, R5.)
+   - **The deterministic gate** (`aggregateDeliberation`, Stage 5): only the
+     **jury-candidate** findings — harness-origin AND still `unknown` *after* the
+     heuristic — reach the jury, and their scope is decided **solely** by the
+     deterministic Stage-5 gate over verified evidence.
+
+   So the **"deterministic gate is the sole arbiter"** invariant is scoped to the
+   **jury-candidate** findings; the heuristic-resolvable findings are arbitrated by
+   the (equally deterministic) heuristic. In BOTH paths the decision is made by
+   deterministic harness logic — an LLM proposal / critique / refutation is only
+   ever *advisory input* to the gate, never the decider. There is no third path
+   and no overlap: a finding is either heuristic-resolved, jury-arbitrated, or
+   (operator-origin) escalated.
+
 1. **No split → auto_confirm path exists structurally.** LLM speech can never
    turn a split into an auto-confirm. The post-critique convergence still passes
    the refuter and gate. The refuter can only `uphold` (does not block the gate)
@@ -422,6 +446,25 @@ yields `false` → escalate (strictly safer). This limit is also noted in the
 scope notes (design §12); true multi-model diversity is out of scope (single
 backend, distinct prompts; the adversarial refuter supplies partial stance
 diversity).
+
+**Current-state note — `auto_confirm` requires PROXIMATE verified evidence
+(deliberate strict-proximity, design §0.1 R1 / §12):** because the proximity
+filter is an AND-gate on `auto_confirm`, a finding can only be auto-confirmed
+when it carries **locatable** metadata the filter can match against —
+`finding.filePath` for a `file`-kind citation, or `finding.category` for a
+`spec` / `policy`-kind citation. A finding that lacks a locatable `filePath` (and
+whose lenses cite `file`-kind evidence) therefore **escalates** even on a
+unanimous, verified, refuter-upheld jury (`proximityOk` is `false`,
+fail-closed). The realistic dominant jury population — `review`-source findings
+that often carry no `filePath` — consequently escalates rather than
+auto-confirms. This is intentional: the headline benefit (誤 escalate 削減 —
+auto-confirming findings the heuristic left `unknown`) applies to findings with
+**locatable, proximate** evidence; the gate never auto-confirms on a verified but
+non-locatable citation. This behavior is pinned by tests (the gate unit
+`finding without filePath/category → escalate`, and the classify-runner
+end-to-end `PRODUCTION review-finding shape (filePath OMITTED) ESCALATES`).
+Relaxing proximity to broaden the auto-confirm population is a future-feature
+trade-off, not a bug.
 
 ### Phase-3 freshness and batch limit
 

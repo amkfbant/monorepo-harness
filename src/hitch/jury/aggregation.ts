@@ -207,10 +207,16 @@ function evidenceProximityOk(
  * refute / inconclusive / undefined (never-run) refuter vetoes. Deterministic:
  * same input -> deep-equal output, no IO, no state mutation.
  *
- * `gateTrace.lensDistinct` / `noInconclusive` / `proximityOk` are computed
- * INDEPENDENTLY for audit display only (plan P2-c/P2-d). The authoritative pass
- * condition delegates to `aggregateJuryVotes` (`scopeUnanimous`) to avoid a
- * double judgment.
+ * `gateTrace.lensDistinct` / `noInconclusive` are computed INDEPENDENTLY for
+ * AUDIT DISPLAY ONLY (plan P2-c): the authoritative scope-unanimity pass
+ * condition delegates to `aggregateJuryVotes` (`scopeUnanimous`, which already
+ * subsumes lens-distinct + zero-inconclusive) to avoid a double judgment.
+ *
+ * In contrast `gateTrace.allHaveVerifiedEvidence` and `gateTrace.proximityOk`
+ * are NOT audit-only — they are LOAD-BEARING AND-gates on `auto_confirm` (design
+ * §0.1 R1): the pass branch below requires BOTH to be `true`. A unanimous
+ * verdict with un-verified or non-proximate evidence therefore escalates.
+ * `refuterUpheld` is likewise load-bearing (must be `true`).
  */
 export function aggregateDeliberation(
   input: DeliberationInput,
@@ -218,8 +224,10 @@ export function aggregateDeliberation(
   const agg = aggregateJuryVotes(input.proposals);
   // aggregateJuryVotes is THE authority (subsumes lensDistinct + noInconclusive).
   const scopeUnanimous = agg.decision === "unanimous";
-  // gateTrace fields below are audit-only (P2-c): they are computed
-  // independently for display, but the pass logic delegates to scopeUnanimous.
+  // lensDistinct / noInconclusive are AUDIT-ONLY (P2-c): computed independently
+  // for display, but the scope-unanimity pass logic delegates to scopeUnanimous.
+  // (allHaveVerifiedEvidence + proximityOk below are NOT audit-only — they are
+  // load-bearing AND-gates on auto_confirm; see the pass branch.)
   const lensDistinct =
     new Set(input.proposals.map((p) => p.lens)).size === 3 &&
     input.proposals.length === 3;

@@ -289,6 +289,71 @@ function splitRouting(): RoutingMap {
   return map;
 }
 
+/**
+ * The genuine RESCUE path (FIX 6): R1 is a real split (spec_adherence
+ * out_of_scope, the other two in_scope), so the critique round fires. The
+ * critique flips the dissenting lens to in_scope with a VALID concrete objection
+ * (passes the strict CritiqueSchema + the anti-ritualization gate, voteChanged
+ * true), making the round-2 set UNANIMOUS in_scope. The refuter then upholds, so
+ * the deterministic gate auto_confirms. This exercises the full
+ * split -> critique-flip -> unanimous-R2 -> uphold -> auto_confirm chain that the
+ * earlier tests (which only assert a STAYING split, or a NO-critique unanimous
+ * R1) never reach.
+ */
+function rescueRouting(): RoutingMap {
+  const map: RoutingMap = {};
+  // R1: a genuine split (one lens dissents) so critique is triggered.
+  map[routingKey("propose", "correctness")] = proposeJson("in_scope");
+  map[routingKey("propose", "scope_fit")] = proposeJson("in_scope");
+  map[routingKey("propose", "spec_adherence")] = proposeJson("out_of_scope");
+  // R2 critiques: every lens lands on in_scope; spec_adherence FLIPS its vote.
+  map[routingKey("critique", "correctness")] = validCritique("correctness", "in_scope");
+  map[routingKey("critique", "scope_fit")] = validCritique("scope_fit", "in_scope");
+  map[routingKey("critique", "spec_adherence")] = flippingCritique(
+    "spec_adherence",
+    "in_scope",
+  );
+  // The refuter upholds the now-unanimous in_scope verdict.
+  map[REFUTE_ROUTE_KEY] = {
+    stdout: JSON.stringify({
+      refuteVerdict: "uphold",
+      whyNotFalseConsensus: "the lenses cite real, proximate evidence",
+      refutationConditions: "if the cited file were unrelated",
+      reasoning: "adversarial check uphold",
+    }),
+  };
+  return map;
+}
+
+/**
+ * Like `validCritique` but records `voteChanged: true` — the lens genuinely
+ * flips its round-1 scope vote during critique (used by the rescue path so the
+ * dissenting lens converges to the majority with an honest vote-change flag).
+ */
+function flippingCritique(
+  lens: (typeof JURY_LENSES)[number],
+  revisedScope: "in_scope" | "out_of_scope",
+): RoutedResponse {
+  const others = JURY_LENSES.filter((l) => l !== lens);
+  return {
+    stdout: JSON.stringify({
+      objections: others.map((target) => ({
+        targetLens: target,
+        type: "代替仮説",
+        objection: `lens ${target} overlooks an alternative reading of the cited evidence`,
+      })),
+      citationRelevance: [
+        {
+          citation: "src/a.ts:1",
+          relevance: "on reflection it supports the " + revisedScope + " reading",
+        },
+      ],
+      revisedScope,
+      voteChanged: true,
+    }),
+  };
+}
+
 function makeRunners(h: Harness, jury: CodexExecRunner): OrchestratorRunners {
   return createOrchestratorRunners({
     dbPath: h.dbPath,
@@ -374,6 +439,85 @@ describe("hitch orchestrate + deliberation jury (e2e #230 D4)", () => {
       );
     } finally {
       close();
+    }
+  });
+
+  it("RESCUE path: R1 split → critique flips the dissenting lens → unanimous R2 → refuter uphold → auto_confirm end-to-end (round1+round2 proposals + refutation persisted)", async () => {
+    const h = makeHarness("e2e-rescue");
+    const fid = seedFinding(h, "e2e-rescue", {
+      source: "review",
+      summary: "initially-disputed finding rescued by critique",
+      filePath: "src/a.ts",
+      category: "core",
+    });
+
+    // maxSteps:1 isolates the single classify step. Step 1 convergence is
+    // needs_classification → classify, which runs the full Stage1-5 pipeline:
+    // R1 split → critique (spec_adherence flips to in_scope) → unanimous R2 →
+    // refuter uphold → gate auto_confirm. The loop then halts cleanly.
+    const result = await new HitchOrchestrator({ dbPath: h.dbPath }).run({
+      hitchId: "e2e-rescue",
+      runners: makeRunners(h, routingRunner(rescueRouting())),
+      maxSteps: 1,
+      createdBy: "worker",
+    });
+
+    // Clean halt after the single classify step — NOT an escalation.
+    expect(result.outcome).toBe("max_steps_exhausted");
+    const classifySteps = result.steps.filter((s) => s.action === "classify");
+    expect(classifySteps).toHaveLength(1);
+    expect(classifySteps[0]?.detail).toBe("true");
+
+    // The finding is auto_confirmed in_scope, reason embeds the deliberation_id.
+    const f = readFinding(h, fid);
+    expect(f.scopeStatus).toBe("in_scope");
+    expect(f.classificationReason).toMatch(
+      /jury auto_confirm \(deliberation_id=[0-9a-f]{64}\)/,
+    );
+
+    // Both rounds of proposals AND the refutation persisted (the critique ran,
+    // so we expect >=6 proposals = 3 round-1 + 3 round-2, not just round 1).
+    const { db, close } = openManagedDb({ dbPath: h.dbPath });
+    try {
+      const round1 = db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM jury_classification_proposals
+             WHERE finding_id = ? AND round = 1`,
+        )
+        .get(fid) as { n: number };
+      const round2 = db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM jury_classification_proposals
+             WHERE finding_id = ? AND round = 2`,
+        )
+        .get(fid) as { n: number };
+      expect(round1.n).toBe(3);
+      expect(round2.n).toBe(3);
+      // The dissenting lens's round-2 row records the genuine vote-change.
+      const flipped = db
+        .prepare(
+          `SELECT vote_changed FROM jury_classification_proposals
+             WHERE finding_id = ? AND round = 2 AND lens = 'spec_adherence'`,
+        )
+        .get(fid) as { vote_changed: number } | undefined;
+      expect(flipped?.vote_changed).toBe(1);
+    } finally {
+      close();
+    }
+    // The refutation and the advisory severity audit persisted too.
+    expect(countRows(h, "jury_classification_refutations", fid)).toBe(1);
+    expect(countRows(h, "jury_severity_audits", fid)).toBe(1);
+
+    // The hitch never escalated.
+    {
+      const { db, close } = openManagedDb({ dbPath: h.dbPath });
+      try {
+        expect(
+          new HitchRepository(db).requireSession("e2e-rescue").status,
+        ).not.toBe("escalated");
+      } finally {
+        close();
+      }
     }
   });
 

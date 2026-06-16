@@ -199,6 +199,16 @@ export interface DecisionPacketFinding {
    * Per-finding deliberation linkage (REQUIRED). A single packet may bundle
    * several deliberations, so the id lives per finding — there is NO top-level
    * packet.deliberationId. The Layer 0 doctor reads this per-finding id.
+   *
+   * SENTINEL: for `origin:"operator"` findings NO deliberation ever runs (R5:
+   * operator-origin unknowns are never machine-classified), so this is the empty
+   * string `""`. The `""` sentinel is NEVER a real `deliberation_id`: no jury
+   * audit row (`jury_classification_*`) is ever written for an operator finding,
+   * and no reader/doctor treats `""` as a key — the auto_confirm replay check
+   * only fires on findings whose `classification_reason` records a jury
+   * auto_confirm (operator findings never get one), and the refutation check
+   * loads from `jury_classification_refutations`, which operator findings never
+   * populate. Treat `""` purely as "no deliberation".
    */
   deliberationId: string;
 }
@@ -289,9 +299,9 @@ export interface HitchDecisionPacket {
  * audit packet may accompany a severity divergence). On `!resolved` the runner
  * escalates with a manual next action.
  *
- * NOTE: the orchestrator-types classify signature is NOT switched to this union
- * in Task B1 — the runner rewrite + signature switch land together in Layer 3
- * (Task D1). Exporting the type here keeps B1 typecheck fully green.
+ * The `OrchestratorRunners.classify` signature returns this union (see
+ * `orchestrator-types.ts`): the Layer 3 runner rewrite + signature switch
+ * landed together in Task D1, so this is the live classify return shape.
  */
 export type ClassifyRunnerResult =
   | {

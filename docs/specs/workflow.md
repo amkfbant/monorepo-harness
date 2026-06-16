@@ -995,6 +995,19 @@ orchestrator は classify runner（`src/hitch/orchestrator-runners.ts` →
 jury）。安全境界の核心: 状態遷移は harness のみ、`repo.classifyFinding` は決定論ゲート
 Stage5 の `auto_confirm` のみで走る（LLM 出力が scope/severity/status を直接書かない）。
 
+**2 つの決定論的決定者・finding 集合を MECE に分割（LLM の発話は分類を決して駆動しない）**:
+open かつ `unknown` の finding は、重なりなく **どちらか一方** の*決定論的*（非 LLM）決定者で
+解決される。(1) **決定論ヒューリスティック**（`classifyFindingForHitch`・非 LLM・Phase 1）が
+解ける明白な **harness-origin** finding は **jury が走る前に**直接分類され（`classifyFinding`）、
+jury は **bypass** される（proposer/critique/refuter 呼び出しも監査行も無し）。(2) **決定論ゲート**
+（`aggregateDeliberation`・Stage5）は、ヒューリスティック後も `unknown` の残った **jury 候補**
+（harness-origin かつ未解決）だけを arbitrate する。したがって **「決定論ゲートが唯一の arbiter」**
+不変条件は **jury 候補に限定**して適用される（ヒューリスティック解決分は同じく決定論的な
+ヒューリスティックが arbitrate）。どちらの経路でも判定は決定論的な harness ロジックが下し、
+LLM の提案/批判/反証はゲートへの *advisory input* に過ぎず決定者ではない。第三の経路も重なりも
+無い（finding は ヒューリスティック解決・jury 判定・operator-origin escalate のいずれか一つ）。
+正本は [`hitch-convergence.md`](./hitch-convergence.md) の Monotonic 不変条件 §0。
+
 - **Phase 1（DB open・同期 snapshot）**: open かつ `unknown` の finding を origin で分割
   する。**operator-origin（`source` が `human`/`mcp`）は heuristic も jury も通さず**、
   manual 分類のため bundled escalate packet に束ねる（fail-closed・機械分類しない）。

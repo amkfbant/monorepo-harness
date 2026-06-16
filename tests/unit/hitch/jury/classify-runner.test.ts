@@ -430,6 +430,50 @@ describe("classify runner — 3 phase deliberation (#230 D1)", () => {
     expect(countRows(h, "jury_severity_audits", fid)).toBe(1);
   });
 
+  it("FIX 7: PRODUCTION review-finding shape (filePath OMITTED) ESCALATES even on a unanimous, verified, refuter-upheld jury (proximityOk false, fail-closed)", async () => {
+    // The realistic dominant jury population: a review-source finding WITHOUT a
+    // locatable `filePath` (the proposer still cites a real file `src/a.ts:1`,
+    // which verifyEvidence proves EXISTS). The deterministic proximity filter
+    // (design §0.1 R1) requires `finding.filePath` for a file-kind citation, so
+    // a missing filePath fail-closes to escalate even though every other
+    // condition (unanimous + verified + refuter uphold) is satisfied. This pins
+    // the DESIGN's deliberate strict-proximity limitation through the REAL
+    // classify runner — it is NOT masked by the filePath-injecting helpers used
+    // by the auto_confirm tests above.
+    const h = makeHarness("noproximity");
+    const fid = seedFinding(h, "noproximity", {
+      source: "review",
+      summary: "review finding lacking a locatable filePath",
+      // NOTE: NO filePath — the production review-finding shape.
+      category: "core",
+    });
+    const r = await makeRunners(
+      h,
+      routingRunner(unanimousRouting("in_scope")),
+    ).classify("noproximity");
+
+    // Fail-closed: a unanimous + verified + upheld jury STILL escalates because
+    // the finding has no locatable filePath for the file-kind proximity check.
+    expect(r.resolved).toBe(false);
+    if (r.resolved) throw new Error("unreachable");
+    expect(r.recommendedNextAction.decisionPacket?.decisionKinds).toContain(
+      "classify_scope",
+    );
+    // The finding was NEVER auto-classified — it stays unknown.
+    expect(readFinding(h, fid).scopeStatus).toBe("unknown");
+    // The escalate decision's gate trace records proximityOk:false as the cause
+    // (scopeUnanimous true, refuterUpheld true, but proximityOk false).
+    const gateTrace =
+      r.recommendedNextAction.decisionPacket?.deliberation.gateTrace;
+    expect(gateTrace?.scopeUnanimous).toBe(true);
+    expect(gateTrace?.refuterUpheld).toBe(true);
+    expect(gateTrace?.proximityOk).toBe(false);
+    // Audit rows are STILL persisted (P2k) — the escalation is auditable.
+    expect(
+      countRows(h, "jury_classification_proposals", fid),
+    ).toBeGreaterThanOrEqual(3);
+  });
+
   it("harness-origin still-unknown -> split -> resolved:false with a split decision packet", async () => {
     const h = makeHarness("split");
     const fid = seedFinding(h, "split", {
