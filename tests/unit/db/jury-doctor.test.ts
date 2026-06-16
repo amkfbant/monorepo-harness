@@ -216,6 +216,38 @@ describe("doctor jury.hitch_mismatch", () => {
     expect(flaggedCheckIds(db)).toContain("jury.hitch_mismatch");
   });
 
+  it("flags a refutation whose stored hitch_id != hitch_findings join", () => {
+    const db = migratedDb();
+    seedHitch(db, "h1");
+    seedHitch(db, "h2");
+    seedFinding(db, "h1", "f1"); // f1 truly belongs to h1
+    // stored hitch_id says h2 — a denormalisation drift on the refutation row.
+    insertRefutation(db, {
+      findingId: "f1",
+      hitchId: "h2",
+      targetScope: "in_scope",
+      refuteVerdict: "uphold",
+      deliberationId: "d1",
+    });
+    expect(flaggedCheckIds(db)).toContain("jury.hitch_mismatch");
+  });
+
+  it("flags a severity audit whose stored hitch_id != hitch_findings join", () => {
+    const db = migratedDb();
+    seedHitch(db, "h1");
+    seedHitch(db, "h2");
+    seedFinding(db, "h1", "f1"); // f1 truly belongs to h1
+    // stored hitch_id says h2 — a denormalisation drift on the audit row.
+    db.prepare(
+      `INSERT INTO jury_severity_audits
+         (finding_id, hitch_id, harness_severity, audit_status,
+          escalate_flag, prompt_sha256, jury_votes_json,
+          deliberation_id, created_at)
+       VALUES ('f1', 'h2', 'P1', 'aligned', 0, 'sha', '[]', 'd1', ?)`,
+    ).run(NOW);
+    expect(flaggedCheckIds(db)).toContain("jury.hitch_mismatch");
+  });
+
   it("does NOT flag when stored hitch_id matches the join", () => {
     const db = migratedDb();
     seedHitch(db, "h1");
@@ -328,22 +360,24 @@ describe("doctor jury.refutation_mismatch", () => {
     expect(flaggedCheckIds(db)).not.toContain("jury.refutation_mismatch");
   });
 
-  it("uses the LATEST round's proposals when computing unanimity", () => {
+  it("uses the LATEST round's unanimous scope (a post-critique re-vote supersedes round 1)", () => {
+    // This case is constructed so it DISCRIMINATES the MAX(round) rule from
+    // both buggy variants:
+    //  - round 1 is unanimous in_scope; round 2 (latest) is unanimous
+    //    out_of_scope (a post-critique flip).
+    //  - the refuter targeted in_scope — the STALE round-1 value.
+    // Correct MAX(round): latest unanimous scope = out_of_scope, which
+    //   disagrees with target_scope=in_scope => MUST FLAG.
+    // Buggy all-rounds: round 1+2 mix in_scope & out_of_scope => not
+    //   unanimous => null => would NOT flag.
+    // Buggy earliest-round (MIN): round 1 unanimous in_scope == target_scope
+    //   in_scope => would NOT flag.
+    // So asserting the FLAG genuinely pins MAX(round) behaviour.
     const db = migratedDb();
     seedHitch(db, "h1");
     seedFinding(db, "h1", "f1");
-    // round 1 split, round 2 (latest) unanimous in_scope.
     for (const lens of ["correctness", "scope_fit", "spec_adherence"]) {
-      insertProposal(db, {
-        findingId: "f1",
-        hitchId: "h1",
-        lens,
-        reviewerId: lens,
-        proposedScope: lens === "scope_fit" ? "out_of_scope" : "in_scope",
-        deliberationId: "d1",
-        round: 1,
-        promptSha256: `${lens}-r1`,
-      });
+      // round 1: unanimous in_scope.
       insertProposal(db, {
         findingId: "f1",
         hitchId: "h1",
@@ -351,11 +385,22 @@ describe("doctor jury.refutation_mismatch", () => {
         reviewerId: lens,
         proposedScope: "in_scope",
         deliberationId: "d1",
+        round: 1,
+        promptSha256: `${lens}-r1`,
+      });
+      // round 2 (latest): unanimous out_of_scope — supersedes round 1.
+      insertProposal(db, {
+        findingId: "f1",
+        hitchId: "h1",
+        lens,
+        reviewerId: lens,
+        proposedScope: "out_of_scope",
+        deliberationId: "d1",
         round: 2,
         promptSha256: `${lens}-r2`,
       });
     }
-    // refuter targeted in_scope (matches the LATEST round unanimous scope).
+    // refuter targeted in_scope — the STALE round-1 value, NOT the latest.
     insertRefutation(db, {
       findingId: "f1",
       hitchId: "h1",
@@ -363,7 +408,20 @@ describe("doctor jury.refutation_mismatch", () => {
       refuteVerdict: "uphold",
       deliberationId: "d1",
     });
-    expect(flaggedCheckIds(db)).not.toContain("jury.refutation_mismatch");
+    // The latest round (out_of_scope) disagrees with target_scope (in_scope).
+    expect(flaggedCheckIds(db)).toContain("jury.refutation_mismatch");
+    // And it is flagged specifically as a target_scope mismatch against the
+    // LATEST unanimous scope (out_of_scope), not the stale round-1 scope.
+    const targetScopeFinding = runDoctor(db, { category: "review" }).findings.find(
+      (f) =>
+        f.checkId === "jury.refutation_mismatch" &&
+        f.status === "flagged" &&
+        (f.details as { kind?: string }).kind === "target_scope",
+    );
+    expect(targetScopeFinding).toBeDefined();
+    expect((targetScopeFinding?.details as { unanimousScope?: string }).unanimousScope).toBe(
+      "out_of_scope",
+    );
   });
 
   it("flags when packet.refuter (recommended_next_action JSON) disagrees with stored refutation verdict", () => {

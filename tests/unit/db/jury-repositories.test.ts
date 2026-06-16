@@ -359,6 +359,23 @@ describe("JuryClassificationRefutationRepository", () => {
       }),
     ).toThrow(/hitch_id mismatch/i);
   });
+
+  it("rejects insert when finding does not exist (fail-closed)", () => {
+    const db = dbWithFinding("h1", "f1");
+    const repo = new JuryClassificationRefutationRepository(db);
+    expect(() =>
+      repo.insert({
+        findingId: "ghost",
+        hitchId: "h1",
+        targetScope: "in_scope",
+        refuteVerdict: "uphold",
+        reviewerId: "r1",
+        promptSha256: "p",
+        deliberationId: "d1",
+        createdAt: "2026-01-01T00:00:00Z",
+      }),
+    ).toThrow(/not found/i);
+  });
 });
 
 describe("JurySeverityAuditRepository", () => {
@@ -487,5 +504,23 @@ describe("JurySeverityAuditRepository", () => {
         createdAt: "2026-01-01T00:00:00Z",
       }),
     ).toThrow(/hitch_id mismatch/i);
+  });
+
+  it("rejects insert when finding does not exist (fail-closed)", () => {
+    const db = dbWithFinding("h1", "f1");
+    const repo = new JurySeverityAuditRepository(db);
+    expect(() =>
+      repo.insert({
+        findingId: "ghost",
+        hitchId: "h1",
+        harnessSeverity: "P1",
+        auditStatus: "aligned",
+        escalateFlag: false,
+        juryVotes: [],
+        promptSha256: "p",
+        deliberationId: "d1",
+        createdAt: "2026-01-01T00:00:00Z",
+      }),
+    ).toThrow(/not found/i);
   });
 });
