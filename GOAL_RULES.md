@@ -138,6 +138,36 @@ harness の安全設計はいかなる hitch 実装でも侵してはならな�
 - fail-closed: 判断に迷う安全関連事項は、必ず安全側（停止・エスカレーション）に
   倒す。
 
+### G-1. 合議制（jury）の provenance footprint と提案／決定の物理分離（#230）
+
+合議制 classification jury（issue #230）など **LLM 提案を入力とする決定論ゲート**を
+実装・拡張する際は、次の 2 つの不変を守る。安全境界 §G の具体化であり、LLM 出力が
+状態遷移の根拠にならないことを監査可能にするための規律。
+
+- **provenance footprint（監査行のメタ列）**: jury 監査入力表
+  （`jury_classification_proposals` / `jury_classification_refutations` /
+  `jury_severity_audits`）の各行には、その提案を **誰が・どの実行で・どの prompt から**
+  生成したかを追える footprint 列を持たせる:
+  `run_id` / `hitch_id` / `finding_id` / `reviewer_id`（例 `jury-<lens>` /
+  `jury-refuter`） / `model` / `prompt_sha256`（NOT NULL・business-key の一部） /
+  `prompt_provenance_json` / `usage_kind` / `usage_seq` / `created_at`。
+  `prompt_sha256` は `(kind, finding, lens/role, round)` の決定論 digest で、
+  `deliberation_id` と併せて retry を冪等化する（同一 deliberation は dedup、別
+  deliberation は別行）。新しい監査行・列を足すときも、この footprint を欠損させない
+  （provenance を辿れない LLM 出力を audit に残さない）。`model` /
+  `prompt_provenance_json` / `usage_kind` / `usage_seq` は現状 nullable で writer が
+  常時は埋めないが、**列は予約済み**であり、将来 writer がトークン計上や prompt 系譜を
+  記録する際の正規の置き場とする（別表を作らない）。
+
+- **提案（proposal）と決定（decision）の物理分離**: LLM 由来の出力は
+  **append-only の入力表にだけ**書く（上記 3 表）。`scope` / `severity` /
+  `lifecycle` 等の **決定**は、決定論ゲート（`aggregateDeliberation` /
+  classify runner Phase 3）の出力にのみ反映する（`hitch_findings` の
+  `classifyFinding`・`hitch_convergence_decisions` の packet）。LLM の自己申告
+  （「修正した」「severity は P0」等）が決定表へ直接流れる経路を作らない。
+  入力表の行が増えても、それ自体は finding の scope/severity/status を 1 ビットも
+  動かさない（doctor は両者の整合を**事後監査**で報告するだけで自動修復しない）。
+
 ---
 
 ## H. 開発規律

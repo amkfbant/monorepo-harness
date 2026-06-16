@@ -420,6 +420,26 @@ PR 作成/merge は別途 `hitch orchestrate` / `hitch await-merge` の明示ス
 `--then-rerun` 無指定時は従来どおり分類のみ（出力不変）。codex coder は execution-only で
 状態遷移の決定権は持たない。
 
+**`hitch finding classify` は合議制 jury を起動しない（#230 / design §0.1 R13）**:
+standalone の `hitch finding classify` は operator が手で `--scope` を渡す
+operator-manual 分類経路であり、5-stage deliberation jury（`src/hitch/jury/`）は
+**走らせない**。`--scope` を harness の決定論的 `classifyFinding` に直結するだけで、
+`deliberate()` も `verifyEvidence` も呼ばない（jury は reviewer runner・run worktree・
+audit context を要求し、standalone CLI はそれを持たない）。
+
+> **jury を起動する経路 / しない経路（MECE）**:
+> - **起動する（唯一）**: `hitch orchestrate` 駆動の classify runner
+>   （convergence が `needs_classification` を返したときに
+>   `src/hitch/jury/classify-runner.ts` を 3 フェーズで回す。詳細は
+>   [`docs/specs/workflow.md`](./workflow.md) 「finding 分類」）。
+> - **起動しない**: ① standalone CLI `hitch finding classify`（本項・operator-manual）、
+>   ② MCP `harness.hitch.classify_finding`（guarded mutation・operator-manual。
+>   [`docs/specs/mcp.md`](./mcp.md)）、③ `record_findings` / `hitch finding add` で
+>   `--scope` 省略時に走る決定論 heuristic（`classifyFindingForHitch`。jury ではない）。
+>
+> いずれの非-jury 経路でも状態遷移は harness の決定論ロジックのみで、LLM 合議が
+> scope/severity を直接書くことはない（安全境界）。
+
 **`hitch finding defer --classify-out-of-scope`（G3 / opt-in）**: 通常の `defer` は従来どおり
 `scope_status = out_of_scope` の finding だけを受け付ける。`--classify-out-of-scope` を明示した
 場合だけ、同じ `--reason` を分類理由と deferral note の両方に使い、finding を

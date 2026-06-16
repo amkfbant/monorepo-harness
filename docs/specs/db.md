@@ -1357,7 +1357,11 @@ CREATE INDEX jury_severity_audits_finding_idx ON jury_severity_audits(hitch_id, 
 ```
 
 severity audit は advisory（`hitch_findings.severity` や close 判定には波及しない）。
-doctor 配線は A3（下記）で実装済み。decision-packet 配線は後続の Layer で拡張する。
+doctor 配線は A3（下記）で実装済み。decision-packet（`packetVersion: 2` の MCDA packet）
+への配線も実装済みで、jury split / refuter veto / 弱証拠 / stale の escalate packet と
+severity 乖離の advisory packet を classify runner / orchestrator が組み立てて
+`hitch_convergence_decisions.recommended_next_action` に永続化する（workflow.md
+「finding 分類」参照）。
 
 ### repository（A2）
 
@@ -1407,8 +1411,12 @@ FK ゼロの 3 表は、親 purge / denorm drift / packet 不整合を doctor �
 
 > P2b の auto_confirm 正当性再検証 check（jury 確定 finding について保存済み
 > proposals/refutations から `aggregateDeliberation` を再実行し `auto_confirm` を
-> 満たすか advisory 検証）は、`aggregateDeliberation`（Layer 1 / Task B3）が未実装の
-> ため後続 Layer に defer する（A3 では未配線）。
+> 満たすか advisory 検証）は **doctor には未配線**。`aggregateDeliberation`
+> （`src/hitch/jury/aggregation.ts`）は実装済みだが、保存済み audit 行から再構成して
+> doctor で再評価する check は本リリースでは載せていない（orphan / hitch_mismatch /
+> refutation_mismatch の 3 check のみ）。auto_confirm の正当性は classify runner の
+> Phase 3 freshness re-stat（workflow.md 参照）が write 時点で担保しており、保存後の
+> 事後再検証 check は follow-up に defer する。
 
 ### import / export（A3 — DB-only audit）
 
