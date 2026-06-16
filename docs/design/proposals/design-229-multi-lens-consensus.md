@@ -931,10 +931,11 @@ harness が **100% 決定論**で検証する:
    出力 → expected-status(needs_review) guard → `run.status` の決定論経路でのみ現れる。**severity フィールドの
    mutation は経由しない**。
 6. **DB 記録**: **全 refute 票を `validation_status`（`passed` / `rejected`）＋ rejected 時は `reject_reason` 付きで**
-   `review_refute_votes` に business-key `(run_id, target_change_hash, reviewer_id, prompt_sha256)`（design-db §3.1）で
-   append（G3 の監査要件と整合。reject 票も監査に残し fail-closed 判断を追跡可能にする）。**participant set / 集約に
-   渡すのは `validation_status='passed'` のみ**。binding 不一致で hash が無い票は `target_change_text` の harness
-   再計算 hash か sentinel を business-key に用い、監査トレースを欠落させない。
+   `review_refute_votes` に append。**dedup business-key は `(run_id, target_change_hash, reviewer_id, prompt_sha256,
+   validation_status)`**＋ `passed` は部分 unique で同一 key 最大 1 本（design-db §3.1。rejected 監査行が後の
+   passed retry を塞がない）。reject 票も監査に残し fail-closed 判断を追跡可能にする。**participant set / 集約に
+   渡すのは `validation_status='passed'` ∧ `refute_verdict ∈ {uphold, refute}` のみ**（inconclusive は除外）。binding
+   不一致で hash が無い票は `target_change_text` の harness 再計算 hash か sentinel を用い、監査トレースを欠落させない。
 
 本 P2-0 は `review-decision-schema.ts` / `schema.ts(+migration v31)` / `review-rule.ts` のみを触り、
 `evaluateConsensus`（[review-consensus.ts](../../../src/core/review-consensus.ts):99, quorum + 固定 tie-break =

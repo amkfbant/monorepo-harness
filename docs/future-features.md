@@ -878,7 +878,7 @@ escalate / 誤分類のイベント（runtime ログは `hitch_findings` / `hitc
 - refute output DSL の実装本体（refute 専用 schema、`{target_change_hash, refute_verdict, refute_reason, counter_evidence_ref, refute_condition, retract_condition}`、`refute_verdict ∈ {uphold, refute, inconclusive}`＝design-db §3.1 CHECK と統一）。target id は content-hash（`sha256(normalizeChangeText(change_text))`、FK なし、idx は advisory）に pin。
 - `normalizeChangeText` 純関数実装（NFC + CRLF→LF + 行内空白畳み + 全体 trim、case 折り/句読点除去なし）+ 単体テスト。
 - binding 決定論検証（未知 target / hash 不一致 = fail-closed reject、harness 再計算のみが権威）。
-- counter_evidence_ref が指す diff/test の実在検証を既存 automatic verification kind（command/finding_policy/artifact_exists）へ配線。
+- counter_evidence_ref が指す diff/test の実在検証は **refute layer 専用の決定論 verifier（run artifact の存在 + hunk/test 出力照合を直接確認）** を新設する。**close-condition kind の `artifact_exists` は external/ask_human 経路で決定論 auto-check でないため使わない**（`command`/`finding_policy` も diff hunk 存在確認には不適。design-229 G3 と統一）。
 - refute layer の participant 除外ロジック（必須フィールド欠落 / artifact 不在 / kind=none を集約前に無効化、無効票は `review_refute_votes` に validation_status/reject_reason 付きで記録し `review_proposals` には入れない＝通常 consensus 汚染を防ぐ）。
 - refute reviewer agent variant（別 prompt, distinct registered reviewer_id）。lens 注入機構（reviewer-agent.ts の reviewerPrompt 拡張）を再利用。
 - reject された refute 票の入力監査記録の形式。
