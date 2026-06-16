@@ -120,6 +120,14 @@ export class HitchOrchestrator {
           if (!r.resolved) {
             return { hitchId: input.hitchId, outcome: "escalated", steps, finalDecision, escalateReason: r.escalateReason ?? "classification unresolved" };
           }
+          // (#230 / codex#252-P2) A jury batch was capped this invocation
+          // (`moreUnknownsPending`): halt the loop cleanly so per-invocation cost
+          // is bounded to one jury batch. Breaking falls through to the natural
+          // end-of-loop `max_steps_exhausted` return (a non-escalate outcome);
+          // the NEXT orchestrate invocation re-fires needs_classification and
+          // drains the remaining unknowns. Re-running classify in THIS invocation
+          // would loop up to maxSteps, breaking the cost bound.
+          if (r.moreUnknownsPending === true) break;
           continue;
         }
         if (action.kind === "defer") {

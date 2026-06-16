@@ -1,0 +1,515 @@
+import { describe, expect, it } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openManagedDb } from "../../../../src/db/managed-connection.js";
+import { runMigrations } from "../../../../src/db/migrations.js";
+import { HitchRepository } from "../../../../src/hitch/repository.js";
+import { createOrchestratorRunners } from "../../../../src/hitch/orchestrator-runners.js";
+import { HitchOrchestrator } from "../../../../src/hitch/orchestrator.js";
+import type { OrchestratorRunners } from "../../../../src/hitch/orchestrator-types.js";
+import type { CodexExecRunner } from "../../../../src/codex/codex-exec-runner.js";
+import {
+  routingRunner,
+  routingKey,
+  REFUTE_ROUTE_KEY,
+  type RoutingMap,
+  type RoutedResponse,
+} from "./_fake-jury-runner.js";
+import { JURY_LENSES } from "../../../../src/hitch/jury/types.js";
+import { DEFAULT_HITCH_POLICY } from "../../../../src/hitch/types.js";
+
+/**
+ * #230 Task D1 — classify runner 3-phase deliberation (orchestrator-level RED).
+ *
+ * These tests drive the REAL `createOrchestratorRunners(...).classify` runner so
+ * the safety boundary (LLM output -> deterministic gate -> repo.classifyFinding)
+ * is exercised end to end against a real DB + a real worktree fixture. The jury
+ * codex calls are routed by the prompt-routing fake runner (per-lens / per-stage).
+ */
+
+interface Harness {
+  harnessRoot: string;
+  dbPath: string;
+  runId: string;
+  worktree: string;
+}
+
+/**
+ * Build a harness root with a hitch session, a coding run + attempt (so the
+ * classify runner can resolve the latest run's worktree), a real worktree dir
+ * with `src/a.ts` (10 lines) for file-kind evidence, and a repo policy file.
+ */
+function makeHarness(hitchId: string): Harness {
+  const harnessRoot = mkdtempSync(join(tmpdir(), "jury-classify-"));
+  mkdirSync(join(harnessRoot, ".harness"), { recursive: true });
+  const dbPath = join(harnessRoot, ".harness", "harness.sqlite");
+  const runId = `run-${hitchId}`;
+  const worktree = join(harnessRoot, "workspaces", runId, "repo");
+  mkdirSync(join(worktree, "src"), { recursive: true });
+  writeFileSync(
+    join(worktree, "src", "a.ts"),
+    Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join("\n") + "\n",
+    "utf8",
+  );
+  // minimal repo policy so the evidence ctx can compile a CompiledPolicyView
+  mkdirSync(join(harnessRoot, "policies", "repos"), { recursive: true });
+  writeFileSync(
+    join(harnessRoot, "policies", "global.yaml"),
+    "always_deny_write: []\n",
+    "utf8",
+  );
+  writeFileSync(
+    join(harnessRoot, "policies", "repos", "t.yaml"),
+    "repo_id: t\nread: []\ndomains: {}\n",
+    "utf8",
+  );
+
+  const { db, close } = openManagedDb({ dbPath });
+  try {
+    runMigrations(db);
+    const repo = new HitchRepository(db);
+    repo.createSession({
+      hitchId,
+      title: "Jury classify",
+      repoId: "t",
+      domain: "docs",
+      // No targetFiles so the heuristic returns `unknown` for review-source
+      // findings (-> jury), but excludedCategories lets us craft heuristic hits.
+      scope: {},
+      closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+      // Permissive divergence budget so seeding many unknown findings (for the
+      // cap test) routes convergence to `needs_classification` rather than
+      // tripping the divergence circuit-breaker (tested elsewhere).
+      policy: {
+        ...DEFAULT_HITCH_POLICY,
+        divergence: {
+          ...DEFAULT_HITCH_POLICY.divergence,
+          maxTotalNewFindings: 1000,
+          maxNewFindingsPerCycle: 1000,
+        },
+      },
+      maxTotalNewFindings: 1000,
+      createdBy: "test",
+      createdSource: "worker",
+    });
+    repo.createAttempt({
+      hitchId,
+      attemptType: "implement",
+      status: "succeeded",
+      runId,
+      createdAt: "2026-06-13T00:00:00.000Z",
+    });
+    db.prepare(
+      `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+         status, base_sha, source_mode, db_revision, export_status,
+         updated_at, meta_json)
+       VALUES (?, 't', 'docs', 'domain-coding', 'main', 'approved',
+         'deadbeef', 'db-first', 1, 'disabled', '2026-06-13T00:00:00.000Z', ?)`,
+    ).run(runId, JSON.stringify({ runId, repoId: "t", domain: "docs" }));
+    // A completed review cycle so convergence is past review and routes
+    // `needs_classification` (not "review the latest run first") once unknown
+    // findings exist (the path under test).
+    const cycle = repo.startReviewCycle({
+      hitchId,
+      reviewMode: "initial",
+      sourceRunId: runId,
+      createdAt: "2026-06-13T00:00:00.000Z",
+    });
+    repo.completeReviewCycle({
+      cycleId: cycle.cycleId,
+      completedAt: "2026-06-13T00:00:00.000Z",
+      summary: "reviewed",
+    });
+  } finally {
+    close();
+  }
+  return { harnessRoot, dbPath, runId, worktree };
+}
+
+function seedFinding(
+  h: Harness,
+  hitchId: string,
+  input: {
+    source: "review" | "human" | "mcp" | "doctor";
+    summary: string;
+    filePath?: string;
+    category?: string;
+    severity?: "P0" | "P1" | "P2" | "P3" | "info";
+  },
+): string {
+  const { db, close } = openManagedDb({ dbPath: h.dbPath });
+  try {
+    const repo = new HitchRepository(db);
+    const f = repo.upsertFinding({
+      hitchId,
+      source: input.source,
+      severity: input.severity ?? "P1",
+      category: input.category ?? "bug",
+      scopeStatus: "unknown",
+      summary: input.summary,
+      ...(input.filePath !== undefined ? { filePath: input.filePath } : {}),
+    }).finding;
+    return f.findingId;
+  } finally {
+    close();
+  }
+}
+
+/** A single lens propose JSON with one file citation (verifiable + proximate). */
+function proposeJson(scope: "in_scope" | "out_of_scope", citation = "src/a.ts:1"): RoutedResponse {
+  return {
+    stdout: JSON.stringify({
+      proposedScope: scope,
+      evidence: [{ citation, kind: "file", claim: "the change touches this line" }],
+      refutationCondition: "the cited line does not actually relate to the finding",
+      reasoning: "the lens reasons it is " + scope,
+      proposedSeverity: "P1",
+    }),
+  };
+}
+
+/** Build a unanimous routing map (all 3 lenses propose `scope`) + refuter uphold. */
+function unanimousRouting(
+  scope: "in_scope" | "out_of_scope",
+  refute: "uphold" | "refute" | "inconclusive" = "uphold",
+  citation = "src/a.ts:1",
+): RoutingMap {
+  const map: RoutingMap = {};
+  for (const lens of JURY_LENSES) {
+    map[routingKey("propose", lens)] = proposeJson(scope, citation);
+  }
+  map[REFUTE_ROUTE_KEY] = {
+    stdout: JSON.stringify({
+      refuteVerdict: refute,
+      whyNotFalseConsensus: "the lenses cite real, proximate evidence",
+      refutationConditions: "if the cited file were unrelated",
+      reasoning: "adversarial check " + refute,
+    }),
+  };
+  return map;
+}
+
+/** Build a split routing map (2 lenses in_scope, 1 out_of_scope). */
+function splitRouting(): RoutingMap {
+  const map: RoutingMap = {};
+  map[routingKey("propose", "correctness")] = proposeJson("in_scope");
+  map[routingKey("propose", "scope_fit")] = proposeJson("in_scope");
+  map[routingKey("propose", "spec_adherence")] = proposeJson("out_of_scope");
+  // split -> critique fires; route round-2 critique to keep the split.
+  for (const lens of JURY_LENSES) {
+    const scope = lens === "spec_adherence" ? "out_of_scope" : "in_scope";
+    map[routingKey("critique", lens)] = {
+      stdout: JSON.stringify({
+        objections: [
+          { target: "other", type: "alternative", objection: "I disagree on scope" },
+        ],
+        citationRelevance: [
+          { citation: "src/a.ts:1", relevance: "supports my " + scope + " view" },
+        ],
+        revisedScope: scope,
+        voteChanged: false,
+      }),
+    };
+  }
+  return map;
+}
+
+function makeRunners(h: Harness, jury: CodexExecRunner): OrchestratorRunners {
+  return createOrchestratorRunners({
+    dbPath: h.dbPath,
+    harnessRoot: h.harnessRoot,
+    createdBy: "worker",
+    coderRunner: jury,
+    reviewerRunner: jury,
+    repoPath: h.worktree,
+  });
+}
+
+function readFinding(h: Harness, findingId: string) {
+  const { db, close } = openManagedDb({ dbPath: h.dbPath });
+  try {
+    return new HitchRepository(db).requireFinding(findingId);
+  } finally {
+    close();
+  }
+}
+
+function countRows(h: Harness, table: string, findingId: string): number {
+  const { db, close } = openManagedDb({ dbPath: h.dbPath });
+  try {
+    const row = db
+      .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE finding_id = ?`)
+      .get(findingId) as { n: number };
+    return row.n;
+  } finally {
+    close();
+  }
+}
+
+describe("classify runner — 3 phase deliberation (#230 D1)", () => {
+  it("operator-origin unknown is NOT heuristic/jury classified; escalates with operator_origin_unknown packet", async () => {
+    const h = makeHarness("op-origin");
+    const fid = seedFinding(h, "op-origin", {
+      source: "human",
+      summary: "operator raised concern",
+    });
+    // route nothing: a jury call would fail closed, proving the jury never runs.
+    const r = await makeRunners(h, routingRunner({})).classify("op-origin");
+    expect(r.resolved).toBe(false);
+    if (r.resolved) throw new Error("unreachable");
+    const packet = r.recommendedNextAction.decisionPacket;
+    expect(packet).toBeDefined();
+    expect(packet?.decisionKinds).toContain("operator_origin_unknown");
+    const entry = packet?.findings.find((f) => f.findingId === fid);
+    expect(entry?.origin).toBe("operator");
+    // still unknown (never machine-classified)
+    expect(readFinding(h, fid).scopeStatus).toBe("unknown");
+  });
+
+  it("harness-origin heuristic-resolvable finding is written immediately, jury bypassed", async () => {
+    const h = makeHarness("heur");
+    // category match via allowedFindingCategories -> heuristic in_scope.
+    {
+      const { db, close } = openManagedDb({ dbPath: h.dbPath });
+      try {
+        const repo = new HitchRepository(db);
+        // overwrite session scope to allow the category
+        db.prepare("UPDATE hitch_sessions SET scope_json = ? WHERE hitch_id = ?").run(
+          JSON.stringify({ allowedFindingCategories: ["bug"] }),
+          "heur",
+        );
+      } finally {
+        close();
+      }
+    }
+    const fid = seedFinding(h, "heur", {
+      source: "review",
+      summary: "a bug",
+      category: "bug",
+    });
+    // route nothing: heuristic must resolve so the jury never runs.
+    const r = await makeRunners(h, routingRunner({})).classify("heur");
+    expect(r.resolved).toBe(true);
+    expect(readFinding(h, fid).scopeStatus).toBe("in_scope");
+    // no jury rows persisted (jury bypassed)
+    expect(countRows(h, "jury_classification_proposals", fid)).toBe(0);
+  });
+
+  it("harness-origin still-unknown -> deliberate -> auto_confirm -> classifyFinding with deliberation_id in reason", async () => {
+    const h = makeHarness("auto");
+    const fid = seedFinding(h, "auto", {
+      source: "review",
+      summary: "ambiguous finding",
+      filePath: "src/a.ts",
+      category: "core",
+    });
+    const r = await makeRunners(h, routingRunner(unanimousRouting("in_scope"))).classify(
+      "auto",
+    );
+    expect(r.resolved).toBe(true);
+    const f = readFinding(h, fid);
+    expect(f.scopeStatus).toBe("in_scope");
+    expect(f.classificationReason).toMatch(/jury auto_confirm \(deliberation_id=[0-9a-f]{64}\)/);
+    // audit rows persisted: round-1 proposals (3) + refutation (1) + severity (1)
+    expect(countRows(h, "jury_classification_proposals", fid)).toBeGreaterThanOrEqual(3);
+    expect(countRows(h, "jury_classification_refutations", fid)).toBe(1);
+    expect(countRows(h, "jury_severity_audits", fid)).toBe(1);
+  });
+
+  it("harness-origin still-unknown -> split -> resolved:false with a split decision packet", async () => {
+    const h = makeHarness("split");
+    const fid = seedFinding(h, "split", {
+      source: "review",
+      summary: "split finding",
+      filePath: "src/a.ts",
+      category: "core",
+    });
+    const r = await makeRunners(h, routingRunner(splitRouting())).classify("split");
+    expect(r.resolved).toBe(false);
+    if (r.resolved) throw new Error("unreachable");
+    expect(r.recommendedNextAction.decisionPacket).toBeDefined();
+    expect(r.recommendedNextAction.decisionPacket?.decisionKinds).toContain(
+      "classify_scope",
+    );
+    // finding stays unknown (no auto classification on a split)
+    expect(readFinding(h, fid).scopeStatus).toBe("unknown");
+    // audit rows STILL persisted (P2k): proposals exist for the split
+    expect(countRows(h, "jury_classification_proposals", fid)).toBeGreaterThanOrEqual(3);
+  });
+
+  it("P2k: a finding classified by another path mid-run skips classifyFinding but persists audit rows", async () => {
+    const h = makeHarness("midrun");
+    const fid = seedFinding(h, "midrun", {
+      source: "review",
+      summary: "race finding",
+      filePath: "src/a.ts",
+      category: "core",
+    });
+    // route a runner that, on its FIRST codex call (a jury propose), classifies
+    // the finding out-of-band so Phase 3 re-verification sees it already resolved.
+    let classifiedMidRun = false;
+    const racing: CodexExecRunner = {
+      run: async (input) => {
+        if (!classifiedMidRun) {
+          classifiedMidRun = true;
+          const { db, close } = openManagedDb({ dbPath: h.dbPath });
+          try {
+            new HitchRepository(db).classifyFinding({
+              findingId: fid,
+              scopeStatus: "out_of_scope",
+              reason: "classified by another path",
+            });
+          } finally {
+            close();
+          }
+        }
+        return routingRunner(unanimousRouting("in_scope")).run(input);
+      },
+    };
+    const r = await makeRunners(h, racing).classify("midrun");
+    // the out-of-band classification stands (jury did NOT overwrite it)
+    const f = readFinding(h, fid);
+    expect(f.scopeStatus).toBe("out_of_scope");
+    expect(f.classificationReason).toBe("classified by another path");
+    // but the generated audit rows were still persisted (P2k)
+    expect(countRows(h, "jury_classification_proposals", fid)).toBeGreaterThanOrEqual(3);
+    expect(r.resolved).toBe(true);
+  });
+
+  it("freshness: a verified file citation whose file changes after Phase 2 escalates (no auto_confirm)", async () => {
+    const h = makeHarness("stale");
+    const fid = seedFinding(h, "stale", {
+      source: "review",
+      summary: "stale citation finding",
+      filePath: "src/a.ts",
+      category: "core",
+    });
+    // route a runner that, after producing the proposals (its last codex call is
+    // the refute), DELETES the cited file so Phase 3 re-stat finds it stale.
+    let calls = 0;
+    const base = routingRunner(unanimousRouting("in_scope", "uphold", "src/a.ts:5"));
+    const staleRunner: CodexExecRunner = {
+      run: async (input) => {
+        const result = await base.run(input);
+        calls += 1;
+        // after the refute call (the last codex invocation of deliberate),
+        // truncate the file so line 5 is now out of range.
+        if (input.prompt.includes("[[stage:refute]]")) {
+          writeFileSync(join(h.worktree, "src", "a.ts"), "only one line\n", "utf8");
+        }
+        return result;
+      },
+    };
+    const r = await makeRunners(h, staleRunner).classify("stale");
+    expect(calls).toBeGreaterThan(0);
+    expect(r.resolved).toBe(false);
+    if (r.resolved) throw new Error("unreachable");
+    // NOT auto_confirmed -> still unknown
+    expect(readFinding(h, fid).scopeStatus).toBe("unknown");
+    expect(r.escalateReason).toMatch(/stale|fresh/i);
+  });
+
+  it("DB is closed during Phase 2 (the jury codex runner sees no open handle)", async () => {
+    const h = makeHarness("dbclosed");
+    seedFinding(h, "dbclosed", {
+      source: "review",
+      summary: "db-closed probe",
+      filePath: "src/a.ts",
+      category: "core",
+    });
+    let openWriterDuringJury = true;
+    const probing: CodexExecRunner = {
+      run: async (input) => {
+        // During Phase 2, the classify runner must hold NO db handle. Prove it by
+        // taking an exclusive write lock from a fresh connection (succeeds iff no
+        // other writer is mid-transaction on the same file).
+        const { db, close } = openManagedDb({ dbPath: h.dbPath });
+        try {
+          db.exec("BEGIN IMMEDIATE; COMMIT;");
+        } catch {
+          openWriterDuringJury = false;
+        } finally {
+          close();
+        }
+        return routingRunner(unanimousRouting("in_scope")).run(input);
+      },
+    };
+    await makeRunners(h, probing).classify("dbclosed");
+    expect(openWriterDuringJury).toBe(true);
+  });
+});
+
+describe("classify runner — cap/defer (#230 D1 / codex#252-P2)", () => {
+  it("processes at most JURY_BATCH_LIMIT candidates, sets moreUnknownsPending, is NOT a no-progress escalate", async () => {
+    const h = makeHarness("cap");
+    // seed more harness-origin still-unknown findings than the jury cap.
+    // JURY_BATCH_LIMIT is small (<= FINDING_BATCH_LIMIT). Seed 30 (cap is 25).
+    const total = 30;
+    for (let i = 0; i < total; i += 1) {
+      seedFinding(h, "cap", {
+        source: "review",
+        summary: `cap finding ${i}`,
+        filePath: "src/a.ts",
+        category: "core",
+      });
+    }
+    const r = await makeRunners(h, routingRunner(unanimousRouting("in_scope"))).classify(
+      "cap",
+    );
+    expect(r.resolved).toBe(true);
+    if (!r.resolved) throw new Error("unreachable");
+    expect(r.moreUnknownsPending).toBe(true);
+    // exactly the cap was auto_confirmed this invocation; the rest remain unknown.
+    const { db, close } = openManagedDb({ dbPath: h.dbPath });
+    try {
+      const repo = new HitchRepository(db);
+      const remaining = repo.countFindings({
+        hitchId: "cap",
+        scopeStatus: "unknown",
+        lifecycleStatusIn: ["open", "reopened", "escalated"],
+      });
+      const classified = repo.countFindings({
+        hitchId: "cap",
+        scopeStatus: "in_scope",
+      });
+      expect(classified).toBe(25);
+      expect(remaining).toBe(total - 25);
+    } finally {
+      close();
+    }
+  });
+
+  it("orchestrator halts after ONE jury batch (does not run a 2nd batch up to maxSteps)", async () => {
+    const h = makeHarness("cap-orch");
+    const total = 30;
+    for (let i = 0; i < total; i += 1) {
+      seedFinding(h, "cap-orch", {
+        source: "review",
+        summary: `cap-orch finding ${i}`,
+        filePath: "src/a.ts",
+        category: "core",
+      });
+    }
+    let classifyCalls = 0;
+    const baseRunners = makeRunners(h, routingRunner(unanimousRouting("in_scope")));
+    const countingRunners: OrchestratorRunners = {
+      ...baseRunners,
+      classify: async (hitchId) => {
+        classifyCalls += 1;
+        return baseRunners.classify(hitchId);
+      },
+    };
+    const orch = new HitchOrchestrator({ dbPath: h.dbPath });
+    const result = await orch.run({
+      hitchId: "cap-orch",
+      runners: countingRunners,
+      maxSteps: 10,
+      createdBy: "worker",
+    });
+    // exactly ONE jury batch this invocation (no second batch up to maxSteps).
+    expect(classifyCalls).toBe(1);
+    // it is NOT an escalation (a clean halt — partial progress).
+    expect(result.outcome).not.toBe("escalated");
+  });
+});

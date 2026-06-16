@@ -1,3 +1,5 @@
+import type { ClassifyRunnerResult } from "./jury/types.js";
+
 /** One logical action the orchestrator can take per loop step. */
 export type OrchestratorAction =
   | { kind: "coder" } // needs_fix: run/rerun the coder to fix findings / run close checks
@@ -27,8 +29,16 @@ export interface OrchestratorRunners {
     passed: number;
     failed: number;
   }>;
-  /** Deterministically classify open unknown-scope findings. Returns whether all resolved. */
-  classify(hitchId: string): Promise<{ resolved: boolean; escalateReason?: string }>;
+  /**
+   * Classify open unknown-scope findings (#230 deliberation jury). harness-origin
+   * findings the heuristic still leaves `unknown` go through the 3-phase jury;
+   * operator-origin unknowns escalate (never machine-classified). Returns the
+   * structured `ClassifyRunnerResult`: `resolved:false` carries an escalate
+   * decision + a consultant-grade decision packet; `resolved:true` may carry a
+   * non-escalating `severityAuditPacket` and/or `moreUnknownsPending` (a jury
+   * batch was capped — the orchestrator halts this invocation cleanly).
+   */
+  classify(hitchId: string): Promise<ClassifyRunnerResult>;
   /** Defer open out-of-scope findings to the backlog. Returns how many were deferred. */
   defer(hitchId: string): Promise<{ deferred: number }>;
   /**

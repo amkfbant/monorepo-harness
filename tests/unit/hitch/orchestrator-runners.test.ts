@@ -47,6 +47,11 @@ function createBasicHitch(repo: HitchRepository, hitchId: string): void {
     hitchId,
     title: "Fix scoped files",
     projectId: "demo",
+    // repoId/domain so the #230 classify runner can resolve the run context
+    // (it needs a worktree for the jury). Findings here are heuristic-resolvable
+    // (src/** targetFiles), so the jury never actually runs.
+    repoId: "t",
+    domain: "docs",
     scope: { targetFiles: ["src/**"] },
     closeConditions: [{ id: "typecheck", kind: "command", required: true }],
     createdBy: "test",
@@ -61,6 +66,9 @@ function createRunners(dbPath: string) {
     createdBy: "worker",
     coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
     reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+    // repoPath so the classify runner can resolve a run context. Heuristic
+    // classification does not touch the worktree, so any path suffices here.
+    repoPath: dbPath,
   });
 }
 
@@ -987,7 +995,7 @@ describe("createOrchestratorRunners.classify", () => {
     }
   });
 
-  it("returns unresolved with an escalation reason when a finding cannot be classified", async () => {
+  it("escalates a harness-origin finding the heuristic AND jury cannot resolve (#230)", async () => {
     const dbPath = createRunnerTestDb("harness-orch-classify-unknown-");
     {
       const { db, close } = openManagedDb({ dbPath });
@@ -1008,10 +1016,15 @@ describe("createOrchestratorRunners.classify", () => {
       }
     }
 
+    // The fake reviewerRunner returns exitCode 0 but writes no JSON, so every
+    // jury lens parses to `parse_error` -> inconclusive -> the deterministic gate
+    // escalates (it can NEVER auto_confirm without verified+unanimous proposals).
     const result = await createRunners(dbPath).classify("g-classify-unknown");
 
     expect(result.resolved).toBe(false);
-    expect(result.escalateReason).toMatch(/cannot classify finding/);
+    if (result.resolved) throw new Error("unreachable");
+    expect(result.decision).toBe("escalate");
+    expect(result.recommendedNextAction.decisionPacket).toBeDefined();
   });
 
   it("stops finitely when classification makes no count progress", async () => {

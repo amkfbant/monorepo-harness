@@ -18,7 +18,11 @@ import type { RunStatus } from "../logging/run-log.js";
 import { resolveBaseSha } from "../git/diff.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
-import { DEFAULT_GIT_TIMEOUT_MS } from "../policy/schema.js";
+import {
+  DEFAULT_GIT_TIMEOUT_MS,
+  GlobalPolicySchema,
+  RepoPolicySchema,
+} from "../policy/schema.js";
 import { runReviewerAgent } from "../core/reviewer-agent.js";
 import { processReviewDecision } from "../core/review-processor.js";
 import {
@@ -66,7 +70,8 @@ import {
   augmentGoalWithOpenFindings,
   type CloseCheckFailureContext,
 } from "./coder-goal-context.js";
-import { classifyFindingForHitch } from "./classification.js";
+import { runClassifyDeliberation } from "./jury/classify-runner.js";
+import type { CompiledPolicyView } from "./jury/types.js";
 import { deferFindingToBacklog } from "./followups.js";
 import { ConvergenceService } from "./convergence.js";
 import { evaluateCloseConditions } from "./close-checks.js";
@@ -94,6 +99,20 @@ import { findTransientLeaseCause } from "../workspace/db-domain-lock.js";
 export { selectProcessedProposalForReviewImport } from "./review-integration.js";
 
 const FINDING_BATCH_LIMIT = 200;
+
+/**
+ * (#230 / codex#252-P2 / plan P2-i) Per-invocation jury budget cap. Each jury
+ * finding costs 4-7 codex calls (3 lens propose + optional 3 critique + 1
+ * refute), so the worst case per invocation is `JURY_BATCH_LIMIT * 7` codex
+ * calls. Kept well under `FINDING_BATCH_LIMIT` (200) — at 25 the worst case is
+ * 175 codex calls. Candidates beyond the cap are deferred to the NEXT orchestrate
+ * invocation (the result carries `moreUnknownsPending` and the orchestrator
+ * halts THIS invocation cleanly; convergence re-fires needs_classification).
+ */
+const JURY_BATCH_LIMIT = 25;
+
+/** Default per-call jury codex timeout (ms) — mirrors the reviewer budget. */
+const JURY_CODEX_TIMEOUT_MS = 600_000;
 
 const OPEN_FINDING_LIFECYCLE_SET: ReadonlySet<HitchLifecycleStatus> = new Set(
   OPEN_FINDING_LIFECYCLES,
@@ -540,6 +559,35 @@ async function resolveGitTimeoutMs(
     return resolvePolicy(global, repo, context.domain).limits.gitTimeoutMs;
   } catch {
     return DEFAULT_GIT_TIMEOUT_MS;
+  }
+}
+
+/**
+ * (#230) Resolve the compiled policy view the jury's `verifyEvidence` resolves
+ * `policy` citations against. Prefers the compiled project policy when present
+ * (mirroring `runDomainCoding`), else loads the repo policy files. Any load
+ * failure falls back to a minimal valid policy (empty domains) — a missing
+ * policy must NOT throw on the read-only evidence path; an unresolvable policy
+ * citation simply fails verification, which is the safe (fail-closed) outcome.
+ */
+async function resolveJuryCompiledPolicy(
+  deps: OrchestratorRunnerDeps,
+  context: HitchRunContext,
+): Promise<CompiledPolicyView> {
+  if (deps.projectRuntime?.compiledPolicy !== undefined) {
+    return deps.projectRuntime.compiledPolicy;
+  }
+  const paths = harnessPaths(deps.harnessRoot);
+  try {
+    return {
+      global: await loadGlobalPolicy(paths.globalPolicyPath),
+      repo: await loadRepoPolicy(paths.repoPolicyPath(context.repoId)),
+    };
+  } catch {
+    return {
+      global: GlobalPolicySchema.parse({}),
+      repo: RepoPolicySchema.parse({ repo_id: context.repoId, domains: {} }),
+    };
   }
 }
 
@@ -1176,59 +1224,57 @@ export function createOrchestratorRunners(
           return resolveRunContext(deps, session);
         },
       }),
-    classify: async (hitchId) =>
-      withManagedDb({ dbPath: deps.dbPath }, (db) => {
-        const repo = new HitchRepository(db);
-        const session = repo.requireSession(hitchId);
-        const filter = {
-          hitchId,
-          scopeStatus: "unknown" as const,
-          lifecycleStatusIn: OPEN_FINDING_LIFECYCLES,
-        };
-        let previousRemaining = repo.countFindings(filter);
-        while (true) {
-          const batch = repo.listFindings({
-            ...filter,
-            limit: FINDING_BATCH_LIMIT,
+    classify: async (hitchId) => {
+      // (#230) 3-phase deliberation classify runner (design §7.1). The phases
+      // manage their own DB handles (open snapshot -> CLOSED for the LLM ->
+      // re-open to persist+classify), so the run-context / worktree / policy are
+      // resolved here OUTSIDE any DB handle. The latest coding run's worktree is
+      // where the jury's file-kind citations resolve.
+      const { context, latestRun, hasUnknown } = withManagedDb(
+        { dbPath: deps.dbPath },
+        (db) => {
+          const repo = new HitchRepository(db);
+          const session = repo.requireSession(hitchId);
+          const unknownCount = repo.countFindings({
+            hitchId,
+            scopeStatus: "unknown",
+            lifecycleStatusIn: OPEN_FINDING_LIFECYCLES,
           });
-          if (batch.length === 0) break;
-
-          for (const finding of batch) {
-            const classification = classifyFindingForHitch(session, finding);
-            if (classification.scopeStatus === "unknown") {
-              return {
-                resolved: false,
-                escalateReason: `cannot classify finding ${finding.findingId}`,
-              };
-            }
-            repo.classifyFinding({
-              findingId: finding.findingId,
-              scopeStatus: classification.scopeStatus,
-              reason: classification.reason,
-            });
+          // No open unknown findings -> nothing to classify; skip the
+          // run-context/worktree/policy resolution (which a no-finding hitch
+          // need not have wired) and report resolved immediately.
+          if (unknownCount === 0) {
+            return { context: null, latestRun: null, hasUnknown: false };
           }
-
-          const remaining = repo.countFindings(filter);
-          if (remaining === 0) return { resolved: true };
-          if (remaining >= previousRemaining) {
-            return {
-              resolved: false,
-              escalateReason:
-                `classification made no progress for hitch ${hitchId}; ` +
-                `${remaining} unknown findings remain`,
-            };
-          }
-          previousRemaining = remaining;
-        }
-        const remaining = repo.countFindings(filter);
-        if (remaining === 0) return { resolved: true };
-        return {
-          resolved: false,
-          escalateReason:
-            `classification did not drain hitch ${hitchId}; ` +
-            `${remaining} unknown findings remain`,
-        };
-      }),
+          return {
+            context: resolveRunContext(deps, session),
+            latestRun: latestCodingRunOrNull(repo, hitchId),
+            hasUnknown: true,
+          };
+        },
+      );
+      if (!hasUnknown || context === null) {
+        return { resolved: true };
+      }
+      const compiledPolicy = await resolveJuryCompiledPolicy(deps, context);
+      const worktreePath =
+        latestRun !== null
+          ? join(paths.workspacesDir, latestRun.runId, "repo")
+          : context.repoPath;
+      return runClassifyDeliberation(
+        {
+          dbPath: deps.dbPath,
+          harnessRoot: deps.harnessRoot,
+          reviewerRunner: deps.reviewerRunner,
+          worktreePath,
+          compiledPolicy,
+          runId: latestRun?.runId ?? null,
+          juryBatchLimit: JURY_BATCH_LIMIT,
+          timeoutMs: JURY_CODEX_TIMEOUT_MS,
+        },
+        hitchId,
+      );
+    },
     defer: async (hitchId) => {
       // No mutation gate: deferral is a hitch-repo bookkeeping op (moving an
       // out-of-scope follow-up to the backlog), not a workspace mutation.

@@ -988,6 +988,49 @@ close-check failure、実 test failure は従来どおり blocker として扱�
 誤って `close_ready` にならないようにする。`out_of_scope_suggestions` は out-of-scope
 follow-up として記録される。
 
+**finding 分類（`needs_classification`・3 フェーズ熟議）**: convergence が
+`needs_classification` を返す（open かつ `unknown`-scope の finding がある）と、
+orchestrator は classify runner（`src/hitch/orchestrator-runners.ts` →
+`src/hitch/jury/classify-runner.ts`）を **3 フェーズの DB 分離**で回す（#230 合議制
+jury）。安全境界の核心: 状態遷移は harness のみ、`repo.classifyFinding` は決定論ゲート
+Stage5 の `auto_confirm` のみで走る（LLM 出力が scope/severity/status を直接書かない）。
+
+- **Phase 1（DB open・同期 snapshot）**: open かつ `unknown` の finding を origin で分割
+  する。**operator-origin（`source` が `human`/`mcp`）は heuristic も jury も通さず**、
+  manual 分類のため bundled escalate packet に束ねる（fail-closed・機械分類しない）。
+  harness-origin（`review`/`test`/`doctor`/`codex`/`other`）は既存 heuristic
+  （`classifyFindingForHitch`）を適用し、確定したら即 `classifyFinding`（heuristic が
+  jury を bypass する）。なお `unknown` のものを **jury 候補**として snapshot する。
+  heuristic ドレインには既存の no-progress guard を残す（heuristic 確定が DB に効かない
+  ケースのみ escalate であり、jury defer を escalate に誤判定しない）。DB を閉じる。
+- **Phase 2（DB 閉・LLM）**: jury 候補のうち先頭 `JURY_BATCH_LIMIT`（既定 **25**）件に
+  対して `deliberate()`（Stage1 提案 → Stage2 決定論証拠検証 → Stage3 批判 → Stage4
+  敵対反証 → Stage5 純関数ゲート）を**メモリ実行**する。DB ハンドルは await を跨いで
+  保持しない（reviewer path と同方式）。finding 1 件あたり 4〜7 codex 呼び出し
+  （3 lens 提案 + 任意の 3 critique + 1 refute）。最悪上限は `JURY_BATCH_LIMIT × 7`
+  ≒ 175 呼び出し/invocation で、`FINDING_BATCH_LIMIT`(200) 以下に抑える。
+- **Phase 3（DB 再 open）**: 各 outcome について、(a) 生成された監査行
+  （proposals R1/R2・refutations・severity_audits）を **skip 有無に関わらず全て永続化**
+  （P2k）、(b) finding がまだ `unknown`+open か再検証（jury 中に他経路が分類した finding は
+  `classifyFinding` を skip し監査行だけ残す）、(c) auto_confirm の file-kind verified
+  citation を現 worktree に対し `verifyEvidence` で **再 stat**（path 消失/行範囲外なら
+  stale → auto_confirm 取り下げて escalate。spec/policy は immutable 扱い）、(d)
+  auto_confirm かつ fresh なら `classifyFinding`（reason に駆動した `deliberation_id` を
+  刻む: `jury auto_confirm (deliberation_id=<id>)`）、(e) severity 乖離は non-escalating
+  な severity packet を `resolved:true` 結果に添える、(f) escalate（split / refuter veto /
+  弱証拠 / stale）は bundled escalate packet に束ねる。DB を閉じる。
+
+**batch cap と次 invocation 持ち越し**: jury 候補が `JURY_BATCH_LIMIT` を超えると、この
+invocation では cap 件だけ処理し、結果に additive な `moreUnknownsPending:true` を立てる。
+orchestrator はこれを見て **当該 invocation のループを clean に halt**（escalate ではない）
+する。残りの `unknown` は次回 `orchestrate` invocation の convergence が再び
+`needs_classification` を返して処理する。これで per-invocation のコスト上界を 1 jury batch に
+抑える。classify runner の戻り型は `ClassifyRunnerResult`（`resolved:true`〔任意で
+`severityAuditPacket` / `moreUnknownsPending`〕／ `resolved:false`〔`decision:'escalate'` +
+`escalateReason` + consultant 級 `decisionPacket`〕）。MCP `hitch.classify_finding` /
+CLI `hitch classify` の standalone 呼び出しは reviewer/worktree/audit context を持たないため
+**jury を起動せず従来どおり heuristic + operator-manual**（fail-closed）。
+
 **rerun への finding 注入**: `rerun` 系 attempt（prior coding attempt が既に
 ある coder 実行）では、open in-scope finding（lifecycle が `open`/`reopened`/
 `escalated`）を集約して coder のゴール文言末尾に「Open in-scope findings to

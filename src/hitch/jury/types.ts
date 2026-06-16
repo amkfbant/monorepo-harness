@@ -294,7 +294,19 @@ export interface HitchDecisionPacket {
  * (Task D1). Exporting the type here keeps B1 typecheck fully green.
  */
 export type ClassifyRunnerResult =
-  | { resolved: true; severityAuditPacket?: HitchDecisionPacket }
+  | {
+      resolved: true;
+      severityAuditPacket?: HitchDecisionPacket;
+      /**
+       * Additive (codex#252-P2 / plan P2-i): set when jury candidates beyond
+       * `JURY_BATCH_LIMIT` remained UNPROCESSED this invocation. The orchestrator
+       * halts the loop cleanly on this flag so per-invocation cost is bounded to
+       * one jury batch; the next orchestrate invocation re-fires
+       * needs_classification and drains the remainder. A plain `resolved:true`
+       * (no flag) means the unknown set is fully drained.
+       */
+      moreUnknownsPending?: boolean;
+    }
   | {
       resolved: false;
       decision: "escalate";
