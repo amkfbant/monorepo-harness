@@ -19,6 +19,10 @@ import type { JuryLens, JuryStage } from "../../../../src/hitch/jury/types.js";
  * JSON from the map, letting RED tests inject per-lens different proposals
  * (e.g. a 1-lens-out_of_scope split), unanimity, vote-changes, parse garbage,
  * and per-stage refuter/critique verdicts.
+ *
+ * Stage4 refute is a SINGLE adversarial invocation, not per-lens — its prompt
+ * carries `[[stage:refute]]` but NO `[[lens:…]]` token. Such prompts route on
+ * the dedicated `refute` key (see `REFUTE_ROUTE_KEY` / `refuteResponse`).
  */
 
 /** The convention the jury prompts MUST follow so this runner can route. */
@@ -57,6 +61,17 @@ export function routingKey(stage: JuryStage, lens: JuryLens): string {
 }
 
 /**
+ * Routing key for the single (lens-less) Stage4 refute invocation. The refuter
+ * prompt has `[[stage:refute]]` but no `[[lens:…]]` token, so it routes here.
+ */
+export const REFUTE_ROUTE_KEY = "refute";
+
+/** Build a routing map entry for the single Stage4 refute invocation. */
+export function refuteResponse(routed: RoutedResponse): RoutingMap {
+  return { [REFUTE_ROUTE_KEY]: routed };
+}
+
+/**
  * A custom `CodexExecRunner` that routes each run() to the canned response for
  * the (stage, lens) tokens found in `input.prompt`. A prompt missing either
  * token, or one with no map entry, writes empty stdout and exits non-zero so a
@@ -71,10 +86,14 @@ export function routingRunner(map: RoutingMap): CodexExecRunner {
 
       const lens = extractLens(input.prompt);
       const stage = extractStage(input.prompt);
+      // Stage4 refute is a single lens-less invocation -> the dedicated key.
+      // propose/critique are per-lens and need BOTH tokens.
       const routed =
-        lens !== undefined && stage !== undefined
-          ? map[routingKey(stage, lens)]
-          : undefined;
+        stage === "refute"
+          ? map[REFUTE_ROUTE_KEY]
+          : lens !== undefined && stage !== undefined
+            ? map[routingKey(stage, lens)]
+            : undefined;
 
       if (routed === undefined) {
         // Mis-routed / unmapped: fail closed (non-zero exit, empty stdout).
