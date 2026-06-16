@@ -157,14 +157,18 @@ function seedFinding(
 }
 
 /** A single lens propose JSON with one file citation (verifiable + proximate). */
-function proposeJson(scope: "in_scope" | "out_of_scope", citation = "src/a.ts:1"): RoutedResponse {
+function proposeJson(
+  scope: "in_scope" | "out_of_scope",
+  citation = "src/a.ts:1",
+  severity: "P0" | "P1" | "P2" | "P3" | "info" = "P1",
+): RoutedResponse {
   return {
     stdout: JSON.stringify({
       proposedScope: scope,
       evidence: [{ citation, kind: "file", claim: "the change touches this line" }],
       refutationCondition: "the cited line does not actually relate to the finding",
       reasoning: "the lens reasons it is " + scope,
-      proposedSeverity: "P1",
+      proposedSeverity: severity,
     }),
   };
 }
@@ -190,27 +194,75 @@ function unanimousRouting(
   return map;
 }
 
-/** Build a split routing map (2 lenses in_scope, 1 out_of_scope). */
+/**
+ * Build a unanimous in_scope routing map that diverges on SEVERITY: all 3
+ * lenses agree in_scope (proximate verified evidence + refuter uphold so the
+ * scope auto_confirms) but unanimously propose a DIVERGENT severity. The
+ * advisory severity audit then sets `escalate:true` while the scope is still
+ * auto-confirmed (the D2b non-escalating severity packet path).
+ */
+function severityDivergedRouting(
+  jurySeverity: "P0" | "P1" | "P2" | "P3" | "info",
+): RoutingMap {
+  const map: RoutingMap = {};
+  for (const lens of JURY_LENSES) {
+    map[routingKey("propose", lens)] = proposeJson("in_scope", "src/a.ts:1", jurySeverity);
+  }
+  map[REFUTE_ROUTE_KEY] = {
+    stdout: JSON.stringify({
+      refuteVerdict: "uphold",
+      whyNotFalseConsensus: "the lenses cite real, proximate evidence",
+      refutationConditions: "if the cited file were unrelated",
+      reasoning: "adversarial check uphold",
+    }),
+  };
+  return map;
+}
+
+/**
+ * Build a VALID round-2 critique for one lens that targets every OTHER lens
+ * with a concrete (>=12 char, non-boilerplate), JP-enum-typed objection so the
+ * strict CritiqueSchema parses AND the anti-ritualization gate ACCEPTS it. The
+ * critique keeps the lens's scope vote so the final round stays genuinely split.
+ */
+function validCritique(
+  lens: (typeof JURY_LENSES)[number],
+  revisedScope: "in_scope" | "out_of_scope",
+): RoutedResponse {
+  const others = JURY_LENSES.filter((l) => l !== lens);
+  return {
+    stdout: JSON.stringify({
+      objections: others.map((target) => ({
+        targetLens: target,
+        type: "代替仮説",
+        objection:
+          `lens ${target} overlooks an alternative reading of the cited evidence`,
+      })),
+      citationRelevance: [
+        { citation: "src/a.ts:1", relevance: "supports my " + revisedScope + " view" },
+      ],
+      revisedScope,
+      voteChanged: false,
+    }),
+  };
+}
+
+/**
+ * Build a split routing map (2 lenses in_scope, 1 out_of_scope) whose round-2
+ * critiques are VALID under the strict CritiqueSchema (targetLens at each other
+ * lens, JP-enum type, concrete objection accepted by the anti-ritualization
+ * gate). The final round stays genuinely split (spec_adherence out_of_scope),
+ * so the escalate fires on a REAL scope split — not on 3x-inconclusive.
+ */
 function splitRouting(): RoutingMap {
   const map: RoutingMap = {};
   map[routingKey("propose", "correctness")] = proposeJson("in_scope");
   map[routingKey("propose", "scope_fit")] = proposeJson("in_scope");
   map[routingKey("propose", "spec_adherence")] = proposeJson("out_of_scope");
-  // split -> critique fires; route round-2 critique to keep the split.
+  // split -> critique fires; route round-2 VALID critiques that keep the split.
   for (const lens of JURY_LENSES) {
     const scope = lens === "spec_adherence" ? "out_of_scope" : "in_scope";
-    map[routingKey("critique", lens)] = {
-      stdout: JSON.stringify({
-        objections: [
-          { target: "other", type: "alternative", objection: "I disagree on scope" },
-        ],
-        citationRelevance: [
-          { citation: "src/a.ts:1", relevance: "supports my " + scope + " view" },
-        ],
-        revisedScope: scope,
-        voteChanged: false,
-      }),
-    };
+    map[routingKey("critique", lens)] = validCritique(lens, scope);
   }
   return map;
 }
@@ -242,6 +294,48 @@ function countRows(h: Harness, table: string, findingId: string): number {
       .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE finding_id = ?`)
       .get(findingId) as { n: number };
     return row.n;
+  } finally {
+    close();
+  }
+}
+
+/** Count persisted proposals at a given round with a given proposal_status. */
+function countProposalsByRoundStatus(
+  h: Harness,
+  findingId: string,
+  round: 1 | 2,
+  status: string,
+): number {
+  const { db, close } = openManagedDb({ dbPath: h.dbPath });
+  try {
+    const row = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM jury_classification_proposals
+         WHERE finding_id = ? AND round = ? AND proposal_status = ?`,
+      )
+      .get(findingId, round, status) as { n: number };
+    return row.n;
+  } finally {
+    close();
+  }
+}
+
+/** Read the persisted advisory severity audit row for a finding (or null). */
+function readSeverityAudit(
+  h: Harness,
+  findingId: string,
+): { audit_status: string; escalate_flag: number; jury_severity: string | null } | null {
+  const { db, close } = openManagedDb({ dbPath: h.dbPath });
+  try {
+    const row = db
+      .prepare(
+        `SELECT audit_status, escalate_flag, jury_severity
+         FROM jury_severity_audits WHERE finding_id = ?`,
+      )
+      .get(findingId) as
+      | { audit_status: string; escalate_flag: number; jury_severity: string | null }
+      | undefined;
+    return row ?? null;
   } finally {
     close();
   }
@@ -336,6 +430,16 @@ describe("classify runner — 3 phase deliberation (#230 D1)", () => {
     expect(readFinding(h, fid).scopeStatus).toBe("unknown");
     // audit rows STILL persisted (P2k): proposals exist for the split
     expect(countRows(h, "jury_classification_proposals", fid)).toBeGreaterThanOrEqual(3);
+    // The escalate must fire on a REAL scope split — the round-2 critiques are
+    // VALID (strict CritiqueSchema + anti-ritualization gate accept them), so
+    // all 3 round-2 proposals are `complete`, NONE inconclusive. (A malformed
+    // critique would silently make them inconclusive and escalate via 3x-
+    // inconclusive, masking that the split path is never exercised.)
+    expect(countProposalsByRoundStatus(h, fid, 2, "complete")).toBe(3);
+    expect(countProposalsByRoundStatus(h, fid, 2, "inconclusive")).toBe(0);
+    // The escalate reason reflects a scope split (in_scope + out_of_scope), not
+    // an all-incomplete set.
+    expect(r.escalateReason).toMatch(/in_scope\(2\), out_of_scope\(1\), unknown\(0\), incomplete\(0\)/);
   });
 
   it("P2k: a finding classified by another path mid-run skips classifyFinding but persists audit rows", async () => {
@@ -437,6 +541,89 @@ describe("classify runner — 3 phase deliberation (#230 D1)", () => {
     };
     await makeRunners(h, probing).classify("dbclosed");
     expect(openWriterDuringJury).toBe(true);
+  });
+
+  it("R14 bundled packet: a harness split + an operator-origin unknown fuse into ONE packet (plural kinds, per-finding origin, no hidden action)", async () => {
+    const h = makeHarness("bundle");
+    // ONE harness-origin (review) still-unknown finding the jury SPLITS, and ONE
+    // operator-origin (human) unknown finding — in the SAME hitch.
+    const harnessFid = seedFinding(h, "bundle", {
+      source: "review",
+      summary: "harness split finding",
+      filePath: "src/a.ts",
+      category: "core",
+    });
+    const operatorFid = seedFinding(h, "bundle", {
+      source: "human",
+      summary: "operator raised concern",
+    });
+    const r = await makeRunners(h, routingRunner(splitRouting())).classify("bundle");
+    expect(r.resolved).toBe(false);
+    if (r.resolved) throw new Error("unreachable");
+    const packet = r.recommendedNextAction.decisionPacket;
+    expect(packet).toBeDefined();
+    if (packet === undefined) throw new Error("unreachable");
+
+    // A single packet carries BOTH decision kinds (R14: plural decisionKinds).
+    expect(packet.decisionKinds).toContain("classify_scope");
+    expect(packet.decisionKinds).toContain("operator_origin_unknown");
+
+    // Per-finding origin is correct, and the harness one carries a deliberationId.
+    const harnessEntry = packet.findings.find((f) => f.findingId === harnessFid);
+    const operatorEntry = packet.findings.find((f) => f.findingId === operatorFid);
+    expect(harnessEntry?.origin).toBe("harness");
+    expect(operatorEntry?.origin).toBe("operator");
+    expect(harnessEntry?.deliberationId).toMatch(/^[0-9a-f]{64}$/);
+
+    // nextActions cover BOTH findings — neither side's manual action is hidden.
+    const actionsBlob = packet.nextActions.map((a) => a.action).join(" | ");
+    expect(actionsBlob).toContain(harnessFid);
+    expect(actionsBlob).toContain(operatorFid);
+
+    // Neither finding was machine-classified (both stay unknown, fail-closed).
+    expect(readFinding(h, harnessFid).scopeStatus).toBe("unknown");
+    expect(readFinding(h, operatorFid).scopeStatus).toBe("unknown");
+  });
+
+  it("severity diverged on an auto_confirm: scope is classified, severity is UNCHANGED, a non-escalating severity packet is surfaced (D2b)", async () => {
+    const h = makeHarness("sevdiv");
+    // Seed a finding with harness severity P2; the jury unanimously agrees
+    // in_scope (auto_confirm) but unanimously proposes a DIVERGENT severity P0.
+    const fid = seedFinding(h, "sevdiv", {
+      source: "review",
+      summary: "severity-diverged finding",
+      filePath: "src/a.ts",
+      category: "core",
+      severity: "P2",
+    });
+    const r = await makeRunners(
+      h,
+      routingRunner(severityDivergedRouting("P0")),
+    ).classify("sevdiv");
+
+    // The scope auto_confirmed -> resolved:true, finding classified in_scope.
+    expect(r.resolved).toBe(true);
+    if (!r.resolved) throw new Error("unreachable");
+    const f = readFinding(h, fid);
+    expect(f.scopeStatus).toBe("in_scope");
+    // Severity is NEVER auto-modified by the advisory audit (stays P2).
+    expect(f.severity).toBe("P2");
+
+    // The non-escalating severity divergence packet is surfaced (D2b).
+    expect(r.severityAuditPacket).toBeDefined();
+    const packet = r.severityAuditPacket;
+    if (packet === undefined) throw new Error("unreachable");
+    expect(packet.decisionKinds).toContain("severity_audit");
+    expect(packet.severityAudit?.status).toBe("diverged");
+    expect(packet.severityAudit?.escalate).toBe(true);
+    expect(packet.severityAudit?.harnessSeverity).toBe("P2");
+    expect(packet.severityAudit?.juryConsensus).toBe("P0");
+
+    // The persisted advisory severity audit row records the divergence too.
+    const audit = readSeverityAudit(h, fid);
+    expect(audit?.audit_status).toBe("diverged");
+    expect(audit?.escalate_flag).toBe(1);
+    expect(audit?.jury_severity).toBe("P0");
   });
 });
 

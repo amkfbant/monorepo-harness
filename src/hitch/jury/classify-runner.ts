@@ -15,6 +15,7 @@ import { buildSeverityAuditPacket } from "./decision-packet.js";
 import { persistAuditRows } from "./classify-persistence.js";
 import {
   buildBundledPacket,
+  finalRoundProposals,
   toPacketSeverityAudit,
   toSplitDeliberation,
   type EscalateBundle,
@@ -292,12 +293,17 @@ function stillUnknownOpen(finding: HitchFinding | null): finding is HitchFinding
  * CURRENT worktree. If ANY is now stale (path gone / line out of range) the
  * auto_confirm is withdrawn -> escalate. spec/policy citations are treated as
  * immutable (no recheck).
+ *
+ * Only the FINAL-round proposals are re-stat'd (the round the gate consumed).
+ * `outcome.proposals` also carries the superseded round-1 proposals; a stale
+ * round-1 citation that did NOT drive the auto_confirm must NOT withdraw it
+ * (design §P2a / codex#252-P2). Exported for the final-round-only unit test.
  */
-function fileCitationsStillFresh(
+export function fileCitationsStillFresh(
   outcome: DeliberationOutcome,
   ctx: EvidenceCheckContext,
 ): boolean {
-  for (const p of outcome.proposals) {
+  for (const p of finalRoundProposals(outcome)) {
     for (const e of p.evidence) {
       if (e.kind !== "file") continue;
       if (e.verified !== true) continue;
