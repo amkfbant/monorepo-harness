@@ -3,6 +3,7 @@ import { JuryClassificationProposalRepository } from "../../db/repositories/jury
 import { JuryClassificationRefutationRepository } from "../../db/repositories/jury-classification-refutations.js";
 import { JurySeverityAuditRepository } from "../../db/repositories/jury-severity-audits.js";
 import { gateInputSha256 } from "./ids.js";
+import { finalRoundProposals } from "./classify-packet.js";
 import type { DeliberationOutcome } from "./deliberate.js";
 import type { HitchFindingSeverity } from "../types.js";
 
@@ -92,7 +93,12 @@ export function persistAuditRows(
     auditStatus: audit.status,
     escalateFlag: audit.escalate,
     reasoning: audit.reasoning,
-    juryVotes: outcome.proposals
+    // FIX 4 (cross-cutting P2): jury_votes_json MUST be the SAME set the verdict
+    // (audit_status / jury_severity) was computed over. `buildSeverityAudit`
+    // (deliberate.ts) audits the FINAL-round votes, so persist the final-round
+    // severity votes here — NOT every round (a stale R1 vote would contradict
+    // the persisted verdict when critique changed the severity in R2).
+    juryVotes: finalRoundProposals(outcome)
       .filter((p) => p.proposedSeverity !== undefined)
       .map((p) => ({
         lens: p.lens,
