@@ -1,6 +1,9 @@
 import {
   JURY_LENSES,
   type JuryClassificationProposal,
+  type VerifiedJuryEvidence,
+  type DeliberationInput,
+  type DeliberationResult,
 } from "./types.js";
 
 /**
@@ -113,4 +116,141 @@ export function aggregateJuryVotes(
     decision: "split",
     reason: splitReason(proposals),
   };
+}
+
+/**
+ * Select the single target-round proposal set to hand to `aggregateJuryVotes`
+ * (design §0.1 R8 / plan PR2 / codex#252-P1). The deliberation gate is the only
+ * arbiter of state transitions, so this selection is **fail-closed**:
+ *
+ * - If ANY round-2 proposal exists, the target round is 2 and EVERY lens must
+ *   supply a round-2 proposal — a stale round-1 vote can never sneak into a
+ *   "unanimous" set.
+ * - Otherwise (critique skipped) the target round is 1.
+ *
+ * Missing lenses, duplicate (lens, round) rows, and partial-R2 mixes are NOT
+ * silently repaired here (no `r2 ?? r1`, no non-null assertion, no dedup): the
+ * resulting set simply has `length !== 3` or a non-distinct lens set, which
+ * `aggregateJuryVotes` deterministically classifies as `split` -> escalate.
+ */
+export function selectFinalRound(
+  proposals: readonly JuryClassificationProposal[],
+): JuryClassificationProposal[] {
+  const targetRound: 1 | 2 = proposals.some((p) => p.round === 2) ? 2 : 1;
+  const out: JuryClassificationProposal[] = [];
+  for (const lens of JURY_LENSES) {
+    out.push(...proposals.filter((p) => p.lens === lens && p.round === targetRound));
+  }
+  return out; // length!==3 / lens 非distinct は aggregateJuryVotes が split->escalate
+}
+
+/**
+ * Deterministic proximity filter (plan PR1 / design §0.1 R1 / codex#252-P1).
+ *
+ * `verifyEvidence` only proves a citation EXISTS; it cannot prove the citation
+ * is RELATED to the finding. This predicate AND-gates auto_confirm on the
+ * citation's path/domain matching the finding's metadata, so a verified but
+ * unrelated-domain citation yields `false` -> escalate (strictly safer):
+ *
+ * - `file` kind: requires `finding.filePath` AND the first two path segments
+ *   (after stripping any `:line` suffix) of the citation equal those of
+ *   `finding.filePath`. Missing `finding.filePath` -> `false` (fail-closed).
+ * - `spec`/`policy` kind: requires `finding.category` AND the citation's
+ *   token-split (`resolvedRef ?? citation` on `/[/#:.\s]+/`) to INCLUDE
+ *   `finding.category` as an exact token (NOT substring, so `api` does not
+ *   match `rapid-api`). Missing `finding.category` -> `false` (fail-closed).
+ */
+function evidenceProximityOk(
+  e: VerifiedJuryEvidence,
+  finding: DeliberationInput["finding"],
+): boolean {
+  const seg = (p: string) => (p.split(":")[0] ?? p).split("/").slice(0, 2).join("/");
+  if (e.kind === "file")
+    return finding?.filePath !== undefined && seg(e.citation) === seg(finding.filePath);
+  // spec/policy: codex#252-P1 — token-split, exact match (substring not allowed).
+  if (finding?.category === undefined) return false;
+  const tokens = (e.resolvedRef ?? e.citation).split(/[/#:.\s]+/).filter(Boolean);
+  return tokens.includes(finding.category);
+}
+
+/**
+ * The monotonic, fail-closed deliberation gate (design §4.2 / §0.1 R1/R8).
+ *
+ * This is the ONLY arbiter of jury-driven state transitions and the heart of
+ * the safety boundary. It calls `aggregateJuryVotes` — which is the authority
+ * (a unanimous verdict already subsumes lens-distinct + zero-inconclusive) —
+ * and AND-gates auto_confirm on verified+proximate evidence and an upheld
+ * refuter. A split can NEVER become auto_confirm regardless of the refuter; a
+ * refute / inconclusive / undefined (never-run) refuter vetoes. Deterministic:
+ * same input -> deep-equal output, no IO, no state mutation.
+ *
+ * `gateTrace.lensDistinct` / `noInconclusive` / `proximityOk` are computed
+ * INDEPENDENTLY for audit display only (plan P2-c/P2-d). The authoritative pass
+ * condition delegates to `aggregateJuryVotes` (`scopeUnanimous`) to avoid a
+ * double judgment.
+ */
+export function aggregateDeliberation(
+  input: DeliberationInput,
+): DeliberationResult {
+  const agg = aggregateJuryVotes(input.proposals);
+  // aggregateJuryVotes is THE authority (subsumes lensDistinct + noInconclusive).
+  const scopeUnanimous = agg.decision === "unanimous";
+  // gateTrace fields below are audit-only (P2-c): they are computed
+  // independently for display, but the pass logic delegates to scopeUnanimous.
+  const lensDistinct =
+    new Set(input.proposals.map((p) => p.lens)).size === 3 &&
+    input.proposals.length === 3;
+  const noInconclusive =
+    input.proposals.length > 0 &&
+    input.proposals.every(
+      (p) => p.proposalStatus === "complete" && p.proposedScope !== "unknown",
+    );
+  const allHaveVerifiedEvidence =
+    input.proposals.length > 0 &&
+    input.proposals.every(
+      (p) =>
+        p.evidence.length > 0 &&
+        p.evidence.every((e) => e.verified !== undefined) &&
+        p.evidence.some((e) => e.verified === true),
+    );
+  const proximityOk =
+    input.proposals.length > 0 &&
+    input.proposals.every((p) =>
+      p.evidence.some(
+        (e) => e.verified === true && evidenceProximityOk(e, input.finding),
+      ),
+    );
+  const refuterUpheld =
+    input.refuterVerdict === undefined
+      ? null
+      : input.refuterVerdict.refuteVerdict === "uphold";
+  const gateTrace = {
+    scopeUnanimous,
+    lensDistinct,
+    noInconclusive,
+    allHaveVerifiedEvidence,
+    proximityOk,
+    refuterUpheld,
+  };
+
+  // PR1/PR2/P2-d: auto_confirm IFF scopeUnanimous (aggregateJuryVotes authority)
+  // AND verified AND proximate AND refuter uphold. Otherwise escalate.
+  // `scopeUnanimous` (from aggregateJuryVotes) guarantees `agg.scope` is
+  // defined; the explicit `scope !== undefined` check makes that invariant
+  // type-visible (no non-null assertion) and keeps the gate fail-closed.
+  const scope = agg.scope;
+  if (
+    scopeUnanimous &&
+    scope !== undefined &&
+    allHaveVerifiedEvidence &&
+    proximityOk &&
+    refuterUpheld === true
+  )
+    return {
+      decision: "auto_confirm",
+      scope,
+      reason: `auto_confirm ${scope} (deliberation upheld)`,
+      gateTrace,
+    };
+  return { decision: "escalate", reason: `escalate: ${agg.reason}`, gateTrace };
 }
