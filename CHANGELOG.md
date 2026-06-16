@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.15](https://github.com/amkfbant/monorepo-harness/compare/v0.7.14...v0.7.15) (2026-06-16)
+
+
+### Features
+
+* **hitch:** [#230](https://github.com/amkfbant/monorepo-harness/issues/230) deliberation jury — 5-stage classification, v31 audit, MCDA decision packet ([#254](https://github.com/amkfbant/monorepo-harness/issues/254)) ([846db38](https://github.com/amkfbant/monorepo-harness/commit/846db38856287c0f951dd7f2aad5b5efd43efb6d))
+
 ## [0.7.14](https://github.com/amkfbant/monorepo-harness/compare/v0.7.13...v0.7.14) (2026-06-16)
 
 
