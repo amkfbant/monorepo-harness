@@ -849,3 +849,48 @@ escalate / 誤分類のイベント（runtime ログは `hitch_findings` / `hitc
 案 A/B の運用知見が溜まってから issue 化する。設計は
 [`design/applications.md`](./design/applications.md#案g)、前提は
 [`design/deliberation.md`](./design/deliberation.md)。
+
+## Multi-lens review — lens persona ライブラリ / 推奨 lens セットのプリセット化（#229 案B follow-up）
+
+#229（[案B] multi-lens review consensus、設計は [`design/proposals/design-229-multi-lens-consensus.md`](./design/proposals/design-229-multi-lens-consensus.md) 付録I）の Phase 1b では lens を reviewer `metadata_json.lens` の enum（correctness/security/regression/efficacy/spec_compliance + 任意 axis）+ 自由文 `lens_prompt` で宣言する最小機構までを in-scope とする。以下は **#229 外 follow-up**:
+
+- lens persona ライブラリ / 推奨 lens セット（correctness/security/regression/efficacy/spec_compliance）のプリセット化と CLI 配布。
+- lens を ReviewerRow 第一級カラムへ昇格 + migration（#229 は metadata_json 上の zod 検証に留め新 table/migration 不要）。
+- lens 多様性の定量評価・外部正解較正（lens が実際に盲点を割っているかの測定）。
+- lens を集約に反映する案（票多様性ボーナス / lens 重複減点）は `evaluateConsensus` 凍結契約の書き換えにあたり**恒久的に採用しない**（安全境界違反）。記録のみ。
+- lens 品質を LLM judge で検査する案も LLM 出力を gate にするため**恒久的に採用しない**。
+- dashboard / MCP への lens カバレッジ・N-proposal・lens provenance 露出（dashboard.md / mcp.md は単一 reviewer 形状前提）。
+- run 生成時の事前 lens 充足検証（`harness project check` 拡張。#229 は orchestrator preflight に委譲）。
+
+## Multi-lens review — 異モデル調達による真の多様性 / reviewer runner DI 改修（#229 案B follow-up）
+
+#229 Phase 1b は **同一 runner + lens prompt 変化**まで（同一基盤モデルの lens 別 prompt）。同一基盤モデルの複数インスタンスは Condorcet 的独立投票者にならず疑似多様性に留まる（[`design/deliberation.md`](./design/deliberation.md) §4 / #163）。真の独立性には異モデル調達が要るが、現状 `ReviewerType` に model field が無く `reviewerRunner` は単一 DI のため別 Phase:
+
+- `ReviewerType` / reviewer registry への model field 追加、reviewer ごとの runner 選択（DI 改修）。
+- 異モデル procurement のコスト計上単位（run_usage per-invocation は既存、N×model の wire は follow-up）。
+- 異モデル failure-domain 独立性の評価（C4 部分失敗の本格対応 = 研究 §8.3 失敗時回復性）。
+- 異モデル procurement 連動の独立性メトリクス（C2/PM-1 の declaredLensCardinality を超える実体測定）。
+
+## Refute verify（#229 Phase 2）— DSL 実装 / target binding / 儀式化対策 gate
+
+#229 の反証 verify は付録H H2 のとおり別 issue 切り出し推奨（Phase 2-0 の target binding data model が前提）。設計は #229 内で inline 確定（付録I.1.2/I.1.3）するが、実コードは Phase 2 follow-up:
+
+- refute output DSL の実装本体（refute 専用 schema、`{target_change_hash, refute_verdict, refute_reason, counter_evidence_ref, refute_condition, retract_condition}`、`refute_verdict ∈ {uphold, refute, inconclusive}`＝design-db §3.1 CHECK と統一）。target id は content-hash（`sha256(normalizeChangeText(change_text))`、FK なし、idx は advisory）に pin。
+- `normalizeChangeText` 純関数実装（NFC + CRLF→LF + 行内空白畳み + 全体 trim、case 折り/句読点除去なし）+ 単体テスト。
+- binding 決定論検証（未知 target / hash 不一致 = fail-closed reject、harness 再計算のみが権威）。
+- counter_evidence_ref が指す diff/test の実在検証は **refute layer 専用の決定論 verifier（run artifact の存在 + hunk/test 出力照合を直接確認）** を新設する。**close-condition kind の `artifact_exists` は external/ask_human 経路で決定論 auto-check でないため使わない**（`command`/`finding_policy` も diff hunk 存在確認には不適。design-229 G3 と統一）。
+- refute layer の participant 除外ロジック（disposition は **verdict 別**: `refute_verdict='refute'` の 必須フィールド欠落 / artifact 不在 / kind=none を集約前に無効化＝rejected(`evidence_none`)、`uphold`/`inconclusive` の kind=none は正当で passed。無効票は `review_refute_votes` に validation_status/reject_reason 付きで記録し `review_proposals` には入れない＝通常 consensus 汚染を防ぐ。participant 集計は uphold/refute のみ＝inconclusive は除外。design-db §3.1 / design-229 G3 と統一）。
+- refute reviewer agent variant（別 prompt, distinct registered reviewer_id）。lens 注入機構（reviewer-agent.ts の reviewerPrompt 拡張）を再利用。
+- reject された refute 票の入力監査記録の形式。
+- **M15（全 proposal を証拠の有無で減点/参加除外）は恒久的に #229 外**: `evaluateConsensus` のラベル集合濃度 quorum + 固定 tie-break（凍結集約契約）の書き換えにあたり安全境界違反。証拠規律は refute DSL に限定して畳む（採用しない理由としてここに記録）。
+
+## Multi-reviewer consensus — 部分失敗回復 / parallel dispatch / escalate 要約の露出（#229 案B follow-up）
+
+#229 Phase 1a/1b の運用品質まわりの follow-up（in-scope は逐次 dispatch + fail-closed + 決定論要約の payload 添付まで）:
+
+- 失敗 reviewer の bounded retry（C4。budget/timeout 設計が前提）。#229 は失敗→non-participant→fail-closed pending まで。
+- parallel N-reviewer dispatch（budget/timeout 設計が前提）。#229 は逐次。parallel 化時の部分失敗集約も別 Phase。
+- N-dispatch helper を orchestrator と reviewed-run で共有（#229 は reviewed-run を consensus 非対応で明示拒否）。
+- consensus escalate 要約（C3: decisiveVotes / requirementStatus / unresolvedBlocking / dissentingProposals / stallCycles）の dashboard・MCP 露出と cycle 跨ぎ差分ビュー。#229 は escalate payload（decision record metrics + recommendedNextAction.message）への決定論 projection 添付まで。
+- `review_consensus_summary` / `review_process_metrics` materialized table 化（可視化要件が固まってから。#229 は summary_json への同梱で migration 不要）。
+- 合議プロセス品質メトリクス（C2/PM-1）の厳格 gate 化（未宣言 requirement への escalate 拡大。#229 は宣言 requirement のみ warning）。
