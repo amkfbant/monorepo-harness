@@ -187,14 +187,15 @@ describe("v31 migration", () => {
     }
   });
 
-  it("ALL_TABLE_NAMES includes the 3 v31 tables and matches sqlite_master", () => {
+  it("ALL_TABLE_NAMES EXACTLY matches sqlite_master (R10/codex#252: catches hand-union drift in either direction)", () => {
     const db = freshDb();
     runMigrations(db);
     for (const t of V31_TABLES) expect(ALL_TABLE_NAMES).toContain(t);
-    const live = new Set(
-      (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map((r) => r.name),
-    );
-    for (const t of V31_TABLES) expect(live.has(t)).toBe(true);
+    const META = new Set(["schema_migrations"]); // sqlite_% は LIKE で除外
+    const live = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[])
+      .map((r) => r.name).filter((n) => !META.has(n)).sort();
+    const declared = [...new Set(ALL_TABLE_NAMES)].filter((n) => !META.has(n)).sort();
+    expect(declared).toEqual(live); // 完全集合一致: 宣言漏れ も 余分 も検出（3表 contains だけにしない）
   });
 
   it("idempotent: second runMigrations is a no-op", () => {
@@ -211,6 +212,20 @@ describe("v31 migration", () => {
     runMigrations(db);
     const row = db.prepare("SELECT name FROM schema_migrations WHERE version=31").get() as { name: string };
     expect(row.name).toBe("epic228_deliberation_v31");
+  });
+
+  it("R12/codex#252: a pre-existing v31 under a DIFFERENT name is detected, not silently skipped", () => {
+    // simulate #229/#231 having taken v31 first under another name:
+    // migrate up to v30, then seed schema_migrations(31,'other_v31') WITHOUT the #230 DDL.
+    const db = freshDb();
+    seedSchemaThroughV30(db);                 // helper: apply v1..v30 only
+    db.prepare("INSERT INTO schema_migrations(version, name, applied_at) VALUES (31,'other_v31', ?)").run("2026-01-01T00:00:00Z");
+    // runMigrations dedups by version → would no-op v31 and leave #230 tables ABSENT (silent skip).
+    // A1 GREEN adds a name-integrity check: applied v31 name must equal expected, else throw (fail-closed).
+    expect(() => runMigrations(db)).toThrow(/v31 .*name mismatch|conflicting migration/i);
+    // and the #230 tables must NOT exist (we did not apply our DDL under a foreign v31)
+    const t = db.prepare("SELECT name FROM sqlite_master WHERE name='jury_classification_proposals'").get();
+    expect(t).toBeUndefined();
   });
 });
 ```
@@ -726,9 +741,11 @@ design §2 + §0.1 R8/P2j。統括: propose → verifyEvidence(C1 内) → (条�
 
 **Files:** Modify `src/hitch/orchestrator-runners.ts`（classify runner）, `src/hitch/orchestrator-types.ts`; Test `tests/unit/hitch/orchestrator-runners.test.ts`
 
-design §7.1 + §0.1 R5(部分前進)/P2i(batch cap)/P2k(skip finding も永続化)。
+design §7.1 + §0.1 R5(部分前進)/P2i(batch cap)/P2k(skip finding も永続化)/P2a(証拠鮮度)。
 
-- [ ] **Step 1: RED** — operator-origin は heuristic も jury も通さず即 escalate packet 同梱（R5）/ harness-origin heuristic 確定は即書込・jury bypass / なお unknown を deliberate→auto_confirm は Phase3 で classifyFinding / split→ClassifyRunnerResult{resolved:false,decision:escalate,recommendedNextAction.decisionPacket} / Phase2 で DB 閉（proposer 呼出時に DB handle 解放）/ Phase3 stale finding skip だが**生成済み proposals/refutation/severity 行は永続化**（P2k）/ jury 専用 batch cap で残 unknown は次 cycle（P2i）。
+- [ ] **Step 1: RED** — operator-origin は heuristic も jury も通さず即 escalate packet 同梱（R5）/ harness-origin heuristic 確定は即書込・jury bypass / なお unknown を deliberate→auto_confirm は Phase3 で classifyFinding / split→ClassifyRunnerResult{resolved:false,decision:escalate,recommendedNextAction.decisionPacket} / Phase2 で DB 閉（proposer 呼出時に DB handle 解放）/ Phase3 stale finding skip だが**生成済み proposals/refutation/severity 行は永続化**（P2k）。
+- [ ] **Step 1b: RED — jury cap が真に defer する（codex#252-P2/P2i）** — 既存 classify runner は `resolved:true` だと orchestrator が **同一 invocation 内で loop 継続→再 classify** するため、単に `resolved:true` を返すだけでは cap が効かず全件 drain しうる。**`JURY_BATCH_LIMIT`（`orchestrator-runners.ts` 新定数・`FINDING_BATCH_LIMIT=200` 以下）に達したら、当該 invocation 内で jury を再入させない guard**（例: runner deps の `juryProcessedThisRun` フラグ / orchestrator 側 step guard）を持たせ、残 unknown は `resolved:true` で**当該 invocation を終え、次回 orchestrate invocation の convergence 再評価（needs_classification 再発火）で次 cap 分を処理**。RED:「unknown が cap 超 → 1 invocation の jury 呼び出しが cap 回で止まり、残 unknown が次 invocation で処理される（no-progress escalate に誤って落ちない）」。
+- [ ] **Step 1c: RED — Phase3 証拠鮮度（codex#252-P2/P2a）** — Stage2 で verified だった file:line citation が jury 実行中の worktree 変化で stale 化し得る。**auto_confirm 直前（Phase3）に file kind の verified citation を軽量 re-stat**（または run worktree revision を Stage2/Phase3 で pin）。stale（path 消失/行範囲外）なら auto_confirm せず escalate。spec/policy は immutable 扱い。RED:「Stage2 後に citation 先ファイルを変更 → Phase3 re-stat が検出 → escalate」。
 - [ ] **Step 2-4:** RED→GREEN→typecheck
 - [ ] **Step 5: Commit** `git commit -am "feat(hitch): classify runner 3-phase deliberation + audit persistence + partial-progress operator-origin (#230)"`
 
@@ -744,11 +761,13 @@ design §7.2 + §0.1 R3。`!r.resolved` のとき escalate return の前に `rec
 
 ### Task D2b: non-escalating severity packet 記録（R3・updateStatus:false）
 
-**Files:** Modify `src/hitch/orchestrator.ts`, `src/hitch/convergence-status.ts`(updateStatus option 確認); Test `tests/unit/hitch/orchestrator.test.ts`
+**Files:** Modify `src/hitch/orchestrator.ts`; Test `tests/unit/hitch/orchestrator.test.ts`, `tests/unit/roadmap/*rollup*`（course rollup 非干渉）
+> `recordConvergenceDecisionWithStatus` は `updateStatus?:boolean` を既に持つ（`convergence-status.ts:23,72`）。D2b は配線のみ（option 追加不要）。
 
 - [ ] **Step 1: RED** — `resolved:true ∧ severityAuditPacket≠null` のとき `recordConvergenceDecisionWithStatus({updateStatus:false, recommendedNextAction.decisionPacket})` で **hitch status 不変・packet 永続化**。scope unanimous + severity diverged で status が escalated にならないことを assert。
-- [ ] **Step 2-4:** RED→GREEN→typecheck（`recordConvergenceDecisionWithStatus` が `updateStatus:false` を受けない場合は option 追加）
-- [ ] **Step 5: Commit** `git commit -am "feat(hitch): non-escalating severity-audit packet recording (D2b) (#230)"`
+- [ ] **Step 1b: RED — course rollup 非干渉（codex#252-P2）** — course rollup は最新 `hitch_convergence_decisions` を読む。advisory severity 記録が rollup を blocking 化しないよう、**この record の `decision` 値を rollup が non-blocking 扱いする値**（例 既存 `advisory`/`needs_classification` 等の非 terminal・**`escalate`/`needs_fix` ではない**）にする。RED:「severity 乖離 packet を記録しても course rollup 状態（phase/course）が不変」。実装前に rollup が参照する decision enum を grep で確認し、non-blocking 値を確定。
+- [ ] **Step 2-4:** RED→GREEN→typecheck
+- [ ] **Step 5: Commit** `git commit -am "feat(hitch): non-escalating severity-audit packet recording, rollup-neutral (D2b) (#230)"`
 
 ### Task D3（任意）: convergence 直接 escalate に additive packet
 

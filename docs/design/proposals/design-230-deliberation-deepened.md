@@ -432,9 +432,10 @@ provenance footprint・DB-only（export 非対象・reset で消えない・back
 | 3 CRITIQUE | R2 再評価・批判 | `jury_classification_proposals`（round=2, vote_changed, critique_json） | 入力 |
 | 4 REFUTE | 敵対 verdict + 反証証拠 | **`jury_classification_refutations`（新表）** | 入力 |
 | severity | severity audit 票・判定 | `jury_severity_audits`（凍結どおり・advisory） | 入力 |
-| 5 AGGREGATE | 決定論ゲートの**判定** | auto_confirm→ `hitch_findings.scope_status/reason`／escalate→ `hitch_convergence_decisions.recommended_next_action.decisionPacket`（gateTrace 含む） | 判定 |
+| 5 AGGREGATE | 決定論ゲートの**判定** | auto_confirm→ `hitch_findings.scope_status/reason`（**reason に driving `deliberation_id` を含める**: `jury auto_confirm (deliberation_id=<id>)`）／escalate→ `hitch_convergence_decisions.recommended_next_action.decisionPacket`（gateTrace + finding 毎 deliberationId） | 判定 |
 
 Stage5 を入力テーブルに書かないのが安全境界の肝。auto_confirm 時の gateTrace は保存済み入力から決定論的に再計算可能。
+**codex#252-P2**: finding には複数 `deliberation_id` グループ（retry）が残り得るため、auto_confirm を駆動した `deliberation_id` を finding.reason に刻み、doctor の auto_confirm 正当性再検証（§6.3）が「どの deliberation が確定を駆動したか」を一意に辿れるようにする。
 
 ### 6.2 v31 テーブル（#230 分）
 
