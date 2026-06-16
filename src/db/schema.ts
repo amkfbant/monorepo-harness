@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 31;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1846,6 +1846,126 @@ export const MIGRATION_V30_STATEMENTS: readonly string[] = [
 /** v30 recreates run_usage in place; no latest-schema table name changes. */
 export const V30_TABLE_NAMES = [] as const;
 
+/**
+ * v31 — epic #228 / issue #230 deliberation jury audit tables.
+ *
+ * Three append-only INPUT tables that persist the 5-stage classification
+ * deliberation (Stage 1 propose / Stage 3 critique / Stage 4 refute / severity
+ * audit). LLM output lands here only; deterministic gates (`aggregateDeliberation`)
+ * drive every state transition. Per the frozen DB backbone all three tables
+ * declare ZERO foreign keys (referential integrity is the writer's concern;
+ * `assertFindingHitchConsistency` checks `finding_id -> hitch_id` at insert).
+ *
+ * `deliberation_id` is part of every business key so that a retry (which
+ * re-uses `prompt_sha256` but produces a new gate input) lands on a NEW row
+ * that always matches its decision packet (design §0.1 R15).
+ */
+export const MIGRATION_V31_STATEMENTS: readonly string[] = [
+  // ① jury_classification_proposals — Stage 1/3 proposals (round 1 = propose,
+  //    round 2 = post-critique re-vote). No FK.
+  `CREATE TABLE jury_classification_proposals (
+     proposal_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+     finding_id           TEXT NOT NULL,
+     hitch_id             TEXT NOT NULL,
+     run_id               TEXT,
+     lens                 TEXT NOT NULL
+       CHECK (lens IN ('correctness','scope_fit','spec_adherence')),
+     reviewer_id          TEXT NOT NULL,
+     proposed_scope       TEXT NOT NULL
+       CHECK (proposed_scope IN ('in_scope','out_of_scope','unknown')),
+     proposal_status      TEXT NOT NULL
+       CHECK (proposal_status IN ('complete','timeout','parse_error','inconclusive'))
+       DEFAULT 'complete',
+     confidence           REAL CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1),
+     reasoning            TEXT,
+     model                TEXT,
+     prompt_sha256        TEXT NOT NULL,
+     prompt_provenance_json TEXT,
+     usage_kind           TEXT,
+     usage_seq            INTEGER,
+     audit_dir_path       TEXT,
+     round                INTEGER NOT NULL DEFAULT 1 CHECK (round IN (1,2)),
+     evidence_json        TEXT,
+     refutation_condition TEXT,
+     uncertainty          TEXT,
+     vote_changed         INTEGER CHECK (vote_changed IN (0,1)),
+     critique_json        TEXT,
+     deliberation_id      TEXT NOT NULL,
+     created_at           TEXT NOT NULL
+   )`,
+  `CREATE UNIQUE INDEX jury_classification_proposals_dedup_idx
+     ON jury_classification_proposals(finding_id, lens, reviewer_id, round, prompt_sha256, deliberation_id)`,
+  `CREATE INDEX jury_classification_proposals_delib_idx
+     ON jury_classification_proposals(deliberation_id)`,
+  `CREATE INDEX jury_classification_proposals_finding_idx
+     ON jury_classification_proposals(finding_id, lens)`,
+  `CREATE INDEX jury_classification_proposals_hitch_idx
+     ON jury_classification_proposals(hitch_id, finding_id)`,
+
+  // ② jury_classification_refutations — Stage 4 adversarial refute. No FK.
+  `CREATE TABLE jury_classification_refutations (
+     refutation_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+     finding_id           TEXT NOT NULL,
+     hitch_id             TEXT NOT NULL,
+     run_id               TEXT,
+     target_scope         TEXT NOT NULL
+       CHECK (target_scope IN ('in_scope','out_of_scope')),
+     refute_verdict       TEXT NOT NULL
+       CHECK (refute_verdict IN ('uphold','refute','inconclusive')),
+     counter_evidence_json TEXT,
+     reasoning            TEXT,
+     reviewer_id          TEXT NOT NULL,
+     model                TEXT,
+     prompt_sha256        TEXT NOT NULL,
+     prompt_provenance_json TEXT,
+     usage_kind           TEXT,
+     usage_seq            INTEGER,
+     audit_dir_path       TEXT,
+     deliberation_id      TEXT NOT NULL,
+     created_at           TEXT NOT NULL
+   )`,
+  `CREATE UNIQUE INDEX jury_classification_refutations_dedup_idx
+     ON jury_classification_refutations(finding_id, target_scope, reviewer_id, prompt_sha256, deliberation_id)`,
+  `CREATE INDEX jury_classification_refutations_delib_idx
+     ON jury_classification_refutations(deliberation_id)`,
+  `CREATE INDEX jury_classification_refutations_finding_idx
+     ON jury_classification_refutations(hitch_id, finding_id)`,
+
+  // ③ jury_severity_audits — advisory severity audit votes + verdict. No FK.
+  `CREATE TABLE jury_severity_audits (
+     audit_id             INTEGER PRIMARY KEY AUTOINCREMENT,
+     finding_id           TEXT NOT NULL,
+     hitch_id             TEXT NOT NULL,
+     run_id               TEXT,
+     harness_severity     TEXT NOT NULL
+       CHECK (harness_severity IN ('P0','P1','P2','P3','info')),
+     jury_severity        TEXT
+       CHECK (jury_severity IN ('P0','P1','P2','P3','info')),
+     audit_status         TEXT NOT NULL
+       CHECK (audit_status IN ('aligned','diverged','inconclusive')),
+     escalate_flag        INTEGER NOT NULL DEFAULT 0 CHECK (escalate_flag IN (0,1)),
+     reasoning            TEXT,
+     model                TEXT,
+     prompt_sha256        TEXT NOT NULL,
+     usage_kind           TEXT,
+     usage_seq            INTEGER,
+     jury_votes_json      TEXT,
+     deliberation_id      TEXT NOT NULL,
+     created_at           TEXT NOT NULL
+   )`,
+  `CREATE UNIQUE INDEX jury_severity_audits_dedup_idx
+     ON jury_severity_audits(finding_id, prompt_sha256, deliberation_id)`,
+  `CREATE INDEX jury_severity_audits_finding_idx
+     ON jury_severity_audits(hitch_id, finding_id)`,
+] as const;
+
+/** Table names created by v31 (#230 deliberation jury audit tables). */
+export const V31_TABLE_NAMES = [
+  "jury_classification_proposals",
+  "jury_classification_refutations",
+  "jury_severity_audits",
+] as const;
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -1892,6 +2012,7 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V27_TABLE_NAMES,
   ...V28_TABLE_NAMES,
   ...V30_TABLE_NAMES,
+  ...V31_TABLE_NAMES,
 ];
 
 /** Tables intentionally removed by later migrations. */

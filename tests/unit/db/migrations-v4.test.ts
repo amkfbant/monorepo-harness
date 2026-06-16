@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { openDb } from "../../../src/db/connection.js";
-import { runMigrations, currentSchemaVersion } from "../../../src/db/migrations.js";
+import {
+  runMigrations,
+  currentSchemaVersion,
+  MIGRATIONS,
+} from "../../../src/db/migrations.js";
 import {
   MIGRATION_V1_STATEMENTS,
   MIGRATION_V2_STATEMENTS,
@@ -35,9 +39,10 @@ function v3Db(path: string): Database.Database {
       "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)",
     ).run();
     for (const v of [1, 2, 3]) {
+      const name = MIGRATIONS.find((m) => m.version === v)?.name ?? `v${v}`;
       db.prepare(
         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
-      ).run(v, `v${v}`, "2026-05-22T00:00:00Z");
+      ).run(v, name, "2026-05-22T00:00:00Z");
     }
   });
   tx();

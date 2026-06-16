@@ -31,6 +31,7 @@ import {
   MIGRATION_V28_STATEMENTS,
   MIGRATION_V29_STATEMENTS,
   MIGRATION_V30_STATEMENTS,
+  MIGRATION_V31_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -196,6 +197,11 @@ export const MIGRATIONS: readonly Migration[] = [
     name: "run-usage-per-invocation-v30",
     statements: MIGRATION_V30_STATEMENTS,
   },
+  {
+    version: 31,
+    name: "epic228_deliberation_v31",
+    statements: MIGRATION_V31_STATEMENTS,
+  },
 ];
 
 /** The newest schema version this harness can produce. */
@@ -247,6 +253,46 @@ export interface MigrateResult {
 }
 
 /**
+ * Fail-closed migration-name integrity check (design §0.1 R12 / codex#252).
+ *
+ * `runMigrations` dedups by version only, so if a different branch landed the
+ * same version number under a different name, our migration would be silently
+ * skipped (`version-only` no-op) and its DDL never applied. Before applying any
+ * migration we verify that, for every already-applied version that this harness
+ * also defines, the stored name equals the expected name. A mismatch means a
+ * conflicting migration took the slot — throw rather than silently skip.
+ *
+ * Returns early when `schema_migrations` is absent (a fresh DB has nothing to
+ * validate). Stored versions this harness does not know about are ignored
+ * (handled separately by the "version newer than supported" guard).
+ */
+export function assertMigrationNameIntegrity(db: Database.Database): void {
+  const present = db
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+    )
+    .get();
+  if (present === undefined) return;
+  const expected = new Map<number, string>(
+    MIGRATIONS.map((m) => [m.version, m.name]),
+  );
+  const rows = db
+    .prepare("SELECT version, name FROM schema_migrations")
+    .all() as { version: number; name: string }[];
+  for (const row of rows) {
+    const want = expected.get(row.version);
+    if (want === undefined) continue;
+    if (row.name !== want) {
+      throw new DbError(
+        `migration v${row.version} name mismatch / conflicting migration: ` +
+          `applied=${row.name} expected=${want}. A different migration took ` +
+          `this version slot; resolve the conflict before migrating (fail-closed)`,
+      );
+    }
+  }
+}
+
+/**
  * Apply every migration newer than the DB's current version.
  *
  * Idempotent and concurrency-safe: each migration is applied inside an
@@ -266,6 +312,7 @@ export function runMigrations(db: Database.Database): MigrateResult {
         `(${LATEST_SCHEMA_VERSION}); upgrade the harness`,
     );
   }
+  assertMigrationNameIntegrity(db);
   const insert = db.prepare(
     "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
   );
