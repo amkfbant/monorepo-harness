@@ -145,6 +145,35 @@ export function selectFinalRound(
 }
 
 /**
+ * Deterministic "weak evidence" predicate — the Stage3 critique trigger
+ * (plan P2-b/P2-c / design §0.1 R9 / §2 Stage3). Pure: same input -> same
+ * output, no IO, no state.
+ *
+ * EXACT RULE (pinned): the evidence is *weak* (-> trigger critique) IFF ANY
+ * lens has FEWER THAN ONE verified evidence — i.e. some proposal has no
+ * `evidence` entry with `verified === true`. A lens that did not produce a
+ * usable proposal (no verified evidence) is by definition weak. The threshold
+ * is exactly `< 1` per lens; do NOT loosen it to a batch-wide count.
+ *
+ * The Stage3 caller fires critique when R1 is `split` OR (R1 unanimous AND
+ * `isWeakEvidence`). Convergence after critique never auto-confirms — that is
+ * the gate's job (Stage5).
+ *
+ * IMPORTANT (single source of truth): the future doctor `auto_confirm`
+ * re-verification (plan A3 / P2-b — which recomputes `critiqueRan` to audit a
+ * jury-confirmed finding) MUST import THIS SAME function so the deterministic
+ * critique-trigger decision is reproduced identically. Changing the rule here
+ * changes both the live trigger and the audit; keep them coupled.
+ */
+export function isWeakEvidence(
+  proposals: readonly JuryClassificationProposal[],
+): boolean {
+  return proposals.some(
+    (p) => !p.evidence.some((e) => e.verified === true),
+  );
+}
+
+/**
  * Deterministic proximity filter (plan PR1 / design §0.1 R1 / codex#252-P1).
  *
  * `verifyEvidence` only proves a citation EXISTS; it cannot prove the citation
