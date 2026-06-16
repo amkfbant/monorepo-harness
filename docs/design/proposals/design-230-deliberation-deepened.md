@@ -375,10 +375,10 @@ design-230 §3.3 の rich フィールドと v3 deliberation フィールドを�
 ```ts
 interface HitchDecisionPacket {
   packetVersion: 2;
-  deliberationId: string;                    // R3/R4: 各 deliberation 実行を packet↔DB 入力行で束ねる
   decisionKinds: Array<'classify_scope' | 'severity_audit' | 'operator_origin_unknown'>; // R14: plural（mixed batch で複数 kind を保持）
   findings: Array<{ findingId; summary; detail?; filePath?; severity?; scopeStatus?;
-    origin?: 'harness' | 'operator' }>;      // R14: finding 毎の origin（どの action がどの origin か失わない）
+    origin?: 'harness' | 'operator';         // R14: finding 毎の origin（どの action がどの origin か失わない）
+    deliberationId: string }>;               // codex#252-P1: finding 毎の deliberation linkage（bundled packet で各 finding を正しく DB 入力行に対応付け。packet 単一 ID では複数 deliberation を束ねられない）
   recommendation: { action: 'classify_manually' | 'review_split' | 'review_severity'; rationale: string };
   evaluationAxes: Array<{ axis: 'correctness'|'scope_fit'|'spec_adherence';
     lensVotes: Array<{ lens; scope?; proposalStatus?; reasoning?; confidence?;

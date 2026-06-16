@@ -587,7 +587,10 @@ export function selectFinalRound(proposals: readonly JuryClassificationProposal[
 function evidenceProximityOk(e: VerifiedJuryEvidence, finding: DeliberationInput["finding"]): boolean {
   const seg = (p: string) => p.split(":")[0].split("/").slice(0, 2).join("/");
   if (e.kind === "file") return finding?.filePath !== undefined && seg(e.citation) === seg(finding.filePath);
-  return finding?.category !== undefined && (e.resolvedRef ?? e.citation).includes(finding.category); // spec/policy
+  // spec/policy: codex#252-P1 — token 分割して完全一致（substring 不可: "api" が "rapid-api" に誤マッチしない）
+  if (finding?.category === undefined) return false;
+  const tokens = (e.resolvedRef ?? e.citation).split(/[/#:.\s]+/).filter(Boolean);
+  return tokens.includes(finding.category);
 }
 
 export function aggregateDeliberation(input: DeliberationInput): DeliberationResult {
