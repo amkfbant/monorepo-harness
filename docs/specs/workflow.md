@@ -1031,6 +1031,17 @@ orchestrator はこれを見て **当該 invocation のループを clean に ha
 CLI `hitch classify` の standalone 呼び出しは reviewer/worktree/audit context を持たないため
 **jury を起動せず従来どおり heuristic + operator-manual**（fail-closed）。
 
+**escalate packet の永続化（WI-9b）**: classify runner が `resolved:false`（jury split /
+refuter veto / 弱証拠 / stale）を返したとき、orchestrator は escalate outcome を return する
+**前に** `recordConvergenceDecisionWithStatus({ decision:'escalate', reason:escalateReason,
+metrics（当該 iteration の convergence metrics を再利用）, recommendedNextAction（consultant 級
+`decisionPacket` を含む）, createdBy })` を呼んで decision を `hitch_convergence_decisions` に
+永続化する。これで packet（jury reasoning / next actions）が operator 向けに残る（dashboard /
+escalation log）。status は既定の `updateStatus:true` で `escalated` に同期する（この escalate は
+status を倒すべき経路なので正しい）。状態遷移は harness のみ: LLM 出力が status を直接書かず、
+この決定論的な record が唯一の sync 経路。`recommendedNextAction` の `kind`/`message`/`findingIds`
+は後方互換のため常時 populate される。
+
 **rerun への finding 注入**: `rerun` 系 attempt（prior coding attempt が既に
 ある coder 実行）では、open in-scope finding（lifecycle が `open`/`reopened`/
 `escalated`）を集約して coder のゴール文言末尾に「Open in-scope findings to

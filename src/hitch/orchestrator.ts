@@ -1,6 +1,9 @@
 import { withManagedDb } from "../db/managed-connection.js";
 import { HitchRepository } from "./repository.js";
-import { evaluateConvergenceAndRecordStatus } from "./convergence-status.js";
+import {
+  evaluateConvergenceAndRecordStatus,
+  recordConvergenceDecisionWithStatus,
+} from "./convergence-status.js";
 import { decideOrchestratorAction } from "./orchestrator-dispatch.js";
 import { findTransientLeaseCause } from "../workspace/db-domain-lock.js";
 import type {
@@ -118,7 +121,28 @@ export class HitchOrchestrator {
           const r = await input.runners.classify(input.hitchId);
           steps.push({ step: i, decision: finalDecision, action: "classify", detail: String(r.resolved) });
           if (!r.resolved) {
-            return { hitchId: input.hitchId, outcome: "escalated", steps, finalDecision, escalateReason: r.escalateReason ?? "classification unresolved" };
+            // (#230 / WI-9b) Persist the consultant-grade decision packet to
+            // `hitch_convergence_decisions` BEFORE returning the escalation, so
+            // the packet (jury reasoning / next actions) survives for the
+            // operator (dashboard, escalation log). Reuse THIS iteration's
+            // convergence metrics. The status syncs to `escalated` (default
+            // updateStatus:true) — correct here. State transitions stay
+            // harness-only: the LLM never writes status; this deterministic
+            // record is the only sync.
+            const escalateReason =
+              r.escalateReason ?? "classification unresolved";
+            withManagedDb({ dbPath: this.opts.dbPath }, (db) => {
+              recordConvergenceDecisionWithStatus({
+                repository: new HitchRepository(db),
+                hitchId: input.hitchId,
+                decision: "escalate",
+                reason: escalateReason,
+                metrics: convergence.metrics,
+                recommendedNextAction: r.recommendedNextAction,
+                createdBy: input.createdBy,
+              });
+            });
+            return { hitchId: input.hitchId, outcome: "escalated", steps, finalDecision, escalateReason };
           }
           // (#230 / codex#252-P2) A jury batch was capped this invocation
           // (`moreUnknownsPending`): halt the loop cleanly so per-invocation cost

@@ -7,6 +7,7 @@ import { runMigrations } from "../../../src/db/migrations.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
 import { HitchOrchestrator } from "../../../src/hitch/orchestrator.js";
 import type { OrchestratorRunners } from "../../../src/hitch/orchestrator-types.js";
+import type { HitchDecisionPacket } from "../../../src/hitch/jury/types.js";
 import { RunFinalizedError } from "../../../src/core/workflow-runner.js";
 import {
   DomainLockBusyError,
@@ -621,5 +622,155 @@ describe("HitchOrchestrator", () => {
     });
     expect(calls).toContain("defer");
     expect(result.steps.some((s) => s.action === "defer")).toBe(true);
+  });
+
+  it("persists the decision packet before a classify escalate (WI-9b #230)", async () => {
+    const dbPath = freshDbPath();
+    let findingId = "";
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new HitchRepository(db);
+      repo.createSession({
+        hitchId: "g-classify-escalate",
+        title: "Classify escalate",
+        projectId: "demo",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+      repo.createAttempt({
+        hitchId: "g-classify-escalate",
+        attemptType: "implement",
+      });
+      // The implement run was reviewed — record the cycle so convergence routes
+      // to needs_classification (the unknown-scope finding below) rather than a
+      // pending review (#104).
+      const cycle = repo.startReviewCycle({
+        hitchId: "g-classify-escalate",
+        cycleNumber: 1,
+        reviewMode: "initial",
+      });
+      repo.completeReviewCycle({ cycleId: cycle.cycleId, findingsNew: 1 });
+      // An OPEN, unknown-scope finding → convergence returns needs_classification
+      // → orchestrator dispatches the classify action.
+      findingId = repo.upsertFinding({
+        hitchId: "g-classify-escalate",
+        source: "review",
+        sourceCycleId: cycle.cycleId,
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "unknown",
+        summary: "unknown-scope finding",
+      }).finding.findingId;
+      // Fresh close-check LAST so its evidence is not stale relative to the
+      // finding mutation.
+      repo.recordCloseCheck({
+        hitchId: "g-classify-escalate",
+        conditionId: "typecheck",
+        status: "passed",
+        checkedBy: "test",
+      });
+    } finally {
+      close();
+    }
+
+    // A consultant-grade escalate packet carried on the runner's
+    // recommendedNextAction; the orchestrator must persist it BEFORE returning.
+    const decisionPacket: HitchDecisionPacket = {
+      packetVersion: 2,
+      decisionKinds: ["classify_scope"],
+      findings: [
+        {
+          findingId,
+          summary: "unknown-scope finding",
+          deliberationId: "delib-classify-escalate",
+          origin: "harness",
+        },
+      ],
+      recommendation: {
+        action: "classify_manually",
+        rationale: "jury split — operator must classify",
+      },
+      evaluationAxes: [],
+      deliberation: {
+        critiqueRan: false,
+        refuter: null,
+        gateTrace: {
+          scopeUnanimous: false,
+          lensDistinct: true,
+          noInconclusive: true,
+          allHaveVerifiedEvidence: true,
+          proximityOk: true,
+          refuterUpheld: null,
+        },
+      },
+      rejectedProposals: [],
+      minorityView: null,
+      riskFlags: [],
+      unvalidatedAssumptions: [],
+      nextActions: [
+        {
+          owner: "operator",
+          action: "classify the unknown-scope finding",
+          verificationMethod: "review jury reasoning in the packet",
+        },
+      ],
+    };
+    const runners: OrchestratorRunners = {
+      ...fakeRunners([]),
+      classify: async () => ({
+        resolved: false,
+        decision: "escalate",
+        escalateReason: "jury split — manual classification required",
+        recommendedNextAction: {
+          kind: "classify_findings",
+          findingIds: [findingId],
+          message: "Classify the unknown-scope finding manually.",
+          decisionPacket,
+        },
+      }),
+    };
+
+    const result = await new HitchOrchestrator({ dbPath }).run({
+      hitchId: "g-classify-escalate",
+      runners,
+      maxSteps: 5,
+      createdBy: "worker",
+    });
+
+    expect(result.outcome).toBe("escalated");
+    expect(result.escalateReason).toBe(
+      "jury split — manual classification required",
+    );
+
+    const { db: db2, close: close2 } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db2);
+      // Status synced to escalated (recordConvergenceDecisionWithStatus default
+      // updateStatus:true).
+      expect(repo.requireSession("g-classify-escalate").status).toBe(
+        "escalated",
+      );
+      // The escalate decision row was persisted and its recommended_next_action
+      // JSON round-trips to include the full decisionPacket.
+      const escalateRows = repo
+        .listDecisions("g-classify-escalate")
+        .filter((d) => d.decision === "escalate");
+      expect(escalateRows.length).toBeGreaterThanOrEqual(1);
+      const persisted = escalateRows[escalateRows.length - 1];
+      const action = persisted.recommendedNextAction;
+      expect(action).not.toBeNull();
+      // kind/message/findingIds populated for back-compat.
+      expect(action?.kind).toBe("classify_findings");
+      expect(action?.message).toBe(
+        "Classify the unknown-scope finding manually.",
+      );
+      expect(action?.findingIds).toEqual([findingId]);
+      // Packet round-trips through the JSON column.
+      expect(action?.decisionPacket).toEqual(decisionPacket);
+    } finally {
+      close2();
+    }
   });
 });
