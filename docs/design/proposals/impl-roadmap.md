@@ -7,7 +7,16 @@
 # 統合実装ロードマップ — epic #228 AI 合議制（DB → 案A → 案B → 案C）
 
 > 計画のみ。実装は別セッションが **dev クローンの `origin/main` ベース隔離ブランチ**で TDD（RED→GREEN→REFACTOR）。
-> 駆動は ops ハーネス（v0.7.10 pin）。base ref 裏取り済み: `SCHEMA_VERSION=30`、migration head=v30、`run_usage` PK=`(run_id,kind,seq)`、`phases.review_state_json` は specApproval 専用書込経路が無い（既存 writer は note 用 `setNote()` のみ・CAS なし）、`ALL_TABLE_NAMES` は手動 union（`V30_TABLE_NAMES=[]`）。
+> 駆動は ops ハーネス。base ref（当時）: `SCHEMA_VERSION=30`、migration head=v30、`run_usage` PK=`(run_id,kind,seq)`、`phases.review_state_json` は specApproval 専用書込経路が無い（既存 writer は note 用 `setNote()` のみ・CAS なし）、`ALL_TABLE_NAMES` は手動 union。**現 main = v0.7.15（`SCHEMA_VERSION=31`、migration head=v31）。着手時は HEAD で file:line を再取得**。
+>
+> **⚠️ 版番号同期（2026-06-17・最重要）**: 本ロードマップは「DB 基盤(v31 単一ブロック) → 案A(#230) → 案B(#229) → 案C(#231)」を
+> 前提に書かれているが、**実際は #230(案A) が先に v31 を単独出荷・リリース済み（0.7.15）**＝実装順が逆転した。**shipped v31 = #230 jury 3表のみ**
+> （`jury_classification_proposals` / `jury_classification_refutations` / `jury_severity_audits`）。確定（design-230-deepened R12:124/511/661）:
+> **#229 `review_refute_votes` = v32 / #231 `phases.review_state_version` = v33**（逐次・別 migration）。**出荷済み v31 statements は不可侵**
+> （後から CREATE/ALTER を足すと適用済み DB を壊す）。よって本書中の「SP-1 が v31 で 3表＋phases ALTER を作る」「共有 v31 単一ブロック」は無効
+> で、**SP-1 は #229 分=v32 / #231 分=v33 に分割**する。さらに **SP-3D の orphan/hitch_id doctor check は #230 が既に出荷済**
+> （`src/db/jury-doctor-checks.ts` の `jury.orphan_rows` / `jury.hitch_mismatch`）なので、#229 SP-3D は **v32 `review_refute_votes` 用の
+> check のみ**に rescope（jury 表ぶんの再実装は DoctorCheck id 重複）。
 
 ## 1. 背景
 
@@ -15,10 +24,10 @@ epic #228 の3 sub-issue は LLM 多体の **提案・票・分類・spec 候補
 
 ## 2. 実装順（人間批准済み）: DB 基盤(v31) → 案A(#230) → 案B(#229) → 案C(#231)
 
-DB 永続化（v31 単一ブロック + repository + review_state_json 書込経路）が**3案の下回り**。各案は共有成果物（後述）に dependsOn し、所有 SP は1つに集約する（v29↔v30 renumber 痛の再発回避）。
+DB 永続化（migration + repository + review_state_json 書込経路）が**3案の下回り**。各案は共有成果物（後述）に dependsOn し、所有 SP は1つに集約する。**※ 版番号は逐次に確定済み（冒頭バナー参照）: v31=#230（出荷済）/ v32=#229（`review_refute_votes`）/ v33=#231（`review_state_version`）。** 旧「単一 v31 ブロック」は #230 の先行出荷で不成立。
 
 ```
-大Phase 0 (DB 基盤)  : SP-1 → SP-2 → SP-3 → SP-3D   [v31 migration / refute+jury precomputed-hash repo / review_state CAS / consistency-doctor]
+大Phase 0 (DB 基盤)  : SP-1 → SP-2 → SP-3 → SP-3D   [v32 refute migration(#229) / v33 phases ALTER(#231) ※v31 jury は #230 出荷済 / refute+jury precomputed-hash repo / review_state CAS / consistency-doctor(refute 用のみ追加)]
 大Phase A (#230)     : SP-4 → SP-5 → SP-6 → SP-7 → SP-8 → SP-9
 大Phase B (#229 1a)  : SP-10 → SP-11 → SP-12 → SP-13 → SP-14
 大Phase B' (#229 1b) : SP-15
@@ -32,9 +41,9 @@ DB 永続化（v31 単一ブロック + repository + review_state_json 書込経
 
 | 成果物 | 所有 SP | consumer |
 |---|---|---|
-| **v31 migration 単一ブロック**（`jury_classification_proposals` / `jury_severity_audits` / `review_refute_votes` 3表 + `phases.review_state_version` ALTER）。`SCHEMA_VERSION→31`、`V31_TABLE_NAMES` を `ALL_TABLE_NAMES` union に append | **SP-1** | 案A(jury2表)/案B-P2(refute表)/案C(review_state_version) |
+| **migration（逐次）**: v31=#230 jury 3表（**出荷済・不変**）/ **v32=#229 `review_refute_votes` CREATE** / **v33=#231 `phases.review_state_version` ALTER**。各版で `SCHEMA_VERSION` bump + `Vxx_TABLE_NAMES` を `ALL_TABLE_NAMES` union に append | **SP-1** | 案B-P2(refute表=v32)/案C(review_state_version=v33) ※案A jury は出荷済 |
 | **provenance footprint 規約**（run_id/hitch_id/finding_id/reviewer_id/model/prompt_sha256/prompt_provenance_json/usage_kind/usage_seq）+ `(run_id,usage_kind,usage_seq)` で run_usage 一意 JOIN（FK 張らない） | **SP-1**（DDL）+ **SP-19/docs** | 全合議行 |
-| **consistency-doctor 整合 check**（orphan proposal/vote/audit / `hitch_id` 整合 = stored vs finding_id→join。FK を張らない設計の必須セット。design-db-persistence §3.4/§8-#8） | **SP-3D**（orphan + hitch_id 整合 = DB 基盤内）+ **SP-16**（refute hash 再計算 check を拡張） | DB 基盤の append-only 監査保証 |
+| **consistency-doctor 整合 check**（orphan / `hitch_id` 整合 = stored vs finding_id→join。FK を張らない設計の必須セット。design-db-persistence §3.4/§8-#8）。**※ jury 3表ぶんは #230 が出荷済**（`jury-doctor-checks.ts`: `jury.orphan_rows` / `jury.hitch_mismatch`）。#229 は **v32 `review_refute_votes` 用 check のみ新設**（重複回避） | **SP-3D**（refute 表の orphan + hitch_id 整合）+ **SP-16**（refute hash 再計算 check を拡張） | DB 基盤の append-only 監査保証 |
 | **refute target binding / hash version**（`normalizeChangeText`/`targetChangeHash`/`verifyRefuteBinding` + normalize version 方針）。**SP-2 は precomputed `target_change_hash` の append/list/dedupe のみ**で binding 検証は持たない | **SP-16** | 案B-P2 refute(SP-17/SP-18)、SP-3D の hash 再計算 check 拡張 |
 | **`review_state_json` CAS 書込経路**（`updateReviewState()`/`recordSpecApproval()`、`review_state_version` で `db.transaction().immediate()` + CAS） | **SP-3** | 案C(specApproval) |
 | **`ReviewRule` 解決**（`compileProfileReviewRule`/`resolveEffectiveRule(profile?)`/`ReviewRuleCompileError`、`reviewRuleResolution` 全入口 thread） | **SP-10** | 案B-1a 本体（案A は jury で consensus rule 不要なので消費しない） |
@@ -46,7 +55,7 @@ DB 永続化（v31 単一ブロック + repository + review_state_json 書込経
 
 | SP | title | 大Phase | dependsOn |
 |---|---|---|---|
-| SP-1 | v31 migration 単一ブロック（3表 + phases ALTER）+ ALL_TABLE_NAMES union | 0 DB | — |
+| SP-1 | 逐次 migration（v32 #229 `review_refute_votes` / v33 #231 phases ALTER。v31 jury は #230 出荷済・不変）+ ALL_TABLE_NAMES union | 0 DB | — |
 | SP-2 | refute votes / jury 2表 repository（footprint・precomputed target_change_hash の append/list/dedupe・存在/一致 hard 検査）。**binding 検証/hash version は持たず SP-16 に移譲** | 0 DB | SP-1 |
 | SP-3 | review_state CAS 書込経路（updateReviewState/recordSpecApproval、bounded retry N→typed conflict error） | 0 DB | SP-1 |
 | SP-3D | consistency-doctor 整合 check（orphan proposal/vote/audit + hitch_id 整合）。refute hash 再計算は SP-16 後拡張 | 0 DB | SP-2 |
@@ -90,7 +99,7 @@ DB 永続化（v31 単一ブロック + repository + review_state_json 書込経
 
 ## 7. リスク
 
-- **共有 v31 の merge 順**: 3案が v31 を共有。SP-1 が必ず最初に land（RESERVED コメント + PR merge 順強制）。番号衝突点を 1 箇所に集約。
+- **逐次 migration の merge 順**: 旧「3案が v31 を共有」は #230 の v31 単独出荷で不成立。**v31=#230（出荷済）→ v32=#229 → v33=#231** の順で land し、同一 version 番号で 2 branch 同時 open を禁止（merge order ゲート）。#229/#231 着手前に未確定 version を予約し番号衝突を防ぐ。**出荷済み v31 statements は不可侵**。
 - **v31 表先行 → LLM verdict→状態直結の誘惑**: jury 提案表（SP-1/SP-2）が決定論ゲート（SP-4 aggregateJuryVotes）より先に land すると安全境界が崩れる。**SP-4 land まで提案表に書く配線（SP-8）を入れない**。
 - **review_state CAS 競合解決ポリシー**（DB v2 Q4）: **bounded retry N 回（read→merge→retry）、超過で typed conflict error（後勝ち禁止）に確定**。SP-3 の acceptance に機械検証可能な形で固定（リトライ上限/typed error）。
 - **consistency-doctor を follow-up にしない**: FK を張らない設計（P1-1）は doctor による orphan/hitch_id 整合 check とセット（design-db-persistence §3.4/§8-#8）。SP-2 直後の **SP-3D で orphan + hitch_id 整合を DB 基盤内**に置き、refute hash 再計算 check は SP-16 で拡張する。
@@ -107,10 +116,10 @@ DB 永続化（v31 単一ブロック + repository + review_state_json 書込経
 
 | SP | title | traces | dependsOn | files | 受け入れ(完了定義) |
 |---|---|---|---|---|---|
-| SP-1 | v31 migration 単一ブロック（jury 2表 + review_refute_votes + phases.review_state_version ALTER）+ ALL_TABLE_NAMES union | design-db-persistence §2.1/§3.1/§3.2/§3.4/§4 + DB v2 changeLog P1-1/P1-2/P2-1/P2-2/P2-3/P2-4/P3-1/migration連番。関数仕様 #229-P2「review_refute_votes table (v31)」P2-DB。#230 jury 2表 |  | src/db/migrations.ts<br>src/db/schema.ts<br>tests/unit/db/migrations.test.ts | v31 が additive・後方互換（fresh と v30→v31 upgrade 両方で適用、idempotent）。FK 一切無し（orphan 残置で doctor advisory 検出と両立）。jury 2表 + refute 表 + phases ALTER が単一ブロック。ALL_TABLE_NAMES 登録。関連 migration テスト + typecheck 緑。docs/specs/db.md 同コミット更新。 |
+| SP-1 | **逐次 migration**: v32=#229 `review_refute_votes` CREATE / v33=#231 `phases.review_state_version` ALTER（v31 jury 3表は #230 出荷済・触らない）+ 各版 ALL_TABLE_NAMES union | design-db-persistence §2.1/§3.1/§3.2/§3.4/§4 + DB v2 changeLog P1-1/P1-2/P2-3/P2-4/P3-1/migration連番。関数仕様 #229-P2「review_refute_votes table (**v32**)」P2-DB |  | src/db/migrations.ts<br>src/db/schema.ts<br>tests/unit/db/migrations.test.ts | v32/v33 が additive・後方互換（fresh と v31→v32→v33 upgrade 両方で適用、idempotent）。FK 一切無し（orphan 残置で doctor advisory 検出と両立）。**出荷済み v31 statements は一切変更しない**。各 Vxx_TABLE_NAMES を ALL_TABLE_NAMES 登録。関連 migration テスト + typecheck 緑。docs/specs/db.md 同コミット更新。 |
 | SP-2 | 合議 repository 層（review_refute_votes / jury_classification_proposals / jury_severity_audits）footprint・**precomputed target_change_hash の append/list/dedupe**・存在/hitch一致 hard 検査。**binding 検証/hash version は持たない（SP-16 所有）** | design-db-persistence §3.0②/§3.1/§3.5 + DB v2 changeLog P1-1/P1-2/P2-3/P2-4 + unresolved「finding_id を FK にしない→repository insert で hard reject」。関数仕様 #229-P2 ReviewRefuteVotesRepository。**CC8: refute UNIQUE = DB v2 business key `(run_id,target_change_hash,reviewer_id,prompt_sha256)`、FK 無し（gate-specs 1083/1099 の `REFERENCES reviewers`/3列 UNIQUE は廃止参照）** | SP-1 | src/db/repositories/review-refute-votes.ts<br>src/db/repositories/jury-proposals.ts<br>src/db/repositories/jury-severity-audits.ts<br>tests/unit/db/review-refute-votes.test.ts | 3 repository が footprint 規約に従い append-only insert。`target_change_hash` は**呼び出し側が事前計算した値をそのまま append/list/dedupe**（repository は normalize/hash しない）。dedupe は business key UNIQUE（refute は `(run_id,target_change_hash,reviewer_id,prompt_sha256)`）。存在 + hitch 一致を hard 検査（不一致 reject）。DB-only（export/import 非対象、backup 包含）。関連 repository テスト + typecheck 緑。 |
 | SP-3 | review_state_json CAS 書込経路（updateReviewState / recordSpecApproval、review_state_version で transaction.immediate + CAS、**bounded retry N→typed conflict error**） | design-db-persistence §2.4/§3.3 + DB v2 changeLog P1-3/P3-2 + Q4(CAS 競合: A 案 bounded retry 確定)。関数仕様 #231 PhaseRepository.recordSpecApproval。実コード裏取り: phase-repository.ts add():70 .immediate() / transitionStatus():116 CAS と同方式 | SP-1 | src/roadmap/phase-repository.ts<br>tests/unit/roadmap/phase-repository-review-state.test.ts | review_state_json 書込経路が新設され、CAS（review_state_version + transaction.immediate）で lost-update を構造的に防ぐ。**CAS 競合は bounded retry（read→merge→retry 最大 N 回）、超過で typed conflict error（後勝ち禁止・fail-closed）**。specHash は app 層 canonical JSON。他 key 保全。関連テスト + typecheck 緑。docs（roadmap.md）は SP-23 で更新。 |
-| SP-3D | consistency-doctor 整合 check（orphan proposal/vote/audit + hitch_id 整合 advisory）。refute hash 再計算 check は SP-16 後に拡張 | design-db-persistence §3.4（doctor）/§6 consistency/doctor/§8-#8。FK を張らない（P1-1）設計の必須セット（親 purge 後も行が残るので doctor が orphan を報告）。CC5: hitch_id 整合 = `(stored hitch_id) != (finding_id→hitch_findings.hitch_id join)` を advisory finding | SP-2 | src/db/consistency.ts<br>src/db/doctor.ts<br>tests/unit/db/doctor-consensus-integrity.test.ts | doctor に v31 監査表の orphan（finding_id/run_id/hitch_id が消えた行）+ hitch_id 整合（stored vs join）の advisory check を追加。**refute `target_change_hash` の TS recompute 整合 check は SP-16（normalizeChangeText 確定後）に拡張**。repair DELETE は default dry-run + operator 承認 gate（破壊的・fail-closed、auto-DELETE しない）。関連 unit テスト + typecheck 緑。 |
+| SP-3D | consistency-doctor 整合 check（orphan proposal/vote/audit + hitch_id 整合 advisory）。refute hash 再計算 check は SP-16 後に拡張 | design-db-persistence §3.4（doctor）/§6 consistency/doctor/§8-#8。FK を張らない（P1-1）設計の必須セット（親 purge 後も行が残るので doctor が orphan を報告）。CC5: hitch_id 整合 = `(stored hitch_id) != (finding_id→hitch_findings.hitch_id join)` を advisory finding | SP-2 | src/db/consistency.ts<br>src/db/doctor.ts<br>tests/unit/db/doctor-consensus-integrity.test.ts | **※ jury 3表の orphan/hitch_id check は #230 出荷済（`jury-doctor-checks.ts`）。SP-3D は重複追加せず、v32 `review_refute_votes` 用の** orphan（run_id/hitch_id が消えた refute 行）+ hitch_id 整合 advisory check **のみ新設**。**refute `target_change_hash` の TS recompute 整合 check は SP-16（normalizeChangeText 確定後）に拡張**。repair DELETE は default dry-run + operator 承認 gate（破壊的・fail-closed、auto-DELETE しない）。関連 unit テスト + typecheck 緑。 |
 | SP-4 | aggregateJuryVotes 純関数（型定義 + 決定論集約、float gate 無し） | 関数仕様 #230案A「jury決定論集約関数」WI-1/WI-2/WI-3。design-230 §3.1/§6.2。#228 N-dispatch P1-G(WI-1 型)。共有成果物（案A jury 配線が消費）。**CC5: jury 判定不能は scope 値 `unknown_inconclusive` ではなく `proposedScope='unknown'` + 別フィールド `proposalStatus`（DB v2 DDL `proposed_scope IN (in_scope,out_of_scope,unknown)` + `proposal_status IN (complete,timeout,parse_error,inconclusive)` と一致）** | SP-1 | src/hitch/types.ts<br>src/hitch/jury-aggregation.ts<br>tests/unit/hitch/jury-aggregation.test.ts | 純関数・決定論（同入力→同出力）。**unanimous は `proposals.length===3` かつ 全3票 `proposalStatus==='complete'` かつ proposedScope 全一致のみ**（lens 不足/第3 lens 欠落 = split、`proposalStatus!=='complete'` または `proposedScope==='unknown'` の混在 = split/escalate、fail-closed）。confidence を gate に使わない。型（JuryProposal{proposedScope:'in_scope'\|'out_of_scope'\|'unknown'; proposalStatus:'complete'\|'timeout'\|'parse_error'\|'inconclusive'} / JuryAggregate）追加。enum 値のみ使用（lens 3値 correctness/scope_fit/spec_adherence、proposedScope 3値）。reason は固定順の count 文字列（決定論テスト可）。関連 unit テスト + typecheck 緑。 |
 | SP-5 | auditSeverity 純関数（advisory-only severity audit、固定 mapping 不変） | 関数仕様 #230案A「severity audit集約」WI-1/WI-10s/WI-11s。design-230 §3.2/§6.2 受け入れ条件②。safety: severity 自動降格禁止 | SP-4 | src/hitch/types.ts<br>src/hitch/severity-audit.ts<br>tests/unit/hitch/severity-audit.test.ts | advisory-only。harnessSeverity を絶対に変えない（固定 mapping review-integration.ts:291/310/330 が authoritative）。diverged/inconclusive は packet に escalate:true を記録するのみ。enforcement_mode 列を作らない。関連 unit テスト + typecheck 緑。 |
 | SP-6 | HitchDecisionPacket 型 + formatter（buildJurySplitPacket / buildOperatorOriginPacket、recommended_next_action additive JSON） | 関数仕様 #228 N-dispatch WI-1/WI-6。design-230 §2.3/§3.3/§6.3。共有成果物（案A escalate packet + 案C は optional decisionPacketId 予約のみ） | SP-4 | src/hitch/types.ts<br>src/hitch/orchestrator-types.ts<br>src/hitch/decision-packet.ts<br>tests/unit/hitch/decision-packet.test.ts | HitchNextAction に optional decisionPacket?、HitchDecisionPacket(packetVersion:1) 型追加。formatter 2種。既存 reader 非破壊（additive）。migration 不要（recommended_next_action JSON）。関連 unit テスト + typecheck 緑。 |
@@ -134,13 +143,13 @@ DB 永続化（v31 単一ブロック + repository + review_state_json 書込経
 
 ### 各SPの RED テスト
 
-**SP-1 v31 migration 単一ブロック（jury 2表 + review_refute_votes + phases.review_state_version ALTER）+ ALL_TABLE_NAMES union**
-- migration: MIGRATIONS に version:31 が version 順・name・statements 非空、LATEST_SCHEMA_VERSION=31
-- migration: fresh DB v1→v31 後 schema_migrations に 31 行、3表 PRAGMA table_info で存在、phases に review_state_version 列(DEFAULT 0)
-- migration: v30→v31 upgrade で既存 review/hitch テーブル無変更・既存 phase 行に review_state_version=0
+**SP-1 逐次 migration（v32=#229 `review_refute_votes` CREATE / v33=#231 `phases.review_state_version` ALTER。v31 jury 3表は #230 出荷済・不変）+ ALL_TABLE_NAMES union**
+- migration: MIGRATIONS に version:32(#229)/33(#231) が version 順・name・statements 非空、LATEST_SCHEMA_VERSION=33
+- migration: fresh DB v1→v33 後 schema_migrations に 33 行、`review_refute_votes`(v32) が PRAGMA table_info で存在、phases に review_state_version 列(v33・DEFAULT 0)
+- migration: v31→v32→v33 upgrade で既存 jury/review/hitch テーブル無変更・既存 phase 行に review_state_version=0
 - migration: idempotent（2回目 run は no-op）
-- migration: ALL_TABLE_NAMES に V31 名が含まれ重複なし、DROPPED_TABLE_NAMES 維持
-- DDL: 全 v31 表に FK 句が無い（REFERENCES 不在）、append-only audit、jury severity CHECK は P0,P1,P2,P3,info、proposed_scope は in_scope/out_of_scope/unknown、proposal_status は別列、escalate_flag IN(0,1)・confidence BETWEEN 0 AND 1 CHECK
+- migration: ALL_TABLE_NAMES に V32/V33 名が含まれ重複なし、DROPPED_TABLE_NAMES 維持（V31 名は #230 出荷分で登録済）
+- DDL: v32 `review_refute_votes` に FK 句が無い（REFERENCES 不在）・append-only audit・confidence BETWEEN 0 AND 1 CHECK。**（jury severity CHECK=P0,P1,P2,P3,info / proposed_scope=in_scope/out_of_scope/unknown / proposal_status 別列 / escalate_flag IN(0,1) は #230 v31 出荷分のテストで担保済＝本 SP 対象外）**
 - DDL: business key UNIQUE。**refute は単一 UNIQUE ではなく partitioned partial unique（passed participant `(run_id,target_change_hash,reviewer_id,prompt_sha256) WHERE validation_status='passed' AND refute_verdict IN('uphold','refute')` / inconclusive 同4キー `WHERE ...refute_verdict='inconclusive'` / rejected `(...,source_sha256) WHERE validation_status='rejected'`）＝design-db §3.1。inconclusive→uphold/refute 遷移と rejected retry を許す（codex #257）** / jury:(finding_id,lens,reviewer_id,prompt_sha256) / severity:(finding_id,prompt_sha256)。UNIQUE(created_at) は使わず INDEX のみ、finding_id index あり、nullable usage_kind/usage_seq 列あり
 
 **SP-2 合議 repository 層（review_refute_votes / jury_classification_proposals / jury_severity_audits）footprint・precomputed target_change_hash の append/list/dedupe・存在/hitch一致 hard 検査**
@@ -161,8 +170,8 @@ DB 永続化（v31 単一ブロック + repository + review_state_json 書込経
 - **既存 writer の CAS 統一**: `setNote()`（`phase-repository.ts:131-144` の note 用 review_state_json RMW・現状 `.immediate()`/CAS なし）も同 CAS 経路（`review_state_version` bump + `transaction.immediate`）へ移行し、setNote↔specApproval 間の lost-update を塞ぐ（design-db §2.4）
 
 **SP-3D consistency-doctor 整合 check（orphan proposal/vote/audit + hitch_id 整合）**
-- consistency RUNTIME 列挙に v31 監査 3表が出ない（export drift 非対象）
-- orphan: finding_id/run_id/hitch_id が消えた v31 行 → advisory finding（FK 無しで親 purge 後も残る = append-only 監査）
+- consistency RUNTIME 列挙に `review_refute_votes`(v32) が出ない（export drift 非対象。jury 3表は #230 出荷分でカバー済）
+- orphan: run_id/hitch_id が消えた `review_refute_votes`(v32) 行 → advisory finding（FK 無しで親 purge 後も残る = append-only 監査）
 - hitch_id 整合: stored hitch_id != finding_id→hitch_findings.hitch_id join → advisory finding（CC5）
 - repair DELETE は default dry-run + --apply 必須（破壊的・operator 承認 gate、auto-DELETE しない）
 - refute `target_change_hash` の TS recompute 整合 check は本 SP に**含めない**（SP-16 で normalizeChangeText 確定後に拡張）
@@ -315,7 +324,7 @@ SP-1 → SP-2 → SP-3D → SP-4 → SP-5 → SP-6 → SP-7 → SP-8 → SP-9 �
 
 ## 共有成果物（所有 SP）
 
-- v31 migration 単一ブロック（jury_classification_proposals / jury_severity_audits / review_refute_votes 3表 + phases.review_state_version ALTER + SCHEMA_VERSION→31 + V31_TABLE_NAMES union）→ 所有 SP-1。consumer: 案A(jury 2表)/案B-P2(refute 表)/案C(review_state_version)
+- migration（逐次）: v31=#230 jury 3表（出荷済）/ v32=#229 `review_refute_votes` / v33=#231 phases.review_state_version ALTER（各版 SCHEMA_VERSION bump + Vxx_TABLE_NAMES union）→ 所有 SP-1。consumer: 案B-P2(refute 表=v32)/案C(review_state_version=v33) ※案A jury は出荷済
 - provenance footprint 規約（run_id/hitch_id/finding_id/reviewer_id/model/prompt_sha256/prompt_provenance_json/usage_kind/usage_seq、(run_id,usage_kind,usage_seq) で run_usage 一意 JOIN、FK 張らない）→ 所有 SP-1(DDL)+SP-23(docs)。consumer: 全合議行(SP-2/SP-8/SP-17)
 - review_state_json CAS 書込経路（updateReviewState / recordSpecApproval、review_state_version + transaction.immediate + CAS、競合 = bounded retry N→typed conflict error）→ 所有 SP-3。consumer: 案C specApproval(SP-21)
 - consistency-doctor 整合 check（orphan proposal/vote/audit + hitch_id 整合 = stored vs finding_id→join、FK を張らない設計の必須セット、非破壊 repair gate）→ 所有 SP-3D（orphan + hitch_id）+ SP-16（refute hash 再計算 check 拡張）。consumer: DB 基盤の append-only 監査保証
@@ -334,7 +343,7 @@ SP-1 → SP-2 → SP-3D → SP-4 → SP-5 → SP-6 → SP-7 → SP-8 → SP-9 �
 推奨: 別 issue 切り出しを推奨（design-229 付録H H2）。Phase1(a+b)だけで主要受け入れ条件（quorum>1 実到達・異レンズ集約決定論・回帰なし・spec 更新）を満たし独立にレビュー可能。refute は SP-16 の target binding data model が前提。ただし #229 を Phase1 で閉じ refute を新 issue にするか #229 を Phase2 まで開き続けるかは人間批准事項。本ロードマップは SP-16〜18 を独立サブ大Phase(B'')として後置し、どちらにも対応できる構成。
 
 ### Q3. 共有 v31 migration（SP-1）の PR merge 順をどう強制するか。#229/#230/#231 が全て v31 を共有する（DB v2 Q3 確定: 単一 v31 ブロック案A）ため、並行ブランチ着地時の番号衝突（v29↔v30 renumber 痛の既往）リスク。
-推奨: 単一 v31 ブロックを SP-1 で最初に land し、schema.ts に 'RESERVED v31 for epic #228 consensus artifacts' コメントを置いて PR merge 順を強制（DB v2 Q3 委員会推奨 A）。3案の v31 表は全て additive CREATE TABLE で相互依存が薄いので、SP-1 を先頭に固定すれば番号衝突点が 1 つに集約され renumber リスク最小。LATEST bump は v31 へ 1 回のみ。
+**推奨（2026-06-17 更新）**: 当初は単一 v31 ブロック案だったが、**#230 が v31 を単独出荷したため逐次採番に確定**: v31=#230（出荷済）→ v32=#229（`review_refute_votes`）→ v33=#231（`review_state_version`）。同一 version で 2 branch 同時 open を禁止（merge order ゲート）し、#229/#231 着手前に version を予約して番号衝突を防ぐ。**出荷済み v31 statements は不可侵**（後から CREATE/ALTER を足さない）。
 
 ### Q4. review_state_version CAS（SP-3）の競合解決ポリシー（DB v2 付録A Q5）: CAS 失敗時に bounded リトライ（read→merge→retry）で吸収するか、即エラーで fail-closed にするか。
 **確定（v2 改訂、acceptance に固定）**: A 案（CAS + **bounded retry N 回（read→merge→retry）、超過で typed conflict error を throw・後勝ち禁止**）。add()/transitionStatus() の既存 CAS 流儀に揃う。現状 specApproval を書く writer は recordSpecApproval 1 経路のみで競合確率が低いため per-key merge 関数は writer 増加時まで defer。**この機械検証可能ポリシー（リトライ上限 N + typed conflict error）を SP-3 の acceptance/RED テストに固定し、operator 向け文言を docs 化する**（codex P2: 完了定義は機械検証可能であるべき → SP-3 開始前に確定済みとする）。

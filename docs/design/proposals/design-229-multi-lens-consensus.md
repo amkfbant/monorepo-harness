@@ -2,10 +2,18 @@
 
 > これは計画のみ。コードは変更しない。実装は別セッションが dev クローンの
 > `origin/main` ベース隔離ブランチで行う（着手順は A→B→C 確定。#229 は2番手・#230 の後）。
-> 本ノートの file:line は当初 ops checkout (v0.7.10) で裏取りしたスナップショット。**現 origin/main は
-> v0.7.14 直後（6d0a610、`git describe --tags`=`v0.7.14-1-g6d0a610`。exact-match は失敗）**で、
-> SCHEMA_VERSION=30・resolveEffectiveRule 等の主要事実は不変だが一部 file:line が +2〜+8 drift している。
+> 本ノートの file:line は当初 ops checkout (v0.7.10) で裏取りしたスナップショット。**現在の main は
+> v0.7.15（SCHEMA_VERSION=31）以降**で、resolveEffectiveRule 等の review/consensus 系の主要事実は不変だが
+> 一部 file:line が drift している（例: orchestrator-runners.ts の runReviewerAgent 呼出が +59 ずれ）。
 > **実装着手時は着手ブランチ HEAD で本体全体の file:line を再取得すること**（付録I.0）。
+>
+> **⚠️ 版番号同期（2026-06-17）**: #230(案A) が **schema v31 を排他取得して先行リリース**（0.7.15）。
+> shipped v31 = #230 jury 3表のみ（`jury_classification_proposals` / `jury_classification_refutations` /
+> `jury_severity_audits`）で、`review_refute_votes`(#229) / `phases.review_state_version`(#231) は**含まれない**。
+> 旧来の「#229/#230/#231 を**単一 v31 に集約**」前提は無効。確定: **#229 `review_refute_votes` = v32 /
+> #231 `review_state_version` = v33**（逐次・別 migration。出荷済み v31 statements は不可侵＝後から書き換えると
+> 適用済み DB を壊す）。**Phase 1a/1b（multi-lens consensus 中核）は新 table/migration 不要**で v31 と無干渉。
+> 決定根拠: [design-230-deliberation-deepened.md](./design-230-deliberation-deepened.md) R12（:124/:511/:661）。
 
 ---
 
@@ -489,7 +497,7 @@ quorum 再実装するのは duplication で禁止。
 
 | id | title | files | depends |
 |----|-------|-------|---------|
-| P2-0 | **refute target binding data model + DSL**(P1-e): required_change に安定 target id/hash、refute output `{target_id,refute_verdict}`、harness 側 binding 決定論検証(未知 target/hash 不一致=reject)（→ 付録I.1.2/I.1.3 で `target_change_hash` / `uphold\|refute\|inconclusive` に契約確定）。**`review_refute_votes` table 自体は epic 共有 v31 単一ブロック（design-db §3.1 / impl-roadmap SP-1）で先行作成。P2-0 が足すのは binding ロジック（normalizeChangeText / verifyRefuteBinding / 集約投入）であり新 migration ではない** | src/core/review-decision-schema.ts, src/core/review-rule.ts（schema は v31=SP-1 で建立済を利用） | Phase 1, v31(SP-1) |
+| P2-0 | **refute target binding data model + DSL**(P1-e): required_change に安定 target id/hash、refute output `{target_id,refute_verdict}`、harness 側 binding 決定論検証(未知 target/hash 不一致=reject)（→ 付録I.1.2/I.1.3 で `target_change_hash` / `uphold\|refute\|inconclusive` に契約確定）。**`review_refute_votes` table は #230 の v31 単独出荷により v31 には載らない＝新 migration `v32` で作成する（design-db §3.1 / impl-roadmap SP-1）。P2-0 が足すのは binding ロジック（normalizeChangeText / verifyRefuteBinding / 集約投入）＋ v32 migration** | src/core/review-decision-schema.ts, src/core/review-rule.ts, src/db/migrations.ts（v32 で `review_refute_votes` を新設） | Phase 1, v32 migration |
 | P2-A | refute requirement の rule 表現(DSL) + schema(`review.refute`) | src/project/schema.ts, src/core/review-rule.ts | P2-0 |
 | P2-B | refute reviewer agent variant(別 prompt, distinct registered reviewer_id) | src/core/refute-agent.ts(新) or reviewer-agent.ts flag | P2-A |
 | P2-C | refute 票を `evaluateConsensus` の決定論集約に通す(target-bound 第2 requirement として) | src/core/review-consensus.ts | P2-0, P2-A |
@@ -1053,7 +1061,7 @@ harness が **100% 決定論**で検証する:
    のを防ぐ）。`target_change_text` 自体が欠落（missing_field）の票のみ定数 sentinel を用い、`reject_reason` で区別する。
    いずれも監査トレースを欠落させない。
 
-本 P2-0 は `review-decision-schema.ts` / `schema.ts(+migration v31)` / `review-rule.ts` のみを触り、
+本 P2-0 は `review-decision-schema.ts` / `schema.ts` + migration **v32**（`review_refute_votes` を新設。v31 は #230 が排他済）/ `review-rule.ts` のみを触り、
 `evaluateConsensus`（[review-consensus.ts](../../../src/core/review-consensus.ts):99, quorum + 固定 tie-break =
 凍結契約）も `refute_verdict(uphold/refute/inconclusive)→consensus label` の決定論マッピングも**改変しない**。
 マッピングと「第2 requirement への投入経路」は P2-A/P2-C の責務（本論点はその前提となる binding の確定のみ）。
