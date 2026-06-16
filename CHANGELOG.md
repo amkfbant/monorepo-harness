@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.14](https://github.com/amkfbant/monorepo-harness/compare/v0.7.13...v0.7.14) (2026-06-16)
+
+
+### Bug Fixes
+
+* **hitch:** honor --base-branch over the project profile base branch ([#236](https://github.com/amkfbant/monorepo-harness/issues/236)) ([#250](https://github.com/amkfbant/monorepo-harness/issues/250)) ([c8e5ede](https://github.com/amkfbant/monorepo-harness/commit/c8e5ede78c821fd536cf7f2df0169c23505959c8))
+
 ## [0.7.13](https://github.com/amkfbant/monorepo-harness/compare/v0.7.12...v0.7.13) (2026-06-15)
 
 
