@@ -196,6 +196,12 @@ export interface HitchFindingFilter {
   severity?: HitchFindingSeverity;
   severityIn?: readonly HitchFindingSeverity[];
   limit?: number;
+  /**
+   * Skip the first `offset` rows (paging). Used by the read-only classify Phase 1
+   * snapshot to walk the whole unknown set deterministically without writes
+   * shrinking it mid-pass (#230 round-2 FIX 1). Ignored when 0/undefined.
+   */
+  offset?: number;
 }
 
 export interface HitchFindingSummaryCounts {
@@ -1578,13 +1584,14 @@ export class HitchRepository {
     const args: unknown[] = [];
     addFindingWhereClauses(clauses, args, filter);
     const limit = filter.limit ?? 200;
+    const offset = filter.offset ?? 0;
     const rows = this.db
       .prepare(
         "SELECT * FROM hitch_findings" +
           whereSql(clauses) +
-          " ORDER BY first_seen_at ASC, finding_id ASC LIMIT ?",
+          " ORDER BY first_seen_at ASC, finding_id ASC LIMIT ? OFFSET ?",
       )
-      .all(...args, limit) as HitchFindingRow[];
+      .all(...args, limit, offset) as HitchFindingRow[];
     return rows.map(rowToFinding);
   }
 

@@ -1,0 +1,357 @@
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { resolve, relative, isAbsolute, sep } from "node:path";
+import { minimatch } from "minimatch";
+import type {
+  EvidenceCheckContext,
+  RawJuryEvidence,
+  VerifiedJuryEvidence,
+} from "./types.js";
+
+/**
+ * #230 deliberation jury — deterministic evidence existence check (Layer 1,
+ * deterministic IO, read-only). Frozen contract: design §4.4 + §0.1 R1 + P3.
+ *
+ * Safety boundary (design §0.1 R1): this function IGNORES any `verified` field
+ * present on the input and recomputes it deterministically. The LLM cannot
+ * self-assert verification — if the model claims `verified:true` on a citation
+ * that does not resolve, the output is `verified:false`. Same input + same ctx
+ * always yields a deep-equal output. No SQLite, no network.
+ *
+ * Relevance limit (design §0.1 R1 / §12): this only proves the citation EXISTS;
+ * it does NOT prove the citation supports the claim. Relevance is handled by the
+ * Stage3 critique and the deterministic proximity filter in `aggregateDelibera
+ * tion` — never here.
+ */
+
+const SPEC_MATCH_OPTS = { dot: true, nocomment: true } as const;
+const DEFAULT_SPEC_DOCS_GLOBS: readonly string[] = ["docs/specs/**/*.md"];
+
+/**
+ * Whether `abs` stays INSIDE `base` by the LEXICAL relative form (no real-path
+ * resolution): the worktree-relative path must be non-empty, not `..`, not start
+ * with `..<sep>`, and not be itself absolute (a Windows drive switch).
+ */
+function relStaysInside(base: string, abs: string): boolean {
+  const rel = relative(base, abs);
+  return (
+    rel.length > 0 &&
+    rel !== ".." &&
+    !rel.startsWith(`..${sep}`) &&
+    !isAbsolute(rel)
+  );
+}
+
+/**
+ * Symlink-escape guard (codex#254-P2 FIX2). The lexical `relStaysInside` guard
+ * passes for an IN-TREE symlink even when its TARGET points OUTSIDE `base`, so
+ * `statSync`/`readFileSync` would follow it and read the external target. After
+ * the lexical guard, resolve the REAL path (following symlinks) and re-check it
+ * is STILL inside `base`. Fail-closed: if the path cannot be realpath-resolved
+ * (e.g. ENOENT, or a broken symlink) OR the real path escapes `base`, return
+ * false BEFORE any read.
+ */
+function realPathStaysInside(base: string, abs: string): boolean {
+  let realBase: string;
+  let realAbs: string;
+  try {
+    // Resolve the base too: a worktree may itself live under a symlinked dir
+    // (e.g. macOS /var -> /private/var), so compare real-vs-real.
+    realBase = realpathSync(base);
+    realAbs = realpathSync(abs);
+  } catch {
+    return false;
+  }
+  return relStaysInside(realBase, realAbs);
+}
+
+/**
+ * Verify one piece of evidence against the deterministic context. Returns a
+ * `VerifiedJuryEvidence` carrying a recomputed `verified` flag (and, for `file`
+ * citations, the absolute resolved path in `resolvedRef`).
+ */
+export function verifyEvidence(
+  ev: RawJuryEvidence,
+  ctx: EvidenceCheckContext,
+): VerifiedJuryEvidence {
+  // Strip any LLM-claimed verified/resolvedRef: only deterministic recompute
+  // below may set them (design §0.1 R1).
+  const base: RawJuryEvidence = {
+    citation: ev.citation,
+    kind: ev.kind,
+    claim: ev.claim,
+  };
+
+  switch (ev.kind) {
+    case "file":
+      return verifyFile(base, ctx);
+    case "spec":
+      return { ...base, verified: verifySpec(base, ctx) };
+    case "policy":
+      return { ...base, verified: verifyPolicy(base, ctx) };
+    default:
+      // Unknown / unresolvable kind -> fail-closed.
+      return { ...base, verified: false };
+  }
+}
+
+/**
+ * A `file` citation is `<path>[:line]` or `<path>[:start-end]`. It is verified
+ * iff `worktreePath/<path>` exists as a file AND the resolved path stays INSIDE
+ * the worktree (no absolute path, no `..` escape — design §0.1 R1 fail-closed)
+ * AND (no line given OR every cited line is within the file's line count).
+ * `resolvedRef` is the absolute (in-tree) path.
+ *
+ * Path-traversal guard (codex P1): a citation like `src/a.ts/../../package.json`
+ * resolves to an out-of-tree file and would otherwise existence-verify AND spoof
+ * proximity (the raw first segment looks in-tree). We reject any absolute
+ * citation and any resolved path whose worktree-relative form is empty, escapes
+ * with `..`, or is itself absolute (Windows drive switch) -> verified:false.
+ */
+function verifyFile(
+  ev: RawJuryEvidence,
+  ctx: EvidenceCheckContext,
+): VerifiedJuryEvidence {
+  const parsed = parseFileCitation(ev.citation);
+  if (parsed === undefined) return { ...ev, verified: false };
+  const { path, startLine, endLine } = parsed;
+  // Reject absolute citations outright (they are not worktree-relative).
+  if (isAbsolute(path)) return { ...ev, verified: false };
+  const abs = resolve(ctx.worktreePath, path);
+  // Reject any resolved path that escapes the worktree (`..` traversal or a
+  // different root). The lexical relative form must be a non-empty, non-`..`,
+  // non-absolute in-tree path.
+  if (!relStaysInside(ctx.worktreePath, abs)) {
+    return { ...ev, verified: false };
+  }
+  // Symlink-escape guard (codex#254-P2 FIX2): the lexical guard above passes for
+  // an in-tree symlink whose TARGET is outside the worktree. Resolve the REAL
+  // path and re-check it stays inside BEFORE statSync/readFileSync follow it.
+  if (!realPathStaysInside(ctx.worktreePath, abs)) {
+    return { ...ev, verified: false, resolvedRef: abs };
+  }
+  let lineCount: number;
+  try {
+    const st = statSync(abs);
+    if (!st.isFile()) return { ...ev, verified: false, resolvedRef: abs };
+    lineCount = countLines(readFileSync(abs, "utf8"));
+  } catch {
+    // ENOENT or any IO error -> unresolvable -> fail-closed.
+    return { ...ev, verified: false, resolvedRef: abs };
+  }
+  const inRange =
+    startLine === undefined ||
+    (startLine >= 1 &&
+      startLine <= lineCount &&
+      (endLine === undefined || (endLine >= startLine && endLine <= lineCount)));
+  return { ...ev, verified: inRange, resolvedRef: abs };
+}
+
+interface ParsedFileCitation {
+  path: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+/** Parse `<path>[:line[-line]]`. Returns undefined if the suffix is malformed. */
+function parseFileCitation(citation: string): ParsedFileCitation | undefined {
+  const colon = citation.lastIndexOf(":");
+  if (colon === -1) return { path: citation };
+  const suffix = citation.slice(colon + 1);
+  const lineRe = /^(\d+)(?:-(\d+))?$/;
+  const m = lineRe.exec(suffix);
+  if (m === null) {
+    // ':' not a line spec — treat the whole string as a path (no line check).
+    return { path: citation };
+  }
+  const path = citation.slice(0, colon);
+  if (path.length === 0) return undefined;
+  const startRaw = m[1];
+  const endRaw = m[2];
+  if (startRaw === undefined) return { path };
+  const startLine = Number.parseInt(startRaw, 10);
+  return endRaw === undefined
+    ? { path, startLine }
+    : { path, startLine, endLine: Number.parseInt(endRaw, 10) };
+}
+
+/** Count lines (1-based) the file spans; an empty file has 0 lines. */
+function countLines(content: string): number {
+  if (content.length === 0) return 0;
+  const withoutTrailingNewline = content.endsWith("\n")
+    ? content.slice(0, -1)
+    : content;
+  return withoutTrailingNewline.split("\n").length;
+}
+
+/**
+ * A `spec` citation is `<md-path>#<anchor>`. It is verified iff the md file is
+ * covered by `specDocsGlobs` (default `docs/specs/**\/*.md`), STAYS inside the
+ * spec root the glob anchors (no `..` escape, no absolute path), AND a heading
+ * whose GitHub-style slug equals `<anchor>` exists exactly once (design §4.4 +
+ * P3: missing -> false; duplicate-ambiguous -> false / fail-closed).
+ *
+ * Path-traversal guard (codex P2): the glob check runs on the RAW citation path,
+ * and minimatch's extglob (`+(..)`) — or any operator-set glob — can match a
+ * `..`-escaping citation. Resolving that path directly would read a markdown
+ * file OUTSIDE the spec tree (and verify if it has the anchor). Mirroring the
+ * file-kind guard, the RESOLVED path must stay INSIDE the static-prefix root of
+ * a glob it matched (`relative(specRoot, resolved)` non-empty / not `..` /
+ * non-absolute); otherwise -> false (fail-closed).
+ *
+ * Spec-root containment (codex#254-P2 FIX3): the guards run PER GLOB and a single
+ * glob must satisfy ALL of them: (1) the cited file lexically inside the glob's
+ * spec root; (2) the REAL file inside the REAL spec root (symlinked spec FILE
+ * escape, round-3 FIX2); (3) the REAL spec ROOT itself inside the REAL worktree
+ * (symlinked spec ROOT escape — e.g. `docs/specs` is a symlink to an external
+ * dir, round-4 FIX3). Requiring one glob to pass all three prevents glob A
+ * passing the file check while glob B passes the root check.
+ */
+function verifySpec(ev: RawJuryEvidence, ctx: EvidenceCheckContext): boolean {
+  const hash = ev.citation.indexOf("#");
+  if (hash === -1) return false;
+  const path = ev.citation.slice(0, hash);
+  const anchor = slugify(ev.citation.slice(hash + 1));
+  if (path.length === 0 || anchor.length === 0) return false;
+  // Reject absolute citations outright (they are not worktree-relative).
+  if (isAbsolute(path)) return false;
+  const globs = ctx.specDocsGlobs ?? DEFAULT_SPEC_DOCS_GLOBS;
+  const matchedGlobs = globs.filter((g) => minimatch(path, g, SPEC_MATCH_OPTS));
+  if (matchedGlobs.length === 0) return false;
+  const abs = resolve(ctx.worktreePath, path);
+  // Require a SINGLE matched glob whose spec root contains the file lexically AND
+  // by real path AND whose real root stays inside the real worktree. Fail-closed
+  // (all checks must hold for the SAME glob) BEFORE readFileSync follows abs.
+  if (!specRootContainsCitation(abs, ctx.worktreePath, matchedGlobs)) {
+    return false;
+  }
+  let content: string;
+  try {
+    content = readFileSync(abs, "utf8");
+  } catch {
+    return false;
+  }
+  const matches = headingSlugs(content).filter((s) => s === anchor).length;
+  // Exactly one heading matches -> verified. Zero (missing) or many
+  // (ambiguous) -> false (fail-closed, deterministic).
+  return matches === 1;
+}
+
+/**
+ * Whether AT LEAST ONE matched glob's spec root passes every containment guard
+ * for the cited file (codex#254-P2 FIX3). For that single glob, the spec root
+ * (`resolve(worktree, globStaticPrefix)`) must:
+ *   1. lexically contain `abs` (`..`-escape guard);
+ *   2. by REAL path contain the REAL `abs` (symlinked spec FILE escape, FIX2);
+ *   3. have its REAL root stay inside the REAL worktree (symlinked spec ROOT
+ *      escape, FIX3 — a `docs/specs` symlink to an external dir).
+ * Checking all three against the SAME glob's root prevents one glob satisfying
+ * the file check while another satisfies the root check. Fail-closed when any
+ * path cannot be realpath-resolved.
+ */
+function specRootContainsCitation(
+  abs: string,
+  worktreePath: string,
+  matchedGlobs: readonly string[],
+): boolean {
+  let realWorktree: string;
+  try {
+    realWorktree = realpathSync(worktreePath);
+  } catch {
+    return false;
+  }
+  return matchedGlobs.some((g) => {
+    const specRoot = resolve(worktreePath, globStaticPrefix(g));
+    // (1) lexical file-in-root + (2) real file-in-real-root.
+    if (!relStaysInside(specRoot, abs)) return false;
+    if (!realPathStaysInside(specRoot, abs)) return false;
+    // (3) the REAL spec root must stay inside the REAL worktree (or BE it, for
+    // an empty static prefix anchored at the worktree root).
+    let realSpecRoot: string;
+    try {
+      realSpecRoot = realpathSync(specRoot);
+    } catch {
+      return false;
+    }
+    return realSpecRoot === realWorktree || relStaysInside(realWorktree, realSpecRoot);
+  });
+}
+
+/**
+ * The static (wildcard-free) leading directory prefix of a glob. Segments are
+ * scanned until the first one containing a glob magic character
+ * (`*?[]{}!+@()`); everything before it is the literal root. `docs/specs/**\/*.md`
+ * -> `docs/specs`; `docs/specs/+(..)/x.md` -> `docs/specs`; `**\/*.md` -> "".
+ */
+function globStaticPrefix(glob: string): string {
+  const segments = glob.split("/");
+  const literal: string[] = [];
+  for (const segment of segments) {
+    if (/[*?[\]{}!+@()]/.test(segment)) break;
+    literal.push(segment);
+  }
+  // Drop a trailing literal FILE segment (it is not a directory prefix). A
+  // segment is a file only when it is the LAST glob segment and contains a dot;
+  // for prefix purposes we keep directory segments only.
+  if (literal.length === segments.length && literal.length > 0) {
+    // Whole glob is literal (no wildcard): the last segment is the file itself.
+    literal.pop();
+  }
+  return literal.join("/");
+}
+
+/** Extract the GitHub-style slug of every ATX heading line in the markdown. */
+function headingSlugs(content: string): string[] {
+  const out: string[] = [];
+  for (const line of content.split("\n")) {
+    const m = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+    if (m !== null && m[2] !== undefined) out.push(slugify(m[2]));
+  }
+  return out;
+}
+
+/**
+ * Deterministic GitHub-style heading slug (codex#254-R6 FIX 4).
+ *
+ * The previous slugifier stripped EVERY non-`[a-z0-9]` char, which erased
+ * Japanese / non-ASCII headings — and `docs/specs/*.md` are written with
+ * Japanese headings (e.g. workflow.md). A valid spec citation to such a heading
+ * then never matched -> verified:false -> the finding wrongly escalated.
+ *
+ * This mirrors GitHub's anchor algorithm: lowercase; drop only the punctuation
+ * GitHub strips (anything that is NOT a Unicode letter `\p{L}`, number `\p{N}`,
+ * combining mark `\p{M}`, underscore, whitespace, or hyphen); then replace
+ * whitespace runs with a single `-`. Unicode word characters are PRESERVED, so
+ * `## モード dev ops` -> `モード-dev-ops` and `# 安全境界` -> `安全境界`. Applied
+ * identically to BOTH the md heading and the citation anchor (see verifySpec /
+ * headingSlugs), the two slugs match deterministically.
+ */
+function slugify(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\p{M}_\s-]/gu, "")
+    .replace(/\s+/g, "-");
+}
+
+/**
+ * Policy-citation grammar (deterministic): a `policy` citation is verified iff
+ * it EITHER names an existing domain key in `compiledPolicy.repo.domains`, OR is
+ * string-equal to a glob present in any domain's `read`/`write`/`deny_write`
+ * list. Zero match -> false. (Pure structural lookup — no glob evaluation, so
+ * the same citation+policy always yields the same result.)
+ */
+function verifyPolicy(ev: RawJuryEvidence, ctx: EvidenceCheckContext): boolean {
+  const domains = ctx.compiledPolicy.repo.domains;
+  const citation = ev.citation;
+  if (Object.prototype.hasOwnProperty.call(domains, citation)) return true;
+  for (const domain of Object.values(domains)) {
+    if (
+      domain.read.includes(citation) ||
+      domain.write.includes(citation) ||
+      domain.deny_write.includes(citation)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}

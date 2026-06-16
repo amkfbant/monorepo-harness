@@ -1689,4 +1689,132 @@ describe("ConvergenceService", () => {
       db.close();
     }
   });
+
+  // #230 Task D5 — jury non-interference at the convergence layer.
+  //
+  // The deliberation jury is reached ONLY through the `classify` orchestrator
+  // action, which `decideOrchestratorAction` returns ONLY for the
+  // `needs_classification` decision (whose next-action kind is
+  // `classify_findings`). The hard pre-emption order in `convergence.ts`
+  // (terminal → budget_exhausted → P0-escalate → diverging) all short-circuit
+  // BEFORE the `needs_classification` branch. These tests seed an open
+  // unknown-scope finding (the SOLE precondition that would otherwise route to
+  // classify → jury) ALONGSIDE each escalate/budget/divergence trigger and
+  // prove the decision pre-empts classification: the decision is the expected
+  // stop and the next-action kind is NEVER `classify_findings`, so the jury is
+  // structurally unreachable on those paths (it escalates as before).
+  describe("#230 D5: escalate/budget/divergence pre-empt classify (jury never runs)", () => {
+    it("open in-scope P0 escalates instead of classifying a co-present unknown-scope finding", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo);
+        passClose(repo);
+        addFinding(repo, { scopeStatus: "unknown", severity: "P2" });
+        addFinding(repo, { scopeStatus: "in_scope", severity: "P0" });
+        const result = service.evaluate("goal-test");
+        expect(result.decision).toBe("escalate");
+        expect(result.decision).not.toBe("needs_classification");
+        expect(result.recommendedNextAction.kind).not.toBe("classify_findings");
+      } finally {
+        db.close();
+      }
+    });
+
+    it("budget_exhausted (iteration limit) stops instead of classifying a co-present unknown-scope finding", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxIterations: 1 });
+        passClose(repo);
+        repo.createAttempt({ hitchId: "goal-test", attemptType: "implement" });
+        repo.createAttempt({ hitchId: "goal-test", attemptType: "validate" });
+        addFinding(repo, { scopeStatus: "unknown", severity: "P2" });
+        const result = service.evaluate("goal-test");
+        expect(result.decision).toBe("budget_exhausted");
+        expect(result.decision).not.toBe("needs_classification");
+        expect(result.recommendedNextAction.kind).not.toBe("classify_findings");
+      } finally {
+        db.close();
+      }
+    });
+
+    it("diverging stops instead of classifying a co-present unknown-scope finding", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxTotalNewFindings: 2 });
+        addCycleFindings(repo, 1, ["review", "review", "review"]); // 3 > 2 → diverging
+        addFinding(repo, { scopeStatus: "unknown", severity: "P2" });
+        passClose(repo);
+        const result = service.evaluate("goal-test");
+        expect(result.decision).toBe("diverging");
+        expect(result.decision).not.toBe("needs_classification");
+        expect(result.recommendedNextAction.kind).not.toBe("classify_findings");
+      } finally {
+        db.close();
+      }
+    });
+
+    // #230 Task D5 / P2-i — an advisory severity-divergence decision (the D2b
+    // shape: a `continue`/non-blocking convergence decision recorded with
+    // updateStatus:false after a jury auto_confirm) is purely advisory. The
+    // close gate keys ONLY on live `hitch_findings` scope/severity metrics — it
+    // never reads jury_severity_audits or recorded convergence decisions — so
+    // recording the advisory decision must NOT move the close gate, and the
+    // subject finding's severity (the authoritative harness mapping) must stay
+    // UNCHANGED (the jury never auto-downgrades it).
+    it("an advisory severity-divergence decision does not move the close gate or alter the finding severity", () => {
+      const { db, repo, service } = fresh();
+      try {
+        // Permissive close policy (mirrors the existing close_ready-with-unknown
+        // test): an unknown-scope finding does not block close here, so the hitch
+        // is genuinely close_ready and the test isolates the advisory decision's
+        // (non-)effect on the gate. The finding carries the authoritative harness
+        // severity that the advisory diverged audit questions but never changes.
+        createGoal(repo, {
+          policy: {
+            ...DEFAULT_HITCH_POLICY,
+            stopOnUnknownScope: false,
+            closeRequires: {
+              ...DEFAULT_HITCH_POLICY.closeRequires,
+              noUnknownScope: false,
+            },
+          },
+        });
+        const finding = addFinding(repo, {
+          scopeStatus: "unknown",
+          severity: "P2",
+        });
+        passClose(repo);
+
+        // Baseline: the hitch is close_ready (no open blockers remain).
+        const before = service.evaluate("goal-test");
+        expect(before.decision).toBe("close_ready");
+
+        // Record the advisory severity-divergence decision exactly as the D2b
+        // orchestrator path does: a NON-blocking `continue` decision (NOT
+        // `escalate`) so the course/phase rollup stays neutral.
+        repo.recordConvergenceDecision({
+          hitchId: "goal-test",
+          decision: "continue",
+          reason:
+            "advisory: jury severity vote diverged from the harness mapping (severity unchanged)",
+          recommendedNextAction: {
+            kind: "ask_human",
+            message: "Review the diverged severity audit; mapping is authoritative.",
+            findingIds: [finding.findingId],
+          },
+          createdBy: "test",
+        });
+
+        // The close gate is unchanged: still close_ready (advisory record does
+        // not feed the gate).
+        const after = service.evaluate("goal-test");
+        expect(after.decision).toBe("close_ready");
+
+        // The finding's severity (authoritative harness mapping) is untouched.
+        expect(repo.requireFinding(finding.findingId).severity).toBe("P2");
+      } finally {
+        db.close();
+      }
+    });
+  });
 });

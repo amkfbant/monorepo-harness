@@ -789,6 +789,78 @@ describe("CourseOrchestrator", () => {
     expect(latestReleaseReason(db, courseId)).toBe("normal");
   });
 
+  it("isolates the subtree when a driven hitch halts with unknown blockers remaining (capped classify batch — #230 codex#254-P2), instead of advancing downstream", async () => {
+    // A jury classify batch that hits moreUnknownsPending halts the hitch loop as
+    // a NON-escalating max_steps_exhausted, but the unknown-scope findings REMAIN
+    // (the hitch's live convergence is still needs_classification). The course
+    // must NOT advance to downstream phases while those unknown blockers remain —
+    // it isolates the subtree (retryable; a later invocation re-fires
+    // needs_classification and continues classifying). This is NOT a human
+    // escalation and NOT a terminal advance.
+    const courseId = newCourse(db, "course-capped-classify");
+    const phases = new PhaseRepository(db);
+    const rootA = phases.add({ courseId, phaseId: "phase-cap-a", title: "A", position: 1, createdBy: "test", createdSource: "cli" });
+    const childA = phases.add({ courseId, parentPhaseId: rootA.phaseId, phaseId: "phase-cap-a-child", title: "A child", position: 1, createdBy: "test", createdSource: "cli" });
+    const rootB = phases.add({ courseId, phaseId: "phase-cap-b", title: "B", position: 2, createdBy: "test", createdSource: "cli" });
+    // h-a starts drivable (an in-scope P1 finding → needs_fix). During the drive
+    // an unknown-scope finding appears (a capped classify left it unprocessed), so
+    // h-a's POST-drive convergence is needs_classification.
+    seedDrivableHitch(db, "h-cap-a");
+    seedDrivableHitch(db, "h-cap-a-child");
+    seedDrivableHitch(db, "h-cap-b");
+    phases.linkHitch(rootA.phaseId, "h-cap-a");
+    phases.linkHitch(childA.phaseId, "h-cap-a-child");
+    phases.linkHitch(rootB.phaseId, "h-cap-b");
+    const calls: string[] = [];
+
+    const result = await makeOrchestrator(
+      db,
+      // h-a halts NON-escalating (capped classify); h-b would close if reached.
+      { "h-cap-a": "max_steps_exhausted", "h-cap-b": "close_ready" },
+      calls,
+      [],
+      async (hitchId) => {
+        if (hitchId === "h-cap-a") {
+          // Simulate the capped classify leaving an unknown-scope finding open:
+          // h-a's live convergence becomes needs_classification post-drive.
+          new HitchRepository(db).upsertFinding({
+            hitchId: "h-cap-a",
+            severity: "P1",
+            source: "review",
+            category: "correctness",
+            summary: "unknown-scope finding left by a capped classify batch",
+            scopeStatus: "unknown",
+          });
+        }
+      },
+    ).run({
+      courseId,
+      maxDrivenHitches: 3,
+      maxStepsPerHitch: 2,
+      createdBy: "test",
+    });
+
+    expect(result.stopReason).toBe("completed");
+    // h-a was driven; the downstream child subtree is isolated (NOT driven), and
+    // the next root subtree (h-b) still progresses.
+    expect(calls).toContain("h-cap-a");
+    expect(calls).not.toContain("h-cap-a-child");
+    expect(result.phaseOutcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phaseId: "phase-cap-a-child",
+          note: "blocked_subtree",
+        }),
+      ]),
+    );
+    // The capped phase must NOT be marked ready_to_close / closed; it stays
+    // blocked-retryable (pending or in_progress), and the child is not closed.
+    expect(phases.require(childA.phaseId).status).not.toBe("closed");
+    expect(phases.require(rootA.phaseId).status).not.toBe("closed");
+    // h-b (a separate top-level subtree) is unaffected and still drives.
+    expect(calls).toContain("h-cap-b");
+  });
+
   it("stops at maxDrivenHitches and records the remaining phases as not driven", async () => {
     const courseId = newCourse(db, "course-budget");
     const phases = new PhaseRepository(db);

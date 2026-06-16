@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V30_STATEMENTS`、
-> `SCHEMA_VERSION = 30`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V31_STATEMENTS`、
+> `SCHEMA_VERSION = 31`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -720,7 +720,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 30`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 31`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -751,6 +751,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 28 | telemetry follow-up F4 | `domain_lock_contention`（run log 作成前の domain lock busy を append-only に記録する純テレメトリ） |
 | 29 | course-ext G4 | `hitch_lifecycle_events.event` CHECK を rebuild で拡張し `pr_adopted` / `updated` を許容（v23 の FK/NOT NULL/index は維持） |
 | 30 | token-usage G1 | `run_usage` を `(run_id, kind, seq)` primary key へ再作成。既存行は `kind='coder', seq=0` で移行し、snapshot payload schema は 2 |
+| 31 | epic #228 / #230 deliberation jury A1 | `jury_classification_proposals` / `jury_classification_refutations` / `jury_severity_audits`（合議制 classification jury の append-only 監査入力表。FK ゼロ・business-key に `deliberation_id` を含む。詳細は下記「schema v31」） |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -1230,3 +1231,218 @@ CREATE INDEX hitch_lifecycle_events_hitch_idx
 ```
 
 この table は監査ログであり、hitch の状態遷移や phase rollup の判定には使わない。
+
+## epic #228 / #230 deliberation jury（schema v31）
+
+schema v31 は合議制 classification jury（issue #230）の 5-stage 熟議
+（Stage 1 propose / Stage 3 critique / Stage 4 refute / severity audit）を永続化する
+**append-only の監査入力 3 テーブル**を additive 追加する。LLM 出力はこの 3 表に
+だけ載り、状態遷移は決定論ゲート `aggregateDeliberation` の結果だけが駆動する
+（LLM の自己申告で状態を書き換えない）。
+
+backbone 準拠（[`docs/design/proposals/design-db-persistence.md`](../design/proposals/design-db-persistence.md)）:
+
+- **FK ゼロ**: 3 表とも `FOREIGN KEY` を一切宣言しない。`finding_id` が権威キー、
+  `hitch_id` は denorm advisory。親 purge 後も行は残る（doctor が orphan を報告）。
+  insert 時に `finding_id → hitch_findings.hitch_id` の一致を harness 側で検査し、
+  不一致は reject（fail-closed・repository / consistency 層の責務）。
+- **business-key に `deliberation_id` を含む**: prompt_sha256 を再利用する retry
+  （gate input = refuter verdict が変わる）を別行にし、decision packet の
+  `deliberation_id` と常に一致させる（design §0.1 R15）。
+- **`V31_TABLE_NAMES`** を新設し `ALL_TABLE_NAMES` union に追加。`CURRENT_TABLE_NAMES`
+  と live な `sqlite_master`（`schema_migrations` / `sqlite_%` を除く）の exact-match
+  health check で union の宣言漏れ・余分の双方向 drift を検出する。
+- **同番号衝突 guard（R12）**: `runMigrations` は適用ループ前に
+  `assertMigrationNameIntegrity` を実行し、`schema_migrations` の既適用 version の
+  `name` が `MIGRATIONS` 定義の期待 `name` と一致するか検査する。別 branch が同一
+  version を別 name で先取りした場合（version-only dedup による silent skip で
+  #230 DDL が永久未適用になる罠）を throw で検出する（fail-closed）。
+
+### ① `jury_classification_proposals`（Stage 1/3）
+
+```sql
+CREATE TABLE jury_classification_proposals (
+  proposal_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  finding_id           TEXT NOT NULL,
+  hitch_id             TEXT NOT NULL,
+  run_id               TEXT,
+  lens                 TEXT NOT NULL
+    CHECK (lens IN ('correctness','scope_fit','spec_adherence')),
+  reviewer_id          TEXT NOT NULL,
+  proposed_scope       TEXT NOT NULL
+    CHECK (proposed_scope IN ('in_scope','out_of_scope','unknown')),
+  proposal_status      TEXT NOT NULL
+    CHECK (proposal_status IN ('complete','timeout','parse_error','inconclusive'))
+    DEFAULT 'complete',
+  confidence           REAL CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1),
+  reasoning            TEXT,
+  model                TEXT,
+  prompt_sha256        TEXT NOT NULL,
+  prompt_provenance_json TEXT,
+  usage_kind           TEXT,
+  usage_seq            INTEGER,
+  audit_dir_path       TEXT,
+  round                INTEGER NOT NULL DEFAULT 1 CHECK (round IN (1,2)),
+  evidence_json        TEXT,
+  refutation_condition TEXT,
+  uncertainty          TEXT,
+  vote_changed         INTEGER CHECK (vote_changed IN (0,1)),
+  critique_json        TEXT,
+  deliberation_id      TEXT NOT NULL,
+  created_at           TEXT NOT NULL
+);
+CREATE UNIQUE INDEX jury_classification_proposals_dedup_idx
+  ON jury_classification_proposals(finding_id, lens, reviewer_id, round, prompt_sha256, deliberation_id);
+CREATE INDEX jury_classification_proposals_delib_idx   ON jury_classification_proposals(deliberation_id);
+CREATE INDEX jury_classification_proposals_finding_idx ON jury_classification_proposals(finding_id, lens);
+CREATE INDEX jury_classification_proposals_hitch_idx   ON jury_classification_proposals(hitch_id, finding_id);
+```
+
+`round=1` は独立提案、`round=2` は批判後の再投票（`vote_changed` / `critique_json`
+は R2 のみ）。business-key に `round` を含むため R1/R2 は別行。
+
+### ② `jury_classification_refutations`（Stage 4・新表）
+
+```sql
+CREATE TABLE jury_classification_refutations (
+  refutation_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  finding_id           TEXT NOT NULL,
+  hitch_id             TEXT NOT NULL,
+  run_id               TEXT,
+  target_scope         TEXT NOT NULL CHECK (target_scope IN ('in_scope','out_of_scope')),
+  refute_verdict       TEXT NOT NULL CHECK (refute_verdict IN ('uphold','refute','inconclusive')),
+  counter_evidence_json TEXT,
+  reasoning            TEXT,
+  reviewer_id          TEXT NOT NULL,
+  model                TEXT,
+  prompt_sha256        TEXT NOT NULL,
+  prompt_provenance_json TEXT,
+  usage_kind           TEXT,
+  usage_seq            INTEGER,
+  audit_dir_path       TEXT,
+  deliberation_id      TEXT NOT NULL,
+  created_at           TEXT NOT NULL
+);
+CREATE UNIQUE INDEX jury_classification_refutations_dedup_idx
+  ON jury_classification_refutations(finding_id, target_scope, reviewer_id, prompt_sha256, deliberation_id);
+CREATE INDEX jury_classification_refutations_delib_idx   ON jury_classification_refutations(deliberation_id);
+CREATE INDEX jury_classification_refutations_finding_idx ON jury_classification_refutations(hitch_id, finding_id);
+```
+
+`target_scope` は Stage 4 起動時の unanimous verdict 単一値。
+
+### ③ `jury_severity_audits`（severity advisory）
+
+```sql
+CREATE TABLE jury_severity_audits (
+  audit_id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  finding_id           TEXT NOT NULL,
+  hitch_id             TEXT NOT NULL,
+  run_id               TEXT,
+  harness_severity     TEXT NOT NULL CHECK (harness_severity IN ('P0','P1','P2','P3','info')),
+  jury_severity        TEXT          CHECK (jury_severity IN ('P0','P1','P2','P3','info')),
+  audit_status         TEXT NOT NULL CHECK (audit_status IN ('aligned','diverged','inconclusive')),
+  escalate_flag        INTEGER NOT NULL DEFAULT 0 CHECK (escalate_flag IN (0,1)),
+  reasoning            TEXT,
+  model                TEXT,
+  prompt_sha256        TEXT NOT NULL,
+  usage_kind           TEXT,
+  usage_seq            INTEGER,
+  jury_votes_json      TEXT,
+  deliberation_id      TEXT NOT NULL,
+  created_at           TEXT NOT NULL
+);
+CREATE UNIQUE INDEX jury_severity_audits_dedup_idx   ON jury_severity_audits(finding_id, prompt_sha256, deliberation_id);
+CREATE INDEX jury_severity_audits_finding_idx ON jury_severity_audits(hitch_id, finding_id);
+```
+
+severity audit は advisory（`hitch_findings.severity` や close 判定には波及しない）。
+doctor 配線は A3（下記）で実装済み。decision-packet（`packetVersion: 2` の MCDA packet）
+への配線も実装済みで、jury split / refuter veto / 弱証拠 / stale の escalate packet と
+severity 乖離の advisory packet を classify runner / orchestrator が組み立てて
+`hitch_convergence_decisions.recommended_next_action` に永続化する（workflow.md
+「finding 分類」参照）。
+
+### repository（A2）
+
+3 表それぞれに insert 専用 repository（`src/db/repositories/jury-*.ts`）。すべて
+`class { constructor(private readonly db) }` 形で、共通ヘルパ
+`assertFindingHitchConsistency`（`src/db/jury-consistency.ts`）を insert 前に呼ぶ。
+
+- **fail-closed 整合検査**: insert する前に `finding_id` が `hitch_findings` に
+  存在し、かつ stored `hitch_id` が input の `hitchId` と一致するかを検査する。
+  finding 不在は throw（`finding_id ... not found`）、hitch_id 不一致は throw
+  （`hitch_id mismatch`）。FK が無い（backbone P1-1）ため、この検査が denorm
+  `hitch_id` の整合性を担保する（design §0.1 R5/P2f）。
+- **business-key dedup**: `INSERT OR IGNORE` で business-key UNIQUE index が
+  重複を黙って捨てる。`deliberation_id` を business-key に含むため、prompt_sha256
+  を再利用する retry（別 deliberation）は別行になり packet と常に一致する（R15）。
+- **JSON 列**: `evidence_json` / `counter_evidence_json` / `jury_votes_json` /
+  `critique_json` / `prompt_provenance_json` は値が `undefined`/`null` のときのみ
+  `null` を格納し、それ以外は `JSON.stringify`。`evidence`/`juryVotes`（必須 array）
+  は空配列でも `'[]'` で round-trip する。proposal の `evidence_json` は
+  `VerifiedJuryEvidence`（`verifyEvidence` 通過後）を保存する（verify は Layer 1/2
+  で上流処理・repository は検証しない＝design §0.1 R1）。
+
+### doctor 拡張（A3）
+
+FK ゼロの 3 表は、親 purge / denorm drift / packet 不整合を doctor が**事後監査
+で報告**する（自動修復はしない＝state 遷移は harness のみ）。check は
+`src/db/jury-doctor-checks.ts` に定義し `DEFAULT_CHECKS` に登録する。category は
+既存 union の `'review'` を流用（design §0.1 R11）。すべて advisory（severity
+`warn`・`repairable:false`）で、DELETE は既存 `repairFinding` の operator 承認 gate
+に乗る（doctor が勝手に消さない）。
+
+- **`jury.orphan_rows`**: 3 表のいずれかに、対応する `hitch_findings` 行が無い
+  audit 行（finding が purge 済み）。FK ゼロゆえ親削除後も残るのが正で、doctor が
+  orphan として advisory 報告する。
+- **`jury.hitch_mismatch`**: stored `hitch_id` が `hitch_findings` join の
+  `hitch_id` と食い違う行（denorm drift）。orphan（join 行が無い）は本 check では
+  flag しない（`jury.orphan_rows` が担当）。
+- **`jury.refutation_mismatch`**: refutation と proposals/packet の不整合（design
+  §0.1 P2h）。(a) `refutation.target_scope` が同一 `deliberation_id` proposals の
+  **最終 round（`MAX(round)`）の unanimous な `proposed_scope`** と一致するか（split
+  や proposals 不在は比較対象が無く vacuous → flag しない）。(b)
+  `hitch_convergence_decisions.recommended_next_action` を **TS でパース**して
+  `decisionPacket.deliberation.refuter.refuteVerdict` を取り出し、保存済み
+  refutation 行の `refute_verdict` と一致するか。SQL 単独では nested packet に
+  届かないため JSON-parse する新 check 形（R11）。壊れた JSON / packet 欠落は防御的
+  に skip（doctor を crash させない）。**bundled packet の単一
+  `deliberation.refuter` は LEAD split（`findings[0]`）のみを表す**ため、(b) は
+  LEAD finding のみと突き合わせる（非 LEAD finding は (a) で各自の per-deliberation
+  proposals と検証する。さもなくば非 LEAD が共有 verdict と誤 mismatch する）。
+- **`jury.auto_confirm_replay`**（P2b auto_confirm 正当性再検証）: jury 確定
+  finding（`classification_reason` が `jury auto_confirm (deliberation_id=<id>)`
+  を含む）について、保存済みの最終 round proposals（`selectFinalRound`）+ refutation
+  行から `DeliberationInput` を再構成し `aggregateDeliberation` を **replay**。
+  `decision==='auto_confirm'` を満たさない finding を advisory flag する（LLM→状態
+  直結の疑い＝安全境界の事後監査の機械化）。証拠 JSON の破損は防御的に空配列扱い
+  （verified 証拠ゼロ → replay は escalate → 改竄を隠さず surface する）。**replay
+  scope-match 監査（codex#254-R6 FIX 2）**: replay が `auto_confirm` を返す場合でも、
+  replay の `scope` を finding の保存 `scope_status` と照合する。両者が食い違う行
+  （proposals は in_scope に replay するのに保存 `scope_status` が out_of_scope 等、
+  決定論ゲートの scope と記録 scope が不一致）も advisory flag する（gate が
+  auto_confirm すること自体は再現できても、記録された scope がゲート由来でない
+  ＝LLM→状態直結 / 事後改竄の疑い）。
+
+**v31 table-presence guard（codex#254-R5 P2 FIX3）**: これら 4 check は
+`DEFAULT_CHECKS` に常駐するが、v31 の 3 表（`jury_classification_proposals` /
+`jury_classification_refutations` / `jury_severity_audits`）を **無条件には
+query しない**。各 check は実行前に必要な v31 表の存在を
+`SELECT name FROM sqlite_master WHERE type='table' AND name=?` で確認し、
+**いずれかが欠落していれば finding ゼロで skip**（status `ok`、error を投げない）。
+これは migration 前の DB に対して read-only caller が `DEFAULT_CHECKS` を回す経路
+（例: `dbRepairDryRunTool` は `withReadonlyDb` ＋ `DEFAULT_CHECKS.flatMap` で
+migration を走らせない）で `no such table` crash を起こさないため。表が無い＝監査
+対象の jury 行も無いので skip は安全（fail-open。隠れた不整合は生じない）。v31
+適用済み DB での挙動は guard 前と byte 同一。
+
+### import / export（A3 — DB-only audit）
+
+3 表は **DB-only** の append-only 監査表で、いずれの reset list
+（`import-files.ts` の `RESET_TABLES_FILE_DERIVED` / `RESET_TABLES_RUNTIME` /
+`RESET_CHILD_TABLES`）にも**追加しない**。よって `runFullImport({ reset: true })`
+（read-only scoped command が `withRefreshedDb` 経由で毎回呼ぶ）後も既存の audit 行は
+残り、空になるのは fresh DB のみ。FK が無いので親 finding を DELETE しても constraint
+error にならず、audit 行は orphan として残る（doctor が報告）。SQLite フル snapshot
+backup は全表を自動包含する。

@@ -7,6 +7,7 @@ import { openDb } from "../../../src/db/connection.js";
 import {
   runMigrations,
   currentSchemaVersion,
+  MIGRATIONS,
 } from "../../../src/db/migrations.js";
 import {
   MIGRATION_V1_STATEMENTS,
@@ -45,9 +46,10 @@ function v4Db(path: string): Database.Database {
       "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)",
     ).run();
     for (const v of [1, 2, 3, 4]) {
+      const name = MIGRATIONS.find((m) => m.version === v)?.name ?? `v${v}`;
       db.prepare(
         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
-      ).run(v, `v${v}`, "2026-05-23T00:00:00Z");
+      ).run(v, name, "2026-05-23T00:00:00Z");
     }
   });
   tx();
@@ -114,7 +116,7 @@ describe("schema v5 migration", () => {
     const r = runMigrations(db);
     expect(r.applied).toEqual([
       5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27, 28, 29, 30,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
     ]);
     expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
     const row = db

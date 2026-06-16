@@ -1,3 +1,5 @@
+import type { HitchDecisionPacket } from "./jury/types.js";
+
 export const HITCH_STATUSES = [
   "open",
   "in_progress",
@@ -360,6 +362,13 @@ export interface HitchNextAction {
   /** Advisory context for operators; convergence may truncate this list. */
   findingIds?: string[];
   message: string;
+  /**
+   * Optional consultant-grade MCDA decision packet (#230, design §5.2 v2).
+   * Additive: present only on jury escalate / non-escalating severity records.
+   * Typed via `import type` to avoid a runtime circular import between
+   * hitch/types.ts and hitch/jury/types.ts.
+   */
+  decisionPacket?: HitchDecisionPacket;
 }
 
 export interface HitchConvergenceMetrics {

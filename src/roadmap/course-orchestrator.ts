@@ -27,7 +27,10 @@ import {
   normalizeCourseMaxDrivenHitches,
   normalizeCourseMaxStepsPerHitch,
 } from "./course-normalize.js";
-import { decideCoursePhaseAction } from "./orchestrate-dispatch.js";
+import {
+  BLOCKED_DECISIONS,
+  decideCoursePhaseAction,
+} from "./orchestrate-dispatch.js";
 import type {
   CourseOrchestrationResult,
   CoursePhaseAction,
@@ -472,6 +475,37 @@ export class CourseOrchestrator {
           subtreeBlocked = true;
           break;
         }
+
+        // (codex#254-P2) A NON-escalating drive may still leave blocking
+        // convergence behind — most importantly a jury classify batch capped at
+        // JURY_BATCH_LIMIT (`moreUnknownsPending`), which halts the hitch loop as
+        // a benign `max_steps_exhausted` while unknown-scope findings REMAIN.
+        // Re-derive the hitch's LIVE convergence (deterministic; never the LLM's
+        // self-report) and, if it is still a blocking decision, isolate the
+        // subtree exactly like the pre-drive gate. This is RETRYABLE, not a human
+        // escalation and not a terminal advance: the phase stays open, downstream
+        // phases do NOT progress, and a later invocation re-fires the same
+        // decision (e.g. needs_classification) and drains the next batch. Sharing
+        // BLOCKED_DECISIONS with the pre-drive gate keeps the two in lock-step.
+        if (options.driveHitch !== undefined) {
+          const postDrive = convergence.evaluate(hitchId);
+          if (BLOCKED_DECISIONS.has(postDrive.decision)) {
+            phaseOutcomes = [
+              ...phaseOutcomes,
+              {
+                phaseId: phase.phaseId,
+                action: "blocked_hitch",
+                drivenHitches: phaseDriven,
+                blockedHitch: {
+                  hitchId,
+                  decision: postDrive.decision,
+                },
+              },
+            ];
+            subtreeBlocked = true;
+            break;
+          }
+        }
       }
 
       if (!subtreeBlocked && !hasOutcomeFor(phaseOutcomes, phase.phaseId)) {
@@ -596,12 +630,10 @@ export class CourseOrchestrator {
     } catch (e) {
       if (!(e instanceof HitchMutationGateError)) throw e;
       const reevaluated = convergence.evaluate(hitchId);
-      if (
-        reevaluated.decision === "escalate" ||
-        reevaluated.decision === "diverging" ||
-        reevaluated.decision === "budget_exhausted" ||
-        reevaluated.decision === "needs_classification"
-      ) {
+      // Reuse the shared BLOCKED_DECISIONS set so all three course-layer blocking
+      // sites (pre-drive gate, post-drive re-check, this mutation-gate fallback)
+      // stay in lock-step — no inlined literal drift.
+      if (BLOCKED_DECISIONS.has(reevaluated.decision)) {
         return { kind: "blocked_hitch", decision: reevaluated.decision };
       }
       return { kind: "report_only" };

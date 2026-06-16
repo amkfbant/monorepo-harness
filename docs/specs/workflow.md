@@ -1022,6 +1022,103 @@ close-check failure、実 test failure は従来どおり blocker として扱�
 誤って `close_ready` にならないようにする。`out_of_scope_suggestions` は out-of-scope
 follow-up として記録される。
 
+**finding 分類（`needs_classification`・3 フェーズ熟議）**: convergence が
+`needs_classification` を返す（open かつ `unknown`-scope の finding がある）と、
+orchestrator は classify runner（`src/hitch/orchestrator-runners.ts` →
+`src/hitch/jury/classify-runner.ts`）を **3 フェーズの DB 分離**で回す（#230 合議制
+jury）。安全境界の核心: 状態遷移は harness のみ、`repo.classifyFinding` は決定論ゲート
+Stage5 の `auto_confirm` のみで走る（LLM 出力が scope/severity/status を直接書かない）。
+
+**2 つの決定論的決定者・finding 集合を MECE に分割（LLM の発話は分類を決して駆動しない）**:
+open かつ `unknown` の finding は、重なりなく **どちらか一方** の*決定論的*（非 LLM）決定者で
+解決される。(1) **決定論ヒューリスティック**（`classifyFindingForHitch`・非 LLM・Phase 1）が
+解ける明白な **harness-origin** finding は **jury が走る前に**直接分類され（`classifyFinding`）、
+jury は **bypass** される（proposer/critique/refuter 呼び出しも監査行も無し）。(2) **決定論ゲート**
+（`aggregateDeliberation`・Stage5）は、ヒューリスティック後も `unknown` の残った **jury 候補**
+（harness-origin かつ未解決）だけを arbitrate する。したがって **「決定論ゲートが唯一の arbiter」**
+不変条件は **jury 候補に限定**して適用される（ヒューリスティック解決分は同じく決定論的な
+ヒューリスティックが arbitrate）。どちらの経路でも判定は決定論的な harness ロジックが下し、
+LLM の提案/批判/反証はゲートへの *advisory input* に過ぎず決定者ではない。第三の経路も重なりも
+無い（finding は ヒューリスティック解決・jury 判定・operator-origin escalate のいずれか一つ）。
+正本は [`hitch-convergence.md`](./hitch-convergence.md) の Monotonic 不変条件 §0。
+
+- **Phase 1（DB open・同期 snapshot）**: open かつ `unknown` の finding を origin で分割
+  する。**operator-origin（`source` が `human`/`mcp`）は heuristic も jury も通さず**、
+  manual 分類のため bundled escalate packet に束ねる（fail-closed・機械分類しない）。
+  harness-origin（`review`/`test`/`doctor`/`codex`/`other`）は既存 heuristic
+  （`classifyFindingForHitch`）を適用し、確定したら即 `classifyFinding`（heuristic が
+  jury を bypass する）。なお `unknown` のものを **jury 候補**として snapshot する。
+  heuristic ドレインには既存の no-progress guard を残す（heuristic 確定が DB に効かない
+  ケースのみ escalate であり、jury defer を escalate に誤判定しない）。DB を閉じる。
+- **Phase 2（DB 閉・LLM）**: jury 候補のうち先頭 `JURY_BATCH_LIMIT`（既定 **25**）件に
+  対して `deliberate()`（Stage1 提案 → Stage2 決定論証拠検証 → Stage3 批判 → Stage4
+  敵対反証 → Stage5 純関数ゲート）を**メモリ実行**する。DB ハンドルは await を跨いで
+  保持しない（reviewer path と同方式）。finding 1 件あたり 4〜7 codex 呼び出し
+  （3 lens 提案 + 任意の 3 critique + 1 refute）。最悪上限は `JURY_BATCH_LIMIT × 7`
+  ≒ 175 呼び出し/invocation で、`FINDING_BATCH_LIMIT`(200) 以下に抑える。
+- **Phase 3（DB 再 open）**: 各 outcome について、(a) 生成された監査行
+  （proposals R1/R2・refutations・severity_audits）を **skip 有無に関わらず全て永続化**
+  （P2k）、(b) finding がまだ `unknown`+open か再検証（jury 中に他経路が分類した finding は
+  `classifyFinding` を skip し監査行だけ残す）、(c) auto_confirm の file-kind verified
+  citation を現 worktree に対し `verifyEvidence` で **再 stat**（path 消失/行範囲外なら
+  stale → auto_confirm 取り下げて escalate。spec/policy は immutable 扱い）、(d)
+  auto_confirm かつ fresh なら `classifyFinding`（reason に駆動した `deliberation_id` を
+  刻む: `jury auto_confirm (deliberation_id=<id>)`）、(e) severity 乖離は non-escalating
+  な severity packet を `resolved:true` 結果に添える、(f) escalate（split / refuter veto /
+  弱証拠 / stale）は bundled escalate packet に束ねる。DB を閉じる。
+
+**batch cap と次 invocation 持ち越し**: jury 候補が `JURY_BATCH_LIMIT` を超えると、この
+invocation では cap 件だけ処理し、結果に additive な `moreUnknownsPending:true` を立てる。
+orchestrator はこれを見て **当該 invocation のループを clean に halt**（escalate ではない）
+する。残りの `unknown` は次回 `orchestrate` invocation の convergence が再び
+`needs_classification` を返して処理する。これで per-invocation のコスト上界を 1 jury batch に
+抑える。classify runner の戻り型は `ClassifyRunnerResult`（`resolved:true`〔任意で
+`severityAuditPacket` / `moreUnknownsPending`〕／ `resolved:false`〔`decision:'escalate'` +
+`escalateReason` + consultant 級 `decisionPacket`〕）。MCP `hitch.classify_finding` /
+CLI `hitch classify` の standalone 呼び出しは reviewer/worktree/audit context を持たないため
+**jury を起動せず従来どおり heuristic + operator-manual**（fail-closed）。
+
+**escalate packet の永続化（WI-9b）**: classify runner が `resolved:false`（jury split /
+refuter veto / 弱証拠 / stale）を返したとき、orchestrator は escalate outcome を return する
+**前に** `recordConvergenceDecisionWithStatus({ decision:'escalate', reason:escalateReason,
+metrics（当該 iteration の convergence metrics を再利用）, recommendedNextAction（consultant 級
+`decisionPacket` を含む）, createdBy })` を呼んで decision を `hitch_convergence_decisions` に
+永続化する。これで packet（jury reasoning / next actions）が operator 向けに残る（dashboard /
+escalation log）。status は既定の `updateStatus:true` で `escalated` に同期する（この escalate は
+status を倒すべき経路なので正しい）。状態遷移は harness のみ: LLM 出力が status を直接書かず、
+この決定論的な record が唯一の sync 経路。`recommendedNextAction` の `kind`/`message`/`findingIds`
+は後方互換のため常時 populate される。
+
+**severity packet の non-escalating 記録（D2b・rollup-neutral）**: classify runner が
+`resolved:true` を返し、かつ `severityAuditPacket` を添えている（scope は jury auto_confirm で
+確定したが、決定論的 severity audit が harness mapping と乖離した）とき、orchestrator はこの
+advisory packet を **1 回だけ non-escalating に記録**する: `recordConvergenceDecisionWithStatus({
+updateStatus:false, decision:'continue', reason:<severity 乖離の advisory 文言>, metrics（当該
+iteration の convergence metrics）, recommendedNextAction（`kind:'ask_human'` ＋ `findingIds` ＋
+`decisionPacket`）, createdBy })`。**hitch status も course/phase rollup も不変**にするため二重の
+非 blocking を取る: (1) `updateStatus:false` で hitch status を sync しない、(2) `decision:'continue'`
+は rollup の blocked-set（`escalate`/`diverging`/`budget_exhausted`/`needs_classification`、
+`orchestrate-dispatch.ts`）の **外** かつ `statusForConvergenceDecision('continue')===null`。
+`escalate`/`needs_fix` 等を使うと updateStatus:false でも rollup が最新 decision の値で linked phase を
+block するため不可。severity mapping は authoritative・不変であり、この記録は監査・operator review 用の
+advisory に限る（状態遷移は harness のみ・LLM が status を倒さない）。record 後は
+`moreUnknownsPending` の halt 判定を適用してから loop を継続する。
+
+**packet の後方互換 read（packetVersion・#230 D6 / design §0.1 R6）**: `decisionPacket`
+は現行 `packetVersion: 2`（consultant 級 MCDA）。一方、旧版ハーネスが
+`hitch_convergence_decisions.recommended_next_action` に永続化した `packetVersion: 1`
+の packet 行は migration で消えず DB に残り得る（`deliberation` / `evidence` /
+`findings[].deliberationId` が**欠落**）。stored decision を読む経路は **packet shape に
+非依存**で設計する: 既存 reader（`HitchRepository.listDecisions` → `rowToDecision` は
+`recommended_next_action` を丸ごと `JSON.parse` して `HitchNextAction` として返すだけ・
+packet sub-field を触らない / CLI `hitch status` は decisions をそのまま JSON・
+`formatHitchStatusLine`〔packet 非参照〕へ渡す / MCP・CLI の run summary は
+`recommendedNextAction.kind`〔v1/v2 共通〕のみ参照 / dashboard snapshot・data-source は
+両 field を参照しない）。将来 packet sub-field を読む reader を足す場合は **`packetVersion`
+で discriminate ＋ optional chaining ＋ default fallback** を徹底し、v1 行（v2 専用 field
+は undefined）で throw しないこと。v1/v2 双方の read-back round-trip は
+`decision-packet-reader-compat.test.ts` で固定する。
+
 **rerun への finding 注入**: `rerun` 系 attempt（prior coding attempt が既に
 ある coder 実行）では、open in-scope finding（lifecycle が `open`/`reopened`/
 `escalated`）を集約して coder のゴール文言末尾に「Open in-scope findings to

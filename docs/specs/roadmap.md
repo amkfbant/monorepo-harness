@@ -128,7 +128,23 @@ For each phase in the tree (pre-order, depth-first):
   snapshot**: a caller cannot mark a phase "closed" to hide open findings.
 - **`latestDecision`**: the most recent `hitch_convergence_decisions.decision`
   across all linked hitches (latest by `created_at`, tie-broken by `decision_id`),
-  or null if none. **#171** — when the selected hitch has been terminally
+  or null if none. **Advisory rows are excluded from this display** (#230 /
+  codex#254-P2 FIX1): the D2b severity-audit advisory record writes a
+  status-neutral `decision:"continue"` row (`metrics.advisorySeverityRecord ===
+  true`, `updateStatus:false`) solely to surface a diverged severity audit; it is
+  not a convergence decision. `latestDecisionForPhase` skips any row detected as
+  advisory by `isAdvisoryRecord`, which matches **either** (a) the explicit
+  `metrics.advisorySeverityRecord === true` marker (current builds) **or** (b) a
+  **shape fallback** (codex#254-R5 P2 FIX2) for pre-marker rows written by earlier
+  #230 builds that had no marker: `decision === "continue"` AND the row's
+  `recommended_next_action.decisionPacket.decisionKinds` includes `severity_audit`.
+  The shape fallback keeps the display honest after a harness upgrade **without a
+  backfill migration**. Either way a phase whose **live** convergence is still
+  blocking (`needs_classification` / `needs_fix` / …) is not displayed as
+  `continue`. The
+  advisory row stays persisted and retrievable via `listDecisions`; only the
+  rollup display ignores it (the blocking gate uses live `convergence.evaluate()`,
+  never this display value). **#171** — when the selected hitch has been terminally
   closed/cancelled (`hitch close --force` / `cancel` record no decision row), its
   stored last decision is a stale mid-flight value (e.g. `diverging`); the rollup
   reports that hitch's **live** decision (`closed` / `cancel`) instead so a
@@ -214,6 +230,18 @@ next pass.
 an escalation boundary, not a whole-course hard stop. `blocked_hitch` and
 `blocked_subtree` are exit-0 structured phase outcomes; the course pass
 `stopReason` remains `completed`.
+
+The same subtree isolation also fires **after** a non-escalating drive. A
+driven hitch can halt benignly (e.g. `max_steps_exhausted` after a jury classify
+batch was capped at `JURY_BATCH_LIMIT`) while a blocking condition REMAINS — most
+importantly unknown-scope findings keeping the hitch at `needs_classification`.
+After each non-escalating drive the orchestrator re-derives the hitch's live
+convergence and, if it is a blocking decision (`escalate` / `diverging` /
+`budget_exhausted` / `needs_classification`), records `blocked_hitch` and
+isolates the subtree just like the pre-drive gate. This is **retryable**: the
+phase is not marked closed and downstream phases do not advance, so a later
+invocation re-fires the same decision and continues classifying. The pre-drive
+gate and the post-drive re-check share one blocked-decision set.
 
 ### Writes and stopping
 
