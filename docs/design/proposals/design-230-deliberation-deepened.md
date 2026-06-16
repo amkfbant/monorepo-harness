@@ -83,7 +83,7 @@ frozen v2 の `aggregateJuryVotes` は unanimous-only（多数決より安全）
 
 **R5. operator-origin 混在 batch の挙動 = 部分前進（確定）**（codex P1-5 / frozen §H3）
 - **harness-origin の unknown は同 batch で jury まで進めて確定/escalate（部分前進）／ operator-origin の unknown は機械分類せず
-  同一 escalate packet に `operator_origin_unknown` として束ねて即 manual escalate**。packet は複数 `decisionKind` を運べる。
+  同一 escalate packet に `operator_origin_unknown` として束ねて即 manual escalate**。packet は複数 `decisionKinds` を運べる。
 - 安全側はどちらでも同じ（operator-origin は機械分類しない）。誤 escalate 削減という headline benefit のため部分前進を採る。
 - TDD: 「mixed batch → harness-origin は jury 確定 / operator-origin は escalate packet に同梱・機械分類されない」。
 
@@ -162,7 +162,7 @@ frozen v2 の `aggregateJuryVotes` は unanimous-only（多数決より安全）
 
 PR #252 の codex App レビュー（P1×2 は plan 本文スニペットの v1.1 未反映＝plan 側で修正済み）に加え、設計側の P2×2 を確定:
 
-- **R14（P2-a・mixed-kind packet）**: R5 の部分前進で harness-origin(split→escalate) と operator-origin を同一 escalate packet に束ねると、スカラー `decisionKind` では片方の manual action が消える。**`HitchDecisionPacket.decisionKind` を `decisionKinds: Array<'classify_scope'|'severity_audit'|'operator_origin_unknown'>`（plural）に変更**し、`findings[]` 各要素に **`origin?: 'harness' | 'operator'`** を追加。`nextActions[]`（既に plural）が各 finding の必要 manual action を漏れなく列挙する（どの kind の action も hidden にしない）。§5.2 のスカラー `decisionKind` は本項で上書き。
+- **R14（P2-a・mixed-kind packet）**: R5 の部分前進で harness-origin(split→escalate) と operator-origin を同一 escalate packet に束ねると、スカラー `decisionKinds` では片方の manual action が消える。**`HitchDecisionPacket.decisionKind` を `decisionKinds: Array<'classify_scope'|'severity_audit'|'operator_origin_unknown'>`（plural）に変更**し、`findings[]` 各要素に **`origin?: 'harness' | 'operator'`** を追加。`nextActions[]`（既に plural）が各 finding の必要 manual action を漏れなく列挙する（どの kind の action も hidden にしない）。§5.2 のスカラー `decisionKinds` は本項で上書き。
 - **R15（P2-c・deliberation_id を dedup key に）**: `deliberation_id` を business-key の**外**に置くと、prompt_sha256 を再利用する retry（gate input=refuter verdict が変わる）で `INSERT OR IGNORE` が old deliberation_id の行を温存し、新 packet の deliberation_id と不整合 → doctor 照合が誤 fail。**business-key UNIQUE に `deliberation_id` を含める**:
   - proposals: `(finding_id, lens, reviewer_id, round, prompt_sha256, deliberation_id)`
   - refutations: `(finding_id, target_scope, reviewer_id, prompt_sha256, deliberation_id)`
@@ -375,12 +375,15 @@ design-230 §3.3 の rich フィールドと v3 deliberation フィールドを�
 ```ts
 interface HitchDecisionPacket {
   packetVersion: 2;
-  decisionKind: 'classify_scope' | 'severity_audit' | 'operator_origin_unknown';
-  findings: Array<{ findingId; summary; detail?; filePath?; severity?; scopeStatus? }>;
+  deliberationId: string;                    // R3/R4: 各 deliberation 実行を packet↔DB 入力行で束ねる
+  decisionKinds: Array<'classify_scope' | 'severity_audit' | 'operator_origin_unknown'>; // R14: plural（mixed batch で複数 kind を保持）
+  findings: Array<{ findingId; summary; detail?; filePath?; severity?; scopeStatus?;
+    origin?: 'harness' | 'operator' }>;      // R14: finding 毎の origin（どの action がどの origin か失わない）
   recommendation: { action: 'classify_manually' | 'review_split' | 'review_severity'; rationale: string };
   evaluationAxes: Array<{ axis: 'correctness'|'scope_fit'|'spec_adherence';
     lensVotes: Array<{ lens; scope?; proposalStatus?; reasoning?; confidence?;
-      evidence?: JuryEvidence[]; refutationCondition?; uncertainty?; voteChanged? }>;
+      evidence?: JuryEvidence[]; refutationCondition?; uncertainty?; voteChanged?;
+      severity?: HitchFindingSeverity }>;    // R2: proposedSeverity を packet にも
     consensus: 'aligned'|'split' }>;
   deliberation: { critiqueRan: boolean; refuter: RefuterVerdict | null;
     gateTrace: DeliberationResult['gateTrace'] };
@@ -449,10 +452,12 @@ Stage5 を入力テーブルに書かないのが安全境界の肝。auto_confi
   refutation_condition TEXT,
   uncertainty          TEXT,
   vote_changed         INTEGER CHECK (vote_changed IN (0,1)),  -- R2 のみ
-  critique_json        TEXT     -- R2 のみ
--- business key に round 追加（R1/R2 衝突回避）:
+  critique_json        TEXT,    -- R2 のみ
+  deliberation_id      TEXT NOT NULL -- R4/R15: deliberation 実行 linkage（business-key にも含む）
+-- business key に round + deliberation_id（R1/R2 衝突回避 + retry を別行・packet と一致: R15）:
 CREATE UNIQUE INDEX jury_classification_proposals_dedup_idx
-  ON jury_classification_proposals(finding_id, lens, reviewer_id, round, prompt_sha256);
+  ON jury_classification_proposals(finding_id, lens, reviewer_id, round, prompt_sha256, deliberation_id);
+CREATE INDEX jury_classification_proposals_delib_idx  ON jury_classification_proposals(deliberation_id);
 CREATE INDEX jury_classification_proposals_finding_idx ON jury_classification_proposals(finding_id, lens);
 CREATE INDEX jury_classification_proposals_hitch_idx   ON jury_classification_proposals(hitch_id, finding_id);
 ```
@@ -470,15 +475,19 @@ CREATE TABLE jury_classification_refutations (
   reviewer_id    TEXT NOT NULL, model TEXT,
   prompt_sha256  TEXT NOT NULL, prompt_provenance_json TEXT,
   usage_kind TEXT, usage_seq INTEGER, audit_dir_path TEXT,
+  deliberation_id TEXT NOT NULL,            -- R4/R15: deliberation 実行 linkage（business-key にも含む）
   created_at     TEXT NOT NULL
 );
 CREATE UNIQUE INDEX jury_classification_refutations_dedup_idx
-  ON jury_classification_refutations(finding_id, target_scope, reviewer_id, prompt_sha256);
+  ON jury_classification_refutations(finding_id, target_scope, reviewer_id, prompt_sha256, deliberation_id);
+CREATE INDEX jury_classification_refutations_delib_idx ON jury_classification_refutations(deliberation_id);
 CREATE INDEX jury_classification_refutations_finding_idx
   ON jury_classification_refutations(hitch_id, finding_id);
 ```
+> target_scope は Stage4 起動時の unanimous verdict 単一値（split refuter は follow-up）。
 
-**③ `jury_severity_audits`** — 凍結どおり（変更なし・advisory・severity CHECK に `info`・`escalate_flag CHECK(0,1)`）。
+**③ `jury_severity_audits`** — 凍結 DDL に **R2/R15 の additive** を加える: `jury_votes_json TEXT`（`[{lens,proposedSeverity,reasoning,round}]`）+ `deliberation_id TEXT NOT NULL`。
+dedup index を `(finding_id, prompt_sha256, deliberation_id)` に。severity CHECK に `info`・`escalate_flag CHECK(0,1)` は凍結どおり。
 
 ### 6.3 migration / consistency / doctor
 

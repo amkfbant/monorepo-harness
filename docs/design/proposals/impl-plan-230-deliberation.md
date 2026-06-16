@@ -139,7 +139,7 @@ R6 は「全 reader に packetVersion discriminate + optional chaining」を要�
 - Modify: `src/db/migrations.ts`（`MIGRATION_V31_STATEMENTS`, `MIGRATIONS` append）
 - Test: `tests/unit/db/migration-v31.test.ts`
 
-DDL は design §6.2 + §0.1 R2/R4 の全文を使う（`jury_classification_proposals` は round/evidence_json/refutation_condition/uncertainty/vote_changed/critique_json/`deliberation_id` 追加・business-key=`(finding_id,lens,reviewer_id,round,prompt_sha256)`；`jury_classification_refutations` は target_scope/refute_verdict/counter_evidence_json/`deliberation_id`；`jury_severity_audits` は frozen + `jury_votes_json` + `deliberation_id`）。**全表 FK ゼロ**。
+DDL は design §6.2 + §0.1 R2/R4 の全文を使う（`jury_classification_proposals` は round/evidence_json/refutation_condition/uncertainty/vote_changed/critique_json/`deliberation_id` 追加・business-key=`(finding_id,lens,reviewer_id,round,prompt_sha256,deliberation_id)`；`jury_classification_refutations` は target_scope/refute_verdict/counter_evidence_json/`deliberation_id`・business-key=`(finding_id,target_scope,reviewer_id,prompt_sha256,deliberation_id)`；`jury_severity_audits` は frozen + `jury_votes_json` + `deliberation_id`・business-key=`(finding_id,prompt_sha256,deliberation_id)`）。**全表 FK ゼロ**。business-key に `deliberation_id` を含めることで retry を別行・packet と常に一致（R15）。
 
 - [ ] **Step 1: RED — migration テスト**
 
@@ -796,7 +796,7 @@ design §7.2 + §0.1 R3。`!r.resolved` のとき escalate return の前に `rec
 6. Stage1-5 永続化＋doctor 監査 = A1/A2/A3 + D1 ✓
 7. サブ/大 Phase 緑 = 各 task の typecheck + D5 のフル ✓
 
-**§0.1 P1 → task:** R1=B5/C1/B3, R2=A1/D2b, R3=D2b, R4=A1/A2, R5=D1, R6=B6/D4, R7=B1/B6, R8=B3, R9=C2/C3(付録P), R10=A1, R11=A3, R12=A1, R13=D1/E2 ✓
+**§0.1 P1 → task:** R1=B5/C1/B3, R2=A1/D2b, R3=D2b, R4=A1/A2/B6, R5=D1, R6=B6/**D6**, R7=B1/B6, R8=B3, R9=C2/C3(付録P), R10=A1, R11=A3, R12=A1, R13=D1/E2 / R14(mixed-kind packet)=B6, R15(deliberation_id dedup)=A1/A2 ✓
 
 **Type consistency:** `VerifiedJuryEvidence` を gate(B3)/proposer(C1)/packet(B6)/repo(A2) で一貫。`ClassifyRunnerResult` を B1 定義・D1/D2 使用。`deliberationId` を A1(DDL)/A2(repo)/C4(生成)/D1(配線) で一貫。
 
