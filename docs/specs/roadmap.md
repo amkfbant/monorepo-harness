@@ -132,9 +132,16 @@ For each phase in the tree (pre-order, depth-first):
   codex#254-P2 FIX1): the D2b severity-audit advisory record writes a
   status-neutral `decision:"continue"` row (`metrics.advisorySeverityRecord ===
   true`, `updateStatus:false`) solely to surface a diverged severity audit; it is
-  not a convergence decision. `latestDecisionForPhase` skips any row whose metrics
-  carry that marker so a phase whose **live** convergence is still blocking
-  (`needs_classification` / `needs_fix` / …) is not displayed as `continue`. The
+  not a convergence decision. `latestDecisionForPhase` skips any row detected as
+  advisory by `isAdvisoryRecord`, which matches **either** (a) the explicit
+  `metrics.advisorySeverityRecord === true` marker (current builds) **or** (b) a
+  **shape fallback** (codex#254-R5 P2 FIX2) for pre-marker rows written by earlier
+  #230 builds that had no marker: `decision === "continue"` AND the row's
+  `recommended_next_action.decisionPacket.decisionKinds` includes `severity_audit`.
+  The shape fallback keeps the display honest after a harness upgrade **without a
+  backfill migration**. Either way a phase whose **live** convergence is still
+  blocking (`needs_classification` / `needs_fix` / …) is not displayed as
+  `continue`. The
   advisory row stays persisted and retrievable via `listDecisions`; only the
   rollup display ignores it (the blocking gate uses live `convergence.evaluate()`,
   never this display value). **#171** — when the selected hitch has been terminally

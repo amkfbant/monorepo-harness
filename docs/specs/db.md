@@ -1419,6 +1419,18 @@ FK ゼロの 3 表は、親 purge / denorm drift / packet 不整合を doctor �
   直結の疑い＝安全境界の事後監査の機械化）。証拠 JSON の破損は防御的に空配列扱い
   （verified 証拠ゼロ → replay は escalate → 改竄を隠さず surface する）。
 
+**v31 table-presence guard（codex#254-R5 P2 FIX3）**: これら 4 check は
+`DEFAULT_CHECKS` に常駐するが、v31 の 3 表（`jury_classification_proposals` /
+`jury_classification_refutations` / `jury_severity_audits`）を **無条件には
+query しない**。各 check は実行前に必要な v31 表の存在を
+`SELECT name FROM sqlite_master WHERE type='table' AND name=?` で確認し、
+**いずれかが欠落していれば finding ゼロで skip**（status `ok`、error を投げない）。
+これは migration 前の DB に対して read-only caller が `DEFAULT_CHECKS` を回す経路
+（例: `dbRepairDryRunTool` は `withReadonlyDb` ＋ `DEFAULT_CHECKS.flatMap` で
+migration を走らせない）で `no such table` crash を起こさないため。表が無い＝監査
+対象の jury 行も無いので skip は安全（fail-open。隠れた不整合は生じない）。v31
+適用済み DB での挙動は guard 前と byte 同一。
+
 ### import / export（A3 — DB-only audit）
 
 3 表は **DB-only** の append-only 監査表で、いずれの reset list

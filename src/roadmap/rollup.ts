@@ -5,6 +5,7 @@ import {
   OPEN_FINDING_LIFECYCLES,
 } from "../hitch/repository.js";
 import { ADVISORY_SEVERITY_RECORD_KEY } from "../hitch/convergence-status.js";
+import type { HitchConvergenceDecisionRecord } from "../hitch/types.js";
 import { PhaseRepository, phaseNote } from "./phase-repository.js";
 import { derivePhaseReadiness } from "./ready-to-close.js";
 import type { PhaseStatus } from "./types.js";
@@ -97,8 +98,17 @@ export function openCounts(
  * `listDecisions` — only the rollup DISPLAY ignores them). The blocking GATE is
  * unaffected: it uses live `convergence.evaluate()`, never this display value.
  */
-function isAdvisoryRecord(metrics: Record<string, unknown>): boolean {
-  return metrics[ADVISORY_SEVERITY_RECORD_KEY] === true;
+function isAdvisoryRecord(d: HitchConvergenceDecisionRecord): boolean {
+  // (a) explicit marker (current builds set this in metrics_json).
+  if (d.metrics[ADVISORY_SEVERITY_RECORD_KEY] === true) return true;
+  // (b) shape fallback for pre-marker rows persisted by EARLIER #230 builds
+  // (which had no marker): a status-neutral `continue` whose decision packet
+  // only advertises a severity audit (it never drives a scope/fix decision) is
+  // an advisory severity record. This keeps the rollup DISPLAY honest after an
+  // upgrade without a backfill migration.
+  if (d.decision !== "continue") return false;
+  const kinds = d.recommendedNextAction?.decisionPacket?.decisionKinds;
+  return Array.isArray(kinds) && kinds.includes("severity_audit");
 }
 
 function latestDecisionForPhase(
@@ -115,7 +125,7 @@ function latestDecisionForPhase(
     // NON-advisory row is the genuine latest decision.
     const decisions = hitches
       .listDecisions(hid)
-      .filter((d) => !isAdvisoryRecord(d.metrics));
+      .filter((d) => !isAdvisoryRecord(d));
     if (decisions.length === 0) continue;
     // listDecisions returns records in ASC order; last item is newest
     const newest = decisions[decisions.length - 1]!;

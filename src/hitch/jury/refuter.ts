@@ -1,5 +1,4 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
 import { verifyEvidence } from "./evidence.js";
 import { runJuryCodex } from "./run-codex.js";
@@ -279,13 +278,8 @@ export async function runClassificationRefuter(
   const logLens: JuryLens = JURY_LENSES[0];
   const paths = deps.logPaths(input.findingId, logLens, "refute");
   try {
-    // P2 (codex): TRUNCATE the deterministic stdout/stderr/events paths before
-    // the run so a codex that exits 0 WITHOUT writing stdout cannot leave a STALE
-    // prior refute for readFile to reparse (fail-closed -> empty => inconclusive).
-    for (const p of [paths.stdout, paths.stderr, paths.events]) {
-      await mkdir(dirname(p), { recursive: true });
-      await writeFile(p, "", "utf8");
-    }
+    // P2 (codex round5): log paths are truncated INSIDE runJuryCodex, after its
+    // already-aborted short-circuit (a stale lease-lost worker cannot erase logs).
     const prompt = buildRefutePrompt(input, deps.scopeSnapshot);
     const result = await runJuryCodex(deps, {
       worktreePath: deps.worktreePath,

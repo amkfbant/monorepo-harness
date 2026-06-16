@@ -6,6 +6,7 @@ import { PhaseRepository } from "../../../src/roadmap/phase-repository.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
 import { ConvergenceService } from "../../../src/hitch/convergence.js";
 import { DEFAULT_HITCH_POLICY } from "../../../src/hitch/types.js";
+import type { HitchNextAction } from "../../../src/hitch/types.js";
 import { rollupCourse } from "../../../src/roadmap/rollup.js";
 import {
   recordConvergenceDecisionWithStatus,
@@ -298,6 +299,72 @@ describe("rollupCourse (SP-1)", () => {
           (d.metrics as { advisorySeverityRecord?: boolean }).advisorySeverityRecord === true,
       ),
     ).toBe(true);
+  });
+
+  it("codex#254-R5 P2 FIX2: an UNMARKED (pre-marker) advisory severity-audit `continue` row is shape-detected and still does NOT mask a blocking live convergence", () => {
+    // EARLIER #230 builds wrote the D2b advisory record with NO
+    // `metrics.advisorySeverityRecord` marker. After upgrading WITHOUT a backfill
+    // migration such a row is still the newest stored decision; the rollup must
+    // shape-detect it (decision==="continue" AND
+    // recommendedNextAction.decisionPacket.decisionKinds includes "severity_audit")
+    // so it does not mask a still-blocking live convergence in the DISPLAY.
+    const courses = new CourseRepository(conn);
+    const phases = new PhaseRepository(conn);
+    const hitches = new HitchRepository(conn);
+    const c = courses.create({ title: "C-adv-shape", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P-adv-shape", createdBy: "t", createdSource: "cli" });
+    const h = hitches.createSession({ title: "H-adv-shape", projectId: "demo", scope: {}, closeConditions: [], createdBy: "t", createdSource: "cli" });
+    phases.linkHitch(p.phaseId, h.hitchId);
+    // LIVE convergence is BLOCKING (open unknown-scope finding -> needs_classification).
+    hitches.upsertFinding({
+      hitchId: h.hitchId,
+      severity: "P1",
+      source: "review",
+      category: "correctness",
+      summary: "unknown-scope blocker",
+      scopeStatus: "unknown",
+    });
+    // A genuine blocking decision was recorded first …
+    hitches.recordConvergenceDecision({
+      hitchId: h.hitchId,
+      decision: "needs_classification",
+      reason: "unknown-scope findings require classification",
+      createdAt: "2026-06-12T01:00:00.000Z",
+      createdBy: "t",
+    });
+    // … then a PRE-MARKER advisory severity-audit record (NEWEST row): a status-
+    // neutral `continue` whose decision packet ONLY advertises a severity audit.
+    // It carries NO `metrics.advisorySeverityRecord` marker — only the SHAPE.
+    hitches.recordConvergenceDecision({
+      hitchId: h.hitchId,
+      decision: "continue",
+      reason: "advisory: jury severity vote diverged from the harness mapping (severity unchanged)",
+      // NB: NO advisorySeverityRecord metric — this is the pre-marker case.
+      metrics: {},
+      recommendedNextAction: {
+        kind: "ask_human",
+        message: "severity audit diverged (advisory only)",
+        decisionPacket: { decisionKinds: ["severity_audit"] },
+      } as unknown as HitchNextAction,
+      createdAt: "2026-06-12T02:00:00.000Z",
+      createdBy: "t",
+    });
+
+    const rollup = rollupCourse({ db: conn, courseId: c.courseId });
+    const node = rollup.phases[0]!;
+    // The UNMARKED advisory `continue` row must be ignored for DISPLAY via shape
+    // detection: the latest decision reflects the real blocking state.
+    expect(node.latestDecision).not.toBe("continue");
+    expect(node.latestDecision).toBe("needs_classification");
+    expect(node.readyToClose).toBe(false);
+    // The advisory row stays PERSISTED/retrievable (only the display ignores it).
+    const stored = hitches.listDecisions(h.hitchId);
+    expect(stored.some((d) => d.decision === "continue")).toBe(true);
+    // And it genuinely carried NO marker (it was shape-detected, not marker-detected).
+    const advisory = stored.find((d) => d.decision === "continue");
+    expect(
+      (advisory?.metrics as { advisorySeverityRecord?: boolean }).advisorySeverityRecord,
+    ).toBeUndefined();
   });
 
   it("exposes a phase operator note in the rollup (#171b)", () => {

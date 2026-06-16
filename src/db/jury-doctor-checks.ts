@@ -45,6 +45,43 @@ const JURY_TABLES = [
   "jury_severity_audits",
 ] as const;
 
+/**
+ * Whether a table exists in the connected DB (SQLite `sqlite_master` lookup).
+ * Used to GATE the jury checks on v31-table presence: a read-only caller running
+ * `DEFAULT_CHECKS` against a DB not yet migrated to v31 (e.g. `dbRepairDryRunTool`
+ * → `withReadonlyDb` + `DEFAULT_CHECKS.flatMap`, which never runs migrations)
+ * would otherwise crash with "no such table" (codex#254-R5 P2). Fail-OPEN here is
+ * safe: an ABSENT v31 table means there are no jury rows to audit, so skipping the
+ * check is correct — never a masked inconsistency.
+ */
+function tableExists(db: Database.Database, table: string): boolean {
+  const row = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    )
+    .get(table);
+  return row !== undefined;
+}
+
+/**
+ * Wrap a jury `DoctorCheck.run` so it SKIPS (returns no findings) when any of its
+ * required v31 jury tables is absent. v31-present behaviour is byte-identical to
+ * the unwrapped check. A skip yields zero findings — `runDoctor` then synthesises
+ * the standard single "ok" row for an empty result, so a pre-v31 DB reports the
+ * jury checks as ok rather than crashing.
+ */
+function guardOnTables(
+  required: readonly string[],
+  run: DoctorCheck["run"],
+): DoctorCheck["run"] {
+  return (db) => {
+    for (const table of required) {
+      if (!tableExists(db, table)) return [];
+    }
+    return run(db);
+  };
+}
+
 interface OrphanRow {
   table: string;
   rowId: number;
@@ -59,7 +96,7 @@ export const juryOrphanRowsCheck: DoctorCheck = {
   severity: "warn",
   description:
     "jury audit row references a finding that no longer exists (FK-zero orphan)",
-  run(db) {
+  run: guardOnTables(JURY_TABLES, (db) => {
     const rows: OrphanRow[] = [];
     for (const [table, pk] of [
       ["jury_classification_proposals", "proposal_id"],
@@ -96,7 +133,7 @@ export const juryOrphanRowsCheck: DoctorCheck = {
       repairable: false,
       details: r as unknown as Record<string, unknown>,
     }));
-  },
+  }),
 };
 
 /** Check 2: stored hitch_id differs from the hitch_findings join. */
@@ -106,7 +143,7 @@ export const juryHitchMismatchCheck: DoctorCheck = {
   severity: "warn",
   description:
     "jury audit row stored hitch_id disagrees with hitch_findings join",
-  run(db) {
+  run: guardOnTables(JURY_TABLES, (db) => {
     const out: DoctorFinding[] = [];
     for (const [table, pk] of [
       ["jury_classification_proposals", "proposal_id"],
@@ -138,7 +175,7 @@ export const juryHitchMismatchCheck: DoctorCheck = {
       }
     }
     return out;
-  },
+  }),
 };
 
 interface RefutationRow {
@@ -168,7 +205,7 @@ export const juryRefutationMismatchCheck: DoctorCheck = {
   severity: "warn",
   description:
     "jury refutation disagrees with its proposals' unanimous scope or the persisted packet refuter verdict",
-  run(db) {
+  run: guardOnTables(JURY_TABLES, (db) => {
     const refutations = db
       .prepare(
         `SELECT refutation_id, finding_id, hitch_id, target_scope,
@@ -236,7 +273,7 @@ export const juryRefutationMismatchCheck: DoctorCheck = {
       }
     }
     return out;
-  },
+  }),
 };
 
 /**
@@ -394,7 +431,7 @@ export const juryAutoConfirmReplayCheck: DoctorCheck = {
   severity: "warn",
   description:
     "jury auto_confirmed finding whose stored proposals/refutation do not replay to auto_confirm (possible LLM->state leak)",
-  run(db) {
+  run: guardOnTables(JURY_TABLES, (db) => {
     const findings = db
       .prepare(
         `SELECT finding_id, file_path, category, classification_reason
@@ -448,7 +485,7 @@ export const juryAutoConfirmReplayCheck: DoctorCheck = {
       }
     }
     return out;
-  },
+  }),
 };
 
 /** Extract `<id>` from a `...jury auto_confirm (deliberation_id=<id>)...` reason. */

@@ -1,11 +1,18 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   generateJuryProposals,
   type JuryProposerFinding,
 } from "../../../../src/hitch/jury/proposer.js";
+import { runCritiqueRound } from "../../../../src/hitch/jury/critique.js";
 import { runClassificationRefuter } from "../../../../src/hitch/jury/refuter.js";
 import type {
   JuryLens,
@@ -138,6 +145,122 @@ describe("runJuryCodex — P1 FIX 2: per-call timeout fail-closed", () => {
     // Fail-closed: a timed-out refuter is a veto, never an uphold.
     expect(verdict.refuteVerdict).toBe("inconclusive");
   }, 10_000);
+});
+
+describe("runJuryCodex — Round5 FIX 1: aborted signal does NOT truncate the log files", () => {
+  // A runner that, if EVER invoked, would overwrite stdout (so any assertion of
+  // preserved content also proves the run() short-circuited). It records calls.
+  function overwritingRunner(calls: { n: number }): CodexExecRunner {
+    return {
+      async run(input: CodexRunInputs): Promise<CodexRunResult> {
+        calls.n += 1;
+        writeFileSync(input.logPaths.stdout, "OVERWRITTEN-BY-STALE-WORKER", "utf8");
+        return { exitCode: 0, timedOut: false, aborted: false, durationMs: 0 };
+      },
+    };
+  }
+
+  /**
+   * SAFETY (codex#254 Round5 P2): the per-(hitch,finding,lens,stage) log paths
+   * are deterministic/shared. A STALE worker that lost its lease must NOT erase
+   * the AUTHORITATIVE worker's log files for the same jury stage — otherwise the
+   * authoritative worker reads empty stdout and a valid proposal degrades to
+   * parse_error. So an already-aborted signal must short-circuit BEFORE any
+   * truncation/write of the jury log files.
+   */
+  it("a proposer call with an already-aborted signal preserves the pre-existing stdout (no truncation)", async () => {
+    const calls = { n: 0 };
+    const controller = new AbortController();
+    controller.abort(new Error("lease lost before launch"));
+    const deps = makeDeps(overwritingRunner(calls), {
+      timeoutMs: 60_000,
+      signal: controller.signal,
+    });
+    // Pre-seed the deterministic propose stdout for every lens (the authoritative
+    // worker's already-written output) with VALID parseable content.
+    const lenses: JuryLens[] = ["correctness", "scope_fit", "spec_adherence"];
+    const authoritative = JSON.stringify({
+      proposedScope: "in_scope",
+      evidence: [{ citation: "src/a.ts:1", kind: "file", claim: "line 1 exists" }],
+      refutationCondition: "the cited line is absent",
+      reasoning: "the change touches src/a.ts",
+    });
+    for (const lens of lenses) {
+      const p = deps.logPaths(FINDING.findingId, lens, "propose");
+      mkdirSync(join(p.stdout, ".."), { recursive: true });
+      writeFileSync(p.stdout, authoritative, "utf8");
+    }
+
+    await generateJuryProposals(deps, FINDING);
+
+    // The aborted call neither truncated nor ran: the authoritative content is
+    // preserved verbatim for every lens, and the runner was never invoked.
+    for (const lens of lenses) {
+      const p = deps.logPaths(FINDING.findingId, lens, "propose");
+      expect(readFileSync(p.stdout, "utf8")).toBe(authoritative);
+    }
+    expect(calls.n).toBe(0);
+  });
+
+  it("a critique call with an already-aborted signal preserves the pre-existing stdout (no truncation)", async () => {
+    const calls = { n: 0 };
+    const controller = new AbortController();
+    controller.abort(new Error("lease lost before launch"));
+    const deps = makeDeps(overwritingRunner(calls), {
+      timeoutMs: 60_000,
+      signal: controller.signal,
+    });
+    const lenses: JuryLens[] = ["correctness", "scope_fit", "spec_adherence"];
+    const r1 = lenses.map((lens) => ({
+      findingId: FINDING.findingId,
+      lens,
+      proposedScope: "in_scope" as const,
+      proposalStatus: "complete" as const,
+      evidence: [],
+      round: 1 as const,
+    }));
+    const authoritative = "AUTHORITATIVE-CRITIQUE-STDOUT";
+    for (const lens of lenses) {
+      const p = deps.logPaths(FINDING.findingId, lens, "critique");
+      mkdirSync(join(p.stdout, ".."), { recursive: true });
+      writeFileSync(p.stdout, authoritative, "utf8");
+    }
+
+    await runCritiqueRound(deps, { findingId: FINDING.findingId }, r1);
+
+    for (const lens of lenses) {
+      const p = deps.logPaths(FINDING.findingId, lens, "critique");
+      expect(readFileSync(p.stdout, "utf8")).toBe(authoritative);
+    }
+    expect(calls.n).toBe(0);
+  });
+
+  it("a refuter call with an already-aborted signal preserves the pre-existing stdout (no truncation)", async () => {
+    const calls = { n: 0 };
+    const controller = new AbortController();
+    controller.abort(new Error("lease lost before launch"));
+    const deps = makeDeps(overwritingRunner(calls), {
+      timeoutMs: 60_000,
+      signal: controller.signal,
+    });
+    const refuteLens: JuryLens = "correctness"; // logLens used by the refuter
+    const p = deps.logPaths(FINDING.findingId, refuteLens, "refute");
+    const authoritative = "AUTHORITATIVE-REFUTE-STDOUT";
+    mkdirSync(join(p.stdout, ".."), { recursive: true });
+    writeFileSync(p.stdout, authoritative, "utf8");
+
+    const verdict = await runClassificationRefuter(deps, {
+      findingId: FINDING.findingId,
+      unanimousScope: "in_scope",
+      refutationConditions: [],
+      verifiedEvidence: [],
+    });
+
+    expect(readFileSync(p.stdout, "utf8")).toBe(authoritative);
+    expect(calls.n).toBe(0);
+    // Still fail-closed (a vetoing inconclusive verdict).
+    expect(verdict.refuteVerdict).toBe("inconclusive");
+  });
 });
 
 describe("runJuryCodex — P1 FIX 1: lease signal combined into the codex call", () => {

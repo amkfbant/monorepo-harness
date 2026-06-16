@@ -1,5 +1,4 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
 import { runJuryCodex } from "./run-codex.js";
 import {
@@ -308,13 +307,8 @@ async function critiqueForLens(
 
   const prompt = buildCritiquePrompt(lens, finding, others, deps.scopeSnapshot);
   const paths = deps.logPaths(finding.findingId, lens, "critique");
-  // P2 (codex): TRUNCATE the deterministic stdout/stderr/events paths before the
-  // run so a codex that exits 0 WITHOUT writing stdout cannot leave a STALE prior
-  // critique for readFile to reparse (fail-closed -> empty file => inconclusive).
-  for (const p of [paths.stdout, paths.stderr, paths.events]) {
-    await mkdir(dirname(p), { recursive: true });
-    await writeFile(p, "", "utf8");
-  }
+  // P2 (codex round5): log paths are truncated INSIDE runJuryCodex, after its
+  // already-aborted short-circuit (a stale lease-lost worker cannot erase logs).
   const result = await runJuryCodex(deps, {
     worktreePath: deps.worktreePath,
     prompt,

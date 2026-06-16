@@ -3,8 +3,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
-import { runMigrations } from "../../../src/db/migrations.js";
-import { runDoctor } from "../../../src/db/doctor.js";
+import { MIGRATIONS, runMigrations } from "../../../src/db/migrations.js";
+import { runDoctor, DEFAULT_CHECKS } from "../../../src/db/doctor.js";
+import { JURY_DOCTOR_CHECKS, JURY_TABLES } from "../../../src/db/jury-doctor-checks.js";
 
 const DOCTOR_CHECKS_SOURCE = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -35,6 +36,35 @@ function migratedDb(): Database.Database {
   const db = new Database(":memory:");
   db.pragma("foreign_keys = ON");
   runMigrations(db);
+  return db;
+}
+
+/**
+ * A genuinely PRE-v31 DB: every migration BELOW v31 is applied directly, so the
+ * three v31 jury tables (`jury_classification_proposals`,
+ * `jury_classification_refutations`, `jury_severity_audits`) are ABSENT — exactly
+ * the state a read-only caller (e.g. `dbRepairDryRunTool` → `DEFAULT_CHECKS.flatMap`)
+ * sees before the harness has been upgraded/migrated to v31.
+ */
+function preV31Db(): Database.Database {
+  const db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  db.prepare(
+    `CREATE TABLE IF NOT EXISTS schema_migrations (
+       version INTEGER PRIMARY KEY,
+       name TEXT NOT NULL,
+       applied_at TEXT NOT NULL
+     )`,
+  ).run();
+  const insert = db.prepare(
+    "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+  );
+  for (const m of [...MIGRATIONS]
+    .filter((m) => m.version < 31)
+    .sort((a, b) => a.version - b.version)) {
+    for (const stmt of m.statements) db.prepare(stmt).run();
+    insert.run(m.version, m.name, NOW);
+  }
   return db;
 }
 
@@ -802,6 +832,72 @@ describe("doctor jury.auto_confirm_replay (FIX 2 / design P2b)", () => {
       });
     }
     expect(flaggedCheckIds(db)).not.toContain("jury.auto_confirm_replay");
+  });
+});
+
+describe("jury doctor checks are table-presence guarded on a pre-v31 DB (FIX 3, codex#254-R5 P2)", () => {
+  it("the v31 jury tables are absent on a pre-v31 DB (precondition)", () => {
+    const db = preV31Db();
+    for (const table of JURY_TABLES) {
+      const present = db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        )
+        .get(table);
+      expect(present).toBeUndefined();
+    }
+  });
+
+  it("each jury check no-ops cleanly (no throw) when its v31 table is absent", () => {
+    const db = preV31Db();
+    for (const check of JURY_DOCTOR_CHECKS) {
+      expect(() => check.run(db)).not.toThrow();
+      // A guarded skip returns zero findings (nothing to flag — and crucially no
+      // "no such table" crash). The default-checks wrapper then synthesises a
+      // single ok row for the empty result.
+      expect(check.run(db)).toEqual([]);
+    }
+  });
+
+  it("running DEFAULT_CHECKS against a pre-v31 DB does NOT throw 'no such table'", () => {
+    // This mirrors dbRepairDryRunTool: withReadonlyDb + DEFAULT_CHECKS.flatMap,
+    // WITHOUT running migrations first.
+    const db = preV31Db();
+    expect(() => DEFAULT_CHECKS.flatMap((check) => check.run(db))).not.toThrow();
+  });
+
+  it("runDoctor(category='review') succeeds on a pre-v31 DB and the jury checks report ok (skip)", () => {
+    const db = preV31Db();
+    let result!: ReturnType<typeof runDoctor>;
+    expect(() => {
+      result = runDoctor(db, { category: "review" });
+    }).not.toThrow();
+    // The jury checks must NOT be flagged (there is nothing to audit pre-v31);
+    // they appear as ok rows via the empty-result wrapper.
+    const juryIds = JURY_DOCTOR_CHECKS.map((c) => c.id);
+    const flagged = result.findings.filter(
+      (f) => juryIds.includes(f.checkId) && f.status === "flagged",
+    );
+    expect(flagged).toEqual([]);
+    for (const id of juryIds) {
+      const row = result.findings.find((f) => f.checkId === id);
+      expect(row?.status).toBe("ok");
+    }
+  });
+
+  it("v31-present behaviour is unchanged: the jury checks still flag genuine inconsistencies", () => {
+    // Sanity: after a real v31 migration the guard is a no-op and the orphan
+    // check still fires (identical behaviour to the rest of the suite).
+    const db = migratedDb();
+    insertProposal(db, {
+      findingId: "ghost",
+      hitchId: "h1",
+      lens: "correctness",
+      reviewerId: "r1",
+      proposedScope: "in_scope",
+      deliberationId: "d1",
+    });
+    expect(flaggedCheckIds(db)).toContain("jury.orphan_rows");
   });
 });
 

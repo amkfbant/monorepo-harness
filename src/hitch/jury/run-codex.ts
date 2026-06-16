@@ -1,3 +1,5 @@
+import { writeFile, mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
 import type {
   CodexRunResult,
   CodexExecRunner,
@@ -27,6 +29,16 @@ import type { JuryProposerDeps } from "./types.js";
  * never `complete`. The runner spreads the original result first so a runner that
  * already set `timedOut`/`exitCode` is preserved; the abort overlay only forces
  * fail-closed when the call was aborted.
+ *
+ * Round5 FIX 1 (codex#254 P2 — log-truncation safety): the per-(hitch,finding,
+ * lens,stage) stdout/stderr/events log paths are DETERMINISTIC/SHARED. They must
+ * be TRUNCATED before a real run so a codex that exits 0 WITHOUT writing stdout
+ * cannot leave a STALE prior proposal for readFile to reparse (which would drive
+ * the gate from stale output). Truncation is performed HERE — AFTER the
+ * already-aborted short-circuit — so a STALE worker that lost its lease can NOT
+ * erase the AUTHORITATIVE worker's log files for the same jury stage (an aborted
+ * call neither truncates nor writes). The per-stage callers (proposer/critique/
+ * refuter) therefore MUST NOT pre-truncate the log files themselves.
  */
 export async function runJuryCodex(
   deps: Pick<JuryProposerDeps, "reviewerRunner" | "timeoutMs"> & {
@@ -34,9 +46,25 @@ export async function runJuryCodex(
   },
   inputs: Parameters<CodexExecRunner["run"]>[0],
 ): Promise<CodexRunResult> {
-  // Already lease-lost before launch: do not spawn a new codex — fail closed.
+  // Already lease-lost before launch: do not spawn a new codex AND do not touch
+  // the (shared, deterministic) log files — fail closed. A stale lease-lost
+  // worker erasing the authoritative worker's stdout would degrade a valid
+  // proposal to parse_error (Round5 FIX 1).
   if (deps.signal?.aborted === true) {
     return { exitCode: 1, timedOut: true, aborted: true, durationMs: 0 };
+  }
+
+  // Truncate the deterministic stdout/stderr/events log files only now that we
+  // are committed to launching a fresh codex. This clears any stale prior
+  // attempt so an empty stdout fails to parse -> fail-closed (never reparses a
+  // stale proposal); it runs ONLY on the non-aborted path (see above).
+  for (const p of [
+    inputs.logPaths.stdout,
+    inputs.logPaths.stderr,
+    inputs.logPaths.events,
+  ]) {
+    await mkdir(dirname(p), { recursive: true });
+    await writeFile(p, "", "utf8");
   }
 
   const timeoutController = new AbortController();
