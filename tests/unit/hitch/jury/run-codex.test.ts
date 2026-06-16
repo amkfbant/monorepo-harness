@@ -14,6 +14,7 @@ import {
 } from "../../../../src/hitch/jury/proposer.js";
 import { runCritiqueRound } from "../../../../src/hitch/jury/critique.js";
 import { runClassificationRefuter } from "../../../../src/hitch/jury/refuter.js";
+import { runJuryCodex } from "../../../../src/hitch/jury/run-codex.js";
 import type {
   JuryLens,
   JuryProposerDeps,
@@ -260,6 +261,61 @@ describe("runJuryCodex — Round5 FIX 1: aborted signal does NOT truncate the lo
     expect(calls.n).toBe(0);
     // Still fail-closed (a vetoing inconclusive verdict).
     expect(verdict.refuteVerdict).toBe("inconclusive");
+  });
+});
+
+describe("runJuryCodex — Round6 FIX 1: re-check the lease BETWEEN the pre-check and the destructive truncation (TOCTOU)", () => {
+  /**
+   * SAFETY (codex#254 Round6 P2): the Round5 fix moves truncation INSIDE
+   * runJuryCodex after the top abort pre-check, but a stale drive can lose its
+   * lease in the window BETWEEN the pre-check and the `writeFile("")`
+   * truncation — there is an `await mkdir` in between. A re-check IMMEDIATELY
+   * before EACH destructive `writeFile("")` (after the mkdir) is required so a
+   * lease that drops mid-window still cannot erase the authoritative worker's
+   * logs. Here the signal is NOT aborted at entry (the pre-check passes) but
+   * becomes aborted during the first `await mkdir`; the re-check must catch it
+   * and return the fail-closed no-op WITHOUT writing.
+   */
+  it("a signal that becomes aborted AFTER the entry pre-check but BEFORE truncation preserves the pre-existing stdout (no truncation)", async () => {
+    const calls = { n: 0 };
+    const runner: CodexExecRunner = {
+      async run(input: CodexRunInputs): Promise<CodexRunResult> {
+        calls.n += 1;
+        writeFileSync(input.logPaths.stdout, "OVERWRITTEN-BY-STALE-WORKER", "utf8");
+        return { exitCode: 0, timedOut: false, aborted: false, durationMs: 0 };
+      },
+    };
+    const worktreePath = mkdtempSync(join(tmpdir(), "jury-runcodex-toctou-"));
+    tmpDirs = [...tmpDirs, worktreePath];
+    const auditDir = join(worktreePath, "audit");
+    mkdirSync(auditDir, { recursive: true });
+    const stdout = join(auditDir, "f-1.correctness.propose.out.log");
+    const stderr = join(auditDir, "f-1.correctness.propose.err.log");
+    const events = join(auditDir, "f-1.correctness.propose.events.jsonl");
+    const authoritative = "AUTHORITATIVE-STDOUT-FROM-LIVE-WORKER";
+    writeFileSync(stdout, authoritative, "utf8");
+
+    // NOT aborted at entry (the top pre-check passes synchronously). We invoke
+    // runJuryCodex — its entry check runs in this same synchronous turn and
+    // passes; it then SUSPENDS on the first `await mkdir`, returning a pending
+    // promise. We abort SYNCHRONOUSLY on the next line — i.e. while mkdir is
+    // pending, squarely inside the TOCTOU window — BEFORE awaiting the promise.
+    // The re-check before the destructive writeFile must then catch the abort.
+    const controller = new AbortController();
+    expect(controller.signal.aborted).toBe(false);
+    const pending = runJuryCodex(
+      { reviewerRunner: runner, timeoutMs: 60_000, signal: controller.signal },
+      { worktreePath, prompt: "x", logPaths: { stdout, stderr, events } },
+    );
+    controller.abort(new Error("lease lost mid-truncation"));
+    const result = await pending;
+
+    // The destructive truncation was skipped: the authoritative content survives.
+    expect(readFileSync(stdout, "utf8")).toBe(authoritative);
+    // Fail-closed no-op result, runner never invoked.
+    expect(result.aborted).toBe(true);
+    expect(result.timedOut).toBe(true);
+    expect(calls.n).toBe(0);
   });
 });
 

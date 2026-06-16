@@ -39,7 +39,28 @@ import type { JuryProposerDeps } from "./types.js";
  * erase the AUTHORITATIVE worker's log files for the same jury stage (an aborted
  * call neither truncates nor writes). The per-stage callers (proposer/critique/
  * refuter) therefore MUST NOT pre-truncate the log files themselves.
+ *
+ * Round6 FIX 1 (codex#254 P2 — TOCTOU truncation re-check): the top abort
+ * pre-check and the destructive `writeFile("")` are separated by an `await mkdir`
+ * (a yield point). A stale drive can lose its lease IN THAT WINDOW, so the
+ * pre-check alone is insufficient: it would still erase the authoritative
+ * worker's logs. The lease is therefore RE-CHECKED immediately before EACH
+ * `writeFile("")` (after the per-path mkdir); if it has become aborted we return
+ * the fail-closed no-op WITHOUT truncating any further path. Combined with the
+ * top pre-check this makes the truncation safe across the whole window — a
+ * lease-lost worker can never erase a live worker's stdout.
  */
+/**
+ * Read the live `aborted` getter of an optional signal. Isolating the read in a
+ * function defeats TypeScript control-flow narrowing: an `await` between two
+ * checks can flip `signal.aborted` at runtime, which TS does not model, so a
+ * second inline `signal?.aborted === true` would be (wrongly) typed as
+ * unreachable. The helper always re-reads the current value.
+ */
+function isAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
 export async function runJuryCodex(
   deps: Pick<JuryProposerDeps, "reviewerRunner" | "timeoutMs"> & {
     signal?: AbortSignal;
@@ -49,8 +70,10 @@ export async function runJuryCodex(
   // Already lease-lost before launch: do not spawn a new codex AND do not touch
   // the (shared, deterministic) log files — fail closed. A stale lease-lost
   // worker erasing the authoritative worker's stdout would degrade a valid
-  // proposal to parse_error (Round5 FIX 1).
-  if (deps.signal?.aborted === true) {
+  // proposal to parse_error (Round5 FIX 1). `isAborted` reads the live `aborted`
+  // getter so the re-check below is NOT defeated by control-flow narrowing (an
+  // `await` can flip the value at runtime, which TS does not model).
+  if (isAborted(deps.signal)) {
     return { exitCode: 1, timedOut: true, aborted: true, durationMs: 0 };
   }
 
@@ -64,6 +87,14 @@ export async function runJuryCodex(
     inputs.logPaths.events,
   ]) {
     await mkdir(dirname(p), { recursive: true });
+    // Round6 FIX 1 (TOCTOU): re-check the lease IMMEDIATELY before the
+    // destructive truncation. The `await mkdir` above is a yield point in which a
+    // stale drive may have lost its lease; truncating after that would erase the
+    // authoritative worker's log. Re-checking here (and bailing out fail-closed
+    // BEFORE the writeFile) closes that window — never erase a live worker's log.
+    if (isAborted(deps.signal)) {
+      return { exitCode: 1, timedOut: true, aborted: true, durationMs: 0 };
+    }
     await writeFile(p, "", "utf8");
   }
 

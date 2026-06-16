@@ -442,41 +442,44 @@ describe("hitch orchestrate + deliberation jury (e2e #230 D4)", () => {
     }
   });
 
-  it("RESCUE path: R1 split → critique flips the dissenting lens → unanimous R2 → refuter uphold → auto_confirm end-to-end (round1+round2 proposals + refutation persisted)", async () => {
+  it("RESCUE path (Round6 FIX 3): R1 split → critique FLIPS the dissenting lens → unanimous R2 → ESCALATES (the flipped lens lacks fresh evidence); both rounds persisted, refuter SKIPPED", async () => {
     const h = makeHarness("e2e-rescue");
     const fid = seedFinding(h, "e2e-rescue", {
       source: "review",
-      summary: "initially-disputed finding rescued by critique",
+      summary: "initially-disputed finding; critique flips a vote",
       filePath: "src/a.ts",
       category: "core",
     });
 
-    // maxSteps:1 isolates the single classify step. Step 1 convergence is
+    // Round6 FIX 3 (codex#254 P2, fail-closed): step 1 convergence is
     // needs_classification → classify, which runs the full Stage1-5 pipeline:
-    // R1 split → critique (spec_adherence flips to in_scope) → unanimous R2 →
-    // refuter uphold → gate auto_confirm. The loop then halts cleanly.
+    // R1 split → critique (spec_adherence FLIPS out_of_scope → in_scope) →
+    // unanimous R2. The critique round collects NO fresh citations, so the
+    // flipped lens's R1 evidence is emptied — the deterministic gate's
+    // allHaveVerifiedEvidence is FALSE for it and the refuter is SKIPPED
+    // entirely. The deliberation therefore ESCALATES (human review), NOT
+    // auto_confirm. This is the STRICTER correct behavior — a critique-driven
+    // vote flip can never auto_confirm on stale evidence — NOT a weakening.
     const result = await new HitchOrchestrator({ dbPath: h.dbPath }).run({
       hitchId: "e2e-rescue",
       runners: makeRunners(h, routingRunner(rescueRouting())),
-      maxSteps: 1,
+      maxSteps: 8,
       createdBy: "worker",
     });
 
-    // Clean halt after the single classify step — NOT an escalation.
-    expect(result.outcome).toBe("max_steps_exhausted");
+    // The flip-converged path escalates.
+    expect(result.outcome).toBe("escalated");
     const classifySteps = result.steps.filter((s) => s.action === "classify");
     expect(classifySteps).toHaveLength(1);
-    expect(classifySteps[0]?.detail).toBe("true");
+    // The classify step did NOT resolve (escalate path -> String(resolved)).
+    expect(classifySteps[0]?.detail).toBe("false");
 
-    // The finding is auto_confirmed in_scope, reason embeds the deliberation_id.
+    // The finding stays UNKNOWN (never auto_confirmed) — it was escalated.
     const f = readFinding(h, fid);
-    expect(f.scopeStatus).toBe("in_scope");
-    expect(f.classificationReason).toMatch(
-      /jury auto_confirm \(deliberation_id=[0-9a-f]{64}\)/,
-    );
+    expect(f.scopeStatus).toBe("unknown");
 
-    // Both rounds of proposals AND the refutation persisted (the critique ran,
-    // so we expect >=6 proposals = 3 round-1 + 3 round-2, not just round 1).
+    // Both rounds of proposals STILL persisted (audit rows are written
+    // regardless of the decision, P2k) — the critique ran.
     const { db, close } = openManagedDb({ dbPath: h.dbPath });
     try {
       const round1 = db
@@ -496,25 +499,33 @@ describe("hitch orchestrate + deliberation jury (e2e #230 D4)", () => {
       // The dissenting lens's round-2 row records the genuine vote-change.
       const flipped = db
         .prepare(
-          `SELECT vote_changed FROM jury_classification_proposals
+          `SELECT vote_changed, evidence_json FROM jury_classification_proposals
              WHERE finding_id = ? AND round = 2 AND lens = 'spec_adherence'`,
         )
-        .get(fid) as { vote_changed: number } | undefined;
+        .get(fid) as
+        | { vote_changed: number; evidence_json: string }
+        | undefined;
       expect(flipped?.vote_changed).toBe(1);
+      // FIX 3: the flipped lens carries NO carried-forward evidence (fail-closed).
+      expect(JSON.parse(flipped?.evidence_json ?? "null")).toEqual([]);
     } finally {
       close();
     }
-    // The refutation and the advisory severity audit persisted too.
-    expect(countRows(h, "jury_classification_refutations", fid)).toBe(1);
+    // The refuter was SKIPPED (no refutation row); the advisory severity audit
+    // still persisted (always written).
+    expect(countRows(h, "jury_classification_refutations", fid)).toBe(0);
     expect(countRows(h, "jury_severity_audits", fid)).toBe(1);
 
-    // The hitch never escalated.
+    // The hitch escalated; an escalate decision packet was persisted.
     {
       const { db, close } = openManagedDb({ dbPath: h.dbPath });
       try {
-        expect(
-          new HitchRepository(db).requireSession("e2e-rescue").status,
-        ).not.toBe("escalated");
+        const repo = new HitchRepository(db);
+        expect(repo.requireSession("e2e-rescue").status).toBe("escalated");
+        const escalateRows = repo
+          .listDecisions("e2e-rescue")
+          .filter((d) => d.decision === "escalate");
+        expect(escalateRows.length).toBeGreaterThanOrEqual(1);
       } finally {
         close();
       }

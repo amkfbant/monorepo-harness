@@ -568,6 +568,59 @@ describe("runCritiqueRound — FIX 2 (codex#254 P1): voteChanged is DERIVED, not
   });
 });
 
+describe("runCritiqueRound — Round6 FIX 3 (codex#254 P2): a vote-flip must NOT carry forward R1 evidence", () => {
+  it("a FLIPPED lens (voteChanged===true) carries EMPTY evidence (fail-closed; gate cannot auto_confirm on stale evidence)", async () => {
+    // SAFETY (CLAUDE.md fail-closed): the critique round does NOT collect fresh
+    // citations. When a lens flips its scope (revisedScope !== r1 scope), the R1
+    // evidence was gathered for the OLD position; carrying it forward would let
+    // the deterministic gate accept stale evidence and auto_confirm a flipped
+    // vote. So a flipped R2 proposal must carry NO gate-supporting evidence (`[]`)
+    // -> the gate's allHaveVerifiedEvidence fails for that lens -> escalate.
+    const map: RoutingMap = {
+      [routingKey("critique", "correctness")]: {
+        // FLIP: in_scope -> out_of_scope.
+        stdout: critiqueJsonForLens("correctness", {
+          revisedScope: "out_of_scope",
+          voteChanged: true,
+        }),
+      },
+      [routingKey("critique", "scope_fit")]: {
+        // NO flip: stays in_scope.
+        stdout: critiqueJsonForLens("scope_fit", {
+          revisedScope: "in_scope",
+          voteChanged: false,
+        }),
+      },
+      [routingKey("critique", "spec_adherence")]: {
+        stdout: critiqueJsonForLens("spec_adherence", {
+          revisedScope: "in_scope",
+          voteChanged: false,
+        }),
+      },
+    };
+    const r1set = [
+      r1("correctness", "in_scope"),
+      r1("scope_fit", "in_scope"),
+      r1("spec_adherence", "in_scope"),
+    ];
+    const out = await runCritiqueRound(deps(routingRunner(map)), FINDING, r1set);
+    const byLens = new Map(out.map((p) => [p.lens, p]));
+
+    // The flipped lens: complete, vote changed, but EMPTY gate-supporting evidence.
+    const flipped = byLens.get("correctness");
+    expect(flipped?.proposalStatus).toBe("complete");
+    expect(flipped?.proposedScope).toBe("out_of_scope");
+    expect(flipped?.voteChanged).toBe(true);
+    expect(flipped?.evidence).toEqual([]);
+
+    // The non-flipped lenses keep their carried-forward verified R1 evidence.
+    const same = byLens.get("scope_fit");
+    expect(same?.voteChanged).toBe(false);
+    expect(same?.evidence.length).toBeGreaterThan(0);
+    expect(same?.evidence.every((e) => e.verified === true)).toBe(true);
+  });
+});
+
 describe("runCritiqueRound — fenced ```json parse path (P3 coverage)", () => {
   const r1set = () => [
     r1("correctness", "in_scope"),

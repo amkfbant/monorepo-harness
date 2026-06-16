@@ -1417,7 +1417,13 @@ FK ゼロの 3 表は、親 purge / denorm drift / packet 不整合を doctor �
   行から `DeliberationInput` を再構成し `aggregateDeliberation` を **replay**。
   `decision==='auto_confirm'` を満たさない finding を advisory flag する（LLM→状態
   直結の疑い＝安全境界の事後監査の機械化）。証拠 JSON の破損は防御的に空配列扱い
-  （verified 証拠ゼロ → replay は escalate → 改竄を隠さず surface する）。
+  （verified 証拠ゼロ → replay は escalate → 改竄を隠さず surface する）。**replay
+  scope-match 監査（codex#254-R6 FIX 2）**: replay が `auto_confirm` を返す場合でも、
+  replay の `scope` を finding の保存 `scope_status` と照合する。両者が食い違う行
+  （proposals は in_scope に replay するのに保存 `scope_status` が out_of_scope 等、
+  決定論ゲートの scope と記録 scope が不一致）も advisory flag する（gate が
+  auto_confirm すること自体は再現できても、記録された scope がゲート由来でない
+  ＝LLM→状態直結 / 事後改竄の疑い）。
 
 **v31 table-presence guard（codex#254-R5 P2 FIX3）**: これら 4 check は
 `DEFAULT_CHECKS` に常駐するが、v31 の 3 表（`jury_classification_proposals` /

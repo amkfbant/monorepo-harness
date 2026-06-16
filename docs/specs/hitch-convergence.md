@@ -291,7 +291,17 @@ Each finding is deliberated independently (`deliberate.ts`):
    deterministically** as `revisedScope !== round-1 scope` — the model's
    self-reported `voteChanged` is parsed (for contract compatibility) but
    IGNORED, so a lens that flips its scope yet claims `voteChanged:false` cannot
-   hide the conformity / false-consensus signal Stage 4 reads. **Convergence
+   hide the conformity / false-consensus signal Stage 4 reads. **A critique
+   vote-flip is FAIL-CLOSED (requires human review).** The critique round does
+   NOT collect fresh citations, so the round-1 evidence was gathered for the OLD
+   position; when a lens flips its scope (`voteChanged`), its round-2 proposal
+   carries **empty** gate-supporting evidence (`evidence: []`) — the round-1
+   evidence is NOT carried forward. This makes the deterministic gate's
+   `allHaveVerifiedEvidence` FALSE for the flipped lens, so a split that converges
+   to unanimous **via a vote flip ESCALATES** (it can never auto_confirm on stale
+   evidence, and Stage 4 is skipped because the final round is not all-verified).
+   A vote that did NOT flip keeps its still-relevant round-1 evidence. (Collecting
+   FRESH critique evidence for a flipped vote is a follow-up.) **Convergence
    after critique does NOT auto-confirm**: the post-critique round is
    re-aggregated, and a post-critique unanimous set still must pass Stage 4 +
    Stage 5.
@@ -342,6 +352,16 @@ caller must enforce both):
   orchestrator's **post-loop** `driveAborted` guard — then maps the stop to
   `lease_lost` (the runner never throws from inside — that would route through the
   orchestrator try/catch and wrongly escalate the hitch).
+- **Shared-log truncation safety (lease-gated, TOCTOU-safe).** The per-(hitch,
+  finding,lens,stage) stdout/stderr/events log paths are deterministic and SHARED.
+  `runJuryCodex` TRUNCATES them before a real run (so a codex that exits 0 without
+  writing stdout cannot leave a STALE prior proposal for `readFile` to reparse).
+  An already-aborted (lease-lost) call short-circuits BEFORE any truncation/write,
+  so a stale worker can never erase the authoritative worker's logs. The lease is
+  ALSO **re-checked immediately before EACH `writeFile("")`** (after the `mkdir`):
+  the pre-check and the truncation are separated by an `await`, a window in which a
+  stale drive may lose its lease — re-checking closes that TOCTOU window
+  (codex#254-R6 FIX 1). Truncation runs ONLY on the still-authoritative path.
 
 ### Monotonic, fail-closed invariants (the safety backbone)
 
@@ -375,9 +395,13 @@ The deliberation can only *add* safety; it can never relax a decision (design
    (operator-origin) escalated.
 
 1. **No split → auto_confirm path exists structurally.** LLM speech can never
-   turn a split into an auto-confirm. The post-critique convergence still passes
-   the refuter and gate. The refuter can only `uphold` (does not block the gate)
-   or `refute` / `inconclusive` (veto).
+   turn a split into an auto-confirm. A split that converges to unanimous does so
+   only via a vote FLIP, and a flipped lens carries no gate-supporting evidence
+   (the critique round collects no fresh citations), so the gate's
+   `allHaveVerifiedEvidence` fails and the deliberation ESCALATES (fail-closed,
+   human review) — the refuter is never reached. Only a CLEAN unanimous round 1
+   (no flip) passes the refuter and gate. The refuter can only `uphold` (does not
+   block the gate) or `refute` / `inconclusive` (veto).
 
 2. **The deterministic gate (`aggregateDeliberation`) is the sole arbiter** of
    `auto_confirm` vs `escalate`. It auto-confirms **iff** the scope is unanimous
@@ -521,7 +545,12 @@ ignores any model-supplied `verified` flag and recomputes existence:
   is rejected before `statSync`/`readFileSync` can follow it.
 - `spec` (`<md-path>#<anchor>`): the md is covered by `specDocsGlobs` (default
   `docs/specs/**/*.md`) and exactly one heading slug equals the anchor (missing
-  → false; duplicate-ambiguous → false, fail-closed). Mirroring the `file` guard,
+  → false; duplicate-ambiguous → false, fail-closed). The slug is **GitHub-style
+  and Unicode-preserving** — lowercase, whitespace → `-`, and only the
+  punctuation GitHub strips is removed while Unicode letters/digits are KEPT — so
+  Japanese / non-ASCII headings (which `docs/specs/*.md` use) match their anchors;
+  the same slugifier is applied to both the heading and the citation anchor.
+  Mirroring the `file` guard,
   an absolute citation, or a `..`-escaping path that the glob nonetheless matched
   on the raw string but whose resolved path leaves the glob's static-prefix spec
   root, is rejected before any read (so a citation cannot read a markdown file

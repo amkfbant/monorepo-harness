@@ -812,6 +812,50 @@ describe("doctor jury.auto_confirm_replay (FIX 2 / design P2b)", () => {
     expect(flaggedCheckIds(db)).toContain("jury.auto_confirm_replay");
   });
 
+  it("FLAGS a jury-auto_confirmed finding whose stored scope_status is the OPPOSITE of the replayed scope (Round6 FIX 2)", () => {
+    // Round6 FIX 2 (codex#254 P2): the replay check flagged only when replay
+    // stopped being auto_confirm; it did NOT compare the replayed SCOPE to the
+    // finding's stored scope_status. A corrupt row recording "jury auto_confirm"
+    // with the OPPOSITE scope replays as auto_confirm and passed silently. Here
+    // the stored rows replay to auto_confirm in_scope, but the finding's stored
+    // scope_status was tampered to out_of_scope — the replayed scope and the
+    // stored scope DISAGREE, so the check must FLAG (advisory) it.
+    const db = migratedDb();
+    seedHitch(db, "h1");
+    seedFinding(db, "h1", "f1");
+    seedAutoConfirmedFinding(db, {
+      hitchId: "h1",
+      findingId: "f1",
+      deliberationId: "d1",
+    });
+    // The proposals/refutation still replay to auto_confirm in_scope, but the
+    // finding row's scope_status is corrupted to the OPPOSITE scope.
+    db.prepare(
+      `UPDATE hitch_findings SET scope_status = 'out_of_scope' WHERE finding_id = 'f1'`,
+    ).run();
+    const flagged = runDoctor(db, { category: "review" }).findings.filter(
+      (f) => f.checkId === "jury.auto_confirm_replay" && f.status === "flagged",
+    );
+    expect(flagged.length).toBeGreaterThan(0);
+    expect(flagged[0]?.severity).toBe("warn");
+    expect(flagged[0]?.repairable).toBe(false);
+  });
+
+  it("does NOT flag a jury-auto_confirmed finding whose stored scope_status MATCHES the replayed scope (Round6 FIX 2)", () => {
+    // The complement: replay yields auto_confirm in_scope AND the finding's
+    // stored scope_status is in_scope — agreement, so no scope-mismatch flag.
+    const db = migratedDb();
+    seedHitch(db, "h1");
+    seedFinding(db, "h1", "f1");
+    seedAutoConfirmedFinding(db, {
+      hitchId: "h1",
+      findingId: "f1",
+      deliberationId: "d1",
+    });
+    // seedAutoConfirmedFinding already sets scope_status = 'in_scope' (matching).
+    expect(flaggedCheckIds(db)).not.toContain("jury.auto_confirm_replay");
+  });
+
   it("does NOT flag findings that were NOT jury-auto_confirmed (no replay needed)", () => {
     const db = migratedDb();
     seedHitch(db, "h1");

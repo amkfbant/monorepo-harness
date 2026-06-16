@@ -309,12 +309,27 @@ function headingSlugs(content: string): string[] {
   return out;
 }
 
-/** Deterministic GitHub-style heading slug. */
+/**
+ * Deterministic GitHub-style heading slug (codex#254-R6 FIX 4).
+ *
+ * The previous slugifier stripped EVERY non-`[a-z0-9]` char, which erased
+ * Japanese / non-ASCII headings — and `docs/specs/*.md` are written with
+ * Japanese headings (e.g. workflow.md). A valid spec citation to such a heading
+ * then never matched -> verified:false -> the finding wrongly escalated.
+ *
+ * This mirrors GitHub's anchor algorithm: lowercase; drop only the punctuation
+ * GitHub strips (anything that is NOT a Unicode letter `\p{L}`, number `\p{N}`,
+ * combining mark `\p{M}`, underscore, whitespace, or hyphen); then replace
+ * whitespace runs with a single `-`. Unicode word characters are PRESERVED, so
+ * `## モード dev ops` -> `モード-dev-ops` and `# 安全境界` -> `安全境界`. Applied
+ * identically to BOTH the md heading and the citation anchor (see verifySpec /
+ * headingSlugs), the two slugs match deterministically.
+ */
 function slugify(text: string): string {
   return text
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/[^\p{L}\p{N}\p{M}_\s-]/gu, "")
     .replace(/\s+/g, "-");
 }
 

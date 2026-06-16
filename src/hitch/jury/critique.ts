@@ -340,13 +340,23 @@ async function critiqueForLens(
   // from the round-1 scope (SAFETY: derive deterministically; the LLM's flag is
   // ignored entirely).
   const voteChanged = parsed.revisedScope !== r1.proposedScope;
+  // Round6 FIX 3 (codex#254 P2 — fail-closed critique vote-flip): the critique
+  // round does NOT collect FRESH citations. The R1 evidence was gathered for the
+  // OLD position, so a FLIPPED vote (voteChanged) must NOT carry it forward as
+  // gate-supporting evidence — otherwise the deterministic gate would accept the
+  // stale (verified+proximate) R1 evidence and auto_confirm a flipped vote after
+  // an upheld refuter. Emptying the evidence makes the gate's
+  // allHaveVerifiedEvidence FALSE for the flipped lens -> escalate (human review).
+  // A vote that did NOT flip keeps its still-relevant R1 evidence. (Collecting
+  // fresh critique evidence is a follow-up; see docs/specs/hitch-convergence.md.)
+  const r2Evidence = voteChanged ? [] : r1.evidence;
   return {
     findingId: r1.findingId,
     lens,
     // revisedScope may change the vote; the gate (Stage5) is still the arbiter.
     proposedScope: parsed.revisedScope,
     proposalStatus: "complete",
-    evidence: r1.evidence,
+    evidence: r2Evidence,
     ...(r1.refutationCondition !== undefined
       ? { refutationCondition: r1.refutationCondition }
       : {}),

@@ -424,6 +424,15 @@ function asString(value: unknown): string | undefined {
  * The replay uses `selectFinalRound` (round 2 when any round-2 row exists for
  * the deliberation_id, else round 1) exactly as the live gate did, so it
  * reproduces the same arbiter the auto_confirm was based on.
+ *
+ * Round6 FIX 2 (codex#254 P2 — replay scope-match audit): replaying to
+ * `auto_confirm` is necessary but NOT sufficient. A corrupt row recording "jury
+ * auto_confirm" with the OPPOSITE scope (e.g. the proposals replay to in_scope
+ * but the finding's stored `scope_status` is out_of_scope) replays as
+ * auto_confirm and would pass silently. So when replay DOES yield auto_confirm,
+ * the replayed `scope` is ALSO compared to the finding's stored `scope_status`;
+ * a disagreement is FLAGGED advisory (the recorded scope does not match the
+ * deterministic gate's scope — a possible LLM->state leak / post-hoc tamper).
  */
 export const juryAutoConfirmReplayCheck: DoctorCheck = {
   id: "jury.auto_confirm_replay",
@@ -434,7 +443,8 @@ export const juryAutoConfirmReplayCheck: DoctorCheck = {
   run: guardOnTables(JURY_TABLES, (db) => {
     const findings = db
       .prepare(
-        `SELECT finding_id, file_path, category, classification_reason
+        `SELECT finding_id, file_path, category, scope_status,
+                classification_reason
            FROM hitch_findings
           WHERE classification_reason LIKE '%jury auto_confirm (deliberation_id=%'`,
       )
@@ -479,6 +489,36 @@ export const juryAutoConfirmReplayCheck: DoctorCheck = {
             deliberationId,
             replayDecision: replay.decision,
             replayReason: replay.reason,
+            gateTrace: replay.gateTrace,
+          },
+        });
+        continue;
+      }
+      // Round6 FIX 2: replay DOES auto_confirm — also verify the replayed scope
+      // matches the finding's stored scope_status. A disagreement means the
+      // recorded scope was not produced by the deterministic gate (possible
+      // LLM->state leak / tamper) even though the gate would have auto_confirmed.
+      const storedScope = asString(raw.scope_status);
+      if (
+        replay.scope !== undefined &&
+        storedScope !== undefined &&
+        storedScope !== replay.scope
+      ) {
+        out.push({
+          checkId: "jury.auto_confirm_replay",
+          severity: "warn",
+          status: "flagged",
+          message:
+            `finding ${findingId} (deliberation ${deliberationId}) is recorded as ` +
+            `jury auto_confirm with scope_status=${storedScope} but replaying the ` +
+            `gate yields scope ${replay.scope}; recorded scope does not match the ` +
+            `deterministic gate (possible LLM->state leak)`,
+          repairable: false,
+          details: {
+            findingId,
+            deliberationId,
+            storedScope,
+            replayScope: replay.scope,
             gateTrace: replay.gateTrace,
           },
         });

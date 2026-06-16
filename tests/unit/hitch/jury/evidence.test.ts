@@ -85,6 +85,23 @@ beforeAll(() => {
       "\n",
     ),
   );
+  // docs/specs/jp.md — NON-ASCII (Japanese) headings. Real specs under
+  // docs/specs use Japanese headings (e.g. workflow.md), so the slugifier MUST
+  // preserve Unicode word characters to verify a citation to their GitHub-style
+  // anchor (codex#254-R6 FIX 4).
+  writeFileSync(
+    join(worktreePath, "docs", "specs", "jp.md"),
+    [
+      "# 安全境界",
+      "",
+      "本文",
+      "",
+      "## モード dev ops",
+      "",
+      "詳細",
+      "",
+    ].join("\n"),
+  );
 });
 
 afterAll(() => {
@@ -237,6 +254,35 @@ describe("verifyEvidence — spec kind", () => {
   it("missing heading anchor -> verified false", () => {
     const out = verifyEvidence(
       { citation: "docs/specs/foo.md#nonexistent", kind: "spec", claim: "c" },
+      ctx(),
+    );
+    expect(out.verified).toBe(false);
+  });
+
+  it("Round6 FIX 4: a NON-ASCII (Japanese) heading -> a citation to its GitHub-style anchor verifies (verified true)", () => {
+    // docs/specs files use Japanese headings; the slugifier must PRESERVE Unicode
+    // word characters. GitHub slug of "## モード dev ops" -> "モード-dev-ops"
+    // (lowercase ASCII, spaces -> "-", Unicode letters kept). Stripping every
+    // non-[a-z0-9] char would erase the Japanese chars and never match.
+    const out = verifyEvidence(
+      { citation: "docs/specs/jp.md#モード-dev-ops", kind: "spec", claim: "c" },
+      ctx(),
+    );
+    expect(out.verified).toBe(true);
+  });
+
+  it("Round6 FIX 4: a pure-Japanese heading anchor verifies (no ASCII at all)", () => {
+    // GitHub slug of "# 安全境界" -> "安全境界" (no punctuation, no spaces).
+    const out = verifyEvidence(
+      { citation: "docs/specs/jp.md#安全境界", kind: "spec", claim: "c" },
+      ctx(),
+    );
+    expect(out.verified).toBe(true);
+  });
+
+  it("Round6 FIX 4: a genuinely-missing Japanese anchor still -> verified false (fail-closed)", () => {
+    const out = verifyEvidence(
+      { citation: "docs/specs/jp.md#存在しない", kind: "spec", claim: "c" },
       ctx(),
     );
     expect(out.verified).toBe(false);

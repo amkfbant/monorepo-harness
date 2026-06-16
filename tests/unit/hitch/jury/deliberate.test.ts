@@ -318,29 +318,35 @@ describe("deliberate — (b) R1 split", () => {
   });
 });
 
-describe("deliberate — (c) critique converges to unanimous -> refuter uphold -> auto_confirm", () => {
-  it("an R1 split that the critique round converges to unanimous auto_confirms", async () => {
-    // R1 is split (scope_fit dissents out_of_scope). The critique round makes
-    // scope_fit revise to in_scope (carrying its verified+proximate R1 evidence),
-    // so the FINAL round (round 2) is unanimous in_scope with verified evidence;
-    // the refuter then upholds -> auto_confirm. This is the meaningful
-    // "convergence after critique still goes through the gate" path: critique ran
-    // (so NOT a clean-skip), yet the gate — not the critique — confirms.
+describe("deliberate — (c) critique converges to unanimous VIA A VOTE FLIP -> ESCALATE (Round6 FIX 3)", () => {
+  it("an R1 split that the critique round converges to unanimous via a vote flip ESCALATES (the flipped lens lacks fresh evidence)", async () => {
+    // Round6 FIX 3 (codex#254 P2, fail-closed): R1 is split (scope_fit dissents
+    // out_of_scope). To make the FINAL round unanimous in_scope, scope_fit must
+    // FLIP its vote (out_of_scope -> in_scope). The critique round does NOT
+    // collect fresh citations, so the flipped lens's R1 evidence (gathered for
+    // the OLD out_of_scope position) is now EMPTIED — it cannot support the new
+    // in_scope vote. The gate's allHaveVerifiedEvidence is therefore FALSE for
+    // the flipped lens, so the deliberation ESCALATES rather than auto_confirms.
+    // This is the STRICTER correct behavior: a critique-driven vote flip can
+    // never auto_confirm on stale evidence (requires human review). It is NOT a
+    // weakening — convergence-via-flip used to (wrongly) auto_confirm.
     const map: RoutingMap = {
       [routingKey("propose", "correctness")]: { stdout: proposeJson("in_scope") },
       [routingKey("propose", "scope_fit")]: { stdout: proposeJson("out_of_scope") },
       [routingKey("propose", "spec_adherence")]: { stdout: proposeJson("in_scope") },
-      // every lens re-votes in_scope in the critique round (convergence).
+      // every lens lands on in_scope; scope_fit FLIPS (out_of_scope -> in_scope).
       ...lensAwareCritiqueMap({ revisedScope: "in_scope", voteChanged: true }),
       ...upholdMap(),
     };
     const out = await deliberate(FINDING, deps(routingRunner(map)), HITCH_ID);
     expect(out.critiqueRan).toBe(true);
-    expect(out.refutation?.verdict.refuteVerdict).toBe("uphold");
-    expect(out.result.decision).toBe("auto_confirm");
-    expect(out.result.scope).toBe("in_scope");
-    // the gate consumed the round-2 (post-critique) proposals.
+    // The round-2 set is scope-unanimous in_scope, but the flipped lens carries
+    // no verified evidence -> the gate fails allHaveVerifiedEvidence -> escalate.
     expect(out.result.gateTrace.scopeUnanimous).toBe(true);
+    expect(out.result.gateTrace.allHaveVerifiedEvidence).toBe(false);
+    expect(out.result.decision).toBe("escalate");
+    // The refuter never ran (a non-verified final round skips Stage4).
+    expect(out.refutation).toBeNull();
   });
 });
 
@@ -366,20 +372,22 @@ describe("deliberate — weak-evidence trigger + fail-closed convergence", () =>
   });
 });
 
-describe("deliberate — (d) post-critique unanimous + refuter refute", () => {
-  it("escalates when refuter refutes a converged consensus", async () => {
-    // R1 split forces critique; critique converges to unanimous in_scope with
-    // verified+proximate evidence; refuter then REFUTES -> escalate.
+describe("deliberate — (d) clean-unanimous R1 + refuter refute -> escalate", () => {
+  it("escalates when the refuter refutes a (clean, no-critique) unanimous consensus", async () => {
+    // The refute-veto path. A critique-CONVERGED consensus can no longer reach
+    // the refuter (Round6 FIX 3: a vote flip empties the flipped lens's evidence
+    // so Stage4 is skipped), so the refute veto is exercised on the CLEAN
+    // unanimous R1 path instead: R1 is unanimous in_scope with verified+proximate
+    // evidence (no critique), the refuter RUNS and REFUTES -> escalate. This
+    // still proves a refuting verdict vetoes auto_confirm.
     const map: RoutingMap = {
-      [routingKey("propose", "correctness")]: { stdout: proposeJson("in_scope") },
-      [routingKey("propose", "scope_fit")]: { stdout: proposeJson("out_of_scope") },
-      [routingKey("propose", "spec_adherence")]: { stdout: proposeJson("in_scope") },
-      ...lensAwareCritiqueMap({ revisedScope: "in_scope", voteChanged: true }),
+      ...unanimousProposeMap(proposeJson("in_scope")),
       ...refuteResponse({ stdout: refuteJson({ refuteVerdict: "refute" }) }),
     };
     const out = await deliberate(FINDING, deps(routingRunner(map)), HITCH_ID);
-    expect(out.critiqueRan).toBe(true);
+    expect(out.critiqueRan).toBe(false);
     expect(out.refutation?.verdict.refuteVerdict).toBe("refute");
+    expect(out.result.gateTrace.refuterUpheld).toBe(false);
     expect(out.result.decision).toBe("escalate");
   });
 });
@@ -410,7 +418,12 @@ describe("deliberate — (e) deliberationId consistency", () => {
 });
 
 describe("deliberate — (f) outcome carries everything for persistence", () => {
-  it("carries R1+R2 proposals, refutation, severityAudit on a converged path", async () => {
+  it("carries R1+R2 proposals + severityAudit on a critique-converged (flip) path, refutation NULL (Round6 FIX 3)", async () => {
+    // A critique-converged (vote-flip) path: BOTH rounds are persisted, but the
+    // refuter is SKIPPED because the flipped lens lost its evidence (Round6 FIX
+    // 3), so refutation is NULL and the gate escalates. This asserts the audit
+    // payload (both rounds + advisory severity audit + gate trace) is carried
+    // even on the escalate path.
     const map: RoutingMap = {
       [routingKey("propose", "correctness")]: { stdout: proposeJson("in_scope") },
       [routingKey("propose", "scope_fit")]: { stdout: proposeJson("out_of_scope") },
@@ -422,13 +435,30 @@ describe("deliberate — (f) outcome carries everything for persistence", () => 
     // both rounds present
     expect(out.proposals.some((p) => p.round === 1)).toBe(true);
     expect(out.proposals.some((p) => p.round === 2)).toBe(true);
-    // refutation present (converged unanimous + verified -> refuter ran)
-    expect(out.refutation).not.toBeNull();
+    // refutation SKIPPED (the flipped lens has no verified evidence -> Stage4
+    // never runs -> the gate escalates).
+    expect(out.refutation).toBeNull();
+    expect(out.result.decision).toBe("escalate");
     // severity audit present and advisory
     expect(out.severityAudit).toBeDefined();
     expect(out.severityAudit.harnessSeverity).toBe("P2");
     // gate trace present
     expect(out.result.gateTrace).toBeDefined();
+  });
+
+  it("carries the refutation on a clean-unanimous (no-critique) auto_confirm path", async () => {
+    // The complement: a clean unanimous R1 (no flip, no critique) runs the
+    // refuter and auto_confirms, so the refutation IS carried for persistence.
+    const map: RoutingMap = {
+      ...unanimousProposeMap(proposeJson("in_scope")),
+      ...upholdMap(),
+    };
+    const out = await deliberate(FINDING, deps(routingRunner(map)), HITCH_ID);
+    expect(out.critiqueRan).toBe(false);
+    expect(out.refutation).not.toBeNull();
+    expect(out.refutation?.verdict.refuteVerdict).toBe("uphold");
+    expect(out.result.decision).toBe("auto_confirm");
+    expect(out.severityAudit).toBeDefined();
   });
 
   it("severity audit reflects the proposers' proposedSeverity vs harness severity", async () => {
@@ -464,7 +494,15 @@ describe("deliberate — (g) critique-skip does NOT pass voteChanged to refuter"
     expect(refutePrompt).not.toContain("changed their vote");
   });
 
-  it("critique-ran path DOES pass voteChanged to the refuter", async () => {
+  it("a critique-CONVERGED (vote-flip) path never reaches the refuter at all (Round6 FIX 3)", async () => {
+    // Round6 FIX 3 stricter behavior: a critique-driven convergence from a split
+    // necessarily involves a vote FLIP, which empties the flipped lens's
+    // evidence, so the final round is NOT all-verified -> Stage4 (the refuter) is
+    // SKIPPED entirely and the gate escalates. The refuter prompt is therefore
+    // NEVER built on this path (its voteChanged plumbing is unreachable here).
+    // This replaces the prior "critique-ran DOES pass voteChanged to refuter"
+    // expectation, which is now structurally impossible (a flip blocks Stage4) —
+    // the new, stricter, fail-closed truth.
     let refutePrompt = "";
     const map: RoutingMap = {
       [routingKey("propose", "correctness")]: { stdout: proposeJson("in_scope") },
@@ -481,7 +519,10 @@ describe("deliberate — (g) critique-skip does NOT pass voteChanged to refuter"
     };
     const out = await deliberate(FINDING, deps(recording), HITCH_ID);
     expect(out.critiqueRan).toBe(true);
-    expect(refutePrompt).toContain("voteChanged");
+    // The refuter never ran -> no refute prompt was built, refutation is null.
+    expect(refutePrompt).toBe("");
+    expect(out.refutation).toBeNull();
+    expect(out.result.decision).toBe("escalate");
   });
 });
 
