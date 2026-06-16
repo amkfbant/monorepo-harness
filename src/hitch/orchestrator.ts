@@ -144,6 +144,45 @@ export class HitchOrchestrator {
             });
             return { hitchId: input.hitchId, outcome: "escalated", steps, finalDecision, escalateReason };
           }
+          // (#230 / D2b / design §0.1 R3) A resolved classify may still carry a
+          // non-escalating severity-audit packet: the jury reached scope
+          // unanimity AND auto-confirmed (status already advanced by the runner),
+          // but the deterministic severity audit diverged from the harness
+          // mapping. Record the advisory packet ONCE so the operator can review
+          // it, WITHOUT touching the hitch status or the course/phase rollup:
+          //   - `updateStatus:false` → no hitch status sync (stays non-escalated).
+          //   - `decision:"continue"` → OUTSIDE the rollup blocked-set
+          //     (orchestrate-dispatch BLOCKED_DECISIONS) and
+          //     `statusForConvergenceDecision("continue") === null` (double
+          //     non-blocking). `escalate`/`needs_fix`/`diverging`/
+          //     `budget_exhausted`/`needs_classification` are NOT used — any of
+          //     those would block the linked phase even with updateStatus:false,
+          //     because the rollup keys on the newest decision VALUE.
+          // State transitions stay harness-only: the LLM never writes status; this
+          // deterministic, status-neutral record is purely advisory.
+          if (r.severityAuditPacket !== undefined) {
+            const packet = r.severityAuditPacket;
+            const findingIds = packet.findings.map((f) => f.findingId);
+            withManagedDb({ dbPath: this.opts.dbPath }, (db) => {
+              recordConvergenceDecisionWithStatus({
+                repository: new HitchRepository(db),
+                hitchId: input.hitchId,
+                updateStatus: false,
+                decision: "continue",
+                reason:
+                  "advisory: jury severity vote diverged from the harness mapping (severity unchanged)",
+                metrics: convergence.metrics,
+                recommendedNextAction: {
+                  kind: "ask_human",
+                  message:
+                    "Review the diverged severity audit; the harness severity mapping is authoritative and unchanged.",
+                  findingIds,
+                  decisionPacket: packet,
+                },
+                createdBy: input.createdBy,
+              });
+            });
+          }
           // (#230 / codex#252-P2) A jury batch was capped this invocation
           // (`moreUnknownsPending`): halt the loop cleanly so per-invocation cost
           // is bounded to one jury batch. Breaking falls through to the natural

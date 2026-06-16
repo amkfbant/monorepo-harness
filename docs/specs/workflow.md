@@ -1042,6 +1042,21 @@ status を倒すべき経路なので正しい）。状態遷移は harness の�
 この決定論的な record が唯一の sync 経路。`recommendedNextAction` の `kind`/`message`/`findingIds`
 は後方互換のため常時 populate される。
 
+**severity packet の non-escalating 記録（D2b・rollup-neutral）**: classify runner が
+`resolved:true` を返し、かつ `severityAuditPacket` を添えている（scope は jury auto_confirm で
+確定したが、決定論的 severity audit が harness mapping と乖離した）とき、orchestrator はこの
+advisory packet を **1 回だけ non-escalating に記録**する: `recordConvergenceDecisionWithStatus({
+updateStatus:false, decision:'continue', reason:<severity 乖離の advisory 文言>, metrics（当該
+iteration の convergence metrics）, recommendedNextAction（`kind:'ask_human'` ＋ `findingIds` ＋
+`decisionPacket`）, createdBy })`。**hitch status も course/phase rollup も不変**にするため二重の
+非 blocking を取る: (1) `updateStatus:false` で hitch status を sync しない、(2) `decision:'continue'`
+は rollup の blocked-set（`escalate`/`diverging`/`budget_exhausted`/`needs_classification`、
+`orchestrate-dispatch.ts`）の **外** かつ `statusForConvergenceDecision('continue')===null`。
+`escalate`/`needs_fix` 等を使うと updateStatus:false でも rollup が最新 decision の値で linked phase を
+block するため不可。severity mapping は authoritative・不変であり、この記録は監査・operator review 用の
+advisory に限る（状態遷移は harness のみ・LLM が status を倒さない）。record 後は
+`moreUnknownsPending` の halt 判定を適用してから loop を継続する。
+
 **rerun への finding 注入**: `rerun` 系 attempt（prior coding attempt が既に
 ある coder 実行）では、open in-scope finding（lifecycle が `open`/`reopened`/
 `escalated`）を集約して coder のゴール文言末尾に「Open in-scope findings to

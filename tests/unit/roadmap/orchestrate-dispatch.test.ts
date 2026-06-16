@@ -166,6 +166,42 @@ describe("decideCoursePhaseAction", () => {
     ).toBe("ready_to_close");
   });
 
+  it("D2b/codex#252-P2: the advisory severity record decision ('continue') is rollup-neutral (NOT blocked_hitch)", () => {
+    // The D2b non-escalating severity-audit record writes a decision="continue"
+    // row (recommendedNextAction.kind="ask_human"). The rollup/dispatch path keys
+    // blocking on the (newest) convergence decision; "continue" must stay OUTSIDE
+    // the blocked-set so an advisory severity divergence never blocks the linked
+    // phase or isolates its subtree. With its own advisory ask_human action it is
+    // a non-isolating report_only (NOT blocked_hitch).
+    const advisory = decideCoursePhaseAction({
+      declaredStatus: "in_progress",
+      isLeaf: true,
+      hitches: [
+        { hitchId: "h1", convergence: conv("h1", "continue", "ask_human") },
+      ],
+      derivedOpenP0: 1,
+      derivedOpenP1: 0,
+    });
+    expect(advisory.kind).not.toBe("blocked_hitch");
+    expect(advisory.kind).toBe("report_only");
+
+    // And because "continue" is outside the blocked-set, a hitch whose newest
+    // decision is "continue" still drives normally when its next action is a
+    // drivable one — the advisory record does not poison subsequent progress.
+    const drive = decideCoursePhaseAction({
+      declaredStatus: "in_progress",
+      isLeaf: true,
+      hitches: [
+        { hitchId: "h1", convergence: conv("h1", "continue", "run_close_check") },
+      ],
+      derivedOpenP0: 1,
+      derivedOpenP1: 0,
+    });
+    expect(drive.kind).not.toBe("blocked_hitch");
+    expect(drive.kind).toBe("drive");
+    if (drive.kind === "drive") expect(drive.hitchIds).toEqual(["h1"]);
+  });
+
   it("report_only when a hitch is neither drivable nor ready (e.g. defer)", () => {
     expect(
       decideCoursePhaseAction({

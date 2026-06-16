@@ -773,4 +773,166 @@ describe("HitchOrchestrator", () => {
       close2();
     }
   });
+
+  it("records a severity-audit packet non-escalating (rollup-neutral) on a resolved classify (D2b #230)", async () => {
+    const dbPath = freshDbPath();
+    let findingId = "";
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new HitchRepository(db);
+      repo.createSession({
+        hitchId: "g-severity-advisory",
+        title: "Severity advisory",
+        projectId: "demo",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+      repo.createAttempt({
+        hitchId: "g-severity-advisory",
+        attemptType: "implement",
+      });
+      const cycle = repo.startReviewCycle({
+        hitchId: "g-severity-advisory",
+        cycleNumber: 1,
+        reviewMode: "initial",
+      });
+      repo.completeReviewCycle({ cycleId: cycle.cycleId, findingsNew: 1 });
+      // An OPEN, unknown-scope finding → convergence returns
+      // needs_classification → orchestrator dispatches the classify action.
+      findingId = repo.upsertFinding({
+        hitchId: "g-severity-advisory",
+        source: "review",
+        sourceCycleId: cycle.cycleId,
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "unknown",
+        summary: "scope-unanimous finding with severity divergence",
+      }).finding.findingId;
+      repo.recordCloseCheck({
+        hitchId: "g-severity-advisory",
+        conditionId: "typecheck",
+        status: "passed",
+        checkedBy: "test",
+      });
+    } finally {
+      close();
+    }
+
+    // scope unanimous (jury auto_confirmed in_scope) BUT severity diverged →
+    // the runner resolves AND carries a non-escalating severity-audit packet.
+    const severityAuditPacket: HitchDecisionPacket = {
+      packetVersion: 2,
+      decisionKinds: ["severity_audit"],
+      findings: [
+        {
+          findingId,
+          summary: "scope-unanimous finding with severity divergence",
+          deliberationId: "delib-severity-advisory",
+          origin: "harness",
+        },
+      ],
+      recommendation: {
+        action: "review_severity",
+        rationale: "jury severity vote diverged from the harness mapping",
+      },
+      evaluationAxes: [],
+      deliberation: {
+        critiqueRan: false,
+        refuter: { refuteVerdict: "uphold", reasoning: "scope upheld" },
+        gateTrace: {
+          scopeUnanimous: true,
+          lensDistinct: true,
+          noInconclusive: true,
+          allHaveVerifiedEvidence: true,
+          proximityOk: true,
+          refuterUpheld: true,
+        },
+      },
+      rejectedProposals: [],
+      minorityView: null,
+      riskFlags: [],
+      unvalidatedAssumptions: [],
+      nextActions: [
+        {
+          owner: "operator",
+          action: "review the diverged severity",
+          verificationMethod: "compare jury votes against the harness mapping",
+        },
+      ],
+      severityAudit: {
+        harnessSeverity: "P2",
+        juryConsensus: "P1",
+        status: "diverged",
+        escalate: true,
+      },
+    };
+    let classifyCalls = 0;
+    const runners: OrchestratorRunners = {
+      ...fakeRunners([]),
+      classify: async (hitchId) => {
+        classifyCalls += 1;
+        // Mirror production auto_confirm: the deterministic gate classified the
+        // finding (scope confirmed), so it is no longer unknown — the loop
+        // converges instead of re-routing to classify forever.
+        const { db: db2, close: close2 } = openManagedDb({ dbPath });
+        try {
+          new HitchRepository(db2).classifyFinding({
+            findingId,
+            scopeStatus: "in_scope",
+            reason: "jury auto_confirm",
+          });
+        } finally {
+          close2();
+        }
+        // resolved:true carries a non-escalating severity-audit packet.
+        void hitchId;
+        return { resolved: true, severityAuditPacket };
+      },
+    };
+
+    const result = await new HitchOrchestrator({ dbPath }).run({
+      hitchId: "g-severity-advisory",
+      runners,
+      maxSteps: 6,
+      createdBy: "worker",
+    });
+
+    expect(classifyCalls).toBe(1);
+    // The advisory record must NOT escalate the hitch.
+    expect(result.outcome).not.toBe("escalated");
+
+    const { db: db2, close: close2 } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db2);
+      // (1) hitch status UNCHANGED (not escalated) — updateStatus:false.
+      expect(repo.requireSession("g-severity-advisory").status).not.toBe(
+        "escalated",
+      );
+      // A hitch_convergence_decisions row with decision="continue" carrying the
+      // severity-audit packet was persisted exactly once (non-escalating).
+      const advisoryRows = repo
+        .listDecisions("g-severity-advisory")
+        .filter(
+          (d) =>
+            d.decision === "continue" &&
+            d.recommendedNextAction?.decisionPacket !== undefined,
+        );
+      expect(advisoryRows).toHaveLength(1);
+      const advisory = advisoryRows[0]!;
+      expect(advisory.decision).toBe("continue");
+      expect(advisory.recommendedNextAction?.decisionPacket).toEqual(
+        severityAuditPacket,
+      );
+      // No escalate decision row was ever written by this advisory path.
+      expect(
+        repo
+          .listDecisions("g-severity-advisory")
+          .some((d) => d.decision === "escalate"),
+      ).toBe(false);
+    } finally {
+      close2();
+    }
+  });
 });
