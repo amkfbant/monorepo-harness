@@ -210,6 +210,237 @@ escalate
 cancel
 ```
 
+## Deliberation Jury (Classification, #230)
+
+When convergence routes to `needs_classification`, the in-loop classify runner
+resolves open + `unknown`-scope findings. Two resolution paths exist and are
+mutually exclusive per finding:
+
+- **Heuristic + operator-manual** — the frozen-scope classifier
+  (`classifyFindingForHitch`) and operator `classify_finding` mutations. This is
+  the only path used by the standalone CLI `harness hitch finding classify` and
+  MCP `harness.hitch.classify_finding`. Those entry points do **not** run the
+  jury (R13): standalone callers carry no reviewer runner, run worktree, or
+  audit context, so they stay on the deterministic heuristic boundary
+  (fail-closed). The jury runs **only** in the orchestrate-driven classify
+  runner (`src/hitch/jury/classify-runner.ts`), reached through
+  `harness hitch orchestrate` / `harness.hitch.orchestrate` /
+  `harness course orchestrate`.
+
+- **Deliberation jury** — for a finding that is **harness-origin AND still
+  `unknown` after the heuristic**, the orchestrate classify runner runs a
+  5-stage deliberation. Operator-origin (`human` / `mcp`) `unknown` findings are
+  **never machine-classified** (R5); they are bundled into the escalate packet as
+  `operator_origin_unknown` for manual classification.
+
+The classify runner is structured in 3 DB phases so the LLM never holds the DB
+open (design §3 invariant 4): **Phase 1** (DB open, synchronous) drains
+heuristic-resolvable findings and snapshots the still-`unknown` jury candidates +
+operator-origin findings, then closes the DB; **Phase 2** (DB closed) runs the
+LLM deliberation per candidate in memory; **Phase 3** (DB re-open) persists the
+audit rows, re-verifies state, freshness-checks file citations, and classifies or
+escalates.
+
+### The 5-stage deliberation pipeline
+
+Each finding is deliberated independently (`deliberate.ts`):
+
+1. **Stage 1 — PROPOSE** (LLM, DB closed, 3 lenses). Three lenses
+   (`correctness`, `scope_fit`, `spec_adherence`) each propose a scope
+   *independently* (no shared view): `{ proposedScope, proposalStatus,
+   evidence[]{citation,kind,claim}, refutationCondition, uncertainty, reasoning,
+   confidence?, proposedSeverity? }`. This is round 1.
+
+2. **Stage 2 — EVIDENCE-CHECK** (deterministic, no LLM, read-only). The harness
+   recomputes each citation's existence via `verifyEvidence`. The model's
+   self-asserted `verified` flag is ignored and re-derived. A proposal with no
+   verified evidence is treated as inconclusive (fail-closed). Unresolvable
+   citations surface in the packet's `unvalidatedAssumptions[]`, never in the
+   evaluation axes. (Stage 2 is woven into the Stage-1/Stage-3 proposer output —
+   the proposer returns already-`verifyEvidence`-d proposals.)
+
+3. **Stage 3 — CRITIQUE** (LLM, conditional). The critique round runs **iff
+   round 1 is `split` OR (round 1 is unanimous AND the evidence is weak)**, where
+   *weak* (`isWeakEvidence`) means at least one lens has fewer than one verified
+   evidence entry. A clean unanimous set with strong evidence skips straight to
+   Stage 4. When it runs, each lens sees the others' proposals + evidence,
+   raises a concrete objection, and re-votes (round 2), recording `voteChanged` /
+   `critique`. **Convergence after critique does NOT auto-confirm**: the
+   post-critique round is re-aggregated, and a post-critique unanimous set still
+   must pass Stage 4 + Stage 5.
+
+4. **Stage 4 — REFUTE** (LLM, adversarial, conditional). The refuter runs **only
+   when the selected final round is unanimous AND every final-round proposal
+   carries verified evidence**. It receives the unanimous verdict, each lens's
+   `refutationCondition`, the verified evidence, and (only when critique ran) who
+   changed their vote, and attacks the consensus — explicitly probing for false
+   consensus by conformity. It returns `{ refuteVerdict: uphold | refute |
+   inconclusive, reasoning, counterEvidence? }`.
+
+5. **Stage 5 — AGGREGATE** (deterministic gate, `aggregateDeliberation`). The
+   sole arbiter (see below).
+
+The final round handed to the gate is selected deterministically by
+`selectFinalRound`: if any round-2 proposal exists, the target round is 2 and
+**every** lens must supply a round-2 proposal; otherwise the target round is 1.
+Missing lenses, duplicate `(lens, round)` rows, and partial round-2 mixes are
+**not** silently repaired — the resulting set fails `aggregateJuryVotes`'
+unanimity test and the gate escalates.
+
+Per-finding codex cost: a clean unanimous + strong-evidence finding costs 3
+(propose) + 1 (refute) = 4 calls (critique skipped); a split / weak-evidence
+finding costs 3 + 3 (critique) + 0–1 (refute) = 6–7 calls.
+
+### Monotonic, fail-closed invariants (the safety backbone)
+
+The deliberation can only *add* safety; it can never relax a decision (design
+§3, mirrored in the harness safety boundary):
+
+1. **No split → auto_confirm path exists structurally.** LLM speech can never
+   turn a split into an auto-confirm. The post-critique convergence still passes
+   the refuter and gate. The refuter can only `uphold` (does not block the gate)
+   or `refute` / `inconclusive` (veto).
+
+2. **The deterministic gate (`aggregateDeliberation`) is the sole arbiter** of
+   `auto_confirm` vs `escalate`. It auto-confirms **iff** the scope is unanimous
+   (`aggregateJuryVotes` is the authority — it already subsumes 3-distinct-lenses
+   + zero-inconclusive) AND every proposal has verified evidence AND every
+   proposal has at least one verified+proximate citation AND the refuter
+   `uphold`s. Everything else escalates. The gate is pure (same input → deep-equal
+   output, no IO, no state). `confidence` never drives the decision (no float
+   gate). A missing (never-run) refuter (`refuterUpheld === null`) vetoes. Before
+   the gate runs, `deliberate` asserts every final-round proposal's evidence is
+   `VerifiedJuryEvidence` and throws (fail-closed) on a violation — a
+   programming-error guard, not an LLM behavior.
+
+3. **State transitions stay harness-only.** `repo.classifyFinding` runs **only**
+   on a Stage-5 `auto_confirm` (never from LLM output), and only after Phase 3
+   re-verifies the finding is still `unknown` + open and re-stats its file
+   citations. Hitch status syncs deterministically via
+   `recordConvergenceDecisionWithStatus`. The LLM never writes finding scope /
+   severity / lifecycle / hitch status.
+
+4. **Evidence is verified deterministically.** Hallucinated citations are
+   rejected in Stage 2; the gate never trusts the model's evidence claim.
+
+5. **Severity is never auto-modified.** `auditSeverity` returns the harness
+   severity unchanged; divergence only sets an `escalate` flag and a packet
+   record for human review (see severity precedence below).
+
+The DB is open only during Phase 1 (synchronous snapshot) and Phase 3
+(append-only audit persistence + classify), and closed for the whole LLM
+deliberation, mirroring the reviewer path.
+
+### RACI: Decision Transitions
+
+Accountable is exactly one role per row. Jury stages and the non-jury
+convergence paths (P0 / budget / divergence) are both covered.
+
+| Decision transition | Responsible (R) | Accountable (A) | Consulted (C) | Informed (I) |
+|---|---|---|---|---|
+| Do not machine-classify operator-origin `unknown` | classify runner (source filter) | **operator** | — | audit trail |
+| Stage 1 independent proposals (DB closed) | jury proposers (LLM input layer) | harness classify runner | reviewer context | audit (proposals / audit dir) |
+| Stage 2 evidence existence check | `verifyEvidence` (deterministic) | harness classify runner | worktree / policy / specs | audit (evidence JSON) |
+| Stage 3 mutual critique + re-vote | jury proposers (LLM input layer) | harness classify runner | other lenses' proposals | audit (round-2 rows) |
+| Stage 4 adversarial refute | refuter (LLM input layer) | harness classify runner | refutation conditions / verified evidence | audit (refutations) |
+| Stage 5 `auto_confirm` → scope set | `aggregateDeliberation` (pure) | harness classify runner (txn) | session policy snapshot | audit trail |
+| Stage 5 `escalate` (packet persisted) | `aggregateDeliberation` + orchestrator (record) | **operator** | harness convergence | dashboard, escalation log |
+| Severity divergence (advisory) → packet record | `auditSeverity` (deterministic) | **operator** | harness mapping (authoritative) | escalate / advisory packet |
+| Operator overrides an auto/classification | operator (CLI/MCP **guarded-mutation** `classify_finding`) | **operator** | jury reasoning (packet) | audit (`created_by` / actor note) |
+| P0 open → `escalate` (non-jury) | convergence | harness convergence | — | operator |
+| `budget_exhausted` → stop (non-jury) | convergence | harness convergence | — | operator |
+| `diverging` → `escalate` (non-jury, harness-origin only) | divergence circuit breaker | harness convergence | divergence policy | operator |
+
+Override is the `harness.hitch.classify_finding` guarded mutation
+(`kind: "mutation"`, outside the dangerous / confirmation-required list) —
+guarded-mutation mode + permission snapshot + audit. It is not bypassed by a
+raw shell mutation.
+
+### HitchDecisionPacket v2
+
+Escalations carry a consultant-grade MCDA decision packet
+(`packetVersion: 2`) persisted into the escalating
+`hitch_convergence_decisions` row's `recommended_next_action`. The v2 shape
+(`src/hitch/jury/decision-packet.ts`):
+
+- `decisionKinds` is a **plural** array — `classify_scope`, `severity_audit`,
+  and/or `operator_origin_unknown` — so a mixed harness/operator batch never
+  hides one side's required action.
+- There is **no top-level `packet.deliberationId`**. Each `findings[]` entry
+  carries its own `deliberationId` and `origin` (`harness` / `operator`), so one
+  packet can bundle several deliberations and each finding maps to its own audit
+  rows.
+- `recommendation.action` ∈ {`classify_manually`, `review_split`,
+  `review_severity`}; MCDA fields include `evaluationAxes[]` (per-lens votes +
+  consensus), `deliberation` (`critiqueRan` / `refuter` / `gateTrace`),
+  `rejectedProposals[]`, `minorityView`, `riskFlags[]`,
+  `unvalidatedAssumptions[]` (UNVERIFIED citations only — R1), `nextActions[]`
+  (one per finding, none hidden), and optional `severityAudit`.
+
+Pre-v2 (`packetVersion: 1`) packets remain in older
+`hitch_convergence_decisions` rows. Readers of `recommended_next_action`
+(dashboard read API, MCP, CLI `listDecisions`) are packet-shape-agnostic:
+`decisionPacket` is stored verbatim and discriminated by `packetVersion`, so a
+v2 reader treats the v2-only `deliberation` / evidence fields as `undefined`
+when reading a v1 row.
+
+**Severity precedence.** The **harness severity mapping is authoritative** and
+is never changed by the jury. `auditSeverity` is advisory-only: it records
+whether the jury's strict-majority severity vote is `aligned`, `diverged`, or
+`inconclusive`. A `diverged` / `inconclusive` audit on an **auto-confirmed**
+finding does NOT escalate the hitch — the orchestrator records a
+status-neutral advisory `severity_audit` packet once
+(`updateStatus: false`, a non-blocking `continue` decision so the
+course/phase rollup is untouched) so an operator can review the divergence
+while the classification stands.
+
+### `verifyEvidence` guarantees and its limit
+
+`verifyEvidence` (`src/hitch/jury/evidence.ts`) is deterministic, read-only IO
+(no SQLite, no network — same input + same context → deep-equal output). It
+ignores any model-supplied `verified` flag and recomputes existence:
+
+- `file` (`<path>[:line[-line]]`): the path resolves under the run worktree as a
+  file, and any cited line is within range. `resolvedRef` is the absolute path.
+- `spec` (`<md-path>#<anchor>`): the md is covered by `specDocsGlobs` (default
+  `docs/specs/**/*.md`) and exactly one heading slug equals the anchor (missing
+  → false; duplicate-ambiguous → false, fail-closed).
+- `policy`: the citation names an existing domain key, or string-equals a glob in
+  any domain's `read` / `write` / `deny_write` list.
+
+**Limit (relevance is not machine-checkable):** `verifyEvidence` proves a
+citation **EXISTS** only — never that it is RELEVANT to the finding (an
+unrelated-but-existing citation cannot be rejected here). Relevance is handled by
+the Stage-3 critique (each lens must state how a citation supports/refutes the
+finding) plus the deterministic **proximity filter** AND-gated into the gate's
+auto_confirm condition: a `file` citation must share the first two path segments
+of the finding's `filePath`; a `spec` / `policy` citation must include the
+finding's `category` as an exact token. A verified-but-unrelated-domain citation
+yields `false` → escalate (strictly safer). This limit is also noted in the
+scope notes (design §12); true multi-model diversity is out of scope (single
+backend, distinct prompts; the adversarial refuter supplies partial stance
+diversity).
+
+### Phase-3 freshness and batch limit
+
+After Phase 2, Phase 3 re-stats only the **FINAL-round** verified `file`
+citations against the current worktree; if any is now stale (path gone / line out
+of range), the auto_confirm is withdrawn → escalate. `spec` / `policy` citations
+are treated as immutable (no recheck). Superseded round-1 citations that did not
+drive the auto_confirm never withdraw it.
+
+The jury processes at most `JURY_BATCH_LIMIT = 25` candidates per orchestrate
+invocation. Remaining unknowns are deferred: the runner returns
+`moreUnknownsPending` and the orchestrator halts this invocation cleanly (a
+non-escalate `max_steps_exhausted` outcome) so per-invocation cost is bounded to
+one jury batch; the next orchestrate invocation re-fires `needs_classification`
+and drains the remainder.
+
+> Scope note: the convergence direct-escalate paths (P0 / budget / divergence)
+> do NOT carry a `decisionPacket` — the additive packet for those non-jury
+> escalations (design D3) was deferred. Only the classify runner's
+> jury/operator-origin escalations attach a `HitchDecisionPacket`.
+
 ## Default Policy
 
 ```yaml
