@@ -1271,6 +1271,10 @@ export function createOrchestratorRunners(
           runId: latestRun?.runId ?? null,
           juryBatchLimit: JURY_BATCH_LIMIT,
           timeoutMs: JURY_CODEX_TIMEOUT_MS,
+          // #132: thread the orchestrator's lease signal so a mid-deliberation
+          // lease loss aborts the in-flight jury codex AND blocks any Phase-3
+          // mutation (a non-authoritative drive mutates no state, fail-closed).
+          ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
         },
         hitchId,
       );

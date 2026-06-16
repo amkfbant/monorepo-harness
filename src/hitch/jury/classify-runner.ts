@@ -73,9 +73,27 @@ export interface ClassifyDeliberationDeps {
   specDocsGlobs?: readonly string[];
   /** Codex per-call timeout (ms). */
   timeoutMs: number;
+  /**
+   * Lease-loss abort signal (#132). Threaded from the orchestrator drive into
+   * every jury codex call (Phase 2) AND checked before each Phase-3 DB mutation:
+   * a non-authoritative (lease-lost) drive persists/classifies/escalates NOTHING
+   * and returns the benign no-op `{ resolved: true }`. The orchestrator's
+   * next-iteration `driveAborted` check then converts that into `lease_lost`.
+   */
+  signal?: AbortSignal;
 }
 
 const OPEN_FINDING_LIFECYCLE_LIST = OPEN_FINDING_LIFECYCLES;
+
+/**
+ * Whether the lease signal has fired (#132). A function call (not an inline
+ * `signal?.aborted` check) so TS does not narrow `aborted` to `false` after the
+ * first check — Phase 2's awaited LLM step can flip it to true between the
+ * pre-Phase-1 guard and the pre-Phase-3 guard (mirrors orchestrator.driveAborted).
+ */
+function signalAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
 
 /** A jury candidate snapshotted in Phase 1 (DB closed for Phase 2). */
 interface JuryCandidate {
@@ -243,6 +261,8 @@ function buildProposerDeps(
     parseSchema: undefined,
     auditDir: join(harnessPaths(deps.harnessRoot).runsDir, "jury", hitchId),
     evidenceCtx,
+    // #132: thread the lease signal into every per-call jury codex invocation.
+    ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
   };
 }
 
@@ -448,6 +468,16 @@ export async function runClassifyDeliberation(
   deps: ClassifyDeliberationDeps,
   hitchId: string,
 ): Promise<ClassifyRunnerResult> {
+  // #132 — already lease-lost before we start: a non-authoritative drive must
+  // mutate NO state. Short-circuit BEFORE the Phase-1 snapshot with the benign
+  // no-op; the orchestrator's next-iteration driveAborted check maps it to
+  // lease_lost (never escalate). Returning resolved:true is the correct
+  // fail-safe — throwing here would route through the orchestrator try/catch and
+  // escalate the hitch.
+  if (signalAborted(deps.signal)) {
+    return { resolved: true };
+  }
+
   // PHASE 1 — DB OPEN, synchronous snapshot (no await inside the handle).
   const phase1 = openSnapshot(deps, hitchId);
   if (phase1.noProgressEscalate !== undefined) {
@@ -481,6 +511,16 @@ export async function runClassifyDeliberation(
 
   // PHASE 2 — DB CLOSED, LLM deliberation (no DB handle held across awaits).
   const deliberated = await runPhase2(deps, phase1.candidates);
+
+  // #132 — lease lost DURING Phase 2 (the long LLM step). Phase 3 is where the
+  // ONLY state mutations happen (persist audit rows / classifyFinding / build the
+  // escalate packet). A non-authoritative drive must mutate NOTHING, so abort
+  // BEFORE re-opening the DB and return the benign no-op. (Do NOT throw — the
+  // orchestrator try/catch would escalate the hitch; resolved:true lets the
+  // next-iteration driveAborted check convert it to lease_lost.)
+  if (signalAborted(deps.signal)) {
+    return { resolved: true };
+  }
 
   // PHASE 3 — DB RE-OPEN, persist + re-verify + classify.
   return runPhase3(

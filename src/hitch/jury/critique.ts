@@ -1,6 +1,7 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
+import { runJuryCodex } from "./run-codex.js";
 import {
   JURY_LENSES,
   type JuryClassificationProposal,
@@ -298,7 +299,7 @@ async function critiqueForLens(
   for (const p of [paths.stdout, paths.stderr, paths.events]) {
     await mkdir(dirname(p), { recursive: true });
   }
-  const result = await deps.reviewerRunner.run({
+  const result = await runJuryCodex(deps, {
     worktreePath: deps.worktreePath,
     prompt,
     logPaths: { stdout: paths.stdout, stderr: paths.stderr, events: paths.events },

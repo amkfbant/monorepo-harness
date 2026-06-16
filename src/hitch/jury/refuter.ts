@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { verifyEvidence } from "./evidence.js";
+import { runJuryCodex } from "./run-codex.js";
 import {
   JURY_LENSES,
   type JuryLens,
@@ -272,7 +273,7 @@ export async function runClassificationRefuter(
       await mkdir(dirname(p), { recursive: true });
     }
     const prompt = buildRefutePrompt(input);
-    const result = await deps.reviewerRunner.run({
+    const result = await runJuryCodex(deps, {
       worktreePath: deps.worktreePath,
       prompt,
       logPaths: {

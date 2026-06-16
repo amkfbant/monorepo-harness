@@ -175,6 +175,15 @@ export interface JuryProposerDeps {
   parseSchema: unknown;
   auditDir: string;
   evidenceCtx: EvidenceCheckContext;
+  /**
+   * Lease-loss abort signal (#132). Threaded from the orchestrator drive through
+   * the classify runner into every proposer/critique/refuter codex call so a
+   * mid-deliberation lease loss aborts the in-flight codex (fail-closed). Each
+   * per-call invocation ALSO derives a `timeoutMs` controller and combines it
+   * with this lease signal (`AbortSignal.any`); see `runJuryCodex`. Optional: a
+   * standalone (non-orchestrated) deliberation may omit it.
+   */
+  signal?: AbortSignal;
 }
 
 /** What kind(s) of decision an escalate packet bundles (R14: plural). */

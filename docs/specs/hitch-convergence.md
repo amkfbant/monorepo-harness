@@ -293,6 +293,29 @@ Per-finding codex cost: a clean unanimous finding costs 3 (propose) + 1 (refute)
 = 4 calls (critique skipped); a non-unanimous (split) finding costs 3 + 3
 (critique) + 0–1 (refute) = 6–7 calls.
 
+Every Stage-1/3/4 codex invocation goes through one wrapper
+(`src/hitch/jury/run-codex.ts`, `runJuryCodex`) that enforces two safety
+properties (the runner exposes a `signal` but **no** timeout field, so the
+caller must enforce both):
+
+- **Per-call timeout.** Each call derives a fresh `AbortController` and a
+  `setTimeout(timeoutMs)` (`JURY_CODEX_TIMEOUT_MS`, 600 s) and passes the
+  combined signal (`AbortSignal.any([lease, timeout])`) into the codex run; an
+  aborted/timed-out call maps **fail-closed** (`proposalStatus: timeout` /
+  refuter `inconclusive`), never `complete`. A hanging jury codex therefore
+  cannot block the classify step indefinitely despite the per-invocation batch
+  cap.
+- **Lease-loss abort (#132).** The orchestrator's drive signal is threaded
+  through the classify runner into every jury codex call. When the course loses
+  its lease mid-deliberation the signal aborts and the in-flight codex is
+  SIGKILLed. The classify runner ALSO checks the signal **before Phase 1** and
+  **before any Phase-3 DB mutation**: a non-authoritative (lease-lost) drive
+  persists/classifies/escalates **nothing** and returns the benign no-op
+  (`{ resolved: true }`); the orchestrator's next-iteration `driveAborted` check
+  then maps the stop to `lease_lost` (it never throws from inside the runner —
+  that would route through the orchestrator try/catch and wrongly escalate the
+  hitch).
+
 ### Monotonic, fail-closed invariants (the safety backbone)
 
 The deliberation can only *add* safety; it can never relax a decision (design
@@ -344,7 +367,9 @@ The deliberation can only *add* safety; it can never relax a decision (design
    re-verifies the finding is still `unknown` + open and re-stats its file
    citations. Hitch status syncs deterministically via
    `recordConvergenceDecisionWithStatus`. The LLM never writes finding scope /
-   severity / lifecycle / hitch status.
+   severity / lifecycle / hitch status. A drive that lost its lease mid-run is
+   **non-authoritative**: the runner checks the lease signal before any Phase-3
+   mutation and writes nothing (see the per-call codex wrapper note above).
 
 4. **Evidence is verified deterministically.** Hallucinated citations are
    rejected in Stage 2; the gate never trusts the model's evidence claim.
