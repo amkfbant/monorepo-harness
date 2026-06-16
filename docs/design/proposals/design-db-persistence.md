@@ -152,6 +152,13 @@ CREATE TABLE review_refute_votes (
     CHECK (refute_verdict IS NULL OR refute_verdict IN ('uphold','refute','inconclusive')),
   confidence    REAL CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1),  -- advisory。gate を駆動しない (P3-1)
   reasoning     TEXT,                 -- 判断ログ (会話全文でない)
+  -- G3 refute DSL 必須フィールドを構造化列で持つ (YAML 再パース不要・verifier/dashboard が直接 query 可。design-229 G3)
+  refute_reason       TEXT,           -- passed は非空 (下の CHECK)
+  counter_evidence_kind TEXT          -- diff | test | none (passed は非 NULL)
+    CHECK (counter_evidence_kind IS NULL OR counter_evidence_kind IN ('diff','test','none')),
+  counter_evidence_ref  TEXT,         -- kind!=none のとき run artifact 参照 (refute layer の決定論 verifier が実在検証)
+  refute_condition    TEXT,           -- 反証条件 (passed は非空)
+  retract_condition   TEXT,           -- 撤回条件 (passed は非空)
   model         TEXT,
   prompt_sha256 TEXT NOT NULL,        -- CC11: business-key dedupe を NULL 重複で破らせない
   prompt_provenance_json TEXT,
@@ -164,7 +171,14 @@ CREATE TABLE review_refute_votes (
   reject_reason TEXT,                 -- rejected 時の決定論コード (unknown_target / hash_mismatch / missing_field / artifact_absent / evidence_none)
   created_at    TEXT NOT NULL,
   CHECK (validation_status = 'passed' OR (reject_reason IS NOT NULL AND reject_reason <> '')),  -- rejected は必ず reason を持つ (audit 可能性、codex round3)
-  CHECK (validation_status <> 'passed' OR refute_verdict IS NOT NULL)  -- passed は必ず verdict を持つ (codex round4: malformed は rejected 側で verdict NULL 可)
+  CHECK (validation_status <> 'passed' OR refute_verdict IS NOT NULL),  -- passed は必ず verdict を持つ (codex round4: malformed は rejected 側で verdict NULL 可)
+  -- passed は G3 必須 DSL フィールドを構造的に持つ (codex round8。malformed は rejected 側で NULL 可)
+  CHECK (validation_status <> 'passed' OR (
+    refute_reason IS NOT NULL AND refute_reason <> ''
+    AND counter_evidence_kind IS NOT NULL
+    AND (counter_evidence_kind = 'none' OR (counter_evidence_ref IS NOT NULL AND counter_evidence_ref <> ''))
+    AND refute_condition IS NOT NULL AND refute_condition <> ''
+    AND retract_condition IS NOT NULL AND retract_condition <> ''))
 );
 -- passed のみ business key で一意 (集約入力の一意性・idempotent)。rejected には掛けない (codex round3/6)
 CREATE UNIQUE INDEX review_refute_votes_passed_idx
