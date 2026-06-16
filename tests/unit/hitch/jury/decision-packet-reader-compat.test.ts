@@ -95,6 +95,7 @@ function v2Packet(): HitchDecisionPacket {
         lensVotes: [
           {
             lens: "scope_fit",
+            findingId: "f-1",
             scope: "in_scope",
             proposalStatus: "complete",
             voteChanged: false,

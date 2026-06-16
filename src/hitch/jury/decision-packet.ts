@@ -93,6 +93,9 @@ function toLensVote(p: JuryClassificationProposal): DecisionPacketLensVote {
   const verified = p.evidence.filter((e) => e.verified === true);
   return {
     lens: p.lens,
+    // codex#254-P2 FIX1: keep the vote attributable to its finding so a bundled
+    // multi-finding packet never lets an operator apply the wrong scope.
+    findingId: p.findingId,
     scope: p.proposedScope,
     proposalStatus: p.proposalStatus,
     ...(p.reasoning !== undefined ? { reasoning: p.reasoning } : {}),
@@ -177,19 +180,37 @@ function toMinorityView(
   };
 }
 
-/** Build the `rejectedProposals` summary (one entry per non-empty scope group). */
+/**
+ * Build the `rejectedProposals` summary. One entry per non-empty
+ * (finding, scope) group: tallying PER finding (codex#254-P2 FIX1) keeps a
+ * bundled multi-finding packet's scope tallies attributable rather than merging
+ * two findings' votes into a single finding-blind count.
+ */
 function toRejectedProposals(
   proposals: readonly JuryClassificationProposal[],
 ): HitchDecisionPacket["rejectedProposals"] {
-  const counts = new Map<JuryClassificationProposal["proposedScope"], number>();
+  // Map<findingId, Map<scope, count>> preserving first-seen order per finding.
+  const byFinding = new Map<
+    string,
+    Map<JuryClassificationProposal["proposedScope"], number>
+  >();
   for (const p of proposals) {
-    counts.set(p.proposedScope, (counts.get(p.proposedScope) ?? 0) + 1);
+    const scopes = byFinding.get(p.findingId) ?? new Map();
+    scopes.set(p.proposedScope, (scopes.get(p.proposedScope) ?? 0) + 1);
+    byFinding.set(p.findingId, scopes);
   }
-  return [...counts.entries()].map(([scope, lensCount]) => ({
-    scope,
-    lensCount,
-    reason: `${lensCount} lens(es) proposed ${scope}`,
-  }));
+  const out: HitchDecisionPacket["rejectedProposals"] = [];
+  for (const [findingId, scopes] of byFinding) {
+    for (const [scope, lensCount] of scopes) {
+      out.push({
+        findingId,
+        scope,
+        lensCount,
+        reason: `${lensCount} lens(es) proposed ${scope} for finding ${findingId}`,
+      });
+    }
+  }
+  return out;
 }
 
 /**

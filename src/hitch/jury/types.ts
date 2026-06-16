@@ -242,6 +242,14 @@ export type DecisionRecommendationAction =
 /** One lens's vote as projected into the packet's evaluation axes. */
 export interface DecisionPacketLensVote {
   lens: JuryLens;
+  /**
+   * Per-finding attribution (codex#254-P2 FIX1). A `review_split` packet may
+   * BUNDLE several findings into ONE shared `evaluationAxes` block (each lens
+   * axis then carries one vote PER bundled finding), so a vote without its
+   * finding id is unattributable — an operator could apply the wrong scope to
+   * the wrong finding. Always set from `JuryClassificationProposal.findingId`.
+   */
+  findingId: string;
   scope?: JuryProposedScope;
   proposalStatus?: JuryProposalStatus;
   reasoning?: string;
@@ -290,6 +298,12 @@ export interface HitchDecisionPacket {
     gateTrace: DeliberationResult["gateTrace"];
   };
   rejectedProposals: Array<{
+    /**
+     * Per-finding attribution (codex#254-P2 FIX1). A bundled `review_split`
+     * packet tallies rejected scopes PER finding — without the finding id the
+     * tallies of two bundled findings would be merged finding-blind.
+     */
+    findingId: string;
     scope: JuryProposedScope;
     lensCount: number;
     reason: string;

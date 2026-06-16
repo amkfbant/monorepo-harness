@@ -248,6 +248,89 @@ describe("buildJurySplitPacket", () => {
       expect(packet.nextActions.some((a) => a.action.includes(f))).toBe(true);
     }
   });
+
+  it("codex#254-P2 FIX1: in a bundled packet, EVERY lensVote is attributable to its finding (findingId present + correct)", () => {
+    const bundled: JurySplitInput = {
+      splits: [
+        splitInput.splits[0]!,
+        {
+          finding: finding({ findingId: "f2", summary: "f2 summary" }),
+          deliberationId: "d2",
+          proposals: [
+            proposal("correctness", "out_of_scope", { findingId: "f2" }),
+            proposal("scope_fit", "in_scope", { findingId: "f2" }),
+            proposal("spec_adherence", "in_scope", { findingId: "f2" }),
+          ],
+          refuter: upheld,
+          critiqueRan: false,
+          gateTrace: splitInput.splits[0]!.gateTrace,
+        },
+      ],
+    };
+    const packet = buildJurySplitPacket(bundled);
+    const allVotes = packet.evaluationAxes.flatMap((a) => a.lensVotes);
+    // No vote may be unattributable (findingId never undefined).
+    expect(allVotes.length).toBeGreaterThan(0);
+    expect(allVotes.every((v) => v.findingId === "f1" || v.findingId === "f2")).toBe(
+      true,
+    );
+    // The correctness axis bundles BOTH findings' correctness votes; each is
+    // attributed to the right finding with the right scope.
+    const correctness = packet.evaluationAxes.find((a) => a.axis === "correctness")!;
+    const f1Vote = correctness.lensVotes.find((v) => v.findingId === "f1")!;
+    const f2Vote = correctness.lensVotes.find((v) => v.findingId === "f2")!;
+    expect(f1Vote.scope).toBe("in_scope");
+    expect(f2Vote.scope).toBe("out_of_scope");
+  });
+
+  it("codex#254-P2 FIX1: in a bundled packet, EVERY rejectedProposal is attributable to its finding (findingId present + correct)", () => {
+    const bundled: JurySplitInput = {
+      splits: [
+        splitInput.splits[0]!, // f1: correctness/scope_fit in_scope, spec out_of_scope
+        {
+          finding: finding({ findingId: "f2", summary: "f2 summary" }),
+          deliberationId: "d2",
+          proposals: [
+            proposal("correctness", "out_of_scope", { findingId: "f2" }),
+            proposal("scope_fit", "unknown", { findingId: "f2" }),
+            proposal("spec_adherence", "unknown", { findingId: "f2" }),
+          ],
+          refuter: upheld,
+          critiqueRan: false,
+          gateTrace: splitInput.splits[0]!.gateTrace,
+        },
+      ],
+    };
+    const packet = buildJurySplitPacket(bundled);
+    expect(packet.rejectedProposals.length).toBeGreaterThan(0);
+    // Each rejectedProposal entry names its finding.
+    expect(
+      packet.rejectedProposals.every(
+        (r) => r.findingId === "f1" || r.findingId === "f2",
+      ),
+    ).toBe(true);
+    // f1 has its own scope tallies; f2 has its own — the two are NOT merged into a
+    // single finding-blind tally.
+    const f1Out = packet.rejectedProposals.find(
+      (r) => r.findingId === "f1" && r.scope === "out_of_scope",
+    );
+    const f2Out = packet.rejectedProposals.find(
+      (r) => r.findingId === "f2" && r.scope === "out_of_scope",
+    );
+    expect(f1Out?.lensCount).toBe(1); // spec_adherence
+    expect(f2Out?.lensCount).toBe(1); // correctness
+    const f2Unknown = packet.rejectedProposals.find(
+      (r) => r.findingId === "f2" && r.scope === "unknown",
+    );
+    expect(f2Unknown?.lensCount).toBe(2); // scope_fit + spec_adherence
+  });
+
+  it("codex#254-P2 FIX1: a single-finding split packet still attributes lensVotes (findingId set)", () => {
+    const packet = buildJurySplitPacket(splitInput);
+    const allVotes = packet.evaluationAxes.flatMap((a) => a.lensVotes);
+    expect(allVotes.length).toBeGreaterThan(0);
+    expect(allVotes.every((v) => v.findingId === "f1")).toBe(true);
+  });
 });
 
 describe("buildOperatorOriginPacket", () => {

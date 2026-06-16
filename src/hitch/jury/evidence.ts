@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { resolve, relative, isAbsolute, sep } from "node:path";
 import { minimatch } from "minimatch";
 import type {
@@ -25,6 +25,44 @@ import type {
 
 const SPEC_MATCH_OPTS = { dot: true, nocomment: true } as const;
 const DEFAULT_SPEC_DOCS_GLOBS: readonly string[] = ["docs/specs/**/*.md"];
+
+/**
+ * Whether `abs` stays INSIDE `base` by the LEXICAL relative form (no real-path
+ * resolution): the worktree-relative path must be non-empty, not `..`, not start
+ * with `..<sep>`, and not be itself absolute (a Windows drive switch).
+ */
+function relStaysInside(base: string, abs: string): boolean {
+  const rel = relative(base, abs);
+  return (
+    rel.length > 0 &&
+    rel !== ".." &&
+    !rel.startsWith(`..${sep}`) &&
+    !isAbsolute(rel)
+  );
+}
+
+/**
+ * Symlink-escape guard (codex#254-P2 FIX2). The lexical `relStaysInside` guard
+ * passes for an IN-TREE symlink even when its TARGET points OUTSIDE `base`, so
+ * `statSync`/`readFileSync` would follow it and read the external target. After
+ * the lexical guard, resolve the REAL path (following symlinks) and re-check it
+ * is STILL inside `base`. Fail-closed: if the path cannot be realpath-resolved
+ * (e.g. ENOENT, or a broken symlink) OR the real path escapes `base`, return
+ * false BEFORE any read.
+ */
+function realPathStaysInside(base: string, abs: string): boolean {
+  let realBase: string;
+  let realAbs: string;
+  try {
+    // Resolve the base too: a worktree may itself live under a symlinked dir
+    // (e.g. macOS /var -> /private/var), so compare real-vs-real.
+    realBase = realpathSync(base);
+    realAbs = realpathSync(abs);
+  } catch {
+    return false;
+  }
+  return relStaysInside(realBase, realAbs);
+}
 
 /**
  * Verify one piece of evidence against the deterministic context. Returns a
@@ -80,11 +118,16 @@ function verifyFile(
   if (isAbsolute(path)) return { ...ev, verified: false };
   const abs = resolve(ctx.worktreePath, path);
   // Reject any resolved path that escapes the worktree (`..` traversal or a
-  // different root). The relative form must be a non-empty, non-`..`,
+  // different root). The lexical relative form must be a non-empty, non-`..`,
   // non-absolute in-tree path.
-  const rel = relative(ctx.worktreePath, abs);
-  if (rel.length === 0 || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+  if (!relStaysInside(ctx.worktreePath, abs)) {
     return { ...ev, verified: false };
+  }
+  // Symlink-escape guard (codex#254-P2 FIX2): the lexical guard above passes for
+  // an in-tree symlink whose TARGET is outside the worktree. Resolve the REAL
+  // path and re-check it stays inside BEFORE statSync/readFileSync follow it.
+  if (!realPathStaysInside(ctx.worktreePath, abs)) {
+    return { ...ev, verified: false, resolvedRef: abs };
   }
   let lineCount: number;
   try {
@@ -171,6 +214,13 @@ function verifySpec(ev: RawJuryEvidence, ctx: EvidenceCheckContext): boolean {
   // one glob it matched (defense-in-depth against a `..`-escaping citation that
   // the glob nonetheless matched on the raw string).
   if (!resolvedStaysInSpecRoot(abs, ctx.worktreePath, matchedGlobs)) return false;
+  // Symlink-escape guard (codex#254-P2 FIX2): the lexical spec-root guard above
+  // passes for an in-tree spec symlink whose TARGET is outside the spec root.
+  // Resolve the REAL path and re-check it stays inside a matched spec root
+  // BEFORE readFileSync follows it (fail-closed on unresolvable/escaping).
+  if (!realSpecPathStaysInSpecRoot(abs, ctx.worktreePath, matchedGlobs)) {
+    return false;
+  }
   let content: string;
   try {
     content = readFileSync(abs, "utf8");
@@ -196,16 +246,25 @@ function resolvedStaysInSpecRoot(
   worktreePath: string,
   matchedGlobs: readonly string[],
 ): boolean {
-  return matchedGlobs.some((g) => {
-    const root = resolve(worktreePath, globStaticPrefix(g));
-    const rel = relative(root, abs);
-    return (
-      rel.length > 0 &&
-      rel !== ".." &&
-      !rel.startsWith(`..${sep}`) &&
-      !isAbsolute(rel)
-    );
-  });
+  return matchedGlobs.some((g) =>
+    relStaysInside(resolve(worktreePath, globStaticPrefix(g)), abs),
+  );
+}
+
+/**
+ * Symlink-escape variant of `resolvedStaysInSpecRoot` (codex#254-P2 FIX2): the
+ * REAL path of `abs` (symlinks followed) must stay inside the REAL spec root of
+ * at least one matched glob. Fail-closed when the path or any root cannot be
+ * realpath-resolved.
+ */
+function realSpecPathStaysInSpecRoot(
+  abs: string,
+  worktreePath: string,
+  matchedGlobs: readonly string[],
+): boolean {
+  return matchedGlobs.some((g) =>
+    realPathStaysInside(resolve(worktreePath, globStaticPrefix(g)), abs),
+  );
 }
 
 /**

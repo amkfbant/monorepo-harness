@@ -466,6 +466,11 @@ Escalations carry a consultant-grade MCDA decision packet
   `rejectedProposals[]`, `minorityView`, `riskFlags[]`,
   `unvalidatedAssumptions[]` (UNVERIFIED citations only — R1), `nextActions[]`
   (one per finding, none hidden), and optional `severityAudit`.
+- A bundled `review_split` packet may flatten **multiple findings'** votes into
+  one shared `evaluationAxes` block, so each `evaluationAxes[].lensVotes[]` entry
+  AND each `rejectedProposals[]` entry carries its own **`findingId`** (it is
+  attributable to its finding). `rejectedProposals[]` tallies scopes **per
+  finding** (a bundle does not merge two findings into one finding-blind count).
 
 Pre-v2 (`packetVersion: 1`) packets remain in older
 `hitch_convergence_decisions` rows. Readers of `recommended_next_action`
@@ -493,14 +498,19 @@ ignores any model-supplied `verified` flag and recomputes existence:
 - `file` (`<path>[:line[-line]]`): the path resolves under the run worktree as a
   file, and any cited line is within range. `resolvedRef` is the absolute path.
   An absolute citation, or a `..`-escaping one whose resolved path leaves the
-  worktree, is rejected (fail-closed) before any read.
+  worktree, is rejected (fail-closed) before any read. The lexical guard is
+  followed by a **real-path (symlink-resolved) guard**: an in-tree path whose
+  symlink TARGET points OUTSIDE the worktree (or that cannot be realpath-resolved)
+  is rejected before `statSync`/`readFileSync` can follow it.
 - `spec` (`<md-path>#<anchor>`): the md is covered by `specDocsGlobs` (default
   `docs/specs/**/*.md`) and exactly one heading slug equals the anchor (missing
   → false; duplicate-ambiguous → false, fail-closed). Mirroring the `file` guard,
   an absolute citation, or a `..`-escaping path that the glob nonetheless matched
   on the raw string but whose resolved path leaves the glob's static-prefix spec
   root, is rejected before any read (so a citation cannot read a markdown file
-  OUTSIDE the spec tree).
+  OUTSIDE the spec tree). The same **real-path guard** applies: an in-tree spec
+  path whose symlink TARGET escapes the spec root (or is unresolvable) is rejected
+  before the read.
 - `policy`: the citation names an existing domain key, or string-equals a glob in
   any domain's `read` / `write` / `deny_write` list.
 
@@ -550,6 +560,17 @@ invocation. Remaining unknowns are deferred: the runner returns
 non-escalate `max_steps_exhausted` outcome) so per-invocation cost is bounded to
 one jury batch; the next orchestrate invocation re-fires `needs_classification`
 and drains the remainder.
+
+Because a capped batch leaves the hitch's live convergence at
+`needs_classification` (unknown-scope findings remain), the **course**
+orchestrator must NOT advance past it. After a non-escalating drive the course
+re-derives the hitch's live convergence and, if it is a blocking decision
+(`escalate` / `diverging` / `budget_exhausted` / `needs_classification`),
+isolates the subtree exactly like the pre-drive gate — **retryable**, not a human
+escalation and not a terminal advance: the phase stays open, downstream phases do
+not progress, and a later invocation re-fires the same decision and drains the
+next batch. The pre-drive gate and this post-drive check share one
+`BLOCKED_DECISIONS` set so they never drift.
 
 > Scope note: the convergence direct-escalate paths (P0 / budget / divergence)
 > do NOT carry a `decisionPacket` — the additive packet for those non-jury

@@ -215,6 +215,18 @@ an escalation boundary, not a whole-course hard stop. `blocked_hitch` and
 `blocked_subtree` are exit-0 structured phase outcomes; the course pass
 `stopReason` remains `completed`.
 
+The same subtree isolation also fires **after** a non-escalating drive. A
+driven hitch can halt benignly (e.g. `max_steps_exhausted` after a jury classify
+batch was capped at `JURY_BATCH_LIMIT`) while a blocking condition REMAINS — most
+importantly unknown-scope findings keeping the hitch at `needs_classification`.
+After each non-escalating drive the orchestrator re-derives the hitch's live
+convergence and, if it is a blocking decision (`escalate` / `diverging` /
+`budget_exhausted` / `needs_classification`), records `blocked_hitch` and
+isolates the subtree just like the pre-drive gate. This is **retryable**: the
+phase is not marked closed and downstream phases do not advance, so a later
+invocation re-fires the same decision and continues classifying. The pre-drive
+gate and the post-drive re-check share one blocked-decision set.
+
 ### Writes and stopping
 
 The only phase status write performed by SP-2 is a CAS transition

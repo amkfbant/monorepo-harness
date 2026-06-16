@@ -1,7 +1,27 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+
+/**
+ * Create a symlink, returning false if the platform does not support symlinks
+ * (e.g. Windows without privilege). Tests guard on this so they skip cleanly
+ * rather than fail on unsupported platforms.
+ */
+function trySymlink(target: string, linkPath: string): boolean {
+  try {
+    symlinkSync(target, linkPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
 import { verifyEvidence } from "../../../../src/hitch/jury/evidence.js";
 import type {
   EvidenceCheckContext,
@@ -159,6 +179,50 @@ describe("verifyEvidence — file kind", () => {
     );
     expect(out.verified).toBe(true);
   });
+
+  it("codex#254-P2 FIX2: an IN-TREE symlink whose target is OUTSIDE the worktree -> verified false (does not follow the symlink to read the external target)", () => {
+    // The lexical relative()/'..' guard passes (the citation path `link.ts` is
+    // in-tree), but the symlink points at a REAL file outside the worktree, so
+    // statSync/readFileSync would otherwise FOLLOW it and verify/read the
+    // external target. The real-path guard must reject it (fail-closed).
+    const parent = resolve(worktreePath, "..");
+    const externalName = "harness-jury-symlink-external.ts";
+    const externalPath = join(parent, externalName);
+    writeFileSync(externalPath, "export const secret = 1;\n");
+    const linkPath = join(worktreePath, "link.ts");
+    if (!trySymlink(externalPath, linkPath)) {
+      rmSync(externalPath, { force: true });
+      return; // platform without symlink support — skip cleanly
+    }
+    try {
+      const out = verifyEvidence(
+        { citation: "link.ts:1", kind: "file", claim: "c" },
+        ctx(),
+      );
+      expect(out.verified).toBe(false);
+    } finally {
+      rmSync(linkPath, { force: true });
+      rmSync(externalPath, { force: true });
+    }
+  });
+
+  it("codex#254-P2 FIX2: an IN-TREE symlink whose target is INSIDE the worktree -> still verifies (does not over-reject in-tree symlinks)", () => {
+    // A symlink that resolves back inside the worktree is legitimate; the
+    // real-path guard must not over-reject it.
+    const linkPath = join(worktreePath, "link-in.ts");
+    if (!trySymlink(join(worktreePath, "src", "x.ts"), linkPath)) {
+      return; // platform without symlink support — skip cleanly
+    }
+    try {
+      const out = verifyEvidence(
+        { citation: "link-in.ts:1", kind: "file", claim: "c" },
+        ctx(),
+      );
+      expect(out.verified).toBe(true);
+    } finally {
+      rmSync(linkPath, { force: true });
+    }
+  });
 });
 
 describe("verifyEvidence — spec kind", () => {
@@ -236,6 +300,34 @@ describe("verifyEvidence — spec kind", () => {
       },
     );
     expect(out.verified).toBe(false);
+  });
+
+  it("codex#254-P2 FIX2: an IN-TREE spec symlink whose target is OUTSIDE the spec root -> verified false (does not follow the symlink to read the external md)", () => {
+    // docs/specs/linked.md is an in-tree symlink (lexical guard + glob pass) that
+    // points at an external md WITH the anchor. Without the real-path guard the
+    // code would follow it and read the out-of-tree md (verified:true).
+    const parent = resolve(worktreePath, "..");
+    const externalName = "harness-jury-symlink-spec.md";
+    const externalPath = join(parent, externalName);
+    writeFileSync(
+      externalPath,
+      ["# External", "", "## Bar", "", "external body", ""].join("\n"),
+    );
+    const linkPath = join(worktreePath, "docs", "specs", "linked.md");
+    if (!trySymlink(externalPath, linkPath)) {
+      rmSync(externalPath, { force: true });
+      return; // platform without symlink support — skip cleanly
+    }
+    try {
+      const out = verifyEvidence(
+        { citation: "docs/specs/linked.md#bar", kind: "spec", claim: "c" },
+        ctx(),
+      );
+      expect(out.verified).toBe(false);
+    } finally {
+      rmSync(linkPath, { force: true });
+      rmSync(externalPath, { force: true });
+    }
   });
 });
 

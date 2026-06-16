@@ -67,6 +67,7 @@ describe("jury/types", () => {
           lensVotes: [
             {
               lens: "correctness",
+              findingId: "f1",
               scope: "in_scope",
               proposalStatus: "complete",
               severity: "P1",
@@ -88,7 +89,7 @@ describe("jury/types", () => {
         },
       },
       rejectedProposals: [
-        { scope: "out_of_scope", lensCount: 1, reason: "minority" },
+        { findingId: "f1", scope: "out_of_scope", lensCount: 1, reason: "minority" },
       ],
       minorityView: {
         count: 1,

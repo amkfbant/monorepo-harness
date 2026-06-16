@@ -16,7 +16,11 @@ import type { PhaseStatus } from "./types.js";
 //   - course dispatch (here): stops and isolates the subtree, leaving
 //     classification to an operator rather than auto-resolving across phases.
 // See the three-layer table in docs/specs/hitch-convergence.md.
-const BLOCKED_DECISIONS = new Set<HitchConvergenceDecision>([
+//
+// Exported (codex#254-P2): the course-orchestrator re-uses this SAME set for the
+// POST-drive convergence re-check, so the pre-drive gate and the post-drive
+// subtree-isolation share one source of truth (no drift between the two).
+export const BLOCKED_DECISIONS = new Set<HitchConvergenceDecision>([
   "escalate",
   "diverging",
   "budget_exhausted",
