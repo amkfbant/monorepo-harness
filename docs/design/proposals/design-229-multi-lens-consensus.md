@@ -278,7 +278,8 @@ review:
 ```
 
 zod 検証(fail-closed): `quorum.min_participants >= 1`（0 は許さない）, `blocking_decisions ⊆ {changes_requested, rejected}`,
-`group` 非空文字列, `max_reviewers >= 1`, **`len(reviewer_ids) <= max_reviewers`（明示リストも hard cap＝DoS bound を破らせない）**。
+`group` 非空文字列, `max_reviewers >= 1`, **`len(reviewer_ids) <= max_reviewers`（明示リストも hard cap＝DoS bound を破らせない）**,
+**`len(reviewer_ids) >= max(min_participants ?? 1, min_approvals ?? 1)`（充足不能 profile を compile で fail-fast。reviewer 数 < min_approvals だと `approvals >= minApprovals` が永久未達で pending/stall を浪費するため。codex #257）**。
 **`multiReviewerRequired`**（＝複数の distinct reviewer が実効的に必要 = `(min_participants ?? 1) > 1` **または**
 `(min_approvals ?? 1) > 1`）が真の consensus requirement は **(i) `lens_axes` 必須（G0c/G1）かつ (ii) `reviewer_ids` 必須**
 （#229 Phase 1。frozen set を rule_json で完結＝migration 不要。どちらか欠落は `ReviewRuleCompileError`）。
@@ -330,8 +331,10 @@ rate を引き続きサポートするが #229 では profile から宣言不可
 2. `rule.mode==="consensus"` かつ requirements あり → 各 requirement の dispatch 対象 reviewer を確定
    （`reviewer_ids` 明示〔**`len <= max_reviewers` を compile/preflight で強制**〕 or `listByGroup(group) ∩ max_reviewers`、reviewer_id 字句順）。
    latest-proposal mode(=DEFAULT, 後方互換) は **従来どおり 1体 dispatch**（else 分岐）。
-3. **preflight（P2 fail-silent 防止）**: dispatch 対象数が各 requirement の `quorum.min_participants`
-   未満なら、dispatch 前に **決定論 escalate**（reason に `group`/`required`/`registered` を含む）。
+3. **preflight（P2 fail-silent 防止）**: dispatch 対象数が各 requirement の **`max(quorum.min_participants, min_approvals)`**
+   未満なら、dispatch 前に **決定論 escalate**（reason に `group`/`required(=max(min_participants,min_approvals))`/`registered` を含む）。
+   **min_approvals も照合する**理由: `min_approvals > dispatch 数`だと `approvals >= minApprovals` が永久未達で pending/stall を
+   浪費する（min_participants だけ見ると見逃す。codex #257。compile 側 fail-fast=§3.2 と二重ゲート）。
    **P1-b preflight**: 現在の active proposal set を読み、expected reviewer set と照合（resume / 手動
    proposal による既存 active を検出してログ）。
 3.5. 各 reviewer を `runReviewerAgent({..., reviewerName: reviewer_id, lensPrompt?, allowOverwrite: true})`
@@ -341,8 +344,12 @@ rate を引き続きサポートするが #229 では profile から宣言不可
    （reviewer-agent.ts:405）、`review-decision.yaml` / reviewer log を固定 path に書く（:418,512-516）。逐次 N-dispatch
    では (1) reviewer#2 の `snapshotRunDir` が #1 の artifact を pre-existing と見て `verifyArtifactsUnchanged` が
    誤 tamper、(2) 後続が先行 artifact を上書き/読取りして独立性を破壊する。→ **runDir/decisionPath/log を
-   `runDir/reviewers/<path-safe reviewer_id>/…` の per-reviewer subdir に分離**し、`verifyArtifactsUnchanged` の
-   baseline をその subdir に限定する。**reviewer_id は path component に使う前に path-safe 化必須**（`reviewers.add()`
+   `runDir/reviewers/<path-safe reviewer_id>/…` の per-reviewer subdir に分離**し、**その subdir を
+   `REVIEWER_WRITE_ALLOWLIST`（reviewer-agent.ts:104）に追加**する。`snapshotRunDir`/`verifyArtifactsUnchanged` の
+   baseline は **runDir 全体のまま**に保ち（共有 run artifact＝meta.json / diff / materialized files の tamper 検知を
+   維持。allowlist 外の改変のみ検知）、**baseline を subdir に narrow しない**（narrow すると sandbox/runner 誤設定で
+   共有 artifact が改変されても検知できなくなる defense-in-depth 欠落。codex #257）。**reviewer_id は path component に
+   使う前に path-safe 化必須**（`reviewers.add()`
    は任意文字列を受けるため、`/`・`..` 等で subdir を escape/alias されないよう **`reviewers.add()` 登録時に path-safe
    id を強制**する＝許可文字集合に制約し不正は ValidationError。既存 `slugify`（knowledge-promoter.ts:170-179、base +
    sha1 短縮で衝突 discriminate）を流用可。path と DB business-key の両方で同一 safe id を使い、既存非-safe id は path
@@ -357,8 +364,12 @@ rate を引き続きサポートするが #229 では profile から宣言不可
      `dbConsensusSnapshotProvider`(同 :118) は `recordConsensusReEvaluation`(reviewer-agent.ts:735, 809)
      が各 dispatch 後に書いた **pending `review_consensus` 行**から timeline を再構築できる（§2.5）。
    - stall（既定 `stallAfterSnapshots=3`）なら決定論 escalate（harness-only state transition、fail-closed）。
-     stall 未満でも **(i) 真 pending（frozen reviewer 全員 landed ∧ verdict が決定論的に固定: 例 1 blocking で
-     過半未達）は即 escalate**（再 dispatch しても同票で進展せず stall 窓を待つ意味が無い）。**(ii) 進展余地 pending
+     stall 未満でも **(i) 真 pending（frozen reviewer 全員 landed ∧ 進展余地なし: 例 全員 landed・**blocking decision
+     なし**・`approvals < min_approvals` で全員 landed 済みのため approve 増加余地が無い）は即 escalate**（再 dispatch
+     しても同票で進展せず stall 窓を待つ意味が無い）。**注意: `changes_requested`/`rejected` 等の blocking decision は
+     `evaluateConsensus` が approval/quorum 判定より先に decisive blocking を返す（review-consensus.ts:175「check
+     blocking decisions first」）ため、そもそも pending にならず本 catch に来ない**＝この (i) は非 blocking の
+     approval-pending に限る（codex #257）。**(ii) 進展余地 pending
      （未 landed reviewer が残る）は「pending・継続」を返し outer catch の即 escalate(orchestrator.ts:183) に伝播
      させない**（cycle 記録して次 step へ）。『継続』は convergence が次 review action を再発行する前提
      （N×`stallAfterSnapshots` の codex 再実行コストは §9/budget 参照）。
@@ -518,7 +529,7 @@ quorum 再実装するのは duplication で禁止。
    基準に読むため、compile→serialize 経路を Phase 1a で単体検証）**。
    `tests/unit/core/review-rule.test.ts`。
 2. `ProjectProfileSchema` の review 検証: 不正 quorum(`min_participants < 1`/neg/NaN) / 不正 blocking_decisions /
-   空 group / `max_reviewers<1` / `len(reviewer_ids) > max_reviewers` を reject。`min_participation_rate` / `group_size`
+   空 group / `max_reviewers<1` / `len(reviewer_ids) > max_reviewers` / **`len(reviewer_ids) < max(min_participants, min_approvals)`（充足不能 profile＝reviewer 数 < min_approvals で `approvals >= minApprovals` 永久未達。compile fail-fast。preflight 側=§3.4 step3 でも `max(min_participants, min_approvals)` 照合。codex #257）** を reject。`min_participation_rate` / `group_size`
    キーは `.strict()` で reject（rate-based quorum は #229 profile 非対応・follow-up）。**review 欠落 profile が通る**
    (後方互換)。`tests/unit/project/*`。**特に** `min_participants=0` が reject されることを検証。
    **2b. G0c/P0: `multiReviewerRequired`（`min_participants > 1` or `min_approvals > 1`）∧（`lens_axes` 未宣言
@@ -1448,11 +1459,13 @@ participants 計算式自体は不変）。
 3. **サイクル毎に先行 active proposal を整理**（resumed cycle の stale 票封じ）: 同一 reviewer が前サイクルの active
    proposal を残したまま今サイクルで `runReviewerAgent` が crash すると、insert/supersede が起きず**旧 active 行が
    残って `participants` に計上**され、"失敗 = non-participant" が破れて stale 票で approve しうる。→ 各 dispatch
-   サイクル開始時に **frozen reviewer の現 active proposal を `archived_at` set で一括 supersede する決定論前処理**を
-   入れ、「今サイクル=この前処理以降に insert された active」と定義する（既存 `archived_at`/`superseded_at` で表現でき
-   **新 cycle 列・migration は不要**。review_proposals の active partial unique は (run_id,reviewer) WHERE
-   superseded_at IS NULL=schema.ts:556）。この前処理は冪等で resumed cycle 時に二重 archive しない。crash した reviewer
-   は active ゼロで non-participant、成功 reviewer は新 active のみ＝item4 と整合（RED-C4f で明示）。
+   サイクル開始時に **frozen reviewer の現 active proposal の `superseded_at` を set して一括 retire する決定論前処理**を
+   入れ、「今サイクル=この前処理以降に insert された active」と定義する。**active から外すには `superseded_at` を set 必須**:
+   active partial unique・`getLatestActiveProposal` の active 述語は **`superseded_at IS NULL`**（schema.ts:556 /
+   review-proposals.ts:96,157）なので、`archived_at`/`lifecycle_status='archived'`(別概念=監査ラベル)を set しても active
+   からは外れない（codex #257）。既存列で表現でき **新 cycle 列・migration は不要**。この前処理は冪等で resumed cycle 時に
+   二重 retire しない。crash した reviewer は active ゼロで non-participant、成功 reviewer は新 active のみ＝item4 と整合
+   （RED-C4f で明示）。
 4. **失敗 reviewer = non-participant（fail-closed・ループ継続）。ただし tamper は例外で abort**: dispatch loop は各
    `runReviewerAgent` を try/catch で囲む（spec5 の dispatch ループには現状 per-reviewer 例外境界が無く、throw すると
    [orchestrator.ts](../../../src/hitch/orchestrator.ts):96(try)/:183(catch)/:210-216(escalate flip) まで伝播して

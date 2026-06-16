@@ -188,10 +188,18 @@ CREATE TABLE review_refute_votes (
     AND refute_condition IS NOT NULL AND refute_condition <> ''
     AND retract_condition IS NOT NULL AND retract_condition <> ''))
 );
--- passed のみ business key で一意 (集約入力の一意性・idempotent)。rejected には掛けない (codex round3/6)
+-- passed の **participant 票(uphold/refute)のみ** business key で一意 (集約入力＝passed∧verdict∈{uphold,refute} と
+-- predicate を一致させる)。inconclusive は passed でも participant でないため、この unique を占有させない＝同一
+-- reviewer/prompt/target で inconclusive を先に記録しても後続の useful な uphold/refute を unique 衝突で
+-- ブロックしない(codex #257)。rejected には掛けない (codex round3/6)
 CREATE UNIQUE INDEX review_refute_votes_passed_idx
   ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256)
-  WHERE validation_status = 'passed';
+  WHERE validation_status = 'passed' AND refute_verdict IN ('uphold','refute');
+-- inconclusive(passed・非participant)は別 predicate の partial unique で idempotent dedup。uphold/refute とは
+-- 別 index なので verdict 変化(inconclusive→uphold/refute)を unique 衝突させない(codex #257)
+CREATE UNIQUE INDEX review_refute_votes_inconclusive_idx
+  ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256)
+  WHERE validation_status = 'passed' AND refute_verdict = 'inconclusive';
 -- rejected は監査 append-only。source_sha256(NOT NULL = sha256(source_yaml)、source_yaml も NOT NULL DEFAULT '') を
 -- key に含め、distinct な失敗試行(source_yaml が違う = hash が違う)は共存・完全重複(同一 source)のみ dedup。
 -- round9/round10: source_yaml/source_sha256 を NOT NULL 化し NULL distinct 問題を解消(COALESCE では別 source の
@@ -379,7 +387,7 @@ interface HitchDecisionPacket {
 
 **determinism**: (1) `aggregateJuryVotes` 純関数: 同 proposals → 同 decision。confidence 変えても decision 不変 (no-float-gate)。(2) `auditSeverity` 純関数: aligned/diverged/inconclusive 決定論、固定 mapping 不変、severity 自動降格しない。(3) proposal/refute insert の business-key UNIQUE (P2-3) で retry 二重挿入を防ぐ。(4) **repository insert が finding_id→hitch_id 不一致を reject** (P1-2)。
 
-**refute votes CHECK / disposition (G3 / round10。証拠強制は refute 限定)**: (a) passed ∧ refute ∧ kind=none → passed CHECK 違反（=rejected 側へ、reject_reason=evidence_none で記録可）。(a') passed ∧ refute ∧ kind=NULL（列欠落）∧ 他 DSL 充足 → passed CHECK 違反（`NULL IN(...)` すり抜け防止の NOT NULL ガードを assert）。(b) passed ∧ refute ∧ refute_reason / refute_condition / retract_condition / counter_evidence_ref のいずれか欠落 → CHECK 違反。(c) passed ∧ refute ∧ kind∈{diff,test} ∧ 全 DSL 充足 ∧ ref 非空 → INSERT OK。(d) **passed ∧ uphold ∧ kind=none かつ DSL フィールド NULL → INSERT OK**（uphold は target_change_hash+verdict のみで passed＝refute-conditional の核。証拠強制で誤って participant 分母から脱落しないことを assert）。(e) passed ∧ inconclusive ∧ kind=none → INSERT OK。(f) rejected ∧ reject_reason NULL/空 → CHECK 違反（round3）。(g) passed ∧ refute_verdict NULL → CHECK 違反（round4）。(h) `source_yaml` NOT NULL DEFAULT '' / `source_sha256` NOT NULL（round10）: NULL yaml で INSERT 不能、空出力は '' で記録可。(i) partitioned UNIQUE: passed は business-key で二重挿入 dedup、rejected は source_sha256 を含み distinct 失敗試行が共存。(j) **集約入力 filter**: passed ∧ verdict∈{uphold,refute} のみ集計に渡り、inconclusive は passed でも除外。
+**refute votes CHECK / disposition (G3 / round10。証拠強制は refute 限定)**: (a) passed ∧ refute ∧ kind=none → passed CHECK 違反（=rejected 側へ、reject_reason=evidence_none で記録可）。(a') passed ∧ refute ∧ kind=NULL（列欠落）∧ 他 DSL 充足 → passed CHECK 違反（`NULL IN(...)` すり抜け防止の NOT NULL ガードを assert）。(b) passed ∧ refute ∧ refute_reason / refute_condition / retract_condition / counter_evidence_ref のいずれか欠落 → CHECK 違反。(c) passed ∧ refute ∧ kind∈{diff,test} ∧ 全 DSL 充足 ∧ ref 非空 → INSERT OK。(d) **passed ∧ uphold ∧ kind=none かつ DSL フィールド NULL → INSERT OK**（uphold は target_change_hash+verdict のみで passed＝refute-conditional の核。証拠強制で誤って participant 分母から脱落しないことを assert）。(e) passed ∧ inconclusive ∧ kind=none → INSERT OK。(f) rejected ∧ reject_reason NULL/空 → CHECK 違反（round3）。(g) passed ∧ refute_verdict NULL → CHECK 違反（round4）。(h) `source_yaml` NOT NULL DEFAULT '' / `source_sha256` NOT NULL（round10）: NULL yaml で INSERT 不能、空出力は '' で記録可。(i) partitioned UNIQUE: passed の **participant 票(uphold/refute)** は business-key で二重挿入 dedup、**inconclusive は別 partial index で dedup**（uphold/refute と別 predicate なので衝突しない・codex #257）、rejected は source_sha256 を含み distinct 失敗試行が共存。(j) **集約入力 filter**: passed ∧ verdict∈{uphold,refute} のみ集計に渡り、inconclusive は passed でも除外。(k) **inconclusive が participant slot を占有しない**: inconclusive(passed) を先に記録後、同一 reviewer/target/prompt の uphold/refute が unique 衝突せず INSERT OK・各 verdict の retry は dedup（codex #257・SQLite 実機検証済）。
 
 **review_state CAS (P1-3)**: (1) `recordSpecApproval` で specApproval 記録、specHash = sha256(canonical scope+close)、`review_state_version` が +1。(2) **並行 read-modify-write シミュレーション**: stale version での CAS が `changes===0` で no-op（後勝ちで他 key を消さない）→ リトライ後に両 key 保全。(3) 他 key (任意の review fact) を保全。
 
