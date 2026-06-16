@@ -630,12 +630,10 @@ export class CourseOrchestrator {
     } catch (e) {
       if (!(e instanceof HitchMutationGateError)) throw e;
       const reevaluated = convergence.evaluate(hitchId);
-      if (
-        reevaluated.decision === "escalate" ||
-        reevaluated.decision === "diverging" ||
-        reevaluated.decision === "budget_exhausted" ||
-        reevaluated.decision === "needs_classification"
-      ) {
+      // Reuse the shared BLOCKED_DECISIONS set so all three course-layer blocking
+      // sites (pre-drive gate, post-drive re-check, this mutation-gate fallback)
+      // stay in lock-step — no inlined literal drift.
+      if (BLOCKED_DECISIONS.has(reevaluated.decision)) {
         return { kind: "blocked_hitch", decision: reevaluated.decision };
       }
       return { kind: "report_only" };
