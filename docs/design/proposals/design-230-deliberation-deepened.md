@@ -39,6 +39,137 @@ frozen v2 の `aggregateJuryVotes` は unanimous-only（多数決より安全）
 
 ---
 
+## 0.1 v3.1 改訂（多角レビュー反映・確定事項）
+
+> 2026-06-16、本 doc を **codex exec gpt-5.5 xhigh ＋ Opus 多角レビュワー 5体（安全境界/凍結契約整合/DB/熟議efficacy/完全性）**
+> でレビュー。**全 6 レビュアー GO-with-fixes・P0 ゼロ**（中核の単調 fail-closed ゲートは airtight と検証済み）。
+> 以下は P1/主要 P2 の確定対処。**本節は本文の該当箇所を上書きする（矛盾時は本節が優先）**。
+
+### P1（実装前に必須）
+
+**R1. 証拠の型境界 + verifyEvidence の airtight 化 + 関連性の限界明示**
+（codex P1-1 / safety P1-1,P1-2 / efficacy P1-2）
+- 型を **2 段に分離（brand 型）**: `RawJuryEvidence = { citation; kind; claim }`（LLM 出力・proposer parse 対象）と
+  `VerifiedJuryEvidence = RawJuryEvidence & { verified: boolean; resolvedRef?: string }`（`verifyEvidence` のみが生成）。
+  **proposer の parseSchema は `verified`/`resolvedRef` を受理しない**（`z.strict()` で reject、または parse 後に必ず drop）。
+  LLM が出せるのは `citation/kind/claim` のみ。
+- `verifyEvidence` は **入力の verified を完全無視し決定論再計算**（解決不能は必ず `verified=false`）。
+- `aggregateDeliberation` は **`VerifiedJuryEvidence` だけを受け取る純関数**。未検証 `RawJuryEvidence` を gate に渡せない型設計。
+  ゲートは渡された `verified` フラグを信頼し、`verifyEvidence` 通過は呼び出し側 `deliberate.ts` の不変条件（gate 直前で assert）。
+- **`allHaveVerifiedEvidence` 述語を確定**: 「各 proposal について `evidence` に `verified===true` が **最低 1 件**存在し、
+  かつ全 `evidence` が `verifyEvidence` 通過済み（`verified` が undefined でない）」。
+- **関連性は機械検証不可と明記（限界）**: `verifyEvidence` は **citation の実在のみ**を保証し、claim を支持するかの関連性は見ない。
+  ＝ 無関係だが実在する citation は弾けない。関連性は **Stage3 批判（各 citation が finding をどう支持/反証するか必須記述）**で担い、
+  加えて **決定論的近接性フィルタ**（citation の path/domain が finding の `filePath`/`category` と同一ドメイン）を auto_confirm の
+  証拠条件に AND する。この限界を §12 に明示。
+- TDD: 「LLM が `verified:true` を申告しても `verifyEvidence` 後に false → gate escalate」「未検証 evidence を含む proposals → escalate」を RED に追加。
+
+**R2. proposedSeverity の保存先**（codex P1-2）
+- `jury_severity_audits` に **`jury_votes_json TEXT`** を追加（`[{lens, proposedSeverity, reasoning, round}]` を保存）し、
+  3 lens の severity 票・reasoning・round を再構成・監査可能にする。packet の `lensVotes` にも `severity?` を含める。
+
+**R3. non-escalating severity packet 記録（D2b WI 復活 + updateStatus:false）**（codex P1-3 / completeness P1-1）
+- `recordConvergenceDecisionWithStatus` は既定で status sync するため、**advisory 記録には `updateStatus:false` を必須**にする
+  （hitch status を `escalated` に倒さない）。
+- WI DAG に **D2b** を独立追加: 「`resolved:true ∧ severityAuditPacket≠null` のとき orchestrator が
+  `recordConvergenceDecisionWithStatus({ updateStatus:false, recommendedNextAction.decisionPacket })` で **non-escalating に 1 回記録**」。
+- RED: 「scope unanimous + severity diverged → **hitch status 不変・packet が convergence decision に永続化**」。
+
+**R4. DB audit linkage（deliberation_id）**（codex P1-4）
+- 1 finding の 1 回の deliberation 実行を束ねる **`deliberation_id TEXT`**（app 層生成の決定論 ID / 例 `sha256(hitchId|findingId|gate_input_sha256)`）を
+  `jury_classification_proposals` / `jury_classification_refutations` / `jury_severity_audits` の各行と packet に持たせる。
+  doctor は `deliberation_id` で proposal/refutation/packet を正確に対応付け（retry / R1+R2 複数行でも一意束ね）。
+  business-key dedup は従来どおり（deliberation_id は linkage 用・dedup キーには含めない）。
+
+**R5. operator-origin 混在 batch の挙動 = 部分前進（確定）**（codex P1-5 / frozen §H3）
+- **harness-origin の unknown は同 batch で jury まで進めて確定/escalate（部分前進）／ operator-origin の unknown は機械分類せず
+  同一 escalate packet に `operator_origin_unknown` として束ねて即 manual escalate**。packet は複数 `decisionKind` を運べる。
+- 安全側はどちらでも同じ（operator-origin は機械分類しない）。誤 escalate 削減という headline benefit のため部分前進を採る。
+- TDD: 「mixed batch → harness-origin は jury 確定 / operator-origin は escalate packet に同梱・機械分類されない」。
+
+**R6. packetVersion 1→2 の後方互換 reader 戦略**（frozen-contract P1-1）
+- 既存 DB に残る `packetVersion:1` 行（escalate packet は `recommended_next_action` JSON に永続化済み・migration で消えない）を、
+  **v2 reader は `packetVersion` で discriminate し、`deliberation`/`evidence` 系を undefined として読む**。全 reader（dashboard read API / MCP / CLI listDecisions）に
+  optional chaining + default fallback を徹底。RED:「`packetVersion:1` 行が v2 reader で壊れず読める」round-trip。
+- frozen §5.4 の RED-11 anchor（`findings.summary/detail`・`lensVote.scope+proposalStatus`）は v2 でも温存。
+
+**R7. recommendation.action は rich(§3.3) 3 値が正本**（frozen-contract P1-2）
+- `recommendation.action: 'classify_manually' | 'review_split' | 'review_severity'`（rich §3.3）を正本とする。
+  lean §5.4 の 2 値を additive に superset し RED-11 を壊さない旨を明記。
+
+**R8. selectFinalRound 決定論**（frozen-contract P1-3）
+- `aggregateDeliberation` に渡す「最終ラウンド」proposals を **純関数 `selectFinalRound(proposals)`** で確定:
+  「各 lens について critique 実行時は `round=2` 行、skip 時は `round=1` 行を 1 件ずつ選び、選択後の 3 件を `aggregateJuryVotes` に渡す。
+  混在・欠落・lens 重複は fail-closed で split」。critique 未起動（`critiqueRan=false`）時は R1 をそのまま最終ラウンドとする。
+  RED:「round 選択の決定論・R1/R2 混在しない・skip 時 R1 採用」。
+
+**R9. 批判/反証プロンプト契約（儀式化防止）**（efficacy P1-1）
+- 深掘りの load-bearing 要素はプロンプト。**出力契約で儀式化を構造的に防ぐ**（付録 P 参照・spec 付録として凍結）:
+  - **critique**: 各 lens は最低 1 件の **具体的 objection** を必須フィールド。空/定型（「問題なし」等）は parse 段で reject → `proposalStatus=inconclusive`（fail-closed）。各 citation が finding をどう支持/反証するか必須記述。
+  - **refuter**: `uphold` でも「**この合意が偽合意でない理由**」と「**棄却したら覆る反証条件**」を必須記述、欠落は `inconclusive`。
+  - GOAL_RULES の codex レビューテンプレ同様、jury 各 stage の prompt テンプレ（必須出力項目・棄却条件）を **spec 付録として凍結**し「中身は実装任せ」にしない。
+
+**R10. ALL_TABLE_NAMES union 健全性**（DB P1-1）
+- `V31_TABLE_NAMES = [jury_classification_proposals, jury_classification_refutations, jury_severity_audits]` を新設し
+  `ALL_TABLE_NAMES` union 末尾に append。**手動 union は歴史的に歯抜けがある**ため、
+  「v31 適用後に 3 表が `CURRENT_TABLE_NAMES` に含まれ実 DB の `sqlite_master` と一致する」migration テストを RED 先行で追加。
+
+**R11. doctor category union 改修 + JSON-parse check 形**（DB P1-2）
+- `DoctorCheck.category` 固定 union に jury 用カテゴリ（`'review'` 流用 or 新規追加）を加える。
+- `packet↔proposals` 整合は `recommended_next_action` を **TS パースして突合する新 check 形**（SQL 単独でない）を許容。
+  orphan / hitch_id 整合は既存 SQL パターンで別 check に分離。DELETE repair は dry-run default + operator 承認の既存 repair gate に乗せる。
+
+**R12. #230 単独 v31 の merge-gate + 同番号衝突防止**（DB P1-3 / frozen-contract P2 / efficacy P2）
+- **v31 は #230 が排他取得。#229=v32 / #231=v33 は #230 merge 後に rebase して連番を確定し直す。同一 version 番号で 2 branch 同時 open を禁止（merge order ゲート）**。
+  `schema_migrations` は同番号既存だと `runMigrations` が no-op 化し新 DDL が永久未適用になるため、**`schema_migrations.name` が期待値と一致するか検査するテスト**を足し、別 DDL の同番号混入を fail-closed 検出。
+- frozen sibling doc（design-db-persistence §4/Q3 の単一 v31 共有・design-231 の v31→v32 仮定・design-gate-specs C10 の review_refute_votes v31 前提）の版番号を実装着手前に同期更新（follow-up）。実装着手順 DB→A→B→C は維持。
+
+**R13. MCP/CLI standalone classify_finding は jury 非適用（明記）**（completeness P1-2）
+- **jury 後段は orchestrate 駆動の classify runner のみ**。MCP `harness.hitch.classify_finding`（hitch-tools.ts）と CLI `hitch classify`（cli/hitch.ts）の
+  heuristic 直呼びは **従来どおり heuristic + operator-manual で jury を起動しない**（理由: standalone 呼び出しは reviewerRunner/worktree/audit context を持たないため fail-closed に heuristic 境界を保つ）。
+  「どの経路が jury を持ち、どれが持たないか」を §7 と cli.md/mcp.md に MECE に明記。
+
+### 主要 P2（実装計画に織り込む）
+
+- **P2a 証拠鮮度（Phase3 drift）**（safety P2）: jury proposer は **run の既存 worktree を共有しつつ revision を snapshot に pin**し、Stage2 と Phase3 で同一 immutable revision を見る。
+  または Phase3 で auto_confirm 直前に file kind の verified citation のみ軽量 re-stat（spec/policy は immutable 扱い）。
+- **P2b doctor の auto_confirm 正当性再検証**（safety P2）: jury 由来で確定した finding について、保存済み proposals/refutations から `aggregateDeliberation` を再実行し
+  `decision==='auto_confirm'` を満たすか advisory 検証（満たさねば「LLM→状態直結の疑い」の強い finding）。＝ 安全境界の事後監査を機械化。
+- **P2c evidenceStrength 決定論述語**（codex P2-1 / safety P3 / efficacy P3）: Stage3 起動条件「弱証拠」を決定論定義
+  （例: いずれかの lens の verified evidence 件数 < 1、または全体 verified 件数 < 閾値）。critiqueRan を決定論にし doctor 再計算と一致。
+- **P2d v31 DDL の self-contained 化**（codex P2-2）: 実装時、proposals/severity_audits の **最終 DDL 全文**を db.md / migration に載せる（差分参照でなく）。
+- **P2e 多様性の現実的緩和 + over-claim 回避**（codex P2-3 / efficacy P2）: 単一 backend の限界を §12 で「敵対 refuter は **立場**の多様性のみ・**認知的**多様性ではない」と正確に区別。
+  低コスト策として refuter の `model_reasoning_effort` を変える等の sampling 多様化を Phase1 で検討余地に残す。効果指標（誤分類救済/誤 confirm 防止件数）を follow-up telemetry に。
+- **P2f finding_id→hitch_id 整合 reject を 3 表すべてに**（DB P2）: 共通ヘルパ `assertFindingHitchConsistency` を 3 repository が共有。doctor も 3 表で advisory チェック。
+- **P2g FK ゼロ assert を 3 表すべてに**（DB P2）: v31 適用後 3 表の `PRAGMA foreign_key_list` が空 + 親削除後も jury 行が残る（CASCADE しない）を RED。
+- **P2h refutation↔proposals/packet doctor 具体化**（frozen-contract P2 / DB P3）: (a) refutation.target_scope が proposals の unanimous scope と一致、(b) packet.deliberation.refuter.refuteVerdict と保存 refutation 行の一致。
+- **P2i multi-batch drain loop**（completeness P2）: jury は 1 orchestrate cycle で **jury 専用 cap**（既定 `FINDING_BATCH_LIMIT` 以下）だけ処理し、残 unknown は次 cycle 持ち越しか escalate。
+  コスト像に batch 全体の最悪上限（finding 数 × per-finding 呼び出し）と打ち切りを明記。既存 `previousRemaining` no-progress guard を Phase3 に残す。
+- **P2j critique skip 時の refuter 入力**（completeness P2）: skip 時は R1 を最終ラウンドとし、refuter には voteChanged を含めず（検証済証拠 + 反証条件 + unanimous verdict のみ）。
+- **P2k Phase3 で skip する finding の audit 永続化**（completeness P2・確定）: **live 再検証で skip する finding でも、生成済み proposals/refutation/severity_audit 行は監査目的で永続化する**（business-key dedup で安全）。
+  ただし `classifyFinding` は呼ばない。doctor は「finding は存在するが他経路分類済み」を orphan 誤検出しない。
+
+### P3（nit・実装時に反映）
+
+- counterEvidence は **packet 記録(advisory)専用**・gate 判定に使わない（記録目的でのみ verifyEvidence を通す）。
+- `severityAudit.juryConsensus?` の optional 化は `auditSeverity` の inconclusive 整合（記法ゆれを v2 で正した）と一文補足。
+- refutations dedup の target_scope は **Stage4 起動時の unanimous verdict 単一値**（split refuter は follow-up）と DDL コメント。
+- 3 lens（correctness/scope_fit/spec_adherence）は **MECE でなく多角的視点**（重複は冗長性として許容）と明記。
+- §5.3 に **経路 → formatter → decisionKind → severityAudit field 有無**の対応表を 1 つ追加。
+- §10 に verifyEvidence の **kind×境界 RED**（file 実在+line 範囲外→false / spec anchor 不在・重複の決定論 / policy glob ゼロ/複数マッチ）を列挙。
+
+### 付録 P: jury stage プロンプト出力契約（凍結・儀式化防止）
+
+実装時に下記を厳格 parse schema として固定（中身を実装任せにしない）:
+- **Stage1 propose（各 lens）**: `{ proposedScope, evidence[]{citation,kind,claim}（≥1）, refutationCondition（必須）, uncertainty, reasoning（必須）, proposedSeverity }`。
+  欠落・空 → `proposalStatus∈{parse_error,inconclusive}`（fail-closed）。
+- **Stage3 critique（各 lens）**: `{ objections[]（他者提案ごとに ≥1 具体 objection。種別: 事実誤認/推論飛躍/代替仮説/最悪ケース/評価軸欠落）, citationRelevance[]（各自証拠が finding をどう支持/反証するか）, revisedScope, voteChanged }`。
+  空/定型 objection → reject → `proposalStatus=inconclusive`。
+- **Stage4 refuter**: `{ refuteVerdict, whyNotFalseConsensus（uphold でも必須）, refutationConditions（覆る条件・必須）, counterEvidence[], reasoning }`。
+  欠落 → `inconclusive`（veto＝fail-closed）。
+
+---
+
 ## 1. ゴールとスコープ（Phase 1・#230 単体で受け入れ条件を全充足）
 
 1. **needs_classification 合議パイプライン**: heuristic がなお `unknown` を返す **harness-origin** finding を、
