@@ -91,7 +91,7 @@ R6 は「全 reader に packetVersion discriminate + optional chaining」を要�
 ### P3（既存利用・文言修正・nit）
 - **`updateStatus:false` は既存実装済み**（`convergence-status.ts:23,72-74`）。**doctor `review` category も既存**（`doctor.ts:28`）。D2b/A3 の「option/category 追加」というヘッジ文言を**削除**し「既存利用・配線のみ」に確定（調査 step を削る）。
 - packet v2 `lensVotes.severity?: HitchFindingSeverity` を追加（R2 packet 側・PR5 B6 RED と同件）。
-- R12 collision guard: name assert は維持しつつ「同一 version で別 name の migration を並べない運用規約 + レビュー gate」で担保（runMigrations の collision 検出強化は #230 スコープ外＝follow-up）と 1 文明記。
+- R12 collision guard（codex#252・**#230 スコープに含める**）: A1 GREEN が `runMigrations` に **name-integrity チェック**を追加（`schema_migrations` の既適用 version の name が `MIGRATIONS` の期待 name と一致するか検査し、不一致なら throw＝fail-closed）。これで別 branch が同 version を別 name で先取りした際の『#230 DDL 永久未適用（version-only dedup による silent skip）』を検出。加えて「同一 version で別 name を並べない」運用 gate も維持。
 - selectFinalRound テストコメントを「lens ごとに targetRound 行を選ぶ。欠落/重複/部分R2混在は下流で split（fail-closed）」に修正。
 
 ---
@@ -255,6 +255,10 @@ export const MIGRATION_V31_STATEMENTS: readonly string[] = [
 // MIGRATIONS 配列末尾に append:
 //   { version: 31, name: "epic228_deliberation_v31", statements: MIGRATION_V31_STATEMENTS }
 ```
+
+- [ ] **Step 4b: GREEN — migration name-integrity check（R12/codex#252・#230 スコープ内）**
+
+`runMigrations`（適用ループの前段）に `assertMigrationNameIntegrity(db)` を追加: `schema_migrations` の各既適用 version の `name` が `MIGRATIONS` 定義の期待 `name` と一致するか検査し、不一致なら `throw new Error("migration v<N> name mismatch / conflicting migration")`（fail-closed）。`runMigrations` は version-only で dedup（既適用 version は no-op）するため、別 branch が v31 を別 name で先取りすると #230 DDL が **silent skip** され永久未適用になる。この check がそれを検出する。RED は A1 Step1 の「別名 v31 を seed → throw」テスト。
 
 - [ ] **Step 5: Run GREEN + typecheck**
 
