@@ -259,6 +259,14 @@ function unanimousScope(
  * and collect each decisionPacket's refuter verdict keyed by
  * (finding_id, deliberation_id). Malformed JSON / absent packet fields are
  * skipped defensively (a corrupt audit blob must never crash doctor).
+ *
+ * The authoritative packet shape (design §0.1 R14 / §5.2 / codex#252-P1)
+ * carries `findingId` + `deliberationId` PER-FINDING inside `findings[]`
+ * (a single packet-level ID cannot bundle multiple deliberations — "packet
+ * 単一 ID では複数 deliberation を束ねられない"). A mixed-batch escalate
+ * packet bundles several findings, each with its own `deliberationId`, under
+ * one shared `deliberation.refuter` block. Each findings[] entry therefore
+ * maps to the same shared refuter verdict.
  */
 function collectPacketRefuterVerdicts(
   db: Database.Database,
@@ -274,19 +282,39 @@ function collectPacketRefuterVerdicts(
   for (const row of rows) {
     const packet = parseDecisionPacket(row.recommended_next_action);
     if (packet === undefined) continue;
-    const findingId = asString(packet.findingId);
-    const deliberationId = asString(packet.deliberationId);
     const verdict = packetRefuterVerdict(packet);
-    if (
-      findingId === undefined ||
-      deliberationId === undefined ||
-      verdict === undefined
-    ) {
-      continue;
+    if (verdict === undefined) continue;
+    for (const entry of packetFindingLinks(packet)) {
+      verdicts.set(verdictKey(entry.findingId, entry.deliberationId), verdict);
     }
-    verdicts.set(verdictKey(findingId, deliberationId), verdict);
   }
   return verdicts;
+}
+
+interface PacketFindingLink {
+  findingId: string;
+  deliberationId: string;
+}
+
+/**
+ * Extract each `findings[]` entry's (findingId, deliberationId) linkage from a
+ * decision packet. Non-array `findings`, non-record entries, or entries
+ * missing either id are skipped defensively (corrupt blobs must not crash).
+ */
+function packetFindingLinks(
+  packet: Record<string, unknown>,
+): PacketFindingLink[] {
+  const findings = packet.findings;
+  if (!Array.isArray(findings)) return [];
+  const links: PacketFindingLink[] = [];
+  for (const entry of findings) {
+    if (!isRecord(entry)) continue;
+    const findingId = asString(entry.findingId);
+    const deliberationId = asString(entry.deliberationId);
+    if (findingId === undefined || deliberationId === undefined) continue;
+    links.push({ findingId, deliberationId });
+  }
+  return links;
 }
 
 function parseDecisionPacket(

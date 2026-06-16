@@ -54,10 +54,16 @@ export function selectFinalRound(proposals: readonly JuryClassificationProposal[
 RED 追加:「correctness=R2,scope_fit=R2,spec_adherence=R1（部分R2混在）→ 選択集合 length<3 → 下流 split」「同一 lens に R2 2件 → length>3/重複 → split」「lens 欠落 → length<3 → split」。
 
 ### PR3（必須）`deliberation_id` を packet・型・生成関数に配置（R4）— Task B1/B6/D1/D2/A3
-- B1: `HitchDecisionPacket.deliberationId: string`（必須）/ `DeliberationInput.deliberationId` / `DeliberationResult` 経由で運ぶ。
+> **訂正（design §0.1 R14 / §5.2 / codex#252-P1 が正本・矛盾時は design §0.1 が優先）**:
+> `deliberation_id` / `finding_id` は **packet トップレベルのスカラーではない**。複数 deliberation を
+> 束ねる mixed-batch escalate packet では packet 単一 ID では各 finding を DB 入力行に対応付けられないため、
+> **`HitchDecisionPacket.findings[]` 各要素が `findingId` + `deliberationId`** を持ち、packet は単一の
+> `deliberation.refuter` ブロックを共有する。以下 B1/D2/A3 はこの per-finding 形に従う。
+- B1: `HitchDecisionPacket.findings[]` の各要素に `deliberationId: string`（必須）/ `findingId`。
+  `DeliberationInput.deliberationId` / `DeliberationResult` 経由で運び、formatter が finding 毎に packet へ載せる。
 - 新純関数 `computeDeliberationId(hitchId, findingId, gateInputSha256): string`（`aggregation.ts` または `jury/ids.ts`）。RED: 同入力→同 ID・決定論。`gateInputSha256` は最終ラウンド proposals + refuter verdict の canonical JSON sha256。
-- B6: formatter が packet に `deliberationId` を載せる。D1: 3 表 insert 時に同一 `deliberationId` を渡す（A1 DDL の `deliberation_id` 列・既出）。
-- D2/D4: read-back で `recommended_next_action.decisionPacket.deliberationId` を assert。A3 doctor: packet↔proposals/refutations 照合を **`deliberation_id` 基準**に。
+- B6: formatter が packet の `findings[]` 各要素に `deliberationId` を載せる。D1: 3 表 insert 時に同一 `deliberationId` を渡す（A1 DDL の `deliberation_id` 列・既出）。
+- D2/D4: read-back で `recommended_next_action.decisionPacket.findings[].deliberationId` を assert。A3 doctor: packet↔proposals/refutations 照合を **packet `findings[]` の `(findingId, deliberation_id)` 基準**に（共有 `deliberation.refuter.refuteVerdict` を各 finding に対応付ける）。
 
 ### PR4（必須）Layer2 テストは prompt-routing inline fake runner — Task C1/C2/C3/C4 前段
 `createFakeCodexRunner()` は run() 全呼び出しに単一固定 stdout を返すため 3 lens/3 stage の差分応答を作れない（3 レビュアー合意）。**確定方針**: Layer2 は `input.prompt`（lens 名/stage 名を含む）で discriminate する **inline カスタム `CodexExecRunner`**（`tests/unit/core/reviewer-agent.test.ts` の capturingRunner / `reviewed-run-workflow.test.ts` の `async run(input)` パターン）を使う。`createFakeCodexRunner` は degenerate（全 lens 同一）ケースのみ。

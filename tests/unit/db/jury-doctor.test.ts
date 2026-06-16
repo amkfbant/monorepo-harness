@@ -389,10 +389,13 @@ describe("doctor jury.refutation_mismatch", () => {
       deliberationId: "d1",
     });
     // ... but the persisted packet says the refuter upheld it.
+    // Authoritative packet shape (design §0.1 R14 / §5.2 / codex#252-P1):
+    // findingId + deliberationId live PER-FINDING in findings[]; the packet
+    // carries a single deliberation.refuter block. There is NO top-level
+    // packet.findingId / packet.deliberationId.
     seedDecisionWithPacket(db, "h1", {
       decisionPacket: {
-        findingId: "f1",
-        deliberationId: "d1",
+        findings: [{ findingId: "f1", deliberationId: "d1" }],
         deliberation: { refuter: { refuteVerdict: "uphold" } },
       },
     });
@@ -422,12 +425,71 @@ describe("doctor jury.refutation_mismatch", () => {
     });
     seedDecisionWithPacket(db, "h1", {
       decisionPacket: {
-        findingId: "f1",
-        deliberationId: "d1",
+        findings: [{ findingId: "f1", deliberationId: "d1" }],
         deliberation: { refuter: { refuteVerdict: "uphold" } },
       },
     });
     expect(flaggedCheckIds(db)).not.toContain("jury.refutation_mismatch");
+  });
+
+  it("flags the right finding inside a BUNDLED multi-finding packet (per-finding deliberationId, single shared refuter)", () => {
+    // A mixed-batch escalate packet bundles several findings, each with its
+    // OWN deliberationId, under a SINGLE deliberation.refuter block
+    // (design §0.1 R14 / §5.2: 'packet 単一 ID では複数 deliberation を束ねられない').
+    // The doctor must key each findings[] entry to the shared refuter verdict.
+    const db = migratedDb();
+    seedHitch(db, "h1");
+    seedFinding(db, "h1", "f1");
+    seedFinding(db, "h1", "f2");
+    for (const findingId of ["f1", "f2"]) {
+      for (const lens of ["correctness", "scope_fit", "spec_adherence"]) {
+        insertProposal(db, {
+          findingId,
+          hitchId: "h1",
+          lens,
+          reviewerId: lens,
+          proposedScope: "in_scope",
+          deliberationId: `d-${findingId}`,
+          promptSha256: `${findingId}-${lens}`,
+        });
+      }
+    }
+    // f1's stored refutation AGREES with the shared refuter verdict ...
+    insertRefutation(db, {
+      findingId: "f1",
+      hitchId: "h1",
+      targetScope: "in_scope",
+      refuteVerdict: "uphold",
+      deliberationId: "d-f1",
+      promptSha256: "ref-f1",
+    });
+    // ... but f2's stored refutation DISAGREES with the shared verdict.
+    insertRefutation(db, {
+      findingId: "f2",
+      hitchId: "h1",
+      targetScope: "in_scope",
+      refuteVerdict: "refute",
+      deliberationId: "d-f2",
+      promptSha256: "ref-f2",
+    });
+    seedDecisionWithPacket(db, "h1", {
+      decisionPacket: {
+        findings: [
+          { findingId: "f1", deliberationId: "d-f1" },
+          { findingId: "f2", deliberationId: "d-f2" },
+        ],
+        deliberation: { refuter: { refuteVerdict: "uphold" } },
+      },
+    });
+    const flagged = runDoctor(db, { category: "review" }).findings.filter(
+      (f) => f.checkId === "jury.refutation_mismatch" && f.status === "flagged",
+    );
+    // Exactly f2 is flagged for a packet_verdict mismatch; f1 is not.
+    const packetVerdictFindings = flagged
+      .filter((f) => (f.details as { kind?: string }).kind === "packet_verdict")
+      .map((f) => (f.details as { findingId?: string }).findingId);
+    expect(packetVerdictFindings).toContain("f2");
+    expect(packetVerdictFindings).not.toContain("f1");
   });
 
   it("does NOT crash on a malformed recommended_next_action JSON (defensive parse)", () => {
