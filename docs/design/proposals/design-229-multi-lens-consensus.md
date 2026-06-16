@@ -2,8 +2,10 @@
 
 > これは計画のみ。コードは変更しない。実装は別セッションが dev クローンの
 > `origin/main` ベース隔離ブランチで行う（着手順は A→B→C 確定。#229 は2番手・#230 の後）。
-> 本ノートの file:line は ops checkout (**v0.7.10**, `git describe --tags --exact-match`=v0.7.10,
-> origin/main と同一) で全件裏取り済み。
+> 本ノートの file:line は当初 ops checkout (v0.7.10) で裏取りしたスナップショット。**現 origin/main は
+> v0.7.14 直後（6d0a610、`git describe --tags`=`v0.7.14-1-g6d0a610`。exact-match は失敗）**で、
+> SCHEMA_VERSION=30・resolveEffectiveRule 等の主要事実は不変だが一部 file:line が +2〜+8 drift している。
+> **実装着手時は着手ブランチ HEAD で本体全体の file:line を再取得すること**（付録I.0）。
 
 ---
 
@@ -72,7 +74,7 @@
 
 ---
 
-## 2. 検証済みの現状 (file:line, 全件 v0.7.10 でコード確認済み)
+## 2. 検証済みの現状 (file:line。当初 v0.7.10 で確認、現 origin/main=6d0a610 で一部 +2〜+8 drift。着手時 HEAD 再取得)
 
 ### 2.1 (0) profile→rule ブリッジが欠落
 
@@ -339,9 +341,13 @@ rate を引き続きサポートするが #229 では profile から宣言不可
    （reviewer-agent.ts:405）、`review-decision.yaml` / reviewer log を固定 path に書く（:418,512-516）。逐次 N-dispatch
    では (1) reviewer#2 の `snapshotRunDir` が #1 の artifact を pre-existing と見て `verifyArtifactsUnchanged` が
    誤 tamper、(2) 後続が先行 artifact を上書き/読取りして独立性を破壊する。→ **runDir/decisionPath/log を
-   `runDir/reviewers/<reviewer_id>/…` の per-reviewer subdir に分離**し、`verifyArtifactsUnchanged` の baseline を
-   その subdir に限定する。N-dispatch と同時に必要なので **Phase 1a の前提**（C1 対処4 の artifact 隔離をここで land、
-   lens 配線=Phase 1b より前）。
+   `runDir/reviewers/<path-safe reviewer_id>/…` の per-reviewer subdir に分離**し、`verifyArtifactsUnchanged` の
+   baseline をその subdir に限定する。**reviewer_id は path component に使う前に path-safe 化必須**（`reviewers.add()`
+   は任意文字列を受けるため、`/`・`..` 等で subdir を escape/alias されないよう **`reviewers.add()` 登録時に path-safe
+   id を強制**する＝許可文字集合に制約し不正は ValidationError。既存 `slugify`（knowledge-promoter.ts:170-179、base +
+   sha1 短縮で衝突 discriminate）を流用可。path と DB business-key の両方で同一 safe id を使い、既存非-safe id は path
+   構築時に reject、seed id（human/codex/system）は既に path-safe＝migration 不要）。N-dispatch と同時に必要なので
+   **Phase 1a の前提**（C1 対処4 の artifact 隔離をここで land、lens 配線=Phase 1b より前）。
 4. 全 N proposal が貯まった後に `processReviewDecision` を **1回**。これで quorum>1 が first call で
    充足 → pending throw を回避 → escalate しない。
 5. **P1-a（pending fail-closed 経路を本物にする）**: `processReviewDecision` が `ReviewGateError`(pending)
@@ -447,7 +453,7 @@ quorum 再実装するのは duplication で禁止。
 | P1-E | orchestrator review runner: consensus mode で N reviewer 逐次 dispatch(**全 `allowOverwrite:true`** P1-b, **preflight で expected/registered/quorum 照合** P1-b/P2)→1回 processReviewDecision。**pending throw を catch→cycle 記録→`evaluateConsensusStallForHitch` 直接呼び（P1-a）**。escalate メッセージに group/required/registered | src/hitch/orchestrator-runners.ts | P1-C, P1-D |
 | P1-F | CLI `reviewers list --group`(listByGroup) / `add --group` の spec 整合 + 効果検証 | src/cli/run.ts | P1-D |
 | P1-G | consensus 集約の決定論固定(P2): `processConsensusModePath` の proposals/includedRows/sourceProposalIds を reviewer_id,proposal_id 昇順に。`recordConsensusReEvaluation` も同順 | src/core/review-processor.ts, src/core/reviewer-agent.ts | P1-E |
-| P1-ISO | **per-reviewer artifact 隔離（C1/C4 前提・§3.4 step3.5）**: runDir/decisionPath/log を `runDir/reviewers/<reviewer_id>/` の subdir 化、`verifyArtifactsUnchanged` の baseline を per-reviewer subdir に限定。runId-keyed 共有 runDir の衝突・誤 tamper を回避 | src/core/reviewer-agent.ts | P1-E |
+| P1-ISO | **per-reviewer artifact 隔離（C1/C4 前提・§3.4 step3.5・C1 対処4-4）**: runDir/decisionPath/log を `runDir/reviewers/<path-safe reviewer_id>/` の subdir 化（reviewer_id は path 化前に `reviewers.add()` で path-safe 強制）、`verifyArtifactsUnchanged` の baseline を per-reviewer subdir に限定。runId-keyed 共有 runDir の衝突・誤 tamper を回避 | src/core/reviewer-agent.ts, src/db/repositories/reviewers.ts | P1-E, P1-D |
 | P1-H | reviewed-run は consensus rule を**明示拒否(typed error)**（P1-d） | src/core/reviewed-run-workflow.ts | P1-C |
 | P1-SPEC | docs/specs 同コミット更新(§7) | docs/specs/{project,workflow,db,cli}.md, docs/future-features.md | P1-B, P1-E |
 | P1-TEST | RED→GREEN テスト群(§6) | tests/unit/**, tests/integration/** | 各実装 item |
@@ -466,7 +472,7 @@ quorum 再実装するのは duplication で禁止。
 
 | id | title | files | depends |
 |----|-------|-------|---------|
-| P2-0 | **refute target binding data model + DSL**(P1-e): required_change に安定 target id/hash、refute output `{target_id,refute_verdict}`、harness 側 binding 決定論検証(未知 target/hash 不一致=reject)（→ 付録I.1.2/I.1.3 で `target_change_hash` / `uphold\|refute\|inconclusive` に契約確定） | src/core/review-decision-schema.ts, src/db/schema.ts(+migration), src/core/review-rule.ts | Phase 1 |
+| P2-0 | **refute target binding data model + DSL**(P1-e): required_change に安定 target id/hash、refute output `{target_id,refute_verdict}`、harness 側 binding 決定論検証(未知 target/hash 不一致=reject)（→ 付録I.1.2/I.1.3 で `target_change_hash` / `uphold\|refute\|inconclusive` に契約確定）。**`review_refute_votes` table 自体は epic 共有 v31 単一ブロック（design-db §3.1 / impl-roadmap SP-1）で先行作成。P2-0 が足すのは binding ロジック（normalizeChangeText / verifyRefuteBinding / 集約投入）であり新 migration ではない** | src/core/review-decision-schema.ts, src/core/review-rule.ts（schema は v31=SP-1 で建立済を利用） | Phase 1, v31(SP-1) |
 | P2-A | refute requirement の rule 表現(DSL) + schema(`review.refute`) | src/project/schema.ts, src/core/review-rule.ts | P2-0 |
 | P2-B | refute reviewer agent variant(別 prompt, distinct registered reviewer_id) | src/core/refute-agent.ts(新) or reviewer-agent.ts flag | P2-A |
 | P2-C | refute 票を `evaluateConsensus` の決定論集約に通す(target-bound 第2 requirement として) | src/core/review-consensus.ts | P2-0, P2-A |
@@ -543,10 +549,19 @@ quorum 再実装するのは duplication で禁止。
      で 2体目まで dispatch が落ちない。preflight が expected/registered/quorum を照合する**。
    - **7c. P1-c: 入口別 thread**: CLI run / reviewed-run prepare / MCP orchestrate / hitch CLI の各入口で
      profile consensus rule の run が `source='project-profile'` snapshot を凍結する（入口ごとに小テスト）。
-8. **P1-a pending fail-closed → stall 経路**: quorum=2, 1体のみ approved → `processReviewDecision` が
-   ReviewGateError → **orchestrator が catch し cycle 記録 + `evaluateConsensusStallForHitch` 直接呼び**。
-   run.status は needs_review のまま。pending `review_consensus` 行が timeline に蓄積されている
-   (recordConsensusReEvaluation 由来)ことを DB アサート。stall 未満なら継続、`stallAfterSnapshots` 到達で escalate。
+8. **P1-a pending fail-closed → stall 経路**（stall detector の 3-snapshot 要件と整合させ分割。1 dispatch=1 pending
+   `review_consensus` 行=1 snapshot。consensus-stall.ts:100-113 は `snapshots.length>=stallAfterSnapshots` を要求）:
+   - **8a（単一サイクル pending=継続）**: quorum=2, 1体のみ approved → `processReviewDecision` が ReviewGateError →
+     orchestrator が catch し cycle 記録 + `evaluateConsensusStallForHitch` 直接呼び。snapshot 蓄積が
+     `stallAfterSnapshots` 未満なら **run.status は needs_review のまま「継続」**（escalate しない）ことをアサート。
+   - **8b（stall 到達=escalate）**: participants/approvals 非増加の **3 distinct pending snapshot** を fixture で直接
+     構築（または同一 reviewer の review action を 3 サイクル駆動）→ `stallAfterSnapshots=3` 到達で決定論 escalate
+     （harness-only state transition）をアサート。pending `review_consensus` 行が recordConsensusReEvaluation 由来で
+     timeline に蓄積されることも DB アサート。
+   - **8c（継続→進捗）**: 8a の「継続」後、次サイクルで未 landed reviewer が dispatch され quorum 充足 → decisive に
+     進む（継続が dead-end でなく進捗に繋がることを実証。§3.4 step5(ii)）。**注意（follow-up）**: 継続分岐は
+     review cycle を消費するため、`maxReviewCycles`（既定 3=repository.ts:516, 比較 convergence.ts:415/569）が `stallAfterSnapshots`
+     （既定 3）より先に尽きると stall でなく `budget_exhausted` で終端しうる。両予算の合成は §9/budget で確定する。
 9. **escalate メッセージ内容**: required group に 1体しか登録が無い(quorum=2)→ preflight or 反復 pending →
    escalate reason に group 名 + required=2/registered=1 が含まれる。
 
@@ -625,6 +640,29 @@ quorum 再実装するのは duplication で禁止。
 - N=N codex の budget/コスト計上単位(run_usage per-invocation は既存、wire は follow-up)。
 - `harness project check` で「required group に quorum 分の reviewer 登録済みか」検証(fail-silent 防止)。
   Phase1 は orchestrator preflight(§3.4 step3)で escalate するが、run 生成時の事前検証は follow-up。
+
+**【round10 独立多角監査の助言（codex App 非依存。要人間判断）】**
+
+- **Phase 1a の PR 物理分割**: Phase 1a は「配管」の語感に反し、schema 新設 + compile 層 + 7 入口 thread +
+  per-reviewer artifact 隔離(P1-ISO) + freeze + frozen-set filter 共有純関数化 + determinism 固定 + C4 例外境界を
+  1 PR に抱える（codex 反復指摘 P1-a〜e/C1/C4 を全て Phase 1a に積んだ局所最適の累積）。**(PR-1) rule 解決経路
+  land（profile review schema + compile 層 + 7 入口 thread + reviewed-run 拒否、N-dispatch なし）/ (PR-2) N-dispatch +
+  allowOverwrite + preflight + artifact 隔離 + determinism + C4** の 2 物理 PR への分割を推奨（各単独で
+  typecheck+関連テスト緑、レビュー面積半減）。#229 スコープ内のまま PR を割る（付録H H1 で人間批准）。
+- **convergence 予算の合成（要確定）**: `maxReviewCycles`(既定 3=repository.ts:516, 比較 convergence.ts:415/569) と
+  `stallAfterSnapshots`(既定 3, consensus-stall.ts:100) は独立予算。P1-a「進展余地 pending=継続」(§3.4 step5(ii)) は
+  review cycle を消費するため、stall 窓到達前に max-review-cycles が尽きると stall でなく `budget_exhausted` で
+  終端しうる（RED#8b/8c 参照）。両予算の合成と、convergence が consensus-pending run に同一 review step を再 dispatch
+  する決定論契約（step5(ii) が依存）を docs/specs/hitch-convergence.md に明記する（未固定）。
+- **dashboard / MCP の N-proposal 誤表示（露出でなく correctness）**: Phase 1a land 後は 1 run に N active proposal が
+  共存（review-proposals active partial-unique は per-reviewer）。既存の単一 proposal 前提 read（`getLatestActiveProposal`
+  global / `proposals[0]`）が**誤/部分表示**しうる。露出（上記 follow-up 既出）とは別に、既存 read surface が N proposal
+  下でも correct であることを #229 受け入れに含めるか検討。
+- **operator 起動 UX（fail-closed 初回 hard-stop）**: consensus 有効化に pre-flight validate 経路が無く（project check は
+  follow-up）、初回 orchestrate が fail-closed 群の発見器になる→ in-flight ops drive を hard-stop しうる。最小の
+  validate-only 経路を #229 に入れるか follow-up か判断。
+- **逐次 N-dispatch の latency / lease 干渉**: 逐次 dispatch は 1 cycle 最悪 N×(codex timeout)。hitch/course lease
+  timeout・#132 abort-on-lease-loss と干渉しうる。per-cycle dispatch time budget の要否を判断。
 
 ---
 
@@ -1039,15 +1077,20 @@ P2-0 DSL に**新規追加**する。
 |---|---|---|
 | target_change_hash（or target_change_text、harness 再計算） | 必須 | 既存 required_change への binding 検証（hash 不一致=reject）。G2 / design-db §3.1 と契約名を統一 |
 | refute_verdict | 必須 | `uphold` \| `refute` \| `inconclusive`（design-db §3.1 の CHECK と統一）。participant カウントは uphold/refute のみ |
-| refute_reason | 必須 | presence + min length のみ（**質は評価しない**＝LLM 自己申告不使用） |
-| counter_evidence_ref | 必須 | refute DSL の**新フィールド**（既存 close-condition kind ではない）。`{ kind: diff\|test\|none; ref }`（`diff`=run の final-diff.patch 内 hunk、`test`=run のテスト出力 artifact）。kind!=none は ref が **run 成果物**に実在するかを **refute layer 専用の決定論 verifier（run artifact の file 存在 + hunk/test 出力の照合を直接確認）** で検査する。**close-condition kind の `artifact_exists` は external evidence(ask_human) 経路で決定論 auto-check ではないため使わない**（`command`/`finding_policy` も diff hunk 存在確認には不適）。**`spec_line`（repo/spec source 参照）は run 成果物でなく専用 resolver を要するため #229 では受理 kind から除外**（follow-up） |
-| refute_condition | 必須 | presence のみ（[deliberation.md](../deliberation.md):147「反証条件 / 最悪ケース」） |
-| retract_condition | 必須 | presence のみ（同 deliberation.md:147「反証されたら撤回する条件」） |
+| refute_reason | 必須(refute) | presence + min length のみ（**質は評価しない**＝LLM 自己申告不使用）。uphold/inconclusive は不要 |
+| counter_evidence_ref | 必須(refute) | refute DSL の**新フィールド**（既存 close-condition kind ではない。**実証拠 diff/test は降格票 `refute_verdict='refute'` の passed のみ必須**。uphold/inconclusive は `kind='none'`/NULL 可）。`{ kind: diff\|test\|none; ref }`（`diff`=run の final-diff.patch 内 hunk、`test`=run のテスト出力 artifact）。kind!=none は ref が **run 成果物**に実在するかを **refute layer 専用の決定論 verifier（run artifact の file 存在 + hunk/test 出力の照合を直接確認）** で検査する。**close-condition kind の `artifact_exists` は external evidence(ask_human) 経路で決定論 auto-check ではないため使わない**（`command`/`finding_policy` も diff hunk 存在確認には不適）。**`spec_line`（repo/spec source 参照）は run 成果物でなく専用 resolver を要するため #229 では受理 kind から除外**（follow-up） |
+| refute_condition | 必須(refute) | presence のみ（[deliberation.md](../deliberation.md):147「反証条件 / 最悪ケース」）。uphold/inconclusive は不要 |
+| retract_condition | 必須(refute) | presence のみ（同 deliberation.md:147「反証されたら撤回する条件」）。uphold/inconclusive は不要 |
 
 **欠落/不成立 refute 票の決定論的扱い（fail-closed）**:
-1. **refute layer（集約前）**で DSL 構文 + target binding + counter_evidence artifact 実在を検証。必須
-   フィールド欠落 / binding 不一致 / artifact 不在 / `counter_evidence_ref.kind=none` → その refute 票を
-   **無効化（participant 除外）**。無効票は監査のため `review_refute_votes`（design-db §3.1）に
+1. **refute layer（集約前）**で DSL 構文 + target binding + counter_evidence artifact 実在を検証。disposition は
+   **verdict 別**（証拠強制は降格を駆動する `refute` 票にのみ要る＝fail-closed）:
+   - `refute_verdict='refute'`（降格票）: 必須フィールド欠落 / binding 不一致 / artifact 不在 / `kind='none'`（実証拠なし）
+     → **無効化（rejected・participant 除外）**。証拠なしの降格票は降格を駆動させない。
+   - `refute_verdict∈{uphold,inconclusive}`（finding 維持/未判定で降格を駆動しない）: target binding が有効なら
+     `kind='none'`/NULL でも **passed として有効**（counter_evidence / refute_condition / retract_condition は不要）。
+     binding 不一致 / 未知 target のみ rejected。
+   無効票（rejected）は監査のため `review_refute_votes`（design-db §3.1）に
    `validation_status` / `reject_reason` を添えて記録し、**`review_proposals` には入れない**（review_proposals は
    通常 reviewer consensus の active 入力で、`reviewer-agent.ts`:715-738 が insert 後に consensus を再評価するため、
    refute 票を混ぜると通常 consensus を汚染する）。無効票の `refute_verdict` は第2 consensus requirement の
@@ -1066,8 +1109,15 @@ expected-status guard 経由（不変）。
 **受け入れ条件への反映（§8「反証 verify が finding を advisory に降格できる経路のテスト」）**:
 (a) 必須フィールド欠落/artifact 不在 refute 票が決定論無効化され降格が起きない（fail-closed）、
 (b) 全フィールド充足 + binding 一致 + artifact 実在 + quorum 充足で第2 requirement 経由降格（severity
-mutation 不経由・evaluateConsensus 不変を DB アサート）、(c) `counter_evidence_ref.kind=none`（証拠なし明示）の
-refute 票は presence は満たすが participant カウントから除外される、の RED を含める。
+mutation 不経由・evaluateConsensus 不変を DB アサート）、(c) `kind='none'`（証拠なし明示）の disposition を verdict 別に
+検証する RED:
+  - (c-1) `refute_verdict='refute'` ∧ `kind='none'` → **rejected（`reject_reason=evidence_none`）**＝証拠なし降格票は
+    passed CHECK を満たせず集約入力に入らない（fail-closed・降格を駆動しない）、
+  - (c-2) `refute_verdict='uphold'` ∧ `kind='none'` → **passed（有効）**かつ participant に数える（finding 維持票が
+    証拠強制で誤って分母から脱落しないことを DB アサート）、
+  - (c-3) `refute_verdict='inconclusive'` ∧ `kind='none'` → **passed だが participant カウントから除外**（presence は満たすが
+    inconclusive は uphold/refute でないため集計外）、
+を含める。
 
 **G3 スコープ**:
 - **#229 内（設計のみ）**: 本節（§3.5 / §4 P2-0 の refute DSL 定義の inline 確定）。実コード変更は #229 内
@@ -1134,8 +1184,10 @@ profile/DB は共有 checkout で書き換わりうる + operator 設定ミス�
    dispatch では per-reviewer の artifact path / workdir を分離**し、後続 reviewer が先行 verdict を読めない
    ようにする（独立性の実効化）。**先行 `review-decision.yaml` の単純削除 cleanup は不可**: sidecar 欠落 + DB に
    decision 有り → `runReviewerAgent` が「レビュー済み」と誤判定し後続 reviewer が走らない。cleanup を採るなら
-   gate / materialization 変更も要るため、既定は **per-reviewer path 分離**とする。これは N-dispatch と同時に必要
-   なので **Phase 1a 前提**（§3.4 step3.5。lens 配線=Phase 1b より前に land）。spec 化する。
+   gate / materialization 変更も要るため、既定は **per-reviewer path 分離**とする。**reviewer_id は path component に
+   使う前に path-safe 化必須**（`reviewers.add()` 登録時に許可文字集合へ制約＝`/`・`..` で subdir escape/alias を防ぐ。
+   §3.4 step3.5・P1-ISO と同一方式）。これは N-dispatch と同時に必要なので **Phase 1a 前提**（§3.4 step3.5。lens
+   配線=Phase 1b より前に land）。spec 化する。
 5. **dispatch の決定論 bound（明示リストも cap）**: `max_reviewers` + preflight escalate（§3.2/§3.4）が DoS 的
    増殖を防ぐ。**明示 `reviewer_ids` にも `max_reviewers` の hard cap を適用**する（明示リストは全 dispatch する
    設計だが、上限超過は compile/preflight で reject。`listByGroup` だけ cap して explicit list を無制限にしない）。
@@ -1386,13 +1438,21 @@ participants 計算式自体は不変）。
    insertActive のみ tx 内に残す** ようにリファクタする。**ただし `recordConsensusReEvaluation` は本体を try/catch で best-effort
    握り潰す（reviewer-agent.ts:784,824-830）**ので、frozen-set/cycle filter を**その swallow 内に置かない**:
    filter throw（rule_json 欠落 / snapshot 破損 / frozen-set parse 失敗）が pending `review_consensus` 行を黙って
-   drop すると P1-a の stall timeline が壊れ fail-open になる。→ **filter は swallow の外で評価し、例外は P1-a 経路へ
-   伝播させ fail-closed（escalate / hold pending）にする**（warn-and-drop しない）。
+   drop すると P1-a の stall timeline が壊れ fail-open になる。→ **filter は swallow の外で評価し warn-and-drop しない**。
+   ただし伝播先は P1-a の pending-catch ではない: recordConsensusReEvaluation の throw は呼び出し元 `runReviewerAgent`
+   （reviewer-agent.ts:738→:743 rethrow）を貫通し **orchestrator-runners.ts:1120 から伝播 → C4 item4 の per-reviewer
+   dispatch try/catch** が受ける（P1-a catch は processReviewDecision:1128 の ReviewGateError 専用の別ステップで、
+   :1120 の throw はここに届かない）。frozen-set/snapshot 破損は recognized エラーカテゴリ（例 `consensus_reeval_failed`）
+   として **明示分類し fail-closed escalate**（non-participant 継続にしない・暗黙 default 落ちに頼らない）。pending 確定
+   経路（真 pending / 進展余地 pending）の評価は別途 processReviewDecision の P1-a catch が担う。
 3. **サイクル毎に先行 active proposal を整理**（resumed cycle の stale 票封じ）: 同一 reviewer が前サイクルの active
    proposal を残したまま今サイクルで `runReviewerAgent` が crash すると、insert/supersede が起きず**旧 active 行が
    残って `participants` に計上**され、"失敗 = non-participant" が破れて stale 票で approve しうる。→ 各 dispatch
-   サイクル開始時に **frozen set の先行 active proposal を archive / cycle タグで filter** し、今サイクルで landed した
-   票だけを参加とする。
+   サイクル開始時に **frozen reviewer の現 active proposal を `archived_at` set で一括 supersede する決定論前処理**を
+   入れ、「今サイクル=この前処理以降に insert された active」と定義する（既存 `archived_at`/`superseded_at` で表現でき
+   **新 cycle 列・migration は不要**。review_proposals の active partial unique は (run_id,reviewer) WHERE
+   superseded_at IS NULL=schema.ts:556）。この前処理は冪等で resumed cycle 時に二重 archive しない。crash した reviewer
+   は active ゼロで non-participant、成功 reviewer は新 active のみ＝item4 と整合（RED-C4f で明示）。
 4. **失敗 reviewer = non-participant（fail-closed・ループ継続）。ただし tamper は例外で abort**: dispatch loop は各
    `runReviewerAgent` を try/catch で囲む（spec5 の dispatch ループには現状 per-reviewer 例外境界が無く、throw すると
    [orchestrator.ts](../../../src/hitch/orchestrator.ts):96(try)/:183(catch)/:210-216(escalate flip) まで伝播して
@@ -1407,10 +1467,15 @@ error/log を読ませない）。
    `already_decided | run_incomplete` のみ（reviewer-agent-errors.ts:8）で tamper も clean 失敗も kind 無しで混在。
    → **判別ルール（message 一致に依存しない）**: (1) verifyArtifactsUnchanged の throw は全て tamper 専用 kind
    （例 `artifact_tampered`）を持つ → **tamper = abort**。(2) timeout/nonzero/parse の clean 失敗にも明示 kind を付け
-   **recognized-clean = non-participant 継続**。**例外型は別機構**: tamper は `verifyArtifactsUnchanged` →
-   `ReviewerAgentGateError(kind=artifact_tampered)`、clean 失敗（timeout/nonzero/parse）は codex runner reject /
-   parse error の**別例外型**を orchestrator dispatch ループの per-reviewer try/catch で分類する（`ReviewGateKind` は
-   現状 already_decided|run_incomplete の preflight 用で、これに tamper kind を追加するのは別作業）。(3) **kind 不明/欠落は fail-closed（abort）**（**tamper kind を持つはずの `ReviewerAgentGateError` で kind 欠落のとき**＝判別不能なら
+   **recognized-clean = non-participant 継続**。**判別は同一例外型内で行う**: tamper も clean 失敗（timeout/nonzero/
+   parse）も実コードでは**同一 `ReviewerAgentGateError`** で運ばれる（reviewer-agent.ts に約 20 throw site。
+   tamper=verifyArtifactsUnchanged:150/155/163、clean=timeout:599/nonzero:609/parse:636,648 等）。clean 失敗は現状
+   `kind` を持たず `sanitizedReason.code`（`reviewer_codex_timed_out` / `reviewer_codex_nonzero_exit` /
+   `reviewer_output_unparseable_yaml` 等）で識別される。→ **C4 land 時に全 throw site を tamper / recognized-clean に
+   分類**する: tamper 専用 kind を新設し、clean は新 kind 追加でも既存 `sanitizedReason.code` を recognized-clean
+   シグナルに使うでもよい（どちらでも fail-closed 不変条件は満たす）。`ReviewGateKind`（現状 already_decided|run_incomplete
+   の preflight 用）に tamper/clean メンバを追加する場合は **C4 work item として §4 スコープに昇格**させ「別作業」の
+   宙ぶらりんを解消する。kind/code 付与が完了するまでは C4b（継続）を無効化し全失敗 abort のまま（段階導入）。(3) **kind 不明/欠落は fail-closed（abort）**（**tamper kind を持つはずの `ReviewerAgentGateError` で kind 欠落のとき**＝判別不能なら
    安全側）。これが無いと C4b/C4e が安全に実装できない。失敗 reviewer は active proposal を残さない
    ので `participants` に寄与せず、`participants < quorum.minParticipants` で §2.3 の pending throw
    （review-processor.ts:208-213）→ **landed が quorum 未達なら fail-closed**（quorum 充足なら decisive＝C4b）。

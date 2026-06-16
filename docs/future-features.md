@@ -879,7 +879,7 @@ escalate / 誤分類のイベント（runtime ログは `hitch_findings` / `hitc
 - `normalizeChangeText` 純関数実装（NFC + CRLF→LF + 行内空白畳み + 全体 trim、case 折り/句読点除去なし）+ 単体テスト。
 - binding 決定論検証（未知 target / hash 不一致 = fail-closed reject、harness 再計算のみが権威）。
 - counter_evidence_ref が指す diff/test の実在検証は **refute layer 専用の決定論 verifier（run artifact の存在 + hunk/test 出力照合を直接確認）** を新設する。**close-condition kind の `artifact_exists` は external/ask_human 経路で決定論 auto-check でないため使わない**（`command`/`finding_policy` も diff hunk 存在確認には不適。design-229 G3 と統一）。
-- refute layer の participant 除外ロジック（必須フィールド欠落 / artifact 不在 / kind=none を集約前に無効化、無効票は `review_refute_votes` に validation_status/reject_reason 付きで記録し `review_proposals` には入れない＝通常 consensus 汚染を防ぐ）。
+- refute layer の participant 除外ロジック（disposition は **verdict 別**: `refute_verdict='refute'` の 必須フィールド欠落 / artifact 不在 / kind=none を集約前に無効化＝rejected(`evidence_none`)、`uphold`/`inconclusive` の kind=none は正当で passed。無効票は `review_refute_votes` に validation_status/reject_reason 付きで記録し `review_proposals` には入れない＝通常 consensus 汚染を防ぐ。participant 集計は uphold/refute のみ＝inconclusive は除外。design-db §3.1 / design-229 G3 と統一）。
 - refute reviewer agent variant（別 prompt, distinct registered reviewer_id）。lens 注入機構（reviewer-agent.ts の reviewerPrompt 拡張）を再利用。
 - reject された refute 票の入力監査記録の形式。
 - **M15（全 proposal を証拠の有無で減点/参加除外）は恒久的に #229 外**: `evaluateConsensus` のラベル集合濃度 quorum + 固定 tie-break（凍結集約契約）の書き換えにあたり安全境界違反。証拠規律は refute DSL に限定して畳む（採用しない理由としてここに記録）。

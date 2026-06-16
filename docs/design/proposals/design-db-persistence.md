@@ -2,7 +2,7 @@
 
 > **生成方法**: 案C形式のマルチエージェント合議（独立起案5体[異レンズ] → DB アーキ前提の反証verify 5体 → 横断批判/MECE/採点 → 統合）+ codex exec gpt-5.5 xhigh レビュー（付録F）。**v2 で付録F の P1×4 / P2×4 / P3×2 を本文 DDL に織り込み確定**。
 > **ステータス**: 計画のみ（コード未変更）。3案(#229/#230/#231) v2 ノートの永続化前提を横断統一し、共有 decision-log バックボーンに乗せる。
-> **前提検証で grounding 訂正あり**（付録C参照）: convergence 表は `hitch_convergence_decisions`（payload列なし→recommended_next_action JSON）/ review_decisions は export-backed / phases.review_state_json は書込経路が無い。設計はこれを反映済み。
+> **前提検証で grounding 訂正あり**（付録C参照）: convergence 表は `hitch_convergence_decisions`（payload列なし→recommended_next_action JSON）/ review_decisions は export-backed / phases.review_state_json は specApproval 用の専用書込経路が無い（既存 writer は note 用 setNote() のみ・CAS なし）。設計はこれを反映済み。
 > 実装は dev クローンの `origin/main` ベース隔離ブランチで別セッション実施。**最終的な home**: dev クローンの `docs/design/` 配下へ。
 > カレント検証元: ops checkout v0.7.10 (= origin/main)。file:line は全件実コードで裏取り済み。
 
@@ -29,6 +29,10 @@
 **P3（反映済み）**:
 - **P3-1（`escalate_flag` / `confidence` の CHECK 欠如）** → §3.2 を改訂。gate 監査 DDL なので厳格化。`CHECK (escalate_flag IN (0,1))`、`CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1)` を全該当列に付与。
 - **P3-2（`phase-repository.ts` の実パス）** → §2.4 / §3.3 を訂正。`src/db/phase-repository.ts` ではなく **`src/roadmap/phase-repository.ts`**（実ファイルで確認）。
+
+**round10 訂正（独立多角監査の反映。codex App 非依存）**:
+- **証拠強制を refute 票に限定（round9 の blanket 強制を訂正）**: round9 は全 passed 行に `counter_evidence_kind IN ('diff','test')` を課したが、反証層の participant は uphold/refute 両方（§3.1 validation_status の集約方針コメント・design-229 §3.5 / G3 表）。uphold（finding 維持＝反証しない）/inconclusive は本来 counter-evidence を持たず `kind='none'` が正当で、全 passed に証拠を課すと**証拠なし uphold が passed になれず「uphold も participant」という stated モデルが空文化**する（脱落方向は `evaluateConsensus` の quorum floor/rate 上 fail-CLOSED＝降格抑制で安全側だが participant モデルが死ぬ）。→ **G3 必須 DSL（refute_reason / counter_evidence / refute_condition / retract_condition）の強制を `refute_verdict='refute'`（降格票）に限定**。uphold/inconclusive は `target_change_hash`（列 NOT NULL）+ verdict のみで passed 可。fail-closed は維持（証拠なし refute は rejected＝降格を駆動しない）。§3.1 DDL（passed CHECK / 列コメント / reject_reason）・design-229 G3 item1 / 受け入れ条件(c) を改訂。
+- **`source_sha256` の NULL-yaml 規則を明示（round9 の積み残し）**: `source_yaml` は nullable だったため `source_sha256 = sha256(source_yaml)` が NULL-yaml（malformed/no-output reject）で不定義だった。→ `source_yaml` を **NOT NULL DEFAULT ''**（raw 出力を空でも verbatim 保存）にし `source_sha256` を常に算出可能化。no-output 票の同一 reviewer/prompt 再試行は同一 hash で idempotent dedup（同一失敗の冪等記録＝許容）。
 
 ---
 
@@ -77,10 +81,10 @@ epic #228 (AI 合議制) の sub-issue #229/#230/#231 は LLM 多体の **提案
 - `repository.ts:1791` INSERT は `recommended_next_action` 列に書く。`:1803-1805` `json(input.recommendedNextAction)` で serialize、`:2314-2317` `JSON.parse(...) as HitchNextAction` で round-trip。
 - → `HitchNextAction` 型に **optional `decisionPacket`** を足すだけで packet 永続化可能。**migration 不要**。既存行は `decisionPacket===undefined` のまま壊れない (design-230:208-210)。
 
-### 2.4 review_state_json は **read-only (書き込み経路ゼロ)** — 操作上 load-bearing なギャップ
-- `schema.ts` phases に `review_state_json TEXT` あり。**実ファイルは `src/roadmap/phase-repository.ts`**（P3-2 訂正、`src/db/` ではない）。`phase-repository.ts:14-20` で `reviewState: parse(r.review_state_json)` と**読むだけ**。
-- `phase-repository.ts:62-68` INSERT は `review_state_json` を**列挙しない**。`:103-108`/`:143-148` UPDATE は `status` のみ。`cli/course.ts:667` UPDATE は `scope_json`/`close_conditions_json` のみ。
-- → 「specApproval を review_state_json に migration 無しで書ける」は技術的に真だが**書き込みメソッドが存在しない**。#231 着手前に `updateReviewState()` / `recordSpecApproval()` を新設する必要があり、**lost-update 対策（txn().immediate() + CAS）を伴う**（§3.3、P1-3）。design-231:170 が `updateSpec()` 経由を前提。
+### 2.4 review_state_json は **specApproval 用の専用書込経路が無い**（既存 writer は note 用 `setNote()` のみ・CAS なし）— 操作上 load-bearing なギャップ
+- `schema.ts` phases に `review_state_json TEXT` あり。**実ファイルは `src/roadmap/phase-repository.ts`**（P3-2 訂正、`src/db/` ではない）。`phase-repository.ts:14-20` で `reviewState: parse(r.review_state_json)` と読む。
+- `phase-repository.ts:62-68` INSERT は `review_state_json` を**列挙しない**。`status`-only UPDATE が複数。**ただし `setNote()`（`phase-repository.ts:131-144`）は例外で `review_state_json` を read-modify-write（`reviewState` を読み `{ note }` を merge → `UPDATE phases SET review_state_json=? WHERE phase_id=?`）する既存 writer。これは `.immediate()`/CAS を使わない**。`cli/course.ts:667` UPDATE は `scope_json`/`close_conditions_json` のみ。
+- → 「specApproval を review_state_json に migration 無しで書ける」は真。だが **specApproval 専用の書込メソッドが無い**（setNote は note 専用）。#231 着手前に `updateReviewState()` / `recordSpecApproval()` を新設し、**lost-update 対策（txn().immediate() + `review_state_version` CAS、§3.3 P1-3）を伴う**。**既存 `setNote()` も CAS（version bump）に揃えないと setNote↔specApproval 間で lost-update が残る**ため、P1-3 で setNote も CAS 経路へ移行する。design-231:170 が `updateSpec()` 経由を前提。
 - 既存の `transitionStatus()`(`:116-152`) が CAS（`WHERE ... AND status IN (...)`）を、`add()`(`:45-70`) が `db.transaction(...).immediate()` を既に使っており、同方式で実装できる。
 
 ### 2.5 run_usage provenance (v30) と CHECK 制約
@@ -153,30 +157,34 @@ CREATE TABLE review_refute_votes (
   confidence    REAL CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1),  -- advisory。gate を駆動しない (P3-1)
   reasoning     TEXT,                 -- 判断ログ (会話全文でない)
   -- G3 refute DSL 必須フィールドを構造化列で持つ (YAML 再パース不要・verifier/dashboard が直接 query 可。design-229 G3)
-  refute_reason       TEXT,           -- passed は非空 (下の CHECK)
-  counter_evidence_kind TEXT          -- diff | test | none (passed は非 NULL)
+  refute_reason       TEXT,           -- passed の refute 票は非空 (下の CHECK。uphold/inconclusive は不要)
+  counter_evidence_kind TEXT          -- diff | test | none。passed の refute 票は diff/test 必須、uphold/inconclusive は none/NULL 可 (下の CHECK)
     CHECK (counter_evidence_kind IS NULL OR counter_evidence_kind IN ('diff','test','none')),
   counter_evidence_ref  TEXT,         -- kind!=none のとき run artifact 参照 (refute layer の決定論 verifier が実在検証)
-  refute_condition    TEXT,           -- 反証条件 (passed は非空)
-  retract_condition   TEXT,           -- 撤回条件 (passed は非空)
+  refute_condition    TEXT,           -- 反証条件 (passed の refute 票は非空。uphold/inconclusive は不要)
+  retract_condition   TEXT,           -- 撤回条件 (passed の refute 票は非空。uphold/inconclusive は不要)
   model         TEXT,
   prompt_sha256 TEXT NOT NULL,        -- CC11: business-key dedupe を NULL 重複で破らせない
   prompt_provenance_json TEXT,
   usage_kind    TEXT,                 -- run_usage(kind) 相関 (P2-4)
   usage_seq     INTEGER,              -- run_usage(seq) 相関 (P2-4)
-  source_yaml   TEXT,                 -- refute agent 出力 yaml (監査)
-  source_sha256 TEXT,
+  source_yaml   TEXT NOT NULL DEFAULT '',  -- refute agent の raw 出力 (監査)。malformed/no-output でも verbatim 保存し空文字で非 NULL 保証 (round10)
+  source_sha256 TEXT NOT NULL,        -- = sha256(source_yaml)。source_yaml が常に非 NULL なので常に算出可。rejected の distinct 試行を一意化(codex round9/round10)
   validation_status TEXT NOT NULL DEFAULT 'rejected'   -- fail-closed default: 明示的に passed と書かれた票のみ集約対象 (codex round7)
     CHECK (validation_status IN ('passed','rejected')),  -- 全票を記録。集約に渡すのは passed ∧ verdict∈{uphold,refute} のみ (design-229 G2/G3。inconclusive は passed でも除外)
-  reject_reason TEXT,                 -- rejected 時の決定論コード (unknown_target / hash_mismatch / missing_field / artifact_absent / evidence_none)
+  reject_reason TEXT,                 -- rejected 時の決定論コード (unknown_target / hash_mismatch / missing_field / artifact_absent / evidence_none)。evidence_none は refute∧kind=none に限る（uphold/inconclusive の kind=none は正当で passed・rejected にしない）
   created_at    TEXT NOT NULL,
   CHECK (validation_status = 'passed' OR (reject_reason IS NOT NULL AND reject_reason <> '')),  -- rejected は必ず reason を持つ (audit 可能性、codex round3)
   CHECK (validation_status <> 'passed' OR refute_verdict IS NOT NULL),  -- passed は必ず verdict を持つ (codex round4: malformed は rejected 側で verdict NULL 可)
-  -- passed は G3 必須 DSL フィールドを構造的に持つ (codex round8。malformed は rejected 側で NULL 可)
-  CHECK (validation_status <> 'passed' OR (
+  -- passed の refute 票は G3 必須 DSL フィールド(儀式化対策)を構造的に持つ (codex round8 + round10: refute 限定)。
+  -- 証拠強制は降格を駆動する refute_verdict='refute' に限定。uphold/inconclusive(降格を駆動しない)は
+  -- target_change_hash(列 NOT NULL)+refute_verdict のみで passed 可(counter-evidence なし=kind∈{none,NULL})。
+  -- これで「participant は uphold/refute 両方」(§3.1 validation_status コメント・design-229 G3)の stated モデルを満たす。
+  -- malformed は rejected 側で verdict NULL 可。fail-closed: 証拠なし refute(kind=none/欠落)は passed CHECK 不成立→rejected。
+  CHECK (validation_status <> 'passed' OR refute_verdict <> 'refute' OR (
     refute_reason IS NOT NULL AND refute_reason <> ''
-    AND counter_evidence_kind IS NOT NULL
-    AND (counter_evidence_kind = 'none' OR (counter_evidence_ref IS NOT NULL AND counter_evidence_ref <> ''))
+    AND counter_evidence_kind IS NOT NULL AND counter_evidence_kind IN ('diff','test')  -- NOT NULL ガード必須: NULL IN(...) は NULL=非違反のため、kind 欠落 refute をすり抜けさせない(round10 fail-closed)
+    AND counter_evidence_ref IS NOT NULL AND counter_evidence_ref <> ''
     AND refute_condition IS NOT NULL AND refute_condition <> ''
     AND retract_condition IS NOT NULL AND retract_condition <> ''))
 );
@@ -184,11 +192,13 @@ CREATE TABLE review_refute_votes (
 CREATE UNIQUE INDEX review_refute_votes_passed_idx
   ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256)
   WHERE validation_status = 'passed';
--- rejected は監査 append-only。source_sha256 違いの失敗試行を共存させ完全重複のみ dedup。
--- source_sha256 は nullable で SQLite は NULL を distinct 扱いするため、COALESCE で非 NULL 化して
--- 「完全重複のみ dedup」を成立させる (codex round7。NULL 同士の重複挿入を防ぐ)
+-- rejected は監査 append-only。source_sha256(NOT NULL = sha256(source_yaml)、source_yaml も NOT NULL DEFAULT '') を
+-- key に含め、distinct な失敗試行(source_yaml が違う = hash が違う)は共存・完全重複(同一 source)のみ dedup。
+-- round9/round10: source_yaml/source_sha256 を NOT NULL 化し NULL distinct 問題を解消(COALESCE では別 source の
+-- NULL 同士が '' に畳まれ誤 dedup していた)。no-output 票(source_yaml='')の同一 reviewer/prompt 再試行は同一 hash で
+-- idempotent dedup(同一失敗の冪等記録＝許容)。
 CREATE UNIQUE INDEX review_refute_votes_rejected_idx
-  ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256, COALESCE(source_sha256, ''))
+  ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256, source_sha256)
   WHERE validation_status = 'rejected';
 CREATE INDEX review_refute_votes_run_idx ON review_refute_votes(run_id, created_at);
 CREATE INDEX review_refute_votes_target_idx ON review_refute_votes(run_id, target_change_hash);
@@ -368,6 +378,8 @@ interface HitchDecisionPacket {
 **consistency / doctor (P1-1 / P1-2 反映)**: (1) RUNTIME 列挙に v31 表が出ない。(2) orphan proposal/vote/audit (finding/run/hitch 削除後も行が残る) → advisory finding。(3) **hitch_id 整合: stored hitch_id != finding_id から join した hitch_id → advisory** (P1-2)。(4) refute hash 不整合 → TS recompute で検出。(5) packet↔votes 不整合検出。(6) repair DELETE は dry-run default、--apply 必須。
 
 **determinism**: (1) `aggregateJuryVotes` 純関数: 同 proposals → 同 decision。confidence 変えても decision 不変 (no-float-gate)。(2) `auditSeverity` 純関数: aligned/diverged/inconclusive 決定論、固定 mapping 不変、severity 自動降格しない。(3) proposal/refute insert の business-key UNIQUE (P2-3) で retry 二重挿入を防ぐ。(4) **repository insert が finding_id→hitch_id 不一致を reject** (P1-2)。
+
+**refute votes CHECK / disposition (G3 / round10。証拠強制は refute 限定)**: (a) passed ∧ refute ∧ kind=none → passed CHECK 違反（=rejected 側へ、reject_reason=evidence_none で記録可）。(a') passed ∧ refute ∧ kind=NULL（列欠落）∧ 他 DSL 充足 → passed CHECK 違反（`NULL IN(...)` すり抜け防止の NOT NULL ガードを assert）。(b) passed ∧ refute ∧ refute_reason / refute_condition / retract_condition / counter_evidence_ref のいずれか欠落 → CHECK 違反。(c) passed ∧ refute ∧ kind∈{diff,test} ∧ 全 DSL 充足 ∧ ref 非空 → INSERT OK。(d) **passed ∧ uphold ∧ kind=none かつ DSL フィールド NULL → INSERT OK**（uphold は target_change_hash+verdict のみで passed＝refute-conditional の核。証拠強制で誤って participant 分母から脱落しないことを assert）。(e) passed ∧ inconclusive ∧ kind=none → INSERT OK。(f) rejected ∧ reject_reason NULL/空 → CHECK 違反（round3）。(g) passed ∧ refute_verdict NULL → CHECK 違反（round4）。(h) `source_yaml` NOT NULL DEFAULT '' / `source_sha256` NOT NULL（round10）: NULL yaml で INSERT 不能、空出力は '' で記録可。(i) partitioned UNIQUE: passed は business-key で二重挿入 dedup、rejected は source_sha256 を含み distinct 失敗試行が共存。(j) **集約入力 filter**: passed ∧ verdict∈{uphold,refute} のみ集計に渡り、inconclusive は passed でも除外。
 
 **review_state CAS (P1-3)**: (1) `recordSpecApproval` で specApproval 記録、specHash = sha256(canonical scope+close)、`review_state_version` が +1。(2) **並行 read-modify-write シミュレーション**: stale version での CAS が `changes===0` で no-op（後勝ちで他 key を消さない）→ リトライ後に両 key 保全。(3) 他 key (任意の review fact) を保全。
 

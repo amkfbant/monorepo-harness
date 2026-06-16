@@ -829,8 +829,11 @@ caller_id）を入れて debug 性を確保する。
 
 ## Phase 11 — Review governance / consensus flow（close 済み・現状仕様）
 
-Phase 11 で review process は **consensus mode** が default となる (project
-profile で `review.mode` が `latest-proposal` 以外を指定した場合)。設計は
+Phase 11 で review consensus 機構（複数 proposal の決定論集約 `evaluateConsensus`）は
+実装済み。**ただし現状 `resolveEffectiveRule` は scope（profile）を無視して常に
+`DEFAULT_REVIEW_RULE`（mode=`latest-proposal`・1 体 dispatch）を返す**（`review-rule.ts:116-122`、
+コメントで後続 Phase 送りを明記）ため、**project profile の `review.mode` から consensus を
+選択する経路は未配線**（profile→rule ブリッジは #229=案B が追加する。design-229 §2.1/§3.1）。設計は
 [`../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md`](../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md)。
 
 ### review auto → consensus re-evaluate flow
