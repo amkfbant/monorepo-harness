@@ -162,11 +162,17 @@ CREATE TABLE review_refute_votes (
   validation_status TEXT NOT NULL DEFAULT 'passed'
     CHECK (validation_status IN ('passed','rejected')),  -- 全票を記録。集約に渡すのは passed のみ (design-229 G2/G3)
   reject_reason TEXT,                 -- rejected 時の決定論コード (unknown_target / hash_mismatch / missing_field / artifact_absent / evidence_none)
-  created_at    TEXT NOT NULL
+  created_at    TEXT NOT NULL,
+  CHECK (validation_status = 'passed' OR (reject_reason IS NOT NULL AND reject_reason <> ''))  -- rejected は必ず reason を持つ (audit 可能性、codex round3)
 );
--- dedupe は business key (P2-3。created_at は使わない)
+-- dedupe は business key (P2-3。created_at は使わない)。validation_status を含め、rejected 監査行が
+-- 後の passed retry を塞がないようにする (codex round3。同一 prompt で reject→修正→pass を許す)
 CREATE UNIQUE INDEX review_refute_votes_dedup_idx
-  ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256);
+  ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256, validation_status);
+-- passed は同一 business key で最大1本 (idempotent。集約入力の一意性を担保)
+CREATE UNIQUE INDEX review_refute_votes_passed_idx
+  ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256)
+  WHERE validation_status = 'passed';
 CREATE INDEX review_refute_votes_run_idx ON review_refute_votes(run_id, created_at);
 CREATE INDEX review_refute_votes_target_idx ON review_refute_votes(run_id, target_change_hash);
 ```

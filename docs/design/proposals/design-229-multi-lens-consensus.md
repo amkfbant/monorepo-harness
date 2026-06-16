@@ -1201,29 +1201,32 @@ decisionPath と併せて記録する。
 export interface ConsensusEscalationSummary {
   decisiveVotes: Array<{ reviewerId: string | null; groupId: string | null; decision: ConsensusStatus | "pending" }>;
   requirementStatus: ConsensusRequirementCheck[];   // 型: review-consensus.ts:54-64 / 構築: 同:208-220
-  unresolvedBlocking: { p0Count: number; p1Count: number; findingIds: string[]; fromPendingProposals: number };  // 確定後は finding registry(convergence.ts:121-123)由来 / pending stall 時は active proposal の required_changes から直接算出(下記注記)
+  unresolvedBlocking: { p0Count: number; p1Count: number; findingIds: string[]; unclassifiedPendingCount: number };  // p0/p1 は in-scope 確定値(finding registry, convergence.ts:121-123 由来) / unclassifiedPendingCount は pending stall 時の scope 未判定 required_changes 候補数(下記注記。in-scope に混ぜない)
   dissentingProposals: Array<{ reviewerId: string | null; groupId: string | null; decision: ConsensusStatus }>;
   stallCycles: { unresolvedStreak: number; stallAfterSnapshots: number };
 }
 // LLM 不使用。reviewer_id, proposal_id 昇順固定（§3.6 P2-determinism と同順）で order 非依存。
 ```
 
-**`dissentingProposals` の定義**: active consensus status を多数派とし、それと異なる decision を出した
-summary.proposals の集合。**active status が pending(UNRESOLVED) の場合**（stall escalate 時点は多くこれ）は、
-非 pending decision の最頻を多数派とする。**最頻が同数で割れたとき**（例: approved 1 / changes_requested 1）は
-"最頻"だけでは一意に決まらないため、`evaluateConsensus` と同じ固定 tie-break order
-（`rejected > changes_requested > approved > pending`）で**一意に**多数派を選ぶ。それ以外を dissent、pending は
-abstained と扱う。→ tie-break が完全決定論なので、dispatch/評価順を入替えても `dissentingProposals` は bit-identical
-（order 非依存テストを満たす）。
+**`dissentingProposals` の定義（投票数ベース。consensus status は使わない）**: `blocking_decisions` が有効だと
+`evaluateConsensus` は in-group の blocking 票が 1 つでもあれば approval 数を見る前に `changes_requested` / `rejected`
+を返す（例: approve 2 + blocking 1 → status=changes_requested）。よって **active consensus status を多数派にすると
+approver が dissenter にされ、本当の少数 blocker が隠れる**。→ 多数派は **proposal の decision 票の最頻（vote
+count）** で決め、それと異なる decision を dissent とする（status ラベルは使わない）。**最頻が同数で割れたとき**
+（例: approved 1 / changes_requested 1）は `evaluateConsensus` と同じ固定 tie-break order
+（`rejected > changes_requested > approved > pending`）で**一意に**多数派を選ぶ。pending は abstained と扱う。
+decisive / 少数は `requirementStatus`（requirement checks）と票数から導く。→ tie-break が完全決定論なので、
+dispatch/評価順を入替えても `dissentingProposals` は bit-identical（order 非依存テストを満たす）。
 
 **`unresolvedBlocking` の pending stall 時の算出**: pending consensus stall では `processReviewDecision` が consensus
-未確定で、required_changes が hitch findings registry に**未 import**（§3.4 catch は cycle/stall 記録のみで finding
-import しない）。よって findings registry だけから数えると **stall を起こした当の proposal の P0/P1 を 0 と誤報**する。
-→ stall 時は **active proposal の required_changes を severity マッピング（§2.6: required_change→P1）で数えて**
-`unresolvedBlocking` を埋め、件数を `fromPendingProposals` に出す（確定後は registry 由来に切替）。いずれも決定論で
-LLM 出力は数えない（required_changes の有無＝観測事実のみ）。なお `recordConsensusReEvaluation` が書く pending
-`review_consensus` 行は consensus decision を持たない（＝findings 未 import と整合）ので、pending 時に registry だけを
-見ると 0 と誤報する点が本注記の根拠。
+未確定で、required_changes が hitch findings registry に**未 import**＝**scope 分類（in-scope / out-of-scope /
+unknown）も未実行**（§3.4 catch は cycle/stall 記録のみ）。よって (a) findings registry だけから数えると **stall を
+起こした proposal の blocker を 0 と誤報**する一方、(b) 生の required_changes を in-scope P1 と数えると
+**out-of-scope/unknown の指摘まで in-scope blocker に誤分類**する。→ stall 時は active proposal の required_changes を
+**`unclassifiedPendingCount`（scope 未判定の候補 blocker）** に出し、**in-scope の `p0Count` / `p1Count` には混ぜない**
+（in-scope 確定値は finding registry 由来のみ）。確定後に classifier が走れば registry 由来の in-scope 値に解決される。
+いずれも決定論で LLM 出力は数えない（required_changes の有無＝観測事実のみ）。`recordConsensusReEvaluation` が書く
+pending `review_consensus` 行は consensus decision を持たない（＝findings 未 import と整合）。
 
 **`stallCycles` の注記**: `trailingUnresolvedStreak`（[consensus-stall.ts](../../../src/core/consensus-stall.ts):142-150）は `maxPendingHours` 定義済みの
 time-based 経路でのみ使う。既定（未設定）の progress-based stall（同 :100-113）は streak 長でなく
@@ -1277,8 +1280,12 @@ participants 計算式自体は不変）。
 
 1. **expected 集合の freeze（再現性）**: dispatch 開始時、`resolveExpectedReviewers`（reviewer_ids 明示 or
    `listByGroup(group) ∩ max_reviewers`、reviewer_id 字句昇順）の結果をその run のレビューサイクルに記録する
-   （新 table 不要。`review_consensus` summary または cycle メタに載せる）。再駆動時はこの freeze 値を分母期待値の
-   基準にする。reviewer registry が後から変わっても、その run の分母期待値は不変。
+   （**dispatch 前に既に durable な `run_review_rule_snapshots` を基点にする**＝run 生成時に書かれ proposal より前。
+   explicit `reviewer_ids` なら frozen set はこの snapshot だけで完全決定〔新 migration 不要〕。`listByGroup`
+   フォールバックは registry 依存なので、**解決済み reviewer リストを run 生成/freeze 時に同 snapshot（JSON）へ
+   含める**。`review_consensus` summary は proposal 後にしか書かれないので freeze 用には使わない＝全 reviewer が
+   proposal 前に落ちても freeze が残る）。再駆動時はこの freeze 値を分母期待値の基準にする。reviewer registry が
+   後から変わっても、その run の分母期待値は不変。
 2. **集約は frozen set の proposal のみ**（freeze だけでは不十分）: `processConsensusModePath` は全 active proposal を
    読む（review-processor.ts:196-207）ため、freeze 後に **frozen reviewer ID 集合外の active proposal**（resumed run /
    手動 / registry 変更由来）が quorum・blocking に効きうる。→ consensus 評価の前に **active proposal を frozen set で
@@ -1294,7 +1301,10 @@ participants 計算式自体は不変）。
 4. **失敗 reviewer = non-participant（fail-closed・ループ継続）。ただし tamper は例外で abort**: dispatch loop は各
    `runReviewerAgent` を try/catch で囲む（spec5 の dispatch ループには現状 per-reviewer 例外境界が無く、throw すると
    [orchestrator.ts](../../../src/hitch/orchestrator.ts):96(try)/:183(catch)/:210-216(escalate flip) まで伝播して
-   全捨て即 escalate）。**clean な crash / timeout / parse 失敗のみ non-participant 扱いでループ継続**。
+   全捨て即 escalate）。**clean な crash / timeout / parse 失敗のみ non-participant 扱いでループ継続**（ただし clean
+失敗も `review-auto-error.json` を共有 runDir に書いてから throw するため、**継続には C1 対処 4 の per-reviewer
+artifact / workdir 分離が前提**。分離が無い段階では clean 失敗でも継続せず abort する＝共有 runDir で後続に
+error/log を読ませない）。
    **artifact tamper（`verifyArtifactsUnchanged` → `ReviewerAgentGateError`）はループ継続しない**: gate は改変を検知
    するが restore しないため、継続すると後続 reviewer が**汚染 artifact を読む**。tamper / gate error は **当該
    サイクルを abort（artifact restore 後に限り再試行）して escalate** する。**clean 失敗（timeout / nonzero / parse）と
