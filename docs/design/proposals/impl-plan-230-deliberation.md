@@ -21,6 +21,81 @@ Conventional Commits（attribution なし）。各 task 末尾で commit。`base
 
 ---
 
+## 計画 v1.1 改訂（多角レビュー反映・確定事項）
+
+> 本計画を **codex xhigh ＋ Opus 計画レビュワー 5体**（設計忠実性/RED質/実装可能性/task分解/完全性）でレビュー。
+> **全 6 レビュアー GO-with-fixes・P0 ゼロ**（中核の単調 fail-closed ゲートは実コード裏取りで健全）。
+> 以下は確定対処。**本節は本文 task の該当箇所を上書きする（矛盾時は本節が優先）**。
+
+### PR1（必須）決定論的近接性フィルタ（設計 §0.1 R1）を実装 — Task B1/B3/B5/C4/D1
+設計 R1 が auto_confirm の証拠条件に AND を命じた近接性フィルタが全 task に欠落（4 レビュアー合意）。実装:
+- `DeliberationInput` に `finding: { filePath?: string; category?: string }` を追加（B1）。`HitchFinding` は filePath/category を持つ（裏取り済み）ので D1 で配線。
+- B3 に決定論述語 `evidenceProximityOk(e: VerifiedJuryEvidence, finding): boolean` を追加し `allHaveVerifiedEvidence` に AND:
+  - `e.kind==='file'`: `finding.filePath` があり、citation path が `finding.filePath` の **先頭2パスセグメント prefix を共有** → true。`finding.filePath` 無し → **false（fail-closed）**。
+  - `e.kind∈{'spec','policy'}`: `finding.category` があり citation の domain/category が一致 → true。`finding.category` 無し → **false（fail-closed）**。
+  - 「実在するが無関係ドメインの citation」は verified=true でも proximity=false → escalate（安全を緩めず厳格化する向き）。
+- `gateTrace` に `proximityOk: boolean` を追加。RED:「verified だが finding と無関係ドメインの citation のみ → escalate / finding.filePath 無し → escalate」。
+
+### PR2（必須）`selectFinalRound` を fail-closed 化（R8）— Task B3
+`r2 ?? r1` 混在・lens 重複黙殺・`!` 非null断定を排除。**確定実装**:
+```ts
+export function selectFinalRound(proposals: readonly JuryClassificationProposal[]): JuryClassificationProposal[] {
+  const targetRound: 1 | 2 = proposals.some((p) => p.round === 2) ? 2 : 1; // R2 が1件でもあれば全 lens R2 を要求
+  const out: JuryClassificationProposal[] = [];
+  for (const lens of JURY_LENSES) {
+    const forLens = proposals.filter((p) => p.lens === lens && p.round === targetRound);
+    // 1件のみ正常。0件(欠落)/2件以上(重複)はそのまま push し、下流 aggregateJuryVotes が
+    //   length!==3 または lens 非distinct で split → escalate（fail-closed）。R1/R2 混在も targetRound 限定で排除。
+    out.push(...forLens);
+  }
+  return out;
+}
+```
+RED 追加:「correctness=R2,scope_fit=R2,spec_adherence=R1（部分R2混在）→ 選択集合 length<3 → 下流 split」「同一 lens に R2 2件 → length>3/重複 → split」「lens 欠落 → length<3 → split」。
+
+### PR3（必須）`deliberation_id` を packet・型・生成関数に配置（R4）— Task B1/B6/D1/D2/A3
+- B1: `HitchDecisionPacket.deliberationId: string`（必須）/ `DeliberationInput.deliberationId` / `DeliberationResult` 経由で運ぶ。
+- 新純関数 `computeDeliberationId(hitchId, findingId, gateInputSha256): string`（`aggregation.ts` または `jury/ids.ts`）。RED: 同入力→同 ID・決定論。`gateInputSha256` は最終ラウンド proposals + refuter verdict の canonical JSON sha256。
+- B6: formatter が packet に `deliberationId` を載せる。D1: 3 表 insert 時に同一 `deliberationId` を渡す（A1 DDL の `deliberation_id` 列・既出）。
+- D2/D4: read-back で `recommended_next_action.decisionPacket.deliberationId` を assert。A3 doctor: packet↔proposals/refutations 照合を **`deliberation_id` 基準**に。
+
+### PR4（必須）Layer2 テストは prompt-routing inline fake runner — Task C1/C2/C3/C4 前段
+`createFakeCodexRunner()` は run() 全呼び出しに単一固定 stdout を返すため 3 lens/3 stage の差分応答を作れない（3 レビュアー合意）。**確定方針**: Layer2 は `input.prompt`（lens 名/stage 名を含む）で discriminate する **inline カスタム `CodexExecRunner`**（`tests/unit/core/reviewer-agent.test.ts` の capturingRunner / `reviewed-run-workflow.test.ts` の `async run(input)` パターン）を使う。`createFakeCodexRunner` は degenerate（全 lens 同一）ケースのみ。
+- C1 前段 step:「prompt の lens トークン規約（例 prompt に `[[lens:correctness]]`）を決め、lens 別 JSON を返す test helper `routingRunner(map)` を `tests/unit/hitch/jury/_fake-jury-runner.ts` に作る」。RED で `split`（1 lens だけ out_of_scope）・`unanimous`・vote-change・refuter verdict 別を注入可能にする。
+
+### PR5（必須）付録P 契約の RED を本文コード化 — Task C1/C2/C3/B5/B6
+省略記法（`/* … */`）をやめ、儀式化防止契約を exact-assert RED で本文化:
+- C1: `proposer evidence:[] → 検証可能ゼロ → proposalStatus=inconclusive` / `parse 失敗 → parse_error` / `parser は verified/resolvedRef を受理しない（与えても drop）`。
+- C2: `critique 空 objections → reject → proposalStatus=inconclusive` / `各 objection が他者提案ごとに ≥1`。
+- C3: `refuter whyNotFalseConsensus 欠落 → inconclusive` / `refutationConditions 欠落 → inconclusive` / `uphold でも両必須`。
+- B5: kind×境界を exact-assert（file 行範囲外→false / spec anchor 不在・重複の決定論 / policy glob ゼロ→false / **R1: LLM verified=true を破棄→false**）。
+- B6: `proposedSeverity を持つ proposal → packet.evaluationAxes[].lensVotes[].severity が round-trip`（R2 packet 側・下記 P3 packet severity と同件）。
+
+### PR6（必須）packetVersion:1 discriminated reader の本体 code task 新設 — Layer3 新 Task D6
+R6 は「全 reader に packetVersion discriminate + optional chaining」を要求。テスト(D4)だけで本体改修が無い。**新 Task D6**:
+- reader 実体を grep（dashboard read API / MCP tools / CLI listDecisions のうち `recommended_next_action`/`decisionPacket` を読む箇所）。
+- RED:「`packetVersion:1` 行（`deliberation`/`evidence` 欠落）を各 reader が壊さず読む（undefined fallback）」。GREEN: optional chaining + default。CLI/MCP threading が docs だけで code 不要かは grep 結果で判定。
+
+### 主要 P2（実装計画に確定織り込み）
+- **P2-a JURY_BATCH_LIMIT（Task D1）**: jury 専用 cap 定数を `orchestrator-runners.ts` に新設（既定値を明記・`FINDING_BATCH_LIMIT=200` 以下。per-finding 4〜7 codex 呼び出しを踏まえ小さめ）。heuristic 確定は既存 while-drain 維持、**jury 対象は cap 件のみ処理し残 unknown は `resolved:true` で次 cycle 持ち越し（no-progress escalate に誤って落とさない）**。RED:「unknown が cap 超 → cap 件だけ deliberate・残は次 cycle」。
+- **P2-b evidenceStrength（Task B3 近傍）**: Stage3 起動条件「弱証拠」を決定論純関数 `isWeakEvidence(proposals): boolean`（`aggregation.ts`・例: いずれかの lens の proximate-verified 証拠件数 < 1）として定義場所・閾値を pin。doctor の critiqueRan 再計算（A3/P2b）が**同一関数**を import。RED: 境界値・同入力同出力。
+- **P2-c noInconclusive を独立計算（Task B3）**: GREEN の `noInconclusive = scopeUnanimous` トートロジーをやめ、`input.proposals.length>0 && input.proposals.every(p => p.proposalStatus==='complete' && p.proposedScope!=='unknown')` で独立計算（gateTrace の独立監査軸に）。
+- **P2-d pass 条件は aggregateJuryVotes に委譲（Task B3）**: auto_confirm の pass = `scopeUnanimous ∧ allHaveVerifiedEvidence(proximity込) ∧ refuterUpheld===true` のみ（lensDistinct/noInconclusive は scopeUnanimous が内包＝二重判定を排除）。gateTrace の lensDistinct/noInconclusive/proximityOk は**監査表示用**でコメント明記「判定権威は aggregateJuryVotes」。
+- **P2-e B3 gateTrace 専用 RED（Task B3）**: 「duplicate lens + refuter uphold + 全証拠 verified → escalate ∧ gateTrace 各 field」「3 件全 inconclusive → escalate ∧ noInconclusive=false」を追加。
+- **P2-f CompiledPolicy 型確定（Task B5 前段）**: `EvidenceCheckContext.compiledPolicy` の型を `RunDomainCodingOpts["compiledPolicy"]` の再 export か新 interface で確定してから policy-kind RED を書く。file/spec kind は fs/md fixture で先行可。
+- **P2-g brand 型境界の compile テスト（Task B1/B3）**: `// @ts-expect-error RawJuryEvidence は VerifiedJuryEvidence に代入不可` の型 RED を追加し、未検証 evidence が gate に入らないことを型で証明。
+- **P2-h A1 table-name 健全性を exact-match（Task A1）**: `CURRENT_TABLE_NAMES` と `sqlite_master`（`schema_migrations` 等を除く data table 集合）の exact match に強化（contains だけにしない）。
+- **P2-i severity 回帰の専用 RED（Task B4/D5）**: 「severityAudit diverged でも `hitch_findings.severity` 不変かつ `closeRequires`（close 判定）に非波及」を専用 assert（既存スイート任せにしない）。
+- **P2-j docs 同コミット（Task A1/D1/E）**: 最小限 A1↔db.md（v31 DDL/no-FK/deliberation_id）、D1↔workflow.md（3 フェーズ/batch cap）を各 task のコミットに同梱。E は残り docs。Layer4 ヘッダ文言を「同コミット（主要分）＋残りは同 PR」に正直化。
+
+### P3（既存利用・文言修正・nit）
+- **`updateStatus:false` は既存実装済み**（`convergence-status.ts:23,72-74`）。**doctor `review` category も既存**（`doctor.ts:28`）。D2b/A3 の「option/category 追加」というヘッジ文言を**削除**し「既存利用・配線のみ」に確定（調査 step を削る）。
+- packet v2 `lensVotes.severity?: HitchFindingSeverity` を追加（R2 packet 側・PR5 B6 RED と同件）。
+- R12 collision guard: name assert は維持しつつ「同一 version で別 name の migration を並べない運用規約 + レビュー gate」で担保（runMigrations の collision 検出強化は #230 スコープ外＝follow-up）と 1 文明記。
+- selectFinalRound テストコメントを「lens ごとに targetRound 行を選ぶ。欠落/重複/部分R2混在は下流で split（fail-closed）」に修正。
+
+---
+
 ## File Structure
 
 **新規（`src/hitch/jury/`）:**
