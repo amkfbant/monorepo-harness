@@ -249,6 +249,37 @@ describe("deliberate — (a) clean unanimous + strong proximate evidence", () =>
   });
 });
 
+describe("deliberate — FIX 5: critique fires IFF R1 is non-unanimous", () => {
+  it("a unanimous R1 with all-verified evidence -> critique SKIPPED (no round-2 proposals)", async () => {
+    // shouldRunCritique fires critique IFF the R1 aggregate is non-unanimous.
+    // A clean unanimous-and-verified R1 must never trigger critique — and the
+    // "unanimous but weak" case cannot arise (a zero-verified lens is
+    // inconclusive -> R1 is non-unanimous -> the split branch already fires),
+    // so the dead isWeakEvidence trigger is gone with no behavior change.
+    const map: RoutingMap = {
+      ...unanimousProposeMap(proposeJson("in_scope")),
+      ...upholdMap(),
+    };
+    const out = await deliberate(FINDING, deps(routingRunner(map)), HITCH_ID);
+    expect(out.critiqueRan).toBe(false);
+    expect(out.proposals.every((p) => p.round === 1)).toBe(true);
+    expect(out.proposals.some((p) => p.round === 2)).toBe(false);
+  });
+
+  it("a non-unanimous (split) R1 -> critique RUNS (round-2 proposals exist)", async () => {
+    const map: RoutingMap = {
+      [routingKey("propose", "correctness")]: { stdout: proposeJson("in_scope") },
+      [routingKey("propose", "scope_fit")]: { stdout: proposeJson("out_of_scope") },
+      [routingKey("propose", "spec_adherence")]: { stdout: proposeJson("in_scope") },
+      ...lensAwareCritiqueMap({ revisedScope: "in_scope", voteChanged: false }),
+      ...upholdMap(),
+    };
+    const out = await deliberate(FINDING, deps(routingRunner(map)), HITCH_ID);
+    expect(out.critiqueRan).toBe(true);
+    expect(out.proposals.some((p) => p.round === 2)).toBe(true);
+  });
+});
+
 describe("deliberate — (b) R1 split", () => {
   it("runs critique, still split -> escalate, refuter NOT invoked", async () => {
     let refuteCalls = 0;

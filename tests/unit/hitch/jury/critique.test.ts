@@ -9,7 +9,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCritiqueRound } from "../../../../src/hitch/jury/critique.js";
-import { isWeakEvidence } from "../../../../src/hitch/jury/aggregation.js";
 import type {
   JuryClassificationProposal,
   JuryLens,
@@ -28,9 +27,9 @@ import type { CodexExecRunner } from "../../../../src/codex/codex-exec-runner.js
 import type { GlobalPolicy, RepoPolicy } from "../../../../src/policy/schema.js";
 
 /**
- * #230 Task C2 — runCritiqueRound (Stage3: conditional mutual critique) +
- * isWeakEvidence (P2-b/P2-c deterministic Stage3 trigger). RED-first contract
- * (design §2 Stage3 + §0.1 R9 + 付録P Stage3 critique contract + plan PR5/PR4).
+ * #230 Task C2 — runCritiqueRound (Stage3: conditional mutual critique).
+ * RED-first contract (design §2 Stage3 + §0.1 R9 + 付録P Stage3 critique
+ * contract + plan PR5/PR4).
  *
  * ★ Convergence after critique does NOT auto-confirm — Stage3 only produces
  * round=2 proposals; the gate (Stage5) is the sole arbiter.
@@ -194,50 +193,6 @@ afterAll(() => {
 });
 
 const FINDING = { findingId: "finding-1", filePath: "src/core/widget.ts", category: "core" };
-
-describe("isWeakEvidence (P2-b/P2-c deterministic Stage3 trigger)", () => {
-  it("true when ANY lens has zero verified evidence (boundary: 0)", () => {
-    const proposals = [
-      r1("correctness", "in_scope", [verifiedEvidence()]),
-      r1("scope_fit", "in_scope", []), // zero verified evidence
-      r1("spec_adherence", "in_scope", [verifiedEvidence()]),
-    ];
-    expect(isWeakEvidence(proposals)).toBe(true);
-  });
-
-  it("true when a lens has only verified:false evidence (no verified===true)", () => {
-    const unverified: VerifiedJuryEvidence = {
-      citation: "src/core/missing.ts:1",
-      kind: "file",
-      claim: "missing",
-      verified: false,
-    };
-    const proposals = [
-      r1("correctness", "in_scope", [verifiedEvidence()]),
-      r1("scope_fit", "in_scope", [unverified]),
-      r1("spec_adherence", "in_scope", [verifiedEvidence()]),
-    ];
-    expect(isWeakEvidence(proposals)).toBe(true);
-  });
-
-  it("false when EVERY lens has >=1 verified evidence (boundary: 1)", () => {
-    const proposals = [
-      r1("correctness", "in_scope", [verifiedEvidence()]),
-      r1("scope_fit", "in_scope", [verifiedEvidence()]),
-      r1("spec_adherence", "in_scope", [verifiedEvidence()]),
-    ];
-    expect(isWeakEvidence(proposals)).toBe(false);
-  });
-
-  it("deterministic: same input twice -> equal output", () => {
-    const proposals = [
-      r1("correctness", "in_scope"),
-      r1("scope_fit", "in_scope", []),
-      r1("spec_adherence", "in_scope"),
-    ];
-    expect(isWeakEvidence(proposals)).toBe(isWeakEvidence(proposals));
-  });
-});
 
 describe("runCritiqueRound — produces round=2 proposals", () => {
   it("returns one round=2 proposal per lens, never auto-confirming", async () => {

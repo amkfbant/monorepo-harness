@@ -260,10 +260,12 @@ Each finding is deliberated independently (`deliberate.ts`):
    the proposer returns already-`verifyEvidence`-d proposals.)
 
 3. **Stage 3 — CRITIQUE** (LLM, conditional). The critique round runs **iff
-   round 1 is `split` OR (round 1 is unanimous AND the evidence is weak)**, where
-   *weak* (`isWeakEvidence`) means at least one lens has fewer than one verified
-   evidence entry. A clean unanimous set with strong evidence skips straight to
-   Stage 4. When it runs, each lens sees the others' proposals + evidence,
+   round 1 is non-unanimous (`split`)**. A clean unanimous round 1 skips straight
+   to Stage 4. (The "unanimous but weak evidence" trigger is unreachable and was
+   removed: a lens is `complete` iff it carries ≥1 verified evidence, so a lens
+   with zero verified evidence is `inconclusive`, which already makes round 1
+   non-unanimous — and critique cannot manufacture verified evidence anyway.)
+   When it runs, each lens sees the others' proposals + evidence,
    raises a concrete objection, and re-votes (round 2), recording `voteChanged` /
    `critique`. **Convergence after critique does NOT auto-confirm**: the
    post-critique round is re-aggregated, and a post-critique unanimous set still
@@ -287,9 +289,9 @@ Missing lenses, duplicate `(lens, round)` rows, and partial round-2 mixes are
 **not** silently repaired — the resulting set fails `aggregateJuryVotes`'
 unanimity test and the gate escalates.
 
-Per-finding codex cost: a clean unanimous + strong-evidence finding costs 3
-(propose) + 1 (refute) = 4 calls (critique skipped); a split / weak-evidence
-finding costs 3 + 3 (critique) + 0–1 (refute) = 6–7 calls.
+Per-finding codex cost: a clean unanimous finding costs 3 (propose) + 1 (refute)
+= 4 calls (critique skipped); a non-unanimous (split) finding costs 3 + 3
+(critique) + 0–1 (refute) = 6–7 calls.
 
 ### Monotonic, fail-closed invariants (the safety backbone)
 

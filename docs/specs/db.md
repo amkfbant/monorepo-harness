@@ -1407,16 +1407,17 @@ FK ゼロの 3 表は、親 purge / denorm drift / packet 不整合を doctor �
   `decisionPacket.deliberation.refuter.refuteVerdict` を取り出し、保存済み
   refutation 行の `refute_verdict` と一致するか。SQL 単独では nested packet に
   届かないため JSON-parse する新 check 形（R11）。壊れた JSON / packet 欠落は防御的
-  に skip（doctor を crash させない）。
-
-> P2b の auto_confirm 正当性再検証 check（jury 確定 finding について保存済み
-> proposals/refutations から `aggregateDeliberation` を再実行し `auto_confirm` を
-> 満たすか advisory 検証）は **doctor には未配線**。`aggregateDeliberation`
-> （`src/hitch/jury/aggregation.ts`）は実装済みだが、保存済み audit 行から再構成して
-> doctor で再評価する check は本リリースでは載せていない（orphan / hitch_mismatch /
-> refutation_mismatch の 3 check のみ）。auto_confirm の正当性は classify runner の
-> Phase 3 freshness re-stat（workflow.md 参照）が write 時点で担保しており、保存後の
-> 事後再検証 check は follow-up に defer する。
+  に skip（doctor を crash させない）。**bundled packet の単一
+  `deliberation.refuter` は LEAD split（`findings[0]`）のみを表す**ため、(b) は
+  LEAD finding のみと突き合わせる（非 LEAD finding は (a) で各自の per-deliberation
+  proposals と検証する。さもなくば非 LEAD が共有 verdict と誤 mismatch する）。
+- **`jury.auto_confirm_replay`**（P2b auto_confirm 正当性再検証）: jury 確定
+  finding（`classification_reason` が `jury auto_confirm (deliberation_id=<id>)`
+  を含む）について、保存済みの最終 round proposals（`selectFinalRound`）+ refutation
+  行から `DeliberationInput` を再構成し `aggregateDeliberation` を **replay**。
+  `decision==='auto_confirm'` を満たさない finding を advisory flag する（LLM→状態
+  直結の疑い＝安全境界の事後監査の機械化）。証拠 JSON の破損は防御的に空配列扱い
+  （verified 証拠ゼロ → replay は escalate → 改竄を隠さず surface する）。
 
 ### import / export（A3 — DB-only audit）
 

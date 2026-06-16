@@ -2,7 +2,6 @@ import {
   aggregateJuryVotes,
   aggregateDeliberation,
   selectFinalRound,
-  isWeakEvidence,
 } from "./aggregation.js";
 import { auditSeverity, type SeverityAuditResult } from "./severity-audit.js";
 import {
@@ -107,15 +106,22 @@ function toProposerFinding(finding: DeliberateFinding): JuryProposerFinding {
 
 /**
  * Decide whether to run Stage3 critique (design §2 Stage3 / §0.1 R9 / P2-b):
- * trigger when round 1 is `split` OR (unanimous AND the evidence is weak). A
- * clean unanimous set with strong evidence skips straight to Stage4.
+ * trigger IFF round 1 is non-unanimous (`split`). A clean unanimous round-1
+ * skips straight to Stage4.
+ *
+ * FIX 5 (efficacy P2): the former "unanimous AND weak evidence" branch was
+ * UNREACHABLE and is removed. A lens is `complete` IFF it carries >=1 verified
+ * evidence (proposer `statusForVerified`); a lens with zero verified evidence is
+ * therefore `inconclusive`, which makes the round-1 aggregate non-unanimous
+ * (`split`). So "unanimous" already implies every lens has >=1 verified evidence
+ * — the weak-and-unanimous case cannot arise, and even if it could, critique
+ * cannot manufacture verified evidence (the gate would still escalate). The
+ * single `split` trigger is exact and honest.
  */
 function shouldRunCritique(
   r1Proposals: readonly JuryClassificationProposal[],
 ): boolean {
-  const agg = aggregateJuryVotes(r1Proposals);
-  if (agg.decision === "split") return true;
-  return isWeakEvidence(r1Proposals);
+  return aggregateJuryVotes(r1Proposals).decision === "split";
 }
 
 /**
