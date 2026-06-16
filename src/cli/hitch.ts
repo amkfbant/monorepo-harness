@@ -103,7 +103,8 @@ export function resolveHitchCloseRunnerDeps(input: {
   dbPath: string;
   hitchId: string;
   repoPath: string;
-  baseBranch: string;
+  /** explicit `--base-branch`; defaults to "main" when omitted (#236). */
+  baseBranch?: string;
 }): Pick<OrchestratorRunnerDeps, "repoPath" | "baseBranch"> {
   const { db, close } = openManagedDb({ dbPath: input.dbPath });
   try {
@@ -114,7 +115,7 @@ export function resolveHitchCloseRunnerDeps(input: {
   }
   return {
     repoPath: input.repoPath,
-    baseBranch: input.baseBranch,
+    baseBranch: input.baseBranch ?? "main",
   };
 }
 
@@ -123,7 +124,12 @@ export async function resolveHitchCoderRunnerDeps(input: {
   dbPath: string;
   hitchId: string;
   repoPath: string;
-  baseBranch: string;
+  /**
+   * Explicit `--base-branch`. When set it OVERRIDES the project profile's
+   * `repo.base_branch` (#236); when omitted, a project-scoped hitch falls back to
+   * the profile's base branch and a project-less hitch to "main".
+   */
+  baseBranch?: string;
 }): Promise<
   Pick<
     OrchestratorRunnerDeps,
@@ -150,7 +156,9 @@ export async function resolveHitchCoderRunnerDeps(input: {
       dbPath: input.dbPath,
       hitchId: input.hitchId,
       repoPath: input.repoPath,
-      baseBranch: input.baseBranch,
+      ...(input.baseBranch !== undefined
+        ? { baseBranch: input.baseBranch }
+        : {}),
     });
   }
   if (domain === null) {
@@ -165,15 +173,19 @@ export async function resolveHitchCoderRunnerDeps(input: {
     domain,
     repoOverride: input.repoPath,
   });
+  // #236 — an explicit `--base-branch` overrides the profile's base branch.
+  // `prepareProjectRun` only RETURNS base_branch (nothing internal depends on
+  // it), so overriding here is safe; the run resolves origin/<name> downstream.
+  const baseBranch = input.baseBranch ?? prepared.baseBranch;
   return {
     repoPath: prepared.repoPath,
-    baseBranch: prepared.baseBranch,
+    baseBranch,
     resolveRunContext: (session) => ({
       repoPath: prepared.repoPath,
       repoId: prepared.repoId,
       domain: prepared.domain,
       goal: hitchGoalText(session),
-      baseBranch: prepared.baseBranch,
+      baseBranch,
     }),
     projectRuntime: {
       compiledPolicy: prepared.compiledPolicy,
@@ -729,7 +741,10 @@ export function registerHitchCommands(
       false,
     )
     .option("--repo <path>", "target git repo (required with --then-rerun)")
-    .option("--base-branch <name>", "base branch for the rerun", "main")
+    .option(
+      "--base-branch <name>",
+      "base branch for the rerun (overrides the project profile base branch; default: profile base branch, else main)",
+    )
     .option("--max-steps <n>", "orchestrator step cap for the chained rerun", "20")
     .option("--json", "emit JSON", false)
     .action(async (findingId: string, raw: Record<string, unknown>) => {
@@ -797,8 +812,15 @@ export function registerHitchCommands(
           dbPath,
           hitchId: finding.hitchId,
           repoPath,
-          baseBranch: String(raw.baseBranch ?? "main"),
+          ...(raw.baseBranch !== undefined
+            ? { baseBranch: String(raw.baseBranch) }
+            : {}),
         });
+        // #236 — surface the effective run base (CLI override vs profile/default)
+        // so an implicit override is never silent.
+        process.stderr.write(
+          `hitch ${finding.hitchId}: using base branch ${runnerDeps.baseBranch}\n`,
+        );
         const result = await new HitchOrchestrator({ dbPath }).run({
           hitchId: finding.hitchId,
           runners: createOrchestratorRunners({
@@ -1063,7 +1085,10 @@ export function registerHitchCommands(
     .description("drive a hitch to a terminal state (run/review/rerun/close/pr)")
     .argument("<hitch-id>", "hitch id")
     .option("--repo <path>", "path to the target git repo (required unless --dry-run)")
-    .option("--base-branch <name>", "base branch for runs and the PR", "main")
+    .option(
+      "--base-branch <name>",
+      "base branch for runs and the PR (overrides the project profile base branch; default: profile base branch, else main)",
+    )
     .option("--max-steps <n>", "loop step cap", "50")
     .option("--dry-run", "print the next action only; do not execute", false)
     .option(
@@ -1159,8 +1184,15 @@ export function registerHitchCommands(
           dbPath,
           hitchId,
           repoPath,
-          baseBranch: String(raw.baseBranch ?? "main"),
+          ...(raw.baseBranch !== undefined
+            ? { baseBranch: String(raw.baseBranch) }
+            : {}),
         });
+        // #236 — surface the effective run base (CLI override vs profile/default)
+        // so an implicit override is never silent.
+        process.stderr.write(
+          `hitch ${hitchId}: using base branch ${runnerDeps.baseBranch}\n`,
+        );
         const result = await new HitchOrchestrator({ dbPath }).run({
           hitchId,
           runners: createOrchestratorRunners({
@@ -1204,7 +1236,10 @@ export function registerHitchCommands(
       "--repo-id <id>",
       "repo id to scope which hitches are driven (REQUIRED with --all; the gh CI/merge probes are bound to the single --repo, so --all must not span repos)",
     )
-    .option("--base-branch <name>", "base branch for the merge gate", "main")
+    .option(
+      "--base-branch <name>",
+      "base branch for the merge gate (default: main)",
+    )
     .option(
       "--merge-method <method>",
       "merge method (squash|merge|rebase)",
@@ -1287,7 +1322,9 @@ export function registerHitchCommands(
             dbPath,
             hitchId,
             repoPath,
-            baseBranch: String(raw.baseBranch ?? "main"),
+            ...(raw.baseBranch !== undefined
+              ? { baseBranch: String(raw.baseBranch) }
+              : {}),
           });
           return createOrchestratorRunners({
             dbPath,

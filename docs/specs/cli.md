@@ -478,6 +478,13 @@ stderr は `harness error: hitch deferred/lock_busy ...`、hitch の状態は既
 runnable 状態のまま維持する。認識できない例外は従来どおり exit `2`（unexpected）で、
 CLI はこの error message を状態遷移には使わない。
 
+`--base-branch <name>`（#236）は、`hitch orchestrate` / `hitch finding classify
+--then-rerun` で **project-scoped hitch でも** 明示指定が project profile の
+`repo.base_branch` を **override** する。未指定時のみ profile の base branch（project
+hitch）または `main`（project 無し）に fallback する（以前は project hitch で CLI 値が
+暗黙に破棄されていた）。`orchestrate` / `--then-rerun` は実際に使う base branch を
+`hitch <id>: using base branch <name>` として stderr に出力し、暗黙の上書きを可視化する。
+
 `hitch reopen`（#76）は **terminal な hitch**（`closed` / `budget_exhausted` / `escalated`）を
 `open` に戻し、後から判明した finding を**既存ブランチ上で**修正できるようにする
 （PR クローズ＆再実装を避ける）。`updateStatus` が COALESCE で残す terminal マーカー
