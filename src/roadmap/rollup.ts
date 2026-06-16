@@ -4,6 +4,7 @@ import {
   HitchRepository,
   OPEN_FINDING_LIFECYCLES,
 } from "../hitch/repository.js";
+import { ADVISORY_SEVERITY_RECORD_KEY } from "../hitch/convergence-status.js";
 import { PhaseRepository, phaseNote } from "./phase-repository.js";
 import { derivePhaseReadiness } from "./ready-to-close.js";
 import type { PhaseStatus } from "./types.js";
@@ -84,7 +85,22 @@ export function openCounts(
  * `cancel`) instead. Active (non-terminal) hitches keep their recorded decision
  * — that is the genuine latest audit value and `readyToClose` already reflects
  * live convergence independently.
+ *
+ * codex#254-P2 FIX1 — the D2b ADVISORY severity-audit record (orchestrator.ts)
+ * writes a `decision:"continue"` row (status-neutral, `updateStatus:false`) ONLY
+ * to surface a diverged severity audit for operators. It is NOT a convergence
+ * decision: a phase whose LIVE convergence is still blocking
+ * (needs_classification / needs_fix / …) would otherwise display "continue"
+ * because that advisory row is the newest stored decision. Such rows carry
+ * `metrics.advisorySeverityRecord === true`; they are SKIPPED when computing the
+ * displayed latest decision (they remain persisted/retrievable via
+ * `listDecisions` — only the rollup DISPLAY ignores them). The blocking GATE is
+ * unaffected: it uses live `convergence.evaluate()`, never this display value.
  */
+function isAdvisoryRecord(metrics: Record<string, unknown>): boolean {
+  return metrics[ADVISORY_SEVERITY_RECORD_KEY] === true;
+}
+
 function latestDecisionForPhase(
   hitches: HitchRepository,
   hitchIds: string[],
@@ -94,7 +110,12 @@ function latestDecisionForPhase(
     | { createdAt: string; decisionId: string; decision: string; hitchId: string }
     | null = null;
   for (const hid of hitchIds) {
-    const decisions = hitches.listDecisions(hid);
+    // Ignore advisory severity-audit rows for DISPLAY: they are not convergence
+    // decisions and must never mask a blocking live state. The newest
+    // NON-advisory row is the genuine latest decision.
+    const decisions = hitches
+      .listDecisions(hid)
+      .filter((d) => !isAdvisoryRecord(d.metrics));
     if (decisions.length === 0) continue;
     // listDecisions returns records in ASC order; last item is newest
     const newest = decisions[decisions.length - 1]!;

@@ -242,6 +242,64 @@ describe("rollupCourse (SP-1)", () => {
     expect(rollup.phases[0]!.latestDecision).toBeNull();
   });
 
+  it("codex#254-P2 FIX1: an advisory severity-audit `continue` row does NOT mask a still-blocking live convergence in the rollup display", () => {
+    const courses = new CourseRepository(conn);
+    const phases = new PhaseRepository(conn);
+    const hitches = new HitchRepository(conn);
+    const c = courses.create({ title: "C-adv", projectId: "demo", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({ courseId: c.courseId, title: "P-adv", createdBy: "t", createdSource: "cli" });
+    const h = hitches.createSession({ title: "H-adv", projectId: "demo", scope: {}, closeConditions: [], createdBy: "t", createdSource: "cli" });
+    phases.linkHitch(p.phaseId, h.hitchId);
+    // LIVE convergence is BLOCKING: an open unknown-scope finding routes
+    // needs_classification under the default policy (stopOnUnknownScope).
+    hitches.upsertFinding({
+      hitchId: h.hitchId,
+      severity: "P1",
+      source: "review",
+      category: "correctness",
+      summary: "unknown-scope blocker",
+      scopeStatus: "unknown",
+    });
+    // A genuine blocking decision was recorded first …
+    hitches.recordConvergenceDecision({
+      hitchId: h.hitchId,
+      decision: "needs_classification",
+      reason: "unknown-scope findings require classification",
+      createdAt: "2026-06-12T01:00:00.000Z",
+      createdBy: "t",
+    });
+    // … then a D2b ADVISORY severity-audit record was written as the NEWEST stored
+    // row (decision:"continue", updateStatus:false, marked advisory in metrics).
+    // It must NOT become the displayed latest decision while the phase is blocked.
+    hitches.recordConvergenceDecision({
+      hitchId: h.hitchId,
+      decision: "continue",
+      reason: "advisory: jury severity vote diverged from the harness mapping (severity unchanged)",
+      metrics: { advisorySeverityRecord: true },
+      createdAt: "2026-06-12T02:00:00.000Z",
+      createdBy: "t",
+    });
+
+    const rollup = rollupCourse({ db: conn, courseId: c.courseId });
+    const node = rollup.phases[0]!;
+    // The advisory `continue` row must be ignored for DISPLAY: the latest decision
+    // reflects the real blocking state, NOT the advisory "continue".
+    expect(node.latestDecision).not.toBe("continue");
+    expect(node.latestDecision).toBe("needs_classification");
+    // The phase is still not ready (live convergence blocks).
+    expect(node.readyToClose).toBe(false);
+    // The advisory row stays PERSISTED/retrievable (only the display ignores it).
+    const stored = hitches.listDecisions(h.hitchId);
+    expect(stored.some((d) => d.decision === "continue")).toBe(true);
+    expect(
+      stored.some(
+        (d) =>
+          d.decision === "continue" &&
+          (d.metrics as { advisorySeverityRecord?: boolean }).advisorySeverityRecord === true,
+      ),
+    ).toBe(true);
+  });
+
   it("exposes a phase operator note in the rollup (#171b)", () => {
     const courses = new CourseRepository(conn);
     const phases = new PhaseRepository(conn);

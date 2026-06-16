@@ -329,6 +329,51 @@ describe("verifyEvidence — spec kind", () => {
       rmSync(externalPath, { force: true });
     }
   });
+
+  it("codex#254-P2 FIX3: the spec-root glob PREFIX is itself a symlink to an external dir -> verified false (does not read the external md under the symlinked root)", () => {
+    // The previous round-3 guard checked the cited FILE against the (possibly
+    // symlinked) spec root, but never checked the spec ROOT itself stays inside
+    // the worktree. Build a fresh worktree whose `docs/specs` is a SYMLINK to an
+    // external dir holding `foo.md#bar`. The cited file `docs/specs/foo.md` is a
+    // real (non-symlink) file under that external dir, so the per-file real-path
+    // guard (root vs file) passes — only checking the root realpath against the
+    // worktree realpath rejects it.
+    const isolated = mkdtempSync(join(tmpdir(), "harness-jury-evroot-"));
+    const externalSpecDir = mkdtempSync(join(tmpdir(), "harness-jury-extspec-"));
+    try {
+      mkdirSync(join(isolated, "docs"), { recursive: true });
+      writeFileSync(
+        join(externalSpecDir, "foo.md"),
+        ["# Foo", "", "## Bar", "", "external body", ""].join("\n"),
+      );
+      // docs/specs -> external dir (the glob static prefix becomes a symlink).
+      if (!trySymlink(externalSpecDir, join(isolated, "docs", "specs"))) {
+        return; // platform without symlink support — skip cleanly
+      }
+      const out = verifyEvidence(
+        { citation: "docs/specs/foo.md#bar", kind: "spec", claim: "c" },
+        {
+          worktreePath: isolated,
+          compiledPolicy: { global: GLOBAL, repo: REPO },
+        },
+      );
+      expect(out.verified).toBe(false);
+    } finally {
+      rmSync(isolated, { recursive: true, force: true });
+      rmSync(externalSpecDir, { recursive: true, force: true });
+    }
+  });
+
+  it("codex#254-P2 FIX3: a non-symlinked spec root (real dir under the worktree) still verifies (does not over-reject)", () => {
+    // Defense against over-rejection from the spec-root guard: the default
+    // fixture's docs/specs is a real directory under the worktree, so a valid
+    // citation must still verify.
+    const out = verifyEvidence(
+      { citation: "docs/specs/foo.md#bar", kind: "spec", claim: "c" },
+      ctx(),
+    );
+    expect(out.verified).toBe(true);
+  });
 });
 
 describe("verifyEvidence — policy kind", () => {

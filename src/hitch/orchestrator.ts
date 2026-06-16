@@ -179,6 +179,13 @@ export class HitchOrchestrator {
                   reason:
                     "advisory: jury severity vote diverged from the harness mapping (severity unchanged)",
                   metrics: convergence.metrics,
+                  // (#230 / codex#254-P2 FIX1) Tag this row as ADVISORY so the
+                  // course/phase rollup DISPLAY (latestDecisionForPhase) ignores
+                  // it. Without the tag this newest `continue` row would mask a
+                  // still-blocking live convergence in `course status` /
+                  // `course export --md`. The row stays persisted/retrievable;
+                  // only the display skips it.
+                  advisory: true,
                   recommendedNextAction: {
                     kind: "ask_human",
                     message:

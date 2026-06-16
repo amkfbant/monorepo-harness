@@ -128,7 +128,16 @@ For each phase in the tree (pre-order, depth-first):
   snapshot**: a caller cannot mark a phase "closed" to hide open findings.
 - **`latestDecision`**: the most recent `hitch_convergence_decisions.decision`
   across all linked hitches (latest by `created_at`, tie-broken by `decision_id`),
-  or null if none. **#171** — when the selected hitch has been terminally
+  or null if none. **Advisory rows are excluded from this display** (#230 /
+  codex#254-P2 FIX1): the D2b severity-audit advisory record writes a
+  status-neutral `decision:"continue"` row (`metrics.advisorySeverityRecord ===
+  true`, `updateStatus:false`) solely to surface a diverged severity audit; it is
+  not a convergence decision. `latestDecisionForPhase` skips any row whose metrics
+  carry that marker so a phase whose **live** convergence is still blocking
+  (`needs_classification` / `needs_fix` / …) is not displayed as `continue`. The
+  advisory row stays persisted and retrievable via `listDecisions`; only the
+  rollup display ignores it (the blocking gate uses live `convergence.evaluate()`,
+  never this display value). **#171** — when the selected hitch has been terminally
   closed/cancelled (`hitch close --force` / `cancel` record no decision row), its
   stored last decision is a stale mid-flight value (e.g. `diverging`); the rollup
   reports that hitch's **live** decision (`closed` / `cancel`) instead so a

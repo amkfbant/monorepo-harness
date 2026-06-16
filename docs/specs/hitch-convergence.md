@@ -455,7 +455,14 @@ Escalations carry a consultant-grade MCDA decision packet
   diverged, the escalate packet **merges** the accumulated `severity_audit`
   divergences (their `findings[]` + `review severity` `nextActions[]`) into the
   same packet — the diverged finding's required severity-review action is never
-  dropped just because another finding forced the escalate.
+  dropped just because another finding forced the escalate. The merge also
+  **carries the severity-audit SUMMARY** into the escalate packet's
+  `severityAudit` (status / `juryConsensus` / `harnessSeverity`), so a packet
+  that advertises `severity_audit` in `decisionKinds` also exposes the actual
+  audit (codex#254-P2 FIX2). Precedence: an escalate base never sets its own
+  `severityAudit`, so the severity packet's lead summary is adopted; were a base
+  to already carry one, the base's is kept (per-finding linkage stays in
+  `findings[]`).
 - There is **no top-level `packet.deliberationId`**. Each `findings[]` entry
   carries its own `deliberationId` and `origin` (`harness` / `operator`), so one
   packet can bundle several deliberations and each finding maps to its own audit
@@ -471,6 +478,12 @@ Escalations carry a consultant-grade MCDA decision packet
   AND each `rejectedProposals[]` entry carries its own **`findingId`** (it is
   attributable to its finding). `rejectedProposals[]` tallies scopes **per
   finding** (a bundle does not merge two findings into one finding-blind count).
+- `minorityView` is a **single** summary object, so it can attribute only one
+  finding's dissent. For a single-finding split it carries that finding's minority
+  scopes; for a **bundled multi-finding** split it is **omitted (`null`)** rather
+  than tallied across findings (codex#254-P3 FIX4) — a global tally would blend
+  two unrelated splits into a finding-blind pseudo-summary, or cancel opposite
+  2-1 splits into `null`. Per-finding attribution lives in `rejectedProposals[]`.
 
 Pre-v2 (`packetVersion: 1`) packets remain in older
 `hitch_convergence_decisions` rows. Readers of `recommended_next_action`
@@ -485,9 +498,13 @@ whether the jury's strict-majority severity vote is `aligned`, `diverged`, or
 `inconclusive`. A `diverged` / `inconclusive` audit on an **auto-confirmed**
 finding does NOT escalate the hitch — the orchestrator records a
 status-neutral advisory `severity_audit` packet once
-(`updateStatus: false`, a non-blocking `continue` decision so the
-course/phase rollup is untouched) so an operator can review the divergence
-while the classification stands.
+(`updateStatus: false`, a non-blocking `continue` decision) so an operator can
+review the divergence while the classification stands. The advisory row is tagged
+`metrics.advisorySeverityRecord === true` (`advisory: true` on
+`recordConvergenceDecisionWithStatus`) so the course/phase rollup
+**display** (`latestDecisionForPhase`) skips it — a still-blocking live
+convergence is never masked by the advisory `continue` (codex#254-P2 FIX1). The
+row stays persisted/retrievable; only the display ignores it.
 
 ### `verifyEvidence` guarantees and its limit
 
@@ -508,9 +525,14 @@ ignores any model-supplied `verified` flag and recomputes existence:
   an absolute citation, or a `..`-escaping path that the glob nonetheless matched
   on the raw string but whose resolved path leaves the glob's static-prefix spec
   root, is rejected before any read (so a citation cannot read a markdown file
-  OUTSIDE the spec tree). The same **real-path guard** applies: an in-tree spec
-  path whose symlink TARGET escapes the spec root (or is unresolvable) is rejected
-  before the read.
+  OUTSIDE the spec tree). The containment guards run **per matched glob and a
+  SINGLE glob must satisfy all of them**: (1) the file lexically inside the glob's
+  spec root; (2) the **real** file inside the **real** spec root (symlinked spec
+  FILE escape); and (3) the **real spec ROOT itself inside the real worktree**
+  (symlinked spec ROOT escape — e.g. `docs/specs` is a symlink to an external dir;
+  codex#254-P2 FIX3). Any unresolvable realpath, or a root/file that escapes, is
+  rejected before the read (fail-closed); platforms without symlink support are
+  unaffected.
 - `policy`: the citation names an existing domain key, or string-equals a glob in
   any domain's `read` / `write` / `deny_write` list.
 

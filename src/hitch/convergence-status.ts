@@ -21,7 +21,19 @@ export interface RecordConvergenceWithStatusInput {
   createdBy: string;
   createdAt?: string;
   updateStatus?: boolean;
+  /**
+   * (#230 / codex#254-P2 FIX1) Mark this row as an ADVISORY severity-audit record
+   * (the D2b status-neutral `continue` row). When set, a deterministic
+   * `advisorySeverityRecord: true` marker is merged into the persisted metrics so
+   * the course/phase rollup DISPLAY (`latestDecisionForPhase`) skips it and a
+   * still-blocking live convergence is not masked. The row is otherwise persisted
+   * and retrievable unchanged.
+   */
+  advisory?: boolean;
 }
+
+/** Deterministic marker key for an advisory severity-audit decision row. */
+export const ADVISORY_SEVERITY_RECORD_KEY = "advisorySeverityRecord" as const;
 
 export interface ConvergenceStatusSyncResult {
   decisionRecord: HitchConvergenceDecisionRecord;
@@ -61,7 +73,12 @@ export function recordConvergenceDecisionWithStatus(input: {
     ...(input.attemptId !== undefined ? { attemptId: input.attemptId } : {}),
     decision: input.decision,
     reason: input.reason,
-    metrics: { ...input.metrics },
+    // Persist the typed convergence metrics, merging the advisory marker (FIX1)
+    // ONLY for advisory rows so the rollup display can deterministically skip them.
+    metrics: {
+      ...input.metrics,
+      ...(input.advisory === true ? { [ADVISORY_SEVERITY_RECORD_KEY]: true } : {}),
+    },
     ...(input.recommendedNextAction !== undefined
       ? { recommendedNextAction: input.recommendedNextAction }
       : {}),

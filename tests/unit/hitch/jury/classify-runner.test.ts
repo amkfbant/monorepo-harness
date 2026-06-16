@@ -890,6 +890,15 @@ describe("classify runner — 3 phase deliberation (#230 D1)", () => {
     expect(packet.decisionKinds).toContain("classify_scope");
     expect(packet.decisionKinds).toContain("severity_audit");
 
+    // codex#254-P2 FIX2: advertising severity_audit in decisionKinds is not
+    // enough — the merged escalate packet must ALSO carry the actual severity
+    // audit SUMMARY (status / juryConsensus / harnessSeverity), not undefined.
+    // Previously mergeSeverityIntoEscalate dropped sevPacket.severityAudit.
+    expect(packet.severityAudit).toBeDefined();
+    expect(packet.severityAudit?.status).toBe("diverged");
+    expect(packet.severityAudit?.harnessSeverity).toBe("P2");
+    expect(packet.severityAudit?.juryConsensus).toBe("P0");
+
     // findings[] covers BOTH the split and the severity-diverged finding.
     const ids = packet.findings.map((f) => f.findingId);
     expect(ids).toContain(splitFid);

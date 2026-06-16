@@ -259,7 +259,14 @@ export function buildJurySplitPacket(input: JurySplitInput): HitchDecisionPacket
     evaluationAxes: toEvaluationAxes(allProposals),
     deliberation,
     rejectedProposals: toRejectedProposals(allProposals),
-    minorityView: toMinorityView(allProposals),
+    // codex#254-P3 FIX4: `minorityView` is a SINGLE summary object, so it can
+    // only attribute one finding's dissent. For a bundled multi-finding split it
+    // is omitted (null): tallying every finding's proposals together blends two
+    // unrelated splits into a finding-blind pseudo-summary (or cancels opposite
+    // 2-1 splits to null). Per-finding attribution lives in `rejectedProposals[]`
+    // (keyed by findingId). A single-finding split keeps its correct summary.
+    minorityView:
+      input.splits.length === 1 ? toMinorityView(allProposals) : null,
     riskFlags: [],
     unvalidatedAssumptions: toUnvalidatedAssumptions(input.splits),
     nextActions,

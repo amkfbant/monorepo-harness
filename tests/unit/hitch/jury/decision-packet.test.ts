@@ -331,6 +331,67 @@ describe("buildJurySplitPacket", () => {
     expect(allVotes.length).toBeGreaterThan(0);
     expect(allVotes.every((v) => v.findingId === "f1")).toBe(true);
   });
+
+  it("codex#254-P3 FIX4: a SINGLE-finding split keeps a correct per-finding minorityView", () => {
+    // f1: correctness/scope_fit in_scope (majority 2), spec_adherence out_of_scope (minority 1).
+    const packet = buildJurySplitPacket(splitInput);
+    expect(packet.minorityView).not.toBeNull();
+    expect(packet.minorityView!.count).toBe(1);
+    expect(packet.minorityView!.scopes).toEqual(["out_of_scope"]);
+  });
+
+  it("codex#254-P3 FIX4: a BUNDLED multi-finding split does NOT emit a cross-finding blended minorityView", () => {
+    // Two findings whose minorities are DIFFERENT scopes. The old finding-blind
+    // global tally blends them into a single pseudo-finding minorityView
+    // (count:2, scopes:[out_of_scope, unknown]) that belongs to NEITHER finding.
+    // After FIX4 the bundled packet omits the (un-attributable) summary -> null.
+    const bundled: JurySplitInput = {
+      splits: [
+        // f1: in_scope (2) majority, out_of_scope (1) minority
+        splitInput.splits[0]!,
+        {
+          // f2: in_scope (2) majority, unknown (1) minority
+          finding: finding({ findingId: "f2", summary: "f2 summary" }),
+          deliberationId: "d2",
+          proposals: [
+            proposal("correctness", "in_scope", { findingId: "f2" }),
+            proposal("scope_fit", "in_scope", { findingId: "f2" }),
+            proposal("spec_adherence", "unknown", { findingId: "f2" }),
+          ],
+          refuter: upheld,
+          critiqueRan: false,
+          gateTrace: splitInput.splits[0]!.gateTrace,
+        },
+      ],
+    };
+    const packet = buildJurySplitPacket(bundled);
+    expect(packet.minorityView).toBeNull();
+  });
+
+  it("codex#254-P3 FIX4: two OPPOSITE 2-1 splits do not cancel into a blended minorityView", () => {
+    // f1: in_scope majority / out_of_scope minority; f2: out_of_scope majority /
+    // in_scope minority. Global tally cancels (in_scope=3, out_of_scope=3); the
+    // bundled summary is un-attributable either way -> omitted (null).
+    const bundled: JurySplitInput = {
+      splits: [
+        splitInput.splits[0]!,
+        {
+          finding: finding({ findingId: "f2", summary: "f2 summary" }),
+          deliberationId: "d2",
+          proposals: [
+            proposal("correctness", "out_of_scope", { findingId: "f2" }),
+            proposal("scope_fit", "out_of_scope", { findingId: "f2" }),
+            proposal("spec_adherence", "in_scope", { findingId: "f2" }),
+          ],
+          refuter: upheld,
+          critiqueRan: false,
+          gateTrace: splitInput.splits[0]!.gateTrace,
+        },
+      ],
+    };
+    const packet = buildJurySplitPacket(bundled);
+    expect(packet.minorityView).toBeNull();
+  });
 });
 
 describe("buildOperatorOriginPacket", () => {

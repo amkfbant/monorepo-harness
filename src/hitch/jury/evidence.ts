@@ -197,6 +197,14 @@ function countLines(content: string): number {
  * file-kind guard, the RESOLVED path must stay INSIDE the static-prefix root of
  * a glob it matched (`relative(specRoot, resolved)` non-empty / not `..` /
  * non-absolute); otherwise -> false (fail-closed).
+ *
+ * Spec-root containment (codex#254-P2 FIX3): the guards run PER GLOB and a single
+ * glob must satisfy ALL of them: (1) the cited file lexically inside the glob's
+ * spec root; (2) the REAL file inside the REAL spec root (symlinked spec FILE
+ * escape, round-3 FIX2); (3) the REAL spec ROOT itself inside the REAL worktree
+ * (symlinked spec ROOT escape — e.g. `docs/specs` is a symlink to an external
+ * dir, round-4 FIX3). Requiring one glob to pass all three prevents glob A
+ * passing the file check while glob B passes the root check.
  */
 function verifySpec(ev: RawJuryEvidence, ctx: EvidenceCheckContext): boolean {
   const hash = ev.citation.indexOf("#");
@@ -210,15 +218,10 @@ function verifySpec(ev: RawJuryEvidence, ctx: EvidenceCheckContext): boolean {
   const matchedGlobs = globs.filter((g) => minimatch(path, g, SPEC_MATCH_OPTS));
   if (matchedGlobs.length === 0) return false;
   const abs = resolve(ctx.worktreePath, path);
-  // The resolved path must stay inside the static-prefix spec root of at least
-  // one glob it matched (defense-in-depth against a `..`-escaping citation that
-  // the glob nonetheless matched on the raw string).
-  if (!resolvedStaysInSpecRoot(abs, ctx.worktreePath, matchedGlobs)) return false;
-  // Symlink-escape guard (codex#254-P2 FIX2): the lexical spec-root guard above
-  // passes for an in-tree spec symlink whose TARGET is outside the spec root.
-  // Resolve the REAL path and re-check it stays inside a matched spec root
-  // BEFORE readFileSync follows it (fail-closed on unresolvable/escaping).
-  if (!realSpecPathStaysInSpecRoot(abs, ctx.worktreePath, matchedGlobs)) {
+  // Require a SINGLE matched glob whose spec root contains the file lexically AND
+  // by real path AND whose real root stays inside the real worktree. Fail-closed
+  // (all checks must hold for the SAME glob) BEFORE readFileSync follows abs.
+  if (!specRootContainsCitation(abs, ctx.worktreePath, matchedGlobs)) {
     return false;
   }
   let content: string;
@@ -234,37 +237,43 @@ function verifySpec(ev: RawJuryEvidence, ctx: EvidenceCheckContext): boolean {
 }
 
 /**
- * Whether the resolved absolute path stays INSIDE the static-prefix root of at
- * least one of the matched globs. Each glob's spec root is its leading path
- * segments BEFORE the first wildcard segment, resolved against the worktree. A
- * path is in-root iff its worktree-relative form against that root is non-empty,
- * does not start with `..`, and is not itself absolute (fail-closed default: an
- * empty static prefix anchors to the worktree root).
+ * Whether AT LEAST ONE matched glob's spec root passes every containment guard
+ * for the cited file (codex#254-P2 FIX3). For that single glob, the spec root
+ * (`resolve(worktree, globStaticPrefix)`) must:
+ *   1. lexically contain `abs` (`..`-escape guard);
+ *   2. by REAL path contain the REAL `abs` (symlinked spec FILE escape, FIX2);
+ *   3. have its REAL root stay inside the REAL worktree (symlinked spec ROOT
+ *      escape, FIX3 — a `docs/specs` symlink to an external dir).
+ * Checking all three against the SAME glob's root prevents one glob satisfying
+ * the file check while another satisfies the root check. Fail-closed when any
+ * path cannot be realpath-resolved.
  */
-function resolvedStaysInSpecRoot(
+function specRootContainsCitation(
   abs: string,
   worktreePath: string,
   matchedGlobs: readonly string[],
 ): boolean {
-  return matchedGlobs.some((g) =>
-    relStaysInside(resolve(worktreePath, globStaticPrefix(g)), abs),
-  );
-}
-
-/**
- * Symlink-escape variant of `resolvedStaysInSpecRoot` (codex#254-P2 FIX2): the
- * REAL path of `abs` (symlinks followed) must stay inside the REAL spec root of
- * at least one matched glob. Fail-closed when the path or any root cannot be
- * realpath-resolved.
- */
-function realSpecPathStaysInSpecRoot(
-  abs: string,
-  worktreePath: string,
-  matchedGlobs: readonly string[],
-): boolean {
-  return matchedGlobs.some((g) =>
-    realPathStaysInside(resolve(worktreePath, globStaticPrefix(g)), abs),
-  );
+  let realWorktree: string;
+  try {
+    realWorktree = realpathSync(worktreePath);
+  } catch {
+    return false;
+  }
+  return matchedGlobs.some((g) => {
+    const specRoot = resolve(worktreePath, globStaticPrefix(g));
+    // (1) lexical file-in-root + (2) real file-in-real-root.
+    if (!relStaysInside(specRoot, abs)) return false;
+    if (!realPathStaysInside(specRoot, abs)) return false;
+    // (3) the REAL spec root must stay inside the REAL worktree (or BE it, for
+    // an empty static prefix anchored at the worktree root).
+    let realSpecRoot: string;
+    try {
+      realSpecRoot = realpathSync(specRoot);
+    } catch {
+      return false;
+    }
+    return realSpecRoot === realWorktree || relStaysInside(realWorktree, realSpecRoot);
+  });
 }
 
 /**

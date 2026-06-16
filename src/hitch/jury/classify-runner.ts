@@ -642,6 +642,15 @@ function runPhase3(
  * severity-diverged finding that ALSO appears as a split (it both escalated and
  * diverged — impossible in one deliberation, but defensively de-duped) is not
  * duplicated in `findings`.
+ *
+ * codex#254-P2 FIX2: carry the severity audit SUMMARY (`severityAudit`) into the
+ * merged packet so a packet advertising `severity_audit` in `decisionKinds` also
+ * exposes the actual audit status/juryConsensus/harnessSeverity (not undefined).
+ * Precedence: a split/operator escalate packet NEVER has its own `severityAudit`
+ * (only severity-audit packets do), so we take the severity packet's summary
+ * (the lead diverged audit). Should a base packet ever already carry one, the
+ * base's is kept (it is the more specific summary for that packet) — per-finding
+ * linkage for every diverged finding still lives in `findings[]`.
  */
 function mergeSeverityIntoEscalate(
   packet: ReturnType<typeof buildBundledPacket>,
@@ -660,6 +669,13 @@ function mergeSeverityIntoEscalate(
     ],
     findings: [...packet.findings, ...newFindings],
     nextActions: [...packet.nextActions, ...sevPacket.nextActions],
+    // Keep the base's summary if it has one; otherwise adopt the severity
+    // packet's (the escalate base path never sets `severityAudit`).
+    ...(packet.severityAudit !== undefined
+      ? {}
+      : sevPacket.severityAudit !== undefined
+        ? { severityAudit: sevPacket.severityAudit }
+        : {}),
   };
 }
 
