@@ -364,6 +364,29 @@ describe("generateJuryProposals — fail-closed status mapping", () => {
   });
 });
 
+describe("generateJuryProposals — fenced ```json parse path (P3 coverage)", () => {
+  it("parses a propose object wrapped in a ```json fence", async () => {
+    // The real codex frequently wraps its JSON in a ```json … ``` fence; the
+    // extractJsonBlock fenced branch (vs. the bare balanced-brace fallback) is
+    // otherwise never exercised. Trailing prose containing a stray brace makes
+    // the balanced-brace FALLBACK (first `{` … last `}`) capture an invalid
+    // span — so a clean parse PROVES the fenced branch ran, not the fallback.
+    const fenced =
+      "```json\n" +
+      proposeJson("in_scope") +
+      "\n```\n\nNote: the trailing prose {has a stray brace} after the fence.";
+    const proposals = await generateJuryProposals(
+      deps(routingRunner(unanimousMap(fenced))),
+      FINDING,
+    );
+    expect(proposals).toHaveLength(3);
+    for (const p of proposals) {
+      expect(p.proposalStatus).toBe("complete");
+      expect(p.proposedScope).toBe("in_scope");
+    }
+  });
+});
+
 describe("generateJuryProposals — per-lens divergence (split injection)", () => {
   it("a 1-lens-out_of_scope split is reflected per lens", async () => {
     const map: RoutingMap = {

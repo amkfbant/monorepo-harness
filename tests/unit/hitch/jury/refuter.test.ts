@@ -325,6 +325,38 @@ describe("runClassificationRefuter — fail-closed (timeout/parse/exit)", () => 
   });
 });
 
+describe("runClassificationRefuter — fenced ```json parse path (P3 coverage)", () => {
+  it("parses a refute object wrapped in a ```json fence (intended verdict)", async () => {
+    // The real codex frequently wraps its JSON in a ```json … ``` fence; the
+    // extractJsonBlock fenced branch (vs. the bare balanced-brace fallback) is
+    // otherwise never exercised. Trailing prose containing a stray brace makes
+    // the balanced-brace FALLBACK (first `{` … last `}`) capture an invalid
+    // span — so a clean parse PROVES the fenced branch ran, not the fallback.
+    const body = refuteJson({
+      refuteVerdict: "uphold",
+      whyNotFalseConsensus:
+        "each lens cited distinct verified evidence, not echoing one another",
+      refutationConditions:
+        "this would flip if the cited file were actually outside the domain",
+    });
+    const map: RoutingMap = {
+      ...refuteResponse({
+        stdout:
+          "```json\n" +
+          body +
+          "\n```\n\nNote: the trailing prose {has a stray brace} after the fence.",
+      }),
+    };
+    const verdict = await runClassificationRefuter(
+      deps(routingRunner(map)),
+      refuterInput(),
+    );
+    expect(verdict.refuteVerdict).toBe("uphold");
+    expect(typeof verdict.reasoning).toBe("string");
+    expect(verdict.reasoning.length).toBeGreaterThan(0);
+  });
+});
+
 describe("runClassificationRefuter — counterEvidence advisory (P3)", () => {
   it("counterEvidence is recomputed by verifyEvidence (LLM verified claim ignored)", async () => {
     const map: RoutingMap = {

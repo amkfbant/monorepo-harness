@@ -371,6 +371,33 @@ describe("runCritiqueRound — anti-ritualization (design §0.1 R9 / 付録P)", 
     }
   });
 
+  it("a >=12-char BOILERPLATE_OBJECTIONS member is rejected by the SET (not the length gate)", async () => {
+    // The existing 問題なし control is 4 chars, so the LENGTH gate rejects it
+    // BEFORE the BOILERPLATE_OBJECTIONS set is ever consulted — leaving the
+    // set-membership branch dead-untested. "no objection" is exactly 12 chars
+    // (== MIN_CONCRETE_OBJECTION_LEN) so it PASSES the length gate and is
+    // rejected ONLY by the set. This isolates the set rejection from length.
+    const boilerSet = JSON.stringify({
+      objections: [
+        { targetLens: "scope_fit", type: "事実誤認", objection: "no objection" },
+        { targetLens: "spec_adherence", type: "推論飛躍", objection: "No Objection" },
+      ],
+      citationRelevance: [],
+      revisedScope: "in_scope",
+      voteChanged: false,
+    });
+    const map: RoutingMap = {};
+    for (const lens of JURY_LENSES) {
+      map[routingKey("critique", lens)] = { stdout: boilerSet };
+    }
+    const out = await runCritiqueRound(deps(routingRunner(map)), FINDING, r1set());
+    expect(out).toHaveLength(3);
+    for (const p of out) {
+      expect(p.round).toBe(2);
+      expect(p.proposalStatus).toBe("inconclusive");
+    }
+  });
+
   it("fewer than one objection per OTHER proposal -> reject -> inconclusive", async () => {
     // 2 other proposals but only 1 objection supplied.
     const map: RoutingMap = {};
@@ -476,6 +503,45 @@ describe("runCritiqueRound — anti-ritualization (design §0.1 R9 / 付録P)", 
     const corr = out.find((p) => p.lens === "correctness");
     expect(corr?.round).toBe(2);
     expect(corr?.proposalStatus).toBe("inconclusive");
+  });
+});
+
+describe("runCritiqueRound — fenced ```json parse path (P3 coverage)", () => {
+  const r1set = () => [
+    r1("correctness", "in_scope"),
+    r1("scope_fit", "in_scope"),
+    r1("spec_adherence", "in_scope"),
+  ];
+
+  it("parses a critique object wrapped in a ```json fence (revised round-2 proposal)", async () => {
+    // The real codex frequently wraps its JSON in a ```json … ``` fence; the
+    // extractJsonBlock fenced branch (vs. the bare balanced-brace fallback) is
+    // otherwise never exercised. Trailing prose containing a stray brace makes
+    // the balanced-brace FALLBACK (first `{` … last `}`) capture an invalid
+    // span — so a clean parse PROVES the fenced branch ran, not the fallback.
+    const map: RoutingMap = {};
+    for (const lens of JURY_LENSES) {
+      const body = critiqueJsonForLens(lens, {
+        revisedScope: "out_of_scope",
+        voteChanged: true,
+      });
+      map[routingKey("critique", lens)] = {
+        stdout:
+          "```json\n" +
+          body +
+          "\n```\n\nNote: the trailing prose {has a stray brace} after the fence.",
+      };
+    }
+    const out = await runCritiqueRound(deps(routingRunner(map)), FINDING, r1set());
+    expect(out).toHaveLength(3);
+    for (const p of out) {
+      expect(p.round).toBe(2);
+      expect(p.proposalStatus).toBe("complete");
+      expect(p.proposedScope).toBe("out_of_scope");
+      expect(p.voteChanged).toBe(true);
+      expect(typeof p.critique).toBe("string");
+      expect(p.critique?.length).toBeGreaterThan(0);
+    }
   });
 });
 
