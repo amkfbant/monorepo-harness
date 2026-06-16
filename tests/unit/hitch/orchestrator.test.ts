@@ -207,6 +207,89 @@ describe("HitchOrchestrator", () => {
     }
   });
 
+  it("propagates the abort on the FINAL (maxSteps:1) classify step instead of falling through to max_steps_exhausted (#132 / round-2 FIX 4)", async () => {
+    // The round-1 abort fix makes the classify runner return resolved:true on
+    // lease loss and relies on the NEXT loop-top guard to map it to lease_lost.
+    // With maxSteps:1 there is NO next iteration, so without a post-loop guard
+    // the drive falls through as max_steps_exhausted (a benign outcome) instead
+    // of propagating the lease cause. The classify runner here mimics the round-1
+    // fix: it aborts the lease mid-run, then returns the benign no-op
+    // resolved:true. The orchestrator MUST throw the lease cause, NOT escalate
+    // and NOT return max_steps_exhausted.
+    const dbPath = freshDbPath();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new HitchRepository(db);
+      repo.createSession({
+        hitchId: "g-classify-abort-final",
+        title: "Classify abort final",
+        projectId: "demo",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+      repo.createAttempt({
+        hitchId: "g-classify-abort-final",
+        attemptType: "implement",
+        status: "succeeded",
+        runId: "r1",
+        createdAt: "2026-05-25T00:00:00.000Z",
+      });
+      const cycle = repo.startReviewCycle({
+        hitchId: "g-classify-abort-final",
+        reviewMode: "initial",
+        createdAt: "2026-05-25T00:01:00.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle.cycleId,
+        completedAt: "2026-05-25T00:01:30.000Z",
+      });
+      // an open unknown-scope finding so convergence routes needs_classification.
+      repo.upsertFinding({
+        hitchId: "g-classify-abort-final",
+        source: "review",
+        severity: "P2",
+        category: "core",
+        scopeStatus: "unknown",
+        summary: "ambiguous finding",
+      });
+    } finally {
+      close();
+    }
+    const controller = new AbortController();
+    const leaseLost = new LeaseGuardFailedError("course:classify-abort-final");
+    let classifyCalls = 0;
+    const runners: OrchestratorRunners = {
+      ...fakeRunners([]),
+      classify: async () => {
+        classifyCalls += 1;
+        // emulate the round-1 abort fix: lease lost mid Phase 2 → the runner
+        // mutates nothing and returns the benign no-op resolved:true.
+        controller.abort(leaseLost);
+        return { resolved: true };
+      },
+    };
+    const run = new HitchOrchestrator({ dbPath }).run({
+      hitchId: "g-classify-abort-final",
+      runners,
+      maxSteps: 1,
+      createdBy: "worker",
+      signal: controller.signal,
+    });
+    await expect(run).rejects.toBe(leaseLost);
+    expect(classifyCalls).toBe(1);
+    // the hitch must NOT have been flipped to escalated by the abort.
+    const { db: db2, close: close2 } = openManagedDb({ dbPath });
+    try {
+      expect(
+        new HitchRepository(db2).requireSession("g-classify-abort-final").status,
+      ).not.toBe("escalated");
+    } finally {
+      close2();
+    }
+  });
+
   it("escalates a diverging goal without calling runners", async () => {
     const dbPath = freshDbPath();
     const { db, close } = openManagedDb({ dbPath });

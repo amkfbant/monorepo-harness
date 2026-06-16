@@ -299,6 +299,15 @@ export class HitchOrchestrator {
         return { hitchId: input.hitchId, outcome: "escalated", steps, finalDecision, escalateReason: message };
       }
     }
+    // #132 (round-2 FIX 4) — the loop exhausted its steps. A step (notably the
+    // classify runner) may have aborted the lease mid-run and returned the benign
+    // no-op resolved:true, relying on the NEXT loop-top guard to map it to
+    // lease_lost. With maxSteps:1 there is NO next iteration, so this post-loop
+    // guard (OUTSIDE the per-iteration try/catch, so it is never swallowed into an
+    // escalate) is what propagates the abort cause on the final step. Without it
+    // the final-step lease loss would fall through as the benign
+    // max_steps_exhausted instead of lease_lost.
+    if (driveAborted(input.signal)) throw abortCause(input.signal);
     return { hitchId: input.hitchId, outcome: "max_steps_exhausted", steps, finalDecision };
   }
 }

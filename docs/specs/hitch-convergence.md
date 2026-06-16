@@ -234,12 +234,24 @@ mutually exclusive per finding:
   `operator_origin_unknown` for manual classification.
 
 The classify runner is structured in 3 DB phases so the LLM never holds the DB
-open (design §3 invariant 4): **Phase 1** (DB open, synchronous) drains
-heuristic-resolvable findings and snapshots the still-`unknown` jury candidates +
-operator-origin findings, then closes the DB; **Phase 2** (DB closed) runs the
-LLM deliberation per candidate in memory; **Phase 3** (DB re-open) persists the
-audit rows, re-verifies state, freshness-checks file citations, and classifies or
-escalates.
+open (design §3 invariant 4), and so a non-authoritative (lease-lost) drive
+mutates **no state**: **Phase 1** (DB open, synchronous, **READ-ONLY**) partitions
+the open+`unknown` findings — it *computes* the heuristic decision for
+heuristic-resolvable harness-origin findings but does **not** write, snapshots the
+still-`unknown` jury candidates, and snapshots the operator-origin findings — then
+closes the DB; **Phase 2** (DB closed) runs the LLM deliberation per candidate in
+memory; **Phase 3** (DB re-open) is the **only** phase that mutates state — it
+applies the snapshotted heuristic writes, persists the audit rows, re-verifies
+state, freshness-checks file citations, and classifies or escalates. Because every
+write is deferred to Phase 3 (behind the pre-Phase-3 lease guard), a lease lost any
+time before Phase 3 leaves the entire classify step state-free.
+
+The jury **run context** (worktree + compiled policy + run id) is resolved
+**lazily** — only when Phase 1 produced actual jury candidates (the heuristic and
+operator-origin paths need no worktree/policy). A hitch session without
+repoId/domain whose `unknown` findings are *only* heuristic-classifiable or
+operator-origin therefore classifies / escalates a manual-classification packet
+**without** a run-context resolution error.
 
 ### The 5-stage deliberation pipeline
 
@@ -309,12 +321,14 @@ caller must enforce both):
   through the classify runner into every jury codex call. When the course loses
   its lease mid-deliberation the signal aborts and the in-flight codex is
   SIGKILLed. The classify runner ALSO checks the signal **before Phase 1** and
-  **before any Phase-3 DB mutation**: a non-authoritative (lease-lost) drive
+  **before Phase 3**: because Phase 1 is fully READ-ONLY and ALL writes (the
+  heuristic writes too) live in Phase 3, a non-authoritative (lease-lost) drive
   persists/classifies/escalates **nothing** and returns the benign no-op
   (`{ resolved: true }`); the orchestrator's next-iteration `driveAborted` check
-  then maps the stop to `lease_lost` (it never throws from inside the runner —
-  that would route through the orchestrator try/catch and wrongly escalate the
-  hitch).
+  — or, on the **final** step (e.g. `maxSteps:1`, with no next iteration), the
+  orchestrator's **post-loop** `driveAborted` guard — then maps the stop to
+  `lease_lost` (the runner never throws from inside — that would route through the
+  orchestrator try/catch and wrongly escalate the hitch).
 
 ### Monotonic, fail-closed invariants (the safety backbone)
 
@@ -325,13 +339,15 @@ The deliberation can only *add* safety; it can never relax a decision (design
    utterance ever drives a classification.** Every open + `unknown` finding is
    resolved by **exactly one** of two *deterministic* (non-LLM) deciders, and the
    two cover the population without overlap:
-   - **The deterministic heuristic** (`classifyFindingForHitch`, non-LLM, Phase 1):
-     clear-cut **harness-origin** findings the frozen-scope classifier can resolve
-     (e.g. a target-file / category / glob hit) are classified **BEFORE the jury
-     ever runs** and the scope is written **directly** (`repo.classifyFinding`).
-     The jury is **bypassed** for these — no proposer/critique/refuter call, no
-     jury audit rows. (Operator-origin `unknown` findings are also handled here:
-     they are never machine-classified at all — bundled to escalate, R5.)
+   - **The deterministic heuristic** (`classifyFindingForHitch`, non-LLM): clear-cut
+     **harness-origin** findings the frozen-scope classifier can resolve (e.g. a
+     target-file / category / glob hit) **bypass the jury** — no
+     proposer/critique/refuter call, no jury audit rows. The heuristic decision is
+     *computed* in the READ-ONLY Phase 1 but the scope is **written** in Phase 3
+     (`repo.classifyFinding`, behind the lease guard), together with the jury
+     classifications, so a lease-lost drive writes nothing. (Operator-origin
+     `unknown` findings are also partitioned here in Phase 1: they are never
+     machine-classified at all — bundled to escalate, R5.)
    - **The deterministic gate** (`aggregateDeliberation`, Stage 5): only the
      **jury-candidate** findings — harness-origin AND still `unknown` *after* the
      heuristic — reach the jury, and their scope is decided **solely** by the
@@ -372,8 +388,9 @@ The deliberation can only *add* safety; it can never relax a decision (design
    stale snapshot). Hitch status syncs deterministically via
    `recordConvergenceDecisionWithStatus`. The LLM never writes finding scope /
    severity / lifecycle / hitch status. A drive that lost its lease mid-run is
-   **non-authoritative**: the runner checks the lease signal before any Phase-3
-   mutation and writes nothing (see the per-call codex wrapper note above).
+   **non-authoritative**: Phase 1 is READ-ONLY and the runner checks the lease
+   signal before Phase 3 (the only mutating phase, which applies the heuristic
+   writes too), so it writes nothing (see the per-call codex wrapper note above).
 
 4. **Evidence is verified deterministically.** Hallucinated citations are
    rejected in Stage 2; the gate never trusts the model's evidence claim.
@@ -382,9 +399,9 @@ The deliberation can only *add* safety; it can never relax a decision (design
    severity unchanged; divergence only sets an `escalate` flag and a packet
    record for human review (see severity precedence below).
 
-The DB is open only during Phase 1 (synchronous snapshot) and Phase 3
-(append-only audit persistence + classify), and closed for the whole LLM
-deliberation, mirroring the reviewer path.
+The DB is open only during Phase 1 (READ-ONLY synchronous snapshot) and Phase 3
+(heuristic writes + append-only audit persistence + classify), and closed for the
+whole LLM deliberation, mirroring the reviewer path.
 
 ### RACI: Decision Transitions
 
@@ -420,7 +437,12 @@ Escalations carry a consultant-grade MCDA decision packet
 
 - `decisionKinds` is a **plural** array — `classify_scope`, `severity_audit`,
   and/or `operator_origin_unknown` — so a mixed harness/operator batch never
-  hides one side's required action.
+  hides one side's required action. When a batch BOTH escalates (a jury split /
+  operator-origin finding) AND has an auto-confirmed finding whose severity
+  diverged, the escalate packet **merges** the accumulated `severity_audit`
+  divergences (their `findings[]` + `review severity` `nextActions[]`) into the
+  same packet — the diverged finding's required severity-review action is never
+  dropped just because another finding forced the escalate.
 - There is **no top-level `packet.deliberationId`**. Each `findings[]` entry
   carries its own `deliberationId` and `origin` (`harness` / `operator`), so one
   packet can bundle several deliberations and each finding maps to its own audit

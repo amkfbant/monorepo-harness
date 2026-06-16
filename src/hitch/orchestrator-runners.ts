@@ -70,7 +70,10 @@ import {
   augmentGoalWithOpenFindings,
   type CloseCheckFailureContext,
 } from "./coder-goal-context.js";
-import { runClassifyDeliberation } from "./jury/classify-runner.js";
+import {
+  runClassifyDeliberation,
+  type JuryRunContext,
+} from "./jury/classify-runner.js";
 import type { CompiledPolicyView } from "./jury/types.js";
 import { deferFindingToBacklog } from "./followups.js";
 import { ConvergenceService } from "./convergence.js";
@@ -1225,50 +1228,45 @@ export function createOrchestratorRunners(
         },
       }),
     classify: async (hitchId) => {
-      // (#230) 3-phase deliberation classify runner (design §7.1). The phases
-      // manage their own DB handles (open snapshot -> CLOSED for the LLM ->
-      // re-open to persist+classify), so the run-context / worktree / policy are
-      // resolved here OUTSIDE any DB handle. The latest coding run's worktree is
-      // where the jury's file-kind citations resolve.
-      const { context, latestRun, hasUnknown } = withManagedDb(
-        { dbPath: deps.dbPath },
-        (db) => {
-          const repo = new HitchRepository(db);
-          const session = repo.requireSession(hitchId);
-          const unknownCount = repo.countFindings({
-            hitchId,
-            scopeStatus: "unknown",
-            lifecycleStatusIn: OPEN_FINDING_LIFECYCLES,
-          });
-          // No open unknown findings -> nothing to classify; skip the
-          // run-context/worktree/policy resolution (which a no-finding hitch
-          // need not have wired) and report resolved immediately.
-          if (unknownCount === 0) {
-            return { context: null, latestRun: null, hasUnknown: false };
-          }
-          return {
-            context: resolveRunContext(deps, session),
-            latestRun: latestCodingRunOrNull(repo, hitchId),
-            hasUnknown: true,
-          };
-        },
-      );
-      if (!hasUnknown || context === null) {
-        return { resolved: true };
-      }
-      const compiledPolicy = await resolveJuryCompiledPolicy(deps, context);
-      const worktreePath =
-        latestRun !== null
-          ? join(paths.workspacesDir, latestRun.runId, "repo")
-          : context.repoPath;
+      // (#230) 3-phase deliberation classify runner (design §7.1). The runner
+      // manages its own DB handles (READ-ONLY snapshot -> CLOSED for the LLM ->
+      // re-open to persist+classify). #132 (round-2 FIX 2): the run-context /
+      // worktree / policy is resolved LAZILY — only when the runner's READ-ONLY
+      // Phase 1 found actual jury candidates. A session without repoId/domain
+      // whose unknown findings are ONLY operator-origin or heuristic-classifiable
+      // must NOT trigger run-context resolution (which would throw and route to a
+      // generic orchestrator escalation instead of the intended manual-
+      // classification packet / heuristic write). The latest coding run's
+      // worktree is where the jury's file-kind citations resolve.
+      const resolveJuryContext = async (): Promise<JuryRunContext> => {
+        const { context, latestRun } = withManagedDb(
+          { dbPath: deps.dbPath },
+          (db) => {
+            const repo = new HitchRepository(db);
+            const session = repo.requireSession(hitchId);
+            return {
+              context: resolveRunContext(deps, session),
+              latestRun: latestCodingRunOrNull(repo, hitchId),
+            };
+          },
+        );
+        const compiledPolicy = await resolveJuryCompiledPolicy(deps, context);
+        const worktreePath =
+          latestRun !== null
+            ? join(paths.workspacesDir, latestRun.runId, "repo")
+            : context.repoPath;
+        return {
+          worktreePath,
+          compiledPolicy,
+          runId: latestRun?.runId ?? null,
+        };
+      };
       return runClassifyDeliberation(
         {
           dbPath: deps.dbPath,
           harnessRoot: deps.harnessRoot,
           reviewerRunner: deps.reviewerRunner,
-          worktreePath,
-          compiledPolicy,
-          runId: latestRun?.runId ?? null,
+          resolveJuryContext,
           juryBatchLimit: JURY_BATCH_LIMIT,
           timeoutMs: JURY_CODEX_TIMEOUT_MS,
           // #132: thread the orchestrator's lease signal so a mid-deliberation

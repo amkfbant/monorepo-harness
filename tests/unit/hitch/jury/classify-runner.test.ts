@@ -730,6 +730,12 @@ describe("classify runner — 3 phase deliberation (#230 D1)", () => {
     expect(packet.severityAudit?.harnessSeverity).toBe("P2");
     expect(packet.severityAudit?.juryConsensus).toBe("P0");
 
+    // round-2 FIX 5: the severity packet's finding entry is built from the
+    // JUST-CLASSIFIED finding, so its scopeStatus reflects the applied in_scope
+    // (NOT the pre-classify `unknown` snapshot read before classifyFinding ran).
+    const entry = packet.findings.find((pf) => pf.findingId === fid);
+    expect(entry?.scopeStatus).toBe("in_scope");
+
     // The persisted advisory severity audit row records the divergence too.
     const audit = readSeverityAudit(h, fid);
     expect(audit?.audit_status).toBe("diverged");
@@ -786,6 +792,187 @@ describe("classify runner — 3 phase deliberation (#230 D1)", () => {
     // Both advisory severity audit rows are persisted (per-finding divergence).
     expect(readSeverityAudit(h, fid1)?.escalate_flag).toBe(1);
     expect(readSeverityAudit(h, fid2)?.escalate_flag).toBe(1);
+  });
+
+  it("round-2 FIX 3: a batch with a SPLIT finding AND an auto_confirm+severity-diverged finding bundles BOTH the split (classify_scope) AND the severity_audit into the ONE escalate packet", async () => {
+    const h = makeHarness("escalate-sev");
+    // ONE finding the jury SPLITS (escalate path) and ONE finding that
+    // auto_confirms in_scope but with a DIVERGENT severity (resolved path with
+    // an advisory severity packet). Previously the escalate branch returned the
+    // split packet immediately and DROPPED the accumulated severity divergence,
+    // so the auto_confirmed finding had a persisted audit row but NO severity-
+    // review next-action for the operator. The single escalate packet must now
+    // carry BOTH.
+    const splitFid = seedFinding(h, "escalate-sev", {
+      source: "review",
+      summary: "the split finding under dispute",
+      filePath: "src/a.ts",
+      category: "core",
+    });
+    const sevFid = seedFinding(h, "escalate-sev", {
+      source: "review",
+      summary: "the auto confirm severity diverged finding",
+      filePath: "src/a.ts",
+      category: "core",
+      severity: "P2",
+    });
+
+    // Per-finding routing: EVERY jury stage prompt (propose/critique/refute)
+    // embeds `- id: <findingId>`, so dispatch each codex call to the right
+    // routing map by the finding id (summary is only on the proposer prompt).
+    const splitR = routingRunner(splitRouting());
+    const sevR = routingRunner(severityDivergedRouting("P0"));
+    const perFinding: CodexExecRunner = {
+      run: async (input) => {
+        if (input.prompt.includes(`- id: ${splitFid}`)) {
+          return splitR.run(input);
+        }
+        if (input.prompt.includes(`- id: ${sevFid}`)) {
+          return sevR.run(input);
+        }
+        // unmapped -> fail closed.
+        return routingRunner({}).run(input);
+      },
+    };
+
+    const r = await makeRunners(h, perFinding).classify("escalate-sev");
+
+    // The batch escalates (the split forces escalate), and the severity-diverged
+    // finding is still auto_confirmed in_scope (severity unchanged).
+    expect(r.resolved).toBe(false);
+    if (r.resolved) throw new Error("unreachable");
+    expect(readFinding(h, splitFid).scopeStatus).toBe("unknown");
+    expect(readFinding(h, sevFid).scopeStatus).toBe("in_scope");
+    expect(readFinding(h, sevFid).severity).toBe("P2");
+
+    const packet = r.recommendedNextAction.decisionPacket;
+    expect(packet).toBeDefined();
+    if (packet === undefined) throw new Error("unreachable");
+
+    // The ONE escalate packet carries BOTH decision kinds.
+    expect(packet.decisionKinds).toContain("classify_scope");
+    expect(packet.decisionKinds).toContain("severity_audit");
+
+    // findings[] covers BOTH the split and the severity-diverged finding.
+    const ids = packet.findings.map((f) => f.findingId);
+    expect(ids).toContain(splitFid);
+    expect(ids).toContain(sevFid);
+
+    // nextActions[] covers BOTH — the severity review is NOT dropped.
+    const actionsBlob = packet.nextActions.map((a) => a.action).join(" | ");
+    expect(actionsBlob).toContain(splitFid);
+    expect(actionsBlob).toContain(sevFid);
+    // a severity-review action exists for the diverged finding (not just a
+    // classify-scope action).
+    expect(
+      packet.nextActions.some(
+        (a) => /severity/i.test(a.action) && a.action.includes(sevFid),
+      ),
+    ).toBe(true);
+
+    // The severity-diverged finding's advisory audit row is still persisted.
+    expect(readSeverityAudit(h, sevFid)?.escalate_flag).toBe(1);
+  });
+});
+
+/**
+ * Build a harness whose session has NO repoId/domain (the default
+ * `resolveRunContext` throws for such a session). A completed review cycle so
+ * convergence routes `needs_classification`. Used to pin round-2 FIX 2: the
+ * run-context is resolved LAZILY (only when jury candidates exist), so a session
+ * without repoId/domain still classifies heuristically / escalates a manual
+ * packet instead of throwing a generic context-resolution error.
+ */
+function makeNoRepoHarness(hitchId: string): Harness {
+  const harnessRoot = mkdtempSync(join(tmpdir(), "jury-norepo-"));
+  tmpDirs = [...tmpDirs, harnessRoot];
+  mkdirSync(join(harnessRoot, ".harness"), { recursive: true });
+  const dbPath = join(harnessRoot, ".harness", "harness.sqlite");
+  const runId = `run-${hitchId}`;
+  const worktree = join(harnessRoot, "workspaces", runId, "repo");
+  mkdirSync(worktree, { recursive: true });
+
+  const { db, close } = openManagedDb({ dbPath });
+  try {
+    runMigrations(db);
+    const repo = new HitchRepository(db);
+    repo.createSession({
+      hitchId,
+      title: "Jury no-repo",
+      // NOTE: NO repoId / NO domain — the default resolveRunContext throws here.
+      scope: {},
+      closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+      policy: {
+        ...DEFAULT_HITCH_POLICY,
+        divergence: {
+          ...DEFAULT_HITCH_POLICY.divergence,
+          maxTotalNewFindings: 1000,
+          maxNewFindingsPerCycle: 1000,
+        },
+      },
+      maxTotalNewFindings: 1000,
+      createdBy: "test",
+      createdSource: "worker",
+    });
+    const cycle = repo.startReviewCycle({
+      hitchId,
+      reviewMode: "initial",
+      createdAt: "2026-06-13T00:00:00.000Z",
+    });
+    repo.completeReviewCycle({
+      cycleId: cycle.cycleId,
+      completedAt: "2026-06-13T00:00:00.000Z",
+      summary: "reviewed",
+    });
+  } finally {
+    close();
+  }
+  return { harnessRoot, dbPath, runId, worktree };
+}
+
+describe("classify runner — round-2 FIX 2: lazy run-context resolution", () => {
+  it("a session WITHOUT repoId/domain with a HEURISTIC-classifiable unknown is classified WITHOUT throwing (run-context never resolved)", async () => {
+    const h = makeNoRepoHarness("norepo-heur");
+    // Make `bug`-category findings heuristic-resolvable (in_scope).
+    {
+      const { db, close } = openManagedDb({ dbPath: h.dbPath });
+      try {
+        db.prepare(
+          "UPDATE hitch_sessions SET scope_json = ? WHERE hitch_id = ?",
+        ).run(JSON.stringify({ allowedFindingCategories: ["bug"] }), "norepo-heur");
+      } finally {
+        close();
+      }
+    }
+    const fid = seedFinding(h, "norepo-heur", {
+      source: "review",
+      summary: "heuristic-resolvable bug",
+      category: "bug",
+    });
+    // route nothing: the heuristic must resolve so the jury never runs AND the
+    // run-context (which would throw for this repo-less session) is never resolved.
+    const r = await makeRunners(h, routingRunner({})).classify("norepo-heur");
+    expect(r.resolved).toBe(true);
+    expect(readFinding(h, fid).scopeStatus).toBe("in_scope");
+  });
+
+  it("a session WITHOUT repoId/domain with an OPERATOR-origin unknown escalates the manual-classification packet (NOT a generic context-resolution error)", async () => {
+    const h = makeNoRepoHarness("norepo-op");
+    const fid = seedFinding(h, "norepo-op", {
+      source: "human",
+      summary: "operator raised concern",
+    });
+    // route nothing: operator-origin is never machine-classified, and the
+    // run-context (which would throw for this repo-less session) is never
+    // resolved — the result is the intended manual-classification escalate.
+    const r = await makeRunners(h, routingRunner({})).classify("norepo-op");
+    expect(r.resolved).toBe(false);
+    if (r.resolved) throw new Error("unreachable");
+    const packet = r.recommendedNextAction.decisionPacket;
+    expect(packet?.decisionKinds).toContain("operator_origin_unknown");
+    const entry = packet?.findings.find((f) => f.findingId === fid);
+    expect(entry?.origin).toBe("operator");
+    expect(readFinding(h, fid).scopeStatus).toBe("unknown");
   });
 });
 

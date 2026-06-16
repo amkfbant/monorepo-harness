@@ -260,6 +260,98 @@ describe("classify runner — P1 FIX 1: lease-loss abort (#132)", () => {
     expect(countRows(h, "jury_severity_audits", fid)).toBe(0);
   });
 
+  it("round-2 FIX 1: a lease lost during Phase 2 leaves a HEURISTIC-resolvable finding UNCLASSIFIED (heuristic writes are now in Phase 3, behind the abort guard)", async () => {
+    const h = makeHarness("abort-heur");
+    // Make `bug`-category findings heuristic-resolvable (in_scope) so a
+    // harness-origin `bug` finding would be written by the heuristic.
+    {
+      const { db, close } = openManagedDb({ dbPath: h.dbPath });
+      try {
+        db.prepare(
+          "UPDATE hitch_sessions SET scope_json = ? WHERE hitch_id = ?",
+        ).run(JSON.stringify({ allowedFindingCategories: ["bug"] }), "abort-heur");
+      } finally {
+        close();
+      }
+    }
+    // ONE heuristic-resolvable finding (category bug) AND ONE jury candidate
+    // (category core, ambiguous -> needs the jury). The jury candidate forces
+    // Phase 2 to run, during which the lease is lost.
+    const heurFid = seedFinding(h, "abort-heur", {
+      summary: "heuristic-resolvable bug",
+      category: "bug",
+    });
+    const juryFid = seedFinding(h, "abort-heur", {
+      summary: "ambiguous jury candidate",
+      filePath: "src/a.ts",
+      category: "core",
+    });
+
+    const controller = new AbortController();
+    const base = routingRunner(unanimousRouting());
+    let calls = 0;
+    const leaseLosing: CodexExecRunner = {
+      run: async (input: CodexRunInputs): Promise<CodexRunResult> => {
+        const result = await base.run(input);
+        calls += 1;
+        // abort after the first jury propose (mid Phase 2, before Phase 3).
+        if (calls === 1) controller.abort(new Error("course lease lost"));
+        return result;
+      },
+    };
+
+    const r = await makeRunners(h, leaseLosing, controller.signal).classify(
+      "abort-heur",
+    );
+
+    // benign no-op: a non-authoritative drive mutates NOTHING. The heuristic
+    // finding is NOT classified (would have been in the OLD Phase-1-write timing),
+    // the jury finding is NOT classified, and NO audit rows were persisted.
+    expect(r.resolved).toBe(true);
+    if (!r.resolved) throw new Error("unreachable");
+    expect(readFinding(h, heurFid).scopeStatus).toBe("unknown");
+    expect(readFinding(h, juryFid).scopeStatus).toBe("unknown");
+    expect(countRows(h, "jury_classification_proposals", juryFid)).toBe(0);
+    expect(countRows(h, "jury_severity_audits", juryFid)).toBe(0);
+  });
+
+  it("round-2 FIX 1: WITHOUT abort, the heuristic finding IS classified in Phase 3 (behavior preserved)", async () => {
+    const h = makeHarness("noabort-heur");
+    {
+      const { db, close } = openManagedDb({ dbPath: h.dbPath });
+      try {
+        db.prepare(
+          "UPDATE hitch_sessions SET scope_json = ? WHERE hitch_id = ?",
+        ).run(
+          JSON.stringify({ allowedFindingCategories: ["bug"] }),
+          "noabort-heur",
+        );
+      } finally {
+        close();
+      }
+    }
+    const heurFid = seedFinding(h, "noabort-heur", {
+      summary: "heuristic-resolvable bug",
+      category: "bug",
+    });
+    const juryFid = seedFinding(h, "noabort-heur", {
+      summary: "ambiguous jury candidate",
+      filePath: "src/a.ts",
+      category: "core",
+    });
+
+    const r = await makeRunners(
+      h,
+      routingRunner(unanimousRouting()),
+    ).classify("noabort-heur");
+
+    expect(r.resolved).toBe(true);
+    // the heuristic finding IS classified (Phase 3 applied the snapshot write).
+    expect(readFinding(h, heurFid).scopeStatus).toBe("in_scope");
+    // the jury candidate auto_confirmed in_scope.
+    expect(readFinding(h, juryFid).scopeStatus).toBe("in_scope");
+  });
+
   it("an already-aborted lease before Phase 1 short-circuits with no DB read and no jury codex call", async () => {
     const h = makeHarness("pre-abort");
     const fid = seedFinding(h, "pre-abort", {
