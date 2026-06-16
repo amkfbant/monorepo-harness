@@ -1357,7 +1357,7 @@ CREATE INDEX jury_severity_audits_finding_idx ON jury_severity_audits(hitch_id, 
 ```
 
 severity audit は advisory（`hitch_findings.severity` や close 判定には波及しない）。
-doctor / decision-packet 配線は後続の Layer（A3 以降）で拡張する。
+doctor 配線は A3（下記）で実装済み。decision-packet 配線は後続の Layer で拡張する。
 
 ### repository（A2）
 
@@ -1379,3 +1379,43 @@ doctor / decision-packet 配線は後続の Layer（A3 以降）で拡張する�
   は空配列でも `'[]'` で round-trip する。proposal の `evidence_json` は
   `VerifiedJuryEvidence`（`verifyEvidence` 通過後）を保存する（verify は Layer 1/2
   で上流処理・repository は検証しない＝design §0.1 R1）。
+
+### doctor 拡張（A3）
+
+FK ゼロの 3 表は、親 purge / denorm drift / packet 不整合を doctor が**事後監査
+で報告**する（自動修復はしない＝state 遷移は harness のみ）。check は
+`src/db/jury-doctor-checks.ts` に定義し `DEFAULT_CHECKS` に登録する。category は
+既存 union の `'review'` を流用（design §0.1 R11）。すべて advisory（severity
+`warn`・`repairable:false`）で、DELETE は既存 `repairFinding` の operator 承認 gate
+に乗る（doctor が勝手に消さない）。
+
+- **`jury.orphan_rows`**: 3 表のいずれかに、対応する `hitch_findings` 行が無い
+  audit 行（finding が purge 済み）。FK ゼロゆえ親削除後も残るのが正で、doctor が
+  orphan として advisory 報告する。
+- **`jury.hitch_mismatch`**: stored `hitch_id` が `hitch_findings` join の
+  `hitch_id` と食い違う行（denorm drift）。orphan（join 行が無い）は本 check では
+  flag しない（`jury.orphan_rows` が担当）。
+- **`jury.refutation_mismatch`**: refutation と proposals/packet の不整合（design
+  §0.1 P2h）。(a) `refutation.target_scope` が同一 `deliberation_id` proposals の
+  **最終 round（`MAX(round)`）の unanimous な `proposed_scope`** と一致するか（split
+  や proposals 不在は比較対象が無く vacuous → flag しない）。(b)
+  `hitch_convergence_decisions.recommended_next_action` を **TS でパース**して
+  `decisionPacket.deliberation.refuter.refuteVerdict` を取り出し、保存済み
+  refutation 行の `refute_verdict` と一致するか。SQL 単独では nested packet に
+  届かないため JSON-parse する新 check 形（R11）。壊れた JSON / packet 欠落は防御的
+  に skip（doctor を crash させない）。
+
+> P2b の auto_confirm 正当性再検証 check（jury 確定 finding について保存済み
+> proposals/refutations から `aggregateDeliberation` を再実行し `auto_confirm` を
+> 満たすか advisory 検証）は、`aggregateDeliberation`（Layer 1 / Task B3）が未実装の
+> ため後続 Layer に defer する（A3 では未配線）。
+
+### import / export（A3 — DB-only audit）
+
+3 表は **DB-only** の append-only 監査表で、いずれの reset list
+（`import-files.ts` の `RESET_TABLES_FILE_DERIVED` / `RESET_TABLES_RUNTIME` /
+`RESET_CHILD_TABLES`）にも**追加しない**。よって `runFullImport({ reset: true })`
+（read-only scoped command が `withRefreshedDb` 経由で毎回呼ぶ）後も既存の audit 行は
+残り、空になるのは fresh DB のみ。FK が無いので親 finding を DELETE しても constraint
+error にならず、audit 行は orphan として残る（doctor が報告）。SQLite フル snapshot
+backup は全表を自動包含する。

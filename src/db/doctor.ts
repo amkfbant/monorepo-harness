@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { JURY_DOCTOR_CHECKS } from "./jury-doctor-checks.js";
 
 /**
  * DB doctor — Phase 15-2.
@@ -353,6 +354,9 @@ export const DEFAULT_CHECKS: DoctorCheck[] = [
         }));
     },
   },
+  // #230 v31 jury audit-table integrity (category "review"): orphan rows,
+  // hitch_id drift, refutation<->proposals/packet consistency. All advisory.
+  ...JURY_DOCTOR_CHECKS,
 ];
 
 export interface DoctorRunResult {
