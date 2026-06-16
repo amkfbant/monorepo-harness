@@ -79,7 +79,7 @@ frozen v2 の `aggregateJuryVotes` は unanimous-only（多数決より安全）
 - 1 finding の 1 回の deliberation 実行を束ねる **`deliberation_id TEXT`**（app 層生成の決定論 ID / 例 `sha256(hitchId|findingId|gate_input_sha256)`）を
   `jury_classification_proposals` / `jury_classification_refutations` / `jury_severity_audits` の各行と packet に持たせる。
   doctor は `deliberation_id` で proposal/refutation/packet を正確に対応付け（retry / R1+R2 複数行でも一意束ね）。
-  business-key dedup は従来どおり（deliberation_id は linkage 用・dedup キーには含めない）。
+  **business-key dedup に `deliberation_id` を含める**（R15・codex#252 で確定）: prompt_sha256 を再利用する retry（gate input=refuter verdict が変わる）を別行にし、packet の deliberation_id と常に一致させる。§6.2 DDL の各 dedup index 参照。
 
 **R5. operator-origin 混在 batch の挙動 = 部分前進（確定）**（codex P1-5 / frozen §H3）
 - **harness-origin の unknown は同 batch で jury まで進めて確定/escalate（部分前進）／ operator-origin の unknown は機械分類せず

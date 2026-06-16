@@ -71,8 +71,8 @@ RED 追加:「correctness=R2,scope_fit=R2,spec_adherence=R1（部分R2混在）�
 - B5: kind×境界を exact-assert（file 行範囲外→false / spec anchor 不在・重複の決定論 / policy glob ゼロ→false / **R1: LLM verified=true を破棄→false**）。
 - B6: `proposedSeverity を持つ proposal → packet.evaluationAxes[].lensVotes[].severity が round-trip`（R2 packet 側・下記 P3 packet severity と同件）。
 
-### PR6（必須）packetVersion:1 discriminated reader の本体 code task 新設 — Layer3 新 Task D6
-R6 は「全 reader に packetVersion discriminate + optional chaining」を要求。テスト(D4)だけで本体改修が無い。**新 Task D6**:
+### PR6（対応済み）packetVersion:1 discriminated reader の本体 code task = Task D6（Layer3 に追加済み）
+R6 は「全 reader に packetVersion discriminate + optional chaining」を要求。**reader 本体の改修は Layer3 の `Task D6` で実施**（本計画 Layer3 に追加済み・Self-Review の R6→B6/D6 参照）。D4 は e2e integration test であり reader 本体改修は D6 が担う。Task D6 の手順（再掲）:
 - reader 実体を grep（dashboard read API / MCP tools / CLI listDecisions のうち `recommended_next_action`/`decisionPacket` を読む箇所）。
 - RED:「`packetVersion:1` 行（`deliberation`/`evidence` 欠落）を各 reader が壊さず読む（undefined fallback）」。GREEN: optional chaining + default。CLI/MCP threading が docs だけで code 不要かは grep 結果で判定。
 
