@@ -296,8 +296,12 @@ async function critiqueForLens(
 
   const prompt = buildCritiquePrompt(lens, finding, others);
   const paths = deps.logPaths(finding.findingId, lens, "critique");
+  // P2 (codex): TRUNCATE the deterministic stdout/stderr/events paths before the
+  // run so a codex that exits 0 WITHOUT writing stdout cannot leave a STALE prior
+  // critique for readFile to reparse (fail-closed -> empty file => inconclusive).
   for (const p of [paths.stdout, paths.stderr, paths.events]) {
     await mkdir(dirname(p), { recursive: true });
+    await writeFile(p, "", "utf8");
   }
   const result = await runJuryCodex(deps, {
     worktreePath: deps.worktreePath,

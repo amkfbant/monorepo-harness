@@ -436,6 +436,40 @@ describe("runClassificationRefuter — prompt contract", () => {
   });
 });
 
+describe("runClassificationRefuter — FIX 2 (codex P2): stale stdout truncation", () => {
+  it("a runner that exits 0 WITHOUT writing stdout does NOT reparse a stale prior refute", async () => {
+    // Pre-seed the refuter's deterministic stdout path with a STALE VALID
+    // `uphold` refute JSON (as if a prior retry wrote an upheld verdict), then
+    // run a runner that exits 0 but never overwrites stdout. Without pre-run
+    // truncation, readFile would parse the stale uphold; with truncation the
+    // empty file -> inconclusive (a veto, fail-closed).
+    const lp = logPaths();
+    // the refuter logs under the first lens slot (correctness, per JURY_LENSES[0]).
+    const p = lp("finding-1", "correctness", "refute");
+    mkdirSync(join(p.stdout, ".."), { recursive: true });
+    writeFileSync(
+      p.stdout,
+      refuteJson({
+        refuteVerdict: "uphold",
+        whyNotFalseConsensus: "stale: the consensus genuinely held",
+        refutationConditions: "stale: if the cited file were unrelated",
+      }),
+      "utf8",
+    );
+    const noWriteRunner: CodexExecRunner = {
+      async run() {
+        return { exitCode: 0, timedOut: false, aborted: false, durationMs: 0 };
+      },
+    };
+    const verdict = await runClassificationRefuter(
+      deps(noWriteRunner),
+      refuterInput(),
+    );
+    // NOT the stale `uphold` — the empty stdout fails to parse => inconclusive.
+    expect(verdict.refuteVerdict).toBe("inconclusive");
+  });
+});
+
 describe("runClassificationRefuter — DB-closed (Stage4)", () => {
   it("creates no sqlite DB file anywhere under the worktree or audit dir", async () => {
     const map: RoutingMap = {

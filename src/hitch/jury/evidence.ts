@@ -142,9 +142,18 @@ function countLines(content: string): number {
 
 /**
  * A `spec` citation is `<md-path>#<anchor>`. It is verified iff the md file is
- * covered by `specDocsGlobs` (default `docs/specs/**\/*.md`) AND a heading whose
- * GitHub-style slug equals `<anchor>` exists exactly once (design §4.4 + P3:
- * missing -> false; duplicate-ambiguous -> false / fail-closed).
+ * covered by `specDocsGlobs` (default `docs/specs/**\/*.md`), STAYS inside the
+ * spec root the glob anchors (no `..` escape, no absolute path), AND a heading
+ * whose GitHub-style slug equals `<anchor>` exists exactly once (design §4.4 +
+ * P3: missing -> false; duplicate-ambiguous -> false / fail-closed).
+ *
+ * Path-traversal guard (codex P2): the glob check runs on the RAW citation path,
+ * and minimatch's extglob (`+(..)`) — or any operator-set glob — can match a
+ * `..`-escaping citation. Resolving that path directly would read a markdown
+ * file OUTSIDE the spec tree (and verify if it has the anchor). Mirroring the
+ * file-kind guard, the RESOLVED path must stay INSIDE the static-prefix root of
+ * a glob it matched (`relative(specRoot, resolved)` non-empty / not `..` /
+ * non-absolute); otherwise -> false (fail-closed).
  */
 function verifySpec(ev: RawJuryEvidence, ctx: EvidenceCheckContext): boolean {
   const hash = ev.citation.indexOf("#");
@@ -152,9 +161,16 @@ function verifySpec(ev: RawJuryEvidence, ctx: EvidenceCheckContext): boolean {
   const path = ev.citation.slice(0, hash);
   const anchor = slugify(ev.citation.slice(hash + 1));
   if (path.length === 0 || anchor.length === 0) return false;
+  // Reject absolute citations outright (they are not worktree-relative).
+  if (isAbsolute(path)) return false;
   const globs = ctx.specDocsGlobs ?? DEFAULT_SPEC_DOCS_GLOBS;
-  if (!globs.some((g) => minimatch(path, g, SPEC_MATCH_OPTS))) return false;
+  const matchedGlobs = globs.filter((g) => minimatch(path, g, SPEC_MATCH_OPTS));
+  if (matchedGlobs.length === 0) return false;
   const abs = resolve(ctx.worktreePath, path);
+  // The resolved path must stay inside the static-prefix spec root of at least
+  // one glob it matched (defense-in-depth against a `..`-escaping citation that
+  // the glob nonetheless matched on the raw string).
+  if (!resolvedStaysInSpecRoot(abs, ctx.worktreePath, matchedGlobs)) return false;
   let content: string;
   try {
     content = readFileSync(abs, "utf8");
@@ -165,6 +181,54 @@ function verifySpec(ev: RawJuryEvidence, ctx: EvidenceCheckContext): boolean {
   // Exactly one heading matches -> verified. Zero (missing) or many
   // (ambiguous) -> false (fail-closed, deterministic).
   return matches === 1;
+}
+
+/**
+ * Whether the resolved absolute path stays INSIDE the static-prefix root of at
+ * least one of the matched globs. Each glob's spec root is its leading path
+ * segments BEFORE the first wildcard segment, resolved against the worktree. A
+ * path is in-root iff its worktree-relative form against that root is non-empty,
+ * does not start with `..`, and is not itself absolute (fail-closed default: an
+ * empty static prefix anchors to the worktree root).
+ */
+function resolvedStaysInSpecRoot(
+  abs: string,
+  worktreePath: string,
+  matchedGlobs: readonly string[],
+): boolean {
+  return matchedGlobs.some((g) => {
+    const root = resolve(worktreePath, globStaticPrefix(g));
+    const rel = relative(root, abs);
+    return (
+      rel.length > 0 &&
+      rel !== ".." &&
+      !rel.startsWith(`..${sep}`) &&
+      !isAbsolute(rel)
+    );
+  });
+}
+
+/**
+ * The static (wildcard-free) leading directory prefix of a glob. Segments are
+ * scanned until the first one containing a glob magic character
+ * (`*?[]{}!+@()`); everything before it is the literal root. `docs/specs/**\/*.md`
+ * -> `docs/specs`; `docs/specs/+(..)/x.md` -> `docs/specs`; `**\/*.md` -> "".
+ */
+function globStaticPrefix(glob: string): string {
+  const segments = glob.split("/");
+  const literal: string[] = [];
+  for (const segment of segments) {
+    if (/[*?[\]{}!+@()]/.test(segment)) break;
+    literal.push(segment);
+  }
+  // Drop a trailing literal FILE segment (it is not a directory prefix). A
+  // segment is a file only when it is the LAST glob segment and contains a dot;
+  // for prefix purposes we keep directory segments only.
+  if (literal.length === segments.length && literal.length > 0) {
+    // Whole glob is literal (no wildcard): the last segment is the file itself.
+    literal.pop();
+  }
+  return literal.join("/");
 }
 
 /** Extract the GitHub-style slug of every ATX heading line in the markdown. */

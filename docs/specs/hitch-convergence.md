@@ -365,7 +365,11 @@ The deliberation can only *add* safety; it can never relax a decision (design
 3. **State transitions stay harness-only.** `repo.classifyFinding` runs **only**
    on a Stage-5 `auto_confirm` (never from LLM output), and only after Phase 3
    re-verifies the finding is still `unknown` + open and re-stats its file
-   citations. Hitch status syncs deterministically via
+   citations. The same still-`unknown`+open re-check is applied to the
+   operator-origin findings snapshotted in Phase 1 before they are bundled into
+   the escalate packet: one classified by a human/process during the (long)
+   Phase-2 deliberation is dropped from the packet (no spurious escalate on a
+   stale snapshot). Hitch status syncs deterministically via
    `recordConvergenceDecisionWithStatus`. The LLM never writes finding scope /
    severity / lifecycle / hitch status. A drive that lost its lease mid-run is
    **non-authoritative**: the runner checks the lease signal before any Phase-3
@@ -453,9 +457,15 @@ ignores any model-supplied `verified` flag and recomputes existence:
 
 - `file` (`<path>[:line[-line]]`): the path resolves under the run worktree as a
   file, and any cited line is within range. `resolvedRef` is the absolute path.
+  An absolute citation, or a `..`-escaping one whose resolved path leaves the
+  worktree, is rejected (fail-closed) before any read.
 - `spec` (`<md-path>#<anchor>`): the md is covered by `specDocsGlobs` (default
   `docs/specs/**/*.md`) and exactly one heading slug equals the anchor (missing
-  → false; duplicate-ambiguous → false, fail-closed).
+  → false; duplicate-ambiguous → false, fail-closed). Mirroring the `file` guard,
+  an absolute citation, or a `..`-escaping path that the glob nonetheless matched
+  on the raw string but whose resolved path leaves the glob's static-prefix spec
+  root, is rejected before any read (so a citation cannot read a markdown file
+  OUTSIDE the spec tree).
 - `policy`: the citation names an existing domain key, or string-equals a glob in
   any domain's `read` / `write` / `deny_write` list.
 

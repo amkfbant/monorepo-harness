@@ -411,6 +411,50 @@ describe("generateJuryProposals — per-lens divergence (split injection)", () =
   });
 });
 
+describe("generateJuryProposals — FIX 2 (codex P2): stale stdout truncation", () => {
+  it("a runner that exits 0 WITHOUT writing stdout does NOT reparse a stale prior proposal", async () => {
+    // Pre-seed every lens's deterministic stdout log path with a STALE valid
+    // proposal JSON (as if a prior retry wrote a `complete` in_scope proposal),
+    // then run a runner that exits 0 but NEVER overwrites stdout. Without the
+    // pre-run truncation, readFile(paths.stdout) would parse the STALE proposal
+    // -> complete (stale output drives the gate). With truncation the file is
+    // empty -> parse_error (fail-closed).
+    const stale = proposeJson("in_scope");
+    const lp = logPaths("propose-stale");
+    for (const lens of JURY_LENSES) {
+      const p = lp(FINDING.findingId, lens, "propose");
+      mkdirSync(join(p.stdout, ".."), { recursive: true });
+      writeFileSync(p.stdout, stale, "utf8");
+    }
+    // A runner that exits 0 but writes NOTHING to stdout (the codex finished
+    // cleanly yet produced no fresh output for this invocation).
+    const noWriteRunner: CodexExecRunner = {
+      async run() {
+        return { exitCode: 0, timedOut: false, aborted: false, durationMs: 0 };
+      },
+    };
+    const proposals = await generateJuryProposals(
+      {
+        reviewerRunner: noWriteRunner,
+        harnessRoot: worktreePath,
+        worktreePath,
+        logPaths: lp,
+        timeoutMs: 60_000,
+        parseSchema: undefined,
+        auditDir,
+        evidenceCtx: evidenceCtx(),
+      },
+      FINDING,
+    );
+    expect(proposals).toHaveLength(3);
+    for (const p of proposals) {
+      // NOT the stale `complete` in_scope proposal — the empty stdout fails to
+      // parse, so the stage is parse_error (fail-closed), never `complete`.
+      expect(p.proposalStatus).toBe("parse_error");
+    }
+  });
+});
+
 describe("generateJuryProposals — DB-closed (Stage1)", () => {
   it("creates no sqlite DB file anywhere under the worktree or audit dir", async () => {
     // Stage1 runs DB-closed: the proposer is given NO dbPath/handle, so it

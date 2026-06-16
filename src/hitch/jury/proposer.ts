@@ -185,8 +185,14 @@ async function proposeForLens(
 ): Promise<JuryClassificationProposal> {
   const prompt = buildProposePrompt(lens, finding);
   const paths = deps.logPaths(finding.findingId, lens, "propose");
+  // P2 (codex): the stdout/stderr/events paths are DETERMINISTIC and reused on
+  // retry. TRUNCATE them before the run so a codex that exits 0 WITHOUT writing
+  // stdout cannot leave a STALE prior proposal for readFile to reparse (which
+  // would drive the gate from stale output). Truncation makes the empty file
+  // fail to parse -> parse_error (fail-closed).
   for (const p of [paths.stdout, paths.stderr, paths.events]) {
     await mkdir(dirname(p), { recursive: true });
+    await writeFile(p, "", "utf8");
   }
   const result = await runJuryCodex(deps, {
     worktreePath: deps.worktreePath,

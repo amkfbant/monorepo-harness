@@ -11,7 +11,10 @@ import {
 } from "../types.js";
 import { deliberate, type DeliberationOutcome } from "./deliberate.js";
 import { verifyEvidence } from "./evidence.js";
-import { buildSeverityAuditPacket } from "./decision-packet.js";
+import {
+  buildBundledSeverityAuditPacket,
+  type SeverityAuditPacketInput,
+} from "./decision-packet.js";
 import { persistAuditRows } from "./classify-persistence.js";
 import {
   buildBundledPacket,
@@ -24,7 +27,6 @@ import type {
   ClassifyRunnerResult,
   CompiledPolicyView,
   EvidenceCheckContext,
-  HitchDecisionPacket,
   JuryProposerDeps,
   JuryLens,
   JuryStage,
@@ -357,22 +359,34 @@ function runPhase3(
   };
   return withManagedDb({ dbPath: deps.dbPath }, (db) => {
     const repo = new HitchRepository(db);
+    // FIX 4 (codex P2): operator-origin unknowns are snapshotted in Phase 1, but
+    // a human/process may classify one during the long Phase 2. Mirror the jury
+    // candidates' `stillUnknownOpen` re-check: re-read each operator finding's
+    // CURRENT state and DROP any that is no longer unknown+open before bundling
+    // it into the escalate packet. A stale snapshot must not escalate a finding
+    // that has since been resolved (no spurious escalate, fail-closed-safe).
+    const freshOperatorOrigin = operatorOrigin.filter((f) =>
+      stillUnknownOpen(repo.getFinding(f.findingId)),
+    );
     const bundle: EscalateBundle = {
       splits: [],
-      operatorFindings: [...operatorOrigin],
+      operatorFindings: [...freshOperatorOrigin],
       operatorDeliberationIds: {},
       reasons: [],
     };
-    for (const f of operatorOrigin) {
+    for (const f of freshOperatorOrigin) {
       bundle.operatorDeliberationIds[f.findingId] = "";
     }
-    if (operatorOrigin.length > 0) {
+    if (freshOperatorOrigin.length > 0) {
       bundle.reasons.push(
-        `${operatorOrigin.length} operator-origin unknown finding(s) require manual classification`,
+        `${freshOperatorOrigin.length} operator-origin unknown finding(s) require manual classification`,
       );
     }
 
-    let severityDivergedPacket: HitchDecisionPacket | undefined;
+    // Accumulate EVERY severity-divergent auto_confirm in the batch (codex P2):
+    // a single bundled advisory packet must cover ALL of them (R14), not just the
+    // first. Each entry carries the per-finding deliberationId + audit.
+    const severityDivergent: SeverityAuditPacketInput[] = [];
 
     for (const dc of deliberated) {
       const { candidate, outcome } = dc;
@@ -413,9 +427,11 @@ function runPhase3(
           scopeStatus: autoConfirmScope,
           reason: `jury auto_confirm (deliberation_id=${outcome.deliberationId})`,
         });
-        // (e) severity diverged -> surface a non-escalating severity packet (D2b).
-        if (outcome.severityAudit.escalate && severityDivergedPacket === undefined) {
-          severityDivergedPacket = buildSeverityAuditPacket({
+        // (e) severity diverged -> accumulate for the bundled non-escalating
+        // severity packet (D2b). EVERY divergence is collected, not just the
+        // first, so the bundled packet covers them all (codex P2).
+        if (outcome.severityAudit.escalate) {
+          severityDivergent.push({
             finding: current,
             deliberationId: outcome.deliberationId,
             audit: toPacketSeverityAudit(outcome),
@@ -451,8 +467,11 @@ function runPhase3(
 
     return {
       resolved: true,
-      ...(severityDivergedPacket !== undefined
-        ? { severityAuditPacket: severityDivergedPacket }
+      ...(severityDivergent.length > 0
+        ? {
+            severityAuditPacket:
+              buildBundledSeverityAuditPacket(severityDivergent),
+          }
         : {}),
       ...(moreCandidatesPending ? { moreUnknownsPending: true } : {}),
     };

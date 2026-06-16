@@ -569,6 +569,41 @@ describe("runCritiqueRound — fail-closed (timeout/parse/exit)", () => {
   });
 });
 
+describe("runCritiqueRound — FIX 2 (codex P2): stale stdout truncation", () => {
+  it("a runner that exits 0 WITHOUT writing stdout does NOT reparse a stale prior critique", async () => {
+    // Pre-seed every lens's deterministic critique stdout path with a STALE
+    // VALID critique JSON (as if a prior retry wrote a `complete` round-2
+    // critique), then run a runner that exits 0 but never overwrites stdout.
+    // Without pre-run truncation, readFile would parse the stale critique ->
+    // complete; with truncation the empty file -> inconclusive (fail-closed).
+    const lp = logPaths();
+    for (const lens of JURY_LENSES) {
+      const p = lp(FINDING.findingId, lens, "critique");
+      mkdirSync(join(p.stdout, ".."), { recursive: true });
+      writeFileSync(
+        p.stdout,
+        critiqueJsonForLens(lens, { revisedScope: "in_scope", voteChanged: false }),
+        "utf8",
+      );
+    }
+    const noWriteRunner: CodexExecRunner = {
+      async run() {
+        return { exitCode: 0, timedOut: false, aborted: false, durationMs: 0 };
+      },
+    };
+    const out = await runCritiqueRound(deps(noWriteRunner), FINDING, [
+      r1("correctness", "in_scope"),
+      r1("scope_fit", "in_scope"),
+      r1("spec_adherence", "out_of_scope"),
+    ]);
+    for (const p of out) {
+      expect(p.round).toBe(2);
+      // NOT the stale `complete` critique — the empty stdout fails to parse.
+      expect(p.proposalStatus).toBe("inconclusive");
+    }
+  });
+});
+
 describe("runCritiqueRound — DB-closed (Stage3)", () => {
   it("creates no sqlite DB file anywhere under the worktree or audit dir", async () => {
     const map: RoutingMap = {};

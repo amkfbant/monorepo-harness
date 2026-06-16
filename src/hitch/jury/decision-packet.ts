@@ -303,38 +303,64 @@ export function buildOperatorOriginPacket(
 export function buildSeverityAuditPacket(
   input: SeverityAuditPacketInput,
 ): HitchDecisionPacket {
+  return buildBundledSeverityAuditPacket([input]);
+}
+
+const EMPTY_SEVERITY_GATE_TRACE: HitchDecisionPacket["deliberation"]["gateTrace"] =
+  {
+    scopeUnanimous: false,
+    lensDistinct: false,
+    noInconclusive: false,
+    allHaveVerifiedEvidence: false,
+    proximityOk: false,
+    refuterUpheld: null,
+  };
+
+/**
+ * Build a SINGLE advisory `review_severity` packet bundling EVERY severity-
+ * diverged finding in a batch (R14 / codex P2). The previous classify runner
+ * kept only the FIRST divergent finding's packet, so additional divergences had
+ * persisted audit rows but no convergence decision/packet for operators. This
+ * bundles all of them: `findings[]` and `nextActions[]` cover EVERY divergent
+ * finding (none hidden). The top-level `severityAudit` SUMMARY field can only
+ * carry one audit (the lead's) — per-finding linkage lives in `findings[]`
+ * (each with its own `deliberationId`); an empty input yields no packet (caller
+ * only surfaces a packet when at least one divergence exists).
+ */
+export function buildBundledSeverityAuditPacket(
+  inputs: readonly SeverityAuditPacketInput[],
+): HitchDecisionPacket {
+  const lead = inputs[0];
   return {
     packetVersion: 2,
     decisionKinds: ["severity_audit"],
-    findings: [toPacketFinding(input.finding, input.deliberationId, "harness")],
+    findings: inputs.map((i) =>
+      toPacketFinding(i.finding, i.deliberationId, "harness"),
+    ),
     recommendation: {
       action: "review_severity",
-      rationale: `jury severity audit ${input.audit.status}; harness severity ${input.audit.harnessSeverity} unchanged (advisory)`,
+      rationale:
+        lead !== undefined
+          ? `jury severity audit ${lead.audit.status}; harness severity ${lead.audit.harnessSeverity} unchanged (advisory)` +
+            (inputs.length > 1 ? ` — ${inputs.length} findings diverged` : "")
+          : "no severity divergence",
     },
     evaluationAxes: [],
     deliberation: {
       critiqueRan: false,
       refuter: null,
-      gateTrace: {
-        scopeUnanimous: false,
-        lensDistinct: false,
-        noInconclusive: false,
-        allHaveVerifiedEvidence: false,
-        proximityOk: false,
-        refuterUpheld: null,
-      },
+      gateTrace: EMPTY_SEVERITY_GATE_TRACE,
     },
     rejectedProposals: [],
     minorityView: null,
     riskFlags: [],
     unvalidatedAssumptions: [],
-    nextActions: [
-      {
-        owner: "operator",
-        action: `review severity for finding ${input.finding.findingId} (jury ${input.audit.status})`,
-        verificationMethod: `severity decision recorded for finding ${input.finding.findingId}`,
-      },
-    ],
-    severityAudit: input.audit,
+    nextActions: inputs.map((i) => ({
+      owner: "operator" as const,
+      action: `review severity for finding ${i.finding.findingId} (jury ${i.audit.status})`,
+      verificationMethod: `severity decision recorded for finding ${i.finding.findingId}`,
+    })),
+    // SUMMARY field: the lead's audit (per-finding linkage is in findings[]).
+    ...(lead !== undefined ? { severityAudit: lead.audit } : {}),
   };
 }

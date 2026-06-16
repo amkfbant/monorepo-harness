@@ -648,6 +648,54 @@ describe("classify runner — 3 phase deliberation (#230 D1)", () => {
     expect(readFinding(h, operatorFid).scopeStatus).toBe("unknown");
   });
 
+  it("FIX 4 (codex P2): an operator-origin finding classified DURING Phase 2 is re-checked and DROPPED from the escalate packet (no spurious escalate)", async () => {
+    const h = makeHarness("opfresh");
+    // ONE harness-origin (review) jury candidate that cleanly auto_confirms, and
+    // ONE operator-origin (human) unknown finding snapshotted in Phase 1.
+    const harnessFid = seedFinding(h, "opfresh", {
+      source: "review",
+      summary: "harness auto-confirm finding",
+      filePath: "src/a.ts",
+      category: "core",
+    });
+    const operatorFid = seedFinding(h, "opfresh", {
+      source: "human",
+      summary: "operator concern resolved mid-run",
+    });
+    // A runner that, on its FIRST codex call (a Phase-2 jury propose), classifies
+    // the OPERATOR finding out-of-band (a human/process resolves it during the
+    // long Phase 2). Phase 3 must re-check it via stillUnknownOpen and DROP it.
+    let classifiedOperator = false;
+    const racing: CodexExecRunner = {
+      run: async (input) => {
+        if (!classifiedOperator) {
+          classifiedOperator = true;
+          const { db, close } = openManagedDb({ dbPath: h.dbPath });
+          try {
+            new HitchRepository(db).classifyFinding({
+              findingId: operatorFid,
+              scopeStatus: "out_of_scope",
+              reason: "operator classified during Phase 2",
+            });
+          } finally {
+            close();
+          }
+        }
+        return routingRunner(unanimousRouting("in_scope")).run(input);
+      },
+    };
+    const r = await makeRunners(h, racing).classify("opfresh");
+
+    // The operator finding is no longer unknown -> it is NOT escalated. With the
+    // harness finding auto_confirmed and nothing else needing escalation, the
+    // result is a CLEAN resolved:true (NOT a spurious escalate on a stale snapshot).
+    expect(r.resolved).toBe(true);
+    // the out-of-band operator classification stands (jury never re-touched it).
+    expect(readFinding(h, operatorFid).scopeStatus).toBe("out_of_scope");
+    // the harness candidate auto_confirmed in_scope.
+    expect(readFinding(h, harnessFid).scopeStatus).toBe("in_scope");
+  });
+
   it("severity diverged on an auto_confirm: scope is classified, severity is UNCHANGED, a non-escalating severity packet is surfaced (D2b)", async () => {
     const h = makeHarness("sevdiv");
     // Seed a finding with harness severity P2; the jury unanimously agrees
@@ -687,6 +735,57 @@ describe("classify runner — 3 phase deliberation (#230 D1)", () => {
     expect(audit?.audit_status).toBe("diverged");
     expect(audit?.escalate_flag).toBe(1);
     expect(audit?.jury_severity).toBe("P0");
+  });
+
+  it("FIX 3 (codex P2): a batch with TWO severity-diverged auto_confirms surfaces ONE bundled severity packet covering BOTH findings", async () => {
+    const h = makeHarness("sevdiv2");
+    // TWO harness-origin still-unknown findings (both harness severity P2). The
+    // jury auto_confirms BOTH in_scope but proposes a DIVERGENT severity P0 for
+    // both -> both produce a severityAudit with escalate:true. Only the FIRST
+    // packet was previously kept; the bundled packet must cover BOTH.
+    const fid1 = seedFinding(h, "sevdiv2", {
+      source: "review",
+      summary: "first severity-diverged finding",
+      filePath: "src/a.ts",
+      category: "core",
+      severity: "P2",
+    });
+    const fid2 = seedFinding(h, "sevdiv2", {
+      source: "review",
+      summary: "second severity-diverged finding",
+      filePath: "src/a.ts",
+      category: "core",
+      severity: "P2",
+    });
+    const r = await makeRunners(
+      h,
+      routingRunner(severityDivergedRouting("P0")),
+    ).classify("sevdiv2");
+
+    expect(r.resolved).toBe(true);
+    if (!r.resolved) throw new Error("unreachable");
+    // BOTH scopes auto_confirmed in_scope (severity advisory only, unchanged).
+    expect(readFinding(h, fid1).scopeStatus).toBe("in_scope");
+    expect(readFinding(h, fid2).scopeStatus).toBe("in_scope");
+    expect(readFinding(h, fid1).severity).toBe("P2");
+    expect(readFinding(h, fid2).severity).toBe("P2");
+
+    // ONE bundled severity packet covers BOTH divergent findings (not just the
+    // first): both finding ids appear in findings[] AND in nextActions[].
+    const packet = r.severityAuditPacket;
+    expect(packet).toBeDefined();
+    if (packet === undefined) throw new Error("unreachable");
+    expect(packet.decisionKinds).toContain("severity_audit");
+    const packetIds = packet.findings.map((f) => f.findingId);
+    expect(packetIds).toContain(fid1);
+    expect(packetIds).toContain(fid2);
+    const actionsBlob = packet.nextActions.map((a) => a.action).join(" | ");
+    expect(actionsBlob).toContain(fid1);
+    expect(actionsBlob).toContain(fid2);
+
+    // Both advisory severity audit rows are persisted (per-finding divergence).
+    expect(readSeverityAudit(h, fid1)?.escalate_flag).toBe(1);
+    expect(readSeverityAudit(h, fid2)?.escalate_flag).toBe(1);
   });
 });
 

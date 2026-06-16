@@ -197,6 +197,46 @@ describe("verifyEvidence — spec kind", () => {
     );
     expect(out.verified).toBe(false);
   });
+
+  it("FIX 1 (codex P2): a '../'-escaping spec citation that glob-matches but RESOLVES outside the spec root -> verified false even with the anchor present", () => {
+    // Place a markdown file with the "## Bar" anchor OUTSIDE the spec tree, at
+    // docs/escape.md (the parent of docs/specs). An operator-set glob that
+    // permits a `..` segment (minimatch's extglob `+(..)`) lets the RAW citation
+    // `docs/specs/../escape.md` pass the glob check; the path then resolves to
+    // docs/escape.md, OUTSIDE the docs/specs spec root. Without the resolved-path
+    // traversal guard the code would read that out-of-tree md and verify the
+    // anchor (verified:true). The guard must keep it verified:false.
+    writeFileSync(
+      join(worktreePath, "docs", "escape.md"),
+      ["# Escape", "", "## Bar", "", "secret body", ""].join("\n"),
+    );
+    const escapingCtx: EvidenceCheckContext = {
+      worktreePath,
+      compiledPolicy: { global: GLOBAL, repo: REPO },
+      // an operator-provided glob that minimatch matches against a `..` path
+      specDocsGlobs: ["docs/specs/+(..)/escape.md"],
+    };
+    const out = verifyEvidence(
+      { citation: "docs/specs/../escape.md#bar", kind: "spec", claim: "c" },
+      escapingCtx,
+    );
+    expect(out.verified).toBe(false);
+  });
+
+  it("FIX 1 (codex P2): an ABSOLUTE-path spec citation -> verified false (fail-closed)", () => {
+    // An absolute spec citation can point anywhere on the host fs; reject it
+    // outright before reading (mirrors the file-kind absolute-path guard).
+    const abs = join(worktreePath, "docs", "specs", "foo.md");
+    const out = verifyEvidence(
+      { citation: `${abs}#bar`, kind: "spec", claim: "c" },
+      {
+        worktreePath,
+        compiledPolicy: { global: GLOBAL, repo: REPO },
+        specDocsGlobs: ["**/*.md"],
+      },
+    );
+    expect(out.verified).toBe(false);
+  });
 });
 
 describe("verifyEvidence — policy kind", () => {
