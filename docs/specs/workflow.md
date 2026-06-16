@@ -1057,6 +1057,21 @@ block するため不可。severity mapping は authoritative・不変であり�
 advisory に限る（状態遷移は harness のみ・LLM が status を倒さない）。record 後は
 `moreUnknownsPending` の halt 判定を適用してから loop を継続する。
 
+**packet の後方互換 read（packetVersion・#230 D6 / design §0.1 R6）**: `decisionPacket`
+は現行 `packetVersion: 2`（consultant 級 MCDA）。一方、旧版ハーネスが
+`hitch_convergence_decisions.recommended_next_action` に永続化した `packetVersion: 1`
+の packet 行は migration で消えず DB に残り得る（`deliberation` / `evidence` /
+`findings[].deliberationId` が**欠落**）。stored decision を読む経路は **packet shape に
+非依存**で設計する: 既存 reader（`HitchRepository.listDecisions` → `rowToDecision` は
+`recommended_next_action` を丸ごと `JSON.parse` して `HitchNextAction` として返すだけ・
+packet sub-field を触らない / CLI `hitch status` は decisions をそのまま JSON・
+`formatHitchStatusLine`〔packet 非参照〕へ渡す / MCP・CLI の run summary は
+`recommendedNextAction.kind`〔v1/v2 共通〕のみ参照 / dashboard snapshot・data-source は
+両 field を参照しない）。将来 packet sub-field を読む reader を足す場合は **`packetVersion`
+で discriminate ＋ optional chaining ＋ default fallback** を徹底し、v1 行（v2 専用 field
+は undefined）で throw しないこと。v1/v2 双方の read-back round-trip は
+`decision-packet-reader-compat.test.ts` で固定する。
+
 **rerun への finding 注入**: `rerun` 系 attempt（prior coding attempt が既に
 ある coder 実行）では、open in-scope finding（lifecycle が `open`/`reopened`/
 `escalated`）を集約して coder のゴール文言末尾に「Open in-scope findings to
