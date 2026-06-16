@@ -72,8 +72,9 @@ frozen v2 の `aggregateJuryVotes` は unanimous-only（多数決より安全）
 - `recordConvergenceDecisionWithStatus` は既定で status sync するため、**advisory 記録には `updateStatus:false` を必須**にする
   （hitch status を `escalated` に倒さない）。
 - WI DAG に **D2b** を独立追加: 「`resolved:true ∧ severityAuditPacket≠null` のとき orchestrator が
-  `recordConvergenceDecisionWithStatus({ updateStatus:false, recommendedNextAction.decisionPacket })` で **non-escalating に 1 回記録**」。
-- RED: 「scope unanimous + severity diverged → **hitch status 不変・packet が convergence decision に永続化**」。
+  `recordConvergenceDecisionWithStatus({ updateStatus:false, decision:<非blocking>, recommendedNextAction.decisionPacket })` で **non-escalating に 1 回記録**」。
+- **decision 値は非 blocking（`escalate` 不可）**（codex#252）: course rollup は最新 `hitch_convergence_decisions` の `decision` 値で blocking 判定するため、`escalate` だと updateStatus:false でも linked phase を block する。rollup の blocked-set 外の値を使う（実装時 grep で確定）。
+- RED: 「scope unanimous + severity diverged → **hitch status 不変・course/phase rollup も不変・packet が convergence decision に永続化**」。
 
 **R4. DB audit linkage（deliberation_id）**（codex P1-4）
 - 1 finding の 1 回の deliberation 実行を束ねる **`deliberation_id TEXT`**（app 層生成の決定論 ID / 例 `sha256(hitchId|findingId|gate_input_sha256)`）を
