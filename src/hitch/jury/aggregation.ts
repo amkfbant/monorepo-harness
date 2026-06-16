@@ -164,12 +164,22 @@ function evidenceProximityOk(
   e: VerifiedJuryEvidence,
   finding: DeliberationInput["finding"],
 ): boolean {
-  const seg = (p: string) => (p.split(":")[0] ?? p).split("/").slice(0, 2).join("/");
-  if (e.kind === "file")
-    return finding?.filePath !== undefined && seg(e.citation) === seg(finding.filePath);
+  // Fail-closed against malformed (non-string) inputs: the gate is the sole
+  // arbiter of auto_confirm vs escalate, so a non-string citation/ref must
+  // return false (-> escalate), NEVER throw (a throw could crash the
+  // orchestrator instead of safely escalating). seg() returns "" for any
+  // non-string, which can never equal a real path segment.
+  const seg = (p: unknown): string =>
+    typeof p === "string" ? (p.split(":")[0] ?? p).split("/").slice(0, 2).join("/") : "";
+  if (e.kind === "file") {
+    if (finding?.filePath === undefined || typeof e.citation !== "string") return false;
+    return seg(e.citation) === seg(finding.filePath);
+  }
   // spec/policy: codex#252-P1 — token-split, exact match (substring not allowed).
   if (finding?.category === undefined) return false;
-  const tokens = (e.resolvedRef ?? e.citation).split(/[/#:.\s]+/).filter(Boolean);
+  const ref = e.resolvedRef ?? e.citation;
+  if (typeof ref !== "string") return false;
+  const tokens = ref.split(/[/#:.\s]+/).filter(Boolean);
   return tokens.includes(finding.category);
 }
 

@@ -57,6 +57,14 @@ beforeAll(() => {
     join(worktreePath, "docs", "specs", "foo.md"),
     ["# Foo", "", "intro text", "", "## Bar", "", "bar body", ""].join("\n"),
   );
+  // docs/specs/dup.md — two headings that slugify to the SAME anchor ("bar").
+  // The duplicate-anchor case must fail-closed (ambiguous -> verified false).
+  writeFileSync(
+    join(worktreePath, "docs", "specs", "dup.md"),
+    ["# Dup", "", "## Bar", "", "first bar", "", "## Bar", "", "second bar", ""].join(
+      "\n",
+    ),
+  );
 });
 
 afterAll(() => {
@@ -126,6 +134,16 @@ describe("verifyEvidence — spec kind", () => {
   it("missing heading anchor -> verified false", () => {
     const out = verifyEvidence(
       { citation: "docs/specs/foo.md#nonexistent", kind: "spec", claim: "c" },
+      ctx(),
+    );
+    expect(out.verified).toBe(false);
+  });
+
+  it("FINDING 4: duplicate-anchor (two headings slugify to the same anchor) -> verified false (ambiguous -> fail-closed)", () => {
+    // dup.md has two "## Bar" headings that both slugify to "bar"; the
+    // matches===1 logic in verifySpec must reject the ambiguous citation.
+    const out = verifyEvidence(
+      { citation: "docs/specs/dup.md#bar", kind: "spec", claim: "c" },
       ctx(),
     );
     expect(out.verified).toBe(false);

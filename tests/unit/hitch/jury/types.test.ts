@@ -23,6 +23,9 @@ describe("jury/types", () => {
       kind: "file",
       claim: "x",
     };
+    // NOTE: the load-bearing, typecheck-gated proof of this brand boundary is
+    // `_assertRawIsNotVerified` in src/hitch/jury/types.ts — this @ts-expect-error
+    // directive is NOT typecheck-gated because tsconfig excludes tests/ from tsc.
     // @ts-expect-error RawJuryEvidence は VerifiedJuryEvidence に代入不可
     // (unverified evidence cannot reach the gate by type — `verified` missing).
     const verified: VerifiedJuryEvidence = raw;
