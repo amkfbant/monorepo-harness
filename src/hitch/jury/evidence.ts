@@ -1,5 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, relative, isAbsolute, sep } from "node:path";
 import { minimatch } from "minimatch";
 import type {
   EvidenceCheckContext,
@@ -58,8 +58,16 @@ export function verifyEvidence(
 
 /**
  * A `file` citation is `<path>[:line]` or `<path>[:start-end]`. It is verified
- * iff `worktreePath/<path>` exists as a file AND (no line given OR every cited
- * line is within the file's line count). `resolvedRef` is the absolute path.
+ * iff `worktreePath/<path>` exists as a file AND the resolved path stays INSIDE
+ * the worktree (no absolute path, no `..` escape — design §0.1 R1 fail-closed)
+ * AND (no line given OR every cited line is within the file's line count).
+ * `resolvedRef` is the absolute (in-tree) path.
+ *
+ * Path-traversal guard (codex P1): a citation like `src/a.ts/../../package.json`
+ * resolves to an out-of-tree file and would otherwise existence-verify AND spoof
+ * proximity (the raw first segment looks in-tree). We reject any absolute
+ * citation and any resolved path whose worktree-relative form is empty, escapes
+ * with `..`, or is itself absolute (Windows drive switch) -> verified:false.
  */
 function verifyFile(
   ev: RawJuryEvidence,
@@ -68,7 +76,16 @@ function verifyFile(
   const parsed = parseFileCitation(ev.citation);
   if (parsed === undefined) return { ...ev, verified: false };
   const { path, startLine, endLine } = parsed;
+  // Reject absolute citations outright (they are not worktree-relative).
+  if (isAbsolute(path)) return { ...ev, verified: false };
   const abs = resolve(ctx.worktreePath, path);
+  // Reject any resolved path that escapes the worktree (`..` traversal or a
+  // different root). The relative form must be a non-empty, non-`..`,
+  // non-absolute in-tree path.
+  const rel = relative(ctx.worktreePath, abs);
+  if (rel.length === 0 || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    return { ...ev, verified: false };
+  }
   let lineCount: number;
   try {
     const st = statSync(abs);

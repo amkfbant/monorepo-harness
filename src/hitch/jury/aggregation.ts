@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import {
   JURY_LENSES,
   type JuryClassificationProposal,
@@ -182,8 +183,12 @@ export function isWeakEvidence(
  * unrelated-domain citation yields `false` -> escalate (strictly safer):
  *
  * - `file` kind: requires `finding.filePath` AND the first two path segments
- *   (after stripping any `:line` suffix) of the citation equal those of
- *   `finding.filePath`. Missing `finding.filePath` -> `false` (fail-closed).
+ *   of the NORMALIZED citation (after stripping any `:line` suffix and
+ *   collapsing `.`/`..`) equal those of the normalized `finding.filePath`.
+ *   Normalizing first (codex P1) means a `..`-traversal citation like
+ *   `src/a.ts/../../vendor/x.ts` is compared as `vendor/x.ts` and CANNOT spoof
+ *   the `src/a.ts` first segment. Missing `finding.filePath` -> `false`
+ *   (fail-closed).
  * - `spec`/`policy` kind: requires `finding.category` AND the citation's
  *   token-split (`resolvedRef ?? citation` on `/[/#:.\s]+/`) to INCLUDE
  *   `finding.category` as an exact token (NOT substring, so `api` does not
@@ -198,8 +203,16 @@ function evidenceProximityOk(
   // return false (-> escalate), NEVER throw (a throw could crash the
   // orchestrator instead of safely escalating). seg() returns "" for any
   // non-string, which can never equal a real path segment.
-  const seg = (p: unknown): string =>
-    typeof p === "string" ? (p.split(":")[0] ?? p).split("/").slice(0, 2).join("/") : "";
+  //
+  // The path is NORMALIZED (posix.normalize) BEFORE taking the first two
+  // segments so a `..`-traversal cannot keep a misleading in-tree prefix.
+  // posix.normalize on an absolute or escaping path keeps a leading "/" or
+  // "../" segment, which can never equal a real worktree-relative segment.
+  const seg = (p: unknown): string => {
+    if (typeof p !== "string") return "";
+    const withoutLine = p.split(":")[0] ?? p;
+    return posix.normalize(withoutLine).split("/").slice(0, 2).join("/");
+  };
   if (e.kind === "file") {
     if (finding?.filePath === undefined || typeof e.citation !== "string") return false;
     return seg(e.citation) === seg(finding.filePath);

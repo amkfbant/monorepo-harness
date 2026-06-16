@@ -120,6 +120,45 @@ describe("verifyEvidence — file kind", () => {
     );
     expect(out.verified).toBe(false);
   });
+
+  it("FIX 1 (codex P1): a '../'-escaping citation resolving to a REAL out-of-tree file -> verified false (guard, not ENOENT)", () => {
+    // Create a sibling file just OUTSIDE the worktree, then cite it via a
+    // `..`-escape. The file genuinely exists on disk, so only the
+    // path-traversal guard (not ENOENT) can keep this verified:false.
+    const parent = resolve(worktreePath, "..");
+    const escapedName = "harness-jury-escape-target.ts";
+    writeFileSync(join(parent, escapedName), "export const x = 1;\n");
+    try {
+      const out = verifyEvidence(
+        { citation: `src/x.ts/../../${escapedName}:1`, kind: "file", claim: "c" },
+        ctx(),
+      );
+      expect(out.verified).toBe(false);
+    } finally {
+      rmSync(join(parent, escapedName), { force: true });
+    }
+  });
+
+  it("FIX 1 (codex P1): an ABSOLUTE-path citation -> verified false (fail-closed)", () => {
+    // An absolute citation can point anywhere on the host fs; the existence
+    // check must reject it outright (it is not a worktree-relative path).
+    const abs = resolve(worktreePath, "src", "x.ts");
+    const out = verifyEvidence(
+      { citation: abs, kind: "file", claim: "c" },
+      ctx(),
+    );
+    expect(out.verified).toBe(false);
+  });
+
+  it("FIX 1 (codex P1): an in-tree '../'-normalizing citation that stays inside the worktree -> still verifies", () => {
+    // docs/specs/../../src/x.ts normalizes back to src/x.ts, which is INSIDE
+    // the worktree — the guard must not over-reject legitimate in-tree paths.
+    const out = verifyEvidence(
+      { citation: "docs/specs/../../src/x.ts:1", kind: "file", claim: "c" },
+      ctx(),
+    );
+    expect(out.verified).toBe(true);
+  });
 });
 
 describe("verifyEvidence — spec kind", () => {

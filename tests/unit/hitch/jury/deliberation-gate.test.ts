@@ -89,6 +89,27 @@ describe("aggregateDeliberation (monotonic fail-closed)", () => {
     expect(r.decision).toBe("escalate");
     expect(r.gateTrace.proximityOk).toBe(false);
   });
+  it("FIX 1 (codex P1): a '../'-traversal citation cannot spoof the first path segment for proximity -> escalate (proximityOk false)", () => {
+    // The RAW first two segments of "src/a.ts/../../vendor/x.ts" are
+    // ["src","a.ts"], which would naively match finding.filePath "src/a.ts".
+    // Proximity must be computed on the NORMALIZED relative path
+    // (vendor/x.ts), so the spoof fails and the gate escalates.
+    const spoof = [
+      P("correctness", "in_scope", {
+        evidence: [v("src/a.ts/../../vendor/x.ts:1")],
+      }),
+      P("scope_fit", "in_scope", {
+        evidence: [v("src/a.ts/../../vendor/y.ts:1")],
+      }),
+      P("spec_adherence", "in_scope", {
+        evidence: [v("src/a.ts/../../vendor/z.ts:1")],
+      }),
+    ];
+    const r = aggregateDeliberation(D(spoof, "uphold"));
+    expect(r.decision).toBe("escalate");
+    expect(r.gateTrace.proximityOk).toBe(false);
+  });
+
   it("PR1: finding without filePath/category -> proximity fail-closed -> escalate", () => {
     const r = aggregateDeliberation({
       findingId: "f",
