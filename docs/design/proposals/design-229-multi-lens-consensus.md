@@ -344,11 +344,17 @@ rate を引き続きサポートするが #229 では profile から宣言不可
    （reviewer-agent.ts:405）、`review-decision.yaml` / reviewer log を固定 path に書く（:418,512-516）。逐次 N-dispatch
    では (1) reviewer#2 の `snapshotRunDir` が #1 の artifact を pre-existing と見て `verifyArtifactsUnchanged` が
    誤 tamper、(2) 後続が先行 artifact を上書き/読取りして独立性を破壊する。→ **runDir/decisionPath/log を
-   `runDir/reviewers/<path-safe reviewer_id>/…` の per-reviewer subdir に分離**し、**その subdir を
-   `REVIEWER_WRITE_ALLOWLIST`（reviewer-agent.ts:104）に追加**する。`snapshotRunDir`/`verifyArtifactsUnchanged` の
-   baseline は **runDir 全体のまま**に保ち（共有 run artifact＝meta.json / diff / materialized files の tamper 検知を
-   維持。allowlist 外の改変のみ検知）、**baseline を subdir に narrow しない**（narrow すると sandbox/runner 誤設定で
-   共有 artifact が改変されても検知できなくなる defense-in-depth 欠落。codex #257）。**reviewer_id は path component に
+   `runDir/reviewers/<path-safe reviewer_id>/…` の per-reviewer subdir に分離**し、**その subdir prefix の write を
+   許可に加える**。ただし現 `REVIEWER_WRITE_ALLOWLIST`（reviewer-agent.ts:104）は **exact relative-path Set**
+   （`snapshotRunDir` が `has(rel)` で照合）なので、ディレクトリ名を1個足すだけでは `reviewers/alice/reviewer-agent.out.log`
+   等の **nested file を exempt できない**→ **prefix-aware 照合**（`rel` が `reviewers/<id>/` 配下かを startsWith 判定）に
+   拡張する（codex #257）。`snapshotRunDir`/`verifyArtifactsUnchanged` の baseline は **runDir 全体のまま**に保ち（共有 run
+   artifact＝meta.json / diff / materialized files の tamper 検知を維持。per-reviewer subdir prefix の改変のみ exempt）、
+   **baseline を subdir に narrow しない**（narrow すると sandbox/runner 誤設定で共有 artifact が改変されても検知できなく
+   なる defense-in-depth 欠落。codex #257）。**さらに『後続 reviewer が先行 verdict を読めない』独立性**は artifact の write
+   先を移すだけでは不十分（reviewer の `codexRunner.run({worktreePath})` が parent runDir のままだと sibling の
+   `reviewers/<other>/review-decision.yaml` を read できる）→ **reviewer の sandbox/worktreePath root を per-reviewer subdir
+   に scope** するか、各 reviewer に **隔離入力を materialize** して sibling subdir を露出しない（codex #257）。**reviewer_id は path component に
    使う前に path-safe 化必須**（`reviewers.add()`
    は任意文字列を受けるため、`/`・`..` 等で subdir を escape/alias されないよう **`reviewers.add()` 登録時に path-safe
    id を強制**する＝許可文字集合に制約し不正は ValidationError。既存 `slugify`（knowledge-promoter.ts:170-179、base +
