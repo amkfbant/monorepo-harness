@@ -1,9 +1,22 @@
 import type Database from "better-sqlite3";
 import type { DoctorCheck, DoctorFinding } from "./doctor.js";
+import {
+  aggregateDeliberation,
+  selectFinalRound,
+} from "../hitch/jury/aggregation.js";
+import type {
+  DeliberationInput,
+  JuryClassificationProposal,
+  JuryLens,
+  JuryProposalStatus,
+  JuryProposedScope,
+  RefuterVerdict,
+  VerifiedJuryEvidence,
+} from "../hitch/jury/types.js";
 
 /**
  * Doctor checks for the v31 jury audit tables (#230 deliberation jury,
- * design §6.3 / §0.1 R11 / P2f / P2g / P2h).
+ * design §6.3 / §0.1 R11 / P2f / P2g / P2h / P2b).
  *
  * The three jury tables (`jury_classification_proposals`,
  * `jury_classification_refutations`, `jury_severity_audits`) carry NO
@@ -18,13 +31,12 @@ import type { DoctorCheck, DoctorFinding } from "./doctor.js";
  * parses `recommended_next_action` JSON in TS (a SQL-only check cannot
  * reach the nested packet), per R11.
  *
- * NOTE (Layer 3 follow-up): design P2b also asks for an `auto_confirm`
- * legitimacy re-verification check that re-runs `aggregateDeliberation`
- * (Layer 1 / Task B3) over the stored proposals/refutations for
- * jury-confirmed findings. `aggregateDeliberation` does not exist yet, so
- * wiring that check is deferred to Layer 3; importing it now would break
- * typecheck. The three checks below (orphan / hitch mismatch / refutation
- * consistency) are implemented in full.
+ * The `auto_confirm` legitimacy re-verification (design P2b) REPLAYS the
+ * deterministic gate `aggregateDeliberation` over the stored final-round
+ * proposals + refutation for every jury-auto_confirmed finding; if the
+ * replay does NOT yield `auto_confirm` the finding is flagged advisory (a
+ * possible LLM->state leak). This is the post-hoc, mechanized audit of the
+ * safety boundary itself.
  */
 
 const JURY_TABLES = [
@@ -145,8 +157,10 @@ interface RefutationRow {
  *      or there are no proposals — nothing to compare against).
  *  (b) the persisted packet's refuter verdict (parsed from
  *      `recommended_next_action.decisionPacket.deliberation.refuter`) agrees
- *      with the stored refutation.refute_verdict for that finding +
- *      deliberation_id.
+ *      with the stored refutation.refute_verdict — but ONLY for the LEAD
+ *      finding the shared block represents (FIX 3: in a bundled packet the
+ *      single `deliberation.refuter` reflects `findings[0]` only; non-lead
+ *      findings are validated by (a) against their own per-deliberation rows).
  */
 export const juryRefutationMismatchCheck: DoctorCheck = {
   id: "jury.refutation_mismatch",
@@ -265,8 +279,15 @@ function unanimousScope(
  * (a single packet-level ID cannot bundle multiple deliberations — "packet
  * 単一 ID では複数 deliberation を束ねられない"). A mixed-batch escalate
  * packet bundles several findings, each with its own `deliberationId`, under
- * one shared `deliberation.refuter` block. Each findings[] entry therefore
- * maps to the same shared refuter verdict.
+ * one shared `deliberation.refuter` block.
+ *
+ * FIX 3 (codex P1): that single `deliberation.refuter` block reflects ONLY the
+ * LEAD split (`buildJurySplitPacket` sets `deliberation = splits[0]`). Mapping
+ * it to EVERY findings[] entry produces false matches/mismatches for non-lead
+ * findings (whose own refuter lives in their OWN deliberation rows, validated
+ * by the per-deliberation target_scope sub-check (a)). So the shared verdict is
+ * keyed ONLY to the LEAD finding (`findings[0]`); non-lead findings are NOT
+ * compared against the lead's summary block.
  */
 function collectPacketRefuterVerdicts(
   db: Database.Database,
@@ -284,9 +305,11 @@ function collectPacketRefuterVerdicts(
     if (packet === undefined) continue;
     const verdict = packetRefuterVerdict(packet);
     if (verdict === undefined) continue;
-    for (const entry of packetFindingLinks(packet)) {
-      verdicts.set(verdictKey(entry.findingId, entry.deliberationId), verdict);
-    }
+    // Only the LEAD finding (findings[0]) is represented by the shared
+    // deliberation.refuter block; non-lead entries are skipped (FIX 3).
+    const lead = packetLeadFindingLink(packet);
+    if (lead === undefined) continue;
+    verdicts.set(verdictKey(lead.findingId, lead.deliberationId), verdict);
   }
   return verdicts;
 }
@@ -297,24 +320,22 @@ interface PacketFindingLink {
 }
 
 /**
- * Extract each `findings[]` entry's (findingId, deliberationId) linkage from a
- * decision packet. Non-array `findings`, non-record entries, or entries
- * missing either id are skipped defensively (corrupt blobs must not crash).
+ * Extract the LEAD `findings[0]` entry's (findingId, deliberationId) linkage —
+ * the only finding the shared `deliberation.refuter` block authoritatively
+ * represents (FIX 3). Non-array `findings`, a non-record lead entry, or a lead
+ * entry missing either id yields undefined (corrupt blobs must not crash).
  */
-function packetFindingLinks(
+function packetLeadFindingLink(
   packet: Record<string, unknown>,
-): PacketFindingLink[] {
+): PacketFindingLink | undefined {
   const findings = packet.findings;
-  if (!Array.isArray(findings)) return [];
-  const links: PacketFindingLink[] = [];
-  for (const entry of findings) {
-    if (!isRecord(entry)) continue;
-    const findingId = asString(entry.findingId);
-    const deliberationId = asString(entry.deliberationId);
-    if (findingId === undefined || deliberationId === undefined) continue;
-    links.push({ findingId, deliberationId });
-  }
-  return links;
+  if (!Array.isArray(findings) || findings.length === 0) return undefined;
+  const entry = findings[0];
+  if (!isRecord(entry)) return undefined;
+  const findingId = asString(entry.findingId);
+  const deliberationId = asString(entry.deliberationId);
+  if (findingId === undefined || deliberationId === undefined) return undefined;
+  return { findingId, deliberationId };
 }
 
 function parseDecisionPacket(
@@ -353,11 +374,196 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+/**
+ * Check 4 (design P2b): auto_confirm legitimacy re-verification. For every
+ * finding whose `classification_reason` records a jury auto_confirm with an
+ * embedded `deliberation_id`, REPLAY the deterministic gate
+ * (`aggregateDeliberation`) over the stored final-round proposals + refutation
+ * and FLAG (advisory) any finding whose replay does NOT yield
+ * `decision==='auto_confirm'`. A finding recorded as jury auto_confirm whose
+ * stored rows no longer satisfy the gate is a possible LLM->state leak (the
+ * safety boundary was bypassed or the rows were tampered after the fact).
+ *
+ * The replay uses `selectFinalRound` (round 2 when any round-2 row exists for
+ * the deliberation_id, else round 1) exactly as the live gate did, so it
+ * reproduces the same arbiter the auto_confirm was based on.
+ */
+export const juryAutoConfirmReplayCheck: DoctorCheck = {
+  id: "jury.auto_confirm_replay",
+  category: "review",
+  severity: "warn",
+  description:
+    "jury auto_confirmed finding whose stored proposals/refutation do not replay to auto_confirm (possible LLM->state leak)",
+  run(db) {
+    const findings = db
+      .prepare(
+        `SELECT finding_id, file_path, category, classification_reason
+           FROM hitch_findings
+          WHERE classification_reason LIKE '%jury auto_confirm (deliberation_id=%'`,
+      )
+      .all() as Record<string, unknown>[];
+    const out: DoctorFinding[] = [];
+    for (const raw of findings) {
+      const findingId = String(raw.finding_id);
+      const reason = asString(raw.classification_reason);
+      if (reason === undefined) continue;
+      const deliberationId = parseDeliberationId(reason);
+      if (deliberationId === undefined) continue;
+
+      const proposals = loadFinalRoundProposals(db, findingId, deliberationId);
+      const refuterVerdict = loadRefuterVerdict(db, findingId, deliberationId);
+      const input: DeliberationInput = {
+        findingId,
+        deliberationId,
+        finding: {
+          ...(asString(raw.file_path) !== undefined
+            ? { filePath: asString(raw.file_path) as string }
+            : {}),
+          ...(nonEmptyCategory(raw.category) !== undefined
+            ? { category: nonEmptyCategory(raw.category) as string }
+            : {}),
+        },
+        proposals,
+        ...(refuterVerdict !== undefined ? { refuterVerdict } : {}),
+      };
+      const replay = aggregateDeliberation(input);
+      if (replay.decision !== "auto_confirm") {
+        out.push({
+          checkId: "jury.auto_confirm_replay",
+          severity: "warn",
+          status: "flagged",
+          message:
+            `finding ${findingId} (deliberation ${deliberationId}) is recorded as ` +
+            `jury auto_confirm but replaying the gate over its stored rows yields ` +
+            `${replay.decision} (${replay.reason}); possible LLM->state leak`,
+          repairable: false,
+          details: {
+            findingId,
+            deliberationId,
+            replayDecision: replay.decision,
+            replayReason: replay.reason,
+            gateTrace: replay.gateTrace,
+          },
+        });
+      }
+    }
+    return out;
+  },
+};
+
+/** Extract `<id>` from a `...jury auto_confirm (deliberation_id=<id>)...` reason. */
+function parseDeliberationId(reason: string): string | undefined {
+  const m = /jury auto_confirm \(deliberation_id=([^)]+)\)/.exec(reason);
+  return m?.[1];
+}
+
+/** A non-empty `category` value, or undefined (the empty string is "no category"). */
+function nonEmptyCategory(value: unknown): string | undefined {
+  const s = asString(value);
+  return s !== undefined && s.length > 0 ? s : undefined;
+}
+
+/**
+ * Reconstruct the selected final-round `JuryClassificationProposal[]` for a
+ * deliberation from the stored proposal rows. ALL rounds are loaded and
+ * `selectFinalRound` picks the target round (round 2 if any round-2 row exists,
+ * else round 1) — identical to the live gate's selection.
+ */
+function loadFinalRoundProposals(
+  db: Database.Database,
+  findingId: string,
+  deliberationId: string,
+): JuryClassificationProposal[] {
+  const rows = db
+    .prepare(
+      `SELECT lens, proposed_scope, proposal_status, round, evidence_json,
+              reasoning, confidence, refutation_condition, uncertainty
+         FROM jury_classification_proposals
+        WHERE finding_id = ? AND deliberation_id = ?`,
+    )
+    .all(findingId, deliberationId) as Record<string, unknown>[];
+  const all = rows.map((r) => reconstructProposal(findingId, r));
+  return selectFinalRound(all);
+}
+
+/** Rebuild one `JuryClassificationProposal` (incl. evidence) from a stored row. */
+function reconstructProposal(
+  findingId: string,
+  row: Record<string, unknown>,
+): JuryClassificationProposal {
+  const round = Number(row.round) === 2 ? 2 : 1;
+  return {
+    findingId,
+    lens: String(row.lens) as JuryLens,
+    proposedScope: String(row.proposed_scope) as JuryProposedScope,
+    proposalStatus: String(row.proposal_status) as JuryProposalStatus,
+    evidence: parseEvidence(row.evidence_json),
+    round,
+    ...(asString(row.reasoning) !== undefined
+      ? { reasoning: asString(row.reasoning) as string }
+      : {}),
+    ...(typeof row.confidence === "number"
+      ? { confidence: row.confidence }
+      : {}),
+    ...(asString(row.refutation_condition) !== undefined
+      ? { refutationCondition: asString(row.refutation_condition) as string }
+      : {}),
+    ...(asString(row.uncertainty) !== undefined
+      ? { uncertainty: asString(row.uncertainty) as string }
+      : {}),
+  };
+}
+
+/**
+ * Parse the stored `evidence_json` into `VerifiedJuryEvidence[]`. Malformed /
+ * absent JSON yields an empty array (fail-closed: no verified evidence -> the
+ * replay escalates, which surfaces the tampering rather than hiding it).
+ */
+function parseEvidence(value: unknown): VerifiedJuryEvidence[] {
+  if (typeof value !== "string") return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(isRecord) as unknown as VerifiedJuryEvidence[];
+}
+
+/**
+ * Reconstruct the `RefuterVerdict` for a deliberation from the stored
+ * refutation row, or `undefined` when none exists (so the replayed gate sees a
+ * never-run refuter and escalates — fail-closed, matching the live gate).
+ */
+function loadRefuterVerdict(
+  db: Database.Database,
+  findingId: string,
+  deliberationId: string,
+): RefuterVerdict | undefined {
+  const row = db
+    .prepare(
+      `SELECT refute_verdict, reasoning
+         FROM jury_classification_refutations
+        WHERE finding_id = ? AND deliberation_id = ?
+        LIMIT 1`,
+    )
+    .get(findingId, deliberationId) as Record<string, unknown> | undefined;
+  if (row === undefined) return undefined;
+  const refuteVerdict = asString(row.refute_verdict);
+  if (refuteVerdict === undefined) return undefined;
+  return {
+    refuteVerdict: refuteVerdict as RefuterVerdict["refuteVerdict"],
+    reasoning: asString(row.reasoning) ?? "",
+  };
+}
+
 /** All v31 jury doctor checks, in registration order. */
 export const JURY_DOCTOR_CHECKS: readonly DoctorCheck[] = [
   juryOrphanRowsCheck,
   juryHitchMismatchCheck,
   juryRefutationMismatchCheck,
+  juryAutoConfirmReplayCheck,
 ];
 
 export { JURY_TABLES };

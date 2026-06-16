@@ -69,6 +69,9 @@ function insertProposal(
     deliberationId: string;
     round?: number;
     promptSha256?: string;
+    proposalStatus?: string;
+    /** Stored VerifiedJuryEvidence[] (defaults to '[]'). */
+    evidenceJson?: string;
   },
 ): void {
   db.prepare(
@@ -76,17 +79,71 @@ function insertProposal(
        (finding_id, hitch_id, lens, reviewer_id, proposed_scope,
         proposal_status, prompt_sha256, round, evidence_json,
         deliberation_id, created_at)
-     VALUES (?, ?, ?, ?, ?, 'complete', ?, ?, '[]', ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     opts.findingId,
     opts.hitchId,
     opts.lens,
     opts.reviewerId,
     opts.proposedScope,
+    opts.proposalStatus ?? "complete",
     opts.promptSha256 ?? `${opts.lens}-sha`,
     opts.round ?? 1,
+    opts.evidenceJson ?? "[]",
     opts.deliberationId,
     NOW,
+  );
+}
+
+/**
+ * A verified+proximate file-kind evidence JSON for finding.file_path 'src/a.ts'.
+ * The replay check reconstructs VerifiedJuryEvidence from this stored JSON; the
+ * citation segment must match the finding's filePath for proximityOk to pass.
+ */
+function verifiedEvidenceJson(citation = "src/a.ts:1"): string {
+  return JSON.stringify([
+    { citation, kind: "file", claim: "c", verified: true },
+  ]);
+}
+
+/**
+ * Seed a fully jury-auto_confirmed finding: 3 distinct lenses unanimous
+ * in_scope with verified+proximate evidence, an uphold refutation, and the
+ * finding's classification_reason embedding the deliberation_id. Replaying
+ * aggregateDeliberation over these rows yields decision==='auto_confirm'.
+ */
+function seedAutoConfirmedFinding(
+  db: Database.Database,
+  opts: { hitchId: string; findingId: string; deliberationId: string },
+): void {
+  for (const lens of ["correctness", "scope_fit", "spec_adherence"]) {
+    insertProposal(db, {
+      findingId: opts.findingId,
+      hitchId: opts.hitchId,
+      lens,
+      reviewerId: lens,
+      proposedScope: "in_scope",
+      deliberationId: opts.deliberationId,
+      evidenceJson: verifiedEvidenceJson(),
+      promptSha256: `${opts.findingId}-${lens}`,
+    });
+  }
+  insertRefutation(db, {
+    findingId: opts.findingId,
+    hitchId: opts.hitchId,
+    targetScope: "in_scope",
+    refuteVerdict: "uphold",
+    deliberationId: opts.deliberationId,
+    promptSha256: `ref-${opts.findingId}`,
+  });
+  db.prepare(
+    `UPDATE hitch_findings
+        SET scope_status = 'in_scope',
+            classification_reason = ?
+      WHERE finding_id = ?`,
+  ).run(
+    `jury auto_confirm (deliberation_id=${opts.deliberationId})`,
+    opts.findingId,
   );
 }
 
@@ -490,11 +547,17 @@ describe("doctor jury.refutation_mismatch", () => {
     expect(flaggedCheckIds(db)).not.toContain("jury.refutation_mismatch");
   });
 
-  it("flags the right finding inside a BUNDLED multi-finding packet (per-finding deliberationId, single shared refuter)", () => {
+  it("FIX 3 (codex P1): in a BUNDLED multi-finding packet, packet.deliberation is the LEAD/summary only — the NON-lead finding is NOT falsely packet-mismatched", () => {
     // A mixed-batch escalate packet bundles several findings, each with its
-    // OWN deliberationId, under a SINGLE deliberation.refuter block
-    // (design §0.1 R14 / §5.2: 'packet 単一 ID では複数 deliberation を束ねられない').
-    // The doctor must key each findings[] entry to the shared refuter verdict.
+    // OWN deliberationId, under a SINGLE deliberation.refuter block that
+    // reflects ONLY the LEAD split (design §0.1 R14 / §5.2 / buildJurySplit
+    // Packet: deliberation = splits[0]). Mapping that shared verdict to EVERY
+    // finding produces FALSE matches/mismatches for non-lead findings.
+    //
+    // Here the packet's shared refuter is 'refute' (the LEAD f1's verdict).
+    // f1's stored refutation = refute (agrees with the shared block, no flag).
+    // f2's stored refutation = uphold and matches f2's OWN deliberation; the
+    // shared 'refute' is NOT f2's authority, so f2 must NOT be packet-mismatched.
     const db = migratedDb();
     seedHitch(db, "h1");
     seedFinding(db, "h1", "f1");
@@ -512,21 +575,23 @@ describe("doctor jury.refutation_mismatch", () => {
         });
       }
     }
-    // f1's stored refutation AGREES with the shared refuter verdict ...
+    // LEAD f1's stored refutation AGREES with the shared (lead) refuter verdict.
     insertRefutation(db, {
       findingId: "f1",
       hitchId: "h1",
       targetScope: "in_scope",
-      refuteVerdict: "uphold",
+      refuteVerdict: "refute",
       deliberationId: "d-f1",
       promptSha256: "ref-f1",
     });
-    // ... but f2's stored refutation DISAGREES with the shared verdict.
+    // NON-lead f2's stored refutation is 'uphold' — consistent with f2's OWN
+    // deliberation rows; it must NOT be compared against the lead's shared
+    // 'refute' block (that comparison would be a FALSE mismatch).
     insertRefutation(db, {
       findingId: "f2",
       hitchId: "h1",
       targetScope: "in_scope",
-      refuteVerdict: "refute",
+      refuteVerdict: "uphold",
       deliberationId: "d-f2",
       promptSha256: "ref-f2",
     });
@@ -536,18 +601,75 @@ describe("doctor jury.refutation_mismatch", () => {
           { findingId: "f1", deliberationId: "d-f1" },
           { findingId: "f2", deliberationId: "d-f2" },
         ],
-        deliberation: { refuter: { refuteVerdict: "uphold" } },
+        deliberation: { refuter: { refuteVerdict: "refute" } },
       },
     });
     const flagged = runDoctor(db, { category: "review" }).findings.filter(
       (f) => f.checkId === "jury.refutation_mismatch" && f.status === "flagged",
     );
-    // Exactly f2 is flagged for a packet_verdict mismatch; f1 is not.
     const packetVerdictFindings = flagged
       .filter((f) => (f.details as { kind?: string }).kind === "packet_verdict")
       .map((f) => (f.details as { findingId?: string }).findingId);
-    expect(packetVerdictFindings).toContain("f2");
+    // The NON-lead finding (f2) must NOT be packet-mismatched against the lead's
+    // shared verdict, and the LEAD (f1) agrees so it is not flagged either.
+    expect(packetVerdictFindings).not.toContain("f2");
     expect(packetVerdictFindings).not.toContain("f1");
+  });
+
+  it("FIX 3 (codex P1): the LEAD finding IS packet-mismatched when its stored refutation disagrees with packet.deliberation.refuter", () => {
+    // The packet.deliberation block is the LEAD's summary, so the LEAD finding
+    // is still validated against it. Lead f1 stored=uphold but packet shared
+    // refuter=refute -> flag f1; f2 (non-lead) is unaffected.
+    const db = migratedDb();
+    seedHitch(db, "h1");
+    seedFinding(db, "h1", "f1");
+    seedFinding(db, "h1", "f2");
+    for (const findingId of ["f1", "f2"]) {
+      for (const lens of ["correctness", "scope_fit", "spec_adherence"]) {
+        insertProposal(db, {
+          findingId,
+          hitchId: "h1",
+          lens,
+          reviewerId: lens,
+          proposedScope: "in_scope",
+          deliberationId: `d-${findingId}`,
+          promptSha256: `${findingId}-${lens}`,
+        });
+      }
+    }
+    insertRefutation(db, {
+      findingId: "f1",
+      hitchId: "h1",
+      targetScope: "in_scope",
+      refuteVerdict: "uphold",
+      deliberationId: "d-f1",
+      promptSha256: "ref-f1",
+    });
+    insertRefutation(db, {
+      findingId: "f2",
+      hitchId: "h1",
+      targetScope: "in_scope",
+      refuteVerdict: "uphold",
+      deliberationId: "d-f2",
+      promptSha256: "ref-f2",
+    });
+    seedDecisionWithPacket(db, "h1", {
+      decisionPacket: {
+        findings: [
+          { findingId: "f1", deliberationId: "d-f1" },
+          { findingId: "f2", deliberationId: "d-f2" },
+        ],
+        deliberation: { refuter: { refuteVerdict: "refute" } },
+      },
+    });
+    const flagged = runDoctor(db, { category: "review" }).findings.filter(
+      (f) => f.checkId === "jury.refutation_mismatch" && f.status === "flagged",
+    );
+    const packetVerdictFindings = flagged
+      .filter((f) => (f.details as { kind?: string }).kind === "packet_verdict")
+      .map((f) => (f.details as { findingId?: string }).findingId);
+    expect(packetVerdictFindings).toContain("f1");
+    expect(packetVerdictFindings).not.toContain("f2");
   });
 
   it("does NOT crash on a malformed recommended_next_action JSON (defensive parse)", () => {
@@ -582,6 +704,96 @@ describe("doctor jury.refutation_mismatch", () => {
     // packet absent/unparseable => only the target_scope sub-check applies;
     // target_scope matches, so no flag.
     expect(flaggedCheckIds(db)).not.toContain("jury.refutation_mismatch");
+  });
+});
+
+describe("doctor jury.auto_confirm_replay (FIX 2 / design P2b)", () => {
+  it("does NOT flag a jury-auto_confirmed finding whose stored rows replay to auto_confirm", () => {
+    const db = migratedDb();
+    seedHitch(db, "h1");
+    seedFinding(db, "h1", "f1");
+    seedAutoConfirmedFinding(db, {
+      hitchId: "h1",
+      findingId: "f1",
+      deliberationId: "d1",
+    });
+    expect(flaggedCheckIds(db)).not.toContain("jury.auto_confirm_replay");
+  });
+
+  it("FLAGS a jury-auto_confirmed finding when a stored proposal is tampered so replay yields escalate (LLM->state leak)", () => {
+    const db = migratedDb();
+    seedHitch(db, "h1");
+    seedFinding(db, "h1", "f1");
+    seedAutoConfirmedFinding(db, {
+      hitchId: "h1",
+      findingId: "f1",
+      deliberationId: "d1",
+    });
+    // Tamper one stored proposal to out_of_scope -> the replayed set is no
+    // longer unanimous -> aggregateDeliberation yields escalate. The finding
+    // is still recorded as jury auto_confirm, so the replay must FLAG it.
+    db.prepare(
+      `UPDATE jury_classification_proposals
+          SET proposed_scope = 'out_of_scope'
+        WHERE finding_id = 'f1' AND lens = 'spec_adherence'
+          AND deliberation_id = 'd1'`,
+    ).run();
+    const flagged = runDoctor(db, { category: "review" }).findings.filter(
+      (f) => f.checkId === "jury.auto_confirm_replay" && f.status === "flagged",
+    );
+    expect(flagged.length).toBeGreaterThan(0);
+    expect(flagged[0]?.severity).toBe("warn");
+    expect(flagged[0]?.repairable).toBe(false);
+  });
+
+  it("uses the round-2 (final) proposals when round-2 rows exist (selectFinalRound)", () => {
+    // round 1 unanimous in_scope (would replay auto_confirm), round 2 (final)
+    // split -> replay must consume round 2 and FLAG (proves selectFinalRound).
+    const db = migratedDb();
+    seedHitch(db, "h1");
+    seedFinding(db, "h1", "f1");
+    seedAutoConfirmedFinding(db, {
+      hitchId: "h1",
+      findingId: "f1",
+      deliberationId: "d1",
+    });
+    // Add round-2 rows: a split (one lens dissents) with verified evidence.
+    for (const lens of ["correctness", "scope_fit", "spec_adherence"]) {
+      insertProposal(db, {
+        findingId: "f1",
+        hitchId: "h1",
+        lens,
+        reviewerId: lens,
+        proposedScope: lens === "spec_adherence" ? "out_of_scope" : "in_scope",
+        deliberationId: "d1",
+        round: 2,
+        evidenceJson: verifiedEvidenceJson(),
+        promptSha256: `f1-${lens}-r2`,
+      });
+    }
+    expect(flaggedCheckIds(db)).toContain("jury.auto_confirm_replay");
+  });
+
+  it("does NOT flag findings that were NOT jury-auto_confirmed (no replay needed)", () => {
+    const db = migratedDb();
+    seedHitch(db, "h1");
+    seedFinding(db, "h1", "f1");
+    // A split deliberation persisted for an escalated (still-unknown) finding:
+    // there is no 'jury auto_confirm' classification_reason, so the replay
+    // check must not consider it.
+    for (const lens of ["correctness", "scope_fit"]) {
+      insertProposal(db, {
+        findingId: "f1",
+        hitchId: "h1",
+        lens,
+        reviewerId: lens,
+        proposedScope: "in_scope",
+        deliberationId: "d1",
+        evidenceJson: verifiedEvidenceJson(),
+        promptSha256: `f1-${lens}`,
+      });
+    }
+    expect(flaggedCheckIds(db)).not.toContain("jury.auto_confirm_replay");
   });
 });
 
