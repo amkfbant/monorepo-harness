@@ -257,19 +257,21 @@ review:
       min_approvals: 1
       blocking_decisions: [changes_requested, rejected]
       quorum: { min_participants: 2 }
-      reviewer_ids: [alice, bob]   # NEW (P2, optional): 明示列挙。あれば全 dispatch、無ければ listByGroup ∩ max_reviewers
+      reviewer_ids: [alice, bob]   # NEW (P2, optional): 明示列挙。あれば全 dispatch（ただし len > max_reviewers は compile reject）、無ければ listByGroup ∩ max_reviewers
   overrides: { allowed_reviewers: [], require_reason: true }   # optional
   stale_proposal: { reject_superseded: true }                  # optional
 ```
 
 zod 検証(fail-closed): `quorum.min_participants >= 1`（0 は許さない、consensus quorum は必ず >1）, `min_participation_rate ∈ [0,1]`,
-`blocking_decisions ⊆ {changes_requested, rejected}`, `group` 非空文字列, `max_reviewers >= 1`。
+`blocking_decisions ⊆ {changes_requested, rejected}`, `group` 非空文字列, `max_reviewers >= 1`,
+**`len(reviewer_ids) <= max_reviewers`（明示リストも hard cap＝DoS bound を破らせない）**。
 `.strict()` 配下なので未知キーは reject。`review` 欠落 = `DEFAULT_REVIEW_RULE`(後方互換)。
 **新 table / migration は不要**(`review_rules.source` が既に `"project-profile"` をサポート、
 `run_review_rule_snapshots` も既存)。
 
 **P2 dispatch 上限**: orchestrator は group の登録 reviewer を **全員無制限に dispatch しない**。
-`reviewer_ids` があればそれを使い、無ければ `listByGroup ∩ max_reviewers`（reviewer_id 字句順で上位
+`reviewer_ids` があればそれを使う（ただし **`len(reviewer_ids) > max_reviewers` は compile/preflight で reject**＝
+明示リストも hard cap）、無ければ `listByGroup ∩ max_reviewers`（reviewer_id 字句順で上位
 `max_reviewers` 体）。preflight で dispatch 予定数を表示し、`quorum.min_participants` 未満なら
 **事前に escalate（fail-silent 防止）**。
 
@@ -306,7 +308,7 @@ zod 検証(fail-closed): `quorum.min_participants >= 1`（0 は許さない、co
 `src/hitch/orchestrator-runners.ts:1096-1160` review runner を改修:
 1. run snapshot rule を `ReviewRulesRepository.findSnapshotByRun(runId)` で読む。
 2. `rule.mode==="consensus"` かつ requirements あり → 各 requirement の dispatch 対象 reviewer を確定
-   （`reviewer_ids` 明示 or `listByGroup(group) ∩ max_reviewers`、reviewer_id 字句順）。
+   （`reviewer_ids` 明示〔**`len <= max_reviewers` を compile/preflight で強制**〕 or `listByGroup(group) ∩ max_reviewers`、reviewer_id 字句順）。
    latest-proposal mode(=DEFAULT, 後方互換) は **従来どおり 1体 dispatch**（else 分岐）。
 3. **preflight（P2 fail-silent 防止）**: dispatch 対象数が各 requirement の `quorum.min_participants`
    未満なら、dispatch 前に **決定論 escalate**（reason に `group`/`required`/`registered` を含む）。
@@ -855,7 +857,7 @@ fail-closed: lens 宣言不正/欠落の consensus rule は run 拒否。
 - lens_axes 未宣言 ∧ `quorum.min_participants <= 1`（または `latest-proposal`）→ 検査 no-op で従来 dispatch
   （後方互換）。**`quorum > 1` ∧ lens 未宣言は G0(c) で compile reject**（同一 prompt quorum を production path に
   残さない＝no-op をレガシー quorum 経路に限定）。
-- lens enum 外/不正 metadata → `add()`/schema で reject。
+- lens 値が **grammar 外（空文字列 / 非文字列 / 型不正）** → `add()`/schema で reject。**5 enum ＋非空 custom axis は受理**（custom axis は profile の `lens_axes` と突合可能。enum-only ではないので custom 軸が永久未充足にならない）。
 - 注入 lens が provenance＋proposal metadata に stamp される。
 これらは決定論データ入力のテストで、`evaluateConsensus` の凍結契約テスト（tie-break / quorum / order
 非依存）に回帰を与えない（lens は集約に不参加）。
@@ -1025,7 +1027,7 @@ refute 票は presence は満たすが participant カウントから除外さ�
 | tool poisoning | reviewer 経路の実 runner [codex-cli-runner.ts](../../../src/codex/codex-cli-runner.ts) に mcp_servers 注入は無く、`--ignore-rules`(:87) で target .rules も無視。reviewer は tool を持たず diff を読むだけ | 増えない |
 | 権限過大 | reviewer runner は全入口で `sandbox:"read-only"` 固定（cli/run.ts:585-587, cli/hitch.ts:832/1204/1335, mcp/tools/mutation-tools.ts:516, roadmap/course-orchestrate-runtime.ts:103-105） | 増えない（N 倍化のみ） |
 | 秘密流出 | env は `DEFAULT_CODEX_ENV_ALLOWLIST`（codex-cli-runner.ts:29-39）で OPENAI_*/AWS_* を strip。codex に機密 env は見えない | 増えない |
-| 票の独立性汚染 | reviewer prompt に **他 reviewer の proposal は渡さない**。ただし**逐次 N-dispatch は同一 `runDir` を共有**し、先行 reviewer の `review-decision.yaml` / reviewer log artifact が次 dispatch まで残るため、後続 read-only reviewer が**先行 verdict / log を読めてしまう**（独立性・lens 隔離の穴）。→ **per-reviewer の artifact path / workdir 分離、または次 dispatch 前の先行 artifact cleanup を #229 内で必須化**（下記対処 4） | **要対処（増分）** |
+| 票の独立性汚染 | reviewer prompt に **他 reviewer の proposal は渡さない**。ただし**逐次 N-dispatch は同一 `runDir` を共有**し、先行 reviewer の `review-decision.yaml` / reviewer log artifact が次 dispatch まで残るため、後続 read-only reviewer が**先行 verdict / log を読めてしまう**（独立性・lens 隔離の穴）。→ **per-reviewer の artifact path / workdir 分離を #229 内で必須化**（sidecar 単純削除 cleanup は gate 誤判定で不可、下記対処 4） | **要対処（増分）** |
 
 （脅威表の「tool poisoning」行注記: reviewer は **MCP/tool 注入も write capability も持たず**、`codex exec` の
 read-only artifact-scoped 実行で diff を読む。read 系能力自体は持つが、write / MCP wire は追加しない。）
@@ -1060,9 +1062,10 @@ profile/DB は共有 checkout で書き換わりうる + operator 設定ミス�
 3. **最小権限の維持**: lens を渡しても reviewer runner は `sandbox:"read-only"` / env allowlist / MCP 未 wire の
    まま。test で sandbox 引数をアサート。
 4. **票の独立性 + artifact 隔離**: 他 reviewer の proposal を reviewer prompt に渡さないことに加え、**逐次
-   dispatch では per-reviewer の artifact path / workdir 分離、または次 dispatch 前に先行 reviewer の
-   `review-decision.yaml` / log artifact を cleanup** し、後続 reviewer が先行 verdict を読めないようにする
-   （独立性の実効化）。spec 化する。
+   dispatch では per-reviewer の artifact path / workdir を分離**し、後続 reviewer が先行 verdict を読めない
+   ようにする（独立性の実効化）。**先行 `review-decision.yaml` の単純削除 cleanup は不可**: sidecar 欠落 + DB に
+   decision 有り → `runReviewerAgent` が「レビュー済み」と誤判定し後続 reviewer が走らない。cleanup を採るなら
+   gate / materialization 変更も要るため、既定は **per-reviewer path 分離**とする。spec 化する。
 5. **dispatch の決定論 bound（明示リストも cap）**: `max_reviewers` + preflight escalate（§3.2/§3.4）が DoS 的
    増殖を防ぐ。**明示 `reviewer_ids` にも `max_reviewers` の hard cap を適用**する（明示リストは全 dispatch する
    設計だが、上限超過は compile/preflight で reject。`listByGroup` だけ cap して explicit list を無制限にしない）。
@@ -1076,11 +1079,11 @@ profile/DB は共有 checkout で書き換わりうる + operator 設定ミス�
 - **injection された 1 票では unsafe approve を強制できない**（approve には独立 quorum が要る）こと、かつ
   **block 方向の偽陽性は fail-closed に倒れる**ことを検証する test（境界 2: approve は N 票集約が吸収、block は
   fail-closed＝unsafe approve に繋がらない）。
-- **逐次 dispatch で先行 reviewer の `review-decision.yaml` / log が後続 reviewer から読めない**（per-reviewer path
-  分離 or 次 dispatch 前 cleanup）ことを検証する test（独立性の実効化）。
+- **逐次 dispatch で先行 reviewer の `review-decision.yaml` / log が後続 reviewer から読めない**（per-reviewer path /
+  workdir 分離）ことを検証する test（独立性の実効化）。
 
 **C1 スコープ**:
-- **#229 内（Phase1b に内包）**: 上記 1〜5（untrusted-fence / provenance / 最小権限 / **artifact 隔離 cleanup** /
+- **#229 内（Phase1b に内包）**: 上記 1〜5（untrusted-fence / provenance / 最小権限 / **per-reviewer artifact path/workdir 分離** /
   **明示 reviewer_ids も max_reviewers cap**）+ spec（docs/specs/workflow.md, project.md）に「lens は proposal を
   多様化する入力に過ぎず集約・遷移には効かない（ただし block 方向は injection で偽陽性になり得る＝fail-closed）／
   lens_prompt は untrusted／他 reviewer proposal は渡さず先行 artifact も隔離する」を明記。
@@ -1218,7 +1221,9 @@ abstained と扱う。→ tie-break が完全決定論なので、dispatch/評�
 import しない）。よって findings registry だけから数えると **stall を起こした当の proposal の P0/P1 を 0 と誤報**する。
 → stall 時は **active proposal の required_changes を severity マッピング（§2.6: required_change→P1）で数えて**
 `unresolvedBlocking` を埋め、件数を `fromPendingProposals` に出す（確定後は registry 由来に切替）。いずれも決定論で
-LLM 出力は数えない（required_changes の有無＝観測事実のみ）。
+LLM 出力は数えない（required_changes の有無＝観測事実のみ）。なお `recordConsensusReEvaluation` が書く pending
+`review_consensus` 行は consensus decision を持たない（＝findings 未 import と整合）ので、pending 時に registry だけを
+見ると 0 と誤報する点が本注記の根拠。
 
 **`stallCycles` の注記**: `trailingUnresolvedStreak`（[consensus-stall.ts](../../../src/core/consensus-stall.ts):142-150）は `maxPendingHours` 定義済みの
 time-based 経路でのみ使う。既定（未設定）の progress-based stall（同 :100-113）は streak 長でなく
@@ -1277,7 +1282,10 @@ participants 計算式自体は不変）。
 2. **集約は frozen set の proposal のみ**（freeze だけでは不十分）: `processConsensusModePath` は全 active proposal を
    読む（review-processor.ts:196-207）ため、freeze 後に **frozen reviewer ID 集合外の active proposal**（resumed run /
    手動 / registry 変更由来）が quorum・blocking に効きうる。→ consensus 評価の前に **active proposal を frozen set で
-   filter** し、集合外票を除外する（評価対象を frozen set に固定）。
+   filter** し、集合外票を除外する（評価対象を frozen set に固定）。**この frozen-set filter（と item 3 の cycle
+   filter）は `processConsensusModePath` だけでなく `recordConsensusReEvaluation`（各 dispatch 後に `review_consensus`
+   行を書き、pending/stall path が消費）にも適用する**。さもないと集合外/stale 票が persisted consensus timeline・
+   stall・escalate 判定に効いてしまう。
 3. **サイクル毎に先行 active proposal を整理**（resumed cycle の stale 票封じ）: 同一 reviewer が前サイクルの active
    proposal を残したまま今サイクルで `runReviewerAgent` が crash すると、insert/supersede が起きず**旧 active 行が
    残って `participants` に計上**され、"失敗 = non-participant" が破れて stale 票で approve しうる。→ 各 dispatch
@@ -1289,7 +1297,10 @@ participants 計算式自体は不変）。
    全捨て即 escalate）。**clean な crash / timeout / parse 失敗のみ non-participant 扱いでループ継続**。
    **artifact tamper（`verifyArtifactsUnchanged` → `ReviewerAgentGateError`）はループ継続しない**: gate は改変を検知
    するが restore しないため、継続すると後続 reviewer が**汚染 artifact を読む**。tamper / gate error は **当該
-   サイクルを abort（artifact restore 後に限り再試行）して escalate** する。失敗 reviewer は active proposal を残さない
+   サイクルを abort（artifact restore 後に限り再試行）して escalate** する。**clean 失敗（timeout / nonzero / parse）と
+   tamper を決定論的に判別するため、`ReviewerAgentGateError` に tamper 専用 `kind` / sanitized code を持たせる**
+   （現状は同一型で混在。message 一致でなく型/コードで分岐できるようにする。これが無いと C4b/C4e が安全に実装でき
+   ない）。失敗 reviewer は active proposal を残さない
    ので `participants` に寄与せず、`participants < quorum.minParticipants` で §2.3 の pending throw
    （review-processor.ts:208-213）→ **landed が quorum 未達なら fail-closed**（quorum 充足なら decisive＝C4b）。
    少数 approval での silent promote を構造的に封じる。

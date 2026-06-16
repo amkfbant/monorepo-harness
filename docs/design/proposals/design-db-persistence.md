@@ -159,6 +159,9 @@ CREATE TABLE review_refute_votes (
   usage_seq     INTEGER,              -- run_usage(seq) 相関 (P2-4)
   source_yaml   TEXT,                 -- refute agent 出力 yaml (監査)
   source_sha256 TEXT,
+  validation_status TEXT NOT NULL DEFAULT 'passed'
+    CHECK (validation_status IN ('passed','rejected')),  -- 全票を記録。集約に渡すのは passed のみ (design-229 G2/G3)
+  reject_reason TEXT,                 -- rejected 時の決定論コード (unknown_target / hash_mismatch / missing_field / artifact_absent / evidence_none)
   created_at    TEXT NOT NULL
 );
 -- dedupe は business key (P2-3。created_at は使わない)
@@ -168,7 +171,7 @@ CREATE INDEX review_refute_votes_run_idx ON review_refute_votes(run_id, created_
 CREATE INDEX review_refute_votes_target_idx ON review_refute_votes(run_id, target_change_hash);
 ```
 - **DB-only** (export 非対象、既存 DB では import/reset 後も残る／fresh DB のみ空: P1-4)。**FK は一切張らない** (P1-1)。`target_change_hash` は app 層計算 (SQLite に sha256 関数は無い)。正規化は決定論 `normalizeChangeText()` を実装しテスト（付録B）。
-- refute 票を decision に通すのは `evaluateConsensus` の決定論集約 (design-229 P2-C)。この表は**入力**。
+- refute 票を decision に通すのは `evaluateConsensus` の決定論集約 (design-229 P2-C)。この表は**入力**で、**集約に渡すのは `validation_status='passed'` のみ**（`rejected` は監査保持＝binding 失敗/証拠欠落も追跡可能。design-229 G2/G3）。
 
 ### 3.2 #230 — classification jury / severity audit / decision packet
 
