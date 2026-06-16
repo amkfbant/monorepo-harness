@@ -127,7 +127,7 @@ run_usage との対応: invocation 単位は `run_usage(run_id, kind, seq)` で 
 - **判定** = 既存 `review_consensus` / `review_decisions` / `hitch_convergence_decisions` (harness 決定論ゲートが書く)。LLM 出力列をゲート入力に直結させない。
 - 「判断ログ」= verdict + reasoning の構造化行 (会話全文は残さない、deliberation.md:151)。raw codex log は `.harness/audit/` のファイルに残し DB には載せない。
 
-**③ v31 で建てる最小テーブル** (詳細 DDL §3.1–3.3): `review_refute_votes` (#229 P2-0)、`jury_classification_proposals` (#230)、`jury_severity_audits` (#230 advisory)。packet (#230) と specApproval (#231) は既存列の additive JSON。additive 列: phases に `review_state_version` (#231)、hitch_review_cycles に `expected_reviewers_json` (#229 C4 frozen set)。
+**③ v31 で建てる最小テーブル** (詳細 DDL §3.1–3.3): `review_refute_votes` (#229 P2-0)、`jury_classification_proposals` (#230)、`jury_severity_audits` (#230 advisory)。packet (#230) と specApproval (#231) は既存列の additive JSON。additive 列: phases に `review_state_version` (#231)、run_review_rule_snapshots に `resolved_reviewers_json` (#229 C4 frozen set・run-scoped・rule_json とは別列で hash 非対象)。
 
 ### 3.1 #229 — multi-lens consensus + refute
 
@@ -166,14 +166,15 @@ CREATE TABLE review_refute_votes (
   CHECK (validation_status = 'passed' OR (reject_reason IS NOT NULL AND reject_reason <> '')),  -- rejected は必ず reason を持つ (audit 可能性、codex round3)
   CHECK (validation_status <> 'passed' OR refute_verdict IS NOT NULL)  -- passed は必ず verdict を持つ (codex round4: malformed は rejected 側で verdict NULL 可)
 );
--- dedupe は business key (P2-3。created_at は使わない)。validation_status を含め、rejected 監査行が
--- 後の passed retry を塞がないようにする (codex round3。同一 prompt で reject→修正→pass を許す)
-CREATE UNIQUE INDEX review_refute_votes_dedup_idx
-  ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256, validation_status);
--- passed は同一 business key で最大1本 (idempotent。集約入力の一意性を担保)
+-- passed のみ business key で一意 (集約入力の一意性・idempotent)。rejected には掛けない (codex round3/6)
 CREATE UNIQUE INDEX review_refute_votes_passed_idx
   ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256)
   WHERE validation_status = 'passed';
+-- rejected は監査 append-only。source_sha256 違いの失敗試行を共存させ完全重複のみ dedup
+-- (同一 reviewer/prompt の複数 reject 試行が衝突せず audit trail を保つ。後の passed retry も上の別 index で通る)
+CREATE UNIQUE INDEX review_refute_votes_rejected_idx
+  ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256, source_sha256)
+  WHERE validation_status = 'rejected';
 CREATE INDEX review_refute_votes_run_idx ON review_refute_votes(run_id, created_at);
 CREATE INDEX review_refute_votes_target_idx ON review_refute_votes(run_id, target_change_hash);
 ```
@@ -321,7 +322,7 @@ interface HitchDecisionPacket {
 
 (下の workItemDag 参照。サマリ: **DB-WI-0 (review_state_json 書き込み経路 + `review_state_version` CAS、#231 の前提・軽微 additive 列)** → **DB-WI-1 (v31 schema/migration の 3 テーブル + phases ALTER)** → repository 層 (refute/jury/severity、finding_id→hitch_id 整合検査)、packet 型、specApproval 書き込み (txn+CAS) → consistency/doctor (orphan/hash/hitch_id 整合) → docs/tests。各 WI は #229/#230/#231 紐付けを明記。)
 
-**migration 連番の単一予約ブロック**: #229/#230/#231 は**全て v31 を共有** (1 migration block)。各案で v31/v32/v33 に分けない (v29↔v30 renumber 再発回避)。schema.ts に `// RESERVED v31 for epic #228 consensus artifacts` コメントを置き、PR merge 順を強制。LATEST bump は v31 へ 1 回のみ。**v31 statements**: 3 テーブル CREATE + index + `ALTER TABLE phases ADD COLUMN review_state_version INTEGER NOT NULL DEFAULT 0` + `ALTER TABLE hitch_review_cycles ADD COLUMN expected_reviewers_json TEXT`（#229 C4 frozen reviewer set、dispatch 前 freeze・additive nullable）。
+**migration 連番の単一予約ブロック**: #229/#230/#231 は**全て v31 を共有** (1 migration block)。各案で v31/v32/v33 に分けない (v29↔v30 renumber 再発回避)。schema.ts に `// RESERVED v31 for epic #228 consensus artifacts` コメントを置き、PR merge 順を強制。LATEST bump は v31 へ 1 回のみ。**v31 statements**: 3 テーブル CREATE + index + `ALTER TABLE phases ADD COLUMN review_state_version INTEGER NOT NULL DEFAULT 0` + `ALTER TABLE run_review_rule_snapshots ADD COLUMN resolved_reviewers_json TEXT`（#229 C4 frozen reviewer set・run-scoped・rule_json とは別列で hash 非対象、dispatch 前 freeze・additive nullable）。
 
 ---
 

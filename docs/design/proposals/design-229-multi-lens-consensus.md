@@ -254,9 +254,10 @@ review:
   max_reviewers: 4           # NEW (P2): group ごとの dispatch 上限（省略時は明示 reviewer_ids 必須 or default 上限）
   requirements:
     - group: humans          # reviewer.group_id
-      min_approvals: 1
+      min_approvals: 1             # injection 耐性が要る consensus は >1 にする（C1: min_approvals:1 は単一 approve が decisive になり得る）
       blocking_decisions: [changes_requested, rejected]
       quorum: { min_participants: 2 }
+      lens_axes: [correctness, security]   # NEW (G0c/G1): quorum>1 は lens 宣言必須（無いと compile reject）。example も valid に保つ
       reviewer_ids: [alice, bob]   # NEW (P2, optional): 明示列挙。あれば全 dispatch（ただし len > max_reviewers は compile reject）、無ければ listByGroup ∩ max_reviewers
   overrides: { allowed_reviewers: [], require_reason: true }   # optional
   stale_proposal: { reject_superseded: true }                  # optional
@@ -931,9 +932,10 @@ harness が **100% 決定論**で検証する:
    出力 → expected-status(needs_review) guard → `run.status` の決定論経路でのみ現れる。**severity フィールドの
    mutation は経由しない**。
 6. **DB 記録**: **全 refute 票を `validation_status`（`passed` / `rejected`）＋ rejected 時は `reject_reason` 付きで**
-   `review_refute_votes` に append。**dedup business-key は `(run_id, target_change_hash, reviewer_id, prompt_sha256,
-   validation_status)`**＋ `passed` は部分 unique で同一 key 最大 1 本（design-db §3.1。rejected 監査行が後の
-   passed retry を塞がない）。reject 票も監査に残し fail-closed 判断を追跡可能にする。**participant set / 集約に
+   `review_refute_votes` に append。**`passed` のみ `(run_id, target_change_hash, reviewer_id, prompt_sha256)` で
+   部分 unique**（集約入力の一意性）。**`rejected` は append-only**（`source_sha256` 違いの複数失敗試行を共存させ、
+   完全重複のみ dedup）＝rejected 監査行が後の passed retry も複数 reject 試行も塞がない（design-db §3.1）。reject 票も
+   監査に残し fail-closed 判断を追跡可能にする。**participant set / 集約に
    渡すのは `validation_status='passed'` ∧ `refute_verdict ∈ {uphold, refute}` のみ**（inconclusive は除外）。binding
    不一致で hash が無い票は `target_change_text` の harness 再計算 hash か sentinel を用い、監査トレースを欠落させない。
 
@@ -1040,8 +1042,11 @@ read-only artifact-scoped 実行で diff を読む。read 系能力自体は持�
 **核心（方向で非対称）**: lens injection が変えられるのは **その reviewer の decision 票（=入力）まで**で、集約
 `evaluateConsensus`（凍結契約）は proposal の説得力も自己申告 severity も見ない。ただし **approve 方向と block
 方向で非対称**である:
-- **approve 方向**: 不正 1 票では quorum を満たせず、独立した複数 approval が要るので **unsafe approve は強制でき
-  ない**（N 票の決定論集約が吸収する）。
+- **approve 方向（`min_approvals > 1` のときのみ安全）**: `evaluateConsensus` は `approvals >= minApprovals` と
+  `quorumMet`（参加者数）を**別々に**判定するため、quorum 充足は複数 approval を含意しない。`min_approvals > 1`
+  なら独立した複数 approval が要り **unsafe approve は強制できない**（N 票集約が吸収）。**ただし `min_approvals: 1`
+  では他参加者で quorum が満たされた状態で injected `approved` 1 票が decisive になり得る**ため、injection 耐性を
+  要する consensus は **`min_approvals > 1`（＋ blocking coverage）を要件にする**。
 - **block 方向**: `blocking_decisions`（`changes_requested` / `rejected`）は approval quorum 充足の前に効くため、
   **injection された 1 票が blocking を強制し得る**。ただしこれは **fail-closed 方向**（誤った block → 無駄な
   rerun / 人間 escalate）で unsafe approve には繋がらない。
@@ -1196,7 +1201,10 @@ decisionPath と併せて記録する。
   types.ts:365-384）。**決定的票 / 未解決 P0・P1 / dissent が埋もれる** = 本論点の本質。
 
 **判断（A案採用）**: 新 table/migration を足さず（生データは `review_consensus.summary_json`
-（[review-consensus.ts](../../../src/core/review-consensus.ts):72-92）と finding registry に既に persist 済み）、
+（[review-consensus.ts](../../../src/core/review-consensus.ts):72-92。proposal id/reviewer/group/decision を持つ）、
+finding registry、**および pending 時は `review_proposals` / `review_required_changes` を proposal id で引いた
+required_changes**（summary_json には required_change 本文/件数が無く、finding registry は import 前は空なので、
+`unclassifiedPendingCount` はこの proposal 直読で埋める）に既に persist 済み）、
 **純関数 projection** で要約を抽出し escalate payload に添付する。`materialize`（新 table）と LLM 要約は棄却
 （前者は §7『Phase1 は新 table/migration 不要』に反しスコープ過大かつ膨張源を増やす、後者は LLM 出力を人間判断の
 正本に混ぜ安全境界違反）。
@@ -1288,8 +1296,11 @@ participants 計算式自体は不変）。
    （永続点は 2 系統。**explicit `reviewer_ids`** は `run_review_rule_snapshots.rule_json`（run 生成時=proposal 前に
    durable、profile rule と同一なので `source_sha256` 一致を壊さない）だけで frozen set が完全決定〔新 migration 不要〕。
    **`listByGroup` フォールバック**は registry 依存の解決リストなので、**`rule_json` には入れない**（入れると snapshot
-   hash が profile rule と不一致になり ruleSha256 一致テストを壊す）。代わりに専用スロット
-   **`hitch_review_cycles.expected_reviewers_json`〔v31, `startReviewCycle` が dispatch 前に書く〕** に永続化する。
+   hash が profile rule と不一致になり ruleSha256 一致テストを壊す）。代わりに **run-scoped な専用スロット
+   `run_review_rule_snapshots.resolved_reviewers_json`〔v31, run 生成時=dispatch 前に書く・`rule_json` とは別列で
+   hash 非対象〕** に永続化する。`processConsensusModePath` / `recordConsensusReEvaluation` は **runId で動き**、
+   CLI run/rerun 等の非 hitch 入口では hitch review-cycle 行が無い（cycle id も processor に渡らない）ため、frozen
+   set は **run-scoped** に置く必要がある（hitch_review_cycles では非 hitch 入口から読めず filter が効かない）。
    `review_consensus` summary は proposal 後にしか書かれないので freeze 用に使わない＝全 reviewer が proposal 前に
    落ちても freeze が残る）。再駆動時はこの freeze 値を分母期待値の基準にする。reviewer registry が後から変わっても、
    その run の分母期待値は不変。
