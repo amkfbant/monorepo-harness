@@ -147,10 +147,15 @@ harness の安全設計はいかなる hitch 実装でも侵してはならな�
 - **provenance footprint（監査行のメタ列）**: jury 監査入力表
   （`jury_classification_proposals` / `jury_classification_refutations` /
   `jury_severity_audits`）の各行には、その提案を **誰が・どの実行で・どの prompt から**
-  生成したかを追える footprint 列を持たせる:
-  `run_id` / `hitch_id` / `finding_id` / `reviewer_id`（例 `jury-<lens>` /
-  `jury-refuter`） / `model` / `prompt_sha256`（NOT NULL・business-key の一部） /
-  `prompt_provenance_json` / `usage_kind` / `usage_seq` / `created_at`。
+  生成したかを追える footprint 列を持たせる。**3 表共通**:
+  `run_id` / `hitch_id` / `finding_id` / `model` / `prompt_sha256`
+  （NOT NULL・business-key の一部） / `usage_kind` / `usage_seq` / `created_at`。
+  **2 つの分類表のみ**（`jury_classification_proposals` /
+  `jury_classification_refutations`）はさらに `reviewer_id`（例 `jury-<lens>` /
+  `jury-refuter`） / `prompt_provenance_json` / `audit_dir_path` を持つ。
+  `jury_severity_audits` は reviewer 単位でなく finding 単位の advisory 集計のため
+  `reviewer_id` / `prompt_provenance_json` / `audit_dir_path` を持たず、3 lens の
+  severity 票は `jury_votes_json` に格納する。
   `prompt_sha256` は `(kind, finding, lens/role, round)` の決定論 digest で、
   `deliberation_id` と併せて retry を冪等化する（同一 deliberation は dedup、別
   deliberation は別行）。新しい監査行・列を足すときも、この footprint を欠損させない
