@@ -1357,4 +1357,25 @@ CREATE INDEX jury_severity_audits_finding_idx ON jury_severity_audits(hitch_id, 
 ```
 
 severity audit は advisory（`hitch_findings.severity` や close 判定には波及しない）。
-repository / doctor / decision-packet 配線は後続の Layer（A2/A3 以降）で拡張する。
+doctor / decision-packet 配線は後続の Layer（A3 以降）で拡張する。
+
+### repository（A2）
+
+3 表それぞれに insert 専用 repository（`src/db/repositories/jury-*.ts`）。すべて
+`class { constructor(private readonly db) }` 形で、共通ヘルパ
+`assertFindingHitchConsistency`（`src/db/jury-consistency.ts`）を insert 前に呼ぶ。
+
+- **fail-closed 整合検査**: insert する前に `finding_id` が `hitch_findings` に
+  存在し、かつ stored `hitch_id` が input の `hitchId` と一致するかを検査する。
+  finding 不在は throw（`finding_id ... not found`）、hitch_id 不一致は throw
+  （`hitch_id mismatch`）。FK が無い（backbone P1-1）ため、この検査が denorm
+  `hitch_id` の整合性を担保する（design §0.1 R5/P2f）。
+- **business-key dedup**: `INSERT OR IGNORE` で business-key UNIQUE index が
+  重複を黙って捨てる。`deliberation_id` を business-key に含むため、prompt_sha256
+  を再利用する retry（別 deliberation）は別行になり packet と常に一致する（R15）。
+- **JSON 列**: `evidence_json` / `counter_evidence_json` / `jury_votes_json` /
+  `critique_json` / `prompt_provenance_json` は値が `undefined`/`null` のときのみ
+  `null` を格納し、それ以外は `JSON.stringify`。`evidence`/`juryVotes`（必須 array）
+  は空配列でも `'[]'` で round-trip する。proposal の `evidence_json` は
+  `VerifiedJuryEvidence`（`verifyEvidence` 通過後）を保存する（verify は Layer 1/2
+  で上流処理・repository は検証しない＝design §0.1 R1）。
