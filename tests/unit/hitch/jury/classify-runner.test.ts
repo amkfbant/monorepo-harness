@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openManagedDb } from "../../../../src/db/managed-connection.js";
@@ -36,12 +36,31 @@ interface Harness {
 }
 
 /**
+ * TMPDIR HYGIENE: every `makeHarness` root is registered for `afterEach` rm so
+ * the suite never leaks full worktree + .harness SQLite + jury audit-log dirs
+ * (the suite has a documented history of TMPDIR leakage filling the disk).
+ */
+let tmpDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tmpDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup; a leftover on rm failure must not fail the test.
+    }
+  }
+  tmpDirs = [];
+});
+
+/**
  * Build a harness root with a hitch session, a coding run + attempt (so the
  * classify runner can resolve the latest run's worktree), a real worktree dir
  * with `src/a.ts` (10 lines) for file-kind evidence, and a repo policy file.
  */
 function makeHarness(hitchId: string): Harness {
   const harnessRoot = mkdtempSync(join(tmpdir(), "jury-classify-"));
+  tmpDirs = [...tmpDirs, harnessRoot];
   mkdirSync(join(harnessRoot, ".harness"), { recursive: true });
   const dbPath = join(harnessRoot, ".harness", "harness.sqlite");
   const runId = `run-${hitchId}`;

@@ -935,4 +935,154 @@ describe("HitchOrchestrator", () => {
       close2();
     }
   });
+
+  it("a FAILED advisory severity record does NOT escalate the already-classified hitch (D2b Finding 2 #230)", async () => {
+    const dbPath = freshDbPath();
+    let findingId = "";
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      const repo = new HitchRepository(db);
+      repo.createSession({
+        hitchId: "g-advisory-throws",
+        title: "Advisory throws",
+        projectId: "demo",
+        closeConditions: [{ id: "typecheck", kind: "command", required: true }],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+      repo.createAttempt({
+        hitchId: "g-advisory-throws",
+        attemptType: "implement",
+      });
+      const cycle = repo.startReviewCycle({
+        hitchId: "g-advisory-throws",
+        cycleNumber: 1,
+        reviewMode: "initial",
+      });
+      repo.completeReviewCycle({ cycleId: cycle.cycleId, findingsNew: 1 });
+      findingId = repo.upsertFinding({
+        hitchId: "g-advisory-throws",
+        source: "review",
+        sourceCycleId: cycle.cycleId,
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "unknown",
+        summary: "scope-unanimous finding; advisory record will fail to persist",
+      }).finding.findingId;
+      repo.recordCloseCheck({
+        hitchId: "g-advisory-throws",
+        conditionId: "typecheck",
+        status: "passed",
+        checkedBy: "test",
+      });
+    } finally {
+      close();
+    }
+
+    // A scope-confirmed (resolved:true) classify carrying a severity-audit packet
+    // that CANNOT be persisted: a BigInt in the packet makes the advisory record's
+    // JSON.stringify throw at write time (a transient-DB-error stand-in). The
+    // throw must be swallowed by the orchestrator's D2b-only try/catch — the
+    // classification has ALREADY landed, so the advisory note failing must NOT
+    // escalate the converged hitch. (`findings` stays valid so the pre-try
+    // `findingIds` map does not trip; only the persistence write throws.)
+    const unserializablePacket = {
+      packetVersion: 2,
+      decisionKinds: ["severity_audit"],
+      findings: [
+        {
+          findingId,
+          summary: "scope-unanimous finding; advisory record will fail to persist",
+          deliberationId: "delib-advisory-throws",
+          origin: "harness",
+        },
+      ],
+      recommendation: {
+        action: "review_severity",
+        rationale: "jury severity vote diverged from the harness mapping",
+      },
+      evaluationAxes: [],
+      deliberation: {
+        critiqueRan: false,
+        refuter: { refuteVerdict: "uphold", reasoning: "scope upheld" },
+        gateTrace: {
+          scopeUnanimous: true,
+          lensDistinct: true,
+          noInconclusive: true,
+          allHaveVerifiedEvidence: true,
+          proximityOk: true,
+          refuterUpheld: true,
+        },
+      },
+      rejectedProposals: [],
+      minorityView: null,
+      // Unserializable payload: JSON.stringify throws on a BigInt, simulating a
+      // transient failure persisting the purely-advisory record.
+      riskFlags: [1n],
+      unvalidatedAssumptions: [],
+      nextActions: [
+        {
+          owner: "operator",
+          action: "review the diverged severity",
+          verificationMethod: "compare jury votes against the harness mapping",
+        },
+      ],
+      severityAudit: {
+        harnessSeverity: "P2",
+        juryConsensus: "P1",
+        status: "diverged",
+        escalate: true,
+      },
+    } as unknown as HitchDecisionPacket;
+
+    let classifyCalls = 0;
+    const runners: OrchestratorRunners = {
+      ...fakeRunners([]),
+      classify: async () => {
+        classifyCalls += 1;
+        const { db: db2, close: close2 } = openManagedDb({ dbPath });
+        try {
+          new HitchRepository(db2).classifyFinding({
+            findingId,
+            scopeStatus: "in_scope",
+            reason: "jury auto_confirm",
+          });
+        } finally {
+          close2();
+        }
+        return { resolved: true, severityAuditPacket: unserializablePacket };
+      },
+    };
+
+    const result = await new HitchOrchestrator({ dbPath }).run({
+      hitchId: "g-advisory-throws",
+      runners,
+      maxSteps: 6,
+      createdBy: "worker",
+    });
+
+    expect(classifyCalls).toBe(1);
+    // The advisory persistence threw, but the hitch must NOT be escalated.
+    expect(result.outcome).not.toBe("escalated");
+
+    const { db: db2, close: close2 } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db2);
+      // The classification stands (finding stays in_scope, status non-escalated).
+      expect(repo.requireFinding(findingId).scopeStatus).toBe("in_scope");
+      expect(repo.requireSession("g-advisory-throws").status).not.toBe(
+        "escalated",
+      );
+      // No escalate decision row was written (the failure was swallowed, not
+      // routed to the outer escalate catch).
+      expect(
+        repo
+          .listDecisions("g-advisory-throws")
+          .some((d) => d.decision === "escalate"),
+      ).toBe(false);
+    } finally {
+      close2();
+    }
+  });
 });

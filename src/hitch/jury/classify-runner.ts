@@ -451,12 +451,20 @@ export async function runClassifyDeliberation(
   // PHASE 1 — DB OPEN, synchronous snapshot (no await inside the handle).
   const phase1 = openSnapshot(deps, hitchId);
   if (phase1.noProgressEscalate !== undefined) {
+    // §7.2 back-compat: kind/message/findingIds are ALWAYS populated on the
+    // persisted next-action. The snapshot's still-unknown finding ids (jury
+    // candidates + operator-origin) are readily available here, so surface them.
+    const unknownFindingIds = [
+      ...phase1.candidates.map((c) => c.findingId),
+      ...phase1.operatorOrigin.map((f) => f.findingId),
+    ];
     return {
       resolved: false,
       decision: "escalate",
       escalateReason: phase1.noProgressEscalate,
       recommendedNextAction: {
         kind: "classify_findings",
+        findingIds: unknownFindingIds,
         message: phase1.noProgressEscalate,
       },
     };

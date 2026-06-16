@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileCitationsStillFresh } from "../../../../src/hitch/jury/classify-runner.js";
@@ -24,8 +24,27 @@ import type { GlobalPolicy, RepoPolicy } from "../../../../src/policy/schema.js"
  * R1-only-stale case cannot be staged through the routed end-to-end path).
  */
 
+/**
+ * TMPDIR HYGIENE: every `makeWorktree` root is registered for `afterEach` rm so
+ * the suite never leaks worktree dirs (the suite has a documented history of
+ * TMPDIR leakage filling the disk).
+ */
+let tmpDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tmpDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup; a leftover on rm failure must not fail the test.
+    }
+  }
+  tmpDirs = [];
+});
+
 function makeWorktree(line5Present: boolean): EvidenceCheckContext {
   const root = mkdtempSync(join(tmpdir(), "jury-freshness-"));
+  tmpDirs = [...tmpDirs, root];
   mkdirSync(join(root, "src"), { recursive: true });
   // line5Present=true -> a.ts has 10 lines (line 5 valid). false -> 1 line
   // (line 5 out of range -> a stale `src/a.ts:5` citation).

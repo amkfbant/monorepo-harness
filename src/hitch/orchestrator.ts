@@ -149,39 +149,51 @@ export class HitchOrchestrator {
           // unanimity AND auto-confirmed (status already advanced by the runner),
           // but the deterministic severity audit diverged from the harness
           // mapping. Record the advisory packet ONCE so the operator can review
-          // it, WITHOUT touching the hitch status or the course/phase rollup:
-          //   - `updateStatus:false` → no hitch status sync (stays non-escalated).
-          //   - `decision:"continue"` → OUTSIDE the rollup blocked-set
-          //     (orchestrate-dispatch BLOCKED_DECISIONS) and
-          //     `statusForConvergenceDecision("continue") === null` (double
-          //     non-blocking). `escalate`/`needs_fix`/`diverging`/
-          //     `budget_exhausted`/`needs_classification` are NOT used — any of
-          //     those would block the linked phase even with updateStatus:false,
-          //     because the rollup keys on the newest decision VALUE.
+          // it, WITHOUT touching the hitch status or the course/phase rollup.
+          // `decision:"continue"` is safe on TWO independent axes:
+          //   1. it is OUTSIDE the course/phase blocking gate's blocked-set
+          //      (orchestrate-dispatch BLOCKED_DECISIONS =
+          //      {escalate, diverging, budget_exhausted, needs_classification}),
+          //      so it never blocks the linked phase via decideCoursePhaseAction;
+          //   2. `statusForConvergenceDecision("continue") === null`, so the
+          //      explicit `updateStatus:false` leaves the hitch status untouched.
           // State transitions stay harness-only: the LLM never writes status; this
           // deterministic, status-neutral record is purely advisory.
+          //
+          // The advisory record is wrapped in its own try/catch (Finding 2): the
+          // scope auto_confirm has ALREADY been committed by the classify runner,
+          // so a transient failure persisting this purely-advisory severity note
+          // must NOT fall through to the outer catch and ESCALATE an already-
+          // converged-and-classified hitch. The escalate-path (D2) persistence
+          // above is deliberately NOT guarded — its failure SHOULD escalate.
           if (r.severityAuditPacket !== undefined) {
             const packet = r.severityAuditPacket;
             const findingIds = packet.findings.map((f) => f.findingId);
-            withManagedDb({ dbPath: this.opts.dbPath }, (db) => {
-              recordConvergenceDecisionWithStatus({
-                repository: new HitchRepository(db),
-                hitchId: input.hitchId,
-                updateStatus: false,
-                decision: "continue",
-                reason:
-                  "advisory: jury severity vote diverged from the harness mapping (severity unchanged)",
-                metrics: convergence.metrics,
-                recommendedNextAction: {
-                  kind: "ask_human",
-                  message:
-                    "Review the diverged severity audit; the harness severity mapping is authoritative and unchanged.",
-                  findingIds,
-                  decisionPacket: packet,
-                },
-                createdBy: input.createdBy,
+            try {
+              withManagedDb({ dbPath: this.opts.dbPath }, (db) => {
+                recordConvergenceDecisionWithStatus({
+                  repository: new HitchRepository(db),
+                  hitchId: input.hitchId,
+                  updateStatus: false,
+                  decision: "continue",
+                  reason:
+                    "advisory: jury severity vote diverged from the harness mapping (severity unchanged)",
+                  metrics: convergence.metrics,
+                  recommendedNextAction: {
+                    kind: "ask_human",
+                    message:
+                      "Review the diverged severity audit; the harness severity mapping is authoritative and unchanged.",
+                    findingIds,
+                    decisionPacket: packet,
+                  },
+                  createdBy: input.createdBy,
+                });
               });
-            });
+            } catch {
+              // Swallow-and-continue: the classification already landed; the
+              // advisory severity note is non-critical and must never escalate a
+              // converged hitch. (Only the D2b advisory record is swallowed.)
+            }
           }
           // (#230 / codex#252-P2) A jury batch was capped this invocation
           // (`moreUnknownsPending`): halt the loop cleanly so per-invocation cost
