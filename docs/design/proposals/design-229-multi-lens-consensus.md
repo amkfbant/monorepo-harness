@@ -278,8 +278,8 @@ review:
 ```
 
 zod 検証(fail-closed): `quorum.min_participants >= 1`（0 は許さない）, `blocking_decisions ⊆ {changes_requested, rejected}`,
-`group` 非空文字列, `max_reviewers >= 1`, **`len(reviewer_ids) <= max_reviewers`（明示リストも hard cap＝DoS bound を破らせない）**,
-**`len(reviewer_ids) >= max(min_participants ?? 1, min_approvals ?? 1)`（充足不能 profile を compile で fail-fast。reviewer 数 < min_approvals だと `approvals >= minApprovals` が永久未達で pending/stall を浪費するため。codex #257）**。
+`group` 非空文字列, `max_reviewers >= 1`, **`reviewer_ids` は重複を reject**（`[alice,alice]` 等。distinct reviewer が participant 分母＝`insertProposal` は reviewer ごとに active 1件のため、重複は len チェックを通過しても frozen set が 1 participant しか生まず pending/stall になる。**以降の数チェックは重複 reject 後＝distinct 数で評価**。codex #257）, **`len(reviewer_ids) <= max_reviewers`（明示リストも hard cap＝DoS bound を破らせない）**,
+**`len(reviewer_ids) >= max(min_participants ?? 1, min_approvals ?? 1)`（充足不能 profile を compile で fail-fast。distinct reviewer 数 < min_approvals だと `approvals >= minApprovals` が永久未達で pending/stall を浪費するため。codex #257）**。
 **`multiReviewerRequired`**（＝複数の distinct reviewer が実効的に必要 = `(min_participants ?? 1) > 1` **または**
 `(min_approvals ?? 1) > 1`）が真の consensus requirement は **(i) `lens_axes` 必須（G0c/G1）かつ (ii) `reviewer_ids` 必須**
 （#229 Phase 1。frozen set を rule_json で完結＝migration 不要。どちらか欠落は `ReviewRuleCompileError`）。
@@ -464,7 +464,7 @@ quorum 再実装するのは duplication で禁止。
 | P1-E | orchestrator review runner: consensus mode で N reviewer 逐次 dispatch(**全 `allowOverwrite:true`** P1-b, **preflight で expected/registered/quorum 照合** P1-b/P2)→1回 processReviewDecision。**pending throw を catch→cycle 記録→`evaluateConsensusStallForHitch` 直接呼び（P1-a）**。escalate メッセージに group/required/registered | src/hitch/orchestrator-runners.ts | P1-C, P1-D |
 | P1-F | CLI `reviewers list --group`(listByGroup) / `add --group` の spec 整合 + 効果検証 | src/cli/run.ts | P1-D |
 | P1-G | consensus 集約の決定論固定(P2): `processConsensusModePath` の proposals/includedRows/sourceProposalIds を reviewer_id,proposal_id 昇順に。`recordConsensusReEvaluation` も同順 | src/core/review-processor.ts, src/core/reviewer-agent.ts | P1-E |
-| P1-ISO | **per-reviewer artifact 隔離（C1/C4 前提・§3.4 step3.5・C1 対処4-4）**: runDir/decisionPath/log を `runDir/reviewers/<path-safe reviewer_id>/` の subdir 化（reviewer_id は path 化前に `reviewers.add()` で path-safe 強制）、`verifyArtifactsUnchanged` の baseline を per-reviewer subdir に限定。runId-keyed 共有 runDir の衝突・誤 tamper を回避 | src/core/reviewer-agent.ts, src/db/repositories/reviewers.ts | P1-E, P1-D |
+| P1-ISO | **per-reviewer artifact 隔離（C1/C4 前提・§3.4 step3.5・C1 対処4-4）**: runDir/decisionPath/log を `runDir/reviewers/<path-safe reviewer_id>/` の subdir 化（reviewer_id は path 化前に `reviewers.add()` で path-safe 強制）、per-reviewer subdir を `REVIEWER_WRITE_ALLOWLIST` に追加し `verifyArtifactsUnchanged` の baseline は **runDir 全体を維持**（共有 artifact の tamper 検知を失わない・§3.4 step3.5）。runId-keyed 共有 runDir の衝突・誤 tamper を回避 | src/core/reviewer-agent.ts, src/db/repositories/reviewers.ts | P1-E, P1-D |
 | P1-H | reviewed-run は consensus rule を**明示拒否(typed error)**（P1-d） | src/core/reviewed-run-workflow.ts | P1-C |
 | P1-SPEC | docs/specs 同コミット更新(§7) | docs/specs/{project,workflow,db,cli}.md, docs/future-features.md | P1-B, P1-E |
 | P1-TEST | RED→GREEN テスト群(§6) | tests/unit/**, tests/integration/** | 各実装 item |
@@ -529,7 +529,7 @@ quorum 再実装するのは duplication で禁止。
    基準に読むため、compile→serialize 経路を Phase 1a で単体検証）**。
    `tests/unit/core/review-rule.test.ts`。
 2. `ProjectProfileSchema` の review 検証: 不正 quorum(`min_participants < 1`/neg/NaN) / 不正 blocking_decisions /
-   空 group / `max_reviewers<1` / `len(reviewer_ids) > max_reviewers` / **`len(reviewer_ids) < max(min_participants, min_approvals)`（充足不能 profile＝reviewer 数 < min_approvals で `approvals >= minApprovals` 永久未達。compile fail-fast。preflight 側=§3.4 step3 でも `max(min_participants, min_approvals)` 照合。codex #257）** を reject。`min_participation_rate` / `group_size`
+   空 group / `max_reviewers<1` / `len(reviewer_ids) > max_reviewers` / **重複 `reviewer_ids`（`[alice,alice]`＝distinct < 宣言数。frozen set が 1 participant しか生まない・codex #257）** / **`distinct(reviewer_ids) < max(min_participants, min_approvals)`（充足不能 profile＝reviewer 数 < min_approvals で `approvals >= minApprovals` 永久未達。compile fail-fast。preflight 側=§3.4 step3 でも `max(min_participants, min_approvals)` 照合。codex #257）** を reject。`min_participation_rate` / `group_size`
    キーは `.strict()` で reject（rate-based quorum は #229 profile 非対応・follow-up）。**review 欠落 profile が通る**
    (後方互換)。`tests/unit/project/*`。**特に** `min_participants=0` が reject されることを検証。
    **2b. G0c/P0: `multiReviewerRequired`（`min_participants > 1` or `min_approvals > 1`）∧（`lens_axes` 未宣言
@@ -1444,12 +1444,16 @@ participants 計算式自体は不変）。
    stall・escalate 判定に効いてしまう。**実装手順（DRY）**: frozen-set filter を **consensus-enrichment 層に
    『frozen reviewer set を引数で受ける純関数』として共有実装**し、`processConsensusModePath` と
    `recordConsensusReEvaluation` の両 call site が同一 filter を呼ぶ（二重実装しない）。`recordConsensusReEvaluation`
-   （reviewer-agent.ts:784-831 は全体が `try{ tx=db.transaction(()=>{… enrichActiveProposals(:801) …}); tx.immediate() }catch{warn}`）
-   は **(i) snapshot 読込＋frozen-set 解決＋filter を tx の前段（swallow の外）で行い throw を P1-a へ伝播、(ii)
-   insertActive のみ tx 内に残す** ようにリファクタする。**ただし `recordConsensusReEvaluation` は本体を try/catch で best-effort
-   握り潰す（reviewer-agent.ts:784,824-830）**ので、frozen-set/cycle filter を**その swallow 内に置かない**:
+   （reviewer-agent.ts:784-831 は全体が `try{ tx=db.transaction(()=>{ status guard + findSnapshotByRun + enrichActiveProposals(:801) + insertActive …}); tx.immediate() }catch{warn}`）
+   の **status guard + snapshot 読込 + frozen-set 解決/filter + insertActive を現状どおり同一 immediate tx 内に保つ**
+   （**tx の外に snapshot を読み出さない**: 外読み後〜遅延 insert 前に concurrent な review-auto が run を promote し
+   final consensus を書く race を再開させ、stale snapshot が final consensus を supersede する＝この status-guard
+   コメントが明示的に避けている race。codex #257）。**ただし外側 try/catch は本体を best-effort で握り潰す
+   （reviewer-agent.ts:784,824-830）**ので、frozen-set/cycle filter の失敗を**この swallow に飲ませない**:
    filter throw（rule_json 欠落 / snapshot 破損 / frozen-set parse 失敗）が pending `review_consensus` 行を黙って
-   drop すると P1-a の stall timeline が壊れ fail-open になる。→ **filter は swallow の外で評価し warn-and-drop しない**。
+   drop すると P1-a の stall timeline が壊れ fail-open になる。→ **frozen-set parse/解決の失敗は tx 内で typed error
+   （`consensus_reeval_failed`）を throw**（tx を abort）し、**外側 catch ではこの error class だけ swallow せず再 throw**
+   して fail-closed 伝播させる（良性 transient は従来どおり warn-continue）。
    ただし伝播先は P1-a の pending-catch ではない: recordConsensusReEvaluation の throw は呼び出し元 `runReviewerAgent`
    （reviewer-agent.ts:738→:743 rethrow）を貫通し **orchestrator-runners.ts:1120 から伝播 → C4 item4 の per-reviewer
    dispatch try/catch** が受ける（P1-a catch は processReviewDecision:1128 の ReviewGateError 専用の別ステップで、
@@ -1527,7 +1531,11 @@ participant が quorum 未達なら** fail-closed pending に倒れ（quorum を
 - **C4e（tamper abort）**: `runReviewerAgent` が artifact tamper の `ReviewerAgentGateError` を投げたら、
   non-participant 継続ではなく当該サイクルを abort/escalate し、後続 reviewer に tampered artifact を読ませない。
 - **C4f（resumed cycle の stale 票）**: 前サイクル active proposal を持つ reviewer が今サイクルで crash したとき、
-  旧 active 票が `participants` に計上されない（cycle filter / archive で今サイクル landed のみ参加）。
+  旧 active 票が `participants` に計上されない（cycle 前処理で `superseded_at` を set し今サイクル landed のみ参加）。
+- **C4g（再評価の tx atomicity・codex #257）**: `recordConsensusReEvaluation` の status guard + snapshot 読込 +
+  frozen-set filter + insertActive が**同一 immediate tx 内**で行われ、concurrent review-auto promote と insert の間で
+  stale snapshot が final consensus を supersede しないこと（tx 外読みの race を作らない）を検証。**frozen-set parse 失敗
+  （`consensus_reeval_failed`）は tx を abort し外側 catch で再 throw されて fail-closed**、良性 transient は warn-continue。
 
 **C4 スコープ**:
 - **#229 内（Phase 1a）**: dispatch loop の per-reviewer try/catch（**clean 失敗→non-participant / tamper→abort**、
