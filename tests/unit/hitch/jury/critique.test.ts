@@ -102,7 +102,61 @@ function r1(
   };
 }
 
-/** A well-formed Stage3 critique JSON: one concrete objection per other lens. */
+const OBJECTION_TYPES = ["事実誤認", "推論飛躍", "代替仮説"] as const;
+
+/** The OTHER lenses for a critiquing lens, in fixed JURY_LENSES order. */
+function otherLensesOf(lens: JuryLens): JuryLens[] {
+  return JURY_LENSES.filter((l) => l !== lens);
+}
+
+/**
+ * A well-formed, LENS-AWARE Stage3 critique JSON: one concrete objection per
+ * OTHER lens of the given critiquing lens. This produces GENUINE per-target
+ * coverage (anti-ritualization design §0.1 R9 / 付録P) rather than always
+ * targeting the same two lenses regardless of the critiquing lens.
+ */
+function critiqueJsonForLens(
+  lens: JuryLens,
+  opts: {
+    revisedScope: "in_scope" | "out_of_scope" | "unknown";
+    voteChanged: boolean;
+  },
+): string {
+  const objections = otherLensesOf(lens).map((target, i) => ({
+    targetLens: target,
+    type: OBJECTION_TYPES[i % OBJECTION_TYPES.length],
+    objection: `concrete objection on ${target}: the cited file does not support that claim`,
+  }));
+  return JSON.stringify({
+    objections,
+    citationRelevance: [
+      { citation: "src/core/widget.ts:1", relevance: "directly supports the finding" },
+    ],
+    revisedScope: opts.revisedScope,
+    voteChanged: opts.voteChanged,
+  });
+}
+
+/** Build a lens-aware routing map (one genuine per-target critique per lens). */
+function lensAwareCritiqueMap(opts: {
+  revisedScope: "in_scope" | "out_of_scope" | "unknown";
+  voteChanged: boolean;
+}): RoutingMap {
+  const map: RoutingMap = {};
+  for (const lens of JURY_LENSES) {
+    map[routingKey("critique", lens)] = {
+      stdout: critiqueJsonForLens(lens, opts),
+    };
+  }
+  return map;
+}
+
+/**
+ * A non-lens-aware Stage3 critique JSON. By default targets the same two lenses
+ * (scope_fit, spec_adherence) regardless of the critiquing lens — used for the
+ * NEGATIVE (ritualization) controls and the fail-closed paths where the routed
+ * stdout content is irrelevant (timeout/exit/parse).
+ */
 function critiqueJson(opts: {
   revisedScope: "in_scope" | "out_of_scope" | "unknown";
   voteChanged: boolean;
@@ -187,12 +241,7 @@ describe("isWeakEvidence (P2-b/P2-c deterministic Stage3 trigger)", () => {
 
 describe("runCritiqueRound — produces round=2 proposals", () => {
   it("returns one round=2 proposal per lens, never auto-confirming", async () => {
-    const map: RoutingMap = {};
-    for (const lens of JURY_LENSES) {
-      map[routingKey("critique", lens)] = {
-        stdout: critiqueJson({ revisedScope: "in_scope", voteChanged: false }),
-      };
-    }
+    const map = lensAwareCritiqueMap({ revisedScope: "in_scope", voteChanged: false });
     const r1set = [
       r1("correctness", "in_scope"),
       r1("scope_fit", "in_scope"),
@@ -210,15 +259,17 @@ describe("runCritiqueRound — produces round=2 proposals", () => {
   });
 
   it("a lens can change its vote in R2 (voteChanged + revisedScope recorded)", async () => {
+    // Lens-aware (genuine per-target coverage) so the anti-ritualization gate
+    // ACCEPTS each lens; the vote-change behaviour is what this test asserts.
     const map: RoutingMap = {
       [routingKey("critique", "correctness")]: {
-        stdout: critiqueJson({ revisedScope: "out_of_scope", voteChanged: true }),
+        stdout: critiqueJsonForLens("correctness", { revisedScope: "out_of_scope", voteChanged: true }),
       },
       [routingKey("critique", "scope_fit")]: {
-        stdout: critiqueJson({ revisedScope: "in_scope", voteChanged: false }),
+        stdout: critiqueJsonForLens("scope_fit", { revisedScope: "in_scope", voteChanged: false }),
       },
       [routingKey("critique", "spec_adherence")]: {
-        stdout: critiqueJson({ revisedScope: "in_scope", voteChanged: false }),
+        stdout: critiqueJsonForLens("spec_adherence", { revisedScope: "in_scope", voteChanged: false }),
       },
     };
     const r1set = [
@@ -336,18 +387,95 @@ describe("runCritiqueRound — anti-ritualization (design §0.1 R9 / 付録P)", 
   });
 
   it("exactly one CONCRETE objection per OTHER proposal -> accepted (complete)", async () => {
-    const map: RoutingMap = {};
-    for (const lens of JURY_LENSES) {
-      map[routingKey("critique", lens)] = {
-        stdout: critiqueJson({ revisedScope: "in_scope", voteChanged: false, objectionCount: 2 }),
-      };
-    }
+    // GENUINE per-target coverage: each critiquing lens objects to each of ITS
+    // OTHER lenses (not a fixed pair). This is the load-bearing positive control
+    // for the anti-ritualization gate (design §0.1 R9 / 付録P).
+    const map = lensAwareCritiqueMap({ revisedScope: "in_scope", voteChanged: false });
     const out = await runCritiqueRound(deps(routingRunner(map)), FINDING, r1set());
     expect(out).toHaveLength(3);
     for (const p of out) {
       expect(p.proposalStatus).toBe("complete");
       expect(p.round).toBe(2);
     }
+  });
+
+  it("N concrete objections all on ONE other lens, another other lens uncovered -> inconclusive", async () => {
+    // For correctness, the other lenses are {scope_fit, spec_adherence}. Supply
+    // 2 concrete objections BOTH targeting scope_fit and ZERO for spec_adherence.
+    // The total count (2) meets the old shortfall gate but spec_adherence is
+    // uncovered -> per-proposal coverage fails -> inconclusive (付録P / R9).
+    const uneven = JSON.stringify({
+      objections: [
+        {
+          targetLens: "scope_fit",
+          type: "事実誤認",
+          objection: "concrete objection #1 on scope_fit: the cited file does not support that claim",
+        },
+        {
+          targetLens: "scope_fit",
+          type: "推論飛躍",
+          objection: "concrete objection #2 on scope_fit: the inference overreaches the evidence",
+        },
+      ],
+      citationRelevance: [
+        { citation: "src/core/widget.ts:1", relevance: "directly supports the finding" },
+      ],
+      revisedScope: "in_scope",
+      voteChanged: false,
+    });
+    const map: RoutingMap = {
+      [routingKey("critique", "correctness")]: { stdout: uneven },
+      // route the other two lenses through genuine per-target critiques so that
+      // ONLY the correctness lens exercises the uncovered-target defect.
+      [routingKey("critique", "scope_fit")]: {
+        stdout: critiqueJsonForLens("scope_fit", { revisedScope: "in_scope", voteChanged: false }),
+      },
+      [routingKey("critique", "spec_adherence")]: {
+        stdout: critiqueJsonForLens("spec_adherence", { revisedScope: "in_scope", voteChanged: false }),
+      },
+    };
+    const out = await runCritiqueRound(deps(routingRunner(map)), FINDING, r1set());
+    const corr = out.find((p) => p.lens === "correctness");
+    expect(corr?.round).toBe(2);
+    expect(corr?.proposalStatus).toBe("inconclusive");
+  });
+
+  it("objections targeting the SELF/critiquing lens (not other proposals) -> inconclusive", async () => {
+    // correctness critiquing correctness: 2 concrete objections, both targetLens
+    // === the critiquing lens itself. The total count meets the old gate but NO
+    // other proposal is examined -> per-proposal coverage fails -> inconclusive.
+    const selfTargeting = JSON.stringify({
+      objections: [
+        {
+          targetLens: "correctness",
+          type: "事実誤認",
+          objection: "concrete self objection #1: my own reasoning may overreach the evidence",
+        },
+        {
+          targetLens: "correctness",
+          type: "推論飛躍",
+          objection: "concrete self objection #2: my own inference is not fully grounded",
+        },
+      ],
+      citationRelevance: [
+        { citation: "src/core/widget.ts:1", relevance: "directly supports the finding" },
+      ],
+      revisedScope: "in_scope",
+      voteChanged: false,
+    });
+    const map: RoutingMap = {
+      [routingKey("critique", "correctness")]: { stdout: selfTargeting },
+      [routingKey("critique", "scope_fit")]: {
+        stdout: critiqueJsonForLens("scope_fit", { revisedScope: "in_scope", voteChanged: false }),
+      },
+      [routingKey("critique", "spec_adherence")]: {
+        stdout: critiqueJsonForLens("spec_adherence", { revisedScope: "in_scope", voteChanged: false }),
+      },
+    };
+    const out = await runCritiqueRound(deps(routingRunner(map)), FINDING, r1set());
+    const corr = out.find((p) => p.lens === "correctness");
+    expect(corr?.round).toBe(2);
+    expect(corr?.proposalStatus).toBe("inconclusive");
   });
 });
 

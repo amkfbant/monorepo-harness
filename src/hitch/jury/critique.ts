@@ -119,19 +119,29 @@ function isConcreteObjection(text: string): boolean {
 }
 
 /**
- * Anti-ritualization gate (design §0.1 R9). The critique is ACCEPTED only when
- * it raises at least one CONCRETE objection per OTHER proposal — i.e. the count
- * of concrete objections is at least `otherCount`. Empty objections,
- * boilerplate-only objections, or too few are REJECTED (fail-closed).
+ * Anti-ritualization gate (design §0.1 R9 / 付録P Stage3 frozen contract). The
+ * critique is ACCEPTED only when EACH OTHER proposal receives at least one
+ * CONCRETE objection whose `targetLens` is that proposal's lens. A total count
+ * of concrete objections is NOT enough: 2 objections both aimed at one other
+ * lens (leaving another uncovered), or objections aimed at the critiquing lens
+ * itself, are REJECTED. Empty / boilerplate-only objections are REJECTED too
+ * (fail-closed). This structurally prevents the ritualization the frozen output
+ * contract was designed to block ("他者提案ごとに ≥1 具体 objection").
  */
 function critiqueIsSubstantive(
   parsed: ParsedCritique,
-  otherCount: number,
+  otherLenses: readonly JuryLens[],
 ): boolean {
-  const concrete = parsed.objections.filter((o) =>
-    isConcreteObjection(o.objection),
+  if (otherLenses.length === 0) return false;
+  const coveredLenses = new Set<JuryLens>(
+    parsed.objections
+      .filter((o) => isConcreteObjection(o.objection))
+      .map((o) => o.targetLens),
   );
-  return concrete.length >= otherCount && otherCount > 0;
+  // Every OTHER proposal must have at least one concrete objection targeting it.
+  // (Self-targeting objections are inherently excluded: the critiquing lens is
+  // never in `otherLenses`, so they can never cover an other proposal.)
+  return otherLenses.every((lens) => coveredLenses.has(lens));
 }
 
 /**
@@ -304,8 +314,9 @@ async function critiqueForLens(
     return inconclusiveRound2(r1);
   }
 
-  // Anti-ritualization (R9): require >=1 concrete objection per OTHER proposal.
-  if (!critiqueIsSubstantive(parsed, others.length)) {
+  // Anti-ritualization (R9): require >=1 concrete objection PER OTHER proposal
+  // (targeted by lens), not merely a total count.
+  if (!critiqueIsSubstantive(parsed, others.map((p) => p.lens))) {
     return inconclusiveRound2(r1);
   }
 

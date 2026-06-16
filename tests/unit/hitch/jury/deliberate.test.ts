@@ -99,30 +99,52 @@ function proposeJson(
   });
 }
 
-/** A well-formed Stage3 critique JSON: one concrete objection per other lens. */
-function critiqueJson(opts: {
-  revisedScope: "in_scope" | "out_of_scope" | "unknown";
-  voteChanged: boolean;
-}): string {
+const CRITIQUE_OBJECTION_TYPES = ["事実誤認", "推論飛躍", "代替仮説"] as const;
+
+/**
+ * A well-formed, LENS-AWARE Stage3 critique JSON: one concrete objection per
+ * OTHER lens of the given critiquing lens. This produces GENUINE per-target
+ * coverage (anti-ritualization design §0.1 R9 / 付録P) — the gate requires that
+ * every other proposal receives at least one concrete objection targeting it,
+ * not merely a total count.
+ */
+function critiqueJson(
+  lens: JuryLens,
+  opts: {
+    revisedScope: "in_scope" | "out_of_scope" | "unknown";
+    voteChanged: boolean;
+  },
+): string {
+  const others = JURY_LENSES.filter((l) => l !== lens);
+  const objections = others.map((target, i) => ({
+    targetLens: target,
+    type: CRITIQUE_OBJECTION_TYPES[i % CRITIQUE_OBJECTION_TYPES.length],
+    objection: `concrete objection on ${target}: the cited file does not support that claim`,
+  }));
   return JSON.stringify({
-    objections: [
-      {
-        targetLens: "scope_fit",
-        type: "事実誤認",
-        objection: "concrete objection #1: the cited file does not support that claim",
-      },
-      {
-        targetLens: "spec_adherence",
-        type: "推論飛躍",
-        objection: "concrete objection #2: the inference leaps past the evidence",
-      },
-    ],
+    objections,
     citationRelevance: [
       { citation: "src/core/widget.ts:1", relevance: "directly supports the finding" },
     ],
     revisedScope: opts.revisedScope,
     voteChanged: opts.voteChanged,
   });
+}
+
+/**
+ * Build a critique-stage routing map where every lens returns a GENUINE
+ * per-target critique (one concrete objection per its OTHER lenses) with the
+ * given revised vote.
+ */
+function lensAwareCritiqueMap(opts: {
+  revisedScope: "in_scope" | "out_of_scope" | "unknown";
+  voteChanged: boolean;
+}): RoutingMap {
+  const map: RoutingMap = {};
+  for (const lens of JURY_LENSES) {
+    map[routingKey("critique", lens)] = { stdout: critiqueJson(lens, opts) };
+  }
+  return map;
 }
 
 /** A Stage4 refute JSON. */
@@ -150,15 +172,6 @@ function unanimousProposeMap(json: string): RoutingMap {
   const map: RoutingMap = {};
   for (const lens of JURY_LENSES) {
     map[routingKey("propose", lens)] = { stdout: json };
-  }
-  return map;
-}
-
-/** Build a critique-stage routing map where every lens returns `json`. */
-function unanimousCritiqueMap(json: string): RoutingMap {
-  const map: RoutingMap = {};
-  for (const lens of JURY_LENSES) {
-    map[routingKey("critique", lens)] = { stdout: json };
   }
   return map;
 }
@@ -245,13 +258,13 @@ describe("deliberate — (b) R1 split", () => {
       [routingKey("propose", "spec_adherence")]: { stdout: proposeJson("in_scope") },
       // critique keeps the split (each lens re-votes its own R1 scope).
       [routingKey("critique", "correctness")]: {
-        stdout: critiqueJson({ revisedScope: "in_scope", voteChanged: false }),
+        stdout: critiqueJson("correctness", { revisedScope: "in_scope", voteChanged: false }),
       },
       [routingKey("critique", "scope_fit")]: {
-        stdout: critiqueJson({ revisedScope: "out_of_scope", voteChanged: false }),
+        stdout: critiqueJson("scope_fit", { revisedScope: "out_of_scope", voteChanged: false }),
       },
       [routingKey("critique", "spec_adherence")]: {
-        stdout: critiqueJson({ revisedScope: "in_scope", voteChanged: false }),
+        stdout: critiqueJson("spec_adherence", { revisedScope: "in_scope", voteChanged: false }),
       },
       ...upholdMap(),
     };
@@ -286,9 +299,7 @@ describe("deliberate — (c) critique converges to unanimous -> refuter uphold -
       [routingKey("propose", "scope_fit")]: { stdout: proposeJson("out_of_scope") },
       [routingKey("propose", "spec_adherence")]: { stdout: proposeJson("in_scope") },
       // every lens re-votes in_scope in the critique round (convergence).
-      ...unanimousCritiqueMap(
-        critiqueJson({ revisedScope: "in_scope", voteChanged: true }),
-      ),
+      ...lensAwareCritiqueMap({ revisedScope: "in_scope", voteChanged: true }),
       ...upholdMap(),
     };
     const out = await deliberate(FINDING, deps(routingRunner(map)), HITCH_ID);
@@ -314,9 +325,7 @@ describe("deliberate — weak-evidence trigger + fail-closed convergence", () =>
         stdout: proposeJson("in_scope", { citation: "src/core/missing.ts:1" }),
       },
       [routingKey("propose", "spec_adherence")]: { stdout: proposeJson("in_scope") },
-      ...unanimousCritiqueMap(
-        critiqueJson({ revisedScope: "in_scope", voteChanged: false }),
-      ),
+      ...lensAwareCritiqueMap({ revisedScope: "in_scope", voteChanged: false }),
       ...upholdMap(),
     };
     const out = await deliberate(FINDING, deps(routingRunner(map)), HITCH_ID);
@@ -333,9 +342,7 @@ describe("deliberate — (d) post-critique unanimous + refuter refute", () => {
       [routingKey("propose", "correctness")]: { stdout: proposeJson("in_scope") },
       [routingKey("propose", "scope_fit")]: { stdout: proposeJson("out_of_scope") },
       [routingKey("propose", "spec_adherence")]: { stdout: proposeJson("in_scope") },
-      ...unanimousCritiqueMap(
-        critiqueJson({ revisedScope: "in_scope", voteChanged: true }),
-      ),
+      ...lensAwareCritiqueMap({ revisedScope: "in_scope", voteChanged: true }),
       ...refuteResponse({ stdout: refuteJson({ refuteVerdict: "refute" }) }),
     };
     const out = await deliberate(FINDING, deps(routingRunner(map)), HITCH_ID);
@@ -376,9 +383,7 @@ describe("deliberate — (f) outcome carries everything for persistence", () => 
       [routingKey("propose", "correctness")]: { stdout: proposeJson("in_scope") },
       [routingKey("propose", "scope_fit")]: { stdout: proposeJson("out_of_scope") },
       [routingKey("propose", "spec_adherence")]: { stdout: proposeJson("in_scope") },
-      ...unanimousCritiqueMap(
-        critiqueJson({ revisedScope: "in_scope", voteChanged: true }),
-      ),
+      ...lensAwareCritiqueMap({ revisedScope: "in_scope", voteChanged: true }),
       ...upholdMap(),
     };
     const out = await deliberate(FINDING, deps(routingRunner(map)), HITCH_ID);
@@ -433,9 +438,7 @@ describe("deliberate — (g) critique-skip does NOT pass voteChanged to refuter"
       [routingKey("propose", "correctness")]: { stdout: proposeJson("in_scope") },
       [routingKey("propose", "scope_fit")]: { stdout: proposeJson("out_of_scope") },
       [routingKey("propose", "spec_adherence")]: { stdout: proposeJson("in_scope") },
-      ...unanimousCritiqueMap(
-        critiqueJson({ revisedScope: "in_scope", voteChanged: true }),
-      ),
+      ...lensAwareCritiqueMap({ revisedScope: "in_scope", voteChanged: true }),
       ...upholdMap(),
     };
     const recording: CodexExecRunner = {
