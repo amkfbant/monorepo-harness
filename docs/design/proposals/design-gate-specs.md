@@ -1000,7 +1000,7 @@ export class ReviewRefuteVoteRepository {
 
 ### 8. DB Schema Addition(CC17①)
 
-Database schema migration — `review_refute_votes` (**migration v32**; v31 is #230-only and already shipped):
+Database schema migration — `review_refute_votes` (**migration v32**; v31 is #230-only and already shipped). **⚠️ The DDL below is a simplified/older sketch — do NOT copy it verbatim. The canonical current DDL is [design-db-persistence.md §3.1](./design-db-persistence.md), which adds `validation_status` / `reject_reason` / `source_sha256` / `source_yaml` and partitioned partial-unique indexes (passed / inconclusive / rejected). Implement from §3.1:**
 ```sql
 CREATE TABLE review_refute_votes (
   refute_id INTEGER PRIMARY KEY AUTOINCREMENT,

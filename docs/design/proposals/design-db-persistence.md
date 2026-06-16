@@ -68,9 +68,9 @@ epic #228 (AI 合議制) の sub-issue #229/#230/#231 は LLM 多体の **提案
 
 ### 2.1 migration 機構
 - `src/db/schema.ts:21` `SCHEMA_VERSION = 30`。`src/db/migrations.ts:202` `LATEST_SCHEMA_VERSION = SCHEMA_VERSION`。
-- `migrations.ts:45-49` `interface Migration = { version; name; statements: readonly string[] }`。`MIGRATIONS` 配列 v1–v30 (`:52-199`、末尾 v30 は `:194-198`)。**v31 は `MIGRATIONS` 配列末尾に `{ version: 31, name, statements: MIGRATION_V31_STATEMENTS }` を append し、`SCHEMA_VERSION` を 31 へ bump する**（`LATEST_SCHEMA_VERSION = SCHEMA_VERSION` なので 1 箇所）。
+- `migrations.ts:45-49` `interface Migration = { version; name; statements: readonly string[] }`。**v31 は #230 が出荷済**（`MIGRATIONS` 末尾 = `{ version: 31, ... }`、`SCHEMA_VERSION=31`。出荷済み statements は不可侵＝書き換えない）。**#229/#231 は同手順を新版で行う**: `MIGRATIONS` 配列末尾に `{ version: 32, name, statements: MIGRATION_V32_STATEMENTS }`（#229 `review_refute_votes`）/ `{ version: 33, ... }`（#231 phases ALTER）を append し `SCHEMA_VERSION` を bump（`LATEST_SCHEMA_VERSION = SCHEMA_VERSION` なので 1 箇所）。
 - `runMigrations`: per-migration IMMEDIATE txn + in-txn 再チェックで idempotent・concurrency-safe。
-- `schema.ts` 末尾 `ALL_TABLE_NAMES` (`:1874-1895`) は `V1..V30_TABLE_NAMES` の**手動 union**。新テーブルは `V31_TABLE_NAMES` 定数を新設し union に `...V31_TABLE_NAMES` を append 必須。`DROPPED_TABLE_NAMES` (`:1898`) も維持（v31 は drop 無し）。
+- `schema.ts` 末尾 `ALL_TABLE_NAMES` は `Vxx_TABLE_NAMES` の**手動 union**。**新テーブルを作る版だけ** `Vxx_TABLE_NAMES` 定数を新設し union に append（**v32=#229 は `V32_TABLE_NAMES`（`review_refute_votes`）を新設**。**v33=#231 は phases ALTER のみ＝新 table 名なし＝table-name 登録不要**）。`DROPPED_TABLE_NAMES` も維持（drop 無し）。
 
 ### 2.2 既存 review/hitch テーブルと **export-backed vs DB-only の正確な切り分け**
 | テーブル | DDL | 分類 | 根拠 file:line |
@@ -138,7 +138,7 @@ run_usage との対応: invocation 単位は `run_usage(run_id, kind, seq)` で 
 - **判定** = 既存 `review_consensus` / `review_decisions` / `hitch_convergence_decisions` (harness 決定論ゲートが書く)。LLM 出力列をゲート入力に直結させない。
 - 「判断ログ」= verdict + reasoning の構造化行 (会話全文は残さない、deliberation.md:151)。raw codex log は `.harness/audit/` のファイルに残し DB には載せない。
 
-**③ 各案で建てる最小テーブル**（版番号は #230 の v31 単独出荷後に確定。詳細 DDL §3.1–3.3）: **v31（#230・出荷済）** = `jury_classification_proposals` / `jury_classification_refutations` / `jury_severity_audits`（advisory）。**v32（#229 P2-0）** = `review_refute_votes`。packet (#230) と specApproval (#231) は既存列の additive JSON。**v33（#231）** additive 列: phases に `review_state_version`。（#229 C4 の frozen set は **explicit reviewer_ids 前提で rule_json に載るため列追加不要**。listByGroup 自動解決の consensus は follow-up で別途 `run_review_rule_snapshots.resolved_reviewers_json` を追加。）
+**③ 各案で建てる最小テーブル**（版番号は #230 の v31 単独出荷後に確定。詳細 DDL §3.1–3.3）: **v31（#230・出荷済）** = `jury_classification_proposals` / `jury_classification_refutations` / `jury_severity_audits`（advisory）**※ jury 3表の DDL 正本は #230 出荷分（`docs/specs/db.md` / design-230）。本ノート §3.2 は proposals / severity_audits のみ概説し `jury_classification_refutations` の DDL は重複掲載しない**。**v32（#229 P2-0）** = `review_refute_votes`。packet (#230) と specApproval (#231) は既存列の additive JSON。**v33（#231）** additive 列: phases に `review_state_version`。（#229 C4 の frozen set は **explicit reviewer_ids 前提で rule_json に載るため列追加不要**。listByGroup 自動解決の consensus は follow-up で別途 `run_review_rule_snapshots.resolved_reviewers_json` を追加。）
 
 ### 3.1 #229 — multi-lens consensus + refute
 
@@ -386,7 +386,7 @@ interface HitchDecisionPacket {
 
 ## 6. TDD テスト計画
 
-**migration**（v31=#230 は出荷済。本案 #229/#231 は v32/v33）: (1) `MIGRATIONS` に v32(#229)/v33(#231) が version 順・name・statements 非空。`LATEST_SCHEMA_VERSION=33`。(2) fresh DB v1→v33 適用後 `schema_migrations` に 33 行。`review_refute_votes`(v32) 存在 + phases に `review_state_version` 列(v33) (PRAGMA table_info)。(3) v31→v32→v33 upgrade で既存 jury/review/hitch テーブル無変更、`review_refute_votes` 追加、既存 phase 行に `review_state_version=0` が入る。(4) idempotent: 2 回目 run は no-op。(5) `ALL_TABLE_NAMES` に V32/V33 名が含まれ重複なし。(6) **FK が無いことの確認**: PRAGMA foreign_key_list が `review_refute_votes` で空。
+**migration**（v31=#230 は出荷済。本案 #229/#231 は v32/v33）: (1) `MIGRATIONS` に v32(#229)/v33(#231) が version 順・name・statements 非空。`LATEST_SCHEMA_VERSION=33`。(2) fresh DB v1→v33 適用後 `schema_migrations` に 33 行。`review_refute_votes`(v32) 存在 + phases に `review_state_version` 列(v33) (PRAGMA table_info)。(3) v31→v32→v33 upgrade で既存 jury/review/hitch テーブル無変更、`review_refute_votes` 追加、既存 phase 行に `review_state_version=0` が入る。(4) idempotent: 2 回目 run は no-op。(5) `ALL_TABLE_NAMES` に V32 名（`review_refute_votes`）が含まれ重複なし（v33 は phases ALTER のみ＝新 table 名登録なし）。(6) **FK が無いことの確認**: PRAGMA foreign_key_list が `review_refute_votes` で空。
 
 **round-trip / import-export (P1-4 反映)**: (1) v31 表に行を入れ `db export-files` → 表は file 化されない (DB-only)。(2) **既存 DB に v31 行を入れて `db import --from-files`（reset 含む）→ v31 行は残る（消えない）。fresh DB を import したときだけ空**（P1-4 を明示 assert）。(3) refute 行を入れ、import で required_changes 再構築 → refute 行は `target_change_hash` 経由で参照保持 (idx 変化に影響されない)。(4) **legacy-file run を reset で削除しても、`run_id` を FK 参照しない v31 行は FK 違反で詰まらず残る**(P1-1)。(5) `db.backup()` snapshot に v31 表行が含まれ restore で復元。
 

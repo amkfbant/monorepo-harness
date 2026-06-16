@@ -497,7 +497,7 @@ quorum 再実装するのは duplication で禁止。
 
 | id | title | files | depends |
 |----|-------|-------|---------|
-| P2-0 | **refute target binding data model + DSL**(P1-e): required_change に安定 target id/hash、refute output `{target_id,refute_verdict}`、harness 側 binding 決定論検証(未知 target/hash 不一致=reject)（→ 付録I.1.2/I.1.3 で `target_change_hash` / `uphold\|refute\|inconclusive` に契約確定）。**`review_refute_votes` table は #230 の v31 単独出荷により v31 には載らない＝新 migration `v32` で作成する（design-db §3.1 / impl-roadmap SP-1）。P2-0 が足すのは binding ロジック（normalizeChangeText / verifyRefuteBinding / 集約投入）＋ v32 migration** | src/core/review-decision-schema.ts, src/core/review-rule.ts, src/db/migrations.ts（v32 で `review_refute_votes` を新設） | Phase 1, v32 migration |
+| P2-0 | **refute target binding data model + DSL**(P1-e): required_change に安定 target id/hash、refute output `{target_id,refute_verdict}`、harness 側 binding 決定論検証(未知 target/hash 不一致=reject)（→ 付録I.1.2/I.1.3 で `target_change_hash` / `uphold\|refute\|inconclusive` に契約確定）。**`review_refute_votes` table は #230 の v31 単独出荷により v32 で作成するが、その v32 migration は impl-roadmap SP-1 が所有（design-db §3.1）。P2-0 が足すのは binding ロジックのみ（normalizeChangeText / verifyRefuteBinding / 集約投入）＝新 migration ではない（table は SP-1 の v32 で建立済を利用）** | src/core/review-decision-schema.ts, src/core/review-rule.ts | Phase 1, v32(SP-1) |
 | P2-A | refute requirement の rule 表現(DSL) + schema(`review.refute`) | src/project/schema.ts, src/core/review-rule.ts | P2-0 |
 | P2-B | refute reviewer agent variant(別 prompt, distinct registered reviewer_id) | src/core/refute-agent.ts(新) or reviewer-agent.ts flag | P2-A |
 | P2-C | refute 票を `evaluateConsensus` の決定論集約に通す(target-bound 第2 requirement として) | src/core/review-consensus.ts | P2-0, P2-A |
@@ -1061,7 +1061,7 @@ harness が **100% 決定論**で検証する:
    のを防ぐ）。`target_change_text` 自体が欠落（missing_field）の票のみ定数 sentinel を用い、`reject_reason` で区別する。
    いずれも監査トレースを欠落させない。
 
-本 P2-0 は `review-decision-schema.ts` / `schema.ts` + migration **v32**（`review_refute_votes` を新設。v31 は #230 が排他済）/ `review-rule.ts` のみを触り、
+本 P2-0 は `review-decision-schema.ts` / `review-rule.ts` のみを触り（`review_refute_votes` の v32 migration 自体は impl-roadmap SP-1 が所有。v31 は #230 が排他済）、
 `evaluateConsensus`（[review-consensus.ts](../../../src/core/review-consensus.ts):99, quorum + 固定 tie-break =
 凍結契約）も `refute_verdict(uphold/refute/inconclusive)→consensus label` の決定論マッピングも**改変しない**。
 マッピングと「第2 requirement への投入経路」は P2-A/P2-C の責務（本論点はその前提となる binding の確定のみ）。
