@@ -465,58 +465,79 @@ design §4.2 + §0.1 R1(allHaveVerifiedEvidence 述語)/R8(selectFinalRound)。*
 - [ ] **Step 1: RED — 単調 fail-closed の不変条件**
 
 ```ts
-// tests/unit/hitch/jury/deliberation-gate.test.ts
+// tests/unit/hitch/jury/deliberation-gate.test.ts （v1.1 + codex#252 P1 反映: finding/proximity/partial-R2/gateTrace）
 import { describe, it, expect } from "vitest";
 import { aggregateDeliberation, selectFinalRound } from "../../../../src/hitch/jury/aggregation.js";
 
-const v = (citation = "src/a.ts:1") => ({ citation, kind: "file" as const, claim: "c", verified: true });
+const FINDING = { filePath: "src/a.ts", category: "core" };
+const v = (citation = "src/a.ts:1", kind = "file" as const, resolvedRef?: string) =>
+  ({ citation, kind, claim: "c", verified: true, resolvedRef });
 const P = (lens: any, scope: any, opts: any = {}) =>
-  ({ findingId: "f", lens, proposedScope: scope, proposalStatus: "complete",
+  ({ findingId: "f", lens, proposedScope: scope, proposalStatus: opts.status ?? "complete",
      evidence: opts.evidence ?? [v()], round: opts.round ?? 2 });
 const unanimous = () => [P("correctness","in_scope"),P("scope_fit","in_scope"),P("spec_adherence","in_scope")];
+const D = (proposals: any, verdict?: any) =>
+  ({ findingId: "f", deliberationId: "d1", finding: FINDING, proposals,
+     ...(verdict ? { refuterVerdict: { refuteVerdict: verdict, reasoning: "x" } } : {}) });
 
 describe("aggregateDeliberation (monotonic fail-closed)", () => {
-  it("unanimous + all-verified + refuter uphold -> auto_confirm", () => {
-    const r = aggregateDeliberation({ findingId: "f", proposals: unanimous(),
-      refuterVerdict: { refuteVerdict: "uphold", reasoning: "x" } });
+  it("unanimous + proximate-verified + refuter uphold -> auto_confirm", () => {
+    const r = aggregateDeliberation(D(unanimous(), "uphold"));
     expect(r.decision).toBe("auto_confirm"); expect(r.scope).toBe("in_scope");
-    expect(r.gateTrace).toMatchObject({ scopeUnanimous: true, allHaveVerifiedEvidence: true, refuterUpheld: true });
+    expect(r.gateTrace).toMatchObject({ scopeUnanimous: true, allHaveVerifiedEvidence: true, proximityOk: true, refuterUpheld: true });
   });
   it("split can NEVER become auto_confirm even if refuter uphold", () => {
     const split = [P("correctness","in_scope"),P("scope_fit","in_scope"),P("spec_adherence","out_of_scope")];
-    const r = aggregateDeliberation({ findingId: "f", proposals: split,
-      refuterVerdict: { refuteVerdict: "uphold", reasoning: "x" } });
-    expect(r.decision).toBe("escalate");
+    expect(aggregateDeliberation(D(split, "uphold")).decision).toBe("escalate");
   });
   it("refuter refute/inconclusive vetoes unanimous", () => {
-    for (const verdict of ["refute","inconclusive"] as const) {
-      const r = aggregateDeliberation({ findingId: "f", proposals: unanimous(),
-        refuterVerdict: { refuteVerdict: verdict, reasoning: "x" } });
-      expect(r.decision).toBe("escalate");
-    }
+    for (const verdict of ["refute","inconclusive"] as const)
+      expect(aggregateDeliberation(D(unanimous(), verdict)).decision).toBe("escalate");
   });
   it("refuter undefined (not run) -> escalate", () => {
-    expect(aggregateDeliberation({ findingId: "f", proposals: unanimous() }).decision).toBe("escalate");
+    expect(aggregateDeliberation(D(unanimous())).decision).toBe("escalate");
   });
   it("any proposal missing a verified evidence -> escalate (allHaveVerifiedEvidence false)", () => {
     const weak = [P("correctness","in_scope",{ evidence: [] }),P("scope_fit","in_scope"),P("spec_adherence","in_scope")];
-    const r = aggregateDeliberation({ findingId: "f", proposals: weak,
-      refuterVerdict: { refuteVerdict: "uphold", reasoning: "x" } });
+    const r = aggregateDeliberation(D(weak, "uphold"));
     expect(r.decision).toBe("escalate"); expect(r.gateTrace.allHaveVerifiedEvidence).toBe(false);
   });
-  it("evidence with verified=false (unresolved citation) does not count", () => {
+  it("verified=false (unresolved citation) does not count -> escalate", () => {
     const weak = [P("correctness","in_scope",{ evidence: [{ citation:"nope", kind:"file", claim:"c", verified:false }] }),
       P("scope_fit","in_scope"),P("spec_adherence","in_scope")];
-    expect(aggregateDeliberation({ findingId:"f", proposals: weak, refuterVerdict:{refuteVerdict:"uphold",reasoning:"x"} }).decision).toBe("escalate");
+    expect(aggregateDeliberation(D(weak, "uphold")).decision).toBe("escalate");
+  });
+  it("PR1: verified but UNRELATED-domain citation only -> escalate (proximityOk false)", () => {
+    const off = [P("correctness","in_scope",{ evidence: [v("vendor/x.ts:1")] }),
+      P("scope_fit","in_scope",{ evidence: [v("vendor/y.ts:1")] }),
+      P("spec_adherence","in_scope",{ evidence: [v("vendor/z.ts:1")] })];
+    const r = aggregateDeliberation(D(off, "uphold"));
+    expect(r.decision).toBe("escalate"); expect(r.gateTrace.proximityOk).toBe(false);
+  });
+  it("PR1: finding without filePath/category -> proximity fail-closed -> escalate", () => {
+    const r = aggregateDeliberation({ findingId:"f", deliberationId:"d1", finding:{}, proposals: unanimous(),
+      refuterVerdict:{ refuteVerdict:"uphold", reasoning:"x" } });
+    expect(r.decision).toBe("escalate"); expect(r.gateTrace.proximityOk).toBe(false);
+  });
+  it("duplicate lens + refuter uphold -> escalate (gateTrace.lensDistinct false)", () => {
+    const dup = [P("correctness","in_scope"),P("correctness","in_scope"),P("spec_adherence","in_scope")];
+    const r = aggregateDeliberation(D(dup, "uphold"));
+    expect(r.decision).toBe("escalate"); expect(r.gateTrace.lensDistinct).toBe(false);
+  });
+  it("all inconclusive -> escalate (gateTrace.noInconclusive false)", () => {
+    const inc = [P("correctness","in_scope",{status:"timeout"}),P("scope_fit","in_scope",{status:"parse_error"}),
+      P("spec_adherence","in_scope",{status:"inconclusive"})];
+    const r = aggregateDeliberation(D(inc, "uphold"));
+    expect(r.decision).toBe("escalate"); expect(r.gateTrace.noInconclusive).toBe(false);
   });
   it("deterministic: same input twice -> equal result", () => {
-    const input = { findingId: "f", proposals: unanimous(), refuterVerdict: { refuteVerdict: "uphold" as const, reasoning: "x" } };
+    const input = D(unanimous(), "uphold");
     expect(aggregateDeliberation(input)).toEqual(aggregateDeliberation(input));
   });
 });
 
-describe("selectFinalRound (deterministic round selection)", () => {
-  it("picks round=2 per lens when critique ran", () => {
+describe("selectFinalRound (deterministic, target-round only)", () => {
+  it("picks round=2 for every lens when any R2 exists", () => {
     const r1 = [P("correctness","in_scope",{round:1}),P("scope_fit","in_scope",{round:1}),P("spec_adherence","in_scope",{round:1})];
     const r2 = [P("correctness","out_of_scope",{round:2}),P("scope_fit","out_of_scope",{round:2}),P("spec_adherence","out_of_scope",{round:2})];
     const sel = selectFinalRound([...r1, ...r2]);
@@ -526,11 +547,18 @@ describe("selectFinalRound (deterministic round selection)", () => {
     const r1 = [P("correctness","in_scope",{round:1}),P("scope_fit","in_scope",{round:1}),P("spec_adherence","in_scope",{round:1})];
     expect(selectFinalRound(r1).every(p => p.round === 1)).toBe(true);
   });
-  it("never mixes R1 and R2 for the gate (selected set is single-round per lens, fail-closed on missing)", () => {
-    const mixed = [P("correctness","in_scope",{round:2}),P("scope_fit","in_scope",{round:1})]; // lens incomplete
-    const sel = selectFinalRound(mixed);
-    // aggregateJuryVotes(sel) must be split (length<3 / lens missing) — verified downstream
-    expect(sel.length).toBeLessThan(3);
+  it("codex#252-P1: partial-R2 mix (2 lenses R2, 1 only R1) -> targetRound=2 drops R1 lens -> <3 -> downstream escalate", () => {
+    const mix = [P("correctness","in_scope",{round:2}),P("scope_fit","in_scope",{round:2}),P("spec_adherence","in_scope",{round:1})];
+    const sel = selectFinalRound(mix);
+    expect(sel).toHaveLength(2); // spec_adherence (R1 only) dropped because targetRound=2 → no stale R1 in unanimous
+    expect(aggregateDeliberation(D(sel, "uphold")).decision).toBe("escalate");
+  });
+  it("duplicate (lens,round) -> length>3 / non-distinct -> downstream escalate", () => {
+    const dup = [P("correctness","in_scope",{round:2}),P("correctness","in_scope",{round:2}),
+      P("scope_fit","in_scope",{round:2}),P("spec_adherence","in_scope",{round:2})];
+    const sel = selectFinalRound(dup);
+    expect(sel.length).toBeGreaterThan(3);
+    expect(aggregateDeliberation(D(sel, "uphold")).decision).toBe("escalate");
   });
 });
 ```
@@ -539,41 +567,48 @@ describe("selectFinalRound (deterministic round selection)", () => {
 - [ ] **Step 3: GREEN**
 
 ```ts
-// src/hitch/jury/aggregation.ts （aggregateDeliberation + selectFinalRound 部分）
+// src/hitch/jury/aggregation.ts （aggregateDeliberation + selectFinalRound。v1.1 PR1/PR2/P2-c/P2-d + codex#252 P1 反映）
 import { JURY_LENSES } from "./types.js";
-import type { JuryClassificationProposal, DeliberationInput, DeliberationResult, RefuterVerdict } from "./types.js";
+import type { JuryClassificationProposal, VerifiedJuryEvidence, DeliberationInput, DeliberationResult } from "./types.js";
 
+// PR2/codex#252-P1: target-round 限定。欠落/重複/部分R2混在は下流 aggregateJuryVotes で split（fail-closed）。
+// R2 が1件でもあれば全 lens に R2 を要求（stale R1 が unanimous に混入しない）。
 export function selectFinalRound(proposals: readonly JuryClassificationProposal[]): JuryClassificationProposal[] {
+  const targetRound: 1 | 2 = proposals.some((p) => p.round === 2) ? 2 : 1;
   const out: JuryClassificationProposal[] = [];
   for (const lens of JURY_LENSES) {
-    const forLens = proposals.filter((p) => p.lens === lens);
-    if (forLens.length === 0) continue; // missing lens -> downstream aggregateJuryVotes returns split
-    const r2 = forLens.find((p) => p.round === 2);
-    out.push(r2 ?? forLens.find((p) => p.round === 1)!);
+    out.push(...proposals.filter((p) => p.lens === lens && p.round === targetRound));
   }
-  return out;
+  return out; // length!==3 / lens 非distinct は aggregateJuryVotes が split→escalate
 }
 
-function proposalHasVerifiedEvidence(p: JuryClassificationProposal): boolean {
-  return p.evidence.length > 0
-    && p.evidence.every((e) => e.verified !== undefined)
-    && p.evidence.some((e) => e.verified === true);
+// PR1/codex#252-P1: 近接性フィルタ。citation の path/domain が finding の filePath/category と一致。
+// finding メタ欠如は fail-closed（false）。file は行番号 suffix を除いて先頭2セグメント比較。
+function evidenceProximityOk(e: VerifiedJuryEvidence, finding: DeliberationInput["finding"]): boolean {
+  const seg = (p: string) => p.split(":")[0].split("/").slice(0, 2).join("/");
+  if (e.kind === "file") return finding?.filePath !== undefined && seg(e.citation) === seg(finding.filePath);
+  return finding?.category !== undefined && (e.resolvedRef ?? e.citation).includes(finding.category); // spec/policy
 }
 
 export function aggregateDeliberation(input: DeliberationInput): DeliberationResult {
   const agg = aggregateJuryVotes(input.proposals);
-  const scopeUnanimous = agg.decision === "unanimous";
-  const lensDistinct = new Set(input.proposals.map((p) => p.lens)).size === input.proposals.length
-    && input.proposals.length === 3;
-  const noInconclusive = scopeUnanimous; // aggregateJuryVotes already enforces this for unanimous
-  const allHaveVerifiedEvidence = input.proposals.length > 0 && input.proposals.every(proposalHasVerifiedEvidence);
+  const scopeUnanimous = agg.decision === "unanimous"; // 判定権威（lens distinct + 判定不能ゼロを内包）
+  // gateTrace は監査表示用に独立計算（P2-c）。pass 判定は scopeUnanimous に委譲し二重判定を排除（P2-d）。
+  const lensDistinct = new Set(input.proposals.map((p) => p.lens)).size === 3 && input.proposals.length === 3;
+  const noInconclusive = input.proposals.length > 0
+    && input.proposals.every((p) => p.proposalStatus === "complete" && p.proposedScope !== "unknown");
+  const allHaveVerifiedEvidence = input.proposals.length > 0
+    && input.proposals.every((p) => p.evidence.length > 0
+      && p.evidence.every((e) => e.verified !== undefined)
+      && p.evidence.some((e) => e.verified === true));
+  const proximityOk = input.proposals.length > 0
+    && input.proposals.every((p) => p.evidence.some((e) => e.verified === true && evidenceProximityOk(e, input.finding)));
   const refuterUpheld = input.refuterVerdict === undefined ? null : input.refuterVerdict.refuteVerdict === "uphold";
-  const gateTrace = { scopeUnanimous, lensDistinct, noInconclusive, allHaveVerifiedEvidence, refuterUpheld };
+  const gateTrace = { scopeUnanimous, lensDistinct, noInconclusive, allHaveVerifiedEvidence, proximityOk, refuterUpheld };
 
-  const pass = scopeUnanimous && lensDistinct && noInconclusive && allHaveVerifiedEvidence && refuterUpheld === true;
-  if (pass) {
-    return { decision: "auto_confirm", scope: agg.scope, reason: `auto_confirm ${agg.scope} (deliberation upheld)`, gateTrace };
-  }
+  // PR1/PR2/P2-d: scopeUnanimous(aggregateJuryVotes 権威) ∧ verified ∧ proximate ∧ refuter uphold のみ auto_confirm。
+  const pass = scopeUnanimous && allHaveVerifiedEvidence && proximityOk && refuterUpheld === true;
+  if (pass) return { decision: "auto_confirm", scope: agg.scope, reason: `auto_confirm ${agg.scope} (deliberation upheld)`, gateTrace };
   return { decision: "escalate", reason: `escalate: ${agg.reason}`, gateTrace };
 }
 ```
@@ -727,9 +762,17 @@ design §7.2 + §0.1 R3。`!r.resolved` のとき escalate return の前に `rec
 **Files:** Test `tests/unit/hitch/convergence.test.ts`, `tests/unit/hitch/fixture-matrix.test.ts`(convergence-only), `tests/unit/hitch/review-integration.test.ts`
 - [ ] P0/budget/divergence は jury 不通過 / heuristic 確定は jury bypass / operator-origin は機械分類なし / 固定 severity 不変・close gate 不変・自動降格なし / 既存スイート緑（弱めない）。`npx vitest run`(フル) + typecheck 緑。commit。
 
+### Task D6: packetVersion discriminated reader 本体改修（v1.1 PR6 / codex#252 P2）
+
+**Files:** grep で特定（dashboard read API / MCP tools / CLI listDecisions のうち `recommended_next_action`/`decisionPacket` を読む箇所）; Test 各 reader の unit
+- [ ] **Step 1: grep** — `recommended_next_action` / `decisionPacket` を読む reader を列挙し、改修対象ファイルを確定。CLI/MCP threading が docs のみで code 不要かもここで判定。
+- [ ] **Step 2: RED** — 「`packetVersion:1` 行（`deliberation`/`evidence`/`deliberationId` 欠落）を各 reader が壊さず読む（undefined fallback）」「`packetVersion:2` 行も読める」。
+- [ ] **Step 3: GREEN** — 各 reader を `packetVersion` で discriminate + optional chaining + default fallback。
+- [ ] **Step 4-5:** typecheck 緑 → commit。
+
 ---
 
-# Layer 4 — docs（同コミット原則・該当 src 変更と同じ PR）
+# Layer 4 — docs（主要分は同コミット・残りは同 PR）
 
 ### Task E1: hitch-convergence.md
 - [ ] 5-stage pipeline / RACI(design §8) / packet v2 format / severity precedence(mapping authoritative・jury advisory) / **単調 fail-closed 不変条件** / verifyEvidence は実在のみ(関連性限界)。commit。

@@ -158,6 +158,18 @@ frozen v2 の `aggregateJuryVotes` は unanimous-only（多数決より安全）
 - §5.3 に **経路 → formatter → decisionKind → severityAudit field 有無**の対応表を 1 つ追加。
 - §10 に verifyEvidence の **kind×境界 RED**（file 実在+line 範囲外→false / spec anchor 不在・重複の決定論 / policy glob ゼロ/複数マッチ）を列挙。
 
+### codex App #252 追加対処（PR レビュー反映）
+
+PR #252 の codex App レビュー（P1×2 は plan 本文スニペットの v1.1 未反映＝plan 側で修正済み）に加え、設計側の P2×2 を確定:
+
+- **R14（P2-a・mixed-kind packet）**: R5 の部分前進で harness-origin(split→escalate) と operator-origin を同一 escalate packet に束ねると、スカラー `decisionKind` では片方の manual action が消える。**`HitchDecisionPacket.decisionKind` を `decisionKinds: Array<'classify_scope'|'severity_audit'|'operator_origin_unknown'>`（plural）に変更**し、`findings[]` 各要素に **`origin?: 'harness' | 'operator'`** を追加。`nextActions[]`（既に plural）が各 finding の必要 manual action を漏れなく列挙する（どの kind の action も hidden にしない）。§5.2 のスカラー `decisionKind` は本項で上書き。
+- **R15（P2-c・deliberation_id を dedup key に）**: `deliberation_id` を business-key の**外**に置くと、prompt_sha256 を再利用する retry（gate input=refuter verdict が変わる）で `INSERT OR IGNORE` が old deliberation_id の行を温存し、新 packet の deliberation_id と不整合 → doctor 照合が誤 fail。**business-key UNIQUE に `deliberation_id` を含める**:
+  - proposals: `(finding_id, lens, reviewer_id, round, prompt_sha256, deliberation_id)`
+  - refutations: `(finding_id, target_scope, reviewer_id, prompt_sha256, deliberation_id)`
+  - severity_audits: `(finding_id, prompt_sha256, deliberation_id)`
+  ＝ **同一 deliberation 内では dedup（Phase3 retry 安全）／別 deliberation（=retry）は別行**で packet の deliberation_id と常に一致。§6.2 の dedup index は本項で上書き。
+- **R-plan（P1×2・plan 側で修正済み）**: plan Task B3 の元コードスニペット（`selectFinalRound` の `r2 ?? r1`・`aggregateDeliberation` の proximity 未組込）を v1.1 PR1/PR2 契約に揃えた（target-round 限定選択・近接性 AND・`finding` を `DeliberationInput` に thread・`gateTrace.proximityOk`）。RED に proximity-fail / partial-R2-mix / gateTrace 直接 assert を追加。
+
 ### 付録 P: jury stage プロンプト出力契約（凍結・儀式化防止）
 
 実装時に下記を厳格 parse schema として固定（中身を実装任せにしない）:
