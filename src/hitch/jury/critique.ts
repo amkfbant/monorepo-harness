@@ -9,6 +9,10 @@ import {
   type JuryProposedScope,
   type JuryProposerDeps,
 } from "./types.js";
+import {
+  renderScopeSnapshot,
+  type HitchScopeSnapshot,
+} from "./scope-snapshot.js";
 
 /**
  * #230 Task C2 — Stage3 mutual critique round (`runCritiqueRound`). Layer 2
@@ -83,6 +87,10 @@ const CritiqueSchema = z
     objections: z.array(ObjectionSchema),
     citationRelevance: z.array(CitationRelevanceSchema),
     revisedScope: z.enum(["in_scope", "out_of_scope", "unknown"]),
+    // Parsed for contract compatibility (the model still emits it, and `.strict()`
+    // would reject the key otherwise) but NEVER trusted: the emitted round-2
+    // `voteChanged` is DERIVED deterministically from `revisedScope` vs the
+    // round-1 scope (FIX 2, codex#254 P1) — this field's value is discarded.
     voteChanged: z.boolean(),
   })
   .strict();
@@ -155,6 +163,7 @@ function buildCritiquePrompt(
   lens: JuryLens,
   finding: JuryCritiqueFinding,
   others: JuryClassificationProposal[],
+  scopeSnapshot: HitchScopeSnapshot,
 ): string {
   const otherBlocks = others.map((p) => {
     const ev = p.evidence
@@ -180,6 +189,9 @@ function buildCritiquePrompt(
     "",
     `[[stage:critique]] [[lens:${lens}]]`,
     `Your lens: ${lens}`,
+    "",
+    // FIX 1 (codex#254 P1): re-evaluate the scope vote AGAINST the frozen scope.
+    renderScopeSnapshot(scopeSnapshot),
     "",
     "Finding under review:",
     `- id: ${finding.findingId}`,
@@ -294,7 +306,7 @@ async function critiqueForLens(
   }
   const others = r1Proposals.filter((p) => p.lens !== lens);
 
-  const prompt = buildCritiquePrompt(lens, finding, others);
+  const prompt = buildCritiquePrompt(lens, finding, others, deps.scopeSnapshot);
   const paths = deps.logPaths(finding.findingId, lens, "critique");
   // P2 (codex): TRUNCATE the deterministic stdout/stderr/events paths before the
   // run so a codex that exits 0 WITHOUT writing stdout cannot leave a STALE prior
@@ -326,6 +338,14 @@ async function critiqueForLens(
   }
 
   const critique = serializeCritique(parsed);
+  // FIX 2 (codex#254 P1) — DERIVE voteChanged deterministically, NEVER trust the
+  // model's self-reported `parsed.voteChanged`. Stage4 reads voteChanged as the
+  // conformity / false-consensus signal: a lens that FLIPS its scope but reports
+  // voteChanged:false would HIDE the conformity signal -> refuter uphold ->
+  // Stage5 auto_confirm. The vote changed IFF the round-2 revised scope differs
+  // from the round-1 scope (SAFETY: derive deterministically; the LLM's flag is
+  // ignored entirely).
+  const voteChanged = parsed.revisedScope !== r1.proposedScope;
   return {
     findingId: r1.findingId,
     lens,
@@ -342,7 +362,7 @@ async function critiqueForLens(
       ? { proposedSeverity: r1.proposedSeverity }
       : {}),
     round: 2,
-    voteChanged: parsed.voteChanged,
+    voteChanged,
     critique,
   };
 }

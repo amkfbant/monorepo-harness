@@ -65,6 +65,7 @@ function deps(runner: CodexExecRunner): JuryProposerDeps {
     parseSchema: undefined,
     auditDir,
     evidenceCtx: evidenceCtx(),
+    scopeSnapshot: { goal: "deliberate test scope" },
   };
 }
 

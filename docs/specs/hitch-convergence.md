@@ -261,7 +261,15 @@ Each finding is deliberated independently (`deliberate.ts`):
    (`correctness`, `scope_fit`, `spec_adherence`) each propose a scope
    *independently* (no shared view): `{ proposedScope, proposalStatus,
    evidence[]{citation,kind,claim}, refutationCondition, uncertainty, reasoning,
-   confidence?, proposedSeverity? }`. This is round 1.
+   confidence?, proposedSeverity? }`. This is round 1. Every lens prompt embeds a
+   READ-ONLY **frozen hitch scope snapshot** (`scope-snapshot.ts`:
+   goal/domain/targetSummary/targetFiles/targetOperations/allowed+excluded
+   categories/notes/closeConditions, built from the session the classify runner
+   loads READ-ONLY in Phase 1) so each lens classifies the finding **against the
+   actual change scope**, not just the finding text. The snapshot is prompt
+   context only — it never feeds a state transition and the LLM cannot mutate it;
+   the same snapshot is threaded into Stage 3 and Stage 4. (`JuryProposerDeps.
+   scopeSnapshot` is required, so a deliberation cannot run without it.)
 
 2. **Stage 2 — EVIDENCE-CHECK** (deterministic, no LLM, read-only). The harness
    recomputes each citation's existence via `verifyEvidence`. The model's
@@ -277,19 +285,24 @@ Each finding is deliberated independently (`deliberate.ts`):
    removed: a lens is `complete` iff it carries ≥1 verified evidence, so a lens
    with zero verified evidence is `inconclusive`, which already makes round 1
    non-unanimous — and critique cannot manufacture verified evidence anyway.)
-   When it runs, each lens sees the others' proposals + evidence,
-   raises a concrete objection, and re-votes (round 2), recording `voteChanged` /
-   `critique`. **Convergence after critique does NOT auto-confirm**: the
-   post-critique round is re-aggregated, and a post-critique unanimous set still
-   must pass Stage 4 + Stage 5.
+   When it runs, each lens sees the others' proposals + evidence (and the same
+   frozen scope snapshot), raises a concrete objection, and re-votes (round 2),
+   recording `voteChanged` / `critique`. **`voteChanged` is DERIVED
+   deterministically** as `revisedScope !== round-1 scope` — the model's
+   self-reported `voteChanged` is parsed (for contract compatibility) but
+   IGNORED, so a lens that flips its scope yet claims `voteChanged:false` cannot
+   hide the conformity / false-consensus signal Stage 4 reads. **Convergence
+   after critique does NOT auto-confirm**: the post-critique round is
+   re-aggregated, and a post-critique unanimous set still must pass Stage 4 +
+   Stage 5.
 
 4. **Stage 4 — REFUTE** (LLM, adversarial, conditional). The refuter runs **only
    when the selected final round is unanimous AND every final-round proposal
    carries verified evidence**. It receives the unanimous verdict, each lens's
-   `refutationCondition`, the verified evidence, and (only when critique ran) who
-   changed their vote, and attacks the consensus — explicitly probing for false
-   consensus by conformity. It returns `{ refuteVerdict: uphold | refute |
-   inconclusive, reasoning, counterEvidence? }`.
+   `refutationCondition`, the verified evidence, (only when critique ran) who
+   changed their vote, and the same frozen scope snapshot, and attacks the
+   consensus — explicitly probing for false consensus by conformity. It returns
+   `{ refuteVerdict: uphold | refute | inconclusive, reasoning, counterEvidence? }`.
 
 5. **Stage 5 — AGGREGATE** (deterministic gate, `aggregateDeliberation`). The
    sole arbiter (see below).

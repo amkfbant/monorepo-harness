@@ -18,6 +18,7 @@ import type {
   VerifiedJuryEvidence,
 } from "../../../../src/hitch/jury/types.js";
 import { JURY_LENSES } from "../../../../src/hitch/jury/types.js";
+import type { HitchScopeSnapshot } from "../../../../src/hitch/jury/scope-snapshot.js";
 import {
   routingRunner,
   routingKey,
@@ -60,6 +61,14 @@ function logPaths() {
   });
 }
 
+const SCOPE_SNAPSHOT: HitchScopeSnapshot = {
+  goal: "refactor the widget renderer — SCOPE_GOAL_SENTINEL",
+  domain: "src/core",
+  targetOperations: ["TARGET_OP_SENTINEL_refactor_render"],
+  excludedCategories: ["EXCLUDED_CAT_SENTINEL_persistence"],
+  closeConditions: ["cc-1 (command, required) — CLOSE_COND_SENTINEL tests pass"],
+};
+
 function deps(runner: CodexExecRunner): JuryProposerDeps {
   return {
     reviewerRunner: runner,
@@ -70,6 +79,7 @@ function deps(runner: CodexExecRunner): JuryProposerDeps {
     parseSchema: undefined,
     auditDir,
     evidenceCtx: evidenceCtx(),
+    scopeSnapshot: SCOPE_SNAPSHOT,
   };
 }
 
@@ -279,6 +289,37 @@ describe("runCritiqueRound — produces round=2 proposals", () => {
   });
 });
 
+describe("runCritiqueRound — FIX 1 (codex#254 P1): scope in the critique prompt", () => {
+  it("every per-lens critique prompt embeds the frozen hitch scope snapshot", async () => {
+    const promptsSeen: string[] = [];
+    const recording: CodexExecRunner = {
+      async run(input) {
+        promptsSeen.push(input.prompt);
+        const map: RoutingMap = {};
+        for (const lens of JURY_LENSES) {
+          map[routingKey("critique", lens)] = {
+            stdout: critiqueJson({ revisedScope: "in_scope", voteChanged: false }),
+          };
+        }
+        return routingRunner(map).run(input);
+      },
+    };
+    await runCritiqueRound(deps(recording), FINDING, [
+      r1("correctness", "in_scope"),
+      r1("scope_fit", "in_scope"),
+      r1("spec_adherence", "in_scope"),
+    ]);
+    expect(promptsSeen).toHaveLength(3);
+    for (const prompt of promptsSeen) {
+      expect(prompt).toContain("SCOPE_GOAL_SENTINEL");
+      expect(prompt).toContain("TARGET_OP_SENTINEL_refactor_render");
+      expect(prompt).toContain("EXCLUDED_CAT_SENTINEL_persistence");
+      expect(prompt).toContain("CLOSE_COND_SENTINEL");
+      expect(prompt).toContain("Frozen hitch scope (READ-ONLY)");
+    }
+  });
+});
+
 describe("runCritiqueRound — anti-ritualization (design §0.1 R9 / 付録P)", () => {
   const r1set = () => [
     r1("correctness", "in_scope"),
@@ -458,6 +499,72 @@ describe("runCritiqueRound — anti-ritualization (design §0.1 R9 / 付録P)", 
     const corr = out.find((p) => p.lens === "correctness");
     expect(corr?.round).toBe(2);
     expect(corr?.proposalStatus).toBe("inconclusive");
+  });
+});
+
+describe("runCritiqueRound — FIX 2 (codex#254 P1): voteChanged is DERIVED, not trusted", () => {
+  const r1set = () => [
+    r1("correctness", "in_scope"),
+    r1("scope_fit", "in_scope"),
+    r1("spec_adherence", "in_scope"),
+  ];
+
+  it("model reports voteChanged:false but revisedScope DIFFERS from r1 -> derived voteChanged===true", async () => {
+    // SAFETY (CLAUDE.md): never trust an LLM self-report that feeds a state
+    // transition. Stage4 reads voteChanged as the conformity / false-consensus
+    // signal; a lens that FLIPS its scope (in_scope -> out_of_scope) yet reports
+    // voteChanged:false would HIDE that flip from the refuter. The harness must
+    // recompute voteChanged from revisedScope vs the round-1 scope, IGNORING the
+    // model's flag.
+    const lyingMap: RoutingMap = {};
+    for (const lens of JURY_LENSES) {
+      // genuine per-target objections (so the critique is ACCEPTED) but the
+      // revisedScope flips out_of_scope while the model dishonestly says
+      // voteChanged:false.
+      lyingMap[routingKey("critique", lens)] = {
+        stdout: critiqueJsonForLens(lens, {
+          revisedScope: "out_of_scope",
+          voteChanged: false,
+        }),
+      };
+    }
+    const out = await runCritiqueRound(
+      deps(routingRunner(lyingMap)),
+      FINDING,
+      r1set(), // every r1 is in_scope
+    );
+    expect(out).toHaveLength(3);
+    for (const p of out) {
+      expect(p.proposalStatus).toBe("complete");
+      expect(p.proposedScope).toBe("out_of_scope");
+      // DERIVED: out_of_scope !== in_scope -> true, regardless of the model's false.
+      expect(p.voteChanged).toBe(true);
+    }
+  });
+
+  it("model reports voteChanged:true but revisedScope UNCHANGED from r1 -> derived voteChanged===false", async () => {
+    const lyingMap: RoutingMap = {};
+    for (const lens of JURY_LENSES) {
+      // revisedScope stays in_scope (== r1) but the model dishonestly claims a flip.
+      lyingMap[routingKey("critique", lens)] = {
+        stdout: critiqueJsonForLens(lens, {
+          revisedScope: "in_scope",
+          voteChanged: true,
+        }),
+      };
+    }
+    const out = await runCritiqueRound(
+      deps(routingRunner(lyingMap)),
+      FINDING,
+      r1set(), // every r1 is in_scope
+    );
+    expect(out).toHaveLength(3);
+    for (const p of out) {
+      expect(p.proposalStatus).toBe("complete");
+      expect(p.proposedScope).toBe("in_scope");
+      // DERIVED: in_scope === in_scope -> false, regardless of the model's true.
+      expect(p.voteChanged).toBe(false);
+    }
   });
 });
 

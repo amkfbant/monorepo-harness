@@ -1,7 +1,15 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { runDoctor } from "../../../src/db/doctor.js";
+
+const DOCTOR_CHECKS_SOURCE = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../src/db/jury-doctor-checks.ts",
+);
 
 /**
  * RED for Task A3 (#230) — doctor checks for jury audit integrity.
@@ -822,3 +830,31 @@ function seedDecisionWithPacket(
 function randomId(): string {
   return Math.random().toString(36).slice(2);
 }
+
+/**
+ * FIX 3 (codex#254 ROUND-3 P3): the jury-doctor source must stay TEXT, not
+ * binary. `verdictKey` previously embedded a LITERAL NUL byte (the key
+ * separator), which makes `grep`/`rg` classify the .ts file as binary and hide
+ * its contents from repo search ("binary file matches"). The separator NUL byte
+ * is preserved at RUNTIME via the `\0` escape sequence in the template literal —
+ * but the SOURCE bytes must contain NO raw NUL so the file stays searchable.
+ */
+describe("jury-doctor-checks source is text-searchable (FIX 3, P3)", () => {
+  it("contains NO raw NUL byte (de-binary source)", () => {
+    const source = readFileSync(DOCTOR_CHECKS_SOURCE, "utf8");
+    // A raw NUL anywhere makes rg/grep treat the file as binary and drop it from
+    // search. The runtime separator NUL must come from the `\0` ESCAPE, not a
+    // literal byte in the source.
+    expect(/\u0000/.test(source)).toBe(false);
+  });
+
+  it("verdictKey is findable as plain text and uses the \\0 escape separator", () => {
+    const source = readFileSync(DOCTOR_CHECKS_SOURCE, "utf8");
+    // A search for the sentinel function name must succeed on the text source.
+    expect(source).toContain("function verdictKey(");
+    // The separator is the two-char escape `\0` (backslash + zero), never a raw
+    // NUL — so runtime semantics (NUL separator) are unchanged but the source
+    // stays text.
+    expect(source).toContain("${findingId}\\0${deliberationId}");
+  });
+});

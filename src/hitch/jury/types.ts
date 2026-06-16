@@ -5,6 +5,7 @@ import type {
   HitchNextAction,
   HitchScopeStatus,
 } from "../types.js";
+import type { HitchScopeSnapshot } from "./scope-snapshot.js";
 
 /**
  * #230 deliberation jury — pure type definitions (Layer 1).
@@ -175,6 +176,16 @@ export interface JuryProposerDeps {
   parseSchema: unknown;
   auditDir: string;
   evidenceCtx: EvidenceCheckContext;
+  /**
+   * FIX 1 (codex#254 ROUND-3 P1) — the READ-ONLY frozen hitch scope snapshot
+   * (goal / target operations / target files / categories / close conditions).
+   * REQUIRED: every jury prompt (proposer / critique / refuter) embeds it so each
+   * lens classifies the finding AGAINST the actual change scope, not just the
+   * finding text. The classify runner builds it from the session it already loads
+   * READ-ONLY in Phase 1; a standalone deliberation must still supply it (a
+   * missing scope is a programming error, not a silent auto_confirm path).
+   */
+  scopeSnapshot: HitchScopeSnapshot;
   /**
    * Lease-loss abort signal (#132). Threaded from the orchestrator drive through
    * the classify runner into every proposer/critique/refuter codex call so a

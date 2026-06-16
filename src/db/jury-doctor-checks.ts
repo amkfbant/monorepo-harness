@@ -363,7 +363,7 @@ function packetRefuterVerdict(
 }
 
 function verdictKey(findingId: string, deliberationId: string): string {
-  return `${findingId} ${deliberationId}`;
+  return `${findingId}\0${deliberationId}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

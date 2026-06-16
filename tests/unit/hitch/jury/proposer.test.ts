@@ -19,6 +19,7 @@ import type {
   EvidenceCheckContext,
 } from "../../../../src/hitch/jury/types.js";
 import { JURY_LENSES } from "../../../../src/hitch/jury/types.js";
+import type { HitchScopeSnapshot } from "../../../../src/hitch/jury/scope-snapshot.js";
 import {
   routingRunner,
   routingKey,
@@ -69,6 +70,15 @@ function logPaths(stageDir: string) {
   });
 }
 
+const SCOPE_SNAPSHOT: HitchScopeSnapshot = {
+  goal: "refactor the widget renderer — SCOPE_GOAL_SENTINEL",
+  domain: "src/core",
+  targetSummary: "TARGET_SUMMARY_SENTINEL only the widget renderer",
+  targetOperations: ["TARGET_OP_SENTINEL_refactor_render"],
+  excludedCategories: ["EXCLUDED_CAT_SENTINEL_persistence"],
+  closeConditions: ["cc-1 (command, required) — CLOSE_COND_SENTINEL tests pass"],
+};
+
 function deps(runner: CodexExecRunner): JuryProposerDeps {
   return {
     reviewerRunner: runner,
@@ -79,6 +89,7 @@ function deps(runner: CodexExecRunner): JuryProposerDeps {
     parseSchema: undefined,
     auditDir,
     evidenceCtx: evidenceCtx(),
+    scopeSnapshot: SCOPE_SNAPSHOT,
   };
 }
 
@@ -174,6 +185,36 @@ describe("generateJuryProposals — Stage1 per-lens launch", () => {
     for (const p of proposals) {
       expect(p.proposalStatus).toBe("complete");
       expect(p.proposedScope).toBe("in_scope");
+    }
+  });
+});
+
+describe("generateJuryProposals — FIX 1 (codex#254 P1): scope in the propose prompt", () => {
+  it("every per-lens propose prompt embeds the frozen hitch scope snapshot", async () => {
+    // The jury classifies whether a finding is IN SCOPE for the change; the
+    // definition of "in scope" lives in the frozen hitch scope (goal / target
+    // ops / categories / close conditions), NOT in the finding text. Without
+    // scope in the prompt a unanimous jury could auto_confirm without ever seeing
+    // the scope -> blocker misclassified. Assert the scope SENTINELS appear in
+    // every lens's prompt (each lens classifies AGAINST the actual scope).
+    const promptsSeen: string[] = [];
+    const recordingRunner: CodexExecRunner = {
+      async run(input) {
+        promptsSeen.push(input.prompt);
+        return routingRunner(unanimousMap(proposeJson("in_scope"))).run(input);
+      },
+    };
+    await generateJuryProposals(deps(recordingRunner), FINDING);
+    expect(promptsSeen).toHaveLength(3);
+    for (const prompt of promptsSeen) {
+      // the goal / target ops / excluded categories / close conditions all reach
+      // the lens (so it classifies against the real scope, not just the finding).
+      expect(prompt).toContain("SCOPE_GOAL_SENTINEL");
+      expect(prompt).toContain("TARGET_OP_SENTINEL_refactor_render");
+      expect(prompt).toContain("EXCLUDED_CAT_SENTINEL_persistence");
+      expect(prompt).toContain("CLOSE_COND_SENTINEL");
+      // and the scope block is explicitly labelled READ-ONLY context
+      expect(prompt).toContain("Frozen hitch scope (READ-ONLY)");
     }
   });
 });
@@ -443,6 +484,7 @@ describe("generateJuryProposals — FIX 2 (codex P2): stale stdout truncation", 
         parseSchema: undefined,
         auditDir,
         evidenceCtx: evidenceCtx(),
+        scopeSnapshot: SCOPE_SNAPSHOT,
       },
       FINDING,
     );

@@ -12,6 +12,10 @@ import {
   type RefuterVerdict,
   type VerifiedJuryEvidence,
 } from "./types.js";
+import {
+  renderScopeSnapshot,
+  type HitchScopeSnapshot,
+} from "./scope-snapshot.js";
 
 /**
  * #230 Task C3 — Stage4 adversarial classification refuter
@@ -107,7 +111,10 @@ const RefuteSchema = z
 type ParsedRefute = z.infer<typeof RefuteSchema>;
 
 /** Build the single Stage4 refuter prompt. Carries `[[stage:refute]]`, no lens. */
-function buildRefutePrompt(input: RefuterInput): string {
+function buildRefutePrompt(
+  input: RefuterInput,
+  scopeSnapshot: HitchScopeSnapshot,
+): string {
   const conditions = input.refutationConditions.map(
     (c) => `  - [${c.lens}] ${c.condition}`,
   );
@@ -133,6 +140,9 @@ function buildRefutePrompt(input: RefuterInput): string {
     "",
     "[[stage:refute]]",
     `Unanimous verdict to attack: ${input.unanimousScope}`,
+    "",
+    // FIX 1 (codex#254 P1): attack the verdict AGAINST the frozen change scope.
+    renderScopeSnapshot(scopeSnapshot),
     "",
     "Finding under review:",
     `- id: ${input.findingId}`,
@@ -276,7 +286,7 @@ export async function runClassificationRefuter(
       await mkdir(dirname(p), { recursive: true });
       await writeFile(p, "", "utf8");
     }
-    const prompt = buildRefutePrompt(input);
+    const prompt = buildRefutePrompt(input, deps.scopeSnapshot);
     const result = await runJuryCodex(deps, {
       worktreePath: deps.worktreePath,
       prompt,

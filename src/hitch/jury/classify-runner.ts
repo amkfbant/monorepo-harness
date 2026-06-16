@@ -13,6 +13,10 @@ import {
 import { deliberate, type DeliberationOutcome } from "./deliberate.js";
 import { verifyEvidence } from "./evidence.js";
 import {
+  snapshotFromSession,
+  type HitchScopeSnapshot,
+} from "./scope-snapshot.js";
+import {
   buildBundledSeverityAuditPacket,
   type SeverityAuditPacketInput,
 } from "./decision-packet.js";
@@ -201,6 +205,14 @@ interface Phase1Result {
   operatorOrigin: HitchFinding[];
   /** True when more harness-origin candidates remained beyond the batch cap. */
   moreCandidatesPending: boolean;
+  /**
+   * FIX 1 (codex#254 P1): the READ-ONLY frozen hitch scope snapshot built from
+   * the session loaded in this Phase 1. Threaded into every jury prompt (Phase 2)
+   * so each lens classifies the finding AGAINST the actual change scope. Captured
+   * here because Phase 1 is the only place the session is read (DB-closed in
+   * Phase 2).
+   */
+  scopeSnapshot: HitchScopeSnapshot;
 }
 
 /**
@@ -265,6 +277,9 @@ function runPhase1(
     candidates: capped,
     operatorOrigin,
     moreCandidatesPending,
+    // FIX 1 (codex#254 P1): capture the frozen scope snapshot from the READ-ONLY
+    // session so Phase 2 prompts classify against the actual change scope.
+    scopeSnapshot: snapshotFromSession(session),
   };
 }
 
@@ -273,6 +288,7 @@ function buildProposerDeps(
   deps: ClassifyDeliberationDeps,
   juryContext: JuryRunContext,
   hitchId: string,
+  scopeSnapshot: HitchScopeSnapshot,
 ): JuryProposerDeps {
   const evidenceCtx: EvidenceCheckContext = {
     worktreePath: juryContext.worktreePath,
@@ -290,6 +306,8 @@ function buildProposerDeps(
     parseSchema: undefined,
     auditDir: join(harnessPaths(deps.harnessRoot).runsDir, "jury", hitchId),
     evidenceCtx,
+    // FIX 1 (codex#254 P1): every jury prompt classifies against the frozen scope.
+    scopeSnapshot,
     // #132: thread the lease signal into every per-call jury codex invocation.
     ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
   };
@@ -303,10 +321,16 @@ async function runPhase2(
   deps: ClassifyDeliberationDeps,
   juryContext: JuryRunContext,
   candidates: readonly JuryCandidate[],
+  scopeSnapshot: HitchScopeSnapshot,
 ): Promise<DeliberatedCandidate[]> {
   const out: DeliberatedCandidate[] = [];
   for (const candidate of candidates) {
-    const proposerDeps = buildProposerDeps(deps, juryContext, candidate.hitchId);
+    const proposerDeps = buildProposerDeps(
+      deps,
+      juryContext,
+      candidate.hitchId,
+      scopeSnapshot,
+    );
     const outcome = await deliberate(
       {
         findingId: candidate.findingId,
@@ -683,7 +707,13 @@ export async function runClassifyDeliberation(
   if (phase1.candidates.length > 0) {
     juryContext = await deps.resolveJuryContext();
     // PHASE 2 — DB CLOSED, LLM deliberation (no DB handle held across awaits).
-    deliberated = await runPhase2(deps, juryContext, phase1.candidates);
+    // FIX 1 (codex#254 P1): thread the frozen scope snapshot captured in Phase 1.
+    deliberated = await runPhase2(
+      deps,
+      juryContext,
+      phase1.candidates,
+      phase1.scopeSnapshot,
+    );
   }
 
   // #132 — lease lost DURING Phase 2 (the long LLM step). Phase 3 is where the

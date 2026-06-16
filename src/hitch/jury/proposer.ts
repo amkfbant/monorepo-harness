@@ -14,6 +14,10 @@ import {
   type VerifiedJuryEvidence,
 } from "./types.js";
 import { HITCH_FINDING_SEVERITIES } from "../types.js";
+import {
+  renderScopeSnapshot,
+  type HitchScopeSnapshot,
+} from "./scope-snapshot.js";
 
 /**
  * #230 Task C1 — Stage1 jury proposer (3 independent lens proposals) + Stage2
@@ -81,7 +85,11 @@ type ParsedPropose = z.infer<typeof ProposeSchema>;
  * the model (and the test routing runner) answer per-lens. A lens prompt NEVER
  * embeds another lens's token, so the lenses cannot see each other.
  */
-function buildProposePrompt(lens: JuryLens, finding: JuryProposerFinding): string {
+function buildProposePrompt(
+  lens: JuryLens,
+  finding: JuryProposerFinding,
+  scopeSnapshot: HitchScopeSnapshot,
+): string {
   const lensGuide: Record<JuryLens, string> = {
     correctness:
       "Does the change do what it claims, with no logic/regression defects?",
@@ -96,6 +104,9 @@ function buildProposePrompt(lens: JuryLens, finding: JuryProposerFinding): strin
     "",
     `[[stage:propose]] [[lens:${lens}]]`,
     `Lens: ${lens} — ${lensGuide[lens]}`,
+    "",
+    // FIX 1 (codex#254 P1): classify AGAINST the frozen scope, not just the text.
+    renderScopeSnapshot(scopeSnapshot),
     "",
     "Finding under review:",
     `- id: ${finding.findingId}`,
@@ -183,7 +194,7 @@ async function proposeForLens(
   finding: JuryProposerFinding,
   lens: JuryLens,
 ): Promise<JuryClassificationProposal> {
-  const prompt = buildProposePrompt(lens, finding);
+  const prompt = buildProposePrompt(lens, finding, deps.scopeSnapshot);
   const paths = deps.logPaths(finding.findingId, lens, "propose");
   // P2 (codex): the stdout/stderr/events paths are DETERMINISTIC and reused on
   // retry. TRUNCATE them before the run so a codex that exits 0 WITHOUT writing

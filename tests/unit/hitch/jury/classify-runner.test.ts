@@ -430,6 +430,43 @@ describe("classify runner — 3 phase deliberation (#230 D1)", () => {
     expect(countRows(h, "jury_severity_audits", fid)).toBe(1);
   });
 
+  it("FIX 1 (codex#254 P1): the session's frozen scope reaches the jury prompts end-to-end", async () => {
+    // The runner loads the session READ-ONLY in Phase 1 and must thread its
+    // frozen scope (goal/domain/closeConditions) into every jury prompt so each
+    // lens classifies AGAINST the actual change scope, never just the finding
+    // text. Capture the proposer prompts and assert the session-derived scope is
+    // present.
+    const h = makeHarness("scope-thread");
+    seedFinding(h, "scope-thread", {
+      source: "review",
+      summary: "ambiguous finding",
+      filePath: "src/a.ts",
+      category: "core",
+    });
+    const promptsSeen: string[] = [];
+    const inner = routingRunner(unanimousRouting("in_scope"));
+    const capturing: CodexExecRunner = {
+      async run(input) {
+        promptsSeen.push(input.prompt);
+        return inner.run(input);
+      },
+    };
+    await makeRunners(h, capturing).classify("scope-thread");
+    const proposePrompts = promptsSeen.filter((p) =>
+      p.includes("[[stage:propose]]"),
+    );
+    expect(proposePrompts.length).toBeGreaterThan(0);
+    for (const prompt of proposePrompts) {
+      expect(prompt).toContain("Frozen hitch scope (READ-ONLY)");
+      // session.title -> goal
+      expect(prompt).toContain("Jury classify");
+      // session.domain
+      expect(prompt).toContain("docs");
+      // session.closeConditions[0].id "typecheck"
+      expect(prompt).toContain("typecheck");
+    }
+  });
+
   it("FIX 7: PRODUCTION review-finding shape (filePath OMITTED) ESCALATES even on a unanimous, verified, refuter-upheld jury (proximityOk false, fail-closed)", async () => {
     // The realistic dominant jury population: a review-source finding WITHOUT a
     // locatable `filePath` (the proposer still cites a real file `src/a.ts:1`,

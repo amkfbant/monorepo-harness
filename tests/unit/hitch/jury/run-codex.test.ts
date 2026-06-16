@@ -70,6 +70,7 @@ function makeDeps(
     parseSchema: undefined,
     auditDir,
     evidenceCtx,
+    scopeSnapshot: { goal: "run-codex test scope" },
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
   };
 }

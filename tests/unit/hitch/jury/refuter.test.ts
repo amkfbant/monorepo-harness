@@ -16,6 +16,7 @@ import type {
   EvidenceCheckContext,
   VerifiedJuryEvidence,
 } from "../../../../src/hitch/jury/types.js";
+import type { HitchScopeSnapshot } from "../../../../src/hitch/jury/scope-snapshot.js";
 import {
   routingRunner,
   refuteResponse,
@@ -60,6 +61,14 @@ function logPaths() {
   });
 }
 
+const SCOPE_SNAPSHOT: HitchScopeSnapshot = {
+  goal: "refactor the widget renderer — SCOPE_GOAL_SENTINEL",
+  domain: "src/core",
+  targetOperations: ["TARGET_OP_SENTINEL_refactor_render"],
+  excludedCategories: ["EXCLUDED_CAT_SENTINEL_persistence"],
+  closeConditions: ["cc-1 (command, required) — CLOSE_COND_SENTINEL tests pass"],
+};
+
 function deps(runner: CodexExecRunner): JuryProposerDeps {
   return {
     reviewerRunner: runner,
@@ -70,6 +79,7 @@ function deps(runner: CodexExecRunner): JuryProposerDeps {
     parseSchema: undefined,
     auditDir,
     evidenceCtx: evidenceCtx(),
+    scopeSnapshot: SCOPE_SNAPSHOT,
   };
 }
 
@@ -408,6 +418,34 @@ describe("runClassificationRefuter — prompt contract", () => {
     expect(seen).toContain("if the file did not exist this would be wrong");
     // verified evidence is shown
     expect(seen).toContain("src/core/widget.ts:1");
+  });
+
+  it("FIX 1 (codex#254 P1): the refuter prompt embeds the frozen hitch scope snapshot", async () => {
+    // The adversarial refuter attacks the unanimous verdict — it must do so
+    // AGAINST the actual change scope, not just the finding text. Assert the
+    // scope sentinels reach the refute prompt.
+    let seen = "";
+    const recording: CodexExecRunner = {
+      async run(input) {
+        seen = input.prompt;
+        const map: RoutingMap = {
+          ...refuteResponse({
+            stdout: refuteJson({
+              refuteVerdict: "uphold",
+              whyNotFalseConsensus: "x",
+              refutationConditions: "y",
+            }),
+          }),
+        };
+        return routingRunner(map).run(input);
+      },
+    };
+    await runClassificationRefuter(deps(recording), refuterInput());
+    expect(seen).toContain("SCOPE_GOAL_SENTINEL");
+    expect(seen).toContain("TARGET_OP_SENTINEL_refactor_render");
+    expect(seen).toContain("EXCLUDED_CAT_SENTINEL_persistence");
+    expect(seen).toContain("CLOSE_COND_SENTINEL");
+    expect(seen).toContain("Frozen hitch scope (READ-ONLY)");
   });
 
   it("P2-j: when critique was skipped, the prompt does NOT include voteChanged", async () => {
