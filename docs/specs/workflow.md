@@ -969,7 +969,8 @@ review → consensus → `run.status` の全経路は「**LLM の出力は入力
 
 > **設計段階（現状仕様ではない）**: profile から `quorum > 1` consensus を到達可能にする経路
 > （`resolveEffectiveRule` の profile 解決 / orchestrator の N-reviewer dispatch）、**異レンズ
-> （lens）reviewer** による視点多様化、**反証 verify（refute）** は #229 の設計段階であり
+> （lens）reviewer** による視点多様化、**反証 verify（refute。#229 close に含めるか別 issue 切り出しかは
+> 人間批准事項＝設計 付録H2/I.3 参照）** は #229 の設計段階であり
 > **まだ実装されていない**（既定 rule は `latest-proposal`、profile に `review:` セクションは無く、
 > `src/` に lens 配線は無い）。設計は
 > [`../design/proposals/design-229-multi-lens-consensus.md`](../design/proposals/design-229-multi-lens-consensus.md)

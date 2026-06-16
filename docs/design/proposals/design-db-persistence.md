@@ -127,7 +127,7 @@ run_usage との対応: invocation 単位は `run_usage(run_id, kind, seq)` で 
 - **判定** = 既存 `review_consensus` / `review_decisions` / `hitch_convergence_decisions` (harness 決定論ゲートが書く)。LLM 出力列をゲート入力に直結させない。
 - 「判断ログ」= verdict + reasoning の構造化行 (会話全文は残さない、deliberation.md:151)。raw codex log は `.harness/audit/` のファイルに残し DB には載せない。
 
-**③ v31 で建てる最小テーブル** (詳細 DDL §3.1–3.3): `review_refute_votes` (#229 P2-0)、`jury_classification_proposals` (#230)、`jury_severity_audits` (#230 advisory)。packet (#230) と specApproval (#231) は既存列の additive JSON。additive 列: phases に `review_state_version` (#231)、run_review_rule_snapshots に `resolved_reviewers_json` (#229 C4 frozen set・run-scoped・rule_json とは別列で hash 非対象)。
+**③ v31 で建てる最小テーブル** (詳細 DDL §3.1–3.3): `review_refute_votes` (#229 P2-0)、`jury_classification_proposals` (#230)、`jury_severity_audits` (#230 advisory)。packet (#230) と specApproval (#231) は既存列の additive JSON。additive 列: phases に `review_state_version` (#231)。（#229 C4 の frozen set は **explicit reviewer_ids 前提で rule_json に載るため列追加不要**。listByGroup 自動解決の consensus は follow-up で別途 `run_review_rule_snapshots.resolved_reviewers_json` を追加。）
 
 ### 3.1 #229 — multi-lens consensus + refute
 
@@ -159,7 +159,7 @@ CREATE TABLE review_refute_votes (
   usage_seq     INTEGER,              -- run_usage(seq) 相関 (P2-4)
   source_yaml   TEXT,                 -- refute agent 出力 yaml (監査)
   source_sha256 TEXT,
-  validation_status TEXT NOT NULL DEFAULT 'passed'
+  validation_status TEXT NOT NULL DEFAULT 'rejected'   -- fail-closed default: 明示的に passed と書かれた票のみ集約対象 (codex round7)
     CHECK (validation_status IN ('passed','rejected')),  -- 全票を記録。集約に渡すのは passed ∧ verdict∈{uphold,refute} のみ (design-229 G2/G3。inconclusive は passed でも除外)
   reject_reason TEXT,                 -- rejected 時の決定論コード (unknown_target / hash_mismatch / missing_field / artifact_absent / evidence_none)
   created_at    TEXT NOT NULL,
@@ -170,10 +170,11 @@ CREATE TABLE review_refute_votes (
 CREATE UNIQUE INDEX review_refute_votes_passed_idx
   ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256)
   WHERE validation_status = 'passed';
--- rejected は監査 append-only。source_sha256 違いの失敗試行を共存させ完全重複のみ dedup
--- (同一 reviewer/prompt の複数 reject 試行が衝突せず audit trail を保つ。後の passed retry も上の別 index で通る)
+-- rejected は監査 append-only。source_sha256 違いの失敗試行を共存させ完全重複のみ dedup。
+-- source_sha256 は nullable で SQLite は NULL を distinct 扱いするため、COALESCE で非 NULL 化して
+-- 「完全重複のみ dedup」を成立させる (codex round7。NULL 同士の重複挿入を防ぐ)
 CREATE UNIQUE INDEX review_refute_votes_rejected_idx
-  ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256, source_sha256)
+  ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256, COALESCE(source_sha256, ''))
   WHERE validation_status = 'rejected';
 CREATE INDEX review_refute_votes_run_idx ON review_refute_votes(run_id, created_at);
 CREATE INDEX review_refute_votes_target_idx ON review_refute_votes(run_id, target_change_hash);
@@ -246,6 +247,9 @@ CREATE TABLE jury_severity_audits (
   usage_seq     INTEGER,
   created_at    TEXT NOT NULL
 );
+-- NOTE: severity audit は **per-finding の単一集約行**（per-reviewer 票ではない）なので、§3.0 footprint の
+-- reviewer_id 規約からは意図的に除外（business key に reviewer_id を含めない）。per-reviewer の severity 票が要る
+-- なら follow-up で reviewer_id を追加し key を (finding_id, reviewer_id, prompt_sha256) にする。
 CREATE UNIQUE INDEX jury_severity_audits_dedup_idx
   ON jury_severity_audits(finding_id, prompt_sha256);  -- business key (P2-3)
 CREATE INDEX jury_severity_audits_finding_idx
@@ -322,7 +326,7 @@ interface HitchDecisionPacket {
 
 (下の workItemDag 参照。サマリ: **DB-WI-0 (review_state_json 書き込み経路 + `review_state_version` CAS、#231 の前提・軽微 additive 列)** → **DB-WI-1 (v31 schema/migration の 3 テーブル + phases ALTER)** → repository 層 (refute/jury/severity、finding_id→hitch_id 整合検査)、packet 型、specApproval 書き込み (txn+CAS) → consistency/doctor (orphan/hash/hitch_id 整合) → docs/tests。各 WI は #229/#230/#231 紐付けを明記。)
 
-**migration 連番の単一予約ブロック**: #229/#230/#231 は**全て v31 を共有** (1 migration block)。各案で v31/v32/v33 に分けない (v29↔v30 renumber 再発回避)。schema.ts に `// RESERVED v31 for epic #228 consensus artifacts` コメントを置き、PR merge 順を強制。LATEST bump は v31 へ 1 回のみ。**v31 statements**: 3 テーブル CREATE + index + `ALTER TABLE phases ADD COLUMN review_state_version INTEGER NOT NULL DEFAULT 0` + `ALTER TABLE run_review_rule_snapshots ADD COLUMN resolved_reviewers_json TEXT`（#229 C4 frozen reviewer set・run-scoped・rule_json とは別列で hash 非対象、dispatch 前 freeze・additive nullable）。
+**migration 連番の単一予約ブロック**: #229/#230/#231 は**全て v31 を共有** (1 migration block)。各案で v31/v32/v33 に分けない (v29↔v30 renumber 再発回避)。schema.ts に `// RESERVED v31 for epic #228 consensus artifacts` コメントを置き、PR merge 順を強制。LATEST bump は v31 へ 1 回のみ。**v31 statements**: 3 テーブル CREATE + index + `ALTER TABLE phases ADD COLUMN review_state_version INTEGER NOT NULL DEFAULT 0`（#229 C4 frozen set は explicit reviewer_ids 前提で rule_json に載るため列追加なし。listByGroup 自動解決は follow-up）。
 
 ---
 
