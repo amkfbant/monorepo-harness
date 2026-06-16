@@ -127,7 +127,7 @@ run_usage との対応: invocation 単位は `run_usage(run_id, kind, seq)` で 
 - **判定** = 既存 `review_consensus` / `review_decisions` / `hitch_convergence_decisions` (harness 決定論ゲートが書く)。LLM 出力列をゲート入力に直結させない。
 - 「判断ログ」= verdict + reasoning の構造化行 (会話全文は残さない、deliberation.md:151)。raw codex log は `.harness/audit/` のファイルに残し DB には載せない。
 
-**③ v31 で建てる最小テーブル** (詳細 DDL §3.1–3.3): `review_refute_votes` (#229 P2-0)、`jury_classification_proposals` (#230)、`jury_severity_audits` (#230 advisory)。packet (#230) と specApproval (#231) は既存列の additive JSON。
+**③ v31 で建てる最小テーブル** (詳細 DDL §3.1–3.3): `review_refute_votes` (#229 P2-0)、`jury_classification_proposals` (#230)、`jury_severity_audits` (#230 advisory)。packet (#230) と specApproval (#231) は既存列の additive JSON。additive 列: phases に `review_state_version` (#231)、hitch_review_cycles に `expected_reviewers_json` (#229 C4 frozen set)。
 
 ### 3.1 #229 — multi-lens consensus + refute
 
@@ -144,12 +144,12 @@ CREATE TABLE review_refute_votes (
   refute_id     INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id        TEXT NOT NULL,        -- advisory ID。FK しない (P1-1)
   -- target binding: required_change を content hash で参照 (FK しない。export-backed 行の idx 再番号で orphan しないため)
-  target_change_hash TEXT NOT NULL,   -- sha256(normalizeChangeText(change_text)) を app 層で計算
+  target_change_hash TEXT NOT NULL,   -- sha256(normalizeChangeText(change_text)) を app 層で計算。binding 不能/欠落(rejected)時は target_change_text or sentinel の harness 再計算 hash で常に非 NULL
   target_change_idx  INTEGER,         -- 記録時点の idx (advisory、binding には使わない)
   finding_id    TEXT,                 -- 対象 finding (advisory、FK しない)
   reviewer_id   TEXT NOT NULL,        -- 登録 reviewer の ID (advisory。FK しない)
-  refute_verdict TEXT NOT NULL
-    CHECK (refute_verdict IN ('uphold','refute','inconclusive')),
+  refute_verdict TEXT             -- rejected(malformed/missing_field)時は NULL 可。passed は必ず非 NULL(下の CHECK)
+    CHECK (refute_verdict IS NULL OR refute_verdict IN ('uphold','refute','inconclusive')),
   confidence    REAL CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1),  -- advisory。gate を駆動しない (P3-1)
   reasoning     TEXT,                 -- 判断ログ (会話全文でない)
   model         TEXT,
@@ -160,10 +160,11 @@ CREATE TABLE review_refute_votes (
   source_yaml   TEXT,                 -- refute agent 出力 yaml (監査)
   source_sha256 TEXT,
   validation_status TEXT NOT NULL DEFAULT 'passed'
-    CHECK (validation_status IN ('passed','rejected')),  -- 全票を記録。集約に渡すのは passed のみ (design-229 G2/G3)
+    CHECK (validation_status IN ('passed','rejected')),  -- 全票を記録。集約に渡すのは passed ∧ verdict∈{uphold,refute} のみ (design-229 G2/G3。inconclusive は passed でも除外)
   reject_reason TEXT,                 -- rejected 時の決定論コード (unknown_target / hash_mismatch / missing_field / artifact_absent / evidence_none)
   created_at    TEXT NOT NULL,
-  CHECK (validation_status = 'passed' OR (reject_reason IS NOT NULL AND reject_reason <> ''))  -- rejected は必ず reason を持つ (audit 可能性、codex round3)
+  CHECK (validation_status = 'passed' OR (reject_reason IS NOT NULL AND reject_reason <> '')),  -- rejected は必ず reason を持つ (audit 可能性、codex round3)
+  CHECK (validation_status <> 'passed' OR refute_verdict IS NOT NULL)  -- passed は必ず verdict を持つ (codex round4: malformed は rejected 側で verdict NULL 可)
 );
 -- dedupe は business key (P2-3。created_at は使わない)。validation_status を含め、rejected 監査行が
 -- 後の passed retry を塞がないようにする (codex round3。同一 prompt で reject→修正→pass を許す)
@@ -177,7 +178,7 @@ CREATE INDEX review_refute_votes_run_idx ON review_refute_votes(run_id, created_
 CREATE INDEX review_refute_votes_target_idx ON review_refute_votes(run_id, target_change_hash);
 ```
 - **DB-only** (export 非対象、既存 DB では import/reset 後も残る／fresh DB のみ空: P1-4)。**FK は一切張らない** (P1-1)。`target_change_hash` は app 層計算 (SQLite に sha256 関数は無い)。正規化は決定論 `normalizeChangeText()` を実装しテスト（付録B）。
-- refute 票を decision に通すのは `evaluateConsensus` の決定論集約 (design-229 P2-C)。この表は**入力**で、**集約に渡すのは `validation_status='passed'` のみ**（`rejected` は監査保持＝binding 失敗/証拠欠落も追跡可能。design-229 G2/G3）。
+- refute 票を decision に通すのは `evaluateConsensus` の決定論集約 (design-229 P2-C)。この表は**入力**で、**集約に渡すのは `validation_status='passed'` ∧ `refute_verdict ∈ {uphold,refute}` のみ**（`inconclusive` は passed でも quorum に数えない＝fail-closed 除外。`rejected` は監査保持＝binding 失敗/証拠欠落も追跡可能。design-229 G2/G3）。
 
 ### 3.2 #230 — classification jury / severity audit / decision packet
 
@@ -320,7 +321,7 @@ interface HitchDecisionPacket {
 
 (下の workItemDag 参照。サマリ: **DB-WI-0 (review_state_json 書き込み経路 + `review_state_version` CAS、#231 の前提・軽微 additive 列)** → **DB-WI-1 (v31 schema/migration の 3 テーブル + phases ALTER)** → repository 層 (refute/jury/severity、finding_id→hitch_id 整合検査)、packet 型、specApproval 書き込み (txn+CAS) → consistency/doctor (orphan/hash/hitch_id 整合) → docs/tests。各 WI は #229/#230/#231 紐付けを明記。)
 
-**migration 連番の単一予約ブロック**: #229/#230/#231 は**全て v31 を共有** (1 migration block)。各案で v31/v32/v33 に分けない (v29↔v30 renumber 再発回避)。schema.ts に `// RESERVED v31 for epic #228 consensus artifacts` コメントを置き、PR merge 順を強制。LATEST bump は v31 へ 1 回のみ。**v31 statements**: 3 テーブル CREATE + index + `ALTER TABLE phases ADD COLUMN review_state_version INTEGER NOT NULL DEFAULT 0`。
+**migration 連番の単一予約ブロック**: #229/#230/#231 は**全て v31 を共有** (1 migration block)。各案で v31/v32/v33 に分けない (v29↔v30 renumber 再発回避)。schema.ts に `// RESERVED v31 for epic #228 consensus artifacts` コメントを置き、PR merge 順を強制。LATEST bump は v31 へ 1 回のみ。**v31 statements**: 3 テーブル CREATE + index + `ALTER TABLE phases ADD COLUMN review_state_version INTEGER NOT NULL DEFAULT 0` + `ALTER TABLE hitch_review_cycles ADD COLUMN expected_reviewers_json TEXT`（#229 C4 frozen reviewer set、dispatch 前 freeze・additive nullable）。
 
 ---
 

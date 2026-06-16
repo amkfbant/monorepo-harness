@@ -487,14 +487,17 @@ quorum 再実装するのは duplication で禁止。
 6. enrichRows: 未登録 reviewer→groupId=null→per-group check を落とす(安全方向)。
 
 **Integration — quorum>1 実到達(ヘッドライン, Phase 1a)**
-7. `tests/integration/hitch-orchestrate-consensus.test.ts`(新):
-   - profile に `review: consensus, requirements:[{group:reviewers, min_approvals:1, quorum:{min_participants:2}}]`。
+7. `tests/integration/hitch-orchestrate-consensus.test.ts`(新) — **配管 fixture（lens-free）**:
+   - **rule snapshot を直接注入**（`review: consensus, requirements:[{group:reviewers, min_approvals:1, quorum:{min_participants:2}}]` 相当）。
+     **profile review: は経由しない**（lens-free quorum>1 profile は G0(c) で compile-reject されるため、profile 経由では
+     この fixture が成立しない）。N-dispatch / allowOverwrite / quorum 到達 / 集約決定論の**配管のみ**を検証する。
    - reviewer alice/bob を groupId=reviewers で登録。
    - `createFakeCodexRunner` で reviewer_id→runner の Map(各 distinct YAML)を作る `FakeMultiReviewerRunner`
      fixture(`tests/fixtures/fake-codex-multi-reviewer.ts` 新)。**`reviewerName` で出力を切り替える wrapper**。
    - orchestrate review step: **runReviewerAgent が 2回(alice/bob)**、2 proposal が active で貯まり、
      `processReviewDecision` が **1回**で `approved` に promote。run.status==='approved'。
-   - rule snapshot `source='project-profile'`、ruleSha256 が profile rule と一致。
+   - 直接注入のため source は fixture 値。**profile→snapshot freeze（`source='project-profile'` / ruleSha256 一致）の
+     検証は lens 宣言込みの headline テスト（RED#12 / 7c）が担う**（lens-free profile は compile されないので RED#7 では検証しない）。
    - **7b. P1-b: 1体目 dispatch 前に既存 active proposal(resume/manual)が1件あっても、全 `allowOverwrite:true`
      で 2体目まで dispatch が落ちない。preflight が expected/registered/quorum を照合する**。
    - **7c. P1-c: 入口別 thread**: CLI run / reviewed-run prepare / MCP orchestrate / hitch CLI の各入口で
@@ -781,8 +784,8 @@ fail-closed: lens 宣言不正/欠落の consensus rule は run 拒否。
 **受け入れ条件・PR 分割への影響（付録H1 精緻化）**:
 - §8 受け入れ条件対応表の「異レンズ proposal の集約が決定論」は **lens 配線込み**で 1 条件に統合
   （lens 別 promptSha256 + order 非依存 + 同入力→同出力）。現 RED#12 を headline に昇格、現 RED#7（lens
-  無し）は配管/fixture テストへ格下げ。新 RED: quorum>1 requirement で lens 未宣言を compile/schema が
-  reject（(c)）。
+  無し）は**配管 fixture（rule snapshot 直接注入・profile compile 非経由）**へ格下げ。新 RED: quorum>1 requirement で
+  lens 未宣言を compile/schema が reject（(c)）。
 - §3.3b 本体の reviewer-agent 行参照は v0.7.10 当時の `:524/:525` 表記。現行（6d0a610）コードでは
   **`:526`(reviewerPrompt) / `:527`(promptSha256)** であり、本付録の file:line は現行で再取得済み（本体側の
   v0.7.10 表記は当時のスナップショットとして残す。実装着手時に本体を現行行へ追従させる）。
@@ -922,7 +925,8 @@ harness が **100% 決定論**で検証する:
    入れない（fail-closed: 元の blocking requirement を維持）。
 4. **hash 不一致**: LLM が `target_change_hash` を申告し、harness 再計算値と食い違う → **reject**（harness
    再計算値のみが権威）。
-5. **集約投入**: binding 成立票のみ `target_change_hash` で group 化し、§3.5 の『第2 consensus requirement』
+5. **集約投入**: binding 成立かつ `validation_status='passed'` **∧ `refute_verdict ∈ {uphold, refute}`** の票のみ
+   （**`inconclusive` は passed でも quorum に数えない＝fail-closed 除外**）を `target_change_hash` で group 化し、§3.5 の『第2 consensus requirement』
    として `evaluateConsensus`（quorum + 固定 tie-break = **凍結契約**）に渡す。降格効果は `evaluateConsensus`
    出力 → expected-status(needs_review) guard → `run.status` の決定論経路でのみ現れる。**severity フィールドの
    mutation は経由しない**。
@@ -974,7 +978,7 @@ P2-0 DSL に**新規追加**する。
 | target_change_hash（or target_change_text、harness 再計算） | 必須 | 既存 required_change への binding 検証（hash 不一致=reject）。G2 / design-db §3.1 と契約名を統一 |
 | refute_verdict | 必須 | `uphold` \| `refute` \| `inconclusive`（design-db §3.1 の CHECK と統一）。participant カウントは uphold/refute のみ |
 | refute_reason | 必須 | presence + min length のみ（**質は評価しない**＝LLM 自己申告不使用） |
-| counter_evidence_ref | 必須 | refute DSL の**新フィールド**（既存 close-condition kind ではない）。`{ kind: diff\|test\|none; ref }`（`diff`=run の final-diff.patch 内 hunk、`test`=run のテスト出力 artifact）。kind!=none は ref が **run 成果物**に実在するかを既存 automatic-verification 系（`command` / `finding_policy` / `artifact_exists`、[deliberation.md](../deliberation.md):149 と同型）で確認。**`spec_line`（repo/spec source 参照）は run 成果物でなく専用 resolver を要するため #229 では受理 kind から除外**（follow-up） |
+| counter_evidence_ref | 必須 | refute DSL の**新フィールド**（既存 close-condition kind ではない）。`{ kind: diff\|test\|none; ref }`（`diff`=run の final-diff.patch 内 hunk、`test`=run のテスト出力 artifact）。kind!=none は ref が **run 成果物**に実在するかを **refute layer 専用の決定論 verifier（run artifact の file 存在 + hunk/test 出力の照合を直接確認）** で検査する。**close-condition kind の `artifact_exists` は external evidence(ask_human) 経路で決定論 auto-check ではないため使わない**（`command`/`finding_policy` も diff hunk 存在確認には不適）。**`spec_line`（repo/spec source 参照）は run 成果物でなく専用 resolver を要するため #229 では受理 kind から除外**（follow-up） |
 | refute_condition | 必須 | presence のみ（[deliberation.md](../deliberation.md):147「反証条件 / 最悪ケース」） |
 | retract_condition | 必須 | presence のみ（同 deliberation.md:147「反証されたら撤回する条件」） |
 
@@ -1280,12 +1284,14 @@ participants 計算式自体は不変）。
 
 1. **expected 集合の freeze（再現性）**: dispatch 開始時、`resolveExpectedReviewers`（reviewer_ids 明示 or
    `listByGroup(group) ∩ max_reviewers`、reviewer_id 字句昇順）の結果をその run のレビューサイクルに記録する
-   （**dispatch 前に既に durable な `run_review_rule_snapshots` を基点にする**＝run 生成時に書かれ proposal より前。
-   explicit `reviewer_ids` なら frozen set はこの snapshot だけで完全決定〔新 migration 不要〕。`listByGroup`
-   フォールバックは registry 依存なので、**解決済み reviewer リストを run 生成/freeze 時に同 snapshot（JSON）へ
-   含める**。`review_consensus` summary は proposal 後にしか書かれないので freeze 用には使わない＝全 reviewer が
-   proposal 前に落ちても freeze が残る）。再駆動時はこの freeze 値を分母期待値の基準にする。reviewer registry が
-   後から変わっても、その run の分母期待値は不変。
+   （永続点は 2 系統。**explicit `reviewer_ids`** は `run_review_rule_snapshots.rule_json`（run 生成時=proposal 前に
+   durable、profile rule と同一なので `source_sha256` 一致を壊さない）だけで frozen set が完全決定〔新 migration 不要〕。
+   **`listByGroup` フォールバック**は registry 依存の解決リストなので、**`rule_json` には入れない**（入れると snapshot
+   hash が profile rule と不一致になり ruleSha256 一致テストを壊す）。代わりに専用スロット
+   **`hitch_review_cycles.expected_reviewers_json`〔v31, `startReviewCycle` が dispatch 前に書く〕** に永続化する。
+   `review_consensus` summary は proposal 後にしか書かれないので freeze 用に使わない＝全 reviewer が proposal 前に
+   落ちても freeze が残る）。再駆動時はこの freeze 値を分母期待値の基準にする。reviewer registry が後から変わっても、
+   その run の分母期待値は不変。
 2. **集約は frozen set の proposal のみ**（freeze だけでは不十分）: `processConsensusModePath` は全 active proposal を
    読む（review-processor.ts:196-207）ため、freeze 後に **frozen reviewer ID 集合外の active proposal**（resumed run /
    手動 / registry 変更由来）が quorum・blocking に効きうる。→ consensus 評価の前に **active proposal を frozen set で
