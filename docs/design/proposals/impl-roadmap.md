@@ -165,7 +165,7 @@ DB 永続化（migration + repository + review_state_json 書込経路）が**3�
 
 **SP-3 review_state_json CAS 書込経路（updateReviewState / recordSpecApproval、review_state_version で transaction.immediate + CAS、bounded retry N→typed conflict error）**
 - updateReviewState: read-modify-write が他 key を保全（既存 review_state_json の非 specApproval key が残る）
-- recordSpecApproval: {specApproval:{approvedBy,approvedAt,reason,specHash}} を namespaced 書込・read-back、specHash = sha256(canonical(scope)+canonical(close)) を TS で計算
+- recordSpecApproval: {specApproval:{approvedBy,approvedAt,reason,specHash}} を namespaced 書込・read-back、specHash = sha256(canonicalJson([scope, closeConditions])) を TS で計算（scalar 連結は境界衝突するため tuple 構造化・SP-3 実装で確定）
 - CAS: review_state_version をインクリメント、WHERE review_state_version=? で楽観ロック。version 不一致で書込失敗（後勝ち禁止）
 - CAS 競合ポリシー: stale version 衝突を bounded retry（read→merge→retry 最大 N 回）で吸収、N 超過で **typed conflict error を throw（後勝ち禁止・fail-closed）**。retry 内で他 key を消さない
 - 後方互換: review_state_json=null または specApproval 無しの phase が deserialize OK、updateReviewState で初期化される

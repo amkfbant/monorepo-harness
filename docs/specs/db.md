@@ -1567,8 +1567,20 @@ ALTER TABLE phases
   ADD COLUMN review_state_version INTEGER NOT NULL DEFAULT 0;
 ```
 
-既存 phase 行は `review_state_version=0` で移行する。SP-3 以降の
-`updateReviewState()` / `recordSpecApproval()` はこの列を optimistic lock として使い、
-`review_state_json` の read-modify-write が operator note や spec approval の別 key を
-lost-update しないようにする。v33 は table identity を変えないため `ALL_TABLE_NAMES`
-には何も追加しない。
+既存 phase 行は `review_state_version=0` で移行する。
+`PhaseRepository.updateReviewState()` は `transaction().immediate()` 内で
+`review_state_json` / `review_state_version` / `scope_json` /
+`close_conditions_json` を読み、mutator の結果を
+`WHERE phase_id=? AND review_state_version=?` で CAS 書込する。成功時は
+`review_state_version` を +1 し、CAS miss は read→merge→retry を最大 3 回
+繰り返す。超過時は `ReviewStateConflictError` を throw し、後勝ち overwrite
+にはしない。
+
+`recordSpecApproval()` はこの経路を使って namespaced
+`review_state_json.specApproval = { approvedBy, approvedAt, reason, specHash }`
+を書き込む。`specHash` は TS 側で `[scope, closeConditions]` tuple の
+canonical JSON の sha256 として計算する（scalar 連結だと `1`+`23` と `12`+`3` が
+ともに "123" に衝突するため、tuple で構造化して衝突を防ぐ）。既存
+`setNote()` も同じ CAS 経路を使うため、operator note と spec approval は互いの
+key を lost-update しない。v33 は table identity を変えないため
+`ALL_TABLE_NAMES` には何も追加しない。
