@@ -494,6 +494,18 @@ function latestRecordedDecision(
   }
 }
 
+function reviewRuleForRun(db: Database.Database, runId: string): ReviewRule {
+  const snapshot = new ReviewRulesRepository(db).findSnapshotByRun(runId);
+  if (snapshot === null) return DEFAULT_REVIEW_RULE;
+  try {
+    return JSON.parse(snapshot.ruleJson) as ReviewRule;
+  } catch (e) {
+    throw new ReviewerAgentGateError(
+      `invalid review rule snapshot for ${runId}: ${(e as Error).message}`,
+    );
+  }
+}
+
 export async function runReviewerAgent(
   inputs: ReviewerAgentInputs,
 ): Promise<ReviewerAgentResult> {
@@ -573,6 +585,7 @@ export async function runReviewerAgent(
   let activeDbProposal: Awaited<
     ReturnType<ReviewProposalRepository["getLatestActiveProposal"]>
   > = null;
+  let rootDecisionIsConsensusCompatibilityExport = false;
   // Operational knowledge (issue #57) is injected into the REVIEWER prompt only
   // (never the coder prompt). Scoped to this run's project + repo (not domain),
   // bounded — see the call below.
@@ -581,9 +594,30 @@ export async function runReviewerAgent(
   if (inputs.dbPath !== undefined && existsSync(inputs.dbPath)) {
     const probe = openManagedDb({ dbPath: inputs.dbPath, readonly: true });
     try {
-      activeDbProposal = new ReviewProposalRepository(
-        probe.db,
-      ).getLatestActiveProposal(inputs.runId);
+      const proposalRepo = new ReviewProposalRepository(probe.db);
+      const rule = reviewRuleForRun(probe.db, inputs.runId);
+      activeDbProposal =
+        rule.mode === "consensus"
+          ? proposalRepo.getLatestActiveProposal(inputs.runId, reviewer)
+          : proposalRepo.getLatestActiveProposal(inputs.runId);
+      if (
+        rule.mode === "consensus" &&
+        existingDecision.decision !== "pending" &&
+        existingDecision.reviewer !== null &&
+        existingDecision.reviewer !== reviewer
+      ) {
+        // In DB-first consensus mode the root review-decision.yaml is only a
+        // compatibility export of the latest active proposal. A later reviewer
+        // must not be blocked by another reviewer's exported verdict; the
+        // per-reviewer artifact and DB proposal are the canonical ownership
+        // boundaries. If the sidecar is not backed by an active proposal, keep
+        // the legacy fail-closed overwrite protection below.
+        rootDecisionIsConsensusCompatibilityExport =
+          proposalRepo.getLatestActiveProposal(
+            inputs.runId,
+            existingDecision.reviewer,
+          ) !== null;
+      }
       // Scope by project + repo only (both include portable, project/repo-less
       // entries). Operational knowledge is rarely domain-specific, and the
       // domain filter would exclude portable notes — so it is intentionally not
@@ -607,9 +641,11 @@ export async function runReviewerAgent(
       );
     }
     if (existingDecision.decision !== "pending") {
-      throw new ReviewerAgentGateError(
-        `review-decision.yaml already has decision="${existingDecision.decision}"; pass --allow-overwrite to replace it`,
-      );
+      if (!rootDecisionIsConsensusCompatibilityExport) {
+        throw new ReviewerAgentGateError(
+          `review-decision.yaml already has decision="${existingDecision.decision}"; pass --allow-overwrite to replace it`,
+        );
+      }
     }
   }
 

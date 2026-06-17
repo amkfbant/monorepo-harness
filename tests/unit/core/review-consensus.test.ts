@@ -139,6 +139,65 @@ describe("evaluateConsensus (Phase 11-4)", () => {
     });
   });
 
+  it("filters proposals outside the frozen reviewer set before quorum and blocking checks", () => {
+    const rule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 2,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "security"],
+          maxReviewers: 2,
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+
+    const r = evaluateConsensus({
+      rule,
+      ruleSha256: ruleSha256(rule),
+      proposals: [
+        proposal({
+          proposalId: 1,
+          decision: "approved",
+          reviewerId: "alice",
+          reviewerType: "codex",
+          groupId: "reviewers",
+        }),
+        proposal({
+          proposalId: 2,
+          decision: "approved",
+          reviewerId: "bob",
+          reviewerType: "codex",
+          groupId: "reviewers",
+        }),
+        proposal({
+          proposalId: 3,
+          decision: "rejected",
+          reviewerId: "mallory",
+          reviewerType: "codex",
+          groupId: "reviewers",
+        }),
+      ],
+      evaluatedAt: NOW,
+    });
+
+    expect(r.status).toBe("approved");
+    expect(r.summary.proposals.map((p) => p.reviewerId)).toEqual([
+      "alice",
+      "bob",
+    ]);
+    expect(r.summary.requirements[0]).toMatchObject({
+      approvals: 2,
+      participants: 2,
+      blocked: false,
+    });
+  });
+
   it("blocking changes_requested from required group → changes_requested", () => {
     const r = evaluateConsensus({
       rule: CONSENSUS_RULE,
