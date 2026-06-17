@@ -22,14 +22,15 @@ export function activeProposalRows(
 ): ReviewProposalRow[] {
   return proposalRepo
     .listForRun(runId)
-    .filter((p) => p.supersededAt === null && p.processedAt === null);
+    .filter((p) => p.supersededAt === null && p.processedAt === null)
+    .sort(compareConsensusProposalRows);
 }
 
 export function enrichRows(
   rows: ReviewProposalRow[],
   reviewerRepo: ReviewerRepository,
 ): EnrichedProposal[] {
-  return rows.map((p) => {
+  return [...rows].sort(compareConsensusProposalRows).map((p) => {
     const reviewer = reviewerRepo.findById(p.reviewer);
     return {
       proposalId: p.proposalId,
@@ -41,6 +42,22 @@ export function enrichRows(
       supersededAt: p.supersededAt,
     };
   });
+}
+
+function compareConsensusProposalRows(
+  a: ReviewProposalRow,
+  b: ReviewProposalRow,
+): number {
+  return (
+    compareStrings(a.reviewer, b.reviewer) ||
+    a.proposalId - b.proposalId
+  );
+}
+
+function compareStrings(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
 }
 
 export function enrichActiveProposals(

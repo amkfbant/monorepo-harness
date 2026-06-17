@@ -42,6 +42,24 @@ export class DuplicateReviewerError extends Error {
   }
 }
 
+export class InvalidReviewerIdError extends Error {
+  constructor(public readonly reviewerId: string) {
+    super(
+      `reviewer_id must be path-safe (match ${REVIEWER_ID_RE.source} and contain no '..'): ` +
+        JSON.stringify(reviewerId),
+    );
+    this.name = "InvalidReviewerIdError";
+  }
+}
+
+const REVIEWER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+export function assertPathSafeReviewerId(reviewerId: string): void {
+  if (!REVIEWER_ID_RE.test(reviewerId) || reviewerId.includes("..")) {
+    throw new InvalidReviewerIdError(reviewerId);
+  }
+}
+
 export class ReviewerRepository {
   constructor(private readonly db: Database.Database) {}
 
@@ -54,6 +72,20 @@ export class ReviewerRepository {
           ORDER BY group_id, reviewer_id`,
       )
       .all() as Record<string, unknown>[];
+    return rows.map(toRow);
+  }
+
+  listByGroup(groupId: string): ReviewerRow[] {
+    if (groupId === "") return [];
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT reviewer_id, reviewer_type, display_name, group_id,
+                trust_level, metadata_json, created_at, updated_at
+           FROM reviewers
+          WHERE group_id = ?
+          ORDER BY reviewer_id ASC`,
+      )
+      .all(groupId) as Record<string, unknown>[];
     return rows.map(toRow);
   }
 
@@ -89,6 +121,7 @@ export class ReviewerRepository {
     metadata?: Record<string, unknown>;
     now?: Date;
   }): ReviewerRow {
+    assertPathSafeReviewerId(input.reviewerId);
     if (this.findById(input.reviewerId) !== null) {
       throw new DuplicateReviewerError(input.reviewerId);
     }

@@ -8,6 +8,7 @@ import {
   ReviewerRepository,
   UnknownReviewerError,
   DuplicateReviewerError,
+  InvalidReviewerIdError,
 } from "../../../src/db/repositories/reviewers.js";
 
 function freshDb() {
@@ -80,6 +81,65 @@ describe("ReviewerRepository (Phase 11-2)", () => {
           displayName: "duplicate",
         }),
       ).toThrow(DuplicateReviewerError);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("listByGroup returns reviewers in reviewer_id order and returns [] for an empty group", () => {
+    const db = freshDb();
+    try {
+      const repo = new ReviewerRepository(db);
+      repo.add({
+        reviewerId: "bob",
+        reviewerType: "human",
+        displayName: "Bob",
+        groupId: "reviewers",
+      });
+      repo.add({
+        reviewerId: "alice",
+        reviewerType: "human",
+        displayName: "Alice",
+        groupId: "reviewers",
+      });
+      repo.add({
+        reviewerId: "charlie",
+        reviewerType: "human",
+        displayName: "Charlie",
+        groupId: "reviewers",
+      });
+      repo.add({
+        reviewerId: "z-system",
+        reviewerType: "system",
+        displayName: "System",
+        groupId: "other",
+      });
+
+      expect(repo.listByGroup("reviewers").map((r) => r.reviewerId)).toEqual([
+        "alice",
+        "bob",
+        "charlie",
+      ]);
+      expect(repo.listByGroup("")).toEqual([]);
+      expect(repo.listByGroup("missing")).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects reviewer ids that cannot be used as a path component", () => {
+    const db = freshDb();
+    try {
+      const repo = new ReviewerRepository(db);
+      for (const reviewerId of ["../alice", "team/alice", "alice..bob", "."]) {
+        expect(() =>
+          repo.add({
+            reviewerId,
+            reviewerType: "human",
+            displayName: "bad",
+          }),
+        ).toThrow(InvalidReviewerIdError);
+      }
     } finally {
       db.close();
     }

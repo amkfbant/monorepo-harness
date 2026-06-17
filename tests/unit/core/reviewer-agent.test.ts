@@ -141,11 +141,17 @@ function fakeRunnerWithOutput(
 
 function capturingRunner(
   output: string,
-  seen: { prompt?: string },
+  seen: {
+    prompt?: string;
+    worktreePath?: string;
+    logPaths?: { stdout: string; stderr: string; events: string };
+  },
 ): CodexExecRunner {
   return {
     async run(input) {
       seen.prompt = input.prompt;
+      seen.worktreePath = input.worktreePath;
+      seen.logPaths = input.logPaths;
       const { writeFile } = await import("node:fs/promises");
       await writeFile(input.logPaths.stdout, output, "utf8");
       await writeFile(input.logPaths.stderr, "", "utf8");
@@ -219,6 +225,42 @@ describe("runReviewerAgent", () => {
       codexRunner: runner,
     });
     expect(r.reviewer).toBe("codex-reviewer-gpt-5.5");
+  });
+
+  it("isolates reviewer artifacts and sandbox cwd under reviewers/<reviewer_id>", async () => {
+    const { runsDir, runId } = setup();
+    const seen: {
+      prompt?: string;
+      worktreePath?: string;
+      logPaths?: { stdout: string; stderr: string; events: string };
+    } = {};
+    const r = await runReviewerAgent({
+      runsDir,
+      runId,
+      reviewerName: "alice",
+      codexRunner: capturingRunner(APPROVED_OUTPUT, seen),
+      now: new Date("2026-05-21T01:00:00Z"),
+    });
+
+    const reviewerDir = join(runsDir, runId, "reviewers", "alice");
+    expect(seen.worktreePath).toBe(join(reviewerDir, "input"));
+    expect(seen.logPaths?.stdout).toBe(join(reviewerDir, "reviewer-agent.out.log"));
+    expect(seen.logPaths?.stderr).toBe(join(reviewerDir, "reviewer-agent.err.log"));
+    expect(seen.logPaths?.events).toBe(join(reviewerDir, ".reviewer-agent.events.raw.jsonl"));
+    expect(r.rawOutputPath).toBe(join(reviewerDir, "reviewer-agent.out.log"));
+    expect(existsSync(join(reviewerDir, "review-decision.yaml"))).toBe(true);
+  });
+
+  it("rejects a reviewerName that is not a safe path component", async () => {
+    const { runsDir, runId } = setup();
+    await expect(
+      runReviewerAgent({
+        runsDir,
+        runId,
+        reviewerName: "../alice",
+        codexRunner: fakeRunnerWithOutput(APPROVED_OUTPUT),
+      }),
+    ).rejects.toThrow(/path-safe/);
   });
 
   it("rejects (does NOT silently coerce) when codex returns an unknown decision", async () => {
@@ -400,6 +442,23 @@ describe("runReviewerAgent", () => {
         codexRunner: tamperingRunner(decisionFile),
       }),
     ).rejects.toThrow(/modified run artifact: review-decision\.yaml/);
+  });
+
+  it("detects tampering with another reviewer's isolated artifacts", async () => {
+    const { runsDir, runId } = setup();
+    const siblingDir = join(runsDir, runId, "reviewers", "bob");
+    mkdirSync(siblingDir, { recursive: true });
+    const siblingDecision = join(siblingDir, "review-decision.yaml");
+    writeFileSync(siblingDecision, "decision: approved\n");
+
+    await expect(
+      runReviewerAgent({
+        runsDir,
+        runId,
+        reviewerName: "alice",
+        codexRunner: tamperingRunner(siblingDecision),
+      }),
+    ).rejects.toThrow(/modified run artifact: reviewers\/bob\/review-decision\.yaml/);
   });
 
   it("rejects an invalid runId (path traversal)", async () => {
@@ -667,7 +726,13 @@ describe("runReviewerAgent", () => {
         }),
       ).rejects.toThrow(/active proposal|supersede|競合/);
 
-      const errPath = join(runsDir, runId, "review-auto-error.json");
+      const errPath = join(
+        runsDir,
+        runId,
+        "reviewers",
+        "codex-reviewer",
+        "review-auto-error.json",
+      );
       expect(existsSync(errPath)).toBe(true);
       const err = JSON.parse(readFileSync(errPath, "utf8"));
       expect(err.type).toBe("review-auto-error");
@@ -705,7 +770,13 @@ describe("runReviewerAgent", () => {
       await expect(
         runReviewerAgent({ runsDir, runId, codexRunner: runner }),
       ).rejects.toThrow(/decision/);
-      const errPath = join(runsDir, runId, "review-auto-error.json");
+      const errPath = join(
+        runsDir,
+        runId,
+        "reviewers",
+        "codex-reviewer",
+        "review-auto-error.json",
+      );
       expect(existsSync(errPath)).toBe(true);
       const err = JSON.parse(readFileSync(errPath, "utf8"));
       expect(err.type).toBe("review-auto-error");
@@ -737,7 +808,13 @@ describe("runReviewerAgent", () => {
 
     it("a stale error artifact is cleared on a subsequent successful run", async () => {
       const { runsDir, runId } = setup();
-      const errPath = join(runsDir, runId, "review-auto-error.json");
+      const errPath = join(
+        runsDir,
+        runId,
+        "reviewers",
+        "codex-reviewer",
+        "review-auto-error.json",
+      );
       // first run: invalid output → error artifact written
       await expect(
         runReviewerAgent({

@@ -429,25 +429,28 @@ review process:
 一切呼ばない。LLM の出力が状態を動かさない原則は Phase 7 でも不変。
 
 `review auto` / `review evaluate` の reviewer codex JSONL も domain-coding 本体と
-同じ quarantine lifecycle を使う。codex は `.reviewer-agent.events.raw.jsonl` に
-stream し、redaction 後だけ `reviewer-agent.events.jsonl` として atomic publish する。
+同じ quarantine lifecycle を使う。`review auto` は reviewer id を path-safe な
+`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`（`..` 不可）に限定し、reviewer ごとの artifact を
+`runs/<runId>/reviewers/<reviewer_id>/` に隔離する。codex は
+`reviewers/<reviewer_id>/.reviewer-agent.events.raw.jsonl` に stream し、redaction 後だけ
+`reviewers/<reviewer_id>/reviewer-agent.events.jsonl` として atomic publish する。
 raw/tmp dotfile は artifact ingest 対象外で、redaction 失敗時は sentinel のみ、sentinel
 も書けない場合は正式名ファイル無しで続行する。
 
 reviewer が runDir の watched artifact を改変/追加/削除した場合は
 `verifyArtifactsUnchanged` が fail-closed で `ReviewerAgentGateError` にする。この
 tamper / gate error 後に DB-first runDir を再同期する経路（`review auto` CLI と
-`workflow reviewed-run`）は、同期前に reviewer が書き換え可能だった
-`reviewer-agent.*` artifact を dotfile quarantine 名へ rename し、artifact ingest
-対象から外す。その後は runDir 全体を再 scan / DELETE→再挿入してはならない。
+`workflow reviewed-run`）は、同期前に reviewer が書き換え可能だった scoped
+`reviewers/<reviewer_id>/reviewer-agent.*` artifact を dotfile quarantine 名へ rename し、
+artifact ingest 対象から外す。その後は runDir 全体を再 scan / DELETE→再挿入してはならない。
 代わりに DB manifest の既存 row を残したまま、harness が生成した
-`review-auto-error.json` だけを targeted upsert する。`reviewer-agent.events.jsonl` は
-`publishRedactedCodexEvents` が `failed: false` を返したことを呼び出し側が保持している
-場合だけ whitelist に追加して targeted upsert できる。確認できない場合は fail-closed で
-隔離する。`summary.md` など既存 DB-canonical artifact は、runDir 上で reviewer が改変しても
-DB 側では元の body のまま維持する。隔離は stderr warning と DB `run_events` の
-`artifacts_quarantined { paths }` で観測できる。tamper なしの正常経路は従来どおり全 artifact
-を同期する。
+`reviewers/<reviewer_id>/review-auto-error.json` だけを targeted upsert する。
+`reviewers/<reviewer_id>/reviewer-agent.events.jsonl` は `publishRedactedCodexEvents` が
+`failed: false` を返したことを呼び出し側が保持している場合だけ whitelist に追加して
+targeted upsert できる。確認できない場合は fail-closed で隔離する。`summary.md` など既存
+DB-canonical artifact は、runDir 上で reviewer が改変しても DB 側では元の body のまま維持する。
+隔離は stderr warning と DB `run_events` の `artifacts_quarantined { paths }` で観測できる。
+tamper なしの正常経路は従来どおり全 artifact を同期する。
 
 `review-auto-error.json.reason` は保存用の sanitized object であり、human 向け
 `Error.message`、YAML parser message、reviewer stdout 断片、raw decision 値は含めない。
@@ -864,6 +867,12 @@ hitch CLI、MCP `harness.hitch.orchestrate`、course orchestration はこの値�
 
 複数 reviewer が並行で auto を走らせると、それぞれが proposal を insert
 し、consensus が re-evaluate される。
+
+consensus evaluator へ渡す active proposal は、DB の insertion order や dispatch order に
+依存しない。集約直前に `reviewer_id ASC, proposal_id ASC` で正規化し、同じ順序を
+`summary.proposals` / `includedRows` / `sourceProposalIds` / `required_changes` 生成に使う。
+未知 reviewer は `groupId = null` / `reviewerType = unknown` として enrichment され、
+per-group quorum を満たさない安全側に倒す。
 
 `review auto` の hot-path INSERT は `ReviewProposalRepository.insertProposal`
 内の `tx.immediate()` で完結する。transaction の先頭で `runs` row を読み、

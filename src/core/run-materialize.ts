@@ -1,4 +1,4 @@
-import { existsSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { DbError } from "../db/connection.js";
@@ -31,6 +31,17 @@ const UNTRUSTED_REVIEWER_ARTIFACTS = [
 ] as const;
 
 const REVIEWER_GATE_ERROR_ARTIFACTS = ["review-auto-error.json"] as const;
+
+const REVIEWER_SCOPED_ARTIFACT_FILES = [
+  "reviewer-agent.out.log",
+  "reviewer-agent.err.log",
+  ".reviewer-agent.events.raw.jsonl",
+  ".reviewer-agent.events.redacted.tmp",
+  "reviewer-agent.events.jsonl",
+  "review-auto-error.json",
+] as const;
+
+const REVIEWER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 function appendRunEvent(
   db: Database.Database,
@@ -67,6 +78,13 @@ function quarantineUntrustedReviewerArtifacts(opts: {
   const candidates = [
     ...UNTRUSTED_REVIEWER_ARTIFACTS,
     ...(opts.reviewerEventsPublished ? [] : ["reviewer-agent.events.jsonl"]),
+    ...reviewerScopedArtifactPaths(opts.runDir, [
+      "reviewer-agent.out.log",
+      "reviewer-agent.err.log",
+      ".reviewer-agent.events.raw.jsonl",
+      ".reviewer-agent.events.redacted.tmp",
+      ...(opts.reviewerEventsPublished ? [] : ["reviewer-agent.events.jsonl"]),
+    ]),
   ];
   const quarantined: string[] = [];
   for (const rel of candidates) {
@@ -90,6 +108,44 @@ function quarantineUntrustedReviewerArtifacts(opts: {
   appendRunEvent(opts.db, opts.runId, "artifacts_quarantined", {
     paths: quarantined,
   });
+}
+
+function reviewerScopedArtifactPaths(
+  runDir: string,
+  filenames: readonly string[],
+): string[] {
+  const reviewersDir = join(runDir, "reviewers");
+  if (!existsSync(reviewersDir)) return [];
+  let reviewerEntries;
+  try {
+    reviewerEntries = readdirSync(reviewersDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const wanted = new Set(filenames);
+  const out: string[] = [];
+  for (const reviewerEntry of reviewerEntries) {
+    if (
+      !reviewerEntry.isDirectory() ||
+      !REVIEWER_ID_RE.test(reviewerEntry.name) ||
+      reviewerEntry.name.includes("..")
+    ) {
+      continue;
+    }
+    const reviewerDir = join(reviewersDir, reviewerEntry.name);
+    let files;
+    try {
+      files = readdirSync(reviewerDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (!file.isFile() || !wanted.has(file.name)) continue;
+      out.push(`reviewers/${reviewerEntry.name}/${file.name}`);
+    }
+  }
+  out.sort();
+  return out;
 }
 
 /**
@@ -251,6 +307,10 @@ export function syncRunArtifactsToDb(opts: {
       } else {
         ingestRunArtifactPaths(db, runDir, opts.runId, [
           ...REVIEWER_GATE_ERROR_ARTIFACTS,
+          ...reviewerScopedArtifactPaths(
+            runDir,
+            REVIEWER_SCOPED_ARTIFACT_FILES,
+          ),
           ...(opts.untrustedReviewerArtifacts.reviewerEventsPublished
             ? ["reviewer-agent.events.jsonl"]
             : []),

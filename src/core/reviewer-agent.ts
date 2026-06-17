@@ -1,4 +1,12 @@
-import { readFile, readdir, stat, writeFile, rm } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  readFile,
+  readdir,
+  stat,
+  writeFile,
+  rm,
+} from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -21,7 +29,10 @@ import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
 import { ReviewRulesRepository } from "../db/repositories/review-rules.js";
 import { ReviewConsensusRepository } from "../db/repositories/review-consensus.js";
-import { ReviewerRepository } from "../db/repositories/reviewers.js";
+import {
+  assertPathSafeReviewerId,
+  ReviewerRepository,
+} from "../db/repositories/reviewers.js";
 import { evaluateConsensus } from "./review-consensus.js";
 import { enrichActiveProposals } from "./consensus-enrichment.js";
 import { DEFAULT_REVIEW_RULE, ruleSha256, type ReviewRule } from "./review-rule.js";
@@ -107,6 +118,18 @@ const REVIEWER_WRITE_ALLOWLIST = new Set([
   ".reviewer-agent.events.raw.jsonl",
 ]);
 
+const REVIEWER_INPUT_FILES = [
+  "review-request.md",
+  "summary.md",
+  "final-diff.patch",
+  "untracked-files.patch",
+  "untracked-files.txt",
+  "untracked-secrets.txt",
+  "untracked-denied.txt",
+] as const;
+
+const REVIEWER_INPUT_DIRS = ["commands"] as const;
+
 interface FileSnapshot {
   size: number;
   mtimeMs: number;
@@ -119,6 +142,7 @@ interface FileSnapshot {
  */
 async function snapshotRunDir(
   runDir: string,
+  writablePrefix: string,
 ): Promise<Map<string, FileSnapshot>> {
   const out = new Map<string, FileSnapshot>();
   async function walk(dir: string, prefix: string): Promise<void> {
@@ -128,7 +152,7 @@ async function snapshotRunDir(
       if (e.isDirectory()) {
         await walk(join(dir, e.name), rel);
       } else if (e.isFile()) {
-        if (REVIEWER_WRITE_ALLOWLIST.has(rel)) continue;
+        if (isReviewerWritable(rel, writablePrefix)) continue;
         const st = await stat(join(dir, e.name));
         out.set(rel, { size: st.size, mtimeMs: st.mtimeMs });
       }
@@ -141,8 +165,9 @@ async function snapshotRunDir(
 async function verifyArtifactsUnchanged(
   runDir: string,
   before: Map<string, FileSnapshot>,
+  writablePrefix: string,
 ): Promise<void> {
-  const after = await snapshotRunDir(runDir);
+  const after = await snapshotRunDir(runDir, writablePrefix);
   // detect modifications and additions
   for (const [name, snap] of after) {
     const prev = before.get(name);
@@ -164,6 +189,44 @@ async function verifyArtifactsUnchanged(
         `reviewer agent deleted run artifact: ${name}`,
       );
     }
+  }
+}
+
+function isReviewerWritable(rel: string, writablePrefix: string): boolean {
+  return (
+    REVIEWER_WRITE_ALLOWLIST.has(rel) ||
+    rel === writablePrefix ||
+    rel.startsWith(`${writablePrefix}/`)
+  );
+}
+
+function reviewerArtifactRelDir(reviewerId: string): string {
+  return `reviewers/${reviewerId}`;
+}
+
+async function materializeReviewerInput(
+  runDir: string,
+  inputDir: string,
+): Promise<void> {
+  await rm(inputDir, { recursive: true, force: true });
+  await mkdir(inputDir, { recursive: true });
+  for (const rel of REVIEWER_INPUT_FILES) {
+    const src = join(runDir, rel);
+    if (!existsSync(src)) continue;
+    await cp(src, join(inputDir, rel), { force: true });
+  }
+  for (const rel of REVIEWER_INPUT_DIRS) {
+    const src = join(runDir, rel);
+    if (!existsSync(src)) continue;
+    await cp(src, join(inputDir, rel), { recursive: true, force: true });
+  }
+}
+
+function assertReviewerPathSafeForAgent(reviewerId: string): void {
+  try {
+    assertPathSafeReviewerId(reviewerId);
+  } catch (e) {
+    throw new ReviewerAgentGateError((e as Error).message);
   }
 }
 
@@ -402,6 +465,9 @@ export async function runReviewerAgent(
       `invalid runId: ${JSON.stringify(inputs.runId)}`,
     );
   }
+  const reviewer = inputs.reviewerName ?? "codex-reviewer";
+  assertReviewerPathSafeForAgent(reviewer);
+  const hasDb = inputs.dbPath !== undefined && existsSync(inputs.dbPath);
   const runDir = join(inputs.runsDir, inputs.runId);
   // the reviewer spawns codex with a read-only sandbox over the run dir,
   // so the run's files must exist. With file export OFF a db-first run
@@ -416,6 +482,10 @@ export async function runReviewerAgent(
   }
   const metaPath = join(runDir, "meta.json");
   const decisionPath = join(runDir, "review-decision.yaml");
+  const reviewerRelDir = reviewerArtifactRelDir(reviewer);
+  const reviewerDir = join(runDir, "reviewers", reviewer);
+  const reviewerInputDir = join(reviewerDir, "input");
+  const reviewerDecisionPath = join(reviewerDir, "review-decision.yaml");
 
   let metaRaw: unknown;
   try {
@@ -509,30 +579,36 @@ export async function runReviewerAgent(
 
   // Invoke codex with the run directory as cwd. Sandbox is read-only —
   // the agent doesn't need to touch the worktree, just read artifacts.
-  const stdoutPath = join(runDir, "reviewer-agent.out.log");
-  const stderrPath = join(runDir, "reviewer-agent.err.log");
-  const rawEventsPath = join(runDir, ".reviewer-agent.events.raw.jsonl");
-  const tmpEventsPath = join(runDir, ".reviewer-agent.events.redacted.tmp");
-  const eventsPath = join(runDir, "reviewer-agent.events.jsonl");
-  const errorArtifactPath = join(runDir, REVIEW_AUTO_ERROR_FILE);
+  await mkdir(reviewerDir, { recursive: true });
+  await materializeReviewerInput(runDir, reviewerInputDir);
+  const stdoutPath = join(reviewerDir, "reviewer-agent.out.log");
+  const stderrPath = join(reviewerDir, "reviewer-agent.err.log");
+  const rawEventsPath = join(reviewerDir, ".reviewer-agent.events.raw.jsonl");
+  const tmpEventsPath = join(reviewerDir, ".reviewer-agent.events.redacted.tmp");
+  const eventsPath = join(reviewerDir, "reviewer-agent.events.jsonl");
+  const errorArtifactPath = join(reviewerDir, REVIEW_AUTO_ERROR_FILE);
 
   // Defense in depth: even though the runner is configured with
   // sandbox=read-only, a misconfigured HARNESS_CODEX_BIN or sandbox
   // failure could let the agent tamper with run artifacts. Snapshot
   // every file (size + mtime) under runDir before codex runs, then
   // verify nothing outside the writable allowlist changed.
-  const snapshot = await snapshotRunDir(runDir);
+  const snapshot = await snapshotRunDir(runDir, reviewerRelDir);
 
   const reviewerPrompt = PROMPT_PREAMBLE + reviewerOpsSection;
   const promptSha256 = createHash("sha256").update(reviewerPrompt).digest("hex");
 
-  const codexResult = await inputs.codexRunner.run({
-    worktreePath: runDir,
-    prompt: reviewerPrompt,
-    logPaths: { stdout: stdoutPath, stderr: stderrPath, events: rawEventsPath },
-    ...(inputs.signal !== undefined ? { signal: inputs.signal } : {}),
-  });
-  const reviewer = inputs.reviewerName ?? "codex-reviewer";
+  let codexResult: Awaited<ReturnType<CodexExecRunner["run"]>>;
+  try {
+    codexResult = await inputs.codexRunner.run({
+      worktreePath: reviewerInputDir,
+      prompt: reviewerPrompt,
+      logPaths: { stdout: stdoutPath, stderr: stderrPath, events: rawEventsPath },
+      ...(inputs.signal !== undefined ? { signal: inputs.signal } : {}),
+    });
+  } finally {
+    await rm(reviewerInputDir, { recursive: true, force: true });
+  }
   const reviewedAt = (inputs.now ?? new Date()).toISOString();
   const writeGateErrorArtifact = async (
     e: ReviewerAgentGateError,
@@ -551,7 +627,7 @@ export async function runReviewerAgent(
           reviewer,
           failedAt: reviewedAt,
           reason,
-          rawOutputPath: "reviewer-agent.out.log",
+          rawOutputPath: `${reviewerRelDir}/reviewer-agent.out.log`,
           codexExitCode: codexResult.exitCode,
           timedOut: codexResult.timedOut,
         },
@@ -573,7 +649,7 @@ export async function runReviewerAgent(
     // Tamper check FIRST — before the timeout/exitCode gates. A sandbox
     // escape that mutates an artifact and THEN exits non-zero / times out
     // would otherwise slip past detection.
-    await verifyArtifactsUnchanged(runDir, snapshot);
+    await verifyArtifactsUnchanged(runDir, snapshot, reviewerRelDir);
     const publishResult = await publishRedactedCodexEvents({
       rawPath: rawEventsPath,
       tmpPath: tmpEventsPath,
@@ -750,9 +826,10 @@ export async function runReviewerAgent(
   // Skip with export OFF: `db export-files` / `ensureRunMaterialized`
   // will regenerate the sidecar from the DB-canonical active proposal
   // when needed (P1-2 fix in exportRun).
-  if (fileExportEnabled()) {
+  await writeReviewDecision(reviewerDecisionPath, decision);
+  if (!hasDb) {
     await writeReviewDecision(decisionPath, decision);
-  } else {
+  } else if (!fileExportEnabled()) {
     // export OFF: leave the (possibly stale `pending` template) sidecar
     // alone — the DB is the canonical store. Remove it so `review
     // process` doesn't read a stale verdict on the file fallback path.

@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runReviewedRunWorkflow } from "../../src/core/reviewed-run-workflow.js";
 import { createFakeCodexRunner } from "../../src/codex/fake-codex-runner.js";
 import { openDb } from "../../src/db/connection.js";
@@ -96,18 +96,20 @@ function tamperingReviewer(
 ): CodexExecRunner {
   return {
     async run(input: CodexRunInputs): Promise<CodexRunResult> {
+      const reviewerDir = dirname(input.logPaths.stdout);
+      const runDir = dirname(dirname(reviewerDir));
       await writeFile(input.logPaths.stdout, APPROVED_YAML, "utf8");
       await writeFile(input.logPaths.stderr, "", "utf8");
       onOriginalSummary?.(
-        readFileSync(join(input.worktreePath, "summary.md"), "utf8"),
+        readFileSync(join(runDir, "summary.md"), "utf8"),
       );
       await writeFile(
-        join(input.worktreePath, "summary.md"),
+        join(runDir, "summary.md"),
         "# summary\ntampered\n",
         "utf8",
       );
       await writeFile(
-        join(input.worktreePath, "reviewer-agent.events.jsonl"),
+        join(reviewerDir, "reviewer-agent.events.jsonl"),
         `${JSON.stringify({
           type: "item.completed",
           item: {
@@ -286,7 +288,14 @@ describe("runReviewedRunWorkflow", () => {
     expect(result.finalStatus).toBe("review-auto-failed");
     expect(
       existsSync(
-        join(root, "runs", result.attempts[0]!.runId, "review-auto-error.json"),
+        join(
+          root,
+          "runs",
+          result.attempts[0]!.runId,
+          "reviewers",
+          "codex-reviewer",
+          "review-auto-error.json",
+        ),
       ),
     ).toBe(true);
   });
@@ -308,9 +317,11 @@ describe("runReviewedRunWorkflow", () => {
     expect(originalSummary).toBeDefined();
     expect(dbArtifactText(root, runId, "summary.md")).toBe(originalSummary);
     expect(
-      dbArtifactText(root, runId, "reviewer-agent.events.jsonl"),
+      dbArtifactText(root, runId, "reviewers/codex-reviewer/reviewer-agent.events.jsonl"),
     ).toBeNull();
-    expect(dbArtifactText(root, runId, "review-auto-error.json")).not.toBeNull();
+    expect(
+      dbArtifactText(root, runId, "reviewers/codex-reviewer/review-auto-error.json"),
+    ).not.toBeNull();
     const db = openDb(join(root, ".harness", "harness.sqlite"));
     try {
       const leaked = db
@@ -333,7 +344,9 @@ describe("runReviewedRunWorkflow", () => {
       const payload = JSON.parse(event?.payload_json ?? "{}") as {
         paths?: string[];
       };
-      expect(payload.paths).toContain("reviewer-agent.events.jsonl");
+      expect(payload.paths).toContain(
+        "reviewers/codex-reviewer/reviewer-agent.events.jsonl",
+      );
     } finally {
       db.close();
     }
