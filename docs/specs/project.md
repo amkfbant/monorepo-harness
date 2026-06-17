@@ -121,7 +121,11 @@ domains:
   `min_approvals < 1`、`quorum.min_participants < 1`、
   複数 reviewer を要求する requirement の `reviewer_ids` / `lens_axes` 欠落、
   `reviewer_ids` の重複や `max_reviewers` 超過は `ReviewRuleCompileError` で
-  fail-closed になり、DEFAULT へ降格しない。
+  fail-closed になり、DEFAULT へ降格しない。`hitch orchestrate` の consensus
+  review runner は run に凍結された `reviewer_ids` を expected set として逐次 dispatch
+  し、quorum を満たす登録済み reviewer が足りない場合は codex 起動前に fail-closed
+  する。`reviewer_ids` 未指定の single-reviewer requirement だけ、登録済み group
+  reviewer の字句順 dispatch にフォールバックする。
 
 ### Domain registry
 

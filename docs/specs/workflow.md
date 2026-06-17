@@ -1005,15 +1005,31 @@ review → consensus → `run.status` の全経路は「**LLM の出力は入力
 - **artifact tamper は fail-closed**（`verifyArtifactsUnchanged` → `ReviewerAgentGateError`）。
 - 迷ったら fail-closed（quorum 未達 / rule 不正 / timestamp 解析不能はいずれも安全側）。
 
-> **設計段階（現状仕様ではない）**: profile から `quorum > 1` consensus rule を凍結する
-> 経路は存在するが、orchestrator の N-reviewer dispatch、**異レンズ（lens）reviewer**
-> による視点多様化、**反証 verify（refute。#229 close に含めるか別 issue 切り出しかは
-> 人間批准事項＝設計 付録H2/I.3 参照）** は #229 の設計段階であり、まだ実装されていない。
-> `reviewer_ids` / `lens_axes` / `maxReviewers` は rule snapshot に保持されるが、dispatch
-> 本体は後続 phase の責務。設計は
-> [`../design/proposals/design-229-multi-lens-consensus.md`](../design/proposals/design-229-multi-lens-consensus.md)
-> （特に付録I = lens 中核化 + 詰め残し G1〜G3 + 新規論点 C1〜C4）。これらが入っても上表 (2)(3) の
-> 決定論ゲートは**凍結契約として不変**で、lens / refute は (1) 提案（入力）の多様化に留まる。
+`hitch orchestrate` の review runner は run の frozen review-rule snapshot を読み、
+`mode: consensus` では `review process` の前に reviewer を逐次 dispatch する。
+各 requirement の `reviewer_ids` が frozen expected set であり、未指定の場合だけ
+`ReviewerRepository.listByGroup(group)` の字句順を使う。dispatch 前 preflight は
+required approvals / quorum participants に対して登録済み・同 group の reviewer 数が
+足りるかを検査し、不足時は codex を呼ぶ前に fail-closed する。dispatch 前に同 run の
+未処理 active proposal は stale として supersede されるため、前 cycle の票は今回の quorum
+に混ざらない。
+
+Consensus mode の `review auto` は reviewer ごとの artifact dir
+`runs/<runId>/reviewers/<reviewer_id>/` に隔離され、orchestrator dispatch は
+`allowOverwrite` 付きで同一 run の複数 reviewer proposal を生成する。clean な reviewer
+失敗（timeout / non-zero / parse error / invalid output）は non-participant として扱い、
+artifact tamper や setup error は review step 全体を abort する。`review process` が
+`pending`（quorum 未達）になった場合、orchestrator は pending consensus snapshot と
+review cycle を記録し、`evaluateConsensusStallForHitch` を直接実行する。stall と判定された
+場合だけ harness が `escalated` へ状態遷移する。
+
+Frozen-set safety: `evaluateConsensus` はすべての consensus requirement が
+`reviewerIds` を持つ場合、集合外 proposal を quorum / blocking / `sourceProposalIds` /
+`required_changes` 集約から除外する。これにより、外部または stale reviewer の verdict は
+監査行として残っても、凍結済み rule snapshot の決定論ゲートを動かせない。
+
+異レンズ（lens）prompt 配線と反証 verify（refute）は後続 phase の責務であり、上表 (2)(3)
+の決定論ゲートは凍結契約として不変である。
 
 ## Phase 19 — hitch convergence（close 済み・現状仕様）
 

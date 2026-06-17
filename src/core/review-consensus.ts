@@ -110,10 +110,22 @@ export function evaluateConsensus(input: {
   // Phase 2-2: drop stale proposals (superseded / too old) before any
   // aggregation. Deterministic: driven only by the rule's staleProposal
   // config and the proposal's own supersededAt/reviewedAt — never LLM output.
-  const { active: proposals, excluded: excludedProposals } = filterStaleProposals(
+  const {
+    active: staleFilteredProposals,
+    excluded: excludedProposals,
+  } = filterStaleProposals(
     input.proposals,
     input.rule.staleProposal,
     evaluatedAt,
+  );
+  // SP-12 C4 frozen-set gate: when every consensus requirement carries an
+  // explicit frozen reviewer set, only those reviewers can feed quorum,
+  // blocking, sourceProposalIds, or required_changes aggregation. Late or
+  // out-of-band proposals remain auditable in review_proposals but cannot
+  // change the deterministic consensus outcome for this run snapshot.
+  const proposals = filterFrozenReviewerSet(
+    staleFilteredProposals,
+    input.rule,
   );
 
   const baseSummary = {
@@ -178,8 +190,13 @@ export function evaluateConsensus(input: {
   let blockingStatus: ConsensusStatus | null = null;
   const reqChecks: ConsensusRequirementCheck[] = [];
   for (const req of input.rule.requirements) {
+    const frozenReviewerIds =
+      req.reviewerIds === undefined ? null : new Set(req.reviewerIds);
     const inGroup = proposals.filter(
-      (p) => p.groupId === req.group && p.reviewerId !== null,
+      (p) =>
+        p.groupId === req.group &&
+        p.reviewerId !== null &&
+        (frozenReviewerIds === null || frozenReviewerIds.has(p.reviewerId)),
     );
     const blockedByReject = inGroup.some(
       (p) => p.decision === "rejected" && req.blockingDecisions.includes("rejected"),
@@ -252,6 +269,25 @@ export function evaluateConsensus(input: {
       decisionPath: "requirements-met",
     },
   };
+}
+
+function filterFrozenReviewerSet(
+  proposals: EnrichedProposal[],
+  rule: ReviewRule,
+): EnrichedProposal[] {
+  if (rule.mode !== "consensus" || rule.requirements.length === 0) {
+    return proposals;
+  }
+  if (rule.requirements.some((req) => req.reviewerIds === undefined)) {
+    return proposals;
+  }
+  const allowed = new Set(
+    rule.requirements.flatMap((req) => req.reviewerIds ?? []),
+  );
+  return proposals.filter(
+    (proposal) =>
+      proposal.reviewerId !== null && allowed.has(proposal.reviewerId),
+  );
 }
 
 /**

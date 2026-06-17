@@ -799,6 +799,8 @@ Phase 11 で reviewer は string ではなく `reviewer_id` (FK to `reviewers`)�
 
 `ReviewerRepository.listByGroup(group_id)` は reviewer dispatch の決定論境界であり、
 該当 reviewer を `reviewer_id ASC` で返す。空 group / 未登録 group は空配列を返す。
+Consensus-mode orchestrator dispatch は frozen rule snapshot の `reviewer_ids` を
+expected set として優先し、未指定 requirement のみ `listByGroup(group_id)` を使う。
 
 ### Review rule snapshot
 
@@ -815,6 +817,10 @@ human override が最優先。production wiring は `review_proposals` の activ
 proposal の insertion order や reviewer dispatch order は `summary.proposals` /
 `sourceProposalIds` / `required_changes` の順序に影響しない。unknown reviewer は
 `group_id = NULL` として enrichment され、per-group requirement では満たさない側に倒す。
+すべての consensus requirement が frozen `reviewerIds` を持つ snapshot では、
+集合外 proposal は quorum / blocking / `summary.proposals` / `sourceProposalIds` /
+`required_changes` 集約に参加しない。行自体は `review_proposals` に残るが、凍結済み
+review semantics には影響しない。
 
 `review_consensus` の active row は `superseded_at IS NULL` で run 単位 1 つ
 (partial unique index)。re-evaluate (新 proposal insert 時など) は supersede。
