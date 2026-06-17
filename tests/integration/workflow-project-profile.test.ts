@@ -12,7 +12,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { runDomainCoding } from "../../src/core/workflow-runner.js";
+import {
+  RunFinalizedError,
+  runDomainCoding,
+} from "../../src/core/workflow-runner.js";
+import { DEFAULT_REVIEW_RULE } from "../../src/core/review-rule.js";
 import { createFakeCodexRunner } from "../../src/codex/fake-codex-runner.js";
 import { prepareProjectRun } from "../../src/project/run-project.js";
 import { openDb } from "../../src/db/connection.js";
@@ -118,6 +122,7 @@ describe("run --project (fake codex)", () => {
       baseBranch: "main",
       codexRunner: runner,
       compiledPolicy: prepared.compiledPolicy,
+      reviewRuleResolution: prepared.reviewRuleResolution,
       project: prepared.project,
       ...(prepared.projectContextPacks !== undefined
         ? {
@@ -141,6 +146,114 @@ describe("run --project (fake codex)", () => {
     const prompt = readFileSync(join(runDir, "codex-prompt.md"), "utf8");
     expect(prompt).toMatch(/Explicit project context packs/);
     expect(prompt).toMatch(/project context doc/);
+  });
+
+  it("freezes a project-profile review rule snapshot for a project run", async () => {
+    writeFileSync(
+      join(harness, "projects", "demo.yaml"),
+      [
+        "version: 1",
+        "project_id: demo",
+        "repo:",
+        "  id: t",
+        `  path: ${repoPath}`,
+        "  package_manager: npm",
+        "policy:",
+        "  template: strict-monorepo-v1",
+        "review:",
+        "  mode: consensus",
+        "  requirements:",
+        "    - group: humans",
+        "      min_approvals: 1",
+        "      blocking_decisions: [changes_requested, rejected]",
+        "domains:",
+        "  - id: apps/user",
+        "    root: apps/user",
+        "    kind: app",
+        "",
+      ].join("\n"),
+    );
+    const prepared = await prepareProjectRun({
+      harnessRoot: harness,
+      projectId: "demo",
+      domain: "apps/user",
+    });
+    expect(prepared.reviewRuleResolution.source).toBe("project-profile");
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: prepared.repoId,
+      domain: "apps/user",
+      goal: "no-op",
+      baseBranch: "main",
+      codexRunner: createFakeCodexRunner(),
+      compiledPolicy: prepared.compiledPolicy,
+      reviewRuleResolution: prepared.reviewRuleResolution,
+      project: prepared.project,
+    });
+
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const row = db
+        .prepare(
+          `SELECT rr.source AS source, s.rule_json AS ruleJson
+             FROM run_review_rule_snapshots s
+             JOIN review_rules rr ON rr.rule_id = s.rule_id
+            WHERE s.run_id = ?`,
+        )
+        .get(r.runId) as { source: string; ruleJson: string } | undefined;
+      expect(row?.source).toBe("project-profile");
+      expect(JSON.parse(row?.ruleJson ?? "{}")).toMatchObject({
+        mode: "consensus",
+        requirements: [{ group: "humans", minApprovals: 1 }],
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("hard-fails a project-profile run when review rule snapshotting fails", async () => {
+    const prepared = await prepareProjectRun({
+      harnessRoot: harness,
+      projectId: "demo",
+      domain: "apps/user",
+    });
+    const circularRule = { ...DEFAULT_REVIEW_RULE } as Record<string, unknown>;
+    circularRule.self = circularRule;
+
+    let error: unknown;
+    try {
+      await runDomainCoding({
+        harnessRoot: harness,
+        repoPath,
+        repoId: prepared.repoId,
+        domain: "apps/user",
+        goal: "snapshot should fail",
+        baseBranch: "main",
+        codexRunner: createFakeCodexRunner(),
+        compiledPolicy: prepared.compiledPolicy,
+        reviewRuleResolution: {
+          rule: circularRule as never,
+          source: "project-profile",
+          ruleSha256: "invalid",
+        },
+        project: prepared.project,
+      });
+    } catch (e) {
+      error = e;
+    }
+
+    expect(error).toBeInstanceOf(RunFinalizedError);
+    const runId = (error as RunFinalizedError).runId;
+    const db = openDb(join(harness, ".harness", "harness.sqlite"));
+    try {
+      const row = db
+        .prepare("SELECT status FROM runs WHERE run_id = ?")
+        .get(runId) as { status: string } | undefined;
+      expect(row?.status).toBe("failed-internal-error");
+    } finally {
+      db.close();
+    }
   });
 
   it("E5-7-4: rejects an unknown domain", async () => {

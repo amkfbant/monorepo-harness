@@ -11,6 +11,7 @@ import { loadProjectById } from "./profile-resolver.js";
 import { ProjectError } from "./errors.js";
 import { scanRepoSignals } from "./repo-signals.js";
 import { loadCompileInputs, compileProjectPolicy } from "./policy-compiler.js";
+import type { ReviewRuleResolution } from "../core/review-rule.js";
 import {
   normalizeInlineContextPack,
   normalizeContextPackPreset,
@@ -36,6 +37,7 @@ export interface PreparedProjectRun {
   /** the profile's base branch (repo.base_branch, defaulting to "main") */
   baseBranch: string;
   compiledPolicy: { global: GlobalPolicy; repo: RepoPolicy };
+  reviewRuleResolution: ReviewRuleResolution;
   /** the resolved policy for the requested domain (used by --dry-run) */
   resolvedPolicy: ResolvedPolicy;
   project: NonNullable<RunMeta["project"]>;
@@ -130,6 +132,7 @@ export async function prepareProjectRun(opts: {
       global: compiled.globalPolicy,
       repo: compiled.repoPolicy,
     },
+    reviewRuleResolution: compiled.reviewRuleResolution,
     resolvedPolicy,
     project,
     ...(assembled !== undefined ? { projectContextPacks: assembled } : {}),

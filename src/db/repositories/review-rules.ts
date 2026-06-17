@@ -67,6 +67,7 @@ export class ReviewRulesRepository {
             AND (repo_id IS ? OR (repo_id IS NULL AND ? IS NULL))
             AND (domain IS ? OR (domain IS NULL AND ? IS NULL))
             AND source_sha256 = ?
+            AND source = ?
           ORDER BY rule_version DESC
           LIMIT 1`,
       )
@@ -78,6 +79,7 @@ export class ReviewRulesRepository {
         input.domain ?? null,
         input.domain ?? null,
         sha,
+        input.source,
       ) as Record<string, unknown> | undefined;
     if (existing !== undefined) return toTemplate(existing);
 

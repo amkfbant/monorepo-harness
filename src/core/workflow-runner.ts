@@ -53,7 +53,10 @@ import { writeArtifact } from "../logging/artifacts.js";
 import { generateRunId } from "./run-id.js";
 import { runAllowedCommands } from "./command-runner.js";
 import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
-import { resolveEffectiveRule } from "./review-rule.js";
+import {
+  resolveEffectiveRule,
+  type ReviewRuleResolution,
+} from "./review-rule.js";
 import { ReviewRulesRepository } from "../db/repositories/review-rules.js";
 import {
   acquireDomainLock as acquireDbDomainLock,
@@ -256,6 +259,11 @@ export interface RunDomainCodingOpts {
    * file — a project profile compiles to exactly this {global, repo} pair.
    */
   compiledPolicy?: { global: GlobalPolicy; repo: RepoPolicy };
+  /**
+   * Pre-resolved review rule for a project profile. Missing means legacy
+   * behaviour: resolve the default rule from repo/domain scope.
+   */
+  reviewRuleResolution?: ReviewRuleResolution;
   /** project profile provenance, recorded in meta.json (Phase 5-7). */
   project?: RunMeta["project"];
   /**
@@ -1078,39 +1086,11 @@ export async function runDomainCoding(
       },
     });
 
-    // Phase 11-5: freeze the effective review rule onto this run so
-    // later profile / rule edits do not retroactively change the run's
-    // review semantics. Phase 11-3 resolveEffectiveRule currently always
-    // returns DEFAULT_REVIEW_RULE; the snapshot row carries its sha256
-    // so consensus evaluation reproduces the same answer later.
-    try {
-      const rule = resolveEffectiveRule({
-        ...(opts.project !== undefined ? { projectId: opts.project.projectId } : {}),
-        repoId: opts.repoId,
-        domain: opts.domain,
-      });
-      const rulesRepo = new ReviewRulesRepository(db);
-      const template = rulesRepo.upsertRuleTemplate({
-        ...(opts.project !== undefined ? { projectId: opts.project.projectId } : {}),
-        repoId: opts.repoId,
-        domain: opts.domain,
-        source: "default",
-        rule,
-      });
-      rulesRepo.snapshotForRun({ runId, template });
-    } catch (e) {
-      // best-effort: a snapshot failure must not abort the run. Phase 11
-      // review process will fall back to DEFAULT_REVIEW_RULE if the
-      // snapshot row is missing.
-      process.stderr.write(
-        `warning: could not snapshot review rule for ${runId}: ${(e as Error).message}\n`,
-      );
-    }
-
     // Any failure after createDbRunLog leaves status='running' in the DB.
     // Wrap the rest of the workflow so unexpected throws still finalize the
     // run as failed-internal-error instead of silently rotting the status.
     try {
+      snapshotReviewRuleForRun({ opts, db, runId });
       return await runDomainCodingInner({
         opts,
         policy,
@@ -1218,6 +1198,41 @@ export async function runDomainCoding(
       }
     }
     dbHandle?.close();
+  }
+}
+
+function snapshotReviewRuleForRun(input: {
+  opts: RunDomainCodingOpts;
+  db: Database.Database;
+  runId: string;
+}): void {
+  const { opts, db, runId } = input;
+  const resolution =
+    opts.reviewRuleResolution ??
+    resolveEffectiveRule({
+      ...(opts.project !== undefined ? { projectId: opts.project.projectId } : {}),
+      repoId: opts.repoId,
+      domain: opts.domain,
+    });
+  try {
+    const rulesRepo = new ReviewRulesRepository(db);
+    const template = rulesRepo.upsertRuleTemplate({
+      ...(opts.project !== undefined ? { projectId: opts.project.projectId } : {}),
+      repoId: opts.repoId,
+      domain: opts.domain,
+      source: resolution.source,
+      rule: resolution.rule,
+    });
+    rulesRepo.snapshotForRun({ runId, template });
+  } catch (e) {
+    if (resolution.source === "project-profile") {
+      throw e;
+    }
+    // best-effort for legacy default snapshots: Phase 11 review process
+    // still falls back to DEFAULT_REVIEW_RULE if the snapshot row is absent.
+    process.stderr.write(
+      `warning: could not snapshot review rule for ${runId}: ${(e as Error).message}\n`,
+    );
   }
 }
 

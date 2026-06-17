@@ -483,6 +483,7 @@ async function cmdRun(o: RunOpts): Promise<RunOutcome> {
     ...(prepared !== undefined
       ? {
           compiledPolicy: prepared.compiledPolicy,
+          reviewRuleResolution: prepared.reviewRuleResolution,
           project: prepared.project,
           ...(prepared.projectContextPacks !== undefined
             ? {
@@ -609,6 +610,7 @@ async function cmdReviewedRun(o: ReviewedRunOpts): Promise<ReviewedRunOutcome> {
       ? {
           projectRun: {
             compiledPolicy: prepared.compiledPolicy,
+            reviewRuleResolution: prepared.reviewRuleResolution,
             project: prepared.project,
             ...(prepared.projectContextPacks !== undefined
               ? {
@@ -2836,6 +2838,7 @@ const rerunCmd = program
       ...(prepared !== undefined
         ? {
             compiledPolicy: prepared.compiledPolicy,
+            reviewRuleResolution: prepared.reviewRuleResolution,
             project: prepared.project,
             ...(prepared.projectContextPacks !== undefined
               ? {
