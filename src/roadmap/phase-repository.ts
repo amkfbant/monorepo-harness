@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Phase, PhaseNode, PhaseStatus } from "./types.js";
-import { CourseUserError } from "./errors.js";
+import { CourseUserError, ReviewStateConflictError } from "./errors.js";
 import { LeaseGuardFailedError } from "../workspace/db-domain-lock.js";
 
 interface PhaseRow {
@@ -11,7 +11,38 @@ interface PhaseRow {
   created_by: string | null; created_source: string | null; created_at: string; updated_at: string;
 }
 
+interface PhaseReviewStateRow {
+  review_state_json: string | null;
+  review_state_version: number;
+  scope_json: string | null;
+  close_conditions_json: string | null;
+}
+
 function parse(text: string | null): unknown { return text === null ? null : JSON.parse(text); }
+
+function reviewStateObject(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {};
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((v) => canonicalJson(v)).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function phaseSpecHash(scope: unknown, closeConditions: unknown): string {
+  return createHash("sha256")
+    .update(canonicalJson(scope) + canonicalJson(closeConditions))
+    .digest("hex");
+}
 
 function mapPhase(r: PhaseRow): Phase {
   return {
@@ -24,9 +55,8 @@ function mapPhase(r: PhaseRow): Phase {
 
 /**
  * Operator audit note for a phase (#171b). Stored under the generic
- * `review_state_json` blob as `{ note }` (no schema migration), so it composes
- * with any other review-state keys a future feature owns. Returns null when
- * absent or empty.
+ * `review_state_json` blob as `{ note }`, so it composes with any other
+ * review-state keys. Returns null when absent or empty.
  */
 export function phaseNote(phase: Phase): string | null {
   const rs = phase.reviewState;
@@ -47,6 +77,32 @@ export interface TransitionStatusOptions {
   now?: string;
   leaseGuard?: PhaseLeaseGuard;
 }
+
+export interface UpdateReviewStateContext {
+  phaseId: string;
+  reviewStateVersion: number;
+  scope: unknown;
+  closeConditions: unknown;
+}
+
+export type ReviewStateMutator = (
+  state: Readonly<Record<string, unknown>>,
+  context: UpdateReviewStateContext,
+) => Record<string, unknown>;
+
+export interface UpdateReviewStateOptions {
+  now?: string;
+  maxAttempts?: number;
+}
+
+export interface RecordSpecApprovalInput {
+  approvedBy: string;
+  reason?: string;
+  now?: string;
+  maxAttempts?: number;
+}
+
+const DEFAULT_REVIEW_STATE_CAS_ATTEMPTS = 3;
 
 export class PhaseRepository {
   constructor(private readonly db: Database.Database) {}
@@ -125,22 +181,84 @@ export class PhaseRepository {
   /**
    * Set an operator audit note (#171b) — e.g. a force-close reason or PR ref —
    * making `phase update --status closed` symmetric with `hitch close --summary`
-   * / `hitch cancel --reason`. Immutably merges `{ note }` into the existing
-   * `review_state_json` blob so unrelated keys survive.
+   * / `hitch cancel --reason`. Uses the versioned review-state CAS path so
+   * unrelated keys survive.
    */
   setNote(phaseId: string, note: string, now?: string): Phase {
-    const phase = this.require(phaseId);
-    const existing =
-      phase.reviewState !== null &&
-      typeof phase.reviewState === "object" &&
-      !Array.isArray(phase.reviewState)
-        ? (phase.reviewState as Record<string, unknown>)
-        : {};
-    const next = { ...existing, note };
-    this.db
-      .prepare("UPDATE phases SET review_state_json = ?, updated_at = ? WHERE phase_id = ?")
-      .run(JSON.stringify(next), now ?? new Date().toISOString(), phaseId);
-    return this.require(phaseId);
+    return this.updateReviewState(
+      phaseId,
+      (state) => ({ ...state, note }),
+      now === undefined ? undefined : { now },
+    );
+  }
+
+  updateReviewState(
+    phaseId: string,
+    mutator: ReviewStateMutator,
+    opts?: UpdateReviewStateOptions,
+  ): Phase {
+    const maxAttempts = normalizeReviewStateAttempts(opts?.maxAttempts);
+    const ts = opts?.now ?? new Date().toISOString();
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const updated = this.db
+        .transaction(() => {
+          const row = this.db
+            .prepare(
+              `SELECT review_state_json, review_state_version, scope_json, close_conditions_json
+                 FROM phases
+                WHERE phase_id = ?`,
+            )
+            .get(phaseId) as PhaseReviewStateRow | undefined;
+          if (row === undefined) throw new CourseUserError(`phase ${phaseId} not found`);
+          const current = reviewStateObject(parse(row.review_state_json));
+          const next = mutator(current, {
+            phaseId,
+            reviewStateVersion: row.review_state_version,
+            scope: parse(row.scope_json),
+            closeConditions: parse(row.close_conditions_json),
+          });
+          const info = this.db
+            .prepare(
+              `UPDATE phases
+                  SET review_state_json = ?,
+                      review_state_version = review_state_version + 1,
+                      updated_at = ?
+                WHERE phase_id = ? AND review_state_version = ?`,
+            )
+            .run(JSON.stringify(next), ts, phaseId, row.review_state_version);
+          return info.changes > 0 ? this.require(phaseId) : null;
+        })
+        .immediate();
+      if (updated !== null) return updated;
+    }
+    throw new ReviewStateConflictError(
+      phaseId,
+      maxAttempts,
+      this.latestReviewStateVersion(phaseId),
+    );
+  }
+
+  recordSpecApproval(
+    phaseId: string,
+    input: RecordSpecApprovalInput,
+  ): Phase {
+    const approvedAt = input.now ?? new Date().toISOString();
+    return this.updateReviewState(
+      phaseId,
+      (state, context) => ({
+        ...state,
+        specApproval: {
+          approvedBy: input.approvedBy,
+          approvedAt,
+          reason: input.reason ?? "",
+          specHash: phaseSpecHash(context.scope, context.closeConditions),
+        },
+      }),
+      {
+        now: approvedAt,
+        ...(input.maxAttempts === undefined ? {} : { maxAttempts: input.maxAttempts }),
+      },
+    );
   }
 
   /**
@@ -235,6 +353,13 @@ export class PhaseRepository {
   hitchIdsFor(phaseId: string): string[] {
     return (this.db.prepare("SELECT hitch_id FROM phase_hitches WHERE phase_id = ? ORDER BY linked_at ASC, hitch_id ASC").all(phaseId) as Array<{ hitch_id: string }>).map((r) => r.hitch_id);
   }
+
+  private latestReviewStateVersion(phaseId: string): number | null {
+    const row = this.db
+      .prepare("SELECT review_state_version FROM phases WHERE phase_id = ?")
+      .get(phaseId) as { review_state_version: number } | undefined;
+    return row?.review_state_version ?? null;
+  }
 }
 
 function normalizeTransitionStatusOptions(
@@ -245,4 +370,12 @@ function normalizeTransitionStatusOptions(
 
 function leaseGuardNowIso(leaseGuard: PhaseLeaseGuard): string {
   return new Date(leaseGuard.nowMs).toISOString();
+}
+
+function normalizeReviewStateAttempts(value: number | undefined): number {
+  const attempts = value ?? DEFAULT_REVIEW_STATE_CAS_ATTEMPTS;
+  if (!Number.isInteger(attempts) || attempts < 1) {
+    throw new CourseUserError("review_state CAS maxAttempts must be a positive integer");
+  }
+  return attempts;
 }

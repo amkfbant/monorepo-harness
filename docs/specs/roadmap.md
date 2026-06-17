@@ -46,6 +46,7 @@ course   (long-lived initiative, project-scoped)
 | `scope_json` | TEXT nullable | arbitrary includes/excludes/target spec |
 | `close_conditions_json` | TEXT nullable | phase-level deterministic gates |
 | `review_state_json` | TEXT nullable | phase-level review facts (not hitch-convergence) |
+| `review_state_version` | INTEGER | optimistic-lock version for `review_state_json`; DEFAULT 0 |
 | `created_by`, `created_source` | TEXT nullable | |
 | `created_at`, `updated_at` | TEXT | |
 
@@ -63,7 +64,14 @@ must belong to the same course; cross-course parents are rejected by
 `review_state_json` records only phase-level reviews that are **not** a hitch's own
 convergence (e.g. a codex/Fable review of the phase's roadmap/plan as a fact). It
 does **not** store hitch-derived P0/P1 counts (those are always derived live) and
-does not encode the GOAL_RULES.md build rules.
+does not encode the GOAL_RULES.md build rules. Writers use
+`PhaseRepository.updateReviewState()` with `review_state_version` CAS and a
+bounded retry budget, then throw `ReviewStateConflictError` rather than applying
+a last-writer-wins overwrite. `recordSpecApproval()` stores human ratification
+under the namespaced `specApproval` key with `{ approvedBy, approvedAt, reason,
+specHash }`; `specHash` is the sha256 of canonicalized `scope_json` plus
+canonicalized `close_conditions_json`. `setNote()` also uses this CAS path so
+operator notes and spec approvals preserve each other's keys.
 
 ### `phase_hitches`
 
