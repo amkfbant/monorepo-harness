@@ -1468,10 +1468,10 @@ harness review auto --run-id <id> [--reviewer-name <name>] [--allow-overwrite] [
 ### 動作
 
 1. `review-decision.yaml` を読む。非 `pending` decision が入っていて `--allow-overwrite` 未指定なら **codex を呼ぶ前に** reject（人間/過去 agent の verdict 保護）
-2. reviewer id を path-safe（`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`、`..` 不可）として検証し、`runs/<runId>/reviewers/<reviewer_id>/input/` に reviewer 用の read-only 入力コピーを作る
-3. `runs/<runId>/reviewers/<reviewer_id>/input/` を cwd に、`sandbox=read-only` で codex を起動
+2. reviewer id を path-safe（`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`、`..` 不可）として検証し、**run dir の外**（`os.tmpdir()` 下の使い捨て dir）に reviewer 用の read-only 入力コピーを作る（許可入力＝`REVIEWER_INPUT_FILES` ＋ `commands/` のみ。**symlink は fail-closed で copy しない**）。この cwd は run 後に削除する（P1-ISO の working-tree 非露出）
+3. その OS-temp dir を cwd に、`sandbox=read-only` で codex を起動（cwd が run dir 配下でないため、先行 reviewer の verdict は短い `..` で届かない）
 4. codex は `review-request.md` / `summary.md` / `final-diff.patch` / `untracked-*` / command logs を読み、fenced YAML block を出力
-5. codex 実行前後で run dir のファイル (size + mtime) を snapshot 比較し、legacy root の `reviewer-agent.out.log` / `reviewer-agent.err.log` / `.reviewer-agent.events.raw.jsonl` と当該 reviewer prefix (`reviewers/<reviewer_id>/...`) 以外が変化していたら reject（read-only sandbox の二重防御）
+5. codex 実行前後で run dir のファイル (size + mtime) を snapshot 比較し、3 つの codex ログ（root の `reviewer-agent.out.log` / `reviewer-agent.err.log` / `.reviewer-agent.events.raw.jsonl`、または `reviewers/<reviewer_id>/<同名>` の **exact 一致のみ**）以外が変化していたら reject（reviewer prefix ツリー全体は exempt しない＝誤設定 runner が `reviewers/<id>/` に作る非ログファイルも tamper 検知。read-only sandbox の二重防御）
 6. YAML を strict にパース（不明 decision / 非 string entry / `changes_requested` で `required_changes` 空 → 全て output error）
 7. `--dry-run` 未指定なら DB-backed run では `review_proposals` に proposal を記録し、`reviewers/<reviewer_id>/review-decision.yaml` を書く。DB がない legacy run では root `review-decision.yaml` も互換 sidecar として書く。stale な scoped `review-auto-error.json` は削除する
 

@@ -596,17 +596,6 @@ export async function runReviewerAgent(
   // Invoke codex with the run directory as cwd. Sandbox is read-only —
   // the agent doesn't need to touch the worktree, just read artifacts.
   await mkdir(reviewerDir, { recursive: true });
-  // P1-ISO (#229): the reviewer's codex sandbox cwd must live OUTSIDE the run
-  // dir tree. codex `--sandbox read-only` sets `-C` as cwd but does NOT jail
-  // reads to that subtree, so a cwd anywhere under runDir lets the agent reach
-  // a prior reviewer's verdict via `../` (e.g. ../../alice/review-decision.yaml
-  // or the repaired root review-decision.yaml). A fresh OS-temp dir shares no
-  // `..`-reachable ancestor with runDir, so no parent-relative path resolves to
-  // any verdict. Only the allowed inputs are copied in; logs/decision stay in
-  // reviewerDir (run dir, tamper-snapshotted). The dir is removed after the run.
-  const reviewerInputDir = await mkdtemp(
-    join(tmpdir(), "harness-reviewer-input-"),
-  );
   const stdoutPath = join(reviewerDir, "reviewer-agent.out.log");
   const stderrPath = join(reviewerDir, "reviewer-agent.err.log");
   const rawEventsPath = join(reviewerDir, ".reviewer-agent.events.raw.jsonl");
@@ -624,6 +613,18 @@ export async function runReviewerAgent(
   const reviewerPrompt = PROMPT_PREAMBLE + reviewerOpsSection;
   const promptSha256 = createHash("sha256").update(reviewerPrompt).digest("hex");
 
+  // P1-ISO (#229): the reviewer's codex sandbox cwd must live OUTSIDE the run
+  // dir tree. codex `--sandbox read-only` sets `-C` as cwd but does NOT jail
+  // reads to that subtree, so a cwd anywhere under runDir lets the agent reach
+  // a prior reviewer's verdict via `../` (e.g. ../../alice/review-decision.yaml
+  // or the repaired root review-decision.yaml). A fresh OS-temp dir shares no
+  // `..`-reachable ancestor with runDir, so no parent-relative path resolves to
+  // any verdict. Only the allowed inputs are copied in; logs/decision stay in
+  // reviewerDir (run dir, tamper-snapshotted). Created right before the try so
+  // the finally always owns its cleanup (no leak window).
+  const reviewerInputDir = await mkdtemp(
+    join(tmpdir(), "harness-reviewer-input-"),
+  );
   let codexResult: Awaited<ReturnType<CodexExecRunner["run"]>>;
   try {
     // materialize inside the try so a copy failure still cleans up the temp dir
