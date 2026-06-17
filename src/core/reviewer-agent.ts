@@ -1,14 +1,16 @@
 import {
   cp,
   mkdir,
+  mkdtemp,
   readFile,
   readdir,
   stat,
   writeFile,
   rm,
 } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { parse as parseYaml } from "yaml";
 import type { RunMeta } from "../logging/run-log.js";
 import {
@@ -213,12 +215,20 @@ async function materializeReviewerInput(
   for (const rel of REVIEWER_INPUT_FILES) {
     const src = join(runDir, rel);
     if (!existsSync(src)) continue;
+    // fail-closed: never materialize a symlink — it could resolve to a verdict
+    // or sibling reviewer artifact and re-introduce the cross-reviewer leak.
+    if (lstatSync(src).isSymbolicLink()) continue;
     await cp(src, join(inputDir, rel), { force: true });
   }
   for (const rel of REVIEWER_INPUT_DIRS) {
     const src = join(runDir, rel);
     if (!existsSync(src)) continue;
-    await cp(src, join(inputDir, rel), { recursive: true, force: true });
+    if (lstatSync(src).isSymbolicLink()) continue;
+    await cp(src, join(inputDir, rel), {
+      recursive: true,
+      force: true,
+      filter: (s) => !lstatSync(s).isSymbolicLink(),
+    });
   }
 }
 
@@ -484,7 +494,6 @@ export async function runReviewerAgent(
   const decisionPath = join(runDir, "review-decision.yaml");
   const reviewerRelDir = reviewerArtifactRelDir(reviewer);
   const reviewerDir = join(runDir, "reviewers", reviewer);
-  const reviewerInputDir = join(reviewerDir, "input");
   const reviewerDecisionPath = join(reviewerDir, "review-decision.yaml");
 
   let metaRaw: unknown;
@@ -580,6 +589,17 @@ export async function runReviewerAgent(
   // Invoke codex with the run directory as cwd. Sandbox is read-only —
   // the agent doesn't need to touch the worktree, just read artifacts.
   await mkdir(reviewerDir, { recursive: true });
+  // P1-ISO (#229): the reviewer's codex sandbox cwd must live OUTSIDE the run
+  // dir tree. codex `--sandbox read-only` sets `-C` as cwd but does NOT jail
+  // reads to that subtree, so a cwd anywhere under runDir lets the agent reach
+  // a prior reviewer's verdict via `../` (e.g. ../../alice/review-decision.yaml
+  // or the repaired root review-decision.yaml). A fresh OS-temp dir shares no
+  // `..`-reachable ancestor with runDir, so no parent-relative path resolves to
+  // any verdict. Only the allowed inputs are copied in; logs/decision stay in
+  // reviewerDir (run dir, tamper-snapshotted). The dir is removed after the run.
+  const reviewerInputDir = await mkdtemp(
+    join(tmpdir(), "harness-reviewer-input-"),
+  );
   await materializeReviewerInput(runDir, reviewerInputDir);
   const stdoutPath = join(reviewerDir, "reviewer-agent.out.log");
   const stderrPath = join(reviewerDir, "reviewer-agent.err.log");

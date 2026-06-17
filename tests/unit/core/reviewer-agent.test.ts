@@ -7,7 +7,7 @@ import {
   existsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { createHash } from "node:crypto";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations, MIGRATIONS } from "../../../src/db/migrations.js";
@@ -227,26 +227,59 @@ describe("runReviewerAgent", () => {
     expect(r.reviewer).toBe("codex-reviewer-gpt-5.5");
   });
 
-  it("isolates reviewer artifacts and sandbox cwd under reviewers/<reviewer_id>", async () => {
+  it("P1-ISO: reviewer codex cwd is OUTSIDE runDir with only inputs, no verdict reachable by parent-relative path", async () => {
     const { runsDir, runId } = setup();
-    const seen: {
-      prompt?: string;
+    const runDir = join(runsDir, runId);
+    // inputs the reviewer may read + a prior verdict that must NOT be reachable
+    writeFileSync(join(runDir, "final-diff.patch"), "diff --git a b\n");
+    writeFileSync(join(runDir, "review-request.md"), "# review request\n");
+
+    // Assertions run INSIDE the fake codex, while the cwd still exists and the
+    // run dir holds the verdict — i.e. exactly the state a real reviewer sees.
+    const checks: {
       worktreePath?: string;
-      logPaths?: { stdout: string; stderr: string; events: string };
+      relToRun?: string;
+      inputPresent?: boolean;
+      verdictInCwd?: boolean;
+      siblingInCwd?: boolean;
     } = {};
+    const probing: CodexExecRunner = {
+      async run(input) {
+        const wt = input.worktreePath;
+        checks.worktreePath = wt;
+        // achievable P1-ISO bar (working-tree non-exposure): the sandbox cwd is
+        // NOT under runDir, so the verdict is not a short `..` hop from a
+        // prompt-relative read. (A read-only codex sandbox does NOT chroot, so
+        // absolute/long-`..` reads cannot be prevented here — that needs a real
+        // read-jail and is tracked as a follow-up. We assert the verdict is not
+        // in the cwd and the cwd is outside the run tree.)
+        checks.relToRun = relative(runDir, wt);
+        checks.inputPresent = existsSync(join(wt, "final-diff.patch"));
+        checks.verdictInCwd = existsSync(join(wt, "review-decision.yaml"));
+        checks.siblingInCwd = existsSync(join(wt, "reviewers"));
+        const { writeFile } = await import("node:fs/promises");
+        await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
+        await writeFile(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      },
+    };
+
     const r = await runReviewerAgent({
       runsDir,
       runId,
       reviewerName: "alice",
-      codexRunner: capturingRunner(APPROVED_OUTPUT, seen),
+      codexRunner: probing,
       now: new Date("2026-05-21T01:00:00Z"),
     });
 
-    const reviewerDir = join(runsDir, runId, "reviewers", "alice");
-    expect(seen.worktreePath).toBe(join(reviewerDir, "input"));
-    expect(seen.logPaths?.stdout).toBe(join(reviewerDir, "reviewer-agent.out.log"));
-    expect(seen.logPaths?.stderr).toBe(join(reviewerDir, "reviewer-agent.err.log"));
-    expect(seen.logPaths?.events).toBe(join(reviewerDir, ".reviewer-agent.events.raw.jsonl"));
+    const reviewerDir = join(runDir, "reviewers", "alice");
+    // cwd is outside the run dir tree (relative path climbs out with `..`)
+    expect(checks.relToRun?.startsWith("..")).toBe(true);
+    expect(checks.inputPresent).toBe(true); // allowed input materialized into cwd
+    expect(checks.verdictInCwd).toBe(false); // no verdict inside the sandbox cwd
+    expect(checks.siblingInCwd).toBe(false); // no reviewers/ tree inside the cwd
+    // logs/decision still land under the run dir (tamper-snapshotted); cwd cleaned up
+    expect(existsSync(checks.worktreePath as string)).toBe(false);
     expect(r.rawOutputPath).toBe(join(reviewerDir, "reviewer-agent.out.log"));
     expect(existsSync(join(reviewerDir, "review-decision.yaml"))).toBe(true);
   });
