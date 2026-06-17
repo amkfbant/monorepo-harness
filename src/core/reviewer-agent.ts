@@ -138,6 +138,17 @@ interface FileSnapshot {
 }
 
 /**
+ * OS-created metadata files that are not reviewer-agent output and must be
+ * ignored by the tamper snapshot: macOS Finder/Spotlight `.DS_Store` and
+ * AppleDouble `._*` resource forks. The OS can create these in the run dir at
+ * any time (independent of the read-only codex sandbox), so counting them as
+ * tampering would false-positive the review (#269).
+ */
+function isOsMetadataNoise(name: string): boolean {
+  return name === ".DS_Store" || name.startsWith("._");
+}
+
+/**
  * Snapshot every file under runDir (recursively — `commands/` etc.
  * included), keyed by path relative to runDir. The two reviewer-agent log
  * files are excluded since codex legitimately writes them.
@@ -150,6 +161,12 @@ async function snapshotRunDir(
   async function walk(dir: string, prefix: string): Promise<void> {
     const entries = await readdir(dir, { withFileTypes: true });
     for (const e of entries) {
+      // OS-metadata noise (macOS .DS_Store / AppleDouble ._*) is created by the
+      // operating system (Finder/Spotlight), not the reviewer agent. Excluding
+      // it from the snapshot keeps the tamper check from false-positiving
+      // ("created unexpected file: .DS_Store") when the OS touches the run dir
+      // mid-review (#269).
+      if (isOsMetadataNoise(e.name)) continue;
       const rel = prefix ? `${prefix}/${e.name}` : e.name;
       if (e.isDirectory()) {
         await walk(join(dir, e.name), rel);

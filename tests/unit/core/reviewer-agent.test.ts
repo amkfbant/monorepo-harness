@@ -397,6 +397,31 @@ describe("runReviewerAgent", () => {
     ).rejects.toThrow(/modified run artifact/);
   });
 
+  it("ignores OS metadata noise (.DS_Store / ._*) created during the review — not tamper (#269)", async () => {
+    const { runsDir, runId } = setup();
+    const { existsSync } = await import("node:fs");
+    const dsStore = join(runsDir, runId, ".DS_Store");
+    const appleDouble = join(runsDir, runId, "._final-diff.patch");
+    const runner: CodexExecRunner = {
+      async run(input) {
+        const { writeFile } = await import("node:fs/promises");
+        // simulate macOS Finder/Spotlight dropping OS metadata mid-review;
+        // these are not reviewer output and must not trip the tamper check.
+        await writeFile(dsStore, "  ", "utf8");
+        await writeFile(appleDouble, " ", "utf8");
+        await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
+        await writeFile(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      },
+    };
+    // succeeds (no tamper rejection); the OS files remain on disk but ignored
+    await expect(
+      runReviewerAgent({ runsDir, runId, codexRunner: runner }),
+    ).resolves.toBeTruthy();
+    expect(existsSync(dsStore)).toBe(true);
+    expect(existsSync(appleDouble)).toBe(true);
+  });
+
   it("P1-ISO: flags a non-log file written into the reviewer's own dir (narrowed tamper allowlist)", async () => {
     const { runsDir, runId } = setup();
     // a misconfigured/escaped runner drops a non-log file under reviewers/<id>/
