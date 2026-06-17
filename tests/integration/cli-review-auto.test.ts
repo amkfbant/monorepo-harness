@@ -130,7 +130,7 @@ function writeFakeCodexBin(): FakeCodex {
     [
       "#!/usr/bin/env node",
       "const { readFileSync, writeFileSync } = require('node:fs');",
-      "const { resolve } = require('node:path');",
+      "const { dirname, join, resolve } = require('node:path');",
       "const args = process.argv.slice(2);",
       "const outputIndex = args.indexOf('-o');",
       "if (!args.includes('--json')) throw new Error('missing --json');",
@@ -169,11 +169,13 @@ function writeTamperingFakeCodexBin(secret: string): FakeCodex {
       "if (!args.includes('--json')) throw new Error('missing --json');",
       "if (outputIndex < 0) throw new Error('missing -o');",
       "const outputPath = resolve(args[outputIndex + 1]);",
+      "const reviewerDir = dirname(outputPath);",
+      "const runDir = dirname(dirname(reviewerDir));",
       `const finalMessage = readFileSync(${JSON.stringify(
         outputFile,
       )}, 'utf8');`,
-      "writeFileSync('summary.md', '# summary\\ntampered\\n', 'utf8');",
-      `writeFileSync('reviewer-agent.events.jsonl', ${JSON.stringify(
+      "writeFileSync(join(runDir, 'summary.md'), '# summary\\ntampered\\n', 'utf8');",
+      `writeFileSync(join(reviewerDir, 'reviewer-agent.events.jsonl'), ${JSON.stringify(
         `{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"leaked ${secret}\\n"}}\\n`,
       )}, 'utf8');`,
       "writeFileSync(outputPath, finalMessage, 'utf8');",
@@ -321,7 +323,14 @@ describe("harness review auto", () => {
       fakeBin,
     );
     expect(status).toBe(1);
-    const errPath = join(root, "runs", runId, "review-auto-error.json");
+    const errPath = join(
+      root,
+      "runs",
+      runId,
+      "reviewers",
+      "codex-reviewer",
+      "review-auto-error.json",
+    );
     expect(existsSync(errPath)).toBe(true);
     const err = JSON.parse(readFileSync(errPath, "utf8"));
     expect(err.type).toBe("review-auto-error");
@@ -347,8 +356,12 @@ describe("harness review auto", () => {
     expect(status).toBe(1);
     expect(stderr).toContain("artifacts_quarantined");
     expect(dbBlobText(root, runId, "summary.md")).toBe("# summary\nclean\n");
-    expect(dbBlobText(root, runId, "reviewer-agent.events.jsonl")).toBeNull();
-    expect(dbBlobText(root, runId, "review-auto-error.json")).not.toBeNull();
+    expect(
+      dbBlobText(root, runId, "reviewers/codex-reviewer/reviewer-agent.events.jsonl") ?? "",
+    ).not.toContain(secret);
+    expect(
+      dbBlobText(root, runId, "reviewers/codex-reviewer/review-auto-error.json"),
+    ).not.toBeNull();
     const db = openDb(join(root, ".harness", "harness.sqlite"));
     try {
       const leaked = db
@@ -373,7 +386,9 @@ describe("harness review auto", () => {
         paths?: string[];
       };
       expect(payload.type).toBe("artifacts_quarantined");
-      expect(payload.paths).toContain("reviewer-agent.events.jsonl");
+      expect(payload.paths).toContain(
+        "reviewers/codex-reviewer/reviewer-agent.out.log",
+      );
     } finally {
       db.close();
     }

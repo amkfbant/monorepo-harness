@@ -1275,7 +1275,7 @@ reviewCmd
         );
       } else {
         process.stdout.write(
-          `note: review-decision.yaml was overwritten; run 'harness review process --run-id ${result.runId}' to apply.\n`,
+          `note: review proposal was recorded; run 'harness review process --run-id ${result.runId}' to apply.\n`,
         );
       }
     } catch (e) {

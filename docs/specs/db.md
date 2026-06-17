@@ -792,7 +792,13 @@ convergence / mutation gate / review・hitch の状態遷移判定には使わ�
 
 Phase 11 で reviewer は string ではなく `reviewer_id` (FK to `reviewers`)。
 既存 string 列 `review_proposals.reviewer` は legacy 互換のため温存。
-`UnknownReviewerError` で unknown reviewer は CLI exit 1。
+`UnknownReviewerError` で unknown reviewer は CLI exit 1。新規登録する
+`reviewer_id` は path-safe（`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`、`..` 不可）でなければ
+ならない。これは `review auto` が reviewer 別 artifact を
+`runs/<runId>/reviewers/<reviewer_id>/` に分離するための境界でもある。
+
+`ReviewerRepository.listByGroup(group_id)` は reviewer dispatch の決定論境界であり、
+該当 reviewer を `reviewer_id ASC` で返す。空 group / 未登録 group は空配列を返す。
 
 ### Review rule snapshot
 
@@ -804,7 +810,11 @@ review semantics は変わらない。
 
 pure function: `evaluateConsensus(rule, proposals, override?) → {status,
 summary}`。tie-break: `rejected > changes_requested > approved > pending`。
-human override が最優先。
+human override が最優先。production wiring は `review_proposals` の active row を
+`reviewer_id ASC, proposal_id ASC` に正規化してから enrichment / evaluation するため、
+proposal の insertion order や reviewer dispatch order は `summary.proposals` /
+`sourceProposalIds` / `required_changes` の順序に影響しない。unknown reviewer は
+`group_id = NULL` として enrichment され、per-group requirement では満たさない側に倒す。
 
 `review_consensus` の active row は `superseded_at IS NULL` で run 単位 1 つ
 (partial unique index)。re-evaluate (新 proposal insert 時など) は supersede。

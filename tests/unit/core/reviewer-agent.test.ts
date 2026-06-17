@@ -5,9 +5,10 @@ import {
   writeFileSync,
   readFileSync,
   existsSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { createHash } from "node:crypto";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations, MIGRATIONS } from "../../../src/db/migrations.js";
@@ -141,11 +142,17 @@ function fakeRunnerWithOutput(
 
 function capturingRunner(
   output: string,
-  seen: { prompt?: string },
+  seen: {
+    prompt?: string;
+    worktreePath?: string;
+    logPaths?: { stdout: string; stderr: string; events: string };
+  },
 ): CodexExecRunner {
   return {
     async run(input) {
       seen.prompt = input.prompt;
+      seen.worktreePath = input.worktreePath;
+      seen.logPaths = input.logPaths;
       const { writeFile } = await import("node:fs/promises");
       await writeFile(input.logPaths.stdout, output, "utf8");
       await writeFile(input.logPaths.stderr, "", "utf8");
@@ -219,6 +226,75 @@ describe("runReviewerAgent", () => {
       codexRunner: runner,
     });
     expect(r.reviewer).toBe("codex-reviewer-gpt-5.5");
+  });
+
+  it("P1-ISO: reviewer codex cwd is OUTSIDE runDir with only inputs, no verdict reachable by parent-relative path", async () => {
+    const { runsDir, runId } = setup();
+    const runDir = join(runsDir, runId);
+    // inputs the reviewer may read + a prior verdict that must NOT be reachable
+    writeFileSync(join(runDir, "final-diff.patch"), "diff --git a b\n");
+    writeFileSync(join(runDir, "review-request.md"), "# review request\n");
+
+    // Assertions run INSIDE the fake codex, while the cwd still exists and the
+    // run dir holds the verdict — i.e. exactly the state a real reviewer sees.
+    const checks: {
+      worktreePath?: string;
+      relToRun?: string;
+      inputPresent?: boolean;
+      verdictInCwd?: boolean;
+      siblingInCwd?: boolean;
+    } = {};
+    const probing: CodexExecRunner = {
+      async run(input) {
+        const wt = input.worktreePath;
+        checks.worktreePath = wt;
+        // achievable P1-ISO bar (working-tree non-exposure): the sandbox cwd is
+        // NOT under runDir, so the verdict is not a short `..` hop from a
+        // prompt-relative read. (A read-only codex sandbox does NOT chroot, so
+        // absolute/long-`..` reads cannot be prevented here — that needs a real
+        // read-jail and is tracked as a follow-up. We assert the verdict is not
+        // in the cwd and the cwd is outside the run tree.)
+        checks.relToRun = relative(runDir, wt);
+        checks.inputPresent = existsSync(join(wt, "final-diff.patch"));
+        checks.verdictInCwd = existsSync(join(wt, "review-decision.yaml"));
+        checks.siblingInCwd = existsSync(join(wt, "reviewers"));
+        const { writeFile } = await import("node:fs/promises");
+        await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
+        await writeFile(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      },
+    };
+
+    const r = await runReviewerAgent({
+      runsDir,
+      runId,
+      reviewerName: "alice",
+      codexRunner: probing,
+      now: new Date("2026-05-21T01:00:00Z"),
+    });
+
+    const reviewerDir = join(runDir, "reviewers", "alice");
+    // cwd is outside the run dir tree (relative path climbs out with `..`)
+    expect(checks.relToRun?.startsWith("..")).toBe(true);
+    expect(checks.inputPresent).toBe(true); // allowed input materialized into cwd
+    expect(checks.verdictInCwd).toBe(false); // no verdict inside the sandbox cwd
+    expect(checks.siblingInCwd).toBe(false); // no reviewers/ tree inside the cwd
+    // logs/decision still land under the run dir (tamper-snapshotted); cwd cleaned up
+    expect(existsSync(checks.worktreePath as string)).toBe(false);
+    expect(r.rawOutputPath).toBe(join(reviewerDir, "reviewer-agent.out.log"));
+    expect(existsSync(join(reviewerDir, "review-decision.yaml"))).toBe(true);
+  });
+
+  it("rejects a reviewerName that is not a safe path component", async () => {
+    const { runsDir, runId } = setup();
+    await expect(
+      runReviewerAgent({
+        runsDir,
+        runId,
+        reviewerName: "../alice",
+        codexRunner: fakeRunnerWithOutput(APPROVED_OUTPUT),
+      }),
+    ).rejects.toThrow(/path-safe/);
   });
 
   it("rejects (does NOT silently coerce) when codex returns an unknown decision", async () => {
@@ -321,6 +397,60 @@ describe("runReviewerAgent", () => {
     ).rejects.toThrow(/modified run artifact/);
   });
 
+  it("P1-ISO: flags a non-log file written into the reviewer's own dir (narrowed tamper allowlist)", async () => {
+    const { runsDir, runId } = setup();
+    // a misconfigured/escaped runner drops a non-log file under reviewers/<id>/
+    // during the codex window — only the 3 codex logs are exempt, so this must
+    // be tamper-flagged (and never silently ingested into DB artifacts).
+    const leakRunner: CodexExecRunner = {
+      async run(input) {
+        const { writeFile, mkdir } = await import("node:fs/promises");
+        const dir = join(runsDir, runId, "reviewers", "alice");
+        await mkdir(dir, { recursive: true });
+        await writeFile(join(dir, "leak.txt"), "exfil\n", "utf8");
+        await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
+        await writeFile(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      },
+    };
+    await expect(
+      runReviewerAgent({
+        runsDir,
+        runId,
+        reviewerName: "alice",
+        codexRunner: leakRunner,
+      }),
+    ).rejects.toThrow(/unexpected file|modified run artifact/);
+  });
+
+  it("P1-ISO: does NOT materialize a symlinked input into the reviewer cwd (fail-closed)", async () => {
+    const { runsDir, runId } = setup();
+    const runDir = join(runsDir, runId);
+    // final-diff.patch is a symlink to the verdict — must be skipped, not copied
+    symlinkSync(
+      join(runDir, "review-decision.yaml"),
+      join(runDir, "final-diff.patch"),
+    );
+    let diffInCwd: boolean | undefined;
+    const probing: CodexExecRunner = {
+      async run(input) {
+        diffInCwd = existsSync(join(input.worktreePath, "final-diff.patch"));
+        const { writeFile } = await import("node:fs/promises");
+        await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
+        await writeFile(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      },
+    };
+    await runReviewerAgent({
+      runsDir,
+      runId,
+      reviewerName: "alice",
+      codexRunner: probing,
+      now: new Date("2026-05-21T01:00:00Z"),
+    });
+    expect(diffInCwd).toBe(false); // symlink not materialized into the sandbox
+  });
+
   // A runner that mutates `targetFile` mid-run, then returns the given
   // exit code / timeout. Used to prove tamper detection runs before the
   // exit-code / timeout gates.
@@ -400,6 +530,23 @@ describe("runReviewerAgent", () => {
         codexRunner: tamperingRunner(decisionFile),
       }),
     ).rejects.toThrow(/modified run artifact: review-decision\.yaml/);
+  });
+
+  it("detects tampering with another reviewer's isolated artifacts", async () => {
+    const { runsDir, runId } = setup();
+    const siblingDir = join(runsDir, runId, "reviewers", "bob");
+    mkdirSync(siblingDir, { recursive: true });
+    const siblingDecision = join(siblingDir, "review-decision.yaml");
+    writeFileSync(siblingDecision, "decision: approved\n");
+
+    await expect(
+      runReviewerAgent({
+        runsDir,
+        runId,
+        reviewerName: "alice",
+        codexRunner: tamperingRunner(siblingDecision),
+      }),
+    ).rejects.toThrow(/modified run artifact: reviewers\/bob\/review-decision\.yaml/);
   });
 
   it("rejects an invalid runId (path traversal)", async () => {
@@ -667,7 +814,13 @@ describe("runReviewerAgent", () => {
         }),
       ).rejects.toThrow(/active proposal|supersede|競合/);
 
-      const errPath = join(runsDir, runId, "review-auto-error.json");
+      const errPath = join(
+        runsDir,
+        runId,
+        "reviewers",
+        "codex-reviewer",
+        "review-auto-error.json",
+      );
       expect(existsSync(errPath)).toBe(true);
       const err = JSON.parse(readFileSync(errPath, "utf8"));
       expect(err.type).toBe("review-auto-error");
@@ -705,7 +858,13 @@ describe("runReviewerAgent", () => {
       await expect(
         runReviewerAgent({ runsDir, runId, codexRunner: runner }),
       ).rejects.toThrow(/decision/);
-      const errPath = join(runsDir, runId, "review-auto-error.json");
+      const errPath = join(
+        runsDir,
+        runId,
+        "reviewers",
+        "codex-reviewer",
+        "review-auto-error.json",
+      );
       expect(existsSync(errPath)).toBe(true);
       const err = JSON.parse(readFileSync(errPath, "utf8"));
       expect(err.type).toBe("review-auto-error");
@@ -737,7 +896,13 @@ describe("runReviewerAgent", () => {
 
     it("a stale error artifact is cleared on a subsequent successful run", async () => {
       const { runsDir, runId } = setup();
-      const errPath = join(runsDir, runId, "review-auto-error.json");
+      const errPath = join(
+        runsDir,
+        runId,
+        "reviewers",
+        "codex-reviewer",
+        "review-auto-error.json",
+      );
       // first run: invalid output → error artifact written
       await expect(
         runReviewerAgent({

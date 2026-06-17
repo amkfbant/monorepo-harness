@@ -97,6 +97,16 @@ interface ReviewAutoArgs extends RunArgs {
   reviewer?: string;
 }
 
+function defaultMcpReviewerId(clientName: string): string {
+  const suffix = clientName
+    .replaceAll(/[^A-Za-z0-9._-]/g, "-")
+    .replaceAll(/\.+/g, ".")
+    .replaceAll(/-+/g, "-")
+    .replace(/^[^A-Za-z0-9]+/, "")
+    .slice(0, 124);
+  return `mcp-${suffix || "client"}`;
+}
+
 interface BacklogCreateArgs extends MutationBaseArgs {
   projectId?: string;
   repoId?: string;
@@ -276,11 +286,12 @@ export async function reviewAutoTool(
       mutationKind: "review.auto",
     },
     workWithDb: async (db, operationId) => {
+      const reviewer = args.reviewer ?? defaultMcpReviewerId(context.clientName);
       const result = await runReviewerAgent({
         runsDir: harnessPaths(context.harnessRoot).runsDir,
         runId: args.runId,
         dbPath: harnessPaths(context.harnessRoot).dbPath,
-        reviewerName: args.reviewer ?? `mcp:${context.clientName}`,
+        reviewerName: reviewer,
         codexRunner: createCodexCliRunner({
           codexBin: process.env.HARNESS_CODEX_BIN ?? "codex",
           sandbox: "read-only",
@@ -302,7 +313,7 @@ export async function reviewAutoTool(
           runStatus: result.decision,
           input: {
             toolName: "harness.review.auto",
-            reviewer: args.reviewer ?? `mcp:${context.clientName}`,
+            reviewer,
           },
           result: { ...result },
         });

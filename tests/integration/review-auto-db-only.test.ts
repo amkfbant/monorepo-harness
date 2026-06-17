@@ -207,7 +207,7 @@ describe("review auto — DB-only mode (Phase 8-13)", () => {
         .all(runId) as { relative_path: string }[];
       const paths = rows.map((r) => r.relative_path);
       // the reviewer's own log is now a DB-canonical artifact
-      expect(paths).toContain("reviewer-agent.out.log");
+      expect(paths).toContain("reviewers/codex-reviewer/reviewer-agent.out.log");
     } finally {
       db.close();
     }
@@ -233,15 +233,16 @@ describe("review auto — DB-only mode (Phase 8-13)", () => {
       now: new Date("2026-05-23T01:00:00Z"),
     });
     const runDir = join(runsDir, runId);
+    const reviewerDir = join(runDir, "reviewers", "codex-reviewer");
     const official = readFileSync(
-      join(runDir, "reviewer-agent.events.jsonl"),
+      join(reviewerDir, "reviewer-agent.events.jsonl"),
       "utf8",
     );
     expect(official).not.toContain(secret);
     expect(official).toContain("[redacted: secret-suspect");
-    expect(existsSync(join(runDir, ".reviewer-agent.events.raw.jsonl"))).toBe(
-      false,
-    );
+    expect(
+      existsSync(join(reviewerDir, ".reviewer-agent.events.raw.jsonl")),
+    ).toBe(false);
 
     syncRunArtifactsToDb({ dbPath, runsDir, runId });
 
@@ -251,7 +252,7 @@ describe("review auto — DB-only mode (Phase 8-13)", () => {
         .prepare(
           `SELECT count(*) AS n
              FROM artifacts
-            WHERE run_id = ? AND relative_path = '.reviewer-agent.events.raw.jsonl'`,
+            WHERE run_id = ? AND relative_path = 'reviewers/codex-reviewer/.reviewer-agent.events.raw.jsonl'`,
         )
         .get(runId) as { n: number };
       expect(rawArtifact.n).toBe(0);
@@ -259,7 +260,7 @@ describe("review auto — DB-only mode (Phase 8-13)", () => {
         .prepare(
           `SELECT blob_sha256
              FROM artifacts
-            WHERE run_id = ? AND relative_path = 'reviewer-agent.events.jsonl'`,
+            WHERE run_id = ? AND relative_path = 'reviewers/codex-reviewer/reviewer-agent.events.jsonl'`,
         )
         .get(runId) as { blob_sha256: string | null };
       expect(row.blob_sha256).not.toBeNull();
@@ -324,7 +325,7 @@ describe("review auto — DB-only mode (Phase 8-13)", () => {
         .prepare(
           `SELECT blob_sha256
              FROM artifacts
-            WHERE run_id = ? AND relative_path = 'reviewer-agent.events.jsonl'`,
+            WHERE run_id = ? AND relative_path = 'reviewers/codex-reviewer/reviewer-agent.events.jsonl'`,
         )
         .get(runId) as { blob_sha256: string | null };
       expect(row.blob_sha256).not.toBeNull();
@@ -367,7 +368,13 @@ describe("review auto — DB-only mode (Phase 8-13)", () => {
       return false;
     });
 
-    const artifactPath = join(runsDir, runId, "review-auto-error.json");
+    const artifactPath = join(
+      runsDir,
+      runId,
+      "reviewers",
+      "codex-reviewer",
+      "review-auto-error.json",
+    );
     const fileText = readFileSync(artifactPath, "utf8");
     expect(fileText).not.toContain(secret);
     const fileArtifact = JSON.parse(fileText) as {
@@ -400,7 +407,7 @@ describe("review auto — DB-only mode (Phase 8-13)", () => {
         .prepare(
           `SELECT blob_sha256
              FROM artifacts
-            WHERE run_id = ? AND relative_path = 'review-auto-error.json'`,
+            WHERE run_id = ? AND relative_path = 'reviewers/codex-reviewer/review-auto-error.json'`,
         )
         .get(runId) as { blob_sha256: string | null };
       expect(row.blob_sha256).not.toBeNull();

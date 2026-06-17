@@ -65,22 +65,25 @@ function seedProposal(
   decision: "approved" | "changes_requested" | "rejected",
   requiredChanges: string[] = [],
   reviewedAt = NOW,
-) {
+): number {
   const db = openDb(dbPath);
   const sourceYaml = `decision: ${decision}\n`;
-  new ReviewProposalRepository(db).insertProposal({
-    runId: "run-consensus",
-    reviewer,
-    decision,
-    requiredChanges,
-    nonBlockingComments: [],
-    outOfScopeSuggestions: [],
-    reviewedAt,
-    sourceYaml,
-    sourceSha256: createHash("sha256").update(sourceYaml + reviewer).digest("hex"),
-    createdAt: reviewedAt,
-  });
-  db.close();
+  try {
+    return new ReviewProposalRepository(db).insertProposal({
+      runId: "run-consensus",
+      reviewer,
+      decision,
+      requiredChanges,
+      nonBlockingComments: [],
+      outOfScopeSuggestions: [],
+      reviewedAt,
+      sourceYaml,
+      sourceSha256: createHash("sha256").update(sourceYaml + reviewer).digest("hex"),
+      createdAt: reviewedAt,
+    }).proposalId;
+  } finally {
+    db.close();
+  }
 }
 
 async function runProcess(dbPath: string, runsDir: string, root: string) {
@@ -98,6 +101,35 @@ function runStatus(dbPath: string): string {
   const row = db.prepare("SELECT status FROM runs WHERE run_id = 'run-consensus'").get() as { status: string };
   db.close();
   return row.status;
+}
+
+function consensusSnapshot(dbPath: string): {
+  sourceProposalIds: number[];
+  summaryProposalReviewers: Array<string | null>;
+  requiredChanges: string[];
+} {
+  const db = openDb(dbPath);
+  try {
+    const consensus = new ReviewConsensusRepository(db).findActive("run-consensus");
+    const requiredChanges = db
+      .prepare(
+        `SELECT change_text FROM review_required_changes
+          WHERE run_id = 'run-consensus'
+          ORDER BY idx ASC`,
+      )
+      .all() as { change_text: string }[];
+    return {
+      sourceProposalIds: JSON.parse(consensus!.sourceProposalsJson) as number[],
+      summaryProposalReviewers: (
+        JSON.parse(consensus!.summaryJson) as {
+          proposals: Array<{ reviewerId: string | null }>;
+        }
+      ).proposals.map((p) => p.reviewerId),
+      requiredChanges: requiredChanges.map((r) => r.change_text),
+    };
+  } finally {
+    db.close();
+  }
 }
 
 describe("review process — consensus mode gating (Phase 2)", () => {
@@ -169,5 +201,48 @@ describe("review process — consensus mode gating (Phase 2)", () => {
     const result = await runProcess(dbPath, runsDir, root);
     expect(result.newStatus).toBe("changes_requested");
     expect(runStatus(dbPath)).toBe("changes_requested");
+  });
+
+  it("aggregates proposals, source ids, and required changes by reviewer_id then proposal_id", async () => {
+    const first = setup();
+    const firstBobId = seedProposal(
+      first.dbPath,
+      "bob",
+      "changes_requested",
+      ["fix bob"],
+    );
+    const firstAliceId = seedProposal(
+      first.dbPath,
+      "alice",
+      "changes_requested",
+      ["fix alice"],
+    );
+    await runProcess(first.dbPath, first.runsDir, first.root);
+
+    const second = setup();
+    const secondAliceId = seedProposal(
+      second.dbPath,
+      "alice",
+      "changes_requested",
+      ["fix alice"],
+    );
+    const secondBobId = seedProposal(
+      second.dbPath,
+      "bob",
+      "changes_requested",
+      ["fix bob"],
+    );
+    await runProcess(second.dbPath, second.runsDir, second.root);
+
+    expect(consensusSnapshot(first.dbPath)).toEqual({
+      summaryProposalReviewers: ["alice", "bob"],
+      sourceProposalIds: [firstAliceId, firstBobId],
+      requiredChanges: ["fix alice", "fix bob"],
+    });
+    expect(consensusSnapshot(second.dbPath)).toEqual({
+      summaryProposalReviewers: ["alice", "bob"],
+      sourceProposalIds: [secondAliceId, secondBobId],
+      requiredChanges: ["fix alice", "fix bob"],
+    });
   });
 });

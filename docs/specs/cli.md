@@ -1448,7 +1448,7 @@ run-20260521-apps-orders-root  changes_requested
 
 ## `harness review auto`
 
-reviewer agent。codex を **read-only sandbox** で呼び、run artifacts を読ませて `review-decision.yaml` を機械生成する。
+reviewer agent。codex を **read-only sandbox** で呼び、run artifacts を読ませて review proposal / `review-decision.yaml` を機械生成する。
 
 ### Synopsis
 
@@ -1461,25 +1461,27 @@ harness review auto --run-id <id> [--reviewer-name <name>] [--allow-overwrite] [
 | Option | Required | 説明 |
 |--------|:--------:|------|
 | `--run-id <id>` | ✅ | 対象 run（`needs_review` 状態） |
-| `--reviewer-name <name>` | — | `review-decision.yaml.reviewer` に刻む名前（default `codex-reviewer`） |
-| `--allow-overwrite` | — | `review-decision.yaml` が既に非 `pending`（人間 or 過去の agent verdict）でも上書きする |
+| `--reviewer-name <name>` | — | proposal / `review-decision.yaml.reviewer` に刻む path-safe reviewer id（default `codex-reviewer`） |
+| `--allow-overwrite` | — | active DB proposal または `review-decision.yaml` が既に非 `pending`（人間 or 過去の agent verdict）でも置き換える |
 | `--dry-run` | — | codex を呼んで output を検証するが `review-decision.yaml` は **書かない** |
 
 ### 動作
 
 1. `review-decision.yaml` を読む。非 `pending` decision が入っていて `--allow-overwrite` 未指定なら **codex を呼ぶ前に** reject（人間/過去 agent の verdict 保護）
-2. `runs/<runId>/` を cwd に、`sandbox=read-only` で codex を起動
-3. codex は `review-request.md` / `summary.md` / `final-diff.patch` / `untracked-*` / command logs を読み、fenced YAML block を出力
-4. codex 実行前後で run dir のファイル (size + mtime) を snapshot 比較し、`reviewer-agent.*.log` / `review-auto-error.json` 以外が変化していたら reject（read-only sandbox の二重防御）
-5. YAML を strict にパース（不明 decision / 非 string entry / `changes_requested` で `required_changes` 空 → 全て output error）
-6. `--dry-run` 未指定なら `review-decision.yaml` を上書き、stale な `review-auto-error.json` を削除
+2. reviewer id を path-safe（`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`、`..` 不可）として検証し、**run dir の外**（`os.tmpdir()` 下の使い捨て dir）に reviewer 用の read-only 入力コピーを作る（許可入力＝`REVIEWER_INPUT_FILES` ＋ `commands/` のみ。**symlink は fail-closed で copy しない**）。この cwd は run 後に削除する（P1-ISO の working-tree 非露出）
+3. その OS-temp dir を cwd に、`sandbox=read-only` で codex を起動（cwd が run dir 配下でないため、先行 reviewer の verdict は短い `..` で届かない）
+4. codex は `review-request.md` / `summary.md` / `final-diff.patch` / `untracked-*` / command logs を読み、fenced YAML block を出力
+5. codex 実行前後で run dir のファイル (size + mtime) を snapshot 比較し、3 つの codex ログ（root の `reviewer-agent.out.log` / `reviewer-agent.err.log` / `.reviewer-agent.events.raw.jsonl`、または `reviewers/<reviewer_id>/<同名>` の **exact 一致のみ**）以外が変化していたら reject（reviewer prefix ツリー全体は exempt しない＝誤設定 runner が `reviewers/<id>/` に作る非ログファイルも tamper 検知。read-only sandbox の二重防御）
+6. YAML を strict にパース（不明 decision / 非 string entry / `changes_requested` で `required_changes` 空 → 全て output error）
+7. `--dry-run` 未指定なら DB-backed run では `review_proposals` に proposal を記録し、`reviewers/<reviewer_id>/review-decision.yaml` を書く。DB がない legacy run では root `review-decision.yaml` も互換 sidecar として書く。stale な scoped `review-auto-error.json` は削除する
 
-**`harness review auto` は status を遷移させない。** 生成された `review-decision.yaml` を人間が確認し、`harness review process` で適用する 2 段構成。
+**`harness review auto` は status を遷移させない。** 生成された review proposal /
+`review-decision.yaml` を人間が確認し、`harness review process` で適用する 2 段構成。
 
 ### 保証範囲（review auto が守ること）
 
-- **review-decision.yaml を壊さない**: codex output が invalid（prose-only / malformed YAML / 不明 decision 等）の場合、`review-decision.yaml` は一切触らない。検証は parse → strict schema の順で、書き込みは検証通過後のみ
-- **read-only**: codex は read-only sandbox。さらに run dir の全ファイルを snapshot し、`reviewer-agent.*.log` / `review-auto-error.json` 以外が変化したら reject（sandbox 誤設定の二重防御）
+- **review-decision.yaml を壊さない**: codex output が invalid（prose-only / malformed YAML / 不明 decision 等）の場合、root `review-decision.yaml` も scoped `reviewers/<reviewer_id>/review-decision.yaml` も触らない。検証は parse → strict schema の順で、書き込みは検証通過後のみ
+- **read-only**: codex は read-only sandbox。さらに run dir の全ファイルを snapshot し、legacy root の reviewer output 3 ファイルと当該 reviewer prefix 以外が変化したら reject（sandbox 誤設定の二重防御）
 - **status を変えない**: meta.json の status 遷移は `review process` のみが行う
 - **冪等でない上書き保護**: 非 `pending` decision は `--allow-overwrite` なしには上書きされない
 
@@ -1488,8 +1490,8 @@ harness review auto --run-id <id> [--reviewer-name <name>] [--allow-overwrite] [
 codex output が invalid だった場合:
 
 - `review-decision.yaml` は変更しない
-- `runs/<runId>/review-auto-error.json` に構造化エラー（reason / rawOutputPath / codexExitCode / timedOut）を書き出す（`--dry-run` 時は書かない）
-- `reviewer-agent.out.log` / `err.log` は codex の生 output として残る
+- `runs/<runId>/reviewers/<reviewer_id>/review-auto-error.json` に構造化エラー（reason / rawOutputPath / codexExitCode / timedOut）を書き出す（`--dry-run` 時は書かない）
+- `runs/<runId>/reviewers/<reviewer_id>/reviewer-agent.out.log` / `err.log` は codex の生 output として残る
 - exit 1
 
 ### 検証状況・限界
@@ -1500,8 +1502,8 @@ codex output が invalid だった場合:
 
 ### Exit code
 
-- `0`: review-decision.yaml 生成成功（`--dry-run` 時は検証成功）
-- `1`: invalid runId / status != needs_review / 非 `pending` decision を `--allow-overwrite` なしで上書き試行 / codex 非ゼロ or timeout / YAML パース不能 / 不明 decision / artifact 改竄検出
+- `0`: review proposal / review-decision.yaml 生成成功（`--dry-run` 時は検証成功）
+- `1`: invalid runId / unsafe reviewer id / status != needs_review / active DB proposal or 非 `pending` decision を `--allow-overwrite` なしで置き換え試行 / codex 非ゼロ or timeout / YAML パース不能 / 不明 decision / artifact 改竄検出
 - `2`: 予期しない例外
 
 ## `harness review evaluate`
