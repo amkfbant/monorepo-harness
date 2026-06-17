@@ -497,7 +497,7 @@ quorum 再実装するのは duplication で禁止。
 
 | id | title | files | depends |
 |----|-------|-------|---------|
-| P2-0 | **refute target binding data model + DSL**(P1-e): required_change に安定 target id/hash、refute output `{target_id,refute_verdict}`、harness 側 binding 決定論検証(未知 target/hash 不一致=reject)（→ 付録I.1.2/I.1.3 で `target_change_hash` / `uphold\|refute\|inconclusive` に契約確定）。**`review_refute_votes` table は #230 の v31 単独出荷により v32 で作成するが、その v32 migration は impl-roadmap SP-1 が所有（design-db §3.1）。P2-0 が足すのは binding ロジックのみ（normalizeChangeText / verifyRefuteBinding / 集約投入）＝新 migration ではない（table は SP-1 の v32 で建立済を利用）** | src/core/review-decision-schema.ts, src/core/review-rule.ts | Phase 1, v32(SP-1) |
+| P2-0 | **refute target binding data model + DSL**(P1-e): required_change に安定 target id/hash、refute output `{target_id,refute_verdict}`、harness 側 binding 決定論検証(未知 target/hash 不一致=reject)（→ 付録I.1.2/I.1.3 で `target_change_hash` / `uphold\|refute\|inconclusive` に契約確定）。**`review_refute_votes` table は #230 の v31 単独出荷により v32 で作成するが、その v32 migration は impl-roadmap SP-1 が所有（design-db §3.1）。P2-0 が足すのは binding 確定ロジックのみ（normalizeChangeText / verifyRefuteBinding）＝新 migration ではない（table は SP-1 の v32 で建立済を利用）。集約への投入（aggregation）は P2-A/P2-C の責務（§3.5 / I.1.2）で P2-0 のスコープ外** | src/core/review-decision-schema.ts, src/core/review-rule.ts | Phase 1, v32(SP-1) |
 | P2-A | refute requirement の rule 表現(DSL) + schema(`review.refute`) | src/project/schema.ts, src/core/review-rule.ts | P2-0 |
 | P2-B | refute reviewer agent variant(別 prompt, distinct registered reviewer_id) | src/core/refute-agent.ts(新) or reviewer-agent.ts flag | P2-A |
 | P2-C | refute 票を `evaluateConsensus` の決定論集約に通す(target-bound 第2 requirement として) | src/core/review-consensus.ts | P2-0, P2-A |

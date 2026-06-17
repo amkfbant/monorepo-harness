@@ -67,7 +67,7 @@ epic #228 (AI 合議制) の sub-issue #229/#230/#231 は LLM 多体の **提案
 ## 2. 検証済みの現状 (file:line)
 
 ### 2.1 migration 機構
-- `src/db/schema.ts:21` `SCHEMA_VERSION = 30`。`src/db/migrations.ts:202` `LATEST_SCHEMA_VERSION = SCHEMA_VERSION`。
+- **現状 baseline（v0.7.15 = #230 出荷後）**: `src/db/schema.ts` `SCHEMA_VERSION = 31`、`src/db/migrations.ts` `LATEST_SCHEMA_VERSION = SCHEMA_VERSION`（migration head = v31）。本ノート初稿時は v30 だったが、#230 出荷で 31 に進んだ。**SP-1 の migration 実装/テストは開始 schema を v31 とする**（v30 ではない）。file:line（schema.ts:21 等）は版で動くので、**着手時の HEAD で再取得**すること。
 - `migrations.ts:45-49` `interface Migration = { version; name; statements: readonly string[] }`。**v31 は #230 が出荷済**（`MIGRATIONS` 末尾 = `{ version: 31, ... }`、`SCHEMA_VERSION=31`。出荷済み statements は不可侵＝書き換えない）。**#229/#231 は同手順を新版で行う**: `MIGRATIONS` 配列末尾に `{ version: 32, name, statements: MIGRATION_V32_STATEMENTS }`（#229 `review_refute_votes`）/ `{ version: 33, ... }`（#231 phases ALTER）を append し `SCHEMA_VERSION` を bump（`LATEST_SCHEMA_VERSION = SCHEMA_VERSION` なので 1 箇所）。
 - `runMigrations`: per-migration IMMEDIATE txn + in-txn 再チェックで idempotent・concurrency-safe。
 - `schema.ts` 末尾 `ALL_TABLE_NAMES` は `Vxx_TABLE_NAMES` の**手動 union**。**新テーブルを作る版だけ** `Vxx_TABLE_NAMES` 定数を新設し union に append（**v32=#229 は `V32_TABLE_NAMES`（`review_refute_votes`）を新設**。**v33=#231 は phases ALTER のみ＝新 table 名なし＝table-name 登録不要**）。`DROPPED_TABLE_NAMES` も維持（drop 無し）。
@@ -223,6 +223,8 @@ CREATE INDEX review_refute_votes_target_idx ON review_refute_votes(run_id, targe
 
 ### 3.2 #230 — classification jury / severity audit / decision packet
 
+> **非 canonical 注記（重要）**: 本節の jury DDL（`jury_classification_proposals` / `jury_severity_audits`。`jury_classification_refutations` は §3③ の通り本ノートに DDL 重複掲載しないが同じく対象）は **#230 設計時のスケッチ**であり、**shipped v31 とは差異がある**（実 schema は unique key に `deliberation_id` を含む・`round` 列・`jury_votes_json` 等を持つ）。**実装/テストの canonical は [`docs/specs/db.md`](../../specs/db.md)（出荷済 v31）と design-230 を正とする**。本節は #229/#231 設計の文脈用であり、repository/doctor テストの基準に使ってはならない（非互換な v31 layout を狙う恐れがある）。
+
 | アーティファクト | 決定 | storage | 理由 |
 |---|---|---|---|
 | (a) jury 分類提案 (3 lens) | **新 table `jury_classification_proposals` (v31)** | DB-only、1行/(finding,lens,reviewer) | 決定論集約は GROUP BY lens が要る。free JSON では引けない (Lens 2/3/5 一致) |
@@ -343,7 +345,7 @@ interface HitchDecisionPacket {
   - **repair の DELETE は破壊的なので default dry-run + operator 明示承認の後ろに gate** (fail-closed)。auto-DELETE しない。
 - **FK を張らない理由 (P1-1)**: `openDb` は `foreign_keys = ON`(connection.ts:44)。親 FK + `ON DELETE` 無しだと親削除が FK で**失敗**し「orphan として残す」が成立しない。かつ import reset の legacy-file `runs` 削除(import-files.ts:114)が詰まる。よって `run_id`/`hitch_id`/`finding_id` を FK にせず advisory ID とし、doctor で orphan を検出する（監査 append-only と両立）。
 - **backup**: `db.backup()` フル snapshot で自動包含 (§2.6)。table 列挙不要。**retention/容量上限は follow-up** (jury votes × lens × findings で増大、§9)。
-- **ALL_TABLE_NAMES に `V31_TABLE_NAMES` を追加** (`review_refute_votes`, `jury_classification_proposals`, `jury_severity_audits`)。union (schema.ts:1894) に `...V31_TABLE_NAMES` を append。phases への列追加 (`review_state_version`) は table 名を変えないので V31_TABLE_NAMES には載らない（ALTER のみ）。
+- **ALL_TABLE_NAMES への登録（逐次・改訂）**: v31=#230 の jury 3表（`jury_classification_proposals` / `jury_classification_refutations` / `jury_severity_audits`）は `V31_TABLE_NAMES` で**出荷済登録**。**#229 の `review_refute_votes` は v32 で `V32_TABLE_NAMES` を新設**して union に append。**#231 の `review_state_version` は phases への ALTER のみ＝table 名を変えないので table-name 登録不要**（v33）。
 
 ### 3.5 provenance / 判断ログ モデル (run_usage 一貫)
 
@@ -373,12 +375,12 @@ interface HitchDecisionPacket {
 
 | 不可侵境界 | DB 設計での守り方 | 該当 |
 |---|---|---|
-| LLM 出力 ≠ 状態遷移の権威 | refute/jury/severity は append-only **提案/監査テーブル** (§3.0②)。verdict/confidence 列はゲートの**入力**。状態遷移は `evaluateConsensus`/`aggregateJuryVotes`/`processReviewDecision`/convergence の決定論ゲートのみ | 全 v31 表 |
+| LLM 出力 ≠ 状態遷移の権威 | refute/jury/severity は append-only **提案/監査テーブル** (§3.0②)。verdict/confidence 列はゲートの**入力**。状態遷移は `evaluateConsensus`/`aggregateJuryVotes`/`processReviewDecision`/convergence の決定論ゲートのみ | v31(#230 jury 3表・出荷済) / v32(#229 refute) / v33(#231 phases ALTER) 全表 |
 | severity 自動降格禁止 | `jury_severity_audits` は **advisory-only**。`enforcement_mode` 列を**作らない**。固定 mapping (review-integration.ts:291/310/330) authoritative。escalate_flag は packet に積むだけ (CHECK IN (0,1)) | jury_severity_audits |
 | 状態遷移は harness のみ | LLM 出力列 → 状態テーブルへの直接 UPDATE 経路を作らない。提案表と decision/consensus 表を物理分離 | 全表 |
 | 蓄積行が権威にならない | confidence は float gate にしない (design-230:187、CHECK 0..1 は範囲健全性のみ)。refute_verdict は決定論集約に通す入力 | refute/jury |
 | provenance/再現性 | footprint (prompt_sha256/template_version/model/lineage/usage_kind+seq) を全行に。判断ログのみ・会話全文残さない | §3.5 |
-| migration additive・後方互換 | v31 は CREATE TABLE/INDEX + phases に 1 列 additive(DEFAULT 0) + 既存列 additive JSON のみ。DROP/RENAME/列削除無し。**FK 一切無し** (orphan/import 詰まり回避) | §3.1-3.3 |
+| migration additive・後方互換 | 全版 additive: v31(#230 jury 3表・出荷済) = CREATE TABLE/INDEX / v32(#229) = `review_refute_votes` CREATE TABLE/INDEX / v33(#231) = phases に 1 列 additive(DEFAULT 0)。既存列 additive JSON のみ。DROP/RENAME/列削除無し。**FK 一切無し** (orphan/import 詰まり回避) | §3.1-3.3 |
 | 人間批准 state の lost-update 防止 | `recordSpecApproval`/`updateReviewState` は txn().immediate() + `review_state_version` CAS で他 key/同時 approval を保護 | §3.3 (P1-3) |
 | 迷ったら fail-closed | refute hash 不一致=reject (design-229:370)。doctor DELETE repair は dry-run + operator 承認 gate。jury split→escalate (auto-confirm しない)。CAS 競合→リトライ/エラー(後勝ち禁止) | §3.4 |
 
