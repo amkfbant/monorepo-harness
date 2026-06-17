@@ -214,6 +214,16 @@ export function compileProfileReviewRule(profile: {
       "consensus mode requires at least one requirement",
     );
   }
+  // fail-closed: requirements are only evaluated in consensus mode. A profile
+  // that declares requirements but leaves mode at its latest-proposal default
+  // would silently drop the intended quorum/multi-reviewer gate (codex SP-10).
+  if (mode !== "consensus" && requirements.length > 0) {
+    throw new ReviewRuleCompileError(
+      `review.requirements is set but review.mode is "${mode}"; requirements ` +
+        `are only evaluated in consensus mode — set mode: consensus explicitly ` +
+        `(a missing mode defaults to latest-proposal and would drop the gate)`,
+    );
+  }
 
   return {
     mode,

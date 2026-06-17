@@ -33,6 +33,40 @@ describe("compileProfileReviewRule", () => {
     ).toThrow(/consensus mode requires at least one requirement/);
   });
 
+  it("throws when requirements are declared but mode is not consensus (fail-closed, no silent gate drop)", () => {
+    // mode omitted → defaults to latest-proposal; requirements would be
+    // snapshotted then ignored at runtime, silently dropping the quorum gate.
+    expect(() =>
+      compileProfileReviewRule(
+        profile({
+          requirements: [
+            {
+              group: "reviewers",
+              min_approvals: 2,
+              blocking_decisions: ["changes_requested"],
+              reviewer_ids: ["alice", "bob"],
+              lens_axes: ["correctness", "scope_fit"],
+            },
+          ],
+        }),
+      ),
+    ).toThrow(ReviewRuleCompileError);
+    expect(() =>
+      compileProfileReviewRule(
+        profile({
+          mode: "latest-proposal",
+          requirements: [
+            {
+              group: "reviewers",
+              min_approvals: 1,
+              blocking_decisions: ["changes_requested"],
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/requirements is set but review\.mode is "latest-proposal"/);
+  });
+
   it("throws a typed error for invalid semantic values passed directly", () => {
     expect(() =>
       compileProfileReviewRule({

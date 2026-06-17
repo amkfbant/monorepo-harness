@@ -85,6 +85,37 @@ describe("ReviewRulesRepository (Phase 11-3)", () => {
     }
   });
 
+  it("upsertRuleTemplate does not reuse a row across different sources (preserves provenance)", () => {
+    const db = freshDb();
+    try {
+      const repo = new ReviewRulesRepository(db);
+      // Same canonical rule (DEFAULT) but distinct provenance: a project-profile
+      // run that compiles to the default rule must not inherit a default-sourced
+      // template row (codex SP-10 P2).
+      const def = repo.upsertRuleTemplate({
+        projectId: "mini",
+        source: "default",
+        rule: DEFAULT_REVIEW_RULE,
+      });
+      const profile = repo.upsertRuleTemplate({
+        projectId: "mini",
+        source: "project-profile",
+        rule: DEFAULT_REVIEW_RULE,
+      });
+      expect(profile.ruleId).not.toBe(def.ruleId);
+      expect(profile.source).toBe("project-profile");
+      // re-upsert with the same source still reuses
+      const profile2 = repo.upsertRuleTemplate({
+        projectId: "mini",
+        source: "project-profile",
+        rule: DEFAULT_REVIEW_RULE,
+      });
+      expect(profile2.ruleId).toBe(profile.ruleId);
+    } finally {
+      db.close();
+    }
+  });
+
   it("upsertRuleTemplate inserts a new version when the rule changes within the same scope", () => {
     const db = freshDb();
     try {

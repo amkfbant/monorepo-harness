@@ -115,7 +115,10 @@ domains:
 - `review` は任意。欠落時は `DEFAULT_REVIEW_RULE`（`latest-proposal`）へ解決される。
   存在する場合は snake_case YAML を `ReviewRule` の camelCase 形へ compile し、
   run 作成時に `run_review_rule_snapshots` へ凍結する。`mode: consensus` で
-  `requirements` が空、`min_approvals < 1`、`quorum.min_participants < 1`、
+  `requirements` が空、`requirements` を宣言したのに `mode` が `consensus` でない
+  （`mode` 欠落時の既定 `latest-proposal` を含む。requirements は consensus mode で
+  のみ評価されるため、放置すると意図した quorum/multi-reviewer gate を静かに落とす）、
+  `min_approvals < 1`、`quorum.min_participants < 1`、
   複数 reviewer を要求する requirement の `reviewer_ids` / `lens_axes` 欠落、
   `reviewer_ids` の重複や `max_reviewers` 超過は `ReviewRuleCompileError` で
   fail-closed になり、DEFAULT へ降格しない。
