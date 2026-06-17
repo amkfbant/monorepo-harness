@@ -333,7 +333,7 @@ interface HitchDecisionPacket {
 ```jsonc
 // phases.review_state_json (read-modify-write で他 key 保全)
 { "specApproval": { "approvedBy": "<actor>", "approvedAt": "<ISO>",
-                    "reason": "<text>", "specHash": "sha256(canonical(scope)+canonical(close))" } }
+                    "reason": "<text>", "specHash": "sha256(canonicalJson([scope, closeConditions]))" } }
 ```
 - **書き込み経路の追加（migration 必要 — 軽微 additive 列）**: `review_state_json` の lost-update を防ぐため、phases に **`review_state_version INTEGER NOT NULL DEFAULT 0`** を **v33（#231 専用 migration。v31 は #230 排他）** で additive 追加（P1-3）。`phase-repository.ts` に下記を新設:
   - `updateReviewState(phaseId, mutator)`: `db.transaction(...).immediate()` 内で `SELECT review_state_json, review_state_version` → mutator で merge → `UPDATE phases SET review_state_json=?, review_state_version=review_state_version+1, updated_at=? WHERE phase_id=? AND review_state_version=?` の **CAS**。`changes===0` なら再読込してリトライ（最大 N 回）か `LeaseGuardFailedError` 同様の競合エラー。read-modify-write は他 key を保全。

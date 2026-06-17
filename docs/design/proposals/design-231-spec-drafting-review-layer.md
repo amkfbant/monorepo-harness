@@ -180,7 +180,7 @@ phase(fail-open を閉じる中核):
       "approvedBy": "<actor>",
       "approvedAt": "<ISO-8601>",
       "reason": "<text?>",
-      "specHash": "<sha256 of canonical(scope_json)+canonical(close_conditions_json)>"
+      "specHash": "<sha256 of canonicalJson([scope, closeConditions]) tuple>"
     }
   }
   ```
