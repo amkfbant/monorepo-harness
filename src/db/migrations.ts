@@ -32,6 +32,8 @@ import {
   MIGRATION_V29_STATEMENTS,
   MIGRATION_V30_STATEMENTS,
   MIGRATION_V31_STATEMENTS,
+  MIGRATION_V32_STATEMENTS,
+  MIGRATION_V33_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -201,6 +203,16 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 31,
     name: "epic228_deliberation_v31",
     statements: MIGRATION_V31_STATEMENTS,
+  },
+  {
+    version: 32,
+    name: "epic228_review_refute_votes_v32",
+    statements: MIGRATION_V32_STATEMENTS,
+  },
+  {
+    version: 33,
+    name: "epic228_phase_review_state_version_v33",
+    statements: MIGRATION_V33_STATEMENTS,
   },
 ];
 

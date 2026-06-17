@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V31_STATEMENTS`、
-> `SCHEMA_VERSION = 31`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V33_STATEMENTS`、
+> `SCHEMA_VERSION = 33`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -720,7 +720,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 31`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 33`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -752,6 +752,8 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 29 | course-ext G4 | `hitch_lifecycle_events.event` CHECK を rebuild で拡張し `pr_adopted` / `updated` を許容（v23 の FK/NOT NULL/index は維持） |
 | 30 | token-usage G1 | `run_usage` を `(run_id, kind, seq)` primary key へ再作成。既存行は `kind='coder', seq=0` で移行し、snapshot payload schema は 2 |
 | 31 | epic #228 / #230 deliberation jury A1 | `jury_classification_proposals` / `jury_classification_refutations` / `jury_severity_audits`（合議制 classification jury の append-only 監査入力表。FK ゼロ・business-key に `deliberation_id` を含む。詳細は下記「schema v31」） |
+| 32 | epic #228 / #229 refute votes | `review_refute_votes`（refute consensus の append-only 監査入力表。FK ゼロ・DB-only・partial UNIQUE。詳細は下記「schema v32/v33」） |
+| 33 | epic #228 / #231 phase review-state CAS | `phases.review_state_version INTEGER NOT NULL DEFAULT 0`（`review_state_json` の将来 CAS 書込用 additive 列。新規 table 無し） |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -1446,3 +1448,112 @@ migration を走らせない）で `no such table` crash を起こさないた�
 残り、空になるのは fresh DB のみ。FK が無いので親 finding を DELETE しても constraint
 error にならず、audit 行は orphan として残る（doctor が報告）。SQLite フル snapshot
 backup は全表を自動包含する。
+
+## epic #228 / #229 #231 sequential migrations（schema v32 / v33）
+
+schema v31 は #230 jury 3 表として出荷済みであり、後続の #229 / #231 は
+**v31 を変更しない**。#229 の refute vote audit は schema v32、#231 の
+phase review-state CAS 用 version 列は schema v33 として逐次適用する。
+
+### v32 `review_refute_votes`
+
+`review_refute_votes` は refute consensus の LLM 出力を保存する **append-only
+監査入力表**。この表自体は状態遷移を駆動しない。後続の決定論 gate が
+`validation_status='passed'` かつ `refute_verdict IN ('uphold','refute')` の
+行だけを入力として扱う。
+
+backbone 準拠:
+
+- **FK ゼロ**: `run_id` / `hitch_id` / `finding_id` / `reviewer_id` は advisory
+  provenance ID であり、`FOREIGN KEY` は一切宣言しない。import reset や親 purge
+  で FK error を起こさず、監査行は doctor の orphan / hitch mismatch check へ残す。
+- **target binding**: `target_change_hash` は app 層が事前計算する
+  `sha256(normalizeChangeText(change_text))`。repository は SP-2 以降で
+  precomputed hash を保存するだけで、schema migration は hash 関数を持たない。
+- **provenance footprint**: `model` / `prompt_sha256` /
+  `prompt_provenance_json` / `usage_kind` / `usage_seq` を持ち、`run_usage` とは
+  `(run_id, usage_kind, usage_seq)` で相関できる（FK は張らない）。
+- **DB-only**: `import-files.ts` の reset list には追加しない。既存 DB の
+  `review_refute_votes` 行は `db import --from-files` 後も残り、空になるのは
+  fresh DB の場合のみ。SQLite backup はファイル snapshot なので自動包含する。
+- **table-name manifest**: `V32_TABLE_NAMES = ['review_refute_votes']` を
+  `ALL_TABLE_NAMES` union に追加する。v33 は ALTER のみなので table-name 登録しない。
+
+DDL の現行形:
+
+```sql
+CREATE TABLE review_refute_votes (
+  refute_id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id                TEXT NOT NULL,
+  hitch_id              TEXT,
+  target_change_hash    TEXT NOT NULL,
+  target_change_idx     INTEGER,
+  finding_id            TEXT,
+  reviewer_id           TEXT NOT NULL,
+  refute_verdict        TEXT
+    CHECK (refute_verdict IS NULL OR refute_verdict IN ('uphold','refute','inconclusive')),
+  confidence            REAL CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1),
+  reasoning             TEXT,
+  refute_reason         TEXT,
+  counter_evidence_kind TEXT
+    CHECK (counter_evidence_kind IS NULL OR counter_evidence_kind IN ('diff','test','none')),
+  counter_evidence_ref  TEXT,
+  refute_condition      TEXT,
+  retract_condition     TEXT,
+  model                 TEXT,
+  prompt_sha256         TEXT NOT NULL,
+  prompt_provenance_json TEXT,
+  usage_kind            TEXT,
+  usage_seq             INTEGER,
+  source_yaml           TEXT NOT NULL DEFAULT '',
+  source_sha256         TEXT NOT NULL,
+  validation_status     TEXT NOT NULL DEFAULT 'rejected'
+    CHECK (validation_status IN ('passed','rejected')),
+  reject_reason         TEXT,
+  created_at            TEXT NOT NULL,
+  CHECK (validation_status = 'passed' OR (reject_reason IS NOT NULL AND reject_reason <> '')),
+  CHECK (validation_status <> 'passed' OR refute_verdict IS NOT NULL),
+  CHECK (validation_status <> 'passed' OR refute_verdict <> 'refute' OR (
+    refute_reason IS NOT NULL AND refute_reason <> ''
+    AND counter_evidence_kind IS NOT NULL
+    AND counter_evidence_kind IN ('diff','test')
+    AND counter_evidence_ref IS NOT NULL AND counter_evidence_ref <> ''
+    AND refute_condition IS NOT NULL AND refute_condition <> ''
+    AND retract_condition IS NOT NULL AND retract_condition <> ''
+  ))
+);
+CREATE UNIQUE INDEX review_refute_votes_passed_idx
+  ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256)
+  WHERE validation_status = 'passed' AND refute_verdict IN ('uphold','refute');
+CREATE UNIQUE INDEX review_refute_votes_inconclusive_idx
+  ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256)
+  WHERE validation_status = 'passed' AND refute_verdict = 'inconclusive';
+CREATE UNIQUE INDEX review_refute_votes_rejected_idx
+  ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256, source_sha256)
+  WHERE validation_status = 'rejected';
+CREATE INDEX review_refute_votes_run_idx ON review_refute_votes(run_id, created_at);
+CREATE INDEX review_refute_votes_target_idx ON review_refute_votes(run_id, target_change_hash);
+CREATE INDEX review_refute_votes_finding_idx ON review_refute_votes(finding_id, created_at);
+CREATE INDEX review_refute_votes_hitch_idx ON review_refute_votes(hitch_id, finding_id);
+```
+
+`validation_status='rejected'` は必ず `reject_reason` を持つ。`passed` は必ず
+`refute_verdict` を持つ。`passed` かつ `refute_verdict='refute'` の行だけは
+反証 DSL の構造化フィールド（reason / diff or test evidence / refute condition /
+retract condition）を必須にする。`uphold` / `inconclusive` は降格を駆動しないため、
+counter evidence なしでも `passed` にできる。
+
+### v33 `phases.review_state_version`
+
+schema v33 は新規 table を作らず、既存 `phases` に次の additive column だけを追加する。
+
+```sql
+ALTER TABLE phases
+  ADD COLUMN review_state_version INTEGER NOT NULL DEFAULT 0;
+```
+
+既存 phase 行は `review_state_version=0` で移行する。SP-3 以降の
+`updateReviewState()` / `recordSpecApproval()` はこの列を optimistic lock として使い、
+`review_state_json` の read-modify-write が operator note や spec approval の別 key を
+lost-update しないようにする。v33 は table identity を変えないため `ALL_TABLE_NAMES`
+には何も追加しない。
