@@ -143,6 +143,35 @@ describe("review process — consensus mode gating (Phase 2)", () => {
     expect(runStatus(dbPath)).toBe("needs_review");
   });
 
+  it("filters consensus evaluation to the frozen reviewer_ids set", async () => {
+    const rule = consensusRule();
+    rule.requirements[0] = {
+      ...rule.requirements[0]!,
+      reviewerIds: ["alice", "bob"],
+    };
+    const { root, runsDir, dbPath } = setup(rule);
+    {
+      const db = openDb(dbPath);
+      try {
+        new ReviewerRepository(db).add({
+          reviewerId: "eve",
+          reviewerType: "human",
+          displayName: "Eve",
+          groupId: "humans",
+        });
+      } finally {
+        db.close();
+      }
+    }
+    seedProposal(dbPath, "alice", "approved");
+    seedProposal(dbPath, "eve", "approved");
+
+    await expect(runProcess(dbPath, runsDir, root)).rejects.toBeInstanceOf(
+      ReviewGateError,
+    );
+    expect(runStatus(dbPath)).toBe("needs_review");
+  });
+
   it("promotes to approved once quorum + approvals are satisfied", async () => {
     const { root, runsDir, dbPath } = setup();
     seedProposal(dbPath, "alice", "approved");

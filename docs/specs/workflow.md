@@ -970,15 +970,27 @@ Phase 2 で consensus mode が実フローに接続された（`src/core/consens
 
 - **`review process`**: run の rule snapshot が `mode: consensus` の場合、単一
   proposal ではなく **全 active proposal**（reviewers registry で group / type を
-  enrich）から `evaluateConsensus` を実行する（`processConsensusModePath`）。結果が
-  `pending` なら **promote せず fail-closed**（`ReviewGateError`）。decisive
+  enrich）から `evaluateConsensus` を実行する（`processConsensusModePath`）。rule
+  snapshot に explicit `reviewer_ids` がある場合は、その frozen reviewer set の proposal
+  だけを評価対象にする。結果が `pending` なら **promote せず fail-closed**
+  （`ConsensusPendingReviewGateError`）。decisive
   （approved / changes_requested / rejected）なら consensus 由来の decision で run を
   promote し、consensus row を実 proposal から記録、集計対象 proposal を processed に
   する。`mode: latest-proposal`（既定）は従来の単一 proposal 経路のまま。
 - **`review auto`**: proposal insert 後、consensus mode なら全 active proposal で
-  consensus を再評価し `review_consensus` に（pending を含めて）記録する。これにより
-  multi-reviewer consensus と stall 用の timeline が蓄積される（best-effort: 記録失敗は
-  insert を巻き戻さない）。
+  consensus を再評価し `review_consensus` に（pending を含めて）記録する。この再評価も
+  frozen reviewer set filter を共有し、status guard + snapshot 読込 + filter + insert を
+  1 つの immediate transaction で行う。これにより multi-reviewer consensus と stall 用の
+  timeline が蓄積される。
+- **`hitch orchestrate` review step**: consensus mode では dispatch 前 preflight で
+  frozen `reviewer_ids` の存在・登録・group 一致・必要 reviewer 数を検証し、旧 active
+  proposal を frozen reviewer ごとに `superseded_at` で retire してから、reviewer を
+  逐次 dispatch する。clean な reviewer failure（timeout / non-zero / parse-invalid output）
+  は non-participant として扱い、他 reviewer の dispatch は続行する。artifact tamper や
+  判別不能な gate error は cycle を abort する。dispatch 後に consensus が pending の
+  場合は run を promote せず review cycle を記録し、`review_consensus` pending snapshot を
+  追加して `evaluateConsensusStallForHitch` に渡す。stall 未満は `pending` として次回
+  review に進み、stall 到達時だけ harness が deterministic に hitch を escalated へ倒す。
 
 > 既定の rule は `latest-proposal`（`profile.review` 欠落時の `resolveEffectiveRule`）
 > なので、上記 consensus 経路は profile が consensus mode を宣言したときのみ作動する。
@@ -994,7 +1006,7 @@ review → consensus → `run.status` の全経路は「**LLM の出力は入力
 |---|---|---|---|
 | **(1) 提案（入力）** | LLM reviewer（codex agent） | proposal を `review_proposals` に INSERT するだけ。`runs.status` は一切動かさない | 「review auto と review process の権限境界」 |
 | **(2) 集約** | `evaluateConsensus`（`src/core/review-consensus.ts`、純関数・決定論） | proposal の **decision ラベル**の集合濃度 quorum + 固定 tie-break（`rejected > changes_requested > approved > pending`）+ stale filter。LLM 自己申告 severity / confidence は集約入力にしない | 「Phase 2 — consensus 拡張」 |
-| **(3) 状態遷移** | `review process` の review-decision guard（`RunRepository.applyReviewDecision`、`status='needs_review'` ガード） | 現 status が `needs_review` のときだけ遷移（`WHERE status='needs_review'`）。consensus が `pending` なら **promote せず fail-closed**（`ReviewGateError`）。多数決結果を直接 `run.status` にしない | 「review process — consensus mode」 / 「state transition guard」 |
+| **(3) 状態遷移** | `review process` の review-decision guard（`RunRepository.applyReviewDecision`、`status='needs_review'` ガード） | 現 status が `needs_review` のときだけ遷移（`WHERE status='needs_review'`）。consensus が `pending` なら **promote せず fail-closed**（`ConsensusPendingReviewGateError`）。多数決結果を直接 `run.status` にしない | 「review process — consensus mode」 / 「state transition guard」 |
 
 不可侵の帰結（いずれも現状で成立）:
 
@@ -1005,12 +1017,12 @@ review → consensus → `run.status` の全経路は「**LLM の出力は入力
 - **artifact tamper は fail-closed**（`verifyArtifactsUnchanged` → `ReviewerAgentGateError`）。
 - 迷ったら fail-closed（quorum 未達 / rule 不正 / timestamp 解析不能はいずれも安全側）。
 
-> **設計段階（現状仕様ではない）**: profile から `quorum > 1` consensus rule を凍結する
-> 経路は存在するが、orchestrator の N-reviewer dispatch、**異レンズ（lens）reviewer**
-> による視点多様化、**反証 verify（refute。#229 close に含めるか別 issue 切り出しかは
-> 人間批准事項＝設計 付録H2/I.3 参照）** は #229 の設計段階であり、まだ実装されていない。
-> `reviewer_ids` / `lens_axes` / `maxReviewers` は rule snapshot に保持されるが、dispatch
-> 本体は後続 phase の責務。設計は
+> **未実装 / follow-up**: hitch orchestrator は frozen `reviewer_ids` による
+> multi-reviewer consensus dispatch まで実装済みだが、**異レンズ（lens）reviewer** の
+> prompt 注入・MECE preflight、**反証 verify**（refute。#229 close に含めるか別 issue
+> 切り出しかは人間批准事項＝設計 付録H2/I.3 参照）、group 自動解決 reviewer set の
+> run-scoped 永続化は follow-up。`lens_axes` は rule snapshot に保持されるが、現時点の
+> dispatch は reviewer id の fanout であり lens prompt 多様化はしない。設計は
 > [`../design/proposals/design-229-multi-lens-consensus.md`](../design/proposals/design-229-multi-lens-consensus.md)
 > （特に付録I = lens 中核化 + 詰め残し G1〜G3 + 新規論点 C1〜C4）。これらが入っても上表 (2)(3) の
 > 決定論ゲートは**凍結契約として不変**で、lens / refute は (1) 提案（入力）の多様化に留まる。

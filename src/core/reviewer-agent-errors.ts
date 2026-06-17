@@ -3,9 +3,13 @@ import type { SanitizedGateReason } from "./gate-reason.js";
 /**
  * Why a run cannot be auto-reviewed. `already_decided` = the run was already
  * reviewed (re-orchestrate is a no-op); `run_incomplete` = the run did not
- * finish and is recoverable (#77). Undefined for other gate failures.
+ * finish and is recoverable (#77); `artifact_tampered` = the reviewer modified
+ * a run artifact and the current review cycle must abort.
  */
-export type ReviewGateKind = "already_decided" | "run_incomplete";
+export type ReviewGateKind =
+  | "already_decided"
+  | "run_incomplete"
+  | "artifact_tampered";
 
 export class ReviewerAgentGateError extends Error {
   readonly kind?: ReviewGateKind;

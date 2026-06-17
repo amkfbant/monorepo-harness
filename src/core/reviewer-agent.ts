@@ -29,16 +29,9 @@ import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
 import { assertNoLegacyRuntimeRows } from "../db/legacy-check.js";
 import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
-import { ReviewRulesRepository } from "../db/repositories/review-rules.js";
-import { ReviewConsensusRepository } from "../db/repositories/review-consensus.js";
 import {
   assertPathSafeReviewerId,
-  ReviewerRepository,
 } from "../db/repositories/reviewers.js";
-import { evaluateConsensus } from "./review-consensus.js";
-import { enrichActiveProposals } from "./consensus-enrichment.js";
-import { DEFAULT_REVIEW_RULE, ruleSha256, type ReviewRule } from "./review-rule.js";
-import type Database from "better-sqlite3";
 import { fileExportEnabled } from "../config/export-mode.js";
 import { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
 import { classifyReviewGate } from "./review-gate-classify.js";
@@ -46,6 +39,7 @@ import { buildOperationalKnowledgeReviewSection } from "./operational-knowledge.
 import { publishRedactedCodexEvents } from "../codex/events-lifecycle.js";
 import { sanitizeGateReason } from "./gate-reason.js";
 import { recordCodexUsage } from "../db/repositories/run-usage.js";
+import { recordConsensusReEvaluation } from "./review-consensus-record.js";
 
 export { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
 
@@ -176,11 +170,13 @@ async function verifyArtifactsUnchanged(
     if (!prev) {
       throw new ReviewerAgentGateError(
         `reviewer agent created unexpected file: ${name}`,
+        { kind: "artifact_tampered" },
       );
     }
     if (prev.size !== snap.size || prev.mtimeMs !== snap.mtimeMs) {
       throw new ReviewerAgentGateError(
         `reviewer agent modified run artifact: ${name}`,
+        { kind: "artifact_tampered" },
       );
     }
   }
@@ -189,6 +185,7 @@ async function verifyArtifactsUnchanged(
     if (!after.has(name)) {
       throw new ReviewerAgentGateError(
         `reviewer agent deleted run artifact: ${name}`,
+        { kind: "artifact_tampered" },
       );
     }
   }
@@ -268,6 +265,12 @@ export interface ReviewerAgentInputs {
    * being clobbered by a re-run of `review auto`.
    */
   allowOverwrite?: boolean;
+  /**
+   * Default review.auto remains a single active-proposal writer for the run.
+   * Consensus dispatch opts in so different frozen reviewers can each land one
+   * active proposal while the same-reviewer overwrite guard still applies.
+   */
+  allowParallelReviewers?: boolean;
   /**
    * Run codex and validate the output, but do NOT write
    * review-decision.yaml (or review-auto-error.json). For inspection.
@@ -563,7 +566,10 @@ export async function runReviewerAgent(
     try {
       activeDbProposal = new ReviewProposalRepository(
         probe.db,
-      ).getLatestActiveProposal(inputs.runId);
+      ).getLatestActiveProposal(
+        inputs.runId,
+        inputs.allowParallelReviewers === true ? reviewer : undefined,
+      );
       // Scope by project + repo only (both include portable, project/repo-less
       // entries). Operational knowledge is rarely domain-specific, and the
       // domain filter would exclude portable notes — so it is intentionally not
@@ -840,7 +846,11 @@ export async function runReviewerAgent(
       // timeline accumulates for stall detection and the active consensus
       // reflects every reviewer. latest-proposal mode keeps its
       // single-writer flow untouched.
-      recordConsensusReEvaluation(dbHandle.db, inputs.runId, reviewedAt);
+      recordConsensusReEvaluation(dbHandle.db, {
+        runId: inputs.runId,
+        evaluatedAt: reviewedAt,
+        evaluatedBy: "review-auto",
+      });
     } catch (e) {
       if (e instanceof ReviewerAgentGateError) {
         await writeGateErrorArtifact(e);
@@ -875,63 +885,4 @@ export async function runReviewerAgent(
     rawOutputPath: stdoutPath,
     dryRun: false,
   };
-}
-
-/**
- * Phase 2: re-evaluate consensus after a `review auto` proposal insert.
- * No-op for latest-proposal mode. Best-effort: a recording failure must not
- * unwind the just-inserted proposal (the verdict is already persisted).
- */
-function recordConsensusReEvaluation(
-  db: Database.Database,
-  runId: string,
-  evaluatedAt: string,
-): void {
-  try {
-    // The status guard + re-evaluation + insert run in ONE immediate
-    // transaction so the "skip if already promoted" check is not subject to a
-    // TOCTOU race: a concurrent `review process` that promotes the run (and
-    // writes the final consensus) cannot be superseded by a late re-eval.
-    const tx = db.transaction(() => {
-      const statusRow = db
-        .prepare("SELECT status FROM runs WHERE run_id = ?")
-        .get(runId) as { status: string } | undefined;
-      if (statusRow === undefined || statusRow.status !== "needs_review") return;
-      const snapshot = new ReviewRulesRepository(db).findSnapshotByRun(runId);
-      const rule: ReviewRule =
-        snapshot === null
-          ? DEFAULT_REVIEW_RULE
-          : (JSON.parse(snapshot.ruleJson) as ReviewRule);
-      if (rule.mode !== "consensus") return;
-      const ruleSha = snapshot?.sourceSha256 ?? ruleSha256(rule);
-      const proposals = enrichActiveProposals(
-        new ReviewProposalRepository(db),
-        new ReviewerRepository(db),
-        runId,
-      );
-      const result = evaluateConsensus({
-        rule,
-        ruleSha256: ruleSha,
-        proposals,
-        evaluatedAt,
-      });
-      new ReviewConsensusRepository(db).insertActive({
-        runId,
-        ruleSha256: ruleSha,
-        status: result.status,
-        summary: result.summary,
-        evaluatedAt,
-        evaluatedBy: "review-auto",
-        // Only proposals that actually fed the consensus (post stale-filter)
-        // are the audit source — keep it consistent with the summary.
-        sourceProposalIds: result.summary.proposals.map((p) => p.proposalId),
-      });
-    });
-    tx.immediate();
-  } catch (e) {
-    process.stderr.write(
-      `warning: could not re-evaluate review consensus for ${runId}: ` +
-        `${(e as Error).message}\n`,
-    );
-  }
 }

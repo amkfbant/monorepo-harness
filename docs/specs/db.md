@@ -804,7 +804,10 @@ Phase 11 で reviewer は string ではなく `reviewer_id` (FK to `reviewers`)�
 
 `run_review_rule_snapshots(run_id, rule_json, source_sha256)` で run 作成時
 に effective rule を freeze。project profile を後変更しても進行中 run の
-review semantics は変わらない。
+review semantics は変わらない。consensus mode で explicit `reviewer_ids` がある
+requirement は、この snapshot 内の reviewer set が hitch orchestrator の expected
+participant set になる。後から reviewer registry に同じ group の reviewer を追加しても、
+その run の consensus 評価・再評価・stall timeline には入らない。
 
 ### Consensus evaluator
 
@@ -815,9 +818,15 @@ human override が最優先。production wiring は `review_proposals` の activ
 proposal の insertion order や reviewer dispatch order は `summary.proposals` /
 `sourceProposalIds` / `required_changes` の順序に影響しない。unknown reviewer は
 `group_id = NULL` として enrichment され、per-group requirement では満たさない側に倒す。
+rule snapshot に frozen `reviewer_ids` がある場合、`processReviewDecision` と
+`recordConsensusReEvaluation` は active proposal をその reviewer set で filter してから
+評価する。frozen set 外の同一 group proposal は quorum / blocking / stall timeline に
+効かない。
 
 `review_consensus` の active row は `superseded_at IS NULL` で run 単位 1 つ
-(partial unique index)。re-evaluate (新 proposal insert 時など) は supersede。
+(partial unique index)。re-evaluate (新 proposal insert 時や hitch pending catch) は
+supersede。status guard、rule snapshot 読込、frozen-set filter、評価、active row insert は
+同一 immediate transaction 内で行う。
 
 ### Human override
 

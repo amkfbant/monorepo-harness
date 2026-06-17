@@ -26,6 +26,7 @@ import {
   type EnrichedProposal,
 } from "./review-consensus.js";
 import { activeProposalRows, enrichRows } from "./consensus-enrichment.js";
+import { frozenReviewerIdSet } from "./review-consensus-record.js";
 import {
   DEFAULT_REVIEW_RULE,
   ruleSha256,
@@ -193,9 +194,11 @@ function processConsensusModePath(
         `run ${opts.runId} status is "${row.status}", only needs_review can be processed`,
       );
     }
-    const rows = activeProposalRows(proposalRepo, opts.runId);
+    const rows = activeProposalRows(proposalRepo, opts.runId, {
+      reviewerIds: frozenReviewerIdSet(rule),
+    });
     if (rows.length === 0) {
-      throw new ReviewGateError(
+      throw new ConsensusPendingReviewGateError(
         `no active review proposals to evaluate for ${opts.runId}; run \`review auto\` first`,
       );
     }
@@ -208,7 +211,7 @@ function processConsensusModePath(
     if (result.status === "pending") {
       // fail-closed: consensus is not satisfied yet (quorum/requirements
       // pending). Do NOT promote the run on a partial set of approvals.
-      throw new ReviewGateError(
+      throw new ConsensusPendingReviewGateError(
         `consensus not yet satisfied for ${opts.runId} (${result.summary.decisionPath})`,
       );
     }
@@ -358,6 +361,13 @@ export class ReviewGateError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ReviewGateError";
+  }
+}
+
+export class ConsensusPendingReviewGateError extends ReviewGateError {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConsensusPendingReviewGateError";
   }
 }
 

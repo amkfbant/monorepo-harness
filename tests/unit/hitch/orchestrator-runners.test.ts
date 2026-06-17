@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { openManagedDb } from "../../../src/db/managed-connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { ConvergenceService } from "../../../src/hitch/convergence.js";
@@ -26,12 +26,17 @@ import {
   type HitchRunContext,
 } from "../../../src/hitch/orchestrator-runners.js";
 import { ReviewProposalRepository } from "../../../src/db/repositories/review-proposals.js";
+import { ReviewConsensusRepository } from "../../../src/db/repositories/review-consensus.js";
+import { ReviewRulesRepository } from "../../../src/db/repositories/review-rules.js";
+import { ReviewerRepository } from "../../../src/db/repositories/reviewers.js";
 import { importReviewProposalToHitch } from "../../../src/hitch/review-integration.js";
 import { REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS } from "../../../src/core/review-consensus.js";
+import type { ReviewRule } from "../../../src/core/review-rule.js";
 import type {
   PrPublisher,
   PrPublishInputs,
 } from "../../../src/core/pr-creator.js";
+import type { CodexExecRunner } from "../../../src/codex/codex-exec-runner.js";
 import {
   acquireDomainLock,
   DomainLockBusyError,
@@ -229,6 +234,180 @@ function insertProcessedProposal(input: {
       input.reviewDecisionId,
     );
   return Number(info.lastInsertRowid);
+}
+
+function approvedOutput(): string {
+  return [
+    "```yaml",
+    "decision: approved",
+    "required_changes: []",
+    "non_blocking_comments: []",
+    "out_of_scope_suggestions: []",
+    "```",
+    "",
+  ].join("\n");
+}
+
+function invalidOutput(): string {
+  return [
+    "```yaml",
+    "decision: maybe",
+    "required_changes: []",
+    "non_blocking_comments: []",
+    "out_of_scope_suggestions: []",
+    "```",
+    "",
+  ].join("\n");
+}
+
+function reviewerFromStdoutPath(stdoutPath: string): string {
+  return stdoutPath.match(/[\\/]reviewers[\\/]([^\\/]+)/)?.[1] ?? "unknown";
+}
+
+function fakeMultiReviewerRunner(
+  outputs: Record<string, "approved" | "invalid" | "tamper">,
+): CodexExecRunner & { calls: string[] } {
+  const calls: string[] = [];
+  return {
+    calls,
+    async run(input) {
+      const reviewer = reviewerFromStdoutPath(input.logPaths.stdout);
+      calls.push(reviewer);
+      const mode = outputs[reviewer] ?? "approved";
+      if (mode === "tamper") {
+        const runDir = input.logPaths.stdout.split(`${join("reviewers", reviewer)}`)[0];
+        writeFileSync(join(runDir, "summary.md"), "tampered\n");
+      }
+      mkdirSync(dirname(input.logPaths.stdout), { recursive: true });
+      mkdirSync(dirname(input.logPaths.stderr), { recursive: true });
+      mkdirSync(dirname(input.logPaths.events), { recursive: true });
+      const stdout = mode === "invalid" ? invalidOutput() : approvedOutput();
+      writeFileSync(input.logPaths.stdout, stdout);
+      writeFileSync(input.logPaths.stderr, "");
+      writeFileSync(input.logPaths.events, "");
+      return { exitCode: 0, timedOut: false, durationMs: 0 };
+    },
+  };
+}
+
+function consensusRule(input: {
+  reviewers: string[];
+  minApprovals: number;
+  minParticipants: number;
+}): ReviewRule {
+  return {
+    mode: "consensus",
+    requirements: [
+      {
+        group: "codex",
+        minApprovals: input.minApprovals,
+        blockingDecisions: ["changes_requested", "rejected"],
+        quorum: { minParticipants: input.minParticipants },
+        reviewerIds: input.reviewers,
+        lensAxes: input.reviewers.map((reviewer) => `lens-${reviewer}`),
+      },
+    ],
+    overrides: { allowedReviewers: [], requireReason: true },
+    staleProposal: { rejectSuperseded: true },
+  };
+}
+
+function seedReviewableConsensusRun(input: {
+  dbPath: string;
+  harnessRoot: string;
+  hitchId: string;
+  rule: ReviewRule;
+  reviewers?: string[];
+}): string {
+  const runId = `run-${input.hitchId}`;
+  const runDir = join(input.harnessRoot, "runs", runId);
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(
+    join(runDir, "meta.json"),
+    JSON.stringify(
+      {
+        runId,
+        repoId: "t",
+        domain: "docs",
+        workflow: "domain-coding",
+        baseBranch: "main",
+        status: "needs_review",
+      },
+      null,
+      2,
+    ),
+  );
+  writeFileSync(join(runDir, "events.jsonl"), "");
+  writeFileSync(join(runDir, "summary.md"), "# summary\n");
+  writeFileSync(join(runDir, "review-request.md"), "# review\n");
+  writeFileSync(join(runDir, "final-diff.patch"), "");
+  writeFileSync(
+    join(runDir, "review-decision.yaml"),
+    [
+      `runId: ${runId}`,
+      "domain: docs",
+      "decision: pending",
+      "required_changes: []",
+      "non_blocking_comments: []",
+      "out_of_scope_suggestions: []",
+      "reviewer: null",
+      "reviewed_at: null",
+      "",
+    ].join("\n"),
+  );
+
+  const { db, close } = openManagedDb({ dbPath: input.dbPath });
+  try {
+    runMigrations(db);
+    const repo = new HitchRepository(db);
+    repo.createSession({
+      hitchId: input.hitchId,
+      title: "Consensus review",
+      repoId: "t",
+      domain: "docs",
+      closeConditions: [
+        { id: "review-ok", kind: "review_consensus", required: true },
+      ],
+      createdBy: "test",
+      createdSource: "worker",
+    });
+    repo.createAttempt({
+      hitchId: input.hitchId,
+      attemptType: "implement",
+      status: "succeeded",
+      runId,
+    });
+    db.prepare(
+      `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+         status, source_mode, db_revision, export_status, updated_at, meta_json)
+       VALUES (?, 't', 'docs', 'domain-coding', 'main',
+         'needs_review', 'db-first', 1, 'disabled',
+         '2026-06-17T00:00:00.000Z', ?)`,
+    ).run(
+      runId,
+      JSON.stringify({ runId, repoId: "t", domain: "docs", status: "needs_review" }),
+    );
+    const reviewers = new ReviewerRepository(db);
+    for (const reviewerId of input.reviewers ?? input.rule.requirements.flatMap((r) => r.reviewerIds ?? [])) {
+      if (reviewers.findById(reviewerId) === null) {
+        reviewers.add({
+          reviewerId,
+          reviewerType: "codex",
+          displayName: reviewerId,
+          groupId: "codex",
+        });
+      }
+    }
+    const rules = new ReviewRulesRepository(db);
+    const template = rules.upsertRuleTemplate({
+      source: "manual",
+      rule: input.rule,
+    });
+    rules.snapshotForRun({ runId, template });
+    return runId;
+  } finally {
+    close();
+  }
 }
 
 describe("createOrchestratorRunners.projectRuntime", () => {
@@ -932,6 +1111,231 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
       }
     });
   }
+});
+
+describe("createOrchestratorRunners.review consensus dispatch", () => {
+  it("dispatches the frozen reviewer set and promotes after quorum is met", async () => {
+    const { harnessRoot, dbPath } = createHarnessRoot(
+      "harness-orch-review-n-",
+    );
+    const hitchId = "g-review-n";
+    const runId = seedReviewableConsensusRun({
+      dbPath,
+      harnessRoot,
+      hitchId,
+      rule: consensusRule({
+        reviewers: ["codex-a", "codex-b"],
+        minApprovals: 2,
+        minParticipants: 2,
+      }),
+    });
+    const reviewerRunner = fakeMultiReviewerRunner({});
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    const result = await runners.review(hitchId);
+
+    expect(result).toEqual({ runId, decision: "approved" });
+    expect(reviewerRunner.calls).toEqual(["codex-a", "codex-b"]);
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const status = db
+        .prepare("SELECT status FROM runs WHERE run_id = ?")
+        .get(runId) as { status: string };
+      expect(status.status).toBe("approved");
+      const consensus = new ReviewConsensusRepository(db).findActive(runId);
+      expect(consensus?.status).toBe("approved");
+      expect(
+        JSON.parse(consensus?.sourceProposalsJson ?? "[]"),
+      ).toHaveLength(2);
+      expect(new HitchRepository(db).listReviewCycles(hitchId)).toHaveLength(1);
+    } finally {
+      close();
+    }
+  });
+
+  it("preflights unknown frozen reviewers before invoking any reviewer", async () => {
+    const { harnessRoot, dbPath } = createHarnessRoot(
+      "harness-orch-review-preflight-",
+    );
+    const hitchId = "g-review-preflight";
+    seedReviewableConsensusRun({
+      dbPath,
+      harnessRoot,
+      hitchId,
+      rule: consensusRule({
+        reviewers: ["codex-a", "missing-reviewer"],
+        minApprovals: 2,
+        minParticipants: 2,
+      }),
+      reviewers: ["codex-a"],
+    });
+    const reviewerRunner = fakeMultiReviewerRunner({});
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).rejects.toThrow(/unknown reviewer/);
+    expect(reviewerRunner.calls).toEqual([]);
+  });
+
+  it("aborts artifact tamper instead of treating it as a partial clean failure", async () => {
+    const { harnessRoot, dbPath } = createHarnessRoot(
+      "harness-orch-review-tamper-",
+    );
+    const hitchId = "g-review-tamper";
+    const runId = seedReviewableConsensusRun({
+      dbPath,
+      harnessRoot,
+      hitchId,
+      rule: consensusRule({
+        reviewers: ["codex-a", "codex-b"],
+        minApprovals: 2,
+        minParticipants: 2,
+      }),
+    });
+    const reviewerRunner = fakeMultiReviewerRunner({ "codex-a": "tamper" });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).rejects.toThrow(
+      /reviewer agent modified run artifact: summary\.md/,
+    );
+    expect(reviewerRunner.calls).toEqual(["codex-a"]);
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      expect(new ReviewProposalRepository(db).listForRun(runId)).toHaveLength(0);
+      expect(new HitchRepository(db).listReviewCycles(hitchId)).toHaveLength(0);
+    } finally {
+      close();
+    }
+  });
+
+  it("keeps partial clean failure pending instead of silently approving below quorum", async () => {
+    const { harnessRoot, dbPath } = createHarnessRoot(
+      "harness-orch-review-partial-clean-",
+    );
+    const hitchId = "g-review-partial-clean";
+    const runId = seedReviewableConsensusRun({
+      dbPath,
+      harnessRoot,
+      hitchId,
+      rule: consensusRule({
+        reviewers: ["codex-a", "codex-b"],
+        minApprovals: 2,
+        minParticipants: 2,
+      }),
+    });
+    const staleYaml = decisionYaml(runId, "approved");
+    const staleSha = createHash("sha256").update(staleYaml).digest("hex");
+    const { db: seedDb, close: closeSeedDb } = openManagedDb({ dbPath });
+    try {
+      new ReviewProposalRepository(seedDb).insertProposal({
+        runId,
+        reviewer: "codex-b",
+        decision: "approved",
+        requiredChanges: [],
+        nonBlockingComments: [],
+        outOfScopeSuggestions: [],
+        reviewedAt: "2026-06-16T00:00:00.000Z",
+        sourceYaml: staleYaml,
+        sourceSha256: staleSha,
+        createdAt: "2026-06-16T00:00:00.000Z",
+      });
+    } finally {
+      closeSeedDb();
+    }
+    const reviewerRunner = fakeMultiReviewerRunner({ "codex-b": "invalid" });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    const result = await runners.review(hitchId);
+
+    expect(result.decision).toMatch(/^pending/);
+    expect(result.decision).toContain("codex-b:reviewer_output_unknown_decision");
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const status = db
+        .prepare("SELECT status FROM runs WHERE run_id = ?")
+        .get(runId) as { status: string };
+      expect(status.status).toBe("needs_review");
+      const active = new ReviewProposalRepository(db)
+        .listForRun(runId)
+        .filter((p) => p.supersededAt === null && p.processedAt === null);
+      expect(active.map((p) => p.reviewer)).toEqual(["codex-a"]);
+      const staleCodexB = new ReviewProposalRepository(db)
+        .listForRun(runId, { includeArchived: true })
+        .find((p) => p.reviewer === "codex-b");
+      expect(staleCodexB?.supersededAt).not.toBeNull();
+      expect(new ReviewConsensusRepository(db).findActive(runId)?.status).toBe(
+        "pending",
+      );
+      expect(new HitchRepository(db).listReviewCycles(hitchId)).toHaveLength(1);
+    } finally {
+      close();
+    }
+  });
+
+  it("continues after one clean failure when landed reviewers still satisfy quorum", async () => {
+    const { harnessRoot, dbPath } = createHarnessRoot(
+      "harness-orch-review-partial-quorum-",
+    );
+    const hitchId = "g-review-partial-quorum";
+    const runId = seedReviewableConsensusRun({
+      dbPath,
+      harnessRoot,
+      hitchId,
+      rule: consensusRule({
+        reviewers: ["codex-a", "codex-b", "codex-c"],
+        minApprovals: 2,
+        minParticipants: 2,
+      }),
+    });
+    const reviewerRunner = fakeMultiReviewerRunner({ "codex-c": "invalid" });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    const result = await runners.review(hitchId);
+
+    expect(result).toEqual({ runId, decision: "approved" });
+    expect(reviewerRunner.calls).toEqual(["codex-a", "codex-b", "codex-c"]);
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const active = new ReviewProposalRepository(db)
+        .listForRun(runId)
+        .filter((p) => p.supersededAt === null && p.processedAt === null);
+      expect(active).toHaveLength(0);
+      expect(new ReviewConsensusRepository(db).findActive(runId)?.status).toBe(
+        "approved",
+      );
+    } finally {
+      close();
+    }
+  });
 });
 
 describe("createOrchestratorRunners.classify", () => {

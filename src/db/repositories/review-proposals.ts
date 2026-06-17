@@ -244,6 +244,33 @@ export class ReviewProposalRepository {
   }
 
   /**
+   * Retire unprocessed active proposals for a frozen reviewer set before a new
+   * dispatch cycle starts. This makes "participants" mean reviewers that
+   * landed a proposal in the current cycle; if a reviewer crashes, an old
+   * active proposal cannot silently count toward quorum.
+   */
+  retireActiveForReviewers(input: {
+    runId: string;
+    reviewers: readonly string[];
+    retiredAt: string;
+  }): number {
+    const reviewers = [...new Set(input.reviewers)].sort();
+    if (reviewers.length === 0) return 0;
+    const placeholders = reviewers.map(() => "?").join(", ");
+    const result = this.db
+      .prepare(
+        `UPDATE review_proposals
+            SET superseded_at = ?, lifecycle_status = 'superseded'
+          WHERE run_id = ?
+            AND reviewer IN (${placeholders})
+            AND superseded_at IS NULL
+            AND processed_at IS NULL`,
+      )
+      .run(input.retiredAt, input.runId, ...reviewers);
+    return result.changes;
+  }
+
+  /**
    * Phase 11-7 — archive a single proposal (audit-preserving delete).
    * Idempotent: already-archived rows stay as-is.
    */

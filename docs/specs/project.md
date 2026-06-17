@@ -87,7 +87,7 @@ review:
       min_approvals: 1
       blocking_decisions: [changes_requested, rejected]
       quorum: { min_participants: 1 }
-      reviewer_ids: [alice]    # optional frozen reviewer set
+      reviewer_ids: [alice]    # frozen reviewer set for hitch orchestrator dispatch
       lens_axes: [correctness] # required with multi-reviewer requirements
       max_reviewers: 1         # optional per-requirement cap
   overrides: { allowed_reviewers: [], require_reason: true }
@@ -121,7 +121,10 @@ domains:
   `min_approvals < 1`、`quorum.min_participants < 1`、
   複数 reviewer を要求する requirement の `reviewer_ids` / `lens_axes` 欠落、
   `reviewer_ids` の重複や `max_reviewers` 超過は `ReviewRuleCompileError` で
-  fail-closed になり、DEFAULT へ降格しない。
+  fail-closed になり、DEFAULT へ降格しない。`hitch orchestrate` の consensus
+  dispatch は run snapshot 内の explicit `reviewer_ids` を frozen expected set として
+  使うため、`reviewer_ids` が無い consensus requirement は dispatch 前 preflight で
+  fail-closed になる（group 自動解決は follow-up）。
 
 ### Domain registry
 
