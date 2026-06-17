@@ -70,7 +70,7 @@ describe("runMigrations", () => {
     expect(r.version).toBe(SCHEMA_VERSION);
     expect(r.applied).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
     ]);
     const tables = tableNames(dbPath);
     expect(tables.has("schema_migrations")).toBe(true);
@@ -82,6 +82,204 @@ describe("runMigrations", () => {
     }
     for (const t of DROPPED_TABLE_NAMES) {
       expect(tables.has(t)).toBe(false);
+    }
+  });
+
+  it("creates v32 review_refute_votes and v33 phase review_state_version sequentially", () => {
+    const db = openDb(freshDbPath());
+    try {
+      applyMigrationsBefore(db, 32);
+      expect(currentSchemaVersion(db)).toBe(31);
+
+      const course = db
+        .prepare(
+          `INSERT INTO courses
+             (course_id, title, status, created_at, updated_at)
+           VALUES ('course-v33', 'v33', 'active',
+             '2026-06-17T00:00:00.000Z',
+             '2026-06-17T00:00:00.000Z')`,
+        )
+        .run();
+      expect(course.changes).toBe(1);
+      db.prepare(
+        `INSERT INTO phases
+           (phase_id, course_id, title, position, status, created_at, updated_at)
+         VALUES ('phase-v33', 'course-v33', 'v33', 0, 'pending',
+           '2026-06-17T00:00:00.000Z',
+           '2026-06-17T00:00:00.000Z')`,
+      ).run();
+
+      expect(hasSchemaObject(db, "table", "review_refute_votes")).toBe(false);
+      const beforePhaseColumns = db.prepare("PRAGMA table_info(phases)").all() as {
+        name: string;
+      }[];
+      expect(beforePhaseColumns.map((r) => r.name)).not.toContain(
+        "review_state_version",
+      );
+
+      const upgraded = runMigrations(db);
+      expect(upgraded.applied).toEqual([32, 33]);
+      expect(upgraded.version).toBe(SCHEMA_VERSION);
+      expect(hasSchemaObject(db, "table", "review_refute_votes")).toBe(true);
+
+      const phaseColumns = db.prepare("PRAGMA table_info(phases)").all() as {
+        name: string;
+        type: string;
+        notnull: number;
+        dflt_value: string | null;
+      }[];
+      expect(phaseColumns.find((r) => r.name === "review_state_version")).toMatchObject(
+        { type: "INTEGER", notnull: 1, dflt_value: "0" },
+      );
+      const phase = db
+        .prepare(
+          "SELECT review_state_version FROM phases WHERE phase_id = 'phase-v33'",
+        )
+        .get() as { review_state_version: number };
+      expect(phase.review_state_version).toBe(0);
+
+      const refuteColumns = db
+        .prepare("PRAGMA table_info(review_refute_votes)")
+        .all() as { name: string; type: string; notnull: number; pk: number }[];
+      expect(refuteColumns.map((r) => r.name)).toEqual([
+        "refute_id",
+        "run_id",
+        "hitch_id",
+        "target_change_hash",
+        "target_change_idx",
+        "finding_id",
+        "reviewer_id",
+        "refute_verdict",
+        "confidence",
+        "reasoning",
+        "refute_reason",
+        "counter_evidence_kind",
+        "counter_evidence_ref",
+        "refute_condition",
+        "retract_condition",
+        "model",
+        "prompt_sha256",
+        "prompt_provenance_json",
+        "usage_kind",
+        "usage_seq",
+        "source_yaml",
+        "source_sha256",
+        "validation_status",
+        "reject_reason",
+        "created_at",
+      ]);
+      expect(refuteColumns.find((r) => r.name === "refute_id")).toMatchObject({
+        type: "INTEGER",
+        pk: 1,
+      });
+      for (const name of [
+        "run_id",
+        "target_change_hash",
+        "reviewer_id",
+        "prompt_sha256",
+        "source_yaml",
+        "source_sha256",
+        "validation_status",
+        "created_at",
+      ]) {
+        expect(refuteColumns.find((r) => r.name === name)).toMatchObject({
+          notnull: 1,
+        });
+      }
+      expect(refuteColumns.find((r) => r.name === "hitch_id")).toMatchObject({
+        type: "TEXT",
+        notnull: 0,
+      });
+      expect(refuteColumns.find((r) => r.name === "usage_kind")).toMatchObject({
+        type: "TEXT",
+        notnull: 0,
+      });
+      expect(refuteColumns.find((r) => r.name === "usage_seq")).toMatchObject({
+        type: "INTEGER",
+        notnull: 0,
+      });
+
+      expect(db.prepare("PRAGMA foreign_key_list(review_refute_votes)").all()).toEqual(
+        [],
+      );
+      for (const indexName of [
+        "review_refute_votes_passed_idx",
+        "review_refute_votes_inconclusive_idx",
+        "review_refute_votes_rejected_idx",
+        "review_refute_votes_run_idx",
+        "review_refute_votes_target_idx",
+        "review_refute_votes_finding_idx",
+        "review_refute_votes_hitch_idx",
+      ]) {
+        expect(hasSchemaObject(db, "index", indexName)).toBe(true);
+      }
+
+      const partialIndexes = db
+        .prepare(
+          `SELECT name, sql FROM sqlite_master
+            WHERE type = 'index' AND name IN (
+              'review_refute_votes_passed_idx',
+              'review_refute_votes_inconclusive_idx',
+              'review_refute_votes_rejected_idx'
+            )`,
+        )
+        .all() as { name: string; sql: string }[];
+      const byName = new Map(partialIndexes.map((row) => [row.name, row.sql]));
+      expect(byName.get("review_refute_votes_passed_idx")).toContain(
+        "validation_status = 'passed' AND refute_verdict IN ('uphold','refute')",
+      );
+      expect(byName.get("review_refute_votes_inconclusive_idx")).toContain(
+        "validation_status = 'passed' AND refute_verdict = 'inconclusive'",
+      );
+      expect(byName.get("review_refute_votes_rejected_idx")).toContain(
+        "validation_status = 'rejected'",
+      );
+
+      db.prepare(
+        `INSERT INTO review_refute_votes
+           (run_id, hitch_id, target_change_hash, finding_id, reviewer_id,
+            refute_verdict, prompt_sha256, source_sha256, validation_status,
+            created_at)
+         VALUES ('run-v32', 'hitch-v32', 'hash-v32', 'finding-v32',
+           'reviewer-v32', 'uphold', 'prompt-v32', 'source-v32', 'passed',
+           '2026-06-17T00:00:01.000Z')`,
+      ).run();
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO review_refute_votes
+               (run_id, target_change_hash, reviewer_id, refute_verdict,
+                confidence, prompt_sha256, source_sha256, validation_status,
+                created_at)
+             VALUES ('run-v32', 'hash-other', 'reviewer-v32', 'uphold',
+               1.5, 'prompt-other', 'source-other', 'passed',
+               '2026-06-17T00:00:02.000Z')`,
+          )
+          .run(),
+      ).toThrow(/CHECK/i);
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO review_refute_votes
+               (run_id, target_change_hash, reviewer_id, refute_verdict,
+                prompt_sha256, source_sha256, validation_status, created_at)
+             VALUES ('run-v32', 'hash-refute', 'reviewer-v32', 'refute',
+               'prompt-refute', 'source-refute', 'passed',
+               '2026-06-17T00:00:03.000Z')`,
+          )
+          .run(),
+      ).toThrow(/CHECK/i);
+
+      expect(ALL_TABLE_NAMES).toContain("review_refute_votes");
+      expect(new Set(ALL_TABLE_NAMES).size).toBe(ALL_TABLE_NAMES.length);
+      expect(CURRENT_TABLE_NAMES).toContain("review_refute_votes");
+      expect(CURRENT_TABLE_NAMES).toContain("phases");
+
+      const again = runMigrations(db);
+      expect(again.applied).toEqual([]);
+      expect(again.version).toBe(SCHEMA_VERSION);
+    } finally {
+      db.close();
     }
   });
 
@@ -115,7 +313,7 @@ describe("runMigrations", () => {
       ).toThrow(/CHECK/i);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([29, 30, 31]);
+      expect(upgraded.applied).toEqual([29, 30, 31, 32, 33]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "index", "hitch_lifecycle_events_hitch_idx")).toBe(
         true,
@@ -200,7 +398,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "domain_lock_contention")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([28, 29, 30, 31]);
+      expect(upgraded.applied).toEqual([28, 29, 30, 31, 32, 33]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "domain_lock_contention")).toBe(true);
       expect(
@@ -278,7 +476,7 @@ describe("runMigrations", () => {
       ).run();
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([30, 31]);
+      expect(upgraded.applied).toEqual([30, 31, 32, 33]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
 
       const columns = db
@@ -380,7 +578,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "metrics_snapshots")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([27, 28, 29, 30, 31]);
+      expect(upgraded.applied).toEqual([27, 28, 29, 30, 31, 32, 33]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "metrics_snapshots")).toBe(true);
       expect(hasSchemaObject(db, "index", "metrics_snapshots_created_idx")).toBe(
@@ -444,7 +642,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "run_usage")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([26, 27, 28, 29, 30, 31]);
+      expect(upgraded.applied).toEqual([26, 27, 28, 29, 30, 31, 32, 33]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "run_usage")).toBe(true);
 
@@ -565,7 +763,7 @@ describe("runMigrations", () => {
       expect(before.map((r) => r.name)).not.toContain("prompt_sha256");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([25, 26, 27, 28, 29, 30, 31]);
+      expect(upgraded.applied).toEqual([25, 26, 27, 28, 29, 30, 31, 32, 33]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       const after = db
         .prepare("PRAGMA table_info(runs)")
@@ -610,7 +808,7 @@ describe("runMigrations", () => {
       expect(before.map((r) => r.name)).not.toContain("prompt_provenance_json");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([24, 25, 26, 27, 28, 29, 30, 31]);
+      expect(upgraded.applied).toEqual([24, 25, 26, 27, 28, 29, 30, 31, 32, 33]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       const after = db
         .prepare("PRAGMA table_info(review_proposals)")
@@ -634,7 +832,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "hitch_lifecycle_events")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([23, 24, 25, 26, 27, 28, 29, 30, 31]);
+      expect(upgraded.applied).toEqual([23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "hitch_lifecycle_events")).toBe(true);
       expect(hasSchemaObject(db, "index", "hitch_lifecycle_events_hitch_idx")).toBe(
@@ -675,7 +873,7 @@ describe("runMigrations", () => {
 
       const upgraded = runMigrations(db);
       expect(upgraded.applied).toEqual([
-        22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+        22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
       ]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "db_stats_snapshots")).toBe(false);

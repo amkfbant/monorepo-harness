@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 31;
+export const SCHEMA_VERSION = 33;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -1966,6 +1966,88 @@ export const V31_TABLE_NAMES = [
   "jury_severity_audits",
 ] as const;
 
+/**
+ * v32 — epic #228 / #229 refute vote audit table.
+ *
+ * Append-only DB-only input rows for the future refute consensus gate. The
+ * table deliberately declares zero foreign keys: run/hitch/finding/reviewer ids
+ * are advisory provenance so import reset and parent purge can leave audit rows
+ * behind for doctor checks instead of failing FK enforcement.
+ */
+export const MIGRATION_V32_STATEMENTS: readonly string[] = [
+  `CREATE TABLE review_refute_votes (
+     refute_id             INTEGER PRIMARY KEY AUTOINCREMENT,
+     run_id                TEXT NOT NULL,
+     hitch_id              TEXT,
+     target_change_hash    TEXT NOT NULL,
+     target_change_idx     INTEGER,
+     finding_id            TEXT,
+     reviewer_id           TEXT NOT NULL,
+     refute_verdict        TEXT
+       CHECK (refute_verdict IS NULL OR refute_verdict IN ('uphold','refute','inconclusive')),
+     confidence            REAL CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1),
+     reasoning             TEXT,
+     refute_reason         TEXT,
+     counter_evidence_kind TEXT
+       CHECK (counter_evidence_kind IS NULL OR counter_evidence_kind IN ('diff','test','none')),
+     counter_evidence_ref  TEXT,
+     refute_condition      TEXT,
+     retract_condition     TEXT,
+     model                 TEXT,
+     prompt_sha256         TEXT NOT NULL,
+     prompt_provenance_json TEXT,
+     usage_kind            TEXT,
+     usage_seq             INTEGER,
+     source_yaml           TEXT NOT NULL DEFAULT '',
+     source_sha256         TEXT NOT NULL,
+     validation_status     TEXT NOT NULL DEFAULT 'rejected'
+       CHECK (validation_status IN ('passed','rejected')),
+     reject_reason         TEXT,
+     created_at            TEXT NOT NULL,
+     CHECK (validation_status = 'passed' OR (reject_reason IS NOT NULL AND reject_reason <> '')),
+     CHECK (validation_status <> 'passed' OR refute_verdict IS NOT NULL),
+     CHECK (validation_status <> 'passed' OR refute_verdict <> 'refute' OR (
+       refute_reason IS NOT NULL AND refute_reason <> ''
+       AND counter_evidence_kind IS NOT NULL
+       AND counter_evidence_kind IN ('diff','test')
+       AND counter_evidence_ref IS NOT NULL AND counter_evidence_ref <> ''
+       AND refute_condition IS NOT NULL AND refute_condition <> ''
+       AND retract_condition IS NOT NULL AND retract_condition <> ''
+     ))
+   )`,
+  `CREATE UNIQUE INDEX review_refute_votes_passed_idx
+     ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256)
+    WHERE validation_status = 'passed' AND refute_verdict IN ('uphold','refute')`,
+  `CREATE UNIQUE INDEX review_refute_votes_inconclusive_idx
+     ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256)
+    WHERE validation_status = 'passed' AND refute_verdict = 'inconclusive'`,
+  `CREATE UNIQUE INDEX review_refute_votes_rejected_idx
+     ON review_refute_votes(run_id, target_change_hash, reviewer_id, prompt_sha256, source_sha256)
+    WHERE validation_status = 'rejected'`,
+  `CREATE INDEX review_refute_votes_run_idx
+     ON review_refute_votes(run_id, created_at)`,
+  `CREATE INDEX review_refute_votes_target_idx
+     ON review_refute_votes(run_id, target_change_hash)`,
+  `CREATE INDEX review_refute_votes_finding_idx
+     ON review_refute_votes(finding_id, created_at)`,
+  `CREATE INDEX review_refute_votes_hitch_idx
+     ON review_refute_votes(hitch_id, finding_id)`,
+] as const;
+
+/** Table names created by v32 (#229 refute vote audit table). */
+export const V32_TABLE_NAMES = ["review_refute_votes"] as const;
+
+/**
+ * v33 — epic #228 / #231 phase review-state CAS version.
+ *
+ * Additive column only. Existing phases migrate with version 0; future
+ * review_state_json writers can use optimistic locking without changing the
+ * phase table identity.
+ */
+export const MIGRATION_V33_STATEMENTS: readonly string[] = [
+  `ALTER TABLE phases ADD COLUMN review_state_version INTEGER NOT NULL DEFAULT 0`,
+] as const;
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -2013,6 +2095,7 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V28_TABLE_NAMES,
   ...V30_TABLE_NAMES,
   ...V31_TABLE_NAMES,
+  ...V32_TABLE_NAMES,
 ];
 
 /** Tables intentionally removed by later migrations. */

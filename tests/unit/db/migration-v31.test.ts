@@ -42,17 +42,18 @@ function seedSchemaThroughV30(db: Database.Database): void {
 }
 
 describe("v31 migration", () => {
-  it("LATEST_SCHEMA_VERSION is 31", () => {
-    expect(LATEST_SCHEMA_VERSION).toBe(31);
+  it("LATEST_SCHEMA_VERSION has advanced beyond shipped v31", () => {
+    expect(LATEST_SCHEMA_VERSION).toBe(33);
   });
 
-  it("fresh v1->v31 creates the 3 jury tables and records version 31", () => {
+  it("fresh migration creates the shipped v31 jury tables and records version 31", () => {
     const db = freshDb();
     runMigrations(db);
     const applied = db
       .prepare("SELECT version FROM schema_migrations ORDER BY version")
       .all() as { version: number }[];
-    expect(applied.at(-1)?.version).toBe(31);
+    expect(applied.map((r) => r.version)).toContain(31);
+    expect(applied.at(-1)?.version).toBe(LATEST_SCHEMA_VERSION);
     for (const t of V31_TABLES) {
       const row = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
