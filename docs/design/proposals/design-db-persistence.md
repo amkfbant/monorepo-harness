@@ -154,6 +154,10 @@ run_usage との対応: invocation 単位は `run_usage(run_id, kind, seq)` で 
 CREATE TABLE review_refute_votes (
   refute_id     INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id        TEXT NOT NULL,        -- advisory ID。FK しない (P1-1)
+  hitch_id      TEXT,                 -- denormalized advisory (P1-2)。FK しない。repository insert で
+                                      --   finding_id→hitch_findings.hitch_id 一致検査、doctor で
+                                      --   (stored hitch_id)==(join hitch_id) を advisory チェック (SP-2/SP-3D)。
+                                      --   nullable: binding 不能/no-finding の rejected 票は hitch を解決できないため
   -- target binding: required_change を content hash で参照 (FK しない。export-backed 行の idx 再番号で orphan しないため)
   target_change_hash TEXT NOT NULL,   -- sha256(normalizeChangeText(change_text)) を app 層で計算。binding 不能/欠落(rejected)時は target_change_text or sentinel の harness 再計算 hash で常に非 NULL
   target_change_idx  INTEGER,         -- 記録時点の idx (advisory、binding には使わない)
@@ -217,8 +221,12 @@ CREATE UNIQUE INDEX review_refute_votes_rejected_idx
   WHERE validation_status = 'rejected';
 CREATE INDEX review_refute_votes_run_idx ON review_refute_votes(run_id, created_at);
 CREATE INDEX review_refute_votes_target_idx ON review_refute_votes(run_id, target_change_hash);
+-- SP-3D の orphan / hitch_id 整合 doctor check 用の lookup index (jury 3表 DDL の hitch_idx と同方針)。
+CREATE INDEX review_refute_votes_finding_idx ON review_refute_votes(finding_id, created_at);
+CREATE INDEX review_refute_votes_hitch_idx ON review_refute_votes(hitch_id, finding_id);
 ```
 - **DB-only** (export 非対象、既存 DB では import/reset 後も残る／fresh DB のみ空: P1-4)。**FK は一切張らない** (P1-1)。`target_change_hash` は app 層計算 (SQLite に sha256 関数は無い)。正規化は決定論 `normalizeChangeText()` を実装しテスト（付録B）。
+- **`hitch_id` 列 + `finding_idx` / `hitch_idx` (SP-1 shipped で追記)**: §3.1 P1-2 の「`hitch_id` は denormalized advisory・整合は repository/doctor」方針を refute 表にも適用。SP-2 RED（insert 時 finding_id→hitch_id 一致 hard 検査）/ SP-3D RED（orphan + hitch_id 整合 advisory）が本列と index を前提とするため、jury 3表（v31）と同形で v32 にも持たせる（footprint 規約 §G-1）。`docs/specs/db.md` v32 節が現状仕様の正本。
 - refute 票を decision に通すのは `evaluateConsensus` の決定論集約 (design-229 P2-C)。この表は**入力**で、**集約に渡すのは `validation_status='passed'` ∧ `refute_verdict ∈ {uphold,refute}` のみ**（`inconclusive` は passed でも quorum に数えない＝fail-closed 除外。`rejected` は監査保持＝binding 失敗/証拠欠落も追跡可能。design-229 G2/G3）。
 
 ### 3.2 #230 — classification jury / severity audit / decision packet
