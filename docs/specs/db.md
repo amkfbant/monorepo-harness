@@ -1578,8 +1578,9 @@ ALTER TABLE phases
 
 `recordSpecApproval()` はこの経路を使って namespaced
 `review_state_json.specApproval = { approvedBy, approvedAt, reason, specHash }`
-を書き込む。`specHash` は TS 側で canonicalized `scope_json` +
-canonicalized `close_conditions_json` の sha256 として計算する。既存
+を書き込む。`specHash` は TS 側で `[scope, closeConditions]` tuple の
+canonical JSON の sha256 として計算する（scalar 連結だと `1`+`23` と `12`+`3` が
+ともに "123" に衝突するため、tuple で構造化して衝突を防ぐ）。既存
 `setNote()` も同じ CAS 経路を使うため、operator note と spec approval は互いの
 key を lost-update しない。v33 は table identity を変えないため
 `ALL_TABLE_NAMES` には何も追加しない。

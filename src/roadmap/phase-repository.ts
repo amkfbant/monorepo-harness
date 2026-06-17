@@ -39,8 +39,10 @@ function canonicalJson(value: unknown): string {
 }
 
 function phaseSpecHash(scope: unknown, closeConditions: unknown): string {
+  // Hash a structured tuple, not concatenated scalars: `1`+`23` and `12`+`3`
+  // would otherwise collide on "123" and let a spec drift slip past (codex SP-3).
   return createHash("sha256")
-    .update(canonicalJson(scope) + canonicalJson(closeConditions))
+    .update(canonicalJson([scope, closeConditions]))
     .digest("hex");
 }
 

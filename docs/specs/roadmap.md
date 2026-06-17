@@ -69,8 +69,9 @@ does not encode the GOAL_RULES.md build rules. Writers use
 bounded retry budget, then throw `ReviewStateConflictError` rather than applying
 a last-writer-wins overwrite. `recordSpecApproval()` stores human ratification
 under the namespaced `specApproval` key with `{ approvedBy, approvedAt, reason,
-specHash }`; `specHash` is the sha256 of canonicalized `scope_json` plus
-canonicalized `close_conditions_json`. `setNote()` also uses this CAS path so
+specHash }`; `specHash` is the sha256 of the canonical JSON of the
+`[scope, closeConditions]` tuple (a structured tuple rather than concatenated
+scalars, which would let `1`+`23` and `12`+`3` both hash to "123"). `setNote()` also uses this CAS path so
 operator notes and spec approvals preserve each other's keys.
 
 ### `phase_hitches`

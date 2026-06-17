@@ -62,9 +62,39 @@ describe("PhaseRepository review_state CAS writes (SP-3)", () => {
       approvedAt: "2026-06-17T00:00:00.000Z",
       reason: "accepted after review",
       specHash:
-        "1f9efad7778266f4d1b9431526ba61600b630688556fbfe50477185429a2547d",
+        "4724bfd1a6945fac5b630e6414f81f41f3edf2f94522efd68f3bfe389340c95a",
     });
     expect(reviewStateVersion(conn, p.phaseId)).toBe(1);
+  });
+
+  it("specHash does not collide across scalar scope/close boundaries", () => {
+    const c = courses.create({
+      title: "Roadmap",
+      projectId: "demo",
+      createdBy: "t",
+      createdSource: "cli",
+    });
+    const mk = (scope: unknown, close: unknown): string => {
+      const p = phases.add({
+        courseId: c.courseId,
+        title: "SP-3",
+        scope,
+        closeConditions: close,
+        createdBy: "t",
+        createdSource: "cli",
+      });
+      const approved = phases.recordSpecApproval(p.phaseId, {
+        approvedBy: "operator",
+        now: "2026-06-17T00:00:00.000Z",
+      });
+      return (
+        (approved.reviewState as { specApproval: { specHash: string } })
+          .specApproval.specHash
+      );
+    };
+    // Concatenating canonical JSON without a separator would hash both of these
+    // to "123"; the structured tuple keeps them distinct.
+    expect(mk(1, 23)).not.toBe(mk(12, 3));
   });
 
   it("updateReviewState retries a stale CAS miss and preserves both writers' keys", () => {
