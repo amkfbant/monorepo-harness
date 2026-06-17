@@ -2,12 +2,17 @@
 
 > 収束: C1→codex(2/3/5 NG)→C2/C4 v2/v3(個別・並行ドリフト)→C6 v4(CC15凍結→P0全消)→C8 v5(CC16)→codex(局所P1)→**C10 v6(CC17で残P1解消)**。spec1/4 は GO系。
 > 安全境界: 集約・状態遷移は決定論ゲートのみ。LLM 出力は入力/監査。fail-closed。
+>
+> **⚠️ 版番号同期（2026-06-17）**: #230(案A) が **schema v31 を排他取得して先行リリース**（0.7.15）。`review_refute_votes`(#229) は
+> v31 に載らず **新 migration `v32`** で作成する（出荷済み v31 statements は不可侵）。本書中の `review_refute_votes` の
+> 「v31」表記（C10 残件・§8 DDL 等）は **v32** に読み替え。`jury_classification_proposals` 等 #230 表の v31 表記は出荷済で正。
+> 決定根拠: design-230-deliberation-deepened.md R12（:124/511/661）。
 
 ## C10 changeLog
 - CC17 contract complete integration: spec2 adds reviewRuleResolution to PreparedProjectRun (required) and implements compileProfileReviewRule with ProjectProfileSchema review section; spec3 defines per-target refute loop (CC17②) with targetHash filter (cross-target mix prevention), dedupeLatestPerReviewer with refuteId tie-break (CC16⑤), and evaluateConsensus as pure function with refuteInputs; spec5 adds runRefuteAgent (CC17②③), N-dispatch review runner with refute dispatch loop (CC17③), reviewed-run consensus rejection (CC17④), and ReviewRefuteVoteRepository; minRefuteFraction schema is (0,1] excluding 0 (CC16④); quorum.minParticipants defaults to 2 (fail-closed); reviewRuleResolution threading unified across CLI/MCP/hitch/orchestrator (CC17①); all changes maintain backward compatibility with DEFAULT_REVIEW_RULE when profile.review is absent; pure function boundary for evaluateConsensus maintained with reviewer set resolution in processConsensusModePath (CC17①)
 
 ## C10 残件
-- Database migration (v31) for review_refute_votes table creation and ReviewRefuteVoteRepository implementation requires DB layer completion; reviewer-agent.ts refute prompt builder requires Codex interaction specification; ReviewerRepository.listByGroup implementation in reviewers.ts (new method) required; RunRepository.applyReviewDecision threading of consensusId/proposalsSummaryJson when refuteDropped present (spec3 output); reviewed-run workflow reviewed-run-workflow.ts integration point for assertReviewedRunRuleCompatible call needs specification; targetChangeHash and normalizeChangeText utility function placement (consensus.ts or review-rule.ts) to clarify; processConsensusModePath transaction handling when RefuteVoteRepository query fails (boundary condition); reviewed-run against consensus + no-refute rules (forward spec design for future phases); Decision packet buildJurySplitPacket implementation signature details beyond camelCase fields; CLI run.ts and MCP mutation-tools.ts specific threading points for resolveEffectiveRule with profile parameter
+- Database migration (**v32** — v31 was taken exclusively by #230; review_refute_votes ships in a new v32 migration, NOT by editing the shipped v31) for review_refute_votes table creation and ReviewRefuteVoteRepository implementation requires DB layer completion; reviewer-agent.ts refute prompt builder requires Codex interaction specification; ReviewerRepository.listByGroup implementation in reviewers.ts (new method) required; RunRepository.applyReviewDecision threading of consensusId/proposalsSummaryJson when refuteDropped present (spec3 output); reviewed-run workflow reviewed-run-workflow.ts integration point for assertReviewedRunRuleCompatible call needs specification; targetChangeHash and normalizeChangeText utility function placement (consensus.ts or review-rule.ts) to clarify; processConsensusModePath transaction handling when RefuteVoteRepository query fails (boundary condition); reviewed-run against consensus + no-refute rules (forward spec design for future phases); Decision packet buildJurySplitPacket implementation signature details beyond camelCase fields; CLI run.ts and MCP mutation-tools.ts specific threading points for resolveEffectiveRule with profile parameter
 
 ---
 
@@ -995,7 +1000,7 @@ export class ReviewRefuteVoteRepository {
 
 ### 8. DB Schema Addition(CC17①)
 
-Database schema migration — `review_refute_votes`:
+Database schema migration — `review_refute_votes` (**migration v32**; v31 is #230-only and already shipped). **⚠️ The DDL below is a simplified/older sketch — do NOT copy it verbatim. The canonical current DDL is [design-db-persistence.md §3.1](./design-db-persistence.md), which adds `validation_status` / `reject_reason` / `source_sha256` / `source_yaml` and partitioned partial-unique indexes (passed / inconclusive / rejected). Implement from §3.1:**
 ```sql
 CREATE TABLE review_refute_votes (
   refute_id INTEGER PRIMARY KEY AUTOINCREMENT,

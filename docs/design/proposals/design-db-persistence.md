@@ -4,7 +4,14 @@
 > **ステータス**: 計画のみ（コード未変更）。3案(#229/#230/#231) v2 ノートの永続化前提を横断統一し、共有 decision-log バックボーンに乗せる。
 > **前提検証で grounding 訂正あり**（付録C参照）: convergence 表は `hitch_convergence_decisions`（payload列なし→recommended_next_action JSON）/ review_decisions は export-backed / phases.review_state_json は specApproval 用の専用書込経路が無い（既存 writer は note 用 setNote() のみ・CAS なし）。設計はこれを反映済み。
 > 実装は dev クローンの `origin/main` ベース隔離ブランチで別セッション実施。**最終的な home**: dev クローンの `docs/design/` 配下へ。
-> カレント検証元: ops checkout v0.7.10 (= origin/main)。file:line は全件実コードで裏取り済み。
+> カレント検証元: ops checkout v0.7.10 (= 当時の origin/main)。file:line は全件実コードで裏取り済み。
+>
+> **⚠️ 版番号同期（2026-06-17）**: #230(案A) が **schema v31 を排他取得して先行リリース**（0.7.15, `SCHEMA_VERSION=31`）。
+> **shipped v31 = #230 jury 3表のみ**（`jury_classification_proposals` / `jury_classification_refutations` /
+> `jury_severity_audits`）。本ノートが前提とした「#229/#230/#231 を**単一 v31 に集約**」は**無効**。確定（design-230-deepened
+> R12:124/511/661）: **#229 `review_refute_votes` = v32 / #231 `phases.review_state_version` = v33**（逐次・別 migration）。
+> **出荷済み v31 statements は不可侵**（後から CREATE/ALTER を足すと適用済み DB の migration が壊れる）。以降の §3〜§4・付録A の
+> 「v31 で建てる」「単一 v31 共有」表記は上記で読み替え（#230 分のみ v31 / #229=v32 / #231=v33）。
 
 ---
 
@@ -14,7 +21,7 @@
 
 **P0**: なし（codex 判定どおり）。
 
-- **P1-1（FK + `foreign_keys=ON` の矛盾 — 「orphan として残す」は実現しない）** → §2.6 / §3.1 / §3.2 / §3.4 / 受け入れ条件①⑧ を改訂。`openDb` は `foreign_keys = ON`（connection.ts:44）。親 FK を張ったまま `ON DELETE` 無しだと、親（runs/hitch_sessions/hitch_findings）削除時に audit 行は **orphan 化せず削除が FK で失敗**する。import reset は legacy-file の `runs` を消す（import-files.ts:114）ので、`run_id REFERENCES runs` を張ると reset が詰まる。**確定方針: `run_id` / `hitch_id` / `finding_id` は FK にせず advisory ID とし、doctor で orphan を検出**（これで「親 purge 後も audit 行を append-only に残す」が成立）。FK は **一切張らない**（v31 の 3 表すべて）。
+- **P1-1（FK + `foreign_keys=ON` の矛盾 — 「orphan として残す」は実現しない）** → §2.6 / §3.1 / §3.2 / §3.4 / 受け入れ条件①⑧ を改訂。`openDb` は `foreign_keys = ON`（connection.ts:44）。親 FK を張ったまま `ON DELETE` 無しだと、親（runs/hitch_sessions/hitch_findings）削除時に audit 行は **orphan 化せず削除が FK で失敗**する。import reset は legacy-file の `runs` を消す（import-files.ts:114）ので、`run_id REFERENCES runs` を張ると reset が詰まる。**確定方針: `run_id` / `hitch_id` / `finding_id` は FK にせず advisory ID とし、doctor で orphan を検出**（これで「親 purge 後も audit 行を append-only に残す」が成立）。FK は **一切張らない**（合議 audit 表すべて＝ v31 jury 3表[#230 出荷済] ＋ v32 `review_refute_votes`[#229]）。
 - **P1-2（`hitch_id` と `finding_id` の別々 FK が別 hitch の finding を許す不整合）** → §3.2 を改訂。`hitch_findings` は `finding_id` 単独 PK・`hitch_id` は通常列（schema.ts:1342）で、既存 unique は `(hitch_id, stable_key)`（schema.ts:1575）であり `(hitch_id, finding_id)` ではない。FK を別々に張ると `hitch_id=h1` ∧ `finding_id=f2(別hitch)` が通る。**P1-1 で FK 自体を外したので、整合は repository insert と doctor で担保する**: insert は `finding_id` から `hitch_findings.hitch_id` を引いて一致を検査（不一致は reject）、doctor は `(stored hitch_id) == (join した hitch_id)` を advisory チェック。`hitch_id` 列は読み取り高速化のための **denormalized advisory** であり、権威は `finding_id` 経由の join。
 - **P1-3（`review_state_json` の lost-update）** → §2.4 / §3.3 / 付録B を改訂。`review_state_json` は人間批准の load-bearing state。単純 read→merge→write は他 key や同時 approval を lost-update する。**確定方針: `updateReviewState()` / `recordSpecApproval()` は `db.transaction(...).immediate()` 内で read-modify-write し、`WHERE phase_id=? AND review_state_version=?` の CAS（新規 `review_state_version` 列、§3.3）で保護**。`add()` が既に `.transaction().immediate()` を使う（phase-repository.ts:45/70）のと同方式。specHash は設計どおり TS 側で canonical JSON から計算。
 - **P1-4（「RESET list に足さない→import で空」は誤り）** → §2.6 / §3.4 / §6 / 受け入れ条件② を改訂。reset 対象は固定リストのみ（import-files.ts:45/60/67）。**新 DB-only 表を list に足さなければ、既存 DB の audit 行は import/reset 後も残る（消えない）**。空になるのは fresh DB の場合だけ。文言を **「file import は新 DB-only 表を変更しない。空になるのは fresh DB の場合のみ」** に訂正。DB-only audit を消す retention/repair は別コマンドに分離（§3.4・§9）。
@@ -60,10 +67,10 @@ epic #228 (AI 合議制) の sub-issue #229/#230/#231 は LLM 多体の **提案
 ## 2. 検証済みの現状 (file:line)
 
 ### 2.1 migration 機構
-- `src/db/schema.ts:21` `SCHEMA_VERSION = 30`。`src/db/migrations.ts:202` `LATEST_SCHEMA_VERSION = SCHEMA_VERSION`。
-- `migrations.ts:45-49` `interface Migration = { version; name; statements: readonly string[] }`。`MIGRATIONS` 配列 v1–v30 (`:52-199`、末尾 v30 は `:194-198`)。**v31 は `MIGRATIONS` 配列末尾に `{ version: 31, name, statements: MIGRATION_V31_STATEMENTS }` を append し、`SCHEMA_VERSION` を 31 へ bump する**（`LATEST_SCHEMA_VERSION = SCHEMA_VERSION` なので 1 箇所）。
+- **現状 baseline（v0.7.15 = #230 出荷後）**: `src/db/schema.ts` `SCHEMA_VERSION = 31`、`src/db/migrations.ts` `LATEST_SCHEMA_VERSION = SCHEMA_VERSION`（migration head = v31）。本ノート初稿時は v30 だったが、#230 出荷で 31 に進んだ。**SP-1 の migration 実装/テストは開始 schema を v31 とする**（v30 ではない）。file:line（schema.ts:21 等）は版で動くので、**着手時の HEAD で再取得**すること。
+- `migrations.ts:45-49` `interface Migration = { version; name; statements: readonly string[] }`。**v31 は #230 が出荷済**（`MIGRATIONS` 末尾 = `{ version: 31, ... }`、`SCHEMA_VERSION=31`。出荷済み statements は不可侵＝書き換えない）。**#229/#231 は同手順を新版で行う**: `MIGRATIONS` 配列末尾に `{ version: 32, name, statements: MIGRATION_V32_STATEMENTS }`（#229 `review_refute_votes`）/ `{ version: 33, ... }`（#231 phases ALTER）を append し `SCHEMA_VERSION` を bump（`LATEST_SCHEMA_VERSION = SCHEMA_VERSION` なので 1 箇所）。
 - `runMigrations`: per-migration IMMEDIATE txn + in-txn 再チェックで idempotent・concurrency-safe。
-- `schema.ts` 末尾 `ALL_TABLE_NAMES` (`:1874-1895`) は `V1..V30_TABLE_NAMES` の**手動 union**。新テーブルは `V31_TABLE_NAMES` 定数を新設し union に `...V31_TABLE_NAMES` を append 必須。`DROPPED_TABLE_NAMES` (`:1898`) も維持（v31 は drop 無し）。
+- `schema.ts` 末尾 `ALL_TABLE_NAMES` は `Vxx_TABLE_NAMES` の**手動 union**。**新テーブルを作る版だけ** `Vxx_TABLE_NAMES` 定数を新設し union に append（**v32=#229 は `V32_TABLE_NAMES`（`review_refute_votes`）を新設**。**v33=#231 は phases ALTER のみ＝新 table 名なし＝table-name 登録不要**）。`DROPPED_TABLE_NAMES` も維持（drop 無し）。
 
 ### 2.2 既存 review/hitch テーブルと **export-backed vs DB-only の正確な切り分け**
 | テーブル | DDL | 分類 | 根拠 file:line |
@@ -95,7 +102,7 @@ epic #228 (AI 合議制) の sub-issue #229/#230/#231 は LLM 多体の **提案
 ### 2.6 consistency / import / backup（**P1-1 / P1-4 反映**）
 - `consistency.ts:395-403` RUNTIME 列挙は `runs` / `backlog_items` / `knowledge_candidates` の 3 つのみ (export drift check 対象)。新 DB-only テーブルは**ここに足さない**。
 - `import-files.ts:45` `RESET_TABLES_FILE_DERIVED`、`:60` `RESET_TABLES_RUNTIME`、`:67-79` `RESET_CHILD_TABLES`。新テーブルは**どれにも足さない**。**訂正(P1-4)**: 足さないと既存 DB の audit 行は **import/reset 後も残る（消えない）**。空になるのは fresh DB の場合のみ（file source が無いから新規には作られない）。
-- `import-files.ts:114` の reset は legacy-file の `runs` を削除する。**`run_id` を FK 参照すると、この削除が FK で詰まる（P1-1）** → v31 表は `run_id` を FK にしない。
+- `import-files.ts:114` の reset は legacy-file の `runs` を削除する。**`run_id` を FK 参照すると、この削除が FK で詰まる（P1-1）** → 合議 audit 表（v31 jury 3表[出荷済] ＋ v32 `review_refute_votes`）は `run_id` を FK にしない。
 - backup は `maintenance.ts:76` `await db.backup(opts.outPath)` (SQLite フル snapshot)。**テーブル列挙でなくファイル全体コピー** → 新テーブルは自動で backup に含まれる。`backup_catalog`/`archive_catalog` は backup の**メタ catalog** であり個別テーブル列挙はしない。
 
 ### 2.7 設計案の前提 (各 v2 ノートで確定済み)
@@ -109,7 +116,7 @@ epic #228 (AI 合議制) の sub-issue #229/#230/#231 は LLM 多体の **提案
 
 ### 3.0 共有 decision-log バックボーン (規約 + 最小テーブル)
 
-「super-table を 1 本建てる」(Lens 5) ではなく、**①provenance footprint 規約 + ②提案/判定テーブル分離規約 + ③v31 で各案が乗る最小テーブル群**でフラグメンテーションを防ぐ。
+「super-table を 1 本建てる」(Lens 5) ではなく、**①provenance footprint 規約 + ②提案/判定テーブル分離規約 + ③各案が乗る最小テーブル群（逐次採番: v31=#230 jury 3表[出荷済] / v32=#229 / v33=#231。詳細 §3③）**でフラグメンテーションを防ぐ。
 
 **① provenance footprint (全合議入力行が持つ列の規約。GOAL_RULES に明記)**
 ```
@@ -131,7 +138,7 @@ run_usage との対応: invocation 単位は `run_usage(run_id, kind, seq)` で 
 - **判定** = 既存 `review_consensus` / `review_decisions` / `hitch_convergence_decisions` (harness 決定論ゲートが書く)。LLM 出力列をゲート入力に直結させない。
 - 「判断ログ」= verdict + reasoning の構造化行 (会話全文は残さない、deliberation.md:151)。raw codex log は `.harness/audit/` のファイルに残し DB には載せない。
 
-**③ v31 で建てる最小テーブル** (詳細 DDL §3.1–3.3): `review_refute_votes` (#229 P2-0)、`jury_classification_proposals` (#230)、`jury_severity_audits` (#230 advisory)。packet (#230) と specApproval (#231) は既存列の additive JSON。additive 列: phases に `review_state_version` (#231)。（#229 C4 の frozen set は **explicit reviewer_ids 前提で rule_json に載るため列追加不要**。listByGroup 自動解決の consensus は follow-up で別途 `run_review_rule_snapshots.resolved_reviewers_json` を追加。）
+**③ 各案で建てる最小テーブル**（版番号は #230 の v31 単独出荷後に確定。詳細 DDL §3.1–3.3）: **v31（#230・出荷済）** = `jury_classification_proposals` / `jury_classification_refutations` / `jury_severity_audits`（advisory）**※ jury 3表の DDL 正本は #230 出荷分（`docs/specs/db.md` / design-230）。本ノート §3.2 は proposals / severity_audits のみ概説し `jury_classification_refutations` の DDL は重複掲載しない**。**v32（#229 P2-0）** = `review_refute_votes`。packet (#230) と specApproval (#231) は既存列の additive JSON。**v33（#231）** additive 列: phases に `review_state_version`。（#229 C4 の frozen set は **explicit reviewer_ids 前提で rule_json に載るため列追加不要**。listByGroup 自動解決の consensus は follow-up で別途 `run_review_rule_snapshots.resolved_reviewers_json` を追加。）
 
 ### 3.1 #229 — multi-lens consensus + refute
 
@@ -139,10 +146,10 @@ run_usage との対応: invocation 単位は `run_usage(run_id, kind, seq)` で 
 |---|---|---|---|
 | (a) profile 由来 review rule | **既存再利用** | `review_rules.source="project-profile"` + `run_review_rule_snapshots` | enum 既存 (design-229:268)。schema 変更なし |
 | (b) N proposals / consensus | **既存再利用** | `review_proposals` / `review_consensus` | distinct reviewer 複数 active、lifecycle_status supersede |
-| (c) Phase 2 refute 票 target binding | **新 table `review_refute_votes` (v31)** | DB-only。target は `sha256(normalized change_text)` で bind (FK しない) | review_decisions/required_changes は global+text array のみ。決定論 bind 構造が無い (design-229:362-366) |
+| (c) Phase 2 refute 票 target binding | **新 table `review_refute_votes` (v32。v31 は #230 排他のため次版)** | DB-only。target は `sha256(normalized change_text)` で bind (FK しない) | review_decisions/required_changes は global+text array のみ。決定論 bind 構造が無い (design-229:362-366) |
 | (d) max_reviewers 等 | rule JSON 内 | (storage 不要) | |
 
-**DDL — `review_refute_votes` (v31)** （P1-1: FK なし / P2-3: UNIQUE は business key / P2-4: usage_kind+seq / P3-1: confidence CHECK）
+**DDL — `review_refute_votes` (v32。v31 は #230 排他のため新規 v32 migration)** （P1-1: FK なし / P2-3: UNIQUE は business key / P2-4: usage_kind+seq / P3-1: confidence CHECK）
 ```sql
 CREATE TABLE review_refute_votes (
   refute_id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -215,6 +222,8 @@ CREATE INDEX review_refute_votes_target_idx ON review_refute_votes(run_id, targe
 - refute 票を decision に通すのは `evaluateConsensus` の決定論集約 (design-229 P2-C)。この表は**入力**で、**集約に渡すのは `validation_status='passed'` ∧ `refute_verdict ∈ {uphold,refute}` のみ**（`inconclusive` は passed でも quorum に数えない＝fail-closed 除外。`rejected` は監査保持＝binding 失敗/証拠欠落も追跡可能。design-229 G2/G3）。
 
 ### 3.2 #230 — classification jury / severity audit / decision packet
+
+> **非 canonical 注記（重要）**: 本節の jury DDL（`jury_classification_proposals` / `jury_severity_audits`。`jury_classification_refutations` は §3③ の通り本ノートに DDL 重複掲載しないが同じく対象）は **#230 設計時のスケッチ**であり、**shipped v31 とは差異がある**（実 schema は unique key に `deliberation_id` を含む・`round` 列・`jury_votes_json` 等を持つ）。**実装/テストの canonical は [`docs/specs/db.md`](../../specs/db.md)（出荷済 v31）と design-230 を正とする**。本節は #229/#231 設計の文脈用であり、repository/doctor テストの基準に使ってはならない（非互換な v31 layout を狙う恐れがある）。
 
 | アーティファクト | 決定 | storage | 理由 |
 |---|---|---|---|
@@ -318,10 +327,10 @@ interface HitchDecisionPacket {
 { "specApproval": { "approvedBy": "<actor>", "approvedAt": "<ISO>",
                     "reason": "<text>", "specHash": "sha256(canonical(scope)+canonical(close))" } }
 ```
-- **書き込み経路の追加（migration 必要 — 軽微 additive 列）**: `review_state_json` の lost-update を防ぐため、phases に **`review_state_version INTEGER NOT NULL DEFAULT 0`** を v31 で additive 追加（P1-3）。`phase-repository.ts` に下記を新設:
+- **書き込み経路の追加（migration 必要 — 軽微 additive 列）**: `review_state_json` の lost-update を防ぐため、phases に **`review_state_version INTEGER NOT NULL DEFAULT 0`** を **v33（#231 専用 migration。v31 は #230 排他）** で additive 追加（P1-3）。`phase-repository.ts` に下記を新設:
   - `updateReviewState(phaseId, mutator)`: `db.transaction(...).immediate()` 内で `SELECT review_state_json, review_state_version` → mutator で merge → `UPDATE phases SET review_state_json=?, review_state_version=review_state_version+1, updated_at=? WHERE phase_id=? AND review_state_version=?` の **CAS**。`changes===0` なら再読込してリトライ（最大 N 回）か `LeaseGuardFailedError` 同様の競合エラー。read-modify-write は他 key を保全。
   - `recordSpecApproval(phaseId, {approvedBy, reason})`: `updateReviewState` を使い `specApproval` key のみ書く。specHash は **scope_json + close_conditions_json から TS 側で canonical JSON 計算**（SQLite sha256 無し）。
-  - `add()`(`:45`) / `transitionStatus()`(`:116`) が既に `.immediate()` / CAS を使うのと同方式。`review_state_version` は v31 で既存行に DEFAULT 0 が入るので後方互換。
+  - `add()`(`:45`) / `transitionStatus()`(`:116`) が既に `.immediate()` / CAS を使うのと同方式。`review_state_version` は v33 で既存行に DEFAULT 0 が入るので後方互換。
 - specHash は link/start で drift 検知 (design-231:200、reject はしない warning)。
 
 ### 3.4 consistency / doctor / import-export / backup の扱い（**P1-1 / P1-4 反映**）
@@ -336,7 +345,7 @@ interface HitchDecisionPacket {
   - **repair の DELETE は破壊的なので default dry-run + operator 明示承認の後ろに gate** (fail-closed)。auto-DELETE しない。
 - **FK を張らない理由 (P1-1)**: `openDb` は `foreign_keys = ON`(connection.ts:44)。親 FK + `ON DELETE` 無しだと親削除が FK で**失敗**し「orphan として残す」が成立しない。かつ import reset の legacy-file `runs` 削除(import-files.ts:114)が詰まる。よって `run_id`/`hitch_id`/`finding_id` を FK にせず advisory ID とし、doctor で orphan を検出する（監査 append-only と両立）。
 - **backup**: `db.backup()` フル snapshot で自動包含 (§2.6)。table 列挙不要。**retention/容量上限は follow-up** (jury votes × lens × findings で増大、§9)。
-- **ALL_TABLE_NAMES に `V31_TABLE_NAMES` を追加** (`review_refute_votes`, `jury_classification_proposals`, `jury_severity_audits`)。union (schema.ts:1894) に `...V31_TABLE_NAMES` を append。phases への列追加 (`review_state_version`) は table 名を変えないので V31_TABLE_NAMES には載らない（ALTER のみ）。
+- **ALL_TABLE_NAMES への登録（逐次・改訂）**: v31=#230 の jury 3表（`jury_classification_proposals` / `jury_classification_refutations` / `jury_severity_audits`）は `V31_TABLE_NAMES` で**出荷済登録**。**#229 の `review_refute_votes` は v32 で `V32_TABLE_NAMES` を新設**して union に append。**#231 の `review_state_version` は phases への ALTER のみ＝table 名を変えないので table-name 登録不要**（v33）。
 
 ### 3.5 provenance / 判断ログ モデル (run_usage 一貫)
 
@@ -347,7 +356,7 @@ interface HitchDecisionPacket {
 
 ### 3.6 共有 backbone の一般化度 (採用/棄却)
 
-- **採用 (中道、Lens 2/3)**: v31 で 3 テーブル + footprint 規約 + packet/specApproval を既存列 JSON + phases に `review_state_version` 1 列 additive。`deliberation_rounds`/`agent_proposals` の anchor super-table は**建てない**。
+- **採用 (中道、Lens 2/3)**: 逐次 migration（v31=#230 jury 3表[出荷済] / v32=#229 `review_refute_votes` / v33=#231 phases `review_state_version` 列 additive）+ footprint 規約 + packet/specApproval を既存列 JSON。`deliberation_rounds`/`agent_proposals` の anchor super-table は**建てない**。
 - **棄却 (Lens 5)**: super-table は D/E 設計が未確定の段階で過剰一般化。かつ具体 DDL が無効 (`agent_proposals.run_usage_id REFERENCES run_usage(invocation_id)` — そんな列無し、v30 PK は `(run_id,kind,seq)`; `REFERENCES run_usage(kind)` — kind は unique でない)。
 - **棄却 (Lens 1)**: severity `enforcement_mode='binding'`、新 `judgment_log_json`/`decision_packet_json` 列 (既存 round-trip JSON 列で足りる churn)。
 - **アンチフラグメンテーションは「規約 (GOAL_RULES の footprint + 分離ルール) を文書化」で 80% 達成** — D/E が後から乗れる。
@@ -356,9 +365,9 @@ interface HitchDecisionPacket {
 
 ## 4. work item DAG
 
-(下の workItemDag 参照。サマリ: **DB-WI-0 (review_state_json 書き込み経路 + `review_state_version` CAS、#231 の前提・軽微 additive 列)** → **DB-WI-1 (v31 schema/migration の 3 テーブル + phases ALTER)** → repository 層 (refute/jury/severity、finding_id→hitch_id 整合検査)、packet 型、specApproval 書き込み (txn+CAS) → consistency/doctor (orphan/hash/hitch_id 整合) → docs/tests。各 WI は #229/#230/#231 紐付けを明記。)
+(下の workItemDag 参照。サマリ: **DB-WI-0 (review_state_json 書き込み経路 + `review_state_version` CAS、#231 の前提・軽微 additive 列)** → **DB-WI-1 (#229 `review_refute_votes` の v32 migration ／ #231 phases ALTER は v33。#230 jury 3表は v31 で出荷済)** → repository 層 (**refute[v32] のみ**。jury/severity repository は #230 出荷済＝対象外)、specApproval 書き込み (txn+CAS、v33) → consistency/doctor (**refute 用の orphan/hash 検査のみ**。jury doctor[orphan_rows/hitch_mismatch/refutation_mismatch/auto_confirm_replay] と packet 型は #230 出荷済＝対象外) → docs/tests。各 WI は #229/#231 紐付けを明記（#230 残作業は無し）。)
 
-**migration 連番の単一予約ブロック**: #229/#230/#231 は**全て v31 を共有** (1 migration block)。各案で v31/v32/v33 に分けない (v29↔v30 renumber 再発回避)。schema.ts に `// RESERVED v31 for epic #228 consensus artifacts` コメントを置き、PR merge 順を強制。LATEST bump は v31 へ 1 回のみ。**v31 statements**: 3 テーブル CREATE + index + `ALTER TABLE phases ADD COLUMN review_state_version INTEGER NOT NULL DEFAULT 0`（#229 C4 frozen set は explicit reviewer_ids 前提で rule_json に載るため列追加なし。listByGroup 自動解決は follow-up）。
+**migration 連番（逐次・改訂）**: 旧計画は「#229/#230/#231 を単一 v31 に集約」だったが、**#230 が v31 を単独出荷したため逐次採番に確定**（design-230-deepened R12）。**v31 = #230**（`jury_classification_proposals` / `jury_classification_refutations` / `jury_severity_audits` の CREATE + index。出荷済・不可侵）。**v32 = #229**（`review_refute_votes` CREATE + index。#229 C4 frozen set は explicit reviewer_ids 前提で rule_json に載るため列追加なし。listByGroup 自動解決は follow-up）。**v33 = #231**（`ALTER TABLE phases ADD COLUMN review_state_version INTEGER NOT NULL DEFAULT 0`）。同一 version 番号で 2 branch 同時 open を禁止（merge order ゲート）。LATEST bump は各版で 1 回ずつ。
 
 ---
 
@@ -366,12 +375,12 @@ interface HitchDecisionPacket {
 
 | 不可侵境界 | DB 設計での守り方 | 該当 |
 |---|---|---|
-| LLM 出力 ≠ 状態遷移の権威 | refute/jury/severity は append-only **提案/監査テーブル** (§3.0②)。verdict/confidence 列はゲートの**入力**。状態遷移は `evaluateConsensus`/`aggregateJuryVotes`/`processReviewDecision`/convergence の決定論ゲートのみ | 全 v31 表 |
+| LLM 出力 ≠ 状態遷移の権威 | refute/jury/severity は append-only **提案/監査テーブル** (§3.0②)。verdict/confidence 列はゲートの**入力**。状態遷移は `evaluateConsensus`/`aggregateJuryVotes`/`processReviewDecision`/convergence の決定論ゲートのみ | v31(#230 jury 3表・出荷済) / v32(#229 refute) / v33(#231 phases ALTER) 全表 |
 | severity 自動降格禁止 | `jury_severity_audits` は **advisory-only**。`enforcement_mode` 列を**作らない**。固定 mapping (review-integration.ts:291/310/330) authoritative。escalate_flag は packet に積むだけ (CHECK IN (0,1)) | jury_severity_audits |
 | 状態遷移は harness のみ | LLM 出力列 → 状態テーブルへの直接 UPDATE 経路を作らない。提案表と decision/consensus 表を物理分離 | 全表 |
 | 蓄積行が権威にならない | confidence は float gate にしない (design-230:187、CHECK 0..1 は範囲健全性のみ)。refute_verdict は決定論集約に通す入力 | refute/jury |
 | provenance/再現性 | footprint (prompt_sha256/template_version/model/lineage/usage_kind+seq) を全行に。判断ログのみ・会話全文残さない | §3.5 |
-| migration additive・後方互換 | v31 は CREATE TABLE/INDEX + phases に 1 列 additive(DEFAULT 0) + 既存列 additive JSON のみ。DROP/RENAME/列削除無し。**FK 一切無し** (orphan/import 詰まり回避) | §3.1-3.3 |
+| migration additive・後方互換 | 全版 additive: v31(#230 jury 3表・出荷済) = CREATE TABLE/INDEX / v32(#229) = `review_refute_votes` CREATE TABLE/INDEX / v33(#231) = phases に 1 列 additive(DEFAULT 0)。既存列 additive JSON のみ。DROP/RENAME/列削除無し。**FK 一切無し** (orphan/import 詰まり回避) | §3.1-3.3 |
 | 人間批准 state の lost-update 防止 | `recordSpecApproval`/`updateReviewState` は txn().immediate() + `review_state_version` CAS で他 key/同時 approval を保護 | §3.3 (P1-3) |
 | 迷ったら fail-closed | refute hash 不一致=reject (design-229:370)。doctor DELETE repair は dry-run + operator 承認 gate。jury split→escalate (auto-confirm しない)。CAS 競合→リトライ/エラー(後勝ち禁止) | §3.4 |
 
@@ -379,19 +388,19 @@ interface HitchDecisionPacket {
 
 ## 6. TDD テスト計画
 
-**migration**: (1) `MIGRATIONS` に v31 が version 順・name・statements 非空。`LATEST_SCHEMA_VERSION=31`。(2) fresh DB v1→v31 適用後 `schema_migrations` に 31 行。3 テーブル存在 + phases に `review_state_version` 列 (PRAGMA table_info)。(3) v30→v31 upgrade で既存 review/hitch テーブル無変更、3 テーブル追加、既存 phase 行に `review_state_version=0` が入る。(4) idempotent: 2 回目 run は no-op。(5) `ALL_TABLE_NAMES` に V31 名が含まれ重複なし。(6) **FK が無いことの確認**: PRAGMA foreign_key_list が v31 3 表で空。
+**migration**（v31=#230 は出荷済。本案 #229/#231 は v32/v33）: (1) `MIGRATIONS` に v32(#229)/v33(#231) が version 順・name・statements 非空。`LATEST_SCHEMA_VERSION=33`。(2) fresh DB v1→v33 適用後 `schema_migrations` に 33 行。`review_refute_votes`(v32) 存在 + phases に `review_state_version` 列(v33) (PRAGMA table_info)。(3) v31→v32→v33 upgrade で既存 jury/review/hitch テーブル無変更、`review_refute_votes` 追加、既存 phase 行に `review_state_version=0` が入る。(4) idempotent: 2 回目 run は no-op。(5) `ALL_TABLE_NAMES` に V32 名（`review_refute_votes`）が含まれ重複なし（v33 は phases ALTER のみ＝新 table 名登録なし）。(6) **FK が無いことの確認**: PRAGMA foreign_key_list が `review_refute_votes` で空。
 
-**round-trip / import-export (P1-4 反映)**: (1) v31 表に行を入れ `db export-files` → 表は file 化されない (DB-only)。(2) **既存 DB に v31 行を入れて `db import --from-files`（reset 含む）→ v31 行は残る（消えない）。fresh DB を import したときだけ空**（P1-4 を明示 assert）。(3) refute 行を入れ、import で required_changes 再構築 → refute 行は `target_change_hash` 経由で参照保持 (idx 変化に影響されない)。(4) **legacy-file run を reset で削除しても、`run_id` を FK 参照しない v31 行は FK 違反で詰まらず残る**(P1-1)。(5) `db.backup()` snapshot に v31 表行が含まれ restore で復元。
+**round-trip / import-export (P1-4 反映。本案の対象は v32 `review_refute_votes`。jury 3表[v31] の round-trip は #230 出荷分でカバー済＝対象外)**: (1) v32 `review_refute_votes` に行を入れ `db export-files` → 表は file 化されない (DB-only)。(2) **既存 DB に refute 行を入れて `db import --from-files`（reset 含む）→ refute 行は残る（消えない）。fresh DB を import したときだけ空**（P1-4 を明示 assert）。(3) refute 行を入れ、import で required_changes 再構築 → refute 行は `target_change_hash` 経由で参照保持 (idx 変化に影響されない)。(4) **legacy-file run を reset で削除しても、`run_id` を FK 参照しない refute 行は FK 違反で詰まらず残る**(P1-1)。(5) `db.backup()` snapshot に refute 行が含まれ restore で復元。
 
-**consistency / doctor (P1-1 / P1-2 反映)**: (1) RUNTIME 列挙に v31 表が出ない。(2) orphan proposal/vote/audit (finding/run/hitch 削除後も行が残る) → advisory finding。(3) **hitch_id 整合: stored hitch_id != finding_id から join した hitch_id → advisory** (P1-2)。(4) refute hash 不整合 → TS recompute で検出。(5) packet↔votes 不整合検出。(6) repair DELETE は dry-run default、--apply 必須。
+**consistency / doctor (P1-1 / P1-2 反映。本案の対象は v32 `review_refute_votes` 用 doctor。jury 3表[v31] の doctor[jury.orphan_rows/hitch_mismatch/refutation_mismatch/auto_confirm_replay] は #230 出荷済＝対象外)**: (1) RUNTIME 列挙に `review_refute_votes` が出ない。(2) orphan refute vote (finding/run/hitch 削除後も行が残る) → advisory finding。(3) **refute hash 不整合 → TS recompute で検出**。(4) packet↔votes 不整合検出。(5) repair DELETE は dry-run default、--apply 必須。
 
-**determinism**: (1) `aggregateJuryVotes` 純関数: 同 proposals → 同 decision。confidence 変えても decision 不変 (no-float-gate)。(2) `auditSeverity` 純関数: aligned/diverged/inconclusive 決定論、固定 mapping 不変、severity 自動降格しない。(3) proposal/refute insert の business-key UNIQUE (P2-3) で retry 二重挿入を防ぐ。(4) **repository insert が finding_id→hitch_id 不一致を reject** (P1-2)。
+**determinism**（jury 側の決定論テスト[`aggregateJuryVotes` / `auditSeverity` 純関数・jury proposal insert dedup・finding_id→hitch_id 整合 reject]は **#230 出荷分でカバー済＝本案対象外**。本案は refute[v32] の決定論性のみ）: (1) refute insert の business-key partial UNIQUE (P2-3。passed participant / inconclusive / rejected を別 index で) で retry 二重挿入を防ぐ。(2) `evaluateConsensus` に渡るのは passed ∧ verdict∈{uphold,refute} のみ（confidence 変えても decision 不変＝no-float-gate）。(3) `normalizeChangeText()` 純関数: 同 change → 同 hash（target binding 決定論）。
 
 **refute votes CHECK / disposition (G3 / round10。証拠強制は refute 限定)**: (a) passed ∧ refute ∧ kind=none → passed CHECK 違反（=rejected 側へ、reject_reason=evidence_none で記録可）。(a') passed ∧ refute ∧ kind=NULL（列欠落）∧ 他 DSL 充足 → passed CHECK 違反（`NULL IN(...)` すり抜け防止の NOT NULL ガードを assert）。(b) passed ∧ refute ∧ refute_reason / refute_condition / retract_condition / counter_evidence_ref のいずれか欠落 → CHECK 違反。(c) passed ∧ refute ∧ kind∈{diff,test} ∧ 全 DSL 充足 ∧ ref 非空 → INSERT OK。(d) **passed ∧ uphold ∧ kind=none かつ DSL フィールド NULL → INSERT OK**（uphold は target_change_hash+verdict のみで passed＝refute-conditional の核。証拠強制で誤って participant 分母から脱落しないことを assert）。(e) passed ∧ inconclusive ∧ kind=none → INSERT OK。(f) rejected ∧ reject_reason NULL/空 → CHECK 違反（round3）。(g) passed ∧ refute_verdict NULL → CHECK 違反（round4）。(h) `source_yaml` NOT NULL DEFAULT '' / `source_sha256` NOT NULL（round10）: NULL yaml で INSERT 不能、空出力は '' で記録可。(i) partitioned UNIQUE: passed の **participant 票(uphold/refute)** は business-key で二重挿入 dedup、**inconclusive は別 partial index で dedup**（uphold/refute と別 predicate なので衝突しない・codex #257）、rejected は source_sha256 を含み distinct 失敗試行が共存。(j) **集約入力 filter**: passed ∧ verdict∈{uphold,refute} のみ集計に渡り、inconclusive は passed でも除外。(k) **inconclusive が participant slot を占有しない**: inconclusive(passed) を先に記録後、同一 reviewer/target/prompt の uphold/refute が unique 衝突せず INSERT OK・各 verdict の retry は dedup（codex #257・SQLite 実機検証済）。
 
 **review_state CAS (P1-3)**: (1) `recordSpecApproval` で specApproval 記録、specHash = sha256(canonical scope+close)、`review_state_version` が +1。(2) **並行 read-modify-write シミュレーション**: stale version での CAS が `changes===0` で no-op（後勝ちで他 key を消さない）→ リトライ後に両 key 保全。(3) 他 key (任意の review fact) を保全。
 
-**後方互換 / 回帰**: (1) Phase 11 review (review_proposals/consensus/review-processor) 無影響。(2) `recommended_next_action` の既存 packet 無し行が `decisionPacket===undefined` で parse OK。(3) phase INSERT/UPDATE 既存挙動不変（`review_state_version` DEFAULT 0 で既存テスト緑）。(4) `info` severity を持つ finding が severity audit を通せる/明示除外できる (P2-1)。
+**後方互換 / 回帰**（本案 #229/#231 が壊さないことの確認。jury packet/severity の後方互換[下記 (2)/(4)]は #230 出荷分でカバー済＝対象外で、ここでは本案変更が同回帰を再壊ししないことの確認に留める）: (1) Phase 11 review (review_proposals/consensus/review-processor) 無影響。(2) 【#230 出荷済】`recommended_next_action` の既存 packet 無し行が `decisionPacket===undefined` で parse OK（本案は packet に触れない＝回帰なし）。(3) phase INSERT/UPDATE 既存挙動不変（`review_state_version` DEFAULT 0 で既存テスト緑、v33）。(4) 【#230 出荷済】`info` severity を持つ finding が severity audit を通せる/明示除外できる (P2-1)（本案は severity audit に触れない）。
 
 **#231 spec gate**: (1) link/start で specHash drift → warning。(2) scope 拡大は `--allow-scope-widen` 無しで reject。
 
@@ -399,20 +408,22 @@ interface HitchDecisionPacket {
 
 ## 7. docs/specs 更新 (同コミット)
 
-(下の specUpdates 参照。db.md に「v31 合議アーティファクト DB-only 監査表」節、export-backed vs DB-only 切り分け表、**FK を張らない理由（foreign_keys=ON + import reset、P1-1）**、**import で空になるのは fresh DB のみ（P1-4）**、refute content-hash binding、`hitch_id` denormalized advisory + 整合検査（P1-2）、doctor 非破壊 repair。GOAL_RULES に provenance footprint 規約（usage_kind+seq 含む、P2-4） + 提案/判定分離 + severity advisory-only + 共有 v31 予約。hitch-convergence.md に decisionPacket format。roadmap.md に specApproval namespaced key + `updateReviewState`/`recordSpecApproval` 書き込み経路 + `review_state_version` CAS（P1-3）。)
+(下の specUpdates 参照。**#230 出荷分（db.md の jury 3表[v31] DB-only 監査表節・`hitch_id` denormalized advisory + 整合検査[P1-2]・hitch-convergence.md の decisionPacket format）は 0.7.15 で更新済＝本案の対象外**。本案（#229/#231）の docs 残作業: db.md に v32 `review_refute_votes` の節（export-backed vs DB-only 切り分け表、**FK を張らない理由（foreign_keys=ON + import reset、P1-1）**、**import で空になるのは fresh DB のみ（P1-4）**、refute content-hash binding、refute 用 doctor 非破壊 repair）。GOAL_RULES に provenance footprint 規約（usage_kind+seq 含む、P2-4） + 提案/判定分離 + severity advisory-only + 逐次 migration 予約（v31=#230 出荷済 / v32=#229 / v33=#231。merge order ゲート）。roadmap.md に specApproval namespaced key + `updateReviewState`/`recordSpecApproval` 書き込み経路 + `review_state_version` CAS（P1-3、v33）。)
 
 ---
 
 ## 8. 受け入れ条件
 
-1. v31 migration が additive・後方互換 (v30→v31 で既存テーブル/行/import 無破壊。phases に `review_state_version` DEFAULT 0 を additive 追加)。fresh DB と upgrade DB の両方で適用、idempotent。
-2. `review_refute_votes`/`jury_classification_proposals`/`jury_severity_audits` が DB-only (export 非対象、backup 包含)。**既存 DB では import/reset 後も残り、空になるのは fresh DB のみ**(P1-4)。`ALL_TABLE_NAMES` に登録。
-3. refute target が content hash bind (export-backed 行に FK せず import round-trip 不破壊)。**3 表とも FK 一切無し** (P1-1)。
-4. severity audit が advisory-only (binding 列無し、`info` も扱える: P2-1)。固定 mapping/close gate 不変の回帰緑。`escalate_flag` は CHECK IN (0,1) (P3-1)。
-5. packet が既存 `recommended_next_action` JSON に additive (migration 無し、既存 reader 不破壊)。
+> **本案(#229/#231)の残作業 vs #230 出荷済の区別**: 条件 4（severity audit）・条件 5（packet）と、jury 3表（v31）の DB-only/ALL_TABLE_NAMES 登録・doctor は **#230 で 0.7.15 出荷済**。本案の残作業は **v32 `review_refute_votes`（#229）/ v33 `review_state_version`（#231）** に限る。下記条件は出荷済前提で読み、新規実装は #229/#231 分のみが対象。
+
+1. v32/v33 migration が additive・後方互換 (v31→v32→v33 で既存テーブル/行/import 無破壊。`review_refute_votes`=v32 CREATE / phases に `review_state_version` DEFAULT 0 を v33 で additive 追加。**出荷済み v31[#230 jury 3表] は不変**)。fresh DB と upgrade DB の両方で適用、idempotent。
+2. 合議 audit 表（v31=#230 jury 3表 `jury_classification_proposals` / `jury_classification_refutations` / `jury_severity_audits`[出荷済] ＋ v32=#229 `review_refute_votes`）が DB-only (export 非対象、backup 包含)。**既存 DB では import/reset 後も残り、空になるのは fresh DB のみ**(P1-4)。`ALL_TABLE_NAMES` に登録（jury 3表は `V31_TABLE_NAMES` で出荷済登録、`review_refute_votes` は `V32_TABLE_NAMES` を新設）。
+3. refute target が content hash bind (export-backed 行に FK せず import round-trip 不破壊)。**audit 4表（v31 jury 3表[出荷済] ＋ v32 refute）とも FK 一切無し** (P1-1)。
+4. severity audit が advisory-only (binding 列無し、`info` も扱える: P2-1)。固定 mapping/close gate 不変の回帰緑。`escalate_flag` は CHECK IN (0,1) (P3-1)。**【#230 出荷済】**
+5. packet が既存 `recommended_next_action` JSON に additive (migration 無し、既存 reader 不破壊)。**【#230 出荷済】**
 6. specApproval が review_state_json namespaced key、**書き込み経路 `recordSpecApproval` 新設 + `review_state_version` CAS で lost-update 防止**(P1-3)、他 key 保全。
 7. provenance footprint が全合議行に一貫 (`(run_id, usage_kind, usage_seq)` で run_usage と一意 JOIN: P2-4、`kind` CHECK 不変)。
-8. doctor が orphan/hash 不整合/**hitch_id 整合**(P1-2)を advisory 検出 (FK を張らないので親 purge 後も行が残る: P1-1)、DELETE repair は非破壊 default。
+8. doctor が orphan/hash 不整合を advisory 検出 (FK を張らないので親 purge 後も行が残る: P1-1)、DELETE repair は非破壊 default。jury 表の doctor（`jury.orphan_rows` / `jury.hitch_mismatch`[hitch_id 整合 P1-2] / `jury.refutation_mismatch` / `jury.auto_confirm_replay`）は **#230 出荷済**。本案は refute 用 doctor のみ新設。
 9. 関連テスト + typecheck 緑 (サブ Phase)、フルスイート + typecheck 緑 (大 Phase)。回帰禁止。
 10. docs/specs を同コミット更新。
 
@@ -425,7 +436,7 @@ interface HitchDecisionPacket {
 - **jury 監査表の retention/容量上限 + DB-only audit の prune コマンド** (votes × lens × findings 増大): 自動 prune は follow-up。**reset では消さない (P1-4) ので、明示的な別コマンド `db prune-audit` 等を別途設計**。今は全保持。
 - **spec proposer の reviewers 登録** (#231 agent を FK 化するか free-text か): §Q5。当面 free-text + 監査性低下を docs 明記。
 - **dashboard read-model materialized view** (E): provenance/lineage キーを予約するのみ。view は建てない。
-- **needs_classification jury の quorum/tie-break 決定論集約ロジック** (`aggregateJuryVotes`): #230 本体スコープ。**v31 表は決定論ゲート spec が固まってから/と同時に出荷** (提案行だけ先行させて LLM→状態直結を招かない)。
+- **needs_classification jury の quorum/tie-break 決定論集約ロジック** (`aggregateJuryVotes`): #230 本体スコープ。**0.7.15 で jury 3表(v31)・`aggregateJuryVotes`・decision packet と同時に出荷済**（提案行だけ先行させず決定論ゲートと同時着地＝LLM→状態直結を招かない、という方針どおり）。本案(#229/#231)の対象外。
 - **operator が packet を read/override する CLI/MCP UX**: read は既存 listDecisions 流用、専用 UX は follow-up (design-230:458)。
 
 ---
@@ -436,10 +447,10 @@ interface HitchDecisionPacket {
 **→ 委員会推奨**: A (中道。3 表 + footprint 規約のみ)。Lens 5 の super-table 案は具体 DDL が無効かつ D/E 設計未確定で過剰一般化。C は #230 の決定論集約が GROUP BY する対象を失い strand する。
 
 ## Q2. spec candidate を DB テーブルに materialize するか、harness 外 GitHub ファイルのみに留めるか。
-**→ 委員会推奨**: A (harness 外ファイルのみ。design-231:95 と整合)。dashboard が候補直接 query を要求したら C で v32 materialize に昇格。
+**→ 委員会推奨**: A (harness 外ファイルのみ。design-231:95 と整合)。dashboard が候補直接 query を要求したら C で後続版（v34 以降）で materialize に昇格（v32=#229 / v33=#231 は予約済のため番号衝突を避ける）。
 
 ## Q3. migration 粒度: #229/#230/#231 を全て単一 v31 にまとめるか。
-**→ 委員会推奨**: A (全て単一 v31、RESERVED コメント + PR merge 順強制)。3 issue は additive で相互依存が薄く、衝突点を 1 つに集約し renumber リスク最小。
+**→ 当初委員会推奨**: A (全て単一 v31)。**実績（2026-06-17 更新）**: #230 が v31 を**単独出荷**したため単一集約は不成立。**逐次採番に確定**: v31=#230（出荷済）/ v32=#229（`review_refute_votes`）/ v33=#231（`review_state_version`）。merge order ゲート（同番号 2 branch 同時 open 禁止）で renumber リスクを抑える（design-230-deepened R12）。
 
 ## Q4. spec proposer を reviewers レジストリに登録するか、free-text のまま監査性を一段下げるか。
 **→ 委員会推奨**: A (free-text agent_id)。spec candidate は harness 外生成で run_usage 相関が元々無い。批准記録 (specApproval.approvedBy) は人間 actor で監査の本丸はそこ。候補 provenance は GitHub git history が正本。
@@ -453,7 +464,7 @@ interface HitchDecisionPacket {
 
 - export-backed→DB-only FK ハザード: **FK を一切張らない方針 (P1-1) で根本回避**。代わりに refute を content hash bind にするが、`normalizeChangeText()` の正規化規則 (whitespace/case/punctuation) が未定義。app 層に決定論 `normalizeChangeText()` を実装しテストしないと、同一 change の hash が環境差でブレて binding が壊れる。
 - review_state_json の並行書き込み: **`review_state_version` CAS + txn().immediate() で対策 (P1-3)**。CAS リトライ上限超過時の競合エラー UX を docs 化しないと、operator が稀な競合で混乱する。
-- needs_classification jury の決定論集約 (aggregateJuryVotes) が #230 本体スコープで未実装。v31 提案テーブルだけ先行着地すると、実装者が LLM verdict→状態を直結する誘惑が生じる。「決定論ゲート spec が固まってから/と同時に表を出荷」を強制しないと安全境界が崩れる。
+- needs_classification jury の決定論集約 (aggregateJuryVotes) は #230 本体スコープ。**0.7.15 で jury 3表(v31) と `aggregateJuryVotes` を同時出荷済**（提案テーブル先行着地のリスクは #230 では発生せず）。**同じ原則を本案にも適用**: v32 `review_refute_votes` も決定論集約 (`evaluateConsensus`) と同時/後に出荷し、提案行だけ先行させて実装者が LLM verdict→状態を直結する誘惑を作らない。これを強制しないと安全境界が崩れる。
 - doctor の DELETE repair が破壊的: orphan/hash/hitch_id 不整合の repair を auto-apply にすると保全すべき監査行を消す。dry-run default + operator 明示承認 gate を入れ忘れると監査 trail 喪失。**reset で消さない (P1-4) ので prune は別コマンドに分離する設計を守る**。
 - jury 監査表の無制限増大: votes × 3 lens × findings/hitch で行数が膨らみ backup サイズと query 性能を圧迫。retention/prune は follow-up としたが、大規模 hitch で doctor の orphan full-scan が遅くなる (finding_id index で緩和するが未保証)。
 - decisionPacket JSON のスキーマ進化: packetVersion を JSON 内に持つが、将来フィールド追加で旧行を読む reader が壊れる可能性。optional chaining + デフォルト fallback を全 reader (dashboard/MCP/CLI) に徹底しないと後方互換が崩れる。
@@ -587,7 +598,7 @@ GO-with-fixes。backbone 方針、v31 単一 migration、packet/specApproval の
 - 反映 §: v2 改訂履歴, §3.2 jury_classification_proposals/jury_severity_audits DDL, §6 TDD(doctor/determinism), §8 受け入れ条件⑧, 付録B, 付録F
 
 ### P1-3: review_state_json の lost-update。人間批准 load-bearing state を単純 read→merge→write すると他 key や同時 approval を lost-update する。現状 phase-repository.ts:14-20 は read のみ、INSERT(:62-68) は列挙せず、UPDATE は status/scope/close のみ(書込経路ゼロ)。
-- 対処: phases に review_state_version INTEGER DEFAULT 0 を v31 で additive 追加し、updateReviewState()/recordSpecApproval() を db.transaction().immediate() + WHERE review_state_version=? の CAS で実装する設計を §3.3 に確定。既存 add()(:45,.immediate())/transitionStatus()(:116,CAS) と同方式と裏取り。specHash は TS 側 canonical JSON 計算。Q5(新規)で CAS 競合解決ポリシーを open question 化。
+- 対処: phases に review_state_version INTEGER DEFAULT 0 を v33（#231 専用 migration。v31 は #230 排他）で additive 追加し、updateReviewState()/recordSpecApproval() を db.transaction().immediate() + WHERE review_state_version=? の CAS で実装する設計を §3.3 に確定。既存 add()(:45,.immediate())/transitionStatus()(:116,CAS) と同方式と裏取り。specHash は TS 側 canonical JSON 計算。Q5(新規)で CAS 競合解決ポリシーを open question 化。
 - 反映 §: v2 改訂履歴, §2.4, §3.3, §4 work item DAG, §5 安全境界, §6 TDD(review_state CAS), §8 受け入れ条件⑥, 付録A Q5, 付録B, 付録F
 
 ### P1-4: 『RESET list に足さない→file import で空』は誤り。reset 対象は固定リストのみ(import-files.ts:45/60/67) で、足さなければ既存 DB の DB-only 行は import/reset 後も残る。空になるのは fresh DB のみ。
@@ -630,7 +641,7 @@ GO-with-fixes。backbone 方針、v31 単一 migration、packet/specApproval の
 推奨: A 案(CAS + bounded リトライ、超過時は競合エラーで後勝ち禁止)を推奨。add()/transitionStatus() の既存 CAS 流儀に揃う。現状 specApproval を書く writer は recordSpecApproval 1 経路のみで競合確率が低いので per-key merge 関数は writer 増加時まで defer。リトライ上限 N と競合エラーの operator 向け文言を docs 化する。
 
 ## H2. P1-3 対策の review_state_version を additive 列で足すと、v31 が『純 CREATE TABLE のみ』でなく phases への ALTER を 1 つ含む。これを単一 v31 ブロックに入れるか、CAS を JSON 内 version フィールド(列を足さない)で代替するか。
-推奨: additive 列(review_state_version INTEGER NOT NULL DEFAULT 0)を v31 に含めることを推奨。ALTER ADD COLUMN ... DEFAULT は additive・後方互換で既存行に 0 が入り SQLite で安全。JSON 内 version は同一 review_state_json を read-modify-write する以上 CAS の WHERE 条件に使えず lost-update を構造的に防げないため、別列が必要。
+推奨: additive 列(review_state_version INTEGER NOT NULL DEFAULT 0)を **v33（#231 専用 migration。当初は v31 単一ブロックだったが #230 の v31 単独出荷で v33 へ）** に含めることを推奨。ALTER ADD COLUMN ... DEFAULT は additive・後方互換で既存行に 0 が入り SQLite で安全。JSON 内 version は同一 review_state_json を read-modify-write する以上 CAS の WHERE 条件に使えず lost-update を構造的に防げないため、別列が必要。
 
 ## H3. finding_id を FK にしない(P1-1)ことで、存在しない finding_id を持つ合議行を insert できてしまう。repository insert 時の存在検査を hard reject にするか、doctor advisory に委ねるか。
 推奨: repository insert で finding_id の存在 + hitch_id 一致を hard 検査して reject(fail-closed)、かつ doctor でも事後 orphan を advisory 検出する二重化を推奨。insert 検査だけだと後から親が purge された行を拾えず、doctor だけだと不正 insert を即時に止められないため両方要る。

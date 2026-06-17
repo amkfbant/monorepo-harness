@@ -3,6 +3,11 @@
 > これは実装計画。コードは変更しない。実装は別セッションが dev クローンの origin/main ベース隔離ブランチで TDD(RED→GREEN→REFACTOR)で行う。
 > 読んだソースは ops checkout(v0.7.10)で origin/main と同一を確認済み、file:line は実装ブランチでも有効。
 > 着手順は **A→B→C に確定**(#231=案C は案A 確定後に着手)。案A(#230)の決定パケット形式は **インターフェイス前提**として扱い、本 issue 単体は案A 無しで ship できる構造にする。
+>
+> **⚠️ 版番号同期（2026-06-17）**: #230(案A) が **schema v31 を排他取得して先行リリース**（0.7.15）。確定 =
+> **v31:#230(出荷済・不可侵) / v32:#229 `review_refute_votes` / v33:#231 `phases.review_state_version`（逐次・別 migration）**。
+> #231 の `review_state_version` は #231 専用の **v33** で追加する（#229 の `review_refute_votes` が v32 を占有）。
+> 出荷済み v31 statements は不可侵。決定根拠: [design-230-deliberation-deepened.md](./design-230-deliberation-deepened.md) R12。
 
 ---
 
@@ -166,7 +171,7 @@ phase(fail-open を閉じる中核):
 **批准前は提案、批准で canonical**。委員会は決めず、accountable owner 1名が署名。
 
 - `harness course phase ratify <phase-id> --close-file <path> [--scope-file <path>] --approved-by <actor> [--reason <text>]` を新設。
-- ratify は (a) validator + parse + loosen gate(spec-gates.ts)を通し、(b) phase の `scope_json`/`close_conditions_json` を `updateSpec()` 経由で更新、(c) **`review_state_json` + 新規 `review_state_version` カラム + CAS write path への依存**。DB スキーマ migration (v31→v32) で `review_state_version` INTEGER DEFAULT 0 を phases テーブルに追加、lost-update 防止の CAS(version 一致 check)を ratify write に埋め込む。
+- ratify は (a) validator + parse + loosen gate(spec-gates.ts)を通し、(b) phase の `scope_json`/`close_conditions_json` を `updateSpec()` 経由で更新、(c) **`review_state_json` + 新規 `review_state_version` カラム + CAS write path への依存**。DB スキーマ migration (v33。v31=#230 出荷済 / v32=#229 `review_refute_votes` が占有) で `review_state_version` INTEGER DEFAULT 0 を phases テーブルに追加、lost-update 防止の CAS(version 一致 check)を ratify write に埋め込む。
 - **(P3-2)** `review_state_json` は既存 docs(roadmap.md:63)で「phase-level review facts(hitch convergence でない codex/Fable レビュー)」用に予約済み。**key 衝突を避けるため namespaced key に固定**する:
   ```jsonc
   {
