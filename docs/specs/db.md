@@ -1558,6 +1558,20 @@ Repository contract:
   advisory finding binding: a supplied `finding_id` must exist, and a supplied
   `hitch_id` must match `hitch_findings.hitch_id` for that finding.
 
+Doctor coverage:
+
+- **`review_refute_votes.orphan_rows`**: rows with a non-null `finding_id` whose
+  parent `hitch_findings` row no longer exists are reported as advisory
+  `warn` findings. Rows without `finding_id` are valid provenance rows and are
+  not orphan findings.
+- **`review_refute_votes.hitch_mismatch`**: rows whose non-null stored
+  `hitch_id` disagrees with the `hitch_findings.hitch_id` join are reported as
+  advisory `warn` findings. Orphans are handled by `orphan_rows`, not double
+  counted here.
+- These checks are registered in `DEFAULT_CHECKS`, `category='review'`, with
+  `repairable:false`. They are table-presence guarded so a pre-v32 DB skips
+  safely instead of crashing in read-only doctor paths.
+
 ### v33 `phases.review_state_version`
 
 schema v33 は新規 table を作らず、既存 `phases` に次の additive column だけを追加する。
