@@ -1543,6 +1543,21 @@ CREATE INDEX review_refute_votes_hitch_idx ON review_refute_votes(hitch_id, find
 retract condition）を必須にする。`uphold` / `inconclusive` は降格を駆動しないため、
 counter evidence なしでも `passed` にできる。
 
+Repository contract:
+
+- `ReviewRefuteVotesRepository.insert()` writes the v32 footprint columns and
+  stores caller-provided `targetChangeHash` as-is. It does not normalize change
+  text or recompute hashes.
+- `listByRun(runId)` and `listByTarget(runId, targetChangeHash)` return rows in
+  append order (`created_at`, then `refute_id`).
+- Duplicate rows are deduped only through the v32 partial unique predicates:
+  passed `uphold`/`refute` share `(run_id, target_change_hash, reviewer_id,
+  prompt_sha256)`, passed `inconclusive` has the same key but a separate
+  predicate, and rejected rows include `source_sha256`.
+- Because the table has no FKs, insert performs the hard app-layer guard for
+  advisory finding binding: a supplied `finding_id` must exist, and a supplied
+  `hitch_id` must match `hitch_findings.hitch_id` for that finding.
+
 ### v33 `phases.review_state_version`
 
 schema v33 は新規 table を作らず、既存 `phases` に次の additive column だけを追加する。
