@@ -121,6 +121,49 @@ export const ContextPackSpecSchema = z
   .strict();
 export type ContextPackSpec = z.infer<typeof ContextPackSpecSchema>;
 
+const ReviewBlockingDecisionSchema = z.enum(["changes_requested", "rejected"]);
+
+const ReviewRuleQuorumSchema = z
+  .object({
+    min_participants: z.number().int().positive().optional(),
+  })
+  .strict();
+
+const ReviewRuleRequirementSchema = z
+  .object({
+    group: z.string().min(1),
+    min_approvals: z.number().int().positive(),
+    blocking_decisions: z.array(ReviewBlockingDecisionSchema),
+    quorum: ReviewRuleQuorumSchema.optional(),
+    reviewer_ids: z.array(z.string().min(1)).optional(),
+    lens_axes: z.array(z.string().min(1)).optional(),
+    max_reviewers: z.number().int().positive().optional(),
+  })
+  .strict();
+
+export const ProfileReviewRuleSchema = z
+  .object({
+    mode: z.enum(["latest-proposal", "consensus"]).default("latest-proposal"),
+    max_reviewers: z.number().int().positive().optional(),
+    requirements: z.array(ReviewRuleRequirementSchema).optional(),
+    overrides: z
+      .object({
+        allowed_reviewers: z.array(z.string().min(1)).optional(),
+        require_reason: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    stale_proposal: z
+      .object({
+        reject_superseded: z.boolean().optional(),
+        max_age_hours: z.number().positive().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type ProfileReviewRule = z.infer<typeof ProfileReviewRuleSchema>;
+
 export const ProjectDomainSchema = z
   .object({
     id: DomainId,
@@ -182,6 +225,7 @@ export const ProjectProfileSchema = z
       .object({ presets: z.array(z.string().min(1)).optional() })
       .strict()
       .optional(),
+    review: ProfileReviewRuleSchema.optional(),
     mcp: z.record(z.string(), z.unknown()).optional(),
     domains: z.array(ProjectDomainSchema).min(1),
   })

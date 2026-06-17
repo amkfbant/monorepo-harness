@@ -189,6 +189,7 @@ export async function resolveHitchCoderRunnerDeps(input: {
     }),
     projectRuntime: {
       compiledPolicy: prepared.compiledPolicy,
+      reviewRuleResolution: prepared.reviewRuleResolution,
       project: prepared.project,
       ...(prepared.projectContextPacks !== undefined
         ? { projectContextPacks: prepared.projectContextPacks }

@@ -830,11 +830,23 @@ caller_id）を入れて debug 性を確保する。
 ## Phase 11 — Review governance / consensus flow（close 済み・現状仕様）
 
 Phase 11 で review consensus 機構（複数 proposal の決定論集約 `evaluateConsensus`）は
-実装済み。**ただし現状 `resolveEffectiveRule` は scope（profile）を無視して常に
-`DEFAULT_REVIEW_RULE`（mode=`latest-proposal`・1 体 dispatch）を返す**（`review-rule.ts:116-122`、
-コメントで後続 Phase 送りを明記）ため、**project profile の `review.mode` から consensus を
-選択する経路は未配線**（profile→rule ブリッジは #229=案B が追加する。design-229 §2.1/§3.1）。設計は
+実装済み。`resolveEffectiveRule` は profile を呼び出し側から受け取る純関数で、`profile.review`
+欠落時だけ `DEFAULT_REVIEW_RULE`（mode=`latest-proposal`）へ解決する。`profile.review`
+が存在する場合は `compileProfileReviewRule` が snake_case YAML を `ReviewRule` の
+camelCase 形へ変換し、`{ rule, source, ruleSha256 }`（`source='project-profile'`）を
+返す。意味的に不正な `review:`（例: consensus なのに requirements が空、正でない
+`min_approvals` / `quorum.min_participants`、複数 reviewer requirement の
+`reviewer_ids` / `lens_axes` 欠落）は `ReviewRuleCompileError` で fail-closed になり、
+DEFAULT へ降格しない。設計の基礎は
 [`../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md`](../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md)。
+
+`prepareProjectRun` は compiled policy と同じ project-runtime 成果物として
+`reviewRuleResolution` を返す。CLI `run --project` / `rerun` / `workflow reviewed-run`、
+hitch CLI、MCP `harness.hitch.orchestrate`、course orchestration はこの値を
+`runDomainCoding` まで thread し、run 作成時に `run_review_rule_snapshots` へ凍結する。
+`source='project-profile'` の snapshot 失敗は fail-closed（run は
+`failed-internal-error` に finalize）で、legacy/default snapshot 失敗だけ従来どおり warning
+で継続する。
 
 ### review auto → consensus re-evaluate flow
 
@@ -946,8 +958,9 @@ Phase 2 で consensus mode が実フローに接続された（`src/core/consens
   multi-reviewer consensus と stall 用の timeline が蓄積される（best-effort: 記録失敗は
   insert を巻き戻さない）。
 
-> 既定の rule は `latest-proposal`（`resolveEffectiveRule`）なので、上記 consensus
-> 経路は profile が consensus mode を宣言したときのみ作動する。既存フローは不変。
+> 既定の rule は `latest-proposal`（`profile.review` 欠落時の `resolveEffectiveRule`）
+> なので、上記 consensus 経路は profile が consensus mode を宣言したときのみ作動する。
+> 既存フローは不変。
 
 ### 安全境界マッピング（LLM 出力 = 入力 / 集約・状態遷移 = 決定論ゲート）
 
@@ -970,12 +983,12 @@ review → consensus → `run.status` の全経路は「**LLM の出力は入力
 - **artifact tamper は fail-closed**（`verifyArtifactsUnchanged` → `ReviewerAgentGateError`）。
 - 迷ったら fail-closed（quorum 未達 / rule 不正 / timestamp 解析不能はいずれも安全側）。
 
-> **設計段階（現状仕様ではない）**: profile から `quorum > 1` consensus を到達可能にする経路
-> （`resolveEffectiveRule` の profile 解決 / orchestrator の N-reviewer dispatch）、**異レンズ
-> （lens）reviewer** による視点多様化、**反証 verify（refute。#229 close に含めるか別 issue 切り出しかは
-> 人間批准事項＝設計 付録H2/I.3 参照）** は #229 の設計段階であり
-> **まだ実装されていない**（既定 rule は `latest-proposal`、profile に `review:` セクションは無く、
-> `src/` に lens 配線は無い）。設計は
+> **設計段階（現状仕様ではない）**: profile から `quorum > 1` consensus rule を凍結する
+> 経路は存在するが、orchestrator の N-reviewer dispatch、**異レンズ（lens）reviewer**
+> による視点多様化、**反証 verify（refute。#229 close に含めるか別 issue 切り出しかは
+> 人間批准事項＝設計 付録H2/I.3 参照）** は #229 の設計段階であり、まだ実装されていない。
+> `reviewer_ids` / `lens_axes` / `maxReviewers` は rule snapshot に保持されるが、dispatch
+> 本体は後続 phase の責務。設計は
 > [`../design/proposals/design-229-multi-lens-consensus.md`](../design/proposals/design-229-multi-lens-consensus.md)
 > （特に付録I = lens 中核化 + 詰め残し G1〜G3 + 新規論点 C1〜C4）。これらが入っても上表 (2)(3) の
 > 決定論ゲートは**凍結契約として不変**で、lens / refute は (1) 提案（入力）の多様化に留まる。

@@ -270,6 +270,25 @@ describe("createOrchestratorRunners.projectRuntime", () => {
       }),
     ).toThrow(/compiledPolicy must contain both global and repo/);
   });
+
+  it("rejects project runtime deps without a reviewRuleResolution", () => {
+    expect(() =>
+      createOrchestratorRunners({
+        dbPath: "/tmp/harness.sqlite",
+        harnessRoot: "/tmp/harness-root",
+        createdBy: "worker",
+        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+        reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+        projectRuntime: {
+          compiledPolicy: {
+            global: { always_deny_write: [], ignore_untracked: [] },
+            repo: { repo_id: "r", read: [], domains: {} },
+          },
+          project: {},
+        } as never,
+      }),
+    ).toThrow(/reviewRuleResolution/);
+  });
 });
 
 describe("createOrchestratorRunners.review decided run re-drive", () => {

@@ -96,6 +96,12 @@ function setupFixture(): Fixture {
       "  package_manager: npm",
       "policy:",
       "  template: strict-monorepo-v1",
+      "review:",
+      "  mode: consensus",
+      "  requirements:",
+      "    - group: humans",
+      "      min_approvals: 1",
+      "      blocking_decisions: [changes_requested, rejected]",
       "domains:",
       "  - id: apps/user",
       "    root: apps/user",
@@ -176,6 +182,24 @@ function latestRunForHitch(dbPath: string, hitchId: string): {
   }
 }
 
+function reviewRuleSourceForRun(dbPath: string, runId: string): string {
+  const db = openDb(dbPath);
+  try {
+    const row = db
+      .prepare(
+        `SELECT rr.source AS source
+           FROM run_review_rule_snapshots s
+           JOIN review_rules rr ON rr.rule_id = s.rule_id
+          WHERE s.run_id = ?`,
+      )
+      .get(runId) as { source: string } | undefined;
+    if (row === undefined) throw new Error(`no review rule snapshot for ${runId}`);
+    return row.source;
+  } finally {
+    db.close();
+  }
+}
+
 function writeDocsCodexBin(): string {
   const dir = mkdtempSync(join(tmpdir(), "harness-orch-project-codex-"));
   const bin = join(dir, "codex");
@@ -245,6 +269,7 @@ describe("project compiled policy in hitch/orchestrator paths", () => {
       baseBranch: prepared.baseBranch,
       projectRuntime: {
         compiledPolicy: prepared.compiledPolicy,
+        reviewRuleResolution: prepared.reviewRuleResolution,
         project: prepared.project,
         ...(prepared.projectContextPacks !== undefined
           ? { projectContextPacks: prepared.projectContextPacks }
@@ -259,6 +284,7 @@ describe("project compiled policy in hitch/orchestrator paths", () => {
     expect(run.status).toBe("failed-policy-violation");
     expect(run.provenance.source).toBe("project-runtime");
     expect(run.provenance.project?.projectId).toBe("demo");
+    expect(reviewRuleSourceForRun(f.dbPath, run.runId)).toBe("project-profile");
   });
 
   it("fails closed for a project hitch when projectRuntime is missing", async () => {
@@ -372,6 +398,7 @@ describe("project compiled policy in hitch/orchestrator paths", () => {
     const run = latestRunForHitch(f.dbPath, "h-mcp");
     expect(run.status).toBe("failed-policy-violation");
     expect(run.provenance.source).toBe("project-runtime");
+    expect(reviewRuleSourceForRun(f.dbPath, run.runId)).toBe("project-profile");
   });
 
   it("threads prepared project policy through course orchestration", async () => {
@@ -423,6 +450,7 @@ describe("project compiled policy in hitch/orchestrator paths", () => {
     const run = latestRunForHitch(f.dbPath, "h-course");
     expect(run.status).toBe("failed-policy-violation");
     expect(run.provenance.source).toBe("project-runtime");
+    expect(reviewRuleSourceForRun(f.dbPath, run.runId)).toBe("project-profile");
 
     const runDir = join(f.harnessRoot, "runs", run.runId);
     expect(readFileSync(join(runDir, "resolved-policy.yaml"), "utf8")).toContain(

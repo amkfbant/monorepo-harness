@@ -23,6 +23,11 @@ import {
   loadContextPackPreset,
 } from "./template-loader.js";
 import { ProjectProfileError } from "./errors.js";
+import {
+  ReviewRuleCompileError,
+  resolveEffectiveRule,
+  type ReviewRuleResolution,
+} from "../core/review-rule.js";
 
 /**
  * Policy compiler (Phase 5-4).
@@ -65,6 +70,8 @@ export interface ProjectPolicyCompileResult {
   domainRoots: Record<string, string>;
   /** context pack ids referenced per domain id */
   domainContextPacks: Record<string, string[]>;
+  /** effective review rule compiled from profile.review, or default. */
+  reviewRuleResolution: ReviewRuleResolution;
   warnings: ProjectWarning[];
   provenance: PolicyProvenance;
 }
@@ -114,6 +121,7 @@ export function compileProjectPolicy(
     read: [],
     domains,
   };
+  const reviewRuleResolution = compileReviewRuleResolution(profile);
 
   const provenance: PolicyProvenance = {
     schemaVersion: 1,
@@ -140,9 +148,29 @@ export function compileProjectPolicy(
     repoPolicy,
     domainRoots,
     domainContextPacks,
+    reviewRuleResolution,
     warnings,
     provenance,
   };
+}
+
+function compileReviewRuleResolution(
+  profile: ProjectProfile,
+): ReviewRuleResolution {
+  try {
+    return resolveEffectiveRule({
+      projectId: profile.project_id,
+      repoId: profile.repo.id,
+      profile,
+    });
+  } catch (e) {
+    if (e instanceof ReviewRuleCompileError) {
+      throw new ProjectProfileError(
+        `project review rule failed validation: ${e.message}`,
+      );
+    }
+    throw e;
+  }
 }
 
 interface DomainCompileCtx {

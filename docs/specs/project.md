@@ -79,6 +79,19 @@ policy:
   template: strict-monorepo-v1
   global_deny: [ ... ]
   ignore_untracked: [ ... ]   # optional; merged with the template's ignore_untracked
+review:
+  mode: consensus              # latest-proposal | consensus
+  max_reviewers: 3             # optional default dispatch cap for requirements
+  requirements:
+    - group: humans
+      min_approvals: 1
+      blocking_decisions: [changes_requested, rejected]
+      quorum: { min_participants: 1 }
+      reviewer_ids: [alice]    # optional frozen reviewer set
+      lens_axes: [correctness] # required with multi-reviewer requirements
+      max_reviewers: 1         # optional per-requirement cap
+  overrides: { allowed_reviewers: [], require_reason: true }
+  stale_proposal: { reject_superseded: true, max_age_hours: 24 }
 context_packs:
   default-docs: { description, globs, max_bytes, deny_secret_like }
 commands:
@@ -99,6 +112,13 @@ domains:
 - `domain.id` は既存互換のため slash を許す。空 / absolute path / `..` / backslash
   / NUL は拒否。
 - `context_packs` は **read enforcement ではなく** prompt に明示添付する context の定義。
+- `review` は任意。欠落時は `DEFAULT_REVIEW_RULE`（`latest-proposal`）へ解決される。
+  存在する場合は snake_case YAML を `ReviewRule` の camelCase 形へ compile し、
+  run 作成時に `run_review_rule_snapshots` へ凍結する。`mode: consensus` で
+  `requirements` が空、`min_approvals < 1`、`quorum.min_participants < 1`、
+  複数 reviewer を要求する requirement の `reviewer_ids` / `lens_axes` 欠落、
+  `reviewer_ids` の重複や `max_reviewers` 超過は `ReviewRuleCompileError` で
+  fail-closed になり、DEFAULT へ降格しない。
 
 ### Domain registry
 
@@ -152,10 +172,12 @@ harness workflow reviewed-run --project <id> --domain <domain> --goal <text>
 Project-scoped hitch drivers are project-runtime executions too. CLI
 `hitch orchestrate`, MCP `harness.hitch.orchestrate`, and course orchestration
 resolve `prepareProjectRun(projectId, domain)` before launching the coder, then
-thread the compiled policy, `RunMeta.project`, and project context packs into
-`domain-coding`. The post-run git diff validation and the
-`effective_policy_snapshots` row therefore use the same compiled policy and
-`source: project-runtime` provenance as `harness run --project`.
+thread the compiled policy, `reviewRuleResolution`, `RunMeta.project`, and
+project context packs into `domain-coding`. The post-run git diff validation and
+the `effective_policy_snapshots` row therefore use the same compiled policy and
+`source: project-runtime` provenance as `harness run --project`; review
+processing uses the same frozen rule snapshot across CLI run/rerun, reviewed-run
+attempts, hitch CLI, MCP hitch orchestration, and course orchestration.
 
 This is a compatibility tightening for project-scoped hitches: when the project
 profile narrows a broader raw repo policy, previously accepted writes can be

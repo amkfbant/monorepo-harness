@@ -213,6 +213,7 @@ export async function runStartTool(
           codexRunner: createCodexCliRunner({ codexBin }),
           codexBinaryVersion: codexBinaryVersion(codexBin),
           compiledPolicy: prepared.compiledPolicy,
+          reviewRuleResolution: prepared.reviewRuleResolution,
           project: prepared.project,
           ...(prepared.projectContextPacks !== undefined
             ? { projectContextPacks: prepared.projectContextPacks }
@@ -369,6 +370,7 @@ export async function rerunStartTool(
             rootRunId: prep.rootRunId,
             rerunAttempt: prep.rerunAttempt,
             compiledPolicy: prepared.compiledPolicy,
+            reviewRuleResolution: prepared.reviewRuleResolution,
             project: prepared.project,
             ...(prepared.projectContextPacks !== undefined
               ? { projectContextPacks: prepared.projectContextPacks }
@@ -521,6 +523,7 @@ export async function orchestrateHitchTool(
           baseBranch: prepared.baseBranch,
           projectRuntime: {
             compiledPolicy: prepared.compiledPolicy,
+            reviewRuleResolution: prepared.reviewRuleResolution,
             project: prepared.project,
             ...(prepared.projectContextPacks !== undefined
               ? { projectContextPacks: prepared.projectContextPacks }

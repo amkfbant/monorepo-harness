@@ -38,9 +38,13 @@ describe("review-rule core (Phase 11-3)", () => {
     expect(DEFAULT_REVIEW_RULE.staleProposal.rejectSuperseded).toBe(true);
   });
 
-  it("resolveEffectiveRule returns DEFAULT_REVIEW_RULE for any scope (Phase 11-3 minimum)", () => {
-    expect(resolveEffectiveRule({})).toEqual(DEFAULT_REVIEW_RULE);
-    expect(resolveEffectiveRule({ projectId: "mini" })).toEqual(
+  it("resolveEffectiveRule returns the default resolution when profile.review is absent", () => {
+    expect(resolveEffectiveRule({})).toEqual({
+      rule: DEFAULT_REVIEW_RULE,
+      source: "default",
+      ruleSha256: ruleSha256(DEFAULT_REVIEW_RULE),
+    });
+    expect(resolveEffectiveRule({ projectId: "mini" }).rule).toEqual(
       DEFAULT_REVIEW_RULE,
     );
   });

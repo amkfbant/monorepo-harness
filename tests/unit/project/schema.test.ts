@@ -41,6 +41,48 @@ describe("ProjectProfileSchema", () => {
     expect(ProjectProfileSchema.safeParse(p).success).toBe(true);
   });
 
+  it("accepts an optional profile review section", () => {
+    const p = validProfile() as Record<string, unknown>;
+    p.review = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "humans",
+          min_approvals: 1,
+          blocking_decisions: ["changes_requested", "rejected"],
+          reviewer_ids: ["alice"],
+          lens_axes: ["correctness"],
+          max_reviewers: 1,
+        },
+      ],
+      overrides: { allowed_reviewers: ["lead"], require_reason: true },
+      stale_proposal: { reject_superseded: true, max_age_hours: 24 },
+    };
+    expect(ProjectProfileSchema.safeParse(p).success).toBe(true);
+  });
+
+  it("rejects unknown keys in the profile review section", () => {
+    const p = validProfile() as Record<string, unknown>;
+    p.review = { mode: "latest-proposal", count: 2 };
+    expect(ProjectProfileSchema.safeParse(p).success).toBe(false);
+  });
+
+  it("rejects invalid review quorum shape", () => {
+    const p = validProfile() as Record<string, unknown>;
+    p.review = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "humans",
+          min_approvals: 1,
+          blocking_decisions: ["changes_requested"],
+          quorum: { min_participants: 0 },
+        },
+      ],
+    };
+    expect(ProjectProfileSchema.safeParse(p).success).toBe(false);
+  });
+
   it("rejects an unknown top-level key (strict)", () => {
     const p = validProfile() as Record<string, unknown>;
     p.extra = true;

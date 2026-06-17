@@ -185,6 +185,42 @@ describe("compileProjectPolicy", () => {
     expect(r.provenance.generatedAt).toBe(GENERATED_AT);
   });
 
+  it("returns a compiled review rule resolution from profile.review", async () => {
+    const r = await compile(
+      profile({
+        review: {
+          mode: "consensus",
+          requirements: [
+            {
+              group: "humans",
+              min_approvals: 1,
+              blocking_decisions: ["changes_requested", "rejected"],
+            },
+          ],
+        },
+      }),
+    );
+    expect(r.reviewRuleResolution.source).toBe("project-profile");
+    expect(r.reviewRuleResolution.rule.mode).toBe("consensus");
+    expect(r.reviewRuleResolution.rule.requirements[0]?.minApprovals).toBe(1);
+  });
+
+  it("fails compile for a semantically invalid profile.review", async () => {
+    const p = profile({
+      review: {
+        mode: "consensus",
+        requirements: [
+          {
+            group: "humans",
+            min_approvals: 2,
+            blocking_decisions: ["changes_requested"],
+          },
+        ],
+      },
+    });
+    await expect(compile(p)).rejects.toThrow(/reviewer_ids is required/);
+  });
+
   it("rejects a profile with no policy.template", async () => {
     const p = profile({ policy: undefined });
     await expect(

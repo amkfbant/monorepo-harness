@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import type { RunStatus, RunMeta } from "../logging/run-log.js";
 import type { GlobalPolicy, RepoPolicy } from "../policy/schema.js";
+import type { ReviewRuleResolution } from "./review-rule.js";
 import {
   runDomainCoding,
   RunFinalizedError,
@@ -70,6 +71,7 @@ export interface ReviewedRunWorkflowOpts {
    */
   projectRun?: {
     compiledPolicy: { global: GlobalPolicy; repo: RepoPolicy };
+    reviewRuleResolution: ReviewRuleResolution;
     project: NonNullable<RunMeta["project"]>;
     projectContextPacks?: { promptText: string; manifestYaml: string };
   };
@@ -86,12 +88,14 @@ function projectRunFields(
   opts: ReviewedRunWorkflowOpts,
 ): Partial<{
   compiledPolicy: { global: GlobalPolicy; repo: RepoPolicy };
+  reviewRuleResolution: ReviewRuleResolution;
   project: NonNullable<RunMeta["project"]>;
   projectContextPacks: { promptText: string; manifestYaml: string };
 }> {
   if (opts.projectRun === undefined) return {};
   return {
     compiledPolicy: opts.projectRun.compiledPolicy,
+    reviewRuleResolution: opts.projectRun.reviewRuleResolution,
     project: opts.projectRun.project,
     ...(opts.projectRun.projectContextPacks !== undefined
       ? { projectContextPacks: opts.projectRun.projectContextPacks }

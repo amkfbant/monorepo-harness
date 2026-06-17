@@ -176,6 +176,7 @@ export interface HitchRunContext {
 
 export interface ProjectRuntimeDeps {
   compiledPolicy: NonNullable<RunDomainCodingOpts["compiledPolicy"]>;
+  reviewRuleResolution: NonNullable<RunDomainCodingOpts["reviewRuleResolution"]>;
   project: NonNullable<RunDomainCodingOpts["project"]>;
   projectContextPacks?: NonNullable<RunDomainCodingOpts["projectContextPacks"]>;
 }
@@ -297,6 +298,12 @@ function assertProjectRuntimeComplete(
       "projectRuntime.compiledPolicy must contain both global and repo policy",
     );
   }
+  if (runtime.reviewRuleResolution == null) {
+    throw new Error(
+      "project runtime deps must be passed atomically as projectRuntime " +
+        "with reviewRuleResolution",
+    );
+  }
 }
 
 function assertCoderProjectRuntime(
@@ -318,13 +325,14 @@ function projectRuntimeFields(
 ): Partial<
   Pick<
     RunDomainCodingOpts,
-    "compiledPolicy" | "project" | "projectContextPacks"
+    "compiledPolicy" | "reviewRuleResolution" | "project" | "projectContextPacks"
   >
 > {
   const projectRuntime = deps.projectRuntime;
   if (projectRuntime === undefined) return {};
   return {
     compiledPolicy: projectRuntime.compiledPolicy,
+    reviewRuleResolution: projectRuntime.reviewRuleResolution,
     project: projectRuntime.project,
     ...(projectRuntime.projectContextPacks !== undefined
       ? { projectContextPacks: projectRuntime.projectContextPacks }

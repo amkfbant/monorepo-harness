@@ -7,6 +7,10 @@ import type { CodexExecRunner } from "../../../src/codex/codex-exec-runner.js";
 import type { PreparedProjectRun } from "../../../src/project/run-project.js";
 import { DEFAULT_CHANGE_BUDGET } from "../../../src/policy/schema.js";
 import {
+  DEFAULT_REVIEW_RULE,
+  ruleSha256,
+} from "../../../src/core/review-rule.js";
+import {
   hitchGoalText,
   makeCourseHitchRunners,
   type CourseHitchRunnersDeps,
@@ -37,6 +41,11 @@ function preparedProjectRun(opts: Parameters<PrepareRun>[0]): PreparedProjectRun
           },
         },
       },
+    },
+    reviewRuleResolution: {
+      rule: DEFAULT_REVIEW_RULE,
+      source: "default",
+      ruleSha256: ruleSha256(DEFAULT_REVIEW_RULE),
     },
     resolvedPolicy: {
       repoId: "repo-1",
