@@ -1,5 +1,8 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import Database from "better-sqlite3";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { ReviewStateConflictError } from "../../../src/roadmap/errors.js";
 import { CourseRepository } from "../../../src/roadmap/course-repository.js";
@@ -176,5 +179,56 @@ describe("PhaseRepository review_state CAS writes (SP-3)", () => {
     expect(rs.note).toBe("force-closed after PR #999 merged");
     expect(rs.specApproval).toMatchObject({ approvedBy: "operator" });
     expect(reviewStateVersion(conn, p.phaseId)).toBe(2);
+  });
+
+  it("normalizes a real concurrent write-lock (SQLITE_BUSY) to a typed conflict error", () => {
+    const dir = mkdtempSync(join(tmpdir(), "phase-cas-busy-"));
+    const file = join(dir, "harness.sqlite");
+    const writer = new Database(file);
+    writer.pragma("journal_mode = WAL");
+    writer.pragma("foreign_keys = ON");
+    writer.pragma("busy_timeout = 50"); // fail fast instead of waiting 5s
+    runMigrations(writer);
+    const blocker = new Database(file);
+    blocker.pragma("busy_timeout = 50");
+    try {
+      const writerCourses = new CourseRepository(writer);
+      const writerPhases = new PhaseRepository(writer);
+      const c = writerCourses.create({
+        title: "Roadmap",
+        projectId: "demo",
+        createdBy: "t",
+        createdSource: "cli",
+      });
+      const p = writerPhases.add({
+        courseId: c.courseId,
+        title: "SP-3",
+        createdBy: "t",
+        createdSource: "cli",
+      });
+
+      // Hold an exclusive write lock on a second connection so the writer's
+      // BEGIN IMMEDIATE cannot acquire it and surfaces SQLITE_BUSY rather than
+      // a CAS miss. The bounded retry must normalize it to a typed error.
+      blocker.exec("BEGIN IMMEDIATE");
+      blocker
+        .prepare("UPDATE phases SET updated_at = ? WHERE phase_id = ?")
+        .run("2026-06-17T00:00:09.000Z", p.phaseId);
+
+      let error: unknown;
+      try {
+        writerPhases.setNote(p.phaseId, "blocked", "2026-06-17T00:00:00.000Z");
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toBeInstanceOf(ReviewStateConflictError);
+      expect((error as ReviewStateConflictError).phaseId).toBe(p.phaseId);
+
+      blocker.exec("ROLLBACK");
+    } finally {
+      writer.close();
+      blocker.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -200,35 +200,45 @@ export class PhaseRepository {
     const maxAttempts = normalizeReviewStateAttempts(opts?.maxAttempts);
     const ts = opts?.now ?? new Date().toISOString();
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const updated = this.db
-        .transaction(() => {
-          const row = this.db
-            .prepare(
-              `SELECT review_state_json, review_state_version, scope_json, close_conditions_json
-                 FROM phases
-                WHERE phase_id = ?`,
-            )
-            .get(phaseId) as PhaseReviewStateRow | undefined;
-          if (row === undefined) throw new CourseUserError(`phase ${phaseId} not found`);
-          const current = reviewStateObject(parse(row.review_state_json));
-          const next = mutator(current, {
-            phaseId,
-            reviewStateVersion: row.review_state_version,
-            scope: parse(row.scope_json),
-            closeConditions: parse(row.close_conditions_json),
-          });
-          const info = this.db
-            .prepare(
-              `UPDATE phases
-                  SET review_state_json = ?,
-                      review_state_version = review_state_version + 1,
-                      updated_at = ?
-                WHERE phase_id = ? AND review_state_version = ?`,
-            )
-            .run(JSON.stringify(next), ts, phaseId, row.review_state_version);
-          return info.changes > 0 ? this.require(phaseId) : null;
-        })
-        .immediate();
+      let updated: Phase | null;
+      try {
+        updated = this.db
+          .transaction(() => {
+            const row = this.db
+              .prepare(
+                `SELECT review_state_json, review_state_version, scope_json, close_conditions_json
+                   FROM phases
+                  WHERE phase_id = ?`,
+              )
+              .get(phaseId) as PhaseReviewStateRow | undefined;
+            if (row === undefined) throw new CourseUserError(`phase ${phaseId} not found`);
+            const current = reviewStateObject(parse(row.review_state_json));
+            const next = mutator(current, {
+              phaseId,
+              reviewStateVersion: row.review_state_version,
+              scope: parse(row.scope_json),
+              closeConditions: parse(row.close_conditions_json),
+            });
+            const info = this.db
+              .prepare(
+                `UPDATE phases
+                    SET review_state_json = ?,
+                        review_state_version = review_state_version + 1,
+                        updated_at = ?
+                  WHERE phase_id = ? AND review_state_version = ?`,
+              )
+              .run(JSON.stringify(next), ts, phaseId, row.review_state_version);
+            return info.changes > 0 ? this.require(phaseId) : null;
+          })
+          .immediate();
+      } catch (e) {
+        // A concurrent writer holding the write lock surfaces (after
+        // busy_timeout) as SQLITE_BUSY rather than a CAS miss. Fold it into
+        // the same bounded retry budget so contention always resolves to a
+        // typed ReviewStateConflictError (fail-closed), never a raw error.
+        if (!isSqliteBusy(e)) throw e;
+        updated = null;
+      }
       if (updated !== null) return updated;
     }
     throw new ReviewStateConflictError(
@@ -378,4 +388,10 @@ function normalizeReviewStateAttempts(value: number | undefined): number {
     throw new CourseUserError("review_state CAS maxAttempts must be a positive integer");
   }
   return attempts;
+}
+
+function isSqliteBusy(e: unknown): boolean {
+  if (typeof e !== "object" || e === null) return false;
+  const code = (e as { code?: unknown }).code;
+  return code === "SQLITE_BUSY" || code === "SQLITE_BUSY_SNAPSHOT";
 }
