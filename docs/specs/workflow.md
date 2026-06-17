@@ -434,14 +434,16 @@ review process:
 `runs/<runId>/reviewers/<reviewer_id>/` に隔離する。**P1-ISO read 独立性**: reviewer の
 codex sandbox cwd（`-C`）は runDir 配下ではなく **OS 一時ディレクトリ（`os.tmpdir()` 下の
 使い捨て dir）**に置き、許可入力（`review-request.md`/`summary.md`/`final-diff.patch`/
-`untracked-*.{patch,txt}`/`meta.json`/`commands/`）だけを copy（**symlink は materialize
-しない**＝fail-closed）。run 後に dir は削除する。これにより先行 reviewer の verdict
+`untracked-files.patch`/`untracked-files.txt`/`untracked-secrets.txt`/
+`untracked-denied.txt` ＝ `REVIEWER_INPUT_FILES` ＋ `commands/`）だけを copy（**symlink は
+materialize しない**＝fail-closed。`meta.json` は harness が runDir から直接読むため cwd に
+は copy しない）。run 後に dir は削除する。これにより先行 reviewer の verdict
 （`runs/<runId>/review-decision.yaml` や sibling `reviewers/<other>/`）は cwd から短い `..`
 で届く位置に無く、prompt 通り cwd を読む reviewer の自然な読取経路から外れる（working-tree
 非露出）。**限界（既知・follow-up）**: codex `--sandbox read-only` は write/network を
 制限するが read を cwd subtree に hard jail しない（`-C` は chroot でない）ため、絶対パスや
 長い `..` を能動的に辿る敵対的 read までは防がない。完全な read-jail enforcement（read root
-制限 or reviewer を隔離コンテナで実行）は別途の sandbox 強化事項（`docs/future-features.md`）。
+制限 or reviewer を隔離コンテナで実行）は別途の sandbox 強化事項（follow-up）。
 codex は
 `reviewers/<reviewer_id>/.reviewer-agent.events.raw.jsonl` に stream し、redaction 後だけ
 `reviewers/<reviewer_id>/reviewer-agent.events.jsonl` として atomic publish する。

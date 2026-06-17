@@ -5,6 +5,7 @@ import {
   writeFileSync,
   readFileSync,
   existsSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -394,6 +395,60 @@ describe("runReviewerAgent", () => {
     await expect(
       runReviewerAgent({ runsDir, runId, codexRunner: runner }),
     ).rejects.toThrow(/modified run artifact/);
+  });
+
+  it("P1-ISO: flags a non-log file written into the reviewer's own dir (narrowed tamper allowlist)", async () => {
+    const { runsDir, runId } = setup();
+    // a misconfigured/escaped runner drops a non-log file under reviewers/<id>/
+    // during the codex window — only the 3 codex logs are exempt, so this must
+    // be tamper-flagged (and never silently ingested into DB artifacts).
+    const leakRunner: CodexExecRunner = {
+      async run(input) {
+        const { writeFile, mkdir } = await import("node:fs/promises");
+        const dir = join(runsDir, runId, "reviewers", "alice");
+        await mkdir(dir, { recursive: true });
+        await writeFile(join(dir, "leak.txt"), "exfil\n", "utf8");
+        await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
+        await writeFile(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      },
+    };
+    await expect(
+      runReviewerAgent({
+        runsDir,
+        runId,
+        reviewerName: "alice",
+        codexRunner: leakRunner,
+      }),
+    ).rejects.toThrow(/unexpected file|modified run artifact/);
+  });
+
+  it("P1-ISO: does NOT materialize a symlinked input into the reviewer cwd (fail-closed)", async () => {
+    const { runsDir, runId } = setup();
+    const runDir = join(runsDir, runId);
+    // final-diff.patch is a symlink to the verdict — must be skipped, not copied
+    symlinkSync(
+      join(runDir, "review-decision.yaml"),
+      join(runDir, "final-diff.patch"),
+    );
+    let diffInCwd: boolean | undefined;
+    const probing: CodexExecRunner = {
+      async run(input) {
+        diffInCwd = existsSync(join(input.worktreePath, "final-diff.patch"));
+        const { writeFile } = await import("node:fs/promises");
+        await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
+        await writeFile(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      },
+    };
+    await runReviewerAgent({
+      runsDir,
+      runId,
+      reviewerName: "alice",
+      codexRunner: probing,
+      now: new Date("2026-05-21T01:00:00Z"),
+    });
+    expect(diffInCwd).toBe(false); // symlink not materialized into the sandbox
   });
 
   // A runner that mutates `targetFile` mid-run, then returns the given

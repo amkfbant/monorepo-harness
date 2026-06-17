@@ -195,11 +195,18 @@ async function verifyArtifactsUnchanged(
 }
 
 function isReviewerWritable(rel: string, writablePrefix: string): boolean {
-  return (
-    REVIEWER_WRITE_ALLOWLIST.has(rel) ||
-    rel === writablePrefix ||
-    rel.startsWith(`${writablePrefix}/`)
-  );
+  // Only the three codex-written log files are exempt from tamper detection —
+  // at runDir root (legacy) or under the per-reviewer prefix. Do NOT exempt the
+  // whole reviewers/<id>/ subtree: a misconfigured/escaped runner that writes
+  // any OTHER file there during the codex window (e.g. a fake review-decision
+  // or a leak.txt) must still be flagged and must not be silently ingested into
+  // DB artifacts (codex SP-11). Harness-written files (decision/error/published
+  // events) land AFTER verifyArtifactsUnchanged, so they need no exemption.
+  if (REVIEWER_WRITE_ALLOWLIST.has(rel)) return true;
+  for (const name of REVIEWER_WRITE_ALLOWLIST) {
+    if (rel === `${writablePrefix}/${name}`) return true;
+  }
+  return false;
 }
 
 function reviewerArtifactRelDir(reviewerId: string): string {
@@ -600,7 +607,6 @@ export async function runReviewerAgent(
   const reviewerInputDir = await mkdtemp(
     join(tmpdir(), "harness-reviewer-input-"),
   );
-  await materializeReviewerInput(runDir, reviewerInputDir);
   const stdoutPath = join(reviewerDir, "reviewer-agent.out.log");
   const stderrPath = join(reviewerDir, "reviewer-agent.err.log");
   const rawEventsPath = join(reviewerDir, ".reviewer-agent.events.raw.jsonl");
@@ -620,6 +626,8 @@ export async function runReviewerAgent(
 
   let codexResult: Awaited<ReturnType<CodexExecRunner["run"]>>;
   try {
+    // materialize inside the try so a copy failure still cleans up the temp dir
+    await materializeReviewerInput(runDir, reviewerInputDir);
     codexResult = await inputs.codexRunner.run({
       worktreePath: reviewerInputDir,
       prompt: reviewerPrompt,
