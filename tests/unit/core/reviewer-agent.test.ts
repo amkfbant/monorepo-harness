@@ -407,8 +407,8 @@ describe("runReviewerAgent", () => {
         const { writeFile } = await import("node:fs/promises");
         // simulate macOS Finder/Spotlight dropping OS metadata mid-review;
         // these are not reviewer output and must not trip the tamper check.
-        await writeFile(dsStore, "  ", "utf8");
-        await writeFile(appleDouble, " ", "utf8");
+        await writeFile(dsStore, "ds\n", "utf8");
+        await writeFile(appleDouble, "ad\n", "utf8");
         await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
         await writeFile(input.logPaths.stderr, "", "utf8");
         return { exitCode: 0, timedOut: false, durationMs: 0 };
@@ -420,6 +420,26 @@ describe("runReviewerAgent", () => {
     ).resolves.toBeTruthy();
     expect(existsSync(dsStore)).toBe(true);
     expect(existsSync(appleDouble)).toBe(true);
+  });
+
+  it("still flags a tamper FILE hidden under a ._-named directory (OS-noise skip is file-only) (#269)", async () => {
+    const { runsDir, runId } = setup();
+    const runner: CodexExecRunner = {
+      async run(input) {
+        const { writeFile, mkdir } = await import("node:fs/promises");
+        // a `._`-named DIRECTORY must NOT be skipped wholesale — a tamper file
+        // inside it must still be detected (the name-based skip is file-only).
+        const dir = join(runsDir, runId, "._payload");
+        await mkdir(dir, { recursive: true });
+        await writeFile(join(dir, "leak.txt"), "exfil\n", "utf8");
+        await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
+        await writeFile(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      },
+    };
+    await expect(
+      runReviewerAgent({ runsDir, runId, codexRunner: runner }),
+    ).rejects.toThrow(/unexpected file|modified run artifact/);
   });
 
   it("P1-ISO: flags a non-log file written into the reviewer's own dir (narrowed tamper allowlist)", async () => {

@@ -161,16 +161,19 @@ async function snapshotRunDir(
   async function walk(dir: string, prefix: string): Promise<void> {
     const entries = await readdir(dir, { withFileTypes: true });
     for (const e of entries) {
-      // OS-metadata noise (macOS .DS_Store / AppleDouble ._*) is created by the
-      // operating system (Finder/Spotlight), not the reviewer agent. Excluding
-      // it from the snapshot keeps the tamper check from false-positiving
-      // ("created unexpected file: .DS_Store") when the OS touches the run dir
-      // mid-review (#269).
-      if (isOsMetadataNoise(e.name)) continue;
       const rel = prefix ? `${prefix}/${e.name}` : e.name;
       if (e.isDirectory()) {
+        // NB: only FILES are exempted as OS noise below — never skip a
+        // directory by name, or a `._foo/`-named dir could hide tamper files
+        // (e.g. `._payload/leak.txt`) from the snapshot (codex #269 review).
         await walk(join(dir, e.name), rel);
       } else if (e.isFile()) {
+        // OS-metadata noise (macOS .DS_Store / AppleDouble ._*) is created by
+        // the operating system (Finder/Spotlight), not the reviewer agent.
+        // Excluding these FILES keeps the tamper check from false-positiving
+        // ("created unexpected file: .DS_Store") when the OS touches the run
+        // dir mid-review (#269).
+        if (isOsMetadataNoise(e.name)) continue;
         if (isReviewerWritable(rel, writablePrefix)) continue;
         const st = await stat(join(dir, e.name));
         out.set(rel, { size: st.size, mtimeMs: st.mtimeMs });
