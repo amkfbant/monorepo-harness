@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync,
@@ -10,7 +10,11 @@ import {
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { runReviewedRunWorkflow } from "../../src/core/reviewed-run-workflow.js";
+import {
+  runReviewedRunWorkflow,
+  ReviewWorkflowUnsupportedError,
+  type ReviewedRunWorkflowOpts,
+} from "../../src/core/reviewed-run-workflow.js";
 import { createFakeCodexRunner } from "../../src/codex/fake-codex-runner.js";
 import { openDb } from "../../src/db/connection.js";
 import { readArtifactBlob } from "../../src/db/artifact-blobs.js";
@@ -135,6 +139,7 @@ interface RunWorkflowOpts {
   maxAttempts?: number;
   noAutoReview?: boolean;
   stopOnChangesRequested?: boolean;
+  projectRun?: ReviewedRunWorkflowOpts["projectRun"];
 }
 
 function runWf(root: string, repoPath: string, o: RunWorkflowOpts) {
@@ -154,6 +159,7 @@ function runWf(root: string, repoPath: string, o: RunWorkflowOpts) {
     ...(o.stopOnChangesRequested !== undefined
       ? { stopOnChangesRequested: o.stopOnChangesRequested }
       : {}),
+    ...(o.projectRun !== undefined ? { projectRun: o.projectRun } : {}),
   });
 }
 
@@ -168,6 +174,48 @@ function inScopeCoder(seedValue = 1): CodexExecRunner {
       );
     },
   });
+}
+
+function consensusProjectRun(): NonNullable<ReviewedRunWorkflowOpts["projectRun"]> {
+  return {
+    compiledPolicy: {
+      global: { always_deny_write: [], ignore_untracked: [] },
+      repo: {
+        repo_id: "t",
+        read: [],
+        domains: {
+          "apps/user": {
+            read: ["apps/user/**"],
+            write: ["apps/user/**"],
+            deny_write: [],
+          },
+        },
+      },
+    },
+    reviewRuleResolution: {
+      source: "project-profile",
+      ruleSha256: "test-consensus-rule",
+      rule: {
+        mode: "consensus",
+        requirements: [
+          {
+            group: "security",
+            minApprovals: 1,
+            blockingDecisions: ["changes_requested", "rejected"],
+            reviewerIds: ["alice"],
+            lensAxes: ["correctness"],
+          },
+        ],
+        overrides: { allowedReviewers: [], requireReason: true },
+        staleProposal: { rejectSuperseded: true },
+      },
+    },
+    project: {
+      projectId: "project-a",
+      profilePath: "projects/project-a.yaml",
+      profileVersion: 1,
+    },
+  };
 }
 
 function dbArtifactText(
@@ -408,5 +456,28 @@ describe("runReviewedRunWorkflow", () => {
         maxAttempts: 0,
       }),
     ).rejects.toThrow(/maxAttempts must be a positive integer/);
+  });
+
+  it("rejects consensus review rules before starting coder or reviewer agents", async () => {
+    const root = setupHarness();
+    const repoPath = setupRepo();
+    const coderRun = vi.fn<CodexExecRunner["run"]>(async () => {
+      throw new Error("coder should not run");
+    });
+    const reviewerRun = vi.fn<CodexExecRunner["run"]>(async () => {
+      throw new Error("reviewer should not run");
+    });
+
+    await expect(
+      runWf(root, repoPath, {
+        coderRunner: { run: coderRun },
+        reviewerRunner: { run: reviewerRun },
+        projectRun: consensusProjectRun(),
+      }),
+    ).rejects.toThrow(ReviewWorkflowUnsupportedError);
+
+    expect(coderRun).not.toHaveBeenCalled();
+    expect(reviewerRun).not.toHaveBeenCalled();
+    expect(existsSync(join(root, "runs"))).toBe(false);
   });
 });

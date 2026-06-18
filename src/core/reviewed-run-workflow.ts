@@ -15,6 +15,28 @@ import { processReviewDecision } from "./review-processor.js";
 import { prepareRerunFromReview } from "./rerun.js";
 import { harnessPaths } from "../config/paths.js";
 
+export class ReviewWorkflowUnsupportedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReviewWorkflowUnsupportedError";
+  }
+}
+
+const REVIEWED_RUN_CONSENSUS_UNSUPPORTED_MESSAGE =
+  "workflow reviewed-run does not support consensus review rules; " +
+  "use harness run plus explicit review auto/process steps, or a hitch runner " +
+  "that supports consensus dispatch";
+
+export function assertReviewedRunWorkflowSupported(
+  reviewRuleResolution?: ReviewRuleResolution,
+): void {
+  if (reviewRuleResolution?.rule.mode === "consensus") {
+    throw new ReviewWorkflowUnsupportedError(
+      REVIEWED_RUN_CONSENSUS_UNSUPPORTED_MESSAGE,
+    );
+  }
+}
+
 /**
  * Outcome of a reviewed-run workflow.
  *  - a RunStatus (approved / rejected / failed-*) when a run/review reached
@@ -114,6 +136,7 @@ export async function runReviewedRunWorkflow(
       `maxAttempts must be a positive integer (got ${String(opts.maxAttempts)})`,
     );
   }
+  assertReviewedRunWorkflowSupported(opts.projectRun?.reviewRuleResolution);
   const attempts: WorkflowAttempt[] = [];
   let rootRunId = "";
   let finalStatus: WorkflowFinalStatus;

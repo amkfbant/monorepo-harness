@@ -195,7 +195,11 @@ import {
   ReviewerAgentGateError,
 } from "../core/reviewer-agent.js";
 import { syncRunArtifactsToDb } from "../core/run-materialize.js";
-import { runReviewedRunWorkflow } from "../core/reviewed-run-workflow.js";
+import {
+  runReviewedRunWorkflow,
+  ReviewWorkflowUnsupportedError,
+  assertReviewedRunWorkflowSupported,
+} from "../core/reviewed-run-workflow.js";
 import {
   evaluateReviewer,
   compareDecisions,
@@ -570,6 +574,16 @@ async function cmdReviewedRun(o: ReviewedRunOpts): Promise<ReviewedRunOutcome> {
     return { rootRunId: "", finalStatus: "dry-run" };
   }
 
+  try {
+    assertReviewedRunWorkflowSupported(prepared?.reviewRuleResolution);
+  } catch (e) {
+    if (e instanceof ReviewWorkflowUnsupportedError) {
+      process.stderr.write(`harness error: ${e.message}\n`);
+      process.exit(1);
+    }
+    throw e;
+  }
+
   const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
   const resolvedCodexBinaryVersion = codexBinaryVersion(codexBin);
   const coderRunner = createCodexCliRunner({
@@ -588,43 +602,52 @@ async function cmdReviewedRun(o: ReviewedRunOpts): Promise<ReviewedRunOutcome> {
     sandbox: "read-only",
   });
 
-  const result = await runReviewedRunWorkflow({
-    harnessRoot,
-    runsDir: paths.runsDir,
-    locksDir: paths.locksDir,
-    repoPath,
-    repoId,
-    domain: o.domain,
-    goal: o.goal,
-    baseBranch,
-    coderRunner,
-    reviewerRunner,
-    coderCodexBinaryVersion: resolvedCodexBinaryVersion,
-    maxAttempts: o.maxAttempts,
-    ...(o.reviewerName !== undefined ? { reviewerName: o.reviewerName } : {}),
-    ...(o.noAutoReview !== undefined ? { noAutoReview: o.noAutoReview } : {}),
-    ...(o.stopOnChangesRequested !== undefined
-      ? { stopOnChangesRequested: o.stopOnChangesRequested }
-      : {}),
-    ...(prepared !== undefined
-      ? {
-          projectRun: {
-            compiledPolicy: prepared.compiledPolicy,
-            reviewRuleResolution: prepared.reviewRuleResolution,
-            project: prepared.project,
-            ...(prepared.projectContextPacks !== undefined
-              ? {
-                  projectContextPacks: {
-                    promptText: prepared.projectContextPacks.promptText,
-                    manifestYaml:
-                      prepared.projectContextPacks.manifestYaml,
-                  },
-                }
-              : {}),
-          },
-        }
-      : {}),
-  });
+  let result: Awaited<ReturnType<typeof runReviewedRunWorkflow>>;
+  try {
+    result = await runReviewedRunWorkflow({
+      harnessRoot,
+      runsDir: paths.runsDir,
+      locksDir: paths.locksDir,
+      repoPath,
+      repoId,
+      domain: o.domain,
+      goal: o.goal,
+      baseBranch,
+      coderRunner,
+      reviewerRunner,
+      coderCodexBinaryVersion: resolvedCodexBinaryVersion,
+      maxAttempts: o.maxAttempts,
+      ...(o.reviewerName !== undefined ? { reviewerName: o.reviewerName } : {}),
+      ...(o.noAutoReview !== undefined ? { noAutoReview: o.noAutoReview } : {}),
+      ...(o.stopOnChangesRequested !== undefined
+        ? { stopOnChangesRequested: o.stopOnChangesRequested }
+        : {}),
+      ...(prepared !== undefined
+        ? {
+            projectRun: {
+              compiledPolicy: prepared.compiledPolicy,
+              reviewRuleResolution: prepared.reviewRuleResolution,
+              project: prepared.project,
+              ...(prepared.projectContextPacks !== undefined
+                ? {
+                    projectContextPacks: {
+                      promptText: prepared.projectContextPacks.promptText,
+                      manifestYaml:
+                        prepared.projectContextPacks.manifestYaml,
+                    },
+                  }
+                : {}),
+            },
+          }
+        : {}),
+    });
+  } catch (e) {
+    if (e instanceof ReviewWorkflowUnsupportedError) {
+      process.stderr.write(`harness error: ${e.message}\n`);
+      process.exit(1);
+    }
+    throw e;
+  }
 
   process.stdout.write(
     `workflow=reviewed-run rootRunId=${result.rootRunId} ` +
