@@ -665,6 +665,8 @@ export function registerCourseCommands(
     .option("--status <s>", "new status (pending|in_progress|closed|blocked)")
     .option("--scope-file <path>", "replace scope with YAML/JSON file")
     .option("--close-file <path>", "replace close conditions with YAML/JSON file")
+    .option("--allow-scope-widen", "allow a phase scope widening update")
+    .option("--allow-gate-loosen", "allow a phase close-gate loosening update")
     .option(
       "--note <text>",
       "operator audit note (e.g. force-close reason / PR ref); shown in course export",
@@ -677,29 +679,24 @@ export function registerCourseCommands(
             : undefined;
         withCourseDb(opts, (db) => {
           const phases = new PhaseRepository(db);
+          if (raw.scopeFile !== undefined || raw.closeFile !== undefined) {
+            phases.updateSpec({
+              phaseId: id,
+              ...(raw.scopeFile !== undefined
+                ? { scope: readStructuredFile(String(raw.scopeFile)) }
+                : {}),
+              ...(raw.closeFile !== undefined
+                ? { closeConditions: readStructuredFile(String(raw.closeFile)) }
+                : {}),
+              allowScopeWiden: raw.allowScopeWiden === true,
+              allowGateLoosen: raw.allowGateLoosen === true,
+            });
+          }
           if (newStatus !== undefined) {
             phases.setStatus(id, newStatus);
           }
           if (raw.note !== undefined) {
             phases.setNote(id, String(raw.note));
-          }
-          if (raw.scopeFile !== undefined || raw.closeFile !== undefined) {
-            db.prepare(
-              `UPDATE phases SET
-                 scope_json = COALESCE(?, scope_json),
-                 close_conditions_json = COALESCE(?, close_conditions_json),
-                 updated_at = ?
-               WHERE phase_id = ?`,
-            ).run(
-              raw.scopeFile !== undefined
-                ? JSON.stringify(readStructuredFile(String(raw.scopeFile)))
-                : null,
-              raw.closeFile !== undefined
-                ? JSON.stringify(readStructuredFile(String(raw.closeFile)))
-                : null,
-              new Date().toISOString(),
-              id,
-            );
           }
           const updated = phases.require(id);
           process.stdout.write(`phase=${updated.phaseId} status=${updated.status}\n`);

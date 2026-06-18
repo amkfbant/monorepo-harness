@@ -20,6 +20,7 @@ import {
   closeConditionsLoosenGate,
   isScopeWidening,
 } from "./spec-gates.js";
+import { assertValidCloseConditions } from "./spec-validation.js";
 import {
   DEFAULT_HITCH_POLICY,
   HARNESS_ORIGIN_FINDING_SOURCE_SET,
@@ -495,7 +496,12 @@ export class HitchRepository {
   createSession(input: CreateHitchSessionInput): HitchSession {
     const now = input.createdAt ?? new Date().toISOString();
     const hitchId = input.hitchId ?? `hitch-${randomUUID()}`;
-    const policy = input.policy ?? DEFAULT_HITCH_POLICY;
+    const scope = parseHitchScope(input.scope ?? {});
+    const closeConditions = parseHitchCloseConditions(
+      input.closeConditions ?? [],
+    );
+    assertValidCloseConditions(closeConditions);
+    const policy = parseHitchPolicy(input.policy ?? DEFAULT_HITCH_POLICY);
     const maxTotalNewFindings =
       input.maxTotalNewFindings ??
       policy.divergence.maxTotalNewFindings;
@@ -519,8 +525,8 @@ export class HitchRepository {
         input.repoId ?? null,
         input.domain ?? null,
         input.backlogItemId ?? null,
-        json(input.scope ?? {}),
-        json(input.closeConditions ?? []),
+        json(scope),
+        json(closeConditions),
         json(policy),
         input.maxIterations ?? 3,
         input.maxReviewCycles ?? 3,
@@ -719,6 +725,9 @@ export class HitchRepository {
       input.closeConditions === undefined
         ? undefined
         : parseHitchCloseConditions(input.closeConditions);
+    if (nextCloseConditions !== undefined) {
+      assertValidCloseConditions(nextCloseConditions);
+    }
     const nextPolicy =
       input.policy === undefined ? undefined : parseHitchPolicy(input.policy);
     const now = input.now ?? new Date().toISOString();

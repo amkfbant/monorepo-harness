@@ -938,6 +938,41 @@ describe("MCP course-tools create/add idempotency replay (P1)", () => {
       expect(matching).toHaveLength(1);
     });
   });
+
+  it("phase.add rejects invalid close conditions before writing a phase", async () => {
+    const root = freshRoot();
+    let courseId = "";
+    withDb(root, (db) => {
+      const repo = new CourseRepository(db);
+      courseId = repo.create({
+        title: "Barrier Course",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "test",
+      }).courseId;
+    });
+
+    const s = server(root, mutationConfig(["phase.add"]));
+    const result = await callTool(s, "harness.phase.add", {
+      courseId,
+      title: "Invalid Phase",
+      closeConditions: [
+        {
+          id: "deploy",
+          kind: "operation_status",
+          required: true,
+          metadata: {},
+        },
+      ],
+      idempotencyKey: "phase-add-invalid-close",
+    });
+    expect(result.status).toBe("error");
+    expect(result.summary).toMatch(/operation_status_missing_operation_id/);
+
+    withDb(root, (db) => {
+      expect(new PhaseRepository(db).listForCourse(courseId)).toEqual([]);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

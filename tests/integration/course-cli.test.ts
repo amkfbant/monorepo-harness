@@ -738,6 +738,96 @@ describe("course/phase CLI (SP-1)", () => {
     expect(exported.out).not.toContain("\n## not a real heading");
   });
 
+  it("phase add/update reject invalid close condition files before writing", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Spec Barrier", "--json"]),
+    );
+    const invalidClose = join(root, "invalid-close.json");
+    writeFileSync(
+      invalidClose,
+      JSON.stringify([
+        {
+          id: "deploy",
+          kind: "operation_status",
+          required: true,
+          metadata: {},
+        },
+      ]),
+    );
+
+    const rejectedAdd = runCli(root, [
+      "phase",
+      "add",
+      "--course",
+      course.courseId,
+      "--title",
+      "Invalid",
+      "--close-file",
+      invalidClose,
+    ]);
+    expect(rejectedAdd.code).toBe(1);
+    expect(rejectedAdd.out).toMatch(/operation_status_missing_operation_id/);
+    withSeedDb(root, (db) => {
+      const row = db
+        .prepare("SELECT COUNT(*) AS count FROM phases WHERE course_id = ?")
+        .get(course.courseId) as { count: number };
+      expect(row.count).toBe(0);
+    });
+
+    const validClose = join(root, "valid-close.json");
+    writeFileSync(
+      validClose,
+      JSON.stringify([
+        {
+          id: "typecheck",
+          kind: "command",
+          required: true,
+          command: "npm run typecheck",
+        },
+      ]),
+    );
+    const phase = json<{ phaseId: string }>(
+      runCli(root, [
+        "phase",
+        "add",
+        "--course",
+        course.courseId,
+        "--title",
+        "Valid",
+        "--close-file",
+        validClose,
+        "--json",
+      ]),
+    );
+
+    const rejectedUpdate = runCli(root, [
+      "phase",
+      "update",
+      phase.phaseId,
+      "--status",
+      "closed",
+      "--close-file",
+      invalidClose,
+    ]);
+    expect(rejectedUpdate.code).toBe(1);
+    expect(rejectedUpdate.out).toMatch(/operation_status_missing_operation_id/);
+    withSeedDb(root, (db) => {
+      const row = db
+        .prepare(
+          "SELECT status, close_conditions_json FROM phases WHERE phase_id = ?",
+        )
+        .get(phase.phaseId) as {
+        status: string;
+        close_conditions_json: string;
+      };
+      expect(row.status).toBe("pending");
+      expect(JSON.parse(row.close_conditions_json).map((cc: { id: string }) => cc.id)).toEqual([
+        "typecheck",
+      ]);
+    });
+  });
+
   it("phase link-hitch links a seeded hitch and phase show reflects it", () => {
     const { root } = setup();
 

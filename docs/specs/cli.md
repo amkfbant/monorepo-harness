@@ -535,6 +535,9 @@ adopt-pr は状態を変更せず、convergence / rollup / merge 判定の sourc
 `hitch update`（#142）は live な hitch（`open` / `in_progress` / `close_ready`）の
 `scope_json` / `close_conditions_json` / `policy_json` を部分更新する。少なくとも 1 つの
 `--*-file` と `--reason` が必須で、各 file は start 時と同じ parser で検証される。
+`HitchRepository.createSession()` と `updateSessionConfig()` は repository 層で
+`parseHitchScope` / `parseHitchCloseConditions` と close-condition validator を実行するため、
+CLI/MCP 呼び出し側の事前 parse に依存しない。
 `targetFiles` / `targetOperations` / `allowedFindingCategories` /
 `excludedCategories` / `targetSummary` の変更が旧 scope の subset と証明できない場合は
 scope widen として `--allow-scope-widen` が必要（`notes` のみは非意味フィールドとして許可）。
@@ -2078,7 +2081,7 @@ course 内 phase 管理（SP-1）。データモデルは [`roadmap.md`](./roadm
 harness phase add --course <id> --title <text> [--parent <phase-id>] [--position <n>] [--scope-file <path>] [--close-file <path>] [--created-by <actor>] [--json]
 harness phase list --course <id> [--json]
 harness phase show <id> [--json]
-harness phase update <id> [--status pending|in_progress|closed|blocked] [--scope-file <path>] [--close-file <path>] [--note <text>]
+harness phase update <id> [--status pending|in_progress|closed|blocked] [--scope-file <path>] [--close-file <path>] [--allow-scope-widen] [--allow-gate-loosen] [--note <text>]
 harness phase link-hitch <phase-id> <hitch-id>
 harness phase unlink-hitch <hitch-id>
 ```
@@ -2088,7 +2091,7 @@ harness phase unlink-hitch <hitch-id>
 | `add` | phase を course に追加。`--scope-file` / `--close-file` は JSON または YAML を受け付ける。cross-course parent は拒否 |
 | `list` | course の phase 一覧（position/id 順のフラット一覧） |
 | `show` | 単一 phase ＋ リンク済み hitch id を表示 |
-| `update` | phase の declared status / scope/close conditions / 監査 note を更新。`--note <text>` は force-close 理由や PR ref を記録し（`review_state_json` の `{ note }` に保存・migration 不要）、`course export --md` に `**Note**:` 行として出る（#171b） |
+| `update` | phase の declared status / scope/close conditions / 監査 note を更新。scope/close conditions は `PhaseRepository.updateSpec()` 経由で hitch と同じ close-condition validator と `--allow-scope-widen` / `--allow-gate-loosen` gate を通る。`--note <text>` は force-close 理由や PR ref を記録し（`review_state_json` の `{ note }` に保存・migration 不要）、`course export --md` に `**Note**:` 行として出る（#171b） |
 | `link-hitch` | hitch を phase にリンク（cross-project mismatch と double-link は拒否） |
 | `unlink-hitch` | hitch の phase リンクを解除 |
 

@@ -3,6 +3,16 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Phase, PhaseNode, PhaseStatus } from "./types.js";
 import { CourseUserError, ReviewStateConflictError } from "./errors.js";
 import { LeaseGuardFailedError } from "../workspace/db-domain-lock.js";
+import {
+  parseHitchCloseConditions,
+  parseHitchScope,
+} from "../hitch/schemas.js";
+import {
+  closeConditionsLoosenGate,
+  isScopeWidening,
+} from "../hitch/spec-gates.js";
+import { assertValidCloseConditions } from "../hitch/spec-validation.js";
+import type { HitchCloseCondition, HitchScope } from "../hitch/types.js";
 
 interface PhaseRow {
   phase_id: string; course_id: string; parent_phase_id: string | null;
@@ -104,6 +114,15 @@ export interface RecordSpecApprovalInput {
   maxAttempts?: number;
 }
 
+export interface UpdatePhaseSpecInput {
+  phaseId: string;
+  scope?: unknown;
+  closeConditions?: unknown;
+  allowScopeWiden?: boolean;
+  allowGateLoosen?: boolean;
+  now?: string;
+}
+
 const DEFAULT_REVIEW_STATE_CAS_ATTEMPTS = 3;
 
 export class PhaseRepository {
@@ -115,6 +134,10 @@ export class PhaseRepository {
     phaseId?: string;
     createdBy: string; createdSource: string; now?: string;
   }): Phase {
+    const scope = normalizeOptionalPhaseScope(input.scope);
+    const closeConditions = normalizeOptionalPhaseCloseConditions(
+      input.closeConditions,
+    );
     return this.db.transaction(() => {
       const course = this.db.prepare("SELECT 1 FROM courses WHERE course_id = ?").get(input.courseId) as { "1": number } | undefined;
       if (course === undefined) throw new CourseUserError(`course ${input.courseId} not found`);
@@ -136,8 +159,8 @@ export class PhaseRepository {
         `INSERT INTO phases (phase_id, course_id, parent_phase_id, title, position, status, scope_json, close_conditions_json, created_by, created_source, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`,
       ).run(id, input.courseId, parentPhaseId, input.title, position,
-        input.scope === undefined ? null : JSON.stringify(input.scope),
-        input.closeConditions === undefined ? null : JSON.stringify(input.closeConditions),
+        scope === undefined ? null : JSON.stringify(scope),
+        closeConditions === undefined ? null : JSON.stringify(closeConditions),
         input.createdBy, input.createdSource, now, now);
       return this.require(id);
     }).immediate();
@@ -178,6 +201,61 @@ export class PhaseRepository {
     this.db.prepare("UPDATE phases SET status = ?, updated_at = ? WHERE phase_id = ?")
       .run(status, now ?? new Date().toISOString(), phaseId);
     return this.require(phaseId);
+  }
+
+  updateSpec(input: UpdatePhaseSpecInput): Phase {
+    if (input.scope === undefined && input.closeConditions === undefined) {
+      throw new CourseUserError("updateSpec requires scope or closeConditions");
+    }
+    const nextScope = normalizeOptionalPhaseScope(input.scope);
+    const nextCloseConditions = normalizeOptionalPhaseCloseConditions(
+      input.closeConditions,
+    );
+    const ts = input.now ?? new Date().toISOString();
+    return this.db.transaction(() => {
+      const current = this.require(input.phaseId);
+      if (
+        nextScope !== undefined &&
+        input.allowScopeWiden !== true &&
+        isScopeWidening(phaseScope(current.scope), nextScope)
+      ) {
+        throw new CourseUserError(
+          `phase ${input.phaseId} scope widen requires --allow-scope-widen`,
+        );
+      }
+      if (
+        nextCloseConditions !== undefined &&
+        input.allowGateLoosen !== true &&
+        closeConditionsLoosenGate(
+          phaseCloseConditions(current.closeConditions),
+          nextCloseConditions,
+        )
+      ) {
+        throw new CourseUserError(
+          `phase ${input.phaseId} gate loosen requires --allow-gate-loosen`,
+        );
+      }
+
+      const sets: string[] = [];
+      const args: unknown[] = [];
+      if (nextScope !== undefined) {
+        sets.push("scope_json = ?");
+        args.push(JSON.stringify(nextScope));
+      }
+      if (nextCloseConditions !== undefined) {
+        sets.push("close_conditions_json = ?");
+        args.push(JSON.stringify(nextCloseConditions));
+      }
+      sets.push("updated_at = ?");
+      args.push(ts, input.phaseId);
+      const info = this.db
+        .prepare(`UPDATE phases SET ${sets.join(", ")} WHERE phase_id = ?`)
+        .run(...args);
+      if (info.changes !== 1) {
+        throw new CourseUserError(`phase ${input.phaseId} not found`);
+      }
+      return this.require(input.phaseId);
+    }).immediate();
   }
 
   /**
@@ -390,6 +468,44 @@ function normalizeReviewStateAttempts(value: number | undefined): number {
     throw new CourseUserError("review_state CAS maxAttempts must be a positive integer");
   }
   return attempts;
+}
+
+function normalizeOptionalPhaseScope(value: unknown | undefined): HitchScope | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return parseHitchScope(value);
+  } catch (e) {
+    throw new CourseUserError((e as Error).message, { cause: e });
+  }
+}
+
+function normalizeOptionalPhaseCloseConditions(
+  value: unknown | undefined,
+): HitchCloseCondition[] | undefined {
+  if (value === undefined) return undefined;
+  try {
+    const conditions = parseHitchCloseConditions(value);
+    assertValidCloseConditions(conditions);
+    return conditions;
+  } catch (e) {
+    throw new CourseUserError((e as Error).message, { cause: e });
+  }
+}
+
+function phaseScope(value: unknown): HitchScope {
+  try {
+    return parseHitchScope(value ?? {});
+  } catch (e) {
+    throw new CourseUserError((e as Error).message, { cause: e });
+  }
+}
+
+function phaseCloseConditions(value: unknown): HitchCloseCondition[] {
+  try {
+    return parseHitchCloseConditions(value ?? []);
+  } catch (e) {
+    throw new CourseUserError((e as Error).message, { cause: e });
+  }
 }
 
 function isSqliteBusy(e: unknown): boolean {

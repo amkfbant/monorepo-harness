@@ -997,6 +997,11 @@ helpers in `src/hitch/spec-gates.ts`, so hitch and future phase-spec gates use
 one behavior definition instead of mirrors.
 Each update writes an `updated` lifecycle event containing the changed fields and
 previous config snapshot.
+`HitchRepository.createSession()` is also a write barrier: it parses scope and
+close conditions and runs the close-condition validator before inserting, so
+direct repository callers cannot bypass CLI/MCP parsing. MCP `hitch.expand_scope`
+uses `updateSessionConfig()` after merging scope, with explicit
+`allowScopeWiden`, and therefore records the same `updated` lifecycle event.
 
 ## MCP Contract
 
