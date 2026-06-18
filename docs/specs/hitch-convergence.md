@@ -744,6 +744,18 @@ self-reported `requiredChanges`. If the active consensus row cannot be parsed,
 does not identify a trace proposal, or references a missing proposal, review
 import fails closed instead of falling back to the latest processed participant
 proposal.
+When the run's frozen review-rule snapshot contains `review.refute`,
+target-bound rows in `review_refute_votes` are evaluated as a second
+requirement before the aggregate decision is promoted. Only
+`validation_status='passed'` rows from the configured refute group and frozen
+refute reviewer set are eligible; only `uphold` / `refute` participate, and
+`inconclusive` remains audit-only. A target is neutralized only when
+`refute` votes form a strict majority of the frozen refute reviewer set
+(`refutes > expectedReviewers / 2`). Missing, rejected, duplicate, group-mismatched,
+or frozen-set-external votes fail closed and leave the original blocking
+required_change intact. This refute path does not mutate finding severity; it
+only affects which target-bound `changes_requested` blockers survive the
+deterministic consensus gate.
 For frozen consensus runs (`reviewer_ids` present in the run's review-rule
 snapshot), the hitch review runner dispatches the frozen reviewer set
 sequentially and then processes the aggregate once. The runner's reported

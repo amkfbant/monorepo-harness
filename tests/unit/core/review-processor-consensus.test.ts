@@ -8,8 +8,10 @@ import { runMigrations } from "../../../src/db/migrations.js";
 import { ReviewProposalRepository } from "../../../src/db/repositories/review-proposals.js";
 import { ReviewRulesRepository } from "../../../src/db/repositories/review-rules.js";
 import { ReviewConsensusRepository } from "../../../src/db/repositories/review-consensus.js";
+import { ReviewRefuteVotesRepository } from "../../../src/db/repositories/review-refute-votes.js";
 import { ReviewerRepository } from "../../../src/db/repositories/reviewers.js";
 import { canonicaliseRule, ruleSha256, type ReviewRule } from "../../../src/core/review-rule.js";
+import { targetChangeHash } from "../../../src/core/refute-binding.js";
 import {
   processReviewDecision,
   ReviewGateError,
@@ -127,6 +129,44 @@ function consensusSnapshot(dbPath: string): {
       ).proposals.map((p) => p.reviewerId),
       requiredChanges: requiredChanges.map((r) => r.change_text),
     };
+  } finally {
+    db.close();
+  }
+}
+
+function proposalContentProjection(dbPath: string): Array<{
+  proposalId: number;
+  reviewer: string;
+  decision: string;
+  requiredChangesJson: string;
+}> {
+  const db = openDb(dbPath);
+  try {
+    return db
+      .prepare(
+        `SELECT proposal_id AS proposalId, reviewer, decision,
+                required_changes_json AS requiredChangesJson
+           FROM review_proposals
+          ORDER BY proposal_id ASC`,
+      )
+      .all() as Array<{
+      proposalId: number;
+      reviewer: string;
+      decision: string;
+      requiredChangesJson: string;
+    }>;
+  } finally {
+    db.close();
+  }
+}
+
+function findingSeverity(dbPath: string, findingId: string): string {
+  const db = openDb(dbPath);
+  try {
+    const row = db
+      .prepare("SELECT severity FROM hitch_findings WHERE finding_id = ?")
+      .get(findingId) as { severity: string } | undefined;
+    return row?.severity ?? "";
   } finally {
     db.close();
   }
@@ -361,5 +401,194 @@ describe("review process — consensus mode gating (Phase 2)", () => {
       sourceProposalIds: [secondAliceId, secondBobId],
       requiredChanges: ["fix alice", "fix bob"],
     });
+  });
+
+  it("applies strict-majority refute votes from DB before promoting consensus", async () => {
+    const target = "fix the auth check";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      refute: {
+        group: "refuters",
+        reviewerIds: ["refute-a", "refute-b", "refute-c"],
+        minParticipants: 2,
+      },
+      requirements: [
+        {
+          group: "humans",
+          minApprovals: 1,
+          blockingDecisions: ["changes_requested", "rejected"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { root, runsDir, dbPath } = setup(rule);
+    const db = openDb(dbPath);
+    try {
+      db.prepare(
+        `INSERT INTO hitch_sessions
+           (hitch_id, title, status, scope_json, close_conditions_json,
+            policy_json, max_iterations, max_review_cycles, max_reruns,
+            max_total_new_findings, created_by, created_source,
+            created_at, updated_at)
+         VALUES ('h-refute', 'refute session', 'open', '{}', '[]', '{}',
+                 10, 5, 3, 100, 'tester', 'cli', ?, ?)`,
+      ).run(NOW, NOW);
+      db.prepare(
+        `INSERT INTO hitch_findings
+           (finding_id, hitch_id, stable_key, source, severity, category,
+            scope_status, lifecycle_status, summary, first_seen_at, last_seen_at)
+         VALUES ('f-refute', 'h-refute', 'f-refute', 'review', 'P1',
+                 'correctness', 'in_scope', 'open', 'blocking finding', ?, ?)`,
+      ).run(NOW, NOW);
+      const reviewers = new ReviewerRepository(db);
+      for (const reviewerId of ["refute-a", "refute-b", "refute-c"]) {
+        reviewers.add({
+          reviewerId,
+          reviewerType: "codex",
+          displayName: reviewerId,
+          groupId: "refuters",
+        });
+      }
+      const refutes = new ReviewRefuteVotesRepository(db);
+      for (const reviewerId of ["refute-a", "refute-b"]) {
+        refutes.insert({
+          runId: "run-consensus",
+          targetChangeHash: targetChangeHash(target),
+          targetChangeIdx: 0,
+          reviewerId,
+          refuteVerdict: "refute",
+          refuteReason: "diff evidence exists",
+          counterEvidenceKind: "diff",
+          counterEvidenceRef: "final-diff.patch",
+          refuteCondition: "evidence covers the blocker",
+          retractCondition: "evidence disappears",
+          promptSha256: `prompt-${reviewerId}`,
+          sourceYaml: "refute_verdict: refute\n",
+          sourceSha256: `source-${reviewerId}`,
+          validationStatus: "passed",
+          createdAt: NOW,
+        });
+      }
+    } finally {
+      db.close();
+    }
+    seedProposal(dbPath, "alice", "changes_requested", [target]);
+    seedProposal(dbPath, "bob", "approved");
+    const proposalsBefore = proposalContentProjection(dbPath);
+
+    const result = await runProcess(dbPath, runsDir, root);
+
+    expect(result.newStatus).toBe("approved");
+    expect(proposalContentProjection(dbPath)).toEqual(proposalsBefore);
+    expect(findingSeverity(dbPath, "f-refute")).toBe("P1");
+    const snapshot = consensusSnapshot(dbPath);
+    expect(snapshot.requiredChanges).toEqual([]);
+    const after = openDb(dbPath);
+    try {
+      const consensus = new ReviewConsensusRepository(after).findActive(
+        "run-consensus",
+      );
+      const summary = JSON.parse(consensus!.summaryJson) as {
+        refute?: { refutedTargetChangeHashes?: string[] };
+      };
+      expect(summary.refute?.refutedTargetChangeHashes).toEqual([
+        targetChangeHash(target),
+      ]);
+    } finally {
+      after.close();
+    }
+  });
+
+  it("fails closed when DB contains duplicate passed refute rows for one reviewer", async () => {
+    const target = "fix the auth check";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      refute: {
+        group: "refuters",
+        reviewerIds: ["refute-a", "refute-b", "refute-c"],
+        minParticipants: 2,
+      },
+      requirements: [
+        {
+          group: "humans",
+          minApprovals: 1,
+          blockingDecisions: ["changes_requested", "rejected"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { root, runsDir, dbPath } = setup(rule);
+    const db = openDb(dbPath);
+    try {
+      const reviewers = new ReviewerRepository(db);
+      for (const reviewerId of ["refute-a", "refute-b", "refute-c"]) {
+        reviewers.add({
+          reviewerId,
+          reviewerType: "codex",
+          displayName: reviewerId,
+          groupId: "refuters",
+        });
+      }
+      const refutes = new ReviewRefuteVotesRepository(db);
+      for (const vote of [
+        { reviewerId: "refute-a", seq: "a1" },
+        { reviewerId: "refute-a", seq: "a2" },
+        { reviewerId: "refute-b", seq: "b1" },
+      ]) {
+        refutes.insert({
+          runId: "run-consensus",
+          targetChangeHash: targetChangeHash(target),
+          targetChangeIdx: 0,
+          reviewerId: vote.reviewerId,
+          refuteVerdict: "refute",
+          refuteReason: "diff evidence exists",
+          counterEvidenceKind: "diff",
+          counterEvidenceRef: "final-diff.patch",
+          refuteCondition: "evidence covers the blocker",
+          retractCondition: "evidence disappears",
+          promptSha256: `prompt-${vote.reviewerId}-${vote.seq}`,
+          sourceYaml: "refute_verdict: refute\n",
+          sourceSha256: `source-${vote.reviewerId}-${vote.seq}`,
+          validationStatus: "passed",
+          createdAt: NOW,
+        });
+      }
+    } finally {
+      db.close();
+    }
+    seedProposal(dbPath, "alice", "changes_requested", [target]);
+    seedProposal(dbPath, "bob", "approved");
+    const proposalsBefore = proposalContentProjection(dbPath);
+
+    const result = await runProcess(dbPath, runsDir, root);
+
+    expect(result.newStatus).toBe("changes_requested");
+    expect(proposalContentProjection(dbPath)).toEqual(proposalsBefore);
+    const snapshot = consensusSnapshot(dbPath);
+    expect(snapshot.requiredChanges).toEqual([target]);
+    const after = openDb(dbPath);
+    try {
+      const consensus = new ReviewConsensusRepository(after).findActive(
+        "run-consensus",
+      );
+      const summary = JSON.parse(consensus!.summaryJson) as {
+        refute?: {
+          refutedTargetChangeHashes?: string[];
+          checks?: Array<{
+            duplicateReviewers: string[];
+            strictMajorityMet: boolean;
+          }>;
+        };
+      };
+      expect(summary.refute?.refutedTargetChangeHashes).toEqual([]);
+      expect(summary.refute?.checks?.[0]).toMatchObject({
+        duplicateReviewers: ["refute-a"],
+        strictMajorityMet: false,
+      });
+    } finally {
+      after.close();
+    }
   });
 });
