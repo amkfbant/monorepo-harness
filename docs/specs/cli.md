@@ -1900,14 +1900,14 @@ knowledge_candidate に対して `assertNoLegacyRuntimeRows(db)` で拒否。
 bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 `db doctor` / `db check-consistency`。
 
-## Phase 11 — Review governance CLI（設計確定・実装中）
+## Phase 11 — Review governance CLI（現状仕様）
 
 Phase 11 の設計は [`../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md`](../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md)。
 
 ### `harness review reviewers`（Phase 11-2、新規）
 
 ```
-harness review reviewers list
+harness review reviewers list [--group <id>]
 harness review reviewers add <reviewer_id> --type <human|codex|external|system> \
                              --display-name <name> [--group <id>] \
                              [--trust <advisory|normal|required|policy>]
@@ -1915,6 +1915,9 @@ harness review reviewers add <reviewer_id> --type <human|codex|external|system> 
 
 migration v7 適用時に default reviewers が seed される (human / codex /
 codex-security / system)。
+`reviewers list --group <id>` は `ReviewerRepository.listByGroup` と同じ
+境界で reviewer を `reviewer_id ASC` に並べ、空 group / 未登録 group は `(none)` を
+返す。
 
 ### `harness review auto`（Phase 11-2 で reviewer 解決）
 
