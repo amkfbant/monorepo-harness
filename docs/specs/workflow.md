@@ -1051,8 +1051,14 @@ frozen consensus dispatch は各 reviewer の `metadata_json.lens` /
 `{reviewerId,lens,lensPromptSha256}` を保存する。lens は proposal を多様化する入力であり、
 `evaluateConsensus` の quorum / tie-break / state transition には参加しない。
 
-> **残る設計段階（現状仕様ではない）**: 反証 verify（refute。#229 close に含めるか別
-> issue 切り出しかは人間批准事項＝設計 付録H2/I.3 参照）、および `listByGroup` からの
+> **反証 binding の現状仕様**: SP-16 の app 層 target binding は実装済み。
+> `normalizeChangeText()` / versioned `targetChangeHash()` /
+> `verifyRefuteBinding()` が refute 票を active required change に fail-closed で
+> bind し、`verifyAndRecordRefuteBinding()` が成功を
+> `review_refute_votes.validation_status='passed'`、失敗を
+> `validation_status='rejected'` + `reject_reason` の監査行として保存する。
+> **残る設計段階（現状仕様ではない）**: refute requirement DSL、`runRefuteAgent`、
+> refute 票を使った `evaluateConsensus` の第2 requirement、および `listByGroup` からの
 > 自動 reviewer set freeze は未実装。これらが入っても上表 (2)(3) の決定論ゲートは
 > **凍結契約として不変**で、lens / refute は (1) 提案（入力）の多様化に留まる。
 
