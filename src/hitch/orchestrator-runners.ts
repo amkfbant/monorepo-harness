@@ -24,6 +24,7 @@ import {
 } from "../policy/schema.js";
 import { runReviewerAgent } from "../core/reviewer-agent.js";
 import type { ReviewerLensPrompt } from "../core/reviewer-agent.js";
+import { runRefuteAgent } from "../core/refute-agent.js";
 import { ReviewerAgentGateError } from "../core/reviewer-agent-errors.js";
 import {
   processReviewDecision,
@@ -72,7 +73,11 @@ import {
   type ConsensusStatus,
   type ConsensusSummary,
 } from "../core/review-consensus.js";
-import { activeProposalRows, enrichRows } from "../core/consensus-enrichment.js";
+import {
+  activeProposalRows,
+  enrichRefuteVotesForRun,
+  enrichRows,
+} from "../core/consensus-enrichment.js";
 import {
   frozenReviewerIdsForRule,
   parseReviewRuleSnapshot,
@@ -80,6 +85,11 @@ import {
   ruleSha256,
   type ReviewRule,
 } from "../core/review-rule.js";
+import {
+  targetChangeHash,
+  type RefuteRequiredChange,
+} from "../core/refute-binding.js";
+import { ReviewRefuteVotesRepository } from "../db/repositories/review-refute-votes.js";
 import {
   HitchRepository,
   OPEN_FINDING_LIFECYCLES,
@@ -1018,6 +1028,16 @@ interface ReviewerDispatchFailure {
   reason: string;
 }
 
+interface RefuteDispatchTarget extends RefuteRequiredChange {
+  changeText: string;
+  targetChangeHash: string;
+}
+
+interface RefuteDispatchPlan {
+  reviewerIds: string[];
+  targets: RefuteDispatchTarget[];
+}
+
 /**
  * Why a frozen-consensus review cannot start. `unregistered` = a frozen
  * reviewer id has no `reviewers` row; `under_quorum`/`wrong_group` = a
@@ -1166,6 +1186,138 @@ function prepareReviewDispatchPlan(input: {
     supersededAt: input.now,
   });
   return { kind: "frozen-consensus", reviewerIds, reviewers };
+}
+
+function prepareRefuteDispatchPlan(input: {
+  db: Database.Database;
+  runId: string;
+  now: string;
+}): RefuteDispatchPlan | null {
+  const snapshot = readReviewRuleSnapshot(input);
+  if (
+    snapshot === null ||
+    snapshot.rule.mode !== "consensus" ||
+    snapshot.rule.refute === undefined
+  ) {
+    return null;
+  }
+
+  const proposalRepo = new ReviewProposalRepository(input.db);
+  const reviewerRepo = new ReviewerRepository(input.db);
+  const frozenReviewerIds = frozenReviewerIdsForRule(snapshot.rule);
+  const rows = activeProposalRows(proposalRepo, input.runId, {
+    ...(frozenReviewerIds.length > 0 ? { reviewerIds: frozenReviewerIds } : {}),
+  });
+  if (rows.length === 0) return null;
+
+  const result = evaluateConsensus({
+    rule: snapshot.rule,
+    ruleSha256: snapshot.ruleSha256,
+    proposals: enrichRows(rows, reviewerRepo),
+    refuteVotes: enrichRefuteVotesForRun(
+      new ReviewRefuteVotesRepository(input.db),
+      reviewerRepo,
+      input.runId,
+    ),
+    evaluatedAt: input.now,
+  });
+  if (result.status !== "changes_requested") return null;
+
+  const targets = collectUnrefutedChangesRequestedTargets({
+    rows,
+    result,
+  });
+  if (targets.length === 0) return null;
+
+  const reviewerIds = assertFrozenRefuteReviewersReady({
+    db: input.db,
+    rule: snapshot.rule,
+  });
+  return { reviewerIds, targets };
+}
+
+function collectUnrefutedChangesRequestedTargets(input: {
+  rows: ReturnType<typeof activeProposalRows>;
+  result: ReturnType<typeof evaluateConsensus>;
+}): RefuteDispatchTarget[] {
+  const rowsByProposalId = new Map(
+    input.rows.map((row) => [row.proposalId, row]),
+  );
+  const refutedTargets = new Set(
+    input.result.summary.refute?.refutedTargetChangeHashes ?? [],
+  );
+  const seen = new Set<string>();
+  const targets: RefuteDispatchTarget[] = [];
+  for (const proposal of input.result.summary.proposals) {
+    const row = rowsByProposalId.get(proposal.proposalId);
+    if (row?.decision !== "changes_requested") continue;
+    for (const changeText of row.requiredChanges) {
+      const hash = targetChangeHash(changeText);
+      if (refutedTargets.has(hash) || seen.has(hash)) continue;
+      seen.add(hash);
+      targets.push({
+        idx: targets.length,
+        changeText,
+        targetChangeHash: hash,
+      });
+    }
+  }
+  return targets;
+}
+
+function assertFrozenRefuteReviewersReady(input: {
+  db: Database.Database;
+  rule: ReviewRule;
+}): string[] {
+  const refute = input.rule.refute;
+  if (refute === undefined) return [];
+  const reviewerIds = [...refute.reviewerIds].sort();
+  if (reviewerIds.length === 0) {
+    throw new ConsensusReviewPreflightError(
+      "the resolved frozen refute reviewer set is empty",
+      { causeKind: "no_reviewers" },
+    );
+  }
+
+  const reviewers = new ReviewerRepository(input.db);
+  const byId = new Map(
+    reviewerIds.map((reviewerId) => [
+      reviewerId,
+      reviewers.findById(reviewerId),
+    ]),
+  );
+  const missing = [...byId]
+    .filter(([, reviewer]) => reviewer === null)
+    .map(([reviewerId]) => reviewerId);
+  if (missing.length > 0) {
+    throw new ConsensusReviewPreflightError(
+      `unknown frozen refute reviewer(s): ${missing.join(", ")}`,
+      { causeKind: "unregistered" },
+    );
+  }
+
+  const required = Math.max(
+    refute.minParticipants ?? 1,
+    Math.floor(reviewerIds.length / 2) + 1,
+  );
+  const registered = reviewerIds.filter(
+    (reviewerId) => byId.get(reviewerId)?.groupId === refute.group,
+  );
+  if (registered.length < required) {
+    const causeKind =
+      registered.length === 0 ? "wrong_group" : "under_quorum";
+    throw new ConsensusReviewPreflightError(
+      `refute group ${refute.group}: required=${required} ` +
+        `registered=${registered.length} expected=${reviewerIds.length}`,
+      {
+        causeKind,
+        group: refute.group,
+        required,
+        registered: registered.length,
+      },
+    );
+  }
+  return reviewerIds;
 }
 
 function assertFrozenConsensusReviewersReady(input: {
@@ -1375,6 +1527,11 @@ function recordConsensusEvaluationForRun(input: {
     rule: snapshot.rule,
     ruleSha256: snapshot.ruleSha256,
     proposals: enrichRows(rows, new ReviewerRepository(input.db)),
+    refuteVotes: enrichRefuteVotesForRun(
+      new ReviewRefuteVotesRepository(input.db),
+      new ReviewerRepository(input.db),
+      input.runId,
+    ),
     evaluatedAt: input.evaluatedAt,
   });
   new ReviewConsensusRepository(input.db).insertActive({
@@ -1441,6 +1598,17 @@ function recordPendingConsensusReview(input: {
     cycleId: completed.cycleId,
   });
   return { decision };
+}
+
+function refuteRecorderForDb(dbPath: string): {
+  insert: ReviewRefuteVotesRepository["insert"];
+} {
+  return {
+    insert: (vote) =>
+      withManagedDb({ dbPath }, (db) =>
+        new ReviewRefuteVotesRepository(db).insert(vote),
+      ),
+  };
 }
 
 function shouldRecordFrozenPendingConsensus(input: {
@@ -1713,6 +1881,38 @@ export function createOrchestratorRunners(
           codexRunner: deps.reviewerRunner,
           ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
         });
+      }
+      const refutePlan = withManagedDb({ dbPath: deps.dbPath }, (db) =>
+        prepareRefuteDispatchPlan({
+          db,
+          runId,
+          now: new Date().toISOString(),
+        }),
+      );
+      if (refutePlan !== null) {
+        for (const target of refutePlan.targets) {
+          for (const reviewerId of refutePlan.reviewerIds) {
+            try {
+              await runRefuteAgent({
+                runsDir: paths.runsDir,
+                runId,
+                repository: refuteRecorderForDb(deps.dbPath),
+                activeRequiredChanges: [target],
+                reviewerName: reviewerId,
+                codexRunner: deps.reviewerRunner,
+                hitchId,
+                ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
+              });
+            } catch (e) {
+              const leaseLoss = findReviewerDispatchLeaseLossCause(
+                e,
+                deps.signal,
+              );
+              if (leaseLoss !== undefined) throw leaseLoss;
+              throw e;
+            }
+          }
+        }
       }
       // 2. promote the proposal to the run's status (approved / ...).
       let processed: Awaited<ReturnType<typeof processReviewDecision>>;

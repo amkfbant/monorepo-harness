@@ -2,8 +2,9 @@ import type {
   ReviewProposalRepository,
   ReviewProposalRow,
 } from "../db/repositories/review-proposals.js";
+import type { ReviewRefuteVotesRepository } from "../db/repositories/review-refute-votes.js";
 import type { ReviewerRepository } from "../db/repositories/reviewers.js";
-import type { EnrichedProposal } from "./review-consensus.js";
+import type { EnrichedProposal, EnrichedRefuteVote } from "./review-consensus.js";
 
 /**
  * Phase 2 (consensus production wiring): turn the active `review_proposals`
@@ -76,4 +77,22 @@ export function enrichActiveProposals(
   opts: { reviewerIds?: readonly string[] } = {},
 ): EnrichedProposal[] {
   return enrichRows(activeProposalRows(proposalRepo, runId, opts), reviewerRepo);
+}
+
+export function enrichRefuteVotesForRun(
+  refuteRepo: ReviewRefuteVotesRepository,
+  reviewerRepo: ReviewerRepository,
+  runId: string,
+): EnrichedRefuteVote[] {
+  return refuteRepo.listByRun(runId).map((vote) => {
+    const reviewer = reviewerRepo.findById(vote.reviewerId);
+    return {
+      refuteId: vote.refuteId,
+      reviewerId: vote.reviewerId,
+      groupId: reviewer?.groupId ?? null,
+      targetChangeHash: vote.targetChangeHash,
+      refuteVerdict: vote.refuteVerdict,
+      validationStatus: vote.validationStatus,
+    };
+  });
 }

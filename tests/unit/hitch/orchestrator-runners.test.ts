@@ -31,12 +31,14 @@ import { ReviewProposalRepository } from "../../../src/db/repositories/review-pr
 import { ReviewConsensusRepository } from "../../../src/db/repositories/review-consensus.js";
 import { ReviewRulesRepository } from "../../../src/db/repositories/review-rules.js";
 import { ReviewerRepository } from "../../../src/db/repositories/reviewers.js";
+import { ReviewRefuteVotesRepository } from "../../../src/db/repositories/review-refute-votes.js";
 import { createCodexCliRunner } from "../../../src/codex/codex-cli-runner.js";
 import { importReviewProposalToHitch } from "../../../src/hitch/review-integration.js";
 import { REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS } from "../../../src/core/review-consensus.js";
 import { ReviewerAgentGateError } from "../../../src/core/reviewer-agent-errors.js";
 import { sanitizeGateReason } from "../../../src/core/gate-reason.js";
 import type { ReviewRule } from "../../../src/core/review-rule.js";
+import { targetChangeHash } from "../../../src/core/refute-binding.js";
 import type {
   PrPublisher,
   PrPublishInputs,
@@ -275,6 +277,20 @@ function reviewerIdFromStdoutPath(stdoutPath: string): string {
   return match?.[1] ?? "codex-reviewer";
 }
 
+function agentFromStdoutPath(stdoutPath: string): {
+  reviewerId: string;
+  agent: "reviewer" | "refute";
+} {
+  const normalized = stdoutPath.replaceAll("\\", "/");
+  const match = normalized.match(
+    /\/reviewers\/([^/]+)\/(reviewer-agent|refute-agent)\.out\.log$/,
+  );
+  return {
+    reviewerId: match?.[1] ?? "codex-reviewer",
+    agent: match?.[2] === "refute-agent" ? "refute" : "reviewer",
+  };
+}
+
 function multiReviewerRunner(
   outputs: Record<string, string | Error>,
 ) {
@@ -290,10 +306,89 @@ function multiReviewerRunner(
   };
 }
 
+const SP18_REFUTE_REVIEWER_IDS = [
+  "refute-a",
+  "refute-b",
+  "refute-c",
+] as const;
+
+function sp18RefuteRule(input?: {
+  refuteReviewerIds?: readonly string[];
+  minParticipants?: number;
+}): ReviewRule {
+  return {
+    mode: "consensus",
+    refute: {
+      group: "refuters",
+      reviewerIds: [
+        ...(input?.refuteReviewerIds ?? SP18_REFUTE_REVIEWER_IDS),
+      ],
+      minParticipants: input?.minParticipants ?? 2,
+    },
+    requirements: [
+      {
+        group: "reviewers",
+        minApprovals: 1,
+        blockingDecisions: ["changes_requested", "rejected"],
+        quorum: { minParticipants: 2 },
+        reviewerIds: ["alice", "bob"],
+        lensAxes: ["correctness", "maintainability"],
+      },
+    ],
+    overrides: { allowedReviewers: [], requireReason: true },
+    staleProposal: { rejectSuperseded: true },
+  };
+}
+
+function addRefuteReviewers(
+  dbPath: string,
+  reviewers: readonly { reviewerId: string; groupId?: string }[] =
+    SP18_REFUTE_REVIEWER_IDS.map((reviewerId) => ({ reviewerId })),
+): void {
+  const { db, close } = openManagedDb({ dbPath });
+  try {
+    const repo = new ReviewerRepository(db);
+    for (const reviewer of reviewers) {
+      repo.add({
+        reviewerId: reviewer.reviewerId,
+        reviewerType: "codex",
+        displayName: reviewer.reviewerId,
+        groupId: reviewer.groupId ?? "refuters",
+      });
+    }
+  } finally {
+    close();
+  }
+}
+
+function refuteOutput(input: {
+  target: string;
+  verdict: "refute" | "uphold" | "inconclusive";
+}): string {
+  return [
+    "```yaml",
+    `target_change_hash: ${JSON.stringify(targetChangeHash(input.target))}`,
+    `refute_verdict: ${input.verdict}`,
+    ...(input.verdict === "refute"
+      ? [
+          'refute_reason: "diff evidence covers the blocker"',
+          "counter_evidence:",
+          "  kind: diff",
+          '  ref: "final-diff.patch"',
+          'refute_condition: "diff still covers the blocker"',
+          'retract_condition: "diff evidence is removed"',
+        ]
+      : []),
+    "```",
+    "",
+  ].join("\n");
+}
+
 function createFrozenConsensusReviewHarness(input: {
   prefix: string;
   hitchId: string;
   rule: ReviewRule;
+  closeConditions?: Parameters<HitchRepository["createSession"]>[0]["closeConditions"];
   reviewerMetadata?: Record<string, Record<string, unknown>>;
 }): { harnessRoot: string; dbPath: string; runId: string } {
   const { harnessRoot, dbPath } = createHarnessRoot(input.prefix);
@@ -337,9 +432,10 @@ function createFrozenConsensusReviewHarness(input: {
       title: "Frozen consensus",
       repoId: "t",
       domain: "docs",
-      closeConditions: [
-        { id: "review-ok", kind: "review_consensus", required: true },
-      ],
+      closeConditions:
+        input.closeConditions ?? [
+          { id: "review-ok", kind: "review_consensus", required: true },
+        ],
       createdBy: "test",
       createdSource: "worker",
     });
@@ -518,6 +614,659 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
         status: "passed",
         evidence: { decision: "approved", processStatus: "approved" },
       });
+    } finally {
+      close();
+    }
+  });
+
+  it("SP-18: dispatches frozen refute reviewers before processing consensus and reflects the advisory votes", async () => {
+    const hitchId = "g-consensus-refute-dispatch";
+    const target = "fix the auth check";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      refute: {
+        group: "refuters",
+        reviewerIds: ["refute-a", "refute-b", "refute-c"],
+        minParticipants: 2,
+      },
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 1,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "maintainability"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-refute-dispatch-",
+      hitchId,
+      rule,
+    });
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        const reviewers = new ReviewerRepository(db);
+        for (const reviewerId of ["refute-a", "refute-b", "refute-c"]) {
+          reviewers.add({
+            reviewerId,
+            reviewerType: "codex",
+            displayName: reviewerId,
+            groupId: "refuters",
+          });
+        }
+      } finally {
+        close();
+      }
+    }
+
+    const calls: string[] = [];
+    const reviewerRunner = {
+      run: vi.fn(async (input: {
+        logPaths: { stdout: string; stderr: string };
+      }) => {
+        const { reviewerId, agent } = agentFromStdoutPath(
+          input.logPaths.stdout,
+        );
+        calls.push(`${agent}:${reviewerId}`);
+        writeFileSync(input.logPaths.stderr, "", "utf8");
+        if (agent === "refute") {
+          const verdict = reviewerId === "refute-c" ? "uphold" : "refute";
+          writeFileSync(
+            input.logPaths.stdout,
+            [
+              "```yaml",
+              `target_change_hash: ${JSON.stringify(targetChangeHash(target))}`,
+              `refute_verdict: ${verdict}`,
+              ...(verdict === "refute"
+                ? [
+                    'refute_reason: "diff evidence covers the blocker"',
+                    "counter_evidence:",
+                    "  kind: diff",
+                    '  ref: "final-diff.patch"',
+                    'refute_condition: "diff still covers the blocker"',
+                    'retract_condition: "diff evidence is removed"',
+                  ]
+                : []),
+              "```",
+              "",
+            ].join("\n"),
+            "utf8",
+          );
+          return { exitCode: 0, timedOut: false, durationMs: 0 };
+        }
+        writeFileSync(
+          input.logPaths.stdout,
+          reviewerId === "alice"
+            ? reviewerOutput({
+                decision: "changes_requested",
+                requiredChanges: [target],
+              })
+            : reviewerOutput({ decision: "approved" }),
+          "utf8",
+        );
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      }),
+    };
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).resolves.toEqual({
+      runId,
+      decision: "approved",
+    });
+
+    expect(calls).toEqual([
+      "reviewer:alice",
+      "reviewer:bob",
+      "refute:refute-a",
+      "refute:refute-b",
+      "refute:refute-c",
+    ]);
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      expect(
+        new ReviewRefuteVotesRepository(db)
+          .listByRun(runId)
+          .map((row) => ({
+            reviewerId: row.reviewerId,
+            verdict: row.refuteVerdict,
+            status: row.validationStatus,
+            target: row.targetChangeHash,
+          })),
+      ).toEqual([
+        {
+          reviewerId: "refute-a",
+          verdict: "refute",
+          status: "passed",
+          target: targetChangeHash(target),
+        },
+        {
+          reviewerId: "refute-b",
+          verdict: "refute",
+          status: "passed",
+          target: targetChangeHash(target),
+        },
+        {
+          reviewerId: "refute-c",
+          verdict: "uphold",
+          status: "passed",
+          target: targetChangeHash(target),
+        },
+      ]);
+      const run = db
+        .prepare("SELECT status, reviewer FROM runs WHERE run_id = ?")
+        .get(runId) as { status: string; reviewer: string };
+      expect(run).toEqual({ status: "approved", reviewer: "consensus" });
+      const consensus = new ReviewConsensusRepository(db).findActive(runId);
+      expect(consensus?.status).toBe("approved");
+      const summary = JSON.parse(consensus!.summaryJson) as {
+        refute?: { refutedTargetChangeHashes?: string[] };
+      };
+      expect(summary.refute?.refutedTargetChangeHashes).toEqual([
+        targetChangeHash(target),
+      ]);
+      expect(
+        db
+          .prepare(
+            "SELECT change_text FROM review_required_changes WHERE run_id = ?",
+          )
+          .all(runId),
+      ).toEqual([]);
+      expect(new HitchRepository(db).listCloseChecks(hitchId)[0]).toMatchObject({
+        conditionId: "review-ok",
+        status: "passed",
+        evidence: { decision: "approved", processStatus: "approved" },
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it("SP-18: keeps blocking changes_requested when refutes are below strict majority", async () => {
+    const hitchId = "g-consensus-refute-sub-majority";
+    const target = "fix the auth check";
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-refute-sub-majority-",
+      hitchId,
+      rule: sp18RefuteRule(),
+    });
+    addRefuteReviewers(dbPath);
+
+    const reviewerRunner = {
+      run: vi.fn(async (input: {
+        logPaths: { stdout: string; stderr: string };
+      }) => {
+        const { reviewerId, agent } = agentFromStdoutPath(
+          input.logPaths.stdout,
+        );
+        writeFileSync(input.logPaths.stderr, "", "utf8");
+        if (agent === "refute") {
+          writeFileSync(
+            input.logPaths.stdout,
+            refuteOutput({
+              target,
+              verdict: reviewerId === "refute-a" ? "refute" : "uphold",
+            }),
+            "utf8",
+          );
+          return { exitCode: 0, timedOut: false, durationMs: 0 };
+        }
+        writeFileSync(
+          input.logPaths.stdout,
+          reviewerId === "alice"
+            ? reviewerOutput({
+                decision: "changes_requested",
+                requiredChanges: [target],
+              })
+            : reviewerOutput({ decision: "approved" }),
+          "utf8",
+        );
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      }),
+    };
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).resolves.toEqual({
+      runId,
+      decision: "changes_requested",
+    });
+
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      expect(new ReviewConsensusRepository(db).findActive(runId)?.status).toBe(
+        "changes_requested",
+      );
+      expect(
+        db
+          .prepare(
+            "SELECT change_text FROM review_required_changes WHERE run_id = ?",
+          )
+          .all(runId),
+      ).toEqual([{ change_text: target }]);
+      const summary = JSON.parse(
+        new ReviewConsensusRepository(db).findActive(runId)!.summaryJson,
+      ) as {
+        refute?: {
+          checks?: Array<{
+            targetChangeHash: string;
+            strictMajorityMet: boolean;
+            duplicateReviewers: string[];
+          }>;
+        };
+      };
+      expect(summary.refute?.checks).toEqual([
+        {
+          targetChangeHash: targetChangeHash(target),
+          expectedReviewers: 3,
+          participants: 3,
+          refutes: 1,
+          upholds: 2,
+          strictMajorityMet: false,
+          duplicateReviewers: [],
+        },
+      ]);
+    } finally {
+      close();
+    }
+  });
+
+  it("SP-18: rejected refute agent runs remain non-participants and keep blocking", async () => {
+    const hitchId = "g-consensus-refute-codex-failed";
+    const target = "fix the auth check";
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-refute-codex-failed-",
+      hitchId,
+      rule: sp18RefuteRule(),
+    });
+    addRefuteReviewers(dbPath);
+
+    const reviewerRunner = {
+      run: vi.fn(async (input: {
+        logPaths: { stdout: string; stderr: string };
+      }) => {
+        const { reviewerId, agent } = agentFromStdoutPath(
+          input.logPaths.stdout,
+        );
+        writeFileSync(input.logPaths.stderr, "", "utf8");
+        if (agent === "refute") {
+          writeFileSync(input.logPaths.stdout, "", "utf8");
+          return { exitCode: 1, timedOut: false, durationMs: 0 };
+        }
+        writeFileSync(
+          input.logPaths.stdout,
+          reviewerId === "alice"
+            ? reviewerOutput({
+                decision: "changes_requested",
+                requiredChanges: [target],
+              })
+            : reviewerOutput({ decision: "approved" }),
+          "utf8",
+        );
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      }),
+    };
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).resolves.toEqual({
+      runId,
+      decision: "changes_requested",
+    });
+
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      expect(
+        new ReviewRefuteVotesRepository(db).listByRun(runId).map((row) => ({
+          reviewerId: row.reviewerId,
+          status: row.validationStatus,
+          rejectReason: row.rejectReason,
+        })),
+      ).toEqual([
+        {
+          reviewerId: "refute-a",
+          status: "rejected",
+          rejectReason: "codex_failed",
+        },
+        {
+          reviewerId: "refute-b",
+          status: "rejected",
+          rejectReason: "codex_failed",
+        },
+        {
+          reviewerId: "refute-c",
+          status: "rejected",
+          rejectReason: "codex_failed",
+        },
+      ]);
+      expect(new ReviewConsensusRepository(db).findActive(runId)?.status).toBe(
+        "changes_requested",
+      );
+      expect(
+        db
+          .prepare(
+            "SELECT change_text FROM review_required_changes WHERE run_id = ?",
+          )
+          .all(runId),
+      ).toEqual([{ change_text: target }]);
+    } finally {
+      close();
+    }
+  });
+
+  for (const scenario of [
+    {
+      label: "unregistered",
+      refuteReviewers: [
+        { reviewerId: "refute-a" },
+        { reviewerId: "refute-c" },
+      ],
+      expectedCause: "unregistered",
+    },
+    {
+      label: "wrong group",
+      refuteReviewers: SP18_REFUTE_REVIEWER_IDS.map((reviewerId) => ({
+        reviewerId,
+        groupId: "other-refuters",
+      })),
+      expectedCause: "wrong_group",
+      expectedRegistered: 0,
+    },
+    {
+      label: "under quorum",
+      refuteReviewers: [
+        { reviewerId: "refute-a" },
+        { reviewerId: "refute-b", groupId: "other-refuters" },
+        { reviewerId: "refute-c", groupId: "other-refuters" },
+      ],
+      expectedCause: "under_quorum",
+      expectedRegistered: 1,
+    },
+  ] as const) {
+    it(`SP-18: refute preflight rejects ${scenario.label} reviewer sets before refute dispatch`, async () => {
+      const hitchId = `g-consensus-refute-preflight-${scenario.expectedCause}`;
+      const target = "fix the auth check";
+      const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+        prefix: `harness-orch-review-refute-preflight-${scenario.expectedCause}-`,
+        hitchId,
+        rule: sp18RefuteRule(),
+      });
+      addRefuteReviewers(dbPath, scenario.refuteReviewers);
+
+      const calls: string[] = [];
+      const reviewerRunner = {
+        run: vi.fn(async (input: {
+          logPaths: { stdout: string; stderr: string };
+        }) => {
+          const { reviewerId, agent } = agentFromStdoutPath(
+            input.logPaths.stdout,
+          );
+          calls.push(`${agent}:${reviewerId}`);
+          writeFileSync(input.logPaths.stderr, "", "utf8");
+          if (agent === "refute") {
+            throw new Error("refute dispatch must not run after failed preflight");
+          }
+          writeFileSync(
+            input.logPaths.stdout,
+            reviewerId === "alice"
+              ? reviewerOutput({
+                  decision: "changes_requested",
+                  requiredChanges: [target],
+                })
+              : reviewerOutput({ decision: "approved" }),
+            "utf8",
+          );
+          return { exitCode: 0, timedOut: false, durationMs: 0 };
+        }),
+      };
+      const runners = createOrchestratorRunners({
+        dbPath,
+        harnessRoot,
+        createdBy: "worker",
+        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+        reviewerRunner,
+      });
+
+      const error = await runners.review(hitchId).then(
+        () => null,
+        (e) => e,
+      );
+
+      expect(error).toBeInstanceOf(ConsensusReviewPreflightError);
+      expect((error as ConsensusReviewPreflightError).causeKind).toBe(
+        scenario.expectedCause,
+      );
+      if (scenario.expectedRegistered !== undefined) {
+        expect((error as ConsensusReviewPreflightError).group).toBe(
+          "refuters",
+        );
+        expect((error as ConsensusReviewPreflightError).required).toBe(2);
+        expect((error as ConsensusReviewPreflightError).registered).toBe(
+          scenario.expectedRegistered,
+        );
+      }
+      expect(calls).toEqual(["reviewer:alice", "reviewer:bob"]);
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        expect(db.prepare("SELECT status FROM runs WHERE run_id = ?").get(runId))
+          .toMatchObject({ status: "needs_review" });
+        expect(new ReviewRefuteVotesRepository(db).listByRun(runId)).toEqual([]);
+        expect(new HitchRepository(db).listReviewCycles(hitchId)).toHaveLength(0);
+      } finally {
+        close();
+      }
+    });
+  }
+
+  it("SP-18: idempotent approved re-review does not dispatch or append refute votes again", async () => {
+    const hitchId = "g-consensus-refute-idempotent-redrive";
+    const target = "fix the auth check";
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-refute-idempotent-redrive-",
+      hitchId,
+      rule: sp18RefuteRule(),
+    });
+    addRefuteReviewers(dbPath);
+
+    const reviewerRunner = {
+      run: vi.fn(async (input: {
+        logPaths: { stdout: string; stderr: string };
+      }) => {
+        const { reviewerId, agent } = agentFromStdoutPath(
+          input.logPaths.stdout,
+        );
+        writeFileSync(input.logPaths.stderr, "", "utf8");
+        if (agent === "refute") {
+          writeFileSync(
+            input.logPaths.stdout,
+            refuteOutput({
+              target,
+              verdict: reviewerId === "refute-c" ? "uphold" : "refute",
+            }),
+            "utf8",
+          );
+          return { exitCode: 0, timedOut: false, durationMs: 0 };
+        }
+        writeFileSync(
+          input.logPaths.stdout,
+          reviewerId === "alice"
+            ? reviewerOutput({
+                decision: "changes_requested",
+                requiredChanges: [target],
+              })
+            : reviewerOutput({ decision: "approved" }),
+          "utf8",
+        );
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      }),
+    };
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).resolves.toEqual({
+      runId,
+      decision: "approved",
+    });
+    const callsAfterFirstReview = reviewerRunner.run.mock.calls.length;
+    let dbHandle = openManagedDb({ dbPath });
+    let votesAfterFirstReview: number;
+    let cyclesAfterFirstReview: number;
+    try {
+      votesAfterFirstReview = new ReviewRefuteVotesRepository(
+        dbHandle.db,
+      ).listByRun(runId).length;
+      cyclesAfterFirstReview = new HitchRepository(
+        dbHandle.db,
+      ).listReviewCycles(hitchId).length;
+      dbHandle.db
+        .prepare("DELETE FROM hitch_close_checks WHERE hitch_id = ?")
+        .run(hitchId);
+    } finally {
+      dbHandle.close();
+    }
+
+    await expect(runners.review(hitchId)).resolves.toEqual({
+      runId,
+      decision: "approved",
+    });
+
+    expect(reviewerRunner.run).toHaveBeenCalledTimes(callsAfterFirstReview);
+    dbHandle = openManagedDb({ dbPath });
+    try {
+      expect(
+        new ReviewRefuteVotesRepository(dbHandle.db).listByRun(runId),
+      ).toHaveLength(votesAfterFirstReview);
+      expect(new HitchRepository(dbHandle.db).listReviewCycles(hitchId)).toHaveLength(
+        cyclesAfterFirstReview,
+      );
+    } finally {
+      dbHandle.close();
+    }
+  });
+
+  it("SP-18: keeps refute prompt identity stable when a prior refuted target drops out on re-drive", async () => {
+    const hitchId = "g-consensus-refute-redrive-stable-prompt";
+    const targetA = "remove the obsolete auth bypass";
+    const targetB = "add a regression test for auth bypass";
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-refute-redrive-stable-prompt-",
+      hitchId,
+      rule: sp18RefuteRule(),
+    });
+    addRefuteReviewers(dbPath);
+
+    let crashOnce = true;
+    const targetBPromptsForRefuteA: string[] = [];
+    const reviewerRunner = {
+      run: vi.fn(async (input: {
+        prompt: string;
+        logPaths: { stdout: string; stderr: string };
+      }) => {
+        const { reviewerId, agent } = agentFromStdoutPath(
+          input.logPaths.stdout,
+        );
+        writeFileSync(input.logPaths.stderr, "", "utf8");
+        if (agent === "refute") {
+          const target = input.prompt.includes(targetChangeHash(targetA))
+            ? targetA
+            : targetB;
+          if (target === targetB && reviewerId === "refute-a") {
+            targetBPromptsForRefuteA.push(input.prompt);
+          }
+          if (target === targetB && reviewerId === "refute-b" && crashOnce) {
+            crashOnce = false;
+            throw new Error("simulated crash before processing refute votes");
+          }
+          const verdict =
+            reviewerId === "refute-a" || reviewerId === "refute-b"
+              ? "refute"
+              : "uphold";
+          writeFileSync(
+            input.logPaths.stdout,
+            refuteOutput({ target, verdict }),
+            "utf8",
+          );
+          return { exitCode: 0, timedOut: false, durationMs: 0 };
+        }
+        writeFileSync(
+          input.logPaths.stdout,
+          reviewerId === "alice"
+            ? reviewerOutput({
+                decision: "changes_requested",
+                requiredChanges: [targetA, targetB],
+              })
+            : reviewerOutput({ decision: "approved" }),
+          "utf8",
+        );
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      }),
+    };
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).rejects.toThrow(
+      "simulated crash before processing refute votes",
+    );
+    await expect(runners.review(hitchId)).resolves.toEqual({
+      runId,
+      decision: "approved",
+    });
+
+    expect(targetBPromptsForRefuteA).toHaveLength(2);
+    expect(targetBPromptsForRefuteA[1]).toBe(targetBPromptsForRefuteA[0]);
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const targetBRows = new ReviewRefuteVotesRepository(db).listByTarget(
+        runId,
+        targetChangeHash(targetB),
+      );
+      expect(targetBRows.map((row) => row.reviewerId)).toEqual([
+        "refute-a",
+        "refute-b",
+        "refute-c",
+      ]);
+      expect(
+        targetBRows.filter((row) => row.reviewerId === "refute-a"),
+      ).toHaveLength(1);
+      const consensus = new ReviewConsensusRepository(db).findActive(runId);
+      expect(consensus?.status).toBe("approved");
+      const summary = JSON.parse(consensus!.summaryJson) as {
+        refute?: { refutedTargetChangeHashes?: string[] };
+      };
+      expect(summary.refute?.refutedTargetChangeHashes).toEqual([
+        targetChangeHash(targetA),
+        targetChangeHash(targetB),
+      ]);
     } finally {
       close();
     }

@@ -267,13 +267,18 @@ async function refuteTamperRejectReason(
 
 function buildRefutePrompt(activeRequiredChanges: RefuteRequiredChange[]): string {
   const targets = [...activeRequiredChanges]
-    .sort((a, b) => a.idx - b.idx)
     .map((change) => {
       const text = change.changeText ?? change.change_text ?? "";
+      return { text, hash: targetChangeHash(text) };
+    })
+    .sort(
+      (a, b) =>
+        a.hash.localeCompare(b.hash) || a.text.localeCompare(b.text),
+    )
+    .map((change) => {
       return [
-        `- idx: ${change.idx}`,
-        `  target_change_hash: ${targetChangeHash(text)}`,
-        `  change_text: ${JSON.stringify(text)}`,
+        `- target_change_hash: ${change.hash}`,
+        `  change_text: ${JSON.stringify(change.text)}`,
       ].join("\n");
     })
     .join("\n");

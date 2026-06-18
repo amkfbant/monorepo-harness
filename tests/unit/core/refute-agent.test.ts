@@ -124,6 +124,25 @@ describe("runRefuteAgent", () => {
     );
   });
 
+  it("keeps prompt identity independent of volatile required_change idx values", async () => {
+    const first = baseInput(validRefuteYaml());
+    first.activeRequiredChanges = [
+      { idx: 0, change_text: "Add input validation" },
+      { idx: 1, change_text: "Fix retry backoff" },
+    ];
+    const second = baseInput(validRefuteYaml());
+    second.activeRequiredChanges = [
+      { idx: 7, change_text: "Fix retry backoff" },
+      { idx: 9, change_text: "Add input validation" },
+    ];
+
+    const firstResult = await runRefuteAgent(first);
+    const secondResult = await runRefuteAgent(second);
+
+    expect(firstResult.row.promptSha256).toBe(secondResult.row.promptSha256);
+    expect(firstResult.row.promptSha256).toHaveLength(64);
+  });
+
   it("passes a diff refute only when the evidence ref is a diff artifact", async () => {
     const input = baseInput(
       validRefuteYaml({ kind: "diff", ref: "final-diff.patch" }),
