@@ -128,6 +128,103 @@ describe("Course/Phase repositories (SP-1)", () => {
     expect(() => phases.add({ courseId: "course-does-not-exist", title: "x", createdBy: "t", createdSource: "t" })).toThrow(/course .* not found/);
   });
 
+  it("validates phase spec at add and leaves no row on invalid close conditions", () => {
+    const c = courses.create({ title: "C", createdBy: "t", createdSource: "cli" });
+    expect(() =>
+      phases.add({
+        courseId: c.courseId,
+        title: "Invalid spec",
+        scope: { targetFiles: ["src/**"] },
+        closeConditions: [
+          {
+            id: "deploy",
+            kind: "operation_status",
+            required: true,
+            metadata: {},
+          },
+        ],
+        createdBy: "t",
+        createdSource: "cli",
+      }),
+    ).toThrow(/operation_status_missing_operation_id/);
+    expect(phases.listForCourse(c.courseId)).toEqual([]);
+  });
+
+  it("updates phase spec through validator and shared widening/loosening gates", () => {
+    const c = courses.create({ title: "C", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({
+      courseId: c.courseId,
+      title: "Spec",
+      scope: { targetFiles: ["src/**"] },
+      closeConditions: [
+        {
+          id: "typecheck",
+          kind: "command",
+          required: true,
+          command: "npm run typecheck",
+        },
+      ],
+      createdBy: "t",
+      createdSource: "cli",
+    });
+
+    expect(() =>
+      phases.updateSpec({
+        phaseId: p.phaseId,
+        scope: { targetFiles: ["src/**", "tests/**"] },
+      }),
+    ).toThrow(/scope widen/i);
+    expect(() =>
+      phases.updateSpec({
+        phaseId: p.phaseId,
+        closeConditions: [],
+      }),
+    ).toThrow(/gate loosen/i);
+    expect(() =>
+      phases.updateSpec({
+        phaseId: p.phaseId,
+        closeConditions: [
+          {
+            id: "deploy",
+            kind: "operation_status",
+            required: true,
+            metadata: {},
+          },
+        ],
+        allowGateLoosen: true,
+      }),
+    ).toThrow(/operation_status_missing_operation_id/);
+
+    const updated = phases.updateSpec({
+      phaseId: p.phaseId,
+      scope: { targetFiles: ["src/**"], notes: "validated update" },
+      closeConditions: [
+        {
+          id: "typecheck",
+          kind: "command",
+          required: true,
+          command: "npm run typecheck",
+        },
+        {
+          id: "review",
+          kind: "review_consensus",
+          required: true,
+          description: "review consensus approved",
+        },
+      ],
+      now: "2026-06-18T00:00:00.000Z",
+    });
+    expect(updated.scope).toEqual({
+      targetFiles: ["src/**"],
+      notes: "validated update",
+    });
+    expect((updated.closeConditions as Array<{ id: string }>).map((cc) => cc.id)).toEqual([
+      "typecheck",
+      "review",
+    ]);
+    expect(updated.updatedAt).toBe("2026-06-18T00:00:00.000Z");
+  });
+
   it("links a hitch to a phase and rejects a second link (schema PK + repo guard)", () => {
     const c = courses.create({ title: "C", projectId: "demo", createdBy: "t", createdSource: "cli" });
     const p = phases.add({ courseId: c.courseId, title: "P", createdBy: "t", createdSource: "cli" });

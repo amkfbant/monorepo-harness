@@ -1105,4 +1105,54 @@ describe("hitch.start idempotency scope isolation (#114)", () => {
       scopedIdForIdempotencyKey("hitch", "", idempotencyKey),
     );
   });
+
+  it("expand_scope runs through the audited hitch config update path", async () => {
+    const root = freshRoot();
+    withDb(root, (db) => {
+      new HitchRepository(db).createSession({
+        hitchId: "hitch-expand-audit",
+        title: "Expand audit",
+        projectId: "demo",
+        scope: { targetFiles: ["src/**"], notes: "before" },
+        closeConditions: [],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+    });
+    const s = server(root, mutationConfig(["hitch.expand_scope"]));
+
+    const pending = await callTool(s, "harness.hitch.expand_scope", {
+      hitchId: "hitch-expand-audit",
+      scope: { targetFiles: ["tests/**"], notes: "after" },
+      reason: "operator expands coverage",
+      idempotencyKey: "expand-audit",
+    });
+    expect(pending.status).toBe("confirmation_required");
+
+    const expanded = await confirmMcpRequest({
+      harnessRoot: root,
+      confirmationId: pending.confirmationId,
+      confirmedBy: "human",
+    });
+    expect(expanded.status).toBe("operation_started");
+
+    withDb(root, (db) => {
+      const repo = new HitchRepository(db);
+      expect(repo.requireSession("hitch-expand-audit").scope).toMatchObject({
+        targetFiles: ["src/**", "tests/**"],
+        notes: "after",
+      });
+      expect(repo.listLifecycleEvents("hitch-expand-audit")).toMatchObject([
+        {
+          event: "updated",
+          reason: "operator expands coverage",
+          detail: {
+            updatedFields: ["scope"],
+            previousScope: { targetFiles: ["src/**"], notes: "before" },
+          },
+          createdBy: "mcp:unit-test",
+        },
+      ]);
+    });
+  });
 });

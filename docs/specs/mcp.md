@@ -530,7 +530,7 @@ confirmation は不要（PR を開かず、hitch/phase close もしない bounde
 |------|---------------|---------|
 | `harness.course.create` | `course.create` | `projectId` を `ensureProjectVisible` で事前チェック |
 | `harness.course.orchestrate` | `course.orchestrate` | `courseId`, `maxDrivenHitches?`, `maxStepsPerHitch?`, `idempotencyKey`, `actorNote?`。親 course の visibility を事前チェック。`maxDrivenHitches` は既定 3 / 最大 10、`maxStepsPerHitch` は既定 20 / 最大 50 に clamp。course-pass lease `course:<id>` を使い、PR は開かない |
-| `harness.phase.add` | `phase.add` | 親 course の visibility を `OperationRunner` 前に確認。cross-course parent は拒否 |
+| `harness.phase.add` | `phase.add` | 親 course の visibility を `OperationRunner` 前に確認。cross-course parent は拒否。`scope` / `closeConditions` は `PhaseRepository.add()` の parser/validator を通る |
 | `harness.phase.update` | `phase.update` | 親 course 経由で visibility 確認。`status` のみ更新（SP-1） |
 | `harness.phase.link_hitch` | `phase.link_hitch` | cross-project mismatch と double-link（PK）は操作内で拒否 |
 
@@ -838,7 +838,10 @@ All hitch mutation tools use `OperationRunner`, require idempotency keys, and
 write operation audit metadata with `hitchId`/`hitch_id` where a hitch is known.
 `hitch.close` is executable without confirmation only when convergence is
 `close_ready`; forced close, cancel, and scope expansion are always
-confirmation-required.
+confirmation-required. `harness.hitch.expand_scope` merges the requested scope
+and then calls `HitchRepository.updateSessionConfig()` with explicit
+`allowScopeWiden`, so it inherits the shared parser/validator, widening gate, and
+`updated` lifecycle audit instead of writing `scope_json` directly.
 
 `harness.hitch.classify_finding` does **NOT** run the deliberation jury (#230,
 design §0.1 R13). It is the operator-manual scope-write path: the handler takes

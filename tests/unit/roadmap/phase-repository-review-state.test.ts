@@ -23,6 +23,34 @@ function reviewStateVersion(conn: Database.Database, phaseId: string): number {
   ).review_state_version;
 }
 
+function insertLegacyPhase(
+  conn: Database.Database,
+  input: {
+    courseId: string;
+    phaseId: string;
+    scope: unknown;
+    closeConditions: unknown;
+  },
+): void {
+  conn
+    .prepare(
+      `INSERT INTO phases (
+         phase_id, course_id, parent_phase_id, title, position, status,
+         scope_json, close_conditions_json, created_by, created_source,
+         created_at, updated_at
+       )
+       VALUES (?, ?, NULL, 'Legacy SP-3', 0, 'pending', ?, ?, 't', 'cli', ?, ?)`,
+    )
+    .run(
+      input.phaseId,
+      input.courseId,
+      JSON.stringify(input.scope),
+      JSON.stringify(input.closeConditions),
+      "2026-06-17T00:00:00.000Z",
+      "2026-06-17T00:00:00.000Z",
+    );
+}
+
 describe("PhaseRepository review_state CAS writes (SP-3)", () => {
   let conn: Database.Database;
   let courses: CourseRepository;
@@ -44,8 +72,18 @@ describe("PhaseRepository review_state CAS writes (SP-3)", () => {
     const p = phases.add({
       courseId: c.courseId,
       title: "SP-3",
-      scope: { z: 1, a: { y: 2, x: 1 } },
-      closeConditions: [{ kind: "command", command: "npm run typecheck" }],
+      scope: {
+        targetFiles: ["src/**"],
+        targetSummary: "SP-3 approval",
+      },
+      closeConditions: [
+        {
+          id: "typecheck",
+          kind: "command",
+          required: true,
+          command: "npm run typecheck",
+        },
+      ],
       createdBy: "t",
       createdSource: "cli",
     });
@@ -62,7 +100,7 @@ describe("PhaseRepository review_state CAS writes (SP-3)", () => {
       approvedAt: "2026-06-17T00:00:00.000Z",
       reason: "accepted after review",
       specHash:
-        "4724bfd1a6945fac5b630e6414f81f41f3edf2f94522efd68f3bfe389340c95a",
+        "22bba06de89b2a7f74dc15747c8bc4f83e537b5936c7209657c2fb3fed7b2fa6",
     });
     expect(reviewStateVersion(conn, p.phaseId)).toBe(1);
   });
@@ -75,15 +113,14 @@ describe("PhaseRepository review_state CAS writes (SP-3)", () => {
       createdSource: "cli",
     });
     const mk = (scope: unknown, close: unknown): string => {
-      const p = phases.add({
+      const phaseId = `phase-${String(scope)}-${String(close)}`;
+      insertLegacyPhase(conn, {
         courseId: c.courseId,
-        title: "SP-3",
+        phaseId,
         scope,
         closeConditions: close,
-        createdBy: "t",
-        createdSource: "cli",
       });
-      const approved = phases.recordSpecApproval(p.phaseId, {
+      const approved = phases.recordSpecApproval(phaseId, {
         approvedBy: "operator",
         now: "2026-06-17T00:00:00.000Z",
       });

@@ -61,6 +61,13 @@ same millisecond still fall back to `phase_id` order. A phase's `parent_phase_id
 must belong to the same course; cross-course parents are rejected by
 `PhaseRepository`.
 
+Phase `scope_json` and `close_conditions_json` writes are guarded by
+`PhaseRepository.updateSpec()` and the same parser/validator used for hitch
+specs. `phase add`, MCP `phase.add`, and `phase update --scope-file/--close-file`
+reject invalid close-condition forms before writing. Updates that widen scope or
+loosen required close gates require the explicit `allowScopeWiden` /
+`allowGateLoosen` path (`--allow-scope-widen` / `--allow-gate-loosen` in the CLI).
+
 `review_state_json` records only phase-level reviews that are **not** a hitch's own
 convergence (e.g. a codex/Fable review of the phase's roadmap/plan as a fact). It
 does **not** store hitch-derived P0/P1 counts (those are always derived live) and
@@ -370,7 +377,7 @@ Implemented in `src/cli/course.ts`, registered via `registerCourseCommands`.
 | `phase add --course <id> --title <text> [--parent <phase-id>] [--position <n>] [--scope-file <path>] [--close-file <path>] [--created-by <actor>] [--json]` | Add a phase. `--scope-file` / `--close-file` accept JSON or YAML. Rejects cross-course parent. |
 | `phase list --course <id> [--json]` | List phases for a course (flat, ordered by position/created_at/id). |
 | `phase show <id> [--json]` | Show a phase plus its linked hitch ids. |
-| `phase update <id> [--status pending\|in_progress\|closed\|blocked] [--scope-file <path>] [--close-file <path>]` | Update a phase's declared status or scope/close conditions. |
+| `phase update <id> [--status pending\|in_progress\|closed\|blocked] [--scope-file <path>] [--close-file <path>] [--allow-scope-widen] [--allow-gate-loosen]` | Update a phase's declared status or scope/close conditions. Spec writes use `PhaseRepository.updateSpec()` validation/gates. |
 | `phase link-hitch <phase-id> <hitch-id>` | Link a hitch to a phase. Rejects cross-project mismatch and double-link. |
 | `phase unlink-hitch <hitch-id>` | Remove a hitch's phase link. |
 

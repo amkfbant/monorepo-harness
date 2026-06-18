@@ -67,6 +67,7 @@ import {
   HITCH_REVIEW_MODES,
   HITCH_SCOPE_STATUSES,
   HITCH_STATUSES,
+  HitchValidationError,
   type HitchFinding,
   type HitchAttemptStatus,
   type HitchAttemptType,
@@ -1788,7 +1789,12 @@ export function mapHitchErrorExit(
       message: `hitch deferred/lock_busy (${lease.name}): ${lease.message}`,
     };
   }
-  if (e instanceof HitchCliError || e instanceof DbError || e instanceof BacklogError) {
+  if (
+    e instanceof HitchCliError ||
+    e instanceof DbError ||
+    e instanceof BacklogError ||
+    e instanceof HitchValidationError
+  ) {
     return { code: 1, message: e.message };
   }
   return null;

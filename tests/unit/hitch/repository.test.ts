@@ -106,6 +106,51 @@ describe("HitchRepository", () => {
     }
   });
 
+  it("rejects invalid close conditions at the createSession choke point", () => {
+    const { db, repo } = freshRepo();
+    try {
+      expect(() =>
+        repo.createSession({
+          hitchId: "hitch-invalid-close",
+          title: "Invalid close condition",
+          scope: {},
+          closeConditions: [
+            {
+              id: "deploy",
+              kind: "operation_status",
+              required: true,
+              metadata: {},
+            },
+          ],
+          createdBy: "test",
+          createdSource: "cli",
+        }),
+      ).toThrow(/operation_status_missing_operation_id/);
+      expect(repo.getSession("hitch-invalid-close")).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects invalid scope at the createSession choke point", () => {
+    const { db, repo } = freshRepo();
+    try {
+      expect(() =>
+        repo.createSession({
+          hitchId: "hitch-invalid-scope",
+          title: "Invalid scope",
+          scope: { targetFiles: [123] } as never,
+          closeConditions: [],
+          createdBy: "test",
+          createdSource: "cli",
+        }),
+      ).toThrow();
+      expect(repo.getSession("hitch-invalid-scope")).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
   it("creates attempts and review cycles linked to a goal", () => {
     const { db, repo } = freshRepo();
     try {
@@ -2301,6 +2346,35 @@ describe("updateSessionConfig (#142)", () => {
         createdBy: "operator",
       });
       expect(updated.closeConditions).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("validates updated close conditions before writing config", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createUpdateGoal(repo);
+      expect(() =>
+        repo.updateSessionConfig({
+          hitchId: "hitch-update",
+          closeConditions: [
+            {
+              id: "deploy",
+              kind: "operation_status",
+              required: true,
+              metadata: {},
+            },
+          ],
+          reason: "invalid external gate",
+          allowGateLoosen: true,
+          createdBy: "operator",
+        }),
+      ).toThrow(/operation_status_missing_operation_id/);
+      expect(repo.requireSession("hitch-update").closeConditions).toEqual(
+        closeConditions,
+      );
+      expect(repo.listLifecycleEvents("hitch-update")).toEqual([]);
     } finally {
       db.close();
     }

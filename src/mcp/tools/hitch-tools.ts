@@ -752,7 +752,7 @@ export async function hitchExpandScopeTool(
     metadata: hitchMetadata(context, "harness.hitch.expand_scope", args, {
       hitchId: args.hitchId,
     }),
-    workWithDb: async (db) => expandHitchScope(db, args),
+    workWithDb: async (db) => expandHitchScope(db, context, args),
   });
 }
 
@@ -1002,19 +1002,22 @@ function toClassifiableFinding(
 
 function expandHitchScope(
   db: Database.Database,
+  context: McpToolContext,
   args: HitchExpandScopeArgs,
 ): { hitchId: string; scope: HitchScope; reason: string } {
   const repo = new HitchRepository(db);
   const current = repo.requireSession(args.hitchId);
   const scope = parseHitchScope(mergeScope(current.scope, args.scope));
-  db.prepare(
-    `UPDATE hitch_sessions
-        SET scope_json = ?, updated_at = ?
-      WHERE hitch_id = ?`,
-  ).run(JSON.stringify(scope), new Date().toISOString(), args.hitchId);
-  return {
+  const updated = repo.updateSessionConfig({
     hitchId: args.hitchId,
     scope,
+    reason: redactMcpText(args.reason),
+    allowScopeWiden: true,
+    createdBy: `mcp:${context.clientName}`,
+  });
+  return {
+    hitchId: args.hitchId,
+    scope: updated.scope,
     reason: redactMcpText(args.reason),
   };
 }
