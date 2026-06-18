@@ -24,6 +24,7 @@ import {
   normalizeCourseMaxStepsPerHitch,
 } from "../roadmap/course-normalize.js";
 import { CourseUserError } from "../roadmap/errors.js";
+import { HitchValidationError } from "../hitch/types.js";
 import { createProductionCourseOrchestrator } from "../roadmap/course-orchestrate-runtime.js";
 import type {
   CourseOrchestrationResult,
@@ -66,7 +67,8 @@ function courseError(e: unknown): never {
     e instanceof CourseUserError ||
     e instanceof CourseOrchestrateError ||
     e instanceof ProjectError ||
-    e instanceof DbError
+    e instanceof DbError ||
+    e instanceof HitchValidationError
   ) {
     process.stderr.write(`harness error: ${e.message}\n`);
     process.exit(1);
@@ -91,7 +93,8 @@ async function withCourseOrchestrateErrorExit(fn: () => Promise<void>): Promise<
       e instanceof CourseUserError ||
       e instanceof CourseOrchestrateError ||
       e instanceof ProjectError ||
-      e instanceof DbError
+      e instanceof DbError ||
+      e instanceof HitchValidationError
     ) {
       process.stderr.write(`harness error: ${e.message}\n`);
       process.exit(1);

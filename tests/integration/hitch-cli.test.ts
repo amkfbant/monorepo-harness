@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { mapHitchErrorExit } from "../../src/cli/hitch.js";
+import { HitchValidationError } from "../../src/hitch/types.js";
 import { harnessPaths } from "../../src/config/paths.js";
 import { openDb } from "../../src/db/connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
@@ -797,6 +798,25 @@ describe("hitch CLI", () => {
       code: 1,
       message:
         "hitch deferred/lock_busy (DomainLockBusyError): " + busy.message,
+    });
+  });
+
+  it("maps a spec-validation failure to a user-facing exit-1 error", () => {
+    // The SP-20 write barrier (createSession/updateSessionConfig) throws
+    // HitchValidationError on a semantically-invalid close condition. It must be
+    // surfaced as a user-fixable validation error (exit 1), not fall through to
+    // the unexpected-error handler (exit 2).
+    const err = new HitchValidationError("invalid close conditions", [
+      {
+        severity: "hard",
+        code: "operation_status_missing_operation_id",
+        message: "operation_status close condition requires metadata.operationId",
+        path: "[0].metadata.operationId",
+      },
+    ]);
+    expect(mapHitchErrorExit(err)).toEqual({
+      code: 1,
+      message: "invalid close conditions",
     });
   });
 
