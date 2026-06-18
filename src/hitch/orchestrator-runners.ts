@@ -9,12 +9,11 @@ import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import {
   runDomainCoding,
   RunFinalizedError,
-  VALIDATED_CONTINUATION_STATUSES,
+  isValidatedContinuationParent,
   type ContinueFromSpec,
   type ContinueFromSkipReason,
   type RunDomainCodingOpts,
 } from "../core/workflow-runner.js";
-import type { RunStatus } from "../logging/run-log.js";
 import { resolveBaseSha } from "../git/diff.js";
 import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
 import { resolvePolicy } from "../policy/resolver.js";
@@ -446,6 +445,7 @@ interface ParentRunRow {
   runId: string;
   baseSha: string | null;
   status: string | null;
+  safetyStatus: string | null;
   parentRunId: string | null;
   rootRunId: string | null;
   rerunAttempt: number | null;
@@ -457,7 +457,7 @@ function readRunRow(
 ): ParentRunRow | null {
   const r = db
     .prepare(
-      "SELECT run_id, base_sha, status, parent_run_id, root_run_id, rerun_attempt " +
+      "SELECT run_id, base_sha, status, safety_status, parent_run_id, root_run_id, rerun_attempt " +
         "FROM runs WHERE run_id = ?",
     )
     .get(runId) as
@@ -465,6 +465,7 @@ function readRunRow(
         run_id: string;
         base_sha: string | null;
         status: string | null;
+        safety_status: string | null;
         parent_run_id: string | null;
         root_run_id: string | null;
         rerun_attempt: number | null;
@@ -475,6 +476,7 @@ function readRunRow(
     runId: r.run_id,
     baseSha: r.base_sha,
     status: r.status,
+    safetyStatus: r.safety_status,
     parentRunId: r.parent_run_id,
     rootRunId: r.root_run_id,
     rerunAttempt: r.rerun_attempt,
@@ -612,6 +614,7 @@ interface ParentContinuationFacts {
   parentRunId: string;
   parentBaseSha: string;
   parentStatus: string | null;
+  parentSafetyStatus: string | null;
   parentWorktreePath: string;
   rootRunId: string;
   rerunAttempt: number;
@@ -633,6 +636,7 @@ function readParentContinuationFacts(opts: {
     parentRunId: parent.runId,
     parentBaseSha: parent.baseSha,
     parentStatus: parent.status,
+    parentSafetyStatus: parent.safetyStatus,
     parentWorktreePath: join(
       harnessPaths(opts.harnessRoot).workspacesDir,
       parent.runId,
@@ -647,13 +651,13 @@ function readParentContinuationFacts(opts: {
 
 /**
  * (#163) Async base-gate half of the continuation resolver. GATEs on (1) the
- * parent run being POLICY-VALIDATED (a completed+passed status — see
- * `VALIDATED_CONTINUATION_STATUSES`), (2) base-equality (parent.baseSha === the
- * freshly resolved base), and (3) the parent worktree's existence. Performs NO
- * git mutation and NO DB write — only a read-only `git rev-parse` for the base
- * and a worktree-existence stat. Every ambiguity fails CLOSED to a fresh run
- * with a recorded `skippedReason`; a thrown git error maps to
- * `parent_work_unmaterializable`, never a throw.
+ * parent run being POLICY-VALIDATED (a completed+passed status, or
+ * `failed-command` with safety_status=`allowed`), (2) base-equality
+ * (parent.baseSha === the freshly resolved base), and (3) the parent worktree's
+ * existence. Performs NO git mutation and NO DB write — only a read-only
+ * `git rev-parse` for the base and a worktree-existence stat. Every ambiguity
+ * fails CLOSED to a fresh run with a recorded `skippedReason`; a thrown git
+ * error maps to `parent_work_unmaterializable`, never a throw.
  *
  * (#163 P2) LINEAGE is recorded on the success branch AND on every skip branch
  * with a resolvable parent — only the MATERIALIZATION is gated, never the rerun
@@ -673,15 +677,18 @@ async function gateContinuation(opts: {
     rerunAttempt: facts.rerunAttempt,
   };
 
-  // (#163 P1) Validated-parent gate: continue ONLY from a run whose status
-  // proves it passed path-policy validation (safetyStatus=allowed). A failed /
-  // non-validated parent (failed-policy-violation carries out-of-scope/deny
-  // paths; failed-internal-error may be an un-resettable partial-carry worktree;
-  // failed-codex never completed validation) must NOT be carried — a
-  // fresh-from-base rerun re-derives without the forbidden/partial changes.
+  // (#163 P1 / #275) Validated-parent gate: continue ONLY from a run whose
+  // persisted status/safety pair proves it passed path-policy validation. Most
+  // eligible runs prove that by status alone (needs_review / approved /
+  // changes_requested). `failed-command` never reached review, but it is
+  // eligible when its final post-command policy verdict is safetyStatus=allowed:
+  // the command failed after the worktree surface was already validated, so the
+  // recovery rerun should amend that safe surface instead of starting blind.
   if (
-    facts.parentStatus === null ||
-    !VALIDATED_CONTINUATION_STATUSES.has(facts.parentStatus as RunStatus)
+    !isValidatedContinuationParent({
+      status: facts.parentStatus,
+      safetyStatus: facts.parentSafetyStatus,
+    })
   ) {
     return { ...lineage, skippedReason: "parent_not_validated" };
   }

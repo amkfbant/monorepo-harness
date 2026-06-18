@@ -1182,14 +1182,17 @@ redaction 処理が子 run の diff に特例なしでそのまま効き、git o
 - **resolution（read-only, mutation 無し）**: orchestrator の `coder()` は rerun のとき
   最新 coding run（＝親）の行・worktree path を読み、3 つの gate を read-only に判定する
   （domain lock 取得前に mutation は一切しない）:
-  1. **validated-parent gate**: 親 run の **status が policy-validated（完了＋通過）** な場合
-     のみ継続する。継続可能 status は `needs_review` / `approved` / `changes_requested`
-     （いずれも path-policy validation を `allowed` で通過済み ＝ worktree surface が
-     policy-valid）。`failed-policy-violation`（scope 外/deny path を抱える）・
+  1. **validated-parent gate**: 親 run の **status / safetyStatus が policy-validated
+     （完了＋通過）** な場合のみ継続する。継続可能 status は `needs_review` / `approved` /
+     `changes_requested`（いずれも path-policy validation を `allowed` で通過済み ＝ worktree
+     surface が policy-valid）に加え、`failed-command` は **`safetyStatus=allowed` のときだけ**
+     継続可能とする。`failed-command(allowed)` は allowedCommands が失敗しただけで、失敗前後
+     の worktree surface は path-policy validation を通過済みなので、recovery rerun はその
+     validated surface を amend できる。`failed-policy-violation`（scope 外/deny path を抱える）・
+     `failed-command` でも `safetyStatus` が `allowed` でない/欠落しているもの・
      `failed-internal-error`（reset 不能の partial-carry worktree かもしれない）・
-     `failed-codex` 等の **全 `failed-*` と `rejected` は非 validated** → 継続せず
-     `parent_not_validated` で skip し、fresh-from-base で再導出する（禁止/部分変更を
-     carry しない）。
+     `failed-codex` 等は非 validated → 継続せず `parent_not_validated` で skip し、
+     fresh-from-base で再導出する（禁止/部分変更を carry しない）。`rejected` も継続しない。
   2. **base-equality gate**: `parent.baseSha === fresh に解決した base`（read-only
      `git rev-parse`、policy の `gitTimeoutMs` で timeout）。
   3. **worktree existence**: 親 worktree が在ること。

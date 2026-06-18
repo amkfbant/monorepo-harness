@@ -136,11 +136,12 @@ function elapsedMs(start: number): number {
  *   - base_advanced: parent.baseSha != the freshly-resolved base (the base
  *     branch moved; carrying stale work would diverge — fail closed).
  *   - parent_work_unmaterializable: a git/copy failure while materializing.
- *   - parent_not_validated: the parent run is NOT a policy-validated, completed
- *     run (e.g. `failed-policy-violation` carrying out-of-scope/deny-write
- *     paths, or `failed-internal-error` from an un-resettable partial-carry
- *     worktree). Continuing would carry forbidden/partial changes a
- *     fresh-from-base rerun would omit — so fail closed.
+ *   - parent_not_validated: the parent run is NOT a policy-validated run (e.g.
+ *     `failed-policy-violation` carrying out-of-scope/deny-write paths, a
+ *     `failed-command` run without safetyStatus=`allowed`, or
+ *     `failed-internal-error` from an un-resettable partial-carry worktree).
+ *     Continuing would carry forbidden/partial changes a fresh-from-base rerun
+ *     would omit — so fail closed.
  */
 export type ContinueFromSkipReason =
   | "parent_run_missing"
@@ -150,20 +151,33 @@ export type ContinueFromSkipReason =
   | "parent_not_validated";
 
 /**
- * (#163) Parent run statuses a rerun may CONTINUE from. A run reaches one of
- * these statuses ONLY after passing path-policy validation (safetyStatus =
- * `allowed`), so its worktree surface is policy-validated and safe to carry
- * forward. Everything else — every `failed-*` status (`failed-policy-violation`
- * carries out-of-scope/deny-write paths; `failed-internal-error` may be the
- * un-resettable partial-carry worktree; `failed-codex` etc. never completed
- * validation) — is NOT validated → continuation is skipped (`parent_not_validated`)
- * and the rerun re-derives fresh-from-base. `rejected` is excluded too: a
- * rejected approach is completed work but should not be carried into the next
- * attempt.
+ * (#163) Parent run statuses that are independently sufficient for a rerun to
+ * CONTINUE. A run reaches one of these statuses ONLY after passing path-policy
+ * validation (safetyStatus = `allowed`), so its worktree surface is
+ * policy-validated and safe to carry forward. `failed-command` is handled by
+ * `isValidatedContinuationParent`: it is eligible only when the row explicitly
+ * records safetyStatus=`allowed`. Other `failed-*` statuses are NOT validated
+ * (`failed-policy-violation` carries out-of-scope/deny-write paths;
+ * `failed-internal-error` may be the un-resettable partial-carry worktree;
+ * `failed-codex` never completed validation) → continuation is skipped
+ * (`parent_not_validated`) and the rerun re-derives fresh-from-base. `rejected`
+ * is excluded too: a rejected approach is completed work but should not be
+ * carried into the next attempt.
  */
 export const VALIDATED_CONTINUATION_STATUSES: ReadonlySet<RunStatus> = new Set<
   RunStatus
 >(["needs_review", "approved", "changes_requested"]);
+
+export function isValidatedContinuationParent(input: {
+  status: string | null;
+  safetyStatus: string | null;
+}): boolean {
+  if (input.status === null) return false;
+  if (VALIDATED_CONTINUATION_STATUSES.has(input.status as RunStatus)) {
+    return true;
+  }
+  return input.status === "failed-command" && input.safetyStatus === "allowed";
+}
 
 /**
  * (#163) Where to find the parent run's work to materialize. The resolver
