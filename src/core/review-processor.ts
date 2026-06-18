@@ -28,6 +28,8 @@ import {
 import { activeProposalRows, enrichRows } from "./consensus-enrichment.js";
 import {
   DEFAULT_REVIEW_RULE,
+  frozenReviewerIdsForRule,
+  parseReviewRuleSnapshot,
   ruleSha256,
   type ReviewRule,
 } from "./review-rule.js";
@@ -67,7 +69,7 @@ function processOverridePath(
   const rule: ReviewRule =
     snapshot === null
       ? DEFAULT_REVIEW_RULE
-      : (JSON.parse(snapshot.ruleJson) as ReviewRule);
+      : parseReviewRuleSnapshot(snapshot.ruleJson);
   const actor = override.actorReviewerId ?? "system";
   if (!rule.overrides.allowedReviewers.includes(actor)) {
     throw new UnauthorizedOverrideError(actor, rule.overrides.allowedReviewers);
@@ -193,11 +195,14 @@ function processConsensusModePath(
         `run ${opts.runId} status is "${row.status}", only needs_review can be processed`,
       );
     }
-    const rows = activeProposalRows(proposalRepo, opts.runId);
+    const frozenReviewerIds = frozenReviewerIdsForRule(rule);
+    const rows = activeProposalRows(proposalRepo, opts.runId, {
+      ...(frozenReviewerIds.length > 0
+        ? { reviewerIds: frozenReviewerIds }
+        : {}),
+    });
     if (rows.length === 0) {
-      throw new ReviewGateError(
-        `no active review proposals to evaluate for ${opts.runId}; run \`review auto\` first`,
-      );
+      throw new ReviewConsensusNoActiveProposalsError(opts.runId);
     }
     const result = evaluateConsensus({
       rule,
@@ -208,8 +213,9 @@ function processConsensusModePath(
     if (result.status === "pending") {
       // fail-closed: consensus is not satisfied yet (quorum/requirements
       // pending). Do NOT promote the run on a partial set of approvals.
-      throw new ReviewGateError(
-        `consensus not yet satisfied for ${opts.runId} (${result.summary.decisionPath})`,
+      throw new ReviewConsensusPendingError(
+        opts.runId,
+        result.summary.decisionPath,
       );
     }
     const decision = result.status;
@@ -305,7 +311,7 @@ function recordConsensusForReviewProcess(
   const rule: ReviewRule =
     snapshot === null
       ? DEFAULT_REVIEW_RULE
-      : (JSON.parse(snapshot.ruleJson) as ReviewRule);
+      : parseReviewRuleSnapshot(snapshot.ruleJson);
   const ruleSha = snapshot?.sourceSha256 ?? ruleSha256(rule);
   const proposals: EnrichedProposal[] =
     input.proposalId !== undefined
@@ -359,6 +365,34 @@ export class ReviewGateError extends Error {
     super(message);
     this.name = "ReviewGateError";
   }
+}
+
+export class ReviewConsensusNoActiveProposalsError extends ReviewGateError {
+  constructor(readonly runId: string) {
+    super(
+      `no active review proposals to evaluate for ${runId}; run \`review auto\` first`,
+    );
+    this.name = "ReviewConsensusNoActiveProposalsError";
+  }
+}
+
+export class ReviewConsensusPendingError extends ReviewGateError {
+  constructor(
+    readonly runId: string,
+    readonly decisionPath: string,
+  ) {
+    super(`consensus not yet satisfied for ${runId} (${decisionPath})`);
+    this.name = "ReviewConsensusPendingError";
+  }
+}
+
+export function isConsensusPendingReviewGateError(
+  e: unknown,
+): e is ReviewConsensusNoActiveProposalsError | ReviewConsensusPendingError {
+  return (
+    e instanceof ReviewConsensusNoActiveProposalsError ||
+    e instanceof ReviewConsensusPendingError
+  );
 }
 
 export interface ProcessOpts {
@@ -528,7 +562,7 @@ export async function processReviewDecision(
       const rule: ReviewRule =
         snapshot === null
           ? DEFAULT_REVIEW_RULE
-          : (JSON.parse(snapshot.ruleJson) as ReviewRule);
+          : parseReviewRuleSnapshot(snapshot.ruleJson);
       if (rule.mode === "consensus") {
         const ruleSha = snapshot?.sourceSha256 ?? ruleSha256(rule);
         return processConsensusModePath(db, opts, rule, ruleSha);

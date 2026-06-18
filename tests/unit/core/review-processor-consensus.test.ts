@@ -203,6 +203,123 @@ describe("review process — consensus mode gating (Phase 2)", () => {
     expect(runStatus(dbPath)).toBe("changes_requested");
   });
 
+  it("C4: excludes an out-of-frozen-set reviewer's approval from quorum + decision", async () => {
+    // Frozen reviewer set = {alice, bob}; charlie is a real reviewer that is
+    // NOT in the rule's reviewerIds. An active charlie approval must not count
+    // toward quorum/participation, so with only alice approving the consensus
+    // stays pending (1 of 2), and charlie's proposal is never marked processed.
+    const frozenRule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "humans",
+          minApprovals: 2,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "scope_fit"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { root, runsDir, dbPath } = setup(frozenRule);
+    const db = openDb(dbPath);
+    new ReviewerRepository(db).add({
+      reviewerId: "charlie",
+      reviewerType: "human",
+      displayName: "Charlie",
+      groupId: "humans",
+    });
+    db.close();
+    seedProposal(dbPath, "alice", "approved");
+    seedProposal(dbPath, "charlie", "approved");
+
+    // charlie's approval is out-of-set, so quorum (2 frozen participants) is not
+    // met → fail-closed, run not promoted.
+    await expect(runProcess(dbPath, runsDir, root)).rejects.toBeInstanceOf(
+      ReviewGateError,
+    );
+    expect(runStatus(dbPath)).toBe("needs_review");
+
+    const after = openDb(dbPath);
+    try {
+      const all = new ReviewProposalRepository(after).listForRun("run-consensus");
+      const charlie = all.find((p) => p.reviewer === "charlie");
+      const alice = all.find((p) => p.reviewer === "alice");
+      // neither is processed (gate failed), but crucially charlie stays active
+      // and was never folded into the evaluated set.
+      expect(charlie?.processedAt).toBeNull();
+      expect(alice?.processedAt).toBeNull();
+      const consensus = new ReviewConsensusRepository(after).findActive(
+        "run-consensus",
+      );
+      // No active consensus is written on the gate-failure path.
+      expect(consensus).toBeNull();
+    } finally {
+      after.close();
+    }
+  });
+
+  it("C4: a quorum reached only via out-of-set reviewers does not promote", async () => {
+    // alice (frozen) approves + charlie (out-of-set) approves = 2 distinct
+    // approvals, but only ONE is a frozen participant. The frozen-set filter
+    // must keep this below quorum so the run is NOT promoted on a borrowed vote.
+    const frozenRule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "humans",
+          minApprovals: 2,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "scope_fit"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { root, runsDir, dbPath } = setup(frozenRule);
+    const db = openDb(dbPath);
+    new ReviewerRepository(db).add({
+      reviewerId: "charlie",
+      reviewerType: "human",
+      displayName: "Charlie",
+      groupId: "humans",
+    });
+    db.close();
+    seedProposal(dbPath, "alice", "approved");
+    seedProposal(dbPath, "bob", "approved");
+    seedProposal(dbPath, "charlie", "approved");
+
+    // With bob also approving, quorum IS met by frozen members alone → approved.
+    // charlie's vote is excluded but does not block the legitimate quorum.
+    const result = await runProcess(dbPath, runsDir, root);
+    expect(result.newStatus).toBe("approved");
+
+    const after = openDb(dbPath);
+    try {
+      const consensus = new ReviewConsensusRepository(after).findActive(
+        "run-consensus",
+      );
+      // only alice + bob are folded into the source set; charlie is excluded.
+      const reviewers = (
+        JSON.parse(consensus!.summaryJson) as {
+          proposals: Array<{ reviewerId: string | null }>;
+        }
+      ).proposals.map((p) => p.reviewerId);
+      expect(reviewers).toEqual(["alice", "bob"]);
+      const charlie = new ReviewProposalRepository(after)
+        .listForRun("run-consensus")
+        .find((p) => p.reviewer === "charlie");
+      // charlie was excluded from the evaluated set and left active (not processed).
+      expect(charlie?.processedAt).toBeNull();
+    } finally {
+      after.close();
+    }
+  });
+
   it("aggregates proposals, source ids, and required changes by reviewer_id then proposal_id", async () => {
     const first = setup();
     const firstBobId = seedProposal(

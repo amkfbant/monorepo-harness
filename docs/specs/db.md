@@ -805,6 +805,11 @@ Phase 11 で reviewer は string ではなく `reviewer_id` (FK to `reviewers`)�
 `run_review_rule_snapshots(run_id, rule_json, source_sha256)` で run 作成時
 に effective rule を freeze。project profile を後変更しても進行中 run の
 review semantics は変わらない。
+`rule_json.requirements[].reviewerIds` がある consensus run では、この frozen set
+がその run の reviewer dispatch / consensus filtering の決定論境界になる。新しい
+列は使わず、dispatch cycle 開始時に frozen reviewer の既存 active proposal を
+`superseded_at` で retire し、その cycle で land した proposal だけを active
+participant 候補にする。
 
 ### Consensus evaluator
 
@@ -815,6 +820,10 @@ human override が最優先。production wiring は `review_proposals` の activ
 proposal の insertion order や reviewer dispatch order は `summary.proposals` /
 `sourceProposalIds` / `required_changes` の順序に影響しない。unknown reviewer は
 `group_id = NULL` として enrichment され、per-group requirement では満たさない側に倒す。
+Frozen reviewer set がある run では、`review process` と `review auto` 後の
+`review_consensus` re-evaluate の両方が frozen set 外 proposal を除外してから
+enrichment / evaluation する。これにより resume/manual/registry drift 由来の
+集合外票が quorum・blocking・stall timeline に混入しない。
 
 `review_consensus` の active row は `superseded_at IS NULL` で run 単位 1 つ
 (partial unique index)。re-evaluate (新 proposal insert 時など) は supersede。

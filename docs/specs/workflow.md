@@ -852,8 +852,12 @@ Phase 11 で review consensus 機構（複数 proposal の決定論集約 `evalu
 camelCase 形へ変換し、`{ rule, source, ruleSha256 }`（`source='project-profile'`）を
 返す。意味的に不正な `review:`（例: consensus なのに requirements が空、正でない
 `min_approvals` / `quorum.min_participants`、複数 reviewer requirement の
-`reviewer_ids` / `lens_axes` 欠落）は `ReviewRuleCompileError` で fail-closed になり、
-DEFAULT へ降格しない。設計の基礎は
+`reviewer_ids` / `lens_axes` 欠落、**consensus requirements が frozen（`reviewer_ids`
+あり）と非 frozen を混在**）は `ReviewRuleCompileError` で fail-closed になり、
+DEFAULT へ降格しない。混在禁止の根拠は promote gate が active proposal を全 frozen
+`reviewer_ids` の union で filter するため、混在すると非 frozen requirement の blocking
+verdict が落ちる fail-open になる点（snapshot read-back 境界も同じ invariant を
+`ReviewRuleSnapshotError` として強制する）。設計の基礎は
 [`../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md`](../superpowers/specs/2026-05-24-phase11-review-governance-consensus-design.md)。
 
 `prepareProjectRun` は compiled policy と同じ project-runtime 成果物として
@@ -970,15 +974,35 @@ Phase 2 で consensus mode が実フローに接続された（`src/core/consens
 
 - **`review process`**: run の rule snapshot が `mode: consensus` の場合、単一
   proposal ではなく **全 active proposal**（reviewers registry で group / type を
-  enrich）から `evaluateConsensus` を実行する（`processConsensusModePath`）。結果が
-  `pending` なら **promote せず fail-closed**（`ReviewGateError`）。decisive
-  （approved / changes_requested / rejected）なら consensus 由来の decision で run を
-  promote し、consensus row を実 proposal から記録、集計対象 proposal を processed に
-  する。`mode: latest-proposal`（既定）は従来の単一 proposal 経路のまま。
+  enrich）から `evaluateConsensus` を実行する（`processConsensusModePath`）。
+  `reviewer_ids` が snapshot に凍結されている場合は、その frozen set に含まれる
+  reviewer の proposal だけを評価対象にする。結果が `pending`、または評価対象の
+  active proposal が 0 件なら、**promote せず fail-closed**（typed
+  `ReviewGateError`）。decisive（approved / changes_requested / rejected）なら
+  consensus 由来の decision で run を promote し、consensus row を実 proposal から
+  記録、集計対象 proposal を processed にする。`mode: latest-proposal`（既定）は
+  従来の単一 proposal 経路のまま。
 - **`review auto`**: proposal insert 後、consensus mode なら全 active proposal で
-  consensus を再評価し `review_consensus` に（pending を含めて）記録する。これにより
+  consensus を再評価し `review_consensus` に（pending を含めて）記録する。この再評価も
+  frozen reviewer set がある run では frozen set 外 proposal を除外する。これにより
   multi-reviewer consensus と stall 用の timeline が蓄積される（best-effort: 記録失敗は
   insert を巻き戻さない）。
+- **`hitch orchestrate` review runner**: 最新 coding run の snapshot が consensus mode かつ
+  `reviewer_ids` を持つ場合、orchestrator は frozen reviewer set を `reviewer_id ASC`
+  で逐次 dispatch する。dispatch 前に frozen reviewer の既存 active proposal を
+  supersede して、この review cycle で land した proposal だけを参加者候補にする。
+  各 reviewer は `allowOverwrite:true` で `runReviewerAgent` に渡されるため、別 reviewer
+  の active proposal がある resume/manual 状態でも dispatch が止まらない。timeout /
+  non-zero / parse failure など clean な reviewer failure は non-participant として
+  記録し、artifact tamper 等の判別不能な reviewer failure は fail-closed に伝播する。
+  全 reviewer が clean に失敗して active proposal が 0 件でも、orchestrator は
+  no-active-proposals gate error を外へ伝播しない。pending `review_consensus` row と
+  hitch review cycle を記録し、既存の consensus-stall detector を実行したうえで
+  `decision: pending` を返す。この例外は frozen dispatch かつ clean reviewer failure
+  がある cycle に限定し、非 frozen consensus の pending gate は従来どおり
+  `ReviewGateError` として fail-closed に surface する。decisive process 後に runner
+  が返す `decision` は最後の individual reviewer verdict ではなく、
+  `processReviewDecision` の aggregate status。
 
 > 既定の rule は `latest-proposal`（`profile.review` 欠落時の `resolveEffectiveRule`）
 > なので、上記 consensus 経路は profile が consensus mode を宣言したときのみ作動する。
@@ -1003,14 +1027,24 @@ review → consensus → `run.status` の全経路は「**LLM の出力は入力
 - **stall escalation は harness のみ**が決定論で行う（`review_consensus` 履歴の timeline が
   入力で、LLM 出力は判定入力にしない）。
 - **artifact tamper は fail-closed**（`verifyArtifactsUnchanged` → `ReviewerAgentGateError`）。
+- **rule snapshot の読み戻しは fail-closed**: 永続化済み `rule_json` を runtime で読む
+  全経路は raw `JSON.parse` ではなく `parseReviewRuleSnapshot` を通す。JSON 不正・
+  未知 mode・`{mode: consensus, requirements: []}`（gate が空になる fail-open 形）・
+  非 path-safe reviewer id などは typed `ReviewRuleSnapshotError`（`ReviewRuleCompileError`
+  家族）で throw し、緩い default に降格しない。
+- **frozen consensus の preflight は dispatch 前に fail-closed**: frozen reviewer set に
+  未登録 reviewer がいる / 必要数を満たす group メンバが揃わない場合、reviewer を 1 人も
+  起動する前に typed `ConsensusReviewPreflightError`（`causeKind` =
+  `unregistered` / `under_quorum` / `wrong_group` / `no_reviewers`）で停止し、
+  orchestrator の clean escalation に倒す。
 - 迷ったら fail-closed（quorum 未達 / rule 不正 / timestamp 解析不能はいずれも安全側）。
 
-> **設計段階（現状仕様ではない）**: profile から `quorum > 1` consensus rule を凍結する
-> 経路は存在するが、orchestrator の N-reviewer dispatch、**異レンズ（lens）reviewer**
-> による視点多様化、**反証 verify（refute。#229 close に含めるか別 issue 切り出しかは
-> 人間批准事項＝設計 付録H2/I.3 参照）** は #229 の設計段階であり、まだ実装されていない。
-> `reviewer_ids` / `lens_axes` / `maxReviewers` は rule snapshot に保持されるが、dispatch
-> 本体は後続 phase の責務。設計は
+> **残る設計段階（現状仕様ではない）**: orchestrator は frozen `reviewer_ids` の
+> N-reviewer dispatch までは実装済みだが、**異レンズ（lens）reviewer** による prompt
+> 多様化、反証 verify（refute。#229 close に含めるか別 issue 切り出しかは
+> 人間批准事項＝設計 付録H2/I.3 参照）、および `listByGroup` からの自動 reviewer set
+> freeze は未実装。`lens_axes` / `maxReviewers` は rule snapshot に保持されるが、
+> prompt 多様化や自動解決は後続 phase の責務。設計は
 > [`../design/proposals/design-229-multi-lens-consensus.md`](../design/proposals/design-229-multi-lens-consensus.md)
 > （特に付録I = lens 中核化 + 詰め残し G1〜G3 + 新規論点 C1〜C4）。これらが入っても上表 (2)(3) の
 > 決定論ゲートは**凍結契約として不変**で、lens / refute は (1) 提案（入力）の多様化に留まる。

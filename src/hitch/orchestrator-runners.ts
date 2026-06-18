@@ -23,7 +23,12 @@ import {
   RepoPolicySchema,
 } from "../policy/schema.js";
 import { runReviewerAgent } from "../core/reviewer-agent.js";
-import { processReviewDecision } from "../core/review-processor.js";
+import { ReviewerAgentGateError } from "../core/reviewer-agent-errors.js";
+import {
+  processReviewDecision,
+  ReviewConsensusNoActiveProposalsError,
+  ReviewConsensusPendingError,
+} from "../core/review-processor.js";
 import {
   createPullRequest,
   pushReviewedBranchForEscalation,
@@ -44,6 +49,8 @@ import { loadAutoMergeSensitivityMap } from "../core/automerge-tiers-config.js";
 import { ReviewProposalRepository } from "../db/repositories/review-proposals.js";
 import { ReviewConsensusRepository } from "../db/repositories/review-consensus.js";
 import { ReviewOverridesRepository } from "../db/repositories/review-overrides.js";
+import { ReviewRulesRepository } from "../db/repositories/review-rules.js";
+import { ReviewerRepository } from "../db/repositories/reviewers.js";
 import {
   startOperation,
   succeedOperation,
@@ -55,9 +62,19 @@ import {
   type CopilotReviewConfig,
 } from "../core/copilot-review-run.js";
 import {
+  evaluateConsensus,
   REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS,
+  type ConsensusStatus,
   type ConsensusSummary,
 } from "../core/review-consensus.js";
+import { activeProposalRows, enrichRows } from "../core/consensus-enrichment.js";
+import {
+  dispatchRequirementsForRule,
+  frozenReviewerIdsForRule,
+  parseReviewRuleSnapshot,
+  ruleSha256,
+  type ReviewRule,
+} from "../core/review-rule.js";
 import {
   HitchRepository,
   OPEN_FINDING_LIFECYCLES,
@@ -85,7 +102,10 @@ import {
   selectProcessedProposalForReviewImport,
 } from "./review-integration.js";
 import { runCommandCloseChecks } from "./orchestrator-close-check-runner.js";
-import { dbConsensusSnapshotProvider } from "./consensus-stall-check.js";
+import {
+  dbConsensusSnapshotProvider,
+  evaluateConsensusStallForHitch,
+} from "./consensus-stall-check.js";
 import { nextReviewMode } from "./review-mode.js";
 import type { OrchestratorRunners } from "./orchestrator-types.js";
 import type {
@@ -975,6 +995,308 @@ function isUnresolvedOutOfScopeFinding(finding: HitchFinding): boolean {
   );
 }
 
+type ReviewDispatchPlan =
+  | { kind: "single" }
+  | { kind: "frozen-consensus"; reviewerIds: string[] };
+
+interface ReviewerDispatchFailure {
+  reviewerId: string;
+  reason: string;
+}
+
+/**
+ * Why a frozen-consensus review cannot start. `unregistered` = a frozen
+ * reviewer id has no `reviewers` row; `under_quorum`/`wrong_group` = a
+ * requirement's group has fewer registered members than it needs (a frozen id
+ * resolves to a different group, or simply is not registered for that group);
+ * `no_reviewers` = the rule resolved to an empty frozen set (defensive).
+ */
+export type ConsensusPreflightCauseKind =
+  | "no_reviewers"
+  | "under_quorum"
+  | "wrong_group"
+  | "unregistered";
+
+/**
+ * Typed preflight failure raised BEFORE any reviewer is dispatched. It is a
+ * plain `Error` subclass so the orchestrator's generic step catch still turns
+ * it into a clean escalation (the discriminator + counts are carried for the
+ * operator / tests, not for any new control flow).
+ */
+export class ConsensusReviewPreflightError extends Error {
+  readonly causeKind: ConsensusPreflightCauseKind;
+  readonly group?: string;
+  readonly required?: number;
+  readonly registered?: number;
+  constructor(
+    message: string,
+    detail: {
+      causeKind: ConsensusPreflightCauseKind;
+      group?: string;
+      required?: number;
+      registered?: number;
+    },
+  ) {
+    super(`consensus review preflight failed: ${message}`);
+    this.name = "ConsensusReviewPreflightError";
+    this.causeKind = detail.causeKind;
+    if (detail.group !== undefined) this.group = detail.group;
+    if (detail.required !== undefined) this.required = detail.required;
+    if (detail.registered !== undefined) this.registered = detail.registered;
+  }
+}
+
+const CLEAN_REVIEWER_FAILURE_CODES = new Set([
+  "reviewer_codex_timed_out",
+  "reviewer_codex_nonzero_exit",
+  "reviewer_output_unparseable_yaml",
+  "reviewer_output_not_yaml_object",
+  "reviewer_output_unknown_decision",
+  "reviewer_output_field_not_string_array",
+  "reviewer_output_field_non_string_entry",
+  "reviewer_output_empty_required_changes",
+]);
+
+function cleanReviewerFailureReason(e: unknown): string | null {
+  if (!(e instanceof ReviewerAgentGateError)) return null;
+  const code = (e.sanitizedReason as { reasonCode?: unknown } | undefined)
+    ?.reasonCode;
+  return typeof code === "string" && CLEAN_REVIEWER_FAILURE_CODES.has(code)
+    ? code
+    : null;
+}
+
+/**
+ * Lease-loss / abort detection for the frozen-consensus dispatch loop —
+ * symmetric with the coder path (which rethrows `findTransientLeaseCause(e)`).
+ *
+ * A course lease loss aborts `deps.signal` mid-drive, SIGKILLs the reviewer
+ * codex (aborted / exit -1), and reviewer-agent raises a `reviewer_codex_*`
+ * gate error that does NOT wrap a transient lease cause. Left unhandled that
+ * error is misclassified as a clean per-reviewer failure → a pending-consensus
+ * demotion that writes a review cycle + stall row and burns the stall budget
+ * under a lost lease (the P1 fail-safe degradation). So before the clean
+ * classification we check BOTH:
+ *  - the error chain itself (a lease error that surfaced directly), and
+ *  - the aborted signal (the abort reason carries the lease error — see
+ *    course-orchestrator `abortController.abort(leaseError)`).
+ * Either one means the drive is no longer authoritative → return the cause so
+ * the loop rethrows it (the course layer finalizes `lease_lost`).
+ */
+function findReviewerDispatchLeaseLossCause(
+  e: unknown,
+  signal: AbortSignal | undefined,
+): unknown {
+  const fromError = findTransientLeaseCause(e);
+  if (fromError !== undefined) return fromError;
+  if (signal?.aborted === true) {
+    const reasonCause = findTransientLeaseCause(signal.reason);
+    return reasonCause ?? signal.reason ?? e;
+  }
+  return undefined;
+}
+
+function readReviewRuleSnapshot(input: {
+  db: Database.Database;
+  runId: string;
+}): { rule: ReviewRule; ruleSha256: string } | null {
+  const snapshot = new ReviewRulesRepository(input.db).findSnapshotByRun(
+    input.runId,
+  );
+  if (snapshot === null) return null;
+  const rule = parseReviewRuleSnapshot(snapshot.ruleJson);
+  return {
+    rule,
+    ruleSha256: snapshot.sourceSha256 ?? ruleSha256(rule),
+  };
+}
+
+function prepareReviewDispatchPlan(input: {
+  db: Database.Database;
+  runId: string;
+  now: string;
+}): ReviewDispatchPlan {
+  const snapshot = readReviewRuleSnapshot(input);
+  if (snapshot === null || snapshot.rule.mode !== "consensus") {
+    return { kind: "single" };
+  }
+  const reviewerIds = frozenReviewerIdsForRule(snapshot.rule);
+  if (reviewerIds.length === 0) return { kind: "single" };
+
+  assertFrozenConsensusReviewersReady({
+    db: input.db,
+    rule: snapshot.rule,
+    reviewerIds,
+  });
+  new ReviewProposalRepository(input.db).supersedeActiveForReviewers({
+    runId: input.runId,
+    reviewerIds,
+    supersededAt: input.now,
+  });
+  return { kind: "frozen-consensus", reviewerIds };
+}
+
+function assertFrozenConsensusReviewersReady(input: {
+  db: Database.Database;
+  rule: ReviewRule;
+  reviewerIds: readonly string[];
+}): void {
+  const reviewers = new ReviewerRepository(input.db);
+  const byId = new Map(
+    input.reviewerIds.map((reviewerId) => [
+      reviewerId,
+      reviewers.findById(reviewerId),
+    ]),
+  );
+  if (input.reviewerIds.length === 0) {
+    throw new ConsensusReviewPreflightError(
+      "the resolved frozen reviewer set is empty",
+      { causeKind: "no_reviewers" },
+    );
+  }
+  const missing = [...byId]
+    .filter(([, reviewer]) => reviewer === null)
+    .map(([reviewerId]) => reviewerId);
+  if (missing.length > 0) {
+    throw new ConsensusReviewPreflightError(
+      `unknown frozen reviewer(s): ${missing.join(", ")}`,
+      { causeKind: "unregistered" },
+    );
+  }
+
+  for (const requirement of dispatchRequirementsForRule(input.rule)) {
+    const registered = requirement.reviewerIds.filter(
+      (reviewerId) => byId.get(reviewerId)?.groupId === requirement.group,
+    );
+    if (registered.length < requirement.requiredReviewers) {
+      // `wrong_group` when NO frozen id resolves to the required group at all
+      // (every declared reviewer is registered under a different group);
+      // `under_quorum` for the general shortfall.
+      const causeKind =
+        registered.length === 0 ? "wrong_group" : "under_quorum";
+      throw new ConsensusReviewPreflightError(
+        `group ${requirement.group}: required=${requirement.requiredReviewers} ` +
+          `registered=${registered.length} ` +
+          `expected=${requirement.reviewerIds.length}`,
+        {
+          causeKind,
+          group: requirement.group,
+          required: requirement.requiredReviewers,
+          registered: registered.length,
+        },
+      );
+    }
+  }
+}
+
+function recordConsensusEvaluationForRun(input: {
+  db: Database.Database;
+  runId: string;
+  evaluatedAt: string;
+  evaluatedBy: string;
+}): ConsensusStatus {
+  const snapshot = readReviewRuleSnapshot(input);
+  if (snapshot === null || snapshot.rule.mode !== "consensus") {
+    throw new Error(
+      `run ${input.runId} has no consensus review rule snapshot`,
+    );
+  }
+  const frozenReviewerIds = frozenReviewerIdsForRule(snapshot.rule);
+  const rows = activeProposalRows(
+    new ReviewProposalRepository(input.db),
+    input.runId,
+    {
+      ...(frozenReviewerIds.length > 0
+        ? { reviewerIds: frozenReviewerIds }
+        : {}),
+    },
+  );
+  const result = evaluateConsensus({
+    rule: snapshot.rule,
+    ruleSha256: snapshot.ruleSha256,
+    proposals: enrichRows(rows, new ReviewerRepository(input.db)),
+    evaluatedAt: input.evaluatedAt,
+  });
+  new ReviewConsensusRepository(input.db).insertActive({
+    runId: input.runId,
+    ruleSha256: snapshot.ruleSha256,
+    status: result.status,
+    summary: result.summary,
+    evaluatedAt: input.evaluatedAt,
+    evaluatedBy: input.evaluatedBy,
+    sourceProposalIds: result.summary.proposals.map((p) => p.proposalId),
+  });
+  return result.status;
+}
+
+function recordPendingConsensusReview(input: {
+  db: Database.Database;
+  hitchId: string;
+  runId: string;
+  createdBy: string;
+  failedReviewers: ReviewerDispatchFailure[];
+}): { decision: ConsensusStatus } {
+  const repo = new HitchRepository(input.db);
+  const session = repo.requireSession(input.hitchId);
+  const evaluatedAt = new Date().toISOString();
+  const decision = recordConsensusEvaluationForRun({
+    db: input.db,
+    runId: input.runId,
+    evaluatedAt,
+    evaluatedBy: "hitch.review.pending",
+  });
+  const cycle = repo.startReviewCycle({
+    hitchId: input.hitchId,
+    reviewMode: reviewModeForHitch(repo, session),
+    sourceRunId: input.runId,
+    createdAt: evaluatedAt,
+  });
+  const failed =
+    input.failedReviewers.length === 0
+      ? ""
+      : `; failed reviewers=${input.failedReviewers
+          .map((f) => `${f.reviewerId}:${f.reason}`)
+          .join(",")}`;
+  const completed = repo.completeReviewCycle({
+    cycleId: cycle.cycleId,
+    completedAt: evaluatedAt,
+    summary: `Consensus review pending (${decision})${failed}`,
+  });
+  const convergence = new ConvergenceService(repo).evaluate(input.hitchId);
+  recordConvergenceDecisionWithStatus({
+    repository: repo,
+    hitchId: input.hitchId,
+    cycleId: completed.cycleId,
+    decision: convergence.decision,
+    reason: convergence.reason,
+    metrics: { ...convergence.metrics },
+    recommendedNextAction: convergence.recommendedNextAction,
+    createdBy: input.createdBy,
+  });
+  evaluateConsensusStallForHitch({
+    repository: repo,
+    hitchId: input.hitchId,
+    provider: dbConsensusSnapshotProvider(input.db),
+    createdBy: input.createdBy,
+    cycleId: completed.cycleId,
+  });
+  return { decision };
+}
+
+function shouldRecordFrozenPendingConsensus(input: {
+  error: unknown;
+  dispatchPlan: ReviewDispatchPlan;
+  failedReviewers: readonly ReviewerDispatchFailure[];
+}): boolean {
+  if (input.dispatchPlan.kind !== "frozen-consensus") return false;
+  if (input.failedReviewers.length === 0) return false;
+  if (input.error instanceof ReviewConsensusPendingError) return true;
+  return (
+    input.error instanceof ReviewConsensusNoActiveProposalsError &&
+    input.failedReviewers.length === input.dispatchPlan.reviewerIds.length
+  );
+}
+
 export function createOrchestratorRunners(
   deps: OrchestratorRunnerDeps,
 ): OrchestratorRunners {
@@ -1182,21 +1504,83 @@ export function createOrchestratorRunners(
       );
       if (decided !== null) return decided;
 
-      // 1. produce a review proposal (review_proposals row) for the run.
-      const reviewResult = await runReviewerAgent({
-        runsDir: paths.runsDir,
-        runId,
-        dbPath: deps.dbPath,
-        codexRunner: deps.reviewerRunner,
-        ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
-      });
+      const dispatchPlan = withManagedDb({ dbPath: deps.dbPath }, (db) =>
+        prepareReviewDispatchPlan({
+          db,
+          runId,
+          now: new Date().toISOString(),
+        }),
+      );
+      const failedReviewers: ReviewerDispatchFailure[] = [];
+      if (dispatchPlan.kind === "frozen-consensus") {
+        for (const reviewerId of dispatchPlan.reviewerIds) {
+          try {
+            await runReviewerAgent({
+              runsDir: paths.runsDir,
+              runId,
+              dbPath: deps.dbPath,
+              reviewerName: reviewerId,
+              allowOverwrite: true,
+              codexRunner: deps.reviewerRunner,
+              ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
+            });
+          } catch (e) {
+            // Symmetry with the coder path (:findTransientLeaseCause rethrow):
+            // a lost lease / aborted signal must rethrow BEFORE the clean
+            // classification, never demote to pending under a lost lease.
+            const leaseLoss = findReviewerDispatchLeaseLossCause(
+              e,
+              deps.signal,
+            );
+            if (leaseLoss !== undefined) throw leaseLoss;
+            const reason = cleanReviewerFailureReason(e);
+            if (reason !== null) {
+              failedReviewers.push({ reviewerId, reason });
+              continue;
+            }
+            throw e;
+          }
+        }
+      } else {
+        // 1. produce a review proposal (review_proposals row) for the run.
+        await runReviewerAgent({
+          runsDir: paths.runsDir,
+          runId,
+          dbPath: deps.dbPath,
+          codexRunner: deps.reviewerRunner,
+          ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
+        });
+      }
       // 2. promote the proposal to the run's status (approved / ...).
-      const processed = await processReviewDecision({
-        runsDir: paths.runsDir,
-        runId,
-        locksDir: paths.locksDir,
-        dbPath: deps.dbPath,
-      });
+      let processed: Awaited<ReturnType<typeof processReviewDecision>>;
+      try {
+        processed = await processReviewDecision({
+          runsDir: paths.runsDir,
+          runId,
+          locksDir: paths.locksDir,
+          dbPath: deps.dbPath,
+        });
+      } catch (e) {
+        if (
+          shouldRecordFrozenPendingConsensus({
+            error: e,
+            dispatchPlan,
+            failedReviewers,
+          })
+        ) {
+          const pending = withManagedDb({ dbPath: deps.dbPath }, (db) =>
+            recordPendingConsensusReview({
+              db,
+              hitchId,
+              runId,
+              createdBy: deps.createdBy,
+              failedReviewers,
+            }),
+          );
+          return { runId, decision: pending.decision };
+        }
+        throw e;
+      }
 
       // 3. fold the processed proposal into the hitch: a review cycle, any
       //    findings it carried, and the `review_consensus` close-check that
@@ -1231,7 +1615,7 @@ export function createOrchestratorRunners(
           consensusStall: { provider: dbConsensusSnapshotProvider(db) },
         });
       });
-      return { runId, decision: reviewResult.decision };
+      return { runId, decision: processed.newStatus };
     },
     closeCheck: async (hitchId) =>
       runCommandCloseChecks({

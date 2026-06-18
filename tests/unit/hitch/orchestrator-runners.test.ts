@@ -22,12 +22,19 @@ import {
   latestRunId,
   selectProcessedProposalForReviewImport,
   tryShortCircuitApprovedDecidedReview,
+  ConsensusReviewPreflightError,
   HitchHasAdoptedPrError,
   type HitchRunContext,
 } from "../../../src/hitch/orchestrator-runners.js";
 import { ReviewProposalRepository } from "../../../src/db/repositories/review-proposals.js";
+import { ReviewConsensusRepository } from "../../../src/db/repositories/review-consensus.js";
+import { ReviewRulesRepository } from "../../../src/db/repositories/review-rules.js";
+import { ReviewerRepository } from "../../../src/db/repositories/reviewers.js";
 import { importReviewProposalToHitch } from "../../../src/hitch/review-integration.js";
 import { REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS } from "../../../src/core/review-consensus.js";
+import { ReviewerAgentGateError } from "../../../src/core/reviewer-agent-errors.js";
+import { sanitizeGateReason } from "../../../src/core/gate-reason.js";
+import type { ReviewRule } from "../../../src/core/review-rule.js";
 import type {
   PrPublisher,
   PrPublishInputs,
@@ -36,6 +43,7 @@ import {
   acquireDomainLock,
   DomainLockBusyError,
   LeaseGuardFailedError,
+  LeaseLostError,
 } from "../../../src/workspace/db-domain-lock.js";
 
 function createRunnerTestDb(prefix: string): string {
@@ -231,6 +239,147 @@ function insertProcessedProposal(input: {
   return Number(info.lastInsertRowid);
 }
 
+function reviewerOutput(input: {
+  decision: "approved" | "changes_requested" | "rejected";
+  requiredChanges?: string[];
+}): string {
+  const requiredChanges = input.requiredChanges ?? [];
+  return [
+    "```yaml",
+    `decision: ${input.decision}`,
+    ...(requiredChanges.length === 0
+      ? ["required_changes: []"]
+      : [
+          "required_changes:",
+          ...requiredChanges.map((change) => `  - ${JSON.stringify(change)}`),
+        ]),
+    "non_blocking_comments: []",
+    "out_of_scope_suggestions: []",
+    "```",
+    "",
+  ].join("\n");
+}
+
+function reviewerIdFromStdoutPath(stdoutPath: string): string {
+  const normalized = stdoutPath.replaceAll("\\", "/");
+  const match = normalized.match(/\/reviewers\/([^/]+)\/reviewer-agent\.out\.log$/);
+  return match?.[1] ?? "codex-reviewer";
+}
+
+function multiReviewerRunner(
+  outputs: Record<string, string | Error>,
+) {
+  return {
+    run: vi.fn(async (input: { logPaths: { stdout: string; stderr: string } }) => {
+      const reviewerId = reviewerIdFromStdoutPath(input.logPaths.stdout);
+      const output = outputs[reviewerId];
+      writeFileSync(input.logPaths.stderr, "", "utf8");
+      if (output instanceof Error) throw output;
+      writeFileSync(input.logPaths.stdout, output ?? "", "utf8");
+      return { exitCode: 0, timedOut: false, durationMs: 0 };
+    }),
+  };
+}
+
+function createFrozenConsensusReviewHarness(input: {
+  prefix: string;
+  hitchId: string;
+  rule: ReviewRule;
+}): { harnessRoot: string; dbPath: string; runId: string } {
+  const { harnessRoot, dbPath } = createHarnessRoot(input.prefix);
+  const runId = `run-${input.hitchId}`;
+  const runDir = join(harnessRoot, "runs", runId);
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(
+    join(runDir, "meta.json"),
+    JSON.stringify({
+      runId,
+      repoId: "t",
+      domain: "docs",
+      status: "needs_review",
+    }),
+  );
+  writeFileSync(join(runDir, "events.jsonl"), "", "utf8");
+  writeFileSync(join(runDir, "summary.md"), "summary\n", "utf8");
+  writeFileSync(join(runDir, "review-request.md"), "review\n", "utf8");
+  writeFileSync(join(runDir, "final-diff.patch"), "", "utf8");
+  writeFileSync(
+    join(runDir, "review-decision.yaml"),
+    [
+      `runId: ${runId}`,
+      "domain: docs",
+      "decision: pending",
+      "required_changes: []",
+      "non_blocking_comments: []",
+      "out_of_scope_suggestions: []",
+      "reviewer: null",
+      "reviewed_at: null",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const { db, close } = openManagedDb({ dbPath });
+  try {
+    runMigrations(db);
+    const repo = new HitchRepository(db);
+    repo.createSession({
+      hitchId: input.hitchId,
+      title: "Frozen consensus",
+      repoId: "t",
+      domain: "docs",
+      closeConditions: [
+        { id: "review-ok", kind: "review_consensus", required: true },
+      ],
+      createdBy: "test",
+      createdSource: "worker",
+    });
+    repo.createAttempt({
+      hitchId: input.hitchId,
+      attemptType: "implement",
+      status: "succeeded",
+      runId,
+      createdAt: "2026-06-13T00:00:00.000Z",
+    });
+    db.prepare(
+      `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+         status, source_mode, db_revision, export_status, started_at,
+         updated_at, meta_json)
+       VALUES (?, 't', 'docs', 'domain-coding', 'main', 'needs_review',
+         'db-first', 1, 'disabled', '2026-06-13T00:00:00.000Z',
+         '2026-06-13T00:00:00.000Z', ?)`,
+    ).run(
+      runId,
+      JSON.stringify({
+        runId,
+        repoId: "t",
+        domain: "docs",
+        status: "needs_review",
+      }),
+    );
+    const reviewers = new ReviewerRepository(db);
+    reviewers.add({
+      reviewerId: "alice",
+      reviewerType: "codex",
+      displayName: "Alice",
+      groupId: "reviewers",
+    });
+    reviewers.add({
+      reviewerId: "bob",
+      reviewerType: "codex",
+      displayName: "Bob",
+      groupId: "reviewers",
+    });
+    const template = new ReviewRulesRepository(db).upsertRuleTemplate({
+      source: "manual",
+      rule: input.rule,
+    });
+    new ReviewRulesRepository(db).snapshotForRun({ runId, template });
+  } finally {
+    close();
+  }
+  return { harnessRoot, dbPath, runId };
+}
+
 describe("createOrchestratorRunners.projectRuntime", () => {
   it("rejects incomplete project runtime deps atomically", () => {
     expect(() =>
@@ -292,6 +441,522 @@ describe("createOrchestratorRunners.projectRuntime", () => {
 });
 
 describe("createOrchestratorRunners.review decided run re-drive", () => {
+  it("returns the processed consensus status instead of the last reviewer decision", async () => {
+    const hitchId = "g-consensus-return";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 1,
+          blockingDecisions: [],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "scope_fit"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-consensus-return-",
+      hitchId,
+      rule,
+    });
+    const reviewerRunner = multiReviewerRunner({
+      alice: reviewerOutput({ decision: "approved" }),
+      bob: reviewerOutput({
+        decision: "changes_requested",
+        requiredChanges: ["Bob would like a follow-up, but it is non-blocking."],
+      }),
+    });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    const result = await runners.review(hitchId);
+
+    expect(result).toEqual({ runId, decision: "approved" });
+    expect(reviewerRunner.run).toHaveBeenCalledTimes(2);
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const run = db
+        .prepare("SELECT status, reviewer FROM runs WHERE run_id = ?")
+        .get(runId) as { status: string; reviewer: string };
+      expect(run).toEqual({ status: "approved", reviewer: "consensus" });
+      expect(
+        new ReviewConsensusRepository(db).findActive(runId)?.status,
+      ).toBe("approved");
+      expect(new HitchRepository(db).listCloseChecks(hitchId)[0]).toMatchObject({
+        conditionId: "review-ok",
+        status: "passed",
+        evidence: { decision: "approved", processStatus: "approved" },
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it("records all-clean reviewer failures as pending consensus and escalates only through stall evaluation", async () => {
+    const hitchId = "g-consensus-all-clean-fail";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 2,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "scope_fit"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-consensus-clean-fail-",
+      hitchId,
+      rule,
+    });
+    const reviewerRunner = multiReviewerRunner({ alice: "", bob: "" });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).resolves.toEqual({
+      runId,
+      decision: "pending",
+    });
+    let dbHandle = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(dbHandle.db);
+      expect(repo.requireSession(hitchId).status).not.toBe("escalated");
+      expect(repo.listReviewCycles(hitchId)).toHaveLength(1);
+      expect(
+        new ReviewConsensusRepository(dbHandle.db).findActive(runId)?.status,
+      ).toBe("pending");
+      expect(new ReviewProposalRepository(dbHandle.db).listForRun(runId)).toEqual([]);
+    } finally {
+      dbHandle.close();
+    }
+
+    await runners.review(hitchId);
+    await runners.review(hitchId);
+
+    dbHandle = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(dbHandle.db);
+      expect(repo.requireSession(hitchId).status).toBe("escalated");
+      expect(repo.listReviewCycles(hitchId)).toHaveLength(3);
+      expect(
+        new ReviewConsensusRepository(dbHandle.db).listHistory(runId).map((r) => r.status),
+      ).toEqual(["pending", "pending", "pending"]);
+    } finally {
+      dbHandle.close();
+    }
+    expect(reviewerRunner.run).toHaveBeenCalledTimes(6);
+  });
+
+  it("rethrows the lease-loss cause (does not demote to pending) when the orchestrator aborts mid-dispatch", async () => {
+    // P1 — symmetry with the coder path: a course lease-loss aborts deps.signal
+    // mid-drive, so codex returns aborted/exit -1 → reviewer-agent raises a
+    // `reviewer_codex_*` gate error. That error must NOT be folded into a clean
+    // per-reviewer failure (and then a pending-consensus demotion that writes a
+    // review cycle + stall row and burns the stall budget under a lost lease).
+    // It must rethrow the underlying lease error so the course layer finalizes
+    // `lease_lost`, leaving the hitch untouched.
+    const hitchId = "g-consensus-abort-rethrow";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 2,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "scope_fit"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-consensus-abort-",
+      hitchId,
+      rule,
+    });
+    // Heartbeat-side lease loss: the controller is aborted with the lease error
+    // as its reason (course-orchestrator runWithLeaseHeartbeat semantics).
+    const controller = new AbortController();
+    const leaseError = new LeaseLostError("t/docs", 7);
+    // Mirror the real codex runner under abort: SIGKILL → aborted/exit -1, which
+    // reviewer-agent turns into a `reviewer_codex_aborted` / nonzero-exit gate.
+    const reviewerRunner = {
+      run: vi.fn(
+        async (input: {
+          logPaths: { stdout: string; stderr: string };
+          signal?: AbortSignal;
+        }) => {
+          writeFileSync(input.logPaths.stderr, "", "utf8");
+          writeFileSync(input.logPaths.stdout, "", "utf8");
+          // The lease heartbeat fires during the first reviewer's codex drive.
+          if (!controller.signal.aborted) controller.abort(leaseError);
+          return {
+            exitCode: -1,
+            timedOut: false,
+            aborted: true,
+            durationMs: 0,
+          };
+        },
+      ),
+    };
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      signal: controller.signal,
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).rejects.toBeInstanceOf(
+      LeaseLostError,
+    );
+
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db);
+      // No pending-consensus demotion: no review cycle, no consensus row, and
+      // the run stays needs_review (fail-closed — the lost lease drive is not
+      // authoritative and must not advance the hitch or spend the stall budget).
+      expect(repo.listReviewCycles(hitchId)).toHaveLength(0);
+      expect(new ReviewConsensusRepository(db).findActive(runId)).toBeNull();
+      expect(
+        new ReviewConsensusRepository(db).listHistory(runId),
+      ).toHaveLength(0);
+      expect(db.prepare("SELECT status FROM runs WHERE run_id = ?").get(runId))
+        .toMatchObject({ status: "needs_review" });
+      expect(repo.requireSession(hitchId).status).not.toBe("escalated");
+    } finally {
+      close();
+    }
+    // Fail-fast: rethrow on the FIRST aborted reviewer; the second is not driven.
+    expect(reviewerRunner.run).toHaveBeenCalledTimes(1);
+  });
+
+  it("rethrows (does not demote to pending) when a frozen reviewer hits a non-clean tamper gate error", async () => {
+    const hitchId = "g-consensus-tamper-rethrow";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 2,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "scope_fit"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-consensus-tamper-",
+      hitchId,
+      rule,
+    });
+    // bob hits a non-clean gate error: a tamper detection
+    // ("modified run artifact") carries NO sanitizedReason, so its reasonCode
+    // is undefined and is NOT a member of CLEAN_REVIEWER_FAILURE_CODES. Unlike a
+    // clean codex failure it MUST abort the whole review, not be folded into a
+    // pending-consensus demotion.
+    const tamperError = new ReviewerAgentGateError(
+      `reviewer agent modified run artifact: ${runId}/final-diff.patch`,
+    );
+    const reviewerRunner = multiReviewerRunner({
+      alice: reviewerOutput({ decision: "approved" }),
+      bob: tamperError,
+    });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).rejects.toBeInstanceOf(
+      ReviewerAgentGateError,
+    );
+
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db);
+      // No review cycle recorded, no pending-consensus demotion, run stays
+      // needs_review (fail-closed: a tamper abort does not advance the hitch).
+      expect(repo.listReviewCycles(hitchId)).toHaveLength(0);
+      expect(repo.requireSession(hitchId).status).not.toBe("escalated");
+      expect(db.prepare("SELECT status FROM runs WHERE run_id = ?").get(runId))
+        .toMatchObject({ status: "needs_review" });
+      // alice's clean approval may leave a `pending` consensus re-eval, but the
+      // tamper abort must NEVER promote it to an approved/decided consensus.
+      expect(
+        new ReviewConsensusRepository(db).findActive(runId)?.status,
+      ).not.toBe("approved");
+    } finally {
+      close();
+    }
+  });
+
+  it("rethrows when a frozen reviewer gate error carries a non-clean reasonCode", async () => {
+    const hitchId = "g-consensus-noncleancode-rethrow";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 2,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "scope_fit"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-consensus-noncleancode-",
+      hitchId,
+      rule,
+    });
+    // A gate error whose reasonCode is present but is NOT in
+    // CLEAN_REVIEWER_FAILURE_CODES (an unexpected-file tamper class) must also
+    // abort rather than be tolerated as a clean per-reviewer failure.
+    const nonCleanError = new ReviewerAgentGateError(
+      "reviewer agent created unexpected file",
+      {
+        sanitizedReason: sanitizeGateReason({
+          code: "reviewer_artifact_unexpected_file",
+        }),
+      },
+    );
+    const reviewerRunner = multiReviewerRunner({
+      alice: reviewerOutput({ decision: "approved" }),
+      bob: nonCleanError,
+    });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).rejects.toBeInstanceOf(
+      ReviewerAgentGateError,
+    );
+
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db);
+      expect(repo.listReviewCycles(hitchId)).toHaveLength(0);
+      expect(db.prepare("SELECT status FROM runs WHERE run_id = ?").get(runId))
+        .toMatchObject({ status: "needs_review" });
+    } finally {
+      close();
+    }
+  });
+
+  it("facet3: escalates (typed preflight error, no reviewer dispatch) on an unregistered frozen reviewer", async () => {
+    const hitchId = "g-consensus-preflight-unregistered";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 2,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "dave"],
+          lensAxes: ["correctness", "scope_fit"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    // harness registers alice + bob; "dave" in the frozen set is unregistered.
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-consensus-preflight-unreg-",
+      hitchId,
+      rule,
+    });
+    const reviewerRunner = multiReviewerRunner({
+      alice: reviewerOutput({ decision: "approved" }),
+      dave: reviewerOutput({ decision: "approved" }),
+    });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    const error = await runners.review(hitchId).then(
+      () => null,
+      (e) => e,
+    );
+    expect(error).toBeInstanceOf(ConsensusReviewPreflightError);
+    expect((error as ConsensusReviewPreflightError).causeKind).toBe(
+      "unregistered",
+    );
+    // fail-closed BEFORE any reviewer dispatch — the registry gap must abort the
+    // whole cycle, not run alice and demote to pending.
+    expect(reviewerRunner.run).not.toHaveBeenCalled();
+
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db);
+      expect(repo.listReviewCycles(hitchId)).toHaveLength(0);
+      expect(db.prepare("SELECT status FROM runs WHERE run_id = ?").get(runId))
+        .toMatchObject({ status: "needs_review" });
+      expect(new ReviewProposalRepository(db).listForRun(runId)).toEqual([]);
+    } finally {
+      close();
+    }
+  });
+
+  it("facet3: escalates (typed preflight error, no reviewer dispatch) when a frozen reviewer is in the wrong group (under quorum)", async () => {
+    const hitchId = "g-consensus-preflight-under-quorum";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 2,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "scope_fit"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-consensus-preflight-quorum-",
+      hitchId,
+      rule,
+    });
+    // Move bob out of the "reviewers" group: now only alice is a registered
+    // member of the required group → registered(1) < required(2).
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        db.prepare(
+          "UPDATE reviewers SET group_id = 'security' WHERE reviewer_id = 'bob'",
+        ).run();
+      } finally {
+        close();
+      }
+    }
+    const reviewerRunner = multiReviewerRunner({
+      alice: reviewerOutput({ decision: "approved" }),
+      bob: reviewerOutput({ decision: "approved" }),
+    });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    const error = await runners.review(hitchId).then(
+      () => null,
+      (e) => e,
+    );
+    expect(error).toBeInstanceOf(ConsensusReviewPreflightError);
+    expect((error as ConsensusReviewPreflightError).causeKind).toBe(
+      "under_quorum",
+    );
+    expect((error as ConsensusReviewPreflightError).group).toBe("reviewers");
+    expect((error as ConsensusReviewPreflightError).required).toBe(2);
+    expect((error as ConsensusReviewPreflightError).registered).toBe(1);
+    expect(reviewerRunner.run).not.toHaveBeenCalled();
+
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      expect(new HitchRepository(db).listReviewCycles(hitchId)).toHaveLength(0);
+      expect(db.prepare("SELECT status FROM runs WHERE run_id = ?").get(runId))
+        .toMatchObject({ status: "needs_review" });
+    } finally {
+      close();
+    }
+  });
+
+  it("does not swallow non-frozen pending consensus gates", async () => {
+    const hitchId = "g-consensus-non-frozen-pending";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 2,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-consensus-non-frozen-pending-",
+      hitchId,
+      rule,
+    });
+    const reviewerRunner = multiReviewerRunner({
+      "codex-reviewer": reviewerOutput({ decision: "approved" }),
+    });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).rejects.toThrow(
+      /consensus not yet satisfied/,
+    );
+
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(db);
+      expect(repo.listReviewCycles(hitchId)).toHaveLength(0);
+      expect(db.prepare("SELECT status FROM runs WHERE run_id = ?").get(runId))
+        .toMatchObject({ status: "needs_review" });
+      expect(new ReviewConsensusRepository(db).findActive(runId)?.status).toBe(
+        "pending",
+      );
+    } finally {
+      close();
+    }
+    expect(reviewerRunner.run).toHaveBeenCalledTimes(1);
+  });
+
   it("selects the approving consensus member for normal review import traceability", () => {
     const { dbPath } = createHarnessRoot(
       "harness-orch-review-consensus-import-",
