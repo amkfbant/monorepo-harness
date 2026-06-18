@@ -2908,6 +2908,7 @@ describe("createOrchestratorRunners.coder rerun continuation (#163)", () => {
     hitchId: string;
     runId: string;
     status: string;
+    safetyStatus?: string | null;
     baseSha: string;
     work?: { file: string; content: string };
     parentRunId?: string | null;
@@ -2919,20 +2920,27 @@ describe("createOrchestratorRunners.coder rerun continuation (#163)", () => {
       const repo = new HitchRepository(db);
       db.prepare(
         `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
-           base_sha, run_branch, status, source_mode, db_revision,
+           base_sha, run_branch, status, safety_status, source_mode, db_revision,
            export_status, updated_at, parent_run_id, root_run_id,
            rerun_attempt, meta_json)
-         VALUES (?, 't', 'apps/user', 'domain-coding', 'main', ?, ?, ?,
+         VALUES (?, 't', 'apps/user', 'domain-coding', 'main', ?, ?, ?, ?,
            'db-first', 1, 'disabled', '2026-06-13T00:00:00.000Z', ?, ?, ?, ?)`,
       ).run(
         opts.runId,
         opts.baseSha,
         `run/${opts.runId}/apps-user`,
         opts.status,
+        opts.safetyStatus ?? null,
         opts.parentRunId ?? null,
         opts.rootRunId ?? null,
         opts.rerunAttempt ?? null,
-        JSON.stringify({ runId: opts.runId, status: opts.status }),
+        JSON.stringify({
+          runId: opts.runId,
+          status: opts.status,
+          ...(opts.safetyStatus !== undefined
+            ? { safetyStatus: opts.safetyStatus }
+            : {}),
+        }),
       );
       repo.createAttempt({
         hitchId: opts.hitchId,
@@ -2997,6 +3005,104 @@ describe("createOrchestratorRunners.coder rerun continuation (#163)", () => {
       "export const f = 1;\n",
     );
     // the skip reason is recorded.
+    const events = readFileSync(
+      join(harnessRoot, "runs", child.runId, "events.jsonl"),
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string; reason?: string });
+    expect(events.find((e) => e.type === "continuation_skipped")?.reason).toBe(
+      "parent_not_validated",
+    );
+  });
+
+  it("FAILED-COMMAND allowed parent: recovery rerun materializes the validated parent work", async () => {
+    const { harnessRoot, dbPath, repoPath } = setupContinuationHarness();
+    seedFixableHitch(dbPath, "g-failed-command-allowed");
+    const baseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath })
+      .toString()
+      .trim();
+    seedParentRun({
+      dbPath,
+      harnessRoot,
+      repoPath,
+      hitchId: "g-failed-command-allowed",
+      runId: "run-command-failed",
+      status: "failed-command",
+      safetyStatus: "allowed",
+      baseSha,
+      work: { file: "apps/user/src/carry.ts", content: "export const c = 1;\n" },
+    });
+
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: succeedingEditRunner(() => ({
+        file: "apps/user/src/fresh.ts",
+        content: "export const f = 1;\n",
+      })),
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      resolveRunContext: () => runContext(repoPath),
+    });
+
+    const child = await runners.coder("g-failed-command-allowed");
+    const childWt = worktreeOf(harnessRoot, child.runId);
+    expect(readFileSync(join(childWt, "apps/user/src/carry.ts"), "utf8")).toBe(
+      "export const c = 1;\n",
+    );
+    expect(readFileSync(join(childWt, "apps/user/src/fresh.ts"), "utf8")).toBe(
+      "export const f = 1;\n",
+    );
+    const events = readFileSync(
+      join(harnessRoot, "runs", child.runId, "events.jsonl"),
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string; paths?: string[] });
+    expect(events.find((e) => e.type === "continuation_materialized")?.paths).toEqual(
+      expect.arrayContaining(["apps/user/src/carry.ts"]),
+    );
+    expect(events.map((e) => e.type)).not.toContain("continuation_skipped");
+  });
+
+  it("FAILED-COMMAND without allowed safety status: recovery rerun skips parent work", async () => {
+    const { harnessRoot, dbPath, repoPath } = setupContinuationHarness();
+    seedFixableHitch(dbPath, "g-failed-command-unknown-safety");
+    const baseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath })
+      .toString()
+      .trim();
+    seedParentRun({
+      dbPath,
+      harnessRoot,
+      repoPath,
+      hitchId: "g-failed-command-unknown-safety",
+      runId: "run-command-unknown-safety",
+      status: "failed-command",
+      baseSha,
+      work: { file: "apps/user/src/carry.ts", content: "export const c = 1;\n" },
+    });
+
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: succeedingEditRunner(() => ({
+        file: "apps/user/src/fresh.ts",
+        content: "export const f = 1;\n",
+      })),
+      reviewerRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      resolveRunContext: () => runContext(repoPath),
+    });
+
+    const child = await runners.coder("g-failed-command-unknown-safety");
+    const childWt = worktreeOf(harnessRoot, child.runId);
+    expect(existsSync(join(childWt, "apps/user/src/carry.ts"))).toBe(false);
+    expect(readFileSync(join(childWt, "apps/user/src/fresh.ts"), "utf8")).toBe(
+      "export const f = 1;\n",
+    );
     const events = readFileSync(
       join(harnessRoot, "runs", child.runId, "events.jsonl"),
       "utf8",
