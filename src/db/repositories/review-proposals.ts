@@ -179,6 +179,34 @@ export class ReviewProposalRepository {
     return row === undefined ? null : toReviewProposalRow(row);
   }
 
+  supersedeActiveForReviewers(input: {
+    runId: string;
+    reviewerIds: readonly string[];
+    supersededAt: string;
+  }): number {
+    if (input.reviewerIds.length === 0) return 0;
+    const stmt = this.db.prepare(
+      `UPDATE review_proposals
+          SET superseded_at = ?, lifecycle_status = 'superseded'
+        WHERE run_id = ?
+          AND reviewer = ?
+          AND superseded_at IS NULL
+          AND processed_at IS NULL`,
+    );
+    const tx = this.db.transaction(() => {
+      let changed = 0;
+      for (const reviewerId of input.reviewerIds) {
+        changed += stmt.run(
+          input.supersededAt,
+          input.runId,
+          reviewerId,
+        ).changes;
+      }
+      return changed;
+    });
+    return tx.immediate();
+  }
+
   /**
    * Return the most recent **processed** proposal for `runId` so callers
    * can detect a crash-survived idempotent state. Used by `review

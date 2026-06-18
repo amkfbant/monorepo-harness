@@ -744,6 +744,19 @@ self-reported `requiredChanges`. If the active consensus row cannot be parsed,
 does not identify a trace proposal, or references a missing proposal, review
 import fails closed instead of falling back to the latest processed participant
 proposal.
+For frozen consensus runs (`reviewer_ids` present in the run's review-rule
+snapshot), the hitch review runner dispatches the frozen reviewer set
+sequentially and then processes the aggregate once. The runner's reported
+`decision` is the processed aggregate status, not the final individual reviewer
+verdict. Clean reviewer failures (timeout / non-zero / invalid output) are
+treated as non-participants for that cycle; artifact tamper or unclassified
+reviewer failures still fail closed. If every frozen reviewer fails cleanly and
+no active proposal exists, the runner records a pending `review_consensus` row
+and a completed hitch review cycle, invokes consensus-stall evaluation, and
+returns `pending` instead of propagating the no-active-proposals gate error.
+This pending-cycle exception is limited to frozen dispatch cycles with clean
+reviewer failures; non-frozen consensus runs still surface `review process`
+pending gates as `ReviewGateError`.
 Generic reviewer advisories that only say tests/checks were not run, could not
 be run in the review environment, that command logs/output are missing, or that
 observed command/test logs passed successfully are not imported as hitch

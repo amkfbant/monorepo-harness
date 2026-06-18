@@ -483,4 +483,96 @@ describe("ReviewProposalRepository", () => {
     ).toThrow(/UNIQUE/);
     db.close();
   });
+
+  describe("supersedeActiveForReviewers (facet6 anti-stale)", () => {
+    it("supersedes only the active, unprocessed proposals of the named frozen reviewers", () => {
+      const db = freshDb();
+      const repo = new ReviewProposalRepository(db);
+      // alice + bob each have a STALE active proposal from a prior cycle.
+      const alice = repo.insertProposal(
+        baseProposal({ reviewer: "alice", decision: "approved" }),
+      );
+      const bob = repo.insertProposal(
+        baseProposal({ reviewer: "bob", decision: "approved" }),
+      );
+      // carol is NOT in the frozen set passed below — she must be untouched.
+      const carol = repo.insertProposal(
+        baseProposal({ reviewer: "carol", decision: "approved" }),
+      );
+
+      const changed = repo.supersedeActiveForReviewers({
+        runId: RUN_ID,
+        reviewerIds: ["alice", "bob"],
+        supersededAt: "2026-05-23T12:00:00Z",
+      });
+      expect(changed).toBe(2);
+
+      const rows = repo.listForRun(RUN_ID);
+      const byReviewer = new Map(rows.map((r) => [r.reviewer, r]));
+      // alice + bob stale rows are now superseded (will NOT count toward a
+      // fresh cycle's quorum); carol's row is untouched.
+      expect(byReviewer.get("alice")?.supersededAt).toBe("2026-05-23T12:00:00Z");
+      expect(byReviewer.get("bob")?.supersededAt).toBe("2026-05-23T12:00:00Z");
+      expect(byReviewer.get("carol")?.supersededAt).toBeNull();
+      // the supersede also bumps lifecycle_status so list/vacuum consumers
+      // agree it is no longer active.
+      const lifecycle = (reviewer: string) =>
+        (
+          db
+            .prepare(
+              `SELECT lifecycle_status FROM review_proposals
+                WHERE run_id = ? AND reviewer = ?`,
+            )
+            .get(RUN_ID, reviewer) as { lifecycle_status: string }
+        ).lifecycle_status;
+      expect(lifecycle("alice")).toBe("superseded");
+      expect(lifecycle("carol")).not.toBe("superseded");
+      void alice;
+      void bob;
+      void carol;
+      db.close();
+    });
+
+    it("never re-supersedes an already-processed proposal (WHERE processed_at IS NULL)", () => {
+      const db = freshDb();
+      const repo = new ReviewProposalRepository(db);
+      const alice = repo.insertProposal(
+        baseProposal({ reviewer: "alice", decision: "approved" }),
+      );
+      // alice's proposal was already processed in a completed cycle.
+      expect(
+        repo.markProcessed(alice.proposalId, RUN_ID, "2026-05-23T11:00:00Z"),
+      ).toBe(true);
+
+      const changed = repo.supersedeActiveForReviewers({
+        runId: RUN_ID,
+        reviewerIds: ["alice"],
+        supersededAt: "2026-05-23T12:00:00Z",
+      });
+      // already processed → not eligible for supersede; left as-is.
+      expect(changed).toBe(0);
+
+      const row = repo
+        .listForRun(RUN_ID)
+        .find((r) => r.proposalId === alice.proposalId);
+      expect(row?.supersededAt).toBeNull();
+      expect(row?.processedAt).toBe("2026-05-23T11:00:00Z");
+      db.close();
+    });
+
+    it("is a no-op for an empty reviewer set", () => {
+      const db = freshDb();
+      const repo = new ReviewProposalRepository(db);
+      repo.insertProposal(baseProposal({ reviewer: "alice" }));
+      expect(
+        repo.supersedeActiveForReviewers({
+          runId: RUN_ID,
+          reviewerIds: [],
+          supersededAt: "2026-05-23T12:00:00Z",
+        }),
+      ).toBe(0);
+      expect(repo.listForRun(RUN_ID)[0]?.supersededAt).toBeNull();
+      db.close();
+    });
+  });
 });

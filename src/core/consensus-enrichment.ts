@@ -19,10 +19,18 @@ import type { EnrichedProposal } from "./review-consensus.js";
 export function activeProposalRows(
   proposalRepo: ReviewProposalRepository,
   runId: string,
+  opts: { reviewerIds?: readonly string[] } = {},
 ): ReviewProposalRow[] {
+  const reviewerIds =
+    opts.reviewerIds === undefined ? null : new Set(opts.reviewerIds);
   return proposalRepo
     .listForRun(runId)
-    .filter((p) => p.supersededAt === null && p.processedAt === null)
+    .filter(
+      (p) =>
+        p.supersededAt === null &&
+        p.processedAt === null &&
+        (reviewerIds === null || reviewerIds.has(p.reviewer)),
+    )
     .sort(compareConsensusProposalRows);
 }
 
@@ -64,6 +72,7 @@ export function enrichActiveProposals(
   proposalRepo: ReviewProposalRepository,
   reviewerRepo: ReviewerRepository,
   runId: string,
+  opts: { reviewerIds?: readonly string[] } = {},
 ): EnrichedProposal[] {
-  return enrichRows(activeProposalRows(proposalRepo, runId), reviewerRepo);
+  return enrichRows(activeProposalRows(proposalRepo, runId, opts), reviewerRepo);
 }

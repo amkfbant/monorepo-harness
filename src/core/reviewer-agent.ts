@@ -37,7 +37,13 @@ import {
 } from "../db/repositories/reviewers.js";
 import { evaluateConsensus } from "./review-consensus.js";
 import { enrichActiveProposals } from "./consensus-enrichment.js";
-import { DEFAULT_REVIEW_RULE, ruleSha256, type ReviewRule } from "./review-rule.js";
+import {
+  DEFAULT_REVIEW_RULE,
+  frozenReviewerIdsForRule,
+  parseReviewRuleSnapshot,
+  ruleSha256,
+  type ReviewRule,
+} from "./review-rule.js";
 import type Database from "better-sqlite3";
 import { fileExportEnabled } from "../config/export-mode.js";
 import { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
@@ -730,6 +736,24 @@ export async function runReviewerAgent(
         },
       );
     }
+    // Defense-in-depth (#132 / lease-loss symmetry): an aborted codex run
+    // (course lease loss → SIGKILL → aborted/exit -1) carries a DISTINCT gate
+    // code that is NOT a CLEAN_REVIEWER_FAILURE_CODE. This is checked BEFORE the
+    // generic non-zero-exit gate so an abort is never collapsed into the clean
+    // `reviewer_codex_nonzero_exit` class (which the frozen-consensus loop would
+    // otherwise demote to a pending consensus under a lost lease). The primary
+    // lease-loss rethrow lives in the dispatch loop (deps.signal / transient
+    // cause); this code is the structural backstop.
+    if (codexResult.aborted === true) {
+      throw new ReviewerAgentGateError(
+        `reviewer codex aborted for ${inputs.runId} (lease loss / interrupted); see ${stderrPath}`,
+        {
+          sanitizedReason: sanitizeGateReason({
+            code: "reviewer_codex_aborted",
+          }),
+        },
+      );
+    }
     if (codexResult.exitCode !== 0) {
       throw new ReviewerAgentGateError(
         `reviewer codex exited ${codexResult.exitCode} for ${inputs.runId}; see ${stderrPath}`,
@@ -901,6 +925,14 @@ export async function runReviewerAgent(
  * Phase 2: re-evaluate consensus after a `review auto` proposal insert.
  * No-op for latest-proposal mode. Best-effort: a recording failure must not
  * unwind the just-inserted proposal (the verdict is already persisted).
+ *
+ * facet4 (fail-closed cross-ref): this re-evaluation row is advisory only.
+ * Promotion is NEVER driven from here — `processReviewDecision`
+ * (`processConsensusModePath` in review-processor.ts) independently and
+ * fail-closed re-evaluates the frozen-set proposals at promote time. So a lost
+ * / stale re-eval row here can only leave the visible consensus snapshot
+ * momentarily behind; it can never produce a fail-open promotion, because the
+ * gate that actually promotes recomputes consensus from scratch.
  */
 function recordConsensusReEvaluation(
   db: Database.Database,
@@ -921,13 +953,19 @@ function recordConsensusReEvaluation(
       const rule: ReviewRule =
         snapshot === null
           ? DEFAULT_REVIEW_RULE
-          : (JSON.parse(snapshot.ruleJson) as ReviewRule);
+          : parseReviewRuleSnapshot(snapshot.ruleJson);
       if (rule.mode !== "consensus") return;
       const ruleSha = snapshot?.sourceSha256 ?? ruleSha256(rule);
+      const frozenReviewerIds = frozenReviewerIdsForRule(rule);
       const proposals = enrichActiveProposals(
         new ReviewProposalRepository(db),
         new ReviewerRepository(db),
         runId,
+        {
+          ...(frozenReviewerIds.length > 0
+            ? { reviewerIds: frozenReviewerIds }
+            : {}),
+        },
       );
       const result = evaluateConsensus({
         rule,

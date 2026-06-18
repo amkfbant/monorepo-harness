@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import type { ProfileReviewRule } from "../project/schema.js";
+import {
+  assertPathSafeReviewerId,
+  InvalidReviewerIdError,
+} from "../db/repositories/reviewers.js";
 
 /**
  * Review rule (Phase 11-3).
@@ -75,10 +79,30 @@ export interface ReviewRuleResolution {
   ruleSha256: string;
 }
 
+export interface ReviewRuleDispatchRequirement {
+  group: string;
+  requiredReviewers: number;
+  reviewerIds: string[];
+}
+
 export class ReviewRuleCompileError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ReviewRuleCompileError";
+  }
+}
+
+/**
+ * Raised when a *persisted* `review_rules` snapshot fails to parse or fails
+ * structural validation. Extends {@link ReviewRuleCompileError} so existing
+ * fail-closed catch sites that trap the compile error family also trap a
+ * tampered/corrupt snapshot — callers must never silently downgrade to a
+ * loose default when a snapshot is malformed.
+ */
+export class ReviewRuleSnapshotError extends ReviewRuleCompileError {
+  constructor(message: string) {
+    super(`invalid review rule snapshot: ${message}`);
+    this.name = "ReviewRuleSnapshotError";
   }
 }
 
@@ -159,40 +183,6 @@ export function compileProfileReviewRule(profile: {
       req.max_reviewers,
       `${path}.max_reviewers`,
     );
-    const effectiveMaxReviewers = reqMaxReviewers ?? maxReviewers;
-    if (
-      reviewerIds !== undefined &&
-      effectiveMaxReviewers !== undefined &&
-      reviewerIds.length > effectiveMaxReviewers
-    ) {
-      throw new ReviewRuleCompileError(
-        `${path}.reviewer_ids has ${reviewerIds.length} entries, exceeding max_reviewers=${effectiveMaxReviewers}`,
-      );
-    }
-
-    const requiredParticipants = Math.max(
-      minApprovals,
-      quorumMinParticipants ?? 1,
-    );
-    const multiReviewerRequired =
-      minApprovals > 1 || (quorumMinParticipants ?? 1) > 1;
-    if (mode === "consensus" && multiReviewerRequired) {
-      if (reviewerIds === undefined) {
-        throw new ReviewRuleCompileError(
-          `${path}.reviewer_ids is required when min_approvals or quorum.min_participants requires multiple reviewers`,
-        );
-      }
-      if (lensAxes === undefined) {
-        throw new ReviewRuleCompileError(
-          `${path}.lens_axes is required when min_approvals or quorum.min_participants requires multiple reviewers`,
-        );
-      }
-    }
-    if (reviewerIds !== undefined && reviewerIds.length < requiredParticipants) {
-      throw new ReviewRuleCompileError(
-        `${path}.reviewer_ids has ${reviewerIds.length} distinct entries, but ${requiredParticipants} reviewer(s) are required`,
-      );
-    }
 
     return {
       group: nonEmpty(req.group, `${path}.group`),
@@ -209,23 +199,8 @@ export function compileProfileReviewRule(profile: {
       ...(reqMaxReviewers !== undefined ? { maxReviewers: reqMaxReviewers } : {}),
     };
   });
-  if (mode === "consensus" && requirements.length === 0) {
-    throw new ReviewRuleCompileError(
-      "consensus mode requires at least one requirement",
-    );
-  }
-  // fail-closed: requirements are only evaluated in consensus mode. A profile
-  // that declares requirements but leaves mode at its latest-proposal default
-  // would silently drop the intended quorum/multi-reviewer gate (codex SP-10).
-  if (mode !== "consensus" && requirements.length > 0) {
-    throw new ReviewRuleCompileError(
-      `review.requirements is set but review.mode is "${mode}"; requirements ` +
-        `are only evaluated in consensus mode — set mode: consensus explicitly ` +
-        `(a missing mode defaults to latest-proposal and would drop the gate)`,
-    );
-  }
 
-  return {
+  const rule: ReviewRule = {
     mode,
     ...(maxReviewers !== undefined ? { maxReviewers } : {}),
     requirements,
@@ -246,6 +221,490 @@ export function compileProfileReviewRule(profile: {
         : {}),
     },
   };
+
+  // Structural validation (snake_case → camelCase, positive-int, etc.) happens
+  // above as each field is parsed. The value-vs-value *semantic* invariants are
+  // factored into a single shared assertion so the snapshot read-back boundary
+  // (parseReviewRuleSnapshot) enforces the same set, never drifting.
+  assertCompiledReviewRuleInvariants(rule);
+  return rule;
+}
+
+/**
+ * Options for {@link assertCompiledReviewRuleInvariants}.
+ */
+export interface AssertReviewRuleInvariantsOptions {
+  /**
+   * Require an explicit frozen reviewer set (`reviewerIds` + `lensAxes`) for any
+   * consensus requirement that needs multiple reviewers.
+   *
+   * `true` (compile default): a profile authoring a multi-reviewer requirement
+   * must declare a frozen reviewer set and its lenses — the stricter authoring
+   * policy enforced by {@link compileProfileReviewRule}.
+   *
+   * `false` (snapshot read-back): a *non-frozen* consensus requirement — a
+   * group-membership quorum with no `reviewerIds` — is a first-class runtime
+   * shape (reviewers resolve from the reviewer group at dispatch time). The
+   * read-back boundary must accept it instead of fail-closed rejecting a
+   * legitimate persisted snapshot. Every other invariant (the fail-open shape
+   * gates and the unsatisfiable / over-cap frozen-set bounds) still applies.
+   */
+  requireFrozenReviewerSet?: boolean;
+}
+
+/**
+ * Assert the *semantic* (value-vs-value) invariants of an already-compiled
+ * {@link ReviewRule} — i.e. consistency checks between fields after defaults
+ * are applied and snake_case has been mapped to camelCase. Structural
+ * validation (types, positive integers, non-empty/path-safe ids) is the
+ * caller's responsibility and is performed while the rule is assembled.
+ *
+ * This is the single source of truth shared by {@link compileProfileReviewRule}
+ * (which builds a rule from a profile) and {@link parseReviewRuleSnapshot}
+ * (which reads a persisted snapshot back). Centralising the checks here removes
+ * the whack-a-mole drift where one boundary mirrored an invariant and the other
+ * silently did not.
+ *
+ * The two callers share every fail-open / unsatisfiable invariant: the
+ * consensus/empty and latest-proposal/requirements shape gates, the
+ * frozen/non-frozen requirement homogeneity gate (no mixing — see below), the
+ * over-`max_reviewers` frozen-set bound, and the frozen-set-too-small-for-the
+ * gate bound. They differ on exactly one axis — `requireFrozenReviewerSet`
+ * (see {@link AssertReviewRuleInvariantsOptions}) — because a *non-frozen*
+ * group-membership consensus requirement is invalid for profile authoring but
+ * valid at runtime, so the snapshot boundary must not reject it. A *mix* of
+ * frozen and non-frozen requirements is rejected on BOTH boundaries: the
+ * consensus gate filters proposals by the union of all frozen reviewer_ids, so
+ * a mix silently drops a non-frozen requirement's blocking verdict (fail-open).
+ *
+ * Throws {@link ReviewRuleCompileError} (the compile-side error type) on the
+ * first violation; the snapshot boundary normalises this to
+ * {@link ReviewRuleSnapshotError}. Error messages intentionally reuse the
+ * profile-source (`review.requirements.<i>.<snake_case>`) wording so existing
+ * compile diagnostics are preserved byte-for-byte.
+ */
+export function assertCompiledReviewRuleInvariants(
+  rule: ReviewRule,
+  opts: AssertReviewRuleInvariantsOptions = {},
+): void {
+  const requireFrozenReviewerSet = opts.requireFrozenReviewerSet ?? true;
+
+  if (rule.mode === "consensus" && rule.requirements.length === 0) {
+    throw new ReviewRuleCompileError(
+      "consensus mode requires at least one requirement",
+    );
+  }
+  // fail-closed: requirements are only evaluated in consensus mode. A rule that
+  // declares requirements but leaves mode at its latest-proposal default would
+  // silently drop the intended quorum/multi-reviewer gate (codex SP-10).
+  if (rule.mode !== "consensus" && rule.requirements.length > 0) {
+    throw new ReviewRuleCompileError(
+      `review.requirements is set but review.mode is "${rule.mode}"; requirements ` +
+        `are only evaluated in consensus mode — set mode: consensus explicitly ` +
+        `(a missing mode defaults to latest-proposal and would drop the gate)`,
+    );
+  }
+
+  // fail-closed (SP-12 fail-open fix): a consensus rule must NOT mix frozen
+  // requirements (declared `reviewerIds`) with non-frozen ones (group-membership,
+  // no `reviewerIds`). The promote gate filters active proposals by the *union*
+  // of every frozen `reviewerIds` (`frozenReviewerIdsForRule`); with a mix, a
+  // blocking proposal from a non-frozen requirement's group member — who is not
+  // in that union — is silently dropped by the global filter, so the frozen
+  // approvals alone can reach `approved`. Frozen-only and non-frozen-only rules
+  // are each internally coherent (one global filter for the whole rule, or no
+  // filter at all); a mix has no coherent dispatch/eval model. Reject it on both
+  // boundaries — compile (authoring) and snapshot read-back (persisted) — since
+  // a tampered/legacy snapshot in this shape is just as unsafe.
+  if (rule.mode === "consensus" && rule.requirements.length > 0) {
+    const frozenCount = rule.requirements.filter(
+      (req) => req.reviewerIds !== undefined && req.reviewerIds.length > 0,
+    ).length;
+    if (frozenCount > 0 && frozenCount < rule.requirements.length) {
+      throw new ReviewRuleCompileError(
+        `review.requirements mixes frozen and non-frozen requirements; all ` +
+          `requirements must declare reviewer_ids (frozen) or none must — a mix ` +
+          `would drop a non-frozen requirement's blocking verdict at the consensus ` +
+          `gate (the gate filters proposals by the union of frozen reviewer_ids)`,
+      );
+    }
+  }
+
+  rule.requirements.forEach((req, index) => {
+    const path = `review.requirements.${index}`;
+    const reviewerIds = req.reviewerIds;
+    const minApprovals = req.minApprovals;
+    const quorumMinParticipants = req.quorum?.minParticipants;
+    const effectiveMaxReviewers = req.maxReviewers ?? rule.maxReviewers;
+
+    if (
+      reviewerIds !== undefined &&
+      effectiveMaxReviewers !== undefined &&
+      reviewerIds.length > effectiveMaxReviewers
+    ) {
+      throw new ReviewRuleCompileError(
+        `${path}.reviewer_ids has ${reviewerIds.length} entries, exceeding max_reviewers=${effectiveMaxReviewers}`,
+      );
+    }
+
+    const requiredParticipants = Math.max(
+      minApprovals,
+      quorumMinParticipants ?? 1,
+    );
+    const multiReviewerRequired =
+      minApprovals > 1 || (quorumMinParticipants ?? 1) > 1;
+    // Authoring policy only: a non-frozen group-membership quorum (reviewerIds
+    // omitted) is valid at runtime, so the snapshot boundary skips this gate.
+    if (
+      requireFrozenReviewerSet &&
+      rule.mode === "consensus" &&
+      multiReviewerRequired
+    ) {
+      if (reviewerIds === undefined) {
+        throw new ReviewRuleCompileError(
+          `${path}.reviewer_ids is required when min_approvals or quorum.min_participants requires multiple reviewers`,
+        );
+      }
+      if (req.lensAxes === undefined) {
+        throw new ReviewRuleCompileError(
+          `${path}.lens_axes is required when min_approvals or quorum.min_participants requires multiple reviewers`,
+        );
+      }
+    }
+    // Whenever a frozen set IS declared, it must be large enough to satisfy the
+    // gate — applies to both boundaries (an explicit set this small can never
+    // reach quorum/approvals).
+    if (reviewerIds !== undefined && reviewerIds.length < requiredParticipants) {
+      throw new ReviewRuleCompileError(
+        `${path}.reviewer_ids has ${reviewerIds.length} distinct entries, but ${requiredParticipants} reviewer(s) are required`,
+      );
+    }
+  });
+}
+
+/**
+ * Parse + structurally validate a persisted `review_rules` snapshot JSON
+ * string into a runtime {@link ReviewRule}.
+ *
+ * This is the single fail-closed boundary for *reading back* a snapshot at
+ * runtime — every consumer that loads `review_rules.rule_json` must route
+ * through here instead of an unchecked `JSON.parse(...) as ReviewRule`. A
+ * tampered/corrupt snapshot (bad JSON, missing/unknown `mode`, a consensus
+ * rule with no `requirements`, or any unsafe reviewer id) throws
+ * {@link ReviewRuleSnapshotError} so callers can fail the run instead of
+ * silently approving with a degraded gate.
+ *
+ * It shares the structural invariants enforced by
+ * {@link compileProfileReviewRule}: known mode enum, non-empty consensus
+ * requirements, positive `minApprovals`, supported blocking decisions, and
+ * non-empty / non-duplicate / path-safe reviewer ids.
+ */
+export function parseReviewRuleSnapshot(ruleJson: string): ReviewRule {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(ruleJson);
+  } catch (e) {
+    throw new ReviewRuleSnapshotError(
+      `not valid JSON (${e instanceof Error ? e.message : String(e)})`,
+    );
+  }
+  if (!isPlainObject(raw)) {
+    throw new ReviewRuleSnapshotError(
+      `top-level value must be an object, got ${describeJsonType(raw)}`,
+    );
+  }
+
+  const mode = raw.mode;
+  if (mode !== "consensus" && mode !== "latest-proposal") {
+    throw new ReviewRuleSnapshotError(
+      `mode must be "consensus" or "latest-proposal", got ${JSON.stringify(mode)}`,
+    );
+  }
+
+  if (!Array.isArray(raw.requirements)) {
+    throw new ReviewRuleSnapshotError("requirements must be an array");
+  }
+  const requirements = raw.requirements.map((req, index) =>
+    validateSnapshotRequirement(req, `requirements.${index}`),
+  );
+
+  const overrides = validateSnapshotOverrides(raw.overrides);
+  const staleProposal = validateSnapshotStaleProposal(raw.staleProposal);
+  const maxReviewers = validateSnapshotPositiveInt(
+    raw.maxReviewers,
+    "maxReviewers",
+  );
+
+  const rule: ReviewRule = {
+    mode,
+    ...(maxReviewers !== undefined ? { maxReviewers } : {}),
+    requirements,
+    overrides,
+    staleProposal,
+  };
+
+  // The structurally-valid snapshot must still satisfy the *semantic* fail-open
+  // / unsatisfiable invariants that compileProfileReviewRule enforces — the
+  // consensus/empty and latest-proposal/requirements shape gates, the
+  // over-max_reviewers bound, and the frozen-set-too-small bound. Routing
+  // through the shared assertion keeps the read-back boundary from drifting.
+  // `requireFrozenReviewerSet: false` because a non-frozen group-membership
+  // quorum (no reviewerIds) is a legitimate runtime shape — that authoring-only
+  // requirement must not fail-closed reject a valid persisted snapshot.
+  // Normalise the compile-side error to the snapshot type so callers fail
+  // closed via the snapshot family.
+  try {
+    assertCompiledReviewRuleInvariants(rule, { requireFrozenReviewerSet: false });
+  } catch (e) {
+    if (
+      e instanceof ReviewRuleCompileError &&
+      !(e instanceof ReviewRuleSnapshotError)
+    ) {
+      throw new ReviewRuleSnapshotError(e.message);
+    }
+    throw e;
+  }
+  return rule;
+}
+
+function validateSnapshotRequirement(
+  req: unknown,
+  path: string,
+): ReviewRuleRequirement {
+  if (!isPlainObject(req)) {
+    throw new ReviewRuleSnapshotError(`${path} must be an object`);
+  }
+  const group = req.group;
+  if (typeof group !== "string" || group.trim() === "") {
+    throw new ReviewRuleSnapshotError(`${path}.group must be a non-empty string`);
+  }
+  const minApprovals = validateSnapshotRequiredPositiveInt(
+    req.minApprovals,
+    `${path}.minApprovals`,
+  );
+  const blockingDecisions = validateSnapshotBlockingDecisions(
+    req.blockingDecisions,
+    `${path}.blockingDecisions`,
+  );
+  const quorum = validateSnapshotQuorum(req.quorum, `${path}.quorum`);
+  const reviewerIds =
+    req.reviewerIds === undefined
+      ? undefined
+      : validateSnapshotReviewerIds(req.reviewerIds, `${path}.reviewerIds`);
+  const lensAxes =
+    req.lensAxes === undefined
+      ? undefined
+      : validateSnapshotStringList(req.lensAxes, `${path}.lensAxes`);
+  const reqMaxReviewers = validateSnapshotPositiveInt(
+    req.maxReviewers,
+    `${path}.maxReviewers`,
+  );
+  return {
+    group,
+    minApprovals,
+    blockingDecisions,
+    ...(quorum !== undefined ? { quorum } : {}),
+    ...(reviewerIds !== undefined ? { reviewerIds } : {}),
+    ...(lensAxes !== undefined ? { lensAxes } : {}),
+    ...(reqMaxReviewers !== undefined ? { maxReviewers: reqMaxReviewers } : {}),
+  };
+}
+
+function validateSnapshotQuorum(
+  value: unknown,
+  path: string,
+): ReviewRuleQuorum | undefined {
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) {
+    throw new ReviewRuleSnapshotError(`${path} must be an object`);
+  }
+  const minParticipants = validateSnapshotPositiveInt(
+    value.minParticipants,
+    `${path}.minParticipants`,
+  );
+  const groupSize = validateSnapshotPositiveInt(
+    value.groupSize,
+    `${path}.groupSize`,
+  );
+  const minParticipationRate = value.minParticipationRate;
+  if (
+    minParticipationRate !== undefined &&
+    (typeof minParticipationRate !== "number" ||
+      !Number.isFinite(minParticipationRate) ||
+      minParticipationRate < 0 ||
+      minParticipationRate > 1)
+  ) {
+    throw new ReviewRuleSnapshotError(
+      `${path}.minParticipationRate must be a number in [0, 1]`,
+    );
+  }
+  return {
+    ...(minParticipants !== undefined ? { minParticipants } : {}),
+    ...(minParticipationRate !== undefined ? { minParticipationRate } : {}),
+    ...(groupSize !== undefined ? { groupSize } : {}),
+  };
+}
+
+function validateSnapshotOverrides(value: unknown): ReviewRuleOverrides {
+  if (!isPlainObject(value)) {
+    throw new ReviewRuleSnapshotError("overrides must be an object");
+  }
+  const allowedReviewers = validateSnapshotReviewerIdArrayMaybeEmpty(
+    value.allowedReviewers,
+    "overrides.allowedReviewers",
+  );
+  if (typeof value.requireReason !== "boolean") {
+    throw new ReviewRuleSnapshotError(
+      "overrides.requireReason must be a boolean",
+    );
+  }
+  return { allowedReviewers, requireReason: value.requireReason };
+}
+
+function validateSnapshotStaleProposal(
+  value: unknown,
+): ReviewRuleStaleProposal {
+  if (!isPlainObject(value)) {
+    throw new ReviewRuleSnapshotError("staleProposal must be an object");
+  }
+  if (typeof value.rejectSuperseded !== "boolean") {
+    throw new ReviewRuleSnapshotError(
+      "staleProposal.rejectSuperseded must be a boolean",
+    );
+  }
+  // maxAgeHours mirrors the compile schema (`z.number().positive()`), which
+  // permits a positive *float* (e.g. 0.5h). A positive-INTEGER check here was
+  // stricter than compile and would fail-closed reject a legitimate compiled
+  // snapshot — accept any positive finite number instead.
+  const maxAgeHours = validateSnapshotPositiveNumber(
+    value.maxAgeHours,
+    "staleProposal.maxAgeHours",
+  );
+  return {
+    rejectSuperseded: value.rejectSuperseded,
+    ...(maxAgeHours !== undefined ? { maxAgeHours } : {}),
+  };
+}
+
+/** Mirrors compile's `z.number().positive()` — any positive finite number. */
+function validateSnapshotPositiveNumber(
+  value: unknown,
+  path: string,
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new ReviewRuleSnapshotError(`${path} must be a positive number`);
+  }
+  return value;
+}
+
+function validateSnapshotReviewerIds(value: unknown, path: string): string[] {
+  const ids = validateSnapshotStringList(value, path);
+  assertPathSafeReviewerIds(ids, path);
+  return ids;
+}
+
+/** allowedReviewers may legitimately be empty, but every entry stays path-safe. */
+function validateSnapshotReviewerIdArrayMaybeEmpty(
+  value: unknown,
+  path: string,
+): string[] {
+  if (!Array.isArray(value)) {
+    throw new ReviewRuleSnapshotError(`${path} must be an array`);
+  }
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new ReviewRuleSnapshotError(`${path} must contain non-empty strings`);
+    }
+    if (seen.has(entry)) {
+      throw new ReviewRuleSnapshotError(`${path} contains duplicate entry: ${entry}`);
+    }
+    seen.add(entry);
+  }
+  assertPathSafeReviewerIds(value as string[], path);
+  return value as string[];
+}
+
+function assertPathSafeReviewerIds(ids: readonly string[], path: string): void {
+  for (const id of ids) {
+    try {
+      assertPathSafeReviewerId(id);
+    } catch (e) {
+      if (e instanceof InvalidReviewerIdError) {
+        throw new ReviewRuleSnapshotError(
+          `${path} contains a non-path-safe reviewer id: ${JSON.stringify(id)}`,
+        );
+      }
+      throw e;
+    }
+  }
+}
+
+function validateSnapshotStringList(value: unknown, path: string): string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new ReviewRuleSnapshotError(`${path} must be a non-empty array`);
+  }
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new ReviewRuleSnapshotError(`${path} must contain non-empty strings`);
+    }
+    if (seen.has(entry)) {
+      throw new ReviewRuleSnapshotError(`${path} contains duplicate entry: ${entry}`);
+    }
+    seen.add(entry);
+  }
+  return value as string[];
+}
+
+function validateSnapshotBlockingDecisions(
+  value: unknown,
+  path: string,
+): Array<"changes_requested" | "rejected"> {
+  if (!Array.isArray(value)) {
+    throw new ReviewRuleSnapshotError(`${path} must be an array`);
+  }
+  for (const entry of value) {
+    if (entry !== "changes_requested" && entry !== "rejected") {
+      throw new ReviewRuleSnapshotError(
+        `${path} contains unsupported decision: ${JSON.stringify(entry)}`,
+      );
+    }
+  }
+  return value as Array<"changes_requested" | "rejected">;
+}
+
+function validateSnapshotRequiredPositiveInt(
+  value: unknown,
+  path: string,
+): number {
+  const parsed = validateSnapshotPositiveInt(value, path);
+  if (parsed === undefined) {
+    throw new ReviewRuleSnapshotError(`${path} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function validateSnapshotPositiveInt(
+  value: unknown,
+  path: string,
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new ReviewRuleSnapshotError(`${path} must be a positive integer`);
+  }
+  return value;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function describeJsonType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
 }
 
 /**
@@ -272,6 +731,48 @@ export function resolveEffectiveRule(scope: {
       ? compileProfileReviewRule(scope.profile as { review: ProfileReviewRule })
       : DEFAULT_REVIEW_RULE;
   return { rule, source, ruleSha256: ruleSha256(rule) };
+}
+
+export function requiredReviewersForRequirement(
+  requirement: ReviewRuleRequirement,
+): number {
+  return Math.max(
+    requirement.minApprovals,
+    requirement.quorum?.minParticipants ?? 1,
+  );
+}
+
+export function frozenReviewerIdsForRule(rule: ReviewRule): string[] {
+  const reviewerIds = new Set<string>();
+  for (const requirement of rule.requirements) {
+    for (const reviewerId of requirement.reviewerIds ?? []) {
+      reviewerIds.add(reviewerId);
+    }
+  }
+  return [...reviewerIds].sort(compareStrings);
+}
+
+export function dispatchRequirementsForRule(
+  rule: ReviewRule,
+): ReviewRuleDispatchRequirement[] {
+  if (rule.mode !== "consensus") return [];
+  return rule.requirements
+    .filter(
+      (requirement) =>
+        requirement.reviewerIds !== undefined &&
+        requirement.reviewerIds.length > 0,
+    )
+    .map((requirement) => ({
+      group: requirement.group,
+      requiredReviewers: requiredReviewersForRequirement(requirement),
+      reviewerIds: [...(requirement.reviewerIds ?? [])].sort(compareStrings),
+    }));
+}
+
+function compareStrings(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
 }
 
 function validateRequiredPositiveInt(
