@@ -3,6 +3,7 @@ import {
   DEFAULT_HITCH_POLICY,
   HITCH_ATTEMPT_STATUSES,
   HITCH_ATTEMPT_TYPES,
+  HITCH_CLOSE_CONDITION_KINDS,
   HITCH_CLOSE_CHECK_STATUSES,
   HITCH_CONVERGENCE_DECISIONS,
   HITCH_CREATED_SOURCES,
@@ -47,15 +48,7 @@ export const HitchScopeSchema = z
 export const HitchCloseConditionSchema = z
   .object({
     id: z.string().min(1),
-    kind: z.enum([
-      "command",
-      "finding_policy",
-      "manual",
-      "operation_status",
-      "db_doctor",
-      "review_consensus",
-      "artifact_exists",
-    ]),
+    kind: z.enum(HITCH_CLOSE_CONDITION_KINDS),
     required: z.boolean().default(true),
     description: z.string().optional(),
     command: z.string().optional(),

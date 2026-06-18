@@ -188,14 +188,18 @@ export interface HitchScope {
   targetSummary?: string;
 }
 
+export const HITCH_CLOSE_CONDITION_KINDS = [
+  "command",
+  "finding_policy",
+  "manual",
+  "operation_status",
+  "db_doctor",
+  "review_consensus",
+  "artifact_exists",
+] as const;
+
 export type HitchCloseConditionKind =
-  | "command"
-  | "finding_policy"
-  | "manual"
-  | "operation_status"
-  | "db_doctor"
-  | "review_consensus"
-  | "artifact_exists";
+  (typeof HITCH_CLOSE_CONDITION_KINDS)[number];
 
 export interface HitchCloseCondition {
   id: string;
@@ -205,6 +209,29 @@ export interface HitchCloseCondition {
   command?: string;
   rule?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
+}
+
+export type HitchValidationIssueSeverity = "hard" | "advisory";
+
+export interface HitchValidationIssue {
+  severity: HitchValidationIssueSeverity;
+  code: string;
+  message: string;
+  path: string;
+  conditionId?: string;
+  conditionIndex?: number;
+  kind?: HitchCloseConditionKind;
+  category?: "auto-verify" | "external-evidence";
+}
+
+export class HitchValidationError extends Error {
+  constructor(
+    message: string,
+    public readonly issues: readonly HitchValidationIssue[],
+  ) {
+    super(message);
+    this.name = "HitchValidationError";
+  }
 }
 
 export interface HitchDivergencePolicy {

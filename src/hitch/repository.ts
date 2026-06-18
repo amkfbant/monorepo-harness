@@ -17,6 +17,10 @@ import {
   parseHitchScope,
 } from "./schemas.js";
 import {
+  closeConditionsLoosenGate,
+  isScopeWidening,
+} from "./spec-gates.js";
+import {
   DEFAULT_HITCH_POLICY,
   HARNESS_ORIGIN_FINDING_SOURCE_SET,
   HARNESS_ORIGIN_FINDING_SOURCES,
@@ -1946,104 +1950,6 @@ function assertConfigUpdateAllowed(session: HitchSession): void {
     `hitch ${session.hitchId} is ${session.status} and cannot be reopened; ` +
       "start a new hitch for config changes",
   );
-}
-
-function isScopeWidening(previous: HitchScope, next: HitchScope): boolean {
-  if (targetFilesWiden(previous.targetFiles, next.targetFiles)) return true;
-  if (arrayFieldWidens(previous.targetOperations, next.targetOperations)) {
-    return true;
-  }
-  if (
-    arrayFieldWidens(
-      previous.allowedFindingCategories,
-      next.allowedFindingCategories,
-    )
-  ) {
-    return true;
-  }
-  if (
-    excludedCategoriesWiden(
-      previous.excludedCategories,
-      next.excludedCategories,
-    )
-  ) {
-    return true;
-  }
-  return (previous.targetSummary ?? null) !== (next.targetSummary ?? null);
-}
-
-function arrayFieldWidens(
-  previous: readonly string[] | undefined,
-  next: readonly string[] | undefined,
-): boolean {
-  // `targetOperations` / `allowedFindingCategories` are positive in-scope
-  // matchers (classification.ts): the matcher set is what each field lists.
-  // Widening means the next set is not a subset of the previous one.
-  // - next undefined/empty → matcher set shrinks to ∅ → narrowing (or a no-op),
-  //   never widening (so notes-only edits that omit matchers are allowed).
-  // - next non-empty with previous undefined/empty → ∅ → non-empty is widening.
-  const nextArr = next ?? [];
-  if (nextArr.length === 0) return false;
-  const previousSet = new Set(previous ?? []);
-  return nextArr.some((value) => !previousSet.has(value));
-}
-
-function targetFilesWiden(
-  previous: readonly string[] | undefined,
-  next: readonly string[] | undefined,
-): boolean {
-  // `targetFiles` is not a pure positive matcher: when non-empty it also gates
-  // findings *outside* the patterns to out_of_scope (classification.ts). So its
-  // widening direction differs from the matcher fields:
-  // - both empty → no-op.
-  // - next empty while previous non-empty → the gate is removed; previously
-  //   out-of-scope files can now become in_scope → widening.
-  // - previous empty → next non-empty adds a gate (non-monotonic: gates out
-  //   some files but admits in-target ones) → conservatively widening.
-  // - both non-empty → only a strict subset (tightening the gate) is provably
-  //   non-widening; any added pattern widens the gate.
-  const prev = previous ?? [];
-  const nxt = next ?? [];
-  if (prev.length === 0 && nxt.length === 0) return false;
-  if (nxt.length === 0 || prev.length === 0) return true;
-  const previousSet = new Set(prev);
-  return nxt.some((value) => !previousSet.has(value));
-}
-
-function excludedCategoriesWiden(
-  previous: readonly string[] | undefined,
-  next: readonly string[] | undefined,
-): boolean {
-  if (previous === undefined) return false;
-  if (next === undefined) return true;
-  const nextSet = new Set(next);
-  return previous.some((value) => !nextSet.has(value));
-}
-
-function closeConditionsLoosenGate(
-  previous: readonly HitchCloseCondition[],
-  next: readonly HitchCloseCondition[],
-): boolean {
-  const nextById = new Map(next.map((condition) => [condition.id, condition]));
-  for (const condition of previous) {
-    if (!condition.required) continue;
-    const replacement = nextById.get(condition.id);
-    if (replacement === undefined) return true;
-    if (!replacement.required) return true;
-    if (conditionGateFingerprint(condition) !== conditionGateFingerprint(replacement)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function conditionGateFingerprint(condition: HitchCloseCondition): string {
-  return json({
-    kind: condition.kind,
-    command: condition.command ?? null,
-    rule: condition.rule ?? null,
-    metadata: condition.metadata ?? null,
-  });
 }
 
 function policyLoosensGate(previous: HitchPolicy, next: HitchPolicy): boolean {
