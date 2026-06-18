@@ -850,6 +850,26 @@ command checks using the existing close-condition machinery; it does not inject
 synthetic test gates and does not use reviewer self-report as state-transition
 evidence.
 
+SP-19 adds a pure spec-gate helper layer under `src/hitch/`:
+
+- `spec-gates.ts` exports the shared widening/loosening predicates used by hitch
+  config updates: `isScopeWidening` and `closeConditionsLoosenGate`. These are
+  pure helpers; the repository remains the writer that enforces them.
+- `gap-to-kind.ts` maps a gap metric to one close-condition kind without I/O. It
+  recognizes allowlisted command pass metrics, finding threshold metrics,
+  review approval, artifact existence, operator verification, external operation
+  status, and DB migration validity. Unmapped or ambiguous metrics return a
+  reject result; they never silently default to `manual`.
+- `spec-validation.ts` exports `validateCloseConditions`, a form/kind guard that
+  reports hard errors and advisory warnings. It validates duplicate ids,
+  `finding_policy.rule` keys, required `operation_status.metadata.operationId`, and
+  required `db_doctor` gates while the runner is not implemented. `command`
+  conditions are validated form-only (kind + syntax); allowed-command resolution
+  is deferred entirely to the close-check runner. Missing
+  external-evidence descriptions and missing `artifact_exists.metadata.path` are
+  advisory warnings. The validator does not decide close readiness; convergence
+  and close-check evaluation remain the only close-state authority.
+
 When a hitch review step is re-driven for a run whose **DB-canonical decision**
 (`review_decisions`, not any single participant proposal) is `approved`, AND a
 **completed** review cycle already exists for that run, the orchestrator
@@ -972,6 +992,9 @@ divergence; see REOPENABLE_STATUSES in the repository). Scope edits are fail-clo
 `--allow-scope-widen` is supplied; `notes` is the only non-semantic scope field.
 Close-condition or policy edits that remove required close evidence or relax
 `closeRequires` / `allowEmptyCloseConditions` require `--allow-gate-loosen`.
+The scope-widening and close-gate-loosening predicates are the shared pure
+helpers in `src/hitch/spec-gates.ts`, so hitch and future phase-spec gates use
+one behavior definition instead of mirrors.
 Each update writes an `updated` lifecycle event containing the changed fields and
 previous config snapshot.
 
