@@ -56,6 +56,8 @@ import {
   ReviewerRepository,
   DuplicateReviewerError,
   UnknownReviewerError,
+  InvalidReviewerMetadataError,
+  reviewerLensMetadata,
 } from "../db/repositories/reviewers.js";
 import {
   ReviewProposalRepository,
@@ -1474,8 +1476,10 @@ reviewersCmd
         return;
       }
       for (const r of rows) {
+        const lens = reviewerLensMetadata(r);
+        const lensPart = lens === null ? "" : `\tlens=${lens.lens}`;
         process.stdout.write(
-          `  ${r.reviewerId}\ttype=${r.reviewerType}\tgroup=${r.groupId ?? "-"}\ttrust=${r.trustLevel}\t"${r.displayName}"\n`,
+          `  ${r.reviewerId}\ttype=${r.reviewerType}\tgroup=${r.groupId ?? "-"}\ttrust=${r.trustLevel}${lensPart}\t"${r.displayName}"\n`,
         );
       }
     } finally {
@@ -1493,6 +1497,11 @@ reviewersCmd
     "--trust <level>",
     "advisory | normal | required | policy (default: normal)",
     "normal",
+  )
+  .option("--lens <axis>", "review lens axis for multi-lens consensus")
+  .option(
+    "--lens-prompt <text>",
+    "untrusted reviewer prompt guidance for the selected lens",
   )
   .action(async (reviewerId: string, raw: Record<string, unknown>) => {
     const paths = harnessPaths(getHarnessRoot());
@@ -1528,18 +1537,27 @@ reviewersCmd
     }
     const dbHandle = openManagedDb({ dbPath: paths.dbPath });
     try {
+      const metadata: Record<string, unknown> = {};
+      if (raw.lens !== undefined) metadata.lens = String(raw.lens);
+      if (raw.lensPrompt !== undefined) {
+        metadata.lens_prompt = String(raw.lensPrompt);
+      }
       const r = new ReviewerRepository(dbHandle.db).add({
         reviewerId,
         reviewerType: type,
         displayName: String(raw.displayName),
         ...(raw.group !== undefined ? { groupId: String(raw.group) } : {}),
         trustLevel: trust,
+        ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
       });
       process.stdout.write(
         `added reviewer ${r.reviewerId} (type=${r.reviewerType}, trust=${r.trustLevel})\n`,
       );
     } catch (e) {
-      if (e instanceof DuplicateReviewerError) {
+      if (
+        e instanceof DuplicateReviewerError ||
+        e instanceof InvalidReviewerMetadataError
+      ) {
         process.stderr.write(`harness error: ${(e as Error).message}\n`);
         process.exit(1);
       }

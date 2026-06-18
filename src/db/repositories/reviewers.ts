@@ -13,6 +13,19 @@ import type Database from "better-sqlite3";
 export type ReviewerType = "human" | "codex" | "external" | "system";
 export type TrustLevel = "advisory" | "normal" | "required" | "policy";
 
+export const BUILTIN_REVIEW_LENSES = [
+  "correctness",
+  "security",
+  "regression",
+  "efficacy",
+  "spec_compliance",
+] as const;
+
+export interface ReviewerLensMetadata {
+  lens: string;
+  lensPrompt?: string;
+}
+
 export interface ReviewerRow {
   reviewerId: string;
   reviewerType: ReviewerType;
@@ -52,12 +65,74 @@ export class InvalidReviewerIdError extends Error {
   }
 }
 
+export class InvalidReviewerMetadataError extends Error {
+  constructor(message: string) {
+    super(`invalid reviewer metadata: ${message}`);
+    this.name = "InvalidReviewerMetadataError";
+  }
+}
+
 const REVIEWER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 export function assertPathSafeReviewerId(reviewerId: string): void {
   if (!REVIEWER_ID_RE.test(reviewerId) || reviewerId.includes("..")) {
     throw new InvalidReviewerIdError(reviewerId);
   }
+}
+
+function assertPlainMetadata(value: unknown): asserts value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new InvalidReviewerMetadataError("metadata must be an object");
+  }
+}
+
+export function validateReviewerMetadata(
+  metadata: Record<string, unknown> = {},
+): Record<string, unknown> {
+  assertPlainMetadata(metadata);
+  const lens = metadata.lens;
+  const lensPrompt = metadata.lens_prompt;
+  if (lens === undefined) {
+    if (lensPrompt !== undefined) {
+      throw new InvalidReviewerMetadataError(
+        "lens_prompt requires a non-empty lens",
+      );
+    }
+    return metadata;
+  }
+  if (typeof lens !== "string" || lens.trim() === "") {
+    throw new InvalidReviewerMetadataError("lens must be a non-empty string");
+  }
+  if (lensPrompt !== undefined && typeof lensPrompt !== "string") {
+    throw new InvalidReviewerMetadataError("lens_prompt must be a string");
+  }
+  return {
+    ...metadata,
+    lens: lens.trim(),
+    ...(lensPrompt !== undefined ? { lens_prompt: lensPrompt } : {}),
+  };
+}
+
+export function reviewerLensMetadata(
+  row: Pick<ReviewerRow, "reviewerId" | "metadataJson">,
+): ReviewerLensMetadata | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(row.metadataJson);
+  } catch (e) {
+    throw new InvalidReviewerMetadataError(
+      `reviewer ${row.reviewerId} metadata_json is not valid JSON: ${(e as Error).message}`,
+    );
+  }
+  assertPlainMetadata(raw);
+  const metadata = validateReviewerMetadata(raw);
+  if (metadata.lens === undefined) return null;
+  return {
+    lens: metadata.lens as string,
+    ...(metadata.lens_prompt !== undefined
+      ? { lensPrompt: metadata.lens_prompt as string }
+      : {}),
+  };
 }
 
 export class ReviewerRepository {
@@ -122,6 +197,7 @@ export class ReviewerRepository {
     now?: Date;
   }): ReviewerRow {
     assertPathSafeReviewerId(input.reviewerId);
+    const metadata = validateReviewerMetadata(input.metadata ?? {});
     if (this.findById(input.reviewerId) !== null) {
       throw new DuplicateReviewerError(input.reviewerId);
     }
@@ -139,7 +215,7 @@ export class ReviewerRepository {
         input.displayName,
         input.groupId ?? null,
         input.trustLevel ?? "normal",
-        JSON.stringify(input.metadata ?? {}),
+        JSON.stringify(metadata),
         now,
         now,
       );

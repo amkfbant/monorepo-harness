@@ -36,6 +36,11 @@ export interface ReviewProposalInput {
 export interface ReviewPromptProvenance {
   template: { name: string; version: number };
   knowledge: { entryId: string; version: number }[];
+  lens?: {
+    reviewerId: string;
+    lens: string;
+    lensPromptSha256: string | null;
+  };
 }
 
 export interface ReviewProposalRow {

@@ -23,6 +23,7 @@ import {
   RepoPolicySchema,
 } from "../policy/schema.js";
 import { runReviewerAgent } from "../core/reviewer-agent.js";
+import type { ReviewerLensPrompt } from "../core/reviewer-agent.js";
 import { ReviewerAgentGateError } from "../core/reviewer-agent-errors.js";
 import {
   processReviewDecision,
@@ -50,7 +51,11 @@ import { ReviewProposalRepository } from "../db/repositories/review-proposals.js
 import { ReviewConsensusRepository } from "../db/repositories/review-consensus.js";
 import { ReviewOverridesRepository } from "../db/repositories/review-overrides.js";
 import { ReviewRulesRepository } from "../db/repositories/review-rules.js";
-import { ReviewerRepository } from "../db/repositories/reviewers.js";
+import {
+  InvalidReviewerMetadataError,
+  ReviewerRepository,
+  reviewerLensMetadata,
+} from "../db/repositories/reviewers.js";
 import {
   startOperation,
   succeedOperation,
@@ -69,9 +74,9 @@ import {
 } from "../core/review-consensus.js";
 import { activeProposalRows, enrichRows } from "../core/consensus-enrichment.js";
 import {
-  dispatchRequirementsForRule,
   frozenReviewerIdsForRule,
   parseReviewRuleSnapshot,
+  requiredReviewersForRequirement,
   ruleSha256,
   type ReviewRule,
 } from "../core/review-rule.js";
@@ -997,7 +1002,16 @@ function isUnresolvedOutOfScopeFinding(finding: HitchFinding): boolean {
 
 type ReviewDispatchPlan =
   | { kind: "single" }
-  | { kind: "frozen-consensus"; reviewerIds: string[] };
+  | {
+      kind: "frozen-consensus";
+      reviewerIds: string[];
+      reviewers: FrozenReviewerDispatch[];
+    };
+
+interface FrozenReviewerDispatch {
+  reviewerId: string;
+  reviewerLens?: ReviewerLensPrompt;
+}
 
 interface ReviewerDispatchFailure {
   reviewerId: string;
@@ -1015,7 +1029,11 @@ export type ConsensusPreflightCauseKind =
   | "no_reviewers"
   | "under_quorum"
   | "wrong_group"
-  | "unregistered";
+  | "unregistered"
+  | "invalid_lens"
+  | "missing_lens"
+  | "missing_axis"
+  | "duplicate_lens";
 
 /**
  * Typed preflight failure raised BEFORE any reviewer is dispatched. It is a
@@ -1028,6 +1046,10 @@ export class ConsensusReviewPreflightError extends Error {
   readonly group?: string;
   readonly required?: number;
   readonly registered?: number;
+  readonly requiredAxes?: string[];
+  readonly coveredAxes?: string[];
+  readonly missingAxes?: string[];
+  readonly duplicateAxes?: string[];
   constructor(
     message: string,
     detail: {
@@ -1035,6 +1057,10 @@ export class ConsensusReviewPreflightError extends Error {
       group?: string;
       required?: number;
       registered?: number;
+      requiredAxes?: string[];
+      coveredAxes?: string[];
+      missingAxes?: string[];
+      duplicateAxes?: string[];
     },
   ) {
     super(`consensus review preflight failed: ${message}`);
@@ -1043,6 +1069,12 @@ export class ConsensusReviewPreflightError extends Error {
     if (detail.group !== undefined) this.group = detail.group;
     if (detail.required !== undefined) this.required = detail.required;
     if (detail.registered !== undefined) this.registered = detail.registered;
+    if (detail.requiredAxes !== undefined) this.requiredAxes = detail.requiredAxes;
+    if (detail.coveredAxes !== undefined) this.coveredAxes = detail.coveredAxes;
+    if (detail.missingAxes !== undefined) this.missingAxes = detail.missingAxes;
+    if (detail.duplicateAxes !== undefined) {
+      this.duplicateAxes = detail.duplicateAxes;
+    }
   }
 }
 
@@ -1123,7 +1155,7 @@ function prepareReviewDispatchPlan(input: {
   const reviewerIds = frozenReviewerIdsForRule(snapshot.rule);
   if (reviewerIds.length === 0) return { kind: "single" };
 
-  assertFrozenConsensusReviewersReady({
+  const reviewers = assertFrozenConsensusReviewersReady({
     db: input.db,
     rule: snapshot.rule,
     reviewerIds,
@@ -1133,14 +1165,14 @@ function prepareReviewDispatchPlan(input: {
     reviewerIds,
     supersededAt: input.now,
   });
-  return { kind: "frozen-consensus", reviewerIds };
+  return { kind: "frozen-consensus", reviewerIds, reviewers };
 }
 
 function assertFrozenConsensusReviewersReady(input: {
   db: Database.Database;
   rule: ReviewRule;
   reviewerIds: readonly string[];
-}): void {
+}): FrozenReviewerDispatch[] {
   const reviewers = new ReviewerRepository(input.db);
   const byId = new Map(
     input.reviewerIds.map((reviewerId) => [
@@ -1164,29 +1196,157 @@ function assertFrozenConsensusReviewersReady(input: {
     );
   }
 
-  for (const requirement of dispatchRequirementsForRule(input.rule)) {
-    const registered = requirement.reviewerIds.filter(
+  const reviewerLensById = new Map<string, ReviewerLensPrompt | null>();
+  for (const reviewerId of input.reviewerIds) {
+    const reviewer = byId.get(reviewerId);
+    if (reviewer === null || reviewer === undefined) continue;
+    try {
+      reviewerLensById.set(reviewerId, reviewerLensMetadata(reviewer));
+    } catch (e) {
+      if (e instanceof InvalidReviewerMetadataError) {
+        throw new ConsensusReviewPreflightError(e.message, {
+          causeKind: "invalid_lens",
+        });
+      }
+      throw e;
+    }
+  }
+
+  for (const requirement of input.rule.requirements) {
+    if (
+      requirement.reviewerIds === undefined ||
+      requirement.reviewerIds.length === 0
+    ) {
+      continue;
+    }
+    const reviewerIds = [...requirement.reviewerIds].sort();
+    const requiredReviewers = requiredReviewersForRequirement(requirement);
+    const registered = reviewerIds.filter(
       (reviewerId) => byId.get(reviewerId)?.groupId === requirement.group,
     );
-    if (registered.length < requirement.requiredReviewers) {
+    if (registered.length < requiredReviewers) {
       // `wrong_group` when NO frozen id resolves to the required group at all
       // (every declared reviewer is registered under a different group);
       // `under_quorum` for the general shortfall.
       const causeKind =
         registered.length === 0 ? "wrong_group" : "under_quorum";
       throw new ConsensusReviewPreflightError(
-        `group ${requirement.group}: required=${requirement.requiredReviewers} ` +
+        `group ${requirement.group}: required=${requiredReviewers} ` +
           `registered=${registered.length} ` +
-          `expected=${requirement.reviewerIds.length}`,
+          `expected=${reviewerIds.length}`,
         {
           causeKind,
           group: requirement.group,
-          required: requirement.requiredReviewers,
+          required: requiredReviewers,
           registered: registered.length,
         },
       );
     }
+    assertFrozenConsensusLensMece({
+      group: requirement.group,
+      requiredReviewers,
+      reviewerIds,
+      ...(requirement.lensAxes !== undefined
+        ? { lensAxes: requirement.lensAxes }
+        : {}),
+      reviewerLensById,
+    });
   }
+  return input.reviewerIds.map((reviewerId) => {
+    const reviewerLens = reviewerLensById.get(reviewerId) ?? null;
+    return {
+      reviewerId,
+      ...(reviewerLens !== null ? { reviewerLens } : {}),
+    };
+  });
+}
+
+function assertFrozenConsensusLensMece(input: {
+  group: string;
+  requiredReviewers: number;
+  reviewerIds: readonly string[];
+  lensAxes?: readonly string[];
+  reviewerLensById: ReadonlyMap<string, ReviewerLensPrompt | null>;
+}): void {
+  if (input.requiredReviewers <= 1 && input.lensAxes === undefined) return;
+  const requiredAxes = [...(input.lensAxes ?? [])].sort();
+  if (input.requiredReviewers > 1 && input.lensAxes === undefined) {
+    throw new ConsensusReviewPreflightError(
+      `group ${input.group}: lens_axes is required for frozen multi-reviewer dispatch`,
+      {
+        causeKind: "missing_axis",
+        group: input.group,
+        requiredAxes,
+        coveredAxes: [],
+        missingAxes: [],
+        duplicateAxes: [],
+      },
+    );
+  }
+  const missingLensReviewers = input.reviewerIds.filter(
+    (reviewerId) => input.reviewerLensById.get(reviewerId) === null,
+  );
+  if (input.requiredReviewers > 1 && missingLensReviewers.length > 0) {
+    throw new ConsensusReviewPreflightError(
+      `group ${input.group}: reviewer(s) missing lens metadata: ${missingLensReviewers.join(", ")}`,
+      {
+        causeKind: "missing_lens",
+        group: input.group,
+        requiredAxes,
+        coveredAxes: coveredLensAxes(input),
+      },
+    );
+  }
+  const counts = new Map<string, number>();
+  for (const reviewerId of input.reviewerIds) {
+    const lens = input.reviewerLensById.get(reviewerId);
+    if (lens === null || lens === undefined) continue;
+    counts.set(lens.lens, (counts.get(lens.lens) ?? 0) + 1);
+  }
+  const duplicateAxes = [...counts]
+    .filter(([, count]) => count > 1)
+    .map(([lens]) => lens)
+    .sort();
+  const coveredAxes = [...counts.keys()].sort();
+  if (duplicateAxes.length > 0) {
+    throw new ConsensusReviewPreflightError(
+      `group ${input.group}: duplicate reviewer lens axis/axes: ${duplicateAxes.join(", ")}`,
+      {
+        causeKind: "duplicate_lens",
+        group: input.group,
+        requiredAxes,
+        coveredAxes,
+        duplicateAxes,
+      },
+    );
+  }
+  const missingAxes = requiredAxes.filter((axis) => !counts.has(axis));
+  if (missingAxes.length > 0) {
+    throw new ConsensusReviewPreflightError(
+      `group ${input.group}: missing required lens axis/axes: ${missingAxes.join(", ")}`,
+      {
+        causeKind: "missing_axis",
+        group: input.group,
+        requiredAxes,
+        coveredAxes,
+        missingAxes,
+        duplicateAxes,
+      },
+    );
+  }
+}
+
+function coveredLensAxes(input: {
+  reviewerIds: readonly string[];
+  reviewerLensById: ReadonlyMap<string, ReviewerLensPrompt | null>;
+}): string[] {
+  return [
+    ...new Set(
+      input.reviewerIds
+        .map((reviewerId) => input.reviewerLensById.get(reviewerId)?.lens)
+        .filter((lens): lens is string => lens !== undefined),
+    ),
+  ].sort();
 }
 
 function recordConsensusEvaluationForRun(input: {
@@ -1513,13 +1673,16 @@ export function createOrchestratorRunners(
       );
       const failedReviewers: ReviewerDispatchFailure[] = [];
       if (dispatchPlan.kind === "frozen-consensus") {
-        for (const reviewerId of dispatchPlan.reviewerIds) {
+        for (const reviewer of dispatchPlan.reviewers) {
           try {
             await runReviewerAgent({
               runsDir: paths.runsDir,
               runId,
               dbPath: deps.dbPath,
-              reviewerName: reviewerId,
+              reviewerName: reviewer.reviewerId,
+              ...(reviewer.reviewerLens !== undefined
+                ? { reviewerLens: reviewer.reviewerLens }
+                : {}),
               allowOverwrite: true,
               codexRunner: deps.reviewerRunner,
               ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
@@ -1535,7 +1698,7 @@ export function createOrchestratorRunners(
             if (leaseLoss !== undefined) throw leaseLoss;
             const reason = cleanReviewerFailureReason(e);
             if (reason !== null) {
-              failedReviewers.push({ reviewerId, reason });
+              failedReviewers.push({ reviewerId: reviewer.reviewerId, reason });
               continue;
             }
             throw e;

@@ -84,12 +84,12 @@ review:
   max_reviewers: 3             # optional default dispatch cap for requirements
   requirements:
     - group: humans
-      min_approvals: 1
+      min_approvals: 2
       blocking_decisions: [changes_requested, rejected]
-      quorum: { min_participants: 1 }
-      reviewer_ids: [alice]    # optional frozen reviewer set
-      lens_axes: [correctness] # required with multi-reviewer requirements
-      max_reviewers: 1         # optional per-requirement cap
+      quorum: { min_participants: 2 }
+      reviewer_ids: [alice, bob]             # optional frozen reviewer set
+      lens_axes: [correctness, security]     # required with multi-reviewer requirements
+      max_reviewers: 2                       # optional per-requirement cap
   overrides: { allowed_reviewers: [], require_reason: true }
   stale_proposal: { reject_superseded: true, max_age_hours: 24 }
 context_packs:
@@ -122,6 +122,13 @@ domains:
   複数 reviewer を要求する requirement の `reviewer_ids` / `lens_axes` 欠落、
   `reviewer_ids` の重複や `max_reviewers` 超過は `ReviewRuleCompileError` で
   fail-closed になり、DEFAULT へ降格しない。
+- frozen consensus dispatch では reviewer registry の `metadata_json.lens` が
+  `lens_axes` を実体化する。`metadata_json.lens` は非空文字列（`correctness` /
+  `security` / `regression` / `efficacy` / `spec_compliance` と custom axis を許可）、
+  `metadata_json.lens_prompt` は任意の文字列。`lens_prompt` は untrusted な助言として
+  reviewer prompt の `<lens>` fence 内へ注入され、出力契約・read-only 制約・集約条件を
+  上書きできない。注入された lens と `lens_prompt` の SHA-256 は
+  `review_proposals.prompt_provenance_json` に記録される。
 - `mode: consensus` は review processing / hitch consensus dispatch のための rule
   であり、互換 workflow `harness workflow reviewed-run` はまだ consensus dispatch を
   持たない。project profile の effective rule が consensus のとき、`reviewed-run` は
