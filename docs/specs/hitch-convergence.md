@@ -756,6 +756,18 @@ or frozen-set-external votes fail closed and leave the original blocking
 required_change intact. This refute path does not mutate finding severity; it
 only affects which target-bound `changes_requested` blockers survive the
 deterministic consensus gate.
+When the hitch review runner sees a decisive blocking `changes_requested`
+aggregate and the frozen review-rule snapshot defines `review.refute`, it
+preflights the frozen refute reviewer set, dispatches `runRefuteAgent` once per
+unrefuted target/reviewer pair, and then promotes the aggregate through the
+same deterministic review-processing gate. Refute preflight failures
+(unregistered reviewer, wrong group, or under-quorum registered set), rejected
+refute rows, and sub-majority refute results fail closed: the run stays
+unapproved or the blocking required change remains. Refute prompts identify a
+target by `target_change_hash` plus `change_text`; filtered positional indices
+are not part of prompt identity, so a crash/re-drive after another target was
+already refuted deduplicates the same reviewer/target vote through the stable
+`prompt_sha256`.
 For frozen consensus runs (`reviewer_ids` present in the run's review-rule
 snapshot), the hitch review runner dispatches the frozen reviewer set
 sequentially and then processes the aggregate once. The runner's reported

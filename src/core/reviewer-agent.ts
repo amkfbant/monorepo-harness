@@ -35,7 +35,10 @@ import {
   reviewerLensMetadata,
 } from "../db/repositories/reviewers.js";
 import { evaluateConsensus } from "./review-consensus.js";
-import { enrichActiveProposals } from "./consensus-enrichment.js";
+import {
+  enrichActiveProposals,
+  enrichRefuteVotesForRun,
+} from "./consensus-enrichment.js";
 import {
   DEFAULT_REVIEW_RULE,
   frozenReviewerIdsForRule,
@@ -43,6 +46,7 @@ import {
   ruleSha256,
   type ReviewRule,
 } from "./review-rule.js";
+import { ReviewRefuteVotesRepository } from "../db/repositories/review-refute-votes.js";
 import type Database from "better-sqlite3";
 import { fileExportEnabled } from "../config/export-mode.js";
 import { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
@@ -903,6 +907,11 @@ function recordConsensusReEvaluation(
         rule,
         ruleSha256: ruleSha,
         proposals,
+        refuteVotes: enrichRefuteVotesForRun(
+          new ReviewRefuteVotesRepository(db),
+          new ReviewerRepository(db),
+          runId,
+        ),
         evaluatedAt,
       });
       new ReviewConsensusRepository(db).insertActive({
