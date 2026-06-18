@@ -206,6 +206,26 @@ describe("course orchestrate runtime", () => {
     expect(calls.map((c) => c.projectId)).toEqual(["p1", "p1"]);
   });
 
+  it("constructs reviewer runners with a read-only sandbox", async () => {
+    createHitch({ hitchId: "h-reviewer-sandbox", projectId: "p1", domain: "roadmap" });
+    const runnerOpts: Parameters<
+      NonNullable<CourseHitchRunnersDeps["createRunners"]>
+    >[0][] = [];
+
+    await makeCourseHitchRunners(makeInput("h-reviewer-sandbox", null), {
+      prepareRun: fakePrepareRun([]),
+      createRunners: (opts) => {
+        runnerOpts.push(opts);
+        return fakeCodexRunner();
+      },
+    });
+
+    expect(runnerOpts).toEqual([
+      { codexBin: "codex", sandbox: "workspace-write" },
+      { codexBin: "codex", sandbox: "read-only" },
+    ]);
+  });
+
   it("builds hitch goal text from title and optional description", () => {
     const withDescription = createHitch({
       hitchId: "h-goal-description",

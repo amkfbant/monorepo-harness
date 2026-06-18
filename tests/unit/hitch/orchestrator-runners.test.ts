@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
@@ -30,6 +31,7 @@ import { ReviewProposalRepository } from "../../../src/db/repositories/review-pr
 import { ReviewConsensusRepository } from "../../../src/db/repositories/review-consensus.js";
 import { ReviewRulesRepository } from "../../../src/db/repositories/review-rules.js";
 import { ReviewerRepository } from "../../../src/db/repositories/reviewers.js";
+import { createCodexCliRunner } from "../../../src/codex/codex-cli-runner.js";
 import { importReviewProposalToHitch } from "../../../src/hitch/review-integration.js";
 import { REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS } from "../../../src/core/review-consensus.js";
 import { ReviewerAgentGateError } from "../../../src/core/reviewer-agent-errors.js";
@@ -84,6 +86,13 @@ function createHarnessRoot(prefix: string): { harnessRoot: string; dbPath: strin
   const harnessRoot = mkdtempSync(join(tmpdir(), prefix));
   mkdirSync(join(harnessRoot, ".harness"), { recursive: true });
   return { harnessRoot, dbPath: join(harnessRoot, ".harness", "harness.sqlite") };
+}
+
+function writeExecutableScript(dir: string, body: string): string {
+  const path = join(dir, "fake-codex.js");
+  writeFileSync(path, `#!/usr/bin/env node\n${body}`, "utf8");
+  chmodSync(path, 0o755);
+  return path;
 }
 
 function decisionYaml(
@@ -285,6 +294,7 @@ function createFrozenConsensusReviewHarness(input: {
   prefix: string;
   hitchId: string;
   rule: ReviewRule;
+  reviewerMetadata?: Record<string, Record<string, unknown>>;
 }): { harnessRoot: string; dbPath: string; runId: string } {
   const { harnessRoot, dbPath } = createHarnessRoot(input.prefix);
   const runId = `run-${input.hitchId}`;
@@ -357,17 +367,29 @@ function createFrozenConsensusReviewHarness(input: {
       }),
     );
     const reviewers = new ReviewerRepository(db);
+    const defaultLensAxes =
+      input.rule.requirements[0]?.lensAxes ?? ["correctness", "maintainability"];
     reviewers.add({
       reviewerId: "alice",
       reviewerType: "codex",
       displayName: "Alice",
       groupId: "reviewers",
+      metadata:
+        input.reviewerMetadata?.alice ??
+        (defaultLensAxes[0] !== undefined
+          ? { lens: defaultLensAxes[0], lens_prompt: "Review for correctness." }
+          : undefined),
     });
     reviewers.add({
       reviewerId: "bob",
       reviewerType: "codex",
       displayName: "Bob",
       groupId: "reviewers",
+      metadata:
+        input.reviewerMetadata?.bob ??
+        (defaultLensAxes[1] !== undefined
+          ? { lens: defaultLensAxes[1], lens_prompt: "Review for maintainability." }
+          : undefined),
     });
     const template = new ReviewRulesRepository(db).upsertRuleTemplate({
       source: "manual",
@@ -452,7 +474,7 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
           blockingDecisions: [],
           quorum: { minParticipants: 2 },
           reviewerIds: ["alice", "bob"],
-          lensAxes: ["correctness", "scope_fit"],
+          lensAxes: ["correctness", "maintainability"],
         },
       ],
       overrides: { allowedReviewers: [], requireReason: true },
@@ -501,6 +523,198 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
     }
   });
 
+  it("passes each frozen reviewer's lens prompt into review auto and records distinct prompt provenance", async () => {
+    const hitchId = "g-consensus-lens-prompt";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 2,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "security"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-consensus-lens-prompt-",
+      hitchId,
+      rule,
+      reviewerMetadata: {
+        alice: { lens: "correctness", lens_prompt: "Check behavior." },
+        bob: { lens: "security", lens_prompt: "Check auth boundaries." },
+      },
+    });
+    const promptsByReviewer = new Map<string, string>();
+    const reviewerRunner = {
+      run: vi.fn(async (input: {
+        prompt: string;
+        logPaths: { stdout: string; stderr: string };
+      }) => {
+        const reviewerId = reviewerIdFromStdoutPath(input.logPaths.stdout);
+        promptsByReviewer.set(reviewerId, input.prompt);
+        writeFileSync(input.logPaths.stderr, "", "utf8");
+        writeFileSync(
+          input.logPaths.stdout,
+          reviewerOutput({ decision: "approved" }),
+          "utf8",
+        );
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      }),
+    };
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).resolves.toEqual({
+      runId,
+      decision: "approved",
+    });
+
+    expect(promptsByReviewer.get("alice")).toContain("Lens: correctness");
+    expect(promptsByReviewer.get("alice")).toContain("Check behavior.");
+    expect(promptsByReviewer.get("bob")).toContain("Lens: security");
+    expect(promptsByReviewer.get("bob")).toContain("Check auth boundaries.");
+    const alicePrompt = promptsByReviewer.get("alice") ?? "";
+    const bobPrompt = promptsByReviewer.get("bob") ?? "";
+    expect(alicePrompt).not.toContain("Lens: security");
+    expect(alicePrompt).not.toContain("Check auth boundaries.");
+    expect(bobPrompt).not.toContain("Lens: correctness");
+    expect(bobPrompt).not.toContain("Check behavior.");
+    expect(alicePrompt).not.toBe(bobPrompt);
+
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      const proposals = new ReviewProposalRepository(db)
+        .listForRun(runId)
+        .sort((a, b) => a.reviewer.localeCompare(b.reviewer));
+      expect(
+        proposals.map((p) => ({
+          reviewer: p.reviewer,
+          promptSha256: p.promptSha256,
+          lens: JSON.parse(p.promptProvenanceJson ?? "{}").lens?.lens,
+        })),
+      ).toEqual([
+        {
+          reviewer: "alice",
+          promptSha256: createHash("sha256")
+            .update(promptsByReviewer.get("alice") ?? "")
+            .digest("hex"),
+          lens: "correctness",
+        },
+        {
+          reviewer: "bob",
+          promptSha256: createHash("sha256")
+            .update(promptsByReviewer.get("bob") ?? "")
+            .digest("hex"),
+          lens: "security",
+        },
+      ]);
+    } finally {
+      close();
+    }
+  });
+
+  it("SP-15: dispatches lens-injected reviewers through a read-only Codex sandbox", async () => {
+    const hitchId = "g-consensus-lens-readonly-sandbox";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 2,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "security"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-consensus-lens-sandbox-",
+      hitchId,
+      rule,
+      reviewerMetadata: {
+        alice: { lens: "correctness", lens_prompt: "Check behavior." },
+        bob: { lens: "security", lens_prompt: "Check auth boundaries." },
+      },
+    });
+    const binRoot = mkdtempSync(join(tmpdir(), "harness-orch-codex-bin-"));
+    const recordsPath = join(binRoot, "records.json");
+    const approvedOutput = reviewerOutput({ decision: "approved" });
+    const codexBin = writeExecutableScript(
+      binRoot,
+      [
+        "const { existsSync, readFileSync, writeFileSync } = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "const outputIndex = args.indexOf('-o');",
+        "if (outputIndex < 0) throw new Error('missing -o');",
+        "let prompt = '';",
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.on('data', (chunk) => { prompt += chunk; });",
+        "process.stdin.on('end', () => {",
+        `  const recordsPath = ${JSON.stringify(recordsPath)};`,
+        "  const records = existsSync(recordsPath) ? JSON.parse(readFileSync(recordsPath, 'utf8')) : [];",
+        "  records.push({ args, prompt, stdout: args[outputIndex + 1] });",
+        "  writeFileSync(recordsPath, JSON.stringify(records), 'utf8');",
+        `  writeFileSync(args[outputIndex + 1], ${JSON.stringify(approvedOutput)}, 'utf8');`,
+        "  process.stdout.write(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }) + '\\n', () => process.exit(0));",
+        "});",
+      ].join("\n"),
+    );
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner: createCodexCliRunner({
+        codexBin,
+        sandbox: "read-only",
+        envAllowlist: ["PATH"],
+      }),
+    });
+
+    await expect(runners.review(hitchId)).resolves.toEqual({
+      runId,
+      decision: "approved",
+    });
+
+    const records = JSON.parse(readFileSync(recordsPath, "utf8")) as {
+      args: string[];
+      prompt: string;
+      stdout: string;
+    }[];
+    expect(records).toHaveLength(2);
+    for (const record of records) {
+      const sandboxIndex = record.args.indexOf("--sandbox");
+      expect(sandboxIndex).toBeGreaterThanOrEqual(0);
+      expect(record.args[sandboxIndex + 1]).toBe("read-only");
+    }
+    const byReviewer = new Map(
+      records.map((record) => [reviewerIdFromStdoutPath(record.stdout), record]),
+    );
+    expect(byReviewer.get("alice")?.prompt).toContain("Lens: correctness");
+    expect(byReviewer.get("alice")?.prompt).toContain("Check behavior.");
+    expect(byReviewer.get("alice")?.prompt).not.toContain("Lens: security");
+    expect(byReviewer.get("alice")?.prompt).not.toContain(
+      "Check auth boundaries.",
+    );
+    expect(byReviewer.get("bob")?.prompt).toContain("Lens: security");
+    expect(byReviewer.get("bob")?.prompt).toContain("Check auth boundaries.");
+    expect(byReviewer.get("bob")?.prompt).not.toContain("Lens: correctness");
+    expect(byReviewer.get("bob")?.prompt).not.toContain("Check behavior.");
+  });
+
   it("records all-clean reviewer failures as pending consensus and escalates only through stall evaluation", async () => {
     const hitchId = "g-consensus-all-clean-fail";
     const rule: ReviewRule = {
@@ -512,7 +726,7 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
           blockingDecisions: ["changes_requested", "rejected"],
           quorum: { minParticipants: 2 },
           reviewerIds: ["alice", "bob"],
-          lensAxes: ["correctness", "scope_fit"],
+          lensAxes: ["correctness", "maintainability"],
         },
       ],
       overrides: { allowedReviewers: [], requireReason: true },
@@ -584,7 +798,7 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
           blockingDecisions: ["changes_requested", "rejected"],
           quorum: { minParticipants: 2 },
           reviewerIds: ["alice", "bob"],
-          lensAxes: ["correctness", "scope_fit"],
+          lensAxes: ["correctness", "maintainability"],
         },
       ],
       overrides: { allowedReviewers: [], requireReason: true },
@@ -665,7 +879,7 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
           blockingDecisions: ["changes_requested", "rejected"],
           quorum: { minParticipants: 2 },
           reviewerIds: ["alice", "bob"],
-          lensAxes: ["correctness", "scope_fit"],
+          lensAxes: ["correctness", "maintainability"],
         },
       ],
       overrides: { allowedReviewers: [], requireReason: true },
@@ -730,7 +944,7 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
           blockingDecisions: ["changes_requested", "rejected"],
           quorum: { minParticipants: 2 },
           reviewerIds: ["alice", "bob"],
-          lensAxes: ["correctness", "scope_fit"],
+          lensAxes: ["correctness", "maintainability"],
         },
       ],
       overrides: { allowedReviewers: [], requireReason: true },
@@ -790,7 +1004,7 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
           blockingDecisions: ["changes_requested", "rejected"],
           quorum: { minParticipants: 2 },
           reviewerIds: ["alice", "dave"],
-          lensAxes: ["correctness", "scope_fit"],
+          lensAxes: ["correctness", "maintainability"],
         },
       ],
       overrides: { allowedReviewers: [], requireReason: true },
@@ -838,6 +1052,75 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
     }
   });
 
+  it("SP-15: preflight rejects malformed frozen reviewer metadata_json before dispatch", async () => {
+    const hitchId = "g-consensus-preflight-invalid-lens";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 2,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "security"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-consensus-invalid-lens-",
+      hitchId,
+      rule,
+      reviewerMetadata: {
+        alice: { lens: "correctness" },
+        bob: { lens: "security" },
+      },
+    });
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      db.prepare(
+        "UPDATE reviewers SET metadata_json = ? WHERE reviewer_id = ?",
+      ).run("{not json", "bob");
+    } finally {
+      close();
+    }
+    const reviewerRunner = multiReviewerRunner({
+      alice: reviewerOutput({ decision: "approved" }),
+      bob: reviewerOutput({ decision: "approved" }),
+    });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    const error = await runners.review(hitchId).then(
+      () => null,
+      (e) => e,
+    );
+    expect(error).toBeInstanceOf(ConsensusReviewPreflightError);
+    expect((error as ConsensusReviewPreflightError).causeKind).toBe(
+      "invalid_lens",
+    );
+    expect(reviewerRunner.run).not.toHaveBeenCalled();
+
+    const handle = openManagedDb({ dbPath });
+    try {
+      const repo = new HitchRepository(handle.db);
+      expect(repo.listReviewCycles(hitchId)).toHaveLength(0);
+      expect(
+        handle.db.prepare("SELECT status FROM runs WHERE run_id = ?").get(runId),
+      ).toMatchObject({ status: "needs_review" });
+      expect(new ReviewProposalRepository(handle.db).listForRun(runId)).toEqual([]);
+    } finally {
+      handle.close();
+    }
+  });
+
   it("facet3: escalates (typed preflight error, no reviewer dispatch) when a frozen reviewer is in the wrong group (under quorum)", async () => {
     const hitchId = "g-consensus-preflight-under-quorum";
     const rule: ReviewRule = {
@@ -849,7 +1132,7 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
           blockingDecisions: ["changes_requested", "rejected"],
           quorum: { minParticipants: 2 },
           reviewerIds: ["alice", "bob"],
-          lensAxes: ["correctness", "scope_fit"],
+          lensAxes: ["correctness", "maintainability"],
         },
       ],
       overrides: { allowedReviewers: [], requireReason: true },
@@ -904,6 +1187,209 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
         .toMatchObject({ status: "needs_review" });
     } finally {
       close();
+    }
+  });
+
+  it("SP-15: preflight rejects a frozen multi-reviewer group with an empty reviewer lens before dispatch", async () => {
+    const hitchId = "g-consensus-lens-empty";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 2,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "maintainability"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { harnessRoot, dbPath } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-consensus-lens-empty-",
+      hitchId,
+      rule,
+      reviewerMetadata: {
+        alice: { lens: "correctness" },
+        bob: {},
+      },
+    });
+    const reviewerRunner = multiReviewerRunner({
+      alice: reviewerOutput({ decision: "approved" }),
+      bob: reviewerOutput({ decision: "approved" }),
+    });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    const error = await runners.review(hitchId).then(
+      () => null,
+      (e) => e,
+    );
+    expect(error).toBeInstanceOf(ConsensusReviewPreflightError);
+    expect((error as ConsensusReviewPreflightError).causeKind).toBe(
+      "missing_lens",
+    );
+    expect(reviewerRunner.run).not.toHaveBeenCalled();
+  });
+
+  it("SP-15: preflight rejects missing declared lens axes before dispatch", async () => {
+    const hitchId = "g-consensus-lens-missing-axis";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 2,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "security"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { harnessRoot, dbPath } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-consensus-lens-missing-axis-",
+      hitchId,
+      rule,
+      reviewerMetadata: {
+        alice: { lens: "correctness" },
+        bob: { lens: "regression" },
+      },
+    });
+    const reviewerRunner = multiReviewerRunner({
+      alice: reviewerOutput({ decision: "approved" }),
+      bob: reviewerOutput({ decision: "approved" }),
+    });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    const error = await runners.review(hitchId).then(
+      () => null,
+      (e) => e,
+    );
+    expect(error).toBeInstanceOf(ConsensusReviewPreflightError);
+    expect((error as ConsensusReviewPreflightError).causeKind).toBe(
+      "missing_axis",
+    );
+    expect((error as ConsensusReviewPreflightError).missingAxes).toEqual([
+      "security",
+    ]);
+    expect(reviewerRunner.run).not.toHaveBeenCalled();
+  });
+
+  it("SP-15: preflight rejects duplicate reviewer lenses before dispatch", async () => {
+    const hitchId = "g-consensus-lens-duplicate";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 2,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "maintainability"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { harnessRoot, dbPath } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-consensus-lens-duplicate-",
+      hitchId,
+      rule,
+      reviewerMetadata: {
+        alice: { lens: "correctness" },
+        bob: { lens: "correctness" },
+      },
+    });
+    const reviewerRunner = multiReviewerRunner({
+      alice: reviewerOutput({ decision: "approved" }),
+      bob: reviewerOutput({ decision: "approved" }),
+    });
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    const error = await runners.review(hitchId).then(
+      () => null,
+      (e) => e,
+    );
+    expect(error).toBeInstanceOf(ConsensusReviewPreflightError);
+    expect((error as ConsensusReviewPreflightError).causeKind).toBe(
+      "duplicate_lens",
+    );
+    expect((error as ConsensusReviewPreflightError).duplicateAxes).toEqual([
+      "correctness",
+    ]);
+    expect(reviewerRunner.run).not.toHaveBeenCalled();
+  });
+
+  it("SP-15: treats single-reviewer lens axes as advisory and dispatches", async () => {
+    for (const scenario of [
+      { hitchId: "g-consensus-single-lens-axes", lensAxes: ["security"] },
+      { hitchId: "g-consensus-single-no-lens-axes" },
+    ] as const) {
+      const rule: ReviewRule = {
+        mode: "consensus",
+        requirements: [
+          {
+            group: "reviewers",
+            minApprovals: 1,
+            blockingDecisions: ["changes_requested", "rejected"],
+            quorum: { minParticipants: 1 },
+            reviewerIds: ["alice"],
+            ...(scenario.lensAxes !== undefined
+              ? { lensAxes: scenario.lensAxes }
+              : {}),
+          },
+        ],
+        overrides: { allowedReviewers: [], requireReason: true },
+        staleProposal: { rejectSuperseded: true },
+      };
+      const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+        prefix: `harness-orch-review-${scenario.hitchId}-`,
+        hitchId: scenario.hitchId,
+        rule,
+        reviewerMetadata: {
+          alice: {},
+          bob: {},
+        },
+      });
+      const reviewerRunner = multiReviewerRunner({
+        alice: reviewerOutput({ decision: "approved" }),
+      });
+      const runners = createOrchestratorRunners({
+        dbPath,
+        harnessRoot,
+        createdBy: "worker",
+        coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+        reviewerRunner,
+      });
+
+      await expect(runners.review(scenario.hitchId)).resolves.toEqual({
+        runId,
+        decision: "approved",
+      });
+      expect(reviewerRunner.run).toHaveBeenCalledTimes(1);
     }
   });
 

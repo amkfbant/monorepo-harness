@@ -9,6 +9,8 @@ import {
   UnknownReviewerError,
   DuplicateReviewerError,
   InvalidReviewerIdError,
+  InvalidReviewerMetadataError,
+  reviewerLensMetadata,
 } from "../../../src/db/repositories/reviewers.js";
 
 function freshDb() {
@@ -65,6 +67,73 @@ describe("ReviewerRepository (Phase 11-2)", () => {
       expect(r.trustLevel).toBe("required");
       const md = JSON.parse(r.metadataJson) as Record<string, string>;
       expect(md.email).toBe("alice@example.com");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("validates and exposes reviewer lens metadata", () => {
+    const db = freshDb();
+    try {
+      const repo = new ReviewerRepository(db);
+      const r = repo.add({
+        reviewerId: "security-lens",
+        reviewerType: "codex",
+        displayName: "Security Lens",
+        groupId: "reviewers",
+        metadata: {
+          lens: "security",
+          lens_prompt: "Focus on auth and data exposure regressions.",
+        },
+      });
+
+      expect(reviewerLensMetadata(r)).toEqual({
+        lens: "security",
+        lensPrompt: "Focus on auth and data exposure regressions.",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects malformed metadata_json when reading reviewer lens metadata", () => {
+    expect(() =>
+      reviewerLensMetadata({
+        reviewerId: "bad-json",
+        metadataJson: "{not json",
+      }),
+    ).toThrow(InvalidReviewerMetadataError);
+  });
+
+  it("rejects non-object metadata_json when reading reviewer lens metadata", () => {
+    expect(() =>
+      reviewerLensMetadata({
+        reviewerId: "array-json",
+        metadataJson: "[]",
+      }),
+    ).toThrow(InvalidReviewerMetadataError);
+  });
+
+  it("rejects malformed reviewer lens metadata at registration", () => {
+    const db = freshDb();
+    try {
+      const repo = new ReviewerRepository(db);
+      expect(() =>
+        repo.add({
+          reviewerId: "empty-lens",
+          reviewerType: "codex",
+          displayName: "Empty Lens",
+          metadata: { lens: "" },
+        }),
+      ).toThrow(InvalidReviewerMetadataError);
+      expect(() =>
+        repo.add({
+          reviewerId: "bad-prompt",
+          reviewerType: "codex",
+          displayName: "Bad Prompt",
+          metadata: { lens: "correctness", lens_prompt: 12 },
+        }),
+      ).toThrow(InvalidReviewerMetadataError);
     } finally {
       db.close();
     }

@@ -1036,18 +1036,25 @@ review → consensus → `run.status` の全経路は「**LLM の出力は入力
   未登録 reviewer がいる / 必要数を満たす group メンバが揃わない場合、reviewer を 1 人も
   起動する前に typed `ConsensusReviewPreflightError`（`causeKind` =
   `unregistered` / `under_quorum` / `wrong_group` / `no_reviewers`）で停止し、
-  orchestrator の clean escalation に倒す。
+  orchestrator の clean escalation に倒す。multi-reviewer の frozen requirement では
+  同じ preflight で reviewer registry の `metadata_json.lens` を決定論的に検査し、
+  lens 未設定 / `lens_axes` 未カバー / lens 重複 / metadata 不正も
+  `missing_lens` / `missing_axis` / `duplicate_lens` / `invalid_lens` として dispatch 前に
+  fail-closed で止める。
 - 迷ったら fail-closed（quorum 未達 / rule 不正 / timestamp 解析不能はいずれも安全側）。
 
-> **残る設計段階（現状仕様ではない）**: orchestrator は frozen `reviewer_ids` の
-> N-reviewer dispatch までは実装済みだが、**異レンズ（lens）reviewer** による prompt
-> 多様化、反証 verify（refute。#229 close に含めるか別 issue 切り出しかは
-> 人間批准事項＝設計 付録H2/I.3 参照）、および `listByGroup` からの自動 reviewer set
-> freeze は未実装。`lens_axes` / `maxReviewers` は rule snapshot に保持されるが、
-> prompt 多様化や自動解決は後続 phase の責務。設計は
-> [`../design/proposals/design-229-multi-lens-consensus.md`](../design/proposals/design-229-multi-lens-consensus.md)
-> （特に付録I = lens 中核化 + 詰め残し G1〜G3 + 新規論点 C1〜C4）。これらが入っても上表 (2)(3) の
-> 決定論ゲートは**凍結契約として不変**で、lens / refute は (1) 提案（入力）の多様化に留まる。
+frozen consensus dispatch は各 reviewer の `metadata_json.lens` /
+`metadata_json.lens_prompt` を `runReviewerAgent` へ渡す。`runReviewerAgent` は
+`PROMPT_PREAMBLE` の後に `## Reviewer lens (untrusted)` section を追加し、
+`lens_prompt` を `<lens>` fence 内へ中和済み text として入れる。`prompt_sha256` は
+この lens section を含む最終 prompt 全文で計算し、`prompt_provenance_json.lens` に
+`{reviewerId,lens,lensPromptSha256}` を保存する。lens は proposal を多様化する入力であり、
+`evaluateConsensus` の quorum / tie-break / state transition には参加しない。
+
+> **残る設計段階（現状仕様ではない）**: 反証 verify（refute。#229 close に含めるか別
+> issue 切り出しかは人間批准事項＝設計 付録H2/I.3 参照）、および `listByGroup` からの
+> 自動 reviewer set freeze は未実装。これらが入っても上表 (2)(3) の決定論ゲートは
+> **凍結契約として不変**で、lens / refute は (1) 提案（入力）の多様化に留まる。
 
 ## Phase 19 — hitch convergence（close 済み・現状仕様）
 
