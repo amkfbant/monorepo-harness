@@ -87,4 +87,59 @@ describe("harness review reviewers", () => {
     expect(result.stdout).toBe("(none)\n");
     expect(result.stderr).toBe("");
   });
+
+  it("add stores lens metadata and list shows the registered lens", () => {
+    const root = setupHarness();
+    const added = run(
+      [
+        "review",
+        "reviewers",
+        "add",
+        "sec-codex",
+        "--type",
+        "codex",
+        "--display-name",
+        "Security Codex",
+        "--group",
+        "reviewers",
+        "--lens",
+        "security",
+        "--lens-prompt",
+        "Check auth boundaries.",
+      ],
+      root,
+    );
+    expect(added.status).toBe(0);
+    expect(added.stderr).toBe("");
+
+    const listed = run(
+      ["review", "reviewers", "list", "--group", "reviewers"],
+      root,
+    );
+    expect(listed.status).toBe(0);
+    expect(listed.stdout).toContain("sec-codex");
+    expect(listed.stdout).toContain("lens=security");
+  });
+
+  it("add rejects lens-prompt without a lens axis", () => {
+    const root = setupHarness();
+    const result = run(
+      [
+        "review",
+        "reviewers",
+        "add",
+        "bad-lens",
+        "--type",
+        "codex",
+        "--display-name",
+        "Bad Lens",
+        "--lens-prompt",
+        "No axis.",
+      ],
+      root,
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("lens_prompt requires a non-empty lens");
+  });
 });

@@ -1910,14 +1910,18 @@ Phase 11 の設計は [`../superpowers/specs/2026-05-24-phase11-review-governanc
 harness review reviewers list [--group <id>]
 harness review reviewers add <reviewer_id> --type <human|codex|external|system> \
                              --display-name <name> [--group <id>] \
-                             [--trust <advisory|normal|required|policy>]
+                             [--trust <advisory|normal|required|policy>] \
+                             [--lens <axis>] [--lens-prompt <text>]
 ```
 
 migration v7 適用時に default reviewers が seed される (human / codex /
 codex-security / system)。
 `reviewers list --group <id>` は `ReviewerRepository.listByGroup` と同じ
 境界で reviewer を `reviewer_id ASC` に並べ、空 group / 未登録 group は `(none)` を
-返す。
+返す。`--lens` は reviewer registry の `metadata_json.lens` に保存される非空文字列
+（built-in axis と custom axis を許可）。`--lens-prompt` は `metadata_json.lens_prompt`
+に保存される untrusted な reviewer prompt guidance で、`--lens` なしでは拒否される。
+`reviewers list` は lens 登録済み reviewer に `lens=<axis>` を表示する。
 
 ### `harness review auto`（Phase 11-2 で reviewer 解決）
 

@@ -776,10 +776,14 @@ Phase 11 は `review_proposals` を governance layer に拡張する。設計は
 
 schema v24 で `prompt_provenance_json TEXT` を nullable 追加。`review auto`
 （codex 由来）は reviewer に実際に送信した最終 prompt 文字列
-（`PROMPT_PREAMBLE` + operational knowledge section）の SHA-256 を harness 側で
-決定論的に計算し、`review_proposals.prompt_sha256` に格納する。同じ insert で
+（`PROMPT_PREAMBLE` + optional reviewer lens section + operational knowledge
+section）の SHA-256 を harness 側で決定論的に計算し、
+`review_proposals.prompt_sha256` に格納する。同じ insert で
 `prompt_provenance_json` に
-`{template:{name,version},knowledge:[{entryId,version}]}` を JSON として保存する。
+`{template:{name,version},knowledge:[{entryId,version}],lens?:{reviewerId,lens,lensPromptSha256}}`
+を JSON として保存する。`lensPromptSha256` は `metadata_json.lens_prompt` の原文 hash
+（prompt が無い場合は `null`）で、lens section の中和後本文ではなく operator 入力を
+監査する。
 `review process` の file 由来 legacy import は prompt を持たないため、
 `prompt_sha256` / `prompt_provenance_json` は NULL のままにする。
 
