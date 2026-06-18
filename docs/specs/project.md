@@ -122,6 +122,11 @@ domains:
   複数 reviewer を要求する requirement の `reviewer_ids` / `lens_axes` 欠落、
   `reviewer_ids` の重複や `max_reviewers` 超過は `ReviewRuleCompileError` で
   fail-closed になり、DEFAULT へ降格しない。
+- `mode: consensus` は review processing / hitch consensus dispatch のための rule
+  であり、互換 workflow `harness workflow reviewed-run` はまだ consensus dispatch を
+  持たない。project profile の effective rule が consensus のとき、`reviewed-run` は
+  `--dry-run` を含めて coder / reviewer agent 起動前に
+  `ReviewWorkflowUnsupportedError` で明示拒否する。
 
 ### Domain registry
 

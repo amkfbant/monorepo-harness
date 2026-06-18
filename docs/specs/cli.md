@@ -953,6 +953,14 @@ harness workflow reviewed-run \
 
 ### 動作
 
+Project profile の effective review rule が `mode: consensus` の場合、
+`harness workflow reviewed-run` は coder / reviewer agent を起動する前に
+`ReviewWorkflowUnsupportedError` で fail-closed 拒否する。これは `--dry-run` でも
+同じで、consensus profile は resolved policy 表示へ進まない。`reviewed-run` は単一
+`review auto` を順次処理する互換 workflow であり、consensus rule の reviewer
+dispatch / aggregate processing は `harness run` 後の明示的な review auto/process
+steps または consensus dispatch 対応 hitch runner が担う。
+
 1. attempt 0: `run` → `needs_review`（失敗系なら即停止）
 2. `review auto`（read-only sandbox の codex）→ `review-decision.yaml`
 3. `review process` → `approved` / `changes_requested` / `rejected`
