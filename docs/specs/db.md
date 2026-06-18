@@ -1593,6 +1593,21 @@ Repository / binding contract:
   stores the already-verified `targetChangeHash`. The repository does not use
   `target_change_idx` as authority and does not perform DB-side hash
   recomputation.
+- `runRefuteAgent()` is the refute input producer. It runs a refute-specific
+  Codex prompt from an OS-temp cwd outside runDir, materializing only refute
+  evidence inputs (`final-diff.patch`, root `untracked-*.patch`, and
+  `commands/*.out.log`). Root verdicts and sibling reviewer artifacts are never
+  copied into the cwd. It parses the target-bound DSL, verifies target binding
+  and refute-only evidence requirements, and records every outcome in
+  `review_refute_votes`. It never inserts `review_proposals`, so a refute vote
+  cannot pollute the normal reviewer consensus input set. Timeout / non-zero /
+  malformed / missing-field / artifact-absent / artifact-tamper outcomes are
+  recorded as `validation_status='rejected'` and remain audit-only.
+- Refute evidence validation is deterministic and existence-only: `kind='diff'`
+  may cite `final-diff.patch` or root `untracked-*.patch`; `kind='test'` may
+  cite `commands/*.out.log`. Existing artifacts with a mismatched kind are
+  rejected as `evidence_kind_mismatch`. Harness does not judge
+  `refute_reason` persuasiveness or compare artifact content.
 - `listByRun(runId)` and `listByTarget(runId, targetChangeHash)` return rows in
   append order (`created_at`, then `refute_id`).
 - Duplicate rows are deduped only through the v32 partial unique predicates:
@@ -1602,6 +1617,14 @@ Repository / binding contract:
 - Because the table has no FKs, insert performs the hard app-layer guard for
   advisory finding binding: a supplied `finding_id` must exist, and a supplied
   `hitch_id` must match `hitch_findings.hitch_id` for that finding.
+- `evaluateConsensus()` consumes only passed `uphold` / `refute` rows from the
+  configured `review.refute.group` and frozen `review.refute.reviewerIds`.
+  The frozen reviewer count is the strict-majority denominator:
+  `refutes > expectedReviewers / 2`. `inconclusive`, rejected, duplicate
+  reviewer rows for the same target, group mismatches, and frozen-set-external
+  rows are fail-closed non-participants. Targets without a strict majority keep
+  their original blocking required_change. When a rule has no `review.refute`
+  requirement, `ConsensusSummary` omits the `refute` key entirely.
 
 Doctor coverage:
 

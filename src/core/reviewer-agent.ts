@@ -1,14 +1,11 @@
 import {
-  cp,
   mkdir,
   mkdtemp,
   readFile,
-  readdir,
-  stat,
   writeFile,
   rm,
 } from "node:fs/promises";
-import { existsSync, lstatSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse as parseYaml } from "yaml";
@@ -54,6 +51,13 @@ import { buildOperationalKnowledgeReviewSection } from "./operational-knowledge.
 import { publishRedactedCodexEvents } from "../codex/events-lifecycle.js";
 import { sanitizeGateReason } from "./gate-reason.js";
 import { recordCodexUsage } from "../db/repositories/run-usage.js";
+import {
+  REVIEWER_WRITE_ALLOWLIST,
+  materializeReviewerInput,
+  reviewerArtifactRelDir,
+  snapshotRunDir,
+  verifyArtifactsUnchanged,
+} from "./reviewer-artifact-isolation.js";
 
 export { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
 
@@ -110,162 +114,6 @@ async function recordReviewerUsage(
 }
 
 const RUN_ID_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-
-/**
- * The ONLY files allowed to appear/change during the codex window. The
- * codex runner writes the agent's final message, stderr, and JSONL events
- * into these files, so they legitimately change. Everything else under
- * runDir — including review-decision.yaml and review-auto-error.json —
- * must match its pre-codex snapshot, or the run is rejected as tampering.
- *
- * review-decision.yaml / review-auto-error.json are written (and the
- * latter rm'd) by the harness itself, but ONLY after snapshot
- * verification has passed — so they belong in the snapshot, not here.
- */
-const REVIEWER_WRITE_ALLOWLIST = new Set([
-  "reviewer-agent.out.log",
-  "reviewer-agent.err.log",
-  ".reviewer-agent.events.raw.jsonl",
-]);
-
-const REVIEWER_INPUT_FILES = [
-  "review-request.md",
-  "summary.md",
-  "final-diff.patch",
-  "untracked-files.patch",
-  "untracked-files.txt",
-  "untracked-secrets.txt",
-  "untracked-denied.txt",
-] as const;
-
-const REVIEWER_INPUT_DIRS = ["commands"] as const;
-
-interface FileSnapshot {
-  size: number;
-  mtimeMs: number;
-}
-
-/**
- * OS-created metadata files that are not reviewer-agent output and must be
- * ignored by the tamper snapshot: macOS Finder/Spotlight `.DS_Store` and
- * AppleDouble `._*` resource forks. The OS can create these in the run dir at
- * any time (independent of the read-only codex sandbox), so counting them as
- * tampering would false-positive the review (#269).
- */
-function isOsMetadataNoise(name: string): boolean {
-  return name === ".DS_Store" || name.startsWith("._");
-}
-
-/**
- * Snapshot every file under runDir (recursively — `commands/` etc.
- * included), keyed by path relative to runDir. The two reviewer-agent log
- * files are excluded since codex legitimately writes them.
- */
-async function snapshotRunDir(
-  runDir: string,
-  writablePrefix: string,
-): Promise<Map<string, FileSnapshot>> {
-  const out = new Map<string, FileSnapshot>();
-  async function walk(dir: string, prefix: string): Promise<void> {
-    const entries = await readdir(dir, { withFileTypes: true });
-    for (const e of entries) {
-      const rel = prefix ? `${prefix}/${e.name}` : e.name;
-      if (e.isDirectory()) {
-        // NB: only FILES are exempted as OS noise below — never skip a
-        // directory by name, or a `._foo/`-named dir could hide tamper files
-        // (e.g. `._payload/leak.txt`) from the snapshot (codex #269 review).
-        await walk(join(dir, e.name), rel);
-      } else if (e.isFile()) {
-        // OS-metadata noise (macOS .DS_Store / AppleDouble ._*) is created by
-        // the operating system (Finder/Spotlight), not the reviewer agent.
-        // Excluding these FILES keeps the tamper check from false-positiving
-        // ("created unexpected file: .DS_Store") when the OS touches the run
-        // dir mid-review (#269).
-        if (isOsMetadataNoise(e.name)) continue;
-        if (isReviewerWritable(rel, writablePrefix)) continue;
-        const st = await stat(join(dir, e.name));
-        out.set(rel, { size: st.size, mtimeMs: st.mtimeMs });
-      }
-    }
-  }
-  await walk(runDir, "");
-  return out;
-}
-
-async function verifyArtifactsUnchanged(
-  runDir: string,
-  before: Map<string, FileSnapshot>,
-  writablePrefix: string,
-): Promise<void> {
-  const after = await snapshotRunDir(runDir, writablePrefix);
-  // detect modifications and additions
-  for (const [name, snap] of after) {
-    const prev = before.get(name);
-    if (!prev) {
-      throw new ReviewerAgentGateError(
-        `reviewer agent created unexpected file: ${name}`,
-      );
-    }
-    if (prev.size !== snap.size || prev.mtimeMs !== snap.mtimeMs) {
-      throw new ReviewerAgentGateError(
-        `reviewer agent modified run artifact: ${name}`,
-      );
-    }
-  }
-  // detect deletions
-  for (const [name] of before) {
-    if (!after.has(name)) {
-      throw new ReviewerAgentGateError(
-        `reviewer agent deleted run artifact: ${name}`,
-      );
-    }
-  }
-}
-
-function isReviewerWritable(rel: string, writablePrefix: string): boolean {
-  // Only the three codex-written log files are exempt from tamper detection —
-  // at runDir root (legacy) or under the per-reviewer prefix. Do NOT exempt the
-  // whole reviewers/<id>/ subtree: a misconfigured/escaped runner that writes
-  // any OTHER file there during the codex window (e.g. a fake review-decision
-  // or a leak.txt) must still be flagged and must not be silently ingested into
-  // DB artifacts (codex SP-11). Harness-written files (decision/error/published
-  // events) land AFTER verifyArtifactsUnchanged, so they need no exemption.
-  if (REVIEWER_WRITE_ALLOWLIST.has(rel)) return true;
-  for (const name of REVIEWER_WRITE_ALLOWLIST) {
-    if (rel === `${writablePrefix}/${name}`) return true;
-  }
-  return false;
-}
-
-function reviewerArtifactRelDir(reviewerId: string): string {
-  return `reviewers/${reviewerId}`;
-}
-
-async function materializeReviewerInput(
-  runDir: string,
-  inputDir: string,
-): Promise<void> {
-  await rm(inputDir, { recursive: true, force: true });
-  await mkdir(inputDir, { recursive: true });
-  for (const rel of REVIEWER_INPUT_FILES) {
-    const src = join(runDir, rel);
-    if (!existsSync(src)) continue;
-    // fail-closed: never materialize a symlink — it could resolve to a verdict
-    // or sibling reviewer artifact and re-introduce the cross-reviewer leak.
-    if (lstatSync(src).isSymbolicLink()) continue;
-    await cp(src, join(inputDir, rel), { force: true });
-  }
-  for (const rel of REVIEWER_INPUT_DIRS) {
-    const src = join(runDir, rel);
-    if (!existsSync(src)) continue;
-    if (lstatSync(src).isSymbolicLink()) continue;
-    await cp(src, join(inputDir, rel), {
-      recursive: true,
-      force: true,
-      filter: (s) => !lstatSync(s).isSymbolicLink(),
-    });
-  }
-}
 
 function assertReviewerPathSafeForAgent(reviewerId: string): void {
   try {
@@ -691,8 +539,8 @@ export async function runReviewerAgent(
     }
   }
 
-  // Invoke codex with the run directory as cwd. Sandbox is read-only —
-  // the agent doesn't need to touch the worktree, just read artifacts.
+  // Invoke codex from an isolated input copy. Sandbox is read-only; the agent
+  // only needs the materialized run artifacts, not the live runDir tree.
   await mkdir(reviewerDir, { recursive: true });
   const stdoutPath = join(reviewerDir, "reviewer-agent.out.log");
   const stderrPath = join(reviewerDir, "reviewer-agent.err.log");
@@ -706,7 +554,11 @@ export async function runReviewerAgent(
   // failure could let the agent tamper with run artifacts. Snapshot
   // every file (size + mtime) under runDir before codex runs, then
   // verify nothing outside the writable allowlist changed.
-  const snapshot = await snapshotRunDir(runDir, reviewerRelDir);
+  const snapshot = await snapshotRunDir(
+    runDir,
+    reviewerRelDir,
+    REVIEWER_WRITE_ALLOWLIST,
+  );
 
   const reviewerPrompt =
     PROMPT_PREAMBLE + buildReviewerLensSection(reviewerLens) + reviewerOpsSection;
@@ -778,7 +630,12 @@ export async function runReviewerAgent(
     // Tamper check FIRST — before the timeout/exitCode gates. A sandbox
     // escape that mutates an artifact and THEN exits non-zero / times out
     // would otherwise slip past detection.
-    await verifyArtifactsUnchanged(runDir, snapshot, reviewerRelDir);
+    await verifyArtifactsUnchanged(
+      runDir,
+      snapshot,
+      reviewerRelDir,
+      REVIEWER_WRITE_ALLOWLIST,
+    );
     const publishResult = await publishRedactedCodexEvents({
       rawPath: rawEventsPath,
       tmpPath: tmpEventsPath,

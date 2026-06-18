@@ -94,6 +94,12 @@ describe("compileProfileReviewRule", () => {
       profile({
         mode: "consensus",
         max_reviewers: 3,
+        refute: {
+          group: "refuters",
+          reviewer_ids: ["refute-a", "refute-b", "refute-c"],
+          min_participants: 2,
+          max_reviewers: 3,
+        },
         requirements: [
           {
             group: "humans",
@@ -113,6 +119,12 @@ describe("compileProfileReviewRule", () => {
     expect(rule).toEqual({
       mode: "consensus",
       maxReviewers: 3,
+      refute: {
+        group: "refuters",
+        reviewerIds: ["refute-a", "refute-b", "refute-c"],
+        minParticipants: 2,
+        maxReviewers: 3,
+      },
       requirements: [
         {
           group: "humans",
@@ -127,6 +139,42 @@ describe("compileProfileReviewRule", () => {
       overrides: { allowedReviewers: ["lead"], requireReason: false },
       staleProposal: { rejectSuperseded: false, maxAgeHours: 12 },
     });
+  });
+
+  it("rejects a refute requirement outside consensus mode", () => {
+    expect(() =>
+      compileProfileReviewRule(
+        profile({
+          mode: "latest-proposal",
+          refute: {
+            group: "refuters",
+            reviewer_ids: ["refute-a", "refute-b", "refute-c"],
+          },
+        }),
+      ),
+    ).toThrow(/review\.refute is set but review\.mode is "latest-proposal"/);
+  });
+
+  it("rejects an unsatisfiable refute frozen reviewer set", () => {
+    expect(() =>
+      compileProfileReviewRule(
+        profile({
+          mode: "consensus",
+          refute: {
+            group: "refuters",
+            reviewer_ids: ["refute-a", "refute-b"],
+            min_participants: 3,
+          },
+          requirements: [
+            {
+              group: "humans",
+              min_approvals: 1,
+              blocking_decisions: ["changes_requested", "rejected"],
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/review\.refute\.reviewer_ids has 2 distinct entries, but min_participants=3/);
   });
 
   it("rejects a multi-reviewer requirement without frozen reviewers and lenses", () => {
@@ -297,6 +345,12 @@ describe("parseReviewRuleSnapshot", () => {
   };
   const consensusRule: ReviewRule = {
     mode: "consensus",
+    refute: {
+      group: "refuters",
+      reviewerIds: ["refute-a", "refute-b", "refute-c"],
+      minParticipants: 2,
+      maxReviewers: 3,
+    },
     requirements: [
       {
         group: "reviewers",
@@ -321,6 +375,32 @@ describe("parseReviewRuleSnapshot", () => {
     expect(parseReviewRuleSnapshot(JSON.stringify(consensusRule))).toEqual(
       consensusRule,
     );
+  });
+
+  it("rejects a snapshot whose refute reviewerIds are missing", () => {
+    expect(() =>
+      parseReviewRuleSnapshot(
+        JSON.stringify({
+          ...consensusRule,
+          refute: { group: "refuters", reviewerIds: [] },
+        }),
+      ),
+    ).toThrow(ReviewRuleSnapshotError);
+  });
+
+  it("rejects a snapshot whose refute minParticipants exceeds the frozen set", () => {
+    expect(() =>
+      parseReviewRuleSnapshot(
+        JSON.stringify({
+          ...consensusRule,
+          refute: {
+            group: "refuters",
+            reviewerIds: ["refute-a", "refute-b"],
+            minParticipants: 3,
+          },
+        }),
+      ),
+    ).toThrow(/review\.refute\.reviewer_ids has 2 distinct entries/);
   });
 
   it("throws a typed snapshot error (not raw SyntaxError) on invalid JSON", () => {

@@ -958,6 +958,9 @@ requirement（per-group `minApprovals` / `blockingDecisions`）に加えて以�
   `maxAgeHours` 超過の proposal を除外し `ConsensusSummary.excludedProposals` に
   記録。timestamp 解析不能時は fail-closed（stale 扱いで除外）。負経過
   （reviewedAt が evaluatedAt より後）は除外しない。
+- **summary JSON compatibility**: `review.refute` 未設定の rule では
+  `ConsensusSummary` に `refute` key を出力しない。`review.refute` 設定時のみ
+  frozen reviewer set / strict majority の refute summary を含める。
 - **stall escalation**: `detectConsensusStall`（`src/core/consensus-stall.ts`、純
   関数）が consensus 評価スナップショット列（時刻昇順）から「詰まり」を判定する。
   直近 `stallAfterSnapshots` 件が unresolved（pending / changes_requested）のまま
@@ -1051,16 +1054,34 @@ frozen consensus dispatch は各 reviewer の `metadata_json.lens` /
 `{reviewerId,lens,lensPromptSha256}` を保存する。lens は proposal を多様化する入力であり、
 `evaluateConsensus` の quorum / tie-break / state transition には参加しない。
 
-> **反証 binding の現状仕様**: SP-16 の app 層 target binding は実装済み。
-> `normalizeChangeText()` / versioned `targetChangeHash()` /
-> `verifyRefuteBinding()` が refute 票を active required change に fail-closed で
-> bind し、`verifyAndRecordRefuteBinding()` が成功を
-> `review_refute_votes.validation_status='passed'`、失敗を
-> `validation_status='rejected'` + `reject_reason` の監査行として保存する。
-> **残る設計段階（現状仕様ではない）**: refute requirement DSL、`runRefuteAgent`、
-> refute 票を使った `evaluateConsensus` の第2 requirement、および `listByGroup` からの
-> 自動 reviewer set freeze は未実装。これらが入っても上表 (2)(3) の決定論ゲートは
-> **凍結契約として不変**で、lens / refute は (1) 提案（入力）の多様化に留まる。
+> **反証 verify の現状仕様**: SP-16 の app 層 target binding に加え、SP-17
+> Phase 2 P2-A/B/C で `review.refute` DSL、`runRefuteAgent`、および
+> `evaluateConsensus` の target-bound 第2 requirement が実装済み。
+> `runRefuteAgent` は通常の `review_proposals` ではなく append-only
+> `review_refute_votes` にだけ書く。codex cwd は runDir 外の OS 一時ディレクトリで、
+> materialize する refute 入力は diff artifact（`final-diff.patch` /
+> `untracked-*.patch`）と `commands/` の test log に限る。root
+> `review-decision.yaml` と `reviewers/` は cwd に入れない。run 後は runDir snapshot
+> を検証し、codex が許可 log 以外の artifact を改変/追加/削除した場合は
+> `validation_status='rejected'` / `reject_reason='artifact_tamper'` にする。
+> `refute_verdict='refute'` は
+> `refute_reason`、`counter_evidence.kind in {diff,test}` + artifact ref、
+> `refute_condition`、`retract_condition` が揃い、target binding と artifact
+> existence が決定論検証された場合だけ `validation_status='passed'` になる。
+> existence 検証は kind/type binding も含む: `kind='diff'` は `final-diff.patch`
+> または root の `untracked-*.patch`、`kind='test'` は `commands/*.out.log`
+> だけを受理する。artifact 内容の説得力は評価しない。
+> `kind='none'` の refute は `reject_reason='evidence_none'` で rejected。
+> `uphold` は target binding が有効なら `kind='none'` でも passed participant、
+> `inconclusive` は passed でも participant から除外される。
+>
+> `evaluateConsensus` は `review.refute.reviewerIds` の frozen set を denominator に
+> `refutes > expectedReviewers / 2` の **strict majority** だけを refuted target と
+> みなす。rejected / inconclusive / group mismatch / frozen set 外 / duplicate reviewer
+> vote は fail-closed で majority に数えない。strict majority に到達した target の
+> `changes_requested` blocker だけが neutralized され、`rejected` decision は refute
+> できない。通常 consensus の quorum / tie-break / `needs_review` status guard は不変で、
+> severity mutation は経由しない。
 
 ## Phase 19 — hitch convergence（close 済み・現状仕様）
 

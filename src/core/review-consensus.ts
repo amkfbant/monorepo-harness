@@ -1,3 +1,4 @@
+import { targetChangeHash } from "./refute-binding.js";
 import type { ReviewRule, ReviewRuleQuorum, ReviewRuleStaleProposal } from "./review-rule.js";
 
 /**
@@ -35,6 +36,8 @@ export interface EnrichedProposal {
   reviewerType: string;
   groupId: string | null;
   decision: ConsensusStatus | "pending";
+  /** Required changes emitted by a changes_requested/rejected proposal. */
+  requiredChanges?: string[];
   reviewedAt: string;
   /**
    * Phase 2-2: non-null when this proposal was superseded by a later
@@ -42,6 +45,15 @@ export interface EnrichedProposal {
    * `undefined`/`null` = active.
    */
   supersededAt?: string | null;
+}
+
+export interface EnrichedRefuteVote {
+  refuteId: number;
+  reviewerId: string;
+  groupId: string | null;
+  targetChangeHash: string;
+  refuteVerdict: "uphold" | "refute" | "inconclusive" | null;
+  validationStatus: "passed" | "rejected";
 }
 
 export interface ConsensusOverride {
@@ -81,6 +93,7 @@ export interface ConsensusSummary {
   }>;
   override: ConsensusOverride | null;
   requirements: ConsensusRequirementCheck[];
+  refute?: ConsensusRefuteSummary;
   /** Phase 2-2: proposals dropped by the staleness filter (audit trail). */
   excludedProposals: ExcludedProposal[];
   decisionPath:
@@ -89,6 +102,23 @@ export interface ConsensusSummary {
     | "requirements-met"
     | "requirements-pending"
     | "no-requirements-latest-proposal";
+}
+
+export interface ConsensusRefuteSummary {
+  group: string;
+  reviewerIds: string[];
+  refutedTargetChangeHashes: string[];
+  checks: ConsensusRefuteTargetCheck[];
+}
+
+export interface ConsensusRefuteTargetCheck {
+  targetChangeHash: string;
+  expectedReviewers: number;
+  participants: number;
+  refutes: number;
+  upholds: number;
+  strictMajorityMet: boolean;
+  duplicateReviewers: string[];
 }
 
 export interface ConsensusResult {
@@ -100,6 +130,7 @@ export function evaluateConsensus(input: {
   rule: ReviewRule;
   ruleSha256: string;
   proposals: EnrichedProposal[];
+  refuteVotes?: EnrichedRefuteVote[];
   override?: ConsensusOverride | null;
   evaluatedAt: string;
 }): ConsensusResult {
@@ -116,6 +147,7 @@ export function evaluateConsensus(input: {
     evaluatedAt,
   );
 
+  const refuteSummary = evaluateRefuteSummary(input.rule, input.refuteVotes ?? []);
   const baseSummary = {
     evaluatedAt,
     ruleSha256: ruleSha,
@@ -127,6 +159,7 @@ export function evaluateConsensus(input: {
       decision: p.decision,
     })),
     override,
+    ...(refuteSummary !== null ? { refute: refuteSummary } : {}),
     excludedProposals,
   };
 
@@ -177,6 +210,9 @@ export function evaluateConsensus(input: {
   // pending.
   let blockingStatus: ConsensusStatus | null = null;
   const reqChecks: ConsensusRequirementCheck[] = [];
+  const refutedTargets = new Set(
+    baseSummary.refute?.refutedTargetChangeHashes ?? [],
+  );
   for (const req of input.rule.requirements) {
     const inGroup = proposals.filter(
       (p) => p.groupId === req.group && p.reviewerId !== null,
@@ -187,7 +223,8 @@ export function evaluateConsensus(input: {
     const blockedByChanges = inGroup.some(
       (p) =>
         p.decision === "changes_requested" &&
-        req.blockingDecisions.includes("changes_requested"),
+        req.blockingDecisions.includes("changes_requested") &&
+        !isChangesRequestRefuted(p, refutedTargets),
     );
     const approvals = inGroup.filter((p) => p.decision === "approved").length;
     // Phase 2-1: count distinct reviewers that submitted a non-pending verdict.
@@ -252,6 +289,87 @@ export function evaluateConsensus(input: {
       decisionPath: "requirements-met",
     },
   };
+}
+
+function evaluateRefuteSummary(
+  rule: ReviewRule,
+  votes: EnrichedRefuteVote[],
+): ConsensusRefuteSummary | null {
+  const refute = rule.refute;
+  if (refute === undefined) return null;
+  const reviewerIds = [...refute.reviewerIds].sort(compareStrings);
+  const reviewerSet = new Set(reviewerIds);
+  const byTarget = new Map<string, EnrichedRefuteVote[]>();
+  for (const vote of votes) {
+    if (vote.validationStatus !== "passed") continue;
+    if (vote.groupId !== refute.group) continue;
+    if (!reviewerSet.has(vote.reviewerId)) continue;
+    if (vote.refuteVerdict !== "uphold" && vote.refuteVerdict !== "refute") {
+      continue;
+    }
+    const existing = byTarget.get(vote.targetChangeHash) ?? [];
+    existing.push(vote);
+    byTarget.set(vote.targetChangeHash, existing);
+  }
+
+  const minParticipants = refute.minParticipants ?? 1;
+  const checks = [...byTarget.entries()]
+    .sort(([a], [b]) => compareStrings(a, b))
+    .map(([targetHash, targetVotes]): ConsensusRefuteTargetCheck => {
+      const byReviewer = new Map<string, EnrichedRefuteVote[]>();
+      for (const vote of targetVotes) {
+        const existing = byReviewer.get(vote.reviewerId) ?? [];
+        existing.push(vote);
+        byReviewer.set(vote.reviewerId, existing);
+      }
+      const duplicateReviewers = [...byReviewer.entries()]
+        .filter(([, reviewerVotes]) => reviewerVotes.length > 1)
+        .map(([reviewerId]) => reviewerId)
+        .sort(compareStrings);
+      const uniqueVotes =
+        duplicateReviewers.length === 0
+          ? [...byReviewer.values()].map((reviewerVotes) => reviewerVotes[0]!)
+          : [];
+      const refutes = uniqueVotes.filter(
+        (vote) => vote.refuteVerdict === "refute",
+      ).length;
+      const upholds = uniqueVotes.filter(
+        (vote) => vote.refuteVerdict === "uphold",
+      ).length;
+      const participants = uniqueVotes.length;
+      return {
+        targetChangeHash: targetHash,
+        expectedReviewers: reviewerIds.length,
+        participants,
+        refutes,
+        upholds,
+        strictMajorityMet:
+          duplicateReviewers.length === 0 &&
+          participants >= minParticipants &&
+          refutes > reviewerIds.length / 2,
+        duplicateReviewers,
+      };
+    });
+  return {
+    group: refute.group,
+    reviewerIds,
+    refutedTargetChangeHashes: checks
+      .filter((check) => check.strictMajorityMet)
+      .map((check) => check.targetChangeHash),
+    checks,
+  };
+}
+
+function isChangesRequestRefuted(
+  proposal: EnrichedProposal,
+  refutedTargets: ReadonlySet<string>,
+): boolean {
+  if (proposal.requiredChanges === undefined || proposal.requiredChanges.length === 0) {
+    return false;
+  }
+  return proposal.requiredChanges.every((change) =>
+    refutedTargets.has(targetChangeHash(change)),
+  );
 }
 
 /**
@@ -337,4 +455,10 @@ function pickLatest(proposals: EnrichedProposal[]): EnrichedProposal | null {
     if (p.reviewedAt > best.reviewedAt) best = p;
   }
   return best;
+}
+
+function compareStrings(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
 }
