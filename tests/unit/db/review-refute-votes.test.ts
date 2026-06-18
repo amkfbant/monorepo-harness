@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import Database from "better-sqlite3";
+import { targetChangeHash } from "../../../src/core/refute-binding.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import {
   ReviewRefuteVotesRepository,
@@ -53,7 +54,7 @@ function passedInput(
   return {
     runId: "run-1",
     hitchId: "h1",
-    targetChangeHash: "precomputed-hash",
+    targetChangeHash: targetChangeHash("default target"),
     targetChangeIdx: 3,
     findingId: "f1",
     reviewerId: "reviewer-a",
@@ -92,14 +93,16 @@ function rejectedInput(
 }
 
 describe("ReviewRefuteVotesRepository", () => {
-  it("appends a precomputed target_change_hash and lists by run and target", () => {
+  it("appends a verified target_change_hash and lists by run and target", () => {
     const db = dbWithFinding("h1", "f1");
     const repo = new ReviewRefuteVotesRepository(db);
+    const hashOne = targetChangeHash("first target");
+    const hashTwo = targetChangeHash("second target");
 
-    const first = repo.insert(passedInput({ targetChangeHash: "hash-one" }));
+    const first = repo.insert(passedInput({ targetChangeHash: hashOne }));
     const second = repo.insert(
       passedInput({
-        targetChangeHash: "hash-two",
+        targetChangeHash: hashTwo,
         promptSha256: "prompt-b",
         sourceSha256: "source-b",
         createdAt: "2026-06-17T00:00:01.000Z",
@@ -108,7 +111,7 @@ describe("ReviewRefuteVotesRepository", () => {
 
     expect(first.inserted).toBe(true);
     expect(second.inserted).toBe(true);
-    expect(first.row.targetChangeHash).toBe("hash-one");
+    expect(first.row.targetChangeHash).toBe(hashOne);
     expect(first.row.targetChangeIdx).toBe(3);
     expect(first.row.promptProvenanceJson).toBe(
       JSON.stringify({ template: "refute-vote", version: 1 }),
@@ -118,7 +121,7 @@ describe("ReviewRefuteVotesRepository", () => {
       second.row.refuteId,
     ]);
     expect(
-      repo.listByTarget("run-1", "hash-one").map((row) => row.refuteId),
+      repo.listByTarget("run-1", hashOne).map((row) => row.refuteId),
     ).toEqual([first.row.refuteId]);
   });
 

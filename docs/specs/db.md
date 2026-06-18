@@ -1490,9 +1490,14 @@ backbone 準拠:
 - **FK ゼロ**: `run_id` / `hitch_id` / `finding_id` / `reviewer_id` は advisory
   provenance ID であり、`FOREIGN KEY` は一切宣言しない。import reset や親 purge
   で FK error を起こさず、監査行は doctor の orphan / hitch mismatch check へ残す。
-- **target binding**: `target_change_hash` は app 層が事前計算する
-  `sha256(normalizeChangeText(change_text))`。repository は SP-2 以降で
-  precomputed hash を保存するだけで、schema migration は hash 関数を持たない。
+- **target binding**: `target_change_hash` は app 層の
+  `targetChangeHash(change_text)`、すなわち
+  `sha256("refute-target-change:v1" || NUL || normalizeChangeText(change_text))`。
+  version token と normalized text は NUL で区切り、将来の正規化規則変更を
+  corruption と区別できるようにする。`normalizeChangeText` は NFC、`CRLF`/`CR`→`LF`、
+  行内の tab/space 連続を単一 space、行末空白除去、全体 trim を行い、
+  case folding / 句読点除去はしない。`target_change_idx` は記録時点の advisory
+  index で、binding の正本ではない。
 - **provenance footprint**: `model` / `prompt_sha256` /
   `prompt_provenance_json` / `usage_kind` / `usage_seq` を持ち、`run_usage` とは
   `(run_id, usage_kind, usage_seq)` で相関できる（FK は張らない）。
@@ -1566,11 +1571,28 @@ CREATE INDEX review_refute_votes_hitch_idx ON review_refute_votes(hitch_id, find
 retract condition）を必須にする。`uphold` / `inconclusive` は降格を駆動しないため、
 counter evidence なしでも `passed` にできる。
 
-Repository contract:
+Repository / binding contract:
 
+- `normalizeChangeText()` / `targetChangeHash()` /
+  `verifyRefuteBinding()` は `src/core/refute-binding.ts` の純関数。refute 票は
+  active `review_required_changes.change_text` から作った hash 集合に
+  fail-closed で bind できる場合だけ集約入力にできる。`targetChangeHash()` は
+  `TARGET_CHANGE_HASH_VERSION` と NUL 区切り payload を含む versioned hash で、
+  doctor の recompute も同じ helper を使う。
+- `verifyAndRecordRefuteBinding()` は binding 検証結果を
+  `ReviewRefuteVotesRepository.insert()` に map する adapter。binding 成功時は
+  `validation_status='passed'`、`target_change_hash` は bound hash、
+  `target_change_idx` は bound idx を保存する。binding 失敗時は participant
+  proposal にはしないが、`validation_status='rejected'` と
+  `reject_reason IN ('missing_target','hash_mismatch','unknown_target')` の監査行を
+  append する。`hash_mismatch` / target text 由来の `unknown_target` は harness
+  recompute hash を保存する。target text が無く declared hash だけが未知だった
+  `unknown_target` は declared hash を保存し、target 欠落は sentinel hash
+  `refute-target-change:missing:v1` を保存する。
 - `ReviewRefuteVotesRepository.insert()` writes the v32 footprint columns and
-  stores caller-provided `targetChangeHash` as-is. It does not normalize change
-  text or recompute hashes.
+  stores the already-verified `targetChangeHash`. The repository does not use
+  `target_change_idx` as authority and does not perform DB-side hash
+  recomputation.
 - `listByRun(runId)` and `listByTarget(runId, targetChangeHash)` return rows in
   append order (`created_at`, then `refute_id`).
 - Duplicate rows are deduped only through the v32 partial unique predicates:
@@ -1591,6 +1613,11 @@ Doctor coverage:
   `hitch_id` disagrees with the `hitch_findings.hitch_id` join are reported as
   advisory `warn` findings. Orphans are handled by `orphan_rows`, not double
   counted here.
+- **`review_refute_votes.target_hash_mismatch`**: passed rows whose stored
+  `target_change_hash` does not match any hash recomputed from active
+  `review_required_changes.change_text` for the same `run_id` are reported as
+  advisory `warn` findings. Rejected rows are excluded because an unbound target
+  can be the expected reason they were rejected.
 - These checks are registered in `DEFAULT_CHECKS`, `category='review'`, with
   `repairable:false`. They are table-presence guarded so a pre-v32 DB skips
   safely instead of crashing in read-only doctor paths.
