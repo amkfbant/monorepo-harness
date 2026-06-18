@@ -1051,16 +1051,25 @@ frozen consensus dispatch は各 reviewer の `metadata_json.lens` /
 `{reviewerId,lens,lensPromptSha256}` を保存する。lens は proposal を多様化する入力であり、
 `evaluateConsensus` の quorum / tie-break / state transition には参加しない。
 
-> **反証 binding の現状仕様**: SP-16 の app 層 target binding は実装済み。
-> `normalizeChangeText()` / versioned `targetChangeHash()` /
-> `verifyRefuteBinding()` が refute 票を active required change に fail-closed で
-> bind し、`verifyAndRecordRefuteBinding()` が成功を
-> `review_refute_votes.validation_status='passed'`、失敗を
-> `validation_status='rejected'` + `reject_reason` の監査行として保存する。
-> **残る設計段階（現状仕様ではない）**: refute requirement DSL、`runRefuteAgent`、
-> refute 票を使った `evaluateConsensus` の第2 requirement、および `listByGroup` からの
-> 自動 reviewer set freeze は未実装。これらが入っても上表 (2)(3) の決定論ゲートは
-> **凍結契約として不変**で、lens / refute は (1) 提案（入力）の多様化に留まる。
+> **反証 verify の現状仕様**: SP-16 の app 層 target binding に加え、SP-17
+> Phase 2 P2-A/B/C で `review.refute` DSL、`runRefuteAgent`、および
+> `evaluateConsensus` の target-bound 第2 requirement が実装済み。
+> `runRefuteAgent` は通常の `review_proposals` ではなく append-only
+> `review_refute_votes` にだけ書く。`refute_verdict='refute'` は
+> `refute_reason`、`counter_evidence.kind in {diff,test}` + artifact ref、
+> `refute_condition`、`retract_condition` が揃い、target binding と artifact
+> existence が決定論検証された場合だけ `validation_status='passed'` になる。
+> `kind='none'` の refute は `reject_reason='evidence_none'` で rejected。
+> `uphold` は target binding が有効なら `kind='none'` でも passed participant、
+> `inconclusive` は passed でも participant から除外される。
+>
+> `evaluateConsensus` は `review.refute.reviewerIds` の frozen set を denominator に
+> `refutes > expectedReviewers / 2` の **strict majority** だけを refuted target と
+> みなす。rejected / inconclusive / group mismatch / frozen set 外 / duplicate reviewer
+> vote は fail-closed で majority に数えない。strict majority に到達した target の
+> `changes_requested` blocker だけが neutralized され、`rejected` decision は refute
+> できない。通常 consensus の quorum / tie-break / `needs_review` status guard は不変で、
+> severity mutation は経由しない。
 
 ## Phase 19 — hitch convergence（close 済み・現状仕様）
 

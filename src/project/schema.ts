@@ -141,10 +141,20 @@ const ReviewRuleRequirementSchema = z
   })
   .strict();
 
+const ReviewRefuteRequirementSchema = z
+  .object({
+    group: z.string().min(1),
+    reviewer_ids: z.array(z.string().min(1)).min(1),
+    min_participants: z.number().int().positive().optional(),
+    max_reviewers: z.number().int().positive().optional(),
+  })
+  .strict();
+
 export const ProfileReviewRuleSchema = z
   .object({
     mode: z.enum(["latest-proposal", "consensus"]).default("latest-proposal"),
     max_reviewers: z.number().int().positive().optional(),
+    refute: ReviewRefuteRequirementSchema.optional(),
     requirements: z.array(ReviewRuleRequirementSchema).optional(),
     overrides: z
       .object({

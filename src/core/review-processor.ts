@@ -25,6 +25,7 @@ import {
   type ConsensusStatus,
   type EnrichedProposal,
 } from "./review-consensus.js";
+import { targetChangeHash } from "./refute-binding.js";
 import { activeProposalRows, enrichRows } from "./consensus-enrichment.js";
 import {
   DEFAULT_REVIEW_RULE,
@@ -33,6 +34,7 @@ import {
   ruleSha256,
   type ReviewRule,
 } from "./review-rule.js";
+import { ReviewRefuteVotesRepository } from "../db/repositories/review-refute-votes.js";
 
 /**
  * Phase 11-5: persist a consensus row for the just-promoted decision.
@@ -208,6 +210,19 @@ function processConsensusModePath(
       rule,
       ruleSha256: ruleSha,
       proposals: enrichRows(rows, reviewerRepo),
+      refuteVotes: new ReviewRefuteVotesRepository(db)
+        .listByRun(opts.runId)
+        .map((vote) => {
+          const reviewer = reviewerRepo.findById(vote.reviewerId);
+          return {
+            refuteId: vote.refuteId,
+            reviewerId: vote.reviewerId,
+            groupId: reviewer?.groupId ?? null,
+            targetChangeHash: vote.targetChangeHash,
+            refuteVerdict: vote.refuteVerdict,
+            validationStatus: vote.validationStatus,
+          };
+        }),
       evaluatedAt: reviewedAt,
     });
     if (result.status === "pending") {
@@ -223,12 +238,21 @@ function processConsensusModePath(
     // by evaluateConsensus) drive the decision, audit ids, and processing.
     const includedIds = new Set(result.summary.proposals.map((p) => p.proposalId));
     const includedRows = rows.filter((r) => includedIds.has(r.proposalId));
+    const refutedTargets = new Set(
+      result.summary.refute?.refutedTargetChangeHashes ?? [],
+    );
     // Required changes feed rerun; aggregate them from the included proposals
     // that did not approve (deduplicated, order-stable).
     const requiredChanges = dedupeStrings(
       includedRows
         .filter((r) => r.decision !== "approved")
-        .flatMap((r) => r.requiredChanges),
+        .flatMap((r) =>
+          r.requiredChanges.filter(
+            (change) =>
+              r.decision !== "changes_requested" ||
+              !refutedTargets.has(targetChangeHash(change)),
+          ),
+        ),
     );
     const decisionYaml = serializeReviewDecision({
       runId: opts.runId,

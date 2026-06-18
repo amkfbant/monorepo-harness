@@ -46,6 +46,7 @@ export function enrichRows(
       reviewerType: reviewer?.reviewerType ?? "unknown",
       groupId: reviewer?.groupId ?? null,
       decision: p.decision,
+      requiredChanges: p.requiredChanges,
       reviewedAt: p.reviewedAt,
       supersededAt: p.supersededAt,
     };

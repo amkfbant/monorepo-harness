@@ -1593,6 +1593,13 @@ Repository / binding contract:
   stores the already-verified `targetChangeHash`. The repository does not use
   `target_change_idx` as authority and does not perform DB-side hash
   recomputation.
+- `runRefuteAgent()` is the refute input producer. It runs a refute-specific
+  Codex prompt, parses the target-bound DSL, verifies target binding and
+  refute-only evidence requirements, and records every outcome in
+  `review_refute_votes`. It never inserts `review_proposals`, so a refute vote
+  cannot pollute the normal reviewer consensus input set. Timeout / non-zero /
+  malformed / missing-field / artifact-absent outcomes are recorded as
+  `validation_status='rejected'` and remain audit-only.
 - `listByRun(runId)` and `listByTarget(runId, targetChangeHash)` return rows in
   append order (`created_at`, then `refute_id`).
 - Duplicate rows are deduped only through the v32 partial unique predicates:
@@ -1602,6 +1609,13 @@ Repository / binding contract:
 - Because the table has no FKs, insert performs the hard app-layer guard for
   advisory finding binding: a supplied `finding_id` must exist, and a supplied
   `hitch_id` must match `hitch_findings.hitch_id` for that finding.
+- `evaluateConsensus()` consumes only passed `uphold` / `refute` rows from the
+  configured `review.refute.group` and frozen `review.refute.reviewerIds`.
+  The frozen reviewer count is the strict-majority denominator:
+  `refutes > expectedReviewers / 2`. `inconclusive`, rejected, duplicate
+  reviewer rows for the same target, group mismatches, and frozen-set-external
+  rows are fail-closed non-participants. Targets without a strict majority keep
+  their original blocking required_change.
 
 Doctor coverage:
 

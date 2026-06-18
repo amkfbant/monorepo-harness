@@ -45,6 +45,12 @@ describe("ProjectProfileSchema", () => {
     const p = validProfile() as Record<string, unknown>;
     p.review = {
       mode: "consensus",
+      refute: {
+        group: "refuters",
+        reviewer_ids: ["refute-a", "refute-b", "refute-c"],
+        min_participants: 2,
+        max_reviewers: 3,
+      },
       requirements: [
         {
           group: "humans",
@@ -59,6 +65,25 @@ describe("ProjectProfileSchema", () => {
       stale_proposal: { reject_superseded: true, max_age_hours: 24 },
     };
     expect(ProjectProfileSchema.safeParse(p).success).toBe(true);
+  });
+
+  it("rejects an invalid refute reviewer set in the profile review section", () => {
+    const p = validProfile() as Record<string, unknown>;
+    p.review = {
+      mode: "consensus",
+      refute: {
+        group: "refuters",
+        reviewer_ids: [],
+      },
+      requirements: [
+        {
+          group: "humans",
+          min_approvals: 1,
+          blocking_decisions: ["changes_requested"],
+        },
+      ],
+    };
+    expect(ProjectProfileSchema.safeParse(p).success).toBe(false);
   });
 
   it("rejects unknown keys in the profile review section", () => {

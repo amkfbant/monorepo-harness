@@ -8,6 +8,7 @@ import {
   ruleSha256,
   type ReviewRule,
 } from "../../../src/core/review-rule.js";
+import { targetChangeHash } from "../../../src/core/refute-binding.js";
 
 const NOW = "2026-05-24T10:00:00Z";
 
@@ -613,5 +614,192 @@ describe("evaluateConsensus staleness (Phase 2-2)", () => {
     });
     expect(r.status).toBe("approved");
     expect(r.summary.excludedProposals).toEqual([]);
+  });
+});
+
+const REFUTE_RULE: ReviewRule = {
+  mode: "consensus",
+  refute: {
+    group: "refuters",
+    reviewerIds: ["refute-a", "refute-b", "refute-c"],
+    minParticipants: 2,
+  },
+  requirements: [
+    {
+      group: "humans",
+      minApprovals: 1,
+      blockingDecisions: ["changes_requested", "rejected"],
+    },
+  ],
+  overrides: { allowedReviewers: [], requireReason: true },
+  staleProposal: { rejectSuperseded: true },
+};
+
+describe("evaluateConsensus refute requirement (Phase 2 P2-C)", () => {
+  it("strict-majority refutes neutralize a target-bound changes_requested blocker", () => {
+    const target = "Add input validation";
+    const r = evaluateConsensus({
+      rule: REFUTE_RULE,
+      ruleSha256: ruleSha256(REFUTE_RULE),
+      proposals: [
+        proposal({
+          proposalId: 1,
+          decision: "changes_requested",
+          reviewerId: "alice",
+          groupId: "humans",
+          requiredChanges: [target],
+        }),
+        proposal({
+          proposalId: 2,
+          decision: "approved",
+          reviewerId: "bob",
+          groupId: "humans",
+        }),
+      ],
+      refuteVotes: [
+        {
+          refuteId: 1,
+          reviewerId: "refute-a",
+          groupId: "refuters",
+          targetChangeHash: targetChangeHash(target),
+          refuteVerdict: "refute",
+          validationStatus: "passed",
+        },
+        {
+          refuteId: 2,
+          reviewerId: "refute-b",
+          groupId: "refuters",
+          targetChangeHash: targetChangeHash(target),
+          refuteVerdict: "refute",
+          validationStatus: "passed",
+        },
+      ],
+      evaluatedAt: NOW,
+    });
+
+    expect(r.status).toBe("approved");
+    expect(r.summary.decisionPath).toBe("requirements-met");
+    expect(r.summary.refute?.refutedTargetChangeHashes).toEqual([
+      targetChangeHash(target),
+    ]);
+    expect(r.summary.refute?.checks[0]).toMatchObject({
+      targetChangeHash: targetChangeHash(target),
+      refutes: 2,
+      expectedReviewers: 3,
+      strictMajorityMet: true,
+    });
+  });
+
+  it("two refutes out of four expected reviewers is not a strict majority", () => {
+    const target = "Add input validation";
+    const rule: ReviewRule = {
+      ...REFUTE_RULE,
+      refute: {
+        group: "refuters",
+        reviewerIds: ["refute-a", "refute-b", "refute-c", "refute-d"],
+      },
+    };
+    const r = evaluateConsensus({
+      rule,
+      ruleSha256: ruleSha256(rule),
+      proposals: [
+        proposal({
+          proposalId: 1,
+          decision: "changes_requested",
+          reviewerId: "alice",
+          groupId: "humans",
+          requiredChanges: [target],
+        }),
+        proposal({
+          proposalId: 2,
+          decision: "approved",
+          reviewerId: "bob",
+          groupId: "humans",
+        }),
+      ],
+      refuteVotes: [
+        {
+          refuteId: 1,
+          reviewerId: "refute-a",
+          groupId: "refuters",
+          targetChangeHash: targetChangeHash(target),
+          refuteVerdict: "refute",
+          validationStatus: "passed",
+        },
+        {
+          refuteId: 2,
+          reviewerId: "refute-b",
+          groupId: "refuters",
+          targetChangeHash: targetChangeHash(target),
+          refuteVerdict: "refute",
+          validationStatus: "passed",
+        },
+      ],
+      evaluatedAt: NOW,
+    });
+
+    expect(r.status).toBe("changes_requested");
+    expect(r.summary.refute?.checks[0]).toMatchObject({
+      refutes: 2,
+      expectedReviewers: 4,
+      strictMajorityMet: false,
+    });
+  });
+
+  it("fails closed: rejected and inconclusive refute rows do not count toward majority", () => {
+    const target = "Add input validation";
+    const r = evaluateConsensus({
+      rule: REFUTE_RULE,
+      ruleSha256: ruleSha256(REFUTE_RULE),
+      proposals: [
+        proposal({
+          proposalId: 1,
+          decision: "changes_requested",
+          reviewerId: "alice",
+          groupId: "humans",
+          requiredChanges: [target],
+        }),
+        proposal({
+          proposalId: 2,
+          decision: "approved",
+          reviewerId: "bob",
+          groupId: "humans",
+        }),
+      ],
+      refuteVotes: [
+        {
+          refuteId: 1,
+          reviewerId: "refute-a",
+          groupId: "refuters",
+          targetChangeHash: targetChangeHash(target),
+          refuteVerdict: "refute",
+          validationStatus: "rejected",
+        },
+        {
+          refuteId: 2,
+          reviewerId: "refute-b",
+          groupId: "refuters",
+          targetChangeHash: targetChangeHash(target),
+          refuteVerdict: "inconclusive",
+          validationStatus: "passed",
+        },
+        {
+          refuteId: 3,
+          reviewerId: "refute-c",
+          groupId: "refuters",
+          targetChangeHash: targetChangeHash(target),
+          refuteVerdict: "refute",
+          validationStatus: "passed",
+        },
+      ],
+      evaluatedAt: NOW,
+    });
+
+    expect(r.status).toBe("changes_requested");
+    expect(r.summary.refute?.checks[0]).toMatchObject({
+      participants: 1,
+      refutes: 1,
+      strictMajorityMet: false,
+    });
   });
 });

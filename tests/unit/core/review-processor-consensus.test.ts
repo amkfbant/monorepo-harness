@@ -8,8 +8,10 @@ import { runMigrations } from "../../../src/db/migrations.js";
 import { ReviewProposalRepository } from "../../../src/db/repositories/review-proposals.js";
 import { ReviewRulesRepository } from "../../../src/db/repositories/review-rules.js";
 import { ReviewConsensusRepository } from "../../../src/db/repositories/review-consensus.js";
+import { ReviewRefuteVotesRepository } from "../../../src/db/repositories/review-refute-votes.js";
 import { ReviewerRepository } from "../../../src/db/repositories/reviewers.js";
 import { canonicaliseRule, ruleSha256, type ReviewRule } from "../../../src/core/review-rule.js";
+import { targetChangeHash } from "../../../src/core/refute-binding.js";
 import {
   processReviewDecision,
   ReviewGateError,
@@ -361,5 +363,83 @@ describe("review process — consensus mode gating (Phase 2)", () => {
       sourceProposalIds: [secondAliceId, secondBobId],
       requiredChanges: ["fix alice", "fix bob"],
     });
+  });
+
+  it("applies strict-majority refute votes from DB before promoting consensus", async () => {
+    const target = "fix the auth check";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      refute: {
+        group: "refuters",
+        reviewerIds: ["refute-a", "refute-b", "refute-c"],
+        minParticipants: 2,
+      },
+      requirements: [
+        {
+          group: "humans",
+          minApprovals: 1,
+          blockingDecisions: ["changes_requested", "rejected"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { root, runsDir, dbPath } = setup(rule);
+    const db = openDb(dbPath);
+    try {
+      const reviewers = new ReviewerRepository(db);
+      for (const reviewerId of ["refute-a", "refute-b", "refute-c"]) {
+        reviewers.add({
+          reviewerId,
+          reviewerType: "codex",
+          displayName: reviewerId,
+          groupId: "refuters",
+        });
+      }
+      const refutes = new ReviewRefuteVotesRepository(db);
+      for (const reviewerId of ["refute-a", "refute-b"]) {
+        refutes.insert({
+          runId: "run-consensus",
+          targetChangeHash: targetChangeHash(target),
+          targetChangeIdx: 0,
+          reviewerId,
+          refuteVerdict: "refute",
+          refuteReason: "test evidence exists",
+          counterEvidenceKind: "test",
+          counterEvidenceRef: "final-diff.patch",
+          refuteCondition: "evidence covers the blocker",
+          retractCondition: "evidence disappears",
+          promptSha256: `prompt-${reviewerId}`,
+          sourceYaml: "refute_verdict: refute\n",
+          sourceSha256: `source-${reviewerId}`,
+          validationStatus: "passed",
+          createdAt: NOW,
+        });
+      }
+    } finally {
+      db.close();
+    }
+    seedProposal(dbPath, "alice", "changes_requested", [target]);
+    seedProposal(dbPath, "bob", "approved");
+
+    const result = await runProcess(dbPath, runsDir, root);
+
+    expect(result.newStatus).toBe("approved");
+    const snapshot = consensusSnapshot(dbPath);
+    expect(snapshot.requiredChanges).toEqual([]);
+    const after = openDb(dbPath);
+    try {
+      const consensus = new ReviewConsensusRepository(after).findActive(
+        "run-consensus",
+      );
+      const summary = JSON.parse(consensus!.summaryJson) as {
+        refute?: { refutedTargetChangeHashes?: string[] };
+      };
+      expect(summary.refute?.refutedTargetChangeHashes).toEqual([
+        targetChangeHash(target),
+      ]);
+    } finally {
+      after.close();
+    }
   });
 });

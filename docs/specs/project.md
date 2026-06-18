@@ -82,6 +82,11 @@ policy:
 review:
   mode: consensus              # latest-proposal | consensus
   max_reviewers: 3             # optional default dispatch cap for requirements
+  refute:                      # optional target-bound second requirement
+    group: refuters
+    reviewer_ids: [refute-a, refute-b, refute-c] # frozen strict-majority set
+    min_participants: 2        # optional; cannot exceed reviewer_ids length
+    max_reviewers: 3           # optional refute dispatch cap
   requirements:
     - group: humans
       min_approvals: 2
@@ -122,6 +127,14 @@ domains:
   複数 reviewer を要求する requirement の `reviewer_ids` / `lens_axes` 欠落、
   `reviewer_ids` の重複や `max_reviewers` 超過は `ReviewRuleCompileError` で
   fail-closed になり、DEFAULT へ降格しない。
+- `review.refute` は optional な第2 requirement で、通常 consensus の
+  `changes_requested` blocker を target-bound refute 票で検証する。`group` と
+  frozen `reviewer_ids` は必須で、この reviewer set の長さが strict-majority
+  denominator になる。`mode` が `consensus` でない rule の `review.refute`、
+  空/重複/非 path-safe な `reviewer_ids`、`min_participants` や
+  `max_reviewers` と矛盾する reviewer set は fail-closed で reject される。
+  `review.refute` は severity を直接変更せず、`evaluateConsensus` の決定論 gate
+  への入力だけを定義する。
 - frozen consensus dispatch では reviewer registry の `metadata_json.lens` が
   `lens_axes` を実体化する。`metadata_json.lens` は非空文字列（`correctness` /
   `security` / `regression` / `efficacy` / `spec_compliance` と custom axis を許可）、

@@ -54,6 +54,17 @@ export interface ReviewRuleRequirement {
   maxReviewers?: number;
 }
 
+export interface ReviewRuleRefuteRequirement {
+  /** reviewer group_id whose target-bound refute votes are eligible. */
+  group: string;
+  /** Frozen refute reviewer set used as the strict-majority denominator. */
+  reviewerIds: string[];
+  /** Optional minimum number of participant votes before the check can pass. */
+  minParticipants?: number;
+  /** Per-refute reviewer dispatch cap. Runtime dispatch consumes this later. */
+  maxReviewers?: number;
+}
+
 export interface ReviewRuleOverrides {
   allowedReviewers: string[];
   requireReason: boolean;
@@ -68,6 +79,8 @@ export interface ReviewRule {
   mode: ReviewMode;
   /** Default reviewer dispatch cap for profile-authored requirements. */
   maxReviewers?: number;
+  /** Phase 2: target-bound refute reviewer gate for blocking changes. */
+  refute?: ReviewRuleRefuteRequirement;
   requirements: ReviewRuleRequirement[];
   overrides: ReviewRuleOverrides;
   staleProposal: ReviewRuleStaleProposal;
@@ -199,10 +212,15 @@ export function compileProfileReviewRule(profile: {
       ...(reqMaxReviewers !== undefined ? { maxReviewers: reqMaxReviewers } : {}),
     };
   });
+  const refute =
+    review.refute === undefined
+      ? undefined
+      : compileProfileRefuteRequirement(review.refute);
 
   const rule: ReviewRule = {
     mode,
     ...(maxReviewers !== undefined ? { maxReviewers } : {}),
+    ...(refute !== undefined ? { refute } : {}),
     requirements,
     overrides: {
       allowedReviewers:
@@ -304,6 +322,12 @@ export function assertCompiledReviewRuleInvariants(
         `(a missing mode defaults to latest-proposal and would drop the gate)`,
     );
   }
+  if (rule.mode !== "consensus" && rule.refute !== undefined) {
+    throw new ReviewRuleCompileError(
+      `review.refute is set but review.mode is "${rule.mode}"; refute votes ` +
+        `are only evaluated in consensus mode — set mode: consensus explicitly`,
+    );
+  }
 
   // fail-closed (SP-12 fail-open fix): a consensus rule must NOT mix frozen
   // requirements (declared `reviewerIds`) with non-frozen ones (group-membership,
@@ -380,6 +404,28 @@ export function assertCompiledReviewRuleInvariants(
       );
     }
   });
+
+  if (rule.refute !== undefined) {
+    const refute = rule.refute;
+    const path = "review.refute";
+    const effectiveMaxReviewers = refute.maxReviewers ?? rule.maxReviewers;
+    if (
+      effectiveMaxReviewers !== undefined &&
+      refute.reviewerIds.length > effectiveMaxReviewers
+    ) {
+      throw new ReviewRuleCompileError(
+        `${path}.reviewer_ids has ${refute.reviewerIds.length} entries, exceeding max_reviewers=${effectiveMaxReviewers}`,
+      );
+    }
+    if (
+      refute.minParticipants !== undefined &&
+      refute.reviewerIds.length < refute.minParticipants
+    ) {
+      throw new ReviewRuleCompileError(
+        `${path}.reviewer_ids has ${refute.reviewerIds.length} distinct entries, but min_participants=${refute.minParticipants}`,
+      );
+    }
+  }
 }
 
 /**
@@ -427,6 +473,7 @@ export function parseReviewRuleSnapshot(ruleJson: string): ReviewRule {
   const requirements = raw.requirements.map((req, index) =>
     validateSnapshotRequirement(req, `requirements.${index}`),
   );
+  const refute = validateSnapshotRefute(raw.refute, "refute");
 
   const overrides = validateSnapshotOverrides(raw.overrides);
   const staleProposal = validateSnapshotStaleProposal(raw.staleProposal);
@@ -438,6 +485,7 @@ export function parseReviewRuleSnapshot(ruleJson: string): ReviewRule {
   const rule: ReviewRule = {
     mode,
     ...(maxReviewers !== undefined ? { maxReviewers } : {}),
+    ...(refute !== undefined ? { refute } : {}),
     requirements,
     overrides,
     staleProposal,
@@ -507,6 +555,60 @@ function validateSnapshotRequirement(
     ...(reviewerIds !== undefined ? { reviewerIds } : {}),
     ...(lensAxes !== undefined ? { lensAxes } : {}),
     ...(reqMaxReviewers !== undefined ? { maxReviewers: reqMaxReviewers } : {}),
+  };
+}
+
+function validateSnapshotRefute(
+  value: unknown,
+  path: string,
+): ReviewRuleRefuteRequirement | undefined {
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) {
+    throw new ReviewRuleSnapshotError(`${path} must be an object`);
+  }
+  const group = value.group;
+  if (typeof group !== "string" || group.trim() === "") {
+    throw new ReviewRuleSnapshotError(`${path}.group must be a non-empty string`);
+  }
+  const reviewerIds = validateSnapshotReviewerIds(
+    value.reviewerIds,
+    `${path}.reviewerIds`,
+  );
+  const minParticipants = validateSnapshotPositiveInt(
+    value.minParticipants,
+    `${path}.minParticipants`,
+  );
+  const maxReviewers = validateSnapshotPositiveInt(
+    value.maxReviewers,
+    `${path}.maxReviewers`,
+  );
+  return {
+    group,
+    reviewerIds,
+    ...(minParticipants !== undefined ? { minParticipants } : {}),
+    ...(maxReviewers !== undefined ? { maxReviewers } : {}),
+  };
+}
+
+function compileProfileRefuteRequirement(
+  refute: NonNullable<ProfileReviewRule["refute"]>,
+): ReviewRuleRefuteRequirement {
+  const minParticipants = validatePositiveInt(
+    refute.min_participants,
+    "review.refute.min_participants",
+  );
+  const maxReviewers = validatePositiveInt(
+    refute.max_reviewers,
+    "review.refute.max_reviewers",
+  );
+  return {
+    group: nonEmpty(refute.group, "review.refute.group"),
+    reviewerIds: validateReviewerIdList(
+      refute.reviewer_ids,
+      "review.refute.reviewer_ids",
+    ),
+    ...(minParticipants !== undefined ? { minParticipants } : {}),
+    ...(maxReviewers !== undefined ? { maxReviewers } : {}),
   };
 }
 
@@ -819,6 +921,23 @@ function validateStringList(values: string[], path: string): string[] {
     seen.add(value);
   }
   return values;
+}
+
+function validateReviewerIdList(values: string[], path: string): string[] {
+  const ids = validateStringList(values, path);
+  for (const id of ids) {
+    try {
+      assertPathSafeReviewerId(id);
+    } catch (e) {
+      if (e instanceof InvalidReviewerIdError) {
+        throw new ReviewRuleCompileError(
+          `${path} contains a non-path-safe reviewer id: ${JSON.stringify(id)}`,
+        );
+      }
+      throw e;
+    }
+  }
+  return ids;
 }
 
 function validateBlockingDecisions(
