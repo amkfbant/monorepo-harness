@@ -1453,7 +1453,8 @@ const reviewersCmd = reviewCmd
 reviewersCmd
   .command("list")
   .description("list registered reviewers")
-  .action(async () => {
+  .option("--group <id>", "only list reviewers in this group")
+  .action(async (raw: Record<string, unknown>) => {
     const paths = harnessPaths(getHarnessRoot());
     if (!existsSync(paths.dbPath)) {
       process.stderr.write(
@@ -1463,7 +1464,11 @@ reviewersCmd
     }
     const dbHandle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
     try {
-      const rows = new ReviewerRepository(dbHandle.db).list();
+      const reviewers = new ReviewerRepository(dbHandle.db);
+      const rows =
+        raw.group !== undefined
+          ? reviewers.listByGroup(String(raw.group))
+          : reviewers.list();
       if (rows.length === 0) {
         process.stdout.write("(none)\n");
         return;
