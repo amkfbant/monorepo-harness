@@ -1006,6 +1006,19 @@ Phase 2 で consensus mode が実フローに接続された（`src/core/consens
   `ReviewGateError` として fail-closed に surface する。decisive process 後に runner
   が返す `decision` は最後の individual reviewer verdict ではなく、
   `processReviewDecision` の aggregate status。
+- **`hitch orchestrate` refute runner**: consensus snapshot が `review.refute` を持ち、
+  normal reviewer proposal の決定論的 pre-eval が unrefuted
+  `changes_requested` blocker を検出した場合、orchestrator は promotion 前に frozen
+  refute reviewer set を `reviewer_id ASC` で dispatch する。dispatch target は
+  active proposal の `required_changes` を `targetChangeHash()` で dedupe した
+  target-bound list で、既に strict-majority refute 済みの target は再 dispatch しない。
+  各 refute reviewer は target ごとに `runRefuteAgent` へ渡され、出力は
+  `review_refute_votes` にだけ append される（`review_proposals` は汚染しない）。
+  その後 `processReviewDecision` が同じ run の active proposal + refute audit rows を
+  transaction 内で再評価し、strict-majority refute が成立した target の
+  `changes_requested` blocker だけを neutralize する。refute reviewer の registry /
+  group が strict majority を満たせない場合は dispatch 前に
+  `ConsensusReviewPreflightError` で fail-closed に止まる。
 
 > 既定の rule は `latest-proposal`（`profile.review` 欠落時の `resolveEffectiveRule`）
 > なので、上記 consensus 経路は profile が consensus mode を宣言したときのみ作動する。
@@ -1082,6 +1095,9 @@ frozen consensus dispatch は各 reviewer の `metadata_json.lens` /
 > `changes_requested` blocker だけが neutralized され、`rejected` decision は refute
 > できない。通常 consensus の quorum / tie-break / `needs_review` status guard は不変で、
 > severity mutation は経由しない。
+> `review_consensus` の advisory / pending re-evaluation rows も同じ refute audit rows を
+> summary に反映するが、promotion 権限は持たない。run の status transition は常に
+> `processReviewDecision` の transaction が再評価した decisive consensus だけで行う。
 
 ## Phase 19 — hitch convergence（close 済み・現状仕様）
 

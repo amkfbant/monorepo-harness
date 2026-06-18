@@ -134,7 +134,12 @@ domains:
   空/重複/非 path-safe な `reviewer_ids`、`min_participants` や
   `max_reviewers` と矛盾する reviewer set は fail-closed で reject される。
   `review.refute` は severity を直接変更せず、`evaluateConsensus` の決定論 gate
-  への入力だけを定義する。
+  への入力だけを定義する。`hitch orchestrate` の review runner は通常 reviewer
+  proposal を集めた後、promotion 前に未反証の `changes_requested.required_changes`
+  target へ frozen refute reviewer set を dispatch し、`review_refute_votes` へ
+  append する。最終 status はその後の `processReviewDecision` が proposal と refute
+  audit row を再評価して決めるため、refute LLM 出力が run / hitch state を直接変更する
+  経路は無い。
 - frozen consensus dispatch では reviewer registry の `metadata_json.lens` が
   `lens_axes` を実体化する。`metadata_json.lens` は非空文字列（`correctness` /
   `security` / `regression` / `efficacy` / `spec_compliance` と custom axis を許可）、

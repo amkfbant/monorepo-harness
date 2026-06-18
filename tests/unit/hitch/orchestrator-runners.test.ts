@@ -31,12 +31,14 @@ import { ReviewProposalRepository } from "../../../src/db/repositories/review-pr
 import { ReviewConsensusRepository } from "../../../src/db/repositories/review-consensus.js";
 import { ReviewRulesRepository } from "../../../src/db/repositories/review-rules.js";
 import { ReviewerRepository } from "../../../src/db/repositories/reviewers.js";
+import { ReviewRefuteVotesRepository } from "../../../src/db/repositories/review-refute-votes.js";
 import { createCodexCliRunner } from "../../../src/codex/codex-cli-runner.js";
 import { importReviewProposalToHitch } from "../../../src/hitch/review-integration.js";
 import { REVIEW_CONSENSUS_STATIC_APPROVAL_SEMANTICS } from "../../../src/core/review-consensus.js";
 import { ReviewerAgentGateError } from "../../../src/core/reviewer-agent-errors.js";
 import { sanitizeGateReason } from "../../../src/core/gate-reason.js";
 import type { ReviewRule } from "../../../src/core/review-rule.js";
+import { targetChangeHash } from "../../../src/core/refute-binding.js";
 import type {
   PrPublisher,
   PrPublishInputs,
@@ -273,6 +275,20 @@ function reviewerIdFromStdoutPath(stdoutPath: string): string {
   const normalized = stdoutPath.replaceAll("\\", "/");
   const match = normalized.match(/\/reviewers\/([^/]+)\/reviewer-agent\.out\.log$/);
   return match?.[1] ?? "codex-reviewer";
+}
+
+function agentFromStdoutPath(stdoutPath: string): {
+  reviewerId: string;
+  agent: "reviewer" | "refute";
+} {
+  const normalized = stdoutPath.replaceAll("\\", "/");
+  const match = normalized.match(
+    /\/reviewers\/([^/]+)\/(reviewer-agent|refute-agent)\.out\.log$/,
+  );
+  return {
+    reviewerId: match?.[1] ?? "codex-reviewer",
+    agent: match?.[2] === "refute-agent" ? "refute" : "reviewer",
+  };
 }
 
 function multiReviewerRunner(
@@ -513,6 +529,179 @@ describe("createOrchestratorRunners.review decided run re-drive", () => {
       expect(
         new ReviewConsensusRepository(db).findActive(runId)?.status,
       ).toBe("approved");
+      expect(new HitchRepository(db).listCloseChecks(hitchId)[0]).toMatchObject({
+        conditionId: "review-ok",
+        status: "passed",
+        evidence: { decision: "approved", processStatus: "approved" },
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it("SP-18: dispatches frozen refute reviewers before processing consensus and reflects the advisory votes", async () => {
+    const hitchId = "g-consensus-refute-dispatch";
+    const target = "fix the auth check";
+    const rule: ReviewRule = {
+      mode: "consensus",
+      refute: {
+        group: "refuters",
+        reviewerIds: ["refute-a", "refute-b", "refute-c"],
+        minParticipants: 2,
+      },
+      requirements: [
+        {
+          group: "reviewers",
+          minApprovals: 1,
+          blockingDecisions: ["changes_requested", "rejected"],
+          quorum: { minParticipants: 2 },
+          reviewerIds: ["alice", "bob"],
+          lensAxes: ["correctness", "maintainability"],
+        },
+      ],
+      overrides: { allowedReviewers: [], requireReason: true },
+      staleProposal: { rejectSuperseded: true },
+    };
+    const { harnessRoot, dbPath, runId } = createFrozenConsensusReviewHarness({
+      prefix: "harness-orch-review-refute-dispatch-",
+      hitchId,
+      rule,
+    });
+    {
+      const { db, close } = openManagedDb({ dbPath });
+      try {
+        const reviewers = new ReviewerRepository(db);
+        for (const reviewerId of ["refute-a", "refute-b", "refute-c"]) {
+          reviewers.add({
+            reviewerId,
+            reviewerType: "codex",
+            displayName: reviewerId,
+            groupId: "refuters",
+          });
+        }
+      } finally {
+        close();
+      }
+    }
+
+    const calls: string[] = [];
+    const reviewerRunner = {
+      run: vi.fn(async (input: {
+        logPaths: { stdout: string; stderr: string };
+      }) => {
+        const { reviewerId, agent } = agentFromStdoutPath(
+          input.logPaths.stdout,
+        );
+        calls.push(`${agent}:${reviewerId}`);
+        writeFileSync(input.logPaths.stderr, "", "utf8");
+        if (agent === "refute") {
+          const verdict = reviewerId === "refute-c" ? "uphold" : "refute";
+          writeFileSync(
+            input.logPaths.stdout,
+            [
+              "```yaml",
+              `target_change_hash: ${JSON.stringify(targetChangeHash(target))}`,
+              `refute_verdict: ${verdict}`,
+              ...(verdict === "refute"
+                ? [
+                    'refute_reason: "diff evidence covers the blocker"',
+                    "counter_evidence:",
+                    "  kind: diff",
+                    '  ref: "final-diff.patch"',
+                    'refute_condition: "diff still covers the blocker"',
+                    'retract_condition: "diff evidence is removed"',
+                  ]
+                : []),
+              "```",
+              "",
+            ].join("\n"),
+            "utf8",
+          );
+          return { exitCode: 0, timedOut: false, durationMs: 0 };
+        }
+        writeFileSync(
+          input.logPaths.stdout,
+          reviewerId === "alice"
+            ? reviewerOutput({
+                decision: "changes_requested",
+                requiredChanges: [target],
+              })
+            : reviewerOutput({ decision: "approved" }),
+          "utf8",
+        );
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      }),
+    };
+    const runners = createOrchestratorRunners({
+      dbPath,
+      harnessRoot,
+      createdBy: "worker",
+      coderRunner: { run: async () => ({ exitCode: 0, timedOut: false, durationMs: 0 }) },
+      reviewerRunner,
+    });
+
+    await expect(runners.review(hitchId)).resolves.toEqual({
+      runId,
+      decision: "approved",
+    });
+
+    expect(calls).toEqual([
+      "reviewer:alice",
+      "reviewer:bob",
+      "refute:refute-a",
+      "refute:refute-b",
+      "refute:refute-c",
+    ]);
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      expect(
+        new ReviewRefuteVotesRepository(db)
+          .listByRun(runId)
+          .map((row) => ({
+            reviewerId: row.reviewerId,
+            verdict: row.refuteVerdict,
+            status: row.validationStatus,
+            target: row.targetChangeHash,
+          })),
+      ).toEqual([
+        {
+          reviewerId: "refute-a",
+          verdict: "refute",
+          status: "passed",
+          target: targetChangeHash(target),
+        },
+        {
+          reviewerId: "refute-b",
+          verdict: "refute",
+          status: "passed",
+          target: targetChangeHash(target),
+        },
+        {
+          reviewerId: "refute-c",
+          verdict: "uphold",
+          status: "passed",
+          target: targetChangeHash(target),
+        },
+      ]);
+      const run = db
+        .prepare("SELECT status, reviewer FROM runs WHERE run_id = ?")
+        .get(runId) as { status: string; reviewer: string };
+      expect(run).toEqual({ status: "approved", reviewer: "consensus" });
+      const consensus = new ReviewConsensusRepository(db).findActive(runId);
+      expect(consensus?.status).toBe("approved");
+      const summary = JSON.parse(consensus!.summaryJson) as {
+        refute?: { refutedTargetChangeHashes?: string[] };
+      };
+      expect(summary.refute?.refutedTargetChangeHashes).toEqual([
+        targetChangeHash(target),
+      ]);
+      expect(
+        db
+          .prepare(
+            "SELECT change_text FROM review_required_changes WHERE run_id = ?",
+          )
+          .all(runId),
+      ).toEqual([]);
       expect(new HitchRepository(db).listCloseChecks(hitchId)[0]).toMatchObject({
         conditionId: "review-ok",
         status: "passed",

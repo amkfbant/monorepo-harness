@@ -26,7 +26,11 @@ import {
   type EnrichedProposal,
 } from "./review-consensus.js";
 import { targetChangeHash } from "./refute-binding.js";
-import { activeProposalRows, enrichRows } from "./consensus-enrichment.js";
+import {
+  activeProposalRows,
+  enrichRefuteVotesForRun,
+  enrichRows,
+} from "./consensus-enrichment.js";
 import {
   DEFAULT_REVIEW_RULE,
   frozenReviewerIdsForRule,
@@ -210,19 +214,11 @@ function processConsensusModePath(
       rule,
       ruleSha256: ruleSha,
       proposals: enrichRows(rows, reviewerRepo),
-      refuteVotes: new ReviewRefuteVotesRepository(db)
-        .listByRun(opts.runId)
-        .map((vote) => {
-          const reviewer = reviewerRepo.findById(vote.reviewerId);
-          return {
-            refuteId: vote.refuteId,
-            reviewerId: vote.reviewerId,
-            groupId: reviewer?.groupId ?? null,
-            targetChangeHash: vote.targetChangeHash,
-            refuteVerdict: vote.refuteVerdict,
-            validationStatus: vote.validationStatus,
-          };
-        }),
+      refuteVotes: enrichRefuteVotesForRun(
+        new ReviewRefuteVotesRepository(db),
+        reviewerRepo,
+        opts.runId,
+      ),
       evaluatedAt: reviewedAt,
     });
     if (result.status === "pending") {

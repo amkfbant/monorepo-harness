@@ -1603,6 +1603,11 @@ Repository / binding contract:
   cannot pollute the normal reviewer consensus input set. Timeout / non-zero /
   malformed / missing-field / artifact-absent / artifact-tamper outcomes are
   recorded as `validation_status='rejected'` and remain audit-only.
+- `hitch orchestrate` calls `runRefuteAgent()` after normal consensus reviewers
+  and before `processReviewDecision` when the pre-eval sees unrefuted
+  `changes_requested.required_changes`. This dispatch is also append-only:
+  `review_refute_votes` rows are advisory audit input until the deterministic
+  consensus gate re-reads them.
 - Refute evidence validation is deterministic and existence-only: `kind='diff'`
   may cite `final-diff.patch` or root `untracked-*.patch`; `kind='test'` may
   cite `commands/*.out.log`. Existing artifacts with a mismatched kind are
