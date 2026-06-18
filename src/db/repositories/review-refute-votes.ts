@@ -3,11 +3,11 @@ import type Database from "better-sqlite3";
 /**
  * Repository for v32 `review_refute_votes`.
  *
- * The table is append-only and declares no foreign keys. `targetChangeHash`
- * is already computed by the caller and is stored as-is; hash normalization
- * and binding verification are owned by later refute phases. The only hard
- * guard here is the advisory finding binding: when `findingId` is supplied,
- * it must exist and any supplied `hitchId` must match that finding's hitch.
+ * The table is append-only and declares no foreign keys. Refute target
+ * normalization/binding is owned by `core/refute-binding`; this repository
+ * persists the already-verified `targetChangeHash`. The hard guard here is
+ * the advisory finding binding: when `findingId` is supplied, it must exist
+ * and any supplied `hitchId` must match that finding's hitch.
  */
 
 export type ReviewRefuteVerdict = "uphold" | "refute" | "inconclusive";

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import Database from "better-sqlite3";
+import { targetChangeHash } from "../../../src/core/refute-binding.js";
 import { MIGRATIONS, runMigrations } from "../../../src/db/migrations.js";
 import { runDoctor, DEFAULT_CHECKS } from "../../../src/db/doctor.js";
 import { REVIEW_REFUTE_VOTE_DOCTOR_CHECKS } from "../../../src/db/review-refute-vote-doctor-checks.js";
@@ -68,6 +69,9 @@ function insertReviewRefuteVote(
     runId?: string;
     hitchId?: string | null;
     findingId?: string | null;
+    targetChangeHash?: string;
+    validationStatus?: "passed" | "rejected";
+    rejectReason?: string | null;
     promptSha256?: string;
   },
 ): void {
@@ -75,17 +79,33 @@ function insertReviewRefuteVote(
     `INSERT INTO review_refute_votes
        (run_id, hitch_id, target_change_hash, finding_id, reviewer_id,
         refute_verdict, prompt_sha256, source_sha256, validation_status,
-        created_at)
-     VALUES (?, ?, ?, ?, 'reviewer-a', 'uphold', ?, ?, 'passed', ?)`,
+        reject_reason, created_at)
+     VALUES (?, ?, ?, ?, 'reviewer-a', 'uphold', ?, ?, ?, ?, ?)`,
   ).run(
     opts.runId ?? "run-1",
     opts.hitchId ?? null,
-    "target-hash",
+    opts.targetChangeHash ?? targetChangeHash("target change"),
     opts.findingId ?? null,
     opts.promptSha256 ?? "prompt-a",
     `source-${opts.promptSha256 ?? "a"}`,
+    opts.validationStatus ?? "passed",
+    opts.validationStatus === "rejected"
+      ? (opts.rejectReason ?? "binding failed")
+      : (opts.rejectReason ?? null),
     NOW,
   );
+}
+
+function seedRequiredChange(
+  db: Database.Database,
+  runId: string,
+  idx: number,
+  changeText: string,
+): void {
+  db.prepare(
+    `INSERT INTO review_required_changes (run_id, idx, change_text)
+     VALUES (?, ?, ?)`,
+  ).run(runId, idx, changeText);
 }
 
 function flaggedCheckIds(db: Database.Database): string[] {
@@ -138,6 +158,42 @@ describe("doctor review_refute_votes.hitch_mismatch", () => {
     const ids = flaggedCheckIds(db);
     expect(ids).not.toContain("review_refute_votes.orphan_rows");
     expect(ids).not.toContain("review_refute_votes.hitch_mismatch");
+  });
+});
+
+describe("doctor review_refute_votes.target_hash_mismatch", () => {
+  it("flags a passed vote whose target hash is not an active required change", () => {
+    const db = migratedDb();
+    seedRequiredChange(db, "run-1", 0, "add validation");
+    insertReviewRefuteVote(db, {
+      targetChangeHash: targetChangeHash("unknown target"),
+    });
+    expect(flaggedCheckIds(db)).toContain(
+      "review_refute_votes.target_hash_mismatch",
+    );
+  });
+
+  it("does not flag a passed vote whose hash matches after normalization", () => {
+    const db = migratedDb();
+    seedRequiredChange(db, "run-1", 0, " Cafe\u0301\tneeds   validation\r\nsoon ");
+    insertReviewRefuteVote(db, {
+      targetChangeHash: targetChangeHash("Café needs validation\nsoon"),
+    });
+    expect(flaggedCheckIds(db)).not.toContain(
+      "review_refute_votes.target_hash_mismatch",
+    );
+  });
+
+  it("does not flag rejected votes with unbound target hashes", () => {
+    const db = migratedDb();
+    seedRequiredChange(db, "run-1", 0, "add validation");
+    insertReviewRefuteVote(db, {
+      targetChangeHash: targetChangeHash("unknown target"),
+      validationStatus: "rejected",
+    });
+    expect(flaggedCheckIds(db)).not.toContain(
+      "review_refute_votes.target_hash_mismatch",
+    );
   });
 });
 
