@@ -158,6 +158,7 @@ export const CLI_PATHS: readonly string[] = [
   "src/cli/rerun.ts",
   "src/cli/diagnostics.ts",
   "src/cli/review.ts",
+  "src/cli/knowledge.ts",
   "src/mcp/cli.ts",
 ];
 
