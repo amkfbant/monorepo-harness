@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.17](https://github.com/amkfbant/monorepo-harness/compare/v0.7.16...v0.7.17) (2026-06-19)
+
+
+### Bug Fixes
+
+* [#303](https://github.com/amkfbant/monorepo-harness/issues/303): db-first artifact sync で意図的 quarantine と削除済 artifact を区別し stale 行を prune（[#272](https://github.com/amkfbant/monorepo-harness/issues/272) transcript 保持は維持） ([#310](https://github.com/amkfbant/monorepo-harness/issues/310)) ([508b5cf](https://github.com/amkfbant/monorepo-harness/commit/508b5cf61a13cff9becf8c48976d70d84ec1d2e2))
+* [#306](https://github.com/amkfbant/monorepo-harness/issues/306): review import（findings import + supersede 解決 + cycle 完了）を単一 transaction で atomic 化（crash-partial 解消） ([#313](https://github.com/amkfbant/monorepo-harness/issues/313)) ([5ed4393](https://github.com/amkfbant/monorepo-harness/commit/5ed4393ca3f545edcd30f96c90b38e13945a42e4))
+* [#308](https://github.com/amkfbant/monorepo-harness/issues/308): facet_red_test の recovery routing 改善（fail-open message 保持・no-test facet pending を coder へ・evidence-recoverable は ask_human 維持） ([#312](https://github.com/amkfbant/monorepo-harness/issues/312)) ([814230e](https://github.com/amkfbant/monorepo-harness/commit/814230ef1a54d2a5993b8388646da6358f0838d1))
+
 ## [0.7.16](https://github.com/amkfbant/monorepo-harness/compare/v0.7.15...v0.7.16) (2026-06-19)
 
 
