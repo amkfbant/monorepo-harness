@@ -215,6 +215,15 @@ Evaluation is deterministic and conservative:
    a divergence whose trigger no longer holds **self-clears** and the hitch
    returns to normal flow (the status syncs off `diverging` back to `in_progress`
    / `close_ready`). A still-active trigger simply re-derives to `diverging`.
+   A trigger that **never self-clears** — the cumulative session-budget trigger
+   (`harnessOriginNewFindings > maxTotalNewFindings`), whose count never decreases
+   — therefore stays diverging permanently and is NOT reachable by `reopen` (which
+   extends only the iteration/review/rerun budgets, not the divergence budget). It
+   has one sanctioned recovery: **`hitch recover-diverging`** (#280), a separate,
+   explicit, audited operator action gated DETERMINISTICALLY (see "Sanctioned
+   cumulative recovery" below). The divergence circuit breaker itself and its
+   ordering (rule 4, before the `close_ready` rule 5) are UNCHANGED — recovery only
+   raises the budget input after the deterministic close pre-gate is already green.
 2. Iteration/review/rerun budgets are enforced.
 3. Open in-scope P0 escalates.
 4. Growing finding counts or reopened churn is `diverging`. Divergence churn
@@ -256,7 +265,19 @@ Evaluation is deterministic and conservative:
    close gate itself is also unchanged — it still blocks for EVERY finding origin
    (operator `human`/`mcp` included); the auto-resolve merely retires the
    superseded review-origin review-blocking rows BEFORE the gate evaluates, so the
-   gate sees the truthful post-approve count.
+   gate sees the truthful post-approve count. **(#280) Effective total-findings
+   ceiling.** The cumulative-total trigger checks two ceilings in order: first the
+   per-hitch session budget (`harnessOriginNewFindings > session.maxTotalNewFindings`
+   → reason `total new findings exceeded hitch budget`), then the policy default
+   (reason `total new findings exceeded policy budget`). The policy check uses the
+   EFFECTIVE ceiling `max(policy.maxTotalNewFindings, session.maxTotalNewFindings)`:
+   the shared policy default is a FLOOR, not an independent ceiling. A LOWERED
+   session budget still tightens (the session check fires first and returns), so
+   normal divergence detection is byte-identically preserved; a RAISED session
+   budget (e.g. the audited `recover-diverging` extension, or an operator
+   `--max-total-new-findings` above policy) is an explicit per-hitch authorization
+   that lifts the effective ceiling, so the shared default does not re-fire under
+   it. This is what lets a default-budget hitch (`session == policy`) recover.
 5. Passed fresh required close checks plus configured `closeRequires` blockers clear is `close_ready`.
 6. (#104/#197) An **unreviewed** coder run — the latest coding attempt
    (implement/rerun) is newer than the latest review cycle — is **reviewed**
@@ -335,6 +356,63 @@ budget_exhausted
 escalate
 cancel
 ```
+
+## Sanctioned cumulative recovery (`hitch recover-diverging`, #280)
+
+A cumulative session-budget divergence (`harnessOriginNewFindings >
+maxTotalNewFindings`) never self-clears — the cumulative count never decreases —
+so the hitch stays `diverging` forever and is unreachable by `reopen` (which does
+not touch the divergence budget). `close --force` would "recover" it only by
+SKIPPING the close gate entirely, which the design forbids as the sanctioned path.
+
+`hitch recover-diverging <id>` is the sanctioned, deterministic, audited recovery.
+It is **NOT a gate-skip** — it is strictly STRONGER than `close --force`: it
+returns the hitch to live `open` (and extends the divergence budget so
+re-derivation does not immediately re-fire) ONLY when a harness-side gate is
+green, computed entirely from `ConvergenceService.evaluate()` metrics plus a fresh
+close-condition evaluation (never from any LLM/self-report). The gate, all of
+which must hold, else the command REFUSES fail-closed (exit 1, no state change):
+
+- the live decision is still `diverging` (the trigger did not already self-clear);
+- the divergence trigger is the **cumulative session-budget** one (reason `total
+  new findings exceeded hitch budget`). Every OTHER trigger — per-cycle
+  (`maxNewFindingsPerCycle`), reopen-count (`maxReopenedPerFinding`), and the
+  non-decreasing-trend trigger — is **NOT recoverable** by a budget bump and is
+  refused with a clear message (investigate or cancel+recreate). (The separate
+  policy-total reason is, by the effective-ceiling rule below, only ever reached
+  when the session budget was already explicitly raised above policy — which is
+  not divergence — so it is not an independent non-recoverable trigger.)
+- `openInScopeP0 == 0` AND `openInScopeP1 == 0` AND `openUnknownScope == 0` (the
+  same in-scope blocker conditions the `close_ready` gate requires); and
+- all required close-checks are green: `closeConditionsFailed == 0` AND
+  `closeConditionsPending == 0`.
+
+When the gate is green it extends `max_total_new_findings` by the minimal amount
+that lifts the cumulative count above the strict `>` comparison (deficit + 1, or
+an operator-supplied `--extend-divergence-budget`), then RE-DERIVES the divergence
+reason under the post-bump budget to PROVE no trigger remains — if any would still
+fire (a per-cycle / reopen-count / non-decreasing trigger that no budget bump can
+clear), it refuses fail-closed. The effective total ceiling for the post-bump
+re-derivation is `max(session.maxTotalNewFindings, policy.maxTotalNewFindings)`
+(see "Effective total-findings ceiling" under rule 4), so a DEFAULT-budget hitch
+(where `createSession` makes `session.maxTotalNewFindings == policy` total) can
+actually recover: raising the session budget above the count clears BOTH the
+session and the policy-total checks, instead of the equal policy default re-firing.
+
+The state transition is fail-closed and atomic. The deterministic gate is RE-RUN
+from fresh DB state INSIDE the write transaction (not only as a pre-check), so a
+concurrent `finding add` / close-check transition / cancel-close-escalate between
+the pre-check and the commit aborts recovery (no mutation, no audit event). The
+status precondition is enforced atomically by a `WHERE hitch_id = ? AND status =
+'diverging'` guard; zero changed rows is a state-conflict error (never a silent
+flip of a just-terminal hitch back to `open`). The flip and budget bump are a
+single harness-only state transition recorded as a `diverging_recovered`
+lifecycle audit event (with `previousStatus`, `divergenceBudgetExtension`,
+`previousMaxTotalNewFindings`, `newMaxTotalNewFindings`). The divergence circuit
+breaker (rule 4) and its ordering before `close_ready` (rule 5) are unchanged;
+ordinary convergence then re-derives `close_ready` (or a live-work decision) so
+nothing lands that the normal path would have blocked. Recovery is an explicit
+operator action — never auto-triggered on a finding-fix.
 
 ## Deliberation Jury (Classification, #230)
 

@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V33_STATEMENTS`、
-> `SCHEMA_VERSION = 33`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V34_STATEMENTS`、
+> `SCHEMA_VERSION = 34`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -733,7 +733,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 33`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 34`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -767,6 +767,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 31 | epic #228 / #230 deliberation jury A1 | `jury_classification_proposals` / `jury_classification_refutations` / `jury_severity_audits`（合議制 classification jury の append-only 監査入力表。FK ゼロ・business-key に `deliberation_id` を含む。詳細は下記「schema v31」） |
 | 32 | epic #228 / #229 refute votes | `review_refute_votes`（refute consensus の append-only 監査入力表。FK ゼロ・DB-only・partial UNIQUE。詳細は下記「schema v32/v33」） |
 | 33 | epic #228 / #231 phase review-state CAS | `phases.review_state_version INTEGER NOT NULL DEFAULT 0`（`review_state_json` の将来 CAS 書込用 additive 列。新規 table 無し） |
+| 34 | hitch divergence recovery #280 | `hitch_lifecycle_events.event` CHECK を rebuild で拡張し `diverging_recovered` を許容（v23/v29 の FK/NOT NULL/index は維持）。`hitch recover-diverging` の audit イベント |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -1047,7 +1048,7 @@ finding 分類・close-check 証跡・convergence decision を記録し、反復
   `diverging`/`budget_exhausted`/`escalate`/`cancel` / `reason` /
   `metrics_json` / `recommended_next_action`）。hitch FK ON DELETE CASCADE。
 - `hitch_lifecycle_events` — `reopened` / `closed` / `cancelled` /
-  `pr_adopted` / `updated` の audit-only
+  `pr_adopted` / `updated` / `diverging_recovered` の audit-only
   ledger（`event_id` PK / `hitch_id` FK ON DELETE CASCADE / `reason` /
   optional `detail_json` / `created_at` / `created_by`）。`reopenSession` は
   status update と event insert を同一 transaction で行う。`updateStatus`
@@ -1234,6 +1235,18 @@ active `domain_locks` 行から取得できる場合に記録する。`metricsSu
 count する。`project_id` 列は持たないため、project scope はこの table には直接適用せず、
 repo/domain/date scope のみを使う。
 
+## Hitch divergence recovery #280 — hitch lifecycle event enum（schema v34）
+
+schema v34 は `hitch_lifecycle_events.event` の CHECK 制約を v29 と同じ rebuild
+手順で再度拡張し、`diverging_recovered` を追加する（`PRAGMA foreign_keys = OFF`
+→ `hitch_lifecycle_events_v34` 作成 → `INSERT ... SELECT` → drop → rename →
+index 再作成 → `PRAGMA foreign_keys = ON`）。v23/v29 の DDL 契約は完全維持する。
+`diverging_recovered` は `hitch recover-diverging`（#280）が cumulative-budget
+diverging な hitch を live `open` へ戻し divergence budget を延長したことを記録する
+audit-only イベント。`detail_json` に `previousStatus` / `divergenceBudgetExtension`
+/ `previousMaxTotalNewFindings` / `newMaxTotalNewFindings` を持つ。この migration は
+audit table の enum だけを広げる（convergence の決定ロジックや状態機械は不変）。
+
 ## Course external fixes G4 — hitch lifecycle event enum（schema v29）
 
 schema v29 は `hitch_lifecycle_events.event` の CHECK 制約を rebuild で拡張し、
@@ -1252,7 +1265,8 @@ convergence decision、phase rollup、auto-merge gate の source は変わらな
 schema v23 は additive な `hitch_lifecycle_events` を追加する。`hitch reopen
 --reason` の reason と actor、`hitch close` / `hitch cancel` の reason と actor を
 永続化し、cancel reason の取りこぼしをなくす。現行 schema では v29 により
-`pr_adopted` と `updated` も同じ audit-only ledger に記録できる。
+`pr_adopted` と `updated`、v34 により `diverging_recovered` も同じ audit-only
+ledger に記録できる。
 
 ```sql
 CREATE TABLE hitch_lifecycle_events (

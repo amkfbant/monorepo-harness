@@ -376,6 +376,7 @@ harness hitch status <hitch-id> [--json]
 harness hitch close <hitch-id> --summary <text> [--created-by <actor>] [--force] [--json]
 harness hitch cancel <hitch-id> --reason <text> [--created-by <actor>] [--json]
 harness hitch reopen <hitch-id> --reason <text> [--created-by <actor>] [--extend-iterations <n>] [--extend-review-cycles <n>] [--extend-reruns <n>] [--json]
+harness hitch recover-diverging <hitch-id> --reason <text> [--created-by <actor>] [--extend-divergence-budget <n>] [--json]
 harness hitch adopt-pr <hitch-id> <pr-url-or-number> --reason <text> [--created-by <actor>] [--json]
 harness hitch update <hitch-id> [--close-file <path>] [--scope-file <path>] [--policy-file <path>] \
   --reason <text> [--allow-scope-widen] [--allow-gate-loosen] [--created-by <actor>] [--json]
@@ -477,7 +478,7 @@ harness hitch await-merge [<hitch-id>] --repo <path> [--all] [--repo-id <id>] \
 
 `hitch status --json` は session / findings / convergence decisions /
 close checks / current convergence に加え、`lifecycleEvents`（`closed` /
-`cancelled` / `reopened` / `pr_adopted` / `updated` の
+`cancelled` / `reopened` / `pr_adopted` / `updated` / `diverging_recovered` の
 reason・actor・timestamp・`detail`）と `tokenUsage`（per-hitch の `run_usage`
 集計）を返す。`tokenUsage` は hitch の attempts が参照する distinct run の
 `run_usage` を SUM したもの（retry 込み）で、総計（`inputTokens` /
@@ -517,13 +518,54 @@ hitch）または `main`（project 無し）に fallback する（以前は proj
 source 付き finding 行の履歴から導出される。`--findings-new` だけの summary-only cycle 完了は
 source-blind なので divergence を駆動しない。reopen は iteration/review/rerun budget しか
 延長しない（divergence budget は延長しない）ため、再開直後の convergence 評価で即 `diverging`
-が再発火し全 mutation を再 block する＝operator に解消手段がない。divergence budget 延長を伴う
-設計は `docs/future-features.md` 参照。reopen 後は `hitch finding add` で finding を記録 →
+が再発火し全 mutation を再 block する＝reopen は cumulative divergence の解消手段にならない。
+cumulative divergence の sanctioned 解消手段は **`hitch recover-diverging`**（#280・下記）。
+reopen 後は `hitch finding add` で finding を記録 →
 orchestrate が `needs_fix` → coder で修正する。
 `--reason` は `hitch_lifecycle_events` に `reopened` event として永続化される。
 `--created-by` 未指定時の actor は CLI では `cli`、MCP では `mcp:<clientName>`。
 close/cancel も同じ audit ledger に reason と actor を記録する。ledger は監査用で、
 convergence / rollup の状態判定には使わない。
+
+`hitch recover-diverging`（#280）は **cumulative session-budget で diverging に
+張り付いた hitch**（`harnessOriginNewFindings > maxTotalNewFindings`・count は
+減らないので self-clear しない）を live `open` に戻す sanctioned な復旧手段。
+**`close --force` のような gate-skip ではなく、それより厳格**: close 条件を
+bypass せず、決定論的な harness 側 gate（`ConvergenceService.evaluate()` の metrics
+＋ fresh な close-condition 評価のみ。LLM/自己申告は不使用）が緑のときだけ許可し、
+そうでなければ **fail-closed で拒否**（exit 1・状態変更なし）する。gate の全条件
+（すべて満たす必要があり、いずれか欠ければ拒否）:
+
+- live decision がまだ `diverging`（トリガーが既に self-clear していない）;
+- divergence トリガーが **cumulative session-budget**（reason `total new findings
+  exceeded hitch budget`）であること。他のトリガー（per-cycle
+  `maxNewFindingsPerCycle` / reopen 数 `maxReopenedPerFinding` / 非減少 trend）は
+  **budget 延長では解消できない**ので明示メッセージで拒否（investigate or
+  cancel+recreate）。policy-total は effective-ceiling 規則（下記）により session
+  budget を policy 超に明示拡張した場合にだけ到達する＝それは divergence でないので
+  独立した非回復トリガーではない;
+- `openInScopeP0 == 0` ∧ `openInScopeP1 == 0` ∧ `openUnknownScope == 0`（`close_ready`
+  gate と同じ in-scope blocker 条件）;
+- 必須 close-check がすべて緑: `closeConditionsFailed == 0` ∧ `closeConditionsPending == 0`。
+
+gate が緑なら `max_total_new_findings` を、cumulative count を strict `>` 比較より
+上に持ち上げる最小量（deficit + 1。`--extend-divergence-budget <n>` で operator 指定可）
+だけ延長し、**延長後の budget で divergence を再導出して残存トリガーがないことを
+証明**（残れば fail-closed 拒否）してから status を `open` に flip する。total-budget
+の再導出は **effective ceiling = `max(session.maxTotalNewFindings,
+policy.maxTotalNewFindings)`** を使う（`createSession` は session を policy total と
+同値に既定するため、default hitch（session==policy）でも session を count 超に上げれば
+session と policy-total の両 check が同時に解消され、実際に回復できる。policy default は
+floor で、下げた session は先に session check が tighten 判定して先勝ちするので通常の
+divergence 検出は不変）。gate は **pre-check に加えて write transaction の内側で fresh
+DB から再評価**され（並行 `finding add` / close-check 遷移 / cancel-close-escalate を
+fail-closed で弾く）、status 前提は `WHERE hitch_id = ? AND status = 'diverging'` で
+atomic に守る（0 行一致＝state-conflict で throw・terminal 化した hitch を黙って `open`
+に戻さない）。flip と budget 延長は単一トランザクションの harness-only 状態遷移で、
+`diverging_recovered` lifecycle event（`previousStatus` / `divergenceBudgetExtension` /
+`previousMaxTotalNewFindings` / `newMaxTotalNewFindings`）として監査記録される。
+divergence circuit breaker とその `close_ready` より前の順序は不変。finding-fix で
+自動発火することはなく、明示的な operator アクション専用（MCP 非公開＝reopen と同じ）。
 
 `hitch adopt-pr`（#169）は operator takeover で外部 PR に差し替えた事実を
 audit/status 表示用に記録する。`detail` は

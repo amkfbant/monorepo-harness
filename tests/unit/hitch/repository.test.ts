@@ -3179,11 +3179,13 @@ describe("reopenSession (#76)", () => {
     }
   });
 
-  it("refuses to reopen a diverging goal (recovery is live self-clear, not reopen)", () => {
+  it("refuses to reopen a diverging goal (recovery is live self-clear or recover-diverging, not reopen)", () => {
     // `diverging` is not reopenable: since #164 it self-clears via live
     // re-derivation (a transient trigger clears on a clean cycle). reopen extends
     // only iteration/review/rerun budgets — not the divergence budget — so it is
     // also the wrong recovery for a cumulative trigger (it would re-fire at once).
+    // The sanctioned recovery for a cumulative trigger is recoverDivergingSession
+    // (#280), NOT reopen — the bare reopen guard must stay intact.
     const { db, repo } = freshRepo();
     try {
       createGoal(repo);
@@ -3196,6 +3198,207 @@ describe("reopenSession (#76)", () => {
           createdBy: "operator",
         }),
       ).toThrow(/not a reopenable/);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("recoverDivergingSession (#280)", () => {
+  it("refuses to recover a non-diverging (open) hitch", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      expect(() =>
+        repo.recoverDivergingSession("goal-test", {
+          reason: "recover",
+          createdBy: "operator",
+          extendDivergenceBudget: 5,
+        }),
+      ).toThrow(/not diverging/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("refuses to recover a closed hitch", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.updateStatus("goal-test", "closed", "done", { createdBy: "op" });
+      expect(() =>
+        repo.recoverDivergingSession("goal-test", {
+          reason: "recover",
+          createdBy: "operator",
+          extendDivergenceBudget: 5,
+        }),
+      ).toThrow(/not diverging/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("recovers a diverging hitch: status open, divergence budget extended, audit event recorded", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.updateStatus("goal-test", "diverging", "finding churn", {
+        createdBy: "operator",
+      });
+      const before = repo.requireSession("goal-test");
+      const after = repo.recoverDivergingSession("goal-test", {
+        reason: "P0/P1 clear and close-checks green; lift cumulative budget",
+        createdBy: "operator",
+        extendDivergenceBudget: 5,
+      });
+      expect(after.status).toBe("open");
+      expect(after.maxTotalNewFindings).toBe(before.maxTotalNewFindings + 5);
+      const events = repo
+        .listLifecycleEvents("goal-test")
+        .filter((event) => event.event === "diverging_recovered");
+      expect(events).toMatchObject([
+        {
+          event: "diverging_recovered",
+          reason: "P0/P1 clear and close-checks green; lift cumulative budget",
+          createdBy: "operator",
+          detail: {
+            previousStatus: "diverging",
+            divergenceBudgetExtension: 5,
+            previousMaxTotalNewFindings: before.maxTotalNewFindings,
+            newMaxTotalNewFindings: before.maxTotalNewFindings + 5,
+          },
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("leaves closed_at/close_summary/escalation_reason untouched (diverging never set them)", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.updateStatus("goal-test", "diverging", "finding churn", {
+        createdBy: "operator",
+      });
+      const after = repo.recoverDivergingSession("goal-test", {
+        reason: "recover",
+        createdBy: "operator",
+        extendDivergenceBudget: 3,
+      });
+      expect(after.closedAt).toBeNull();
+      expect(after.closeSummary).toBeNull();
+      expect(after.escalationReason).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rolls back the status flip AND the audit event when the UPDATE aborts (transactional)", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.updateStatus("goal-test", "diverging", "finding churn", {
+        createdBy: "operator",
+      });
+      db.prepare(
+        `CREATE TRIGGER fail_recover_update
+           BEFORE UPDATE OF status ON hitch_sessions
+           WHEN NEW.hitch_id = 'goal-test' AND NEW.status = 'open'
+         BEGIN
+           SELECT RAISE(ABORT, 'forced recover failure');
+         END`,
+      ).run();
+      expect(() =>
+        repo.recoverDivergingSession("goal-test", {
+          reason: "recover",
+          createdBy: "operator",
+          extendDivergenceBudget: 5,
+        }),
+      ).toThrow(/forced recover failure/);
+      expect(repo.requireSession("goal-test").status).toBe("diverging");
+      expect(
+        repo
+          .listLifecycleEvents("goal-test")
+          .filter((event) => event.event === "diverging_recovered"),
+      ).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("P2#2: a revalidate callback that throws aborts fail-closed (no status flip, no audit event)", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.updateStatus("goal-test", "diverging", "finding churn", {
+        createdBy: "operator",
+      });
+      // The in-transaction gate re-validation rejects (e.g. a concurrent
+      // finding-add surfaced an open in-scope P1) → whole tx aborts.
+      expect(() =>
+        repo.recoverDivergingSession("goal-test", {
+          reason: "recover",
+          createdBy: "operator",
+          extendDivergenceBudget: 5,
+          revalidate: () => {
+            throw new Error("stale gate: open in-scope P1 appeared");
+          },
+        }),
+      ).toThrow(/stale gate/);
+      const after = repo.requireSession("goal-test");
+      expect(after.status).toBe("diverging");
+      expect(after.maxTotalNewFindings).toBe(
+        DEFAULT_HITCH_POLICY.divergence.maxTotalNewFindings,
+      );
+      expect(
+        repo
+          .listLifecycleEvents("goal-test")
+          .filter((event) => event.event === "diverging_recovered"),
+      ).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("P2#1: the status-guarded UPDATE matches 0 rows when the row is not diverging at commit time → fail-closed conflict (no flip, no audit)", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      repo.updateStatus("goal-test", "diverging", "finding churn", {
+        createdBy: "operator",
+      });
+      // Force the in-method status precondition (`WHERE ... AND status =
+      // 'diverging'`) to match 0 rows by flipping the row to a terminal status
+      // inside the SAME write transaction, just before the guarded UPDATE runs.
+      // `revalidate` runs at the top of the tx; the subsequent guarded UPDATE
+      // then sees status != 'diverging' and changes 0 rows → state-conflict throw.
+      // (The throw aborts the whole tx, so the in-tx flip is itself rolled back —
+      // the fail-closed guarantee is: recovery did NOT land, the row keeps its
+      // committed pre-tx 'diverging' status, and no audit event is written.)
+      expect(() =>
+        repo.recoverDivergingSession("goal-test", {
+          reason: "recover",
+          createdBy: "operator",
+          extendDivergenceBudget: 5,
+          revalidate: () => {
+            db.prepare(
+              "UPDATE hitch_sessions SET status = 'cancelled' WHERE hitch_id = 'goal-test'",
+            ).run();
+          },
+        }),
+      ).toThrow(/no longer diverging \(concurrent state change\)/);
+      const after = repo.requireSession("goal-test");
+      // tx aborted → the in-tx 'cancelled' flip rolled back too; row unchanged.
+      expect(after.status).toBe("diverging");
+      expect(after.maxTotalNewFindings).toBe(
+        DEFAULT_HITCH_POLICY.divergence.maxTotalNewFindings,
+      );
+      expect(
+        repo
+          .listLifecycleEvents("goal-test")
+          .filter((event) => event.event === "diverging_recovered"),
+      ).toEqual([]);
     } finally {
       db.close();
     }

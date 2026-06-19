@@ -202,6 +202,7 @@ export const HITCH_LIFECYCLE_EVENTS = [
   "cancelled",
   "pr_adopted",
   "updated",
+  "diverging_recovered",
 ] as const;
 
 export type HitchLifecycleEventName = (typeof HITCH_LIFECYCLE_EVENTS)[number];

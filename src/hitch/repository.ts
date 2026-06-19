@@ -284,6 +284,28 @@ export interface ReopenHitchSessionOptions {
   now?: string;
 }
 
+/** #280 — options for {@link HitchRepository.recoverDivergingSession}. The
+ * deterministic open-P0/P1 + close-check gate is supplied by the CLI/caller as
+ * `revalidate` and is RE-RUN INSIDE the write transaction (not just before it),
+ * so a concurrent `finding add` / close-check transition / cancel-close-escalate
+ * between the caller's pre-check and the commit cannot flip a stale hitch to
+ * `open` (fail-closed under the shared DB lock). */
+export interface RecoverDivergingSessionOptions {
+  reason: string;
+  createdBy: string;
+  /** Amount added to `max_total_new_findings` so live re-derivation does not
+   * immediately re-fire the cumulative trigger. Clamped to a non-negative int. */
+  extendDivergenceBudget?: number;
+  /** #280 P2#2 — deterministic gate re-validation, executed INSIDE the write
+   * transaction against fresh DB state. MUST throw (fail-closed) on any unmet
+   * invariant (status drift, open P0/P1/unknown, red/pending close-check,
+   * non-recoverable divergence trigger, or a residual re-fire). The repo passes
+   * itself so the callback recomputes from `ConvergenceService.evaluate()`
+   * without the repo depending on the convergence layer. */
+  revalidate?: (repo: HitchRepository) => void;
+  now?: string;
+}
+
 export interface AdoptHitchPrInput {
   hitchId: string;
   prUrl?: string | null;
@@ -478,8 +500,10 @@ function nonNegInt(value: number | undefined): number {
  * CUMULATIVE trigger (total-over-budget / max-reopen): those do not decrease, and
  * `reopenSession` extends only the iteration/review/rerun budgets — not the
  * divergence budget — so a reopened cumulatively-diverging hitch would re-fire
- * `diverging` at once. Recovering that case needs a divergence-budget extension
- * design (see docs/future-features.md). */
+ * `diverging` at once. Recovering that case is handled by the separate
+ * `recoverDivergingSession` / `hitch recover-diverging` path (deterministically
+ * gated on open in-scope P0/P1 == 0 + all required close-checks green, then a
+ * divergence-budget extension), NOT by reopen. */
 const REOPENABLE_STATUSES: ReadonlySet<HitchStatus> = new Set<HitchStatus>([
   "closed",
   "budget_exhausted",
@@ -710,6 +734,83 @@ export class HitchRepository {
             reviewCycles: extendReviewCycles,
             reruns: extendReruns,
           },
+        },
+        createdAt: now,
+        createdBy: opts.createdBy,
+      });
+      return this.requireSession(hitchId);
+    });
+    return tx.immediate();
+  }
+
+  /**
+   * #280 — sanctioned recovery for a CUMULATIVELY/stickily `diverging` hitch
+   * whose trigger does not self-clear via live re-derivation (a total-over-budget
+   * trigger never decreases; see REOPENABLE_STATUSES). Returns it to live `open`
+   * AND extends the divergence budget (`max_total_new_findings`) so re-derivation
+   * does not immediately re-fire. This is NOT a gate-skip: the deterministic
+   * close pre-gate (open in-scope P0/P1 == 0 AND all required close-checks green)
+   * and the recoverable-trigger check are supplied by the caller (CLI) as
+   * `opts.revalidate` and are RE-RUN INSIDE this write transaction against fresh
+   * DB state (P2#2), so a concurrent mutation between the caller's pre-check and
+   * the commit cannot land recovery on stale metrics — any unmet invariant
+   * throws and aborts the whole transaction (fail-closed, no audit event).
+   *
+   * The status precondition is enforced ATOMICALLY (P2#1): the UPDATE is guarded
+   * by `WHERE hitch_id = ? AND status = 'diverging'`, and zero changed rows is a
+   * state-conflict error (a concurrent cancel/close/escalate slipped in) — never
+   * a silent flip of a just-terminal hitch back to `open`. Leaves
+   * `closed_at`/`close_summary`/`escalation_reason` untouched (diverging never
+   * sets them). State transition only (harness-driven), audited as a
+   * `diverging_recovered` lifecycle event in the immutable ledger.
+   */
+  recoverDivergingSession(
+    hitchId: string,
+    opts: RecoverDivergingSessionOptions,
+  ): HitchSession {
+    const session = this.requireSession(hitchId);
+    if (session.status !== "diverging") {
+      throw new Error(
+        `hitch ${hitchId} is "${session.status}", not diverging; ` +
+          `recover-diverging only applies to a diverging hitch`,
+      );
+    }
+    const now = opts.now ?? new Date().toISOString();
+    const extension = nonNegInt(opts.extendDivergenceBudget);
+    const tx = this.db.transaction(() => {
+      // P2#2 — re-derive the deterministic gate from fresh DB state INSIDE the
+      // transaction. Throws fail-closed (aborting the tx, no mutation, no audit)
+      // on any concurrent invariant violation.
+      opts.revalidate?.(this);
+      // Re-read under the write lock so the audit `previousMaxTotalNewFindings`
+      // reflects the committed pre-state, not a value read before this tx.
+      const current = this.requireSession(hitchId);
+      const previousMaxTotalNewFindings = current.maxTotalNewFindings;
+      // P2#1 — atomic status precondition: only flip a row that is STILL
+      // diverging. A concurrent cancel/close/escalate makes this match 0 rows.
+      const result = this.db
+        .prepare(
+          `UPDATE hitch_sessions
+              SET status = 'open', updated_at = ?,
+                  max_total_new_findings = max_total_new_findings + ?
+            WHERE hitch_id = ? AND status = 'diverging'`,
+        )
+        .run(now, extension, hitchId);
+      if (result.changes !== 1) {
+        throw new Error(
+          `hitch ${hitchId} is no longer diverging (concurrent state change); ` +
+            `recover-diverging aborted (fail-closed)`,
+        );
+      }
+      this.insertLifecycleEvent({
+        hitchId,
+        event: "diverging_recovered",
+        reason: opts.reason,
+        detail: {
+          previousStatus: "diverging",
+          divergenceBudgetExtension: extension,
+          previousMaxTotalNewFindings,
+          newMaxTotalNewFindings: previousMaxTotalNewFindings + extension,
         },
         createdAt: now,
         createdBy: opts.createdBy,

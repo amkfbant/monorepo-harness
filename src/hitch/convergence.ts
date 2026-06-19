@@ -752,6 +752,35 @@ function terminalDecision(
   return null;
 }
 
+/**
+ * #280 — the single divergence reason recoverable via a session-budget bump
+ * (`hitch recover-diverging`). All OTHER triggers (policy-total / per-cycle /
+ * reopen-count / non-decreasing trend) are NOT cleared by raising
+ * `max_total_new_findings`, so the recovery command must fail-closed on them.
+ * Kept here next to {@link divergenceReason} so the recoverable reason cannot
+ * drift from the trigger that actually produces it.
+ */
+export const RECOVERABLE_DIVERGENCE_REASON =
+  "total new findings exceeded hitch budget" as const;
+
+/**
+ * #280 — deterministic re-derivation of the divergence reason under a
+ * HYPOTHETICAL session budget, reusing the exact frozen {@link divergenceReason}
+ * logic. The recovery CLI calls this with the post-bump budget to PROVE the
+ * extension clears the trigger (no re-fire) before flipping status. Returns the
+ * first active divergence reason, or null when none would fire.
+ */
+export function divergenceReasonForBudget(
+  session: HitchSession,
+  metrics: HitchConvergenceMetrics,
+  hypotheticalMaxTotalNewFindings: number,
+): string | null {
+  return divergenceReason(
+    { ...session, maxTotalNewFindings: hypotheticalMaxTotalNewFindings },
+    metrics,
+  );
+}
+
 function divergenceReason(
   session: HitchSession,
   metrics: HitchConvergenceMetrics,
@@ -760,7 +789,19 @@ function divergenceReason(
   if (metrics.harnessOriginNewFindings > session.maxTotalNewFindings) {
     return "total new findings exceeded hitch budget";
   }
-  if (metrics.harnessOriginNewFindings > policy.maxTotalNewFindings) {
+  // #280 — the policy default is a FLOOR, not an independent ceiling: an explicit
+  // per-hitch session budget that is RAISED above policy (e.g. by the audited
+  // `recover-diverging` extension) authorizes that count for THIS hitch, so the
+  // shared policy default must not re-fire under it. A LOWERED session budget can
+  // never pull the effective ceiling below policy here because the SESSION check
+  // above decides tightening first and returns before this line is reached. So
+  // `max(...)` preserves the session-tightening behavior byte-identically while
+  // letting recovery lift the effective total ceiling above both ceilings.
+  const effectiveTotalCeiling = Math.max(
+    policy.maxTotalNewFindings,
+    session.maxTotalNewFindings,
+  );
+  if (metrics.harnessOriginNewFindings > effectiveTotalCeiling) {
     return "total new findings exceeded policy budget";
   }
   if (
