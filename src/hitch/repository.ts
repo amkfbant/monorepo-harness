@@ -18,6 +18,24 @@ import {
 } from "./schemas.js";
 import { phaseSpecApprovalStatusForSpec } from "../roadmap/phase-repository.js";
 import {
+  AttemptRepository,
+  type CompleteHitchAttemptInput,
+  type CreateHitchAttemptInput,
+} from "./repositories/attempt-repository.js";
+import {
+  CloseCheckRepository,
+  type RecordHitchCloseCheckInput,
+} from "./repositories/close-check-repository.js";
+import {
+  ConvergenceDecisionRepository,
+  type RecordHitchConvergenceDecisionInput,
+} from "./repositories/convergence-decision-repository.js";
+import {
+  ReviewCycleRepository,
+  type CompleteHitchReviewCycleInput,
+  type StartHitchReviewCycleInput,
+} from "./repositories/review-cycle-repository.js";
+import {
   closeConditionsLoosenGate,
   isScopeWidening,
 } from "./spec-gates.js";
@@ -29,12 +47,9 @@ import {
   HARNESS_ORIGIN_FINDING_SOURCES,
   REVIEW_BLOCKING_FINDING_CATEGORY_SET,
   type HitchAttempt,
-  type HitchAttemptStatus,
   type HitchAttemptType,
   type HitchCloseCheck,
-  type HitchCloseCheckStatus,
   type HitchCloseCondition,
-  type HitchConvergenceDecision,
   type HitchConvergenceDecisionRecord,
   type HitchCreatedSource,
   type HitchFinding,
@@ -44,15 +59,22 @@ import {
   type HitchLifecycleEvent,
   type HitchLifecycleEventName,
   type HitchLifecycleStatus,
-  type HitchNextAction,
   type HitchPolicy,
   type HitchReviewCycle,
-  type HitchReviewMode,
   type HitchScope,
   type HitchScopeStatus,
   type HitchSession,
   type HitchStatus,
 } from "./types.js";
+
+// #125 Track C: concerns moved to per-concern sub-repos. Re-export their input
+// types so the public module surface of `repository.ts` (and any consumer
+// importing them from here) is unchanged.
+// C1 — convergence-decision; C2 — close-check; C3 — attempt; C4 — review-cycle.
+export type { RecordHitchConvergenceDecisionInput };
+export type { RecordHitchCloseCheckInput };
+export type { CreateHitchAttemptInput, CompleteHitchAttemptInput };
+export type { StartHitchReviewCycleInput, CompleteHitchReviewCycleInput };
 
 export interface CreateHitchSessionInput {
   hitchId?: string;
@@ -80,53 +102,6 @@ export interface HitchSessionFilter {
   repoId?: string;
   domain?: string;
   limit?: number;
-}
-
-export interface CreateHitchAttemptInput {
-  attemptId?: string;
-  hitchId: string;
-  iteration?: number;
-  attemptType: HitchAttemptType;
-  status?: HitchAttemptStatus;
-  operationId?: string;
-  runId?: string;
-  parentAttemptId?: string;
-  input?: Record<string, unknown>;
-  startedAt?: string;
-  createdAt?: string;
-}
-
-export interface CompleteHitchAttemptInput {
-  attemptId: string;
-  status: Exclude<HitchAttemptStatus, "pending" | "running">;
-  operationId?: string;
-  runId?: string;
-  result?: Record<string, unknown>;
-  errorMessage?: string;
-  completedAt?: string;
-}
-
-export interface StartHitchReviewCycleInput {
-  cycleId?: string;
-  hitchId: string;
-  cycleNumber?: number;
-  reviewMode: HitchReviewMode;
-  triggerAttemptId?: string;
-  sourceReviewId?: string;
-  sourceRunId?: string;
-  createdAt?: string;
-}
-
-export interface CompleteHitchReviewCycleInput {
-  cycleId: string;
-  findingsSeen?: number;
-  findingsNew?: number;
-  findingsReopened?: number;
-  findingsFixed?: number;
-  findingsDeferred?: number;
-  findingsInScopeOpen?: number;
-  summary?: string;
-  completedAt?: string;
 }
 
 export interface UpsertHitchFindingInput {
@@ -246,30 +221,6 @@ export interface LinkedPhaseSpecApprovalDrift {
   currentSpecHash: string;
 }
 
-export interface RecordHitchCloseCheckInput {
-  checkId?: string;
-  hitchId: string;
-  conditionId: string;
-  status: HitchCloseCheckStatus;
-  checkedAt?: string;
-  checkedBy: string;
-  evidence?: Record<string, unknown>;
-  message?: string;
-}
-
-export interface RecordHitchConvergenceDecisionInput {
-  decisionId?: string;
-  hitchId: string;
-  cycleId?: string;
-  attemptId?: string;
-  decision: HitchConvergenceDecision;
-  reason: string;
-  metrics?: Record<string, unknown>;
-  recommendedNextAction?: HitchNextAction;
-  createdAt?: string;
-  createdBy: string;
-}
-
 export interface UpdateHitchStatusOptions {
   createdBy: string;
   now?: string;
@@ -354,42 +305,6 @@ interface HitchSessionRow {
   escalation_reason: string | null;
 }
 
-interface HitchAttemptRow {
-  attempt_id: string;
-  hitch_id: string;
-  iteration: number;
-  attempt_type: HitchAttemptType;
-  status: HitchAttemptStatus;
-  operation_id: string | null;
-  run_id: string | null;
-  parent_attempt_id: string | null;
-  input_json: string;
-  result_json: string;
-  error_message: string | null;
-  started_at: string | null;
-  completed_at: string | null;
-  created_at: string;
-}
-
-interface HitchReviewCycleRow {
-  cycle_id: string;
-  hitch_id: string;
-  cycle_number: number;
-  review_mode: HitchReviewMode;
-  trigger_attempt_id: string | null;
-  source_review_id: string | null;
-  source_run_id: string | null;
-  findings_seen: number;
-  findings_new: number;
-  findings_reopened: number;
-  findings_fixed: number;
-  findings_deferred: number;
-  findings_in_scope_open: number;
-  created_at: string;
-  completed_at: string | null;
-  summary: string | null;
-}
-
 interface HitchFindingRow {
   finding_id: string;
   hitch_id: string;
@@ -440,30 +355,6 @@ interface HitchDivergenceCycleFindingRow {
   cycle_id: string;
   cycle_number: number;
   findings_new: number;
-}
-
-interface HitchCloseCheckRow {
-  check_id: string;
-  hitch_id: string;
-  condition_id: string;
-  status: HitchCloseCheckStatus;
-  checked_at: string;
-  checked_by: string;
-  evidence_json: string;
-  message: string | null;
-}
-
-interface HitchDecisionRow {
-  decision_id: string;
-  hitch_id: string;
-  cycle_id: string | null;
-  attempt_id: string | null;
-  decision: HitchConvergenceDecision;
-  reason: string;
-  metrics_json: string;
-  recommended_next_action: string | null;
-  created_at: string;
-  created_by: string;
 }
 
 interface HitchLifecycleEventRow {
@@ -561,7 +452,21 @@ const CODING_RUN_ATTEMPT_TYPES = new Set<HitchAttemptType>([
 ]);
 
 export class HitchRepository {
-  constructor(private readonly db: Database.Database) {}
+  // #125 Track C: per-concern sub-repositories. Each is constructed with this
+  // facade's `db` handle (no transaction of its own) so its writes compose
+  // inside the facade's single-BEGIN atomic primitive (`runAtomically`). The
+  // facade keeps every public method and forwards to the owning sub-repo.
+  private readonly decisions: ConvergenceDecisionRepository;
+  private readonly closeChecks: CloseCheckRepository;
+  private readonly attempts: AttemptRepository;
+  private readonly reviewCycles: ReviewCycleRepository;
+
+  constructor(private readonly db: Database.Database) {
+    this.decisions = new ConvergenceDecisionRepository(db);
+    this.closeChecks = new CloseCheckRepository(db);
+    this.attempts = new AttemptRepository(db);
+    this.reviewCycles = new ReviewCycleRepository(db);
+  }
 
   createSession(input: CreateHitchSessionInput): HitchSession {
     const now = input.createdAt ?? new Date().toISOString();
@@ -984,165 +889,46 @@ export class HitchRepository {
     return row !== undefined;
   }
 
+  // #125 Track C (C3): attempt concern delegated to AttemptRepository (incl.
+  // the private nextIteration counter). The facade keeps these entry-points and
+  // forwards to the sub-repo (shared `db`, behaviour-identical). The facade's
+  // own latestCodingRunId / newestCodingAttemptRunId call this.listAttempts(),
+  // which forwards here.
   createAttempt(input: CreateHitchAttemptInput): HitchAttempt {
-    const now = input.createdAt ?? new Date().toISOString();
-    const attemptId = input.attemptId ?? `attempt-${randomUUID()}`;
-    const iteration = input.iteration ?? this.nextIteration(input.hitchId);
-    this.db
-      .prepare(
-        `INSERT INTO hitch_attempts (
-           attempt_id, hitch_id, iteration, attempt_type, status,
-           operation_id, run_id, parent_attempt_id, input_json,
-           result_json, started_at, created_at
-         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)`,
-      )
-      .run(
-        attemptId,
-        input.hitchId,
-        iteration,
-        input.attemptType,
-        input.status ?? "running",
-        input.operationId ?? null,
-        input.runId ?? null,
-        input.parentAttemptId ?? null,
-        json(input.input ?? {}),
-        input.startedAt ?? now,
-        now,
-      );
-    this.touchSession(input.hitchId, now);
-    return this.requireAttempt(attemptId);
+    return this.attempts.createAttempt(input);
   }
 
   completeAttempt(input: CompleteHitchAttemptInput): HitchAttempt {
-    const now = input.completedAt ?? new Date().toISOString();
-    this.db
-      .prepare(
-        `UPDATE hitch_attempts
-            SET status = ?, operation_id = COALESCE(?, operation_id),
-                run_id = COALESCE(?, run_id), result_json = ?,
-                error_message = ?, completed_at = ?
-          WHERE attempt_id = ?`,
-      )
-      .run(
-        input.status,
-        input.operationId ?? null,
-        input.runId ?? null,
-        json(input.result ?? {}),
-        input.errorMessage ?? null,
-        now,
-        input.attemptId,
-      );
-    const attempt = this.requireAttempt(input.attemptId);
-    this.touchSession(attempt.hitchId, now);
-    return attempt;
+    return this.attempts.completeAttempt(input);
   }
 
   discardAttempt(attemptId: string, now = new Date().toISOString()): void {
-    const tx = this.db.transaction(() => {
-      const attempt = this.getAttempt(attemptId);
-      if (attempt === null) return;
-      this.db
-        .prepare("DELETE FROM hitch_attempts WHERE attempt_id = ?")
-        .run(attemptId);
-      this.db
-        .prepare(
-          `UPDATE hitch_sessions
-              SET current_iteration = (
-                    SELECT COALESCE(MAX(iteration), 0)
-                      FROM hitch_attempts
-                     WHERE hitch_id = ?
-                  ),
-                  updated_at = ?
-            WHERE hitch_id = ?`,
-        )
-        .run(attempt.hitchId, now, attempt.hitchId);
-    });
-    tx.immediate();
+    this.attempts.discardAttempt(attemptId, now);
   }
 
   getAttempt(attemptId: string): HitchAttempt | null {
-    const row = this.db
-      .prepare("SELECT * FROM hitch_attempts WHERE attempt_id = ?")
-      .get(attemptId) as HitchAttemptRow | undefined;
-    return row === undefined ? null : rowToAttempt(row);
+    return this.attempts.getAttempt(attemptId);
   }
 
   requireAttempt(attemptId: string): HitchAttempt {
-    const attempt = this.getAttempt(attemptId);
-    if (attempt === null) throw new DbError(`hitch attempt not found: ${attemptId}`);
-    return attempt;
+    return this.attempts.requireAttempt(attemptId);
   }
 
   listAttempts(hitchId: string): HitchAttempt[] {
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM hitch_attempts
-          WHERE hitch_id = ?
-          ORDER BY iteration ASC, created_at ASC`,
-      )
-      .all(hitchId) as HitchAttemptRow[];
-    return rows.map(rowToAttempt);
+    return this.attempts.listAttempts(hitchId);
   }
 
+  // #125 Track C (C4): review-cycle concern delegated to ReviewCycleRepository
+  // (incl. the private nextReviewCycleNumber counter). The facade keeps these
+  // entry-points and forwards to the sub-repo (shared `db`, behaviour-identical).
+  // startReviewCycle / completeReviewCycle remain the "plain writers" that
+  // runAtomically calls directly inside its single BEGIN (no inner transaction).
   startReviewCycle(input: StartHitchReviewCycleInput): HitchReviewCycle {
-    const now = input.createdAt ?? new Date().toISOString();
-    const cycleId = input.cycleId ?? `cycle-${randomUUID()}`;
-    const cycleNumber =
-      input.cycleNumber ?? this.nextReviewCycleNumber(input.hitchId);
-    this.db
-      .prepare(
-        `INSERT INTO hitch_review_cycles (
-           cycle_id, hitch_id, cycle_number, review_mode, trigger_attempt_id,
-           source_review_id, source_run_id, created_at
-         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        cycleId,
-        input.hitchId,
-        cycleNumber,
-        input.reviewMode,
-        input.triggerAttemptId ?? null,
-        input.sourceReviewId ?? null,
-        input.sourceRunId ?? null,
-        now,
-      );
-    this.db
-      .prepare(
-        `UPDATE hitch_sessions
-            SET current_review_cycle = MAX(current_review_cycle, ?),
-                updated_at = ?
-          WHERE hitch_id = ?`,
-      )
-      .run(cycleNumber, now, input.hitchId);
-    return this.requireReviewCycle(cycleId);
+    return this.reviewCycles.startReviewCycle(input);
   }
 
   completeReviewCycle(input: CompleteHitchReviewCycleInput): HitchReviewCycle {
-    const now = input.completedAt ?? new Date().toISOString();
-    this.db
-      .prepare(
-        `UPDATE hitch_review_cycles
-            SET findings_seen = ?, findings_new = ?, findings_reopened = ?,
-                findings_fixed = ?, findings_deferred = ?,
-                findings_in_scope_open = ?, summary = ?, completed_at = ?
-          WHERE cycle_id = ?`,
-      )
-      .run(
-        input.findingsSeen ?? 0,
-        input.findingsNew ?? 0,
-        input.findingsReopened ?? 0,
-        input.findingsFixed ?? 0,
-        input.findingsDeferred ?? 0,
-        input.findingsInScopeOpen ?? 0,
-        input.summary ?? null,
-        now,
-        input.cycleId,
-      );
-    const cycle = this.requireReviewCycle(input.cycleId);
-    this.touchSession(cycle.hitchId, now);
-    return cycle;
+    return this.reviewCycles.completeReviewCycle(input);
   }
 
   /**
@@ -1173,27 +959,15 @@ export class HitchRepository {
   }
 
   getReviewCycle(cycleId: string): HitchReviewCycle | null {
-    const row = this.db
-      .prepare("SELECT * FROM hitch_review_cycles WHERE cycle_id = ?")
-      .get(cycleId) as HitchReviewCycleRow | undefined;
-    return row === undefined ? null : rowToReviewCycle(row);
+    return this.reviewCycles.getReviewCycle(cycleId);
   }
 
   requireReviewCycle(cycleId: string): HitchReviewCycle {
-    const cycle = this.getReviewCycle(cycleId);
-    if (cycle === null) throw new DbError(`hitch review cycle not found: ${cycleId}`);
-    return cycle;
+    return this.reviewCycles.requireReviewCycle(cycleId);
   }
 
   listReviewCycles(hitchId: string): HitchReviewCycle[] {
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM hitch_review_cycles
-          WHERE hitch_id = ?
-          ORDER BY cycle_number ASC`,
-      )
-      .all(hitchId) as HitchReviewCycleRow[];
-    return rows.map(rowToReviewCycle);
+    return this.reviewCycles.listReviewCycles(hitchId);
   }
 
   upsertFinding(input: UpsertHitchFindingInput): UpsertHitchFindingResult {
@@ -2208,112 +1982,44 @@ export class HitchRepository {
     return drifts;
   }
 
+  // #125 Track C (C2): close-check concern delegated to CloseCheckRepository.
+  // The facade keeps these entry-points and forwards to the sub-repo (shared
+  // `db`, behaviour-identical).
   recordCloseCheck(input: RecordHitchCloseCheckInput): HitchCloseCheck {
-    const checkedAt = input.checkedAt ?? new Date().toISOString();
-    const checkId = input.checkId ?? `check-${randomUUID()}`;
-    this.db
-      .prepare(
-        `INSERT INTO hitch_close_checks (
-           check_id, hitch_id, condition_id, status, checked_at, checked_by,
-           evidence_json, message
-         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        checkId,
-        input.hitchId,
-        input.conditionId,
-        input.status,
-        checkedAt,
-        input.checkedBy,
-        json(input.evidence ?? {}),
-        input.message ?? null,
-      );
-    this.touchSession(input.hitchId, checkedAt);
-    return this.requireCloseCheck(checkId);
+    return this.closeChecks.recordCloseCheck(input);
   }
 
   getCloseCheck(checkId: string): HitchCloseCheck | null {
-    const row = this.db
-      .prepare("SELECT * FROM hitch_close_checks WHERE check_id = ?")
-      .get(checkId) as HitchCloseCheckRow | undefined;
-    return row === undefined ? null : rowToCloseCheck(row);
+    return this.closeChecks.getCloseCheck(checkId);
   }
 
   requireCloseCheck(checkId: string): HitchCloseCheck {
-    const check = this.getCloseCheck(checkId);
-    if (check === null) throw new DbError(`hitch close check not found: ${checkId}`);
-    return check;
+    return this.closeChecks.requireCloseCheck(checkId);
   }
 
   listCloseChecks(hitchId: string): HitchCloseCheck[] {
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM hitch_close_checks
-          WHERE hitch_id = ?
-          ORDER BY checked_at ASC, check_id ASC`,
-      )
-      .all(hitchId) as HitchCloseCheckRow[];
-    return rows.map(rowToCloseCheck);
+    return this.closeChecks.listCloseChecks(hitchId);
   }
 
+  // #125 Track C (C1): convergence-decision concern delegated to
+  // ConvergenceDecisionRepository. The facade keeps these entry-points and
+  // forwards to the sub-repo (shared `db`, behaviour-identical).
   recordConvergenceDecision(
     input: RecordHitchConvergenceDecisionInput,
   ): HitchConvergenceDecisionRecord {
-    const createdAt = input.createdAt ?? new Date().toISOString();
-    const decisionId = input.decisionId ?? `decision-${randomUUID()}`;
-    this.db
-      .prepare(
-        `INSERT INTO hitch_convergence_decisions (
-           decision_id, hitch_id, cycle_id, attempt_id, decision, reason,
-           metrics_json, recommended_next_action, created_at, created_by
-         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        decisionId,
-        input.hitchId,
-        input.cycleId ?? null,
-        input.attemptId ?? null,
-        input.decision,
-        input.reason,
-        json(input.metrics ?? {}),
-        input.recommendedNextAction === undefined
-          ? null
-          : json(input.recommendedNextAction),
-        createdAt,
-        input.createdBy,
-      );
-    this.touchSession(input.hitchId, createdAt);
-    return this.requireDecision(decisionId);
+    return this.decisions.recordConvergenceDecision(input);
   }
 
   getDecision(decisionId: string): HitchConvergenceDecisionRecord | null {
-    const row = this.db
-      .prepare(
-        "SELECT * FROM hitch_convergence_decisions WHERE decision_id = ?",
-      )
-      .get(decisionId) as HitchDecisionRow | undefined;
-    return row === undefined ? null : rowToDecision(row);
+    return this.decisions.getDecision(decisionId);
   }
 
   requireDecision(decisionId: string): HitchConvergenceDecisionRecord {
-    const decision = this.getDecision(decisionId);
-    if (decision === null) {
-      throw new DbError(`hitch convergence decision not found: ${decisionId}`);
-    }
-    return decision;
+    return this.decisions.requireDecision(decisionId);
   }
 
   listDecisions(hitchId: string): HitchConvergenceDecisionRecord[] {
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM hitch_convergence_decisions
-          WHERE hitch_id = ?
-          ORDER BY created_at ASC, decision_id ASC`,
-      )
-      .all(hitchId) as HitchDecisionRow[];
-    return rows.map(rowToDecision);
+    return this.decisions.listDecisions(hitchId);
   }
 
   private insertLifecycleEvent(input: {
@@ -2340,32 +2046,6 @@ export class HitchRepository {
         input.createdAt,
         input.createdBy,
       );
-  }
-
-  private nextIteration(hitchId: string): number {
-    const row = this.db
-      .prepare(
-        "SELECT COALESCE(MAX(iteration), 0) + 1 AS n FROM hitch_attempts WHERE hitch_id = ?",
-      )
-      .get(hitchId) as { n: number };
-    this.db
-      .prepare(
-        `UPDATE hitch_sessions
-            SET current_iteration = MAX(current_iteration, ?),
-                updated_at = ?
-          WHERE hitch_id = ?`,
-      )
-      .run(row.n, new Date().toISOString(), hitchId);
-    return row.n;
-  }
-
-  private nextReviewCycleNumber(hitchId: string): number {
-    const row = this.db
-      .prepare(
-        "SELECT COALESCE(MAX(cycle_number), 0) + 1 AS n FROM hitch_review_cycles WHERE hitch_id = ?",
-      )
-      .get(hitchId) as { n: number };
-    return row.n;
   }
 
   private latestCodingRunId(hitchId: string): string | null {
@@ -2668,46 +2348,6 @@ function rowToSession(row: HitchSessionRow): HitchSession {
   };
 }
 
-function rowToAttempt(row: HitchAttemptRow): HitchAttempt {
-  return {
-    attemptId: row.attempt_id,
-    hitchId: row.hitch_id,
-    iteration: row.iteration,
-    attemptType: row.attempt_type,
-    status: row.status,
-    operationId: row.operation_id,
-    runId: row.run_id,
-    parentAttemptId: row.parent_attempt_id,
-    input: parseRecord(row.input_json),
-    result: parseRecord(row.result_json),
-    errorMessage: row.error_message,
-    startedAt: row.started_at,
-    completedAt: row.completed_at,
-    createdAt: row.created_at,
-  };
-}
-
-function rowToReviewCycle(row: HitchReviewCycleRow): HitchReviewCycle {
-  return {
-    cycleId: row.cycle_id,
-    hitchId: row.hitch_id,
-    cycleNumber: row.cycle_number,
-    reviewMode: row.review_mode,
-    triggerAttemptId: row.trigger_attempt_id,
-    sourceReviewId: row.source_review_id,
-    sourceRunId: row.source_run_id,
-    findingsSeen: row.findings_seen,
-    findingsNew: row.findings_new,
-    findingsReopened: row.findings_reopened,
-    findingsFixed: row.findings_fixed,
-    findingsDeferred: row.findings_deferred,
-    findingsInScopeOpen: row.findings_in_scope_open,
-    createdAt: row.created_at,
-    completedAt: row.completed_at,
-    summary: row.summary,
-  };
-}
-
 function rowToFinding(row: HitchFindingRow): HitchFinding {
   return {
     findingId: row.finding_id,
@@ -2750,37 +2390,6 @@ function rowToNearDuplicateCandidate(
     summary: row.summary,
     filePath: row.file_path,
     symbol: row.symbol,
-  };
-}
-
-function rowToCloseCheck(row: HitchCloseCheckRow): HitchCloseCheck {
-  return {
-    checkId: row.check_id,
-    hitchId: row.hitch_id,
-    conditionId: row.condition_id,
-    status: row.status,
-    checkedAt: row.checked_at,
-    checkedBy: row.checked_by,
-    evidence: parseRecord(row.evidence_json),
-    message: row.message,
-  };
-}
-
-function rowToDecision(row: HitchDecisionRow): HitchConvergenceDecisionRecord {
-  return {
-    decisionId: row.decision_id,
-    hitchId: row.hitch_id,
-    cycleId: row.cycle_id,
-    attemptId: row.attempt_id,
-    decision: row.decision,
-    reason: row.reason,
-    metrics: parseRecord(row.metrics_json),
-    recommendedNextAction:
-      row.recommended_next_action === null
-        ? null
-        : (JSON.parse(row.recommended_next_action) as HitchNextAction),
-    createdAt: row.created_at,
-    createdBy: row.created_by,
   };
 }
 
