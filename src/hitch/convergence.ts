@@ -55,6 +55,10 @@ export class ConvergenceService {
     const cycles = this.repo.listReviewCycles(hitchId);
     const attempts = this.repo.listAttempts(hitchId);
     const closeChecks = this.repo.listCloseChecks(hitchId);
+    // Deterministic facet_red_test inputs (#279). For hitches that never declare
+    // a facet_red_test condition these are simply unused; for those that do, a
+    // null runId / empty paths keep the gate fail-closed (never passed).
+    const facetGate = this.repo.latestCodingRunChangedPaths(hitchId);
     const close = evaluateCloseConditions({
       conditions: session.closeConditions,
       checks: closeChecks,
@@ -65,6 +69,8 @@ export class ConvergenceService {
         cycles,
       }),
       allowEmptyCloseConditions: session.policy.allowEmptyCloseConditions,
+      changedPaths: facetGate.paths,
+      latestCodingRunId: facetGate.runId,
     });
     const metrics = buildMetrics(
       session,

@@ -58,7 +58,7 @@ full shape ではなく、`src/hitch/gap-to-kind.ts` の `GapRow = { metric: str
 
 ## 3. kind 選択 decision tree と auto-verify / external-evidence 分類
 
-closeCondition kind は厳密に 7 種（`HitchCloseConditionKind`）。**自動検証 kind** と
+closeCondition kind は厳密に 8 種（`HitchCloseConditionKind`）。**自動検証 kind** と
 **外部証拠待ち（ask_human）kind** を区別する。自動ゲート意図の条件が ask_human kind に
 化けないこと。
 
@@ -67,7 +67,8 @@ metric は自動で検証できるか？
 ├─ 可（auto-verify）
 │  ├─ コマンド実行で判定 …………………… command       （close-check runner が実行）
 │  ├─ open finding の閾値 …………………… finding_policy （evaluateFindingPolicy）
-│  └─ レビュー承認 ………………………………… review_consensus（review runner が充足）
+│  ├─ レビュー承認 ………………………………… review_consensus（review runner が充足）
+│  └─ facet ごとの RED test 被覆 ………… facet_red_test （evaluateFacetRedCoverage・#279）
 └─ 不可（外部証拠が要る = ask_human）
    ├─ 成果物 / ファイルの存在 ……………… artifact_exists （metadata.path）
    ├─ operator の手動確認 …………………… manual
@@ -77,8 +78,18 @@ metric は自動で検証できるか？
 
 | kind | category | 評価 |
 |---|---|---|
-| command / finding_policy / review_consensus | auto-verify | convergence の決定論ゲートで充足 |
+| command / finding_policy / review_consensus / facet_red_test | auto-verify | convergence の決定論ゲートで充足 |
 | manual / artifact_exists / operation_status / db_doctor | external-evidence | ask_human routing（外部証拠を記録するまで pending） |
+
+`facet_red_test`（#279・opt-in）は consensus reviewer の depth gap（テスト未実行ゆえ
+被覆欠落を素通り）を埋める決定論ゲート。`rule.facets[]` の各 facet（`{id, testGlobs[],
+changedFileGlobs?[]}`）を、最新 coding run の `run_changed_files`＋記録された close-check
+`evidence.facets[]`（`{facetId, redTestPath, redDemonstrated, runId}`）だけから評価する
+（LLM/reviewer の出力は状態遷移に使わない）。production surface が変わったのに被覆 test が
+無い fail-open shape は `failed`、欠落/stale/不正/runId 解決不能は never passed。glob は
+root-anchored minimatch（`docs/policy-semantics.md`）。決定表の詳細は
+[`hitch-convergence.md`](./hitch-convergence.md)。**gap→kind 自動写像は対象外**（author 宣言のみ・
+fail-closed default）。
 
 詳細な routing は [`hitch-convergence.md`](./hitch-convergence.md)。分類の裏付けは
 `src/hitch/spec-validation.ts` の hard/advisory split（§4）。
@@ -98,11 +109,12 @@ metric は自動で検証できるか？
 |---|---|
 | `missing_condition_id` | condition id が空 |
 | `duplicate_condition_id` | 同一 array 内で id 重複 |
-| `unknown_kind` | kind が 7 種外（Zod の二重チェック） |
+| `unknown_kind` | kind が 8 種外（Zod の二重チェック） |
 | `finding_policy_unknown_rule` | `rule` キーが `{maxOpenInScopeP0,P1,P2,maxOpenUnknownScope}` 以外（`rule.count` 等は hard error） |
 | `finding_policy_invalid_threshold` | rule 値が非負数でない |
 | `operation_status_missing_operation_id` | `operation_status` で `metadata.operationId` 欠落 |
 | `db_doctor_required_without_runner` | `db_doctor` かつ `required:true`（`context.allowRequiredDbDoctor` 無しでは reject。自動 runner 未実装ゆえ） |
+| `facet_red_test_invalid_contract` | `facet_red_test` の `rule.facets[]` が欠落／非配列／facet の `id` 欠落／`testGlobs[]` 空／facet id 重複（form-only・FS に触れない） |
 
 **ADVISORY warning（error にしない・false-positive 回避）**:
 
@@ -113,6 +125,7 @@ metric は自動で検証できるか？
 | `auto_intent_external_kind` | description の NL（`npm test passes` 等）が auto 意図を示すのに kind が external-evidence |
 | `review_consensus_ambiguous_description` | `review_consensus` の description が承認語彙を含まず曖昧 |
 | `external_evidence_majority` | external-evidence kind が条件の 50% 超 |
+| `facet_red_test_test_globs_unconventional` | `facet_red_test` の facet が production surface（`changedFileGlobs`）を宣言しつつ `testGlobs` が test 形に見えない |
 
 **command は form-only**: validator は kind + syntax（bare-id 受理）のみを見て、allowlist の
 一意解決と ambiguous 検出は **close-check runner（`orchestrator-close-check-runner.ts`）に defer**

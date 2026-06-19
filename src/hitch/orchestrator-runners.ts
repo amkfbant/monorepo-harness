@@ -99,6 +99,7 @@ import {
   augmentGoalWithFailedCloseChecks,
   augmentGoalWithFailedRun,
   augmentGoalWithOpenFindings,
+  closeCheckFailureContexts,
   type CloseCheckFailureContext,
 } from "./coder-goal-context.js";
 import {
@@ -921,79 +922,21 @@ function closeCheckFreshAfter(
   );
 }
 
-function stringEvidence(
-  evidence: Record<string, unknown>,
-  key: string,
-): string | undefined {
-  const value = evidence[key];
-  return typeof value === "string" ? value : undefined;
-}
-
-function numberEvidence(
-  evidence: Record<string, unknown>,
-  key: string,
-): number | undefined {
-  const value = evidence[key];
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : undefined;
-}
-
-function booleanEvidence(
-  evidence: Record<string, unknown>,
-  key: string,
-): boolean | undefined {
-  const value = evidence[key];
-  return typeof value === "boolean" ? value : undefined;
-}
-
 function failedRequiredCloseChecks(
   repo: HitchRepository,
   session: HitchSession,
 ): CloseCheckFailureContext[] {
+  const facetGate = repo.latestCodingRunChangedPaths(session.hitchId);
   const close = evaluateCloseConditions({
     conditions: session.closeConditions,
     checks: repo.listCloseChecks(session.hitchId),
     findingCounts: repo.countFindingSummary(session.hitchId),
     freshAfter: closeCheckFreshAfter(repo, session.hitchId),
     allowEmptyCloseConditions: session.policy.allowEmptyCloseConditions,
+    changedPaths: facetGate.paths,
+    latestCodingRunId: facetGate.runId,
   });
-  return close.conditions
-    .filter(
-      (evaluated) =>
-        evaluated.condition.required &&
-        evaluated.status === "failed" &&
-        evaluated.check !== null,
-    )
-    .map((evaluated) => {
-      const evidence = evaluated.check?.evidence ?? {};
-      const description = evaluated.condition.description;
-      const command = stringEvidence(evidence, "command");
-      const exitCode = numberEvidence(evidence, "exitCode");
-      const timedOut = booleanEvidence(evidence, "timedOut");
-      const message = evaluated.check?.message ?? undefined;
-      const stdout =
-        stringEvidence(evidence, "stdoutTail") ??
-        stringEvidence(evidence, "stdout");
-      const stderr =
-        stringEvidence(evidence, "stderrTail") ??
-        stringEvidence(evidence, "stderr");
-      const stdoutPath = stringEvidence(evidence, "stdoutPath");
-      const stderrPath = stringEvidence(evidence, "stderrPath");
-      return {
-        conditionId: evaluated.condition.id,
-        conditionKind: evaluated.condition.kind,
-        ...(description !== undefined ? { description } : {}),
-        ...(command !== undefined ? { command } : {}),
-        ...(exitCode !== undefined ? { exitCode } : {}),
-        ...(timedOut !== undefined ? { timedOut } : {}),
-        ...(message !== undefined ? { message } : {}),
-        ...(stdout !== undefined ? { stdout } : {}),
-        ...(stderr !== undefined ? { stderr } : {}),
-        ...(stdoutPath !== undefined ? { stdoutPath } : {}),
-        ...(stderrPath !== undefined ? { stderrPath } : {}),
-      };
-    });
+  return closeCheckFailureContexts(close.conditions);
 }
 
 function reviewModeForHitch(

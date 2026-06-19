@@ -36,8 +36,8 @@ describe("reviewer prompt template (tripwire)", () => {
       .update(PROMPT_PREAMBLE)
       .digest("hex")
       .slice(0, 16);
-    expect(REVIEWER_PROMPT_TEMPLATE.version).toBe(3);
-    expect(hash).toBe("9df6fc0b96a9b29f");
+    expect(REVIEWER_PROMPT_TEMPLATE.version).toBe(4);
+    expect(hash).toBe("283aef25657e6f46");
   });
 
   it("tells reviewers to surface missing test execution as non-blocking advisory", () => {
@@ -47,6 +47,13 @@ describe("reviewer prompt template (tripwire)", () => {
     expect(PROMPT_PREAMBLE).toMatch(/command logs/i);
     expect(PROMPT_PREAMBLE).toMatch(/absence of\s+commands\/\s+is normal/i);
     expect(PROMPT_PREAMBLE).toMatch(/MUST NOT be treated as a deficiency or required_change/);
+  });
+
+  it("asks reviewers to flag fail-open shapes as advisory (the facet gate enforces)", () => {
+    expect(PROMPT_PREAMBLE).toMatch(/fail-open shape/i);
+    expect(PROMPT_PREAMBLE).toMatch(/required_changes/);
+    // The prompt change is advisory: it must defer enforcement to the gate.
+    expect(PROMPT_PREAMBLE).toMatch(/facet_red_test close gate/);
   });
 });
 

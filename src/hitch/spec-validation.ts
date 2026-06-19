@@ -5,6 +5,7 @@ import {
   type HitchCloseConditionKind,
   type HitchValidationIssue,
 } from "./types.js";
+import { parseFacetRule } from "./facet-coverage.js";
 
 export type CloseConditionValidationCategory =
   | "auto-verify"
@@ -88,6 +89,12 @@ const KIND_TABLE: Record<
     evaluator: "operator evidence",
     guard: "metadata.path recommended",
   },
+  facet_red_test: {
+    kind: "facet_red_test",
+    category: "auto-verify",
+    evaluator: "evaluateFacetRedCoverage",
+    guard: "rule.facets[] each need id + non-empty testGlobs; harness evaluates from run_changed_files + recorded RED evidence",
+  },
 };
 
 export function closeConditionKindClassification(
@@ -168,6 +175,8 @@ export function validateCloseConditions(
       validateOperationStatusCondition(condition, path, push);
     } else if (kind === "db_doctor") {
       validateDbDoctorCondition(condition, context, path, push);
+    } else if (kind === "facet_red_test") {
+      validateFacetRedTestCondition(condition, path, push);
     }
 
     if (EXTERNAL_EVIDENCE_KINDS.has(kind)) {
@@ -324,6 +333,51 @@ function validateExternalEvidenceCondition(
         "artifact_exists_missing_path",
         "artifact_exists should include metadata.path",
         path("metadata.path"),
+      );
+    }
+  }
+}
+
+/**
+ * FORM-only validation of a facet_red_test contract (#279). Validates the SHAPE
+ * of rule.facets[] only — it NEVER touches the filesystem or checks whether the
+ * declared tests actually exist (that is the runtime gate's job, evaluated from
+ * run_changed_files + recorded RED evidence). Reuses the same fail-closed parse
+ * the runtime evaluator uses so the contract shape is a single source of truth.
+ */
+function validateFacetRedTestCondition(
+  condition: HitchCloseCondition,
+  path: (field: string) => string,
+  push: (
+    severity: HitchValidationIssue["severity"],
+    code: string,
+    message: string,
+    issuePath: string,
+  ) => void,
+): void {
+  const parsed = parseFacetRule(condition.rule);
+  for (const error of parsed.errors) {
+    push(
+      "hard",
+      "facet_red_test_invalid_contract",
+      error,
+      path("rule.facets"),
+    );
+  }
+  // Advisory: a facet that anchors a production surface (changedFileGlobs) but
+  // whose testGlobs look unlikely to cover it cannot be checked form-only, so we
+  // only nudge — the runtime gate decides authoritatively.
+  for (const facet of parsed.facets) {
+    if (
+      facet.changedFileGlobs !== undefined &&
+      facet.changedFileGlobs.length > 0 &&
+      facet.testGlobs.every((g) => !g.includes("test"))
+    ) {
+      push(
+        "advisory",
+        "facet_red_test_test_globs_unconventional",
+        `facet ${facet.id} declares a production surface but its testGlobs do not look test-shaped`,
+        path("rule.facets"),
       );
     }
   }

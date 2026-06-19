@@ -190,7 +190,7 @@ export interface ReviewerLensPrompt {
  */
 export const REVIEWER_PROMPT_TEMPLATE = {
   name: "reviewer-run-artifacts",
-  version: 3,
+  version: 4,
 } as const;
 
 function neutraliseLensFence(text: string): string {
@@ -279,6 +279,13 @@ If command logs that do exist do not show tests/checks actually ran, do not
 block approval solely for that reason; add a concise non_blocking_comments
 advisory that tests/checks were not run or evidence is limited to the run
 summary.
+Fail-open shapes (depth): when the diff changes a production surface (e.g. a
+file under src/) but NO test file in the SAME diff covers that changed
+behaviour, name the uncovered surface in a specific required_changes entry
+rather than only a non_blocking advisory — incomplete coverage is a blocking
+gap, not a stylistic note. This is advisory: the harness enforces per-facet RED
+coverage deterministically (the facet_red_test close gate); your verdict
+surfaces it earlier but never substitutes for that gate.
 `;
 
 /**

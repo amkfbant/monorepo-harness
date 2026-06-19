@@ -235,6 +235,7 @@ export const HITCH_CLOSE_CONDITION_KINDS = [
   "db_doctor",
   "review_consensus",
   "artifact_exists",
+  "facet_red_test",
 ] as const;
 
 export type HitchCloseConditionKind =

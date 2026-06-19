@@ -2155,6 +2155,86 @@ export class HitchRepository {
     return null;
   }
 
+  /**
+   * The latest coding run id + the paths that run changed (run_changed_files),
+   * deterministic inputs for the facet_red_test close gate (#279). Fail-closed:
+   * when no run is resolvable, `runId` is null and `paths` is empty so the gate
+   * can never pass. Mirrors `changedPathsForRun` (allowed, non-ignored rows,
+   * with the reviewed.meta_json fallback) so the gate sees the same surface the
+   * post-hoc policy diff verified.
+   *
+   * STRICT on the NEWEST coding attempt (not the shared `latestCodingRunId`,
+   * which is intentionally lenient — it skips a newer run-less attempt and falls
+   * back to an older run, a semantics #278's auto-resolve guard relies on). For
+   * the facet gate that lenient fallback is unsafe: if the newest implement/rerun
+   * attempt has no resolvable run_id (a coding pass is in flight / failed before
+   * recording a run), evaluating an OLDER run's changedPaths AND accepting fresh
+   * evidence bound to that older run would let a hitch reach close_ready on stale
+   * data. So we look ONLY at the newest coding attempt: no resolvable run_id =>
+   * `{ runId: null, paths: [] }` (gate goes pending, never passes on the older
+   * run). Only when the newest coding attempt HAS a run_id do we use it.
+   */
+  latestCodingRunChangedPaths(hitchId: string): {
+    runId: string | null;
+    paths: string[];
+  } {
+    const runId = this.newestCodingAttemptRunId(hitchId);
+    if (runId === null) return { runId: null, paths: [] };
+    return { runId, paths: this.changedPathsForRun(runId) };
+  }
+
+  /**
+   * The run_id of the NEWEST implement/rerun attempt, or null when that newest
+   * coding attempt has no run_id (does NOT fall back to an older attempt). This
+   * is the fail-closed resolution the facet_red_test gate requires; it is
+   * deliberately distinct from `latestCodingRunId`.
+   */
+  private newestCodingAttemptRunId(hitchId: string): string | null {
+    const attempts = this.listAttempts(hitchId);
+    for (let i = attempts.length - 1; i >= 0; i--) {
+      const attempt = attempts[i];
+      if (attempt === undefined) continue;
+      if (!CODING_RUN_ATTEMPT_TYPES.has(attempt.attemptType)) continue;
+      // Newest coding attempt found — its run_id (or null) is authoritative.
+      return attempt.runId !== null && attempt.runId !== ""
+        ? attempt.runId
+        : null;
+    }
+    return null;
+  }
+
+  private changedPathsForRun(runId: string): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT path
+           FROM run_changed_files
+          WHERE run_id = ? AND allowed = 1 AND status <> 'ignored'
+          ORDER BY path`,
+      )
+      .all(runId) as { path: string }[];
+    const dbPaths = rows
+      .map((r) => r.path)
+      .filter((p): p is string => typeof p === "string" && p !== "");
+    if (dbPaths.length > 0) return dbPaths;
+
+    const row = this.db
+      .prepare("SELECT meta_json FROM runs WHERE run_id = ?")
+      .get(runId) as { meta_json: string | null } | undefined;
+    if (row?.meta_json === undefined || row.meta_json === null) return [];
+    try {
+      const meta = JSON.parse(row.meta_json) as {
+        reviewed?: { paths?: unknown };
+      };
+      const reviewedPaths = meta.reviewed?.paths;
+      if (!Array.isArray(reviewedPaths)) return [];
+      return reviewedPaths.filter(
+        (p): p is string => typeof p === "string" && p !== "",
+      );
+    } catch {
+      return [];
+    }
+  }
+
   private runPr(runId: string): { url: string | null; number: number | null } | null {
     const row = this.db
       .prepare("SELECT pr_url, pr_number FROM runs WHERE run_id = ?")

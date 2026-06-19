@@ -169,7 +169,7 @@ describe("close condition schema and validation", () => {
     expect(warningCodes(result)).toContain("external_evidence_majority");
   });
 
-  it("exports the kind classification table for all seven kinds", () => {
+  it("exports the kind classification table for all kinds", () => {
     expect(
       HITCH_CLOSE_CONDITION_KINDS.map((kind) => [
         kind,
@@ -183,6 +183,69 @@ describe("close condition schema and validation", () => {
       ["db_doctor", "external-evidence"],
       ["review_consensus", "auto-verify"],
       ["artifact_exists", "external-evidence"],
+      ["facet_red_test", "auto-verify"],
     ]);
+  });
+});
+
+describe("facet_red_test validation (#279, form-only)", () => {
+  function facet(overrides: Partial<HitchCloseCondition> = {}): HitchCloseCondition {
+    return condition({
+      id: "facet-red",
+      kind: "facet_red_test",
+      rule: {
+        facets: [{ id: "auth-login", testGlobs: ["tests/auth/**"] }],
+      },
+      ...overrides,
+    });
+  }
+
+  it("classifies facet_red_test as auto-verify (not external-evidence)", () => {
+    expect(closeConditionKindClassification("facet_red_test").category).toBe(
+      "auto-verify",
+    );
+  });
+
+  it("accepts a well-formed facets[] contract WITHOUT touching the filesystem", () => {
+    const result = validateCloseConditions([facet()]);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("hard-fails a missing rule.facets array", () => {
+    const result = validateCloseConditions([facet({ rule: {} })]);
+    expect(result.valid).toBe(false);
+    expect(errorCodes(result)).toContain("facet_red_test_invalid_contract");
+  });
+
+  it("hard-fails a facet missing an id", () => {
+    const result = validateCloseConditions([
+      facet({ rule: { facets: [{ testGlobs: ["tests/auth/**"] }] } }),
+    ]);
+    expect(result.valid).toBe(false);
+    expect(errorCodes(result)).toContain("facet_red_test_invalid_contract");
+  });
+
+  it("hard-fails a facet with empty testGlobs", () => {
+    const result = validateCloseConditions([
+      facet({ rule: { facets: [{ id: "x", testGlobs: [] }] } }),
+    ]);
+    expect(result.valid).toBe(false);
+    expect(errorCodes(result)).toContain("facet_red_test_invalid_contract");
+  });
+
+  it("hard-fails duplicate facet ids", () => {
+    const result = validateCloseConditions([
+      facet({
+        rule: {
+          facets: [
+            { id: "x", testGlobs: ["tests/a/**"] },
+            { id: "x", testGlobs: ["tests/b/**"] },
+          ],
+        },
+      }),
+    ]);
+    expect(result.valid).toBe(false);
+    expect(errorCodes(result)).toContain("facet_red_test_invalid_contract");
   });
 });

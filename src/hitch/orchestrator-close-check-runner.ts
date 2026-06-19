@@ -365,6 +365,9 @@ function pendingCommandCloseConditions(input: {
   session: HitchSession;
 }): HitchCloseCondition[] {
   const attempts = input.repo.listAttempts(input.session.hitchId);
+  const facetGate = input.repo.latestCodingRunChangedPaths(
+    input.session.hitchId,
+  );
   const close = evaluateCloseConditions({
     conditions: input.session.closeConditions,
     checks: input.repo.listCloseChecks(input.session.hitchId),
@@ -377,6 +380,8 @@ function pendingCommandCloseConditions(input: {
       cycles: input.repo.listReviewCycles(input.session.hitchId),
     }),
     allowEmptyCloseConditions: input.session.policy.allowEmptyCloseConditions,
+    changedPaths: facetGate.paths,
+    latestCodingRunId: facetGate.runId,
   });
   // Only REQUIRED, runnable command conditions gate close.
   // - required: optional/advisory conditions never block close, and running a
