@@ -1862,4 +1862,52 @@ describe("ConvergenceService", () => {
       }
     });
   });
+
+  // #278 GATE-INVARIANCE: the openInScopeP1 close gate is FROZEN. The #278 fix
+  // only retires superseded review blockers via the pre-existing open->fixed
+  // lifecycle edge; it must NOT weaken the gate for any origin. These tests pin
+  // that decide() still blocks on openInScopeP1>0 for every origin when no
+  // approving review cycle has retired the finding.
+  describe("#278: openInScopeP1 close gate stays FROZEN (no auto-resolve without approve)", () => {
+    it("STILL routes needs_fix for an OPERATOR (human) open in-scope P1 finding", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo);
+        addFinding(repo, {
+          source: "human",
+          severity: "P1",
+          scopeStatus: "in_scope",
+          summary: "operator P1 blocker (must always block close)",
+        });
+        passClose(repo);
+
+        const result = service.evaluate("goal-test");
+        expect(result.metrics.openInScopeP1).toBe(1);
+        expect(result.decision).toBe("needs_fix");
+      } finally {
+        db.close();
+      }
+    });
+
+    it("STILL routes needs_fix for a review-origin P1 finding never superseded by an approve", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo);
+        addFinding(repo, {
+          source: "review",
+          severity: "P1",
+          scopeStatus: "in_scope",
+          category: "review-required-change",
+          summary: "review P1 blocker with no approving cycle",
+        });
+        passClose(repo);
+
+        const result = service.evaluate("goal-test");
+        expect(result.metrics.openInScopeP1).toBe(1);
+        expect(result.decision).toBe("needs_fix");
+      } finally {
+        db.close();
+      }
+    });
+  });
 });

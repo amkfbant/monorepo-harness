@@ -460,6 +460,425 @@ describe("HitchRepository", () => {
     });
   });
 
+  // #278: auto-resolution flips lifecycle_status open->fixed only; it must NOT
+  // erase the divergence audit ledger (source / source_cycle_id rows are
+  // preserved), so the cumulative/per-cycle circuit-breaker (#196/#280) stays
+  // intact.
+  it("#278: resolveSupersededReviewFindings preserves the divergence ledger (lifecycle change only)", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      const cycle1 = repo.startReviewCycle({
+        hitchId: "goal-test",
+        cycleNumber: 1,
+        reviewMode: "initial",
+        createdAt: "2026-05-26T00:01:00.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle1.cycleId,
+        findingsNew: 1,
+        completedAt: "2026-05-26T00:01:30.000Z",
+      });
+      const cycle2 = repo.startReviewCycle({
+        hitchId: "goal-test",
+        cycleNumber: 2,
+        reviewMode: "delta",
+        createdAt: "2026-05-26T00:02:00.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle2.cycleId,
+        findingsNew: 0,
+        completedAt: "2026-05-26T00:02:30.000Z",
+      });
+      const blocker = repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        sourceCycleId: cycle1.cycleId,
+        severity: "P1",
+        category: "review-required-change",
+        scopeStatus: "in_scope",
+        summary: "blocking required change from cycle 1",
+      }).finding;
+
+      const before = repo.harnessOriginDivergenceMetrics("goal-test");
+      expect(before.harnessOriginNewFindings).toBe(1);
+
+      const resolved = repo.resolveSupersededReviewFindings({
+        hitchId: "goal-test",
+        supersedingCycleId: cycle2.cycleId,
+        categories: ["review-required-change", "review-negative-decision"],
+        decisionRunId: "run-approve",
+        resolvedAt: "2026-05-26T00:03:00.000Z",
+      });
+      expect(resolved.map((f) => f.findingId)).toEqual([blocker.findingId]);
+      expect(repo.requireFinding(blocker.findingId).lifecycleStatus).toBe(
+        "fixed",
+      );
+
+      // Ledger preserved: cumulative total and the ORIGINAL cycle's churn count
+      // are unchanged after the lifecycle flip.
+      const after = repo.harnessOriginDivergenceMetrics("goal-test");
+      expect(after.harnessOriginNewFindings).toBe(1);
+      expect(after.harnessOriginNewFindingsByCycle).toEqual([
+        { cycleId: cycle1.cycleId, cycleNumber: 1, findingsNew: 1 },
+        { cycleId: cycle2.cycleId, cycleNumber: 2, findingsNew: 0 },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  // #278: STRICT allowlist edges at the repository boundary (fail-closed).
+  describe("#278: resolveSupersededReviewFindings strict allowlist (fail-closed)", () => {
+    function seedEarlierCycle(repo: HitchRepository) {
+      createGoal(repo, { hitchId: "goal-test" });
+      const earlier = repo.startReviewCycle({
+        hitchId: "goal-test",
+        cycleNumber: 1,
+        reviewMode: "initial",
+      });
+      repo.completeReviewCycle({ cycleId: earlier.cycleId, findingsNew: 1 });
+      const superseding = repo.startReviewCycle({
+        hitchId: "goal-test",
+        cycleNumber: 2,
+        reviewMode: "delta",
+      });
+      repo.completeReviewCycle({ cycleId: superseding.cycleId, findingsNew: 0 });
+      return { earlier, superseding };
+    }
+
+    function resolve(repo: HitchRepository, supersedingCycleId: string) {
+      return repo.resolveSupersededReviewFindings({
+        hitchId: "goal-test",
+        supersedingCycleId,
+        categories: ["review-required-change", "review-negative-decision"],
+        decisionRunId: "run-approve",
+      });
+    }
+
+    it("never resolves a P0 review-required-change (defensive severity guard)", () => {
+      const { db, repo } = freshRepo();
+      try {
+        const { earlier, superseding } = seedEarlierCycle(repo);
+        const p0 = repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          sourceCycleId: earlier.cycleId,
+          severity: "P0",
+          category: "review-required-change",
+          scopeStatus: "in_scope",
+          summary: "a P0 review blocker must never auto-resolve",
+        }).finding;
+
+        expect(resolve(repo, superseding.cycleId)).toEqual([]);
+        expect(repo.requireFinding(p0.findingId).lifecycleStatus).toBe("open");
+      } finally {
+        db.close();
+      }
+    });
+
+    it("never resolves when the approving run is NOT the hitch's current coding-run target", () => {
+      const { db, repo } = freshRepo();
+      try {
+        const { earlier, superseding } = seedEarlierCycle(repo);
+        // The hitch's current review target is run-current (latest coding attempt),
+        // but the approve (resolve helper) is for run-approve — a stale/foreign run.
+        repo.createAttempt({
+          hitchId: "goal-test",
+          attemptType: "implement",
+          status: "succeeded",
+          runId: "run-current",
+        });
+        const blocker = repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          sourceCycleId: earlier.cycleId,
+          severity: "P1",
+          category: "review-required-change",
+          scopeStatus: "in_scope",
+          summary: "blocker that a non-current run's approve must not retire",
+        }).finding;
+
+        expect(resolve(repo, superseding.cycleId)).toEqual([]);
+        expect(repo.requireFinding(blocker.findingId).lifecycleStatus).toBe(
+          "open",
+        );
+
+        // Sanity: when the approve IS for the current target run, it resolves.
+        const resolved = repo.resolveSupersededReviewFindings({
+          hitchId: "goal-test",
+          supersedingCycleId: superseding.cycleId,
+          categories: ["review-required-change", "review-negative-decision"],
+          decisionRunId: "run-current",
+        });
+        expect(resolved.map((f) => f.findingId)).toEqual([blocker.findingId]);
+        expect(repo.requireFinding(blocker.findingId).lifecycleStatus).toBe(
+          "fixed",
+        );
+      } finally {
+        db.close();
+      }
+    });
+
+    it("never resolves a duplicate child row (duplicate_of IS NOT NULL guard)", () => {
+      const { db, repo } = freshRepo();
+      try {
+        const { earlier, superseding } = seedEarlierCycle(repo);
+        const canonical = repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          sourceCycleId: earlier.cycleId,
+          severity: "P1",
+          category: "review-required-change",
+          scopeStatus: "in_scope",
+          summary: "canonical blocker",
+          filePath: "src/a.ts",
+        }).finding;
+        const dup = repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          sourceCycleId: earlier.cycleId,
+          severity: "P1",
+          category: "review-required-change",
+          scopeStatus: "duplicate",
+          duplicateOf: canonical.findingId,
+          summary: "duplicate of canonical blocker",
+          filePath: "src/b.ts",
+        }).finding;
+        expect(repo.requireFinding(dup.findingId).duplicateOf).toBe(
+          canonical.findingId,
+        );
+
+        const resolved = resolve(repo, superseding.cycleId);
+        // Only the in-scope canonical resolves; the duplicate child is never touched.
+        expect(resolved.map((f) => f.findingId)).toEqual([canonical.findingId]);
+        expect(repo.requireFinding(dup.findingId).lifecycleStatus).not.toBe(
+          "fixed",
+        );
+      } finally {
+        db.close();
+      }
+    });
+
+    it("never resolves a review blocker with a NULL source_cycle_id (cannot prove earlier — fail-closed)", () => {
+      const { db, repo } = freshRepo();
+      try {
+        const { superseding } = seedEarlierCycle(repo);
+        // Manual CLI path: a `--source review` finding with NO --source-cycle-id.
+        const nullCycle = repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          severity: "P1",
+          category: "review-required-change",
+          scopeStatus: "in_scope",
+          summary: "review blocker with no source cycle id",
+        }).finding;
+        expect(nullCycle.sourceCycleId).toBeNull();
+
+        expect(resolve(repo, superseding.cycleId)).toEqual([]);
+        expect(repo.requireFinding(nullCycle.findingId).lifecycleStatus).toBe(
+          "open",
+        );
+      } finally {
+        db.close();
+      }
+    });
+
+    it("never resolves when the superseding cycle id does not exist for the hitch (fail-closed)", () => {
+      const { db, repo } = freshRepo();
+      try {
+        const { earlier } = seedEarlierCycle(repo);
+        const blocker = repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          sourceCycleId: earlier.cycleId,
+          severity: "P1",
+          category: "review-required-change",
+          scopeStatus: "in_scope",
+          summary: "earlier blocker, but superseding cycle is bogus",
+        }).finding;
+
+        const resolved = repo.resolveSupersededReviewFindings({
+          hitchId: "goal-test",
+          supersedingCycleId: "cycle-does-not-exist",
+          categories: ["review-required-change", "review-negative-decision"],
+          decisionRunId: "run-approve",
+        });
+        expect(resolved).toEqual([]);
+        expect(repo.requireFinding(blocker.findingId).lifecycleStatus).toBe(
+          "open",
+        );
+      } finally {
+        db.close();
+      }
+    });
+
+    it("drops a disallowed category even if the caller passes it in (allowlist enforced inside the repo)", () => {
+      const { db, repo } = freshRepo();
+      try {
+        const { earlier, superseding } = seedEarlierCycle(repo);
+        const advisory = repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          sourceCycleId: earlier.cycleId,
+          severity: "P1",
+          category: "review-non-blocking-comment",
+          scopeStatus: "in_scope",
+          summary: "advisory comment misclassified as a caller-supplied category",
+        }).finding;
+
+        // Caller mistakenly passes a non-blocking category; the repo must drop it.
+        const resolved = repo.resolveSupersededReviewFindings({
+          hitchId: "goal-test",
+          supersedingCycleId: superseding.cycleId,
+          categories: ["review-non-blocking-comment"],
+          decisionRunId: "run-approve",
+        });
+        expect(resolved).toEqual([]);
+        expect(repo.requireFinding(advisory.findingId).lifecycleStatus).toBe(
+          "open",
+        );
+      } finally {
+        db.close();
+      }
+    });
+  });
+
+  // #278 (codex P2): the resolution_note audit record must name the CURRENT
+  // superseding cycle, even after a reopen->re-approve. A STALE prior auto-resolve
+  // note is refreshed; a genuine operator note is preserved.
+  describe("#278: resolveSupersededReviewFindings audit-note refresh", () => {
+    function startCompleteCycle(
+      repo: HitchRepository,
+      cycleNumber: number,
+      at: string,
+    ) {
+      const cycle = repo.startReviewCycle({
+        hitchId: "goal-test",
+        cycleNumber,
+        reviewMode: cycleNumber === 1 ? "initial" : "delta",
+        createdAt: at,
+      });
+      repo.completeReviewCycle({ cycleId: cycle.cycleId, findingsNew: 0 });
+      return cycle;
+    }
+
+    it("refreshes a STALE prior auto-resolve note to the current superseding cycle on reopen->re-approve", () => {
+      const { db, repo } = freshRepo();
+      try {
+        createGoal(repo, { hitchId: "goal-test" });
+        const cycle1 = startCompleteCycle(repo, 1, "2026-05-26T00:01:00.000Z");
+        const cycle2 = startCompleteCycle(repo, 2, "2026-05-26T00:02:00.000Z");
+
+        // cycle1: a blocking required change.
+        const seed = repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          sourceCycleId: cycle1.cycleId,
+          severity: "P1",
+          category: "review-required-change",
+          scopeStatus: "in_scope",
+          summary: "stable blocker text",
+          filePath: "src/x.ts",
+        }).finding;
+
+        // cycle2 approve auto-resolves -> note names cycle2.
+        repo.resolveSupersededReviewFindings({
+          hitchId: "goal-test",
+          supersedingCycleId: cycle2.cycleId,
+          categories: ["review-required-change", "review-negative-decision"],
+          decisionRunId: "run-approve-2",
+        });
+        const afterC2 = repo.requireFinding(seed.findingId);
+        expect(afterC2.lifecycleStatus).toBe("fixed");
+        expect(afterC2.resolutionNote).toContain(cycle2.cycleId);
+
+        // cycle3: the same blocker is re-raised (fixed->reopened, same stable_key).
+        startCompleteCycle(repo, 3, "2026-05-26T00:03:00.000Z");
+        const reopened = repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          sourceCycleId: cycle1.cycleId,
+          severity: "P1",
+          category: "review-required-change",
+          scopeStatus: "in_scope",
+          summary: "stable blocker text",
+          filePath: "src/x.ts",
+        }).finding;
+        expect(reopened.findingId).toBe(seed.findingId);
+        expect(reopened.lifecycleStatus).toBe("reopened");
+
+        // cycle4 approve re-resolves -> note MUST name cycle4, not the stale cycle2.
+        const cycle4 = startCompleteCycle(repo, 4, "2026-05-26T00:04:00.000Z");
+        repo.resolveSupersededReviewFindings({
+          hitchId: "goal-test",
+          supersedingCycleId: cycle4.cycleId,
+          categories: ["review-required-change", "review-negative-decision"],
+          decisionRunId: "run-approve-4",
+        });
+        const afterC4 = repo.requireFinding(seed.findingId);
+        expect(afterC4.lifecycleStatus).toBe("fixed");
+        expect(afterC4.resolutionNote).toContain(cycle4.cycleId);
+        expect(afterC4.resolutionNote).toContain("run-approve-4");
+        expect(afterC4.resolutionNote).not.toContain(cycle2.cycleId);
+      } finally {
+        db.close();
+      }
+    });
+
+    it("PRESERVES a genuine operator-authored resolution_note", () => {
+      const { db, repo } = freshRepo();
+      try {
+        createGoal(repo, { hitchId: "goal-test" });
+        const cycle1 = startCompleteCycle(repo, 1, "2026-05-26T00:01:00.000Z");
+        const cycle2 = startCompleteCycle(repo, 2, "2026-05-26T00:02:00.000Z");
+        const blocker = repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          sourceCycleId: cycle1.cycleId,
+          severity: "P1",
+          category: "review-required-change",
+          scopeStatus: "in_scope",
+          summary: "operator-noted blocker",
+        }).finding;
+        // Operator records a manual note (markFindingFixed then reopen, simulating
+        // an operator-authored note that must survive a later auto-resolve).
+        repo.markFindingFixed({
+          findingId: blocker.findingId,
+          note: "operator: verified fixed in commit abc123",
+        });
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          sourceCycleId: cycle1.cycleId,
+          severity: "P1",
+          category: "review-required-change",
+          scopeStatus: "in_scope",
+          summary: "operator-noted blocker",
+        });
+        expect(repo.requireFinding(blocker.findingId).lifecycleStatus).toBe(
+          "reopened",
+        );
+
+        repo.resolveSupersededReviewFindings({
+          hitchId: "goal-test",
+          supersedingCycleId: cycle2.cycleId,
+          categories: ["review-required-change", "review-negative-decision"],
+          decisionRunId: "run-approve-2",
+        });
+        const after = repo.requireFinding(blocker.findingId);
+        expect(after.lifecycleStatus).toBe("fixed");
+        // Operator note preserved; NOT overwritten by the auto-resolve note.
+        expect(after.resolutionNote).toBe(
+          "operator: verified fixed in commit abc123",
+        );
+        expect(after.resolutionNote).not.toContain("auto-resolved");
+      } finally {
+        db.close();
+      }
+    });
+  });
+
   it("keeps first-seen divergence origin immutable on duplicate upsert", () => {
     const { db, repo } = freshRepo();
     try {
