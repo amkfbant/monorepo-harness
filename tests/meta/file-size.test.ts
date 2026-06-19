@@ -18,7 +18,11 @@ const STRUCTURAL_EXEMPT = new Set<string>([
 ]);
 
 const GRANDFATHER: Record<string, number> = {
-  "src/hitch/repository.ts": 2845,
+  // src/hitch/repository.ts removed from the ratchet: #125 Track C (C0-C7) split
+  // the frozen 2845-line core into per-concern sub-repos under
+  // src/hitch/repositories/, shrinking the facade to a thin delegator well under
+  // the 800 HARD cap. Per this test's own rule (≤800 ⇒ drop the grandfather), it
+  // is now held to the cap like any other file.
   "src/hitch/orchestrator-runners.ts": 2536,
   "src/mcp/tools/mutation-tools.ts": 2157,
   "src/cli/hitch.ts": 2136,
