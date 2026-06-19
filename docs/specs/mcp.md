@@ -175,6 +175,7 @@ mcp:
     - hitch.close
     - hitch.cancel
     - hitch.expand_scope
+    - phase.ratify
     - db.repair.apply
     - db.archive.apply
     - db.migrate_blobs.apply
@@ -624,6 +625,7 @@ harness.pr.create
 harness.hitch.close
 harness.hitch.cancel
 harness.hitch.expand_scope
+harness.phase.ratify
 harness.db.repair.apply
 harness.db.archive.apply
 harness.db.migrate_blobs.apply

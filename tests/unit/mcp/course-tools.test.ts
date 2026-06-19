@@ -397,10 +397,18 @@ describe("MCP course-tools mutations", () => {
       });
     });
 
-    const s = server(
-      root,
-      mutationConfig(["phase.ratify", "phase.link_hitch", "phase.start_hitch"]),
-    );
+    // This test exercises the ratified-spec COMPATIBILITY gate, not the
+    // confirmation gate (phase.ratify requires confirmation by default — covered
+    // separately in config-permissions.test.ts). Override requireConfirmation to
+    // empty so ratify executes inline and the link/start assertions can proceed.
+    const s = server(root, {
+      ...mutationConfig([
+        "phase.ratify",
+        "phase.link_hitch",
+        "phase.start_hitch",
+      ]),
+      requireConfirmation: [],
+    });
     const ratified = await callTool(s, "harness.phase.ratify", {
       phaseId,
       approvedBy: "operator",
