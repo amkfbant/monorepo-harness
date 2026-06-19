@@ -160,6 +160,8 @@ export const CLI_PATHS: readonly string[] = [
   "src/cli/review.ts",
   "src/cli/knowledge.ts",
   "src/cli/workspace.ts",
+  "src/cli/pr.ts",
+  "src/cli/backlog.ts",
   "src/mcp/cli.ts",
 ];
 
