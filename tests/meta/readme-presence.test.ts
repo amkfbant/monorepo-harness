@@ -58,6 +58,7 @@ const ALLOWLIST_NO_README = new Set<string>([
   "hitch",   // 43 files — hitch/jury 収束ループ。
   "mcp",     // 29 files — MCP server/tools/registry。
   "project", // 24 files — Project Abstraction 層。
+  "cli",     // 22 files — CLI command groups (#125 Track A 抽出後)。
 ]);
 
 describe("大ドメイン README-presence gate (#125 B8, advisory)", () => {

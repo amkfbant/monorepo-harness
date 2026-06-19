@@ -164,6 +164,8 @@ const ALLOWLIST_CYCLES = new Set<string>([
   "src/mcp/registry/tool-registry.ts -> src/mcp/tools/hitch-tools.ts -> src/mcp/tools/operation-wrapper.ts",
   // mcp: tool-registry ↔ hitch-tools
   "src/mcp/registry/tool-registry.ts -> src/mcp/tools/hitch-tools.ts",
+  // mcp: tool-registry -> hitch-tools -> confirmation (経路バリアント; SP-21 phase.ratify requireConfirmation 追加後)
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/hitch-tools.ts -> src/mcp/security/confirmation.ts",
   // mcp: tool-registry ↔ course-tools
   "src/mcp/registry/tool-registry.ts -> src/mcp/tools/course-tools.ts",
 ]);
