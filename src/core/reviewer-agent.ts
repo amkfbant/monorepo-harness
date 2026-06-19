@@ -15,7 +15,10 @@ import {
   serializeReviewDecision,
   writeReviewDecision,
 } from "./review-decision-loader.js";
-import { ensureRunMaterialized } from "./run-materialize.js";
+import {
+  ensureRunMaterialized,
+  quarantinePriorReviewerVerdictArtifacts,
+} from "./run-materialize.js";
 import {
   ReviewDecisionFileSchema,
   type ReviewDecisionFile,
@@ -543,6 +546,39 @@ export async function runReviewerAgent(
     }
   }
 
+  // #272 / P1-ISO — make EVERY prior reviewer's / pass's / command's verdict
+  // UNREACHABLE on disk BEFORE codex runs (and before the tamper snapshot). codex
+  // `--sandbox read-only` can absolute-read ANY path, so cwd isolation alone does
+  // not stop a sequential reviewer recovering a prior verdict verbatim — from a
+  // sibling `reviewers/<other>/reviewer-agent.out.log` (the fenced verdict YAML)
+  // or events (redaction is secret-only, NOT verdict-stripping), a refute
+  // transcript (`refute-agent.out.log`), a `review-evaluations/**` log/decision,
+  // or the root/scoped `review-decision.yaml`. Rather than chase a verdict-file
+  // denylist (which kept missing producers), quarantine by INPUT-ALLOWLIST: keep
+  // only the reviewer inputs, remove every other run-dir entry. In DB-backed
+  // file-export-OFF review the verdict is DB-canonical (`review_proposals`) and
+  // each ingestable prior output is ingested to the DB before removal (audit set
+  // stays recoverable); raw dotfile streams are remove-only. The CURRENT
+  // reviewer's scoped dir is created below (after this), so only prior/completed
+  // artifacts are removed. No-DB legacy review keeps the root verdict (canonical
+  // there); export-ON keeps the sidecars/logs for compatibility; both are
+  // unaffected by this gate. `assertReviewerInputDirHasNoVerdict` (cwd) remains as
+  // a fail-closed backstop on the materialized input dir.
+  if (hasDb && inputs.dbPath !== undefined && !fileExportEnabled()) {
+    // The inversion removes root + scoped `review-decision.yaml` (and every other
+    // prior output) ITSELF, and ONLY for a confirmed `source_mode='db-first'` run
+    // (fail-closed gate inside the function). A DB-backed file-first / legacy run
+    // is a no-op — its canonical verdict sidecar is NOT removed. The decision-yaml
+    // suppression that `suppressRunDirVerdictFiles` used to provide is subsumed
+    // here under the SAME db-first gate, so it is not called ungated (which would
+    // have removed a file-first run's canonical verdict without recovery).
+    quarantinePriorReviewerVerdictArtifacts({
+      dbPath: inputs.dbPath,
+      runsDir: inputs.runsDir,
+      runId: inputs.runId,
+    });
+  }
+
   // Invoke codex from an isolated input copy. Sandbox is read-only; the agent
   // only needs the materialized run artifacts, not the live runDir tree.
   await mkdir(reviewerDir, { recursive: true });
@@ -831,11 +867,22 @@ export async function runReviewerAgent(
     }
   }
 
-  // Phase 9 post-close P1-3 fix — sidecar is compatibility export only.
-  // Skip with export OFF: `db export-files` / `ensureRunMaterialized`
-  // will regenerate the sidecar from the DB-canonical active proposal
-  // when needed (P1-2 fix in exportRun).
-  await writeReviewDecision(reviewerDecisionPath, decision);
+  // #272 / P1-ISO — the per-reviewer verdict sidecar is gated behind file
+  // export. During a sequential frozen-consensus round the NEXT reviewer's
+  // read-only codex can absolute-read a sibling verdict at the predictable
+  // path `reviewers/<reviewer>/review-decision.yaml`; codex `--sandbox
+  // read-only` does NOT jail reads (verified codex-cli 0.139, no readable-root
+  // config), so the only deterministic enforcement is to NOT persist the
+  // sibling verdict to a readable predictable path during the round. The
+  // verdict is DB-canonical (`review_proposals`, inserted above); with export
+  // ON the sidecar is regenerated as a compatibility export.
+  if (fileExportEnabled()) {
+    await writeReviewDecision(reviewerDecisionPath, decision);
+  }
+  // Phase 9 post-close P1-3 fix — the ROOT sidecar is compatibility export
+  // only. Skip with export OFF: `db export-files` / `ensureRunMaterialized`
+  // will regenerate it from the DB-canonical active proposal when needed
+  // (P1-2 fix in exportRun).
   if (!hasDb) {
     await writeReviewDecision(decisionPath, decision);
   } else if (!fileExportEnabled()) {

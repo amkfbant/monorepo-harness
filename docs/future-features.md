@@ -186,6 +186,59 @@ Phase 14 profile loading is the gate).
 **Status:** idea only — recorded 2026-06 during `GOAL.md` Phase 2 (consensus
 extension) review.
 
+## OS-level reviewer read-jail (best-effort, non-portable) — #272 follow-up
+
+**What:** Wrap the reviewer codex in an OS read-jail — macOS `sandbox-exec` with a
+read-deny profile, or Linux landlock — so reads are hard-jailed to the
+materialized input dir as **defense-in-depth** on top of the already-enforced
+DB-only sibling-verdict guarantee.
+
+**Why it is deferred (not implemented):** The independence threat in #272 is that
+a prompt-injected reviewer could **absolute-read** a prior reviewer's verdict during
+a fan-out round. The verdict text lives verbatim in MANY producers/files: the ROOT
+`runs/<id>/review-decision.yaml`, a scoped `reviewers/<id>/review-decision.yaml`, each
+reviewer's transcript (`reviewer-agent.out.log` = the fenced verdict YAML; the events
+files = the final agent message, redaction is secret-only and does NOT strip the
+verdict; `.err.log`), refute transcripts (`refute-agent.out.log` etc.), and `review
+evaluate` outputs under `review-evaluations/**`. codex `--sandbox read-only`
+restricts write/network but does NOT jail reads (it can read any absolute path; cwd
+isolation only defeats `..`-relative reads), and codex-cli 0.139 exposes **no
+readable-root config** (its `sandbox_permissions` only *widens* reads via
+`disk-full-read-access`), so the read-jail cannot be enforced at the codex level. The
+**portable, deterministic, enforceable** fix that shipped uses an **input-allowlist
+inversion** (not a verdict-filename denylist, which kept missing producers): in
+DB-backed file-export-OFF review, `quarantinePriorReviewerVerdictArtifacts` keeps only
+the reviewer input allowlist (`meta.json` / `events.jsonl` / `REVIEWER_INPUT_FILES` /
+`commands/`) and removes EVERY other run-dir entry (all `reviewers/**`,
+`review-evaluations/**`, refute artifacts, root decision yaml, and any future
+producer) immediately before `snapshotRunDir`/codex — gated on a single confirmed
+`source_mode='db-first'` run row (a DB-backed file-first/legacy run is a no-op, so its
+canonical verdict sidecar is never removed without recovery). Ingestable files are
+ingested to the DB first (audit/export set stays recoverable; the db-first
+`ingestRunArtifacts` merge then preserves any recoverable-body row — `storage` in
+`db` or `external`, `blob_sha256` present — whose scratch file is intentionally
+absent, so the audit transcript survives the post-round sync). Raw dotfile streams are
+remove-only (intentionally non-recoverable; the published `reviewer-agent.events.jsonl`
+is the canonical one). The per-reviewer sidecar is DB-only by default;
+`assertReviewerInputDirHasNoVerdict` (cwd) remains as a fail-closed backstop. The
+verdict stays canonical in `review_proposals` and the ingestable transcripts as DB
+artifacts (db or external blob tier), so the recoverable copies are reconstructed by
+`exportRun` after the round / when file export is requested.
+**Residual by design:** a read-only codex can still absolute-read NON-verdict repo/run
+files (diff, summary, command logs); the shipped fix is complete for the
+**verdict-leak-on-disk class** only. An OS-level wrapper is platform-specific (sandbox-exec
+vs landlock vs none) and cannot be made deterministic across the supported OSes, so it
+is recorded here as a best-effort hardening rather than a requirement.
+
+**How (sketch):** detect the platform; on macOS run codex under `sandbox-exec` with
+a profile that denies `file-read*` outside the input dir; on Linux apply a landlock
+ruleset before exec; elsewhere fall back to the DB-only enforcement only (no
+regression). Must stay opt-in / fail-open-to-current-behavior so an unsupported OS
+does not break review.
+
+**Status:** deferred — recorded 2026-06 resolving #272 (the DB-only sibling-verdict
+enforcement is the shipped portable mitigation).
+
 ## Copilot PR review integration
 
 **Idea:** Let `harness pr create` optionally request a GitHub Copilot code

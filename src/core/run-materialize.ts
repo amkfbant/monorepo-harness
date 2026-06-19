@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import type Database from "better-sqlite3";
 import { DbError } from "../db/connection.js";
 import { openManagedDb } from "../db/managed-connection.js";
@@ -8,6 +8,10 @@ import {
   ingestRunArtifactPaths,
   ingestRunArtifacts,
 } from "../db/run-artifacts.js";
+import {
+  REVIEWER_INPUT_DIRS,
+  REVIEWER_INPUT_FILES,
+} from "./reviewer-artifact-isolation.js";
 import { fileExportEnabled } from "../config/export-mode.js";
 import {
   recordScratchMaterialization,
@@ -365,4 +369,162 @@ export function syncRunArtifactsToDb(opts: {
   } finally {
     dbHandle.close();
   }
+}
+
+/**
+ * INPUT-ALLOWLIST (#272 inversion): the only run-dir entries a reviewer
+ * legitimately needs to KEEP before its codex starts. Everything ELSE under
+ * `runs/<id>/` is a prior output (another reviewer's / pass's / command's
+ * artifact) and is quarantined. Using an input-allowlist instead of a
+ * verdict-filename denylist means ANY current OR FUTURE verdict-bearing
+ * producer (`reviewers/**`, `review-evaluations/**`, refute artifacts, root
+ * `review-decision.yaml`, …) is removed by default — no hand-maintained list to
+ * keep in sync, no missed vector.
+ *
+ *   - `meta.json`     — run metadata the harness reads directly from runDir
+ *   - `events.jsonl`  — run event log (not verdict-bearing); kept as run state
+ *   - REVIEWER_INPUT_FILES / REVIEWER_INPUT_DIRS — the materialized review
+ *     inputs (review-request.md / summary.md / final-diff.patch / untracked-* /
+ *     commands/). These are the SAME for every reviewer and carry no verdict.
+ */
+const REVIEWER_RUN_DIR_INPUT_ALLOWLIST: ReadonlySet<string> = new Set<string>([
+  "meta.json",
+  "events.jsonl",
+  ...REVIEWER_INPUT_FILES,
+  ...REVIEWER_INPUT_DIRS,
+]);
+
+/**
+ * A run-relative path is DB-ingestable iff `ingestRunArtifactPaths` would
+ * actually store it — i.e. no path component is empty / `.` / `..` or
+ * dot-prefixed. Raw/tmp dotfile streams (`.reviewer-agent.events.raw.jsonl`,
+ * `.reviewer-agent.events.redacted.tmp`, `.refute-agent.events.raw.jsonl`) are
+ * therefore NOT ingestable — they are non-canonical raw streams (the published
+ * `reviewer-agent.events.jsonl` is the recoverable one), so they are
+ * REMOVE-ONLY. Mirrors `isIngestableRelPath` in db/run-artifacts.ts.
+ */
+function isDbIngestableRelPath(rel: string): boolean {
+  if (rel === "" || rel.startsWith("/") || rel.includes("\\")) return false;
+  return rel
+    .split("/")
+    .every(
+      (part) =>
+        part !== "" &&
+        part !== "." &&
+        part !== ".." &&
+        !part.startsWith("."),
+    );
+}
+
+/**
+ * Recursively collect every FILE under `dir` as a run-relative path.
+ */
+function collectFilesRel(runDir: string, dir: string): string[] {
+  const out: string[] = [];
+  const entries = readDirEntriesSafe(dir);
+  for (const e of entries) {
+    const abs = join(dir, e.name);
+    if (e.isDirectory()) {
+      out.push(...collectFilesRel(runDir, abs));
+    } else if (e.isFile()) {
+      out.push(relative(runDir, abs).split("\\").join("/"));
+    }
+  }
+  return out;
+}
+
+/** readdir with file types; [] on error (missing / unreadable dir). */
+function readDirEntriesSafe(dir: string) {
+  try {
+    return readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * #272 (definitive) — before a reviewer's read-only codex starts, make EVERY
+ * prior reviewer's / prior pass's / prior command's verdict UNREACHABLE on disk.
+ * codex `--sandbox read-only` can absolute-read ANY path, so cwd isolation alone
+ * does not stop a reviewer recovering a prior verdict verbatim from a sibling's
+ * `reviewer-agent.out.log` / events, a `review-evaluations/**` log, a refute
+ * transcript, or the root/scoped `review-decision.yaml`.
+ *
+ * INPUT-ALLOWLIST model (DB-backed file-export-OFF review only): keep ONLY the
+ * reviewer input allowlist (`REVIEWER_RUN_DIR_INPUT_ALLOWLIST`); treat every
+ * OTHER run-dir entry as a prior output to quarantine. Ingestable files are
+ * ingested into the DB FIRST (so the audit/export artifact set stays
+ * recoverable — no lost logs), then removed; non-ingestable raw dotfile streams
+ * are REMOVE-ONLY (intentionally non-recoverable — the published events.jsonl is
+ * the canonical one). The CURRENT reviewer's scoped dir is created AFTER this
+ * runs, so only prior/completed artifacts are affected. The verdict stays
+ * canonical in `review_proposals`; nothing verdict-shaped remains on disk while
+ * the next reviewer's codex runs. Returns removed run-rel paths (audit/test).
+ * Safe no-op when nothing extra is present.
+ */
+export function quarantinePriorReviewerVerdictArtifacts(opts: {
+  dbPath: string;
+  runsDir: string;
+  runId: string;
+}): { removed: string[]; ingested: string[] } {
+  const runDir = join(opts.runsDir, opts.runId);
+  if (!existsSync(runDir)) return { removed: [], ingested: [] };
+  // P2 (gating): the WHOLE operation — removal AND ingest — runs ONLY for a run
+  // row that EXISTS and is `db-first`. In db-first export-OFF the run dir is
+  // ephemeral scratch and the DB is canonical, so removal is recoverable. For a
+  // missing / legacy / file-first run the DB is NOT canonical, so removing
+  // scratch files would lose data with no recovery — fail-closed to a no-op.
+  if (!existsSync(opts.dbPath)) return { removed: [], ingested: [] };
+
+  // Enumerate top-level entries; everything not in the input allowlist is a
+  // prior output. Collect the full set of files to quarantine (recursively).
+  const topLevel = readDirEntriesSafe(runDir);
+  const quarantineRoots: string[] = [];
+  const quarantineFiles: string[] = [];
+  for (const e of topLevel) {
+    if (REVIEWER_RUN_DIR_INPUT_ALLOWLIST.has(e.name)) continue;
+    const abs = join(runDir, e.name);
+    quarantineRoots.push(abs);
+    if (e.isDirectory()) {
+      quarantineFiles.push(...collectFilesRel(runDir, abs));
+    } else if (e.isFile()) {
+      quarantineFiles.push(relative(runDir, abs).split("\\").join("/"));
+    }
+  }
+  if (quarantineRoots.length === 0) return { removed: [], ingested: [] };
+
+  const ingested: string[] = [];
+  const dbHandle = openManagedDb({ dbPath: opts.dbPath });
+  try {
+    const row = dbHandle.db
+      .prepare("SELECT source_mode FROM runs WHERE run_id = ?")
+      .get(opts.runId) as { source_mode: string } | undefined;
+    // Fail-closed gate: not a db-first run → no-op (do NOT remove unrecoverable
+    // files). The verdict's security comes from removal, which we only do when
+    // the DB can recover the audit body.
+    if (row === undefined || row.source_mode !== "db-first") {
+      return { removed: [], ingested: [] };
+    }
+    // Ingest the DB-ingestable prior-output files BEFORE removal so the audit /
+    // export artifact set is recoverable. Raw dotfile streams are not ingestable
+    // and are remove-only (intentionally non-recoverable).
+    const ingestable = quarantineFiles.filter((p) => isDbIngestableRelPath(p));
+    if (ingestable.length > 0) {
+      ingestRunArtifactPaths(dbHandle.db, runDir, opts.runId, ingestable);
+      ingested.push(...ingestable);
+    }
+    // Remove every prior-output entry (files + dirs) from disk WHILE STILL HOLDING
+    // the DB maintenance lock, so a concurrent `db restore` cannot acquire the
+    // exclusive lock between ingest and delete, restore a snapshot lacking the
+    // just-ingested rows, and leave us deleting the only on-disk copy (TOCTOU).
+    for (const abs of quarantineRoots) {
+      rmSync(abs, { recursive: true, force: true });
+    }
+  } finally {
+    dbHandle.close();
+  }
+
+  quarantineFiles.sort();
+  ingested.sort();
+  return { removed: quarantineFiles, ingested };
 }

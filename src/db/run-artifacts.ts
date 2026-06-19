@@ -236,18 +236,57 @@ function isIngestableRelPath(rel: string): boolean {
  * `meta.json` / `events.jsonl` / `review-decision.yaml` are skipped for
  * blob storage — their body is reconstructed by `exportRun` from the
  * canonical `runs` / `run_events` / `review_decisions` rows.
+ *
+ * Manifest rebuild semantics depend on the run's `source_mode` (#272 audit
+ * fidelity):
+ *   - file-first / unknown: the run dir IS the source of truth, so the manifest
+ *     is fully rebuilt from disk (delete-all → rescan). Stale rows are pruned.
+ *   - db-first: the run dir is EPHEMERAL SCRATCH and the DB is canonical. A
+ *     recoverable DB-canonical row (`storage='db'` with a present blob body)
+ *     whose scratch file is INTENTIONALLY absent (e.g. quarantined by #272's
+ *     `quarantinePriorReviewerVerdictArtifacts`) must NOT be deleted just
+ *     because it is not on disk — that would lose the audit transcript. So in
+ *     db-first mode only rows that will be re-scanned from disk, or that are not
+ *     recoverable, are deleted, and the rescan upserts (INSERT OR REPLACE).
  */
 export function ingestRunArtifacts(
   db: Database.Database,
   runDir: string,
   runId: string,
 ): IngestRunArtifactsResult {
-  const insert = prepareDbArtifactInsert(db, "insert");
+  const sourceRow = db
+    .prepare("SELECT source_mode FROM runs WHERE run_id = ?")
+    .get(runId) as { source_mode: string } | undefined;
+  const dbFirst = sourceRow?.source_mode === "db-first";
+  const insert = prepareDbArtifactInsert(db, dbFirst ? "replace" : "insert");
   const txn = db.transaction((): IngestRunArtifactsResult => {
-    db.prepare("DELETE FROM artifacts WHERE run_id = ?").run(runId);
+    const onDisk = [...walkRunArtifacts(runDir)];
+    if (dbFirst) {
+      // Preserve recoverable DB-canonical rows whose scratch file is absent;
+      // delete rows about to be re-scanned (refreshed) or that are not
+      // recoverable so they cannot strand. The recoverability key is a present
+      // blob body, regardless of storage tier — both `storage='db'` and
+      // `storage='external'` (after `db migrate-blobs`) are DB-canonical and
+      // rebuilt by `exportRun`, so neither may be pruned merely because its
+      // intentionally-quarantined scratch file is absent. Only bodyless rows
+      // (`blob_sha256 IS NULL`, e.g. file-backed) and on-disk-refreshed rows
+      // are deleted.
+      const placeholders = onDisk.map(() => "?").join(", ");
+      const onDiskFilter =
+        onDisk.length > 0 ? `relative_path IN (${placeholders})` : "0";
+      db.prepare(
+        `DELETE FROM artifacts
+          WHERE run_id = ?
+            AND (${onDiskFilter}
+                 OR storage NOT IN ('db', 'external')
+                 OR blob_sha256 IS NULL)`,
+      ).run(runId, ...onDisk.map((a) => a.rel));
+    } else {
+      db.prepare("DELETE FROM artifacts WHERE run_id = ?").run(runId);
+    }
     let count = 0;
     let totalBytes = 0;
-    for (const { rel, abs } of walkRunArtifacts(runDir)) {
+    for (const { rel, abs } of onDisk) {
       const result = ingestRunArtifactFile(db, insert, runId, rel, abs);
       count += result.count;
       totalBytes += result.totalBytes;
