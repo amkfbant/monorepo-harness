@@ -535,7 +535,7 @@ confirmation は不要（PR を開かず、hitch/phase close もしない bounde
 | `harness.phase.add` | `phase.add` | 親 course の visibility を `OperationRunner` 前に確認。cross-course parent は拒否。`scope` / `closeConditions` は `PhaseRepository.add()` の parser/validator を通る |
 | `harness.phase.update` | `phase.update` | 親 course 経由で visibility 確認。`status` のみ更新（SP-1） |
 | `harness.phase.ratify` | `phase.ratify` | `phaseId`, `approvedBy`, `reason?`, `idempotencyKey`, `actorNote?`。現在の phase scope/close conditions の `specHash` を `review_state_json.specApproval` に記録 |
-| `harness.phase.link_hitch` | `phase.link_hitch` | `phaseId`, `hitchId`, `allowScopeWiden?`, `allowGateLoosen?`, `idempotencyKey`, `actorNote?`。cross-project mismatch と double-link（PK）は操作内で拒否。ratify 済み phase では hitch spec が phase spec を緩める link も拒否（明示 allow でのみ許可） |
+| `harness.phase.link_hitch` | `phase.link_hitch` | `phaseId`, `hitchId`, `allowScopeWiden?`, `allowGateLoosen?`, `idempotencyKey`, `actorNote?`。親 phase（= 親 course）の visibility を `OperationRunner` 前に `ensureProjectVisible` で確認（sibling phase tool と対称・null/out-of-scope は fail-closed）。cross-project mismatch と double-link（PK）は操作内で拒否。ratify 済み phase では hitch spec が phase spec を緩める link も拒否（明示 allow でのみ許可） |
 | `harness.phase.start_hitch` | `phase.start_hitch` | `phaseId`, `hitchId?`, `title`, `description?`, `domain?`, `backlogItemId?`, `scope?`, `closeConditions?`, `policy?`, budget fields, `allowScopeWiden?`, `allowGateLoosen?`, `idempotencyKey`, `actorNote?`。phase spec から hitch を作って同一 transaction で link。ratified-spec gate と drift warning は `phase.link_hitch` と同じ |
 
 project-restricted client の scope: null-`project_id` course の create / orchestrate / phase 操作は拒否。

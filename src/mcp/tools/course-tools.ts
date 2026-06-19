@@ -605,11 +605,33 @@ export async function phaseLinkHitchTool(
   args: PhaseLinkHitchArgs,
   context: McpToolContext,
 ): Promise<HarnessMcpToolResult> {
+  // Resolve visibility of the DESTINATION (parent phase/course) BEFORE entering
+  // runMcpMutationOperation so a denied call returns permission_denied (not a generic
+  // error thrown inside workWithDb). This is symmetric with the sibling phase tools
+  // (phase.add/update/ratify/start_hitch) and is defense-in-depth: even if the
+  // PERMISSION layer (resolvePhaseLinkHitchProjectId → resolvePhaseProjectId) were
+  // bypassed/regressed, a restricted client whose parent course project is null or
+  // out-of-scope must fail-closed here (#296).
+  const visibilityResult = withReadonlyDb(context, ({ db }) => {
+    const row = db
+      .prepare(
+        `SELECT c.project_id
+           FROM phases p
+           JOIN courses c ON c.course_id = p.course_id
+          WHERE p.phase_id = ?`,
+      )
+      .get(args.phaseId) as { project_id: string | null } | undefined;
+    if (row === undefined) return errorResult(`phase ${args.phaseId} not found`);
+    return ensureProjectVisible(context.config, row.project_id);
+  });
+  if (visibilityResult !== null) return visibilityResult as HarnessMcpToolResult;
+
   // NOTE: an out-of-scope SOURCE hitch is gated at the PERMISSION layer by
   // resolvePhaseLinkHitchProjectId (registry) — that runs before both the
   // confirmation record and the handler, so a forbidden/unknown hitch id can never
   // reach a confirmation/audit record and not-found is indistinguishable from
-  // forbidden for restricted clients. We do not re-check it here.
+  // forbidden for restricted clients. We do not re-check the SOURCE hitch here; the
+  // DESTINATION parent (above) IS re-checked, symmetric with sibling phase tools.
   return runMcpMutationOperation(context, {
     operationType: "phase.link_hitch",
     target: { type: "phase", id: args.phaseId },
