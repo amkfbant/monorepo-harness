@@ -18,6 +18,10 @@ import {
 } from "./schemas.js";
 import { phaseSpecApprovalStatusForSpec } from "../roadmap/phase-repository.js";
 import {
+  ConvergenceDecisionRepository,
+  type RecordHitchConvergenceDecisionInput,
+} from "./repositories/convergence-decision-repository.js";
+import {
   closeConditionsLoosenGate,
   isScopeWidening,
 } from "./spec-gates.js";
@@ -34,7 +38,6 @@ import {
   type HitchCloseCheck,
   type HitchCloseCheckStatus,
   type HitchCloseCondition,
-  type HitchConvergenceDecision,
   type HitchConvergenceDecisionRecord,
   type HitchCreatedSource,
   type HitchFinding,
@@ -44,7 +47,6 @@ import {
   type HitchLifecycleEvent,
   type HitchLifecycleEventName,
   type HitchLifecycleStatus,
-  type HitchNextAction,
   type HitchPolicy,
   type HitchReviewCycle,
   type HitchReviewMode,
@@ -53,6 +55,11 @@ import {
   type HitchSession,
   type HitchStatus,
 } from "./types.js";
+
+// #125 Track C (C1): the convergence-decision concern moved to a sub-repo.
+// Re-export its input type so the public module surface of `repository.ts`
+// (and any consumer importing it from here) is unchanged.
+export type { RecordHitchConvergenceDecisionInput };
 
 export interface CreateHitchSessionInput {
   hitchId?: string;
@@ -257,19 +264,6 @@ export interface RecordHitchCloseCheckInput {
   message?: string;
 }
 
-export interface RecordHitchConvergenceDecisionInput {
-  decisionId?: string;
-  hitchId: string;
-  cycleId?: string;
-  attemptId?: string;
-  decision: HitchConvergenceDecision;
-  reason: string;
-  metrics?: Record<string, unknown>;
-  recommendedNextAction?: HitchNextAction;
-  createdAt?: string;
-  createdBy: string;
-}
-
 export interface UpdateHitchStatusOptions {
   createdBy: string;
   now?: string;
@@ -453,19 +447,6 @@ interface HitchCloseCheckRow {
   message: string | null;
 }
 
-interface HitchDecisionRow {
-  decision_id: string;
-  hitch_id: string;
-  cycle_id: string | null;
-  attempt_id: string | null;
-  decision: HitchConvergenceDecision;
-  reason: string;
-  metrics_json: string;
-  recommended_next_action: string | null;
-  created_at: string;
-  created_by: string;
-}
-
 interface HitchLifecycleEventRow {
   event_id: string;
   hitch_id: string;
@@ -561,7 +542,15 @@ const CODING_RUN_ATTEMPT_TYPES = new Set<HitchAttemptType>([
 ]);
 
 export class HitchRepository {
-  constructor(private readonly db: Database.Database) {}
+  // #125 Track C: per-concern sub-repositories. Each is constructed with this
+  // facade's `db` handle (no transaction of its own) so its writes compose
+  // inside the facade's single-BEGIN atomic primitive (`runAtomically`). The
+  // facade keeps every public method and forwards to the owning sub-repo.
+  private readonly decisions: ConvergenceDecisionRepository;
+
+  constructor(private readonly db: Database.Database) {
+    this.decisions = new ConvergenceDecisionRepository(db);
+  }
 
   createSession(input: CreateHitchSessionInput): HitchSession {
     const now = input.createdAt ?? new Date().toISOString();
@@ -2257,63 +2246,25 @@ export class HitchRepository {
     return rows.map(rowToCloseCheck);
   }
 
+  // #125 Track C (C1): convergence-decision concern delegated to
+  // ConvergenceDecisionRepository. The facade keeps these entry-points and
+  // forwards to the sub-repo (shared `db`, behaviour-identical).
   recordConvergenceDecision(
     input: RecordHitchConvergenceDecisionInput,
   ): HitchConvergenceDecisionRecord {
-    const createdAt = input.createdAt ?? new Date().toISOString();
-    const decisionId = input.decisionId ?? `decision-${randomUUID()}`;
-    this.db
-      .prepare(
-        `INSERT INTO hitch_convergence_decisions (
-           decision_id, hitch_id, cycle_id, attempt_id, decision, reason,
-           metrics_json, recommended_next_action, created_at, created_by
-         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        decisionId,
-        input.hitchId,
-        input.cycleId ?? null,
-        input.attemptId ?? null,
-        input.decision,
-        input.reason,
-        json(input.metrics ?? {}),
-        input.recommendedNextAction === undefined
-          ? null
-          : json(input.recommendedNextAction),
-        createdAt,
-        input.createdBy,
-      );
-    this.touchSession(input.hitchId, createdAt);
-    return this.requireDecision(decisionId);
+    return this.decisions.recordConvergenceDecision(input);
   }
 
   getDecision(decisionId: string): HitchConvergenceDecisionRecord | null {
-    const row = this.db
-      .prepare(
-        "SELECT * FROM hitch_convergence_decisions WHERE decision_id = ?",
-      )
-      .get(decisionId) as HitchDecisionRow | undefined;
-    return row === undefined ? null : rowToDecision(row);
+    return this.decisions.getDecision(decisionId);
   }
 
   requireDecision(decisionId: string): HitchConvergenceDecisionRecord {
-    const decision = this.getDecision(decisionId);
-    if (decision === null) {
-      throw new DbError(`hitch convergence decision not found: ${decisionId}`);
-    }
-    return decision;
+    return this.decisions.requireDecision(decisionId);
   }
 
   listDecisions(hitchId: string): HitchConvergenceDecisionRecord[] {
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM hitch_convergence_decisions
-          WHERE hitch_id = ?
-          ORDER BY created_at ASC, decision_id ASC`,
-      )
-      .all(hitchId) as HitchDecisionRow[];
-    return rows.map(rowToDecision);
+    return this.decisions.listDecisions(hitchId);
   }
 
   private insertLifecycleEvent(input: {
@@ -2763,24 +2714,6 @@ function rowToCloseCheck(row: HitchCloseCheckRow): HitchCloseCheck {
     checkedBy: row.checked_by,
     evidence: parseRecord(row.evidence_json),
     message: row.message,
-  };
-}
-
-function rowToDecision(row: HitchDecisionRow): HitchConvergenceDecisionRecord {
-  return {
-    decisionId: row.decision_id,
-    hitchId: row.hitch_id,
-    cycleId: row.cycle_id,
-    attemptId: row.attempt_id,
-    decision: row.decision,
-    reason: row.reason,
-    metrics: parseRecord(row.metrics_json),
-    recommendedNextAction:
-      row.recommended_next_action === null
-        ? null
-        : (JSON.parse(row.recommended_next_action) as HitchNextAction),
-    createdAt: row.created_at,
-    createdBy: row.created_by,
   };
 }
 
