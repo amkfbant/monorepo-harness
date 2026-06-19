@@ -1879,3 +1879,365 @@ describe("#278: later approve auto-resolves superseded review blockers", () => {
     }
   });
 });
+
+describe("#306: the review import commits atomically (all-or-nothing)", () => {
+  function createSessionForAutoResolve(goals: HitchRepository, hitchId: string) {
+    goals.createSession({
+      hitchId,
+      title: "Goal atomic import",
+      scope: {
+        allowedFindingCategories: [
+          "review-required-change",
+          "review-negative-decision",
+          "correctness",
+        ],
+      },
+      closeConditions: [
+        {
+          id: "review-consensus",
+          kind: "review_consensus",
+          required: true,
+        },
+      ],
+      createdBy: "test",
+      createdSource: "cli",
+    });
+  }
+
+  // Set up a hitch with a prior changes_requested cycle that left an open in-scope
+  // P1 review-required-change blocker, plus the implementation attempt + persisted
+  // approve decision so a SECOND approving import would (on the happy path) both
+  // supersede-resolve the blocker AND complete the approving cycle.
+  function seedHitchWithPriorBlocker(
+    goals: HitchRepository,
+    proposals: ReviewProposalRepository,
+    db: ReturnType<typeof openDb>,
+    hitchId: string,
+  ): { blockerId: string } {
+    createSessionForAutoResolve(goals, hitchId);
+    goals.createAttempt({
+      hitchId,
+      attemptType: "implement",
+      status: "succeeded",
+      runId: "run-review",
+    });
+    const cr = createProposal(proposals, {
+      reviewer: "reviewer-a",
+      decision: "changes_requested",
+      requiredChanges: ["Fix the convergence gate ordering"],
+    });
+    importReviewProposalToHitch({
+      repository: goals,
+      hitchId,
+      proposal: cr,
+      createdBy: "test",
+    });
+    const blocker = goals
+      .listFindings({ hitchId, scopeStatus: "in_scope", severity: "P1" })
+      .find((f) => f.category === "review-required-change");
+    expect(blocker?.lifecycleStatus).toBe("open");
+    // The persisted DB canonical decision is the approve trigger for cycle 2.
+    insertReviewDecision(db, { decision: "approved" });
+    return { blockerId: blocker!.findingId };
+  }
+
+  // (a) ATOMICITY / RED-FIRST: inject a throw DURING completeReviewCycle — i.e.
+  // AFTER resolveSupersededReviewFindings has flipped the prior blocker open->fixed
+  // but BEFORE the approving cycle is recorded. The WHOLE import must roll back:
+  // the prior blocker stays OPEN (not left fixed) AND no new cycle row is recorded
+  // (no crash-partial). Before #306 this would have left the blocker `fixed` while
+  // the approving cycle never completed.
+  it("rolls back the ENTIRE import when completeReviewCycle throws after supersede-resolve", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      const hitchId = "goal-306-rollback";
+      const { blockerId } = seedHitchWithPriorBlocker(goals, proposals, db, hitchId);
+      const cyclesBefore = goals.listReviewCycles(hitchId).length;
+
+      // Crash injection: completeReviewCycle runs INSIDE the atomic transaction,
+      // after the supersede-resolve open->fixed flip. Throwing here exercises the
+      // exact crash-partial window the issue describes.
+      const realComplete = goals.completeReviewCycle.bind(goals);
+      let completeCalls = 0;
+      goals.completeReviewCycle = ((_input: Parameters<typeof realComplete>[0]) => {
+        completeCalls += 1;
+        throw new Error("injected crash during completeReviewCycle");
+      }) as typeof goals.completeReviewCycle;
+
+      const approved = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "approved",
+      });
+      expect(() =>
+        importReviewProposalToHitch({
+          repository: goals,
+          hitchId,
+          proposal: approved,
+          createdBy: "test",
+        }),
+      ).toThrow("injected crash during completeReviewCycle");
+      expect(completeCalls).toBe(1);
+
+      // Restore so the assertions read live DB state through the real method path.
+      goals.completeReviewCycle = realComplete;
+
+      // The supersede-resolve was rolled back: the prior blocker is STILL OPEN.
+      expect(goals.requireFinding(blockerId).lifecycleStatus).toBe("open");
+      expect(goals.requireFinding(blockerId).fixedAt).toBeNull();
+      expect(goals.requireFinding(blockerId).resolutionNote).toBeNull();
+      // No crash-partial: the started-but-not-completed approving cycle row was
+      // rolled back too (cycle creation is inside the same transaction).
+      expect(goals.listReviewCycles(hitchId).length).toBe(cyclesBefore);
+      expect(
+        goals.listReviewCycles(hitchId).filter((c) => c.completedAt === null),
+      ).toEqual([]);
+      // Convergence still SEES the blocker (live re-derivation) — the approve never
+      // fully imported, so the close gate is NOT cleared.
+      expect(
+        new ConvergenceService(goals).evaluate(hitchId).metrics.openInScopeP1,
+      ).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  // (a') ATOMICITY of the finding-import portion: a throw DURING the finding import
+  // (the first write after the cycle is started) rolls back the started cycle too —
+  // no orphan cycle row, no partially-imported findings.
+  it("rolls back the started cycle when a finding upsert throws mid-import", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      const hitchId = "goal-306-upsert-throw";
+      createSessionForAutoResolve(goals, hitchId);
+      const cyclesBefore = goals.listReviewCycles(hitchId).length;
+      const findingsBefore = goals.listFindings({ hitchId, limit: 10_000 }).length;
+
+      const realUpsertCore = goals.upsertFindingCore.bind(goals);
+      goals.upsertFindingCore = (() => {
+        throw new Error("injected crash during finding import");
+      }) as typeof goals.upsertFindingCore;
+
+      const cr = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "changes_requested",
+        requiredChanges: ["This blocker is never imported"],
+      });
+      expect(() =>
+        importReviewProposalToHitch({
+          repository: goals,
+          hitchId,
+          proposal: cr,
+          createdBy: "test",
+        }),
+      ).toThrow("injected crash during finding import");
+
+      goals.upsertFindingCore = realUpsertCore;
+      expect(goals.listReviewCycles(hitchId).length).toBe(cyclesBefore);
+      expect(goals.listFindings({ hitchId, limit: 10_000 }).length).toBe(
+        findingsBefore,
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  // (b) HAPPY PATH (#278 behavior preserved): on a clean approving import the
+  // findings are imported, the prior blocker is resolved (open->fixed) BEFORE the
+  // cycle completes, the cycle is completed with counts reflecting the resolution,
+  // and convergence reaches close_ready — all committed atomically.
+  it("imports atomically on the happy path (findings + resolve + cycle completion all commit)", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      const hitchId = "goal-306-happy";
+      const { blockerId } = seedHitchWithPriorBlocker(goals, proposals, db, hitchId);
+
+      const approved = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "approved",
+      });
+      const imported = importReviewProposalToHitch({
+        repository: goals,
+        hitchId,
+        proposal: approved,
+        processResult: {
+          runId: "run-review",
+          previousStatus: "needs_review",
+          newStatus: "approved",
+          reviewer: "consensus",
+          reviewedAt: "2026-05-26T00:01:00.000Z",
+          warnings: [],
+        },
+        createdBy: "test",
+      });
+
+      // Prior blocker resolved open->fixed (the #278 resolve ran, committed).
+      const resolved = goals.requireFinding(blockerId);
+      expect(resolved.lifecycleStatus).toBe("fixed");
+      expect(resolved.fixedAt).not.toBeNull();
+      // The approving cycle is recorded AND completed, with counts reflecting the
+      // resolution computed BEFORE completeReviewCycle (#278 ordering preserved).
+      expect(imported.cycle.completedAt).not.toBeNull();
+      expect(imported.cycle.findingsFixed).toBe(1);
+      expect(imported.cycle.findingsInScopeOpen).toBe(0);
+      expect(imported.autoResolvedFindings?.map((f) => f.findingId)).toEqual([
+        blockerId,
+      ]);
+      // The review_consensus close-check evidence is recorded atomically with the
+      // cycle (committed inside the same transaction, #306 P1).
+      expect(imported.closeChecks.length).toBe(1);
+      expect(imported.closeChecks[0]?.status).toBe("passed");
+      const persistedChecks = goals
+        .listCloseChecks(hitchId)
+        .filter((c) => c.conditionId === "review-consensus");
+      expect(persistedChecks.length).toBe(1);
+      expect(persistedChecks[0]?.status).toBe("passed");
+      // Convergence reaches close_ready (the now-superseded openInScopeP1 is clear).
+      const conv = new ConvergenceService(goals).evaluate(hitchId);
+      expect(conv.metrics.openInScopeP1).toBe(0);
+      expect(conv.decision).toBe("close_ready");
+    } finally {
+      db.close();
+    }
+  });
+
+  // (a'') ATOMICITY of the close-check evidence (#306 P1): a crash AFTER
+  // completeReviewCycle has run but DURING the review_consensus close-check
+  // recording must roll back EVERYTHING — the cycle is NOT completed (and its row
+  // is gone), the prior blocker stays OPEN, and no close-check evidence is written.
+  // Before the fix (close-check recording OUTSIDE the atomic block) this left the
+  // cycle completed + blocker fixed while the required close-check evidence was
+  // missing — a crash-partial that becomes a wrong terminal budget_exhausted on the
+  // final allowed review cycle.
+  it("rolls back the ENTIRE import (cycle + resolve + close-check) when close-check recording throws after completeReviewCycle", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      const hitchId = "goal-306-closecheck-throw";
+      const { blockerId } = seedHitchWithPriorBlocker(goals, proposals, db, hitchId);
+      const cyclesBefore = goals.listReviewCycles(hitchId).length;
+      const reviewChecksBefore = goals
+        .listCloseChecks(hitchId)
+        .filter((c) => c.conditionId === "review-consensus").length;
+
+      // Crash injection: recordCloseCheck runs INSIDE the atomic transaction,
+      // AFTER completeReviewCycle. Throwing here exercises the second crash-partial
+      // window (cycle completed, evidence not yet written).
+      const realRecord = goals.recordCloseCheck.bind(goals);
+      let completeRan = false;
+      const realComplete = goals.completeReviewCycle.bind(goals);
+      goals.completeReviewCycle = ((input: Parameters<typeof realComplete>[0]) => {
+        const out = realComplete(input);
+        completeRan = true;
+        return out;
+      }) as typeof goals.completeReviewCycle;
+      goals.recordCloseCheck = (() => {
+        throw new Error("injected crash during close-check recording");
+      }) as typeof goals.recordCloseCheck;
+
+      const approved = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "approved",
+      });
+      expect(() =>
+        importReviewProposalToHitch({
+          repository: goals,
+          hitchId,
+          proposal: approved,
+          processResult: {
+            runId: "run-review",
+            previousStatus: "needs_review",
+            newStatus: "approved",
+            reviewer: "consensus",
+            reviewedAt: "2026-05-26T00:01:00.000Z",
+            warnings: [],
+          },
+          createdBy: "test",
+        }),
+      ).toThrow("injected crash during close-check recording");
+      // completeReviewCycle DID run (its write happened) — the throw is strictly
+      // after it, proving this is the post-complete window, not the earlier one.
+      expect(completeRan).toBe(true);
+
+      goals.recordCloseCheck = realRecord;
+      goals.completeReviewCycle = realComplete;
+
+      // EVERYTHING rolled back: the completed-cycle write is gone (no new row, none
+      // left incomplete), the prior blocker stays OPEN, and no review_consensus
+      // close-check evidence was written.
+      expect(goals.listReviewCycles(hitchId).length).toBe(cyclesBefore);
+      expect(
+        goals.listReviewCycles(hitchId).filter((c) => c.completedAt === null),
+      ).toEqual([]);
+      expect(goals.requireFinding(blockerId).lifecycleStatus).toBe("open");
+      expect(goals.requireFinding(blockerId).fixedAt).toBeNull();
+      expect(
+        goals
+          .listCloseChecks(hitchId)
+          .filter((c) => c.conditionId === "review-consensus").length,
+      ).toBe(reviewChecksBefore);
+      // The blocker is still SEEN by convergence (not silently cleared).
+      expect(
+        new ConvergenceService(goals).evaluate(hitchId).metrics.openInScopeP1,
+      ).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  // (c) PUBLIC-METHOD STANDALONE: the public methods other callers (CLI / MCP /
+  // orchestrator-runners) use directly still each open + commit their own
+  // transaction and behave identically — only the import path composes their cores
+  // into a single transaction.
+  it("public methods still commit transactionally when called standalone", () => {
+    const { db, goals } = fresh();
+    try {
+      const hitchId = "goal-306-standalone";
+      createSessionForAutoResolve(goals, hitchId);
+
+      // startReviewCycle + completeReviewCycle (plain writers) commit independently.
+      const cycle = goals.startReviewCycle({
+        hitchId,
+        reviewMode: "initial",
+        sourceRunId: "run-review",
+      });
+      expect(goals.requireReviewCycle(cycle.cycleId).completedAt).toBeNull();
+      const completed = goals.completeReviewCycle({
+        cycleId: cycle.cycleId,
+        findingsSeen: 1,
+        summary: "standalone",
+      });
+      expect(completed.completedAt).not.toBeNull();
+      expect(goals.requireReviewCycle(cycle.cycleId).completedAt).not.toBeNull();
+
+      // upsertFinding (own transaction) commits a finding on its own — stamped to
+      // the earlier cycle so it is eligible for supersede-resolution below.
+      const finding = goals.upsertFinding({
+        hitchId,
+        source: "review",
+        severity: "P1",
+        category: "review-required-change",
+        scopeStatus: "in_scope",
+        summary: "Standalone blocker",
+        sourceCycleId: cycle.cycleId,
+      }).finding;
+      expect(goals.requireFinding(finding.findingId).lifecycleStatus).toBe("open");
+
+      // resolveSupersededReviewFindings (own transaction) retires the standalone
+      // blocker once a strictly-later cycle supersedes it.
+      const later = goals.startReviewCycle({
+        hitchId,
+        reviewMode: "initial",
+        sourceRunId: "run-review",
+      });
+      const resolved = goals.resolveSupersededReviewFindings({
+        hitchId,
+        supersedingCycleId: later.cycleId,
+        categories: ["review-required-change", "review-negative-decision"],
+        decisionRunId: "run-review",
+      });
+      expect(resolved.map((f) => f.findingId)).toEqual([finding.findingId]);
+      expect(goals.requireFinding(finding.findingId).lifecycleStatus).toBe("fixed");
+    } finally {
+      db.close();
+    }
+  });
+});

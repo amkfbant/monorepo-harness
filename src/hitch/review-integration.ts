@@ -125,86 +125,119 @@ export function importReviewProposalToHitch(
   const mode =
     input.reviewMode ??
     nextReviewMode(session, input.repository.listReviewCycles(input.hitchId));
-  const cycle = input.repository.startReviewCycle({
-    hitchId: input.hitchId,
-    reviewMode: mode,
-    ...(input.triggerAttemptId !== undefined
-      ? { triggerAttemptId: input.triggerAttemptId }
-      : {}),
-    sourceReviewId: sourceReviewId(input.proposal),
-    sourceRunId: input.proposal.runId,
-  });
-  const findings = importProposalFindings(
-    input.repository,
-    session,
-    input.proposal,
-    cycle,
-    canonical,
-  );
-  // #278: once a later review cycle's canonical decision is APPROVED, retire the
-  // prior cycles' OPEN in-scope review-origin review-blocking findings for this
-  // hitch (open->fixed). This runs BEFORE completeReviewCycle so the cycle's
-  // findingsFixed / findingsInScopeOpen counts and the subsequent convergence
-  // evaluation both see the resolved state (convergence reaches close_ready
-  // instead of needs_fix on a now-superseded openInScopeP1). The trigger is the
-  // same harness-deterministic `canonical.decision === "approved"` signal that
-  // drives suppressBlockingFindings — never an LLM self-report.
-  //
-  // Fail-closed invariant: when a processResult is supplied, the result being
-  // applied MUST belong to the proposal's run. Production selects the proposal by
-  // the same run, but a direct misuse could pass an approved result for an
-  // UNRELATED run; auto-resolving prior blockers off a foreign run's approve would
-  // wrongly retire them. If the run ids mismatch we do NOT auto-resolve.
-  const resultRunMatchesProposal =
-    input.processResult === undefined ||
-    input.processResult.runId === input.proposal.runId;
-  const autoResolved =
-    canonical.decision === "approved" && resultRunMatchesProposal
-      ? input.repository.resolveSupersededReviewFindings({
-          hitchId: input.hitchId,
-          supersedingCycleId: cycle.cycleId,
-          categories: REVIEW_BLOCKING_FINDING_CATEGORIES,
-          decisionRunId: canonical.runId,
-        })
-      : [];
   const reviewAdvisories = proposalReviewerAdvisories(input.proposal);
-  const completedCycle = input.repository.completeReviewCycle({
-    cycleId: cycle.cycleId,
-    findingsSeen: findings.length,
-    findingsNew: findings.filter(
-      (f) => f.created && f.finding.scopeStatus !== "duplicate",
-    ).length,
-    findingsReopened: findings.filter((f) => f.reopened).length,
-    findingsFixed: input.repository
-      .listFindings({ hitchId: input.hitchId, lifecycleStatus: "fixed", limit: 10_000 })
-      .length,
-    findingsDeferred: input.repository
-      .listFindings({ hitchId: input.hitchId, lifecycleStatus: "deferred", limit: 10_000 })
-      .length,
-    findingsInScopeOpen: input.repository
-      .listFindings({ hitchId: input.hitchId, scopeStatus: "in_scope", limit: 10_000 })
-      .filter((f) => f.lifecycleStatus === "open" || f.lifecycleStatus === "reopened")
-      .length,
-    summary:
-      `Imported review proposal ${input.proposal.proposalId} (${input.proposal.decision})` +
-      (reviewAdvisories.length === 0
-        ? ""
-        : `; reviewer advisory surfaced=${reviewAdvisories.length}`) +
-      (autoResolved.length === 0
-        ? ""
-        : `; auto-resolved superseded review blockers=${autoResolved.length}`),
-  });
-  const closeChecks =
-    input.processResult === undefined
-      ? []
-      : recordReviewProcessCloseChecks(
-          input.repository,
-          session,
-          input.proposal,
-          input.processResult,
-          canonical,
-          completedCycle.completedAt,
-        );
+  // #306: the cycle creation + finding import + #278 supersede-resolve + cycle
+  // completion + review_consensus close-check evidence commit together or not at
+  // all. Previously each constituent repository method opened its OWN transaction,
+  // so a crash/exception BETWEEN resolveSupersededReviewFindings (which committed
+  // the open->fixed flip of prior review-blocking findings) and completeReviewCycle
+  // could leave a crash-partial state: prior P1 blockers retired while the approving
+  // cycle stayed incomplete. Likewise, a crash AFTER completeReviewCycle but BEFORE
+  // recordReviewProcessCloseChecks would complete the cycle (consuming a review
+  // budget slot) while the required review_consensus close-check evidence was never
+  // recorded; that is NOT idempotently recoverable, because on the FINAL allowed
+  // review cycle convergence.decide() evaluates the review-cycle budget BEFORE the
+  // stale-review-consensus refresh path, so the missing evidence yields a wrong
+  // terminal `budget_exhausted` instead of a re-review. Running the whole write
+  // sequence inside one repository.runAtomically(...) transaction closes both
+  // windows — a failure rolls back ALL of it (blockers stay open, the cycle is not
+  // recorded, and no close-check evidence is written). The non-transactional `*Core`
+  // variants are used for the writers that otherwise open their own transaction, so
+  // there is a single BEGIN (better-sqlite3 would otherwise degrade a nested
+  // `.transaction()` to a SAVEPOINT; using the cores keeps one BEGIN). The #278
+  // resolve-before-complete ordering is preserved inside the transaction, so the
+  // cycle's findingsFixed / findingsInScopeOpen counts still reflect the resolution.
+  // ONLY the live, idempotently re-derived convergence status + consensus-stall
+  // evaluation run AFTER the block.
+  const { findings, autoResolved, completedCycle, closeChecks } =
+    input.repository.runAtomically(() => {
+      const cycle = input.repository.startReviewCycle({
+        hitchId: input.hitchId,
+        reviewMode: mode,
+        ...(input.triggerAttemptId !== undefined
+          ? { triggerAttemptId: input.triggerAttemptId }
+          : {}),
+        sourceReviewId: sourceReviewId(input.proposal),
+        sourceRunId: input.proposal.runId,
+      });
+      const findings = importProposalFindings(
+        input.repository,
+        session,
+        input.proposal,
+        cycle,
+        canonical,
+      );
+      // #278: once a later review cycle's canonical decision is APPROVED, retire the
+      // prior cycles' OPEN in-scope review-origin review-blocking findings for this
+      // hitch (open->fixed). This runs BEFORE completeReviewCycle so the cycle's
+      // findingsFixed / findingsInScopeOpen counts and the subsequent convergence
+      // evaluation both see the resolved state (convergence reaches close_ready
+      // instead of needs_fix on a now-superseded openInScopeP1). The trigger is the
+      // same harness-deterministic `canonical.decision === "approved"` signal that
+      // drives suppressBlockingFindings — never an LLM self-report.
+      //
+      // Fail-closed invariant: when a processResult is supplied, the result being
+      // applied MUST belong to the proposal's run. Production selects the proposal by
+      // the same run, but a direct misuse could pass an approved result for an
+      // UNRELATED run; auto-resolving prior blockers off a foreign run's approve would
+      // wrongly retire them. If the run ids mismatch we do NOT auto-resolve.
+      const resultRunMatchesProposal =
+        input.processResult === undefined ||
+        input.processResult.runId === input.proposal.runId;
+      const autoResolved =
+        canonical.decision === "approved" && resultRunMatchesProposal
+          ? input.repository.resolveSupersededReviewFindingsCore({
+              hitchId: input.hitchId,
+              supersedingCycleId: cycle.cycleId,
+              categories: REVIEW_BLOCKING_FINDING_CATEGORIES,
+              decisionRunId: canonical.runId,
+            })
+          : [];
+      const completedCycle = input.repository.completeReviewCycle({
+        cycleId: cycle.cycleId,
+        findingsSeen: findings.length,
+        findingsNew: findings.filter(
+          (f) => f.created && f.finding.scopeStatus !== "duplicate",
+        ).length,
+        findingsReopened: findings.filter((f) => f.reopened).length,
+        findingsFixed: input.repository
+          .listFindings({ hitchId: input.hitchId, lifecycleStatus: "fixed", limit: 10_000 })
+          .length,
+        findingsDeferred: input.repository
+          .listFindings({ hitchId: input.hitchId, lifecycleStatus: "deferred", limit: 10_000 })
+          .length,
+        findingsInScopeOpen: input.repository
+          .listFindings({ hitchId: input.hitchId, scopeStatus: "in_scope", limit: 10_000 })
+          .filter((f) => f.lifecycleStatus === "open" || f.lifecycleStatus === "reopened")
+          .length,
+        summary:
+          `Imported review proposal ${input.proposal.proposalId} (${input.proposal.decision})` +
+          (reviewAdvisories.length === 0
+            ? ""
+            : `; reviewer advisory surfaced=${reviewAdvisories.length}`) +
+          (autoResolved.length === 0
+            ? ""
+            : `; auto-resolved superseded review blockers=${autoResolved.length}`),
+      });
+      // #306: record the review_consensus close-check evidence INSIDE the same
+      // transaction, immediately after the cycle completes. recordCloseCheck does
+      // not open its own transaction (a plain INSERT + touchSession, like
+      // startReviewCycle / completeReviewCycle), so it joins this single BEGIN with
+      // no nested-BEGIN. The cycle completion + finding resolution + close-check
+      // evidence are now one all-or-nothing unit.
+      const closeChecks =
+        input.processResult === undefined
+          ? []
+          : recordReviewProcessCloseChecks(
+              input.repository,
+              session,
+              input.proposal,
+              input.processResult,
+              canonical,
+              completedCycle.completedAt,
+            );
+      return { cycle, findings, autoResolved, completedCycle, closeChecks };
+    });
   const convergence = new ConvergenceService(input.repository).evaluate(input.hitchId);
   const recorded = recordConvergenceDecisionWithStatus({
     repository: input.repository,
@@ -296,7 +329,11 @@ function importProposalFindings(
                 ? "review proposal marks this item as out of scope"
                 : "review proposal negative decision blocks hitch closure",
           };
-    return repository.upsertFinding({
+    // #306: use the non-transactional core so this write joins the single atomic
+    // review-import transaction opened by runAtomically (no nested BEGIN). The
+    // core is byte-equivalent to upsertFinding (the public method is just a thin
+    // transaction wrapper around it).
+    return repository.upsertFindingCore({
       hitchId: session.hitchId,
       source: "review",
       sourceRef:

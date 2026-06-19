@@ -1145,6 +1145,33 @@ export class HitchRepository {
     return cycle;
   }
 
+  /**
+   * #306: run a write closure inside a SINGLE transaction so a set of
+   * constituent writes commit together or not at all (all-or-nothing). The
+   * closure MUST use the non-transactional `*Core` variants for any write that
+   * otherwise opens its own transaction ({@link upsertFindingCore},
+   * {@link resolveSupersededReviewFindingsCore}) to preserve the single-BEGIN
+   * guarantee: better-sqlite3 would otherwise degrade a nested `.transaction()`
+   * to a SAVEPOINT (it does NOT throw on a nested BEGIN), which still rolls back
+   * to the savepoint on a throw but adds an inner boundary; using the cores keeps
+   * a single BEGIN/COMMIT. Plain writers
+   * that never open a transaction ({@link startReviewCycle},
+   * {@link completeReviewCycle}, {@link recordCloseCheck}) may be called directly.
+   * The transaction takes an immediate write lock at BEGIN (consistent with the
+   * other mutating repository transactions). On any throw the whole closure rolls
+   * back — no half-applied state.
+   *
+   * This is the atomicity primitive behind {@link importReviewProposalToHitch}:
+   * its finding-import + supersede-resolve + cycle-completion (the #278
+   * resolve-before-complete ordering) + review_consensus close-check evidence all
+   * run inside one call here, closing the documented crash-partial windows where
+   * prior review blockers could be left `fixed` while the approving cycle stayed
+   * incomplete, or the cycle completed without its required close-check evidence.
+   */
+  runAtomically<T>(write: () => T): T {
+    return this.db.transaction(write).immediate();
+  }
+
   getReviewCycle(cycleId: string): HitchReviewCycle | null {
     const row = this.db
       .prepare("SELECT * FROM hitch_review_cycles WHERE cycle_id = ?")
@@ -1170,6 +1197,40 @@ export class HitchRepository {
   }
 
   upsertFinding(input: UpsertHitchFindingInput): UpsertHitchFindingResult {
+    // #306 / P3: keep the public wrapper's transaction boundary identical to the
+    // pre-refactor version — run the pure prelude (now / stable-key / scope /
+    // duplicate-canonical validation, which may throw) OUTSIDE the transaction, so
+    // a validation throw fails before any BEGIN exactly as on main. Only the write
+    // body runs inside the (same `immediate` variant) transaction.
+    const prepared = this.prepareUpsertFinding(input);
+    return this.db
+      .transaction(
+        (): UpsertHitchFindingResult =>
+          this.upsertFindingWithin(input, prepared),
+      )
+      .immediate();
+  }
+
+  /**
+   * #306: non-transactional core of {@link upsertFinding} for the atomic review
+   * import (via {@link runAtomically} in `importReviewProposalToHitch`). Runs the
+   * IDENTICAL prelude + read + write logic but does NOT open its own transaction,
+   * so it composes inside the single outer BEGIN. Effect-equivalent to the public
+   * method; the public method only differs in opening its own tx.
+   */
+  upsertFindingCore(input: UpsertHitchFindingInput): UpsertHitchFindingResult {
+    return this.upsertFindingWithin(input, this.prepareUpsertFinding(input));
+  }
+
+  // #306 / P3: pure prelude shared by the public wrapper and the atomic-import
+  // core. May throw (requireCanonicalDuplicateFinding) — the public wrapper calls
+  // this BEFORE opening a transaction so the throw boundary matches main.
+  private prepareUpsertFinding(input: UpsertHitchFindingInput): {
+    now: string;
+    stableKey: string;
+    scopeStatus: HitchScopeStatus;
+    explicitDuplicateOf: string | null;
+  } {
     const now = input.seenAt ?? new Date().toISOString();
     const stableKey =
       input.stableKey ??
@@ -1188,7 +1249,23 @@ export class HitchRepository {
             input.duplicateOf,
           )
         : null;
-    const tx = this.db.transaction((): UpsertHitchFindingResult => {
+    return { now, stableKey, scopeStatus, explicitDuplicateOf };
+  }
+
+  // #306 / P3: the IDENTICAL write body of the former upsertFinding transaction —
+  // no transaction is opened here, so it runs inside the caller's transaction (the
+  // public wrapper's own tx, or the atomic import's outer BEGIN).
+  private upsertFindingWithin(
+    input: UpsertHitchFindingInput,
+    prepared: {
+      now: string;
+      stableKey: string;
+      scopeStatus: HitchScopeStatus;
+      explicitDuplicateOf: string | null;
+    },
+  ): UpsertHitchFindingResult {
+    const { now, stableKey, scopeStatus, explicitDuplicateOf } = prepared;
+    {
       const existing = this.db
         .prepare(
           `SELECT finding_id, scope_status, lifecycle_status, severity,
@@ -1410,8 +1487,7 @@ export class HitchRepository {
         created: true,
         reopened,
       };
-    });
-    return tx.immediate();
+    }
   }
 
   classifyFinding(input: ClassifyHitchFindingInput): HitchFinding {
@@ -1727,6 +1803,43 @@ export class HitchRepository {
   resolveSupersededReviewFindings(
     input: ResolveSupersededReviewFindingsInput,
   ): HitchFinding[] {
+    // #306 / P3: keep the public wrapper's transaction boundary identical to the
+    // pre-refactor version — run the pure prelude (allowlist filter + the
+    // empty-category early-return) OUTSIDE the transaction, so the empty fast path
+    // never opens a tx. Only the write core runs inside the (same `default` variant)
+    // transaction.
+    const prepared = this.prepareResolveSuperseded(input);
+    if (prepared === null) return [];
+    return this.db
+      .transaction((): HitchFinding[] =>
+        this.resolveSupersededReviewFindingsWithin(input, prepared),
+      )
+      .default();
+  }
+
+  /**
+   * #306: non-transactional core of {@link resolveSupersededReviewFindings} for the
+   * atomic review import (via {@link runAtomically} in
+   * `importReviewProposalToHitch`). Runs the IDENTICAL prelude (allowlist filter +
+   * empty-category short-circuit) and the IDENTICAL fail-closed allowlist +
+   * current-target + strict-earlier-cycle write, but does NOT open its own
+   * transaction so it composes inside the single outer BEGIN. Effect-equivalent to
+   * the public method; the public method only differs in opening its own tx.
+   */
+  resolveSupersededReviewFindingsCore(
+    input: ResolveSupersededReviewFindingsInput,
+  ): HitchFinding[] {
+    const prepared = this.prepareResolveSuperseded(input);
+    if (prepared === null) return [];
+    return this.resolveSupersededReviewFindingsWithin(input, prepared);
+  }
+
+  // #306 / P3: pure prelude shared by the public wrapper and the atomic-import
+  // core. Returns null for the empty-category fast path (resolve nothing) so the
+  // wrapper can short-circuit BEFORE opening a transaction (matching main).
+  private prepareResolveSuperseded(
+    input: ResolveSupersededReviewFindingsInput,
+  ): { now: string; note: string; categories: string[]; categoryPlaceholders: string } | null {
     // Defense-in-depth (fail-closed): enforce the review-blocking allowlist
     // INSIDE the repository, not just at the caller. A caller can never widen the
     // set of auto-resolvable categories — any category outside
@@ -1735,13 +1848,24 @@ export class HitchRepository {
     const categories = input.categories.filter((category) =>
       REVIEW_BLOCKING_FINDING_CATEGORY_SET.has(category),
     );
-    if (categories.length === 0) return [];
+    if (categories.length === 0) return null;
     const now = input.resolvedAt ?? new Date().toISOString();
     const note =
       `${AUTO_RESOLVE_NOTE_PREFIX} ` +
       `(run ${input.decisionRunId}, cycle ${input.supersedingCycleId})`;
     const categoryPlaceholders = placeholders(categories.length);
-    const tx = this.db.transaction((): HitchFinding[] => {
+    return { now, note, categories, categoryPlaceholders };
+  }
+
+  // #306 / P3: the IDENTICAL write body of the former resolveSupersededReviewFindings
+  // transaction — no transaction is opened here, so it runs inside the caller's
+  // transaction (the public wrapper's own tx, or the atomic import's outer BEGIN).
+  private resolveSupersededReviewFindingsWithin(
+    input: ResolveSupersededReviewFindingsInput,
+    prepared: { now: string; note: string; categories: string[]; categoryPlaceholders: string },
+  ): HitchFinding[] {
+    const { now, note, categories, categoryPlaceholders } = prepared;
+    {
       // The superseding cycle must exist for this hitch; if it does not we cannot
       // prove any finding is from an EARLIER cycle, so resolve nothing (fail-closed).
       const supersedingCycle = this.db
@@ -1821,8 +1945,7 @@ export class HitchRepository {
       }
       this.touchSession(input.hitchId, now);
       return rows.map((row) => this.requireFinding(row.finding_id));
-    });
-    return tx();
+    }
   }
 
   deferFinding(input: DeferHitchFindingInput): HitchFinding {
