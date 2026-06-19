@@ -10,6 +10,7 @@ import {
   currentSchemaVersion,
   readSchemaVersion,
 } from "../../../src/db/migrations.js";
+import { assertSchemaCompatibleForMigrate } from "../../../src/db/schema-compat.js";
 import {
   ALL_TABLE_NAMES,
   CURRENT_TABLE_NAMES,
@@ -928,6 +929,22 @@ describe("runMigrations", () => {
       "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
     ).run(999, "from-the-future", new Date().toISOString());
     expect(() => runMigrations(db)).toThrow(/newer than this harness/);
+    // The richer skew message still carries actionable upgrade-the-harness guidance.
+    expect(() => runMigrations(db)).toThrow(/upgrade the harness/);
+    db.close();
+  });
+
+  it("the skew guard does NOT block a DB older than latest (directional)", () => {
+    const db = openDb(freshDbPath());
+    runMigrations(db);
+    // Simulate vN-1 by deleting the top applied bookkeeping row. The directional
+    // skew guard must treat an older DB as a no-op (it proceeds to migrate
+    // forward), unlike the newer-than-harness case which fails closed.
+    db.prepare(
+      "DELETE FROM schema_migrations WHERE version = (SELECT max(version) FROM schema_migrations)",
+    ).run();
+    expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION - 1);
+    expect(() => assertSchemaCompatibleForMigrate(db)).not.toThrow();
     db.close();
   });
 

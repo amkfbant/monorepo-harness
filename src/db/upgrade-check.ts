@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
 import { SCHEMA_VERSION } from "./schema.js";
+import { readSchemaVersion } from "./migrations.js";
+import { evaluateSchemaCompatibility } from "./schema-compat.js";
 import { runDoctor } from "./doctor.js";
 import { listBackups } from "./backup-catalog.js";
 import { listArchives } from "./archive-catalog.js";
@@ -44,20 +46,49 @@ export function runUpgradeCheck(
 ): UpgradeReport {
   const checks: UpgradeCheck[] = [];
 
-  // 1. schema version
-  const currentVersion = (
-    db
-      .prepare("SELECT MAX(version) AS v FROM schema_migrations")
-      .get() as { v: number | null }
-  ).v ?? 0;
+  // 1. schema version — NON-mutating diagnostic. Read the on-disk version with
+  // `readSchemaVersion` (returns 0 on a table-less/fresh DB without throwing).
+  const currentVersion = readSchemaVersion(db);
+  // Directional skew classification (#271): distinguish a DB newer than this
+  // harness (upgrade the harness) from an older DB (run `harness db migrate`)
+  // instead of an undifferentiated 'blocked'.
+  const compat = evaluateSchemaCompatibility(currentVersion, SCHEMA_VERSION);
+  if (compat.kind !== "ok") {
+    // Skewed EITHER direction: the subsequent latest-schema table / phase
+    // readiness checks are misleading (and may throw) against an unmigrated or
+    // too-new schema, so short-circuit with only the directional verdict.
+    checks.push({
+      id: "schema.version",
+      status: "blocked",
+      message:
+        compat.kind === "db-newer-than-harness"
+          ? `schema at v${currentVersion}, newer than this harness supports (v${SCHEMA_VERSION}) — upgrade the harness (DB is newer than this driver)`
+          : `schema at v${currentVersion}, expected v${SCHEMA_VERSION} — run \`harness db migrate\``,
+      details: {
+        current: currentVersion,
+        expected: SCHEMA_VERSION,
+        skewKind: compat.kind,
+        note: "further checks skipped pending schema alignment",
+      },
+    });
+    return {
+      generatedAt: now.toISOString(),
+      target,
+      currentSchemaVersion: currentVersion,
+      expectedSchemaVersion: SCHEMA_VERSION,
+      overall: "blocked",
+      checks,
+    };
+  }
   checks.push({
     id: "schema.version",
-    status: currentVersion === SCHEMA_VERSION ? "ready" : "blocked",
-    message:
-      currentVersion === SCHEMA_VERSION
-        ? `schema at v${SCHEMA_VERSION}`
-        : `schema at v${currentVersion}, expected v${SCHEMA_VERSION} — run \`harness db migrate\``,
-    details: { current: currentVersion, expected: SCHEMA_VERSION },
+    status: "ready",
+    message: `schema at v${SCHEMA_VERSION}`,
+    details: {
+      current: currentVersion,
+      expected: SCHEMA_VERSION,
+      skewKind: compat.kind,
+    },
   });
 
   // 2. doctor findings

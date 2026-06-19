@@ -653,6 +653,77 @@ describe("hitch CLI", () => {
     expect(r.out).toMatch(/next-action=/);
   });
 
+  it("hitch orchestrate fails early with friendly guidance when the DB is newer than the harness (#271)", () => {
+    const { root, repoPath, scopePath } = setupProjectFixture();
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch",
+        "start",
+        "--title",
+        "Skew",
+        "--project",
+        "demo",
+        "--domain",
+        "apps/web",
+        "--scope-file",
+        scopePath,
+        "--json",
+      ]),
+    );
+    expect(
+      runCli(root, [
+        "hitch",
+        "finding",
+        "add",
+        hitch.hitchId,
+        "--severity",
+        "P1",
+        "--category",
+        "correctness",
+        "--summary",
+        "Fix the page",
+        "--file",
+        "apps/web/src/page.ts",
+        "--scope",
+        "in-scope",
+      ]).code,
+    ).toBe(0);
+
+    // Stamp a schema_migrations row newer than this harness supports.
+    {
+      const db = openDb(harnessPaths(root).dbPath);
+      const latest = (
+        db
+          .prepare("SELECT max(version) AS v FROM schema_migrations")
+          .get() as { v: number }
+      ).v;
+      db.prepare(
+        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+      ).run(latest + 1, "from-the-future", new Date().toISOString());
+      db.close();
+    }
+
+    const result = runCli(
+      root,
+      ["hitch", "orchestrate", hitch.hitchId, "--repo", repoPath, "--max-steps", "1"],
+      { HARNESS_CODEX_BIN: join(root, "missing-codex") },
+    );
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/newer than this harness/);
+    expect(result.out).toMatch(/upgrade the harness/);
+    // The friendly error fires BEFORE any orchestration work — no run rows.
+    // Read directly (no runMigrations — the stamped DB would reject migration).
+    const probe = openDb(harnessPaths(root).dbPath);
+    try {
+      const runs = probe
+        .prepare("SELECT COUNT(*) AS n FROM runs")
+        .get() as { n: number };
+      expect(runs.n).toBe(0);
+    } finally {
+      probe.close();
+    }
+  });
+
   it("maps hitch orchestrate domain-lock contention to deferred exit 1", () => {
     const { root, repoPath, scopePath } = setupProjectFixture();
     const hitch = json<{ hitchId: string }>(

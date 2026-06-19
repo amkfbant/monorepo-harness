@@ -784,9 +784,12 @@ export function registerDbCommands(program: Command): void {
     .action((raw: Record<string, unknown>) => {
       withLock("shared", raw, () => {
         const { dbPath } = harnessPaths(getHarnessRoot());
+        // #271: upgrade-check is a NON-mutating diagnostic — it must REPORT, not
+        // APPLY. Do NOT runMigrations here: migrating an older DB would mask the
+        // `harness-newer-than-db` skew (it would read as `ok`), and a newer DB
+        // would throw from the backstop before the directional report is built.
         const db = openDb(dbPath);
         try {
-          runMigrations(db);
           const report = runUpgradeCheck(db, String(raw.target));
           process.stdout.write(
             raw.json === true

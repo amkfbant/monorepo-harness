@@ -437,6 +437,45 @@ describe("course/phase CLI (SP-1)", () => {
     });
   });
 
+  it("course orchestrate fails early with friendly guidance when the DB is newer than the harness", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Skew Course", "--json"]),
+    );
+    json<{ phaseId: string }>(
+      runCli(root, ["phase", "add", "--course", course.courseId, "--title", "One", "--json"]),
+    );
+    // Stamp a schema_migrations row newer than the harness supports.
+    withSeedDb(root, (db) => {
+      const latest = (
+        db
+          .prepare("SELECT max(version) AS v FROM schema_migrations")
+          .get() as { v: number }
+      ).v;
+      db.prepare(
+        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+      ).run(latest + 1, "from-the-future", new Date().toISOString());
+    });
+
+    const result = runCli(root, ["course", "orchestrate", course.courseId]);
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/newer than this harness/);
+    expect(result.out).toMatch(/upgrade the harness/);
+    // The friendly error fires BEFORE the operation is started — no spurious row.
+    // Read directly (no runMigrations — the stamped DB would reject migration).
+    const probe = openDb(join(root, ".harness", "harness.sqlite"));
+    try {
+      const row = probe
+        .prepare(
+          "SELECT COUNT(*) AS n FROM operations WHERE operation_type = 'course.orchestrate'",
+        )
+        .get() as { n: number };
+      expect(row.n).toBe(0);
+    } finally {
+      probe.close();
+    }
+  });
+
   it("course orchestrate treats driver exceptions containing project as internal errors", () => {
     const { root } = setup();
     const course = json<{ courseId: string }>(
