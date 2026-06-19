@@ -111,4 +111,81 @@ describe("ConvergenceService runtime spec drift diagnostics", () => {
       db.close();
     }
   });
+
+  it("keeps the gate decision byte-identical and omits the drift note when no linked phase is drifted", () => {
+    // Gate-invariance + negative-drift guard: the diagnostic must NEVER alter
+    // decision/reason/kind, and the drift note must be ABSENT when the hitch is
+    // linked to no drifted phase (pins the `!status.drifted` guard).
+    const { db, hitches, service } = fresh();
+    try {
+      hitches.createSession({
+        hitchId: "h-nodrift",
+        title: "Hitch No Drift",
+        projectId: "demo",
+        scope: {},
+        closeConditions: [MANUAL_SIGNOFF],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      seedReviewedCodingAttempt(hitches, "h-nodrift");
+
+      const result = service.evaluate("h-nodrift");
+
+      // The external-evidence gate decision is byte-identical regardless of the
+      // diagnostic — drift/pending values feed ONLY the advisory message.
+      expect(result.decision).toBe("continue");
+      expect(result.reason).toBe("external close-check evidence required");
+      expect(result.recommendedNextAction.kind).toBe("ask_human");
+      // pending-cycle diagnostic is still enriched (no phase access needed)...
+      expect(result.recommendedNextAction.message).toContain(
+        "condition manual-signoff kind=manual pending 2 cycles",
+      );
+      // ...but NO drift note, because the hitch is linked to no drifted phase.
+      expect(result.recommendedNextAction.message).not.toContain(
+        "Spec approval hash drift",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("counts only review cycles completed after the latest recorded close-check evidence", () => {
+    // Discriminating pending-cycle: evidence recorded BETWEEN the two completed
+    // cycles → only the cycle completed after it counts (pending 1, not 2). A bug
+    // counting all cycles regardless of the evidence timestamp would fail here.
+    const { db, hitches, service } = fresh();
+    try {
+      hitches.createSession({
+        hitchId: "h-evidence",
+        title: "Hitch Evidence",
+        projectId: "demo",
+        scope: {},
+        closeConditions: [MANUAL_SIGNOFF],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      seedReviewedCodingAttempt(hitches, "h-evidence");
+      // cycles complete @00:01:30 and @00:02:30; record pending evidence at
+      // 00:01:45 (between them) so only cycle 2 is "pending since evidence".
+      hitches.recordCloseCheck({
+        hitchId: "h-evidence",
+        conditionId: "manual-signoff",
+        status: "pending",
+        checkedAt: "2026-06-18T00:01:45.000Z",
+        checkedBy: "operator",
+      });
+
+      const result = service.evaluate("h-evidence");
+
+      expect(result.recommendedNextAction.kind).toBe("ask_human");
+      expect(result.recommendedNextAction.message).toContain(
+        "condition manual-signoff kind=manual pending 1 cycle",
+      );
+      expect(result.recommendedNextAction.message).not.toContain(
+        "pending 2 cycle",
+      );
+    } finally {
+      db.close();
+    }
+  });
 });
