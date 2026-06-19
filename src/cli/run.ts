@@ -1,20 +1,14 @@
 #!/usr/bin/env node
+import { getHarnessRoot, rejectProjectRepoIdMix, parseChangeBudgetOverride, cmdRun, cmdReviewedRun, parseSource, runViewAction, parseNonNegativeIntSeconds, parsePositiveIntSeconds, parsePositiveInt } from "./run-core.js";
 import process from "node:process";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+
 import { join } from "node:path";
 
 import { Command } from "commander";
 import { harnessPaths } from "../config/paths.js";
 import { harnessVersion } from "../config/version.js";
-import { loadGlobalPolicy, loadRepoPolicy } from "../policy/loader.js";
-import { resolvePolicy } from "../policy/resolver.js";
-import {
-  runDomainCoding,
-  type RunChangeBudgetOverride,
-} from "../core/workflow-runner.js";
-import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
-import { codexBinaryVersion } from "../codex/codex-version.js";
+
 import { StateConflictError, SourceModeError } from "../db/errors.js";
 import { runMigrations } from "../db/migrations.js";
 
@@ -32,13 +26,7 @@ import {
   failOperation,
 } from "../db/repositories/operations.js";
 import { randomUUID } from "node:crypto";
-import {
-  renderRunShow,
-  renderRunTimeline,
-  renderRunArtifacts,
-  type RunViewSource,
-  RunViewError,
-} from "../core/run-viewer.js";
+import { renderRunShow, renderRunTimeline, renderRunArtifacts, RunViewError } from "../core/run-viewer.js";
 import {
   formatItem,
   formatItemList,
@@ -59,14 +47,6 @@ import {
 
 import { DEFAULT_MAX_ATTEMPTS } from "../core/rerun.js";
 
-import {
-  runReviewedRunWorkflow,
-  ReviewWorkflowUnsupportedError,
-  assertReviewedRunWorkflowSupported,
-} from "../core/reviewed-run-workflow.js";
-
-import { buildKnowledgeContextFromDb, KnowledgeContextError, domainSlug } from "../core/knowledge-context.js";
-
 import { registerProjectCommands } from "./project.js";
 import { registerPolicyCommands } from "./policy.js";
 import { registerDbCommands } from "./db.js";
@@ -85,406 +65,12 @@ import { registerReviewCommands } from "./review.js";
 import { registerKnowledgeCommands } from "./knowledge.js";
 import { registerWorkspaceCommands } from "./workspace.js";
 
-import {
-  prepareProjectRun,
-  type PreparedProjectRun,
-} from "../project/run-project.js";
-import { ProjectError } from "../project/errors.js";
-
-function getHarnessRoot(): string {
-  return process.env.HARNESS_ROOT ?? process.cwd();
-}
-
 /**
  * Reject `--project` combined with `--repo-id` (Phase 6-1). In project mode
  * the repo and its id come from the profile; `--repo-id` would be silently
  * ignored, so a caller passing both is told explicitly instead. `--repo` is
  * still allowed in project mode as a path override.
  */
-function rejectProjectRepoIdMix(
-  raw: Record<string, unknown>,
-  command: string,
-): void {
-  if (raw.project !== undefined && raw.repoId !== undefined) {
-    process.stderr.write(
-      `harness error: '${command}' cannot combine --project with --repo-id ` +
-        `(--project resolves the repo from the profile; --repo is the only override)\n`,
-    );
-    process.exit(1);
-  }
-}
-
-interface RunOpts {
-  /** repo path; required in --repo-id mode, an optional override in --project mode */
-  repo?: string;
-  repoId?: string;
-  /** project id — selects the profile-driven run path (Phase 5-7) */
-  project?: string;
-  domain: string;
-  goal: string;
-  /** explicit --base-branch; when absent the profile (or "main") decides */
-  baseBranch?: string;
-  keepWorktree?: boolean;
-  dryRun?: boolean;
-  withKnowledge?: boolean;
-  knowledgeContextPath?: string;
-  changeBudgetOverride?: RunChangeBudgetOverride;
-}
-
-interface RunOutcome {
-  runId: string;
-  status: string;
-  failed: boolean;
-}
-
-function parseChangeBudgetOverride(
-  raw: Record<string, unknown>,
-): { changeBudgetOverride?: RunChangeBudgetOverride } {
-  const override: RunChangeBudgetOverride = {};
-  if (raw.changeBudgetMaxDeletedLines !== undefined) {
-    override.maxDeletedLines = parsePositiveInt(
-      raw.changeBudgetMaxDeletedLines,
-      "--change-budget-max-deleted-lines",
-    );
-  }
-  if (raw.changeBudgetMaxTotalChangedLines !== undefined) {
-    override.maxTotalChangedLines = parsePositiveInt(
-      raw.changeBudgetMaxTotalChangedLines,
-      "--change-budget-max-total-changed-lines",
-    );
-  }
-  if (raw.changeBudgetMaxDeletedFiles !== undefined) {
-    override.maxDeletedFiles = parsePositiveInt(
-      raw.changeBudgetMaxDeletedFiles,
-      "--change-budget-max-deleted-files",
-    );
-  }
-  if (raw.changeBudgetMaxChangedFiles !== undefined) {
-    override.maxChangedFiles = parsePositiveInt(
-      raw.changeBudgetMaxChangedFiles,
-      "--change-budget-max-changed-files",
-    );
-  }
-  return Object.keys(override).length > 0 ? { changeBudgetOverride: override } : {};
-}
-
-async function cmdRun(o: RunOpts): Promise<RunOutcome> {
-  const harnessRoot = getHarnessRoot();
-  const paths = harnessPaths(harnessRoot);
-
-  let prepared: PreparedProjectRun | undefined;
-  let resolved;
-  let repoPath: string;
-  let repoId: string;
-  if (o.project !== undefined) {
-    try {
-      prepared = await prepareProjectRun({
-        harnessRoot,
-        projectId: o.project,
-        domain: o.domain,
-        ...(o.repo !== undefined ? { repoOverride: o.repo } : {}),
-      });
-    } catch (e) {
-      if (e instanceof ProjectError) {
-        process.stderr.write(`harness error: ${e.message}\n`);
-        process.exit(1);
-      }
-      throw e;
-    }
-    resolved = prepared.resolvedPolicy;
-    repoPath = prepared.repoPath;
-    repoId = prepared.repoId;
-  } else {
-    const global = await loadGlobalPolicy(paths.globalPolicyPath);
-    const repo = await loadRepoPolicy(paths.repoPolicyPath(String(o.repoId)));
-    resolved = resolvePolicy(global, repo, o.domain);
-    repoPath = String(o.repo);
-    repoId = String(o.repoId);
-  }
-
-  // explicit --base-branch wins; otherwise the project profile's base
-  // branch (or "main" in --repo-id mode).
-  const baseBranch = o.baseBranch ?? prepared?.baseBranch ?? "main";
-
-  if (o.dryRun) {
-    process.stdout.write(
-      `resolved policy for ${resolved.domain}:\n${JSON.stringify(resolved, null, 2)}\n`,
-    );
-    return { runId: "", status: "dry-run", failed: false };
-  }
-
-  // resolve promoted-knowledge context (Phase 3-4), if requested.
-  let knowledgeContext:
-    | { path: string; text: string; revisionIds?: number[] }
-    | undefined;
-  const explicitCtx = o.knowledgeContextPath;
-  if (explicitCtx !== undefined) {
-    if (!existsSync(explicitCtx)) {
-      process.stderr.write(
-        `harness error: --knowledge-context file not found: ${explicitCtx}\n`,
-      );
-      process.exit(1);
-    }
-    knowledgeContext = {
-      path: explicitCtx,
-      text: await readFile(explicitCtx, "utf8"),
-    };
-  } else if (o.withKnowledge) {
-    const ctxPath = join(
-      harnessRoot,
-      "docs",
-      "knowledge-context",
-      `${domainSlug(o.domain)}.md`,
-    );
-    if (prepared !== undefined && existsSync(paths.dbPath)) {
-      try {
-        const handle = openManagedDb({ dbPath: paths.dbPath });
-        try {
-          runMigrations(handle.db);
-          const built = await buildKnowledgeContextFromDb({
-            db: handle.db,
-            outDir: join(harnessRoot, "docs", "knowledge-context"),
-            domain: o.domain,
-            projectId: prepared.project.projectId,
-            repoId,
-          });
-          knowledgeContext = {
-            path: built.outPath,
-            text: await readFile(built.outPath, "utf8"),
-            ...(built.knowledgeRevisionIds !== undefined
-              ? { revisionIds: built.knowledgeRevisionIds }
-              : {}),
-          };
-        } finally {
-          handle.close();
-        }
-      } catch (e) {
-        if (!(e instanceof KnowledgeContextError)) throw e;
-        process.stderr.write(
-          `warning: DB knowledge context unavailable: ${e.message}; falling back to ${ctxPath}\n`,
-        );
-      }
-    }
-    if (knowledgeContext === undefined && !existsSync(ctxPath)) {
-      process.stderr.write(
-        `harness error: --with-knowledge: ${ctxPath} not found; ` +
-          `run 'harness knowledge build-context --domain ${o.domain}' first\n`,
-      );
-      process.exit(1);
-    }
-    if (knowledgeContext === undefined) {
-      knowledgeContext = {
-        path: ctxPath,
-        text: await readFile(ctxPath, "utf8"),
-      };
-    }
-  }
-
-  const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
-  const resolvedCodexBinaryVersion = codexBinaryVersion(codexBin);
-  const runner = createCodexCliRunner({
-    codexBin,
-    sandbox: resolved.codex.sandbox,
-    ...(resolved.codex.approval !== undefined
-      ? { approvalPolicy: resolved.codex.approval }
-      : {}),
-    ...(resolved.codex.timeoutMs !== undefined
-      ? { timeoutMs: resolved.codex.timeoutMs }
-      : {}),
-  });
-
-  const result = await runDomainCoding({
-    harnessRoot,
-    repoPath,
-    repoId,
-    domain: o.domain,
-    goal: o.goal,
-    baseBranch,
-    ...(o.keepWorktree !== undefined ? { keepWorktree: o.keepWorktree } : {}),
-    codexRunner: runner,
-    codexBinaryVersion: resolvedCodexBinaryVersion,
-    ...(knowledgeContext !== undefined ? { knowledgeContext } : {}),
-    ...(o.changeBudgetOverride !== undefined
-      ? { changeBudgetOverride: o.changeBudgetOverride }
-      : {}),
-    ...(prepared !== undefined
-      ? {
-          compiledPolicy: prepared.compiledPolicy,
-          reviewRuleResolution: prepared.reviewRuleResolution,
-          project: prepared.project,
-          ...(prepared.projectContextPacks !== undefined
-            ? {
-                projectContextPacks: {
-                  promptText: prepared.projectContextPacks.promptText,
-                  manifestYaml: prepared.projectContextPacks.manifestYaml,
-                },
-              }
-            : {}),
-        }
-      : {}),
-  });
-  const cmdTotal = result.commandResults.length;
-  const cmdOk = result.commandResults.filter(
-    (c) => c.exitCode === 0 && !c.timedOut,
-  ).length;
-  process.stdout.write(
-    `run=${result.runId} status=${result.status} safetyStatus=${result.safetyStatus} ignoredUntrackedCount=${result.ignoredUntrackedCount} secretSuspectCount=${result.secretSuspectCount} commands=${cmdOk}/${cmdTotal}\n`,
-  );
-  const failed = result.status.startsWith("failed-");
-  return { runId: result.runId, status: result.status, failed };
-}
-
-interface ReviewedRunOpts {
-  repo?: string;
-  repoId?: string;
-  project?: string;
-  domain: string;
-  goal: string;
-  baseBranch?: string;
-  reviewerName?: string;
-  maxAttempts: number;
-  noAutoReview?: boolean;
-  stopOnChangesRequested?: boolean;
-  dryRun?: boolean;
-}
-
-interface ReviewedRunOutcome {
-  rootRunId: string;
-  finalStatus: string;
-}
-
-async function cmdReviewedRun(o: ReviewedRunOpts): Promise<ReviewedRunOutcome> {
-  const harnessRoot = getHarnessRoot();
-  const paths = harnessPaths(harnessRoot);
-
-  let prepared: PreparedProjectRun | undefined;
-  let resolved;
-  let repoPath: string;
-  let repoId: string;
-  if (o.project !== undefined) {
-    try {
-      prepared = await prepareProjectRun({
-        harnessRoot,
-        projectId: o.project,
-        domain: o.domain,
-        ...(o.repo !== undefined ? { repoOverride: o.repo } : {}),
-      });
-    } catch (e) {
-      if (e instanceof ProjectError) {
-        process.stderr.write(`harness error: ${e.message}\n`);
-        process.exit(1);
-      }
-      throw e;
-    }
-    resolved = prepared.resolvedPolicy;
-    repoPath = prepared.repoPath;
-    repoId = prepared.repoId;
-  } else {
-    const global = await loadGlobalPolicy(paths.globalPolicyPath);
-    const repo = await loadRepoPolicy(paths.repoPolicyPath(String(o.repoId)));
-    resolved = resolvePolicy(global, repo, o.domain);
-    repoPath = String(o.repo);
-    repoId = String(o.repoId);
-  }
-
-  const baseBranch = o.baseBranch ?? prepared?.baseBranch ?? "main";
-
-  try {
-    assertReviewedRunWorkflowSupported(prepared?.reviewRuleResolution);
-  } catch (e) {
-    if (e instanceof ReviewWorkflowUnsupportedError) {
-      process.stderr.write(`harness error: ${e.message}\n`);
-      process.exit(1);
-    }
-    throw e;
-  }
-
-  if (o.dryRun) {
-    process.stdout.write(
-      `reviewed-run workflow for ${resolved.domain} (maxAttempts=${o.maxAttempts}):\n` +
-        `${JSON.stringify(resolved, null, 2)}\n`,
-    );
-    return { rootRunId: "", finalStatus: "dry-run" };
-  }
-
-  const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
-  const resolvedCodexBinaryVersion = codexBinaryVersion(codexBin);
-  const coderRunner = createCodexCliRunner({
-    codexBin,
-    sandbox: resolved.codex.sandbox,
-    ...(resolved.codex.approval !== undefined
-      ? { approvalPolicy: resolved.codex.approval }
-      : {}),
-    ...(resolved.codex.timeoutMs !== undefined
-      ? { timeoutMs: resolved.codex.timeoutMs }
-      : {}),
-  });
-  // the reviewer agent always runs in a separate read-only sandbox.
-  const reviewerRunner = createCodexCliRunner({
-    codexBin,
-    sandbox: "read-only",
-  });
-
-  let result: Awaited<ReturnType<typeof runReviewedRunWorkflow>>;
-  try {
-    result = await runReviewedRunWorkflow({
-      harnessRoot,
-      runsDir: paths.runsDir,
-      locksDir: paths.locksDir,
-      repoPath,
-      repoId,
-      domain: o.domain,
-      goal: o.goal,
-      baseBranch,
-      coderRunner,
-      reviewerRunner,
-      coderCodexBinaryVersion: resolvedCodexBinaryVersion,
-      maxAttempts: o.maxAttempts,
-      ...(o.reviewerName !== undefined ? { reviewerName: o.reviewerName } : {}),
-      ...(o.noAutoReview !== undefined ? { noAutoReview: o.noAutoReview } : {}),
-      ...(o.stopOnChangesRequested !== undefined
-        ? { stopOnChangesRequested: o.stopOnChangesRequested }
-        : {}),
-      ...(prepared !== undefined
-        ? {
-            projectRun: {
-              compiledPolicy: prepared.compiledPolicy,
-              reviewRuleResolution: prepared.reviewRuleResolution,
-              project: prepared.project,
-              ...(prepared.projectContextPacks !== undefined
-                ? {
-                    projectContextPacks: {
-                      promptText: prepared.projectContextPacks.promptText,
-                      manifestYaml:
-                        prepared.projectContextPacks.manifestYaml,
-                    },
-                  }
-                : {}),
-            },
-          }
-        : {}),
-    });
-  } catch (e) {
-    if (e instanceof ReviewWorkflowUnsupportedError) {
-      process.stderr.write(`harness error: ${e.message}\n`);
-      process.exit(1);
-    }
-    throw e;
-  }
-
-  process.stdout.write(
-    `workflow=reviewed-run rootRunId=${result.rootRunId} ` +
-      `attempts=${result.attempts.length} finalStatus=${result.finalStatus}\n`,
-  );
-  for (const a of result.attempts) {
-    process.stdout.write(
-      `  attempt ${a.attempt}: ${a.runId} ${a.status}` +
-        `${a.reviewer ? ` (reviewer=${a.reviewer})` : ""}\n`,
-    );
-  }
-  return { rootRunId: result.rootRunId, finalStatus: result.finalStatus };
-}
-
 const program = new Command();
 program.name("harness");
 program.version(harnessVersion(), "-v, --version", "print the harness version");
@@ -568,41 +154,6 @@ const runCmd = program
     if (outcome.failed) process.exit(1);
   });
 
-function parseSource(raw: unknown): RunViewSource {
-  const s = raw === undefined ? "auto" : String(raw);
-  if (s !== "auto" && s !== "db" && s !== "files") {
-    process.stderr.write(
-      `harness error: --source must be one of auto | db | files (got ${JSON.stringify(s)})\n`,
-    );
-    process.exit(1);
-  }
-  return s;
-}
-
-function runViewAction(
-  render: (
-    runsDir: string,
-    runId: string,
-    dbPath?: string,
-    source?: RunViewSource,
-  ) => Promise<string>,
-) {
-  return async (raw: Record<string, unknown>): Promise<void> => {
-    const paths = harnessPaths(getHarnessRoot());
-    const source = parseSource(raw.source);
-    try {
-      process.stdout.write(
-        await render(paths.runsDir, String(raw.runId), paths.dbPath, source),
-      );
-    } catch (e) {
-      if (e instanceof RunViewError) {
-        process.stderr.write(`harness error: ${(e as Error).message}\n`);
-        process.exit(1);
-      }
-      throw e;
-    }
-  };
-}
 runCmd
   .command("show")
   .description("one-screen summary of a run (status / files / commands / PR)")
@@ -787,38 +338,11 @@ prCmd
  * Non-finite / negative / non-integer (decimal) all fail — seconds are whole.
  * 0 is allowed (= observe once, no wait budget).
  */
-function parseNonNegativeIntSeconds(raw: unknown, flag: string): number {
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 0) {
-    process.stderr.write(`harness error: invalid ${flag}: ${String(raw)}\n`);
-    process.exit(2);
-  }
-  return n;
-}
-
 /**
  * Parse a positive (> 0) *integer* seconds CLI arg; exit 2 on anything invalid.
  * Used for `--poll-interval` so we never poll GitHub at 0 / sub-second / NaN.
  */
-function parsePositiveIntSeconds(raw: unknown, flag: string): number {
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 1) {
-    process.stderr.write(`harness error: invalid ${flag}: ${String(raw)}\n`);
-    process.exit(2);
-  }
-  return n;
-}
-
 /** Parse a positive integer CLI arg; exit 2 on anything invalid (incl. decimals). */
-function parsePositiveInt(raw: unknown, flag: string): number {
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 1) {
-    process.stderr.write(`harness error: invalid ${flag}: ${String(raw)}\n`);
-    process.exit(2);
-  }
-  return n;
-}
-
 prCmd
   .command("request-review")
   .description(
