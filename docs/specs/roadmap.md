@@ -12,6 +12,12 @@ Implementation: `src/roadmap/` (repositories + rollup + orchestrator),
 `MIGRATION_V21_STATEMENTS` (`src/db/schema.ts`, `SCHEMA_VERSION = 21`). SP-2 adds
 no migration.
 
+SP-23 scope note: this layer documents and enforces roadmap/spec compatibility,
+but does not change `GOAL_RULES.md` itself. The root GOAL_RULES file remains the
+operator/process source of truth for reviewer retry limits, P0-P3 classification,
+merge gates, and development discipline; roadmap review state only records phase
+facts such as notes and spec ratification.
+
 ## Data Model
 
 ```txt
@@ -465,8 +471,9 @@ warnings), `unlinkHitch`, `hitchIdsFor`.
   drive-only over explicitly linked or explicitly started phase hitches.
 - Course-level PR automation, phase auto-close, parallel hitch drive, durable
   `course_orchestration_runs`, and phase dependency edges are later increments.
-- The GOAL_RULES.md build rules (retry limits, P0–P3 classification, gates) stay as
-  docs / prompt-context — not duplicated into the DB.
+- SP-23 does not modify GOAL_RULES.md content. The GOAL_RULES.md build rules
+  (retry limits, P0-P3 classification, gates) stay as docs / prompt-context and
+  are not duplicated into the DB or phase spec-review state.
 - The individual roadmap features (#84–#93) build on this model in later sub-projects.
 - A markdown → DB auto-importer. The old `GOAL.md` markdown roadmap has been retired
   (kept in git history); new courses/phases are created through the API.

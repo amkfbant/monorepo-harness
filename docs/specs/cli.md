@@ -2099,4 +2099,7 @@ harness phase unlink-hitch <hitch-id>
 | `start-hitch` | phase spec から hitch を作成して同一 transaction で link。project/repo は parent course から継承し、`--scope-file` / `--close-file` が無ければ phase の scope/close conditions を使う。ratify 済み phase では `link-hitch` と同じ整合 gate と drift warning を適用 |
 | `unlink-hitch` | hitch の phase リンクを解除 |
 
+> `--close-file` の close-condition kind（auto-verify / external-evidence の区別）・gap→kind 写像・
+> command の bare-id 解決規約・起案→批准ワークフローは [`spec-review-layer.md`](./spec-review-layer.md) を参照。
+
 Exit code は `harness course` と同じ（0 / 1 / 2）。
