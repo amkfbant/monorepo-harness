@@ -18,6 +18,11 @@ import {
 } from "./schemas.js";
 import { phaseSpecApprovalStatusForSpec } from "../roadmap/phase-repository.js";
 import {
+  AttemptRepository,
+  type CompleteHitchAttemptInput,
+  type CreateHitchAttemptInput,
+} from "./repositories/attempt-repository.js";
+import {
   CloseCheckRepository,
   type RecordHitchCloseCheckInput,
 } from "./repositories/close-check-repository.js";
@@ -37,7 +42,6 @@ import {
   HARNESS_ORIGIN_FINDING_SOURCES,
   REVIEW_BLOCKING_FINDING_CATEGORY_SET,
   type HitchAttempt,
-  type HitchAttemptStatus,
   type HitchAttemptType,
   type HitchCloseCheck,
   type HitchCloseCondition,
@@ -62,9 +66,10 @@ import {
 // #125 Track C: concerns moved to per-concern sub-repos. Re-export their input
 // types so the public module surface of `repository.ts` (and any consumer
 // importing them from here) is unchanged.
-// C1 — convergence-decision; C2 — close-check.
+// C1 — convergence-decision; C2 — close-check; C3 — attempt.
 export type { RecordHitchConvergenceDecisionInput };
 export type { RecordHitchCloseCheckInput };
+export type { CreateHitchAttemptInput, CompleteHitchAttemptInput };
 
 export interface CreateHitchSessionInput {
   hitchId?: string;
@@ -92,30 +97,6 @@ export interface HitchSessionFilter {
   repoId?: string;
   domain?: string;
   limit?: number;
-}
-
-export interface CreateHitchAttemptInput {
-  attemptId?: string;
-  hitchId: string;
-  iteration?: number;
-  attemptType: HitchAttemptType;
-  status?: HitchAttemptStatus;
-  operationId?: string;
-  runId?: string;
-  parentAttemptId?: string;
-  input?: Record<string, unknown>;
-  startedAt?: string;
-  createdAt?: string;
-}
-
-export interface CompleteHitchAttemptInput {
-  attemptId: string;
-  status: Exclude<HitchAttemptStatus, "pending" | "running">;
-  operationId?: string;
-  runId?: string;
-  result?: Record<string, unknown>;
-  errorMessage?: string;
-  completedAt?: string;
 }
 
 export interface StartHitchReviewCycleInput {
@@ -342,23 +323,6 @@ interface HitchSessionRow {
   escalation_reason: string | null;
 }
 
-interface HitchAttemptRow {
-  attempt_id: string;
-  hitch_id: string;
-  iteration: number;
-  attempt_type: HitchAttemptType;
-  status: HitchAttemptStatus;
-  operation_id: string | null;
-  run_id: string | null;
-  parent_attempt_id: string | null;
-  input_json: string;
-  result_json: string;
-  error_message: string | null;
-  started_at: string | null;
-  completed_at: string | null;
-  created_at: string;
-}
-
 interface HitchReviewCycleRow {
   cycle_id: string;
   hitch_id: string;
@@ -531,10 +495,12 @@ export class HitchRepository {
   // facade keeps every public method and forwards to the owning sub-repo.
   private readonly decisions: ConvergenceDecisionRepository;
   private readonly closeChecks: CloseCheckRepository;
+  private readonly attempts: AttemptRepository;
 
   constructor(private readonly db: Database.Database) {
     this.decisions = new ConvergenceDecisionRepository(db);
     this.closeChecks = new CloseCheckRepository(db);
+    this.attempts = new AttemptRepository(db);
   }
 
   createSession(input: CreateHitchSessionInput): HitchSession {
@@ -958,105 +924,33 @@ export class HitchRepository {
     return row !== undefined;
   }
 
+  // #125 Track C (C3): attempt concern delegated to AttemptRepository (incl.
+  // the private nextIteration counter). The facade keeps these entry-points and
+  // forwards to the sub-repo (shared `db`, behaviour-identical). The facade's
+  // own latestCodingRunId / newestCodingAttemptRunId call this.listAttempts(),
+  // which forwards here.
   createAttempt(input: CreateHitchAttemptInput): HitchAttempt {
-    const now = input.createdAt ?? new Date().toISOString();
-    const attemptId = input.attemptId ?? `attempt-${randomUUID()}`;
-    const iteration = input.iteration ?? this.nextIteration(input.hitchId);
-    this.db
-      .prepare(
-        `INSERT INTO hitch_attempts (
-           attempt_id, hitch_id, iteration, attempt_type, status,
-           operation_id, run_id, parent_attempt_id, input_json,
-           result_json, started_at, created_at
-         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)`,
-      )
-      .run(
-        attemptId,
-        input.hitchId,
-        iteration,
-        input.attemptType,
-        input.status ?? "running",
-        input.operationId ?? null,
-        input.runId ?? null,
-        input.parentAttemptId ?? null,
-        json(input.input ?? {}),
-        input.startedAt ?? now,
-        now,
-      );
-    this.touchSession(input.hitchId, now);
-    return this.requireAttempt(attemptId);
+    return this.attempts.createAttempt(input);
   }
 
   completeAttempt(input: CompleteHitchAttemptInput): HitchAttempt {
-    const now = input.completedAt ?? new Date().toISOString();
-    this.db
-      .prepare(
-        `UPDATE hitch_attempts
-            SET status = ?, operation_id = COALESCE(?, operation_id),
-                run_id = COALESCE(?, run_id), result_json = ?,
-                error_message = ?, completed_at = ?
-          WHERE attempt_id = ?`,
-      )
-      .run(
-        input.status,
-        input.operationId ?? null,
-        input.runId ?? null,
-        json(input.result ?? {}),
-        input.errorMessage ?? null,
-        now,
-        input.attemptId,
-      );
-    const attempt = this.requireAttempt(input.attemptId);
-    this.touchSession(attempt.hitchId, now);
-    return attempt;
+    return this.attempts.completeAttempt(input);
   }
 
   discardAttempt(attemptId: string, now = new Date().toISOString()): void {
-    const tx = this.db.transaction(() => {
-      const attempt = this.getAttempt(attemptId);
-      if (attempt === null) return;
-      this.db
-        .prepare("DELETE FROM hitch_attempts WHERE attempt_id = ?")
-        .run(attemptId);
-      this.db
-        .prepare(
-          `UPDATE hitch_sessions
-              SET current_iteration = (
-                    SELECT COALESCE(MAX(iteration), 0)
-                      FROM hitch_attempts
-                     WHERE hitch_id = ?
-                  ),
-                  updated_at = ?
-            WHERE hitch_id = ?`,
-        )
-        .run(attempt.hitchId, now, attempt.hitchId);
-    });
-    tx.immediate();
+    this.attempts.discardAttempt(attemptId, now);
   }
 
   getAttempt(attemptId: string): HitchAttempt | null {
-    const row = this.db
-      .prepare("SELECT * FROM hitch_attempts WHERE attempt_id = ?")
-      .get(attemptId) as HitchAttemptRow | undefined;
-    return row === undefined ? null : rowToAttempt(row);
+    return this.attempts.getAttempt(attemptId);
   }
 
   requireAttempt(attemptId: string): HitchAttempt {
-    const attempt = this.getAttempt(attemptId);
-    if (attempt === null) throw new DbError(`hitch attempt not found: ${attemptId}`);
-    return attempt;
+    return this.attempts.requireAttempt(attemptId);
   }
 
   listAttempts(hitchId: string): HitchAttempt[] {
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM hitch_attempts
-          WHERE hitch_id = ?
-          ORDER BY iteration ASC, created_at ASC`,
-      )
-      .all(hitchId) as HitchAttemptRow[];
-    return rows.map(rowToAttempt);
+    return this.attempts.listAttempts(hitchId);
   }
 
   startReviewCycle(input: StartHitchReviewCycleInput): HitchReviewCycle {
@@ -2248,23 +2142,6 @@ export class HitchRepository {
       );
   }
 
-  private nextIteration(hitchId: string): number {
-    const row = this.db
-      .prepare(
-        "SELECT COALESCE(MAX(iteration), 0) + 1 AS n FROM hitch_attempts WHERE hitch_id = ?",
-      )
-      .get(hitchId) as { n: number };
-    this.db
-      .prepare(
-        `UPDATE hitch_sessions
-            SET current_iteration = MAX(current_iteration, ?),
-                updated_at = ?
-          WHERE hitch_id = ?`,
-      )
-      .run(row.n, new Date().toISOString(), hitchId);
-    return row.n;
-  }
-
   private nextReviewCycleNumber(hitchId: string): number {
     const row = this.db
       .prepare(
@@ -2571,25 +2448,6 @@ function rowToSession(row: HitchSessionRow): HitchSession {
     closedAt: row.closed_at,
     closeSummary: row.close_summary,
     escalationReason: row.escalation_reason,
-  };
-}
-
-function rowToAttempt(row: HitchAttemptRow): HitchAttempt {
-  return {
-    attemptId: row.attempt_id,
-    hitchId: row.hitch_id,
-    iteration: row.iteration,
-    attemptType: row.attempt_type,
-    status: row.status,
-    operationId: row.operation_id,
-    runId: row.run_id,
-    parentAttemptId: row.parent_attempt_id,
-    input: parseRecord(row.input_json),
-    result: parseRecord(row.result_json),
-    errorMessage: row.error_message,
-    startedAt: row.started_at,
-    completedAt: row.completed_at,
-    createdAt: row.created_at,
   };
 }
 
