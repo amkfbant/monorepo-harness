@@ -104,6 +104,26 @@ export const ADVISORY_REVIEW_FINDING_CATEGORY_SET = new Set<string>(
   ADVISORY_REVIEW_FINDING_CATEGORIES,
 );
 
+// Review-BLOCKING finding categories the harness emits deterministically FROM A
+// REVIEW PROPOSAL (review-integration.ts). These are the only categories a later
+// APPROVING review cycle deterministically retires as superseded (#278): when the
+// canonical review decision is `approved`, prior OPEN in-scope review-origin rows
+// in these categories from EARLIER cycles are auto-resolved to `fixed`. The set is
+// shared by the emission site and the auto-resolve trigger so the two cannot drift.
+// NOTE: this is NOT the simple complement of ADVISORY_REVIEW_FINDING_CATEGORIES
+// within source='review'. The externally-ingested `external-review-changes-requested`
+// blocker (orchestrator-runners.ts, a third source='review' P1 category) is in
+// NEITHER set and is deliberately NOT auto-resolved — an internal review approve
+// must never retire an external human reviewer's blocking verdict (fail-closed).
+export const REVIEW_BLOCKING_FINDING_CATEGORIES = [
+  "review-required-change",
+  "review-negative-decision",
+] as const;
+
+export const REVIEW_BLOCKING_FINDING_CATEGORY_SET = new Set<string>(
+  REVIEW_BLOCKING_FINDING_CATEGORIES,
+);
+
 // Compile-time guard: every HitchFindingSource MUST be classified as either
 // operator-origin or harness-origin. An unclassified source would silently
 // drop out of divergence accounting (fail-open of the safety circuit-breaker,

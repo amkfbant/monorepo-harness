@@ -28,16 +28,20 @@ import {
 import type { ConsensusStallConfig } from "../core/consensus-stall.js";
 import { HitchRepository } from "./repository.js";
 import { nextReviewMode } from "./review-mode.js";
-import type {
-  HitchCloseCheck,
-  HitchConvergenceDecisionRecord,
-  HitchFinding,
-  HitchFindingSeverity,
-  HitchReviewCycle,
-  HitchReviewMode,
-  HitchSession,
-  HitchScopeStatus,
+import {
+  REVIEW_BLOCKING_FINDING_CATEGORIES,
+  type HitchCloseCheck,
+  type HitchConvergenceDecisionRecord,
+  type HitchFinding,
+  type HitchFindingSeverity,
+  type HitchReviewCycle,
+  type HitchReviewMode,
+  type HitchSession,
+  type HitchScopeStatus,
 } from "./types.js";
+
+const REVIEW_REQUIRED_CHANGE_CATEGORY = REVIEW_BLOCKING_FINDING_CATEGORIES[0];
+const REVIEW_NEGATIVE_DECISION_CATEGORY = REVIEW_BLOCKING_FINDING_CATEGORIES[1];
 
 export interface ImportReviewProposalToHitchInput {
   repository: HitchRepository;
@@ -80,6 +84,13 @@ export interface ImportReviewProposalToHitchResult {
   hitchStatus: HitchSession | null;
   /** Phase 2-3: present when a consensus-stall check ran for this import. */
   consensusStall?: HitchConsensusStallResult;
+  /**
+   * #278: prior cycles' review-blocking findings that this APPROVING cycle
+   * deterministically retired (lifecycle open->fixed). Present (non-empty) only
+   * when the canonical decision was `approved` and at least one stale blocker was
+   * superseded; omitted otherwise.
+   */
+  autoResolvedFindings?: HitchFinding[];
 }
 
 interface ProposalFindingSeed {
@@ -130,6 +141,32 @@ export function importReviewProposalToHitch(
     cycle,
     canonical,
   );
+  // #278: once a later review cycle's canonical decision is APPROVED, retire the
+  // prior cycles' OPEN in-scope review-origin review-blocking findings for this
+  // hitch (open->fixed). This runs BEFORE completeReviewCycle so the cycle's
+  // findingsFixed / findingsInScopeOpen counts and the subsequent convergence
+  // evaluation both see the resolved state (convergence reaches close_ready
+  // instead of needs_fix on a now-superseded openInScopeP1). The trigger is the
+  // same harness-deterministic `canonical.decision === "approved"` signal that
+  // drives suppressBlockingFindings — never an LLM self-report.
+  //
+  // Fail-closed invariant: when a processResult is supplied, the result being
+  // applied MUST belong to the proposal's run. Production selects the proposal by
+  // the same run, but a direct misuse could pass an approved result for an
+  // UNRELATED run; auto-resolving prior blockers off a foreign run's approve would
+  // wrongly retire them. If the run ids mismatch we do NOT auto-resolve.
+  const resultRunMatchesProposal =
+    input.processResult === undefined ||
+    input.processResult.runId === input.proposal.runId;
+  const autoResolved =
+    canonical.decision === "approved" && resultRunMatchesProposal
+      ? input.repository.resolveSupersededReviewFindings({
+          hitchId: input.hitchId,
+          supersedingCycleId: cycle.cycleId,
+          categories: REVIEW_BLOCKING_FINDING_CATEGORIES,
+          decisionRunId: canonical.runId,
+        })
+      : [];
   const reviewAdvisories = proposalReviewerAdvisories(input.proposal);
   const completedCycle = input.repository.completeReviewCycle({
     cycleId: cycle.cycleId,
@@ -148,10 +185,14 @@ export function importReviewProposalToHitch(
       .listFindings({ hitchId: input.hitchId, scopeStatus: "in_scope", limit: 10_000 })
       .filter((f) => f.lifecycleStatus === "open" || f.lifecycleStatus === "reopened")
       .length,
-    summary: reviewAdvisories.length === 0
-      ? `Imported review proposal ${input.proposal.proposalId} (${input.proposal.decision})`
-      : `Imported review proposal ${input.proposal.proposalId} (${input.proposal.decision}); ` +
-        `reviewer advisory surfaced=${reviewAdvisories.length}`,
+    summary:
+      `Imported review proposal ${input.proposal.proposalId} (${input.proposal.decision})` +
+      (reviewAdvisories.length === 0
+        ? ""
+        : `; reviewer advisory surfaced=${reviewAdvisories.length}`) +
+      (autoResolved.length === 0
+        ? ""
+        : `; auto-resolved superseded review blockers=${autoResolved.length}`),
   });
   const closeChecks =
     input.processResult === undefined
@@ -212,6 +253,7 @@ export function importReviewProposalToHitch(
     convergenceDecision,
     hitchStatus,
     ...(consensusStall !== undefined ? { consensusStall } : {}),
+    ...(autoResolved.length > 0 ? { autoResolvedFindings: autoResolved } : {}),
   };
 }
 
@@ -289,7 +331,7 @@ function proposalFindingSeeds(
           index,
           text,
           severity: "P1" as const,
-          category: "review-required-change",
+          category: REVIEW_REQUIRED_CHANGE_CATEGORY,
           ...(canonicalBlocking
             ? {
                 sourceRef:
@@ -308,7 +350,7 @@ function proposalFindingSeeds(
               `Review decision was ${blockingDecision} with no required_changes; ` +
               "inspect the review output and resolve the negative verdict before closing this hitch.",
             severity: "P1" as const,
-            category: "review-negative-decision",
+            category: REVIEW_NEGATIVE_DECISION_CATEGORY,
             ...(canonicalBlocking
               ? {
                   sourceRef:

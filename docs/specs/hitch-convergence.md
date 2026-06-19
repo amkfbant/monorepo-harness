@@ -154,6 +154,55 @@ category, and summary. Semantic clustering is not part of Phase 19.
 Out-of-scope findings default to deferred follow-up. A deferred finding may
 create a backlog item and stores the linked item id.
 
+**(#278) Auto-resolve of superseded review blockers on approve.** The
+`open -> fixed` edge is also driven deterministically by the harness — not only by
+the operator's manual `hitch finding fixed`. When a later review cycle's
+**canonical decision is `approved`** (the same harness-computed
+`canonical.decision === "approved"` signal, event-sourced from
+`review_decisions` / `review_consensus`, that already drives
+`suppressBlockingFindings`), the import path retires the prior cycles' now-stale
+blockers via `HitchRepository.resolveSupersededReviewFindings`. The transition is
+bounded by a STRICT allowlist (fail-closed): only findings with `source = 'review'`
+**and** category in the review-blocking set (`review-required-change` /
+`review-negative-decision`, the only categories the harness emits as P1 blockers
+from review proposals) **and** `scope_status = 'in_scope'` **and**
+`lifecycle_status IN ('open','reopened')` **and** `severity <> 'P0'` **and**
+`duplicate_of IS NULL` **and** stamped with a `source_cycle_id` that resolves to a
+review cycle of the SAME hitch whose `cycle_number` is **strictly less** than the
+approving (superseding) cycle's `cycle_number` are flipped to `fixed`. The
+earlier-cycle predicate is a strict cycle_number comparison (an inner join on
+`hitch_review_cycles`), not a `<> superseding` id check: a NULL, dangling, future,
+or same-cycle `source_cycle_id` cannot be proven earlier and is left OPEN
+(fail-closed). Everything outside the allowlist — operator-origin (`human`/`mcp`)
+findings, out_of_scope/unknown, non-blocking advisory categories, the approving
+cycle's own (or later) rows, manual NULL-cycle review findings, P0 — stays OPEN.
+The auto-resolve runs BEFORE `completeReviewCycle`, so that cycle's
+`findingsFixed` / `findingsInScopeOpen` counts and the subsequent convergence
+evaluation both observe the resolved state (convergence reaches `close_ready`
+instead of routing `needs_fix` on a now-superseded `openInScopeP1`). A deterministic
+`resolution_note` records the CURRENT superseding run + cycle: it is written when
+the note is empty OR when the existing note is a prior harness auto-resolve note
+(refreshed so a reopen->re-approve names the current cycle, not a stale earlier
+one), while a genuine operator-authored note is preserved. When a `processResult`
+is supplied, auto-resolve additionally requires `processResult.runId` to equal the
+proposal's `runId` (the applied result must belong to the proposal's run) —
+otherwise it is skipped (fail-closed). **Current-review-target guard:** the
+earlier-cycle / same-hitch predicate alone does NOT prove the approving run is the
+run those blockers should be superseded by — the MCP `review.process` path accepts
+any `needs_review` run linked by project/repo/domain, so a manually-processed
+approve for a STALE/older run could be imported as a later cycle. Therefore, when
+the hitch has a current coding-run target (its latest `implement`/`rerun` attempt's
+run, ranked deterministically by attempt iteration — not the nullable
+`runs.started_at`), the approving `decisionRunId` MUST equal it; an approve for any
+other (older / foreign) run retires nothing (fail-closed). The externally-ingested
+`external-review-changes-requested` P1 blocker (a third `source='review'` category,
+in neither the blocking nor the advisory set) is deliberately NOT auto-resolved: an
+internal review approve must never retire an external human reviewer's verdict.
+This is the harness observing an event-sourced APPROVE —
+never an LLM "I fixed it" self-report. The auto-resolve fires only on `approved`:
+a later `changes_requested` / `rejected` re-blocks correctly, and a genuinely
+re-raised blocker is re-promoted through the normal `fixed -> reopened` edge.
+
 ## Convergence Decisions
 
 Evaluation is deterministic and conservative:
@@ -198,7 +247,16 @@ Evaluation is deterministic and conservative:
    that happens to be `out_of_scope` (e.g. `correctness`) STILL counts toward
    churn, and the blocking categories `review-required-change` /
    `review-negative-decision` are deliberately NOT excluded — they still drive
-   divergence and still block close (fail-closed).
+   divergence and still block close (fail-closed). **(#278)** The approve-driven
+   auto-resolve of superseded review blockers (see Finding Lifecycle) changes ONLY
+   `lifecycle_status` (open->fixed); it does NOT rewrite or delete the underlying
+   `source` / `source_cycle_id` rows, so `harnessOriginDivergenceMetrics`
+   (cumulative `harnessOriginNewFindings` and the per-cycle churn) is unchanged and
+   the cumulative divergence circuit-breaker stays intact. The `openInScopeP1`
+   close gate itself is also unchanged — it still blocks for EVERY finding origin
+   (operator `human`/`mcp` included); the auto-resolve merely retires the
+   superseded review-origin review-blocking rows BEFORE the gate evaluates, so the
+   gate sees the truthful post-approve count.
 5. Passed fresh required close checks plus configured `closeRequires` blockers clear is `close_ready`.
 6. (#104/#197) An **unreviewed** coder run — the latest coding attempt
    (implement/rerun) is newer than the latest review cycle — is **reviewed**

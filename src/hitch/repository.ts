@@ -27,6 +27,7 @@ import {
   DEFAULT_HITCH_POLICY,
   HARNESS_ORIGIN_FINDING_SOURCE_SET,
   HARNESS_ORIGIN_FINDING_SOURCES,
+  REVIEW_BLOCKING_FINDING_CATEGORY_SET,
   type HitchAttempt,
   type HitchAttemptStatus,
   type HitchAttemptType,
@@ -168,6 +169,26 @@ export interface MarkHitchFindingFixedInput {
   findingId: string;
   note?: string;
   fixedAt?: string;
+}
+
+/**
+ * #278: input for {@link HitchRepository.resolveSupersededReviewFindings}. A later
+ * APPROVING review cycle deterministically retires the prior cycles' review-origin
+ * review-blocking findings for the SAME hitch. The trigger (canonical approve) is
+ * computed by the harness from event-sourced review_decisions / review_consensus
+ * rows — never an LLM "I fixed it" self-report.
+ */
+export interface ResolveSupersededReviewFindingsInput {
+  /** Hitch whose prior review blockers are being superseded. */
+  hitchId: string;
+  /** The approving cycle that supersedes earlier blockers (same-cycle rows skipped). */
+  supersedingCycleId: string;
+  /** Allowlist of review-blocking categories to retire (REVIEW_BLOCKING_FINDING_CATEGORIES). */
+  categories: readonly string[];
+  /** Run id whose canonical APPROVE decision drove the supersession (audit trail). */
+  decisionRunId: string;
+  /** Deterministic resolution timestamp (defaults to now). */
+  resolvedAt?: string;
 }
 
 export interface DeferHitchFindingInput {
@@ -470,6 +491,16 @@ export const OPEN_FINDING_LIFECYCLES = [
   "reopened",
   "escalated",
 ] as const satisfies readonly HitchLifecycleStatus[];
+
+/**
+ * #278: marker prefix for the deterministic resolution_note written by
+ * {@link HitchRepository.resolveSupersededReviewFindings}. The prefix lets the
+ * re-resolve path distinguish a STALE prior harness auto-resolve note (which
+ * names an older superseding cycle and is safe to refresh) from a genuine
+ * operator-authored note (which is preserved). Changing this string would orphan
+ * existing notes from the refresh path, so keep it stable.
+ */
+export const AUTO_RESOLVE_NOTE_PREFIX = "auto-resolved: superseded by approving review";
 
 export const UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES = [
   "open",
@@ -1563,6 +1594,134 @@ export class HitchRepository {
       .run(now, input.note ?? null, now, input.findingId);
     this.touchSession(current.hitchId, now);
     return this.requireFinding(input.findingId);
+  }
+
+  /**
+   * #278: deterministically retire prior cycles' review-origin review-blocking
+   * findings once a later review cycle's canonical decision is APPROVED. This is
+   * the harness-side equivalent of the operator running `hitch finding fixed` by
+   * hand on every stale blocker after an approve — lifted into the harness and
+   * bounded by a STRICT allowlist (fail-closed):
+   *
+   *   - source = 'review'                       (never human/mcp/test/doctor/codex/other)
+   *   - category IN (caller allowlist)          (only review-blocking categories)
+   *   - scope_status = 'in_scope'               (never out_of_scope/unknown/duplicate)
+   *   - lifecycle_status IN ('open','reopened') (only still-open blockers)
+   *   - severity <> 'P0'                         (defensive belt-and-suspenders)
+   *   - duplicate_of IS NULL                    (never duplicate child rows)
+   *   - source_cycle_id resolves to a SAME-hitch cycle with cycle_number STRICTLY
+   *     LESS than the superseding cycle (proven-earlier; NULL/dangling/future/
+   *     same-cycle ids are NOT proven-earlier and are left OPEN — fail-closed)
+   *   - decisionRunId is the hitch's CURRENT review target (its latest coding run)
+   *     when one exists — a stale/non-current run's approve retires nothing
+   *     (fail-closed); see the current-review-target guard below
+   *
+   * Anything outside the allowlist is left OPEN (fail-closed). Only
+   * `lifecycle_status` / `fixed_at` / `resolution_note` / `last_seen_at` change;
+   * `source` and `source_cycle_id` are preserved, so the divergence audit ledger
+   * (harnessOriginDivergenceMetrics, #196/#280) is unaffected. The trigger is
+   * 100% harness-deterministic (canonical approve from the DB), never an LLM claim.
+   * Returns the resolved findings (immutable snapshot), in first-seen order.
+   */
+  resolveSupersededReviewFindings(
+    input: ResolveSupersededReviewFindingsInput,
+  ): HitchFinding[] {
+    // Defense-in-depth (fail-closed): enforce the review-blocking allowlist
+    // INSIDE the repository, not just at the caller. A caller can never widen the
+    // set of auto-resolvable categories — any category outside
+    // REVIEW_BLOCKING_FINDING_CATEGORIES is dropped here, so advisory / arbitrary
+    // categories are never retired even if mistakenly passed in.
+    const categories = input.categories.filter((category) =>
+      REVIEW_BLOCKING_FINDING_CATEGORY_SET.has(category),
+    );
+    if (categories.length === 0) return [];
+    const now = input.resolvedAt ?? new Date().toISOString();
+    const note =
+      `${AUTO_RESOLVE_NOTE_PREFIX} ` +
+      `(run ${input.decisionRunId}, cycle ${input.supersedingCycleId})`;
+    const categoryPlaceholders = placeholders(categories.length);
+    const tx = this.db.transaction((): HitchFinding[] => {
+      // The superseding cycle must exist for this hitch; if it does not we cannot
+      // prove any finding is from an EARLIER cycle, so resolve nothing (fail-closed).
+      const supersedingCycle = this.db
+        .prepare(
+          `SELECT cycle_number FROM hitch_review_cycles
+            WHERE cycle_id = ? AND hitch_id = ?`,
+        )
+        .get(input.supersedingCycleId, input.hitchId) as
+        | { cycle_number: number }
+        | undefined;
+      if (supersedingCycle === undefined) return [];
+      // CURRENT-REVIEW-TARGET guard (fail-closed): an approve only supersedes prior
+      // blockers when it reviewed the hitch's CURRENT review target — the latest
+      // coding run (newest implement/rerun attempt, ranked deterministically by
+      // attempt iteration, NOT nullable runs.started_at). The earlier-cycle /
+      // same-hitch predicate alone does NOT prove the approving run is current: the
+      // MCP review.process path accepts any needs_review run linked by
+      // project/repo/domain, so a manually-processed approve for a STALE/older run
+      // could be imported as a later cycle and wrongly retire open blockers raised
+      // against a DIFFERENT, NEWER run. If a coding-run target exists and the
+      // approving run is not it, resolve nothing. When no coding run is recorded
+      // (e.g. a direct primitive caller with no attempts) there is no target to
+      // contradict, so the strict earlier-cycle predicate below governs alone.
+      const currentTargetRunId = this.latestCodingRunId(input.hitchId);
+      if (currentTargetRunId !== null && currentTargetRunId !== input.decisionRunId) {
+        return [];
+      }
+      // STRICT earlier-cycle predicate (fail-closed): the finding's source_cycle_id
+      // MUST reference a cycle of the SAME hitch whose cycle_number is strictly less
+      // than the superseding cycle's. A NULL, dangling, future, or same source_cycle_id
+      // is NOT proven-earlier and is left OPEN — the inner JOIN drops it. This is
+      // tighter than `<> superseding` (which would admit null/future/foreign cycles)
+      // and matches the documented "prior EARLIER cycle" semantics.
+      const rows = this.db
+        .prepare(
+          `SELECT f.finding_id
+             FROM hitch_findings f
+             JOIN hitch_review_cycles c
+               ON c.cycle_id = f.source_cycle_id
+              AND c.hitch_id = f.hitch_id
+            WHERE f.hitch_id = ?
+              AND f.source = 'review'
+              AND f.scope_status = 'in_scope'
+              AND f.lifecycle_status IN ('open', 'reopened')
+              AND f.severity <> 'P0'
+              AND f.duplicate_of IS NULL
+              AND f.category IN (${categoryPlaceholders})
+              AND c.cycle_number < ?
+            ORDER BY f.first_seen_at ASC, f.finding_id ASC`,
+        )
+        .all(input.hitchId, ...categories, supersedingCycle.cycle_number) as Array<{
+        finding_id: string;
+      }>;
+      if (rows.length === 0) return [];
+      // Reuse the SAME open->fixed lifecycle edge as markFindingFixed. The
+      // resolution_note is written so the AUDIT record always names the CURRENT
+      // superseding cycle (#278): set the fresh note when there is none OR when the
+      // existing note is a prior harness auto-resolve note (which would otherwise
+      // name a STALE older cycle after a reopen->approve), but PRESERVE a genuine
+      // operator-authored note. The marker prefix carries no LIKE wildcards, and
+      // `${prefix}%` is a bound parameter, so this stays injection-safe.
+      const update = this.db.prepare(
+        `UPDATE hitch_findings
+            SET lifecycle_status = 'fixed', fixed_at = ?,
+                resolution_note = CASE
+                  WHEN resolution_note IS NULL OR resolution_note LIKE ? THEN ?
+                  ELSE resolution_note
+                END,
+                deferred_at = NULL,
+                deferred_backlog_item_id = NULL,
+                last_seen_at = ?
+          WHERE finding_id = ?`,
+      );
+      const autoNoteLikePattern = `${AUTO_RESOLVE_NOTE_PREFIX}%`;
+      for (const row of rows) {
+        update.run(now, autoNoteLikePattern, note, now, row.finding_id);
+      }
+      this.touchSession(input.hitchId, now);
+      return rows.map((row) => this.requireFinding(row.finding_id));
+    });
+    return tx();
   }
 
   deferFinding(input: DeferHitchFindingInput): HitchFinding {

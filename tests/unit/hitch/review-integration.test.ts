@@ -1321,3 +1321,561 @@ describe("goal review integration", () => {
     }
   });
 });
+
+describe("#278: later approve auto-resolves superseded review blockers", () => {
+  function createSessionForAutoResolve(goals: HitchRepository, hitchId: string) {
+    goals.createSession({
+      hitchId,
+      title: "Goal autoresolve",
+      // review-blocking categories classify in_scope so the openInScopeP1 close
+      // gate engages (mirrors the orchestrate review loop's in-scope P1 blockers).
+      scope: {
+        allowedFindingCategories: [
+          "review-required-change",
+          "review-negative-decision",
+          "correctness",
+        ],
+      },
+      closeConditions: [
+        {
+          id: "review-consensus",
+          kind: "review_consensus",
+          required: true,
+        },
+      ],
+      createdBy: "test",
+      createdSource: "cli",
+    });
+  }
+
+  // (A) HAPPY PATH + (B) AUDIT: a later approving cycle auto-resolves the prior
+  // changes_requested cycle's open in-scope P1 review-required-change finding,
+  // and convergence stops routing needs_fix on openInScopeP1.
+  it("auto-resolves a prior cycle review-required-change on approve and clears the openInScopeP1 close gate", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      const hitchId = "goal-278-happy";
+      createSessionForAutoResolve(goals, hitchId);
+      // An implementation attempt exists (close gate requires iterationsUsed>0).
+      // Its runId is the hitch's current review target; the approve below reviews
+      // this same run (satisfies the current-review-target guard).
+      goals.createAttempt({
+        hitchId,
+        attemptType: "implement",
+        status: "succeeded",
+        runId: "run-review",
+      });
+
+      // Cycle 1: changes_requested with a required change -> open P1 blocker.
+      const cr = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "changes_requested",
+        requiredChanges: ["Fix the convergence gate ordering"],
+      });
+      const cycle1 = importReviewProposalToHitch({
+        repository: goals,
+        hitchId,
+        proposal: cr,
+        createdBy: "test",
+      });
+      const blocker = goals
+        .listFindings({ hitchId, scopeStatus: "in_scope", severity: "P1" })
+        .find((f) => f.category === "review-required-change");
+      expect(blocker).toBeDefined();
+      expect(blocker?.lifecycleStatus).toBe("open");
+      expect(blocker?.sourceCycleId).toBe(cycle1.cycle.cycleId);
+      expect(
+        new ConvergenceService(goals).evaluate(hitchId).metrics.openInScopeP1,
+      ).toBe(1);
+      expect(new ConvergenceService(goals).evaluate(hitchId).decision).toBe(
+        "needs_fix",
+      );
+
+      // Cycle 2: a fresh review of the latest run APPROVES (canonical decision
+      // approved via DB review_decisions, processed into an approved result so the
+      // review_consensus close check passes). The prior blocker is superseded.
+      insertReviewDecision(db, { decision: "approved" });
+      const approved = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "approved",
+      });
+      const cycle2 = importReviewProposalToHitch({
+        repository: goals,
+        hitchId,
+        proposal: approved,
+        processResult: {
+          runId: "run-review",
+          previousStatus: "needs_review",
+          newStatus: "approved",
+          reviewer: "consensus",
+          reviewedAt: "2026-05-26T00:01:00.000Z",
+          warnings: [],
+        },
+        createdBy: "test",
+      });
+
+      // (A) the prior blocker is now lifecycle 'fixed'.
+      const resolved = goals.requireFinding(blocker!.findingId);
+      expect(resolved.lifecycleStatus).toBe("fixed");
+      expect(resolved.fixedAt).not.toBeNull();
+      // (B) AUDIT: deterministic resolution_note records the superseding run.
+      expect(resolved.resolutionNote).toContain("auto-resolved");
+      expect(resolved.resolutionNote).toContain(cycle2.cycle.cycleId);
+
+      // (A) convergence no longer routes needs_fix / diverging / budget_exhausted
+      // on the (now retired) openInScopeP1 blocker; close gate is clear.
+      const conv = new ConvergenceService(goals).evaluate(hitchId);
+      expect(conv.metrics.openInScopeP1).toBe(0);
+      expect(conv.decision).not.toBe("needs_fix");
+      expect(conv.decision).not.toBe("diverging");
+      expect(conv.decision).not.toBe("budget_exhausted");
+      // approving cycle recorded a passed review_consensus close check, so the
+      // hitch is close_ready.
+      expect(conv.decision).toBe("close_ready");
+
+      // (B) AUDIT: the approving cycle's findingsFixed/findingsInScopeOpen counts
+      // reflect the resolution (computed AFTER auto-resolve, before completeCycle).
+      expect(cycle2.cycle.findingsFixed).toBe(1);
+      expect(cycle2.cycle.findingsInScopeOpen).toBe(0);
+      expect(cycle2.autoResolvedFindings).toBeDefined();
+      expect(cycle2.autoResolvedFindings?.map((f) => f.findingId)).toEqual([
+        blocker!.findingId,
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  // (A') DB-CANONICAL trigger (no processResult): the approve trigger is the
+  // persisted review_decisions row, NOT an LLM self-report. Auto-resolve fires off
+  // the same harness-computed `canonical.decision === "approved"` signal that
+  // drives suppressBlockingFindings, whether sourced from processResult.newStatus
+  // (harness review-processor verdict) or the DB review_decisions row.
+  it("auto-resolves off the persisted review_decisions approve (no processResult)", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      const hitchId = "goal-278-dbcanonical";
+      createSessionForAutoResolve(goals, hitchId);
+      goals.createAttempt({
+        hitchId,
+        attemptType: "implement",
+        status: "succeeded",
+        runId: "run-review",
+      });
+
+      const cr = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "changes_requested",
+        requiredChanges: ["Earlier blocker to be superseded"],
+      });
+      importReviewProposalToHitch({
+        repository: goals,
+        hitchId,
+        proposal: cr,
+        createdBy: "test",
+      });
+      const blocker = goals
+        .listFindings({ hitchId, scopeStatus: "in_scope", severity: "P1" })
+        .find((f) => f.category === "review-required-change");
+      expect(blocker?.lifecycleStatus).toBe("open");
+
+      // The persisted DB canonical decision is the approve trigger.
+      insertReviewDecision(db, { decision: "approved" });
+      const approved = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "approved",
+      });
+      const cycle2 = importReviewProposalToHitch({
+        repository: goals,
+        hitchId,
+        proposal: approved,
+        createdBy: "test",
+      });
+
+      expect(goals.requireFinding(blocker!.findingId).lifecycleStatus).toBe(
+        "fixed",
+      );
+      expect(cycle2.autoResolvedFindings?.map((f) => f.findingId)).toEqual([
+        blocker!.findingId,
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  // (G2) FAIL-CLOSED INVARIANT: an approved processResult whose runId does NOT
+  // match the proposal's runId must NOT auto-resolve prior blockers (the result
+  // must belong to the proposal's run).
+  it("does NOT auto-resolve when processResult.runId mismatches the proposal runId", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      const hitchId = "goal-278-runmismatch";
+      createSessionForAutoResolve(goals, hitchId);
+      // A second, unrelated run exists.
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, source_mode, db_revision, export_status, updated_at, meta_json)
+         VALUES ('run-other', 'repo', 'apps/web', 'domain-coding', 'main',
+           'needs_review', 'db-first', 1, 'disabled',
+           '2026-05-26T00:00:00.000Z', '{}')`,
+      ).run();
+
+      const cr = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "changes_requested",
+        requiredChanges: ["Earlier blocker"],
+      });
+      importReviewProposalToHitch({
+        repository: goals,
+        hitchId,
+        proposal: cr,
+        createdBy: "test",
+      });
+      const blocker = goals
+        .listFindings({ hitchId, scopeStatus: "in_scope", severity: "P1" })
+        .find((f) => f.category === "review-required-change");
+      expect(blocker?.lifecycleStatus).toBe("open");
+
+      // The proposal is on run-review, but the processResult claims an approve for
+      // an UNRELATED run (run-other). The fail-closed invariant must skip auto-resolve.
+      const approved = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "approved",
+      });
+      const imported = importReviewProposalToHitch({
+        repository: goals,
+        hitchId,
+        proposal: approved,
+        processResult: {
+          runId: "run-other",
+          previousStatus: "needs_review",
+          newStatus: "approved",
+          reviewer: "consensus",
+          reviewedAt: "2026-05-26T00:01:00.000Z",
+          warnings: [],
+        },
+        createdBy: "test",
+      });
+      expect(imported.autoResolvedFindings).toBeUndefined();
+      expect(goals.requireFinding(blocker!.findingId).lifecycleStatus).toBe(
+        "open",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  // (G3) CURRENT-REVIEW-TARGET INVARIANT: a stale/non-current run's approve must
+  // NOT auto-resolve blockers raised against a DIFFERENT, NEWER run. The hitch's
+  // current target is its latest coding run; an approve for an OLDER run is skipped
+  // (fail-closed). Mirrors the MCP review.process path accepting any linked
+  // needs_review run.
+  it("does NOT auto-resolve when the approving run is NOT the hitch's current review target (stale run)", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      const hitchId = "goal-278-staletarget";
+      createSessionForAutoResolve(goals, hitchId);
+      // The hitch's CURRENT review target is a newer coding run (run-new).
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, source_mode, db_revision, export_status, updated_at, meta_json)
+         VALUES ('run-new', 'repo', 'apps/web', 'domain-coding', 'main',
+           'needs_review', 'db-first', 1, 'disabled',
+           '2026-05-26T00:05:00.000Z', '{}')`,
+      ).run();
+      // run-review is the OLDER coding run; run-new is the LATEST (current target).
+      goals.createAttempt({
+        hitchId,
+        attemptType: "implement",
+        status: "succeeded",
+        runId: "run-review",
+        iteration: 1,
+      });
+      goals.createAttempt({
+        hitchId,
+        attemptType: "rerun",
+        status: "succeeded",
+        runId: "run-new",
+        iteration: 2,
+      });
+
+      // cycle1: a blocker raised reviewing the OLD run (run-review).
+      const cr = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "changes_requested",
+        requiredChanges: ["Old-run blocker that a stale approve must not retire"],
+      });
+      importReviewProposalToHitch({
+        repository: goals,
+        hitchId,
+        proposal: cr,
+        createdBy: "test",
+      });
+      const blocker = goals
+        .listFindings({ hitchId, scopeStatus: "in_scope", severity: "P1" })
+        .find((f) => f.category === "review-required-change");
+      expect(blocker?.lifecycleStatus).toBe("open");
+
+      // A STALE approve is processed for the OLD run (run-review), which is no
+      // longer the hitch's current review target (run-new is). It must NOT retire
+      // the blocker.
+      insertReviewDecision(db, { decision: "approved" });
+      const approved = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "approved",
+      });
+      const imported = importReviewProposalToHitch({
+        repository: goals,
+        hitchId,
+        proposal: approved,
+        createdBy: "test",
+      });
+      expect(imported.autoResolvedFindings).toBeUndefined();
+      expect(goals.requireFinding(blocker!.findingId).lifecycleStatus).toBe(
+        "open",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  // (C) NEGATIVE / FAIL-CLOSED: a genuine operator (human) in-scope P1 finding is
+  // NOT auto-resolved by an approving review cycle.
+  it("does NOT auto-resolve a human-origin operator P1 finding", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      const hitchId = "goal-278-human";
+      createSessionForAutoResolve(goals, hitchId);
+      const human = goals.upsertFinding({
+        hitchId,
+        source: "human",
+        severity: "P1",
+        category: "correctness",
+        scopeStatus: "in_scope",
+        summary: "Operator-found blocker that the approve must not silence",
+      }).finding;
+      expect(human.lifecycleStatus).toBe("open");
+
+      insertReviewDecision(db, { decision: "approved" });
+      const approved = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "approved",
+      });
+      importReviewProposalToHitch({
+        repository: goals,
+        hitchId,
+        proposal: approved,
+        createdBy: "test",
+      });
+
+      expect(goals.requireFinding(human.findingId).lifecycleStatus).toBe("open");
+    } finally {
+      db.close();
+    }
+  });
+
+  // (D) NEGATIVE: an out_of_scope review finding is NOT auto-resolved.
+  it("does NOT auto-resolve an out_of_scope review finding", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      const hitchId = "goal-278-oos";
+      createSessionForAutoResolve(goals, hitchId);
+      const oos = goals.upsertFinding({
+        hitchId,
+        source: "review",
+        severity: "P1",
+        category: "review-required-change",
+        scopeStatus: "out_of_scope",
+        lifecycleStatus: "out_of_scope",
+        summary: "An out-of-scope review item",
+      }).finding;
+      expect(oos.scopeStatus).toBe("out_of_scope");
+
+      insertReviewDecision(db, { decision: "approved" });
+      const approved = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "approved",
+      });
+      importReviewProposalToHitch({
+        repository: goals,
+        hitchId,
+        proposal: approved,
+        createdBy: "test",
+      });
+
+      const after = goals.requireFinding(oos.findingId);
+      expect(after.lifecycleStatus).toBe("out_of_scope");
+    } finally {
+      db.close();
+    }
+  });
+
+  // (E) NEGATIVE: a non-blocking review category (P2 comment) is NOT auto-resolved.
+  it("does NOT auto-resolve a non-blocking review-non-blocking-comment finding", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      const hitchId = "goal-278-nonblocking";
+      createSessionForAutoResolve(goals, hitchId);
+      const comment = goals.upsertFinding({
+        hitchId,
+        source: "review",
+        severity: "P2",
+        category: "review-non-blocking-comment",
+        scopeStatus: "in_scope",
+        summary: "A non-blocking advisory comment",
+      }).finding;
+      expect(comment.lifecycleStatus).toBe("open");
+
+      insertReviewDecision(db, { decision: "approved" });
+      const approved = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "approved",
+      });
+      importReviewProposalToHitch({
+        repository: goals,
+        hitchId,
+        proposal: approved,
+        createdBy: "test",
+      });
+
+      expect(goals.requireFinding(comment.findingId).lifecycleStatus).toBe(
+        "open",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  // (F) NEGATIVE / SAME-CYCLE GUARD: a blocker stamped with the approving cycle's
+  // OWN cycle id is never auto-resolved by that same cycle.
+  it("does NOT auto-resolve a finding stamped with the superseding cycle id", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      const hitchId = "goal-278-samecycle";
+      createSessionForAutoResolve(goals, hitchId);
+
+      insertReviewDecision(db, { decision: "approved" });
+      const approved = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "approved",
+      });
+      const imported = importReviewProposalToHitch({
+        repository: goals,
+        hitchId,
+        proposal: approved,
+        createdBy: "test",
+      });
+
+      // Stamp a blocker with the just-completed (superseding) cycle id and re-run
+      // a second approve cycle: the first cycle's own row must NOT be resolved by
+      // the cycle that created it (the same-cycle guard).
+      const sameCycleBlocker = goals.upsertFinding({
+        hitchId,
+        source: "review",
+        sourceCycleId: imported.cycle.cycleId,
+        severity: "P1",
+        category: "review-required-change",
+        scopeStatus: "in_scope",
+        summary: "Blocker stamped with the current cycle id",
+      }).finding;
+
+      // Auto-resolve is gated on canonical approve, so directly exercise the
+      // repo method with the SAME cycle id it was stamped with.
+      const resolvedSame = goals.resolveSupersededReviewFindings({
+        hitchId,
+        supersedingCycleId: imported.cycle.cycleId,
+        categories: ["review-required-change", "review-negative-decision"],
+        decisionRunId: "run-review",
+      });
+      expect(resolvedSame).toEqual([]);
+      expect(
+        goals.requireFinding(sameCycleBlocker.findingId).lifecycleStatus,
+      ).toBe("open");
+    } finally {
+      db.close();
+    }
+  });
+
+  // (G) FAIL-CLOSED: when the canonical decision is NOT approved, prior open
+  // review blockers stay open (no auto-resolution on non-approve).
+  it("does NOT auto-resolve when the canonical decision is changes_requested", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      const hitchId = "goal-278-nonapprove";
+      createSessionForAutoResolve(goals, hitchId);
+
+      const cr1 = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "changes_requested",
+        requiredChanges: ["First blocker"],
+      });
+      const cycle1 = importReviewProposalToHitch({
+        repository: goals,
+        hitchId,
+        proposal: cr1,
+        createdBy: "test",
+      });
+      const blocker = goals
+        .listFindings({ hitchId, scopeStatus: "in_scope", severity: "P1" })
+        .find((f) => f.category === "review-required-change");
+      expect(blocker?.lifecycleStatus).toBe("open");
+      expect(blocker?.sourceCycleId).toBe(cycle1.cycle.cycleId);
+
+      // Cycle 2: STILL changes_requested (different blocker). No auto-resolve.
+      const cr2 = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "changes_requested",
+        requiredChanges: ["Second blocker"],
+      });
+      const cycle2 = importReviewProposalToHitch({
+        repository: goals,
+        hitchId,
+        proposal: cr2,
+        createdBy: "test",
+      });
+      expect(cycle2.autoResolvedFindings).toBeUndefined();
+      expect(goals.requireFinding(blocker!.findingId).lifecycleStatus).toBe(
+        "open",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  // (H) NEGATIVE: a blocker from a DIFFERENT hitch is never touched.
+  it("does NOT auto-resolve a review blocker belonging to a different hitch", () => {
+    const { db, goals, proposals } = fresh();
+    try {
+      const hitchId = "goal-278-thishitch";
+      const otherHitchId = "goal-278-otherhitch";
+      createSessionForAutoResolve(goals, hitchId);
+      createSessionForAutoResolve(goals, otherHitchId);
+      const otherBlocker = goals.upsertFinding({
+        hitchId: otherHitchId,
+        source: "review",
+        severity: "P1",
+        category: "review-required-change",
+        scopeStatus: "in_scope",
+        summary: "Blocker on a different hitch",
+      }).finding;
+
+      insertReviewDecision(db, { decision: "approved" });
+      const approved = createProposal(proposals, {
+        reviewer: "reviewer-a",
+        decision: "approved",
+      });
+      importReviewProposalToHitch({
+        repository: goals,
+        hitchId,
+        proposal: approved,
+        createdBy: "test",
+      });
+
+      expect(
+        goals.requireFinding(otherBlocker.findingId).lifecycleStatus,
+      ).toBe("open");
+    } finally {
+      db.close();
+    }
+  });
+});
