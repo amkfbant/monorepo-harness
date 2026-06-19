@@ -33,6 +33,12 @@ const RUNNABLE_CLOSE_CHECK_STATUSES = new Set([
 interface PendingCloseCheckRouting {
   hasRunnableCommand: boolean;
   externalEvidenceConditions: PendingExternalEvidenceCondition[];
+  /**
+   * #308 P2-2: pending facet_red_test conditions whose disposition is
+   * code-recoverable (no covering test present → evidence alone can never clear
+   * them). These route to a coder rerun (needs_fix), NOT ask_human.
+   */
+  codeRecoverableFacetConditionIds: string[];
 }
 
 interface PendingExternalEvidenceCondition {
@@ -250,6 +256,7 @@ function requiredPendingCloseCheckRouting(
 ): PendingCloseCheckRouting {
   let hasRunnableCommand = false;
   const externalEvidenceConditions: PendingExternalEvidenceCondition[] = [];
+  const codeRecoverableFacetConditionIds: string[] = [];
   for (const evaluated of conditions) {
     if (!evaluated.condition.required) continue;
     if (evaluated.status === "passed" || evaluated.status === "failed") {
@@ -263,6 +270,19 @@ function requiredPendingCloseCheckRouting(
       continue;
     }
     if (evaluated.condition.kind === "review_consensus") continue;
+    // #308 P2-2: a pending facet_red_test that is code-recoverable (no covering
+    // test present → no evidence row can ever clear it) must route to the coder,
+    // NOT the external-evidence/ask_human path (which would stall the hitch
+    // waiting for evidence that cannot satisfy it). An evidence-recoverable
+    // facet pending (covering test present, only RED evidence missing) keeps the
+    // pre-#308 external-evidence routing below.
+    if (
+      evaluated.condition.kind === "facet_red_test" &&
+      evaluated.facetPendingDisposition === "code_recoverable"
+    ) {
+      codeRecoverableFacetConditionIds.push(evaluated.condition.id);
+      continue;
+    }
     externalEvidenceConditions.push({
       conditionId: evaluated.condition.id,
       kind: evaluated.condition.kind,
@@ -286,7 +306,11 @@ function requiredPendingCloseCheckRouting(
       pendingCycles: completedReviewCycleCount(cycles),
     });
   }
-  return { hasRunnableCommand, externalEvidenceConditions };
+  return {
+    hasRunnableCommand,
+    externalEvidenceConditions,
+    codeRecoverableFacetConditionIds,
+  };
 }
 
 function countPendingCycles(
@@ -676,6 +700,29 @@ function decide(
       {
         kind: "run_close_check",
         message: "Record command close-check evidence.",
+      },
+    );
+  }
+
+  // #308 P2-2: a pending facet_red_test condition that can ONLY be satisfied by
+  // a code/test change (no covering test present → no evidence row can clear it)
+  // routes to a bounded coder rerun, NOT ask_human/external-evidence. An
+  // evidence-recoverable facet pending (covering test present, RED evidence
+  // missing) is NOT routed here — it falls through to the external-evidence
+  // branch below, preserving the pre-#308 ask_human/record-evidence routing.
+  if (pendingCloseCheckRouting.codeRecoverableFacetConditionIds.length > 0) {
+    return result(
+      session.hitchId,
+      "needs_fix",
+      "facet_red_test pending requires a covering test",
+      metrics,
+      {
+        kind: "fix_findings",
+        message:
+          "A required facet_red_test condition has no covering test " +
+          `(${pendingCloseCheckRouting.codeRecoverableFacetConditionIds.join(", ")}). ` +
+          "Re-run the coder to add a RED covering test for the facet; recorded " +
+          "evidence alone cannot satisfy it.",
       },
     );
   }
