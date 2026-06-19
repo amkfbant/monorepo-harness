@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
-import { ConvergenceService } from "../../../src/hitch/convergence.js";
+import {
+  ConvergenceService,
+  RECOVERABLE_DIVERGENCE_REASON,
+  divergenceReasonForBudget,
+} from "../../../src/hitch/convergence.js";
 import { evaluateConvergenceAndRecordStatus } from "../../../src/hitch/convergence-status.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
 import {
@@ -1096,6 +1100,312 @@ describe("ConvergenceService", () => {
         addCycle(repo, 3, 0); // now over the review-cycle budget
         // re-derived live: the budget gate (step 2) precedes divergence.
         expect(service.evaluate("goal-test").decision).toBe("budget_exhausted");
+      } finally {
+        db.close();
+      }
+    });
+  });
+
+  describe("#280: sanctioned cumulative recovery does not re-fire diverging", () => {
+    it("does not re-fire diverging after recover-diverging lifts the cumulative budget", () => {
+      const { db, repo, service } = fresh();
+      try {
+        // cumulative session-budget trigger: 3 harness-origin findings > budget 2.
+        createGoal(repo, { maxTotalNewFindings: 2, maxReviewCycles: 20 });
+        addCycleFindings(repo, 1, ["review", "review", "review"]); // 3 > 2 → diverging
+        passClose(repo); // required close-check green; findings are out_of_scope P2
+        const before = service.evaluate("goal-test");
+        expect(before.decision).toBe("diverging");
+        expect(before.reason).toBe("total new findings exceeded hitch budget");
+        expect(before.metrics.openInScopeP0).toBe(0);
+        expect(before.metrics.openInScopeP1).toBe(0);
+        expect(before.metrics.openUnknownScope).toBe(0);
+        expect(before.metrics.closeConditionsFailed).toBe(0);
+        expect(before.metrics.closeConditionsPending).toBe(0);
+        repo.updateStatus("goal-test", "diverging", "diverged", {
+          createdBy: "test",
+        });
+        // lift the cumulative budget 2 → 4 (> cumulative count 3) — the same
+        // extension `hitch recover-diverging` computes (deficit 1 + 1 = 2).
+        repo.recoverDivergingSession("goal-test", {
+          reason: "recover",
+          createdBy: "operator",
+          extendDivergenceBudget: 2,
+        });
+        const after = service.evaluate("goal-test");
+        // The divergence circuit breaker no longer fires: the cumulative trigger
+        // is lifted (budget 4 > count 3), so convergence re-derives a LIVE
+        // decision instead of the diverging stop. (It routes to deferring the
+        // out-of-scope follow-ups before close_ready — not a stop.)
+        expect(after.decision).not.toBe("diverging");
+        expect(after.decision).not.toBe("budget_exhausted");
+        expect(after.decision).not.toBe("escalate");
+      } finally {
+        db.close();
+      }
+    });
+
+    it("exposes the gate metrics the CLI reads: an open in-scope P1 keeps openInScopeP1 > 0", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxTotalNewFindings: 2, maxReviewCycles: 20 });
+        addCycleFindings(repo, 1, ["review", "review", "review"]);
+        addFinding(repo, { scopeStatus: "in_scope", severity: "P1" });
+        const result = service.evaluate("goal-test");
+        // with an open in-scope P1, the CLI recover-diverging gate must refuse.
+        expect(result.metrics.openInScopeP1).toBeGreaterThan(0);
+      } finally {
+        db.close();
+      }
+    });
+
+    it("a pending required close-check keeps closeConditionsPending > 0 (gate refuses)", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxTotalNewFindings: 2, maxReviewCycles: 20 });
+        addCycleFindings(repo, 1, ["review", "review", "review"]);
+        // no passClose → the required typecheck close-check is pending.
+        const result = service.evaluate("goal-test");
+        expect(result.metrics.closeConditionsPending).toBeGreaterThan(0);
+      } finally {
+        db.close();
+      }
+    });
+
+    it("the recoverable reason matches the SESSION-budget trigger exactly (no drift)", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxTotalNewFindings: 2, maxReviewCycles: 20 });
+        addCycleFindings(repo, 1, ["review", "review", "review"]); // 3 > 2
+        const result = service.evaluate("goal-test");
+        expect(result.decision).toBe("diverging");
+        expect(result.reason).toBe(RECOVERABLE_DIVERGENCE_REASON);
+      } finally {
+        db.close();
+      }
+    });
+
+    it("a NON-budget trigger (per-cycle) is NOT the recoverable reason and a budget bump cannot clear it (fail-closed)", () => {
+      const { db, repo, service } = fresh();
+      try {
+        // high session-total so the SESSION-budget trigger does not fire first;
+        // 6 findings in one cycle > maxNewFindingsPerCycle (5) trips per-cycle.
+        createGoal(repo, { maxTotalNewFindings: 100, maxReviewCycles: 20 });
+        addCycleFindings(repo, 1, [
+          "review",
+          "review",
+          "review",
+          "review",
+          "review",
+          "review",
+        ]);
+        const result = service.evaluate("goal-test");
+        expect(result.decision).toBe("diverging");
+        expect(result.reason).not.toBe(RECOVERABLE_DIVERGENCE_REASON);
+        // even an enormous session-budget bump leaves the per-cycle trigger
+        // active — the CLI gate's residual re-derivation must fail-closed.
+        const session = repo.requireSession("goal-test");
+        expect(
+          divergenceReasonForBudget(
+            session,
+            result.metrics,
+            session.maxTotalNewFindings + 1000,
+          ),
+        ).not.toBeNull();
+      } finally {
+        db.close();
+      }
+    });
+
+    it("divergenceReasonForBudget re-derives null once the session budget clears the cumulative count (no re-fire)", () => {
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxTotalNewFindings: 2, maxReviewCycles: 20 });
+        addCycleFindings(repo, 1, ["review", "review", "review"]); // 3 > 2
+        const result = service.evaluate("goal-test");
+        const session = repo.requireSession("goal-test");
+        // budget 2 → still diverging; budget 4 (>3) → clears, no re-fire.
+        expect(
+          divergenceReasonForBudget(session, result.metrics, 2),
+        ).toBe(RECOVERABLE_DIVERGENCE_REASON);
+        expect(
+          divergenceReasonForBudget(session, result.metrics, 4),
+        ).toBeNull();
+      } finally {
+        db.close();
+      }
+    });
+
+    it("a NON-budget trigger (reopen-count) is NOT the recoverable reason and a budget bump cannot clear it (fail-closed)", () => {
+      const { db, repo, service } = fresh();
+      try {
+        // high session-total so the session-budget trigger does not fire first;
+        // reopen ONE harness-origin in-scope finding 3 times >
+        // maxReopenedPerFinding (default 2). Mirrors the proven reopen-count
+        // churn pattern in the source-aware divergence suite.
+        createGoal(repo, { maxTotalNewFindings: 100, maxReviewCycles: 20 });
+        const finding = addFinding(repo, {
+          source: "review",
+          scopeStatus: "in_scope",
+          severity: "P2",
+          summary: "reopen-churn",
+        });
+        for (let i = 0; i < 3; i += 1) {
+          repo.markFindingFixed({ findingId: finding.findingId });
+          repo.upsertFinding({
+            hitchId: "goal-test",
+            source: "review",
+            severity: "P2",
+            category: "correctness",
+            scopeStatus: "in_scope",
+            summary: "reopen-churn",
+          });
+        }
+        // re-fix so the reopened finding is not itself an open in-scope blocker;
+        // the cumulative reopen COUNT (harnessOriginMaxReopenCount) is what trips
+        // divergence and never decreases.
+        repo.markFindingFixed({ findingId: finding.findingId });
+        passClose(repo);
+        const result = service.evaluate("goal-test");
+        expect(result.metrics.harnessOriginMaxReopenCount).toBeGreaterThan(
+          DEFAULT_HITCH_POLICY.divergence.maxReopenedPerFinding,
+        );
+        expect(result.decision).toBe("diverging");
+        expect(result.reason).toBe("a finding reopened too many times");
+        expect(result.reason).not.toBe(RECOVERABLE_DIVERGENCE_REASON);
+        // the reopen-count trigger is budget-independent: a huge session-budget
+        // bump still leaves divergence active → CLI residual gate fails closed.
+        const session = repo.requireSession("goal-test");
+        expect(
+          divergenceReasonForBudget(
+            session,
+            result.metrics,
+            session.maxTotalNewFindings + 1000,
+          ),
+        ).not.toBeNull();
+      } finally {
+        db.close();
+      }
+    });
+
+    it("a NON-budget trigger (non-decreasing trend) is NOT the recoverable reason and a budget bump cannot clear it (fail-closed)", () => {
+      const { db, repo, service } = fresh();
+      try {
+        // high session-total + per-cycle headroom so neither the session-budget
+        // nor the per-cycle trigger fires first; two ACTIONABLE non-decreasing
+        // cycles trip the non-decreasing-trend trigger.
+        createGoal(repo, { maxTotalNewFindings: 100, maxReviewCycles: 20 });
+        addCycleFindings(repo, 1, ["review"], { category: "correctness" });
+        addCycleFindings(repo, 2, ["review"], { category: "correctness" });
+        passClose(repo);
+        const result = service.evaluate("goal-test");
+        expect(result.decision).toBe("diverging");
+        expect(result.reason).toBe(
+          "new findings did not decrease across review cycles",
+        );
+        expect(result.reason).not.toBe(RECOVERABLE_DIVERGENCE_REASON);
+        // trend trigger is budget-independent: a huge session-budget bump still
+        // leaves divergence active → CLI residual gate fails closed.
+        const session = repo.requireSession("goal-test");
+        expect(
+          divergenceReasonForBudget(
+            session,
+            result.metrics,
+            session.maxTotalNewFindings + 1000,
+          ),
+        ).not.toBeNull();
+      } finally {
+        db.close();
+      }
+    });
+
+    it("an explicit per-hitch session raise above the policy default authorizes the count (effective ceiling = max(session,policy); NOT a residual policy-total re-fire)", () => {
+      // #280 P2#3: this is the corrected semantics of the former "policy-total
+      // co-occurrence" case. When the session budget is explicitly raised ABOVE
+      // the shared policy default (here 100 > 12), the effective total ceiling
+      // for THIS hitch is max(session,policy)=100, so a count of 13 does NOT
+      // re-fire the shared policy default — an explicit per-hitch raise is the
+      // authorization. (A LOWERED session budget still tightens, proven below.)
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxTotalNewFindings: 100, maxReviewCycles: 20 });
+        addCycleFindings(repo, 1, ["review", "review", "review", "review", "review"]);
+        addCycleFindings(repo, 2, ["review", "review", "review", "review", "review"]);
+        addCycleFindings(repo, 3, ["review", "review", "review"]); // total 13
+        passClose(repo);
+        const result = service.evaluate("goal-test");
+        expect(result.metrics.harnessOriginNewFindings).toBe(13);
+        // 13 <= max(100, 12) → no cumulative-total trigger fires.
+        expect(result.decision).not.toBe("diverging");
+        const session = repo.requireSession("goal-test");
+        expect(
+          divergenceReasonForBudget(session, result.metrics, 100),
+        ).toBeNull();
+      } finally {
+        db.close();
+      }
+    });
+
+    it("GATE-INVARIANCE: a DEFAULT-budget hitch (session==policy) STILL diverges on the cumulative trigger when NOT recovered", () => {
+      // #280 P2#3 invariance guard: the `max(session,policy)` change must NOT
+      // weaken normal cumulative divergence detection for the default config.
+      // session==policy==12 (DEFAULT_HITCH_POLICY), 13 findings > 12 → diverging.
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxReviewCycles: 20 }); // session defaults to policy 12
+        const session0 = repo.requireSession("goal-test");
+        expect(session0.maxTotalNewFindings).toBe(
+          DEFAULT_HITCH_POLICY.divergence.maxTotalNewFindings,
+        );
+        addCycleFindings(repo, 1, ["review", "review", "review", "review", "review"]);
+        addCycleFindings(repo, 2, ["review", "review", "review", "review", "review"]);
+        addCycleFindings(repo, 3, ["review", "review", "review"]); // total 13 > 12
+        passClose(repo);
+        const result = service.evaluate("goal-test");
+        expect(result.metrics.harnessOriginNewFindings).toBe(13);
+        expect(result.decision).toBe("diverging");
+        // The SESSION check (count > session==12) fires FIRST → recoverable reason.
+        expect(result.reason).toBe(RECOVERABLE_DIVERGENCE_REASON);
+      } finally {
+        db.close();
+      }
+    });
+
+    it("DEFAULT-budget recovery (session==policy): recover-diverging lifts the EFFECTIVE ceiling above BOTH so re-derivation does not re-fire policy-total", () => {
+      // #280 P2#3 core regression: the common/default case. session==policy==12,
+      // count=13. Raising the session budget to 14 must clear BOTH the session
+      // check (13>14 false) AND the policy-total check (effective max(14,12)=14,
+      // 13>14 false) — previously the unchanged policy-total check re-fired and
+      // recovery was useless for default hitches.
+      const { db, repo, service } = fresh();
+      try {
+        createGoal(repo, { maxReviewCycles: 20 }); // session defaults to policy 12
+        addCycleFindings(repo, 1, ["review", "review", "review", "review", "review"]);
+        addCycleFindings(repo, 2, ["review", "review", "review", "review", "review"]);
+        addCycleFindings(repo, 3, ["review", "review", "review"]); // total 13 > 12
+        passClose(repo);
+        const before = service.evaluate("goal-test");
+        expect(before.decision).toBe("diverging");
+        expect(before.reason).toBe(RECOVERABLE_DIVERGENCE_REASON);
+        const session = repo.requireSession("goal-test");
+        // minimal recovery extension = deficit(13-12=1) + 1 = 2 → budget 12→14.
+        expect(
+          divergenceReasonForBudget(session, before.metrics, 12),
+        ).toBe(RECOVERABLE_DIVERGENCE_REASON); // pre-bump still diverges
+        expect(
+          divergenceReasonForBudget(session, before.metrics, 14),
+        ).toBeNull(); // post-bump (14 > policy 12 AND > count 13) → no re-fire
+        // end-to-end: recover and confirm convergence does not re-fire diverging.
+        repo.updateStatus("goal-test", "diverging", "diverged", {
+          createdBy: "test",
+        });
+        repo.recoverDivergingSession("goal-test", {
+          reason: "recover default-budget hitch",
+          createdBy: "operator",
+          extendDivergenceBudget: 2,
+        });
+        const after = service.evaluate("goal-test");
+        expect(after.decision).not.toBe("diverging");
       } finally {
         db.close();
       }

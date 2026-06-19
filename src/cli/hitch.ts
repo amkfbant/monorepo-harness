@@ -27,7 +27,11 @@ import {
 } from "../core/gh-pr-publisher.js";
 import { createGhCopilotReviewer } from "../core/copilot-reviewer-gh.js";
 import type { PrMergeMethod } from "../core/pr-creator.js";
-import { ConvergenceService } from "../hitch/convergence.js";
+import {
+  ConvergenceService,
+  RECOVERABLE_DIVERGENCE_REASON,
+  divergenceReasonForBudget,
+} from "../hitch/convergence.js";
 import {
   evaluateConvergenceAndRecordStatus,
   recordConvergenceDecisionWithStatus,
@@ -437,6 +441,63 @@ export function registerHitchCommands(
           `hitch=${result.hitchId} status=${result.status} reopened ` +
             `(budget: iter=${result.maxIterations} review=${result.maxReviewCycles} ` +
             `rerun=${result.maxReruns}; reason: ${String(raw.reason)})\n`,
+        );
+      });
+    });
+
+  hitchCmd
+    .command("recover-diverging")
+    .description(
+      "sanctioned recovery for a cumulatively-diverging hitch (#280): return it " +
+        "to live `open` and extend the divergence budget, GATED deterministically " +
+        "on open in-scope P0/P1==0 + all required close-checks green + a " +
+        "session-budget trigger. NOT a gate-skip (fail-closed; refuses otherwise)",
+    )
+    .argument("<hitch-id>", "hitch id")
+    .requiredOption("--reason <text>", "recovery reason (audited)")
+    .option("--created-by <actor>", "actor label", "cli")
+    .option(
+      "--extend-divergence-budget <n>",
+      "amount added to max_total_new_findings (default: minimal extension that " +
+        "lifts the cumulative count above the budget)",
+    )
+    .option("--json", "emit JSON", false)
+    .action((hitchId: string, raw: Record<string, unknown>) => {
+      withHitchErrorExit(() => {
+        const extendOverride =
+          raw.extendDivergenceBudget !== undefined
+            ? parseNonNegativeInt(
+                raw.extendDivergenceBudget,
+                "--extend-divergence-budget",
+              )
+            : undefined;
+        const result = withHitchRepo(opts, ({ repo }) => {
+          // Pre-check: surface a clean message/exit and compute the extension
+          // BEFORE opening the write transaction. The SAME gate is re-run inside
+          // the repo transaction via `revalidate` (P2#2) against fresh DB state.
+          const { extend } = assertRecoverDivergingGate(
+            repo,
+            hitchId,
+            extendOverride,
+          );
+          return repo.recoverDivergingSession(hitchId, {
+            reason: String(raw.reason),
+            createdBy: String(raw.createdBy),
+            extendDivergenceBudget: extend,
+            // P2#2 — re-derive the deterministic gate from fresh state inside the
+            // transaction; throws fail-closed on any concurrent drift. The fixed
+            // `extend` (from the pre-check) is re-proven against fresh metrics.
+            revalidate: (txRepo) => {
+              assertRecoverDivergingGate(txRepo, hitchId, extend);
+            },
+          });
+        });
+        writeOutput(
+          raw,
+          result,
+          `hitch=${result.hitchId} status=${result.status} recovered ` +
+            `(divergence budget: ${result.maxTotalNewFindings}; reason: ` +
+            `${String(raw.reason)})\n`,
         );
       });
     });
@@ -1810,6 +1871,100 @@ function hitchError(e: unknown): never {
     process.exit(mapped.code);
   }
   throw e;
+}
+
+/**
+ * #280 — the deterministic `recover-diverging` gate. Computed ONLY from
+ * `ConvergenceService.evaluate()` metrics + a fresh close-condition eval (never
+ * an LLM/self-report). Throws `HitchCliError` (fail-closed, exit 1) on any unmet
+ * invariant; returns the computed minimal budget extension on success. Run BOTH
+ * as the CLI pre-check AND, re-bound to the transaction's repo, as the in-tx
+ * revalidation (P2#2) so concurrent drift cannot land recovery on stale state.
+ *
+ * When `extendOverride` is supplied (operator flag, or the pre-check's fixed
+ * extension re-proven in-transaction) it is used verbatim; otherwise the minimal
+ * deficit+1 extension is computed. The residual re-derivation under the post-bump
+ * EFFECTIVE budget must clear ALL divergence triggers, else it refuses.
+ */
+function assertRecoverDivergingGate(
+  repo: HitchRepository,
+  hitchId: string,
+  extendOverride: number | undefined,
+): { extend: number } {
+  const session = repo.requireSession(hitchId);
+  if (session.status !== "diverging") {
+    throw new HitchCliError(
+      `hitch ${hitchId} is "${session.status}", not diverging; ` +
+        `recover-diverging only applies to a diverging hitch`,
+    );
+  }
+  const convergence = new ConvergenceService(repo).evaluate(hitchId);
+  if (convergence.decision !== "diverging") {
+    throw new HitchCliError(
+      `hitch ${hitchId} no longer diverges live (decision=` +
+        `${convergence.decision}); the trigger already cleared — no ` +
+        `recovery needed`,
+    );
+  }
+  // Only the cumulative SESSION-budget trigger is recoverable by a budget bump.
+  // Per-cycle / reopen-count / non-decreasing-trend triggers are NOT.
+  if (convergence.reason !== RECOVERABLE_DIVERGENCE_REASON) {
+    throw new HitchCliError(
+      `hitch ${hitchId} cannot recover from diverging: the divergence ` +
+        `trigger ("${convergence.reason}") is not recoverable via a ` +
+        `budget extension; investigate or cancel+recreate ` +
+        `(this is NOT a gate-skip)`,
+    );
+  }
+  // The close pre-gate: STRICTLY STRONGER than `close --force`. Refuse on any
+  // open in-scope P0/P1, open unknown-scope, or red/pending required close-check.
+  const reasons: string[] = [];
+  if (convergence.metrics.openInScopeP0 > 0) {
+    reasons.push("open in-scope P0 findings");
+  }
+  if (convergence.metrics.openInScopeP1 > 0) {
+    reasons.push("open in-scope P1 findings");
+  }
+  if (convergence.metrics.openUnknownScope > 0) {
+    reasons.push("open unknown-scope findings");
+  }
+  if (convergence.metrics.closeConditionsFailed > 0) {
+    reasons.push("failed required close-checks");
+  }
+  if (convergence.metrics.closeConditionsPending > 0) {
+    reasons.push("pending required close-checks");
+  }
+  if (reasons.length > 0) {
+    throw new HitchCliError(
+      `hitch ${hitchId} cannot recover from diverging: ` +
+        `${reasons.join(", ")}; resolve these then retry ` +
+        `(this is NOT a gate-skip)`,
+    );
+  }
+  // Minimal extension that lifts the cumulative count ABOVE the strict `>` budget
+  // comparison (deficit + 1), unless an extension is supplied.
+  const deficit = Math.max(
+    0,
+    convergence.metrics.harnessOriginNewFindings - session.maxTotalNewFindings,
+  );
+  const extend = extendOverride ?? deficit + 1;
+  // PROVE re-derivation under the post-bump budget no longer fires ANY divergence
+  // trigger (the EFFECTIVE total ceiling is max(session,policy), so a default
+  // hitch where session==policy is correctly cleared) — fail-closed otherwise.
+  const residual = divergenceReasonForBudget(
+    session,
+    convergence.metrics,
+    session.maxTotalNewFindings + extend,
+  );
+  if (residual !== null) {
+    throw new HitchCliError(
+      `hitch ${hitchId} cannot recover from diverging: a budget ` +
+        `extension of ${extend} would still leave it diverging ` +
+        `("${residual}"); raise --extend-divergence-budget or ` +
+        `cancel+recreate (this is NOT a gate-skip)`,
+    );
+  }
+  return { extend };
 }
 
 export function mapHitchErrorExit(

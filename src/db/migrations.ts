@@ -35,6 +35,7 @@ import {
   MIGRATION_V31_STATEMENTS,
   MIGRATION_V32_STATEMENTS,
   MIGRATION_V33_STATEMENTS,
+  MIGRATION_V34_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -214,6 +215,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 33,
     name: "epic228_phase_review_state_version_v33",
     statements: MIGRATION_V33_STATEMENTS,
+  },
+  {
+    version: 34,
+    name: "hitch-lifecycle-events-diverging-recovered-v34",
+    statements: MIGRATION_V34_STATEMENTS,
   },
 ];
 

@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 33;
+export const SCHEMA_VERSION = 34;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -2046,6 +2046,36 @@ export const V32_TABLE_NAMES = ["review_refute_votes"] as const;
  */
 export const MIGRATION_V33_STATEMENTS: readonly string[] = [
   `ALTER TABLE phases ADD COLUMN review_state_version INTEGER NOT NULL DEFAULT 0`,
+] as const;
+
+/**
+ * v34 — add the `diverging_recovered` hitch lifecycle audit event (#280).
+ *
+ * SQLite cannot alter a CHECK constraint in place, so rebuild the audit table
+ * (mirroring the v29 rebuild) while preserving the full DDL contract: hitch FK
+ * ON DELETE CASCADE, reason/created_by NOT NULL, and the hitch/date index.
+ */
+export const MIGRATION_V34_STATEMENTS: readonly string[] = [
+  "PRAGMA foreign_keys = OFF",
+  `CREATE TABLE hitch_lifecycle_events_v34 (
+     event_id TEXT PRIMARY KEY NOT NULL,
+     hitch_id TEXT NOT NULL REFERENCES hitch_sessions(hitch_id) ON DELETE CASCADE,
+     event TEXT NOT NULL CHECK (event IN ('reopened','closed','cancelled','pr_adopted','updated','diverging_recovered')),
+     reason TEXT NOT NULL,
+     detail_json TEXT,
+     created_at TEXT NOT NULL,
+     created_by TEXT NOT NULL
+   )`,
+  `INSERT INTO hitch_lifecycle_events_v34 (
+     event_id, hitch_id, event, reason, detail_json, created_at, created_by
+   )
+   SELECT event_id, hitch_id, event, reason, detail_json, created_at, created_by
+     FROM hitch_lifecycle_events`,
+  "DROP TABLE hitch_lifecycle_events",
+  "ALTER TABLE hitch_lifecycle_events_v34 RENAME TO hitch_lifecycle_events",
+  `CREATE INDEX hitch_lifecycle_events_hitch_idx
+     ON hitch_lifecycle_events(hitch_id, created_at)`,
+  "PRAGMA foreign_keys = ON",
 ] as const;
 
 /** Table names created by v1 — used by `db status` and tests. */

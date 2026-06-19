@@ -371,6 +371,439 @@ describe("hitch CLI", () => {
     ]);
   });
 
+  // #280: drive a hitch to a cumulative-budget diverging state via the CLI.
+  // 3 harness-origin (`review`) findings > max-total-new-findings 2 trips the
+  // SESSION-budget divergence trigger; high review-cycle budget keeps it from
+  // masking with budget_exhausted. Findings are out-of-scope P2 so the close
+  // gate stays green unless we add an in-scope P0/P1.
+  function driveToDiverging(
+    root: string,
+    scopePath: string,
+    closePath: string,
+    title: string,
+  ): string {
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch",
+        "start",
+        "--title",
+        title,
+        "--domain",
+        "hitch",
+        "--scope-file",
+        scopePath,
+        "--close-file",
+        closePath,
+        "--max-total-new-findings",
+        "2",
+        "--max-review-cycles",
+        "20",
+        "--json",
+      ]),
+    );
+    const cycle = json<{ cycleId: string }>(
+      runCli(root, [
+        "hitch",
+        "review-cycle",
+        "start",
+        hitch.hitchId,
+        "--mode",
+        "initial",
+        "--json",
+      ]),
+    );
+    expect(
+      runCli(root, [
+        "hitch",
+        "review-cycle",
+        "complete",
+        cycle.cycleId,
+        "--findings-seen",
+        "3",
+        "--findings-new",
+        "3",
+      ]).code,
+    ).toBe(0);
+    for (let i = 0; i < 3; i++) {
+      expect(
+        runCli(root, [
+          "hitch",
+          "finding",
+          "add",
+          hitch.hitchId,
+          "--severity",
+          "P2",
+          "--category",
+          "correctness",
+          "--summary",
+          `churn finding ${i}`,
+          "--source",
+          "review",
+          "--source-cycle-id",
+          cycle.cycleId,
+          "--scope",
+          "out-of-scope",
+        ]).code,
+      ).toBe(0);
+    }
+    return hitch.hitchId;
+  }
+
+  it("recover-diverging succeeds and restores live status when P0/P1==0 and close-checks green", () => {
+    const { root, scopePath, closePath } = setup();
+    const hitchId = driveToDiverging(root, scopePath, closePath, "Recover ok");
+    expect(
+      runCli(root, [
+        "hitch",
+        "close-check",
+        "record",
+        hitchId,
+        "--condition",
+        "typecheck",
+        "--status",
+        "passed",
+      ]).code,
+    ).toBe(0);
+    // diverging is persisted by check-convergence (exit 2 on diverging).
+    expect(runCli(root, ["hitch", "check-convergence", hitchId]).code).toBe(2);
+
+    const recovered = runCli(root, [
+      "hitch",
+      "recover-diverging",
+      hitchId,
+      "--reason",
+      "P0/P1 clear; close-checks green; lift cumulative budget",
+      "--created-by",
+      "operator",
+    ]);
+    expect(recovered.code).toBe(0);
+
+    const status = json<{
+      session: { status: string };
+      lifecycleEvents: { event: string; reason: string; createdBy: string }[];
+    }>(runCli(root, ["hitch", "status", hitchId, "--json"]));
+    expect(status.session.status).toBe("open");
+    expect(status.lifecycleEvents).toContainEqual(
+      expect.objectContaining({
+        event: "diverging_recovered",
+        createdBy: "operator",
+      }),
+    );
+    // re-evaluating does NOT re-fire diverging (budget lifted above the count).
+    const conv = json<{ decision: string }>(
+      runCli(root, ["hitch", "check-convergence", hitchId, "--json"]),
+    );
+    expect(conv.decision).not.toBe("diverging");
+  });
+
+  it("recover-diverging succeeds for a DEFAULT-budget hitch (session==policy==12) — the common-case regression (#280 P2#3)", () => {
+    // No --max-total-new-findings → session budget defaults to the policy total
+    // (12). 13 harness-origin findings trip the cumulative session-budget trigger
+    // (13>12). Previously recovery refused here because raising only the session
+    // budget left the equal policy-total check re-firing; the effective-ceiling
+    // fix (max(session,policy)) lets the default case actually recover.
+    const { root, scopePath, closePath } = setup();
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch",
+        "start",
+        "--title",
+        "Recover default budget",
+        "--domain",
+        "hitch",
+        "--scope-file",
+        scopePath,
+        "--close-file",
+        closePath,
+        "--max-review-cycles",
+        "20",
+        "--json",
+      ]),
+    );
+    // 13 findings spread over 3 cycles of <=5 so per-cycle (limit 5) never fires.
+    let added = 0;
+    for (const [cycleNumber, count] of [
+      [1, 5],
+      [2, 5],
+      [3, 3],
+    ] as const) {
+      const cycle = json<{ cycleId: string }>(
+        runCli(root, [
+          "hitch",
+          "review-cycle",
+          "start",
+          hitch.hitchId,
+          "--mode",
+          cycleNumber === 1 ? "initial" : "delta",
+          "--json",
+        ]),
+      );
+      expect(
+        runCli(root, [
+          "hitch",
+          "review-cycle",
+          "complete",
+          cycle.cycleId,
+          "--findings-seen",
+          String(count),
+          "--findings-new",
+          String(count),
+        ]).code,
+      ).toBe(0);
+      for (let i = 0; i < count; i++) {
+        expect(
+          runCli(root, [
+            "hitch",
+            "finding",
+            "add",
+            hitch.hitchId,
+            "--severity",
+            "P2",
+            "--category",
+            "correctness",
+            "--summary",
+            `default churn ${added++}`,
+            "--source",
+            "review",
+            "--source-cycle-id",
+            cycle.cycleId,
+            "--scope",
+            "out-of-scope",
+          ]).code,
+        ).toBe(0);
+      }
+    }
+    expect(
+      runCli(root, [
+        "hitch",
+        "close-check",
+        "record",
+        hitch.hitchId,
+        "--condition",
+        "typecheck",
+        "--status",
+        "passed",
+      ]).code,
+    ).toBe(0);
+    expect(runCli(root, ["hitch", "check-convergence", hitch.hitchId]).code).toBe(2);
+
+    const recovered = runCli(root, [
+      "hitch",
+      "recover-diverging",
+      hitch.hitchId,
+      "--reason",
+      "default-budget hitch recovery",
+      "--created-by",
+      "operator",
+    ]);
+    expect(recovered.code).toBe(0);
+    const status = json<{ session: { status: string } }>(
+      runCli(root, ["hitch", "status", hitch.hitchId, "--json"]),
+    );
+    expect(status.session.status).toBe("open");
+    const conv = json<{ decision: string }>(
+      runCli(root, ["hitch", "check-convergence", hitch.hitchId, "--json"]),
+    );
+    expect(conv.decision).not.toBe("diverging");
+  });
+
+  it("recover-diverging refuses when an open in-scope P1 exists (fail-closed, exit 1)", () => {
+    const { root, scopePath, closePath } = setup();
+    const hitchId = driveToDiverging(root, scopePath, closePath, "Recover P1");
+    // an open in-scope P1 finding (src/hitch/** matches the scope target).
+    expect(
+      runCli(root, [
+        "hitch",
+        "finding",
+        "add",
+        hitchId,
+        "--severity",
+        "P1",
+        "--category",
+        "correctness",
+        "--summary",
+        "unresolved in-scope P1",
+        "--file",
+        "src/hitch/repository.ts",
+        "--source",
+        "review",
+      ]).code,
+    ).toBe(0);
+    expect(
+      runCli(root, [
+        "hitch",
+        "close-check",
+        "record",
+        hitchId,
+        "--condition",
+        "typecheck",
+        "--status",
+        "passed",
+      ]).code,
+    ).toBe(0);
+    expect(runCli(root, ["hitch", "check-convergence", hitchId]).code).toBe(2);
+
+    const refused = runCli(root, [
+      "hitch",
+      "recover-diverging",
+      hitchId,
+      "--reason",
+      "should refuse",
+    ]);
+    expect(refused.code).toBe(1);
+    expect(refused.out).toMatch(/cannot recover from diverging/);
+    expect(refused.out).toMatch(/open in-scope P1/);
+    // no state change: still diverging.
+    const status = json<{ session: { status: string } }>(
+      runCli(root, ["hitch", "status", hitchId, "--json"]),
+    );
+    expect(status.session.status).toBe("diverging");
+  });
+
+  it("recover-diverging refuses a required close-check that is pending (fail-closed, exit 1)", () => {
+    const { root, scopePath, closePath } = setup();
+    const hitchId = driveToDiverging(root, scopePath, closePath, "Recover pending");
+    // no close-check recorded → required typecheck is pending.
+    expect(runCli(root, ["hitch", "check-convergence", hitchId]).code).toBe(2);
+    const refused = runCli(root, [
+      "hitch",
+      "recover-diverging",
+      hitchId,
+      "--reason",
+      "should refuse",
+    ]);
+    expect(refused.code).toBe(1);
+    expect(refused.out).toMatch(/cannot recover from diverging/);
+    expect(refused.out).toMatch(/pending required close-check/);
+  });
+
+  it("recover-diverging refuses a NON-budget divergence trigger (per-cycle), fail-closed exit 1", () => {
+    const { root, scopePath, closePath } = setup();
+    // High session-total budget (100) so the SESSION-budget trigger does NOT
+    // fire; instead trip the per-cycle trigger (maxNewFindingsPerCycle default 5)
+    // with 6 new findings in one cycle. A budget bump cannot clear this trigger.
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch",
+        "start",
+        "--title",
+        "Recover per-cycle",
+        "--domain",
+        "hitch",
+        "--scope-file",
+        scopePath,
+        "--close-file",
+        closePath,
+        "--max-total-new-findings",
+        "100",
+        "--max-review-cycles",
+        "20",
+        "--json",
+      ]),
+    );
+    const cycle = json<{ cycleId: string }>(
+      runCli(root, [
+        "hitch",
+        "review-cycle",
+        "start",
+        hitch.hitchId,
+        "--mode",
+        "initial",
+        "--json",
+      ]),
+    );
+    expect(
+      runCli(root, [
+        "hitch",
+        "review-cycle",
+        "complete",
+        cycle.cycleId,
+        "--findings-seen",
+        "6",
+        "--findings-new",
+        "6",
+      ]).code,
+    ).toBe(0);
+    for (let i = 0; i < 6; i++) {
+      expect(
+        runCli(root, [
+          "hitch",
+          "finding",
+          "add",
+          hitch.hitchId,
+          "--severity",
+          "P2",
+          "--category",
+          "correctness",
+          "--summary",
+          `per-cycle churn ${i}`,
+          "--source",
+          "review",
+          "--source-cycle-id",
+          cycle.cycleId,
+          "--scope",
+          "out-of-scope",
+        ]).code,
+      ).toBe(0);
+    }
+    expect(
+      runCli(root, [
+        "hitch",
+        "close-check",
+        "record",
+        hitch.hitchId,
+        "--condition",
+        "typecheck",
+        "--status",
+        "passed",
+      ]).code,
+    ).toBe(0);
+    expect(runCli(root, ["hitch", "check-convergence", hitch.hitchId]).code).toBe(2);
+
+    const refused = runCli(root, [
+      "hitch",
+      "recover-diverging",
+      hitch.hitchId,
+      "--reason",
+      "should refuse non-budget trigger",
+    ]);
+    expect(refused.code).toBe(1);
+    expect(refused.out).toMatch(/not recoverable via a budget extension/);
+    // no state change: still diverging.
+    const status = json<{ session: { status: string } }>(
+      runCli(root, ["hitch", "status", hitch.hitchId, "--json"]),
+    );
+    expect(status.session.status).toBe("diverging");
+  });
+
+  it("recover-diverging refuses a non-diverging (open) hitch", () => {
+    const { root, scopePath, closePath } = setup();
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch",
+        "start",
+        "--title",
+        "Recover not diverging",
+        "--domain",
+        "hitch",
+        "--scope-file",
+        scopePath,
+        "--close-file",
+        closePath,
+        "--json",
+      ]),
+    );
+    const refused = runCli(root, [
+      "hitch",
+      "recover-diverging",
+      hitch.hitchId,
+      "--reason",
+      "should refuse",
+    ]);
+    expect(refused.code).toBe(1);
+    expect(refused.out).toMatch(/not diverging/);
+  });
+
   it("adopt-pr records the adopted PR as an audit-only lifecycle event", () => {
     const { root, scopePath, closePath } = setup();
     const hitch = json<{ hitchId: string }>(
