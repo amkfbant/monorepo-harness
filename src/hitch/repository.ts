@@ -31,6 +31,11 @@ import {
   type RecordHitchConvergenceDecisionInput,
 } from "./repositories/convergence-decision-repository.js";
 import {
+  ReviewCycleRepository,
+  type CompleteHitchReviewCycleInput,
+  type StartHitchReviewCycleInput,
+} from "./repositories/review-cycle-repository.js";
+import {
   closeConditionsLoosenGate,
   isScopeWidening,
 } from "./spec-gates.js";
@@ -56,7 +61,6 @@ import {
   type HitchLifecycleStatus,
   type HitchPolicy,
   type HitchReviewCycle,
-  type HitchReviewMode,
   type HitchScope,
   type HitchScopeStatus,
   type HitchSession,
@@ -66,10 +70,11 @@ import {
 // #125 Track C: concerns moved to per-concern sub-repos. Re-export their input
 // types so the public module surface of `repository.ts` (and any consumer
 // importing them from here) is unchanged.
-// C1 — convergence-decision; C2 — close-check; C3 — attempt.
+// C1 — convergence-decision; C2 — close-check; C3 — attempt; C4 — review-cycle.
 export type { RecordHitchConvergenceDecisionInput };
 export type { RecordHitchCloseCheckInput };
 export type { CreateHitchAttemptInput, CompleteHitchAttemptInput };
+export type { StartHitchReviewCycleInput, CompleteHitchReviewCycleInput };
 
 export interface CreateHitchSessionInput {
   hitchId?: string;
@@ -97,29 +102,6 @@ export interface HitchSessionFilter {
   repoId?: string;
   domain?: string;
   limit?: number;
-}
-
-export interface StartHitchReviewCycleInput {
-  cycleId?: string;
-  hitchId: string;
-  cycleNumber?: number;
-  reviewMode: HitchReviewMode;
-  triggerAttemptId?: string;
-  sourceReviewId?: string;
-  sourceRunId?: string;
-  createdAt?: string;
-}
-
-export interface CompleteHitchReviewCycleInput {
-  cycleId: string;
-  findingsSeen?: number;
-  findingsNew?: number;
-  findingsReopened?: number;
-  findingsFixed?: number;
-  findingsDeferred?: number;
-  findingsInScopeOpen?: number;
-  summary?: string;
-  completedAt?: string;
 }
 
 export interface UpsertHitchFindingInput {
@@ -323,25 +305,6 @@ interface HitchSessionRow {
   escalation_reason: string | null;
 }
 
-interface HitchReviewCycleRow {
-  cycle_id: string;
-  hitch_id: string;
-  cycle_number: number;
-  review_mode: HitchReviewMode;
-  trigger_attempt_id: string | null;
-  source_review_id: string | null;
-  source_run_id: string | null;
-  findings_seen: number;
-  findings_new: number;
-  findings_reopened: number;
-  findings_fixed: number;
-  findings_deferred: number;
-  findings_in_scope_open: number;
-  created_at: string;
-  completed_at: string | null;
-  summary: string | null;
-}
-
 interface HitchFindingRow {
   finding_id: string;
   hitch_id: string;
@@ -496,11 +459,13 @@ export class HitchRepository {
   private readonly decisions: ConvergenceDecisionRepository;
   private readonly closeChecks: CloseCheckRepository;
   private readonly attempts: AttemptRepository;
+  private readonly reviewCycles: ReviewCycleRepository;
 
   constructor(private readonly db: Database.Database) {
     this.decisions = new ConvergenceDecisionRepository(db);
     this.closeChecks = new CloseCheckRepository(db);
     this.attempts = new AttemptRepository(db);
+    this.reviewCycles = new ReviewCycleRepository(db);
   }
 
   createSession(input: CreateHitchSessionInput): HitchSession {
@@ -953,64 +918,17 @@ export class HitchRepository {
     return this.attempts.listAttempts(hitchId);
   }
 
+  // #125 Track C (C4): review-cycle concern delegated to ReviewCycleRepository
+  // (incl. the private nextReviewCycleNumber counter). The facade keeps these
+  // entry-points and forwards to the sub-repo (shared `db`, behaviour-identical).
+  // startReviewCycle / completeReviewCycle remain the "plain writers" that
+  // runAtomically calls directly inside its single BEGIN (no inner transaction).
   startReviewCycle(input: StartHitchReviewCycleInput): HitchReviewCycle {
-    const now = input.createdAt ?? new Date().toISOString();
-    const cycleId = input.cycleId ?? `cycle-${randomUUID()}`;
-    const cycleNumber =
-      input.cycleNumber ?? this.nextReviewCycleNumber(input.hitchId);
-    this.db
-      .prepare(
-        `INSERT INTO hitch_review_cycles (
-           cycle_id, hitch_id, cycle_number, review_mode, trigger_attempt_id,
-           source_review_id, source_run_id, created_at
-         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        cycleId,
-        input.hitchId,
-        cycleNumber,
-        input.reviewMode,
-        input.triggerAttemptId ?? null,
-        input.sourceReviewId ?? null,
-        input.sourceRunId ?? null,
-        now,
-      );
-    this.db
-      .prepare(
-        `UPDATE hitch_sessions
-            SET current_review_cycle = MAX(current_review_cycle, ?),
-                updated_at = ?
-          WHERE hitch_id = ?`,
-      )
-      .run(cycleNumber, now, input.hitchId);
-    return this.requireReviewCycle(cycleId);
+    return this.reviewCycles.startReviewCycle(input);
   }
 
   completeReviewCycle(input: CompleteHitchReviewCycleInput): HitchReviewCycle {
-    const now = input.completedAt ?? new Date().toISOString();
-    this.db
-      .prepare(
-        `UPDATE hitch_review_cycles
-            SET findings_seen = ?, findings_new = ?, findings_reopened = ?,
-                findings_fixed = ?, findings_deferred = ?,
-                findings_in_scope_open = ?, summary = ?, completed_at = ?
-          WHERE cycle_id = ?`,
-      )
-      .run(
-        input.findingsSeen ?? 0,
-        input.findingsNew ?? 0,
-        input.findingsReopened ?? 0,
-        input.findingsFixed ?? 0,
-        input.findingsDeferred ?? 0,
-        input.findingsInScopeOpen ?? 0,
-        input.summary ?? null,
-        now,
-        input.cycleId,
-      );
-    const cycle = this.requireReviewCycle(input.cycleId);
-    this.touchSession(cycle.hitchId, now);
-    return cycle;
+    return this.reviewCycles.completeReviewCycle(input);
   }
 
   /**
@@ -1041,27 +959,15 @@ export class HitchRepository {
   }
 
   getReviewCycle(cycleId: string): HitchReviewCycle | null {
-    const row = this.db
-      .prepare("SELECT * FROM hitch_review_cycles WHERE cycle_id = ?")
-      .get(cycleId) as HitchReviewCycleRow | undefined;
-    return row === undefined ? null : rowToReviewCycle(row);
+    return this.reviewCycles.getReviewCycle(cycleId);
   }
 
   requireReviewCycle(cycleId: string): HitchReviewCycle {
-    const cycle = this.getReviewCycle(cycleId);
-    if (cycle === null) throw new DbError(`hitch review cycle not found: ${cycleId}`);
-    return cycle;
+    return this.reviewCycles.requireReviewCycle(cycleId);
   }
 
   listReviewCycles(hitchId: string): HitchReviewCycle[] {
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM hitch_review_cycles
-          WHERE hitch_id = ?
-          ORDER BY cycle_number ASC`,
-      )
-      .all(hitchId) as HitchReviewCycleRow[];
-    return rows.map(rowToReviewCycle);
+    return this.reviewCycles.listReviewCycles(hitchId);
   }
 
   upsertFinding(input: UpsertHitchFindingInput): UpsertHitchFindingResult {
@@ -2142,15 +2048,6 @@ export class HitchRepository {
       );
   }
 
-  private nextReviewCycleNumber(hitchId: string): number {
-    const row = this.db
-      .prepare(
-        "SELECT COALESCE(MAX(cycle_number), 0) + 1 AS n FROM hitch_review_cycles WHERE hitch_id = ?",
-      )
-      .get(hitchId) as { n: number };
-    return row.n;
-  }
-
   private latestCodingRunId(hitchId: string): string | null {
     const attempts = this.listAttempts(hitchId);
     for (let i = attempts.length - 1; i >= 0; i--) {
@@ -2448,27 +2345,6 @@ function rowToSession(row: HitchSessionRow): HitchSession {
     closedAt: row.closed_at,
     closeSummary: row.close_summary,
     escalationReason: row.escalation_reason,
-  };
-}
-
-function rowToReviewCycle(row: HitchReviewCycleRow): HitchReviewCycle {
-  return {
-    cycleId: row.cycle_id,
-    hitchId: row.hitch_id,
-    cycleNumber: row.cycle_number,
-    reviewMode: row.review_mode,
-    triggerAttemptId: row.trigger_attempt_id,
-    sourceReviewId: row.source_review_id,
-    sourceRunId: row.source_run_id,
-    findingsSeen: row.findings_seen,
-    findingsNew: row.findings_new,
-    findingsReopened: row.findings_reopened,
-    findingsFixed: row.findings_fixed,
-    findingsDeferred: row.findings_deferred,
-    findingsInScopeOpen: row.findings_in_scope_open,
-    createdAt: row.created_at,
-    completedAt: row.completed_at,
-    summary: row.summary,
   };
 }
 
