@@ -50,7 +50,8 @@ import {
 export type CourseOrchestrateErrorCode =
   | "course_not_active"
   | "lease_busy"
-  | "lease_lost";
+  | "lease_lost"
+  | "schema_version_skew";
 
 export class CourseOrchestrateError extends Error {
   constructor(

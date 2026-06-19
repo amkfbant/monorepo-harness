@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { DbError } from "./connection.js";
+import { assertSchemaCompatibleForMigrate } from "./schema-compat.js";
 import {
   MIGRATION_V1_STATEMENTS,
   MIGRATION_V2_STATEMENTS,
@@ -317,13 +318,12 @@ export function assertMigrationNameIntegrity(db: Database.Database): void {
  * schema.
  */
 export function runMigrations(db: Database.Database): MigrateResult {
-  const max = currentSchemaVersion(db);
-  if (max > LATEST_SCHEMA_VERSION) {
-    throw new DbError(
-      `DB schema version ${max} is newer than this harness supports ` +
-        `(${LATEST_SCHEMA_VERSION}); upgrade the harness`,
-    );
-  }
+  // Fail-closed skew guard (#271): reject a DB newer than this harness with
+  // actionable, directional guidance. The older-DB path proceeds to migrate.
+  // This reads the version read-only (no table creation), so ensure the
+  // `schema_migrations` table exists before the insert loop below.
+  assertSchemaCompatibleForMigrate(db);
+  appliedVersions(db);
   assertMigrationNameIntegrity(db);
   const insert = db.prepare(
     "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",

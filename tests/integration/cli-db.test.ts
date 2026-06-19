@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDb } from "../../src/db/connection.js";
+import { readSchemaVersion } from "../../src/db/migrations.js";
 import { storeArtifactBlob } from "../../src/db/artifact-blobs.js";
 import { SCHEMA_VERSION } from "../../src/db/schema.js";
 import { buildKnowledgeContextFromDb } from "../../src/core/knowledge-context.js";
@@ -63,6 +64,76 @@ describe("CLI harness db", () => {
     expect(out).toMatch(
       new RegExp(`already at schema version ${SCHEMA_VERSION}`),
     );
+  });
+
+  it("upgrade-check reports db-newer-than-harness skew WITHOUT migrating (#271)", () => {
+    const root = makeTmpDir("harness-clidb-");
+    runCli(root, ["db", "init"]);
+    const dbPath = join(root, ".harness", "harness.sqlite");
+    // Stamp a schema_migrations row newer than this harness supports.
+    {
+      const db = openDb(dbPath);
+      db.prepare(
+        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+      ).run(SCHEMA_VERSION + 1, "from-the-future", new Date().toISOString());
+      db.close();
+    }
+    const { out, code } = runCli(root, [
+      "db",
+      "upgrade-check",
+      "--target",
+      "phaseNN",
+      "--json",
+    ]);
+    expect(code).toBe(1); // overall blocked
+    const report = JSON.parse(out) as {
+      overall: string;
+      checks: Array<{ id: string; status: string; details?: { skewKind?: string } }>;
+    };
+    expect(report.overall).toBe("blocked");
+    const schemaCheck = report.checks.find((c) => c.id === "schema.version");
+    expect(schemaCheck?.status).toBe("blocked");
+    expect(schemaCheck?.details?.skewKind).toBe("db-newer-than-harness");
+    expect(out).toMatch(/upgrade the harness/);
+    // The diagnostic must NOT have migrated/changed the DB version.
+    const probe = openDb(dbPath);
+    expect(readSchemaVersion(probe)).toBe(SCHEMA_VERSION + 1);
+    probe.close();
+  });
+
+  it("upgrade-check reports harness-newer-than-db skew WITHOUT auto-migrating (#271)", () => {
+    const root = makeTmpDir("harness-clidb-");
+    runCli(root, ["db", "init"]);
+    const dbPath = join(root, ".harness", "harness.sqlite");
+    // Simulate an older DB (vN-1) by deleting the top bookkeeping row.
+    {
+      const db = openDb(dbPath);
+      db.prepare(
+        "DELETE FROM schema_migrations WHERE version = (SELECT max(version) FROM schema_migrations)",
+      ).run();
+      db.close();
+    }
+    const { out, code } = runCli(root, [
+      "db",
+      "upgrade-check",
+      "--target",
+      "phaseNN",
+      "--json",
+    ]);
+    expect(code).toBe(1); // overall blocked
+    const report = JSON.parse(out) as {
+      overall: string;
+      checks: Array<{ id: string; status: string; details?: { skewKind?: string } }>;
+    };
+    expect(report.overall).toBe("blocked");
+    const schemaCheck = report.checks.find((c) => c.id === "schema.version");
+    expect(schemaCheck?.status).toBe("blocked");
+    expect(schemaCheck?.details?.skewKind).toBe("harness-newer-than-db");
+    expect(out).toMatch(/harness db migrate/);
+    // upgrade-check must NOT silently migrate the older DB forward.
+    const probe = openDb(dbPath);
+    expect(readSchemaVersion(probe)).toBe(SCHEMA_VERSION - 1);
+    probe.close();
   });
 
   it("migrate-blobs --to db refuses corrupted external object bytes", () => {

@@ -123,3 +123,49 @@ harness db migrate           # 未適用 migration を冪等に適用（schema �
 - [ ] `harness db migrate`（未適用 migration を適用）
 - [ ] `harness mcp serve` を再起動（新 tool 露出）
 - [ ] 共有 DB は全 checkout を同時更新（no-downgrade）
+- [ ] schema 変更 SP が main に land したら ops checkout を**即アップグレード**（version-skew を溜めない・§5）
+
+---
+
+## 5. DB schema version-skew（driver と DB の不整合）
+
+<a id="db-schema-version-skew"></a>
+
+ops harness（driver）が動かす DB の schema version と、その harness build が知っている
+最新 schema version（`SCHEMA_VERSION`）がズレると、ハーネスは**決定論的に方向を判定して
+止める/案内する**（#271・整数 version 比較・LLM 非依存・fail-closed）。判定は純関数
+`evaluateSchemaCompatibility`（`src/db/schema-compat.ts`）が行い、`runMigrations` の
+preflight・`course`/`hitch orchestrate` の preflight・`db upgrade-check` が共有する。
+
+**2 方向と対処**:
+
+- **DB が harness より新しい（`db-newer-than-harness`）** = ops harness（driver）が DB に
+  **遅れている**。**fail-closed で拒否**し、harness を上げる（DB は下げない）:
+
+  ```bash
+  cd <ops checkout>            # 例: ~/ops/monorepo-harness
+  git fetch --tags origin
+  git checkout vX.Y.Z          # schema vN を知る build へ
+  npm ci
+  harness db migrate
+  ```
+
+- **harness が DB より新しい（`harness-newer-than-db`）** = DB が遅れている。
+  `harness db migrate` で未適用 migration を適用して追いつく（additive forward path は
+  ブロックしない）。
+
+**早期検出**: skew は DB-open のたびに `runMigrations` の preflight で検出されるが、
+`course orchestrate` / `hitch orchestrate` は **operation を起こす前（lease 前）** に
+explicit preflight を回し、spurious な operation 行や escalation を作らずに friendly な
+guidance（上のコマンド・本 runbook への link）を返す（未初期化の harness root では
+preflight を skip し、通常の create+migrate path に委ねる）。`harness db upgrade-check`
+は **非破壊の diagnostic**（migrate しない）で、`schema.version` check が `readSchemaVersion`
+で版を読み、skew があれば**どちらの方向でも** `blocked` + `details.skewKind` + 方向別の
+メッセージを出して**以降の latest-schema 前提 check を short-circuit** する（古い DB を
+勝手に migrate して skew を隠さない／新しい DB で backstop に当たる前に方向を報告する）。
+
+**driver-DB isolation（#271(c)）**: ops harness は **driver**、course/hitch レコードは
+**ops DB**（`~/ops/monorepo-harness/.harness`）に置く。target（dev クローン）側の新しい
+code が ops DB を migrate してしまう経路を避けるため、**ops checkout と target repo で
+`HARNESS_ROOT` を共有しない**（driver と被験 DB を分離する）。schema 変更 SP が main に
+land したら **ops checkout を即アップグレード**して skew を溜めないこと（§4 checklist）。

@@ -57,6 +57,19 @@ SQLite（`better-sqlite3`）。`PRAGMA journal_mode=WAL` / `foreign_keys=ON`。
 schema は migration version を持つ。`schema_migrations` テーブルに適用済み
 version を記録し、`harness db migrate` が未適用分を idempotent に適用する。
 
+**no-downgrade ガードは方向を区別する（#271）**: DB が harness より新しい
+（`db-newer-than-harness`）場合は **fail-closed で拒否**し、「harness を上げよ」
+（ops checkout を新 release tag へ）と案内する。harness が DB より新しい
+（`harness-newer-than-db`）場合は `harness db migrate` で追いつく（additive forward
+path はブロックしない）。判定は決定論的な純関数 `evaluateSchemaCompatibility`
+（`src/db/schema-compat.ts`、整数 version 比較）で行い、`runMigrations` の preflight・
+`course`/`hitch` orchestrate preflight・`db upgrade-check` の `schema.version` が同じ
+分類を共有する（details に `skewKind` を出す）。`harness db upgrade-check` は
+**非破壊の diagnostic**で、`readSchemaVersion` で版を読んで migrate せず（古い DB を
+勝手に上げて skew を隠さない）、skew があればどちらの方向でも `blocked` を報告して
+以降の latest-schema 前提 check を short-circuit する。runbook は
+[`docs/ops/release-and-upgrade.md#db-schema-version-skew`](../ops/release-and-upgrade.md#db-schema-version-skew)。
+
 > **v17（agent workspaces）**: additive な `workspaces` テーブルを追加。`harness
 > workspace`（[`cli.md`](./cli.md#harness-workspace)）が作る per-agent git worktree
 > の **index**。git が worktree の存在・branch の正本で、この行は git が持たない

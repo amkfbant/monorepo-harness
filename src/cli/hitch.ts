@@ -1,5 +1,5 @@
 import process from "node:process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { Command } from "commander";
 import type Database from "better-sqlite3";
 import { parse as parseYaml } from "yaml";
@@ -11,7 +11,8 @@ import {
 import { BacklogError } from "../core/backlog.js";
 import { DbError } from "../db/connection.js";
 import { openManagedDb } from "../db/managed-connection.js";
-import { runMigrations } from "../db/migrations.js";
+import { runMigrations, readSchemaVersion } from "../db/migrations.js";
+import { evaluateSchemaCompatibility } from "../db/schema-compat.js";
 import {
   classifyFindingForHitch,
   type ClassifiableHitchFinding,
@@ -1125,6 +1126,9 @@ export function registerHitchCommands(
     )
     .action(async (hitchId: string, raw: Record<string, unknown>) => {
       await withHitchErrorExitAsync(async () => {
+        // #271: surface DB-newer-than-harness skew with friendly, actionable
+        // guidance BEFORE any orchestration work begins.
+        assertHitchOrchestrateSchemaCompatible(opts);
         if (raw.dryRun === true) {
           const { convergence, action } = withHitchRepo(opts, ({ repo }) => {
             const result = new ConvergenceService(repo).evaluate(hitchId);
@@ -1717,6 +1721,35 @@ function latestCloseCheck(
       },
       null,
     );
+}
+
+/**
+ * Early schema-version-skew preflight for `hitch orchestrate` (#271). Opens a
+ * read-only handle (shared lock — non-contending), reads the on-disk schema
+ * version WITHOUT migrating, and throws a friendly, actionable `DbError`
+ * (mapped to exit 1 by the hitch CLI error mapper) BEFORE any deep work when
+ * the DB is newer than this harness. The `runMigrations` guard inside
+ * `withHitchRepo*` remains the fail-closed backstop.
+ */
+function assertHitchOrchestrateSchemaCompatible(
+  opts: RegisterHitchCommandsOptions,
+): void {
+  const paths = harnessPaths(opts.getHarnessRoot());
+  // A fresh/uninitialized harness root has no DB to be skewed against — skip the
+  // read-only preflight and let the normal create+migrate path run (with the
+  // runMigrations backstop). The read-only handle below requires the file to
+  // exist (fileMustExist), so opening it on a fresh root would throw.
+  if (!existsSync(paths.dbPath)) return;
+  const handle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
+  try {
+    const dbVersion = readSchemaVersion(handle.db);
+    const compat = evaluateSchemaCompatibility(dbVersion);
+    if (compat.kind === "db-newer-than-harness") {
+      throw new DbError(compat.message);
+    }
+  } finally {
+    handle.close();
+  }
 }
 
 function withHitchRepo<T>(

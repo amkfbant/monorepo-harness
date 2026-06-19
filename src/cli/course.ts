@@ -1,12 +1,13 @@
 import process from "node:process";
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { Command } from "commander";
 import { parse as parseYaml } from "yaml";
 import type Database from "better-sqlite3";
 import { harnessPaths } from "../config/paths.js";
 import { openManagedDb } from "../db/managed-connection.js";
-import { runMigrations } from "../db/migrations.js";
+import { runMigrations, readSchemaVersion } from "../db/migrations.js";
+import { evaluateSchemaCompatibility } from "../db/schema-compat.js";
 import { DbError } from "../db/connection.js";
 import {
   startOperation,
@@ -140,6 +141,39 @@ async function withCourseDbAsync<T>(
   try {
     runMigrations(handle.db);
     return await fn(handle.db);
+  } finally {
+    handle.close();
+  }
+}
+
+/**
+ * Early schema-version-skew preflight for `course orchestrate` (#271). Opens a
+ * read-only handle (shared lock — non-contending), reads the on-disk schema
+ * version WITHOUT migrating, and throws a friendly, actionable
+ * `CourseOrchestrateError` BEFORE any operation is started or hitch is leased
+ * when the DB is newer than this harness. The `runMigrations` guard inside
+ * `withCourseDbAsync` remains the fail-closed backstop.
+ */
+function assertCourseOrchestrateSchemaCompatible(
+  opts: RegisterCourseCommandsOptions,
+): void {
+  const paths = harnessPaths(opts.getHarnessRoot());
+  // A fresh/uninitialized harness root has no DB to be skewed against — skip the
+  // read-only preflight and let the normal create+migrate path run (with the
+  // runMigrations backstop). The read-only handle below requires the file to
+  // exist (fileMustExist), so opening it on a fresh root would throw.
+  if (!existsSync(paths.dbPath)) return;
+  const handle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
+  try {
+    const dbVersion = readSchemaVersion(handle.db);
+    const compat = evaluateSchemaCompatibility(dbVersion);
+    if (compat.kind === "db-newer-than-harness") {
+      throw new CourseOrchestrateError("schema_version_skew", compat.message, {
+        dbVersion: compat.dbVersion,
+        harnessVersion: compat.harnessVersion,
+        kind: compat.kind,
+      });
+    }
   } finally {
     handle.close();
   }
@@ -415,6 +449,9 @@ export function registerCourseCommands(
     .option("--json", "emit JSON", false)
     .action(async (courseId: string, raw: Record<string, unknown>) => {
       await withCourseOrchestrateErrorExit(async () => {
+        // #271: surface DB-newer-than-harness skew with friendly, actionable
+        // guidance BEFORE the operation is started (no spurious operation row).
+        assertCourseOrchestrateSchemaCompatible(opts);
         const maxDrivenHitches = normalizeCourseMaxDrivenHitches(
           parsePositiveInt(raw.maxDrivenHitches ?? 3, "--max-driven-hitches"),
         );
