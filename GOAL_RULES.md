@@ -181,8 +181,36 @@ harness の安全設計はいかなる hitch 実装でも侵してはならな�
   production コードを書かない。
 - **Conventional Commits** 形式でコミット。
 - **commit 前に `npm run typecheck`。**
-- immutability・小ファイル（〜400 行目安、800 行上限）・適切なエラーハンドリング
-  などグローバル規約を遵守。
+- immutability・適切なエラーハンドリングなどグローバル規約を遵守。
+
+### H-1. cohesion-first リファクタ規約（#125 RP1-RP5）
+
+探索性 / 局所的簡潔性 / 常時コンテキストが薄い を理念に、行数は cohesion の proxy
+として扱う（行数 target を機械目的にしない）。
+
+- **RP1（薄い always-on context）**: 毎セッション自動ロードされる `CLAUDE.md` のみが
+  真の always-on コスト。分量は char/token で測り、session 開始時に不要な詳細は
+  on-demand 層（`GOAL_RULES.md` / `docs/`）へ relocate する（分割でなく移動）。
+  `tests/meta/context-budget.test.ts` が ratchet で機械監視する。
+- **RP2（cohesion-first + 800 HARD cap）**: 分割は cohesion（1 ファイル＝1 責務・
+  1 read-order）で判断。**800 行は HARD cap**（超過は分割必須）。`file-size.test.ts`
+  が grandfather ratchet で強制（既存 800 超＝現サイズ baseline・縮小のみ／新規＝
+  800 以下／schema.ts・tool-registry.ts＝append-only 台帳の構造的恒久例外）。
+  「小さすぎる/低凝集な分割を避ける」も同格の規律（過剰分割は探索性を下げる）。
+- **RP3（関数粒度）**: 1 関数＝1 論理単位。上限 80 行を超えたら extract-method を
+  検討（soft・機械 gate にしない）。下限は設けない（5-20 行の純 helper は健全）。
+  register*/dispatcher 等の container は最大 inner callback で測る。
+- **RP4（コメント）**: 非自明コードのコメントは {何の問題/脅威を防ぐか・どの不変条件が
+  成立すべきか・なぜ非自明な選択をしたか・変えると何が壊れるか・編集前にどの doc を
+  読むか} の1つに答える。behavior の再記述は禁止（`docs/specs` が正本）。密度を品質の
+  proxy にしない。
+- **RP5（大ドメイン README）**: 命名で navigate しきれない大ドメインに nav-map README
+  （ファイル→責務 + entrypoint + `docs/specs` への link）を置く。小 dir には置かない
+  （stub の rot を生む）。frozen-core dir は §G への STOP beacon にする。
+
+enforcement の現実: CI は billing-blocked ゆえ meta-test は local soft gate、唯一の
+実 hard gate は PR 毎の codex xhigh レビュー。grandfather/budget の baseline を上げる
+変更は PR で明示的に正当化する（silent な肥大化を防ぐ）。
 
 ---
 

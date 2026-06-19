@@ -173,8 +173,17 @@ npm run harness -- <args>   # 開発時の CLI 起動（tsx 経由、HARNESS_ROO
   bot レビュー（codex App / Copilot）の受け入れ指摘も併せて反映する。hitch モードの
   リトライ上限（サブ ≤3 / 大 ≤5）・レビューテンプレート・未解決 P0 ゼロ gate は
   [`GOAL_RULES.md`](./GOAL_RULES.md) を正本とする。
-- **immutability**（新オブジェクトを作り、mutate しない）、小ファイル（〜400 行
-  目安・800 行上限）、適切なエラーハンドリング、`console.log` を残さない。
+- **immutability**（新オブジェクトを作り、mutate しない）、適切なエラーハンドリング、
+  `console.log` を残さない。
+- **cohesion-first ファイル分割（#125 RP1-RP5）**: 行数でなく cohesion（1 ファイル＝
+  1 責務）を一次基準とする。ただし **800 行は HARD cap**（review/diff 粒度が破綻するため
+  超過は分割必須）で、`tests/meta/file-size.test.ts` が grandfather ratchet 付きで機械強制
+  する（既存の 800 超は現サイズを baseline に「増やさない」、新規/縮小済は 800 以下、
+  schema.ts/tool-registry.ts は append-only 台帳ゆえ構造的恒久例外）。関数は単一責務・
+  上限 80 行目安。コメントは「何を」でなく **why / 不変条件 / 落とし穴 / 編集前に読む doc**
+  に焦点（behavior の再記述は docs/specs が正本）。always-on の `CLAUDE.md` は薄く保つ
+  （詳細は on-demand な `GOAL_RULES.md`／`docs/` へ relocate）。詳細規約は
+  [`GOAL_RULES.md`](./GOAL_RULES.md) §H。
 - **スコープを広げない**: 作業中に見つけたスコープ外の事項は backlog /
   `docs/future-features.md` / follow-up に積む（その場で直さない）。
 
