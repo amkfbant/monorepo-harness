@@ -440,10 +440,86 @@ materialize しない**＝fail-closed。`meta.json` は harness が runDir か�
 は copy しない）。run 後に dir は削除する。これにより先行 reviewer の verdict
 （`runs/<runId>/review-decision.yaml` や sibling `reviewers/<other>/`）は cwd から短い `..`
 で届く位置に無く、prompt 通り cwd を読む reviewer の自然な読取経路から外れる（working-tree
-非露出）。**限界（既知・follow-up）**: codex `--sandbox read-only` は write/network を
-制限するが read を cwd subtree に hard jail しない（`-C` は chroot でない）ため、絶対パスや
-長い `..` を能動的に辿る敵対的 read までは防がない。完全な read-jail enforcement（read root
-制限 or reviewer を隔離コンテナで実行）は別途の sandbox 強化事項（follow-up）。
+非露出）。さらに materialize の最後に **fail-closed assertion**
+（`assertReviewerInputDirHasNoVerdict`）が input dir を再帰走査し、`review-decision.yaml` /
+`review-auto-error.json`（厳密 basename）が 1 つでも copy されていたら
+`ReviewerAgentGateError` で停止する（将来の regression で verdict が cwd に紛れ込んでも
+leak ではなく fail-closed になる決定論的 backstop）。
+
+**P1-ISO read 独立性の絶対 enforcement（#272）**: codex `--sandbox read-only` は
+write/network を制限するが **read を一切 jail しない**（`-C` は chroot でなく、絶対パスでも
+任意の path を read できる・codex-cli 0.139 に readable-root 設定は無い＝検証済）。よって cwd を
+OS-temp に置く隔離は `..`-相対 read を外すだけで、**予測可能な絶対パスの read は防げない**。
+verdict text は **複数の producer・複数のファイルに verbatim で載る**: root/scoped
+`review-decision.yaml` だけでなく、(1) 各 reviewer の transcript
+（`reviewers/<id>/reviewer-agent.out.log`＝raw codex stdout＝fenced verdict YAML そのもの・
+`extractYamlBlock` でここから parse／`.reviewer-agent.events.{raw.jsonl,jsonl}`／`.redacted.tmp`／
+`.err.log`。**redaction は secret-only で verdict を落とさない**）、(2) refute transcript
+（`reviewers/<id>/refute-agent.out.log` 等＝refute verdict と target change_text）、(3)
+`review evaluate` の出力（`review-evaluations/eval-NNN/{reviewer-agent.out.log, events…,
+review-decision.yaml}`）—— にも載る。DB-backed export-OFF の sequential round では producer 間で
+DB-sync が無いため、次の reviewer が先行の verdict を**絶対パス**から verbatim に復元できてしまう。
+
+**不変条件（enforcement target）**: DB-backed ∧ file-export-OFF の review で、**いずれかの
+reviewer codex が起動する瞬間、`runs/<runId>/` 配下のどのファイルにも先行（完了済）reviewer の /
+pass の / command の verdict text が無く、reviewer の input allowlist だけが残る**。
+`review_proposals`（＋ ingest 済 artifact）が round 中の唯一の source of truth。
+
+OS read-jail（read root 制限 or 隔離コンテナ）は codex 側で決定論的・portable に強制できない
+ため、harness 側で決定論的に強制できる唯一の手段として **reviewer codex 実行中は verdict を
+ディスク上に一切残さない**。実装は **denylist でなく INPUT-ALLOWLIST 反転**で行う
+（`quarantinePriorReviewerVerdictArtifacts`）: codex 起動直前（tamper snapshot より前）に
+`runs/<runId>/` 直下を走査し、**reviewer の input allowlist
+（`meta.json`／`events.jsonl`／`REVIEWER_INPUT_FILES`＝review-request.md/summary.md/
+final-diff.patch/untracked-*／`commands/`）だけを残し、それ以外の全エントリ
+（`reviewers/**`・`review-evaluations/**`・refute artifact・root `review-decision.yaml`・
+将来の任意の producer 出力）を prior-output として一掃する**。これにより hand-maintained な
+verdict-filename list を保守する必要がなく、**現在も将来も verdict-bearing producer を取り
+こぼさない**。一掃（root/scoped `review-decision.yaml` の削除を含む）は **run row が存在し
+`source_mode='db-first'` のときだけ**実行する（**単一の fail-closed gate**・別経路の ungated な
+verdict 削除は無い）: db-first では run dir は ephemeral scratch で DB が canonical ゆえ削除は
+recoverable。run row が無い / legacy / file-first なら **no-op**——DB-backed file-first/legacy run
+の canonical な verdict sidecar を recovery 無く削除しない。ingestable なファイルは
+**まず DB に ingest**（`ingestRunArtifactPaths`＝監査用 artifact set を recoverable に保つ）→ 削除。
+raw dotfile stream
+（`.reviewer-agent.events.raw.jsonl`／`.redacted.tmp`／`.refute-agent.events.raw.jsonl`）は
+`isIngestableRelPath` が dot-prefixed component を弾くため **ingest 対象外＝REMOVE-ONLY**
+（意図的に non-recoverable。canonical な published `reviewer-agent.events.jsonl` のみ recover
+可能）。**現 reviewer 自身の scoped dir はこの後に作られる**ため消えるのは先行/完了済の出力のみ。
+verdict は `review_proposals`、ingestable transcript は DB artifact として recoverable なので
+ディスクから消しても失われない。**監査 fidelity**: round 後 / 次 `review auto` の
+`syncRunArtifactsToDb` は full `ingestRunArtifacts`（manifest 再構築）を呼ぶが、`ingestRunArtifacts`
+は **db-first では DELETE-then-rescan でなく manifest を merge する**——disk が source of truth
+でなく DB が canonical ゆえ、scratch file が（quarantine で）意図的に欠けているだけの recoverable
+な行を「disk に無い」という理由で削除しない。**recoverability の鍵は storage tier でなく
+`blob_sha256 IS NOT NULL`**: `storage='db'` も `storage='external'`（`db migrate-blobs` 後）も
+DB-canonical で `exportRun` が再生できるため、delete 述語は
+`relative_path IN (<on-disk>) OR storage NOT IN ('db','external') OR blob_sha256 IS NULL`——
+つまり再 scan される行・recover 不能 tier（file 等）・bodyless 行のみ削除し、blob を持つ
+db/external 行は absent でも保持する。`DB_RECONSTRUCTED`（`meta.json`/`events.jsonl`/
+`review-decision.yaml`）は blob を持たず（`blob_sha256 IS NULL`）canonical テーブルから再生される
+ため、absent なら削除され（loss でなく再生）present なら再 scan される——正しく保持対象外。
+file-first / run row 無しは従来どおり DELETE-then-rescan（disk が truth・stale 行は prune）で
+**不変**。これにより quarantine-ingest した transcript は post-round sync を生き延び、`exportRun`
+が DB から再生する（main との監査 parity・audit loss 無し）。読むものがディスクに無いので、
+絶対パスでも `..` でも到達できない。per-reviewer
+decision sidecar も **default（`HARNESS_EXPORT_FILES` 未設定 ＝ OFF）では round 中書かず DB-only**。
+さらに materialize の最後の `assertReviewerInputDirHasNoVerdict`（cwd 限定 fail-closed backstop）を
+defense-in-depth で併用する。（`suppressRunDirVerdictFiles` は decision-yaml 限定の helper として
+残るが、ungated に呼ぶと file-first run の canonical verdict を消すため review 経路では呼ばず、
+db-first-gated な inversion がその役割を包含する。）
+
+**保たれる経路**: no-DB legacy review は root verdict が canonical なので従来どおり書く
+（掃除しない）。`HARNESS_EXPORT_FILES=1` は back-compat で sidecar / transcript を書く
+（掃除しない）。round / consensus 完了後の最終 verdict・transcript は export 経路で DB
+（`review_proposals` / artifacts）から再生する。掃除は あくまで「DB が source of truth ∧ file
+export OFF のとき、reviewer codex 実行中に verdict を ディスクに置かない」ことに限定される。
+**residual（design 上残るもの）**: read-only codex は **verdict 以外の repo / run ファイル
+（diff / summary / command logs 等）は依然 absolute-read できる**。完全な OS read-jail は
+defer（下記）。本 fix は **verdict-leak class** に対して complete。**defer（best-effort）**:
+OS-level read-jail wrapper
+（macOS `sandbox-exec` / Linux landlock）は defense-in-depth として
+[`docs/future-features.md`](../future-features.md) に保留（platform 依存で決定論化できないため未実装）。
 codex は
 `reviewers/<reviewer_id>/.reviewer-agent.events.raw.jsonl` に stream し、redaction 後だけ
 `reviewers/<reviewer_id>/reviewer-agent.events.jsonl` として atomic publish する。

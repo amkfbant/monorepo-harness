@@ -5,6 +5,7 @@ import {
   mkdirSync,
   writeFileSync,
   readFileSync,
+  readdirSync,
   existsSync,
   symlinkSync,
 } from "node:fs";
@@ -524,7 +525,124 @@ describe("runReviewerAgent", () => {
     // logs/decision still land under the run dir (tamper-snapshotted); cwd cleaned up
     expect(existsSync(checks.worktreePath as string)).toBe(false);
     expect(r.rawOutputPath).toBe(join(reviewerDir, "reviewer-agent.out.log"));
+    // suite default is export ON (tests/setup-export-mode.ts), so the
+    // per-reviewer sidecar IS written here. The #272 export-OFF DB-only
+    // enforcement is covered by the dedicated tests below.
     expect(existsSync(join(reviewerDir, "review-decision.yaml"))).toBe(true);
+  });
+
+  it("P1-ISO #272: a sibling reviewer verdict is NOT reachable on disk during a round (DB-only)", async () => {
+    const { runsDir, runId } = setup();
+    const runDir = join(runsDir, runId);
+    writeFileSync(join(runDir, "final-diff.patch"), "diff --git a b\n");
+    writeFileSync(join(runDir, "review-request.md"), "# review request\n");
+    // Simulate an EARLIER reviewer in the same round having already produced a
+    // verdict at the predictable readable path, plus the root verdict.
+    const bobDir = join(runDir, "reviewers", "bob");
+    mkdirSync(bobDir, { recursive: true });
+    writeFileSync(join(bobDir, "review-decision.yaml"), "decision: approved\n");
+
+    // The adversarial probe runs INSIDE the fake codex (sandbox cwd live).
+    const found: { siblingsUnderCwd: string[]; relStartsWithDotDot?: boolean } =
+      { siblingsUnderCwd: [] };
+    const probing: CodexExecRunner = {
+      async run(input) {
+        const wt = input.worktreePath;
+        // A read-only codex cannot be jailed against absolute reads, so the
+        // only enforceable guarantee is that NO verdict exists anywhere under
+        // the materialized cwd to read (recursive walk).
+        const walk = (dir: string): void => {
+          for (const e of readdirSync(dir, { withFileTypes: true })) {
+            const p = join(dir, e.name);
+            if (e.isDirectory()) walk(p);
+            else if (
+              e.name === "review-decision.yaml" ||
+              e.name === "review-auto-error.json"
+            ) {
+              found.siblingsUnderCwd.push(relative(wt, p));
+            }
+          }
+        };
+        walk(wt);
+        found.relStartsWithDotDot = relative(runDir, wt).startsWith("..");
+        const { writeFile } = await import("node:fs/promises");
+        await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
+        await writeFile(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      },
+    };
+
+    await runReviewerAgent({
+      runsDir,
+      runId,
+      reviewerName: "alice",
+      codexRunner: probing,
+      now: new Date("2026-05-21T01:00:00Z"),
+    });
+
+    // No verdict (sibling OR root) was copied into the cwd, and the cwd is
+    // outside the run tree — so neither an absolute nor a `..` read can reach
+    // the pre-seeded sibling verdict at runDir/reviewers/bob/review-decision.yaml.
+    expect(found.siblingsUnderCwd).toEqual([]);
+    expect(found.relStartsWithDotDot).toBe(true);
+  });
+
+  it("#272: with file export OFF the verdict is DB-only (no per-reviewer sidecar)", async () => {
+    // The runtime default is export OFF (Phase 9); the test harness pins it ON
+    // (tests/setup-export-mode.ts), so exercise the real default explicitly.
+    const prev = process.env.HARNESS_EXPORT_FILES;
+    process.env.HARNESS_EXPORT_FILES = "0";
+    try {
+      const { runsDir, runId } = setup();
+      const dbPath = setupReviewDb(runId);
+      await runReviewerAgent({
+        runsDir,
+        runId,
+        dbPath,
+        reviewerName: "alice",
+        codexRunner: fakeRunnerWithOutput(APPROVED_OUTPUT),
+        now: new Date("2026-05-21T01:00:00Z"),
+      });
+      // sidecar is NOT on disk (export OFF) ...
+      const reviewerDir = join(runsDir, runId, "reviewers", "alice");
+      expect(existsSync(join(reviewerDir, "review-decision.yaml"))).toBe(false);
+      // ... but the verdict IS DB-canonical in review_proposals.
+      const db = openDb(dbPath);
+      try {
+        const active = new ReviewProposalRepository(
+          db,
+        ).getLatestActiveProposal(runId);
+        expect(active?.decision).toBe("approved");
+        expect(active?.reviewer).toBe("alice");
+      } finally {
+        db.close();
+      }
+    } finally {
+      if (prev === undefined) delete process.env.HARNESS_EXPORT_FILES;
+      else process.env.HARNESS_EXPORT_FILES = prev;
+    }
+  });
+
+  it("#272: with HARNESS_EXPORT_FILES=1 the per-reviewer sidecar IS written (back-compat)", async () => {
+    const prev = process.env.HARNESS_EXPORT_FILES;
+    process.env.HARNESS_EXPORT_FILES = "1";
+    try {
+      const { runsDir, runId } = setup();
+      const dbPath = setupReviewDb(runId);
+      await runReviewerAgent({
+        runsDir,
+        runId,
+        dbPath,
+        reviewerName: "alice",
+        codexRunner: fakeRunnerWithOutput(APPROVED_OUTPUT),
+        now: new Date("2026-05-21T01:00:00Z"),
+      });
+      const reviewerDir = join(runsDir, runId, "reviewers", "alice");
+      expect(existsSync(join(reviewerDir, "review-decision.yaml"))).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.HARNESS_EXPORT_FILES;
+      else process.env.HARNESS_EXPORT_FILES = prev;
+    }
   });
 
   it("rejects a reviewerName that is not a safe path component", async () => {
@@ -614,14 +732,12 @@ describe("runReviewerAgent", () => {
     const summary = join(runsDir, runId, "summary.md");
     const { writeFileSync, utimesSync } = await import("node:fs");
     writeFileSync(summary, "original\n");
-    const runner: typeof fakeRunnerWithOutput extends () => infer T
-      ? T
-      : never = {
+    const runner = {
       async run(input: {
         worktreePath: string;
         prompt: string;
         logPaths: { stdout: string; stderr: string; events: string };
-      }): Promise<{ exitCode: number; timedOut: boolean }> {
+      }): Promise<{ exitCode: number; timedOut: boolean; durationMs: number }> {
         // mutate summary.md during codex execution (simulating sandbox escape)
         writeFileSync(summary, "tampered\n");
         // bump mtime ahead to ensure the snapshot detects the change even

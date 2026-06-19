@@ -25,6 +25,20 @@ export const REVIEWER_INPUT_FILES = [
 
 export const REVIEWER_INPUT_DIRS = ["commands"] as const;
 
+/**
+ * Verdict basenames that must NEVER be present inside the materialized reviewer
+ * input dir. A reviewer's read-only codex sandbox does NOT jail reads (verified
+ * codex-cli 0.139 — no readable-root config), so any verdict reachable on disk
+ * could be absolute-read by a prompt-injected reviewer and collapse the
+ * independence the consensus rule assumes (#272 / P1-ISO). Matched by EXACT
+ * basename only — a command log such as `review-decision.yaml.out.log` is not a
+ * verdict and must not trip the guard.
+ */
+const FORBIDDEN_INPUT_VERDICT_BASENAMES: ReadonlySet<string> = new Set([
+  "review-decision.yaml",
+  "review-auto-error.json",
+]);
+
 export interface ReviewerInputDirSpec {
   dir: string;
   include?: (artifactRef: string) => boolean;
@@ -156,6 +170,78 @@ export async function materializeReviewerInput(
       },
     });
   }
+  // Fail-closed backstop (#272 / P1-ISO): the input allowlist already excludes
+  // verdicts, but assert deterministically that NO verdict was copied in before
+  // codex sees the dir. If a future change ever reintroduces a verdict into the
+  // reviewer cwd the review fails closed rather than leaking it cross-reviewer.
+  await assertReviewerInputDirHasNoVerdict(inputDir);
+}
+
+/**
+ * Deterministic, fail-closed guard (#272 / P1-ISO): scan the materialized
+ * reviewer input dir recursively and throw if ANY verdict file
+ * (`review-decision.yaml` / `review-auto-error.json`, exact basename) is
+ * present at any depth — there must be nothing on disk for an adversarial
+ * read-only reviewer to read. The verdict is DB-canonical (`review_proposals`),
+ * so a sibling verdict must never reach a predictable readable path during a
+ * fan-out round.
+ */
+export async function assertReviewerInputDirHasNoVerdict(
+  inputDir: string,
+): Promise<void> {
+  async function walk(dir: string, prefix: string): Promise<void> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const e of entries) {
+      const rel = prefix ? `${prefix}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        await walk(join(dir, e.name), rel);
+      } else if (e.isFile() && FORBIDDEN_INPUT_VERDICT_BASENAMES.has(e.name)) {
+        throw new ReviewerAgentGateError(
+          `reviewer input dir leaked a verdict file: ${rel}`,
+        );
+      }
+    }
+  }
+  await walk(inputDir, "");
+}
+
+/**
+ * Remove every verdict sidecar from the run dir so NOTHING verdict-shaped is on
+ * disk while a reviewer codex executes (#272). codex `--sandbox read-only` can
+ * absolute-read ANY path (cwd isolation only defeats `..`-relative reads), so a
+ * prior reviewer's verdict at the predictable ROOT `runs/<id>/review-decision.yaml`
+ * — or a stale scoped `reviewers/<id>/review-decision.yaml` left by an earlier
+ * export-ON run / rerun — is otherwise absolute-readable by the next reviewer.
+ *
+ * The verdict is DB-canonical (`review_proposals`), so removing the on-disk copy
+ * during the round loses nothing: `exportRun` reconstructs the root verdict from
+ * the DB when file export is requested (after the round / end state). Caller must
+ * gate this to DB-backed, file-export-OFF review only — the no-DB legacy path
+ * keeps the root verdict (it is canonical there) and export-ON keeps the sidecars
+ * for back-compat. Returns the run-relative paths that were removed (audit/test).
+ */
+export async function suppressRunDirVerdictFiles(
+  runDir: string,
+): Promise<string[]> {
+  const removed: string[] = [];
+  const rootVerdict = join(runDir, "review-decision.yaml");
+  if (existsSync(rootVerdict)) {
+    await rm(rootVerdict, { force: true });
+    removed.push("review-decision.yaml");
+  }
+  const reviewersDir = join(runDir, "reviewers");
+  if (!existsSync(reviewersDir)) return removed;
+  const entries = await readdir(reviewersDir, { withFileTypes: true }).catch(
+    () => [],
+  );
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const scoped = join(reviewersDir, entry.name, "review-decision.yaml");
+    if (!existsSync(scoped)) continue;
+    await rm(scoped, { force: true });
+    removed.push(`reviewers/${entry.name}/review-decision.yaml`);
+  }
+  return removed;
 }
 
 function artifactRefForSource(
