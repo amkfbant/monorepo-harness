@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 34;
+export const SCHEMA_VERSION = 35;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -2076,6 +2076,35 @@ export const MIGRATION_V34_STATEMENTS: readonly string[] = [
   `CREATE INDEX hitch_lifecycle_events_hitch_idx
      ON hitch_lifecycle_events(hitch_id, created_at)`,
   "PRAGMA foreign_keys = ON",
+] as const;
+
+/**
+ * v35 (#303): mark artifact rows that the reviewer-transcript quarantine
+ * (`quarantinePriorReviewerVerdictArtifacts`) intentionally keeps DB-canonical
+ * while removing the scratch file. The db-first full sync (`ingestRunArtifacts`)
+ * preserves an absent-on-disk recoverable row ONLY when it is `quarantined = 1`;
+ * a non-quarantined absent recoverable row (e.g. a `review-auto-error.json` a
+ * successful retry removed) is pruned instead of re-materialized by `exportRun`.
+ * The column defaults to 0 so the file-first branch is unaffected.
+ *
+ * BACKFILL (#303 P1 — upgrade-path data safety): the pre-v35 db-first predicate
+ * PRESERVED every absent recoverable row (`storage IN ('db','external') AND
+ * blob_sha256 IS NOT NULL`). Without a backfill, every such legacy row — incl.
+ * #272-quarantined transcripts already removed from disk on a live v34 DB —
+ * would land at `quarantined = 0` and be DELETED by the new
+ * `OR quarantined = 0` prune on the very next full sync. So GRANDFATHER all
+ * currently-recoverable rows to `quarantined = 1`, exactly reproducing the
+ * pre-v35 "preserve all absent recoverable rows" behavior. This guarantees NO
+ * transcript is lost on upgrade: rows still on disk are re-ingested and reset to
+ * 0 on the next sync (harmless), and the stricter #303 prune applies only to
+ * artifacts created after the upgrade. (Chosen over retroactively excluding
+ * gate-error sidecars from the backfill: on a live DB we cannot be certain a
+ * legacy sidecar is safe to prune, and silent loss is the worse failure.)
+ */
+export const MIGRATION_V35_STATEMENTS: readonly string[] = [
+  "ALTER TABLE artifacts ADD COLUMN quarantined INTEGER NOT NULL DEFAULT 0",
+  `UPDATE artifacts SET quarantined = 1
+     WHERE storage IN ('db', 'external') AND blob_sha256 IS NOT NULL`,
 ] as const;
 
 /** Table names created by v1 — used by `db status` and tests. */

@@ -220,6 +220,35 @@ function isIngestableRelPath(rel: string): boolean {
 }
 
 /**
+ * Mark the given run-relative artifact rows as INTENTIONALLY quarantined
+ * (#303). The reviewer-transcript quarantine
+ * (`quarantinePriorReviewerVerdictArtifacts`) ingests a prior round's outputs
+ * DB-canonical and then removes the scratch files; stamping `quarantined = 1`
+ * lets the db-first full sync (`ingestRunArtifacts`) tell these rows — which it
+ * MUST preserve — apart from an artifact a successful retry deliberately removed
+ * (e.g. a stale `review-auto-error.json`), which it MUST prune.
+ *
+ * Only rows whose body is recoverable (`blob_sha256 IS NOT NULL`) are marked —
+ * a bodyless row would not be re-exported anyway. Deterministic; no-op for an
+ * empty path list.
+ */
+export function markArtifactsQuarantined(
+  db: Database.Database,
+  runId: string,
+  relPaths: readonly string[],
+): void {
+  if (relPaths.length === 0) return;
+  const update = db.prepare(
+    `UPDATE artifacts SET quarantined = 1
+      WHERE run_id = ? AND relative_path = ? AND blob_sha256 IS NOT NULL`,
+  );
+  const txn = db.transaction(() => {
+    for (const rel of relPaths) update.run(runId, rel);
+  });
+  txn();
+}
+
+/**
  * Ingest a DB-first run's artifact bodies into the DB (Phase 8-2).
  *
  * Like `recordRunArtifacts` it replaces the run's `artifacts` rows from a
@@ -238,16 +267,21 @@ function isIngestableRelPath(rel: string): boolean {
  * canonical `runs` / `run_events` / `review_decisions` rows.
  *
  * Manifest rebuild semantics depend on the run's `source_mode` (#272 audit
- * fidelity):
+ * fidelity / #303 retention cleanliness):
  *   - file-first / unknown: the run dir IS the source of truth, so the manifest
  *     is fully rebuilt from disk (delete-all → rescan). Stale rows are pruned.
- *   - db-first: the run dir is EPHEMERAL SCRATCH and the DB is canonical. A
- *     recoverable DB-canonical row (`storage='db'` with a present blob body)
- *     whose scratch file is INTENTIONALLY absent (e.g. quarantined by #272's
- *     `quarantinePriorReviewerVerdictArtifacts`) must NOT be deleted just
- *     because it is not on disk — that would lose the audit transcript. So in
- *     db-first mode only rows that will be re-scanned from disk, or that are not
- *     recoverable, are deleted, and the rescan upserts (INSERT OR REPLACE).
+ *   - db-first: the run dir is EPHEMERAL SCRATCH and the DB is canonical. An
+ *     absent-on-disk recoverable row (`storage IN ('db','external')` with a
+ *     present blob body) is preserved ONLY when it is INTENTIONALLY quarantined
+ *     (`quarantined = 1`, stamped by #272's
+ *     `quarantinePriorReviewerVerdictArtifacts`): deleting it would lose the
+ *     audit transcript. An absent recoverable row that is NOT quarantined was
+ *     deliberately removed / superseded on disk (e.g. a `review-auto-error.json`
+ *     a successful retry deleted, #303) and IS pruned, so `exportRun` does not
+ *     re-materialize a stale artifact. On-disk-refreshed rows and bodyless rows
+ *     (`blob_sha256 IS NULL`) are always deleted; the rescan upserts (INSERT OR
+ *     REPLACE), which resets `quarantined` to its default 0 because a path back
+ *     on disk is file-authoritative again.
  */
 export function ingestRunArtifacts(
   db: Database.Database,
@@ -262,15 +296,19 @@ export function ingestRunArtifacts(
   const txn = db.transaction((): IngestRunArtifactsResult => {
     const onDisk = [...walkRunArtifacts(runDir)];
     if (dbFirst) {
-      // Preserve recoverable DB-canonical rows whose scratch file is absent;
-      // delete rows about to be re-scanned (refreshed) or that are not
-      // recoverable so they cannot strand. The recoverability key is a present
-      // blob body, regardless of storage tier — both `storage='db'` and
-      // `storage='external'` (after `db migrate-blobs`) are DB-canonical and
-      // rebuilt by `exportRun`, so neither may be pruned merely because its
-      // intentionally-quarantined scratch file is absent. Only bodyless rows
-      // (`blob_sha256 IS NULL`, e.g. file-backed) and on-disk-refreshed rows
-      // are deleted.
+      // Preserve ONLY recoverable DB-canonical rows whose scratch file is absent
+      // AND that were INTENTIONALLY quarantined (`quarantined = 1`, #303). Delete
+      // everything else so it cannot strand or be re-materialized stale:
+      //   - rows about to be re-scanned (on disk) — refreshed by the upsert;
+      //   - non-recoverable rows (bodyless `blob_sha256 IS NULL`, e.g.
+      //     file-backed) and rows whose `storage` is neither 'db' nor 'external';
+      //   - absent recoverable rows that are NOT quarantined — these were
+      //     deliberately removed / superseded on disk (e.g. a stale
+      //     `review-auto-error.json` a successful retry deleted, #303).
+      // The recoverability key is a present blob body across both 'db' and
+      // 'external' (after `db migrate-blobs`) tiers — both are rebuilt by
+      // `exportRun`. The quarantine marker (not path/storage) is what tells an
+      // intentionally-preserved transcript apart from a superseded artifact.
       const placeholders = onDisk.map(() => "?").join(", ");
       const onDiskFilter =
         onDisk.length > 0 ? `relative_path IN (${placeholders})` : "0";
@@ -279,7 +317,8 @@ export function ingestRunArtifacts(
           WHERE run_id = ?
             AND (${onDiskFilter}
                  OR storage NOT IN ('db', 'external')
-                 OR blob_sha256 IS NULL)`,
+                 OR blob_sha256 IS NULL
+                 OR quarantined = 0)`,
       ).run(runId, ...onDisk.map((a) => a.rel));
     } else {
       db.prepare("DELETE FROM artifacts WHERE run_id = ?").run(runId);

@@ -487,21 +487,39 @@ raw dotfile stream
 （意図的に non-recoverable。canonical な published `reviewer-agent.events.jsonl` のみ recover
 可能）。**現 reviewer 自身の scoped dir はこの後に作られる**ため消えるのは先行/完了済の出力のみ。
 verdict は `review_proposals`、ingestable transcript は DB artifact として recoverable なので
-ディスクから消しても失われない。**監査 fidelity**: round 後 / 次 `review auto` の
-`syncRunArtifactsToDb` は full `ingestRunArtifacts`（manifest 再構築）を呼ぶが、`ingestRunArtifacts`
-は **db-first では DELETE-then-rescan でなく manifest を merge する**——disk が source of truth
-でなく DB が canonical ゆえ、scratch file が（quarantine で）意図的に欠けているだけの recoverable
-な行を「disk に無い」という理由で削除しない。**recoverability の鍵は storage tier でなく
-`blob_sha256 IS NOT NULL`**: `storage='db'` も `storage='external'`（`db migrate-blobs` 後）も
-DB-canonical で `exportRun` が再生できるため、delete 述語は
-`relative_path IN (<on-disk>) OR storage NOT IN ('db','external') OR blob_sha256 IS NULL`——
-つまり再 scan される行・recover 不能 tier（file 等）・bodyless 行のみ削除し、blob を持つ
-db/external 行は absent でも保持する。`DB_RECONSTRUCTED`（`meta.json`/`events.jsonl`/
-`review-decision.yaml`）は blob を持たず（`blob_sha256 IS NULL`）canonical テーブルから再生される
-ため、absent なら削除され（loss でなく再生）present なら再 scan される——正しく保持対象外。
-file-first / run row 無しは従来どおり DELETE-then-rescan（disk が truth・stale 行は prune）で
-**不変**。これにより quarantine-ingest した transcript は post-round sync を生き延び、`exportRun`
-が DB から再生する（main との監査 parity・audit loss 無し）。読むものがディスクに無いので、
+ディスクから消しても失われない。quarantine は ingest 後、保持対象の **durable な
+transcript 行だけ**を `markArtifactsQuarantined`（`artifacts.quarantined = 1`）で marking する。
+**reviewer gate-error sidecar（`reviewers/<id>/review-auto-error.json`——先頭 2 segment 厳密一致）は
+marking から除外**する——これは transient（成功 retry で `runReviewerAgent` が削除し、canonical な
+失敗記録は run event log / `review_proposals` 側）であり、durable な監査 transcript ではないため
+（#303）。**除外は narrow**: 同 basename でも review-evaluator の per-sample 診断
+（`review-evaluations/<sample>/review-auto-error.json`、#279）は durable ゆえ除外しない（quarantine 保持）。
+**監査 fidelity**:
+round 後 / 次 `review auto` の `syncRunArtifactsToDb` は full `ingestRunArtifacts`（manifest 再構築）
+を呼ぶが、`ingestRunArtifacts` は **db-first では DELETE-then-rescan でなく manifest を merge する**
+——disk が source of truth でなく DB が canonical ゆえ、scratch file が**意図的に quarantine された**
+recoverable な行を「disk に無い」という理由で削除しない。**ただし保持するのは意図的 quarantine 行
+だけ**: absent ∧ recoverable でも `quarantined = 0` の行は deliberately removed/superseded（例: 成功
+retry が消した stale `review-auto-error.json`、#303）として **prune** し、`exportRun` が stale artifact
+を再生しないようにする。**recoverability の鍵は storage tier でなく `blob_sha256 IS NOT NULL`**:
+`storage='db'` も `storage='external'`（`db migrate-blobs` 後）も DB-canonical で `exportRun` が
+再生できるため、delete 述語は
+`relative_path IN (<on-disk>) OR storage NOT IN ('db','external') OR blob_sha256 IS NULL OR quarantined = 0`
+——つまり再 scan される行・recover 不能 tier（file 等）・bodyless 行・**非 quarantine の absent 行**
+を削除し、blob を持つ db/external 行のうち **quarantine marker を持つもの**だけを absent でも保持する。
+disk に再出現した path は再 scan で upsert され `quarantined` が default 0 に戻る（file が再び
+authoritative ゆえ）。**upgrade 安全**: `quarantined` 列は schema v35 で追加するが、同 migration が
+既存 recoverable 行（`storage IN ('db','external') AND blob_sha256 IS NOT NULL`）を全て
+`quarantined = 1` に backfill する——pre-v35 の「absent recoverable を全保持」を grandfather し、
+v34 で #272-quarantine 済 transcript が upgrade 直後の sync で誤 prune されないことを保証する
+（disk に残る行は次 sync で再 ingest され 0 に戻る・harmless。stricter な prune は upgrade 後に
+作られた artifact から適用）。`DB_RECONSTRUCTED`（`meta.json`/`events.jsonl`/`review-decision.yaml`）は
+blob を持たず（`blob_sha256 IS NULL`）canonical テーブルから再生されるため、absent なら削除され
+（loss でなく再生）present なら再 scan される——正しく保持対象外。file-first / run row 無しは従来
+どおり DELETE-then-rescan（disk が truth・marker 無視・stale 行は prune）で **byte-不変**。これに
+より quarantine-ingest した transcript は post-round sync を生き延び、`exportRun` が DB から再生する
+（main との監査 parity・audit loss 無し）一方、superseded な gate-error は prune される。読むものが
+ディスクに無いので、
 絶対パスでも `..` でも到達できない。per-reviewer
 decision sidecar も **default（`HARNESS_EXPORT_FILES` 未設定 ＝ OFF）では round 中書かず DB-only**。
 さらに materialize の最後の `assertReviewerInputDirHasNoVerdict`（cwd 限定 fail-closed backstop）を

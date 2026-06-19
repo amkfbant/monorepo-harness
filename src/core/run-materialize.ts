@@ -3,10 +3,12 @@ import { join, relative } from "node:path";
 import type Database from "better-sqlite3";
 import { DbError } from "../db/connection.js";
 import { openManagedDb } from "../db/managed-connection.js";
+import { runMigrations } from "../db/migrations.js";
 import { exportRun } from "../db/export-files.js";
 import {
   ingestRunArtifactPaths,
   ingestRunArtifacts,
+  markArtifactsQuarantined,
 } from "../db/run-artifacts.js";
 import {
   REVIEWER_INPUT_DIRS,
@@ -35,6 +37,40 @@ const UNTRUSTED_REVIEWER_ARTIFACTS = [
 ] as const;
 
 const REVIEWER_GATE_ERROR_ARTIFACTS = ["review-auto-error.json"] as const;
+
+/**
+ * The reviewer gate-error sidecar (`reviewers/<id>/review-auto-error.json`) is
+ * TRANSIENT, not a durable audit transcript (#303): `runReviewerAgent` removes
+ * it on a successful retry, and the canonical failure record lives in the run
+ * event log / `review_proposals`. So the quarantine must NOT stamp it as
+ * intentionally-preserved — an absent-on-disk reviewer gate-error row is a
+ * superseded artifact the db-first full sync should PRUNE, not re-materialize.
+ *
+ * The exclusion is NARROW: it matches ONLY the reviewer sidecar shape
+ * (`reviewers/<id>/review-auto-error.json`, exactly two leading segments). The
+ * review-evaluator's per-sample diagnostics
+ * (`review-evaluations/<sample>/review-auto-error.json`, #279) share the
+ * basename but ARE durable per-sample failure detail, so they stay
+ * quarantine-preserved (#303 P2).
+ */
+const REVIEWER_GATE_ERROR_BASENAMES: ReadonlySet<string> = new Set(
+  REVIEWER_GATE_ERROR_ARTIFACTS,
+);
+
+function isReviewerGateErrorSidecar(rel: string): boolean {
+  const parts = rel.split("/");
+  return (
+    parts.length === 3 &&
+    parts[0] === "reviewers" &&
+    parts[1] !== undefined &&
+    parts[1] !== "" &&
+    REVIEWER_GATE_ERROR_BASENAMES.has(parts[2] as string)
+  );
+}
+
+function isQuarantinePreservedPath(rel: string): boolean {
+  return !isReviewerGateErrorSidecar(rel);
+}
 
 const REVIEWER_SCOPED_ARTIFACT_FILES = [
   "reviewer-agent.out.log",
@@ -288,6 +324,12 @@ export function syncRunArtifactsToDb(opts: {
   const dbHandle = openManagedDb({ dbPath: opts.dbPath });
   const db = dbHandle.db;
   try {
+    // #303 P1#2: `ingestRunArtifacts` reads the v35 `artifacts.quarantined`
+    // column. `openManagedDb` does NOT migrate, and this path can run on a
+    // freshly-upgraded-but-unmigrated DB (the reviewer flow quarantines before
+    // its own migrate), so bring the schema current first. runMigrations is
+    // idempotent.
+    runMigrations(db);
     const row = db
       .prepare("SELECT source_mode FROM runs WHERE run_id = ?")
       .get(opts.runId) as { source_mode: string } | undefined;
@@ -496,6 +538,11 @@ export function quarantinePriorReviewerVerdictArtifacts(opts: {
   const ingested: string[] = [];
   const dbHandle = openManagedDb({ dbPath: opts.dbPath });
   try {
+    // #303 P1#2: `markArtifactsQuarantined` writes the v35 `artifacts.quarantined`
+    // column. `openManagedDb` does NOT migrate, and `runReviewerAgent` calls this
+    // quarantine BEFORE its own runMigrations, so on a freshly-upgraded v34 DB the
+    // column would be missing. Bring the schema current first (idempotent).
+    runMigrations(dbHandle.db);
     const row = dbHandle.db
       .prepare("SELECT source_mode FROM runs WHERE run_id = ?")
       .get(opts.runId) as { source_mode: string } | undefined;
@@ -511,6 +558,17 @@ export function quarantinePriorReviewerVerdictArtifacts(opts: {
     const ingestable = quarantineFiles.filter((p) => isDbIngestableRelPath(p));
     if (ingestable.length > 0) {
       ingestRunArtifactPaths(dbHandle.db, runDir, opts.runId, ingestable);
+      // #303: stamp the DURABLE prior-output rows as INTENTIONALLY quarantined so
+      // the later db-first full sync (`ingestRunArtifacts`) preserves them — and
+      // ONLY them — when their scratch file is absent. Gate-error sidecars
+      // (`review-auto-error.json`) are deliberately EXCLUDED: they are transient
+      // (removed on a successful retry, canonical record is in the event log), so
+      // an absent gate-error row must be pruned, not re-materialized stale.
+      markArtifactsQuarantined(
+        dbHandle.db,
+        opts.runId,
+        ingestable.filter(isQuarantinePreservedPath),
+      );
       ingested.push(...ingestable);
     }
     // Remove every prior-output entry (files + dirs) from disk WHILE STILL HOLDING

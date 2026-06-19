@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { openDb } from "../../../src/db/connection.js";
+import { storeArtifactBlob } from "../../../src/db/artifact-blobs.js";
+import { ingestRunArtifacts } from "../../../src/db/run-artifacts.js";
 import {
   MIGRATIONS,
   runMigrations,
@@ -71,7 +73,7 @@ describe("runMigrations", () => {
     expect(r.version).toBe(SCHEMA_VERSION);
     expect(r.applied).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     ]);
     const tables = tableNames(dbPath);
     expect(tables.has("schema_migrations")).toBe(true);
@@ -119,7 +121,7 @@ describe("runMigrations", () => {
       );
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([32, 33, 34]);
+      expect(upgraded.applied).toEqual([32, 33, 34, 35]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "review_refute_votes")).toBe(true);
 
@@ -314,7 +316,7 @@ describe("runMigrations", () => {
       ).toThrow(/CHECK/i);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([29, 30, 31, 32, 33, 34]);
+      expect(upgraded.applied).toEqual([29, 30, 31, 32, 33, 34, 35]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "index", "hitch_lifecycle_events_hitch_idx")).toBe(
         true,
@@ -414,7 +416,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "domain_lock_contention")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([28, 29, 30, 31, 32, 33, 34]);
+      expect(upgraded.applied).toEqual([28, 29, 30, 31, 32, 33, 34, 35]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "domain_lock_contention")).toBe(true);
       expect(
@@ -492,7 +494,7 @@ describe("runMigrations", () => {
       ).run();
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([30, 31, 32, 33, 34]);
+      expect(upgraded.applied).toEqual([30, 31, 32, 33, 34, 35]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
 
       const columns = db
@@ -594,7 +596,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "metrics_snapshots")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([27, 28, 29, 30, 31, 32, 33, 34]);
+      expect(upgraded.applied).toEqual([27, 28, 29, 30, 31, 32, 33, 34, 35]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "metrics_snapshots")).toBe(true);
       expect(hasSchemaObject(db, "index", "metrics_snapshots_created_idx")).toBe(
@@ -658,7 +660,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "run_usage")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([26, 27, 28, 29, 30, 31, 32, 33, 34]);
+      expect(upgraded.applied).toEqual([26, 27, 28, 29, 30, 31, 32, 33, 34, 35]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "run_usage")).toBe(true);
 
@@ -779,7 +781,7 @@ describe("runMigrations", () => {
       expect(before.map((r) => r.name)).not.toContain("prompt_sha256");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([25, 26, 27, 28, 29, 30, 31, 32, 33, 34]);
+      expect(upgraded.applied).toEqual([25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       const after = db
         .prepare("PRAGMA table_info(runs)")
@@ -825,7 +827,7 @@ describe("runMigrations", () => {
 
       const upgraded = runMigrations(db);
       expect(upgraded.applied).toEqual([
-        24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+        24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
       ]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       const after = db
@@ -851,7 +853,7 @@ describe("runMigrations", () => {
 
       const upgraded = runMigrations(db);
       expect(upgraded.applied).toEqual([
-        23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+        23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
       ]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "hitch_lifecycle_events")).toBe(true);
@@ -893,7 +895,7 @@ describe("runMigrations", () => {
 
       const upgraded = runMigrations(db);
       expect(upgraded.applied).toEqual([
-        22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+        22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
       ]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "db_stats_snapshots")).toBe(false);
@@ -987,5 +989,68 @@ describe("runMigrations", () => {
     const bogus = join(dir, "harness.sqlite");
     writeFileSync(bogus, "this is not a database\n");
     expect(() => openDb(bogus)).toThrow(/not a database/);
+  });
+});
+
+describe("v35 artifact quarantine marker backfill (#303 P1)", () => {
+  /**
+   * The pre-v35 db-first predicate preserved EVERY absent recoverable row,
+   * including #272-quarantined transcripts already removed from disk on a live
+   * v34 DB. The v35 backfill must grandfather all currently-recoverable rows to
+   * `quarantined = 1` so the new `OR quarantined = 0` prune does NOT delete them
+   * on the first post-upgrade full sync.
+   */
+  it("grandfathers legacy absent recoverable rows so the next full sync does not prune them", () => {
+    const dbPath = freshDbPath();
+    const db = openDb(dbPath);
+    // Seed a v34-shape DB (every migration BEFORE v35), then add a legacy
+    // db-first run with an ABSENT recoverable reviewer-transcript row — exactly
+    // what #272 left on a v34 ops DB (ingested DB-canonical, file removed).
+    applyMigrationsBefore(db, 35);
+    expect(currentSchemaVersion(db)).toBe(34);
+    db.prepare(
+      `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+         status, source_mode, db_revision, export_status, updated_at)
+       VALUES ('run-v35', 't', 'apps/user', 'domain-coding', 'main',
+         'needs_review', 'db-first', 1, 'disabled', '2026-05-23T00:00:00Z')`,
+    ).run();
+    const blob = storeArtifactBlob(db, Buffer.from("decision: approved\n"));
+    const rel = "reviewers/alice/reviewer-agent.out.log";
+    db.prepare(
+      `INSERT INTO artifacts (artifact_id, run_id, kind, relative_path,
+         content_type, bytes, sha256, storage, blob_sha256, body_status)
+       VALUES ('run-v35:tx', 'run-v35', 'other', ?, 'text/plain', ?, ?, 'db',
+         ?, 'db_available')`,
+    ).run(rel, blob.bytes, blob.sha256, blob.sha256);
+
+    // Upgrade through v35.
+    const upgraded = runMigrations(db);
+    expect(upgraded.applied).toEqual([35]);
+
+    // The legacy recoverable row is grandfathered to quarantined = 1.
+    const marked = db
+      .prepare(
+        "SELECT quarantined FROM artifacts WHERE run_id = 'run-v35' AND relative_path = ?",
+      )
+      .get(rel) as { quarantined: number } | undefined;
+    expect(marked?.quarantined).toBe(1);
+
+    // A subsequent db-first full sync over an empty run dir must NOT prune it
+    // (the regression #303 P1#1 would have lost this transcript).
+    const runDir = join(mkdtempSync(join(tmpdir(), "harness-v35-")), "run-v35");
+    mkdirSync(runDir, { recursive: true });
+    ingestRunArtifacts(db, runDir, "run-v35");
+
+    const after = db
+      .prepare(
+        `SELECT quarantined, blob_sha256 FROM artifacts
+          WHERE run_id = 'run-v35' AND relative_path = ?`,
+      )
+      .get(rel) as
+      | { quarantined: number; blob_sha256: string | null }
+      | undefined;
+    expect(after?.quarantined).toBe(1);
+    expect(after?.blob_sha256).toBeTruthy();
+    db.close();
   });
 });
