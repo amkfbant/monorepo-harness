@@ -98,7 +98,10 @@ describe("ConvergenceService runtime spec drift diagnostics", () => {
 
       const result = service.evaluate("h-drift");
 
+      // decision/reason/kind are the SAME tuple as the non-drift path (see the
+      // linked-undrifted test below) — the drift note is message-only.
       expect(result.decision).toBe("continue");
+      expect(result.reason).toBe("external close-check evidence required");
       expect(result.recommendedNextAction.kind).toBe("ask_human");
       expect(result.recommendedNextAction.message).toContain(
         "condition manual-signoff kind=manual pending 2 cycles",
@@ -140,7 +143,66 @@ describe("ConvergenceService runtime spec drift diagnostics", () => {
       expect(result.recommendedNextAction.message).toContain(
         "condition manual-signoff kind=manual pending 2 cycles",
       );
-      // ...but NO drift note, because the hitch is linked to no drifted phase.
+      // ...but NO drift note, because the hitch is linked to no phase.
+      expect(result.recommendedNextAction.message).not.toContain(
+        "Spec approval hash drift",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("omits the drift note for a LINKED, ratified, un-edited phase (drifted=false)", () => {
+    // The discriminating negative case: the hitch IS linked to a ratified phase,
+    // but the spec was NOT edited after ratification (drifted=false). A bug that
+    // emitted a drift note for any linked+approved phase (dropping the
+    // `!status.drifted` guard) would fail here. Also re-pins the decision/reason/
+    // kind tuple identical to the drifted case above.
+    const { db, hitches, service, courses, phases } = fresh();
+    try {
+      const course = courses.create({
+        courseId: "course-nodrift",
+        title: "Course No Drift",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      const phase = phases.add({
+        courseId: course.courseId,
+        phaseId: "phase-nodrift",
+        title: "Phase No Drift",
+        scope: {},
+        closeConditions: [MANUAL_SIGNOFF],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      phases.recordSpecApproval(phase.phaseId, {
+        approvedBy: "operator",
+        now: "2026-06-18T00:00:00.000Z",
+      });
+      hitches.createSession({
+        hitchId: "h-linked-nodrift",
+        title: "Hitch Linked No Drift",
+        projectId: "demo",
+        scope: {},
+        closeConditions: [MANUAL_SIGNOFF],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      phases.linkHitch(phase.phaseId, "h-linked-nodrift");
+      // NOTE: no updateSpec() after ratification → phaseSpecApprovalStatus.drifted === false
+      seedReviewedCodingAttempt(hitches, "h-linked-nodrift");
+
+      const result = service.evaluate("h-linked-nodrift");
+
+      // Gate tuple identical to the drifted case (byte-invariance across drift state).
+      expect(result.decision).toBe("continue");
+      expect(result.reason).toBe("external close-check evidence required");
+      expect(result.recommendedNextAction.kind).toBe("ask_human");
+      // pending-cycle diagnostic present, but NO drift note for an un-edited spec.
+      expect(result.recommendedNextAction.message).toContain(
+        "condition manual-signoff kind=manual pending 2 cycles",
+      );
       expect(result.recommendedNextAction.message).not.toContain(
         "Spec approval hash drift",
       );
