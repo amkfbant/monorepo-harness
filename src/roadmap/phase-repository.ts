@@ -48,12 +48,61 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function phaseSpecHash(scope: unknown, closeConditions: unknown): string {
+export function phaseSpecHash(scope: unknown, closeConditions: unknown): string {
   // Hash a structured tuple, not concatenated scalars: `1`+`23` and `12`+`3`
   // would otherwise collide on "123" and let a spec drift slip past (codex SP-3).
   return createHash("sha256")
     .update(canonicalJson([scope, closeConditions]))
     .digest("hex");
+}
+
+export interface PhaseSpecApproval {
+  approvedBy: string;
+  approvedAt: string;
+  reason: string;
+  specHash: string;
+}
+
+export interface PhaseSpecApprovalStatus {
+  approval: PhaseSpecApproval | null;
+  currentSpecHash: string;
+  approvedSpecHash: string | null;
+  drifted: boolean;
+}
+
+export function phaseSpecApproval(phase: Phase): PhaseSpecApproval | null {
+  const rs = phase.reviewState;
+  if (rs === null || typeof rs !== "object" || Array.isArray(rs)) return null;
+  const value = (rs as Record<string, unknown>).specApproval;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const approval = value as Record<string, unknown>;
+  if (
+    typeof approval.approvedBy !== "string" ||
+    typeof approval.approvedAt !== "string" ||
+    typeof approval.reason !== "string" ||
+    typeof approval.specHash !== "string"
+  ) {
+    return null;
+  }
+  return {
+    approvedBy: approval.approvedBy,
+    approvedAt: approval.approvedAt,
+    reason: approval.reason,
+    specHash: approval.specHash,
+  };
+}
+
+export function phaseSpecApprovalStatus(phase: Phase): PhaseSpecApprovalStatus {
+  const currentSpecHash = phaseSpecHash(phase.scope, phase.closeConditions);
+  const approval = phaseSpecApproval(phase);
+  return {
+    approval,
+    currentSpecHash,
+    approvedSpecHash: approval?.specHash ?? null,
+    drifted: approval !== null && approval.specHash !== currentSpecHash,
+  };
 }
 
 function mapPhase(r: PhaseRow): Phase {
@@ -121,6 +170,19 @@ export interface UpdatePhaseSpecInput {
   allowScopeWiden?: boolean;
   allowGateLoosen?: boolean;
   now?: string;
+}
+
+export interface LinkHitchOptions {
+  now?: string;
+  allowScopeWiden?: boolean;
+  allowGateLoosen?: boolean;
+}
+
+export interface LinkHitchResult {
+  phaseId: string;
+  hitchId: string;
+  warnings: string[];
+  specApproval: PhaseSpecApprovalStatus;
 }
 
 const DEFAULT_REVIEW_STATE_CAS_ATTEMPTS = 3;
@@ -332,13 +394,17 @@ export class PhaseRepository {
     phaseId: string,
     input: RecordSpecApprovalInput,
   ): Phase {
+    const approvedBy = input.approvedBy.trim();
+    if (approvedBy === "") {
+      throw new CourseUserError("phase spec approval requires approvedBy");
+    }
     const approvedAt = input.now ?? new Date().toISOString();
     return this.updateReviewState(
       phaseId,
       (state, context) => ({
         ...state,
         specApproval: {
-          approvedBy: input.approvedBy,
+          approvedBy,
           approvedAt,
           reason: input.reason ?? "",
           specHash: phaseSpecHash(context.scope, context.closeConditions),
@@ -412,25 +478,72 @@ export class PhaseRepository {
     }
   }
 
-  /** Link a hitch to a phase. Rejects a project mismatch and a double-link (PK). */
-  linkHitch(phaseId: string, hitchId: string, now?: string): void {
+  /**
+   * Link a hitch to a phase. Rejects a project mismatch and a double-link (PK).
+   * If the phase has been ratified, the hitch spec must match or tighten the
+   * current phase spec unless the caller explicitly accepts a loosened gate.
+   */
+  linkHitch(
+    phaseId: string,
+    hitchId: string,
+    opts?: string | LinkHitchOptions,
+  ): LinkHitchResult {
+    const options = normalizeLinkHitchOptions(opts);
     const phase = this.require(phaseId);
-    const course = this.db.prepare("SELECT project_id FROM courses WHERE course_id = ?").get(phase.courseId) as { project_id: string | null } | undefined;
-    const hitch = this.db.prepare("SELECT project_id FROM hitch_sessions WHERE hitch_id = ?").get(hitchId) as { project_id: string | null } | undefined;
-    if (hitch === undefined) throw new CourseUserError(`hitch ${hitchId} not found`);
-    if (course?.project_id != null && hitch.project_id !== course.project_id) {
-      throw new CourseUserError(`hitch ${hitchId} belongs to a different project than course ${phase.courseId}`);
+    const course = this.db
+      .prepare("SELECT project_id FROM courses WHERE course_id = ?")
+      .get(phase.courseId) as { project_id: string | null } | undefined;
+    const hitch = this.db
+      .prepare(
+        `SELECT project_id, scope_json, close_conditions_json
+           FROM hitch_sessions
+          WHERE hitch_id = ?`,
+      )
+      .get(hitchId) as
+      | {
+          project_id: string | null;
+          scope_json: string;
+          close_conditions_json: string;
+        }
+      | undefined;
+    if (hitch === undefined) {
+      throw new CourseUserError(`hitch ${hitchId} not found`);
     }
+    if (course?.project_id != null && hitch.project_id !== course.project_id) {
+      throw new CourseUserError(
+        `hitch ${hitchId} belongs to a different project than course ${phase.courseId}`,
+      );
+    }
+    const specApproval = this.assertRatifiedSpecAllowsHitch(phase, hitchId, {
+      scope: parseHitchScope(parse(hitch.scope_json) ?? {}),
+      closeConditions: parseHitchCloseConditions(
+        parse(hitch.close_conditions_json) ?? [],
+      ),
+      allowScopeWiden: options.allowScopeWiden === true,
+      allowGateLoosen: options.allowGateLoosen === true,
+    });
     try {
-      this.db.prepare("INSERT INTO phase_hitches (hitch_id, phase_id, linked_at) VALUES (?, ?, ?)")
-        .run(hitchId, phaseId, now ?? new Date().toISOString());
+      this.db
+        .prepare(
+          "INSERT INTO phase_hitches (hitch_id, phase_id, linked_at) VALUES (?, ?, ?)",
+        )
+        .run(hitchId, phaseId, options.now ?? new Date().toISOString());
     } catch (e) {
       // only the PK violation means "already linked"; rethrow anything else.
       if ((e as { code?: string }).code === "SQLITE_CONSTRAINT_PRIMARYKEY") {
-        throw new CourseUserError(`hitch ${hitchId} is already linked to a phase`, { cause: e });
+        throw new CourseUserError(
+          `hitch ${hitchId} is already linked to a phase`,
+          { cause: e },
+        );
       }
       throw e;
     }
+    return {
+      phaseId,
+      hitchId,
+      warnings: ratifiedSpecWarnings(phase, specApproval),
+      specApproval,
+    };
   }
 
   unlinkHitch(hitchId: string): boolean {
@@ -450,11 +563,55 @@ export class PhaseRepository {
       .get(phaseId) as { review_state_version: number } | undefined;
     return row?.review_state_version ?? null;
   }
+
+  private assertRatifiedSpecAllowsHitch(
+    phase: Phase,
+    hitchId: string,
+    input: {
+      scope: HitchScope;
+      closeConditions: HitchCloseCondition[];
+      allowScopeWiden: boolean;
+      allowGateLoosen: boolean;
+    },
+  ): PhaseSpecApprovalStatus {
+    const status = phaseSpecApprovalStatus(phase);
+    if (status.approval === null) return status;
+    const phaseScopeValue = phaseScope(phase.scope);
+    const phaseCloseConditionsValue = phaseCloseConditions(
+      phase.closeConditions,
+    );
+    if (
+      !input.allowScopeWiden &&
+      isScopeWidening(phaseScopeValue, input.scope)
+    ) {
+      throw new CourseUserError(
+        `phase ${phase.phaseId} ratified spec forbids linking hitch ${hitchId}: scope widen requires --allow-scope-widen`,
+      );
+    }
+    if (
+      !input.allowGateLoosen &&
+      closeConditionsLoosenGate(
+        phaseCloseConditionsValue,
+        input.closeConditions,
+      )
+    ) {
+      throw new CourseUserError(
+        `phase ${phase.phaseId} ratified spec forbids linking hitch ${hitchId}: gate loosen requires --allow-gate-loosen`,
+      );
+    }
+    return status;
+  }
 }
 
 function normalizeTransitionStatusOptions(
   opts: string | TransitionStatusOptions | undefined,
 ): TransitionStatusOptions {
+  return typeof opts === "string" ? { now: opts } : opts ?? {};
+}
+
+function normalizeLinkHitchOptions(
+  opts: string | LinkHitchOptions | undefined,
+): LinkHitchOptions {
   return typeof opts === "string" ? { now: opts } : opts ?? {};
 }
 
@@ -512,4 +669,14 @@ function isSqliteBusy(e: unknown): boolean {
   if (typeof e !== "object" || e === null) return false;
   const code = (e as { code?: unknown }).code;
   return code === "SQLITE_BUSY" || code === "SQLITE_BUSY_SNAPSHOT";
+}
+
+function ratifiedSpecWarnings(
+  phase: Phase,
+  status: PhaseSpecApprovalStatus,
+): string[] {
+  if (!status.drifted) return [];
+  return [
+    `phase ${phase.phaseId} spec approval hash drift: approved=${status.approvedSpecHash} current=${status.currentSpecHash}`,
+  ];
 }

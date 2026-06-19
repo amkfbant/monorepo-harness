@@ -1,11 +1,20 @@
 import { harnessPaths } from "../../config/paths.js";
 import { CourseRepository } from "../../roadmap/course-repository.js";
 import { createProductionCourseOrchestrator } from "../../roadmap/course-orchestrate-runtime.js";
+import { HitchRepository } from "../../hitch/repository.js";
+import type {
+  HitchCloseCondition,
+  HitchPolicy,
+  HitchScope,
+} from "../../hitch/types.js";
 import {
   normalizeCourseMaxDrivenHitches,
   normalizeCourseMaxStepsPerHitch,
 } from "../../roadmap/course-normalize.js";
-import { PhaseRepository } from "../../roadmap/phase-repository.js";
+import {
+  PhaseRepository,
+  phaseSpecApprovalStatus,
+} from "../../roadmap/phase-repository.js";
 import { rollupCourse } from "../../roadmap/rollup.js";
 import { errorResult, ok, type HarnessMcpToolResult } from "../schemas/outputs.js";
 import type { McpToolContext } from "../registry/tool-registry.js";
@@ -70,9 +79,39 @@ export interface PhaseUpdateArgs {
   actorNote?: string;
 }
 
+export interface PhaseRatifyArgs {
+  phaseId: string;
+  approvedBy: string;
+  reason?: string;
+  idempotencyKey: string;
+  actorNote?: string;
+}
+
 export interface PhaseLinkHitchArgs {
   phaseId: string;
   hitchId: string;
+  allowScopeWiden?: boolean;
+  allowGateLoosen?: boolean;
+  idempotencyKey: string;
+  actorNote?: string;
+}
+
+export interface PhaseStartHitchArgs {
+  phaseId: string;
+  hitchId?: string;
+  title: string;
+  description?: string;
+  domain?: string;
+  backlogItemId?: string;
+  scope?: HitchScope;
+  closeConditions?: HitchCloseCondition[];
+  policy?: HitchPolicy;
+  maxIterations?: number;
+  maxReviewCycles?: number;
+  maxReruns?: number;
+  maxTotalNewFindings?: number;
+  allowScopeWiden?: boolean;
+  allowGateLoosen?: boolean;
   idempotencyKey: string;
   actorNote?: string;
 }
@@ -312,6 +351,13 @@ function phaseIdForIdempotencyKey(
   return scopedIdForIdempotencyKey("phase", courseScope, idempotencyKey);
 }
 
+function phaseHitchIdForIdempotencyKey(
+  phaseId: string,
+  idempotencyKey: string,
+): string {
+  return scopedIdForIdempotencyKey("hitch", phaseId, idempotencyKey);
+}
+
 // ---------------------------------------------------------------------------
 // Mutation tools
 // ---------------------------------------------------------------------------
@@ -515,6 +561,46 @@ export async function phaseUpdateTool(
   });
 }
 
+export async function phaseRatifyTool(
+  args: PhaseRatifyArgs,
+  context: McpToolContext,
+): Promise<HarnessMcpToolResult> {
+  const visibilityResult = withReadonlyDb(context, ({ db }) => {
+    const row = db
+      .prepare(
+        `SELECT c.project_id
+           FROM phases p
+           JOIN courses c ON c.course_id = p.course_id
+          WHERE p.phase_id = ?`,
+      )
+      .get(args.phaseId) as { project_id: string | null } | undefined;
+    if (row === undefined) return errorResult(`phase ${args.phaseId} not found`);
+    return ensureProjectVisible(context.config, row.project_id);
+  });
+  if (visibilityResult !== null) return visibilityResult as HarnessMcpToolResult;
+
+  return runMcpMutationOperation(context, {
+    operationType: "phase.ratify",
+    target: { type: "phase", id: args.phaseId },
+    args,
+    metadata: courseMetadata(context, "harness.phase.ratify", args, {
+      phaseId: args.phaseId,
+    }),
+    workWithDb: async (db) => {
+      const phaseRepo = new PhaseRepository(db);
+      const phase = phaseRepo.recordSpecApproval(args.phaseId, {
+        approvedBy: args.approvedBy,
+        ...(args.reason !== undefined ? { reason: args.reason } : {}),
+      });
+      return {
+        phaseId: args.phaseId,
+        phase,
+        specApproval: phaseSpecApprovalStatus(phase),
+      };
+    },
+  });
+}
+
 export async function phaseLinkHitchTool(
   args: PhaseLinkHitchArgs,
   context: McpToolContext,
@@ -537,8 +623,91 @@ export async function phaseLinkHitchTool(
       const phase = phaseRepo.get(args.phaseId);
       if (phase === null) throw new Error(`phase ${args.phaseId} not found`);
       // linkHitch already validates cross-project and double-link (throws on violation)
-      phaseRepo.linkHitch(args.phaseId, args.hitchId);
-      return { phaseId: args.phaseId, hitchId: args.hitchId };
+      const link = phaseRepo.linkHitch(args.phaseId, args.hitchId, {
+        allowScopeWiden: args.allowScopeWiden === true,
+        allowGateLoosen: args.allowGateLoosen === true,
+      });
+      return { phaseId: args.phaseId, hitchId: args.hitchId, link };
+    },
+  });
+}
+
+export async function phaseStartHitchTool(
+  args: PhaseStartHitchArgs,
+  context: McpToolContext,
+): Promise<HarnessMcpToolResult> {
+  const visibilityResult = withReadonlyDb(context, ({ db }) => {
+    const row = db
+      .prepare(
+        `SELECT c.project_id
+           FROM phases p
+           JOIN courses c ON c.course_id = p.course_id
+          WHERE p.phase_id = ?`,
+      )
+      .get(args.phaseId) as { project_id: string | null } | undefined;
+    if (row === undefined) return errorResult(`phase ${args.phaseId} not found`);
+    return ensureProjectVisible(context.config, row.project_id);
+  });
+  if (visibilityResult !== null) return visibilityResult as HarnessMcpToolResult;
+
+  const hitchId =
+    args.hitchId ?? phaseHitchIdForIdempotencyKey(args.phaseId, args.idempotencyKey);
+  return runMcpMutationOperation(context, {
+    operationType: "phase.start_hitch",
+    target: { type: "goal", id: hitchId },
+    args,
+    metadata: courseMetadata(context, "harness.phase.start_hitch", args, {
+      phaseId: args.phaseId,
+      hitchId,
+    }),
+    workWithDb: async (db) => {
+      const courseRepo = new CourseRepository(db);
+      const phaseRepo = new PhaseRepository(db);
+      const hitchRepo = new HitchRepository(db);
+      const tx = db.transaction(() => {
+        const phase = phaseRepo.require(args.phaseId);
+        const course = courseRepo.require(phase.courseId);
+        const hitch = hitchRepo.createSession({
+          hitchId,
+          title: args.title,
+          ...(args.description !== undefined ? { description: args.description } : {}),
+          ...(course.projectId !== null ? { projectId: course.projectId } : {}),
+          ...(course.repoId !== null ? { repoId: course.repoId } : {}),
+          ...(args.domain !== undefined ? { domain: args.domain } : {}),
+          ...(args.backlogItemId !== undefined
+            ? { backlogItemId: args.backlogItemId }
+            : {}),
+          scope: args.scope ?? (phase.scope as HitchScope | null) ?? {},
+          closeConditions:
+            args.closeConditions ??
+            ((phase.closeConditions as HitchCloseCondition[] | null) ?? []),
+          ...(args.policy !== undefined ? { policy: args.policy } : {}),
+          ...(args.maxIterations !== undefined
+            ? { maxIterations: args.maxIterations }
+            : {}),
+          ...(args.maxReviewCycles !== undefined
+            ? { maxReviewCycles: args.maxReviewCycles }
+            : {}),
+          ...(args.maxReruns !== undefined ? { maxReruns: args.maxReruns } : {}),
+          ...(args.maxTotalNewFindings !== undefined
+            ? { maxTotalNewFindings: args.maxTotalNewFindings }
+            : {}),
+          createdBy: `mcp:${context.clientName}`,
+          createdSource: "mcp",
+        });
+        const link = phaseRepo.linkHitch(args.phaseId, hitch.hitchId, {
+          allowScopeWiden: args.allowScopeWiden === true,
+          allowGateLoosen: args.allowGateLoosen === true,
+        });
+        return {
+          phaseId: args.phaseId,
+          hitchId: hitch.hitchId,
+          hitch,
+          link,
+          warnings: link.warnings,
+        };
+      });
+      return tx.immediate();
     },
   });
 }

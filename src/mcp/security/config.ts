@@ -173,6 +173,7 @@ export const DEFAULT_MCP_CONFIG: McpConfig = {
     "hitch.close",
     "hitch.cancel",
     "hitch.expand_scope",
+    "phase.ratify",
     "db.repair.apply",
     "db.archive.apply",
     "db.migrate_blobs.apply",

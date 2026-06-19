@@ -175,6 +175,7 @@ mcp:
     - hitch.close
     - hitch.cancel
     - hitch.expand_scope
+    - phase.ratify
     - db.repair.apply
     - db.archive.apply
     - db.migrate_blobs.apply
@@ -518,7 +519,8 @@ read surface。データモデル・ロールアップ仕様は [`roadmap.md`](.
 すべて read tool なので allowlist 不要。`allowedProjects` が空（unrestricted）なら全 course 可視。
 
 **`harness.course.create` / `harness.course.orchestrate` / `harness.phase.add` /
-`harness.phase.update` / `harness.phase.link_hitch`（guarded mutation、SP-1/SP-2）**
+`harness.phase.update` / `harness.phase.ratify` / `harness.phase.link_hitch` /
+`harness.phase.start_hitch`（guarded mutation、SP-1/SP-2/SP-21）**
 は course → phase の構造変更・drive surface。
 `guarded-mutation` モード ＋ `allowedOperations` への operation key 追加が必須（deny-by-default）。
 `idempotencyKey` 必須。`course.create` / phase mutation は `OperationRunner` 経由で idempotency
@@ -532,7 +534,9 @@ confirmation は不要（PR を開かず、hitch/phase close もしない bounde
 | `harness.course.orchestrate` | `course.orchestrate` | `courseId`, `maxDrivenHitches?`, `maxStepsPerHitch?`, `idempotencyKey`, `actorNote?`。親 course の visibility を事前チェック。`maxDrivenHitches` は既定 3 / 最大 10、`maxStepsPerHitch` は既定 20 / 最大 50 に clamp。course-pass lease `course:<id>` を使い、PR は開かない |
 | `harness.phase.add` | `phase.add` | 親 course の visibility を `OperationRunner` 前に確認。cross-course parent は拒否。`scope` / `closeConditions` は `PhaseRepository.add()` の parser/validator を通る |
 | `harness.phase.update` | `phase.update` | 親 course 経由で visibility 確認。`status` のみ更新（SP-1） |
-| `harness.phase.link_hitch` | `phase.link_hitch` | cross-project mismatch と double-link（PK）は操作内で拒否 |
+| `harness.phase.ratify` | `phase.ratify` | `phaseId`, `approvedBy`, `reason?`, `idempotencyKey`, `actorNote?`。現在の phase scope/close conditions の `specHash` を `review_state_json.specApproval` に記録 |
+| `harness.phase.link_hitch` | `phase.link_hitch` | `phaseId`, `hitchId`, `allowScopeWiden?`, `allowGateLoosen?`, `idempotencyKey`, `actorNote?`。cross-project mismatch と double-link（PK）は操作内で拒否。ratify 済み phase では hitch spec が phase spec を緩める link も拒否（明示 allow でのみ許可） |
+| `harness.phase.start_hitch` | `phase.start_hitch` | `phaseId`, `hitchId?`, `title`, `description?`, `domain?`, `backlogItemId?`, `scope?`, `closeConditions?`, `policy?`, budget fields, `allowScopeWiden?`, `allowGateLoosen?`, `idempotencyKey`, `actorNote?`。phase spec から hitch を作って同一 transaction で link。ratified-spec gate と drift warning は `phase.link_hitch` と同じ |
 
 project-restricted client の scope: null-`project_id` course の create / orchestrate / phase 操作は拒否。
 
@@ -572,7 +576,9 @@ harness.course.create
 harness.course.orchestrate
 harness.phase.add
 harness.phase.update
+harness.phase.ratify
 harness.phase.link_hitch
+harness.phase.start_hitch
 ```
 
 `harness.hitch.orchestrate` is a **bounded driver** for the hitch convergence
@@ -619,6 +625,7 @@ harness.pr.create
 harness.hitch.close
 harness.hitch.cancel
 harness.hitch.expand_scope
+harness.phase.ratify
 harness.db.repair.apply
 harness.db.archive.apply
 harness.db.migrate_blobs.apply

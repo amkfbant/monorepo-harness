@@ -29,6 +29,10 @@ describe("MCP config and permission engine", () => {
     expect(config.defaultMode).toBe("dry-run");
     expect(config.audit.recordDryRuns).toBe(true);
     expect(config.requireConfirmation).toContain("pr.create");
+    // phase.ratify records human spec approval (accountable owner signs); it must
+    // require out-of-band confirmation by default so an allowlisted agent cannot
+    // silently self-ratify a phase spec (parity with hitch.close/hitch.cancel).
+    expect(config.requireConfirmation).toContain("phase.ratify");
     expect(config.deniedOperations).toContain("db.vacuum");
   });
 

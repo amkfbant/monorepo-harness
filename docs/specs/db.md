@@ -1674,5 +1674,12 @@ ALTER TABLE phases
 canonical JSON の sha256 として計算する（scalar 連結だと `1`+`23` と `12`+`3` が
 ともに "123" に衝突するため、tuple で構造化して衝突を防ぐ）。既存
 `setNote()` も同じ CAS 経路を使うため、operator note と spec approval は互いの
-key を lost-update しない。v33 は table identity を変えないため
+key を lost-update しない。
+
+`specApproval` は専用 table ではなく phase review-state blob の namespaced key なので、
+link/start 時は現在の `scope_json` / `close_conditions_json` から `specHash` を再計算して
+批准後の drift を診断する。drift は operator warning であり DB schema の状態遷移では
+ない。ratify 済み phase に hitch を attach する経路は、この current spec に対して
+scope/close conditions が同一または厳格化であることを deterministic gate で確認する。
+v33 は table identity を変えないため
 `ALL_TABLE_NAMES` には何も追加しない。

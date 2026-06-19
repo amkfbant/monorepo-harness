@@ -119,6 +119,8 @@ import {
   phaseGetTool,
   phaseListTool,
   phaseLinkHitchTool,
+  phaseRatifyTool,
+  phaseStartHitchTool,
   phaseUpdateTool,
   resolveCourseProjectId,
   resolveCourseCreateProjectId,
@@ -424,6 +426,27 @@ const hitchStartArgs = z
     maxReviewCycles: z.number().int().min(1).optional(),
     maxReruns: z.number().int().min(0).optional(),
     maxTotalNewFindings: z.number().int().min(0).optional(),
+  })
+  .merge(MutationArgsBaseSchema)
+  .strict();
+
+const phaseStartHitchArgs = z
+  .object({
+    phaseId: z.string().min(1),
+    hitchId: z.string().min(1).optional(),
+    title: z.string().min(1),
+    description: z.string().min(1).optional(),
+    domain: z.string().min(1).optional(),
+    backlogItemId: z.string().min(1).optional(),
+    scope: HitchScopeSchema.optional(),
+    closeConditions: z.array(HitchCloseConditionSchema).optional(),
+    policy: HitchPolicySchema.optional(),
+    maxIterations: z.number().int().min(1).optional(),
+    maxReviewCycles: z.number().int().min(1).optional(),
+    maxReruns: z.number().int().min(0).optional(),
+    maxTotalNewFindings: z.number().int().min(0).optional(),
+    allowScopeWiden: z.boolean().optional(),
+    allowGateLoosen: z.boolean().optional(),
   })
   .merge(MutationArgsBaseSchema)
   .strict();
@@ -2039,17 +2062,48 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     handler: phaseUpdateTool,
   }),
   define({
+    name: "harness.phase.ratify",
+    title: "Ratify phase spec",
+    description:
+      "Record human approval for a roadmap phase spec through OperationRunner.",
+    kind: "mutation",
+    operation: "phase.ratify",
+    argsSchema: z
+      .object({
+        phaseId: z.string().min(1),
+        approvedBy: z.string().min(1),
+        reason: z.string().min(1).optional(),
+      })
+      .merge(MutationArgsBaseSchema)
+      .strict(),
+    resolveProjectIdForPermission: resolvePhaseProjectId,
+    inputSchema: objectSchema(
+      {
+        phaseId: { type: "string", description: "Phase id" },
+        approvedBy: { type: "string", description: "Approving operator" },
+        reason: { type: "string" },
+        idempotencyKey: { type: "string", description: "Required idempotency key for mutation tools" },
+        actorNote: { type: "string" },
+      },
+      ["phaseId", "approvedBy", "idempotencyKey"],
+    ),
+    handler: phaseRatifyTool,
+  }),
+  define({
     name: "harness.phase.link_hitch",
     title: "Link hitch to phase",
     description:
       "Link a hitch session to a roadmap phase through OperationRunner. " +
-      "Rejects cross-project links and double-links. Guarded mutation.",
+      "Rejects cross-project links, double-links, and ratified spec loosening " +
+      "unless explicitly allowed. Guarded mutation.",
     kind: "mutation",
     operation: "phase.link_hitch",
     argsSchema: z
       .object({
         phaseId: z.string().min(1),
         hitchId: z.string().min(1),
+        allowScopeWiden: z.boolean().optional(),
+        allowGateLoosen: z.boolean().optional(),
       })
       .merge(MutationArgsBaseSchema)
       .strict(),
@@ -2058,12 +2112,48 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
       {
         phaseId: { type: "string", description: "Phase id" },
         hitchId: { type: "string", description: "Hitch id" },
+        allowScopeWiden: { type: "boolean" },
+        allowGateLoosen: { type: "boolean" },
         idempotencyKey: { type: "string", description: "Required idempotency key for mutation tools" },
         actorNote: { type: "string" },
       },
       ["phaseId", "hitchId", "idempotencyKey"],
     ),
     handler: phaseLinkHitchTool,
+  }),
+  define({
+    name: "harness.phase.start_hitch",
+    title: "Start phase hitch",
+    description:
+      "Create a hitch from a roadmap phase and link it atomically. " +
+      "Ratified phase specs must match or tighten unless explicitly allowed.",
+    kind: "mutation",
+    operation: "phase.start_hitch",
+    argsSchema: phaseStartHitchArgs,
+    resolveProjectIdForPermission: resolvePhaseProjectId,
+    inputSchema: objectSchema(
+      {
+        phaseId: { type: "string", description: "Phase id" },
+        hitchId: hitchIdJson,
+        title: { type: "string" },
+        description: { type: "string" },
+        domain: { type: "string" },
+        backlogItemId: { type: "string" },
+        scope: hitchScopeJson,
+        closeConditions: { type: "array", items: { type: "object" } },
+        policy: { type: "object", additionalProperties: true },
+        maxIterations: { type: "number" },
+        maxReviewCycles: { type: "number" },
+        maxReruns: { type: "number" },
+        maxTotalNewFindings: { type: "number" },
+        allowScopeWiden: { type: "boolean" },
+        allowGateLoosen: { type: "boolean" },
+        idempotencyKey: { type: "string", description: "Required idempotency key for mutation tools" },
+        actorNote: { type: "string" },
+      },
+      ["phaseId", "title", "idempotencyKey"],
+    ),
+    handler: phaseStartHitchTool,
   }),
   define({
     name: "harness.workspace.list",
