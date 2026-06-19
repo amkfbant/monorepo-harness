@@ -127,12 +127,6 @@ import {
   RunViewError,
 } from "../core/run-viewer.js";
 import {
-  buildInbox,
-  formatInbox,
-  formatInboxJson,
-  type InboxSection,
-} from "../core/inbox.js";
-import {
   formatItem,
   formatItemList,
   BacklogError,
@@ -246,6 +240,7 @@ import { registerHitchCommands } from "./hitch.js";
 import { registerCourseCommands } from "./course.js";
 import { registerMcpCommands } from "../mcp/cli.js";
 import { registerLockCommands } from "./lock.js";
+import { registerInboxCommands } from "./inbox.js";
 import {
   confirmMcpRequest,
   rejectMcpRequest,
@@ -259,7 +254,6 @@ import {
   runMetricsDelta,
   runScopedMetrics,
   runMetricsSnapshot,
-  runScopedInbox,
   runScopedKnowledgeDigest,
 } from "./db-scope.js";
 import {
@@ -1655,59 +1649,7 @@ prCmd
     process.exit(outcome.status === "failed" ? 1 : 0);
   });
 
-program
-  .command("inbox")
-  .description(
-    "today's queue: needs_review / changes_requested / failed / cleanup / knowledge",
-  )
-  .option("--today", "only runs started today", false)
-  .option(
-    "--needs-action",
-    "only sections that need an action (exclude knowledge)",
-    false,
-  )
-  .option("--failed", "only the failed section", false)
-  .option("--cleanup", "only the cleanup-candidates section", false)
-  .option("--project <id>", "scope to a project (DB-backed, Phase 6)")
-  .option("--repo-id <id>", "scope to a repo (DB-backed, Phase 6)")
-  .option("--json", "emit JSON instead of text", false)
-  .action(async (raw: Record<string, unknown>) => {
-    // a project/repo/domain scope answers from the DB read model (Phase 6-6)
-    if (hasScopeFilter(raw)) {
-      runScopedInbox(getHarnessRoot(), raw);
-      return;
-    }
-    const harnessRoot = getHarnessRoot();
-    const paths = harnessPaths(harnessRoot);
-    const inbox = await buildInbox({
-      runsDir: paths.runsDir,
-      workspacesDir: paths.workspacesDir,
-      knowledgeDir: join(harnessRoot, "docs", "knowledge"),
-      ...(raw.today ? { today: new Date() } : {}),
-    });
-    // section selection is decided BEFORE the json branch so --failed /
-    // --cleanup / --needs-action apply to JSON output too.
-    let sections: InboxSection[] | undefined;
-    if (raw.failed) sections = ["failed"];
-    else if (raw.cleanup) sections = ["cleanupCandidates"];
-    else if (raw.needsAction) {
-      sections = [
-        "needsReview",
-        "changesRequested",
-        "failed",
-        "cleanupCandidates",
-      ];
-    }
-    if (raw.json) {
-      process.stdout.write(
-        sections ? formatInboxJson(inbox, sections) : formatInboxJson(inbox),
-      );
-      return;
-    }
-    process.stdout.write(
-      sections ? formatInbox(inbox, sections) : formatInbox(inbox),
-    );
-  });
+registerInboxCommands(program, { getHarnessRoot });
 
 const backlogCmd = program
   .command("backlog")
