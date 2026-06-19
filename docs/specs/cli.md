@@ -2082,7 +2082,9 @@ harness phase add --course <id> --title <text> [--parent <phase-id>] [--position
 harness phase list --course <id> [--json]
 harness phase show <id> [--json]
 harness phase update <id> [--status pending|in_progress|closed|blocked] [--scope-file <path>] [--close-file <path>] [--allow-scope-widen] [--allow-gate-loosen] [--note <text>]
-harness phase link-hitch <phase-id> <hitch-id>
+harness phase ratify <id> --approved-by <actor> [--reason <text>] [--json]
+harness phase link-hitch <phase-id> <hitch-id> [--allow-scope-widen] [--allow-gate-loosen] [--json]
+harness phase start-hitch <phase-id> --title <text> [--hitch-id <id>] [--description <text>] [--domain <domain>] [--backlog-item-id <id>] [--scope-file <path>] [--close-file <path>] [--policy-file <path>] [--max-iterations <n>] [--max-review-cycles <n>] [--max-reruns <n>] [--max-total-new-findings <n>] [--allow-scope-widen] [--allow-gate-loosen] [--created-by <actor>] [--json]
 harness phase unlink-hitch <hitch-id>
 ```
 
@@ -2092,7 +2094,9 @@ harness phase unlink-hitch <hitch-id>
 | `list` | course の phase 一覧（position/id 順のフラット一覧） |
 | `show` | 単一 phase ＋ リンク済み hitch id を表示 |
 | `update` | phase の declared status / scope/close conditions / 監査 note を更新。scope/close conditions は `PhaseRepository.updateSpec()` 経由で hitch と同じ close-condition validator と `--allow-scope-widen` / `--allow-gate-loosen` gate を通る。`--note <text>` は force-close 理由や PR ref を記録し（`review_state_json` の `{ note }` に保存・migration 不要）、`course export --md` に `**Note**:` 行として出る（#171b） |
-| `link-hitch` | hitch を phase にリンク（cross-project mismatch と double-link は拒否） |
+| `ratify` | human approval を `review_state_json.specApproval = { approvedBy, approvedAt, reason, specHash }` に記録。`--approved-by` は必須で、`specHash` は現在の `[scope, closeConditions]` tuple の canonical hash |
+| `link-hitch` | hitch を phase にリンク（cross-project mismatch と double-link は拒否）。phase が ratify 済みなら hitch spec は phase spec と同一または厳格化である必要があり、scope 拡大は `--allow-scope-widen`、required close gate の緩和は `--allow-gate-loosen` が必要。批准後の phase spec drift は warning として出力 |
+| `start-hitch` | phase spec から hitch を作成して同一 transaction で link。project/repo は parent course から継承し、`--scope-file` / `--close-file` が無ければ phase の scope/close conditions を使う。ratify 済み phase では `link-hitch` と同じ整合 gate と drift warning を適用 |
 | `unlink-hitch` | hitch の phase リンクを解除 |
 
 Exit code は `harness course` と同じ（0 / 1 / 2）。

@@ -25,12 +25,21 @@ import {
 } from "../roadmap/course-normalize.js";
 import { CourseUserError } from "../roadmap/errors.js";
 import { HitchValidationError } from "../hitch/types.js";
+import { HitchRepository } from "../hitch/repository.js";
+import {
+  parseHitchCloseConditions,
+  parseHitchPolicy,
+  parseHitchScope,
+} from "../hitch/schemas.js";
 import { createProductionCourseOrchestrator } from "../roadmap/course-orchestrate-runtime.js";
 import type {
   CourseOrchestrationResult,
   PhaseOutcome,
 } from "../roadmap/orchestrator-types.js";
-import { PhaseRepository } from "../roadmap/phase-repository.js";
+import {
+  PhaseRepository,
+  phaseSpecApprovalStatus,
+} from "../roadmap/phase-repository.js";
 import { rollupCourse, type CourseRollup } from "../roadmap/rollup.js";
 import {
   COURSE_STATUSES,
@@ -708,16 +717,158 @@ export function registerCourseCommands(
     });
 
   phaseCmd
+    .command("ratify")
+    .description("record human approval for the phase spec")
+    .argument("<id>", "phase id")
+    .requiredOption("--approved-by <actor>", "approving operator")
+    .option("--reason <text>", "approval reason")
+    .option("--json", "emit JSON", false)
+    .action((id: string, raw: Record<string, unknown>) => {
+      withCourseErrorExit(() => {
+        const result = withCourseRepo(opts, ({ phases }) => {
+          const phase = phases.recordSpecApproval(id, {
+            approvedBy: String(raw.approvedBy),
+            ...(raw.reason !== undefined ? { reason: String(raw.reason) } : {}),
+          });
+          return {
+            phase,
+            specApproval: phaseSpecApprovalStatus(phase),
+          };
+        });
+        writeOutput(
+          raw,
+          result,
+          `phase=${result.phase.phaseId} approvedBy=${result.specApproval.approval?.approvedBy ?? ""} specHash=${result.specApproval.currentSpecHash}\n`,
+        );
+      });
+    });
+
+  phaseCmd
     .command("link-hitch")
     .description("link a hitch to a phase")
     .argument("<phase-id>", "phase id")
     .argument("<hitch-id>", "hitch id")
-    .action((phaseId: string, hitchId: string) => {
+    .option("--allow-scope-widen", "allow a ratified phase scope widening link")
+    .option("--allow-gate-loosen", "allow a ratified phase close-gate loosening link")
+    .option("--json", "emit JSON", false)
+    .action((phaseId: string, hitchId: string, raw: Record<string, unknown>) => {
       withCourseErrorExit(() => {
-        withCourseRepo(opts, ({ phases }) => {
-          phases.linkHitch(phaseId, hitchId);
+        const result = withCourseRepo(opts, ({ phases }) => {
+          return phases.linkHitch(phaseId, hitchId, {
+            allowScopeWiden: raw.allowScopeWiden === true,
+            allowGateLoosen: raw.allowGateLoosen === true,
+          });
         });
-        process.stdout.write(`linked hitch=${hitchId} to phase=${phaseId}\n`);
+        if (raw.json === true) {
+          process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        } else {
+          for (const warning of result.warnings) {
+            process.stdout.write(`warning: ${warning}\n`);
+          }
+          process.stdout.write(`linked hitch=${hitchId} to phase=${phaseId}\n`);
+        }
+      });
+    });
+
+  phaseCmd
+    .command("start-hitch")
+    .description("create a hitch from a phase and link it")
+    .argument("<phase-id>", "phase id")
+    .requiredOption("--title <text>", "hitch title")
+    .option("--hitch-id <id>", "explicit hitch id")
+    .option("--description <text>", "hitch description")
+    .option("--domain <domain>", "hitch domain")
+    .option("--backlog-item-id <id>", "source backlog item id")
+    .option("--scope-file <path>", "YAML/JSON hitch scope override")
+    .option("--close-file <path>", "YAML/JSON close conditions override")
+    .option("--policy-file <path>", "YAML/JSON policy file")
+    .option("--max-iterations <n>", "iteration budget")
+    .option("--max-review-cycles <n>", "review cycle budget")
+    .option("--max-reruns <n>", "rerun budget")
+    .option("--max-total-new-findings <n>", "new finding budget")
+    .option("--allow-scope-widen", "allow a ratified phase scope widening start")
+    .option("--allow-gate-loosen", "allow a ratified phase close-gate loosening start")
+    .option("--created-by <actor>", "actor label", "cli")
+    .option("--json", "emit JSON", false)
+    .action((phaseId: string, raw: Record<string, unknown>) => {
+      withCourseErrorExit(() => {
+        const result = withCourseDb(opts, (db) => {
+          const courses = new CourseRepository(db);
+          const phases = new PhaseRepository(db);
+          const hitches = new HitchRepository(db);
+          const tx = db.transaction(() => {
+            const phase = phases.require(phaseId);
+            const course = courses.require(phase.courseId);
+            const scope =
+              raw.scopeFile === undefined
+                ? parseHitchScope(phase.scope ?? {})
+                : parseHitchScope(readStructuredFile(String(raw.scopeFile)));
+            const closeConditions =
+              raw.closeFile === undefined
+                ? parseHitchCloseConditions(phase.closeConditions ?? [])
+                : parseHitchCloseConditions(
+                    readStructuredFile(String(raw.closeFile)),
+                  );
+            const hitch = hitches.createSession({
+              ...(raw.hitchId !== undefined ? { hitchId: String(raw.hitchId) } : {}),
+              title: String(raw.title),
+              ...(raw.description !== undefined
+                ? { description: String(raw.description) }
+                : {}),
+              ...(course.projectId !== null ? { projectId: course.projectId } : {}),
+              ...(course.repoId !== null ? { repoId: course.repoId } : {}),
+              ...(raw.domain !== undefined ? { domain: String(raw.domain) } : {}),
+              ...(raw.backlogItemId !== undefined
+                ? { backlogItemId: String(raw.backlogItemId) }
+                : {}),
+              scope,
+              closeConditions,
+              ...(raw.policyFile !== undefined
+                ? { policy: parseHitchPolicy(readStructuredFile(String(raw.policyFile))) }
+                : {}),
+              ...(raw.maxIterations !== undefined
+                ? { maxIterations: parsePositiveInt(raw.maxIterations, "--max-iterations") }
+                : {}),
+              ...(raw.maxReviewCycles !== undefined
+                ? {
+                    maxReviewCycles: parsePositiveInt(
+                      raw.maxReviewCycles,
+                      "--max-review-cycles",
+                    ),
+                  }
+                : {}),
+              ...(raw.maxReruns !== undefined
+                ? { maxReruns: parseNonNegativeInt(raw.maxReruns, "--max-reruns") }
+                : {}),
+              ...(raw.maxTotalNewFindings !== undefined
+                ? {
+                    maxTotalNewFindings: parseNonNegativeInt(
+                      raw.maxTotalNewFindings,
+                      "--max-total-new-findings",
+                    ),
+                  }
+                : {}),
+              createdBy: String(raw.createdBy),
+              createdSource: "cli",
+            });
+            const link = phases.linkHitch(phaseId, hitch.hitchId, {
+              allowScopeWiden: raw.allowScopeWiden === true,
+              allowGateLoosen: raw.allowGateLoosen === true,
+            });
+            return { phaseId, hitch, link, warnings: link.warnings };
+          });
+          return tx.immediate();
+        });
+        if (raw.json === true) {
+          process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        } else {
+          for (const warning of result.warnings) {
+            process.stdout.write(`warning: ${warning}\n`);
+          }
+          process.stdout.write(
+            `hitch=${result.hitch.hitchId} phase=${phaseId} linked\n`,
+          );
+        }
       });
     });
 

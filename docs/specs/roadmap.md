@@ -81,6 +81,16 @@ specHash }`; `specHash` is the sha256 of the canonical JSON of the
 scalars, which would let `1`+`23` and `12`+`3` both hash to "123"). `setNote()` also uses this CAS path so
 operator notes and spec approvals preserve each other's keys.
 
+`phase ratify <phase-id> --approved-by <actor>` is the CLI ceremony for this
+write. Ratification is opt-in: phases without `specApproval` keep the legacy free
+link behavior. Once ratified, `phase link-hitch` and `phase start-hitch` enforce
+that the hitch's scope and close conditions match or tighten the current phase
+spec. A scope widening requires `--allow-scope-widen`; removing or weakening a
+required close gate requires `--allow-gate-loosen`. If the phase spec was edited
+after approval, the link/start path recomputes the current spec hash, compares it
+with `specApproval.specHash`, and emits a drift warning while still applying the
+same current-spec compatibility gate.
+
 ### `phase_hitches`
 
 | Column | Type | Notes |
@@ -122,7 +132,9 @@ CLI commands are operator-level (unrestricted).
 
 **Cross-project link rejection**: `phase.link_hitch` rejects linking a hitch whose
 `hitch_sessions.project_id` differs from the course's `project_id`. A
-null-`project_id` course accepts any hitch.
+null-`project_id` course accepts any hitch. `phase.start_hitch` derives the new
+hitch's `project_id` / `repo_id` from the parent course and then uses the same
+link gate atomically, so a ratified-spec rejection rolls back the hitch insert.
 
 ## Deterministic Rollup (`course status`)
 
@@ -346,8 +358,9 @@ consumed.
 ### Safety boundary mapping
 
 - Project visibility and null-project fail-closed behavior are unchanged.
-- `phase.link_hitch` remains the only way to attach a hitch; `needs_link` is the
-  future auto-spawn integration point, but SP-2 only reports it.
+- `phase.link_hitch` and explicit `phase.start_hitch` are the only attach paths;
+  `needs_link` is still a future auto-spawn integration point and is only
+  reported by course orchestration.
 - Drivability is delegated to the existing hitch mutation gate
   (`allowedByConvergence`) and each hitch drive still re-checks its own gate.
 - Per-hitch repo/domain resolution is server-side via `prepareProjectRun`; clients
@@ -378,7 +391,9 @@ Implemented in `src/cli/course.ts`, registered via `registerCourseCommands`.
 | `phase list --course <id> [--json]` | List phases for a course (flat, ordered by position/created_at/id). |
 | `phase show <id> [--json]` | Show a phase plus its linked hitch ids. |
 | `phase update <id> [--status pending\|in_progress\|closed\|blocked] [--scope-file <path>] [--close-file <path>] [--allow-scope-widen] [--allow-gate-loosen]` | Update a phase's declared status or scope/close conditions. Spec writes use `PhaseRepository.updateSpec()` validation/gates. |
-| `phase link-hitch <phase-id> <hitch-id>` | Link a hitch to a phase. Rejects cross-project mismatch and double-link. |
+| `phase ratify <id> --approved-by <actor> [--reason <text>] [--json]` | Record human approval under `review_state_json.specApproval` with the current `specHash`. |
+| `phase link-hitch <phase-id> <hitch-id> [--allow-scope-widen] [--allow-gate-loosen] [--json]` | Link a hitch to a phase. Rejects cross-project mismatch, double-link, and ratified-spec loosening unless explicitly allowed. Emits a warning if the phase spec hash drifted after approval. |
+| `phase start-hitch <phase-id> --title <text> [--hitch-id <id>] [--description …] [--domain …] [--backlog-item-id …] [--scope-file …] [--close-file …] [--policy-file …] [--max-iterations …] [--max-review-cycles …] [--max-reruns …] [--max-total-new-findings …] [--allow-scope-widen] [--allow-gate-loosen] [--created-by <actor>] [--json]` | Create a hitch using the parent course project/repo and the phase spec by default, then link it in one transaction. Explicit scope/close overrides are checked against ratified phase specs with the same flags as `link-hitch`. |
 | `phase unlink-hitch <hitch-id>` | Remove a hitch's phase link. |
 
 ### Exit codes
@@ -415,7 +430,9 @@ mutating.
 | `harness.course.orchestrate` | `course.orchestrate` | `courseId`, `maxDrivenHitches?`, `maxStepsPerHitch?`, `idempotencyKey`, `actorNote?` | Drive eligible linked hitches for one bounded pass. Visibility-checked via course; defaults/clamps match CLI; no confirmation; does not open PRs. |
 | `harness.phase.add` | `phase.add` | `courseId`, `title`, `parentPhaseId?`, `position?`, `scope?`, `closeConditions?`, `idempotencyKey`, `actorNote?` | Add a phase to a course. Visibility-checked via parent course before entering `OperationRunner`. |
 | `harness.phase.update` | `phase.update` | `phaseId`, `status?`, `idempotencyKey`, `actorNote?` | Update a phase's declared status. Visibility-checked via parent course. |
-| `harness.phase.link_hitch` | `phase.link_hitch` | `phaseId`, `hitchId`, `idempotencyKey`, `actorNote?` | Link a hitch to a phase. Cross-project mismatch and double-link are rejected inside the operation. |
+| `harness.phase.ratify` | `phase.ratify` | `phaseId`, `approvedBy`, `reason?`, `idempotencyKey`, `actorNote?` | Record human approval for the current phase spec. |
+| `harness.phase.link_hitch` | `phase.link_hitch` | `phaseId`, `hitchId`, `allowScopeWiden?`, `allowGateLoosen?`, `idempotencyKey`, `actorNote?` | Link a hitch to a phase. Cross-project mismatch, double-link, and ratified-spec loosening are rejected inside the operation. |
+| `harness.phase.start_hitch` | `phase.start_hitch` | `phaseId`, `hitchId?`, `title`, `description?`, `domain?`, `backlogItemId?`, `scope?`, `closeConditions?`, `policy?`, budgets?, `allowScopeWiden?`, `allowGateLoosen?`, `idempotencyKey`, `actorNote?` | Create and link a phase hitch atomically. Defaults scope/close conditions from the phase. |
 
 `course.create` / phase guarded mutations use `runMcpMutationOperation`
 (idempotency ledger / operation audit / mutation budget enforcement).
@@ -438,13 +455,14 @@ null-`project_id` courses. This is fail-closed: `course.list` excludes them,
 
 `src/roadmap/PhaseRepository` — `add` (with cross-course parent guard), `get`,
 `require`, `listForCourse`, `tree` (builds `PhaseNode[]` forest in pre-order),
-`setStatus`, `linkHitch` (with cross-project guard and double-link detection),
-`unlinkHitch`, `hitchIdsFor`.
+`setStatus`, `recordSpecApproval`, `phaseSpecApprovalStatus`, `linkHitch` (with
+cross-project guard, double-link detection, ratified-spec gate, and drift
+warnings), `unlinkHitch`, `hitchIdsFor`.
 
 ## Out of Scope
 
-- Auto-spawn from a phase (`needs_link`) is a later increment. SP-2 is drive-only
-  over manually linked hitches.
+- Auto-spawn from a phase (`needs_link`) is a later increment. SP-2/SP-21 are
+  drive-only over explicitly linked or explicitly started phase hitches.
 - Course-level PR automation, phase auto-close, parallel hitch drive, durable
   `course_orchestration_runs`, and phase dependency edges are later increments.
 - The GOAL_RULES.md build rules (retry limits, P0–P3 classification, gates) stay as

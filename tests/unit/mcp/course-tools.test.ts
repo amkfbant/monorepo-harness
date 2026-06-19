@@ -81,6 +81,8 @@ describe("MCP course-tools registration", () => {
     expect(names).toContain("harness.course.get");
     expect(names).toContain("harness.phase.list");
     expect(names).toContain("harness.phase.get");
+    expect(names).toContain("harness.phase.ratify");
+    expect(names).toContain("harness.phase.start_hitch");
   });
 
   it("registers harness.course.orchestrate in tools/list", async () => {
@@ -348,6 +350,93 @@ describe("MCP course-tools mutations", () => {
     // cross-project link should be rejected at the business logic level
     expect(result.status).toBe("error");
     expect(result.summary).toMatch(/project/i);
+  });
+
+  it("phase.ratify and phase link/start hitch enforce ratified spec compatibility", async () => {
+    const root = freshRoot();
+    let phaseId = "";
+    withDb(root, (db) => {
+      const course = new CourseRepository(db).create({
+        title: "Demo Course",
+        projectId: "demo",
+        repoId: "repo-demo",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      const phase = new PhaseRepository(db).add({
+        courseId: course.courseId,
+        title: "Ratified Phase",
+        scope: { targetFiles: ["src/**", "tests/**"] },
+        closeConditions: [
+          { id: "manual-pass", kind: "manual", required: true },
+        ],
+        createdBy: "test",
+        createdSource: "test",
+      });
+      phaseId = phase.phaseId;
+      new HitchRepository(db).createSession({
+        hitchId: "h-mcp-loose",
+        title: "Loose hitch",
+        projectId: "demo",
+        scope: {},
+        closeConditions: [],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      new HitchRepository(db).createSession({
+        hitchId: "h-mcp-tight",
+        title: "Tight hitch",
+        projectId: "demo",
+        scope: { targetFiles: ["src/**"] },
+        closeConditions: [
+          { id: "manual-pass", kind: "manual", required: true },
+          { id: "extra-manual-pass", kind: "manual", required: true },
+        ],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+    });
+
+    const s = server(
+      root,
+      mutationConfig(["phase.ratify", "phase.link_hitch", "phase.start_hitch"]),
+    );
+    const ratified = await callTool(s, "harness.phase.ratify", {
+      phaseId,
+      approvedBy: "operator",
+      idempotencyKey: "phase-ratify-mcp",
+    });
+    expect(ratified.status).toBe("operation_started");
+    expect(ratified.data.result.specApproval.approval.approvedBy).toBe(
+      "operator",
+    );
+
+    const looseLink = await callTool(s, "harness.phase.link_hitch", {
+      phaseId,
+      hitchId: "h-mcp-loose",
+      idempotencyKey: "phase-link-loose-mcp",
+    });
+    expect(looseLink.status).toBe("error");
+    expect(looseLink.summary).toContain("--allow-scope-widen");
+
+    const tightLink = await callTool(s, "harness.phase.link_hitch", {
+      phaseId,
+      hitchId: "h-mcp-tight",
+      idempotencyKey: "phase-link-tight-mcp",
+    });
+    expect(tightLink.status).toBe("operation_started");
+
+    const started = await callTool(s, "harness.phase.start_hitch", {
+      phaseId,
+      hitchId: "h-mcp-start",
+      title: "Started from phase",
+      idempotencyKey: "phase-start-mcp",
+    });
+    expect(started.status).toBe("operation_started");
+    expect(started.data.result.hitch.scope).toEqual({
+      targetFiles: ["src/**", "tests/**"],
+    });
+    expect(started.data.result.link.hitchId).toBe("h-mcp-start");
   });
 
   // P1 (codex App): a project-restricted client must not be able to probe or
