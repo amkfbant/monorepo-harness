@@ -243,6 +243,110 @@ describe("facet_red_test close condition", () => {
     });
     expect(result.allRequiredPassed).toBe(false);
   });
+
+  // P2-1 (#308): a fail-open-shape FAILURE keeps its actionable message even
+  // when the only recorded evidence row is STALE. A fail-open shape can be
+  // cleared ONLY by adding a covering test, so misdirecting the coder to
+  // "record fresh evidence" (the stale-evidence message) would dead-end it.
+  it("#308 P2-1: fail-open shape with a STALE prior evidence row keeps the no-covering-test message", () => {
+    const result = evaluateCloseConditions({
+      conditions: [facetCondition()],
+      checks: [
+        facetCheck(
+          [
+            {
+              facetId: "auth-login",
+              redTestPath: "tests/auth/login.test.ts",
+              redDemonstrated: true,
+              runId: "run-prior",
+            },
+          ],
+          { checkedAt: "2026-05-01T00:00:00.000Z" },
+        ),
+      ],
+      findingCounts: noFindingCounts(),
+      freshAfter: "2026-05-20T00:00:00.000Z",
+      // Newest coding run touched the production surface but changed NO test.
+      changedPaths: ["src/auth/login.ts"],
+      latestCodingRunId: "run-close",
+    });
+    expect(result.requiredFailed).toBe(1);
+    expect(result.conditions[0]?.status).toBe("failed");
+    expect(result.conditions[0]?.message).toMatch(/no covering test/i);
+    expect(result.conditions[0]?.message).not.toMatch(/stale|record fresh/i);
+  });
+
+  // The evidence-recoverable case (covering test present, no fresh evidence yet)
+  // still emits the stale/record-evidence message — recording RED evidence CAN
+  // clear it, so the operator/runner guidance is correct there.
+  it("#308 P2-1: test-present-no-fresh-evidence keeps the stale/record-evidence message", () => {
+    const result = evaluateCloseConditions({
+      conditions: [facetCondition()],
+      checks: [
+        facetCheck(
+          [
+            {
+              facetId: "auth-login",
+              redTestPath: "tests/auth/login.test.ts",
+              redDemonstrated: true,
+              runId: "run-prior",
+            },
+          ],
+          { checkedAt: "2026-05-01T00:00:00.000Z" },
+        ),
+      ],
+      findingCounts: noFindingCounts(),
+      freshAfter: "2026-05-20T00:00:00.000Z",
+      // Covering test changed in the newest run, but the evidence row is stale.
+      changedPaths: ["src/auth/login.ts", "tests/auth/login.test.ts"],
+      latestCodingRunId: "run-close",
+    });
+    expect(result.requiredPending).toBe(1);
+    expect(result.conditions[0]?.message).toMatch(/stale|record fresh/i);
+  });
+
+  // P2 (#308, App): a CODE-recoverable facet pending (no covering test present,
+  // reasonCode `no_change`) that has a STALE prior check row must STILL surface
+  // the actionable "no covering test" message — never the record-evidence/stale
+  // message — because recording evidence can NEVER satisfy it. Same root as
+  // P2-1, but the disposition is code_recoverable (not fail_open_shape).
+  it("#308: code-recoverable pending with a STALE prior check row keeps the covering-test message", () => {
+    const result = evaluateCloseConditions({
+      // No changedFileGlobs → an unrelated change yields a `no_change` pending.
+      conditions: [
+        facetCondition({
+          rule: {
+            facets: [{ id: "auth-login", testGlobs: ["tests/auth/**"] }],
+          },
+        }),
+      ],
+      checks: [
+        facetCheck(
+          [
+            {
+              facetId: "auth-login",
+              redTestPath: "tests/auth/login.test.ts",
+              redDemonstrated: true,
+              runId: "run-prior",
+            },
+          ],
+          { checkedAt: "2026-05-01T00:00:00.000Z" },
+        ),
+      ],
+      findingCounts: noFindingCounts(),
+      freshAfter: "2026-05-20T00:00:00.000Z",
+      // Newest coding run touched neither the test nor a production surface.
+      changedPaths: ["src/billing/charge.ts"],
+      latestCodingRunId: "run-close",
+    });
+    expect(result.requiredPending).toBe(1);
+    expect(result.conditions[0]?.status).toBe("pending");
+    expect(result.conditions[0]?.facetPendingDisposition).toBe(
+      "code_recoverable",
+    );
+    expect(result.conditions[0]?.message).toMatch(/no covering test/i);
+    expect(result.conditions[0]?.message).not.toMatch(/stale|record fresh/i);
+  });
 });
 
 describe("opt-in invariance (#279)", () => {

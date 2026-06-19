@@ -9,11 +9,28 @@ import {
   type FacetRedEvidence,
 } from "./facet-coverage.js";
 
+/**
+ * How a PENDING facet_red_test condition can be satisfied — drives convergence
+ * recovery routing (#308 P2-2). Only ever set on a pending facet_red_test
+ * condition; undefined for every other condition kind/status.
+ * - `code_recoverable`: at least one pending facet has NO covering test present,
+ *   so no evidence row could ever clear it — only a code/test change can
+ *   (route to the CODER / needs_fix).
+ * - `evidence_recoverable`: every pending facet has a covering test present and
+ *   merely lacks a fresh RED evidence row — recording evidence clears it (route
+ *   to ask_human / external-evidence, the pre-#308 behaviour).
+ */
+export type FacetPendingDisposition =
+  | "code_recoverable"
+  | "evidence_recoverable";
+
 export interface EvaluatedCloseCondition {
   condition: HitchCloseCondition;
   status: HitchCloseCheckStatus;
   check: HitchCloseCheck | null;
   message: string;
+  /** Present only on a pending facet_red_test condition (see type doc). */
+  facetPendingDisposition?: FacetPendingDisposition;
 }
 
 export interface CloseConditionEvaluation {
@@ -203,11 +220,54 @@ function evaluateFacetRedTest(
   const status: HitchCloseCheckStatus = evidenceIsFresh
     ? result.status
     : downgradeMissingEvidenceToPending(result);
+  // P2-2 (#308): expose, for a PENDING facet condition, whether it is
+  // code-recoverable (a facet with no covering test → evidence alone can never
+  // clear it → coder) or evidence-recoverable (covering test present, only the
+  // RED evidence row is missing/stale → ask_human). Set only when pending.
+  const facetPendingDisposition =
+    status === "pending"
+      ? facetPendingDispositionFor(result)
+      : undefined;
+  // P2-1 (#308): a fail-open-shape FAILURE and a code-recoverable PENDING facet
+  // can both be cleared ONLY by adding a covering test — never by recording
+  // evidence. So even when the only recorded row is STALE, preserve the
+  // actionable "no covering test" message (`result.message`). The
+  // stale/record-evidence message is reserved for the EVIDENCE-recoverable case
+  // (covering test present, only the RED evidence row is missing/stale) — the
+  // one place recording evidence can actually satisfy the facet. Keying off the
+  // disposition keeps `message` always consistent with where the condition
+  // routes, so the coder is never misdirected to record evidence that cannot
+  // help. (`fail_open_shape` is a FAILED status → no disposition; it is
+  // covered by the disposition-absent branch falling through to result.message.)
   const message =
-    check !== null && !evidenceIsFresh
+    check !== null &&
+    !evidenceIsFresh &&
+    facetPendingDisposition === "evidence_recoverable"
       ? "facet_red_test: recorded evidence is stale; record fresh RED evidence after latest mutation"
       : result.message;
-  return { condition, status, check, message };
+  return {
+    condition,
+    status,
+    check,
+    message,
+    ...(facetPendingDisposition !== undefined ? { facetPendingDisposition } : {}),
+  };
+}
+
+/**
+ * Disposition of a PENDING facet condition (#308 P2-2). Code-recoverable when
+ * any still-pending facet has NO covering test (reasonCode `no_change`): no
+ * evidence row could ever satisfy it (`matchedTestPaths` is empty), so only a
+ * code/test change can. Otherwise evidence-recoverable: every pending facet has
+ * a covering test and merely lacks a fresh RED evidence row.
+ */
+function facetPendingDispositionFor(
+  result: ReturnType<typeof evaluateFacetRedCoverage>,
+): FacetPendingDisposition {
+  const anyCodeRecoverable = result.perFacet.some(
+    (f) => f.status !== "passed" && f.reasonCode === "no_change",
+  );
+  return anyCodeRecoverable ? "code_recoverable" : "evidence_recoverable";
 }
 
 /**

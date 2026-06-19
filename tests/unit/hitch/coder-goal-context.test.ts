@@ -5,7 +5,10 @@ import {
   augmentGoalWithOpenFindings,
   closeCheckFailureContexts,
 } from "../../../src/hitch/coder-goal-context.js";
-import type { EvaluatedCloseCondition } from "../../../src/hitch/close-checks.js";
+import {
+  evaluateCloseConditions,
+  type EvaluatedCloseCondition,
+} from "../../../src/hitch/close-checks.js";
 import type {
   HitchCloseCheck,
   HitchCloseCondition,
@@ -145,11 +148,15 @@ describe("closeCheckFailureContexts (#279 P2 coder feedback)", () => {
     expect(closeCheckFailureContexts(evaluated)).toHaveLength(0);
   });
 
-  it("prefers the recorded check message over the evaluator message when a row exists", () => {
+  // NON-facet path: a recorded failure detail is the right coder feedback, so
+  // a present `check.message` is preferred over the evaluator message. (#308
+  // keeps this for non-facet conditions; facet conditions use the re-derived
+  // evaluator message instead — see the facet stale-message tests below.)
+  it("prefers the recorded check message over the evaluator message for a NON-facet condition with a row", () => {
     const check: HitchCloseCheck = {
       checkId: "chk-1",
       hitchId: "g1",
-      conditionId: "facet-red",
+      conditionId: "typecheck",
       status: "failed",
       checkedAt: "2026-01-01T00:00:00Z",
       checkedBy: "runner",
@@ -158,7 +165,7 @@ describe("closeCheckFailureContexts (#279 P2 coder feedback)", () => {
     };
     const evaluated: EvaluatedCloseCondition[] = [
       {
-        condition: reqCondition({ id: "facet-red", kind: "facet_red_test" }),
+        condition: reqCondition({ id: "typecheck", kind: "command" }),
         status: "failed",
         check,
         message: "evaluator message",
@@ -167,6 +174,43 @@ describe("closeCheckFailureContexts (#279 P2 coder feedback)", () => {
     expect(closeCheckFailureContexts(evaluated)[0]?.message).toBe(
       "recorded check message",
     );
+  });
+
+  // #308 (App P2): a FAILED fail-open-shape facet_red_test with a STALE prior
+  // check row (e.g. an old "record fresh RED evidence" recording) must inject
+  // the evaluator's CURRENT actionable "no covering test" message into the coder
+  // goal — NOT the stale check.message. The evaluator re-derives the message
+  // from current run_changed_files on every evaluation, so it is authoritative
+  // for facets; the recorded row can be stale/misleading.
+  it("#308: FAILED fail-open-shape facet with a STALE check row injects the evaluator covering-test message, not the stale one", () => {
+    const staleCheck: HitchCloseCheck = {
+      checkId: "chk-stale",
+      hitchId: "g1",
+      conditionId: "facet-red",
+      status: "passed",
+      checkedAt: "2026-01-01T00:00:00Z",
+      checkedBy: "runner",
+      evidence: {},
+      message:
+        "facet_red_test: recorded evidence is stale; record fresh RED evidence after latest mutation",
+    };
+    const evaluated: EvaluatedCloseCondition[] = [
+      {
+        condition: reqCondition({ id: "facet-red", kind: "facet_red_test" }),
+        status: "failed",
+        check: staleCheck,
+        message:
+          "failed: auth-login: production surface changed, no covering test",
+      },
+    ];
+    const contexts = closeCheckFailureContexts(evaluated);
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]?.message).toMatch(/no covering test/i);
+    expect(contexts[0]?.message).not.toMatch(/record fresh RED evidence/i);
+
+    const goal = augmentGoalWithFailedCloseChecks("rerun goal", contexts);
+    expect(goal).toContain("production surface changed, no covering test");
+    expect(goal).not.toContain("record fresh RED evidence");
   });
 
   it("ignores optional and non-failed conditions", () => {
@@ -189,6 +233,173 @@ describe("closeCheckFailureContexts (#279 P2 coder feedback)", () => {
       },
     ];
     expect(closeCheckFailureContexts(evaluated)).toHaveLength(0);
+  });
+
+  // #308 P2-2 coder feedback: a code-recoverable PENDING facet routes to the
+  // coder, so its actionable "add a covering test" message must reach the coder
+  // goal — otherwise the coder reruns blind and burns bounded iterations.
+  it("#308 P2-2: includes a code-recoverable PENDING facet and carries its covering-test message", () => {
+    const evaluated: EvaluatedCloseCondition[] = [
+      {
+        condition: reqCondition({ id: "facet-red", kind: "facet_red_test" }),
+        status: "pending",
+        check: null,
+        message:
+          "pending: auth-login: no covering test changed and no production surface touched",
+        facetPendingDisposition: "code_recoverable",
+      },
+    ];
+    const contexts = closeCheckFailureContexts(evaluated);
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]?.conditionId).toBe("facet-red");
+    expect(contexts[0]?.conditionKind).toBe("facet_red_test");
+    expect(contexts[0]?.message).toMatch(/covering test/i);
+
+    const goal = augmentGoalWithFailedCloseChecks("rerun goal", contexts);
+    expect(goal).toContain("facet-red");
+    expect(goal).toContain("covering test");
+  });
+
+  // #308 (App P2): a code-recoverable facet pending may carry a STALE prior
+  // check row whose recorded message is misleading (e.g. an old "passed" /
+  // record-evidence message). The coder goal must carry the evaluator's CURRENT
+  // actionable covering-test message, NOT the stale check.message — otherwise
+  // the coder is misdirected to record evidence that can never satisfy it.
+  it("#308: code-recoverable pending prefers the evaluator message over a STALE check row message", () => {
+    const staleCheck: HitchCloseCheck = {
+      checkId: "chk-stale",
+      hitchId: "g1",
+      conditionId: "facet-red",
+      status: "passed",
+      checkedAt: "2026-05-01T00:00:00Z",
+      checkedBy: "runner",
+      evidence: {},
+      message:
+        "facet_red_test: recorded evidence is stale; record fresh RED evidence after latest mutation",
+    };
+    const evaluated: EvaluatedCloseCondition[] = [
+      {
+        condition: reqCondition({ id: "facet-red", kind: "facet_red_test" }),
+        status: "pending",
+        check: staleCheck,
+        message:
+          "pending: auth-login: no covering test changed and no production surface touched",
+        facetPendingDisposition: "code_recoverable",
+      },
+    ];
+    const contexts = closeCheckFailureContexts(evaluated);
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]?.message).toMatch(/no covering test/i);
+    expect(contexts[0]?.message).not.toMatch(/record fresh RED evidence/i);
+
+    const goal = augmentGoalWithFailedCloseChecks("rerun goal", contexts);
+    expect(goal).toContain("no covering test");
+    expect(goal).not.toContain("record fresh RED evidence");
+  });
+
+  // Guard (don't over-inject): an EVIDENCE-recoverable pending facet routes to
+  // ask_human (record evidence), NOT the coder — it must NOT be injected into
+  // the coder goal.
+  it("#308 P2-2 guard: does NOT include an evidence-recoverable PENDING facet", () => {
+    const evaluated: EvaluatedCloseCondition[] = [
+      {
+        condition: reqCondition({ id: "facet-ev", kind: "facet_red_test" }),
+        status: "pending",
+        check: null,
+        message: "pending: needs RED evidence",
+        facetPendingDisposition: "evidence_recoverable",
+      },
+    ];
+    expect(closeCheckFailureContexts(evaluated)).toHaveLength(0);
+  });
+
+  // Guard: a pending NON-facet condition (e.g. an external-evidence manual
+  // condition) is never injected even if it somehow carried a disposition.
+  it("#308 P2-2 guard: does NOT include a pending non-facet condition", () => {
+    const evaluated: EvaluatedCloseCondition[] = [
+      {
+        condition: reqCondition({ id: "manual-check", kind: "manual" }),
+        status: "pending",
+        check: null,
+        message: "needs external evidence",
+      },
+    ];
+    expect(closeCheckFailureContexts(evaluated)).toHaveLength(0);
+  });
+
+  // End-to-end through the SAME pipeline the orchestrator's
+  // `failedRequiredCloseChecks` uses (real `evaluateCloseConditions` →
+  // `closeCheckFailureContexts` → `augmentGoalWithFailedCloseChecks`): a
+  // code-recoverable pending facet (no covering test present) reaches the coder
+  // rerun goal with its covering-test instruction; an evidence-recoverable
+  // pending (covering test present, evidence missing) does NOT.
+  it("#308 P2-2 e2e: real evaluator → code-recoverable pending facet reaches the coder goal", () => {
+    const codeRecoverable = evaluateCloseConditions({
+      conditions: [
+        {
+          id: "facet-red",
+          kind: "facet_red_test",
+          required: true,
+          // No changedFileGlobs: the run touches neither the test nor a
+          // production surface → no_change pending → code-recoverable.
+          rule: { facets: [{ id: "auth-login", testGlobs: ["tests/auth/**"] }] },
+        },
+      ],
+      checks: [],
+      findingCounts: {
+        openInScopeP0: 0,
+        openInScopeP1: 0,
+        openInScopeP2: 0,
+        openUnknownScope: 0,
+      },
+      changedPaths: ["src/billing/charge.ts"],
+      latestCodingRunId: "run-close",
+    });
+    expect(codeRecoverable.conditions[0]?.status).toBe("pending");
+    expect(codeRecoverable.conditions[0]?.facetPendingDisposition).toBe(
+      "code_recoverable",
+    );
+    const contexts = closeCheckFailureContexts(codeRecoverable.conditions);
+    expect(contexts).toHaveLength(1);
+    const goal = augmentGoalWithFailedCloseChecks("rerun goal", contexts);
+    expect(goal).toContain("facet-red");
+    expect(goal).toContain("covering test");
+
+    const evidenceRecoverable = evaluateCloseConditions({
+      conditions: [
+        {
+          id: "facet-red",
+          kind: "facet_red_test",
+          required: true,
+          rule: {
+            facets: [
+              {
+                id: "auth-login",
+                testGlobs: ["tests/auth/**"],
+                changedFileGlobs: ["src/auth/**"],
+              },
+            ],
+          },
+        },
+      ],
+      checks: [],
+      findingCounts: {
+        openInScopeP0: 0,
+        openInScopeP1: 0,
+        openInScopeP2: 0,
+        openUnknownScope: 0,
+      },
+      // Covering test changed but no evidence recorded → evidence-recoverable.
+      changedPaths: ["src/auth/login.ts", "tests/auth/login.test.ts"],
+      latestCodingRunId: "run-close",
+    });
+    expect(evidenceRecoverable.conditions[0]?.status).toBe("pending");
+    expect(evidenceRecoverable.conditions[0]?.facetPendingDisposition).toBe(
+      "evidence_recoverable",
+    );
+    expect(
+      closeCheckFailureContexts(evidenceRecoverable.conditions),
+    ).toHaveLength(0);
   });
 });
 

@@ -319,9 +319,18 @@ Evaluation is deterministic and conservative:
     `needs_fix` first so the next coder pass fixes the failure before the
     command is re-run. A required `facet_red_test` (#279) is auto-verify and
     deterministic: a `failed` fail-open shape (production surface changed with no
-    covering test) routes to `needs_fix` like any failed required check, while a
-    `pending` facet (covering test present but RED evidence not yet recorded)
-    waits for operator/runner evidence via the external-evidence path below.
+    covering test) routes to `needs_fix` like any failed required check. A
+    `pending` facet routes by its **recovery disposition** (#308): a
+    *code-recoverable* pending — a facet with **no covering test present**, so no
+    recorded evidence row could ever clear it (`matchedTestPaths` is empty) —
+    routes to `needs_fix` with `fix_findings` so the coder adds a RED covering
+    test; an *evidence-recoverable* pending (covering test present, only the RED
+    evidence row missing/stale) waits for operator/runner evidence via the
+    external-evidence path below. A `failed` fail-open shape that has only a
+    STALE prior evidence row keeps its actionable "production surface changed, no
+    covering test" message (it can be cleared only by adding a test, never by
+    recording evidence); only the test-present-no-fresh-evidence case emits the
+    "record fresh RED evidence" stale message.
 14. If the only remaining required close checks need external/operator evidence
     (`manual`, `artifact_exists`, `operation_status`, or another non-command
     condition), the decision is `continue` with `ask_human`; the orchestrator
@@ -1111,6 +1120,46 @@ and passes only when every facet passes. Evidence is **bound to the closing
 Existing hitches that never declare a `facet_red_test` condition are completely
 unaffected — the gate is purely additive and can only make close **stricter**
 for hitches that opt in.
+
+**Recovery routing (#308).** The gate decision (pass/fail/pending) is unchanged;
+only the recovery message and the routing of a *pending* facet condition differ
+by what can satisfy it:
+
+The recovery **message is keyed off what can satisfy the condition**, so it is
+always consistent with where the condition routes — even when a STALE prior
+check row exists. The stale/"record fresh RED evidence" message is emitted ONLY
+for an evidence-recoverable pending (covering test present, only the RED evidence
+row missing/stale); a fail-open-shape failure and a code-recoverable pending both
+keep the actionable "no covering test" message, because recording evidence can
+never satisfy either.
+
+- A `failed` fail-open shape (production surface changed, no covering test)
+  routes to `needs_fix` and keeps the actionable "production surface changed, no
+  covering test" message — even when the only recorded evidence row is STALE,
+  because a fail-open shape can be cleared **only by adding a covering test**,
+  never by recording evidence.
+- A `pending` facet is *code-recoverable* when at least one still-pending facet
+  has **no covering test present** (reasonCode `no_change`): `matchedTestPaths`
+  is empty, so no evidence row can ever clear it. It routes to `needs_fix` /
+  `fix_findings` so the coder adds a RED covering test, and keeps the actionable
+  "no covering test" message even with a stale prior check row. The coder rerun
+  goal also carries that message: `closeCheckFailureContexts` includes a
+  code-recoverable pending `facet_red_test` (in addition to failed required
+  conditions). The message it injects for **any** `facet_red_test` condition
+  (failed fail-open shape OR code-recoverable pending) is the **evaluator's
+  current** message — `evaluateFacetRedTest` re-derives it from the current
+  `run_changed_files` + evidence on every evaluation, so it is always correctly
+  routed — never a possibly-stale facet `check.message`. (For NON-facet
+  conditions the recorded `check.message` stays the preferred feedback, since a
+  real recorded failure detail is the right coder feedback there.)
+  Evidence-recoverable pendings and every other pending kind are NOT injected
+  into the coder goal.
+- A `pending` facet is *evidence-recoverable* when every pending facet has a
+  covering test present and merely lacks a fresh RED evidence row: recording
+  evidence clears it, so it routes to `continue` / `ask_human` via the
+  external-evidence path (the pre-#308 behaviour, unchanged). The disposition is
+  surfaced on the evaluated condition (`facetPendingDisposition`) and consumed by
+  the convergence routing — convergence never re-derives it from facet internals.
 
 The spec review and config-update paths share a pure spec-gate helper layer
 under `src/hitch/`:

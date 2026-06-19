@@ -155,6 +155,37 @@ function booleanEvidence(
 }
 
 /**
+ * A FAILED required condition the coder must address: any failure with a
+ * recorded check row, or a `facet_red_test` failure (the evidence-INDEPENDENT
+ * fail-open shape that has no recorded row — #279 P2).
+ */
+function isCoderDrivenFacetFailure(
+  evaluated: EvaluatedCloseCondition,
+): boolean {
+  return (
+    evaluated.status === "failed" &&
+    (evaluated.check !== null ||
+      evaluated.condition.kind === "facet_red_test")
+  );
+}
+
+/**
+ * A code-recoverable PENDING `facet_red_test` (#308 P2-2): convergence routes it
+ * to the coder (needs_fix), so its actionable message must reach the rerun goal.
+ * Strictly gated on `facetPendingDisposition === "code_recoverable"` so an
+ * evidence-recoverable pending (→ ask_human) is never injected.
+ */
+function isCodeRecoverableFacetPending(
+  evaluated: EvaluatedCloseCondition,
+): boolean {
+  return (
+    evaluated.status === "pending" &&
+    evaluated.condition.kind === "facet_red_test" &&
+    evaluated.facetPendingDisposition === "code_recoverable"
+  );
+}
+
+/**
  * Project failed REQUIRED close-condition evaluations into the coder-rerun
  * failure context. Pure (no DB). A `command`/finding failure carries its
  * recorded evidence (exitCode, output tails, log paths). A `facet_red_test`
@@ -164,6 +195,13 @@ function booleanEvidence(
  * knows the production surface changed with no covering test instead of looping
  * blind. Other failed kinds still require a recorded check row (a bare failure
  * with no row carries no actionable detail).
+ *
+ * #308 P2-2: a code-recoverable PENDING `facet_red_test` (a facet with no
+ * covering test present → evidence alone can never clear it; convergence routes
+ * it to the CODER, not ask_human) is ALSO included so the rerun goal carries the
+ * "add a RED covering test" instruction. Evidence-recoverable pendings (route to
+ * ask_human) and every other pending kind are NOT included — they are not driven
+ * by the coder, so injecting them would mislead the rerun.
  */
 export function closeCheckFailureContexts(
   conditions: readonly EvaluatedCloseCondition[],
@@ -172,9 +210,8 @@ export function closeCheckFailureContexts(
     .filter(
       (evaluated) =>
         evaluated.condition.required &&
-        evaluated.status === "failed" &&
-        (evaluated.check !== null ||
-          evaluated.condition.kind === "facet_red_test"),
+        (isCoderDrivenFacetFailure(evaluated) ||
+          isCodeRecoverableFacetPending(evaluated)),
     )
     .map((evaluated) => {
       const evidence = evaluated.check?.evidence ?? {};
@@ -182,7 +219,22 @@ export function closeCheckFailureContexts(
       const command = stringEvidence(evidence, "command");
       const exitCode = numberEvidence(evidence, "exitCode");
       const timedOut = booleanEvidence(evidence, "timedOut");
-      const message = evaluated.check?.message ?? evaluated.message ?? undefined;
+      // #308 P2: for ANY `facet_red_test` condition (a FAILED fail-open shape OR
+      // a code-recoverable pending) the actionable feedback is the evaluator's
+      // CURRENT message. `evaluateFacetRedTest` RE-DERIVES that message from the
+      // current run_changed_files + evidence on every evaluation, so it is always
+      // correctly routed (fail-open / code-recoverable → "no covering test"; the
+      // evidence-recoverable case → "record fresh RED evidence" — and the latter
+      // is never injected into the coder goal). A facet `check.message`, by
+      // contrast, is a PRIOR recording that can be stale/misleading (e.g. an old
+      // "record fresh RED evidence" or a stale "passed"), which would misdirect
+      // the coder to record evidence that can never satisfy it. For NON-facet
+      // conditions the recorded `check.message` is still the right feedback (a
+      // real failure detail), so keep it preferred there.
+      const message =
+        evaluated.condition.kind === "facet_red_test"
+          ? (evaluated.message ?? undefined)
+          : (evaluated.check?.message ?? evaluated.message ?? undefined);
       const stdout =
         stringEvidence(evidence, "stdoutTail") ??
         stringEvidence(evidence, "stdout");
