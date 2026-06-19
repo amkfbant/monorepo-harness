@@ -133,12 +133,23 @@ const MCP_REGISTRY_PATH = "src/mcp/registry/tool-registry.ts";
 // CLI commands are registered across run.ts plus the per-domain modules
 // (`registerXCommands`), so all must be scanned — otherwise a removal in e.g.
 // db.ts / hitch.ts is invisible.
-const CLI_PATHS = [
+// 露出: CLI surface を持つ全ファイルを列挙できているかを meta-test
+// (tests/unit/release/cli-paths-coverage.test.ts) が検証するため export する。
+// course.ts / onboard.ts は register*Commands を持つ per-domain モジュールだが
+// 旧来この一覧から漏れており、両者の command 削除が release の breaking 検知を
+// すり抜けていた（coverage gap の修正）。標準の最新タグ起点（例 v0.7.17..HEAD）では
+// 両ファイルが `since`/`to` 双方に既存のため surface diff は不変（+0/-0）。ただし
+// course/onboard の command 構成が異なる古い/任意の since..to では、追加した両ファイル
+// 分だけ surface 比較対象が増えるため diff 結果が変わり得る（=これらの正しい検知に
+// なる）。すなわち「全範囲で挙動不変」ではなく、欠けていた検知対象を補う変更である。
+export const CLI_PATHS: readonly string[] = [
   "src/cli/run.ts",
   "src/cli/project.ts",
   "src/cli/policy.ts",
   "src/cli/db.ts",
   "src/cli/hitch.ts",
+  "src/cli/course.ts",
+  "src/cli/onboard.ts",
   "src/mcp/cli.ts",
 ];
 
