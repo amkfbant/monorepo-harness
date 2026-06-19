@@ -37,7 +37,7 @@ full shape ではなく、`src/hitch/gap-to-kind.ts` の `GapRow = { metric: str
 
 | metric パターン | kind | category |
 |---|---|---|
-| command が `policy.allowedCommands` に **whitespace-delimited token 一致**（`tokenPresent`。短 id `test` が `latest` の部分文字列にはマッチしない） | `command` | auto-verify |
+| metric が intent regex（`command`/`cmd`/`npm`/`pnpm`/`yarn`/`test`/`typecheck`/`lint` ＋ `pass`/`passes`/`succeed`/`succeeds`/`green`）に合致し、かつ `policy.allowedCommands` に **whitespace-delimited token 一致**（`tokenPresent`。短 id `test` が `latest` の部分文字列にはマッチしない） | `command` | auto-verify |
 | `maxOpenInScopeP0/P1/P2` / `maxOpenUnknownScope` の閾値 | `finding_policy` | auto-verify |
 | review 承認（approved） | `review_consensus` | auto-verify |
 | artifact / file の存在（`metadata.path` 明示） | `artifact_exists` | external-evidence |
@@ -125,20 +125,25 @@ metric は自動で検証できるか？
 **批准前は提案、批准で canonical。** accountable owner 1 名が署名する。詳細な CLI / データ
 モデルは [`cli.md`](./cli.md) / [`roadmap.md`](./roadmap.md) を正本とし、ここでは要約と相互参照に留める。
 
-- `harness course phase ratify <phase-id> --approved-by <actor> [--close-file] [--scope-file] [--reason]`：
-  `--approved-by` 必須（無しは reject）。spec は `updateSpec()`（§4 validator + spec-gates を通す）で
-  更新し、`recordSpecApproval` が `review_state_json.specApproval = { approvedBy, approvedAt, reason, specHash }`
-  を **namespaced** に記録する。`specHash = sha256(canonicalJson([scope, closeConditions]))`。
-  書き込みは `review_state_version` の **CAS**（最大 3 retry → `ReviewStateConflictError`、fail-closed）。
+- `harness phase ratify <phase-id> --approved-by <actor> [--reason <text>] [--json]`：
+  `--approved-by` 必須（無しは reject）。ratify は **spec を編集しない** —
+  `recordSpecApproval` が **その時点で committed の `[scope, closeConditions]`** を hash して
+  `review_state_json.specApproval = { approvedBy, approvedAt, reason, specHash }` を **namespaced** に記録する
+  のみ。`specHash = sha256(canonicalJson([scope, closeConditions]))`。書き込みは `review_state_version` の
+  **CAS**（最大 3 retry → `ReviewStateConflictError`、fail-closed）。**spec 自体の編集は事前に
+  `phase update --scope-file/--close-file`（→ `updateSpec()`・§4 validator + spec-gates を通す）で行う**
+  （ratify は別コマンド）。
 - **整合 gate（ratify 済 phase のみ）**: `phase link-hitch` / 新 `phase start-hitch` が hitch spec を
-  phase の批准 spec と比較し、**同一または厳格化（tightening）** を require する。判定は live な
-  hitch config 更新と同一の純述語（`isScopeWidening` / `closeConditionsLoosenGate`、`src/hitch/spec-gates.ts`）。
-  scope 拡大は `--allow-scope-widen`、required close 条件の削除 / optional 化 / gate fingerprint 弱化は
-  `--allow-gate-loosen` 無しで reject。より厳しい追加条件は許容。
+  phase の **現在 spec** と比較し、**同一または厳格化（tightening）** を require する（批准時 snapshot ではなく
+  current phase spec が gate の基準）。判定は live な hitch config 更新と同一の純述語
+  （`isScopeWidening` / `closeConditionsLoosenGate`、`src/hitch/spec-gates.ts`）。scope 拡大は `--allow-scope-widen`、
+  required close 条件の削除 / optional 化 / gate fingerprint 弱化は `--allow-gate-loosen` 無しで reject。
+  より厳しい追加条件は許容。
 - **後方互換**: `specApproval` の無い（＝未 ratify の）phase は従来通り自由に link/start でき、整合
   gate は skip される（ratify は opt-in）。
-- **specHash drift warning**: link/start 時に phase spec から再計算した hash が `specApproval.specHash`
-  と不一致なら **warning**（reject はしない。批准後の手編集の可視化）。
+- **specHash drift warning**: link/start 時に **現在 phase spec** から再計算した hash が
+  `specApproval.specHash`（批准時 snapshot）と不一致なら **warning**（reject はしない。批准後に spec が
+  手編集された＝drift の可視化）。
 
 ---
 
