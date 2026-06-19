@@ -1,0 +1,16 @@
+#!/bin/sh
+# push（= PR 化）直前の hard gate。
+#
+# なぜ必要か: CI が billing-blocked（spending-limit で job 未起動）ゆえ、
+# リモートに上がるコードに対する唯一の機械的回帰検知点がこの hook である。
+# behavior-zero リファクタでは「フル vitest 緑」が挙動不変の主たる証明なので、
+# PR を作る前に必ずフルスイート + typecheck を緑にする。
+#
+# 速度: フルスイートは数分かかる。日常 commit を遅くしないため pre-commit には置かず
+# ここ（push 時のみ）に集約する。緊急時は `git push --no-verify` で迂回可
+# （その場合も PR 前に手動でフル gate を回し、結果を PR 説明に証跡として残すこと）。
+set -e
+echo "[pre-push] npm run typecheck"
+npm run typecheck
+echo "[pre-push] npm test (full vitest)"
+npm test

@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "harness": "tsx src/cli/run.ts",
-    "prepare": "npm run build"
+    "hooks:setup": "git config core.hooksPath .githooks",
+    "prepare": "npm run build && (npm run hooks:setup || true)"
   },
   "dependencies": {
     "better-sqlite3": "12.10.0",
