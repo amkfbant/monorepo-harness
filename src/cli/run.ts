@@ -2,7 +2,7 @@
 import process from "node:process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import { Command } from "commander";
 import { harnessPaths } from "../config/paths.js";
@@ -19,8 +19,6 @@ import { StateConflictError, SourceModeError } from "../db/errors.js";
 import { runMigrations } from "../db/migrations.js";
 
 import { findTransientLeaseCause } from "../workspace/db-domain-lock.js";
-
-import { listAgentWorkspaces } from "../workspace/agent-workspace.js";
 
 import { openManagedDb } from "../db/managed-connection.js";
 

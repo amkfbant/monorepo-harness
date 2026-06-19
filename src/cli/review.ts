@@ -1,6 +1,5 @@
 import process from "node:process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
 import type { Command } from "commander";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
 import { harnessPaths } from "../config/paths.js";
