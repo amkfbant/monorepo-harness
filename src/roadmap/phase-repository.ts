@@ -70,8 +70,10 @@ export interface PhaseSpecApprovalStatus {
   drifted: boolean;
 }
 
-export function phaseSpecApproval(phase: Phase): PhaseSpecApproval | null {
-  const rs = phase.reviewState;
+export function phaseSpecApprovalFromReviewState(
+  reviewState: unknown,
+): PhaseSpecApproval | null {
+  const rs = reviewState;
   if (rs === null || typeof rs !== "object" || Array.isArray(rs)) return null;
   const value = (rs as Record<string, unknown>).specApproval;
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -94,15 +96,31 @@ export function phaseSpecApproval(phase: Phase): PhaseSpecApproval | null {
   };
 }
 
-export function phaseSpecApprovalStatus(phase: Phase): PhaseSpecApprovalStatus {
-  const currentSpecHash = phaseSpecHash(phase.scope, phase.closeConditions);
-  const approval = phaseSpecApproval(phase);
+export function phaseSpecApproval(phase: Phase): PhaseSpecApproval | null {
+  return phaseSpecApprovalFromReviewState(phase.reviewState);
+}
+
+export function phaseSpecApprovalStatusForSpec(input: {
+  scope: unknown;
+  closeConditions: unknown;
+  reviewState: unknown;
+}): PhaseSpecApprovalStatus {
+  const currentSpecHash = phaseSpecHash(input.scope, input.closeConditions);
+  const approval = phaseSpecApprovalFromReviewState(input.reviewState);
   return {
     approval,
     currentSpecHash,
     approvedSpecHash: approval?.specHash ?? null,
     drifted: approval !== null && approval.specHash !== currentSpecHash,
   };
+}
+
+export function phaseSpecApprovalStatus(phase: Phase): PhaseSpecApprovalStatus {
+  return phaseSpecApprovalStatusForSpec({
+    scope: phase.scope,
+    closeConditions: phase.closeConditions,
+    reviewState: phase.reviewState,
+  });
 }
 
 function mapPhase(r: PhaseRow): Phase {

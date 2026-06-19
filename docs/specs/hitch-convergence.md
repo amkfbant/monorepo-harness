@@ -185,7 +185,13 @@ Evaluation is deterministic and conservative:
     (`manual`, `artifact_exists`, `operation_status`, or another non-command
     condition), the decision is `continue` with `ask_human`; the orchestrator
     waits for recorded evidence and does not auto-escalate by invoking the
-    command runner with no runnable command.
+    command runner with no runnable command. The `ask_human` message lists each
+    pending external condition as `condition <id> kind=<kind> pending <N>
+    cycle(s)` using completed review cycles since the latest evidence for that
+    condition (or all completed cycles when no evidence exists). If the hitch is
+    linked to a ratified phase whose approved `specHash` no longer matches the
+    current phase spec, the same message appends the phase id plus approved and
+    current hashes as a runtime spec-drift diagnostic.
 
 Recorded close-check evidence is fresh only when it is at or after the latest
 invalidating hitch event: a non-close-check attempt, finding seen/fixed/deferred
