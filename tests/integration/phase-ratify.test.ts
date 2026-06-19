@@ -250,6 +250,33 @@ describe("phase ratify and ratified hitch integration (SP-21)", () => {
     expect(drift.out).toContain("spec approval hash drift");
   });
 
+  it("link-hitch rejects a close-gate loosening without --allow-gate-loosen even when scope is identical", () => {
+    // Exercises the closeConditionsLoosenGate branch in isolation: the hitch scope
+    // is IDENTICAL to the ratified phase (no scope-widen short-circuit), but it drops
+    // the required close condition — must reject citing --allow-gate-loosen, and
+    // succeed only when the flag is supplied.
+    const { root, files } = setup();
+    const { phaseId } = createCourseAndPhase(root, files);
+    expect(
+      runCli(root, ["phase", "ratify", phaseId, "--approved-by", "operator"]).code,
+    ).toBe(0);
+
+    seedHitch(root, "h-gate-loose", { scope: PHASE_SCOPE, closeConditions: [] });
+    const rejected = runCli(root, ["phase", "link-hitch", phaseId, "h-gate-loose"]);
+    expect(rejected.code).toBe(1);
+    expect(rejected.out).toContain("--allow-gate-loosen");
+
+    expect(
+      runCli(root, [
+        "phase",
+        "link-hitch",
+        phaseId,
+        "h-gate-loose",
+        "--allow-gate-loosen",
+      ]).code,
+    ).toBe(0);
+  });
+
   it("start-hitch creates and links atomically with the same ratified spec gate", () => {
     const { root, files } = setup();
     const { phaseId } = createCourseAndPhase(root, files);
