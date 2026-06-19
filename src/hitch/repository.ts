@@ -11,7 +11,6 @@ import {
   findNearDuplicate,
   type NearDuplicateCandidate,
 } from "./near-duplicate.js";
-import { phaseSpecApprovalStatusForSpec } from "../roadmap/phase-repository.js";
 import {
   AttemptRepository,
   type CompleteHitchAttemptInput,
@@ -40,6 +39,10 @@ import {
   type UpdateHitchStatusOptions,
 } from "./repositories/session-repository.js";
 import {
+  MetricsRepository,
+  type LinkedPhaseSpecApprovalDrift,
+} from "./repositories/metrics-repository.js";
+import {
   addWhere,
   addWhereIn,
   getHitchSession,
@@ -50,12 +53,9 @@ import {
   whereSql,
 } from "./repositories/shared.js";
 import {
-  ADVISORY_REVIEW_FINDING_CATEGORIES,
   HARNESS_ORIGIN_FINDING_SOURCE_SET,
-  HARNESS_ORIGIN_FINDING_SOURCES,
   REVIEW_BLOCKING_FINDING_CATEGORY_SET,
   type HitchAttempt,
-  type HitchAttemptType,
   type HitchCloseCheck,
   type HitchConvergenceDecisionRecord,
   type HitchFinding,
@@ -74,7 +74,7 @@ import {
 // types so the public module surface of `repository.ts` (and any consumer
 // importing them from here) is unchanged.
 // C1 — convergence-decision; C2 — close-check; C3 — attempt; C4 — review-cycle;
-// C5 — session.
+// C5 — session; C7 — metrics.
 export type { RecordHitchConvergenceDecisionInput };
 export type { RecordHitchCloseCheckInput };
 export type { CreateHitchAttemptInput, CompleteHitchAttemptInput };
@@ -87,6 +87,7 @@ export type {
   AdoptHitchPrInput,
   UpdateHitchSessionConfigInput,
 };
+export type { LinkedPhaseSpecApprovalDrift };
 
 export interface UpsertHitchFindingInput {
   findingId?: string;
@@ -199,12 +200,6 @@ export interface HitchFindingSummaryCounts {
   openOutOfScope: number;
 }
 
-export interface LinkedPhaseSpecApprovalDrift {
-  phaseId: string;
-  approvedSpecHash: string;
-  currentSpecHash: string;
-}
-
 /** #280 — options for {@link HitchRepository.recoverDivergingSession}. The
  * deterministic open-P0/P1 + close-check gate is supplied by the CLI/caller as
  * `revalidate` and is RE-RUN INSIDE the write transaction (not just before it),
@@ -278,19 +273,6 @@ interface HitchFindingSummaryRow {
   n: number;
 }
 
-interface HitchDivergenceCycleFindingRow {
-  cycle_id: string;
-  cycle_number: number;
-  findings_new: number;
-}
-
-interface LinkedPhaseSpecRow {
-  phase_id: string;
-  scope_json: string | null;
-  close_conditions_json: string | null;
-  review_state_json: string | null;
-}
-
 export const OPEN_FINDING_LIFECYCLES = [
   "open",
   "reopened",
@@ -324,11 +306,6 @@ function isHarnessOriginFindingSource(source: HitchFindingSource): boolean {
   return HARNESS_ORIGIN_FINDING_SOURCE_SET.has(source);
 }
 
-const CODING_RUN_ATTEMPT_TYPES = new Set<HitchAttemptType>([
-  "implement",
-  "rerun",
-]);
-
 export class HitchRepository {
   // #125 Track C: per-concern sub-repositories. Each is constructed with this
   // facade's `db` handle (no transaction of its own) so its writes compose
@@ -339,6 +316,7 @@ export class HitchRepository {
   private readonly attempts: AttemptRepository;
   private readonly reviewCycles: ReviewCycleRepository;
   private readonly sessions: SessionRepository;
+  private readonly metrics: MetricsRepository;
 
   constructor(private readonly db: Database.Database) {
     this.decisions = new ConvergenceDecisionRepository(db);
@@ -346,6 +324,7 @@ export class HitchRepository {
     this.attempts = new AttemptRepository(db);
     this.reviewCycles = new ReviewCycleRepository(db);
     this.sessions = new SessionRepository(db);
+    this.metrics = new MetricsRepository(db);
   }
 
   // #125 Track C (C5): session concern delegated to SessionRepository (incl.
@@ -1380,78 +1359,15 @@ export class HitchRepository {
     return counts;
   }
 
+  // #125 Track C (C7): metrics/read concern delegated to MetricsRepository.
+  // The facade keeps these read entry-points and forwards to the sub-repo
+  // (shared `db`, behaviour-identical). maxFindingReopenCount /
+  // latestFindingMutationAt stay with the FINDING concern (they read finding
+  // mutation columns, not the divergence/run-lineage derivations).
   harnessOriginDivergenceMetrics(
     hitchId: string,
   ): HitchHarnessOriginDivergenceMetrics {
-    const sourcePlaceholders = placeholders(
-      HARNESS_ORIGIN_FINDING_SOURCES.length,
-    );
-    // #283: non-actionable advisory review categories (assigned deterministically
-    // by the harness, NOT self-reported by the LLM) are RECORDED as findings but
-    // EXCLUDED from the divergence churn counter — otherwise an approval/positive
-    // advisory comment could inflate findingsNew and trip a FALSE `diverging` on
-    // reopen. The blocking categories (review-required-change /
-    // review-negative-decision) are deliberately NOT in this set, so real blockers
-    // still drive divergence (and still block close) — fail-closed.
-    const advisoryPlaceholders = placeholders(
-      ADVISORY_REVIEW_FINDING_CATEGORIES.length,
-    );
-    const totals = this.db
-      .prepare(
-        `SELECT COUNT(*) AS total, COALESCE(MAX(reopen_count), 0) AS maxReopen
-           FROM hitch_findings
-          WHERE hitch_id = ?
-            AND duplicate_of IS NULL
-            AND source IN (${sourcePlaceholders})
-            AND category NOT IN (${advisoryPlaceholders})`,
-      )
-      .get(
-        hitchId,
-        ...HARNESS_ORIGIN_FINDING_SOURCES,
-        ...ADVISORY_REVIEW_FINDING_CATEGORIES,
-      ) as {
-      total: number;
-      maxReopen: number;
-    };
-    const cycleRows = this.db
-      .prepare(
-        `SELECT
-            c.cycle_id,
-            c.cycle_number,
-            COUNT(f.finding_id) AS findings_new
-           FROM hitch_review_cycles c
-           LEFT JOIN hitch_findings f
-             ON f.hitch_id = c.hitch_id
-            AND f.source_cycle_id = c.cycle_id
-            AND f.duplicate_of IS NULL
-            AND f.source IN (${sourcePlaceholders})
-            AND f.category NOT IN (${advisoryPlaceholders})
-          WHERE c.hitch_id = ?
-            -- only COMPLETED cycles are review evidence (#164): a
-            -- started-but-incomplete cycle has 0 imported findings and would
-            -- otherwise look like a "clean" cycle, prematurely clearing a
-            -- non-decreasing divergence before any review evidence exists.
-            AND c.completed_at IS NOT NULL
-          GROUP BY c.cycle_id, c.cycle_number, c.created_at
-          ORDER BY c.cycle_number ASC, c.created_at ASC, c.cycle_id ASC`,
-      )
-      // Positional binds (#283): JOIN-clause params bind BEFORE the WHERE
-      // `c.hitch_id = ?` param — sources, then advisory categories (both in the
-      // ON clause), THEN hitchId. Reordering would silently corrupt the counts.
-      .all(
-        ...HARNESS_ORIGIN_FINDING_SOURCES,
-        ...ADVISORY_REVIEW_FINDING_CATEGORIES,
-        hitchId,
-      ) as HitchDivergenceCycleFindingRow[];
-    return {
-      harnessOriginNewFindings: totals.total,
-      harnessOriginMaxReopenCount: totals.maxReopen,
-      harnessOriginNewFindingsByCycle: cycleRows.map((row) => ({
-        cycleId: row.cycle_id,
-        cycleNumber: row.cycle_number,
-        findingsNew: row.findings_new,
-      })),
-    };
+    return this.metrics.harnessOriginDivergenceMetrics(hitchId);
   }
 
   maxFindingReopenCount(hitchId: string): number {
@@ -1489,30 +1405,7 @@ export class HitchRepository {
   linkedPhaseSpecApprovalDrifts(
     hitchId: string,
   ): LinkedPhaseSpecApprovalDrift[] {
-    const rows = this.db
-      .prepare(
-        `SELECT p.phase_id, p.scope_json, p.close_conditions_json, p.review_state_json
-           FROM phase_hitches ph
-           JOIN phases p ON p.phase_id = ph.phase_id
-          WHERE ph.hitch_id = ?
-          ORDER BY p.phase_id ASC`,
-      )
-      .all(hitchId) as LinkedPhaseSpecRow[];
-    const drifts: LinkedPhaseSpecApprovalDrift[] = [];
-    for (const row of rows) {
-      const status = phaseSpecApprovalStatusForSpec({
-        scope: parseNullableJson(row.scope_json),
-        closeConditions: parseNullableJson(row.close_conditions_json),
-        reviewState: parseNullableJson(row.review_state_json),
-      });
-      if (!status.drifted || status.approvedSpecHash === null) continue;
-      drifts.push({
-        phaseId: row.phase_id,
-        approvedSpecHash: status.approvedSpecHash,
-        currentSpecHash: status.currentSpecHash,
-      });
-    }
-    return drifts;
+    return this.metrics.linkedPhaseSpecApprovalDrifts(hitchId);
   }
 
   // #125 Track C (C2): close-check concern delegated to CloseCheckRepository.
@@ -1555,84 +1448,15 @@ export class HitchRepository {
     return this.decisions.listDecisions(hitchId);
   }
 
-  /**
-   * The latest coding run id + the paths that run changed (run_changed_files),
-   * deterministic inputs for the facet_red_test close gate (#279). Fail-closed:
-   * when no run is resolvable, `runId` is null and `paths` is empty so the gate
-   * can never pass. Mirrors `changedPathsForRun` (allowed, non-ignored rows,
-   * with the reviewed.meta_json fallback) so the gate sees the same surface the
-   * post-hoc policy diff verified.
-   *
-   * STRICT on the NEWEST coding attempt (not the shared `latestCodingRunId`,
-   * which is intentionally lenient — it skips a newer run-less attempt and falls
-   * back to an older run, a semantics #278's auto-resolve guard relies on). For
-   * the facet gate that lenient fallback is unsafe: if the newest implement/rerun
-   * attempt has no resolvable run_id (a coding pass is in flight / failed before
-   * recording a run), evaluating an OLDER run's changedPaths AND accepting fresh
-   * evidence bound to that older run would let a hitch reach close_ready on stale
-   * data. So we look ONLY at the newest coding attempt: no resolvable run_id =>
-   * `{ runId: null, paths: [] }` (gate goes pending, never passes on the older
-   * run). Only when the newest coding attempt HAS a run_id do we use it.
-   */
+  // #125 Track C (C7): the latest coding run id + its allowed changed paths
+  // (facet_red_test close gate input, #279) is delegated to MetricsRepository
+  // (incl. the STRICT newest-coding-attempt resolution + run_changed_files /
+  // reviewed.meta_json fallback). Behaviour-identical (fail-closed).
   latestCodingRunChangedPaths(hitchId: string): {
     runId: string | null;
     paths: string[];
   } {
-    const runId = this.newestCodingAttemptRunId(hitchId);
-    if (runId === null) return { runId: null, paths: [] };
-    return { runId, paths: this.changedPathsForRun(runId) };
-  }
-
-  /**
-   * The run_id of the NEWEST implement/rerun attempt, or null when that newest
-   * coding attempt has no run_id (does NOT fall back to an older attempt). This
-   * is the fail-closed resolution the facet_red_test gate requires; it is
-   * deliberately distinct from `latestCodingRunId`.
-   */
-  private newestCodingAttemptRunId(hitchId: string): string | null {
-    const attempts = this.listAttempts(hitchId);
-    for (let i = attempts.length - 1; i >= 0; i--) {
-      const attempt = attempts[i];
-      if (attempt === undefined) continue;
-      if (!CODING_RUN_ATTEMPT_TYPES.has(attempt.attemptType)) continue;
-      // Newest coding attempt found — its run_id (or null) is authoritative.
-      return attempt.runId !== null && attempt.runId !== ""
-        ? attempt.runId
-        : null;
-    }
-    return null;
-  }
-
-  private changedPathsForRun(runId: string): string[] {
-    const rows = this.db
-      .prepare(
-        `SELECT DISTINCT path
-           FROM run_changed_files
-          WHERE run_id = ? AND allowed = 1 AND status <> 'ignored'
-          ORDER BY path`,
-      )
-      .all(runId) as { path: string }[];
-    const dbPaths = rows
-      .map((r) => r.path)
-      .filter((p): p is string => typeof p === "string" && p !== "");
-    if (dbPaths.length > 0) return dbPaths;
-
-    const row = this.db
-      .prepare("SELECT meta_json FROM runs WHERE run_id = ?")
-      .get(runId) as { meta_json: string | null } | undefined;
-    if (row?.meta_json === undefined || row.meta_json === null) return [];
-    try {
-      const meta = JSON.parse(row.meta_json) as {
-        reviewed?: { paths?: unknown };
-      };
-      const reviewedPaths = meta.reviewed?.paths;
-      if (!Array.isArray(reviewedPaths)) return [];
-      return reviewedPaths.filter(
-        (p): p is string => typeof p === "string" && p !== "",
-      );
-    } catch {
-      return [];
-    }
+    return this.metrics.latestCodingRunChangedPaths(hitchId);
   }
 
   // #125 Track C (C5): the former private `touchSession` is unified into the
@@ -1726,10 +1550,6 @@ function nearDuplicateClassificationReason(
 
 function isNearDuplicateClassificationReason(reason: string | null): boolean {
   return reason?.startsWith(NEAR_DUPLICATE_CLASSIFICATION_PREFIX) ?? false;
-}
-
-function parseNullableJson(text: string | null): unknown {
-  return text === null ? null : (JSON.parse(text) as unknown);
 }
 
 function rowToFinding(row: HitchFindingRow): HitchFinding {
