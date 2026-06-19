@@ -296,7 +296,11 @@ Evaluation is deterministic and conservative:
     `unknown`), the decision is `continue` with `run_close_check` (record fresh
     command evidence). Required `failed` close-checks still route to
     `needs_fix` first so the next coder pass fixes the failure before the
-    command is re-run.
+    command is re-run. A required `facet_red_test` (#279) is auto-verify and
+    deterministic: a `failed` fail-open shape (production surface changed with no
+    covering test) routes to `needs_fix` like any failed required check, while a
+    `pending` facet (covering test present but RED evidence not yet recorded)
+    waits for operator/runner evidence via the external-evidence path below.
 14. If the only remaining required close checks need external/operator evidence
     (`manual`, `artifact_exists`, `operation_status`, or another non-command
     condition), the decision is `continue` with `ask_human`; the orchestrator
@@ -984,6 +988,52 @@ command checks using the existing close-condition machinery; it does not inject
 synthetic test gates and does not use reviewer self-report as state-transition
 evidence.
 
+`facet_red_test` (#279) is an **opt-in, deterministic** close-condition kind
+(category `auto-verify`) that closes the reviewer-depth gap: the static
+consensus reviewer does not execute tests, so it can approve work whose
+production surface changed with no covering test (a fail-open shape). A
+`facet_red_test` condition declares, in `rule.facets[]`, the contracted facets
+the deliverable requires a RED test for:
+
+```yaml
+- id: facet-red
+  kind: facet_red_test
+  required: true
+  rule:
+    facets:
+      - id: auth-login
+        testGlobs: ["tests/auth/**"]        # where the covering test must live
+        changedFileGlobs: ["src/auth/**"]   # optional: the production surface
+```
+
+Each facet is evaluated **deterministically** from the latest coding run's
+`run_changed_files` (the same surface the post-hoc policy diff verified) plus
+operator/runner-recorded close-check `evidence.facets[]` rows of shape
+`{facetId, redTestPath, redDemonstrated: true, runId, evidenceRef?}`. **No
+LLM/reviewer verdict is consulted for the state transition.** Glob matching uses
+the harness-standard root-anchored `minimatch` options (`docs/policy-semantics.md`);
+author `testGlobs` / `changedFileGlobs` with a leading `**/` for "anywhere in
+the repo". The decision table (fail-closed at every junction — never `passed` on
+missing/stale/malformed/unresolvable input):
+
+| Situation | Facet status |
+|-----------|--------------|
+| changed test matches `testGlobs` AND fresh RED evidence for the facet from the close run on a changed test path | `passed` |
+| `changedFileGlobs` matched a changed path but NO changed test matches `testGlobs` (fail-open shape) | `failed` |
+| changed test matches but no corroborating RED evidence, and a fresh evidence row exists | `failed` |
+| changed test matches but no evidence row recorded yet | `pending` (record evidence) |
+| no recorded evidence row / stale evidence (older than `freshAfter`) and no fail-open shape | `pending` |
+| evidence `runId` ≠ the close run (stale prior-approved run) / `redDemonstrated` ≠ `true` / `redTestPath` not a changed test | not counted → `failed`/`pending` per above |
+| malformed `rule.facets` (missing id, empty `testGlobs`, duplicate id, …) | `failed` |
+| no resolvable coding run (`latestCodingRunId` null) / `changedPaths` unavailable | `pending` |
+
+The condition fails if any facet failed, is pending if any facet is pending,
+and passes only when every facet passes. Evidence is **bound to the closing
+`runId`**, so a re-opened hitch cannot inherit a prior approved run's coverage.
+Existing hitches that never declare a `facet_red_test` condition are completely
+unaffected — the gate is purely additive and can only make close **stricter**
+for hitches that opt in.
+
 The spec review and config-update paths share a pure spec-gate helper layer
 under `src/hitch/`:
 
@@ -1001,10 +1051,15 @@ under `src/hitch/`:
   `finding_policy.rule` keys, required `operation_status.metadata.operationId`, and
   required `db_doctor` gates while the runner is not implemented. `command`
   conditions are validated form-only (kind + syntax); allowed-command resolution
-  is deferred entirely to the close-check runner. Missing
-  external-evidence descriptions and missing `artifact_exists.metadata.path` are
-  advisory warnings. The validator does not decide close readiness; convergence
-  and close-check evaluation remain the only close-state authority.
+  is deferred entirely to the close-check runner. `facet_red_test` conditions are
+  validated form-only too: `rule.facets[]` must declare each facet with a string
+  `id` and a non-empty `testGlobs[]`, with no duplicate ids — but the validator
+  **never touches the filesystem** to check whether the declared tests exist
+  (that is the runtime gate's job, evaluated from `run_changed_files` + recorded
+  RED evidence). Missing external-evidence descriptions and missing
+  `artifact_exists.metadata.path` are advisory warnings. The validator does not
+  decide close readiness; convergence and close-check evaluation remain the only
+  close-state authority.
 
 When a hitch review step is re-driven for a run whose **DB-canonical decision**
 (`review_decisions`, not any single participant proposal) is `approved`, AND a

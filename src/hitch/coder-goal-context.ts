@@ -1,4 +1,5 @@
 import type { HitchFinding } from "./types.js";
+import type { EvaluatedCloseCondition } from "./close-checks.js";
 import { containsLikelySecret } from "../reporter/secret-scan.js";
 
 /** Default cap on findings injected into a coder rerun goal (keeps the prompt bounded). */
@@ -127,6 +128,83 @@ function renderCloseCheckFailure(failure: CloseCheckFailureContext): string {
     parts.push(["  stderr:", clipOutput(failure.stderr).trimEnd()].join("\n"));
   }
   return parts.join("\n");
+}
+
+function stringEvidence(
+  evidence: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = evidence[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function numberEvidence(
+  evidence: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = evidence[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function booleanEvidence(
+  evidence: Record<string, unknown>,
+  key: string,
+): boolean | undefined {
+  const value = evidence[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
+/**
+ * Project failed REQUIRED close-condition evaluations into the coder-rerun
+ * failure context. Pure (no DB). A `command`/finding failure carries its
+ * recorded evidence (exitCode, output tails, log paths). A `facet_red_test`
+ * fail-open-shape failure is evidence-INDEPENDENT (it has no recorded check row,
+ * #279 P2): include it anyway and carry the deterministic evaluator `message`
+ * (which names the uncovered facet / production glob) so the next coder pass
+ * knows the production surface changed with no covering test instead of looping
+ * blind. Other failed kinds still require a recorded check row (a bare failure
+ * with no row carries no actionable detail).
+ */
+export function closeCheckFailureContexts(
+  conditions: readonly EvaluatedCloseCondition[],
+): CloseCheckFailureContext[] {
+  return conditions
+    .filter(
+      (evaluated) =>
+        evaluated.condition.required &&
+        evaluated.status === "failed" &&
+        (evaluated.check !== null ||
+          evaluated.condition.kind === "facet_red_test"),
+    )
+    .map((evaluated) => {
+      const evidence = evaluated.check?.evidence ?? {};
+      const description = evaluated.condition.description;
+      const command = stringEvidence(evidence, "command");
+      const exitCode = numberEvidence(evidence, "exitCode");
+      const timedOut = booleanEvidence(evidence, "timedOut");
+      const message = evaluated.check?.message ?? evaluated.message ?? undefined;
+      const stdout =
+        stringEvidence(evidence, "stdoutTail") ??
+        stringEvidence(evidence, "stdout");
+      const stderr =
+        stringEvidence(evidence, "stderrTail") ??
+        stringEvidence(evidence, "stderr");
+      const stdoutPath = stringEvidence(evidence, "stdoutPath");
+      const stderrPath = stringEvidence(evidence, "stderrPath");
+      return {
+        conditionId: evaluated.condition.id,
+        conditionKind: evaluated.condition.kind,
+        ...(description !== undefined ? { description } : {}),
+        ...(command !== undefined ? { command } : {}),
+        ...(exitCode !== undefined ? { exitCode } : {}),
+        ...(timedOut !== undefined ? { timedOut } : {}),
+        ...(message !== undefined ? { message } : {}),
+        ...(stdout !== undefined ? { stdout } : {}),
+        ...(stderr !== undefined ? { stderr } : {}),
+        ...(stdoutPath !== undefined ? { stdoutPath } : {}),
+        ...(stderrPath !== undefined ? { stderrPath } : {}),
+      };
+    });
 }
 
 /**

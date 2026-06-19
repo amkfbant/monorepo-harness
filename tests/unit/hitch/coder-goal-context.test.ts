@@ -3,8 +3,14 @@ import {
   augmentGoalWithFailedCloseChecks,
   augmentGoalWithFailedRun,
   augmentGoalWithOpenFindings,
+  closeCheckFailureContexts,
 } from "../../../src/hitch/coder-goal-context.js";
-import type { HitchFinding } from "../../../src/hitch/types.js";
+import type { EvaluatedCloseCondition } from "../../../src/hitch/close-checks.js";
+import type {
+  HitchCloseCheck,
+  HitchCloseCondition,
+  HitchFinding,
+} from "../../../src/hitch/types.js";
 
 function mkFinding(partial: Partial<HitchFinding>): HitchFinding {
   return {
@@ -96,6 +102,93 @@ describe("augmentGoalWithFailedRun", () => {
     expect(out.startsWith("do the thing")).toBe(true);
     expect(out).toContain("Previous attempt failed");
     expect(out).toContain("`failed-command`");
+  });
+});
+
+function reqCondition(
+  overrides: Partial<HitchCloseCondition> = {},
+): HitchCloseCondition {
+  return { id: "c", kind: "command", required: true, ...overrides };
+}
+
+describe("closeCheckFailureContexts (#279 P2 coder feedback)", () => {
+  it("includes an evidence-INDEPENDENT facet fail-open-shape failure (no check row) and carries its message", () => {
+    const evaluated: EvaluatedCloseCondition[] = [
+      {
+        condition: reqCondition({ id: "facet-red", kind: "facet_red_test" }),
+        status: "failed",
+        check: null, // fail-open-shape failures have NO recorded check row
+        message:
+          "failed: auth-login: production surface changed, no covering test",
+      },
+    ];
+    const contexts = closeCheckFailureContexts(evaluated);
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]?.conditionKind).toBe("facet_red_test");
+    expect(contexts[0]?.message).toMatch(/no covering test/i);
+
+    // The fail-open explanation reaches the next coder prompt.
+    const goal = augmentGoalWithFailedCloseChecks("rerun goal", contexts);
+    expect(goal).toContain("auth-login");
+    expect(goal).toContain("production surface changed, no covering test");
+  });
+
+  it("still drops a non-facet failed condition that has NO recorded check row", () => {
+    const evaluated: EvaluatedCloseCondition[] = [
+      {
+        condition: reqCondition({ id: "typecheck", kind: "command" }),
+        status: "failed",
+        check: null,
+        message: "no actionable detail",
+      },
+    ];
+    expect(closeCheckFailureContexts(evaluated)).toHaveLength(0);
+  });
+
+  it("prefers the recorded check message over the evaluator message when a row exists", () => {
+    const check: HitchCloseCheck = {
+      checkId: "chk-1",
+      hitchId: "g1",
+      conditionId: "facet-red",
+      status: "failed",
+      checkedAt: "2026-01-01T00:00:00Z",
+      checkedBy: "runner",
+      evidence: {},
+      message: "recorded check message",
+    };
+    const evaluated: EvaluatedCloseCondition[] = [
+      {
+        condition: reqCondition({ id: "facet-red", kind: "facet_red_test" }),
+        status: "failed",
+        check,
+        message: "evaluator message",
+      },
+    ];
+    expect(closeCheckFailureContexts(evaluated)[0]?.message).toBe(
+      "recorded check message",
+    );
+  });
+
+  it("ignores optional and non-failed conditions", () => {
+    const evaluated: EvaluatedCloseCondition[] = [
+      {
+        condition: reqCondition({
+          id: "facet-opt",
+          kind: "facet_red_test",
+          required: false,
+        }),
+        status: "failed",
+        check: null,
+        message: "x",
+      },
+      {
+        condition: reqCondition({ id: "facet-pending", kind: "facet_red_test" }),
+        status: "pending",
+        check: null,
+        message: "y",
+      },
+    ];
+    expect(closeCheckFailureContexts(evaluated)).toHaveLength(0);
   });
 });
 
