@@ -1,0 +1,13 @@
+#!/bin/sh
+# Behavior-zero リファクタの安全網（ローカル一次 gate）。
+#
+# なぜ必要か: GitHub Actions CI は spending-limit で job 未起動のまま即 fail する
+# （billing-blocked）。よって型/テストの機械的 backstop はローカルにしか存在しない。
+# この hook が無いと「手動で typecheck を回し忘れた壊れた commit」が素通りする。
+#
+# 役割分担: commit は高速フィードバックのため typecheck のみ。重いフルスイート
+# （vitest 3000+ 本）は pre-push に置き、PR 化（push）の直前にだけ走らせる。
+# 緊急時は `git commit --no-verify` で迂回可（ただし PR 前に手動で gate を回すこと）。
+set -e
+echo "[pre-commit] npm run typecheck"
+npm run typecheck
