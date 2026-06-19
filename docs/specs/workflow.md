@@ -656,11 +656,37 @@ Unit and integration tests that allocate temp roots use
 roots are removed in-process.
 
 `vitest run` uses the forks pool with `maxForks=4`, `minForks=1`, and
-`teardownTimeout=20s`. Before a run starts, `tests/global-tmp-sweep.ts` sweeps
-stale real directories under `os.tmpdir()` whose basenames start with
-`harness-`, `onb-`, `ws-repo-`, or `legacy-lock-warn-`. The sweep is maxdepth 1,
-prefix-scoped, skips files/symlinks/fresh directories, and never reads the root
-from env or config.
+`teardownTimeout=20s`. The `tests/global-tmp-sweep.ts` `globalSetup` module does
+two things at setup:
+
+1. **Stale sweep (backward-compat).** It reclaims real directories under the
+   real `os.tmpdir()` whose basenames start with `harness-`, `onb-`, `ws-repo-`,
+   or `legacy-lock-warn-` AND are older than 1h (`sweepStaleTmpDirs`). This is
+   maxdepth 1, prefix-scoped, skips files/symlinks, and is age-gated (>1h via
+   mtime): a concurrent run's freshly-created directories are protected; only the
+   theoretical case of a long-lived active directory idle for over an hour could
+   be reclaimed.
+2. **Per-run private TMPDIR subroot.** It creates a private subroot
+   `harness-vitest-run-XXXX` under the real `os.tmpdir()` and points
+   `process.env.TMPDIR` at it. Forked test workers inherit this env at fork
+   time, so `os.tmpdir()` resolves to the private subroot in every worker —
+   including the ~66 integration files that call `mkdtempSync(join(tmpdir(), …))`
+   at module top level. All their temp roots therefore land UNDER the private
+   subroot. (Locked by a committed regression test
+   `tests/integration/tmpdir-redirect-probe.test.ts`: a module-top `mkdtemp` in a
+   forked integration worker must resolve under `harness-vitest-run-*`, so a
+   future vitest that pre-forks workers before `globalSetup` fails loudly instead
+   of silently leaking.)
+
+At **teardown** the module deletes EXCLUSIVELY its own private subroot
+(`removeRunTmpRoot` → `rmSync` recursive, errors swallowed). There is no
+prefix/snapshot/age scan of the shared tmpdir at teardown, so a concurrent
+external or production harness run on the same machine — which creates
+same-prefix dirs like `harness-reviewer-input-` directly under `os.tmpdir()` —
+is never at risk: the suite only ever removes the one directory it created. This
+is the architectural fix for the test-side leak (issue #270): the 66 integration
+files that allocate raw temp roots without per-test cleanup no longer need
+editing, because their roots are nested inside the wholesale-deleted subroot.
 
 ## limits / timeout
 
