@@ -203,6 +203,45 @@ never an LLM "I fixed it" self-report. The auto-resolve fires only on `approved`
 a later `changes_requested` / `rejected` re-blocks correctly, and a genuinely
 re-raised blocker is re-promoted through the normal `fixed -> reopened` edge.
 
+**(#306) The review import is atomic (all-or-nothing).** `importReviewProposalToHitch`
+performs its writes — starting the review cycle, importing the proposal findings,
+the #278 supersede-resolve of prior blockers, completing the cycle with the
+post-resolve counts, AND recording the `review_consensus` close-check evidence —
+inside a **single transaction** (`HitchRepository.runAtomically`, an `immediate`
+write transaction). Previously each constituent repository method opened its OWN
+transaction, so a crash/exception **between** `resolveSupersededReviewFindings`
+(which committed the `open -> fixed` flip of prior review-blocking findings) and
+`completeReviewCycle` could leave a crash-partial state: prior P1 blockers retired
+while the approving cycle stayed INCOMPLETE, silently clearing the close gate even
+though the approve never fully imported. A second window existed **between**
+`completeReviewCycle` and recording the close-check evidence: the cycle would be
+completed (consuming a review-cycle budget slot) while the required
+`review_consensus` close-check was never written. That is NOT idempotently
+recovered, because on the FINAL allowed review cycle `decide()` evaluates the
+review-cycle budget (the `budget_exhausted` branch) BEFORE the stale-review-consensus
+refresh branch (which is itself gated on `reviewCyclesUsed < maxReviewCycles`), so
+the missing evidence would yield a wrong terminal `budget_exhausted` instead of a
+re-review. The close-check evidence is therefore part of the cycle's all-or-nothing
+state. Now a failure anywhere in that sequence rolls back ALL of it — the prior
+blockers stay OPEN, no (started-but-incomplete) cycle row is recorded, and no
+close-check evidence is written. To compose the writes under one `BEGIN`, the
+constituent methods that otherwise open their own transaction expose
+non-transactional cores (`upsertFindingCore`, `resolveSupersededReviewFindingsCore`)
+that the import calls inside `runAtomically` (better-sqlite3 does NOT reject a
+nested `BEGIN`; it would instead degrade a nested `.transaction()` to a `SAVEPOINT`,
+so calling the cores keeps a single BEGIN/COMMIT rather than an extra inner
+boundary). The public `upsertFinding` / `resolveSupersededReviewFindings` remain
+thin transaction wrappers that run their pure prelude (and the empty-category /
+validation short-circuits) OUTSIDE the transaction exactly as before and are
+effect-equivalent for every standalone caller (CLI / MCP / orchestrate).
+`startReviewCycle` / `completeReviewCycle` / `recordCloseCheck` never opened their
+own transaction and are called directly. The #278 resolve-before-complete ordering
+and the cycle's `findingsFixed` / `findingsInScopeOpen` count semantics are
+preserved unchanged inside the transaction. ONLY the live, idempotently re-derived
+steps run AFTER the atomic block — the convergence decision and the consensus-stall
+check; convergence is always re-derived from current DB state, so a rolled-back
+import is fully recovered by re-importing the latest run.
+
 ## Convergence Decisions
 
 Evaluation is deterministic and conservative:
