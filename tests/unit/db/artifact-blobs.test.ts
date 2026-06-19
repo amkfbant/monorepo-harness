@@ -266,4 +266,148 @@ describe("ingestRunArtifacts", () => {
     expect(count).toBe(1);
     db.close();
   });
+
+  /**
+   * #303 — db-first absent-recoverable retention: the full sync preserves an
+   * absent recoverable row ONLY when it carries the `quarantined` marker (set by
+   * `quarantinePriorReviewerVerdictArtifacts`). A non-quarantined absent
+   * recoverable row (e.g. a `review-auto-error.json` that a successful retry
+   * removed) is PRUNED. File-first behavior is byte-identical (full
+   * delete-then-rescan), regardless of the marker.
+   */
+  describe("#303 db-first absent-recoverable retention", () => {
+    function seedDbFirstRun(db: Database.Database, runId: string): void {
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, source_mode, db_revision, export_status, updated_at)
+         VALUES (?, 't', 'apps/user', 'domain-coding', 'main', 'needs_review',
+           'db-first', 1, 'disabled', '2026-05-23T00:00:00Z')`,
+      ).run(runId);
+    }
+    function seedAbsentRecoverableRow(
+      db: Database.Database,
+      runId: string,
+      rel: string,
+      quarantined: 0 | 1,
+    ): void {
+      const blob = storeArtifactBlob(db, Buffer.from(`body of ${rel}\n`));
+      db.prepare(
+        `INSERT INTO artifacts (artifact_id, run_id, kind, relative_path,
+           content_type, bytes, sha256, storage, blob_sha256, body_status,
+           quarantined)
+         VALUES (?, ?, 'other', ?, 'application/json', ?, ?, 'db', ?,
+           'db_available', ?)`,
+      ).run(`${runId}:${rel}`, runId, rel, blob.bytes, blob.sha256, blob.sha256, quarantined);
+    }
+
+    it("prunes a NON-quarantined absent recoverable row (stale review-auto-error.json)", () => {
+      const db = freshDb();
+      const root = mkdtempSync(join(tmpdir(), "harness-ingest-"));
+      const runId = "run-x-303-prune";
+      const runDir = join(root, runId);
+      mkdirSync(runDir, { recursive: true });
+      seedDbFirstRun(db, runId);
+      // ingested-then-superseded on disk: row present, file absent, NOT quarantined
+      seedAbsentRecoverableRow(
+        db,
+        runId,
+        "reviewers/codex-reviewer/review-auto-error.json",
+        0,
+      );
+      // an actually-on-disk artifact so the rescan has content
+      writeFileSync(join(runDir, "summary.md"), "ok\n");
+
+      ingestRunArtifacts(db, runDir, runId);
+
+      const row = db
+        .prepare(
+          "SELECT 1 AS n FROM artifacts WHERE run_id = ? AND relative_path = ?",
+        )
+        .get(runId, "reviewers/codex-reviewer/review-auto-error.json");
+      expect(row).toBeUndefined();
+      db.close();
+    });
+
+    it("preserves a quarantined (marked) absent recoverable row (#272 non-regression)", () => {
+      const db = freshDb();
+      const root = mkdtempSync(join(tmpdir(), "harness-ingest-"));
+      const runId = "run-x-303-keep";
+      const runDir = join(root, runId);
+      mkdirSync(runDir, { recursive: true });
+      seedDbFirstRun(db, runId);
+      seedAbsentRecoverableRow(
+        db,
+        runId,
+        "reviewers/alice/reviewer-agent.out.log",
+        1,
+      );
+      writeFileSync(join(runDir, "summary.md"), "ok\n");
+
+      ingestRunArtifacts(db, runDir, runId);
+
+      const row = db
+        .prepare(
+          `SELECT quarantined, blob_sha256 FROM artifacts
+            WHERE run_id = ? AND relative_path = ?`,
+        )
+        .get(runId, "reviewers/alice/reviewer-agent.out.log") as
+        | { quarantined: number; blob_sha256: string | null }
+        | undefined;
+      expect(row?.quarantined).toBe(1);
+      expect(row?.blob_sha256).not.toBeNull();
+      db.close();
+    });
+
+    it("re-ingest from disk clears the quarantined marker (the file is authoritative again)", () => {
+      const db = freshDb();
+      const root = mkdtempSync(join(tmpdir(), "harness-ingest-"));
+      const runId = "run-x-303-reappear";
+      const runDir = join(root, runId);
+      const rel = "reviewers/alice/reviewer-agent.out.log";
+      mkdirSync(join(runDir, "reviewers", "alice"), { recursive: true });
+      seedDbFirstRun(db, runId);
+      seedAbsentRecoverableRow(db, runId, rel, 1);
+      // the same path reappears on disk → it is re-scanned and re-ingested fresh
+      writeFileSync(join(runDir, rel), "fresh on-disk body\n");
+
+      ingestRunArtifacts(db, runDir, runId);
+
+      const row = db
+        .prepare(
+          `SELECT quarantined FROM artifacts
+            WHERE run_id = ? AND relative_path = ?`,
+        )
+        .get(runId, rel) as { quarantined: number } | undefined;
+      expect(row?.quarantined).toBe(0);
+      db.close();
+    });
+
+    it("file-first sync is byte-identical: full delete-then-rescan ignores the marker", () => {
+      const db = freshDb();
+      const root = mkdtempSync(join(tmpdir(), "harness-ingest-"));
+      const runId = "run-x-303-ff";
+      const runDir = join(root, runId);
+      mkdirSync(runDir, { recursive: true });
+      // NO db-first run row → file-first branch (delete-all → rescan).
+      // even a "quarantined"-marked absent recoverable row is pruned, because
+      // file-first treats the run dir as the sole source of truth.
+      seedAbsentRecoverableRow(
+        db,
+        runId,
+        "reviewers/alice/reviewer-agent.out.log",
+        1,
+      );
+      writeFileSync(join(runDir, "summary.md"), "ok\n");
+
+      ingestRunArtifacts(db, runDir, runId);
+
+      const rows = db
+        .prepare(
+          "SELECT relative_path FROM artifacts WHERE run_id = ? ORDER BY relative_path",
+        )
+        .all(runId) as { relative_path: string }[];
+      expect(rows.map((r) => r.relative_path)).toEqual(["summary.md"]);
+      db.close();
+    });
+  });
 });

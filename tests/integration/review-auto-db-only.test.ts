@@ -9,7 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { openDb, openDbReadonly } from "../../src/db/connection.js";
-import { runMigrations } from "../../src/db/migrations.js";
+import { MIGRATIONS, runMigrations } from "../../src/db/migrations.js";
 import { storeArtifactBlob } from "../../src/db/artifact-blobs.js";
 import { readArtifactBlob } from "../../src/db/artifact-blobs.js";
 import {
@@ -831,6 +831,162 @@ describe("review auto — DB-only mode (Phase 8-13)", () => {
     }
   });
 
+  it("#303: a stale review-auto-error.json is pruned by the full sync after a successful retry (not re-materialized)", async () => {
+    // #303 regression: a reviewer FAILS → review-auto-error.json is ingested into
+    // the DB (storage='db', blob present). On a later SUCCESSFUL retry,
+    // runReviewerAgent removes the on-disk error file. The db-first full sync must
+    // PRUNE the now-DB-canonical-but-not-quarantined error row — otherwise
+    // exportRun re-materializes a stale failure artifact after the review
+    // succeeded. The canonical verdict in review_proposals is correct; this is an
+    // artifact-retention cleanliness fix.
+    const prevExport = process.env.HARNESS_EXPORT_FILES;
+    process.env.HARNESS_EXPORT_FILES = "0";
+    try {
+      const { runsDir, dbPath, runId } = dbOnlyNeedsReview();
+      const errorRel = "reviewers/codex-reviewer/review-auto-error.json";
+
+      // 1) reviewer FAILS (invalid decision) → review-auto-error.json written.
+      const invalidOutput = [
+        "```yaml",
+        "decision: not-a-valid-decision",
+        "required_changes: []",
+        "non_blocking_comments: []",
+        "out_of_scope_suggestions: []",
+        "```",
+      ].join("\n");
+      await runReviewerAgent({
+        runsDir,
+        runId,
+        dbPath,
+        codexRunner: fakeRunner(invalidOutput),
+        allowOverwrite: true,
+        now: new Date("2026-05-23T07:00:00Z"),
+      }).catch(() => undefined);
+      expect(existsSync(join(runsDir, runId, errorRel))).toBe(true);
+
+      // 2) full sync ingests the on-disk error file as a DB-canonical row.
+      syncRunArtifactsToDb({ dbPath, runsDir, runId });
+      {
+        const db = openDbReadonly(dbPath);
+        try {
+          const row = db
+            .prepare(
+              `SELECT blob_sha256 FROM artifacts
+                WHERE run_id = ? AND relative_path = ? AND storage = 'db'`,
+            )
+            .get(runId, errorRel) as { blob_sha256: string | null } | undefined;
+          expect(row?.blob_sha256).toBeTruthy(); // precondition: it WAS ingested
+        } finally {
+          db.close();
+        }
+      }
+
+      // 3) successful retry (same reviewer) — runReviewerAgent removes the
+      // on-disk review-auto-error.json (reviewer-agent.ts: rm errorArtifactPath).
+      await runReviewerAgent({
+        runsDir,
+        runId,
+        dbPath,
+        codexRunner: fakeRunner(APPROVED_OUTPUT),
+        allowOverwrite: true,
+        now: new Date("2026-05-23T07:01:00Z"),
+      });
+      expect(existsSync(join(runsDir, runId, errorRel))).toBe(false);
+
+      // 4) full post-round sync (delete-then-rescan / db-first merge). The stale,
+      // NOT-quarantined error row must be PRUNED — not preserved + re-exported.
+      syncRunArtifactsToDb({ dbPath, runsDir, runId });
+
+      const db = openDbReadonly(dbPath);
+      try {
+        const row = db
+          .prepare(
+            `SELECT blob_sha256 FROM artifacts
+              WHERE run_id = ? AND relative_path = ?`,
+          )
+          .get(runId, errorRel) as { blob_sha256: string | null } | undefined;
+        expect(row).toBeUndefined();
+      } finally {
+        db.close();
+      }
+    } finally {
+      if (prevExport === undefined) delete process.env.HARNESS_EXPORT_FILES;
+      else process.env.HARNESS_EXPORT_FILES = prevExport;
+    }
+  });
+
+  it("#303: a quarantined reviewer transcript carries the quarantined marker and survives the full sync (#272 non-regression)", async () => {
+    // Pins the distinguishing mechanism: the quarantine path MARKS the rows it
+    // intentionally preserves (`quarantined = 1`); the db-first full sync keeps
+    // ONLY marked absent-recoverable rows. A quarantined transcript must keep its
+    // marker AND survive the post-round sync (no regression of #272).
+    const prevExport = process.env.HARNESS_EXPORT_FILES;
+    process.env.HARNESS_EXPORT_FILES = "0";
+    try {
+      const { runsDir, dbPath, runId } = dbOnlyNeedsReview();
+      await runReviewerAgent({
+        runsDir,
+        runId,
+        dbPath,
+        reviewerName: "alice",
+        codexRunner: fakeRunner(APPROVED_OUTPUT),
+        allowOverwrite: true,
+        now: new Date("2026-05-23T08:00:00Z"),
+      });
+      await runReviewerAgent({
+        runsDir,
+        runId,
+        dbPath,
+        reviewerName: "bob",
+        codexRunner: fakeRunner(APPROVED_OUTPUT),
+        allowOverwrite: true,
+        now: new Date("2026-05-23T08:01:00Z"),
+      });
+
+      const rel = "reviewers/alice/reviewer-agent.out.log";
+      {
+        const db = openDbReadonly(dbPath);
+        try {
+          const marked = db
+            .prepare(
+              `SELECT quarantined FROM artifacts
+                WHERE run_id = ? AND relative_path = ? AND storage = 'db'`,
+            )
+            .get(runId, rel) as { quarantined: number } | undefined;
+          expect(marked?.quarantined).toBe(1); // quarantine stamped the marker
+        } finally {
+          db.close();
+        }
+      }
+
+      // Full post-round sync must NOT prune the marked row.
+      syncRunArtifactsToDb({ dbPath, runsDir, runId });
+
+      const db = openDbReadonly(dbPath);
+      try {
+        const row = db
+          .prepare(
+            `SELECT quarantined, blob_sha256 FROM artifacts
+              WHERE run_id = ? AND relative_path = ? AND storage = 'db'`,
+          )
+          .get(runId, rel) as
+          | { quarantined: number; blob_sha256: string | null }
+          | undefined;
+        expect(row?.quarantined).toBe(1);
+        expect(row?.blob_sha256).toBeTruthy();
+        const body = readArtifactBlob(db, row!.blob_sha256 as string)?.toString(
+          "utf8",
+        );
+        expect(body).toContain("decision: approved");
+      } finally {
+        db.close();
+      }
+    } finally {
+      if (prevExport === undefined) delete process.env.HARNESS_EXPORT_FILES;
+      else process.env.HARNESS_EXPORT_FILES = prevExport;
+    }
+  });
+
   it("#272: quarantine is a NO-OP for a DB-backed file-first/legacy run (verdict not removed) (codex P2)", async () => {
     // A DB exists but the run row is NOT db-first → the DB is not canonical for
     // this run, so removing the verdict sidecar would lose it with no recovery.
@@ -926,6 +1082,133 @@ describe("review auto — DB-only mode (Phase 8-13)", () => {
       }).catch(() => undefined);
 
       expect(existsSync(rootVerdict)).toBe(true);
+    } finally {
+      if (prevExport === undefined) delete process.env.HARNESS_EXPORT_FILES;
+      else process.env.HARNESS_EXPORT_FILES = prevExport;
+    }
+  });
+
+  /** Seed a v34-shape DB (every migration BEFORE v35 — no `quarantined` column)
+   *  with a db-first run that has an on-disk reviewers/<id> dir, mirroring a
+   *  freshly-upgraded-but-unmigrated ops DB. */
+  function v34DbFirstRunWithReviewerDir(): {
+    runsDir: string;
+    dbPath: string;
+    runId: string;
+  } {
+    const root = mkdtempSync(join(tmpdir(), "harness-v34-"));
+    const runsDir = join(root, "runs");
+    const runId = "run-20260523-apps-user-v34";
+    const runDir = join(runsDir, runId);
+    mkdirSync(join(runDir, "reviewers", "alice"), { recursive: true });
+    writeFileSync(join(runDir, "meta.json"), JSON.stringify({ runId }));
+    writeFileSync(
+      join(runDir, "reviewers", "alice", "reviewer-agent.out.log"),
+      "decision: approved\n",
+    );
+    const dbPath = join(root, ".harness", "harness.sqlite");
+    const db = openDb(dbPath);
+    try {
+      db.prepare(
+        `CREATE TABLE schema_migrations (
+           version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
+         )`,
+      ).run();
+      for (const m of MIGRATIONS.filter((mig) => mig.version < 35)) {
+        for (const stmt of m.statements) db.prepare(stmt).run();
+        db.prepare(
+          "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+        ).run(m.version, m.name, "2026-05-23T00:00:00Z");
+      }
+      const colNames = (
+        db.prepare("PRAGMA table_info(artifacts)").all() as { name: string }[]
+      ).map((r) => r.name);
+      expect(colNames).not.toContain("quarantined"); // precondition: v34 shape
+      db.prepare(
+        `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch,
+           status, source_mode, db_revision, export_status, updated_at)
+         VALUES (?, 't', 'apps/user', 'domain-coding', 'main', 'needs_review',
+           'db-first', 1, 'disabled', '2026-05-23T00:00:00Z')`,
+      ).run(runId);
+    } finally {
+      db.close();
+    }
+    return { runsDir, dbPath, runId };
+  }
+
+  it("#303 P1#2: quarantine + sync self-migrate on a v34 (unmigrated) DB — no missing-column error", () => {
+    // openManagedDb does NOT migrate; the quarantine writes the v35 `quarantined`
+    // column. On a freshly-upgraded v34 DB this would throw `no such column:
+    // quarantined` without the in-helper runMigrations. Both helpers must bring
+    // the schema current first.
+    const { runsDir, dbPath, runId } = v34DbFirstRunWithReviewerDir();
+    expect(() =>
+      quarantinePriorReviewerVerdictArtifacts({ dbPath, runsDir, runId }),
+    ).not.toThrow();
+    expect(() =>
+      syncRunArtifactsToDb({ dbPath, runsDir, runId }),
+    ).not.toThrow();
+    // and the schema is now current (column present)
+    const db = openDbReadonly(dbPath);
+    try {
+      const colNames = (
+        db.prepare("PRAGMA table_info(artifacts)").all() as { name: string }[]
+      ).map((r) => r.name);
+      expect(colNames).toContain("quarantined");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("#303 P2: a review-evaluations/* error.json is NOT pruned by the full sync (durable per-sample diagnostic)", () => {
+    // The reviewer retry sidecar `reviewers/<id>/review-auto-error.json` is
+    // transient; the review-evaluator's per-sample diagnostic
+    // `review-evaluations/<sample>/review-auto-error.json` (#279) shares the
+    // basename but IS durable. The narrowed exclusion must keep it quarantined.
+    const prevExport = process.env.HARNESS_EXPORT_FILES;
+    process.env.HARNESS_EXPORT_FILES = "0";
+    try {
+      const { runsDir, dbPath, runId } = dbOnlyNeedsReview();
+      const evalRel = "review-evaluations/sample-0/review-auto-error.json";
+      mkdirSync(join(runsDir, runId, "review-evaluations", "sample-0"), {
+        recursive: true,
+      });
+      writeFileSync(
+        join(runsDir, runId, evalRel),
+        '{"type":"review-auto-error","sample":0}\n',
+      );
+
+      // Quarantine the prior outputs (ingests + marks, removes from disk).
+      quarantinePriorReviewerVerdictArtifacts({ dbPath, runsDir, runId });
+      // It is marked quarantined (NOT excluded like the reviewer sidecar).
+      {
+        const db = openDbReadonly(dbPath);
+        try {
+          const marked = db
+            .prepare(
+              `SELECT quarantined FROM artifacts
+                WHERE run_id = ? AND relative_path = ? AND storage = 'db'`,
+            )
+            .get(runId, evalRel) as { quarantined: number } | undefined;
+          expect(marked?.quarantined).toBe(1);
+        } finally {
+          db.close();
+        }
+      }
+      // Full sync must NOT prune the eval diagnostic.
+      syncRunArtifactsToDb({ dbPath, runsDir, runId });
+      const db = openDbReadonly(dbPath);
+      try {
+        const row = db
+          .prepare(
+            `SELECT blob_sha256 FROM artifacts
+              WHERE run_id = ? AND relative_path = ?`,
+          )
+          .get(runId, evalRel) as { blob_sha256: string | null } | undefined;
+        expect(row?.blob_sha256).toBeTruthy();
+      } finally {
+        db.close();
+      }
     } finally {
       if (prevExport === undefined) delete process.env.HARNESS_EXPORT_FILES;
       else process.env.HARNESS_EXPORT_FILES = prevExport;

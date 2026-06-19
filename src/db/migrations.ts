@@ -36,6 +36,7 @@ import {
   MIGRATION_V32_STATEMENTS,
   MIGRATION_V33_STATEMENTS,
   MIGRATION_V34_STATEMENTS,
+  MIGRATION_V35_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -220,6 +221,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 34,
     name: "hitch-lifecycle-events-diverging-recovered-v34",
     statements: MIGRATION_V34_STATEMENTS,
+  },
+  {
+    version: 35,
+    name: "artifact-quarantined-marker-v35",
+    statements: MIGRATION_V35_STATEMENTS,
   },
 ];
 

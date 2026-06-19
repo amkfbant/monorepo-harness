@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V34_STATEMENTS`、
-> `SCHEMA_VERSION = 34`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V35_STATEMENTS`、
+> `SCHEMA_VERSION = 35`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -733,7 +733,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 34`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 35`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -768,6 +768,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 32 | epic #228 / #229 refute votes | `review_refute_votes`（refute consensus の append-only 監査入力表。FK ゼロ・DB-only・partial UNIQUE。詳細は下記「schema v32/v33」） |
 | 33 | epic #228 / #231 phase review-state CAS | `phases.review_state_version INTEGER NOT NULL DEFAULT 0`（`review_state_json` の将来 CAS 書込用 additive 列。新規 table 無し） |
 | 34 | hitch divergence recovery #280 | `hitch_lifecycle_events.event` CHECK を rebuild で拡張し `diverging_recovered` を許容（v23/v29 の FK/NOT NULL/index は維持）。`hitch recover-diverging` の audit イベント |
+| 35 | artifact quarantine marker #303 | `artifacts.quarantined INTEGER NOT NULL DEFAULT 0`（additive 列）。db-first full sync が absent ∧ recoverable な行のうち**意図的に quarantine された行だけ**を保持し、superseded 行（成功 retry が消した stale `reviewers/<id>/review-auto-error.json` 等）を prune するための marker。**upgrade 安全のため backfill 同梱**: 同 migration で `UPDATE artifacts SET quarantined = 1 WHERE storage IN ('db','external') AND blob_sha256 IS NOT NULL`——pre-v35 の「absent recoverable 行を全保持」を grandfather し、v34 の #272-quarantined transcript が次回 sync で `quarantined = 0` として誤 prune されるのを防ぐ。詳細は `docs/specs/workflow.md` の reviewer quarantine 節 |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
