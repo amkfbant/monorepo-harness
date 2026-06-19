@@ -4,6 +4,7 @@ import {
   type HitchFindingFilter,
   type HitchFindingSummaryCounts,
   type HitchRepository,
+  type LinkedPhaseSpecApprovalDrift,
 } from "./repository.js";
 import {
   evaluateCloseConditions,
@@ -11,6 +12,7 @@ import {
 } from "./close-checks.js";
 import type {
   HitchAttempt,
+  HitchCloseCondition,
   HitchConvergenceDecision,
   HitchConvergenceMetrics,
   HitchConvergenceResult,
@@ -30,7 +32,14 @@ const RUNNABLE_CLOSE_CHECK_STATUSES = new Set([
 
 interface PendingCloseCheckRouting {
   hasRunnableCommand: boolean;
-  externalEvidenceLabels: string[];
+  externalEvidenceConditions: PendingExternalEvidenceCondition[];
+}
+
+interface PendingExternalEvidenceCondition {
+  conditionId: string;
+  kind: HitchCloseCondition["kind"];
+  description: string | null;
+  pendingCycles: number;
 }
 
 export class ConvergenceService {
@@ -86,6 +95,10 @@ export class ConvergenceService {
     const pendingCloseCheckRouting = requiredPendingCloseCheckRouting(
       close.conditions,
       close.requiredPending,
+      cycles,
+    );
+    const linkedPhaseSpecDrifts = this.repo.linkedPhaseSpecApprovalDrifts(
+      session.hitchId,
     );
     return decide(
       this.repo,
@@ -98,6 +111,7 @@ export class ConvergenceService {
       latestCodingSucceeded,
       reviewConsensusPending,
       pendingCloseCheckRouting,
+      linkedPhaseSpecDrifts,
     );
   }
 }
@@ -223,22 +237,13 @@ function isReviewPending(
   return latestCodingAt > latestCycleAt;
 }
 
-function closeConditionLabel(
-  condition: EvaluatedCloseCondition["condition"],
-): string {
-  const description =
-    condition.description !== undefined && condition.description.trim() !== ""
-      ? ` (${condition.description.trim()})`
-      : "";
-  return `${condition.id}${description} [${condition.kind}]`;
-}
-
 function requiredPendingCloseCheckRouting(
   conditions: EvaluatedCloseCondition[],
   requiredPending: number,
+  cycles: HitchReviewCycle[],
 ): PendingCloseCheckRouting {
   let hasRunnableCommand = false;
-  const externalEvidenceLabels: string[] = [];
+  const externalEvidenceConditions: PendingExternalEvidenceCondition[] = [];
   for (const evaluated of conditions) {
     if (!evaluated.condition.required) continue;
     if (evaluated.status === "passed" || evaluated.status === "failed") {
@@ -252,16 +257,92 @@ function requiredPendingCloseCheckRouting(
       continue;
     }
     if (evaluated.condition.kind === "review_consensus") continue;
-    externalEvidenceLabels.push(closeConditionLabel(evaluated.condition));
+    externalEvidenceConditions.push({
+      conditionId: evaluated.condition.id,
+      kind: evaluated.condition.kind,
+      description:
+        evaluated.condition.description !== undefined &&
+        evaluated.condition.description.trim() !== ""
+          ? evaluated.condition.description.trim()
+          : null,
+      pendingCycles: countPendingCycles(evaluated, cycles),
+    });
   }
   if (
     conditions.length === 0 &&
     requiredPending > 0 &&
     !hasRunnableCommand
   ) {
-    externalEvidenceLabels.push("close conditions [none configured]");
+    externalEvidenceConditions.push({
+      conditionId: "close conditions",
+      kind: "manual",
+      description: "none configured",
+      pendingCycles: completedReviewCycleCount(cycles),
+    });
   }
-  return { hasRunnableCommand, externalEvidenceLabels };
+  return { hasRunnableCommand, externalEvidenceConditions };
+}
+
+function countPendingCycles(
+  evaluated: EvaluatedCloseCondition,
+  cycles: HitchReviewCycle[],
+): number {
+  const checkedAt = evaluated.check?.checkedAt ?? null;
+  return cycles.filter((cycle) => {
+    const completedAt = cycle.completedAt;
+    if (completedAt === null) return false;
+    return checkedAt === null || completedAt > checkedAt;
+  }).length;
+}
+
+function completedReviewCycleCount(cycles: HitchReviewCycle[]): number {
+  return cycles.filter((cycle) => cycle.completedAt !== null).length;
+}
+
+function externalEvidenceAskHumanMessage(
+  conditions: readonly PendingExternalEvidenceCondition[],
+  specDrifts: readonly LinkedPhaseSpecApprovalDrift[],
+): string {
+  const conditionText = conditions
+    .map(formatPendingExternalEvidenceCondition)
+    .join(", ");
+  const driftText = formatLinkedPhaseSpecDrifts(specDrifts);
+  return (
+    `Record external close-check evidence for: ${conditionText}` +
+    (driftText === null ? "" : `. ${driftText}`)
+  );
+}
+
+function formatPendingExternalEvidenceCondition(
+  condition: PendingExternalEvidenceCondition,
+): string {
+  const description =
+    condition.description === null ? "" : ` (${condition.description})`;
+  return (
+    `condition ${condition.conditionId} kind=${condition.kind} ` +
+    `pending ${condition.pendingCycles} ${cycleWord(condition.pendingCycles)}` +
+    description
+  );
+}
+
+function cycleWord(count: number): string {
+  return count === 1 ? "cycle" : "cycles";
+}
+
+function formatLinkedPhaseSpecDrifts(
+  drifts: readonly LinkedPhaseSpecApprovalDrift[],
+): string | null {
+  if (drifts.length === 0) return null;
+  return (
+    "Spec approval hash drift: " +
+    drifts
+      .map(
+        (drift) =>
+          `phase ${drift.phaseId} approved=${drift.approvedSpecHash} ` +
+          `current=${drift.currentSpecHash}`,
+      )
+      .join(", ")
+  );
 }
 
 export function lastCloseCheckInvalidatingMutationAt(input: {
@@ -300,6 +381,7 @@ function decide(
   latestCodingSucceeded: boolean,
   reviewConsensusPending: boolean,
   pendingCloseCheckRouting: PendingCloseCheckRouting,
+  linkedPhaseSpecDrifts: readonly LinkedPhaseSpecApprovalDrift[],
 ): HitchConvergenceResult {
   const terminal = terminalDecision(session.status);
   if (terminal !== null) {
@@ -592,7 +674,7 @@ function decide(
     );
   }
 
-  if (pendingCloseCheckRouting.externalEvidenceLabels.length > 0) {
+  if (pendingCloseCheckRouting.externalEvidenceConditions.length > 0) {
     return result(
       session.hitchId,
       "continue",
@@ -600,9 +682,10 @@ function decide(
       metrics,
       {
         kind: "ask_human",
-        message:
-          "Record external close-check evidence for: " +
-          pendingCloseCheckRouting.externalEvidenceLabels.join(", "),
+        message: externalEvidenceAskHumanMessage(
+          pendingCloseCheckRouting.externalEvidenceConditions,
+          linkedPhaseSpecDrifts,
+        ),
       },
     );
   }

@@ -16,6 +16,7 @@ import {
   parseHitchPolicy,
   parseHitchScope,
 } from "./schemas.js";
+import { phaseSpecApprovalStatusForSpec } from "../roadmap/phase-repository.js";
 import {
   closeConditionsLoosenGate,
   isScopeWidening,
@@ -215,6 +216,12 @@ export interface HitchFindingSummaryCounts {
   openInScopeP2: number;
   openUnknownScope: number;
   openOutOfScope: number;
+}
+
+export interface LinkedPhaseSpecApprovalDrift {
+  phaseId: string;
+  approvedSpecHash: string;
+  currentSpecHash: string;
 }
 
 export interface RecordHitchCloseCheckInput {
@@ -423,6 +430,13 @@ interface HitchLifecycleEventRow {
   detail_json: string | null;
   created_at: string;
   created_by: string;
+}
+
+interface LinkedPhaseSpecRow {
+  phase_id: string;
+  scope_json: string | null;
+  close_conditions_json: string | null;
+  review_state_json: string | null;
 }
 
 /** Clamp a budget extension to a non-negative integer; non-finite (e.g. a NaN
@@ -1759,6 +1773,35 @@ export class HitchRepository {
     return row.latest;
   }
 
+  linkedPhaseSpecApprovalDrifts(
+    hitchId: string,
+  ): LinkedPhaseSpecApprovalDrift[] {
+    const rows = this.db
+      .prepare(
+        `SELECT p.phase_id, p.scope_json, p.close_conditions_json, p.review_state_json
+           FROM phase_hitches ph
+           JOIN phases p ON p.phase_id = ph.phase_id
+          WHERE ph.hitch_id = ?
+          ORDER BY p.phase_id ASC`,
+      )
+      .all(hitchId) as LinkedPhaseSpecRow[];
+    const drifts: LinkedPhaseSpecApprovalDrift[] = [];
+    for (const row of rows) {
+      const status = phaseSpecApprovalStatusForSpec({
+        scope: parseNullableJson(row.scope_json),
+        closeConditions: parseNullableJson(row.close_conditions_json),
+        reviewState: parseNullableJson(row.review_state_json),
+      });
+      if (!status.drifted || status.approvedSpecHash === null) continue;
+      drifts.push({
+        phaseId: row.phase_id,
+        approvedSpecHash: status.approvedSpecHash,
+        currentSpecHash: status.currentSpecHash,
+      });
+    }
+    return drifts;
+  }
+
   recordCloseCheck(input: RecordHitchCloseCheckInput): HitchCloseCheck {
     const checkedAt = input.checkedAt ?? new Date().toISOString();
     const checkId = input.checkId ?? `check-${randomUUID()}`;
@@ -2094,6 +2137,10 @@ function isNearDuplicateClassificationReason(reason: string | null): boolean {
 
 function json(value: unknown): string {
   return JSON.stringify(value);
+}
+
+function parseNullableJson(text: string | null): unknown {
+  return text === null ? null : (JSON.parse(text) as unknown);
 }
 
 function parseRecord(text: string): Record<string, unknown> {
