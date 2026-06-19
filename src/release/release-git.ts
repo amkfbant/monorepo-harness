@@ -154,6 +154,9 @@ export const CLI_PATHS: readonly string[] = [
   "src/cli/inbox.ts",
   "src/cli/operations.ts",
   "src/cli/dashboard.ts",
+  "src/cli/release.ts",
+  "src/cli/rerun.ts",
+  "src/cli/diagnostics.ts",
   "src/mcp/cli.ts",
 ];
 

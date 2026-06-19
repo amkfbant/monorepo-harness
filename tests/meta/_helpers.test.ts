@@ -30,11 +30,14 @@ describe("meta/_helpers tracked src enumeration", () => {
     }
   });
 
-  it("loc は非負整数で run.ts は >4000（baseline sanity）", () => {
+  it("loc は非負整数で大きいファイルを正しく読む（baseline sanity）", () => {
     const sizes = listTrackedSrcSizes();
-    const run = sizes.find((s) => s.path === "src/cli/run.ts");
-    expect(run).toBeDefined();
-    expect(run?.loc ?? 0).toBeGreaterThan(4000);
+    // run.ts は #125 の cohesion-first 分割で縮小し続けるため、特定サイズに結合しない。
+    // 列挙が実 LOC を読めていることは「最大ファイルが十分大きい」で確認する
+    // （schema.ts 等の宣言的台帳が常に存在）。
+    const maxLoc = Math.max(...sizes.map((s) => s.loc));
+    expect(maxLoc).toBeGreaterThan(1000);
+    expect(sizes.find((s) => s.path === "src/cli/run.ts")).toBeDefined();
     expect(sizes.every((s) => Number.isInteger(s.loc) && s.loc >= 0)).toBe(true);
   });
 
