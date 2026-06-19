@@ -52,6 +52,14 @@ export function operationNameForTool(toolName: string): string {
     : toolName;
 }
 
+// NOTE (#296): a null/undefined projectId is INTENTIONALLY allowed at this
+// PERMISSION layer (project-agnostic). `decideMcpPermission` and many tools call
+// this for cross-resource gating where "no project" means "not project-scoped",
+// not "denied" — flipping it would break those callers. Course/phase visibility
+// for restricted clients is enforced fail-closed at the HANDLER layer by
+// `ensureProjectVisible` (tool-helpers), which DENIES a null/unresolved project
+// when `allowedProjects` is non-empty. The two layers are complementary: permission
+// = agnostic-allow, handler = course-visibility fail-closed.
 export function isProjectAllowed(
   config: McpConfig,
   projectId: string | null | undefined,

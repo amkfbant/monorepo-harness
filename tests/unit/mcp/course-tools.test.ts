@@ -8,6 +8,8 @@ import { CourseRepository } from "../../../src/roadmap/course-repository.js";
 import { PhaseRepository } from "../../../src/roadmap/phase-repository.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
 import { HarnessMcpServer } from "../../../src/mcp/server.js";
+import { phaseLinkHitchTool } from "../../../src/mcp/tools/course-tools.js";
+import type { McpToolContext } from "../../../src/mcp/registry/tool-registry.js";
 import {
   DEFAULT_MCP_CONFIG,
   type McpConfig,
@@ -1326,5 +1328,146 @@ describe("MCP course-tools phase.add and phase.update visibility denial (P2)", (
       idempotencyKey: "phase-update-visibility-denied",
     });
     expect(result.status).toBe("permission_denied");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #296: phase.link_hitch must enforce the SAME handler-side ensureProjectVisible
+// precheck as its siblings (phase.add/update/ratify/start_hitch). The DESTINATION
+// (parent phase/course) visibility is defense-in-depth: even if the PERMISSION
+// layer were bypassed/regressed, the handler must fail-closed for a restricted
+// client whose parent course project is null or out-of-scope. Previously only the
+// permission layer guarded this path (asymmetric with siblings).
+// ---------------------------------------------------------------------------
+
+describe("MCP course-tools phase.link_hitch destination visibility (#296)", () => {
+  // Directly exercise the handler (bypassing the permission layer) to prove the
+  // handler-side check is present — mirroring the sibling phase.add/update gate.
+  function handlerContext(root: string, config: McpConfig): McpToolContext {
+    return {
+      harnessRoot: root,
+      config,
+      clientName: "unit-test",
+      sessionId: "mcpsess_link296",
+    };
+  }
+
+  it("phaseLinkHitchTool returns permission_denied when the parent course project is NULL for a restricted client", async () => {
+    const root = freshRoot();
+    let nullPhaseId = "";
+    let hitchId = "";
+    withDb(root, (db) => {
+      // Parent course with NO project (null project_id).
+      const course = new CourseRepository(db).create({
+        title: "Null Project Course",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      nullPhaseId = new PhaseRepository(db).add({
+        courseId: course.courseId,
+        title: "Phase in null-project course",
+        createdBy: "test",
+        createdSource: "test",
+      }).phaseId;
+      hitchId = new HitchRepository(db).createSession({
+        title: "Some hitch",
+        createdBy: "test",
+        createdSource: "cli",
+      }).hitchId;
+    });
+
+    // Restricted client (allowedProjects ["demo"]). The handler-side check must
+    // fail-closed on the null-project parent — no mutation, no error-from-deep.
+    const ctx = handlerContext(root, mutationConfig(["phase.link_hitch"]));
+    const result = await phaseLinkHitchTool(
+      { phaseId: nullPhaseId, hitchId, idempotencyKey: "link-null-parent-296" },
+      ctx,
+    );
+    expect(result.status).toBe("permission_denied");
+
+    // Fail-closed: no link created, nothing audited under this phase.
+    withDb(root, (db) => {
+      const audited = db
+        .prepare("SELECT COUNT(*) AS n FROM operations WHERE target_id = ?")
+        .get(nullPhaseId) as { n: number };
+      expect(audited.n).toBe(0);
+    });
+  });
+
+  it("phaseLinkHitchTool returns permission_denied when the parent course project is OUT-OF-SCOPE for a restricted client", async () => {
+    const root = freshRoot();
+    let otherPhaseId = "";
+    let hitchId = "";
+    withDb(root, (db) => {
+      const course = new CourseRepository(db).create({
+        title: "Other Project Course",
+        projectId: "other",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      otherPhaseId = new PhaseRepository(db).add({
+        courseId: course.courseId,
+        title: "Phase in other-project course",
+        createdBy: "test",
+        createdSource: "test",
+      }).phaseId;
+      hitchId = new HitchRepository(db).createSession({
+        title: "Other project hitch",
+        projectId: "other",
+        createdBy: "test",
+        createdSource: "cli",
+      }).hitchId;
+    });
+
+    const ctx = handlerContext(root, mutationConfig(["phase.link_hitch"]));
+    const result = await phaseLinkHitchTool(
+      { phaseId: otherPhaseId, hitchId, idempotencyKey: "link-other-parent-296" },
+      ctx,
+    );
+    expect(result.status).toBe("permission_denied");
+
+    // Fail-closed: no link created, nothing audited under this phase.
+    withDb(root, (db) => {
+      const audited = db
+        .prepare("SELECT COUNT(*) AS n FROM operations WHERE target_id = ?")
+        .get(otherPhaseId) as { n: number };
+      expect(audited.n).toBe(0);
+    });
+  });
+
+  it("phaseLinkHitchTool still links when the parent course project IS in scope (no regression)", async () => {
+    const root = freshRoot();
+    let demoPhaseId = "";
+    let hitchId = "";
+    withDb(root, (db) => {
+      const course = new CourseRepository(db).create({
+        title: "Demo Course",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "test",
+      });
+      demoPhaseId = new PhaseRepository(db).add({
+        courseId: course.courseId,
+        title: "Phase in demo course",
+        createdBy: "test",
+        createdSource: "test",
+      }).phaseId;
+      hitchId = new HitchRepository(db).createSession({
+        title: "In-scope hitch",
+        projectId: "demo",
+        createdBy: "test",
+        createdSource: "cli",
+      }).hitchId;
+    });
+
+    const ctx = handlerContext(root, mutationConfig(["phase.link_hitch"]));
+    const result = await phaseLinkHitchTool(
+      { phaseId: demoPhaseId, hitchId, idempotencyKey: "link-demo-parent-296" },
+      ctx,
+    );
+    expect(result.status).toBe("operation_started");
+    expect((result.data as { result: { hitchId: string } }).result.hitchId).toBe(
+      hitchId,
+    );
   });
 });
