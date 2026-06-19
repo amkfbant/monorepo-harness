@@ -202,7 +202,7 @@ export function registerDiagnosticsCommands(
       }
     });
 
-  const cleanupCmd = program
+  program
     .command("cleanup")
     .description(
       "remove worktree + branch for an approved/rejected run (run dir kept by default)",

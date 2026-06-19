@@ -1,5 +1,4 @@
 import process from "node:process";
-import { resolve } from "node:path";
 import type { Command } from "commander";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
 import { codexBinaryVersion } from "../codex/codex-version.js";
