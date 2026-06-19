@@ -18,6 +18,10 @@ import {
 } from "./schemas.js";
 import { phaseSpecApprovalStatusForSpec } from "../roadmap/phase-repository.js";
 import {
+  CloseCheckRepository,
+  type RecordHitchCloseCheckInput,
+} from "./repositories/close-check-repository.js";
+import {
   ConvergenceDecisionRepository,
   type RecordHitchConvergenceDecisionInput,
 } from "./repositories/convergence-decision-repository.js";
@@ -36,7 +40,6 @@ import {
   type HitchAttemptStatus,
   type HitchAttemptType,
   type HitchCloseCheck,
-  type HitchCloseCheckStatus,
   type HitchCloseCondition,
   type HitchConvergenceDecisionRecord,
   type HitchCreatedSource,
@@ -56,10 +59,12 @@ import {
   type HitchStatus,
 } from "./types.js";
 
-// #125 Track C (C1): the convergence-decision concern moved to a sub-repo.
-// Re-export its input type so the public module surface of `repository.ts`
-// (and any consumer importing it from here) is unchanged.
+// #125 Track C: concerns moved to per-concern sub-repos. Re-export their input
+// types so the public module surface of `repository.ts` (and any consumer
+// importing them from here) is unchanged.
+// C1 — convergence-decision; C2 — close-check.
 export type { RecordHitchConvergenceDecisionInput };
+export type { RecordHitchCloseCheckInput };
 
 export interface CreateHitchSessionInput {
   hitchId?: string;
@@ -253,17 +258,6 @@ export interface LinkedPhaseSpecApprovalDrift {
   currentSpecHash: string;
 }
 
-export interface RecordHitchCloseCheckInput {
-  checkId?: string;
-  hitchId: string;
-  conditionId: string;
-  status: HitchCloseCheckStatus;
-  checkedAt?: string;
-  checkedBy: string;
-  evidence?: Record<string, unknown>;
-  message?: string;
-}
-
 export interface UpdateHitchStatusOptions {
   createdBy: string;
   now?: string;
@@ -436,17 +430,6 @@ interface HitchDivergenceCycleFindingRow {
   findings_new: number;
 }
 
-interface HitchCloseCheckRow {
-  check_id: string;
-  hitch_id: string;
-  condition_id: string;
-  status: HitchCloseCheckStatus;
-  checked_at: string;
-  checked_by: string;
-  evidence_json: string;
-  message: string | null;
-}
-
 interface HitchLifecycleEventRow {
   event_id: string;
   hitch_id: string;
@@ -547,9 +530,11 @@ export class HitchRepository {
   // inside the facade's single-BEGIN atomic primitive (`runAtomically`). The
   // facade keeps every public method and forwards to the owning sub-repo.
   private readonly decisions: ConvergenceDecisionRepository;
+  private readonly closeChecks: CloseCheckRepository;
 
   constructor(private readonly db: Database.Database) {
     this.decisions = new ConvergenceDecisionRepository(db);
+    this.closeChecks = new CloseCheckRepository(db);
   }
 
   createSession(input: CreateHitchSessionInput): HitchSession {
@@ -2197,53 +2182,23 @@ export class HitchRepository {
     return drifts;
   }
 
+  // #125 Track C (C2): close-check concern delegated to CloseCheckRepository.
+  // The facade keeps these entry-points and forwards to the sub-repo (shared
+  // `db`, behaviour-identical).
   recordCloseCheck(input: RecordHitchCloseCheckInput): HitchCloseCheck {
-    const checkedAt = input.checkedAt ?? new Date().toISOString();
-    const checkId = input.checkId ?? `check-${randomUUID()}`;
-    this.db
-      .prepare(
-        `INSERT INTO hitch_close_checks (
-           check_id, hitch_id, condition_id, status, checked_at, checked_by,
-           evidence_json, message
-         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        checkId,
-        input.hitchId,
-        input.conditionId,
-        input.status,
-        checkedAt,
-        input.checkedBy,
-        json(input.evidence ?? {}),
-        input.message ?? null,
-      );
-    this.touchSession(input.hitchId, checkedAt);
-    return this.requireCloseCheck(checkId);
+    return this.closeChecks.recordCloseCheck(input);
   }
 
   getCloseCheck(checkId: string): HitchCloseCheck | null {
-    const row = this.db
-      .prepare("SELECT * FROM hitch_close_checks WHERE check_id = ?")
-      .get(checkId) as HitchCloseCheckRow | undefined;
-    return row === undefined ? null : rowToCloseCheck(row);
+    return this.closeChecks.getCloseCheck(checkId);
   }
 
   requireCloseCheck(checkId: string): HitchCloseCheck {
-    const check = this.getCloseCheck(checkId);
-    if (check === null) throw new DbError(`hitch close check not found: ${checkId}`);
-    return check;
+    return this.closeChecks.requireCloseCheck(checkId);
   }
 
   listCloseChecks(hitchId: string): HitchCloseCheck[] {
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM hitch_close_checks
-          WHERE hitch_id = ?
-          ORDER BY checked_at ASC, check_id ASC`,
-      )
-      .all(hitchId) as HitchCloseCheckRow[];
-    return rows.map(rowToCloseCheck);
+    return this.closeChecks.listCloseChecks(hitchId);
   }
 
   // #125 Track C (C1): convergence-decision concern delegated to
@@ -2701,19 +2656,6 @@ function rowToNearDuplicateCandidate(
     summary: row.summary,
     filePath: row.file_path,
     symbol: row.symbol,
-  };
-}
-
-function rowToCloseCheck(row: HitchCloseCheckRow): HitchCloseCheck {
-  return {
-    checkId: row.check_id,
-    hitchId: row.hitch_id,
-    conditionId: row.condition_id,
-    status: row.status,
-    checkedAt: row.checked_at,
-    checkedBy: row.checked_by,
-    evidence: parseRecord(row.evidence_json),
-    message: row.message,
   };
 }
 
