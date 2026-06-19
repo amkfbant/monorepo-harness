@@ -85,6 +85,25 @@ export const HARNESS_ORIGIN_FINDING_SOURCE_SET = new Set<HitchFindingSource>(
   HARNESS_ORIGIN_FINDING_SOURCES,
 );
 
+// Non-actionable advisory review categories (assigned deterministically by the
+// harness in review-integration.ts, never self-reported by an LLM). These rows
+// are RECORDED as findings (operator-visible, classified out_of_scope) but MUST
+// NOT inflate the harness-origin divergence churn counter (#283): an
+// approval/positive advisory comment materialized as a `review-non-blocking-
+// comment` (or `review-out-of-scope-suggestion`) row could otherwise push
+// `harnessOriginNewFindingsByCycle` to a non-decreasing sequence and trip a
+// FALSE `diverging` on reopen. The blocking categories `review-required-change`
+// and `review-negative-decision` are deliberately EXCLUDED from this set so real
+// blockers still drive divergence (and still block close) — fail-closed.
+export const ADVISORY_REVIEW_FINDING_CATEGORIES = [
+  "review-non-blocking-comment",
+  "review-out-of-scope-suggestion",
+] as const;
+
+export const ADVISORY_REVIEW_FINDING_CATEGORY_SET = new Set<string>(
+  ADVISORY_REVIEW_FINDING_CATEGORIES,
+);
+
 // Compile-time guard: every HitchFindingSource MUST be classified as either
 // operator-origin or harness-origin. An unclassified source would silently
 // drop out of divergence accounting (fail-open of the safety circuit-breaker,

@@ -910,6 +910,51 @@ describe("ConvergenceService", () => {
     }
   });
 
+  it("does not false-diverge when cycle2 adds only an approval/non-blocking advisory finding (#283)", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo);
+      // cycle1: a genuine actionable finding.
+      addCycleFindings(repo, 1, ["review"], { category: "correctness" });
+      // cycle2: ONLY a non-actionable advisory (approval/positive summary). It is
+      // RECORDED as a finding but must NOT inflate the divergence churn counter,
+      // so byCycle becomes [1, 0] (decreasing) → no false "did not decrease".
+      addCycleFindings(repo, 2, ["review"], {
+        category: "review-non-blocking-comment",
+        scopeStatus: "out_of_scope",
+        severity: "P2",
+      });
+      passClose(repo);
+      const result = service.evaluate("goal-test");
+      expect(result.decision).not.toBe("diverging");
+      expect(result.reason).not.toBe(
+        "new findings did not decrease across review cycles",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("STILL diverges when cycle2 adds an ACTIONABLE finding that does not decrease (#283 guard)", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo);
+      // Mirror of the advisory case but with an ACTIONABLE category in cycle2:
+      // the churn counter must NOT be weakened — genuine non-decreasing churn
+      // still trips diverging (the fix excludes ONLY advisory categories).
+      addCycleFindings(repo, 1, ["review"], { category: "correctness" });
+      addCycleFindings(repo, 2, ["review"], {
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        severity: "P2",
+      });
+      passClose(repo);
+      expect(service.evaluate("goal-test").decision).toBe("diverging");
+    } finally {
+      db.close();
+    }
+  });
+
   it("returns diverging before recommending another P1 fix pass", () => {
     const { db, repo, service } = fresh();
     try {

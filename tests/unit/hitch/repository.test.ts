@@ -315,6 +315,151 @@ describe("HitchRepository", () => {
     }
   });
 
+  describe("#283: non-actionable advisory categories excluded from divergence churn", () => {
+    function seedTwoCycles(repo: HitchRepository) {
+      createGoal(repo);
+      const cycle1 = repo.startReviewCycle({
+        hitchId: "goal-test",
+        cycleNumber: 1,
+        reviewMode: "initial",
+        createdAt: "2026-05-26T00:01:00.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle1.cycleId,
+        findingsNew: 1,
+        completedAt: "2026-05-26T00:01:30.000Z",
+      });
+      const cycle2 = repo.startReviewCycle({
+        hitchId: "goal-test",
+        cycleNumber: 2,
+        reviewMode: "delta",
+        createdAt: "2026-05-26T00:02:00.000Z",
+      });
+      repo.completeReviewCycle({
+        cycleId: cycle2.cycleId,
+        findingsNew: 1,
+        completedAt: "2026-05-26T00:02:30.000Z",
+      });
+      // cycle1: a genuine actionable finding (counts).
+      repo.upsertFinding({
+        hitchId: "goal-test",
+        source: "review",
+        sourceCycleId: cycle1.cycleId,
+        severity: "P2",
+        category: "correctness",
+        scopeStatus: "out_of_scope",
+        summary: "real cycle1 finding",
+      });
+      return { cycle1, cycle2 };
+    }
+
+    it("does NOT count a review-non-blocking-comment advisory toward the churn counter", () => {
+      const { db, repo } = freshRepo();
+      try {
+        const { cycle1, cycle2 } = seedTwoCycles(repo);
+        // cycle2: ONLY an approval/positive advisory (review-non-blocking-comment).
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          sourceCycleId: cycle2.cycleId,
+          severity: "P2",
+          category: "review-non-blocking-comment",
+          scopeStatus: "out_of_scope",
+          summary: "The diff addresses the consensus guard cleanly.",
+        });
+
+        const metrics = repo.harnessOriginDivergenceMetrics("goal-test");
+
+        expect(metrics.harnessOriginNewFindings).toBe(1);
+        expect(metrics.harnessOriginNewFindingsByCycle).toEqual([
+          { cycleId: cycle1.cycleId, cycleNumber: 1, findingsNew: 1 },
+          { cycleId: cycle2.cycleId, cycleNumber: 2, findingsNew: 0 },
+        ]);
+      } finally {
+        db.close();
+      }
+    });
+
+    it("does NOT count a review-out-of-scope-suggestion advisory toward the churn counter", () => {
+      const { db, repo } = freshRepo();
+      try {
+        const { cycle1, cycle2 } = seedTwoCycles(repo);
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          sourceCycleId: cycle2.cycleId,
+          severity: "P2",
+          category: "review-out-of-scope-suggestion",
+          scopeStatus: "out_of_scope",
+          summary: "Consider extracting this helper in a follow-up.",
+        });
+
+        const metrics = repo.harnessOriginDivergenceMetrics("goal-test");
+
+        expect(metrics.harnessOriginNewFindings).toBe(1);
+        expect(metrics.harnessOriginNewFindingsByCycle).toEqual([
+          { cycleId: cycle1.cycleId, cycleNumber: 1, findingsNew: 1 },
+          { cycleId: cycle2.cycleId, cycleNumber: 2, findingsNew: 0 },
+        ]);
+      } finally {
+        db.close();
+      }
+    });
+
+    it("STILL counts a genuine ACTIONABLE out_of_scope P2 finding (filter is category-based, not scope-based)", () => {
+      const { db, repo } = freshRepo();
+      try {
+        const { cycle1, cycle2 } = seedTwoCycles(repo);
+        // out_of_scope + P2 but an ACTIONABLE category → must still count.
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          sourceCycleId: cycle2.cycleId,
+          severity: "P2",
+          category: "correctness",
+          scopeStatus: "out_of_scope",
+          summary: "genuine out-of-scope correctness churn",
+        });
+
+        const metrics = repo.harnessOriginDivergenceMetrics("goal-test");
+
+        expect(metrics.harnessOriginNewFindings).toBe(2);
+        expect(metrics.harnessOriginNewFindingsByCycle).toEqual([
+          { cycleId: cycle1.cycleId, cycleNumber: 1, findingsNew: 1 },
+          { cycleId: cycle2.cycleId, cycleNumber: 2, findingsNew: 1 },
+        ]);
+      } finally {
+        db.close();
+      }
+    });
+
+    it("STILL counts review-required-change / review-negative-decision blockers", () => {
+      const { db, repo } = freshRepo();
+      try {
+        const { cycle1, cycle2 } = seedTwoCycles(repo);
+        repo.upsertFinding({
+          hitchId: "goal-test",
+          source: "review",
+          sourceCycleId: cycle2.cycleId,
+          severity: "P1",
+          category: "review-required-change",
+          scopeStatus: "in_scope",
+          summary: "blocking required change",
+        });
+
+        const metrics = repo.harnessOriginDivergenceMetrics("goal-test");
+
+        expect(metrics.harnessOriginNewFindings).toBe(2);
+        expect(metrics.harnessOriginNewFindingsByCycle).toEqual([
+          { cycleId: cycle1.cycleId, cycleNumber: 1, findingsNew: 1 },
+          { cycleId: cycle2.cycleId, cycleNumber: 2, findingsNew: 1 },
+        ]);
+      } finally {
+        db.close();
+      }
+    });
+  });
+
   it("keeps first-seen divergence origin immutable on duplicate upsert", () => {
     const { db, repo } = freshRepo();
     try {

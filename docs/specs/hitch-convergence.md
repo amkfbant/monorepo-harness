@@ -183,7 +183,22 @@ Evaluation is deterministic and conservative:
    (`review`) finding rows, so the automated review loop always feeds the
    circuit breaker. MCP `record_findings` also records source-bearing rows, but
    as operator-origin (`mcp`), which (by design) block close yet do not drive
-   divergence.
+   divergence. **(#283)** Non-actionable advisory review categories
+   (`review-non-blocking-comment`, `review-out-of-scope-suggestion`) are
+   harness-origin (`review`) rows that are RECORDED as findings (operator-visible,
+   classified `out_of_scope`) but are EXCLUDED from the divergence churn count.
+   These categories are assigned deterministically by the harness (never by an
+   LLM self-report) and are, by construction, never required changes and never
+   close blockers, so an approval/positive advisory comment materialized as such a
+   row cannot inflate the harness-origin divergence count (`harnessOriginNewFindings`
+   and the per-cycle divergence churn) or trip "new findings did not decrease". The
+   row is still recorded in the cycle summary (operator-visible); only the computed
+   divergence metrics exclude it. The
+   exclusion is CATEGORY-based, not scope-based: a genuinely ACTIONABLE finding
+   that happens to be `out_of_scope` (e.g. `correctness`) STILL counts toward
+   churn, and the blocking categories `review-required-change` /
+   `review-negative-decision` are deliberately NOT excluded — they still drive
+   divergence and still block close (fail-closed).
 5. Passed fresh required close checks plus configured `closeRequires` blockers clear is `close_ready`.
 6. (#104/#197) An **unreviewed** coder run — the latest coding attempt
    (implement/rerun) is newer than the latest review cycle — is **reviewed**
@@ -851,7 +866,19 @@ actual command-evidence defects such as unverified command arrays.
 If an advisory wording variant is still imported as a
 `review-non-blocking-comment` finding, classification treats that category as
 `out_of_scope`; only other categories can remain `unknown` and trigger the
-fail-closed classification gate.
+fail-closed classification gate. **(#283)** The two non-actionable advisory
+categories `review-non-blocking-comment` and `review-out-of-scope-suggestion`
+are additionally EXCLUDED from harness-origin divergence counts (the same
+exclusion lane already applied to `duplicate` rows below): they are still
+recorded and operator-visible in the cycle summary, but an approval/positive
+advisory cannot inflate the harness-origin divergence count
+(`harnessOriginNewFindings` / the per-cycle divergence churn) or trip a false
+`diverging` on reopen. The exclusion keys on the
+harness-assigned `category` column (deterministic, not LLM self-report) and is
+category-based, not scope-based — an actionable `out_of_scope` finding still
+counts. The blocking categories `review-required-change` and
+`review-negative-decision` are deliberately NOT excluded, so genuine churn still
+drives divergence and still blocks close (fail-closed).
 
 Review-imported findings are deduplicated in two tiers. Tier 1 is the stable
 SHA-256 key over the normalized file path, symbol, category, and summary and is
