@@ -23,6 +23,7 @@ import {
 } from "./spec-gates.js";
 import { assertValidCloseConditions } from "./spec-validation.js";
 import {
+  ADVISORY_REVIEW_FINDING_CATEGORIES,
   DEFAULT_HITCH_POLICY,
   HARNESS_ORIGIN_FINDING_SOURCE_SET,
   HARNESS_ORIGIN_FINDING_SOURCES,
@@ -1695,15 +1696,30 @@ export class HitchRepository {
     const sourcePlaceholders = placeholders(
       HARNESS_ORIGIN_FINDING_SOURCES.length,
     );
+    // #283: non-actionable advisory review categories (assigned deterministically
+    // by the harness, NOT self-reported by the LLM) are RECORDED as findings but
+    // EXCLUDED from the divergence churn counter — otherwise an approval/positive
+    // advisory comment could inflate findingsNew and trip a FALSE `diverging` on
+    // reopen. The blocking categories (review-required-change /
+    // review-negative-decision) are deliberately NOT in this set, so real blockers
+    // still drive divergence (and still block close) — fail-closed.
+    const advisoryPlaceholders = placeholders(
+      ADVISORY_REVIEW_FINDING_CATEGORIES.length,
+    );
     const totals = this.db
       .prepare(
         `SELECT COUNT(*) AS total, COALESCE(MAX(reopen_count), 0) AS maxReopen
            FROM hitch_findings
           WHERE hitch_id = ?
             AND duplicate_of IS NULL
-            AND source IN (${sourcePlaceholders})`,
+            AND source IN (${sourcePlaceholders})
+            AND category NOT IN (${advisoryPlaceholders})`,
       )
-      .get(hitchId, ...HARNESS_ORIGIN_FINDING_SOURCES) as {
+      .get(
+        hitchId,
+        ...HARNESS_ORIGIN_FINDING_SOURCES,
+        ...ADVISORY_REVIEW_FINDING_CATEGORIES,
+      ) as {
       total: number;
       maxReopen: number;
     };
@@ -1719,6 +1735,7 @@ export class HitchRepository {
             AND f.source_cycle_id = c.cycle_id
             AND f.duplicate_of IS NULL
             AND f.source IN (${sourcePlaceholders})
+            AND f.category NOT IN (${advisoryPlaceholders})
           WHERE c.hitch_id = ?
             -- only COMPLETED cycles are review evidence (#164): a
             -- started-but-incomplete cycle has 0 imported findings and would
@@ -1728,8 +1745,14 @@ export class HitchRepository {
           GROUP BY c.cycle_id, c.cycle_number, c.created_at
           ORDER BY c.cycle_number ASC, c.created_at ASC, c.cycle_id ASC`,
       )
-      .all(...HARNESS_ORIGIN_FINDING_SOURCES, hitchId) as
-      HitchDivergenceCycleFindingRow[];
+      // Positional binds (#283): JOIN-clause params bind BEFORE the WHERE
+      // `c.hitch_id = ?` param — sources, then advisory categories (both in the
+      // ON clause), THEN hitchId. Reordering would silently corrupt the counts.
+      .all(
+        ...HARNESS_ORIGIN_FINDING_SOURCES,
+        ...ADVISORY_REVIEW_FINDING_CATEGORIES,
+        hitchId,
+      ) as HitchDivergenceCycleFindingRow[];
     return {
       harnessOriginNewFindings: totals.total,
       harnessOriginMaxReopenCount: totals.maxReopen,
