@@ -597,6 +597,47 @@ describe("recordAgentUsage general path (claude/external foundation, #235)", () 
     }
   });
 
+  it("treats an omitted and an empty-string identifier as one scope (#206 codex-App P2 round 3)", () => {
+    const db = freshDb();
+    try {
+      // first: session/agent omitted (null); second: explicit "" — both are
+      // "absent" and must share one seq series, not collide on the PK.
+      recordAgentUsage({
+        db,
+        tool: "claude",
+        role: "external",
+        externalLabel: "lbl",
+        usageSource: "exact",
+        turns: [{ turnSeq: 0, usageSource: "exact" }],
+      });
+      recordAgentUsage({
+        db,
+        tool: "claude",
+        role: "external",
+        externalLabel: "lbl",
+        sessionId: "",
+        agentId: "",
+        usageSource: "exact",
+        turns: [{ turnSeq: 0, usageSource: "exact" }],
+      });
+
+      const rows = db
+        .prepare(
+          "SELECT invocation_id, invocation_seq, session_id FROM agent_invocation ORDER BY invocation_seq",
+        )
+        .all() as {
+        invocation_id: string;
+        invocation_seq: number;
+        session_id: string | null;
+      }[];
+      expect(rows.map((r) => r.invocation_seq)).toEqual([0, 1]); // neither dropped
+      expect(rows.every((r) => r.session_id === null)).toBe(true); // "" normalized
+      expect(new Set(rows.map((r) => r.invocation_id)).size).toBe(2);
+    } finally {
+      db.close();
+    }
+  });
+
   it("fails open on a non-string description rather than throwing to the caller", () => {
     const db = freshDb();
     const warn = vi.fn();

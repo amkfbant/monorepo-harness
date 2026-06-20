@@ -124,6 +124,17 @@ function sha256Hex(parts: readonly string[]): string {
   return createHash("sha256").update(parts.join("\0")).digest("hex");
 }
 
+/**
+ * Treat an empty-string identifier as absent (null). Seq allocation compares
+ * with `IS` (NULL-safe) while the id hash coalesces with `?? ""`; without this
+ * normalization an omitted field (null) and an explicit "" would land in
+ * different `allocateSeq` scopes (both seq 0) yet hash to the same id —
+ * colliding on the PK and silently dropping the second invocation.
+ */
+function nullIfEmpty(v: string | null | undefined): string | null {
+  return v === undefined || v === null || v === "" ? null : v;
+}
+
 function deriveInvocationId(input: RecordAgentUsageInput, seq: number): string {
   if (input.externalLabel !== undefined && input.externalLabel !== null) {
     // Hash the FULL identity scope `allocateSeq` counts over, NUL-joined (the
@@ -296,16 +307,26 @@ export function recordAgentUsage(input: RecordAgentUsageInput): void {
   try {
     const createdAt = isoNow(input.now);
     const description = truncateDescription(input.description);
+    // Normalize empty-string identifiers to null so seq allocation and id
+    // hashing agree on "absent" (see nullIfEmpty). Applied to every field that
+    // feeds allocateSeq's scope or the invocation id.
+    const norm: RecordAgentUsageInput = {
+      ...input,
+      runId: nullIfEmpty(input.runId),
+      sessionId: nullIfEmpty(input.sessionId),
+      agentId: nullIfEmpty(input.agentId),
+      externalLabel: nullIfEmpty(input.externalLabel),
+    };
     const tx = input.db.transaction(() => {
       input.beforeWrite?.();
-      const seq = allocateSeq(input);
-      if (input.legacyRunUsage) {
-        insertLegacyRunUsage(input, input.legacyRunUsage, seq, createdAt);
+      const seq = allocateSeq(norm);
+      if (norm.legacyRunUsage) {
+        insertLegacyRunUsage(norm, norm.legacyRunUsage, seq, createdAt);
       }
-      const invocationId = deriveInvocationId(input, seq);
-      insertInvocation(input, invocationId, seq, description, createdAt);
-      for (const turn of input.turns) {
-        insertTurn(input.db, invocationId, turn, createdAt);
+      const invocationId = deriveInvocationId(norm, seq);
+      insertInvocation(norm, invocationId, seq, description, createdAt);
+      for (const turn of norm.turns) {
+        insertTurn(norm.db, invocationId, turn, createdAt);
       }
     });
     tx.immediate();

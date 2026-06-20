@@ -2128,6 +2128,14 @@ export const MIGRATION_V35_STATEMENTS: readonly string[] = [
  * agent_usage_turn (turn_seq=0, token columns verbatim). INSERT OR IGNORE keeps
  * re-migration idempotent on the stable surrogate id; a COUNT gate in the v36
  * test catches any silent OR-IGNORE drop.
+ *
+ * The colon-joined `bf:` surrogate is injective (so OR IGNORE never drops a
+ * distinct row): `kind` is the enum coder/reviewer/evaluator and `seq` is an
+ * integer — both colon-free — so the two trailing colon segments decode kind
+ * and seq unambiguously and the remainder is run_id, which is itself colon-free
+ * (`RUN_ID_RE = /^run-[A-Za-z0-9][A-Za-z0-9._-]+$/`). A TS sha256 (as used for
+ * live ids) is impossible here because this runs as pure SQL and SQLite has no
+ * sha256() builtin; the surrogate + COUNT gate are the equivalent guarantee.
  */
 export const MIGRATION_V36_STATEMENTS: readonly string[] = [
   `CREATE TABLE agent_invocation (
