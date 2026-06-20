@@ -163,8 +163,13 @@ const ALLOWLIST_CYCLES = new Set<string>([
   "src/mcp/registry/tool-registry.ts -> src/mcp/tools/ops-knowledge-tools.ts",
   // mcp: tool-registry ↔ release-tools
   "src/mcp/registry/tool-registry.ts -> src/mcp/tools/release-tools.ts",
-  // mcp: tool-registry ↔ dry-run-tools
-  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/dry-run-tools.ts",
+  // mcp: tool-registry -> dry-run-tools(barrel) -> dry-run-*-tools (#125 A15)。
+  // read-tools と同様、dry-run-tools.ts を per-domain module を再 export する barrel に
+  // 分割。各 dry-run-*-tools は McpToolContext を tool-registry から import するので、
+  // 旧「tool-registry ↔ dry-run-tools」2-cycle は barrel 経由の同型循環群に置き換わった。
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/dry-run-tools.ts -> src/mcp/tools/dry-run-project-tools.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/dry-run-tools.ts -> src/mcp/tools/dry-run-run-tools.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/dry-run-tools.ts -> src/mcp/tools/dry-run-db-tools.ts",
   // mcp: tool-registry ↔ mutation-tools
   "src/mcp/registry/tool-registry.ts -> src/mcp/tools/mutation-tools.ts",
   // mcp: tool-registry -> mutation-tools -> confirmation (経路バリアント)
