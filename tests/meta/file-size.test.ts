@@ -31,7 +31,11 @@ const GRANDFATHER: Record<string, number> = {
   "src/db/repositories/runs.ts": 1264,
   "src/dashboard/server/server.ts": 1254,
   "src/mcp/tools/dry-run-tools.ts": 1226,
-  "src/cli/db.ts": 1144,
+  // src/cli/db.ts removed from the ratchet: #125 A15 split the 1144-line command
+  // group into per-concern sub-modules under src/cli/db/ (schema / maintenance /
+  // archive / doctor / blob + shared/blob-helpers), shrinking the registrar to a
+  // thin orchestrator well under the 800 cap. Per this test's own rule (≤800 ⇒
+  // drop the grandfather), it is now held to the cap like any other file.
   "src/mcp/tools/hitch-tools.ts": 1067,
   "src/core/reviewer-agent.ts": 990,
   "src/core/review-processor.ts": 961,
