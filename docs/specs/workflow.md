@@ -347,6 +347,20 @@ env `HARNESS_RUN_ID` で任意リンク（省略時 NULL）。DB が存在しな
 fail-open（codex の exit code を伝播し、warning を stderr に 1 行出す）。詳細は
 [`cli.md`](./cli.md) の「`harness codex`」節。
 
+**第 5 の usage writer — orchestrate-tail post-hoc ingest（#235, #206 Phase-3）**:
+`harness course orchestrate` および `harness hitch orchestrate` は、orchestrate が
+正常完了して output を書いた直後に `ingestClaudeSubagentUsage` を呼ぶ（fail-open
+tail）。この呼び出しは **MUST never throw** — orchestrate は既に成功しており、
+telemetry の失敗が exit code や output を汚染しない。ingest は
+`HARNESS_CLAUDE_PROJECTS_DIR` env（設定時）を `claudeProjectDir` override として渡し、
+未設定の場合は `harnessRoot` からデフォルト resolve（`~/.claude/projects/<encoded>`）
+する。dry-run path は早期 return するため tail に到達せず、dry-run で ingest は呼ばれない。
+
+ingest の詳細な動作（mtime settle / skip-before-read / in-flight transcript
+under-count / ops launch-cwd 単一 dir scope）は `docs/specs/db.md` の
+「Agent usage telemetry」節を参照。read side は `harness usage subagents`
+（[`cli.md`](./cli.md) の「`harness usage`」節）。
+
 `run_completed.runElapsedMs` は `runDomainCoding` 開始から `run_completed` emit 直前までの wall-clock 整数 ms。
 
 コマンドが作った副作用（scope 外書き込み / secret-shaped file / ignored output / symlink / huge / binary）はすべて post-command の再検査で codex 直後と同じ扱いになる — 詳細は [`policy.md`](./policy.md#allowedcommands-実行) の「commands 実行後」。

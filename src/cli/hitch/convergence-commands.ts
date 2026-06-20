@@ -13,6 +13,7 @@ import { linkAgentWorkspaceToHitch } from "../../workspace/workspace-hitch-link.
 import { decideOrchestratorAction } from "../../hitch/orchestrator-dispatch.js";
 import { createOrchestratorRunners, HitchNotCloseReadyError } from "../../hitch/orchestrator-runners.js";
 import { assertHitchOrchestrateSchemaCompatible, formatHitchOrchestrateResultLine, HitchCliError, latestAdoptedPrEvent, parseMergeMethod, parseNonNegativeInt, parsePositiveInt, type RegisterHitchCommandsOptions, resolveHitchCloseRunnerDeps, resolveHitchCoderRunnerDeps, withHitchErrorExit, withHitchErrorExitAsync, withHitchRepo, writeConvergence } from "./helpers.js";
+import { ingestClaudeSubagentUsage } from "../../telemetry/ingest-claude-subagent-usage.js";
 
 /**
  * `harness hitch` check-convergence / orchestrate / await-merge（#125 A15: cli/hitch.ts から behaviour-zero 分割）。
@@ -205,6 +206,14 @@ export function registerHitchConvergenceCommands(
         process.stdout.write(
           `${formatHitchOrchestrateResultLine(hitchId, result, link)}\n`,
         );
+        // Fail-open telemetry: record ops-driven Claude subagent usage after the pass.
+        // MUST never throw here — orchestrate already succeeded and output was written.
+        ingestClaudeSubagentUsage({
+          harnessRoot: opts.getHarnessRoot(),
+          ...(process.env.HARNESS_CLAUDE_PROJECTS_DIR !== undefined
+            ? { claudeProjectDir: process.env.HARNESS_CLAUDE_PROJECTS_DIR }
+            : {}),
+        });
       });
     });
 

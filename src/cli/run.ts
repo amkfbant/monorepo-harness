@@ -23,6 +23,7 @@ import { registerLockCommands } from "./lock.js";
 
 import { registerReleaseCommands } from "./release.js";
 import { registerCodexCommands } from "./codex.js";
+import { registerUsageCommands } from "./usage.js";
 
 import { registerReviewCommands } from "./review.js";
 
@@ -265,6 +266,7 @@ registerCourseCommands(program, { getHarnessRoot });
 registerMcpCommands(program, { getHarnessRoot });
 registerReleaseCommands(program, { getHarnessRoot });
 registerCodexCommands(program);
+registerUsageCommands(program, { getHarnessRoot });
 
 function rejectUnknownTopLevelCommandBeforeDefaultRun(
   rootCommand: Command,

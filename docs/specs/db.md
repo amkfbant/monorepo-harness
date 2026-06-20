@@ -1265,6 +1265,71 @@ CREATE TABLE agent_usage_turn (
   の orphan-prune は `run_id IS NOT NULL` guard で external 行を保持する（#235 の
   claude consumer も同様の external 行を生成する予定）。
 
+### Phase-3 post-hoc ingest — `ingestClaudeSubagentUsage`（#235）
+
+ops 駆動の Claude サブエージェント（MCP session 内の tool call agent）は JSONL
+transcript を `~/.claude/projects/<encoded-launch-cwd>/` に書き出す。Phase-3 は
+このファイルを **事後（post-hoc）に読んで** `agent_invocation` + `agent_usage_turn`
+へ `role='external'` / `tool='claude'` / `usage_source='parsed_log'` で書き込む。
+
+**ingest の動作規則**:
+
+- **parser** (`src/telemetry/claude-transcript-parser.ts`): JSONL の
+  `type='assistant'` 行から `agentId` / `sessionId` / `model` / token fields を
+  抽出する。1 ファイル = 1 session×agent。
+- **ingest** (`src/telemetry/ingest-claude-subagent-usage.ts`): MUST never throw。
+  全体を単一 try-catch で包み、エラー時は `{scanned, inserted, skipped}` を返す
+  だけで呼び出し元に propagate しない（fail-open 設計）。
+- **mtime settle**: デフォルト 30 秒以内に修正されたファイルはスキップする。
+  書き込み中のファイルを半端に読んで UNIQUE INDEX 衝突で以後 skipped に固定されるのを防ぐ。
+- **skip-before-read**: 既存の `(session_id, agent_id)` ペアを DB から事前ロードし、
+  `readFileSync` の前に skip 判定する。2 回目以降の pass でファイルを読まずにスキップ。
+- **in-flight transcript の under-count**: mtime settle をパスした時点でファイルが
+  まだ書き込み中の場合、その transcript は途中行しか読まれない（last-in-flight
+  under-count）。次 pass で再 ingest しても session×agent UNIQUE INDEX により空振り
+  になる（2 度書きなし）。これは設計上の制約で許容済み。
+- **ops launch-cwd 単一 dir scope**: `resolveClaudeProjectDir` は `harnessRoot` を
+  encode した 1 ディレクトリのみを走査する。複数の launch cwd を跨ぐ横断 ingest は
+  Phase-4 以降の拡張対象。
+- **trigger**: `harness course orchestrate` / `harness hitch orchestrate` の正常完了
+  tail（dry-run は early-return するため到達しない）。環境変数
+  `HARNESS_CLAUDE_PROJECTS_DIR` が設定されている場合はその値を `claudeProjectDir`
+  override として渡す（テスト・CI での fixture dir 指定に使用）。
+
+**read side**: `src/db/repositories/subagent-usage.ts` の `subagentUsageSummary(db, filter)`
+が `agent_invocation JOIN agent_usage_turn WHERE tool='claude' AND role IN roles` を集計する。
+CLI surface は `harness usage subagents [--since <iso>] [--json]`（[`cli.md`](./cli.md) 参照）。
+
+**安全境界**: `telemetry-never-gates` meta-test（#235 G7）が `src/hitch/**` /
+`src/roadmap/**` の gating modules から parser / ingest / reader への import を
+機械強制する。Phase-3 telemetry は常に write-only; convergence / phase-readiness
+判定の入力に使われない。
+
+---
+
+### Phase-4 (#191) usage adapter contract — deferred
+
+以下の write-side adapter は `#191` の claude -p runner 出荷後に実装される。
+**schema / storage 契約は出荷済み**（`recordAgentUsage` が `tool='claude'` +
+run-scoped role を受理; `agent_usage_turn` XOR CHECK が claude taxonomy 対応;
+`subagentUsageSummary` は `roles` パラメータ化済）。
+
+保留中の write-side adapter:
+
+- **`parseClaudeStreamJson(stdout): AgentUsageTurnInput[]`** —
+  `parseCodexTurns` (`src/codex/usage-parser.ts`) の鏡像。各 turn `usageSource='exact'`;
+  5m/1h cache split が無ければ flat のみ。
+- **`recordClaudeUsage({ db, runId, role, model, turns })`** —
+  `recordCodexUsage` (`src/db/repositories/run-usage.ts`) の鏡像。
+  **ただし `legacyRunUsage` は渡さない**（`run_usage` は codex-only で byte-stable に保つ。
+  部分鏡像）。内部的には `recordAgentUsage(tool='claude', role, runId, usageSource='exact', turns)`
+  を呼ぶ。enum / migration 変更なし。
+
+依存: `#191` の claude `-p` runner + F15 permission / containment 検証。
+
+後続: `subagentUsageSummary(roles=['coder','reviewer','evaluator'])` を
+`harness usage internal` subcommand に差すだけで内部 Claude usage 可視化が完成。
+
 ## Telemetry snapshots E1 — metrics_snapshots（schema v27）
 
 schema v27 は additive な `metrics_snapshots` を追加する。これは

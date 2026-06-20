@@ -52,4 +52,14 @@ describe("#206 G7: agent-usage telemetry never gates a decision", () => {
     const src = read("src/db/repositories/agent-usage.ts");
     expect(/from\s+['"][^'"]*\/(hitch|roadmap)\//.test(src)).toBe(false);
   });
+
+  // #235 G7: Phase-3 subagent telemetry modules (parser/ingest/reader) must
+  // also be kept out of gating dirs so post-hoc transcript ingestion never
+  // influences convergence or phase-readiness decisions.
+  const NEW_SUBAGENT_TELEMETRY =
+    /telemetry\/(claude-transcript-parser|ingest-claude-subagent-usage)|repositories\/subagent-usage/;
+
+  it("no gating module imports the new subagent telemetry (parser/ingest/reader) (#235 G7)", () => {
+    expect(gatingFiles.filter((p) => NEW_SUBAGENT_TELEMETRY.test(read(p)))).toEqual([]);
+  });
 });

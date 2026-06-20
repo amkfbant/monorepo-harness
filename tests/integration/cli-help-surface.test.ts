@@ -179,6 +179,7 @@ describe("CLI help surface golden (#125 behavior-zero gate)", () => {
       "verify-guarded",
       "release",
       "codex",
+      "usage",
       "help",
     ]);
   }, 60_000);
@@ -425,6 +426,9 @@ describe("CLI help surface golden (#125 behavior-zero gate)", () => {
         help
       codex
         exec
+        help
+      usage
+        subagents
         help
       help
       "
