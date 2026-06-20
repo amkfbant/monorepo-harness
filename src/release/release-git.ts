@@ -166,6 +166,10 @@ export const CLI_PATHS: readonly string[] = [
   "src/cli/diagnostics.ts",
   "src/cli/review.ts",
   "src/cli/knowledge.ts",
+  // #125 A15: knowledge.ts command group split into per-concern sub-modules.
+  "src/cli/knowledge/entry-commands.ts",
+  "src/cli/knowledge/ops-commands.ts",
+  "src/cli/knowledge/digest-command.ts",
   "src/cli/workspace.ts",
   "src/cli/pr.ts",
   "src/cli/backlog.ts",
