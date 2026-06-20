@@ -122,7 +122,21 @@ function truncateDescription(
  */
 function deriveInvocationId(input: RecordAgentUsageInput, seq: number): string {
   if (input.externalLabel !== undefined && input.externalLabel !== null) {
-    return `ext:${input.externalLabel}:${input.role}:${seq}`;
+    // Encode the SAME identity scope `allocateSeq` counts over (label, session,
+    // agent, run) so the same label reused in a different session / agent / run
+    // never collides on the PK. A collision would be silently dropped by the
+    // fail-open writer. `_` stands in for an absent field.
+    const part = (v: string | null | undefined): string =>
+      v === undefined || v === null || v === "" ? "_" : v;
+    return [
+      "ext",
+      input.externalLabel,
+      part(input.sessionId),
+      part(input.agentId),
+      part(input.runId),
+      input.role,
+      String(seq),
+    ].join(":");
   }
   const parts =
     input.sessionId != null && input.agentId != null
@@ -154,13 +168,15 @@ function allocateSeq(input: RecordAgentUsageInput): number {
         WHERE role = @role
           AND run_id IS @run_id
           AND external_label IS @external_label
-          AND session_id IS @session_id`,
+          AND session_id IS @session_id
+          AND agent_id IS @agent_id`,
     )
     .get({
       role: input.role,
       run_id: input.runId ?? null,
       external_label: input.externalLabel ?? null,
       session_id: input.sessionId ?? null,
+      agent_id: input.agentId ?? null,
     }) as { seq: number };
   return row.seq;
 }

@@ -376,7 +376,7 @@ describe("recordAgentUsage general path (claude/external foundation, #235)", () 
           )
           .get(),
       ).toEqual({
-        invocation_id: "ext:sub-review:external:0",
+        invocation_id: "ext:sub-review:sess-1:agent-1:_:external:0",
         tool: "claude",
         role: "external",
         run_id: null,
@@ -478,6 +478,52 @@ describe("recordAgentUsage general path (claude/external foundation, #235)", () 
         { tool: "claude", model: "claude-opus-4-8", input: 20, output: 8 },
         { tool: "codex", model: "gpt-5.5", input: 100, output: 40 },
       ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not collide when the same external label is reused across sessions (#206 codex-App P2)", () => {
+    const db = freshDb();
+    try {
+      const writeExternal = (sessionId: string, agentId: string): void => {
+        recordAgentUsage({
+          db,
+          tool: "claude",
+          role: "external",
+          externalLabel: "sub-review",
+          sessionId,
+          agentId,
+          usageSource: "exact",
+          turns: [{ turnSeq: 0, inputTokens: 1, usageSource: "exact" }],
+        });
+      };
+      // same label, distinct sessions/agents — must NOT collide on the PK and
+      // be silently dropped by the fail-open writer.
+      writeExternal("sess-A", "agent-A");
+      writeExternal("sess-B", "agent-B");
+
+      expect(
+        db
+          .prepare(
+            "SELECT invocation_id, session_id FROM agent_invocation ORDER BY session_id",
+          )
+          .all(),
+      ).toEqual([
+        {
+          invocation_id: "ext:sub-review:sess-A:agent-A:_:external:0",
+          session_id: "sess-A",
+        },
+        {
+          invocation_id: "ext:sub-review:sess-B:agent-B:_:external:0",
+          session_id: "sess-B",
+        },
+      ]);
+      expect(
+        (db.prepare("SELECT count(*) AS n FROM agent_usage_turn").get() as {
+          n: number;
+        }).n,
+      ).toBe(2);
     } finally {
       db.close();
     }

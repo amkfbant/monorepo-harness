@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
@@ -177,8 +177,15 @@ describe("runDomainCoding (fake codex)", () => {
   let repoPath: string;
   let harness: string;
   beforeEach(() => {
+    // #206: pin HARNESS_CODEX_MODEL empty so no-config `model: null` assertions
+    // are deterministic regardless of the ambient env (the coder now resolves
+    // model via resolveCodexModel → env fallback). The env-chain test re-stubs.
+    vi.stubEnv("HARNESS_CODEX_MODEL", "");
     repoPath = setupRepo();
     harness = setupHarness();
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("ends a healthy run at needs_review + safetyStatus=allowed with full artifact set", async () => {
