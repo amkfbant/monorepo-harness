@@ -41,7 +41,9 @@ const GRANDFATHER: Record<string, number> = {
   "src/core/review-processor.ts": 961,
   "src/core/review-rule.ts": 958,
   "src/hitch/convergence.ts": 937,
-  "src/cli/course.ts": 928,
+  // src/cli/course.ts removed from the ratchet: #125 A15 split the command group
+  // into per-concern sub-modules under src/cli/course/ (course / phase commands +
+  // shared helpers), leaving the registrar a thin orchestrator under the 800 cap.
   // src/cli/knowledge.ts removed from the ratchet: #125 A15 split the command
   // group into per-concern sub-modules under src/cli/knowledge/ (entry / ops /
   // digest), leaving the registrar a thin orchestrator under the 800 cap.
