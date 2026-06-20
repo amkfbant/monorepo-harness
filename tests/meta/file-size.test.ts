@@ -40,7 +40,13 @@ const GRANDFATHER: Record<string, number> = {
   // thin orchestrator well under the 800 cap. Per this test's own rule (≤800 ⇒
   // drop the grandfather), it is now held to the cap like any other file.
   "src/mcp/tools/hitch-tools.ts": 1067,
-  "src/core/reviewer-agent.ts": 990,
+  // src/core/reviewer-agent.ts removed from the ratchet: #125 A15 extracted the
+  // public API types (reviewer-agent-types.ts, the cycle-breaking leaf), the
+  // prompt construction incl. the sha256-pinned PROMPT_PREAMBLE
+  // (reviewer-agent-prompt.ts), the codex-output → ReviewDecisionFile boundary
+  // (reviewer-agent-decision.ts), and the token-usage telemetry
+  // (reviewer-agent-usage.ts), leaving runReviewerAgent + consensus re-eval
+  // under the 800 cap.
   // src/core/review-processor.ts removed from the ratchet: #125 A15 extracted the
   // shared error/result types (review-processor-types.ts) and the override/consensus
   // path implementations (review-processor-paths.ts), leaving the orchestration
