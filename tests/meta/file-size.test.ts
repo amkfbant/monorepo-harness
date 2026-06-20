@@ -36,7 +36,13 @@ const GRANDFATHER: Record<string, number> = {
   // leaf (read-types.ts) and an internal helper layer (read-helpers.ts), leaving
   // each well under the 800 cap.
   "src/db/repositories/runs.ts": 1264,
-  "src/dashboard/server/server.ts": 1254,
+  // src/dashboard/server/server.ts removed from the ratchet: #125 A15 split the
+  // 1254-line dashboard server. The 820-line defaultRoutes() route table is split
+  // by domain into server-routes-data.ts (operations/assets/storage/runs) and
+  // server-routes-review.ts (review/artifacts/db/locks/snapshot), composed in order;
+  // shared types → server-types.ts (leaf), route matching + JSON helpers →
+  // server-routing.ts, the auth gate → server-auth.ts. server.ts keeps
+  // defaultRoutes()/buildListener/createDashboardServer under the 800 cap.
   // src/mcp/tools/dry-run-tools.ts removed from the ratchet: #125 A15 split the
   // 1226-line dry-run/preview MCP tool module into a barrel re-exporting per-domain
   // modules (dry-run-{project,run,db}-tools.ts) over a shared leaf (dry-run-types.ts),
