@@ -947,3 +947,46 @@ escalate / 誤分類のイベント（runtime ログは `hitch_findings` / `hitc
 - consensus escalate 要約（C3: decisiveVotes / requirementStatus / unresolvedBlocking / dissentingProposals / stallCycles）の dashboard・MCP 露出と cycle 跨ぎ差分ビュー。#229 は escalate payload（decision record metrics + recommendedNextAction.message）への決定論 projection 添付まで。
 - `review_consensus_summary` / `review_process_metrics` materialized table 化（可視化要件が固まってから。#229 は summary_json への同梱で migration 不要）。
 - 合議プロセス品質メトリクス（C2/PM-1）の厳格 gate 化（未宣言 requirement への escalate 拡大。#229 は宣言 requirement のみ warning）。
+
+## 複数 domain を跨ぐ 1 論理変更の協調マージ（#74 — 主痛点は combined-domain で回避可、残るは split-PR 協調 land のみ）
+
+#74 は (a)「migration とそれを使うコードのような 1 論理変更が複数 domain に分割を強いられる」と
+(b)「分割した PR を協調 land する手段が無い（broken-main 窓）」の 2 問題を束ねている。multi-lens
+調査（2026-06-20、全 LENS の主張をコード照合で検証）で **(a) は既存のゼロコード回避策で解消可能**と
+確認した: 1 つの `ProjectDomain` を root `.`／複数 root の明示 `write` で **combined-domain** として
+宣言すれば（`projects/monorepo-harness.yaml` の `self` domain が実例）、変更は 1 hitch → 1 PR →
+atomic merge に畳まれ broken-main 窓が消える。`write` は無制約 `SafeGlob[]`（`src/project/schema.ts`）
+ゆえスキーマ変更は不要。**ただし `compileDomain` が他 domain の root を無条件に deny_write へ追加する
+（`src/project/policy-compiler.ts`「domain isolation cannot be lost」）ため、回避策は「畳んだ範囲の
+domain 隔離を失う」コストを伴い、唯一/非重複 domain のときだけクリーンに効く**（`projects/mini-commerce.yaml`
+の catalog/orders は相互に shared/contracts を deny し分割を強制する＝#74 の実演）。
+
+- **案 A（複数 domain hitch）は不採用**: 他 root deny の抑制が必要で、harness 中核の domain 隔離＝
+  安全境界（`CLAUDE.md` §安全境界 / `GOAL_RULES.md` §G）を侵す。安全に作るなら「operator が明示した
+  domain 集合 S への virtual combined domain（write=union(S)、deny=S 外の全 root＋各 root_deny）」に
+  限られるが、それは combined-domain 回避策と実質同義で XL。`runs.domain NOT NULL`／単一 lease
+  （`domain_locks` の active-per-key UNIQUE）／branch・PR 同一性（`runBranchName`）／domain-blind な
+  convergence・close-check も全て widen が要る。**回避策と便益が重複するため作らない。**
+- **案 C（migration+code テンプレ）は不採用**: combined-domain の authoring 砂糖にすぎず、docs runbook で
+  価値の大半を代替できる。operator が同型の combined-domain を繰り返し手書きする実績が出たら極小
+  `project` preset として再検討。
+- **残る真のギャップは (b) のみ**: 協調/順序/atomic な複数 PR merge primitive は皆無（`pull_requests` は
+  UNIQUE(run_id)、`phase_hitches.hitch_id` は PK で 1 hitch≤1 phase、`hitch close/await-merge --all` は
+  順序なし非 atomic な逐次 fan-out、merge は reviewed headSha に `--match-head-commit` で pin され
+  rebase/re-pin step が無い）。唯一の escape hatch は `adopt-pr`（audit-only・human-merge-only で
+  auto-merge を無効化）。
+
+**(b) を作るなら（条件付き follow-up = 案 B）**: 各 hitch を単一 domain/単一 PR のまま保ち、既存の
+per-PR merge gate の**上に**直交層を足す — additive migration（`merge_groups` ＋ `pull_requests.group_id`
+か link table）＋順序フィールド＋「全 member が close_ready∧consensus 承認∧CI green∧tier-0」を**既存の
+`evaluateMergeGate` を member 毎に再利用**して判定する group driver。**GitHub に atomic 複数 PR merge は
+無い**ので実現できるのは「順序逐次 merge＋first-failure halt」＝broken-main 窓の最小化のみ（atomic では
+ない、と spec に明記する）。安全条件: ①group-approve で per-PR gate を上書きしない（唯一の fail-open
+設計ミス）、②共有 `closeAndPr` choke point 経由で adopt-pr guard を継承、③partial-failure（A merged・B
+失敗）で main を壊さない abort＋escalation。PR-A squash 後に PR-B の reviewed headSha が stale 化する点を
+解く rebase/re-pin step が実装の本丸。CI 課金停止下では ciGreen がほぼ常に false ＝ auto-merge は発火
+しないため、価値は auto-merge gate でなく operator 向けツール（human-override path）から来る。
+
+**pickup の発火条件**: 「別レビュアー / domain 別 CI gating のために分割 PR が**必須**な密結合変更」が
+実在し、かつ手動 adopt-pr 連続マージで**実際の broken-main インシデントが記録**されたとき。それまでは
+combined-domain 回避策＋ordered-merge runbook（別 PR で docs 追記予定）で足りる。重要度: 中（元 issue）。
