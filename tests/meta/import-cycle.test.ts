@@ -140,12 +140,21 @@ const ALLOWLIST_CYCLES = new Set<string>([
   "src/db/doctor.ts -> src/db/jury-doctor-checks.ts",
   // db: doctor ↔ review-refute-vote-doctor-checks
   "src/db/doctor.ts -> src/db/review-refute-vote-doctor-checks.ts",
-  // mcp: tool-registry ↔ read-tools
-  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/read-tools.ts",
-  // mcp: tool-registry -> read-tools -> tool-helpers (経路バリアント)
-  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/read-tools.ts -> src/mcp/tools/tool-helpers.ts",
   // mcp: tool-registry ↔ workspace-tools
   "src/mcp/registry/tool-registry.ts -> src/mcp/tools/workspace-tools.ts",
+  // mcp: tool-registry -> read-tools(barrel) -> read-*-tools (#125 A15)。
+  // read-tools.ts を per-domain module を再 export する barrel に分割。各 read-*-tools
+  // module は tool 署名のため McpToolContext を tool-registry から import するので、旧
+  // 「tool-registry ↔ read-tools」2-cycle は barrel 経由の同型循環群に置き換わった
+  // （基礎となる MCP tool 登録循環は不変。McpToolContext を leaf に出さない限り解けず、
+  // それは tool-registry と全 MCP tool に波及する別 refactor ＝ #125 スコープ外）。
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/read-tools.ts -> src/mcp/tools/read-project-tools.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/read-tools.ts -> src/mcp/tools/read-project-tools.ts -> src/mcp/tools/tool-helpers.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/read-tools.ts -> src/mcp/tools/read-project-tools.ts -> src/mcp/tools/read-helpers.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/read-tools.ts -> src/mcp/tools/read-run-tools.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/read-tools.ts -> src/mcp/tools/read-catalog-tools.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/read-tools.ts -> src/mcp/tools/read-system-tools.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/read-tools.ts -> src/mcp/tools/read-resolve.ts",
   // mcp: tool-registry ↔ workspace-read-tools
   "src/mcp/registry/tool-registry.ts -> src/mcp/tools/workspace-read-tools.ts",
   // mcp: tool-registry ↔ aggregate-tools
