@@ -2212,3 +2212,11 @@ harness usage subagents [--since <iso>] [--json]
 （`rows: []`, `totals: { invocations: 0, ... }`）を出力する。ops shell スクリプトが
 未初期化環境でクラッシュしないよう fail-open 設計を採る。`readonly: true` 開放で
 migrations を実行しない（観測コマンドが DB を変更しない）。
+
+**ingest trigger**: `harness course orchestrate` / `harness hitch orchestrate` は
+正常完了 tail で `ingestClaudeSubagentUsage` を自動呼び出しする（dry-run は
+early-return のため到達しない）。環境変数 `HARNESS_CLAUDE_PROJECTS_DIR` を設定すると、
+デフォルトの `~/.claude/projects/<encoded-harnessRoot>` の代わりにその値を
+transcript dir として使用する（テスト・CI での fixture dir 指定に使用）。ingest の
+詳細な動作規則（mtime settle / skip-before-read / in-flight under-count / single-dir
+scope）は `docs/specs/db.md` の「Phase-3 post-hoc ingest」節を参照。
