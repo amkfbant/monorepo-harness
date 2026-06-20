@@ -184,6 +184,7 @@ export const CLI_PATHS: readonly string[] = [
   "src/cli/backlog.ts",
   "src/mcp/cli.ts",
   "src/cli/codex.ts",
+  "src/cli/usage.ts",
 ];
 
 export class ReleaseGatherError extends Error {

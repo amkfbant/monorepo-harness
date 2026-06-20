@@ -2185,3 +2185,30 @@ codex がネイティブに処理し、ラッパーは触れない。最終メ�
 - **明示的 `--json` → raw JSONL 出力**: ユーザーが `--json` を明示的に指定した場合（例: `harness codex exec --json ... | jq`）、ラッパーは最終メッセージを再構築せず raw JSONL events をそのまま stdout へ書き出す。`--json` を省略した場合はラッパーが透過的に注入し、最終メッセージを再構築して出力する（既存の動作）。
 - **root-option-named フラグの透過**: ラッパーは `program.rawArgs`（Commander が `parseAsync` 時に設定する verbatim argv）から `exec` 以降をスライスしてパススルーを構築する。これにより、root オプション（`--repo`, `--project` 等）として Commander に消費されても codex へ verbatim で転送される。ただし、`-v`/`--version` のように Commander が即時終了するオプションは Commander の設計上 action に到達しない（`--` セパレータ経由で回避可能）。
 - **spawn 失敗時は DB 記録しない**: codex が起動できなかった場合（exitCode:127 かつ eventsContent が空）、`agent_invocation` 行は書き込まない。exit code は 127 として伝播する。
+
+## `harness usage`
+
+ops 駆動の Claude サブエージェント usage telemetry を読み取る（#235, #206 Phase-3）。
+`agent_invocation` + `agent_usage_turn`（schema v36+）から read-only で集計する。
+
+```bash
+harness usage subagents [--since <iso>] [--json]
+```
+
+`harness usage subagents` はトークン使用量を `tool='claude'`, `role='external'` で
+フィルタし、`agentType` / `model` 別に集計して返す。
+
+| オプション | 説明 |
+|-----------|------|
+| `--since <iso>` | 指定 ISO 日時以降に作成された invocation のみ集計（`agent_invocation.created_at >= <iso>`） |
+| `--json` | JSON 出力（text 出力との選択）。出力形式は `SubagentUsageSummary`（`rows` + `totals`） |
+
+**ops-only scope**: このコマンドは ops 運用向けで、ハーネスが ops モードで外部 Claude
+サブエージェントを呼び出した際のトークン消費を可視化する。コスト属性付けは Phase-4
+（`#191`）で追加予定。
+
+**fail-open tail**: DB が存在しない、または `agent_invocation` テーブルが存在しない
+（schema v36 未満）場合は、stderr に diagnostic を 1 行出した上で zero-shaped summary
+（`rows: []`, `totals: { invocations: 0, ... }`）を出力する。ops shell スクリプトが
+未初期化環境でクラッシュしないよう fail-open 設計を採る。`readonly: true` 開放で
+migrations を実行しない（観測コマンドが DB を変更しない）。
