@@ -23,7 +23,13 @@ const GRANDFATHER: Record<string, number> = {
   // src/hitch/repositories/, shrinking the facade to a thin delegator well under
   // the 800 HARD cap. Per this test's own rule (≤800 ⇒ drop the grandfather), it
   // is now held to the cap like any other file.
-  "src/hitch/orchestrator-runners.ts": 2536,
+  // src/hitch/orchestrator-runners.ts removed from the ratchet: #125 A15 split the
+  // 2536-line file. The FROZEN createOrchestratorRunners factory (merge-gate +
+  // operation-audit, byte-identical) stays; the run-context/continuation helpers →
+  // orchestrator-runners-continuation.ts, the review-dispatch + frozen consensus/refute
+  // readiness → orchestrator-runners-review.ts, the Phase-3 auto-merge helpers →
+  // orchestrator-runners-automerge.ts, and the consts/errors/dispatch types →
+  // orchestrator-runners-types.ts (leaf), leaving each well under the 800 cap.
   // src/mcp/tools/mutation-tools.ts removed from the ratchet: #125 A15 split the
   // 2157-line mutation MCP tool module into a barrel re-exporting per-concern
   // modules (mutation-tools-core [run/orchestrate/backlog/knowledge] / mutation-tools-ops
