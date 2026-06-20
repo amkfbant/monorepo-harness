@@ -174,12 +174,18 @@ const ALLOWLIST_CYCLES = new Set<string>([
   "src/mcp/registry/tool-registry.ts -> src/mcp/tools/mutation-tools.ts",
   // mcp: tool-registry -> mutation-tools -> confirmation (経路バリアント)
   "src/mcp/registry/tool-registry.ts -> src/mcp/tools/mutation-tools.ts -> src/mcp/security/confirmation.ts",
-  // mcp: tool-registry -> hitch-tools -> operation-wrapper (経路バリアント)
-  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/hitch-tools.ts -> src/mcp/tools/operation-wrapper.ts",
-  // mcp: tool-registry ↔ hitch-tools
-  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/hitch-tools.ts",
-  // mcp: tool-registry -> hitch-tools -> confirmation (経路バリアント; SP-21 phase.ratify requireConfirmation 追加後)
-  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/hitch-tools.ts -> src/mcp/security/confirmation.ts",
+  // mcp: tool-registry -> hitch-tools(barrel) -> hitch-tools-{read,mutation} (#125 A15)。
+  // read-tools/dry-run と同様、hitch-tools.ts を per-concern module を再 export する barrel
+  // に分割。各 sub-module は McpToolContext を tool-registry から import するので、旧
+  // 「tool-registry ↔ hitch-tools」2-cycle（+ operation-wrapper / confirmation 経由の変種）
+  // は barrel 経由の同型循環群に置き換わった（helpers が runMcpMutationOperation /
+  // createMcpConfirmationRequest を import するため operation-wrapper / confirmation 変種も
+  // hitch-tools-read -> hitch-tools-helpers 経由で再出現）。
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/hitch-tools.ts -> src/mcp/tools/hitch-tools-read.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/hitch-tools.ts -> src/mcp/tools/hitch-tools-read.ts -> src/mcp/tools/hitch-tools-helpers.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/hitch-tools.ts -> src/mcp/tools/hitch-tools-read.ts -> src/mcp/tools/hitch-tools-helpers.ts -> src/mcp/tools/operation-wrapper.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/hitch-tools.ts -> src/mcp/tools/hitch-tools-read.ts -> src/mcp/tools/hitch-tools-helpers.ts -> src/mcp/security/confirmation.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/hitch-tools.ts -> src/mcp/tools/hitch-tools-mutation.ts",
   // mcp: tool-registry ↔ course-tools
   "src/mcp/registry/tool-registry.ts -> src/mcp/tools/course-tools.ts",
 ]);

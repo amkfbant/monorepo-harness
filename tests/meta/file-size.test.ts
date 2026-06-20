@@ -48,7 +48,11 @@ const GRANDFATHER: Record<string, number> = {
   // archive / doctor / blob + shared/blob-helpers), shrinking the registrar to a
   // thin orchestrator well under the 800 cap. Per this test's own rule (≤800 ⇒
   // drop the grandfather), it is now held to the cap like any other file.
-  "src/mcp/tools/hitch-tools.ts": 1067,
+  // src/mcp/tools/hitch-tools.ts removed from the ratchet: #125 A15 split the
+  // 1067-line hitch MCP tool module into a barrel re-exporting per-concern modules
+  // (hitch-tools-read / hitch-tools-mutation [the db.transaction().immediate()
+  // atomic seam]) over a shared leaf (hitch-tools-types) and an internal helper
+  // layer (hitch-tools-helpers), leaving each well under the 800 cap.
   // src/core/reviewer-agent.ts removed from the ratchet: #125 A15 extracted the
   // public API types (reviewer-agent-types.ts, the cycle-breaking leaf), the
   // prompt construction incl. the sha256-pinned PROMPT_PREAMBLE
