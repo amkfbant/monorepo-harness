@@ -105,7 +105,11 @@ export function registerCodexCommands(
     .description("transparent `codex exec` wrapper that records usage telemetry")
     .allowUnknownOption(true)
     .passThroughOptions()
-    .helpOption(false)
+    // helpOption(false) was removed: --help/-h must be handled by Commander (exit 0),
+    // not passed through to the real codex binary. In codex-absent environments (CI,
+    // fresh clones) passing --help to the action would spawn codex → ENOENT → exit 127.
+    // Users wanting codex's own help can use `harness codex exec -- --help` or run
+    // `codex exec --help` directly; the `--` separator already passes args verbatim.
     .argument("[args...]", "codex exec arguments (passed through verbatim)")
     .action(async (_args: string[], _opts: unknown, cmd: Command) => {
       // cmd.args holds the raw passthrough argv (commander with

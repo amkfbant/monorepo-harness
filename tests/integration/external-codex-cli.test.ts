@@ -397,4 +397,38 @@ describe("harness codex exec (external usage)", () => {
       delete process.env.HARNESS_HITCH_ID;
     }
   });
+
+  // P0 regression: `harness codex exec --help` must exit 0 without spawning the
+  // real codex binary. Commander must handle --help itself (not pass through to action).
+  // Without this fix (.helpOption(false) present), Commander delegates --help to the
+  // action which spawns `codex exec --json --help`; in CI there is no codex → ENOENT →
+  // exit 127. Pins: helpOption(false) reintroduction is caught without needing codex.
+  it("codex exec --help is handled by Commander (action is NOT called)", async () => {
+    const program = new Command();
+    program.exitOverride(); // make Commander throw instead of process.exit
+
+    let actionCalled = false;
+    registerCodexCommands(program, {
+      runExternalCodex: async () => {
+        actionCalled = true;
+        return { exitCode: 0, eventsContent: "" };
+      },
+      writeStdout: () => {},
+    } as never);
+
+    // Commander throws a CommanderError with exitCode 0 and code 'commander.helpDisplayed'
+    // when help is printed. If the action ran instead, actionCalled would be true and
+    // the error code would not be 'commander.helpDisplayed'.
+    let thrownError: { exitCode?: number; code?: string } | undefined;
+    try {
+      await program.parseAsync(["node", "h", "codex", "exec", "--help"]);
+    } catch (e) {
+      thrownError = e as { exitCode?: number; code?: string };
+    }
+
+    expect(actionCalled).toBe(false);
+    expect(thrownError).toBeDefined();
+    expect(thrownError?.code).toBe("commander.helpDisplayed");
+    expect(thrownError?.exitCode).toBe(0);
+  });
 });
