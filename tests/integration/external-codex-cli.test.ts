@@ -108,4 +108,79 @@ describe("harness codex exec (external usage)", () => {
       delete process.env.HARNESS_ROOT;
     }
   });
+
+  it("keeps per-turn rows for a multi-turn external run", async () => {
+    const root = harnessRootWithDb();
+    process.env.HARNESS_ROOT = root;
+    try {
+      const twoTurns =
+        JSON.stringify({ type: "turn.completed", usage: { input_tokens: 100, cached_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 0 } }) + "\n" +
+        JSON.stringify({ type: "turn.completed", usage: { input_tokens: 5, cached_input_tokens: 0, output_tokens: 9, reasoning_output_tokens: 0 } }) + "\n";
+      const program = new Command();
+      registerCodexCommands(program, {
+        runExternalCodex: async () => ({ exitCode: 0, eventsContent: twoTurns }),
+        writeStdout: () => {},
+      } as never);
+      await program.parseAsync(["node", "harness", "codex", "exec", "-m", "x", "p"]);
+      const db = openDb(join(root, ".harness", "harness.sqlite"));
+      try {
+        expect(
+          db.prepare("SELECT turn_seq, input_tokens, output_tokens FROM agent_usage_turn ORDER BY turn_seq").all(),
+        ).toEqual([
+          { turn_seq: 0, input_tokens: 100, output_tokens: 20 },
+          { turn_seq: 1, input_tokens: 5, output_tokens: 9 },
+        ]);
+      } finally {
+        db.close();
+      }
+    } finally {
+      delete process.env.HARNESS_ROOT;
+    }
+  });
+
+  it("reconstructs the final message to stdout EVEN WHEN -o is present", async () => {
+    // bare codex prints the final message to stdout even with -o (golden); the
+    // wrapper must too, regardless of -o / --output-last-message.
+    const root = harnessRootWithDb();
+    process.env.HARNESS_ROOT = root;
+    try {
+      for (const outFlag of [["-o", "out.txt"], ["--output-last-message", "out.txt"]]) {
+        const out: string[] = [];
+        const program = new Command();
+        registerCodexCommands(program, {
+          runExternalCodex: async () => ({ exitCode: 0, eventsContent: usageJsonl(1, 1) }),
+          writeStdout: (s) => out.push(s),
+        } as never);
+        await program.parseAsync([
+          "node", "harness", "codex", "exec", ...outFlag, "-m", "x", "p",
+        ]);
+        expect(out.join("")).toBe("done\n"); // final message echoed despite -o
+      }
+    } finally {
+      delete process.env.HARNESS_ROOT;
+    }
+  });
+
+  it("links to --harness-hitch-id", async () => {
+    const root = harnessRootWithDb();
+    process.env.HARNESS_ROOT = root;
+    try {
+      const program = new Command();
+      registerCodexCommands(program, {
+        runExternalCodex: async () => ({ exitCode: 0, eventsContent: usageJsonl(2, 2) }),
+        writeStdout: () => {},
+      } as never);
+      await program.parseAsync([
+        "node", "harness", "codex", "exec", "--harness-hitch-id=hitch-7", "-m", "x", "p",
+      ]);
+      const db = openDb(join(root, ".harness", "harness.sqlite"));
+      try {
+        expect((db.prepare("SELECT hitch_id FROM agent_invocation").get())).toEqual({ hitch_id: "hitch-7" });
+      } finally {
+        db.close();
+      }
+    } finally {
+      delete process.env.HARNESS_ROOT;
+    }
+  });
 });
