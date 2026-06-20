@@ -340,6 +340,13 @@ evaluator（policy を持たない）では `HARNESS_CODEX_MODEL` → `NULL`（h
 `assertActiveLease`・reviewer / evaluator は lease-free）。スキーマと不変条件は
 [`db.md`](./db.md) の「Agent usage telemetry」節。
 
+**第 4 の usage writer — `harness codex exec`（#206 Phase-2）**: `harness codex exec`
+は run lifecycle の外から `recordAgentUsage(role='external')` を呼ぶ。JSONL 永続化なし・
+DB 書き込みのみ。モデルは `-m` フラグから sniff。`run_id` は `--harness-run-id` または
+env `HARNESS_RUN_ID` で任意リンク（省略時 NULL）。DB が存在しないか書き込み失敗の場合は
+fail-open（codex の exit code を伝播し、warning を stderr に 1 行出す）。詳細は
+[`cli.md`](./cli.md) の「`harness codex`」節。
+
 `run_completed.runElapsedMs` は `runDomainCoding` 開始から `run_completed` emit 直前までの wall-clock 整数 ms。
 
 コマンドが作った副作用（scope 外書き込み / secret-shaped file / ignored output / symlink / huge / binary）はすべて post-command の再検査で codex 直後と同じ扱いになる — 詳細は [`policy.md`](./policy.md#allowedcommands-実行) の「commands 実行後」。

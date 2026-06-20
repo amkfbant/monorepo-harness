@@ -1258,6 +1258,12 @@ CREATE TABLE agent_usage_turn (
 - **telemetry never gates** — convergence（`src/hitch/**`）/ phase rollup
   （`src/roadmap/**`）はこの 2 表を読まない。`tests/meta/telemetry-never-gates.test.ts` が
   機械強制する（usage が state 遷移の入力にならない安全境界）。
+- **`role='external'` 行（#206 Phase-2）** — `harness codex exec` ラッパーが生成する
+  `agent_invocation` 行。`run_id` は `--harness-run-id` / env `HARNESS_RUN_ID` で任意
+  リンクしない限り NULL（前述の `CHECK (role = 'external' OR run_id IS NOT NULL)` を
+  満たす唯一の role）。JSONL artifact への永続化はなく DB 書き込みのみ。import reset
+  の orphan-prune は `run_id IS NOT NULL` guard で external 行を保持する（#235 の
+  claude consumer も同様の external 行を生成する予定）。
 
 ## Telemetry snapshots E1 — metrics_snapshots（schema v27）
 

@@ -2146,3 +2146,42 @@ harness phase unlink-hitch <hitch-id>
 > command の bare-id 解決規約・起案→批准ワークフローは [`spec-review-layer.md`](./spec-review-layer.md) を参照。
 
 Exit code は `harness course` と同じ（0 / 1 / 2）。
+
+## `harness codex`
+
+外部 `codex exec` の透過ラッパー（#206 Phase-2）。`--json` を自動注入して
+`turn.completed.usage` を捕捉し、`agent_invocation` / `agent_usage_turn`
+（`tool='codex'`, `role='external'`）へ usage telemetry を記録する。
+
+```bash
+harness codex exec [--harness-label=<label>] [--harness-run-id=<id>]
+                   [--harness-hitch-id=<id>] [--harness-course-id=<id>]
+                   [<codex exec args...>]
+```
+
+`--harness-*` フラグ（`=value` 形式のみ）はハーネス側で消費し、残りの引数を
+verbatim で `codex exec --json <args>` に渡す。`-o`/`--output-last-message` は
+codex がネイティブに処理し、ラッパーは触れない。最終メッセージは JSONL から
+再構築して stdout へ出力する（bare `codex exec` と byte-identical な振る舞い）。
+
+| フラグ | 動作 |
+|--------|------|
+| `--harness-label=<label>` | `agent_invocation.external_label` に記録（省略時 `"external"`） |
+| `--harness-run-id=<id>` | `agent_invocation.run_id` にリンク（省略時 env `HARNESS_RUN_ID`） |
+| `--harness-hitch-id=<id>` | `agent_invocation.hitch_id` にリンク（省略時 env `HARNESS_HITCH_ID`） |
+| `--harness-course-id=<id>` | `agent_invocation.course_id` にリンク（省略時 env `HARNESS_COURSE_ID`） |
+
+**fail-open**: DB が存在しない・書き込み失敗でも codex の exit code をそのまま
+伝播し、stderr に warning を 1 行出す（usage の未記録は運用を止めない）。
+
+モデルは `-m`/`--model` から sniff（省略時 `NULL` = best-effort）。exit code は
+`codex exec` の exit code そのまま（0 / 非 0）。
+
+`--` セパレータ: 最初の単独 `--` はハーネスフラグ境界として**消費**される（codex へは転送しない）。それ以降のトークンはすべて verbatim で codex に渡され、`--harness-*` 解釈は行われない。例: `harness codex exec --harness-label=x -- -m gpt-5.5 "prompt"`。
+
+**追加の動作（P2-b/c/d/e）**:
+
+- **`HARNESS_CODEX_BIN` を尊重**: `HARNESS_CODEX_BIN` 環境変数が設定されていれば、ラッパーはその値を codex バイナリとして使用する（ハーネスの他の CLI と同様）。
+- **明示的 `--json` → raw JSONL 出力**: ユーザーが `--json` を明示的に指定した場合（例: `harness codex exec --json ... | jq`）、ラッパーは最終メッセージを再構築せず raw JSONL events をそのまま stdout へ書き出す。`--json` を省略した場合はラッパーが透過的に注入し、最終メッセージを再構築して出力する（既存の動作）。
+- **root-option-named フラグの透過**: ラッパーは `program.rawArgs`（Commander が `parseAsync` 時に設定する verbatim argv）から `exec` 以降をスライスしてパススルーを構築する。これにより、root オプション（`--repo`, `--project` 等）として Commander に消費されても codex へ verbatim で転送される。ただし、`-v`/`--version` のように Commander が即時終了するオプションは Commander の設計上 action に到達しない（`--` セパレータ経由で回避可能）。
+- **spawn 失敗時は DB 記録しない**: codex が起動できなかった場合（exitCode:127 かつ eventsContent が空）、`agent_invocation` 行は書き込まない。exit code は 127 として伝播する。

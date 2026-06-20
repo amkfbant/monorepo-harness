@@ -22,6 +22,7 @@ import { registerMcpCommands } from "../mcp/cli.js";
 import { registerLockCommands } from "./lock.js";
 
 import { registerReleaseCommands } from "./release.js";
+import { registerCodexCommands } from "./codex.js";
 
 import { registerReviewCommands } from "./review.js";
 
@@ -263,6 +264,7 @@ registerHitchCommands(program, { getHarnessRoot });
 registerCourseCommands(program, { getHarnessRoot });
 registerMcpCommands(program, { getHarnessRoot });
 registerReleaseCommands(program, { getHarnessRoot });
+registerCodexCommands(program);
 
 function rejectUnknownTopLevelCommandBeforeDefaultRun(
   rootCommand: Command,
