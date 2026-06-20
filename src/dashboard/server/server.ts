@@ -21,7 +21,7 @@ import { reviewRoutes } from "./server-routes-review.js";
 // Re-export the public surface so existing importers keep their paths:
 // cli/dashboard (createDashboardServer), operations/server (buildListener,
 // DashboardServerConfig), operations-api (Route, writeError, writeJson).
-export { writeJson, writeError } from "./server-routing.js";
+export { matchRoute, writeJson, writeError } from "./server-routing.js";
 export type {
   Route,
   DashboardServerConfig,
