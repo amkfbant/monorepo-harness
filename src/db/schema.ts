@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 35;
+export const SCHEMA_VERSION = 36;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -2107,6 +2107,115 @@ export const MIGRATION_V35_STATEMENTS: readonly string[] = [
      WHERE storage IN ('db', 'external') AND blob_sha256 IS NOT NULL`,
 ] as const;
 
+/**
+ * v36 — agent usage telemetry (#206 epic Phase-1).
+ *
+ * ADDITIVE on top of v30 `run_usage`, which stays the canonical legacy read
+ * surface (`recordAgentUsage` dual-writes it byte-identically). Two new tables
+ * generalize usage across tools (codex/claude) and roles (incl. external):
+ *   - `agent_invocation`: one row per agent process. ZERO foreign keys
+ *     (advisory run/hitch/course links; external rows carry run_id NULL) — the
+ *     same audit-backbone posture as the v31/v32 jury tables, so import reset /
+ *     parent purge never orphans-throw on telemetry.
+ *   - `agent_usage_turn`: 1:N child, REAL FK ON DELETE CASCADE. UNION-nullable
+ *     token columns hold BOTH taxonomies (codex: cached_input/reasoning_output;
+ *     claude: cache_read + cache_creation 5m/1h) under an XOR CHECK so one row
+ *     never mixes the two. codex is single-turn (turn_seq=0); claude is
+ *     per-assistant-message.
+ *
+ * Backfill: each v30 run_usage row → one agent_invocation (tool='codex',
+ * role=kind, invocation_seq=seq, deterministic `bf:<run>:<kind>:<seq>` id) + one
+ * agent_usage_turn (turn_seq=0, token columns verbatim). INSERT OR IGNORE keeps
+ * re-migration idempotent on the stable surrogate id; a COUNT gate in the v36
+ * test catches any silent OR-IGNORE drop.
+ */
+export const MIGRATION_V36_STATEMENTS: readonly string[] = [
+  `CREATE TABLE agent_invocation (
+     invocation_id  TEXT PRIMARY KEY,
+     tool           TEXT NOT NULL CHECK (tool IN ('codex','claude')),
+     role           TEXT NOT NULL
+       CHECK (role IN ('coder','reviewer','evaluator','external')),
+     model          TEXT,
+     run_id         TEXT,
+     hitch_id       TEXT,
+     course_id      TEXT,
+     session_id     TEXT,
+     agent_id       TEXT,
+     agent_type     TEXT,
+     external_label TEXT,
+     invocation_seq INTEGER NOT NULL DEFAULT 0,
+     started_at     TEXT,
+     exit_code      INTEGER,
+     duration_ms    INTEGER,
+     description    TEXT,
+     usage_source   TEXT NOT NULL
+       CHECK (usage_source IN ('exact','parsed_log','estimated','unavailable')),
+     created_at     TEXT NOT NULL,
+     CHECK (role = 'external' OR run_id IS NOT NULL),
+     CHECK ((session_id IS NULL) = (agent_id IS NULL)),
+     CHECK (tool <> 'codex' OR (session_id IS NULL AND agent_id IS NULL))
+   )`,
+  `CREATE INDEX agent_invocation_run_idx
+     ON agent_invocation(run_id, role, invocation_seq)`,
+  `CREATE INDEX agent_invocation_hitch_idx
+     ON agent_invocation(hitch_id, created_at)`,
+  `CREATE INDEX agent_invocation_course_idx
+     ON agent_invocation(course_id, created_at)`,
+  `CREATE UNIQUE INDEX agent_invocation_session_agent_idx
+     ON agent_invocation(session_id, agent_id)
+     WHERE session_id IS NOT NULL AND agent_id IS NOT NULL`,
+  `CREATE TABLE agent_usage_turn (
+     invocation_id TEXT NOT NULL
+       REFERENCES agent_invocation(invocation_id) ON DELETE CASCADE,
+     turn_seq      INTEGER NOT NULL,
+     model         TEXT,
+     input_tokens  INTEGER,
+     output_tokens INTEGER,
+     total_tokens  INTEGER,
+     cached_input_tokens INTEGER,
+     reasoning_output_tokens INTEGER,
+     cache_read_input_tokens INTEGER,
+     cache_creation_input_tokens INTEGER,
+     cache_creation_5m_input_tokens INTEGER,
+     cache_creation_1h_input_tokens INTEGER,
+     usage_source  TEXT NOT NULL
+       CHECK (usage_source IN ('exact','parsed_log','estimated','unavailable')),
+     created_at    TEXT NOT NULL,
+     PRIMARY KEY (invocation_id, turn_seq),
+     CHECK (
+       (cached_input_tokens IS NULL AND reasoning_output_tokens IS NULL)
+       OR (cache_read_input_tokens IS NULL
+           AND cache_creation_input_tokens IS NULL
+           AND cache_creation_5m_input_tokens IS NULL
+           AND cache_creation_1h_input_tokens IS NULL)
+     )
+   )`,
+  `CREATE INDEX agent_usage_turn_invocation_idx
+     ON agent_usage_turn(invocation_id)`,
+  `INSERT OR IGNORE INTO agent_invocation
+     (invocation_id, tool, role, model, run_id, hitch_id, course_id,
+      invocation_seq, external_label, usage_source, created_at)
+   SELECT 'bf:' || run_id || ':' || kind || ':' || seq, 'codex', kind, model,
+          run_id, NULL, NULL, seq, NULL, usage_source, created_at
+     FROM run_usage`,
+  `INSERT OR IGNORE INTO agent_usage_turn
+     (invocation_id, turn_seq, model, input_tokens, output_tokens, total_tokens,
+      cached_input_tokens, reasoning_output_tokens,
+      cache_read_input_tokens, cache_creation_input_tokens,
+      cache_creation_5m_input_tokens, cache_creation_1h_input_tokens,
+      usage_source, created_at)
+   SELECT 'bf:' || run_id || ':' || kind || ':' || seq, 0, model, input_tokens,
+          output_tokens, total_tokens, cached_input_tokens, reasoning_output_tokens,
+          NULL, NULL, NULL, NULL, usage_source, created_at
+     FROM run_usage`,
+] as const;
+
+/** Table names created by v36 (#206 agent usage telemetry). */
+export const V36_TABLE_NAMES = [
+  "agent_invocation",
+  "agent_usage_turn",
+] as const;
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -2155,6 +2264,7 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V30_TABLE_NAMES,
   ...V31_TABLE_NAMES,
   ...V32_TABLE_NAMES,
+  ...V36_TABLE_NAMES,
 ];
 
 /** Tables intentionally removed by later migrations. */
