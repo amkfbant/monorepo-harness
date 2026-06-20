@@ -147,6 +147,13 @@ export const CLI_PATHS: readonly string[] = [
   "src/cli/project.ts",
   "src/cli/policy.ts",
   "src/cli/db.ts",
+  // #125 A15: db.ts command group split into per-concern sub-modules; each holds
+  // `.command(..)` surface so a removal there must be visible to release scanning.
+  "src/cli/db/schema-commands.ts",
+  "src/cli/db/maintenance-commands.ts",
+  "src/cli/db/archive-commands.ts",
+  "src/cli/db/doctor-commands.ts",
+  "src/cli/db/blob-commands.ts",
   "src/cli/hitch.ts",
   "src/cli/course.ts",
   "src/cli/onboard.ts",
