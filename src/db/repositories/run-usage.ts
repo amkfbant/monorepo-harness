@@ -12,6 +12,26 @@ import {
 
 export type RunUsageKind = "coder" | "reviewer" | "evaluator";
 
+/**
+ * Resolve the advisory codex model for telemetry (#206). The harness does NOT
+ * inject `-m`, so this is best-effort metadata, not a verified model: the
+ * operator's policy-declared model if present, else the `HARNESS_CODEX_MODEL`
+ * env override (the uniform source for roles without a policy in scope —
+ * reviewer/evaluator), else null so no-config telemetry stays byte-stable.
+ *
+ * The writer itself stays pure: callers resolve the model and pass it in, which
+ * keeps `recordAgentUsage`/`recordCodexUsage` and their tests env-independent.
+ */
+export function resolveCodexModel(
+  policyModel?: string | null,
+): string | null {
+  if (policyModel !== undefined && policyModel !== null && policyModel !== "") {
+    return policyModel;
+  }
+  const env = process.env.HARNESS_CODEX_MODEL;
+  return env !== undefined && env !== "" ? env : null;
+}
+
 export interface RecordCodexUsageInput {
   db: Database.Database;
   runId: string;

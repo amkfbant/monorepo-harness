@@ -1328,8 +1328,91 @@ describe("runDomainCoding (fake codex)", () => {
         kind: "coder",
         seq: 0,
       });
+      // #206: the coder run dual-writes agent_invocation + agent_usage_turn in
+      // the same transaction as run_usage (forwarder wiring, end-to-end).
+      expect(
+        db
+          .prepare(
+            `SELECT tool, role, model, run_id, invocation_seq, usage_source
+               FROM agent_invocation WHERE run_id = ?`,
+          )
+          .get(r.runId),
+      ).toEqual({
+        tool: "codex",
+        role: "coder",
+        model: null,
+        run_id: r.runId,
+        invocation_seq: 0,
+        usage_source: "exact",
+      });
+      expect(
+        db
+          .prepare(
+            `SELECT t.turn_seq, t.input_tokens, t.output_tokens, t.total_tokens
+               FROM agent_usage_turn t
+               JOIN agent_invocation i ON i.invocation_id = t.invocation_id
+              WHERE i.run_id = ?`,
+          )
+          .all(r.runId),
+      ).toEqual([
+        { turn_seq: 0, input_tokens: 120, output_tokens: 35, total_tokens: 155 },
+      ]);
     } finally {
       db.close();
+    }
+  });
+
+  it("records the HARNESS_CODEX_MODEL env model across all three usage tables (#206)", async () => {
+    vi.stubEnv("HARNESS_CODEX_MODEL", "gpt-5.5-test");
+    try {
+      const runner = createFakeCodexRunner({
+        edit: async (cwd) => {
+          writeFileSync(
+            join(cwd, "apps/user/src/profile.ts"),
+            "export const x = 3;\n",
+          );
+        },
+        usage: {
+          inputTokens: 12,
+          cachedInputTokens: 4,
+          outputTokens: 6,
+          reasoningOutputTokens: 1,
+        },
+      });
+      const r = await runDomainCoding({
+        harnessRoot: harness,
+        repoPath,
+        repoId: "t",
+        domain: "apps/user",
+        goal: "record usage with model",
+        baseBranch: "main",
+        codexRunner: runner,
+        now: new Date("2026-05-20T00:00:00Z"),
+      });
+      const db = openDb(join(harness, ".harness", "harness.sqlite"));
+      try {
+        const model = (sql: string): string =>
+          (db.prepare(sql).get(r.runId) as { model: string }).model;
+        expect({
+          runUsage: model("SELECT model FROM run_usage WHERE run_id = ?"),
+          invocation: model(
+            "SELECT model FROM agent_invocation WHERE run_id = ?",
+          ),
+          turn: model(
+            `SELECT t.model AS model FROM agent_usage_turn t
+               JOIN agent_invocation i ON i.invocation_id = t.invocation_id
+              WHERE i.run_id = ?`,
+          ),
+        }).toEqual({
+          runUsage: "gpt-5.5-test",
+          invocation: "gpt-5.5-test",
+          turn: "gpt-5.5-test",
+        });
+      } finally {
+        db.close();
+      }
+    } finally {
+      vi.unstubAllEnvs();
     }
   });
 

@@ -3,7 +3,10 @@
 import { existsSync } from "node:fs";
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
-import { recordCodexUsage } from "../db/repositories/run-usage.js";
+import {
+  recordCodexUsage,
+  resolveCodexModel,
+} from "../db/repositories/run-usage.js";
 
 /**
  * Telemetry-only warning (token-usage G2). Recording reviewer codex usage is
@@ -44,6 +47,9 @@ export async function recordReviewerUsage(
         runId,
         kind: "reviewer",
         eventsContent,
+        // reviewer has no policy in scope; the HARNESS_CODEX_MODEL env is the
+        // uniform advisory source (#206). Absent → null → byte-stable.
+        model: resolveCodexModel(),
         onError: (err) => warnReviewerUsageRecordFailed(runId, err),
       });
     } finally {

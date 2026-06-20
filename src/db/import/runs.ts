@@ -24,6 +24,9 @@ const RUN_CHILD_TABLES = [
   "run_changed_files",
   "policy_violations",
   "run_usage",
+  // #206: per-run replace deletes agent_invocation (DB-only, like run_usage);
+  // agent_usage_turn follows via FK ON DELETE CASCADE.
+  "agent_invocation",
   "artifacts",
   "run_context_packs",
   "run_context_pack_files",
