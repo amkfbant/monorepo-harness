@@ -30,7 +30,11 @@ const GRANDFATHER: Record<string, number> = {
   // review / convergence) + a shared hitch/helpers.ts, leaving the registrar a
   // thin orchestrator under the 800 cap.
   "src/core/workflow-runner.ts": 1919,
-  "src/mcp/tools/read-tools.ts": 1632,
+  // src/mcp/tools/read-tools.ts removed from the ratchet: #125 A15 split the
+  // 1632-line read MCP tool module into a barrel re-exporting per-domain modules
+  // (read-{project,run,catalog,system}-tools.ts + read-resolve.ts) over a shared
+  // leaf (read-types.ts) and an internal helper layer (read-helpers.ts), leaving
+  // each well under the 800 cap.
   "src/db/repositories/runs.ts": 1264,
   "src/dashboard/server/server.ts": 1254,
   "src/mcp/tools/dry-run-tools.ts": 1226,
