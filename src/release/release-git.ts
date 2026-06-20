@@ -156,6 +156,9 @@ export const CLI_PATHS: readonly string[] = [
   "src/cli/db/blob-commands.ts",
   "src/cli/hitch.ts",
   "src/cli/course.ts",
+  // #125 A15: course.ts command groups (course + phase) split into sub-modules.
+  "src/cli/course/course-commands.ts",
+  "src/cli/course/phase-commands.ts",
   "src/cli/onboard.ts",
   "src/cli/lock.ts",
   "src/cli/inbox.ts",
