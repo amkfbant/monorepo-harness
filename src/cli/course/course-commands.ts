@@ -11,6 +11,7 @@ import { createProductionCourseOrchestrator } from "../../roadmap/course-orchest
 import { rollupCourse } from "../../roadmap/rollup.js";
 import { COURSE_STATUSES, type CourseStatus } from "../../roadmap/types.js";
 import { noteForMarkdownLine, withCourseErrorExit, withCourseOrchestrateErrorExit, withCourseDb, withCourseDbAsync, assertCourseOrchestrateSchemaCompatible, withCourseRepo, writeOutput, parseChoice, parsePositiveInt, buildCourseOrchestrateDryRun, operationErrorCode, writeCourseOrchestrateDryRunOutput, writeCourseOrchestrateOutput, CourseCliError, type RegisterCourseCommandsOptions } from "./helpers.js";
+import { ingestClaudeSubagentUsage } from "../../telemetry/ingest-claude-subagent-usage.js";
 
 /**
  * `harness course` サブコマンド（#125 A15: cli/course.ts から behaviour-zero 分割）。
@@ -211,6 +212,14 @@ export function registerCourseSubcommands(
         });
 
         writeCourseOrchestrateOutput(raw, result);
+        // Fail-open telemetry: record ops-driven Claude subagent usage after the pass.
+        // MUST never throw here — orchestrate already succeeded and output was written.
+        ingestClaudeSubagentUsage({
+          harnessRoot: opts.getHarnessRoot(),
+          ...(process.env.HARNESS_CLAUDE_PROJECTS_DIR !== undefined
+            ? { claudeProjectDir: process.env.HARNESS_CLAUDE_PROJECTS_DIR }
+            : {}),
+        });
       });
     });
 
