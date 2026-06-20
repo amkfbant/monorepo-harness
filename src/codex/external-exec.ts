@@ -77,3 +77,28 @@ export function sniffModel(codexArgs: string[]): string | null {
   }
   return null;
 }
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * The user-facing final message, reconstructed from the JSONL (because `--json`
+ * replaces stdout with events). Total function. Matches the last event whose
+ * item carries a non-empty string `text`, so it survives minor schema drift.
+ */
+export function extractFinalMessage(jsonl: string): string {
+  let last = "";
+  for (const line of jsonl.split(/\r?\n/)) {
+    if (line.trim() === "") continue;
+    try {
+      const ev = JSON.parse(line) as unknown;
+      if (!isRecord(ev) || !isRecord(ev.item)) continue;
+      const text = ev.item.text;
+      if (typeof text === "string" && text.length > 0) last = text;
+    } catch {
+      // skip malformed line — total function
+    }
+  }
+  return last;
+}

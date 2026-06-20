@@ -3,6 +3,7 @@ import {
   splitHarnessFlags,
   injectJsonFlag,
   sniffModel,
+  extractFinalMessage,
 } from "../../../src/codex/external-exec.js";
 
 describe("splitHarnessFlags (single-token `=` form only)", () => {
@@ -67,5 +68,20 @@ describe("sniffModel", () => {
     expect(sniffModel(["-m=gpt-5.5", "p"])).toBe("gpt-5.5");
     expect(sniffModel(["--model=o3", "p"])).toBe("o3");
     expect(sniffModel(["-s", "read-only", "p"])).toBeNull();
+  });
+});
+
+describe("extractFinalMessage", () => {
+  it("returns the last assistant message text item", () => {
+    const jsonl = [
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "first" } }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "final answer" } }),
+    ].join("\n");
+    expect(extractFinalMessage(jsonl)).toBe("final answer");
+  });
+  it("is total: malformed/empty → empty string", () => {
+    expect(extractFinalMessage("{broken")).toBe("");
+    expect(extractFinalMessage("")).toBe("");
   });
 });
