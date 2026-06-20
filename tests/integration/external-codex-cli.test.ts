@@ -431,4 +431,139 @@ describe("harness codex exec (external usage)", () => {
     expect(thrownError?.code).toBe("commander.helpDisplayed");
     expect(thrownError?.exitCode).toBe(0);
   });
+
+  // P2-c: root-level options like --repo or --project are parsed by Commander and
+  // consumed before the action sees cmd.args. Without rawArgs passthrough, they
+  // disappear from the codex passthrough. Using program.rawArgs (sliced after "exec")
+  // recovers them verbatim so they reach codex.
+  // Note: -v/--version causes Commander to exit immediately (by design) before the
+  // action runs — that is Commander behavior, not a wrapper bug. The fix targets the
+  // more common case of non-exit root options (--repo, --project, etc.).
+  it("passes root-option-named args (e.g. --repo) through to codex verbatim via rawArgs", async () => {
+    const program = new Command();
+    program.exitOverride();
+    // Declare a root-level --repo option to simulate the real harness behavior
+    program.option("--repo <path>", "repo path");
+    let capturedCodexArgs: string[] | undefined;
+    registerCodexCommands(program, {
+      runExternalCodex: async ({ codexArgs }) => {
+        capturedCodexArgs = codexArgs;
+        return { exitCode: 0, eventsContent: "" };
+      },
+      writeStdout: () => {},
+    } as never);
+    // --repo is a root option that would be consumed by Commander, losing it from cmd.args
+    await program.parseAsync(["node", "harness", "codex", "exec", "--repo", "/some/path", "hi"]);
+    // With rawArgs passthrough: --repo and its value reach codex verbatim
+    expect(capturedCodexArgs).toContain("--repo");
+    expect(capturedCodexArgs).toContain("/some/path");
+    expect(capturedCodexArgs).toContain("hi");
+  });
+
+  // P2-c gate: `harness run --version` behavior is unchanged (root NOT mutated).
+  // Sibling commands' root-level options still work after registerCodexCommands.
+  it("sibling command's root --version still works after registerCodexCommands (root NOT mutated)", async () => {
+    const program = new Command();
+    program.exitOverride();
+    program.version("0.7.17-test", "-v, --version");
+
+    registerCodexCommands(program, {
+      runExternalCodex: async () => ({ exitCode: 0, eventsContent: "" }),
+      writeStdout: () => {},
+    } as never);
+
+    // Invoke root --version (simulates `harness --version` or `harness run --version` via root)
+    let caughtErr: { code?: string; exitCode?: number } | undefined;
+    try {
+      await program.parseAsync(["node", "harness", "--version"]);
+    } catch (e) {
+      caughtErr = e as { code?: string; exitCode?: number };
+    }
+    expect(caughtErr?.code).toBe("commander.version");
+    expect(caughtErr?.exitCode).toBe(0);
+  });
+
+  // P2-d: HARNESS_CODEX_BIN env var must be honoured — the exec action must forward
+  // it to runExternalCodex so the correct binary is used instead of literal "codex".
+  it("forwards HARNESS_CODEX_BIN to runExternalCodex as codexBin", async () => {
+    const sentinel = "/custom/path/to/codex-sentinel";
+    const origBin = process.env.HARNESS_CODEX_BIN;
+    process.env.HARNESS_CODEX_BIN = sentinel;
+    let capturedBin: string | undefined;
+    try {
+      const program = new Command();
+      program.exitOverride();
+      registerCodexCommands(program, {
+        runExternalCodex: async (opts) => {
+          capturedBin = opts.codexBin;
+          return { exitCode: 0, eventsContent: "" };
+        },
+        writeStdout: () => {},
+      } as never);
+      await program.parseAsync(["node", "harness", "codex", "exec", "hello"]);
+      expect(capturedBin).toBe(sentinel);
+    } finally {
+      if (origBin === undefined) delete process.env.HARNESS_CODEX_BIN;
+      else process.env.HARNESS_CODEX_BIN = origBin;
+    }
+  });
+
+  // P2-b: explicit --json in passthrough → raw JSONL on stdout (not reconstructed message).
+  // Without explicit --json → reconstructed final message (existing behavior, still green).
+  it("emits raw JSONL to stdout when caller explicitly passes --json", async () => {
+    const rawJsonl = '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":0}}\n{"type":"item.completed","item":{"type":"agent_message","text":"hello"}}\n';
+    const out: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerCodexCommands(program, {
+      runExternalCodex: async () => ({ exitCode: 0, eventsContent: rawJsonl }),
+      writeStdout: (s) => out.push(s),
+    } as never);
+    await program.parseAsync(["node", "harness", "codex", "exec", "--json", "-m", "x", "p"]);
+    // When --json is explicit: raw JSONL is written as-is (not the extracted message "hello")
+    expect(out.join("")).toBe(rawJsonl);
+  });
+
+  it("emits reconstructed final message (not raw JSONL) when --json is absent", async () => {
+    const rawJsonl = '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":0}}\n{"type":"item.completed","item":{"type":"agent_message","text":"final answer"}}\n';
+    const out: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerCodexCommands(program, {
+      runExternalCodex: async () => ({ exitCode: 0, eventsContent: rawJsonl }),
+      writeStdout: (s) => out.push(s),
+    } as never);
+    await program.parseAsync(["node", "harness", "codex", "exec", "-m", "x", "p"]);
+    // Without explicit --json: reconstructed final message (wrapper behavior)
+    expect(out.join("")).toBe("final answer\n");
+  });
+
+  // P2-e: when codex cannot spawn (exitCode:127 + eventsContent:""), do NOT record
+  // an agent_invocation row. The exit code must still propagate.
+  // Rationale: a spawn failure (ENOENT/codex-not-installed) means codex never ran —
+  // recording an 'unavailable' row would accumulate spurious rows in misconfigured envs.
+  it("does NOT record agent_invocation when codex fails to spawn (exitCode:127, eventsContent:'')", async () => {
+    const root = harnessRootWithDb();
+    process.env.HARNESS_ROOT = root;
+    try {
+      const program = new Command();
+      registerCodexCommands(program, {
+        runExternalCodex: async () => ({ exitCode: 127, eventsContent: "" }),
+        writeStdout: () => {},
+      } as never);
+      await program.parseAsync(["node", "harness", "codex", "exec", "p"]);
+      expect(process.exitCode).toBe(127);
+      const db = openDb(join(root, ".harness", "harness.sqlite"));
+      try {
+        expect(
+          (db.prepare("SELECT count(*) AS n FROM agent_invocation").get() as { n: number }).n,
+        ).toBe(0);
+      } finally {
+        db.close();
+      }
+    } finally {
+      process.exitCode = 0;
+      delete process.env.HARNESS_ROOT;
+    }
+  });
 });

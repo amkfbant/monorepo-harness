@@ -2178,3 +2178,10 @@ codex がネイティブに処理し、ラッパーは触れない。最終メ�
 `codex exec` の exit code そのまま（0 / 非 0）。
 
 `--` セパレータ: 最初の単独 `--` はハーネスフラグ境界として**消費**される（codex へは転送しない）。それ以降のトークンはすべて verbatim で codex に渡され、`--harness-*` 解釈は行われない。例: `harness codex exec --harness-label=x -- -m gpt-5.5 "prompt"`。
+
+**追加の動作（P2-b/c/d/e）**:
+
+- **`HARNESS_CODEX_BIN` を尊重**: `HARNESS_CODEX_BIN` 環境変数が設定されていれば、ラッパーはその値を codex バイナリとして使用する（ハーネスの他の CLI と同様）。
+- **明示的 `--json` → raw JSONL 出力**: ユーザーが `--json` を明示的に指定した場合（例: `harness codex exec --json ... | jq`）、ラッパーは最終メッセージを再構築せず raw JSONL events をそのまま stdout へ書き出す。`--json` を省略した場合はラッパーが透過的に注入し、最終メッセージを再構築して出力する（既存の動作）。
+- **root-option-named フラグの透過**: ラッパーは `program.rawArgs`（Commander が `parseAsync` 時に設定する verbatim argv）から `exec` 以降をスライスしてパススルーを構築する。これにより、root オプション（`--repo`, `--project` 等）として Commander に消費されても codex へ verbatim で転送される。ただし、`-v`/`--version` のように Commander が即時終了するオプションは Commander の設計上 action に到達しない（`--` セパレータ経由で回避可能）。
+- **spawn 失敗時は DB 記録しない**: codex が起動できなかった場合（exitCode:127 かつ eventsContent が空）、`agent_invocation` 行は書き込まない。exit code は 127 として伝播する。

@@ -111,20 +111,56 @@ export function registerCodexCommands(
     // Users wanting codex's own help can use `harness codex exec -- --help` or run
     // `codex exec --help` directly; the `--` separator already passes args verbatim.
     .argument("[args...]", "codex exec arguments (passed through verbatim)")
-    .action(async (_args: string[], _opts: unknown, cmd: Command) => {
-      // cmd.args holds the raw passthrough argv (commander with
-      // allowUnknownOption + passThroughOptions).
-      const { wrapper, codexArgs } = splitHarnessFlags(cmd.args);
+    .action(async (_args: string[], _opts: unknown, _cmd: Command) => {
+      // Derive the passthrough from program.rawArgs (Commander's copy of the
+      // argv slice passed to parse/parseAsync) rather than cmd.args. cmd.args
+      // is built AFTER Commander resolves options, so root options like -v/
+      // --version or --repo are parsed and stolen before we see them. Slicing
+      // rawArgs after the "exec" token gives the verbatim user tokens, meaning
+      // root-option-named flags (e.g. `-v`, `--version`) reach codex intact.
+      // NOTE: program here is the root Command captured in the outer closure.
+      // rawArgs is set by Commander during parse/parseAsync but is absent from the
+      // TypeScript type definition (it is a public runtime property). Cast as needed.
+      const raw = (program as unknown as { rawArgs: string[] }).rawArgs; // set by Commander during parseAsync
+      const codexIdx = raw.indexOf("codex");
+      const execIdx = codexIdx !== -1 ? raw.indexOf("exec", codexIdx + 1) : -1;
+      const rawSlice = execIdx !== -1 ? raw.slice(execIdx + 1) : _cmd.args;
+      const { wrapper, codexArgs } = splitHarnessFlags(rawSlice);
       const model = sniffModel(codexArgs);
-      const { exitCode, eventsContent } = await runExternalCodex({ codexArgs });
-      // ALWAYS echo the final message to stdout first. Bare codex prints the
-      // final message to stdout even when `-o <file>` is given (golden-verified
-      // on codex-cli 0.139.0); the `-o` file is written natively by codex and
-      // the wrapper does not touch it. Raw JSONL never reaches stdout.
-      // Recording must never change what the user sees — write stdout first, then
-      // record so DB-lock contention cannot delay user-visible output.
-      const msg = extractFinalMessage(eventsContent);
-      if (msg.length > 0) writeStdout(msg.endsWith("\n") ? msg : msg + "\n");
+      // P2-e: skip spawn entirely when codex cannot be started — exitCode:127 +
+      // eventsContent:"" is the exact shape runExternalCodex returns on ENOENT/
+      // EACCES. Recording a row in that case would accumulate spurious
+      // 'unavailable' rows in misconfigured environments where codex is absent.
+      const { exitCode, eventsContent } = await runExternalCodex({
+        codexArgs,
+        // P2-d: honour HARNESS_CODEX_BIN so callers can override the codex binary,
+        // consistent with how the rest of the harness CLI resolves the binary path.
+        codexBin: process.env.HARNESS_CODEX_BIN ?? "codex",
+      });
+      if (exitCode === 127 && eventsContent === "") {
+        // Codex never spawned — propagate the exit code but do not write a row.
+        process.exitCode = exitCode;
+        return;
+      }
+      // P2-b: if the caller EXPLICITLY passed --json they expect the raw JSONL
+      // event stream on stdout (e.g. for piping to `jq`). Detect whether the
+      // flag was present in the original passthrough (before injectJsonFlag adds
+      // it transparently). If yes: write the raw eventsContent verbatim. If no:
+      // reconstruct the final message (existing wrapper behavior).
+      // Recording is unchanged either way.
+      const callerPassedJson = codexArgs.includes("--json");
+      if (callerPassedJson) {
+        writeStdout(eventsContent);
+      } else {
+        // ALWAYS echo the final message to stdout first. Bare codex prints the
+        // final message to stdout even when `-o <file>` is given (golden-verified
+        // on codex-cli 0.139.0); the `-o` file is written natively by codex and
+        // the wrapper does not touch it. Raw JSONL never reaches stdout.
+        // Recording must never change what the user sees — write stdout first, then
+        // record so DB-lock contention cannot delay user-visible output.
+        const msg = extractFinalMessage(eventsContent);
+        if (msg.length > 0) writeStdout(msg.endsWith("\n") ? msg : msg + "\n");
+      }
       // recordExternal is fail-open: cannot throw; any error is warned to stderr.
       recordExternal({
         eventsContent, label: wrapper.label, runId: wrapper.runId,
