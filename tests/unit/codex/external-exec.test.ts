@@ -4,6 +4,8 @@ import {
   injectJsonFlag,
   sniffModel,
   extractFinalMessage,
+  runExternalCodex,
+  type SpawnImpl,
 } from "../../../src/codex/external-exec.js";
 
 describe("splitHarnessFlags (single-token `=` form only)", () => {
@@ -83,5 +85,53 @@ describe("extractFinalMessage", () => {
   it("is total: malformed/empty → empty string", () => {
     expect(extractFinalMessage("{broken")).toBe("");
     expect(extractFinalMessage("")).toBe("");
+  });
+});
+
+describe("runExternalCodex", () => {
+  it("injects --json, forwards stderr, returns captured JSONL + exit code", async () => {
+    const calls: { bin: string; args: string[] }[] = [];
+    const stderrSeen: string[] = [];
+    const fakeSpawn = async (
+      bin: string,
+      args: string[],
+      onStderr: (c: string) => void,
+    ) => {
+      calls.push({ bin, args });
+      onStderr("progress line\n");
+      return { exitCode: 0, stdout: '{"type":"turn.completed","usage":{}}\n' };
+    };
+    const res = await runExternalCodex({
+      codexArgs: ["-m", "gpt-5.5", "hi"],
+      codexBin: "codex",
+      onStderr: (c) => stderrSeen.push(c),
+      spawnImpl: fakeSpawn,
+    });
+    expect(calls[0]?.args).toEqual(["exec", "--json", "-m", "gpt-5.5", "hi"]);
+    expect(stderrSeen.join("")).toContain("progress line");
+    expect(res.exitCode).toBe(0);
+    expect(res.eventsContent).toContain("turn.completed");
+  });
+
+  it("returns a non-zero exit without throwing", async () => {
+    const fakeSpawn: SpawnImpl = async () => ({ exitCode: 7, stdout: "" });
+    const res = await runExternalCodex({
+      codexArgs: ["x"], codexBin: "codex", spawnImpl: fakeSpawn,
+    });
+    expect(res.exitCode).toBe(7);
+  });
+
+  it("catches a spawn failure (ENOENT) as exit 127 + stderr, never throws", async () => {
+    const stderrSeen: string[] = [];
+    const failingSpawn: SpawnImpl = async () => {
+      throw new Error("spawn codex ENOENT");
+    };
+    const res = await runExternalCodex({
+      codexArgs: ["x"], codexBin: "codex",
+      onStderr: (c) => stderrSeen.push(c), spawnImpl: failingSpawn,
+    });
+    expect(res.exitCode).toBe(127);
+    expect(res.eventsContent).toBe("");
+    expect(stderrSeen.join("")).toContain("failed to spawn codex");
   });
 });

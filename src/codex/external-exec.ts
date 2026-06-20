@@ -78,6 +78,65 @@ export function sniffModel(codexArgs: string[]): string | null {
   return null;
 }
 
+import { spawn } from "node:child_process";
+import { resolveCodexBin } from "./resolve-codex-bin.js";
+
+export type SpawnImpl = (
+  bin: string,
+  args: string[],
+  onStderr: (chunk: string) => void,
+) => Promise<{ exitCode: number; stdout: string }>;
+
+export interface RunExternalCodexOpts {
+  codexArgs: string[];
+  codexBin?: string;
+  onStderr?: (chunk: string) => void;
+  spawnImpl?: SpawnImpl;
+}
+
+export interface ExternalCodexResult {
+  exitCode: number;
+  eventsContent: string;
+}
+
+const realSpawn: SpawnImpl = (bin, args, onStderr) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { stdio: ["inherit", "pipe", "pipe"] });
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (c: string) => (stdout += c));
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (c: string) => onStderr(c));
+    child.on("error", reject); // ENOENT/EACCES — caught by runExternalCodex
+    child.on("close", (code) => resolve({ exitCode: code ?? 1, stdout }));
+  });
+
+/**
+ * Run `codex exec --json <args>` transparently: capture stdout (JSONL) for
+ * usage, stream stderr to `onStderr`, return the codex exit code. `--json` and
+ * `-o` are independent, so any `-o` in `codexArgs` is honored natively by codex.
+ *
+ * NEVER throws: a non-zero codex exit is returned as `exitCode`; a spawn failure
+ * (ENOENT/EACCES — `resolveCodexBin` does not check existence) is caught and
+ * returned as `exitCode: 127` with a clear `onStderr` message. The CLI action
+ * therefore always has an exit code to propagate and never leaks a raw throw.
+ */
+export async function runExternalCodex(
+  opts: RunExternalCodexOpts,
+): Promise<ExternalCodexResult> {
+  const bin = resolveCodexBin(opts.codexBin ?? "codex");
+  const args = ["exec", ...injectJsonFlag(opts.codexArgs)];
+  const onStderr = opts.onStderr ?? ((c: string) => void process.stderr.write(c));
+  const spawnImpl = opts.spawnImpl ?? realSpawn;
+  try {
+    const { exitCode, stdout } = await spawnImpl(bin, args, onStderr);
+    return { exitCode, eventsContent: stdout };
+  } catch (e) {
+    onStderr(`harness codex exec: failed to spawn codex: ${(e as Error).message}\n`);
+    return { exitCode: 127, eventsContent: "" };
+  }
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
