@@ -7,6 +7,14 @@ describe("computeAutoMergeTier", () => {
     ["docs/workflow.md", 0],
     ["src/cli/hitch.ts", 1],
     ["tests/unit/core/example.test.ts", 0],
+    // #125 A15: reviewer-agent.ts and its extracted modules are all Tier-2.
+    // The glob preserves the safety classification across the file split — a
+    // prompt-only change to an extracted module must not auto-merge.
+    ["src/core/reviewer-agent.ts", 2],
+    ["src/core/reviewer-agent-prompt.ts", 2],
+    ["src/core/reviewer-agent-decision.ts", 2],
+    ["src/core/reviewer-agent-types.ts", 2],
+    ["src/core/reviewer-agent-usage.ts", 2],
   ] as const)("%s maps to Tier-%d", (path, tier) => {
     expect(computeAutoMergeTier([path])).toBe(tier);
   });
