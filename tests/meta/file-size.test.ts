@@ -29,7 +29,12 @@ const GRANDFATHER: Record<string, number> = {
   // into 5 sub-registrars under src/cli/hitch/ (lifecycle / attempt / finding /
   // review / convergence) + a shared hitch/helpers.ts, leaving the registrar a
   // thin orchestrator under the 800 cap.
-  "src/core/workflow-runner.ts": 1919,
+  // src/core/workflow-runner.ts removed from the ratchet: #125 A15 extracted the
+  // FROZEN runDomainCodingInner (lease/dup-gate + PRE/POST-normalize #141/#197 +
+  // all-or-nothing materialize) into workflow-runner-inner.ts, the diff/validate/
+  // materialize helpers into workflow-runner-diff.ts, and the shared warn helpers +
+  // run-coding types/RunFinalizedError into workflow-runner-shared.ts (leaf-ward),
+  // keeping the FROZEN runDomainCoding entrypoint under the 800 cap.
   // src/mcp/tools/read-tools.ts removed from the ratchet: #125 A15 split the
   // 1632-line read MCP tool module into a barrel re-exporting per-domain modules
   // (read-{project,run,catalog,system}-tools.ts + read-resolve.ts) over a shared
