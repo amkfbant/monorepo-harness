@@ -57,7 +57,7 @@ export interface RecordCodexUsageInput {
  * (no turns) yields ONE synthetic null turn so the new tables keep the
  * backfill's 1:1 invariant (one `run_usage` row ↔ one `agent_usage_turn` row).
  */
-function codexTurnInputs(
+export function codexTurnInputs(
   turns: readonly CodexTurnUsage[],
   model: string | null,
   summarySource: UsageSource,

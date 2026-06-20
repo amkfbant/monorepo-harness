@@ -178,6 +178,7 @@ describe("CLI help surface golden (#125 behavior-zero gate)", () => {
       "mcp",
       "verify-guarded",
       "release",
+      "codex",
       "help",
     ]);
   }, 60_000);
@@ -421,6 +422,9 @@ describe("CLI help surface golden (#125 behavior-zero gate)", () => {
       release
         plan
         check
+        help
+      codex
+        exec
         help
       help
       "
