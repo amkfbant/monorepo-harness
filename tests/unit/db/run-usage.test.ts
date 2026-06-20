@@ -1,11 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
-import { recordCodexUsage } from "../../../src/db/repositories/run-usage.js";
+import {
+  recordCodexUsage,
+  resolveCodexModel,
+} from "../../../src/db/repositories/run-usage.js";
 
 function freshDb(): Database.Database {
   const dir = mkdtempSync(join(tmpdir(), "harness-run-usage-"));
@@ -34,6 +37,29 @@ function usageEvent(inputTokens: number, outputTokens: number): string {
     },
   })}\n`;
 }
+
+describe("resolveCodexModel (advisory model fallback chain, #206)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("prefers the policy-declared model over the env override", () => {
+    vi.stubEnv("HARNESS_CODEX_MODEL", "gpt-env");
+    expect(resolveCodexModel("gpt-policy")).toBe("gpt-policy");
+  });
+
+  it("falls back to HARNESS_CODEX_MODEL when policy has no model", () => {
+    vi.stubEnv("HARNESS_CODEX_MODEL", "gpt-env");
+    expect(resolveCodexModel(undefined)).toBe("gpt-env");
+    expect(resolveCodexModel(null)).toBe("gpt-env");
+  });
+
+  it("returns null when neither policy nor env is set (byte-stable no-config)", () => {
+    vi.stubEnv("HARNESS_CODEX_MODEL", "");
+    expect(resolveCodexModel()).toBeNull();
+    expect(resolveCodexModel(undefined)).toBeNull();
+  });
+});
 
 describe("recordCodexUsage", () => {
   it("allocates seq per run and kind while recording codex turn usage", () => {

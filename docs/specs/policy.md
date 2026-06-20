@@ -36,6 +36,7 @@ defaults:
     sandbox: workspace-write          # read-only | workspace-write | danger-full-access
     approval: on-request              # codex 内部の approval policy 設定
     timeout_ms: 900000                # codex 子プロセスの kill timeout (15 min)
+    model: gpt-5.5                    # 任意 — agent-usage telemetry に記録する advisory model (#206)
 
 limits:
   git_timeout_ms: 30000               # 各 git invocation の kill timeout (30 s)
@@ -74,6 +75,7 @@ ignore_untracked:                     # minimatch root-anchored
 | `defaults.codex.sandbox` | enum | codex の `--sandbox` フラグに渡る。`workspace-write` が MVP の既定 |
 | `defaults.codex.approval` | string? | codex の `-c approval_policy=…` に渡る |
 | `defaults.codex.timeout_ms` | number? | runner.timeoutMs。未設定なら 15 min default |
+| `defaults.codex.model` | string? | agent-usage telemetry に記録する advisory model (#206)。harness は `-m` を注入しないため実モデルと食い違い得る best-effort 値。coder のみ参照（reviewer/evaluator は `HARNESS_CODEX_MODEL` 経由）。未設定なら `HARNESS_CODEX_MODEL` → `NULL` |
 | `limits.git_timeout_ms` | number | gitCli の SIGKILL タイマー。未設定なら 30 s |
 | `limits.change_budget` | object? | run ごとの tracked diff size / deletion guard。未設定でも fail-closed default が適用される |
 | `always_deny_write` | string[] | 全 domain で必ず deny される path glob |
@@ -166,6 +168,7 @@ ResolvedPolicy {
     sandbox: global.defaults?.codex?.sandbox ?? "workspace-write",
     approval: global.defaults?.codex?.approval,    // optional
     timeoutMs: global.defaults?.codex?.timeout_ms ?? 900_000,
+    model: global.defaults?.codex?.model,          // optional advisory (#206)
   },
   limits: {
     gitTimeoutMs: global.limits?.git_timeout_ms ?? 30_000,

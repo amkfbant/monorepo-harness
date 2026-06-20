@@ -18,7 +18,7 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
 > （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V35_STATEMENTS`、
-> `SCHEMA_VERSION = 35`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> `SCHEMA_VERSION = 36`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -733,7 +733,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 35`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 36`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -769,6 +769,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 33 | epic #228 / #231 phase review-state CAS | `phases.review_state_version INTEGER NOT NULL DEFAULT 0`（`review_state_json` の将来 CAS 書込用 additive 列。新規 table 無し） |
 | 34 | hitch divergence recovery #280 | `hitch_lifecycle_events.event` CHECK を rebuild で拡張し `diverging_recovered` を許容（v23/v29 の FK/NOT NULL/index は維持）。`hitch recover-diverging` の audit イベント |
 | 35 | artifact quarantine marker #303 | `artifacts.quarantined INTEGER NOT NULL DEFAULT 0`（additive 列）。db-first full sync が absent ∧ recoverable な行のうち**意図的に quarantine された行だけ**を保持し、superseded 行（成功 retry が消した stale `reviewers/<id>/review-auto-error.json` 等）を prune するための marker。**upgrade 安全のため backfill 同梱**: 同 migration で `UPDATE artifacts SET quarantined = 1 WHERE storage IN ('db','external') AND blob_sha256 IS NOT NULL`——pre-v35 の「absent recoverable 行を全保持」を grandfather し、v34 の #272-quarantined transcript が次回 sync で `quarantined = 0` として誤 prune されるのを防ぐ。詳細は `docs/specs/workflow.md` の reviewer quarantine 節 |
+| 36 | agent usage telemetry #206 Phase-1 | additive: DB-only `agent_invocation`（ZERO FK・1 invocation/row）+ `agent_usage_turn`（REAL FK ON DELETE CASCADE・per-turn・UNION-nullable token 列を codex/claude 両 taxonomy で保持し XOR CHECK）を `run_usage` と並置。`recordAgentUsage` が単一 `BEGIN IMMEDIATE` で run_usage（model 以外 byte-identical な dual-write）+ 2 新表を both-or-neither 書込。backfill: run_usage 1 行 → invocation 1（`bf:<run>:<kind>:<seq>` surrogate）+ turn_seq=0 turn 1（列 verbatim・`INSERT OR IGNORE` 冪等）。**NO view**——run_usage が legacy read surface のまま。下記「Agent usage telemetry」節 |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -1150,9 +1151,13 @@ CREATE INDEX run_usage_run_idx ON run_usage(run_id);
 v30 migration は既存 v26 rows を `kind='coder'`, `seq=0` として `INSERT ... SELECT`
 で移行してから旧 table を drop / rename する。`V26_TABLE_NAMES` /
 `CURRENT_TABLE_NAMES` の table 名は引き続き `run_usage` のまま変わらない。
-`model` は現状 `NULL`。`seq` は同一 `(run_id, kind)` 内で
-`COALESCE(MAX(seq) + 1, 0)` により採番し、採番と INSERT は同じ `BEGIN IMMEDIATE`
-transaction 内で行う。usage 記録は fail-open で、記録失敗は run を止めない。
+`model` は #206 以降 advisory に populate される（policy `defaults.codex.model`
+→ `HARNESS_CODEX_MODEL` → `NULL` の fallback。harness は `-m` を注入しないため実モデルと
+食い違い得る best-effort 値。未設定時は `NULL` で byte-stable）。`seq` は同一
+`(run_id, kind)` 内で `COALESCE(MAX(seq) + 1, 0)` により採番し、採番と INSERT は同じ
+`BEGIN IMMEDIATE` transaction 内で行う（#206 以降この tx は `agent_invocation` /
+`agent_usage_turn` への dual-write も含む。下記「Agent usage telemetry」節）。usage
+記録は fail-open で、記録失敗は run を止めない。
 `usage_source` の意味論:
 
 - `exact` — Codex CLI structured events の `turn.completed.usage` から決定論的に取得。
@@ -1163,6 +1168,96 @@ transaction 内で行う。usage 記録は fail-open で、記録失敗は run �
 
 `total_tokens` の正規定義は `input_tokens + output_tokens`。`reasoning_output_tokens`
 は別列であり、total に二重加算しない。
+
+## Agent usage telemetry — agent_invocation / agent_usage_turn（schema v36, #206 Phase-1）
+
+schema v36 は `run_usage` の上に **additive** な 2 表を足し、agent usage を tool
+（codex / claude）と role（coder / reviewer / evaluator / external）をまたいで一般化する。
+`run_usage` は legacy canonical read surface のまま残し（**view は採らない**——view は
+INSERT 不可で writer / meta-test / import が全壊するため）、`recordAgentUsage`
+（`src/db/repositories/agent-usage.ts`）が両者へ **dual-write** する。
+
+- **`agent_invocation`** — 1 invocation = 1 row。**FK ゼロ**（run / hitch / course link は
+  advisory・external claude 行は `run_id` NULL）。import reset の orphan-prune / 親 purge で
+  telemetry が orphan-throw しない v31/v32 jury 表と同じ audit-backbone posture。
+- **`agent_usage_turn`** — 1:N child（`agent_invocation` への REAL FK ON DELETE CASCADE）。
+  UNION-nullable token 列が **両 taxonomy** を保持する: codex は
+  `cached_input_tokens` / `reasoning_output_tokens`、claude は `cache_read_input_tokens`
+  + `cache_creation_5m/1h_input_tokens`。XOR CHECK で 1 行が両者を混在しない。codex は
+  単一 turn（`turn_seq=0`）、claude は assistant message ごと。
+
+```sql
+CREATE TABLE agent_invocation (
+  invocation_id  TEXT PRIMARY KEY,   -- live codex: sha256(run_id\0role\0seq) 64-hex /
+                                     -- external: 'ext:'||sha256(label\0session\0agent\0
+                                     --   run\0role\0seq) — NUL-joined hash (injective:
+                                     --   a reused label in a different session/agent/run,
+                                     --   or a field containing ':'/'_', never collides) /
+                                     -- backfill: 'bf:'||run_id||':'||kind||':'||seq
+  tool           TEXT NOT NULL CHECK (tool IN ('codex','claude')),
+  role           TEXT NOT NULL
+    CHECK (role IN ('coder','reviewer','evaluator','external')),
+  model          TEXT,               -- advisory（policy/env 由来・best-effort）
+  run_id         TEXT,               -- FK なし。external は NULL
+  hitch_id       TEXT,
+  course_id      TEXT,
+  session_id     TEXT,               -- claude identity（codex は NULL）
+  agent_id       TEXT,
+  agent_type     TEXT,
+  external_label TEXT,
+  invocation_seq INTEGER NOT NULL DEFAULT 0,  -- codex は run_usage.seq と lock-step
+  started_at     TEXT,
+  exit_code      INTEGER,
+  duration_ms    INTEGER,
+  description    TEXT,               -- writer 側で HARD-TRUNCATE（2000 字）
+  usage_source   TEXT NOT NULL
+    CHECK (usage_source IN ('exact','parsed_log','estimated','unavailable')),
+  created_at     TEXT NOT NULL,
+  CHECK (role = 'external' OR run_id IS NOT NULL),
+  CHECK ((session_id IS NULL) = (agent_id IS NULL)),
+  CHECK (tool <> 'codex' OR (session_id IS NULL AND agent_id IS NULL))
+);
+-- indexes: run(run_id,role,invocation_seq) / hitch(hitch_id,created_at) /
+--          course(course_id,created_at) / partial-unique(session_id,agent_id)
+CREATE TABLE agent_usage_turn (
+  invocation_id TEXT NOT NULL
+    REFERENCES agent_invocation(invocation_id) ON DELETE CASCADE,
+  turn_seq      INTEGER NOT NULL,
+  model         TEXT,
+  input_tokens  INTEGER, output_tokens INTEGER, total_tokens INTEGER,
+  cached_input_tokens INTEGER, reasoning_output_tokens INTEGER,        -- codex
+  cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,-- claude
+  cache_creation_5m_input_tokens INTEGER, cache_creation_1h_input_tokens INTEGER,
+  usage_source  TEXT NOT NULL
+    CHECK (usage_source IN ('exact','parsed_log','estimated','unavailable')),
+  created_at    TEXT NOT NULL,
+  PRIMARY KEY (invocation_id, turn_seq),
+  CHECK ( (cached_input_tokens IS NULL AND reasoning_output_tokens IS NULL)
+       OR (cache_read_input_tokens IS NULL AND cache_creation_input_tokens IS NULL
+           AND cache_creation_5m_input_tokens IS NULL
+           AND cache_creation_1h_input_tokens IS NULL) );  -- codex XOR claude
+```
+
+**dual-write の不変条件**:
+
+- **byte-stable legacy 行** — `run_usage` の INSERT は pre-#206 と同一で、`model` が
+  caller 由来で populate される点だけが追加（未指定時 `NULL` = 不変）。
+- **both-or-neither** — 3 INSERT は同一 `BEGIN IMMEDIATE`。lease 喪失 / 制約違反で
+  全 rollback（torn-write なし）。`recordAgentUsage` 全体が single-try **fail-open**
+  （timestamp / description 切り詰め / hash / 3 INSERT を try 内に置き、失敗は
+  `onError` 経由・run へ re-throw しない）。
+- **deterministic id** — codex の `invocation_id` は `(run_id, role, seq)` の純関数
+  （SQLite に `sha256()` builtin は無く TS `node:crypto` で計算）。live / external / backfill の
+  3 namespace は disjoint。`invocation_seq` は codex で `run_usage.MAX(seq)+1` を単一権威に
+  lock-step。
+- **DB-only / no file export** — `run_usage` 同様 file へ export せず、per-run reimport は
+  destructive（restore 無し）。import reset では `agent_invocation` を child として orphan-prune
+  するが、**external（`run_id` NULL）行は親 run を持たないため保持**する（prune に
+  `key IS NOT NULL` guard。SQLite の `NULL NOT IN (空集合)` は TRUE になり得るため三値論理に
+  依存しない）。`agent_usage_turn` は `run_id` を持たず FK CASCADE で追従。
+- **telemetry never gates** — convergence（`src/hitch/**`）/ phase rollup
+  （`src/roadmap/**`）はこの 2 表を読まない。`tests/meta/telemetry-never-gates.test.ts` が
+  機械強制する（usage が state 遷移の入力にならない安全境界）。
 
 ## Telemetry snapshots E1 — metrics_snapshots（schema v27）
 

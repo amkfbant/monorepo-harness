@@ -259,6 +259,61 @@ describe("runFullImport", () => {
     d.close();
   });
 
+  it("--reset clears agent_invocation orphaned by legacy-file run reset (#206)", () => {
+    const runId = "run-20260521-apps-web-aaa";
+    const root = normalRoot();
+    const d = db(root);
+    runFullImport(d, { harnessRoot: root });
+    d.prepare(
+      `INSERT INTO agent_invocation
+         (invocation_id, tool, role, run_id, invocation_seq, usage_source,
+          created_at)
+       VALUES (?, 'codex', 'coder', ?, 0, 'exact', '2026-05-21T00:00:00Z')`,
+    ).run("live:aaa:coder:0", runId);
+    rmSync(join(root, "runs", runId), { recursive: true, force: true });
+
+    runFullImport(d, { harnessRoot: root, reset: true });
+
+    const n = d
+      .prepare("SELECT count(*) AS n FROM agent_invocation WHERE run_id = ?")
+      .get(runId) as { n: number };
+    expect(n.n).toBe(0);
+    d.close();
+  });
+
+  it("--reset preserves external NULL-run_id agent_invocation rows (#206 E1)", () => {
+    // The external (run_id NULL) row survives because of the `run_id IS NOT NULL`
+    // guard on the orphan prune — NOT because of SQLite three-valued logic.
+    // normalRoot() has exactly ONE run; deleting its dir empties `runs` on reset,
+    // so the prune subquery is the EMPTY set and `NULL NOT IN ()` is TRUE (would
+    // delete the row without the guard). The run-linked codex row IS orphaned by
+    // the legacy-file run reset and must be pruned. Remove the guard in
+    // import-files.ts and this test fails — it is the guard's regression gate.
+    const runId = "run-20260521-apps-web-aaa";
+    const root = normalRoot();
+    const d = db(root);
+    runFullImport(d, { harnessRoot: root });
+    d.prepare(
+      `INSERT INTO agent_invocation
+         (invocation_id, tool, role, run_id, external_label, invocation_seq,
+          usage_source, created_at)
+       VALUES
+         ('live:aaa:coder:0', 'codex', 'coder', ?, NULL, 0, 'exact',
+          '2026-05-21T00:00:00Z'),
+         ('ext:sub:external:0', 'claude', 'external', NULL, 'sub', 0, 'exact',
+          '2026-05-21T00:00:01Z')`,
+    ).run(runId);
+    rmSync(join(root, "runs", runId), { recursive: true, force: true });
+
+    runFullImport(d, { harnessRoot: root, reset: true });
+
+    const rows = d
+      .prepare("SELECT invocation_id FROM agent_invocation ORDER BY invocation_id")
+      .all();
+    expect(rows).toEqual([{ invocation_id: "ext:sub:external:0" }]);
+    d.close();
+  });
+
   it("records a malformed meta.json in import_errors and keeps other runs", () => {
     const root = normalRoot();
     const badDir = join(root, "runs", "run-20260521-apps-web-bad");

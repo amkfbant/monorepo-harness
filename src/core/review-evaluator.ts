@@ -28,7 +28,10 @@ import {
   type SanitizedGateReason,
 } from "./gate-reason.js";
 import { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
-import { recordCodexUsage } from "../db/repositories/run-usage.js";
+import {
+  recordCodexUsage,
+  resolveCodexModel,
+} from "../db/repositories/run-usage.js";
 import { runMigrations } from "../db/migrations.js";
 
 /**
@@ -203,6 +206,9 @@ export async function evaluateReviewer(
             runId: opts.runId,
             kind: "evaluator",
             eventsContent,
+            // evaluator is a standalone CLI without a resolved policy; the
+            // HARNESS_CODEX_MODEL env is the uniform advisory source (#206).
+            model: resolveCodexModel(),
             onError: (err) =>
               warnEvaluatorUsageRecordFailed(opts.runId, err),
           });

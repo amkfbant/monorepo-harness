@@ -73,6 +73,12 @@ const RESET_CHILD_TABLES: { table: string; key: string; parent: string }[] = [
   { table: "policy_violations", key: "run_id", parent: "runs" },
   { table: "artifacts", key: "run_id", parent: "runs" },
   { table: "run_usage", key: "run_id", parent: "runs" },
+  // #206 telemetry. `agent_usage_turn` is intentionally absent: it has no
+  // run_id and follows via the agent_invocation FK ON DELETE CASCADE. External
+  // claude rows carry run_id NULL and are kept by the `key IS NOT NULL` guard on
+  // the orphan prune below (a NULL key has no parent run, so it is not an
+  // orphan — see the prune comment for why NULL NOT IN is not relied on).
+  { table: "agent_invocation", key: "run_id", parent: "runs" },
   { table: "run_context_packs", key: "run_id", parent: "runs" },
   { table: "run_context_pack_files", key: "run_id", parent: "runs" },
   { table: "backlog_run_links", key: "item_id", parent: "backlog_items" },
@@ -115,11 +121,18 @@ export function runFullImport(
         db.prepare(`DELETE FROM ${t} WHERE source_mode != 'db-first'`).run();
       }
       // drop child rows orphaned by the runtime deletes above; children of a
-      // surviving db-first parent stay.
+      // surviving db-first parent stay. The `key IS NOT NULL` guard is load
+      // bearing for #206 agent_invocation: an external (run_id NULL) row has no
+      // parent run by design, so it is never an orphan. Relying on SQLite's
+      // `NULL NOT IN (...)` UNKNOWN is unsafe — when the parent set is EMPTY
+      // (every run was a since-deleted legacy-file run), `NULL NOT IN ()` is
+      // TRUE and would wrongly delete external telemetry. Other child tables
+      // have NOT NULL keys, so the guard is a no-op for them.
       for (const c of RESET_CHILD_TABLES) {
         db.prepare(
           `DELETE FROM ${c.table}
-           WHERE ${c.key} NOT IN (SELECT ${c.key} FROM ${c.parent})`,
+           WHERE ${c.key} IS NOT NULL
+             AND ${c.key} NOT IN (SELECT ${c.key} FROM ${c.parent})`,
         ).run();
       }
     });

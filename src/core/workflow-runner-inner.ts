@@ -38,7 +38,10 @@ import { buildReviewRequest } from "../reporter/review-request.js";
 import { buildReviewDecision } from "../reporter/review-decision.js";
 import { buildUntrackedPatch, buildUntrackedDeniedReport, buildUntrackedSecretsReport } from "../reporter/untracked-patch.js";
 import { publishRedactedCodexEvents } from "../codex/events-lifecycle.js";
-import { recordCodexUsage } from "../db/repositories/run-usage.js";
+import {
+  recordCodexUsage,
+  resolveCodexModel,
+} from "../db/repositories/run-usage.js";
 import { warnArtifactIngestFailed, warnUsageRecordFailed, elapsedMs } from "./workflow-runner-shared.js";
 import type { RunDomainCodingOpts, RunDomainCodingResult } from "./workflow-runner-shared.js";
 import { applyChangeBudgetOverride, diffAndValidate, evaluateChangeBudget, materializeParentWork, normalizeWorktreeIndexToBase, readOptionalUtf8, readStderrTail, readTail } from "./workflow-runner-diff.js";
@@ -229,6 +232,7 @@ export async function runDomainCodingInner(
       runId,
       kind: "coder",
       eventsContent: codexEventsContent,
+      model: resolveCodexModel(policy.codex.model),
       beforeWrite: () => assertActiveLease(db, runId),
       onError: (error) => warnUsageRecordFailed(runId, error),
     });

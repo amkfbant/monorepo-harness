@@ -331,6 +331,15 @@ transaction 内で行う。`turn.completed.usage` が正常に読める場合は
 `parsed_log` / `estimated` は予約値であり、G1 の workflow は書き込まない。
 `total_tokens` は `input_tokens + output_tokens`（`reasoning_output_tokens` は別列）。
 
+#206 以降この記録は `recordAgentUsage` 経由の **dual-write** になり、同じ
+`BEGIN IMMEDIATE` transaction 内で `run_usage`（model 以外 byte-identical）に加えて
+`agent_invocation` + per-turn `agent_usage_turn` も書く（both-or-neither）。`model` は
+coder では policy `defaults.codex.model` → `HARNESS_CODEX_MODEL` → `NULL`、reviewer /
+evaluator（policy を持たない）では `HARNESS_CODEX_MODEL` → `NULL`（harness は `-m`
+非注入のため best-effort advisory）。3 経路の lease 有無は変わらない（coder のみ
+`assertActiveLease`・reviewer / evaluator は lease-free）。スキーマと不変条件は
+[`db.md`](./db.md) の「Agent usage telemetry」節。
+
 `run_completed.runElapsedMs` は `runDomainCoding` 開始から `run_completed` emit 直前までの wall-clock 整数 ms。
 
 コマンドが作った副作用（scope 外書き込み / secret-shaped file / ignored output / symlink / huge / binary）はすべて post-command の再検査で codex 直後と同じ扱いになる — 詳細は [`policy.md`](./policy.md#allowedcommands-実行) の「commands 実行後」。
