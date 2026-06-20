@@ -18,6 +18,15 @@ interface CodexDeps {
   writeStdout: (s: string) => void;
 }
 
+/**
+ * External telemetry recording is best-effort and must not gate the transparent
+ * wrapper's completion. Under a held EXCLUSIVE maintenance lock (e.g. db restore),
+ * the default shared-lock acquire would wait up to DEFAULT_LOCK_TIMEOUT_MS (30s)
+ * before failing open — delaying process exit even though stdout was already written.
+ * 2 seconds is ample time for an uncontended lock; under contention we fail-open fast.
+ */
+const EXTERNAL_RECORD_LOCK_TIMEOUT_MS = 2000;
+
 interface ExternalUsage {
   eventsContent: string;
   label: string;
@@ -53,7 +62,7 @@ function recordExternal(u: ExternalUsage): void {
     return;
   }
   try {
-    const handle = openManagedDb({ dbPath });
+    const handle = openManagedDb({ dbPath, timeoutMs: EXTERNAL_RECORD_LOCK_TIMEOUT_MS });
     try {
       const turns = parseCodexTurns(u.eventsContent);
       const summary = sumCodexTurns(turns);

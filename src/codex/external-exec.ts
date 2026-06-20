@@ -28,6 +28,13 @@ function envOr(name: string): string | null {
  * (`-c <x>`, `-o <path>`, `--model <name>`) or the positional prompt equals a
  * `--harness-*` name. A bare `--harness-label` (no `=`) is NOT a wrapper flag and
  * passes straight through to codex.
+ *
+ * `--` separator: the FIRST standalone `--` token is the wrapper/codex boundary.
+ * It is CONSUMED (not forwarded to codex — codex would treat the following `-m`
+ * etc. as positional). All tokens after it are pushed to codexArgs verbatim without
+ * any `--harness-*` interpretation. Only the first `--` is the separator; a later
+ * `--` is a literal codex arg. Tokens before the first `--` keep the existing
+ * consume-or-passthrough behavior.
  */
 export function splitHarnessFlags(argv: string[]): {
   wrapper: WrapperFlags;
@@ -40,7 +47,19 @@ export function splitHarnessFlags(argv: string[]): {
     courseId: envOr("HARNESS_COURSE_ID"),
   };
   const codexArgs: string[] = [];
+  let separatorSeen = false;
   for (const tok of argv) {
+    // The first standalone `--` is the wrapper/codex boundary: consumed, not forwarded.
+    if (!separatorSeen && tok === "--") {
+      separatorSeen = true;
+      continue; // consume the separator itself — codex does not want it
+    }
+    // After the separator: push everything verbatim, no harness-flag interpretation.
+    if (separatorSeen) {
+      codexArgs.push(tok);
+      continue;
+    }
+    // Before the separator: try to consume a single-token --harness-*=value.
     if (tok.startsWith("--harness-")) {
       const eq = tok.indexOf("=");
       if (eq !== -1) {

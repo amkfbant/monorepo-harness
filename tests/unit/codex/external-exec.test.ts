@@ -8,6 +8,56 @@ import {
   type SpawnImpl,
 } from "../../../src/codex/external-exec.js";
 
+describe("splitHarnessFlags -- separator boundary", () => {
+  it("strips the first standalone `--` and treats everything after as verbatim codex args", () => {
+    // `--harness-label=x -- -m gpt-5.5 p`: label consumed before `--`, `--` stripped, rest verbatim
+    const { wrapper, codexArgs } = splitHarnessFlags([
+      "--harness-label=x", "--", "-m", "gpt-5.5", "p",
+    ]);
+    expect(wrapper.label).toBe("x");
+    expect(codexArgs).toEqual(["-m", "gpt-5.5", "p"]);
+  });
+
+  it("does NOT consume --harness-*=value after `--` (verbatim passthrough)", () => {
+    // `-- --harness-label=LITERAL`: label stays 'external', token passed to codex
+    const { wrapper, codexArgs } = splitHarnessFlags([
+      "--", "--harness-label=LITERAL",
+    ]);
+    expect(wrapper.label).toBe("external");
+    expect(codexArgs).toEqual(["--harness-label=LITERAL"]);
+  });
+
+  it("passes `--json` verbatim when it follows `--`", () => {
+    const { codexArgs } = splitHarnessFlags(["--", "--json"]);
+    expect(codexArgs).toEqual(["--json"]);
+  });
+
+  it("passes all args verbatim after `--` (model sniff still works on passthrough)", () => {
+    const { wrapper, codexArgs } = splitHarnessFlags(["--", "-m", "gpt-5.5", "p"]);
+    expect(wrapper.label).toBe("external");
+    expect(codexArgs).toEqual(["-m", "gpt-5.5", "p"]);
+    // sniff still works on the returned codexArgs (sniffModel already imported at top)
+    expect(sniffModel(codexArgs)).toBe("gpt-5.5");
+  });
+
+  it("only the FIRST `--` is special; a later `--` is a literal codex arg", () => {
+    const { codexArgs } = splitHarnessFlags(["--harness-label=x", "--", "arg1", "--", "arg2"]);
+    // second `--` is NOT consumed — forwarded as a codex arg
+    expect(codexArgs).toEqual(["arg1", "--", "arg2"]);
+  });
+
+  it("no `--` present → behavior unchanged (regression guard)", () => {
+    // matches existing behavior: label consumed, rest passed through
+    const { wrapper, codexArgs } = splitHarnessFlags([
+      "--harness-label=pr-review", "--harness-run-id=run-1",
+      "-m", "gpt-5.5", "the prompt",
+    ]);
+    expect(wrapper.label).toBe("pr-review");
+    expect(wrapper.runId).toBe("run-1");
+    expect(codexArgs).toEqual(["-m", "gpt-5.5", "the prompt"]);
+  });
+});
+
 describe("splitHarnessFlags (single-token `=` form only)", () => {
   it("consumes --harness-*=value and passes the rest through verbatim", () => {
     const { wrapper, codexArgs } = splitHarnessFlags([

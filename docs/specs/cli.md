@@ -2176,3 +2176,5 @@ codex がネイティブに処理し、ラッパーは触れない。最終メ�
 
 モデルは `-m`/`--model` から sniff（省略時 `NULL` = best-effort）。exit code は
 `codex exec` の exit code そのまま（0 / 非 0）。
+
+`--` セパレータ: 最初の単独 `--` はハーネスフラグ境界として**消費**される（codex へは転送しない）。それ以降のトークンはすべて verbatim で codex に渡され、`--harness-*` 解釈は行われない。例: `harness codex exec --harness-label=x -- -m gpt-5.5 "prompt"`。
