@@ -41,7 +41,10 @@ const GRANDFATHER: Record<string, number> = {
   // drop the grandfather), it is now held to the cap like any other file.
   "src/mcp/tools/hitch-tools.ts": 1067,
   "src/core/reviewer-agent.ts": 990,
-  "src/core/review-processor.ts": 961,
+  // src/core/review-processor.ts removed from the ratchet: #125 A15 extracted the
+  // shared error/result types (review-processor-types.ts) and the override/consensus
+  // path implementations (review-processor-paths.ts), leaving the orchestration
+  // entrypoints under the 800 cap.
   "src/core/review-rule.ts": 958,
   "src/hitch/convergence.ts": 937,
   // src/cli/course.ts removed from the ratchet: #125 A15 split the command group
