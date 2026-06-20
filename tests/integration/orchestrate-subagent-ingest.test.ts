@@ -332,6 +332,10 @@ describe("orchestrate-tail subagent ingest (#235 G6)", () => {
       },
     );
 
+    // The fail-open ingest tail must not change the orchestrate exit code.
+    // A non-zero exit here means the tail ingest tainted a succeeded run.
+    expect(result.code, `hitch orchestrate exited ${result.code}: ${result.out}`).toBe(0);
+
     // The hitch tail must have called ingestClaudeSubagentUsage — fixture rows
     // must appear in agent_invocation + agent_usage_turn.
     withDb(root, (db) => {

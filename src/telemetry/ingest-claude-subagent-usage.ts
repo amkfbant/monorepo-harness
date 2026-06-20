@@ -123,12 +123,17 @@ function toTurnInput(t: ParsedTurn) {
   }
 }
 
-/** Write one invocation. Delegates error surface to onError (fail-open path). */
+/**
+ * Write one invocation. Returns true when the write succeeded, false on any
+ * error. The caller must not increment inserted / mark existing on false —
+ * a failed write must not be treated as a successful insert.
+ */
 function writeInvocation(
   db: Database.Database,
   inv: ParsedSubagentInvocation,
   opts: IngestOptions,
-): void {
+): boolean {
+  let ok = true
   recordAgentUsage({
     db,
     tool: 'claude',
@@ -141,12 +146,15 @@ function writeInvocation(
     description: inv.description ?? null,
     model: inv.model ?? null,
     turns: inv.turns.map(toTurnInput),
-    onError: (e) =>
+    onError: (e) => {
+      ok = false
       safeWarn(
         opts,
         `recordAgentUsage failed for ${inv.agentId} (fail-open): ${String(e)}`,
-      ),
+      )
+    },
   })
+  return ok
 }
 
 function readMeta(jsonlPath: string): unknown {
@@ -235,11 +243,16 @@ export function ingestClaudeSubagentUsage(opts: IngestOptions): IngestResult {
         }
 
         // --- write ---
-        writeInvocation(managed.db, inv, opts)
+        const wrote = writeInvocation(managed.db, inv, opts)
 
-        // Guard within-pass duplicates (e.g. two files for the same agent).
-        existing.add(compositeKey(inv.sessionId, inv.agentId))
-        result.inserted += 1
+        // Guard within-pass duplicates only when the write succeeded.
+        // A failed write (onError path) must not increment inserted or mark
+        // the key as existing — the cross-pass UNIQUE index + pre-SELECT
+        // still guarantee idempotency on retry.
+        if (wrote) {
+          existing.add(compositeKey(inv.sessionId, inv.agentId))
+          result.inserted += 1
+        }
       }
     } finally {
       managed.close()

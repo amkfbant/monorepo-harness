@@ -127,14 +127,20 @@ describe('ingestClaudeSubagentUsage', () => {
 
   it('[P2] onWarn that throws does NOT propagate (fail-open contract)', () => {
     const env = makeEnv()
+    // Use a non-existent claudeProjectDir so resolveExistingProjectDir calls
+    // onWarn("claude project dir not found…") deterministically — without this
+    // trigger onWarn is never called and the test passes even if safeWarn were
+    // removed (non-discriminating).
+    const nonExistentDir = join(tmpdir(), 'no-such-cpd-xyzzy-' + Date.now())
     const throwingWarn = (_msg: string): void => {
       throw new Error('onWarn intentionally throws')
     }
-    // Must not throw — ingest is fail-open even when onWarn misbehaves.
+    // Must not throw — safeWarn catches the throwing onWarn (fail-open).
     let result: { scanned: number; inserted: number; skipped: number } | undefined
     expect(() => {
       result = ingestClaudeSubagentUsage({
-        ...env,
+        harnessRoot: env.harnessRoot,
+        claudeProjectDir: nonExistentDir,
         settleMs: 0,
         onWarn: throwingWarn,
       })
