@@ -45,7 +45,11 @@ const GRANDFATHER: Record<string, number> = {
   // shared error/result types (review-processor-types.ts) and the override/consensus
   // path implementations (review-processor-paths.ts), leaving the orchestration
   // entrypoints under the 800 cap.
-  "src/core/review-rule.ts": 958,
+  // src/core/review-rule.ts removed from the ratchet: #125 A15 extracted the
+  // types/errors/DEFAULT + the shared assertCompiledReviewRuleInvariants
+  // (review-rule-types.ts, the cycle-breaking leaf) and the snapshot read-back
+  // boundary (review-rule-snapshot.ts), leaving compile/serialise/accessors under
+  // the 800 cap.
   "src/hitch/convergence.ts": 937,
   // src/cli/course.ts removed from the ratchet: #125 A15 split the command group
   // into per-concern sub-modules under src/cli/course/ (course / phase commands +
