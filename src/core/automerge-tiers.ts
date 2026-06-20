@@ -15,7 +15,12 @@ export const DEFAULT_AUTO_MERGE_SENSITIVITY_MAP: readonly AutoMergeSensitivityRu
     { glob: "src/codex/**", tier: 2 },
     { glob: "src/core/merge-gate.ts", tier: 2 },
     { glob: "src/hitch/**", tier: 2 },
-    { glob: "src/core/reviewer-agent.ts", tier: 2 },
+    // Glob (not just reviewer-agent.ts) so the #125 A15 split modules
+    // (reviewer-agent-prompt/decision/types/usage.ts) and the reviewer-agent-errors
+    // module stay Tier-2: the reviewer-agent family is safety-sensitive, and a
+    // prompt-only change to an extracted module must not become auto-merge-eligible
+    // just because the code moved out of reviewer-agent.ts.
+    { glob: "src/core/reviewer-agent*.ts", tier: 2 },
     { glob: "src/db/repositories/review-*.ts", tier: 2 },
     { glob: "src/db/migrations*", tier: 2 },
     { glob: ".github/**", tier: 2 },
