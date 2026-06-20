@@ -25,7 +25,10 @@ const GRANDFATHER: Record<string, number> = {
   // is now held to the cap like any other file.
   "src/hitch/orchestrator-runners.ts": 2536,
   "src/mcp/tools/mutation-tools.ts": 2157,
-  "src/cli/hitch.ts": 2136,
+  // src/cli/hitch.ts removed from the ratchet: #125 A15 split the command group
+  // into 5 sub-registrars under src/cli/hitch/ (lifecycle / attempt / finding /
+  // review / convergence) + a shared hitch/helpers.ts, leaving the registrar a
+  // thin orchestrator under the 800 cap.
   "src/core/workflow-runner.ts": 1919,
   "src/mcp/tools/read-tools.ts": 1632,
   "src/db/repositories/runs.ts": 1264,

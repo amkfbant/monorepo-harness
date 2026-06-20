@@ -155,6 +155,12 @@ export const CLI_PATHS: readonly string[] = [
   "src/cli/db/doctor-commands.ts",
   "src/cli/db/blob-commands.ts",
   "src/cli/hitch.ts",
+  // #125 A15: hitch.ts command group split into 5 per-concern sub-registrars.
+  "src/cli/hitch/lifecycle-commands.ts",
+  "src/cli/hitch/attempt-commands.ts",
+  "src/cli/hitch/finding-commands.ts",
+  "src/cli/hitch/review-commands.ts",
+  "src/cli/hitch/convergence-commands.ts",
   "src/cli/course.ts",
   // #125 A15: course.ts command groups (course + phase) split into sub-modules.
   "src/cli/course/course-commands.ts",
