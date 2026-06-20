@@ -79,7 +79,11 @@ const GRANDFATHER: Record<string, number> = {
   // (review-rule-types.ts, the cycle-breaking leaf) and the snapshot read-back
   // boundary (review-rule-snapshot.ts), leaving compile/serialise/accessors under
   // the 800 cap.
-  "src/hitch/convergence.ts": 937,
+  // src/hitch/convergence.ts removed from the ratchet: #125 A15 extracted the
+  // close-check constants + pending-routing types (convergence-types.ts, the
+  // cycle-breaking leaf) and the metrics/predicate helpers (convergence-metrics.ts),
+  // keeping ConvergenceService + the FROZEN decide() (12-branch order, byte-identical)
+  // + the budget/divergence helpers under the 800 cap.
   // src/cli/course.ts removed from the ratchet: #125 A15 split the command group
   // into per-concern sub-modules under src/cli/course/ (course / phase commands +
   // shared helpers), leaving the registrar a thin orchestrator under the 800 cap.
