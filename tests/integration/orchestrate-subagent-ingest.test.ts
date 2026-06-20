@@ -268,4 +268,79 @@ describe("orchestrate-tail subagent ingest (#235 G6)", () => {
     );
     expect(result.code).toBe(0);
   });
+
+  it("[P2] hitch orchestrate tail ingests claude subagent usage from HARNESS_CLAUDE_PROJECTS_DIR", () => {
+    const root = makeHarnessRoot();
+    const repoPath = makeRepo();
+    setupProjectHarness(root, repoPath);
+    const fakeCodexBin = writeFakeCodexBin();
+    // Unique agent/session so rows don't collide with the course test.
+    const cpd = mkdtempSync(join(tmpdir(), "harness-hitch-ingest-cpd-"));
+    const subagentDir = join(cpd, "sess-hitch", "subagents");
+    mkdirSync(subagentDir, { recursive: true });
+    const jsonlPath = join(subagentDir, "agent-hitch.jsonl");
+    const metaPath = join(subagentDir, "agent-hitch.meta.json");
+    writeFileSync(
+      jsonlPath,
+      '{"type":"assistant","sessionId":"sess-hitch","agentId":"agent-hitch","message":{"model":"claude-opus-4-8","usage":{"input_tokens":7,"output_tokens":14,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}\n',
+    );
+    writeFileSync(metaPath, '{"agentType":"general-purpose"}');
+    // Backdate mtime 60 s so the default settle-guard (30 s) passes.
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(jsonlPath, past, past);
+    utimesSync(metaPath, past, past);
+
+    // Create a hitch with an open P1 finding so orchestrate advances past
+    // the early-exit check and reaches the ingest tail.
+    withDb(root, (db) => {
+      new HitchRepository(db).createSession({
+        hitchId: "h-hitch-ingest",
+        title: "hitch ingest test",
+        projectId: "demo",
+        domain: "apps/user",
+        scope: {},
+        closeConditions: [],
+        createdBy: "test",
+        createdSource: "cli",
+      });
+      new HitchRepository(db).upsertFinding({
+        hitchId: "h-hitch-ingest",
+        severity: "P1",
+        source: "human",
+        category: "correctness",
+        summary: "fix needed for hitch ingest test",
+        scopeStatus: "in_scope",
+      });
+    });
+
+    // Run hitch orchestrate — exit code varies by run state (may be pr_created
+    // or similar); what matters is that the ingest tail ran after the pass.
+    const result = runCli(
+      root,
+      [
+        "hitch",
+        "orchestrate",
+        "h-hitch-ingest",
+        "--repo",
+        repoPath,
+        "--max-steps",
+        "1",
+      ],
+      {
+        HARNESS_CODEX_BIN: fakeCodexBin,
+        HARNESS_CLAUDE_PROJECTS_DIR: cpd,
+      },
+    );
+
+    // The hitch tail must have called ingestClaudeSubagentUsage — fixture rows
+    // must appear in agent_invocation + agent_usage_turn.
+    withDb(root, (db) => {
+      const summary = subagentUsageSummary(db);
+      expect(
+        summary.totals.invocations,
+        `hitch orchestrate ingest tail did not run (exit=${result.code}): ${result.out}`,
+      ).toBeGreaterThan(0);
+      expect(summary.totals.inputTokens).toBeGreaterThan(0);
+    });
+  });
 });

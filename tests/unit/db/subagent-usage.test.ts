@@ -14,6 +14,7 @@ const TURN = {
   outputTokens: 20,
   cacheReadInputTokens: 5,
   cacheCreationInputTokens: 3,
+  totalTokens: 30,
   cacheCreation5mInputTokens: 2,
   cacheCreation1hInputTokens: 1,
 };
@@ -40,6 +41,12 @@ describe("subagentUsageSummary", () => {
     expect(s.rows[0].inputTokens).toBe(10);
     expect(s.rows[0].invocations).toBe(1);
     expect(s.totals.outputTokens).toBe(20);
+    // [P2] cache columns must be read back non-zero (fixture sets 5/3)
+    expect(s.rows[0].cacheReadInputTokens).toBeGreaterThan(0);
+    expect(s.rows[0].cacheCreationInputTokens).toBeGreaterThan(0);
+    // [P1] totalTokens must be non-zero (writer stores 30, reader SUMs it)
+    expect(s.rows[0].totalTokens).toBeGreaterThan(0);
+    expect(s.totals.totalTokens).toBeGreaterThan(0);
   });
   it("default role=external excludes internal rows; roles param includes them (Phase-4 ready)", () => {
     const db = freshDb();

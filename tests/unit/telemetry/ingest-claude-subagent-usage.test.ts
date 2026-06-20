@@ -51,7 +51,30 @@ describe('ingestClaudeSubagentUsage', () => {
     expect(r.inserted).toBe(1)
     const m = dbAt(env.harnessRoot)
     try {
-      expect(subagentUsageSummary(m.db).rows.length).toBeGreaterThan(0)
+      const summary = subagentUsageSummary(m.db)
+      expect(summary.rows.length).toBeGreaterThan(0)
+      // P2: non-zero token sums — a zeroing parser would pass a rows.length check alone
+      expect(summary.rows[0].inputTokens).toBeGreaterThan(0)
+      expect(summary.rows[0].outputTokens).toBeGreaterThan(0)
+    } finally {
+      m.close()
+    }
+  })
+
+  it('[P1] totalTokens is non-zero and equals input+output for ingested rows', () => {
+    const env = makeEnv()
+    ingestClaudeSubagentUsage({ ...env, settleMs: 0 })
+    const m = dbAt(env.harnessRoot)
+    try {
+      const summary = subagentUsageSummary(m.db)
+      expect(summary.rows.length).toBeGreaterThan(0)
+      const row = summary.rows[0]
+      // TURN_LINE_1: 10+20=30, TURN_LINE_2: 1+2=3 → total 33
+      expect(row.totalTokens).toBe(33)
+      expect(summary.totals.totalTokens).toBe(33)
+      expect(summary.totals.totalTokens).toBe(
+        summary.totals.inputTokens + summary.totals.outputTokens,
+      )
     } finally {
       m.close()
     }
@@ -81,8 +104,55 @@ describe('ingestClaudeSubagentUsage', () => {
     }
   })
 
+  it('[P1] mtime SKIP guard: fresh transcript is skipped, no row written', () => {
+    const env = makeEnv()
+    // File was just written (mtime ≈ now). settleMs=60000 ensures it's within
+    // the settle window. Pass now explicitly so the comparison is deterministic.
+    const now = Date.now()
+    const result = ingestClaudeSubagentUsage({
+      ...env,
+      settleMs: 60_000,
+      now,
+    })
+    expect(result.skipped).toBe(1)
+    expect(result.inserted).toBe(0)
+    // No agent_invocation row must have been written — guard-removal regression.
+    const m = dbAt(env.harnessRoot)
+    try {
+      expect(countInvocations(m.db)).toBe(0)
+    } finally {
+      m.close()
+    }
+  })
+
+  it('[P2] onWarn that throws does NOT propagate (fail-open contract)', () => {
+    const env = makeEnv()
+    const throwingWarn = (_msg: string): void => {
+      throw new Error('onWarn intentionally throws')
+    }
+    // Must not throw — ingest is fail-open even when onWarn misbehaves.
+    let result: { scanned: number; inserted: number; skipped: number } | undefined
+    expect(() => {
+      result = ingestClaudeSubagentUsage({
+        ...env,
+        settleMs: 0,
+        onWarn: throwingWarn,
+      })
+    }).not.toThrow()
+    // Should still return a valid result object.
+    expect(result).toBeDefined()
+    expect(result!.inserted).toBeGreaterThanOrEqual(0)
+  })
+
   it('never throws on a broken transcript', () => {
     const env = makeEnv({ broken: true })
     expect(() => ingestClaudeSubagentUsage({ ...env, settleMs: 0 })).not.toThrow()
+    // [P3] Broken transcript must persist nothing.
+    const m = dbAt(env.harnessRoot)
+    try {
+      expect(countInvocations(m.db)).toBe(0)
+    } finally {
+      m.close()
+    }
   })
 })

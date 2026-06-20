@@ -47,6 +47,18 @@ function compositeKey(sessionId: string, agentId: string): string {
 }
 
 /**
+ * Fire opts.onWarn without letting a throwing caller break the never-throws
+ * contract. All warn paths must route through here.
+ */
+function safeWarn(opts: IngestOptions, message: string): void {
+  try {
+    opts.onWarn?.(message)
+  } catch {
+    // A throwing onWarn must not propagate — ingest is fail-open.
+  }
+}
+
+/**
  * Resolve the Claude project dir, trying realpath fallback when the literal
  * path does not exist. Logs a warning and returns null when absent.
  */
@@ -70,7 +82,7 @@ function resolveExistingProjectDir(opts: IngestOptions): string | null {
     }
   }
 
-  opts.onWarn?.(`claude project dir not found: ${literal}`)
+  safeWarn(opts, `claude project dir not found: ${literal}`)
   return null
 }
 
@@ -105,7 +117,9 @@ function toTurnInput(t: ParsedTurn) {
     cacheCreationInputTokens: t.cacheCreationInputTokens,
     cacheCreation5mInputTokens: t.cacheCreation5mInputTokens,
     cacheCreation1hInputTokens: t.cacheCreation1hInputTokens,
-    // total_tokens: writer accepts undefined and derives it; omit to avoid drift.
+    // Writer saves total_tokens verbatim (null when absent); derive it here so
+    // `harness usage subagents` totalTokens is non-zero.
+    totalTokens: (t.inputTokens ?? 0) + (t.outputTokens ?? 0),
   }
 }
 
@@ -113,7 +127,7 @@ function toTurnInput(t: ParsedTurn) {
 function writeInvocation(
   db: Database.Database,
   inv: ParsedSubagentInvocation,
-  onWarn?: (m: string) => void,
+  opts: IngestOptions,
 ): void {
   recordAgentUsage({
     db,
@@ -128,7 +142,8 @@ function writeInvocation(
     model: inv.model ?? null,
     turns: inv.turns.map(toTurnInput),
     onError: (e) =>
-      onWarn?.(
+      safeWarn(
+        opts,
         `recordAgentUsage failed for ${inv.agentId} (fail-open): ${String(e)}`,
       ),
   })
@@ -220,7 +235,7 @@ export function ingestClaudeSubagentUsage(opts: IngestOptions): IngestResult {
         }
 
         // --- write ---
-        writeInvocation(managed.db, inv, opts.onWarn)
+        writeInvocation(managed.db, inv, opts)
 
         // Guard within-pass duplicates (e.g. two files for the same agent).
         existing.add(compositeKey(inv.sessionId, inv.agentId))
@@ -230,7 +245,8 @@ export function ingestClaudeSubagentUsage(opts: IngestOptions): IngestResult {
       managed.close()
     }
   } catch (error) {
-    opts.onWarn?.(
+    safeWarn(
+      opts,
       `claude subagent usage ingest failed (fail-open): ${String(error)}`,
     )
   }

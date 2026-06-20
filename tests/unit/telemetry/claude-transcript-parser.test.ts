@@ -71,7 +71,13 @@ describe("discoverAndParse", () => {
         .turns.every((t) => Number.isFinite(t.inputTokens)),
     ).toBe(true);
   });
-  it("NEVER surfaces message.content (privacy)", () => {
+  it("NEVER surfaces message.usage.content (privacy — legacy field)", () => {
     expect(JSON.stringify(invs)).not.toContain("SECRET-SHOULD-NOT-BE-READ");
+  });
+  it("NEVER surfaces message.content (privacy — real assistant text field)", () => {
+    // The fixture has message.content:[{type:"text",text:"SECRET-AT-REAL-CONTENT"}]
+    // which is the sibling of message.usage (where real assistant text lives).
+    // Parser must not read or surface it.
+    expect(JSON.stringify(invs)).not.toContain("SECRET-AT-REAL-CONTENT");
   });
 });
