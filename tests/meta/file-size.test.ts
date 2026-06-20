@@ -35,7 +35,11 @@ const GRANDFATHER: Record<string, number> = {
   // (read-{project,run,catalog,system}-tools.ts + read-resolve.ts) over a shared
   // leaf (read-types.ts) and an internal helper layer (read-helpers.ts), leaving
   // each well under the 800 cap.
-  "src/db/repositories/runs.ts": 1264,
+  // src/db/repositories/runs.ts removed from the ratchet: #125 A15 extracted the
+  // DTO types (runs-types.ts, cycle-breaking leaf) and the two heaviest FROZEN
+  // write methods — forceFailFinalize (lease-guard bypass) and applyReviewDecision
+  // (IMMEDIATE tx) — into RunFinalizeRepository (runs-finalize-repository.ts), to
+  // which the RunRepository facade delegates, leaving the class under the 800 cap.
   // src/dashboard/server/server.ts removed from the ratchet: #125 A15 split the
   // 1254-line dashboard server. The 820-line defaultRoutes() route table is split
   // by domain into server-routes-data.ts (operations/assets/storage/runs) and

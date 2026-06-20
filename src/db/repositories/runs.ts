@@ -1,8 +1,25 @@
 import type Database from "better-sqlite3";
 import { DbError } from "../connection.js";
 import { StateConflictError } from "../errors.js";
-import { sha256 } from "../import/common.js";
+
 import { findOperation, recordOperation } from "./operations.js";
+import { RunFinalizeRepository } from "./runs-finalize-repository.js";
+import type { RunFilter, DashboardRunSummary, RunDetail, RunTimelineEvent, RerunChainNode, CommandResultRow, ReviewDecisionRow, UpdateRunStatusInput, UpdateRunStatusResult, ChangedFileInput, ViolationInput, ApplyReviewDecisionInput } from "./runs-types.js";
+// Re-export the DTO types so existing importers keep using "./runs.js".
+export type {
+  RunFilter,
+  DashboardRunSummary,
+  RunDetail,
+  RunTimelineEvent,
+  RerunChainNode,
+  CommandResultRow,
+  ReviewDecisionRow,
+  UpdateRunStatusInput,
+  UpdateRunStatusResult,
+  ChangedFileInput,
+  ViolationInput,
+  ApplyReviewDecisionInput,
+};
 
 /**
  * Run repository (Phase 6-5, write methods Phase 7).
@@ -15,187 +32,6 @@ import { findOperation, recordOperation } from "./operations.js";
  * Phase 7 adds write methods. `updateRunStatus` is the guarded
  * status-transition primitive every DB-first command shares.
  */
-
-export interface RunFilter {
-  projectId?: string;
-  repoId?: string;
-  domain?: string;
-  statuses?: string[];
-  /** ISO lower bound on started_at (inclusive) */
-  since?: string;
-  /** ISO upper bound on started_at (inclusive) */
-  until?: string;
-  reviewer?: string;
-  safetyStatus?: string;
-  limit?: number;
-  offset?: number;
-}
-
-/** One row of the dashboard run list. */
-export interface DashboardRunSummary {
-  runId: string;
-  repoId: string;
-  projectId: string | null;
-  domain: string;
-  status: string;
-  safetyStatus: string | null;
-  reviewer: string | null;
-  startedAt: string | null;
-  finishedAt: string | null;
-  rerunAttempt: number | null;
-  prUrl: string | null;
-}
-
-/** Full run row for the run-detail view. */
-export interface RunDetail extends DashboardRunSummary {
-  repoPath: string | null;
-  workflow: string;
-  baseBranch: string;
-  baseSha: string | null;
-  runBranch: string | null;
-  reviewedAt: string | null;
-  parentRunId: string | null;
-  rootRunId: string | null;
-  changedFilesCount: number | null;
-  ignoredUntrackedCount: number | null;
-  secretSuspectCount: number | null;
-  prNumber: number | null;
-  promptTemplateName: string | null;
-  promptTemplateVersion: number | null;
-  knowledgeContextPath: string | null;
-}
-
-export interface RunTimelineEvent {
-  seq: number;
-  type: string;
-  occurredAt: string | null;
-  payload: unknown;
-}
-
-export interface RerunChainNode {
-  runId: string;
-  parentRunId: string | null;
-  rootRunId: string | null;
-  rerunAttempt: number | null;
-  status: string;
-}
-
-export interface CommandResultRow {
-  commandIndex: number;
-  command: string;
-  exitCode: number | null;
-  durationMs: number | null;
-  timedOut: boolean;
-}
-
-export interface ReviewDecisionRow {
-  decision: string;
-  reviewer: string | null;
-  summary: string | null;
-  reviewedAt: string | null;
-  requiredChanges: string[];
-}
-
-/** Input to the guarded run status transition. */
-export interface UpdateRunStatusInput {
-  runId: string;
-  /** the transition succeeds only if the current status is one of these */
-  expectedStatuses: string[];
-  nextStatus: string;
-  /** `run_events.type` for the appended lifecycle event */
-  eventType: string;
-  actor?: string;
-  /** when set, a replay of the same id is an idempotent no-op */
-  operationId?: string;
-  /** ISO timestamp; defaults to now */
-  occurredAt?: string;
-}
-
-export interface UpdateRunStatusResult {
-  /** false when an operation-id replay made this an idempotent no-op */
-  changed: boolean;
-  /** the run's status after the call */
-  status: string;
-}
-
-/** One row of `run_changed_files` — a path the run touched. */
-export interface ChangedFileInput {
-  path: string;
-  /** `tracked` | `untracked` | `ignored` */
-  status: string;
-  /** false when path policy denied the path */
-  allowed: boolean;
-  /** `post-codex` | `post-command` — which diff pass produced this */
-  source: string;
-}
-
-/** One row of `policy_violations` — a path path-policy rejected. */
-export interface ViolationInput {
-  path: string;
-  /** the rule kind: `deny_write` | `not_in_write_scope` | `unsafe_path` */
-  rule: string;
-  reason?: string;
-}
-
-/** Input to the guarded review-decision transition (Phase 7-5). */
-export interface ApplyReviewDecisionInput {
-  runId: string;
-  /**
-   * the reviewer's decision — also the run's target status, since the
-   * three decision values map identically onto run statuses.
-   */
-  decision: "approved" | "changes_requested" | "rejected";
-  reviewer: string | null;
-  reviewedAt: string;
-  requiredChanges: string[];
-  /** raw review-decision.yaml content, stored in review_decisions */
-  decisionYaml: string;
-  /**
-   * Phase 10 post-close (whole-phase review P1 #1) — when supplied, the
-   * promotion UPDATE adds `AND state_version = ?`. A concurrent writer
-   * that already bumped state_version between the caller's read and this
-   * UPDATE triggers a StateConflictError rather than a silent overwrite.
-   * Phase 10-5 only bumps state_version in review-related transitions,
-   * so passing the caller-read snapshot is the right minimum guard.
-   */
-  expectedStateVersion?: number;
-  /**
-   * Phase 11 post-close P1 #2 — link the just-evaluated consensus row
-   * + its summary json into review_decisions, so decision provenance
-   * (including override actor / reason) is queryable from a single row
-   * for dashboard / archive consumers.
-   */
-  consensusId?: number;
-  proposalsSummaryJson?: string;
-  /**
-   * Phase 9 post-close P1 #1 fix — when the verdict came from a DB
-   * `review_proposals` row, mark it processed inside the SAME transaction
-   * as the decision promotion. If the process crashes between the run
-   * status update and a later `markProcessed`, the proposal would
-   * otherwise stay active-but-unprocessed and a retry would fail the
-   * `status === needs_review` gate.
-   */
-  markProposalProcessed?: {
-    proposalId: number;
-    reviewDecisionId: string;
-    /**
-     * Phase 10-5 (design §3.E E1): when supplied, the UPDATE adds an
-     * `AND source_sha256 = ?` predicate so a stale caller (who read the
-     * proposal under an old sha after a concurrent `review auto`
-     * mutated it) gets a `StateConflictError` instead of silently
-     * stamping `processed_at`.
-     */
-    expectedSourceSha256?: string;
-  };
-  /**
-   * Phase 2 (consensus production wiring): mark MULTIPLE proposals
-   * processed in the SAME transaction as the consensus promotion. Each
-   * proposal must still be active (`processed_at IS NULL AND superseded_at
-   * IS NULL`); any that is not aborts the whole promotion with a
-   * StateConflictError (atomic: the run is not promoted on a stale set).
-   */
-  markProposalsProcessed?: number[];
-}
 
 const SUMMARY_COLUMNS = `run_id, repo_id, project_id, domain, status,
   safety_status, reviewer, started_at, finished_at, rerun_attempt, pr_url`;
@@ -278,7 +114,13 @@ function toSummary(r: SummaryRow): DashboardRunSummary {
 }
 
 export class RunRepository {
-  constructor(private readonly db: Database.Database) {}
+  // The two heaviest FROZEN write methods (forceFailFinalize / applyReviewDecision)
+  // live in a sub-repository (#125 A15); this facade delegates to keep the class
+  // under the 800 cap while preserving the public RunRepository API.
+  private readonly finalize: RunFinalizeRepository;
+  constructor(private readonly db: Database.Database) {
+    this.finalize = new RunFinalizeRepository(db);
+  }
 
   /** List runs newest-first, filtered by `RunFilter`. */
   listRuns(filter: RunFilter = {}): DashboardRunSummary[] {
@@ -609,410 +451,23 @@ export class RunRepository {
   }
 
   /**
-   * Force-finalize a run as `failed-internal-error` WITHOUT the active
-   * lease guard (Phase 9 post-close second review P1-6).
-   *
-   * Why this exists: `RunLog.finalize` routes through `commitThenExport`,
-   * which begins with `assertActiveLease`. When a run's lease has been
-   * stolen (a peer process acquired the lease, the old fencing token is
-   * no longer in `domain_locks.released_at IS NULL`), every subsequent
-   * write — including the failure finalize — is rejected by that guard.
-   * Without a bypass, a lease-lost run never transitions out of
-   * `running` even though the orchestrator threw and exited; the row
-   * would rot.
-   *
-   * This method:
-   *   - Does NOT call `assertActiveLease` (this IS the recovery path)
-   *   - Only flips a run that is still in a non-terminal status (other
-   *     terminal writes win on a tie)
-   *   - Appends a `lease_lost` or `internal_error` event for audit
-   *   - Updates `meta_json` so file export round-trips the new status
-   *   - Returns `changed: true` when the row was actually flipped
+   * Force-finalize a lease-lost run as failed (lease-guard bypass) — delegates
+   * to RunFinalizeRepository; see that class for the full invariant.
    */
-  forceFailFinalize(input: {
-    runId: string;
-    finishedAt: string;
-    reason: "lease_lost" | "internal_error";
-    errorMessage: string;
-    /**
-     * Phase 10-0 post-review P1 / Phase 10-2: when this finalize is
-     * recovering from a stolen lease, the caller passes the `lock_id`
-     * of the lease that was lost. The UPDATE is then guarded by
-     * `AND lease_lock_id = :lostLockId`, so a *new* attempt that
-     * reacquired the same `run_id` under a fresh lease (e.g. a rerun)
-     * is not accidentally flipped to `failed-internal-error`. Omitting
-     * `lostLockId` preserves the Phase 9 unguarded behaviour for the
-     * generic internal-error recovery path.
-     *
-     * Note: `runs.state_version` bump (design §3.E.E3) is **not** added
-     * here because the column does not exist until schema v6 (Phase 10-3).
-     * Phase 10-5 will fold this finalize into the unified state-version
-     * CAS once the column lands.
-     */
-    lostLockId?: number;
-  }): { changed: boolean } {
-    const TERMINAL = new Set([
-      "approved",
-      "changes_requested",
-      "rejected",
-      "cleaned",
-      "failed-internal-error",
-      "failed-policy-violation",
-      "failed-codex-timeout",
-      "failed-budget-exceeded",
-      "failed-command",
-    ]);
-    const txn = this.db.transaction((): { changed: boolean } => {
-      const row = this.db
-        .prepare(
-          "SELECT status, meta_json, lease_lock_id FROM runs WHERE run_id = ?",
-        )
-        .get(input.runId) as
-        | { status: string; meta_json: string | null; lease_lock_id: number | null }
-        | undefined;
-      if (row === undefined) return { changed: false };
-      if (TERMINAL.has(row.status)) return { changed: false };
-      // Phase 10-2: lostLockId guard — if the caller knows which lease was
-      // lost, only finalize the row when it still carries that exact lease.
-      // A re-acquired lease (different lock_id) means a new attempt is live
-      // for the same run_id; we must not flip it.
-      if (
-        input.lostLockId !== undefined &&
-        row.lease_lock_id !== input.lostLockId
-      ) {
-        return { changed: false };
-      }
-      const meta =
-        row.meta_json !== null
-          ? (JSON.parse(row.meta_json) as Record<string, unknown>)
-          : {};
-      const patchedMeta = {
-        ...meta,
-        status: "failed-internal-error",
-        finishedAt: input.finishedAt,
-      };
-      const guarded = input.lostLockId !== undefined;
-      // Phase 10-5: bump state_version on the lease-stolen finalize so
-      // downstream observers (consensus / dashboard / doctor) see this
-      // transition. The state_version column landed in schema v6.
-      const sql = guarded
-        ? `UPDATE runs
-             SET status = 'failed-internal-error',
-                 finished_at = ?,
-                 meta_json = ?,
-                 db_revision = db_revision + 1,
-                 export_status = 'dirty',
-                 last_export_error = NULL,
-                 updated_at = ?,
-                 state_version = state_version + 1
-           WHERE run_id = ? AND lease_lock_id = ?`
-        : `UPDATE runs
-             SET status = 'failed-internal-error',
-                 finished_at = ?,
-                 meta_json = ?,
-                 db_revision = db_revision + 1,
-                 export_status = 'dirty',
-                 last_export_error = NULL,
-                 updated_at = ?,
-                 state_version = state_version + 1
-           WHERE run_id = ?`;
-      const params = guarded
-        ? [
-            input.finishedAt,
-            JSON.stringify(patchedMeta, null, 2),
-            input.finishedAt,
-            input.runId,
-            input.lostLockId,
-          ]
-        : [
-            input.finishedAt,
-            JSON.stringify(patchedMeta, null, 2),
-            input.finishedAt,
-            input.runId,
-          ];
-      const info = this.db.prepare(sql).run(...params);
-      if (info.changes === 0) {
-        // guarded UPDATE matched zero rows → a re-acquired lease moved past
-        // this finalize. Treat as a no-op (returning `changed: false`).
-        return { changed: false };
-      }
-      const seq = (
-        this.db
-          .prepare(
-            `SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM run_events
-             WHERE run_id = ?`,
-          )
-          .get(input.runId) as { next: number }
-      ).next;
-      this.db
-        .prepare(
-          `INSERT INTO run_events (run_id, seq, type, occurred_at, payload_json)
-           VALUES (?, ?, ?, ?, ?)`,
-        )
-        .run(
-          input.runId,
-          seq,
-          input.reason,
-          input.finishedAt,
-          JSON.stringify({
-            type: input.reason,
-            runId: input.runId,
-            reason: input.errorMessage,
-          }),
-        );
-      return { changed: true };
-    });
-    return txn.immediate();
+  forceFailFinalize(
+    ...args: Parameters<RunFinalizeRepository["forceFailFinalize"]>
+  ): ReturnType<RunFinalizeRepository["forceFailFinalize"]> {
+    return this.finalize.forceFailFinalize(...args);
   }
 
   /**
-   * Apply a review decision to a DB-first run (Phase 7-5).
-   *
-   * In one transaction: guards the run is still `needs_review` (a
-   * concurrent reviewer that already moved it is a `StateConflictError`,
-   * not a silent overwrite), moves it to `newStatus`, patches the
-   * `meta_json` reviewer fields, appends a `review_processed` event, and
-   * records the decision in `review_decisions` /
-   * `review_required_changes`. Returns the prior status.
+   * Apply a review verdict to a run (IMMEDIATE tx) — delegates to
+   * RunFinalizeRepository.
    */
-  applyReviewDecision(input: ApplyReviewDecisionInput): {
-    previousStatus: string;
-  } {
-    const txn = this.db.transaction((): { previousStatus: string } => {
-      const row = this.db
-        .prepare(
-          "SELECT status, meta_json, state_version FROM runs WHERE run_id = ?",
-        )
-        .get(input.runId) as
-        | { status: string; meta_json: string | null; state_version: number }
-        | undefined;
-      if (row === undefined) {
-        throw new DbError(`applyReviewDecision: no run '${input.runId}'`);
-      }
-      if (row.status !== "needs_review") {
-        throw new StateConflictError(
-          input.runId,
-          ["needs_review"],
-          row.status,
-        );
-      }
-      if (
-        input.expectedStateVersion !== undefined &&
-        row.state_version !== input.expectedStateVersion
-      ) {
-        throw new StateConflictError(
-          input.runId,
-          [`state_version=${input.expectedStateVersion}`],
-          `state_version=${row.state_version}`,
-        );
-      }
-      const meta =
-        row.meta_json !== null
-          ? (JSON.parse(row.meta_json) as Record<string, unknown>)
-          : {};
-      // the three decision values are also the target run statuses.
-      const newStatus = input.decision;
-      const patchedMeta = {
-        ...meta,
-        status: newStatus,
-        reviewer: input.reviewer,
-        reviewedAt: input.reviewedAt,
-      };
-      // Phase 10-5 (design §3.E E3): bump runs.state_version on every
-      // review-process transition so future consensus / dashboard / db
-      // doctor consumers can detect change. Phase 10 only bumps in
-      // review-related transitions; other writers are tracked in the
-      // close report as Phase 11 work.
-      // Phase 10 post-close (whole-phase review P1 #1): if the caller
-      // passed expectedStateVersion, the UPDATE adds the CAS predicate.
-      const guarded = input.expectedStateVersion !== undefined;
-      const sql = guarded
-        ? `UPDATE runs
-             SET status = ?, reviewer = ?, reviewed_at = ?, meta_json = ?,
-                 db_revision = db_revision + 1, export_status = 'dirty',
-                 last_export_error = NULL, updated_at = ?,
-                 state_version = state_version + 1
-           WHERE run_id = ? AND status = 'needs_review'
-             AND state_version = ?`
-        : `UPDATE runs
-             SET status = ?, reviewer = ?, reviewed_at = ?, meta_json = ?,
-                 db_revision = db_revision + 1, export_status = 'dirty',
-                 last_export_error = NULL, updated_at = ?,
-                 state_version = state_version + 1
-           WHERE run_id = ? AND status = 'needs_review'`;
-      const params = guarded
-        ? [
-            newStatus,
-            input.reviewer,
-            input.reviewedAt,
-            JSON.stringify(patchedMeta, null, 2),
-            input.reviewedAt,
-            input.runId,
-            input.expectedStateVersion,
-          ]
-        : [
-            newStatus,
-            input.reviewer,
-            input.reviewedAt,
-            JSON.stringify(patchedMeta, null, 2),
-            input.reviewedAt,
-            input.runId,
-          ];
-      const info = this.db.prepare(sql).run(...params);
-      if (info.changes === 0) {
-        throw new StateConflictError(
-          input.runId,
-          ["needs_review"],
-          row.status,
-        );
-      }
-      const seq = (
-        this.db
-          .prepare(
-            `SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM run_events
-             WHERE run_id = ?`,
-          )
-          .get(input.runId) as { next: number }
-      ).next;
-      this.db
-        .prepare(
-          `INSERT INTO run_events (run_id, seq, type, occurred_at, payload_json)
-           VALUES (?, ?, 'review_processed', ?, ?)`,
-        )
-        .run(
-          input.runId,
-          seq,
-          input.reviewedAt,
-          JSON.stringify({
-            type: "review_processed",
-            runId: input.runId,
-            decision: input.decision,
-            previousStatus: row.status,
-            newStatus,
-            reviewer: input.reviewer,
-            reviewedAt: input.reviewedAt,
-          }),
-        );
-      // Phase 11 post-close P1 #2: include consensus_id +
-      // proposals_summary_json so decision provenance is tied to the
-      // consensus row + summary used to derive it (override 経路を含む).
-      this.db
-        .prepare(
-          `INSERT INTO review_decisions (run_id, decision, reviewer, summary,
-             reviewed_at, source_yaml, source_sha256, consensus_id,
-             proposals_summary_json)
-           VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)
-           ON CONFLICT (run_id) DO UPDATE SET
-             decision = excluded.decision, reviewer = excluded.reviewer,
-             reviewed_at = excluded.reviewed_at,
-             source_yaml = excluded.source_yaml,
-             source_sha256 = excluded.source_sha256,
-             consensus_id = excluded.consensus_id,
-             proposals_summary_json = excluded.proposals_summary_json`,
-        )
-        .run(
-          input.runId,
-          input.decision,
-          input.reviewer,
-          input.reviewedAt,
-          input.decisionYaml,
-          sha256(input.decisionYaml),
-          input.consensusId ?? null,
-          input.proposalsSummaryJson ?? null,
-        );
-      this.db
-        .prepare("DELETE FROM review_required_changes WHERE run_id = ?")
-        .run(input.runId);
-      const insChange = this.db.prepare(
-        `INSERT INTO review_required_changes (run_id, idx, change_text)
-         VALUES (?, ?, ?)`,
-      );
-      input.requiredChanges.forEach((c, i) => {
-        insChange.run(input.runId, i, c);
-      });
-      // Phase 9 post-close P1 #1 fix — mark the source proposal processed
-      // in the same transaction as the decision promotion. `processed_at
-      // IS NULL` guard makes the UPDATE idempotent against a retry: a
-      // proposal already processed by a prior crash-survived transaction
-      // stays exactly as it was.
-      //
-      // Phase 9 post-close (second review) P1-4 fix — also require
-      // `superseded_at IS NULL`. If the proposal was superseded by a
-      // concurrent `review auto` between read and write, fail the whole
-      // transaction with a StateConflictError so the caller can reload
-      // the latest proposal rather than process a stale one.
-      if (input.markProposalProcessed !== undefined) {
-        const expSha = input.markProposalProcessed.expectedSourceSha256;
-        // Phase 11-7: bump lifecycle_status to 'processed' alongside
-        // processed_at, mirroring ReviewProposalRepository.markProcessed.
-        const r =
-          expSha === undefined
-            ? this.db
-                .prepare(
-                  `UPDATE review_proposals
-                      SET processed_at = ?, review_decision_id = ?,
-                          lifecycle_status = 'processed'
-                    WHERE proposal_id = ?
-                      AND processed_at IS NULL
-                      AND superseded_at IS NULL`,
-                )
-                .run(
-                  input.reviewedAt,
-                  input.markProposalProcessed.reviewDecisionId,
-                  input.markProposalProcessed.proposalId,
-                )
-            : this.db
-                .prepare(
-                  `UPDATE review_proposals
-                      SET processed_at = ?, review_decision_id = ?,
-                          lifecycle_status = 'processed'
-                    WHERE proposal_id = ?
-                      AND processed_at IS NULL
-                      AND superseded_at IS NULL
-                      AND source_sha256 = ?`,
-                )
-                .run(
-                  input.reviewedAt,
-                  input.markProposalProcessed.reviewDecisionId,
-                  input.markProposalProcessed.proposalId,
-                  expSha,
-                );
-        if (r.changes === 0) {
-          throw new StateConflictError(
-            input.runId,
-            ["needs_review"],
-            `review_proposals(id=${input.markProposalProcessed.proposalId})` +
-              ` superseded, sha mismatch, or already processed`,
-          );
-        }
-      }
-      // Phase 2: consensus promotion marks every aggregated proposal in this
-      // same transaction. Any proposal that is no longer active aborts the
-      // whole promotion (atomic), so the run is never promoted on a stale set.
-      if (input.markProposalsProcessed !== undefined) {
-        for (const proposalId of input.markProposalsProcessed) {
-          const r = this.db
-            .prepare(
-              `UPDATE review_proposals
-                  SET processed_at = ?, review_decision_id = ?,
-                      lifecycle_status = 'processed'
-                WHERE proposal_id = ?
-                  AND processed_at IS NULL
-                  AND superseded_at IS NULL`,
-            )
-            .run(input.reviewedAt, input.runId, proposalId);
-          if (r.changes === 0) {
-            throw new StateConflictError(
-              input.runId,
-              ["needs_review"],
-              `review_proposals(id=${proposalId}) superseded or already processed`,
-            );
-          }
-        }
-      }
-      return { previousStatus: row.status };
-    });
-    return txn.immediate();
+  applyReviewDecision(
+    ...args: Parameters<RunFinalizeRepository["applyReviewDecision"]>
+  ): ReturnType<RunFinalizeRepository["applyReviewDecision"]> {
+    return this.finalize.applyReviewDecision(...args);
   }
 
   /**
