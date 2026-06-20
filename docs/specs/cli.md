@@ -2146,3 +2146,33 @@ harness phase unlink-hitch <hitch-id>
 > command の bare-id 解決規約・起案→批准ワークフローは [`spec-review-layer.md`](./spec-review-layer.md) を参照。
 
 Exit code は `harness course` と同じ（0 / 1 / 2）。
+
+## `harness codex`
+
+外部 `codex exec` の透過ラッパー（#206 Phase-2）。`--json` を自動注入して
+`turn.completed.usage` を捕捉し、`agent_invocation` / `agent_usage_turn`
+（`tool='codex'`, `role='external'`）へ usage telemetry を記録する。
+
+```bash
+harness codex exec [--harness-label <label>] [--harness-run-id <id>]
+                   [--harness-hitch-id <id>] [--harness-course-id <id>]
+                   [<codex exec args...>]
+```
+
+`--harness-*` フラグ（`=value` 形式のみ）はハーネス側で消費し、残りの引数を
+verbatim で `codex exec --json <args>` に渡す。`-o`/`--output-last-message` は
+codex がネイティブに処理し、ラッパーは触れない。最終メッセージは JSONL から
+再構築して stdout へ出力する（bare `codex exec` と byte-identical な振る舞い）。
+
+| フラグ | 動作 |
+|--------|------|
+| `--harness-label` | `agent_invocation.external_label` に記録（省略時 `"external"`） |
+| `--harness-run-id` | `agent_invocation.run_id` にリンク（省略時 env `HARNESS_RUN_ID`） |
+| `--harness-hitch-id` | `agent_invocation.hitch_id` にリンク（省略時 env `HARNESS_HITCH_ID`） |
+| `--harness-course-id` | `agent_invocation.course_id` にリンク（省略時 env `HARNESS_COURSE_ID`） |
+
+**fail-open**: DB が存在しない・書き込み失敗でも codex の exit code をそのまま
+伝播し、stderr に warning を 1 行出す（usage の未記録は運用を止めない）。
+
+モデルは `-m`/`--model` から sniff（省略時 `NULL` = best-effort）。exit code は
+`codex exec` の exit code そのまま（0 / 非 0）。
