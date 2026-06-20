@@ -50,7 +50,9 @@ const GRANDFATHER: Record<string, number> = {
   // src/cli/knowledge.ts removed from the ratchet: #125 A15 split the command
   // group into per-concern sub-modules under src/cli/knowledge/ (entry / ops /
   // digest), leaving the registrar a thin orchestrator under the 800 cap.
-  "src/roadmap/course-orchestrator.ts": 809,
+  // src/roadmap/course-orchestrator.ts removed from the ratchet: #125 A15 extracted
+  // the shared types/error + free helpers into course-orchestrator-types.ts /
+  // course-orchestrator-helpers.ts, leaving the class file under the 800 cap.
 };
 
 describe("src file-size cap (#125 RP2)", () => {

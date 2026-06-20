@@ -1,125 +1,28 @@
-import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { ConvergenceService } from "../hitch/convergence.js";
-import {
-  assertHitchCanStartMutation,
-  HitchMutationGateError,
-} from "../hitch/mutation-gate.js";
-import type { HitchOrchestrator } from "../hitch/orchestrator.js";
-import type {
-  HitchOrchestrationResult,
-  OrchestratorRunners,
-} from "../hitch/orchestrator-types.js";
+import { assertHitchCanStartMutation, HitchMutationGateError } from "../hitch/mutation-gate.js";
 import { HitchRepository } from "../hitch/repository.js";
-import {
-  acquireDomainLock,
-  DomainLockBusyError,
-  findTransientLeaseCause,
-  LeaseGuardFailedError,
-  LeaseLostError,
-  heartbeatIntervalMs,
-  leaseDurationMs,
-  type DomainLockHandle,
-} from "../workspace/db-domain-lock.js";
+import { acquireDomainLock, DomainLockBusyError, type DomainLockHandle } from "../workspace/db-domain-lock.js";
 import { CourseRepository } from "./course-repository.js";
-import {
-  normalizeCourseMaxDrivenHitches,
-  normalizeCourseMaxStepsPerHitch,
-} from "./course-normalize.js";
-import {
-  BLOCKED_DECISIONS,
-  decideCoursePhaseAction,
-} from "./orchestrate-dispatch.js";
-import type {
-  CourseOrchestrationResult,
-  CoursePhaseAction,
-  CourseStopReason,
-  DrivenHitch,
-  PhaseOutcome,
-} from "./orchestrator-types.js";
+import { BLOCKED_DECISIONS, decideCoursePhaseAction } from "./orchestrate-dispatch.js";
+import type { CourseOrchestrationResult, CoursePhaseAction, CourseStopReason, DrivenHitch, PhaseOutcome } from "./orchestrator-types.js";
 import { PhaseRepository } from "./phase-repository.js";
-import type { PhaseLeaseGuard } from "./phase-repository.js";
-import {
-  openCounts,
-  rollupCourse,
-  type CourseRollup,
-  type PhaseRollup,
-} from "./rollup.js";
+import { openCounts, rollupCourse, type CourseRollup, type PhaseRollup } from "./rollup.js";
+import { CourseOrchestrateError, COURSE_STOP_REASON, type CourseOrchestratorDeps, type RunCourseOrchestrationInput, type PlanCourseOrchestrationInput, type WalkCourseInput, type WalkCourseOptions, type WalkCourseResult } from "./course-orchestrator-types.js";
+import { isCourseLeaseLostError, isCourseLeaseBusyError, courseLeaseLostError, courseLeaseBusyError, courseLeaseHeartbeatIntervalMs, normalizeRunInput, normalizePlanInput, isLeafPhase, outcomeForAction, phaseStatusSkipOutcome, toDrivenHitch, hasOutcomeFor, followUpsFor } from "./course-orchestrator-helpers.js";
 
-export type CourseOrchestrateErrorCode =
-  | "course_not_active"
-  | "lease_busy"
-  | "lease_lost"
-  | "schema_version_skew";
-
-export class CourseOrchestrateError extends Error {
-  constructor(
-    public readonly code: CourseOrchestrateErrorCode,
-    message: string,
-    public readonly details: Record<string, unknown> = {},
-  ) {
-    super(message);
-    this.name = "CourseOrchestrateError";
-  }
-}
-
-export interface CourseOrchestratorDeps {
-  db: Database.Database;
-  makeHitchOrchestrator(hitchId: string): HitchOrchestrator;
-  /**
-   * Build the runners for a hitch. The optional `signal` (#132) is aborted when
-   * the course loses its lease mid-drive; production runners thread it to the
-   * codex runner so the in-flight codex process is SIGKILLed (fail-closed).
-   */
-  makeRunners(
-    hitchId: string,
-    signal?: AbortSignal,
-  ): OrchestratorRunners | Promise<OrchestratorRunners>;
-}
-
-export interface RunCourseOrchestrationInput {
-  courseId: string;
-  maxDrivenHitches: number;
-  maxStepsPerHitch: number;
-  createdBy: string;
-}
-
-export interface PlanCourseOrchestrationInput {
-  courseId: string;
-  maxDrivenHitches: number;
-  maxStepsPerHitch: number;
-}
-
-interface WalkCourseInput {
-  courseId: string;
-  maxDrivenHitches: number;
-  maxStepsPerHitch: number;
-  createdBy?: string;
-}
-
-interface WalkCourseOptions {
-  driveHitch?: (input: {
-    hitchId: string;
-    maxStepsPerHitch: number;
-    createdBy: string;
-  }) => Promise<DrivenHitch & { finalDecision: string }>;
-  transitionPhaseStatus: boolean;
-  beforeDriveHitch?: () => void;
-  beforeStatusWrite?: () => void;
-  statusWriteLeaseGuard?: () => PhaseLeaseGuard;
-}
-
-interface WalkCourseResult {
-  stopReason: CourseStopReason;
-  phaseOutcomes: PhaseOutcome[];
-  drivenHitches: DrivenHitch[];
-}
-
-const COURSE_STOP_REASON = {
-  completed: "completed",
-  budgetReached: "budget_reached",
-} as const satisfies Record<string, CourseStopReason>;
+// #125 A15: 共有型は course-orchestrator-types.ts、フリーヘルパーは
+// course-orchestrator-helpers.ts へ behaviour-zero 抽出。public 型は外部 import 互換の
+// ため再 export（cli/course・course-orchestrate-runtime・tests が course-orchestrator.js
+// から取得）。
+export { CourseOrchestrateError } from "./course-orchestrator-types.js";
+export type {
+  CourseOrchestrateErrorCode,
+  CourseOrchestratorDeps,
+  RunCourseOrchestrationInput,
+  PlanCourseOrchestrationInput,
+} from "./course-orchestrator-types.js";
 
 export class CourseOrchestrator {
   constructor(private readonly deps: CourseOrchestratorDeps) {}
@@ -673,137 +576,3 @@ export class CourseOrchestrator {
   }
 }
 
-function isCourseLeaseLostError(e: unknown): boolean {
-  const cause = findTransientLeaseCause(e);
-  return cause instanceof LeaseLostError || cause instanceof LeaseGuardFailedError;
-}
-
-function isCourseLeaseBusyError(e: unknown): boolean {
-  return findTransientLeaseCause(e) instanceof DomainLockBusyError;
-}
-
-function courseLeaseLostError(e: unknown): CourseOrchestrateError {
-  const cause = findTransientLeaseCause(e) ?? e;
-  return new CourseOrchestrateError(
-    "lease_lost",
-    cause instanceof Error ? cause.message : "course orchestration lease lost",
-    {
-      causeName: cause instanceof Error ? cause.name : typeof cause,
-    },
-  );
-}
-
-function courseLeaseBusyError(e: unknown): CourseOrchestrateError {
-  const cause = findTransientLeaseCause(e);
-  if (!(cause instanceof DomainLockBusyError)) {
-    return new CourseOrchestrateError(
-      "lease_busy",
-      e instanceof Error ? e.message : "course orchestration lease is busy",
-    );
-  }
-  return new CourseOrchestrateError("lease_busy", cause.message, {
-    domainKey: cause.domainKey,
-    holder: cause.holder,
-  });
-}
-
-function courseLeaseHeartbeatIntervalMs(): number {
-  return Math.max(
-    1,
-    Math.min(heartbeatIntervalMs(), Math.floor(leaseDurationMs() / 2)),
-  );
-}
-
-function normalizeRunInput(
-  input: RunCourseOrchestrationInput,
-): RunCourseOrchestrationInput {
-  return {
-    ...input,
-    maxDrivenHitches: normalizeCourseMaxDrivenHitches(input.maxDrivenHitches),
-    maxStepsPerHitch: normalizeCourseMaxStepsPerHitch(input.maxStepsPerHitch),
-  };
-}
-
-function normalizePlanInput(
-  input: PlanCourseOrchestrationInput,
-): PlanCourseOrchestrationInput {
-  return {
-    ...input,
-    maxDrivenHitches: normalizeCourseMaxDrivenHitches(input.maxDrivenHitches),
-    maxStepsPerHitch: normalizeCourseMaxStepsPerHitch(input.maxStepsPerHitch),
-  };
-}
-
-function isLeafPhase(phases: PhaseRollup[], index: number): boolean {
-  const next = phases[index + 1];
-  return next === undefined || next.depth <= phases[index]!.depth;
-}
-
-function outcomeForAction(
-  phaseId: string,
-  action: CoursePhaseAction,
-): PhaseOutcome {
-  if (action.kind === "blocked_hitch") {
-    return {
-      phaseId,
-      action: action.kind,
-      blockedHitch: {
-        hitchId: action.hitchId,
-        decision: action.decision,
-      },
-    };
-  }
-  if (action.kind === "ready_to_close") {
-    return { phaseId, action: action.kind, readyToClose: true };
-  }
-  return { phaseId, action: action.kind };
-}
-
-function phaseStatusSkipOutcome(
-  phaseId: string,
-  phaseDriven: DrivenHitch[],
-  status: "blocked" | "closed",
-): PhaseOutcome {
-  return {
-    phaseId,
-    action: status === "blocked" ? "skip_blocked" : "skip_closed",
-    drivenHitches: phaseDriven,
-  };
-}
-
-function toDrivenHitch(result: HitchOrchestrationResult): DrivenHitch {
-  return {
-    hitchId: result.hitchId,
-    outcome: result.outcome,
-    stepCount: result.steps.length,
-  };
-}
-
-function hasOutcomeFor(outcomes: PhaseOutcome[], phaseId: string): boolean {
-  return outcomes.some((outcome) => outcome.phaseId === phaseId);
-}
-
-function followUpsFor(
-  rollup: CourseRollup,
-  convergence: ConvergenceService,
-): string[] {
-  const followUps: string[] = [];
-  for (let i = 0; i < rollup.phases.length; i++) {
-    const phase = rollup.phases[i]!;
-    if (phase.readyToClose) {
-      for (const hitchId of phase.hitchIds) {
-        if (convergence.evaluate(hitchId).decision === "closed") continue;
-        followUps.push(`hitch orchestrate ${hitchId}`);
-      }
-    }
-    if (
-      phase.hitchIds.length === 0 &&
-      phase.declaredStatus !== "blocked" &&
-      phase.declaredStatus !== "closed" &&
-      isLeafPhase(rollup.phases, i)
-    ) {
-      followUps.push(`phase ${phase.phaseId} needs_link`);
-    }
-  }
-  return followUps;
-}
