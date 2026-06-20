@@ -37,7 +37,12 @@ const GRANDFATHER: Record<string, number> = {
   // each well under the 800 cap.
   "src/db/repositories/runs.ts": 1264,
   "src/dashboard/server/server.ts": 1254,
-  "src/mcp/tools/dry-run-tools.ts": 1226,
+  // src/mcp/tools/dry-run-tools.ts removed from the ratchet: #125 A15 split the
+  // 1226-line dry-run/preview MCP tool module into a barrel re-exporting per-domain
+  // modules (dry-run-{project,run,db}-tools.ts) over a shared leaf (dry-run-types.ts),
+  // an internal helper layer (dry-run-helpers.ts), and the doctor-finding→project
+  // resolver (dry-run-doctor-projects.ts, re-exported for mutation-tools), leaving
+  // each well under the 800 cap.
   // src/cli/db.ts removed from the ratchet: #125 A15 split the 1144-line command
   // group into per-concern sub-modules under src/cli/db/ (schema / maintenance /
   // archive / doctor / blob + shared/blob-helpers), shrinking the registrar to a
