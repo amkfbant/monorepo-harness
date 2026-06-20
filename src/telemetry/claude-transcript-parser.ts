@@ -120,8 +120,16 @@ export function parseAgentTranscriptFile(
     .replace(/^agent-/, "")
     .replace(/\.jsonl$/, "");
   let attributionAgent: string | null = null;
-  const turns: ParsedTurn[] = [];
-  let seq = 0;
+
+  // Streaming dedup: real Claude Code transcripts write MULTIPLE assistant
+  // snapshots per message.id during streaming. Each intermediate snapshot has
+  // a stub output_tokens (1); the FINAL snapshot carries authoritative usage.
+  // We keep a map from message.id → snapshot object so the last-seen wins.
+  // Lines with no message.id use a unique sentinel so they are never collapsed.
+  let noIdCounter = 0;
+  // Ordered list of first-seen message keys (preserves first-appearance order).
+  const messageOrder: string[] = [];
+  const messageSnaps = new Map<string, Record<string, unknown>>();
 
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
@@ -135,17 +143,39 @@ export function parseAgentTranscriptFile(
       sessionId = obj.sessionId;
     }
     if (typeof obj.agentId === "string") {
-      agentId = obj.agentId;
+      // Defensive: strip agent- prefix from in-file agentId. Real Claude Code
+      // transcripts store the id WITHOUT the prefix (filename agent-<id>.jsonl
+      // has in-file agentId="<id>"). This strip makes the idempotency check
+      // (path-derived vs content-derived) robust either way.
+      agentId = obj.agentId.replace(/^agent-/, "");
     }
     if (obj.type === "assistant") {
       if (typeof obj.attributionAgent === "string") {
         attributionAgent = obj.attributionAgent;
       }
-      const turn = parseAssistantLine(obj, seq);
-      if (turn) {
-        turns.push(turn);
-        seq += 1;
+      const msg = obj.message as Record<string, unknown> | null | undefined;
+      const msgId = msg && typeof (msg as { id?: unknown }).id === "string"
+        ? (msg as { id: string }).id
+        : null;
+      // Use message.id when available; fall back to a unique-per-line sentinel
+      // so no-id lines are never collapsed with each other.
+      const key = msgId ?? `__no_id_${noIdCounter++}`;
+      if (!messageSnaps.has(key)) {
+        messageOrder.push(key);
       }
+      messageSnaps.set(key, obj);
+    }
+  }
+
+  // Build turns from the deduped snapshots in first-seen order.
+  const turns: ParsedTurn[] = [];
+  let seq = 0;
+  for (const key of messageOrder) {
+    const obj = messageSnaps.get(key)!;
+    const turn = parseAssistantLine(obj, seq);
+    if (turn) {
+      turns.push(turn);
+      seq += 1;
     }
   }
 

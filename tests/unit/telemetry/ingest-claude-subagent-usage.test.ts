@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ingestClaudeSubagentUsage } from '../../../src/telemetry/ingest-claude-subagent-usage.js'
@@ -157,6 +157,47 @@ describe('ingestClaudeSubagentUsage', () => {
     const m = dbAt(env.harnessRoot)
     try {
       expect(countInvocations(m.db)).toBe(0)
+    } finally {
+      m.close()
+    }
+  })
+
+  // ---------------------------------------------------------------------------
+  // FIX 3 [P2]: created_at must reflect the transcript file mtime, NOT ingest
+  // wall-clock. On the first scan of an existing project dir, old transcripts
+  // must NOT get created_at=now (which would wrongly include them in --since
+  // <today> queries).
+  // ---------------------------------------------------------------------------
+  it('[P2-mtime] created_at reflects file mtime, not ingest time', () => {
+    const harnessRoot = mkdtempSync(join(tmpdir(), 'hr-mtime-'))
+    mkdirSync(join(harnessRoot, '.harness'), { recursive: true })
+    const claudeProjectDir = mkdtempSync(join(tmpdir(), 'cpd-mtime-'))
+    const dir = join(claudeProjectDir, 'sess-old', 'subagents')
+    mkdirSync(dir, { recursive: true })
+    const jsonlPath = join(dir, 'agent-bak.jsonl')
+    writeFileSync(
+      jsonlPath,
+      '{"type":"assistant","sessionId":"sess-old","agentId":"bak","message":{"model":"claude-opus-4-8","usage":{"input_tokens":5,"output_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}\n',
+    )
+    // Backdate to 2 days ago
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)
+    utimesSync(jsonlPath, twoDaysAgo, twoDaysAgo)
+
+    ingestClaudeSubagentUsage({ harnessRoot, claudeProjectDir, settleMs: 0 })
+
+    const m = dbAt(harnessRoot)
+    try {
+      // Query with since = 1 day ago: the backdated transcript must NOT appear.
+      const oneDayAgoIso = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString()
+      const recent = subagentUsageSummary(m.db, { since: oneDayAgoIso })
+      expect(
+        recent.totals.invocations,
+        'backdated transcript must NOT appear in since=1d-ago query (created_at must be mtime, not now)',
+      ).toBe(0)
+
+      // Without since filter the row IS present (the row was written).
+      const all = subagentUsageSummary(m.db)
+      expect(all.totals.invocations).toBe(1)
     } finally {
       m.close()
     }

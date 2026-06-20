@@ -127,11 +127,17 @@ function toTurnInput(t: ParsedTurn) {
  * Write one invocation. Returns true when the write succeeded, false on any
  * error. The caller must not increment inserted / mark existing on false —
  * a failed write must not be treated as a successful insert.
+ *
+ * fileMtime: the transcript file's mtime (epoch ms). Passed as `now` to
+ * recordAgentUsage so agent_invocation.created_at reflects WHEN the transcript
+ * was written, not when this ingest pass ran. This ensures `--since <today>`
+ * queries correctly exclude historical transcripts scanned for the first time.
  */
 function writeInvocation(
   db: Database.Database,
   inv: ParsedSubagentInvocation,
   opts: IngestOptions,
+  fileMtime: number,
 ): boolean {
   let ok = true
   recordAgentUsage({
@@ -146,6 +152,7 @@ function writeInvocation(
     description: inv.description ?? null,
     model: inv.model ?? null,
     turns: inv.turns.map(toTurnInput),
+    now: new Date(fileMtime),
     onError: (e) => {
       ok = false
       safeWarn(
@@ -243,7 +250,7 @@ export function ingestClaudeSubagentUsage(opts: IngestOptions): IngestResult {
         }
 
         // --- write ---
-        const wrote = writeInvocation(managed.db, inv, opts)
+        const wrote = writeInvocation(managed.db, inv, opts, mtime)
 
         // Guard within-pass duplicates only when the write succeeded.
         // A failed write (onError path) must not increment inserted or mark

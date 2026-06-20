@@ -27,10 +27,14 @@ import { subagentUsageSummary } from "../../src/db/repositories/subagent-usage.j
 const CLI = join(process.cwd(), "src/cli/run.ts");
 
 // Two assistant JSONL lines with deterministic token counts.
+// NOTE: in-file agentId is "orch" (WITHOUT the agent- prefix) to match real
+// Claude Code transcripts (filename agent-orch.jsonl → in-file agentId="orch").
+// This ensures path-derived id ("orch") == content-derived id ("orch") so the
+// idempotent skip-before-read check works correctly.
 const TURN_LINE_A =
-  '{"type":"assistant","sessionId":"sess-orch","agentId":"agent-orch","message":{"model":"claude-opus-4-8","usage":{"input_tokens":5,"output_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}\n';
+  '{"type":"assistant","sessionId":"sess-orch","agentId":"orch","message":{"model":"claude-opus-4-8","usage":{"input_tokens":5,"output_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}\n';
 const TURN_LINE_B =
-  '{"type":"assistant","sessionId":"sess-orch","agentId":"agent-orch","message":{"model":"claude-opus-4-8","usage":{"input_tokens":2,"output_tokens":3,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}\n';
+  '{"type":"assistant","sessionId":"sess-orch","agentId":"orch","message":{"model":"claude-opus-4-8","usage":{"input_tokens":2,"output_tokens":3,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}\n';
 
 function runCli(
   root: string,
@@ -282,7 +286,9 @@ describe("orchestrate-tail subagent ingest (#235 G6)", () => {
     const metaPath = join(subagentDir, "agent-hitch.meta.json");
     writeFileSync(
       jsonlPath,
-      '{"type":"assistant","sessionId":"sess-hitch","agentId":"agent-hitch","message":{"model":"claude-opus-4-8","usage":{"input_tokens":7,"output_tokens":14,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}\n',
+      // in-file agentId without agent- prefix — matches real Claude transcripts
+      // (filename agent-hitch.jsonl → path-derived id "hitch" == in-file "hitch")
+      '{"type":"assistant","sessionId":"sess-hitch","agentId":"hitch","message":{"model":"claude-opus-4-8","usage":{"input_tokens":7,"output_tokens":14,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}\n',
     );
     writeFileSync(metaPath, '{"agentType":"general-purpose"}');
     // Backdate mtime 60 s so the default settle-guard (30 s) passes.
