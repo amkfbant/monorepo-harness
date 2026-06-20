@@ -24,7 +24,12 @@ const GRANDFATHER: Record<string, number> = {
   // the 800 HARD cap. Per this test's own rule (≤800 ⇒ drop the grandfather), it
   // is now held to the cap like any other file.
   "src/hitch/orchestrator-runners.ts": 2536,
-  "src/mcp/tools/mutation-tools.ts": 2157,
+  // src/mcp/tools/mutation-tools.ts removed from the ratchet: #125 A15 split the
+  // 2157-line mutation MCP tool module into a barrel re-exporting per-concern
+  // modules (mutation-tools-core [run/orchestrate/backlog/knowledge] / mutation-tools-ops
+  // [review/cleanup/pr/db-apply]) over a shared leaf (mutation-types) + the runMcpOperation
+  // engine/preview layer (mutation-helpers-high) + validate/context layer
+  // (mutation-helpers-low), leaving each well under the 800 cap.
   // src/cli/hitch.ts removed from the ratchet: #125 A15 split the command group
   // into 5 sub-registrars under src/cli/hitch/ (lifecycle / attempt / finding /
   // review / convergence) + a shared hitch/helpers.ts, leaving the registrar a

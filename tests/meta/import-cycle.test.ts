@@ -170,10 +170,18 @@ const ALLOWLIST_CYCLES = new Set<string>([
   "src/mcp/registry/tool-registry.ts -> src/mcp/tools/dry-run-tools.ts -> src/mcp/tools/dry-run-project-tools.ts",
   "src/mcp/registry/tool-registry.ts -> src/mcp/tools/dry-run-tools.ts -> src/mcp/tools/dry-run-run-tools.ts",
   "src/mcp/registry/tool-registry.ts -> src/mcp/tools/dry-run-tools.ts -> src/mcp/tools/dry-run-db-tools.ts",
-  // mcp: tool-registry ↔ mutation-tools
-  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/mutation-tools.ts",
-  // mcp: tool-registry -> mutation-tools -> confirmation (経路バリアント)
-  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/mutation-tools.ts -> src/mcp/security/confirmation.ts",
+  // mcp: tool-registry -> mutation-tools(barrel) -> mutation-tools-{core,ops} (#125 A15)。
+  // read-tools/dry-run/hitch と同様、mutation-tools.ts を per-concern module を再 export
+  // する barrel に分割。各 sub-module は McpToolContext を tool-registry から import するので、
+  // 旧「tool-registry ↔ mutation-tools」2-cycle（+ confirmation 変種）は barrel 経由の同型
+  // 循環群に置き換わった（helpers-high が createMcpConfirmationRequest を import するため
+  // confirmation 変種も core -> helpers-high (-> helpers-low) 経由で再出現）。
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/mutation-tools.ts -> src/mcp/tools/mutation-tools-core.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/mutation-tools.ts -> src/mcp/tools/mutation-tools-core.ts -> src/mcp/tools/mutation-helpers-high.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/mutation-tools.ts -> src/mcp/tools/mutation-tools-core.ts -> src/mcp/tools/mutation-helpers-high.ts -> src/mcp/security/confirmation.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/mutation-tools.ts -> src/mcp/tools/mutation-tools-core.ts -> src/mcp/tools/mutation-helpers-high.ts -> src/mcp/tools/mutation-helpers-low.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/mutation-tools.ts -> src/mcp/tools/mutation-tools-core.ts -> src/mcp/tools/mutation-helpers-high.ts -> src/mcp/tools/mutation-helpers-low.ts -> src/mcp/security/confirmation.ts",
+  "src/mcp/registry/tool-registry.ts -> src/mcp/tools/mutation-tools.ts -> src/mcp/tools/mutation-tools-ops.ts",
   // mcp: tool-registry -> hitch-tools(barrel) -> hitch-tools-{read,mutation} (#125 A15)。
   // read-tools/dry-run と同様、hitch-tools.ts を per-concern module を再 export する barrel
   // に分割。各 sub-module は McpToolContext を tool-registry から import するので、旧
