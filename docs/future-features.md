@@ -982,8 +982,10 @@ per-PR merge gate の**上に**直交層を足す — additive migration（`merg
 `evaluateMergeGate` を member 毎に再利用**して判定する group driver。**GitHub に atomic 複数 PR merge は
 無い**ので実現できるのは「順序逐次 merge＋first-failure halt」＝broken-main 窓の最小化のみ（atomic では
 ない、と spec に明記する）。安全条件: ①group-approve で per-PR gate を上書きしない（唯一の fail-open
-設計ミス）、②共有 `closeAndPr` choke point 経由で adopt-pr guard を継承、③partial-failure（A merged・B
-失敗）で main を壊さない abort＋escalation。PR-A squash 後に PR-B の reviewed headSha が stale 化する点を
+設計ミス）、②共有 `closeAndPr` choke point 経由で adopt-pr guard を継承、③first-failure halt が broken-main を防げるのは A が未 merge のうちに B が失敗した場合のみ。**A
+merge 後に B が失敗すると main は A-only の broken 状態に入り、halt+escalation は後続 merge を止める
+だけで窓自体は消せない**（真に戻すには A の revert/rollback が要る）＝順序逐次は窓を最小化するが消去
+しない（上記「atomic ではない」と一貫）。PR-A squash 後に PR-B の reviewed headSha が stale 化する点を
 解く rebase/re-pin step が実装の本丸。CI 課金停止下では ciGreen がほぼ常に false ＝ auto-merge は発火
 しないため、価値は auto-merge gate でなく operator 向けツール（human-override path）から来る。
 
