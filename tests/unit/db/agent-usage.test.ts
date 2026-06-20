@@ -430,6 +430,59 @@ describe("recordAgentUsage general path (claude/external foundation, #235)", () 
     }
   });
 
+  it("supports #191-style cross-tool token attribution from the unified tables", () => {
+    const db = freshDb();
+    try {
+      insertRun(db, "run-1");
+      // a codex coder turn (run-scoped) + a claude external review turn
+      recordCodexUsage({
+        db,
+        runId: "run-1",
+        kind: "coder",
+        eventsContent: usageEvent(100, 40),
+        model: "gpt-5.5",
+      });
+      recordAgentUsage({
+        db,
+        tool: "claude",
+        role: "external",
+        externalLabel: "sub-review",
+        model: "claude-opus-4-8",
+        usageSource: "exact",
+        turns: [
+          {
+            turnSeq: 0,
+            model: "claude-opus-4-8",
+            inputTokens: 20,
+            outputTokens: 8,
+            totalTokens: 28,
+            cacheReadInputTokens: 3,
+            usageSource: "exact",
+          },
+        ],
+      });
+
+      // #191 reads usage per (tool, model) across BOTH taxonomies from the
+      // single agent_usage_turn surface — the capability Phase-1 unblocks.
+      const rows = db
+        .prepare(
+          `SELECT i.tool AS tool, i.model AS model,
+                  SUM(t.input_tokens) AS input, SUM(t.output_tokens) AS output
+             FROM agent_usage_turn t
+             JOIN agent_invocation i ON i.invocation_id = t.invocation_id
+            GROUP BY i.tool, i.model
+            ORDER BY i.tool`,
+        )
+        .all();
+      expect(rows).toEqual([
+        { tool: "claude", model: "claude-opus-4-8", input: 20, output: 8 },
+        { tool: "codex", model: "gpt-5.5", input: 100, output: 40 },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("fails open on a non-string description rather than throwing to the caller", () => {
     const db = freshDb();
     const warn = vi.fn();
