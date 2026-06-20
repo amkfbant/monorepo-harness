@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
@@ -181,6 +181,220 @@ describe("harness codex exec (external usage)", () => {
       }
     } finally {
       delete process.env.HARNESS_ROOT;
+    }
+  });
+
+  // P0 regression: registerCodexCommands must NOT mutate root program's parsing
+  it("does NOT break sibling command parsing after registerCodexCommands", async () => {
+    // Simulates `harness other list --repo x` — sibling sub-commands must still
+    // parse normally after registerCodexCommands is called on the root program.
+    const program = new Command();
+    program.exitOverride();
+    program.option("--repo <p>", "repo path");
+
+    let listCalled = false;
+    let repoParsed: string | undefined;
+    program
+      .command("other")
+      .command("list")
+      .action(function () {
+        listCalled = true;
+        // root options are inherited via the command chain
+        repoParsed = (program.opts() as { repo?: string }).repo;
+      });
+
+    // This is the call under test — must not corrupt root parsing
+    registerCodexCommands(program);
+
+    await program.parseAsync(["node", "h", "other", "list", "--repo", "x"]);
+    expect(listCalled).toBe(true);
+    expect(repoParsed).toBe("x");
+  });
+
+  // P1/P2 missing-DB warning: absent DB must emit one stderr warning, not be silent
+  it("emits a stderr warning when no harness DB exists", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-nodb-warn-"));
+    process.env.HARNESS_ROOT = root;
+    const stderrLines: string[] = [];
+    const origStderr = process.stderr.write.bind(process.stderr);
+    // Intercept stderr
+    const stderrSpy = (s: string | Uint8Array): boolean => {
+      stderrLines.push(typeof s === "string" ? s : Buffer.from(s).toString());
+      return true;
+    };
+    process.stderr.write = stderrSpy as typeof process.stderr.write;
+    try {
+      const program = new Command();
+      registerCodexCommands(program, {
+        runExternalCodex: async () => ({ exitCode: 5, eventsContent: usageJsonl(1, 1) }),
+        writeStdout: () => {},
+      } as never);
+      await program.parseAsync(["node", "harness", "codex", "exec", "p"]);
+      expect(process.exitCode).toBe(5);
+      const allStderr = stderrLines.join("");
+      expect(allStderr).toContain("warning");
+    } finally {
+      process.stderr.write = origStderr;
+      process.exitCode = 0;
+      delete process.env.HARNESS_ROOT;
+    }
+  });
+
+  // P1 fail-open DB-ERROR: corrupt DB must warn on stderr but not block exit/stdout
+  it("fails open and warns when DB exists but is corrupt (not a valid sqlite file)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "harness-baddb-"));
+    // Create a non-sqlite file at the DB path to force an error on open
+    const dotHarness = join(root, ".harness");
+    mkdirSync(dotHarness, { recursive: true });
+    writeFileSync(join(dotHarness, "harness.sqlite"), "not-a-sqlite-file");
+    process.env.HARNESS_ROOT = root;
+    const stderrLines: string[] = [];
+    const origStderr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((s: string | Uint8Array): boolean => {
+      stderrLines.push(typeof s === "string" ? s : Buffer.from(s).toString());
+      return true;
+    }) as typeof process.stderr.write;
+    const out: string[] = [];
+    try {
+      const program = new Command();
+      registerCodexCommands(program, {
+        runExternalCodex: async () => ({ exitCode: 9, eventsContent: usageJsonl(1, 1) }),
+        writeStdout: (s) => out.push(s),
+      } as never);
+      await program.parseAsync(["node", "harness", "codex", "exec", "p"]);
+      expect(process.exitCode).toBe(9);
+      expect(out.join("")).toContain("done"); // stdout still emitted
+      const allStderr = stderrLines.join("");
+      expect(allStderr).toContain("warning"); // warning emitted
+    } finally {
+      process.stderr.write = origStderr;
+      process.exitCode = 0;
+      delete process.env.HARNESS_ROOT;
+    }
+  });
+
+  // P1 non-zero exit + DB present + usage recorded
+  it("records usage AND propagates non-zero exit code", async () => {
+    const root = harnessRootWithDb();
+    process.env.HARNESS_ROOT = root;
+    try {
+      const program = new Command();
+      registerCodexCommands(program, {
+        runExternalCodex: async () => ({ exitCode: 7, eventsContent: usageJsonl(10, 5) }),
+        writeStdout: () => {},
+      } as never);
+      await program.parseAsync(["node", "harness", "codex", "exec", "-m", "gpt-5.5", "p"]);
+      expect(process.exitCode).toBe(7);
+      const db = openDb(join(root, ".harness", "harness.sqlite"));
+      try {
+        expect(
+          db.prepare("SELECT tool, role FROM agent_invocation").get(),
+        ).toEqual({ tool: "codex", role: "external" });
+      } finally {
+        db.close();
+      }
+    } finally {
+      process.exitCode = 0;
+      delete process.env.HARNESS_ROOT;
+    }
+  });
+
+  // P2/P3 focused asserts: usage_source='exact', default label, env linking, flag wins over env
+  it("records usage_source=exact for a run with turn-level usage", async () => {
+    const root = harnessRootWithDb();
+    process.env.HARNESS_ROOT = root;
+    try {
+      const program = new Command();
+      registerCodexCommands(program, {
+        runExternalCodex: async () => ({ exitCode: 0, eventsContent: usageJsonl(5, 3) }),
+        writeStdout: () => {},
+      } as never);
+      await program.parseAsync(["node", "harness", "codex", "exec", "-m", "x", "p"]);
+      const db = openDb(join(root, ".harness", "harness.sqlite"));
+      try {
+        expect(
+          db.prepare("SELECT usage_source FROM agent_invocation").get(),
+        ).toEqual({ usage_source: "exact" });
+      } finally {
+        db.close();
+      }
+    } finally {
+      delete process.env.HARNESS_ROOT;
+    }
+  });
+
+  it("defaults external_label to 'external' when no --harness-label flag", async () => {
+    const root = harnessRootWithDb();
+    process.env.HARNESS_ROOT = root;
+    try {
+      const program = new Command();
+      registerCodexCommands(program, {
+        runExternalCodex: async () => ({ exitCode: 0, eventsContent: usageJsonl(1, 1) }),
+        writeStdout: () => {},
+      } as never);
+      await program.parseAsync(["node", "harness", "codex", "exec", "-m", "x", "p"]);
+      const db = openDb(join(root, ".harness", "harness.sqlite"));
+      try {
+        expect(
+          db.prepare("SELECT external_label FROM agent_invocation").get(),
+        ).toEqual({ external_label: "external" });
+      } finally {
+        db.close();
+      }
+    } finally {
+      delete process.env.HARNESS_ROOT;
+    }
+  });
+
+  it("env HARNESS_RUN_ID populates agent_invocation.run_id", async () => {
+    const root = harnessRootWithDb();
+    process.env.HARNESS_ROOT = root;
+    process.env.HARNESS_RUN_ID = "run-env-42";
+    try {
+      const program = new Command();
+      registerCodexCommands(program, {
+        runExternalCodex: async () => ({ exitCode: 0, eventsContent: usageJsonl(1, 1) }),
+        writeStdout: () => {},
+      } as never);
+      await program.parseAsync(["node", "harness", "codex", "exec", "-m", "x", "p"]);
+      const db = openDb(join(root, ".harness", "harness.sqlite"));
+      try {
+        expect(
+          db.prepare("SELECT run_id FROM agent_invocation").get(),
+        ).toEqual({ run_id: "run-env-42" });
+      } finally {
+        db.close();
+      }
+    } finally {
+      delete process.env.HARNESS_ROOT;
+      delete process.env.HARNESS_RUN_ID;
+    }
+  });
+
+  it("CLI flag --harness-hitch-id wins over env HARNESS_HITCH_ID", async () => {
+    const root = harnessRootWithDb();
+    process.env.HARNESS_ROOT = root;
+    process.env.HARNESS_HITCH_ID = "hitch-env-99";
+    try {
+      const program = new Command();
+      registerCodexCommands(program, {
+        runExternalCodex: async () => ({ exitCode: 0, eventsContent: usageJsonl(1, 1) }),
+        writeStdout: () => {},
+      } as never);
+      await program.parseAsync([
+        "node", "harness", "codex", "exec", "--harness-hitch-id=hitch-flag-X", "-m", "x", "p",
+      ]);
+      const db = openDb(join(root, ".harness", "harness.sqlite"));
+      try {
+        expect(
+          db.prepare("SELECT hitch_id FROM agent_invocation").get(),
+        ).toEqual({ hitch_id: "hitch-flag-X" });
+      } finally {
+        db.close();
+      }
+    } finally {
+      delete process.env.HARNESS_ROOT;
+      delete process.env.HARNESS_HITCH_ID;
     }
   });
 });

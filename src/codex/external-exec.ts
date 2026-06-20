@@ -1,3 +1,6 @@
+import { spawn } from "node:child_process";
+import { resolveCodexBin } from "./resolve-codex-bin.js";
+
 export interface WrapperFlags {
   label: string;
   runId: string | null;
@@ -78,9 +81,6 @@ export function sniffModel(codexArgs: string[]): string | null {
   return null;
 }
 
-import { spawn } from "node:child_process";
-import { resolveCodexBin } from "./resolve-codex-bin.js";
-
 export type SpawnImpl = (
   bin: string,
   args: string[],
@@ -143,21 +143,29 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 /**
  * The user-facing final message, reconstructed from the JSONL (because `--json`
- * replaces stdout with events). Total function. Matches the last event whose
- * item carries a non-empty string `text`, so it survives minor schema drift.
+ * replaces stdout with events). Total function.
+ *
+ * Preference order: last `item.completed` event whose `item.type === "agent_message"`
+ * with a non-empty `text` string. Defensive fallback: if no `agent_message` item
+ * is found, returns the last event with any non-empty `text` on its item — preserves
+ * resilience against minor schema drift without corrupting the common case.
  */
 export function extractFinalMessage(jsonl: string): string {
-  let last = "";
+  let lastAgentMessage = "";
+  let lastAnyText = "";
   for (const line of jsonl.split(/\r?\n/)) {
     if (line.trim() === "") continue;
     try {
       const ev = JSON.parse(line) as unknown;
       if (!isRecord(ev) || !isRecord(ev.item)) continue;
       const text = ev.item.text;
-      if (typeof text === "string" && text.length > 0) last = text;
+      if (typeof text !== "string" || text.length === 0) continue;
+      lastAnyText = text;
+      if (ev.item.type === "agent_message") lastAgentMessage = text;
     } catch {
       // skip malformed line — total function
     }
   }
-  return last;
+  // prefer the last agent_message; fall back to any text item (schema-drift resilience)
+  return lastAgentMessage !== "" ? lastAgentMessage : lastAnyText;
 }

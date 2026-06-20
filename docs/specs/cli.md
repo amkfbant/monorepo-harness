@@ -2154,8 +2154,8 @@ Exit code は `harness course` と同じ（0 / 1 / 2）。
 （`tool='codex'`, `role='external'`）へ usage telemetry を記録する。
 
 ```bash
-harness codex exec [--harness-label <label>] [--harness-run-id <id>]
-                   [--harness-hitch-id <id>] [--harness-course-id <id>]
+harness codex exec [--harness-label=<label>] [--harness-run-id=<id>]
+                   [--harness-hitch-id=<id>] [--harness-course-id=<id>]
                    [<codex exec args...>]
 ```
 
@@ -2166,10 +2166,10 @@ codex がネイティブに処理し、ラッパーは触れない。最終メ�
 
 | フラグ | 動作 |
 |--------|------|
-| `--harness-label` | `agent_invocation.external_label` に記録（省略時 `"external"`） |
-| `--harness-run-id` | `agent_invocation.run_id` にリンク（省略時 env `HARNESS_RUN_ID`） |
-| `--harness-hitch-id` | `agent_invocation.hitch_id` にリンク（省略時 env `HARNESS_HITCH_ID`） |
-| `--harness-course-id` | `agent_invocation.course_id` にリンク（省略時 env `HARNESS_COURSE_ID`） |
+| `--harness-label=<label>` | `agent_invocation.external_label` に記録（省略時 `"external"`） |
+| `--harness-run-id=<id>` | `agent_invocation.run_id` にリンク（省略時 env `HARNESS_RUN_ID`） |
+| `--harness-hitch-id=<id>` | `agent_invocation.hitch_id` にリンク（省略時 env `HARNESS_HITCH_ID`） |
+| `--harness-course-id=<id>` | `agent_invocation.course_id` にリンク（省略時 env `HARNESS_COURSE_ID`） |
 
 **fail-open**: DB が存在しない・書き込み失敗でも codex の exit code をそのまま
 伝播し、stderr に warning を 1 行出す（usage の未記録は運用を止めない）。

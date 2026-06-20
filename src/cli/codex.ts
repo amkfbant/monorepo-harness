@@ -34,19 +34,24 @@ function harnessDbPath(): string | undefined {
 
 function warnNotRecorded(e: unknown): void {
   process.stderr.write(
-    `warning: external codex usage not recorded: ${(e as Error).message}\n`,
+    `warning: external codex usage not recorded: ${e instanceof Error ? e.message : String(e)}\n`,
   );
 }
 
 /**
  * Record an out-of-harness codex invocation's usage. Fail-open and best-effort:
- * a missing DB or any write error is warned and swallowed so the codex result
- * is never affected. Reuses `codexTurnInputs` (the same per-turn / synthetic-
- * unavailable mapping the internal forwarder uses) — no parallel logic.
+ * a missing DB is warned and swallowed, any write error is warned and swallowed,
+ * so the codex result is never affected. Reuses `codexTurnInputs` (the same
+ * per-turn / synthetic-unavailable mapping the internal forwarder uses) — no
+ * parallel logic.
  */
 function recordExternal(u: ExternalUsage): void {
   const dbPath = harnessDbPath();
-  if (dbPath === undefined) return; // no harness DB → skip silently
+  if (dbPath === undefined) {
+    // missing DB → warn to stderr (fail-open: no throw, codex output unchanged)
+    process.stderr.write("warning: external codex usage not recorded: no harness DB found\n");
+    return;
+  }
   try {
     const handle = openManagedDb({ dbPath });
     try {
@@ -82,32 +87,36 @@ export function registerCodexCommands(
     deps?.writeStdout ?? ((s: string) => void process.stdout.write(s));
 
   const codex = program.command("codex").description("codex wrappers");
+  // enablePositionalOptions scoped to the `codex` sub-command group only — does
+  // NOT mutate the root program, so sibling commands (e.g. `project list --repo`)
+  // keep their option-parsing behaviour unchanged.
+  codex.enablePositionalOptions();
   codex
     .command("exec")
     .description("transparent `codex exec` wrapper that records usage telemetry")
     .allowUnknownOption(true)
+    .passThroughOptions()
     .helpOption(false)
     .argument("[args...]", "codex exec arguments (passed through verbatim)")
     .action(async (_args: string[], _opts: unknown, cmd: Command) => {
-      // cmd.args holds the raw passthrough argv (commander, with
-      // allowUnknownOption + enablePositionalOptions).
+      // cmd.args holds the raw passthrough argv (commander with
+      // allowUnknownOption + passThroughOptions).
       const { wrapper, codexArgs } = splitHarnessFlags(cmd.args);
       const model = sniffModel(codexArgs);
       const { exitCode, eventsContent } = await runExternalCodex({ codexArgs });
-      // Record FIRST (fail-open — recordExternal cannot throw), then reconstruct
-      // output. Recording must never change what the user sees.
+      // ALWAYS echo the final message to stdout first. Bare codex prints the
+      // final message to stdout even when `-o <file>` is given (golden-verified
+      // on codex-cli 0.139.0); the `-o` file is written natively by codex and
+      // the wrapper does not touch it. Raw JSONL never reaches stdout.
+      // Recording must never change what the user sees — write stdout first, then
+      // record so DB-lock contention cannot delay user-visible output.
+      const msg = extractFinalMessage(eventsContent);
+      if (msg.length > 0) writeStdout(msg.endsWith("\n") ? msg : msg + "\n");
+      // recordExternal is fail-open: cannot throw; any error is warned to stderr.
       recordExternal({
         eventsContent, label: wrapper.label, runId: wrapper.runId,
         hitchId: wrapper.hitchId, courseId: wrapper.courseId, model,
       });
-      // ALWAYS echo the final message to stdout. Bare codex prints the final
-      // message to stdout even when `-o <file>` is given (golden-verified on
-      // codex-cli 0.139.0); the `-o` file is written natively by codex and the
-      // wrapper does not touch it. Raw JSONL never reaches stdout.
-      const msg = extractFinalMessage(eventsContent);
-      if (msg.length > 0) writeStdout(msg.endsWith("\n") ? msg : msg + "\n");
       process.exitCode = exitCode;
     });
-  program.enablePositionalOptions();
-  codex.enablePositionalOptions();
 }

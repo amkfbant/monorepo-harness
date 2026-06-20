@@ -86,6 +86,28 @@ describe("extractFinalMessage", () => {
     expect(extractFinalMessage("{broken")).toBe("");
     expect(extractFinalMessage("")).toBe("");
   });
+  // P1: non-agent_message item AFTER the final agent_message must not override it
+  it("ignores trailing non-agent_message items after the final agent_message", () => {
+    const jsonl = [
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "real answer" } }),
+      JSON.stringify({ type: "item.completed", item: { type: "command_execution", text: "trailing" } }),
+    ].join("\n");
+    expect(extractFinalMessage(jsonl)).toBe("real answer");
+  });
+  // P1: fallback — only a non-agent text item present → returns it (schema-drift resilience)
+  it("falls back to last non-empty text item when no agent_message is present", () => {
+    const jsonl = [
+      JSON.stringify({ type: "item.completed", item: { type: "command_execution", text: "only text" } }),
+    ].join("\n");
+    expect(extractFinalMessage(jsonl)).toBe("only text");
+  });
+  // Fallback: no item with text → empty string
+  it("returns empty string when no text items at all", () => {
+    const jsonl = [
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1 } }),
+    ].join("\n");
+    expect(extractFinalMessage(jsonl)).toBe("");
+  });
 });
 
 describe("runExternalCodex", () => {
