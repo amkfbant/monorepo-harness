@@ -42,9 +42,13 @@ wrapper」一択（既存 `-o` 出力を後から読む post-hoc importer は us
 新サブコマンド **`harness codex exec [wrapper-flags] <codex-args…>`** — `codex exec` の透明 drop-in。
 
 - **wrapper 固有フラグ**（消費し codex へ渡さない。衝突回避で `--harness-` prefix）:
-  - `--harness-label <L>` — `external_label`（既定 `"external"`）。
-  - `--harness-run-id <id>` / `--harness-hitch-id <id>` / `--harness-course-id <id>` — 任意リンク。
+  - `--harness-label=<L>` — `external_label`（既定 `"external"`）。
+  - `--harness-run-id=<id>` / `--harness-hitch-id=<id>` / `--harness-course-id=<id>` — 任意リンク。
     env fallback: `HARNESS_RUN_ID` / `HARNESS_HITCH_ID` / `HARNESS_COURSE_ID`。
+  - **形式は単一トークン `=` 形のみ**（`--harness-label=x`）。スペース区切り（`--harness-label x`）は
+    採らない: 後続トークンを「値」として奪う位置走査は、codex フラグの値が `--harness-*` と一致する
+    場合（例 `-c --harness-label`）や位置 prompt が `--harness-label` の場合に passthrough を壊す。
+    `=` 形なら wrapper は1トークンを消費するだけで、後続を絶対に奪わない。
 - **それ以外の引数は全て codex へ素通し**（`-m` / `-s` / `-c` / `-o` / 位置 prompt 等）。wrapper は
   内部で **`--json` を1個だけ追加**する。
 - 新モジュール:
@@ -68,17 +72,22 @@ harness codex exec --harness-label pr-review -m gpt-5.5 -s read-only -o out.txt 
        · codex が -o(out.txt) に最終メッセージを native 書き込み（bare と同一・--json と独立）
        · stdout(JSONL) を capture / stderr は user の stderr へ素通し（進捗透明）
   4. 終了時: capture した JSONL を parseCodexTurns / sumCodexTurns で usage 化
-       · model は passthrough の -m <model> / --model <model> から sniff（実値 = ground truth）
+       · model は passthrough の `-m <m>` / `--model <m>`（および `-m=<m>` / `--model=<m>` の `=` 形）
+         から sniff（実値 = ground truth）。無ければ null（codex の config 既定は best-effort で記録しない）
   5. recordAgentUsage({ tool:'codex', role:'external', model, externalLabel,
        runId?/hitchId?/courseId?, usageSource, turns })   ← fail-open
-  6. 出力再現: JSONL から最終 assistant message を抽出し stdout へ print
-       （-o 利用時は out.txt に codex が native 書き込み済／非-o 利用者にも結果が見える）
+  6. 出力再現: JSONL から最終 assistant message を抽出し **常に** stdout へ print
+       （-o 有無に関わらず。bare codex は `-o` 指定時も最終メッセージを stdout に出すため
+        ＝golden 検証済み。-o の file は codex が native 書き込み・wrapper は触らない）
   7. codex の exit code を伝搬
 ```
 
-> **実装時検証点**: bare `codex exec`（`--json` 無し）の stdout/stderr 出力形態と、wrapper の
-> 再現（最終メッセージ stdout print + stderr 素通し）の微細な差は、実 codex でゴールデン確認する
-> （契約の核は **`-o` file 内容・exit code の完全一致**。stdout は最終メッセージ可視性を満たせば可）。
+> **golden 検証済み（codex-cli 0.139.0）**: `--json` と `-o` は独立。bare `codex exec -o f "x"` は
+> stdout=`<msg>\n` **かつ** file=`<msg>`（`-o` は stdout を抑制しない）。よって wrapper は **常に**
+> 最終メッセージを stdout へ再現する（`hasOutputFile` で抑制しない）。生 JSONL は stdout に出さない。
+> **stderr は bare と byte-identical ではない**: `--json` 時は codex の human transcript（header/
+> `model:`/`session id:`/`user`/`codex` ブロック）が出ず JSON-mode の進捗になる。stderr は deliverable
+> でなく診断ゆえ、この差は **usage 捕捉の対価として許容**（§7 の不変条件は stderr を含まない）。
 
 要点:
 - `codex exec` の `--json`（JSONL→stdout）と `-o`（最終メッセージ→ファイル）は **独立フラグ**
@@ -117,10 +126,14 @@ harness codex exec --harness-label pr-review -m gpt-5.5 -s read-only -o out.txt 
 
 ## 7. エラー処理 / fail-open
 
-**不変条件: codex の結果（stdout / `-o` / exit code）は、usage 記録の成否に関わらず byte-identical。
-記録は純粋な副作用。**
+**不変条件: codex の deliverable（`-o` file 内容 / exit code）は、usage 記録の成否に関わらず
+byte-identical。stdout は JSONL から再現した最終メッセージ（bare の最終出力行と一致）。stderr は
+JSON-mode 進捗（§5 注記・bare と非一致を許容）。記録は純粋な副作用。**
 
-- **codex spawn 不能**（binary 解決失敗）= wrapper のコア機能失敗 → 明確にエラー終了（fail-open 対象外）。
+- **codex spawn 失敗**（ENOENT / EACCES 等。`resolveCodexBin` は存在検査しないので bare 名は spawn 時に
+  ENOENT し得る）= wrapper のコア機能失敗 → `runExternalCodex` が **catch して非ゼロ exit + stderr に
+  明確なメッセージ**を返す（**raw throw を action から漏らさない**・exit code 必ず設定）。fail-open 対象外
+  だが「throw で落ちる」のではなく「明示エラー終了」。
 - **codex が非ゼロ / timeout** → codex の exit code を **そのまま伝搬**。usage は取れた分だけ記録
   （内部 reviewer 同様、全 outcome で記録）。
 - **JSONL parse 不能 / usage 無し** → `usage_source='unavailable'`（fail-open）。
@@ -135,15 +148,19 @@ DI で **fake codex spawner**（scripted JSONL + exit code を出す・`createFa
 external 版）を使用:
 
 1. arg 素通し + `--json` がちょうど 1 個注入される（既に `--json` がある場合の冪等も）。
-2. `--harness-*` が codex に渡らず・label / run / hitch / course が適用される。
-3. usage capture → `agent_invocation`（codex/external/model/label）+ `agent_usage_turn` 行。
-4. model を `-m`（と `--model`）から sniff（無ければ null）。
-5. unavailable（usage 無し）→ unavailable 行 + synthetic 1 turn。
-6. **exit code 伝搬**（codex 非ゼロ→wrapper 非ゼロ）+ usage は記録される。
-7. 出力再現（最終メッセージ→stdout / `-o` 保持・exit 伝搬）。
-8. **fail-open**（DB 欠落 / DB エラーで codex 出力・exit 不変・warn 1 回）。
-9. linking（`--harness-run-id` で run_id・env fallback・両方無しで null + external_label）。
-10. multi-turn（synthetic 2 turn）→ per-turn 2 行・サマリは sum。
+2. `--harness-*=value` が codex に渡らず・label / run / hitch / course が適用される。
+3. **passthrough 不破壊**（P1）: codex フラグの値や位置 prompt が `--harness-*` 名と一致しても
+   verbatim で codex に届く（`-c --harness-label -m gpt-5.5 p` → 全て素通し・label 既定のまま）。
+4. usage capture → `agent_invocation`（codex/external/model/label）+ `agent_usage_turn` 行。
+5. model を `-m`/`--model`（space と `=` 形）から sniff（無ければ null）。
+6. unavailable（usage 無し）→ unavailable 行 + synthetic 1 turn。
+7. **exit code 伝搬**（codex 非ゼロ→wrapper 非ゼロ）+ usage は記録される。
+8. **出力再現**（P1）: 最終メッセージを **常に** stdout へ（`-o` / `--output-last-message` 指定時も）・
+   `-o` file は codex native・exit 伝搬。
+9. **spawn 失敗**（ENOENT）→ exit 127 + stderr メッセージ・throw しない。
+10. **fail-open**（DB 欠落 / DB エラーで codex 出力・exit 不変・warn 1 回）。
+11. linking（`--harness-run-id=` で run_id・env fallback・両方無しで null + external_label）。
+12. multi-turn（synthetic 2 turn）→ per-turn 2 行・サマリは sum。
 
 - サブ Phase 緑 = 関連テスト + typecheck、最終 = フルスイート + typecheck（弱化/skip 禁止）。
 
