@@ -50,6 +50,9 @@ describe("resolvePolicy", () => {
     const r = resolvePolicy(GLOBAL, REPO as never, "apps/user");
     expect(r.codex.sandbox).toBe("workspace-write");
     expect(r.codex.approval).toBeUndefined();
+    // #206: model is undefined when policy does not set it (no-config →
+    // run_usage.model stays NULL → telemetry byte-stable).
+    expect(r.codex.model).toBeUndefined();
     expect(r.codex.timeoutMs).toBe(DEFAULT_CODEX_TIMEOUT_MS);
     expect(r.limits.gitTimeoutMs).toBe(DEFAULT_GIT_TIMEOUT_MS);
     expect(r.limits.changeBudget).toEqual(DEFAULT_CHANGE_BUDGET);
@@ -66,6 +69,7 @@ describe("resolvePolicy", () => {
             sandbox: "read-only",
             approval: "on-request",
             timeout_ms: 60_000,
+            model: "gpt-5.5",
           },
         },
         limits: {
@@ -83,6 +87,7 @@ describe("resolvePolicy", () => {
     );
     expect(r.codex.sandbox).toBe("read-only");
     expect(r.codex.approval).toBe("on-request");
+    expect(r.codex.model).toBe("gpt-5.5");
     expect(r.codex.timeoutMs).toBe(60_000);
     expect(r.limits.gitTimeoutMs).toBe(10_000);
     expect(r.limits.changeBudget).toEqual({

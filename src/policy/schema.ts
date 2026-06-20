@@ -14,6 +14,14 @@ export const CodexDefaultsSchema = z
     sandbox: SandboxModeSchema.default("workspace-write"),
     approval: z.string().optional(),
     timeout_ms: z.number().int().positive().optional(),
+    /**
+     * Advisory model name recorded into agent-usage telemetry (#206). The
+     * harness does NOT inject `-m`, so this is the operator's declared model,
+     * not a verified one — best-effort metadata for cost attribution by
+     * downstream consumers (#191/#235). Absent → telemetry model stays NULL
+     * (no-config byte-stability; DEFAULT_CODEX_MODEL = null).
+     */
+    model: z.string().min(1).optional(),
   })
   .strict();
 export type CodexDefaults = z.infer<typeof CodexDefaultsSchema>;
@@ -184,6 +192,8 @@ export interface ResolvedPolicy {
     sandbox: SandboxMode;
     approval?: string;
     timeoutMs?: number;
+    /** Advisory model for agent-usage telemetry (#206); absent → NULL. */
+    model?: string;
   };
   limits: {
     gitTimeoutMs: number;

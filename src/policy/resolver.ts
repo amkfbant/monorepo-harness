@@ -80,6 +80,10 @@ export function resolvePolicy(
   };
   const approval = global.defaults?.codex?.approval;
   if (approval !== undefined) codex.approval = approval;
+  // #206: only set when the operator declares a model, so a no-config policy
+  // leaves codex.model undefined → telemetry model NULL → run_usage byte-stable.
+  const codexModel = global.defaults?.codex?.model;
+  if (codexModel !== undefined) codex.model = codexModel;
 
   const cmdDefaultsRaw = d.commands?.defaults;
   const commandDefaults: ResolvedPolicy["commandDefaults"] = {
