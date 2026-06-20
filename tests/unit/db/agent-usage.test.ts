@@ -44,6 +44,21 @@ function codexInvocationId(runId: string, role: string, seq: number): string {
     .digest("hex");
 }
 
+/** Mirror of the writer's external invocation_id (pins the injective formula). */
+function externalInvocationId(
+  label: string,
+  sessionId: string,
+  agentId: string,
+  runId: string,
+  role: string,
+  seq: number,
+): string {
+  const hex = createHash("sha256")
+    .update([label, sessionId, agentId, runId, role, String(seq)].join("\0"))
+    .digest("hex");
+  return `ext:${hex}`;
+}
+
 function countRows(db: Database.Database): {
   runUsage: number;
   invocation: number;
@@ -376,7 +391,14 @@ describe("recordAgentUsage general path (claude/external foundation, #235)", () 
           )
           .get(),
       ).toEqual({
-        invocation_id: "ext:sub-review:sess-1:agent-1:_:external:0",
+        invocation_id: externalInvocationId(
+          "sub-review",
+          "sess-1",
+          "agent-1",
+          "",
+          "external",
+          0,
+        ),
         tool: "claude",
         role: "external",
         run_id: null,
@@ -511,11 +533,25 @@ describe("recordAgentUsage general path (claude/external foundation, #235)", () 
           .all(),
       ).toEqual([
         {
-          invocation_id: "ext:sub-review:sess-A:agent-A:_:external:0",
+          invocation_id: externalInvocationId(
+            "sub-review",
+            "sess-A",
+            "agent-A",
+            "",
+            "external",
+            0,
+          ),
           session_id: "sess-A",
         },
         {
-          invocation_id: "ext:sub-review:sess-B:agent-B:_:external:0",
+          invocation_id: externalInvocationId(
+            "sub-review",
+            "sess-B",
+            "agent-B",
+            "",
+            "external",
+            0,
+          ),
           session_id: "sess-B",
         },
       ]);
@@ -524,6 +560,38 @@ describe("recordAgentUsage general path (claude/external foundation, #235)", () 
           n: number;
         }).n,
       ).toBe(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("derives injective external ids when components contain ':' (#206 codex-App P2 round 2)", () => {
+    const db = freshDb();
+    try {
+      const writeExternal = (label: string, session: string): void => {
+        recordAgentUsage({
+          db,
+          tool: "claude",
+          role: "external",
+          externalLabel: label,
+          sessionId: session,
+          agentId: "a",
+          usageSource: "exact",
+          turns: [{ turnSeq: 0, usageSource: "exact" }],
+        });
+      };
+      // Distinct tuples that a naive ':'-join would alias to the same id
+      // ("ext:a:b:c:a:_:external:0"). The hash keeps them injective.
+      writeExternal("a:b", "c");
+      writeExternal("a", "b:c");
+
+      const ids = (
+        db.prepare("SELECT invocation_id FROM agent_invocation").all() as {
+          invocation_id: string;
+        }[]
+      ).map((r) => r.invocation_id);
+      expect(new Set(ids).size).toBe(2); // distinct → neither silently dropped
+      expect(ids.every((id) => /^ext:[0-9a-f]{64}$/.test(id))).toBe(true);
     } finally {
       db.close();
     }

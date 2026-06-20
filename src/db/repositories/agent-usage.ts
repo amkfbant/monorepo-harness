@@ -120,29 +120,34 @@ function truncateDescription(
  * `(run, role, seq)`. Backfilled rows use a `bf:` surrogate (pure SQL) — the
  * three namespaces are disjoint so live and backfill never collide.
  */
+function sha256Hex(parts: readonly string[]): string {
+  return createHash("sha256").update(parts.join("\0")).digest("hex");
+}
+
 function deriveInvocationId(input: RecordAgentUsageInput, seq: number): string {
   if (input.externalLabel !== undefined && input.externalLabel !== null) {
-    // Encode the SAME identity scope `allocateSeq` counts over (label, session,
-    // agent, run) so the same label reused in a different session / agent / run
-    // never collides on the PK. A collision would be silently dropped by the
-    // fail-open writer. `_` stands in for an absent field.
-    const part = (v: string | null | undefined): string =>
-      v === undefined || v === null || v === "" ? "_" : v;
-    return [
-      "ext",
+    // Hash the FULL identity scope `allocateSeq` counts over, NUL-joined (the
+    // codebase's injective convention — see import/runs.ts). A NUL byte cannot
+    // appear in these identifier fields, so distinct
+    // (label, session, agent, run, role, seq) tuples never map to the same id
+    // even when a field contains ':' or '_' — unlike a readable separator join,
+    // which is NOT injective. A collision would be silently dropped by the
+    // fail-open writer. The `ext:` prefix keeps the id in a namespace disjoint
+    // from the bare-hex codex/claude ids and the `bf:` backfill surrogate.
+    return `ext:${sha256Hex([
       input.externalLabel,
-      part(input.sessionId),
-      part(input.agentId),
-      part(input.runId),
+      input.sessionId ?? "",
+      input.agentId ?? "",
+      input.runId ?? "",
       input.role,
       String(seq),
-    ].join(":");
+    ])}`;
   }
   const parts =
     input.sessionId != null && input.agentId != null
       ? [input.sessionId, input.agentId, input.role, String(seq)]
       : [input.runId ?? "", input.role, String(seq)];
-  return createHash("sha256").update(parts.join("\0")).digest("hex");
+  return sha256Hex(parts);
 }
 
 /**

@@ -1189,10 +1189,10 @@ INSERT 不可で writer / meta-test / import が全壊するため）、`recordA
 ```sql
 CREATE TABLE agent_invocation (
   invocation_id  TEXT PRIMARY KEY,   -- live codex: sha256(run_id\0role\0seq) 64-hex /
-                                     -- external: ext:label:session:agent:run:role:seq
-                                     --   ('_' for absent fields; encodes the full
-                                     --    allocateSeq scope so a reused label in a
-                                     --    different session/agent/run never collides) /
+                                     -- external: 'ext:'||sha256(label\0session\0agent\0
+                                     --   run\0role\0seq) — NUL-joined hash (injective:
+                                     --   a reused label in a different session/agent/run,
+                                     --   or a field containing ':'/'_', never collides) /
                                      -- backfill: 'bf:'||run_id||':'||kind||':'||seq
   tool           TEXT NOT NULL CHECK (tool IN ('codex','claude')),
   role           TEXT NOT NULL
