@@ -1289,12 +1289,13 @@ transcript を `~/.claude/projects/<encoded-launch-cwd>/` に書き出す。Phas
   transcript はすり抜け得るため、下の size-aware re-ingest が二次防御）。
 - **skip-before-read / size-aware re-ingest（#349）**: 既存の
   `(session_id, agent_id) → source_size` を DB から事前ロードし `readFileSync` 前に判定。
-  サイズ不変なら skip（2 回目以降は空振り）。**サイズが変化していれば**（grown=settle
-  通過後も生きていた transcript を途中で読んでいた / shrunk=truncate・rotation）同一
-  transaction 内で旧 invocation を DELETE（FK CASCADE で turn も削除）→ 再記録して
-  partial を self-heal する。`source_size` が NULL の行（v37 以前）は complete とみなし
-  再 ingest しない（v37 upgrade で既存 telemetry を churn させない）。同サイズで内容だけ
-  変わる場合は未検知（Claude transcript は agentId 単位で append-only ゆえスコープ外）。
+  サイズ不変なら skip（2 回目以降は空振り）。**サイズが増えていれば**（settle 通過後も
+  生きていた transcript を途中で読んでいた場合）同一 transaction 内で旧 invocation を
+  DELETE（FK CASCADE で turn も削除）→ 再記録して partial を self-heal する。grown のみ
+  対象（Claude transcript は agentId 単位で append-only ゆえ shrink/rotation は起きない。
+  size!=stored にすると truncate-to-garbage を毎回再読込し、再 parse が空のとき stale 行を
+  残し得るため growth-only とする）。`source_size` が NULL の行（v37 以前）は complete と
+  みなし再 ingest しない（v37 upgrade で既存 telemetry を churn させない）。
 - **path-authoritative identity（#353）**: keying は path 由来 `(session, agent)` を
   権威とする。in-file の `sessionId` が dir 名と食い違っても skip-before-read の pre-check
   と格納行が同一 key で一致する。

@@ -2232,11 +2232,12 @@ export const V36_TABLE_NAMES = [
  *
  * Additive single column (no new table). The claude transcript ingest records
  * the byte size of the source transcript it parsed. A later ingest pass
- * re-ingests a `(session_id, agent_id)` row (delete + re-record) when the file
- * size has CHANGED from the stored size (grown = a previously-partial mid-stream
- * read; shrunk = truncation/rotation) — self-healing the "partial transcript
+ * re-ingests a `(session_id, agent_id)` row (delete + re-record) ONLY when the
+ * file has GROWN past the stored size — self-healing the "partial transcript
  * frozen by the unique index" bug, where an idle-but-alive subagent transcript
- * read mid-stream was recorded partial and never updated. NULL for codex rows,
+ * read mid-stream was recorded partial and never updated. Growth-only because
+ * Claude transcripts are append-only per agentId (shrink/rotation does not
+ * occur). NULL for codex rows,
  * backfilled rows, and pre-v37 claude rows (treated as complete → never
  * re-ingested, so a v37 upgrade does not churn existing telemetry).
  */

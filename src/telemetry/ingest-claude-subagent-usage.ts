@@ -269,19 +269,23 @@ export function ingestClaudeSubagentUsage(opts: IngestOptions): IngestResult {
           continue
         }
 
-        // --- idempotency / changed-transcript check BEFORE readFileSync ---
-        // Skip an unchanged transcript; re-ingest one whose byte size has
-        // CHANGED from its stored source_size (#349): growth = a previously
-        // partial mid-stream read; shrink = truncation/rotation. (A same-size
-        // content change is NOT detected — would need an mtime/hash; out of
-        // scope as Claude transcripts are append-only per agentId.) A NULL stored
-        // size (pre-v37 row) is treated as complete → never re-ingested, so a
-        // v37 upgrade does not churn existing telemetry.
+        // --- idempotency / grown-transcript check BEFORE readFileSync ---
+        // Skip an unchanged transcript; re-ingest one that has GROWN past its
+        // stored source_size (#349) — a previously-partial mid-stream read now
+        // has more turns. GROWTH ONLY: Claude transcripts are append-only per
+        // agentId, so a grown transcript that was recorded once still parses
+        // (its original valid turns remain) — the replacement parse cannot fail
+        // and leave a stale row. Shrink/rotation is intentionally NOT self-healed
+        // (it does not occur for append-only files; treating size!=stored would
+        // re-read a truncated-to-garbage file forever and could strand stale
+        // rows when the new parse yields nothing). A NULL stored size (pre-v37
+        // row) is treated as complete → never re-ingested, so a v37 upgrade does
+        // not churn existing telemetry.
         const key = compositeKey(id.sessionId, id.agentId)
         const known = existing.has(key)
         const replace = known && (() => {
           const storedSize = existing.get(key)
-          return storedSize !== null && storedSize !== undefined && size !== storedSize
+          return storedSize !== null && storedSize !== undefined && size > storedSize
         })()
         if (known && !replace) {
           result.skipped += 1
