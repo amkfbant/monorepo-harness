@@ -48,8 +48,8 @@ function seedRun(db: Database.Database, runId: string): void {
 }
 
 describe("v36 agent_invocation / agent_usage_turn migration", () => {
-  it("LATEST_SCHEMA_VERSION has advanced to v36", () => {
-    expect(LATEST_SCHEMA_VERSION).toBe(36);
+  it("LATEST_SCHEMA_VERSION is at or beyond v36", () => {
+    expect(LATEST_SCHEMA_VERSION).toBeGreaterThanOrEqual(36);
   });
 
   it("fresh migration creates the v36 telemetry tables and records version 36", () => {
@@ -262,7 +262,7 @@ describe("v36 agent_invocation / agent_usage_turn migration", () => {
     ).run();
 
     const r = runMigrations(db);
-    expect(r.applied).toEqual([36]);
+    expect(r.applied).toEqual([36, 37]);
 
     const ru = db.prepare("SELECT COUNT(*) AS c FROM run_usage").get() as {
       c: number;

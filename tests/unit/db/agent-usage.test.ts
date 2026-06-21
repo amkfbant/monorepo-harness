@@ -664,3 +664,89 @@ describe("recordAgentUsage general path (claude/external foundation, #235)", () 
     }
   });
 });
+
+describe("recordAgentUsage — fail-open completeness (#351) + source_size (#349)", () => {
+  it("[#351] a throwing onError does NOT propagate (fail-open holds)", () => {
+    const db = freshDb();
+    try {
+      // `now: invalid` makes isoNow throw inside the writer's single try, so the
+      // catch runs onError — which itself throws. recordAgentUsage must swallow
+      // it (a telemetry failure must never reach the run/orchestrate workflow).
+      expect(() =>
+        recordAgentUsage({
+          db,
+          tool: "codex",
+          role: "coder",
+          runId: "run-x",
+          usageSource: "exact",
+          turns: [],
+          now: "not-a-valid-date",
+          onError: () => {
+            throw new Error("onError boom");
+          },
+        }),
+      ).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("[#349] persists sourceSize into agent_invocation.source_size", () => {
+    const db = freshDb();
+    try {
+      recordAgentUsage({
+        db,
+        tool: "claude",
+        role: "external",
+        externalLabel: "ops-subagent",
+        sessionId: "s",
+        agentId: "a",
+        usageSource: "parsed_log",
+        sourceSize: 4096,
+        turns: [
+          {
+            turnSeq: 0,
+            model: "claude-opus-4-8",
+            inputTokens: 1,
+            outputTokens: 1,
+            usageSource: "parsed_log",
+          },
+        ],
+        onError: (e) => {
+          throw e;
+        },
+      });
+      const row = db
+        .prepare("SELECT source_size AS sz FROM agent_invocation")
+        .get() as { sz: number | null };
+      expect(row.sz).toBe(4096);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("[#349] leaves source_size NULL when not provided", () => {
+    const db = freshDb();
+    try {
+      recordAgentUsage({
+        db,
+        tool: "codex",
+        role: "coder",
+        runId: "run-y",
+        usageSource: "exact",
+        turns: [
+          { turnSeq: 0, inputTokens: 1, outputTokens: 1, usageSource: "exact" },
+        ],
+        onError: (e) => {
+          throw e;
+        },
+      });
+      const row = db
+        .prepare("SELECT source_size AS sz FROM agent_invocation")
+        .get() as { sz: number | null };
+      expect(row.sz).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+});

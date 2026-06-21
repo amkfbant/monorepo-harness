@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 36;
+export const SCHEMA_VERSION = 37;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -2116,7 +2116,10 @@ export const MIGRATION_V35_STATEMENTS: readonly string[] = [
  *   - `agent_invocation`: one row per agent process. ZERO foreign keys
  *     (advisory run/hitch/course links; external rows carry run_id NULL) — the
  *     same audit-backbone posture as the v31/v32 jury tables, so import reset /
- *     parent purge never orphans-throw on telemetry.
+ *     parent purge never orphans-throw on telemetry. RESERVED (always NULL
+ *     today, no writer): `started_at` / `exit_code` / `duration_ms` are kept for
+ *     a future process-lifecycle consumer (e.g. Phase-4), mirroring the
+ *     `run_usage.codex_model` "NULL 予約" precedent — see docs/specs/db.md.
  *   - `agent_usage_turn`: 1:N child, REAL FK ON DELETE CASCADE. UNION-nullable
  *     token columns hold BOTH taxonomies (codex: cached_input/reasoning_output;
  *     claude: cache_read + cache_creation 5m/1h) under an XOR CHECK so one row
@@ -2222,6 +2225,24 @@ export const MIGRATION_V36_STATEMENTS: readonly string[] = [
 export const V36_TABLE_NAMES = [
   "agent_invocation",
   "agent_usage_turn",
+] as const;
+
+/**
+ * v37 — agent_invocation.source_size (#206 follow-up, #349).
+ *
+ * Additive single column (no new table). The claude transcript ingest records
+ * the byte size of the source transcript it parsed. A later ingest pass
+ * re-ingests a `(session_id, agent_id)` row (delete + re-record) ONLY when the
+ * file has GROWN past the stored size — self-healing the "partial transcript
+ * frozen by the unique index" bug, where an idle-but-alive subagent transcript
+ * read mid-stream was recorded partial and never updated. Growth-only because
+ * Claude transcripts are append-only per agentId (shrink/rotation does not
+ * occur). NULL for codex rows,
+ * backfilled rows, and pre-v37 claude rows (treated as complete → never
+ * re-ingested, so a v37 upgrade does not churn existing telemetry).
+ */
+export const MIGRATION_V37_STATEMENTS: readonly string[] = [
+  `ALTER TABLE agent_invocation ADD COLUMN source_size INTEGER`,
 ] as const;
 
 /** Table names created by v1 — used by `db status` and tests. */

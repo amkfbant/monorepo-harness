@@ -9,6 +9,7 @@ import {
   listAgentTranscripts,
   claudeIdentityFromPath,
   parseAgentTranscriptFile,
+  capToken,
   type ParsedSubagentInvocation,
   type ParsedTurn,
 } from './claude-transcript-parser.js'
@@ -87,21 +88,23 @@ function resolveExistingProjectDir(opts: IngestOptions): string | null {
 }
 
 /**
- * Load the set of (session_id, agent_id) pairs already present in the DB.
- * Used to skip-before-read on subsequent passes (idempotency).
+ * Load `(session_id, agent_id) → source_size` for every claude invocation
+ * already present. Used to skip-before-read on later passes (idempotency) AND to
+ * detect a GROWN transcript that must be re-ingested (#349). source_size is NULL
+ * for pre-v37 rows (treated as complete → never re-ingested).
  */
-function loadExistingKeys(db: Database.Database): Set<string> {
+function loadExistingKeys(db: Database.Database): Map<string, number | null> {
   const rows = db
-    .prepare<[], { s: string; a: string }>(
-      `SELECT session_id AS s, agent_id AS a
+    .prepare<[], { s: string; a: string; sz: number | null }>(
+      `SELECT session_id AS s, agent_id AS a, source_size AS sz
          FROM agent_invocation
         WHERE session_id IS NOT NULL
           AND agent_id   IS NOT NULL`,
     )
     .all()
-  const set = new Set<string>()
-  for (const row of rows) set.add(compositeKey(row.s, row.a))
-  return set
+  const map = new Map<string, number | null>()
+  for (const row of rows) map.set(compositeKey(row.s, row.a), row.sz)
+  return map
 }
 
 /** Map a ParsedTurn to the AgentUsageTurnInput shape recordAgentUsage expects. */
@@ -118,8 +121,9 @@ function toTurnInput(t: ParsedTurn) {
     cacheCreation5mInputTokens: t.cacheCreation5mInputTokens,
     cacheCreation1hInputTokens: t.cacheCreation1hInputTokens,
     // Writer saves total_tokens verbatim (null when absent); derive it here so
-    // `harness usage subagents` totalTokens is non-zero.
-    totalTokens: (t.inputTokens ?? 0) + (t.outputTokens ?? 0),
+    // `harness usage subagents` totalTokens is non-zero. capToken keeps the
+    // derived sum a non-negative safe integer (the addends are already clamped).
+    totalTokens: capToken((t.inputTokens ?? 0) + (t.outputTokens ?? 0)),
   }
 }
 
@@ -128,16 +132,29 @@ function toTurnInput(t: ParsedTurn) {
  * error. The caller must not increment inserted / mark existing on false —
  * a failed write must not be treated as a successful insert.
  *
+ * identity: PATH-derived (session, agent). It — not the in-file content ids — is
+ * authoritative for keying so the skip-before-read pre-check and the stored row
+ * agree on a single identity even if a transcript's in-file sessionId drifts
+ * from its directory (#353).
+ *
  * fileMtime: the transcript file's mtime (epoch ms). Passed as `now` to
  * recordAgentUsage so agent_invocation.created_at reflects WHEN the transcript
  * was written, not when this ingest pass ran. This ensures `--since <today>`
  * queries correctly exclude historical transcripts scanned for the first time.
+ *
+ * sourceSize: the transcript byte size, persisted for grown-transcript re-ingest
+ * (#349). replace=true (a grown previously-partial transcript) deletes the old
+ * `(session, agent)` row IN THE SAME transaction (beforeWrite) so the rewrite is
+ * atomic and the FK ON DELETE CASCADE clears its stale turns.
  */
 function writeInvocation(
   db: Database.Database,
+  identity: { sessionId: string; agentId: string },
   inv: ParsedSubagentInvocation,
   opts: IngestOptions,
   fileMtime: number,
+  sourceSize: number,
+  replace: boolean,
 ): boolean {
   let ok = true
   recordAgentUsage({
@@ -145,19 +162,30 @@ function writeInvocation(
     tool: 'claude',
     role: 'external',
     usageSource: 'parsed_log',
-    sessionId: inv.sessionId,
-    agentId: inv.agentId,
+    sessionId: identity.sessionId,
+    agentId: identity.agentId,
     agentType: inv.agentType ?? null,
     externalLabel: EXTERNAL_LABEL,
     description: inv.description ?? null,
     model: inv.model ?? null,
     turns: inv.turns.map(toTurnInput),
+    sourceSize,
     now: new Date(fileMtime),
+    ...(replace
+      ? {
+          beforeWrite: () => {
+            db.prepare(
+              `DELETE FROM agent_invocation
+                WHERE session_id = ? AND agent_id = ?`,
+            ).run(identity.sessionId, identity.agentId)
+          },
+        }
+      : {}),
     onError: (e) => {
       ok = false
       safeWarn(
         opts,
-        `recordAgentUsage failed for ${inv.agentId} (fail-open): ${String(e)}`,
+        `recordAgentUsage failed for ${identity.agentId} (fail-open): ${String(e)}`,
       )
     },
   })
@@ -179,8 +207,11 @@ function readMeta(jsonlPath: string): unknown {
  * - NEVER throws — the entire body is wrapped in a single try/catch that
  *   returns a benign {scanned, inserted, skipped} on any error.
  * - Idempotent via the UNIQUE INDEX agent_invocation_session_agent_idx:
- *   pre-SELECT existing (session_id, agent_id) into a Set and skip before
- *   readFileSync so a 2nd pass inserts nothing new.
+ *   pre-SELECT existing (session_id, agent_id) → source_size and skip before
+ *   readFileSync so a 2nd pass over an UNCHANGED transcript inserts nothing new.
+ * - Self-healing (#349): a transcript that has GROWN past its stored
+ *   source_size (a previously-partial mid-stream read) is re-ingested
+ *   (delete + re-record) so its frozen partial usage is corrected.
  * - mtime settle: skip files modified within settleMs (default 30 000 ms) of
  *   now — they may still be appending.
  *
@@ -205,10 +236,13 @@ export function ingestClaudeSubagentUsage(opts: IngestOptions): IngestResult {
       const existing = loadExistingKeys(managed.db)
 
       for (const file of files) {
-        // --- mtime checks (before any file reads) ---
+        // --- stat (mtime + size) before any file reads ---
         let mtime: number
+        let size: number
         try {
-          mtime = statSync(file).mtimeMs
+          const st = statSync(file)
+          mtime = st.mtimeMs
+          size = st.size
         } catch {
           result.skipped += 1
           continue
@@ -235,8 +269,25 @@ export function ingestClaudeSubagentUsage(opts: IngestOptions): IngestResult {
           continue
         }
 
-        // --- idempotency check BEFORE readFileSync ---
-        if (existing.has(compositeKey(id.sessionId, id.agentId))) {
+        // --- idempotency / grown-transcript check BEFORE readFileSync ---
+        // Skip an unchanged transcript; re-ingest one that has GROWN past its
+        // stored source_size (#349) — a previously-partial mid-stream read now
+        // has more turns. GROWTH ONLY: Claude transcripts are append-only per
+        // agentId, so a grown transcript that was recorded once still parses
+        // (its original valid turns remain) — the replacement parse cannot fail
+        // and leave a stale row. Shrink/rotation is intentionally NOT self-healed
+        // (it does not occur for append-only files; treating size!=stored would
+        // re-read a truncated-to-garbage file forever and could strand stale
+        // rows when the new parse yields nothing). A NULL stored size (pre-v37
+        // row) is treated as complete → never re-ingested, so a v37 upgrade does
+        // not churn existing telemetry.
+        const key = compositeKey(id.sessionId, id.agentId)
+        const known = existing.has(key)
+        const replace = known && (() => {
+          const storedSize = existing.get(key)
+          return storedSize !== null && storedSize !== undefined && size > storedSize
+        })()
+        if (known && !replace) {
           result.skipped += 1
           continue
         }
@@ -249,15 +300,15 @@ export function ingestClaudeSubagentUsage(opts: IngestOptions): IngestResult {
           continue
         }
 
-        // --- write ---
-        const wrote = writeInvocation(managed.db, inv, opts, mtime)
+        // --- write (path-authoritative identity; replace deletes the stale row) ---
+        const wrote = writeInvocation(managed.db, id, inv, opts, mtime, size, replace)
 
         // Guard within-pass duplicates only when the write succeeded.
-        // A failed write (onError path) must not increment inserted or mark
-        // the key as existing — the cross-pass UNIQUE index + pre-SELECT
-        // still guarantee idempotency on retry.
+        // A failed write (onError path) must not update the size map or count —
+        // the cross-pass UNIQUE index + pre-SELECT still guarantee idempotency
+        // on retry.
         if (wrote) {
-          existing.add(compositeKey(inv.sessionId, inv.agentId))
+          existing.set(key, size)
           result.inserted += 1
         }
       }

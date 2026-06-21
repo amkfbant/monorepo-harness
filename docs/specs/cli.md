@@ -2183,7 +2183,7 @@ codex がネイティブに処理し、ラッパーは触れない。最終メ�
 
 - **`HARNESS_CODEX_BIN` を尊重**: `HARNESS_CODEX_BIN` 環境変数が設定されていれば、ラッパーはその値を codex バイナリとして使用する（ハーネスの他の CLI と同様）。
 - **明示的 `--json` → raw JSONL 出力**: ユーザーが `--json` を明示的に指定した場合（例: `harness codex exec --json ... | jq`）、ラッパーは最終メッセージを再構築せず raw JSONL events をそのまま stdout へ書き出す。`--json` を省略した場合はラッパーが透過的に注入し、最終メッセージを再構築して出力する（既存の動作）。
-- **root-option-named フラグの透過**: ラッパーは `program.rawArgs`（Commander が `parseAsync` 時に設定する verbatim argv）から `exec` 以降をスライスしてパススルーを構築する。これにより、root オプション（`--repo`, `--project` 等）として Commander に消費されても codex へ verbatim で転送される。ただし、`-v`/`--version` のように Commander が即時終了するオプションは Commander の設計上 action に到達しない（`--` セパレータ経由で回避可能）。
+- **root-option-named フラグの透過**: ラッパーは `program.rawArgs`（Commander が `parseAsync` 時に設定する verbatim argv）から `exec` 以降をスライスしてパススルーを構築する。これにより、root オプション（`--repo`, `--project` 等）として Commander に消費されても codex へ verbatim で転送される。ただし、`-v`/`--version` や `-h`/`--help` のように Commander が即時終了するオプションは Commander の設計上 action に到達しない（任意位置でも横取りされる。codex 自身の `-h` を見たい場合は `--` セパレータ経由で回避: `harness codex exec -- --help`）。
 - **spawn 失敗時は DB 記録しない**: codex が起動できなかった場合（exitCode:127 かつ eventsContent が空）、`agent_invocation` 行は書き込まない。exit code は 127 として伝播する。
 
 ## `harness usage`
@@ -2207,11 +2207,14 @@ harness usage subagents [--since <iso>] [--json]
 サブエージェントを呼び出した際のトークン消費を可視化する。コスト属性付けは Phase-4
 （`#191`）で追加予定。
 
-**fail-open tail**: DB が存在しない、または `agent_invocation` テーブルが存在しない
-（schema v36 未満）場合は、stderr に diagnostic を 1 行出した上で zero-shaped summary
-（`rows: []`, `totals: { invocations: 0, ... }`）を出力する。ops shell スクリプトが
-未初期化環境でクラッシュしないよう fail-open 設計を採る。`readonly: true` 開放で
-migrations を実行しない（観測コマンドが DB を変更しない）。
+**fail-open tail (#351)**: 次のいずれでも stderr に diagnostic を 1 行出した上で
+zero-shaped summary（`rows: []`, `totals: { invocations: 0, ... }`）を返し、ハード
+exit しない: ① DB ファイルが無い ② `agent_invocation` テーブルが無い（schema v36 未満）
+③ **DB が corrupt**（"file is not a database"）④ **共有ロック取得タイムアウト**（EXCLUSIVE
+maintenance ロック保持下。観測コマンドは短い 2s timeout で即 fail-open し default 30s で
+ブロックしない）。DB open とその後のクエリの両方を try で囲む。ops shell スクリプトが
+未初期化・メンテ中環境でクラッシュしないための設計。`readonly: true` 開放で migrations を
+実行しない（観測コマンドが DB を変更しない）。
 
 **ingest trigger**: `harness course orchestrate` / `harness hitch orchestrate` は
 正常完了 tail で `ingestClaudeSubagentUsage` を自動呼び出しする（dry-run は

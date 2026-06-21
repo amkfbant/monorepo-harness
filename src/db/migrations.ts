@@ -38,6 +38,7 @@ import {
   MIGRATION_V34_STATEMENTS,
   MIGRATION_V35_STATEMENTS,
   MIGRATION_V36_STATEMENTS,
+  MIGRATION_V37_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -232,6 +233,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 36,
     name: "agent-usage-telemetry-v36",
     statements: MIGRATION_V36_STATEMENTS,
+  },
+  {
+    version: 37,
+    name: "agent-invocation-source-size-v37",
+    statements: MIGRATION_V37_STATEMENTS,
   },
 ];
 

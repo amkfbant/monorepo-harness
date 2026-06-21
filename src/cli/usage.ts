@@ -23,6 +23,12 @@ import { writeOutput } from "./course/helpers.js";
  *
  * Read before editing: docs/specs/cli.md ##`harness usage`
  */
+/**
+ * Short lock-acquire timeout for this observational command. Under a held
+ * EXCLUSIVE maintenance lock the default (30s) would block; 2s fails open fast.
+ */
+const USAGE_LOCK_TIMEOUT_MS = 2000;
+
 export function registerUsageCommands(
   program: Command,
   deps: { getHarnessRoot: () => string },
@@ -52,7 +58,26 @@ export function registerUsageCommands(
       }
 
       // readonly: true — must NOT runMigrations on an observational command.
-      const managed = openManagedDb({ dbPath: paths.dbPath, readonly: true });
+      // Fail-open (#351): a corrupt DB ("file is not a database") or a
+      // shared-lock acquire timeout under a held EXCLUSIVE maintenance lock must
+      // yield the zero summary, NOT a hard exit. Short timeout so lock
+      // contention fails fast instead of blocking the default 30s.
+      let managed: ReturnType<typeof openManagedDb>;
+      try {
+        managed = openManagedDb({
+          dbPath: paths.dbPath,
+          readonly: true,
+          timeoutMs: USAGE_LOCK_TIMEOUT_MS,
+        });
+      } catch (e) {
+        process.stderr.write(
+          `usage: cannot open DB (${e instanceof Error ? e.message : String(e)}). ` +
+            "Emitting zero summary.\n",
+        );
+        const empty = buildZeroSummary();
+        writeOutput(opts, empty, formatSubagentUsageText(empty));
+        return;
+      }
       try {
         // Fail-open: tables missing (schema pre-v36) → zero-shaped summary.
         const hasTable = managed.db
@@ -74,6 +99,14 @@ export function registerUsageCommands(
         const filter = since !== undefined ? { since } : {};
         const summary = subagentUsageSummary(managed.db, filter);
         writeOutput(opts, summary, formatSubagentUsageText(summary));
+      } catch (e) {
+        // Any read-side failure (corrupt page, etc.) is fail-open too.
+        process.stderr.write(
+          `usage: query failed (${e instanceof Error ? e.message : String(e)}). ` +
+            "Emitting zero summary.\n",
+        );
+        const empty = buildZeroSummary();
+        writeOutput(opts, empty, formatSubagentUsageText(empty));
       } finally {
         managed.close();
       }

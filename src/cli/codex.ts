@@ -12,6 +12,7 @@ import {
 import { parseCodexTurns, sumCodexTurns } from "../codex/usage-parser.js";
 import { recordAgentUsage } from "../db/repositories/agent-usage.js";
 import { codexTurnInputs } from "../db/repositories/run-usage.js";
+import { runMigrations } from "../db/migrations.js";
 
 interface CodexDeps {
   runExternalCodex: typeof defaultRunExternalCodex;
@@ -64,6 +65,12 @@ function recordExternal(u: ExternalUsage): void {
   try {
     const handle = openManagedDb({ dbPath, timeoutMs: EXTERNAL_RECORD_LOCK_TIMEOUT_MS });
     try {
+      // Bring the DB to the current schema before writing. Without this, a DB
+      // still at an older schema (e.g. v36 before the v37 source_size column)
+      // makes the agent_invocation INSERT fail with "no such column" and the
+      // external usage is silently lost. All sibling write paths (run workflow,
+      // reviewer/evaluator, claude ingest) migrate first; this one must too.
+      runMigrations(handle.db);
       const turns = parseCodexTurns(u.eventsContent);
       const summary = sumCodexTurns(turns);
       recordAgentUsage({
@@ -126,7 +133,9 @@ export function registerCodexCommands(
       const execIdx = codexIdx !== -1 ? raw.indexOf("exec", codexIdx + 1) : -1;
       const rawSlice = execIdx !== -1 ? raw.slice(execIdx + 1) : _cmd.args;
       const { wrapper, codexArgs } = splitHarnessFlags(rawSlice);
-      const model = sniffModel(codexArgs);
+      // Normalize an empty model (e.g. malformed `-m=`) to null so telemetry
+      // honours the "absent → NULL" contract instead of storing "" (#351).
+      const model = sniffModel(codexArgs) || null;
       // P2-e: skip spawn entirely when codex cannot be started — exitCode:127 +
       // eventsContent:"" is the exact shape runExternalCodex returns on ENOENT/
       // EACCES. Recording a row in that case would accumulate spurious

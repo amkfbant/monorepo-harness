@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V35_STATEMENTS`、
-> `SCHEMA_VERSION = 36`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V37_STATEMENTS`、
+> `SCHEMA_VERSION = 37`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -733,7 +733,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 36`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 37`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -770,6 +770,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 34 | hitch divergence recovery #280 | `hitch_lifecycle_events.event` CHECK を rebuild で拡張し `diverging_recovered` を許容（v23/v29 の FK/NOT NULL/index は維持）。`hitch recover-diverging` の audit イベント |
 | 35 | artifact quarantine marker #303 | `artifacts.quarantined INTEGER NOT NULL DEFAULT 0`（additive 列）。db-first full sync が absent ∧ recoverable な行のうち**意図的に quarantine された行だけ**を保持し、superseded 行（成功 retry が消した stale `reviewers/<id>/review-auto-error.json` 等）を prune するための marker。**upgrade 安全のため backfill 同梱**: 同 migration で `UPDATE artifacts SET quarantined = 1 WHERE storage IN ('db','external') AND blob_sha256 IS NOT NULL`——pre-v35 の「absent recoverable 行を全保持」を grandfather し、v34 の #272-quarantined transcript が次回 sync で `quarantined = 0` として誤 prune されるのを防ぐ。詳細は `docs/specs/workflow.md` の reviewer quarantine 節 |
 | 36 | agent usage telemetry #206 Phase-1 | additive: DB-only `agent_invocation`（ZERO FK・1 invocation/row）+ `agent_usage_turn`（REAL FK ON DELETE CASCADE・per-turn・UNION-nullable token 列を codex/claude 両 taxonomy で保持し XOR CHECK）を `run_usage` と並置。`recordAgentUsage` が単一 `BEGIN IMMEDIATE` で run_usage（model 以外 byte-identical な dual-write）+ 2 新表を both-or-neither 書込。backfill: run_usage 1 行 → invocation 1（`bf:<run>:<kind>:<seq>` surrogate）+ turn_seq=0 turn 1（列 verbatim・`INSERT OR IGNORE` 冪等）。**NO view**——run_usage が legacy read surface のまま。下記「Agent usage telemetry」節 |
+| 37 | agent usage telemetry follow-up #206 / #349 | additive 単一列: `agent_invocation.source_size INTEGER`（`ALTER TABLE ADD COLUMN`）。claude transcript ingest が parse 元 transcript の byte size を記録し、後続 pass が **grown transcript を検知して再 ingest（self-heal）** するのに使う（partial freeze の解消）。codex / external / backfill / v37 以前の行は NULL（= complete 扱い・再 ingest しない） |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -1206,13 +1207,16 @@ CREATE TABLE agent_invocation (
   agent_type     TEXT,
   external_label TEXT,
   invocation_seq INTEGER NOT NULL DEFAULT 0,  -- codex は run_usage.seq と lock-step
-  started_at     TEXT,
-  exit_code      INTEGER,
-  duration_ms    INTEGER,
+  started_at     TEXT,               -- 予約: 常に NULL・writer なし。将来の process-
+  exit_code      INTEGER,            --   lifecycle consumer 用（run_usage.codex_model の
+  duration_ms    INTEGER,            --   "NULL 予約" 慣習に倣う）
   description    TEXT,               -- writer 側で HARD-TRUNCATE（2000 字）
   usage_source   TEXT NOT NULL
     CHECK (usage_source IN ('exact','parsed_log','estimated','unavailable')),
   created_at     TEXT NOT NULL,
+  source_size    INTEGER,            -- v37 (#349): parse した transcript の byte size
+                                     --   （claude のみ）。grown transcript の再 ingest 判定。
+                                     --   ALTER 追加ゆえ物理的には末尾列
   CHECK (role = 'external' OR run_id IS NOT NULL),
   CHECK ((session_id IS NULL) = (agent_id IS NULL)),
   CHECK (tool <> 'codex' OR (session_id IS NULL AND agent_id IS NULL))
@@ -1281,13 +1285,24 @@ transcript を `~/.claude/projects/<encoded-launch-cwd>/` に書き出す。Phas
   全体を単一 try-catch で包み、エラー時は `{scanned, inserted, skipped}` を返す
   だけで呼び出し元に propagate しない（fail-open 設計）。
 - **mtime settle**: デフォルト 30 秒以内に修正されたファイルはスキップする。
-  書き込み中のファイルを半端に読んで UNIQUE INDEX 衝突で以後 skipped に固定されるのを防ぐ。
-- **skip-before-read**: 既存の `(session_id, agent_id)` ペアを DB から事前ロードし、
-  `readFileSync` の前に skip 判定する。2 回目以降の pass でファイルを読まずにスキップ。
-- **in-flight transcript の under-count**: mtime settle をパスした時点でファイルが
-  まだ書き込み中の場合、その transcript は途中行しか読まれない（last-in-flight
-  under-count）。次 pass で再 ingest しても session×agent UNIQUE INDEX により空振り
-  になる（2 度書きなし）。これは設計上の制約で許容済み。
+  書き込み中のファイルを半端に読むのを一次的に防ぐ（生きていても 30 秒無更新の
+  transcript はすり抜け得るため、下の size-aware re-ingest が二次防御）。
+- **skip-before-read / size-aware re-ingest（#349）**: 既存の
+  `(session_id, agent_id) → source_size` を DB から事前ロードし `readFileSync` 前に判定。
+  サイズ不変なら skip（2 回目以降は空振り）。**サイズが増えていれば**（settle 通過後も
+  生きていた transcript を途中で読んでいた場合）同一 transaction 内で旧 invocation を
+  DELETE（FK CASCADE で turn も削除）→ 再記録して partial を self-heal する。grown のみ
+  対象（Claude transcript は agentId 単位で append-only ゆえ shrink/rotation は起きない。
+  size!=stored にすると truncate-to-garbage を毎回再読込し、再 parse が空のとき stale 行を
+  残し得るため growth-only とする）。`source_size` が NULL の行（v37 以前）は complete と
+  みなし再 ingest しない（v37 upgrade で既存 telemetry を churn させない）。
+- **path-authoritative identity（#353）**: keying は path 由来 `(session, agent)` を
+  権威とする。in-file の `sessionId` が dir 名と食い違っても skip-before-read の pre-check
+  と格納行が同一 key で一致する。
+- **parser hardening（#350）**: transcript は untrusted 入力。非 object な valid-JSON 行
+  （`null` 等）は skip（pass 全体を止めない）/ token 値は非負整数かつ `MAX_SAFE_INTEGER`
+  以下に clamp / `cache_creation` の flat 欠落時は `5m+1h` で補完 / 再帰 scan は symlink を
+  たどらない。
 - **ops launch-cwd 単一 dir scope**: `resolveClaudeProjectDir` は `harnessRoot` を
   encode した 1 ディレクトリのみを走査する。複数の launch cwd を跨ぐ横断 ingest は
   Phase-4 以降の拡張対象。

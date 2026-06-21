@@ -4,8 +4,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
 import { openDb } from "../../src/db/connection.js";
-import { runMigrations } from "../../src/db/migrations.js";
+import { runMigrations, MIGRATIONS } from "../../src/db/migrations.js";
 import { registerCodexCommands } from "../../src/cli/codex.js";
+
+/** A harness root whose DB is migrated ONLY through v36 (pre-source_size). */
+function harnessRootAtV36(): string {
+  const root = mkdtempSync(join(tmpdir(), "harness-extcodex-v36-"));
+  const db = openDb(join(root, ".harness", "harness.sqlite"));
+  db.prepare(
+    `CREATE TABLE IF NOT EXISTS schema_migrations
+       (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`,
+  ).run();
+  const ins = db.prepare(
+    "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+  );
+  for (const m of [...MIGRATIONS]
+    .filter((m) => m.version <= 36)
+    .sort((a, b) => a.version - b.version)) {
+    for (const s of m.statements) db.prepare(s).run();
+    ins.run(m.version, m.name, "2026-01-01T00:00:00Z");
+  }
+  db.close();
+  return root;
+}
 
 function harnessRootWithDb(): string {
   const root = mkdtempSync(join(tmpdir(), "harness-extcodex-"));
@@ -558,6 +579,79 @@ describe("harness codex exec (external usage)", () => {
         expect(
           (db.prepare("SELECT count(*) AS n FROM agent_invocation").get() as { n: number }).n,
         ).toBe(0);
+      } finally {
+        db.close();
+      }
+    } finally {
+      process.exitCode = 0;
+      delete process.env.HARNESS_ROOT;
+    }
+  });
+
+  it("[#349/#351] migrates a v36 DB before recording (no 'no such column: source_size')", async () => {
+    const root = harnessRootAtV36();
+    process.env.HARNESS_ROOT = root;
+    try {
+      const program = new Command();
+      program.exitOverride();
+      registerCodexCommands(program, {
+        runExternalCodex: async () => ({
+          exitCode: 0,
+          eventsContent: usageJsonl(50, 10),
+        }),
+        writeStdout: () => {},
+      } as never);
+      await program.parseAsync([
+        "node", "harness", "codex", "exec", "--harness-label=pr", "-m", "gpt-5.5", "p",
+      ]);
+
+      const db = openDb(join(root, ".harness", "harness.sqlite"));
+      try {
+        const cols = (
+          db.prepare("PRAGMA table_info(agent_invocation)").all() as {
+            name: string;
+          }[]
+        ).map((r) => r.name);
+        expect(cols).toContain("source_size"); // v37 applied by recordExternal
+        const n = (
+          db
+            .prepare(
+              "SELECT COUNT(*) AS n FROM agent_invocation WHERE role='external'",
+            )
+            .get() as { n: number }
+        ).n;
+        expect(n).toBe(1); // recorded — would be 0 if the INSERT hit a missing column
+      } finally {
+        db.close();
+      }
+    } finally {
+      process.exitCode = 0;
+      delete process.env.HARNESS_ROOT;
+    }
+  });
+
+  it("[#351] empty `-m=` model is normalized to NULL (not stored as '')", async () => {
+    const root = harnessRootWithDb();
+    process.env.HARNESS_ROOT = root;
+    try {
+      const program = new Command();
+      program.exitOverride();
+      registerCodexCommands(program, {
+        runExternalCodex: async () => ({
+          exitCode: 0,
+          eventsContent: usageJsonl(10, 5),
+        }),
+        writeStdout: () => {},
+      } as never);
+      await program.parseAsync([
+        "node", "harness", "codex", "exec", "--harness-label=pr", "-m=", "p",
+      ]);
+      const db = openDb(join(root, ".harness", "harness.sqlite"));
+      try {
+        const row = db
+          .prepare("SELECT model FROM agent_invocation WHERE role='external'")
+          .get() as { model: string | null };
+        expect(row.model).toBeNull(); // empty -m= → NULL, not ""
       } finally {
         db.close();
       }

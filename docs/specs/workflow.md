@@ -325,7 +325,12 @@ redaction の raw 読み込み、redacted tmp 書き込み、または `codex-ev
 `run_usage` に `kind='coder'` の invocation row を INSERT する。`seq` は同一
 `(run_id, kind)` 内で採番し、lease guard / seq 採番 / INSERT は同じ `BEGIN IMMEDIATE`
 transaction 内で行う。`turn.completed.usage` が正常に読める場合は
-`usage_source='exact'`、複数 turn は token fields を合算する。events file が無い /
+`usage_source='exact'`、複数 turn は token fields を合算する。**INVARIANT (#353)**:
+`turn.completed.usage` は per-turn **incremental**（その turn の delta）前提で合算する。
+`codex exec` はステートレス単発で 1 invocation=1 `turn.completed` が実測（実機
+174/174 ファイルが単一 turn）なので合算は単一行に対して行われる。将来 codex が
+複数 turn を **cumulative**（累積）で出すようになると過大計上になるため、その際は
+複数 turn を anomaly 扱いし本前提を再検証する。events file が無い /
 読めない / 空 / JSON parse 不可 / `turn.completed.usage` 無しの場合も run は止めず、
 `usage_source='unavailable'` かつ token fields `NULL` の行を明示的に記録する。
 `parsed_log` / `estimated` は予約値であり、G1 の workflow は書き込まない。

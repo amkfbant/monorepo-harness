@@ -43,7 +43,7 @@ function seedSchemaThroughV30(db: Database.Database): void {
 
 describe("v31 migration", () => {
   it("LATEST_SCHEMA_VERSION has advanced beyond shipped v31", () => {
-    expect(LATEST_SCHEMA_VERSION).toBe(36);
+    expect(LATEST_SCHEMA_VERSION).toBeGreaterThan(31);
   });
 
   it("fresh migration creates the shipped v31 jury tables and records version 31", () => {
