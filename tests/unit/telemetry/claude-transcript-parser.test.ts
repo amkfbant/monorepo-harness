@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -163,5 +168,124 @@ describe("parseAgentTranscriptFile — agentId agent- prefix strip", () => {
     expect(inv).not.toBeNull();
     // After strip: agent-pfx → pfx (matching path-derived id "pfx")
     expect(inv!.agentId).toBe("pfx");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #350: untrusted-input hardening.
+// ---------------------------------------------------------------------------
+describe("parseAgentTranscriptFile — untrusted input hardening (#350)", () => {
+  function fileWith(lines: string[]): string {
+    const dir = mkdtempSync(join(tmpdir(), "hard-test-"));
+    const sessDir = join(dir, "sess-h", "subagents");
+    mkdirSync(sessDir, { recursive: true });
+    const p = join(sessDir, "agent-h.jsonl");
+    writeFileSync(p, lines.join("\n") + "\n");
+    return p;
+  }
+  const VALID =
+    '{"type":"assistant","sessionId":"sess-h","agentId":"h","message":{"model":"claude-opus-4-8","usage":{"input_tokens":5,"output_tokens":2}}}';
+
+  it("[#350a] a `null` (valid-JSON non-object) line does NOT throw and is skipped", () => {
+    // Before the fix this threw `Cannot read properties of null` and aborted the
+    // whole ingest pass. The valid line must still parse.
+    const p = fileWith(["null", "123", '"str"', "[]", VALID]);
+    let inv;
+    expect(() => {
+      inv = parseAgentTranscriptFile(p, null);
+    }).not.toThrow();
+    expect(inv).not.toBeNull();
+    expect(inv!.turns).toHaveLength(1);
+    expect(inv!.turns[0].inputTokens).toBe(5);
+  });
+
+  it("[#350b] num() clamps negative / fractional / huge token values to 0", () => {
+    const BAD =
+      '{"type":"assistant","sessionId":"sess-h","agentId":"h","message":{"model":"claude-opus-4-8","usage":{"input_tokens":-100,"output_tokens":1.5,"cache_read_input_tokens":1e308}}}';
+    const inv = parseAgentTranscriptFile(fileWith([BAD]), null);
+    expect(inv).not.toBeNull();
+    const t = inv!.turns[0];
+    expect(t.inputTokens).toBe(0); // negative → 0
+    expect(t.outputTokens).toBe(0); // fractional → 0
+    expect(t.cacheReadInputTokens).toBe(0); // non-integer/huge → 0
+  });
+
+  it("[#350d] cache_creation falls back to 5m+1h when the flat total is absent", () => {
+    const SPLIT_ONLY =
+      '{"type":"assistant","sessionId":"sess-h","agentId":"h","message":{"model":"claude-opus-4-8","usage":{"input_tokens":1,"output_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":4,"ephemeral_1h_input_tokens":6}}}}';
+    const inv = parseAgentTranscriptFile(fileWith([SPLIT_ONLY]), null);
+    expect(inv).not.toBeNull();
+    // flat absent → derived 4+6=10 so the flat-column aggregate is not zeroed
+    expect(inv!.turns[0].cacheCreationInputTokens).toBe(10);
+    expect(inv!.turns[0].cacheCreation5mInputTokens).toBe(4);
+    expect(inv!.turns[0].cacheCreation1hInputTokens).toBe(6);
+  });
+
+  it("[#350d] cache_creation prefers the flat total when present (no double counting)", () => {
+    const BOTH =
+      '{"type":"assistant","sessionId":"sess-h","agentId":"h","message":{"model":"claude-opus-4-8","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":10,"cache_creation":{"ephemeral_5m_input_tokens":4,"ephemeral_1h_input_tokens":6}}}}';
+    const inv = parseAgentTranscriptFile(fileWith([BOTH]), null);
+    expect(inv!.turns[0].cacheCreationInputTokens).toBe(10); // flat, not 10+10
+  });
+
+  it("[#350d] falls back to 5m+1h when the flat total is present but INVALID", () => {
+    // flat is a number but negative → invalid → must fall back to the split.
+    const BAD_FLAT =
+      '{"type":"assistant","sessionId":"sess-h","agentId":"h","message":{"model":"claude-opus-4-8","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":-5,"cache_creation":{"ephemeral_5m_input_tokens":4,"ephemeral_1h_input_tokens":6}}}}';
+    const inv = parseAgentTranscriptFile(fileWith([BAD_FLAT]), null);
+    expect(inv!.turns[0].cacheCreationInputTokens).toBe(10); // 4+6, not clamped-0
+  });
+
+  it("[#350b] caps a DERIVED cache_creation sum to MAX_SAFE_INTEGER (not 2x)", () => {
+    const M = Number.MAX_SAFE_INTEGER;
+    const SUM = `{"type":"assistant","sessionId":"sess-h","agentId":"h","message":{"model":"claude-opus-4-8","usage":{"input_tokens":1,"output_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":${M},"ephemeral_1h_input_tokens":${M}}}}}`;
+    const inv = parseAgentTranscriptFile(fileWith([SUM]), null);
+    // each addend passes num() (=M); the fallback sum 2M is capped back to M
+    expect(inv!.turns[0].cacheCreationInputTokens).toBe(M);
+  });
+});
+
+describe("listAgentTranscripts — symlink safety (#350c)", () => {
+  it("does NOT follow a symlinked directory or a symlinked file", () => {
+    const project = mkdtempSync(join(tmpdir(), "proj-"));
+    const real = join(project, "sess-r", "subagents");
+    mkdirSync(real, { recursive: true });
+    writeFileSync(join(real, "agent-real.jsonl"), "{}\n");
+
+    // A transcript OUTSIDE the project tree that a symlink would otherwise reach.
+    const outside = mkdtempSync(join(tmpdir(), "outside-"));
+    const outsideSub = join(outside, "sess-x", "subagents");
+    mkdirSync(outsideSub, { recursive: true });
+    writeFileSync(join(outsideSub, "agent-evil.jsonl"), "{}\n");
+
+    // 1) symlinked DIRECTORY under the project pointing at the outside tree.
+    symlinkSync(outside, join(project, "linked-session"));
+    // 2) symlinked FILE under a real subagents dir.
+    symlinkSync(
+      join(outsideSub, "agent-evil.jsonl"),
+      join(real, "agent-link.jsonl"),
+    );
+
+    const files = listAgentTranscripts(project);
+    expect(files.some((f) => f.endsWith("agent-real.jsonl"))).toBe(true);
+    expect(files.some((f) => f.includes("agent-evil.jsonl"))).toBe(false);
+    expect(files.some((f) => f.endsWith("agent-link.jsonl"))).toBe(false);
+  });
+
+  it("[#350c] does NOT over-match when projectDir itself is named 'subagents'", () => {
+    // The match is anchored on the path RELATIVE to projectDir, so a `subagents`
+    // component in projectDir (or an ancestor) must not pull in a stray
+    // agent-*.jsonl that is not actually under a <session>/subagents/ dir.
+    const base = mkdtempSync(join(tmpdir(), "anc-"));
+    const project = join(base, "subagents"); // last component is exactly 'subagents'
+    mkdirSync(project, { recursive: true });
+    writeFileSync(join(project, "agent-stray.jsonl"), "{}\n"); // directly under projectDir
+    const real = join(project, "sess-1", "subagents");
+    mkdirSync(real, { recursive: true });
+    writeFileSync(join(real, "agent-real.jsonl"), "{}\n");
+
+    const files = listAgentTranscripts(project);
+    expect(files.some((f) => f.endsWith("agent-real.jsonl"))).toBe(true);
+    expect(files.some((f) => f.endsWith("agent-stray.jsonl"))).toBe(false);
   });
 });

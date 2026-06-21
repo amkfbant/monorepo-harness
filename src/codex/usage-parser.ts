@@ -70,6 +70,14 @@ function integerField(
  * malformed/partial usage object the whole run's turns are discarded. The
  * summed `run_usage` row would otherwise be partial and untrustworthy, and the
  * pre-#206 `parseCodexUsage` made the same choice.
+ *
+ * INVARIANT — per-turn INCREMENTAL (not cumulative): each `turn.completed.usage`
+ * is the delta for THAT turn, so `sumCodexTurns` adds them. `codex exec` is
+ * stateless single-shot and emits ONE `turn.completed` per invocation in
+ * practice (174/174 real `codex-events.jsonl` files scanned, #353), so the sum
+ * is over a single row. If a future codex ever emitted CUMULATIVE running totals
+ * across multiple `turn.completed` events, summing would over-count — treat
+ * multiple turns as an anomaly and re-validate this assumption then.
  */
 export function parseCodexTurns(content: string): CodexTurnUsage[] {
   try {

@@ -40,6 +40,14 @@ const ZERO_TOTALS: Omit<SubagentUsageRow, "agentType" | "model"> = {
  *
  * roles defaults to ['external'] (ops subagents). Pass additional roles
  * (e.g. ['reviewer']) for Phase-4 internal-claude attribution.
+ *
+ * MODEL ATTRIBUTION (#353): rows are grouped by `i.model`, the INVOCATION-level
+ * model (= the first turn's model). If a single subagent invocation mixed models
+ * across turns (rare — a Claude Code subagent runs under one model in practice),
+ * all of its turn tokens are attributed to that first-turn model. Grand totals
+ * are unaffected (they reduce over all rows); only the per-model split row is a
+ * simplification. Switch the GROUP BY to `t.model` if true per-turn-model
+ * attribution is ever required.
  */
 export function subagentUsageSummary(
   db: Database.Database,

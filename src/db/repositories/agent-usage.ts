@@ -78,6 +78,12 @@ export interface RecordAgentUsageInput {
   agentId?: string | null;
   agentType?: string | null;
   externalLabel?: string | null;
+  /**
+   * Byte size of the source transcript this invocation was parsed from (#349,
+   * schema v37). Persisted so the claude ingest can detect a GROWN (previously
+   * partial) transcript and re-ingest it. NULL for codex / external / backfill.
+   */
+  sourceSize?: number | null;
   description?: string | null;
   /** Invocation-level usage source (matches the legacy `run_usage` row). */
   usageSource: UsageSource;
@@ -115,10 +121,16 @@ function truncateDescription(
 }
 
 /**
- * Live invocation id. External rows use a readable composite key; identity-
- * bearing claude rows hash their `(session, agent, role, seq)`; codex rows hash
- * `(run, role, seq)`. Backfilled rows use a `bf:` surrogate (pure SQL) — the
- * three namespaces are disjoint so live and backfill never collide.
+ * Live invocation id, in one of three disjoint namespaces so live and backfill
+ * never collide:
+ *   - `ext:<sha256>` — ANY row carrying an external_label. The current claude
+ *     consumer (ingest) always sets external_label='ops-subagent', so claude
+ *     rows land HERE (the ext: hash still includes session+agent, so it is
+ *     injective per (label,session,agent,run,role,seq)).
+ *   - `<sha256>` (bare hex) — codex rows hash `(run, role, seq)`. The bare-hex
+ *     `(session, agent, role, seq)` branch is RESERVED for a future label-less
+ *     claude consumer (e.g. Phase-4 internal claude); no caller hits it today.
+ *   - `bf:<run>:<kind>:<seq>` — the v36 backfill surrogate (pure SQL).
  */
 function sha256Hex(parts: readonly string[]): string {
   return createHash("sha256").update(parts.join("\0")).digest("hex");
@@ -238,10 +250,11 @@ function insertInvocation(
       `INSERT INTO agent_invocation
          (invocation_id, tool, role, model, run_id, hitch_id, course_id,
           session_id, agent_id, agent_type, external_label, invocation_seq,
-          description, usage_source, created_at)
+          description, usage_source, source_size, created_at)
        VALUES (@invocation_id, @tool, @role, @model, @run_id, @hitch_id,
                @course_id, @session_id, @agent_id, @agent_type, @external_label,
-               @invocation_seq, @description, @usage_source, @created_at)`,
+               @invocation_seq, @description, @usage_source, @source_size,
+               @created_at)`,
     )
     .run({
       invocation_id: invocationId,
@@ -258,6 +271,7 @@ function insertInvocation(
       invocation_seq: seq,
       description,
       usage_source: input.usageSource,
+      source_size: input.sourceSize ?? null,
       created_at: createdAt,
     });
 }
@@ -331,6 +345,13 @@ export function recordAgentUsage(input: RecordAgentUsageInput): void {
     });
     tx.immediate();
   } catch (error) {
-    input.onError?.(error);
+    // Fail-open MUST hold even if the caller's onError itself throws (e.g. a
+    // process.stderr.write hitting EPIPE): a telemetry failure must never
+    // propagate into the run/review/orchestrate workflow (#351).
+    try {
+      input.onError?.(error);
+    } catch {
+      // swallow — telemetry is best-effort
+    }
   }
 }

@@ -202,4 +202,86 @@ describe('ingestClaudeSubagentUsage', () => {
       m.close()
     }
   })
+
+  // ---------------------------------------------------------------------------
+  // #349: a transcript ingested partial (mid-stream) must SELF-HEAL when it
+  // later grows past its stored source_size — the previously-frozen row is
+  // re-ingested with the complete usage instead of staying partial forever.
+  // ---------------------------------------------------------------------------
+  it('[#349] re-ingests a GROWN transcript and corrects the frozen partial usage', () => {
+    const harnessRoot = mkdtempSync(join(tmpdir(), 'hr-grow-'))
+    mkdirSync(join(harnessRoot, '.harness'), { recursive: true })
+    const claudeProjectDir = mkdtempSync(join(tmpdir(), 'cpd-grow-'))
+    const dir = join(claudeProjectDir, 'sess-1', 'subagents')
+    mkdirSync(dir, { recursive: true })
+    const jsonlPath = join(dir, 'agent-aaa.jsonl')
+
+    // Pass 1: only the first turn is present (a mid-stream partial read).
+    writeFileSync(jsonlPath, TURN_LINE_1)
+    const r1 = ingestClaudeSubagentUsage({ harnessRoot, claudeProjectDir, settleMs: 0 })
+    expect(r1.inserted).toBe(1)
+    let m = dbAt(harnessRoot)
+    try {
+      expect(subagentUsageSummary(m.db).totals.totalTokens).toBe(30) // 10+20
+      expect(countTurns(m.db)).toBe(1)
+    } finally {
+      m.close()
+    }
+
+    // Pass 2: the transcript has GROWN (second turn appended).
+    writeFileSync(jsonlPath, TURN_LINE_1 + TURN_LINE_2)
+    const r2 = ingestClaudeSubagentUsage({ harnessRoot, claudeProjectDir, settleMs: 0 })
+    expect(r2.inserted).toBe(1) // a write happened (replacement)
+    m = dbAt(harnessRoot)
+    try {
+      // still ONE invocation (unique session+agent), now with BOTH turns + the
+      // corrected total (33), not the frozen partial 30.
+      expect(countInvocations(m.db)).toBe(1)
+      expect(countTurns(m.db)).toBe(2)
+      expect(subagentUsageSummary(m.db).totals.totalTokens).toBe(33)
+    } finally {
+      m.close()
+    }
+
+    // Pass 3: unchanged size → idempotent skip (no churn).
+    const r3 = ingestClaudeSubagentUsage({ harnessRoot, claudeProjectDir, settleMs: 0 })
+    expect(r3.inserted).toBe(0)
+  })
+
+  // ---------------------------------------------------------------------------
+  // #353: path-derived identity is authoritative for keying. Even if the in-file
+  // sessionId drifts from the directory name, the row is stored under the PATH
+  // identity so the skip-before-read pre-check and the stored key agree.
+  // ---------------------------------------------------------------------------
+  it('[#353] stores the row under the PATH identity, not the in-file sessionId', () => {
+    const harnessRoot = mkdtempSync(join(tmpdir(), 'hr-id-'))
+    mkdirSync(join(harnessRoot, '.harness'), { recursive: true })
+    const claudeProjectDir = mkdtempSync(join(tmpdir(), 'cpd-id-'))
+    const dir = join(claudeProjectDir, 'sess-PATH', 'subagents')
+    mkdirSync(dir, { recursive: true })
+    // in-file sessionId deliberately differs from the directory ('sess-PATH').
+    writeFileSync(
+      join(dir, 'agent-zzz.jsonl'),
+      '{"type":"assistant","sessionId":"sess-CONTENT","agentId":"zzz","message":{"model":"claude-opus-4-8","usage":{"input_tokens":7,"output_tokens":3}}}\n',
+    )
+
+    const r1 = ingestClaudeSubagentUsage({ harnessRoot, claudeProjectDir, settleMs: 0 })
+    expect(r1.inserted).toBe(1)
+    const m = dbAt(harnessRoot)
+    try {
+      const row = m.db
+        .prepare(
+          "SELECT session_id AS s, agent_id AS a FROM agent_invocation WHERE tool='claude'",
+        )
+        .get() as { s: string; a: string }
+      expect(row.s).toBe('sess-PATH') // path-derived, NOT 'sess-CONTENT'
+      expect(row.a).toBe('zzz')
+    } finally {
+      m.close()
+    }
+
+    // pre-check now matches the stored (path) key → 2nd pass is idempotent.
+    const r2 = ingestClaudeSubagentUsage({ harnessRoot, claudeProjectDir, settleMs: 0 })
+    expect(r2.inserted).toBe(0)
+  })
 })

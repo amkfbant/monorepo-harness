@@ -1,5 +1,5 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { readFileSync, readdirSync, statSync, type Dirent } from "node:fs";
+import { basename, join, relative } from "node:path";
 
 const DATE_SUFFIX = /-\d{8}$/;
 // Matches subagents/agent-*.jsonl AND subagents/workflows/wf_*/agent-*.jsonl;
@@ -17,8 +17,8 @@ export interface ParsedTurn {
   model: string;
   inputTokens: number;
   outputTokens: number;
-  /** Flat sum of 5m + 1h. */
   cacheReadInputTokens: number;
+  /** Flat cache-creation total; equals 5m + 1h (falls back to their sum). */
   cacheCreationInputTokens: number;
   cacheCreation5mInputTokens: number;
   cacheCreation1hInputTokens: number;
@@ -34,24 +34,80 @@ export interface ParsedSubagentInvocation {
   turns: ParsedTurn[];
 }
 
+/**
+ * A usable token value: non-negative integer within safe range. Untrusted
+ * transcript input — like the codex parser's integerField guard PLUS an upper
+ * sanity bound, so a malformed/adversarial transcript cannot inject negative /
+ * fractional / overflow tokens (e.g. 1e308, which Number.isInteger accepts).
+ */
+function validToken(v: unknown): v is number {
+  return (
+    typeof v === "number" &&
+    Number.isInteger(v) &&
+    v >= 0 &&
+    v <= Number.MAX_SAFE_INTEGER
+  );
+}
+
 function num(v: unknown): number {
-  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+  return validToken(v) ? v : 0; // fail-open: anything invalid → 0
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Cap a non-negative DERIVED total (a sum of already-num()-clamped values) to a
+ * safe integer. Each addend is ≤ MAX_SAFE_INTEGER, so a sum can exceed it and
+ * lose integer precision; cap (don't zero) to preserve magnitude. Keeps the
+ * "token values are non-negative integers ≤ MAX_SAFE_INTEGER" contract for
+ * derived columns too.
+ */
+export function capToken(n: number): number {
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return n > Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : n;
 }
 
 /**
  * List all agent transcript paths under projectDir recursively.
  * Returns absolute paths. Empty list on directory read error (fail-open).
+ *
+ * SECURITY: a manual walk (NOT `readdirSync({recursive:true})`) so we can SKIP
+ * symlinks. `Dirent` reflects an lstat, so `isSymbolicLink()` is true for links;
+ * we neither descend into a symlinked directory nor read a symlinked file. This
+ * prevents a symlink planted under the project tree from redirecting the scan
+ * outside projectDir or to an arbitrary read target. Because every descended
+ * dir and every collected file is a real entry under projectDir, the path stays
+ * contained without a separate realpath check. Fail-open: a readdir error stops
+ * that subtree only.
  */
 export function listAgentTranscripts(projectDir: string): string[] {
-  let rels: string[];
-  try {
-    rels = readdirSync(projectDir, { recursive: true }) as string[];
-  } catch {
-    return [];
-  }
-  return rels
-    .filter((rel) => AGENT_FILE_RE.test(rel))
-    .map((rel) => join(projectDir, rel));
+  const out: string[] = [];
+  const walk = (dir: string): void => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      if (ent.isSymbolicLink()) continue; // never follow links
+      const abs = join(dir, ent.name);
+      if (ent.isDirectory()) {
+        walk(abs);
+      } else if (
+        ent.isFile() &&
+        // Match against the path RELATIVE to projectDir (not the absolute path)
+        // so a `subagents` component in a projectDir ANCESTOR cannot over-match.
+        AGENT_FILE_RE.test(relative(projectDir, abs))
+      ) {
+        out.push(abs);
+      }
+    }
+  };
+  walk(projectDir);
+  return out;
 }
 
 /**
@@ -87,15 +143,24 @@ function parseAssistantLine(
   const u = msg.usage as Record<string, unknown> | null | undefined;
   if (!u) return null;
   const cc = (u.cache_creation as Record<string, unknown> | null | undefined) ?? {};
+  const cacheCreation5m = num(cc.ephemeral_5m_input_tokens);
+  const cacheCreation1h = num(cc.ephemeral_1h_input_tokens);
+  // Prefer the flat total when it is a VALID token; fall back to 5m + 1h when
+  // the flat is absent OR invalid. The reader (subagent-usage) SUMs the flat
+  // column only, so a split-only (or bad-flat) transcript would otherwise
+  // under-count cache creation.
+  const cacheCreationInputTokens = validToken(u.cache_creation_input_tokens)
+    ? u.cache_creation_input_tokens
+    : capToken(cacheCreation5m + cacheCreation1h);
   return {
     turnSeq,
     model: normalizeClaudeModel(msg.model),
     inputTokens: num(u.input_tokens),
     outputTokens: num(u.output_tokens),
     cacheReadInputTokens: num(u.cache_read_input_tokens),
-    cacheCreationInputTokens: num(u.cache_creation_input_tokens),
-    cacheCreation5mInputTokens: num(cc.ephemeral_5m_input_tokens),
-    cacheCreation1hInputTokens: num(cc.ephemeral_1h_input_tokens),
+    cacheCreationInputTokens,
+    cacheCreation5mInputTokens: cacheCreation5m,
+    cacheCreation1hInputTokens: cacheCreation1h,
   };
 }
 
@@ -133,12 +198,17 @@ export function parseAgentTranscriptFile(
 
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
-    let obj: Record<string, unknown>;
+    let parsed: unknown;
     try {
-      obj = JSON.parse(line) as Record<string, unknown>;
+      parsed = JSON.parse(line);
     } catch {
       continue;
     }
+    // Untrusted input: a line that is valid JSON but not an object (the literal
+    // `null`, a number, a string, an array) would throw on property access and
+    // abort the whole ingest pass. Skip non-objects to keep this a total fn.
+    if (!isRecord(parsed)) continue;
+    const obj = parsed;
     if (typeof obj.sessionId === "string" && !sessionId) {
       sessionId = obj.sessionId;
     }
