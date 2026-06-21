@@ -12,6 +12,7 @@ import type { McpToolContext } from "../registry/tool-registry.js";
 import { ensureProjectVisible } from "./tool-helpers.js";
 
 import { prepareProjectRun } from "../../project/run-project.js";
+import { resolveRepoCodexDefaults } from "../../policy/loader.js";
 import { RunFinalizedError, runDomainCoding } from "../../core/workflow-runner.js";
 import { createCodexCliRunner } from "../../codex/codex-cli-runner.js";
 import {
@@ -266,6 +267,14 @@ export async function rerunStartTool(
           throw e;
         }
       } else {
+        // #191: repo-id-mode rerun (no project profile) — resolve the same
+        // global+repo policy runDomainCoding would load so the coder honours
+        // policy.codex.backend (policy > env > codex).
+        const repoCodex = await resolveRepoCodexDefaults(
+          context.harnessRoot,
+          prep.repoId,
+          prep.domain,
+        );
         try {
           result = await runDomainCoding({
             harnessRoot: context.harnessRoot,
@@ -274,7 +283,7 @@ export async function rerunStartTool(
             domain: prep.domain,
             goal: prep.goal,
             baseBranch: prep.baseBranch,
-            ...coderRunFields(codexBin),
+            ...coderRunFields(codexBin, coderBackendOpts(repoCodex)),
             parentRunId: prep.parentRunId,
             rootRunId: prep.rootRunId,
             rerunAttempt: prep.rerunAttempt,

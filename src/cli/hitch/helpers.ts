@@ -4,6 +4,7 @@ import type Database from "better-sqlite3";
 import { parse as parseYaml } from "yaml";
 import { harnessPaths } from "../../config/paths.js";
 import { coderBackendOpts, coderRunnerDeps } from "../../core/agent-runner.js";
+import { resolveRepoCodexDefaults } from "../../policy/loader.js";
 import { type DbHitchTokenUsage } from "../../db/repositories/aggregates.js";
 import { BacklogError } from "../../core/backlog.js";
 import { DbError } from "../../db/connection.js";
@@ -94,17 +95,25 @@ export async function resolveHitchCoderRunnerDeps(input: {
   const { db, close } = openManagedDb({ dbPath: input.dbPath });
   let projectId: string | null;
   let domain: string | null;
+  let repoId: string | null;
   try {
     runMigrations(db);
     const session = new HitchRepository(db).requireSession(input.hitchId);
     projectId = session.projectId;
     domain = session.domain;
+    repoId = session.repoId;
   } finally {
     close();
   }
 
   if (projectId === null) {
-    // project-less hitch: no resolved policy → coder backend falls back to env.
+    // Project-less (repo-id-mode) hitch: no profile, but a repoId+domain still
+    // resolves a global+repo policy (the same one runDomainCoding loads), so
+    // honour its coder backend. No repoId/domain → no policy → env fallback.
+    const codex =
+      domain !== null && repoId !== null
+        ? await resolveRepoCodexDefaults(input.harnessRoot, repoId, domain)
+        : undefined;
     return {
       ...resolveHitchCloseRunnerDeps({
         dbPath: input.dbPath,
@@ -114,7 +123,10 @@ export async function resolveHitchCoderRunnerDeps(input: {
           ? { baseBranch: input.baseBranch }
           : {}),
       }),
-      ...coderRunnerDeps(input.codexBin),
+      ...coderRunnerDeps(
+        input.codexBin,
+        codex !== undefined ? coderBackendOpts(codex) : undefined,
+      ),
     };
   }
   if (domain === null) {
