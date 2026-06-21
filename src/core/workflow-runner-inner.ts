@@ -38,6 +38,9 @@ import { buildReviewRequest } from "../reporter/review-request.js";
 import { buildReviewDecision } from "../reporter/review-decision.js";
 import { buildUntrackedPatch, buildUntrackedDeniedReport, buildUntrackedSecretsReport } from "../reporter/untracked-patch.js";
 import { publishRedactedCodexEvents } from "../codex/events-lifecycle.js";
+import { redactClaudeEvents } from "../claude/redact-events.js";
+import { recordClaudeUsage } from "../db/repositories/claude-usage.js";
+import { resolveClaudeModel } from "./agent-runner.js";
 import {
   recordCodexUsage,
   resolveCodexModel,
@@ -214,12 +217,18 @@ export async function runDomainCodingInner(
       timedOut: codex.timedOut,
       durationMs: codex.durationMs,
     });
+    // #191 — the coder runner may be claude (opt-in). The backend is captured
+    // with the runner construction and threaded via opts (NOT re-read from env
+    // here) so the events shape, redactor, and usage parser cannot diverge from
+    // the injected runner if HARNESS_CODER_BACKEND changes mid-process.
+    const coderBackend = opts.coderBackend ?? "codex";
     const codexEventsRedaction = await publishRedactedCodexEvents({
       rawPath: codexRawEventsPath,
       tmpPath: codexRedactedTmpPath,
       officialPath: codexEventsPath,
       io: opts.codexEventsIo,
       runId,
+      ...(coderBackend === "claude" ? { redact: redactClaudeEvents } : {}),
     });
     let codexEventsContent: string | null = null;
     try {
@@ -227,15 +236,30 @@ export async function runDomainCodingInner(
     } catch {
       codexEventsContent = null;
     }
-    recordCodexUsage({
-      db,
-      runId,
-      kind: "coder",
-      eventsContent: codexEventsContent,
-      model: resolveCodexModel(policy.codex.model),
-      beforeWrite: () => assertActiveLease(db, runId),
-      onError: (error) => warnUsageRecordFailed(runId, error),
-    });
+    if (coderBackend === "claude") {
+      // The claude runner already wrote a REDACTED final message to
+      // codex-output.log (fail-closed at the source), so the codex-output
+      // artifact / summary.md / review-request.md never see a raw secret (S4).
+      recordClaudeUsage({
+        db,
+        runId,
+        kind: "coder",
+        eventsContent: codexEventsContent,
+        model: resolveClaudeModel(),
+        beforeWrite: () => assertActiveLease(db, runId),
+        onError: (error) => warnUsageRecordFailed(runId, error),
+      });
+    } else {
+      recordCodexUsage({
+        db,
+        runId,
+        kind: "coder",
+        eventsContent: codexEventsContent,
+        model: resolveCodexModel(policy.codex.model),
+        beforeWrite: () => assertActiveLease(db, runId),
+        onError: (error) => warnUsageRecordFailed(runId, error),
+      });
+    }
     if (!codexEventsRedaction.failed) {
       if (
         codexEventsRedaction.redactedCount +

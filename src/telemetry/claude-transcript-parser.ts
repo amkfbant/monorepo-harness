@@ -165,6 +165,70 @@ function parseAssistantLine(
 }
 
 /**
+ * Parse the assistant `usage` turns out of a Claude Code JSONL stream.
+ *
+ * SHARED by the Phase-3 transcript ingest (file content) and the #191 internal
+ * `claude -p --output-format stream-json` runner (stdout content): the assistant
+ * event envelope (`{type:'assistant', message:{id,model,usage}}`) is identical
+ * in both, so the drift-prone token mapping (cache_creation flat-vs-split,
+ * num() clamping) and the streaming-snapshot dedup live in ONE place.
+ *
+ * Streaming dedup: Claude Code writes MULTIPLE assistant snapshots per
+ * message.id during streaming; each intermediate snapshot has a stub
+ * output_tokens, the FINAL snapshot carries authoritative usage. The map keeps
+ * last-seen-per-message.id so naive summing cannot over-count (the ~4.6x bug,
+ * #235 FIX 1). Lines with no message.id use a unique sentinel so they are never
+ * collapsed together. Total function — never throws (malformed lines skipped).
+ */
+export function parseAssistantTurnsFromJsonl(raw: string): ParsedTurn[] {
+  let noIdCounter = 0;
+  // Ordered list of first-seen message keys (preserves first-appearance order).
+  const messageOrder: string[] = [];
+  const messageSnaps = new Map<string, Record<string, unknown>>();
+
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    // Untrusted input: a line that is valid JSON but not an object (the literal
+    // `null`, a number, a string, an array) would throw on property access and
+    // abort the whole pass. Skip non-objects to keep this a total fn.
+    if (!isRecord(parsed)) continue;
+    const obj = parsed;
+    if (obj.type !== "assistant") continue;
+    const msg = obj.message as Record<string, unknown> | null | undefined;
+    const msgId =
+      msg && typeof (msg as { id?: unknown }).id === "string"
+        ? (msg as { id: string }).id
+        : null;
+    // Use message.id when available; fall back to a unique-per-line sentinel
+    // so no-id lines are never collapsed with each other.
+    const key = msgId ?? `__no_id_${noIdCounter++}`;
+    if (!messageSnaps.has(key)) {
+      messageOrder.push(key);
+    }
+    messageSnaps.set(key, obj);
+  }
+
+  // Build turns from the deduped snapshots in first-seen order.
+  const turns: ParsedTurn[] = [];
+  let seq = 0;
+  for (const key of messageOrder) {
+    const obj = messageSnaps.get(key)!;
+    const turn = parseAssistantLine(obj, seq);
+    if (turn) {
+      turns.push(turn);
+      seq += 1;
+    }
+  }
+  return turns;
+}
+
+/**
  * Parse a transcript file into a subagent invocation.
  * metaJson: parsed sibling .meta.json content (may be null).
  * Returns null when the file is unreadable or contains no valid turns.
@@ -186,16 +250,9 @@ export function parseAgentTranscriptFile(
     .replace(/\.jsonl$/, "");
   let attributionAgent: string | null = null;
 
-  // Streaming dedup: real Claude Code transcripts write MULTIPLE assistant
-  // snapshots per message.id during streaming. Each intermediate snapshot has
-  // a stub output_tokens (1); the FINAL snapshot carries authoritative usage.
-  // We keep a map from message.id → snapshot object so the last-seen wins.
-  // Lines with no message.id use a unique sentinel so they are never collapsed.
-  let noIdCounter = 0;
-  // Ordered list of first-seen message keys (preserves first-appearance order).
-  const messageOrder: string[] = [];
-  const messageSnaps = new Map<string, Record<string, unknown>>();
-
+  // Identity pass: sessionId / agentId / attributionAgent are computed
+  // independently of the turn extraction, so they can share the raw content
+  // with parseAssistantTurnsFromJsonl without interleaving.
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
     let parsed: unknown;
@@ -204,9 +261,6 @@ export function parseAgentTranscriptFile(
     } catch {
       continue;
     }
-    // Untrusted input: a line that is valid JSON but not an object (the literal
-    // `null`, a number, a string, an array) would throw on property access and
-    // abort the whole ingest pass. Skip non-objects to keep this a total fn.
     if (!isRecord(parsed)) continue;
     const obj = parsed;
     if (typeof obj.sessionId === "string" && !sessionId) {
@@ -219,35 +273,15 @@ export function parseAgentTranscriptFile(
       // (path-derived vs content-derived) robust either way.
       agentId = obj.agentId.replace(/^agent-/, "");
     }
-    if (obj.type === "assistant") {
-      if (typeof obj.attributionAgent === "string") {
-        attributionAgent = obj.attributionAgent;
-      }
-      const msg = obj.message as Record<string, unknown> | null | undefined;
-      const msgId = msg && typeof (msg as { id?: unknown }).id === "string"
-        ? (msg as { id: string }).id
-        : null;
-      // Use message.id when available; fall back to a unique-per-line sentinel
-      // so no-id lines are never collapsed with each other.
-      const key = msgId ?? `__no_id_${noIdCounter++}`;
-      if (!messageSnaps.has(key)) {
-        messageOrder.push(key);
-      }
-      messageSnaps.set(key, obj);
+    if (
+      obj.type === "assistant" &&
+      typeof obj.attributionAgent === "string"
+    ) {
+      attributionAgent = obj.attributionAgent;
     }
   }
 
-  // Build turns from the deduped snapshots in first-seen order.
-  const turns: ParsedTurn[] = [];
-  let seq = 0;
-  for (const key of messageOrder) {
-    const obj = messageSnaps.get(key)!;
-    const turn = parseAssistantLine(obj, seq);
-    if (turn) {
-      turns.push(turn);
-      seq += 1;
-    }
-  }
+  const turns = parseAssistantTurnsFromJsonl(raw);
 
   if (!sessionId || !agentId || turns.length === 0) return null;
 

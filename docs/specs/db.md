@@ -1322,28 +1322,40 @@ CLI surface は `harness usage subagents [--since <iso>] [--json]`（[`cli.md`](
 
 ---
 
-### Phase-4 (#191) usage adapter contract — deferred
+### Phase-4 (#191) usage adapter — shipped (coder backend)
 
-以下の write-side adapter は `#191` の claude -p runner 出荷後に実装される。
-**schema / storage 契約は出荷済み**（`recordAgentUsage` が `tool='claude'` +
-run-scoped role を受理; `agent_usage_turn` XOR CHECK が claude taxonomy 対応;
-`subagentUsageSummary` は `roles` パラメータ化済）。
+`#191` の claude `-p` coder backend と共に出荷済み。schema / enum / migration の
+変更は無い（`recordAgentUsage` が `tool='claude'` + run-scoped role を受理;
+`agent_usage_turn` XOR CHECK が claude taxonomy 対応; `subagentUsageSummary` は
+`roles` パラメータ化済 — すべて #206 で出荷済の契約に additive write を載せるだけ）。
 
-保留中の write-side adapter:
+出荷済 write-side adapter:
 
-- **`parseClaudeStreamJson(stdout): AgentUsageTurnInput[]`** —
-  `parseCodexTurns` (`src/codex/usage-parser.ts`) の鏡像。各 turn `usageSource='exact'`;
-  5m/1h cache split が無ければ flat のみ。
-- **`recordClaudeUsage({ db, runId, role, model, turns })`** —
-  `recordCodexUsage` (`src/db/repositories/run-usage.ts`) の鏡像。
-  **ただし `legacyRunUsage` は渡さない**（`run_usage` は codex-only で byte-stable に保つ。
-  部分鏡像）。内部的には `recordAgentUsage(tool='claude', role, runId, usageSource='exact', turns)`
-  を呼ぶ。enum / migration 変更なし。
+- **`parseClaudeStreamJson(stdout): AgentUsageTurnInput[]`**（`src/claude/usage-parser.ts`）
+  — `parseCodexTurns` の鏡像。各 turn `usageSource='exact'`。drift-prone なトークン
+  マッピング（cache_creation flat-vs-split / `num()` clamp）と streaming-snapshot
+  dedup は Phase-3 transcript ingest と共有（`parseAssistantTurnsFromJsonl`,
+  `src/telemetry/claude-transcript-parser.ts`）。CUMULATIVE な `result` イベントは
+  usage に含めない（over-count 回避）。
+- **`recordClaudeUsage({ db, runId, kind, eventsContent, model })`**
+  （`src/db/repositories/claude-usage.ts`）— `recordCodexUsage` の部分鏡像。
+  **`legacyRunUsage` は渡さない**（`run_usage` は codex-only で byte-stable）。
+  内部的に `recordAgentUsage(tool='claude', role, runId, usageSource='exact', turns)`
+  を呼ぶ。usage 無し → 1 synthetic null turn（`unavailable`）。
 
-依存: `#191` の claude `-p` runner + F15 permission / containment 検証。
+backend 選択は `HARNESS_CODER_BACKEND=claude`（opt-in / default codex）。配線は
+`src/core/agent-runner.ts`（`resolveAgentRunner` / `resolveAgentBackend` /
+`resolveClaudeModel`）と `workflow-runner-inner.ts` の coder dispatch（runner /
+redaction[`redactClaudeEvents`] / usage[`recordClaudeUsage`] / model を backend で
+分岐）。claude events の secret redaction は `src/claude/redact-events.ts`（codex
+redactor は claude shape を素通しするため別実装、検出エンジン `scanForSecrets` は共有）。
 
-後続: `subagentUsageSummary(roles=['coder','reviewer','evaluator'])` を
-`harness usage internal` subcommand に差すだけで内部 Claude usage 可視化が完成。
+未実装（follow-up）: reviewer / evaluator backend 選択（reviewer は redaction /
+telemetry dispatch 未配線のため codex 据え置き）; orchestrate パスの coder
+construction site の swap（現状 `harness run` のみ swap 済）; F15 OS-sandbox
+ラッパ（決定: native guard + hygiene ＝ claude 2.1.185 が worktree 外 write を
+fail-closed でブロックするため不要）; `harness usage internal` subcommand
+（`subagentUsageSummary(roles=['coder','reviewer','evaluator'])` を差すだけ）。
 
 ## Telemetry snapshots E1 — metrics_snapshots（schema v27）
 

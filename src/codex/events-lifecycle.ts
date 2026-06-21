@@ -75,7 +75,18 @@ export async function publishRedactedCodexEvents(opts: {
   officialPath: string;
   io?: CodexEventsIo | undefined;
   runId?: string | undefined;
+  /**
+   * Redactor for the raw events. Defaults to the codex redactor; the #191
+   * claude backend passes `redactClaudeEvents` (same shape) since the codex
+   * redactor's `parsed.item` gate would pass claude events through un-redacted.
+   */
+  redact?: (content: string) => {
+    content: string;
+    redactedCount: number;
+    droppedCount: number;
+  };
 }): Promise<PublishCodexEventsResult> {
+  const redact = opts.redact ?? redactCodexEvents;
   const io = defaultCodexEventsIo(opts.io);
   const failClosed = async (
     reason: string,
@@ -98,7 +109,7 @@ export async function publishRedactedCodexEvents(opts: {
     return await failClosed("read_failed");
   }
 
-  const redacted = redactCodexEvents(rawContent);
+  const redacted = redact(rawContent);
   try {
     await io.writeFile(opts.tmpPath, redacted.content);
   } catch {
