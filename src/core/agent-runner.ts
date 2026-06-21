@@ -117,6 +117,9 @@ export function resolveAgentRunner(o: ResolveAgentRunnerOpts): {
 export interface CoderBackendOpts {
   backend?: AgentBackend;
   claudeModel?: string | null;
+  /** Policy kill timeout (#191) — threaded so orchestrate/MCP coders honour it
+   * like the CLI run/rerun paths (codex AND claude). */
+  timeoutMs?: number;
 }
 
 /**
@@ -127,10 +130,12 @@ export interface CoderBackendOpts {
 export function coderBackendOpts(codex: {
   backend?: AgentBackend;
   claudeModel?: string;
+  timeoutMs?: number;
 }): CoderBackendOpts {
   return {
     ...(codex.backend !== undefined ? { backend: codex.backend } : {}),
     ...(codex.claudeModel !== undefined ? { claudeModel: codex.claudeModel } : {}),
+    ...(codex.timeoutMs !== undefined ? { timeoutMs: codex.timeoutMs } : {}),
   };
 }
 
@@ -148,12 +153,16 @@ export function coderRunnerDeps(
   coderBackend: AgentBackend;
   coderCodexBinaryVersion: string | null;
 } {
+  const claudeModel = resolveClaudeModel(opts?.claudeModel);
   const { runner, backend } = resolveAgentRunner({
     role: "coder",
     codexBin,
     sandbox: "workspace-write",
     backend: resolveAgentBackend("coder", opts?.backend),
-    ...(opts?.claudeModel != null ? { claudeModel: opts.claudeModel } : {}),
+    // policy > HARNESS_CLAUDE_MODEL > null (the runner's --model gets the env
+    // fallback too, not just telemetry).
+    ...(claudeModel !== null ? { claudeModel } : {}),
+    ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
   });
   return {
     coderRunner: runner,
@@ -178,11 +187,13 @@ export function coderRunFields(
   coderBackend: AgentBackend;
   codexBinaryVersion: string | null;
 } {
+  const claudeModel = resolveClaudeModel(opts?.claudeModel);
   const { runner, backend } = resolveAgentRunner({
     role: "coder",
     codexBin,
     backend: resolveAgentBackend("coder", opts?.backend),
-    ...(opts?.claudeModel != null ? { claudeModel: opts.claudeModel } : {}),
+    ...(claudeModel !== null ? { claudeModel } : {}),
+    ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
   });
   return {
     codexRunner: runner,

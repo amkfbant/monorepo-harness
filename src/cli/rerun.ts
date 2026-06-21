@@ -1,6 +1,10 @@
 import process from "node:process";
 import type { Command } from "commander";
-import { resolveAgentBackend, resolveAgentRunner } from "../core/agent-runner.js";
+import {
+  resolveAgentBackend,
+  resolveAgentRunner,
+  resolveClaudeModel,
+} from "../core/agent-runner.js";
 import { codexBinaryVersion } from "../codex/codex-version.js";
 import { harnessPaths } from "../config/paths.js";
 import { prepareRerunFromReview, buildRerunChain, formatChain, RerunGateError, DEFAULT_MAX_ATTEMPTS } from "../core/rerun.js";
@@ -130,9 +134,8 @@ export function registerRerunCommands(
         codexBin,
         backend: resolveAgentBackend("coder", resolved.codex.backend),
         sandbox: resolved.codex.sandbox,
-        ...(resolved.codex.claudeModel !== undefined
-          ? { claudeModel: resolved.codex.claudeModel }
-          : {}),
+        // policy > HARNESS_CLAUDE_MODEL > null for the runner's --model.
+        claudeModel: resolveClaudeModel(resolved.codex.claudeModel),
         ...(resolved.codex.approval !== undefined
           ? { approvalPolicy: resolved.codex.approval }
           : {}),

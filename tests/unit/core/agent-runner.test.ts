@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
+  coderBackendOpts,
   coderRunFields,
   coderRunnerDeps,
   resolveAgentBackend,
@@ -84,6 +85,15 @@ describe("resolveAgentRunner", () => {
     // P2: a claude run must NOT carry a codex binary version in its provenance.
     expect(coderRunnerDeps("codex").coderCodexBinaryVersion).toBeNull();
     expect(coderRunFields("codex").codexBinaryVersion).toBeNull();
+  });
+
+  it("coderBackendOpts threads backend + claudeModel + timeoutMs from resolved.codex (P2)", () => {
+    // policy kill budget must reach orchestrate/MCP coders, not just CLI run.
+    expect(
+      coderBackendOpts({ backend: "claude", claudeModel: "opus", timeoutMs: 60000 }),
+    ).toEqual({ backend: "claude", claudeModel: "opus", timeoutMs: 60000 });
+    // absent fields are omitted (exactOptionalPropertyTypes; byte-stable).
+    expect(coderBackendOpts({})).toEqual({});
   });
 
   it("a per-project policy backend drives the helper independent of env (#191)", () => {

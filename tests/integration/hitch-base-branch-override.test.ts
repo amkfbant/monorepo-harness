@@ -181,6 +181,36 @@ describe("resolveHitchCoderRunnerDeps base-branch override (#236)", () => {
     expect(omitted.baseBranch).toBe("main");
   });
 
+  it("[#191] project-less hitch with a domain tolerates a MISSING repo policy (fail-open, P2)", async () => {
+    // A repo-id-mode hitch whose repo policy file is absent/renamed must NOT
+    // throw here — that would block opening/merging an already close_ready PR
+    // (this helper runs before convergence on orchestrate). It falls back to env.
+    const { harnessRoot, dbPath, repoPath } = setupProject();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      new HitchRepository(db).createSession({
+        hitchId: "g-missingpol",
+        title: "repo-id mode, missing policy",
+        projectId: null,
+        repoId: "no-such-repo",
+        domain: "apps/x",
+        scope: {},
+        closeConditions: [],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+    } finally {
+      close();
+    }
+    const deps = await resolveHitchCoderRunnerDeps({
+      harnessRoot, dbPath, hitchId: "g-missingpol", repoPath, codexBin: "codex",
+    });
+    // resolved (no throw) and still produced a coder runner (env-fallback backend).
+    expect(deps.baseBranch).toBe("main");
+    expect(typeof deps.coderRunner?.run).toBe("function");
+  });
+
   it("CLI wiring: omitted --base-branch uses the profile base; explicit overrides it (#236)", () => {
     const { harnessRoot, dbPath, repoPath } = setupProject();
     seedProjectHitch(dbPath);

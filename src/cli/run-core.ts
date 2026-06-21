@@ -3,7 +3,11 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
-import { resolveAgentBackend, resolveAgentRunner } from "../core/agent-runner.js";
+import {
+  resolveAgentBackend,
+  resolveAgentRunner,
+  resolveClaudeModel,
+} from "../core/agent-runner.js";
 import { codexBinaryVersion } from "../codex/codex-version.js";
 import { harnessPaths } from "../config/paths.js";
 import { KnowledgeContextError, buildKnowledgeContextFromDb, domainSlug } from "../core/knowledge-context.js";
@@ -217,9 +221,8 @@ export async function cmdRun(o: RunOpts): Promise<RunOutcome> {
     // #191: per-project coder backend (policy > env > codex).
     backend: resolveAgentBackend("coder", resolved.codex.backend),
     sandbox: resolved.codex.sandbox,
-    ...(resolved.codex.claudeModel !== undefined
-      ? { claudeModel: resolved.codex.claudeModel }
-      : {}),
+    // policy > HARNESS_CLAUDE_MODEL > null for the runner's --model (not just telemetry).
+    claudeModel: resolveClaudeModel(resolved.codex.claudeModel),
     ...(resolved.codex.approval !== undefined
       ? { approvalPolicy: resolved.codex.approval }
       : {}),
@@ -355,9 +358,8 @@ export async function cmdReviewedRun(o: ReviewedRunOpts): Promise<ReviewedRunOut
     // #191: per-project coder backend (policy > env > codex).
     backend: resolveAgentBackend("coder", resolved.codex.backend),
     sandbox: resolved.codex.sandbox,
-    ...(resolved.codex.claudeModel !== undefined
-      ? { claudeModel: resolved.codex.claudeModel }
-      : {}),
+    // policy > HARNESS_CLAUDE_MODEL > null for the runner's --model (not just telemetry).
+    claudeModel: resolveClaudeModel(resolved.codex.claudeModel),
     ...(resolved.codex.approval !== undefined
       ? { approvalPolicy: resolved.codex.approval }
       : {}),

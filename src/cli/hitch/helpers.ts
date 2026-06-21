@@ -5,6 +5,7 @@ import { parse as parseYaml } from "yaml";
 import { harnessPaths } from "../../config/paths.js";
 import { coderBackendOpts, coderRunnerDeps } from "../../core/agent-runner.js";
 import { resolveRepoCodexDefaults } from "../../policy/loader.js";
+import type { ResolvedPolicy } from "../../policy/schema.js";
 import { type DbHitchTokenUsage } from "../../db/repositories/aggregates.js";
 import { BacklogError } from "../../core/backlog.js";
 import { DbError } from "../../db/connection.js";
@@ -110,10 +111,18 @@ export async function resolveHitchCoderRunnerDeps(input: {
     // Project-less (repo-id-mode) hitch: no profile, but a repoId+domain still
     // resolves a global+repo policy (the same one runDomainCoding loads), so
     // honour its coder backend. No repoId/domain → no policy → env fallback.
-    const codex =
-      domain !== null && repoId !== null
-        ? await resolveRepoCodexDefaults(input.harnessRoot, repoId, domain)
-        : undefined;
+    // FAIL-OPEN: this runs before convergence even on close-only flows
+    // (orchestrate of an already close_ready hitch builds a coder it never runs).
+    // A missing/renamed repo policy must NOT block opening/merging that PR — fall
+    // back to env rather than throwing.
+    let codex: ResolvedPolicy["codex"] | undefined;
+    if (domain !== null && repoId !== null) {
+      try {
+        codex = await resolveRepoCodexDefaults(input.harnessRoot, repoId, domain);
+      } catch {
+        codex = undefined; // policy unavailable → env fallback for the (maybe unused) coder
+      }
+    }
     return {
       ...resolveHitchCloseRunnerDeps({
         dbPath: input.dbPath,
