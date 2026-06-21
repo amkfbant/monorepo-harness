@@ -119,8 +119,13 @@ export async function resolveHitchCoderRunnerDeps(input: {
     if (domain !== null && repoId !== null) {
       try {
         codex = await resolveRepoCodexDefaults(input.harnessRoot, repoId, domain);
-      } catch {
-        codex = undefined; // policy unavailable → env fallback for the (maybe unused) coder
+      } catch (e) {
+        // ONLY a missing policy FILE (ENOENT — renamed/absent repo) falls back
+        // to env so a close-only flow isn't blocked. A PRESENT-but-INVALID
+        // policy (malformed YAML, schema/domain/command errors) still fails
+        // CLOSED — env-defaulting a broken policy would be a silent safety hole.
+        if ((e as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") throw e;
+        codex = undefined;
       }
     }
     return {
