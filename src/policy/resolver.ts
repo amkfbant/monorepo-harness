@@ -84,6 +84,12 @@ export function resolvePolicy(
   // leaves codex.model undefined → telemetry model NULL → run_usage byte-stable.
   const codexModel = global.defaults?.codex?.model;
   if (codexModel !== undefined) codex.model = codexModel;
+  // #191: only set when declared so an unconfigured policy stays byte-stable
+  // (backend undefined → resolveAgentBackend falls back to env, then codex).
+  const backend = global.defaults?.codex?.backend;
+  if (backend !== undefined) codex.backend = backend;
+  const claudeModel = global.defaults?.codex?.claude_model;
+  if (claudeModel !== undefined) codex.claudeModel = claudeModel;
 
   const cmdDefaultsRaw = d.commands?.defaults;
   const commandDefaults: ResolvedPolicy["commandDefaults"] = {

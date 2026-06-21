@@ -17,6 +17,24 @@ describe("GlobalPolicySchema", () => {
       GlobalPolicySchema.parse({ always_deny_write: [], extra: 1 }),
     ).toThrow();
   });
+
+  it("parses a per-project coder backend + claude model (#191)", () => {
+    const parsed = GlobalPolicySchema.parse({
+      always_deny_write: [],
+      defaults: { codex: { backend: "claude", claude_model: "opus-4.8" } },
+    });
+    expect(parsed.defaults?.codex?.backend).toBe("claude");
+    expect(parsed.defaults?.codex?.claude_model).toBe("opus-4.8");
+  });
+
+  it("rejects an unknown backend (fail-closed at the schema)", () => {
+    expect(() =>
+      GlobalPolicySchema.parse({
+        always_deny_write: [],
+        defaults: { codex: { backend: "gpt" } },
+      }),
+    ).toThrow();
+  });
 });
 
 describe("RepoPolicySchema", () => {

@@ -37,6 +37,8 @@ defaults:
     approval: on-request              # codex 内部の approval policy 設定
     timeout_ms: 900000                # codex 子プロセスの kill timeout (15 min)
     model: gpt-5.5                    # 任意 — agent-usage telemetry に記録する advisory model (#206)
+    backend: claude                   # 任意 — coder backend (codex | claude)。#191。未設定=codex
+    claude_model: opus-4.8            # 任意 — backend=claude 時の advisory claude model
 
 limits:
   git_timeout_ms: 30000               # 各 git invocation の kill timeout (30 s)
@@ -76,6 +78,8 @@ ignore_untracked:                     # minimatch root-anchored
 | `defaults.codex.approval` | string? | codex の `-c approval_policy=…` に渡る |
 | `defaults.codex.timeout_ms` | number? | runner.timeoutMs。未設定なら 15 min default |
 | `defaults.codex.model` | string? | agent-usage telemetry に記録する advisory model (#206)。harness は `-m` を注入しないため実モデルと食い違い得る best-effort 値。coder のみ参照（reviewer/evaluator は `HARNESS_CODEX_MODEL` 経由）。未設定なら `HARNESS_CODEX_MODEL` → `NULL` |
+| `defaults.codex.backend` | enum? | (#191) **coder** backend = `codex` \| `claude`。precedence は `policy 値 > HARNESS_CODER_BACKEND env > codex`（`resolveCodexModel` と同型・ただし `'claude'` 厳密一致のみ opt-in で fail-closed）。これにより project A=claude / B=codex が 1 つの ops driver で env を触らず共存。未設定なら env→codex。**reviewer は当面 codex 固定**（F16 推奨構成 + S4 reviewer-redaction follow-up）。`claude -p` の安全境界は cwd=worktree（F15・`--add-dir` 不使用） |
+| `defaults.codex.claude_model` | string? | (#191) `backend=claude` 時の advisory claude model（`model` の claude 版）。`createClaudeCliRunner` の `--model` に注入。未設定なら `HARNESS_CLAUDE_MODEL` → stream 由来 model → `NULL` |
 | `limits.git_timeout_ms` | number | gitCli の SIGKILL タイマー。未設定なら 30 s |
 | `limits.change_budget` | object? | run ごとの tracked diff size / deletion guard。未設定でも fail-closed default が適用される |
 | `always_deny_write` | string[] | 全 domain で必ず deny される path glob |
@@ -169,6 +173,8 @@ ResolvedPolicy {
     approval: global.defaults?.codex?.approval,    // optional
     timeoutMs: global.defaults?.codex?.timeout_ms ?? 900_000,
     model: global.defaults?.codex?.model,          // optional advisory (#206)
+    backend: global.defaults?.codex?.backend,      // optional coder backend (#191)
+    claudeModel: global.defaults?.codex?.claude_model, // optional (#191)
   },
   limits: {
     gitTimeoutMs: global.limits?.git_timeout_ms ?? 30_000,

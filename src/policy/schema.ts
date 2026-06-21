@@ -9,6 +9,15 @@ export const SandboxModeSchema = z.enum([
 ]);
 export type SandboxMode = z.infer<typeof SandboxModeSchema>;
 
+// Which agent backend drives the CODER for runs resolved under this policy
+// (#191 per-project). 'claude' is OPT-IN; absent → the harness default (codex),
+// keeping codex's OS-sandbox behaviour the safe default. The reviewer stays
+// codex regardless for now (F16 recommended config + the S4 reviewer-redaction
+// follow-up). Lives in `codex` defaults to reuse the single execution-config
+// channel rather than add a parallel one.
+export const AgentBackendSchema = z.enum(["codex", "claude"]);
+export type AgentBackend = z.infer<typeof AgentBackendSchema>;
+
 export const CodexDefaultsSchema = z
   .object({
     sandbox: SandboxModeSchema.default("workspace-write"),
@@ -22,6 +31,14 @@ export const CodexDefaultsSchema = z
      * (no-config byte-stability; DEFAULT_CODEX_MODEL = null).
      */
     model: z.string().min(1).optional(),
+    /**
+     * (#191) Coder backend for this policy's runs. Absent → codex (env
+     * HARNESS_CODER_BACKEND can still opt a no-config run into claude). Enables
+     * project A=claude / B=codex from ONE ops driver without env juggling.
+     */
+    backend: AgentBackendSchema.optional(),
+    /** (#191) Advisory claude model when backend=claude (mirror of `model`). */
+    claude_model: z.string().min(1).optional(),
   })
   .strict();
 export type CodexDefaults = z.infer<typeof CodexDefaultsSchema>;
@@ -194,6 +211,10 @@ export interface ResolvedPolicy {
     timeoutMs?: number;
     /** Advisory model for agent-usage telemetry (#206); absent → NULL. */
     model?: string;
+    /** (#191) Coder backend; absent → codex (env can still opt into claude). */
+    backend?: AgentBackend;
+    /** (#191) Advisory claude model when backend=claude; absent → NULL. */
+    claudeModel?: string;
   };
   limits: {
     gitTimeoutMs: number;

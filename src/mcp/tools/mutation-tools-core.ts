@@ -14,7 +14,11 @@ import { ensureProjectVisible } from "./tool-helpers.js";
 import { prepareProjectRun } from "../../project/run-project.js";
 import { RunFinalizedError, runDomainCoding } from "../../core/workflow-runner.js";
 import { createCodexCliRunner } from "../../codex/codex-cli-runner.js";
-import { coderRunFields, coderRunnerDeps } from "../../core/agent-runner.js";
+import {
+  coderBackendOpts,
+  coderRunFields,
+  coderRunnerDeps,
+} from "../../core/agent-runner.js";
 import { runReviewerAgent } from "../../core/reviewer-agent.js";
 import { prepareRerunFromReview } from "../../core/rerun.js";
 import { addBacklogItem, resolveBacklogItemForRun } from "../../core/backlog-db.js";
@@ -75,7 +79,7 @@ export async function runStartTool(
           domain: prepared.domain,
           goal: args.goal,
           baseBranch: prepared.baseBranch,
-          ...coderRunFields(codexBin),
+          ...coderRunFields(codexBin, coderBackendOpts(prepared.resolvedPolicy.codex)),
           compiledPolicy: prepared.compiledPolicy,
           reviewRuleResolution: prepared.reviewRuleResolution,
           project: prepared.project,
@@ -228,7 +232,7 @@ export async function rerunStartTool(
             domain: prepared.domain,
             goal: prep.goal,
             baseBranch: prepared.baseBranch,
-            ...coderRunFields(codexBin),
+            ...coderRunFields(codexBin, coderBackendOpts(prepared.resolvedPolicy.codex)),
             parentRunId: prep.parentRunId,
             rootRunId: prep.rootRunId,
             rerunAttempt: prep.rerunAttempt,
@@ -375,7 +379,7 @@ export async function orchestrateHitchTool(
           dbPath,
           harnessRoot: context.harnessRoot,
           createdBy,
-          ...coderRunnerDeps(codexBin),
+          ...coderRunnerDeps(codexBin, coderBackendOpts(prepared.resolvedPolicy.codex)),
           reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
           // NO publisher: the MCP driver never opens a PR. stopAtCloseReady below
           // halts at close_ready; opening the PR / closing the hitch stays a
