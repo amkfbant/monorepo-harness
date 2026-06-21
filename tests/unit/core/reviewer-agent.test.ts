@@ -848,6 +848,50 @@ describe("runReviewerAgent", () => {
     ).rejects.toThrow(/modified run artifact/);
   });
 
+  it("[#191] removes the un-redacted raw reviewer events on the tamper-failure path (fail-closed S4)", async () => {
+    const { runsDir, runId } = setup();
+    const summary = join(runsDir, runId, "summary.md");
+    const { writeFileSync, utimesSync, existsSync } = await import("node:fs");
+    writeFileSync(summary, "original\n");
+    const SECRET = "AKIAIOSFODNN7EXAMPLE";
+    let rawEventsPath = "";
+    const runner: CodexExecRunner = {
+      async run(input) {
+        rawEventsPath = input.logPaths.events;
+        const { writeFile, mkdir } = await import("node:fs/promises");
+        const { dirname } = await import("node:path");
+        await mkdir(dirname(input.logPaths.events), { recursive: true });
+        // raw claude events carrying a secret in a tool_result
+        await writeFile(
+          input.logPaths.events,
+          JSON.stringify({
+            type: "user",
+            message: { content: [{ type: "tool_result", content: `leak ${SECRET}` }] },
+          }) + "\n",
+        );
+        // tamper: mutate a non-allowlisted artifact during the run, so the
+        // tamper check throws BEFORE the redaction publish runs.
+        writeFileSync(summary, "tampered\n");
+        const now = new Date();
+        utimesSync(summary, now, new Date(now.getTime() + 5000));
+        await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
+        await writeFile(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      },
+    };
+    await expect(
+      runReviewerAgent({
+        runsDir,
+        runId,
+        codexRunner: runner,
+        reviewerBackend: "claude",
+      }),
+    ).rejects.toThrow(/modified run artifact/);
+    // the un-redacted raw events file (with the secret) must NOT survive
+    expect(rawEventsPath).not.toBe("");
+    expect(existsSync(rawEventsPath)).toBe(false);
+  });
+
   it("ignores OS metadata noise (.DS_Store / ._*) created during the review — not tamper (#269)", async () => {
     const { runsDir, runId } = setup();
     const { existsSync } = await import("node:fs");

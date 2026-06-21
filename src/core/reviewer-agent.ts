@@ -520,6 +520,14 @@ export async function runReviewerAgent(
       });
     }
     throw e;
+  } finally {
+    // Fail-closed (S4 / #191): publishRedactedCodexEvents consumes the raw events
+    // file (redacts → official, removes raw) on the happy AND publish-failure
+    // paths. But the tamper check runs BEFORE publish, so a tamper/throw leaves
+    // the UN-redacted raw file on disk — and it is allowlisted (not quarantined),
+    // so for a claude reviewer it can persist tool_result/result secrets.
+    // Best-effort remove it so no unredacted secrets survive any failure path.
+    await rm(rawEventsPath, { force: true }).catch(() => {});
   }
 
   if (inputs.dryRun) {
