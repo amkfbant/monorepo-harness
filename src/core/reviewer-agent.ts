@@ -53,6 +53,7 @@ import { ReviewerAgentGateError } from "./reviewer-agent-errors.js";
 import { classifyReviewGate } from "./review-gate-classify.js";
 import { buildOperationalKnowledgeReviewSection } from "./operational-knowledge.js";
 import { publishRedactedCodexEvents } from "../codex/events-lifecycle.js";
+import { redactClaudeEvents } from "../claude/redact-events.js";
 import { sanitizeGateReason } from "./gate-reason.js";
 import { recordReviewerUsage } from "./reviewer-agent-usage.js";
 import type {
@@ -389,11 +390,15 @@ export async function runReviewerAgent(
       reviewerRelDir,
       REVIEWER_WRITE_ALLOWLIST,
     );
+    // #191: a claude reviewer needs the claude-shaped redactor (the codex
+    // redactor's parsed.item gate would pass claude events through un-redacted).
+    const reviewerBackend = inputs.reviewerBackend ?? "codex";
     const publishResult = await publishRedactedCodexEvents({
       rawPath: rawEventsPath,
       tmpPath: tmpEventsPath,
       officialPath: eventsPath,
       runId: inputs.runId,
+      ...(reviewerBackend === "claude" ? { redact: redactClaudeEvents } : {}),
     });
     reviewerEventsPublished = !publishResult.failed;
 
@@ -407,7 +412,12 @@ export async function runReviewerAgent(
       const eventsContent = reviewerEventsPublished
         ? await readFile(eventsPath, "utf8").catch(() => null)
         : null;
-      await recordReviewerUsage(inputs.dbPath, inputs.runId, eventsContent);
+      await recordReviewerUsage(
+        inputs.dbPath,
+        inputs.runId,
+        eventsContent,
+        reviewerBackend,
+      );
     }
 
     if (codexResult.timedOut) {
@@ -510,6 +520,14 @@ export async function runReviewerAgent(
       });
     }
     throw e;
+  } finally {
+    // Fail-closed (S4 / #191): publishRedactedCodexEvents consumes the raw events
+    // file (redacts → official, removes raw) on the happy AND publish-failure
+    // paths. But the tamper check runs BEFORE publish, so a tamper/throw leaves
+    // the UN-redacted raw file on disk — and it is allowlisted (not quarantined),
+    // so for a claude reviewer it can persist tool_result/result secrets.
+    // Best-effort remove it so no unredacted secrets survive any failure path.
+    await rm(rawEventsPath, { force: true }).catch(() => {});
   }
 
   if (inputs.dryRun) {

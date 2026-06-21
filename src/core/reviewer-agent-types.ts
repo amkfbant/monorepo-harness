@@ -36,6 +36,12 @@ export interface ReviewerAgentInputs {
    */
   dryRun?: boolean;
   codexRunner: CodexExecRunner;
+  /**
+   * (#191) Backend of `codexRunner` — captured with its construction so the
+   * reviewer events redaction (redactClaudeEvents) and usage dispatch
+   * (recordClaudeUsage) match the injected runner. Absent → 'codex'.
+   */
+  reviewerBackend?: "codex" | "claude";
   /** Abort the in-flight reviewer codex run on course-lease loss (#132). */
   signal?: AbortSignal;
   now?: Date;

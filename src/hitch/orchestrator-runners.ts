@@ -182,6 +182,9 @@ export function createOrchestratorRunners(
           goal: goalText,
           baseBranch: context.baseBranch,
           codexRunner: deps.coderRunner,
+          ...(deps.coderBackend !== undefined
+            ? { coderBackend: deps.coderBackend }
+            : {}),
           codexBinaryVersion: deps.coderCodexBinaryVersion ?? null,
           ...(deps.signal !== undefined ? { signal: deps.signal } : {}),
           ...projectRuntimeFields(deps),

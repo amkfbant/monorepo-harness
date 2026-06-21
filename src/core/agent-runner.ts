@@ -14,6 +14,7 @@
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
 import { createClaudeCliRunner } from "../claude/claude-cli-runner.js";
+import { codexBinaryVersion } from "../codex/codex-version.js";
 import type { SandboxMode } from "../policy/schema.js";
 
 export type AgentBackend = "codex" | "claude";
@@ -93,6 +94,51 @@ export function resolveAgentRunner(o: ResolveAgentRunnerOpts): {
       ...(o.timeoutMs !== undefined ? { timeoutMs: o.timeoutMs } : {}),
       ...(o.envAllowlist !== undefined ? { envAllowlist: o.envAllowlist } : {}),
     }),
+  };
+}
+
+/**
+ * Coder runner + backend as the `OrchestratorRunnerDeps` / construction-site
+ * field pair, from ONE resolution (so the runner and its threaded backend can't
+ * diverge). Spread into the deps object: `...coderRunnerDeps(codexBin)`. The
+ * coder always uses the workspace-write codex sandbox; claude ignores it.
+ */
+export function coderRunnerDeps(codexBin: string): {
+  coderRunner: CodexExecRunner;
+  coderBackend: AgentBackend;
+  coderCodexBinaryVersion: string | null;
+} {
+  const { runner, backend } = resolveAgentRunner({
+    role: "coder",
+    codexBin,
+    sandbox: "workspace-write",
+  });
+  return {
+    coderRunner: runner,
+    coderBackend: backend,
+    // #191: do not stamp a CODEX binary version onto a CLAUDE run's provenance
+    // (it would falsely attribute the run to whatever codex is on PATH / null).
+    coderCodexBinaryVersion:
+      backend === "claude" ? null : codexBinaryVersion(codexBin),
+  };
+}
+
+/**
+ * Coder runner + backend as the `RunDomainCodingOpts` field pair (the `run` /
+ * `rerun` entry points that call runDomainCoding directly), from ONE resolution.
+ * Spread: `...coderRunFields(codexBin)`. Default codex sandbox (workspace-write).
+ */
+export function coderRunFields(codexBin: string): {
+  codexRunner: CodexExecRunner;
+  coderBackend: AgentBackend;
+  codexBinaryVersion: string | null;
+} {
+  const { runner, backend } = resolveAgentRunner({ role: "coder", codexBin });
+  return {
+    codexRunner: runner,
+    coderBackend: backend,
+    // null for claude — see coderRunnerDeps.
+    codexBinaryVersion: backend === "claude" ? null : codexBinaryVersion(codexBin),
   };
 }
 

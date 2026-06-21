@@ -123,13 +123,18 @@ function truncateDescription(
 /**
  * Live invocation id, in one of three disjoint namespaces so live and backfill
  * never collide:
- *   - `ext:<sha256>` — ANY row carrying an external_label. The current claude
- *     consumer (ingest) always sets external_label='ops-subagent', so claude
- *     rows land HERE (the ext: hash still includes session+agent, so it is
+ *   - `ext:<sha256>` — ANY row carrying an external_label. The claude TRANSCRIPT
+ *     consumer (ingest) always sets external_label='ops-subagent', so those
+ *     claude rows land HERE (the ext: hash still includes session+agent, so it is
  *     injective per (label,session,agent,run,role,seq)).
- *   - `<sha256>` (bare hex) — codex rows hash `(run, role, seq)`. The bare-hex
- *     `(session, agent, role, seq)` branch is RESERVED for a future label-less
- *     claude consumer (e.g. Phase-4 internal claude); no caller hits it today.
+ *   - `<sha256>` (bare hex) — codex rows hash `(run, role, seq)`; the
+ *     `(session, agent, role, seq)` shape is reserved for a future label-less
+ *     session-scoped claude consumer. A label-less claude INTERNAL invocation
+ *     (#191 coder/reviewer/evaluator) ALSO hits this branch but is namespaced
+ *     with a leading "claude" so its id is disjoint from the codex bare-hex
+ *     (they share the (run, role, seq) shape but allocate seq from different
+ *     authorities — agent_invocation vs run_usage — so the prefix prevents a
+ *     mixed-backend same-run collision).
  *   - `bf:<run>:<kind>:<seq>` — the v36 backfill surrogate (pure SQL).
  */
 function sha256Hex(parts: readonly string[]): string {
@@ -170,7 +175,16 @@ function deriveInvocationId(input: RecordAgentUsageInput, seq: number): string {
     input.sessionId != null && input.agentId != null
       ? [input.sessionId, input.agentId, input.role, String(seq)]
       : [input.runId ?? "", input.role, String(seq)];
-  return sha256Hex(parts);
+  // codex keeps its bare-hex `(run|session, role, seq)` id BYTE-STABLE. A
+  // label-less claude INTERNAL invocation (coder/reviewer/evaluator, #191)
+  // shares that exact shape but allocates `seq` from a DIFFERENT authority
+  // (agent_invocation, not run_usage), so a mixed-backend same-run review
+  // (claude then codex via `review auto --allow-overwrite`) would derive the
+  // SAME id and the later codex insert would be swallowed fail-open. Prefix the
+  // claude hash input with the tool so the two namespaces are disjoint.
+  return input.tool === "claude"
+    ? sha256Hex(["claude", ...parts])
+    : sha256Hex(parts);
 }
 
 /**

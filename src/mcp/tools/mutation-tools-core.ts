@@ -14,7 +14,7 @@ import { ensureProjectVisible } from "./tool-helpers.js";
 import { prepareProjectRun } from "../../project/run-project.js";
 import { RunFinalizedError, runDomainCoding } from "../../core/workflow-runner.js";
 import { createCodexCliRunner } from "../../codex/codex-cli-runner.js";
-import { codexBinaryVersion } from "../../codex/codex-version.js";
+import { coderRunFields, coderRunnerDeps } from "../../core/agent-runner.js";
 import { runReviewerAgent } from "../../core/reviewer-agent.js";
 import { prepareRerunFromReview } from "../../core/rerun.js";
 import { addBacklogItem, resolveBacklogItemForRun } from "../../core/backlog-db.js";
@@ -75,8 +75,7 @@ export async function runStartTool(
           domain: prepared.domain,
           goal: args.goal,
           baseBranch: prepared.baseBranch,
-          codexRunner: createCodexCliRunner({ codexBin }),
-          codexBinaryVersion: codexBinaryVersion(codexBin),
+          ...coderRunFields(codexBin),
           compiledPolicy: prepared.compiledPolicy,
           reviewRuleResolution: prepared.reviewRuleResolution,
           project: prepared.project,
@@ -203,7 +202,6 @@ export async function rerunStartTool(
         dbPath: paths.dbPath,
       });
       const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
-      const resolvedCodexBinaryVersion = codexBinaryVersion(codexBin);
       let result: Awaited<ReturnType<typeof runDomainCoding>>;
       if (prep.projectId !== undefined) {
         const prepared = await prepareProjectRun({
@@ -230,8 +228,7 @@ export async function rerunStartTool(
             domain: prepared.domain,
             goal: prep.goal,
             baseBranch: prepared.baseBranch,
-            codexRunner: createCodexCliRunner({ codexBin }),
-            codexBinaryVersion: resolvedCodexBinaryVersion,
+            ...coderRunFields(codexBin),
             parentRunId: prep.parentRunId,
             rootRunId: prep.rootRunId,
             rerunAttempt: prep.rerunAttempt,
@@ -273,8 +270,7 @@ export async function rerunStartTool(
             domain: prep.domain,
             goal: prep.goal,
             baseBranch: prep.baseBranch,
-            codexRunner: createCodexCliRunner({ codexBin }),
-            codexBinaryVersion: resolvedCodexBinaryVersion,
+            ...coderRunFields(codexBin),
             parentRunId: prep.parentRunId,
             rootRunId: prep.rootRunId,
             rerunAttempt: prep.rerunAttempt,
@@ -379,8 +375,7 @@ export async function orchestrateHitchTool(
           dbPath,
           harnessRoot: context.harnessRoot,
           createdBy,
-          coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
-          coderCodexBinaryVersion: codexBinaryVersion(codexBin),
+          ...coderRunnerDeps(codexBin),
           reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
           // NO publisher: the MCP driver never opens a PR. stopAtCloseReady below
           // halts at close_ready; opening the PR / closing the hitch stays a

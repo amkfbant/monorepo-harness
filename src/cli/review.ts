@@ -2,6 +2,7 @@ import process from "node:process";
 import { existsSync } from "node:fs";
 import type { Command } from "commander";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
+import { resolveAgentRunner } from "../core/agent-runner.js";
 import { harnessPaths } from "../config/paths.js";
 import { evaluateReviewer, compareDecisions, ReviewEvaluateError } from "../core/review-evaluator.js";
 import { listReviews, formatTable, formatJson } from "../core/review-lister.js";
@@ -191,7 +192,8 @@ export function registerReviewCommands(
     .requiredOption("--run-id <id>", "target run identifier")
     .option(
       "--reviewer-name <name>",
-      "stamped into review-decision.yaml.reviewer (default: codex-reviewer)",
+      "stamped into review-decision.yaml.reviewer (default: codex-reviewer, " +
+        "or claude-reviewer when HARNESS_REVIEWER_BACKEND=claude)",
     )
     .option(
       "--allow-overwrite",
@@ -209,7 +211,12 @@ export function registerReviewCommands(
       // touch the worktree/runs files except by us writing review-decision
       // afterward.
       const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
-      const runner = createCodexCliRunner({
+      // #191: the reviewer may be claude (opt-in via HARNESS_REVIEWER_BACKEND).
+      // read-only sandbox for codex; claude's read-only tool surface + cwd
+      // boundary for claude. Backend threaded so the events redaction / usage
+      // dispatch matches the runner.
+      const { runner, backend: reviewerBackend } = resolveAgentRunner({
+        role: "reviewer",
         codexBin,
         sandbox: "read-only",
       });
@@ -239,12 +246,18 @@ export function registerReviewCommands(
           runsDir: paths.runsDir,
           runId,
           dbPath: paths.dbPath,
+          // #191: a claude reviewer must not be stored under the codex-reviewer
+          // identity (which carries its own lens/trust config). Default the name
+          // to the backend when the operator didn't pass --reviewer-name.
           ...(raw.reviewerName !== undefined
             ? { reviewerName: String(raw.reviewerName) }
-            : {}),
+            : reviewerBackend === "claude"
+              ? { reviewerName: "claude-reviewer" }
+              : {}),
           allowOverwrite: Boolean(raw.allowOverwrite),
           dryRun,
           codexRunner: runner,
+          reviewerBackend,
         });
         syncArtifacts();
         process.stdout.write(

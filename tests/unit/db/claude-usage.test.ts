@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { freshDb } from "./_agent-usage-helpers.js";
 import { recordClaudeUsage } from "../../../src/db/repositories/claude-usage.js";
+import { recordCodexUsage } from "../../../src/db/repositories/run-usage.js";
 
 const STREAM = (turns: Array<Record<string, number>>): string =>
   turns
@@ -116,6 +117,44 @@ describe("recordClaudeUsage", () => {
     expect(turns).toHaveLength(1);
     expect(turns[0].input_tokens).toBeNull();
     expect(turns[0].usage_source).toBe("unavailable");
+  });
+
+  it("a claude reviewer and a codex reviewer on the SAME run both record (no id collision, P2)", () => {
+    const db = freshDb();
+    // codex run_usage has a FK to runs(run_id); insert the run first.
+    db.prepare(
+      `INSERT INTO runs (run_id, repo_id, domain, workflow, base_branch, status, updated_at)
+       VALUES ('run-mix', 'demo', 'apps/web', 'domain-coding', 'main', 'needs_review', '2026-06-21T00:00:00.000Z')`,
+    ).run();
+    // claude reviewer first...
+    recordClaudeUsage({
+      db,
+      runId: "run-mix",
+      kind: "reviewer",
+      eventsContent: STREAM([{ input_tokens: 1, output_tokens: 1 }]),
+      onError: (e) => {
+        throw e;
+      },
+    });
+    // ...then codex reviewer on the SAME run (review auto --allow-overwrite
+    // after switching HARNESS_REVIEWER_BACKEND). Pre-fix the codex bare-hex id
+    // collided with claude's and was swallowed fail-open.
+    recordCodexUsage({
+      db,
+      runId: "run-mix",
+      kind: "reviewer",
+      eventsContent:
+        '{"type":"turn.completed","usage":{"input_tokens":2,"cached_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":0}}\n',
+      onError: (e) => {
+        throw e;
+      },
+    });
+    const rows = db
+      .prepare(
+        "SELECT tool FROM agent_invocation WHERE run_id = ? AND role = 'reviewer' ORDER BY tool",
+      )
+      .all("run-mix") as Array<{ tool: string }>;
+    expect(rows.map((r) => r.tool)).toEqual(["claude", "codex"]); // BOTH recorded
   });
 
   it("is fail-open: a write error reaches onError without throwing", () => {

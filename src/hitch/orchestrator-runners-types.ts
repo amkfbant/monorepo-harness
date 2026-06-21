@@ -99,6 +99,13 @@ export interface OrchestratorRunnerDeps {
   harnessRoot: string;
   createdBy: string;
   coderRunner: CodexExecRunner;
+  /**
+   * (#191) Backend of `coderRunner`, captured with its construction and threaded
+   * to the coder `runDomainCoding` call so the coder dispatch (redaction / usage
+   * / model) can't diverge from the injected runner. Absent → 'codex'. Reviewer
+   * stays codex (its claude dispatch is a separate follow-up).
+   */
+  coderBackend?: "codex" | "claude";
   coderCodexBinaryVersion?: string | null;
   reviewerRunner: CodexExecRunner;
   /**

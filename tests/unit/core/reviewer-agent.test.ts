@@ -178,6 +178,46 @@ function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
+// A fake claude `-p` reviewer: writes the claude stream-json envelope (usage +
+// a secret in a tool_result) to the events file, and the YAML verdict to stdout
+// (the final message the reviewer parses). The real runner would redact stdout;
+// the fake writes the verdict directly so the parser sees it.
+function fakeClaudeReviewer(verdict: string, secret: string): CodexExecRunner {
+  return {
+    async run(input) {
+      const { writeFile, mkdir } = await import("node:fs/promises");
+      const { dirname } = await import("node:path");
+      await mkdir(dirname(input.logPaths.events), { recursive: true });
+      const events =
+        [
+          JSON.stringify({ type: "system", subtype: "init", apiKeySource: "none" }),
+          JSON.stringify({
+            type: "assistant",
+            message: {
+              id: "m1",
+              model: "claude-opus-4-8",
+              usage: {
+                input_tokens: 7,
+                output_tokens: 20,
+                cache_read_input_tokens: 5,
+                cache_creation_input_tokens: 2,
+              },
+            },
+          }),
+          JSON.stringify({
+            type: "user",
+            message: { content: [{ type: "tool_result", content: `read ${secret}` }] },
+          }),
+          JSON.stringify({ type: "result", subtype: "success", result: verdict }),
+        ].join("\n") + "\n";
+      await writeFile(input.logPaths.events, events, "utf8");
+      await writeFile(input.logPaths.stdout, verdict, "utf8");
+      await writeFile(input.logPaths.stderr, "", "utf8");
+      return { exitCode: 0, timedOut: false, durationMs: 0 };
+    },
+  };
+}
+
 function writeFakeCodexBinary(dir: string, body: string): string {
   const path = join(dir, "fake-codex.js");
   writeFileSync(path, `#!/usr/bin/env node\n${body}`, "utf8");
@@ -250,6 +290,52 @@ describe("runReviewerAgent", () => {
       codexRunner: runner,
     });
     expect(r.reviewer).toBe("codex-reviewer-gpt-5.5");
+  });
+
+  it("[#191] claude reviewer: parses the verdict, redacts events with the claude redactor, records tool='claude' usage", async () => {
+    const { runsDir, runId } = setup();
+    const dbPath = setupReviewDb(runId);
+    const SECRET = "AKIAIOSFODNN7EXAMPLE";
+    const r = await runReviewerAgent({
+      runsDir,
+      runId,
+      dbPath,
+      reviewerName: "claude-reviewer",
+      codexRunner: fakeClaudeReviewer(APPROVED_OUTPUT, SECRET),
+      reviewerBackend: "claude",
+      now: new Date("2026-06-21T01:00:00Z"),
+    });
+    // verdict parsed from the claude final message
+    expect(r.decision).toBe("approved");
+
+    // events redacted with the CLAUDE redactor (the codex redactor would have
+    // passed the tool_result secret through un-redacted).
+    const { readdirSync, readFileSync: rfs } = await import("node:fs");
+    const reviewersDir = join(runsDir, runId, "reviewers");
+    const reviewerDir = join(reviewersDir, readdirSync(reviewersDir)[0]!);
+    const events = rfs(join(reviewerDir, "reviewer-agent.events.jsonl"), "utf8");
+    expect(events).not.toContain(SECRET);
+    expect(events).toContain("[redacted:");
+
+    // usage recorded as tool='claude', role='reviewer'
+    const db = openDb(dbPath);
+    try {
+      const inv = db
+        .prepare(
+          "SELECT tool, role, usage_source FROM agent_invocation WHERE run_id = ? AND role = 'reviewer'",
+        )
+        .get(runId) as { tool: string; role: string; usage_source: string };
+      expect(inv.tool).toBe("claude");
+      expect(inv.usage_source).toBe("exact");
+      const n = (
+        db
+          .prepare("SELECT COUNT(*) AS n FROM run_usage WHERE run_id = ?")
+          .get(runId) as { n: number }
+      ).n;
+      expect(n).toBe(0); // no legacy run_usage for a claude reviewer
+    } finally {
+      db.close();
+    }
   });
 
   it("injects reviewer lens guidance as untrusted fenced prompt text and records lens provenance", async () => {
@@ -760,6 +846,50 @@ describe("runReviewerAgent", () => {
     await expect(
       runReviewerAgent({ runsDir, runId, codexRunner: runner }),
     ).rejects.toThrow(/modified run artifact/);
+  });
+
+  it("[#191] removes the un-redacted raw reviewer events on the tamper-failure path (fail-closed S4)", async () => {
+    const { runsDir, runId } = setup();
+    const summary = join(runsDir, runId, "summary.md");
+    const { writeFileSync, utimesSync, existsSync } = await import("node:fs");
+    writeFileSync(summary, "original\n");
+    const SECRET = "AKIAIOSFODNN7EXAMPLE";
+    let rawEventsPath = "";
+    const runner: CodexExecRunner = {
+      async run(input) {
+        rawEventsPath = input.logPaths.events;
+        const { writeFile, mkdir } = await import("node:fs/promises");
+        const { dirname } = await import("node:path");
+        await mkdir(dirname(input.logPaths.events), { recursive: true });
+        // raw claude events carrying a secret in a tool_result
+        await writeFile(
+          input.logPaths.events,
+          JSON.stringify({
+            type: "user",
+            message: { content: [{ type: "tool_result", content: `leak ${SECRET}` }] },
+          }) + "\n",
+        );
+        // tamper: mutate a non-allowlisted artifact during the run, so the
+        // tamper check throws BEFORE the redaction publish runs.
+        writeFileSync(summary, "tampered\n");
+        const now = new Date();
+        utimesSync(summary, now, new Date(now.getTime() + 5000));
+        await writeFile(input.logPaths.stdout, APPROVED_OUTPUT, "utf8");
+        await writeFile(input.logPaths.stderr, "", "utf8");
+        return { exitCode: 0, timedOut: false, durationMs: 0 };
+      },
+    };
+    await expect(
+      runReviewerAgent({
+        runsDir,
+        runId,
+        codexRunner: runner,
+        reviewerBackend: "claude",
+      }),
+    ).rejects.toThrow(/modified run artifact/);
+    // the un-redacted raw events file (with the secret) must NOT survive
+    expect(rawEventsPath).not.toBe("");
+    expect(existsSync(rawEventsPath)).toBe(false);
   });
 
   it("ignores OS metadata noise (.DS_Store / ._*) created during the review — not tamper (#269)", async () => {

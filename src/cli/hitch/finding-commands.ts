@@ -3,7 +3,7 @@ import type { Command } from "commander";
 import { harnessPaths } from "../../config/paths.js";
 import { classifyFindingForHitch, type ClassifiableHitchFinding } from "../../hitch/classification.js";
 import { createCodexCliRunner } from "../../codex/codex-cli-runner.js";
-import { codexBinaryVersion } from "../../codex/codex-version.js";
+import { coderRunnerDeps } from "../../core/agent-runner.js";
 import { evaluateConvergenceAndRecordStatus } from "../../hitch/convergence-status.js";
 import { deferFindingToBacklog } from "../../hitch/followups.js";
 import { HitchOrchestrator } from "../../hitch/orchestrator.js";
@@ -246,8 +246,7 @@ export function registerHitchFindingCommands(
             dbPath,
             harnessRoot: opts.getHarnessRoot(),
             createdBy: "cli",
-            coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
-            coderCodexBinaryVersion: codexBinaryVersion(codexBin),
+            ...coderRunnerDeps(codexBin),
             reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
             // no publisher: --then-rerun reruns the coder and halts at
             // close_ready; it never opens a PR (stopAtCloseReady below).
