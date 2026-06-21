@@ -192,7 +192,8 @@ export function registerReviewCommands(
     .requiredOption("--run-id <id>", "target run identifier")
     .option(
       "--reviewer-name <name>",
-      "stamped into review-decision.yaml.reviewer (default: codex-reviewer)",
+      "stamped into review-decision.yaml.reviewer (default: codex-reviewer, " +
+        "or claude-reviewer when HARNESS_REVIEWER_BACKEND=claude)",
     )
     .option(
       "--allow-overwrite",
