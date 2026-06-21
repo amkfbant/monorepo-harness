@@ -2,6 +2,7 @@ import process from "node:process";
 import type { Command } from "commander";
 import { harnessPaths } from "../../config/paths.js";
 import { createCodexCliRunner } from "../../codex/codex-cli-runner.js";
+import { coderRunnerDeps } from "../../core/agent-runner.js";
 import { codexBinaryVersion } from "../../codex/codex-version.js";
 import { createGhPrPublisher, createGhPrMerger, createGhCiStatus, createGhReviewVerdicts } from "../../core/gh-pr-publisher.js";
 import { createGhCopilotReviewer } from "../../core/copilot-reviewer-gh.js";
@@ -184,7 +185,7 @@ export function registerHitchConvergenceCommands(
             dbPath,
             harnessRoot: opts.getHarnessRoot(),
             createdBy: "cli",
-            coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
+            ...coderRunnerDeps(codexBin),
             coderCodexBinaryVersion: codexBinaryVersion(codexBin),
             reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
             publisher: createGhPrPublisher(),
@@ -323,7 +324,7 @@ export function registerHitchConvergenceCommands(
             dbPath,
             harnessRoot: opts.getHarnessRoot(),
             createdBy: "cli",
-            coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
+            ...coderRunnerDeps(codexBin),
             coderCodexBinaryVersion: codexBinaryVersion(codexBin),
             reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
             publisher: createGhPrPublisher(),

@@ -97,6 +97,37 @@ export function resolveAgentRunner(o: ResolveAgentRunnerOpts): {
 }
 
 /**
+ * Coder runner + backend as the `OrchestratorRunnerDeps` / construction-site
+ * field pair, from ONE resolution (so the runner and its threaded backend can't
+ * diverge). Spread into the deps object: `...coderRunnerDeps(codexBin)`. The
+ * coder always uses the workspace-write codex sandbox; claude ignores it.
+ */
+export function coderRunnerDeps(codexBin: string): {
+  coderRunner: CodexExecRunner;
+  coderBackend: AgentBackend;
+} {
+  const { runner, backend } = resolveAgentRunner({
+    role: "coder",
+    codexBin,
+    sandbox: "workspace-write",
+  });
+  return { coderRunner: runner, coderBackend: backend };
+}
+
+/**
+ * Coder runner + backend as the `RunDomainCodingOpts` field pair (the `run` /
+ * `rerun` entry points that call runDomainCoding directly), from ONE resolution.
+ * Spread: `...coderRunFields(codexBin)`. Default codex sandbox (workspace-write).
+ */
+export function coderRunFields(codexBin: string): {
+  codexRunner: CodexExecRunner;
+  coderBackend: AgentBackend;
+} {
+  const { runner, backend } = resolveAgentRunner({ role: "coder", codexBin });
+  return { codexRunner: runner, coderBackend: backend };
+}
+
+/**
  * Advisory claude model for agent-usage telemetry — mirror of resolveCodexModel:
  * the policy-declared model if present, else HARNESS_CLAUDE_MODEL, else null.
  * Best-effort metadata (the per-turn model is always recorded from the stream).

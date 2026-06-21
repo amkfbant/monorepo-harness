@@ -1,5 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
+  coderRunFields,
+  coderRunnerDeps,
   resolveAgentBackend,
   resolveAgentRunner,
   resolveClaudeModel,
@@ -53,6 +55,19 @@ describe("resolveAgentRunner", () => {
     expect(claude.backend).toBe("claude");
     expect(typeof claude.runner.run).toBe("function");
     expect(claude.runner).not.toBe(codex.runner);
+  });
+
+  it("coderRunnerDeps / coderRunFields carry the matching backend per env (orchestrate + run sites)", () => {
+    vi.stubEnv("HARNESS_CODER_BACKEND", "");
+    const deps = coderRunnerDeps("codex");
+    expect(deps.coderBackend).toBe("codex");
+    expect(typeof deps.coderRunner.run).toBe("function");
+    const run = coderRunFields("codex");
+    expect(run.coderBackend).toBe("codex");
+    expect(typeof run.codexRunner.run).toBe("function");
+    vi.stubEnv("HARNESS_CODER_BACKEND", "claude");
+    expect(coderRunnerDeps("codex").coderBackend).toBe("claude");
+    expect(coderRunFields("codex").coderBackend).toBe("claude");
   });
 
   it("returns the EXACT backend used so the dispatch can't diverge (R1-P1b)", () => {

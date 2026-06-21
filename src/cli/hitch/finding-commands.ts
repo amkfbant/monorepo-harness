@@ -3,6 +3,7 @@ import type { Command } from "commander";
 import { harnessPaths } from "../../config/paths.js";
 import { classifyFindingForHitch, type ClassifiableHitchFinding } from "../../hitch/classification.js";
 import { createCodexCliRunner } from "../../codex/codex-cli-runner.js";
+import { coderRunnerDeps } from "../../core/agent-runner.js";
 import { codexBinaryVersion } from "../../codex/codex-version.js";
 import { evaluateConvergenceAndRecordStatus } from "../../hitch/convergence-status.js";
 import { deferFindingToBacklog } from "../../hitch/followups.js";
@@ -246,7 +247,7 @@ export function registerHitchFindingCommands(
             dbPath,
             harnessRoot: opts.getHarnessRoot(),
             createdBy: "cli",
-            coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
+            ...coderRunnerDeps(codexBin),
             coderCodexBinaryVersion: codexBinaryVersion(codexBin),
             reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
             // no publisher: --then-rerun reruns the coder and halts at

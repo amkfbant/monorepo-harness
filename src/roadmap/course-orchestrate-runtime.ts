@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import process from "node:process";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
+import { coderRunnerDeps } from "../core/agent-runner.js";
 import { codexBinaryVersion } from "../codex/codex-version.js";
 import { createOrchestratorRunners } from "../hitch/orchestrator-runners.js";
 import type { OrchestratorRunners } from "../hitch/orchestrator-types.js";
@@ -90,15 +91,24 @@ export async function makeCourseHitchRunners(
     projectId,
     domain: session.domain,
   });
+  // #191: the production coder is backend-aware (claude opt-in via
+  // HARNESS_CODER_BACKEND). A test-injected `createRunners` pins codex — those
+  // tests exercise the codex path and must keep receiving the fake runner.
+  const coderFields = deps.createRunners
+    ? {
+        coderRunner: createRunners({
+          codexBin: input.codexBin,
+          sandbox: "workspace-write",
+        }),
+        coderBackend: "codex" as const,
+      }
+    : coderRunnerDeps(input.codexBin);
   const runners = createOrchestratorRunners({
     dbPath: input.dbPath,
     harnessRoot: input.harnessRoot,
     createdBy: input.createdBy,
     ...(input.signal !== undefined ? { signal: input.signal } : {}),
-    coderRunner: createRunners({
-      codexBin: input.codexBin,
-      sandbox: "workspace-write",
-    }),
+    ...coderFields,
     coderCodexBinaryVersion: codexBinaryVersion(input.codexBin),
     reviewerRunner: createRunners({
       codexBin: input.codexBin,

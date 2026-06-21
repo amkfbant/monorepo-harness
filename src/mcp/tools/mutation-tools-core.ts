@@ -14,6 +14,7 @@ import { ensureProjectVisible } from "./tool-helpers.js";
 import { prepareProjectRun } from "../../project/run-project.js";
 import { RunFinalizedError, runDomainCoding } from "../../core/workflow-runner.js";
 import { createCodexCliRunner } from "../../codex/codex-cli-runner.js";
+import { coderRunFields, coderRunnerDeps } from "../../core/agent-runner.js";
 import { codexBinaryVersion } from "../../codex/codex-version.js";
 import { runReviewerAgent } from "../../core/reviewer-agent.js";
 import { prepareRerunFromReview } from "../../core/rerun.js";
@@ -75,7 +76,7 @@ export async function runStartTool(
           domain: prepared.domain,
           goal: args.goal,
           baseBranch: prepared.baseBranch,
-          codexRunner: createCodexCliRunner({ codexBin }),
+          ...coderRunFields(codexBin),
           codexBinaryVersion: codexBinaryVersion(codexBin),
           compiledPolicy: prepared.compiledPolicy,
           reviewRuleResolution: prepared.reviewRuleResolution,
@@ -230,7 +231,7 @@ export async function rerunStartTool(
             domain: prepared.domain,
             goal: prep.goal,
             baseBranch: prepared.baseBranch,
-            codexRunner: createCodexCliRunner({ codexBin }),
+            ...coderRunFields(codexBin),
             codexBinaryVersion: resolvedCodexBinaryVersion,
             parentRunId: prep.parentRunId,
             rootRunId: prep.rootRunId,
@@ -273,7 +274,7 @@ export async function rerunStartTool(
             domain: prep.domain,
             goal: prep.goal,
             baseBranch: prep.baseBranch,
-            codexRunner: createCodexCliRunner({ codexBin }),
+            ...coderRunFields(codexBin),
             codexBinaryVersion: resolvedCodexBinaryVersion,
             parentRunId: prep.parentRunId,
             rootRunId: prep.rootRunId,
@@ -379,7 +380,7 @@ export async function orchestrateHitchTool(
           dbPath,
           harnessRoot: context.harnessRoot,
           createdBy,
-          coderRunner: createCodexCliRunner({ codexBin, sandbox: "workspace-write" }),
+          ...coderRunnerDeps(codexBin),
           coderCodexBinaryVersion: codexBinaryVersion(codexBin),
           reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
           // NO publisher: the MCP driver never opens a PR. stopAtCloseReady below
