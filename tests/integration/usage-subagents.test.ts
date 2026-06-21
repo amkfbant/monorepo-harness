@@ -9,10 +9,11 @@ import { harnessPaths } from "../../src/config/paths.js";
 import { recordAgentUsage } from "../../src/db/repositories/agent-usage.js";
 import { registerUsageCommands } from "../../src/cli/usage.js";
 
-/** Run `harness usage subagents [args]` capturing stdout/stderr. Never throws. */
+/** Run `harness usage <sub> [args]` capturing stdout/stderr. Never throws. */
 async function runUsage(
   root: string,
   args: string[],
+  sub: "subagents" | "internal" = "subagents",
 ): Promise<{ stdout: string; stderr: string; threw: boolean }> {
   const program = new Command();
   program.exitOverride();
@@ -31,7 +32,7 @@ async function runUsage(
   };
   let threw = false;
   try {
-    await program.parseAsync(["node", "harness", "usage", "subagents", ...args]);
+    await program.parseAsync(["node", "harness", "usage", sub, ...args]);
   } catch {
     threw = true;
   } finally {
@@ -116,6 +117,56 @@ describe("harness usage subagents (fail-open + aggregation) #351", () => {
     expect(out.totals.inputTokens).toBe(100);
     expect(out.totals.totalTokens).toBe(140);
     expect(out.rows[0].agentType).toBe("code-reviewer");
+  });
+
+  it("[internal] aggregates the harness's own claude coder/reviewer/evaluator, NOT external", async () => {
+    const root = freshRootWithMigratedDb();
+    const db = openDb(harnessPaths(root).dbPath);
+    try {
+      // an internal claude coder run
+      recordAgentUsage({
+        db,
+        tool: "claude",
+        role: "coder",
+        runId: "run-c",
+        model: "claude-opus-4-8",
+        usageSource: "exact",
+        turns: [
+          { turnSeq: 0, model: "claude-opus-4-8", inputTokens: 10, outputTokens: 5, totalTokens: 15, usageSource: "exact" },
+        ],
+        onError: (e) => {
+          throw e;
+        },
+      });
+      // an external subagent run — must be EXCLUDED from `usage internal`
+      recordAgentUsage({
+        db,
+        tool: "claude",
+        role: "external",
+        externalLabel: "ops-subagent",
+        sessionId: "s9",
+        agentId: "a9",
+        model: "claude-opus-4-8",
+        usageSource: "parsed_log",
+        turns: [
+          { turnSeq: 0, model: "claude-opus-4-8", inputTokens: 999, outputTokens: 999, totalTokens: 1998, usageSource: "parsed_log" },
+        ],
+        onError: (e) => {
+          throw e;
+        },
+      });
+    } finally {
+      db.close();
+    }
+    const internal = await runUsage(root, ["--json"], "internal");
+    expect(internal.threw).toBe(false);
+    const out = JSON.parse(internal.stdout);
+    expect(out.totals.invocations).toBe(1); // only the internal coder
+    expect(out.totals.inputTokens).toBe(10); // NOT the external 999
+    expect(out.totals.totalTokens).toBe(15);
+    // and `subagents` sees only the external one (the complement)
+    const external = await runUsage(root, ["--json"], "subagents");
+    expect(JSON.parse(external.stdout).totals.inputTokens).toBe(999);
   });
 
   it("readonly: does NOT migrate a pre-v36 DB (observational command)", async () => {

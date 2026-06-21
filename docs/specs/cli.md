@@ -2193,19 +2193,26 @@ ops 駆動の Claude サブエージェント usage telemetry を読み取る（
 
 ```bash
 harness usage subagents [--since <iso>] [--json]
+harness usage internal   [--since <iso>] [--json]
 ```
 
 `harness usage subagents` はトークン使用量を `tool='claude'`, `role='external'` で
-フィルタし、`agentType` / `model` 別に集計して返す。
+フィルタし、`agentType` / `model` 別に集計して返す（ops 駆動の外部サブエージェント）。
+
+`harness usage internal` は `tool='claude'`, `role IN ('coder','reviewer','evaluator')`
+で集計する（`#191` の claude `-p` バックエンドが内部 coder/reviewer/evaluator として
+動いた際の usage）。同じ `SubagentUsageSummary` 形式・同じ fail-open tail。`model` 別
+（内部 invocation は `agentType` が NULL なので実質 model 別）に集計する。両サブコマンドは
+read-only 集計を共有 helper で実行する。
 
 | オプション | 説明 |
 |-----------|------|
 | `--since <iso>` | 指定 ISO 日時以降に作成された invocation のみ集計（`agent_invocation.created_at >= <iso>`） |
 | `--json` | JSON 出力（text 出力との選択）。出力形式は `SubagentUsageSummary`（`rows` + `totals`） |
 
-**ops-only scope**: このコマンドは ops 運用向けで、ハーネスが ops モードで外部 Claude
-サブエージェントを呼び出した際のトークン消費を可視化する。コスト属性付けは Phase-4
-（`#191`）で追加予定。
+**scope**: `subagents` は ops モードで外部 Claude サブエージェントを呼び出した際の消費、
+`internal` はハーネス自身の claude バックエンド（coder/reviewer/evaluator）の消費を可視化する。
+コスト属性付け（per-role 内訳・$ 換算）は将来拡張。
 
 **fail-open tail (#351)**: 次のいずれでも stderr に diagnostic を 1 行出した上で
 zero-shaped summary（`rows: []`, `totals: { invocations: 0, ... }`）を返し、ハード

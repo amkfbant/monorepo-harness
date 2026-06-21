@@ -429,6 +429,7 @@ describe("CLI help surface golden (#125 behavior-zero gate)", () => {
         help
       usage
         subagents
+        internal
         help
       help
       "
