@@ -123,6 +123,7 @@ describe("resolveHitchCoderRunnerDeps base-branch override (#236)", () => {
       dbPath,
       hitchId: "g-proj",
       repoPath,
+      codexBin: "codex",
       baseBranch: "feature/stacked",
     });
     expect(deps.baseBranch).toBe("feature/stacked");
@@ -144,6 +145,7 @@ describe("resolveHitchCoderRunnerDeps base-branch override (#236)", () => {
       dbPath,
       hitchId: "g-proj",
       repoPath,
+      codexBin: "codex",
       // baseBranch omitted → profile default (develop), not the CLI default main
     });
     expect(deps.baseBranch).toBe("develop");
@@ -169,14 +171,76 @@ describe("resolveHitchCoderRunnerDeps base-branch override (#236)", () => {
       close();
     }
     const explicit = await resolveHitchCoderRunnerDeps({
-      harnessRoot, dbPath, hitchId: "g-nolproj", repoPath,
+      harnessRoot, dbPath, hitchId: "g-nolproj", repoPath, codexBin: "codex",
       baseBranch: "feature/x",
     });
     expect(explicit.baseBranch).toBe("feature/x");
     const omitted = await resolveHitchCoderRunnerDeps({
-      harnessRoot, dbPath, hitchId: "g-nolproj", repoPath,
+      harnessRoot, dbPath, hitchId: "g-nolproj", repoPath, codexBin: "codex",
     });
     expect(omitted.baseBranch).toBe("main");
+  });
+
+  it("[#191] project-less hitch with a domain tolerates a MISSING repo policy (fail-open, P2)", async () => {
+    // A repo-id-mode hitch whose repo policy file is absent/renamed must NOT
+    // throw here — that would block opening/merging an already close_ready PR
+    // (this helper runs before convergence on orchestrate). It falls back to env.
+    const { harnessRoot, dbPath, repoPath } = setupProject();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      new HitchRepository(db).createSession({
+        hitchId: "g-missingpol",
+        title: "repo-id mode, missing policy",
+        projectId: null,
+        repoId: "no-such-repo",
+        domain: "apps/x",
+        scope: {},
+        closeConditions: [],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+    } finally {
+      close();
+    }
+    const deps = await resolveHitchCoderRunnerDeps({
+      harnessRoot, dbPath, hitchId: "g-missingpol", repoPath, codexBin: "codex",
+    });
+    // resolved (no throw) and still produced a coder runner (env-fallback backend).
+    expect(deps.baseBranch).toBe("main");
+    expect(typeof deps.coderRunner?.run).toBe("function");
+  });
+
+  it("[#191] project-less hitch FAILS CLOSED on a present-but-INVALID policy (not ENOENT) (P2)", async () => {
+    // The fail-open is narrowed to ENOENT — a PRESENT but malformed policy must
+    // NOT be silently env-defaulted (that would be a safety hole).
+    const { harnessRoot, dbPath, repoPath } = setupProject();
+    mkdirSync(join(harnessRoot, "policies", "repos"), { recursive: true });
+    writeFileSync(join(harnessRoot, "policies", "global.yaml"), "always_deny_write: []\n");
+    // present file, but missing the required `domains` → schema (Zod) error.
+    writeFileSync(join(harnessRoot, "policies", "repos", "badrepo.yaml"), "repo_id: badrepo\n");
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      new HitchRepository(db).createSession({
+        hitchId: "g-badpol",
+        title: "invalid policy",
+        projectId: null,
+        repoId: "badrepo",
+        domain: "apps/web",
+        scope: {},
+        closeConditions: [],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+    } finally {
+      close();
+    }
+    await expect(
+      resolveHitchCoderRunnerDeps({
+        harnessRoot, dbPath, hitchId: "g-badpol", repoPath, codexBin: "codex",
+      }),
+    ).rejects.toThrow();
   });
 
   it("CLI wiring: omitted --base-branch uses the profile base; explicit overrides it (#236)", () => {

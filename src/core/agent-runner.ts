@@ -32,10 +32,22 @@ export const CLAUDE_CODER_TOOLS = ["Bash", "Read", "Edit", "Write"];
 export const CLAUDE_REVIEWER_TOOLS = ["Read", "Grep", "Glob"];
 
 /**
- * Which backend drives this role. Default 'codex'; only the exact string
- * 'claude' opts in (any other value fail-closes to 'codex').
+ * Which backend drives this role, mirroring resolveCodexModel's precedence
+ * (policy/profile value > env > default) but SAFETY-INVERTED: only the exact
+ * string 'claude' opts in at any layer; everything else fail-closes to 'codex'.
+ *
+ *   1. `policyBackend` — the per-project resolved.codex.backend (#191). Lets
+ *      project A=claude / B=codex coexist in one ops driver without env juggling.
+ *   2. HARNESS_*_BACKEND env — a global override for ops convenience / no-config
+ *      runs (the role has no policy in scope, e.g. standalone `review auto`).
+ *   3. default codex.
  */
-export function resolveAgentBackend(role: RunnerRole): AgentBackend {
+export function resolveAgentBackend(
+  role: RunnerRole,
+  policyBackend?: AgentBackend,
+): AgentBackend {
+  if (policyBackend === "claude") return "claude";
+  if (policyBackend === "codex") return "codex";
   return process.env[ENV_BY_ROLE[role]] === "claude" ? "claude" : "codex";
 }
 
@@ -98,20 +110,59 @@ export function resolveAgentRunner(o: ResolveAgentRunnerOpts): {
 }
 
 /**
+ * Per-project coder backend config (#191): the resolved policy's coder backend
+ * and advisory claude model, threaded from the in-scope ResolvedPolicy.codex so
+ * the helper picks the project's backend instead of only the global env.
+ */
+export interface CoderBackendOpts {
+  backend?: AgentBackend;
+  claudeModel?: string | null;
+  /** Policy kill timeout (#191) — threaded so orchestrate/MCP coders honour it
+   * like the CLI run/rerun paths (codex AND claude). */
+  timeoutMs?: number;
+}
+
+/**
+ * Build CoderBackendOpts from an in-scope ResolvedPolicy.codex, honouring
+ * exactOptionalPropertyTypes (never pass an explicit `undefined`). Spread the
+ * result into the coder helper: `coderRunnerDeps(bin, coderBackendOpts(resolved.codex))`.
+ */
+export function coderBackendOpts(codex: {
+  backend?: AgentBackend;
+  claudeModel?: string;
+  timeoutMs?: number;
+}): CoderBackendOpts {
+  return {
+    ...(codex.backend !== undefined ? { backend: codex.backend } : {}),
+    ...(codex.claudeModel !== undefined ? { claudeModel: codex.claudeModel } : {}),
+    ...(codex.timeoutMs !== undefined ? { timeoutMs: codex.timeoutMs } : {}),
+  };
+}
+
+/**
  * Coder runner + backend as the `OrchestratorRunnerDeps` / construction-site
  * field pair, from ONE resolution (so the runner and its threaded backend can't
- * diverge). Spread into the deps object: `...coderRunnerDeps(codexBin)`. The
- * coder always uses the workspace-write codex sandbox; claude ignores it.
+ * diverge). Spread into the deps object: `...coderRunnerDeps(codexBin, opts)`.
+ * The coder always uses the workspace-write codex sandbox; claude ignores it.
  */
-export function coderRunnerDeps(codexBin: string): {
+export function coderRunnerDeps(
+  codexBin: string,
+  opts?: CoderBackendOpts,
+): {
   coderRunner: CodexExecRunner;
   coderBackend: AgentBackend;
   coderCodexBinaryVersion: string | null;
 } {
+  const claudeModel = resolveClaudeModel(opts?.claudeModel);
   const { runner, backend } = resolveAgentRunner({
     role: "coder",
     codexBin,
     sandbox: "workspace-write",
+    backend: resolveAgentBackend("coder", opts?.backend),
+    // policy > HARNESS_CLAUDE_MODEL > null (the runner's --model gets the env
+    // fallback too, not just telemetry).
+    ...(claudeModel !== null ? { claudeModel } : {}),
+    ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
   });
   return {
     coderRunner: runner,
@@ -126,14 +177,24 @@ export function coderRunnerDeps(codexBin: string): {
 /**
  * Coder runner + backend as the `RunDomainCodingOpts` field pair (the `run` /
  * `rerun` entry points that call runDomainCoding directly), from ONE resolution.
- * Spread: `...coderRunFields(codexBin)`. Default codex sandbox (workspace-write).
+ * Spread: `...coderRunFields(codexBin, opts)`. Default codex sandbox.
  */
-export function coderRunFields(codexBin: string): {
+export function coderRunFields(
+  codexBin: string,
+  opts?: CoderBackendOpts,
+): {
   codexRunner: CodexExecRunner;
   coderBackend: AgentBackend;
   codexBinaryVersion: string | null;
 } {
-  const { runner, backend } = resolveAgentRunner({ role: "coder", codexBin });
+  const claudeModel = resolveClaudeModel(opts?.claudeModel);
+  const { runner, backend } = resolveAgentRunner({
+    role: "coder",
+    codexBin,
+    backend: resolveAgentBackend("coder", opts?.backend),
+    ...(claudeModel !== null ? { claudeModel } : {}),
+    ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+  });
   return {
     codexRunner: runner,
     coderBackend: backend,

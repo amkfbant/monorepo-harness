@@ -3,6 +3,9 @@ import { existsSync, readFileSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { parse as parseYaml } from "yaml";
 import { harnessPaths } from "../../config/paths.js";
+import { coderBackendOpts, coderRunnerDeps } from "../../core/agent-runner.js";
+import { resolveRepoCodexDefaults } from "../../policy/loader.js";
+import type { ResolvedPolicy } from "../../policy/schema.js";
 import { type DbHitchTokenUsage } from "../../db/repositories/aggregates.js";
 import { BacklogError } from "../../core/backlog.js";
 import { DbError } from "../../db/connection.js";
@@ -68,6 +71,10 @@ export async function resolveHitchCoderRunnerDeps(input: {
   dbPath: string;
   hitchId: string;
   repoPath: string;
+  /** Codex binary (#191): the coder runner is built HERE so the per-project
+   * resolved backend (claude vs codex) is applied — building it at the call site
+   * would only see the global env. */
+  codexBin: string;
   /**
    * Explicit `--base-branch`. When set it OVERRIDES the project profile's
    * `repo.base_branch` (#236); when omitted, a project-scoped hitch falls back to
@@ -81,29 +88,60 @@ export async function resolveHitchCoderRunnerDeps(input: {
     | "baseBranch"
     | "resolveRunContext"
     | "projectRuntime"
+    | "coderRunner"
+    | "coderBackend"
+    | "coderCodexBinaryVersion"
   >
 > {
   const { db, close } = openManagedDb({ dbPath: input.dbPath });
   let projectId: string | null;
   let domain: string | null;
+  let repoId: string | null;
   try {
     runMigrations(db);
     const session = new HitchRepository(db).requireSession(input.hitchId);
     projectId = session.projectId;
     domain = session.domain;
+    repoId = session.repoId;
   } finally {
     close();
   }
 
   if (projectId === null) {
-    return resolveHitchCloseRunnerDeps({
-      dbPath: input.dbPath,
-      hitchId: input.hitchId,
-      repoPath: input.repoPath,
-      ...(input.baseBranch !== undefined
-        ? { baseBranch: input.baseBranch }
-        : {}),
-    });
+    // Project-less (repo-id-mode) hitch: no profile, but a repoId+domain still
+    // resolves a global+repo policy (the same one runDomainCoding loads), so
+    // honour its coder backend. No repoId/domain → no policy → env fallback.
+    // FAIL-OPEN: this runs before convergence even on close-only flows
+    // (orchestrate of an already close_ready hitch builds a coder it never runs).
+    // A missing/renamed repo policy must NOT block opening/merging that PR — fall
+    // back to env rather than throwing.
+    let codex: ResolvedPolicy["codex"] | undefined;
+    if (domain !== null && repoId !== null) {
+      try {
+        codex = await resolveRepoCodexDefaults(input.harnessRoot, repoId, domain);
+      } catch (e) {
+        // ONLY a missing policy FILE (ENOENT — renamed/absent repo) falls back
+        // to env so a close-only flow isn't blocked. A PRESENT-but-INVALID
+        // policy (malformed YAML, schema/domain/command errors) still fails
+        // CLOSED — env-defaulting a broken policy would be a silent safety hole.
+        if ((e as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") throw e;
+        codex = undefined;
+      }
+    }
+    return {
+      ...resolveHitchCloseRunnerDeps({
+        dbPath: input.dbPath,
+        hitchId: input.hitchId,
+        repoPath: input.repoPath,
+        ...(input.baseBranch !== undefined
+          ? { baseBranch: input.baseBranch }
+          : {}),
+      }),
+      ...coderRunnerDeps(
+        input.codexBin,
+        codex !== undefined ? coderBackendOpts(codex) : undefined,
+      ),
+    };
   }
   if (domain === null) {
     throw new HitchCliError(
@@ -122,6 +160,11 @@ export async function resolveHitchCoderRunnerDeps(input: {
   // it), so overriding here is safe; the run resolves origin/<name> downstream.
   const baseBranch = input.baseBranch ?? prepared.baseBranch;
   return {
+    // #191: build the coder with the run's per-project resolved backend.
+    ...coderRunnerDeps(
+      input.codexBin,
+      coderBackendOpts(prepared.resolvedPolicy.codex),
+    ),
     repoPath: prepared.repoPath,
     baseBranch,
     resolveRunContext: (session) => ({

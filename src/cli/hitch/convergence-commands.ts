@@ -169,6 +169,7 @@ export function registerHitchConvergenceCommands(
           dbPath,
           hitchId,
           repoPath,
+          codexBin,
           ...(raw.baseBranch !== undefined
             ? { baseBranch: String(raw.baseBranch) }
             : {}),
@@ -184,7 +185,7 @@ export function registerHitchConvergenceCommands(
             dbPath,
             harnessRoot: opts.getHarnessRoot(),
             createdBy: "cli",
-            ...coderRunnerDeps(codexBin),
+            // #191: coder (with per-project backend) comes from runnerDeps below.
             reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
             publisher: createGhPrPublisher(),
             ...(autoMerge !== undefined ? { autoMerge } : {}),

@@ -53,6 +53,10 @@ describe("resolvePolicy", () => {
     // #206: model is undefined when policy does not set it (no-config →
     // run_usage.model stays NULL → telemetry byte-stable).
     expect(r.codex.model).toBeUndefined();
+    // #191: backend/claudeModel undefined when unset → resolveAgentBackend
+    // falls back to env then codex; an unconfigured policy stays byte-stable.
+    expect(r.codex.backend).toBeUndefined();
+    expect(r.codex.claudeModel).toBeUndefined();
     expect(r.codex.timeoutMs).toBe(DEFAULT_CODEX_TIMEOUT_MS);
     expect(r.limits.gitTimeoutMs).toBe(DEFAULT_GIT_TIMEOUT_MS);
     expect(r.limits.changeBudget).toEqual(DEFAULT_CHANGE_BUDGET);
@@ -70,6 +74,8 @@ describe("resolvePolicy", () => {
             approval: "on-request",
             timeout_ms: 60_000,
             model: "gpt-5.5",
+            backend: "claude",
+            claude_model: "opus-4.8",
           },
         },
         limits: {
@@ -88,6 +94,9 @@ describe("resolvePolicy", () => {
     expect(r.codex.sandbox).toBe("read-only");
     expect(r.codex.approval).toBe("on-request");
     expect(r.codex.model).toBe("gpt-5.5");
+    // #191: per-project coder backend + advisory claude model resolved.
+    expect(r.codex.backend).toBe("claude");
+    expect(r.codex.claudeModel).toBe("opus-4.8");
     expect(r.codex.timeoutMs).toBe(60_000);
     expect(r.limits.gitTimeoutMs).toBe(10_000);
     expect(r.limits.changeBudget).toEqual({

@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
+  coderBackendOpts,
   coderRunFields,
   coderRunnerDeps,
   resolveAgentBackend,
@@ -29,6 +30,19 @@ describe("resolveAgentBackend", () => {
     expect(resolveAgentBackend("coder")).toBe("codex");
     vi.stubEnv("HARNESS_CODER_BACKEND", "gpt");
     expect(resolveAgentBackend("coder")).toBe("codex");
+  });
+
+  it("per-project policy backend wins over env, mirroring resolveCodexModel (#191)", () => {
+    // policy 'claude' opts in even when env is unset/codex
+    vi.stubEnv("HARNESS_CODER_BACKEND", "");
+    expect(resolveAgentBackend("coder", "claude")).toBe("claude");
+    // policy 'codex' pins codex even when env says claude (per-project override)
+    vi.stubEnv("HARNESS_CODER_BACKEND", "claude");
+    expect(resolveAgentBackend("coder", "codex")).toBe("codex");
+    // policy absent → env layer applies
+    expect(resolveAgentBackend("coder", undefined)).toBe("claude");
+    vi.stubEnv("HARNESS_CODER_BACKEND", "");
+    expect(resolveAgentBackend("coder", undefined)).toBe("codex");
   });
 });
 
@@ -71,6 +85,26 @@ describe("resolveAgentRunner", () => {
     // P2: a claude run must NOT carry a codex binary version in its provenance.
     expect(coderRunnerDeps("codex").coderCodexBinaryVersion).toBeNull();
     expect(coderRunFields("codex").codexBinaryVersion).toBeNull();
+  });
+
+  it("coderBackendOpts threads backend + claudeModel + timeoutMs from resolved.codex (P2)", () => {
+    // policy kill budget must reach orchestrate/MCP coders, not just CLI run.
+    expect(
+      coderBackendOpts({ backend: "claude", claudeModel: "opus", timeoutMs: 60000 }),
+    ).toEqual({ backend: "claude", claudeModel: "opus", timeoutMs: 60000 });
+    // absent fields are omitted (exactOptionalPropertyTypes; byte-stable).
+    expect(coderBackendOpts({})).toEqual({});
+  });
+
+  it("a per-project policy backend drives the helper independent of env (#191)", () => {
+    // env says codex, but project policy = claude → helper picks claude.
+    vi.stubEnv("HARNESS_CODER_BACKEND", "");
+    expect(coderRunnerDeps("codex", { backend: "claude" }).coderBackend).toBe("claude");
+    expect(coderRunFields("codex", { backend: "claude" }).coderBackend).toBe("claude");
+    // env says claude, but project policy = codex → helper pins codex.
+    vi.stubEnv("HARNESS_CODER_BACKEND", "claude");
+    expect(coderRunnerDeps("codex", { backend: "codex" }).coderBackend).toBe("codex");
+    expect(coderRunFields("codex", { backend: "codex" }).coderBackend).toBe("codex");
   });
 
   it("returns the EXACT backend used so the dispatch can't diverge (R1-P1b)", () => {

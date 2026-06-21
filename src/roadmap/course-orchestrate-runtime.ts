@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import process from "node:process";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
-import { coderRunnerDeps } from "../core/agent-runner.js";
+import { coderBackendOpts, coderRunnerDeps } from "../core/agent-runner.js";
 import { codexBinaryVersion } from "../codex/codex-version.js";
 import { createOrchestratorRunners } from "../hitch/orchestrator-runners.js";
 import type { OrchestratorRunners } from "../hitch/orchestrator-types.js";
@@ -103,7 +103,11 @@ export async function makeCourseHitchRunners(
         coderBackend: "codex" as const,
         coderCodexBinaryVersion: codexBinaryVersion(input.codexBin),
       }
-    : coderRunnerDeps(input.codexBin);
+    : // #191: per-project coder backend from the run's resolved policy.
+      coderRunnerDeps(
+        input.codexBin,
+        coderBackendOpts(prepared.resolvedPolicy.codex),
+      );
   const runners = createOrchestratorRunners({
     dbPath: input.dbPath,
     harnessRoot: input.harnessRoot,

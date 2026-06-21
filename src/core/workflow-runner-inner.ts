@@ -245,7 +245,7 @@ export async function runDomainCodingInner(
         runId,
         kind: "coder",
         eventsContent: codexEventsContent,
-        model: resolveClaudeModel(),
+        model: resolveClaudeModel(policy.codex.claudeModel),
         beforeWrite: () => assertActiveLease(db, runId),
         onError: (error) => warnUsageRecordFailed(runId, error),
       });
