@@ -43,30 +43,28 @@ describe("resolveClaudeModel", () => {
 });
 
 describe("resolveAgentRunner", () => {
-  it("returns a CodexExecRunner-shaped object for both backends", () => {
+  it("returns the runner AND the backend it was built from (one value, per env)", () => {
     vi.stubEnv("HARNESS_CODER_BACKEND", "");
     const codex = resolveAgentRunner({ role: "coder", codexBin: "codex" });
-    expect(typeof codex.run).toBe("function");
+    expect(codex.backend).toBe("codex");
+    expect(typeof codex.runner.run).toBe("function");
     vi.stubEnv("HARNESS_CODER_BACKEND", "claude");
     const claude = resolveAgentRunner({ role: "coder", codexBin: "codex" });
-    expect(typeof claude.run).toBe("function");
-    // distinct instances selected by env (smoke: behavior covered by the
-    // workflow-claude-coder integration test).
-    expect(claude).not.toBe(codex);
+    expect(claude.backend).toBe("claude");
+    expect(typeof claude.runner.run).toBe("function");
+    expect(claude.runner).not.toBe(codex.runner);
   });
 
-  it("an explicit backend overrides env (captured-once consistency, #191 P1)", () => {
-    // env says codex, but the caller captured 'claude' alongside the runner —
-    // the explicit value wins so the runner can't diverge from the dispatch.
+  it("returns the EXACT backend used so the dispatch can't diverge (R1-P1b)", () => {
+    // env says codex, but an explicit override is honoured AND reported back, so
+    // the caller threads the same backend it actually built the runner with.
     vi.stubEnv("HARNESS_CODER_BACKEND", "");
-    const a = resolveAgentRunner({ role: "coder", codexBin: "codex" });
-    const b = resolveAgentRunner({
+    const forced = resolveAgentRunner({
       role: "coder",
       codexBin: "codex",
       backend: "claude",
     });
-    expect(typeof a.run).toBe("function");
-    expect(typeof b.run).toBe("function");
-    expect(a).not.toBe(b);
+    expect(forced.backend).toBe("claude");
+    expect(typeof forced.runner.run).toBe("function");
   });
 });

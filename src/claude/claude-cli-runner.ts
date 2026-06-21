@@ -42,6 +42,7 @@ import type {
 } from "../codex/codex-exec-runner.js";
 import { filterEnv } from "../codex/codex-cli-runner.js";
 import { killProcessTree } from "../codex/process-tree.js";
+import { redactClaudeEvents } from "./redact-events.js";
 
 // Default env passed to the claude subprocess. ANTHROPIC_API_KEY is
 // DELIBERATELY excluded: its presence would flip claude off subscription auth
@@ -206,9 +207,14 @@ export function createClaudeCliRunner(opts: ClaudeCliOpts): CodexExecRunner {
               } catch {
                 eventsContent = "";
               }
+              // Redact BEFORE extracting so the official codex-output.log never
+              // holds a raw secret from the final message — fail-closed at the
+              // source, independent of any downstream publish (S4). Both
+              // functions are total (never throw).
+              const redactedEvents = redactClaudeEvents(eventsContent).content;
               await writeFile(
                 input.logPaths.stdout,
-                extractClaudeFinalMessage(eventsContent),
+                extractClaudeFinalMessage(redactedEvents),
               );
             })
             .catch(() => {

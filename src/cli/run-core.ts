@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
-import { resolveAgentBackend, resolveAgentRunner } from "../core/agent-runner.js";
+import { resolveAgentRunner } from "../core/agent-runner.js";
 import { codexBinaryVersion } from "../codex/codex-version.js";
 import { harnessPaths } from "../config/paths.js";
 import { KnowledgeContextError, buildKnowledgeContextFromDb, domainSlug } from "../core/knowledge-context.js";
@@ -208,13 +208,11 @@ export async function cmdRun(o: RunOpts): Promise<RunOutcome> {
   const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
   const resolvedCodexBinaryVersion = codexBinaryVersion(codexBin);
   // #191: the coder may be claude (opt-in via HARNESS_CODER_BACKEND=claude).
-  // Capture the backend ONCE here and thread it (runner + run) so the coder
-  // dispatch can't diverge from the runner. The claude branch ignores codex-only
-  // knobs; cwd=worktree is its F15 boundary.
-  const coderBackend = resolveAgentBackend("coder");
-  const runner = resolveAgentRunner({
+  // The runner and its backend come from ONE call and are threaded together so
+  // the coder dispatch can't diverge from the runner. The claude branch ignores
+  // codex-only knobs; cwd=worktree is its F15 boundary.
+  const { runner, backend: coderBackend } = resolveAgentRunner({
     role: "coder",
-    backend: coderBackend,
     codexBin,
     sandbox: resolved.codex.sandbox,
     ...(resolved.codex.approval !== undefined
@@ -345,10 +343,8 @@ export async function cmdReviewedRun(o: ReviewedRunOpts): Promise<ReviewedRunOut
   // #191: coder may be claude (opt-in). Reviewer stays codex — claude reviewer
   // redaction/telemetry dispatch is a follow-up, and routing claude events
   // through the codex redactor would leak secrets (the S4 gap).
-  const coderBackend = resolveAgentBackend("coder");
-  const coderRunner = resolveAgentRunner({
+  const { runner: coderRunner, backend: coderBackend } = resolveAgentRunner({
     role: "coder",
-    backend: coderBackend,
     codexBin,
     sandbox: resolved.codex.sandbox,
     ...(resolved.codex.approval !== undefined

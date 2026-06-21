@@ -58,29 +58,42 @@ export interface ResolveAgentRunnerOpts {
 }
 
 /**
- * Construct the runner for a role per the given/resolved backend. The claude
- * branch ignores codex-only knobs (sandbox/approval/envAllowlist) and selects
- * the role's tool surface; cwd=worktree (set by the runner) is the write boundary.
+ * Construct the runner for a role per the given/resolved backend, returning the
+ * runner AND the backend it was built from as ONE value. Callers thread the
+ * returned `backend` to the run so the downstream redaction/usage dispatch
+ * cannot diverge from the runner — the discriminator is never resolved twice
+ * (the R1-P1b TOCTOU is unrepresentable). The claude branch ignores codex-only
+ * knobs (sandbox/approval/envAllowlist) and selects the role's tool surface;
+ * cwd=worktree (set by the runner) is the write boundary.
  */
-export function resolveAgentRunner(o: ResolveAgentRunnerOpts): CodexExecRunner {
+export function resolveAgentRunner(o: ResolveAgentRunnerOpts): {
+  runner: CodexExecRunner;
+  backend: AgentBackend;
+} {
   const backend = o.backend ?? resolveAgentBackend(o.role);
   if (backend === "claude") {
-    return createClaudeCliRunner({
-      tools:
-        o.role === "coder" ? CLAUDE_CODER_TOOLS : CLAUDE_REVIEWER_TOOLS,
-      ...(o.timeoutMs !== undefined ? { timeoutMs: o.timeoutMs } : {}),
-      ...(o.claudeModel ? { model: o.claudeModel } : {}),
-    });
+    return {
+      backend,
+      runner: createClaudeCliRunner({
+        tools:
+          o.role === "coder" ? CLAUDE_CODER_TOOLS : CLAUDE_REVIEWER_TOOLS,
+        ...(o.timeoutMs !== undefined ? { timeoutMs: o.timeoutMs } : {}),
+        ...(o.claudeModel ? { model: o.claudeModel } : {}),
+      }),
+    };
   }
-  return createCodexCliRunner({
-    codexBin: o.codexBin,
-    ...(o.sandbox !== undefined ? { sandbox: o.sandbox } : {}),
-    ...(o.approvalPolicy !== undefined
-      ? { approvalPolicy: o.approvalPolicy }
-      : {}),
-    ...(o.timeoutMs !== undefined ? { timeoutMs: o.timeoutMs } : {}),
-    ...(o.envAllowlist !== undefined ? { envAllowlist: o.envAllowlist } : {}),
-  });
+  return {
+    backend,
+    runner: createCodexCliRunner({
+      codexBin: o.codexBin,
+      ...(o.sandbox !== undefined ? { sandbox: o.sandbox } : {}),
+      ...(o.approvalPolicy !== undefined
+        ? { approvalPolicy: o.approvalPolicy }
+        : {}),
+      ...(o.timeoutMs !== undefined ? { timeoutMs: o.timeoutMs } : {}),
+      ...(o.envAllowlist !== undefined ? { envAllowlist: o.envAllowlist } : {}),
+    }),
+  };
 }
 
 /**

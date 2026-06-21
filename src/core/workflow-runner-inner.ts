@@ -14,7 +14,6 @@ import type { RunLog, RunMeta, RunStatus } from "../logging/run-log.js";
 import { ingestRunArtifacts } from "../db/run-artifacts.js";
 import { fileExportEnabled } from "../config/export-mode.js";
 import { rmSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
 
 import { RunRepository, type ChangedFileInput } from "../db/repositories/runs.js";
 
@@ -40,7 +39,6 @@ import { buildReviewDecision } from "../reporter/review-decision.js";
 import { buildUntrackedPatch, buildUntrackedDeniedReport, buildUntrackedSecretsReport } from "../reporter/untracked-patch.js";
 import { publishRedactedCodexEvents } from "../codex/events-lifecycle.js";
 import { redactClaudeEvents } from "../claude/redact-events.js";
-import { extractClaudeFinalMessage } from "../claude/claude-cli-runner.js";
 import { recordClaudeUsage } from "../db/repositories/claude-usage.js";
 import { resolveClaudeModel } from "./agent-runner.js";
 import {
@@ -239,14 +237,9 @@ export async function runDomainCodingInner(
       codexEventsContent = null;
     }
     if (coderBackend === "claude") {
-      // The runner extracted the final message from the RAW events into
-      // codex-output.log; re-derive it from the REDACTED events so a secret in
-      // claude's final message does not bypass redaction into the
-      // codex-output artifact / summary.md / review-request.md (S4).
-      await writeFile(
-        codexStdoutPath,
-        extractClaudeFinalMessage(codexEventsContent ?? ""),
-      );
+      // The claude runner already wrote a REDACTED final message to
+      // codex-output.log (fail-closed at the source), so the codex-output
+      // artifact / summary.md / review-request.md never see a raw secret (S4).
       recordClaudeUsage({
         db,
         runId,
