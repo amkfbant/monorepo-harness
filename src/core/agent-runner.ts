@@ -14,6 +14,7 @@
 import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
 import { createClaudeCliRunner } from "../claude/claude-cli-runner.js";
+import { codexBinaryVersion } from "../codex/codex-version.js";
 import type { SandboxMode } from "../policy/schema.js";
 
 export type AgentBackend = "codex" | "claude";
@@ -105,13 +106,21 @@ export function resolveAgentRunner(o: ResolveAgentRunnerOpts): {
 export function coderRunnerDeps(codexBin: string): {
   coderRunner: CodexExecRunner;
   coderBackend: AgentBackend;
+  coderCodexBinaryVersion: string | null;
 } {
   const { runner, backend } = resolveAgentRunner({
     role: "coder",
     codexBin,
     sandbox: "workspace-write",
   });
-  return { coderRunner: runner, coderBackend: backend };
+  return {
+    coderRunner: runner,
+    coderBackend: backend,
+    // #191: do not stamp a CODEX binary version onto a CLAUDE run's provenance
+    // (it would falsely attribute the run to whatever codex is on PATH / null).
+    coderCodexBinaryVersion:
+      backend === "claude" ? null : codexBinaryVersion(codexBin),
+  };
 }
 
 /**
@@ -122,9 +131,15 @@ export function coderRunnerDeps(codexBin: string): {
 export function coderRunFields(codexBin: string): {
   codexRunner: CodexExecRunner;
   coderBackend: AgentBackend;
+  codexBinaryVersion: string | null;
 } {
   const { runner, backend } = resolveAgentRunner({ role: "coder", codexBin });
-  return { codexRunner: runner, coderBackend: backend };
+  return {
+    codexRunner: runner,
+    coderBackend: backend,
+    // null for claude — see coderRunnerDeps.
+    codexBinaryVersion: backend === "claude" ? null : codexBinaryVersion(codexBin),
+  };
 }
 
 /**

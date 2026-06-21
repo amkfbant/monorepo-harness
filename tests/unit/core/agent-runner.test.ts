@@ -68,6 +68,9 @@ describe("resolveAgentRunner", () => {
     vi.stubEnv("HARNESS_CODER_BACKEND", "claude");
     expect(coderRunnerDeps("codex").coderBackend).toBe("claude");
     expect(coderRunFields("codex").coderBackend).toBe("claude");
+    // P2: a claude run must NOT carry a codex binary version in its provenance.
+    expect(coderRunnerDeps("codex").coderCodexBinaryVersion).toBeNull();
+    expect(coderRunFields("codex").codexBinaryVersion).toBeNull();
   });
 
   it("returns the EXACT backend used so the dispatch can't diverge (R1-P1b)", () => {

@@ -170,7 +170,16 @@ function deriveInvocationId(input: RecordAgentUsageInput, seq: number): string {
     input.sessionId != null && input.agentId != null
       ? [input.sessionId, input.agentId, input.role, String(seq)]
       : [input.runId ?? "", input.role, String(seq)];
-  return sha256Hex(parts);
+  // codex keeps its bare-hex `(run|session, role, seq)` id BYTE-STABLE. A
+  // label-less claude INTERNAL invocation (coder/reviewer/evaluator, #191)
+  // shares that exact shape but allocates `seq` from a DIFFERENT authority
+  // (agent_invocation, not run_usage), so a mixed-backend same-run review
+  // (claude then codex via `review auto --allow-overwrite`) would derive the
+  // SAME id and the later codex insert would be swallowed fail-open. Prefix the
+  // claude hash input with the tool so the two namespaces are disjoint.
+  return input.tool === "claude"
+    ? sha256Hex(["claude", ...parts])
+    : sha256Hex(parts);
 }
 
 /**

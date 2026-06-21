@@ -245,9 +245,14 @@ export function registerReviewCommands(
           runsDir: paths.runsDir,
           runId,
           dbPath: paths.dbPath,
+          // #191: a claude reviewer must not be stored under the codex-reviewer
+          // identity (which carries its own lens/trust config). Default the name
+          // to the backend when the operator didn't pass --reviewer-name.
           ...(raw.reviewerName !== undefined
             ? { reviewerName: String(raw.reviewerName) }
-            : {}),
+            : reviewerBackend === "claude"
+              ? { reviewerName: "claude-reviewer" }
+              : {}),
           allowOverwrite: Boolean(raw.allowOverwrite),
           dryRun,
           codexRunner: runner,

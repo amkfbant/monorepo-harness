@@ -101,6 +101,7 @@ export async function makeCourseHitchRunners(
           sandbox: "workspace-write",
         }),
         coderBackend: "codex" as const,
+        coderCodexBinaryVersion: codexBinaryVersion(input.codexBin),
       }
     : coderRunnerDeps(input.codexBin);
   const runners = createOrchestratorRunners({
@@ -109,7 +110,6 @@ export async function makeCourseHitchRunners(
     createdBy: input.createdBy,
     ...(input.signal !== undefined ? { signal: input.signal } : {}),
     ...coderFields,
-    coderCodexBinaryVersion: codexBinaryVersion(input.codexBin),
     reviewerRunner: createRunners({
       codexBin: input.codexBin,
       sandbox: "read-only",

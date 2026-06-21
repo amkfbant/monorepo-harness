@@ -233,7 +233,8 @@ export async function cmdRun(o: RunOpts): Promise<RunOutcome> {
     baseBranch,
     ...(o.keepWorktree !== undefined ? { keepWorktree: o.keepWorktree } : {}),
     codexRunner: runner,
-    codexBinaryVersion: resolvedCodexBinaryVersion,
+    // #191: don't stamp a codex binary version onto a claude run's provenance.
+    codexBinaryVersion: coderBackend === "claude" ? null : resolvedCodexBinaryVersion,
     ...(knowledgeContext !== undefined ? { knowledgeContext } : {}),
     ...(o.changeBudgetOverride !== undefined
       ? { changeBudgetOverride: o.changeBudgetOverride }
@@ -374,7 +375,8 @@ export async function cmdReviewedRun(o: ReviewedRunOpts): Promise<ReviewedRunOut
       coderRunner,
       coderBackend,
       reviewerRunner,
-      coderCodexBinaryVersion: resolvedCodexBinaryVersion,
+      coderCodexBinaryVersion:
+        coderBackend === "claude" ? null : resolvedCodexBinaryVersion,
       maxAttempts: o.maxAttempts,
       ...(o.reviewerName !== undefined ? { reviewerName: o.reviewerName } : {}),
       ...(o.noAutoReview !== undefined ? { noAutoReview: o.noAutoReview } : {}),

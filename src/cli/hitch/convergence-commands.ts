@@ -3,7 +3,6 @@ import type { Command } from "commander";
 import { harnessPaths } from "../../config/paths.js";
 import { createCodexCliRunner } from "../../codex/codex-cli-runner.js";
 import { coderRunnerDeps } from "../../core/agent-runner.js";
-import { codexBinaryVersion } from "../../codex/codex-version.js";
 import { createGhPrPublisher, createGhPrMerger, createGhCiStatus, createGhReviewVerdicts } from "../../core/gh-pr-publisher.js";
 import { createGhCopilotReviewer } from "../../core/copilot-reviewer-gh.js";
 import { ConvergenceService } from "../../hitch/convergence.js";
@@ -186,7 +185,6 @@ export function registerHitchConvergenceCommands(
             harnessRoot: opts.getHarnessRoot(),
             createdBy: "cli",
             ...coderRunnerDeps(codexBin),
-            coderCodexBinaryVersion: codexBinaryVersion(codexBin),
             reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
             publisher: createGhPrPublisher(),
             ...(autoMerge !== undefined ? { autoMerge } : {}),
@@ -325,7 +323,6 @@ export function registerHitchConvergenceCommands(
             harnessRoot: opts.getHarnessRoot(),
             createdBy: "cli",
             ...coderRunnerDeps(codexBin),
-            coderCodexBinaryVersion: codexBinaryVersion(codexBin),
             reviewerRunner: createCodexCliRunner({ codexBin, sandbox: "read-only" }),
             publisher: createGhPrPublisher(),
             autoMerge: {
