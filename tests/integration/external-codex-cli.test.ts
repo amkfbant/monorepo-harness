@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,6 +47,19 @@ function usageJsonl(input: number, output: number): string {
     "\n"
   );
 }
+
+// Isolate HARNESS_ROOT for EVERY test. `harness codex exec` records external
+// usage via recordExternal → getHarnessRoot(), which falls back to the launch
+// cwd when HARNESS_ROOT is unset. Without this, a test that does not set its own
+// root would write agent_invocation rows into the REAL harness DB at the repo
+// root. Default to a fresh empty temp root (no DB → recordExternal fails open);
+// tests that need a populated DB override process.env.HARNESS_ROOT in their body.
+beforeEach(() => {
+  process.env.HARNESS_ROOT = mkdtempSync(join(tmpdir(), "extcodex-iso-"));
+});
+afterEach(() => {
+  delete process.env.HARNESS_ROOT;
+});
 
 describe("harness codex exec (external usage)", () => {
   it("records external codex usage and propagates exit code", async () => {
