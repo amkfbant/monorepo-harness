@@ -39,9 +39,11 @@ export interface RecordClaudeUsageInput {
 export function recordClaudeUsage(input: RecordClaudeUsageInput): void {
   const turns = parseClaudeStreamJson(input.eventsContent ?? "");
   const usageSource: UsageSource = turns.length > 0 ? "exact" : "unavailable";
-  // Prefer an explicit advisory model; else fall back to the real model the
-  // stream reported (claude -p, unlike codex, carries the model per turn).
-  const model = input.model ?? turns[0]?.model ?? null;
+  // Prefer the REAL model the stream reported (claude -p carries it per turn)
+  // over the advisory `input.model`. The runner does not inject `--model`, so an
+  // advisory `HARNESS_CLAUDE_MODEL` could otherwise claim a model that never ran
+  // (telemetry drift). Advisory is only a fallback when the stream has no model.
+  const model = turns[0]?.model ?? input.model ?? null;
   const turnInputs =
     turns.length > 0
       ? turns

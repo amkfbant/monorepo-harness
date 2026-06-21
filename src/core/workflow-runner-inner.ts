@@ -14,6 +14,7 @@ import type { RunLog, RunMeta, RunStatus } from "../logging/run-log.js";
 import { ingestRunArtifacts } from "../db/run-artifacts.js";
 import { fileExportEnabled } from "../config/export-mode.js";
 import { rmSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 
 import { RunRepository, type ChangedFileInput } from "../db/repositories/runs.js";
 
@@ -39,8 +40,9 @@ import { buildReviewDecision } from "../reporter/review-decision.js";
 import { buildUntrackedPatch, buildUntrackedDeniedReport, buildUntrackedSecretsReport } from "../reporter/untracked-patch.js";
 import { publishRedactedCodexEvents } from "../codex/events-lifecycle.js";
 import { redactClaudeEvents } from "../claude/redact-events.js";
+import { extractClaudeFinalMessage } from "../claude/claude-cli-runner.js";
 import { recordClaudeUsage } from "../db/repositories/claude-usage.js";
-import { resolveAgentBackend, resolveClaudeModel } from "./agent-runner.js";
+import { resolveClaudeModel } from "./agent-runner.js";
 import {
   recordCodexUsage,
   resolveCodexModel,
@@ -217,10 +219,11 @@ export async function runDomainCodingInner(
       timedOut: codex.timedOut,
       durationMs: codex.durationMs,
     });
-    // #191 — the coder runner may be claude (opt-in). The runner was injected
-    // by the same resolveAgentBackend('coder') the dispatch below reads, so the
-    // events shape, redactor, and usage parser agree by construction.
-    const coderBackend = resolveAgentBackend("coder");
+    // #191 — the coder runner may be claude (opt-in). The backend is captured
+    // with the runner construction and threaded via opts (NOT re-read from env
+    // here) so the events shape, redactor, and usage parser cannot diverge from
+    // the injected runner if HARNESS_CODER_BACKEND changes mid-process.
+    const coderBackend = opts.coderBackend ?? "codex";
     const codexEventsRedaction = await publishRedactedCodexEvents({
       rawPath: codexRawEventsPath,
       tmpPath: codexRedactedTmpPath,
@@ -236,6 +239,14 @@ export async function runDomainCodingInner(
       codexEventsContent = null;
     }
     if (coderBackend === "claude") {
+      // The runner extracted the final message from the RAW events into
+      // codex-output.log; re-derive it from the REDACTED events so a secret in
+      // claude's final message does not bypass redaction into the
+      // codex-output artifact / summary.md / review-request.md (S4).
+      await writeFile(
+        codexStdoutPath,
+        extractClaudeFinalMessage(codexEventsContent ?? ""),
+      );
       recordClaudeUsage({
         db,
         runId,

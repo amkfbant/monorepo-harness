@@ -118,6 +118,13 @@ export interface RunDomainCodingOpts {
   keepWorktree?: boolean;
   codexRunner: CodexExecRunner;
   /**
+   * (#191) Which backend `codexRunner` is — captured ONCE by the caller next to
+   * the runner construction so the coder dispatch (redaction / usage / final
+   * message) cannot diverge from the injected runner if HARNESS_CODER_BACKEND is
+   * mutated mid-process. Absent → 'codex' (every non-claude entry point).
+   */
+  coderBackend?: "codex" | "claude";
+  /**
    * Abort the in-flight codex run (#132): forwarded to `codexRunner.run`. The
    * course orchestrator aborts it on lease loss, SIGKILLing codex; the killed
    * run finalizes `failed-codex` via the existing non-zero-exit path.

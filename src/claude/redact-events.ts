@@ -82,23 +82,44 @@ function redactToolResultContent(content: unknown): {
   return { value: content, redacted: false };
 }
 
-/** Redact every top-level string value of a tool_use `input` (command, etc.). */
+/**
+ * Recursively redact every string anywhere in a tool_use `input` — not just
+ * top-level fields. Fail-closed against tool-shape drift: a secret nested in an
+ * object/array value (e.g. a structured Edit/Write payload) is still scanned.
+ */
+function redactDeep(value: unknown): { value: unknown; redacted: boolean } {
+  if (typeof value === "string") {
+    const r = redactString("input.txt", value);
+    return { value: r.value, redacted: r.redacted };
+  }
+  if (Array.isArray(value)) {
+    let redacted = false;
+    const out = value.map((v) => {
+      const r = redactDeep(v);
+      if (r.redacted) redacted = true;
+      return r.value;
+    });
+    return { value: out, redacted };
+  }
+  if (isJsonObject(value)) {
+    let redacted = false;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      const r = redactDeep(v);
+      if (r.redacted) redacted = true;
+      out[k] = r.value;
+    }
+    return { value: out, redacted };
+  }
+  return { value, redacted: false };
+}
+
 function redactToolUseInput(input: unknown): {
   value: unknown;
   redacted: boolean;
 } {
   if (!isJsonObject(input)) return { value: input, redacted: false };
-  let redacted = false;
-  const out: Record<string, unknown> = { ...input };
-  for (const [key, val] of Object.entries(input)) {
-    if (typeof val !== "string") continue;
-    const r = redactString(`input.${key}.txt`, val);
-    if (r.redacted) {
-      out[key] = r.value;
-      redacted = true;
-    }
-  }
-  return { value: out, redacted };
+  return redactDeep(input);
 }
 
 /** Redact an assistant/user `message.content[]` array in place (immutably). */

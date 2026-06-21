@@ -92,7 +92,9 @@ function createFakeClaudeRunner(): CodexExecRunner {
           JSON.stringify({
             type: "result",
             subtype: "success",
-            result: "applied the edit",
+            // a secret in the FINAL message must not leak into codex-output.log
+            // / summary.md (it's re-derived from the redacted events). (P1)
+            result: `applied the edit; key ${SECRET}`,
             usage: { input_tokens: 5, output_tokens: 10 },
           }),
         ].join("\n") + "\n";
@@ -127,6 +129,9 @@ describe("runDomainCoding — claude coder backend (#191 wiring)", () => {
       goal: "bump x",
       baseBranch: "main",
       codexRunner: createFakeClaudeRunner(),
+      // backend is captured with the runner and threaded (NOT re-read from env),
+      // so it cannot diverge from the injected runner.
+      coderBackend: "claude",
       codexBinaryVersion: "fake-claude",
       now: new Date("2026-06-21T00:00:00Z"),
     });
@@ -139,6 +144,14 @@ describe("runDomainCoding — claude coder backend (#191 wiring)", () => {
     const published = readFileSync(join(runDir, "codex-events.jsonl"), "utf8");
     expect(published).not.toContain(SECRET);
     expect(published).toContain("[redacted:");
+    // P1: the secret in the FINAL message is also gone from the codex-output
+    // artifact (re-derived from the redacted events) and the summary.
+    expect(readFileSync(join(runDir, "codex-output.log"), "utf8")).not.toContain(
+      SECRET,
+    );
+    expect(readFileSync(join(runDir, "summary.md"), "utf8")).not.toContain(
+      SECRET,
+    );
 
     const db = openDb(join(harness, ".harness", "harness.sqlite"));
     try {

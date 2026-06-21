@@ -54,4 +54,19 @@ describe("resolveAgentRunner", () => {
     // workflow-claude-coder integration test).
     expect(claude).not.toBe(codex);
   });
+
+  it("an explicit backend overrides env (captured-once consistency, #191 P1)", () => {
+    // env says codex, but the caller captured 'claude' alongside the runner —
+    // the explicit value wins so the runner can't diverge from the dispatch.
+    vi.stubEnv("HARNESS_CODER_BACKEND", "");
+    const a = resolveAgentRunner({ role: "coder", codexBin: "codex" });
+    const b = resolveAgentRunner({
+      role: "coder",
+      codexBin: "codex",
+      backend: "claude",
+    });
+    expect(typeof a.run).toBe("function");
+    expect(typeof b.run).toBe("function");
+    expect(a).not.toBe(b);
+  });
 });

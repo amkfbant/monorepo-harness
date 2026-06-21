@@ -74,7 +74,9 @@ export interface ClaudeCliOpts {
   settingSources?: string;
   envAllowlist?: readonly string[];
   timeoutMs?: number;
-  extraArgs?: readonly string[];
+  // NOTE: no `extraArgs` escape hatch (unlike codex). A pass-through arg list
+  // could smuggle `--add-dir`, which widens claude's write boundary past the
+  // worktree and breaks the F15 containment invariant. The flag set is fixed.
 }
 
 /**
@@ -98,25 +100,17 @@ export function buildClaudeArgs(opts: ClaudeCliOpts): string[] {
     "--disable-slash-commands",
   ];
   if (opts.model) args.push("--model", opts.model);
-  args.push(...(opts.extraArgs ?? []));
   if (tools.length > 0) args.push("--tools", ...tools);
   return args;
 }
 
 /**
- * Extract the final agent message from the captured stream-json events file:
- * the last `{type:'result'}` event's `.result`. Returns "" when absent (early
- * exit / crash) — the artifact path is always written, fail-closed, like codex.
+ * Extract the final agent message from captured stream-json events content: the
+ * last `{type:'result'}` event's `.result`. Returns "" when absent (early exit /
+ * crash) — the artifact path is always written, fail-closed, like codex. Pure on
+ * content so it can be re-run over the REDACTED events downstream (S4).
  */
-export async function extractClaudeFinalMessage(
-  eventsPath: string,
-): Promise<string> {
-  let content: string;
-  try {
-    content = await readFile(eventsPath, "utf8");
-  } catch {
-    return "";
-  }
+export function extractClaudeFinalMessage(content: string): string {
   const lines = content.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]?.trim();
@@ -203,11 +197,19 @@ export function createClaudeCliRunner(opts: ClaudeCliOpts): CodexExecRunner {
             .then(async () => {
               // claude has no `-o`; synthesize the final-message artifact from
               // the result event. Always write the path (fail-closed) even on
-              // early exit, mirroring codex's empty-`-o` preservation.
-              const finalMessage = await extractClaudeFinalMessage(
-                input.logPaths.events,
+              // early exit, mirroring codex's empty-`-o` preservation. (The
+              // coder dispatch re-derives this from the REDACTED events so a
+              // secret in the final message is not leaked — see workflow-runner.)
+              let eventsContent = "";
+              try {
+                eventsContent = await readFile(input.logPaths.events, "utf8");
+              } catch {
+                eventsContent = "";
+              }
+              await writeFile(
+                input.logPaths.stdout,
+                extractClaudeFinalMessage(eventsContent),
               );
-              await writeFile(input.logPaths.stdout, finalMessage);
             })
             .catch(() => {
               // best-effort artifact write — never mask the run's exit code

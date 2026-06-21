@@ -63,6 +63,22 @@ describe("recordClaudeUsage", () => {
     expect(turns[0].usage_source).toBe("exact");
   });
 
+  it("records the REAL stream model, not a drifting advisory (P2)", () => {
+    const db = freshDb();
+    recordClaudeUsage({
+      db,
+      runId: "run-m",
+      kind: "coder",
+      // advisory claims sonnet, but the stream actually ran opus → opus wins.
+      model: "claude-sonnet-4-6",
+      eventsContent: STREAM([{ input_tokens: 1, output_tokens: 1 }]),
+      onError: (e) => {
+        throw e;
+      },
+    });
+    expect(invocationRow(db).model).toBe("claude-opus-4-8");
+  });
+
   it("does NOT write a legacy run_usage row (run_usage stays codex-only / byte-stable)", () => {
     const db = freshDb();
     recordClaudeUsage({

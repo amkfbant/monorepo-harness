@@ -43,6 +43,24 @@ describe("redactClaudeEvents", () => {
     expect(out.redactedCount).toBe(1);
   });
 
+  it("redacts a secret NESTED in a tool_use input (recursive, fail-closed vs shape drift) (P2)", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "SomeTool",
+            input: { edits: [{ payload: { token: SECRET } }] },
+          },
+        ],
+      },
+    });
+    const out = redactClaudeEvents(line + "\n");
+    expect(out.content).not.toContain(SECRET);
+    expect(out.redactedCount).toBe(1);
+  });
+
   it("redacts a secret in the final result message", () => {
     const line = JSON.stringify({
       type: "result",

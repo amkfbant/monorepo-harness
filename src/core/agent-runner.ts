@@ -41,6 +41,13 @@ export function resolveAgentBackend(role: RunnerRole): AgentBackend {
 export interface ResolveAgentRunnerOpts {
   role: RunnerRole;
   codexBin: string;
+  /**
+   * Backend to use. Pass the value captured ONCE by the caller (the same value
+   * threaded to the run as `coderBackend`) so the runner and the downstream
+   * redaction/usage dispatch cannot disagree if HARNESS_*_BACKEND is mutated
+   * mid-process. Omitted → resolved from env here.
+   */
+  backend?: AgentBackend;
   /** codex-only — claude's write boundary is its cwd (#191 F15), not a sandbox. */
   sandbox?: SandboxMode;
   approvalPolicy?: string;
@@ -51,12 +58,13 @@ export interface ResolveAgentRunnerOpts {
 }
 
 /**
- * Construct the runner for a role per resolveAgentBackend. The claude branch
- * ignores codex-only knobs (sandbox/approval/envAllowlist) and selects the
- * role's tool surface; cwd=worktree (set by the runner) is the write boundary.
+ * Construct the runner for a role per the given/resolved backend. The claude
+ * branch ignores codex-only knobs (sandbox/approval/envAllowlist) and selects
+ * the role's tool surface; cwd=worktree (set by the runner) is the write boundary.
  */
 export function resolveAgentRunner(o: ResolveAgentRunnerOpts): CodexExecRunner {
-  if (resolveAgentBackend(o.role) === "claude") {
+  const backend = o.backend ?? resolveAgentBackend(o.role);
+  if (backend === "claude") {
     return createClaudeCliRunner({
       tools:
         o.role === "coder" ? CLAUDE_CODER_TOOLS : CLAUDE_REVIEWER_TOOLS,
