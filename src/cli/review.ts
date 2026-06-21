@@ -2,6 +2,7 @@ import process from "node:process";
 import { existsSync } from "node:fs";
 import type { Command } from "commander";
 import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
+import { resolveAgentRunner } from "../core/agent-runner.js";
 import { harnessPaths } from "../config/paths.js";
 import { evaluateReviewer, compareDecisions, ReviewEvaluateError } from "../core/review-evaluator.js";
 import { listReviews, formatTable, formatJson } from "../core/review-lister.js";
@@ -209,7 +210,12 @@ export function registerReviewCommands(
       // touch the worktree/runs files except by us writing review-decision
       // afterward.
       const codexBin = process.env.HARNESS_CODEX_BIN ?? "codex";
-      const runner = createCodexCliRunner({
+      // #191: the reviewer may be claude (opt-in via HARNESS_REVIEWER_BACKEND).
+      // read-only sandbox for codex; claude's read-only tool surface + cwd
+      // boundary for claude. Backend threaded so the events redaction / usage
+      // dispatch matches the runner.
+      const { runner, backend: reviewerBackend } = resolveAgentRunner({
+        role: "reviewer",
         codexBin,
         sandbox: "read-only",
       });
@@ -245,6 +251,7 @@ export function registerReviewCommands(
           allowOverwrite: Boolean(raw.allowOverwrite),
           dryRun,
           codexRunner: runner,
+          reviewerBackend,
         });
         syncArtifacts();
         process.stdout.write(

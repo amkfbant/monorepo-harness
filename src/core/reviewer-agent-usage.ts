@@ -7,6 +7,8 @@ import {
   recordCodexUsage,
   resolveCodexModel,
 } from "../db/repositories/run-usage.js";
+import { recordClaudeUsage } from "../db/repositories/claude-usage.js";
+import { resolveClaudeModel } from "./agent-runner.js";
 
 /**
  * Telemetry-only warning (token-usage G2). Recording reviewer codex usage is
@@ -32,6 +34,7 @@ export async function recordReviewerUsage(
   dbPath: string | undefined,
   runId: string,
   eventsContent: string | null,
+  backend: "codex" | "claude" = "codex",
 ): Promise<void> {
   if (dbPath === undefined || !existsSync(dbPath)) return;
   try {
@@ -42,16 +45,29 @@ export async function recordReviewerUsage(
       // and the reviewer usage would be silently lost. runMigrations is
       // idempotent; the surrounding fail-open guard still covers any error.
       runMigrations(usageDb.db);
-      recordCodexUsage({
-        db: usageDb.db,
-        runId,
-        kind: "reviewer",
-        eventsContent,
-        // reviewer has no policy in scope; the HARNESS_CODEX_MODEL env is the
-        // uniform advisory source (#206). Absent → null → byte-stable.
-        model: resolveCodexModel(),
-        onError: (err) => warnReviewerUsageRecordFailed(runId, err),
-      });
+      if (backend === "claude") {
+        // #191: a claude `-p` reviewer — record its claude stream-json usage
+        // (tool='claude'; no legacy run_usage row, mirroring the coder).
+        recordClaudeUsage({
+          db: usageDb.db,
+          runId,
+          kind: "reviewer",
+          eventsContent,
+          model: resolveClaudeModel(),
+          onError: (err) => warnReviewerUsageRecordFailed(runId, err),
+        });
+      } else {
+        recordCodexUsage({
+          db: usageDb.db,
+          runId,
+          kind: "reviewer",
+          eventsContent,
+          // reviewer has no policy in scope; the HARNESS_CODEX_MODEL env is the
+          // uniform advisory source (#206). Absent → null → byte-stable.
+          model: resolveCodexModel(),
+          onError: (err) => warnReviewerUsageRecordFailed(runId, err),
+        });
+      }
     } finally {
       usageDb.close();
     }
