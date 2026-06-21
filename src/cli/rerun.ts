@@ -1,6 +1,6 @@
 import process from "node:process";
 import type { Command } from "commander";
-import { createCodexCliRunner } from "../codex/codex-cli-runner.js";
+import { resolveAgentBackend, resolveAgentRunner } from "../core/agent-runner.js";
 import { codexBinaryVersion } from "../codex/codex-version.js";
 import { harnessPaths } from "../config/paths.js";
 import { prepareRerunFromReview, buildRerunChain, formatChain, RerunGateError, DEFAULT_MAX_ATTEMPTS } from "../core/rerun.js";
@@ -124,9 +124,15 @@ export function registerRerunCommands(
         repoPath = parentRepoPath;
         repoId = prep.repoId;
       }
-      const runner = createCodexCliRunner({
+      // #191: per-project coder backend (policy > env > codex).
+      const { runner, backend: coderBackend } = resolveAgentRunner({
+        role: "coder",
         codexBin,
+        backend: resolveAgentBackend("coder", resolved.codex.backend),
         sandbox: resolved.codex.sandbox,
+        ...(resolved.codex.claudeModel !== undefined
+          ? { claudeModel: resolved.codex.claudeModel }
+          : {}),
         ...(resolved.codex.approval !== undefined
           ? { approvalPolicy: resolved.codex.approval }
           : {}),
@@ -143,7 +149,9 @@ export function registerRerunCommands(
         goal: prep.goal,
         baseBranch: prep.baseBranch,
         codexRunner: runner,
-        codexBinaryVersion: resolvedCodexBinaryVersion,
+        coderBackend,
+        codexBinaryVersion:
+          coderBackend === "claude" ? null : resolvedCodexBinaryVersion,
         parentRunId: prep.parentRunId,
         rootRunId: prep.rootRunId,
         rerunAttempt: prep.rerunAttempt,

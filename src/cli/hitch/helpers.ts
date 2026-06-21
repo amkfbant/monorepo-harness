@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { parse as parseYaml } from "yaml";
 import { harnessPaths } from "../../config/paths.js";
+import { coderBackendOpts, coderRunnerDeps } from "../../core/agent-runner.js";
 import { type DbHitchTokenUsage } from "../../db/repositories/aggregates.js";
 import { BacklogError } from "../../core/backlog.js";
 import { DbError } from "../../db/connection.js";
@@ -68,6 +69,10 @@ export async function resolveHitchCoderRunnerDeps(input: {
   dbPath: string;
   hitchId: string;
   repoPath: string;
+  /** Codex binary (#191): the coder runner is built HERE so the per-project
+   * resolved backend (claude vs codex) is applied — building it at the call site
+   * would only see the global env. */
+  codexBin: string;
   /**
    * Explicit `--base-branch`. When set it OVERRIDES the project profile's
    * `repo.base_branch` (#236); when omitted, a project-scoped hitch falls back to
@@ -81,6 +86,9 @@ export async function resolveHitchCoderRunnerDeps(input: {
     | "baseBranch"
     | "resolveRunContext"
     | "projectRuntime"
+    | "coderRunner"
+    | "coderBackend"
+    | "coderCodexBinaryVersion"
   >
 > {
   const { db, close } = openManagedDb({ dbPath: input.dbPath });
@@ -96,14 +104,18 @@ export async function resolveHitchCoderRunnerDeps(input: {
   }
 
   if (projectId === null) {
-    return resolveHitchCloseRunnerDeps({
-      dbPath: input.dbPath,
-      hitchId: input.hitchId,
-      repoPath: input.repoPath,
-      ...(input.baseBranch !== undefined
-        ? { baseBranch: input.baseBranch }
-        : {}),
-    });
+    // project-less hitch: no resolved policy → coder backend falls back to env.
+    return {
+      ...resolveHitchCloseRunnerDeps({
+        dbPath: input.dbPath,
+        hitchId: input.hitchId,
+        repoPath: input.repoPath,
+        ...(input.baseBranch !== undefined
+          ? { baseBranch: input.baseBranch }
+          : {}),
+      }),
+      ...coderRunnerDeps(input.codexBin),
+    };
   }
   if (domain === null) {
     throw new HitchCliError(
@@ -122,6 +134,11 @@ export async function resolveHitchCoderRunnerDeps(input: {
   // it), so overriding here is safe; the run resolves origin/<name> downstream.
   const baseBranch = input.baseBranch ?? prepared.baseBranch;
   return {
+    // #191: build the coder with the run's per-project resolved backend.
+    ...coderRunnerDeps(
+      input.codexBin,
+      coderBackendOpts(prepared.resolvedPolicy.codex),
+    ),
     repoPath: prepared.repoPath,
     baseBranch,
     resolveRunContext: (session) => ({

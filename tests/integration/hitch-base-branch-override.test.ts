@@ -123,6 +123,7 @@ describe("resolveHitchCoderRunnerDeps base-branch override (#236)", () => {
       dbPath,
       hitchId: "g-proj",
       repoPath,
+      codexBin: "codex",
       baseBranch: "feature/stacked",
     });
     expect(deps.baseBranch).toBe("feature/stacked");
@@ -144,6 +145,7 @@ describe("resolveHitchCoderRunnerDeps base-branch override (#236)", () => {
       dbPath,
       hitchId: "g-proj",
       repoPath,
+      codexBin: "codex",
       // baseBranch omitted → profile default (develop), not the CLI default main
     });
     expect(deps.baseBranch).toBe("develop");
@@ -169,12 +171,12 @@ describe("resolveHitchCoderRunnerDeps base-branch override (#236)", () => {
       close();
     }
     const explicit = await resolveHitchCoderRunnerDeps({
-      harnessRoot, dbPath, hitchId: "g-nolproj", repoPath,
+      harnessRoot, dbPath, hitchId: "g-nolproj", repoPath, codexBin: "codex",
       baseBranch: "feature/x",
     });
     expect(explicit.baseBranch).toBe("feature/x");
     const omitted = await resolveHitchCoderRunnerDeps({
-      harnessRoot, dbPath, hitchId: "g-nolproj", repoPath,
+      harnessRoot, dbPath, hitchId: "g-nolproj", repoPath, codexBin: "codex",
     });
     expect(omitted.baseBranch).toBe("main");
   });
