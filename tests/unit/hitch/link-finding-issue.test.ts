@@ -145,6 +145,27 @@ describe("linkFindingIssue", () => {
     }
   });
 
+  it("session touch: linkFindingIssue bumps parent hitch session updated_at", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createHitch(repo);
+      const deferred = createDeferredFinding(repo, "h-link-test", "session touch test");
+
+      // Artificially age the session
+      db.prepare(
+        `UPDATE hitch_sessions SET updated_at = '2020-01-01T00:00:00.000Z' WHERE hitch_id = ?`,
+      ).run("h-link-test");
+
+      repo.linkFindingIssue(deferred.findingId, ISSUE_URL);
+
+      const session = repo.getSession("h-link-test");
+      expect(session?.updatedAt).toBeDefined();
+      expect(session!.updatedAt > "2020-01-01T00:00:00.000Z").toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
   it("write-path isolation: upsertFinding leaves deferredIssueUrl null", () => {
     const { db, repo } = freshRepo();
     try {

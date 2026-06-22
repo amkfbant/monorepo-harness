@@ -518,6 +518,7 @@ export class FindingRepository {
         `hitch finding ${findingId} must be deferred before linking an issue (lifecycle=${current.lifecycleStatus})`,
       );
     }
+    const now = new Date().toISOString();
     this.db
       .prepare(
         `UPDATE hitch_findings
@@ -525,6 +526,7 @@ export class FindingRepository {
           WHERE finding_id = ?`,
       )
       .run(issueUrl, findingId);
+    touchHitchSession(this.db, current.hitchId, now);
     return this.requireFinding(findingId);
   }
 
