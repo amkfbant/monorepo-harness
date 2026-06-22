@@ -350,6 +350,10 @@ export class HitchRepository {
     return this.findings.deferFinding(input);
   }
 
+  linkFindingIssue(findingId: string, issueUrl: string): HitchFinding {
+    return this.findings.linkFindingIssue(findingId, issueUrl);
+  }
+
   getFinding(findingId: string): HitchFinding | null {
     return this.findings.getFinding(findingId);
   }

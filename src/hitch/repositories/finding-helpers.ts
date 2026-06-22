@@ -157,6 +157,7 @@ export interface HitchFindingRow {
   escalated_at: string | null;
   reopen_count: number;
   deferred_backlog_item_id: string | null;
+  deferred_issue_url: string | null;
   classification_reason: string | null;
   resolution_note: string | null;
 }
@@ -325,6 +326,7 @@ export function rowToFinding(row: HitchFindingRow): HitchFinding {
     escalatedAt: row.escalated_at,
     reopenCount: row.reopen_count,
     deferredBacklogItemId: row.deferred_backlog_item_id,
+    deferredIssueUrl: row.deferred_issue_url,
     classificationReason: row.classification_reason,
     resolutionNote: row.resolution_note,
   };

@@ -502,6 +502,32 @@ export class FindingRepository {
     return this.requireFinding(input.findingId);
   }
 
+  /**
+   * Attach an external tracking issue URL to a DEFERRED finding (#90 Stage B).
+   * SOLE writer of deferred_issue_url. Operator-only: called exclusively from
+   * the CLI `finding defer --to-issue` action — never from ingest/MCP/orchestrator
+   * (which keeps the issue link out of any LLM-reachable path). First-fix:
+   * COALESCE(deferred_issue_url, ?) keeps the first linked URL (re-link is a
+   * no-op), matching the backlog-id behaviour. `issueUrl` MUST already be a
+   * validated canonical GitHub issue URL (parseIssueUrl).
+   */
+  linkFindingIssue(findingId: string, issueUrl: string): HitchFinding {
+    const current = this.requireFinding(findingId);
+    if (current.lifecycleStatus !== "deferred") {
+      throw new DbError(
+        `hitch finding ${findingId} must be deferred before linking an issue (lifecycle=${current.lifecycleStatus})`,
+      );
+    }
+    this.db
+      .prepare(
+        `UPDATE hitch_findings
+            SET deferred_issue_url = COALESCE(deferred_issue_url, ?)
+          WHERE finding_id = ?`,
+      )
+      .run(issueUrl, findingId);
+    return this.requireFinding(findingId);
+  }
+
   getFinding(findingId: string): HitchFinding | null {
     const row = this.db
       .prepare("SELECT * FROM hitch_findings WHERE finding_id = ?")

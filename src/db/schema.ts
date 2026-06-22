@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 37;
+export const SCHEMA_VERSION = 38;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -2243,6 +2243,18 @@ export const V36_TABLE_NAMES = [
  */
 export const MIGRATION_V37_STATEMENTS: readonly string[] = [
   `ALTER TABLE agent_invocation ADD COLUMN source_size INTEGER`,
+] as const;
+
+/**
+ * v38 — hitch_findings.deferred_issue_url (#90 Stage B).
+ *
+ * Additive single column. Lets an operator attach an external GitHub issue URL
+ * to a deferred finding. Written exclusively by `linkFindingIssue` (operator
+ * CLI path); never touched by ingest, MCP tools, or the orchestrator — keeping
+ * the issue link out of any LLM-reachable write path by construction.
+ */
+export const MIGRATION_V38_STATEMENTS: readonly string[] = [
+  `ALTER TABLE hitch_findings ADD COLUMN deferred_issue_url TEXT`,
 ] as const;
 
 /** Table names created by v1 — used by `db status` and tests. */

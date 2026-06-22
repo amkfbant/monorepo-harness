@@ -410,6 +410,7 @@ export interface HitchFinding {
   escalatedAt: string | null;
   reopenCount: number;
   deferredBacklogItemId: string | null;
+  deferredIssueUrl: string | null;
   classificationReason: string | null;
   resolutionNote: string | null;
 }
