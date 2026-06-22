@@ -447,3 +447,83 @@ describe("hitch evidence show", () => {
     expect(out).toMatch(/not found/i);
   });
 });
+
+// ── #91 Stage A Task 5: hitch status surfaces evidence ───────────────────────
+
+describe("hitch status surfaces attached evidence (#91 Stage A Task 5)", () => {
+  it("--json output includes empty evidence array when no evidence attached", () => {
+    const { root } = setup();
+    const { out, code } = runCli(root, [
+      "hitch",
+      "status",
+      "h-ev-1",
+      "--json",
+    ]);
+    expect(code).toBe(0);
+    const data = JSON.parse(out) as { evidence: unknown[] };
+    expect(Array.isArray(data.evidence)).toBe(true);
+    expect(data.evidence).toHaveLength(0);
+  });
+
+  it("human text renders NO evidence section when no evidence is attached", () => {
+    const { root } = setup();
+    const { out, code } = runCli(root, ["hitch", "status", "h-ev-1"]);
+    expect(code).toBe(0);
+    // The output must be a single line (no evidence rows appended).
+    // Evidence rows start with a tab-separated timestamp field.
+    expect(out.trim().split("\n")).toHaveLength(1);
+  });
+
+  it("--json includes attached evidence rows in the evidence array", () => {
+    const { root } = setup();
+    // attach evidence first
+    runCli(root, [
+      "hitch",
+      "evidence",
+      "add",
+      "h-ev-1",
+      "--label",
+      "status test label",
+      "--note",
+      "status test body",
+    ]);
+    const { out, code } = runCli(root, [
+      "hitch",
+      "status",
+      "h-ev-1",
+      "--json",
+    ]);
+    expect(code).toBe(0);
+    const data = JSON.parse(out) as {
+      evidence: Array<{
+        evidenceId: string;
+        kind: string;
+        attester: string;
+        label: string;
+      }>;
+    };
+    expect(data.evidence).toHaveLength(1);
+    expect(data.evidence[0].kind).toBe("note");
+    expect(data.evidence[0].attester).toBe("operator");
+    expect(data.evidence[0].label).toBe("status test label");
+  });
+
+  it("human text renders an evidence line for each attached row (≥1)", () => {
+    const { root } = setup();
+    runCli(root, [
+      "hitch",
+      "evidence",
+      "add",
+      "h-ev-1",
+      "--label",
+      "visible in status",
+      "--note",
+      "body",
+    ]);
+    const { out, code } = runCli(root, ["hitch", "status", "h-ev-1"]);
+    expect(code).toBe(0);
+    expect(out).toContain("visible in status");
+    expect(out).toContain("note");
+    expect(out).toContain("operator");
+  });
+});

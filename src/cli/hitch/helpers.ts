@@ -18,7 +18,7 @@ import { ConvergenceService, RECOVERABLE_DIVERGENCE_REASON, divergenceReasonForB
 import { findTransientLeaseCause } from "../../workspace/db-domain-lock.js";
 import { type OrchestratorRunnerDeps } from "../../hitch/orchestrator-runners.js";
 import { HitchRepository, type CompleteHitchReviewCycleInput } from "../../hitch/repository.js";
-import { HITCH_SCOPE_STATUSES, HitchValidationError, type HitchFinding, type HitchConvergenceResult, type HitchScopeStatus } from "../../hitch/types.js";
+import { HITCH_SCOPE_STATUSES, HitchValidationError, type HitchEvidence, type HitchFinding, type HitchConvergenceResult, type HitchScopeStatus } from "../../hitch/types.js";
 import type { HitchOrchestrationResult } from "../../hitch/orchestrator-types.js";
 import { prepareProjectRun } from "../../project/run-project.js";
 
@@ -225,6 +225,7 @@ export function formatHitchStatusLine(result: {
     detail?: Record<string, unknown> | null;
   }>;
   tokenUsage?: DbHitchTokenUsage;
+  evidence?: HitchEvidence[];
 }): string {
   const reviewAdvisoryCount = countReviewConsensusAdvisories(result);
   const staticConsensus = hasPassedReviewConsensusCheck(result)
@@ -243,7 +244,11 @@ export function formatHitchStatusLine(result: {
     adoptedPrText +
     staticConsensus +
     advisories;
-  return statusLine + formatHitchTokenUsageLine(result.tokenUsage);
+  return (
+    statusLine +
+    formatHitchTokenUsageLine(result.tokenUsage) +
+    formatHitchEvidenceLines(result.evidence)
+  );
 }
 
 /**
@@ -262,6 +267,40 @@ export function formatHitchTokenUsageLine(usage?: DbHitchTokenUsage): string {
     `byKind[coder=${k.coder.totalTokens} reviewer=${k.reviewer.totalTokens} ` +
     `evaluator=${k.evaluator.totalTokens}]`
   );
+}
+
+/**
+ * Render attached evidence rows as additional status lines, one per row.
+ * Quiet-when-empty: returns `""` when there are no rows (no header rendered).
+ * Format mirrors `formatEvidenceRow` in evidence-commands.ts.
+ */
+export function formatHitchEvidenceLines(
+  evidence?: HitchEvidence[],
+): string {
+  if (evidence === undefined || evidence.length === 0) return "";
+  return evidence
+    .map((ev) => {
+      const shortId = ev.evidenceId.slice(0, 12);
+      const fields: string[] = [
+        ev.createdAt,
+        shortId,
+        ev.kind,
+        ev.attester,
+        ev.label,
+      ];
+      if (ev.command !== null) fields.push(`cmd=${ev.command}`);
+      if (ev.exitCode !== null) fields.push(`exit=${ev.exitCode}`);
+      const metricsEntries = Object.entries(ev.summaryMetrics);
+      if (metricsEntries.length > 0) {
+        fields.push(
+          `metrics={${metricsEntries.map(([k, v]) => `${k}:${String(v)}`).join(",")}}`,
+        );
+      }
+      if (ev.redacted) fields.push("[redacted]");
+      else if (ev.secretSuspect) fields.push("[secret-suspect]");
+      return "\n" + fields.join("\t");
+    })
+    .join("");
 }
 
 export function formatHitchFindingList(findings: HitchFinding[]): string {
