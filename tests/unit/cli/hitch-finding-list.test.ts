@@ -87,3 +87,31 @@ describe("formatHitchFindingList — #90 Stage A: deferred_backlog display", () 
     expect(formatHitchFindingList([])).toBe("");
   });
 });
+
+describe("formatHitchFindingList — #90 Stage B: deferred_issue display", () => {
+  it("finding with deferredIssueUrl set ends with \\tdeferred_issue=<url>", () => {
+    const f = makeFinding({
+      deferredIssueUrl: "https://github.com/o/r/issues/7",
+      lifecycleStatus: "deferred",
+    });
+    const output = formatHitchFindingList([f]);
+    expect(output).toContain("\tdeferred_issue=https://github.com/o/r/issues/7");
+    expect(output).not.toContain("deferred_backlog");
+  });
+
+  it("finding with null deferredIssueUrl has NO deferred_issue token (byte-invariant)", () => {
+    const f = makeFinding({ deferredIssueUrl: null });
+    const output = formatHitchFindingList([f]);
+    expect(output).not.toContain("deferred_issue");
+  });
+
+  it("finding with both deferredBacklogItemId and deferredIssueUrl shows both tokens in order", () => {
+    const f = makeFinding({
+      deferredBacklogItemId: "bk-42",
+      deferredIssueUrl: "https://github.com/o/r/issues/9",
+      lifecycleStatus: "deferred",
+    });
+    const output = formatHitchFindingList([f]);
+    expect(output).toContain("\tdeferred_backlog=bk-42\tdeferred_issue=https://github.com/o/r/issues/9");
+  });
+});

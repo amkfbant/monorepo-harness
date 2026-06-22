@@ -66,6 +66,7 @@ function finding(over: Partial<SafeFindingLine> = {}): SafeFindingLine {
     summary: redactFreeText("off-by-one in pagination"),
     firstSeenAt: "2026-06-20T00:00:00.000Z",
     deferredBacklogItemId: null,
+    deferredIssueUrl: null,
     ...over,
   };
 }
@@ -395,6 +396,72 @@ describe("renderHitchSummary", () => {
     expect(lines.some((l) => l.startsWith("# Fake"))).toBe(false);
     // the token is still present but collapsed
     expect(md).toContain("deferred_backlog=");
+  });
+
+  // ------------------------------------------------------------------
+  // Stage B (#90): deferred_issue display in finding lines
+  // ------------------------------------------------------------------
+  it("finding with deferredIssueUrl renders deferred_issue= token", () => {
+    const md = renderHitchSummary(
+      course({
+        phases: [
+          {
+            phaseId: "phase-1",
+            title: redactFreeText("Backend"),
+            status: "in_progress",
+            hitches: [
+              hitch({
+                findings: [
+                  finding({
+                    deferredIssueUrl: "https://github.com/o/r/issues/7",
+                  }),
+                ],
+              }),
+            ],
+          },
+        ],
+      }),
+    );
+    expect(md).toContain("deferred_issue=https://github.com/o/r/issues/7");
+  });
+
+  it("finding with null deferredIssueUrl has NO deferred_issue token (byte-invariant)", () => {
+    const md = renderHitchSummary(course());
+    expect(md).not.toContain("deferred_issue");
+  });
+
+  it("existing tests are byte-identical with deferredIssueUrl: null default in fixture", () => {
+    // Smoke test: a vanilla finding still renders the same as before Stage B.
+    const md = renderHitchSummary(course());
+    expect(md).toMatch(/off-by-one in pagination/);
+    expect(md).not.toContain("deferred_issue");
+    expect(md).not.toContain("deferred_backlog");
+  });
+
+  it("newline-bearing deferredIssueUrl cannot inject a structural heading", () => {
+    const md = renderHitchSummary(
+      course({
+        phases: [
+          {
+            phaseId: "phase-1",
+            title: redactFreeText("Backend"),
+            status: "in_progress",
+            hitches: [
+              hitch({
+                findings: [
+                  finding({
+                    deferredIssueUrl: "https://github.com/o/r/issues/1\n# Fake",
+                  }),
+                ],
+              }),
+            ],
+          },
+        ],
+      }),
+    );
+    const lines = md.split("\n");
+    expect(lines.some((l) => l.startsWith("# Fake"))).toBe(false);
+    expect(md).toContain("deferred_issue=");
   });
 });
 

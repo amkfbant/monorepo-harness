@@ -392,13 +392,14 @@ harness hitch finding add <hitch-id> --severity P1 --category correctness --summ
 harness hitch finding classify <finding-id> --scope in-scope|out-of-scope|unknown|duplicate --reason <text> \
   [--duplicate-of <finding-id>] [--then-rerun --repo <path> [--base-branch <name>] [--max-steps <n>]] [--json]
 harness hitch finding fixed <finding-id> [--note <text>] [--json]
-harness hitch finding defer <finding-id> --reason <text> [--backlog] [--classify-out-of-scope] [--json]
+harness hitch finding defer <finding-id> --reason <text> [--backlog] [--classify-out-of-scope] [--to-issue <url>] [--json]
 ```
 
 `hitch finding list` は hitch の存在を `requireSession()` で検証してから finding を読む
 read-only command。text 出力は `findingId / severity / lifecycleStatus / scopeStatus /
 category / summary` のタブ区切りで、`deferredBacklogItemId` が non-null の finding は末尾に
-`\tdeferred_backlog=<id>` トークンを追加する（非 deferred の finding は 6 フィールドのまま）。
+`\tdeferred_backlog=<id>` トークンを追加する。`deferredIssueUrl` が non-null の finding は
+さらに末尾に `\tdeferred_issue=<url>` トークンを追加する（non-deferred の finding は 6 フィールドのまま）。
 `--json` は `{ findings: HitchFinding[] }` を返す。
 並び順は repository 既定の `first_seen_at ASC, finding_id ASC`。`--open` は
 `open` / `reopened` / `escalated` lifecycle のみ、`--severity` と `--scope` は
@@ -450,6 +451,16 @@ audit context を要求し、standalone CLI はそれを持たない）。
 DB transaction に含めるため、分類だけ済む / backlog item だけ残る部分状態は残らない。backlog
 YAML export は DB commit 後の best-effort で、失敗時はコマンド成功のまま stderr warning として
 返る。
+
+**`hitch finding defer --to-issue <url>`（#90 Stage B）**: 既存の GitHub issue URL を deferred
+finding にリンクする（`https://github.com/<owner>/<repo>/issues/<N>` のみ受理、strict / fail-closed、
+ネットワーク不要）。URL は `defer` 成功後に operator-only の `linkFindingIssue` で
+`deferred_issue_url` 列に書き込まれ、text 出力に `issue=<url>` として表示される。不正な URL は
+`--to-issue` 検証段階で即 exit 1（defer は実行されない）。secret-shaped な値は `[redacted]` で
+表示する。issue 自動作成はスコープ外（→ #173）。`--backlog` と併用可。`deferred_issue_url` は
+`hitch finding list` text 出力に `deferred_issue=<url>` トークンとして、`hitch summary` の
+Markdown finding 行に `, deferred_issue=<url>` として表示される（null の場合は非表示・既存出力と
+byte-identical）。
 
 Attempts, review cycles, close checks, and convergence decisions:
 
@@ -514,6 +525,8 @@ close-check message / convergence reason 等の B 列は **型レベルで proje
 到達しない**（aggregate は raw row を spread せず名前付き field のみ map）。
 deferred finding（`deferredBacklogItemId !== null`）はその id を finding 行の trailing
 parens 内に `deferred_backlog=<id>` として表示する（`inline()` で改行折畳み済み）。
+`--to-issue` でリンクされた finding（`deferredIssueUrl !== null`）はさらに
+`deferred_issue=<url>` を同 parens 内に追加する（null の場合は非表示・byte-identical）。
 `--out` は **CWD 配下に限定**（traversal は fail-closed で拒否）。stdout / `--out`
 ともローカルのみ＝外部送信なし。**Stage B 実装済み**: `--since <iso>` / `--until <iso>` は `session.updatedAt`
 への**インクルーシブ時間窓**（per-hitch 述語）。窓外の hitch は出力から除外され、
