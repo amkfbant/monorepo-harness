@@ -355,7 +355,7 @@ function seedWithDomainAndStatus(root: string): void {
       createdSource: "cli",
     });
     phases.linkHitch("phase-ds", "h-ds-2");
-    repo.updateStatus("h-ds-2", "closed", undefined, { createdBy: "t", createdSource: "cli" });
+    repo.updateStatus("h-ds-2", "closed", undefined, { createdBy: "t" });
   } finally {
     db.close();
   }
