@@ -610,3 +610,225 @@ describe("buildHitchSummary — Stage B time-window filter (#84)", () => {
     }
   });
 });
+
+// ── Stage C: status/domain filter predicates ─────────────────────────────────
+
+/**
+ * Seed a hitch with optional domain, status, and P0 finding. Caller must call
+ * `seedCoursePhase` first. Reuses the Stage B `seedHitch` deterministic-timestamp
+ * pattern for `updatedAt`.
+ */
+function seedHitchC(
+  repo: HitchRepository,
+  phases: PhaseRepository,
+  db: ReturnType<typeof fresh>["db"],
+  hitchId: string,
+  opts: {
+    updatedAt?: string;
+    domain?: string;
+    status?: "open" | "closed" | "cancelled" | "escalated";
+    addP0?: boolean;
+  } = {},
+): void {
+  const { updatedAt = "2026-06-01T00:00:00.000Z", domain, status, addP0 = false } = opts;
+  repo.createSession({
+    hitchId,
+    title: `Hitch ${hitchId}`,
+    scope: {},
+    closeConditions: [],
+    createdBy: "t",
+    createdSource: "cli",
+    ...(domain !== undefined ? { domain } : {}),
+  });
+  phases.linkHitch("phase-1", hitchId);
+  if (status !== undefined && status !== "open") {
+    repo.updateStatus(hitchId, status, "test setup", { createdBy: "t" });
+  }
+  if (addP0) {
+    repo.upsertFinding({
+      hitchId,
+      source: "review",
+      severity: "P0",
+      category: "correctness",
+      summary: "p0 finding",
+      scopeStatus: "in_scope",
+      lifecycleStatus: "open",
+    });
+  }
+  // Set deterministic timestamp LAST (upsertFinding / updateStatus touch updated_at).
+  db.prepare(
+    "UPDATE hitch_sessions SET updated_at = ? WHERE hitch_id = ?",
+  ).run(updatedAt, hitchId);
+}
+
+describe("buildHitchSummary — Stage C status/domain filter (#84)", () => {
+  it("status include: only the matching-status hitch is returned", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitchC(repo, phases, db, "h-c-status-closed", { status: "closed" });
+      seedHitchC(repo, phases, db, "h-c-status-open", { status: "open" });
+
+      const summary = buildHitchSummary(db, "course-1", { status: "closed" });
+      const ids = summary.phases[0]!.hitches.map((h) => h.hitchId);
+      expect(ids).toContain("h-c-status-closed");
+      expect(ids).not.toContain("h-c-status-open");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("status exclude: non-matching status is absent from result", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitchC(repo, phases, db, "h-c-excl-esc", { status: "escalated" });
+      seedHitchC(repo, phases, db, "h-c-excl-open", { status: "open" });
+
+      const summary = buildHitchSummary(db, "course-1", { status: "open" });
+      const ids = summary.phases[0]!.hitches.map((h) => h.hitchId);
+      expect(ids).toContain("h-c-excl-open");
+      expect(ids).not.toContain("h-c-excl-esc");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("domain include: only the matching-domain hitch is returned", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitchC(repo, phases, db, "h-c-dom-match", { domain: "apps/a" });
+      seedHitchC(repo, phases, db, "h-c-dom-other", { domain: "apps/b" });
+
+      const summary = buildHitchSummary(db, "course-1", { domain: "apps/a" });
+      const ids = summary.phases[0]!.hitches.map((h) => h.hitchId);
+      expect(ids).toContain("h-c-dom-match");
+      expect(ids).not.toContain("h-c-dom-other");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("domain exclude: null-domain session never matches a provided domain filter", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitchC(repo, phases, db, "h-c-dom-null", {}); // domain omitted → null
+      seedHitchC(repo, phases, db, "h-c-dom-a", { domain: "apps/a" });
+
+      const summary = buildHitchSummary(db, "course-1", { domain: "apps/a" });
+      const ids = summary.phases[0]!.hitches.map((h) => h.hitchId);
+      expect(ids).toContain("h-c-dom-a");
+      expect(ids).not.toContain("h-c-dom-null");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("AND semantics: status AND domain both required", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      // Matches both
+      seedHitchC(repo, phases, db, "h-c-and-both", { status: "closed", domain: "apps/a" });
+      // Closed but wrong domain
+      seedHitchC(repo, phases, db, "h-c-and-closed-wrong-dom", { status: "closed", domain: "apps/b" });
+      // Correct domain but not closed
+      seedHitchC(repo, phases, db, "h-c-and-open-right-dom", { status: "open", domain: "apps/a" });
+
+      const summary = buildHitchSummary(db, "course-1", { status: "closed", domain: "apps/a" });
+      const ids = summary.phases[0]!.hitches.map((h) => h.hitchId);
+      expect(ids).toContain("h-c-and-both");
+      expect(ids).not.toContain("h-c-and-closed-wrong-dom");
+      expect(ids).not.toContain("h-c-and-open-right-dom");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("AND semantics: status combined with sinceMs window", () => {
+    const T_EARLY_C = "2026-01-01T00:00:00.000Z";
+    const T_MID_C = "2026-06-01T00:00:00.000Z";
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      // Closed AND in window — must appear
+      seedHitchC(repo, phases, db, "h-c-and-win-ok", { status: "closed", updatedAt: T_MID_C });
+      // Closed but out of window — excluded
+      seedHitchC(repo, phases, db, "h-c-and-win-old", { status: "closed", updatedAt: T_EARLY_C });
+      // In window but open — excluded
+      seedHitchC(repo, phases, db, "h-c-and-win-open", { status: "open", updatedAt: T_MID_C });
+
+      const summary = buildHitchSummary(db, "course-1", {
+        status: "closed",
+        sinceMs: Date.parse("2026-05-01T00:00:00.000Z"),
+      });
+      const ids = summary.phases[0]!.hitches.map((h) => h.hitchId);
+      expect(ids).toContain("h-c-and-win-ok");
+      expect(ids).not.toContain("h-c-and-win-old");
+      expect(ids).not.toContain("h-c-and-win-open");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("roll-up excludes filtered-out hitches from openInScopeP0/P1", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      // Included hitch (closed, with P0)
+      seedHitchC(repo, phases, db, "h-c-rollup-in", { status: "closed", addP0: true });
+      // Excluded hitch (open, with P0) — must NOT be counted
+      seedHitchC(repo, phases, db, "h-c-rollup-out", { status: "open", addP0: true });
+
+      const summary = buildHitchSummary(db, "course-1", { status: "closed" });
+      expect(summary.openInScopeP0).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("projection echo: statusFilter present when status filter active", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitchC(repo, phases, db, "h-c-echo-status", { status: "closed" });
+
+      const summary = buildHitchSummary(db, "course-1", { status: "closed" });
+      expect(summary.statusFilter).toBe("closed");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("projection echo: domainFilter present when domain filter active", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitchC(repo, phases, db, "h-c-echo-domain", { domain: "apps/a" });
+
+      const summary = buildHitchSummary(db, "course-1", { domain: "apps/a" });
+      expect(summary.domainFilter).toBe("apps/a");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("no filter (default arg) — no statusFilter or domainFilter in result", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitchC(repo, phases, db, "h-c-nofilter", { status: "closed", domain: "apps/a" });
+
+      const summary = buildHitchSummary(db, "course-1");
+      // Stage A/B: all hitches included
+      expect(summary.phases[0]!.hitches).toHaveLength(1);
+      // Stage C: no echo fields when no filter
+      expect(summary).not.toHaveProperty("statusFilter");
+      expect(summary).not.toHaveProperty("domainFilter");
+    } finally {
+      db.close();
+    }
+  });
+});

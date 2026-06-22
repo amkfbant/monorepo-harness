@@ -475,7 +475,7 @@ harness hitch await-merge [<hitch-id>] --repo <path> [--all] [--repo-id <id>] \
   [--ci-await-timeout <seconds>] [--poll-interval <seconds>] [--max-wait <seconds>] \
   [--ingest-external-reviews] [--external-review-timeout <seconds>]
 
-harness hitch summary --course <id> [--since <iso>] [--until <iso>] [--json] [--out <path>]
+harness hitch summary --course <id> [--since <iso>] [--until <iso>] [--status <status>] [--domain <domain>] [--json] [--out <path>]
 ```
 
 `hitch status --json` は session / findings / convergence decisions /
@@ -516,8 +516,15 @@ close-check message / convergence reason 等の B 列は **型レベルで proje
 headline の P0/P1 ロールアップにも加算されない（per-finding ではなく per-hitch
 単位）。境界値は **ISO-8601 UTC instant**（`Z` または数値 offset `±HH:MM` の明示が必須
 — offset なし・曖昧な入力は exit 1）に厳格検証済み（不正値または `since > until` →
-exit 1）、アクティブな窓はレポートヘッダに canonical UTC ISO で表示される。Stage C
-（status/domain filter）は後続。
+exit 1）、アクティブな窓はレポートヘッダに canonical UTC ISO で表示される。**Stage C
+実装済み**: `--status <status>` は `HITCH_STATUSES` のいずれか（`open` /
+`in_progress` / `close_ready` / `closed` / `diverging` / `budget_exhausted` /
+`escalated` / `cancelled`）に限定された per-hitch 述語で、不正値は exit 1。`--domain
+<domain>` は自由文字列の per-hitch exact-match 述語（enum 検証なし）。両フラグは
+時間窓（`--since` / `--until`）と AND 結合され、除外された hitch は出力からも
+headline roll-up P0/P1 カウントからも脱落する。アクティブなフィルタはレポートヘッダに
+`- Status filter: <status>` / `- Domain filter: <domain>`（`inline()` 折畳み）として
+表示される。Stage C は #84 summary フィルタの最終段階。
 
 `hitch orchestrate` と `hitch finding classify --then-rerun` は、coder 実行中の
 domain lease contention（`DomainLockBusyError` / `LeaseLostError` /

@@ -16,12 +16,14 @@ import process from "node:process";
 import type { Command } from "commander";
 import {
   HitchCliError,
+  parseChoice,
   withHitchErrorExit,
   withHitchReadonlyDb,
   type RegisterHitchCommandsOptions,
 } from "./helpers.js";
 import { parseIsoInstantMs } from "./iso-instant.js";
 import { buildHitchSummary, type HitchSummaryFilter } from "./summary-aggregate.js";
+import { HITCH_STATUSES } from "../../hitch/types.js";
 import { renderHitchSummary } from "../../reporter/hitch-summary.js";
 import { containsLikelySecret } from "../../reporter/secret-scan.js";
 
@@ -102,6 +104,8 @@ export function registerHitchSummaryCommands(
     .requiredOption("--course <id>", "course id to summarize")
     .option("--since <iso>", "include only hitches whose session updatedAt is at or after this ISO-8601 instant")
     .option("--until <iso>", "include only hitches whose session updatedAt is at or before this ISO-8601 instant")
+    .option("--status <status>", "include only hitches with this session status")
+    .option("--domain <domain>", "include only hitches with this session domain")
     .option("--json", "emit the structured (redacted) summary as JSON", false)
     .option(
       "--out <path>",
@@ -115,9 +119,16 @@ export function registerHitchSummaryCommands(
         if (sinceMs !== undefined && untilMs !== undefined && sinceMs > untilMs) {
           throw new HitchCliError("--since must not be after --until");
         }
+        const status =
+          typeof raw.status === "string"
+            ? parseChoice(raw.status, HITCH_STATUSES, "--status")
+            : undefined;
+        const domain = typeof raw.domain === "string" ? raw.domain : undefined;
         const filter: HitchSummaryFilter = {
           ...(sinceMs !== undefined ? { sinceMs } : {}),
           ...(untilMs !== undefined ? { untilMs } : {}),
+          ...(status !== undefined ? { status } : {}),
+          ...(domain !== undefined ? { domain } : {}),
         };
         const summary = withHitchReadonlyDb(opts, ({ db }) =>
           buildHitchSummary(db, courseId, filter),

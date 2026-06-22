@@ -33,6 +33,7 @@ import type {
   HitchConvergenceDecisionRecord,
   HitchFinding,
   HitchLifecycleEvent,
+  HitchSession,
   HitchStatus,
 } from "../../hitch/types.js";
 import {
@@ -46,18 +47,24 @@ import {
 
 /**
  * Optional read-only filter for `hitch summary`. Stage B adds a time window on
- * `session.updatedAt`; bounds are pre-parsed epoch-ms (the I/O layer owns ISO
- * validation → HitchCliError). A hitch whose session falls OUTSIDE the window
- * is excluded WHOLESALE — neither rendered NOR counted in the headline P0/P1
- * roll-up (the roll-up sums only hitches that survive the filter). The window
- * is a PER-HITCH predicate, not per-finding: an included hitch shows all of its
- * findings. (Stage C will extend this with status/domain.)
+ * `session.updatedAt`; Stage C adds exact-match predicates on `session.status`
+ * and `session.domain`. Bounds are pre-parsed epoch-ms (the I/O layer owns ISO
+ * validation → HitchCliError). A hitch whose session does NOT satisfy ALL
+ * active filters is excluded WHOLESALE — neither rendered NOR counted in the
+ * headline P0/P1 roll-up (the roll-up sums only hitches that survive the
+ * filter). The filter is a PER-HITCH predicate, not per-finding: an included
+ * hitch shows all of its findings.
  */
 export interface HitchSummaryFilter {
   /** Inclusive lower bound on session.updatedAt (epoch ms). */
   sinceMs?: number;
   /** Inclusive upper bound on session.updatedAt (epoch ms). */
   untilMs?: number;
+  /** Include only hitches whose session.status equals this (exact enum match). */
+  status?: HitchStatus;
+  /** Include only hitches whose session.domain equals this (exact match;
+   * a null session domain never matches a provided filter). */
+  domain?: string;
 }
 
 /**
@@ -75,6 +82,20 @@ function withinWindow(updatedAt: string, filter: HitchSummaryFilter): boolean {
   if (filter.sinceMs !== undefined && t < filter.sinceMs) return false;
   if (filter.untilMs !== undefined && t > filter.untilMs) return false;
   return true;
+}
+
+/**
+ * Whether a hitch's session satisfies ALL active filters (AND semantics). An
+ * absent filter field is a no-op. status is an exact enum match; domain is an
+ * exact string match (a null session domain never matches a provided filter);
+ * the time window delegates to `withinWindow`. A non-match → the hitch is
+ * excluded wholesale (not rendered, not rolled up) via the buildHitchLine null
+ * return — same choke point as a dangling link.
+ */
+function matchesFilter(session: HitchSession, filter: HitchSummaryFilter): boolean {
+  if (filter.status !== undefined && session.status !== filter.status) return false;
+  if (filter.domain !== undefined && session.domain !== filter.domain) return false;
+  return withinWindow(session.updatedAt, filter);
 }
 
 /**
@@ -210,10 +231,11 @@ function buildHitchLine(
   // report must not throw on a data inconsistency.
   const session = repo.getSession(hitchId);
   if (session === null) return null;
-  // Time-window filter: a hitch outside the window is excluded wholesale (not
-  // rendered, not counted in the roll-up). Mirrors the dangling-link null return
-  // so the hitch is also never added to `built` and thus excluded from the sum.
-  if (!withinWindow(session.updatedAt, filter)) return null;
+  // status/domain/time-window filter: a hitch that does not satisfy all active
+  // filters is excluded wholesale (not rendered, not counted in the roll-up).
+  // Mirrors the dangling-link null return so the hitch is also never added to
+  // `built` and thus excluded from the sum.
+  if (!matchesFilter(session, filter)) return null;
   const events = repo.listLifecycleEvents(hitchId);
   return {
     hitchId,
@@ -282,6 +304,8 @@ export function buildHitchSummary(
       course.description === null ? null : redactFreeText(course.description),
     status: course.status,
     ...(window !== undefined ? { window } : {}),
+    ...(filter.status !== undefined ? { statusFilter: filter.status } : {}),
+    ...(filter.domain !== undefined ? { domainFilter: filter.domain } : {}),
     openInScopeP0,
     openInScopeP1,
     phases: phaseGroups,
