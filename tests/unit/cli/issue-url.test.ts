@@ -72,4 +72,23 @@ describe("parseIssueUrl", () => {
     const long = "https://github.com/o/r/issues/1" + "a".repeat(3000);
     expect(parseIssueUrl(long)).toBeNull();
   });
+
+  // Fix 3 (P3): dot-only repo segments must be rejected
+  it("rejects dot-dot repo segment (..)", () => {
+    expect(parseIssueUrl("https://github.com/o/../issues/1")).toBeNull();
+  });
+
+  it("rejects single-dot repo segment (.)", () => {
+    expect(parseIssueUrl("https://github.com/o/./issues/1")).toBeNull();
+  });
+
+  it("rejects three-dot repo segment (...)", () => {
+    expect(parseIssueUrl("https://github.com/o/.../issues/1")).toBeNull();
+  });
+
+  it("still accepts repo with embedded dot (my.repo)", () => {
+    expect(parseIssueUrl("https://github.com/o/my.repo/issues/1")).toBe(
+      "https://github.com/o/my.repo/issues/1"
+    );
+  });
 });

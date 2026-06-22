@@ -177,6 +177,10 @@ export class FindingRepository {
                   WHEN ? IN ('in_scope', 'unknown') THEN NULL
                   ELSE deferred_backlog_item_id
                 END,
+                deferred_issue_url = CASE
+                  WHEN ? IN ('in_scope', 'unknown') THEN NULL
+                  ELSE deferred_issue_url
+                END,
                 fixed_at = CASE
                   WHEN ? IN ('in_scope', 'unknown') THEN NULL
                   ELSE fixed_at
@@ -189,6 +193,7 @@ export class FindingRepository {
         lifecycleStatus,
         duplicateOf,
         input.reason,
+        input.scopeStatus,
         input.scopeStatus,
         input.scopeStatus,
         input.scopeStatus,
@@ -290,6 +295,7 @@ export class FindingRepository {
                 resolution_note = COALESCE(?, resolution_note),
                 deferred_at = NULL,
                 deferred_backlog_item_id = NULL,
+                deferred_issue_url = NULL,
                 last_seen_at = ?
           WHERE finding_id = ?`,
       )
@@ -461,6 +467,7 @@ export class FindingRepository {
                 END,
                 deferred_at = NULL,
                 deferred_backlog_item_id = NULL,
+                deferred_issue_url = NULL,
                 last_seen_at = ?
           WHERE finding_id = ?`,
       );

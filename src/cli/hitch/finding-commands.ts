@@ -331,14 +331,10 @@ export function registerHitchFindingCommands(
             reason: String(raw.reason),
             createBacklogItem: raw.backlog === true,
             classifyOutOfScope: raw.classifyOutOfScope === true,
-            ...(raw.backlog === true
-              ? {
-                  backlogContext: {
-                    backlogDir: ctx.paths.backlogDir,
-                    dbPath: ctx.paths.dbPath,
-                  },
-                }
-              : {}),
+            backlogContext: {
+              backlogDir: ctx.paths.backlogDir,
+              dbPath: ctx.paths.dbPath,
+            },
           });
           // Link the issue URL AFTER a successful defer, via the operator-only method.
           const finding =

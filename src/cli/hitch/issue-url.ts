@@ -6,15 +6,19 @@
 // shape also makes the STORED value safe to display verbatim (no token-bearing
 // query string, no newline) — see the renderer.
 const GITHUB_ISSUE_URL =
-  /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+\/issues\/[1-9][0-9]*$/;
+  /^https:\/\/github\.com\/([A-Za-z0-9][A-Za-z0-9-]*)\/([A-Za-z0-9._-]+)\/issues\/[1-9][0-9]*$/;
 const MAX_URL_LEN = 2048;
 
 /**
  * Return the URL unchanged if it is a canonical GitHub issue URL, else `null`
  * (fail-closed — the caller maps null to a CLI error). Anchored + length-bounded
- * so it cannot accept control chars, query strings, or fragments.
+ * so it cannot accept control chars, query strings, or fragments. Dot-only repo
+ * segments (`.`, `..`, `...`) are rejected because URL parsers normalize them away.
  */
 export function parseIssueUrl(value: string): string | null {
   if (value.length > MAX_URL_LEN) return null;
-  return GITHUB_ISSUE_URL.test(value) ? value : null;
+  const m = GITHUB_ISSUE_URL.exec(value);
+  if (m === null) return null;
+  if (/^\.+$/.test(m[2]!)) return null; // dot-only repo segment normalizes away
+  return value;
 }

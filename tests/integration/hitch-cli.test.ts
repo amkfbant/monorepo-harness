@@ -1706,4 +1706,39 @@ describe("hitch finding defer --to-issue (#90 Stage B)", () => {
     expect(result.out).toContain("[redacted]");
     expect(result.out).not.toContain(secretShaped);
   });
+
+  it("--to-issue without --backlog succeeds for an already-backlogged finding (Fix 2)", () => {
+    const { root, findingId } = seedDeferFixture();
+    // First defer WITH --backlog to create the backlog link
+    runCli(root, [
+      "hitch",
+      "finding",
+      "defer",
+      findingId,
+      "--classify-out-of-scope",
+      "--reason",
+      "initial defer",
+      "--backlog",
+      "--json",
+    ]);
+    // Now defer AGAIN with --to-issue but WITHOUT --backlog
+    const result = runCli(root, [
+      "hitch",
+      "finding",
+      "defer",
+      findingId,
+      "--reason",
+      "link issue",
+      "--to-issue",
+      "https://github.com/o/r/issues/2",
+      "--json",
+    ]);
+    expect(result.code).toBe(0);
+    const parsed = JSON.parse(result.out) as {
+      finding: { deferredIssueUrl: string | null };
+    };
+    expect(parsed.finding.deferredIssueUrl).toBe(
+      "https://github.com/o/r/issues/2",
+    );
+  });
 });
