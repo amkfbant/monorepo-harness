@@ -298,3 +298,176 @@ describe("hitch summary CLI (#84 Stage B — --since/--until time window)", () =
     expect(out).toMatch(/--since must not be after --until/);
   });
 });
+
+// Seed helper that creates h-1 (open, domain "apps/catalog") and h-2 (closed,
+// domain "apps/payments"). Extends the base seed: reuses the same course/phase.
+function seedWithDomainAndStatus(root: string): void {
+  const db = openDb(join(root, ".harness", "harness.sqlite"));
+  try {
+    runMigrations(db);
+    const courses = new CourseRepository(db);
+    const phases = new PhaseRepository(db);
+    const repo = new HitchRepository(db);
+    courses.create({
+      courseId: "course-ds",
+      title: "Course DS",
+      createdBy: "t",
+      createdSource: "cli",
+    });
+    phases.add({
+      courseId: "course-ds",
+      phaseId: "phase-ds",
+      title: "Phase DS",
+      scope: {},
+      closeConditions: [],
+      createdBy: "t",
+      createdSource: "cli",
+    });
+    // h-ds-1: open, domain "apps/catalog"
+    repo.createSession({
+      hitchId: "h-ds-1",
+      title: "Hitch DS Open",
+      domain: "apps/catalog",
+      scope: {},
+      closeConditions: [],
+      createdBy: "t",
+      createdSource: "cli",
+    });
+    phases.linkHitch("phase-ds", "h-ds-1");
+    repo.upsertFinding({
+      hitchId: "h-ds-1",
+      source: "review",
+      severity: "P0",
+      category: "security",
+      summary: "open p0 finding",
+      detail: "detail",
+      scopeStatus: "in_scope",
+      lifecycleStatus: "open",
+    });
+    // h-ds-2: closed, domain "apps/payments"
+    repo.createSession({
+      hitchId: "h-ds-2",
+      title: "Hitch DS Closed",
+      domain: "apps/payments",
+      scope: {},
+      closeConditions: [],
+      createdBy: "t",
+      createdSource: "cli",
+    });
+    phases.linkHitch("phase-ds", "h-ds-2");
+    repo.updateStatus("h-ds-2", "closed", undefined, { createdBy: "t", createdSource: "cli" });
+  } finally {
+    db.close();
+  }
+}
+
+function setupDs(): { root: string } {
+  const root = mkdtempSync(join(tmpdir(), "harness-hitch-summary-ds-"));
+  seedWithDomainAndStatus(root);
+  return { root };
+}
+
+describe("hitch summary CLI (#84 Stage C — --status/--domain filters)", () => {
+  it("--status open includes matching hitch and shows '- Status filter:' line", () => {
+    const { root } = setupDs();
+    const { out, code } = runCli(root, [
+      "hitch",
+      "summary",
+      "--course",
+      "course-ds",
+      "--status",
+      "open",
+    ]);
+    expect(code).toBe(0);
+    expect(out).toContain("h-ds-1");
+    expect(out).toMatch(/- Status filter: open/);
+  });
+
+  it("--status closed excludes the open hitch; --json openInScopeP0 === 0", () => {
+    const { root } = setupDs();
+    // text output: h-ds-1 (open) absent
+    const { out, code } = runCli(root, [
+      "hitch",
+      "summary",
+      "--course",
+      "course-ds",
+      "--status",
+      "closed",
+    ]);
+    expect(code).toBe(0);
+    expect(out).not.toContain("h-ds-1");
+    // --json: openInScopeP0 reflects only the closed hitch (no open P0)
+    const { out: jsonOut, code: jsonCode } = runCli(root, [
+      "hitch",
+      "summary",
+      "--course",
+      "course-ds",
+      "--status",
+      "closed",
+      "--json",
+    ]);
+    expect(jsonCode).toBe(0);
+    const parsed = JSON.parse(jsonOut) as { openInScopeP0: number };
+    expect(parsed.openInScopeP0).toBe(0);
+  });
+
+  it("--domain apps/catalog includes the matching hitch and shows '- Domain filter:' line", () => {
+    const { root } = setupDs();
+    const { out, code } = runCli(root, [
+      "hitch",
+      "summary",
+      "--course",
+      "course-ds",
+      "--domain",
+      "apps/catalog",
+    ]);
+    expect(code).toBe(0);
+    expect(out).toContain("h-ds-1");
+    expect(out).toMatch(/- Domain filter:/);
+  });
+
+  it("--domain other excludes all hitches", () => {
+    const { root } = setupDs();
+    const { out, code } = runCli(root, [
+      "hitch",
+      "summary",
+      "--course",
+      "course-ds",
+      "--domain",
+      "apps/other",
+    ]);
+    expect(code).toBe(0);
+    expect(out).not.toContain("h-ds-1");
+    expect(out).not.toContain("h-ds-2");
+  });
+
+  it("invalid --status exits 1 with '--status must be one of' message", () => {
+    const { root } = setupDs();
+    const { out, code } = runCli(root, [
+      "hitch",
+      "summary",
+      "--course",
+      "course-ds",
+      "--status",
+      "bogus",
+    ]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/--status must be one of/);
+  });
+
+  it("combined --status open --since far-past includes the open hitch", () => {
+    const { root } = setupDs();
+    const { out, code } = runCli(root, [
+      "hitch",
+      "summary",
+      "--course",
+      "course-ds",
+      "--status",
+      "open",
+      "--since",
+      "2000-01-01T00:00:00Z",
+    ]);
+    expect(code).toBe(0);
+    expect(out).toContain("h-ds-1");
+  });
+});
