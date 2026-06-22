@@ -10,11 +10,17 @@
 // epoch-ms. Uppercase `T`/`Z` only, matching the canonical `toISOString()` form
 // the harness writes.
 const ISO_INSTANT =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})$/;
 
-/** Last calendar day of `month` (1-12) in `year` (leap-year aware). */
+/** Last calendar day of `month` (1-12) in `year` — proleptic Gregorian,
+ * leap-year aware, with no `Date` century-remap pitfall. `month` is validated
+ * to 1-12 before this is called. */
 function daysInMonth(year: number, month: number): number {
-  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (month === 2) {
+    const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+    return leap ? 29 : 28;
+  }
+  return [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]!;
 }
 
 /**

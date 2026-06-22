@@ -12,6 +12,26 @@ describe("parseIsoInstantMs — strict ISO-8601 UTC instant parser (#84 Stage B)
     expect(parseIsoInstantMs("2026-06-01T00:00:00.000Z")).not.toBeNull();
   });
 
+  it("accepts 1-digit fractional second", () => {
+    expect(parseIsoInstantMs("2026-06-01T00:00:00.1Z")).not.toBeNull();
+  });
+
+  it("accepts 2-digit fractional second", () => {
+    expect(parseIsoInstantMs("2026-06-01T00:00:00.12Z")).not.toBeNull();
+  });
+
+  it("accepts 3-digit fractional second (canonical toISOString form)", () => {
+    expect(parseIsoInstantMs("2026-06-01T00:00:00.123Z")).not.toBeNull();
+  });
+
+  it("accepts Feb 29 in a ÷4 leap year (2024)", () => {
+    expect(parseIsoInstantMs("2024-02-29T00:00:00Z")).not.toBeNull();
+  });
+
+  it("accepts Feb 29 in a ÷400 leap year (2000)", () => {
+    expect(parseIsoInstantMs("2000-02-29T00:00:00Z")).not.toBeNull();
+  });
+
   it("accepts positive numeric offset +09:00 and returns the same epoch-ms as its UTC equivalent", () => {
     const withOffset = parseIsoInstantMs("2026-06-01T00:00:00+09:00");
     const utcEquivalent = parseIsoInstantMs("2026-05-31T15:00:00Z");
@@ -56,5 +76,21 @@ describe("parseIsoInstantMs — strict ISO-8601 UTC instant parser (#84 Stage B)
 
   it("rejects impossible offset: '2026-06-01T00:00:00+99:00'", () => {
     expect(parseIsoInstantMs("2026-06-01T00:00:00+99:00")).toBeNull();
+  });
+
+  it("rejects 4-digit fractional second (sub-ms truncation ambiguity)", () => {
+    expect(parseIsoInstantMs("2026-06-01T00:00:00.0001Z")).toBeNull();
+  });
+
+  it("rejects 9-digit fractional second", () => {
+    expect(parseIsoInstantMs("2026-06-01T00:00:00.000999999Z")).toBeNull();
+  });
+
+  it("rejects Feb 29 in a non-leap year (2026)", () => {
+    expect(parseIsoInstantMs("2026-02-29T00:00:00Z")).toBeNull();
+  });
+
+  it("rejects Feb 29 in a ÷100 but not ÷400 year (1900)", () => {
+    expect(parseIsoInstantMs("1900-02-29T00:00:00Z")).toBeNull();
   });
 });
