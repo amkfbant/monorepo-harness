@@ -20,7 +20,7 @@ import {
   withHitchReadonlyDb,
   type RegisterHitchCommandsOptions,
 } from "./helpers.js";
-import { buildHitchSummary } from "./summary-aggregate.js";
+import { buildHitchSummary, type HitchSummaryFilter } from "./summary-aggregate.js";
 import { renderHitchSummary } from "../../reporter/hitch-summary.js";
 
 /** Deepest EXISTING ancestor of `p` (walk up), so we can realpath-check
@@ -73,6 +73,20 @@ export function resolveSummaryOutPath(out: string): string {
   return resolved;
 }
 
+/**
+ * Parse an ISO-8601 instant flag to epoch-ms, fail-closed → HitchCliError
+ * (exit 1). `Date.parse` accepts ISO-8601; NaN is a user input error.
+ */
+function parseInstantFlag(value: string, flag: string): number {
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) {
+    throw new HitchCliError(
+      `${flag} must be an ISO-8601 timestamp (got ${JSON.stringify(value)})`,
+    );
+  }
+  return ms;
+}
+
 export function registerHitchSummaryCommands(
   hitchCmd: Command,
   opts: RegisterHitchCommandsOptions,
@@ -81,6 +95,8 @@ export function registerHitchSummaryCommands(
     .command("summary")
     .description("summarize hitch sessions across a course (read-only)")
     .requiredOption("--course <id>", "course id to summarize")
+    .option("--since <iso>", "include only hitches whose session updatedAt is at or after this ISO-8601 instant")
+    .option("--until <iso>", "include only hitches whose session updatedAt is at or before this ISO-8601 instant")
     .option("--json", "emit the structured (redacted) summary as JSON", false)
     .option(
       "--out <path>",
@@ -89,8 +105,17 @@ export function registerHitchSummaryCommands(
     .action((raw: Record<string, unknown>) => {
       withHitchErrorExit(() => {
         const courseId = String(raw.course);
+        const sinceMs = typeof raw.since === "string" ? parseInstantFlag(raw.since, "--since") : undefined;
+        const untilMs = typeof raw.until === "string" ? parseInstantFlag(raw.until, "--until") : undefined;
+        if (sinceMs !== undefined && untilMs !== undefined && sinceMs > untilMs) {
+          throw new HitchCliError("--since must not be after --until");
+        }
+        const filter: HitchSummaryFilter = {
+          ...(sinceMs !== undefined ? { sinceMs } : {}),
+          ...(untilMs !== undefined ? { untilMs } : {}),
+        };
         const summary = withHitchReadonlyDb(opts, ({ db }) =>
-          buildHitchSummary(db, courseId),
+          buildHitchSummary(db, courseId, filter),
         );
         const text =
           raw.json === true

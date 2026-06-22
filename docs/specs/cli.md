@@ -475,7 +475,7 @@ harness hitch await-merge [<hitch-id>] --repo <path> [--all] [--repo-id <id>] \
   [--ci-await-timeout <seconds>] [--poll-interval <seconds>] [--max-wait <seconds>] \
   [--ingest-external-reviews] [--external-review-timeout <seconds>]
 
-harness hitch summary --course <id> [--json] [--out <path>]
+harness hitch summary --course <id> [--since <iso>] [--until <iso>] [--json] [--out <path>]
 ```
 
 `hitch status --json` は session / findings / convergence decisions /
@@ -511,7 +511,11 @@ finding の自由テキスト（summary / category）は `RedactedText` brand �
 close-check message / convergence reason 等の B 列は **型レベルで projection に
 到達しない**（aggregate は raw row を spread せず名前付き field のみ map）。
 `--out` は **CWD 配下に限定**（traversal は fail-closed で拒否）。stdout / `--out`
-ともローカルのみ＝外部送信なし。Stage B（時間窓 `--since`/`--until`）・Stage C
+ともローカルのみ＝外部送信なし。**Stage B 実装済み**: `--since <iso>` / `--until <iso>` は `session.updatedAt`
+への**インクルーシブ時間窓**（per-hitch 述語）。窓外の hitch は出力から除外され、
+headline の P0/P1 ロールアップにも加算されない（per-finding ではなく per-hitch
+単位）。境界値は ISO-8601 検証済み（不正値または `since > until` → exit 1）、
+アクティブな窓はレポートヘッダに canonical ISO で表示される。Stage C
 （status/domain filter）は後続。
 
 `hitch orchestrate` と `hitch finding classify --then-rerun` は、coder 実行中の
