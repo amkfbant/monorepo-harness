@@ -21,6 +21,7 @@ import { HitchRepository, type CompleteHitchReviewCycleInput } from "../../hitch
 import { HITCH_SCOPE_STATUSES, HitchValidationError, type HitchEvidence, type HitchFinding, type HitchConvergenceResult, type HitchScopeStatus } from "../../hitch/types.js";
 import type { HitchOrchestrationResult } from "../../hitch/orchestrator-types.js";
 import { prepareProjectRun } from "../../project/run-project.js";
+import { formatHitchEvidenceLines, formatHitchTokenUsageLine } from "./evidence-format.js";
 
 /**
  * `harness hitch` / `harness phase`(no) CLI の共有ヘルパー（#125 A15: cli/hitch.ts から
@@ -244,63 +245,8 @@ export function formatHitchStatusLine(result: {
     adoptedPrText +
     staticConsensus +
     advisories;
-  return (
-    statusLine +
-    formatHitchTokenUsageLine(result.tokenUsage) +
-    formatHitchEvidenceLines(result.evidence)
-  );
-}
-
-/**
- * Render the per-hitch token usage as a second status line (retry-inclusive
- * sum over the hitch's attempts, with the coder/reviewer/evaluator split).
- * Empty string when no usage telemetry is present so older hitches stay quiet.
- */
-export function formatHitchTokenUsageLine(usage?: DbHitchTokenUsage): string {
-  if (usage === undefined || usage.runsWithUsage === 0) return "";
-  const k = usage.byKind;
-  return (
-    `\ntokens total=${usage.totalTokens} ` +
-    `(in=${usage.inputTokens} cached=${usage.cachedInputTokens} ` +
-    `out=${usage.outputTokens} reasoning=${usage.reasoningOutputTokens}) ` +
-    `runsWithUsage=${usage.runsWithUsage} ` +
-    `byKind[coder=${k.coder.totalTokens} reviewer=${k.reviewer.totalTokens} ` +
-    `evaluator=${k.evaluator.totalTokens}]`
-  );
-}
-
-/**
- * Render attached evidence rows as additional status lines, one per row.
- * Quiet-when-empty: returns `""` when there are no rows (no header rendered).
- * Format mirrors `formatEvidenceRow` in evidence-commands.ts.
- */
-export function formatHitchEvidenceLines(
-  evidence?: HitchEvidence[],
-): string {
-  if (evidence === undefined || evidence.length === 0) return "";
-  return evidence
-    .map((ev) => {
-      const shortId = ev.evidenceId.slice(0, 12);
-      const fields: string[] = [
-        ev.createdAt,
-        shortId,
-        ev.kind,
-        ev.attester,
-        ev.label,
-      ];
-      if (ev.command !== null) fields.push(`cmd=${ev.command}`);
-      if (ev.exitCode !== null) fields.push(`exit=${ev.exitCode}`);
-      const metricsEntries = Object.entries(ev.summaryMetrics);
-      if (metricsEntries.length > 0) {
-        fields.push(
-          `metrics={${metricsEntries.map(([k, v]) => `${k}:${String(v)}`).join(",")}}`,
-        );
-      }
-      if (ev.redacted) fields.push("[redacted]");
-      else if (ev.secretSuspect) fields.push("[secret-suspect]");
-      return "\n" + fields.join("\t");
-    })
-    .join("");
+  const tokenLine = formatHitchTokenUsageLine(result.tokenUsage);
+  return statusLine + tokenLine + formatHitchEvidenceLines(result.evidence);
 }
 
 export function formatHitchFindingList(findings: HitchFinding[]): string {

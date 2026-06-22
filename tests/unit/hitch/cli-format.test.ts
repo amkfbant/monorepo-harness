@@ -191,11 +191,13 @@ describe("hitch CLI formatting", () => {
   });
 
   it("omits evidence section entirely when evidence list is empty or absent", () => {
+    // baseStatus has hitchId "g-tok" (no "ev-" substring) and no tokenUsage, so
+    // a quiet evidence section means the output is exactly one status line.
     const withEmpty = formatHitchStatusLine({ ...baseStatus, evidence: [] });
+    expect(withEmpty.split("\n")).toHaveLength(1);
     expect(withEmpty).not.toContain("ev-");
-    expect(withEmpty).not.toContain("evidence");
     const withUndefined = formatHitchStatusLine(baseStatus);
+    expect(withUndefined.split("\n")).toHaveLength(1);
     expect(withUndefined).not.toContain("ev-");
-    expect(withUndefined).not.toContain("evidence");
   });
 });
