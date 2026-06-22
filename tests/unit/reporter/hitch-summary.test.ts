@@ -279,6 +279,46 @@ describe("renderHitchSummary", () => {
     const md = renderHitchSummary(course({ description: null }));
     expect(md).not.toMatch(/Description/);
   });
+
+  // ------------------------------------------------------------------
+  // Stage B: --since/--until time-window filter (#84 Stage B, Task 1)
+  // ------------------------------------------------------------------
+  it("renders the Window line with both bounds", () => {
+    const md = renderHitchSummary(
+      course({
+        window: {
+          sinceIso: "2026-06-01T00:00:00.000Z",
+          untilIso: "2026-06-30T00:00:00.000Z",
+        },
+      }),
+    );
+    expect(md).toMatch(
+      /- Window \(session updatedAt\): since=2026-06-01T00:00:00.000Z until=2026-06-30T00:00:00.000Z/,
+    );
+  });
+
+  it("renders (open) for open-ended lower bound", () => {
+    const md = renderHitchSummary(
+      course({
+        window: { sinceIso: null, untilIso: "2026-06-30T00:00:00.000Z" },
+      }),
+    );
+    expect(md).toMatch(/since=\(open\) until=2026-06-30/);
+  });
+
+  it("renders (open) for open-ended upper bound", () => {
+    const md = renderHitchSummary(
+      course({
+        window: { sinceIso: "2026-06-01T00:00:00.000Z", untilIso: null },
+      }),
+    );
+    expect(md).toMatch(/since=2026-06-01.* until=\(open\)/);
+  });
+
+  it("emits no Window line in Stage A output (backward compat)", () => {
+    const md = renderHitchSummary(course());
+    expect(md).not.toMatch(/Window/);
+  });
 });
 
 // brand: a plain string is NOT assignable where RedactedText is required.

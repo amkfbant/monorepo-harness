@@ -20,8 +20,10 @@ import {
   withHitchReadonlyDb,
   type RegisterHitchCommandsOptions,
 } from "./helpers.js";
-import { buildHitchSummary } from "./summary-aggregate.js";
+import { parseIsoInstantMs } from "./iso-instant.js";
+import { buildHitchSummary, type HitchSummaryFilter } from "./summary-aggregate.js";
 import { renderHitchSummary } from "../../reporter/hitch-summary.js";
+import { containsLikelySecret } from "../../reporter/secret-scan.js";
 
 /** Deepest EXISTING ancestor of `p` (walk up), so we can realpath-check
  * containment without requiring the full `--out` path to exist yet. */
@@ -73,6 +75,23 @@ export function resolveSummaryOutPath(out: string): string {
   return resolved;
 }
 
+/**
+ * Parse a strict ISO-8601 UTC instant flag to epoch-ms, fail-closed →
+ * HitchCliError (exit 1). Uses `parseIsoInstantMs` which rejects prose,
+ * offset-less local time, impossible calendar dates, and impossible offsets.
+ * Secret-shaped values are redacted in the error message.
+ */
+function parseInstantFlag(value: string, flag: string): number {
+  const ms = parseIsoInstantMs(value);
+  if (ms === null) {
+    const shown = containsLikelySecret(value) ? "[redacted]" : JSON.stringify(value);
+    throw new HitchCliError(
+      `${flag} must be an ISO-8601 UTC instant (e.g. "2026-06-01T00:00:00Z"); got ${shown}`,
+    );
+  }
+  return ms;
+}
+
 export function registerHitchSummaryCommands(
   hitchCmd: Command,
   opts: RegisterHitchCommandsOptions,
@@ -81,6 +100,8 @@ export function registerHitchSummaryCommands(
     .command("summary")
     .description("summarize hitch sessions across a course (read-only)")
     .requiredOption("--course <id>", "course id to summarize")
+    .option("--since <iso>", "include only hitches whose session updatedAt is at or after this ISO-8601 instant")
+    .option("--until <iso>", "include only hitches whose session updatedAt is at or before this ISO-8601 instant")
     .option("--json", "emit the structured (redacted) summary as JSON", false)
     .option(
       "--out <path>",
@@ -89,8 +110,17 @@ export function registerHitchSummaryCommands(
     .action((raw: Record<string, unknown>) => {
       withHitchErrorExit(() => {
         const courseId = String(raw.course);
+        const sinceMs = typeof raw.since === "string" ? parseInstantFlag(raw.since, "--since") : undefined;
+        const untilMs = typeof raw.until === "string" ? parseInstantFlag(raw.until, "--until") : undefined;
+        if (sinceMs !== undefined && untilMs !== undefined && sinceMs > untilMs) {
+          throw new HitchCliError("--since must not be after --until");
+        }
+        const filter: HitchSummaryFilter = {
+          ...(sinceMs !== undefined ? { sinceMs } : {}),
+          ...(untilMs !== undefined ? { untilMs } : {}),
+        };
         const summary = withHitchReadonlyDb(opts, ({ db }) =>
-          buildHitchSummary(db, courseId),
+          buildHitchSummary(db, courseId, filter),
         );
         const text =
           raw.json === true

@@ -8,7 +8,7 @@ import { CourseRepository } from "../../../src/roadmap/course-repository.js";
 import { PhaseRepository } from "../../../src/roadmap/phase-repository.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
 import { ADVISORY_SEVERITY_RECORD_KEY } from "../../../src/hitch/convergence-status.js";
-import { buildHitchSummary } from "../../../src/cli/hitch/summary-aggregate.js";
+import { buildHitchSummary, type HitchSummaryFilter } from "../../../src/cli/hitch/summary-aggregate.js";
 
 const GHP = "ghp_0123456789abcdefghijklmnopqrstuvwx";
 
@@ -333,6 +333,278 @@ describe("buildHitchSummary (read-only aggregation, #84 Stage A)", () => {
       const b = buildHitchSummary(db, "course-empty");
       expect(b.phases).toHaveLength(1);
       expect(b.phases[0]!.hitches).toHaveLength(0);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+// ── Stage B: time-window filter ──────────────────────────────────────────────
+
+/**
+ * Seed a hitch linked to "phase-1" and return its id. Caller must call
+ * `seedCoursePhase` first.
+ */
+function seedHitch(
+  repo: HitchRepository,
+  phases: PhaseRepository,
+  db: ReturnType<typeof fresh>["db"],
+  hitchId: string,
+  updatedAt: string,
+  /** Optional P0 finding to add (for roll-up tests). */
+  addP0 = false,
+): void {
+  repo.createSession({
+    hitchId,
+    title: `Hitch ${hitchId}`,
+    scope: {},
+    closeConditions: [],
+    createdBy: "t",
+    createdSource: "cli",
+  });
+  phases.linkHitch("phase-1", hitchId);
+  if (addP0) {
+    repo.upsertFinding({
+      hitchId,
+      source: "review",
+      severity: "P0",
+      category: "correctness",
+      summary: "p0 finding",
+      scopeStatus: "in_scope",
+      lifecycleStatus: "open",
+    });
+  }
+  // Set the deterministic timestamp LAST — upsertFinding calls touchHitchSession
+  // which overwrites updated_at, so the final write must come after all mutations.
+  db.prepare(
+    "UPDATE hitch_sessions SET updated_at = ? WHERE hitch_id = ?",
+  ).run(updatedAt, hitchId);
+}
+
+describe("buildHitchSummary — Stage B time-window filter (#84)", () => {
+  const T_EARLY = "2026-01-01T00:00:00.000Z"; // ms: 1735689600000
+  const T_MID = "2026-06-01T00:00:00.000Z"; // ms: 1748736000000
+  const T_LATE = "2026-12-31T00:00:00.000Z"; // ms: 1767139200000
+
+  it("no filter (default arg) — includes every hitch; result has NO `window` property", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitch(repo, phases, db, "h-w-none-a", T_EARLY);
+      seedHitch(repo, phases, db, "h-w-none-b", T_LATE);
+
+      const summary = buildHitchSummary(db, "course-1");
+
+      expect(summary.phases[0]!.hitches).toHaveLength(2);
+      expect(summary).not.toHaveProperty("window");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("in-window included / out-of-window excluded", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitch(repo, phases, db, "h-w-in", T_MID);
+      seedHitch(repo, phases, db, "h-w-out", T_EARLY);
+
+      const filter: HitchSummaryFilter = {
+        sinceMs: Date.parse("2026-05-01T00:00:00.000Z"),
+        untilMs: Date.parse("2026-07-01T00:00:00.000Z"),
+      };
+      const summary = buildHitchSummary(db, "course-1", filter);
+
+      const ids = summary.phases[0]!.hitches.map((h) => h.hitchId);
+      expect(ids).toContain("h-w-in");
+      expect(ids).not.toContain("h-w-out");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("inclusive lower boundary — hitch with updatedAt === since is included", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitch(repo, phases, db, "h-w-at-since", T_MID);
+      const sinceMs = Date.parse(T_MID);
+
+      const summary = buildHitchSummary(db, "course-1", { sinceMs });
+
+      const ids = summary.phases[0]!.hitches.map((h) => h.hitchId);
+      expect(ids).toContain("h-w-at-since");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("inclusive upper boundary — hitch with updatedAt === until is included", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitch(repo, phases, db, "h-w-at-until", T_MID);
+      const untilMs = Date.parse(T_MID);
+
+      const summary = buildHitchSummary(db, "course-1", { untilMs });
+
+      const ids = summary.phases[0]!.hitches.map((h) => h.hitchId);
+      expect(ids).toContain("h-w-at-until");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("roll-up excludes filtered hitches from openInScopeP0/P1", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      // In-window hitch with a P0
+      seedHitch(repo, phases, db, "h-w-rollup-in", T_MID, true);
+      // Out-of-window hitch with a P0 — must NOT be counted
+      seedHitch(repo, phases, db, "h-w-rollup-out", T_EARLY, true);
+
+      const filter: HitchSummaryFilter = {
+        sinceMs: Date.parse("2026-05-01T00:00:00.000Z"),
+        untilMs: Date.parse("2026-07-01T00:00:00.000Z"),
+      };
+      const summary = buildHitchSummary(db, "course-1", filter);
+
+      expect(summary.openInScopeP0).toBe(1); // only the in-window hitch
+    } finally {
+      db.close();
+    }
+  });
+
+  it("since-only: includes hitches with updatedAt >= since", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitch(repo, phases, db, "h-w-since-yes", T_MID);
+      seedHitch(repo, phases, db, "h-w-since-no", T_EARLY);
+
+      const summary = buildHitchSummary(db, "course-1", {
+        sinceMs: Date.parse("2026-05-01T00:00:00.000Z"),
+      });
+
+      const ids = summary.phases[0]!.hitches.map((h) => h.hitchId);
+      expect(ids).toContain("h-w-since-yes");
+      expect(ids).not.toContain("h-w-since-no");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("until-only: includes hitches with updatedAt <= until", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitch(repo, phases, db, "h-w-until-yes", T_EARLY);
+      seedHitch(repo, phases, db, "h-w-until-no", T_LATE);
+
+      const summary = buildHitchSummary(db, "course-1", {
+        untilMs: Date.parse("2026-06-01T00:00:00.000Z"),
+      });
+
+      const ids = summary.phases[0]!.hitches.map((h) => h.hitchId);
+      expect(ids).toContain("h-w-until-yes");
+      expect(ids).not.toContain("h-w-until-no");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("`window` is present and canonical ISO when filter is active", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitch(repo, phases, db, "h-w-iso", T_MID);
+
+      const sinceMs = Date.parse("2026-06-01T00:00:00.000Z");
+      const summary = buildHitchSummary(db, "course-1", { sinceMs });
+
+      expect(summary.window).toEqual({
+        sinceIso: "2026-06-01T00:00:00.000Z",
+        untilIso: null,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("empty-result window: no matching hitch → hitches empty, openInScopeP0 === 0", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitch(repo, phases, db, "h-w-empty", T_EARLY);
+
+      const filter: HitchSummaryFilter = {
+        sinceMs: Date.parse("2026-11-01T00:00:00.000Z"),
+        untilMs: Date.parse("2026-12-30T00:00:00.000Z"),
+      };
+      const summary = buildHitchSummary(db, "course-1", filter);
+
+      expect(summary.phases[0]!.hitches).toHaveLength(0);
+      expect(summary.openInScopeP0).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("fail-closed unparseable timestamp: excluded with filter, included without", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitch(repo, phases, db, "h-w-bad-ts", T_MID);
+      // Overwrite with an invalid timestamp
+      db.prepare(
+        "UPDATE hitch_sessions SET updated_at = ? WHERE hitch_id = ?",
+      ).run("not-a-timestamp", "h-w-bad-ts");
+
+      // With an active filter → excluded (fail-closed)
+      const withFilter = buildHitchSummary(db, "course-1", {
+        sinceMs: Date.parse("2026-01-01T00:00:00.000Z"),
+      });
+      expect(
+        withFilter.phases[0]!.hitches.map((h) => h.hitchId),
+      ).not.toContain("h-w-bad-ts");
+
+      // Without filter → included (Stage A fast-path preserved)
+      const noFilter = buildHitchSummary(db, "course-1");
+      expect(
+        noFilter.phases[0]!.hitches.map((h) => h.hitchId),
+      ).toContain("h-w-bad-ts");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("fail-closed on Date.parse-only-valid timestamp: Feb 31 excluded with filter, included without", () => {
+    // '2026-02-31T00:00:00.000Z' is accepted by Date.parse (rolls over to Mar 3)
+    // but must be rejected by the strict parser → excluded with any filter active.
+    const FEB_31 = "2026-02-31T00:00:00.000Z";
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitch(repo, phases, db, "h-w-feb31", T_MID);
+      // Overwrite with the impossible-but-Date.parse-accepted timestamp
+      db.prepare(
+        "UPDATE hitch_sessions SET updated_at = ? WHERE hitch_id = ?",
+      ).run(FEB_31, "h-w-feb31");
+
+      // With an active filter → excluded (fail-closed strict parser rejects Feb 31)
+      const withFilter = buildHitchSummary(db, "course-1", {
+        sinceMs: Date.parse("2026-01-01T00:00:00.000Z"),
+      });
+      expect(
+        withFilter.phases[0]!.hitches.map((h) => h.hitchId),
+      ).not.toContain("h-w-feb31");
+
+      // Without filter → included (fast-path bypasses parsing entirely)
+      const noFilter = buildHitchSummary(db, "course-1");
+      expect(
+        noFilter.phases[0]!.hitches.map((h) => h.hitchId),
+      ).toContain("h-w-feb31");
     } finally {
       db.close();
     }

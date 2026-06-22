@@ -178,3 +178,123 @@ describe("hitch summary CLI (#84 Stage A)", () => {
     expect(existsSync(join(emptyRoot, ".harness", "harness.sqlite"))).toBe(false);
   });
 });
+
+describe("hitch summary CLI (#84 Stage B — --since/--until time window)", () => {
+  it("includes the hitch when the window spans all time (far-past to far-future)", () => {
+    const { root } = setup();
+    const { out, code } = runCli(root, [
+      "hitch",
+      "summary",
+      "--course",
+      "course-1",
+      "--since",
+      "2000-01-01T00:00:00.000Z",
+      "--until",
+      "2999-01-01T00:00:00.000Z",
+    ]);
+    expect(code).toBe(0);
+    expect(out).toContain("h-1");
+    expect(out).toMatch(/Window \(session updatedAt\)/);
+  });
+
+  it("excludes the hitch when the window ends before it was created (far-past upper bound)", () => {
+    const { root } = setup();
+    const { out, code } = runCli(root, [
+      "hitch",
+      "summary",
+      "--course",
+      "course-1",
+      "--until",
+      "2000-01-01T00:00:00.000Z",
+    ]);
+    expect(code).toBe(0);
+    expect(out).not.toContain("h-1");
+    // --json mode: openInScopeP0 is 0 because the hitch is filtered out
+    const { out: jsonOut, code: jsonCode } = runCli(root, [
+      "hitch",
+      "summary",
+      "--course",
+      "course-1",
+      "--until",
+      "2000-01-01T00:00:00.000Z",
+      "--json",
+    ]);
+    expect(jsonCode).toBe(0);
+    const parsed = JSON.parse(jsonOut) as { openInScopeP0: number };
+    expect(parsed.openInScopeP0).toBe(0);
+  });
+
+  it("exits 1 with a descriptive message for an invalid --since ISO value", () => {
+    const { root } = setup();
+    const { out, code } = runCli(root, [
+      "hitch",
+      "summary",
+      "--course",
+      "course-1",
+      "--since",
+      "not-a-date",
+    ]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/--since must be an ISO-8601 UTC instant/);
+  });
+
+  it("exits 1 for prose date that Date.parse would accept but strict parser rejects: --since 'June 1, 2026'", () => {
+    const { root } = setup();
+    const { out, code } = runCli(root, [
+      "hitch",
+      "summary",
+      "--course",
+      "course-1",
+      "--since",
+      "June 1, 2026",
+    ]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/--since must be an ISO-8601 UTC instant/);
+  });
+
+  it("exits 1 for offset-less local time that Date.parse would accept: --since 2026-06-01T00:00:00", () => {
+    const { root } = setup();
+    const { out, code } = runCli(root, [
+      "hitch",
+      "summary",
+      "--course",
+      "course-1",
+      "--since",
+      "2026-06-01T00:00:00",
+    ]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/--since must be an ISO-8601 UTC instant/);
+  });
+
+  it("exits 1 for a secret-shaped --since value; output does NOT contain the secret and DOES contain [redacted]", () => {
+    const { root } = setup();
+    const { out, code } = runCli(root, [
+      "hitch",
+      "summary",
+      "--course",
+      "course-1",
+      "--since",
+      GHP,
+    ]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/--since must be an ISO-8601 UTC instant/);
+    expect(out).not.toContain(GHP);
+    expect(out).toContain("[redacted]");
+  });
+
+  it("exits 1 when --since is after --until", () => {
+    const { root } = setup();
+    const { out, code } = runCli(root, [
+      "hitch",
+      "summary",
+      "--course",
+      "course-1",
+      "--since",
+      "2026-06-30T00:00:00.000Z",
+      "--until",
+      "2026-06-01T00:00:00.000Z",
+    ]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/--since must not be after --until/);
+  });
+});

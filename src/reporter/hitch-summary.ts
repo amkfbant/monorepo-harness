@@ -103,6 +103,13 @@ export interface SafeCourseSummary {
   title: RedactedText;
   description: RedactedText | null;
   status: CourseStatus;
+  /**
+   * Active time-window filter as canonical ISO (a null bound = open-ended).
+   * Present ONLY when `--since`/`--until` was supplied (#84 Stage B); strings
+   * are derived from validated epoch-ms via toISOString(), so they are
+   * structurally injection-safe (no newlines) — not operator free text.
+   */
+  window?: { sinceIso: string | null; untilIso: string | null };
   /** Rolled up by summing per-hitch counts — NOT via rollupCourse (which runs
    * a per-hitch convergence.evaluate(); see the aggregate layer). */
   openInScopeP0: number;
@@ -172,6 +179,11 @@ export function renderHitchSummary(summary: SafeCourseSummary): string {
   const lines: string[] = [`# Hitch Summary: ${summary.title}`, ""];
   lines.push(`- Course: ${inline(summary.courseId)}`);
   lines.push(`- Status: ${summary.status}`);
+  if (summary.window !== undefined) {
+    const since = summary.window.sinceIso !== null ? inline(summary.window.sinceIso) : "(open)";
+    const until = summary.window.untilIso !== null ? inline(summary.window.untilIso) : "(open)";
+    lines.push(`- Window (session updatedAt): since=${since} until=${until}`);
+  }
   if (summary.description !== null) {
     lines.push(`- Description: ${summary.description}`);
   }
