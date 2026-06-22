@@ -110,6 +110,11 @@ export interface SafeCourseSummary {
    * structurally injection-safe (no newlines) — not operator free text.
    */
   window?: { sinceIso: string | null; untilIso: string | null };
+  /** Active status filter (#84 Stage C), present only when --status was given. */
+  statusFilter?: HitchStatus;
+  /** Active domain filter (#84 Stage C), present only when --domain was given.
+   * Operator-supplied — the renderer collapses it via inline() (not free text). */
+  domainFilter?: string;
   /** Rolled up by summing per-hitch counts — NOT via rollupCourse (which runs
    * a per-hitch convergence.evaluate(); see the aggregate layer). */
   openInScopeP0: number;
@@ -183,6 +188,12 @@ export function renderHitchSummary(summary: SafeCourseSummary): string {
     const since = summary.window.sinceIso !== null ? inline(summary.window.sinceIso) : "(open)";
     const until = summary.window.untilIso !== null ? inline(summary.window.untilIso) : "(open)";
     lines.push(`- Window (session updatedAt): since=${since} until=${until}`);
+  }
+  if (summary.statusFilter !== undefined) {
+    lines.push(`- Status filter: ${summary.statusFilter}`);
+  }
+  if (summary.domainFilter !== undefined) {
+    lines.push(`- Domain filter: ${inline(summary.domainFilter)}`);
   }
   if (summary.description !== null) {
     lines.push(`- Description: ${summary.description}`);

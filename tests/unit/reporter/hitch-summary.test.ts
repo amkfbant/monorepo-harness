@@ -319,6 +319,31 @@ describe("renderHitchSummary", () => {
     const md = renderHitchSummary(course());
     expect(md).not.toMatch(/Window/);
   });
+
+  // ------------------------------------------------------------------
+  // Stage C: --status/--domain filter echo (#84 Stage C, Task 1)
+  // ------------------------------------------------------------------
+  it("renders the Status filter line when statusFilter is present", () => {
+    const md = renderHitchSummary(course({ statusFilter: "closed" }));
+    expect(md).toMatch(/- Status filter: closed/);
+  });
+
+  it("renders the Domain filter line when domainFilter is present", () => {
+    const md = renderHitchSummary(course({ domainFilter: "apps/catalog" }));
+    expect(md).toMatch(/- Domain filter: apps\/catalog/);
+  });
+
+  it("collapses newlines in domainFilter (injection-safety)", () => {
+    const md = renderHitchSummary(course({ domainFilter: "x\n# Fake Heading" }));
+    const lines = md.split("\n");
+    expect(lines.some((l) => l.startsWith("# Fake Heading"))).toBe(false);
+  });
+
+  it("emits no Status filter or Domain filter line when absent (backward compat)", () => {
+    const md = renderHitchSummary(course());
+    expect(md).not.toMatch(/Status filter/);
+    expect(md).not.toMatch(/Domain filter/);
+  });
 });
 
 // brand: a plain string is NOT assignable where RedactedText is required.
