@@ -3,8 +3,29 @@ import {
   scanForSecrets,
   redactSecretLines,
   createSecretLineRedactor,
+  containsLikelySecret,
   COMMAND_LOG_LINE_WITHHELD,
 } from "../../../src/reporter/secret-scan.js";
+
+describe("containsLikelySecret — extended vendor shapes (#84 P1 fix)", () => {
+  it.each([
+    ["slack bot token", `xoxb-12345678901-abcdefghijkl`],
+    ["slack app token", `xapp-1-A0123456789-abcdefghijklmno`],
+    ["gitlab pat", `glpat-abcdefghijklmnopqrstuvwx`],
+    ["google api key", `AIza${"x".repeat(35)}`],
+    ["http basic auth header", `Authorization: Basic QWxhZGRpbjpvcGVuc2VzYW1l`],
+  ])("matches %s", (_label, text) => {
+    expect(containsLikelySecret(text)).toBe(true);
+  });
+
+  it.each([
+    ["the word basic in prose", "this is a basic implementation detail"],
+    ["basic followed by a long word (no header)", "basic understanding required"],
+    ["plain identifier", "hitch-12345 fixed pagination off-by-one"],
+  ])("does NOT over-redact %s", (_label, text) => {
+    expect(containsLikelySecret(text)).toBe(false);
+  });
+});
 
 describe("scanForSecrets — filename heuristics", () => {
   it("flags .env / .env.local / .env.production", () => {

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -161,5 +161,19 @@ describe("hitch summary CLI (#84 Stage A)", () => {
     ]);
     expect(code).not.toBe(0);
     expect(out).toMatch(/course-missing/);
+  });
+
+  it("errors (does not create a DB) when no harness DB exists — read-only", () => {
+    // a pure reporter must NOT open read-write / migrate / create the DB.
+    const emptyRoot = mkdtempSync(join(tmpdir(), "harness-hitch-summary-empty-"));
+    const { out, code } = runCli(emptyRoot, [
+      "hitch",
+      "summary",
+      "--course",
+      "course-1",
+    ]);
+    expect(code).not.toBe(0);
+    expect(out).toMatch(/no harness DB/);
+    expect(existsSync(join(emptyRoot, ".harness", "harness.sqlite"))).toBe(false);
   });
 });

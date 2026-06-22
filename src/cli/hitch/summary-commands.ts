@@ -5,33 +5,61 @@
 // no state transitions. Output (Markdown default, --json for the structured
 // projection) is already secret-redacted by the aggregate.
 
-import { writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import type { Command } from "commander";
 import {
   HitchCliError,
   withHitchErrorExit,
-  withHitchRepo,
+  withHitchReadonlyDb,
   type RegisterHitchCommandsOptions,
 } from "./helpers.js";
 import { buildHitchSummary } from "./summary-aggregate.js";
 import { renderHitchSummary } from "../../reporter/hitch-summary.js";
 
+/** Deepest EXISTING ancestor of `p` (walk up), so we can realpath-check
+ * containment without requiring the full `--out` path to exist yet. */
+function deepestExisting(p: string): string {
+  let cur = p;
+  while (!existsSync(cur)) {
+    const parent = path.dirname(cur);
+    if (parent === cur) return cur; // filesystem root
+    cur = parent;
+  }
+  return cur;
+}
+
 /**
  * Resolve `--out` against the CWD and reject anything that escapes it
- * (fail-closed traversal guard). NOTE: this is a string-prefix check — a
- * symlink inside the CWD pointing outside is NOT caught (the bar is "no casual
- * traversal", matching reporter/secret-scan's philosophy). `course export`'s
- * `--out` is unguarded; tightening it is tracked separately (out of #84 scope).
+ * (fail-closed). Three layers: (1) lexical containment; (2) realpath the
+ * deepest EXISTING ancestor so a symlinked directory cannot redirect the write
+ * outside cwd (a lexical check alone follows no links); (3) refuse to write
+ * through an existing symlink target (writeFileSync would follow it out). A
+ * not-yet-created subdirectory is still allowed. `course export`'s `--out` is
+ * unguarded; tightening it is tracked separately (out of #84 scope).
  */
 export function resolveSummaryOutPath(out: string): string {
   const cwd = process.cwd();
   const resolved = path.resolve(cwd, out);
+  const reject = (why: string): never => {
+    throw new HitchCliError(`--out ${why} (got ${JSON.stringify(out)})`);
+  };
   if (resolved !== cwd && !resolved.startsWith(cwd + path.sep)) {
-    throw new HitchCliError(
-      `--out must resolve within the current directory (got ${JSON.stringify(out)})`,
-    );
+    reject("must resolve within the current directory");
+  }
+  const realCwd = realpathSync.native(cwd);
+  const realAnchor = realpathSync.native(deepestExisting(resolved));
+  if (realAnchor !== realCwd && !realAnchor.startsWith(realCwd + path.sep)) {
+    reject("must resolve within the current directory");
+  }
+  if (existsSync(resolved) && lstatSync(resolved).isSymbolicLink()) {
+    reject("must not be a symlink");
   }
   return resolved;
 }
@@ -52,7 +80,7 @@ export function registerHitchSummaryCommands(
     .action((raw: Record<string, unknown>) => {
       withHitchErrorExit(() => {
         const courseId = String(raw.course);
-        const summary = withHitchRepo(opts, ({ db }) =>
+        const summary = withHitchReadonlyDb(opts, ({ db }) =>
           buildHitchSummary(db, courseId),
         );
         const text =

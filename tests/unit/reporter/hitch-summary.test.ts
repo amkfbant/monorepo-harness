@@ -37,6 +37,11 @@ describe("redactFreeText", () => {
     ["generic api_key assignment", "api_key: 1234567890abcdef"],
     ["bearer token", "Authorization: bearer abcdef0123456789xyz"],
     ["pem private key header", "-----BEGIN RSA PRIVATE KEY-----\nMIIE..."],
+    ["slack bot token", "leaked xoxb-12345678901-abcdefghijkl token"],
+    ["slack app token", "xapp-1-A0123456789-abcdefghijklmno here"],
+    ["gitlab pat", "glpat-abcdefghijklmnopqrstuvwx in config"],
+    ["google api key", `key AIza${"x".repeat(35)} used`],
+    ["http basic auth", "Authorization: Basic QWxhZGRpbjpvcGVuc2VzYW1l"],
   ])("withholds the whole field for %s", (_label, raw) => {
     const out = redactFreeText(raw);
     expect(out).toBe(REDACTED_PLACEHOLDER);
@@ -190,6 +195,40 @@ describe("renderHitchSummary", () => {
     );
     expect(md).not.toContain(secret);
     expect(md).toContain(REDACTED_PLACEHOLDER);
+  });
+
+  it("a newline-bearing identifier or PR url cannot inject a structural heading", () => {
+    // hitch/course/phase ids are operator-supplied and NOT charset-validated at
+    // write time, so the renderer must collapse them defensively.
+    const md = renderHitchSummary(
+      course({
+        courseId: "c\n# Fake Course Heading",
+        phases: [
+          {
+            phaseId: "p\n# Fake Phase Heading",
+            title: redactFreeText("P"),
+            status: "in_progress",
+            hitches: [
+              hitch({
+                hitchId: "h\n# Fake Hitch Heading",
+                findings: [finding({ findingId: "f\n# Fake Finding Heading" })],
+                pr: { number: 1, url: "https://x/y\n# Fake PR Heading" },
+              }),
+            ],
+          },
+        ],
+      }),
+    );
+    const lines = md.split("\n");
+    for (const fake of [
+      "# Fake Course Heading",
+      "# Fake Phase Heading",
+      "# Fake Hitch Heading",
+      "# Fake Finding Heading",
+      "# Fake PR Heading",
+    ]) {
+      expect(lines.some((l) => l.startsWith(fake))).toBe(false);
+    }
   });
 
   it("a free-text heading injection in a title cannot create a structural heading", () => {

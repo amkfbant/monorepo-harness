@@ -110,17 +110,26 @@ export interface SafeCourseSummary {
   phases: readonly SafePhaseGroup[];
 }
 
+// IDs and PR URLs are NOT secret-redacted free text, but hitch/course/phase IDs
+// are operator-supplied and NOT charset-validated at write time (`hitch start
+// --hitch-id <arbitrary>`), so a newline-bearing identifier could otherwise
+// break out of its line and inject a Markdown heading. Collapse every raw plain
+// string the renderer interpolates. RedactedText fields are already collapsed.
+function inline(s: string): string {
+  return noteForMarkdownLine(s);
+}
+
 function renderFinding(f: SafeFindingLine): string {
   return (
     `  - [${f.severity}/${f.scopeStatus}/${f.lifecycleStatus}] ${f.summary}` +
-    ` (source=${f.source}, category=${f.category}, id=${f.findingId})`
+    ` (source=${f.source}, category=${f.category}, id=${inline(f.findingId)})`
   );
 }
 
 function renderHitch(h: SafeHitchLine): string[] {
   const c = h.findingCounts;
   const lines: string[] = [
-    `### ${h.hitchId} — status: ${h.status}`,
+    `### ${inline(h.hitchId)} — status: ${h.status}`,
     `- Title: ${h.title}`,
     `- Convergence: ${h.latestDecision ?? "(none)"}`,
     `- Findings: P0=${c.openInScopeP0} P1=${c.openInScopeP1}` +
@@ -137,7 +146,7 @@ function renderHitch(h: SafeHitchLine): string[] {
   }
   if (h.pr !== null && (h.pr.number !== null || h.pr.url !== null)) {
     const num = h.pr.number !== null ? `#${h.pr.number}` : "(no number)";
-    const url = h.pr.url !== null ? ` ${h.pr.url}` : "";
+    const url = h.pr.url !== null ? ` ${inline(h.pr.url)}` : "";
     lines.push(`- PR: ${num}${url}`);
   }
   if (h.findings.length > 0) {
@@ -149,7 +158,7 @@ function renderHitch(h: SafeHitchLine): string[] {
 }
 
 function renderPhase(p: SafePhaseGroup): string[] {
-  const lines: string[] = [`## Phase: ${p.title}  (${p.phaseId})  — status: ${p.status}`, ""];
+  const lines: string[] = [`## Phase: ${p.title}  (${inline(p.phaseId)})  — status: ${p.status}`, ""];
   if (p.hitches.length === 0) {
     lines.push("_(no hitches)_", "");
     return lines;
@@ -161,7 +170,7 @@ function renderPhase(p: SafePhaseGroup): string[] {
 /** Render an already-gated {@link SafeCourseSummary} to deterministic Markdown. */
 export function renderHitchSummary(summary: SafeCourseSummary): string {
   const lines: string[] = [`# Hitch Summary: ${summary.title}`, ""];
-  lines.push(`- Course: ${summary.courseId}`);
+  lines.push(`- Course: ${inline(summary.courseId)}`);
   lines.push(`- Status: ${summary.status}`);
   if (summary.description !== null) {
     lines.push(`- Description: ${summary.description}`);

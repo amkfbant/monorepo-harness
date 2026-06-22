@@ -45,6 +45,14 @@ const CONTENT_PATTERNS: NamedPattern[] = [
   { re: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/, name: "openai-key" },
   // Stripe live/test secret keys
   { re: /\bsk_(?:live|test)_[A-Za-z0-9]{20,}\b/, name: "stripe-key" },
+  // Slack tokens (bot/user/legacy: xoxb-/xoxa-/xoxp-/xoxr-/xoxs-)
+  { re: /\bxox[baprs]-[A-Za-z0-9-]{10,}/, name: "slack-token" },
+  // Slack app-level token
+  { re: /\bxapp-[A-Za-z0-9-]{10,}/, name: "slack-app-token" },
+  // GitLab personal access token
+  { re: /\bglpat-[A-Za-z0-9_-]{20,}\b/, name: "gitlab-pat" },
+  // Google API key (AIza + 35 chars)
+  { re: /\bAIza[0-9A-Za-z_-]{35}\b/, name: "google-api-key" },
 ];
 
 export interface SecretScanResult {
@@ -100,6 +108,9 @@ const SECRET_ASSIGNMENT_RE =
 const GENERIC_KEY_ASSIGNMENT_RE =
   /(?:^|[^a-z0-9_-])[a-z0-9]+[_-]key\s*[:=]/i;
 const BEARER_TOKEN_RE = /\bbearer\s+[A-Za-z0-9._~+/=-]{12,}/i;
+// HTTP Basic auth. Anchored on the `authorization:` header so common prose
+// ("basic understanding…") never trips it — only an actual credential header.
+const BASIC_AUTH_RE = /\bauthorization\s*:\s*basic\s+[A-Za-z0-9+/]{8,}={0,2}/i;
 
 /**
  * Whole-text fail-closed gate for free text bound for an LLM prompt.
@@ -118,7 +129,8 @@ export function containsLikelySecret(text: string): boolean {
   return (
     SECRET_ASSIGNMENT_RE.test(text) ||
     GENERIC_KEY_ASSIGNMENT_RE.test(text) ||
-    BEARER_TOKEN_RE.test(text)
+    BEARER_TOKEN_RE.test(text) ||
+    BASIC_AUTH_RE.test(text)
   );
 }
 

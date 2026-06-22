@@ -467,6 +467,36 @@ export async function withHitchRepoAsync<T>(
   }
 }
 
+/**
+ * Open the harness DB READ-ONLY for a pure reporter (#84 `hitch summary`): a
+ * shared-lock handle, NO migrations (a report must never mutate — not even
+ * schema), and a fail-closed schema preflight. Mirrors the read-only open used
+ * by the MCP read tools / run-db-reader. Use this — NOT `withHitchRepo`, which
+ * opens read-write and runs migrations — for any command that only reads.
+ */
+export function withHitchReadonlyDb<T>(
+  opts: RegisterHitchCommandsOptions,
+  fn: (ctx: { db: Database.Database }) => T,
+): T {
+  const paths = harnessPaths(opts.getHarnessRoot());
+  if (!existsSync(paths.dbPath)) {
+    throw new HitchCliError(`no harness DB at ${paths.dbPath}`);
+  }
+  const handle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
+  try {
+    // A read-only handle cannot migrate; reject a DB NEWER than this harness
+    // (unreadable) with the actionable skew message. Older/equal additive
+    // schemas read fine for the core tables the reporter touches.
+    const compat = evaluateSchemaCompatibility(readSchemaVersion(handle.db));
+    if (compat.kind === "db-newer-than-harness") {
+      throw new DbError(compat.message);
+    }
+    return fn({ db: handle.db });
+  } finally {
+    handle.close();
+  }
+}
+
 export function withHitchErrorExit(fn: () => void): void {
   try {
     fn();
