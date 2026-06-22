@@ -158,6 +158,7 @@ function toSafeFinding(f: HitchFinding): SafeFindingLine {
     category: redactFreeText(f.category),
     summary: redactFreeText(f.summary),
     firstSeenAt: f.firstSeenAt,
+    deferredBacklogItemId: f.deferredBacklogItemId,
   };
 }
 

@@ -832,3 +832,90 @@ describe("buildHitchSummary — Stage C status/domain filter (#84)", () => {
     }
   });
 });
+
+// ── #90 Stage A: deferredBacklogItemId projection ────────────────────────────
+
+describe("buildHitchSummary — #90 Stage A: deferredBacklogItemId in SafeFindingLine", () => {
+  it("deferred finding carries deferredBacklogItemId in the projected SafeFindingLine", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      repo.createSession({
+        hitchId: "h-defer-90",
+        title: "Hitch defer 90",
+        scope: {},
+        closeConditions: [],
+        createdBy: "t",
+        createdSource: "cli",
+      });
+      phases.linkHitch("phase-1", "h-defer-90");
+      // Insert a finding and manually set deferred_backlog_item_id via SQL (the
+      // production deferFinding() requires out_of_scope first; here we exercise the
+      // row-mapper / projection path directly, independent of the defer command).
+      repo.upsertFinding({
+        hitchId: "h-defer-90",
+        source: "review",
+        severity: "P2",
+        category: "reliability",
+        summary: "retry not implemented",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+      });
+      const [row] = db
+        .prepare(
+          "SELECT finding_id FROM hitch_findings WHERE hitch_id = ? LIMIT 1",
+        )
+        .all("h-defer-90") as Array<{ finding_id: string }>;
+      const findingId = row!.finding_id;
+
+      // Directly set the backlog link (mirrors what followups.ts does after
+      // classifying + deferring — we only test the projection path here).
+      db.prepare(
+        "UPDATE hitch_findings SET deferred_backlog_item_id = ? WHERE finding_id = ?",
+      ).run("bk-item-90a", findingId);
+
+      const summary = buildHitchSummary(db, "course-1");
+      const h = summary.phases[0]!.hitches.find((x) => x.hitchId === "h-defer-90")!;
+      const f = h.findings.find((x) => x.findingId === findingId)!;
+
+      expect(f.deferredBacklogItemId).toBe("bk-item-90a");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("non-deferred finding has deferredBacklogItemId === null in the projection", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      repo.createSession({
+        hitchId: "h-nodefer-90",
+        title: "Hitch no-defer 90",
+        scope: {},
+        closeConditions: [],
+        createdBy: "t",
+        createdSource: "cli",
+      });
+      phases.linkHitch("phase-1", "h-nodefer-90");
+      repo.upsertFinding({
+        hitchId: "h-nodefer-90",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        summary: "off-by-one",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+      });
+
+      const summary = buildHitchSummary(db, "course-1");
+      const h = summary.phases[0]!.hitches.find(
+        (x) => x.hitchId === "h-nodefer-90",
+      )!;
+      for (const f of h.findings) {
+        expect(f.deferredBacklogItemId).toBeNull();
+      }
+    } finally {
+      db.close();
+    }
+  });
+});

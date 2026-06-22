@@ -397,7 +397,9 @@ harness hitch finding defer <finding-id> --reason <text> [--backlog] [--classify
 
 `hitch finding list` は hitch の存在を `requireSession()` で検証してから finding を読む
 read-only command。text 出力は `findingId / severity / lifecycleStatus / scopeStatus /
-category / summary` のタブ区切りで、`--json` は `{ findings: HitchFinding[] }` を返す。
+category / summary` のタブ区切りで、`deferredBacklogItemId` が non-null の finding は末尾に
+`\tdeferred_backlog=<id>` トークンを追加する（非 deferred の finding は 6 フィールドのまま）。
+`--json` は `{ findings: HitchFinding[] }` を返す。
 並び順は repository 既定の `first_seen_at ASC, finding_id ASC`。`--open` は
 `open` / `reopened` / `escalated` lifecycle のみ、`--severity` と `--scope` は
 repository filter に直結する。`--limit` 未指定時は `hitch status --json` と同様に
@@ -510,6 +512,8 @@ finding の自由テキスト（summary / category）は `RedactedText` brand �
 潰して Markdown 構造注入を防ぐ。detail / file_path / symbol / suggested_fix /
 close-check message / convergence reason 等の B 列は **型レベルで projection に
 到達しない**（aggregate は raw row を spread せず名前付き field のみ map）。
+deferred finding（`deferredBacklogItemId !== null`）はその id を finding 行の trailing
+parens 内に `deferred_backlog=<id>` として表示する（`inline()` で改行折畳み済み）。
 `--out` は **CWD 配下に限定**（traversal は fail-closed で拒否）。stdout / `--out`
 ともローカルのみ＝外部送信なし。**Stage B 実装済み**: `--since <iso>` / `--until <iso>` は `session.updatedAt`
 への**インクルーシブ時間窓**（per-hitch 述語）。窓外の hitch は出力から除外され、

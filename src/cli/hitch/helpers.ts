@@ -268,16 +268,20 @@ export function formatHitchFindingList(findings: HitchFinding[]): string {
   if (findings.length === 0) return "";
   return (
     findings
-      .map((finding) =>
-        [
+      .map((finding) => {
+        const fields = [
           finding.findingId,
           finding.severity,
           finding.lifecycleStatus,
           finding.scopeStatus,
           finding.category,
           finding.summary,
-        ].join("\t"),
-      )
+        ];
+        if (finding.deferredBacklogItemId !== null) {
+          fields.push(`deferred_backlog=${finding.deferredBacklogItemId}`);
+        }
+        return fields.join("\t");
+      })
       .join("\n") + "\n"
   );
 }
