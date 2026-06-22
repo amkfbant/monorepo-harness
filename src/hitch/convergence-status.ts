@@ -35,6 +35,32 @@ export interface RecordConvergenceWithStatusInput {
 /** Deterministic marker key for an advisory severity-audit decision row. */
 export const ADVISORY_SEVERITY_RECORD_KEY = "advisorySeverityRecord" as const;
 
+/**
+ * Whether a persisted convergence decision is an ADVISORY severity-audit record
+ * (#230 / codex#254-P2 FIX1) rather than a real convergence decision. The D2b
+ * record writes a status-neutral `decision:"continue"` row ONLY to surface a
+ * diverged severity audit for operators; it must NEVER mask a still-blocking
+ * live state in any DISPLAY of "latest decision" (the rollup AND the #84 hitch
+ * summary both skip it). The row stays persisted/retrievable via `listDecisions`.
+ *
+ *   (a) current builds set the explicit `advisorySeverityRecord` marker in
+ *       `metrics_json`;
+ *   (b) shape fallback for pre-marker rows from earlier #230 builds: a neutral
+ *       `continue` whose decision packet only advertises a `severity_audit` kind
+ *       (it never drives a scope/fix decision) — keeps DISPLAY honest after an
+ *       upgrade without a backfill migration.
+ *
+ * Pure (no DB / evaluate) — safe to call from a read-only reporter.
+ */
+export function isAdvisorySeverityRecord(
+  d: HitchConvergenceDecisionRecord,
+): boolean {
+  if (d.metrics[ADVISORY_SEVERITY_RECORD_KEY] === true) return true;
+  if (d.decision !== "continue") return false;
+  const kinds = d.recommendedNextAction?.decisionPacket?.decisionKinds;
+  return Array.isArray(kinds) && kinds.includes("severity_audit");
+}
+
 export interface ConvergenceStatusSyncResult {
   decisionRecord: HitchConvergenceDecisionRecord;
   hitchStatus: HitchSession | null;

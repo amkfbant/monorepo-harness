@@ -161,6 +161,8 @@ export const CLI_PATHS: readonly string[] = [
   "src/cli/hitch/finding-commands.ts",
   "src/cli/hitch/review-commands.ts",
   "src/cli/hitch/convergence-commands.ts",
+  // #84: `hitch summary` read-only reporter command (6th sub-registrar).
+  "src/cli/hitch/summary-commands.ts",
   "src/cli/course.ts",
   // #125 A15: course.ts command groups (course + phase) split into sub-modules.
   "src/cli/course/course-commands.ts",
