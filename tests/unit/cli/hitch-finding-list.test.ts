@@ -29,6 +29,7 @@ function makeFinding(over: Partial<HitchFinding> = {}): HitchFinding {
     escalatedAt: null,
     reopenCount: 0,
     deferredBacklogItemId: null,
+    deferredIssueUrl: null,
     classificationReason: null,
     resolutionNote: null,
     ...over,
