@@ -65,6 +65,7 @@ function finding(over: Partial<SafeFindingLine> = {}): SafeFindingLine {
     category: redactFreeText("correctness"),
     summary: redactFreeText("off-by-one in pagination"),
     firstSeenAt: "2026-06-20T00:00:00.000Z",
+    deferredBacklogItemId: null,
     ...over,
   };
 }
@@ -343,6 +344,57 @@ describe("renderHitchSummary", () => {
     const md = renderHitchSummary(course());
     expect(md).not.toMatch(/Status filter/);
     expect(md).not.toMatch(/Domain filter/);
+  });
+
+  // ------------------------------------------------------------------
+  // Stage A (#90): deferred_backlog display in finding lines
+  // ------------------------------------------------------------------
+  it("finding with deferredBacklogItemId renders deferred_backlog= token", () => {
+    const md = renderHitchSummary(
+      course({
+        phases: [
+          {
+            phaseId: "phase-1",
+            title: redactFreeText("Backend"),
+            status: "in_progress",
+            hitches: [
+              hitch({
+                findings: [finding({ deferredBacklogItemId: "bk-123" })],
+              }),
+            ],
+          },
+        ],
+      }),
+    );
+    expect(md).toContain("deferred_backlog=bk-123");
+  });
+
+  it("finding with null deferredBacklogItemId has NO deferred_backlog token (byte-invariant)", () => {
+    const md = renderHitchSummary(course());
+    expect(md).not.toContain("deferred_backlog");
+  });
+
+  it("newline-bearing deferredBacklogItemId cannot inject a structural heading (injection-safety)", () => {
+    const md = renderHitchSummary(
+      course({
+        phases: [
+          {
+            phaseId: "phase-1",
+            title: redactFreeText("Backend"),
+            status: "in_progress",
+            hitches: [
+              hitch({
+                findings: [finding({ deferredBacklogItemId: "bk\n# Fake" })],
+              }),
+            ],
+          },
+        ],
+      }),
+    );
+    const lines = md.split("\n");
+    expect(lines.some((l) => l.startsWith("# Fake"))).toBe(false);
+    // the token is still present but collapsed
+    expect(md).toContain("deferred_backlog=");
   });
 });
 
