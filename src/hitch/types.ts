@@ -426,6 +426,47 @@ export interface HitchCloseCheck {
   message: string | null;
 }
 
+// #91 Stage A — evidence attached to a hitch (#91).
+export const HITCH_EVIDENCE_KINDS = [
+  "command",
+  "metrics",
+  "before_after",
+  "transcript",
+  "note",
+] as const;
+
+export type HitchEvidenceKind = (typeof HITCH_EVIDENCE_KINDS)[number];
+
+export const EVIDENCE_ATTESTERS = [
+  "operator",
+  "agent",
+  "harness_auto",
+] as const;
+
+export type EvidenceAttester = (typeof EVIDENCE_ATTESTERS)[number];
+
+export interface HitchEvidence {
+  evidenceId: string;
+  hitchId: string;
+  runId: string | null;
+  conditionId: string | null;
+  kind: HitchEvidenceKind;
+  attester: EvidenceAttester;
+  attesterLabel: string;
+  label: string;
+  command: string | null;
+  exitCode: number | null;
+  /** Parsed from `summary_metrics_json` column (stored as JSON string). */
+  summaryMetrics: Record<string, unknown>;
+  metricsSchema: number;
+  outputExcerpt: string | null;
+  /** Stored as INTEGER 0/1 in DB; boolean on this interface. */
+  secretSuspect: boolean;
+  /** Stored as INTEGER 0/1 in DB; boolean on this interface. */
+  redacted: boolean;
+  createdAt: string;
+}
+
 export interface HitchNextAction {
   kind: HitchNextActionKind;
   /** Advisory context for operators; convergence may truncate this list. */
