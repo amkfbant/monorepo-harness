@@ -45,6 +45,14 @@ const CONTENT_PATTERNS: NamedPattern[] = [
   { re: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/, name: "openai-key" },
   // Stripe live/test secret keys
   { re: /\bsk_(?:live|test)_[A-Za-z0-9]{20,}\b/, name: "stripe-key" },
+  // Slack tokens (bot/user/legacy: xoxb-/xoxa-/xoxp-/xoxr-/xoxs-)
+  { re: /\bxox[baprs]-[A-Za-z0-9-]{10,}/, name: "slack-token" },
+  // Slack app-level token
+  { re: /\bxapp-[A-Za-z0-9-]{10,}/, name: "slack-app-token" },
+  // GitLab personal access token
+  { re: /\bglpat-[A-Za-z0-9_-]{20,}\b/, name: "gitlab-pat" },
+  // Google API key (AIza + 35 chars)
+  { re: /\bAIza[0-9A-Za-z_-]{35}\b/, name: "google-api-key" },
 ];
 
 export interface SecretScanResult {
@@ -100,6 +108,30 @@ const SECRET_ASSIGNMENT_RE =
 const GENERIC_KEY_ASSIGNMENT_RE =
   /(?:^|[^a-z0-9_-])[a-z0-9]+[_-]key\s*[:=]/i;
 const BEARER_TOKEN_RE = /\bbearer\s+[A-Za-z0-9._~+/=-]{12,}/i;
+// HTTP Basic auth: `Authorization: Basic <base64(user:pass)>`. Anchored on the
+// header, then VERIFIED by decoding the token — real Basic credentials base64 a
+// string containing a ':' separator. Decoding both (a) avoids prose
+// false-positives ("authorization: basic implementation" decodes without a ':')
+// and (b) catches short credentials a length threshold would miss ("dTpw"="u:p").
+function looksLikeBasicAuthHeader(text: string): boolean {
+  // Inspect EVERY `Authorization: Basic <token>` in the text: a benign
+  // Basic-looking header appearing BEFORE a real credential must not let the
+  // real one slip through (a single `exec` would stop at the first match). A
+  // fresh global regex per call (no shared lastIndex); the capture is non-empty
+  // so `exec` cannot loop zero-width.
+  const re = /\bauthorization\s*:\s*basic\s+([A-Za-z0-9+/]+={0,2})/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    try {
+      if (Buffer.from(m[1] ?? "", "base64").toString("utf8").includes(":")) {
+        return true;
+      }
+    } catch {
+      // undecodable token — keep scanning the remaining headers
+    }
+  }
+  return false;
+}
 
 /**
  * Whole-text fail-closed gate for free text bound for an LLM prompt.
@@ -118,7 +150,8 @@ export function containsLikelySecret(text: string): boolean {
   return (
     SECRET_ASSIGNMENT_RE.test(text) ||
     GENERIC_KEY_ASSIGNMENT_RE.test(text) ||
-    BEARER_TOKEN_RE.test(text)
+    BEARER_TOKEN_RE.test(text) ||
+    looksLikeBasicAuthHeader(text)
   );
 }
 

@@ -474,6 +474,8 @@ harness hitch await-merge [<hitch-id>] --repo <path> [--all] [--repo-id <id>] \
   [--base-branch <name>] [--merge-method squash|merge|rebase] \
   [--ci-await-timeout <seconds>] [--poll-interval <seconds>] [--max-wait <seconds>] \
   [--ingest-external-reviews] [--external-review-timeout <seconds>]
+
+harness hitch summary --course <id> [--json] [--out <path>]
 ```
 
 `hitch status --json` は session / findings / convergence decisions /
@@ -491,6 +493,26 @@ reason・actor・timestamp・`detail`）と `tokenUsage`（per-hitch の `run_us
 `hitch close` は convergence が `close_ready` でない限り `--force` を要求する。
 `check-convergence` は `diverging` / `budget_exhausted` / `escalate` で exit 2。
 MCP 経由の hitch close/cancel/scope expansion は confirmation-required。
+
+**`hitch summary --course <id>`（#84 Stage A）** は course に紐づく hitch を
+**read-only** で集約し、course → phase（`PhaseRepository.listForCourse`）→
+linked hitch（`phaseHitches`）の構造で Markdown ダイジェスト（既定）または
+`--json`（構造化 projection）を出力する。各 hitch ごとに status / 最新の
+**永続**convergence decision（enum のみ）/ finding 件数（`countFindingSummary`）/
+escalation flag（`status==='escalated'`）/ 介入回数（lifecycle event 種別）/ PR
+（operator adopt 済なら `pr_adopted` event の `adoptedPr` を優先、無ければ最新
+coding run の `pr_url`/`pr_number`）を出す。headline の open P0/P1 は per-hitch
+件数の SUM。**`convergence.evaluate()` も `rollupCourse()` も呼ばない**（後者は
+per-hitch で `evaluate()` を起動するため＝read-only/状態非干渉を破る）。安全境界:
+finding の自由テキスト（summary / category）は `RedactedText` brand を経由する
+（`reporter/hitch-summary.ts` の `redactFreeText` が唯一の constructor）。secret 形
+（`containsLikelySecret`）は **フィールド全体を `[redacted]`**、それ以外は改行を
+潰して Markdown 構造注入を防ぐ。detail / file_path / symbol / suggested_fix /
+close-check message / convergence reason 等の B 列は **型レベルで projection に
+到達しない**（aggregate は raw row を spread せず名前付き field のみ map）。
+`--out` は **CWD 配下に限定**（traversal は fail-closed で拒否）。stdout / `--out`
+ともローカルのみ＝外部送信なし。Stage B（時間窓 `--since`/`--until`）・Stage C
+（status/domain filter）は後続。
 
 `hitch orchestrate` と `hitch finding classify --then-rerun` は、coder 実行中の
 domain lease contention（`DomainLockBusyError` / `LeaseLostError` /

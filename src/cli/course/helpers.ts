@@ -33,15 +33,11 @@ export class CourseCliError extends Error {
   }
 }
 
-/**
- * Render a phase note onto a single Markdown line for `course export --md`.
- * Newlines are collapsed to spaces so a note cannot break out of the
- * `**Note**:` line and inject extra Markdown blocks/headings into the audit
- * export (the stored note stays verbatim for `--json` / the DB). #171b.
- */
-export function noteForMarkdownLine(note: string): string {
-  return note.replace(/\s*[\r\n]+\s*/g, " ").trim();
-}
+// #171b sanitizer. Moved to the pure `reporter/markdown-line.ts` so the pure
+// summary renderers (#84) can share the canonical impl without importing the
+// CLI/DB graph; re-exported here to preserve this module's public surface
+// (course-commands.ts and the `src/cli/course.js` re-export both consume it).
+export { noteForMarkdownLine } from "../../reporter/markdown-line.js";
 
 /** User-fixable errors are explicit domain/CLI/configuration errors only. */
 export function courseError(e: unknown): never {

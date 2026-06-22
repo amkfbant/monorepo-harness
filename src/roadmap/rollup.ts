@@ -4,8 +4,7 @@ import {
   HitchRepository,
   OPEN_FINDING_LIFECYCLES,
 } from "../hitch/repository.js";
-import { ADVISORY_SEVERITY_RECORD_KEY } from "../hitch/convergence-status.js";
-import type { HitchConvergenceDecisionRecord } from "../hitch/types.js";
+import { isAdvisorySeverityRecord } from "../hitch/convergence-status.js";
 import { PhaseRepository, phaseNote } from "./phase-repository.js";
 import { derivePhaseReadiness } from "./ready-to-close.js";
 import type { PhaseStatus } from "./types.js";
@@ -87,30 +86,11 @@ export function openCounts(
  * — that is the genuine latest audit value and `readyToClose` already reflects
  * live convergence independently.
  *
- * codex#254-P2 FIX1 — the D2b ADVISORY severity-audit record (orchestrator.ts)
- * writes a `decision:"continue"` row (status-neutral, `updateStatus:false`) ONLY
- * to surface a diverged severity audit for operators. It is NOT a convergence
- * decision: a phase whose LIVE convergence is still blocking
- * (needs_classification / needs_fix / …) would otherwise display "continue"
- * because that advisory row is the newest stored decision. Such rows carry
- * `metrics.advisorySeverityRecord === true`; they are SKIPPED when computing the
- * displayed latest decision (they remain persisted/retrievable via
- * `listDecisions` — only the rollup DISPLAY ignores them). The blocking GATE is
+ * codex#254-P2 FIX1 — advisory D2b severity-audit rows are skipped via the
+ * shared {@link isAdvisorySeverityRecord} predicate (hitch/convergence-status)
+ * so a still-blocking live state is never masked. The blocking GATE is
  * unaffected: it uses live `convergence.evaluate()`, never this display value.
  */
-function isAdvisoryRecord(d: HitchConvergenceDecisionRecord): boolean {
-  // (a) explicit marker (current builds set this in metrics_json).
-  if (d.metrics[ADVISORY_SEVERITY_RECORD_KEY] === true) return true;
-  // (b) shape fallback for pre-marker rows persisted by EARLIER #230 builds
-  // (which had no marker): a status-neutral `continue` whose decision packet
-  // only advertises a severity audit (it never drives a scope/fix decision) is
-  // an advisory severity record. This keeps the rollup DISPLAY honest after an
-  // upgrade without a backfill migration.
-  if (d.decision !== "continue") return false;
-  const kinds = d.recommendedNextAction?.decisionPacket?.decisionKinds;
-  return Array.isArray(kinds) && kinds.includes("severity_audit");
-}
-
 function latestDecisionForPhase(
   hitches: HitchRepository,
   hitchIds: string[],
@@ -125,7 +105,7 @@ function latestDecisionForPhase(
     // NON-advisory row is the genuine latest decision.
     const decisions = hitches
       .listDecisions(hid)
-      .filter((d) => !isAdvisoryRecord(d));
+      .filter((d) => !isAdvisorySeverityRecord(d));
     if (decisions.length === 0) continue;
     // listDecisions returns records in ASC order; last item is newest
     const newest = decisions[decisions.length - 1]!;

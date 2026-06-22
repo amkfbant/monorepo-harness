@@ -8,6 +8,7 @@ import { resolveRepoCodexDefaults } from "../../policy/loader.js";
 import type { ResolvedPolicy } from "../../policy/schema.js";
 import { type DbHitchTokenUsage } from "../../db/repositories/aggregates.js";
 import { BacklogError } from "../../core/backlog.js";
+import { CourseUserError } from "../../roadmap/errors.js";
 import { DbError } from "../../db/connection.js";
 import { openManagedDb } from "../../db/managed-connection.js";
 import { runMigrations, readSchemaVersion } from "../../db/migrations.js";
@@ -467,6 +468,38 @@ export async function withHitchRepoAsync<T>(
   }
 }
 
+/**
+ * Open the harness DB READ-ONLY for a pure reporter (#84 `hitch summary`): a
+ * shared-lock handle, NO migrations (a report must never mutate — not even
+ * schema), and a fail-closed schema preflight. Mirrors the read-only open used
+ * by the MCP read tools / run-db-reader. Use this — NOT `withHitchRepo`, which
+ * opens read-write and runs migrations — for any command that only reads.
+ */
+export function withHitchReadonlyDb<T>(
+  opts: RegisterHitchCommandsOptions,
+  fn: (ctx: { db: Database.Database }) => T,
+): T {
+  const paths = harnessPaths(opts.getHarnessRoot());
+  if (!existsSync(paths.dbPath)) {
+    throw new HitchCliError(`no harness DB at ${paths.dbPath}`);
+  }
+  const handle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
+  try {
+    // A read-only handle cannot migrate, and the reporter issues current-schema
+    // reads — so reject ANY skew (newer OR older) with the actionable message
+    // rather than letting an unmigrated DB fail later with a raw SQLite
+    // "no such table/column". Both `db-newer-than-harness` and
+    // `harness-newer-than-db` carry the right guidance.
+    const compat = evaluateSchemaCompatibility(readSchemaVersion(handle.db));
+    if (compat.kind !== "ok") {
+      throw new DbError(compat.message);
+    }
+    return fn({ db: handle.db });
+  } finally {
+    handle.close();
+  }
+}
+
 export function withHitchErrorExit(fn: () => void): void {
   try {
     fn();
@@ -600,7 +633,11 @@ export function mapHitchErrorExit(
     e instanceof HitchCliError ||
     e instanceof DbError ||
     e instanceof BacklogError ||
-    e instanceof HitchValidationError
+    e instanceof HitchValidationError ||
+    // `hitch summary --course <id>` reads course/phase data, so a missing
+    // course surfaces a CourseUserError — a user-fixable input error (exit 1),
+    // mirroring the course CLI's own mapping (not an internal exit 2).
+    e instanceof CourseUserError
   ) {
     return { code: 1, message: e.message };
   }
