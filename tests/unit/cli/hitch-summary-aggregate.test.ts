@@ -578,4 +578,35 @@ describe("buildHitchSummary — Stage B time-window filter (#84)", () => {
       db.close();
     }
   });
+
+  it("fail-closed on Date.parse-only-valid timestamp: Feb 31 excluded with filter, included without", () => {
+    // '2026-02-31T00:00:00.000Z' is accepted by Date.parse (rolls over to Mar 3)
+    // but must be rejected by the strict parser → excluded with any filter active.
+    const FEB_31 = "2026-02-31T00:00:00.000Z";
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      seedHitch(repo, phases, db, "h-w-feb31", T_MID);
+      // Overwrite with the impossible-but-Date.parse-accepted timestamp
+      db.prepare(
+        "UPDATE hitch_sessions SET updated_at = ? WHERE hitch_id = ?",
+      ).run(FEB_31, "h-w-feb31");
+
+      // With an active filter → excluded (fail-closed strict parser rejects Feb 31)
+      const withFilter = buildHitchSummary(db, "course-1", {
+        sinceMs: Date.parse("2026-01-01T00:00:00.000Z"),
+      });
+      expect(
+        withFilter.phases[0]!.hitches.map((h) => h.hitchId),
+      ).not.toContain("h-w-feb31");
+
+      // Without filter → included (fast-path bypasses parsing entirely)
+      const noFilter = buildHitchSummary(db, "course-1");
+      expect(
+        noFilter.phases[0]!.hitches.map((h) => h.hitchId),
+      ).toContain("h-w-feb31");
+    } finally {
+      db.close();
+    }
+  });
 });

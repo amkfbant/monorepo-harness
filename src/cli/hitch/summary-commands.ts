@@ -20,8 +20,10 @@ import {
   withHitchReadonlyDb,
   type RegisterHitchCommandsOptions,
 } from "./helpers.js";
+import { parseIsoInstantMs } from "./iso-instant.js";
 import { buildHitchSummary, type HitchSummaryFilter } from "./summary-aggregate.js";
 import { renderHitchSummary } from "../../reporter/hitch-summary.js";
+import { containsLikelySecret } from "../../reporter/secret-scan.js";
 
 /** Deepest EXISTING ancestor of `p` (walk up), so we can realpath-check
  * containment without requiring the full `--out` path to exist yet. */
@@ -74,14 +76,17 @@ export function resolveSummaryOutPath(out: string): string {
 }
 
 /**
- * Parse an ISO-8601 instant flag to epoch-ms, fail-closed → HitchCliError
- * (exit 1). `Date.parse` accepts ISO-8601; NaN is a user input error.
+ * Parse a strict ISO-8601 UTC instant flag to epoch-ms, fail-closed →
+ * HitchCliError (exit 1). Uses `parseIsoInstantMs` which rejects prose,
+ * offset-less local time, impossible calendar dates, and impossible offsets.
+ * Secret-shaped values are redacted in the error message.
  */
 function parseInstantFlag(value: string, flag: string): number {
-  const ms = Date.parse(value);
-  if (Number.isNaN(ms)) {
+  const ms = parseIsoInstantMs(value);
+  if (ms === null) {
+    const shown = containsLikelySecret(value) ? "[redacted]" : JSON.stringify(value);
     throw new HitchCliError(
-      `${flag} must be an ISO-8601 timestamp (got ${JSON.stringify(value)})`,
+      `${flag} must be an ISO-8601 UTC instant (e.g. "2026-06-01T00:00:00Z"); got ${shown}`,
     );
   }
   return ms;

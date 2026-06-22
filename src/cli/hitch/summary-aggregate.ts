@@ -22,6 +22,7 @@
 // cannot reach the projection. See reporter/hitch-summary.ts for the model.
 
 import type Database from "better-sqlite3";
+import { parseIsoInstantMs } from "./iso-instant.js";
 import { CourseRepository } from "../../roadmap/course-repository.js";
 import { PhaseRepository } from "../../roadmap/phase-repository.js";
 import { HitchRepository } from "../../hitch/repository.js";
@@ -62,14 +63,15 @@ export interface HitchSummaryFilter {
 /**
  * Whether a hitch's `session.updatedAt` lies within the active window. Fast
  * path to `true` when no bound is set (preserves Stage A: every hitch is
- * included). With a bound active, an UNPARSEABLE timestamp is fail-closed
- * EXCLUDED — it cannot be placed in the window (updatedAt is NOT NULL and
- * harness-written ISO, so this branch is purely defensive). Bounds inclusive.
+ * included — the no-filter path never parses `updatedAt`). With a bound active,
+ * an UNPARSEABLE or ambiguous timestamp is fail-closed EXCLUDED via
+ * `parseIsoInstantMs` (which rejects `Date.parse`-accepted-but-invalid inputs
+ * such as impossible rolled-over dates). Bounds inclusive.
  */
 function withinWindow(updatedAt: string, filter: HitchSummaryFilter): boolean {
   if (filter.sinceMs === undefined && filter.untilMs === undefined) return true;
-  const t = Date.parse(updatedAt);
-  if (Number.isNaN(t)) return false;
+  const t = parseIsoInstantMs(updatedAt);
+  if (t === null) return false;
   if (filter.sinceMs !== undefined && t < filter.sinceMs) return false;
   if (filter.untilMs !== undefined && t > filter.untilMs) return false;
   return true;

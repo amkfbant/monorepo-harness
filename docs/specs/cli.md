@@ -514,8 +514,9 @@ close-check message / convergence reason 等の B 列は **型レベルで proje
 ともローカルのみ＝外部送信なし。**Stage B 実装済み**: `--since <iso>` / `--until <iso>` は `session.updatedAt`
 への**インクルーシブ時間窓**（per-hitch 述語）。窓外の hitch は出力から除外され、
 headline の P0/P1 ロールアップにも加算されない（per-finding ではなく per-hitch
-単位）。境界値は ISO-8601 検証済み（不正値または `since > until` → exit 1）、
-アクティブな窓はレポートヘッダに canonical ISO で表示される。Stage C
+単位）。境界値は **ISO-8601 UTC instant**（`Z` または数値 offset `±HH:MM` の明示が必須
+— offset なし・曖昧な入力は exit 1）に厳格検証済み（不正値または `since > until` →
+exit 1）、アクティブな窓はレポートヘッダに canonical UTC ISO で表示される。Stage C
 （status/domain filter）は後続。
 
 `hitch orchestrate` と `hitch finding classify --then-rerun` は、coder 実行中の
