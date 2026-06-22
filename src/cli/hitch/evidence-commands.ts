@@ -121,13 +121,15 @@ export function registerHitchEvidenceCommands(
         if (rawMetrics.length > 0) {
           for (const entry of rawMetrics) {
             const eqIdx = entry.indexOf("=");
-            if (eqIdx < 1) {
+            const key = eqIdx >= 1 ? entry.slice(0, eqIdx) : "";
+            const val = eqIdx >= 1 ? entry.slice(eqIdx + 1) : "";
+            // Fail-closed: require a non-empty key AND a non-empty (after-trim)
+            // value. Rejects `no-equals`, `=v`, and `k=` (empty value) alike.
+            if (eqIdx < 1 || val.trim() === "") {
               throw new HitchCliError(
-                `--metric must be in k=v format (got ${JSON.stringify(entry)})`,
+                `--metric must be in k=v format with a non-empty value (got ${JSON.stringify(entry)})`,
               );
             }
-            const key = entry.slice(0, eqIdx);
-            const val = entry.slice(eqIdx + 1);
             metrics[key] = val;
           }
         }

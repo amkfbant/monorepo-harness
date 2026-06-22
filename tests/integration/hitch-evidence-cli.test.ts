@@ -133,6 +133,62 @@ describe("hitch evidence add", () => {
     expect(data.kind).toBe("metrics");
   });
 
+  it("exits non-zero with a malformed --metric (no '=')", () => {
+    const { root } = setup();
+    const { out, code } = runCli(root, [
+      "hitch",
+      "evidence",
+      "add",
+      "h-ev-1",
+      "--label",
+      "bad metric",
+      "--command",
+      "c",
+      "--metric",
+      "no-equals",
+    ]);
+    expect(code).not.toBe(0);
+    expect(out).toMatch(/--metric must be in k=v format/);
+  });
+
+  it("exits non-zero with an empty --metric value (k=)", () => {
+    const { root } = setup();
+    const { out, code } = runCli(root, [
+      "hitch",
+      "evidence",
+      "add",
+      "h-ev-1",
+      "--label",
+      "empty metric value",
+      "--command",
+      "c",
+      "--metric",
+      "coverage=",
+    ]);
+    expect(code).not.toBe(0);
+    expect(out).toMatch(/--metric must be in k=v format/);
+  });
+
+  it("exits non-zero when both --output and --output-file are given", () => {
+    const { root } = setup();
+    const outFile = join(root, "mutex-output.txt");
+    writeFileSync(outFile, "from file");
+    const { out, code } = runCli(root, [
+      "hitch",
+      "evidence",
+      "add",
+      "h-ev-1",
+      "--label",
+      "mutual exclusion",
+      "--output",
+      "inline output",
+      "--output-file",
+      outFile,
+    ]);
+    expect(code).not.toBe(0);
+    expect(out).toMatch(/mutually exclusive/);
+  });
+
   it("reads --output-file content and passes it as output", () => {
     const { root } = setup();
     const outFile = join(root, "output.txt");
