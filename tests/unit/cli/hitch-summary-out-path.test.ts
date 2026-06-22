@@ -54,6 +54,15 @@ describe("resolveSummaryOutPath symlink hardening (#84 P1 fix)", () => {
     expect(() => resolveSummaryOutPath("report.md")).toThrow(/symlink/);
   });
 
+  it("rejects a DANGLING symlink target (existsSync would skip the check)", () => {
+    const work = mkdtempSync(path.join(tmpdir(), "harness-outpath-work-"));
+    // report.md -> ./nonexistent (target does not exist). existsSync(report.md)
+    // is false, but writeFileSync would create the target by following the link.
+    symlinkSync(path.join(work, "nonexistent"), path.join(work, "report.md"));
+    process.chdir(work);
+    expect(() => resolveSummaryOutPath("report.md")).toThrow(/symlink/);
+  });
+
   it("still allows a not-yet-created file in a real subdirectory of cwd", () => {
     const work = mkdtempSync(path.join(tmpdir(), "harness-outpath-work-"));
     mkdirSync(path.join(work, "reports"));

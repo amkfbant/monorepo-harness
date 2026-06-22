@@ -13,7 +13,9 @@ describe("containsLikelySecret — extended vendor shapes (#84 P1 fix)", () => {
     ["slack app token", `xapp-1-A0123456789-abcdefghijklmno`],
     ["gitlab pat", `glpat-abcdefghijklmnopqrstuvwx`],
     ["google api key", `AIza${"x".repeat(35)}`],
-    ["http basic auth header", `Authorization: Basic QWxhZGRpbjpvcGVuc2VzYW1l`],
+    ["http basic auth (full creds)", `Authorization: Basic QWxhZGRpbjpvcGVuc2VzYW1l`],
+    // short credential the old `{8,}` length heuristic missed: base64("u:p")
+    ["http basic auth (short creds)", `Authorization: Basic dTpw`],
   ])("matches %s", (_label, text) => {
     expect(containsLikelySecret(text)).toBe(true);
   });
@@ -22,6 +24,9 @@ describe("containsLikelySecret — extended vendor shapes (#84 P1 fix)", () => {
     ["the word basic in prose", "this is a basic implementation detail"],
     ["basic followed by a long word (no header)", "basic understanding required"],
     ["plain identifier", "hitch-12345 fixed pagination off-by-one"],
+    // WITH the header but a token that decodes WITHOUT a ':' separator — the
+    // decode check must not over-redact header-shaped prose.
+    ["basic auth header over prose", "authorization: basic implementation detail"],
   ])("does NOT over-redact %s", (_label, text) => {
     expect(containsLikelySecret(text)).toBe(false);
   });

@@ -40,9 +40,10 @@ function deepestExisting(p: string): string {
  * (fail-closed). Three layers: (1) lexical containment; (2) realpath the
  * deepest EXISTING ancestor so a symlinked directory cannot redirect the write
  * outside cwd (a lexical check alone follows no links); (3) refuse to write
- * through an existing symlink target (writeFileSync would follow it out). A
- * not-yet-created subdirectory is still allowed. `course export`'s `--out` is
- * unguarded; tightening it is tracked separately (out of #84 scope).
+ * through ANY symlink target — including a DANGLING one (writeFileSync would
+ * follow it out). A not-yet-created plain subdirectory is still allowed.
+ * `course export`'s `--out` is unguarded; tightening it is tracked separately
+ * (out of #84 scope).
  */
 export function resolveSummaryOutPath(out: string): string {
   const cwd = process.cwd();
@@ -58,9 +59,17 @@ export function resolveSummaryOutPath(out: string): string {
   if (realAnchor !== realCwd && !realAnchor.startsWith(realCwd + path.sep)) {
     reject("must resolve within the current directory");
   }
-  if (existsSync(resolved) && lstatSync(resolved).isSymbolicLink()) {
-    reject("must not be a symlink");
+  // lstat does NOT follow the link, so this catches a DANGLING symlink too (its
+  // target does not exist, so `existsSync` would return false and skip the
+  // check, yet `writeFileSync` would still follow it out of cwd). A thrown
+  // ENOENT means no entry at all — a fresh file path, which is allowed.
+  let finalIsSymlink = false;
+  try {
+    finalIsSymlink = lstatSync(resolved).isSymbolicLink();
+  } catch {
+    finalIsSymlink = false;
   }
+  if (finalIsSymlink) reject("must not be a symlink");
   return resolved;
 }
 

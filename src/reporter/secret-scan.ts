@@ -108,9 +108,23 @@ const SECRET_ASSIGNMENT_RE =
 const GENERIC_KEY_ASSIGNMENT_RE =
   /(?:^|[^a-z0-9_-])[a-z0-9]+[_-]key\s*[:=]/i;
 const BEARER_TOKEN_RE = /\bbearer\s+[A-Za-z0-9._~+/=-]{12,}/i;
-// HTTP Basic auth. Anchored on the `authorization:` header so common prose
-// ("basic understanding…") never trips it — only an actual credential header.
-const BASIC_AUTH_RE = /\bauthorization\s*:\s*basic\s+[A-Za-z0-9+/]{8,}={0,2}/i;
+// HTTP Basic auth: `Authorization: Basic <base64(user:pass)>`. Anchored on the
+// header, then VERIFIED by decoding the token — real Basic credentials base64 a
+// string containing a ':' separator. Decoding both (a) avoids prose
+// false-positives ("authorization: basic implementation" decodes without a ':')
+// and (b) catches short credentials a length threshold would miss ("dTpw"="u:p").
+const BASIC_AUTH_TOKEN_RE =
+  /\bauthorization\s*:\s*basic\s+([A-Za-z0-9+/]+={0,2})/i;
+
+function looksLikeBasicAuthHeader(text: string): boolean {
+  const m = BASIC_AUTH_TOKEN_RE.exec(text);
+  if (m === null) return false;
+  try {
+    return Buffer.from(m[1] ?? "", "base64").toString("utf8").includes(":");
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Whole-text fail-closed gate for free text bound for an LLM prompt.
@@ -130,7 +144,7 @@ export function containsLikelySecret(text: string): boolean {
     SECRET_ASSIGNMENT_RE.test(text) ||
     GENERIC_KEY_ASSIGNMENT_RE.test(text) ||
     BEARER_TOKEN_RE.test(text) ||
-    BASIC_AUTH_RE.test(text)
+    looksLikeBasicAuthHeader(text)
   );
 }
 
