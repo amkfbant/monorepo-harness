@@ -151,7 +151,7 @@ describe("hitch summary CLI (#84 Stage A)", () => {
     expect(out).toMatch(/--out must resolve within the current directory/);
   });
 
-  it("errors clearly for an unknown course", () => {
+  it("errors clearly for an unknown course (user error → exit 1, not 2)", () => {
     const { root } = setup();
     const { out, code } = runCli(root, [
       "hitch",
@@ -159,7 +159,8 @@ describe("hitch summary CLI (#84 Stage A)", () => {
       "--course",
       "course-missing",
     ]);
-    expect(code).not.toBe(0);
+    // a missing course is a user-fixable input error: exit 1, not an internal 2
+    expect(code).toBe(1);
     expect(out).toMatch(/course-missing/);
   });
 

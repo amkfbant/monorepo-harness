@@ -16,6 +16,12 @@ describe("containsLikelySecret — extended vendor shapes (#84 P1 fix)", () => {
     ["http basic auth (full creds)", `Authorization: Basic QWxhZGRpbjpvcGVuc2VzYW1l`],
     // short credential the old `{8,}` length heuristic missed: base64("u:p")
     ["http basic auth (short creds)", `Authorization: Basic dTpw`],
+    // a benign Basic-looking header BEFORE a real credential must still trip
+    // (a single-match exec would have stopped at the benign first header)
+    [
+      "http basic auth (benign header before real cred)",
+      "authorization: basic implementation detail\nAuthorization: Basic dTpw",
+    ],
   ])("matches %s", (_label, text) => {
     expect(containsLikelySecret(text)).toBe(true);
   });

@@ -113,17 +113,24 @@ const BEARER_TOKEN_RE = /\bbearer\s+[A-Za-z0-9._~+/=-]{12,}/i;
 // string containing a ':' separator. Decoding both (a) avoids prose
 // false-positives ("authorization: basic implementation" decodes without a ':')
 // and (b) catches short credentials a length threshold would miss ("dTpw"="u:p").
-const BASIC_AUTH_TOKEN_RE =
-  /\bauthorization\s*:\s*basic\s+([A-Za-z0-9+/]+={0,2})/i;
-
 function looksLikeBasicAuthHeader(text: string): boolean {
-  const m = BASIC_AUTH_TOKEN_RE.exec(text);
-  if (m === null) return false;
-  try {
-    return Buffer.from(m[1] ?? "", "base64").toString("utf8").includes(":");
-  } catch {
-    return false;
+  // Inspect EVERY `Authorization: Basic <token>` in the text: a benign
+  // Basic-looking header appearing BEFORE a real credential must not let the
+  // real one slip through (a single `exec` would stop at the first match). A
+  // fresh global regex per call (no shared lastIndex); the capture is non-empty
+  // so `exec` cannot loop zero-width.
+  const re = /\bauthorization\s*:\s*basic\s+([A-Za-z0-9+/]+={0,2})/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    try {
+      if (Buffer.from(m[1] ?? "", "base64").toString("utf8").includes(":")) {
+        return true;
+      }
+    } catch {
+      // undecodable token — keep scanning the remaining headers
+    }
   }
+  return false;
 }
 
 /**

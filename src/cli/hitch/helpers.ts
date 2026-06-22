@@ -8,6 +8,7 @@ import { resolveRepoCodexDefaults } from "../../policy/loader.js";
 import type { ResolvedPolicy } from "../../policy/schema.js";
 import { type DbHitchTokenUsage } from "../../db/repositories/aggregates.js";
 import { BacklogError } from "../../core/backlog.js";
+import { CourseUserError } from "../../roadmap/errors.js";
 import { DbError } from "../../db/connection.js";
 import { openManagedDb } from "../../db/managed-connection.js";
 import { runMigrations, readSchemaVersion } from "../../db/migrations.js";
@@ -484,11 +485,13 @@ export function withHitchReadonlyDb<T>(
   }
   const handle = openManagedDb({ dbPath: paths.dbPath, readonly: true });
   try {
-    // A read-only handle cannot migrate; reject a DB NEWER than this harness
-    // (unreadable) with the actionable skew message. Older/equal additive
-    // schemas read fine for the core tables the reporter touches.
+    // A read-only handle cannot migrate, and the reporter issues current-schema
+    // reads — so reject ANY skew (newer OR older) with the actionable message
+    // rather than letting an unmigrated DB fail later with a raw SQLite
+    // "no such table/column". Both `db-newer-than-harness` and
+    // `harness-newer-than-db` carry the right guidance.
     const compat = evaluateSchemaCompatibility(readSchemaVersion(handle.db));
-    if (compat.kind === "db-newer-than-harness") {
+    if (compat.kind !== "ok") {
       throw new DbError(compat.message);
     }
     return fn({ db: handle.db });
@@ -630,7 +633,11 @@ export function mapHitchErrorExit(
     e instanceof HitchCliError ||
     e instanceof DbError ||
     e instanceof BacklogError ||
-    e instanceof HitchValidationError
+    e instanceof HitchValidationError ||
+    // `hitch summary --course <id>` reads course/phase data, so a missing
+    // course surfaces a CourseUserError — a user-fixable input error (exit 1),
+    // mirroring the course CLI's own mapping (not an internal exit 2).
+    e instanceof CourseUserError
   ) {
     return { code: 1, message: e.message };
   }
