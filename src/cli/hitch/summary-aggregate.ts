@@ -1,4 +1,7 @@
-// Read-only aggregation for `harness hitch summary` (#84 Stage A).
+// Read-only aggregation for `harness hitch summary` (#84 Stage A/B).
+// Stage B adds an optional time-window filter on `session.updatedAt`; a hitch
+// outside the window is excluded wholesale (not rendered, not counted in the
+// headline roll-up) — see `HitchSummaryFilter` and `withinWindow` below.
 //
 // Walks course → phases → linked hitches and builds the `SafeCourseSummary`
 // projection consumed by the pure renderer. EVERYTHING here is read-only:
@@ -39,6 +42,60 @@ import {
   type SafeHitchLine,
   type SafePhaseGroup,
 } from "../../reporter/hitch-summary.js";
+
+/**
+ * Optional read-only filter for `hitch summary`. Stage B adds a time window on
+ * `session.updatedAt`; bounds are pre-parsed epoch-ms (the I/O layer owns ISO
+ * validation → HitchCliError). A hitch whose session falls OUTSIDE the window
+ * is excluded WHOLESALE — neither rendered NOR counted in the headline P0/P1
+ * roll-up (the roll-up sums only hitches that survive the filter). The window
+ * is a PER-HITCH predicate, not per-finding: an included hitch shows all of its
+ * findings. (Stage C will extend this with status/domain.)
+ */
+export interface HitchSummaryFilter {
+  /** Inclusive lower bound on session.updatedAt (epoch ms). */
+  sinceMs?: number;
+  /** Inclusive upper bound on session.updatedAt (epoch ms). */
+  untilMs?: number;
+}
+
+/**
+ * Whether a hitch's `session.updatedAt` lies within the active window. Fast
+ * path to `true` when no bound is set (preserves Stage A: every hitch is
+ * included). With a bound active, an UNPARSEABLE timestamp is fail-closed
+ * EXCLUDED — it cannot be placed in the window (updatedAt is NOT NULL and
+ * harness-written ISO, so this branch is purely defensive). Bounds inclusive.
+ */
+function withinWindow(updatedAt: string, filter: HitchSummaryFilter): boolean {
+  if (filter.sinceMs === undefined && filter.untilMs === undefined) return true;
+  const t = Date.parse(updatedAt);
+  if (Number.isNaN(t)) return false;
+  if (filter.sinceMs !== undefined && t < filter.sinceMs) return false;
+  if (filter.untilMs !== undefined && t > filter.untilMs) return false;
+  return true;
+}
+
+/**
+ * Project the active filter bounds back to ISO for the `SafeCourseSummary`
+ * `window` field. Returns `undefined` when no bounds are set so the caller can
+ * use a conditional spread and omit the key entirely (exactOptionalPropertyTypes).
+ */
+function windowOf(
+  filter: HitchSummaryFilter,
+): { sinceIso: string | null; untilIso: string | null } | undefined {
+  if (filter.sinceMs === undefined && filter.untilMs === undefined)
+    return undefined;
+  return {
+    sinceIso:
+      filter.sinceMs !== undefined
+        ? new Date(filter.sinceMs).toISOString()
+        : null,
+    untilIso:
+      filter.untilMs !== undefined
+        ? new Date(filter.untilMs).toISOString()
+        : null,
+  };
+}
 
 /** Mirror `hitch status` (10_000): bounded but lists every finding. */
 const FINDING_LIST_LIMIT = 10_000;
@@ -145,11 +202,16 @@ function buildHitchLine(
   db: Database.Database,
   repo: HitchRepository,
   hitchId: string,
+  filter: HitchSummaryFilter,
 ): SafeHitchLine | null {
   // A dangling phase_hitches link (session deleted) is skipped — a read-only
   // report must not throw on a data inconsistency.
   const session = repo.getSession(hitchId);
   if (session === null) return null;
+  // Time-window filter: a hitch outside the window is excluded wholesale (not
+  // rendered, not counted in the roll-up). Mirrors the dangling-link null return
+  // so the hitch is also never added to `built` and thus excluded from the sum.
+  if (!withinWindow(session.updatedAt, filter)) return null;
   const events = repo.listLifecycleEvents(hitchId);
   return {
     hitchId,
@@ -172,6 +234,7 @@ function buildHitchLine(
 export function buildHitchSummary(
   db: Database.Database,
   courseId: string,
+  filter: HitchSummaryFilter = {},
 ): SafeCourseSummary {
   const courses = new CourseRepository(db);
   const phases = new PhaseRepository(db);
@@ -185,7 +248,7 @@ export function buildHitchSummary(
   const getHitch = (hitchId: string): SafeHitchLine | null => {
     const cached = built.get(hitchId);
     if (cached !== undefined) return cached;
-    const line = buildHitchLine(db, repo, hitchId);
+    const line = buildHitchLine(db, repo, hitchId, filter);
     if (line !== null) built.set(hitchId, line);
     return line;
   };
@@ -209,12 +272,14 @@ export function buildHitchSummary(
     openInScopeP1 += h.findingCounts.openInScopeP1;
   }
 
+  const window = windowOf(filter);
   return {
     courseId: course.courseId,
     title: redactFreeText(course.title),
     description:
       course.description === null ? null : redactFreeText(course.description),
     status: course.status,
+    ...(window !== undefined ? { window } : {}),
     openInScopeP0,
     openInScopeP1,
     phases: phaseGroups,
