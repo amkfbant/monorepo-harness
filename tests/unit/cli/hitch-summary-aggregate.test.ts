@@ -919,3 +919,88 @@ describe("buildHitchSummary — #90 Stage A: deferredBacklogItemId in SafeFindin
     }
   });
 });
+
+// ── #90 Stage B: deferredIssueUrl projection ─────────────────────────────────
+
+describe("buildHitchSummary — #90 Stage B: deferredIssueUrl in SafeFindingLine", () => {
+  it("issue-linked finding carries deferredIssueUrl in the projected SafeFindingLine", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      repo.createSession({
+        hitchId: "h-issue-90b",
+        title: "Hitch issue 90b",
+        scope: {},
+        closeConditions: [],
+        createdBy: "t",
+        createdSource: "cli",
+      });
+      phases.linkHitch("phase-1", "h-issue-90b");
+      repo.upsertFinding({
+        hitchId: "h-issue-90b",
+        source: "review",
+        severity: "P2",
+        category: "reliability",
+        summary: "retry not implemented",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+      });
+      const [row] = db
+        .prepare(
+          "SELECT finding_id FROM hitch_findings WHERE hitch_id = ? LIMIT 1",
+        )
+        .all("h-issue-90b") as Array<{ finding_id: string }>;
+      const findingId = row!.finding_id;
+
+      // Defer the finding first (linkFindingIssue requires lifecycle=deferred),
+      // then set the issue URL via the operator-only repo method.
+      db.prepare(
+        "UPDATE hitch_findings SET lifecycle_status = 'deferred', deferred_at = ? WHERE finding_id = ?",
+      ).run("2026-06-23T00:00:00.000Z", findingId);
+      repo.linkFindingIssue(findingId, "https://github.com/o/r/issues/7");
+
+      const summary = buildHitchSummary(db, "course-1");
+      const h = summary.phases[0]!.hitches.find((x) => x.hitchId === "h-issue-90b")!;
+      const f = h.findings.find((x) => x.findingId === findingId)!;
+
+      expect(f.deferredIssueUrl).toBe("https://github.com/o/r/issues/7");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("non-linked finding has deferredIssueUrl === null in the projection", () => {
+    const { db, courses, phases, repo } = fresh();
+    try {
+      seedCoursePhase(courses, phases);
+      repo.createSession({
+        hitchId: "h-noissue-90b",
+        title: "Hitch no-issue 90b",
+        scope: {},
+        closeConditions: [],
+        createdBy: "t",
+        createdSource: "cli",
+      });
+      phases.linkHitch("phase-1", "h-noissue-90b");
+      repo.upsertFinding({
+        hitchId: "h-noissue-90b",
+        source: "review",
+        severity: "P1",
+        category: "correctness",
+        summary: "off-by-one",
+        scopeStatus: "in_scope",
+        lifecycleStatus: "open",
+      });
+
+      const summary = buildHitchSummary(db, "course-1");
+      const h = summary.phases[0]!.hitches.find(
+        (x) => x.hitchId === "h-noissue-90b",
+      )!;
+      for (const f of h.findings) {
+        expect(f.deferredIssueUrl).toBeNull();
+      }
+    } finally {
+      db.close();
+    }
+  });
+});

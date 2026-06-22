@@ -10,7 +10,9 @@ import { classifyChainDecision } from "../../hitch/classify-rerun.js";
 import { createOrchestratorRunners } from "../../hitch/orchestrator-runners.js";
 import { OPEN_FINDING_LIFECYCLES, type UpsertHitchFindingInput } from "../../hitch/repository.js";
 import { HITCH_FINDING_SEVERITIES, HITCH_FINDING_SOURCES, type HitchFindingSeverity, type HitchFindingSource } from "../../hitch/types.js";
+import { containsLikelySecret } from "../../reporter/secret-scan.js";
 import { formatHitchFindingList, HitchCliError, parseChoice, parsePositiveInt, parseScope, type RegisterHitchCommandsOptions, resolveHitchCoderRunnerDeps, warnBacklogExport, withHitchErrorExit, withHitchErrorExitAsync, withHitchRepo, withHitchRepoAsync, writeOutput } from "./helpers.js";
+import { parseIssueUrl } from "./issue-url.js";
 
 /**
  * `harness hitch` finding (list/add/classify/fixed/defer)（#125 A15: cli/hitch.ts から behaviour-zero 分割）。
@@ -301,27 +303,51 @@ export function registerHitchFindingCommands(
       false,
     )
     .requiredOption("--reason <text>", "deferral reason")
+    .option(
+      "--to-issue <url>",
+      "link an existing GitHub issue URL (https://github.com/<owner>/<repo>/issues/<n>)",
+    )
     .option("--json", "emit JSON", false)
     .action(async (findingId: string, raw: Record<string, unknown>) => {
       await withHitchErrorExitAsync(async () => {
-        const result = await withHitchRepoAsync(opts, async (ctx) =>
-          deferFindingToBacklog({
+        // Validate --to-issue BEFORE the defer (fail-closed).
+        const issueUrl =
+          typeof raw.toIssue === "string"
+            ? (parseIssueUrl(raw.toIssue) ??
+              (() => {
+                const shown = containsLikelySecret(raw.toIssue as string)
+                  ? "[redacted]"
+                  : JSON.stringify(raw.toIssue);
+                throw new HitchCliError(
+                  `--to-issue must be a GitHub issue URL (https://github.com/<owner>/<repo>/issues/<n>); got ${shown}`,
+                );
+              })())
+            : undefined;
+
+        const result = await withHitchRepoAsync(opts, async (ctx) => {
+          const deferred = await deferFindingToBacklog({
             repository: ctx.repo,
             findingId,
             reason: String(raw.reason),
             createBacklogItem: raw.backlog === true,
             classifyOutOfScope: raw.classifyOutOfScope === true,
-            ...(raw.backlog === true
-              ? {
-                  backlogContext: {
-                    backlogDir: ctx.paths.backlogDir,
-                    dbPath: ctx.paths.dbPath,
-                  },
-                }
-              : {}),
-          }),
-        );
+            backlogContext: {
+              backlogDir: ctx.paths.backlogDir,
+              dbPath: ctx.paths.dbPath,
+            },
+          });
+          // Link the issue URL AFTER a successful defer, via the operator-only method.
+          const finding =
+            issueUrl !== undefined
+              ? ctx.repo.linkFindingIssue(deferred.finding.findingId, issueUrl)
+              : deferred.finding;
+          return { ...deferred, finding };
+        });
         warnBacklogExport(result.exportWarning);
+        const issueToken =
+          result.finding.deferredIssueUrl !== null
+            ? ` issue=${result.finding.deferredIssueUrl}`
+            : "";
         writeOutput(
           raw,
           result,
@@ -329,6 +355,7 @@ export function registerHitchFindingCommands(
             (result.backlogItemId !== null
               ? ` backlogItem=${result.backlogItemId}`
               : "") +
+            issueToken +
             "\n",
         );
       });

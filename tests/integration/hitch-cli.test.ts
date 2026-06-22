@@ -1555,3 +1555,190 @@ describe("hitch CLI", () => {
     expect(text.out).toContain("tokens total=46");
   });
 });
+
+// ── #90 Stage B: hitch finding defer --to-issue ───────────────────────────────
+
+describe("hitch finding defer --to-issue (#90 Stage B)", () => {
+  /** Seed a hitch and an out-of-scope finding, return {root, findingId}. */
+  function seedDeferFixture(): { root: string; findingId: string } {
+    const { root, scopePath, closePath } = setup();
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch",
+        "start",
+        "--title",
+        "Issue-link test hitch",
+        "--domain",
+        "hitch",
+        "--scope-file",
+        scopePath,
+        "--close-file",
+        closePath,
+        "--json",
+      ]),
+    );
+    const finding = json<{
+      finding: { findingId: string };
+    }>(
+      runCli(root, [
+        "hitch",
+        "finding",
+        "add",
+        hitch.hitchId,
+        "--severity",
+        "P2",
+        "--category",
+        "future-feature",
+        "--summary",
+        "Add issue-tracking link",
+        "--json",
+      ]),
+    );
+    return { root, findingId: finding.finding.findingId };
+  }
+
+  it("defers with --to-issue stores the issue URL (JSON output carries deferredIssueUrl)", () => {
+    const { root, findingId } = seedDeferFixture();
+    const result = json<{
+      finding: {
+        findingId: string;
+        lifecycleStatus: string;
+        deferredIssueUrl: string | null;
+      };
+      backlogItemId: string | null;
+    }>(
+      runCli(root, [
+        "hitch",
+        "finding",
+        "defer",
+        findingId,
+        "--classify-out-of-scope",
+        "--reason",
+        "r",
+        "--to-issue",
+        "https://github.com/o/r/issues/7",
+        "--json",
+      ]),
+    );
+    expect(result.finding.lifecycleStatus).toBe("deferred");
+    expect(result.finding.deferredIssueUrl).toBe(
+      "https://github.com/o/r/issues/7",
+    );
+  });
+
+  it("stores the issue URL in the DB and it appears in the text output line", () => {
+    const { root, findingId } = seedDeferFixture();
+    const text = runCli(root, [
+      "hitch",
+      "finding",
+      "defer",
+      findingId,
+      "--classify-out-of-scope",
+      "--reason",
+      "r",
+      "--to-issue",
+      "https://github.com/o/r/issues/42",
+    ]);
+    expect(text.code).toBe(0);
+    expect(text.out).toContain("issue=https://github.com/o/r/issues/42");
+
+    // Verify the URL is persisted in the DB.
+    const db = openDb(harnessPaths(root).dbPath);
+    try {
+      runMigrations(db);
+      const row = db
+        .prepare(
+          "SELECT deferred_issue_url FROM hitch_findings WHERE finding_id = ?",
+        )
+        .get(findingId) as { deferred_issue_url: string | null };
+      expect(row.deferred_issue_url).toBe("https://github.com/o/r/issues/42");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("--to-issue not-a-url → exit 1 with validation message", () => {
+    const { root, findingId } = seedDeferFixture();
+    const result = runCli(root, [
+      "hitch",
+      "finding",
+      "defer",
+      findingId,
+      "--classify-out-of-scope",
+      "--reason",
+      "r",
+      "--to-issue",
+      "not-a-url",
+    ]);
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/--to-issue must be a GitHub issue URL/);
+    // The finding must NOT have been deferred (fail-closed: validate before defer).
+    const db = openDb(harnessPaths(root).dbPath);
+    try {
+      runMigrations(db);
+      const row = db
+        .prepare(
+          "SELECT lifecycle_status FROM hitch_findings WHERE finding_id = ?",
+        )
+        .get(findingId) as { lifecycle_status: string };
+      expect(row.lifecycle_status).not.toBe("deferred");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("--to-issue with a secret-shaped invalid value → exit 1 AND output has [redacted]", () => {
+    const { root, findingId } = seedDeferFixture();
+    // A valid GitHub PAT shape — looks like a secret but is not a valid issue URL.
+    const secretShaped = "ghp_0123456789abcdefghijklmnopqrstuvwx";
+    const result = runCli(root, [
+      "hitch",
+      "finding",
+      "defer",
+      findingId,
+      "--classify-out-of-scope",
+      "--reason",
+      "r",
+      "--to-issue",
+      secretShaped,
+    ]);
+    expect(result.code).toBe(1);
+    expect(result.out).toContain("[redacted]");
+    expect(result.out).not.toContain(secretShaped);
+  });
+
+  it("--to-issue without --backlog succeeds for an already-backlogged finding (Fix 2)", () => {
+    const { root, findingId } = seedDeferFixture();
+    // First defer WITH --backlog to create the backlog link
+    runCli(root, [
+      "hitch",
+      "finding",
+      "defer",
+      findingId,
+      "--classify-out-of-scope",
+      "--reason",
+      "initial defer",
+      "--backlog",
+      "--json",
+    ]);
+    // Now defer AGAIN with --to-issue but WITHOUT --backlog
+    const result = runCli(root, [
+      "hitch",
+      "finding",
+      "defer",
+      findingId,
+      "--reason",
+      "link issue",
+      "--to-issue",
+      "https://github.com/o/r/issues/2",
+      "--json",
+    ]);
+    expect(result.code).toBe(0);
+    const parsed = JSON.parse(result.out) as {
+      finding: { deferredIssueUrl: string | null };
+    };
+    expect(parsed.finding.deferredIssueUrl).toBe(
+      "https://github.com/o/r/issues/2",
+    );
+  });
+});

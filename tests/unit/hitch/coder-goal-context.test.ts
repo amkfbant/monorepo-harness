@@ -41,6 +41,7 @@ function mkFinding(partial: Partial<HitchFinding>): HitchFinding {
     escalatedAt: null,
     reopenCount: 0,
     deferredBacklogItemId: null,
+    deferredIssueUrl: null,
     classificationReason: null,
     resolutionNote: null,
     ...partial,

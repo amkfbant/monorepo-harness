@@ -80,6 +80,10 @@ export interface SafeFindingLine {
    * (`harness hitch finding defer --backlog`); null when not deferred.
    * A structured internal id (not free text) — collapsed via `inline()`. */
   deferredBacklogItemId: string | null;
+  /** GitHub issue URL when this finding has been deferred with `--to-issue`
+   * (`harness hitch finding defer --to-issue <url>`); null when not linked.
+   * Validated canonical URL (not free text) — collapsed via `inline()`. */
+  deferredIssueUrl: string | null;
 }
 
 export interface SafeHitchLine {
@@ -136,13 +140,17 @@ function inline(s: string): string {
 }
 
 function renderFinding(f: SafeFindingLine): string {
-  const deferred =
+  const deferredBacklog =
     f.deferredBacklogItemId !== null
       ? `, deferred_backlog=${inline(f.deferredBacklogItemId)}`
       : "";
+  const deferredIssue =
+    f.deferredIssueUrl !== null
+      ? `, deferred_issue=${inline(f.deferredIssueUrl)}`
+      : "";
   return (
     `  - [${f.severity}/${f.scopeStatus}/${f.lifecycleStatus}] ${f.summary}` +
-    ` (source=${f.source}, category=${f.category}, id=${inline(f.findingId)}${deferred})`
+    ` (source=${f.source}, category=${f.category}, id=${inline(f.findingId)}${deferredBacklog}${deferredIssue})`
   );
 }
 

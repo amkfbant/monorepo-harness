@@ -39,6 +39,7 @@ import {
   MIGRATION_V35_STATEMENTS,
   MIGRATION_V36_STATEMENTS,
   MIGRATION_V37_STATEMENTS,
+  MIGRATION_V38_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -238,6 +239,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 37,
     name: "agent-invocation-source-size-v37",
     statements: MIGRATION_V37_STATEMENTS,
+  },
+  {
+    version: 38,
+    name: "finding-deferred-issue-url-v38",
+    statements: MIGRATION_V38_STATEMENTS,
   },
 ];
 

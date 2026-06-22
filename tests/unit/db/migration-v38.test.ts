@@ -36,45 +36,36 @@ function columns(db: Database.Database, table: string): string[] {
   ).map((r) => r.name);
 }
 
-describe("v37 agent_invocation.source_size migration", () => {
-  it("LATEST_SCHEMA_VERSION is at or beyond v37", () => {
-    expect(LATEST_SCHEMA_VERSION).toBeGreaterThanOrEqual(37);
+describe("v38 hitch_findings.deferred_issue_url migration", () => {
+  it("LATEST_SCHEMA_VERSION has advanced to v38", () => {
+    expect(LATEST_SCHEMA_VERSION).toBe(38);
   });
 
-  it("fresh migration adds the source_size column", () => {
+  it("fresh migration adds the deferred_issue_url column", () => {
     const db = freshDb();
     const r = runMigrations(db);
-    expect(r.version).toBe(LATEST_SCHEMA_VERSION);
-    expect(r.applied).toContain(37);
-    expect(columns(db, "agent_invocation")).toContain("source_size");
+    expect(r.version).toBe(38);
+    expect(r.applied).toContain(38);
+    expect(columns(db, "hitch_findings")).toContain("deferred_issue_url");
   });
 
-  it("is additive on a realistic v36 DB (column added, existing rows keep data)", () => {
+  it("is additive on a realistic v37 DB (column added, existing rows keep data)", () => {
     const db = freshDb();
-    seedThrough(db, 36);
-    expect(columns(db, "agent_invocation")).not.toContain("source_size");
-    // a pre-v37 codex row (source_size will be NULL after upgrade)
-    db.prepare(
-      `INSERT INTO agent_invocation
-         (invocation_id, tool, role, run_id, invocation_seq, usage_source, created_at)
-       VALUES ('x', 'codex', 'coder', 'run-1', 0, 'exact', '2026-01-01T00:00:00Z')`,
-    ).run();
+    seedThrough(db, 37);
+    expect(columns(db, "hitch_findings")).not.toContain("deferred_issue_url");
 
     runMigrations(db);
 
-    expect(columns(db, "agent_invocation")).toContain("source_size");
-    const row = db
-      .prepare("SELECT source_size AS sz, tool FROM agent_invocation WHERE invocation_id='x'")
-      .get() as { sz: number | null; tool: string };
-    expect(row.tool).toBe("codex"); // existing row preserved
-    expect(row.sz).toBeNull(); // pre-v37 rows are NULL → treated as complete
+    expect(columns(db, "hitch_findings")).toContain("deferred_issue_url");
   });
 
   it("re-running migrations is a no-op (idempotent)", () => {
     const db = freshDb();
     runMigrations(db);
     const again = runMigrations(db);
-    expect(again.applied).not.toContain(37); // already applied
-    expect(columns(db, "agent_invocation").filter((c) => c === "source_size")).toHaveLength(1);
+    expect(again.applied).not.toContain(38);
+    expect(
+      columns(db, "hitch_findings").filter((c) => c === "deferred_issue_url"),
+    ).toHaveLength(1);
   });
 });

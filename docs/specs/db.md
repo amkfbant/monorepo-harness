@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V37_STATEMENTS`、
-> `SCHEMA_VERSION = 37`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V38_STATEMENTS`、
+> `SCHEMA_VERSION = 38`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -733,7 +733,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 37`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 38`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -771,6 +771,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 35 | artifact quarantine marker #303 | `artifacts.quarantined INTEGER NOT NULL DEFAULT 0`（additive 列）。db-first full sync が absent ∧ recoverable な行のうち**意図的に quarantine された行だけ**を保持し、superseded 行（成功 retry が消した stale `reviewers/<id>/review-auto-error.json` 等）を prune するための marker。**upgrade 安全のため backfill 同梱**: 同 migration で `UPDATE artifacts SET quarantined = 1 WHERE storage IN ('db','external') AND blob_sha256 IS NOT NULL`——pre-v35 の「absent recoverable 行を全保持」を grandfather し、v34 の #272-quarantined transcript が次回 sync で `quarantined = 0` として誤 prune されるのを防ぐ。詳細は `docs/specs/workflow.md` の reviewer quarantine 節 |
 | 36 | agent usage telemetry #206 Phase-1 | additive: DB-only `agent_invocation`（ZERO FK・1 invocation/row）+ `agent_usage_turn`（REAL FK ON DELETE CASCADE・per-turn・UNION-nullable token 列を codex/claude 両 taxonomy で保持し XOR CHECK）を `run_usage` と並置。`recordAgentUsage` が単一 `BEGIN IMMEDIATE` で run_usage（model 以外 byte-identical な dual-write）+ 2 新表を both-or-neither 書込。backfill: run_usage 1 行 → invocation 1（`bf:<run>:<kind>:<seq>` surrogate）+ turn_seq=0 turn 1（列 verbatim・`INSERT OR IGNORE` 冪等）。**NO view**——run_usage が legacy read surface のまま。下記「Agent usage telemetry」節 |
 | 37 | agent usage telemetry follow-up #206 / #349 | additive 単一列: `agent_invocation.source_size INTEGER`（`ALTER TABLE ADD COLUMN`）。claude transcript ingest が parse 元 transcript の byte size を記録し、後続 pass が **grown transcript を検知して再 ingest（self-heal）** するのに使う（partial freeze の解消）。codex / external / backfill / v37 以前の行は NULL（= complete 扱い・再 ingest しない） |
+| 38 | #90 Stage B | additive 単一列: `hitch_findings.deferred_issue_url TEXT`（`ALTER TABLE ADD COLUMN`）。operator が `hitch finding defer --to-issue <url>` で deferred finding に既存 GitHub issue URL を link した値を保持（CLI 経由の linkFindingIssue のみが書き込む single-writer・finding が deferred を離れると deferred_backlog_item_id と共にクリア）。v37 以前の行は NULL |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -1038,7 +1039,7 @@ finding 分類・close-check 証跡・convergence decision を記録し、反復
   `source` / `severity` `P0`〜`P3`/`info` / `scope_status`
   `in_scope`/`out_of_scope`/`unknown`/`duplicate` / `lifecycle_status`
   `open`/`fixed`/`reopened`/`deferred`/`duplicate`/`out_of_scope`/
-  `escalated`/`accepted_risk` / `deferred_backlog_item_id`）。
+  `escalated`/`accepted_risk` / `deferred_backlog_item_id` / `deferred_issue_url`）。
   `hitch_findings_stable_idx`（`(hitch_id, stable_key)` partial unique WHERE
   `duplicate_of IS NULL`）/ `hitch_findings_hitch_status_idx`。
 - `hitch_close_checks` — close 条件ごとの check 証跡（status

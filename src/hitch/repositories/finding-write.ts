@@ -164,6 +164,10 @@ export function upsertFindingWithin(
                     WHEN ? THEN NULL
                     ELSE deferred_backlog_item_id
                   END,
+                  deferred_issue_url = CASE
+                    WHEN ? THEN NULL
+                    ELSE deferred_issue_url
+                  END,
                   reopen_count = CASE
                     WHEN ((lifecycle_status = 'fixed' AND ?) OR ?) AND ?
                       THEN reopen_count + 1
@@ -185,6 +189,7 @@ export function upsertFindingWithin(
           fixedReopen ? 1 : 0,
           promoteLifecycleToReopened ? 1 : 0,
           fixedReopen ? 1 : 0,
+          promoteLifecycleToReopened ? 1 : 0,
           promoteLifecycleToReopened ? 1 : 0,
           promoteLifecycleToReopened ? 1 : 0,
           promoteLifecycleToReopened ? 1 : 0,
@@ -348,6 +353,10 @@ export function promoteDuplicateCanonical(
                 WHEN ? THEN NULL
                 ELSE deferred_backlog_item_id
               END,
+              deferred_issue_url = CASE
+                WHEN ? THEN NULL
+                ELSE deferred_issue_url
+              END,
               reopen_count = CASE
                 WHEN ((lifecycle_status = 'fixed' AND ?) OR ?) AND ?
                   THEN reopen_count + 1
@@ -366,6 +375,7 @@ export function promoteDuplicateCanonical(
       fixedReopen ? 1 : 0,
       promoteLifecycleToReopened ? 1 : 0,
       fixedReopen ? 1 : 0,
+      promoteLifecycleToReopened ? 1 : 0,
       promoteLifecycleToReopened ? 1 : 0,
       promoteLifecycleToReopened ? 1 : 0,
       promoteLifecycleToReopened ? 1 : 0,

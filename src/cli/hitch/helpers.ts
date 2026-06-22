@@ -280,6 +280,9 @@ export function formatHitchFindingList(findings: HitchFinding[]): string {
         if (finding.deferredBacklogItemId !== null) {
           fields.push(`deferred_backlog=${finding.deferredBacklogItemId}`);
         }
+        if (finding.deferredIssueUrl !== null) {
+          fields.push(`deferred_issue=${finding.deferredIssueUrl}`);
+        }
         return fields.join("\t");
       })
       .join("\n") + "\n"
