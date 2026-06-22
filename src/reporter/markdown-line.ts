@@ -10,5 +10,13 @@
  * `src/cli/course/helpers.ts` re-exports it to preserve its public surface.
  */
 export function noteForMarkdownLine(note: string): string {
-  return note.replace(/\s*[\r\n]+\s*/g, " ").trim();
+  // Collapse any whitespace run that CONTAINS a line break to a single space
+  // (a note must stay on one Markdown line); newline-free whitespace runs are
+  // left intact, exactly as before. Scanning maximal `\s+` runs with a callback
+  // is linear — it avoids the catastrophic backtracking of `\s*[\r\n]+\s*`,
+  // whose `\s*` overlaps `[\r\n]+` and degrades to O(n^2) on a long newline-free
+  // whitespace run (now reachable via unbounded finding text in #84).
+  return note
+    .replace(/\s+/g, (run) => (/[\r\n]/.test(run) ? " " : run))
+    .trim();
 }
