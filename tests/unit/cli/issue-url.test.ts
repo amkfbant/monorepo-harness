@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseIssueUrl } from "../../../src/cli/hitch/issue-url";
+import { parseIssueUrl } from "../../../src/cli/hitch/issue-url.js";
 
 describe("parseIssueUrl", () => {
   // ACCEPT cases
