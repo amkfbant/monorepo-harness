@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 38;
+export const SCHEMA_VERSION = 39;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -2257,6 +2257,44 @@ export const MIGRATION_V38_STATEMENTS: readonly string[] = [
   `ALTER TABLE hitch_findings ADD COLUMN deferred_issue_url TEXT`,
 ] as const;
 
+/**
+ * v39 — hitch_evidence table (#91 Stage A, excerpt-only).
+ *
+ * Append-only ledger that attaches bounded verification evidence to a hitch.
+ * Each row captures one piece of evidence: a command run, a metrics snapshot,
+ * a before/after comparison, a transcript excerpt, or a free-form note.
+ *
+ * Excerpt-only design: `output_excerpt` stores a bounded text excerpt;
+ * full-body blob storage is deferred (no `blob_sha256` / `body_status`).
+ * Written exclusively by the evidence writer (later tasks); never touched by
+ * the convergence controller or LLM-reachable write paths.
+ */
+export const MIGRATION_V39_STATEMENTS: readonly string[] = [
+  `CREATE TABLE hitch_evidence (
+  evidence_id          TEXT PRIMARY KEY,
+  hitch_id             TEXT NOT NULL REFERENCES hitch_sessions(hitch_id) ON DELETE CASCADE,
+  run_id               TEXT,
+  condition_id         TEXT,
+  kind                 TEXT NOT NULL CHECK (kind IN ('command','metrics','before_after','transcript','note')),
+  attester             TEXT NOT NULL CHECK (attester IN ('operator','agent','harness_auto')),
+  attester_label       TEXT NOT NULL DEFAULT '',
+  label                TEXT NOT NULL,
+  command              TEXT,
+  exit_code            INTEGER,
+  summary_metrics_json TEXT NOT NULL DEFAULT '{}',
+  metrics_schema       INTEGER NOT NULL DEFAULT 1,
+  output_excerpt       TEXT,
+  secret_suspect       INTEGER NOT NULL DEFAULT 0,
+  redacted             INTEGER NOT NULL DEFAULT 0,
+  created_at           TEXT NOT NULL
+)`,
+  `CREATE INDEX hitch_evidence_hitch_idx ON hitch_evidence(hitch_id, created_at)`,
+  `CREATE INDEX hitch_evidence_run_idx   ON hitch_evidence(run_id)`,
+] as const;
+
+/** Table created by v39 — hitch_evidence (#91 Stage A). */
+export const V39_TABLE_NAMES = ["hitch_evidence"] as const;
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -2306,6 +2344,7 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V31_TABLE_NAMES,
   ...V32_TABLE_NAMES,
   ...V36_TABLE_NAMES,
+  ...V39_TABLE_NAMES,
 ];
 
 /** Tables intentionally removed by later migrations. */

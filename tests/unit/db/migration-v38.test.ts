@@ -37,14 +37,14 @@ function columns(db: Database.Database, table: string): string[] {
 }
 
 describe("v38 hitch_findings.deferred_issue_url migration", () => {
-  it("LATEST_SCHEMA_VERSION has advanced to v38", () => {
-    expect(LATEST_SCHEMA_VERSION).toBe(38);
+  it("LATEST_SCHEMA_VERSION is at or beyond v38", () => {
+    expect(LATEST_SCHEMA_VERSION).toBeGreaterThanOrEqual(38);
   });
 
   it("fresh migration adds the deferred_issue_url column", () => {
     const db = freshDb();
     const r = runMigrations(db);
-    expect(r.version).toBe(38);
+    expect(r.version).toBe(LATEST_SCHEMA_VERSION);
     expect(r.applied).toContain(38);
     expect(columns(db, "hitch_findings")).toContain("deferred_issue_url");
   });
