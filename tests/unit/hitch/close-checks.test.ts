@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { evaluateCloseConditions } from "../../../src/hitch/close-checks.js";
 import type {
+  EvidenceAttester,
   HitchCloseCheck,
   HitchCloseCondition,
+  HitchEvidence,
 } from "../../../src/hitch/types.js";
 
 function noFindingCounts() {
@@ -346,6 +348,269 @@ describe("facet_red_test close condition", () => {
     );
     expect(result.conditions[0]?.message).toMatch(/no covering test/i);
     expect(result.conditions[0]?.message).not.toMatch(/stale|record fresh/i);
+  });
+});
+
+function evidenceCondition(
+  overrides: Partial<HitchCloseCondition> = {},
+): HitchCloseCondition {
+  return condition({
+    id: "evidence-gate",
+    kind: "evidence_attached",
+    ...overrides,
+  });
+}
+
+function evidenceRow(
+  overrides: Partial<HitchEvidence> = {},
+): HitchEvidence {
+  return {
+    evidenceId: "ev-a",
+    hitchId: "goal-a",
+    runId: null,
+    conditionId: "evidence-gate",
+    kind: "note",
+    attester: "operator",
+    label: "manual verification",
+    command: null,
+    exitCode: null,
+    summaryMetrics: {},
+    metricsSchema: 1,
+    outputExcerpt: null,
+    secretSuspect: false,
+    redacted: false,
+    createdAt: "2026-05-26T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("evidence_attached close condition", () => {
+  it("PASS: one operator row, matching conditionId, no freshAfter => passed", () => {
+    const result = evaluateCloseConditions({
+      conditions: [evidenceCondition()],
+      checks: [],
+      findingCounts: noFindingCounts(),
+      evidenceRows: [evidenceRow()],
+    });
+    expect(result.requiredPassed).toBe(1);
+    expect(result.allRequiredPassed).toBe(true);
+    expect(result.conditions[0]?.status).toBe("passed");
+    expect(result.conditions[0]?.check).toBeNull();
+    expect(result.conditions[0]?.message).toMatch(/operator evidence attached/i);
+  });
+
+  it("PASS: fresh operator row (createdAt >= freshAfter) => passed", () => {
+    const result = evaluateCloseConditions({
+      conditions: [evidenceCondition()],
+      checks: [],
+      findingCounts: noFindingCounts(),
+      freshAfter: "2026-05-20T00:00:00.000Z",
+      evidenceRows: [evidenceRow({ createdAt: "2026-05-26T00:00:00.000Z" })],
+    });
+    expect(result.requiredPassed).toBe(1);
+    expect(result.allRequiredPassed).toBe(true);
+  });
+
+  it("PENDING (fail-closed): evidenceRows omitted entirely => pending", () => {
+    const result = evaluateCloseConditions({
+      conditions: [evidenceCondition()],
+      checks: [],
+      findingCounts: noFindingCounts(),
+    });
+    expect(result.requiredPending).toBe(1);
+    expect(result.allRequiredPassed).toBe(false);
+    expect(result.conditions[0]?.status).toBe("pending");
+    expect(result.conditions[0]?.check).toBeNull();
+    expect(result.conditions[0]?.message).toMatch(/no operator evidence/i);
+  });
+
+  it("PENDING (fail-closed): no rows at all (empty array) => pending", () => {
+    const result = evaluateCloseConditions({
+      conditions: [evidenceCondition()],
+      checks: [],
+      findingCounts: noFindingCounts(),
+      evidenceRows: [],
+    });
+    expect(result.requiredPending).toBe(1);
+    expect(result.allRequiredPassed).toBe(false);
+  });
+
+  it("PENDING: row exists but conditionId differs (unrelated evidence) => pending", () => {
+    const result = evaluateCloseConditions({
+      conditions: [evidenceCondition()],
+      checks: [],
+      findingCounts: noFindingCounts(),
+      evidenceRows: [evidenceRow({ conditionId: "some-other-condition" })],
+    });
+    expect(result.requiredPending).toBe(1);
+    expect(result.allRequiredPassed).toBe(false);
+  });
+
+  it("PENDING: row with non-operator attester does NOT satisfy (re-verify provenance in code)", () => {
+    // Simulate a future/forged non-operator row: cast through the union so a
+    // value outside EVIDENCE_ATTESTERS can be constructed in the test. The
+    // evaluator must re-check attester === "operator" and reject this row even
+    // though the DDL CHECK would (today) also reject it.
+    const forged = evidenceRow({
+      attester: "harness" as unknown as EvidenceAttester,
+    });
+    const result = evaluateCloseConditions({
+      conditions: [evidenceCondition()],
+      checks: [],
+      findingCounts: noFindingCounts(),
+      evidenceRows: [forged],
+    });
+    expect(result.requiredPending).toBe(1);
+    expect(result.allRequiredPassed).toBe(false);
+  });
+
+  it("PENDING: only matching row is stale (createdAt < freshAfter) => pending", () => {
+    const result = evaluateCloseConditions({
+      conditions: [evidenceCondition()],
+      checks: [],
+      findingCounts: noFindingCounts(),
+      freshAfter: "2026-05-20T00:00:00.000Z",
+      evidenceRows: [evidenceRow({ createdAt: "2026-05-01T00:00:00.000Z" })],
+    });
+    expect(result.requiredPending).toBe(1);
+    expect(result.allRequiredPassed).toBe(false);
+    expect(result.conditions[0]?.message).toMatch(/stale/i);
+  });
+
+  it("PENDING: rule.kind set but row.kind differs => pending", () => {
+    const result = evaluateCloseConditions({
+      conditions: [evidenceCondition({ rule: { kind: "metrics" } })],
+      checks: [],
+      findingCounts: noFindingCounts(),
+      evidenceRows: [evidenceRow({ kind: "note" })],
+    });
+    expect(result.requiredPending).toBe(1);
+    expect(result.allRequiredPassed).toBe(false);
+  });
+
+  it("PENDING: requiredMetricKeys set but a key is missing => pending", () => {
+    const result = evaluateCloseConditions({
+      conditions: [
+        evidenceCondition({ rule: { requiredMetricKeys: ["p95", "rps"] } }),
+      ],
+      checks: [],
+      findingCounts: noFindingCounts(),
+      evidenceRows: [
+        evidenceRow({ kind: "metrics", summaryMetrics: { p95: 120 } }),
+      ],
+    });
+    expect(result.requiredPending).toBe(1);
+    expect(result.allRequiredPassed).toBe(false);
+  });
+
+  it("PASS: rule.kind + requiredMetricKeys both satisfied => passed", () => {
+    const result = evaluateCloseConditions({
+      conditions: [
+        evidenceCondition({
+          rule: { kind: "metrics", requiredMetricKeys: ["p95", "rps"] },
+        }),
+      ],
+      checks: [],
+      findingCounts: noFindingCounts(),
+      evidenceRows: [
+        evidenceRow({
+          kind: "metrics",
+          summaryMetrics: { p95: 120, rps: 8000 },
+        }),
+      ],
+    });
+    expect(result.requiredPassed).toBe(1);
+    expect(result.allRequiredPassed).toBe(true);
+  });
+
+  it("FAILED: malformed rule — kind not in HITCH_EVIDENCE_KINDS => failed", () => {
+    const result = evaluateCloseConditions({
+      conditions: [evidenceCondition({ rule: { kind: "bogus" } })],
+      checks: [],
+      findingCounts: noFindingCounts(),
+      evidenceRows: [evidenceRow()],
+    });
+    expect(result.requiredFailed).toBe(1);
+    expect(result.allRequiredPassed).toBe(false);
+    expect(result.conditions[0]?.status).toBe("failed");
+    expect(result.conditions[0]?.message).toMatch(/malformed evidence_attached/i);
+  });
+
+  it("FAILED: malformed rule — requiredMetricKeys not a string array => failed", () => {
+    const result = evaluateCloseConditions({
+      conditions: [
+        evidenceCondition({ rule: { requiredMetricKeys: "p95" } }),
+      ],
+      checks: [],
+      findingCounts: noFindingCounts(),
+      evidenceRows: [evidenceRow()],
+    });
+    expect(result.requiredFailed).toBe(1);
+    expect(result.allRequiredPassed).toBe(false);
+  });
+
+  it("FAILED: malformed rule — requiredMetricKeys contains an empty string => failed", () => {
+    const result = evaluateCloseConditions({
+      conditions: [
+        evidenceCondition({ rule: { requiredMetricKeys: ["p95", ""] } }),
+      ],
+      checks: [],
+      findingCounts: noFindingCounts(),
+      evidenceRows: [evidenceRow()],
+    });
+    expect(result.requiredFailed).toBe(1);
+    expect(result.allRequiredPassed).toBe(false);
+  });
+
+  it("forward-compat: unknown rule keys are ignored, not errors", () => {
+    const result = evaluateCloseConditions({
+      conditions: [
+        evidenceCondition({ rule: { kind: "note", futureKey: 42 } }),
+      ],
+      checks: [],
+      findingCounts: noFindingCounts(),
+      evidenceRows: [evidenceRow({ kind: "note" })],
+    });
+    expect(result.requiredPassed).toBe(1);
+    expect(result.allRequiredPassed).toBe(true);
+  });
+});
+
+describe("evidence_attached gate invariance", () => {
+  it("an existing condition mix evaluates byte-identically with/without evidenceRows", () => {
+    // finding_policy + facet_red_test (pending) + recorded-check `manual`.
+    const conditions: HitchCloseCondition[] = [
+      condition({
+        id: "finding-policy",
+        kind: "finding_policy",
+        rule: { maxOpenInScopeP1: 0 },
+      }),
+      facetCondition(),
+      condition({ id: "manual-gate", kind: "manual" }),
+    ];
+    const checks = [
+      check({
+        checkId: "manual-check",
+        conditionId: "manual-gate",
+        status: "passed",
+      }),
+    ];
+    const sharedInput = {
+      conditions,
+      checks,
+      findingCounts: noFindingCounts(),
+      changedPaths: ["src/auth/login.ts", "tests/auth/login.test.ts"],
+      latestCodingRunId: "run-close",
+    } as const;
+    const baseline = evaluateCloseConditions({ ...sharedInput });
+    const withEvidence = evaluateCloseConditions({
+      ...sharedInput,
+      evidenceRows: [
+        evidenceRow({ conditionId: "manual-gate", kind: "note" }),
+        evidenceRow({ conditionId: "finding-policy", kind: "metrics" }),
+      ],
+    });
+    expect(withEvidence).toEqual(baseline);
   });
 });
 

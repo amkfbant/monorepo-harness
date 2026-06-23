@@ -1006,10 +1006,8 @@ Stage A（hitch evidence store & surface）の codex App レビューで挙が�
   **作るなら**: `stat` でサイズを見て末尾 N バイト（excerpt cap + UTF-8 境界マージン）だけを `read` する
   tail-read。正当性問題ではなく効率の edge なので低優先。
 
-- **`--condition` の close-condition id 検証（C11・Stage B 結合）**: 誤入力した `--condition <id>` を
-  検証せずそのまま保存する。Stage A では `condition_id` は **store-only**（何も駆動しない）。検証は
-  Stage B の `evidence_attached` 決定論ゲートが `condition_id` を consume する時点に属する（そこで
-  「hitch の close_conditions に存在する id か」を確認する）。Stage A で先に検証すると、後から条件を
-  足す前に evidence を pre-attach する運用を不必要に縛る。**Stage B で実装**する。
+（C11 `--condition` の close-condition id 検証は **#91 Stage B で実装済み** — `attachHitchEvidence`
+が add 時に未知の condition id を fail-closed で reject する。`docs/specs/cli.md` の `hitch evidence add`
+参照。）
 
-重要度: 低〜中（どちらも周辺的・非ブロッカー）。
+重要度: 低（C9 のみ残置・周辺的・非ブロッカー）。

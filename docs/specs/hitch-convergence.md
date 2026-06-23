@@ -1160,6 +1160,45 @@ Existing hitches that never declare a `facet_red_test` condition are completely
 unaffected — the gate is purely additive and can only make close **stricter**
 for hitches that opt in.
 
+`evidence_attached` (#91 Stage B) is an **opt-in, deterministic** close-condition
+kind (category `auto-verify`) — an attestation gate that requires
+operator-attested evidence to be on file for the condition before it can pass. It
+reads the `hitch_evidence` table (Stage A), NOT `hitch_close_checks`, so its
+`check` is always `null` (like `finding_policy`). The condition may declare an
+OPTIONAL `rule` shape it requires of the evidence:
+
+```yaml
+- id: evidence-gate
+  kind: evidence_attached
+  required: true
+  rule:                              # OPTIONAL; both fields optional
+    kind: metrics                    # if present, the row.kind must equal this
+    requiredMetricKeys: ["p95", "rps"]  # if present, every key must be an own-key
+                                        # of the row's summary_metrics
+```
+
+The gate is evaluated **deterministically** from the candidate evidence rows —
+**no recorded `check.status`/verdict is ever consulted** (no self-report). A row
+is a *candidate* when ALL hold: `attester === "operator"` (provenance re-verified
+in code, never trusting the DDL CHECK alone), `conditionId` equals the
+condition's id (condition-scoped), `rule.kind` (if declared) matches `row.kind`,
+and every `requiredMetricKeys` (if declared) is present as an own-key of the
+row's `summary_metrics`. The decision table (fail-closed at every junction —
+never `passed` on missing/stale/malformed input):
+
+| Situation | Status |
+|-----------|--------|
+| ≥1 fresh candidate (`freshAfter` null OR `createdAt >= freshAfter`) | `passed` |
+| ≥1 candidate but every candidate is stale (`createdAt < freshAfter`) | `pending` (record fresh evidence) |
+| no candidate (no rows / `evidenceRows` absent / unmatched attester, condition, kind, or metric keys) | `pending` |
+| malformed `rule` (`kind` not a `HITCH_EVIDENCE_KINDS` member; `requiredMetricKeys` not an array of non-empty strings) | `failed` |
+
+When the `evidenceRows` input is absent, an `evidence_attached` condition
+evaluates fail-closed (`pending`, never `passed`). Unknown `rule` keys are
+ignored (forward-compat), not errors. Existing hitches that never declare an
+`evidence_attached` condition are completely unaffected — the input is purely
+additive and can only make close **stricter** for hitches that opt in.
+
 **Recovery routing (#308).** The gate decision (pass/fail/pending) is unchanged;
 only the recovery message and the routing of a *pending* facet condition differ
 by what can satisfy it:
@@ -1222,7 +1261,11 @@ under `src/hitch/`:
   `id` and a non-empty `testGlobs[]`, with no duplicate ids — but the validator
   **never touches the filesystem** to check whether the declared tests exist
   (that is the runtime gate's job, evaluated from `run_changed_files` + recorded
-  RED evidence). Missing external-evidence descriptions and missing
+  RED evidence). `evidence_attached` (#91) conditions are validated form-only as
+  well (kind + id + duplicate-id): the validator never inspects the optional
+  `rule.kind` / `rule.requiredMetricKeys` shape — that is checked deterministically
+  by `evaluateEvidenceAttached` at evaluation time (malformed rule → `failed`).
+  Missing external-evidence descriptions and missing
   `artifact_exists.metadata.path` are advisory warnings. The validator does not
   decide close readiness; convergence and close-check evaluation remain the only
   close-state authority.

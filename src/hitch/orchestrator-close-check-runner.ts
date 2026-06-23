@@ -382,6 +382,7 @@ function pendingCommandCloseConditions(input: {
     allowEmptyCloseConditions: input.session.policy.allowEmptyCloseConditions,
     changedPaths: facetGate.paths,
     latestCodingRunId: facetGate.runId,
+    evidenceRows: input.repo.listEvidence(input.session.hitchId),
   });
   // Only REQUIRED, runnable command conditions gate close.
   // - required: optional/advisory conditions never block close, and running a

@@ -184,6 +184,7 @@ describe("close condition schema and validation", () => {
       ["review_consensus", "auto-verify"],
       ["artifact_exists", "external-evidence"],
       ["facet_red_test", "auto-verify"],
+      ["evidence_attached", "auto-verify"],
     ]);
   });
 });

@@ -575,6 +575,15 @@ harness hitch evidence show <evidence-id> [--json]
   キーを echo しない）。`attester` は writer 内部で `'operator'` に hardcode され、DB CHECK も
   `operator` のみ許可する（Stage A は operator-attested のみ）。text 出力は
   `evidence=<id> attester=operator kind=<kind> label=<label>`。
+  `--condition <id>`（#91 Stage B）を指定する場合、その id は **hitch が宣言する
+  close condition のいずれか**でなければならない。未知の id は add 時に fail-closed で
+  reject される（exit 1・`EVIDENCE_CONDITION_NOT_FOUND`・id は operator 供給で secret では
+  ないためエラーに echo される）。これは typo で付けた id が **どの close gate も満たさず
+  silent に握り潰される**のを防ぐためのもの。`evidence_attached` 種別の close condition は、
+  **その condition id に紐づき、かつ FRESH（`created_at` ≥ `freshAfter`）で、condition の
+  任意の rule shape（`kind` / `requiredMetricKeys`）に一致する operator-attested evidence
+  行**によって満たされる（行存在だけでは不十分。convergence の deterministic gate。詳細は
+  [`hitch-convergence.md`](./hitch-convergence.md)）。
 
 - `evidence list`: hitch の `requireSession()` で存在確認後に全 evidence 行を返す
   （テキスト: tab 区切り per-row — created_at, short-id, kind, attester, label, cmd=…
