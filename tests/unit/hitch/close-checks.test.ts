@@ -5,7 +5,6 @@ import type {
   HitchCloseCheck,
   HitchCloseCondition,
   HitchEvidence,
-  HitchEvidenceKind,
 } from "../../../src/hitch/types.js";
 
 function noFindingCounts() {
