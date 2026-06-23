@@ -185,6 +185,16 @@ export function attachHitchEvidence(
           `metrics.${key}`,
         );
       }
+      // NaN/Infinity pass `typeof === "number"` but JSON.stringify serializes
+      // them to `null`, silently corrupting the stored metric — reject them.
+      // (key is already confirmed non-secret above, so echoing it is safe.)
+      if (typeof val === "number" && !Number.isFinite(val)) {
+        throwValidation(
+          "EVIDENCE_METRIC_NOT_FINITE",
+          `metrics["${key}"] must be a finite number`,
+          `metrics.${key}`,
+        );
+      }
     }
   }
 
@@ -290,8 +300,24 @@ export function attachHitchEvidence(
     createdAt,
   };
 
-  // ── 9. persist via repository facade ─────────────────────────────────────
-  repo.insertEvidence(row);
+  // ── 9. persist atomically ─────────────────────────────────────────────────
+  // Re-check the hitch is still non-terminal INSIDE the write transaction: a
+  // concurrent close/cancel/escalate/exhaust committed between the early guard
+  // (step 2) and this insert would otherwise leave post-terminal evidence (the
+  // FK only enforces existence, not status). `runAtomically` takes an immediate
+  // write lock, so the re-read + insert + updated_at touch commit all-or-nothing
+  // and a racing terminal transition is observed before the insert.
+  repo.runAtomically(() => {
+    const live = repo.getSession(input.hitchId);
+    if (live === null || TERMINAL_HITCH_STATUSES.has(live.status)) {
+      throwValidation(
+        "EVIDENCE_HITCH_TERMINAL",
+        `hitch ${input.hitchId} is terminal; cannot attach evidence`,
+        "hitchId",
+      );
+    }
+    repo.insertEvidence(row);
+  });
 
   // ── 10. return the canonical inserted row ────────────────────────────────
   const inserted = repo.getEvidence(evidenceId);

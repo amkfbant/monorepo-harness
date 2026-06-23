@@ -992,3 +992,24 @@ merge 後に B が失敗すると main は A-only の broken 状態に入り、h
 **pickup の発火条件**: 「別レビュアー / domain 別 CI gating のために分割 PR が**必須**な密結合変更」が
 実在し、かつ手動 adopt-pr 連続マージで**実際の broken-main インシデントが記録**されたとき。それまでは
 combined-domain 回避策＋ordered-merge runbook（別 PR で docs 追記予定）で足りる。重要度: 中（元 issue）。
+
+## #91 evidence — Stage A の deferred hardening（codex App PR #367 レビュー由来）
+
+Stage A（hitch evidence store & surface）の codex App レビューで挙がった P2 のうち、Stage A スコープ外
+として defer したもの。いずれも安全境界（self-cert / redaction）には無関係で、close gate の P0/P1 ゼロ要件も
+満たしているため非ブロッカー。
+
+- **`--output-file` の tail-only ストリーミング読み（C9・perf）**: 現状 `evidence-commands.ts` は
+  `readFileSync(outputFile, "utf8")` でファイル全体をメモリに読み込んでから writer 側で 8192 byte の
+  excerpt だけを残す。巨大な test log / transcript を `--output-file` に指定すると、8KB の抜粋のために
+  ファイル全体をメモリ展開する。**回避策**: operator が巨大ファイルを渡さない／`tail -c` で事前縮約。
+  **作るなら**: `stat` でサイズを見て末尾 N バイト（excerpt cap + UTF-8 境界マージン）だけを `read` する
+  tail-read。正当性問題ではなく効率の edge なので低優先。
+
+- **`--condition` の close-condition id 検証（C11・Stage B 結合）**: 誤入力した `--condition <id>` を
+  検証せずそのまま保存する。Stage A では `condition_id` は **store-only**（何も駆動しない）。検証は
+  Stage B の `evidence_attached` 決定論ゲートが `condition_id` を consume する時点に属する（そこで
+  「hitch の close_conditions に存在する id か」を確認する）。Stage A で先に検証すると、後から条件を
+  足す前に evidence を pre-attach する運用を不必要に縛る。**Stage B で実装**する。
+
+重要度: 低〜中（どちらも周辺的・非ブロッカー）。

@@ -539,6 +539,58 @@ describe("attachHitchEvidence", () => {
     expect(row.outputExcerpt!).not.toContain("�");
   });
 
+  // ── C10 (codex P2): non-finite numeric metrics are rejected fail-closed ───
+  it("throws when a numeric metric is NaN or Infinity", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a");
+    expect(() =>
+      attachHitchEvidence(repo, {
+        hitchId: "hitch-a",
+        label: "x",
+        metrics: { ratio: NaN },
+      }),
+    ).toThrow(HitchValidationError);
+    expect(() =>
+      attachHitchEvidence(repo, {
+        hitchId: "hitch-a",
+        label: "x",
+        metrics: { rate: Infinity },
+      }),
+    ).toThrow(HitchValidationError);
+  });
+
+  // ── C8 (codex P2): terminal re-check + insert are atomic (TOCTOU) ─────────
+  it("rejects evidence atomically if the hitch goes terminal between the early check and the insert", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a"); // live
+    // Seam: getSession returns the live row on the FIRST read (early guard) and
+    // a terminal row on the SECOND read (the in-transaction re-check),
+    // simulating a concurrent close committed between the two reads. The fix
+    // re-checks terminal status inside the write transaction, so this must
+    // throw and persist nothing.
+    const realGet = repo.getSession.bind(repo);
+    let calls = 0;
+    const racingRepo: HitchRepository = Object.create(repo);
+    (
+      racingRepo as { getSession: HitchRepository["getSession"] }
+    ).getSession = (id: string) => {
+      calls += 1;
+      const s = realGet(id);
+      if (calls >= 2 && s !== null) return { ...s, status: "closed" };
+      return s;
+    };
+    expect(() =>
+      attachHitchEvidence(racingRepo, {
+        hitchId: "hitch-a",
+        label: "x",
+        output: "ok",
+      }),
+    ).toThrow(HitchValidationError);
+    expect(repo.listEvidence("hitch-a")).toHaveLength(0);
+  });
+
   // ── F8: non-secret command survives the writer round-trip ─────────────────
   it("preserves a non-secret command verbatim (writer round-trip)", () => {
     const db = freshDb();
