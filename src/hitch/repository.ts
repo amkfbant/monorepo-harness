@@ -458,6 +458,13 @@ export class HitchRepository {
   // #91 Stage A (C8): evidence concern delegated to EvidenceRepository. The
   // facade keeps these entry-points and forwards to the sub-repo (shared `db`,
   // no transaction of its own).
+  //
+  // SAFETY: this is the RAW writer — it does NO redaction, payload validation,
+  // or terminal-hitch guard. The single-writer invariant (#91) requires every
+  // evidence write to go through `attachHitchEvidence` (src/hitch/evidence-
+  // write.ts), which applies those. Do NOT call this directly from new code; a
+  // direct call would persist an unredacted/unvalidated row. (Structural
+  // enforcement of the boundary is tracked as a follow-up — see PR #367.)
   insertEvidence(row: HitchEvidence): void {
     return this.evidence.insertEvidence(row);
   }

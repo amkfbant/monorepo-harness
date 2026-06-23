@@ -4,7 +4,7 @@ import type {
   HitchEvidence,
   HitchEvidenceKind,
 } from "../types.js";
-import { json } from "./shared.js";
+import { json, touchHitchSession } from "./shared.js";
 
 /**
  * #91 Stage A — composition-delegation repository for the `hitch_evidence`
@@ -13,7 +13,8 @@ import { json } from "./shared.js";
  *
  * Methods:
  *   - `insertEvidence` — raw INSERT; serializes `summaryMetrics` to JSON and
- *     booleans to 0/1.
+ *     booleans to 0/1, then bumps the parent hitch's `updated_at` (like every
+ *     other hitch writer).
  *   - `listEvidence(hitchId)` — ordered by `created_at ASC, evidence_id ASC`
  *     for stability; deserializes on read.
  *   - `getEvidence(evidenceId)` — single-row lookup; null for unknown id.
@@ -94,6 +95,11 @@ export class EvidenceRepository {
         row.redacted ? 1 : 0,
         row.createdAt,
       );
+    // Evidence is a hitch-scoped mutation: bump updated_at like every other
+    // writer (attempts/findings/close-checks/convergence) so an evidence-only
+    // hitch still moves in `hitch list` ordering and stays in range for
+    // `hitch summary --since/--until` (which filters on session.updatedAt).
+    touchHitchSession(this.db, row.hitchId, row.createdAt);
   }
 
   listEvidence(hitchId: string): HitchEvidence[] {

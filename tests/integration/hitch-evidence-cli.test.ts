@@ -448,6 +448,25 @@ describe("hitch evidence show", () => {
     expect(out).toContain("operator");
   });
 
+  it("text output surfaces the stored output excerpt body (C4: --output is the note body channel)", () => {
+    const { root } = setup();
+    const addResult = runCli(root, [
+      "hitch",
+      "evidence",
+      "add",
+      "h-ev-1",
+      "--label",
+      "note label",
+      "--output",
+      "the note body text",
+      "--json",
+    ]);
+    const { evidenceId } = JSON.parse(addResult.out) as { evidenceId: string };
+    const { out, code } = runCli(root, ["hitch", "evidence", "show", evidenceId]);
+    expect(code).toBe(0);
+    expect(out).toContain("the note body text");
+  });
+
   it("--json returns the full evidence object", () => {
     const { root } = setup();
     const addResult = runCli(root, [

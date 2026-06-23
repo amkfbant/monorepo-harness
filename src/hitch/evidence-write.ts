@@ -180,8 +180,12 @@ export function attachHitchEvidence(
   // ── 5. payload non-empty ──────────────────────────────────────────────────
   const hasMetrics =
     input.metrics !== undefined && Object.keys(input.metrics).length > 0;
-  const hasPayload =
-    input.command !== undefined || input.output !== undefined || hasMetrics;
+  // A blank (whitespace-only) command/output is NOT payload — mirrors the
+  // non-empty metrics rule — so `--output ""` / `--command "  "` cannot bypass
+  // the non-empty gate and persist a contentless row.
+  const hasCommand = input.command !== undefined && input.command.trim() !== "";
+  const hasOutput = input.output !== undefined && input.output.trim() !== "";
+  const hasPayload = hasCommand || hasOutput || hasMetrics;
 
   if (!hasPayload) {
     throwValidation(

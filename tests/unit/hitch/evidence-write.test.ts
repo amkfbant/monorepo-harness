@@ -468,6 +468,41 @@ describe("attachHitchEvidence", () => {
     expect(row.redacted).toBe(false);
   });
 
+  // ── C1 (codex P2): blank command/output must not satisfy the payload gate ─
+  it("throws EVIDENCE_PAYLOAD_EMPTY when output is empty and nothing else is supplied", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a");
+    expect(() =>
+      attachHitchEvidence(repo, { hitchId: "hitch-a", label: "x", output: "" }),
+    ).toThrow(HitchValidationError);
+    expect(() =>
+      attachHitchEvidence(repo, {
+        hitchId: "hitch-a",
+        label: "x",
+        output: "   ",
+      }),
+    ).toThrow(HitchValidationError);
+    expect(() =>
+      attachHitchEvidence(repo, { hitchId: "hitch-a", label: "x", command: "" }),
+    ).toThrow(HitchValidationError);
+  });
+
+  // ── C4 (codex P2): attaching evidence bumps the hitch session updated_at ───
+  it("bumps the hitch session updated_at when evidence is attached", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a");
+    attachHitchEvidence(
+      repo,
+      { hitchId: "hitch-a", label: "x", output: "ok" },
+      { now: "2031-02-03T04:05:06.000Z" },
+    );
+    expect(repo.getSession("hitch-a")?.updatedAt).toBe(
+      "2031-02-03T04:05:06.000Z",
+    );
+  });
+
   // ── F8: non-secret command survives the writer round-trip ─────────────────
   it("preserves a non-secret command verbatim (writer round-trip)", () => {
     const db = freshDb();

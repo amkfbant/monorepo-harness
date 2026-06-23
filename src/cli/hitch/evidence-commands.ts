@@ -201,11 +201,15 @@ export function registerHitchEvidenceCommands(
         if (evidence === null) {
           throw new HitchCliError(`evidence not found: ${evidenceId}`);
         }
-        writeOutput(
-          raw,
-          evidence,
-          formatEvidenceRow(evidence) + "\n",
-        );
+        // `show` is the single-record DETAIL view, so it surfaces the stored
+        // output excerpt (the documented body channel for notes / transcripts /
+        // before-after) below the one-line summary. `list` / `hitch status`
+        // deliberately stay terse (no excerpt spill on dense multi-row surfaces).
+        const detail =
+          evidence.outputExcerpt !== null
+            ? `${formatEvidenceRow(evidence)}\noutput:\n${evidence.outputExcerpt}\n`
+            : `${formatEvidenceRow(evidence)}\n`;
+        writeOutput(raw, evidence, detail);
       });
     });
 }
