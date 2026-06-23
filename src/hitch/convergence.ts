@@ -37,6 +37,7 @@ export class ConvergenceService {
       allowEmptyCloseConditions: session.policy.allowEmptyCloseConditions,
       changedPaths: facetGate.paths,
       latestCodingRunId: facetGate.runId,
+      evidenceRows: this.repo.listEvidence(hitchId),
     });
     const metrics = buildMetrics(
       session,

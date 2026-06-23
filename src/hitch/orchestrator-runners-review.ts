@@ -192,6 +192,7 @@ export function failedRequiredCloseChecks(
     allowEmptyCloseConditions: session.policy.allowEmptyCloseConditions,
     changedPaths: facetGate.paths,
     latestCodingRunId: facetGate.runId,
+    evidenceRows: repo.listEvidence(session.hitchId),
   });
   return closeCheckFailureContexts(close.conditions);
 }
