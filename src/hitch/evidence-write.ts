@@ -334,6 +334,22 @@ export function attachHitchEvidence(
         "hitchId",
       );
     }
+    // Re-check conditionId membership against the FRESHLY re-read `live` session
+    // (mirrors the terminal re-check above). A concurrent `updateSessionConfig`
+    // removing/replacing the condition between the early guard (step 3) and this
+    // insert would otherwise commit evidence referencing a now-unknown condition
+    // id (TOCTOU). The FK does not enforce condition membership, so this guard
+    // must be inside the same write lock as the insert to be atomic.
+    if (
+      input.conditionId !== undefined &&
+      !live.closeConditions.some((c) => c.id === input.conditionId)
+    ) {
+      throwValidation(
+        "EVIDENCE_CONDITION_NOT_FOUND",
+        `close condition not found: ${input.conditionId}`,
+        "conditionId",
+      );
+    }
     repo.insertEvidence(row);
   });
 

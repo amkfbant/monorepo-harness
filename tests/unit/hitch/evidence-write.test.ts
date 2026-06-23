@@ -674,6 +674,43 @@ describe("attachHitchEvidence", () => {
     expect(repo.listEvidence("hitch-a")).toHaveLength(0);
   });
 
+  // ── C12 (codex P3): conditionId re-check + insert are atomic (TOCTOU) ──────
+  it("rejects evidence atomically if the conditionId is removed between the early check and the insert", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a", {
+      closeConditions: [
+        { id: "c1", kind: "evidence_attached", required: true },
+      ],
+    });
+    // Seam: getSession returns the live row (conditionId still declared) on the
+    // FIRST read (early guard) and a row whose closeConditions no longer contain
+    // "c1" on the SECOND read (the in-transaction re-check), simulating a
+    // concurrent updateSessionConfig removing/replacing the condition committed
+    // between the two reads. The fix re-checks conditionId membership inside the
+    // write transaction, so this must throw and persist nothing.
+    const realGet = repo.getSession.bind(repo);
+    let calls = 0;
+    const racingRepo: HitchRepository = Object.create(repo);
+    (
+      racingRepo as { getSession: HitchRepository["getSession"] }
+    ).getSession = (id: string) => {
+      calls += 1;
+      const s = realGet(id);
+      if (calls >= 2 && s !== null) return { ...s, closeConditions: [] };
+      return s;
+    };
+    expect(() =>
+      attachHitchEvidence(racingRepo, {
+        hitchId: "hitch-a",
+        label: "x",
+        output: "ok",
+        conditionId: "c1",
+      }),
+    ).toThrow(HitchValidationError);
+    expect(repo.listEvidence("hitch-a")).toHaveLength(0);
+  });
+
   // ── F8: non-secret command survives the writer round-trip ─────────────────
   it("preserves a non-secret command verbatim (writer round-trip)", () => {
     const db = freshDb();
