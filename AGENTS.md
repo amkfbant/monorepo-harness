@@ -27,3 +27,5 @@ mode). In ops mode the harness source (`src/`) is a pinned, immutable release
 tag and is **read-only** — do not edit it here; if a code change is needed,
 raise it in the dev clone. The authoritative definition of the two modes and how
 to tell them apart lives in [`CLAUDE.md`](./CLAUDE.md) ("モード（dev / ops）").
+When operating in ops mode, follow [`CLAUDE.md`](./CLAUDE.md) as the governing
+mode and procedure document.

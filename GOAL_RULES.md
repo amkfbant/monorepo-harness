@@ -112,6 +112,9 @@
   分類・未解決 P0 ゼロ gate）。② PR を上げたら **PR 上の bot レビュー（codex App
   `chatgpt-codex-connector[bot]` / Copilot）の受け入れ指摘も反映**してから merge（P0/P1 必須・
   P2 は判断）。codex App reaction の意味論: **👀=レビュー中 / 👍=指摘なし / inline comment=指摘あり**。
+  PR 投稿後 3 分経っても codex App の reaction が付かない場合は、PR に `@codex review <id>`
+  形式の追加コメントを投げてレビューを明示的に起動する（`<id>` は当該 PR / run を識別できる
+  短い値）。
 - spec 駆動: 大 Phase 着手前に spec / plan を用意し、実装はそれに紐づける。
 
 ---
