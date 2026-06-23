@@ -81,7 +81,7 @@ describe("hitch evidence add", () => {
       "h-ev-1",
       "--label",
       "manual check passed",
-      "--note",
+      "--output",
       "all green",
     ]);
     expect(code).toBe(0);
@@ -99,7 +99,7 @@ describe("hitch evidence add", () => {
       "h-ev-1",
       "--label",
       "json test",
-      "--note",
+      "--output",
       "payload",
       "--json",
     ]);
@@ -149,6 +149,25 @@ describe("hitch evidence add", () => {
     ]);
     expect(code).not.toBe(0);
     expect(out).toMatch(/--metric must be in k=v format/);
+  });
+
+  it("does not echo a secret-shaped token in a malformed --metric error", () => {
+    const { root } = setup();
+    // malformed (empty value) AND the key is a secret-shaped token — the parser
+    // error must NOT echo the raw entry, mirroring the writer's leak-free reject.
+    const { out, code } = runCli(root, [
+      "hitch",
+      "evidence",
+      "add",
+      "h-ev-1",
+      "--label",
+      "secret metric",
+      "--metric",
+      `${SECRET}=`,
+    ]);
+    expect(code).not.toBe(0);
+    expect(out).toMatch(/--metric must be in k=v format/);
+    expect(out).not.toContain(SECRET);
   });
 
   it("exits non-zero with an empty --metric value (k=)", () => {
@@ -248,7 +267,7 @@ describe("hitch evidence add", () => {
     expect(code).not.toBe(0);
   });
 
-  it("accepts --command and --before/--after fields", () => {
+  it("accepts --command and stores it (kind inferred as command)", () => {
     const { root } = setup();
     const { out, code } = runCli(root, [
       "hitch",
@@ -256,13 +275,9 @@ describe("hitch evidence add", () => {
       "add",
       "h-ev-1",
       "--label",
-      "before/after test",
+      "typecheck before/after",
       "--command",
       "npm run typecheck",
-      "--before",
-      "42 errors",
-      "--after",
-      "0 errors",
       "--json",
     ]);
     expect(code).toBe(0);
@@ -280,7 +295,7 @@ describe("hitch evidence add", () => {
       "no-such-hitch",
       "--label",
       "x",
-      "--note",
+      "--output",
       "y",
     ]);
     expect(code).not.toBe(0);
@@ -298,6 +313,33 @@ describe("hitch evidence add", () => {
     // help exits 0 (commander default)
     expect(helpResult.out).not.toMatch(/--status\b/);
     expect(helpResult.out).not.toMatch(/--attester\b/);
+  });
+
+  // ── F1 (REJECT): before/after/note inputs were accepted but their content was
+  // silently dropped (no storage column). Stage A removes the flags entirely
+  // rather than accept-and-drop. Free-text bodies go via --output.
+  it("does NOT expose --before / --after / --note options on evidence add", () => {
+    const { root } = setup();
+    const helpResult = runCli(root, ["hitch", "evidence", "add", "--help"]);
+    expect(helpResult.out).not.toMatch(/--before\b/);
+    expect(helpResult.out).not.toMatch(/--after\b/);
+    expect(helpResult.out).not.toMatch(/--note\b/);
+  });
+
+  it("rejects an unknown --note flag with a non-zero exit", () => {
+    const { root } = setup();
+    const { code } = runCli(root, [
+      "hitch",
+      "evidence",
+      "add",
+      "h-ev-1",
+      "--label",
+      "x",
+      "--note",
+      "y",
+    ]);
+    // commander reports unknown option → non-zero exit (not a silent accept).
+    expect(code).not.toBe(0);
   });
 });
 
@@ -323,7 +365,7 @@ describe("hitch evidence list", () => {
       "h-ev-1",
       "--label",
       "round-trip label",
-      "--note",
+      "--output",
       "body text",
     ]);
     const { out, code } = runCli(root, [
@@ -346,7 +388,7 @@ describe("hitch evidence list", () => {
       "h-ev-1",
       "--label",
       "json list",
-      "--note",
+      "--output",
       "n",
     ]);
     const { out, code } = runCli(root, [
@@ -386,7 +428,7 @@ describe("hitch evidence show", () => {
       "h-ev-1",
       "--label",
       "show test",
-      "--note",
+      "--output",
       "detail",
       "--json",
     ]);
@@ -415,7 +457,7 @@ describe("hitch evidence show", () => {
       "h-ev-1",
       "--label",
       "show json",
-      "--note",
+      "--output",
       "n",
       "--json",
     ]);
@@ -484,7 +526,7 @@ describe("hitch status surfaces attached evidence (#91 Stage A Task 5)", () => {
       "h-ev-1",
       "--label",
       "status test label",
-      "--note",
+      "--output",
       "status test body",
     ]);
     const { out, code } = runCli(root, [
@@ -517,7 +559,7 @@ describe("hitch status surfaces attached evidence (#91 Stage A Task 5)", () => {
       "h-ev-1",
       "--label",
       "visible in status",
-      "--note",
+      "--output",
       "body",
     ]);
     const { out, code } = runCli(root, ["hitch", "status", "h-ev-1"]);

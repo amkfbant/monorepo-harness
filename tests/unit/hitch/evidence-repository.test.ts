@@ -39,7 +39,6 @@ function makeEvidence(overrides: Partial<HitchEvidence> = {}): HitchEvidence {
     conditionId: null,
     kind: "command",
     attester: "operator",
-    attesterLabel: "",
     label: "typecheck",
     command: null,
     exitCode: null,
@@ -110,8 +109,7 @@ describe("EvidenceRepository", () => {
         runId: "run-99",
         conditionId: "cond-1",
         kind: "metrics",
-        attester: "harness_auto",
-        attesterLabel: "harness",
+        attester: "operator",
         command: "npm test",
         exitCode: 0,
         outputExcerpt: "PASS",
@@ -123,8 +121,7 @@ describe("EvidenceRepository", () => {
     expect(got?.runId).toBe("run-99");
     expect(got?.conditionId).toBe("cond-1");
     expect(got?.kind).toBe("metrics");
-    expect(got?.attester).toBe("harness_auto");
-    expect(got?.attesterLabel).toBe("harness");
+    expect(got?.attester).toBe("operator");
     expect(got?.command).toBe("npm test");
     expect(got?.exitCode).toBe(0);
     expect(got?.outputExcerpt).toBe("PASS");

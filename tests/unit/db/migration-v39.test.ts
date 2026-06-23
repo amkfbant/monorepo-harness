@@ -63,8 +63,9 @@ describe("v39 hitch_evidence table migration", () => {
     expect(cols).toContain("condition_id");
     expect(cols).toContain("kind");
     expect(cols).toContain("attester");
-    expect(cols).toContain("attester_label");
     expect(cols).toContain("label");
+    // attester_label is intentionally NOT a column (operator-only, no label)
+    expect(cols).not.toContain("attester_label");
     expect(cols).toContain("command");
     expect(cols).toContain("exit_code");
     expect(cols).toContain("summary_metrics_json");
@@ -144,6 +145,34 @@ describe("v39 hitch_evidence table migration", () => {
     ).toThrow();
   });
 
+  // ── F4: attester CHECK is operator-only in Stage A ────────────────────────
+  // 'agent'/'harness_auto' have no hardcode-stamped writer yet, so the DB must
+  // reject them — defense-in-depth before the Stage B close-gate trusts the row.
+  it.each(["agent", "harness_auto"])(
+    "rejects non-operator attester '%s' (operator-only CHECK)",
+    (badAttester) => {
+      const db = freshDb();
+      runMigrations(db);
+      db.prepare(
+        `INSERT INTO hitch_sessions
+           (hitch_id, project_id, title, status, scope_json, close_conditions_json,
+            policy_json, max_iterations, max_review_cycles, max_reruns,
+            max_total_new_findings, created_by, created_source, created_at, updated_at)
+         VALUES ('h-att','p-1','T','open','{}','[]','{}',3,3,2,12,'t','cli',
+                 '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+      ).run();
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO hitch_evidence
+               (evidence_id, hitch_id, kind, attester, label, created_at)
+             VALUES ('e-att', 'h-att', 'note', ?, 'lbl', '2026-01-01T00:00:00Z')`,
+          )
+          .run(badAttester),
+      ).toThrow();
+    },
+  );
+
   it("accepts a valid row with defaults and returns correct column values", () => {
     const db = freshDb();
     runMigrations(db);
@@ -163,7 +192,6 @@ describe("v39 hitch_evidence table migration", () => {
     const row = db
       .prepare("SELECT * FROM hitch_evidence WHERE evidence_id='e-1'")
       .get() as Record<string, unknown>;
-    expect(row["attester_label"]).toBe("");
     expect(row["summary_metrics_json"]).toBe("{}");
     expect(row["metrics_schema"]).toBe(1);
     expect(row["secret_suspect"]).toBe(0);

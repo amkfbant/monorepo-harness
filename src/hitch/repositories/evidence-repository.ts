@@ -29,7 +29,6 @@ interface HitchEvidenceRow {
   condition_id: string | null;
   kind: HitchEvidenceKind;
   attester: EvidenceAttester;
-  attester_label: string;
   label: string;
   command: string | null;
   exit_code: number | null;
@@ -54,7 +53,6 @@ function rowToEvidence(row: HitchEvidenceRow): HitchEvidence {
     conditionId: row.condition_id,
     kind: row.kind,
     attester: row.attester,
-    attesterLabel: row.attester_label,
     label: row.label,
     command: row.command,
     exitCode: row.exit_code,
@@ -75,9 +73,9 @@ export class EvidenceRepository {
       .prepare(
         `INSERT INTO hitch_evidence (
            evidence_id, hitch_id, run_id, condition_id, kind, attester,
-           attester_label, label, command, exit_code, summary_metrics_json,
+           label, command, exit_code, summary_metrics_json,
            metrics_schema, output_excerpt, secret_suspect, redacted, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.evidenceId,
@@ -86,7 +84,6 @@ export class EvidenceRepository {
         row.conditionId,
         row.kind,
         row.attester,
-        row.attesterLabel,
         row.label,
         row.command,
         row.exitCode,

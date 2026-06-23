@@ -437,11 +437,13 @@ export const HITCH_EVIDENCE_KINDS = [
 
 export type HitchEvidenceKind = (typeof HITCH_EVIDENCE_KINDS)[number];
 
-export const EVIDENCE_ATTESTERS = [
-  "operator",
-  "agent",
-  "harness_auto",
-] as const;
+// Stage A (#91): operator-attested evidence ONLY. The single writer
+// (`attachHitchEvidence`) hardcode-stamps `'operator'`; there is no agent /
+// harness writer yet, so BOTH this type and the DB CHECK are operator-only —
+// fail-closed defense-in-depth so the Stage B close-gate cannot be satisfied by
+// a non-operator-attested row. A future stage with a genuine hardcode-stamped
+// non-operator writer widens both this list and the CHECK via a new migration.
+export const EVIDENCE_ATTESTERS = ["operator"] as const;
 
 export type EvidenceAttester = (typeof EVIDENCE_ATTESTERS)[number];
 
@@ -452,7 +454,6 @@ export interface HitchEvidence {
   conditionId: string | null;
   kind: HitchEvidenceKind;
   attester: EvidenceAttester;
-  attesterLabel: string;
   label: string;
   command: string | null;
   exitCode: number | null;

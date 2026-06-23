@@ -54,7 +54,7 @@ describe("attachHitchEvidence", () => {
       attachHitchEvidence(repo, {
         hitchId: "no-such-hitch",
         label: "typecheck",
-        note: "ok",
+        output: "ok",
       }),
     ).toThrow(HitchValidationError);
   });
@@ -70,7 +70,7 @@ describe("attachHitchEvidence", () => {
         attachHitchEvidence(repo, {
           hitchId: "hitch-term",
           label: "typecheck",
-          note: "ok",
+          output: "ok",
         }),
       ).toThrow(HitchValidationError);
     },
@@ -85,7 +85,7 @@ describe("attachHitchEvidence", () => {
       attachHitchEvidence(repo, {
         hitchId: "hitch-a",
         label: "  ",
-        note: "ok",
+        output: "ok",
       }),
     ).toThrow(HitchValidationError);
   });
@@ -98,7 +98,7 @@ describe("attachHitchEvidence", () => {
       attachHitchEvidence(repo, {
         hitchId: "hitch-a",
         label: "",
-        note: "ok",
+        output: "ok",
       }),
     ).toThrow(HitchValidationError);
   });
@@ -112,7 +112,7 @@ describe("attachHitchEvidence", () => {
       attachHitchEvidence(repo, {
         hitchId: "hitch-a",
         label: "typecheck",
-        // no command/output/metrics/before/after/note
+        // no command/output/metrics
       }),
     ).toThrow(HitchValidationError);
   });
@@ -166,7 +166,7 @@ describe("attachHitchEvidence", () => {
     const row = attachHitchEvidence(repo, {
       hitchId: "hitch-a",
       label: "manual check",
-      note: "all good",
+      output: "all good",
     });
     expect(row.attester).toBe("operator");
   });
@@ -179,7 +179,7 @@ describe("attachHitchEvidence", () => {
     const row = attachHitchEvidence(repo, {
       hitchId: "hitch-a",
       label: "manual check",
-      note: "all tests pass",
+      output: "all tests pass",
     });
     expect(row.hitchId).toBe("hitch-a");
     expect(row.attester).toBe("operator");
@@ -229,8 +229,7 @@ describe("attachHitchEvidence", () => {
       hitchId: "hitch-a",
       label: "snapshot",
       kind: "before_after",
-      before: "old state",
-      after: "new state",
+      output: "old state -> new state",
     });
     expect(row.kind).toBe("before_after");
   });
@@ -309,21 +308,6 @@ describe("attachHitchEvidence", () => {
     expect(excerpt).toBe(longOutput.slice(longOutput.length - 8192));
   });
 
-  // ── before/after fields are valid payload ─────────────────────────────────
-  it("accepts before+after as payload and does not throw", () => {
-    const db = freshDb();
-    const repo = makeRepo(db);
-    seedHitch(repo, "hitch-a");
-    expect(() =>
-      attachHitchEvidence(repo, {
-        hitchId: "hitch-a",
-        label: "state change",
-        before: "old",
-        after: "new",
-      }),
-    ).not.toThrow();
-  });
-
   // ── output within cap ─────────────────────────────────────────────────────
   it("preserves outputExcerpt unchanged when output is within the 8192 byte cap", () => {
     const db = freshDb();
@@ -338,20 +322,18 @@ describe("attachHitchEvidence", () => {
     expect(row.outputExcerpt).toBe(shortOutput);
   });
 
-  // ── attesterLabel and runId/conditionId pass-through ──────────────────────
-  it("stores attesterLabel, runId, conditionId when provided", () => {
+  // ── runId/conditionId pass-through ────────────────────────────────────────
+  it("stores runId and conditionId when provided", () => {
     const db = freshDb();
     const repo = makeRepo(db);
     seedHitch(repo, "hitch-a");
     const row = attachHitchEvidence(repo, {
       hitchId: "hitch-a",
       label: "ci run",
-      note: "green",
-      attesterLabel: "Alice",
+      output: "green",
       runId: "run-123",
       conditionId: "cond-456",
     });
-    expect(row.attesterLabel).toBe("Alice");
     expect(row.runId).toBe("run-123");
     expect(row.conditionId).toBe("cond-456");
   });
@@ -364,12 +346,12 @@ describe("attachHitchEvidence", () => {
     const r1 = attachHitchEvidence(repo, {
       hitchId: "hitch-a",
       label: "first",
-      note: "one",
+      output: "one",
     });
     const r2 = attachHitchEvidence(repo, {
       hitchId: "hitch-a",
       label: "second",
-      note: "two",
+      output: "two",
     });
     expect(r1.evidenceId).not.toBe(r2.evidenceId);
     expect(repo.listEvidence("hitch-a")).toHaveLength(2);
@@ -386,7 +368,7 @@ describe("attachHitchEvidence", () => {
         attachHitchEvidence(repo, {
           hitchId: "hitch-live",
           label: "check",
-          note: "ok",
+          output: "ok",
         }),
       ).not.toThrow();
     },
@@ -400,9 +382,103 @@ describe("attachHitchEvidence", () => {
     const fixedNow = "2030-05-15T12:00:00.000Z";
     const row = attachHitchEvidence(
       repo,
-      { hitchId: "hitch-a", label: "test", note: "ok" },
+      { hitchId: "hitch-a", label: "test", output: "ok" },
       { now: fixedNow },
     );
     expect(row.createdAt).toBe(fixedNow);
+  });
+
+  // ── F2: label is a mandatory-redaction field ──────────────────────────────
+  it("redacts label and sets secretSuspect+redacted when label contains a secret", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a");
+    const row = attachHitchEvidence(repo, {
+      hitchId: "hitch-a",
+      // operator-supplied free text — must be scanned like command/output
+      label: "deploy ghp_0123456789abcdefghijklmnopqrstuvwx",
+      output: "ok",
+    });
+    expect(row.label).toBe("[redacted]");
+    expect(row.secretSuspect).toBe(true);
+    expect(row.redacted).toBe(true);
+  });
+
+  it("preserves a non-secret label verbatim", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a");
+    const row = attachHitchEvidence(repo, {
+      hitchId: "hitch-a",
+      label: "manual check passed",
+      output: "ok",
+    });
+    expect(row.label).toBe("manual check passed");
+    expect(row.redacted).toBe(false);
+  });
+
+  // ── F3: a secret-shaped metric KEY is rejected fail-closed ─────────────────
+  it("throws HitchValidationError when a metric key looks like a secret", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a");
+    expect(() =>
+      attachHitchEvidence(repo, {
+        hitchId: "hitch-a",
+        label: "metrics",
+        metrics: { "ghp_0123456789abcdefghijklmnopqrstuvwx": "1" },
+      }),
+    ).toThrow(HitchValidationError);
+  });
+
+  it("does not leak the secret-shaped metric key in the error message", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a");
+    const secretKey = "ghp_0123456789abcdefghijklmnopqrstuvwx";
+    try {
+      attachHitchEvidence(repo, {
+        hitchId: "hitch-a",
+        label: "metrics",
+        metrics: { [secretKey]: "1" },
+      });
+      throw new Error("expected attachHitchEvidence to throw");
+    } catch (e) {
+      const err = e as HitchValidationError;
+      expect(err).toBeInstanceOf(HitchValidationError);
+      expect(err.message).not.toContain(secretKey);
+      for (const issue of err.issues) {
+        expect(issue.message).not.toContain(secretKey);
+        expect(issue.path).not.toContain(secretKey);
+      }
+    }
+  });
+
+  it("accepts a benign metric key whose name merely mentions 'key'", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a");
+    // "api_key" has no token shape and no assignment punctuation → not a secret.
+    const row = attachHitchEvidence(repo, {
+      hitchId: "hitch-a",
+      label: "metrics",
+      metrics: { api_key_rotations: 3 },
+    });
+    expect(row.summaryMetrics).toEqual({ api_key_rotations: 3 });
+    expect(row.redacted).toBe(false);
+  });
+
+  // ── F8: non-secret command survives the writer round-trip ─────────────────
+  it("preserves a non-secret command verbatim (writer round-trip)", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a");
+    const row = attachHitchEvidence(repo, {
+      hitchId: "hitch-a",
+      label: "typecheck",
+      command: "npm run typecheck",
+    });
+    expect(row.command).toBe("npm run typecheck");
+    expect(row.redacted).toBe(false);
   });
 });

@@ -171,7 +171,6 @@ describe("hitch CLI formatting", () => {
           conditionId: null,
           kind: "note",
           attester: "operator",
-          attesterLabel: "operator",
           label: "manual check passed",
           command: null,
           exitCode: null,

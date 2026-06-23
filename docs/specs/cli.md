@@ -554,7 +554,6 @@ harness hitch evidence add <hitch-id> --label <text>
   [--command <text>]
   [--output <text> | --output-file <path>]
   [--metric <k=v>]...
-  [--before <text>] [--after <text>] [--note <text>]
   [--kind command|metrics|before_after|transcript|note]
   [--condition <condition-id>]
   [--json]
@@ -565,15 +564,23 @@ harness hitch evidence show <evidence-id> [--json]
 
 - `evidence add`: `--label` は必須。`--output` と `--output-file` は排他。
   `--metric k=v` は繰り返し可能（`--metric coverage=92 --metric passing=1234`）。
-  command / output / metrics（非空）/ before / after / note のいずれかが必須
-  （payload 非空制約 — なければ exit 1）。`--output-file` はファイルを UTF-8 テキストとして
-  読み込み `output` フィールドに渡す。secret 疑いの output / command / metric 値は
-  `[redacted]` に置換され `redacted=true` / `secretSuspect=true` フラグが立つ。
-  text 出力は `evidence=<id> attester=operator kind=<kind> label=<label>`。
+  command / output / metrics（非空）のいずれかが必須（payload 非空制約 — なければ
+  exit 1）。`--output-file` はファイルを UTF-8 テキストとして読み込み `output` フィールドに
+  渡す。free-text な note / before-after の本文は `--output` に入れる（Stage A は専用の
+  note/before/after 本文列を持たない＝accept-and-drop による silent data loss を避けるため、
+  `--note`/`--before`/`--after` フラグは提供しない。`--kind` で分類のみ付与可能）。
+  secret 疑いの label / command / output / metric 値は `[redacted]` に置換され
+  `redacted=true` / `secretSuspect=true` フラグが立つ。さらに secret 形の metric **キー**は
+  reject される（exit 1・キーは識別子であって secret payload ではないため。エラーメッセージは
+  キーを echo しない）。`attester` は writer 内部で `'operator'` に hardcode され、DB CHECK も
+  `operator` のみ許可する（Stage A は operator-attested のみ）。text 出力は
+  `evidence=<id> attester=operator kind=<kind> label=<label>`。
 
 - `evidence list`: hitch の `requireSession()` で存在確認後に全 evidence 行を返す
   （テキスト: tab 区切り per-row — created_at, short-id, kind, attester, label, cmd=…
-  exit=… metrics={…} [redacted]/[secret-suspect]；JSON: `{ evidence: [...] }`）。
+  metrics={…} [redacted]/[secret-suspect]；JSON: `{ evidence: [...] }`）。`exit=` は
+  `exit_code` が非 null の場合のみ表示されるが、Stage A は `exit_code` の入力経路を持たない
+  ため出力されない（列は将来のための予約）。
 
 - `evidence show`: evidence_id で 1 行を取得。not-found は exit 1 +
   `harness error: evidence not found: <id>`。

@@ -17,11 +17,15 @@ import type { HitchRepository } from "./repository.js";
  *   - hitch must be non-terminal (open/in_progress/close_ready/diverging)
  *   - label must be non-empty after trim
  *   - at least one payload field must be supplied (command/output/metrics
- *     (non-empty)/before/after/note)
- *   - metrics, if present, must be a flat record of string|number values
+ *     (non-empty)). Free-text bodies (notes, before/after) go via `output`;
+ *     Stage A does not store a dedicated note/before/after body, so those
+ *     inputs are NOT accepted (accept-and-drop would be silent data loss).
+ *   - metrics, if present, must be a flat record of string|number values whose
+ *     KEYS are non-secret identifiers (a secret-shaped key is rejected — a key
+ *     is an identifier, never secret payload)
  *
  * Redaction (mandatory before persistence):
- *   - command, output, and each metric string value are scanned via
+ *   - label, command, output, and each metric string value are scanned via
  *     `containsLikelySecret`; any suspicious value is replaced with
  *     `"[redacted]"` and `secretSuspect`/`redacted` flags are set to `true`.
  *
@@ -38,12 +42,8 @@ export interface AttachHitchEvidenceInput {
   output?: string;
   /** Flat record of string|number values only. */
   metrics?: Record<string, string | number>;
-  before?: string;
-  after?: string;
-  note?: string;
   runId?: string;
   conditionId?: string;
-  attesterLabel?: string;
 }
 
 /** Optional test / deterministic overrides. */
@@ -151,9 +151,22 @@ export function attachHitchEvidence(
     );
   }
 
-  // ── 4. metrics shape validation (before payload check) ───────────────────
+  // ── 4. metrics shape + key-safety validation (before payload check) ───────
   if (input.metrics !== undefined) {
     for (const [key, val] of Object.entries(input.metrics)) {
+      // A metric key is an identifier, never secret payload. Reject a
+      // secret-shaped key fail-closed and do NOT echo the key in the error
+      // (path/message) so the rejection itself cannot leak it. Benign names
+      // such as `api_key_rotations` are not flagged (no token shape / no
+      // assignment punctuation). The check precedes the value-type throw below
+      // so that throw never echoes a secret key either.
+      if (containsLikelySecret(key)) {
+        throwValidation(
+          "EVIDENCE_METRIC_KEY_SECRET",
+          "a metric key looks like a secret; use a non-secret identifier as the key",
+          "metrics",
+        );
+      }
       if (typeof val !== "string" && typeof val !== "number") {
         throwValidation(
           "EVIDENCE_METRICS_INVALID_VALUE",
@@ -168,17 +181,12 @@ export function attachHitchEvidence(
   const hasMetrics =
     input.metrics !== undefined && Object.keys(input.metrics).length > 0;
   const hasPayload =
-    input.command !== undefined ||
-    input.output !== undefined ||
-    hasMetrics ||
-    input.before !== undefined ||
-    input.after !== undefined ||
-    input.note !== undefined;
+    input.command !== undefined || input.output !== undefined || hasMetrics;
 
   if (!hasPayload) {
     throwValidation(
       "EVIDENCE_PAYLOAD_EMPTY",
-      "at least one payload field is required (command, output, metrics, before, after, or note)",
+      "at least one payload field is required (command, output, or metrics)",
       "payload",
     );
   }
@@ -186,6 +194,18 @@ export function attachHitchEvidence(
   // ── 6. redaction ──────────────────────────────────────────────────────────
   let secretSuspect = false;
   let redacted = false;
+
+  // `label` is operator-supplied free text surfaced on `evidence list` and
+  // `hitch status`, so it gets the same mandatory scan as command/output.
+  let safeLabel = input.label;
+  {
+    const r = redactField(input.label);
+    if (r.flagged) {
+      safeLabel = r.value;
+      secretSuspect = true;
+      redacted = true;
+    }
+  }
 
   let safeCommand: string | undefined = input.command;
   if (input.command !== undefined) {
@@ -238,8 +258,7 @@ export function attachHitchEvidence(
     conditionId: input.conditionId ?? null,
     kind,
     attester: "operator", // HARDCODED — NEVER read from input
-    attesterLabel: input.attesterLabel ?? "",
-    label: input.label,
+    label: safeLabel,
     command: safeCommand ?? null,
     exitCode: null,
     summaryMetrics: safeMetrics,

@@ -87,9 +87,6 @@ export function registerHitchEvidenceCommands(
       (val: string, acc: string[]) => [...acc, val],
       [] as string[],
     )
-    .option("--before <text>", "state before the action (for before_after kind)")
-    .option("--after <text>", "state after the action (for before_after kind)")
-    .option("--note <text>", "free-text note")
     .option(
       "--kind <kind>",
       `evidence kind: ${HITCH_EVIDENCE_KINDS.join(" | ")}`,
@@ -125,9 +122,12 @@ export function registerHitchEvidenceCommands(
             const val = eqIdx >= 1 ? entry.slice(eqIdx + 1) : "";
             // Fail-closed: require a non-empty key AND a non-empty (after-trim)
             // value. Rejects `no-equals`, `=v`, and `k=` (empty value) alike.
+            // The raw entry is NOT echoed in the error: a malformed metric can
+            // carry a secret-shaped token, and the writer's metric-key rejection
+            // is leak-free, so this earlier parser must not leak it either.
             if (eqIdx < 1 || val.trim() === "") {
               throw new HitchCliError(
-                `--metric must be in k=v format with a non-empty value (got ${JSON.stringify(entry)})`,
+                "--metric must be in k=v format with a non-empty value",
               );
             }
             metrics[key] = val;
@@ -153,9 +153,6 @@ export function registerHitchEvidenceCommands(
               : {}),
             ...(outputValue !== undefined ? { output: outputValue } : {}),
             ...(rawMetrics.length > 0 ? { metrics } : {}),
-            ...(raw.before !== undefined ? { before: String(raw.before) } : {}),
-            ...(raw.after !== undefined ? { after: String(raw.after) } : {}),
-            ...(raw.note !== undefined ? { note: String(raw.note) } : {}),
             ...(raw.condition !== undefined
               ? { conditionId: String(raw.condition) }
               : {}),

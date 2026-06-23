@@ -2262,12 +2262,20 @@ export const MIGRATION_V38_STATEMENTS: readonly string[] = [
  *
  * Append-only ledger that attaches bounded verification evidence to a hitch.
  * Each row captures one piece of evidence: a command run, a metrics snapshot,
- * a before/after comparison, a transcript excerpt, or a free-form note.
+ * or a free-text body (a note / before-after / transcript) carried in
+ * `output_excerpt` and categorised by `kind`.
+ *
+ * Provenance is operator-only in Stage A: `attester` is CHECK-constrained to
+ * `'operator'` and is hardcode-stamped by the single writer
+ * (`attachHitchEvidence`). There is no agent / harness writer yet, so the DB
+ * refuses any other value — fail-closed defense-in-depth before the Stage B
+ * close-gate trusts the row. Widen the CHECK via a new migration only when a
+ * genuine hardcode-stamped non-operator writer exists.
  *
  * Excerpt-only design: `output_excerpt` stores a bounded text excerpt;
  * full-body blob storage is deferred (no `blob_sha256` / `body_status`).
- * Written exclusively by the evidence writer (later tasks); never touched by
- * the convergence controller or LLM-reachable write paths.
+ * Written exclusively by the evidence writer; never touched by the convergence
+ * controller or LLM-reachable write paths.
  */
 export const MIGRATION_V39_STATEMENTS: readonly string[] = [
   `CREATE TABLE hitch_evidence (
@@ -2276,8 +2284,7 @@ export const MIGRATION_V39_STATEMENTS: readonly string[] = [
   run_id               TEXT,
   condition_id         TEXT,
   kind                 TEXT NOT NULL CHECK (kind IN ('command','metrics','before_after','transcript','note')),
-  attester             TEXT NOT NULL CHECK (attester IN ('operator','agent','harness_auto')),
-  attester_label       TEXT NOT NULL DEFAULT '',
+  attester             TEXT NOT NULL CHECK (attester IN ('operator')),
   label                TEXT NOT NULL,
   command              TEXT,
   exit_code            INTEGER,
