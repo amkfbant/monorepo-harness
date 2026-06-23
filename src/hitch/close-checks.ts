@@ -2,12 +2,19 @@ import type {
   HitchCloseCheck,
   HitchCloseCheckStatus,
   HitchCloseCondition,
+  HitchEvidence,
+  HitchEvidenceKind,
 } from "./types.js";
+import { HITCH_EVIDENCE_KINDS } from "./types.js";
 import {
   evaluateFacetRedCoverage,
   parseFacetRule,
   type FacetRedEvidence,
 } from "./facet-coverage.js";
+
+const HITCH_EVIDENCE_KIND_SET: ReadonlySet<string> = new Set(
+  HITCH_EVIDENCE_KINDS,
+);
 
 /**
  * How a PENDING facet_red_test condition can be satisfied — drives convergence
@@ -78,6 +85,13 @@ export function evaluateCloseConditions(input: {
    */
   changedPaths?: readonly string[];
   latestCodingRunId?: string | null;
+  /**
+   * Deterministic evidence_attached input (#91 Stage B, opt-in). When absent, an
+   * `evidence_attached` condition evaluates fail-closed (pending, never passed).
+   * Existing hitches that never declare `evidence_attached` are unaffected — the
+   * field is purely additive and can only make close stricter for opt-in hitches.
+   */
+  evidenceRows?: readonly HitchEvidence[];
 }): CloseConditionEvaluation {
   if (
     input.conditions.length === 0 &&
@@ -103,6 +117,13 @@ export function evaluateCloseConditions(input: {
         input.freshAfter ?? null,
         input.changedPaths ?? [],
         input.latestCodingRunId ?? null,
+      );
+    }
+    if (condition.kind === "evidence_attached") {
+      return evaluateEvidenceAttached(
+        condition,
+        input.evidenceRows ?? [],
+        input.freshAfter ?? null,
       );
     }
     return evaluateRecordedCheck(
@@ -311,6 +332,114 @@ function parseFacetEvidence(
     });
   }
   return parsed;
+}
+
+interface ParsedEvidenceAttachedRule {
+  kind?: HitchEvidenceKind;
+  requiredMetricKeys?: string[];
+  errors: string[];
+}
+
+/**
+ * Parse the OPTIONAL `evidence_attached` rule. Both `kind` and
+ * `requiredMetricKeys` are optional; unknown keys are ignored (forward-compat).
+ * A malformed declared shape is a hard error so a broken contract fails closed
+ * (never silently passes) — mirrors `parseFacetRule`.
+ */
+export function parseEvidenceAttachedRule(
+  rule: Record<string, unknown> | undefined,
+): ParsedEvidenceAttachedRule {
+  const errors: string[] = [];
+  const parsed: ParsedEvidenceAttachedRule = { errors };
+  if (rule === undefined) {
+    return parsed;
+  }
+  if (rule.kind !== undefined) {
+    if (typeof rule.kind === "string" && HITCH_EVIDENCE_KIND_SET.has(rule.kind)) {
+      parsed.kind = rule.kind as HitchEvidenceKind;
+    } else {
+      errors.push(`rule.kind is not a known evidence kind: ${String(rule.kind)}`);
+    }
+  }
+  if (rule.requiredMetricKeys !== undefined) {
+    const raw = rule.requiredMetricKeys;
+    if (
+      Array.isArray(raw) &&
+      raw.every((key) => typeof key === "string" && key !== "")
+    ) {
+      parsed.requiredMetricKeys = raw as string[];
+    } else {
+      errors.push("rule.requiredMetricKeys must be an array of non-empty strings");
+    }
+  }
+  return parsed;
+}
+
+/**
+ * Deterministic `evidence_attached` attestation gate (#91 Stage B). PASS is
+ * derived ONLY from row existence + provenance + freshness + declared-shape
+ * match — NEVER from any recorded `check.status`/verdict (no self-report). Like
+ * `evaluateFindingPolicy`, `check` is always null: evidence lives in the
+ * `hitch_evidence` table, not `hitch_close_checks`. Fail-closed at every
+ * junction:
+ * - malformed rule => failed (a broken contract must not pass);
+ * - no candidate row (operator-attested, condition-scoped, declared-shape match)
+ *   => pending;
+ * - every candidate stale (older than freshAfter) => pending;
+ * - never passed on missing/ambiguous input.
+ * Provenance is re-verified in code (`row.attester === "operator"`); the DDL
+ * CHECK is not trusted alone (defense-in-depth against a future/forged writer).
+ */
+function evaluateEvidenceAttached(
+  condition: HitchCloseCondition,
+  evidenceRows: readonly HitchEvidence[],
+  freshAfter: string | null,
+): EvaluatedCloseCondition {
+  const parsed = parseEvidenceAttachedRule(condition.rule);
+  if (parsed.errors.length > 0) {
+    return {
+      condition,
+      status: "failed",
+      check: null,
+      message: `malformed evidence_attached contract: ${parsed.errors.join("; ")}`,
+    };
+  }
+  const candidates = evidenceRows.filter(
+    (row) =>
+      row.attester === "operator" &&
+      row.conditionId === condition.id &&
+      (parsed.kind === undefined || row.kind === parsed.kind) &&
+      (parsed.requiredMetricKeys === undefined ||
+        parsed.requiredMetricKeys.every((key) =>
+          Object.prototype.hasOwnProperty.call(row.summaryMetrics, key),
+        )),
+  );
+  if (candidates.length === 0) {
+    return {
+      condition,
+      status: "pending",
+      check: null,
+      message: "no operator evidence attached for this condition",
+    };
+  }
+  const hasFresh = candidates.some(
+    (row) => freshAfter === null || row.createdAt >= freshAfter,
+  );
+  if (!hasFresh) {
+    return {
+      condition,
+      status: "pending",
+      check: null,
+      message:
+        "attached evidence is stale; record fresh evidence after latest mutation",
+    };
+  }
+  return {
+    condition,
+    status: "passed",
+    check: null,
+    message: "operator evidence attached",
+  };
 }
 
 function evaluateFindingPolicy(

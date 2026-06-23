@@ -95,6 +95,12 @@ const KIND_TABLE: Record<
     evaluator: "evaluateFacetRedCoverage",
     guard: "rule.facets[] each need id + non-empty testGlobs; harness evaluates from run_changed_files + recorded RED evidence",
   },
+  evidence_attached: {
+    kind: "evidence_attached",
+    category: "auto-verify",
+    evaluator: "evaluateEvidenceAttached",
+    guard: "harness evaluates from operator-attested hitch_evidence rows (condition-scoped, fresh, declared-shape match); optional rule.kind + rule.requiredMetricKeys validated at evaluation time",
+  },
 };
 
 export function closeConditionKindClassification(
