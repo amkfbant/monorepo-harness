@@ -143,6 +143,7 @@ export function registerHitchLifecycleCommands(
           const closeChecks = repo.listCloseChecks(hitchId);
           const convergence = new ConvergenceService(repo).evaluate(hitchId);
           const tokenUsage = hitchTokenUsage(db, hitchId);
+          const evidence = repo.listEvidence(hitchId);
           return {
             session,
             findings,
@@ -151,6 +152,7 @@ export function registerHitchLifecycleCommands(
             closeChecks,
             convergence,
             tokenUsage,
+            evidence,
           };
         });
         if (raw.json === true) {

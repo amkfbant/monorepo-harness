@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V38_STATEMENTS`、
-> `SCHEMA_VERSION = 38`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V39_STATEMENTS`、
+> `SCHEMA_VERSION = 39`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -733,7 +733,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 38`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 39`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -772,6 +772,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 36 | agent usage telemetry #206 Phase-1 | additive: DB-only `agent_invocation`（ZERO FK・1 invocation/row）+ `agent_usage_turn`（REAL FK ON DELETE CASCADE・per-turn・UNION-nullable token 列を codex/claude 両 taxonomy で保持し XOR CHECK）を `run_usage` と並置。`recordAgentUsage` が単一 `BEGIN IMMEDIATE` で run_usage（model 以外 byte-identical な dual-write）+ 2 新表を both-or-neither 書込。backfill: run_usage 1 行 → invocation 1（`bf:<run>:<kind>:<seq>` surrogate）+ turn_seq=0 turn 1（列 verbatim・`INSERT OR IGNORE` 冪等）。**NO view**——run_usage が legacy read surface のまま。下記「Agent usage telemetry」節 |
 | 37 | agent usage telemetry follow-up #206 / #349 | additive 単一列: `agent_invocation.source_size INTEGER`（`ALTER TABLE ADD COLUMN`）。claude transcript ingest が parse 元 transcript の byte size を記録し、後続 pass が **grown transcript を検知して再 ingest（self-heal）** するのに使う（partial freeze の解消）。codex / external / backfill / v37 以前の行は NULL（= complete 扱い・再 ingest しない） |
 | 38 | #90 Stage B | additive 単一列: `hitch_findings.deferred_issue_url TEXT`（`ALTER TABLE ADD COLUMN`）。operator が `hitch finding defer --to-issue <url>` で deferred finding に既存 GitHub issue URL を link した値を保持（CLI 経由の linkFindingIssue のみが書き込む single-writer・finding が deferred を離れると deferred_backlog_item_id と共にクリア）。v37 以前の行は NULL |
+| 39 | #91 Stage A | additive 新規テーブル: `hitch_evidence`（excerpt-only）。hitch への検証エビデンスを append-only に記録する。`kind` は `command`/`metrics`/`before_after`/`transcript`/`note`、`attester` は `operator` のみ（Stage A は operator-attested only — CHECK で強制し writer が hardcode-stamp）。`output_excerpt TEXT` に有界テキスト抜粋を格納（フルボディ blob は defer）。FK `hitch_id REFERENCES hitch_sessions(hitch_id) ON DELETE CASCADE`。インデックス: `hitch_evidence_hitch_idx(hitch_id, created_at)`・`hitch_evidence_run_idx(run_id)` |
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
@@ -1047,6 +1048,18 @@ finding 分類・close-check 証跡・convergence decision を記録し、反復
   Autonomous command close checks store stdout/stderr artifacts under
   `runs/<runId>/close-checks/` and reference them from `evidence_json`; they do
   not write evidence into the target repo tree.
+- `hitch_evidence` — hitch への検証エビデンスの append-only ledger（v39 / #91
+  Stage A・excerpt-only）。`evidence_id` PK / `hitch_id` FK ON DELETE CASCADE /
+  `run_id` / `condition_id` / `kind` (`command`/`metrics`/`before_after`/
+  `transcript`/`note`) / `attester` (`operator` のみ — Stage A は operator-attested
+  only。CHECK で強制し、単一 writer `attachHitchEvidence` が hardcode-stamp する。
+  agent/harness writer が出来た時に新 migration で CHECK を拡張する) / `label` /
+  `command` / `exit_code` / `summary_metrics_json` DEFAULT `'{}'` /
+  `metrics_schema` DEFAULT `1` / `output_excerpt` / `secret_suspect` DEFAULT `0` /
+  `redacted` DEFAULT `0` / `created_at`。フルボディ blob 列（`blob_sha256`・
+  `body_status`）は持たない（deferred）。インデックス:
+  `hitch_evidence_hitch_idx(hitch_id, created_at)`・
+  `hitch_evidence_run_idx(run_id)`。
 - `hitch_convergence_decisions` — convergence decision（`decision`
   `continue`/`needs_fix`/`needs_classification`/`close_ready`/`closed`/
   `diverging`/`budget_exhausted`/`escalate`/`cancel` / `reason` /

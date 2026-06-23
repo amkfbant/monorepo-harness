@@ -388,6 +388,11 @@ describe("CLI help surface golden (#125 behavior-zero gate)", () => {
         orchestrate
         await-merge
         summary
+        evidence
+          add
+          list
+          show
+          help
         help
       course
         create

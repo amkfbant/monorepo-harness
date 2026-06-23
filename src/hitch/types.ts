@@ -426,6 +426,48 @@ export interface HitchCloseCheck {
   message: string | null;
 }
 
+// #91 Stage A — evidence attached to a hitch (#91).
+export const HITCH_EVIDENCE_KINDS = [
+  "command",
+  "metrics",
+  "before_after",
+  "transcript",
+  "note",
+] as const;
+
+export type HitchEvidenceKind = (typeof HITCH_EVIDENCE_KINDS)[number];
+
+// Stage A (#91): operator-attested evidence ONLY. The single writer
+// (`attachHitchEvidence`) hardcode-stamps `'operator'`; there is no agent /
+// harness writer yet, so BOTH this type and the DB CHECK are operator-only —
+// fail-closed defense-in-depth so the Stage B close-gate cannot be satisfied by
+// a non-operator-attested row. A future stage with a genuine hardcode-stamped
+// non-operator writer widens both this list and the CHECK via a new migration.
+export const EVIDENCE_ATTESTERS = ["operator"] as const;
+
+export type EvidenceAttester = (typeof EVIDENCE_ATTESTERS)[number];
+
+export interface HitchEvidence {
+  evidenceId: string;
+  hitchId: string;
+  runId: string | null;
+  conditionId: string | null;
+  kind: HitchEvidenceKind;
+  attester: EvidenceAttester;
+  label: string;
+  command: string | null;
+  exitCode: number | null;
+  /** Parsed from `summary_metrics_json` column (stored as JSON string). */
+  summaryMetrics: Record<string, unknown>;
+  metricsSchema: number;
+  outputExcerpt: string | null;
+  /** Stored as INTEGER 0/1 in DB; boolean on this interface. */
+  secretSuspect: boolean;
+  /** Stored as INTEGER 0/1 in DB; boolean on this interface. */
+  redacted: boolean;
+  createdAt: string;
+}
+
 export interface HitchNextAction {
   kind: HitchNextActionKind;
   /** Advisory context for operators; convergence may truncate this list. */

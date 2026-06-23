@@ -159,4 +159,44 @@ describe("hitch CLI formatting", () => {
     const withUndefined = formatHitchStatusLine(baseStatus);
     expect(withUndefined).not.toContain("tokens total=");
   });
+
+  it("appends evidence line(s) when evidence rows are present", () => {
+    const line = formatHitchStatusLine({
+      ...baseStatus,
+      evidence: [
+        {
+          evidenceId: "ev-aabbccdd1122",
+          hitchId: "g-tok",
+          runId: null,
+          conditionId: null,
+          kind: "note",
+          attester: "operator",
+          label: "manual check passed",
+          command: null,
+          exitCode: null,
+          summaryMetrics: {},
+          metricsSchema: 1,
+          outputExcerpt: null,
+          secretSuspect: false,
+          redacted: false,
+          createdAt: "2026-06-23T00:00:00.000Z",
+        },
+      ],
+    });
+    expect(line).toContain("ev-aabbccdd");
+    expect(line).toContain("note");
+    expect(line).toContain("operator");
+    expect(line).toContain("manual check passed");
+  });
+
+  it("omits evidence section entirely when evidence list is empty or absent", () => {
+    // baseStatus has hitchId "g-tok" (no "ev-" substring) and no tokenUsage, so
+    // a quiet evidence section means the output is exactly one status line.
+    const withEmpty = formatHitchStatusLine({ ...baseStatus, evidence: [] });
+    expect(withEmpty.split("\n")).toHaveLength(1);
+    expect(withEmpty).not.toContain("ev-");
+    const withUndefined = formatHitchStatusLine(baseStatus);
+    expect(withUndefined.split("\n")).toHaveLength(1);
+    expect(withUndefined).not.toContain("ev-");
+  });
 });

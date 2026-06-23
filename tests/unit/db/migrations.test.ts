@@ -74,6 +74,7 @@ describe("runMigrations", () => {
     expect(r.applied).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
       22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
+      39,
     ]);
     const tables = tableNames(dbPath);
     expect(tables.has("schema_migrations")).toBe(true);
@@ -121,7 +122,7 @@ describe("runMigrations", () => {
       );
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([32, 33, 34, 35, 36, 37, 38]);
+      expect(upgraded.applied).toEqual([32, 33, 34, 35, 36, 37, 38, 39]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "review_refute_votes")).toBe(true);
 
@@ -316,7 +317,7 @@ describe("runMigrations", () => {
       ).toThrow(/CHECK/i);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([29, 30, 31, 32, 33, 34, 35, 36, 37, 38]);
+      expect(upgraded.applied).toEqual([29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "index", "hitch_lifecycle_events_hitch_idx")).toBe(
         true,
@@ -416,7 +417,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "domain_lock_contention")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38]);
+      expect(upgraded.applied).toEqual([28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "domain_lock_contention")).toBe(true);
       expect(
@@ -494,7 +495,7 @@ describe("runMigrations", () => {
       ).run();
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([30, 31, 32, 33, 34, 35, 36, 37, 38]);
+      expect(upgraded.applied).toEqual([30, 31, 32, 33, 34, 35, 36, 37, 38, 39]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
 
       const columns = db
@@ -596,7 +597,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "metrics_snapshots")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38]);
+      expect(upgraded.applied).toEqual([27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "metrics_snapshots")).toBe(true);
       expect(hasSchemaObject(db, "index", "metrics_snapshots_created_idx")).toBe(
@@ -660,7 +661,7 @@ describe("runMigrations", () => {
       expect(hasSchemaObject(db, "table", "run_usage")).toBe(false);
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38]);
+      expect(upgraded.applied).toEqual([26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "run_usage")).toBe(true);
 
@@ -781,7 +782,7 @@ describe("runMigrations", () => {
       expect(before.map((r) => r.name)).not.toContain("prompt_sha256");
 
       const upgraded = runMigrations(db);
-      expect(upgraded.applied).toEqual([25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38]);
+      expect(upgraded.applied).toEqual([25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       const after = db
         .prepare("PRAGMA table_info(runs)")
@@ -827,7 +828,7 @@ describe("runMigrations", () => {
 
       const upgraded = runMigrations(db);
       expect(upgraded.applied).toEqual([
-        24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
+        24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
       ]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       const after = db
@@ -853,7 +854,7 @@ describe("runMigrations", () => {
 
       const upgraded = runMigrations(db);
       expect(upgraded.applied).toEqual([
-        23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
+        23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
       ]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "hitch_lifecycle_events")).toBe(true);
@@ -895,7 +896,7 @@ describe("runMigrations", () => {
 
       const upgraded = runMigrations(db);
       expect(upgraded.applied).toEqual([
-        22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
+        22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
       ]);
       expect(upgraded.version).toBe(SCHEMA_VERSION);
       expect(hasSchemaObject(db, "table", "db_stats_snapshots")).toBe(false);
@@ -1025,7 +1026,7 @@ describe("v35 artifact quarantine marker backfill (#303 P1)", () => {
 
     // Upgrade through v35.
     const upgraded = runMigrations(db);
-    expect(upgraded.applied).toEqual([35, 36, 37, 38]);
+    expect(upgraded.applied).toEqual([35, 36, 37, 38, 39]);
 
     // The legacy recoverable row is grandfathered to quarantined = 1.
     const marked = db

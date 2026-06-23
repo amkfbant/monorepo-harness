@@ -18,9 +18,10 @@ import { ConvergenceService, RECOVERABLE_DIVERGENCE_REASON, divergenceReasonForB
 import { findTransientLeaseCause } from "../../workspace/db-domain-lock.js";
 import { type OrchestratorRunnerDeps } from "../../hitch/orchestrator-runners.js";
 import { HitchRepository, type CompleteHitchReviewCycleInput } from "../../hitch/repository.js";
-import { HITCH_SCOPE_STATUSES, HitchValidationError, type HitchFinding, type HitchConvergenceResult, type HitchScopeStatus } from "../../hitch/types.js";
+import { HITCH_SCOPE_STATUSES, HitchValidationError, type HitchEvidence, type HitchFinding, type HitchConvergenceResult, type HitchScopeStatus } from "../../hitch/types.js";
 import type { HitchOrchestrationResult } from "../../hitch/orchestrator-types.js";
 import { prepareProjectRun } from "../../project/run-project.js";
+import { formatHitchEvidenceLines, formatHitchTokenUsageLine } from "./evidence-format.js";
 
 /**
  * `harness hitch` / `harness phase`(no) CLI の共有ヘルパー（#125 A15: cli/hitch.ts から
@@ -225,6 +226,7 @@ export function formatHitchStatusLine(result: {
     detail?: Record<string, unknown> | null;
   }>;
   tokenUsage?: DbHitchTokenUsage;
+  evidence?: HitchEvidence[];
 }): string {
   const reviewAdvisoryCount = countReviewConsensusAdvisories(result);
   const staticConsensus = hasPassedReviewConsensusCheck(result)
@@ -243,25 +245,8 @@ export function formatHitchStatusLine(result: {
     adoptedPrText +
     staticConsensus +
     advisories;
-  return statusLine + formatHitchTokenUsageLine(result.tokenUsage);
-}
-
-/**
- * Render the per-hitch token usage as a second status line (retry-inclusive
- * sum over the hitch's attempts, with the coder/reviewer/evaluator split).
- * Empty string when no usage telemetry is present so older hitches stay quiet.
- */
-export function formatHitchTokenUsageLine(usage?: DbHitchTokenUsage): string {
-  if (usage === undefined || usage.runsWithUsage === 0) return "";
-  const k = usage.byKind;
-  return (
-    `\ntokens total=${usage.totalTokens} ` +
-    `(in=${usage.inputTokens} cached=${usage.cachedInputTokens} ` +
-    `out=${usage.outputTokens} reasoning=${usage.reasoningOutputTokens}) ` +
-    `runsWithUsage=${usage.runsWithUsage} ` +
-    `byKind[coder=${k.coder.totalTokens} reviewer=${k.reviewer.totalTokens} ` +
-    `evaluator=${k.evaluator.totalTokens}]`
-  );
+  const tokenLine = formatHitchTokenUsageLine(result.tokenUsage);
+  return statusLine + tokenLine + formatHitchEvidenceLines(result.evidence);
 }
 
 export function formatHitchFindingList(findings: HitchFinding[]): string {

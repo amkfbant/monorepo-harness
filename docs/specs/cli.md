@@ -543,6 +543,48 @@ headline roll-up P0/P1 カウントからも脱落する。アクティブなフ
 `- Status filter: <status>` / `- Domain filter: <domain>`（`inline()` 折畳み）として
 表示される。Stage C は #84 summary フィルタの最終段階。
 
+**`hitch evidence add/list/show`（#91 Stage A）**: operator が hitch に証拠行（evidence
+row）を添付するための CLI サーフェス。`attester` は `attachHitchEvidence` ライタ内部で
+`'operator'` に hardcode されており、CLI に `--attester` / `--status` フラグは存在しない。
+すべての書き込みは `attachHitchEvidence` を経由するため、secret 検査・redaction・
+payload 非空検証が常に適用される。
+
+```
+harness hitch evidence add <hitch-id> --label <text>
+  [--command <text>]
+  [--output <text> | --output-file <path>]
+  [--metric <k=v>]...
+  [--kind command|metrics|before_after|transcript|note]
+  [--condition <condition-id>]
+  [--json]
+
+harness hitch evidence list <hitch-id> [--json]
+harness hitch evidence show <evidence-id> [--json]
+```
+
+- `evidence add`: `--label` は必須。`--output` と `--output-file` は排他。
+  `--metric k=v` は繰り返し可能（`--metric coverage=92 --metric passing=1234`）。
+  command / output / metrics（非空）のいずれかが必須（payload 非空制約 — なければ
+  exit 1）。`--output-file` はファイルを UTF-8 テキストとして読み込み `output` フィールドに
+  渡す。free-text な note / before-after の本文は `--output` に入れる（Stage A は専用の
+  note/before/after 本文列を持たない＝accept-and-drop による silent data loss を避けるため、
+  `--note`/`--before`/`--after` フラグは提供しない。`--kind` で分類のみ付与可能）。
+  secret 疑いの label / command / output / metric 値は `[redacted]` に置換され
+  `redacted=true` / `secretSuspect=true` フラグが立つ。さらに secret 形の metric **キー**は
+  reject される（exit 1・キーは識別子であって secret payload ではないため。エラーメッセージは
+  キーを echo しない）。`attester` は writer 内部で `'operator'` に hardcode され、DB CHECK も
+  `operator` のみ許可する（Stage A は operator-attested のみ）。text 出力は
+  `evidence=<id> attester=operator kind=<kind> label=<label>`。
+
+- `evidence list`: hitch の `requireSession()` で存在確認後に全 evidence 行を返す
+  （テキスト: tab 区切り per-row — created_at, short-id, kind, attester, label, cmd=…
+  metrics={…} [redacted]/[secret-suspect]；JSON: `{ evidence: [...] }`）。`exit=` は
+  `exit_code` が非 null の場合のみ表示されるが、Stage A は `exit_code` の入力経路を持たない
+  ため出力されない（列は将来のための予約）。
+
+- `evidence show`: evidence_id で 1 行を取得。not-found は exit 1 +
+  `harness error: evidence not found: <id>`。
+
 `hitch orchestrate` と `hitch finding classify --then-rerun` は、coder 実行中の
 domain lease contention（`DomainLockBusyError` / `LeaseLostError` /
 `LeaseGuardFailedError`）を retryable defer として surface する。exit code は `1`、

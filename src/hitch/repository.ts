@@ -31,6 +31,7 @@ import {
   type LinkedPhaseSpecApprovalDrift,
 } from "./repositories/metrics-repository.js";
 import { FindingRepository } from "./repositories/finding-repository.js";
+import { EvidenceRepository } from "./repositories/evidence-repository.js";
 import {
   AUTO_RESOLVE_NOTE_PREFIX,
   OPEN_FINDING_LIFECYCLES,
@@ -51,6 +52,7 @@ import {
   type HitchAttempt,
   type HitchCloseCheck,
   type HitchConvergenceDecisionRecord,
+  type HitchEvidence,
   type HitchFinding,
   type HitchHarnessOriginDivergenceMetrics,
   type HitchLifecycleEvent,
@@ -137,6 +139,8 @@ export class HitchRepository {
   private readonly sessions: SessionRepository;
   private readonly metrics: MetricsRepository;
   private readonly findings: FindingRepository;
+  // #91 Stage A — evidence sub-repo (C8).
+  private readonly evidence: EvidenceRepository;
 
   constructor(private readonly db: Database.Database) {
     this.decisions = new ConvergenceDecisionRepository(db);
@@ -146,6 +150,7 @@ export class HitchRepository {
     this.sessions = new SessionRepository(db);
     this.metrics = new MetricsRepository(db);
     this.findings = new FindingRepository(db);
+    this.evidence = new EvidenceRepository(db);
   }
 
   // #125 Track C (C5): session concern delegated to SessionRepository (incl.
@@ -448,5 +453,27 @@ export class HitchRepository {
     paths: string[];
   } {
     return this.metrics.latestCodingRunChangedPaths(hitchId);
+  }
+
+  // #91 Stage A (C8): evidence concern delegated to EvidenceRepository. The
+  // facade keeps these entry-points and forwards to the sub-repo (shared `db`,
+  // no transaction of its own).
+  //
+  // SAFETY: this is the RAW writer — it does NO redaction, payload validation,
+  // or terminal-hitch guard. The single-writer invariant (#91) requires every
+  // evidence write to go through `attachHitchEvidence` (src/hitch/evidence-
+  // write.ts), which applies those. Do NOT call this directly from new code; a
+  // direct call would persist an unredacted/unvalidated row. (Structural
+  // enforcement of the boundary is tracked as a follow-up — see PR #367.)
+  insertEvidence(row: HitchEvidence): void {
+    return this.evidence.insertEvidence(row);
+  }
+
+  listEvidence(hitchId: string): HitchEvidence[] {
+    return this.evidence.listEvidence(hitchId);
+  }
+
+  getEvidence(evidenceId: string): HitchEvidence | null {
+    return this.evidence.getEvidence(evidenceId);
   }
 }
