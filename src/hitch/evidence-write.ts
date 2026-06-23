@@ -153,7 +153,25 @@ export function attachHitchEvidence(
     );
   }
 
-  // ── 3. label non-empty ────────────────────────────────────────────────────
+  // ── 3. conditionId names a declared close condition ───────────────────────
+  // An operator typo in `--condition <id>` would otherwise be stored verbatim
+  // and SILENTLY never satisfy the Stage B `evidence_attached` close gate (which
+  // matches an operator evidence row by condition id). Reject an unknown id up
+  // front, fail-closed. Validated ONLY when supplied (conditionId is optional).
+  // The id is operator-supplied and not a secret, so echoing it is fine — unlike
+  // metric keys, it is never scanned/redacted.
+  if (
+    input.conditionId !== undefined &&
+    !session.closeConditions.some((c) => c.id === input.conditionId)
+  ) {
+    throwValidation(
+      "EVIDENCE_CONDITION_NOT_FOUND",
+      `close condition not found: ${input.conditionId}`,
+      "conditionId",
+    );
+  }
+
+  // ── 4. label non-empty ────────────────────────────────────────────────────
   if (input.label.trim() === "") {
     throwValidation(
       "EVIDENCE_LABEL_EMPTY",
@@ -162,7 +180,7 @@ export function attachHitchEvidence(
     );
   }
 
-  // ── 4. metrics shape + key-safety validation (before payload check) ───────
+  // ── 5. metrics shape + key-safety validation (before payload check) ───────
   if (input.metrics !== undefined) {
     for (const [key, val] of Object.entries(input.metrics)) {
       // A metric key is an identifier, never secret payload. Reject a
@@ -198,7 +216,7 @@ export function attachHitchEvidence(
     }
   }
 
-  // ── 5. normalize payload + non-empty gate ─────────────────────────────────
+  // ── 6. normalize payload + non-empty gate ─────────────────────────────────
   // A blank (whitespace-only) command/output is NOT payload, so normalize it to
   // "absent" up front. The gate, kind inference, redaction, and storage then
   // all agree — `--output ""` cannot bypass the gate, and a blank `--command`
@@ -222,7 +240,7 @@ export function attachHitchEvidence(
     );
   }
 
-  // ── 6. redaction ──────────────────────────────────────────────────────────
+  // ── 7. redaction ──────────────────────────────────────────────────────────
   let secretSuspect = false;
   let redacted = false;
 
@@ -276,12 +294,12 @@ export function attachHitchEvidence(
     }
   }
 
-  // ── 7. derive remaining fields ────────────────────────────────────────────
+  // ── 8. derive remaining fields ────────────────────────────────────────────
   const evidenceId = `ev-${randomUUID()}`;
   const createdAt = opts.now ?? new Date().toISOString();
   const kind = inferKind(input.kind, command !== undefined, hasMetrics);
 
-  // ── 8. build the row (attester is HARDCODED — never from input) ───────────
+  // ── 9. build the row (attester is HARDCODED — never from input) ───────────
   const row: HitchEvidence = {
     evidenceId,
     hitchId: input.hitchId,
@@ -300,7 +318,7 @@ export function attachHitchEvidence(
     createdAt,
   };
 
-  // ── 9. persist atomically ─────────────────────────────────────────────────
+  // ── 10. persist atomically ────────────────────────────────────────────────
   // Re-check the hitch is still non-terminal INSIDE the write transaction: a
   // concurrent close/cancel/escalate/exhaust committed between the early guard
   // (step 2) and this insert would otherwise leave post-terminal evidence (the
@@ -319,7 +337,7 @@ export function attachHitchEvidence(
     repo.insertEvidence(row);
   });
 
-  // ── 10. return the canonical inserted row ────────────────────────────────
+  // ── 11. return the canonical inserted row ─────────────────────────────────
   const inserted = repo.getEvidence(evidenceId);
   if (inserted === null) {
     // Should never happen — insert just succeeded.

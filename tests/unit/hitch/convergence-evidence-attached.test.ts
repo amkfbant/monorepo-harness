@@ -73,12 +73,20 @@ describe("ConvergenceService evidence_attached gate (#91 Stage B wiring)", () =>
   it("scoped: evidence attached to a DIFFERENT condition id does NOT satisfy the gate", () => {
     const { db, repo, service } = fresh();
     try {
-      createGoal(repo, [EVIDENCE_CONDITION]);
+      // Two declared conditions: the evidence_attached one (the gate under test)
+      // and a separate one we will (legitimately) attach evidence to. Attaching
+      // to the OTHER declared condition must not satisfy the evidence_attached
+      // gate. The other condition id must be DECLARED — Task 3's add-time
+      // validation now rejects evidence attached to an undeclared condition id.
+      createGoal(repo, [
+        EVIDENCE_CONDITION,
+        { id: "other-evidence", kind: "evidence_attached", required: false },
+      ]);
       attachHitchEvidence(repo, {
         hitchId: "goal-test",
         label: "unrelated",
         output: "for another condition",
-        conditionId: "some-other-condition",
+        conditionId: "other-evidence",
       });
       const result = service.evaluate("goal-test");
       expect(result.decision).not.toBe("close_ready");

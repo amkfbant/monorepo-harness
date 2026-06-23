@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
-import { HitchValidationError } from "../../../src/hitch/types.js";
+import {
+  HitchValidationError,
+  type HitchCloseCondition,
+} from "../../../src/hitch/types.js";
 import { attachHitchEvidence } from "../../../src/hitch/evidence-write.js";
 
 function freshDb() {
@@ -22,7 +25,7 @@ function makeRepo(db: ReturnType<typeof openDb>) {
 function seedHitch(
   repo: HitchRepository,
   hitchId: string,
-  overrides: { status?: string } = {},
+  overrides: { status?: string; closeConditions?: HitchCloseCondition[] } = {},
 ): void {
   repo.createSession({
     hitchId,
@@ -30,7 +33,7 @@ function seedHitch(
     projectId: "proj",
     domain: "test",
     scope: { targetFiles: ["src/**"] },
-    closeConditions: [],
+    closeConditions: overrides.closeConditions ?? [],
     createdBy: "test",
     createdSource: "cli",
     createdAt: "2026-01-01T00:00:00.000Z",
@@ -326,7 +329,12 @@ describe("attachHitchEvidence", () => {
   it("stores runId and conditionId when provided", () => {
     const db = freshDb();
     const repo = makeRepo(db);
-    seedHitch(repo, "hitch-a");
+    // conditionId must name a declared close condition (Task 3 add-time gate).
+    seedHitch(repo, "hitch-a", {
+      closeConditions: [
+        { id: "cond-456", kind: "evidence_attached", required: true },
+      ],
+    });
     const row = attachHitchEvidence(repo, {
       hitchId: "hitch-a",
       label: "ci run",
@@ -336,6 +344,81 @@ describe("attachHitchEvidence", () => {
     });
     expect(row.runId).toBe("run-123");
     expect(row.conditionId).toBe("cond-456");
+  });
+
+  // ── C11 (#91 Stage B): --condition is validated against declared conditions ─
+  it("throws HitchValidationError when conditionId is not a declared close condition", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a", {
+      closeConditions: [
+        { id: "c1", kind: "evidence_attached", required: true },
+      ],
+    });
+    expect(() =>
+      attachHitchEvidence(repo, {
+        hitchId: "hitch-a",
+        label: "manual check",
+        output: "ok",
+        conditionId: "typo", // not "c1"
+      }),
+    ).toThrow(HitchValidationError);
+  });
+
+  it("throws HitchValidationError when conditionId is supplied but the hitch declares no close conditions", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a"); // closeConditions: []
+    expect(() =>
+      attachHitchEvidence(repo, {
+        hitchId: "hitch-a",
+        label: "manual check",
+        output: "ok",
+        conditionId: "c1",
+      }),
+    ).toThrow(HitchValidationError);
+  });
+
+  it("accepts and stores a conditionId that names a declared close condition", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a", {
+      closeConditions: [
+        { id: "c1", kind: "evidence_attached", required: true },
+      ],
+    });
+    const row = attachHitchEvidence(repo, {
+      hitchId: "hitch-a",
+      label: "manual check",
+      output: "ok",
+      conditionId: "c1",
+    });
+    expect(row.conditionId).toBe("c1");
+  });
+
+  it("echoes the (non-secret) unknown conditionId in the validation error", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a", {
+      closeConditions: [
+        { id: "c1", kind: "evidence_attached", required: true },
+      ],
+    });
+    try {
+      attachHitchEvidence(repo, {
+        hitchId: "hitch-a",
+        label: "manual check",
+        output: "ok",
+        conditionId: "nope",
+      });
+      throw new Error("expected attachHitchEvidence to throw");
+    } catch (e) {
+      const err = e as HitchValidationError;
+      expect(err).toBeInstanceOf(HitchValidationError);
+      expect(err.issues[0]?.code).toBe("EVIDENCE_CONDITION_NOT_FOUND");
+      expect(err.issues[0]?.path).toBe("conditionId");
+      expect(err.message).toContain("nope");
+    }
   });
 
   // ── multiple insertions are independent ───────────────────────────────────
