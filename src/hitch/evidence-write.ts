@@ -76,12 +76,17 @@ function throwValidation(code: string, message: string, path: string): never {
   ]);
 }
 
+// Kind inference operates on the NORMALIZED payload (blank command/output
+// already dropped by the caller), so a blank `--command` cannot mislabel a row
+// as kind=command.
 function inferKind(
-  input: AttachHitchEvidenceInput,
+  kind: HitchEvidenceKind | undefined,
+  hasCommand: boolean,
+  hasMetrics: boolean,
 ): HitchEvidenceKind {
-  if (input.kind !== undefined) return input.kind;
-  if (input.command !== undefined) return "command";
-  if (input.metrics !== undefined) return "metrics";
+  if (kind !== undefined) return kind;
+  if (hasCommand) return "command";
+  if (hasMetrics) return "metrics";
   return "note";
 }
 
@@ -99,14 +104,20 @@ function redactField(raw: string): { value: string; flagged: boolean } {
 
 /**
  * Tail-clip `output` to `EVIDENCE_EXCERPT_BYTES` AFTER redaction.
- * Clipping is byte-aware (UTF-8) to match the close-check runner's approach.
+ *
+ * Byte-aware AND character-boundary-aware: a naive `subarray(len-N)` tail can
+ * begin mid-multibyte-character, and decoding that emits U+FFFD replacement
+ * chars whose re-encoding can push the excerpt OVER the byte cap (e.g. a 3-byte
+ * char split yields an 8196-byte excerpt). We advance the start to the next
+ * UTF-8 lead byte (skip 0b10xxxxxx continuation bytes), so the kept tail is a
+ * valid character sequence of at most `EVIDENCE_EXCERPT_BYTES` bytes.
  */
 function makeExcerpt(output: string): string {
   const buf = Buffer.from(output, "utf8");
   if (buf.length <= EVIDENCE_EXCERPT_BYTES) return output;
-  return buf
-    .subarray(buf.length - EVIDENCE_EXCERPT_BYTES)
-    .toString("utf8");
+  let start = buf.length - EVIDENCE_EXCERPT_BYTES;
+  while (start < buf.length && (buf[start]! & 0xc0) === 0x80) start++;
+  return buf.subarray(start).toString("utf8");
 }
 
 /**
@@ -177,17 +188,23 @@ export function attachHitchEvidence(
     }
   }
 
-  // ── 5. payload non-empty ──────────────────────────────────────────────────
+  // ── 5. normalize payload + non-empty gate ─────────────────────────────────
+  // A blank (whitespace-only) command/output is NOT payload, so normalize it to
+  // "absent" up front. The gate, kind inference, redaction, and storage then
+  // all agree — `--output ""` cannot bypass the gate, and a blank `--command`
+  // cannot be stored or mislabel the row as kind=command.
+  const command =
+    input.command !== undefined && input.command.trim() !== ""
+      ? input.command
+      : undefined;
+  const output =
+    input.output !== undefined && input.output.trim() !== ""
+      ? input.output
+      : undefined;
   const hasMetrics =
     input.metrics !== undefined && Object.keys(input.metrics).length > 0;
-  // A blank (whitespace-only) command/output is NOT payload — mirrors the
-  // non-empty metrics rule — so `--output ""` / `--command "  "` cannot bypass
-  // the non-empty gate and persist a contentless row.
-  const hasCommand = input.command !== undefined && input.command.trim() !== "";
-  const hasOutput = input.output !== undefined && input.output.trim() !== "";
-  const hasPayload = hasCommand || hasOutput || hasMetrics;
 
-  if (!hasPayload) {
+  if (command === undefined && output === undefined && !hasMetrics) {
     throwValidation(
       "EVIDENCE_PAYLOAD_EMPTY",
       "at least one payload field is required (command, output, or metrics)",
@@ -211,9 +228,9 @@ export function attachHitchEvidence(
     }
   }
 
-  let safeCommand: string | undefined = input.command;
-  if (input.command !== undefined) {
-    const r = redactField(input.command);
+  let safeCommand: string | null = null;
+  if (command !== undefined) {
+    const r = redactField(command);
     safeCommand = r.value;
     if (r.flagged) {
       secretSuspect = true;
@@ -222,8 +239,8 @@ export function attachHitchEvidence(
   }
 
   let outputExcerpt: string | null = null;
-  if (input.output !== undefined) {
-    const r = redactField(input.output);
+  if (output !== undefined) {
+    const r = redactField(output);
     if (r.flagged) {
       secretSuspect = true;
       redacted = true;
@@ -252,7 +269,7 @@ export function attachHitchEvidence(
   // ── 7. derive remaining fields ────────────────────────────────────────────
   const evidenceId = `ev-${randomUUID()}`;
   const createdAt = opts.now ?? new Date().toISOString();
-  const kind = inferKind(input);
+  const kind = inferKind(input.kind, command !== undefined, hasMetrics);
 
   // ── 8. build the row (attester is HARDCODED — never from input) ───────────
   const row: HitchEvidence = {
@@ -263,7 +280,7 @@ export function attachHitchEvidence(
     kind,
     attester: "operator", // HARDCODED — NEVER read from input
     label: safeLabel,
-    command: safeCommand ?? null,
+    command: safeCommand,
     exitCode: null,
     summaryMetrics: safeMetrics,
     metricsSchema: 1,

@@ -503,6 +503,42 @@ describe("attachHitchEvidence", () => {
     );
   });
 
+  // ── C6 (codex P2): a blank command must not drive kind or be stored ───────
+  it("ignores a blank command for kind inference and does not store it", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a");
+    const row = attachHitchEvidence(repo, {
+      hitchId: "hitch-a",
+      label: "x",
+      command: "   ",
+      output: "real body",
+    });
+    expect(row.kind).toBe("note"); // NOT "command"
+    expect(row.command).toBeNull(); // blank command not persisted
+    expect(row.outputExcerpt).toBe("real body");
+  });
+
+  // ── C7 (codex P2): excerpt stays within the byte cap across a multibyte cut ─
+  it("keeps outputExcerpt within the byte cap when the tail splits a multibyte char", () => {
+    const db = freshDb();
+    const repo = makeRepo(db);
+    seedHitch(repo, "hitch-a");
+    // 3-byte chars × 4000 = 12000 bytes > 8192; the tail cut lands mid-character.
+    const big = "あ".repeat(4000);
+    const row = attachHitchEvidence(repo, {
+      hitchId: "hitch-a",
+      label: "x",
+      output: big,
+    });
+    expect(row.outputExcerpt).not.toBeNull();
+    expect(Buffer.byteLength(row.outputExcerpt!, "utf8")).toBeLessThanOrEqual(
+      8192,
+    );
+    // no U+FFFD replacement char from a severed multibyte sequence
+    expect(row.outputExcerpt!).not.toContain("�");
+  });
+
   // ── F8: non-secret command survives the writer round-trip ─────────────────
   it("preserves a non-secret command verbatim (writer round-trip)", () => {
     const db = freshDb();
