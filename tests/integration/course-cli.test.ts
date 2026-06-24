@@ -867,6 +867,110 @@ describe("course/phase CLI (SP-1)", () => {
     });
   });
 
+  it("phase update applies scope, close conditions, status, and note atomically", () => {
+    const { root } = setup();
+    const course = json<{ courseId: string }>(
+      runCli(root, ["course", "create", "--title", "Atomic Update", "--json"]),
+    );
+    const initialScope = join(root, "initial-scope.json");
+    const nextScope = join(root, "next-scope.json");
+    const initialClose = join(root, "initial-close.json");
+    const nextClose = join(root, "next-close.json");
+    writeFileSync(initialScope, JSON.stringify({ targetFiles: ["src/**"] }));
+    writeFileSync(nextScope, JSON.stringify({ targetFiles: ["src/**"], notes: "next scope" }));
+    writeFileSync(
+      initialClose,
+      JSON.stringify([
+        {
+          id: "typecheck",
+          kind: "command",
+          required: true,
+          command: "npm run typecheck",
+        },
+      ]),
+    );
+    writeFileSync(
+      nextClose,
+      JSON.stringify([
+        {
+          id: "typecheck",
+          kind: "command",
+          required: true,
+          command: "npm run typecheck",
+        },
+        {
+          id: "review",
+          kind: "review_consensus",
+          required: true,
+          description: "review consensus approved",
+        },
+      ]),
+    );
+    const phase = json<{ phaseId: string }>(
+      runCli(root, [
+        "phase",
+        "add",
+        "--course",
+        course.courseId,
+        "--title",
+        "Atomic Phase",
+        "--scope-file",
+        initialScope,
+        "--close-file",
+        initialClose,
+        "--json",
+      ]),
+    );
+
+    withSeedDb(root, (db) => {
+      db.exec(`
+        CREATE TRIGGER fail_phase_note
+        BEFORE UPDATE OF review_state_json ON phases
+        WHEN NEW.review_state_json LIKE '%rollback note%'
+        BEGIN
+          SELECT RAISE(ABORT, 'forced_note_failure');
+        END;
+      `);
+    });
+
+    const failed = runCli(root, [
+      "phase",
+      "update",
+      phase.phaseId,
+      "--scope-file",
+      nextScope,
+      "--close-file",
+      nextClose,
+      "--status",
+      "closed",
+      "--note",
+      "rollback note",
+    ]);
+    expect(failed.code).not.toBe(0);
+    expect(failed.out).toMatch(/forced_note_failure/);
+
+    withSeedDb(root, (db) => {
+      const row = db
+        .prepare(
+          `SELECT status, scope_json, close_conditions_json, review_state_json
+             FROM phases
+            WHERE phase_id = ?`,
+        )
+        .get(phase.phaseId) as {
+        status: string;
+        scope_json: string;
+        close_conditions_json: string;
+        review_state_json: string | null;
+      };
+      expect(row.status).toBe("pending");
+      expect(JSON.parse(row.scope_json)).toEqual({ targetFiles: ["src/**"] });
+      expect(
+        JSON.parse(row.close_conditions_json).map((cc: { id: string }) => cc.id),
+      ).toEqual(["typecheck"]);
+      expect(row.review_state_json).toBeNull();
+    });
+  });
+
   it("phase link-hitch links a seeded hitch and phase show reflects it", () => {
     const { root } = setup();
 

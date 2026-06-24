@@ -73,6 +73,9 @@ specs. `phase add`, MCP `phase.add`, and `phase update --scope-file/--close-file
 reject invalid close-condition forms before writing. Updates that widen scope or
 loosen required close gates require the explicit `allowScopeWiden` /
 `allowGateLoosen` path (`--allow-scope-widen` / `--allow-gate-loosen` in the CLI).
+CLI `phase update` applies scope/close-condition replacements, declared status,
+and `--note` in one `BEGIN IMMEDIATE` transaction through `PhaseRepository.update()`;
+if any part fails, none of the phase row changes are committed.
 
 `review_state_json` records only phase-level reviews that are **not** a hitch's own
 convergence (e.g. a codex/Fable review of the phase's roadmap/plan as a fact). It
@@ -396,7 +399,7 @@ Implemented in `src/cli/course.ts`, registered via `registerCourseCommands`.
 | `phase add --course <id> --title <text> [--parent <phase-id>] [--position <n>] [--scope-file <path>] [--close-file <path>] [--created-by <actor>] [--json]` | Add a phase. `--scope-file` / `--close-file` accept JSON or YAML. Rejects cross-course parent. |
 | `phase list --course <id> [--json]` | List phases for a course (flat, ordered by position/created_at/id). |
 | `phase show <id> [--json]` | Show a phase plus its linked hitch ids. |
-| `phase update <id> [--status pending\|in_progress\|closed\|blocked] [--scope-file <path>] [--close-file <path>] [--allow-scope-widen] [--allow-gate-loosen]` | Update a phase's declared status or scope/close conditions. Spec writes use `PhaseRepository.updateSpec()` validation/gates. |
+| `phase update <id> [--status pending\|in_progress\|closed\|blocked] [--scope-file <path>] [--close-file <path>] [--allow-scope-widen] [--allow-gate-loosen] [--note <text>]` | Update a phase's declared status, scope/close conditions, and/or note atomically. Spec writes use `PhaseRepository.updateSpec()` validation/gates inside the same transaction as status and note writes. |
 | `phase ratify <id> --approved-by <actor> [--reason <text>] [--json]` | Record human approval under `review_state_json.specApproval` with the current `specHash`. |
 | `phase link-hitch <phase-id> <hitch-id> [--allow-scope-widen] [--allow-gate-loosen] [--json]` | Link a hitch to a phase. Rejects cross-project mismatch, double-link, and ratified-spec loosening unless explicitly allowed. Emits a warning if the phase spec hash drifted after approval. |
 | `phase start-hitch <phase-id> --title <text> [--hitch-id <id>] [--description …] [--domain …] [--backlog-item-id …] [--scope-file …] [--close-file …] [--policy-file …] [--max-iterations …] [--max-review-cycles …] [--max-reruns …] [--max-total-new-findings …] [--allow-scope-widen] [--allow-gate-loosen] [--created-by <actor>] [--json]` | Create a hitch using the parent course project/repo and the phase spec by default, then link it in one transaction. Explicit scope/close overrides are checked against ratified phase specs with the same flags as `link-hitch`. |

@@ -115,27 +115,19 @@ export function registerPhaseSubcommands(
             ? (parseChoice(raw.status, PHASE_STATUSES, "--status") as PhaseStatus)
             : undefined;
         withCourseDb(opts, (db) => {
-          const phases = new PhaseRepository(db);
-          if (raw.scopeFile !== undefined || raw.closeFile !== undefined) {
-            phases.updateSpec({
-              phaseId: id,
-              ...(raw.scopeFile !== undefined
-                ? { scope: readStructuredFile(String(raw.scopeFile)) }
-                : {}),
-              ...(raw.closeFile !== undefined
-                ? { closeConditions: readStructuredFile(String(raw.closeFile)) }
-                : {}),
-              allowScopeWiden: raw.allowScopeWiden === true,
-              allowGateLoosen: raw.allowGateLoosen === true,
-            });
-          }
-          if (newStatus !== undefined) {
-            phases.setStatus(id, newStatus);
-          }
-          if (raw.note !== undefined) {
-            phases.setNote(id, String(raw.note));
-          }
-          const updated = phases.require(id);
+          const updated = new PhaseRepository(db).update({
+            phaseId: id,
+            ...(raw.scopeFile !== undefined
+              ? { scope: readStructuredFile(String(raw.scopeFile)) }
+              : {}),
+            ...(raw.closeFile !== undefined
+              ? { closeConditions: readStructuredFile(String(raw.closeFile)) }
+              : {}),
+            ...(newStatus !== undefined ? { status: newStatus } : {}),
+            ...(raw.note !== undefined ? { note: String(raw.note) } : {}),
+            allowScopeWiden: raw.allowScopeWiden === true,
+            allowGateLoosen: raw.allowGateLoosen === true,
+          });
           process.stdout.write(`phase=${updated.phaseId} status=${updated.status}\n`);
         });
       });
