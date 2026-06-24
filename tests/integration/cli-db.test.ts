@@ -222,6 +222,71 @@ describe("CLI harness db", () => {
     ).toBe(true);
   });
 
+  it("migrate-blobs preserves truncated artifact status across external round trip", () => {
+    const root = makeTmpDir("harness-clidb-");
+    runCli(root, ["db", "init"]);
+    const dbPath = join(root, ".harness", "harness.sqlite");
+    const db = openDb(dbPath);
+    let blobSha: string;
+    try {
+      const body = Buffer.from("stored truncated prefix");
+      blobSha = storeArtifactBlob(db, body).sha256;
+      db.prepare(
+        `INSERT INTO artifacts
+           (artifact_id, run_id, kind, relative_path, content_type, bytes,
+            sha256, storage, blob_sha256, body_status, created_at,
+            redacted, secret_suspect, original_bytes, original_sha256)
+         VALUES ('run-a:large.log', 'run-a', 'log', 'large.log',
+                 'text/plain', ?, ?, 'db', ?, 'truncated',
+                 '2026-05-25T00:00:00.000Z', 0, 0, ?, ?)`,
+      ).run(body.length, blobSha, blobSha, body.length + 10, "f".repeat(64));
+    } finally {
+      db.close();
+    }
+
+    const storeRoot = join(root, "blob-store");
+    expect(
+      runCli(root, [
+        "db",
+        "blob-store",
+        "add",
+        "local",
+        "--id",
+        "local",
+        "--path",
+        storeRoot,
+      ]).code,
+    ).toBe(0);
+    expect(
+      runCli(root, ["db", "migrate-blobs", "--to", "external", "--store", "local"]).code,
+    ).toBe(0);
+
+    const externalRow = openDb(dbPath);
+    try {
+      expect(
+        externalRow
+          .prepare("SELECT storage, body_status FROM artifacts WHERE artifact_id = 'run-a:large.log'")
+          .get(),
+      ).toEqual({ storage: "external", body_status: "truncated" });
+    } finally {
+      externalRow.close();
+    }
+
+    expect(
+      runCli(root, ["db", "migrate-blobs", "--to", "db", "--store", "local"]).code,
+    ).toBe(0);
+    const restoredRow = openDb(dbPath);
+    try {
+      expect(
+        restoredRow
+          .prepare("SELECT storage, body_status FROM artifacts WHERE artifact_id = 'run-a:large.log'")
+          .get(),
+      ).toEqual({ storage: "db", body_status: "truncated" });
+    } finally {
+      restoredRow.close();
+    }
+  });
+
   it("init is idempotent — re-running keeps the schema current", () => {
     const root = makeTmpDir("harness-clidb-");
     runCli(root, ["db", "init"]);

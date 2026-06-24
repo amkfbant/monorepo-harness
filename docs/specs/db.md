@@ -968,6 +968,11 @@ Phase 17 は Phase 16 の BlobStore infrastructure を実際の runtime storage 
   に拡張（SQLite は in-place な CHECK 変更ができないため `artifacts_v12` を
   作って `INSERT … SELECT` → `DROP` → `RENAME`）。`blob_sha256` /
   `body_status` / `original_bytes` / `original_sha256` は引き継ぐ。
+- Blob migration (`db-to-external` / `external-to-db`) changes the physical
+  location marker (`artifacts.storage`) without erasing truncation audit state.
+  If an artifact already has `body_status='truncated'`, CLI and MCP migration
+  paths preserve `truncated`; only non-truncated artifacts are rewritten to
+  `external_available` or `db_available`.
 - `runs` に asset 帰属列を追加: `project_profile_revision_id`（FK →
   `project_profile_revisions`）/ `effective_policy_snapshot_id`（FK →
   `effective_policy_snapshots`）/ `knowledge_revision_ids_json`。`meta_json`

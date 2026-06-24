@@ -110,7 +110,11 @@ export function registerDbBlobCommands(dbCmd: Command): void {
                 .prepare(
                   `UPDATE artifacts
                       SET storage = 'external',
-                          body_status = 'external_available'
+                          body_status = CASE
+                            WHEN body_status = 'truncated'
+                            THEN 'truncated'
+                            ELSE 'external_available'
+                          END
                     WHERE storage = 'db'
                       AND blob_sha256 IN (
                         SELECT sha256 FROM external_artifact_blobs

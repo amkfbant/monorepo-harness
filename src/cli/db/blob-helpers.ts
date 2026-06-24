@@ -97,7 +97,12 @@ export async function migrateExternalBlobsToDb(
         storeArtifactBlob(db, body);
         db.prepare(
           `UPDATE artifacts
-              SET storage = 'db', body_status = 'db_available'
+              SET storage = 'db',
+                  body_status = CASE
+                    WHEN body_status = 'truncated'
+                    THEN 'truncated'
+                    ELSE 'db_available'
+                  END
             WHERE artifact_id = ?`,
         ).run(row.artifact_id);
       }

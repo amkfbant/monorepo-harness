@@ -925,7 +925,10 @@ MCP-requested archive output paths must resolve under `.harness/archives`.
 
 `harness.db.migrate_blobs.apply` is also global-scope only because blob
 migration can move artifact bodies across projects. Project-scoped clients may
-call the preview tool, but apply returns `permission_denied`.
+call the preview tool, but apply returns `permission_denied`. Confirmed
+`db-to-external` and `external-to-db` migrations preserve
+`body_status='truncated'` while changing `artifacts.storage`; non-truncated
+artifacts move to the normal `external_available` / `db_available` statuses.
 
 `harness.db.gc_blobs.apply` is also global-scope only because unreferenced
 external blob rows are not project-scoped. Project-scoped clients may call the
