@@ -870,16 +870,18 @@ design §0.1 R13). It is the operator-manual scope-write path: the handler takes
 orchestrate-driven classify runner (`harness hitch orchestrate` /
 `harness.hitch.orchestrate`), which alone supplies the reviewer runner, run
 worktree, and audit context the jury needs (see `docs/specs/workflow.md`
-"finding 分類"). When a `record_findings` call omits `scopeStatus`, the only
-machine classification applied is the deterministic **heuristic**
-(`classifyFindingForHitch`) — still no jury. Operator override of a jury- or
-heuristic-assigned classification therefore goes through `classify_finding` as a
-**guarded mutation**: it requires `guarded-mutation` client mode, runs under
-`OperationRunner` with the stored permission snapshot, and is recorded in the
-operation audit. It is NOT a shell bypass of harness state transitions — the
-classification write is the harness's deterministic `repo.classifyFinding`, and
-the safety boundary (state transitions are harness-only; LLM output never drives
-status) holds for the override as for every other path.
+"finding 分類"). `record_findings` does **not** accept `findings[].scopeStatus`;
+calls that include it are rejected as invalid arguments before any finding is
+written. The only classification applied during `record_findings` is the
+deterministic **heuristic** (`classifyFindingForHitch`) — still no jury.
+Operator override of a jury- or heuristic-assigned classification therefore goes
+through `classify_finding` as a **guarded mutation**: it requires
+`guarded-mutation` client mode, runs under `OperationRunner` with the stored
+permission snapshot, and is recorded in the operation audit. It is NOT a shell
+bypass of harness state transitions — the classification write is the harness's
+deterministic `repo.classifyFinding`, and the safety boundary (state transitions
+are harness-only; LLM output never drives status) holds for the override as for
+every other path.
 
 When `harness.hitch.start` omits an explicit `hitchId`, the deterministic
 default id is derived from the tuple `[projectScope, idempotencyKey]` using

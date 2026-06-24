@@ -127,13 +127,10 @@ export async function hitchRecordFindingsTool(
         });
         const recorded = args.findings.map((finding) => {
           const source = finding.source ?? "mcp";
-          const classification =
-            finding.scopeStatus === undefined
-              ? classifyFindingForHitch(session, toClassifiableFinding(source, finding))
-              : {
-                  scopeStatus: finding.scopeStatus,
-                  reason: "scope supplied by MCP caller",
-                };
+          const classification = classifyFindingForHitch(
+            session,
+            toClassifiableFinding(source, finding),
+          );
           const input: UpsertHitchFindingInput = {
             hitchId: args.hitchId,
             source,
@@ -518,4 +515,3 @@ export async function hitchExpandScopeTool(
     workWithDb: async (db) => expandHitchScope(db, context, args),
   });
 }
-

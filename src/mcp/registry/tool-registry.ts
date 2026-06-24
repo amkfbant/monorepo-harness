@@ -464,7 +464,6 @@ const hitchFindingInputArgs = z
     sourceRef: z.string().min(1).optional(),
     sourceAttemptId: z.string().min(1).optional(),
     sourceCycleId: z.string().min(1).optional(),
-    scopeStatus: z.enum(HITCH_SCOPE_STATUSES).optional(),
   })
   .strict();
 
@@ -673,11 +672,22 @@ const hitchScopeJson = {
   description: "Hitch scope object",
   additionalProperties: true,
 };
-const hitchFindingJson = {
-  type: "object",
-  description: "Hitch finding input",
-  additionalProperties: true,
-};
+const hitchFindingJson = objectSchema(
+  {
+    severity: enumSchema(HITCH_FINDING_SEVERITIES),
+    category: { type: "string" },
+    summary: { type: "string" },
+    detail: { type: "string" },
+    filePath: { type: "string" },
+    symbol: { type: "string" },
+    suggestedFix: { type: "string" },
+    source: enumSchema(HITCH_FINDING_SOURCES),
+    sourceRef: { type: "string" },
+    sourceAttemptId: { type: "string" },
+    sourceCycleId: { type: "string" },
+  },
+  ["severity", "category", "summary"],
+);
 
 const workspaceListArgs = z
   .object({

@@ -52,7 +52,6 @@ export interface HitchFindingInput {
   sourceRef?: string;
   sourceAttemptId?: string;
   sourceCycleId?: string;
-  scopeStatus?: HitchScopeStatus;
 }
 
 export interface HitchRecordFindingsArgs extends MutationBaseArgs {
