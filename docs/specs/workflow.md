@@ -1449,6 +1449,10 @@ redaction 処理が子 run の diff に特例なしでそのまま効き、git o
   （file↔dir / link↔file）でも EEXIST/EISDIR/ENOTDIR にならず継続する。具体的には —
   **symlink は live run の no-follow モデルに合わせて決して dereference しない**（`lstat`
   判定 → `readlink`/`symlink` で symlink として再作成、broken/dangling も symlink のまま）/
+  **子側 dst の ancestor が symlink の場合は、`mkdir` / `rm` / `copyFile` / `cp` /
+  `symlink` の前に fail-closed で拒否**する（final component の symlink は従来通り no-follow
+  `rm` で置換可能だが、先行 entry が `a -> outside` を作り、後続 `a/b` がその ancestor
+  symlink を辿って child worktree 外へ書く/消すことは許可しない）/
   **親が tracked dir を regular file に潰した**ら子の dir を recursive 削除して file を copy /
   **親が tracked file を dir に展開した**ら（src が directory）`cp -r`（no-dereference）で
   tree を再作成 / 親で消えた path（ENOENT・祖先が file 化した ENOTDIR）は子から recursive
