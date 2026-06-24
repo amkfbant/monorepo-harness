@@ -833,6 +833,11 @@ harness operations serve --cors-origin <origin>  # 指定 origin に CORS を許
   それぞれ `401` / `403`
 - route: `POST /api/runs/:runId/review`, `/cleanup`, `/pr`, `/rerun`,
   `POST /api/backlog/:itemId/run`
+- `POST /api/runs/:runId/review` body は `decision`（`approved` /
+  `changes_requested` / `rejected`）を必須とし、optional な `override` は
+  `{ "reason": string, "actorReviewerId"?: string }` の object のみ受け付ける。
+  `override.reason` は non-empty string、`override.actorReviewerId` は指定時 string。
+  型不一致は operation ledger へ記録する前に `400 bad_request`。
 
 ## `harness session`
 
