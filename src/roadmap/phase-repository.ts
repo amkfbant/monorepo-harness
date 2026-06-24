@@ -190,6 +190,11 @@ export interface UpdatePhaseSpecInput {
   now?: string;
 }
 
+export interface UpdatePhaseInput extends UpdatePhaseSpecInput {
+  status?: PhaseStatus;
+  note?: string;
+}
+
 export interface LinkHitchOptions {
   now?: string;
   allowScopeWiden?: boolean;
@@ -336,6 +341,52 @@ export class PhaseRepository {
       }
       return this.require(input.phaseId);
     }).immediate();
+  }
+
+  /**
+   * Atomically applies the CLI phase update surface: spec replacement,
+   * declared status, and operator note. Any failure rolls back the whole set.
+   */
+  update(input: UpdatePhaseInput): Phase {
+    const hasSpecUpdate =
+      input.scope !== undefined || input.closeConditions !== undefined;
+    if (
+      !hasSpecUpdate &&
+      input.status === undefined &&
+      input.note === undefined
+    ) {
+      return this.require(input.phaseId);
+    }
+    const ts = input.now ?? new Date().toISOString();
+    return this.db
+      .transaction(() => {
+        if (hasSpecUpdate) {
+          this.updateSpec({
+            phaseId: input.phaseId,
+            ...(input.scope !== undefined ? { scope: input.scope } : {}),
+            ...(input.closeConditions !== undefined
+              ? { closeConditions: input.closeConditions }
+              : {}),
+            ...(input.allowScopeWiden !== undefined
+              ? { allowScopeWiden: input.allowScopeWiden }
+              : {}),
+            ...(input.allowGateLoosen !== undefined
+              ? { allowGateLoosen: input.allowGateLoosen }
+              : {}),
+            now: ts,
+          });
+        } else {
+          this.require(input.phaseId);
+        }
+        if (input.status !== undefined) {
+          this.setStatus(input.phaseId, input.status, ts);
+        }
+        if (input.note !== undefined) {
+          this.setNote(input.phaseId, input.note, ts);
+        }
+        return this.require(input.phaseId);
+      })
+      .immediate();
   }
 
   /**

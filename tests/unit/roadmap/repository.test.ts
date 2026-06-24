@@ -225,6 +225,64 @@ describe("Course/Phase repositories (SP-1)", () => {
     expect(updated.updatedAt).toBe("2026-06-18T00:00:00.000Z");
   });
 
+  it("update rolls back spec and status when the note write fails", () => {
+    const c = courses.create({ title: "C", createdBy: "t", createdSource: "cli" });
+    const p = phases.add({
+      courseId: c.courseId,
+      title: "Atomic",
+      scope: { targetFiles: ["src/**"] },
+      closeConditions: [
+        {
+          id: "typecheck",
+          kind: "command",
+          required: true,
+          command: "npm run typecheck",
+        },
+      ],
+      createdBy: "t",
+      createdSource: "cli",
+    });
+    conn.exec(`
+      CREATE TRIGGER fail_phase_note
+      BEFORE UPDATE OF review_state_json ON phases
+      WHEN NEW.review_state_json LIKE '%rollback note%'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced_note_failure');
+      END;
+    `);
+
+    expect(() =>
+      phases.update({
+        phaseId: p.phaseId,
+        scope: { targetFiles: ["src/**"], notes: "next scope" },
+        closeConditions: [
+          {
+            id: "typecheck",
+            kind: "command",
+            required: true,
+            command: "npm run typecheck",
+          },
+          {
+            id: "review",
+            kind: "review_consensus",
+            required: true,
+            description: "review consensus approved",
+          },
+        ],
+        status: "closed",
+        note: "rollback note",
+      }),
+    ).toThrow(/forced_note_failure/);
+
+    const unchanged = phases.require(p.phaseId);
+    expect(unchanged.status).toBe("pending");
+    expect(unchanged.scope).toEqual({ targetFiles: ["src/**"] });
+    expect(
+      (unchanged.closeConditions as Array<{ id: string }>).map((cc) => cc.id),
+    ).toEqual(["typecheck"]);
+    expect(unchanged.reviewState).toBeNull();
+  });
+
   it("links a hitch to a phase and rejects a second link (schema PK + repo guard)", () => {
     const c = courses.create({ title: "C", projectId: "demo", createdBy: "t", createdSource: "cli" });
     const p = phases.add({ courseId: c.courseId, title: "P", createdBy: "t", createdSource: "cli" });
