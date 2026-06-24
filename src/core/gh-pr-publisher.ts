@@ -312,6 +312,7 @@ export function createGhReviewVerdicts(
             id?: unknown;
             databaseId?: unknown;
             submittedAt?: unknown;
+            body?: unknown;
           };
           const author =
             typeof rr.author?.login === "string" ? rr.author.login : "";
@@ -324,7 +325,14 @@ export function createGhReviewVerdicts(
                 : null;
           const submittedAt =
             typeof rr.submittedAt === "string" ? rr.submittedAt : null;
-          return { author, state, githubReviewId, submittedAt };
+          // `gh pr view --json reviews` returns each review's `body`. Pass it
+          // through RAW as `summary`; the ingest boundary
+          // (normalizeExternalReviewVerdict) applies whole-field secret
+          // redaction before persisting, so operators keep the review text they
+          // need to triage recorded verdicts instead of a NULL summary.
+          const summary =
+            typeof rr.body === "string" && rr.body !== "" ? rr.body : null;
+          return { author, state, githubReviewId, submittedAt, summary };
         })
         .filter((v) => v.author !== "" && v.state !== "");
     } catch (error) {

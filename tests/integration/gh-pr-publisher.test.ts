@@ -383,7 +383,7 @@ describe("gh CI status probe (Phase 3)", () => {
 });
 
 describe("external probe failure observability", () => {
-  it("review verdicts probe preserves GitHub review ids and submitted timestamps", async () => {
+  it("review verdicts probe preserves GitHub review ids, timestamps, and body summaries", async () => {
     const verdicts = createGhReviewVerdicts(tmpdir(), "fake-gh", 5_000, async () =>
       JSON.stringify({
         reviews: [
@@ -393,6 +393,7 @@ describe("external probe failure observability", () => {
             author: { login: "codex[bot]" },
             state: "CHANGES_REQUESTED",
             submittedAt: "2026-06-25T00:00:00Z",
+            body: "please fix the null check",
           },
           {
             databaseId: 456,
@@ -409,12 +410,16 @@ describe("external probe failure observability", () => {
         state: "CHANGES_REQUESTED",
         githubReviewId: "PRR_kwDO",
         submittedAt: "2026-06-25T00:00:00Z",
+        // the review body is surfaced as `summary` (the ingest boundary redacts
+        // it before persisting); an empty/absent body becomes null.
+        summary: "please fix the null check",
       },
       {
         author: "alice",
         state: "APPROVED",
         githubReviewId: 456,
         submittedAt: null,
+        summary: null,
       },
     ]);
   });
