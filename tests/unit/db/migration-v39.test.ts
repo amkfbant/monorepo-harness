@@ -46,8 +46,8 @@ function tableExists(db: Database.Database, table: string): boolean {
 }
 
 describe("v39 hitch_evidence table migration", () => {
-  it("LATEST_SCHEMA_VERSION has advanced to v39", () => {
-    expect(LATEST_SCHEMA_VERSION).toBe(39);
+  it("LATEST_SCHEMA_VERSION is at or beyond v39", () => {
+    expect(LATEST_SCHEMA_VERSION).toBeGreaterThanOrEqual(39);
   });
 
   it("fresh migration creates hitch_evidence with all expected columns", () => {
