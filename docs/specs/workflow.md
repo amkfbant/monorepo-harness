@@ -52,7 +52,8 @@
 18. setSafetyStatus  (from the final — post-command if commands ran — validation)
 19. split kept untracked → (allowed, denied) based on the final violations set
 20. write final-diff.patch
-21. write untracked-files.{txt,patch} for allowed (with secret-scan redaction)
+21. write untracked-files.{txt,patch} for allowed (with secret-scan redaction;
+    inline-sized UTF-8 text is full-content scanned before any patch bytes are saved)
 22. write untracked-denied.txt for denied (metadata only)
 23. write untracked-secrets.txt for secret suspects (metadata only)
 24. emit diff_collected (stage = post-command if commands ran, else post-codex, durationMs)
@@ -183,7 +184,7 @@ runs/<runId>/
   codex-error.log          # codex stderr (生; readStderrTail で patch echo を抑制してから artifact に転載)
   codex-events.jsonl       # codex `--json` stdout の JSONL events (raw stdout は一時 dotfile に隔離し、redaction 後に atomic publish; command aggregated_output / text / command / command_name / name は shared secret heuristic redaction 済み; turn.completed.usage を含み、run_usage の入力になる。redaction 失敗時は redaction.failed sentinel のみ)
   final-diff.patch         # tracked changes の unified diff (against baseSha)。常に生成 (変更なしなら空)
-  untracked-files.patch    # OPTIONAL: allowed untracked がある場合のみ。inline + secret hit は redact
+  untracked-files.patch    # OPTIONAL: allowed untracked がある場合のみ。inline-sized UTF-8 text は全文 secret scan 後に保存し、hit は redact
   untracked-files.txt      # OPTIONAL: allowed untracked がある場合のみ。path list
   untracked-denied.txt     # OPTIONAL: denied untracked がある場合のみ。size + sha256、content なし
   untracked-secrets.txt    # OPTIONAL: secret hit がある場合のみ。reasons のみ、content なし

@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { basename as pathBasename, join } from "node:path";
-import { scanForSecrets, SCAN_SAMPLE_BYTES } from "./secret-scan.js";
+import { scanForSecrets } from "./secret-scan.js";
 
 const MAX_FILE_BYTES = 256 * 1024;
 
@@ -103,11 +103,8 @@ export async function buildUntrackedPatch(
         }
       } else {
         const buf = await readFile(fullPath);
-        const isBinary = looksBinary(buf);
-        const sample = isBinary
-          ? null
-          : buf.toString("utf8").slice(0, SCAN_SAMPLE_BYTES);
-        const scan = scanForSecrets(base, sample);
+        const content = looksBinary(buf) ? null : buf.toString("utf8");
+        const scan = scanForSecrets(base, content);
         if (scan.matched) {
           const sha = createHash("sha256").update(buf).digest("hex");
           secretSuspects.push({ path: p, reasons: scan.reasons });
@@ -115,14 +112,13 @@ export async function buildUntrackedPatch(
             `@@ secret-suspect (${scan.reasons.join(", ")}, size=${st.size}, sha256=${sha}) @@`,
           );
           out.push("+# content omitted: matched secret heuristic");
-        } else if (isBinary) {
+        } else if (content === null) {
           const sha = createHash("sha256").update(buf).digest("hex");
           out.push(
             `@@ omitted (binary, size=${st.size} bytes, sha256=${sha}) @@`,
           );
           out.push("+# content omitted: detected as binary");
         } else {
-          const content = buf.toString("utf8");
           const lines = content.split("\n");
           const hasTrailingNewline =
             lines.length > 0 && lines[lines.length - 1] === "";

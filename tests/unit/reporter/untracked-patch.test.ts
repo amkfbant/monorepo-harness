@@ -10,6 +10,7 @@ import {
   buildUntrackedDeniedReport,
   buildUntrackedSecretsReport,
 } from "../../../src/reporter/untracked-patch.js";
+import { SCAN_SAMPLE_BYTES } from "../../../src/reporter/secret-scan.js";
 import { makeTmpDir } from "../../helpers/tmp.js";
 
 describe("buildUntrackedPatch", () => {
@@ -122,6 +123,23 @@ describe("buildUntrackedPatch", () => {
     );
     const r = await buildUntrackedPatch(dir, ["notes.md"]);
     expect(r.patch).not.toMatch(/AKIAIOSFODNN7EXAMPLE/);
+    expect(r.secretSuspects[0]?.reasons).toContain(
+      "content:aws-access-key-id",
+    );
+  });
+
+  it("scans full inline-sized text content before emitting patch bytes", async () => {
+    const dir = makeTmpDir("harness-up-");
+    const key = "AKIAIOSFODNN7EXAMPLE";
+    writeFileSync(
+      join(dir, "notes.md"),
+      `${"x".repeat(SCAN_SAMPLE_BYTES + 64)}\nlate key: ${key}\n`,
+    );
+
+    const r = await buildUntrackedPatch(dir, ["notes.md"]);
+
+    expect(r.patch).not.toContain(key);
+    expect(r.patch).toMatch(/@@ secret-suspect/);
     expect(r.secretSuspects[0]?.reasons).toContain(
       "content:aws-access-key-id",
     );
