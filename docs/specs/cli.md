@@ -992,7 +992,7 @@ scope 無しは従来の file-based 集計。
 
 - **Candidates**: 各 run の `knowledge-candidates.yaml` を kind 別に集計（run の startedAt で `--since`、candidate.domain で `--domain` フィルタ）
 - **Promoted**: `docs/knowledge/<kind>/*.md` の frontmatter（`promoted_at` / `domain`）でフィルタして件数
-- **Rejected**: 各 run の `knowledge-decisions.yaml` の `rejected` 決定を `decidedAt` でフィルタして件数
+- **Rejected**: 各 run の `knowledge-decisions.yaml` の `rejected` 決定を `decidedAt` でフィルタして件数。`index` が同じ run の有効な `knowledge-candidates.yaml` entry（`knowledge list` / `promote` と同じ candidate schema）に解決できる決定だけを数え、out-of-range / malformed candidate への rejection は無視する
 - **Suggested actions**: 未対応の candidate を持つ run に `harness knowledge list --run-id` を提案
 
 `--since` は `7d` / `12h` 形式。
