@@ -790,7 +790,7 @@ describe("hitch orchestrate (real git + fake codex)", () => {
           summary: "looks good",
         },
         {
-          author: "codex[bot]",
+          author: "chatgpt-codex-connector",
           state: "COMMENTED",
           githubReviewId: "R_codex_comment",
           submittedAt: "2026-06-25T00:02:00.000Z",
