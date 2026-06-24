@@ -4,6 +4,7 @@ import {
   exportRun,
   exportBacklogItem,
   exportKnowledgeDecisions,
+  clearKnowledgeDecisionExport,
 } from "./export-files.js";
 
 /**
@@ -15,9 +16,10 @@ import {
  * export, or a `--reset` import.
  *
  * - `run` / `backlog`: every `db-first` row's files are re-exported.
- * - `knowledge`: every run with `db-first` candidate decisions has its
- *   `knowledge-decisions.yaml` re-projected. Promoted-entry `.md` bodies
- *   are file-backed (the `.md` is the artifact) and are NOT re-exported.
+ * - `knowledge`: every run with `db-first` rejected candidate decisions
+ *   has its `knowledge-decisions.yaml` re-projected. Promoted-entry `.md`
+ *   bodies are file-backed (the `.md` is the artifact) and are NOT
+ *   re-exported.
  */
 
 export type ExportScope = "run" | "backlog" | "knowledge";
@@ -47,6 +49,9 @@ export function exportFiles(
   const scopes: ExportScope[] =
     opts.scope !== undefined ? [opts.scope] : ["run", "backlog", "knowledge"];
   return scopes.map((scope) => {
+    if (scope === "knowledge") {
+      clearKnowledgeDecisionExportsWithoutRejections(db, paths.runsDir, opts.id);
+    }
     const ids = scopeIds(db, scope, opts.id);
     const result: BulkExportResult = {
       scope,
@@ -69,8 +74,8 @@ export function exportFiles(
 
 /**
  * The export targets for a scope. `run` / `backlog` are `db-first` rows;
- * `knowledge` is the set of runs that have `db-first` candidate decisions
- * (one `knowledge-decisions.yaml` per run).
+ * `knowledge` is the set of runs that have `db-first` rejected candidate
+ * decisions (one `knowledge-decisions.yaml` per run).
  */
 function scopeIds(
   db: Database.Database,
@@ -86,6 +91,7 @@ function scopeIds(
   const col = scope === "backlog" ? "item_id" : "run_id";
   const distinct = scope === "knowledge" ? "DISTINCT " : "";
   let sql = `SELECT ${distinct}${col} AS id FROM ${table} WHERE source_mode = 'db-first'`;
+  if (scope === "knowledge") sql += " AND status = 'rejected'";
   // a run whose dir was removed by `cleanup --scope run/all` is
   // intentionally file-less — re-exporting it (the run's meta/events OR
   // its knowledge-decisions.yaml, both under runs/<id>/) would resurrect
@@ -101,6 +107,42 @@ function scopeIds(
     id: string;
   }[];
   return rows.map((r) => r.id);
+}
+
+function clearKnowledgeDecisionExportsWithoutRejections(
+  db: Database.Database,
+  runsDir: string,
+  id: string | undefined,
+): void {
+  const runIdFilter = id === undefined ? "" : " AND run_id = @id";
+  const scopeIdFilter = id === undefined ? "" : " AND scope_id = @id";
+  const rows = db
+    .prepare(
+      `SELECT target.id
+       FROM (
+         SELECT run_id AS id
+         FROM runs
+         WHERE source_mode = 'db-first'${runIdFilter}
+         UNION
+         SELECT scope_id AS id
+         FROM exported_files
+         WHERE scope_type = 'knowledge_decisions'${scopeIdFilter}
+         UNION
+         SELECT run_id AS id
+         FROM knowledge_candidates
+         WHERE source_mode = 'db-first'${runIdFilter}
+       ) AS target
+       WHERE NOT EXISTS (
+         SELECT 1 FROM knowledge_candidates rejected
+         WHERE rejected.run_id = target.id
+           AND rejected.status = 'rejected'
+       )
+       ORDER BY target.id`,
+    )
+    .all(id === undefined ? {} : { id }) as { id: string }[];
+  for (const row of rows) {
+    clearKnowledgeDecisionExport(db, row.id, runsDir);
+  }
 }
 
 function exportOne(

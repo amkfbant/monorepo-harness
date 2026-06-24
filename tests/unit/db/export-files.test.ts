@@ -21,7 +21,10 @@ import {
   endExporting,
   isExporting,
 } from "../../../src/db/atomic-write.js";
-import { exportRun } from "../../../src/db/export-files.js";
+import {
+  exportKnowledgeDecisions,
+  exportRun,
+} from "../../../src/db/export-files.js";
 import { ingestRunArtifacts } from "../../../src/db/run-artifacts.js";
 import { importRuns } from "../../../src/db/import/runs.js";
 import { emptyCounters } from "../../../src/db/import/common.js";
@@ -402,5 +405,54 @@ describe("exportRun", () => {
     expect(artifacts).not.toContain(".exporting");
     db.close();
     db2.close();
+  });
+});
+
+describe("exportKnowledgeDecisions", () => {
+  it("does not write or track a decision sidecar when there are no rejected candidates", () => {
+    const db = freshDb();
+    const runsDir = tmpDir();
+    mkdirSync(join(runsDir, "run-no-rejections"), { recursive: true });
+    db.prepare(
+      `INSERT INTO knowledge_candidates (candidate_id, run_id, domain, kind,
+         title, body, status, created_at, decided_at, reviewer, reason,
+         source_mode, db_revision, export_status)
+       VALUES ('run-no-rejections:0', 'run-no-rejections', 'apps/x',
+         'policy_improvement', 't', 'c', 'promoted',
+         '2026-05-22T00:00:00Z', '2026-05-22T01:00:00Z',
+         'kn', NULL, 'db-first', 1, 'synced')`,
+    ).run();
+    writeFileSync(
+      join(runsDir, "run-no-rejections", "knowledge-decisions.yaml"),
+      "decisions:\n\n",
+    );
+    db.prepare(
+      `INSERT INTO exported_files (scope_type, scope_id, relative_path,
+         sha256, bytes, db_revision, exported_at)
+       VALUES ('knowledge_decisions', 'run-no-rejections',
+         'knowledge-decisions.yaml', 'stale-empty', 12, 1,
+         '2026-05-22T02:00:00Z')`,
+    ).run();
+
+    const result = exportKnowledgeDecisions(db, "run-no-rejections", {
+      runsDir,
+      force: true,
+    });
+
+    expect(result.status).toBe("synced");
+    expect(
+      existsSync(
+        join(runsDir, "run-no-rejections", "knowledge-decisions.yaml"),
+      ),
+    ).toBe(false);
+    const tracked = db
+      .prepare(
+        `SELECT count(*) AS n FROM exported_files
+         WHERE scope_type = 'knowledge_decisions'
+           AND scope_id = 'run-no-rejections'`,
+      )
+      .get() as { n: number };
+    expect(tracked.n).toBe(0);
+    db.close();
   });
 });

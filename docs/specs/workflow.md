@@ -651,7 +651,7 @@ file export を optional にした（[`db.md`](./db.md) の「Phase 8」節）�
 - knowledge entry markdown（`docs/knowledge/**/*.md`）は **authored file** で
   あり export gate の対象外 — export OFF でも `knowledge promote` は `.md` を
   書く。export gate がかかるのは DB 由来の sidecar（`knowledge-decisions.yaml`）
-  のみ。
+  のみで、sidecar は rejected candidate がある run だけに存在する。
 - Phase 3-5 の `index.sqlite` / `harness index` は撤去された（Phase 8-7）。
   run 一覧は file scan、集計・ダッシュボードは `harness.sqlite` read model。
 
