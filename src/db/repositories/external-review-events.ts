@@ -93,38 +93,46 @@ export class ExternalReviewEventRepository {
   constructor(private readonly db: Database.Database) {}
 
   append(input: ExternalReviewEventInput): ExternalReviewEventInsertResult {
+    assertRequired(input);
     assertKnownState(input.state);
     assertKnownReviewerType(input.reviewerType);
-    const info = this.db
-      .prepare(
-        `INSERT OR IGNORE INTO external_review_events
-           (event_id, hitch_id, run_id, repo_id, pr_number, author, reviewer_type,
-            state, github_review_id, submitted_at, summary, redacted, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        input.eventId,
-        input.hitchId ?? null,
-        input.runId ?? null,
-        input.repoId ?? null,
-        input.prNumber,
-        input.author,
-        input.reviewerType,
-        input.state,
-        input.githubReviewId ?? null,
-        input.submittedAt ?? null,
-        input.summary ?? null,
-        input.redacted === true ? 1 : 0,
-        input.createdAt,
-      );
-    if (info.changes === 1) {
-      return { row: this.requireById(input.eventId), inserted: true };
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO external_review_events
+             (event_id, hitch_id, run_id, repo_id, pr_number, author, reviewer_type,
+              state, github_review_id, submitted_at, summary, redacted, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.eventId,
+          input.hitchId ?? null,
+          input.runId ?? null,
+          input.repoId ?? null,
+          input.prNumber,
+          input.author,
+          input.reviewerType,
+          input.state,
+          input.githubReviewId ?? null,
+          input.submittedAt ?? null,
+          input.summary ?? null,
+          input.redacted === true ? 1 : 0,
+          input.createdAt,
+        );
+    } catch (error) {
+      // Fail closed: only the EXPECTED dedup (unique index / primary key)
+      // collapses to inserted:false. NOT NULL / CHECK / FK violations re-throw,
+      // so a malformed ingest is never silently dropped — a plain
+      // `INSERT OR IGNORE` would suppress those too (codex #397 review). Required
+      // fields are pre-validated above so the only constraint that can fire here
+      // is the dedup.
+      if (isUniqueConstraintError(error)) {
+        const existing = this.findIgnoredDuplicate(input);
+        if (existing !== null) return { row: existing, inserted: false };
+      }
+      throw error;
     }
-    const existing = this.findIgnoredDuplicate(input);
-    if (existing !== null) return { row: existing, inserted: false };
-    throw new Error(
-      `external_review_events insert ignored but no existing row was found for ${input.eventId}`,
-    );
+    return { row: this.requireById(input.eventId), inserted: true };
   }
 
   listForHitch(hitchId: string): ExternalReviewEventRow[] {
@@ -293,6 +301,35 @@ function assertKnownReviewerType(reviewerType: ExternalReviewerType): void {
       `CHECK constraint failed: external_review_events.reviewer_type (${reviewerType})`,
     );
   }
+}
+
+/**
+ * Fail closed on malformed input BEFORE the INSERT so the only constraint that
+ * can fire at the DB is the dedup unique index. Otherwise a NOT NULL violation
+ * on a row that also collides on `(github_review_id, state)` could be misread as
+ * a benign duplicate and silently dropped.
+ */
+function assertRequired(input: ExternalReviewEventInput): void {
+  for (const field of ["eventId", "author", "createdAt"] as const) {
+    const value = input[field];
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(
+        `external_review_events.${field} must be a non-empty string`,
+      );
+    }
+  }
+  if (!Number.isInteger(input.prNumber)) {
+    throw new Error("external_review_events.pr_number must be an integer");
+  }
+}
+
+/** better-sqlite3 surfaces dedup collisions with these constraint codes. */
+function isUniqueConstraintError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return (
+    code === "SQLITE_CONSTRAINT_UNIQUE" ||
+    code === "SQLITE_CONSTRAINT_PRIMARYKEY"
+  );
 }
 
 function toRow(row: ExternalReviewEventDbRow): ExternalReviewEventRow {

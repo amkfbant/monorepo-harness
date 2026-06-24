@@ -155,6 +155,32 @@ describe("ExternalReviewEventRepository", () => {
     }
   });
 
+  it("fails closed on a malformed duplicate insert instead of swallowing it", () => {
+    const db = freshDb();
+    try {
+      seedHitch(db, "hitch-a");
+      const repo = new ExternalReviewEventRepository(db);
+      repo.append(eventInput({ githubReviewId: "gh-dup", state: "approved" }));
+
+      // A second append colliding on (github_review_id, state) but malformed
+      // (empty author) must THROW, not silently report inserted:false the way a
+      // plain INSERT OR IGNORE would have.
+      expect(() =>
+        repo.append(
+          eventInput({
+            eventId: "erev-malformed",
+            githubReviewId: "gh-dup",
+            state: "approved",
+            author: "",
+          }),
+        ),
+      ).toThrow();
+      expect(repo.listForHitch("hitch-a")).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it("scopes listForPr / summarize by repo_id (PR numbers are per-repo)", () => {
     const db = freshDb();
     try {

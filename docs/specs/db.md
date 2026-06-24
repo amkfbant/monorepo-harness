@@ -827,7 +827,16 @@ re-poll された **同一 state の** 同一 GitHub review を 1 行に dedup �
 された）場合は別 verdict として記録する（取りこぼさない）。異なる / NULL の `github_review_id` の
 verdict も collapse / supersede せず別行として保持する。`listForHitch` / `listForPr` は
 `created_at ASC, event_id ASC`、`summarize` の `lastVerdict` は `created_at DESC, event_id DESC`
-で安定化する。
+で安定化する。`append` は required フィールド（`event_id`/`author`/`created_at`/`pr_number`）を
+事前検証し、INSERT は plain INSERT として **unique 衝突（dedup）のみ** を `inserted:false` に畳む。
+NOT NULL / CHECK / FK 違反は re-throw して malformed ingest を fail-closed に拒否する（`INSERT OR
+IGNORE` はこれらも握りつぶすため使わない）。
+
+> **既知の制約（ingest 層で解決予定・#395 後続フェーズ）**: dedup キー `(github_review_id, state)`
+> は linkage を含まない。同一 `(review, state)` を hitch なし（standalone）で先に記録し、後から
+> hitch 付きで append すると後者は dedup で無視され、その verdict は `listForHitch` /
+> `summarize({ hitchId })` に現れない。ingest 層（後続 hitch）が各 review を最初から最良の linkage
+> 込みで一度だけ記録するか、null linkage の補完で解決する設計判断を行う。
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 
