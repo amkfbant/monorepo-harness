@@ -826,6 +826,67 @@ describe("MCP mutation, confirmation, and audit", () => {
       ).toBe(3);
     });
 
+    it("confirmed blob migrations preserve truncated artifact status", async () => {
+      const root = freshRoot((db, harnessRoot) => {
+        const storeRoot = join(harnessRoot, "blob-store");
+        mkdirSync(storeRoot, { recursive: true });
+        seedLocalBlobStore(db, storeRoot);
+        seedRun(db, "run-blob", "demo");
+        const body = Buffer.from("stored truncated prefix");
+        const sha = sha256Text(body.toString("utf8"));
+        seedDbBlob(db, sha, body);
+        db.prepare(
+          `INSERT INTO artifacts
+             (artifact_id, run_id, kind, relative_path, content_type, bytes,
+              sha256, storage, blob_sha256, body_status, created_at,
+              original_bytes, original_sha256)
+           VALUES ('artifact-truncated', 'run-blob', 'log', 'large.log',
+                   'text/plain', ?, ?, 'db', ?, 'truncated',
+                   '2026-05-25T00:00:00Z', ?, ?)`,
+        ).run(body.length, sha, sha, body.length + 10, "f".repeat(64));
+      });
+
+      const toExternal = await callTool(server(root, guardedConfig()), "harness.db.migrate_blobs.apply", {
+        to: "external",
+        storeId: "local-main",
+        idempotencyKey: "migrate-truncated-ext",
+      });
+      expect(toExternal.status).toBe("confirmation_required");
+      const externalConfirmed = await confirmMcpRequest({
+        harnessRoot: root,
+        confirmationId: toExternal.confirmationId,
+        confirmedBy: "human",
+      });
+      expect(externalConfirmed.status).toBe("operation_started");
+      expect(
+        readDb(root, (db) =>
+          db
+            .prepare("SELECT storage, body_status FROM artifacts WHERE artifact_id = 'artifact-truncated'")
+            .get(),
+        ),
+      ).toEqual({ storage: "external", body_status: "truncated" });
+
+      const toDb = await callTool(server(root, guardedConfig()), "harness.db.migrate_blobs.apply", {
+        to: "db",
+        storeId: "local-main",
+        idempotencyKey: "migrate-truncated-db",
+      });
+      expect(toDb.status).toBe("confirmation_required");
+      const dbConfirmed = await confirmMcpRequest({
+        harnessRoot: root,
+        confirmationId: toDb.confirmationId,
+        confirmedBy: "human",
+      });
+      expect(dbConfirmed.status).toBe("operation_started");
+      expect(
+        readDb(root, (db) =>
+          db
+            .prepare("SELECT storage, body_status FROM artifacts WHERE artifact_id = 'artifact-truncated'")
+            .get(),
+        ),
+      ).toEqual({ storage: "db", body_status: "truncated" });
+    });
+
     it("enforces DB-backed mutation rate limits without blocking idempotent replay", async () => {
       const root = freshRoot((db) => {
         db.prepare(

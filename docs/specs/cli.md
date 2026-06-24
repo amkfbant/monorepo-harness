@@ -283,6 +283,10 @@ harness db export-files --scope backlog --id item-20260522-001  # 範囲指定
 harness db import --from-files --force-legacy-reconcile  # db-first row の上書きを許可
 harness db migrate-artifacts          # 既存 run の file-backed artifact body を DB へ
 harness db migrate-legacy             # legacy-file runtime row を db-first へ移行
+harness db blob-store add local --id <id> --path <path>
+harness db migrate-blobs --to external|db [--store <id>] [--limit <n>] [--dry-run]
+harness db verify-blobs [--store <id>] [--deep]
+harness db gc-blobs [--store <id>] [--dry-run|--apply] [--delete-objects]
 harness db backup --out <path>        # 一貫した standalone コピーを書き出す
 harness db restore --from <path> --force  # backup で live DB を置換（破壊的）
 harness db checkpoint                 # WAL を本体へ checkpoint し truncate
@@ -310,6 +314,11 @@ harness db vacuum                     # 空き領域を回収（blob 削除後�
 - `db migrate-legacy`（Phase 8-6）は `source_mode='legacy-file'` の runtime row を
   db-first へ変換する。idempotent。artifact body がまだ file-backed の run は
   先に `migrate-artifacts` を促し、変換しない。
+- `db migrate-blobs --to external|db` は artifact body を SQLite blob store と
+  configured local external store の間で移動し、`artifacts.storage` を
+  `db` / `external` に切り替える。availability status は通常
+  `db_available` / `external_available` に更新するが、既存の
+  `body_status='truncated'` は audit signal なので両方向で保持する。
 - `db backup / restore / checkpoint / vacuum`（Phase 8-8）は DB 運用コマンド。
   `backup` は WAL を含む一貫した standalone `.sqlite` を書き出す（出力先が既存
   なら拒否）。`restore` は backup を SQLite online backup 経由で検証してから
