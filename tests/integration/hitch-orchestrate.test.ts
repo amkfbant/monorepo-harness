@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openManagedDb } from "../../src/db/managed-connection.js";
 import { runMigrations } from "../../src/db/migrations.js";
+import { ExternalReviewEventRepository } from "../../src/db/repositories/external-review-events.js";
 import { HitchRepository } from "../../src/hitch/repository.js";
 import { HitchOrchestrator } from "../../src/hitch/orchestrator.js";
 import { ConvergenceService } from "../../src/hitch/convergence.js";
@@ -670,7 +671,15 @@ describe("hitch orchestrate (real git + fake codex)", () => {
     changedPath?: string;
     reviewVerdicts?: (
       prNumber: number,
-    ) => Promise<{ author: string; state: string }[]>;
+    ) => Promise<
+      {
+        author: string;
+        state: string;
+        githubReviewId?: string | number | null;
+        submittedAt?: string | null;
+        summary?: string | null;
+      }[]
+    >;
     reviewAwait?: {
       timeoutMs: number;
       intervalMs: number;
@@ -765,20 +774,117 @@ describe("hitch orchestrate (real git + fake codex)", () => {
     }
   });
 
-  it("auto-merge: an external APPROVED review does NOT gate (CI-green merge proceeds)", async () => {
+  it("auto-merge: records every external review state while APPROVED still does NOT gate", async () => {
     const hitchId = createGoal(f.dbPath, "goal-merge-extapprove", "docs");
     const merger = fakeMerger("ok");
     const result = await driveWithAutoMerge({
       hitchId,
       ciGreen: true,
       merger,
-      reviewVerdicts: async () => [{ author: "copilot", state: "APPROVED" }],
+      reviewVerdicts: async () => [
+        {
+          author: "copilot-pull-request-reviewer",
+          state: "APPROVED",
+          githubReviewId: "R_copilot",
+          submittedAt: "2026-06-25T00:01:00.000Z",
+          summary: "looks good",
+        },
+        {
+          author: "chatgpt-codex-connector",
+          state: "COMMENTED",
+          githubReviewId: "R_codex_comment",
+          submittedAt: "2026-06-25T00:02:00.000Z",
+          summary: "nit",
+        },
+        {
+          author: "alice",
+          state: "DISMISSED",
+          githubReviewId: "R_alice",
+          submittedAt: "2026-06-25T00:03:00.000Z",
+        },
+        {
+          author: "bob",
+          state: "PENDING",
+          githubReviewId: "R_bob",
+          submittedAt: "2026-06-25T00:04:00.000Z",
+        },
+      ],
     });
 
     // an external approval is never trusted to gate — the deterministic gate
     // (consensus + CI green + tier-0) still merges.
     expect(result.outcome).toBe("merged");
     expect(merger.calls).toHaveLength(1);
+    const { db, close } = openManagedDb({ dbPath: f.dbPath });
+    try {
+      const events = new ExternalReviewEventRepository(db).listForHitch(hitchId);
+      expect(events.map((e) => e.state)).toEqual([
+        "approved",
+        "commented",
+        "dismissed",
+        "pending",
+      ]);
+      expect(events.map((e) => e.reviewerType)).toEqual([
+        "copilot",
+        "codex_app",
+        "human",
+        "human",
+      ]);
+      expect(events.every((e) => e.repoId === "t")).toBe(true);
+    } finally {
+      close();
+    }
+  });
+
+  it("auto-merge: repeated polls dedupe review events by review id/state and deterministic index id", async () => {
+    const hitchId = createGoal(f.dbPath, "goal-merge-ext-dedup", "docs");
+    const merger = fakeMerger("ok");
+    let fetchCount = 0;
+    let clock = 0;
+    const result = await driveWithAutoMerge({
+      hitchId,
+      ciGreen: true,
+      merger,
+      reviewVerdicts: async () => {
+        fetchCount += 1;
+        return [
+          {
+            author: "codex[bot]",
+            state: fetchCount === 1 ? "COMMENTED" : "APPROVED",
+            githubReviewId: "R_codex_stateful",
+          },
+          {
+            author: "anonymous-reviewer",
+            state: "COMMENTED",
+            githubReviewId: null,
+            summary: "id-less review stays one row across polls",
+          },
+        ];
+      },
+      reviewAwait: {
+        timeoutMs: 30_000,
+        intervalMs: 15_000,
+        now: () => clock,
+        sleep: async (ms: number) => {
+          clock += ms;
+        },
+      },
+    });
+
+    expect(result.outcome).toBe("merged");
+    expect(fetchCount).toBe(3);
+    const { db, close } = openManagedDb({ dbPath: f.dbPath });
+    try {
+      const events = new ExternalReviewEventRepository(db).listForHitch(hitchId);
+      expect(events.map((e) => [e.author, e.state])).toEqual([
+        ["codex[bot]", "commented"],
+        ["anonymous-reviewer", "commented"],
+        ["codex[bot]", "approved"],
+      ]);
+      expect(new Set(events.map((e) => e.eventId)).size).toBe(events.length);
+    } finally {
+      close();
+    }
   });
 
   it("auto-merge: bounded await polls until a late external CHANGES_REQUESTED appears, then escalates", async () => {

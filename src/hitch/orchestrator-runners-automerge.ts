@@ -9,6 +9,12 @@ import type { PrMergeMethod } from "../core/pr-creator.js";
 import { evaluateMergeGate, quorumSatisfiedFromRequirements, type MergeGateConsensus } from "../core/merge-gate.js";
 import { computeAutoMergeTier, type AutoMergeTier } from "../core/automerge-tiers.js";
 import { loadAutoMergeSensitivityMap } from "../core/automerge-tiers-config.js";
+import {
+  normalizeExternalReviewState,
+  recordExternalReviewEvents,
+  type ExternalReviewVerdict,
+} from "../core/external-review-ingest.js";
+import { warnExternalProbeFailure } from "../core/gh-pr-publisher.js";
 
 import { ReviewConsensusRepository } from "../db/repositories/review-consensus.js";
 import { ReviewOverridesRepository } from "../db/repositories/review-overrides.js";
@@ -53,7 +59,7 @@ export async function runAutoMerge(
   // CHANGES_REQUESTED verdict becomes an unknown-scope finding, which makes the
   // close-readiness re-eval below fail → the gate escalates for the operator to
   // classify (fail-closed; external approvals are never trusted to merge).
-  await ingestExternalReviewVerdicts(deps, hitchId, prNumber);
+  await ingestExternalReviewVerdicts(deps, hitchId, runId, prNumber);
   const tier = withManagedDb({ dbPath: deps.dbPath }, (db) =>
     effectiveAutoMergeTier(db, runId, deps.harnessRoot),
   );
@@ -223,38 +229,62 @@ export function effectiveAutoMergeTier(
 
 /**
  * Opt-in advisory ingestion of external PR review verdicts (codex GitHub App /
- * Copilot). Each `CHANGES_REQUESTED` verdict is recorded ONCE as an
- * unknown-scope hitch finding; the close-readiness re-eval in the merge gate
- * then fails, so the gate escalates for the operator to classify. External
- * approvals are NEVER ingested — an external "approve" cannot authorise a merge
- * (§0/§6: external output may only push fail-closed, never approve). Best
- * effort: a fetch failure is swallowed so it cannot break the merge path.
+ * Copilot). Every known review state is recorded in the v40 ledger, but only
+ * `CHANGES_REQUESTED` is recorded ONCE as an unknown-scope hitch finding; the
+ * close-readiness re-eval in the merge gate then fails, so the gate escalates
+ * for the operator to classify. External approvals are ledger-only — an
+ * external "approve" cannot authorise a merge (§0/§6: external output may only
+ * push fail-closed, never approve). Best effort: a fetch failure is swallowed
+ * so it cannot break the merge path.
  */
 export function defaultReviewSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Fetch the PR's CHANGES_REQUESTED verdicts once; a fetch failure yields none. */
-export async function fetchBlockingVerdicts(
-  fetchVerdicts: (prNumber: number) => Promise<{ author: string; state: string }[]>,
+/** Fetch the PR's external review verdicts once; a fetch failure yields none. */
+export async function fetchExternalReviewVerdicts(
+  fetchVerdicts: (prNumber: number) => Promise<ExternalReviewVerdict[]>,
   prNumber: number,
-): Promise<{ author: string; state: string }[]> {
+): Promise<ExternalReviewVerdict[]> {
   try {
-    const verdicts = await fetchVerdicts(prNumber);
-    return verdicts.filter((v) => v.state.toUpperCase() === "CHANGES_REQUESTED");
+    return await fetchVerdicts(prNumber);
   } catch {
     return [];
   }
 }
 
+/** Fetch the PR's CHANGES_REQUESTED verdicts once; a fetch failure yields none. */
+export async function fetchBlockingVerdicts(
+  fetchVerdicts: (prNumber: number) => Promise<ExternalReviewVerdict[]>,
+  prNumber: number,
+): Promise<ExternalReviewVerdict[]> {
+  return blockingExternalReviewVerdicts(
+    await fetchExternalReviewVerdicts(fetchVerdicts, prNumber),
+  );
+}
+
 export async function ingestExternalReviewVerdicts(
   deps: OrchestratorRunnerDeps,
   hitchId: string,
+  runId: string,
   prNumber: number,
 ): Promise<void> {
   const fetchVerdicts = deps.autoMerge?.reviewVerdicts;
   if (fetchVerdicts === undefined) return;
-  let blocking = await fetchBlockingVerdicts(fetchVerdicts, prNumber);
+  const ingestStartedAtMs = Date.now();
+  let fetchSequence = 0;
+  const nextCreatedAt = () =>
+    new Date(ingestStartedAtMs + fetchSequence++ * 10_000).toISOString();
+  let verdicts = await fetchExternalReviewVerdicts(fetchVerdicts, prNumber);
+  recordFetchedExternalReviewEvents(
+    deps,
+    hitchId,
+    runId,
+    prNumber,
+    verdicts,
+    nextCreatedAt(),
+  );
+  let blocking = blockingExternalReviewVerdicts(verdicts);
   const awaitCfg = deps.autoMerge?.reviewAwait;
   if (blocking.length === 0 && awaitCfg !== undefined) {
     // Bounded await: give async external reviewers a window to weigh in before
@@ -265,7 +295,16 @@ export async function ingestExternalReviewVerdicts(
     while (now() - start < awaitCfg.timeoutMs) {
       const remaining = awaitCfg.timeoutMs - (now() - start);
       await sleep(Math.min(awaitCfg.intervalMs, remaining));
-      blocking = await fetchBlockingVerdicts(fetchVerdicts, prNumber);
+      verdicts = await fetchExternalReviewVerdicts(fetchVerdicts, prNumber);
+      recordFetchedExternalReviewEvents(
+        deps,
+        hitchId,
+        runId,
+        prNumber,
+        verdicts,
+        nextCreatedAt(),
+      );
+      blocking = blockingExternalReviewVerdicts(verdicts);
       if (blocking.length > 0) break;
     }
   }
@@ -292,4 +331,47 @@ export async function ingestExternalReviewVerdicts(
       });
     }
   });
+}
+
+function blockingExternalReviewVerdicts(
+  verdicts: readonly ExternalReviewVerdict[],
+): ExternalReviewVerdict[] {
+  return verdicts.filter(
+    (v) => normalizeExternalReviewState(v.state) === "changes_requested",
+  );
+}
+
+function recordFetchedExternalReviewEvents(
+  deps: OrchestratorRunnerDeps,
+  hitchId: string,
+  runId: string,
+  prNumber: number,
+  verdicts: readonly ExternalReviewVerdict[],
+  createdAt: string,
+): void {
+  if (verdicts.length === 0) return;
+  // Best-effort observability: a ledger-recording failure must NEVER break the
+  // merge/close path. The auto-merge gate reads hitch_findings + the six
+  // deterministic gate inputs, never external_review_events, so swallowing here
+  // cannot mask a gate signal — it only drops a telemetry row (fail-safe, mirrors
+  // the fetch swallow in fetchExternalReviewVerdicts).
+  try {
+    withManagedDb({ dbPath: deps.dbPath }, (db) => {
+      const session = new HitchRepository(db).requireSession(hitchId);
+      recordExternalReviewEvents({
+        db,
+        hitchId,
+        runId,
+        repoId: session.repoId,
+        prNumber,
+        verdicts,
+        createdAt,
+      });
+    });
+  } catch (error) {
+    warnExternalProbeFailure(
+      `recording external review events for PR #${prNumber}`,
+      error,
+    );
+  }
 }

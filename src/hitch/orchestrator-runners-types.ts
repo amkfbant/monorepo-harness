@@ -4,6 +4,7 @@ import type { CodexExecRunner } from "../codex/codex-exec-runner.js";
 import type { RunDomainCodingOpts } from "../core/workflow-runner.js";
 
 import type { PrPublisher, PrMerger, PrMergeMethod } from "../core/pr-creator.js";
+import type { ExternalReviewVerdict } from "../core/external-review-ingest.js";
 
 import type { CopilotReviewer } from "../core/copilot-reviewer.js";
 import type { CopilotReviewConfig } from "../core/copilot-review-run.js";
@@ -142,9 +143,7 @@ export interface OrchestratorRunnerDeps {
      * (fail-closed) for the operator to classify (§6: external output is
      * advisory, never auto-trusted). Approvals have NO gating effect.
      */
-    reviewVerdicts?: (
-      prNumber: number,
-    ) => Promise<{ author: string; state: string }[]>;
+    reviewVerdicts?: (prNumber: number) => Promise<ExternalReviewVerdict[]>;
     /**
      * Opt-in bounded await for external review verdicts, symmetric with the CI
      * bounded await: external reviewers (codex App / Copilot) post their verdict
