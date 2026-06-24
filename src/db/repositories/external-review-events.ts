@@ -27,6 +27,7 @@ export interface ExternalReviewEventInput {
   eventId: string;
   hitchId?: string | null;
   runId?: string | null;
+  repoId?: string | null;
   prNumber: number;
   author: string;
   reviewerType: ExternalReviewerType;
@@ -42,6 +43,7 @@ export interface ExternalReviewEventRow {
   eventId: string;
   hitchId: string | null;
   runId: string | null;
+  repoId: string | null;
   prNumber: number;
   author: string;
   reviewerType: ExternalReviewerType;
@@ -60,6 +62,7 @@ export interface ExternalReviewEventInsertResult {
 
 export interface ExternalReviewEventSummaryFilter {
   hitchId?: string;
+  repoId?: string;
   prNumber?: number;
 }
 
@@ -74,6 +77,7 @@ interface ExternalReviewEventDbRow {
   event_id: string;
   hitch_id: string | null;
   run_id: string | null;
+  repo_id: string | null;
   pr_number: number;
   author: string;
   reviewer_type: ExternalReviewerType;
@@ -94,14 +98,15 @@ export class ExternalReviewEventRepository {
     const info = this.db
       .prepare(
         `INSERT OR IGNORE INTO external_review_events
-           (event_id, hitch_id, run_id, pr_number, author, reviewer_type, state,
-            github_review_id, submitted_at, summary, redacted, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (event_id, hitch_id, run_id, repo_id, pr_number, author, reviewer_type,
+            state, github_review_id, submitted_at, summary, redacted, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.eventId,
         input.hitchId ?? null,
         input.runId ?? null,
+        input.repoId ?? null,
         input.prNumber,
         input.author,
         input.reviewerType,
@@ -134,15 +139,20 @@ export class ExternalReviewEventRepository {
     return rows.map(toRow);
   }
 
-  listForPr(prNumber: number): ExternalReviewEventRow[] {
+  /**
+   * Events for a PR. Pass `repoId` whenever known: PR numbers are only unique
+   * within a repo, so an unscoped call can mix repos in a multi-repo harness DB.
+   */
+  listForPr(prNumber: number, repoId?: string): ExternalReviewEventRow[] {
+    const scoped = repoId !== undefined;
     const rows = this.db
       .prepare(
         `SELECT *
            FROM external_review_events
-          WHERE pr_number = ?
+          WHERE pr_number = ?${scoped ? " AND repo_id = ?" : ""}
           ORDER BY created_at ASC, event_id ASC`,
       )
-      .all(prNumber) as ExternalReviewEventDbRow[];
+      .all(...(scoped ? [prNumber, repoId] : [prNumber])) as ExternalReviewEventDbRow[];
     return rows.map(toRow);
   }
 
@@ -212,12 +222,17 @@ export class ExternalReviewEventRepository {
     if (input.githubReviewId === undefined || input.githubReviewId === null) {
       return null;
     }
-    const byGithubReviewId = this.db
+    // Dedup matches the (github_review_id, state) unique index: re-polling the
+    // same review at the same state collapses, but a state change is a distinct
+    // row, so look up by both columns.
+    const byReview = this.db
       .prepare(
-        "SELECT * FROM external_review_events WHERE github_review_id = ?",
+        "SELECT * FROM external_review_events WHERE github_review_id = ? AND state = ?",
       )
-      .get(input.githubReviewId) as ExternalReviewEventDbRow | undefined;
-    return byGithubReviewId === undefined ? null : toRow(byGithubReviewId);
+      .get(input.githubReviewId, input.state) as
+      | ExternalReviewEventDbRow
+      | undefined;
+    return byReview === undefined ? null : toRow(byReview);
   }
 }
 
@@ -230,6 +245,10 @@ function scopedWhere(filter: ExternalReviewEventSummaryFilter): {
   if (filter.hitchId !== undefined) {
     clauses.push("hitch_id = ?");
     params.push(filter.hitchId);
+  }
+  if (filter.repoId !== undefined) {
+    clauses.push("repo_id = ?");
+    params.push(filter.repoId);
   }
   if (filter.prNumber !== undefined) {
     clauses.push("pr_number = ?");
@@ -281,6 +300,7 @@ function toRow(row: ExternalReviewEventDbRow): ExternalReviewEventRow {
     eventId: row.event_id,
     hitchId: row.hitch_id,
     runId: row.run_id,
+    repoId: row.repo_id,
     prNumber: row.pr_number,
     author: row.author,
     reviewerType: row.reviewer_type,

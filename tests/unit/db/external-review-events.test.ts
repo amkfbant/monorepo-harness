@@ -40,6 +40,7 @@ function eventInput(
     eventId: "erev-1",
     hitchId: "hitch-a",
     runId: "run-a",
+    repoId: "monorepo-harness",
     prNumber: 395,
     author: "codex[bot]",
     reviewerType: "codex_app",
@@ -102,6 +103,97 @@ describe("ExternalReviewEventRepository", () => {
       expect(duplicate.inserted).toBe(false);
       expect(duplicate.row.eventId).toBe("erev-1");
       expect(repo.listForHitch("hitch-a")).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("records a state change under the same github_review_id as a new verdict", () => {
+    const db = freshDb();
+    try {
+      seedHitch(db, "hitch-a");
+      const repo = new ExternalReviewEventRepository(db);
+
+      // Same review id, but the verdict changes (changes_requested -> dismissed).
+      // The (github_review_id, state) dedup keeps BOTH observations; only a
+      // re-poll of the same state collapses.
+      const changes = repo.append(
+        eventInput({
+          eventId: "rev-cr",
+          githubReviewId: "gh-same",
+          state: "changes_requested",
+          createdAt: "2026-06-25T00:01:00.000Z",
+        }),
+      );
+      const dismissed = repo.append(
+        eventInput({
+          eventId: "rev-dismissed",
+          githubReviewId: "gh-same",
+          state: "dismissed",
+          createdAt: "2026-06-25T00:09:00.000Z",
+        }),
+      );
+      const repoll = repo.append(
+        eventInput({
+          eventId: "rev-dismissed-repoll",
+          githubReviewId: "gh-same",
+          state: "dismissed",
+          createdAt: "2026-06-25T00:20:00.000Z",
+        }),
+      );
+
+      expect(changes.inserted).toBe(true);
+      expect(dismissed.inserted).toBe(true);
+      expect(repoll.inserted).toBe(false);
+      expect(repoll.row.eventId).toBe("rev-dismissed");
+      expect(repo.listForHitch("hitch-a")).toHaveLength(2);
+      expect(repo.summarize({ hitchId: "hitch-a" }).lastVerdict?.state).toBe(
+        "dismissed",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("scopes listForPr / summarize by repo_id (PR numbers are per-repo)", () => {
+    const db = freshDb();
+    try {
+      const repo = new ExternalReviewEventRepository(db);
+      repo.append(
+        eventInput({
+          eventId: "repoA",
+          hitchId: undefined,
+          runId: undefined,
+          repoId: "repo-a",
+          githubReviewId: "gh-a",
+          prNumber: 12,
+          state: "approved",
+        }),
+      );
+      repo.append(
+        eventInput({
+          eventId: "repoB",
+          hitchId: undefined,
+          runId: undefined,
+          repoId: "repo-b",
+          githubReviewId: "gh-b",
+          prNumber: 12,
+          state: "changes_requested",
+        }),
+      );
+
+      expect(repo.listForPr(12, "repo-a").map((r) => r.eventId)).toEqual([
+        "repoA",
+      ]);
+      expect(
+        repo
+          .listForPr(12)
+          .map((r) => r.eventId)
+          .sort(),
+      ).toEqual(["repoA", "repoB"]);
+      const scoped = repo.summarize({ repoId: "repo-b", prNumber: 12 });
+      expect(scoped.total).toBe(1);
+      expect(scoped.byState.changes_requested).toBe(1);
     } finally {
       db.close();
     }

@@ -69,6 +69,7 @@ describe("v40 external_review_events table migration", () => {
       "event_id",
       "hitch_id",
       "run_id",
+      "repo_id",
       "pr_number",
       "author",
       "reviewer_type",
@@ -89,7 +90,20 @@ describe("v40 external_review_events table migration", () => {
       )
       .get() as { sql: string };
     expect(uniqueIndex.sql).toContain("UNIQUE INDEX");
+    // Dedup key is (github_review_id, state): a state change under the same
+    // review id is recorded as a new verdict rather than dropped (#397 review).
+    expect(uniqueIndex.sql).toContain("state");
     expect(uniqueIndex.sql).toContain("WHERE github_review_id IS NOT NULL");
+
+    // event_id must be NOT NULL — a non-INTEGER TEXT PRIMARY KEY allows NULLs
+    // otherwise, which would let a missing-id ingest insert an unreachable row.
+    const eventIdCol = (
+      db.prepare(`PRAGMA table_info(external_review_events)`).all() as {
+        name: string;
+        notnull: number;
+      }[]
+    ).find((c) => c.name === "event_id");
+    expect(eventIdCol?.notnull).toBe(1);
   });
 
   it("is additive on a realistic v39 DB (table absent before, present after)", () => {

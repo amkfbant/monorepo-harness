@@ -2308,19 +2308,24 @@ export const V39_TABLE_NAMES = ["hitch_evidence"] as const;
  * Append-only ledger for external PR review verdicts (codex App / Copilot /
  * humans). This is DB foundation only: ingest, dashboard, and loop linkage are
  * wired by follow-up hitches. `hitch_id` is nullable so standalone PR paths can
- * record events by PR number without inventing hitch linkage.
+ * record events by PR number without inventing hitch linkage; `repo_id` scopes
+ * those PR-number rows because PR numbers are only unique within a repo and a
+ * single harness DB hosts multiple target repos.
  *
  * GitHub review states are normalized to lowercase before insertion. Unknown
  * `state` / `reviewer_type` values fail closed through CHECK constraints. The
- * partial unique index dedupes repeated polling of the same GitHub review
- * (`github_review_id`) while preserving append-only behavior for distinct
- * verdicts.
+ * partial unique index dedupes on `(github_review_id, state)`: re-polling the
+ * same unchanged review is ignored, but a state change under the same review id
+ * (a review dismissed, or a pending review submitted) is recorded as a new
+ * verdict rather than dropped. `event_id` is NOT NULL so a missing-id ingest
+ * cannot insert an unreachable primary-key row.
  */
 export const MIGRATION_V40_STATEMENTS: readonly string[] = [
   `CREATE TABLE external_review_events (
-  event_id         TEXT PRIMARY KEY,
+  event_id         TEXT PRIMARY KEY NOT NULL,
   hitch_id         TEXT REFERENCES hitch_sessions(hitch_id) ON DELETE CASCADE,
   run_id           TEXT,
+  repo_id          TEXT,
   pr_number        INTEGER NOT NULL,
   author           TEXT NOT NULL,
   reviewer_type    TEXT NOT NULL CHECK (reviewer_type IN ('codex_app','copilot','human','other')),
@@ -2334,9 +2339,9 @@ export const MIGRATION_V40_STATEMENTS: readonly string[] = [
   `CREATE INDEX external_review_events_hitch_idx
      ON external_review_events(hitch_id, created_at)`,
   `CREATE INDEX external_review_events_pr_idx
-     ON external_review_events(pr_number, created_at)`,
+     ON external_review_events(repo_id, pr_number, created_at)`,
   `CREATE UNIQUE INDEX external_review_events_review_idx
-     ON external_review_events(github_review_id)
+     ON external_review_events(github_review_id, state)
      WHERE github_review_id IS NOT NULL`,
 ] as const;
 
