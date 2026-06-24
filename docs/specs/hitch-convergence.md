@@ -371,8 +371,8 @@ Evaluation is deterministic and conservative:
     recording evidence); only the test-present-no-fresh-evidence case emits the
     "record fresh RED evidence" stale message.
 14. If the only remaining required close checks need external/operator evidence
-    (`manual`, `artifact_exists`, `operation_status`, or another non-command
-    condition), the decision is `continue` with `ask_human`; the orchestrator
+    (`manual`, `artifact_exists`, `operation_status`, or `db_doctor`), the
+    decision is `continue` with `ask_human`; the orchestrator
     waits for recorded evidence and does not auto-escalate by invoking the
     command runner with no runnable command. The `ask_human` message lists each
     pending external condition as `condition <id> kind=<kind> pending <N>
@@ -386,6 +386,15 @@ Recorded close-check evidence is fresh only when it is at or after the latest
 invalidating hitch event: a non-close-check attempt, finding seen/fixed/deferred
 transition, or completed review cycle. Stale passed evidence is treated as
 pending and the next action is to record fresh close-check evidence.
+
+Public manual close-check recording is fail-closed against the declared
+close-condition contract: the condition id must exist on the hitch, and manual
+records may target only `manual`, `artifact_exists`, `operation_status`,
+`db_doctor`, or legacy-compatible `command` conditions. Deterministic-only kinds
+(`review_consensus`, `finding_policy`, `facet_red_test`, `evidence_attached`)
+reject manual `record_close_check` writes; their statuses must be produced by the
+harness review import, policy/facet/evidence evaluator, or command runner path
+rather than by self-reported caller status.
 
 Hitches with no close conditions are not close-ready by default. Set
 `policy.allowEmptyCloseConditions: true` only for hitches where an empty close

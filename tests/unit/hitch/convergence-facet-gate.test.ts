@@ -126,6 +126,7 @@ describe("ConvergenceService facet_red_test gate (#279 wiring)", () => {
         conditionId: "facet-red",
         status: "passed",
         checkedBy: "runner",
+        recordingMode: "deterministic",
         evidence: {
           facets: [
             {
@@ -155,6 +156,7 @@ describe("ConvergenceService facet_red_test gate (#279 wiring)", () => {
         conditionId: "facet-red",
         status: "passed",
         checkedBy: "runner",
+        recordingMode: "deterministic",
         evidence: {
           facets: [
             {

@@ -1,8 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { DbError } from "../../db/connection.js";
-import type { HitchCloseCheck, HitchCloseCheckStatus } from "../types.js";
-import { json, parseRecord, touchHitchSession } from "./shared.js";
+import type {
+  HitchCloseCheck,
+  HitchCloseCheckStatus,
+  HitchCloseConditionKind,
+} from "../types.js";
+import {
+  json,
+  parseRecord,
+  requireHitchSession,
+  touchHitchSession,
+} from "./shared.js";
 
 /**
  * #125 Track C (C2) — the close-check concern extracted from the frozen
@@ -24,6 +33,7 @@ export interface RecordHitchCloseCheckInput {
   checkedBy: string;
   evidence?: Record<string, unknown>;
   message?: string;
+  recordingMode?: "manual" | "deterministic";
 }
 
 interface HitchCloseCheckRow {
@@ -41,6 +51,7 @@ export class CloseCheckRepository {
   constructor(private readonly db: Database.Database) {}
 
   recordCloseCheck(input: RecordHitchCloseCheckInput): HitchCloseCheck {
+    assertCloseCheckRecordable(this.db, input);
     const checkedAt = input.checkedAt ?? new Date().toISOString();
     const checkId = input.checkId ?? `check-${randomUUID()}`;
     this.db
@@ -87,6 +98,39 @@ export class CloseCheckRepository {
       )
       .all(hitchId) as HitchCloseCheckRow[];
     return rows.map(rowToCloseCheck);
+  }
+}
+
+const MANUALLY_RECORDABLE_CLOSE_CONDITION_KINDS =
+  new Set<HitchCloseConditionKind>([
+    "command",
+    "manual",
+    "operation_status",
+    "db_doctor",
+    "artifact_exists",
+  ]);
+
+function assertCloseCheckRecordable(
+  db: Database.Database,
+  input: RecordHitchCloseCheckInput,
+): void {
+  const session = requireHitchSession(db, input.hitchId);
+  const condition = session.closeConditions.find(
+    (candidate) => candidate.id === input.conditionId,
+  );
+  if (condition === undefined) {
+    throw new DbError(
+      `hitch close condition not declared: ${input.conditionId}`,
+    );
+  }
+  if (
+    (input.recordingMode ?? "manual") === "manual" &&
+    !MANUALLY_RECORDABLE_CLOSE_CONDITION_KINDS.has(condition.kind)
+  ) {
+    throw new DbError(
+      `close condition ${condition.id} kind=${condition.kind} cannot be ` +
+        `recorded manually; use its deterministic evaluator`,
+    );
   }
 }
 

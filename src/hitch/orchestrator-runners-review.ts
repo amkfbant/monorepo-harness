@@ -108,6 +108,7 @@ export function tryShortCircuitApprovedDecidedReview(input: {
       conditionId: condition.id,
       status: "passed",
       checkedBy: decisionRow.reviewer ?? proposal?.reviewer ?? "review",
+      recordingMode: "deterministic",
       checkedAt,
       evidence: {
         runId: input.runId,
@@ -737,4 +738,3 @@ export function shouldRecordFrozenPendingConsensus(input: {
     input.failedReviewers.length === input.dispatchPlan.reviewerIds.length
   );
 }
-

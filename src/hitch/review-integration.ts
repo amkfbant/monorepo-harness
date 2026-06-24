@@ -625,6 +625,7 @@ function recordReviewProcessCloseChecks(
       conditionId: condition.id,
       status: result.newStatus === "approved" ? "passed" : "failed",
       checkedBy: result.reviewer ?? proposal.reviewer,
+      recordingMode: "deterministic",
       checkedAt:
         freshAfter !== null && result.reviewedAt < freshAfter
           ? freshAfter

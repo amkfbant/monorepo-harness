@@ -594,6 +594,7 @@ export async function runCommandCloseChecks(
           conditionId: item.condition.id,
           status,
           checkedBy: input.deps.createdBy,
+          recordingMode: "deterministic",
           evidence: {
             runId: prep.runId,
             conditionKind: "command",
