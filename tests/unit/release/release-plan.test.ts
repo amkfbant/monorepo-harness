@@ -46,6 +46,9 @@ describe("parseConventionalCommit", () => {
   it("detects a BREAKING CHANGE footer", () => {
     expect(commit("refactor: x", "body\n\nBREAKING CHANGE: removed Y").breaking).toBe(true);
   });
+  it("detects a BREAKING-CHANGE footer synonym", () => {
+    expect(commit("refactor: x", "body\n\nBREAKING-CHANGE: removed Y").breaking).toBe(true);
+  });
   it("returns type null for a non-conventional subject", () => {
     expect(commit("just a message").type).toBeNull();
   });
@@ -111,6 +114,17 @@ describe("buildReleasePlan — compatibility detection", () => {
         mcpTools: { added: [], removed: ["harness.old.tool"] },
       }),
     );
+    expect(p.undeclaredBreaking).toEqual([]);
+  });
+
+  it("does NOT flag undeclared-breaking when a BREAKING-CHANGE footer marker is present", () => {
+    const p = buildReleasePlan(
+      input({
+        commits: [commit("feat: remove old tool", "BREAKING-CHANGE: removed old tool")],
+        mcpTools: { added: [], removed: ["harness.old.tool"] },
+      }),
+    );
+    expect(p.breakingCommits).toHaveLength(1);
     expect(p.undeclaredBreaking).toEqual([]);
   });
 

@@ -68,6 +68,8 @@ export interface ReleasePlan extends ReleasePlanInput {
   analysisWarnings: string[];
 }
 
+const BREAKING_FOOTER_RE = /(^|\n)BREAKING(?: CHANGE|-CHANGE):/;
+
 function parseSemver(v: string): [number, number, number] | null {
   const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(v.trim());
   if (m === null) return null;
@@ -135,12 +137,12 @@ export function buildReleasePlan(input: ReleasePlanInput): ReleasePlan {
   if (detectedBreaking && breakingCommits.length === 0) {
     if (input.mcpTools.removed.length > 0) {
       undeclaredBreaking.push(
-        `removed MCP tool(s) with no \`feat!\` / BREAKING CHANGE marker: ${input.mcpTools.removed.join(", ")}`,
+        `removed MCP tool(s) with no \`feat!\` / BREAKING footer marker: ${input.mcpTools.removed.join(", ")}`,
       );
     }
     if (input.cliCommands.removed.length > 0) {
       undeclaredBreaking.push(
-        `removed CLI command token(s) with no \`feat!\` / BREAKING CHANGE marker: ${input.cliCommands.removed.join(", ")}`,
+        `removed CLI command token(s) with no \`feat!\` / BREAKING footer marker: ${input.cliCommands.removed.join(", ")}`,
       );
     }
     if (input.schema.destructive) {
@@ -265,7 +267,7 @@ export function parseConventionalCommit(
     return { sha, type: null, scope: null, breaking: false, subject };
   }
   const bangBreaking = m[4] === "!";
-  const bodyBreaking = /(^|\n)BREAKING CHANGE:/.test(body);
+  const bodyBreaking = BREAKING_FOOTER_RE.test(body);
   return {
     sha,
     type: m[1] ?? null,
