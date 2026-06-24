@@ -194,6 +194,50 @@ describe("buildKnowledgeDigest", () => {
     expect(d.rejected).toBe(1);
   });
 
+  it("ignores a rejected index that does not resolve to a candidate", async () => {
+    const r = harnessRoot();
+    const runId = writeRun(r, {
+      candidates: [{ kind: "policy_violation" }],
+      rejections: [{ index: 7, decidedAt: "2026-05-21T01:00:00Z" }],
+    });
+    const d = await buildKnowledgeDigest(r);
+    expect(d.rejected).toBe(0);
+    expect(d.suggestions.some((s) => s.includes(runId))).toBe(true);
+  });
+
+  it("ignores a rejection that resolves to a malformed candidate", async () => {
+    const r = harnessRoot();
+    const runId = `run-20260521-apps-user-kd${String(seq++).padStart(2, "0")}`;
+    const dir = join(r.runsDir, runId);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "meta.json"),
+      JSON.stringify({
+        runId,
+        domain: "apps/user",
+        startedAt: "2026-05-21T00:00:00Z",
+      }),
+    );
+    writeFileSync(
+      join(dir, "knowledge-candidates.yaml"),
+      "candidates:\n  - kind: policy_violation\n    domain: apps/user\n    title: t\n",
+    );
+    writeFileSync(
+      join(dir, "knowledge-decisions.yaml"),
+      [
+        "decisions:",
+        "  - index: 0",
+        '    decision: "rejected"',
+        '    reviewer: "knkn"',
+        '    reason: "x"',
+        '    decidedAt: "2026-05-21T01:00:00Z"',
+      ].join("\n") + "\n",
+    );
+    const d = await buildKnowledgeDigest(r);
+    expect(d.candidateTotal).toBe(0);
+    expect(d.rejected).toBe(0);
+  });
+
   it("excludes a malformed candidate from the counts", async () => {
     const r = harnessRoot();
     const runId = `run-20260521-apps-user-kd${String(seq++).padStart(2, "0")}`;

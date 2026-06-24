@@ -69,13 +69,12 @@ export async function buildKnowledgeDigest(
     }
     if (unactionedHere) runsWithUnactioned.push(runId);
 
-    // rejections — filtered by decidedAt + the rejected candidate's domain
+    // rejections — filtered by decidedAt + the rejected valid candidate's domain
     for (const [index, decidedAt] of rejections) {
       if (!withinSince(decidedAt, sinceMs)) continue;
-      if (opts.domain !== undefined) {
-        const c = candidates[index];
-        if (!c || c.domain !== opts.domain) continue;
-      }
+      const c = candidates[index];
+      if (!c?.valid) continue;
+      if (opts.domain !== undefined && c.domain !== opts.domain) continue;
       rejected += 1;
     }
   }
@@ -120,7 +119,7 @@ interface DigestCandidate {
   index: number;
   kind: string;
   domain: string;
-  /** false when the candidate is malformed (kind/domain missing) */
+  /** false when the candidate is malformed by the knowledge candidate schema */
   valid: boolean;
 }
 
@@ -157,9 +156,11 @@ async function readCandidates(runDir: string): Promise<DigestCandidate[]> {
 }
 
 /**
- * Read a run's rejections as `index -> latest decidedAt`. Only a valid
- * non-negative integer index is kept; a duplicate index keeps the most
- * recent decision (matching how `listKnowledge` keys rejections by index).
+ * Read a run's rejections as `index -> latest decidedAt`. Only a syntactically
+ * valid non-negative integer index is kept; candidate existence/schema validity
+ * is resolved by callers that have the candidate list. A duplicate index keeps
+ * the most recent decision (matching how `listKnowledge` keys rejections by
+ * index).
  */
 async function readRejections(
   runDir: string,
