@@ -329,13 +329,15 @@ text file は、patch bytes を書く前に **全文**を content パターン�
 oversized / binary / symlink / non-file は content を artifact に保存しないため、filename
 heuristic と metadata-only 出力に留める。
 
-**free-text / log パターン**: prompt / log / Codex events の文字列 redaction は
-同じ `containsLikelySecret` gate を使う。上記 vendor-shaped token に加えて、
+**free-text / log パターン**: prompt / log / Codex events / summary・review-request
+用 Codex stdout/stderr tail の文字列 redaction は同じ `containsLikelySecret` gate を使う。上記 vendor-shaped token に加えて、
 `AWS_SECRET_ACCESS_KEY=...`、`api_key: ...`、`password=...` のような
 name-based assignment、generic `*_key` assignment、`Authorization: Bearer ...`、
 および `Authorization: Basic ...`（base64 decode 後に `:` を含む credential）を
 secret-shaped とみなす。file artifact と違い、free-text callers は hit した
-field / line 全体を置換し、raw value の部分置換はしない。
+field / line 全体を置換し、raw value の部分置換はしない。Codex stdout/stderr tail
+は全文を行単位 redaction してから tail 化し、PEM private-key block の body 行も
+command log と同じ stateful semantics で withheld する。
 
 hit したファイルは:
 - content を artifact に保存しない（`untracked-files.patch` には `@@ secret-suspect @@` + sha256 のみ）

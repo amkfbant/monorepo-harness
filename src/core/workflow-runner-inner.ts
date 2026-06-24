@@ -47,7 +47,7 @@ import {
 } from "../db/repositories/run-usage.js";
 import { warnArtifactIngestFailed, warnUsageRecordFailed, elapsedMs } from "./workflow-runner-shared.js";
 import type { RunDomainCodingOpts, RunDomainCodingResult } from "./workflow-runner-shared.js";
-import { applyChangeBudgetOverride, diffAndValidate, evaluateChangeBudget, materializeParentWork, normalizeWorktreeIndexToBase, readOptionalUtf8, readStderrTail, readTail } from "./workflow-runner-diff.js";
+import { applyChangeBudgetOverride, diffAndValidate, evaluateChangeBudget, materializeParentWork, normalizeWorktreeIndexToBase, readOptionalUtf8, readRedactedStderrTail, readRedactedTail } from "./workflow-runner-diff.js";
 
 export function snapshotReviewRuleForRun(input: {
   opts: RunDomainCodingOpts;
@@ -597,8 +597,8 @@ export async function runDomainCodingInner(
       status = "needs_review";
     }
 
-    const codexStdoutTail = await readTail(codexStdoutPath);
-    const codexStderrTail = await readStderrTail(codexStderrPath);
+    const codexStdoutTail = await readRedactedTail(codexStdoutPath);
+    const codexStderrTail = await readRedactedStderrTail(codexStderrPath);
     const codexEventsSummary =
       codex.timedOut || codex.exitCode !== 0
         ? summarizeCodexEvents(codexEventsContent ?? "")

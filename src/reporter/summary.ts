@@ -6,6 +6,7 @@ import type {
   DiffBudgetBreach,
   DiffBudgetValidationResult,
 } from "../policy/diff-budget-validator.js";
+import { redactSecretLines } from "./secret-scan.js";
 
 export interface ChangeBudgetReport {
   status: DiffBudgetValidationResult["status"];
@@ -36,8 +37,8 @@ export interface SummaryInputs {
   diffCollectionError?: string;
 }
 
-function fenced(s: string): string[] {
-  return ["```", s.trim() || "(empty)", "```"];
+function fencedRedactedTail(s: string): string[] {
+  return ["```", redactSecretLines(s).trim() || "(empty)", "```"];
 }
 
 function pushChangeBudget(
@@ -130,10 +131,10 @@ export function buildSummary(i: SummaryInputs): string {
   pushChangeBudget(lines, i.diffStat, i.changeBudget);
   lines.push("");
   lines.push("## Codex output (stdout tail)");
-  lines.push(...fenced(i.codexStdoutTail));
+  lines.push(...fencedRedactedTail(i.codexStdoutTail));
   lines.push("");
   lines.push("## Codex output (stderr tail)");
-  lines.push(...fenced(i.codexStderrTail));
+  lines.push(...fencedRedactedTail(i.codexStderrTail));
   lines.push("");
   if (i.codexEventsSummary !== undefined && i.codexEventsSummary !== "") {
     lines.push("## codex events (tail, redacted)");
