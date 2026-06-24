@@ -11,6 +11,7 @@ import type {
   PrMergeResult,
 } from "./pr-creator.js";
 import { PrGateError } from "./pr-creator.js";
+import type { ExternalReviewVerdict } from "./external-review-ingest.js";
 
 /**
  * A `gh` invocation that exceeded its timeout. Subclass of PrGateError so
@@ -292,7 +293,7 @@ export function createGhReviewVerdicts(
   ghBin = "gh",
   timeoutMs = DEFAULT_GH_TIMEOUT_MS,
   runGhImpl: typeof runGh = runGh,
-): (prNumber: number) => Promise<{ author: string; state: string }[]> {
+): (prNumber: number) => Promise<ExternalReviewVerdict[]> {
   return async (prNumber: number) => {
     try {
       const out = await runGhImpl(
@@ -305,11 +306,25 @@ export function createGhReviewVerdicts(
       if (!Array.isArray(parsed.reviews)) return [];
       return parsed.reviews
         .map((r) => {
-          const rr = r as { author?: { login?: unknown }; state?: unknown };
+          const rr = r as {
+            author?: { login?: unknown };
+            state?: unknown;
+            id?: unknown;
+            databaseId?: unknown;
+            submittedAt?: unknown;
+          };
           const author =
             typeof rr.author?.login === "string" ? rr.author.login : "";
           const state = typeof rr.state === "string" ? rr.state : "";
-          return { author, state };
+          const githubReviewId =
+            typeof rr.id === "string" && rr.id !== ""
+              ? rr.id
+              : typeof rr.databaseId === "number"
+                ? rr.databaseId
+                : null;
+          const submittedAt =
+            typeof rr.submittedAt === "string" ? rr.submittedAt : null;
+          return { author, state, githubReviewId, submittedAt };
         })
         .filter((v) => v.author !== "" && v.state !== "");
     } catch (error) {

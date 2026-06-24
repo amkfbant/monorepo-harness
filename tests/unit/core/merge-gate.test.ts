@@ -98,6 +98,27 @@ describe("evaluateMergeGate (Phase 3-1)", () => {
     expect(r.blockers).toContain("not_close_ready");
     expect(r.blockers).toContain("ci_not_green");
   });
+
+  it("external review ledger observations are not merge-gate inputs", () => {
+    const withExternalLedger = {
+      ...base(),
+      externalReviewEvents: [{ state: "changes_requested" }],
+    } as MergeGateInput & { externalReviewEvents: unknown };
+
+    expect(evaluateMergeGate(withExternalLedger)).toEqual({
+      canMerge: true,
+      blockers: [],
+      hardBlocked: false,
+    });
+    expect(Object.keys(base()).sort()).toEqual([
+      "autoMergeEnabled",
+      "ciGreen",
+      "closeReady",
+      "consensus",
+      "humanApproved",
+      "tierEligible",
+    ]);
+  });
 });
 
 describe("quorumSatisfiedFromRequirements (Phase 3)", () => {

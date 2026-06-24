@@ -780,9 +780,10 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 ## External review events（schema v40 / #395）
 
 `external_review_events` は外部レビュー（codex App / Copilot / 人間）の verdict を
-append-only に保存する DB-only ledger。runtime gate はまだこの表を読まない。ingest /
-dashboard / review→fix loop linkage は後続 hitch の責務で、このフェーズでは migration と
-repository のみを提供する。
+append-only に保存する DB-only ledger。runtime gate はこの表を読まない。`--ingest-external-reviews`
+の fetch / bounded-await 経路は、既知 state の verdict を全てこの ledger に記録するが、
+auto-merge gate の入力は従来どおり close-ready / consensus(or human override) / CI /
+tier のみであり、外部 approval は merge を authorize しない。
 
 ```sql
 CREATE TABLE external_review_events (
@@ -821,7 +822,7 @@ lower-case に正規化してから挿入する。未知の `reviewer_type` / `s
 ingest が到達不能行を作るのを防ぐ）。
 
 `ExternalReviewEventRepository`（`src/db/repositories/external-review-events.ts`）は
-`INSERT OR IGNORE` で append し、`(github_review_id, state)` の partial UNIQUE index によって
+plain `INSERT` で append し、`(github_review_id, state)` の partial UNIQUE index によって
 re-poll された **同一 state の** 同一 GitHub review を 1 行に dedup する。一方、同一
 `github_review_id` でも **state が変わった**（review が dismiss された / pending review が submit
 された）場合は別 verdict として記録する（取りこぼさない）。異なる / NULL の `github_review_id` の
@@ -832,11 +833,12 @@ verdict も collapse / supersede せず別行として保持する。`listForHit
 NOT NULL / CHECK / FK 違反は re-throw して malformed ingest を fail-closed に拒否する（`INSERT OR
 IGNORE` はこれらも握りつぶすため使わない）。
 
-> **既知の制約（ingest 層で解決予定・#395 後続フェーズ）**: dedup キー `(github_review_id, state)`
-> は linkage を含まない。同一 `(review, state)` を hitch なし（standalone）で先に記録し、後から
-> hitch 付きで append すると後者は dedup で無視され、その verdict は `listForHitch` /
-> `summarize({ hitchId })` に現れない。ingest 層（後続 hitch）が各 review を最初から最良の linkage
-> 込みで一度だけ記録するか、null linkage の補完で解決する設計判断を行う。
+runtime ingest の共有 helper（`recordExternalReviewEvents`）は deterministic な `event_id` を
+生成する。GitHub review id がある verdict は `(repo_id, pr_number, state, github_review_id)`、
+id が無い verdict は `(repo_id, pr_number, state, fetch 配列 index, author)` を event key にする。
+このため id 付き review は v40 の partial UNIQUE index と event_id の両方で re-poll dedup され、
+id 無し review も同じ fetch 順なら event_id で re-poll dedup される。state が変われば event_id も
+変わるため、同じ review の state transition は別 verdict として残る。
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 

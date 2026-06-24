@@ -383,6 +383,42 @@ describe("gh CI status probe (Phase 3)", () => {
 });
 
 describe("external probe failure observability", () => {
+  it("review verdicts probe preserves GitHub review ids and submitted timestamps", async () => {
+    const verdicts = createGhReviewVerdicts(tmpdir(), "fake-gh", 5_000, async () =>
+      JSON.stringify({
+        reviews: [
+          {
+            id: "PRR_kwDO",
+            databaseId: 123,
+            author: { login: "codex[bot]" },
+            state: "CHANGES_REQUESTED",
+            submittedAt: "2026-06-25T00:00:00Z",
+          },
+          {
+            databaseId: 456,
+            author: { login: "alice" },
+            state: "APPROVED",
+          },
+        ],
+      }),
+    );
+
+    expect(await verdicts(9)).toEqual([
+      {
+        author: "codex[bot]",
+        state: "CHANGES_REQUESTED",
+        githubReviewId: "PRR_kwDO",
+        submittedAt: "2026-06-25T00:00:00Z",
+      },
+      {
+        author: "alice",
+        state: "APPROVED",
+        githubReviewId: 456,
+        submittedAt: null,
+      },
+    ]);
+  });
+
   it("CI status probe surfaces an unexpected gh failure on stderr (still fail-safe false)", async () => {
     const warnings: string[] = [];
     const spy = vi

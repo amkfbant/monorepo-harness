@@ -1605,19 +1605,22 @@ follow-up finding だけなら hitch は close できる。open な in-scope P0/
     変わらない＝再チェック無意味）は従来どおり `closed`（人手 merge）。新 status /
     migration なしで `close_ready` を「PR up・CI 待ち」に二重利用する。
   - **外部レビュー ingestion**（opt-in `--ingest-external-reviews`）: gate 評価前に
-    PR の外部レビュー verdict（codex App / Copilot）を fetch し、**`CHANGES_REQUESTED`**
-    を **unknown-scope の advisory finding**（`source=review` /
-    `category=external-review-changes-requested`、stableKey で 1 度だけ）として記録する。
-    すると closeReady 再評価が落ち gate が escalate → operator が分類（§6: 外部は
-    advisory・operator 分類必須）。**approve は ingest しない**（外部の approve は merge を
-    authorize できない＝§0 非対称）。fetch 失敗は握って merge path を壊さない。
+    PR の外部レビュー verdict（codex App / Copilot / 人間）を fetch し、既知 state
+    （`approved` / `changes_requested` / `commented` / `dismissed` / `pending`）を
+    v40 `external_review_events` ledger に全て記録する。ledger は観測用で gate 入力ではない。
+    そのうえで **`CHANGES_REQUESTED`** だけを **unknown-scope の advisory finding**
+    （`source=review` / `category=external-review-changes-requested`、stableKey で 1 度だけ）として
+    記録する。すると closeReady 再評価が落ち gate が escalate → operator が分類（§6:
+    外部は advisory・operator 分類必須）。外部 approval も ledger には残るが merge を authorize
+    しない（§0 非対称）。fetch 失敗は握って merge path を壊さない。
   - **外部レビュー bounded await**（opt-in `--external-review-timeout <seconds>`、既定
     `0`＝単発 fetch）: CI bounded await と対称。外部レビューは PR 公開後に非同期で
     post されるため、一発の orchestrate が verdict 到着前に gate を評価しうる。正値なら
-    `CHANGES_REQUESTED` が出るか budget が尽きるまで 15 秒間隔で poll する（最初に
-    blocking を見つけた時点で打ち切り）。budget 内に blocking が無ければ gate 評価へ進む
-    （fail-safe。遅れて来た verdict は close_ready 再 check で後から拾える）。`now`/`sleep`
-    は注入可能（テスト用）。
+    `CHANGES_REQUESTED` が出るか budget が尽きるまで 15 秒間隔で poll する。各 poll の全 verdict
+    は ledger へ append され、同一 GitHub review/state は v40 index で、GitHub review id が無い
+    verdict は deterministic `event_id`（fetch 配列 index + author を含む）で re-poll dedup される。
+    budget 内に blocking が無ければ gate 評価へ進む（fail-safe。遅れて来た verdict は close_ready
+    再 check で後から拾える）。`now`/`sleep` は注入可能（テスト用）。
   - merge コマンド失敗 → 例外で escalate（audit は `failed`）。
 - **既定 OFF**: `deps.autoMerge` 不在（CLI で `--auto-merge` 未指定）なら従来どおり
   PR 作成のみ（`pr_created`）。`--merge-method`（squash|merge|rebase）で方式指定し、

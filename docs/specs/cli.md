@@ -728,17 +728,22 @@ operation audit（`copilot-review`）に記録されるだけで、close / merge
 
 **`--ingest-external-reviews`（既定 OFF・`--auto-merge` 時のみ）** を付けると、
 auto-merge gate 評価前に PR の外部レビュー verdict（codex App / Copilot）を fetch し、
-**`CHANGES_REQUESTED`** を **unknown-scope の advisory finding** として 1 度だけ記録
-する。これにより gate が escalate し operator が分類する（外部は advisory・operator
-分類必須）。**approve は ingest しない**（外部の approve は merge を authorize しない）。
+既知 state（`approved` / `changes_requested` / `commented` / `dismissed` / `pending`）を
+v40 `external_review_events` ledger に全て記録する。ledger は観測用で auto-merge gate の
+入力ではない。そのうえで **`CHANGES_REQUESTED`** だけを **unknown-scope の advisory finding**
+として 1 度だけ記録する。これにより gate が escalate し operator が分類する（外部は
+advisory・operator 分類必須）。外部の approve は ledger には残るが merge を authorize しない。
 fetch 失敗は握って merge path を壊さない。`workflow.md` の「Phase 3 — auto-merge」参照。
 
 **`--external-review-timeout <seconds>`（既定 `0`・`--ingest-external-reviews` 時のみ
 有効）** は外部レビューの **bounded await**（CI bounded await と対称）。外部レビューは
 PR 公開後に非同期で post されるため、一発の orchestrate が verdict 到着前に gate を
 評価しうる。`0`（既定）は単発 fetch。正値なら `CHANGES_REQUESTED` が出るか budget
-（秒）が尽きるまで 15 秒間隔で poll する。budget 内に blocking が無ければ gate 評価に
-進む（fail-safe。遅れて来た verdict は close_ready の再 check で後から拾える）。
+（秒）が尽きるまで 15 秒間隔で poll する。各 poll の全 known-state verdict は
+`external_review_events` に記録され、同一 GitHub review/state は v40 index で、GitHub review
+id が無い verdict は deterministic `event_id`（fetch 配列 index + author）で re-poll dedup
+される。budget 内に blocking が無ければ gate 評価に進む（fail-safe。遅れて来た verdict は
+close_ready の再 check で後から拾える）。
 
 `hitch await-merge` は **`close_ready` で PR がオープン中（CI 待ち）** の hitch を、
 merge されるまで**ポーリングで自動駆動**する（`orchestrate --auto-merge` の close/merge
