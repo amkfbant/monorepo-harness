@@ -327,7 +327,7 @@ describe("MCP goal tools", () => {
     expect(denied.status).toBe("permission_denied");
   });
 
-  it("rejects duplicate-scoped finding records without canonical duplicate targets", async () => {
+  it("rejects caller-supplied scopeStatus in record_findings before mutating", async () => {
     const root = freshRoot();
     const s = server(
       root,
@@ -347,14 +347,20 @@ describe("MCP goal tools", () => {
         {
           severity: "P1",
           category: "correctness",
-          summary: "Duplicate without canonical",
-          scopeStatus: "duplicate",
+          summary: "Caller tries to classify this out of scope",
+          filePath: "src/hitch/repository.ts",
+          scopeStatus: "out_of_scope",
         },
       ],
-      idempotencyKey: "goal-record-duplicate-finding",
+      idempotencyKey: "goal-record-scope-bypass",
     });
     expect(recorded.status).toBe("error");
-    expect(recorded.summary).toContain("duplicate finding requires duplicateOf");
+    expect(recorded.summary).toContain("invalid arguments");
+    expect(recorded.summary).toContain("scopeStatus");
+    withDb(root, (db) => {
+      const repo = new HitchRepository(db);
+      expect(repo.listFindings({ hitchId })).toEqual([]);
+    });
   });
 
   it("records convergence decisions after classify and defer mutations", async () => {
@@ -384,11 +390,11 @@ describe("MCP goal tools", () => {
           severity: "P1",
           category: "correctness",
           summary: "Unknown finding",
-          scopeStatus: "unknown",
         },
       ],
       idempotencyKey: "goal-record-unknown-audit",
     });
+    expect(unknown.data.result.recorded[0].finding.scopeStatus).toBe("unknown");
     const unknownFindingId = unknown.data.result.recorded[0].finding.findingId;
 
     const classified = await callTool(s, "harness.hitch.classify_finding", {
@@ -790,6 +796,13 @@ describe("MCP goal tools", () => {
     const toolNames = tools.result.tools.map((tool: { name: string }) => tool.name);
     expect(toolNames).toContain("harness.hitch.status");
     expect(toolNames).toContain("harness.hitch.check_convergence");
+    const recordFindingsTool = tools.result.tools.find(
+      (tool: { name: string }) => tool.name === "harness.hitch.record_findings",
+    );
+    const findingSchema =
+      recordFindingsTool.inputSchema.properties.findings.items;
+    expect(findingSchema.additionalProperties).toBe(false);
+    expect(findingSchema.properties).not.toHaveProperty("scopeStatus");
 
     const resources = (await s.handleMessage({
       jsonrpc: "2.0",
