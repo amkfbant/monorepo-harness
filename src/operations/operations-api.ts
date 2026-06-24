@@ -14,6 +14,54 @@ function validRunId(s: string): boolean {
   return RUN_ID_SHAPE.test(s);
 }
 
+type ReviewDecision = "approved" | "changes_requested" | "rejected";
+
+interface ReviewOverridePayload {
+  reason: string;
+  actorReviewerId?: string;
+}
+
+type ReviewOverrideValidation =
+  | { ok: true; override?: ReviewOverridePayload }
+  | { ok: false; message: string };
+
+function validateReviewOverridePayload(raw: unknown): ReviewOverrideValidation {
+  if (raw === undefined) {
+    return { ok: true };
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, message: "override must be an object" };
+  }
+  const override = raw as Record<string, unknown>;
+  if (
+    typeof override.reason !== "string" ||
+    override.reason.trim() === ""
+  ) {
+    return {
+      ok: false,
+      message: "override.reason must be a non-empty string",
+    };
+  }
+  if (
+    override.actorReviewerId !== undefined &&
+    typeof override.actorReviewerId !== "string"
+  ) {
+    return {
+      ok: false,
+      message: "override.actorReviewerId must be a string",
+    };
+  }
+  return {
+    ok: true,
+    override: {
+      reason: override.reason,
+      ...(override.actorReviewerId !== undefined
+        ? { actorReviewerId: override.actorReviewerId }
+        : {}),
+    },
+  };
+}
+
 /**
  * Cap JSON body size so a runaway POST cannot exhaust server memory. 1 MiB is
  * generous for the mutation API (its bodies are short JSON). Returns
@@ -104,6 +152,11 @@ export function mutationRoutes(): Route[] {
           );
           return;
         }
+        const overridePayload = validateReviewOverridePayload(body.override);
+        if (!overridePayload.ok) {
+          writeError(res, 400, "bad_request", overridePayload.message);
+          return;
+        }
         const dryRun = body.dryRun === true;
         const idempotencyKey =
           typeof req.headers["idempotency-key"] === "string"
@@ -133,24 +186,16 @@ export function mutationRoutes(): Route[] {
               );
               const { harnessPaths } = await import("../config/paths.js");
               const paths = harnessPaths(dirname(dirname(ctx.config.dbPath)));
-              const override = body.override as
-                | {
-                    actorReviewerId?: string;
-                    reason?: string;
-                  }
-                | undefined;
+              const override = overridePayload.override;
               const r = await processReviewDecision({
                 runsDir: paths.runsDir,
                 locksDir: paths.locksDir,
                 dbPath: paths.dbPath,
                 runId,
-                ...(override !== undefined && override.reason !== undefined
+                ...(override !== undefined
                   ? {
                       override: {
-                        decision: decision as
-                          | "approved"
-                          | "changes_requested"
-                          | "rejected",
+                        decision: decision as ReviewDecision,
                         reason: override.reason,
                         ...(override.actorReviewerId !== undefined
                           ? { actorReviewerId: override.actorReviewerId }

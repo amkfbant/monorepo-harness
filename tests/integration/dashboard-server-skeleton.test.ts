@@ -578,6 +578,78 @@ describe("Dashboard server skeleton (Phase 12-1)", () => {
         (invalidDecision.body as { error: { message: string } }).error.message,
       ).toMatch(/decision must be/);
 
+      const invalidOverrideCases: Array<
+        [runId: string, body: Record<string, unknown>, message: RegExp]
+      > = [
+        [
+          "run-invalid-override-scalar",
+          { decision: "approved", dryRun: true, override: "manual" },
+          /override must be an object/,
+        ],
+        [
+          "run-invalid-override-null",
+          { decision: "approved", dryRun: true, override: null },
+          /override must be an object/,
+        ],
+        [
+          "run-invalid-override-array",
+          { decision: "approved", dryRun: true, override: [] },
+          /override must be an object/,
+        ],
+        [
+          "run-invalid-override-missing-reason",
+          { decision: "approved", dryRun: true, override: {} },
+          /override\.reason must be a non-empty string/,
+        ],
+        [
+          "run-invalid-override-reason-type",
+          { decision: "approved", dryRun: true, override: { reason: 123 } },
+          /override\.reason must be a non-empty string/,
+        ],
+        [
+          "run-invalid-override-reason-empty",
+          { decision: "approved", dryRun: true, override: { reason: "   " } },
+          /override\.reason must be a non-empty string/,
+        ],
+        [
+          "run-invalid-override-actor-type",
+          {
+            decision: "approved",
+            dryRun: true,
+            override: { reason: "manual approval", actorReviewerId: 42 },
+          },
+          /override\.actorReviewerId must be a string/,
+        ],
+      ];
+
+      for (const [runId, requestBody, expectedMessage] of invalidOverrideCases) {
+        const invalidOverride = await postJson(
+          srv.baseUrl,
+          `/api/runs/${runId}/review`,
+          requestBody,
+        );
+        expect(invalidOverride.status, runId).toBe(400);
+        const error = (invalidOverride.body as {
+          error: { code: string; message: string };
+        }).error;
+        expect(error.code, runId).toBe("bad_request");
+        expect(error.message, runId).toMatch(expectedMessage);
+      }
+
+      const db = openDb(env.dbPath);
+      try {
+        const row = db
+          .prepare(
+            `SELECT count(*) AS n
+               FROM operations
+              WHERE target_id LIKE 'run-invalid-override-%'`,
+          )
+          .get() as { n: number };
+        expect(row.n).toBe(0);
+      } finally {
+        db.close();
+      }
+
       const cleanupMissingConfirm = await postJson(
         srv.baseUrl,
         "/api/runs/run-confirm-cleanup/cleanup",

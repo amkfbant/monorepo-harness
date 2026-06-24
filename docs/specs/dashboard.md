@@ -177,6 +177,12 @@ dashboard では POST は常に `405`。以下の操作系 API は別 listener �
 | `POST /api/runs/:runId/rerun` | rerun |
 | `POST /api/backlog/:itemId/run` | backlog item の実行 |
 
+`POST /api/runs/:runId/review` body は `{ "decision": "approved" |
+"changes_requested" | "rejected", "dryRun"?: true, "override"?: { "reason":
+string, "actorReviewerId"?: string } }`。`override` を送る場合は object で、
+`reason` は non-empty string、`actorReviewerId` は指定時 string。型不一致は
+operation ledger へ row を作る前に `400 bad_request` で拒否する。
+
 ### Auth / CSRF / security headers
 
 認証の運用詳細は [`../ops/setup-and-secrets.md`](../ops/setup-and-secrets.md) の
