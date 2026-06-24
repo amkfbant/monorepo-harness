@@ -316,12 +316,18 @@ for each changed path p:
 - `id_{rsa,dsa,ecdsa,ed25519}` （SSH 秘密鍵）
 - `*.{pem,key,pfx,p12}`
 
-**content パターン** (先頭 32KB の strict UTF-8 sample):
+**content パターン**:
 - PEM private key header
 - AWS access key id (`AKIA[0-9A-Z]{16}`)
 - GitHub token (`gh{p,s,o,u,r}_*` or `github_pat_*`)
 - OpenAI key (`sk-(proj-)?[A-Za-z0-9_-]{20,}`)
 - Stripe live/test key (`sk_(live|test)_*`)
+
+`untracked-files.patch` に inline される通常サイズ（256KiB 以下）の strict UTF-8
+text file は、patch bytes を書く前に **全文**を content パターンで scan する。hit
+した場合は content を保存せず `@@ secret-suspect (...) @@` + sha256 に redaction する。
+oversized / binary / symlink / non-file は content を artifact に保存しないため、filename
+heuristic と metadata-only 出力に留める。
 
 **free-text / log パターン**: prompt / log / Codex events の文字列 redaction は
 同じ `containsLikelySecret` gate を使う。上記 vendor-shaped token に加えて、
