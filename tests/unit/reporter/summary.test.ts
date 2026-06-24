@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildSummary } from "../../../src/reporter/summary.js";
+import { COMMAND_LOG_LINE_WITHHELD } from "../../../src/reporter/secret-scan.js";
 
 const BASE = {
   runId: "run-1",
@@ -60,6 +61,29 @@ describe("buildSummary", () => {
     });
     expect(md).toMatch(/TIMEOUT/);
     expect(md).toMatch(/rate limit exceeded/);
+  });
+
+  it("redacts secret-shaped stdout and stderr tail lines", () => {
+    const token = `sk-${"a".repeat(40)}`;
+    const bearer = `Authorization: Bearer ${"b".repeat(24)}`;
+    const md = buildSummary({
+      ...BASE,
+      status: "failed-codex",
+      safetyStatus: "allowed",
+      codexExitCode: 1,
+      codexStdoutTail: ["build started", `OPENAI_API_KEY=${token}`, "done"].join(
+        "\n",
+      ),
+      codexStderrTail: ["warning before", bearer, "warning after"].join("\n"),
+    });
+
+    expect(md).toContain("build started");
+    expect(md).toContain("done");
+    expect(md).toContain("warning before");
+    expect(md).toContain("warning after");
+    expect(md).toContain(COMMAND_LOG_LINE_WITHHELD);
+    expect(md).not.toContain(token);
+    expect(md).not.toContain(bearer);
   });
 
   it("highlights secret-suspect files when present", () => {

@@ -2,6 +2,7 @@ import type { Violation } from "../policy/path-policy-validator.js";
 import type { RunStatus, SafetyStatus } from "../logging/run-log.js";
 import type { DiffStat } from "../git/diff.js";
 import type { ChangeBudgetReport } from "./summary.js";
+import { redactSecretLines } from "./secret-scan.js";
 
 export interface ReviewRequestInputs {
   runId: string;
@@ -32,8 +33,8 @@ export interface ReviewRequestInputs {
   reviewDecisionPath: string;
 }
 
-function fenced(s: string): string[] {
-  return ["```", s.trim() || "(empty)", "```"];
+function fencedRedactedTail(s: string): string[] {
+  return ["```", redactSecretLines(s).trim() || "(empty)", "```"];
 }
 
 function pushChangeBudget(
@@ -142,10 +143,10 @@ export function buildReviewRequest(i: ReviewRequestInputs): string {
   lines.push(`- review decision: \`${i.reviewDecisionPath}\``);
   lines.push("");
   lines.push("## Codex output (stdout tail)");
-  lines.push(...fenced(i.codexStdoutTail));
+  lines.push(...fencedRedactedTail(i.codexStdoutTail));
   lines.push("");
   lines.push("## Codex output (stderr tail)");
-  lines.push(...fenced(i.codexStderrTail));
+  lines.push(...fencedRedactedTail(i.codexStderrTail));
   lines.push("");
   if (i.codexEventsSummary !== undefined && i.codexEventsSummary !== "") {
     lines.push("## codex events (tail, redacted)");

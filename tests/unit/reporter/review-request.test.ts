@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildReviewRequest } from "../../../src/reporter/review-request.js";
+import { COMMAND_LOG_LINE_WITHHELD } from "../../../src/reporter/secret-scan.js";
 
 const BASE = {
   runId: "run-20260520-apps-user-xyz",
@@ -67,6 +68,33 @@ describe("buildReviewRequest", () => {
     });
     expect(md).toMatch(/Codex output \(stderr tail\)/);
     expect(md).toMatch(/error: model unavailable/);
+  });
+
+  it("redacts multi-line PEM blocks from Codex tails", () => {
+    const body = "MIIEpAIBAAKCAQEAtailartifactsecretbody";
+    const md = buildReviewRequest({
+      ...BASE,
+      status: "failed-codex",
+      safetyStatus: "allowed",
+      changedPaths: [],
+      untrackedPaths: [],
+      violations: [],
+      codexExitCode: 1,
+      codexStdoutTail: [
+        "plain before",
+        "-----BEGIN RSA PRIVATE KEY-----",
+        body,
+        "-----END RSA PRIVATE KEY-----",
+        "plain after",
+      ].join("\n"),
+    });
+
+    expect(md).toContain("plain before");
+    expect(md).toContain("plain after");
+    expect(md).toContain(COMMAND_LOG_LINE_WITHHELD);
+    expect(md).not.toContain("BEGIN RSA PRIVATE KEY");
+    expect(md).not.toContain(body);
+    expect(md).not.toContain("END RSA PRIVATE KEY");
   });
 
   it("annotates timeouts and diff collection failures", () => {

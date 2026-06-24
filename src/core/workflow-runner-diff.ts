@@ -16,9 +16,16 @@ import { createReadStream } from "node:fs";
 import { gitCli } from "../git/git-cli.js";
 import { collectDiff, type DiffResult, type DiffStat } from "../git/diff.js";
 import { normalizeDiffBudget, validateDiffBudget } from "../policy/diff-budget-validator.js";
+import { redactSecretLines } from "../reporter/secret-scan.js";
 
 import { elapsedMs } from "./workflow-runner-shared.js";
 import type { ContinueFromSkipReason, RunChangeBudgetOverride } from "./workflow-runner-shared.js";
+
+function utf8Tail(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text, "utf8");
+  if (buf.length <= maxBytes) return text;
+  return buf.subarray(buf.length - maxBytes).toString("utf8");
+}
 
 export async function readTail(path: string, maxBytes = 8 * 1024): Promise<string> {
   try {
@@ -43,6 +50,17 @@ export async function readOptionalUtf8(path: string): Promise<string | null> {
   }
 }
 
+export async function readRedactedTail(
+  path: string,
+  maxBytes = 8 * 1024,
+): Promise<string> {
+  try {
+    return utf8Tail(redactSecretLines(await readFile(path, "utf8")), maxBytes);
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Codex sometimes echoes the diff it just applied into stderr (via the
  * `git apply` subprocess), which then floods review-request.md and
@@ -62,6 +80,18 @@ export async function readStderrTail(
   maxBytes = 8 * 1024,
 ): Promise<string> {
   return filterPatchEcho(await readTail(path, maxBytes));
+}
+
+export async function readRedactedStderrTail(
+  path: string,
+  maxBytes = 8 * 1024,
+): Promise<string> {
+  try {
+    const filtered = filterPatchEcho(await readFile(path, "utf8"));
+    return utf8Tail(redactSecretLines(filtered), maxBytes);
+  } catch {
+    return "";
+  }
 }
 
 export interface DiffOutcome {

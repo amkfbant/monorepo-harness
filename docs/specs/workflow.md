@@ -60,7 +60,9 @@
 25. determine RunStatus from priority:
     diff failure > codex timeout > codex non-zero > policy violation
     > enforced budget exceeded > command failure > needs_review
-26. readTail(codex-output.log), readStderrTail(codex-error.log);
+26. readRedactedTail(codex-output.log), readRedactedStderrTail(codex-error.log);
+    summary/review-request 用の stdout/stderr tail は command-log と同じ
+    行単位 secret redaction を全文に適用してから tail 化する
     codex が失敗（exitCode != 0 / timedOut）した場合は、publish 済みの
     redacted `codex-events.jsonl` から events tail を要約
 27. write summary.md
@@ -181,16 +183,16 @@ runs/<runId>/
   resolved-policy.yaml     # ResolvedPolicy を YAML で
   codex-prompt.md          # codex に渡した prompt 全文
   codex-output.log         # codex `-o/--output-last-message` の最終 agent message
-  codex-error.log          # codex stderr (生; readStderrTail で patch echo を抑制してから artifact に転載)
+  codex-error.log          # codex stderr (生; summary/review-request へ載せる tail は readRedactedStderrTail で patch echo 抑制 + secret line redaction)
   codex-events.jsonl       # codex `--json` stdout の JSONL events (raw stdout は一時 dotfile に隔離し、redaction 後に atomic publish; command aggregated_output / text / command / command_name / name は shared secret heuristic redaction 済み; turn.completed.usage を含み、run_usage の入力になる。redaction 失敗時は redaction.failed sentinel のみ)
   final-diff.patch         # tracked changes の unified diff (against baseSha)。常に生成 (変更なしなら空)
   untracked-files.patch    # OPTIONAL: allowed untracked がある場合のみ。inline-sized UTF-8 text は全文 secret scan 後に保存し、hit は redact
   untracked-files.txt      # OPTIONAL: allowed untracked がある場合のみ。path list
   untracked-denied.txt     # OPTIONAL: denied untracked がある場合のみ。size + sha256、content なし
   untracked-secrets.txt    # OPTIONAL: secret hit がある場合のみ。reasons のみ、content なし
-  summary.md               # 人間向け短いサマリ。diff stat / change budget evidence を載せる。codex が非ゼロ exit / timeout で失敗した run のみ redacted codex events tail も載せる
+  summary.md               # 人間向け短いサマリ。diff stat / change budget evidence を載せる。codex stdout/stderr tail は redacted。codex が非ゼロ exit / timeout で失敗した run のみ redacted codex events tail も載せる
   knowledge-candidates.yaml # 自動抽出 signal (4 kinds; 後述)
-  review-request.md        # reviewer 向け詳細 (status / safety / lists / change budget / artifacts / codex tails / redacted events tail on codex failure / checklist)
+  review-request.md        # reviewer 向け詳細 (status / safety / lists / change budget / artifacts / redacted codex tails / redacted events tail on codex failure / checklist)
   review-decision.yaml     # 初期: { decision: pending, … } — reviewer がここを編集する
   commands/                # OPTIONAL: policy.allowedCommands があるときだけ runs/<runId>/commands/ に生成（workspace 内に作らない）
     00-<slug>.out.log      # command stdout; secret-shaped 行は write 層で redaction (#186)
@@ -203,6 +205,15 @@ locks/<repoId>--<domain-slug>-<hash>.lock  # active run の lock; runId / pid / 
 ```
 
 **command log redaction (#186)**: `runAllowedCommands`（全 command 種別 — policy commands と hitch close-check の双方）は子プロセスの stdout/stderr を **write 層の Transform で行単位 redaction** してから `*.out.log` / `*.err.log` に書く。secret-shaped な行（`containsLikelySecret`: vendor token / name-based assignment / bearer / verified Basic auth header）は `[redacted: secret-shaped line withheld]` に**丸ごと**置換する（partial 置換はしない＝chunk/行境界で token が断たれて残りが漏れるのを防ぐ）。PEM 秘密鍵は **BEGIN..END の block 全行**を redaction する（base64 本体行は単体では token pattern に一致しないため、redactor が block 状態を持つ）。byte stream は `StringDecoder` で multi-byte char を再結合し、token が chunk をまたいでも行確定時に判定する。partial-line buffer は `COMMAND_LOG_MAX_LINE_CHARS`（1 MiB）で**上限**を設け、改行無しの巨大行は丸ごと withhold する（無界 buffer の OOM と flush 境界での token 断裂を防ぐ）。marker 自体も `containsLikelySecret` で secret 扱いなので、redact 済みログを再 scan（close-check の log excerpt 等）しても withheld のまま。
+
+**Codex tail artifact redaction (#381)**: `summary.md` / `review-request.md`
+に載せる `codex-output.log` / `codex-error.log` の stdout/stderr tail は、
+表示用 tail を切り出す前に全文へ `redactSecretLines` を適用する。これにより、
+tail window が PEM body や secret 行の途中から始まっても、BEGIN..END block 状態と
+name-based assignment / bearer / verified Basic auth / vendor token 判定は
+command-log と同じ semantics で効く。`codex-error.log` は既存どおり patch echo
+suppression（`diff --git` 以降 omit）を適用した上で redaction / tail 化する。
+clean な tail 行はそのまま表示される。
 
 ## Phase 5: project-driven run
 
