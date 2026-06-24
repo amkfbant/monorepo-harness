@@ -9,6 +9,7 @@ import {
   type ExternalReviewerType,
   type ExternalReviewState,
 } from "../db/repositories/external-review-events.js";
+import { containsLikelySecret } from "../reporter/secret-scan.js";
 
 export interface ExternalReviewVerdict {
   author: string;
@@ -41,6 +42,37 @@ interface NormalizedExternalReviewVerdict {
 }
 
 const COPILOT_BOT_LOGIN = "copilot-pull-request-reviewer";
+/**
+ * The codex GitHub App posts PR reviews under this login (the reviews API
+ * returns it bare; GOAL_RULES names the `[bot]` form). Exact-match it — a loose
+ * "contains codex + bot" heuristic misses the bare login and misclassifies a
+ * real codex App review as `human`.
+ */
+const CODEX_APP_LOGIN = "chatgpt-codex-connector";
+
+/** Whole-field redaction marker for a secret-suspect external review body. */
+const REDACTED_EXTERNAL_REVIEW_SUMMARY =
+  "[redacted: external review summary withheld (secret-suspect)]";
+
+/**
+ * Redact an external review body at the ingest boundary. The body is untrusted
+ * free text (it can carry copied tokens / env values) bound for the DB and later
+ * prompt injection, so withhold the WHOLE field fail-closed when it looks
+ * secret-bearing — never persist raw secret-shaped text (#82/#97/#98). Mirrors
+ * the harness's other write-boundary redactions.
+ */
+function redactReviewSummary(body: string | null | undefined): {
+  summary: string | null;
+  redacted: boolean;
+} {
+  if (body === undefined || body === null || body === "") {
+    return { summary: null, redacted: false };
+  }
+  if (containsLikelySecret(body)) {
+    return { summary: REDACTED_EXTERNAL_REVIEW_SUMMARY, redacted: true };
+  }
+  return { summary: body, redacted: false };
+}
 
 export function recordExternalReviewEvents(
   input: ExternalReviewEventIngestInput,
@@ -129,8 +161,9 @@ export function reviewerTypeForExternalReview(
     return explicit;
   }
   const lower = author.toLowerCase();
-  if (lower === COPILOT_BOT_LOGIN) return "copilot";
-  if (lower.includes("codex") && lower.includes("bot")) return "codex_app";
+  const bare = lower.endsWith("[bot]") ? lower.slice(0, -"[bot]".length) : lower;
+  if (bare === COPILOT_BOT_LOGIN) return "copilot";
+  if (bare === CODEX_APP_LOGIN) return "codex_app";
   if (lower.endsWith("[bot]")) return "other";
   return "human";
 }
@@ -145,14 +178,16 @@ function normalizeExternalReviewVerdict(
     verdict.githubReviewId === undefined || verdict.githubReviewId === null
       ? null
       : String(verdict.githubReviewId);
+  // Redact at THIS write boundary — never trust the caller to have done it.
+  const redaction = redactReviewSummary(verdict.summary);
   return {
     author,
     state,
     reviewerType: reviewerTypeForExternalReview(author, verdict.reviewerType),
     githubReviewId: githubReviewId === "" ? null : githubReviewId,
     submittedAt: verdict.submittedAt ?? null,
-    summary: verdict.summary ?? null,
-    redacted: verdict.redacted === true,
+    summary: redaction.summary,
+    redacted: redaction.redacted || verdict.redacted === true,
   };
 }
 

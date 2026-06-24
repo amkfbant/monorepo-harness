@@ -9,6 +9,7 @@ import { ExternalReviewEventRepository } from "../../../src/db/repositories/exte
 import {
   externalReviewEventId,
   recordExternalReviewEvents,
+  reviewerTypeForExternalReview,
 } from "../../../src/core/external-review-ingest.js";
 
 function freshDb() {
@@ -114,5 +115,56 @@ describe("external review event ingest", () => {
       }),
     );
     expect(withGithubIndex0).not.toBe(withIndex0);
+  });
+
+  it("classifies reviewer type from the login (codex App / Copilot / bot / human)", () => {
+    expect(reviewerTypeForExternalReview("chatgpt-codex-connector")).toBe(
+      "codex_app",
+    );
+    expect(reviewerTypeForExternalReview("chatgpt-codex-connector[bot]")).toBe(
+      "codex_app",
+    );
+    expect(reviewerTypeForExternalReview("copilot-pull-request-reviewer")).toBe(
+      "copilot",
+    );
+    expect(reviewerTypeForExternalReview("some-tool[bot]")).toBe("other");
+    expect(reviewerTypeForExternalReview("alice")).toBe("human");
+  });
+
+  it("redacts a secret-suspect review summary at the ingest boundary", () => {
+    const db = freshDb();
+    try {
+      recordExternalReviewEvents({
+        db,
+        repoId: "repo-a",
+        prNumber: 401,
+        createdAt: "2026-06-25T00:00:00.000Z",
+        verdicts: [
+          {
+            author: "alice",
+            state: "COMMENTED",
+            githubReviewId: "S1",
+            summary: "looks fine, but api_key=abcd1234deadbeef is hardcoded",
+          },
+          {
+            author: "bob",
+            state: "COMMENTED",
+            githubReviewId: "S2",
+            summary: "please add a null check here",
+          },
+        ],
+      });
+      const rows = new ExternalReviewEventRepository(db).listForPr(401, "repo-a");
+      const secret = rows.find((r) => r.githubReviewId === "S1");
+      const clean = rows.find((r) => r.githubReviewId === "S2");
+      // The secret-shaped body is withheld whole-field (never the raw token).
+      expect(secret?.redacted).toBe(true);
+      expect(secret?.summary).not.toContain("api_key");
+      // A clean body passes through unredacted.
+      expect(clean?.redacted).toBe(false);
+      expect(clean?.summary).toBe("please add a null check here");
+    } finally {
+      db.close();
+    }
   });
 });

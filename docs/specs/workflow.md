@@ -1608,6 +1608,11 @@ follow-up finding だけなら hitch は close できる。open な in-scope P0/
     PR の外部レビュー verdict（codex App / Copilot / 人間）を fetch し、既知 state
     （`approved` / `changes_requested` / `commented` / `dismissed` / `pending`）を
     v40 `external_review_events` ledger に全て記録する。ledger は観測用で gate 入力ではない。
+    `reviewer_type` は login から決定論的に分類（`chatgpt-codex-connector`→`codex_app` /
+    `copilot-pull-request-reviewer`→`copilot` / 他 `[bot]`→`other` / それ以外→`human`）。review
+    summary は ingest 境界で whole-field redaction（`containsLikelySecret` で secret-suspect なら
+    全文 withhold・fail-closed）してから格納する（#82/#97/#98。caller の事前 redact は信用しない）。
+    ledger への記録は best-effort（try で包み、失敗は warn のみで merge path を壊さない）。
     そのうえで **`CHANGES_REQUESTED`** だけを **unknown-scope の advisory finding**
     （`source=review` / `category=external-review-changes-requested`、stableKey で 1 度だけ）として
     記録する。すると closeReady 再評価が落ち gate が escalate → operator が分類（§6:
