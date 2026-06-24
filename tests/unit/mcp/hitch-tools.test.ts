@@ -224,6 +224,41 @@ describe("MCP goal tools", () => {
     expect(closed.data.result.status).toBe("closed");
   });
 
+  it("rejects manual record_close_check for review_consensus conditions", async () => {
+    const root = freshRoot();
+    const s = server(
+      root,
+      mutationConfig(["hitch.start", "hitch.record_close_check"]),
+    );
+    const started = await callTool(s, "harness.hitch.start", {
+      title: "Goal MCP review consensus guard",
+      projectId: "demo",
+      domain: "goal",
+      closeConditions: [
+        { id: "review-consensus", kind: "review_consensus", required: true },
+      ],
+      idempotencyKey: "goal-review-consensus-guard-start",
+    });
+    const hitchId = started.data.result.hitchId as string;
+
+    const denied = await callTool(s, "harness.hitch.record_close_check", {
+      hitchId,
+      conditionId: "review-consensus",
+      status: "passed",
+      checkedBy: "reviewer-self-certification",
+      idempotencyKey: "goal-review-consensus-guard-check",
+    });
+
+    expect(denied.status).toBe("error");
+    expect(denied.summary).toContain("kind=review_consensus");
+    expect(denied.summary).toContain("deterministic evaluator");
+    withDb(root, (db) => {
+      const repo = new HitchRepository(db);
+      expect(repo.listCloseChecks(hitchId)).toEqual([]);
+      expect(repo.requireSession(hitchId).status).toBe("open");
+    });
+  });
+
   it("records the MCP client actor in close and cancel lifecycle events", async () => {
     const root = freshRoot();
     const s = server(

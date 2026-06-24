@@ -923,6 +923,64 @@ describe("hitch CLI", () => {
     ]);
   });
 
+  it("rejects manual close-check records for deterministic or undeclared conditions", () => {
+    const { root, scopePath } = setup();
+    const closePath = join(root, "close-review-consensus.yaml");
+    writeFileSync(
+      closePath,
+      [
+        "- id: review-consensus",
+        "  kind: review_consensus",
+        "  required: true",
+        "",
+      ].join("\n"),
+    );
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch",
+        "start",
+        "--title",
+        "Review consensus manual guard",
+        "--domain",
+        "hitch",
+        "--scope-file",
+        scopePath,
+        "--close-file",
+        closePath,
+        "--json",
+      ]),
+    );
+
+    const deterministic = runCli(root, [
+      "hitch",
+      "close-check",
+      "record",
+      hitch.hitchId,
+      "--condition",
+      "review-consensus",
+      "--status",
+      "passed",
+      "--checked-by",
+      "operator-self-certification",
+    ]);
+    expect(deterministic.code).not.toBe(0);
+    expect(deterministic.out).toMatch(/kind=review_consensus/);
+    expect(deterministic.out).toMatch(/deterministic evaluator/);
+
+    const undeclared = runCli(root, [
+      "hitch",
+      "close-check",
+      "record",
+      hitch.hitchId,
+      "--condition",
+      "missing-condition",
+      "--status",
+      "passed",
+    ]);
+    expect(undeclared.code).not.toBe(0);
+    expect(undeclared.out).toMatch(/close condition not declared/);
+  });
+
   it("defers an out-of-scope finding to a backlog follow-up", () => {
     const { root, scopePath, closePath } = setup();
     const hitch = json<{ hitchId: string }>(

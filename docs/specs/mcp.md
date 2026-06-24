@@ -820,18 +820,16 @@ evidence to `hitch_close_checks` plus `runs/<runId>/close-checks/`. If the
 condition does not resolve to exactly one allowlisted command, no command is
 run and the hitch escalates for external evidence.
 
-A `facet_red_test` close condition (#279, opt-in) is satisfied by recording RED
-coverage evidence via `harness.hitch.record_close_check`: pass
-`evidence.facets` as an array of `{facetId, redTestPath, redDemonstrated: true,
-runId, evidenceRef?}` rows. The gate is deterministic — the harness re-derives
-pass/fail from the latest coding run's `run_changed_files` plus these evidence
-rows, binding each row to the closing `runId` and requiring `redTestPath` to be
-an actually-changed test path. A recorded `redDemonstrated: true` that does not
-correspond to a changed test in the close run does NOT pass the facet (the
-caller cannot self-assert coverage the changed-paths set does not corroborate),
-and a production surface changed with no covering test FAILS regardless of any
-recorded evidence. No reviewer/LLM verdict is consulted for this state
-transition.
+A `facet_red_test` close condition (#279, opt-in) is deterministic-only. Public
+manual `harness.hitch.record_close_check` calls cannot record
+`facet_red_test`, `finding_policy`, `review_consensus`, or `evidence_attached`
+condition ids; those statuses must come from the harness evaluator/import path
+for that condition kind. This prevents an operator, reviewer, or MCP client from
+self-certifying a deterministic gate by writing a fresh `passed` row. The facet
+gate re-derives pass/fail from the latest coding run's `run_changed_files` plus
+deterministically accepted evidence, binding evidence to the closing `runId` and
+requiring `redTestPath` to be an actually-changed test path. No reviewer/LLM
+verdict is consulted for this state transition.
 
 `harness.review.consensus` returns the persisted `review_consensus` row without
 introducing extra enum values. The `active` row is returned raw, so parse
@@ -856,6 +854,13 @@ harness.hitch.expand_scope
 
 All hitch mutation tools use `OperationRunner`, require idempotency keys, and
 write operation audit metadata with `hitchId`/`hitch_id` where a hitch is known.
+`harness.hitch.record_close_check` first resolves `conditionId` against the
+hitch's declared close conditions. It rejects undeclared ids and rejects manual
+records for deterministic-only kinds (`review_consensus`, `finding_policy`,
+`facet_red_test`, `evidence_attached`). Manual records are allowed only for
+operator/external evidence kinds (`manual`, `artifact_exists`,
+`operation_status`, `db_doctor`) and for `command` while the CLI/MCP compatibility
+surface still supports manually-entered command evidence.
 `hitch.close` is executable without confirmation only when convergence is
 `close_ready`; forced close, cancel, and scope expansion are always
 confirmation-required. `harness.hitch.expand_scope` merges the requested scope
