@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 39;
+export const SCHEMA_VERSION = 40;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -2302,6 +2302,52 @@ export const MIGRATION_V39_STATEMENTS: readonly string[] = [
 /** Table created by v39 — hitch_evidence (#91 Stage A). */
 export const V39_TABLE_NAMES = ["hitch_evidence"] as const;
 
+/**
+ * v40 — external_review_events (#395 DB foundation).
+ *
+ * Append-only ledger for external PR review verdicts (codex App / Copilot /
+ * humans). This is DB foundation only: ingest, dashboard, and loop linkage are
+ * wired by follow-up hitches. `hitch_id` is nullable so standalone PR paths can
+ * record events by PR number without inventing hitch linkage; `repo_id` scopes
+ * those PR-number rows because PR numbers are only unique within a repo and a
+ * single harness DB hosts multiple target repos.
+ *
+ * GitHub review states are normalized to lowercase before insertion. Unknown
+ * `state` / `reviewer_type` values fail closed through CHECK constraints. The
+ * partial unique index dedupes on `(github_review_id, state)`: re-polling the
+ * same unchanged review is ignored, but a state change under the same review id
+ * (a review dismissed, or a pending review submitted) is recorded as a new
+ * verdict rather than dropped. `event_id` is NOT NULL so a missing-id ingest
+ * cannot insert an unreachable primary-key row.
+ */
+export const MIGRATION_V40_STATEMENTS: readonly string[] = [
+  `CREATE TABLE external_review_events (
+  event_id         TEXT PRIMARY KEY NOT NULL,
+  hitch_id         TEXT REFERENCES hitch_sessions(hitch_id) ON DELETE CASCADE,
+  run_id           TEXT,
+  repo_id          TEXT,
+  pr_number        INTEGER NOT NULL,
+  author           TEXT NOT NULL,
+  reviewer_type    TEXT NOT NULL CHECK (reviewer_type IN ('codex_app','copilot','human','other')),
+  state            TEXT NOT NULL CHECK (state IN ('approved','changes_requested','commented','dismissed','pending')),
+  github_review_id TEXT,
+  submitted_at     TEXT,
+  summary          TEXT,
+  redacted         INTEGER NOT NULL DEFAULT 0,
+  created_at       TEXT NOT NULL
+)`,
+  `CREATE INDEX external_review_events_hitch_idx
+     ON external_review_events(hitch_id, created_at)`,
+  `CREATE INDEX external_review_events_pr_idx
+     ON external_review_events(repo_id, pr_number, created_at)`,
+  `CREATE UNIQUE INDEX external_review_events_review_idx
+     ON external_review_events(github_review_id, state)
+     WHERE github_review_id IS NOT NULL`,
+] as const;
+
+/** Table created by v40 — external_review_events (#395 DB foundation). */
+export const V40_TABLE_NAMES = ["external_review_events"] as const;
+
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [
   "db_meta",
@@ -2352,6 +2398,7 @@ export const ALL_TABLE_NAMES: readonly string[] = [
   ...V32_TABLE_NAMES,
   ...V36_TABLE_NAMES,
   ...V39_TABLE_NAMES,
+  ...V40_TABLE_NAMES,
 ];
 
 /** Tables intentionally removed by later migrations. */

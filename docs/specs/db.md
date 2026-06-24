@@ -17,8 +17,8 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V39_STATEMENTS`、
-> `SCHEMA_VERSION = 39`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V40_STATEMENTS`、
+> `SCHEMA_VERSION = 40`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)
@@ -735,7 +735,7 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 
 ### schema versions
 
-`SCHEMA_VERSION = 39`（`src/db/schema.ts`）。
+`SCHEMA_VERSION = 40`（`src/db/schema.ts`）。
 
 | Version | Phase | 主な内容 |
 |---|---|---|
@@ -775,6 +775,68 @@ bypass は `db migrate-legacy` / `db import --force-legacy-reconcile` /
 | 37 | agent usage telemetry follow-up #206 / #349 | additive 単一列: `agent_invocation.source_size INTEGER`（`ALTER TABLE ADD COLUMN`）。claude transcript ingest が parse 元 transcript の byte size を記録し、後続 pass が **grown transcript を検知して再 ingest（self-heal）** するのに使う（partial freeze の解消）。codex / external / backfill / v37 以前の行は NULL（= complete 扱い・再 ingest しない） |
 | 38 | #90 Stage B | additive 単一列: `hitch_findings.deferred_issue_url TEXT`（`ALTER TABLE ADD COLUMN`）。operator が `hitch finding defer --to-issue <url>` で deferred finding に既存 GitHub issue URL を link した値を保持（CLI 経由の linkFindingIssue のみが書き込む single-writer・finding が deferred を離れると deferred_backlog_item_id と共にクリア）。v37 以前の行は NULL |
 | 39 | #91 Stage A | additive 新規テーブル: `hitch_evidence`（excerpt-only）。hitch への検証エビデンスを append-only に記録する。`kind` は `command`/`metrics`/`before_after`/`transcript`/`note`、`attester` は `operator` のみ（Stage A は operator-attested only — CHECK で強制し writer が hardcode-stamp）。`output_excerpt TEXT` に有界テキスト抜粋を格納（フルボディ blob は defer）。FK `hitch_id REFERENCES hitch_sessions(hitch_id) ON DELETE CASCADE`。インデックス: `hitch_evidence_hitch_idx(hitch_id, created_at)`・`hitch_evidence_run_idx(run_id)` |
+| 40 | #395 DB foundation | additive 新規テーブル: `external_review_events`。PR の外部レビュー verdict（codex App / Copilot / 人間）を append-only に記録する DB-only ledger。`event_id` は `TEXT PRIMARY KEY NOT NULL`、`hitch_id` は nullable・`repo_id` で standalone PR 行を scope（PR 番号は repo 内でのみ一意）、`reviewer_type` は `codex_app`/`copilot`/`human`/`other`、`state` は lower-case の `approved`/`changes_requested`/`commented`/`dismissed`/`pending` に CHECK 制約で限定する。partial UNIQUE index は `(github_review_id, state)`: 同一 review の re-poll は dedup しつつ、同一 review id の state 遷移（dismiss / pending→submit）は別 verdict として保持する。インデックス: `external_review_events_hitch_idx(hitch_id, created_at)`・`external_review_events_pr_idx(repo_id, pr_number, created_at)`・`external_review_events_review_idx(github_review_id, state) WHERE github_review_id IS NOT NULL` |
+
+## External review events（schema v40 / #395）
+
+`external_review_events` は外部レビュー（codex App / Copilot / 人間）の verdict を
+append-only に保存する DB-only ledger。runtime gate はまだこの表を読まない。ingest /
+dashboard / review→fix loop linkage は後続 hitch の責務で、このフェーズでは migration と
+repository のみを提供する。
+
+```sql
+CREATE TABLE external_review_events (
+  event_id         TEXT PRIMARY KEY NOT NULL,
+  hitch_id         TEXT REFERENCES hitch_sessions(hitch_id) ON DELETE CASCADE,
+  run_id           TEXT,
+  repo_id          TEXT,
+  pr_number        INTEGER NOT NULL,
+  author           TEXT NOT NULL,
+  reviewer_type    TEXT NOT NULL
+    CHECK (reviewer_type IN ('codex_app','copilot','human','other')),
+  state            TEXT NOT NULL
+    CHECK (state IN ('approved','changes_requested','commented','dismissed','pending')),
+  github_review_id TEXT,
+  submitted_at     TEXT,
+  summary          TEXT,
+  redacted         INTEGER NOT NULL DEFAULT 0,
+  created_at       TEXT NOT NULL
+);
+CREATE INDEX external_review_events_hitch_idx
+  ON external_review_events(hitch_id, created_at);
+CREATE INDEX external_review_events_pr_idx
+  ON external_review_events(repo_id, pr_number, created_at);
+CREATE UNIQUE INDEX external_review_events_review_idx
+  ON external_review_events(github_review_id, state)
+  WHERE github_review_id IS NOT NULL;
+```
+
+`hitch_id` は nullable。hitch orchestrator 由来の PR では hitch に紐づけられるが、
+standalone `harness pr` 経路では `pr_number` のみで記録できる。PR 番号は repo 内でのみ一意な
+ため、1 つの harness DB が複数 repo を持つ場合に `pr_number` だけでは衝突する。これを避けるため
+`repo_id` を持ち、`listForPr(prNumber, repoId?)` / `summarize({ repoId, prNumber })` は repo で
+scope できる（呼び出し側は判明していれば必ず `repoId` を渡す）。GitHub の大文字 state は writer 側で
+lower-case に正規化してから挿入する。未知の `reviewer_type` / `state` は CHECK 制約で fail-closed に
+拒否する。`event_id` は `NOT NULL`（非 INTEGER の `TEXT PRIMARY KEY` は NULL を許すため、id 欠落の
+ingest が到達不能行を作るのを防ぐ）。
+
+`ExternalReviewEventRepository`（`src/db/repositories/external-review-events.ts`）は
+`INSERT OR IGNORE` で append し、`(github_review_id, state)` の partial UNIQUE index によって
+re-poll された **同一 state の** 同一 GitHub review を 1 行に dedup する。一方、同一
+`github_review_id` でも **state が変わった**（review が dismiss された / pending review が submit
+された）場合は別 verdict として記録する（取りこぼさない）。異なる / NULL の `github_review_id` の
+verdict も collapse / supersede せず別行として保持する。`listForHitch` / `listForPr` は
+`created_at ASC, event_id ASC`、`summarize` の `lastVerdict` は `created_at DESC, event_id DESC`
+で安定化する。`append` は required フィールド（`event_id`/`author`/`created_at`/`pr_number`）を
+事前検証し、INSERT は plain INSERT として **unique 衝突（dedup）のみ** を `inserted:false` に畳む。
+NOT NULL / CHECK / FK 違反は re-throw して malformed ingest を fail-closed に拒否する（`INSERT OR
+IGNORE` はこれらも握りつぶすため使わない）。
+
+> **既知の制約（ingest 層で解決予定・#395 後続フェーズ）**: dedup キー `(github_review_id, state)`
+> は linkage を含まない。同一 `(review, state)` を hitch なし（standalone）で先に記録し、後から
+> hitch 付きで append すると後者は dedup で無視され、その verdict は `listForHitch` /
+> `summarize({ hitchId })` に現れない。ingest 層（後続 hitch）が各 review を最初から最良の linkage
+> 込みで一度だけ記録するか、null linkage の補完で解決する設計判断を行う。
 
 ## Phase 11 — Review governance / consensus（close 済み・現状仕様）
 

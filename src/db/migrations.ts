@@ -41,6 +41,7 @@ import {
   MIGRATION_V37_STATEMENTS,
   MIGRATION_V38_STATEMENTS,
   MIGRATION_V39_STATEMENTS,
+  MIGRATION_V40_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -250,6 +251,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 39,
     name: "hitch-evidence-v39",
     statements: MIGRATION_V39_STATEMENTS,
+  },
+  {
+    version: 40,
+    name: "external-review-events-v40",
+    statements: MIGRATION_V40_STATEMENTS,
   },
 ];
 
