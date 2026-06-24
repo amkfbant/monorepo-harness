@@ -1711,7 +1711,7 @@ run が生成した `knowledge-candidates.yaml` の候補をレビューし、�
 データモデル:
 
 - `runs/<runId>/knowledge-candidates.yaml` — run が生成した **immutable な観測ログ**（harness は一切書き換えない）
-- `runs/<runId>/knowledge-decisions.yaml` — reviewer の **reject 決定 sidecar**（`knowledge reject` が書く）
+- `runs/<runId>/knowledge-decisions.yaml` — reviewer の **reject 決定 sidecar**（`knowledge reject` が書く。rejected candidate が無い run では書かない）
 - `docs/knowledge/<kind>/*.md` — reviewer が **採用した知見**（`knowledge promote` が書く）
 - `knowledge_entry_revisions` — DB-current な knowledge markdown body。`knowledge deprecate` / `knowledge edit` が更新する
 - `docs/knowledge-context/<domain>.md` — domain ごとに集約した **次回 run 用 context**（`knowledge build-context` が書く、Phase 3-4）

@@ -304,9 +304,11 @@ crash・export 失敗・`--reset` import のあとに files を DB から再構�
 - `run` / `backlog`: `db-first` row の files（`meta.json` / `events.jsonl` /
   `backlog/*.yaml`）を再 export。`legacy-file` row は files が source of truth
   なので対象外。
-- `knowledge`: `db-first` decision を持つ run の `knowledge-decisions.yaml` を
-  再投影する。promote 済み entry の `.md` body は **file-backed**（`.md` 自体が
-  canonical な artifact で人手編集可能）なので DB から再生成しない。
+- `knowledge`: `db-first` rejected decision を持つ run だけ
+  `knowledge-decisions.yaml` を再投影する。rejected candidate が無い run は
+  sidecar を書かず、current export tracking からも外す。promote 済み entry の
+  `.md` body は **file-backed**（`.md` 自体が canonical な artifact で人手編集可能）
+  なので DB から再生成しない。
 
 `db check-consistency` は export 追跡も検査する: `export_status` が
 `dirty` / `failed` の runtime 行、`exported_files.sha256` と実ファイルの drift。

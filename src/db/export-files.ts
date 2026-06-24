@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { DbError } from "./connection.js";
@@ -581,6 +581,10 @@ export function exportKnowledgeDecisions(
     reason: string | null;
     decided_at: string | null;
   }[];
+  if (rows.length === 0) {
+    clearKnowledgeDecisionExport(db, runId, opts.runsDir);
+    return { runId, status: "synced" };
+  }
   const entries = rows
     .map((r) => ({
       index: candidateIndex(r.candidate_id),
@@ -631,6 +635,31 @@ export function exportKnowledgeDecisions(
       error,
     });
     return { runId, status: "failed", error };
+  }
+}
+
+/**
+ * A run with no rejected candidates has no decision sidecar projection.
+ * Clear current export tracking and remove only the empty projection shape
+ * produced by older exporters.
+ */
+export function clearKnowledgeDecisionExport(
+  db: Database.Database,
+  runId: string,
+  runsDir: string,
+): void {
+  db.prepare(
+    `DELETE FROM exported_files
+     WHERE scope_type = 'knowledge_decisions' AND scope_id = ?`,
+  ).run(runId);
+  const path = join(runsDir, runId, "knowledge-decisions.yaml");
+  try {
+    const existing = readFileSync(path, "utf8").trim();
+    if (existing === "decisions:" || existing === "decisions: []") {
+      rmSync(path, { force: true });
+    }
+  } catch {
+    // Missing/unreadable sidecar already satisfies the DB-canonical no-op.
   }
 }
 

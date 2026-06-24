@@ -129,6 +129,81 @@ describe("db export-files (bulk)", () => {
     db.close();
   });
 
+  it("does not export a knowledge decision sidecar for db-first runs without rejections", () => {
+    const { root, db } = setup();
+    mkdirSync(join(root, "runs", "run-knw-promoted"), { recursive: true });
+    db.prepare(
+      `INSERT INTO knowledge_candidates (candidate_id, run_id, domain, kind,
+         title, body, status, created_at, decided_at, reviewer, reason,
+         source_mode, db_revision, export_status)
+       VALUES ('run-knw-promoted:0', 'run-knw-promoted', 'apps/x',
+         'policy_improvement', 't', 'c', 'promoted',
+         '2026-05-22T00:00:00Z', '2026-05-22T01:00:00Z',
+         'kn', NULL, 'db-first', 1, 'synced')`,
+    ).run();
+    writeFileSync(
+      join(root, "runs", "run-knw-promoted", "knowledge-decisions.yaml"),
+      "decisions:\n\n",
+    );
+    db.prepare(
+      `INSERT INTO exported_files (scope_type, scope_id, relative_path,
+         sha256, bytes, db_revision, exported_at)
+       VALUES ('knowledge_decisions', 'run-knw-promoted',
+         'knowledge-decisions.yaml', 'stale-empty', 12, 1,
+         '2026-05-22T02:00:00Z')`,
+    ).run();
+
+    const results = exportFiles(db, { harnessRoot: root, scope: "knowledge" });
+    expect(results[0]).toMatchObject({ total: 0, synced: 0, failed: 0 });
+    expect(
+      existsSync(
+        join(root, "runs", "run-knw-promoted", "knowledge-decisions.yaml"),
+      ),
+    ).toBe(false);
+    const tracked = db
+      .prepare(
+        `SELECT count(*) AS n FROM exported_files
+         WHERE scope_type = 'knowledge_decisions'
+           AND scope_id = 'run-knw-promoted'`,
+      )
+      .get() as { n: number };
+    expect(tracked.n).toBe(0);
+    db.close();
+  });
+
+  it("clears stale empty knowledge decision tracking for db-first runs with no candidates", () => {
+    const { root, db } = setup();
+    seedRun(db, "run-knw-empty");
+    mkdirSync(join(root, "runs", "run-knw-empty"), { recursive: true });
+    writeFileSync(
+      join(root, "runs", "run-knw-empty", "knowledge-decisions.yaml"),
+      "decisions:\n\n",
+    );
+    db.prepare(
+      `INSERT INTO exported_files (scope_type, scope_id, relative_path,
+         sha256, bytes, db_revision, exported_at)
+       VALUES ('knowledge_decisions', 'run-knw-empty',
+         'knowledge-decisions.yaml', 'stale-empty', 12, 1,
+         '2026-05-22T02:00:00Z')`,
+    ).run();
+
+    const results = exportFiles(db, { harnessRoot: root, scope: "knowledge" });
+
+    expect(results[0]).toMatchObject({ total: 0, synced: 0, failed: 0 });
+    expect(
+      existsSync(join(root, "runs", "run-knw-empty", "knowledge-decisions.yaml")),
+    ).toBe(false);
+    const tracked = db
+      .prepare(
+        `SELECT count(*) AS n FROM exported_files
+         WHERE scope_type = 'knowledge_decisions'
+           AND scope_id = 'run-knw-empty'`,
+      )
+      .get() as { n: number };
+    expect(tracked.n).toBe(0);
+    db.close();
+  });
+
   it("does not resurrect a run dir removed by cleanup --scope run (P1-4)", () => {
     const { root, db } = setup();
     seedRun(db, "run-cleaned");
