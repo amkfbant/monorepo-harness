@@ -181,7 +181,7 @@ runs/<runId>/
   codex-prompt.md          # codex に渡した prompt 全文
   codex-output.log         # codex `-o/--output-last-message` の最終 agent message
   codex-error.log          # codex stderr (生; readStderrTail で patch echo を抑制してから artifact に転載)
-  codex-events.jsonl       # codex `--json` stdout の JSONL events (raw stdout は一時 dotfile に隔離し、redaction 後に atomic publish; command aggregated_output / text / command / command_name / name は secret redaction 済み; turn.completed.usage を含み、run_usage の入力になる。redaction 失敗時は redaction.failed sentinel のみ)
+  codex-events.jsonl       # codex `--json` stdout の JSONL events (raw stdout は一時 dotfile に隔離し、redaction 後に atomic publish; command aggregated_output / text / command / command_name / name は shared secret heuristic redaction 済み; turn.completed.usage を含み、run_usage の入力になる。redaction 失敗時は redaction.failed sentinel のみ)
   final-diff.patch         # tracked changes の unified diff (against baseSha)。常に生成 (変更なしなら空)
   untracked-files.patch    # OPTIONAL: allowed untracked がある場合のみ。inline + secret hit は redact
   untracked-files.txt      # OPTIONAL: allowed untracked がある場合のみ。path list
@@ -201,7 +201,7 @@ workspaces/<runId>/repo/   # git worktree (削除しない)
 locks/<repoId>--<domain-slug>-<hash>.lock  # active run の lock; runId / pid / hostname / acquiredAt
 ```
 
-**command log redaction (#186)**: `runAllowedCommands`（全 command 種別 — policy commands と hitch close-check の双方）は子プロセスの stdout/stderr を **write 層の Transform で行単位 redaction** してから `*.out.log` / `*.err.log` に書く。secret-shaped な行（`containsLikelySecret`: vendor token / name-based assignment / bearer）は `[redacted: secret-shaped line withheld]` に**丸ごと**置換する（partial 置換はしない＝chunk/行境界で token が断たれて残りが漏れるのを防ぐ）。PEM 秘密鍵は **BEGIN..END の block 全行**を redaction する（base64 本体行は単体では token pattern に一致しないため、redactor が block 状態を持つ）。byte stream は `StringDecoder` で multi-byte char を再結合し、token が chunk をまたいでも行確定時に判定する。partial-line buffer は `COMMAND_LOG_MAX_LINE_CHARS`（1 MiB）で**上限**を設け、改行無しの巨大行は丸ごと withhold する（無界 buffer の OOM と flush 境界での token 断裂を防ぐ）。marker 自体も `containsLikelySecret` で secret 扱いなので、redact 済みログを再 scan（close-check の log excerpt 等）しても withheld のまま。
+**command log redaction (#186)**: `runAllowedCommands`（全 command 種別 — policy commands と hitch close-check の双方）は子プロセスの stdout/stderr を **write 層の Transform で行単位 redaction** してから `*.out.log` / `*.err.log` に書く。secret-shaped な行（`containsLikelySecret`: vendor token / name-based assignment / bearer / verified Basic auth header）は `[redacted: secret-shaped line withheld]` に**丸ごと**置換する（partial 置換はしない＝chunk/行境界で token が断たれて残りが漏れるのを防ぐ）。PEM 秘密鍵は **BEGIN..END の block 全行**を redaction する（base64 本体行は単体では token pattern に一致しないため、redactor が block 状態を持つ）。byte stream は `StringDecoder` で multi-byte char を再結合し、token が chunk をまたいでも行確定時に判定する。partial-line buffer は `COMMAND_LOG_MAX_LINE_CHARS`（1 MiB）で**上限**を設け、改行無しの巨大行は丸ごと withhold する（無界 buffer の OOM と flush 境界での token 断裂を防ぐ）。marker 自体も `containsLikelySecret` で secret 扱いなので、redact 済みログを再 scan（close-check の log excerpt 等）しても withheld のまま。
 
 ## Phase 5: project-driven run
 
@@ -317,7 +317,7 @@ cannot be proven index-clean.
 
 `artifacts_ingested` は run 完了時の `ingestRunArtifacts` 成功直後、`finalize` 前に emit される。`count` / `totalBytes` は DB blob に取り込んだ artifact body（`meta.json` / `events.jsonl` / `review-decision.yaml` など DB から再構成される artifact を除く）のファイル数と元ファイル byte 合計、`durationMs` は同じく `performance.now()` ベースの整数 ms。
 
-`codex_events_redacted` は `codex_exec_completed` 後、artifact ingest 前に quarantined raw dotfile を redaction して `codex-events.jsonl` へ atomic publish した結果、実際に置換または drop が発生した場合のみ emit される。`item.aggregated_output`、`item.text`、`item.command_name`、`item.name`、および `item.command`（string、string[] の各 string 要素、`{name: string}` の name）の secret-shaped content は `SCAN_SAMPLE_BYTES` ごとの 1KB overlap chunk で全量 scan し、hit した field または要素は `"[redacted: secret-suspect (...)]"` に置換する。parse できない JSONL 行は `{"type":"redaction.dropped_line"}` に置換して保存する。raw dotfile と redaction tmp dotfile は dotfile であり、artifact ingest の対象外。成功時は raw dotfile を削除する。
+`codex_events_redacted` は `codex_exec_completed` 後、artifact ingest 前に quarantined raw dotfile を redaction して `codex-events.jsonl` へ atomic publish した結果、実際に置換または drop が発生した場合のみ emit される。`item.aggregated_output`、`item.text`、`item.command_name`、`item.name`、および `item.command`（string、string[] の各 string 要素、`{name: string}` の name）の secret-shaped content は `SCAN_SAMPLE_BYTES` ごとの 1KB overlap chunk で全量 scan する。各 chunk は file/vendor token scanner と shared `containsLikelySecret` gate の両方を通し、name-based secret assignment と `Authorization: Bearer ...` / verified `Authorization: Basic ...` header も catch する。hit した field または要素は `"[redacted: secret-suspect (...)]"` に置換する。vendor scanner の具体 reason が無い `containsLikelySecret` hit は `content:likely-secret` reason を使う。parse できない JSONL 行は `{"type":"redaction.dropped_line"}` に置換して保存する。raw dotfile と redaction tmp dotfile は dotfile であり、artifact ingest の対象外。成功時は raw dotfile を削除する。
 
 redaction の raw 読み込み、redacted tmp 書き込み、または `codex-events.jsonl` への rename が失敗した場合、workflow は raw を正式 artifact 名に置かない。可能なら `codex-events.jsonl` には `{"type":"redaction.failed","reason":"<short>"}` の 1 行だけを書き、raw/tmp dotfile の削除を試みる。sentinel 書き込みも失敗した場合は正式名ファイル無しのまま続行する。この場合、run は redaction 失敗だけでは失敗しない。
 
