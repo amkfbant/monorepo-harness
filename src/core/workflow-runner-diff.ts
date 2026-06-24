@@ -1,6 +1,6 @@
 // workflow-runner の diff / validate / materialize helper 層。
 
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { copyFile, cp, lstat, mkdir, readFile, readlink, rm, symlink } from "node:fs/promises";
 
 import { performance } from "node:perf_hooks";
@@ -356,7 +356,9 @@ export class WorktreeResetError extends Error {
  * a symlink entry in the surface is recreated AS A SYMLINK in the child
  * (its link target is copied via `readlink`/`symlink`, not its dereferenced
  * bytes). A broken/dangling symlink stays a symlink — it is not treated as a
- * deletion.
+ * deletion. Destination operations also reject any symlink ancestor inside the
+ * child worktree before mkdir/rm/copy, so an earlier surface entry cannot
+ * create `a -> outside` and make a later `a/b` entry write through it.
  *
  * Atomicity (all-or-nothing): the copy/remove loop applies the surface entry
  * by entry. If ANY entry fails after earlier entries were already applied, the
@@ -415,7 +417,7 @@ export async function materializeParentWork(opts: {
     for (const rel of surface) {
       const src = join(opts.parentWorktreePath, rel);
       const dst = join(opts.childWorktreePath, rel);
-      await materializeEntry(src, dst);
+      await materializeEntry(src, dst, opts.childWorktreePath);
     }
   } catch {
     // ATOMICITY: a copy/remove threw after earlier entries were already
@@ -455,7 +457,11 @@ export async function materializeParentWork(opts: {
  *     → copy its content into the child (uncommitted).
  * Throws on any unexpected error so the caller's atomic reset fires.
  */
-export async function materializeEntry(src: string, dst: string): Promise<void> {
+export async function materializeEntry(
+  src: string,
+  dst: string,
+  childWorktreePath: string,
+): Promise<void> {
   let info: Awaited<ReturnType<typeof lstat>>;
   try {
     info = await lstat(src);
@@ -470,6 +476,7 @@ export async function materializeEntry(src: string, dst: string): Promise<void> 
       isNodeError(e) &&
       (e.code === "ENOENT" || e.code === "ENOTDIR")
     ) {
+      await assertNoDestinationSymlinkAncestor(childWorktreePath, dst);
       await rm(dst, { recursive: true, force: true });
       return;
     }
@@ -479,8 +486,11 @@ export async function materializeEntry(src: string, dst: string): Promise<void> 
   // file / symlink / DIRECTORY at this path so the recreate below never writes
   // THROUGH a base symlink (escape) and never hits EEXIST/EISDIR/ENOTDIR when
   // the parent swapped the path's kind (file↔dir, link↔file).
+  await assertNoDestinationSymlinkAncestor(childWorktreePath, dst);
   await mkdir(dirname(dst), { recursive: true });
+  await assertNoDestinationSymlinkAncestor(childWorktreePath, dst);
   await rm(dst, { recursive: true, force: true });
+  await assertNoDestinationSymlinkAncestor(childWorktreePath, dst);
   if (info.isSymbolicLink()) {
     // recreate AS a symlink — never follow it into a regular file.
     await symlink(await readlink(src), dst);
@@ -494,6 +504,54 @@ export async function materializeEntry(src: string, dst: string): Promise<void> 
   }
   // added/modified/untracked regular file → copy content into the child.
   await copyFile(src, dst);
+}
+
+function isInsideOrEqual(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+async function assertNoDestinationSymlinkAncestor(
+  childWorktreePath: string,
+  dst: string,
+): Promise<void> {
+  const root = resolve(childWorktreePath);
+  const target = resolve(dst);
+  if (!isInsideOrEqual(root, target)) {
+    throw new Error(`materialize destination escapes child worktree: ${dst}`);
+  }
+
+  const parent = dirname(target);
+  if (!isInsideOrEqual(root, parent)) {
+    throw new Error(`materialize destination parent escapes child worktree: ${dst}`);
+  }
+
+  const relParent = relative(root, parent);
+  if (relParent === "") return;
+
+  let current = root;
+  for (const part of relParent.split(sep)) {
+    if (part === "") continue;
+    current = join(current, part);
+    let info: Awaited<ReturnType<typeof lstat>>;
+    try {
+      info = await lstat(current);
+    } catch (e) {
+      if (
+        isNodeError(e) &&
+        (e.code === "ENOENT" || e.code === "ENOTDIR")
+      ) {
+        return;
+      }
+      throw e;
+    }
+    if (info.isSymbolicLink()) {
+      throw new Error(
+        `refusing to materialize through symlink ancestor: ${current}`,
+      );
+    }
+    if (!info.isDirectory()) return;
+  }
 }
 
 /**
@@ -572,4 +630,3 @@ export async function runResetStep(
     );
   }
 }
-

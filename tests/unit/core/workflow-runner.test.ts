@@ -708,6 +708,56 @@ describe("materializeParentWork (#163)", () => {
     expect(readFileSync(outsideTarget, "utf8")).toBe("ORIGINAL OUTSIDE CONTENT\n");
   });
 
+  it("ANCESTOR-SYMLINK escape: a symlink ancestor created earlier in the carry surface fails closed before touching outside the child worktree", async () => {
+    const g = (a: string[]) =>
+      execFileSync("git", a, { cwd: repoPath, stdio: "ignore" });
+    mkdirSync(join(repoPath, "apps/user/src/link"), { recursive: true });
+    writeFileSync(
+      join(repoPath, "apps/user/src/link/b.ts"),
+      "export const base = 1;\n",
+    );
+    g(["add", "apps/user/src/link/b.ts"]);
+    g(["commit", "-qm", "add tracked link dir"]);
+    const baseSha = gitHead(repoPath);
+    const policy = await resolvedTestPolicy(harness);
+    const relativeOutsideTarget = "../../../../outside-link-target";
+
+    const parentWt = buildWorktree("parent-ancestor-link", baseSha, (cwd) => {
+      const parentOutside = join(cwd, "..", "outside-link-target");
+      mkdirSync(parentOutside, { recursive: true });
+      writeFileSync(join(parentOutside, "b.ts"), "export const parent = 1;\n");
+      rmSync(join(cwd, "apps/user/src/link"), { recursive: true, force: true });
+      symlinkSync(relativeOutsideTarget, join(cwd, "apps/user/src/link"));
+      execFileSync("git", ["add", "-A", "apps/user/src/link"], { cwd });
+    });
+    const childWt = buildWorktree("child-ancestor-link", baseSha, (cwd) => {
+      const childOutside = join(cwd, "..", "outside-link-target");
+      mkdirSync(childOutside, { recursive: true });
+      writeFileSync(join(childOutside, "b.ts"), "ORIGINAL OUTSIDE CONTENT\n");
+    });
+    const childOutsideFile = join(childWt, "..", "outside-link-target", "b.ts");
+
+    const outcome = await materializeParentWork({
+      parentWorktreePath: parentWt,
+      childWorktreePath: childWt,
+      baseSha,
+      policy,
+      gitTimeoutMs: policy.limits.gitTimeoutMs,
+    });
+
+    expect(outcome.materialized).toBe(false);
+    expect(outcome.skippedReason).toBe("parent_work_unmaterializable");
+    expect(readFileSync(childOutsideFile, "utf8")).toBe(
+      "ORIGINAL OUTSIDE CONTENT\n",
+    );
+    expect(lstatSync(join(childWt, "apps/user/src/link")).isDirectory()).toBe(
+      true,
+    );
+    expect(readFileSync(join(childWt, "apps/user/src/link/b.ts"), "utf8")).toBe(
+      "export const base = 1;\n",
+    );
+  });
+
   it("RESET-FAILS fail-closed-hard: when the atomic reset cannot return the child to fresh-from-base, materializeParentWork THROWS WorktreeResetError (no silent skip-with-partial)", async () => {
     const baseSha = gitHead(repoPath);
     const policy = await resolvedTestPolicy(harness);
