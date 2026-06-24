@@ -323,6 +323,14 @@ for each changed path p:
 - OpenAI key (`sk-(proj-)?[A-Za-z0-9_-]{20,}`)
 - Stripe live/test key (`sk_(live|test)_*`)
 
+**free-text / log パターン**: prompt / log / Codex events の文字列 redaction は
+同じ `containsLikelySecret` gate を使う。上記 vendor-shaped token に加えて、
+`AWS_SECRET_ACCESS_KEY=...`、`api_key: ...`、`password=...` のような
+name-based assignment、generic `*_key` assignment、`Authorization: Bearer ...`、
+および `Authorization: Basic ...`（base64 decode 後に `:` を含む credential）を
+secret-shaped とみなす。file artifact と違い、free-text callers は hit した
+field / line 全体を置換し、raw value の部分置換はしない。
+
 hit したファイルは:
 - content を artifact に保存しない（`untracked-files.patch` には `@@ secret-suspect @@` + sha256 のみ）
 - `runs/<runId>/untracked-secrets.txt` に reasons を別 artifact として保存

@@ -31,6 +31,67 @@ describe("redactCodexEvents", () => {
     expect(result.content).not.toContain("AKIAABCDEFGHIJKLMNOP");
   });
 
+  it("redacts name-based secret assignments in command aggregated output", () => {
+    const secret = "AWS_SECRET_ACCESS_KEY=plainvalue-not-vendor-shaped";
+    const content = jsonl([
+      {
+        type: "item.completed",
+        item: {
+          type: "command_execution",
+          aggregated_output: `export ${secret}\n`,
+        },
+      },
+    ]);
+
+    const result = redactCodexEvents(content);
+    const redacted = JSON.parse(result.content.trim()) as {
+      item: { aggregated_output: string };
+    };
+
+    expect(result.redactedCount).toBe(1);
+    expect(redacted.item.aggregated_output).toBe(
+      "[redacted: secret-suspect (content:likely-secret)]",
+    );
+    expect(result.content).not.toContain(secret);
+  });
+
+  it.each([
+    [
+      "bearer",
+      "Authorization: Bearer abcdef0123456789TOKEN",
+      "abcdef0123456789TOKEN",
+    ],
+    [
+      "basic",
+      "Authorization: Basic QWxhZGRpbjpvcGVuc2VzYW1l",
+      "QWxhZGRpbjpvcGVuc2VzYW1l",
+    ],
+  ])(
+    "redacts %s authorization headers in agent message text",
+    (_label, header, token) => {
+      const content = jsonl([
+        {
+          type: "item.completed",
+          item: {
+            type: "agent_message",
+            text: `request failed with ${header}`,
+          },
+        },
+      ]);
+
+      const result = redactCodexEvents(content);
+      const redacted = JSON.parse(result.content.trim()) as {
+        item: { text: string };
+      };
+
+      expect(result.redactedCount).toBe(1);
+      expect(redacted.item.text).toBe(
+        "[redacted: secret-suspect (content:likely-secret)]",
+      );
+      expect(result.content).not.toContain(token);
+    },
+  );
+
   it("redacts secret-shaped output beyond the first scan sample", () => {
     const secret = "AKIAABCDEFGHIJKLMNOP";
     const content = jsonl([

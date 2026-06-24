@@ -1,4 +1,5 @@
 import {
+  containsLikelySecret,
   scanForSecrets,
   SCAN_SAMPLE_BYTES,
 } from "../reporter/secret-scan.js";
@@ -34,6 +35,9 @@ function scanCodexOutputForSecrets(filename: string, content: string): {
     const scan = scanForSecrets(filename, chunk);
     for (const reason of scan.reasons) {
       reasons.add(reason);
+    }
+    if (!scan.matched && containsLikelySecret(chunk)) {
+      reasons.add("content:likely-secret");
     }
   }
   return { matched: reasons.size > 0, reasons: [...reasons] };
