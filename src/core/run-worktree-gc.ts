@@ -19,9 +19,10 @@ export interface RunWorktreeGcOpts {
  *
  *  1. `pruneWorktrees` — clears admin entries whose working dir is already GONE
  *     (crashed run / interrupted cleanup). Never touches a live worktree.
- *  2. `reclaimTerminalRunWorktrees` — removes worktrees of TERMINAL runs
- *     (`approved` / `rejected`) whose dir still EXISTS. `changes_requested`
- *     (retry base / continuation source) and non-terminal runs are left alone.
+ *  2. `reclaimTerminalRunWorktrees` — removes worktrees of `rejected` runs whose
+ *     dir still EXISTS. `approved` is deliberately NOT reclaimed (its worktree
+ *     feeds `pr create` and is a valid continuation parent); `changes_requested`
+ *     (retry base) and non-terminal runs are left alone too.
  *
  * See docs/specs/workspace.md for the lifecycle and safety rationale.
  */
