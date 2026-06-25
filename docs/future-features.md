@@ -3,6 +3,30 @@
 Ideas recorded for later implementation. Each entry is a sketch, not an approved
 design — run it through brainstorming → spec → plan when picked up.
 
+## External review observability — dashboard surface (#395 P3, issue #401)
+
+- **Recorded but not yet visualized.** #395 landed the v40 `external_review_events`
+  append-only ledger (P0+P1 = PR #397) and the auto-merge ingest that records every
+  external review verdict — codex App (`chatgpt-codex-connector`) / Copilot / human —
+  into it (P2 Site A = PR #399). The read-only dashboard (`src/dashboard/`) does NOT
+  yet surface this data, so an operator cannot see on the dashboard "this hitch's
+  external reviews ran N times, M requested changes, last verdict X" — the original
+  motivation of #395.
+- **Sketch (issue #401)** — extend the existing dashboard via its read add-pattern:
+  a `GET /api/hitches/:hitchId/external-reviews` endpoint
+  (`ExternalReviewEventRepository.listForHitch` + `summarize`), a
+  `DashboardSnapshot.externalReviewMetrics` aggregate (mirror `hitchMetricsSummary`;
+  honor project/repo `DashboardFilters`), and a `render.ts` section. Read-only
+  (`openManagedDb({readonly:true})`, `autoImport:false`); the ledger is observational
+  and the gate never reads it.
+- **Deferred beyond surfacing**: P4 review→fix loop linkage (join the
+  `changes_requested` rows to the fix runs / `hitch_review_cycles` that resolved them),
+  and the P2 Site B/C ingest paths (issue #400).
+
+**Status:** idea only — recorded 2026-06-25 when the dashboard view was split out of
+#395 as a separate task. The record side (ledger + ingest) is shipped; the
+visualization (#401) is not.
+
 ## commit-object identity metadata exfil (author / committer)
 
 - **P3 (defense-in-depth, deferred)** — the git-validation hardening PR

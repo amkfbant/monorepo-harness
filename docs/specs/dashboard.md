@@ -163,6 +163,16 @@ DB-first 化された write は即時この read model に反映されるため�
 | `/api/archives` | query なし | `{ archives }` |
 | `/api/doctor/latest` | query なし | latest doctor run + findings。run 未存在時は `{ run: null, findings: [] }` |
 
+> **未 surface（follow-up #401）**: v40 `external_review_events` ledger（#395 で外部レビュー
+> verdict — codex App `chatgpt-codex-connector` / Copilot / 人間 — を append-only に記録。
+> 記録側は P0+P1 #397 ＋ P2 Site A #399 で出荷済み）は、現状この read surface にも
+> `DashboardSnapshot` にも出していない。per-hitch の外部レビュー実行回数 / state 内訳
+> （approved / changes_requested / commented / …）/ last verdict を可視化する read view
+> （`GET /api/hitches/:hitchId/external-reviews` ＋ `DashboardSnapshot.externalReviewMetrics`
+> ＋ render section）は **#401** で追加する。設計 sketch は `docs/future-features.md` の
+> 「External review observability — dashboard surface」を参照。追加時も read-only surface 限定で、
+> ledger は観測専用（gate / close-check / convergence からは読まない）。
+
 ### Operations endpoints（POST, Phase 13 — `harness operations serve`）
 
 dashboard では POST は常に `405`。以下の操作系 API は別 listener の
