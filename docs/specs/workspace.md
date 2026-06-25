@@ -85,9 +85,17 @@ rerun budget を消費しない。
   回収する。run worktree の作業 dir が `git worktree remove` を経ずに消えると（crash / 中断
   された cleanup）project の実 `.git/worktrees/` に entry が残り、放置すると蓄積して repo を
   degrade させる（git 操作の劣化・`core.bare` 化の遠因）。`prune` は作業 dir が存在する live
-  worktree を消さないので安全、prune 失敗は run を止めない（warn して続行）。なお作業 dir が
-  残ったままの terminal run worktree（`approved`/`rejected` の未 cleanup）の自動回収は別途
-  `cleanupRun` に委ねる（#404 follow-up）。
+  worktree を消さないので安全、prune 失敗は run を止めない（warn して続行）。
+- **run 開始時の terminal worktree 回収（#404 follow-up）**: prune の直後に
+  `reclaimTerminalRunWorktrees`（`src/core/cleanup.ts`）を best-effort で実行し、同 repo の
+  **terminal run（`approved` / `rejected`）の worktree（作業 dir が残っているもの）**を
+  `removeWorktree` + `recordCleanup`（status → `cleaned`）で回収する。`prune` が回収できない
+  「作業 dir が残ったまま手動 cleanup されていない」leak を断つ。安全性: run の branch/worktree は
+  **local 限定**（PR があれば remote に push 済み）なので local branch 削除は open PR に影響しない。
+  `changes_requested`（retry base ＝ continuation source）と非 terminal run（running/generated/
+  verified/needs_review）は**対象外**。run DB handle を再利用し（managed-DB の二重 open なし）、
+  1 run の失敗は記録してスキップ（run を止めない・並行 status 変化は `recordCleanup` の
+  StateConflict で当該 run をスキップ）。
 
 ## symlink 可能な FS が前提（#68）
 

@@ -8,6 +8,7 @@ import {
   type RunStatus,
 } from "../logging/run-log.js";
 import { gitCli } from "../git/git-cli.js";
+import { removeWorktree } from "../workspace/git-worktree.js";
 import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
@@ -371,4 +372,89 @@ async function cleanupUnderLock(
     runDirRemoved,
     previousStatus,
   };
+}
+
+export interface ReclaimResult {
+  runId: string;
+  status: string;
+  /** true if this run's worktree existed and was removed by this call */
+  reclaimed: boolean;
+  /** populated when removal/record failed (best-effort: the run is skipped) */
+  error?: string;
+}
+
+/**
+ * (#404 follow-up) Reclaim the worktrees of TERMINAL runs (`approved` /
+ * `rejected`) on `repoPath`, flipping each to `cleaned` (audited via
+ * {@link RunRepository.recordCleanup}).
+ *
+ * Why this is needed and safe:
+ * - `pruneWorktrees` only clears entries whose working dir is already GONE.
+ *   This removes worktrees whose dir STILL EXISTS — the leak source when a
+ *   terminal run is never `cleanupRun`-ed (worktrees pile up on the real `.git`).
+ * - A run's branch/worktree are LOCAL; an `approved` run's PR (if any) is already
+ *   pushed to the remote, so deleting the local branch never affects an open PR.
+ * - `changes_requested` runs are retry bases (continuation source) and are
+ *   NEVER selected; neither are non-terminal runs (running / generated /
+ *   verified / needs_review) — they keep their worktree for their own flow.
+ *
+ * Best-effort and self-contained: it reuses the caller's run DB handle (no second
+ * managed-DB open), and a failure on one run is recorded in the result and
+ * skipped so the caller (run start) is never blocked. A concurrent status change
+ * surfaces as a `recordCleanup` StateConflictError → that run is skipped.
+ */
+export async function reclaimTerminalRunWorktrees(opts: {
+  db: Database.Database;
+  repoPath: string;
+  workspacesDir: string;
+  gitTimeoutMs?: number;
+}): Promise<ReclaimResult[]> {
+  const rows = opts.db
+    .prepare(
+      `SELECT run_id, run_branch, status FROM runs
+       WHERE repo_path = ? AND status IN ('approved', 'rejected')
+         AND run_branch IS NOT NULL`,
+    )
+    .all(opts.repoPath) as Array<{
+    run_id: string;
+    run_branch: string;
+    status: string;
+  }>;
+  const repo = new RunRepository(opts.db);
+  const results: ReclaimResult[] = [];
+  for (const row of rows) {
+    const workspaceRunDir = join(opts.workspacesDir, row.run_id);
+    const worktreePath = join(workspaceRunDir, "repo");
+    if (!existsSync(worktreePath)) {
+      results.push({ runId: row.run_id, status: row.status, reclaimed: false });
+      continue;
+    }
+    try {
+      const wtOpts: {
+        repoPath: string;
+        worktreePath: string;
+        branch: string;
+        timeoutMs?: number;
+      } = { repoPath: opts.repoPath, worktreePath, branch: row.run_branch };
+      if (opts.gitTimeoutMs !== undefined) wtOpts.timeoutMs = opts.gitTimeoutMs;
+      await removeWorktree(wtOpts);
+      repo.recordCleanup({
+        runId: row.run_id,
+        scope: "workspace",
+        expectedStatus: row.status,
+        worktreeRemoved: true,
+        branchRemoved: true,
+      });
+      await rm(workspaceRunDir, { recursive: true, force: true });
+      results.push({ runId: row.run_id, status: row.status, reclaimed: true });
+    } catch (e) {
+      results.push({
+        runId: row.run_id,
+        status: row.status,
+        reclaimed: false,
+        error: (e as Error).message,
+      });
+    }
+  }
+  return results;
 }
