@@ -384,19 +384,22 @@ export interface ReclaimResult {
 }
 
 /**
- * (#404 follow-up) Reclaim the worktrees of TERMINAL runs (`approved` /
- * `rejected`) on `repoPath`, flipping each to `cleaned` (audited via
- * {@link RunRepository.recordCleanup}).
+ * (#404 follow-up) Reclaim the worktrees of `rejected` runs on `repoPath`,
+ * flipping each to `cleaned` (audited via {@link RunRepository.recordCleanup}).
  *
- * Why this is needed and safe:
- * - `pruneWorktrees` only clears entries whose working dir is already GONE.
- *   This removes worktrees whose dir STILL EXISTS — the leak source when a
- *   terminal run is never `cleanupRun`-ed (worktrees pile up on the real `.git`).
- * - A run's branch/worktree are LOCAL; an `approved` run's PR (if any) is already
- *   pushed to the remote, so deleting the local branch never affects an open PR.
- * - `changes_requested` runs are retry bases (continuation source) and are
- *   NEVER selected; neither are non-terminal runs (running / generated /
- *   verified / needs_review) — they keep their worktree for their own flow.
+ * Why ONLY `rejected` (not every terminal run):
+ * - `pruneWorktrees` only clears entries whose working dir is already GONE. This
+ *   removes worktrees whose dir STILL EXISTS — the leak source when a rejected
+ *   run is never `cleanupRun`-ed (worktrees pile up on the project's real `.git`).
+ * - `rejected` is uniquely safe to reclaim unprompted: it can never become a PR
+ *   (`pr create` gates on `approved` — see pr-creator.ts), and it is excluded
+ *   from `VALIDATED_CONTINUATION_STATUSES`, so it is never a continuation parent.
+ * - `approved` is deliberately NOT reclaimed: a PR-less approved run's worktree
+ *   is the *input* to `harness pr create`, and `approved` IS a valid continuation
+ *   parent — removing it would break PR creation / continuation. Its cleanup is
+ *   left to the explicit `cleanupRun` path (after the PR is created/merged).
+ * - `changes_requested` (retry base) and non-terminal runs (running / generated /
+ *   verified / needs_review) are never selected — they keep their worktree.
  *
  * Best-effort and self-contained: it reuses the caller's run DB handle (no second
  * managed-DB open), and a failure on one run is recorded in the result and
@@ -407,12 +410,13 @@ export async function reclaimTerminalRunWorktrees(opts: {
   db: Database.Database;
   repoPath: string;
   workspacesDir: string;
+  runsDir: string;
   gitTimeoutMs?: number;
 }): Promise<ReclaimResult[]> {
   const rows = opts.db
     .prepare(
       `SELECT run_id, run_branch, status FROM runs
-       WHERE repo_path = ? AND status IN ('approved', 'rejected')
+       WHERE repo_path = ? AND status = 'rejected'
          AND run_branch IS NOT NULL`,
     )
     .all(opts.repoPath) as Array<{
@@ -437,14 +441,23 @@ export async function reclaimTerminalRunWorktrees(opts: {
         timeoutMs?: number;
       } = { repoPath: opts.repoPath, worktreePath, branch: row.run_branch };
       if (opts.gitTimeoutMs !== undefined) wtOpts.timeoutMs = opts.gitTimeoutMs;
-      await removeWorktree(wtOpts);
+      // branchRemoved reflects the ACTUAL `git branch -D` result (removeWorktree
+      // reports it) so the cleanup audit never claims a branch delete that the
+      // worktree-remove silently skipped.
+      const { branchRemoved } = await removeWorktree(wtOpts);
       repo.recordCleanup({
         runId: row.run_id,
         scope: "workspace",
         expectedStatus: row.status,
         worktreeRemoved: true,
-        branchRemoved: true,
+        branchRemoved,
       });
+      // Mirror cleanupRun: re-export so the kept runs/<id>/ files (meta.json /
+      // events.jsonl) reflect the cleaned status under HARNESS_EXPORT_FILES=1 —
+      // otherwise file-source views and `db check-consistency` see stale state.
+      warnIfExportFailed(
+        exportRun(opts.db, row.run_id, { runsDir: opts.runsDir }),
+      );
       await rm(workspaceRunDir, { recursive: true, force: true });
       results.push({ runId: row.run_id, status: row.status, reclaimed: true });
     } catch (e) {

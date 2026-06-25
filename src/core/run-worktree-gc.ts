@@ -6,6 +6,7 @@ export interface RunWorktreeGcOpts {
   db: Database.Database;
   repoPath: string;
   workspacesDir: string;
+  runsDir: string;
   gitTimeoutMs?: number;
 }
 
@@ -42,6 +43,7 @@ export async function gcWorktreesBeforeRun(
       db: opts.db,
       repoPath: opts.repoPath,
       workspacesDir: opts.workspacesDir,
+      runsDir: opts.runsDir,
       ...(opts.gitTimeoutMs !== undefined ? { gitTimeoutMs: opts.gitTimeoutMs } : {}),
     });
   } catch (e) {

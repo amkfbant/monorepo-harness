@@ -43,7 +43,7 @@ function statusOf(db: Database.Database, runId: string): string {
 }
 
 describe("reclaimTerminalRunWorktrees (#404 follow-up)", () => {
-  it("removes approved/rejected worktrees, keeps changes_requested and needs_review", async () => {
+  it("removes ONLY rejected worktrees, keeps approved/changes_requested/needs_review", async () => {
     const harnessRoot = makeTmpDir("harness-rtw-");
     const repoPath = makeTmpDir("harness-rtw-repo-");
     const g = (a: string[]) =>
@@ -81,26 +81,27 @@ describe("reclaimTerminalRunWorktrees (#404 follow-up)", () => {
       db,
       repoPath,
       workspacesDir: join(harnessRoot, "workspaces"),
+      runsDir: join(harnessRoot, "runs"),
     });
 
-    // terminal (approved/rejected) worktrees are gone
-    expect(existsSync(approved)).toBe(false);
+    // ONLY the rejected worktree is reclaimed
     expect(existsSync(rejected)).toBe(false);
-    // retry base + non-terminal are kept
+    // approved is kept (input to `pr create` + valid continuation parent),
+    // changes_requested is a retry base, needs_review is not terminal
+    expect(existsSync(approved)).toBe(true);
     expect(existsSync(cr)).toBe(true);
     expect(existsSync(nr)).toBe(true);
 
-    // status flipped to cleaned only for the reclaimed terminal runs
-    expect(statusOf(db, "run-approved")).toBe("cleaned");
     expect(statusOf(db, "run-rejected")).toBe("cleaned");
+    expect(statusOf(db, "run-approved")).toBe("approved");
     expect(statusOf(db, "run-cr")).toBe("changes_requested");
     expect(statusOf(db, "run-nr")).toBe("needs_review");
 
-    expect(results.filter((r) => r.reclaimed).length).toBe(2);
+    expect(results.filter((r) => r.reclaimed).length).toBe(1);
     db.close();
   });
 
-  it("is a no-op when there are no terminal runs", async () => {
+  it("is a no-op when there are no rejected runs", async () => {
     const harnessRoot = makeTmpDir("harness-rtw2-");
     const repoPath = makeTmpDir("harness-rtw2-repo-");
     const g = (a: string[]) =>
@@ -120,6 +121,7 @@ describe("reclaimTerminalRunWorktrees (#404 follow-up)", () => {
       db,
       repoPath,
       workspacesDir: join(harnessRoot, "workspaces"),
+      runsDir: join(harnessRoot, "runs"),
     });
     expect(results).toEqual([]);
     db.close();

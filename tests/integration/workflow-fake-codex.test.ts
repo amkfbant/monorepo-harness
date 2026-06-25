@@ -237,7 +237,7 @@ describe("runDomainCoding (fake codex)", () => {
     expect(listAfter).not.toContain("run-leaked");
   });
 
-  it("(#404 follow-up) reclaims a terminal (approved) run's worktree when the next run starts", async () => {
+  it("(#404 follow-up) reclaims a rejected run's worktree when the next run starts", async () => {
     const common = {
       harnessRoot: harness,
       repoPath,
@@ -265,21 +265,21 @@ describe("runDomainCoding (fake codex)", () => {
     const wt1 = join(harness, "workspaces", r1.runId, "repo");
     expect(existsSync(wt1)).toBe(true);
 
-    // the leak scenario: run 1 reaches a terminal state (approved) but is never
-    // cleaned — its worktree would otherwise pile up on the real repo's .git.
+    // the leak scenario: run 1 is rejected but never cleaned — its worktree
+    // would otherwise pile up on the real repo's .git.
     const db = openDb(join(harness, ".harness", "harness.sqlite"));
-    db.prepare("UPDATE runs SET status = 'approved' WHERE run_id = ?").run(
+    db.prepare("UPDATE runs SET status = 'rejected' WHERE run_id = ?").run(
       r1.runId,
     );
     db.close();
 
-    // run 2 on the same repo reclaims run 1's terminal worktree at start
+    // run 2 on the same repo reclaims run 1's rejected worktree at start
     const r2 = await runDomainCoding({
       ...common,
       goal: "second",
       codexRunner: runner(),
     });
-    expect(existsSync(wt1)).toBe(false); // run 1 (approved) reclaimed
+    expect(existsSync(wt1)).toBe(false); // run 1 (rejected) reclaimed
     expect(existsSync(join(harness, "workspaces", r2.runId, "repo"))).toBe(
       true,
     ); // run 2's own worktree kept

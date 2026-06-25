@@ -128,6 +128,7 @@ export async function runDomainCodingInner(
       db,
       repoPath: opts.repoPath,
       workspacesDir: paths.workspacesDir,
+      runsDir: paths.runsDir,
       ...(gitTimeoutMs !== undefined ? { gitTimeoutMs } : {}),
     });
 
