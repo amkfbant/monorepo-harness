@@ -102,3 +102,25 @@ export async function removeWorktree(opts: WorktreeRemoveOpts): Promise<void> {
     withTimeout(opts.repoPath, opts.timeoutMs),
   );
 }
+
+/**
+ * (#404) Reclaim stale worktree admin entries — entries under the repo's
+ * `.git/worktrees/` whose working directory no longer exists. A run whose
+ * worktree dir vanished WITHOUT `git worktree remove` (crashed run / interrupted
+ * cleanup) leaves such an entry; left unpruned they accumulate on the project's
+ * real `.git` and eventually degrade it. `git worktree prune` only removes
+ * entries whose working dir is GONE, so it never touches a live worktree — it is
+ * safe to run before every `createWorktree`.
+ */
+export async function pruneWorktrees(opts: {
+  repoPath: string;
+  timeoutMs?: number;
+}): Promise<void> {
+  const pruned = await gitCli(
+    ["worktree", "prune"],
+    withTimeout(opts.repoPath, opts.timeoutMs),
+  );
+  if (pruned.exitCode !== 0) {
+    throw new Error(`worktree prune failed: ${pruned.stderr.trim()}`);
+  }
+}

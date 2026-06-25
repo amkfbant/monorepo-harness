@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runDomainCoding } from "../../src/core/workflow-runner.js";
 import { runReviewedRunWorkflow } from "../../src/core/reviewed-run-workflow.js";
+import { createWorktree } from "../../src/workspace/git-worktree.js";
 import { createFakeCodexRunner } from "../../src/codex/fake-codex-runner.js";
 import type { CodexExecRunner } from "../../src/codex/codex-exec-runner.js";
 import { readArtifactBlob } from "../../src/db/artifact-blobs.js";
@@ -186,6 +187,54 @@ describe("runDomainCoding (fake codex)", () => {
   });
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it("(#404) reclaims stale worktree entries on the target repo when a run starts", async () => {
+    // Seed a leaked worktree on the target repo: working dir removed WITHOUT
+    // `git worktree remove`, leaving a stale admin entry — the #404 accumulation
+    // that, unpruned, degrades the project's real .git over many runs.
+    const stale = await createWorktree({
+      repoPath,
+      worktreesDir: join(harness, "workspaces"),
+      runId: "run-leaked",
+      branch: "harness/run-leaked/x",
+      base: "main",
+    });
+    rmSync(stale.path, { recursive: true, force: true });
+    const listBefore = execFileSync(
+      "git",
+      ["worktree", "list", "--porcelain"],
+      { cwd: repoPath },
+    ).toString();
+    expect(listBefore).toContain("run-leaked");
+
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 9;\n",
+        );
+      },
+    });
+    await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "bump x",
+      baseBranch: "main",
+      codexRunner: runner,
+      codexBinaryVersion: "fake-codex 0.0.25",
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+
+    // run start pruned the stale admin entry off the real repo
+    const listAfter = execFileSync(
+      "git",
+      ["worktree", "list", "--porcelain"],
+      { cwd: repoPath },
+    ).toString();
+    expect(listAfter).not.toContain("run-leaked");
   });
 
   it("ends a healthy run at needs_review + safetyStatus=allowed with full artifact set", async () => {

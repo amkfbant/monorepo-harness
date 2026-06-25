@@ -25,7 +25,7 @@ import { resolveEffectiveRule } from "./review-rule.js";
 import { ReviewRulesRepository } from "../db/repositories/review-rules.js";
 import { assertActiveLease } from "../workspace/db-domain-lock.js";
 
-import { createWorktree } from "../workspace/git-worktree.js";
+import { createWorktree, pruneWorktrees } from "../workspace/git-worktree.js";
 
 import { detectsTestWeakening } from "./automerge-tiers.js";
 import { buildCodexPrompt } from "../codex/prompt-builder.js";
@@ -117,6 +117,20 @@ export async function runDomainCodingInner(
       join(log.runDir, "resolved-policy.yaml"),
       yamlStringify(policy),
     );
+
+    // (#404) Reclaim stale worktree admin entries on the project repo before
+    // adding this run's worktree. A run whose worktree dir vanished WITHOUT
+    // `git worktree remove` (crashed run / interrupted cleanup) leaves a stale
+    // entry under the project's real .git/worktrees/; unpruned these accumulate
+    // and eventually degrade the repo. prune never removes a live worktree, so
+    // this is safe; it is best-effort — a prune failure must not block the run.
+    try {
+      await pruneWorktrees({ repoPath: opts.repoPath, timeoutMs: gitTimeoutMs });
+    } catch (e) {
+      process.stderr.write(
+        `warning: stale-worktree prune failed for ${opts.repoPath}: ${(e as Error).message}\n`,
+      );
+    }
 
     const wt = await createWorktree({
       repoPath: opts.repoPath,
