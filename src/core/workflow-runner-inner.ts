@@ -25,7 +25,8 @@ import { resolveEffectiveRule } from "./review-rule.js";
 import { ReviewRulesRepository } from "../db/repositories/review-rules.js";
 import { assertActiveLease } from "../workspace/db-domain-lock.js";
 
-import { createWorktree, pruneWorktrees } from "../workspace/git-worktree.js";
+import { createWorktree } from "../workspace/git-worktree.js";
+import { gcWorktreesBeforeRun } from "./run-worktree-gc.js";
 
 import { detectsTestWeakening } from "./automerge-tiers.js";
 import { buildCodexPrompt } from "../codex/prompt-builder.js";
@@ -118,19 +119,18 @@ export async function runDomainCodingInner(
       yamlStringify(policy),
     );
 
-    // (#404) Reclaim stale worktree admin entries on the project repo before
-    // adding this run's worktree. A run whose worktree dir vanished WITHOUT
-    // `git worktree remove` (crashed run / interrupted cleanup) leaves a stale
-    // entry under the project's real .git/worktrees/; unpruned these accumulate
-    // and eventually degrade the repo. prune never removes a live worktree, so
-    // this is safe; it is best-effort — a prune failure must not block the run.
-    try {
-      await pruneWorktrees({ repoPath: opts.repoPath, timeoutMs: gitTimeoutMs });
-    } catch (e) {
-      process.stderr.write(
-        `warning: stale-worktree prune failed for ${opts.repoPath}: ${(e as Error).message}\n`,
-      );
-    }
+    // (#404) Reclaim leaked run worktrees on the project repo before cutting
+    // this run's worktree — prune stale admin entries + remove terminal-run
+    // worktrees. Both passes are best-effort and never block the run; the run
+    // worktree roots in the project's real .git, so un-reclaimed worktrees
+    // accumulate and degrade it. See run-worktree-gc.ts / docs/specs/workspace.md.
+    await gcWorktreesBeforeRun({
+      db,
+      repoPath: opts.repoPath,
+      workspacesDir: paths.workspacesDir,
+      runsDir: paths.runsDir,
+      ...(gitTimeoutMs !== undefined ? { gitTimeoutMs } : {}),
+    });
 
     const wt = await createWorktree({
       repoPath: opts.repoPath,

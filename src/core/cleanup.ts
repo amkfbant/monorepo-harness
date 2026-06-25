@@ -8,6 +8,7 @@ import {
   type RunStatus,
 } from "../logging/run-log.js";
 import { gitCli } from "../git/git-cli.js";
+import { removeWorktree } from "../workspace/git-worktree.js";
 import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
@@ -371,4 +372,102 @@ async function cleanupUnderLock(
     runDirRemoved,
     previousStatus,
   };
+}
+
+export interface ReclaimResult {
+  runId: string;
+  status: string;
+  /** true if this run's worktree existed and was removed by this call */
+  reclaimed: boolean;
+  /** populated when removal/record failed (best-effort: the run is skipped) */
+  error?: string;
+}
+
+/**
+ * (#404 follow-up) Reclaim the worktrees of `rejected` runs on `repoPath`,
+ * flipping each to `cleaned` (audited via {@link RunRepository.recordCleanup}).
+ *
+ * Why ONLY `rejected` (not every terminal run):
+ * - `pruneWorktrees` only clears entries whose working dir is already GONE. This
+ *   removes worktrees whose dir STILL EXISTS — the leak source when a rejected
+ *   run is never `cleanupRun`-ed (worktrees pile up on the project's real `.git`).
+ * - `rejected` is uniquely safe to reclaim unprompted: it can never become a PR
+ *   (`pr create` gates on `approved` — see pr-creator.ts), and it is excluded
+ *   from `VALIDATED_CONTINUATION_STATUSES`, so it is never a continuation parent.
+ * - `approved` is deliberately NOT reclaimed: a PR-less approved run's worktree
+ *   is the *input* to `harness pr create`, and `approved` IS a valid continuation
+ *   parent — removing it would break PR creation / continuation. Its cleanup is
+ *   left to the explicit `cleanupRun` path (after the PR is created/merged).
+ * - `changes_requested` (retry base) and non-terminal runs (running / generated /
+ *   verified / needs_review) are never selected — they keep their worktree.
+ *
+ * Best-effort and self-contained: it reuses the caller's run DB handle (no second
+ * managed-DB open), and a failure on one run is recorded in the result and
+ * skipped so the caller (run start) is never blocked. A concurrent status change
+ * surfaces as a `recordCleanup` StateConflictError → that run is skipped.
+ */
+export async function reclaimTerminalRunWorktrees(opts: {
+  db: Database.Database;
+  repoPath: string;
+  workspacesDir: string;
+  runsDir: string;
+  gitTimeoutMs?: number;
+}): Promise<ReclaimResult[]> {
+  const rows = opts.db
+    .prepare(
+      `SELECT run_id, run_branch, status FROM runs
+       WHERE repo_path = ? AND status = 'rejected'
+         AND run_branch IS NOT NULL`,
+    )
+    .all(opts.repoPath) as Array<{
+    run_id: string;
+    run_branch: string;
+    status: string;
+  }>;
+  const repo = new RunRepository(opts.db);
+  const results: ReclaimResult[] = [];
+  for (const row of rows) {
+    const workspaceRunDir = join(opts.workspacesDir, row.run_id);
+    const worktreePath = join(workspaceRunDir, "repo");
+    if (!existsSync(worktreePath)) {
+      results.push({ runId: row.run_id, status: row.status, reclaimed: false });
+      continue;
+    }
+    try {
+      const wtOpts: {
+        repoPath: string;
+        worktreePath: string;
+        branch: string;
+        timeoutMs?: number;
+      } = { repoPath: opts.repoPath, worktreePath, branch: row.run_branch };
+      if (opts.gitTimeoutMs !== undefined) wtOpts.timeoutMs = opts.gitTimeoutMs;
+      // branchRemoved reflects the ACTUAL `git branch -D` result (removeWorktree
+      // reports it) so the cleanup audit never claims a branch delete that the
+      // worktree-remove silently skipped.
+      const { branchRemoved } = await removeWorktree(wtOpts);
+      repo.recordCleanup({
+        runId: row.run_id,
+        scope: "workspace",
+        expectedStatus: row.status,
+        worktreeRemoved: true,
+        branchRemoved,
+      });
+      // Mirror cleanupRun: re-export so the kept runs/<id>/ files (meta.json /
+      // events.jsonl) reflect the cleaned status under HARNESS_EXPORT_FILES=1 —
+      // otherwise file-source views and `db check-consistency` see stale state.
+      warnIfExportFailed(
+        exportRun(opts.db, row.run_id, { runsDir: opts.runsDir }),
+      );
+      await rm(workspaceRunDir, { recursive: true, force: true });
+      results.push({ runId: row.run_id, status: row.status, reclaimed: true });
+    } catch (e) {
+      results.push({
+        runId: row.run_id,
+        status: row.status,
+        reclaimed: false,
+        error: (e as Error).message,
+      });
+    }
+  }
+  return results;
 }

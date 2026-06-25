@@ -89,7 +89,16 @@ export interface WorktreeRemoveOpts {
   timeoutMs?: number;
 }
 
-export async function removeWorktree(opts: WorktreeRemoveOpts): Promise<void> {
+/**
+ * Remove a run worktree, then delete its branch. Returns whether the branch was
+ * actually deleted: worktree removal is fatal (throws on failure), but branch
+ * deletion is reported (not thrown) so callers recording an audit (#404
+ * `reclaimTerminalRunWorktrees`) never claim `branchRemoved` for a `-D` that
+ * silently failed (e.g. the branch is checked out elsewhere).
+ */
+export async function removeWorktree(
+  opts: WorktreeRemoveOpts,
+): Promise<{ branchRemoved: boolean }> {
   const removed = await gitCli(
     ["worktree", "remove", "--force", opts.worktreePath],
     withTimeout(opts.repoPath, opts.timeoutMs),
@@ -97,10 +106,11 @@ export async function removeWorktree(opts: WorktreeRemoveOpts): Promise<void> {
   if (removed.exitCode !== 0) {
     throw new Error(`worktree remove failed: ${removed.stderr.trim()}`);
   }
-  await gitCli(
+  const del = await gitCli(
     ["branch", "-D", opts.branch],
     withTimeout(opts.repoPath, opts.timeoutMs),
   );
+  return { branchRemoved: del.exitCode === 0 };
 }
 
 /**
