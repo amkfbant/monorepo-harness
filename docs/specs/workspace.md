@@ -80,6 +80,14 @@ rerun budget を消費しない。
 - **2 レイヤーの worktree**: agent workspace（人間 / エージェントが編集・`agent/<name>`）と、
   run 内部の worktree（`workspaces/<runId>/repo/`・codex 実行用）は**別物**。
   reconcile / list / status は run 内部 worktree と main checkout を除外する。
+- **run 開始時の stale worktree GC（#404）**: `createWorktree` の直前に `pruneWorktrees`
+  （`git worktree prune`）を **best-effort** で実行し、作業 dir が消えた stale admin entry を
+  回収する。run worktree の作業 dir が `git worktree remove` を経ずに消えると（crash / 中断
+  された cleanup）project の実 `.git/worktrees/` に entry が残り、放置すると蓄積して repo を
+  degrade させる（git 操作の劣化・`core.bare` 化の遠因）。`prune` は作業 dir が存在する live
+  worktree を消さないので安全、prune 失敗は run を止めない（warn して続行）。なお作業 dir が
+  残ったままの terminal run worktree（`approved`/`rejected` の未 cleanup）の自動回収は別途
+  `cleanupRun` に委ねる（#404 follow-up）。
 
 ## symlink 可能な FS が前提（#68）
 

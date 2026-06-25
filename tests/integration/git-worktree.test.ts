@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { writeFileSync, existsSync } from "node:fs";
+import { writeFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   createWorktree,
   removeWorktree,
+  pruneWorktrees,
 } from "../../src/workspace/git-worktree.js";
 import { makeTmpDir } from "../helpers/tmp.js";
 
@@ -57,5 +58,51 @@ describe("createWorktree / removeWorktree", () => {
       branch: wt.branch,
     });
     expect(existsSync(wt.path)).toBe(false);
+  });
+});
+
+describe("pruneWorktrees (#404)", () => {
+  // The leak in #404: a run worktree whose working dir vanishes WITHOUT
+  // `git worktree remove` (crash / interrupted cleanup) leaves a stale admin
+  // entry under the real repo's .git/worktrees/. Unpruned these accumulate and
+  // degrade the repo. prune must reclaim them.
+  it("reclaims a stale worktree entry whose working dir was deleted", async () => {
+    const wt = await createWorktree({
+      repoPath: repoRoot,
+      worktreesDir,
+      runId: "run-stale",
+      branch: "harness/run-stale/x",
+      base: "main",
+    });
+    // simulate the leak: drop the working dir, leaving the admin entry stale
+    rmSync(wt.path, { recursive: true, force: true });
+    const before = execFileSync("git", ["worktree", "list", "--porcelain"], {
+      cwd: repoRoot,
+    }).toString();
+    expect(before).toContain("run-stale"); // still registered → would accumulate
+
+    await pruneWorktrees({ repoPath: repoRoot });
+
+    const after = execFileSync("git", ["worktree", "list", "--porcelain"], {
+      cwd: repoRoot,
+    }).toString();
+    expect(after).not.toContain("run-stale");
+  });
+
+  it("never removes a worktree whose working dir still exists", async () => {
+    const wt = await createWorktree({
+      repoPath: repoRoot,
+      worktreesDir,
+      runId: "run-live",
+      branch: "harness/run-live/x",
+      base: "main",
+    });
+    await pruneWorktrees({ repoPath: repoRoot });
+    // a live worktree (dir present) is untouched by prune
+    expect(existsSync(wt.path)).toBe(true);
+    const list = execFileSync("git", ["worktree", "list", "--porcelain"], {
+      cwd: repoRoot,
+    }).toString();
+    expect(list).toContain("run-live");
   });
 });
