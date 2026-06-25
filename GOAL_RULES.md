@@ -25,19 +25,23 @@
   Copilot review 連携）に対応。feature branch 1 本 ＝ 大 Phase 1 つ。
 - **サブ Phase** — 大 Phase を構成する作業単位。1〜数コミットで完結し、関連
   テストと typecheck が緑になる粒度。
-- **codex レビュー** — 外部 LLM による差分レビュー。**course / hitch 駆動中は必ず
-  `harness codex exec` 透過ラッパ経由で起動し、`--harness-course-id` / `--harness-hitch-id`
-  で usage を course/hitch に紐付ける**（usage の READ 経路は #403）。`-s read-only` ＋
+- **codex レビュー** — 外部 LLM による差分レビュー。**必ず `harness codex exec` 透過ラッパ
+  経由で起動し、`--harness-label` で review 種別を、適用可能な `--harness-hitch-id` /
+  `--harness-course-id` で usage を紐付ける**（usage の READ 経路は #403）。`-s read-only` ＋
   stdin クローズ `< /dev/null` で hang 回避。正本は [`CLAUDE.md`](./CLAUDE.md):
 
   ```
-  harness codex exec --harness-course-id=<courseId> --harness-hitch-id=<hitchId> \
+  # course 駆動下の hitch レビュー（label + 実在する ID を併記）
+  harness codex exec --harness-label=hitch-review --harness-hitch-id=<hitchId> --harness-course-id=<courseId> \
     -- -m gpt-5.5 -c model_reasoning_effort="xhigh" -s read-only -o <out> "<prompt>" < /dev/null
   ```
 
-  hitch / course 文脈の無い単発 PR レビューは course/hitch を省略し `--harness-label=<context>`
-  のみ付ける（例: `--harness-label=pr-review`）。`--` の前が wrapper フラグ（`=` 形式の単一
-  トークンのみ認識）、後が codex への verbatim 引数。
+  **付ける ID は実在するものだけ**: hitch 単体運用（course 無し）なら `--harness-hitch-id` のみ、
+  course 駆動下の hitch なら両方。**course id を捏造しない**（course-level 集計が壊れる）。
+  hitch / course 文脈の無い単発 PR レビューは ID を省略し `--harness-label=pr-review` のみ。
+  **`--harness-label` は常に付ける**（省略時 `external` になり review が他の外部呼び出しと
+  混ざる）。`--` の前が wrapper フラグ（`=` 形式の単一トークンのみ認識）、後が codex への
+  verbatim 引数。
 
 - **finding** — レビューが挙げた指摘。下記 **B** の P0〜P3 で分類する。
 
@@ -252,8 +256,8 @@ hitch を駆動する Claude が使うサブエージェント（`Agent` ツー�
 ## レビューテンプレート
 
 codex レビューに渡すプロンプトの雛形。`<...>` を実値で埋めて
-`harness codex exec --harness-course-id=<id> --harness-hitch-id=<id> -- -m gpt-5.5 -c model_reasoning_effort="xhigh"`
-に渡す（course/hitch 駆動中は透過ラッパ必須。§0 用語「codex レビュー」を正本とする）。
+`harness codex exec --harness-label=<種別> [--harness-hitch-id=<id>] [--harness-course-id=<id>] -- -m gpt-5.5 -c model_reasoning_effort="xhigh"`
+に渡す（§0 用語「codex レビュー」を正本とし、付ける ID は実在するものだけ・label は常に付ける）。
 
 ### サブ Phase 用（差分の簡易レビュー）
 
