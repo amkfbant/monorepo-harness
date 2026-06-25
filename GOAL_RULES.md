@@ -38,6 +38,10 @@
 
   **付ける ID は実在するものだけ**: hitch 単体運用（course 無し）なら `--harness-hitch-id` のみ、
   course 駆動下の hitch なら両方。**course id を捏造しない**（course-level 集計が壊れる）。
+  ⚠ wrapper は省略したフラグを env（`HARNESS_COURSE_ID` / `HARNESS_HITCH_ID` 等）で補完する
+  （`src/codex/external-exec.ts`）ので、hitch 単体運用で環境に course が残る場合は
+  **`--harness-course-id=`（空値）で明示クリア**（または clean env）し、stale な course link の
+  混入を防ぐ。
   hitch / course 文脈の無い単発 PR レビューは ID を省略し `--harness-label=pr-review` のみ。
   **`--harness-label` は常に付ける**（省略時 `external` になり review が他の外部呼び出しと
   混ざる）。`--` の前が wrapper フラグ（`=` 形式の単一トークンのみ認識）、後が codex への
