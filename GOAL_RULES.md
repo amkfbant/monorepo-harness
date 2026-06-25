@@ -25,12 +25,19 @@
   Copilot review 連携）に対応。feature branch 1 本 ＝ 大 Phase 1 つ。
 - **サブ Phase** — 大 Phase を構成する作業単位。1〜数コミットで完結し、関連
   テストと typecheck が緑になる粒度。
-- **codex レビュー** — 外部 LLM による差分レビュー。コマンドは常に（`-s read-only` ＋
-  stdin クローズ `< /dev/null` で hang 回避。正本は [`CLAUDE.md`](./CLAUDE.md)）:
+- **codex レビュー** — 外部 LLM による差分レビュー。**course / hitch 駆動中は必ず
+  `harness codex exec` 透過ラッパ経由で起動し、`--harness-course-id` / `--harness-hitch-id`
+  で usage を course/hitch に紐付ける**（usage の READ 経路は #403）。`-s read-only` ＋
+  stdin クローズ `< /dev/null` で hang 回避。正本は [`CLAUDE.md`](./CLAUDE.md):
 
   ```
-  codex exec -m gpt-5.5 -c model_reasoning_effort="xhigh" -s read-only -o <out> "<prompt>" < /dev/null
+  harness codex exec --harness-course-id=<courseId> --harness-hitch-id=<hitchId> \
+    -- -m gpt-5.5 -c model_reasoning_effort="xhigh" -s read-only -o <out> "<prompt>" < /dev/null
   ```
+
+  hitch / course 文脈の無い単発 PR レビューは course/hitch を省略し `--harness-label=<context>`
+  のみ付ける（例: `--harness-label=pr-review`）。`--` の前が wrapper フラグ（`=` 形式の単一
+  トークンのみ認識）、後が codex への verbatim 引数。
 
 - **finding** — レビューが挙げた指摘。下記 **B** の P0〜P3 で分類する。
 
@@ -108,7 +115,7 @@
 - 大 Phase 完了時に **push → GitHub Actions CI green → main へマージ**。CI（`ci.yml`:
   node 20/24 matrix で `npm ci` → typecheck → build → `npm test` フルスイート）が **赤のまま
   main へは入れない**（必須 gate。docs/md のみの変更は `paths-ignore` で skip される）。
-- **PR レビューは二段**: ① merge 前に **codex exec で差分レビュー**（§A のリトライ上限・finding
+- **PR レビューは二段**: ① merge 前に **`harness codex exec` で差分レビュー**（§0 の起動形・§A のリトライ上限・finding
   分類・未解決 P0 ゼロ gate）。② PR を上げたら **PR 上の bot レビュー（codex App
   `chatgpt-codex-connector[bot]` / Copilot）の受け入れ指摘も反映**してから merge（P0/P1 必須・
   P2 は判断）。codex App reaction の意味論: **👀=レビュー中 / 👍=指摘なし / inline comment=指摘あり**。
@@ -212,7 +219,7 @@ harness の安全設計はいかなる hitch 実装でも侵してはならな�
   （stub の rot を生む）。frozen-core dir は §G への STOP beacon にする。
 
 enforcement の現実: CI は billing-blocked ゆえ meta-test は local soft gate、唯一の
-実 hard gate は PR 毎の codex xhigh レビュー。grandfather/budget の baseline を上げる
+実 hard gate は PR 毎の codex xhigh レビュー（`harness codex exec` 経由）。grandfather/budget の baseline を上げる
 変更は PR で明示的に正当化する（silent な肥大化を防ぐ）。
 
 ---
@@ -245,7 +252,8 @@ hitch を駆動する Claude が使うサブエージェント（`Agent` ツー�
 ## レビューテンプレート
 
 codex レビューに渡すプロンプトの雛形。`<...>` を実値で埋めて
-`codex exec -m gpt-5.5 -c model_reasoning_effort="xhigh"` に渡す。
+`harness codex exec --harness-course-id=<id> --harness-hitch-id=<id> -- -m gpt-5.5 -c model_reasoning_effort="xhigh"`
+に渡す（course/hitch 駆動中は透過ラッパ必須。§0 用語「codex レビュー」を正本とする）。
 
 ### サブ Phase 用（差分の簡易レビュー）
 

@@ -86,8 +86,11 @@ pin**（`git describe --tags --exact-match` が成功）、dev は **`main` / fe
    needs_classification で自動修正を止める / MCP `confirmation_required` を shell で
    迂回しない）。
 
-**codex レビューコマンドは常に** `codex exec -m gpt-5.5 -c model_reasoning_effort="xhigh"`
-（サブ Phase は最大 3 回、大 Phase は最大 5 回リトライ。詳細は `GOAL_RULES.md`）。
+**codex レビューコマンドは常に `harness codex exec` 透過ラッパ経由で起動する。**
+**course / hitch 駆動中は `--harness-course-id=<id>` / `--harness-hitch-id=<id>` を必須**とし
+（usage を course/hitch に紐付け。READ 経路は #403）、`--` を挟んで
+`-m gpt-5.5 -c model_reasoning_effort="xhigh"` を渡す（サブ Phase は最大 3 回、大 Phase は
+最大 5 回リトライ。詳細は `GOAL_RULES.md`）。
 
 **サブエージェント（Claude 側）は軽量ポリシー**（`GOAL_RULES.md` §I）: 探索は
 `Explore` 等に常用、実装の subagent-driven 化は任意、**レビューの正本は codex**
@@ -166,9 +169,10 @@ npm run harness -- <args>   # 開発時の CLI 起動（tsx 経由、HARNESS_ROO
   **同じコミットで**更新する。`docs/specs/` は現状のスナップショット（TODO を
   書かない）。
 - **codex exec レビュー（hitch モード外の通常 PR にも適用）**: 実質的な変更の PR は
-  **merge 前に codex exec で差分レビュー**する。コマンドは常に
-  `codex exec -m gpt-5.5 -c model_reasoning_effort="xhigh" -s read-only -o <out> "<prompt>" < /dev/null`
-  （`-s read-only` ＋ **stdin クローズ（`< /dev/null`）で hang 回避**）。**P0 / P1 は
+  **merge 前に `harness codex exec` 経由で差分レビュー**する。コマンドは常に
+  `harness codex exec --harness-label=pr-review -- -m gpt-5.5 -c model_reasoning_effort="xhigh" -s read-only -o <out> "<prompt>" < /dev/null`
+  （`-s read-only` ＋ **stdin クローズ（`< /dev/null`）で hang 回避**。course/hitch 駆動の
+  一環なら `--harness-label` の代わりに `--harness-course-id` / `--harness-hitch-id` を付ける）。**P0 / P1 は
   修正必須**、P2 は修正 or `docs/future-features.md` に defer（理由を記録）。PR の
   bot レビュー（codex App / Copilot）の受け入れ指摘も併せて反映する。hitch モードの
   リトライ上限（サブ ≤3 / 大 ≤5）・レビューテンプレート・未解決 P0 ゼロ gate は
