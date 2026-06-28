@@ -25,7 +25,7 @@ import { resolveEffectiveRule } from "./review-rule.js";
 import { ReviewRulesRepository } from "../db/repositories/review-rules.js";
 import { assertActiveLease } from "../workspace/db-domain-lock.js";
 
-import { createWorktree } from "../workspace/git-worktree.js";
+import { createRunWorkspace } from "../workspace/git-worktree.js";
 import { gcWorktreesBeforeRun } from "./run-worktree-gc.js";
 
 import { detectsTestWeakening } from "./automerge-tiers.js";
@@ -132,13 +132,16 @@ export async function runDomainCodingInner(
       ...(gitTimeoutMs !== undefined ? { gitTimeoutMs } : {}),
     });
 
-    const wt = await createWorktree({
+    const wt = await createRunWorkspace({
       repoPath: opts.repoPath,
       worktreesDir: paths.workspacesDir,
       runId,
       branch,
       base: baseSha,
       timeoutMs: gitTimeoutMs,
+      // (#410 Phase 2) Task 1 guarantees this is always present; default
+      // "worktree" keeps the legacy path byte-for-byte for non-self targets.
+      isolation: policy.workspace.isolation,
     });
     await log.emit({ type: "worktree_created", path: wt.path });
 
