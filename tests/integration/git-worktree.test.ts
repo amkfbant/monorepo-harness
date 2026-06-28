@@ -4,8 +4,10 @@ import { writeFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   createWorktree,
+  createCloneWorkspace,
   removeWorktree,
   pruneWorktrees,
+  workspaceGitKind,
 } from "../../src/workspace/git-worktree.js";
 import { makeTmpDir } from "../helpers/tmp.js";
 
@@ -104,5 +106,36 @@ describe("pruneWorktrees (#404)", () => {
       cwd: repoRoot,
     }).toString();
     expect(list).toContain("run-live");
+  });
+});
+
+describe("workspaceGitKind (#410)", () => {
+  // The schema-free clone/worktree discriminator cleanup + #404 reclaim rely on:
+  // a `git worktree` writes `.git` as a FILE ("gitdir: ..." pointer), a clone
+  // owns a real `.git` DIRECTORY, and an unmade/removed workspace has no `.git`.
+  it("classifies a real git worktree as 'worktree'", async () => {
+    const wt = await createWorktree({
+      repoPath: repoRoot,
+      worktreesDir,
+      runId: "run-kind-wt",
+      branch: "harness/run-kind-wt/x",
+      base: "main",
+    });
+    expect(workspaceGitKind(wt.path)).toBe("worktree");
+  });
+
+  it("classifies an independent clone as 'clone'", async () => {
+    const wt = await createCloneWorkspace({
+      repoPath: repoRoot,
+      worktreesDir,
+      runId: "run-kind-clone",
+      branch: "harness/run-kind-clone/x",
+      base: "main",
+    });
+    expect(workspaceGitKind(wt.path)).toBe("clone");
+  });
+
+  it("classifies a path with no workspace as 'absent'", () => {
+    expect(workspaceGitKind(join(worktreesDir, "nope", "repo"))).toBe("absent");
   });
 });
