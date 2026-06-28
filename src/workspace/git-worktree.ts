@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { existsSync, statSync } from "node:fs";
 import { gitCliOrThrow, gitCli } from "../git/git-cli.js";
 import { assertSymlinkCapable } from "./fs-preflight.js";
+import type { WorkspaceIsolation } from "../policy/schema.js";
 
 export interface WorktreeCreateOpts {
   repoPath: string;
@@ -101,6 +102,33 @@ export async function createCloneWorkspace(
     withTimeout(wtPath, opts.timeoutMs),
   );
   return { path: wtPath, branch: opts.branch };
+}
+
+/**
+ * (#410 Phase 2) Single entry point the run-creation path uses to materialize a
+ * run workspace, dispatching on `policy.workspace.isolation`. Both arms return
+ * the shared {@link Worktree} shape, so every downstream consumer (codex run,
+ * diff/validate, push/PR) is unchanged regardless of isolation mode.
+ *
+ * - `"clone"` → {@link createCloneWorkspace} (opt-in, git-isolated).
+ * - anything else (default `"worktree"`) → {@link createWorktree}, byte-for-byte
+ *   the legacy path so non-self targets are completely unaffected.
+ */
+export async function createRunWorkspace(
+  opts: WorktreeCreateOpts & { isolation: WorkspaceIsolation },
+): Promise<Worktree> {
+  if (opts.isolation === "clone") {
+    return createCloneWorkspace({
+      repoPath: opts.repoPath,
+      worktreesDir: opts.worktreesDir,
+      runId: opts.runId,
+      branch: opts.branch,
+      base: opts.base,
+      // exactOptionalPropertyTypes: only forward timeoutMs when set.
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    });
+  }
+  return createWorktree(opts);
 }
 
 /**
