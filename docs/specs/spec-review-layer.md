@@ -25,7 +25,8 @@ full shape ではなく、`src/hitch/gap-to-kind.ts` の `GapRow = { metric: str
 に **橋渡し**する（`metric` が写像対象・`count`/`gap` は規模・`reason` は任意の補足）。
 
 > 注意（consulting-frameworks.md の caveat 継承）: `metric` は実在の `HitchCloseConditionKind`
-> へ写像される素であり、`count` という名の kind は存在しない。kind は §3 の 7 種のみ。
+> へ写像される素であり、`count` という名の kind は存在しない。gap から写像可能な kind は
+> §2 の 7 種のみ（`facet_red_test` / `evidence_attached` は gap 自動写像の対象外＝author 宣言のみ）。
 
 ---
 
@@ -58,7 +59,8 @@ full shape ではなく、`src/hitch/gap-to-kind.ts` の `GapRow = { metric: str
 
 ## 3. kind 選択 decision tree と auto-verify / external-evidence 分類
 
-closeCondition kind は厳密に 8 種（`HitchCloseConditionKind`）。**自動検証 kind** と
+closeCondition kind は厳密に 9 種（`HitchCloseConditionKind`。正本は
+`src/hitch/types.ts` の `HITCH_CLOSE_CONDITION_KINDS`）。**自動検証 kind** と
 **外部証拠待ち（ask_human）kind** を区別する。自動ゲート意図の条件が ask_human kind に
 化けないこと。
 
@@ -68,7 +70,8 @@ metric は自動で検証できるか？
 │  ├─ コマンド実行で判定 …………………… command       （close-check runner が実行）
 │  ├─ open finding の閾値 …………………… finding_policy （evaluateFindingPolicy）
 │  ├─ レビュー承認 ………………………………… review_consensus（review runner が充足）
-│  └─ facet ごとの RED test 被覆 ………… facet_red_test （evaluateFacetRedCoverage・#279）
+│  ├─ facet ごとの RED test 被覆 ………… facet_red_test （evaluateFacetRedCoverage・#279）
+│  └─ operator 添付の証拠で判定 ………… evidence_attached（evaluateEvidenceAttached・#91）
 └─ 不可（外部証拠が要る = ask_human）
    ├─ 成果物 / ファイルの存在 ……………… artifact_exists （metadata.path）
    ├─ operator の手動確認 …………………… manual
@@ -78,8 +81,14 @@ metric は自動で検証できるか？
 
 | kind | category | 評価 |
 |---|---|---|
-| command / finding_policy / review_consensus / facet_red_test | auto-verify | convergence の決定論ゲートで充足 |
+| command / finding_policy / review_consensus / facet_red_test / evidence_attached | auto-verify | convergence の決定論ゲートで充足 |
 | manual / artifact_exists / operation_status / db_doctor | external-evidence | ask_human routing（外部証拠を記録するまで pending） |
+
+`evidence_attached`（#91 Stage B・opt-in）は category `auto-verify` の attestation gate。
+operator が `hitch_evidence` に添付した証拠行を **決定論的に**評価する（`check.status` 等の
+自己申告は一切見ない・provenance `attester==='operator'` をコード側で再検証）。証拠が
+無い / stale / shape 不一致は fail-closed（`passed` にしない）。決定表の詳細は
+[`hitch-convergence.md`](./hitch-convergence.md)。
 
 `facet_red_test`（#279・opt-in）は consensus reviewer の depth gap（テスト未実行ゆえ
 被覆欠落を素通り）を埋める決定論ゲート。`rule.facets[]` の各 facet（`{id, testGlobs[],
@@ -109,7 +118,7 @@ fail-closed default）。
 |---|---|
 | `missing_condition_id` | condition id が空 |
 | `duplicate_condition_id` | 同一 array 内で id 重複 |
-| `unknown_kind` | kind が 8 種外（Zod の二重チェック） |
+| `unknown_kind` | kind が 9 種外（Zod の二重チェック） |
 | `finding_policy_unknown_rule` | `rule` キーが `{maxOpenInScopeP0,P1,P2,maxOpenUnknownScope}` 以外（`rule.count` 等は hard error） |
 | `finding_policy_invalid_threshold` | rule 値が非負数でない |
 | `operation_status_missing_operation_id` | `operation_status` で `metadata.operationId` 欠落 |
