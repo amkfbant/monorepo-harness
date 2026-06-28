@@ -108,6 +108,24 @@ describe("ProjectProfileSchema", () => {
     expect(ProjectProfileSchema.safeParse(p).success).toBe(false);
   });
 
+  it("accepts an optional workspace isolation section", () => {
+    const p = validProfile() as Record<string, unknown>;
+    p.workspace = { isolation: "clone" };
+    expect(ProjectProfileSchema.safeParse(p).success).toBe(true);
+  });
+
+  it("rejects an unknown workspace isolation value (fail-closed)", () => {
+    const p = validProfile() as Record<string, unknown>;
+    p.workspace = { isolation: "bogus" };
+    expect(ProjectProfileSchema.safeParse(p).success).toBe(false);
+  });
+
+  it("rejects an unknown key in the workspace section (strict)", () => {
+    const p = validProfile() as Record<string, unknown>;
+    p.workspace = { foo: 1 };
+    expect(ProjectProfileSchema.safeParse(p).success).toBe(false);
+  });
+
   it("rejects an unknown top-level key (strict)", () => {
     const p = validProfile() as Record<string, unknown>;
     p.extra = true;

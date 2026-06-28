@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { minimatch } from "minimatch";
-import { CommandEntrySchema, CommandDefaultsSchema } from "../policy/schema.js";
+import {
+  CommandEntrySchema,
+  CommandDefaultsSchema,
+  WorkspaceIsolationSchema,
+} from "../policy/schema.js";
 
 /**
  * Project profile schema (Phase 5).
@@ -236,6 +240,12 @@ export const ProjectProfileSchema = z
       .strict()
       .optional(),
     review: ProfileReviewRuleSchema.optional(),
+    // #410 Phase 2: opt-in run workspace isolation mode (default worktree when
+    // omitted). Compiled into GlobalPolicy.workspace by the policy compiler.
+    workspace: z
+      .object({ isolation: WorkspaceIsolationSchema })
+      .strict()
+      .optional(),
     mcp: z.record(z.string(), z.unknown()).optional(),
     domains: z.array(ProjectDomainSchema).min(1),
   })

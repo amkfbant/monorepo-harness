@@ -3,6 +3,7 @@ import {
   DEFAULT_CODEX_TIMEOUT_MS,
   DEFAULT_COMMAND_TIMEOUT_MS,
   DEFAULT_GIT_TIMEOUT_MS,
+  DEFAULT_WORKSPACE_ISOLATION,
   type ChangeBudget,
   type ChangeBudgetConfig,
   type CommandEntry,
@@ -127,6 +128,9 @@ export function resolvePolicy(
         global.limits?.change_budget,
         d.change_budget,
       ),
+    },
+    workspace: {
+      isolation: global.workspace?.isolation ?? DEFAULT_WORKSPACE_ISOLATION,
     },
   };
 }

@@ -83,6 +83,19 @@ export const LimitsSchema = z
   .strict();
 export type Limits = z.infer<typeof LimitsSchema>;
 
+// #410 Phase 2: how a run's workspace is materialized from the target repo.
+// `worktree` is the historical default (`git worktree add`, sharing the
+// target's `.git`). `clone` is opt-in: an independent local clone so a run
+// can never write the target's shared `.git/config` (the core.bare flip in
+// #410). Default stays `worktree` so non-self targets are byte-stable.
+export const WorkspaceIsolationSchema = z.enum(["worktree", "clone"]);
+export type WorkspaceIsolation = z.infer<typeof WorkspaceIsolationSchema>;
+export const DEFAULT_WORKSPACE_ISOLATION: WorkspaceIsolation = "worktree";
+export const WorkspaceConfigSchema = z
+  .object({ isolation: WorkspaceIsolationSchema.default("worktree") })
+  .strict();
+export type WorkspaceConfig = z.infer<typeof WorkspaceConfigSchema>;
+
 export const GlobalPolicySchema = z
   .object({
     defaults: z
@@ -91,6 +104,7 @@ export const GlobalPolicySchema = z
       })
       .optional(),
     limits: LimitsSchema.optional(),
+    workspace: WorkspaceConfigSchema.optional(),
     always_deny_write: z.array(Glob).default([]),
     // minimatch root-anchored patterns. Use `**/dist/**` (NOT `dist/**`)
     // to match nested directories. See docs/policy-semantics.md.
@@ -219,6 +233,13 @@ export interface ResolvedPolicy {
   limits: {
     gitTimeoutMs: number;
     changeBudget: ChangeBudget;
+  };
+  /**
+   * (#410 Phase 2) Run workspace isolation mode. Always present after
+   * resolution — defaults to "worktree" so every run path can branch on it.
+   */
+  workspace: {
+    isolation: WorkspaceIsolation;
   };
 }
 
