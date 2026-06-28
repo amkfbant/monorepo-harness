@@ -66,9 +66,11 @@ export interface CloneWorkspaceCreateOpts {
  * target has no `origin`, this fails closed: warn and REMOVE the clone's `origin`
  * remote (which `git clone` set to the local target) so a later
  * `git push origin <branch>` loud-fails (`'origin' does not appear to be a git
- * repository`) instead of silently pushing into the local clone/source. Clone
- * creation itself still succeeds (NO implicit worktree fallback); the failure is
- * deferred to the push step by design.
+ * repository`) instead of silently pushing into the local clone/source. On that
+ * path clone creation still succeeds (NO implicit worktree fallback) and the
+ * failure is deferred to the push step by design — but if the `origin` removal
+ * itself fails, this THROWS rather than return a clone whose `origin` still
+ * points at the local target (which a later push could silently reach).
  *
  * Returns the shared {@link Worktree} shape so downstream callers are unchanged.
  */
@@ -96,9 +98,9 @@ export async function createCloneWorkspace(
     // fail-closed: the target has no `origin` to re-point to, but `git clone`
     // already set the clone's `origin` to the LOCAL target. Leaving it there
     // would let `git push -u origin <branch>` silently succeed into the local
-    // clone/source. Remove `origin` so the push loud-fails instead. We do NOT
-    // throw here (no worktree fallback): clone creation succeeds and the failure
-    // is deferred to the push step by design.
+    // clone/source. Remove `origin` so the push loud-fails instead. On success
+    // clone creation still succeeds (no worktree fallback) and the failure is
+    // deferred to the push step by design.
     process.stderr.write(
       `warning: target ${opts.repoPath} has no 'origin' remote (#410 clone ` +
         `workspace) — removing the clone's local-target 'origin' so a later ` +
@@ -109,11 +111,16 @@ export async function createCloneWorkspace(
       withTimeout(wtPath, opts.timeoutMs),
     );
     if (removed.exitCode !== 0) {
-      // best-effort: if removal somehow fails the clone still has a local-target
-      // origin, so escalate the warning rather than leave it silent.
-      process.stderr.write(
-        `warning: failed to remove the clone's local-target 'origin' (#410) — ` +
-          `a later push may reach the local target: ${removed.stderr.trim()}\n`,
+      // If removal itself fails the clone STILL has a local-target `origin`, so
+      // returning the workspace would re-open the silent-push hole this branch
+      // exists to close. Fail closed: throw rather than hand back an unsafe
+      // workspace whose `origin` points at the local target.
+      throw new Error(
+        `#410 clone workspace: target ${opts.repoPath} is origin-less and ` +
+          `removing the clone's local-target 'origin' failed — refusing to ` +
+          `return an unsafe workspace (its 'origin' would still point at the ` +
+          `local target, letting a later push silently reach it): ` +
+          `${removed.stderr.trim()}`,
       );
     }
   }
