@@ -1035,3 +1035,32 @@ Stage A（hitch evidence store & surface）の codex App レビューで挙が�
 参照。）
 
 重要度: 低（C9 のみ残置・周辺的・非ブロッカー）。
+
+## run workspace clone 隔離 — Phase 2 の follow-up / 残課題（#410 Phase 2）
+
+#410 Phase 2 で run workspace の **clone 隔離 capability**（`policy.workspace.isolation:
+"worktree"(既定)|"clone"`）を出荷した（設計は
+[`design/proposals/design-410-run-workspace-git-isolation.md`](design/proposals/design-410-run-workspace-git-isolation.md)、
+現状仕様は [`specs/workspace.md`](./specs/workspace.md) の「run workspace の隔離モード」）。
+本 PR は capability のみで、以下は意図的に defer する。
+
+- **(a) self profile を `clone` に切替える follow-up**: `projects/monorepo-harness.yaml` の
+  `workspace.isolation` を `clone` にして self-orchestrate を復帰させる。本 PR では既定 `worktree`
+  のままで、切替は別 PR（self-orchestrate は #410 当事者ゆえ慎重に）。
+- **(b) agent-workspace 層の clone 化**: `src/workspace/agent-workspace.ts`
+  （`createAgentWorkspace`）は依然 worktree 前提で target の共有 `.git` を使うため、self が agent
+  workspace を使う場合 #410 同型のリスク（共有 `.git/config` 汚染）が残る。run workspace 層と同様の
+  clone 隔離を agent workspace へ広げるかは別途設計。
+- **(c) Phase 2.5 — `deny_write: .git/**` の sandbox 実配線**: 現状 `deny_write: .git/**` は prompt
+  文言 + 事後 worktree diff のみで command-runner / claude runner の OS sandbox に未配線。clone は
+  config を隔離するが、clone 内 `.git` への書込自体は防げない（clone の自己 `.git` なので target は
+  無害だが、clone 内の object-graph tampering は push gate の事後検出に依存）。common-dir を read-only
+  にする / OS sandbox で common-dir 書込不可にする等は高コストゆえ defer。
+- **(d) clone は target の LOCAL git identity を継承しない**: `git clone` は target の
+  `.git/config` の `user.name` / `user.email` を clone へコピーしない（remote 設定のみ継承）。
+  clone-mode の commit は **global identity にフォールバック**するため、**target が
+  local-identity-only かつ global identity 未設定の場合、clone-mode の commit が失敗しうる**。
+  self（GitHub origin + global identity 有）では問題ないが、対応するなら clone 作成時に target の
+  local `user.*` を clone へ写経する（または mint 時に明示注入する）。
+
+**Status:** idea only — #410 Phase 2（clone capability）出荷時に記録（2026-06-29）。

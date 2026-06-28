@@ -97,6 +97,8 @@ review:
       max_reviewers: 2                       # optional per-requirement cap
   overrides: { allowed_reviewers: [], require_reason: true }
   stale_proposal: { reject_superseded: true, max_age_hours: 24 }
+workspace:
+  isolation: clone               # optional; worktree (既定) | clone。#410 Phase 2。compile 時に GlobalPolicy.workspace へ写経
 context_packs:
   default-docs: { description, globs, max_bytes, deny_secret_like }
 commands:
@@ -152,6 +154,12 @@ domains:
   持たない。project profile の effective rule が consensus のとき、`reviewed-run` は
   `--dry-run` を含めて coder / reviewer agent 起動前に
   `ReviewWorkflowUnsupportedError` で明示拒否する。
+- `workspace.isolation`（任意・#410 Phase 2）は run workspace の隔離モード
+  （`worktree` 既定 / `clone` opt-in）。policy compiler が `GlobalPolicy.workspace` へ写経し、
+  resolver が `ResolvedPolicy.workspace.isolation` に解決する。clone のライフサイクル
+  （作成 = `git clone --no-checkout` + origin 張替、cleanup = FS 検出で `rm -rf`、push/PR 無改修）は
+  [`workspace.md`](./workspace.md) の「run workspace の隔離モード」、フィールド定義は
+  [`policy.md`](./policy.md) を参照。
 
 ### Domain registry
 
