@@ -39,6 +39,69 @@ export async function createWorktree(
   return { path: wtPath, branch: opts.branch };
 }
 
+export interface CloneWorkspaceCreateOpts {
+  /** local target (the repo being cloned) */
+  repoPath: string;
+  worktreesDir: string;
+  runId: string;
+  branch: string;
+  /** commit-ish (SHA recommended) to base the new branch on */
+  base: string;
+  timeoutMs?: number;
+}
+
+/**
+ * (#410) Create a run workspace as an INDEPENDENT clone instead of a
+ * `git worktree`. A worktree shares the target's `.git` (config lives in the
+ * common dir), so an allowed-command running `git config core.bare true` inside
+ * the worktree corrupts the SHARED config and flips the *target* to bare. A
+ * clone owns a separate `.git` directory, physically severing that shared
+ * config. Object storage is still shared cheaply via git's local-clone hardlinks
+ * (which survive a target `gc` — the inode lives), but config is NOT shared.
+ *
+ * The clone's origin is re-pointed from the local target to the target's own
+ * GitHub remote so `git push` / `gh pr create` reach GitHub unchanged. If the
+ * target has no `origin`, this fails closed: warn and leave origin at the local
+ * target (NO implicit worktree fallback) so a later push loud-fails instead of
+ * silently pushing into a local clone.
+ *
+ * Returns the shared {@link Worktree} shape so downstream callers are unchanged.
+ */
+export async function createCloneWorkspace(
+  opts: CloneWorkspaceCreateOpts,
+): Promise<Worktree> {
+  assertSymlinkCapable(opts.worktreesDir);
+  const wtPath = join(opts.worktreesDir, opts.runId, "repo");
+  // `git clone` creates the leading directories itself; `--no-checkout` avoids a
+  // throwaway checkout we immediately replace with `checkout -b base`.
+  await gitCliOrThrow(
+    ["clone", "--no-checkout", opts.repoPath, wtPath],
+    withTimeout(opts.worktreesDir, opts.timeoutMs),
+  );
+  const originUrl = await gitCli(
+    ["-C", opts.repoPath, "remote", "get-url", "origin"],
+    withTimeout(opts.repoPath, opts.timeoutMs),
+  );
+  if (originUrl.exitCode === 0) {
+    await gitCliOrThrow(
+      ["-C", wtPath, "remote", "set-url", "origin", originUrl.stdout.trim()],
+      withTimeout(wtPath, opts.timeoutMs),
+    );
+  } else {
+    // fail-closed: do not fall back to a worktree; leave the loud-fail to push.
+    process.stderr.write(
+      `warning: target ${opts.repoPath} has no 'origin' remote (#410 clone ` +
+        `workspace) — leaving clone origin at the local target; a later push ` +
+        `will loud-fail rather than push into a local clone\n`,
+    );
+  }
+  await gitCliOrThrow(
+    ["-C", wtPath, "checkout", "-b", opts.branch, opts.base],
+    withTimeout(wtPath, opts.timeoutMs),
+  );
+  return { path: wtPath, branch: opts.branch };
+}
+
 export interface DetachedWorktreeOpts {
   repoPath: string;
   /** absolute path where the detached worktree is created */
