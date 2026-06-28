@@ -9,8 +9,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { cleanupRun } from "../../../src/core/cleanup.js";
-import { createWorktree } from "../../../src/workspace/git-worktree.js";
+import {
+  cleanupRun,
+  reclaimTerminalRunWorktrees,
+} from "../../../src/core/cleanup.js";
+import {
+  createWorktree,
+  createCloneWorkspace,
+} from "../../../src/workspace/git-worktree.js";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 
@@ -70,6 +76,69 @@ async function setup(status: string): Promise<SetupResult> {
   const runId = "run-cleanup-test-001";
   const runBranch = `harness/${runId}/x`;
   const wt = await createWorktree({
+    repoPath,
+    worktreesDir: join(harnessRoot, "workspaces"),
+    runId,
+    branch: runBranch,
+    base: baseSha,
+  });
+
+  mkdirSync(join(harnessRoot, "runs", runId), { recursive: true });
+  writeFileSync(
+    join(harnessRoot, "runs", runId, "meta.json"),
+    JSON.stringify(
+      {
+        runId,
+        repoId: "t",
+        repoPath,
+        domain: "apps/user",
+        workflow: "domain-coding",
+        baseBranch: "main",
+        baseSha,
+        runBranch,
+        status,
+        startedAt: "2026-05-20T00:00:00Z",
+      },
+      null,
+      2,
+    ),
+  );
+  writeFileSync(join(harnessRoot, "runs", runId, "events.jsonl"), "");
+
+  return { harnessRoot, repoPath, runId, worktreePath: wt.path, runBranch };
+}
+
+/**
+ * (#410) Like {@link setup} but builds the run workspace as an independent CLONE
+ * (createCloneWorkspace) rather than a `git worktree`. cleanup / #404 reclaim must
+ * `rm -rf` a clone — `git worktree remove` would fail "not a working tree" on it.
+ */
+async function setupClone(status: string): Promise<SetupResult> {
+  const harnessRoot = mkdtempSync(join(tmpdir(), "harness-cu-clone-"));
+  const repoPath = mkdtempSync(join(tmpdir(), "harness-target-clone-"));
+  const bareRemote = mkdtempSync(join(tmpdir(), "harness-bare-clone-"));
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", bareRemote], {
+    stdio: "ignore",
+  });
+  const g = (a: string[]) =>
+    execFileSync("git", a, { cwd: repoPath, stdio: "ignore" });
+  g(["init", "-q", "-b", "main"]);
+  g(["config", "user.email", "t@e.com"]);
+  g(["config", "user.name", "T"]);
+  writeFileSync(join(repoPath, "README.md"), "init\n");
+  g(["add", "."]);
+  g(["commit", "-qm", "init"]);
+  g(["remote", "add", "origin", bareRemote]);
+  g(["push", "-q", "origin", "main"]);
+  const baseSha = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: repoPath,
+  })
+    .toString()
+    .trim();
+
+  const runId = "run-cleanup-clone-001";
+  const runBranch = `harness/${runId}/x`;
+  const wt = await createCloneWorkspace({
     repoPath,
     worktreesDir: join(harnessRoot, "workspaces"),
     runId,
@@ -443,5 +512,80 @@ describe("cleanupRun — DB-first run (Phase 7-7)", () => {
     // db-first run is recovered from the DB row.
     const r = await cleanupRun(opts);
     expect(r.previousStatus).toBe("cleaned");
+  });
+});
+
+describe("cleanupRun — clone workspace (#410 Phase 2)", () => {
+  it("removes a clone via rm (not `git worktree remove`) and keeps the target healthy", async () => {
+    const s = await setupClone("approved");
+    const r = await cleanupRun({
+      runsDir: join(s.harnessRoot, "runs"),
+      workspacesDir: join(s.harnessRoot, "workspaces"),
+      locksDir: join(s.harnessRoot, "locks"),
+      dbPath: join(s.harnessRoot, ".harness", "harness.sqlite"),
+      runId: s.runId,
+    });
+    // worktreeRemoved is true (the clone dir was removed) WITHOUT a
+    // `git worktree remove` (which would throw "not a working tree" on a clone).
+    expect(r.worktreeRemoved).toBe(true);
+    // A clone's run branch is internal to the clone (gone with the dir); there is
+    // no target-branch to delete, so branchRemoved is false.
+    expect(r.branchRemoved).toBe(false);
+    expect(existsSync(s.worktreePath)).toBe(false);
+    expect(existsSync(join(s.harnessRoot, "workspaces", s.runId))).toBe(false);
+    // workspace scope keeps the run dir (audit trail)
+    expect(existsSync(join(s.harnessRoot, "runs", s.runId, "meta.json"))).toBe(
+      true,
+    );
+    // the target repo must NOT have been corrupted by cleanup
+    const bare = execFileSync("git", ["rev-parse", "--is-bare-repository"], {
+      cwd: s.repoPath,
+    })
+      .toString()
+      .trim();
+    expect(bare).toBe("false");
+  });
+});
+
+describe("reclaimTerminalRunWorktrees — clone workspace (#410 Phase 2)", () => {
+  it("reclaims a rejected clone via rm and audits cleanup without `git worktree remove`", async () => {
+    const s = await setupClone("rejected");
+    const dbPath = seedDbFirstRun(s.harnessRoot, s.runId);
+    const db = openDb(dbPath);
+    try {
+      const results = await reclaimTerminalRunWorktrees({
+        db,
+        repoPath: s.repoPath,
+        workspacesDir: join(s.harnessRoot, "workspaces"),
+        runsDir: join(s.harnessRoot, "runs"),
+      });
+      const res = results.find((x) => x.runId === s.runId);
+      expect(res?.reclaimed).toBe(true);
+      expect(res?.error).toBeUndefined();
+      expect(existsSync(s.worktreePath)).toBe(false);
+      expect(existsSync(join(s.harnessRoot, "workspaces", s.runId))).toBe(false);
+      // status flipped to cleaned, worktree_remove action recorded
+      const row = db
+        .prepare("SELECT status FROM runs WHERE run_id = ?")
+        .get(s.runId) as { status: string };
+      expect(row.status).toBe("cleaned");
+      const actions = (
+        db
+          .prepare("SELECT action_type FROM cleanup_actions WHERE run_id = ?")
+          .all(s.runId) as { action_type: string }[]
+      ).map((a) => a.action_type);
+      expect(actions).toContain("worktree_remove");
+      // no branch_delete: a clone's branch is internal (no target-branch op)
+      expect(actions).not.toContain("branch_delete");
+      // target repo healthy
+      const bare = execFileSync("git", ["rev-parse", "--is-bare-repository"], {
+        cwd: s.repoPath,
+      })
+        .toString()
+        .trim();
+      expect(bare).toBe("false");
+    } finally {
+      db.close();
+    }
   });
 });

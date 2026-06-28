@@ -1,5 +1,6 @@
 import { dirname } from "node:path";
 import { join } from "node:path";
+import { existsSync, statSync } from "node:fs";
 import { gitCliOrThrow, gitCli } from "../git/git-cli.js";
 import { assertSymlinkCapable } from "./fs-preflight.js";
 
@@ -100,6 +101,26 @@ export async function createCloneWorkspace(
     withTimeout(wtPath, opts.timeoutMs),
   );
   return { path: wtPath, branch: opts.branch };
+}
+
+/**
+ * (#410) Discriminate how the run workspace at `worktreePath` was created, with
+ * NO schema/DB dependency — the only state cleanup / #404 reclaim have at hand is
+ * the path itself, so the filesystem is the single source of truth.
+ *
+ * - `.git` is a real DIRECTORY → `"clone"` (an independent {@link createCloneWorkspace}).
+ *   Must be removed with `rm -rf`; `git worktree remove` fails "not a working tree".
+ * - `.git` is a FILE ("gitdir: ..." pointer) → `"worktree"` (a {@link createWorktree}).
+ *   Removed via `git worktree remove` so the target's `.git/worktrees/` admin entry
+ *   is also cleared.
+ * - `.git` is absent (path unmade or already removed) → `"absent"`.
+ */
+export function workspaceGitKind(
+  worktreePath: string,
+): "worktree" | "clone" | "absent" {
+  const gitPath = join(worktreePath, ".git");
+  if (!existsSync(gitPath)) return "absent";
+  return statSync(gitPath).isDirectory() ? "clone" : "worktree";
 }
 
 export interface DetachedWorktreeOpts {

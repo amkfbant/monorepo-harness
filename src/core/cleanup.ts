@@ -1,5 +1,4 @@
 import { readFile, writeFile, appendFile, rm } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import {
@@ -8,7 +7,10 @@ import {
   type RunStatus,
 } from "../logging/run-log.js";
 import { gitCli } from "../git/git-cli.js";
-import { removeWorktree } from "../workspace/git-worktree.js";
+import {
+  removeWorktree,
+  workspaceGitKind,
+} from "../workspace/git-worktree.js";
 import { warnLegacyFileLocks } from "../workspace/legacy-file-lock-warning.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import { runMigrations } from "../db/migrations.js";
@@ -264,31 +266,44 @@ async function cleanupUnderLock(
   let branchRemoved = false;
   let runDirRemoved = false;
 
-  if (existsSync(worktreePath)) {
-    const wt = await gitCli(
-      ["worktree", "remove", "--force", worktreePath],
-      gitOpts,
-    );
-    if (wt.exitCode !== 0) {
-      throw new Error(
-        `failed to remove worktree at ${worktreePath}: ${wt.stderr.trim()}`,
-      );
-    }
+  // (#410) A run workspace is either a `git worktree` (shares the target's
+  // `.git`; removed via `git worktree remove`) or an independent clone (owns its
+  // own `.git` DIRECTORY; `git worktree remove` would fail "not a working tree").
+  // cleanup has no policy at hand, so `workspaceGitKind` discriminates from the FS.
+  const kind = workspaceGitKind(worktreePath);
+  if (kind === "clone") {
+    // A clone's run branch lives inside the clone and is removed with the dir;
+    // any pushed branch is managed on GitHub. So there is no target-branch to
+    // delete here (branchRemoved stays false) and `rm -rf` is the cleanup.
+    await rm(worktreePath, { recursive: true, force: true });
     worktreeRemoved = true;
-  }
-
-  // Branch removal is independent of worktree state — a previous run might
-  // have lost its worktree directory but the branch is still in the repo.
-  // Look it up explicitly and surface deletion failure.
-  const lookup = await gitCli(["branch", "--list", runBranch], gitOpts);
-  if (lookup.exitCode === 0 && lookup.stdout.trim() !== "") {
-    const del = await gitCli(["branch", "-D", runBranch], gitOpts);
-    if (del.exitCode !== 0) {
-      throw new Error(
-        `branch delete failed for ${runBranch}: ${del.stderr.trim()}`,
+  } else {
+    if (kind === "worktree") {
+      const wt = await gitCli(
+        ["worktree", "remove", "--force", worktreePath],
+        gitOpts,
       );
+      if (wt.exitCode !== 0) {
+        throw new Error(
+          `failed to remove worktree at ${worktreePath}: ${wt.stderr.trim()}`,
+        );
+      }
+      worktreeRemoved = true;
     }
-    branchRemoved = true;
+
+    // Branch removal is independent of worktree state — a previous run might
+    // have lost its worktree directory but the branch is still in the repo.
+    // Look it up explicitly and surface deletion failure.
+    const lookup = await gitCli(["branch", "--list", runBranch], gitOpts);
+    if (lookup.exitCode === 0 && lookup.stdout.trim() !== "") {
+      const del = await gitCli(["branch", "-D", runBranch], gitOpts);
+      if (del.exitCode !== 0) {
+        throw new Error(
+          `branch delete failed for ${runBranch}: ${del.stderr.trim()}`,
+        );
+      }
+      branchRemoved = true;
+    }
   }
 
   const previousStatus = currentStatus;
@@ -429,22 +444,31 @@ export async function reclaimTerminalRunWorktrees(opts: {
   for (const row of rows) {
     const workspaceRunDir = join(opts.workspacesDir, row.run_id);
     const worktreePath = join(workspaceRunDir, "repo");
-    if (!existsSync(worktreePath)) {
+    const kind = workspaceGitKind(worktreePath);
+    if (kind === "absent") {
       results.push({ runId: row.run_id, status: row.status, reclaimed: false });
       continue;
     }
     try {
-      const wtOpts: {
-        repoPath: string;
-        worktreePath: string;
-        branch: string;
-        timeoutMs?: number;
-      } = { repoPath: opts.repoPath, worktreePath, branch: row.run_branch };
-      if (opts.gitTimeoutMs !== undefined) wtOpts.timeoutMs = opts.gitTimeoutMs;
-      // branchRemoved reflects the ACTUAL `git branch -D` result (removeWorktree
-      // reports it) so the cleanup audit never claims a branch delete that the
-      // worktree-remove silently skipped.
-      const { branchRemoved } = await removeWorktree(wtOpts);
+      let branchRemoved: boolean;
+      if (kind === "clone") {
+        // (#410) A clone can't be `git worktree remove`d; its run branch lives
+        // inside the clone and vanishes with the dir (the `rm` below). So skip
+        // removeWorktree and record no target-branch delete.
+        branchRemoved = false;
+      } else {
+        const wtOpts: {
+          repoPath: string;
+          worktreePath: string;
+          branch: string;
+          timeoutMs?: number;
+        } = { repoPath: opts.repoPath, worktreePath, branch: row.run_branch };
+        if (opts.gitTimeoutMs !== undefined) wtOpts.timeoutMs = opts.gitTimeoutMs;
+        // branchRemoved reflects the ACTUAL `git branch -D` result (removeWorktree
+        // reports it) so the cleanup audit never claims a branch delete that the
+        // worktree-remove silently skipped.
+        ({ branchRemoved } = await removeWorktree(wtOpts));
+      }
       repo.recordCleanup({
         runId: row.run_id,
         scope: "workspace",
