@@ -63,9 +63,12 @@ export interface CloneWorkspaceCreateOpts {
  *
  * The clone's origin is re-pointed from the local target to the target's own
  * GitHub remote so `git push` / `gh pr create` reach GitHub unchanged. If the
- * target has no `origin`, this fails closed: warn and leave origin at the local
- * target (NO implicit worktree fallback) so a later push loud-fails instead of
- * silently pushing into a local clone.
+ * target has no `origin`, this fails closed: warn and REMOVE the clone's `origin`
+ * remote (which `git clone` set to the local target) so a later
+ * `git push origin <branch>` loud-fails (`'origin' does not appear to be a git
+ * repository`) instead of silently pushing into the local clone/source. Clone
+ * creation itself still succeeds (NO implicit worktree fallback); the failure is
+ * deferred to the push step by design.
  *
  * Returns the shared {@link Worktree} shape so downstream callers are unchanged.
  */
@@ -90,12 +93,29 @@ export async function createCloneWorkspace(
       withTimeout(wtPath, opts.timeoutMs),
     );
   } else {
-    // fail-closed: do not fall back to a worktree; leave the loud-fail to push.
+    // fail-closed: the target has no `origin` to re-point to, but `git clone`
+    // already set the clone's `origin` to the LOCAL target. Leaving it there
+    // would let `git push -u origin <branch>` silently succeed into the local
+    // clone/source. Remove `origin` so the push loud-fails instead. We do NOT
+    // throw here (no worktree fallback): clone creation succeeds and the failure
+    // is deferred to the push step by design.
     process.stderr.write(
       `warning: target ${opts.repoPath} has no 'origin' remote (#410 clone ` +
-        `workspace) — leaving clone origin at the local target; a later push ` +
-        `will loud-fail rather than push into a local clone\n`,
+        `workspace) — removing the clone's local-target 'origin' so a later ` +
+        `push loud-fails rather than pushing into a local clone\n`,
     );
+    const removed = await gitCli(
+      ["-C", wtPath, "remote", "remove", "origin"],
+      withTimeout(wtPath, opts.timeoutMs),
+    );
+    if (removed.exitCode !== 0) {
+      // best-effort: if removal somehow fails the clone still has a local-target
+      // origin, so escalate the warning rather than leave it silent.
+      process.stderr.write(
+        `warning: failed to remove the clone's local-target 'origin' (#410) — ` +
+          `a later push may reach the local target: ${removed.stderr.trim()}\n`,
+      );
+    }
   }
   await gitCliOrThrow(
     ["-C", wtPath, "checkout", "-b", opts.branch, opts.base],

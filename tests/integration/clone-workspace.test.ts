@@ -123,7 +123,7 @@ describe("createCloneWorkspace (#410)", () => {
     expect(after).toBe(before); // target worktree admin unchanged
   });
 
-  it("origin-less target: skips set-url, warns, does not throw (clone still succeeds)", async () => {
+  it("origin-less target: removes origin (fail-closed) so a later push loud-fails, clone still succeeds", async () => {
     const noOrigin = makeTmpDir("harness-noorigin-");
     const r = (args: string[]) =>
       execFileSync("git", args, { cwd: noOrigin, stdio: "ignore" });
@@ -143,7 +143,29 @@ describe("createCloneWorkspace (#410)", () => {
       base: sha,
     });
     expect(existsSync(wt.path)).toBe(true); // clone succeeded despite no origin
-    // origin left pointing at the local source (no implicit re-point / fallback)
-    expect(git(wt.path, ["remote", "get-url", "origin"])).toBe(noOrigin);
+    // fail-closed: the clone's local-target 'origin' (set by `git clone`) is
+    // REMOVED, so the clone has no 'origin' remote at all (#410 P1 fix). Leaving
+    // it would let a later push silently land in the local source.
+    expect(() => git(wt.path, ["remote", "get-url", "origin"])).toThrow();
+    expect(git(wt.path, ["remote"])).toBe(""); // no remotes remain
+
+    // and a push to origin must LOUD-FAIL (not silently push into the source).
+    let pushFailed = false;
+    try {
+      execFileSync("git", ["push", "-u", "origin", "harness/run-noorigin/x"], {
+        cwd: wt.path,
+        stdio: "ignore",
+      });
+    } catch {
+      pushFailed = true;
+    }
+    expect(pushFailed).toBe(true);
+    // the source must NOT have gained the run branch from a silent local push.
+    const sourceBranches = git(noOrigin, [
+      "for-each-ref",
+      "--format=%(refname:short)",
+      "refs/heads",
+    ]);
+    expect(sourceBranches.split("\n")).not.toContain("harness/run-noorigin/x");
   });
 });
