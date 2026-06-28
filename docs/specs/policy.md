@@ -49,6 +49,9 @@ limits:
     max_changed_files: 40             # changed tracked/index + allowed untracked file 数上限
     enforce: true                     # false は pre-gate skip + loud audit + review backstop
 
+workspace:
+  isolation: worktree                 # worktree (既定) | clone。#410 Phase 2。clone は run workspace を独立 clone にして共有 .git/config を断つ (opt-in)
+
 always_deny_write:
   - .git/**
   - .github/**
@@ -82,6 +85,7 @@ ignore_untracked:                     # minimatch root-anchored
 | `defaults.codex.claude_model` | string? | (#191) `backend=claude` 時の advisory claude model（`model` の claude 版）。`createClaudeCliRunner` の `--model` に注入。未設定なら `HARNESS_CLAUDE_MODEL` → stream 由来 model → `NULL` |
 | `limits.git_timeout_ms` | number | gitCli の SIGKILL タイマー。未設定なら 30 s |
 | `limits.change_budget` | object? | run ごとの tracked diff size / deletion guard。未設定でも fail-closed default が適用される |
+| `workspace.isolation` | enum? | (#410 Phase 2) run workspace の作り方 = `worktree`（既定・`git worktree add`）\| `clone`（独立 clone で共有 `.git/config` を断つ・opt-in）。未設定→`worktree`。clone のライフサイクルは [`workspace.md`](./workspace.md) の「run workspace の隔離モード」 |
 | `always_deny_write` | string[] | 全 domain で必ず deny される path glob |
 | `ignore_untracked` | string[] | untracked のうち validation スキップ + artifact カウント除外する glob |
 
@@ -181,6 +185,9 @@ ResolvedPolicy {
     changeBudget: field-wise merge(global.limits.change_budget, domain.change_budget)
       with defaults { maxDeletedLines: 800, maxTotalChangedLines: 5000,
                       maxDeletedFiles: 20, maxChangedFiles: 40, enforce: true },
+  },
+  workspace: {
+    isolation: global.workspace?.isolation ?? "worktree",  // (#410 Phase 2) 未設定→worktree
   },
 }
 ```
