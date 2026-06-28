@@ -444,12 +444,19 @@ export async function reclaimTerminalRunWorktrees(opts: {
   for (const row of rows) {
     const workspaceRunDir = join(opts.workspacesDir, row.run_id);
     const worktreePath = join(workspaceRunDir, "repo");
-    const kind = workspaceGitKind(worktreePath);
-    if (kind === "absent") {
-      results.push({ runId: row.run_id, status: row.status, reclaimed: false });
-      continue;
-    }
     try {
+      // `workspaceGitKind` calls statSync, which can throw (e.g. a permission
+      // error mid-loop). Keep it inside the per-row try so one bad row is
+      // recorded and skipped rather than aborting the whole reclaim sweep.
+      const kind = workspaceGitKind(worktreePath);
+      if (kind === "absent") {
+        results.push({
+          runId: row.run_id,
+          status: row.status,
+          reclaimed: false,
+        });
+        continue;
+      }
       let branchRemoved: boolean;
       if (kind === "clone") {
         // (#410) A clone can't be `git worktree remove`d; its run branch lives
