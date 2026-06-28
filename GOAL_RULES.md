@@ -257,6 +257,44 @@ hitch を駆動する Claude が使うサブエージェント（`Agent` ツー�
 
 ---
 
+## J. spec-review 層の運用（#231）
+
+phase spec（`scope` / `closeConditions`）の **起案 → 検証 → 批准 → 整合 enforcement** の運用。
+**正本は [`docs/specs/spec-review-layer.md`](./docs/specs/spec-review-layer.md) §5 / §7 / §8**
+（設計の正本は `docs/design/proposals/design-231-spec-drafting-review-layer.md`）。ここは
+hitch を回す際の **運用差分だけ**を薄く記す（behavior の再記述はしない。詳細はリンク先が正本）。
+
+- **起案は harness の外**（§7）。多エージェントの起案 → 重複排除 → 批判 → 統合（NGT / Delphi、
+  `superpowers:dispatching-parallel-agents` 等）は operator 側で行う。harness が所有するのは
+  **validate / ratify / persist / spec↔hitch 整合 / runtime drift 診断**のみ。起案フレームワークは
+  [`docs/design/consulting-frameworks.md`](./docs/design/consulting-frameworks.md) /
+  [`docs/design/deliberation.md`](./docs/design/deliberation.md) のギャップ行を reuse する（新たに著さない）。
+- **批准は人間（accountable owner 1 名）**: `harness phase ratify <phase-id> --approved-by <actor>`。
+  批准前は提案、批准で canonical。**ratify は spec を編集しない**（committed の `[scope, closeConditions]`
+  を hash して `specApproval` に記録するのみ）。spec 自体の編集は事前に
+  `phase update --scope-file/--close-file` で行う（§4 validator + spec-gates を通る）。
+- **整合 gate は ratify 済 phase のみ**: `phase link-hitch` / `phase start-hitch` は hitch spec を
+  **現在の phase spec**（批准時 snapshot ではない）と比較し、**同一または厳格化のみ**許可する。scope
+  拡大は `--allow-scope-widen`、required close 条件の削除 / optional 化 / gate 弱化は `--allow-gate-loosen`
+  が無ければ reject（より厳しい追加条件は許容）。判定は live な hitch config 更新と **同じ純述語**
+  （`isScopeWidening` / `closeConditionsLoosenGate`）を共用する。未 ratify の phase は従来通り自由に
+  link/start でき gate は skip（ratify は opt-in）。
+- **close-condition kind は auto-verify と ask_human を区別する**（§3）。**kind の正本は実装
+  `HITCH_CLOSE_CONDITION_KINDS`（`src/hitch/types.ts`）と [`docs/specs/hitch-convergence.md`](./docs/specs/hitch-convergence.md)**
+  で、ここの列挙は網羅ではなく現状のスナップショット（drift し得るので正本を見る）。現状 auto-verify＝
+  `command` / `finding_policy` / `review_consensus` / `facet_red_test` / `evidence_attached`（convergence の
+  決定論ゲートで充足）、external-evidence（ask_human）＝`manual` / `artifact_exists` / `operation_status` /
+  `db_doctor`（外部証拠を記録するまで pending）。**auto 検証意図の条件を ask_human kind に化けさせない**。
+  gap → kind 写像は TOTAL・fail-closed で、写像不能 / 曖昧な metric は **REJECT**（沈黙で `manual` に default しない）。
+- **severity / LLM 出力は advisory（状態遷移の根拠にしない）**: spec-review でも安全境界 §G と
+  footprint 規律 §G-1 がそのまま適用される。LLM の severity 自己申告は決定へ流さず、scope / severity /
+  lifecycle の決定は harness の決定論ゲートのみが行う。
+- **drift は warning（fail-open にしない）**: 批准後に spec を手編集すると link/start 時に specHash
+  drift warning が出る（reject はしない）。convergence は ask_human message に drift を診断する
+  （[`docs/specs/hitch-convergence.md`](./docs/specs/hitch-convergence.md)）。
+
+---
+
 ## レビューテンプレート
 
 codex レビューに渡すプロンプトの雛形。`<...>` を実値で埋めて
