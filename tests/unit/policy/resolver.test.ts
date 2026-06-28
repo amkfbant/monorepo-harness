@@ -305,6 +305,27 @@ describe("resolvePolicy", () => {
     ).toThrow(/duplicate command id/);
   });
 
+  it("defaults workspace.isolation to worktree when global.workspace is unset", () => {
+    // #410 Phase 2: every resolved policy carries a workspace isolation mode;
+    // absent config falls back to the worktree default so non-self targets are
+    // byte-stable and downstream run wiring can rely on the field existing.
+    const r = resolvePolicy(GLOBAL, REPO as never, "apps/user");
+    expect(r.workspace.isolation).toBe("worktree");
+  });
+
+  it("propagates workspace.isolation = clone from the global policy", () => {
+    const r = resolvePolicy(
+      {
+        always_deny_write: [],
+        ignore_untracked: [],
+        workspace: { isolation: "clone" },
+      },
+      REPO as never,
+      "apps/user",
+    );
+    expect(r.workspace.isolation).toBe("clone");
+  });
+
   it("propagates per-domain commands.defaults (timeout + env_allowlist)", () => {
     const r = resolvePolicy(
       GLOBAL,
