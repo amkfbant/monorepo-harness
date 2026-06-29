@@ -95,6 +95,9 @@ export function compileProjectPolicy(
     ]),
     ...(tpl.defaults?.codex ? { defaults: { codex: tpl.defaults.codex } } : {}),
     ...(tpl.defaults?.limits ? { limits: tpl.defaults.limits } : {}),
+    // #410 Phase 2: pass the profile's opt-in workspace isolation through to
+    // the compiled global policy (omitted → resolver applies worktree default).
+    ...(profile.workspace ? { workspace: profile.workspace } : {}),
   };
 
   const allRoots = profile.domains.map((d) => d.root);

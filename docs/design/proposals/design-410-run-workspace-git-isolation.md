@@ -1,7 +1,9 @@
 # design-410 — run workspace の git 隔離（共有 .git/config 汚染の構造的封じ込め）
 
-> 状態: 提案（#410）。本書は「何をどう直すか」の設計。実装は operator-direct（self-orchestrate は
-> #410 当事者ゆえ使わない）。調査の全文は issue #410 のコメント参照。
+> 状態: **Phase 1 + Phase 2（clone capability）実装済み**（#410）。本書は「何をどう直すか」の
+> 設計と AS-IMPLEMENTED の差分注記。実装は operator-direct（self-orchestrate は #410 当事者ゆえ
+> 使わない）。残るのは self profile を `clone` に切替える follow-up と Phase 2.5（いずれも
+> [`../../future-features.md`](../../future-features.md) に defer）。調査の全文は issue #410 のコメント参照。
 
 ## 問題（要約）
 
@@ -46,10 +48,26 @@ operator の手動 git も fatal のまま。これを塞ぐには run 完了（
 loud 記録**する（汚染を「成功」に偽装しない）。run-completion 経路への配線が要る（surface 増）ため
 本 PR からは外し follow-up とする。
 
-### Phase 2（設計・構造的決定論修正）: clone-based workspace 隔離（opt-in）
+### Phase 2（**実装済み・capability**・構造的決定論修正）: clone-based workspace 隔離（opt-in）
 
 run workspace を worktree でなく **独立 clone** にし、共有 .git/config を物理的に断つ。
 ブラスト半径を抑えるため **project profile の opt-in フラグ**で、既定は現行 worktree（非 self は無影響）。
+
+> **AS-IMPLEMENTED（capability・self profile の切替は follow-up）**: 既定 `worktree`／opt-in
+> `clone` の配線を実装済み。現状仕様は spec が正本（[`../../specs/workspace.md`](../../specs/workspace.md)
+> の「run workspace の隔離モード」節 / フィールドは [`../../specs/policy.md`](../../specs/policy.md) ・
+> [`../../specs/project.md`](../../specs/project.md)）。設計時の候補から確定した点:
+> - **作成**: `createCloneWorkspace`（`src/workspace/git-worktree.ts`）= `git clone --no-checkout
+>   <target> <wtPath>` → origin を target の GitHub URL に `remote set-url`（target に origin
+>   無しは warn+skip で fail-closed・push 段で loud fail）→ `checkout -b <branch> <baseSha>`。
+>   object は git のローカル clone **hardlink** で共有（下記 `--reference` alternates 案は不採用＝
+>   堅牢性優先・target の `gc` でも壊れない）。
+> - **dispatch**: `createRunWorkspace`（同ファイル）が `policy.workspace.isolation` で分岐。既定
+>   `worktree` は `createWorktree` をそのまま呼ぶ（非 self は byte 不変）。
+> - **cleanup / #404 reclaim**: `workspaceGitKind`（`.git` が dir=clone / file=worktree / 不在=absent）
+>   で FS 判別（schema 変更なし）。clone は `rm -rf`（`git worktree remove` は "not a working tree"
+>   で失敗）・target 上の branch 削除はスキップ。`src/core/cleanup.ts`。
+> - **push / PR**: origin 張替により無改修（`reviewed-branch-push.ts` / `pr-creator.ts`）。
 
 - **profile schema**: `workspace.isolation?: "worktree" | "clone"`（既定 `"worktree"`）。
   self profile（`projects/monorepo-harness.yaml`）で `clone` を選ぶ。`src/policy/schema.ts` /
@@ -110,7 +128,7 @@ common-dir 書込不可の OS sandbox で走らせるか、実行前に commondi
 
 ## 推奨実装順
 
-1. **Phase 1（core.bare ガード）を先に land**（即効の被害封じ込め・低リスク・self-orchestrate を再び安全寄りに）。
-2. **Phase 2（clone 隔離）を opt-in で land**（構造的決定論修正）。isolation テストで検証（self-orchestrate に依存しない）。
-3. self profile を `workspace.isolation: clone` に切替 → self-orchestrate を復帰。
-4. Phase 2.5 は backlog。
+1. ✅ **Phase 1（core.bare ガード）land 済み**（即効の被害封じ込め・低リスク・self-orchestrate を再び安全寄りに）。
+2. ✅ **Phase 2（clone 隔離）を opt-in で land 済み（capability）**（構造的決定論修正）。isolation テストで検証（self-orchestrate に依存しない）。
+3. ⏳ **follow-up**: self profile を `workspace.isolation: clone` に切替 → self-orchestrate を復帰（本 capability とは別 PR・[`../../future-features.md`](../../future-features.md)）。
+4. Phase 2.5（`deny_write: .git/**` 実配線）は backlog（同上）。

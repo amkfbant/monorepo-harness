@@ -88,9 +88,9 @@ rerun budget を消費しない。
   以降の prune/reclaim も run 自体も壊れる。本パスは `git rev-parse --is-bare-repository` で検出し、
   bare なら `git config core.bare false` で**修復して warn** する（fail-closed・run を止めない）。
   これは**予防ではなく被害封じ込め**（catastrophic な silent-fatal を回復可能状態に戻す）。予防＝
-  共有 .git を断つ workspace 隔離は
-  [`../design/proposals/design-410-run-workspace-git-isolation.md`](../design/proposals/design-410-run-workspace-git-isolation.md)
-  Phase 2（clone 化）で扱う。
+  共有 .git を断つ workspace 隔離は #410 Phase 2 で **opt-in 実装済み**（下記「run workspace の
+  隔離モード」）。設計は
+  [`../design/proposals/design-410-run-workspace-git-isolation.md`](../design/proposals/design-410-run-workspace-git-isolation.md)。
 - **run 開始時の stale worktree GC（#404）**: `createWorktree` の直前に `pruneWorktrees`
   （`git worktree prune`）を **best-effort** で実行し、作業 dir が消えた stale admin entry を
   回収する。run worktree の作業 dir が `git worktree remove` を経ずに消えると（crash / 中断
@@ -117,6 +117,34 @@ rerun budget を消費しない。
   - **既知の限界（#404 follow-up scope 外）**: 候補選択は `repo_path` の exact match。同一 git repo
     でも起動間で path 表記が変わる場合（`--repo .` vs 絶対パス vs symlink）は取りこぼす。canonical
     git identity への正規化は将来対応。
+
+## run workspace の隔離モード（#410 Phase 2）
+
+run 内部 worktree（`workspaces/<runId>/repo/`）の作り方を policy で選べる。**既定は `worktree`**
+（`git worktree add`・target の共有 `.git` を使う現行挙動）、**opt-in で `clone`**（独立 clone で
+共有 `.git/config` を物理的に断つ）。フィールドは `policy.workspace.isolation`（[`policy.md`](./policy.md)）
+／profile の `workspace.isolation`（[`project.md`](./project.md)）。既定が `worktree` なので
+**非 self target は完全に無影響**。self profile を `clone` に切替えるのは別 follow-up。
+
+- **なぜ clone か**: 上記 core.bare 汚染（#410）の根本は、共有 `.git/config` が per-worktree でない
+  こと。clone は独自 `.git` を持つので、clone 内の git 書込が target の config に着弾しない
+  （被害封じ込めでなく**構造的予防**）。
+- **作成**（`createCloneWorkspace`・`src/workspace/git-worktree.ts`）: `git clone --no-checkout
+  <target> <wtPath>` → clone の `origin` を target の GitHub remote URL に `remote set-url` で張替
+  → `checkout -b <branch> <baseSha>`。object は git のローカル clone hardlink で安価に共有
+  （target の `gc` でも壊れない）。**target に `origin` が無い場合は warn して張替をスキップ**し、
+  worktree へ暗黙フォールバックしない（fail-closed・push 段で loud fail）。
+- **dispatch**（`createRunWorkspace`・同ファイル）: `policy.workspace.isolation` で worktree/clone を
+  選ぶ。両者とも同じ `Worktree { path, branch }` を返すので、下流（codex 実行・diff/validate・
+  push/PR）は隔離モードに依らず無改修。
+- **cleanup / #404 reclaim**: cleanup / reclaim は policy を持たないため、`workspaceGitKind`
+  （`.git` が **dir=clone / file=worktree / 不在=absent**）で FS 判別する（schema を増やさない）。
+  clone は `git worktree remove` が "not a working tree" で失敗するので **`rm -rf`** で掃除し、
+  target 上の run branch 削除はスキップ（branch は clone 内ローカル＝dir ごと消える。push 済 branch
+  は GitHub 側で別管理）。`src/core/cleanup.ts`。
+- **push / PR**: origin 張替により `git push -u origin` / `gh pr create` は無改修で GitHub に届く。
+- **スコープ外**: 本ファイル主題の agent workspace 層（`createAgentWorkspace`）は依然 worktree 前提で、
+  #410 と同型のリスクが残る（[`../future-features.md`](../future-features.md) に defer）。
 
 ## symlink 可能な FS が前提（#68）
 

@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +15,7 @@ import {
   assertNoObjectGraphTampering,
   pushReviewedBranchForEscalation,
 } from "../../../src/core/reviewed-branch-push.js";
+import { createCloneWorkspace } from "../../../src/workspace/git-worktree.js";
 import { computeReviewedFingerprint } from "../../../src/core/reviewed-fingerprint.js";
 
 describe("parseGitPathList (git diff -z parsing)", () => {
@@ -515,5 +522,140 @@ describe("pushReviewedBranchForEscalation (salvage push guard)", () => {
       { encoding: "utf8" },
     );
     expect(remoteBranches).not.toMatch(/harness\/run-20260521-apps-x-salv1/);
+  });
+});
+
+interface CloneSalvageFixture {
+  root: string;
+  runId: string;
+  runBranch: string;
+  worktree: string;
+  bareRemote: string;
+  /** the LOCAL clone source — must NOT receive the pushed branch */
+  source: string;
+}
+
+/**
+ * (#410 Phase 2 — Task 5) Same shape as {@link setupSalvage} but the run
+ * workspace is an INDEPENDENT clone (`createCloneWorkspace`) rather than a
+ * `git worktree`. This pins that the real push path
+ * (`pushReviewedBranchForEscalation` → `commitAndPushReviewedBranch`) needs NO
+ * change to work from a clone: it is cwd=`workspaces/<id>/repo` + `origin`
+ * driven, and the clone's `origin` was re-pointed to the GitHub stand-in remote.
+ *
+ * Note: a clone does NOT inherit the source's *local* git identity (local config
+ * is not copied), so we set `user.email`/`user.name` on the clone here — the
+ * test-equivalent of the global identity present in a real environment. No
+ * `--global` writes, so the real `~/.gitconfig` is untouched.
+ */
+async function setupCloneSalvage(): Promise<CloneSalvageFixture> {
+  const root = mkdtempSync(join(tmpdir(), "harness-clone-salvage-"));
+  mkdirSync(join(root, "runs"), { recursive: true });
+  mkdirSync(join(root, "workspaces"), { recursive: true });
+
+  // local target (clone source) with its OWN GitHub stand-in remote
+  const source = mkdtempSync(join(tmpdir(), "harness-clone-salvage-src-"));
+  git(source, ["init", "-q", "-b", "main"]);
+  git(source, ["config", "user.email", "t@e.com"]);
+  git(source, ["config", "user.name", "T"]);
+  mkdirSync(join(source, "apps/x"), { recursive: true });
+  writeFileSync(join(source, "apps/x/f.ts"), "export const v = 0;\n");
+  git(source, ["add", "."]);
+  git(source, ["commit", "-qm", "init"]);
+
+  const bareRemote =
+    mkdtempSync(join(tmpdir(), "harness-clone-salvage-bare-")) + ".git";
+  execFileSync("git", ["init", "-q", "--bare", bareRemote]);
+  git(source, ["remote", "add", "origin", bareRemote]);
+  git(source, ["push", "-q", "-u", "origin", "main"]);
+
+  const baseSha = git(source, ["rev-parse", "main"]).trim();
+
+  const runId = "run-20260521-apps-x-clone1";
+  const runBranch = `harness/${runId}/apps-x`;
+  // build the run workspace as a CLONE (origin re-pointed to bareRemote inside).
+  const wt = await createCloneWorkspace({
+    repoPath: source,
+    worktreesDir: join(root, "workspaces"),
+    runId,
+    branch: runBranch,
+    base: baseSha,
+  });
+  const worktree = wt.path;
+  // clone has no local identity (local config is not cloned); set it locally.
+  git(worktree, ["config", "user.email", "t@e.com"]);
+  git(worktree, ["config", "user.name", "T"]);
+  // an uncommitted codex change in the clone workspace
+  writeFileSync(join(worktree, "apps/x/f.ts"), "export const v = 1;\n");
+
+  const runDir = join(root, "runs", runId);
+  mkdirSync(runDir, { recursive: true });
+  const reviewedPaths = ["apps/x/f.ts"];
+  const fingerprint = await computeReviewedFingerprint(worktree, reviewedPaths);
+  writeFileSync(
+    join(runDir, "meta.json"),
+    JSON.stringify(
+      {
+        runId,
+        domain: "apps/x",
+        status: "needs_review",
+        safetyStatus: "allowed",
+        runBranch,
+        baseSha,
+        reviewer: "knkn",
+        reviewedAt: "2026-05-21T00:00:00Z",
+        reviewed: { paths: reviewedPaths, fingerprint },
+        startedAt: "2026-05-21T00:00:00Z",
+      },
+      null,
+      2,
+    ),
+  );
+  writeFileSync(join(runDir, "events.jsonl"), "");
+  return { root, runId, runBranch, worktree, bareRemote, source };
+}
+
+describe("pushReviewedBranchForEscalation (clone workspace, #410 Phase 2)", () => {
+  it("pushes from a clone workspace to the GitHub stand-in remote, not the local source", async () => {
+    const f = await setupCloneSalvage();
+    // sanity: the workspace under test is genuinely a clone, not a worktree
+    // (a worktree's `.git` is a gitdir-pointer FILE, a clone's is a DIRECTORY).
+    expect(statSync(join(f.worktree, ".git")).isDirectory()).toBe(true);
+
+    // The real push path runs every push gate (object-graph / unreviewed-history
+    // / single-reviewed-commit / message-auth) with cwd=clone — this passing IS
+    // the proof the gates do not misfire on a clone (full, non-bare, non-shallow,
+    // no replace/grafts).
+    const r = await pushReviewedBranchForEscalation({
+      runsDir: join(f.root, "runs"),
+      workspacesDir: join(f.root, "workspaces"),
+      locksDir: join(f.root, "locks"),
+      runId: f.runId,
+    });
+    expect(r.committed).toBe(true);
+
+    // the GitHub stand-in remote received the branch (origin was re-pointed)
+    const remoteBranches = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(remoteBranches).toMatch(/harness\/run-20260521-apps-x-clone1/);
+    // the pushed tip carries the real reviewed commit object
+    const remoteHead = execFileSync(
+      "git",
+      ["-C", f.bareRemote, "rev-parse", f.runBranch],
+      { encoding: "utf8" },
+    ).trim();
+    expect(remoteHead).toBe(r.headSha);
+
+    // ★ the LOCAL clone source did NOT receive the branch — proves `origin`
+    // points at the GitHub stand-in, not at the local target it was cloned from.
+    const sourceBranches = execFileSync(
+      "git",
+      ["-C", f.source, "branch", "--list"],
+      { encoding: "utf8" },
+    );
+    expect(sourceBranches).not.toMatch(/harness\/run-20260521-apps-x-clone1/);
   });
 });

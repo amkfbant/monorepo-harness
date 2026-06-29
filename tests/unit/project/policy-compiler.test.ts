@@ -231,6 +231,30 @@ describe("compileProjectPolicy", () => {
     ).rejects.toThrow(/policy\.template/);
   });
 
+  it("carries profile.workspace.isolation through to the global policy", async () => {
+    const r = await compile(profile({ workspace: { isolation: "clone" } }));
+    expect(r.globalPolicy.workspace?.isolation).toBe("clone");
+    // resolvePolicy then surfaces it so the run wiring sees clone.
+    const resolved = resolvePolicy(
+      r.globalPolicy,
+      r.repoPolicy,
+      "apps/web",
+    );
+    expect(resolved.workspace.isolation).toBe("clone");
+  });
+
+  it("omits workspace from the global policy when the profile leaves it unset", async () => {
+    const r = await compile();
+    // absent → resolver falls back to the worktree default (byte-stable).
+    expect(r.globalPolicy.workspace).toBeUndefined();
+    const resolved = resolvePolicy(
+      r.globalPolicy,
+      r.repoPolicy,
+      "apps/web",
+    );
+    expect(resolved.workspace.isolation).toBe("worktree");
+  });
+
   it("dedupes a structured 'cmd-N' id colliding with a legacy string command", async () => {
     const p = profile({
       commands: undefined,
