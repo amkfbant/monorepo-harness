@@ -99,6 +99,24 @@ describe("awaitHitchMerge", () => {
     });
   });
 
+  it("(#396 part 2) STOPS on a transient push recheck — one poll, no budget burn", async () => {
+    const clock = fakeClock();
+    // Even with a long maxWaitMs and a sustained transient outage, await-merge
+    // must STOP after the single recheck (not keep polling closeAndPr, which would
+    // re-push and burn the run-scoped retry budget within one invocation).
+    const poll = scripted([
+      { kind: "push_retry_pending" },
+      { kind: "push_retry_pending" }, // never reached
+    ]);
+    const out = await awaitHitchMerge(
+      { pollOnce: poll.pollOnce, sleep: clock.sleep, now: clock.now },
+      { pollIntervalMs: 500, maxWaitMs: 60_000 },
+    );
+    expect(out).toEqual({ outcome: "push_retry_pending", polls: 1 });
+    expect(poll.calls()).toBe(1); // did NOT poll again
+    expect(clock.sleeps).toEqual([]); // and did not sleep/wait
+  });
+
   it("times out when the PR never merges within maxWaitMs", async () => {
     const clock = fakeClock();
     const poll = scripted([{ kind: "awaiting" }]); // always awaiting
@@ -167,5 +185,11 @@ describe("awaitStepFromCloseResult", () => {
         escalateReason: "gate hard-blocked: ci_not_green",
       }),
     ).toEqual({ kind: "escalated", reason: "gate hard-blocked: ci_not_green" });
+  });
+
+  it("(#396 part 2) maps pushRetryPending → push_retry_pending (NOT awaiting)", () => {
+    expect(
+      awaitStepFromCloseResult({ prUrl: "", merged: false, pushRetryPending: true }),
+    ).toEqual({ kind: "push_retry_pending" });
   });
 });

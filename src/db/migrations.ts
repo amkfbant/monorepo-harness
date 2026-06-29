@@ -42,6 +42,7 @@ import {
   MIGRATION_V38_STATEMENTS,
   MIGRATION_V39_STATEMENTS,
   MIGRATION_V40_STATEMENTS,
+  MIGRATION_V41_STATEMENTS,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -256,6 +257,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 40,
     name: "external-review-events-v40",
     statements: MIGRATION_V40_STATEMENTS,
+  },
+  {
+    version: 41,
+    name: "hitch-close-push-retry-budget-v41",
+    statements: MIGRATION_V41_STATEMENTS,
   },
 ];
 

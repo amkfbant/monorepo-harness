@@ -17,8 +17,12 @@ DB への完全移行の第一歩として、**DB を read model（読み取り�
 > integration（Phase 17）/ MCP confirmation + invocation audit（Phase 18）/
 > hitch convergence（Phase 19）はいずれも `src/db/` / `src/workspace/` /
 > `src/mcp/` / `src/hitch/` に実装済み。schema の確定値は `src/db/schema.ts`
-> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V40_STATEMENTS`、
-> `SCHEMA_VERSION = 40`）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
+> （`MIGRATION_V1_STATEMENTS`〜`MIGRATION_V41_STATEMENTS`、
+> `SCHEMA_VERSION = 41`）。**v41（#396 part 2）**は `hitch_sessions` に
+> `close_push_attempts INTEGER NOT NULL DEFAULT 0` と `close_push_run_id TEXT` を
+> 追加する additive ALTER — close PR の transient `git push` 失敗の run-scoped
+> リトライ予算で、`closeAndPr` 内部のみが使い convergence は読まない（`rowToSession`
+> は両列を surface しないので `HitchSession` 不変）。下記「Phase 7」以降の節はいずれも現状仕様。設計書は
 > [`2026-05-22-phase7-db-first-write-path-design.md`](../superpowers/specs/2026-05-22-phase7-db-first-write-path-design.md)
 > /
 > [`2026-05-22-phase8-runtime-db-complete-design.md`](../superpowers/specs/2026-05-22-phase8-runtime-db-complete-design.md)

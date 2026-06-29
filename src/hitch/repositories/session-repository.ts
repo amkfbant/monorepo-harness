@@ -296,16 +296,51 @@ export class SessionRepository {
   }
 
   /**
+   * (#396 part 2) Atomically increment the transient close-push retry counter and
+   * return the new value. The budget is RUN-SCOPED: when the stored
+   * `close_push_run_id` differs from the converged `runId` passed in (a NEW close
+   * episode — first push, or after a regression re-converged onto a fresh run),
+   * the counter restarts at 1; otherwise it accumulates. This keeps the budget
+   * per-close-cycle (never bleeding across episodes) and removes any reset-on-
+   * success. Internal to `closeAndPr`; never read by convergence.
+   */
+  incrementClosePushAttempts(hitchId: string, runId: string): number {
+    const now = new Date().toISOString();
+    const tx = this.db.transaction(() => {
+      const cur = this.db
+        .prepare(
+          `SELECT close_push_attempts, close_push_run_id
+             FROM hitch_sessions WHERE hitch_id = ?`,
+        )
+        .get(hitchId) as
+        | { close_push_attempts: number; close_push_run_id: string | null }
+        | undefined;
+      if (cur === undefined) throw new DbError(`hitch not found: ${hitchId}`);
+      const next = cur.close_push_run_id === runId ? cur.close_push_attempts + 1 : 1;
+      this.db
+        .prepare(
+          `UPDATE hitch_sessions
+              SET close_push_attempts = ?, close_push_run_id = ?, updated_at = ?
+            WHERE hitch_id = ?`,
+        )
+        .run(next, runId, now, hitchId);
+      return next;
+    });
+    return tx.immediate();
+  }
+
+  /**
    * #76 / #104 — resume a terminal hitch (closed / budget_exhausted / escalated)
    * so a late-discovered finding can be fixed on the existing branch instead of
    * closing the PR and re-implementing. (`diverging` is NOT reopenable — it
    * self-clears via live re-derivation; see REOPENABLE_STATUSES.) Transitions
    * back to `open`,
    * clears the terminal markers `updateStatus` would COALESCE-preserve
-   * (`closed_at` / `close_summary` / `escalation_reason`), and extends the
-   * budget (existing columns — no schema change) so a budget_exhausted hitch does
-   * not immediately re-exhaust. State transition only (harness-driven, audited
-   * by the caller). `cancelled` is a deliberate abandon and is NOT reopenable.
+   * (`closed_at` / `close_summary` / `escalation_reason`), zeroes the #396
+   * close-push retry budget, and extends the iteration/review/rerun budget so a
+   * budget_exhausted hitch does not immediately re-exhaust. State transition only
+   * (harness-driven, audited by the caller). `cancelled` is a deliberate abandon
+   * and is NOT reopenable.
    */
   reopenSession(
     hitchId: string,
@@ -328,6 +363,7 @@ export class SessionRepository {
           `UPDATE hitch_sessions
               SET status = 'open', updated_at = ?,
                   closed_at = NULL, close_summary = NULL, escalation_reason = NULL,
+                  close_push_attempts = 0, close_push_run_id = NULL,
                   max_iterations = max_iterations + ?,
                   max_review_cycles = max_review_cycles + ?,
                   max_reruns = max_reruns + ?

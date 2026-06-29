@@ -184,6 +184,11 @@ export class HitchRepository {
     return this.sessions.updateStatus(hitchId, status, note, opts);
   }
 
+  /** (#396 part 2) Run-scoped transient close-push retry counter; see session-repository. */
+  incrementClosePushAttempts(hitchId: string, runId: string): number {
+    return this.sessions.incrementClosePushAttempts(hitchId, runId);
+  }
+
   reopenSession(
     hitchId: string,
     opts: ReopenHitchSessionOptions,

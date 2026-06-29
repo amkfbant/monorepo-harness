@@ -262,7 +262,7 @@ describe("v36 agent_invocation / agent_usage_turn migration", () => {
     ).run();
 
     const r = runMigrations(db);
-    expect(r.applied).toEqual([36, 37, 38, 39, 40]);
+    expect(r.applied).toEqual([36, 37, 38, 39, 40, 41]);
 
     const ru = db.prepare("SELECT COUNT(*) AS c FROM run_usage").get() as {
       c: number;

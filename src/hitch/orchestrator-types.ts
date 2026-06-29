@@ -51,6 +51,14 @@ export interface OrchestratorRunners {
     draft: boolean;
     merged?: boolean;
     escalateReason?: string;
+    /**
+     * (#396 part 2) The close PR push failed transiently and is under budget: the
+     * hitch was left non-terminal `close_ready`, NO PR was created, and a later
+     * pass should re-push. Distinct from the CI-not-green recheck (`merged:false`
+     * with a real PR), so `await-merge` STOPS instead of re-polling closeAndPr
+     * (which would burn the run-scoped retry budget within one invocation).
+     */
+    pushRetryPending?: boolean;
   }>;
   /**
    * Best-effort, fail-closed salvage for a review-step failure: commit and push
@@ -79,6 +87,10 @@ export type OrchestrationOutcome =
   | "merged"
   | "close_ready"
   | "waiting"
+  // (#396 part 2) a transient close-PR push left the hitch close_ready with no PR;
+  // re-run to retry. Non-terminal, NOT an escalation (course re-derives the live
+  // close_ready and keeps the phase open, exactly as for the CI-not-green recheck).
+  | "push_retry_pending"
   | "max_steps_exhausted";
 
 export interface HitchOrchestrationResult {

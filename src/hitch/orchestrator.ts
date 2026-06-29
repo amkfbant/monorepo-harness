@@ -260,7 +260,15 @@ export class HitchOrchestrator {
             draft: pr.draft,
           };
         }
-        const outcome: OrchestrationOutcome = pr.merged === true ? "merged" : "pr_created";
+        // (#396 part 2) a transient close-push recheck left the hitch close_ready
+        // with no PR → `push_retry_pending` (re-run to retry), distinct from a real
+        // pr_created/merged. The runner already persisted close_ready.
+        const outcome: OrchestrationOutcome =
+          pr.pushRetryPending === true
+            ? "push_retry_pending"
+            : pr.merged === true
+              ? "merged"
+              : "pr_created";
         steps.push({ step: i, decision: finalDecision, action: "close_and_pr", detail: pr.prUrl });
         return {
           hitchId: input.hitchId,

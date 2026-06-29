@@ -55,8 +55,8 @@ function indexExists(db: Database.Database, indexName: string): boolean {
 }
 
 describe("v40 external_review_events table migration", () => {
-  it("LATEST_SCHEMA_VERSION has advanced to v40", () => {
-    expect(LATEST_SCHEMA_VERSION).toBe(40);
+  it("LATEST_SCHEMA_VERSION is at or beyond v40", () => {
+    expect(LATEST_SCHEMA_VERSION).toBeGreaterThanOrEqual(40);
   });
 
   it("fresh migration creates external_review_events with all expected columns and indexes", () => {

@@ -30,6 +30,7 @@ import { ConvergenceService } from "./convergence.js";
 import { assertHitchCanStartMutation } from "./mutation-gate.js";
 import { importReviewProposalToHitch, selectProcessedProposalForReviewImport } from "./review-integration.js";
 import { runCommandCloseChecks } from "./orchestrator-close-check-runner.js";
+import { classifyAndRecordClosePushFailure } from "./close-push-retry.js";
 import { dbConsensusSnapshotProvider } from "./consensus-stall-check.js";
 
 import type { OrchestratorRunners } from "./orchestrator-types.js";
@@ -623,20 +624,56 @@ export function createOrchestratorRunners(
 
       // Create the PR FIRST. A PR failure must NOT leave a permanently-closed
       // hitch with no PR, so the close is the last side effect.
-      const pr = await createPullRequest({
-        runsDir: paths.runsDir,
-        workspacesDir: paths.workspacesDir,
-        locksDir: paths.locksDir,
-        runId,
-        base,
-        title: prTitle,
-        // A draft PR cannot be merged; when auto-merge is enabled the PR must be
-        // ready so `gh pr merge` can complete. Otherwise keep the safe default
-        // (draft) so a human opens it.
-        draft: deps.autoMerge === undefined,
-        publisher: deps.publisher,
-        dbPath: deps.dbPath,
-      });
+      let pr: Awaited<ReturnType<typeof createPullRequest>>;
+      try {
+        pr = await createPullRequest({
+          runsDir: paths.runsDir,
+          workspacesDir: paths.workspacesDir,
+          locksDir: paths.locksDir,
+          runId,
+          base,
+          title: prTitle,
+          // A draft PR cannot be merged; when auto-merge is enabled the PR must be
+          // ready so `gh pr merge` can complete. Otherwise keep the safe default
+          // (draft) so a human opens it.
+          draft: deps.autoMerge === undefined,
+          publisher: deps.publisher,
+          dbPath: deps.dbPath,
+        });
+      } catch (e) {
+        // (#396 part 2) Only a transient `git push` failure rechecks; everything
+        // else (gates / publish / adopted / not-ready / permanent / exhaustion)
+        // rethrows or escalates. See `close-push-retry.ts` + hitch-convergence.md.
+        const decision = classifyAndRecordClosePushFailure(
+          { dbPath: deps.dbPath },
+          hitchId,
+          runId,
+          e,
+          deps.signal?.aborted === true,
+        );
+        if (decision.kind === "rethrow") throw e;
+        // abort/lease-loss beats BOTH escalate and recheck — re-read the live
+        // signal so an abort routes through the orchestrator's abort-first catch.
+        if (deps.signal?.aborted === true) throw e;
+        if (decision.kind === "escalate") {
+          return { prUrl: "", draft: false, escalateReason: decision.reason };
+        }
+        // transient under budget → non-terminal `close_ready` (the CI-not-green
+        // recheck lane): a later pass re-derives close_ready and re-pushes. The
+        // branch+commit exist locally and no PR was created, so it is idempotent.
+        withManagedDb({ dbPath: deps.dbPath }, (db) => {
+          new HitchRepository(db).updateStatus(
+            hitchId,
+            "close_ready",
+            decision.summary,
+            { createdBy: deps.createdBy },
+          );
+        });
+        // pushRetryPending distinguishes this from the CI-not-green recheck so
+        // await-merge stops (no PR to await) instead of re-polling and burning the
+        // budget, and orchestrate reports `push_retry_pending` not `pr_created`.
+        return { prUrl: "", draft: false, merged: false, pushRetryPending: true };
+      }
 
       // Best-effort Copilot review (opt-in). Observational only: it NEVER
       // gates close/merge, and ANY failure (including an unexpected throw) is

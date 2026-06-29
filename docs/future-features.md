@@ -1068,3 +1068,21 @@ capability に続き **(a) も完了**（下記）。**(b)〜(d) は意図的に
 
 **Status:** (a) 完了（self profile を `clone` に切替・別 PR）。(b)〜(d) は idea/backlog。
 #410 Phase 2（clone capability）出荷時に記録（2026-06-29）。
+
+## close-PR publish-step の transient recheck（#396 part 2 の follow-up）
+
+#396 part 2 で **close-PR の `git push`** の transient 失敗は recheckable（`close_ready`
+維持・next pass で idempotent re-push）になった。一方、push 成功後の **publish 段**
+（`gh pr create` の `GhTimeoutError`、`src/core/gh-pr-publisher.ts`）の transient
+タイムアウトは**意図的にスコープ外**で、現状は terminal `escalated` のままにしている。
+
+- **なぜ defer か**: bug 報告は `git push` 段。classifier の blast radius を単一の
+  well-understood な push exit-code site に絞り、`GhTimeoutError` は未 export の private
+  サブクラス（型ゲートで `PrPushError` のみ retry 候補）。branch は push 済みで PR 未作成
+  ゆえ idempotently 復旧可能だが、fail-closed（escalate + human reopen）で安全。
+- **upgrade path**: `GhTimeoutError` を export し、`close-push-retry.ts` の型ゲートに
+  typed-transient retry 候補として追加（publish-timeout 専用の recheck）。push と同じ
+  run-scoped 予算で束ねる。
+
+**Status:** idea only — #396 part 2 出荷時に記録（2026-06-29）。fail-closed なので
+未対応でも安全（escalate のまま）。
