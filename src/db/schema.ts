@@ -18,7 +18,7 @@
  */
 
 /** Current (latest) schema version produced by the migrations. */
-export const SCHEMA_VERSION = 40;
+export const SCHEMA_VERSION = 41;
 
 /**
  * v1 DDL — the read-side tables (overview §5). Each statement is run
@@ -2347,6 +2347,17 @@ export const MIGRATION_V40_STATEMENTS: readonly string[] = [
 
 /** Table created by v40 — external_review_events (#395 DB foundation). */
 export const V40_TABLE_NAMES = ["external_review_events"] as const;
+
+/**
+ * v41 — hitch_sessions close-push retry budget (#396 part 2). A bounded,
+ * run-scoped counter for transient `git push` failures during close. Internal to
+ * the `closeAndPr` runner; never read by convergence (`rowToSession` ignores both
+ * columns, so `HitchSession` / convergence-metrics are unchanged). No new table.
+ */
+export const MIGRATION_V41_STATEMENTS: readonly string[] = [
+  `ALTER TABLE hitch_sessions ADD COLUMN close_push_attempts INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE hitch_sessions ADD COLUMN close_push_run_id TEXT`,
+] as const;
 
 /** Table names created by v1 — used by `db status` and tests. */
 export const V1_TABLE_NAMES: readonly string[] = [

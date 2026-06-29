@@ -12,7 +12,7 @@ import { RunRepository } from "../db/repositories/runs.js";
 import { PullRequestRepository } from "../db/repositories/pull-requests.js";
 import { exportRun, warnIfExportFailed } from "../db/export-files.js";
 import { SourceModeError } from "../db/errors.js";
-import { PrGateError } from "./pr-gate-error.js";
+import { PrGateError, PrPushError } from "./pr-gate-error.js";
 import {
   assertHeadCommitMessageAuthentic,
   assertNoObjectGraphTampering,
@@ -24,7 +24,7 @@ import {
   reviewedPathsFromMeta,
 } from "./reviewed-branch-push.js";
 
-export { PrGateError } from "./pr-gate-error.js";
+export { PrGateError, PrPushError } from "./pr-gate-error.js";
 export {
   pushReviewedBranchForEscalation,
   type PushReviewedBranchOpts,
@@ -474,8 +474,21 @@ async function createUnderLock(
   // 5. push the run branch to the target repo's origin.
   const push = await gitCli(["push", "-u", "origin", head], git);
   if (push.exitCode !== 0) {
-    throw new PrGateError(
-      `git push of ${head} failed: ${push.stderr.trim() || push.stdout.trim()}`,
+    // (#396 part 2) PrPushError (a PrGateError subclass — message unchanged, so
+    // existing catches still escalate) carries the raw git result so the close
+    // path can classify transient vs permanent and bound-retry a transient.
+    // A `gitTimeoutMs` timeout kills the process and may leave empty stderr; a
+    // bare empty body would fail-closed to permanent, so synthesize a `timed out`
+    // marker (classified transient) when git reports the kill.
+    const stderr =
+      push.timedOut && !/timed out/i.test(`${push.stderr}\n${push.stdout}`)
+        ? `${push.stderr}\ngit push timed out`.trim()
+        : push.stderr;
+    throw new PrPushError(
+      `git push of ${head} failed: ${stderr.trim() || push.stdout.trim() || "timed out"}`,
+      push.exitCode,
+      stderr,
+      push.stdout,
     );
   }
   // The pushed tip is the reviewed commit (the worktree was fingerprint-checked

@@ -341,6 +341,117 @@ describe("hitch orchestrate (real git + fake codex)", () => {
     }
   });
 
+  it("(#396 part 2) a transient close push RECHECKS (close_ready), not escalates, and recovers next pass", async () => {
+    const hitchId = createGoal(f.dbPath);
+    const { coderRunner, reviewerRunner } = approveFakes("apps/user/src/profile.ts");
+    const publisher = fakePublisher();
+    const resolveRunContext = (): HitchRunContext => ({
+      repoPath: f.repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "bump x",
+      baseBranch: "main",
+    });
+    const runners = createOrchestratorRunners({
+      dbPath: f.dbPath,
+      harnessRoot: f.harnessRoot,
+      createdBy: "test",
+      coderRunner,
+      reviewerRunner,
+      publisher,
+      resolveRunContext,
+    });
+
+    const coded = await runDomainCoding({
+      harnessRoot: f.harnessRoot,
+      repoPath: f.repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "bump x",
+      baseBranch: "main",
+      codexRunner: coderRunner,
+    });
+    expect(coded.status).toBe("needs_review");
+    {
+      const { db, close } = openManagedDb({ dbPath: f.dbPath });
+      try {
+        const repo = new HitchRepository(db);
+        const attempt = repo.createAttempt({
+          hitchId,
+          attemptType: "implement",
+          status: "running",
+        });
+        repo.completeAttempt({
+          attemptId: attempt.attemptId,
+          status: "succeeded",
+          runId: coded.runId,
+        });
+      } finally {
+        close();
+      }
+    }
+
+    // Break the run workspace's push target so the close-PR `git push` fails with
+    // a TRANSIENT connectivity error ("Failed to connect" → classified transient).
+    const ws = join(f.harnessRoot, "workspaces", coded.runId, "repo");
+    execFileSync("git", [
+      "-C",
+      ws,
+      "remote",
+      "set-url",
+      "origin",
+      "https://127.0.0.1:1/unreachable.git",
+    ]);
+
+    // Pass 1: convergence is close_ready, closeAndPr pushes → transient fail →
+    // recheck. The hitch stays close_ready (NOT escalated), no PR is published.
+    const r1 = await new HitchOrchestrator({ dbPath: f.dbPath }).run({
+      hitchId,
+      runners,
+      maxSteps: 20,
+      createdBy: "test",
+    });
+    expect(r1.outcome).not.toBe("escalated");
+    expect(r1.outcome).toBe("push_retry_pending"); // not pr_created (no PR exists)
+    expect(publisher.calls).toHaveLength(0); // no PR created (push failed first)
+    {
+      const { db, close } = openManagedDb({ dbPath: f.dbPath });
+      try {
+        const repo = new HitchRepository(db);
+        expect(repo.requireSession(hitchId).status).toBe("close_ready");
+        const row = db
+          .prepare(
+            "SELECT close_push_attempts, close_push_run_id FROM hitch_sessions WHERE hitch_id = ?",
+          )
+          .get(hitchId) as { close_push_attempts: number; close_push_run_id: string };
+        expect(row.close_push_attempts).toBe(1);
+        expect(row.close_push_run_id).toBe(coded.runId);
+      } finally {
+        close();
+      }
+    }
+
+    // Restore the push target; a later orchestrate pass re-enters closeAndPr,
+    // re-pushes (idempotent), and closes — converged work was never lost.
+    execFileSync("git", ["-C", ws, "remote", "set-url", "origin", f.bareRemote]);
+    const r2 = await new HitchOrchestrator({ dbPath: f.dbPath }).run({
+      hitchId,
+      runners,
+      maxSteps: 20,
+      createdBy: "test",
+    });
+    expect(r2.outcome).toBe("pr_created");
+    expect(publisher.calls).toHaveLength(1); // PR now published
+    {
+      const { db, close } = openManagedDb({ dbPath: f.dbPath });
+      try {
+        expect(new HitchRepository(db).requireSession(hitchId).status).toBe("closed");
+      } finally {
+        close();
+      }
+    }
+  });
+
   it("drives an EMPTY goal (no seeded run) end-to-end", async () => {
     // No pre-created run. ConvergenceService returns needs_fix/fix_findings
     // for a goal with zero coding attempts (iterationsUsed===0), so the

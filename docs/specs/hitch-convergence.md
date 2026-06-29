@@ -1472,3 +1472,36 @@ deterministic merge gate (close-ready ∧ consensus approved with quorum, or a
 human override ∧ CI green) and merges the PR, escalating fail-closed on a
 hard-blocked gate. See [`workflow.md`](./workflow.md) (auto-merge).
 ```
+
+### Transient close-PR push retry (#396 part 2)
+
+`closeAndPr` pushes the reviewed run branch before publishing the PR. A failed
+`git push` no longer terminal-escalates a close-ready hitch unconditionally;
+instead, ONLY a **transient** push failure is bound-retried (the same
+recheckable `close_ready` lane the CI-not-green auto-merge gate uses): the hitch
+stays `close_ready` (re-derived live next pass, so a regression that introduces
+an in-scope P0/P1 still routes to `coder`, never auto-closes), no PR is created,
+and the next `hitch orchestrate` pass re-enters `closeAndPr` for an idempotent
+re-push. Determinism / fail-closed:
+
+- Classification is `classifyPushFailure` (`src/core/push-failure-classifier.ts`)
+  — a strict allowlist with a **permanent default**: unknown/ambiguous/empty,
+  server refusals (`! [remote rejected]`, hook-declined, protected-branch), auth,
+  cert-validation, and stale-ref (`non-fast-forward` / `! [rejected]`) all
+  escalate. Transient signatures (connectivity, anchored HTTP 5xx/429, ref-lock)
+  match only git's CLIENT lines (server `remote:` lines stripped), so a
+  side-band counter / hook body cannot fabricate a transient.
+- Only a typed `PrPushError` (the push exit-code site) is a retry candidate; the
+  PR-safety gates (single-commit / authentic-message / paths-subset) and the
+  publish step keep escalating. Abort / lease-loss beats both retry and escalate.
+- The budget is **run-scoped** (`hitch_sessions.close_push_attempts` /
+  `close_push_run_id`, v41): up to `MAX_CLOSE_PUSH_ATTEMPTS` (5) transient
+  retries per close episode (auto-restarts when the converged run id changes),
+  then escalate. `reopenSession` zeroes it. The counter is internal to
+  `closeAndPr` — convergence never reads it.
+- The recheck result carries `pushRetryPending` so it is **distinct from the
+  CI-not-green recheck** (which awaits an existing PR): `hitch orchestrate`
+  reports outcome `push_retry_pending` (not `pr_created`), and `hitch await-merge`
+  **stops** after the single recheck rather than re-polling `closeAndPr` (which
+  would re-push and burn the budget within one invocation — one attempt per pass).
+  Both are non-terminal: a later pass re-derives `close_ready` and re-pushes.

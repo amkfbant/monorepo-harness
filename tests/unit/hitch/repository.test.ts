@@ -3018,6 +3018,35 @@ describe("reopenSession (#76)", () => {
     }
   });
 
+  it("(#396 part 2) zeroes the close-push retry budget on reopen", () => {
+    const { db, repo } = freshRepo();
+    try {
+      createGoal(repo);
+      // burn some transient close-push budget on a converged run, then escalate.
+      repo.incrementClosePushAttempts("goal-test", "run-X");
+      repo.incrementClosePushAttempts("goal-test", "run-X");
+      repo.updateStatus("goal-test", "escalated", "push exhausted", {
+        createdBy: "orch",
+      });
+      const before = db
+        .prepare(
+          "SELECT close_push_attempts, close_push_run_id FROM hitch_sessions WHERE hitch_id = 'goal-test'",
+        )
+        .get() as { close_push_attempts: number; close_push_run_id: string | null };
+      expect(before).toEqual({ close_push_attempts: 2, close_push_run_id: "run-X" });
+
+      repo.reopenSession("goal-test", { reason: "retry", createdBy: "operator" });
+      const after = db
+        .prepare(
+          "SELECT close_push_attempts, close_push_run_id FROM hitch_sessions WHERE hitch_id = 'goal-test'",
+        )
+        .get() as { close_push_attempts: number; close_push_run_id: string | null };
+      expect(after).toEqual({ close_push_attempts: 0, close_push_run_id: null });
+    } finally {
+      db.close();
+    }
+  });
+
   it("reopens a budget_exhausted goal", () => {
     const { db, repo } = freshRepo();
     try {

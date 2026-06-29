@@ -16,6 +16,12 @@ export type AwaitMergeStep =
   | { kind: "awaiting"; prUrl?: string }
   /** the merge gate hard-blocked / a runner threw → human needed */
   | { kind: "escalated"; reason?: string }
+  /**
+   * (#396 part 2) the close PR push failed transiently (under budget): the hitch
+   * stays close_ready, NO PR exists to await. STOP polling — re-polling closeAndPr
+   * would re-push and burn the run-scoped retry budget within one await-merge.
+   */
+  | { kind: "push_retry_pending" }
   /** the hitch is not `close_ready` (e.g. needs_fix/continue) → nothing to await */
   | { kind: "not_awaiting"; decision: string };
 
@@ -23,6 +29,7 @@ export type AwaitMergeOutcome =
   | { outcome: "merged"; polls: number; prUrl?: string }
   | { outcome: "escalated"; polls: number; reason?: string }
   | { outcome: "timeout"; polls: number }
+  | { outcome: "push_retry_pending"; polls: number }
   | { outcome: "not_awaiting"; polls: number; decision: string };
 
 /** The subset of a `closeAndPr` runner result the await-merge mapping reads. */
@@ -30,6 +37,7 @@ export interface CloseStepResult {
   prUrl?: string;
   merged?: boolean;
   escalateReason?: string;
+  pushRetryPending?: boolean;
 }
 
 /**
@@ -52,6 +60,10 @@ export function awaitStepFromCloseResult(
       kind: "merged",
       ...(result.prUrl !== undefined ? { prUrl: result.prUrl } : {}),
     };
+  }
+  // (#396 part 2) a transient close-push recheck (no PR) → stop, don't poll again.
+  if (result.pushRetryPending === true) {
+    return { kind: "push_retry_pending" };
   }
   return {
     kind: "awaiting",
@@ -117,6 +129,12 @@ export async function awaitHitchMerge(
     }
     if (step.kind === "not_awaiting") {
       return { outcome: "not_awaiting", polls, decision: step.decision };
+    }
+    if (step.kind === "push_retry_pending") {
+      // (#396 part 2) the close push failed transiently; there is no PR to await.
+      // Stop after this single recheck so the run-scoped retry budget is consumed
+      // one attempt per invocation (a later await-merge/orchestrate re-pushes).
+      return { outcome: "push_retry_pending", polls };
     }
     // awaiting → keep polling until the wall-clock budget is spent.
     const elapsed = deps.now() - start;
