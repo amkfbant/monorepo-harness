@@ -2,8 +2,8 @@
 
 > 状態: **Phase 1 + Phase 2（clone capability）実装済み**（#410）。本書は「何をどう直すか」の
 > 設計と AS-IMPLEMENTED の差分注記。実装は operator-direct（self-orchestrate は #410 当事者ゆえ
-> 使わない）。残るのは self profile を `clone` に切替える follow-up と Phase 2.5（いずれも
-> [`../../future-features.md`](../../future-features.md) に defer）。調査の全文は issue #410 のコメント参照。
+> 使わない）。self profile の `clone` 切替は**完了**（別 PR・self は clone 隔離で復帰）。残るのは
+> Phase 2.5 等（[`../../future-features.md`](../../future-features.md) に defer）。調査の全文は issue #410 のコメント参照。
 
 ## 問題（要約）
 
@@ -53,7 +53,7 @@ loud 記録**する（汚染を「成功」に偽装しない）。run-completio
 run workspace を worktree でなく **独立 clone** にし、共有 .git/config を物理的に断つ。
 ブラスト半径を抑えるため **project profile の opt-in フラグ**で、既定は現行 worktree（非 self は無影響）。
 
-> **AS-IMPLEMENTED（capability・self profile の切替は follow-up）**: 既定 `worktree`／opt-in
+> **AS-IMPLEMENTED（capability。self profile の `clone` 切替も完了）**: 既定 `worktree`／opt-in
 > `clone` の配線を実装済み。現状仕様は spec が正本（[`../../specs/workspace.md`](../../specs/workspace.md)
 > の「run workspace の隔離モード」節 / フィールドは [`../../specs/policy.md`](../../specs/policy.md) ・
 > [`../../specs/project.md`](../../specs/project.md)）。設計時の候補から確定した点:
@@ -70,7 +70,7 @@ run workspace を worktree でなく **独立 clone** にし、共有 .git/confi
 > - **push / PR**: origin 張替により無改修（`reviewed-branch-push.ts` / `pr-creator.ts`）。
 
 - **profile schema**: `workspace.isolation?: "worktree" | "clone"`（既定 `"worktree"`）。
-  self profile（`projects/monorepo-harness.yaml`）で `clone` を選ぶ。`src/policy/schema.ts` /
+  self profile（`projects/monorepo-harness.yaml`）は `clone` を選ぶ（設定済み）。`src/policy/schema.ts` /
   project profile loader に追加。
 - **workspace 作成**（`src/workspace/git-worktree.ts` / `src/core/workflow-runner-inner.ts:135-143`）:
   - `worktree` モード: 現行どおり `git worktree add`。
@@ -130,5 +130,5 @@ common-dir 書込不可の OS sandbox で走らせるか、実行前に commondi
 
 1. ✅ **Phase 1（core.bare ガード）land 済み**（即効の被害封じ込め・低リスク・self-orchestrate を再び安全寄りに）。
 2. ✅ **Phase 2（clone 隔離）を opt-in で land 済み（capability）**（構造的決定論修正）。isolation テストで検証（self-orchestrate に依存しない）。
-3. ⏳ **follow-up**: self profile を `workspace.isolation: clone` に切替 → self-orchestrate を復帰（本 capability とは別 PR・[`../../future-features.md`](../../future-features.md)）。
+3. ✅ **完了**: self profile を `workspace.isolation: clone` に切替 → self-orchestrate を clone 隔離で復帰（本 capability とは別 PR）。
 4. Phase 2.5（`deny_write: .git/**` 実配線）は backlog（同上）。
