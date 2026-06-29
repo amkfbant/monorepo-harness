@@ -10,6 +10,7 @@ import {
   runMigrations,
 } from "../../../src/db/migrations.js";
 import { SCHEMA_VERSION } from "../../../src/db/schema.js";
+import { migrationVersionsAbove } from "./_migration-helpers.js";
 
 function freshDbPath(): string {
   const dir = mkdtempSync(join(tmpdir(), "harness-db-v18-"));
@@ -58,9 +59,7 @@ describe("schema v18 workspace checkpoints", () => {
     try {
       expect(currentSchemaVersion(db)).toBe(17);
       const result = runMigrations(db);
-      expect(result.applied).toEqual([
-        18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
-      ]);
+      expect(result.applied).toEqual(migrationVersionsAbove(17));
       expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
       expect(tableExists(db, "workspace_checkpoints")).toBe(true);
     } finally {
