@@ -124,7 +124,8 @@ run 内部 worktree（`workspaces/<runId>/repo/`）の作り方を policy で選
 （`git worktree add`・target の共有 `.git` を使う現行挙動）、**opt-in で `clone`**（独立 clone で
 共有 `.git/config` を物理的に断つ）。フィールドは `policy.workspace.isolation`（[`policy.md`](./policy.md)）
 ／profile の `workspace.isolation`（[`project.md`](./project.md)）。既定が `worktree` なので
-**非 self target は完全に無影響**。self profile を `clone` に切替えるのは別 follow-up。
+**非 self target は完全に無影響**。**self profile（`projects/monorepo-harness.yaml`）は `clone`
+に設定済み**で、self-orchestrate run は独立 clone で動き、共有 `.git/config` 汚染（#410）を構造的に防ぐ。
 
 - **なぜ clone か**: 上記 core.bare 汚染（#410）の根本は、共有 `.git/config` が per-worktree でない
   こと。clone は独自 `.git` を持つので、clone 内の git 書込が target の config に着弾しない

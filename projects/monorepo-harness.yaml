@@ -7,6 +7,21 @@ repo:
   package_manager: npm
 policy:
   template: strict-monorepo-v1
+  # macOS Spotlight/Finder drops .DS_Store into the run workspace. The harness's
+  # untracked scan deliberately omits `--exclude-standard` (so codex can't hide a
+  # file by .gitignore'ing it — src/git/diff.ts), so a stray .DS_Store surfaces as
+  # not_in_write_scope → failed-policy-violation even though the repo .gitignore
+  # lists it. Treat it as benign untracked noise via the policy ignore list.
+  ignore_untracked:
+    - "**/.DS_Store"
+# (#410 Phase 2) self-orchestrate (ops harness → this dev clone) uses clone
+# isolation: a run gets an independent local clone instead of a `git worktree`
+# that shares the target's `.git`. This structurally prevents the #410 core.bare
+# corruption — an allowed-command runner (e.g. `npx vitest run`) writing inside
+# the workspace can no longer reach the dev clone's shared `.git/config`. Default
+# stays `worktree`, so non-self targets are completely unaffected.
+workspace:
+  isolation: clone
 domains:
   # Self-hosting uses ONE cross-cutting domain. A harness change spans src/,
   # tests/ and docs/specs/ together (spec-driven), so the narrow apps/packages

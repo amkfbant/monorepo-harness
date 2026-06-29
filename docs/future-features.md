@@ -1042,11 +1042,14 @@ Stage A（hitch evidence store & surface）の codex App レビューで挙が�
 "worktree"(既定)|"clone"`）を出荷した（設計は
 [`design/proposals/design-410-run-workspace-git-isolation.md`](design/proposals/design-410-run-workspace-git-isolation.md)、
 現状仕様は [`specs/workspace.md`](./specs/workspace.md) の「run workspace の隔離モード」）。
-本 PR は capability のみで、以下は意図的に defer する。
+capability に続き **(a) も完了**（下記）。**(b)〜(d) は意図的に defer 継続**。
 
-- **(a) self profile を `clone` に切替える follow-up**: `projects/monorepo-harness.yaml` の
-  `workspace.isolation` を `clone` にして self-orchestrate を復帰させる。本 PR では既定 `worktree`
-  のままで、切替は別 PR（self-orchestrate は #410 当事者ゆえ慎重に）。
+- **(a) ✅ self profile を `clone` に切替（完了）**: `projects/monorepo-harness.yaml` の
+  `workspace.isolation` を `clone` に設定し、self-orchestrate を clone 隔離で復帰させた。e2e 検証済み
+  （フル `npx vitest run` を clone 内で完走させても target dev clone の `.git/config` は byte 不変・
+  core.bare 非汚染）。併せて macOS の `.DS_Store` を `policy.ignore_untracked` で無視する（untracked
+  スキャンは `.git/diff.ts` で `--exclude-standard` を使わず `.gitignore` を尊重しない設計のため、
+  fresh clone workspace に撒かれる `.DS_Store` が `not_in_write_scope` で run を落とすのを防ぐ）。
 - **(b) agent-workspace 層の clone 化**: `src/workspace/agent-workspace.ts`
   （`createAgentWorkspace`）は依然 worktree 前提で target の共有 `.git` を使うため、self が agent
   workspace を使う場合 #410 同型のリスク（共有 `.git/config` 汚染）が残る。run workspace 層と同様の
@@ -1063,4 +1066,5 @@ Stage A（hitch evidence store & surface）の codex App レビューで挙が�
   self（GitHub origin + global identity 有）では問題ないが、対応するなら clone 作成時に target の
   local `user.*` を clone へ写経する（または mint 時に明示注入する）。
 
-**Status:** idea only — #410 Phase 2（clone capability）出荷時に記録（2026-06-29）。
+**Status:** (a) 完了（self profile を `clone` に切替・別 PR）。(b)〜(d) は idea/backlog。
+#410 Phase 2（clone capability）出荷時に記録（2026-06-29）。
