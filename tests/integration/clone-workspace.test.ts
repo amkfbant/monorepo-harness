@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { writeFileSync, existsSync, statSync } from "node:fs";
+import { writeFileSync, existsSync, statSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { createCloneWorkspace } from "../../src/workspace/git-worktree.js";
 import { makeTmpDir } from "../helpers/tmp.js";
@@ -167,5 +167,40 @@ describe("createCloneWorkspace (#410)", () => {
       "refs/heads",
     ]);
     expect(sourceBranches.split("\n")).not.toContain("harness/run-noorigin/x");
+  });
+
+  it("★push from the clone skips the target's core.hooksPath pre-push hook (#396 part 3)", async () => {
+    // #396: a self-driven push from a `git worktree` ran the dev clone's
+    // `core.hooksPath` pre-push hook (full vitest) — redundant with the close
+    // check and, on a corrupted tree, fatal. Here the target carries a pre-push
+    // hook that ALWAYS fails; a worktree (sharing the target's config incl.
+    // core.hooksPath) would run and be blocked by it. The clone gets a fresh
+    // `.git/config` with NO core.hooksPath, so its push skips the hook.
+    const hooksDir = makeTmpDir("harness-hooks-");
+    const prePush = join(hooksDir, "pre-push");
+    writeFileSync(prePush, "#!/bin/sh\nexit 1\n"); // would block ANY push
+    chmodSync(prePush, 0o755);
+    execFileSync("git", ["config", "core.hooksPath", hooksDir], { cwd: source });
+
+    const wt = await createCloneWorkspace({
+      repoPath: source,
+      worktreesDir,
+      runId: "run-hooks",
+      branch: "harness/run-hooks/x",
+      base: baseSha,
+    });
+    // the clone owns a fresh config — core.hooksPath is NOT copied from source.
+    expect(() => git(wt.path, ["config", "--local", "core.hooksPath"])).toThrow();
+
+    // a real push to origin succeeds — the target's failing pre-push never runs.
+    git(wt.path, ["config", "user.email", "t@e.com"]);
+    git(wt.path, ["config", "user.name", "T"]);
+    git(wt.path, ["commit", "--allow-empty", "-qm", "run change"]);
+    expect(() =>
+      execFileSync("git", ["push", "-u", "origin", "harness/run-hooks/x"], {
+        cwd: wt.path,
+        stdio: "ignore",
+      }),
+    ).not.toThrow();
   });
 });

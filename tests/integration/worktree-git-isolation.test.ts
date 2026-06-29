@@ -68,7 +68,14 @@ beforeEach(() => {
 });
 
 describe("run workspace git isolation under runAllowedCommands (#410)", () => {
-  it("clone mode: `git config core.bare true` does NOT flip the target to bare (#410 fixed)", async () => {
+  it("clone mode: a close-check `git config core.bare` cannot corrupt the target (#410 fixed; #396 part 1)", async () => {
+    // This is also the #396 part (1) regression guard: the close-check runs its
+    // commands (e.g. the full `vitest-run`) through this same `runAllowedCommands`
+    // path in the run workspace. Under clone isolation, a git write from that
+    // command lands in the clone's OWN `.git` and cannot reach the target's
+    // shared config — which is what made #396's self-driven close-check corrupt
+    // the workspace (a worktree shared the target's `.git`). The worktree-mode
+    // contrast below shows the same command flipping the target, pre-isolation.
     const wt = await createCloneWorkspace({
       repoPath: source,
       worktreesDir,
