@@ -6,6 +6,7 @@ import {
   MIGRATIONS,
 } from "../../../src/db/migrations.js";
 import { ALL_TABLE_NAMES, CURRENT_TABLE_NAMES } from "../../../src/db/schema.js";
+import { migrationVersionsAbove } from "./_migration-helpers.js";
 
 const V36_TABLES = ["agent_invocation", "agent_usage_turn"];
 
@@ -262,7 +263,7 @@ describe("v36 agent_invocation / agent_usage_turn migration", () => {
     ).run();
 
     const r = runMigrations(db);
-    expect(r.applied).toEqual([36, 37, 38, 39, 40, 41]);
+    expect(r.applied).toEqual(migrationVersionsAbove(35));
 
     const ru = db.prepare("SELECT COUNT(*) AS c FROM run_usage").get() as {
       c: number;

@@ -10,6 +10,7 @@ import {
   runMigrations,
 } from "../../../src/db/migrations.js";
 import { SCHEMA_VERSION } from "../../../src/db/schema.js";
+import { migrationVersionsAbove } from "./_migration-helpers.js";
 
 function freshDbPath(): string {
   const dir = mkdtempSync(join(tmpdir(), "harness-db-v12-"));
@@ -56,10 +57,7 @@ describe("schema v12", () => {
       ).run();
 
       const result = runMigrations(db);
-      expect(result.applied).toEqual([
-        12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
-        30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
-      ]);
+      expect(result.applied).toEqual(migrationVersionsAbove(11));
       expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
 
       const preserved = db

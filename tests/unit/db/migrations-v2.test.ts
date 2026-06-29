@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { openDb } from "../../../src/db/connection.js";
 import { runMigrations, currentSchemaVersion } from "../../../src/db/migrations.js";
+import { migrationVersionsAbove } from "./_migration-helpers.js";
 import {
   MIGRATION_V1_STATEMENTS,
   SCHEMA_VERSION,
@@ -102,10 +103,7 @@ describe("schema v2", () => {
     ).run();
 
     const r = runMigrations(db);
-    expect(r.applied).toEqual([
-      2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
-    ]);
+    expect(r.applied).toEqual(migrationVersionsAbove(1));
     expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
 
     const row = db

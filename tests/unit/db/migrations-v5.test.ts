@@ -16,6 +16,7 @@ import {
   MIGRATION_V4_STATEMENTS,
   SCHEMA_VERSION,
 } from "../../../src/db/schema.js";
+import { migrationVersionsAbove } from "./_migration-helpers.js";
 
 /**
  * Phase 9-1 — schema v5 (concurrency + runtime completion).
@@ -114,10 +115,7 @@ describe("schema v5 migration", () => {
          'needs_review', 'db-first', 1, 'synced', 't')`,
     ).run();
     const r = runMigrations(db);
-    expect(r.applied).toEqual([
-      5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
-    ]);
+    expect(r.applied).toEqual(migrationVersionsAbove(4));
     expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
     const row = db
       .prepare(
