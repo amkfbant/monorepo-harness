@@ -1,23 +1,32 @@
 import process from "node:process";
 import { existsSync } from "node:fs";
+import type Database from "better-sqlite3";
 import type { Command } from "commander";
 import { harnessPaths } from "../config/paths.js";
 import { openManagedDb } from "../db/managed-connection.js";
 import {
   subagentUsageSummary,
-  type SubagentUsageFilter,
   type SubagentUsageSummary,
 } from "../db/repositories/subagent-usage.js";
+import {
+  codexUsageSummary,
+  type CodexUsageFilter,
+  type CodexUsageSummary,
+} from "../db/repositories/codex-usage.js";
 import { writeOutput } from "./course/helpers.js";
 
 /**
  * `harness usage` — read-only agent usage telemetry (ops-facing).
  *
- * Why: Surfaces Claude token consumption aggregated from agent_invocation +
- * agent_usage_turn (schema v36+): `subagents` = ops-driven external subagents
- * (tool=claude, role=external); `internal` = the harness's own claude
- * coder/reviewer/evaluator runs (#191). Designed for ops-mode inspection
- * without risk of accidental migration (readonly: true).
+ * Why: Surfaces token consumption aggregated from agent_invocation +
+ * agent_usage_turn (schema v36+):
+ *   - `subagents` = ops-driven external claude subagents (tool=claude, role=external);
+ *   - `internal`  = the harness's own claude coder/reviewer/evaluator runs (#191);
+ *   - `codex`     = external codex usage written by the `harness codex exec`
+ *                   wrapper (tool=codex, role=external), grouped by
+ *                   course/hitch/external_label (#403).
+ * Designed for ops-mode inspection without risk of accidental migration
+ * (readonly: true).
  *
  * Fail-open tail: if the DB is absent or the schema pre-dates v36 (tables
  * missing), the command logs a diagnostic and emits a zero-shaped summary
@@ -51,9 +60,13 @@ export function registerUsageCommands(
     .option("--since <iso>", "only invocations created at or after this ISO timestamp")
     .option("--json", "emit JSON instead of text")
     .action((opts: Record<string, unknown>) => {
-      runUsageQuery(deps.getHarnessRoot, opts, (since) =>
-        since !== undefined ? { since } : {},
-      );
+      const since = opts.since as string | undefined;
+      runUsageQuery(deps.getHarnessRoot, opts, {
+        query: (db) =>
+          subagentUsageSummary(db, since !== undefined ? { since } : {}),
+        zero: buildZeroSubagentSummary,
+        format: formatSubagentUsageText,
+      });
     });
 
   usageGroup
@@ -64,36 +77,74 @@ export function registerUsageCommands(
     .option("--since <iso>", "only invocations created at or after this ISO timestamp")
     .option("--json", "emit JSON instead of text")
     .action((opts: Record<string, unknown>) => {
-      runUsageQuery(deps.getHarnessRoot, opts, (since) => ({
-        roles: INTERNAL_CLAUDE_ROLES,
-        ...(since !== undefined ? { since } : {}),
-      }));
+      const since = opts.since as string | undefined;
+      runUsageQuery(deps.getHarnessRoot, opts, {
+        query: (db) =>
+          subagentUsageSummary(db, {
+            roles: INTERNAL_CLAUDE_ROLES,
+            ...(since !== undefined ? { since } : {}),
+          }),
+        zero: buildZeroSubagentSummary,
+        format: formatSubagentUsageText,
+      });
+    });
+
+  usageGroup
+    .command("codex")
+    .description(
+      "aggregate external codex token usage (tool=codex, role=external) by course/hitch/external_label (#403)",
+    )
+    .option("--since <iso>", "only invocations created at or after this ISO timestamp")
+    .option("--course <id>", "filter to a single course_id")
+    .option("--hitch <id>", "filter to a single hitch_id")
+    .option("--label <label>", "filter to a single external_label")
+    .option("--json", "emit JSON instead of text")
+    .action((opts: Record<string, unknown>) => {
+      runUsageQuery(deps.getHarnessRoot, opts, {
+        query: (db) => codexUsageSummary(db, buildCodexFilter(opts)),
+        zero: buildZeroCodexSummary,
+        format: formatCodexUsageText,
+      });
     });
 }
 
 /**
- * Shared fail-open execution for the read-only usage subcommands. `buildFilter`
- * picks the role scope (external subagents vs internal coder/reviewer/evaluator);
- * every absent/corrupt/locked-DB path yields the zero-shaped summary, never a
- * hard exit.
+ * A read-only usage view: how to query it, its zero-shaped fallback, and how to
+ * render it as text. Lets `runUsageQuery` carry the shared fail-open scaffolding
+ * once while each subcommand supplies its own summary type/SQL/formatter.
  */
-function runUsageQuery(
+interface UsageReader<T> {
+  query: (db: Database.Database) => T;
+  zero: () => T;
+  format: (summary: T) => string;
+}
+
+/**
+ * Shared fail-open execution for the read-only usage subcommands. Every
+ * absent/corrupt/locked-DB path yields the reader's zero-shaped summary, never a
+ * hard exit (#351). readonly: true — MUST NOT runMigrations on an observational
+ * command.
+ */
+function runUsageQuery<T>(
   getHarnessRoot: () => string,
   opts: Record<string, unknown>,
-  buildFilter: (since: string | undefined) => SubagentUsageFilter,
+  reader: UsageReader<T>,
 ): void {
   const paths = harnessPaths(getHarnessRoot());
+  const emitZero = (): void => {
+    const empty = reader.zero();
+    writeOutput(opts, empty, reader.format(empty));
+  };
 
   // Fail-open: missing DB → zero-shaped summary with a diagnostic note.
   if (!existsSync(paths.dbPath)) {
     process.stderr.write(
       "usage: DB not initialised — run 'harness db init'. Emitting zero summary.\n",
     );
-    emitZero(opts);
+    emitZero();
     return;
   }
 
-  // readonly: true — must NOT runMigrations on an observational command.
   // Fail-open (#351): a corrupt DB ("file is not a database") or a shared-lock
   // acquire timeout under a held EXCLUSIVE maintenance lock must yield the zero
   // summary, NOT a hard exit. Short timeout so lock contention fails fast.
@@ -109,7 +160,7 @@ function runUsageQuery(
       `usage: cannot open DB (${e instanceof Error ? e.message : String(e)}). ` +
         "Emitting zero summary.\n",
     );
-    emitZero(opts);
+    emitZero();
     return;
   }
   try {
@@ -124,31 +175,38 @@ function runUsageQuery(
         "usage: agent_invocation table absent (schema < v36). " +
           "Run 'harness db migrate'. Emitting zero summary.\n",
       );
-      emitZero(opts);
+      emitZero();
       return;
     }
 
-    const since = opts.since as string | undefined;
-    const summary = subagentUsageSummary(managed.db, buildFilter(since));
-    writeOutput(opts, summary, formatSubagentUsageText(summary));
+    const summary = reader.query(managed.db);
+    writeOutput(opts, summary, reader.format(summary));
   } catch (e) {
     // Any read-side failure (corrupt page, etc.) is fail-open too.
     process.stderr.write(
       `usage: query failed (${e instanceof Error ? e.message : String(e)}). ` +
         "Emitting zero summary.\n",
     );
-    emitZero(opts);
+    emitZero();
   } finally {
     managed.close();
   }
 }
 
-function emitZero(opts: Record<string, unknown>): void {
-  const empty = buildZeroSummary();
-  writeOutput(opts, empty, formatSubagentUsageText(empty));
+function buildCodexFilter(opts: Record<string, unknown>): CodexUsageFilter {
+  const course = opts.course as string | undefined;
+  const hitch = opts.hitch as string | undefined;
+  const label = opts.label as string | undefined;
+  const since = opts.since as string | undefined;
+  return {
+    ...(course !== undefined ? { course } : {}),
+    ...(hitch !== undefined ? { hitch } : {}),
+    ...(label !== undefined ? { label } : {}),
+    ...(since !== undefined ? { since } : {}),
+  };
 }
 
-function buildZeroSummary(): SubagentUsageSummary {
+function buildZeroSubagentSummary(): SubagentUsageSummary {
   return {
     rows: [],
     totals: {
@@ -157,6 +215,20 @@ function buildZeroSummary(): SubagentUsageSummary {
       outputTokens: 0,
       cacheReadInputTokens: 0,
       cacheCreationInputTokens: 0,
+      totalTokens: 0,
+    },
+  };
+}
+
+function buildZeroCodexSummary(): CodexUsageSummary {
+  return {
+    rows: [],
+    totals: {
+      invocations: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
       totalTokens: 0,
     },
   };
@@ -178,6 +250,32 @@ function formatSubagentUsageText(s: SubagentUsageSummary): string {
       `invocations=${s.totals.invocations}\t` +
       `in=${s.totals.inputTokens}\t` +
       `out=${s.totals.outputTokens}\t` +
+      `total=${s.totals.totalTokens}`,
+  );
+  return `${lines.join("\n")}\n`;
+}
+
+function formatCodexUsageText(s: CodexUsageSummary): string {
+  if (s.rows.length === 0) return "No external codex usage recorded.\n";
+  const lines = s.rows.map(
+    (r) =>
+      `course=${r.courseId ?? "-"}\t` +
+      `hitch=${r.hitchId ?? "-"}\t` +
+      `label=${r.externalLabel ?? "-"}\t` +
+      `invocations=${r.invocations}\t` +
+      `in=${r.inputTokens}\t` +
+      `cached_in=${r.cachedInputTokens}\t` +
+      `out=${r.outputTokens}\t` +
+      `reasoning_out=${r.reasoningOutputTokens}\t` +
+      `total=${r.totalTokens}`,
+  );
+  lines.push(
+    `TOTAL\t-\t-\t` +
+      `invocations=${s.totals.invocations}\t` +
+      `in=${s.totals.inputTokens}\t` +
+      `cached_in=${s.totals.cachedInputTokens}\t` +
+      `out=${s.totals.outputTokens}\t` +
+      `reasoning_out=${s.totals.reasoningOutputTokens}\t` +
       `total=${s.totals.totalTokens}`,
   );
   return `${lines.join("\n")}\n`;

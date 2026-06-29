@@ -436,6 +436,7 @@ describe("CLI help surface golden (#125 behavior-zero gate)", () => {
       usage
         subagents
         internal
+        codex
         help
       help
       "

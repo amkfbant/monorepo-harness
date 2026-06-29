@@ -2309,12 +2309,13 @@ codex がネイティブに処理し、ラッパーは触れない。最終メ�
 
 ## `harness usage`
 
-ops 駆動の Claude サブエージェント usage telemetry を読み取る（#235, #206 Phase-3）。
+ops 駆動の agent usage telemetry を読み取る（#235, #206 Phase-3, #403）。
 `agent_invocation` + `agent_usage_turn`（schema v36+）から read-only で集計する。
 
 ```bash
 harness usage subagents [--since <iso>] [--json]
-harness usage internal   [--since <iso>] [--json]
+harness usage internal  [--since <iso>] [--json]
+harness usage codex     [--since <iso>] [--course <id>] [--hitch <id>] [--label <label>] [--json]
 ```
 
 `harness usage subagents` はトークン使用量を `tool='claude'`, `role='external'` で
@@ -2323,17 +2324,30 @@ harness usage internal   [--since <iso>] [--json]
 `harness usage internal` は `tool='claude'`, `role IN ('coder','reviewer','evaluator')`
 で集計する（`#191` の claude `-p` バックエンドが内部 coder/reviewer/evaluator として
 動いた際の usage）。同じ `SubagentUsageSummary` 形式・同じ fail-open tail。`model` 別
-（内部 invocation は `agentType` が NULL なので実質 model 別）に集計する。両サブコマンドは
-read-only 集計を共有 helper で実行する。
+（内部 invocation は `agentType` が NULL なので実質 model 別）に集計する。
+
+`harness usage codex` は `harness codex exec` ラッパが書き込む external codex の usage
+（`tool='codex'`, `role='external'`）を `course_id` / `hitch_id` / `external_label` 別に
+集計して返す（WRITE 側 `harness codex exec --harness-course-id/--harness-hitch-id/--harness-label`
+と対称・#403）。トークンは codex taxonomy（`cached_input` / `reasoning_output`）で SUM する
+（claude の `cache_read` / `cache_creation_*` 列は codex 行では NULL）。出力形式は
+`CodexUsageSummary`（`rows` + `totals`）。internal codex（coder/reviewer/evaluator）は
+`role='external'` 条件で除外され、現状 course/hitch 紐付けを持たない（別件）。
+
+全サブコマンドは read-only 集計を共有 helper（`runUsageQuery`）で実行する。
 
 | オプション | 説明 |
 |-----------|------|
 | `--since <iso>` | 指定 ISO 日時以降に作成された invocation のみ集計（`agent_invocation.created_at >= <iso>`） |
-| `--json` | JSON 出力（text 出力との選択）。出力形式は `SubagentUsageSummary`（`rows` + `totals`） |
+| `--course <id>` | （`codex` のみ）指定 `course_id` に絞り込む |
+| `--hitch <id>` | （`codex` のみ）指定 `hitch_id` に絞り込む |
+| `--label <label>` | （`codex` のみ）指定 `external_label` に絞り込む |
+| `--json` | JSON 出力（text 出力との選択）。出力形式は `subagents`/`internal` は `SubagentUsageSummary`、`codex` は `CodexUsageSummary`（いずれも `rows` + `totals`） |
 
 **scope**: `subagents` は ops モードで外部 Claude サブエージェントを呼び出した際の消費、
-`internal` はハーネス自身の claude バックエンド（coder/reviewer/evaluator）の消費を可視化する。
-コスト属性付け（per-role 内訳・$ 換算）は将来拡張。
+`internal` はハーネス自身の claude バックエンド（coder/reviewer/evaluator）の消費、
+`codex` は course/hitch 駆動下で `harness codex exec` 経由に呼び出した external codex の消費を
+可視化する。コスト属性付け（per-role 内訳・$ 換算）は将来拡張。
 
 **fail-open tail (#351)**: 次のいずれでも stderr に diagnostic を 1 行出した上で
 zero-shaped summary（`rows: []`, `totals: { invocations: 0, ... }`）を返し、ハード
