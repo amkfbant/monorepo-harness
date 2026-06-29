@@ -80,6 +80,17 @@ rerun budget を消費しない。
 - **2 レイヤーの worktree**: agent workspace（人間 / エージェントが編集・`agent/<name>`）と、
   run 内部の worktree（`workspaces/<runId>/repo/`・codex 実行用）は**別物**。
   reconcile / list / status は run 内部 worktree と main checkout を除外する。
+- **run 開始時の core.bare 修復（#410）**: stale worktree GC の **前に** `repairCoreBareFlip`
+  （`src/core/run-worktree-gc.ts`）を best-effort で実行する。run worktree は target の実 `.git`
+  common-dir を**共有**するため、worktree 内で隔離なく走る git 書込（例: self の allowed-command
+  `npx vitest run` が harness 自身の git テストを実行）が共有 `<target>/.git/config` に着弾して
+  `core.bare=true` を立てると、target の**全** git 操作が `must be run in a work tree` で fatal 化し、
+  以降の prune/reclaim も run 自体も壊れる。本パスは `git rev-parse --is-bare-repository` で検出し、
+  bare なら `git config core.bare false` で**修復して warn** する（fail-closed・run を止めない）。
+  これは**予防ではなく被害封じ込め**（catastrophic な silent-fatal を回復可能状態に戻す）。予防＝
+  共有 .git を断つ workspace 隔離は
+  [`../design/proposals/design-410-run-workspace-git-isolation.md`](../design/proposals/design-410-run-workspace-git-isolation.md)
+  Phase 2（clone 化）で扱う。
 - **run 開始時の stale worktree GC（#404）**: `createWorktree` の直前に `pruneWorktrees`
   （`git worktree prune`）を **best-effort** で実行し、作業 dir が消えた stale admin entry を
   回収する。run worktree の作業 dir が `git worktree remove` を経ずに消えると（crash / 中断
